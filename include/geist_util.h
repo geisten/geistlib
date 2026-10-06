@@ -5,10 +5,8 @@
  * model → session → decode). This header adds everything beyond that happy
  * path: tokenizer / special-token helpers, multimodal soft-token attach,
  * speculative decode, raw-logits / prefill access, KV-prefix pinning,
- * telemetry, and backend-capability queries.
- *
- * Split out of <geist.h> in 0.2.0. A program that only generates text needs
- * only <geist.h>; include this header where you use the functions below.
+ * telemetry, and backend-capability queries. A program that only generates
+ * text needs only <geist.h>.
  */
 #pragma once
 
@@ -40,17 +38,13 @@ extern "C" {
 geist_token_t geist_model_eos_token(const struct geist_model *m);
 geist_token_t geist_model_bos_token(const struct geist_model *m);
 
-/* @stability STABLE since 0.12.0 — the tokenizer's own add_bos_token /
+/* @stability STABLE since 0.12.0 — the tokenizer's add_bos_token /
  * add_eos_token metadata (geist-runtime contract, #622).
  *
- * geist_session_tokenize returns CONTENT tokens only, by design: the caller
- * decides what to wrap them in. These two say what the model was trained to
- * expect around them, so a caller can follow the model's convention instead
- * of guessing it. It matters most for embedding models, where the pooled
- * vector is taken over exactly the sequence you pass — an embedding pooled
- * over a sequence one token short of the model's convention is a different
- * vector, not a rounding difference. Both false when no tokenizer is
- * loaded. */
+ * geist_session_tokenize returns content tokens only; these say whether the
+ * model expects BOS / EOS around them. Embedding models in particular pool
+ * over exactly the sequence passed, so a missing BOS gives a different
+ * vector. Both false when no tokenizer is loaded. */
 bool geist_model_add_bos(const struct geist_model *m);
 bool geist_model_add_eos(const struct geist_model *m);
 
@@ -67,10 +61,9 @@ geist_token_t geist_model_token_by_text(const struct geist_model *m, const char 
 
 /* @stability STABLE since 0.6.0 — agent-runtime contract (docs/API_CONTRACT.md).
  *
- * Tokenize without prefilling. Lets the caller inspect the token IDs that
- * would be produced by set_prompt, e.g. to seed a speculative-decode
- * drafter's history buffer with the prompt tokens, or to measure a
- * constrained candidate before committing it. Writes up to `out_capacity`
+ * Tokenize without prefilling: the token IDs set_prompt would produce
+ * (e.g. to seed the speculative-decode history or measure a candidate
+ * before committing it). Writes up to `out_capacity`
  * IDs to `out_ids` and the actual count to `*n_out`; `out_ids` may be
  * nullptr only when `out_capacity` is 0. Returns GEIST_E_NOT_FOUND if no
  * tokenizer is loaded, GEIST_E_INVALID_ARG on overflow. */
@@ -80,10 +73,8 @@ geist_token_t geist_model_token_by_text(const struct geist_model *m, const char 
                                                        geist_token_t        *out_ids,
                                                        size_t               *n_out);
 
-/* @stability STABLE since 0.1.0 — bypass tokenization: caller supplies
- * token IDs directly. Useful for testing and for integrations that
- * already have a tokenizer (set_prompt is the wrapper that does the
- * tokenize-then-prefill flow when a tokenizer.bin is available).
+/* @stability STABLE since 0.1.0 — prefill caller-supplied token IDs,
+ * bypassing the tokenizer (set_prompt = tokenize + this).
  *
  * Appends `n` tokens to the KV cache. After return the next call to
  * geist_session_decode_step yields the prediction for the position
@@ -103,9 +94,7 @@ enum geist_modality {
 };
 
 /* @stability EXPERIMENTAL — bitmask of modalities this loaded model
- * instance can consume beyond text, so a host can decide up front whether
- * to offer e.g. microphone input instead of finding out from a failing
- * attach call.
+ * instance can consume beyond text.
  *
  * The mask is a property of the *loaded instance*, not the architecture
  * string: it depends on the encoder weights found next to the GGUF at
@@ -131,8 +120,7 @@ enum geist_status geist_session_attach_audio(struct geist_session *s,
 
 /* @stability EXPERIMENTAL — streaming audio turn (#256): push PCM while
  * the user is still speaking; the encoder overlaps its work with the
- * arriving audio, so end() returns after only the tail (~200 ms on a
- * Pi 5 for a 10 s utterance vs ~4 s re-encoding it after the fact).
+ * arriving audio, so end() only has the tail left to encode.
  *
  * Contract: begin → push* → end is equivalent to a single
  * geist_session_attach_audio over the concatenated PCM: same token
@@ -155,11 +143,9 @@ enum geist_status geist_session_audio_end(struct geist_session *s);
 
 /* @stability EXPERIMENTAL — vision-tower soft-token injection.
  *
- * RGB is consumed as height × width × 3 uint8 row-major (i.e. HWC,
- * channels innermost). The vision encoder owns aspect-preserving
- * resize, patchification, the 16-block ViT, kernel-3 avg-pool, and
- * the multimodal projector — calling code only needs to supply
- * decoded pixels at native resolution.
+ * RGB is consumed as height × width × 3 uint8 row-major (HWC, channels
+ * innermost), decoded pixels at native resolution; resizing and
+ * patchification happen inside the encoder.
  *
  * Returns GEIST_E_NOT_FOUND if vision_tower.safetensors was not found
  * at model-load time. */
@@ -196,8 +182,7 @@ enum geist_status geist_session_attach_video(struct geist_session *s,
  * GEIST_OK, the session's cache holds those tokens' KV state and any
  * subsequent geist_session_reset() truncates the cache back to this
  * prefix length (rather than 0). Use this to amortize a constant system
- * prompt across many chat turns. The arch decides whether to support
- * pin_prefix at all; transformer (Gemma 4) does, Mamba2 does not.
+ * prompt across many chat turns.
  *
  * `ids` may be nullptr when `n` is 0. Returns GEIST_E_UNSUPPORTED if the
  * active architecture does not implement prefix pinning, and for a
@@ -322,32 +307,22 @@ geist_session_restore(size_t n_bytes, const void *buf, struct geist_session *s);
 
 /* @stability STABLE since 0.6.0 — agent-runtime contract (docs/API_CONTRACT.md).
  *
- * BREAKING CHANGE in 0.11.0: the parameter order was `(s, n_logits)` up to
- * and including 0.10.8 and is now out-size-first for consistency with the
- * other borrowed-output accessors. This is a source-incompatible change to a
- * STABLE symbol inside 0.x, which the stability tag above otherwise rules
- * out — taken deliberately by the
- * maintainer while the user base is small enough to absorb it, rather than
- * carrying the inconsistency to 1.0. A caller built against 0.10.8 will not
- * compile; the fix is to swap the two arguments. See CHANGELOG.md.
- *
  * Raw-logits accessor for evaluation, scoring, and constrained decoding.
  *
  * Returns a pointer to the next-position logits and writes the vocab size
  * to *n_logits. Returns nullptr (and sets *n_logits=0) if no logits are
  * pending — call geist_session_prefill_tokens / set_prompt / decode_step
- * first — or if the active architecture does not implement peek_logits
- * (Mamba2 currently), which callers must treat as "constrained decoding
- * unavailable", not as an error.
+ * first — or if the active architecture does not implement peek_logits,
+ * which callers must treat as "constrained decoding unavailable", not as
+ * an error.
  *
- * Ownership: the buffer belongs to the SESSION, not the backend, and stays
- * valid until the next mutating call on that session. It may be a staging
- * copy — an accelerator backend satisfies this contract by copying device
- * memory into session storage, so the signature does not change when such a
- * backend lands. Do not free it and do not hold it across a decode. */
+ * Ownership: the buffer belongs to the SESSION, not the backend (it may be
+ * a staging copy of device memory), and stays valid until the next mutating
+ * call on that session. Do not free it and do not hold it across a
+ * decode. */
 const float *geist_session_peek_logits(size_t *n_logits, struct geist_session *s);
 
-/* @stability EXPERIMENTAL — embedding models (BitNet embedding, July 2026).
+/* @stability EXPERIMENTAL — embedding models.
  *
  * The pooled sentence embedding for everything prefilled into `s` so far:
  * pooled per the model's own pooling metadata, passed through the final
@@ -359,29 +334,21 @@ const float *geist_session_peek_logits(size_t *n_logits, struct geist_session *s
  * embedding model conversely emits no tokens: geist_session_decode_step
  * returns GEIST_E_UNSUPPORTED on one.
  *
- *
  * Ownership matches geist_session_peek_logits: the buffer belongs to the
  * SESSION, stays valid until the next mutating call on it, and must not be
  * freed. Copy it if you need it past the next prefill.
  *
- * The engine deliberately stops at the vector. Query instruction prefixes —
- * which these models are trained with and lose quality without — embedding
- * quantization for storage, and any index belong to the caller, per the
- * engine/application split in docs/README.md. */
+ * Query instruction prefixes (which these models need for quality),
+ * embedding quantization and indexing are the caller's job. */
 const float *geist_session_peek_embedding(size_t *n_dims, struct geist_session *s);
 
 /* @stability EXPERIMENTAL — forward-only (zeroth-order) fine-tuning.
  *
  * Mutable view of the model's tuning gains: one f32 per linear weight, all
  * 1.0f after load, each multiplied into that weight's output. The weight
- * bytes are never touched — for a ternary model the trits stay frozen and
- * only these continuous scalars move, which is what makes a gradient-free
- * optimizer (MeZO/QZO-style) tractable: the search dimension is `*n`, not
- * the parameter count.
- *
- * A tuned model is therefore the unmodified GGUF plus `*n` floats. Writing
- * the array takes effect on the next forward pass, so swapping one tuning
- * profile for another at runtime is a memcpy — no reload, no requantize.
+ * bytes are never touched, so a gradient-free optimizer (MeZO/QZO-style)
+ * searches `*n` scalars, and a tuned model is the unmodified GGUF plus `*n`
+ * floats. Writes take effect on the next forward pass (no reload).
  * The array is MODEL-level: a write is seen by every session on `m`, and
  * concurrent sessions must not race it (tune, then serve).
  *
@@ -411,8 +378,7 @@ geist_model_gains(struct geist_model *m, float **out_gains, size_t *out_n);
  * One speculative-decode step: drafts up to k_max candidate tokens via an
  * architecture-native head when available and enabled (Qwen3.5 MTP with
  * GEIST_MTP=1), otherwise via an internal n-gram lookup over `history`, then
- * verifies them in one batched forward pass. MTP is opt-in so ordinary decode
- * does not pay its synchronization cost. Writes the emitted tokens
+ * verifies them in one batched forward pass. Writes the emitted tokens
  * (1..k_max+1) to `out_tokens` and the count to `*n_out`.
  *
  * The drafter's first guess is always the model's own argmax over the
@@ -430,12 +396,10 @@ geist_model_gains(struct geist_model *m, float **out_gains, size_t *out_n);
  *
  * Distribution caveat: under greedy decoding (temperature = 0), the
  * emitted stream is numerically equivalent to running decode_step
- * `*n_out` times. Under stochastic decoding (temperature > 0) the
- * emitted stream is valid (tokens sampled correctly per position) but
- * not distribution-preserving — the simple argmax-style accept-reject
- * loses the rejection-sampling step that would match the target
- * model's exact joint distribution. For strict stochastic equivalence,
- * use decode_step.
+ * `*n_out` times. Under stochastic decoding (temperature > 0) each token
+ * is sampled correctly per position, but the accept/reject step does not
+ * preserve the model's joint distribution; use decode_step when that
+ * matters.
  *
  * Falls back to single-token decode if the active architecture lacks
  * the speculative primitives. */
@@ -460,9 +424,7 @@ struct geist_session_stats {
     uint64_t total_prefill_ns;
     uint64_t total_audio_encode_ns;
 
-    /* Stubbed at zero. Backend-side counters not yet plumbed — these
-     * land with an opt-in geist_backend_opts.enable_op_profiling
-     * configuration in a future revision. */
+    /* Always zero: backend-side counters are not implemented. */
     uint64_t buffer_alloc_count;
     uint64_t buffer_alloc_bytes_peak;
     uint64_t buffer_alloc_bytes_current;
@@ -474,15 +436,15 @@ enum geist_status geist_session_get_stats(const struct geist_session *s,
 enum geist_status geist_session_reset_stats(struct geist_session *s);
 
 /* @stability EXPERIMENTAL — optional, observational backend telemetry.
- * Metal reports MTLDevice.currentAllocatedSize from this backend's device.
- * This is provider resource allocation, NOT unique physical residency, a
- * process RSS or a working-set budget. Never add it to RSS on unified memory.
- * No-copy aliases, heaps and driver retention follow the provider's accounting.
- * The backend must remain alive throughout the call; join observer threads
- * before destroy. Concurrent model/inference use is supported. No inference
- * lock, command submission, GPU synchronization or heap allocation is required.
- * Failure zero-initializes out; only GEIST_OK makes a zero a known measurement.
- * CPU/other unimplemented providers return GEIST_E_UNSUPPORTED. */
+ * Metal reports MTLDevice.currentAllocatedSize from this backend's device:
+ * provider resource allocation, NOT physical residency, process RSS or a
+ * working-set budget (never add it to RSS on unified memory). No-copy
+ * aliases, heaps and driver retention follow the provider's accounting.
+ * Safe to call concurrently with inference; takes no lock, submits no work
+ * and does not allocate. The backend must stay alive for the call (join
+ * observer threads before destroy). Failure zero-initializes out; only
+ * GEIST_OK makes a zero a measurement. Backends without a provider (CPU)
+ * return GEIST_E_UNSUPPORTED. */
 enum geist_resource_source { GEIST_RESOURCE_NONE, GEIST_RESOURCE_METAL_DEVICE };
 struct geist_backend_resources {
     uint64_t                   allocated_bytes;

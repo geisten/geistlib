@@ -6,8 +6,6 @@
  * program that only loads and runs a model never needs it (use <geist.h>).
  * It is pulled in by <geist_backend.h> (the backend vtable) and
  * <geist_weight.h> (the weight loader).
- *
- * Split out of <geist.h> in 0.2.0 so the model-running surface stays small.
  */
 #pragma once
 
@@ -22,6 +20,8 @@ extern "C" {
 /* Tensor types — dtype = logical, layout = physical storage               */
 /* ====================================================================== */
 
+/* Values are ABI (metal shaders hardcode some): new dtypes go at the end,
+ * directly above GEIST_DTYPE_COUNT. */
 enum geist_dtype {
     GEIST_DTYPE_F32,
     GEIST_DTYPE_F16,
@@ -67,9 +67,8 @@ enum geist_dtype {
 
     /* GGUF IQ4 quants: 4-bit indices into a fixed non-linear 16-value
      * table (kvalues_iq4nl). IQ4_NL: 32-elem blocks, one fp16 scale.
-     * IQ4_XS: 256-elem super-blocks with 6-bit sub-scales. Appended after
-     * I2_S so no existing dtype value shifts (metal shaders hardcode
-     * embed-table dtype numbers). layout=GEIST_LAYOUT_BLOCK_QUANTIZED. */
+     * IQ4_XS: 256-elem super-blocks with 6-bit sub-scales.
+     * layout=GEIST_LAYOUT_BLOCK_QUANTIZED. */
     GEIST_DTYPE_IQ4_NL,
     GEIST_DTYPE_IQ4_XS,
 
@@ -82,19 +81,10 @@ enum geist_dtype {
      * one fp16 scale followed by 32 bytes of 2-bit codes, element j at
      * byte j/4, bits 2*(j%4); value (code - 1) * scale, so codes 0/1/2 are
      * the trits -1/0/+1 (code 3 decodes to +2). 2.125 bpw.
-     * layout=GEIST_LAYOUT_BLOCK_QUANTIZED.
-     *
-     * Last, after CUSTOM: "appended" has to mean appended to the whole
-     * enum, not to the quant group. Sitting before BINARY it moved
-     * BINARY/TERNARY/CUSTOM off the values v0.11.0 published (19/20/21),
-     * which is what the IQ4 note above was written to prevent. Anything
-     * new goes here, below this line. */
+     * layout=GEIST_LAYOUT_BLOCK_QUANTIZED. */
     GEIST_DTYPE_PQ2_0,
 
-    /* Not a dtype: one past the last, for sizing tables keyed by dtype.
-     * CUSTOM used to serve that role, which is why moving PQ2_0 past it
-     * silently dropped PQ2_0 from the weight-path counters. Anything
-     * appended above is covered automatically. */
+    /* Not a dtype: one past the last, for sizing tables keyed by dtype. */
     GEIST_DTYPE_COUNT,
 };
 
