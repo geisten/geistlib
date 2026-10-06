@@ -25,12 +25,9 @@
  *
  * C leaves the tiles through memory (TILESTORED), and a vector load of
  * those bytes waits until the store commits, after the two TDPBSSD it
- * depends on retire: TILEZERO, the two dots, the store and a vector load of
- * its bytes took about 140 cycles as a dependent chain on the host below.
- * So C alternates between two tile registers and a ring of four buffers,
- * and each step post-processes the C of two steps before: 46 cycles per
- * step against 75 with the post right behind its store, in a loop of tile
- * ops alone (32 cycles is the two TDPBSSD). The B tiles
+ * depends on retire (about 140 cycles as a dependent chain). So C
+ * alternates between two tile registers and a ring of four buffers, and
+ * each step post-processes the C of two steps before. The B tiles
  * alternate with C, so a step's loads need not wait for the previous
  * step's dots to read theirs. The next block's A is extracted into the
  * other half of a double buffer while this block's steps run, so its tile

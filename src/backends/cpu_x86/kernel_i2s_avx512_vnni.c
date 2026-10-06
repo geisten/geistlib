@@ -81,9 +81,8 @@ void i2s_gemv_m1_avx512_vnni(size_t        n_out,
 /* Prefill GEMM. JT tokens share each weight-row load: the 4 unpacked code
  * vectors per block are reused across the token-tile, so the packed weight
  * is read once per (row, block, tile) and the VPDPBUSD throughput is the
- * limiter. y is [m, n_out] row-major.
- * Swept 2/4/6/8 on the 9950X (#212): 4 optimal (1053/1078/1057/1035 pp128),
- * 8 spills the acc[] registers like I2S_X4_TT=8 did. */
+ * limiter. y is [m, n_out] row-major. 4 measured best of 2/4/6/8 on the
+ * 9950X (#212); 8 spills the acc[] registers. */
 #define I2S_JT 4
 
 void i2s_gemm_avx512_vnni(size_t         m,
@@ -98,10 +97,8 @@ void i2s_gemm_avx512_vnni(size_t         m,
     const size_t n_blocks  = n_in / I2S_BLOCK_ELEMS;
     const size_t row_bytes = n_in / 4;
 
-    /* `perm` is caller-owned scratch of m*n_in bytes (#336 batch 3): this
-     * used to be a raw malloc here, per GEMM, giving 16-byte alignment to a
-     * buffer that AVX-512 loads out of. The caller either hands over
-     * workspace or takes the M=1 loop below. */
+    /* `perm` is caller-owned scratch of m*n_in bytes; without it, the M=1
+     * loop below. */
     if (perm == nullptr) {
         for (size_t i = 0; i < m; i++) {
             i2s_gemv_m1_avx512_vnni(
@@ -175,8 +172,8 @@ static inline void i2s_x4_group_m1(const uint8_t *Wg,
     __m512i a3 = _mm512_setzero_si512();
     for (size_t cb = 0; cb < n_cblocks; cb++) {
         /* Weights stream once per token — NTA prefetch keeps them from
-         * evicting the resident activations/KV out of L3. Distance 512 B
-         * won the 256/512/1024 sweep; A/B: +2.7 % decode (#102 Phase 2). */
+         * evicting the resident activations/KV out of L3. 512 B measured
+         * best of 256/512/1024 (+2.7 % decode, #102). */
         _mm_prefetch((const char *) (Wg + cb * 64 + 512), _MM_HINT_NTA);
         const __m512i w = _mm512_loadu_si512((const void *) (Wg + cb * 64));
         const __m512i a = _mm512_loadu_si512((const void *) (xq + cb * 64));
@@ -213,9 +210,8 @@ void i2s_x4_gemv_m1_avx512_vnni(size_t        n_out,
 /* Fused pair: two same-n_in weights (gate+up, q+k) under ONE OMP region,
  * sharing the single pre-quantized activation — fewer fork/joins + no
  * redundant activation quant, and the combined output rows amortize better
- * than two separate small GEMVs. Opt-in (GEIST_I2S_PAIR=1): perf-neutral at
- * the DDR5-6400 BW ceiling, a win only where per-op overhead bites (slower
- * RAM). */
+ * than two separate small GEMVs. Default on; GEIST_I2S_PAIR=0 disables
+ * (backend.c). */
 void i2s_x4_gemv_pair_m1_avx512_vnni(size_t        n_in,
                                      const int8_t *xq,
                                      int32_t       sum_a,
@@ -249,8 +245,8 @@ void i2s_x4_gemv_pair_m1_avx512_vnni(size_t        n_in,
 /* 1.6 bpw: byte = 5 trits of ONE row (pow3 pack, see kernel_i2s.h). One
  * 64-byte group covers 320 columns in 5 stride-64 planes. 4 rows share the
  * 5 activation slices from registers; unpack per plane is 2 wrapping byte
- * adds (m *= 3) + 2 epu8 compares. Phase-A spike: the extra ALU fits in
- * Zen 5's VNNI slack (362 vs 298 Gwt/s vs the 2-bit x4 stream). */
+ * adds (m *= 3) + 2 epu8 compares; the extra ALU fits in Zen 5's VNNI
+ * slack. */
 
 /* Trit plane from m = byte * 3^k (mod 256): (m > 85) + (m > 170). */
 static inline __m512i i2s_t5_plane(__m512i m) {
@@ -350,7 +346,7 @@ void i2s_t5_gemv_pair_m1_avx512_vnni(size_t        n_in_pad,
     }
 }
 
-#define I2S_X4_TT 4 /* 16 live accumulators; swept 2/4/8 on the 9950X — 4 wins (#102 Ph. 4) */
+#define I2S_X4_TT 4 /* 16 live accumulators; 4 measured best of 2/4/8 on the 9950X (#102) */
 
 void i2s_x4_gemm_avx512_vnni(size_t         m,
                              size_t         n_out,

@@ -81,11 +81,9 @@ static inline void reduce_dot8(__m256i dot8, int32_t *d0, int32_t *d1) {
 
 /* JT = number of tokens whose accumulators are kept live in the inner loop.
  * 4 independent fp32 chains per weight 2-block load — enough ILP to hide
- * the fp-add latency on Zen 5 while the weight stays resident in L1.
- * JT=4 still performs per-block horizontal reductions, which set the
- * throughput ceiling. The upgrade path is a lane-parallel W8A8 weight repack
- * (à la block_q4_Kx8) that produces 8 cells per VPDPBUSD and defers the
- * reduction. */
+ * the fp-add latency on Zen 5 while the weight stays resident in L1. The
+ * per-block horizontal reductions set the throughput ceiling; w8x8_gemm
+ * below avoids them with a lane-parallel layout. */
 #define W8A8_JT 4
 
 void w8a8_gemm_avx512_vnni(size_t        n_tokens,

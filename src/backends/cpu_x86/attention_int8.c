@@ -6,22 +6,18 @@
  *
  * Layer: BACKEND (cpu_x86).
  *
- * The INT8 cache is this backend's default (caps.preferred_kv_mode), and
- * its attention was the architecture layer's portable loop
- * (attention_int8_via_buffers in forward/attention.c), vectorized by gcc
- * on its own: about 570 instructions per context position for four query
- * heads at head_dim 64, where the work is 256 int8 multiply-adds for the
- * scores and 256 fp32 ones for V. This is the same computation — the
- * query quantization, the blocks of the context, the online softmax, the
- * split decode and its merge — written for AVX2, this backend's floor
+ * The INT8 cache is this backend's default (caps.preferred_kv_mode). This
+ * is the computation of the architecture layer's portable loop
+ * (attention_int8_via_buffers in forward/attention.c) — the query
+ * quantization, the blocks of the context, the online softmax, the split
+ * decode and its merge — written for AVX2, this backend's floor
  * (x86-64-v3):
  *   - scores: |k| (u8) times q * sign(k) (s8) through vpmaddubsw and
  *     vpmaddwd, exact in int32 for every int8 k, as the portable dot is;
  *     eight positions are reduced together;
  *   - V: eight fp32 accumulators per pass stay in registers while 64
  *     rows of the block go past — 16 output dimensions of each of 4 or 3
- *     heads, 32 of each of 2, 64 of one. The portable loop kept them in
- *     memory and stored every update: the int8 V row may alias them;
+ *     heads, 32 of each of 2, 64 of one;
  *   - head_dim 64, 128 and 256 are compile-time constants, so the dots
  *     unroll; any other head_dim up to AX_HEAD_DIM_MAX runs the same code
  *     with the length at run time.

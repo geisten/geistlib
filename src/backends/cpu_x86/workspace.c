@@ -1,11 +1,7 @@
 /*
  * src/backends/cpu_x86/workspace.c — per-thread, backend-owned kernel
- * scratch. Port of the cpu_neon mechanism (workspace.c there) that fixed
- * the concurrent-session data race test_multi_session_parallel_int
- * caught: one workspace per calling thread, all of them owned and freed
- * by the backend.
- *
- * Allocation flows through heap.h.
+ * scratch, as in cpu_neon: one workspace per calling thread, so concurrent
+ * sessions on one backend do not share buffers; the backend frees them all.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 

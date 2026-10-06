@@ -8,8 +8,7 @@
  * across the 8 rows in 8-byte stripes. This is the same layout llama.cpp
  * uses in its AVX-512 q4_K GEMM kernel (ggml/src/ggml-cpu/repack.h and
  * arch/x86/repack.cpp), which lets one 256-bit weight load feed VPMADDUBSW
- * across 8 output cells simultaneously — the lane-parallel structure that
- * makes their prefill ~18× faster than our independent-row W4A8 SoA.
+ * across 8 output cells simultaneously.
  *
  * --- Block layout ----------------------------------------------------------
  *

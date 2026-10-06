@@ -105,35 +105,16 @@ struct ax_plan {
 /* How to run a call, from its shape alone (any thread count gives the same
  * bits); `span` is the number of positions the last query attends to,
  * kv_bytes the size of a K or V element, chunk_span the decode split's
- * positions per chunk. Measured per kernel with every choice forced, 4
- * threads, decode and 64-row prefill over 32/8 heads at head_dim 64, 16/8,
- * 24/8 and 32/8 at 128, 15/5 and 32/32 at 64, 8/1 at 256 and 512, contexts
- * 256-8192:
- *   - the widest pass that divides the KV group was never slower, prefill
- *     or decode: one head a pass took up to twice as long (INT8), 21-141 %
- *     longer (FP32), two of a group of four or eight 10-67 % (FP32);
- *   - INT8 decode: a chunk per 1024 positions ran 7-45 % faster at 8192
- *     positions than unsplit (32/8 hd 64: 0.50 -> 0.44 ms; 8/1 hd 256:
- *     0.60 -> 0.30), within noise of it at 2048, and slower at 512, where
- *     the split is left to the item count;
- *   - FP32 decode: a chunk per 256 positions ran 3-17 % faster at 1024 and
- *     2048 positions than one per 1024 with five to 32 KV heads, the same
- *     at 512 and with one KV head (four chunks either way); unsplit took
- *     up to twice as long with one KV head, 11-47 % longer at 4096 and
- *     8192 positions with five to eight.
- * A prefill puts its queries in items of up to AX_QUERIES_MAX where a span
- * runs past one block and the call reads more than AX_REUSE_BYTES of K and
- * V, in items of as many as leave at least AX_MIN_ITEMS items; the queries
- * of an item do not change each other's arithmetic, so any plan gives the
- * same bits. Against one query an item, 64-token chunks: up to 36 % (AVX2)
- * and 4-44 % (VNNI) faster at 2048 and 8192 positions where the call reads
- * more than 1 MB, the least at 1.3 MB (SmolLM2-360M at 2048 positions);
- * in FP32 one query an item took 1-31 % longer at 1024 positions and
- * 11-91 % from 2048 on, two -2 to +30 %. With the queries forced into
- * items anyway, a few percent slower within one block and at 1 MB (MQA at
- * 2048 positions), and with fewer items the threads waited on the longest
- * (MQA with four queries a call, two items, 20-80 % slower in the VNNI
- * kernel). */
+ * positions per chunk. Chosen per kernel with every option forced (4
+ * threads, head layouts 8/1 to 32/32, head_dim 64-512, contexts 256-8192):
+ *   - the widest pass that divides the KV group was never slower;
+ *   - decode: one chunk per chunk_span positions, or more where the passes
+ *     alone give fewer than AX_MIN_ITEMS items, none below AX_CHUNK_MIN;
+ *   - prefill: up to AX_QUERIES_MAX queries an item where a span runs past
+ *     one block and the call reads more than AX_REUSE_BYTES of K and V,
+ *     keeping at least AX_MIN_ITEMS items (with fewer, threads wait on the
+ *     longest). The queries of an item do not change each other's
+ *     arithmetic, so any plan gives the same bits. */
 static inline struct ax_plan ax_plan_for(size_t n_q,
                                          size_t n_q_heads,
                                          size_t n_kv_heads,
@@ -319,10 +300,7 @@ static void ax_run_item(size_t                per_pass,
     }
     /* Items by KV head, then pass, then block of queries: the team works
      * through one KV head's rows at a time, which then stay in each core's
-     * L2 (1 MB of INT8 at 8192 positions and head_dim 64), where in query
-     * order every thread went through all KV heads' (five of them in
-     * SmolLM2-360M, 5 MB). Causal and window masks make later positions
-     * longer: dynamic. */
+     * L2. Causal and window masks make later positions longer: dynamic. */
     const size_t per_item = plan.per_item;
     const size_t n_blocks = (n_q + per_item - 1) / per_item;
 #if defined(_OPENMP)

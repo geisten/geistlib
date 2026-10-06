@@ -213,11 +213,10 @@ dot_fmt(enum kfmt f, size_t n_super, const uint8_t *w, const struct q8k_act *y) 
  * bound is a tile size, not a limit on K. */
 constexpr size_t Q8K_SEG = 64;
 
-/* K up to Q8K_SEG * 256 = 16384 is one segment, exactly the old single pass.
- * Beyond it (ffn_down of any model wider than 16384) each segment's partial
- * dot is added into y. The activation is quantized per super-block either
- * way, so segmenting changes only the order of the fp32 sum across segments;
- * that K used to return without writing y, and no caller had a fallback. */
+/* K up to Q8K_SEG * 256 = 16384 is one segment. Beyond it (ffn_down of any
+ * model wider than 16384) each segment's partial dot is added into y. The
+ * activation is quantized per super-block either way, so segmenting changes
+ * only the order of the fp32 sum across segments. */
 [[gnu::always_inline]] static inline void
 gemv_m1(enum kfmt f, size_t N, size_t K, const float *x, const uint8_t *raw, float *y) {
     const size_t n_super = K / 256;

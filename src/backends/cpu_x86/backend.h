@@ -6,8 +6,8 @@
  * The descriptor (gated by GEIST_BACKEND_CPU_X86) starts from cpu_scalar's
  * vtbl, prims and fused tables and overrides what cpu_x86 has native code
  * for: create/destroy, resolve_weight (the AVX2 / AVX-512 linear kernels,
- * per dtype), the per-phase OpenMP regions, attention and the GELU
- * entries. backend.c has the list.
+ * per dtype), the per-phase OpenMP regions, attention (FP32 and INT8 KV)
+ * and the elementwise entries. backend.c has the list.
  */
 #ifndef GEIST_INTERNAL_BACKEND_CPU_X86_H
 #define GEIST_INTERNAL_BACKEND_CPU_X86_H

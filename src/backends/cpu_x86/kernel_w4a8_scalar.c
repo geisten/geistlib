@@ -4,11 +4,11 @@
  * Layer: BACKEND (cpu_x86).
  *
  * Pure C23, no intrinsics. Serves three roles:
- *   1. Correctness oracle for the AVX-512+VNNI / AVX-512 / AVX2 variants
- *      (cross-ISA-consistency tests, see tests/test_w4a8_kernel_unit.c).
- *   2. Fallback when none of the SIMD tiers is available
- *      (cpu_x86 on pre-Haswell, or under GEIST_FORCE_ISA=scalar).
- *   3. Algorithm documentation (the SIMD variants are harder to read).
+ *   1. Correctness oracle for the AVX-512 VNNI variant
+ *      (tests/test_w4a8_kernel_unit.c).
+ *   2. The dot on every host without AVX-512 VNNI, or under
+ *      GEIST_FORCE_ISA below avx512_vnni.
+ *   3. Algorithm documentation (the SIMD variant is harder to read).
  *
  * The contract is in kernel_w4a8.h.
  */
