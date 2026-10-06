@@ -1,13 +1,12 @@
 /*
- * test_tokenizer — encodes the same TEST_STRINGS as tokenizer_oracle.py
- * via sp_bpe_tokenizer and emits diff-comparable output.
+ * test_tokenizer — encodes TEST_STRINGS with sp_bpe_tokenizer and prints the
+ * ids in a diff-friendly form, for a manual parity check against a reference
+ * tokenizer (e.g. HuggingFace's on the same strings). Fails only if an
+ * encode fails; skips without a tokenizer.bin argument.
  *
  * Output format (per input, stdout):
  *   INPUT: <hex-encoded-utf8>
  *     ids:        id1,id2,...
- *
- * Diff against extracted reference lines from tokens_ref.txt to verify
- * SP-BPE parity.
  *
  * Run:
  *   ./test_tokenizer ../gemma-4-E2B-it/tokenizer.bin
@@ -19,7 +18,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Same corpus as tokenizer_oracle.py — keep in sync. */
 static const char *TEST_STRINGS[] = {
         "Hello, world!",
         "The quick brown fox jumps over the lazy dog.",
