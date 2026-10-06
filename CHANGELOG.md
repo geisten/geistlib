@@ -782,6 +782,14 @@ minor release.
   and Metal and Vulkan now spell the contract `[static n_bytes]` like the
   vtable.
 
+### Removed
+- **`geist_decision_supported` and `geist_decision_reset`** (EXPERIMENTAL,
+  #631). The first was `geist_decision_mode_supported(m,
+  GEIST_DECISION_DENSE)` under another name; the second repeated what every
+  `geist_decision_score` already does before its query. Only the tests
+  called either. Use `geist_decision_mode_supported` with the mode you will
+  create; a score needs no reset.
+
 ### Fixed
 - **GGUF string metadata length check** (#622). `gguf_get_meta_string` bounded
   a value by `8 + length > payload`, which a length near `UINT64_MAX` wraps

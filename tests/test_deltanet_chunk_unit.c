@@ -14,7 +14,7 @@
  * tiny-batch edge), an odd C, and C = 64 (the m_max chunk); strides
  * exercise the direct-from-y-buffer row layout.
  *
- * transformer_dn_head_chunk_fresh, the chunk after a reset (dn_fresh),
+ * transformer_dn_head_chunk(fresh), the chunk after a reset (dn_fresh),
  * must equal the chunk from a zeroed S on every shape, while its own S
  * holds garbage it may not read.
  *
@@ -118,7 +118,8 @@ static int run_case(size_t C, size_t d_k, size_t d_v, float g_scale, bool forget
         fprintf(stderr, "FAIL: ws alloc\n");
         return 1;
     }
-    transformer_dn_head_chunk(S_chunk, Q, sq, K, sk, V, sv, beta, g, sbg, C, d_k, d_v, o_chunk, ws);
+    transformer_dn_head_chunk(
+            false, S_chunk, Q, sq, K, sk, V, sv, beta, g, sbg, C, d_k, d_v, o_chunk, ws);
     const size_t den_ws = count_denormals(ws_f, ws);
 
     /* From the empty state: the fresh chunk, which never reads S, on
@@ -131,9 +132,10 @@ static int run_case(size_t C, size_t d_k, size_t d_v, float g_scale, bool forget
         S_zero[i]  = 0.0f;
         S_fresh[i] = (float) ((i * 2654435761u) % 2001u) - 1000.0f;
     }
-    transformer_dn_head_chunk(S_zero, Q, sq, K, sk, V, sv, beta, g, sbg, C, d_k, d_v, o_zero, ws);
-    transformer_dn_head_chunk_fresh(
-            S_fresh, Q, sq, K, sk, V, sv, beta, g, sbg, C, d_k, d_v, o_fresh, ws);
+    transformer_dn_head_chunk(
+            false, S_zero, Q, sq, K, sk, V, sv, beta, g, sbg, C, d_k, d_v, o_zero, ws);
+    transformer_dn_head_chunk(
+            true, S_fresh, Q, sq, K, sk, V, sv, beta, g, sbg, C, d_k, d_v, o_fresh, ws);
     free(ws);
     size_t fresh_diff = 0;
     for (size_t i = 0; i < C * d_v; i++)

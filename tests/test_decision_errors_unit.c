@@ -201,13 +201,14 @@ int main(void) {
     struct geist_decision     *d = nullptr;
     ops.session_alloc            = nullptr;
     fails +=
-            geist_expect(!geist_decision_supported(&model) &&
+            geist_expect(!geist_decision_mode_supported(&model, GEIST_DECISION_DENSE) &&
                                  geist_decision_create(&model, be, &o, &d) == GEIST_E_UNSUPPORTED &&
                                  d == nullptr,
                          "legacy shared-state architecture rejected");
     ops             = complete;
     ops.state_reset = nullptr;
-    fails += geist_expect(!geist_decision_supported(&model), "no-reset architecture unsupported");
+    fails += geist_expect(!geist_decision_mode_supported(&model, GEIST_DECISION_DENSE),
+                          "no-reset architecture unsupported");
     ops                   = complete;
     ops.logits_vocab_size = no_vocab;
     fails += geist_expect(geist_decision_create(&model, be, &o, &d) == GEIST_E_UNSUPPORTED,

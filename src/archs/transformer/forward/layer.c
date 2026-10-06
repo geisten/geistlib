@@ -23,7 +23,6 @@
 #include <geist.h>
 #include <geist_backend.h>
 
-#include <math.h>
 #include <stdio.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -104,50 +103,6 @@ static void transformer_profile_add(enum transformer_profile_stage stage, uint64
     }
     atomic_fetch_add(&g_transformer_profile_ns[stage], transformer_profile_now_ns() - t0);
     atomic_fetch_add(&g_transformer_profile_calls[stage], 1);
-}
-
-/* GEIST_DUMP_LAYERS=1: one line per layer with the last row of the layer
- * output — sum, mean |x| and the first four values. Diagnostic only, for
- * bisecting a divergence against another runtime's per-op dump (#432). */
-static void transformer_layer_dump(const struct transformer_layer_forward_ctx *ctx) {
-    /* Atomic: sessions on different threads all pass through here, and the
-     * first-call initialisation of a plain static is a data race under
-     * TSan (caught by test_multi_session_parallel_int). Every thread
-     * computes the same value, so a relaxed store is enough. */
-    static atomic_int on   = -1;
-    int               v_on = atomic_load_explicit(&on, memory_order_relaxed);
-    if (v_on < 0) {
-        const char *e = getenv("GEIST_DUMP_LAYERS");
-        v_on          = e != nullptr && e[0] == '1' ? 1 : 0;
-        atomic_store_explicit(&on, v_on, memory_order_relaxed);
-    }
-    if (v_on == 0 || ctx == nullptr || ctx->sess == nullptr) {
-        return;
-    }
-    const struct transformer_arch_state *st = ctx->sess->model;
-    const struct geist_backend_vtbl     *v  = st->backend->desc->vtbl;
-    const float                         *h  = (const float *) v->buffer_map(ctx->h_out_buf);
-    if (h == nullptr) {
-        return;
-    }
-    const size_t d   = st->d_model;
-    double       all = 0.0, abs_sum = 0.0;
-    for (size_t t = 0; t < ctx->seq; t++) {
-        for (size_t i = 0; i < d; i++) {
-            all += (double) h[t * d + i];
-            abs_sum += fabs((double) h[t * d + i]);
-        }
-    }
-    const float *row = h + (ctx->seq - 1) * d; /* last position */
-    fprintf(stderr,
-            "LAYER %3zu %s sum=%.6f absmean=%.6f last0=%.5f last1=%.5f\n",
-            (size_t) ctx->layer_idx,
-            st->layers[ctx->layer_idx].mixer == GEIST_MIXER_DELTANET ? "dn  " : "attn",
-            all,
-            abs_sum / (double) (d * ctx->seq),
-            (double) row[0],
-            (double) row[1]);
-    v->buffer_unmap(ctx->h_out_buf);
 }
 
 static void transformer_layer_bind_kv_buffers(struct transformer_layer_forward_ctx *ctx) {
@@ -293,7 +248,6 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
     if (ctx.advance_kv) {
         sess->kv_len = ctx.kv_len_now;
     }
-    transformer_layer_dump(&ctx);
     return GEIST_OK;
 }
 

@@ -196,7 +196,7 @@ static inline float dn_decay(float x) {
  * KCe C*d_k | Qg C*d_k | Vb C*d_v | vnew C*d_v | A C*C | attn C*C |
  * row C (scratch for the substitution).
  *
- * fresh (transformer_dn_head_chunk_fresh): S is the empty sequence's
+ * fresh: S is the empty sequence's
  * state, zeros, whatever its floats hold (dn_fresh), and is only written.
  * The two GEMMs that read it are zero and do not run, nor are KCe and Qg
  * formed, which only they read: 2 of the 7 GEMMs, 40 % of the
@@ -420,7 +420,8 @@ size_t transformer_dn_chunk_ws_floats(size_t C, size_t d_k, size_t d_v) {
                 (int) d_v);
 }
 
-void transformer_dn_head_chunk(float       *S,
+void transformer_dn_head_chunk(bool         fresh,
+                               float       *S,
                                const float *Q,
                                size_t       sq,
                                const float *K,
@@ -435,25 +436,12 @@ void transformer_dn_head_chunk(float       *S,
                                size_t       d_v,
                                float       *o,
                                float       *ws) {
-    dn_head_chunk(false, S, Q, sq, K, sk, V, sv, beta, g, sbg, C, d_k, d_v, o, ws);
-}
-
-void transformer_dn_head_chunk_fresh(float       *S,
-                                     const float *Q,
-                                     size_t       sq,
-                                     const float *K,
-                                     size_t       sk,
-                                     const float *V,
-                                     size_t       sv,
-                                     const float *beta,
-                                     const float *g,
-                                     size_t       sbg,
-                                     size_t       C,
-                                     size_t       d_k,
-                                     size_t       d_v,
-                                     float       *o,
-                                     float       *ws) {
-    dn_head_chunk(true, S, Q, sq, K, sk, V, sv, beta, g, sbg, C, d_k, d_v, o, ws);
+    /* Two inlined bodies, each with fresh a constant: the branch is taken
+     * once per chunk, never inside its loops. */
+    if (fresh)
+        dn_head_chunk(true, S, Q, sq, K, sk, V, sv, beta, g, sbg, C, d_k, d_v, o, ws);
+    else
+        dn_head_chunk(false, S, Q, sq, K, sk, V, sv, beta, g, sbg, C, d_k, d_v, o, ws);
 }
 
 /* Largest delta-rule chunk the host path runs at once; see
@@ -682,38 +670,22 @@ static bool dn_run_prefill_chunked(struct transformer_arch_session *sess,
             const float *br = betas + off * n_vh + hv;
             const float *gr = gs + off * n_vh + hv;
             /* The first sub-chunk writes a fresh S, every later one reads it. */
-            if (fresh && off == 0)
-                transformer_dn_head_chunk_fresh(Sh,
-                                                qr,
-                                                convd,
-                                                kr,
-                                                convd,
-                                                vr,
-                                                convd,
-                                                br,
-                                                gr,
-                                                n_vh,
-                                                c,
-                                                d_k,
-                                                d_v,
-                                                o + off * d_v,
-                                                ws);
-            else
-                transformer_dn_head_chunk(Sh,
-                                          qr,
-                                          convd,
-                                          kr,
-                                          convd,
-                                          vr,
-                                          convd,
-                                          br,
-                                          gr,
-                                          n_vh,
-                                          c,
-                                          d_k,
-                                          d_v,
-                                          o + off * d_v,
-                                          ws);
+            transformer_dn_head_chunk(fresh && off == 0,
+                                      Sh,
+                                      qr,
+                                      convd,
+                                      kr,
+                                      convd,
+                                      vr,
+                                      convd,
+                                      br,
+                                      gr,
+                                      n_vh,
+                                      c,
+                                      d_k,
+                                      d_v,
+                                      o + off * d_v,
+                                      ws);
         }
         for (size_t t = 0; t < seq; t++) {
             float *o_t = o + t * d_v;

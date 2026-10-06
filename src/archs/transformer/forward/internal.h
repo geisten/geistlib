@@ -418,38 +418,24 @@ void   transformer_dn_head_step(float       *S,
                                 float       *delta,
                                 float       *o_h);
 size_t transformer_dn_chunk_ws_floats(size_t C, size_t d_k, size_t d_v);
-void   transformer_dn_head_chunk(float       *S,
-                                 const float *Q,
-                                 size_t       sq,
-                                 const float *K,
-                                 size_t       sk,
-                                 const float *V,
-                                 size_t       sv,
-                                 const float *beta,
-                                 const float *g,
-                                 size_t       sbg,
-                                 size_t       C,
-                                 size_t       d_k,
-                                 size_t       d_v,
-                                 float       *o,
-                                 float       *ws);
-/* The same chunk from the empty sequence's state: S is only written, its
- * old floats never read (dn_fresh). */
-void transformer_dn_head_chunk_fresh(float       *S,
-                                     const float *Q,
-                                     size_t       sq,
-                                     const float *K,
-                                     size_t       sk,
-                                     const float *V,
-                                     size_t       sv,
-                                     const float *beta,
-                                     const float *g,
-                                     size_t       sbg,
-                                     size_t       C,
-                                     size_t       d_k,
-                                     size_t       d_v,
-                                     float       *o,
-                                     float       *ws);
+/* fresh: the chunk from the empty sequence's state; S is only written,
+ * its old floats never read (dn_fresh). */
+void transformer_dn_head_chunk(bool         fresh,
+                               float       *S,
+                               const float *Q,
+                               size_t       sq,
+                               const float *K,
+                               size_t       sk,
+                               const float *V,
+                               size_t       sv,
+                               const float *beta,
+                               const float *g,
+                               size_t       sbg,
+                               size_t       C,
+                               size_t       d_k,
+                               size_t       d_v,
+                               float       *o,
+                               float       *ws);
 
 /* The causal depthwise conv of token t of a chunk, then silu
  * (layer_deltanet.c), exported for test_deltanet_conv_unit:
