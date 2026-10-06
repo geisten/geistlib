@@ -1,18 +1,9 @@
 #!/bin/sh
 # check-release.sh — the gate a release must pass, run before the tag.
 #
-# WHY THIS EXISTS. 0.9.0 nearly shipped wrong twice in one sitting:
-#
-#   * docs/API_CONTRACT.md and a header said "STABLE since 0.9.0" while
-#     GEIST_VERSION_STRING still read 0.8.2 and no tag carried 0.9.0. The
-#     promise lived in the source and in no artefact — a consumer pinning the
-#     newest tag got a library that did not have it.
-#   * CITATION.cff was a fourth version site that check-version.sh checks and
-#     its own header comment did not mention. Trusting the comment over the
-#     script would have shipped a stale citation.
-#
-# Both are the same failure: a release is several files agreeing, and agreement
-# is not something to verify by memory at the moment you type `git tag`.
+# A release is several files agreeing (version string, CITATION.cff,
+# CHANGELOG, "STABLE since" promises, the published tag), and agreement is not
+# something to verify by memory at the moment you type `git tag`.
 #
 # This is a read-only guard: an inconsistent release fails the command. Run it
 # via `make release-check`.
@@ -81,9 +72,7 @@ if [ "$first_release" != "$version" ]; then
     note "FIRST CHANGELOG RELEASE: '$first_release', expected '$version'"
 fi
 
-# Every linked heading needs a reference definition. In particular, this catches
-# the old state where [0.10.7] existed but [Unreleased] still compared from
-# v0.10.6 and no [0.10.7] link was defined.
+# Every linked heading needs a reference definition.
 for heading in $(sed -n 's/^## \[\([^]]*\)\].*/\1/p' CHANGELOG.md); do
     if ! grep -qF "[$heading]:" CHANGELOG.md; then
         note "CHANGELOG LINK MISSING: [$heading] has no reference definition"

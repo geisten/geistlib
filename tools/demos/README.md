@@ -1,11 +1,8 @@
-# Demo recording pipeline (issue #218)
+# Demo recording pipeline
 
 The take scripts that produce the recordings in
-[`docs/DEMOS.md`](../../docs/DEMOS.md). The originals lived in `/tmp` on the
-reference board and were lost; these are faithful reconstructions of the
-method documented in DEMOS.md and the PR #214 commit message. Run them on a
-Raspberry Pi 5 with the release binary (`geist-bitnet`) in this directory or
-pointed to via `BIN=`.
+[`docs/DEMOS.md`](../../docs/DEMOS.md). Run them on a Raspberry Pi 5 with
+the release binary (`geist-bitnet`) in this directory or pointed to via `BIN=`.
 
 ## Prerequisites
 
@@ -19,7 +16,7 @@ cargo install --git https://github.com/asciinema/agg   # cast -> gif renderer
 
 ```bash
 git clone --recursive https://github.com/microsoft/BitNet && cd BitNet
-git checkout 404980e   # June 2025: current main mis-decodes i2_s on ARM (????)
+git checkout 404980e   # June 2025; current main mis-decodes i2_s on ARM
 # build per their README with clang, then point BITNET_CLI at build/bin/llama-cli
 ```
 
