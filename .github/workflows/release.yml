@@ -145,7 +145,7 @@ jobs:
             cc -std=c23 -I "$d/include" examples/runtime_contract_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/runtime_smoke
             /tmp/runtime_smoke
 
-            # ---- CLI binaries (the README first screen, geistlib#: one binary) --
+            # ---- CLI binaries ------------------------------------------------
             # geist-linux-arm64: the slim bring-your-own-GGUF CLI (<1 MB).
             # Fully static (musl + libgomp.a): runs on any 64-bit Pi OS with
             # no toolchain, no Python, no shared libs.
@@ -197,12 +197,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.version-guard.outputs.sha }}
-      # Same musl-static recipe as arm64, on x86_64. BACKENDS="cpu_x86 cpu_scalar"
-      # turns on the native AVX-512/VNNI backend (x86_64 still defaults to
-      # cpu_scalar). Baseline is x86-64-v3 (Haswell / Zen+: AVX2+FMA) with the
-      # AVX-512 kernels compiled per-TU and runtime-dispatched via hw_probe — so the
-      # one binary runs on any x86-64-v3 CPU and uses AVX-512 only where present (no
-      # SIGILL). GEMM_PROVIDER=native -> BLAS-free (portable scalar fp32 for the
+      # Same musl-static recipe as arm64, on x86_64, with the native
+      # AVX-512/VNNI backend (BACKENDS="cpu_x86 cpu_scalar"). Baseline is
+      # x86-64-v3 with the AVX-512 kernels compiled per-TU and runtime-dispatched
+      # via hw_probe, so the one binary runs on any x86-64-v3 CPU (no SIGILL).
+      # GEMM_PROVIDER=native -> BLAS-free (portable scalar fp32 for the
       # vision/audio dense path; the quantized text kernels never touch BLAS).
       - name: Build + smoke + package libgeist SDK
         env:
