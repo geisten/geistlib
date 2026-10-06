@@ -206,7 +206,7 @@ static const struct vk_dtype *vk_linear_dtype(enum geist_dtype dt) {
 
 /* Resolver-installed kernels. The signature has no error path — failures
  * report to stderr and zero y so a defect is loud in the parity gate
- * rather than silent garbage (same policy as the Metal backend). */
+ * rather than silent garbage. */
 static void vk_linear_run(size_t                     m,
                           const float               *x,
                           const struct geist_weight *w,
@@ -220,8 +220,7 @@ static void vk_linear_run(size_t                     m,
     if (ld != nullptr && m > 1 && !st->gemm_sg32) {
         /* The register-tiled GEMM shaders hard-assume 32-lane subgroups;
          * on a device that can neither run nor pin them at 32 (lavapipe:
-         * 8 lanes only) they compute garbage — the lavapipe CI leg caught
-         * exactly that on its first run. The matvec kernels are
+         * 8 lanes only) they compute garbage. The matvec kernels are
          * subgroup-size-agnostic, so loop them: correct everywhere. */
         for (size_t r = 0; r < m; r++) {
             vk_linear_run(1, x + r * n_in, w, be, y + r * n_out);
@@ -245,9 +244,9 @@ vk_w_m1(const float *x, const struct geist_weight *w, struct geist_backend *be, 
     vk_linear_run(1, x, w, be, y);
 }
 
-/* ---- CPU fallback for dtypes without a GPU kernel yet (F16/BF16/...) ----
- * Row-dequant + naive dot, following cpu_scalar_w_quant_*; keeps model
- * loading alive for mixed-dtype GGUFs until those dtypes get shaders. */
+/* ---- CPU fallback for dtypes without a GPU kernel (F16/BF16/...) -------
+ * Row-dequant + naive dot, following cpu_scalar_w_quant_*, so mixed-dtype
+ * GGUFs still load. */
 
 static bool vk_dequant_row(const struct geist_weight *w, size_t j, float *row) {
     const uint8_t *base = (const uint8_t *) w->raw;
@@ -352,7 +351,7 @@ vk_w_cpu_m1(const float *x, const struct geist_weight *w, struct geist_backend *
 
 /* Install the host row-dequant kernels on `w`, or refuse them under
  * GEIST_VK_STRICT=1. Counted so the first host linear can say how much of
- * the model left the GPU (#474 item 9). */
+ * the model left the GPU (#474). */
 [[nodiscard]] static enum geist_status vk_resolve_host(struct geist_backend *be,
                                                        struct geist_weight  *w) {
     struct vk_state *st = be->state;
@@ -469,7 +468,7 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
 /* linear_t stages up to VK_MAX_M rows of x into the device x ring. Check that
  * against this weight's n_in at load, so a batch that cannot fit fails the load
  * instead of turning into a per-call UNSUPPORTED and a silent host linear, and
- * create the ring and the argmax word here, off the hot path (#474 item 6). */
+ * create the ring and the argmax word here, off the hot path (#474). */
 [[nodiscard]] static enum geist_status vk_ring_reserve(struct geist_backend *be, size_t n_in) {
     struct vk_state *st = be->state;
     size_t           need;
@@ -623,8 +622,9 @@ static uint32_t vk_groups(uint32_t n) {
     return n / 256u + (n % 256u != 0u ? 1u : 0u);
 }
 
-/* Dispatch geometry of the linear pipes. matvec q4k/q6k: 8 rows per
- * workgroup. matmul_q4k: 4 output rows x 16 batch rows per workgroup. */
+/* Dispatch geometry of the linear pipes (rows per workgroup in the shader
+ * headers). Register-tiled quant GEMMs: 8 output rows x 32 batch rows;
+ * matmul_q6k / matmul_f32: 4 x 16. */
 uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out) {
     switch (pipe) {
     case VK_PIPE_MATVEC_Q4K:
@@ -1315,9 +1315,8 @@ attn_generic:;
                     kv16 ? vk_acc_tensor16(k, false) : vk_acc_tensor(k, false),
                     kv16 ? vk_acc_tensor16(v, false) : vk_acc_tensor(v, false),
                     vk_acc_tensor(out, true)};
-            /* Tensor-core kernel (#475 follow-up), default since #501's
-             * rollout: prefill only (n_q > 1; decode already has its own
-             * tuned attn_part_f16/attn_comb path above), no sliding window
+            /* Tensor-core kernel: prefill only (n_q > 1; decode has the
+             * attn_part_f16/attn_comb path above), no sliding window
              * (2-pass causal masking assumes a single contiguous valid range
              * per row), head_dim == 256 (HD_TILES == 16 in the shader, qwen35/Bonsai's
              * full-attention shape). Same push layout and bindings as
@@ -1369,7 +1368,7 @@ attn_generic:;
     return GEIST_OK;
 }
 
-/* ---- New batched-submit ops (Phase 3) --------------------------------- */
+/* ---- Batched-submit ops ----------------------------------------------- */
 
 [[nodiscard]] static enum geist_status vk_rmsnorm_add(struct geist_backend      *be,
                                                       const struct geist_tensor *res,
@@ -1498,7 +1497,7 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
 
 /* Tensor-path linear: x staged into the VRAM ring, weight from the VRAM
  * registry, y written to its host-visible home — no host round-trip, no
- * flush. THE hot path since Phase 3. */
+ * flush. The hot path. */
 [[nodiscard]] static enum geist_status vk_linear_t(struct geist_backend      *be,
                                                    const struct geist_tensor *t_x,
                                                    const struct geist_weight *w,
@@ -1601,9 +1600,8 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
                                                         size_t                     m,
                                                         struct geist_tensor       *t_y0,
                                                         struct geist_tensor       *t_y1) {
-    /* Two appended dispatches; a fused two-weight kernel is a Phase-3c
-     * candidate once the profiler ranks it. Check both up front so the
-     * fallback never sees a half-done pair. */
+    /* Two appended dispatches. Check both weights up front so the fallback
+     * never sees a half-done pair. */
     struct vk_state *st = be->state;
     if (vk_weight_lookup(st, w0->raw) == nullptr || vk_weight_lookup(st, w1->raw) == nullptr) {
         return GEIST_E_UNSUPPORTED;
@@ -1837,10 +1835,9 @@ static bool vk_ffn_gate_up_geometry_ok(bool             with_norm,
 /* Gemma-3n PLE block in THREE dispatches (replaces gate matvec +
  * gelu_mul + proj matvec + rmsnorm_add): the gate GEMV gets the gelu*ple
  * epilogue folded in; the proj tail keeps the multi-workgroup matvec +
- * rmsnorm_add pair. A single-workgroup proj+norm fusion was measured at
- * 68 us vs 19 us for the pair — one SM streaming the 1.5 MB proj weight
- * is a bandwidth wall, so the norm's full-vector reduction stays a
- * separate dispatch. Decode only (rows == 1), F32 weights. */
+ * rmsnorm_add pair: a single-workgroup proj+norm fusion is bandwidth-bound
+ * (one SM streams the 1.5 MB proj weight; 68 us vs 19 us). Decode only
+ * (rows == 1), F32 weights. */
 [[nodiscard]] static enum geist_status vk_ple_block(struct geist_backend      *be,
                                                     const struct geist_tensor *x,
                                                     const struct geist_tensor *gate_w,
@@ -2279,7 +2276,7 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
     }
 }
 
-/* ---- Fused-op entry points: a decline is a fallback (#474 item 4).     */
+/* ---- Fused-op entry points: a decline is a fallback (#474).            */
 /* The arch takes the host path on GEIST_E_UNSUPPORTED; vk_fallback counts */
 /* it per site and, under GEIST_VK_STRICT=1, turns it into an error.      */
 
