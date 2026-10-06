@@ -40,13 +40,12 @@ transformer_prefill_resolve(const char *family,
                                                .m_max_from_env = false};
     /* qwen35 hybrids from 4 GiB up (Ternary-Bonsai-2-27B, Qwen3.5-27B):
      * 27B weights dequantized once per chunk are the prefill's cost, so
-     * twice the chunk (256 is no better than 128), and blocktime 0: the
-     * prefill SGEMM shares the cores idle workers would spin on. Everything
-     * else keeps the idle bound — on a 0.8B, blocktime 0 costs more decode
-     * than it gains prefill. */
+     * twice the chunk (256 is no better than 128). Blocktime stays at the
+     * idle bound for every model: 0 on the 27B measured prefill -9.6 % but
+     * decode +18.3 % (#651), and on a 0.8B it costs more decode than it
+     * gains prefill. */
     if (family != nullptr && strcmp(family, "qwen35") == 0 && weight_bytes >= 4 * GIB) {
-        out.m_max                = base_m_max + 64;
-        out.prefill_blocktime_ms = 0;
+        out.m_max = base_m_max + 64;
     }
     bool set;
     long v = env_long(getenv_fn, "GEIST_M_MAX", &set);

@@ -19,8 +19,9 @@
  *              token, short enough that a waiting process goes idle. A
  *              prefill SGEMM runs 30-50 ms though, and on Apple Accelerate
  *              threads it on the very cores the other workers spin on:
- *              KMP_BLOCKTIME=0 speeds up the 27B's prefill but slows a
- *              0.8B's decode. Switching it per phase at run time
+ *              KMP_BLOCKTIME=0 speeds up the 27B's prefill (-9.6 %) but
+ *              slows its decode (+18.3 %) and a 0.8B's decode more still,
+ *              so no model sets it today. Switching it per phase at run time
  *              (kmp_set_blocktime) costs more than it saves, so the knob
  *              is one value per process, taken from the FIRST model
  *              loaded, before its weight packing runs the first parallel
@@ -30,8 +31,8 @@
  *   default   what the platform and backend already choose (arch_state.c:
  *             64, or caps.preferred_m_max); blocktime GEIST_IDLE_SPIN_MS
  *   delta     per model class (prefill_tuning.c): rows added to m_max,
- *             and a blocktime for that class; today only qwen35 from
- *             4 GiB up has one (+64, blocktime 0)
+ *             and optionally a blocktime; today only qwen35 from 4 GiB up
+ *             has one (+64 rows, no blocktime of its own)
  *   override  GEIST_M_MAX and GEIST_PREFILL_BLOCKTIME_MS, absolute
  *
  * Sizes are the GGUF's tensor bytes, the one number every model carries

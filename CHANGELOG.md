@@ -806,9 +806,11 @@ minor release.
   variable of the same name). That is far above any gap between decode
   steps. It also sizes the pool through `OMP_NUM_THREADS` instead of
   `omp_set_num_threads()`, which had initialized libomp at backend create.
-  That initialization had kept the per-model blocktime (`0` for Qwen3.5 from
-  4 GiB, `GEIST_PREFILL_BLOCKTIME_MS`) from ever taking effect in-process;
-  it applies now. An explicit `KMP_BLOCKTIME`, `OMP_WAIT_POLICY` or
+  That initialization had kept the per-model blocktime from ever taking
+  effect in-process, so the `0` meant for Qwen3.5 from 4 GiB never applied.
+  It now could, but on Ternary-Bonsai-2-27B (M1 Max) it measured prefill
+  -9.6 % and decode +18.3 %, so that row now keeps the idle bound too.
+  `GEIST_PREFILL_BLOCKTIME_MS` works in-process now. An explicit `KMP_BLOCKTIME`, `OMP_WAIT_POLICY` or
   `OMP_NUM_THREADS` in the environment still wins. Linux builds (libgomp)
   read these variables only at process start and were not affected unless
   `OMP_WAIT_POLICY=active` came from the environment. The docs now pair
