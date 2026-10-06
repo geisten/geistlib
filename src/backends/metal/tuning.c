@@ -16,18 +16,9 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
-/* Seeds: M1 Max, 27B shapes. See the tunable comments for the measurement.
- *
- * wide_rows_min_cols has no sonde: at rows == 1 the rmsnorm and F32 GEMV
- * kernels are dispatch-latency-bound, and repeated A/Bs on an idle M1 Max
- * put the 256- vs 1024-thread difference inside the run-to-run noise (the
- * crossover wandered between 2048 and 8192 across runs). A knob that
- * cannot be measured reliably is a seed plus an env override, not a
- * calibration value. */
-static constexpr uint32_t SEED_PQ2_N8_MIN_N_OUT   = 6144u;
-static constexpr uint32_t SEED_WIDE_ROWS_MIN_COLS = 1024u;
+/* Seed: M1 Max, 27B shapes. See the tunable comment for the measurement. */
+static constexpr uint32_t SEED_PQ2_N8_MIN_N_OUT = 6144u;
 
 /* Sonde geometry: decode shape (rows == 1) on an FFN-class input width.
  * SONDE_COPIES weights are cycled so the reads come from DRAM the way a
@@ -42,12 +33,6 @@ static constexpr size_t SONDE_MAX_COPIES = 48;
 static constexpr size_t SONDE_WORKING_SET = 128u << 20;
 static constexpr double SONDE_MARGIN      = 0.03;
 static const size_t     SONDE_OUT[]       = {1024, 2048, 4096, 6144, 8192, 12288};
-
-static uint64_t tuning_now_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t) ts.tv_sec * 1000000000ull + (uint64_t) ts.tv_nsec;
-}
 
 static uint32_t tuning_env_u32(const char *name, uint32_t fallback) {
     const char *v = getenv(name);
@@ -74,9 +59,8 @@ tuning_resolve(struct geist_backend *be, const char *tunable, const char *env, u
  * overlays its policy at the first weight resolve. */
 void metal_tuning_init(struct geist_backend *be, struct metal_state *st) {
     (void) be;
-    st->tuning.pq2_n8_min_n_out   = SEED_PQ2_N8_MIN_N_OUT;
-    st->tuning.wide_rows_min_cols = SEED_WIDE_ROWS_MIN_COLS;
-    st->tuning.resolved           = false;
+    st->tuning.pq2_n8_min_n_out = SEED_PQ2_N8_MIN_N_OUT;
+    st->tuning.resolved         = false;
 }
 
 void metal_tuning_resolve(struct geist_backend *be, struct metal_state *st) {
@@ -86,8 +70,6 @@ void metal_tuning_resolve(struct geist_backend *be, struct metal_state *st) {
     st->tuning.resolved         = true;
     st->tuning.pq2_n8_min_n_out = tuning_resolve(
             be, "pq2_n8_min_n_out", "GEIST_METAL_PQ2_N8_MIN_N_OUT", SEED_PQ2_N8_MIN_N_OUT);
-    st->tuning.wide_rows_min_cols = tuning_resolve(
-            be, "wide_rows_min_cols", "GEIST_METAL_WIDE_ROWS_MIN_COLS", SEED_WIDE_ROWS_MIN_COLS);
 }
 
 /* ---- Sondes ------------------------------------------------------------
@@ -159,11 +141,11 @@ static bool sonde_time_pq2_gemv(struct geist_backend *be, size_t n_out, double *
                 w[i % copies].linear_m1(x, &w[i % copies], be, y);
             }
             for (int rep = 0; rep < 3; rep++) {
-                const uint64_t t0 = tuning_now_ns();
+                const uint64_t t0 = metal_now_ns();
                 for (size_t i = 0; i < SONDE_REPS; i++) {
                     w[i % copies].linear_m1(x, &w[i % copies], be, y);
                 }
-                const double dt = (double) (tuning_now_ns() - t0) / (double) SONDE_REPS;
+                const double dt = (double) (metal_now_ns() - t0) / (double) SONDE_REPS;
                 if (best == 0.0 || dt < best) {
                     best = dt;
                 }
@@ -190,10 +172,10 @@ metal_measure_pq2_n8_min_n_out(struct geist_backend *be, uint64_t budget_ns, int
     }
     metal_tuning_resolve(be, st);
     const uint32_t live     = st->tuning.pq2_n8_min_n_out;
-    const uint64_t deadline = tuning_now_ns() + budget_ns;
+    const uint64_t deadline = metal_now_ns() + budget_ns;
     uint32_t       cross    = SEED_PQ2_N8_MIN_N_OUT;
     for (size_t i = 0; i < sizeof SONDE_OUT / sizeof SONDE_OUT[0]; i++) {
-        if (tuning_now_ns() >= deadline) {
+        if (metal_now_ns() >= deadline) {
             break;
         }
         double n4 = 0.0, n8 = 0.0;
