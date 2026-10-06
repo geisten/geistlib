@@ -1,11 +1,9 @@
 /*
- * src/backends/vulkan/vk_internal.h — shared state, types, macros, and
- * cross-module prototypes of the Vulkan backend.
+ * src/backends/vulkan/vk_internal.h — shared state, types and cross-module
+ * prototypes of the Vulkan backend (lifecycle.c, resources.c, pipelines.c,
+ * sequence.c, ops.c).
  *
- * Layer: BACKEND (vulkan, internal). Split by responsibility into
- * lifecycle.c, resources.c, pipelines.c, sequence.c, ops.c — the same
- * template as the metal backend (profiling folded into sequence.c: one
- * function does not earn a file).
+ * Layer: BACKEND (vulkan, internal).
  */
 #ifndef GEIST_INTERNAL_VK_INTERNAL_H
 #define GEIST_INTERNAL_VK_INTERNAL_H
@@ -30,10 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ====================================================================== */
-/* Runtime loader                                                          */
-/* ====================================================================== */
-
+/* Vulkan entry points, resolved at runtime from the dlopen'd loader. */
 struct vk_fns {
     PFN_vkGetInstanceProcAddr GetInstanceProcAddr;
     /* global */
@@ -127,9 +122,8 @@ enum vk_pipe {
     VK_PIPE_KV_APPEND_F16,
     VK_PIPE_ATTN_PART_F16,
     VK_PIPE_ATTN_COMB,
-    VK_PIPE_MM_Q4K_CM32, /* small-n_out tensor-core tile */
-    VK_PIPE_MM_PQ2_0_CM, /* PQ2_0 tensor-core GEMM (ternary codes -> f16, f16 acc folded into f32)
-                          */
+    VK_PIPE_MM_Q4K_CM32,     /* small-n_out tensor-core tile */
+    VK_PIPE_MM_PQ2_0_CM,     /* PQ2_0 tensor-core GEMM, f16 acc folded into f32 */
     VK_PIPE_MM_PQ2_0_CM_F32, /* the same with f32 accumulation throughout (GEIST_VK_PQ2_F32_ACC) */
     VK_PIPE_MM_PQ2_0_CM64,   /* 128 x 64 tile (f32 acc) for batches under 128 tokens */
     VK_PIPE_PLE_GATE,        /* fused PLE gate: gelu(x.gate_w) * ple_in */
@@ -280,15 +274,15 @@ struct vk_state {
      * loops the (size-agnostic) matvec kernels instead (#471). */
     bool gemm_sg32;
 
-    /* Feature probes for the Phase-2 kernels. */
+    /* Device feature probes. */
     bool has_fp16;     /* shaderFloat16 + 16-bit storage */
     bool has_int8_dot; /* shaderIntegerDotProduct + 8-bit storage */
     bool has_coopmat;  /* VK_KHR_cooperative_matrix */
     bool pq2_f32_acc;  /* GEIST_VK_PQ2_F32_ACC: exact f32-accumulate PQ2_0 tensor-core GEMM */
     /* GEIST_VK_SCRATCH_DEVICE=1 (#488): a SCRATCH-role buffer_create that asks
      * for GEIST_MEMORY_DEVICE gets device-local, unmappable memory. Off by
-     * default: such a request is served host-visible, as before, and the
-     * arch keeps its mapped pool. See vk_buffer_create_api. */
+     * default: such a request is served host-visible and the arch keeps its
+     * mapped pool. See vk_buffer_create_api. */
     bool scratch_device;
 
     /* Set when a sequence flush failed (submit / wait / end); the next host
@@ -315,7 +309,7 @@ struct vk_state {
     uint64_t stat_scratch_n[3];
     uint64_t stat_scratch_bytes[3];
 
-    /* Work that left the GPU (#474 item 4), counted per site by
+    /* Work that left the GPU (#474), counted per site by
      * vk_fallback: a coverage gap otherwise shows up only as a slowdown.
      * GEIST_VK_STRICT=1 (strict) turns every such fallback into an error,
      * and refuses host-path weights at resolve. Weights resolved onto the
@@ -367,11 +361,12 @@ struct vk_state {
     struct geist_buffer *xring;
     size_t               xring_used;
 
-    /* ---- Sequence (Phase 3): ONE open command buffer per token/chunk. ----
-     * GPU ops append dispatches (global memory barrier between each);
-     * flush = submit + fence-wait, triggered by any host data access
-     * (buffer_map / CPU-op fallback / argmax readback). Descriptor sets
-     * are allocated per dispatch from seq_pool and bulk-freed at flush. */
+    /* Sequence: one open recording per token/chunk, rolled over the
+     * seq_cmds ring every VK_SEQ_ROTATE dispatches. GPU ops append
+     * dispatches (barrier only on a hazard, see vk_seq_hazard); flush =
+     * submit + fence-wait, triggered by any host data access (buffer_map /
+     * CPU-op fallback / argmax readback). Descriptor sets come from
+     * dset_cache; seq_pool holds the uncached ones and is reset at flush. */
     VkCommandBuffer       seq_cmds[VK_SEQ_CMDBUFS];
     VkCommandBuffer       seq_cmd;     /* currently recording */
     uint32_t              seq_cmd_idx; /* next ring slot */
@@ -385,7 +380,7 @@ struct vk_state {
 
     /* Host-visible buffers created via buffer_create — containment lookup
      * so buffer_create_aliased can hand out GPU-bindable borrowed views
-     * (the arch scratch pool / weight arena are such buffers since P3). */
+     * (e.g. of the arch scratch pool / weight arena). */
     struct geist_buffer **hostbufs;
     size_t                n_hostbufs;
     size_t                cap_hostbufs;
