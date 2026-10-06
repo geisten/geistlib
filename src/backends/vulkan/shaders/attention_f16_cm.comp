@@ -12,7 +12,7 @@
  * matmul_pq2_0_cm_body.glsl). Requires sliding_window == 0 and
  * head_dim == 256 (HD_TILES == 16, the shape qwen35/Bonsai's full-attention
  * layers actually use); the host falls back to attention_f16 for every
- * other shape (#475 follow-up).
+ * other shape.
  *
  * Two passes over the causal KV range instead of one:
  *   pass A: QK^T per tile, row max only (discarded otherwise).
@@ -25,9 +25,7 @@
  * streaming softmax needs every tile to rescale O by exp(m_old - m_new).
  * The fork's flash attention reaches into GL_NV_cooperative_matrix2 for
  * that (coopMatReduceNV); this kernel stays on the portable KHR extension
- * so it still builds and runs on RADV (#471 already tracks that backend's
- * other coopmat-shader limits; this one is squarely in scope for a later
- * single-pass version once this baseline is validated).
+ * so it also builds and runs on RADV.
  *
  * GPU layout: Q f32 (vec4), K/V f16 (f16vec4), matching attention_f16.comp
  * so the two kernels are drop-in alternatives from the host's POV.

@@ -19,9 +19,9 @@
  * 128 registers for the whole dispatch: S is read once at the start and
  * written once at the end instead of two loads and a store per row per
  * token. Other d_k stream the column through L1/L2. Reductions are
- * subgroupAdd + one tiny shared pass (rmsnorm_f32.comp's pattern, #475):
- * the naive 128-wide shared-memory tree was 7 barriers per call, called
- * twice per token on this kernel's serial per-token critical path.
+ * subgroupAdd + one tiny shared pass (rmsnorm_f32.comp's pattern): a
+ * shared-memory tree would cost 7 barriers per reduction, twice per token,
+ * on the serial per-token critical path.
  * Parametrized by the subgroup count, not hardcoded to 32 lanes: correct
  * on any subgroup size (8 on llvmpipe, 8/16 on Intel, 64 on RADV).
  * Limits (host-checked): d_v <= 128, d_k <= 256. Threads j >= d_v idle but

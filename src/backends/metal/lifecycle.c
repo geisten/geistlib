@@ -39,8 +39,8 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->argmax_function, "release");
         metal_msg_send_void0(st, st->deltanet_library, "release");
         metal_msg_send_void0(st, st->qgate_library, "release");
-    }
-    if (st->f32_matmul_sg_pipeline != nullptr) {
+        /* Everything below exists from init or the first op on; a backend
+         * destroyed before its first op still owns the device and queue. */
         metal_msg_send_void0(st, st->attention_rows_pipeline, "release");
         metal_msg_send_void0(st, st->attention_rows_function, "release");
         metal_msg_send_void0(st, st->attention_rows_f16_pipeline, "release");
