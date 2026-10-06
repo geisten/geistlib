@@ -797,6 +797,13 @@ minor release.
   create; a score needs no reset.
 
 ### Fixed
+- **A Metal backend destroyed before its first op no longer leaks its device
+  and command queue.** `metal_destroy_state` released the device, the queue
+  and every library behind `if (st->f32_matmul_sg_pipeline != nullptr)`, a
+  pipeline that is built lazily on the first quant op. A backend created and
+  destroyed without running one (a probe, a failed model load) leaked
+  them; the guard dates from the #178 module split. `leaks --atExit` on 20
+  create/destroy cycles reported a leaked `MTLCommandQueue` and now reports 0.
 - **GGUF string metadata length check** (#622). `gguf_get_meta_string` bounded
   a value by `8 + length > payload`, which a length near `UINT64_MAX` wraps
   past; the check is a subtraction now (AGENT.md §4), shared with the new
