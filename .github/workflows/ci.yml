@@ -78,9 +78,11 @@ jobs:
             cc: clang
             bflags: BACKENDS="metal cpu_neon cpu_scalar"
             apple_silicon: true
+            perf_gguf: qwen3.5-0.8b-q8_0.gguf
+            perf_floors: --min-prefill 30 --min-decode 10
           # Intel Mac: target-mac*.mk picks the x86 pair from `uname -m`.
-          # The Metal probe/parity gate and the Apple perf floors below are
-          # sized for Apple silicon, so they run only where apple_silicon is set.
+          # The Metal probe/parity gate and the Apple perf floors are sized
+          # for Apple silicon, so neither runs here.
           - name: macOS x86_64
             runner: macos-15-intel
             target: mac-omp
@@ -91,6 +93,8 @@ jobs:
             target: linux
             cc: gcc-14
             bflags: ""
+            perf_gguf: gemma4-e2b-Q4_K_M.gguf
+            perf_floors: --min-prefill 20 --min-decode 4
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -296,7 +300,7 @@ jobs:
           python3 examples/ffi/generate.py ./libgeist.so \
             gguf_artifacts/smollm2-360m-instruct-q8_0.gguf "The capital of France is" | head -c 400
 
-      # Coarse Q4_K perf-regression gate on the (noisy) shared runner: generous
+      # Coarse perf-regression gate on the (noisy) shared runner: generous
       # floors catch a cliff — scalar fallback, -O0, OpenMP off, an early-return
       # kernel — not subtle drift. The Pi 5 stays the precise arbiter. Floors are
       # conservative; tighten toward ~60% of the runner's real numbers once the
@@ -311,36 +315,29 @@ jobs:
           path: perf-last
           key: perf-${{ matrix.name }}-${{ github.run_id }}
           restore-keys: perf-${{ matrix.name }}-
-      - name: Perf regression gate (Q4_K)
-        if: matrix.target == 'linux'
-        run: |
-          bin/${{ matrix.target }}/release/tests/bench_perf_sweep \
-            --gguf gguf_artifacts/gemma4-e2b-Q4_K_M.gguf \
-            --seq-lens 128 --decode-n 16 --warmup 4 --repeats 3 \
-            | python3 benchmark/perf_gate.py --min-prefill 20 --min-decode 4 --record perf-last/main.json
-
-      # Same cliff detector on the Apple leg (#327). It runs on the qwen3.5
-      # 0.8B Q8_0 that this leg already caches — the gemma4 reference is a
-      # 3.1 GB download the mac runner deliberately does not do.
+      # The model and floors are matrix fields. Linux gates the Q4_K gemma4
+      # reference; the Apple leg (#327) the qwen3.5 0.8B Q8_0 it already
+      # caches — the gemma4 reference is a 3.1 GB download the mac runner
+      # deliberately does not do.
       #
-      # Four runs of the same code measured, in order:
+      # On the Apple leg four runs of the same code measured, in order:
       #   prefill 127.5  108.7  132.3  75.1
       #   decode   59.2   46.7   58.7  25.5
       # A 1.8x spread. Floors first set from one sample, then from the lower
       # of two, and the fourth run failed the gate on code that had nothing
       # to do with it. That is a flaky gate, which is worse than none.
-      # These floors are ~40% of the WORST observed run, not a percentage of
+      # Its floors are ~40% of the WORST observed run, not a percentage of
       # the best: this is a cliff detector, and the cliffs it exists for
       # (scalar fallback, -O0, OpenMP off, an early-returning kernel) are
       # multiples, not percentages. Raise them only with a sample count that
       # justifies it.
-      - name: Perf regression gate (Apple, Q8_0)
-        if: matrix.apple_silicon
+      - name: Perf regression gate (${{ matrix.perf_gguf }})
+        if: matrix.perf_gguf
         run: |
           bin/${{ matrix.target }}/release/tests/bench_perf_sweep \
-            --gguf gguf_artifacts/qwen3.5-0.8b-q8_0.gguf \
+            --gguf gguf_artifacts/${{ matrix.perf_gguf }} \
             --seq-lens 128 --decode-n 16 --warmup 4 --repeats 3 \
-            | python3 benchmark/perf_gate.py --min-prefill 30 --min-decode 10 --record perf-last/main.json
+            | python3 benchmark/perf_gate.py ${{ matrix.perf_floors }} --record perf-last/main.json
       - name: Save perf numbers for the next comparison (main only)
         if: github.ref == 'refs/heads/main' && hashFiles('perf-last/main.json') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

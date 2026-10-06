@@ -137,20 +137,10 @@ static const struct vk_dtype *vk_dtype_of(enum geist_dtype dt) {
     return nullptr;
 }
 
-/* Quant formats with GPU linear kernels: elements per block and the
- * (matvec, matmul) pipeline pair. */
-struct vk_qinfo {
-    uint32_t     block_elems;
-    enum vk_pipe mv, mm;
-};
-
-[[nodiscard]] static bool vk_qinfo_for(enum geist_dtype dt, struct vk_qinfo *out) {
+/* The table row of `dt` when it has GPU linear kernels, else nullptr. */
+static const struct vk_dtype *vk_linear_dtype(enum geist_dtype dt) {
     const struct vk_dtype *d = vk_dtype_of(dt);
-    if (d == nullptr || !d->has_linear) {
-        return false;
-    }
-    *out = (struct vk_qinfo) {d->block_elems, d->mv, d->mm};
-    return true;
+    return d != nullptr && d->has_linear ? d : nullptr;
 }
 
 [[nodiscard]] static enum geist_status vk_dispatch_linear(struct geist_backend *be,
@@ -217,31 +207,30 @@ struct vk_qinfo {
 /* Resolver-installed kernels. The signature has no error path — failures
  * report to stderr and zero y so a defect is loud in the parity gate
  * rather than silent garbage (same policy as the Metal backend). */
-static void vk_linear_run(const float               *x,
+static void vk_linear_run(size_t                     m,
+                          const float               *x,
                           const struct geist_weight *w,
-                          size_t                     m,
                           struct geist_backend      *be,
                           float                     *y) {
     struct vk_state     *st   = be->state;
     struct geist_buffer *wbuf = vk_weight_lookup(st, w->raw);
     const size_t         n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
-    struct vk_qinfo      qi;
     /* Only dtypes vk_resolve_weight installed these kernels for get here. */
-    const bool known = vk_qinfo_for((enum geist_dtype) w->dtype, &qi);
-    if (known && m > 1 && !st->gemm_sg32) {
+    const struct vk_dtype *ld = vk_linear_dtype((enum geist_dtype) w->dtype);
+    if (ld != nullptr && m > 1 && !st->gemm_sg32) {
         /* The register-tiled GEMM shaders hard-assume 32-lane subgroups;
          * on a device that can neither run nor pin them at 32 (lavapipe:
          * 8 lanes only) they compute garbage — the lavapipe CI leg caught
          * exactly that on its first run. The matvec kernels are
          * subgroup-size-agnostic, so loop them: correct everywhere. */
         for (size_t r = 0; r < m; r++) {
-            vk_linear_run(x + r * n_in, w, 1, be, y + r * n_out);
+            vk_linear_run(1, x + r * n_in, w, be, y + r * n_out);
         }
         return;
     }
-    if (!known || wbuf == nullptr ||
+    if (ld == nullptr || wbuf == nullptr ||
         vk_dispatch_linear(
-                be, m == 1 ? qi.mv : qi.mm, wbuf, x, y, m, n_in, n_out, n_in / qi.block_elems) !=
+                be, m == 1 ? ld->mv : ld->mm, wbuf, x, y, m, n_in, n_out, n_in / ld->block_elems) !=
                 GEIST_OK) {
         fprintf(stderr,
                 "geist vulkan: linear dispatch failed (%s) — zeroing output\n",
@@ -250,18 +239,10 @@ static void vk_linear_run(const float               *x,
     }
 }
 
-/* Host-pointer kernels for every dtype vk_qinfo_for knows. */
+/* The m == 1 entry of the host-pointer kernels (vk_linear_run is linear_mN). */
 static void
 vk_w_m1(const float *x, const struct geist_weight *w, struct geist_backend *be, float *y) {
-    vk_linear_run(x, w, 1, be, y);
-}
-
-static void vk_w_mN(size_t                     m,
-                    const float               *x,
-                    const struct geist_weight *w,
-                    struct geist_backend      *be,
-                    float                     *y) {
-    vk_linear_run(x, w, m, be, y);
+    vk_linear_run(1, x, w, be, y);
 }
 
 /* ---- CPU fallback for dtypes without a GPU kernel yet (F16/BF16/...) ----
@@ -525,8 +506,8 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
     if (!quant_weight_extent_ok(w)) {
         return GEIST_E_FORMAT;
     }
-    struct vk_qinfo qi;
-    if (!vk_qinfo_for((enum geist_dtype) w->dtype, &qi)) {
+    const struct vk_dtype *ld = vk_linear_dtype((enum geist_dtype) w->dtype);
+    if (ld == nullptr) {
         switch ((enum geist_dtype) w->dtype) {
         case GEIST_DTYPE_F16:
         case GEIST_DTYPE_BF16:
@@ -552,7 +533,7 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
             return GEIST_E_UNSUPPORTED;
         }
     }
-    if (w->dtype != GEIST_DTYPE_F32 && (size_t) w->n_in % qi.block_elems != 0) {
+    if (w->dtype != GEIST_DTYPE_F32 && (size_t) w->n_in % ld->block_elems != 0) {
         /* Row length is not a whole number of blocks: the GPU kernels index
          * by block. Every dtype but the two native k-quants has a CPU dequant
          * row (vk_dequant_row) and keeps working through it. */
@@ -633,7 +614,7 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
         }
     }
     w->linear_m1 = vk_w_m1;
-    w->linear_mN = vk_w_mN;
+    w->linear_mN = vk_linear_run;
     return GEIST_OK;
 }
 
@@ -920,9 +901,6 @@ enum vk_ew3_op { EW3_ADD, EW3_MUL, EW3_GELU_MUL, EW3_SILU_MUL, EW3_SIGMOID_MUL }
     return GEIST_OK;
 }
 
-static constexpr float VK_GELU_K0 = 0.7978845608028654f; /* sqrt(2/pi) */
-static constexpr float VK_GELU_K1 = 0.044715f;
-
 [[nodiscard]] static enum geist_status
 vk_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
     const enum geist_status gs = vk_try_ew2(be, VK_PIPE_GELU, x, y);
@@ -941,39 +919,6 @@ vk_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct geis
         return gs;
     }
     return vk_ew3_cpu(be, EW3_GELU_MUL, x, z, y, "gelu_tanh_mul");
-}
-
-[[nodiscard]] static enum geist_status vk_gelu_tanh_mul_scaled(struct geist_backend      *be,
-                                                               const struct geist_tensor *x,
-                                                               const struct geist_tensor *z,
-                                                               const float               *scale,
-                                                               struct geist_tensor       *y) {
-    size_t       nx = 0, nz = 0, ny = 0;
-    const float *xp = vk_tensor_host(x, &nx);
-    const float *zp = vk_tensor_host(z, &nz);
-    float       *yp = vk_tensor_host(y, &ny);
-    if (xp == nullptr || zp == nullptr || yp == nullptr || scale == nullptr || nx != nz ||
-        nx != ny || y->ndim < 1) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan gelu_tanh_mul_scaled: bad inputs");
-        return GEIST_E_INVALID_ARG;
-    }
-    const size_t feat = (size_t) y->shape[y->ndim - 1];
-    if (feat == 0 || nx % feat != 0) {
-        geist_backend_set_error(
-                be, GEIST_E_INVALID_ARG, "vulkan gelu_tanh_mul_scaled: feature mismatch");
-        return GEIST_E_INVALID_ARG;
-    }
-    const size_t rows = nx / feat;
-    for (size_t r = 0; r < rows; r++) {
-        const size_t base = r * feat;
-        for (size_t j = 0; j < feat; j++) {
-            const size_t i = base + j;
-            const float  v = xp[i];
-            const float  u = VK_GELU_K0 * (v + VK_GELU_K1 * v * v * v);
-            yp[i]          = (0.5f * v * (1.0f + tanhf(u))) * zp[i] * scale[j];
-        }
-    }
-    return GEIST_OK;
 }
 
 [[nodiscard]] static enum geist_status
@@ -1370,15 +1315,14 @@ attn_generic:;
                     kv16 ? vk_acc_tensor16(k, false) : vk_acc_tensor(k, false),
                     kv16 ? vk_acc_tensor16(v, false) : vk_acc_tensor(v, false),
                     vk_acc_tensor(out, true)};
-            /* Tensor-core kernel (#475 follow-up), default on since #501's
-             * rollout (GEIST_VK_ATTN_CM=0 disables it): prefill only
-             * (n_q > 1; decode already has its own tuned attn_part_f16/
-             * attn_comb path above), no sliding window (2-pass causal
-             * masking assumes a single contiguous valid range per row),
-             * head_dim == 256 (HD_TILES == 16 in the shader, qwen35/Bonsai's
+            /* Tensor-core kernel (#475 follow-up), default since #501's
+             * rollout: prefill only (n_q > 1; decode already has its own
+             * tuned attn_part_f16/attn_comb path above), no sliding window
+             * (2-pass causal masking assumes a single contiguous valid range
+             * per row), head_dim == 256 (HD_TILES == 16 in the shader, qwen35/Bonsai's
              * full-attention shape). Same push layout and bindings as
              * VK_PIPE_ATTENTION_F16, just a 16-row dispatch. */
-            if (kv16 && n_q > 1 && sliding_window == 0 && hd == 256 && stt->attn_cm &&
+            if (kv16 && n_q > 1 && sliding_window == 0 && hd == 256 &&
                 stt->pipes[VK_PIPE_ATTENTION_F16_CM] != VK_NULL_HANDLE) {
                 return vk_seq_dispatch_acc(be,
                                            VK_PIPE_ATTENTION_F16_CM,
@@ -1562,12 +1506,12 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
                                                    size_t                     m,
                                                    struct geist_tensor       *t_y) {
     (void) t_w;
-    struct vk_state *st = be->state;
-    struct vk_qinfo  qi;
-    if (!vk_qinfo_for((enum geist_dtype) w->dtype, &qi)) {
+    struct vk_state       *st = be->state;
+    const struct vk_dtype *ld = vk_linear_dtype((enum geist_dtype) w->dtype);
+    if (ld == nullptr) {
         return GEIST_E_UNSUPPORTED;
     }
-    const enum vk_pipe     mv = qi.mv, mm = qi.mm;
+    const enum vk_pipe     mv = ld->mv, mm = ld->mm;
     struct geist_buffer   *wbuf = vk_weight_lookup(st, w->raw);
     VkDescriptorBufferInfo bi[3];
     uint32_t               xo, yo;
@@ -1599,7 +1543,7 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
     bi[1] = (VkDescriptorBufferInfo) {.buffer = wbuf->buf, .range = VK_WHOLE_SIZE};
     const struct vk_push push = {.n_in           = n_in,
                                  .n_out          = n_out,
-                                 .blocks_per_row = n_in / qi.block_elems,
+                                 .blocks_per_row = n_in / ld->block_elems,
                                  .rows           = m32,
                                  .x_offset       = xo,
                                  .y_offset       = yo,
@@ -1703,9 +1647,8 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
                     ? (const uint8_t *) embed_table->buffer->host_alias + embed_table->offset
                     : nullptr;
     struct geist_buffer *wbuf = host != nullptr ? vk_weight_lookup(st, host) : nullptr;
-    struct vk_qinfo      eqi;
     if (wbuf == nullptr && host != nullptr && embed_table->buffer->bytes > embed_table->offset &&
-        vk_qinfo_for((enum geist_dtype) embed_table->dtype, &eqi)) {
+        vk_linear_dtype((enum geist_dtype) embed_table->dtype) != nullptr) {
         /* An untied table (separate output.weight) is never resolved by the
          * arch layer: register it now, so the repacked dtypes can be read.
          * Only dtypes with a GPU copy: a host-path table is not a weight
@@ -2283,10 +2226,6 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
     switch (q->op) {
     case GEIST_FUSED_GELU_TANH_MUL:
         return true;
-    case GEIST_FUSED_GELU_TANH_MUL_SCALED:
-        /* vk_gelu_tanh_mul_scaled is a host loop over mapped buffers (a
-         * flush per layer): the plan takes the GPU gelu_mul instead. */
-        return false;
     case GEIST_FUSED_SILU_MUL:
     case GEIST_FUSED_BITNET_ACT_QUANT:
         return true;
@@ -2419,9 +2358,8 @@ static const struct geist_backend_primitives vk_prims = {
 };
 
 static const struct geist_backend_fused vk_fused = {
-        .supported            = vk_fused_supported,
-        .gelu_tanh_mul        = vk_gelu_tanh_mul,
-        .gelu_tanh_mul_scaled = vk_gelu_tanh_mul_scaled,
+        .supported     = vk_fused_supported,
+        .gelu_tanh_mul = vk_gelu_tanh_mul,
         /* Batched-submit paths: one flush per token (argmax). */
         .linear_t                = vk_fb_linear_t,
         .linear_t_pair           = vk_fb_linear_t_pair,

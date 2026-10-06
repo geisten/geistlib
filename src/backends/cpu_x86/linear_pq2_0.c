@@ -61,6 +61,7 @@
 
 #include "backend_state.h"
 #include "kernel_pq2_0_amx.h"
+#include "linear_util.h"
 #include "kernel_w4a8.h" /* w4a8_dispatcher_tier: the ISA gate, GEIST_FORCE_ISA-clamped */
 
 #include "checked.h"
@@ -249,11 +250,7 @@ static inline float row_dot(size_t nb, const uint8_t *w, const int8_t *xq, const
                 block_scale(k0),
                 acc0);
     }
-    const __m256 s  = _mm256_add_ps(acc0, acc1);
-    __m128       s4 = _mm_add_ps(_mm256_castps256_ps128(s), _mm256_extractf128_ps(s, 1));
-    s4              = _mm_add_ps(s4, _mm_movehl_ps(s4, s4));
-    s4              = _mm_add_ss(s4, _mm_movehdup_ps(s4));
-    return _mm_cvtss_f32(s4);
+    return hsum_ps(_mm256_add_ps(acc0, acc1));
 }
 
 static void cpu_x86_linear_pq2_0_m1(const float               *x,
@@ -329,35 +326,7 @@ block_tokens(size_t m, const uint8_t *blk, const int8_t *xb, const int32_t *neg_
 }
 
 static inline float hsum8(const float *v) {
-    const __m256 s  = _mm256_load_ps(v);
-    __m128       s4 = _mm_add_ps(_mm256_castps256_ps128(s), _mm256_extractf128_ps(s, 1));
-    s4              = _mm_add_ps(s4, _mm_movehl_ps(s4, s4));
-    s4              = _mm_add_ss(s4, _mm_movehdup_ps(s4));
-    return _mm_cvtss_f32(s4);
-}
-
-static inline size_t team_max(void) {
-#if defined(_OPENMP)
-    return (size_t) omp_get_max_threads();
-#else
-    return 1;
-#endif
-}
-
-static inline size_t team_id(void) {
-#if defined(_OPENMP)
-    return (size_t) omp_get_thread_num();
-#else
-    return 0;
-#endif
-}
-
-static inline size_t team_size(void) {
-#if defined(_OPENMP)
-    return (size_t) omp_get_num_threads();
-#else
-    return 1;
-#endif
+    return hsum_ps(_mm256_load_ps(v));
 }
 
 /* M>1: all m rows quantized (in parallel, one token per iteration), then the
@@ -543,11 +512,7 @@ bool cpu_x86_linear_pq2_0_amx_usable(void) {
 #endif
 }
 
-bool cpu_x86_linear_pq2_0_bind(struct geist_weight *w) {
-    if (w == nullptr || w->dtype != GEIST_DTYPE_PQ2_0 || w->n_in <= 0 ||
-        (size_t) w->n_in % QK != 0) {
-        return false;
-    }
+void cpu_x86_linear_pq2_0_bind(struct geist_weight *w) {
     w->linear_m1 = cpu_x86_linear_pq2_0_m1;
 #ifndef GEIST_NO_AMX
     w->linear_mN = cpu_x86_linear_pq2_0_amx_usable() ? cpu_x86_linear_pq2_0_mN_amx
@@ -555,5 +520,4 @@ bool cpu_x86_linear_pq2_0_bind(struct geist_weight *w) {
 #else
     w->linear_mN = cpu_x86_linear_pq2_0_mN;
 #endif
-    return true;
 }

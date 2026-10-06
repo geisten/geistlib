@@ -110,12 +110,10 @@ recorded row states its own spread for exactly that reason.
 
 | File | Purpose |
 | :-- | :-- |
-| `perf_gate.py` | CI cliff detector — fails the build on a catastrophic regression (scalar fallback, `-O0`, OpenMP off), not on drift |
-| `perf_ratio_gate.py` | the same cliff detector on the geist / llama.cpp ratio, for runners whose absolute numbers swing 2× week to week (the weekly Apple guard) |
+| `perf_gate.py` | CI cliff detector — fails the build on a catastrophic regression (scalar fallback, `-O0`, OpenMP off), not on drift; `--llama` gates the geist / llama.cpp ratio instead, for runners whose absolute numbers swing 2× week to week (the weekly Apple guard) |
 | `bench_compare.py` | the Pi nightly: this run's raw JSON against the last green run's, fails past −3 % decode / −5 % prefill |
 | `total_tps.py` | cross-engine end-to-end measurement (geist vs llama.cpp), thermally quiesced on a Pi |
 | `compare_ternary_pi5.sh` | three-engine ternary head-to-head: geist vs llama.cpp vs bitnet.cpp, one protocol |
 | `compare_metal.sh` | cool-state Metal A/B against llama.cpp |
-| `embedding_bench_pi5.sh` | runs `embedding_protocol.json` on a Pi 5 and writes the numbers back — prefill only, refuses to record a thermally tainted run |
 | `chart_headline.py` | renders `headline_results.json` into the README scoreboard SVG |
 | `headline_results.json` | curated headline numbers — each row names its baseline engine and pinned version; sub-parity rows are kept on purpose |

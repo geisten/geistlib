@@ -352,12 +352,7 @@ static void cpu_x86_linear_q3k_mN(size_t                     m,
     q3k_gemm(m, n_out, n_in, x, (const uint8_t *) w->raw, ws->mN_acts, y);
 }
 
-bool cpu_x86_linear_q3k_bind(struct geist_weight *w) {
-    if (w == nullptr || w->dtype != GEIST_DTYPE_Q3_K || w->raw == nullptr || w->n_in <= 0 ||
-        w->n_out <= 0 || (size_t) w->n_in % Q3_K_BLOCK_ELEMS != 0) {
-        return false;
-    }
+void cpu_x86_linear_q3k_bind(struct geist_weight *w) {
     w->linear_m1 = cpu_x86_linear_q3k_m1;
     w->linear_mN = cpu_x86_linear_q3k_mN;
-    return true;
 }

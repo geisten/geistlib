@@ -37,6 +37,7 @@
 #error "cpu_neon/parallel.h is internal to the backend layer."
 #endif
 
+#include <stdbool.h>
 #include <stddef.h>
 
 typedef void (*geist_pp_body_fn)(size_t i, void *ctx);
@@ -51,6 +52,17 @@ void geist_pp_parallel_for(size_t n, geist_pp_body_fn body_fn, void *ctx);
  * atomic fetch_add per chunk but gives better load balance for kernels
  * with uneven row/tile cost. */
 void geist_pp_parallel_for_grain(size_t n, size_t grain, geist_pp_body_fn body_fn, void *ctx);
+
+/* Whether GEIST_PP=1 routes the row kernels to this pool instead of
+ * OpenMP. Read once, then cached. */
+bool geist_pp_enabled(void);
+
+/* Run `body_fn(i, ctx)` for each `i` in `[0, n)` the way the per-row
+ * decode kernels dispatch: on this pool under GEIST_PP=1; else as an
+ * `omp for` work-share when already inside a team (no team spawn); else
+ * as an `omp parallel for`, serial without OpenMP. Static schedule in
+ * every case. */
+void cpu_neon_parallel_rows(size_t n, geist_pp_body_fn body_fn, void *ctx);
 
 /* Number of threads the pool will actually use. Returns the same
  * value passed via GEIST_THREADS / OMP_NUM_THREADS. Cheap to call. */

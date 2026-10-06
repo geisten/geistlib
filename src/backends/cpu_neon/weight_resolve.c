@@ -1696,10 +1696,7 @@ static void install_pq2_0_x8_gemv_if_eligible(struct geist_weight               
     if (buf == nullptr) {
         return;
     }
-    if (pq2_0_x8_pack(w->raw, (size_t) w->n_in, (size_t) w->n_out, buf) != 0) {
-        safe_free(&buf);
-        return;
-    }
+    pq2_0_x8_pack(w->raw, (size_t) w->n_in, (size_t) w->n_out, buf);
     w->aux_fp32 = (const float *) buf;
     w->aux_n    = (int32_t) bytes;
     w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;

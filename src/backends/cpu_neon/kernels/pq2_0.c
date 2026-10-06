@@ -38,18 +38,12 @@
 #include <geist_backend.h>
 #include <geist_weight.h>
 
-#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
 #include <arm_neon.h>
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 /* Σ (code_i) * xq_i over one 128-element block, codes still biased by +1. */
 static inline int32_t pq2_0_block_dot_raw(const uint8_t *qs, const int8_t *xb) {
@@ -152,32 +146,6 @@ pq2_0_prep(struct cpu_neon_workspace *ws, size_t n_in, const float *x, float *in
     return true;
 }
 
-/* Dispatch exactly as cpu_neon_w_tq2_0_q8a_m1. */
-static void pq2_0_parallel_for(size_t n, void (*body)(size_t, void *), void *ctx) {
-    static _Atomic int pp_enabled = -1;
-    if (pp_enabled < 0) {
-        const char *e = getenv("GEIST_PP");
-        pp_enabled    = (e && e[0] == '1') ? 1 : 0;
-    }
-    if (pp_enabled) {
-        geist_pp_parallel_for(n, body, ctx);
-    }
-#ifdef _OPENMP
-    else if (omp_in_parallel()) {
-#pragma omp for schedule(static) nowait
-        for (size_t i = 0; i < n; i++)
-            body(i, ctx);
-    }
-#endif
-    else {
-#ifdef _OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-        for (size_t i = 0; i < n; i++)
-            body(i, ctx);
-    }
-}
-
 void cpu_neon_w_pq2_0_q8a_m1(const float               *x,
                              const struct geist_weight *w,
                              struct geist_backend      *be,
@@ -199,25 +167,27 @@ void cpu_neon_w_pq2_0_q8a_m1(const float               *x,
             .row_bytes      = n_in / PQ2_0_BLOCK_ELEMS * PQ2_0_BLOCK_BYTES,
             .blocks_per_row = n_in / PQ2_0_BLOCK_ELEMS,
     };
-    pq2_0_parallel_for(n_out, pq2_0_m1_row_body, &ctx);
+    cpu_neon_parallel_rows(n_out, pq2_0_m1_row_body, &ctx);
 }
 
 /* Two projections over one x (FFN gate/up, attention q/k/v): the int8
  * quantization and the per-block sums depend only on x and n_in, so they
  * are computed once and both row loops read them. The row space is walked
  * as one range, so the thread dispatch is shared too -- the workspace
- * invariant in internal.h asks for exactly this. */
-struct pq2_0_m1_pair_ctx {
-    struct pq2_0_m1_ctx a, b;
-    size_t              a_rows;
+ * invariant in internal.h asks for exactly this. Items [0, a_n) are
+ * body(i, a), the rest body(i - a_n, b); the m1 and x8 pairs both use it. */
+struct pq2_0_pair {
+    void (*body)(size_t, void *);
+    void  *a, *b;
+    size_t a_n;
 };
 
-static void pq2_0_m1_pair_body(size_t i, void *vctx) {
-    struct pq2_0_m1_pair_ctx *p = (struct pq2_0_m1_pair_ctx *) vctx;
-    if (i < p->a_rows) {
-        pq2_0_m1_row_body(i, &p->a);
+static void pq2_0_pair_body(size_t i, void *vctx) {
+    const struct pq2_0_pair *p = (const struct pq2_0_pair *) vctx;
+    if (i < p->a_n) {
+        p->body(i, p->a);
     } else {
-        pq2_0_m1_row_body(i - p->a_rows, &p->b);
+        p->body(i - p->a_n, p->b);
     }
 }
 
@@ -236,26 +206,20 @@ void cpu_neon_w_pq2_0_q8a_pair_m1(const float               *x,
         geist_linear_ref(1, x, w1, y1);
         return;
     }
-    const size_t             rb = nin / PQ2_0_BLOCK_ELEMS * PQ2_0_BLOCK_BYTES;
-    const size_t             bp = nin / PQ2_0_BLOCK_ELEMS;
-    struct pq2_0_m1_pair_ctx pc = {
-            .a      = {.W              = (const uint8_t *) w0->raw,
-                       .xq             = ws->m1_xq,
-                       .bsum           = ws->m1_bsum,
-                       .y              = y0,
-                       .inv_act_scale  = inv,
-                       .row_bytes      = rb,
-                       .blocks_per_row = bp},
-            .b      = {.W              = (const uint8_t *) w1->raw,
-                       .xq             = ws->m1_xq,
-                       .bsum           = ws->m1_bsum,
-                       .y              = y1,
-                       .inv_act_scale  = inv,
-                       .row_bytes      = rb,
-                       .blocks_per_row = bp},
-            .a_rows = n0,
-    };
-    pq2_0_parallel_for(n0 + n1, pq2_0_m1_pair_body, &pc);
+    const size_t        rb = nin / PQ2_0_BLOCK_ELEMS * PQ2_0_BLOCK_BYTES;
+    const size_t        bp = nin / PQ2_0_BLOCK_ELEMS;
+    struct pq2_0_m1_ctx a  = {.W              = (const uint8_t *) w0->raw,
+                              .xq             = ws->m1_xq,
+                              .bsum           = ws->m1_bsum,
+                              .y              = y0,
+                              .inv_act_scale  = inv,
+                              .row_bytes      = rb,
+                              .blocks_per_row = bp};
+    struct pq2_0_m1_ctx b  = a;
+    b.W                    = (const uint8_t *) w1->raw;
+    b.y                    = y1;
+    struct pq2_0_pair pc   = {.body = pq2_0_m1_row_body, .a = &a, .b = &b, .a_n = n0};
+    cpu_neon_parallel_rows(n0 + n1, pq2_0_pair_body, &pc);
 }
 
 /* ---- x8: eight rows interleaved (decode) ---------------------------------
@@ -293,10 +257,7 @@ size_t pq2_0_x8_size_bytes(size_t n_in, size_t n_out) {
     return bytes;
 }
 
-int pq2_0_x8_pack(const void *src, size_t n_in, size_t n_out, void *dst) {
-    if (pq2_0_x8_size_bytes(n_in, n_out) == 0 || src == nullptr || dst == nullptr) {
-        return -1;
-    }
+void pq2_0_x8_pack(const void *src, size_t n_in, size_t n_out, void *dst) {
     const uint8_t *s  = (const uint8_t *) src;
     uint8_t       *d  = (uint8_t *) dst;
     const size_t   nb = n_in / PQ2_0_BLOCK_ELEMS;
@@ -323,7 +284,6 @@ int pq2_0_x8_pack(const void *src, size_t n_in, size_t n_out, void *dst) {
             }
         }
     }
-    return 0;
 }
 
 struct pq2_0_x8_ctx {
@@ -408,24 +368,10 @@ void cpu_neon_w_pq2_0_x8_m1(const float               *x,
             .inv_act_scale  = inv,
             .blocks_per_row = n_in / PQ2_0_BLOCK_ELEMS,
     };
-    pq2_0_parallel_for(n_out / 8, pq2_0_x8_tile_body, &ctx);
+    cpu_neon_parallel_rows(n_out / 8, pq2_0_x8_tile_body, &ctx);
 }
 
 /* The x8 twin of cpu_neon_w_pq2_0_q8a_pair_m1. */
-struct pq2_0_x8_pair_ctx {
-    struct pq2_0_x8_ctx a, b;
-    size_t              a_tiles;
-};
-
-static void pq2_0_x8_pair_body(size_t i, void *vctx) {
-    struct pq2_0_x8_pair_ctx *p = (struct pq2_0_x8_pair_ctx *) vctx;
-    if (i < p->a_tiles) {
-        pq2_0_x8_tile_body(i, &p->a);
-    } else {
-        pq2_0_x8_tile_body(i - p->a_tiles, &p->b);
-    }
-}
-
 void cpu_neon_w_pq2_0_x8_pair_m1(const float               *x,
                                  const struct geist_weight *w0,
                                  const struct geist_weight *w1,
@@ -442,23 +388,17 @@ void cpu_neon_w_pq2_0_x8_pair_m1(const float               *x,
         geist_linear_ref(1, x, w1, y1);
         return;
     }
-    const size_t             bp = nin / PQ2_0_BLOCK_ELEMS;
-    struct pq2_0_x8_pair_ctx pc = {
-            .a       = {.W              = (const uint8_t *) w0->aux_fp32,
-                        .xq             = ws->m1_xq,
-                        .bsum           = ws->m1_bsum,
-                        .y              = y0,
-                        .inv_act_scale  = inv,
-                        .blocks_per_row = bp},
-            .b       = {.W              = (const uint8_t *) w1->aux_fp32,
-                        .xq             = ws->m1_xq,
-                        .bsum           = ws->m1_bsum,
-                        .y              = y1,
-                        .inv_act_scale  = inv,
-                        .blocks_per_row = bp},
-            .a_tiles = n0 / 8,
-    };
-    pq2_0_parallel_for(n0 / 8 + n1 / 8, pq2_0_x8_pair_body, &pc);
+    struct pq2_0_x8_ctx a = {.W              = (const uint8_t *) w0->aux_fp32,
+                             .xq             = ws->m1_xq,
+                             .bsum           = ws->m1_bsum,
+                             .y              = y0,
+                             .inv_act_scale  = inv,
+                             .blocks_per_row = nin / PQ2_0_BLOCK_ELEMS};
+    struct pq2_0_x8_ctx b = a;
+    b.W                   = (const uint8_t *) w1->aux_fp32;
+    b.y                   = y1;
+    struct pq2_0_pair pc  = {.body = pq2_0_x8_tile_body, .a = &a, .b = &b, .a_n = n0 / 8};
+    cpu_neon_parallel_rows(n0 / 8 + n1 / 8, pq2_0_pair_body, &pc);
 }
 
 /* ---- x8 prefill: dequant straight from the x8 copy + SGEMM ---------------

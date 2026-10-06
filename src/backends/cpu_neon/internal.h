@@ -224,10 +224,12 @@ void cpu_neon_w_pq2_0_q8a_pair_m1(const float               *x,
                                   float                     *y1);
 /* x8 interleaved variant on a heap repack (aux_fp32, backend_layout
  * GEIST_W_LAYOUT_PQ2_0_X8_GEMV); installed by the resolver when
- * n_out % 8 == 0 and the pq2_0_x8_gemv policy is on. */
+ * n_out % 8 == 0 and the pq2_0_x8_gemv policy is on. pq2_0_x8_size_bytes
+ * is 0 for a shape the layout cannot hold; pq2_0_x8_pack wants a shape it
+ * accepted and dst of that many bytes. */
 constexpr size_t PQ2_0_X8_BLOCK_BYTES = 8 * 34;
 size_t           pq2_0_x8_size_bytes(size_t n_in, size_t n_out);
-int              pq2_0_x8_pack(const void *src, size_t n_in, size_t n_out, void *dst);
+void             pq2_0_x8_pack(const void *src, size_t n_in, size_t n_out, void *dst);
 void             cpu_neon_w_pq2_0_x8_mN(
         size_t m, const float *x, const struct geist_weight *w, struct geist_backend *be, float *y);
 void cpu_neon_w_pq2_0_x8_m1(const float               *x,
@@ -351,19 +353,6 @@ cpu_neon_attention_kv_int8(struct geist_backend                      *be,
 /* The probe's answer for GEIST_FUSED_ATTN_KV_INT8: any m, head_dim up to
  * 512, query heads a multiple of the KV heads. */
 [[nodiscard]] bool cpu_neon_attention_kv_int8_supported(const struct geist_fusion_query *q);
-void               cpu_neon_attention_kv_int8_run(size_t        n_q,
-                                                  size_t        n_q_heads,
-                                                  size_t        head_dim,
-                                                  size_t        n_kv,
-                                                  size_t        n_kv_heads,
-                                                  size_t        q_offset,
-                                                  size_t        sliding_window,
-                                                  const float  *q,
-                                                  const int8_t *k_q8,
-                                                  const float  *k_scale,
-                                                  const int8_t *v_q8,
-                                                  const float  *v_scale,
-                                                  float        *out);
 
 /* attention_int4.c: attention over the packed INT4 KV cache (FEAT_DotProd). */
 struct geist_attention_kv_int4_args;
@@ -373,19 +362,6 @@ cpu_neon_attention_kv_int4(struct geist_backend                      *be,
 /* The probe's answer for GEIST_FUSED_ATTN_KV_INT4: any m, an even head_dim
  * up to 512, query heads a multiple of the KV heads. */
 [[nodiscard]] bool cpu_neon_attention_kv_int4_supported(const struct geist_fusion_query *q);
-void               cpu_neon_attention_kv_int4_run(size_t         n_q,
-                                                  size_t         n_q_heads,
-                                                  size_t         head_dim,
-                                                  size_t         n_kv,
-                                                  size_t         n_kv_heads,
-                                                  size_t         q_offset,
-                                                  size_t         sliding_window,
-                                                  const float   *q,
-                                                  const uint8_t *k_q4,
-                                                  const float   *k_scale,
-                                                  const uint8_t *v_q4,
-                                                  const float   *v_scale,
-                                                  float         *out);
 #endif
 [[nodiscard]] enum geist_status cpu_neon_ffn_geglu_q4q6_mN(struct geist_backend      *be,
                                                            size_t                     m,

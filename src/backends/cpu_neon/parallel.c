@@ -26,6 +26,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
 #else
@@ -263,5 +267,34 @@ void geist_pp_parallel_for_grain(size_t n, size_t grain, geist_pp_body_fn body_f
     do_dynamic_chunks(n, grain, body_fn, ctx);
     while (atomic_load_explicit(&g_state.pending_workers, memory_order_acquire) != 0) {
         /* spin */
+    }
+}
+
+bool geist_pp_enabled(void) {
+    static _Atomic int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("GEIST_PP");
+        enabled       = (e && e[0] == '1') ? 1 : 0;
+    }
+    return enabled != 0;
+}
+
+void cpu_neon_parallel_rows(size_t n, geist_pp_body_fn body_fn, void *ctx) {
+    if (geist_pp_enabled()) {
+        geist_pp_parallel_for(n, body_fn, ctx);
+    }
+#ifdef _OPENMP
+    else if (omp_in_parallel()) {
+#pragma omp for schedule(static) nowait
+        for (size_t i = 0; i < n; i++)
+            body_fn(i, ctx);
+    }
+#endif
+    else {
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+        for (size_t i = 0; i < n; i++)
+            body_fn(i, ctx);
     }
 }

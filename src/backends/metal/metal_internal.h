@@ -210,33 +210,14 @@ struct metal_state {
     void  *pq2_mm_pipeline;
     void  *pq2_mm_fast_function;
     void  *pq2_mm_fast_pipeline;
-    /* matvec_pq2_n8: 8 rows per simdgroup instead of 4.
-     * GEIST_METAL_PQ2_N8=0 pins the 4-row kernel for A/B. */
-    bool use_pq2_n8;
-    /* Threadgroup-limit diagnostics, GEIST_METAL_CHECK_TG=1. A pipeline's
-     * own maxTotalThreadsPerThreadgroup can sit below the architectural
-     * 1024 -- on an M1 Max the simdgroup GEMMs report 832/896 and the PQ2
-     * GEMVs 576/704 -- and nothing derives the dispatch width from it. No
-     * current dispatch exceeds its pipeline's limit, so this is a guard
-     * against a future retune, not a live fix, and it stays off the hot
-     * path: with the switch off, set_pipeline and dispatch pay one branch.
-     * Encoding is single-threaded per encoder, so the bound limit needs no
-     * synchronisation; a race could only mis-report, never mis-compute. */
-    bool          check_tg;
-    bool          tg_warned;
-    unsigned long bound_tg_max;
     /* Device-dependent crossovers; see tuning.c. Seeded from M1 Max
      * measurements, then a calibration blob, then the env. */
     struct metal_tuning {
         uint32_t pq2_n8_min_n_out;
-        uint32_t wide_rows_min_cols;
         /* Cleared once the calibration blob has been folded in; see
          * metal_tuning_resolve. */
         bool resolved;
     } tuning;
-    /* Parallel single-token DeltaNet; GEIST_METAL_DN_SERIAL_DECODE=1 takes
-     * the serial path. Cached here: the decode path asks per layer. */
-    bool  use_dn_dec;
     void *pq2_n8_function;
     void *pq2_n8_pipeline;
     void *iq4nl_n4_function;
@@ -573,52 +554,19 @@ enum {
     METAL_Q5K_BLOCK_BYTES               = 176u,
     METAL_Q6K_BLOCK_ELEMS               = 256u,
     METAL_Q6K_BLOCK_BYTES               = 210u,
-    METAL_Q40_Q80_BLOCK_ELEMS           = 32u,
-    METAL_Q40_BLOCK_BYTES               = 18u,
-    METAL_Q41_BLOCK_BYTES               = 20u,
-    METAL_Q80_BLOCK_BYTES               = 34u,
-    METAL_IQ4NL_BLOCK_BYTES             = 18u,
-    METAL_IQ4XS_BLOCK_ELEMS             = 256u,
-    METAL_IQ4XS_BLOCK_BYTES             = 136u,
-    METAL_Q3K_BLOCK_BYTES               = 110u,
-    METAL_IQ3S_BLOCK_BYTES              = 110u,
-    METAL_PQ2_BLOCK_ELEMS               = (unsigned) PQ2_0_BLOCK_ELEMS,
-    METAL_PQ2_BLOCK_BYTES               = (unsigned) PQ2_0_BLOCK_BYTES,
-    METAL_TQ2_BLOCK_ELEMS               = (unsigned) TQ2_0_BLOCK_ELEMS,
-    METAL_TQ2_BLOCK_BYTES               = (unsigned) TQ2_0_BLOCK_BYTES,
-    METAL_I2S_BLOCK_ELEMS               = (unsigned) I2_S_BLOCK_ELEMS,
-    METAL_I2S_BLOCK_BYTES               = (unsigned) I2_S_BLOCK_BYTES,
     METAL_Q6K_NT4_MIN_N_OUT             = 1024u,
     METAL_Q6K_NT4_MAX_N_OUT             = 8192u,
     METAL_Q4K_M_TILE                    = 8u,
     METAL_Q4K_M16_TILE                  = 16u,
     METAL_ELEM_THREADS                  = 256u,
-    /* The widest threadgroup the backend dispatches (the decode rmsnorm,
-     * the F32 GEMV widening and hadamard_rows all go up to this). Every
-     * Apple GPU to date reports at least this much for these kernels, so
-     * nothing clamps to it -- metal_create_named_pipeline warns instead, so
-     * a device that reports less is visible rather than silently failing
-     * at the first dispatch. Add the clamp when this warning is seen. */
-    METAL_MAX_DISPATCH_THREADS         = 1024u,
-    METAL_QNORM_ATTENTION_MAX_HEAD_DIM = 512u,
+    METAL_QNORM_ATTENTION_MAX_HEAD_DIM  = 512u,
 };
 
-/* Elements per block of the formats metal_q40_q80_linear serves. */
+/* Elements per raw block of `dtype` (quant_block_layout); 1 for a dtype
+ * without a fixed layout. */
 static inline size_t metal_quant_block_elems(enum geist_dtype dtype) {
-    switch (dtype) {
-    case GEIST_DTYPE_IQ4_XS:
-    case GEIST_DTYPE_Q3_K:
-    case GEIST_DTYPE_IQ3_S:
-        return METAL_IQ4XS_BLOCK_ELEMS;
-    case GEIST_DTYPE_PQ2_0:
-        return METAL_PQ2_BLOCK_ELEMS;
-    case GEIST_DTYPE_TQ2_0:
-        return METAL_TQ2_BLOCK_ELEMS;
-    case GEIST_DTYPE_I2_S:
-        return METAL_I2S_BLOCK_ELEMS;
-    default:
-        return METAL_Q40_Q80_BLOCK_ELEMS;
-    }
+    size_t elems = 1, bytes = 0, tail = 0;
+    return quant_block_layout(dtype, &elems, &bytes, &tail) ? elems : 1u;
 }
 
 struct metal_size {
@@ -1039,6 +987,10 @@ bool metal_tensor_is_f16_3d(const struct geist_tensor *t,
 [[nodiscard]] enum geist_status metal_ensure_hadamard_pipeline(struct geist_backend *be);
 
 [[nodiscard]] enum geist_status metal_ensure_deltanet_pipeline(struct geist_backend *be);
+
+/* Releases every pipeline and function the ensure_* tables in pipelines.c
+ * build; the libraries stay with the caller. */
+void metal_release_pipeline_tables(struct metal_state *st);
 
 bool metal_ranges_overlap(size_t a_offset, size_t b_offset, size_t n_bytes);
 

@@ -29,17 +29,11 @@
 #include <geist_weight.h>
 
 #include <stddef.h>
-#include <stdatomic.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
-#endif
-
-#ifdef _OPENMP
-#include <omp.h>
 #endif
 
 /* P3.10: direct TQ2_0 W1.58 A32 NEON kernel — fused dequant+dot. The
@@ -484,33 +478,7 @@ void cpu_neon_w_tq2_0_q8a_m1(const float               *x,
             .blocks_per_row = blocks_per_row,
     };
 
-    /* Dispatch:
-     *   - GEIST_PP=1            → custom spin-pool (geist_pp_parallel_for)
-     *   - else, in OMP team     → omp for (work-share, no team spawn)
-     *   - else, standalone OMP  → omp parallel for (spawn a team)
-     *   - else                  → serial */
-    static _Atomic int pp_enabled = -1;
-    if (pp_enabled < 0) {
-        const char *e = getenv("GEIST_PP");
-        pp_enabled    = (e && e[0] == '1') ? 1 : 0;
-    }
-    if (pp_enabled) {
-        geist_pp_parallel_for(n_out, q8a_m1_row_body, &ctx);
-    }
-#ifdef _OPENMP
-    else if (omp_in_parallel()) {
-#pragma omp for schedule(static) nowait
-        for (size_t r = 0; r < n_out; r++)
-            q8a_m1_row_body(r, &ctx);
-    }
-#endif
-    else {
-#ifdef _OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-        for (size_t r = 0; r < n_out; r++)
-            q8a_m1_row_body(r, &ctx);
-    }
+    cpu_neon_parallel_rows(n_out, q8a_m1_row_body, &ctx);
     /* xq, bsum point to thread-local cache; nothing to free. */
 }
 
@@ -714,11 +682,7 @@ void cpu_neon_w_tq2_0_q8a_mN(size_t                     m,
             .row_bytes      = row_bytes,
     };
 
-    static _Atomic int pp_enabled = -1;
-    if (pp_enabled < 0) {
-        const char *e = getenv("GEIST_PP");
-        pp_enabled    = (e && e[0] == '1') ? 1 : 0;
-    }
+    const bool pp_enabled = geist_pp_enabled();
 #if defined(__ARM_NEON) && defined(_OPENMP)
     if (!pp_enabled) {
 /* Loop-reordered NC-row panels (q4_K cache-blocking applied to ternary):
@@ -1020,28 +984,7 @@ void cpu_neon_w_i2_s_q8a_m1(const float               *x,
             .blocks_per_row = blocks_per_row,
     };
 
-    static _Atomic int pp_enabled = -1;
-    if (pp_enabled < 0) {
-        const char *e = getenv("GEIST_PP");
-        pp_enabled    = (e && e[0] == '1') ? 1 : 0;
-    }
-    if (pp_enabled) {
-        geist_pp_parallel_for(n_out, i2s_m1_row_body, &ctx);
-    }
-#ifdef _OPENMP
-    else if (omp_in_parallel()) {
-#pragma omp for schedule(static) nowait
-        for (size_t r = 0; r < n_out; r++)
-            i2s_m1_row_body(r, &ctx);
-    }
-#endif
-    else {
-#ifdef _OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-        for (size_t r = 0; r < n_out; r++)
-            i2s_m1_row_body(r, &ctx);
-    }
+    cpu_neon_parallel_rows(n_out, i2s_m1_row_body, &ctx);
 }
 
 /* MT=4 i2_s block dot — like the tq2_0 mt4 but with the reversed shift↔offset
@@ -1314,26 +1257,5 @@ void cpu_neon_w_i2_s_q8a_mN(size_t                     m,
             .row_bytes      = row_bytes,
     };
 
-    static _Atomic int pp_enabled = -1;
-    if (pp_enabled < 0) {
-        const char *e = getenv("GEIST_PP");
-        pp_enabled    = (e && e[0] == '1') ? 1 : 0;
-    }
-    if (pp_enabled) {
-        geist_pp_parallel_for(n_out, i2s_mN_row_body, (void *) &ctx);
-    }
-#ifdef _OPENMP
-    else if (omp_in_parallel()) {
-#pragma omp for schedule(static) nowait
-        for (size_t r = 0; r < n_out; r++)
-            i2s_mN_row_body(r, (void *) &ctx);
-    }
-#endif
-    else {
-#ifdef _OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-        for (size_t r = 0; r < n_out; r++)
-            i2s_mN_row_body(r, (void *) &ctx);
-    }
+    cpu_neon_parallel_rows(n_out, i2s_mN_row_body, (void *) &ctx);
 }
