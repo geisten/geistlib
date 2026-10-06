@@ -84,11 +84,9 @@ consumer that cannot ask which family it loaded cannot avoid that.
 | `geist_session_pin_prefix` | amortizing the system prompt across turns | STABLE since 0.6.0 |
 | `geist_session_tokenize` | measuring a candidate before committing it | STABLE since 0.6.0 |
 
-The three 0.6.0 entries were `EXPERIMENTAL` until this contract; they are
-promoted here and ship in 0.6.0. `geist_session_peek_logits` gained an explicit
-ownership clause in the same change so an accelerator backend can satisfy it by
-staging device memory into session storage — the promotion does not freeze a
-CPU-only design.
+`geist_session_peek_logits`'s ownership clause lets an accelerator backend
+satisfy it by staging device memory into session storage, so the contract does
+not freeze a CPU-only design.
 
 ### Explicitly NOT in the contract
 
@@ -101,16 +99,15 @@ build its core loop on them expecting release-boundary stability.
 
 ### Optional decision API (experimental)
 
-All declarations in `include/geist_decision.h` remain EXPERIMENTAL and outside
-the agent-runtime stability contract. The default-off `DECISION=1` feature
-adds independent numeric scoring handles; disabled libraries retain symbols
-with explicit unsupported stubs. It preserves the existing generation,
-embedding and logits APIs. Lifetime, reset, conditional-score semantics,
-capabilities and benchmark protocol are specified in [DECISION.md](DECISION.md).
-The optional decoder `logits_vocab_size` hook is appended to the experimental
-architecture vtable without changing existing field offsets. The optional
-selected-row readout hooks and `geist_weight` row-tile callbacks are also
-EXPERIMENTAL additions. `GEIST_DECISION_SELECTED_ROWS` requires explicit mode
+All declarations in `include/geist_decision.h` are EXPERIMENTAL and outside
+the agent-runtime contract. The default-off `DECISION=1` feature adds
+independent numeric scoring handles; libraries built without it keep the
+symbols as stubs that return unsupported. Generation, embedding and logits
+APIs are unaffected. Lifetime, reset, conditional-score semantics,
+capabilities and benchmark protocol: [DECISION.md](DECISION.md). The decoder
+`logits_vocab_size` hook is appended to the experimental architecture vtable
+without changing existing field offsets; the selected-row readout hooks and
+`geist_weight` row-tile callbacks are EXPERIMENTAL as well. `GEIST_DECISION_SELECTED_ROWS` requires explicit mode
 selection and a supported loaded model/backend pair; its result metadata reports
 row work, logical staging bytes and selected-head time. Unsupported modes never
 silently fall back to another execution path.
@@ -214,23 +211,18 @@ session create.
 
 ## Optional backend resources (experimental)
 
-`geist_backend_resources_snapshot` is an additive, observational API. Its output
-is valid only on GEIST_OK. Null handles/outputs are invalid, missing providers are
-unsupported, and failures clear all output fields. A destroyed pointer must never
-be reused; set it to nullptr and join observers before backend destruction.
-Metal's source is the live backend's MTLDevice.currentAllocatedSize. It includes
-provider-accounted resource allocation, with provider alias/heap/driver semantics;
-no unique physical total or exact system-RAM reclamation is promised. Do not sum
-it with RSS. No model, prompt or disk storage is involved. The experimental backend
-descriptor gains an optional provider callback; third-party backends recompile
-with a zero/null callback to retain explicit unsupported behavior.
+`geist_backend_resources_snapshot` is an additive, observational API. Its
+output is valid only on GEIST_OK. Null handles/outputs are invalid, missing
+providers are unsupported, and failures clear all output fields. A destroyed
+pointer must never be reused; set it to nullptr and join observers before
+backend destruction.
 
-Provider validation on Apple M1 Max / macOS 27 (2026-09-29), release and ASan:
-initial 393216 B, two 16-MiB shared/private buffers 33947648 B, three no-copy
-wrappers over overlapping pages 34111488 B, heap plus buffer 67665920 B,
-failed over-capacity heap allocation unchanged, release returned 393216 B.
-Every snapshot equalled a direct query of the same device in the same process.
-The alias increment illustrates why this is a provider allocation counter and
-not unique physical residency. Driver retention on other versions may differ.
-The opt-in test also queries during concurrent allocate/release, rejects partial
-initialization, and uses null after shutdown; it never dereferences freed handles.
+Metal's source is the live backend's `MTLDevice.currentAllocatedSize`: a
+provider allocation counter with the provider's alias/heap/driver semantics
+(overlapping no-copy wrappers count again), not unique physical residency or
+reclaimable system RAM. Do not sum it with RSS. No model, prompt or disk
+storage is involved. The experimental backend descriptor has an optional
+provider callback; third-party backends recompile with a zero/null callback
+to keep explicit unsupported behavior. `test_metal_resources_unit`
+(opt-in, `GEIST_TEST_METAL_RESOURCES=1`) checks the counter against direct
+device queries, including under concurrent allocate/release.

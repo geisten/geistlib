@@ -1,8 +1,8 @@
-# geist Architecture
+# Architecture
 
-geist is a C23 inference runtime built around one idea: **decide everything
-expensive at load time, so the hot path is branch-light.** This document maps
-the codebase and the design rationale referenced from
+geistlib is a C23 inference runtime built around one idea: **decide everything
+expensive at load time, so the hot path is branch-light.** This page maps the
+codebase and the design rationale referenced from
 [`include/geist.h`](../include/geist.h).
 
 ## Three layers
@@ -30,25 +30,24 @@ src/base/                freestanding utilities: heap, error, hw_probe
 
 An **architecture** knows the shape of the computation (which ops, in which
 order, with which tensors). A **backend** knows how to execute an op on a given
-dtype/layout. The engine binds the two and drives sessions. Backends and archs
-are listed in compile-gated registries (`src/engine/*_registry.c`, each entry
-behind a `GEIST_BACKEND_*` / `GEIST_ARCH_*` guard), so the set compiled in is a
-build-time choice (`make BACKENDS="..."`) and the one used is a runtime choice
+dtype/layout. The engine binds the two and drives sessions. Archs and backends
+are listed in registries (`src/engine/arch_registry.c`,
+`src/engine/backend_registry.c`); backend entries sit behind
+`GEIST_BACKEND_*` guards, so the set compiled in is a build-time choice
+(`make BACKENDS="..."`) and the one used is a runtime choice
 (`geist_backend_create("auto" | "cpu_neon" | ...)`).
 
 ### Dependency rules
 
-The include graph follows the layers strictly — these rules are load-bearing,
-not aspirational (the tree conforms today):
+The include graph follows the layers strictly:
 
 - `src/base/` includes nothing above it; everyone may include `src/base/`.
 - `src/engine/` includes `base` and the public headers. It never reaches into
   an arch or backend implementation — with exactly **two composition points**:
   `arch_registry.c` and `backend_registry.c`, the only files that name concrete
-  archs/backends (each entry compile-gated).
+  archs/backends.
 - `src/archs/` never includes a concrete backend (`cpu_*`, `metal`, `vulkan`).
-  Ops reach
-  compute through the backend vtbl. The one sanctioned shortcut is
+  Ops reach compute through the backend vtbl. The one sanctioned shortcut is
   `src/backends/common/` — the shared compute library (GEMM facade, gemma4
   kernels, KIVI) that is always compiled and may be called directly from archs.
 - `src/backends/<name>/` includes `base` and `backends/common` only; a backend
@@ -111,13 +110,11 @@ well-formed call out of a model that cannot emit one are **not** in this
 repository. They belong above the ABI, built on top of the public API described
 here.
 
-That split is the point rather than an accident of history. The agent layer is
-where a whitelist decides whether a model may act; the engine is where tokens
-are produced. Keeping the loop above the ABI means the constrained-decoding
-capability is reconstructed from the public peek/prefill primitives instead of
-buried in the sampler — `libgeist` stays small, and the code that gates actions
-stays auditable in one place, outside the engine that has no opinion about
-them.
+The agent layer is where a whitelist decides whether a model may act; the
+engine is where tokens are produced. Keeping the loop above the ABI means
+constrained decoding is built from the public peek/prefill primitives instead
+of buried in the sampler: `libgeist` stays small, and the code that gates
+actions stays auditable in one place.
 
 What the engine owes that consumer is written down and enforced:
 [API_CONTRACT.md](API_CONTRACT.md) lists the symbols an out-of-tree agent
@@ -134,11 +131,10 @@ calls bound kernels with no vtable walk or format switch. This matters most on
 single-core-heavy edge CPUs where dispatch overhead is a real fraction of the
 per-token budget.
 
-Capabilities are settled up front rather than discovered mid-forward, but the
-query is no longer a public one: the generic `supports_op` vtable slot was
-removed with the vtable split. Linear support is answered backend-internally
-from the same kernel table the resolver dispatches on, and fused ops are bound
-at plan-build time through `geist_backend_vtbl_fused::supported`.
+Capabilities are settled up front rather than discovered mid-forward. Linear
+support is answered inside each backend from the same kernel table the resolver
+dispatches on, and fused ops are bound at plan-build time through
+`geist_backend_vtbl_fused::supported`.
 
 ### Where the oracle stops: ternary
 
@@ -201,19 +197,17 @@ the mutable per-conversation state: KV cache, pending logits, sampler config,
 stats. Multiple sessions can share one model. The KV cache supports quantized
 modes (`INT8`, packed `INT4` — half the INT8 footprint, near-lossless via a
 default-on Hadamard rotation, `GEIST_KV_ROT=0` to opt out; and `KIVI` 2-bit)
-and prefix pinning
-(`geist_session_pin_prefix`) to
-amortize a constant system prompt across chat turns. Speculative decode drafts
+and prefix pinning (`geist_session_pin_prefix`) to amortize a constant system
+prompt across chat turns. Speculative decode drafts
 via an n-gram lookup over history and verifies in one batched forward.
 
 Where the backend asks for it (`caps.kv_q8_block` for INT8 and INT4,
-`caps.kv_dense_block` for FP32 and F16: `cpu_x86`), a layer's K and V data are
-one allocation, and V starts further into its page than K: half a row in the
-INT8 and INT4 caches, one KV head's slice in the dense ones (not at all with
-one KV head, whose rows lie next to each other). The rows of one KV head lie a
-cache row apart; at the power-of-two rows of most models they take one
-n_kv_heads-th of the cache sets, and K and V as allocations of their own
-started at the same page offset and took the same ones.
+`caps.kv_dense_block` for FP32 and F16; set by `cpu_x86`), a layer's K and V
+data are one allocation and V starts further into its page than K: half a row
+in the INT8 and INT4 caches, one KV head's slice in the dense ones (no offset
+with a single KV head). The rows of one KV head lie a cache row apart, so at
+the power-of-two row sizes of most models they map to a fraction of the cache
+sets; the offset keeps K and V from competing for the same sets.
 
 The rotation and packed-INT4 modes store K post-RoPE and rotated; this is only
 safe because geist never re-bases cached positions (the sliding window masks,
