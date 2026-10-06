@@ -32,7 +32,6 @@ bench_runs/
 *.npy
 summary.json
 module_tree.txt
-tokens_ref.txt
 
 # JetBrains IDE
 .idea/
