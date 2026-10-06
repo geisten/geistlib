@@ -1,23 +1,11 @@
 /*
- * src/engine/gguf_tokenizer.h — decoder for the BPE tokenizer embedded
- * in a GGUF file (P1.5.f).
+ * src/engine/gguf_tokenizer.h — encoder/decoder for the tokenizer embedded
+ * in a GGUF file (`tokenizer.ggml.*` metadata).
  *
  * Layer: ENGINE (internal).
  *
- * Reads the `tokenizer.ggml.tokens` array from a GGUF metadata block
- * and provides O(1) token-id → string lookup. For `tokenizer.ggml.
- * model == "gpt2"` models the per-token strings are byte-level BPE
- * encoded; gguf_tokenizer_decode rebuilds the original byte sequence
- * (mapping unicode glyphs like Ġ, Ċ, … back to space, newline, …).
- *
- * Scope at P1.5.f: DECODE ONLY. Encoding (text → token IDs) is the
- * other half of the BPE algorithm and lands in P1.5.g. With decode-
- * only, callers can prefill known-good token IDs (pre-tokenized
- * elsewhere) through the engine and print the model's output as
- * readable text.
- *
- * No allocations in the hot path: decode walks pointers into the
- * GGUF mmap region; the only output buffer is caller-provided.
+ * Decode allocates nothing: it walks the token strings and writes into a
+ * caller-provided buffer.
  */
 #ifndef GEIST_INTERNAL_ENGINE_GGUF_TOKENIZER_H
 #define GEIST_INTERNAL_ENGINE_GGUF_TOKENIZER_H
@@ -64,7 +52,7 @@ struct gguf_tokenizer {
      * owned heap copy (4 B × vocab, always copied at load). null for gpt2. */
     float *scores;
 
-    /* BPE merges (P1.5.g). Each entry encodes "left right" as a
+    /* BPE merges. Each entry encodes "left right" as a
      * single GGUF string; we split on the first space at load time.
      * Rank = array index (0 = highest priority). */
     const char **merge_left;
@@ -78,8 +66,8 @@ struct gguf_tokenizer {
     int32_t bos_id;
     /* tokenizer.ggml.add_bos_token: whether encode should PREPEND bos.
      * Qwen-family GGUFs carry a bos_id but set this false — blindly
-     * prepending desynced the qwen35 recurrent state (#281). Absent
-     * key falls back to "prepend iff bos_id set" (prior behavior). */
+     * prepending desynced the qwen35 recurrent state (#281). Absent:
+     * prepend iff bos_id is set and the mode is not GPT2. */
     bool add_bos;
 
     /* tokenizer.ggml.add_eos_token: whether the model expects eos APPENDED.
@@ -90,10 +78,9 @@ struct gguf_tokenizer {
     int32_t eos_id;
     int32_t unk_id;
 
-    /* Model variant — "gpt2", "llama", or "sentencepiece". The decoder
-     * uses this to pick byte-mapping behavior. GGUF strings are
-     * length-prefixed, NOT NUL-terminated — use `model_len` for any
-     * comparison. */
+    /* tokenizer.ggml.model ("gpt2", "llama", ...); `mode` is resolved from
+     * it. GGUF strings are length-prefixed, NOT NUL-terminated — use
+     * `model_len` for any comparison. */
     const char *model; /* points into GGUF mmap; not owned */
     size_t      model_len;
 
@@ -101,24 +88,22 @@ struct gguf_tokenizer {
     enum gguf_tokenizer_mode mode;
     bool                     add_space_prefix; /* SPM: prepend ▁ to the input (add_dummy_prefix) */
     /* GPT-2 mode: tokenizer.ggml.pre == "qwen2" — encode chunks via the
-     * qwen2 pretokenizer scanner instead of the legacy word splitter
-     * (#275: contractions, single digits, punctuation runs, the
-     * one-codepoint prefix rule). Other pre values keep the old path. */
+     * qwen2 pretokenizer scanner instead of the simple word splitter
+     * (contractions, single digits, punctuation runs, the one-codepoint
+     * prefix rule; #275). Also set for pre == "qwen35". */
     bool    pre_qwen2;
     int32_t spm_byte_id[256]; /* SPM byte fallback: byte → "<0xXX>" vocab id, -1 if absent */
 
-    /* P1.5.h: open-addressed hash indices over the vocab + merges
-     * arrays. Slot stores the index into the array; -1 (vocab) or
-     * SIZE_MAX (merges) marks empty. Tables are power-of-2 sized
-     * with load factor ~0.5; the mask is (table_size - 1). Built
-     * once at load — encode then drops from O(N) per lookup to
-     * effectively O(1). */
+    /* Open-addressed hash indices over the vocab + merges arrays. A slot
+     * holds the array index; -1 (vocab) or SIZE_MAX (merges) marks empty.
+     * Power-of-2 sized, load factor ~0.5, mask = size - 1. Built at load;
+     * null when allocation failed (lookups then scan linearly). */
     int32_t *vocab_hash;
     size_t   vocab_hash_mask;
     size_t  *merge_hash;
     size_t   merge_hash_mask;
 
-    /* P1.6: owned heap arenas. Non-null when the tokenizer was loaded
+    /* Owned heap arenas. Non-null when the tokenizer was loaded
      * in copy mode (gguf_tokenizer_load_copy) — then token_str /
      * merge_*_str point into these instead of into the GGUF mmap,
      * letting the caller close the gguf_ctx after load.
@@ -150,12 +135,9 @@ struct gguf_tokenizer {
  * (`tokenizer.ggml.tokens` and `tokenizer.ggml.model`). */
 [[nodiscard]] bool gguf_tokenizer_load(struct gguf_tokenizer *tok, const struct gguf_ctx *ctx);
 
-/* Copy-mode loader (P1.6). Like gguf_tokenizer_load, but allocates
- * heap arenas and memcpys every vocab + merge byte out of the GGUF
- * mmap. After this call, the caller may close the struct gguf_ctx — the
- * tokenizer is fully self-contained. Used by geist_model_load so the
- * engine doesn't have to keep a second mmap alive for the
- * tokenizer's lifetime. */
+/* Copy-mode loader. Like gguf_tokenizer_load, but copies every vocab,
+ * merge and model-name byte into heap arenas, so the caller may close the
+ * gguf_ctx afterwards. Also returns false for GGUF_TOK_MODE_UNSUPPORTED. */
 [[nodiscard]] bool gguf_tokenizer_load_copy(struct gguf_tokenizer *tok, const struct gguf_ctx *ctx);
 
 void gguf_tokenizer_unload(struct gguf_tokenizer *tok);
@@ -172,7 +154,7 @@ int32_t gguf_tokenizer_id_for_text(const struct gguf_tokenizer *tok, const char 
 size_t gguf_tokenizer_decode(
         const struct gguf_tokenizer *tok, const int32_t *ids, size_t n, char *out, size_t out_cap);
 
-/* Encode a UTF-8 text string into token IDs (P1.5.g).
+/* Encode a UTF-8 text string into token IDs.
  *
  *   text       NUL-terminated UTF-8 input.
  *   cap        Room in out_ids.

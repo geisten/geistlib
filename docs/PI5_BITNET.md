@@ -1,10 +1,9 @@
 # BitNet on a Raspberry Pi 5 — user guide
 
-Everything about running the self-contained BitNet binary (release asset
-`geist-bitnet-linux-arm64` — renamed to plain `geist-bitnet` on download below)
-from the [release page](https://github.com/geisten/geistlib/releases/latest)
-on a Raspberry Pi 5. Every number on this page was measured on the reference
-board described below; nothing is extrapolated.
+Running the self-contained BitNet binary (release asset
+`geist-bitnet-linux-arm64`, renamed to `geist-bitnet` below) from the
+[release page](https://github.com/geisten/geistlib/releases/latest) on a
+Raspberry Pi 5. Every number here was measured on the reference board below.
 
 ## Tested configuration
 
@@ -16,10 +15,11 @@ board described below; nothing is extrapolated.
 | Cooling | official active cooler (pwm-fan) |
 | Storage | SD card (the cold-start numbers below are SD-bound) |
 
-Any 64-bit OS on a Pi 5 should behave the same (the binary is fully static —
-musl, no shared libraries, no glibc version to match). A Pi 4 will run it too,
-slower; 32-bit OS images will not (see [Common errors](#common-errors)).
-8 GB boards simply have more headroom.
+Any 64-bit OS on a Pi 5 should behave the same: the binary is fully static
+(musl, no shared libraries). 8 GB boards have more headroom. A Pi 4 is not
+supported: its Cortex-A72 lacks the dot-product instructions the binary is
+built for, and it exits with an error naming the missing feature. 32-bit OS
+images cannot run it (see [Common errors](#common-errors)).
 
 ## Disk and RAM
 
@@ -115,6 +115,7 @@ the device. Verify it yourself: run it with the network cable pulled, or under
 | Symptom | Cause | Fix |
 | :-- | :-- | :-- |
 | `cannot execute binary file: Exec format error` | 32-bit OS or non-arm64 machine | `uname -m` must say `aarch64`. Install the 64-bit Raspberry Pi OS; on x86 boxes build from source instead |
+| `this build of geist uses …, which this CPU does not have` | CPU without dot product (Pi 4 and older) | use a Pi 5, or build from source for that CPU (`mk/target-linux.mk` explains how) |
 | `Permission denied` despite `chmod +x` | filesystem mounted `noexec` (some `/tmp` setups, USB sticks, network mounts) | move the binary to your home directory: `mv geist-bitnet ~/` |
 | Process killed mid-run, `Killed` in dmesg | out of memory (other big processes competing) | close memory-heavy apps; check `free -h`; the binary itself needs no swap on an otherwise idle 4 GB board |
 | `embedded model load failed` at startup | truncated or corrupted download | re-download and verify: `sha256sum -c --ignore-missing SHA256SUMS` |

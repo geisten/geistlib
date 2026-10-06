@@ -216,7 +216,7 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
 
     const bool profile = transformer_profile_enabled();
     uint64_t   t0      = profile ? transformer_profile_now_ns() : 0;
-    /* Per-layer token mixer (#281): DeltaNet layers replace the whole
+    /* Per-layer token mixer: DeltaNet layers replace the whole
      * attention block (incl. its residual add); the FFN/PLE stages are
      * mixer-agnostic. */
     enum geist_status s = st->layers[layer_idx].mixer == GEIST_MIXER_DELTANET
@@ -528,9 +528,7 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_se
     }
 
     /* 2. linear(h, model_proj) → per_layer_input (reused as scratch).
-     *    Shape: [1, HIDDEN] × [PLE_OUT, HIDDEN]^T → [1, PLE_OUT].
-     * P1.1.e: model_proj is F32 dense → cblas trampoline via the
-     * pre-resolved kernel pointer. */
+     *    Shape: [1, HIDDEN] × [PLE_OUT, HIDDEN]^T → [1, PLE_OUT]. */
     struct geist_tensor t_h_2d        = view_2d(h_buf, 1, st->d_model);
     struct geist_tensor t_ple_proj_2d = view_2d(per_layer_input_buf, 1, st->ple_out);
     s                                 = linear_w_or_legacy(be,
@@ -604,14 +602,6 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_se
     return GEIST_OK;
 }
 
-/* ---- KIVI drain across all non-shared layers -------------------------- *
- *
- * Called after committed writes when residual_count ≥ R. Drains as many
- * groups as fit; updates shared counters once at the end. Each layer's
- * buffers are mapped/packed/unmapped independently — at most one drain
- * group per outer iteration. No-op if KIVI is off or residual not yet
- * full. */
-
 /* ---- Batched PLE precompute ------------------------------------------- *
  *
  * Batched version of transformer_compute_per_layer_input. Processes n
@@ -664,9 +654,8 @@ static void plepre_print(void) {
 }
 
 static bool plepre_enabled(void) {
-    /* Same idiom as transformer_profile_enabled above: the plain lazy
-     * cache raced across concurrent sessions — caught by the x86 TSan CI
-     * leg the moment it existed. First updater registers the atexit sink;
+    /* Same idiom as transformer_profile_enabled above (atomic, so concurrent
+     * sessions do not race). First updater registers the atexit sink;
      * losers just reload. */
     static _Atomic int en  = -1;
     int                cur = atomic_load(&en);
@@ -748,8 +737,7 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     }
     plepre_add(PLEPRE_GATHER, t0);
 
-    /* 3. linear(h, model_proj) → out_buf.
-     * P1.1.e: model_proj F32 dense → cblas trampoline. */
+    /* 3. linear(h, model_proj) → out_buf. */
     struct geist_tensor t_h_2d   = view_2d(h_buf, (int64_t) n, st->d_model);
     struct geist_tensor t_out_2d = view_2d(out_buf, (int64_t) n, (int64_t) PLE_OUT);
     t0                           = prof ? transformer_profile_now_ns() : 0;
@@ -792,11 +780,8 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
 
     /* 6. out_buf = (out_buf + ple_lookup) * PLE_INPUT_SCALE. */
     t0 = prof ? transformer_profile_now_ns() : 0;
-    /* Bound once (#352). `add` is a required member — six other sites in
-     * this arch call it without a null test — so only scale_f32 decides.
-     * The old shape ran the device add, and on failure re-ran the whole
-     * combine on the host over a buffer the add had already mutated; the
-     * comment there warned about it rather than preventing it. */
+    /* Path chosen once, before anything mutates out_buf: `add` is a required
+     * member, so only scale_f32 decides (#352). */
     if (st->model_fusions.prim_scale_f32) {
         struct geist_tensor t_plu_2d =
                 view_2d(sess->scratch_ple_lookup, (int64_t) n, (int64_t) PLE_OUT);
@@ -822,13 +807,3 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     plepre_add(PLEPRE_COMBINE, t0);
     return GEIST_OK;
 }
-
-/* ---- Batched output head (logits for the last row only) -------------- *
- *
- * After run_all_layers populates scratch_h_b [seq, HIDDEN], extract the
- * row for the final token (seq-1), run output_norm + lm_head + softcap +
- * argmax, and store the prediction in next_token_pending. */
-/* Drive lm_head + softcap + sampler on a single row of scratch_h_b
- * (at index row_idx, 0..seq-1). Returns the sampled token via
- * *out_token. Greedy when sess->temperature == 0; otherwise uses the
- * session's configured top_k/top_p/temperature. */

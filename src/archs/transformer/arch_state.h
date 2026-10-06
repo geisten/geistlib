@@ -1,20 +1,10 @@
 /*
- * src/archs/transformer/arch_state.h — Gemma 4 transformer state built
- * entirely on backend buffers (no `LM*` legacy delegation).
+ * src/archs/transformer/arch_state.h — transformer model state (weights in
+ * backend-owned buffers) and per-session state (KV cache, scratch, sampler).
  *
  * Layer: ARCHITECTURE.
  *
- * Phase B-4e sub-step 1 (this file): weight loading. Reads every per-layer
- * + global tensor from the GGUF and stages the raw bytes into backend-owned
- * geist_buffer*'s. No forward pass yet — that lands in sub-steps 2 and 3.
- *
- * Why a v2 path: the legacy transformer_arch_state in arch.c delegates to
- * lm.c's `LM*`. Sub-step 1 stands up the replacement plumbing alongside it
- * (live arch_ops vtable still points at the legacy path); once sub-steps
- * 2..4 land and verify byte-identical token output, arch.c will be flipped
- * over and `LM*` retired.
- *
- * Gemma 4 specifics encoded here:
+ * Field comments quote Gemma 4 E2B dimensions as examples:
  *   - 35 layers, hidden 1536, vocab 262144, n_q_heads 8, n_kv_heads 1.
  *   - Alternating sliding (256 head_dim, window 512) / full (512 head_dim,
  *     unbounded) attention in a 4+1 pattern.
@@ -55,20 +45,16 @@ constexpr size_t TRANSFORMER_HEAD_DIM_MAX = 512;
 
 /* ---- Per-layer weight bundle ------------------------------------------- */
 
-/* Holds every weight tensor needed to run one transformer layer. Layouts
- * that may be either F32 DENSE or BLOCK_QUANTIZED (k-quants) keep their
- * native dtype/layout — the linear() vtable dispatches on these. KV-shared
- * layers (idx >= 15) leave k_proj / v_proj / k_norm as NULL since they
- * reuse the source layer's projections at runtime. */
-/* Per-layer token mixer. The transformer family historically meant
- * "attention in every layer"; qwen35 (#281) generalizes that to a
- * per-layer choice — the layer loop dispatches on this BEFORE any
+/* Per-layer token mixer. The layer loop dispatches on this before any
  * attention code runs, so attention paths stay mixer-agnostic. */
 enum transformer_mixer_kind {
     GEIST_MIXER_ATTN = 0, /* softmax attention (KV cache) */
     GEIST_MIXER_DELTANET, /* gated DeltaNet (recurrent conv+delta state) */
 };
 
+/* Every weight tensor of one transformer layer. Projections keep their
+ * native dtype/layout (F32 DENSE or BLOCK_QUANTIZED). KV-shared layers
+ * leave k_proj / v_proj / k_norm null and reuse the source layer's K/V. */
 struct transformer_layer_weights {
     /* ---- Geometry derived from layer_idx (set by loader). ------------- */
     int                         layer_idx;
@@ -98,7 +84,7 @@ struct transformer_layer_weights {
      * skips the rmsnorm call in that case. */
     struct geist_tensor attn_sub_norm; /* [q_out] — SubLN before o_proj */
     struct geist_tensor ffn_sub_norm;  /* [intermediate] — SubLN before down_proj */
-    /* Per-projection input norms (BitNet embedding models, July 2026):
+    /* Per-projection input norms (BitNet embedding models):
      * an RMSNorm on the input of q/k/v/gate/up, all [d_model]. The other
      * two of the seven — before o_proj and before down_proj — reuse
      * attn_sub_norm / ffn_sub_norm above, which sit at exactly those
@@ -121,21 +107,19 @@ struct transformer_layer_weights {
     struct geist_tensor per_layer_gate; /* [HIDDEN_PER_LAYER, HIDDEN] */
     struct geist_tensor per_layer_proj; /* [HIDDEN, HIDDEN_PER_LAYER] */
 
-    /* ---- Pre-resolved kernel-pointer table (P1.1.c..d refactor v2). ---- *
-     * Populated at load time from each projection's raw bytes via the
-     * backend's resolve_weight. Forward hot path calls these directly
-     * (no vtable, no dtype switch). If linear_m1 is nullptr, the
-     * backend doesn't yet support that dtype/shape; the legacy
-     * v->linear() path runs as fallback.                              */
-    struct geist_weight q_proj_w;         /* P1.1.c */
-    struct geist_weight k_proj_w;         /* P1.1.d */
-    struct geist_weight v_proj_w;         /* P1.1.d */
-    struct geist_weight o_proj_w;         /* P1.1.d */
-    struct geist_weight gate_proj_w;      /* P1.1.d */
-    struct geist_weight up_proj_w;        /* P1.1.d */
-    struct geist_weight down_proj_w;      /* P1.1.d */
-    struct geist_weight per_layer_gate_w; /* P1.1.d */
-    struct geist_weight per_layer_proj_w; /* P1.1.d */
+    /* ---- Pre-resolved kernels, one per projection. ---------------------- *
+     * Filled at load time by the backend's resolve_weight; the forward
+     * path calls them directly (no vtable, no dtype switch). A null
+     * linear_m1 / linear_mN makes that linear GEIST_E_UNSUPPORTED. */
+    struct geist_weight q_proj_w;
+    struct geist_weight k_proj_w;
+    struct geist_weight v_proj_w;
+    struct geist_weight o_proj_w;
+    struct geist_weight gate_proj_w;
+    struct geist_weight up_proj_w;
+    struct geist_weight down_proj_w;
+    struct geist_weight per_layer_gate_w;
+    struct geist_weight per_layer_proj_w;
 
     /* ---- AWQ inverse scales (host arrays; nullptr if no AWQ). --------- *
      * Applied per-token to attn_out (before o_proj) and to post-GeGLU
@@ -145,7 +129,7 @@ struct transformer_layer_weights {
     float *down_awq_inv_scale; /* [intermediate] or nullptr */
 
     /* ---- Gated-DeltaNet weights (mixer == GEIST_MIXER_DELTANET only;
-     * all-zero otherwise). Dims from config.dn_* (#281). ---------------- */
+     * all-zero otherwise). Dims from config.dn_*. ------------------------ */
     struct geist_tensor dn_qkv;     /* [conv_dim, d_model]  in_proj_qkv */
     struct geist_tensor dn_z;       /* [value_dim, d_model] in_proj_z (output gate) */
     struct geist_tensor dn_conv;    /* [conv_dim, kernel]   depthwise conv1d */
@@ -157,13 +141,9 @@ struct transformer_layer_weights {
     struct geist_tensor dn_out;     /* [d_model, value_dim] out_proj */
     struct geist_weight dn_qkv_w, dn_z_w, dn_beta_w, dn_alpha_w, dn_out_w;
 
-    /* ---- Owning buffer handles (so destroy can free them). ------------ *
-     * The structs above carry .buffer pointers but the LIST OF buffers we
-     * created is stored here so cleanup is unambiguous and order-stable.
-     * NULL slots denote "not allocated" (e.g. k_proj_buf for kv_shared). */
-    /* 24, not 16: a BitNet-embedding block loads 20 tensors -- 7 projections
-     * plus 13 norms, five of them the per-projection gammas -- and
-     * overflowing this list is a hard load failure, not a leak. */
+    /* ---- Owning buffer handles, freed by destroy. NULL slots are "not
+     * allocated". A BitNet-embedding block loads 20 tensors (7 projections,
+     * 13 norms); overflowing this list is a hard load failure. */
     struct geist_buffer *bufs[24];
     size_t               n_bufs;
 };
@@ -182,21 +162,17 @@ struct transformer_mtp_layer_weights {
     struct geist_weight eh_proj_w;
 };
 
-/* ---- Per-session mutable state (P1.2.d refactor v2) -------------------- *
+/* ---- Per-session mutable state ----------------------------------------- *
  *
- * All mutable state for ONE inference stream lives here. Separated from
- * the immutable transformer_arch_model fields so future sub-phase
- * P1.2.e can detach session lifetime from model lifetime (N sessions
- * per model). For now this struct is nested inside transformer_arch_
- * state with a 1:1 lifecycle, but the field grouping already
- * mirrors the eventual ownership model.
+ * All mutable state for ONE inference stream; the model
+ * (transformer_arch_state) stays immutable, so a model can serve several
+ * sessions.
  *
  *   KV cache       : per-session inference state (kv_len, the buffers,
  *                    drain counters).
  *   scratch pool   : per-session reserved memory backing the long-
- *                    lived scratch buffers (P1.2.c).
- *   scratch arena  : per-session frame-arena for hot-path transients
- *                    (P1.2.b).
+ *                    lived scratch buffers.
+ *   scratch arena  : per-session frame-arena for hot-path transients.
  *   sampler        : per-session RNG + workspace, temperature, top-k,
  *                    top-p.
  *   pending logits : the prediction the next decode_step returns, and
@@ -243,8 +219,8 @@ struct transformer_arch_session {
      * appends convert through the backend's kv_append_f16 slot and
      * attention reads F16 views. Only set when that slot is non-null. */
     bool kv_f16_enabled;
-    /* P1.4.c: per-layer KV slot arrays are heap-allocated at
-     * session_alloc, sized to state->n_layers. Exactly one of the
+    /* Per-layer KV slot arrays, heap-allocated at session_alloc, sized to
+     * state->n_layers. Exactly one of the
      * three representations (FP32 / INT8 / KIVI) holds non-null slots
      * per non-KV-shared layer per the kv_*_enabled flags. */
     struct geist_buffer **k_cache;
@@ -283,8 +259,8 @@ struct transformer_arch_session {
     float *kivi_pin_tail;
     size_t kivi_pin_rows;
 
-    /* ---- Scratch buffers (per-forward-pass workspace).
-     * 21 buffers backed by the consolidated scratch pool (P1.2.c). */
+    /* ---- Scratch buffers (per-forward-pass workspace), slices of the
+     * scratch pool. */
     struct geist_buffer *scratch_normed;
     /* Holds one projection's own normalised input when
      * config.has_projection_input_norms is set: scratch_normed stays the
@@ -316,19 +292,18 @@ struct transformer_arch_session {
     struct geist_buffer *scratch_logits;
 
     /* ---- Memory backing for the buffers above.
-     * scratch_arena: per-forward frame-arena (P1.2.b), reset per layer.
-     * scratch_pool: never reset, holds slices for 21 scratch buffers. */
+     * scratch_arena: per-forward frame-arena, reset per layer.
+     * scratch_pool: never reset, holds the scratch buffer slices. */
     void              *scratch_arena_base;
     size_t             scratch_arena_bytes;
     struct frame_arena scratch_arena;
     void              *scratch_pool_base;
     size_t             scratch_pool_bytes;
     size_t             scratch_pool_used;
-    /* P3 (vulkan): pool allocated through the backend so GPU backends can
-     * bind aliased slices directly; scratch_pool_base == buffer_map(buf).
-     * CPU backends malloc under the hood — behavior unchanged. */
+    /* Pool allocated through the backend so GPU backends can bind aliased
+     * slices directly; scratch_pool_base == buffer_map(buf). */
     struct geist_buffer *scratch_pool_buf;
-    /* #488: the device-local part of the pool, when the session runs with
+    /* The device-local part of the pool (#488), when the session runs with
      * one (scratch_device; see scratch_device_wanted in arch_state.c). Every
      * slot but h_a, h_b and logits — the ones the host maps — is then a
      * buffer_create_view slice of it, and scratch_pool_buf holds only those
@@ -338,7 +313,7 @@ struct transformer_arch_session {
     size_t               scratch_dev_pool_used;
     bool                 scratch_device;
 
-    /* ---- Gated-DeltaNet recurrent state (#281/#296). Backend buffers,
+    /* ---- Gated-DeltaNet recurrent state. Backend buffers,
      * allocated at session_alloc only for layers with mixer == DELTANET;
      * nullptr slots otherwise. Zeroed on session reset, or marked fresh.
      *   dn_conv_state[li]: [(kernel-1) * conv_dim]  rolling pre-conv qkv
@@ -346,9 +321,9 @@ struct transformer_arch_session {
     struct geist_buffer **dn_conv_state;
     struct geist_buffer **dn_S;
     /* dn_fresh[li]: layer li's state is the empty sequence's, all zeros,
-     * whatever its two buffers hold. A reset sets it where it used to
-     * clear them (157 MB on Qwen3.5-27B, on the calling thread), the
-     * layer's next forward clears it: the chunked prefill reads zeros for
+     * whatever its two buffers hold. A reset sets it instead of clearing
+     * them (157 MB on Qwen3.5-27B); the layer's next forward clears it:
+     * the chunked prefill reads zeros for
      * the state and skips the GEMMs on S of its first sub-chunk, the token
      * loop and a speculative snapshot zero the buffers first. nullptr, and
      * a reset clears the buffers as before, when the backend has a
@@ -370,7 +345,7 @@ struct transformer_arch_session {
     size_t               dn_txn_kivi_residual_count;
     size_t               dn_txn_kivi_drained_count;
     bool                 dn_txn_active;
-    /* qwen35 scratch (#281): joint q+gate projection result
+    /* qwen35 scratch: joint q+gate projection result
      * [m_max, 2*q_out] + saved per-head gate [m_max, q_out], and the
      * DeltaNet projection outputs (qkv [m_max, conv_dim], z
      * [m_max, value_dim], beta+alpha [m_max, 2*n_v_heads]) — backend
@@ -481,15 +456,12 @@ struct transformer_arch_state {
      * snapshot to the model it was taken on (snapshot.c). */
     uint64_t snapshot_id;
 
-    /* GGUF source (kept open while the state lives: weight buffers reuploaded
-     * could be re-fetched but for simplicity we just retain the handle for
-     * diagnostics; mmap stays valid). */
+    /* GGUF source, kept open while the state lives (the mmap stays valid). */
     struct gguf_ctx *gguf; /* opaque; from gguf_reader.h */
 
-    /* ---- Arch family config (P1.4.a). Populated at load time; holds
-     * all Gemma-specific numeric knobs (RMS eps, logit softcap, PLE
-     * scales, KV-shared layer mapping). Future arch families plug in
-     * by swapping the populator at state_create. */
+    /* ---- Arch family config, filled at load time by the family populator
+     * (arch_family.c): norms eps, logit softcap, PLE scales, KV-sharing,
+     * feature flags. */
     struct geist_arch_config         config;
     struct transformer_runtime_flags runtime_flags;
 
@@ -509,13 +481,13 @@ struct transformer_arch_state {
     size_t m_max;            /* prefill chunk size — scratch sized for this many
                               * tokens; longer prompts are chunked. Default 64. */
 
-    /* ---- Weight arena (P1.1.g refactor v2). -------------------------- *
+    /* ---- Weight arena. -------------------------------------------------- *
      * ONE heap_alloc_aligned(arena_capacity) at load time; every weight
      * tensor bump-allocates into it. Released once in
      * transformer_state_destroy. */
     void  *weight_arena;
     size_t weight_arena_used;
-    /* P3 (vulkan): arena allocated through the backend (see
+    /* Arena allocated through the backend (see
      * scratch_pool_buf) so norm weights / embed tables inside it are
      * GPU-bindable. nullptr in mmap-alias mode or on heap fallback. */
     struct geist_buffer *weight_arena_buf;
@@ -540,8 +512,8 @@ struct transformer_arch_state {
     struct geist_tensor model_proj;      /* [PLE_OUT, HIDDEN] — Q-format */
     struct geist_tensor model_proj_norm; /* [HIDDEN_PER_LAYER] — F32 */
     struct geist_tensor output_norm;     /* [HIDDEN] — F32 */
-    struct geist_weight embed_table_w;   /* P1.1.d lm_head kernels */
-    struct geist_weight model_proj_w;    /* P1.1.e F32 dense kernels */
+    struct geist_weight embed_table_w;   /* lm_head kernels */
+    struct geist_weight model_proj_w;    /* PLE model_proj kernels */
 
     /* Activation-side Walsh-Hadamard transform for checkpoints stored in a
      * rotated basis (prism.hadamard.* keys). Loaded and validated by
@@ -640,8 +612,7 @@ struct transformer_arch_state {
  * are reached through sess->model. Handles must be non-null — the vtable
  * thunks (arch.c) guard-return on nullptr.
  *
- * Single-token, single-layer forward. Used by sub-step 2 cross-reference
- * tests; the full prefill/decode wrappers land in sub-steps 2-loop and 3.
+ * One layer forward over `seq` tokens starting at q_position.
  *
  *   h_in_buf            [HIDDEN]  — residual stream input (F32).
  *   per_layer_input_buf [HIDDEN_PER_LAYER] — PLE input, or NULL.
@@ -714,9 +685,8 @@ void transformer_mtp_reset(struct transformer_arch_session *sess);
  *   per_layer_input_buf [NUM_LAYERS * HIDDEN_PER_LAYER] — output, ready
  *                          to be sliced per-layer at runtime.
  *
- * PLE table is Q-quantized in the GGUF; this function dequantizes the
- * single needed row on the fly (lm.c's approach to keep the Pi 5 RAM
- * budget — full FP32 expansion of the table would be ~9 GB). */
+ * The PLE table stays quantized; only the needed row is dequantized (a
+ * full FP32 expansion would be ~9 GB). */
 [[nodiscard]] enum geist_status
 transformer_compute_per_layer_input(struct transformer_arch_session *sess,
                                     geist_token_t                    token_id,
@@ -725,10 +695,8 @@ transformer_compute_per_layer_input(struct transformer_arch_session *sess,
 
 /* End-to-end single-token forward + sample. Consumes the input token at
  * position sess->kv_len, advances sess->kv_len by 1, and returns the
- * predicted next token via greedy argmax.
- *
- * This is the v2 equivalent of lm.c::lm_decode_step + the embedding scale
- * + the PLE precompute + the softcap'd lm_head all rolled into one call. */
+ * predicted next token: embedding lookup and scale, PLE precompute, the
+ * layer stack and the softcapped lm_head. */
 [[nodiscard]] enum geist_status transformer_decode_step(struct transformer_arch_session *sess,
                                                         geist_token_t  input_token,
                                                         geist_token_t *out_token);
@@ -736,7 +704,7 @@ transformer_compute_per_layer_input(struct transformer_arch_session *sess,
 /* Append one audio soft-token (HIDDEN floats, already produced by the
  * audio encoder) to the KV cache.
  *
- * Differences vs the text path (from lm.c::lm_prefill_audio):
+ * Differences vs the text path:
  *   - h_in_host is the soft-token bytes verbatim — no embedding lookup
  *     and no sqrt(HIDDEN) scale (soft-tokens enter post-lookup unscaled).
  *   - PLE token-identity is the pad_token_id (0), not the audio token's
@@ -768,7 +736,7 @@ transformer_advance_audio_token(struct transformer_arch_session *sess, const flo
 [[nodiscard]] enum geist_status transformer_prefill_audio_batch(
         struct transformer_arch_session *sess, size_t n, const float *soft_tokens);
 
-/* Pin a prefix into the KV cache. Mirrors lm.c::lm_pin_prefix semantics:
+/* Pin a prefix into the KV cache:
  * truncates the cache to empty, runs a batched prefill of `ids` (no-op if
  * n==0), then snapshots the resulting kv_len into state->prefix_length.
  * Subsequent calls to transformer_state_reset truncate kv_len back to
@@ -859,8 +827,8 @@ transformer_dn_state_zero(struct geist_backend *be, struct geist_buffer *buf, si
 /* ---- Public functions (architecture-internal) -------------------------- */
 
 /* Build a transformer arch state from a GGUF file. All weight bytes land in
- * backend-owned buffers via be->vtbl->buffer_create+upload. KV cache and
- * scratch buffer allocation are deferred to sub-step 2.
+ * backend-owned buffers. KV cache and scratch belong to sessions
+ * (transformer_session_alloc).
  *
  * Returns GEIST_OK on success; on failure *out is left as nullptr and the
  * backend's error slot is populated. Caller owns *out and frees it via
@@ -935,8 +903,7 @@ transformer_kv_bytes_per_token(size_t *out_bytes, const struct transformer_arch_
 transformer_session_apply_opts(struct transformer_arch_session *sess,
                                const struct geist_session_opts *opts);
 
-/* ---- Multi-session API (P1.2.f, made concurrent by the session-
- * threading refactor) ---------------------------------------------------- *
+/* ---- Multi-session API -------------------------------------------------- *
  *
  * Each engine-level geist_session owns a transformer_arch_session (KV
  * cache, scratch pool, sampler RNG, spec scratch). Sessions carry their

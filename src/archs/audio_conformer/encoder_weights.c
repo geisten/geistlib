@@ -1,14 +1,10 @@
 /*
  * src/archs/audio_conformer/encoder_weights.c — weight loading, quantization, and teardown.
- *
- * Layer: ARCHITECTURE (audio_conformer). Split from the former
- * monolithic audio_encoder.c; pure moves, no behavior change.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "encoder_internal.h"
 
-/* Intra-module forward decls (definition order preserved from the split). */
 static void quantize_clippable_w8(struct ClippableLinear *cl, size_t out_dim, size_t in_dim);
 
 float *load_bf16(struct st_ctx *sf, const char *name, size_t expect_elems) {
@@ -71,16 +67,12 @@ static bool load_clippable(struct st_ctx          *sf,
     cl->prec = prec;
     if (prec != AUDIO_PREC_FP32) {
         quantize_clippable_w8(cl, out_dim, in_dim);
-        /* Drop the FP32 copy after quant — ~450 MB on a Pi 5. FP32 A/B
-         * runs use GEIST_AUDIO_FORCE_QUANT / the per-class env knobs at
-         * load time instead of keeping both copies resident. */
+        /* Drop the FP32 copy after quant (~450 MB on a Pi 5). */
         safe_free((void **) &cl->w);
         cl->w = nullptr;
     }
     return true;
 }
-
-/* forward decl */
 
 static bool env_flag(const char *name, bool fallback) {
     const char *s = getenv(name);
@@ -89,17 +81,14 @@ static bool env_flag(const char *name, bool fallback) {
     return s[0] == '1';
 }
 
-/* THE precision decision, resolved once per encoder create (#251) — env
- * mutated afterwards changes nothing, and the A/B parity tests get their
- * per-encoder configs by setting env between creates.
+/* The precision decision, resolved once per encoder create (#251): env
+ * changed afterwards has no effect, so tests set env between creates.
  *
  * force_fp32: Apple Silicon's cblas_sgemm via Accelerate (AMX) beats the
  * hand-rolled W8 kernels at these matmul sizes, so Apple defaults every
  * ClippableLinear to FP32; GEIST_AUDIO_FORCE_QUANT=1 opts back in.
- * attn/lconv W8A8 default ON since their quality gates went green
- * (parity, chat e2e, LibriSpeech WER — see PI5-audio.md); '0' opts out.
- * layer_limit: quantization restricted to layers [0, N) for the
- * quant-noise mitigation experiments. */
+ * attn/lconv W8A8 default on (quality gates: benchmark/results/PI5-audio.md);
+ * '0' opts out. layer_limit: quantization restricted to layers [0, N). */
 struct audio_prec_policy audio_prec_policy_resolve(void) {
     struct audio_prec_policy p = {
             .attn_w8a8   = env_flag("GEIST_AUDIO_ATTN_W8A8", true),
@@ -139,8 +128,7 @@ static bool load_ffn(struct st_ctx                  *sf,
                      struct FFN                     *ffn,
                      const struct audio_prec_policy *pol) {
     char buf[384];
-    /* FFN W8A8 is unconditional (modulo layer_limit/force_fp32) — it has
-     * been the default since f6156e74 (per-tensor mixed precision). */
+    /* FFN W8A8 is unconditional (modulo layer_limit/force_fp32). */
     const enum audio_linear_prec ffn_prec =
             pick_prec(pol, layer_idx, true, AUDIO_PREC_W8A8, AUDIO_PREC_FP32);
     snprintf(buf, sizeof(buf), "%sffw_layer_1.", prefix);
@@ -157,20 +145,15 @@ static bool load_ffn(struct st_ctx                  *sf,
 }
 
 /* GEIST_AUDIO_W8A8_LAYER_LIMIT=N restricts W8A8 (Attn and LConv) to layers
- * [0, N). Default N=N_LAYERS=12 → all layers W8A8 (legacy behaviour). Use
- * this to test the mitigation hypothesis that the structural drift at
- * positions [53, 69, 88, 114] is driven by cumulative quant-noise
- * resonance across all 12 Conformer layers - if dropping the last few
- * layers from W8A8 weakens or shifts the drift, the hypothesis holds. */
+ * [0, N); default N_LAYERS (all layers). A diagnostic for cumulative
+ * quant noise across layers. */
 static bool load_attn(struct st_ctx                  *sf,
                       int                             layer_idx,
                       const char                     *prefix,
                       struct Attn                    *a,
                       const struct audio_prec_policy *pol) {
     char buf[384];
-    /* Attn W8A8 vs W8A32 per the resolved policy. Per bib.md A6 (4-bit
-     * Conformer with Native QAT, Google 2024) INT8-only shows 0.87% WER
-     * loss without finetune. */
+    /* Attn W8A8 vs W8A32 per the resolved policy. */
     const enum audio_linear_prec attn_prec =
             pick_prec(pol, layer_idx, pol->attn_w8a8, AUDIO_PREC_W8A8, AUDIO_PREC_W8A32);
 
@@ -249,8 +232,7 @@ bool load_layer(struct st_ctx                  *sf,
 }
 
 /* Quantize an FP32 weight matrix (out, in) into per-output-row symmetric INT8.
- * Stores the int8 weights and per-row fp32 scales into cl. Original FP32 stays
- * intact; the dispatcher in clip_linear_apply chooses the path at runtime. */
+ * Stores the int8 weights and per-row fp32 scales into cl; leaves cl->w alone. */
 static void quantize_clippable_w8(struct ClippableLinear *cl, size_t out_dim, size_t in_dim) {
     cl->w_q8     = heap_alloc_array_aligned(int8_t, out_dim *in_dim);
     cl->w_scales = heap_alloc_array_aligned(float, out_dim);

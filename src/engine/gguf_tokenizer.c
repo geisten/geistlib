@@ -49,7 +49,7 @@ static int gpt2_codepoint_to_byte(uint32_t cp) {
 }
 
 /* Forward of gpt2_codepoint_to_byte: maps each of the 256 byte values
- * to a codepoint in [0, 323]. P1.5.g (encoder). */
+ * to a codepoint in [0, 323]. */
 static uint32_t gpt2_byte_to_codepoint(uint8_t b) {
     if ((b >= 33 && b <= 126) || (b >= 161 && b <= 172) || b >= 174) {
         return b; /* identity (174..255 is the open-ended upper range) */
@@ -119,7 +119,7 @@ static int32_t utf8_decode_one(const char *s, size_t n, size_t *advance) {
     return -1;
 }
 
-/* Forward decls for hash helpers defined further down (P1.5.h). */
+/* Hash helpers, defined further down. */
 static uint64_t fnv1a64(const char *p, size_t n);
 static uint64_t fnv1a64_pair(const char *a, size_t alen, const char *b, size_t blen);
 static size_t   next_pow2(size_t n);
@@ -166,7 +166,7 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
         p += slen;
     }
 
-    /* P1.5.g: load tokenizer.ggml.merges. Each entry is "left right"
+    /* tokenizer.ggml.merges: each entry is "left right"
      * (one space separator). Split on first space at load time so
      * the encoder can compare both halves without re-parsing. */
     if (gguf_get_meta_array_info(ctx, "tokenizer.ggml.merges", &elem_vt, &count, &p) &&
@@ -268,7 +268,7 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
         }
     }
 
-    /* P1.5.h: build the vocab + merges hash indices. Both tables are
+    /* Build the vocab + merges hash indices. Both tables are
      * pow-of-2 sized with load factor ~0.5; failure to allocate is
      * non-fatal — the encoder's linear-scan fallback kicks in. */
     {
@@ -312,9 +312,9 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
     /* Resolve the tokenization algorithm. "gpt2" is byte-level BPE; any
      * other model that ships merges (Gemma/Llama/Mistral SentencePiece,
      * model="gemma4"/"llama"/…) is driven through the same merge engine
-     * with ▁ normalization + <0xXX> byte fallback. A model without merges
-     * (pure unigram, or wordpiece) is unsupported here — load_copy then
-     * refuses so the engine falls back to an external tokenizer.bin. */
+     * with ▁ normalization + <0xXX> byte fallback. Without merges, per-token
+     * scores select unigram; with neither the mode is unsupported and
+     * load_copy refuses, so the engine falls back to tokenizer.bin. */
     if (tok->model_len == 4 && memcmp(tok->model, "gpt2", 4) == 0) {
         tok->mode           = GGUF_TOK_MODE_GPT2;
         size_t      pre_len = 0;
@@ -442,7 +442,7 @@ void gguf_tokenizer_unload(struct gguf_tokenizer *tok) {
     tok->n_specials = 0;
 }
 
-/* P1.6: copy-mode loader. Calls the mmap-pointing loader first, then
+/* Copy-mode loader. Calls the mmap-pointing loader first, then
  * walks every vocab + merge string and memcpys the bytes into heap
  * arenas, rewriting the pointer slots to indirect through them. The
  * model name string is copied too. After this returns the caller can
@@ -451,10 +451,8 @@ void gguf_tokenizer_unload(struct gguf_tokenizer *tok) {
                                             const struct gguf_ctx *ctx) {
     if (!gguf_tokenizer_load(tok, ctx))
         return false;
-    /* gpt2 (byte-level BPE) and merge-driven SentencePiece (▁ BPE) are both
-     * implemented for encode + decode. A model with neither (pure unigram /
-     * wordpiece) is unsupported — refuse so the engine falls back to the
-     * external sp_bpe (tokenizer.bin) path. */
+    /* Refuse an unsupported mode so the engine falls back to the external
+     * sp_bpe (tokenizer.bin) path. */
     if (tok->mode == GGUF_TOK_MODE_UNSUPPORTED) {
         gguf_tokenizer_unload(tok);
         return false;
@@ -631,9 +629,7 @@ size_t gguf_tokenizer_decode(
     return total;
 }
 
-/* ============================================================== */
-/* Encoder (P1.5.g) + hash indices (P1.5.h)                        */
-/* ============================================================== */
+/* ---- Encoder + hash indices ---- */
 
 /* FNV-1a 64-bit. Stable across builds; we just need a good
  * distribution over short byte strings. */
@@ -731,8 +727,7 @@ static size_t merge_lookup(const struct gguf_tokenizer *tok,
 
 /* Find the lowest-rank merge in the symbol list. Returns the index
  * of the LEFT symbol of the winning pair, or -1 when no adjacent
- * pair has a merge entry. P1.5.h: uses the merge hash index — O(1)
- * per pair instead of O(N_merges). */
+ * pair has a merge entry. */
 static int find_best_merge(const struct gguf_tokenizer *tok,
                            const char                  *buf,
                            const struct pair_merge_sym *syms,
@@ -756,13 +751,12 @@ static int find_best_merge(const struct gguf_tokenizer *tok,
 /* Symbols up to which a chunk rescans with find_best_merge instead of
  * running the merge heap: gpt2 hands over one pre-tokenized word at a
  * time, and for a word of a few symbols the rescan costs no more lookups
- * and none of the heap's bookkeeping. Measured (bench_tokenizer style,
- * 64 KB of letter runs): 3 and 5 symbols 5-8 % faster rescanning, 9
- * symbols 24 % faster with the heap, 129 symbols 76 %. */
+ * and none of the heap's bookkeeping. The heap wins from ~9 symbols up
+ * (bench_tokenizer, letter runs). */
 constexpr int BPE_RESCAN_MAX_SYMS = 8;
 
 /* Merge-engine key (pair_merge.h) for BPE: the merge's rank, lowest
- * first. P1.5.h: the merge hash index makes each lookup O(1). */
+ * first. */
 static bool bpe_merge_key(
         const void *ctx, const char *buf, size_t off, size_t llen, size_t rlen, uint64_t *key) {
     const size_t m = merge_lookup(ctx, buf + off, llen, buf + off + llen, rlen);
@@ -774,7 +768,6 @@ static bool bpe_merge_key(
  * vocab IDs into out. Returns the count, or SIZE_MAX when scratch
  * allocation fails — a caller that adds the return value blindly would
  * otherwise turn dropped tokens into a silently shorter encoding.
- * Internal helper for encode.
  * When byte_fallback is set (SPM), a symbol missing from the vocab is
  * emitted as one "<0xXX>" token per byte (spm_byte_id), then unk_id;
  * otherwise (gpt2) a missing symbol emits a single unk_id. */
@@ -1049,9 +1042,8 @@ static size_t qwen2_chunk_end(const char *text, size_t tlen, size_t i) {
 
 /* Merge-engine key for unigram: the joined piece's score, highest first.
  * The float's bits made to sort as unsigned (sign bit set: all bits
- * flipped; clear: sign bit set) and then reversed. -0 is made +0 first,
- * on the bits: under -ffast-math a float compare may not tell them apart,
- * and a float compare is what the scan this replaces used, so they tie. */
+ * flipped; clear: sign bit set) and then reversed. -0 is made +0 first so
+ * the two tie, as a float compare would (fast-math may not tell them apart). */
 static bool unigram_merge_key(
         const void *ctx, const char *buf, size_t off, size_t llen, size_t rlen, uint64_t *key) {
     const struct gguf_tokenizer *tok = ctx;
@@ -1323,7 +1315,7 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
         /* A special token directly after the whitespace run: emit the
          * run as its own chunk and let the outer loop match the special
          * — otherwise its first byte gets shredded into the next punct
-         * chunk ("\n<|im_start|>" became "\n<" + "|" + ... , #275). */
+         * chunk ("\n<|im_start|>" would become "\n<" + "|" + ..., #275). */
         if (i > start && i < tlen) {
             bool special_follows = false;
             for (size_t s = 0; s < tok->n_specials; s++) {
@@ -1382,8 +1374,7 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
             while (i < tlen && is_ascii_digit((unsigned char) text[i]))
                 i++;
         } else {
-            /* Punctuation / symbol — match one byte at a time, but
-             * group multiple of the same byte. Simpler: single byte. */
+            /* Punctuation / symbol: one byte per chunk. */
             i++;
         }
 

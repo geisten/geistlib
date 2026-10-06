@@ -1,8 +1,8 @@
 /* metal_objc.h — the dlopen/dlsym Objective-C runtime shim for the Metal
  * backend: typed objc_msgSend wrappers over the handles in metal_state.
  *
- * backend.c-private — included exactly once, after struct metal_state is
- * defined (the wrappers read its objc handles); everything is static. */
+ * Included from metal_internal.h after struct metal_state is defined (the
+ * wrappers read its objc handles); everything is static. */
 #ifndef GEIST_METAL_OBJC_H
 #define GEIST_METAL_OBJC_H
 
@@ -34,10 +34,10 @@ static inline void *metal_sel_register_name(struct metal_state *st, const char *
     return sel_register.fn(selector);
 }
 
-/* Autorelease pools. Plain C has no @autoreleasepool, so without these the
- * autoreleased command buffers and encoders were never drained (#527:
- * +7.2 KiB per decode token). Pools are per thread and LIFO: popping one
- * also pops every pool pushed after it. */
+/* Autorelease pools. Plain C has no @autoreleasepool; without these the
+ * autoreleased command buffers and encoders are never drained (#527).
+ * Pools are per thread and LIFO: popping one also pops every pool pushed
+ * after it. */
 static inline void *metal_pool_push(struct metal_state *st) {
     union {
         void *raw;
@@ -278,7 +278,7 @@ static inline void metal_msg_send_copy_buffer(struct metal_state *st,
     send.fn(receiver, sel, src, src_offset, dst, dst_offset, bytes);
 }
 
-/* Defined in sequence.c (non-static since the module split). */
+/* Defined in sequence.c. */
 void metal_seq_mark_buffer(struct metal_state *st, void *mtl_buf, size_t off);
 
 /* Defined in resources.c: the first bind of an MTLBuffer adds it to the
@@ -307,9 +307,8 @@ static inline void metal_msg_send_set_bytes(
     send.fn(receiver, sel, bytes, length, index);
 }
 
-/* Pipeline bind. Dedup of identical re-binds was tried (2026-07-04) and
- * measured a wash — consecutive redundancy is too low; the per-op GPU
- * command-stream cost scales with op COUNT, so fusion is the lever. */
+/* No dedup of identical re-binds: consecutive repeats are too rare to pay;
+ * the per-op cost scales with op count, so fusion is the lever. */
 static inline void
 metal_msg_send_set_pipeline(struct metal_state *st, void *receiver, void *pipeline) {
     (void) metal_msg_send_id_id(st, receiver, "setComputePipelineState:", pipeline);

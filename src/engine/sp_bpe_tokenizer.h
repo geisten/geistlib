@@ -2,7 +2,7 @@
  * SentencePiece-style BPE tokenizer for HF tokenizers v4+ format
  * (Gemma, Llama, Mistral, Qwen, ...).
  *
- * Differences from geist's GPT-2-style hf_bpe_tokenizer:
+ * Differences from GPT-2-style byte-level BPE:
  *   - Normalizer: " " (0x20) -> "▁" (U+2581, UTF-8 0xE2 0x96 0x81)
  *     not " " -> "Ġ" (U+0120, GPT-2 byte map)
  *   - No pre-tokenizer split at space/word/digit boundaries — BPE
@@ -13,7 +13,7 @@
  * Algorithm:
  *   1. Scan input for longest-match special tokens. Split into
  *      [chunk_0, special_0, chunk_1, special_1, ..., chunk_N].
- *   2. For each chunk: normalize " " -> "▁", then greedy-rank BPE.
+ *   2. For each chunk: normalize " " -> "▁", then rank-ordered BPE merges.
  *   3. Concatenate token IDs in order.
  */
 #ifndef SP_BPE_TOKENIZER_H

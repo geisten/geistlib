@@ -1,13 +1,6 @@
 /*
- * src/archs/transformer/forward.h — internal forward-pass surface.
- *
- * Layer: ARCHITECTURE (internal). Implementations live in forward.c;
- * orchestration entry points (prefill_text_batch, prefill_audio_batch,
- * verify_forward, decode_step, kv_truncate, pin_prefix) live in
- * arch_state.c and call into the helpers declared here.
- *
- * NOT part of the public ABI. Only included by transformer/{forward,
- * arch_state}.c.
+ * src/archs/transformer/forward.h — internal forward-pass helpers,
+ * implemented in forward/. Not part of the public ABI.
  */
 #ifndef GEIST_INTERNAL_ARCH_TRANSFORMER_FORWARD_H
 #define GEIST_INTERNAL_ARCH_TRANSFORMER_FORWARD_H
@@ -163,9 +156,6 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
 [[nodiscard]] enum geist_status finalize_logits_last_row(struct transformer_arch_session *sess,
                                                          size_t                           seq);
 
-/* Embedding models' terminal step: pool + output_norm + L2 normalise into
- * the session's staging row, instead of running the LM head. `seq` is the
- * row count of the final prefill chunk. Sets sess->embedding_valid. */
 /* Output-head front half: scratch_h_b's first `k` rows, output_norm'd, into
  * scratch_h_a. The lm_head is NOT applied -- see head.c. */
 [[nodiscard]] enum geist_status transformer_norm_rows(struct transformer_arch_session *sess,
@@ -178,6 +168,9 @@ transformer_embedding_accumulate(struct transformer_arch_session *sess, size_t k
 [[nodiscard]] enum geist_status finalize_embedding_mean(struct transformer_arch_session *sess,
                                                         size_t                           n_tokens);
 
+/* Embedding models' terminal step: pool + output_norm + L2 normalise into
+ * the session's staging row, instead of running the LM head. `seq` is the
+ * row count of the final prefill chunk. Sets sess->embedding_valid. */
 [[nodiscard]] enum geist_status finalize_embedding_last_row(struct transformer_arch_session *sess,
                                                             size_t                           seq);
 
@@ -192,7 +185,7 @@ dequant_one_row(struct geist_backend *be, const struct geist_tensor *t, size_t r
  * session's lookup_rows and buffer_upload, which a batched backend orders
  * behind the work still reading dst; mapping dst there would flush that
  * work once per prefill chunk (#529). Other backends write through
- * buffer_map as before. */
+ * buffer_map. */
 [[nodiscard]] enum geist_status transformer_gather_rows(struct transformer_arch_session *sess,
                                                         const struct geist_tensor       *table,
                                                         size_t                           n,

@@ -1,11 +1,6 @@
 /*
  * src/archs/audio_conformer/encoder_internal.h — shared types, config
  * macros, and cross-module prototypes of the Conformer audio encoder.
- *
- * Layer: ARCHITECTURE (audio_conformer, internal). The encoder is split
- * by responsibility: encoder_weights.c (load/quantize/free),
- * encoder_stream.c (worker thread + streaming API), encoder_forward.c
- * (Conformer stages), audio_encoder.c (create/destroy orchestration).
  */
 #ifndef GEIST_INTERNAL_AUDIO_ENCODER_INTERNAL_H
 #define GEIST_INTERNAL_AUDIO_ENCODER_INTERNAL_H
@@ -161,8 +156,8 @@ struct ConformerLayer {
  * Conformer layers block-by-block while audio is still arriving, instead of
  * running the whole encoder synchronously at end_input.
  *
- * Carrier ownership: one instance lives inside struct AudioEncoder, lazily
- * reset each segment. attn[*].n and lconv[*].hist content reflect the
+ * Ownership: one instance lives inside struct AudioEncoder, reset each
+ * segment. attn[*].n and lconv[*].hist content reflect the
  * processed sub-tokens for the current utterance. */
 struct attn_kv_cache {
     float *k; /* (MAX_SUB_TOKENS, AUDIO_HIDDEN) — scaled K projections */
@@ -178,7 +173,7 @@ struct lconv_state {
     size_t n_filled; /* 0..CONV_KERNEL-1 — how many history rows are populated */
 };
 
-/* Phase-3 incremental subsample state. Caches the (128, T_out0, 64) and
+/* Incremental subsample state. Caches the (128, T_out0, 64) and
  * (32, T_out1, 32) intermediate conv2d outputs so that pushing more mel
  * extends them in-place instead of re-running the full subsample chain.
  * Conv2d outputs are stable for already-computed time positions as the
@@ -217,10 +212,8 @@ static inline size_t audio_soft_bound_from_mel(size_t n_mel) {
  * arrives. Layer 0 is stable up to an even row count; layer 1 is stable
  * only over rows whose whole window lies inside the STABLE part of layer
  * 0, i.e. half of it. A mid-stream push may emit sub-tokens only below
- * this bound — a full 12-token block that ended on the unstable row went
- * out to the LM with a value ~15 off and was never recomputed (#506: the
- * argmax flipped whenever the worker happened to wake at 46 mod 48
- * frames). The final push carries the padded frame and emits everything. */
+ * this bound, since emitted tokens are never recomputed (#506). The final
+ * push carries the padded frame and emits everything. */
 static inline size_t audio_subsample_stable_tokens(size_t n_mel) {
     if (n_mel < 2)
         return 0;
@@ -232,16 +225,14 @@ static inline size_t audio_subsample_stable_tokens(size_t n_mel) {
 /* Mel framing constants shared by the one-shot (encode_pcm) and streaming
  * (push_pcm) paths: 10 ms hop, one 160-sample zero left-pad, and one
  * padded (mask=false) frame appended after the real ones — HF's
- * Gemma4AudioFeatureExtractor convention. The one-shot path used a 20 ms
- * hop with neither pad until the framing-parity fix; keep BOTH paths on
- * these constants so they can never diverge again. */
+ * Gemma4AudioFeatureExtractor convention. Keep both paths on these
+ * constants so they cannot diverge. */
 #define MEL_HOP 160
 #define AUDIO_MAX_MEL_FRAMES 3000 /* 30 s at the 10 ms hop */
 
 /* All-true mask for n_frames real frames, optionally with the extra
  * padded frame (mask=false). Caller frees. The single home of the
- * padded-frame convention — #235's missing-token bug and the one-shot
- * path's missing pad were both callers hand-rolling it. */
+ * padded-frame convention (#235); don't hand-roll it. */
 static inline bool *audio_mel_mask_alloc(size_t n_frames, bool pad_final, size_t *n_mel_out) {
     const size_t n_mel = pad_final ? n_frames + 1 : n_frames;
     bool        *mask  = heap_calloc_array_aligned(bool, n_mel);
@@ -271,12 +262,12 @@ struct audio_stream_state {
     struct attn_kv_cache attn[N_LAYERS];
     struct lconv_state   lconv[N_LAYERS];
 
-    /* Phase-3 cache: avoids re-running subsample on the full mel each push. */
+    /* Avoids re-running subsample on the full mel each push. */
     struct subs_cache subs;
 
-    /* Accumulated subsample output (h_in for layer 0). Subsample re-runs on
-     * the full mel each push for simplicity; sub-tokens before the new block
-     * are already here and skipped at the Conformer-layer stage. */
+    /* Accumulated subsample output (h_in for layer 0). Sub-tokens before
+     * the new block are already here and skipped at the Conformer-layer
+     * stage. */
     float *sub_buf;
     size_t n_sub_total; /* # sub-tokens currently in sub_buf */
 
@@ -287,7 +278,7 @@ struct audio_stream_state {
     /* Accumulated soft tokens (output_proj + embed_audio applied). */
     float *soft; /* (MAX_SUB_TOKENS, AudioEncoder.soft_dim) */
     size_t n_soft;
-    size_t n_drained; /* pull drain pointer (Phase 2 worker path) */
+    size_t n_drained; /* pull drain pointer (worker path) */
 };
 
 struct AudioEncoder {
@@ -315,7 +306,7 @@ struct AudioEncoder {
      * the safetensors shape at create (#258). */
     size_t soft_dim;
 
-    /* === Phase 8 streaming state === */
+    /* Streaming state. */
     pthread_mutex_t mtx;
     pthread_cond_t  cv;
 
@@ -330,12 +321,12 @@ struct AudioEncoder {
     /* Streaming mel buffer — populated incrementally inside push_pcm as
      * each new 160-sample hop's worth of PCM arrives. compute_segment_locked
      * consumes this directly instead of re-running mel_frame_compute on the
-     * full PCM buffer (Phase C: overlaps mel work with PCM capture). */
+     * full PCM buffer, overlapping mel work with PCM capture. */
     float *mel_buf;        /* (MEL_BUF_CAP, MEL_N_MEL) */
     size_t mel_n_computed; /* number of mel frames already produced */
     size_t mel_cap;
 
-    /* Soft-token output queue (filled on first pull after end_input). */
+    /* Sync-path soft-token output queue (filled on first pull after end_input). */
     float *soft_tokens; /* (n_soft, soft_dim) */
     size_t n_soft;
     size_t n_emitted; /* drain pointer */
@@ -344,13 +335,13 @@ struct AudioEncoder {
     bool computed_flag;  /* audio_encoder_run has executed for this segment */
     bool shutdown_flag;  /* destroy/shutdown in progress */
 
-    /* === Phase 8b chunk-streaming state (lazy-allocated, see plan doc). === */
+    /* Chunk-streaming state, allocated at create. */
     struct audio_stream_state *stream;
 
-    /* === Phase 2: background worker thread for streaming compute. ===
-     * Active iff GEIST_AUDIO_STREAM=1 at create. Drives stream_push on a
-     * snapshot of mel_n_computed each time the caller signals (push_pcm
-     * after enough new frames, or end_input). */
+    /* Background worker thread for streaming compute. Started at create
+     * when GEIST_AUDIO_STREAM=1, else on the first stream_begin. Drives
+     * stream_push on a snapshot of mel_n_computed each time the caller
+     * signals (push_pcm after enough new frames, or end_input). */
     bool      stream_enabled;
     bool      worker_active;
     bool      worker_kick;  /* push_pcm signaled new work */
@@ -359,7 +350,6 @@ struct AudioEncoder {
     size_t    worker_last_mel; /* mel-frame count at last fire */
 };
 
-/* ---- Cross-module prototypes ------------------------------------------ */
 float                     *load_bf16(struct st_ctx *sf, const char *name, size_t expect_elems);
 bool                       load_layer(struct st_ctx                  *sf,
                                       int                             layer_idx,

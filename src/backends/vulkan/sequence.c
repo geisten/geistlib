@@ -6,8 +6,6 @@
  */
 #include "vk_internal.h"
 
-/* ---- Sequence core ---------------------------------------------------- */
-
 void vk_seq_flush(struct vk_state *st) {
     if (st == nullptr || !st->seq_open) {
         return;
@@ -31,9 +29,8 @@ void vk_seq_flush(struct vk_state *st) {
         (void) st->fn.ResetFences(st->device, 1, &st->seq_fence);
     }
     if (!ok) {
-        /* Loud failure: outputs of the dropped batch are undefined and the
-         * parity/token gates will catch it — same policy as the resolved
-         * kernels. */
+        /* The dropped batch's outputs are undefined; the next readback
+         * reports it (vk_seq_take_failure). */
         fprintf(stderr, "geist vulkan: sequence flush failed — batch dropped\n");
         geist_backend_set_error(st->backend, GEIST_E_BACKEND, "vulkan: sequence flush failed");
         st->seq_failed = true;
@@ -189,8 +186,8 @@ static void vk_seq_barrier(struct vk_state *st) {
 }
 
 /* Barrier iff the new accesses conflict with anything recorded since the
- * last barrier, then record them. acc == nullptr → conservative (always
- * barrier when the batch is non-empty, like the pre-tracking behavior). */
+ * last barrier, then record them. acc == nullptr: always barrier when the
+ * batch is non-empty. */
 void vk_seq_hazard(struct vk_state              *st,
                    const VkDescriptorBufferInfo *infos,
                    const struct vk_access       *acc,
@@ -213,7 +210,7 @@ void vk_seq_hazard(struct vk_state              *st,
             }
         }
         if (!conflict && st->n_dirty + n > VK_DIRTY_CAP) {
-            conflict = true; /* table full — degrade to the old behavior */
+            conflict = true; /* table full: barrier and start over */
         }
     }
     if (conflict && st->seq_dispatches > 0) {

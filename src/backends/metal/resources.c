@@ -1,15 +1,11 @@
 /*
  * src/backends/metal/resources.c — buffers, the host-pointer registry, and tensor validators.
- *
- * Layer: BACKEND (metal). Split from the former monolithic backend.c;
- * pure moves, no behavior change.
  */
 #include "metal_internal.h"
 
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 
-/* Intra-module forward decl (definition order preserved from the split). */
 static bool metal_tensor_is_dense_3d_dtype(const struct geist_tensor *t,
                                            enum geist_dtype           dtype,
                                            size_t                     elem_size,
@@ -22,11 +18,10 @@ static bool metal_buffer_wants_host_visible(enum geist_buffer_role role,
                                             unsigned int           memory_flags) {
     (void) role;
     (void) memory_flags;
-    /* main's contract maps weights and scratch to host pointers (resolve_
-     * weight reads w->raw; linear_w_or_legacy buffer_maps x/y). On Apple
-     * unified memory SHARED storage is the same physical memory as PRIVATE
-     * with zero perf cost, so make every buffer host-visible — otherwise
-     * buffer_map returns null and state_create fails. */
+    /* The engine maps weights and scratch to host pointers (resolve_weight
+     * reads w->raw; linear_w_or_legacy buffer_maps x/y). On unified memory
+     * SHARED storage costs nothing over PRIVATE, so every buffer is
+     * host-visible; otherwise buffer_map returns null and state_create fails. */
     return true;
 }
 
@@ -396,15 +391,13 @@ static bool metal_copies_in_sequence(const struct metal_state *st,
         return GEIST_OK;
     }
 
-    /* In-sequence fast path: when a command sequence is recording, encode the
-     * copy as a compute dispatch (copy_u32) on the SEQUENCE's existing compute
-     * encoder instead of committing a standalone buffer + waitUntilCompleted.
-     * The per-copy GPU round-trip was ~53% of prefill wall (per-layer PLE/KV
-     * copies). Dispatches run in order on a serial compute encoder, so the copy
-     * correctly sees prior writes; all commits once at sequence_end. Using a
-     * compute dispatch (not a blit encoder) avoids exhausting the per-command-
-     * buffer encoder limit at long context. Requires 4-byte alignment; other
-     * copies fall through to the standalone blit below. */
+    /* In-sequence fast path: encode the copy as a compute dispatch
+     * (copy_u32) on the sequence's compute encoder instead of a standalone
+     * buffer + waitUntilCompleted, whose round-trip per layer copy dominates
+     * prefill. The serial encoder orders it behind prior writes. A compute
+     * dispatch, not a blit encoder, so long contexts do not exhaust the
+     * per-command-buffer encoder limit. Needs 4-byte alignment; other copies
+     * take the standalone blit below. */
     if (metal_copies_in_sequence(st, src_offset, dst_offset, n_bytes)) {
         void *enc = metal_sequence_encoder(st);
         /* Bound at the copy's own offsets, not at 0: the batch's reference
@@ -469,7 +462,7 @@ static bool metal_copies_in_sequence(const struct metal_state *st,
     return metal_new_buffer(be, bytes, role, memory_flags, host_visible, out);
 }
 
-/* #357: is [p, p+n) inside file-backed VM regions, and what is the
+/* Is [p, p+n) inside file-backed VM regions (#357), and what is the
  * enclosing page range? A weight aliased straight out of the loader's mmap
  * needs no copy — unified memory lets the GPU read the file pages in place.
  * The mmap is page-granular but the tensor inside it is only 32-byte
@@ -479,7 +472,7 @@ static bool metal_copies_in_sequence(const struct metal_state *st,
  * Read-only anonymous memory qualifies as well (#577): a caller that verifies
  * the GGUF into its own mapping and then seals it with mprotect(PROT_READ)
  * hands load_from_memory bytes that nobody can write, and that API already
- * requires them to outlive the model. Copying them doubled the resident
+ * requires them to outlive the model; a copy would double the resident
  * weights on unified memory. A writable heap pointer still fails the check and
  * takes the copy path, the only one safe for memory whose owner may reuse it. */
 static bool
@@ -491,12 +484,11 @@ metal_host_range_wrappable(const void *p, size_t n, uint8_t **base_out, size_t *
     }
     const uintptr_t hi = ((uintptr_t) p + n + page - 1u) & ~(page - 1u);
 
-    /* The short submap flavor reads the map entry alone. VM_REGION_EXTENDED_INFO
-     * walks every page of the entry, which is the whole GGUF mapping: 84 ms
-     * per tensor on a 16 GB model, a minute per load (#555). The kernel splits
-     * a large anonymous mapping into 128 MiB entries, so a tensor that crosses
-     * one of those seams spans several entries: walk them, each must start
-     * where the last ended and qualify on its own. */
+    /* The short submap flavor reads the map entry alone; VM_REGION_EXTENDED_INFO
+     * walks every page of the entry, i.e. the whole GGUF mapping (#555). The
+     * kernel splits a large anonymous mapping into 128 MiB entries, so a
+     * tensor that crosses one of those seams spans several entries: walk
+     * them, each must start where the last ended and qualify on its own. */
     for (uintptr_t cursor = lo; cursor < hi;) {
         mach_vm_address_t                     addr  = cursor;
         mach_vm_size_t                        size  = 0;
@@ -528,8 +520,7 @@ metal_host_range_wrappable(const void *p, size_t n, uint8_t **base_out, size_t *
  * device buffer, without a copy wherever the memory allows one:
  *  - inside a live Metal buffer (a scratch-pool slice, a weight-arena
  *    tensor): a view of that buffer — its MTLBuffer, retained, at the
- *    absolute base_off (#528). A copy left the pool as dead memory beside
- *    per-slice duplicates. Views share their parent's MTLBuffer, and the
+ *    absolute base_off (#528). Views share their parent's MTLBuffer, and the
  *    open batch tracks references per MTLBuffer, so mapping one slice
  *    flushes while a sibling is bound — conservative, never unsafe;
  *  - in a file-backed or read-only mapping: wrapped in place

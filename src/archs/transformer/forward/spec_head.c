@@ -41,11 +41,7 @@
  *
  * Default ON for greedy decode on an eligible tied lm_head (GEIST_SPEC_HEAD=0
  * forces the exact dense head). Non-greedy sampling, ineligible dtypes, and
- * non-NEON/dotprod hosts always fall back to the dense head — extending the
- * sketch to top-k sampling failed its exactness gate (see the measured-out
- * note at the sampling check below). For source-layout quantized / F16 heads
- * the finalist logits are bit-exact so greedy output is byte-identical;
- * repacked layouts use a high-precision (not bit-exact) phase-3.
+ * hosts without NEON+dotprod or AVX2 always use the dense head.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -83,15 +79,10 @@
 #define SPEC_HEAD_AVAILABLE 1
 #endif
 
-/* Sketch resolution, not a divisor. The stride used to be fixed at 4, which
- * ties the sketch's quality to how wide the model happens to be: the same
- * divisor gave the 2B-4T (H=2560) a 640-dim sketch and bitnet_b1_58-large
- * (H=1536) a 384-dim one. The coarser sketch loses the true argmax, and since
- * there is no fallback the loss is silent -- measured 2026-08-01, greedy
- * output matched the dense head for 28 tokens and then diverged, at the
- * shipped defaults. Deriving the stride from a target resolution instead makes
- * the sketch equally good on any width; it reproduces stride 4 for the 2B-4T
- * and stride 2 for the large model, both of which measure exact. */
+/* Sketch resolution, not a divisor: the stride is derived from it so the
+ * sketch is equally good at any model width (stride 4 for the 2B-4T, 2 for
+ * bitnet_b1_58-large). A fixed stride gives narrow models a coarser sketch
+ * that silently loses the true argmax. */
 #define SPEC_SKETCH_DIMS 640
 
 /* How much smaller a sketch row must be than a dense row before the sketch is
@@ -100,28 +91,13 @@
  * the sketch row is not much smaller there is nothing to win -- and the
  * phase-3 verify and a resident V*SD table still get paid for.
  *
- * Gating on dtype, as this used to, asks the wrong question. What decides the
- * trade is not whether the head is F16 or Q6_K but how wide a dense row is
- * against the sketch replacing it. Measured on a Pi 5, decode against the same
- * build with GEIST_SPEC_HEAD=0:
- *
- *   BitNet 2B-4T        F16  head  5120 B/row  640-dim sketch  8.00x   +82 %
- *   bitnet_b1_58-large  Q6_K head  1260 B/row  768-dim sketch  1.64x   +0.8 %
- *   gemma4-e2b          Q6_K head  1260 B/row  768-dim sketch  1.64x   +0.5 %
- *
- * A quantized head is already compact, so subsampling it to int8 shrinks
- * almost nothing. 3.0 sits between the two measured regimes, and the gap they
- * leave is wide enough that its exact position hardly matters.
- *
- * Declining also hands memory back where the sketch bought nothing: on gemma4
- * its table is 201 MB resident, which is real on a 4 GB board, for +0.5 %. */
+ * On a Pi 5 an F16 head (8x shrink) decodes +82 % faster; a Q6_K head (1.64x)
+ * gains under 1 % while holding a 201 MB table. 3.0 sits between the two. */
 #define SPEC_MIN_ROW_SHRINK 3.0
 
-/* 512 was verified byte-identical on the original trajectories, but the
- * margin is thin: a near-tie whose loser the sketch ranks past the cutoff
- * flips greedy (seen live when an unrelated ULP-level kernel change shifted
- * the trajectory, #102 Phase 2). 1024 doubles the recall margin for ~3 % of
- * the head read (phase 3 is 2.6 → 5.2 MB next to the 82 MB sketch). */
+/* Finalists for a ~128 K vocab. 512 has a thin margin: a near-tie whose loser
+ * the sketch ranks past the cutoff flips greedy (#102). 1024 doubles the
+ * recall margin for ~3 % of the head read. */
 #define SPEC_TOPK_DEFAULT 1024
 
 /* (rough score, vocab index) entry of the top-K min-heap. */
@@ -155,28 +131,16 @@ static int spec_verify_env(void) {
      * declines whenever one of them could have beaten the winner, which makes
      * the answer provably the dense head's.
      *
-     * Off by default, for a measured reason rather than an assumed one. At the
-     * shipped stride the sketch keeps one dimension in four, so the dropped
-     * three quarters carry an uncertainty of the same order as the dot product
-     * itself -- Cauchy-Schwarz must assume they all conspire. The bound is then
-     * almost never satisfiable: on a Pi 5 it fires on nearly every token and
-     * decode falls from 18.3 to 9.4 t/s, which is dense-head speed. Correct,
-     * and worth nothing at that price.
-     *
-     * What it is worth is as an instrument. Run a model under it once and the
-     * output is either identical to the dense head or it is not -- no sampling,
-     * no luck -- which is how the silent divergence on bitnet_b1_58-large would
-     * have been caught the day it appeared instead of months later. */
+     * Off by default: with three quarters of the dimensions dropped the
+     * Cauchy-Schwarz bound almost never holds, so it declines on nearly every
+     * token (dense-head speed). Use it as an instrument: output under it is
+     * exactly the dense head's or the sketch is losing argmaxes. */
     const char *e = getenv("GEIST_SPEC_VERIFY");
     return (e != nullptr && e[0] == '1') ? 1 : 0;
 }
 
 static int spec_head_env(void) {
-    /* Default ON for greedy decode + top-k sampling on an eligible tied
-     * lm_head: verified byte-identical to the dense head on Gemma 4 (Q6_K,
-     * 256 K vocab) and BitNet (F16, 128 K) with the vocab-aware TOP_K.
-     * Ineligible modes/dtypes/hosts always fall back to the exact dense head
-     * regardless. GEIST_SPEC_HEAD=0 forces it off. Read per call (once per
+    /* Default ON; GEIST_SPEC_HEAD=0 forces it off. Read per call (once per
      * decoded token — noise next to the head itself) so tests can toggle it
      * within one process. */
     const char *e = getenv("GEIST_SPEC_HEAD");
@@ -405,10 +369,8 @@ static bool spec_head_build(struct transformer_arch_state *st) {
         return false;
     }
 #if !(defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD))
-    /* x86 port: only the F16 tied lm_head (BitNet 2B-4T) is validated
-     * byte-identical to the dense head (exact f16 phase-3). The quantized /
-     * repacked-layout phase-3 paths (e.g. Gemma Q6_K) are NEON-validated only,
-     * so on x86 those heads keep the exact dense decode. */
+    /* x86: only the F16 tied lm_head is validated byte-identical to the dense
+     * head; quantized heads keep the dense decode. */
     if (w->dtype != GEIST_DTYPE_F16) {
         return false;
     }
@@ -425,16 +387,14 @@ static bool spec_head_build(struct transformer_arch_state *st) {
 
     /* Subsample stride and finalist count are tunable: a larger vocabulary /
      * harder ranking (Gemma's 256 K) needs a finer sketch (smaller stride)
-     * and/or more finalists for the true argmax to land in the candidate set.
-     * Defaults (4, 512) are exact for BitNet's 128 K F16 head. */
+     * and/or more finalists for the true argmax to land in the candidate set. */
     const size_t stride_dflt = H > SPEC_SKETCH_DIMS ? H / SPEC_SKETCH_DIMS : 1;
     size_t       sub         = spec_env_sz("GEIST_SPEC_STRIDE", stride_dflt, 1, H);
     while (sub > 1 && H % sub != 0) {
         sub--;
     } /* require H % sub == 0 */
-    /* Default finalist count is vocab-aware: 512 keeps the true argmax for a
-     * ~128 K vocab (BitNet, exact); a ~256 K vocab (Gemma) needs ~4096 for the
-     * argmax to land in the candidate set. Measured crossover. Override with
+    /* Default finalist count is vocab-aware: a ~256 K vocab (Gemma) needs
+     * ~4096 for the argmax to land in the candidate set. Override with
      * GEIST_SPEC_TOPK. */
     const size_t topk_dflt = (V >= 200000) ? 4096 : SPEC_TOPK_DEFAULT;
     size_t       topk      = spec_env_sz("GEIST_SPEC_TOPK", topk_dflt, 16, V);
@@ -540,8 +500,7 @@ static bool spec_head_build(struct transformer_arch_state *st) {
             }
         }
     }
-    /* Mark kept dimensions so the bound terms can split on membership rather
-     * than on the arithmetic the stride used to imply. */
+    /* Mark kept dimensions so the bound terms can split on membership. */
     bool *kept = heap_alloc_array_aligned(bool, H);
     if (kept != nullptr) {
         for (size_t i = 0; i < H; i++) {
@@ -582,8 +541,8 @@ static bool spec_head_build(struct transformer_arch_state *st) {
             sk[s] = (int8_t) q;
         }
         rscale[r] = amax / 127.0f;
-        /* The sketch keeps every sub-th dimension and is blind to the rest, so
-         * their combined contribution is what Cauchy-Schwarz has to cover. */
+        /* The sketch is blind to the dropped dimensions, so their combined
+         * contribution is what Cauchy-Schwarz has to cover. */
         float sq = 0.0f, l1 = 0.0f;
         for (size_t i = 0; i < H; i++) {
             if (kept != nullptr && kept[i]) {
@@ -640,15 +599,9 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
     if (st->embed_table_w.gain_slot != nullptr && *st->embed_table_w.gain_slot != 1.0f) {
         return false;
     }
-    /* Greedy only. Extending this to top-k sampling was tried and MEASURED
-     * OUT (#102 Phase 1): exact sampling needs the true top-k rows inside the
-     * candidate set, and the stride-4 sketch's rank noise beyond rank 1 is
-     * enormous — on BitNet 2B-4T some true top-40 rows rank outside even the
-     * top-8192 rough candidates, so sampled output diverged from the exact
-     * dense head at every tested TOP_K. Perfect rank-40 recall required a
-     * stride-1 (full-width) int8 phase 1 — the same bytes as the Q8 dense
-     * head, i.e. no win. The sketch ranks only the argmax reliably; greedy is
-     * where the recall contract holds (byte-identical, verified in
+    /* Greedy only: the sketch ranks only the argmax reliably. Exact top-k
+     * sampling needs the true top-k rows in the candidate set, which only a
+     * full-width int8 phase 1 delivers — no win over the dense head (#102,
      * tests/test_spec_head_sampling_int.c). */
     if (sess->temperature != 0.0f) {
         return false;
@@ -797,9 +750,8 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
 #else
     /* x86: route F16 finalists through the SAME compiled f16_gemv_m1 row
      * loop the dense head uses (it skips the OMP fork for n_out == 1) —
-     * greedy byte-identity holds by construction instead of by luck. The
-     * previous local spec_f16dot was a second -ffast-math compilation of
-     * the same math and drifted a ULP on near-ties (#102 Phase 2). */
+     * greedy byte-identity holds by construction. A separately compiled dot
+     * can drift a ULP under -ffast-math and flip near-ties (#102). */
     const bool f16_via_kernel = true;
 #endif
     const bool exact_kernel = st->embed_table_w.linear_m1 != nullptr &&
@@ -843,12 +795,7 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
      * quantization -- so every excluded row has an upper bound on what its
      * exact logit could have been. If none reaches the winner's exact logit,
      * no excluded row could have won and the answer is provably the dense
-     * head's. If one does, we do not guess: the head declines and head.c
-     * recomputes densely.
-     *
-     * That turns the failure this head used to have -- a silently different
-     * token, which took a 28-token trajectory on another model to notice --
-     * into an occasional slower step. */
+     * head's. If one does, the head declines and head.c recomputes densely. */
     /* Cutoff from the min-heap: nothing below it made the candidate set. Read
      * before the scan because phase 3 overwrites logits, never rough. */
     const float  cutoff     = hn > 0 ? heap[0].s : -3.4e38f;
@@ -860,14 +807,8 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
     if (spec_verify_env() && wdrop != nullptr && wl1 != nullptr) {
         for (size_t r = 0; r < V; r++) {
             /* Excluded rows are those phase 2 left below the heap's cutoff.
-             * This asked `logits[r] != -INFINITY` before, which is a correct
-             * question only where infinities survive: the Pi builds with plain
-             * -ffast-math, whose finite-math assumption lets the compiler fold
-             * that test to always-true. Every row then looked like a
-             * candidate, the scan examined nothing, and the bound did nothing
-             * at all on the one platform it was written for -- while passing
-             * on the Mac, which builds -fno-finite-math-only. A cutoff is
-             * finite arithmetic and means the same thing on both. */
+             * Not `logits[r] != -INFINITY`: under plain -ffast-math (Pi) the
+             * compiler may fold that to always-true. */
             if (rough[r] > cutoff) {
                 continue; /* a candidate: already scored exactly */
             }

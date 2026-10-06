@@ -36,7 +36,7 @@ enum { GGUF_MIN_RECORD_BYTES = 12 };
 
 #define MAGIC_LE 0x46554747u /* "GGUF" little-endian */
 
-/* P1.4.d: metadata KV record. Each entry points into the mmap for both
+/* Metadata KV record. Each entry points into the mmap for both
  * key and value bytes; ctx lifetime keeps the mmap mapped. */
 struct gguf_meta_kv_t {
     const char    *key; /* nul-terminated, owned by ctx->meta_keys arena */
@@ -63,7 +63,7 @@ struct gguf_ctx {
     char                 *name_arena;
     size_t                name_arena_used;
 
-    /* Metadata KV table (P1.4.d) */
+    /* Metadata KV table */
     struct gguf_meta_kv_t *meta_kvs;
     char                  *meta_key_arena;
     size_t                 meta_key_arena_used;
@@ -273,7 +273,7 @@ static bool skip_value(struct cur_t *c, uint32_t vt) {
     return c->ok;
 }
 
-/* P1.4.d: record a metadata KV entry by spanning the value's bytes and
+/* Record a metadata KV entry by spanning the value's bytes and
  * advancing the cursor. Also captures general.alignment when seen.
  * `slot_idx` is the write position in ctx->meta_kvs[]. */
 static bool record_meta_kv(struct gguf_ctx *ctx,
@@ -389,7 +389,7 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
     ctx->metadata_kv_count = mcount;
     ctx->alignment         = 32; /* default per spec */
 
-    /* P1.4.d: allocate metadata KV table + key arena, then walk and
+    /* Allocate metadata KV table + key arena, then walk and
      * record every entry. Upper-bound the key arena by the remaining
      * mmap bytes — names + lengths fit within it for any well-formed
      * GGUF (the structure is just length-prefixed strings interleaved
@@ -660,7 +660,7 @@ void gguf_close(struct gguf_ctx *ctx) {
     safe_free((void **) &ctx);
 }
 
-/* ---- Metadata KV accessors (P1.4.d) ---------------------------------- */
+/* ---- Metadata KV accessors ---------------------------------------------- */
 
 static const struct gguf_meta_kv_t *meta_find(const struct gguf_ctx *ctx, const char *key) {
     if (!ctx || !ctx->meta_kvs || !key)
@@ -715,7 +715,7 @@ bool gguf_meta_string_at(const struct gguf_ctx *ctx,
 
 const char *gguf_get_meta_string(const struct gguf_ctx *ctx, const char *key, size_t *out_len) {
     /* Through meta_string: its bound is a subtraction, so a length near
-     * UINT64_MAX cannot wrap past the check (8 + slen did). */
+     * UINT64_MAX cannot wrap past the check. */
     size_t      len = 0;
     const char *val = meta_string(meta_find(ctx, key), &len);
     if (out_len)

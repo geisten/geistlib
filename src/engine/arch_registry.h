@@ -24,8 +24,8 @@ struct geist_arch_descriptor {
      * against it fail-closed. */
     const char *const                   *gguf_names;
     const struct geist_arch_ops_decoder *decoder_ops;
-    const struct geist_arch_ops_encoder *audio_encoder_ops;  /* Phase B-5 */
-    const struct geist_arch_ops_vision  *vision_encoder_ops; /* Phase P1 */
+    const struct geist_arch_ops_encoder *audio_encoder_ops;
+    const struct geist_arch_ops_vision  *vision_encoder_ops;
 };
 
 /* NULL-terminated. Defined in arch_registry.c. */

@@ -12,13 +12,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Diagnostics, but shared diagnostics: several sessions run this forward
- * path concurrently and they all accumulate into the SAME per-stage
- * counters, because a profile sink is one file-scope object per stage
- * group, not one per session. So the counters are atomic and `registered`
- * is atomic — a plain `+=` here is a data race whose visible symptom is
- * quietly wrong profile output, and whose invisible symptom is a TSan
- * report that only appears when someone sets the env var.
+/* Shared diagnostics: concurrent sessions accumulate into the same
+ * per-stage counters (one file-scope sink per stage group, not per
+ * session), so the counters and `registered` are atomic.
  *
  * Relaxed ordering throughout: these numbers are read once at exit and
  * nothing else is ordered against them, so the counters cost a plain

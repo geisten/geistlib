@@ -1,7 +1,7 @@
 /*
  * src/archs/transformer/weight_load.h — internal weight-load surface.
  *
- * Layer: ARCHITECTURE (internal). Owned by weight_load.c; only
+ * Layer: ARCHITECTURE (internal). Implemented in weight_load/; only
  * arch_state.c (state_create) calls into these.
  */
 #ifndef GEIST_INTERNAL_ARCH_TRANSFORMER_WEIGHT_LOAD_H
@@ -27,11 +27,10 @@
 [[nodiscard]] bool weight_skips_arena(const struct geist_backend *be,
                                       const struct gguf_tensor_t *t);
 
-/* Load one transformer block (layer L) from the GGUF. Reads attention,
- * FFN, and per-layer norm + scalar tensors; populates L->is_full,
- * L->head_dim, L->q_out, L->kv_out, L->intermediate. Allocates layer
- * buffers via the backend (arena slice when arena mode, raw upload
- * when mmap-alias mode). */
+/* Load one transformer block (layer L) from the GGUF: attention or
+ * DeltaNet, FFN, and per-layer norm + scalar tensors. L's geometry is
+ * pre-filled by the family's populate_layers. Allocates layer buffers via
+ * the backend (arena slice in arena mode, aliased in mmap-alias mode). */
 [[nodiscard]] enum geist_status load_one_layer(struct transformer_arch_state    *st,
                                                struct gguf_ctx                  *gguf,
                                                struct transformer_layer_weights *L);
@@ -42,9 +41,9 @@
                                                struct gguf_ctx                      *gguf,
                                                struct transformer_mtp_layer_weights *M);
 
-/* Load all non-per-layer tensors: embed_table, ple_table, model_proj,
- * model_proj_norm, output_norm, and the per-layer-input embed for the
- * audio path. Resolves geist_weight wrappers for each. */
+/* Load all non-per-layer tensors: embed_table, output_table, ple_table,
+ * model_proj, model_proj_norm, output_norm. Resolves geist_weight wrappers
+ * for each. */
 [[nodiscard]] enum geist_status
 load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer_arch_state *st);
 

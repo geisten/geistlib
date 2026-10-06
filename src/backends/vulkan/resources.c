@@ -240,11 +240,10 @@ static void vk_vram_exhausted(struct geist_backend  *be,
 
 /* The vtable's buffer_create. One policy on top of vk_buffer_create: the
  * arch asks for its scratch pool device-local (SCRATCH role, DEVICE flag, no
- * host flag) when its host paths never map the pool (#488). That is opt-in
- * while the arch's safety decision is new, GEIST_VK_SCRATCH_DEVICE=1; without
- * it the request is served host-visible, as every scratch pool was before,
- * and the arch keeps its mapped pool. Internal callers (the x ring, weight
- * copies) call vk_buffer_create and are not affected. */
+ * host flag) when its host paths never map the pool (#488). Honoured only
+ * under GEIST_VK_SCRATCH_DEVICE=1; otherwise the request is served
+ * host-visible and the arch keeps its mapped pool. Internal callers (the x
+ * ring, weight copies) call vk_buffer_create and are not affected. */
 [[nodiscard]] enum geist_status vk_buffer_create_api(struct geist_backend  *be,
                                                      size_t                 bytes,
                                                      enum geist_buffer_role role,
@@ -313,11 +312,10 @@ enum vk_placement vk_buffer_placement(const struct geist_buffer *buf) {
                                                          size_t                 n_bytes,
                                                          enum geist_buffer_role role,
                                                          struct geist_buffer  **out) {
-    /* Bookkeeping handle only: records the host region (scratch-pool slice,
-     * weight arena, GGUF mmap). No Vulkan resources — device copies of
-     * aliased weights are made at resolve_weight time (Phase 2), keyed by
-     * this pointer. buffer_map returns the pointer unchanged, so the arch
-     * layer's CPU-side paths keep working. */
+    /* A handle on a host region (scratch-pool slice, weight arena, GGUF
+     * mmap) that owns no Vulkan resources. Device copies of aliased weights
+     * are made at resolve_weight time, keyed by this pointer. buffer_map
+     * returns the pointer unchanged, so the arch's CPU paths keep working. */
     struct vk_state *st = be->state;
     if (host_ptr == nullptr || out == nullptr) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan: bad aliased-buffer args");
@@ -335,7 +333,7 @@ enum vk_placement vk_buffer_placement(const struct geist_buffer *buf) {
                                   .memory_flags = GEIST_MEMORY_ALIASED,
                                   .host_visible = true};
     /* If the region lives inside one of our mapped buffers (arch scratch
-     * pool / weight arena since P3), borrow its VkBuffer so GPU ops can
+     * pool / weight arena), borrow its VkBuffer so GPU ops can
      * bind this slice. Pointers outside any known buffer (GGUF mmap) stay
      * pure bookkeeping — ops on them fall back to the CPU path. */
     for (size_t i = 0; i < st->n_hostbufs; ++i) {
@@ -559,13 +557,12 @@ void vk_buffer_unmap(struct geist_buffer *buf) {
 }
 
 /* ====================================================================== */
-/* Linear dispatch (Phase 2: synchronous per-call round-trip)              */
+/* Staging and the weight registry                                         */
 /*                                                                         */
-/* The main contract hands the resolved kernels host pointers (x, y) and   */
-/* a host w->raw. Weights were copied to VRAM at resolve time; x/y round-  */
-/* trip through persistent host-visible staging. One submit + fence wait   */
-/* per linear — correct first. Phase 3 moves the hot loop onto linear_t    */
-/* with device-resident activations and batched submits.                   */
+/* The host-pointer linear kernels get x, y and w->raw as host pointers:   */
+/* weights were copied to VRAM at resolve time, x/y round-trip through     */
+/* persistent host-visible staging (one submit + fence wait per call).     */
+/* The hot path is linear_t on device-resident activations (ops.c).        */
 /* ====================================================================== */
 
 [[nodiscard]] enum geist_status vk_stage_reserve_role(struct geist_backend  *be,

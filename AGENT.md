@@ -1,10 +1,8 @@
 # AGENT.md — writing code in this repository
 
 Rules for anyone adding C to geist, human or model. Source comments cite this
-file by name ("per AGENT.md", "AGENT.md hot-path rule"); this is that file.
-
-Read this before writing a function. The prose rationale for humans lives in
-`CONTRIBUTING.md`; this file is the short, checkable form.
+file by name ("per AGENT.md", "AGENT.md §3"). Read it before writing a
+function. Workflow, tests and benchmarks: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
@@ -22,10 +20,9 @@ void rope_compute(size_t seq_len, size_t head_dim, size_t n_rotated, float theta
 void dequant_q4_K_row(const void *blocks, float *out, size_t n_elems);
 ```
 
-This is not style for its own sake. `T arr[static len]` is only expressible
-when `len` is already in scope, and it is the only way a signature can say
-"non-null, and at least this many elements" to the reader, to the compiler,
-and to the next model editing this file.
+`T arr[static len]` is only expressible when `len` is already in scope, and it
+is the only way a signature can say "non-null, and at least this many
+elements" to the reader, the compiler and the next model editing the file.
 
 ### The order, in full
 
@@ -40,8 +37,8 @@ and to the next model editing this file.
 ```
 
 Handles that are not arrays (`struct geist_backend *be`, `void *state`) are
-exempt from rule 1 — they are not sized by anything. Put them where they read
-best, conventionally first or last, and stay consistent within a family.
+exempt from rule 1 — nothing sizes them. Put them where they read best,
+conventionally first or last, and stay consistent within a family.
 
 ### When to write `[static len]` — and when it is a lie
 
@@ -57,46 +54,38 @@ elements. Otherwise use a plain pointer.
 | length is a bound, not a guarantee (may write fewer) | `float out[static cap]` + return the count |
 | size is not a parameter (opaque blob, `void *`) | `const void *blocks` |
 
-Two of those rows are earned the hard way; gcc enforces both and clang
-does not, so they surface only in CI unless you run the check in §7.
+gcc enforces the next two rules and clang does not, so violations surface
+only in CI unless you run the check in §7.
 
 **A parameter the function null-checks must not be `[static]`.** The
-contract says non-null; the check says maybe. gcc calls that
-`-Wnonnull-compare` and it is right — one of the two is wrong, and the
-callers decide which. The encoder vtable entry points are handed the
-caller's audio and images and defensively accept null (returning 0), so
-they take plain pointers (`encode_pcm`'s `pcm`, `encode_image`'s `rgb`).
-`buffer_upload` / `buffer_download` are only ever handed engine-owned
-memory, so they keep `[static n_bytes]` and lost the check — which gcc and
-clang had been deleting at `-O1` and above anyway.
+contract says non-null; the check says maybe. gcc reports
+`-Wnonnull-compare`, and one of the two is wrong — the callers decide which.
+The encoder vtable entry points receive the caller's audio and images and
+accept null (returning 0), so they take plain pointers (`encode_pcm`'s `pcm`,
+`encode_image`'s `rgb`). `buffer_upload` / `buffer_download` only ever receive
+engine-owned memory, so they keep `[static n_bytes]` and have no null check
+(the compilers drop such a check at `-O1` and above anyway).
 
-**A bound that is a product over runtime dimensions must not be
-`[static]` either**, when any factor can be 0. `float y[static m * n_out]`
-reads well and breaks as soon as gcc cannot prove `m > 0`: it reports
-`accessing 4 bytes in a region of size 0` at every call site.
-`linear_fp32` and `rmsnorm_fp32` document their extents in prose for
-exactly this reason. A single dimension (`[static n]`) is fine.
+**A bound that is a product over runtime dimensions must not be `[static]`**
+when any factor can be 0. `float y[static m * n_out]` breaks as soon as gcc
+cannot prove `m > 0`: it reports `accessing 4 bytes in a region of size 0` at
+every call site. `linear_fp32` and `rmsnorm_fp32` document their extents in
+prose for this reason. A single dimension (`[static n]`) is fine.
 
 A false `[static]` is worse than none: the compiler is entitled to believe it.
-Real examples in this tree — `linear_fp32`'s `bias` and `rmsnorm_fp32`'s
-`weight` are passed `nullptr` at 84 and 12 call sites respectively, so they
-stay plain pointers.
+`linear_fp32`'s `bias` and `rmsnorm_fp32`'s `weight` are passed `nullptr` at
+many call sites, so they stay plain pointers.
 
 The bound may be an expression: `const float x[static m * n_in]` is valid and
 preferred over understating it as `[static n_in]`.
 
 ### What `[static len]` actually buys
 
-Measured on this project's toolchains, so you can calibrate:
-
 - **Codegen: nothing.** clang 21 and gcc 15 emit identical instructions with
-  and without it — verified by compiling a real kernel TU both ways, same
-  parameter order: 2819 instructions and 11571 bytes either way. Do not
-  justify a change by "the optimizer".
-- **The reorder itself can shift register allocation**, slightly and in our
-  favour: the same TU went 2824 -> 2819 instructions and 11591 -> 11571
-  bytes purely from arguments arriving where the callee wants them (15
-  fewer `mov`). Small, real, and not the reason to do it.
+  and without it. Do not justify a change by "the optimizer".
+- **The reorder itself can shift register allocation** slightly in our favour
+  (a few fewer `mov`s when arguments arrive where the callee wants them).
+  Small, real, and not the reason to do it.
 - **Diagnostics: gcc only.** gcc warns `reading 16 bytes from a region of
   size 8` when the caller's array is visibly too small (stack arrays and
   tracked `malloc`). clang warns only on a literal `nullptr`.
@@ -104,8 +93,8 @@ Measured on this project's toolchains, so you can calibrate:
   struct member across a translation unit. That needs an explicit extent —
   see `geist_weight::raw_nbytes` and `src/base/checked.h`.
 
-So the real payoff is that the signature documents itself and the family
-stays uniform. That is enough; do not oversell it in a commit message.
+The payoff is a self-documenting signature and a uniform family. Do not
+oversell it in a commit message.
 
 ### In public headers, write `GEIST_AT_LEAST(len)`
 
@@ -119,19 +108,17 @@ enum geist_status (*prefill)(void *session, size_t n,
 ```
 
 which expands to `static n` in C and to nothing in C++ (`ids[]` — the same
-parameter type; both decay to `geist_token_t *`). The rules above are
-unchanged: the macro is where you would have written `static`, so "when it
-is a lie" still decides whether it appears at all. The `geist_session_*`
-entry points that take arrays are the standing counter-example: they check
-the consumer's pointer and return `GEIST_E_INVALID_ARG`, so they take
-plain pointers.
+parameter type; both decay to `geist_token_t *`). The rules above still
+decide whether it appears at all. The `geist_session_*` entry points that take
+arrays check the consumer's pointer and return `GEIST_E_INVALID_ARG`, so they
+take plain pointers.
 
-Code under `src/` keeps the plain `[static len]` form. Nothing includes it
-from C++, and the extra indirection would buy nothing there.
+Code under `src/` keeps the plain `[static len]` form; nothing includes it
+from C++.
 
-`make check-headers` compiles every header in `include/` on its own, once as
-C23 and once as C++17 with `-pedantic-errors`. It runs in `make test` and in
-CI's `build-test` leg.
+`make check-headers` compiles every header in `include/` on its own, as C23
+and as C++17 with `-pedantic-errors`. It runs in `make test` and in CI's
+`build-test` leg.
 
 ---
 
@@ -144,22 +131,21 @@ CI's `build-test` leg.
 - `[[nodiscard]]` on every returned status or size a caller must check.
 - `const` on pointer parameters not written through.
 - `restrict` **only** where non-aliasing is proven for every call site in the
-  tree. Several kernels here document "y may alias x" — those must not get
-  it. Aliasing the compiler was told cannot happen is a miscompile.
+  tree. Several kernels document "y may alias x" — those must not get it.
+  Aliasing the compiler was told cannot happen is a miscompile.
 - `typeof` / `auto` only where they clarify; never where they hide ownership.
 
 ## 3. Memory
 
 - **Engine, arch and kernel allocation flows through `src/base/heap.h`** —
   `heap_alloc_aligned`, `heap_calloc_aligned`, `heap_alloc_n_aligned`, and
-  the array macros. Not raw `malloc` / `aligned_alloc`. heap.h is where the
-  alignment guarantee, the overflow check and the huge-page hint live, so
-  anything a kernel will read from belongs there.
-  Narrow exceptions, and they are the only ones: one-time setup that builds
-  C strings (`strdup` for a path, shader-source concatenation in
-  `metal/pipelines.c`), and `realloc`, for which heap.h currently has no
-  equivalent — a gap, not a licence. If you are about to add a
-  twenty-sixth exception, fix heap.h instead.
+  the array macros. Not raw `malloc` / `aligned_alloc`. heap.h holds the
+  alignment guarantee, the overflow check and the huge-page hint, so anything
+  a kernel will read from belongs there.
+  The only exceptions: one-time setup that builds C strings (`strdup` for a
+  path, shader-source concatenation in `metal/pipelines.c`), and `realloc`,
+  which heap.h does not provide yet — a gap, not a licence. Do not add new
+  exceptions; extend heap.h instead.
 - **No runtime heap allocation in hot paths** (per-token, per-layer, per
   block). Use caller-provided workspace or a thread-local high-water buffer.
 - Free through `safe_free(&p)`; it tolerates null and nulls your pointer.
@@ -185,25 +171,23 @@ comparison you meant to make may be folded away.
 
 ### `&a->b[n]` versus `a->b + n` — a style choice, nothing more
 
-These are **the same expression**, not two options with different safety.
-C23 6.5.2.1p2 defines `E1[E2]` as `(*((E1)+(E2)))`, so:
+These are **the same expression**. C23 6.5.2.1p2 defines `E1[E2]` as
+`(*((E1)+(E2)))`, so:
 
 ```
 &a->b[n]  ==  &(*(a->b + n))  ==  a->b + n
 ```
 
-Verified on this project's compilers: identical instruction sequences, and
-identical undefined behaviour past one-past-the-end. Writing the index form
-does **not** reduce pointer arithmetic and does not make a bounds mistake
-safer. If you reach for it hoping for that, you have the bug that #332 was
-about — the only safe bound is the subtraction above.
+Both compile to identical instructions with identical undefined behaviour
+past one-past-the-end. The index form does **not** reduce pointer arithmetic
+or make a bounds mistake safer (see #332); the only safe bound is the
+subtraction above.
 
-As pure readability, the house split is:
+For readability:
 
 - `&arr[i]`, `&st->layers[i]` — you mean *the address of that element*.
-  92 uses; keep it.
-- `base + i * stride` — you mean *stride arithmetic*, and the multipliers
-  belong in the open where they can be read. 733 uses; keep that too.
+- `base + i * stride` — you mean *stride arithmetic*; keep the multipliers in
+  the open.
 
 Neither is "cleaner" in general. Match the surrounding code.
 
@@ -254,9 +238,9 @@ make MODE=asan test-unit           # ASan + UBSan
 ```
 
 CI builds every Linux target with **gcc**; local macOS builds use clang, and
-they disagree on parts of C23. Compile what you changed with the local gcc
-before pushing — a `constexpr` with two declarators compiles under clang and
-fails all nine Linux jobs:
+they disagree on parts of C23 (e.g. a `constexpr` with two declarators
+compiles under clang and fails every Linux job). Compile what you changed
+with a local gcc before pushing:
 
 ```sh
 gcc-15 -std=c23 -O3 -DNDEBUG -fopenmp -Wall -Wextra -Wpedantic -Werror \
@@ -269,29 +253,25 @@ gcc-15 -std=c23 -O3 -DNDEBUG -fopenmp -Wall -Wextra -Wpedantic -Werror \
        -c <changed>.c -o /dev/null
 ```
 
-The `-I` list is `CFLAGS_STRICT`'s from `mk/common.mk` and `-march` is the
-arm64 one from `mk/target-linux.mk`; keep them in step. With a shorter `-I`
-list, `session.c` stops at a missing header before the optimizer ever runs.
-`-fopenmp` is what every target builds with; without it the kernels'
-`#pragma omp` is an unknown pragma, which `-Werror` turns into an error.
-`-march` makes the check see what CI's arm64 legs compile, and a generic
-aarch64 gcc, which defaults to plain armv8-a, cannot inline the kernels'
-dot-product intrinsics without it. An x86-64 gcc rejects that value
-outright; on an x86-64 host use the x86 one from the same file,
-`-march=x86-64-v3`.
-
-**`-O3 -c`, not `-fsyntax-only`.** The diagnostics that matter for the
-rules above — `-Wstringop-overflow`, `-Wstringop-overread`,
-`-Wnonnull-compare` — come out of the optimizer, so a syntax-only pass
-reports none of them and CI finds them for you instead. Skip
-`src/backends/{metal,vulkan}`, which need SDKs, and the CPU backend the
-Linux target for your architecture does not build: `cpu_x86` on arm64,
-`cpu_neon` on x86-64. On x86-64 also skip the `cpu_x86` kernels that
-`mk/backend-cpu_x86.mk` gives extra `-mavx512*` flags; this command does
-not carry them. CI covers all of these.
-
-gcc-15 is stricter than CI's gcc-14. A hit that also reproduces on
-`origin/main` is pre-existing, not yours — check before chasing it.
+- The `-I` list is `CFLAGS_STRICT`'s from `mk/common.mk` and `-march` is the
+  arm64 one from `mk/target-linux.mk`; keep them in step. With a shorter `-I`
+  list, `session.c` stops at a missing header before the optimizer runs.
+- `-fopenmp` is what every target builds with; without it `#pragma omp` is an
+  unknown pragma, which `-Werror` turns into an error.
+- `-march` makes the check see what CI's arm64 legs compile; a generic
+  aarch64 gcc (plain armv8-a) cannot inline the dot-product intrinsics without
+  it. On an x86-64 host use the x86 value from the same file,
+  `-march=x86-64-v3`.
+- **`-O3 -c`, not `-fsyntax-only`.** `-Wstringop-overflow`,
+  `-Wstringop-overread` and `-Wnonnull-compare` come out of the optimizer, so
+  a syntax-only pass reports none of them.
+- Skip `src/backends/{metal,vulkan}` (they need SDKs) and the CPU backend the
+  Linux target for your architecture does not build (`cpu_x86` on arm64,
+  `cpu_neon` on x86-64). On x86-64 also skip the `cpu_x86` kernels that
+  `mk/backend-cpu_x86.mk` gives extra `-mavx512*` flags; this command does
+  not carry them. CI covers all of these.
+- gcc-15 is stricter than CI's gcc-14. A hit that also reproduces on
+  `origin/main` is pre-existing, not yours — check before chasing it.
 
 Commits: one logical change each, and say *why*. For kernel or perf work,
 include before/after numbers and the host.

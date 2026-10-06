@@ -3,15 +3,15 @@
  *
  * The writer, ptqtp_quantize_full.py, is not in this repository
  * (tools/ptqtp_single_tensor.py is the single-tensor validator). The file
- * format stores per-tensor 2-trit-plane representations with per-row-group
- * FP16 scales:
+ * format stores per-tensor 2- or 3-trit-plane representations with
+ * per-row-group FP16 scales:
  *
  *   header: magic "PTQT", version, n_tensors, group_size, n_planes
  *   TOC (one entry per tensor): name, n_in, n_out, n_groups, offsets+sizes,
  *                                cos_sim (diagnostic)
  *   data section (16-byte aligned): per tensor [trits, alpha]
  *
- * Per tensor:
+ * Per tensor (2-plane; see enum ptqtp_storage for 3-plane):
  *   trits  uint8[n_out * n_in / 2]   row-major, 4 bits/weight,
  *                                    byte = (idx_col_2j+1 << 4) | idx_col_2j
  *                                    idx = (T1+1)*3 + (T2+1) ∈ {0..8}

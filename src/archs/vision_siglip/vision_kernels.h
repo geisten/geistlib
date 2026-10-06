@@ -1,18 +1,9 @@
 /*
  * vision_kernels — arch-local kernels for the Gemma 4 vision tower.
  *
- * Per the Q5/Q8 design decisions, heavy ops (linear, RMSNorm, softmax,
- * GELU) lower to the existing backend catalog. This module owns only
- * vision-specific ops that don't fit there:
- *
- *   - patch_embed_reshape: (h_p, w_p, patch_px) layout glue feeding into
- *                          a backend SGEMM (no compute itself)
  *   - avgpool2d_k3: kernel-3 stride-3 average pool over a 2D patch grid
  *   - rope_2d: 2D RoPE applied to Q,K (theta=100, head_dim=64)
- *
- * Phase status:
- *   P1 ⇐ THIS — header + stubs
- *   P3-P4     — fleshed out, NEON specialization for Pi 5
+ *   - vision_attention_bidir: non-causal multi-head attention
  */
 #ifndef VISION_KERNELS_H
 #define VISION_KERNELS_H

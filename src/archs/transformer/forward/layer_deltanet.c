@@ -1,12 +1,11 @@
 /*
  * src/archs/transformer/forward/layer_deltanet.c — gated-DeltaNet token
- * mixer (#281, qwen35 family).
+ * mixer (qwen35 family).
  *
  * Layer: ARCHITECTURE.
  *
  * Replaces the attention block for layers with mixer == GEIST_MIXER_DELTANET.
- * Evaluation order per token (spec pinned in issue #281 from the HF
- * modeling code, cross-checked against llama.cpp):
+ * Evaluation order per token (HF modeling code; spec in #281):
  *
  *   x               = rmsnorm(h, attn_norm)
  *   qkv             = W_qkv x                    [conv_dim]
@@ -81,7 +80,7 @@ static void l2norm_row(float *x, size_t n, float eps) {
         x[i] *= inv;
 }
 
-/* One delta-rule step for one v-head (perf lever 2, #281):
+/* One delta-rule step for one v-head:
  *   pass 1: S *= exp(g);  kv_mem = S^T k        (kv_mem stays L1-resident)
  *   delta  = (v - kv_mem) * beta
  *   pass 2: S += k (x) delta;  o = S^T q
@@ -158,18 +157,11 @@ void transformer_dn_head_step(float       *S,  /* [d_k, d_v] */
 
 /* No decay factor of the chunk is taken below e^DN_EXP_FLOOR: one below
  * it is 0. A fast-forgetting head runs gamma past -87 within a 64-token
- * chunk (a Mamba-style A of 16 and dt of 0.1 make -1.6 per token), and
- * then e^gamma, e^(gamma_i - gamma_j) and their products with K, Q and
- * the substitution's entries are denormals, each a microcode assist on
- * x86, in the GEMMs as much as in the loops here. On the synthetic
- * Ternary-Bonsai-2-27B 3-5 % of KCe, Qg and the decayed K were, and the
- * head loop took about three times as long as at this floor, which
- * leaves none. No result that matters moves: a factor below e^-60 =
- * 8.8e-27 scales values of order 1, and e^-60 times anything above
- * 1.3e-12 is a normal float. The argument is clamped as well, so a
- * vectorized expf (libmvec) never sees one below -87.3, where it sends
- * the lane down a scalar slow path. The attention kernels'
- * ATTN_EXP_FLOOR is the same floor. */
+ * chunk, and the decays and their products then become denormals, each a
+ * microcode assist on x86 (about 3x head-loop time on a 27B). A factor
+ * below e^-60 = 8.8e-27 changes no result that matters. The argument is
+ * clamped as well, so a vectorized expf (libmvec) never sees one below
+ * -87.3, where it takes a scalar slow path. Same floor as ATTN_EXP_FLOOR. */
 static constexpr float DN_EXP_FLOOR = -60.0f;
 
 /* e^x for x <= 0, and 0 below DN_EXP_FLOOR. */
@@ -177,10 +169,10 @@ static inline float dn_decay(float x) {
     return x < DN_EXP_FLOOR ? 0.0f : expf(fmaxf(x, DN_EXP_FLOOR));
 }
 
-/* Chunked delta-rule for C tokens of one v-head (#281 prefill phase).
+/* Chunked delta-rule for C tokens of one v-head.
  * Mathematically equivalent to C sequential dn_head_step calls — pinned
  * by test_deltanet_chunk_int against the sequential path. Formulation
- * per the HF/llama.cpp chunk recipe (issue #281 spec, section 5b), with
+ * per the HF/llama.cpp chunk recipe (see #281), with
  * the (I - A_strict)^-1 forward substitution folded as (A + I) into the
  * single GEMM that consumes it. All exp arguments are <= 0 (g <= 0 and
  * gamma is non-increasing), so nothing overflows; none below
@@ -513,15 +505,12 @@ dn_conv_row(size_t i, size_t hist, size_t convd, const float *old_cst, const flo
     return i < hist ? old_cst + i * convd : qkv + (i - hist) * convd;
 }
 
-/* The input rows are picked before the channel loop, so it has no branch
- * and vectorizes. With the source of each tap chosen per element it did
- * not, and with silu's scalar expf beside it a 64-token chunk at the
- * synthetic Ternary-Bonsai-2-27B's sizes took 1.9 ms per layer on 4
- * threads, against 0.24 ms now. K == 4, every known variant's kernel,
- * names its taps, so the four weights of a channel load as one group;
- * another K adds tap after tap into y_t. silu gets a pass of its own: it
- * vectorizes only where libm has a vector expf (glibc's libmvec), and the
- * conv should vectorize everywhere. */
+/* Causal depthwise conv + silu for token t. The input rows are picked
+ * before the channel loop, so it has no branch and vectorizes. K == 4,
+ * every known variant's kernel, names its taps, so the four weights of a
+ * channel load as one group; another K adds tap after tap into y_t. silu
+ * gets a pass of its own: it vectorizes only where libm has a vector expf
+ * (glibc's libmvec), and the conv should vectorize everywhere. */
 void transformer_dn_conv_silu_row(size_t       t,
                                   size_t       K,
                                   size_t       convd,
@@ -551,12 +540,10 @@ void transformer_dn_conv_silu_row(size_t       t,
         y_t[c] = silu_f(y_t[c]);
 }
 
-/* Chunked prefill (#281 phase 3). The engine batches prefill at m_max
- * (= 64) tokens per forward call, so the whole call is ONE chunk of
- * C = seq — no chunk loop, no remainder. Conv + norms + gating run as
- * whole-batch passes into the session's staging (dn_prefill_ws), then
- * dn_head_chunk per v-head (OMP). Returns false if that staging cannot be
- * had; the caller falls back to the sequential token loop. */
+/* Chunked prefill. Conv + norms + gating run as whole-batch passes into
+ * the session's staging (dn_prefill_ws), then the delta rule per v-head
+ * (OMP) in sub-chunks of DN_SUBCHUNK tokens. Returns false if that staging
+ * cannot be had; the caller falls back to the sequential token loop. */
 static bool dn_run_prefill_chunked(struct transformer_arch_session *sess,
                                    bool         fresh, /* the state is zeros (dn_fresh) */
                                    float       *qkv,   /* [seq, convd] pre-conv, mapped */
@@ -587,8 +574,7 @@ static bool dn_run_prefill_chunked(struct transformer_arch_session *sess,
     /* The delta rule runs in sub-chunks of at most DN_SUBCHUNK tokens, S
      * threaded through: its O(C^2) terms then cost the same whatever m the
      * caller batches, so the surrounding GEMMs may take larger m
-     * (caps.dn_subchunk). Boundaries sit at multiples of DN_SUBCHUNK, the
-     * positions the old m_max = 64 outer chunking produced. */
+     * (caps.dn_subchunk). Boundaries sit at multiples of DN_SUBCHUNK. */
     const size_t ws_f = dn_prefill_thread_ws_floats(seq, d_k, d_v);
 #if defined(_OPENMP)
     const size_t nthr = (size_t) omp_get_max_threads();
@@ -597,8 +583,7 @@ static bool dn_run_prefill_chunked(struct transformer_arch_session *sess,
 #endif
     /* All staging up front — nothing inside the head loop, so a failure
      * here leaves state untouched and the sequential fallback stays
-     * valid. The session keeps it: it used to be a heap allocation per
-     * DeltaNet layer per chunk. */
+     * valid. The session keeps it across layers and calls. */
     float *y = dn_prefill_ws(sess,
                              dn_prefill_ws_floats(seq, nthr, n_vh, d_k, d_v, K, convd),
                              nthr,
@@ -851,14 +836,9 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
         float       *cstate = (float *) v->buffer_map(sess->dn_conv_state[ctx->layer_idx]);
         float       *S      = (float *) v->buffer_map(sess->dn_S[ctx->layer_idx]);
         if (cstate == nullptr || S == nullptr) {
-            /* #470: the fused kernel above already refused this call
-             * (UNSUPPORTED) or was never offered; the state buffers
-             * themselves are device-only VRAM here (e.g. batched-submit GPU,
-             * geometry outside the fused kernel's covered range: this model's
-             * head_k/head_v/conv_kernel), so the host-oracle fallback that
-             * every other backend relies on cannot reach them. Name the
-             * geometry so this reads as "unsupported model shape", not a
-             * generic backend fault. */
+            /* Device-only state and no fused kernel for this geometry: the
+             * host oracle cannot reach it. Name the geometry so this reads
+             * as an unsupported model shape, not a backend fault (#470). */
             geist_backend_set_error(be,
                                     GEIST_E_UNSUPPORTED,
                                     "deltanet: recurrent state not host-mappable and no fused "

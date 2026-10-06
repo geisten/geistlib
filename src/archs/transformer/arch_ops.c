@@ -297,15 +297,11 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
 
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
     /* sqrt(d_model) embedding scale is Gemma-3/4-specific; Llama / BitNet
-     * don't scale. has_ple gates Gemma family identity. */
+     * don't scale. */
     const float embed_scale = st->config.has_embed_scale ? sqrtf((float) st->d_model) : 1.0f;
 
-    /* Chunk by the SESSION cap: every scratch buffer is sized with
-     * sess->m_max (arch_state.c), and a session opt below the state's
-     * preferred value must shrink the chunks with it — since the metal
-     * preferred_m_max moved to 256, chunking by st->m_max overran the
-     * scratch of any session created with a smaller m_max (embed failed
-     * at row sess->m_max exactly). */
+    /* Chunk by the SESSION cap, not st->m_max: every scratch buffer is
+     * sized with sess->m_max (arch_state.c), which may be smaller. */
     for (size_t off = 0; off < n; off += sess->m_max) {
         const size_t chunk = (n - off > sess->m_max) ? sess->m_max : (n - off);
 
@@ -316,8 +312,8 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
         bool embed_on_device = st->model_fusions.embed_lookup_scaled;
         bool embed_batched   = false;
         if (embed_on_device && fused->embedding_lookup_scaled_rows != nullptr) {
-            /* #322: one dispatch for the whole chunk instead of one tiny
-             * dispatch per token. Non-OK (row cap, unsupported dtype)
+            /* One dispatch for the whole chunk instead of one per token
+             * (#322). Non-OK (row cap, unsupported dtype)
              * falls through to the per-token loop below. */
             struct geist_tensor t_rows = {
                     .buffer = sess->scratch_h_a,
@@ -373,7 +369,7 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
             }
         }
 
-        /* 2. Batched PLE precompute. P1.5.b: skipped for non-PLE families. */
+        /* 2. Batched PLE precompute; skipped for non-PLE families. */
         struct geist_buffer *ple_buf = nullptr;
         if (st->config.has_ple) {
             s = compute_per_layer_inputs_batch(
@@ -537,7 +533,7 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
         }
     }
 
-    /* 2. PLE precompute. P1.5.b: skipped for non-PLE families. */
+    /* 2. PLE precompute; skipped for non-PLE families. */
     struct geist_buffer *ple_buf = nullptr;
     if (st->config.has_ple) {
         s = compute_per_layer_inputs_batch(
@@ -586,11 +582,8 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
      *  - k>1: batched lm_head — ONE m=k linear against embed_table
      *    (lights up the M>1 IQ kernels) + per-row softcap+argmax.
      *
-     * On Pi 5 the lm_head linear is the dominant cost in verify_forward
-     * (262 144-wide projection). The k=1 SGEMV path is competitive only
-     * because we don't batch; m=k SGEMM uses the IQ2_S / IQ3_S prefill
-     * kernels and amortizes the weight stream over k columns. Greedy-
-     * only softcap skip would be additive but the linear is the bulk. */
+     * The lm_head linear dominates verify_forward; the batched path
+     * amortizes its weight stream over k columns. */
     if (k == 1) {
         s = finalize_logits_one_row(sess, 0, &out_tokens[0]);
         if (s != GEIST_OK) {
@@ -731,8 +724,7 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_sessio
          *
          * So the PLE projection must see the soft tokens, not a pad row —
          * feeding it pad rows starves all 30 layers' per-layer signal of
-         * audio content (#268: measured as ~10x WER vs llama.cpp on the
-         * same Q4 weights while soft tokens were reference-exact).
+         * audio content (#268).
          *
          *   1. Place soft tokens in scratch_h_a (LM residual stream, raw,
          *      no embed_scale).
@@ -848,8 +840,8 @@ transformer_pin_prefix(struct transformer_arch_session *sess, size_t n, const ge
  * down_proj inputs as host arrays on the layer struct; the forward path
  * multiplies attn_out / post-GeGLU gate by these before the linear call.
  *
- * Mirrors lm.c::apply_awq_to_layers (lm.c:1079). Names follow the AWQS
- * file convention: blk.{i}.{attn_norm.out, ffn_norm.out, attn.out, ffn.out}.
+ * Names follow the AWQS file convention:
+ * blk.{i}.{attn_norm.out, ffn_norm.out, attn.out, ffn.out}.
  *
  * Returns GEIST_OK if AWQ applied (or no-op if path is nullptr).
  * On size mismatch or alloc failure: returns the error WITHOUT undoing
