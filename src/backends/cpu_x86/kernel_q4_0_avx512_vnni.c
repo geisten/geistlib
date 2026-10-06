@@ -28,6 +28,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "kernel_q4_0_avx512_vnni.h"
+#include "linear_util.h"
 
 #include <immintrin.h>
 #include <stdbool.h>
@@ -79,15 +80,6 @@ static inline __m512i lanes0_8_epi32(int32_t lo, int32_t hi) {
 }
 static inline __m512 lanes0_8_ps(float lo, float hi) {
     return _mm512_insertf32x4(_mm512_zextps128_ps512(_mm_set_ss(lo)), _mm_set_ss(hi), 2);
-}
-
-/* Halves, then 8 -> 4 -> 2 -> 1. */
-static inline float reduce(__m512 v) {
-    const __m256 s  = _mm256_add_ps(_mm512_castps512_ps256(v), _mm512_extractf32x8_ps(v, 1));
-    __m128       s4 = _mm_add_ps(_mm256_castps256_ps128(s), _mm256_extractf128_ps(s, 1));
-    s4              = _mm_add_ps(s4, _mm_movehl_ps(s4, s4));
-    s4              = _mm_add_ss(s4, _mm_movehdup_ps(s4));
-    return _mm_cvtss_f32(s4);
 }
 
 /* One block pair (or the odd last block, pair == false) of a rows x tokens
@@ -172,7 +164,7 @@ static inline float reduce(__m512 v) {
     }
     for (size_t r = 0; r < rows; r++) {
         for (size_t t = 0; t < tokens; t++) {
-            y[t * n_out + r] = reduce(acc[r][t]);
+            y[t * n_out + r] = hsum512_ps(acc[r][t]);
         }
     }
 }

@@ -57,19 +57,7 @@ BACKEND_SOURCES += \
 # shadow poisoning), so a guard placed inside would run after the first
 # illegal instruction, not before it. q4kx8 keeps its guard and shape
 # dispatch in kernel_q4kx8_gemm_avx512.c, which is not in this list.
-$(BUILD_DIR)/src/backends/cpu_x86/kernel_w4a8_avx512_vnni.o: CFLAGS_STRICT += \
-    -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
-$(BUILD_DIR)/src/backends/cpu_x86/kernel_w8a8_avx512_vnni.o: CFLAGS_STRICT += \
-    -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
-$(BUILD_DIR)/src/backends/cpu_x86/kernel_i2s_avx512_vnni.o: CFLAGS_STRICT += \
-    -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
-$(BUILD_DIR)/src/backends/cpu_x86/kernel_q8_0_avx512_vnni.o: CFLAGS_STRICT += \
-    -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
-$(BUILD_DIR)/src/backends/cpu_x86/kernel_q4_0_avx512_vnni.o: CFLAGS_STRICT += \
-    -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
-$(BUILD_DIR)/src/backends/cpu_x86/kernel_tq2_0_avx512_vnni.o: CFLAGS_STRICT += \
-    -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
-$(BUILD_DIR)/src/backends/cpu_x86/attention_int8_avx512_vnni.o: CFLAGS_STRICT += \
+$(BUILD_DIR)/src/backends/cpu_x86/%_avx512_vnni.o: CFLAGS_STRICT += \
     -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni
 $(BUILD_DIR)/src/backends/cpu_x86/kernel_q4kx8_gemm_avx512_full.o: CFLAGS_STRICT += \
     -mavx2 -mavx -mf16c -mfma -mavx512f -mavx512bw -mavx512dq -mavx512vl

@@ -22,11 +22,8 @@ MODES = ("decision_dense", "scorealt_dense", "generate_1", "generate_long")
 
 
 def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(4 * 1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    with open(path, "rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def cases_from_jsonl(path: Path) -> list[dict]:

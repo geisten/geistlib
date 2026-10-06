@@ -27,6 +27,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "attention.h"
+#include "attention_driver.h"
 
 #include "gemma4_kernels.h" /* ATTN_EXP_FLOOR */
 
@@ -37,109 +38,9 @@
 #include <stdint.h>
 #include <string.h>
 
-/* The architecture refuses a larger head_dim at load; the stack arrays
- * below are sized by it. */
-constexpr size_t AVN_HEAD_DIM_MAX = 512;
-
-/* Context positions per online-softmax block. */
-constexpr size_t AVN_BLOCK = 512;
-
 /* V rows per pass over the output dimensions: their bytes stay in L1 while
  * every slice of the dimensions goes over them. */
 constexpr size_t AVN_PV_ROWS = 64;
-
-/* Query heads per pass, at most. */
-constexpr size_t AVN_HEADS_PER_PASS_MAX = 4;
-
-/* Decode chunks per pass, at most, and the split rule: as the AVX2
- * kernel's (see ai8_plan_for), whose part buffer this one fills. */
-constexpr size_t AVN_MAX_CHUNKS = 4;
-constexpr size_t AVN_CHUNK_SPAN = 1024;
-constexpr size_t AVN_MIN_ITEMS  = 8;
-constexpr size_t AVN_CHUNK_MIN  = 128;
-
-/* Prefill: queries per work item, at most. An item runs each block of the
- * context for all its queries before the next block, so that the block's K
- * and V bytes, fetched for the first query, are near for the others ... */
-constexpr size_t AVN_QUERIES_MAX = 4;
-
-/* ... where the K and V bytes a call reads exceed this: below it they stay
- * cached between queries anyway. */
-constexpr size_t AVN_REUSE_BYTES = (size_t) 1 << 20;
-
-struct avn_args {
-    size_t        n_q_heads, head_dim, n_kv, n_kv_heads, q_offset, sliding_window;
-    const float  *q;
-    const int8_t *k;
-    const float  *k_scale;
-    const int8_t *v;
-    const float  *v_scale;
-    float        *out;
-};
-
-/* The context positions [*s_lo, *s_hi] query t attends to. */
-static inline void avn_span(const struct avn_args *a, size_t t, size_t *s_lo, size_t *s_hi) {
-    const size_t q_pos = a->q_offset + t;
-    *s_lo = (a->sliding_window > 0 && q_pos + 1 > a->sliding_window) ? q_pos + 1 - a->sliding_window
-                                                                     : 0;
-    *s_hi = q_pos < a->n_kv ? q_pos : a->n_kv - 1;
-}
-
-struct avn_plan {
-    size_t per_pass; /* query heads per pass */
-    size_t n_chunks; /* decode: context chunks per pass, merged afterwards */
-    size_t per_item; /* prefill: queries per work item */
-};
-
-/* How to run a call, from its shape alone; `span` is the number of
- * positions the last query attends to. The passes and the decode split are
- * the AVX2 kernel's rule. A prefill puts its queries in items of up to
- * AVN_QUERIES_MAX where a span runs past one block and the call reads more
- * than AVN_REUSE_BYTES of K and V, in items of as many as leave at least
- * AVN_MIN_ITEMS items. Measured (4 threads, 64-token chunks) against one
- * query an item: 4-44 % faster at 2048 and 8192 positions where the call
- * reads more than 1 MB, the least at 1.3 MB (SmolLM2-360M at 2048); with
- * the queries forced into items anyway, a few percent slower within one
- * block and at 1 MB (MQA at 2048 positions, 3.5 %), and with fewer items
- * the threads waited on the longest (MQA with four queries a call, two
- * items, 20-80 % slower). The queries of an item do not change each
- * other's arithmetic: any plan gives the same bits. */
-static struct avn_plan avn_plan_for(size_t n_q,
-                                    size_t n_q_heads,
-                                    size_t n_kv_heads,
-                                    size_t head_dim,
-                                    size_t span,
-                                    size_t part_floats) {
-    const size_t group    = n_q_heads / n_kv_heads;
-    size_t       per_pass = 1;
-    for (size_t g = AVN_HEADS_PER_PASS_MAX; g >= 2; g--) {
-        if (group % g == 0) {
-            per_pass = g;
-            break;
-        }
-    }
-    struct avn_plan plan  = {.per_pass = per_pass, .n_chunks = 1, .per_item = 1};
-    const size_t    items = n_kv_heads * (group / per_pass); /* per query */
-    if (n_q == 1) {
-        const size_t for_items = (AVN_MIN_ITEMS + items - 1) / items;
-        const size_t fit       = span / AVN_CHUNK_MIN;
-        size_t       chunks    = span / AVN_CHUNK_SPAN;
-        chunks                 = chunks > for_items ? chunks : for_items;
-        chunks                 = chunks < AVN_MAX_CHUNKS ? chunks : AVN_MAX_CHUNKS;
-        chunks                 = chunks < fit ? chunks : fit;
-        if (chunks >= 2 && part_floats >= n_q_heads * chunks * (head_dim + 2)) {
-            plan.n_chunks = chunks;
-        }
-    } else if (span > AVN_BLOCK && span * n_kv_heads * head_dim * 2 > AVN_REUSE_BYTES) {
-        for (size_t per_item = AVN_QUERIES_MAX; per_item >= 2; per_item /= 2) {
-            if (items * ((n_q + per_item - 1) / per_item) >= AVN_MIN_ITEMS) {
-                plan.per_item = per_item;
-                break;
-            }
-        }
-    }
-    return plan;
-}
 
 /* ---- Scores ------------------------------------------------------------ */
 
@@ -162,10 +63,10 @@ static struct avn_plan avn_plan_for(size_t n_q,
 [[gnu::always_inline]] static inline void avn_dot_pair32(size_t    S,
                                                          size_t    hd32,
                                                          __mmask32 tail,
-                                                         const int8_t (*q)[AVN_HEAD_DIM_MAX],
+                                                         const int8_t (*q)[AX_HEAD_DIM_MAX],
                                                          const int8_t *ka,
                                                          const int8_t *kb,
-                                                         __m256i h[static AVN_HEADS_PER_PASS_MAX]) {
+                                                         __m256i h[static AX_HEADS_PER_PASS_MAX]) {
     const __m256i flip = _mm256_set1_epi8((char) 0x80);
     __m256i       a0 = _mm256_setzero_si256(), a1 = a0, a2 = a0, a3 = a0;
     __m256i       b0 = a0, b1 = a0, b2 = a0, b3 = a0;
@@ -230,10 +131,10 @@ static inline __m256i avn_fold(__m512i v) {
  * the accumulators instead). */
 [[gnu::always_inline]] static inline void avn_dot_pair64(size_t S,
                                                          size_t head_dim,
-                                                         const int8_t (*q)[AVN_HEAD_DIM_MAX],
+                                                         const int8_t (*q)[AX_HEAD_DIM_MAX],
                                                          const int8_t *ka,
                                                          const int8_t *kb,
-                                                         __m256i h[static AVN_HEADS_PER_PASS_MAX]) {
+                                                         __m256i h[static AX_HEADS_PER_PASS_MAX]) {
     const __m512i flip = _mm512_set1_epi8((char) 0x80);
     __m512i       a0 = _mm512_setzero_si512(), a1 = a0, a2 = a0, a3 = a0;
     __m512i       b0 = a0, b1 = a0, b2 = a0, b3 = a0;
@@ -273,11 +174,11 @@ static inline __m256i avn_fold(__m512i v) {
                                                     size_t    head_dim,
                                                     size_t    hd32,
                                                     __mmask32 tail,
-                                                    const int8_t (*q)[AVN_HEAD_DIM_MAX],
+                                                    const int8_t (*q)[AX_HEAD_DIM_MAX],
                                                     const int8_t *k0,
                                                     size_t        row,
-                                                    __m256i u[static AVN_HEADS_PER_PASS_MAX]) {
-    __m256i h01[AVN_HEADS_PER_PASS_MAX], h23[AVN_HEADS_PER_PASS_MAX];
+                                                    __m256i       u[static AX_HEADS_PER_PASS_MAX]) {
+    __m256i h01[AX_HEADS_PER_PASS_MAX], h23[AX_HEADS_PER_PASS_MAX];
     if (W == 64) {
         avn_dot_pair64(S, head_dim, q, k0, k0 + row, h01);
         avn_dot_pair64(S, head_dim, q, k0 + 2 * row, k0 + 3 * row, h23);
@@ -316,8 +217,8 @@ static inline __m512 avn_cvt16(__mmask16 m, const int8_t *v) {
                                                  size_t        c,
                                                  __mmask16     last,
                                                  const int8_t *v,
-                                                 const float (*w)[AVN_BLOCK],
-                                                 float (*acc)[AVN_HEAD_DIM_MAX]) {
+                                                 const float (*w)[AX_BLOCK],
+                                                 float (*acc)[AX_HEAD_DIM_MAX]) {
     __m512 x[16];
 #pragma GCC unroll 4
     for (size_t g = 0; g < G; g++) {
@@ -371,8 +272,8 @@ static inline __m512 avn_cvt16(__mmask16 m, const int8_t *v) {
                                                       size_t        n,
                                                       size_t        row,
                                                       const int8_t *v,
-                                                      const float (*w)[AVN_BLOCK],
-                                                      float (*acc)[AVN_HEAD_DIM_MAX]) {
+                                                      const float (*w)[AX_BLOCK],
+                                                      float (*acc)[AX_HEAD_DIM_MAX]) {
     const size_t    hd16 = head_dim & ~(size_t) 15;
     const __mmask16 full = 0xFFFF;
     size_t          c    = 0;
@@ -407,16 +308,16 @@ static inline __m512 avn_cvt16(__mmask16 m, const int8_t *v) {
  * Without `part` it writes their output; with it (one query), its partial
  * results. G and HD are compile-time constants at every call site (HD = 0:
  * head_dim at run time). */
-[[gnu::always_inline]] static inline void avn_item(size_t                 G,
-                                                   size_t                 HD,
-                                                   const struct avn_args *a,
-                                                   size_t                 t0,
-                                                   size_t                 tn,
-                                                   size_t                 kv_h,
-                                                   size_t                 h0,
-                                                   const size_t           lo[static tn],
-                                                   const size_t           hi[static tn],
-                                                   float                 *part) {
+[[gnu::always_inline]] static inline void avn_item(size_t                G,
+                                                   size_t                HD,
+                                                   const struct ax_args *a,
+                                                   size_t                t0,
+                                                   size_t                tn,
+                                                   size_t                kv_h,
+                                                   size_t                h0,
+                                                   const size_t          lo[static tn],
+                                                   const size_t          hi[static tn],
+                                                   float                *part) {
     /* Locals, not a->field in the loops: after OpenMP outlining `a` points
      * into the caller's frame, and every float store could alias it. */
     const size_t    head_dim  = HD != 0 ? HD : a->head_dim;
@@ -431,19 +332,19 @@ static inline __m512 avn_cvt16(__mmask16 m, const int8_t *v) {
      * at most eight registers (with head_dim at run time it is loaded as
      * it is used), four elsewhere. */
     const size_t  W       = HD >= 128 ? 64 : 32;
-    const size_t  SM      = HD == 512 ? 2 : AVN_HEADS_PER_PASS_MAX;
+    const size_t  SM      = HD == 512 ? 2 : AX_HEADS_PER_PASS_MAX;
     const size_t  RS      = HD == 0 || HD / W * (G < SM ? G : SM) <= 8 ? 8 : 4;
     const float  *k_scale = a->k_scale;
     const float  *v_scale = a->v_scale;
-    const int8_t *kh      = a->k + kv_h * head_dim;
-    const int8_t *vh      = a->v + kv_h * head_dim;
+    const int8_t *kh      = (const int8_t *) a->k + kv_h * head_dim;
+    const int8_t *vh      = (const int8_t *) a->v + kv_h * head_dim;
 
     /* The query, quantized per head as the AVX2 kernel does, zero past
      * head_dim to the end of its last 32 bytes; q_corr: 128 times the sum
      * of its values, which the dots carry. */
-    alignas(64) int8_t q_all[AVN_QUERIES_MAX][G][AVN_HEAD_DIM_MAX];
-    float              scale_all[AVN_QUERIES_MAX][G];
-    int32_t            corr_all[AVN_QUERIES_MAX][G];
+    alignas(64) int8_t q_all[AX_QUERIES_MAX][G][AX_HEAD_DIM_MAX];
+    float              scale_all[AX_QUERIES_MAX][G];
+    int32_t            corr_all[AX_QUERIES_MAX][G];
     for (size_t i_q = 0; i_q < tn * G; i_q++) {
         const size_t tq = i_q / G, g = i_q % G;
         const float *qv   = a->q + ((t0 + tq) * n_q_heads + h0 + g) * head_dim;
@@ -475,12 +376,12 @@ static inline __m512 avn_cvt16(__mmask16 m, const int8_t *v) {
     /* sc: the block's scores, then exp(score - max), then those times the
      * row's V scale — the weight of each V row. acc holds zeros up to the
      * next multiple of 16 (the V tail's masked-off lanes). */
-    alignas(64) float sc[G][AVN_BLOCK];
-    alignas(32) float ks[AVN_BLOCK];
-    alignas(32) float vs[AVN_BLOCK];
-    alignas(64) float acc_all[AVN_QUERIES_MAX][G][AVN_HEAD_DIM_MAX];
-    float             max_all[AVN_QUERIES_MAX][G];
-    double            sum_all[AVN_QUERIES_MAX][G];
+    alignas(64) float sc[G][AX_BLOCK];
+    alignas(32) float ks[AX_BLOCK];
+    alignas(32) float vs[AX_BLOCK];
+    alignas(64) float acc_all[AX_QUERIES_MAX][G][AX_HEAD_DIM_MAX];
+    float             max_all[AX_QUERIES_MAX][G];
+    double            sum_all[AX_QUERIES_MAX][G];
     for (size_t i_q = 0; i_q < tn * G; i_q++) {
         for (size_t i = 0; i < hd16up; i++) {
             acc_all[i_q / G][i_q % G][i] = 0.0f;
@@ -491,22 +392,22 @@ static inline __m512 avn_cvt16(__mmask16 m, const int8_t *v) {
         bool ran = false;
         for (size_t tq = 0; tq < tn; tq++) {
             /* Block blk of query tq's span, if it has one. */
-            if (blk * AVN_BLOCK > hi[tq] - lo[tq]) {
+            if (blk * AX_BLOCK > hi[tq] - lo[tq]) {
                 continue;
             }
             ran = true;
 
-            const size_t b0                        = lo[tq] + blk * AVN_BLOCK;
-            const size_t c_hi                      = hi[tq];
-            const int8_t (*q_s8)[AVN_HEAD_DIM_MAX] = q_all[tq];
-            const float   *scale_q                 = scale_all[tq];
-            const int32_t *q_corr                  = corr_all[tq];
-            float (*acc)[AVN_HEAD_DIM_MAX]         = acc_all[tq];
-            float        *max_score                = max_all[tq];
-            double       *sum_exp                  = sum_all[tq];
-            const size_t  n  = c_hi - b0 < AVN_BLOCK ? c_hi - b0 + 1 : AVN_BLOCK;
-            const int8_t *kb = kh + b0 * row;
-            const int8_t *vb = vh + b0 * row;
+            const size_t b0                       = lo[tq] + blk * AX_BLOCK;
+            const size_t c_hi                     = hi[tq];
+            const int8_t (*q_s8)[AX_HEAD_DIM_MAX] = q_all[tq];
+            const float   *scale_q                = scale_all[tq];
+            const int32_t *q_corr                 = corr_all[tq];
+            float (*acc)[AX_HEAD_DIM_MAX]         = acc_all[tq];
+            float        *max_score               = max_all[tq];
+            double       *sum_exp                 = sum_all[tq];
+            const size_t  n                       = c_hi - b0 < AX_BLOCK ? c_hi - b0 + 1 : AX_BLOCK;
+            const int8_t *kb                      = kh + b0 * row;
+            const int8_t *vb                      = vh + b0 * row;
             for (size_t j = 0; j < n; j++) {
                 ks[j] = k_scale[(b0 + j) * n_kv_heads + kv_h];
                 vs[j] = v_scale[(b0 + j) * n_kv_heads + kv_h];
@@ -521,7 +422,7 @@ static inline __m512 avn_cvt16(__mmask16 m, const int8_t *v) {
                 size_t       j = 0;
                 for (; j + RS <= n; j += RS) {
                     const int8_t *k0 = kb + j * row;
-                    __m256i       u0[AVN_HEADS_PER_PASS_MAX], u1[AVN_HEADS_PER_PASS_MAX];
+                    __m256i       u0[AX_HEADS_PER_PASS_MAX], u1[AX_HEADS_PER_PASS_MAX];
                     avn_dots4(W, S, head_dim, hd32, tail, &q_s8[g0], k0, row, u0);
                     if (RS == 8) {
                         avn_dots4(W, S, head_dim, hd32, tail, &q_s8[g0], k0 + 4 * row, row, u1);
@@ -555,7 +456,7 @@ static inline __m512 avn_cvt16(__mmask16 m, const int8_t *v) {
                     const int8_t *kr = kb + j * row;
                     /* The row as both of the pair: h's lanes sum to twice its
                      * dot. */
-                    __m256i h[AVN_HEADS_PER_PASS_MAX];
+                    __m256i h[AX_HEADS_PER_PASS_MAX];
                     if (W == 64) {
                         avn_dot_pair64(S, head_dim, &q_s8[g0], kr, kr, h);
                     } else {
@@ -599,8 +500,8 @@ static inline __m512 avn_cvt16(__mmask16 m, const int8_t *v) {
              * while every slice of the output dimensions passes over them. The
              * sums keep their order. */
             for (size_t r0 = 0; r0 < n; r0 += AVN_PV_ROWS) {
-                const size_t nr             = n - r0 < AVN_PV_ROWS ? n - r0 : AVN_PV_ROWS;
-                const float (*w)[AVN_BLOCK] = (const float (*)[AVN_BLOCK]) & sc[0][r0];
+                const size_t nr            = n - r0 < AVN_PV_ROWS ? n - r0 : AVN_PV_ROWS;
+                const float (*w)[AX_BLOCK] = (const float (*)[AX_BLOCK]) & sc[0][r0];
                 avn_pv_rows(G, head_dim, nr, row, vb + r0 * row, w, acc);
             }
         }
@@ -627,16 +528,16 @@ static inline __m512 avn_cvt16(__mmask16 m, const int8_t *v) {
 
 /* One function per compiled shape (G, HD): in one function holding all of
  * them, every change to one moved the hot loops of the others. */
-#define AVN_ITEM_FN(G, HD)                                                                  \
-    [[gnu::noinline]] static void avn_item_##G##_##HD(const struct avn_args *a,             \
-                                                      size_t                 t0,            \
-                                                      size_t                 tn,            \
-                                                      size_t                 kv_h,          \
-                                                      size_t                 h0,            \
-                                                      const size_t           lo[static tn], \
-                                                      const size_t           hi[static tn], \
-                                                      float                 *part) {        \
-        avn_item(G, HD, a, t0, tn, kv_h, h0, lo, hi, part);                                 \
+#define AVN_ITEM_FN(G, HD)                                                                 \
+    [[gnu::noinline]] static void avn_item_##G##_##HD(const struct ax_args *a,             \
+                                                      size_t                t0,            \
+                                                      size_t                tn,            \
+                                                      size_t                kv_h,          \
+                                                      size_t                h0,            \
+                                                      const size_t          lo[static tn], \
+                                                      const size_t          hi[static tn], \
+                                                      float                *part) {        \
+        avn_item(G, HD, a, t0, tn, kv_h, h0, lo, hi, part);                                \
     }
 #define AVN_ITEM_FNS(G) \
     AVN_ITEM_FN(G, 64) AVN_ITEM_FN(G, 128) AVN_ITEM_FN(G, 256) AVN_ITEM_FN(G, 512) AVN_ITEM_FN(G, 0)
@@ -666,15 +567,15 @@ AVN_ITEM_FNS(4)
         }                                                          \
     } while (0)
 
-static void avn_run_item(size_t                 per_pass,
-                         const struct avn_args *a,
-                         size_t                 t0,
-                         size_t                 tn,
-                         size_t                 kv_h,
-                         size_t                 h0,
-                         const size_t           lo[static tn],
-                         const size_t           hi[static tn],
-                         float                 *part) {
+static void ax_run_item(size_t                per_pass,
+                        const struct ax_args *a,
+                        size_t                t0,
+                        size_t                tn,
+                        size_t                kv_h,
+                        size_t                h0,
+                        const size_t          lo[static tn],
+                        const size_t          hi[static tn],
+                        float                *part) {
     switch (per_pass) {
     case 4:
         AVN_ITEM_HD(4);
@@ -688,36 +589,6 @@ static void avn_run_item(size_t                 per_pass,
     default:
         AVN_ITEM_HD(1);
         break;
-    }
-}
-
-/* One head's output from its n_chunks partial results (records `stride`
- * floats apart), rescaled to their common max and summed in chunk order:
- * the AVX2 kernel's merge. */
-static void
-avn_merge(size_t n_chunks, size_t head_dim, size_t stride, const float *part, float *out) {
-    float max_score = part[head_dim];
-    for (size_t c = 1; c < n_chunks; c++) {
-        const float m = part[c * stride + head_dim];
-        max_score     = m > max_score ? m : max_score;
-    }
-    float  acc[AVN_HEAD_DIM_MAX];
-    double sum_exp = 0.0;
-    for (size_t i = 0; i < head_dim; i++) {
-        acc[i] = 0.0f;
-    }
-    for (size_t c = 0; c < n_chunks; c++) {
-        const float *rec = part + c * stride;
-        const float  d   = rec[head_dim] - max_score;
-        const float  w   = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
-        sum_exp += (double) rec[head_dim + 1] * w;
-        for (size_t i = 0; i < head_dim; i++) {
-            acc[i] += w * rec[i];
-        }
-    }
-    const float inv_sum = (float) (1.0 / sum_exp);
-    for (size_t i = 0; i < head_dim; i++) {
-        out[i] = acc[i] * inv_sum;
     }
 }
 
@@ -736,109 +607,21 @@ void cpu_x86_attention_kv_int8_run_avx512_vnni(size_t        n_q,
                                                const float  *v_scale,
                                                float        *out,
                                                float        *part) {
-    const struct avn_args a      = {.n_q_heads      = n_q_heads,
-                                    .head_dim       = head_dim,
-                                    .n_kv           = n_kv,
-                                    .n_kv_heads     = n_kv_heads,
-                                    .q_offset       = q_offset,
-                                    .sliding_window = sliding_window,
-                                    .q              = q,
-                                    .k              = k,
-                                    .k_scale        = k_scale,
-                                    .v              = v,
-                                    .v_scale        = v_scale,
-                                    .out            = out};
-    const size_t          group  = n_q_heads / n_kv_heads;
-    size_t                dec_lo = 0, dec_hi = 0, last_lo = 0, last_hi = 0;
-    avn_span(&a, 0, &dec_lo, &dec_hi);
-    avn_span(&a, n_q - 1, &last_lo, &last_hi);
-    const struct avn_plan plan     = avn_plan_for(n_q,
-                                                  n_q_heads,
-                                                  n_kv_heads,
-                                                  head_dim,
-                                                  last_hi - last_lo + 1,
-                                                  part != nullptr ? part_floats : 0);
-    const size_t          per_pass = plan.per_pass;
-    const size_t          n_passes = group / per_pass;
-    if (plan.n_chunks > 1) {
-        /* Split decode (n_q == 1): items (KV head, pass, chunk) leave their
-         * partial results in `part`, then each head merges its chunks.
-         * Chunk c covers positions [dec_lo + c * len, ...], at least
-         * AVN_CHUNK_MIN each, so none is empty. */
-        const size_t n_chunks = plan.n_chunks;
-        const size_t len      = (dec_hi - dec_lo + n_chunks) / n_chunks;
-        const size_t rec      = per_pass * (head_dim + 2); /* one item's records */
-#if defined(_OPENMP)
-#pragma omp parallel
-#endif
-        {
-#if defined(_OPENMP)
-#pragma omp for collapse(3) schedule(dynamic)
-#endif
-            for (size_t kv_h = 0; kv_h < n_kv_heads; kv_h++) {
-                for (size_t pass = 0; pass < n_passes; pass++) {
-                    for (size_t c = 0; c < n_chunks; c++) {
-                        const size_t c_lo = dec_lo + c * len;
-                        const size_t c_hi = dec_hi - c_lo < len ? dec_hi : c_lo + len - 1;
-                        avn_run_item(per_pass,
-                                     &a,
-                                     0,
-                                     1,
-                                     kv_h,
-                                     kv_h * group + pass * per_pass,
-                                     &c_lo,
-                                     &c_hi,
-                                     part + ((kv_h * n_passes + pass) * n_chunks + c) * rec);
-                    }
-                }
-            }
-#if defined(_OPENMP)
-#pragma omp for collapse(2)
-#endif
-            for (size_t kv_h = 0; kv_h < n_kv_heads; kv_h++) {
-                for (size_t hg = 0; hg < group; hg++) {
-                    const size_t pass = hg / per_pass;
-                    avn_merge(n_chunks,
-                              head_dim,
-                              rec,
-                              part + (kv_h * n_passes + pass) * n_chunks * rec +
-                                      hg % per_pass * (head_dim + 2),
-                              out + (kv_h * group + hg) * head_dim);
-                }
-            }
-        }
-        return;
-    }
-    /* Items by KV head, then pass, then block of queries: the team works
-     * through one KV head's rows at a time, which then stay in each core's
-     * L2 (1 MB at 8192 positions and head_dim 64), where in query order
-     * every thread went through all KV heads' (five of them in
-     * SmolLM2-360M, 5 MB). Causal and window masks make later positions
-     * longer: dynamic. */
-    const size_t per_item = plan.per_item;
-    const size_t n_blocks = (n_q + per_item - 1) / per_item;
-#if defined(_OPENMP)
-#pragma omp parallel for collapse(3) schedule(dynamic)
-#endif
-    for (size_t kv_h = 0; kv_h < n_kv_heads; kv_h++) {
-        for (size_t pass = 0; pass < n_passes; pass++) {
-            for (size_t qb = 0; qb < n_blocks; qb++) {
-                const size_t t0 = qb * per_item;
-                const size_t tn = n_q - t0 < per_item ? n_q - t0 : per_item;
-                size_t       lo[AVN_QUERIES_MAX], hi[AVN_QUERIES_MAX];
-                for (size_t tq = 0; tq < tn; tq++) {
-                    avn_span(&a, t0 + tq, &lo[tq], &hi[tq]);
-                }
-                avn_run_item(per_pass,
-                             &a,
-                             t0,
-                             tn,
-                             kv_h,
-                             kv_h * group + pass * per_pass,
-                             lo,
-                             hi,
-                             nullptr);
-            }
-        }
-    }
+    ax_run(n_q,
+           n_q_heads,
+           head_dim,
+           n_kv,
+           n_kv_heads,
+           part_floats,
+           q_offset,
+           sliding_window,
+           1,
+           AX_CHUNK_SPAN_I8,
+           q,
+           k,
+           k_scale,
+           v,
+           v_scale,
+           out,
+           part);
 }

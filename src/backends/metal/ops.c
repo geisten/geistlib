@@ -222,8 +222,7 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
          * shapes at the M1 Max seed of 6144: ffn gate/up 0.138 -> 0.121
          * ms, lm_head 1.68 -> 1.35, while attn kv (1024 rows) would go
          * 0.030 -> 0.044. */
-        const bool n8 = st->use_pq2_n8 && n_out >= st->tuning.pq2_n8_min_n_out &&
-                        st->pq2_n8_pipeline != nullptr;
+        const bool n8 = n_out >= st->tuning.pq2_n8_min_n_out && st->pq2_n8_pipeline != nullptr;
         return (struct metal_quant_pipes) {.n4 = n8 ? st->pq2_n8_pipeline : st->pq2_n4_pipeline,
                                            .mm = st->pq2_mm_pipeline,
                                            .mm_fast   = st->pq2_mm_fast_pipeline,
@@ -367,6 +366,13 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
+/* From this row width a single-row dispatch goes 1024 wide; the F32 GEMV
+ * widens the same way. Fixed, not calibrated: at rows == 1 both kernels are
+ * dispatch-latency-bound, and repeated A/Bs on an idle M1 Max put the 256-
+ * vs 1024-thread difference inside the run-to-run noise (the crossover
+ * wandered between 2048 and 8192 across runs). */
+static constexpr uint32_t METAL_WIDE_ROWS_MIN_COLS = 1024u;
+
 /* One row per threadgroup: at decode (rows == 1) that leaves the whole GPU
  * running a single threadgroup, so a long row wants every thread it can
  * get — 5120 columns went from 256 threads to 1024. Prefill already fills
@@ -374,7 +380,7 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
  * kernels take their stride from threads_per_threadgroup; the plain ones
  * hardcode 256. */
 static uint32_t metal_rows_threads(const struct metal_state *st, uint32_t rows, uint32_t cols) {
-    return st->use_rmsnorm_simd && rows == 1u && cols >= st->tuning.wide_rows_min_cols
+    return st->use_rmsnorm_simd && rows == 1u && cols >= METAL_WIDE_ROWS_MIN_COLS
                    ? 1024u
                    : METAL_ELEM_THREADS;
 }
@@ -786,7 +792,7 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
              * there is, so widen them; multi-row shapes take the sg/mm
              * kernels anyway. */
             .width  = use_sg ? 32u
-                      : (params->rows == 1u && params->n_in >= st->tuning.wide_rows_min_cols)
+                      : (params->rows == 1u && params->n_in >= METAL_WIDE_ROWS_MIN_COLS)
                               ? 1024u
                               : METAL_ELEM_THREADS,
             .height = use_mm ? 4u : 1,
@@ -1727,19 +1733,9 @@ metal_embed_table_geometry(struct geist_backend      *be,
         }
         row_bytes = d_model * sizeof(uint16_t);
     } else if (embed_table->layout == GEIST_LAYOUT_BLOCK_QUANTIZED &&
-               (embed_table->dtype == GEIST_DTYPE_Q4_0 || embed_table->dtype == GEIST_DTYPE_Q8_0)) {
-        if ((d_model % METAL_Q40_Q80_BLOCK_ELEMS) != 0) {
-            return GEIST_E_INVALID_ARG;
-        }
-        blocks_per_row           = d_model / METAL_Q40_Q80_BLOCK_ELEMS;
-        const size_t block_bytes = embed_table->dtype == GEIST_DTYPE_Q4_0 ? METAL_Q40_BLOCK_BYTES
-                                                                          : METAL_Q80_BLOCK_BYTES;
-        if (blocks_per_row > SIZE_MAX / block_bytes) {
-            return GEIST_E_INVALID_ARG;
-        }
-        row_bytes = blocks_per_row * block_bytes;
-    } else if (embed_table->layout == GEIST_LAYOUT_BLOCK_QUANTIZED &&
-               embed_table->dtype == GEIST_DTYPE_PQ2_0) {
+               (embed_table->dtype == GEIST_DTYPE_Q4_0 || embed_table->dtype == GEIST_DTYPE_Q8_0 ||
+                embed_table->dtype == GEIST_DTYPE_PQ2_0 || embed_table->dtype == GEIST_DTYPE_Q4_K ||
+                embed_table->dtype == GEIST_DTYPE_Q5_K || embed_table->dtype == GEIST_DTYPE_Q6_K)) {
         /* embed_lookup_scaled dispatches on the raw enum value, so every
          * dtype its ternary chain names is pinned here -- not just the one
          * being added. PQ2_0 first sat at 19 and pushed BINARY/TERNARY/
@@ -1751,47 +1747,16 @@ metal_embed_table_geometry(struct geist_backend      *be,
         static_assert(GEIST_DTYPE_F16 == 1, "embed shader hardcodes F16 as 1");
         static_assert(GEIST_DTYPE_BF16 == 2, "embed shader hardcodes BF16 as 2");
         static_assert(GEIST_DTYPE_Q4_0 == 5, "embed shader hardcodes Q4_0 as 5");
+        static_assert(GEIST_DTYPE_Q8_0 == 7, "embed shader hardcodes Q8_0 as 7");
         static_assert(GEIST_DTYPE_Q4_K == 9, "embed shader hardcodes Q4_K as 9");
         static_assert(GEIST_DTYPE_Q5_K == 10, "embed shader hardcodes Q5_K as 10");
         static_assert(GEIST_DTYPE_PQ2_0 == 22, "embed shader hardcodes PQ2_0 as 22");
-        if ((d_model % METAL_PQ2_BLOCK_ELEMS) != 0) {
+        const enum geist_dtype dtype = (enum geist_dtype) embed_table->dtype;
+        if (d_model % metal_quant_block_elems(dtype) != 0 ||
+            quant_raw_bytes(dtype, d_model, &row_bytes)) {
             return GEIST_E_INVALID_ARG;
         }
-        blocks_per_row = d_model / METAL_PQ2_BLOCK_ELEMS;
-        if (blocks_per_row > SIZE_MAX / METAL_PQ2_BLOCK_BYTES) {
-            return GEIST_E_INVALID_ARG;
-        }
-        row_bytes = blocks_per_row * METAL_PQ2_BLOCK_BYTES;
-    } else if (embed_table->layout == GEIST_LAYOUT_BLOCK_QUANTIZED &&
-               embed_table->dtype == GEIST_DTYPE_Q4_K) {
-        if ((d_model % METAL_Q4K_BLOCK_ELEMS) != 0) {
-            return GEIST_E_INVALID_ARG;
-        }
-        blocks_per_row = d_model / METAL_Q4K_BLOCK_ELEMS;
-        if (blocks_per_row > SIZE_MAX / METAL_Q4K_BLOCK_BYTES) {
-            return GEIST_E_INVALID_ARG;
-        }
-        row_bytes = blocks_per_row * METAL_Q4K_BLOCK_BYTES;
-    } else if (embed_table->layout == GEIST_LAYOUT_BLOCK_QUANTIZED &&
-               embed_table->dtype == GEIST_DTYPE_Q5_K) {
-        if ((d_model % METAL_Q5K_BLOCK_ELEMS) != 0) {
-            return GEIST_E_INVALID_ARG;
-        }
-        blocks_per_row = d_model / METAL_Q5K_BLOCK_ELEMS;
-        if (blocks_per_row > SIZE_MAX / METAL_Q5K_BLOCK_BYTES) {
-            return GEIST_E_INVALID_ARG;
-        }
-        row_bytes = blocks_per_row * METAL_Q5K_BLOCK_BYTES;
-    } else if (embed_table->layout == GEIST_LAYOUT_BLOCK_QUANTIZED &&
-               embed_table->dtype == GEIST_DTYPE_Q6_K) {
-        if ((d_model % METAL_Q6K_BLOCK_ELEMS) != 0) {
-            return GEIST_E_INVALID_ARG;
-        }
-        blocks_per_row = d_model / METAL_Q6K_BLOCK_ELEMS;
-        if (blocks_per_row > SIZE_MAX / METAL_Q6K_BLOCK_BYTES) {
-            return GEIST_E_INVALID_ARG;
-        }
-        row_bytes = blocks_per_row * METAL_Q6K_BLOCK_BYTES;
+        blocks_per_row = d_model / metal_quant_block_elems(dtype);
     } else {
         geist_backend_set_error(be,
                                 GEIST_E_UNSUPPORTED,
@@ -4156,10 +4121,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
                     .n_out = (uint32_t) n,
                     .rows  = 1,
                     .blocks_per_row =
-                            (uint32_t) ((size_t) w->n_in /
-                                        (dtype == GEIST_DTYPE_Q6_K || dtype == GEIST_DTYPE_Q4_K
-                                                 ? 256
-                                                 : metal_quant_block_elems(dtype))),
+                            (uint32_t) ((size_t) w->n_in / metal_quant_block_elems(dtype)),
                     .x_offset      = (uint32_t) (x->offset / sizeof(float)),
                     .w_byte_offset = (uint32_t) wo,
                     .y_offset      = (uint32_t) yo,
@@ -4261,7 +4223,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
             const struct metal_quant_pipes p =
                     metal_quant_pipes_for(st, (enum geist_dtype) w->dtype, (uint32_t) w->n_out);
             if (w->n_out >= 4 && (st->use_q4k_n4 || p.gemm_only)) {
-                tile = w->dtype == GEIST_DTYPE_PQ2_0 && st->use_pq2_n8 &&
+                tile = w->dtype == GEIST_DTYPE_PQ2_0 &&
                                        (uint32_t) w->n_out >= st->tuning.pq2_n8_min_n_out
                                ? 16
                                : p.n4_tile;
@@ -4488,8 +4450,7 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
             metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_WIDE, g_tv);
             metal_msg_send_dispatch(st, enc, g_tv, t256);
         }
-    } else if (args->seq == 1 && st->dn_dec_v_pipeline != nullptr && 4u * args->head_v <= 1024u &&
-               st->use_dn_dec) {
+    } else if (args->seq == 1 && st->dn_dec_v_pipeline != nullptr && 4u * args->head_v <= 1024u) {
         /* Decode: q/k prep per k-head, then the state update spread over
          * v-heads x 4 row groups (dn_dec_v). */
         metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);

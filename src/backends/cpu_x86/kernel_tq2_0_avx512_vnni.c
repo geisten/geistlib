@@ -26,6 +26,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "kernel_tq2_0_avx512_vnni.h"
+#include "linear_util.h"
 
 #include <immintrin.h>
 #include <stddef.h>
@@ -39,15 +40,6 @@ static_assert(TILE_ROWS == 4, "tq2_0_gemm_rows_avx512_vnni instantiates 4-row ti
 
 static inline float tq2_scale(const struct block_tq2_0_t *w) {
     return _cvtsh_ss((uint16_t) (w->d[0] | (w->d[1] << 8)));
-}
-
-/* Halves, then 8 -> 4 -> 2 -> 1. */
-static inline float reduce(__m512 v) {
-    const __m256 s  = _mm256_add_ps(_mm512_castps512_ps256(v), _mm512_extractf32x8_ps(v, 1));
-    __m128       s4 = _mm_add_ps(_mm256_castps256_ps128(s), _mm256_extractf128_ps(s, 1));
-    s4              = _mm_add_ps(s4, _mm_movehl_ps(s4, s4));
-    s4              = _mm_add_ss(s4, _mm_movehdup_ps(s4));
-    return _mm_cvtss_f32(s4);
 }
 
 /* rows x tokens outputs; constant rows / tokens at every call site, as in
@@ -104,7 +96,7 @@ static inline float reduce(__m512 v) {
     }
     for (size_t r = 0; r < rows; r++) {
         for (size_t t = 0; t < tokens; t++) {
-            y[t * n_out + r] = reduce(acc[r][t]);
+            y[t * n_out + r] = hsum512_ps(acc[r][t]);
         }
     }
 }

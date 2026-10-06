@@ -99,7 +99,7 @@ static int run(struct geist_backend *be, enum geist_dtype dtype, size_t h, size_
             const size_t   scale = dtype == GEIST_DTYPE_Q6_K ? 208 : 0;
             const uint16_t half  = (uint16_t) (0x3800u + (byte() & 3u) * 0x400u);
             memcpy(blob + i * block_bytes + scale, &half, 2);
-            if (dtype == GEIST_DTYPE_Q4_K) {
+            if (dtype == GEIST_DTYPE_Q4_K || dtype == GEIST_DTYPE_Q5_K) {
                 const uint16_t min = 0x3400;
                 memcpy(blob + i * block_bytes + 2, &min, 2);
             }
@@ -287,7 +287,8 @@ int main(void) {
                                          GEIST_DTYPE_F16,
                                          GEIST_DTYPE_Q4_K,
                                          GEIST_DTYPE_Q6_K,
-                                         GEIST_DTYPE_PQ2_0};
+                                         GEIST_DTYPE_PQ2_0,
+                                         GEIST_DTYPE_Q5_K};
     int                    fails      = 0;
     for (size_t b = 0; b < 3; b++) {
         struct geist_backend *be = nullptr;
@@ -295,7 +296,7 @@ int main(void) {
             continue;
         if (strcmp(backends[b], "cpu_scalar") == 0)
             fails += borrowed_capability(be);
-        for (size_t d = 0; d < 6; d++) {
+        for (size_t d = 0; d < sizeof dtypes / sizeof dtypes[0]; d++) {
             fails += run(be, dtypes[d], 512, 384);
             fails += run(be, dtypes[d], 1024, 387);
         }

@@ -185,7 +185,7 @@ static inline void *metal_msg_send_id_id_err(
     return send.fn(receiver, sel, a, err);
 }
 
-/* NSUInteger-returning nullary getter (maxTotalThreadsPerThreadgroup). */
+/* NSUInteger-returning nullary getter (currentAllocatedSize, ...). */
 static inline unsigned long
 metal_msg_send_ulong0(struct metal_state *st, void *receiver, const char *selector) {
     void *sel = metal_sel_register_name(st, selector);
@@ -313,12 +313,6 @@ static inline void metal_msg_send_set_bytes(
 static inline void
 metal_msg_send_set_pipeline(struct metal_state *st, void *receiver, void *pipeline) {
     (void) metal_msg_send_id_id(st, receiver, "setComputePipelineState:", pipeline);
-    if (st->check_tg) {
-        st->bound_tg_max =
-                pipeline != nullptr
-                        ? metal_msg_send_ulong0(st, pipeline, "maxTotalThreadsPerThreadgroup")
-                        : 0u;
-    }
 }
 
 static inline void metal_msg_send_set_threadgroup_memory(struct metal_state *st,
@@ -346,18 +340,6 @@ static inline void metal_msg_send_dispatch(struct metal_state *st,
         void *raw;
         void (*fn)(void *, void *, struct metal_size, struct metal_size);
     } send = {.raw = st->objc_msgSend};
-    if (st->check_tg && st->bound_tg_max != 0u && !st->tg_warned) {
-        const unsigned long want = (unsigned long) threads.width * (unsigned long) threads.height *
-                                   (unsigned long) threads.depth;
-        if (want > st->bound_tg_max) {
-            st->tg_warned = true;
-            fprintf(stderr,
-                    "geist: metal dispatch asks for %lu threads per threadgroup but the bound "
-                    "pipeline allows %lu. This is a bug -- please report it.\n",
-                    want,
-                    st->bound_tg_max);
-        }
-    }
     send.fn(receiver, sel, groups, threads);
     st->seq_dispatch_count++;
 }

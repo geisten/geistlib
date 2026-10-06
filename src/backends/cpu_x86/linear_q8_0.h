@@ -15,9 +15,9 @@
 
 /* Bind w->linear_m1 / linear_mN to the int8 Q8_0 kernels (Q8_0 weights
  * straight from the GGUF bytes, activations quantized to Q8_0 blocks once
- * per call). Returns false and leaves `w` untouched unless w is Q8_0 with
- * n_in a whole number of 32-element blocks. No repack, no aux memory.
- * M>1 takes the AVX-512 VNNI tiles where the ISA gate allows them. */
-[[nodiscard]] bool cpu_x86_linear_q8_0_bind(struct geist_weight *w);
+ * per call). w is Q8_0 and has passed quant_weight_extent_ok, so n_in is a
+ * whole number of 32-element blocks. No repack, no aux memory. M>1 takes
+ * the AVX-512 VNNI tiles where the ISA gate allows them. */
+void cpu_x86_linear_q8_0_bind(struct geist_weight *w);
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_LINEAR_Q8_0_H */
