@@ -18,49 +18,32 @@ the test suite**, not just built.
 | **Linux x86_64** (cpu_x86, clang) | ✅ | ✅ | — | — | — | `build-test-x86_64-clang`⁵ |
 
 Every environment in [`release.yml`](../.github/workflows/release.yml)
-(macos-arm64, linux-arm64, linux-x86_64) now has build **and** test coverage
-here. On top of the matrix, dedicated legs gate every PR: TSan multi-session
-(x86_64), the coverage ratchet (arm64), AVX-512 under Intel SDE, Vulkan on
-lavapipe, the Metal GPU step inside the macOS arm64 leg, the macOS ASan/UBSan
-unit suite on both Mac arches, and `check-headers` — every
-public header compiled standalone as C23 and as C++17, inside `build-test` —
-each described in its section below. Vulkan on a physical GPU (`vulkan-gpu`) runs on a self-hosted
-runner and gates branch PRs only, not fork PRs.
+(macos-arm64, linux-arm64, linux-x86_64) has build **and** test coverage. On
+top of the matrix, dedicated legs gate every PR: TSan multi-session (x86_64),
+the coverage ratchet (arm64), AVX-512 under Intel SDE, Vulkan on lavapipe, the
+Metal GPU step inside the macOS arm64 leg, and `check-headers` (every public
+header compiled standalone as C23 and C++17, inside `build-test`). Vulkan on a
+physical GPU (`vulkan-gpu`) runs on a self-hosted runner and gates branch PRs
+only, not fork PRs.
 
 ## Caveats and deliberate gaps
 
-1. **macOS int/e2e — skipped on purpose.** The real-model product path (forward
-   pass, tokenizer, KV, agent/chat loops) is exercised on **both** Linux arches;
-   macOS runners are the slowest/costliest and the model download dominates.
-   Revisit if a macOS-specific product-path bug ever appears. macOS still runs
-   the full unit suite.
-2. **x86_64 ASan/UBSan — enforced (`asan-x86_64`).** Model-free unit suite with
-   the release binary's backends and GEMM, UBSan halting, leak detection on.
-   Before this leg the cpu_x86 tests were never sanitizer-built, and three had
-   broken there unseen: a build error only at -O1, a NaN comparison that
-   -ffast-math folds at -O1, and a leak on the no-cpu_neon exit path.
-3. **x86_64 int/e2e — required (#96 resolved).** This leg once caught a
-   real shipping bug: AVX-512 kernels in the forward path without a runtime CPU
-   guard, SIGILLing on AVX-512-less x86-64-v3 runners. The kernels are guarded
-   now, the step gates every PR, and a dedicated
-   `GEIST_FORCE_ISA=avx2` pass exercises the non-AVX512 dispatch even on
-   runners that do have AVX-512 — so the portability regression class stays
-   caught.
-4. **macOS ASan/UBSan — enforced (`build-test`, both arches).** The `asan` and
-   `asan-x86_64` legs are Linux+gcc only, so clang-specific breakage at -O1 had
-   no gate: an `omp simd` request the sanitizer instrumentation cannot satisfy
-   is a `-Wpass-failed=transform-warning` error under `-Werror`, and it never
-   appears at -O3. That failed the whole macOS x86_64 sanitizer build while
-   every Linux leg stayed green. Model-free unit suite, same backends as the
-   release build on that leg.
-5. **x86_64 clang — enforced (`build-test-x86_64-clang`).** Every other x86_64
-   leg compiles with gcc, so a clang-only x86 break had no gate: at v0.10.8 the
-   release backend configuration aborted in instruction selection ("Cannot
-   select: X86ISD::VPDPBUSD") under clang-19 and clang-21 alike, because clang
-   outlines an OpenMP `parallel for` body into a function that does not inherit
-   the kernel's `target` attribute. #415 removed the cause; this leg keeps it
-   from returning. Build plus the model-free unit suite — the failure mode is a
-   compile abort.
+1. **macOS int/e2e — skipped on purpose.** The real-model path (forward pass,
+   tokenizer, KV, chat loops) runs on both Linux arches; macOS runners are the
+   slowest and the model download dominates. macOS runs the full unit suite.
+2. **x86_64 ASan/UBSan (`asan-x86_64`).** Model-free unit suite with the
+   release binary's backends and GEMM, UBSan halting, leak detection on.
+3. **x86_64 int/e2e — required.** Includes a `GEIST_FORCE_ISA=avx2` pass, so
+   the non-AVX-512 dispatch is exercised even on runners that have AVX-512 and
+   an unguarded AVX-512 kernel (SIGILL on x86-64-v3) fails the PR.
+4. **macOS ASan/UBSan (`build-test`, both arches).** Catches clang-only
+   breakage at -O1 that the gcc sanitizer legs cannot see, e.g. an `omp simd`
+   the instrumentation cannot satisfy (`-Wpass-failed=transform-warning` under
+   `-Werror`). Model-free unit suite.
+5. **x86_64 clang (`build-test-x86_64-clang`).** Every other x86_64 leg uses
+   gcc. clang outlines OpenMP `parallel for` bodies into functions that do not
+   inherit a kernel's `target` attribute, which can abort instruction
+   selection (#415); this leg builds and runs the model-free unit suite.
 
 ### AVX-512 is exercised *opportunistically*, not guaranteed
 
@@ -78,8 +61,7 @@ guarantee an AVX-512 CPU, so:
   builds and passes — the baseline every SIMD kernel is checked against, runner
   CPU notwithstanding.
 
-Since #184 the `avx512-sde` job **guarantees** AVX-512/VNNI execution on every
-PR: the shipped x86_64 binaries run under Intel SDE's Sapphire Rapids
+The `avx512-sde` job **guarantees** AVX-512/VNNI execution on every PR: the shipped x86_64 binaries run under Intel SDE's Sapphire Rapids
 emulation, `test_x86_isa_dispatch_unit` hard-fails unless the dispatcher
 actually selects the VNNI tier (a silent downgrade cannot pass), and the
 targeted W4A8/W8A8/Q4Kx8/Q6K/i2s and INT8-KV attention kernel tests execute
@@ -106,15 +88,13 @@ not merely built**: both Linux int/e2e legs fetch the model
 (`make fetch-llama-model`, which verifies the SHA-256 on every run and fails
 loudly on a truncated download, a corrupted cache, or a changed upstream) and
 run with `GEIST_STRICT_FIXTURES=gguf`, which turns a "model not found" skip
-into a failure. The CI cache key embeds the content-pin prefix, so re-pinning
-the model rotates the cache. Local `make test` without the model keeps
-skipping cleanly (#180).
+into a failure. The CI cache key embeds the content pin, so re-pinning the
+model rotates the cache. Local `make test` without the model skips cleanly.
 
-### Metal is built AND executed on a real GPU in every PR (#181)
+### Metal is built and executed on a real GPU in every PR
 
-The manual probe spike answered its question: **hosted `macos-15` runners
-expose a usable Metal device**. The macOS matrix leg therefore builds
-`BACKENDS="metal cpu_neon cpu_scalar"` and runs a mandatory GPU step:
+Hosted `macos-15` runners expose a usable Metal device. The macOS arm64 leg
+builds `BACKENDS="metal cpu_neon cpu_scalar"` and runs a mandatory GPU step:
 
 - `test_backend_metal_probe` — registration, backend lifecycle, buffer
   round-trip (host↔device);
@@ -124,23 +104,20 @@ expose a usable Metal device**. The macOS matrix leg therefore builds
   Q3_K/IQ3_S, F32), with x/w/y allocated through the backend's buffer API so
   the GPU path runs by construction. Tolerance 1e-3 relative; several
   formats pin their block scales small because the simdgroup GEMM stages
-  weights in **half**, whose integer lattice ends at 2048 — a documented
-  staging-precision property, not a bug (unpinned scales produce √n·ulp
-  noise, measured and triaged 2026-08-28).
+  weights in **half**, whose integer lattice ends at 2048 (a staging-precision
+  property, not a bug; unpinned scales produce √n·ulp noise).
 
 In this step a SKIP (exit 77) **fails**: on `macos-15` a device is expected,
 and a skipped gate must not read as a green one. On Linux legs metal is not
 built and both tests skip cleanly in the unit suite.
 
-Model e2e on Metal is intentionally a separate tier. Every PR builds the
-fixture-gated `test_qwen35_metal_e2e_int`, but the macOS PR leg does not run the
-real-model integration suite. The weekly `gemma4-metal-smoke` workflow does
-generate end-to-end on the cached E2B reference on a hosted macOS runner — added
-after the PLE fused-probe regression shipped unnoticed for weeks precisely
-because no CI leg ran a Gemma model on Metal (#305–#307). Qwen35 Metal e2e
-therefore remains a manual/fixture-provisioned gate rather than per-PR coverage.
+Model e2e on Metal is a separate tier. Every PR builds the fixture-gated
+`test_qwen35_metal_e2e_int`, but the macOS PR leg does not run the real-model
+suite. The weekly `gemma4-metal-smoke` workflow generates end to end with the
+E2B reference on a hosted macOS runner (#305–#307); Qwen35 Metal e2e is a
+manual, fixture-provisioned gate.
 
-## Vulkan: software tier on every PR, hardware tier self-hosted (#182)
+## Vulkan: software tier on every PR, hardware tier self-hosted
 
 The `vulkan-lavapipe` job builds `BACKENDS="vulkan cpu_x86 cpu_scalar"` and
 executes `test_backend_vulkan_registry_unit`, the buffer round-trip test and
@@ -160,14 +137,11 @@ PRs are excluded by a `head.repo.full_name` guard — the runner is not
 sandboxed and this repo is public — so a fork gets no hardware tier.
 Setup and operational notes: `docs/CI_SELF_HOSTED.md`.
 
-On top of the three, this tier runs the model e2e the emulated tiers cannot
+On top of the three, this tier runs model e2e the emulated tiers cannot
 afford: `test_known_answer_e2e` (five cloze prompts, floor 4/5) and
-`test_prefill_determinism_int`, against a GGUF kept on the runner host and
-named by the repo variable `GEIST_GGUF_PATH`. That gate is the reason it
-exists — the three kernel tests passed green on the device while the model
-path was returning nothing at all (a scratch buffer outside the pool made
-Vulkan's fused `attn_qkv_prep` decline, and prefill turned that into a hard
-failure). Kernel parity does not imply a working forward pass.
+`test_prefill_determinism_int`, against a GGUF on the runner host named by the
+repo variable `GEIST_GGUF_PATH`. Kernel parity does not imply a working forward
+pass.
 
 ### Diagnostics are kept as artifacts
 
@@ -180,20 +154,18 @@ pass or fail:
 | `vulkan-gpu` | `vulkan-gpu-diagnostics` | `vulkaninfo --summary`, `nvidia-smi`, per-test output |
 | `avx512-sde` | `avx512-sde-diagnostics` | host `lscpu`, per-test output under SDE |
 
-The reason is specific to emulated tiers: lavapipe is a moving target — a Mesa
-update lands under the job without anything in this repo changing — so the
-first question after a red run is what the environment was. `if: always()`
-because that is exactly the run whose diagnostics get thrown away otherwise.
+A Mesa or driver update can land under the job without a change in this
+repository, so the first question after a red run is what the environment
+was; hence `if: always()`.
 
-## Coverage ratchet (#185)
+## Coverage ratchet
 
 The `coverage` job builds `MODE=cov` (gcc-14, `-O1 --coverage`, Linux arm64)
 and runs the model-free unit suite plus the real-model int suite with
 `GEIST_STRICT_FIXTURES=gguf` — a fixture skip would hollow out the
-measurement, so it fails instead. (e2e is deliberately not measured: on an
-instrumented -O1 build it re-drives the same engine paths through the CLI
-wrappers for another ~half hour and changes the numbers by noise.) `gcovr` produces JSON + Cobertura XML +
-HTML (uploaded as the `coverage-report` artifact), and
+measurement, so it fails instead. (e2e is not measured: it re-drives the same
+engine paths for another ~30 min and moves the numbers by noise.) `gcovr`
+produces JSON + Cobertura XML + HTML (uploaded as the `coverage-report` artifact), and
 `scripts/coverage_gate.py` gates per-subsystem **line and branch** coverage
 against the versioned baselines in `benchmark/coverage_baselines.json`, with
 the overall figure and per-subsystem table published to the job summary.
@@ -225,9 +197,7 @@ model nor the network, because the input *is* the format:
 - `fuzz_gguf.c` → `gguf_open_memory` plus every accessor on the result
   (tensor list, dtype names, metadata getters, one index past the end) and it
   reads each tensor's payload bytes, so a length that escapes the mapping is a
-  read ASan reports rather than a value nobody looks at. GGUF is first because
-  the whole file comes from outside and the parser says so itself
-  (`src/io/gguf_reader.c:153`).
+  read ASan reports. The whole file is untrusted input.
 - `fuzz_tokenizer.c` → `gguf_tokenizer_load_copy` out of the same file, then
   encode/decode/`id_for_text`. The GGUF is closed and freed right after the
   load: copy mode promises independence from the mapping, so a surviving
@@ -242,23 +212,15 @@ behind `GEIST_FUZZ_STANDALONE`, which is what lets them run in a gcc job:
 | `make MODE=asan fuzz` (3000 runs/harness, fixed seed) | `asan-x86_64` | < 1 s, reuses that job's sanitizer tree |
 | `make fuzz-libfuzzer FUZZ_SECONDS=30` (coverage-guided) | `build-test-x86_64-clang` | ~1 min run, ~7 M execs per target |
 
-`MODE=fuzz` (asan + ubsan + `-fsanitize=fuzzer-no-link`) exists so the library
-itself is instrumented in its own build tree. Do not fake it with
-`MODE=asan EXTRA_CFLAGS=-fsanitize=fuzzer-no-link`: there is no flag hash in
-this build system, an existing asan tree is reused as-is, and the fuzzer then
-runs blind — `cov: 22` after 24 M executions, which is how this was noticed.
+`MODE=fuzz` (asan + ubsan + `-fsanitize=fuzzer-no-link`) instruments the
+library in its own build tree. Do not substitute
+`MODE=asan EXTRA_CFLAGS=-fsanitize=fuzzer-no-link`: the build system does not
+track flags, an existing asan tree is reused as-is, and the fuzzer runs blind.
 
-The corpus is written by the harness (`--seed`), not checked in: the format
-knowledge belongs next to the parser it feeds. Nothing is persisted between
-runs, which is also the argument against a **nightly long run for now** — each
-run would restart from the same seed, and a 10-minute run from scratch explores
-little past what 30 s at ~230 k exec/s already reaches. Worth adding the moment
-the corpus is cached (`actions/cache`, one entry per target); then the long run
-starts where the last one stopped and the extra minutes buy new shapes.
-
-First finding, fixed in the same change: an unbounded metadata/tensor count in
-the 24-byte GGUF header turned into a 1.5 PB allocation request
-(`gguf_reader.c`, now bounded by the bytes that are actually left).
+The corpus is generated by the harness (`--seed`), not checked in, and not
+persisted between runs. A nightly long run is not worth it until the corpus is
+cached (`actions/cache`, one entry per target): from the same seed, 10 minutes
+explore little beyond what 30 s at ~230 k exec/s already reach.
 
 ## Non-goals
 
