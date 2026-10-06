@@ -50,11 +50,11 @@ knowledge, full control over weighting and output.** For task adaptation on a
 few hundred examples that is usually the binding constraint anyway; for
 teaching the model facts it does not have, it is not enough.
 
-The upgrade path, if per-tensor capacity runs out, is per-block scales: TQ2_0
+If per-tensor capacity runs out, the next step is per-block scales: TQ2_0
 carries one f16 scale per 256 trits, so a `[2560, 2560]` weight has 25 600 of
 them — roughly a rank-10 LoRA's parameter budget. They sit at a 66-byte stride
-inside the packed weight bytes and reaching them needs a backend-layout-aware
-accessor, which is why the shipped version stops at per-tensor.
+inside the packed weight bytes and need a backend-layout-aware accessor, so
+tuning stays per-tensor for now.
 
 ---
 
@@ -139,10 +139,9 @@ prefills only suffixes.
 | M1 Max, unpinned, 40 steps | 76.4 tokens | 59.5 s |
 | M1 Max, pinned, 40 steps | 8.4 tokens | **15.8 s — 3.77×** |
 
-Pinning is worth more than the raw token ratio suggests on neither machine
-and less than it on both, because scoring an example is a reset plus a
-prefill plus one call per target token — the per-call overhead does not
-shrink.
+Wall clock improves by less than the 9× token ratio on both machines:
+scoring an example is a reset, a prefill and one call per target token, and
+the per-call overhead does not shrink.
 
 ### When pinning pays — and when it does not
 
@@ -179,35 +178,29 @@ The corollary is worth more than the measurement: if your own agent sends a
 prefix again, and you are back in the first row. Hermes's diversity is
 synthetic; a real deployment usually is not that diverse.
 
-### Two invariants that bite
+### Two invariants
 
-Both of these were found by measurement, not by review, and both produce
-loss curves that look entirely healthy while being wrong.
+Both produce loss curves that look healthy while being wrong.
 
 **`pin_len` is not an on/off switch.** Once a prefix is pinned, `reset()`
 restores to it unconditionally. Passing `pin_len = 0` while a prefix is
-pinned prefills the shared context a *second time on top of itself*.
-Measured: the holdout read 3.26 instead of 2.79, and the only reason it was
-caught is that two runs which had to agree on their step-0 value did not.
-Pass `0` only when nothing is pinned.
+pinned prefills the shared context a *second time on top of itself* (measured:
+holdout 3.26 instead of 2.79). Pass `0` only when nothing is pinned.
 
 **The pinned KV is a function of the weights, and the gains are weights.**
 The cached prefix reflects the gains that were live when it was pinned, while
 suffix and target are scored with the current ones — so training makes its
 own cache stale.
 
-It is not fatal: within a step both probes see the same prefix, so the finite
-difference is taken at a consistent, if slightly displaced, operating point,
-and a run tuned this way still generalizes. But it is measurable, and it
-flatters the number being reported. After 400 steps the in-run holdout read
-**0.1556** against a prefix pinned at `gains = 1.0`, and **0.2249** once
-re-pinned at the tuned gains — 0.07 nats of pure bookkeeping error.
+Within a step both probes see the same prefix, so the finite difference is
+still consistent and the run still generalizes, but the reported holdout is
+flattered: after 400 steps it read **0.1556** against a prefix pinned at
+`gains = 1.0` and **0.2249** once re-pinned at the tuned gains.
 
-The trainer therefore re-pins every `REPIN_EVERY_STEPS` (25) and again before
+The trainer therefore re-pins every `REPIN_EVERY_STEPS` (25) steps and before
 every holdout evaluation. One prefill of the shared prefix per 25 steps is far
-below what the pin saves, and it bounds the drift instead of letting it
-accumulate over the run. With that in place the in-run final holdout and a
-fresh process loading the same sidecar agree exactly:
+below what the pin saves, and it bounds the drift. The in-run final holdout
+and a fresh process loading the same sidecar then agree exactly:
 
 ```
 training run, step 400 holdout  0.4562
@@ -216,17 +209,11 @@ fresh process, --init g2.bin    0.4562
 
 ### The verification gate
 
-`geist_session_pin_prefix` propagates a failed architecture pin (since
-7f568e8), but a pin that *succeeds* while subtly changing the score would
-mean training on wrong contexts behind a loss curve that still looks
-reasonable.
-
-So the pin is not trusted, it is **checked**: one example is scored with a
-full prefill, then scored again on top of the pinned prefix. The two must
-agree.
-
-They agree to a tolerance, not exactly, and the tolerance is measured rather
-than guessed:
+`geist_session_pin_prefix` reports a failed pin, but a pin that *succeeds*
+while subtly changing the score would train on wrong contexts behind a
+reasonable-looking loss curve. So the trainer **checks** it: one example is
+scored with a full prefill, then again on top of the pinned prefix, and the two
+must agree within a measured tolerance:
 
 | | Δ (nats) |
 | :-- | --: |
@@ -241,13 +228,10 @@ different batch shapes in a different order and the last bits move. On the
 Pi's own int8 kernel the accumulation order does not depend on the batch
 shape and the difference vanishes — which confirms the diagnosis.
 
-The threshold is **0.1 nats, absolute**. Roughly 10× above the noise and 60×
-below the fault.
-
-Absolute rather than relative, and that is not a style choice: once tuning
-drives the loss to ~0.02, the same 0.003-nat wobble reads as 11 % and a
-relative gate rejects a pin that is perfectly fine. This was found by running
-the round-trip test, not by reasoning about it.
+The threshold is **0.1 nats, absolute**: roughly 10× above the noise and 60×
+below the fault. It must be absolute: once tuning drives the loss to ~0.02,
+the same 0.003-nat wobble reads as 11 % and a relative gate would reject a
+correct pin.
 
 ---
 
@@ -327,19 +311,23 @@ tokenized separately, so the split lands on a token boundary by construction —
 write the completion the way the model should emit it, leading space included
 if that is what the tokenizer produces.
 
-| flag | |
-| :-- | :-- |
-| `--init PATH` | continue from an existing sidecar |
-| `--no-pin` | disable shared-prefix pinning |
-| `--holdout N` | hold out the last N examples (default 10 %) |
-| `--eval-every N` | holdout eval interval, 0 = off |
-| `--clip F` | directional-derivative clip (default 10) |
-| `--self-check` | run the unit checks, no model needed |
+| flag | default | |
+| :-- | :-- | :-- |
+| `--out PATH` | `gains.bin` | sidecar to write |
+| `--init PATH` | all 1.0 | continue from an existing sidecar |
+| `--steps N` | 2000 | ZO steps |
+| `--batch N` | 1 | examples per step, 1..32 |
+| `--lr F` / `--eps F` | 1e-4 / 1e-3 | learning rate / perturbation radius |
+| `--clip F` | 10 | directional-derivative clip |
+| `--holdout N` | 10 % | hold out the last N examples |
+| `--eval-every N` | 200 | holdout eval interval, 0 = off |
+| `--seed N` | 1 | RNG seed |
+| `--no-pin` | pin on | disable shared-prefix pinning |
+| `--self-check` | | run the unit checks, no model needed |
 
 `--self-check` covers the perturbation algebra, the JSON escape decoding and
-the shared-prefix length rule. It uses an always-on `CHECK` macro rather than
-`assert`, because the shipped build is `-DNDEBUG` and asserts would compile
-away into a self-check that reports success on no evidence.
+the shared-prefix length rule. It uses an always-on `CHECK` macro, not
+`assert`, because release builds define `NDEBUG`.
 
 ### Batch size is the trap
 
@@ -412,9 +400,8 @@ requests.
 **Step 400 is worse than step 300.** There is no learning-rate schedule — a
 constant `lr` bounces around the minimum once it gets there, and the run
 happened to end on an upswing. Quoting 0.6447 as "the result" would be
-picking the best point of a noisy curve. If you need the best vector rather
-than the last one, checkpoint on holdout improvement; the tool currently
-writes whatever the final step produced.
+picking the best point of a noisy curve. The tool writes the final step's
+gains; if you need the best vector, checkpoint on holdout improvement.
 
 ---
 
