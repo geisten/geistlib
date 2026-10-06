@@ -4,14 +4,11 @@
  *
  * Every attention path maps query head h to KV head
  * h / (n_q_heads / n_kv_heads), and both counts are model metadata. More
- * KV heads than query heads made that group size 0: a synthetic llama GGUF
- * with 4 query and 8 KV heads (tools/gen_synth_gguf.py --heads 4
- * --kv-heads 8) loaded and then died on its first prefill with SIGFPE, in
- * the INT8 and the FP32 KV attention, on cpu_x86 and cpu_scalar. A count
- * that does not divide (15 query, 4 KV) sent query heads 12-14 to KV head
- * 4, which does not exist: they read the next position's rows, and at the
- * last position one row past the ones written. The loader now refuses both,
- * and a zero count, and says why.
+ * KV heads than query heads (e.g. tools/gen_synth_gguf.py --heads 4
+ * --kv-heads 8) make that group size 0, a SIGFPE on the first prefill. A
+ * count that does not divide (15 query, 4 KV) sends query heads 12-14 to
+ * KV head 4, which does not exist, and reads past the rows written. The
+ * loader refuses both, and a zero count, and says why.
  *
  * Minimal in-memory llama GGUFs (metadata plus one dummy tensor, like
  * test_head_dim_limit_unit), head_dim 64: the bad counts must be refused

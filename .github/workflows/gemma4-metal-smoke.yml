@@ -1,9 +1,7 @@
-# Weekly gemma4-on-Metal gate. The PLE fused-probe regression (missing
-# m-gate, fixed alongside this file) hard-failed every gemma4 Metal
-# prefill at layer 0 and shipped unnoticed: nothing in per-PR CI runs a
-# gemma model on the Metal backend. Same shape as e4b-smoke.yml — weekly
-# with a cached model, deliberately outside ci.yml so the 3.1 GB E2B
-# reference doesn't ride along on every PR leg.
+# Weekly gemma4-on-Metal gate: nothing in per-PR CI runs a gemma model on
+# the Metal backend. Same shape as e4b-smoke.yml — weekly with a cached
+# model, outside ci.yml so the 3.1 GB E2B reference doesn't ride along on
+# every PR leg.
 name: gemma4 Metal smoke
 
 on:
@@ -51,10 +49,9 @@ jobs:
         if: steps.probe.outputs.metal == 'yes'
         run: make fetch-model
 
-      # simple_generate exits non-zero when any forward stage fails —
-      # exactly how the PLE probe regression surfaced (prefill returned
-      # UNSUPPORTED). Output text is not asserted, only that generation
-      # runs end to end on the Metal backend.
+      # simple_generate exits non-zero when any forward stage fails (e.g.
+      # prefill returning UNSUPPORTED). Output text is not asserted, only that
+      # generation runs end to end on the Metal backend.
       - name: Generate on Metal
         if: steps.probe.outputs.metal == 'yes'
         run: |

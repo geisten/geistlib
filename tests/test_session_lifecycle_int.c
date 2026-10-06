@@ -5,8 +5,6 @@
  * SKIPs cleanly if no GGUF model is available (GEIST_GGUF_PATH env or
  * default-path search). Otherwise loads the model, prefills 4 BOS-only
  * tokens, decodes 3 tokens, prints them.
- *
- * Phase B-4a smoke test — confirms the facade wiring works end-to-end.
  */
 #include "test_helpers.h"
 
@@ -115,8 +113,8 @@ int main(void) {
     geist_session_destroy(sess);
 
     /* Capacity guard: a prefill that can't fit the session window must be
-     * rejected up-front with TOO_MANY_TOKENS, not silently no-op'd (the
-     * pp>=4096 decode bug). The over-large prefill is rejected before any
+     * rejected up-front with TOO_MANY_TOKENS, not silently no-op'd. The
+     * over-large prefill is rejected before any
      * forward runs, so this is cheap. */
     {
         struct geist_session_opts small = {.max_seq_len = 512, .temperature = 0.0f};

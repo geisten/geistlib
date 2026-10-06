@@ -61,10 +61,6 @@
 #include "shaders/silu_f32_spv.h"
 #include "shaders/silu_mul_f32_spv.h"
 
-/* ====================================================================== */
-/* Compute pipelines                                                       */
-/* ====================================================================== */
-
 /* local_size_x of a compute module (OpExecutionMode LocalSize), 0 when the
  * module does not state a literal one. */
 static uint32_t vk_spirv_local_size_x(size_t n_words, const uint32_t code[static n_words]) {

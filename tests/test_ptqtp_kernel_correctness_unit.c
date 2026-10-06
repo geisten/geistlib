@@ -1,10 +1,10 @@
 /*
- * test_ptqtp_kernel_correctness — guard for Step 1 K1 (CPU-PTQTP-IMPL-PLAN).
+ * test_ptqtp_kernel_correctness — the 2-plane PTQTP GEMV kernels.
  *
  * Verifies that ptqtp_gemv_2plane_fp16alpha and ptqtp_gemv_2plane_fp32alpha
  * produce equivalent output on a deterministic 2-plane test case, plus a
- * scalar reference computation. Catches accidental regressions when the
- * inner-loop α handling is refactored.
+ * scalar reference computation, so a change to the inner-loop α handling
+ * shows up here.
  *
  * Tolerances:
  *   fp16α vs scalar reference  : rtol=1e-2 atol=1e-3 (fp16 alpha loses ~3

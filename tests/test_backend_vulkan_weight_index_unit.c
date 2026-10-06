@@ -4,10 +4,9 @@
  *
  * resolve_weight uploads each weight to device memory and records host
  * pointer → buffer; every linear_t and embedding call looks the weight up
- * by its host pointer. The lookup used to scan the whole registry. Checked
- * here, with 1500 weights at consecutive 64-byte addresses (the densest
- * layout a model's mmap can produce, and growth of the index past several
- * doublings):
+ * by its host pointer through a hash index. Checked here, with 1500
+ * weights at consecutive 64-byte addresses (the densest layout a model's
+ * mmap can produce, and growth of the index past several doublings):
  *
  *   - every weight is found and maps to its own buffer, the same one a
  *     scan of the dense list finds; pointers between the weights are not

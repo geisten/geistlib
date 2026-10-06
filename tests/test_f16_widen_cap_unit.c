@@ -3,9 +3,9 @@
  * run is refused at load, not at the first prefill (#564).
  *
  * Metal has no F16/BF16 linear: its resolver refuses them, and the loader
- * widens a small one (<= 4M elements) to F32 instead. A larger one used to
- * load anyway and then fail the first prefill with "resolver installed no
- * kernel". The test wraps cpu_scalar in a resolver that refuses F16/BF16
+ * widens a small one (<= 4M elements) to F32 instead; a larger one must fail
+ * the load rather than the first prefill ("resolver installed no kernel").
+ * The test wraps cpu_scalar in a resolver that refuses F16/BF16
  * the same way, and loads an in-memory llama whose attn_q is F16:
  *   - below the cap the projection is widened, and a prefill runs;
  *   - above the cap the load fails with GEIST_E_UNSUPPORTED, and the message

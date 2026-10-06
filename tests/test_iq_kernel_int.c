@@ -3,13 +3,10 @@
  * linear_iq3s_decode_w3a8 against the dequant + cblas_sgemv reference.
  *
  * Loads one IQ2_S and one IQ3_S tensor from a real GGUF (gemma4-e2b-IQ2_M),
- * runs the new W2A8/W3A8 NEON kernels on a random input vector, and
+ * runs the W2A8/W3A8 NEON kernels on a random input vector, and
  * compares against the FP32 reference computed by dequant_iq{2,3}_s_row +
  * sgemv. Pass criterion: cosine similarity ≥ 0.999 (both kernels are
  * int8-quantized in x so we accept the slight rounding vs FP32 reference).
- *
- * Phase 0.3 (IQ2_M throughput unblock) — verifies the kernels are
- * functionally correct before benchmarking.
  *
  * SKIPs cleanly if the IQ2_M model is not available.
  */

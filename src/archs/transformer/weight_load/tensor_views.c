@@ -50,12 +50,9 @@ bool weight_skips_arena(const struct geist_backend *be, const struct gguf_tensor
         /* A small half-precision matrix a backend refuses to resolve is
          * widened to F32 (load_layer_proj): load_norm_to_f32_buffer stages the
          * source in the arena a second time and adds the F32 copy — the bump
-         * allocator frees nothing. Bonsai: 96 BF16 ssm_alpha/ssm_beta.
-         * Counted whatever the caps say: the refusal comes from
-         * resolve_weight, not from a cap, and metal (no
-         * weights_need_backend_arena) widens too once GEIST_WEIGHT_MMAP=0
-         * forces the arena (#561). A backend that resolves the matrix
-         * natively leaves the surcharge unused. */
+         * allocator frees nothing. Counted whatever the caps say: the refusal
+         * comes from resolve_weight, not from a cap (#561). A backend that
+         * resolves the matrix natively leaves the surcharge unused. */
         const size_t elems = gguf_tensor_elem_count(t);
         if (t->n_dims == 2 && (t->dtype == GGUF_TYPE_F16 || t->dtype == GGUF_TYPE_BF16) &&
             elems <= (4u << 20)) {
@@ -73,11 +70,10 @@ bool weight_skips_arena(const struct geist_backend *be, const struct gguf_tensor
 /* Reorder the rows of a llama-family attn_q / attn_k from the GGUF's
  * interleaved RoPE pair order to the half-split order the runtime rotates:
  * within each head, output row i comes from row 2i and row half + i from
- * row 2i + 1. That is the permutation the forward pass used to apply to the
- * q/k activations on every layer and token; applied to the weight rows it
- * yields the same activations, bit for bit, since every output row is its
- * own dot product. Quantized blocks never straddle rows, so a row is a
- * plain byte range for every dtype. */
+ * row 2i + 1. Applied to the weight rows it yields the same activations as
+ * permuting q/k per token, bit for bit, since every output row is its own
+ * dot product. Quantized blocks never straddle rows, so a row is a plain
+ * byte range for every dtype. */
 void permute_rope_rows(
         size_t n_rows, size_t row_bytes, size_t head_dim, const uint8_t *src, uint8_t *dst) {
     const size_t half = head_dim / 2;
@@ -179,12 +175,10 @@ rope_il_rows_alloc(struct transformer_arch_state *st, struct gguf_ctx *gguf, siz
         return GEIST_E_FORMAT;
     }
 
-    /* Not F32 in the file. Every kernel that consumes a norm gamma reads
-     * F32, so convert once here rather than teaching rmsnorm a dtype.
-     * Microsoft's published bitnet-embedding GGUFs store every gamma as
-     * F16 -- the first models in tree to do so, and the reason a norm now
-     * goes through this instead of a flat dtype check. The staged buffer is
-     * dropped: its bytes are the file's F16, not the F32 we need. */
+    /* Not F32 in the file (e.g. the F16 gammas of bitnet-embedding GGUFs).
+     * Every kernel that consumes a norm gamma reads F32, so convert once
+     * here rather than teaching rmsnorm a dtype. The staged buffer is
+     * dropped: its bytes are the file's, not the F32 we need. */
     be->desc->vtbl->buffer_destroy(be, buf);
     buf = nullptr;
 
@@ -291,19 +285,15 @@ rope_il_rows_alloc(struct transformer_arch_state *st, struct gguf_ctx *gguf, siz
      *   β mode (the default where caps.weights_need_backend_arena is
      *   set, i.e. Vulkan; GEIST_WEIGHT_MMAP=0 elsewhere): weight bytes
      *   are copied from the GGUF mmap into a backend-owned arena via
-     *   bump-allocation;
-     *   gguf_close runs after all loads. Backend has full ownership.
-     *   Cost: 2.8 GB upfront disk read + memcpy on Pi 5 IQ2_M.
+     *   bump-allocation; gguf_close runs after all loads.
      *
      *   mmap-alias mode (the CPU and Metal default): weight bytes are NOT
-     *   copied; we wrap the mmap pointer in an aliased buffer (the
-     *   P0.3 path). gguf_ctx is retained for state lifetime; kernels
-     *   read directly from mmap pages. Disk reads happen on demand
-     *   during attention. Pi 5 IQ2_M cold-load ~1.7 s.
+     *   copied; the mmap pointer is wrapped in an aliased buffer.
+     *   gguf_ctx is retained for state lifetime; kernels read directly
+     *   from mmap pages, faulted in on demand.
      *
-     * The two modes share the same hot path because both expose a
-     * GEIST_MEMORY_ALIASED buffer to the kernel layer. Only the
-     * underlying ownership differs. */
+     * Both expose a GEIST_MEMORY_ALIASED buffer to the kernel layer; only
+     * the ownership differs. */
     struct geist_buffer             *buf = nullptr;
     enum geist_status                s;
     const struct geist_backend_vtbl *v = be->desc->vtbl;

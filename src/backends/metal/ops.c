@@ -1,8 +1,5 @@
 /*
  * src/backends/metal/ops.c — op implementations, encode helpers, probe, and the descriptor.
- *
- * Layer: BACKEND (metal). Split from the former monolithic backend.c;
- * pure moves, no behavior change.
  */
 #include <geist_util.h>
 #include "metal_internal.h"
@@ -11,10 +8,8 @@
 #include "hadamard.h"
 
 /* Below this many rows a quantized linear reads the weights once per row
- * through the matvec kernel instead of one pass of a tiled GEMM. Measured on
- * an M1 Max with Gemma 4 E4B Q4_K_M: a whole-model pass costs ~20 ms per
- * row as matvec and ~195 ms as a bounded GEMM tile for any count up to 32,
- * so the two meet at ~10 rows (#578). */
+ * through the matvec kernel instead of one pass of a tiled GEMM: a bounded
+ * GEMM tile costs about as much as ten matvec rows (#578). */
 #define METAL_MATVEC_MAX_ROWS 9u
 static void metal_encode_q4k_linear(struct metal_state            *st,
                                     void                          *enc,
@@ -23,10 +18,9 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
                                     const struct geist_tensor     *y,
                                     const struct metal_q4k_params *params,
                                     bool                           m_tile8) {
-    /* #578: split a ragged batch so its whole 32-row tiles take the interior
-     * fast kernel and only the tail takes a bounded one. Left whole, one
-     * ragged row sent every tile of the matrix through the bounded path.
-     * The two dispatches write disjoint rows of y. */
+    /* Split a ragged batch so its whole 32-row tiles take the interior fast
+     * kernel and only the tail takes a bounded one (#578). The two
+     * dispatches write disjoint rows of y. */
     if (m_tile8 && params->rows > 32u && (params->rows % 32u) != 0u) {
         struct metal_q4k_params head = *params;
         struct metal_q4k_params tail = *params;
@@ -39,7 +33,7 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
         return;
     }
     /* A few rows (a ragged tail, a short appended turn) go row by row
-     * through the matvec kernel: the m8 tile kernel took as long as a full
+     * through the matvec kernel: the m8 tile kernel costs as much as a full
      * 64-row GEMM for any row count (#578). */
     if (m_tile8 && params->rows <= METAL_MATVEC_MAX_ROWS && st->use_q4k_n4 && params->n_out >= 4u) {
         for (uint32_t r = 0; r < params->rows; r++) {
@@ -56,9 +50,7 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
                              st->q4k_matmul_m16_n2_pipeline != nullptr && params->n_out >= 2u;
     /* The bounded kernel clamps its row and column indices and copies a
      * partial tile out through threadgroup memory, so any rows >= 8 shape
-     * takes it, as the other formats' GEMMs do. Gated on rows%32, a ragged
-     * tail went through the m16 kernel, which on Gemma 4 E4B cost more than
-     * the four full 64-row chunks before it (#578). The partial-tile
+     * takes it, as the other formats' GEMMs do (#578). The partial-tile
      * epilogue stores float4s, so y rows must start 16-byte aligned. */
     const bool full_tiles = (params->rows % 32u) == 0u && (params->n_out % 64u) == 0u;
     const bool m_tile_sg =
@@ -120,8 +112,8 @@ static void metal_encode_q6k_linear(struct metal_state            *st,
                                     const struct geist_tensor     *y,
                                     const struct metal_q4k_params *params,
                                     bool                           m_tile8) {
-    /* #578: as for Q4_K, whole 64-row tiles take the fast kernel and only a
-     * ragged tail the bounded one. */
+    /* As for Q4_K, whole 64-row tiles take the fast kernel and only a
+     * ragged tail the bounded one (#578). */
     if (m_tile8 && params->rows > 64u && (params->rows % 64u) != 0u) {
         struct metal_q4k_params head = *params;
         struct metal_q4k_params tail = *params;
@@ -171,10 +163,7 @@ static void metal_encode_q6k_linear(struct metal_state            *st,
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
 
     /* The q6k sg kernels are 128-thread / 4-simdgroup with a 32-output x
-     * 64-batch-row tile (b0=tg.y*64, o0=tg.x*32). The old (n_out+7)/8 x
-     * 32-thread dispatch here only ever ran simdgroup 0 — a latent bug the
-     * old engine never hit because its prefill routed q6k through the
-     * fused blocks, not this vtbl op. */
+     * 64-batch-row tile (b0=tg.y*64, o0=tg.x*32). */
     const struct metal_size groups = {
             .width  = m_tile_sg ? (params->n_out + 31u) / 32u
                       : n_tile4 ? (params->n_out + 3u) / 4u
@@ -198,9 +187,8 @@ static void metal_encode_q6k_linear(struct metal_state            *st,
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
-/* The pipelines and grid geometry for one quant dtype. One row per
- * format, so a new format is one case instead of an arm in each of the
- * five selection chains this replaced. */
+/* The pipelines and grid geometry for one quant dtype; a new format is
+ * one case here. */
 struct metal_quant_pipes {
     void    *n4;        /* decode GEMV (rows == 1) */
     void    *mm;        /* bounded 64x32 simdgroup GEMM */
@@ -218,10 +206,8 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
         /* 8 rows per simdgroup halve the activation traffic (a thread
          * reads 128 bytes of x per iteration against R*8 bytes of
          * weights) but halve the threadgroup count too, so it pays only
-         * from tuning.pq2_n8_min_n_out output rows up. Measured on 27B
-         * shapes at the M1 Max seed of 6144: ffn gate/up 0.138 -> 0.121
-         * ms, lm_head 1.68 -> 1.35, while attn kv (1024 rows) would go
-         * 0.030 -> 0.044. */
+         * from tuning.pq2_n8_min_n_out output rows up (on 27B shapes: the
+         * FFN and lm_head GEMVs gain, the 1024-row attn kv ones lose). */
         const bool n8 = n_out >= st->tuning.pq2_n8_min_n_out && st->pq2_n8_pipeline != nullptr;
         return (struct metal_quant_pipes) {.n4 = n8 ? st->pq2_n8_pipeline : st->pq2_n4_pipeline,
                                            .mm = st->pq2_mm_pipeline,
@@ -368,15 +354,13 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
 
 /* From this row width a single-row dispatch goes 1024 wide; the F32 GEMV
  * widens the same way. Fixed, not calibrated: at rows == 1 both kernels are
- * dispatch-latency-bound, and repeated A/Bs on an idle M1 Max put the 256-
- * vs 1024-thread difference inside the run-to-run noise (the crossover
- * wandered between 2048 and 8192 across runs). */
+ * dispatch-latency-bound and the 256- vs 1024-thread difference is within
+ * run-to-run noise. */
 static constexpr uint32_t METAL_WIDE_ROWS_MIN_COLS = 1024u;
 
 /* One row per threadgroup: at decode (rows == 1) that leaves the whole GPU
  * running a single threadgroup, so a long row wants every thread it can
- * get — 5120 columns went from 256 threads to 1024. Prefill already fills
- * the machine with rows, so it keeps the 256 it was tuned at. The simd
+ * get. Prefill already fills the machine with rows, so it keeps 256. The simd
  * kernels take their stride from threads_per_threadgroup; the plain ones
  * hardcode 256. */
 static uint32_t metal_rows_threads(const struct metal_state *st, uint32_t rows, uint32_t cols) {
@@ -733,8 +717,7 @@ static void metal_encode_attention_rows(struct metal_state                  *st,
             .depth  = 1,
     };
     /* Books the SCALAR stage: this two-pass kernel is the O(kv) fallback
-     * the head_dim-512 full-attention layers take (flash gate is <=256) —
-     * it was invisible to the profiler/skips until 2026-07-04. */
+     * the head_dim-512 full-attention layers take (flash gate is <=256). */
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ATTENTION_QNORM_ROWS, groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
@@ -1330,10 +1313,10 @@ static void metal_encode_hadamard(struct metal_state                 *st,
     metal_msg_send_set_bytes(st, enc, p, sizeof(*p), 3);
     metal_msg_send_set_threadgroup_memory(st, enc, p->block * sizeof(float), 0u);
     const struct metal_size groups = {p->width / p->block, rows, 1};
-    /* One thread per element pair and stage: 1024 threads measured 10.6 us
-     * per decode row vs 14 us at 256 (the butterflies are barrier-bound). A
-     * barrier-free simdgroup variant (32 registers per lane, shuffles for
-     * the low strides) measured ~50 us and was dropped. */
+    /* One thread per element pair and stage, up to 1024: the butterflies
+     * are barrier-bound, and a wider threadgroup beats 256 per decode row.
+     * A barrier-free simdgroup variant (shuffles for the low strides) was
+     * several times slower. */
     const struct metal_size threads = {p->block < 1024u ? p->block : 1024u, 1, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_HADAMARD, groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
@@ -1737,12 +1720,8 @@ metal_embed_table_geometry(struct geist_backend      *be,
                 embed_table->dtype == GEIST_DTYPE_PQ2_0 || embed_table->dtype == GEIST_DTYPE_Q4_K ||
                 embed_table->dtype == GEIST_DTYPE_Q5_K || embed_table->dtype == GEIST_DTYPE_Q6_K)) {
         /* embed_lookup_scaled dispatches on the raw enum value, so every
-         * dtype its ternary chain names is pinned here -- not just the one
-         * being added. PQ2_0 first sat at 19 and pushed BINARY/TERNARY/
-         * CUSTOM off the values v0.11.0 published; moving it to the tail
-         * put 19 back on BINARY, which the shader would then have decoded
-         * as PQ2_0. One assert per arm is what makes that a build error
-         * instead of wrong embedding rows. */
+         * dtype its ternary chain names is pinned here: renumbering the
+         * enum is a build error instead of wrong embedding rows. */
         static_assert(GEIST_DTYPE_F32 == 0, "embed shader hardcodes F32 as 0");
         static_assert(GEIST_DTYPE_F16 == 1, "embed shader hardcodes F16 as 1");
         static_assert(GEIST_DTYPE_BF16 == 2, "embed shader hardcodes BF16 as 2");
@@ -1876,7 +1855,7 @@ metal_embedding_lookup_scaled(struct geist_backend      *be,
     return GEIST_OK;
 }
 
-/* Batched twin (#322 step 3): one dispatch embeds a whole prefill chunk.
+/* Batched twin: one dispatch embeds a whole prefill chunk.
  * ids travel via setBytes (constant buffer), so the row count is bounded
  * by the 4 KB setBytes budget. */
 enum { METAL_EMBED_ROWS_MAX = 1024 };
@@ -2578,8 +2557,7 @@ metal_embedding_lookup(struct geist_backend      *be,
 /* The f32-KV fast paths below convert the live K/V rows into this f16
  * staging on every call. It is sized for every row of the cache k views
  * (the session's context), so a growing KV length never reallocates it
- * mid-session (AGENT.md §3); sized at twice the live rows, it was
- * reallocated each time the KV length doubled. A larger cache on this
+ * mid-session (AGENT.md §3). A larger cache on this
  * backend (another session or model) grows it once more. */
 [[nodiscard]] static enum geist_status metal_attn_kvf16_reserve(struct geist_backend      *be,
                                                                 struct metal_state        *st,
@@ -2609,9 +2587,8 @@ metal_embedding_lookup(struct geist_backend      *be,
 }
 
 /* rows>1 f32-KV fast path: convert K/V to persistent f16 staging (one
- * kv_append_rows_f16 dispatch) and run the no-norm simdgroup flash kernel.
- * The scalar f32 kernel this replaces is the dominant prefill cost; the
- * conversion is ~1%% of the savings. Serial-encoder ordering makes the
+ * kv_append_rows_f16 dispatch) and run the no-norm simdgroup flash kernel
+ * instead of the scalar f32 kernel. Serial-encoder ordering makes the
  * staging reuse across layers safe. */
 [[nodiscard]] static enum geist_status metal_attention_flash_kv(struct geist_backend      *be,
                                                                 struct metal_state        *st,
@@ -2979,8 +2956,8 @@ metal_embedding_lookup(struct geist_backend      *be,
     return metal_msg_send_id0(st, cmd, "error") == nullptr ? GEIST_OK : GEIST_E_BACKEND;
 }
 
-/* Fused FFN gate+up matvec with GeGLU epilogue (vtbl slot): the restored
- * wip gate_up_q4k_n4 kernel — llama mul_mv structure, 2 rows/simdgroup,
+/* Fused FFN gate+up matvec with GeGLU epilogue (vtbl slot): the
+ * gate_up_q4k_n4 kernel — llama mul_mv structure, 2 rows/simdgroup,
  * both weights against one activation pass, gelu(g)*u written directly.
  * rows==1 (decode) and Q4_K only; prefill keeps the mm_sg GEMMs. */
 [[nodiscard]] static enum geist_status metal_ffn_gate_up(struct geist_backend      *be,
@@ -3072,7 +3049,7 @@ metal_embedding_lookup(struct geist_backend      *be,
 
 /* Fused gemma attention q/k/v prep (vtbl slot): q_norm_rope_rows for q,
  * kv_norm_append_rows{,_f16} for k+v (norm + RoPE + cache append in one
- * dispatch). Replaces up to six decomposed ops with two dispatches. */
+ * dispatch): two dispatches for up to six decomposed ops. */
 [[nodiscard]] static enum geist_status metal_attn_qkv_prep(struct geist_backend      *be,
                                                            struct geist_tensor       *q,
                                                            struct geist_tensor       *k,
@@ -3371,8 +3348,7 @@ metal_embedding_lookup(struct geist_backend      *be,
     }
 
     /* Proj side: the fused ple_proj_norm_f32 kernel is a single-threadgroup
-     * GEMV — 400us/layer at d_model 2048 (measured 2026-07-04, decode
-     * 18.7->32.9 ms/tok). Route through the fast f32 matvec + fused
+     * GEMV and far too slow; route through the fast f32 matvec + fused
      * rmsnorm_add instead. */
     struct geist_tensor gate_1d = *gate_scratch;
     if (gate_1d.ndim == 2 && gate_1d.shape[0] == 1) {
@@ -3399,7 +3375,7 @@ metal_embedding_lookup(struct geist_backend      *be,
 
 /* Device greedy argmax (vtbl slot): one 256-thread threadgroup scans the
  * [1, n] logits row on the GPU; the host flush then reads a 4-byte token
- * instead of mapping the whole 1 MB logits row (plan Phase A1). Tie-break
+ * instead of mapping the whole 1 MB logits row. Tie-break
  * = lowest index, matching geist_sampler_argmax. */
 [[nodiscard]] static enum geist_status
 metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32_t *out_index) {
@@ -3928,7 +3904,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     metal_linear_mN(1, x, w, be, y);
 }
 
-/* Tensor-based linear (main's optional vtbl slot): dispatch the GEMM from
+/* Tensor-based linear (optional vtbl slot): dispatch the GEMM from
  * the engine's existing tensor views — no host pointers, so the op encodes
  * onto the open batch when one is active. UNSUPPORTED falls back to the
  * resolved host-pointer kernels. */
@@ -4354,12 +4330,11 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
      * dn_run_prefill_chunked port); the serial per-token mixer stays for
      * decode and as the fallback when scratch allocation fails.
      *
-     * #322: the recipe is encoded in DN_SUBCHUNK-token sub-chunks
-     * regardless of the caller's m — the O(C²) chunk cost stays at its
-     * measured optimum (64; the arch-level cap A/B'd 64/128/256 at
-     * 623/430/335 tok/s) while the surrounding GEMMs run at the full
-     * batch for occupancy. State buffers thread through Metal's hazard
-     * tracking; scratch is reused per sub-chunk. */
+     * The recipe is encoded in DN_SUBCHUNK-token sub-chunks regardless of
+     * the caller's m, so the O(C²) chunk cost stays at its optimum (64;
+     * #322) while the surrounding GEMMs run at the full batch for
+     * occupancy. State buffers thread through Metal's hazard tracking;
+     * scratch is reused per sub-chunk. */
     enum { DN_SUBCHUNK = 64u };
     bool chunked = args->seq > 1 && (args->head_v % 4u) == 0u && st->use_dn_chunk &&
                    st->dn_chunk_gate_pipeline != nullptr;
@@ -4489,7 +4464,7 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
     return GEIST_OK;
 }
 
-/* main-contract vtbl. */
+/* Backend vtbl. */
 static const struct geist_backend_vtbl metal_vtbl = {
         .create                = metal_create,
         .destroy               = metal_destroy,
@@ -4547,8 +4522,8 @@ static bool metal_fused_supported(struct geist_backend *be, const struct geist_f
     case GEIST_FUSED_PLE_BLOCK:
         /* F32 gate/proj matrices AND m==1 (mirrors metal_ple_block's
          * checks — its kernels are naive decode GEMVs, rows==1 only).
-         * The missing m check made the plan bind fuse_ple_block_mN and
-         * hard-fail every gemma4 Metal prefill at layer 0. */
+         * Without the m check the plan binds fuse_ple_block_mN and every
+         * gemma4 prefill fails at layer 0. */
         return q->m == 1 && q->gate_w != nullptr && q->up_w != nullptr &&
                q->gate_w->dtype == GEIST_DTYPE_F32 && q->up_w->dtype == GEIST_DTYPE_F32;
     case GEIST_FUSED_EMBEDDING_LOOKUP_SCALED:
@@ -4634,15 +4609,10 @@ const struct geist_backend_descriptor geist_backend_metal = {
                                /* deltanet_mix encodes 64-token sub-chunks internally
                                 * (#322), so DN models keep preferred_m_max. */
                  .dn_subchunk = true,
-                 /* 256 since the simdgroup GEMM work. The original
-                  * 2026-08-27 A/B was void — pre-#312, m_max requests
-                  * below the default were silently ignored, so both
-                  * arms ran identical configs. The post-#312 re-check
-                  * with real chunking keeps 256 (gemma4-e2b 972 tok/s
-                  * pp512). 512 doubles the m_max-scaled logits scratch
-                  * (m_max x VOCAB floats — 256 MB at vocab 262k); DN
-                  * models are capped at 64 in arch_state anyway
-                  * (O(C^2) chunk cost). */
+                 /* 512 would double the m_max-scaled logits scratch
+                  * (m_max x VOCAB floats — 256 MB at vocab 262k) for no
+                  * prefill gain; DN models are capped at 64 in
+                  * arch_state anyway (O(C^2) chunk cost). */
                  .preferred_m_max   = 256,
                  .max_m             = 512, /* batched-submit pipeline bound */
                  .preferred_kv_mode = GEIST_KV_FP32},

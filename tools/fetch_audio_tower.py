@@ -103,7 +103,7 @@ def main() -> int:
 
     # Fetch in SOURCE-offset order, coalescing near-adjacent tensors into a
     # handful of large Range requests (one TLS handshake each) instead of
-    # one request per tensor — 752 round-trips used to dominate wall clock.
+    # one request per tensor (752 round-trips would dominate wall clock).
     # Each tensor is seek-written to its name-sorted OUTPUT offset.
     prelude = struct.pack("<Q", len(hdr_bytes)) + hdr_bytes
     out_off = {}

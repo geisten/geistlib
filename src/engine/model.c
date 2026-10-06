@@ -4,9 +4,8 @@
  * Layer: ENGINE.
  *
  * Dispatches to arch_ops based on the GGUF's general.architecture metadata.
- * Transformer goes to src/archs/transformer (which since B-4e runs entirely
- * through backend->vtbl ops); future architectures (Mamba, etc.) plug in
- * by registering an arch_ops descriptor in arch_registry.c.
+ * New architectures plug in by registering an arch_ops descriptor in
+ * arch_registry.c.
  */
 #define GEIST_INTERNAL_ENGINE_LAYER
 
@@ -23,7 +22,7 @@
 #include "gguf_reader.h"
 
 #include <geist.h>
-#include <geist_util.h> /* eos/bos/token_by_text live here as of 0.2.0 */
+#include <geist_util.h> /* eos/bos/token_by_text */
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -32,14 +31,14 @@
 
 /* Per-model engine-side state. The text_decoder.arch_meta in
  * struct geist_model holds the arch-specific state — transformer_arch_state
- * for the transformer arch; future archs will store their own state types.
- * This struct holds engine-only side data that's architecture-agnostic. */
+ * for the transformer arch. This struct holds engine-only side data that's architecture-agnostic.
+ */
 struct model_engine_state {
     char *path;
     /* Two tokenizer paths, exactly one populated:
      *  - `sp_tok` is loaded from an external tokenizer.bin (Gemma path).
      *  - `gguf_tok` is loaded from the GGUF-embedded vocab + merges
-     *    (Llama / Mistral path, P1.6). Owns heap-arena copies of the
+     *    (Llama / Mistral path). Owns heap-arena copies of the
      *    token strings so the gguf_ctx can close after load.
      * set_prompt / tokenize dispatch on whichever is non-null. */
     struct sp_bpe_tokenizer *sp_tok;
@@ -180,8 +179,8 @@ model_load_undo(struct sp_bpe_tokenizer *sp, struct gguf_tokenizer *gg, struct m
     }
 }
 
-/* Find tokenizer.bin near the GGUF: <dir>/tokenizer.bin, then ./tokenizer.bin,
- * then ../<sibling-model-dir>/tokenizer.bin heuristically, then env. */
+/* Find tokenizer.bin: $GEIST_TOKENIZER_PATH, then <gguf dir>/tokenizer.bin,
+ * then ./tokenizer.bin and the Gemma 4 dev-tree fallbacks. */
 static char *find_tokenizer_path(const char *gguf_path) {
     /* 1. Env override */
     const char *env = getenv("GEIST_TOKENIZER_PATH");
@@ -280,15 +279,9 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
         /* Best-effort tokenizer load. Failure is non-fatal — caller can
          * still use geist_session_prefill_tokens with pre-tokenized IDs.
          *
-         * Two paths (P1.6). Try GGUF-embedded first since it's the
-         * model's own tokenizer; only fall back to external
-         * `tokenizer.bin` if the GGUF doesn't ship a usable one
-         * (gguf_tokenizer_load_copy refuses non-gpt2 models, so Gemma 4
-         * sentencepiece-LLama variants flow to the external sp_bpe path):
-         *  1. GGUF-embedded vocab + merges — Llama, Mistral, SmolLM2,
-         *     etc. gguf_tokenizer handles GPT-2-style byte-level BPE.
-         *  2. External `tokenizer.bin` — Gemma 4 layout.
-         *     sp_bpe_tokenizer handles SentencePiece-BPE. */
+         * The GGUF-embedded tokenizer is tried first; external
+         * `tokenizer.bin` (sp_bpe_tokenizer) only when the GGUF has no
+         * usable one (gguf_tokenizer_load_copy refuses unsupported modes). */
         gguf_tok = heap_alloc_aligned(sizeof(*gguf_tok), alignof(struct gguf_tokenizer));
         if (gguf_tok != nullptr) {
             if (!gguf_tokenizer_load_copy(gguf_tok, tg)) {
@@ -309,13 +302,9 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
         }
     }
 
-    /* Allocate the arch_state via the decoder's state_create. For the
-     * transformer arch this opens the GGUF and loads weights into
-     * backend-owned buffers; for future archs it'll be SSM-state or
-     * whatever the arch needs. */
-    /* state_create returns void*, so a failure carries no status up here.
-     * If it named the cause in the create-time slot, keep that message —
-     * the guess below is only right when nothing below said anything. */
+    /* state_create (for the transformer: open the GGUF, load weights into
+     * backend buffers) returns void*, so a failure carries no status. Keep
+     * a create-time message it set; the generic one below is a fallback. */
     geist_error_clear_create_time();
     void *arch_state = desc->decoder_ops->state_create(be, path, opts);
     if (arch_state == nullptr) {
@@ -625,7 +614,7 @@ void geist_model_destroy(struct geist_model *m) {
 }
 
 const char *geist_model_errmsg(const struct geist_model *m) {
-    (void) m; /* TODO B-4d: per-handle err slot */
+    (void) m; /* no per-handle error slot */
     return "(model errmsg not yet stored per-handle)";
 }
 
@@ -660,7 +649,7 @@ geist_model_metadata_str(const struct geist_model *m, const char *key, size_t *o
     return nullptr;
 }
 
-/* geist_model_plan / _from_memory (#625): the metadata the model would keep,
+/* geist_model_plan / _from_memory: the metadata the model would keep,
  * the arch gate, then the architecture's plan on the open GGUF. */
 static enum geist_status model_plan(const char                      *fn,
                                     struct gguf_ctx                 *tg,
@@ -784,7 +773,7 @@ enum geist_status geist_model_gains(struct geist_model *m, float **out_gains, si
     }
     *out_gains = nullptr;
     *out_n     = 0;
-    /* Optional op: an arch without a gain path (mamba2) leaves it null.
+    /* Optional op: an arch without a gain path leaves it null.
      * That is "tuning unavailable", the same answer the transformer gives
      * for a build without GEIST_TUNE — not a failure of the model. */
     const struct geist_arch_ops_decoder *ops = m->text_decoder.arch_ops;

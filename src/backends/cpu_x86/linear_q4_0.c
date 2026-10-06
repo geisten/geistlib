@@ -4,14 +4,11 @@
  *
  * Layer: BACKEND (cpu_x86).
  *
- * Q4_0 (and the Q4_1 tensors that ship inside "Q4_0" exports) had no x86
- * kernel: they ran the generic path (linear_generic.c), which dequantizes
- * every weight to fp32 before the dot — 2.8 tok/s prefill on a Q4_0 model
- * where llama.cpp runs 273 (#410). This kernel stays in int8 the same way
- * linear_q8_0.c does: the weights are read straight from the GGUF bytes (no
- * repack, no aux memory), the activations are quantized to Q8_0 blocks once
- * per call, and each block's 32 products are one maddubs + madd on the raw
- * nibbles:
+ * Q4_0 and the Q4_1 tensors that ship inside "Q4_0" exports (#410). The kernel
+ * stays in int8 the same way linear_q8_0.c does: the weights are read straight
+ * from the GGUF bytes (no repack, no aux memory), the activations are
+ * quantized to Q8_0 blocks once per call, and each block's 32 products are one
+ * maddubs + madd on the raw nibbles:
  *
  *   maddubs(q, xq)  — q is the unsigned nibble (0..15), xq the int8
  *                     activation (|xq| <= 127): a pair is at most 3810, so

@@ -6,9 +6,9 @@
  * j * (n_in / block_elems) * block_bytes and is decoded block by block. A
  * row that ends inside a block breaks both: the next row starts at the
  * wrong byte and the tail of this one is never decoded. The GGUF reader
- * checks only that the whole tensor is whole blocks, and so did
- * quant_weight_extent_ok, so Q4_0 with n_in = 48 and n_out = 2 (three
- * blocks in all, one and a half per row) was accepted.
+ * checks only that the whole tensor is whole blocks, which Q4_0 with
+ * n_in = 48 and n_out = 2 (three blocks in all, one and a half per row)
+ * passes.
  *
  * For every block-quantized dtype and every CPU backend in the build: rows
  * of one and a half blocks give GEIST_E_FORMAT; a total that is not whole

@@ -5,8 +5,8 @@ An incremental build appends the objects it rebuilds to the archive, so a
 parent built in the tree and a commit built on top of it differ in code
 layout as well as in the change. On x86-64 the layout alone moved single
 stages of the prefill profile by 2-3 %, and end-to-end gains measured that
-way came out several times too large: a claimed -7.4 % was -1.8 % between
-clean builds (the CHANGELOG entries af36a9d corrected). This tool builds
+way came out several times too large (-7.4 % claimed, -1.8 % between clean
+builds). This tool builds
 every revision in a git worktree of its own, then runs bench_perf_sweep on
 the binaries interleaved, the order rotating each cycle as in
 tools/bench_mac_ab.py.

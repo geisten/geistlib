@@ -1,5 +1,6 @@
 /*
- * mel_pipeline — vDSP-backed log-mel spectrogram.
+ * mel_pipeline — log-mel spectrogram (vDSP on Apple, vendored radix-2 FFT
+ * elsewhere).
  *
  * Per-frame (320 fp32 PCM in → 128 fp32 log-mel out):
  *   1. windowed[i]   = pcm[i] * hann[i]                 for i in [0, 320)
@@ -63,10 +64,9 @@ extern void           vDSP_ctoz(const DSPComplex      *C,
 
 #if !defined(__APPLE__)
 /* Vendored real FFT for the non-Apple build: a small in-place iterative
- * radix-2 DIT FFT (forward, -2pi i convention; n a power of 2). Replaces the
- * FFTW3 dependency so the BLAS-free build is fully dependency-free
- * (ROADMAP.md). Validated against a naive DFT: max rel-magnitude error ~7e-6
- * at N=512. Audio is not perf-critical, so the per-butterfly trig is fine. */
+ * radix-2 DIT FFT (forward, -2pi i convention; n a power of 2), keeping the
+ * BLAS-free build dependency-free. Max rel-magnitude error vs a naive DFT
+ * ~7e-6 at N=512. Audio is not perf-critical, so per-butterfly trig is fine. */
 static void mel_fft_radix2(float *re, float *im, int n) {
     static const double MEL_PI = 3.14159265358979323846;
     int                 bits   = 0;
@@ -197,7 +197,7 @@ void mel_frame_compute(struct MelState *m, const float *pcm_320, float *out_mel_
     }
 #else
     /* Radix-2 real FFT: real input, imag 0; output bins 0..N/2 (no scaling,
-     * Nyquist at N/2 — same convention as np.fft.rfft / the FFTW path). */
+     * Nyquist at N/2 — same convention as np.fft.rfft). */
     for (int i = 0; i < MEL_FFT_LENGTH; i++) {
         m->fft_re[i] = m->padded[i];
         m->fft_im[i] = 0.0f;

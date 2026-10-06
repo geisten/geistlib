@@ -12,8 +12,7 @@ privileges, never refuses to run, and never writes into the repository.
 Design notes, because each one is load-bearing:
 
 * The protocol is FROZEN (see PROTOCOL). Every row in reference_runs.json was
-  produced by it. Change it and every stored row becomes incomparable, which is
-  exactly how the old headline table stopped meaning anything.
+  produced by it. Change it and every stored row becomes incomparable.
 
 * An absolute t/s number cannot be checked by a stranger on unknown hardware.
   What can be checked is a RATIO against a baseline engine on the same box, so
@@ -64,17 +63,11 @@ CLEAN_SPREAD_PCT = 2.0
 BUSY_LOAD_PER_CORE = 0.7
 
 # Both engines must start from the same thermal state. A passively cooled board
-# reaches its soft limit during one sweep -- measured here, 48 -> 74 C -- and
-# whichever engine runs second is throttled. Measured cost of ignoring it:
-# bitnet.cpp's prefill read 37.5 t/s straight after geist against 44.5 on a
-# cool board, a 16 % handicap invented by the running order and pointing the
-# wrong way, in our favour.
+# reaches its soft limit during one sweep (48 -> 74 C on a Pi 5) and whichever
+# engine runs second is throttled (~16 % prefill on bitnet.cpp).
 COOL_C = 56.0
-# 20 minutes, not 10. Measured: a Pi 5 that starts a run at 51.6 C finishes the
-# sweep plus the energy probes around 74 C and does not come back under the gate
-# within ten -- it reached 57.6, the baseline ran warm, and the report correctly
-# declared its own ratios compromised. A gate that routinely cannot be met
-# teaches readers to ignore it. Overridable for boards that cool differently.
+# 20 minutes: a Pi 5 ends the sweep plus energy probes near 74 C and does not
+# reach the gate within ten. Overridable for boards that cool differently.
 COOL_TIMEOUT_S = int(os.environ.get("GEIST_BENCH_COOL_TIMEOUT", "1200"))
 
 # Energy per token needs the phases physically separated, because a prefill
@@ -269,13 +262,10 @@ def cool_down() -> tuple[str, float]:
     """Return the board to the state the first engine started from.
 
     Without this the baseline runs on hardware geist just heated and the ratio
-    measures the running order as much as the engines — measured here at an 18 %
-    handicap to whichever ran second.
+    measures the running order as much as the engines.
 
-    Returns (status, temperature). The three outcomes are deliberately distinct
-    because they mean different things to a reader, and an earlier version of
-    this collapsed them into one boolean and then reported a cooldown timeout as
-    "this platform has no thermometer", which was simply untrue:
+    Returns (status, temperature). The three outcomes are distinct because they
+    mean different things to a reader:
 
       "cooled"     — verified at or below the threshold before the baseline ran
       "still_hot"  — readable, but it did not come down inside the timeout;
@@ -335,9 +325,7 @@ def find_baselines() -> list[tuple[str, Path]]:
     Both are measured when both are present: bitnet.cpp is the relevant
     opponent for a ternary model, llama.cpp for everything else, and which one
     matters depends on the GGUF rather than on which path we happened to check
-    first. An earlier version returned at the first hit, so on a box carrying
-    both -- the development Pi carries five llama-bench builds -- llama.cpp was
-    never measured at all.
+    first.
 
     Explicit env wins over the conventional build paths. Finding none is the
     normal case for someone who just cloned this, and is not an error.
@@ -450,10 +438,9 @@ def render(run: dict, refs: list[dict]) -> str:
         e = run["energy"]
         # Deliberately NOT divided into a per-token figure. The sampling window
         # covers prefill and decode together, and at a 512-token prompt prefill
-        # dominates it -- dividing by decoded tokens alone charges prefill's
-        # energy to them and inflates the number ~4.5x. A trustworthy J/token
-        # needs the sampler phase-separated against the sweep's own timings,
-        # which this does not do yet.
+        # dominates it -- dividing by decoded tokens alone would inflate the
+        # number ~4.5x. Per-token figures come from the phase-separated probes
+        # (energy_per_token).
         L += ["", f"**Energy:** {e['mean_w']:.2f} W mean board power over "
                   f"{e['seconds']:.0f} s ({e['samples']} PMIC samples), "
                   f"{e['joules']:.0f} J for the sweep."]
@@ -537,9 +524,6 @@ def render(run: dict, refs: list[dict]) -> str:
               "| system | model | decode t/s @512 | vs baseline | date |",
               "| :-- | :-- | --: | :-- | :-- |"]
         for r in refs:
-            # Reads the baselines list; an earlier flat "ratio" field was folded
-            # into it and this table kept looking for the old key, quietly
-            # printing a dash for every row that in fact had a ratio.
             parts = [f"{x['decode_ratio_short_ctx']:.2f}× {x['engine']}"
                      for x in r.get("baselines", [])
                      if x.get("decode_ratio_short_ctx")]
@@ -642,11 +626,8 @@ def main() -> int:
     print(f"\nreport: {out_dir / (stem + '_report.md')}", file=sys.stderr)
 
     if args.record:
-        # A row whose own gate says the comparison was compromised does not
-        # belong in a dataset whose only purpose is that someone else can
-        # reproduce it. Recording it anyway leaves a ratio that flatters us
-        # sitting next to ones that do not, distinguishable only by a field
-        # nobody reads twice. Refuse instead, and say what to do about it.
+        # A row whose own thermal gate says the comparison was compromised
+        # does not belong in a dataset meant to be reproduced; refuse it.
         hot = [b["engine"] for b in run.get("baselines", [])
                if b.get("thermal_gate") == "still_hot"]
         if hot:
@@ -665,16 +646,12 @@ def main() -> int:
             "decode_tps_512": rows[-1]["decode_tps"],
             "prefill_tps_512": rows[-1]["prefill_tps"],
             "spread_pct": rows[-1]["spread_pct"],
-            # The row that baseline ratios are computed against. It went missing
-            # when the flat baseline fields became a list, leaving ratios with
-            # no way to check them -- the one thing every row here exists to
-            # avoid, and the second time this file lost that.
+            # The row that baseline ratios are computed against, so the
+            # ratios can be checked.
             "decode_tps_short": rows[0]["decode_tps"],
         }
         if run.get("baselines"):
-            # A list, because a box can carry more than one relevant opponent and
-            # picking just the first silently dropped llama.cpp on every machine
-            # that also had bitnet.cpp.
+            # A list: a box can carry more than one relevant opponent.
             entry["baselines"] = [
                 {"engine": b["engine"],
                  "decode_tps": b.get("decode_tps"),

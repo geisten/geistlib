@@ -370,7 +370,7 @@ static double logsumexp(const float *v, size_t n) {
  * "use the pin or don't" switch: reset() restores to the pinned prefix
  * either way, so passing 0 while a prefix is pinned prefills the shared
  * context a SECOND time on top of itself. That produces a plausible but
- * wrong loss — measured, it moved the holdout from 2.79 to 3.26. Pass 0
+ * wrong loss. Pass 0
  * only when nothing is pinned. */
 static double nll_one(struct geist_session *s, const struct example *e, size_t pin_len) {
     if (geist_session_reset(s) != GEIST_OK) {
@@ -452,25 +452,14 @@ static size_t common_prefix_len(const struct example *ex, size_t n) {
 /* How far the pinned and unpinned loss for the same example may differ
  * before pinning is rejected. In NATS, absolute — not relative.
  *
- * Both sides were measured on BitNet 2B-4T with a 68-token shared system
- * prompt:
+ * Pinned and unpinned scoring differ by ~0.01 nats: arch_ops.c prefills in
+ * m_max(=64)-token sub-batches, so the two paths use different GEMM batch
+ * shapes and sum in a different order. Missing context moves the loss by
+ * nats (6.2 on BitNet 2B-4T); 0.1 sits ~10x above the noise and ~60x below
+ * that fault.
  *
- *   pinned vs unpinned, same example : 4.270556 vs 4.281214   (Δ 0.011)
- *   context actually missing         : 3.6280   vs 9.8156     (Δ 6.19)
- *
- * The first is prefill chunking: arch_ops.c prefills in m_max(=64)-token
- * sub-batches, so 76 tokens in one call splits 64+12 while pinned-68 plus
- * an 8-token suffix splits 64+4 then 8. Different GEMM batch shapes sum in
- * a different order and the last bits move. Benign, and unavoidable short
- * of pinning at a multiple of m_max.
- *
- * The second is the failure this gate exists to catch. 0.1 nats sits ~10x
- * above the noise and ~60x below the fault.
- *
- * Absolute rather than relative because the noise is roughly absolute while
- * the baseline is not: once tuning drives the loss to ~0.02, that same
- * 0.003-nat wobble reads as 11% and a relative gate rejects a pin that is
- * perfectly fine. Measured, not hypothetical. */
+ * Absolute because the noise is: once tuning drives the loss to ~0.02, a
+ * relative gate would reject a pin that is fine. */
 #define PIN_LOSS_TOLERANCE_NATS 0.1
 
 /* How often the pinned prefix is recomputed during training.
@@ -480,17 +469,11 @@ static size_t common_prefix_len(const struct example *ex, size_t n) {
  * the suffix and target are scored with the current ones. Training makes the
  * cache stale by construction.
  *
- * It is not fatal — within a step both probes see the same prefix, so the
- * finite difference is taken at a consistent (if slightly displaced)
- * operating point, and a run tuned this way still generalizes when
- * re-verified from a fresh process. But it is measurable: after 400 steps
- * the in-run holdout read 0.1556 against a prefix pinned at gains=1.0, and
- * 0.2249 once re-pinned at the tuned gains. That is 0.07 nats of pure
- * bookkeeping error, and it flatters the number being reported.
- *
- * Re-pinning costs one prefill of the shared prefix. Every 25 steps that is
- * far below the ~89% the pin saves, and it bounds the drift instead of
- * letting it accumulate over the whole run. */
+ * Within a step both probes see the same prefix, so the finite difference
+ * stays consistent, but a stale prefix flatters the reported holdout loss
+ * (~0.07 nats after 400 steps). Re-pinning costs one prefill of the shared
+ * prefix; every 25 steps that is far below what the pin saves and bounds the
+ * drift. */
 #define REPIN_EVERY_STEPS 25
 
 /* Pin the shared prefix, and CHECK it changed nothing that matters: one
@@ -498,7 +481,7 @@ static size_t common_prefix_len(const struct example *ex, size_t n) {
  * of the pinned prefix.
  *
  * The check is not paranoia. geist_session_pin_prefix propagates a failed
- * arch pin (since 7f568e8), but a pin that SUCCEEDS while subtly changing
+ * arch pin, but a pin that SUCCEEDS while subtly changing
  * the score would mean training on wrong context behind a loss curve that
  * still looks plausible — the delta below is the only witness for that.
  *

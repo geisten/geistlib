@@ -38,10 +38,9 @@ transformer_prefill_resolve(const char *family,
             .m_max = base_m_max, .prefill_blocktime_ms = -1, .m_max_from_env = false};
     /* qwen35 hybrids from 4 GiB up (Ternary-Bonsai-2-27B, Qwen3.5-27B):
      * 27B weights dequantized once per chunk are the prefill's cost, so
-     * twice the chunk; 256 measured no better than 128. Everything else
-     * keeps the platform default and the runtime's own spin policy — on a
-     * 0.8B, blocktime 0 costs 16 % decode for 8 % prefill (M1 Max, quiet),
-     * so no blanket value yet. */
+     * twice the chunk (256 is no better than 128). Everything else keeps
+     * the platform default and the runtime's own spin policy — on a 0.8B,
+     * blocktime 0 costs more decode than it gains prefill. */
     if (family != nullptr && strcmp(family, "qwen35") == 0 && weight_bytes >= 4 * GIB) {
         out.m_max                = base_m_max + 64;
         out.prefill_blocktime_ms = 0;

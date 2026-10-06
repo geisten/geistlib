@@ -15,10 +15,8 @@ then promotes the current run, and the next night has something to compare.
 
 A run is judged only if the board was quiet while it ran. The measurement
 itself says so: bench_perf_sweep's best/worst spread per row is 0.4-1.5 % on
-an idle Pi 5 and jumped to 15 % on the one night (2026-09-26) that another
-job shared the board — a row like that would have failed the 3 % decode gate
-for reasons that had nothing to do with the tree (#446). Past --max-spread
-the run is reported as not comparable: exit 3, so the workflow neither fails
+an idle Pi 5 and ~15 % when another job shares the board (#446). Past
+--max-spread the run is reported as not comparable: exit 3, so the workflow neither fails
 on it nor promotes it to the new baseline.
 
 Exit codes: 0 ok (or nothing to compare), 1 regression, 2 usage,

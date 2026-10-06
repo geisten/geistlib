@@ -98,8 +98,8 @@ void w8a8_gemm(size_t        n_tokens,
 constexpr size_t W8X8_NROWS = 8;
 
 /* W8x16: same idea, 16 rows per group → one 512-bit VPDPBUSD lands 16
- * output rows in the 16 int32 lanes. On Zen 5's full-width AVX-512 datapath
- * this is ~1.5× the 256-bit W8x8 (measured 2393→3720 GFLOP/s). Layout is
+ * output rows in the 16 int32 lanes, ~1.5× the 256-bit W8x8 on Zen 5's
+ * full-width AVX-512 datapath. Layout is
  * identical to W8x8 with NROWS=16 (qs[grp*64 + r*4 + e], scales[b*16 + r]).
  * Requires n_out % 16 == 0. */
 constexpr size_t W8X16_NROWS = 16;
@@ -155,8 +155,6 @@ void w8x8_gemm(size_t        n_tokens,
                const float   scale_x[static n_tokens],
                float         out[static n_tokens * n_rows]);
 
-/* Reuses the per-row int8 quantization + sum_a logic from kernel_w4a8.h
- * (W8A8 and W4A8 share the activation pipeline). The caller is expected
- * to use that path; nothing new is needed here. */
+/* Activations are quantized by w4a8_quantize_acts_row (kernel_w4a8.h). */
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_KERNEL_W8A8_H */

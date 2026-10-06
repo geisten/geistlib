@@ -56,9 +56,8 @@ static void w8a8_dispatch_init(void) {
     if (g_inited8 != 0) {
         return;
     }
-    /* The W4A8 dispatcher already encapsulates the cpuid + GEIST_FORCE_ISA
-     * selection. We mirror its decision: if W4A8 resolved to AVX-512+VNNI
-     * we know VPDPBUSD is available for us too. */
+    /* The W4A8 dispatcher's tier (cpuid + GEIST_FORCE_ISA): AVX-512 VNNI
+     * there means VPDPBUSD here too. */
     const enum w4a8_isa tier = w4a8_dispatcher_init();
     if (tier == W4A8_ISA_AVX512_VNNI || tier == W4A8_ISA_AVX512_BF16) {
         g_dot8 = w8a8_dot_avx512_vnni;

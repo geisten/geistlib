@@ -7,21 +7,16 @@
  *     Hot-path contract:
  *       - linear_m1 / linear_mN must be allocation-free.
  *
- * It was not true. The resolver wrappers discarded their `be` argument
- * and called the convenience entry points in quant.h, which malloc a
- * per-call activation buffer — some of them dereferencing the result
- * without checking it first.
- *
- * The fix routes them through the per-thread cpu_neon workspace, which
- * grows once and is reused. This test is what keeps it that way: run a
- * kernel many times over growing shapes and assert the workspace
- * capacity settles — i.e. the steady state allocates nothing.
+ * The resolver wrappers run on the per-thread cpu_neon workspace, which
+ * grows once and is reused, not on quant.h's convenience entry points,
+ * which malloc a per-call activation buffer. This test runs a kernel many
+ * times over growing shapes and asserts the steady state allocates
+ * nothing.
  *
  * Two observations: the workspace itself, whose capacity must stop
  * changing and whose buffers must stop moving after the first call at the
  * largest shape, and heap_alloc_count, which counts every allocation made
- * through heap.h, the workspace's or not (the dequant trampolines' tiles
- * were not in the workspace, and were allocated on every call).
+ * through heap.h, the workspace's or not (e.g. per-call dequant tiles).
  */
 #include "test_helpers.h"
 

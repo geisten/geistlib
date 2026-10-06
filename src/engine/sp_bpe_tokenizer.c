@@ -242,7 +242,6 @@ bool sp_bpe_tokenizer_load(struct sp_bpe_tokenizer **out, const char *path) {
     memcpy(&unk, p, 4);
     p += 4;
 
-    /* Allocate context */
     struct sp_bpe_tokenizer *tok = heap_calloc_array_aligned(struct sp_bpe_tokenizer, 1);
     if (!tok)
         goto bad;
@@ -494,7 +493,7 @@ static bool sp_merge_key(
 }
 
 /* BPE-encode a single chunk (no specials inside). The chunk is normalized
- * (" " -> "▁") into a stack/heap buffer, then greedy-merged. Output token
+ * (" " -> "▁") into a heap buffer, then greedy-merged. Output token
  * IDs are appended to (*tokens). */
 static bool encode_chunk(const struct sp_bpe_tokenizer *tok,
                          const char                    *in,

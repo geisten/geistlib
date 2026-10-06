@@ -1,15 +1,13 @@
 /*
- * test_backend_vulkan_registry_unit — walking-skeleton smoke test for the
- * vulkan backend (Phase 1 scaffold).
+ * test_backend_vulkan_registry_unit — smoke test for the vulkan backend.
  *
  * Verifies:
  *   - geist_backend_create("vulkan") succeeds when a Vulkan ICD is present
  *   - name reports "vulkan"
  *   - create/destroy cycles twice without leaking device state
  *
- * On machines without a Vulkan loader/device the test SKIPs (exit 0) so CI
- * without a GPU stays green — mirrors the graceful-fail contract of
- * vk_create.
+ * On machines without a Vulkan loader/device the test SKIPs (exit 77), as
+ * vk_create fails gracefully there.
  */
 #include "test_helpers.h"
 

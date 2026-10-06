@@ -22,10 +22,8 @@
  *   7. acc += w_scales[b]*d_b0 - w_offsets[b]*sum_a_per_block[b];
  *      acc += w_scales[b+1]*d_b1 - w_offsets[b+1]*sum_a_per_block[b+1];
  *
- * Two-block-per-iteration is allowed unconditionally because Q4_K guarantees
- * n_in is a multiple of 256 (one super-block) → n_blocks = n_in / 32 is a
- * multiple of 8, always even. For correctness across non-Q4_K callers the
- * scalar reference handles odd n_blocks; this kernel doesn't need to.
+ * Q4_K makes n_in a multiple of 256, so n_blocks = n_in / 32 is even; an
+ * odd last block takes a 256-bit tail path.
  *
  * Caller pre-computes sum_a_per_block once per activation row, so the
  * inner loop is pure VPDPBUSD + load + small per-block fp arithmetic.

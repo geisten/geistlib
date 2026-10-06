@@ -1,5 +1,5 @@
 /*
- * test_full_logits_gguf — Phase 2A: full forward from quantized GGUF: full forward + LM head +
+ * test_full_logits_gguf_int — full forward from a quantized GGUF + LM head +
  * softcap.
  *
  * Forwards through all 35 decoder layers (with KV-sharing for layers 15-34

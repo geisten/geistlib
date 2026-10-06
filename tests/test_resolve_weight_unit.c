@@ -1,18 +1,17 @@
 /*
  * test_resolve_weight_unit — smoke test for backend->resolve_weight.
  *
- * Validates the load-time kernel-resolution API introduced in P1.1.b.
+ * Validates the load-time kernel-resolution API.
  * No GGUF needed; we synthesize geist_weight handles with raw=non-null
  * stubs and the supported dtypes, and verify the backend populates
  * linear_m1 / linear_mN as expected. For unsupported dtypes we expect
  * GEIST_E_UNSUPPORTED.
  *
  * Also gates cpu_neon_linear_support against the resolver: for every dtype the two
- * must agree on whether the backend can do it at all. They drifted apart
- * once (Q5_K / IQ2_S / IQ3_S advertised EMULATED and TQ2_0 / I2_S
- * advertised NONE while all five had native kernels), which is invisible
- * without a check like this because nothing in the engine consults
- * the capability answer — only the resolver and this gate do.
+ * must agree on whether the backend can do it at all. A drift between
+ * them is invisible without a check like this, because nothing in the
+ * engine consults the capability answer — only the resolver and this
+ * gate do.
  */
 #include "test_helpers.h"
 
@@ -49,10 +48,8 @@ constexpr size_t STUB_N_IN  = 1536;
 constexpr size_t STUB_N_OUT = 1536;
 
 /* Format-correct storage for a [n_out, n_in] tensor of `dtype`, sized by
- * the same helper the resolver validates against. The old fixture handed
- * every dtype a flat 64-byte buffer; the Q4_K predecode hook then repacked
- * the whole tensor out of it. Under-sizing is now its own test case
- * (expect_short_buffer_rejected) rather than an accident here. */
+ * the same helper the resolver validates against. Under-sizing is its own
+ * test case (expect_short_buffer_rejected). */
 static size_t stub_raw_bytes(enum geist_dtype dtype) {
     size_t need = 0;
     if (quant_raw_bytes(dtype, STUB_N_IN * STUB_N_OUT, &need)) {
@@ -189,8 +186,8 @@ expect_short_buffer_rejected(struct geist_backend *be, enum geist_dtype dtype, c
 /* The extent check is only as good as quant_raw_bytes' coverage: a dtype
  * the kernel table can install but the size table does not know passes
  * validation unchecked. That gap opens silently whenever a new dtype
- * lands (IQ4_NL and IQ4_XS did exactly that), so assert the two tables
- * agree rather than trusting them to be edited together.
+ * lands, so assert the two tables agree rather than trusting them to be
+ * edited together.
  *
  * Sweeps the whole enum: nothing to keep in sync here either. */
 static int expect_extent_known_for_every_supported_dtype(struct geist_backend *be) {
@@ -256,20 +253,18 @@ int main(void) {
     fails += expect_resolved(be, GEIST_DTYPE_Q6_K, "Q6_K", true);
     fails += expect_resolved(be, GEIST_DTYPE_IQ2_S, "IQ2_S", true);
     fails += expect_resolved(be, GEIST_DTYPE_IQ3_S, "IQ3_S", true);
-    /* P2: Q8_0 M>1 now covered via dequant-and-cblas trampoline. */
+    /* Q8_0 M>1 via the dequant-and-cblas trampoline. */
     fails += expect_resolved(be, GEIST_DTYPE_Q8_0, "Q8_0", true);
-    /* F32 dense supported via cblas trampolines (P1.1.e). */
+    /* F32 dense via cblas trampolines. */
     fails += expect_resolved(be, GEIST_DTYPE_F32, "F32", true);
-    /* P2: Q5_K / F16 / BF16 now resolve via dequant-and-cblas
-     * trampolines — the legacy v->linear() vtable fallback is no
-     * longer used for these formats. */
+    /* Q5_K / F16 / BF16 via dequant-and-cblas trampolines. */
     fails += expect_resolved(be, GEIST_DTYPE_Q5_K, "Q5_K", true);
     fails += expect_resolved(be, GEIST_DTYPE_F16, "F16", true);
     fails += expect_resolved(be, GEIST_DTYPE_BF16, "BF16", true);
 
-    /* linear_support must not carry a dtype list of its own. TQ2_0 and I2_S
-     * are the rows that were silently reported NONE; GEIST_DTYPE_CUSTOM
-     * is the negative case that must stay NONE on both sides. */
+    /* linear_support must not carry a dtype list of its own.
+     * GEIST_DTYPE_CUSTOM is the negative case that must stay NONE on both
+     * sides. */
     fails += expect_support_agrees(be, GEIST_DTYPE_Q3_K, "Q3_K");
     fails += expect_support_agrees(be, GEIST_DTYPE_Q4_K, "Q4_K");
     fails += expect_support_agrees(be, GEIST_DTYPE_Q5_K, "Q5_K");

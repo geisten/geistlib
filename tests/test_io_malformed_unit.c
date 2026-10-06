@@ -234,9 +234,8 @@ static void test_gguf_malformed(void) {
     check_gguf_rejected(&o, "truncated metadata");
 
     /* Absurd counts in the header: each entry needs at least 12 file bytes, so
-     * a count far beyond the file's size is a rejection, not an allocation.
-     * Found by fuzzing: unbounded, 2^48 KVs became a 1.5 PB heap_calloc that
-     * aborts an ASan build instead of failing the open. */
+     * a count far beyond the file's size is a rejection, not an allocation
+     * (2^48 KVs would be a 1.5 PB heap_calloc that aborts an ASan build). */
     gguf_header(&o, 3, 0, UINT64_C(1) << 48);
     check_gguf_rejected(&o, "metadata count beyond file size");
     gguf_header(&o, 3, UINT64_C(1) << 48, 0);
@@ -287,10 +286,10 @@ static void test_gguf_malformed(void) {
     check_gguf_rejected(&o, "tensor data past EOF");
 
     /* ---- arithmetic-abuse seeds (issue #332) --------------------------
-     * Each of these used to reach a pointer add, a modulo, or a product on
-     * an attacker-chosen value BEFORE anything validated it. The assertion
-     * is the same for all of them — rejected, with a message — but the
-     * point is that they run clean under ASan/UBSan. */
+     * Each puts an attacker-chosen value where a pointer add, a modulo or a
+     * product would use it before validation. The assertion is the same for
+     * all of them — rejected, with a message — but the point is that they
+     * run clean under ASan/UBSan. */
 
     /* String length within one byte of UINT64_MAX. `c->p + len` for this
      * value is undefined; `len > (size_t)(end - p)` is not. */
@@ -310,7 +309,7 @@ static void test_gguf_malformed(void) {
     put_u64(&o, UINT64_MAX);
     check_gguf_rejected(&o, "metadata array count UINT64_MAX");
 
-    /* general.alignment = 0 — reached `info_end % alignment`. */
+    /* general.alignment = 0 — the divisor of `info_end % alignment`. */
     gguf_header(&o, 3, 0, 1);
     put_gstr(&o, "general.alignment");
     put_u32(&o, VT_U32);
@@ -349,8 +348,8 @@ static void test_gguf_malformed(void) {
     pad_to(&o, 32);
     check_gguf_rejected(&o, "overflowing tensor byte count");
 
-    /* Tensor offset near UINT64_MAX: data_offset + offset + nbytes wrapped
-     * to a small sum that passed the EOF test. */
+    /* Tensor offset near UINT64_MAX: data_offset + offset + nbytes wraps
+     * to a small sum that would pass a naive EOF test. */
     gguf_header(&o, 3, 1, 0);
     put_gstr(&o, "w");
     put_u32(&o, 1);
@@ -367,9 +366,9 @@ static void test_gguf_malformed(void) {
     /* ---- I2_S trailing per-tensor scale (issue #334) -------------------
      * I2_S stores 256 elements in 64 packed bytes with NO per-block scale
      * and ONE f32 for the whole tensor, sitting immediately after the last
-     * packed byte. The reader used to size the tensor from the blocks
-     * alone, so a file that stopped four bytes early validated fine and the
-     * kernel then read the scale from whatever followed. */
+     * packed byte. The reader must size the tensor with the scale: from the
+     * blocks alone, a file that stops four bytes early validates and the
+     * kernel reads the scale from whatever follows. */
     {
         /* Exact size: 256 elems -> 64 packed bytes + 4 scale bytes. */
         gguf_header(&o, 3, 1, 0);

@@ -1,9 +1,8 @@
 /*
  * bench_audio_streaming — simulate live-mic capture by pushing PCM in
  * 20 ms chunks at real-time rate, then measure the residual encode wall
- * after end_input(). With Phase C's incremental mel pipeline this drops
- * by the mel cost (mel runs concurrent with capture); without it the
- * residual is the full encode time.
+ * after end_input(). Mel runs incrementally during capture, so the
+ * residual excludes the mel cost.
  *
  *   bench_audio_streaming <audio.wav> [audio_tower.safetensors]
  *
@@ -36,8 +35,7 @@ static double now_ms(void) {
     return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec / 1e6;
 }
 
-/* Chunk-walking WAV reader (audio_test_util.h) — the fixed-44-byte
- * shortcut mis-read ffmpeg WAVs with a LIST chunk (#268). */
+/* Chunk-walking WAV reader (audio_test_util.h); handles ffmpeg's LIST chunk. */
 static int16_t *read_wav_pcm(const char *path, size_t *n_samples_out, int *sample_rate_out) {
     return audio_test_read_wav(path, n_samples_out, sample_rate_out);
 }
@@ -93,7 +91,7 @@ int main(int argc, char **argv) {
     const double t0_residual = now_ms();
 
     float *soft = malloc(256 * 1536 * sizeof(float));
-    /* Drain until segment_done — the Phase 2 worker emits tokens
+    /* Drain until segment_done — the streaming worker emits tokens
      * incrementally and pull returns as soon as ANY are available. */
     size_t n_soft = 0;
     while (!audio_encoder_segment_done(enc) && n_soft < 256) {

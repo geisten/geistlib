@@ -4,9 +4,9 @@
  * height and width arrive from geist_session_attach_image / _video and
  * are multiplied out several layers down: height * width * 3 for the
  * pixel extent, width * 3 for a row stride that then narrows to an int
- * on the way into stb_image_resize2. None of those products were checked
- * and nothing bounded the dimensions, so a large enough pair produced a
- * negative stride or a wrapped allocation size.
+ * on the way into stb_image_resize2. Unbounded, a large enough pair gives
+ * a negative stride or a wrapped allocation size; the planner must refuse
+ * it.
  *
  * Hermetic: synthesizes its own RGB, needs no model and no fixture.
  */
@@ -43,7 +43,7 @@ int main(void) {
     CHECK(!image_pipeline_plan(SIZE_MAX, SIZE_MAX, 280, &plan));
     CHECK(!image_pipeline_plan(SIZE_MAX / 3, 4, 280, &plan));
 
-    /* Degenerate inputs the planner already refused; keep them pinned. */
+    /* Degenerate inputs are refused too. */
     CHECK(!image_pipeline_plan(0, 64, 280, &plan));
     CHECK(!image_pipeline_plan(64, 0, 280, &plan));
     CHECK(!image_pipeline_plan(64, 64, 0, &plan));

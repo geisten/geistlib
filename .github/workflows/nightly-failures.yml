@@ -1,8 +1,6 @@
-# The scheduled workflows have no PR to be red on. The Apple perf guard was
-# red three Sundays in a row (2026-09-06/13/20) and nobody saw it: a cron
-# run's only consumer is whoever opens the Actions tab. This gives each one
-# an issue instead — opened on the first failure, commented on every
-# further one, closed when the workflow is green again (#438).
+# Scheduled workflows have no PR to be red on. This gives each failing one
+# an issue: opened on the first failure, commented on every further one,
+# closed when the workflow is green again (#438).
 name: nightly failures
 
 on:

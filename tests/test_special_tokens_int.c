@@ -1,8 +1,8 @@
 /*
  * test_special_tokens_int — public special-token accessors.
  *
- * Exercises geist_model_eos_token / _bos_token / _token_by_text (added so a
- * chat app can stop generation by token-id instead of string-matching the
+ * Exercises geist_model_eos_token / _bos_token / _token_by_text (which let a
+ * chat app stop generation by token-id instead of string-matching the
  * decoded output). Prints the ids it finds and asserts the invariants that a
  * Gemma-style instruct GGUF must satisfy. SKIPs cleanly if no GGUF is given.
  */

@@ -12,8 +12,8 @@
  *    sliding_window: plain scalars, no large allocation needed) returns
  *    GEIST_E_INVALID_ARG instead of dispatching with the value wrapped.
  * 4. resolve_weight refuses a weight whose max_m batch would not fit the
- *    x ring (it used to become a per-call UNSUPPORTED and a silent host
- *    linear), and creates the ring at load for one that fits.
+ *    x ring (rather than a per-call UNSUPPORTED and a silent host linear),
+ *    and creates the ring at load for one that fits.
  *
  * SKIPs (exit 77) when the Vulkan backend is not built or has no device.
  */

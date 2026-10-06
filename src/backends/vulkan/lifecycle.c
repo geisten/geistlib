@@ -9,10 +9,6 @@
 
 #include <errno.h>
 
-/* ====================================================================== */
-/* Create / destroy                                                        */
-/* ====================================================================== */
-
 static PFN_vkVoidFunction vk_iproc(struct vk_state *st, const char *name) {
     return st->fn.GetInstanceProcAddr(st->instance, name);
 }
@@ -28,7 +24,7 @@ static PFN_vkVoidFunction vk_iproc(struct vk_state *st, const char *name) {
         geist_backend_set_error(be, GEIST_E_UNSUPPORTED, "vulkan: no libvulkan (%s)", dlerror());
         return GEIST_E_UNSUPPORTED;
     }
-    union { /* object→function pointer cast, -Wpedantic-clean (as in metal) */
+    union { /* object→function pointer cast, -Wpedantic-clean */
         void                     *obj;
         PFN_vkGetInstanceProcAddr fn;
     } gipa;
@@ -70,9 +66,8 @@ static PFN_vkVoidFunction vk_iproc(struct vk_state *st, const char *name) {
     VK_LOAD_I(st, CreateDevice);
     VK_LOAD_I(st, GetDeviceProcAddr);
     /* Device-level entry points fetched through the instance proc addr work
-     * on every ICD (they go through the loader trampoline). Good enough for
-     * the scaffold; switch to GetDeviceProcAddr if dispatch overhead ever
-     * shows in a profile. */
+     * on every ICD (via the loader trampoline); GetDeviceProcAddr would save
+     * that indirection. */
     VK_LOAD_I(st, DestroyDevice);
     VK_LOAD_I(st, GetDeviceQueue);
     VK_LOAD_I(st, CreateBuffer);
@@ -274,8 +269,8 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     }
     st->queue_family = family;
 
-    /* Probe the features the Phase-2 kernels want (fp16, int8 dot, coopmat),
-     * then request exactly the supported subset. Base robustBufferAccess
+    /* Probe the optional features (fp16, int8 dot, coopmat), then request
+     * exactly the supported subset. Base robustBufferAccess
      * stays off — it costs bandwidth and cpu_scalar is the safety net. */
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop_have = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};

@@ -1,17 +1,6 @@
 /*
- * audio_encoder — Gemma 4 audio tower (incremental bringup).
- *
- * Public API per laborbuch design (Phase 3-1 thru 3-9). This header tracks
- * implementation phases as they land:
- *
- *   Phase 1 ✅ — mel pipeline (separate module, mel_pipeline.{c,h})
- *   Phase 2  ⇐  THIS — subsample conv-stage; partial encoder for testing
- *   Phase 3-5    Conformer layers + projections (forthcoming)
- *   Phase 8      pthread+CV wiring for blockable pull
- *
- * Until the full pipeline lands, the streaming push/pull API is not yet
- * exposed. Phase-2 surface: create with safetensors path, load weights,
- * run the subsample stage on an externally-supplied mel buffer.
+ * audio_encoder — Gemma 4 audio tower: one-shot encode of a mel buffer,
+ * and a thread-safe streaming push/pull API over 16 kHz PCM.
  */
 #ifndef AUDIO_ENCODER_H
 #define AUDIO_ENCODER_H
@@ -30,11 +19,6 @@ void                 audio_encoder_destroy(struct AudioEncoder *);
  * this to size pull buffers instead of guessing a cap (#247). */
 size_t audio_encoder_max_soft_tokens(size_t n_samples);
 
-/* Full audio-tower pipeline: mel → subsample → 12× Conformer → output_proj →
- * embed_audio. Output is the (T_sub, soft_dim) soft-token sequence ready
- * for the LM. Caller provides padded mel buffer + per-frame mask analogous
- * to audio_encoder_subsample_run.
- * Returns n_softtokens produced. */
 /* E2B soft-token width AND the tower-internal output_proj width (constant
  * across variants). The per-instance soft-token width — the text model's
  * residual stream, 2560 on E4B — comes from audio_encoder_soft_dim(). */
@@ -43,13 +27,18 @@ size_t audio_encoder_max_soft_tokens(size_t n_samples);
 /* Soft-token width of THIS tower checkpoint (embedding_projection rows):
  * 1536 for E2B, 2560 for E4B. Size pull buffers with this. */
 size_t audio_encoder_soft_dim(const struct AudioEncoder *);
+
+/* Full audio-tower pipeline: mel → subsample → 12× Conformer → output_proj →
+ * embed_audio. Output is the (T_sub, soft_dim) soft-token sequence ready
+ * for the LM. Caller provides the padded mel buffer + per-frame mask.
+ * Returns n_softtokens produced. */
 size_t audio_encoder_run(const struct AudioEncoder *,
                          size_t       n_mel_frames,
                          const float *mel_in,
                          const bool  *mel_mask_in,
                          float       *softtokens_out);
 
-/* === Phase 8 — streaming push/pull API (thread-safe) ===
+/* Streaming push/pull API (thread-safe).
  *
  * Frontend pattern (single-thread / stdin-style):
  *   while ((n = read(stdin, pcm))) audio_encoder_push_pcm(enc, n, pcm);
@@ -64,14 +53,11 @@ size_t audio_encoder_run(const struct AudioEncoder *,
  *                       if (n) ... else if (audio_encoder_segment_done(enc)) ...
  *                   }
  *
- * Internal model: PCM is buffered as it arrives. The audio_encoder_run
- * pipeline triggers on first pull AFTER end_input(), producing the full
- * soft-token sequence at once. Pull-calls drain that sequence in chunks
- * of up to max_out tokens.
- *
- * (True chunk-streaming — incremental encode while audio still arrives —
- * is a future Phase 8b. Current semantics suit file-based and
- * push-to-talk frontends; live continuous mic needs Phase 8b.) */
+ * PCM is buffered and turned into mel frames as it arrives. Without the
+ * stream worker, the encoder runs on the first pull after end_input() and
+ * pulls drain the whole sequence in chunks of up to max_out tokens. With
+ * the worker (stream_worker_start), sub-token blocks are encoded while
+ * audio still arrives and pulls may return tokens before end_input(). */
 
 /* Append PCM samples to the internal buffer. Returns 0 on success, -1 on
  * overflow (>30s buffered = audio_seq_length limit) or after shutdown. */
@@ -97,11 +83,8 @@ bool audio_encoder_segment_done(const struct AudioEncoder *);
  * Weights stay loaded. */
 void audio_encoder_reset(struct AudioEncoder *);
 
-/* === Phase 8b: chunk-streaming forward (parity API for tests). ===
- * These are the building blocks for true incremental encode. The push_pcm
- * path will eventually drive them from a background worker; for now they
- * are exposed so tests can drive them directly and validate parity
- * against the monolithic audio_encoder_run. */
+/* Chunk-streaming forward, driven by the stream worker; exposed so tests
+ * can check parity against the monolithic audio_encoder_run. */
 struct audio_stream_state;
 size_t                     audio_encoder_stream_push(struct AudioEncoder *,
                                                      struct audio_stream_state *,

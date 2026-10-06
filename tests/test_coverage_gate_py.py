@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """tests/test_coverage_gate_py.py — control test for the coverage ratchet.
 
-#185 demands proof that the gate actually fires: feed the gate synthetic
-gcovr JSON and baselines, and assert PASS on-baseline, FAIL on a regression
+Proves the gate fires (#185): feeds the gate synthetic gcovr JSON and
+baselines, and asserts PASS on-baseline, FAIL on a regression
 beyond tolerance, FAIL on an empty scope, FAIL on an unset baseline, and
 FAIL on a floor violation. Hermetic — no compiler, no gcovr, no network.
 """

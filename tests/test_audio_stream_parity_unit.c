@@ -1,5 +1,5 @@
 /*
- * test_audio_stream_parity_unit — verify Phase 1b chunk-streaming
+ * test_audio_stream_parity_unit — verify the chunk-streaming
  * encoder produces the same soft tokens as the monolithic
  * audio_encoder_run on the same mel input.
  *
@@ -110,12 +110,12 @@ int main(void) {
     }
 
     /* 2+3. Drive streaming as two pushes (mid-stream, then final) and
-     *    compare against the monolithic reference — for EVERY cut point
-     *    that has bitten. 46 and 47 end exactly on a full 12-token block
-     *    whose last sub-token still depends on the zero pad (#506: emitted
-     *    ~15 off and never recomputed; 94/95 are the same at the second
-     *    block), 48/50/96 are the block-aligned cases the worker usually
-     *    lands on, 44 emits nothing mid-stream, 99 leaves one frame. */
+     *    compare against the monolithic reference at each cut point.
+     *    46 and 47 end exactly on a full 12-token block whose last
+     *    sub-token still depends on the zero pad (#506; 94/95 are the
+     *    same at the second block), 48/50/96 are the block-aligned cases
+     *    the worker usually lands on, 44 emits nothing mid-stream, 99
+     *    leaves one frame. */
     static const size_t CUTS[]    = {44, 46, 47, 48, 50, 94, 95, 96, 99};
     float               worst_abs = 0.0f;
     size_t              worst_cut = 0, worst_at = 0;

@@ -8,9 +8,8 @@
  *   periodic Hann (length 320), zero-pad to 512, real FFT, magnitude,
  *   HTK mel filterbank (257 → 128, no norm, [0..8000] Hz), log(x + 1e-3).
  *
- * The Hann window and mel filterbank are precomputed once in Python
- * (see gen_mel_constants.py) and loaded as a single binary blob — eliminates
- * one porting failure mode (filterbank construction).
+ * The Hann window and mel filterbank are precomputed in Python
+ * (tools/gen_mel_constants.py) and loaded as a single binary blob.
  */
 #ifndef MEL_PIPELINE_H
 #define MEL_PIPELINE_H

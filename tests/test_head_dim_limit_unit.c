@@ -5,10 +5,9 @@
  * head_dim is model metadata (llama: embedding_length / head_count). The
  * forward pass holds one attention head in stack arrays of
  * TRANSFORMER_HEAD_DIM_MAX (512) elements and sizes its scratch for it; a
- * model with head_dim 1024 used to load and then write past int8_t
- * q_q8[512] in the INT8 KV attention on its first prefill (ASan:
- * stack-buffer-overflow, forward/attention.c). The loader now refuses it
- * and says why. (The engine reports any failed arch state create as
+ * larger head_dim would write past int8_t q_q8[512] in the INT8 KV
+ * attention (forward/attention.c), so the loader refuses it and says
+ * why. (The engine reports any failed arch state create as
  * GEIST_E_IO; the backend's error message carries the reason.)
  *
  * Minimal in-memory llama GGUFs (metadata plus one dummy tensor, like

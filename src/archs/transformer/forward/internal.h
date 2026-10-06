@@ -1,7 +1,6 @@
 /*
  * src/archs/transformer/forward/internal.h — file-private declarations
- * shared by the forward/{attention,layer,layer_attn,layer_ffn,layer_ple,
- * probes,head,step}.c translation units.
+ * shared by the forward/ translation units.
  *
  * Layer: ARCHITECTURE (private). Not part of the public ABI.
  *
@@ -64,13 +63,9 @@ struct transformer_layer_forward_ctx {
     bool apply_qk_norms;
     bool apply_ple;
     /* Whether the PLE stage will actually run this layer: apply_ple AND a
-     * per-layer input to run it on. TWO stages branch on this — the FFN
+     * per-layer input to run it on. Two stages branch on this — the FFN
      * picks its destination buffer, and the PLE stage decides whether to
-     * execute — and they must agree, so it is decided once here rather
-     * than re-derived in each. They did drift: the FFN switched on
-     * apply_ple alone while the PLE stage also required a non-null input,
-     * and the combination in between wrote the FFN result to a scratch
-     * buffer that nothing then copied out. */
+     * execute — and they must agree, so it is decided once here. */
     bool run_ple;
     /* BitNet embedding models: each of q/k/v/gate/up normalises the
      * shared attn_norm/ffn_norm output through its OWN gamma before its
@@ -279,11 +274,9 @@ norm_projection_input(size_t                                n,
     return GEIST_OK;
 }
 
-/* ---- Cross-TU function declarations ----------------------------------- *
- *
- * forward/attention.c — both static-helper bodies promoted to extern so
- * forward/layer.c can call them via the same names they had pre-split.
- */
+/* ---- Cross-TU function declarations ----------------------------------- */
+
+/* forward/attention.c */
 void kivi_drain_one_layer(size_t   drained_count,
                           size_t   residual_count,
                           size_t   R,
@@ -340,7 +333,7 @@ void attention_int8_via_buffers(size_t        n_q,
                                 float        *out,
                                 float        *scratch);
 
-/* Packed-INT4 variant (issue #61): k_q4/v_q4 hold two 4-bit values per byte
+/* Packed-INT4 variant: k_q4/v_q4 hold two 4-bit values per byte
  * (head_dim/2 bytes per row); otherwise identical to the INT8 kernel. */
 void attention_int4_via_buffers(size_t         n_q,
                                 size_t         n_q_heads,
@@ -360,6 +353,7 @@ void attention_int4_via_buffers(size_t         n_q,
 [[nodiscard]] enum geist_status
 transformer_layer_run_attention_block(struct transformer_layer_forward_ctx *ctx);
 
+/* forward/layer.c */
 [[nodiscard]] enum geist_status
 transformer_forward_mtp_layer(struct transformer_arch_session  *sess,
                               struct transformer_layer_weights *layer,
@@ -393,7 +387,7 @@ void transformer_probe_ffn_sparsity(const struct geist_backend_vtbl *v,
                                     struct geist_buffer             *buf,
                                     size_t                           n_elems);
 
-/* forward/layer_deltanet.c — gated-DeltaNet token mixer (#281). Runs in
+/* forward/layer_deltanet.c — gated-DeltaNet token mixer. Runs in
  * place of the attention block for mixer == GEIST_MIXER_DELTANET layers;
  * writes scratch_h_post_attn like the attention block so the FFN stage
  * is mixer-agnostic. */
@@ -402,10 +396,8 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx);
 
 /* DeltaNet recurrence kernels (layer_deltanet.c) — exported for
  * test_deltanet_chunk_unit, which pins chunked == sequential at f32
- * precision. The end-to-end logit oracle (test_deltanet_chunk_int)
- * cannot discriminate subtle kernel bugs from int8-quantization
- * jitter (a 10% beta error scores ~0.6 max|dlogit|, below the ~1.0
- * legitimate cross-kernel spread), so the tight pin lives here. */
+ * precision; the end-to-end logit test is too coarse to catch subtle
+ * kernel bugs. */
 void   transformer_dn_head_step(float       *S,
                                 const float *qh,
                                 const float *kh,
@@ -450,7 +442,7 @@ void transformer_dn_conv_silu_row(size_t       t,
                                   const float *convw,
                                   float        y_t[static convd]);
 
-/* forward/layer.c — exported helper used across forward/. */
+/* forward/linear.c */
 [[nodiscard]] enum geist_status linear_w_or_legacy(struct geist_backend            *be,
                                                    const struct geist_backend_vtbl *v,
                                                    struct geist_buffer             *x_buf,

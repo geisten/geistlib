@@ -20,9 +20,8 @@
  *   - Per-layer counters are 64-bit and updated under a small mutex so
  *     interleaved updates from concurrent forwards do not tear or lose
  *     increments. Cost is paid only when the probe is enabled.
- *   - Layer indices ≥ ACT_SPARSITY_MAX_LAYERS no longer fail silently:
- *     the first overflow logs an explicit warning to stderr so users
- *     running > 64-layer models know data is being dropped.
+ *   - Layer indices ≥ ACT_SPARSITY_MAX_LAYERS are dropped; the first
+ *     overflow logs a warning to stderr.
  */
 #define ACT_SPARSITY_MAX_LAYERS 64
 
@@ -32,7 +31,7 @@ static bool            g_act_sparsity_overflow_warned = false;
 static uint64_t        g_act_sparsity_zeros[ACT_SPARSITY_MAX_LAYERS];
 static uint64_t        g_act_sparsity_total[ACT_SPARSITY_MAX_LAYERS];
 /* All-zero 64-element blocks — the unit a block-skipping ternary GEMV
- * could drop (one x4 weight cache line per block; #102 Phase 3 gate). */
+ * could drop (one x4 weight cache line per block; see #102). */
 static uint64_t g_act_sparsity_zblk[ACT_SPARSITY_MAX_LAYERS];
 static uint64_t g_act_sparsity_tblk[ACT_SPARSITY_MAX_LAYERS];
 static size_t   g_act_sparsity_n_layers;

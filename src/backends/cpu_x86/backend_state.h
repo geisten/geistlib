@@ -4,14 +4,11 @@
  *
  * Layer: BACKEND (cpu_x86, internal).
  *
- * The kernel scratch (per-row int8 activation buffer + per-block sum_a,
- * written by w4a8_quantize_acts_row and read by the GEMV inside one
- * linear invocation) used to be a single per-backend allocation grown at
- * resolve_weight time. That races when CONCURRENT sessions share one
- * backend (the geist_arch.h thread contract) — the same bug
- * test_multi_session_parallel_int caught in cpu_neon. Same cure as
- * there: one workspace per calling thread (isolation), all nodes owned
- * and freed by the backend (lifetime), grown on demand at kernel time.
+ * Kernel scratch (int8 activations + per-block sum_a, written by
+ * w4a8_quantize_acts_row and read by the GEMV within one linear call) is
+ * per calling thread, since concurrent sessions may share one backend
+ * (geist_arch.h thread contract). The backend owns and frees every node;
+ * buffers grow on demand at kernel time.
  *
  * Lifecycle:
  *   - cpu_x86_create (in backend.c) zero-inits the state and mints a
@@ -37,15 +34,10 @@ struct cpu_x86_workspace {
     int8_t  *acts_scratch;  /* int8 activation buffer; heap_alloc_aligned. */
     int32_t *sum_a_scratch; /* per-block sum_a int32 buffer; heap-aligned. */
     size_t   scratch_cap;   /* max n_in (in fp32 elements) the scratch covers. */
-    /* M>1 (prefill) scratch — #336 batch 3. The prefill kernels used to
-     * malloc these per call, three or four allocations per projection per
-     * layer per chunk, and the I2S pair did it with raw malloc (16-byte
-     * alignment on x86-64) for buffers that feed AVX-512 loads. Four
-     * high-water buffers rather than one arena: each has a distinct element
-     * type, and `mN_aux` has to stay live at the same time as `mN_acts`
-     * (i2s_gemm_avx512_vnni permutes out of one into the other).
-     * Sized in BYTES so one growth path serves int8 acts, int32 sums, fp32
-     * scales, and the q8_Kx4 / permuted-activation blobs alike. */
+    /* M>1 (prefill) high-water scratch, aligned for AVX-512 loads. Four
+     * buffers rather than one arena: each has its own element type, and
+     * `mN_aux` stays live alongside `mN_acts` (i2s_gemm_avx512_vnni permutes
+     * one into the other). Capacities are in bytes. */
     int8_t  *mN_acts;
     size_t   mN_acts_cap;
     int32_t *mN_sum_a;
@@ -54,8 +46,7 @@ struct cpu_x86_workspace {
     size_t   mN_scale_cap;
     uint8_t *mN_aux;
     size_t   mN_aux_cap;
-    /* Split-decode partial results of the INT8-KV attention
-     * (attention_int8.c): written by the team, merged afterwards. */
+    /* Split-decode partials of the INT8-KV attention (attention_int8.c). */
     float *attn_part;
     size_t attn_part_cap; /* bytes */
 };
@@ -80,9 +71,8 @@ uint64_t cpu_x86_ws_next_generation(void);
 struct cpu_x86_workspace *cpu_x86_ws_acquire(struct cpu_x86_state *st, size_t n_in);
 
 /* The calling thread's workspace with the M>1 scratch grown to cover the
- * requested byte counts (0 = "this caller does not use that buffer"), or
- * nullptr on OOM or size overflow. Callers fall back to their M=1 loop,
- * matching what they already did when the per-call malloc failed. */
+ * requested byte counts (0 = buffer unused), or nullptr on OOM or size
+ * overflow; callers then fall back to their M=1 loop. */
 struct cpu_x86_workspace *cpu_x86_ws_acquire_mN(struct cpu_x86_state *st,
                                                 size_t                acts_bytes,
                                                 size_t                sum_a_bytes,

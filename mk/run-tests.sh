@@ -22,25 +22,19 @@
 #   1 if any test failed
 #   2 if the bin_dir does not exist or contains no tests
 #
-# Output of a PASSING test used to be captured and dropped, which threw away
-# the only thing several suites exist to report — the measured numbers they
-# print (cosine, WER, tokens/s, a retrieval count). A pass now shows its LAST
-# line beside the verdict, which is where those tests put their summary, and
-# GEIST_TEST_VERBOSE=1 shows every line of every test.
+# A passing test shows its LAST line beside the verdict — where suites print
+# their summary numbers (cosine, WER, tokens/s). GEIST_TEST_VERBOSE=1 shows
+# every line of every test.
 #
 # With GITHUB_STEP_SUMMARY set, the verdict line and the skip table are also
-# appended there: a skip is silent green in the log, and on the model legs
-# roughly half the integration suite was skipping for fixtures nobody saw.
+# appended there, so skips are visible.
 # GEIST_EXPECTED_SKIPS=<file> (one test name per line, # comments) turns any
 # skip NOT on the list into a failure — the list is what a leg is allowed to
 # skip, so a fixture that goes missing fails instead of shrinking the suite.
 #
-# POSIX sh, no bash. The build dropped its bash dependency (mk/detect-target.sh
-# is #!/bin/sh); this script was the last thing forcing it, so on an image
-# without bash — Alpine's build-base does not pull one in — the suite died with
-# a shell error instead of a test result. Selected binaries ride in the
-# positional parameters instead of an array, and failure details go to a temp
-# file instead of parallel indexed arrays.
+# POSIX sh, no bash (minimal images such as Alpine ship none). Selected
+# binaries ride in the positional parameters; failure details go to a temp
+# file.
 
 set -u
 
@@ -81,8 +75,7 @@ while [ "$i" -lt "$n_candidates" ]; do
     [ -x "$b" ] || continue
     if [ -n "$FILTER" ]; then
         # The three suite classes match the NAME SUFFIX, a user filter any
-        # substring: `_int` as a substring also picked up *_int8_unit and
-        # ran an x86 unit test in the arm64 integration suite (PR #512).
+        # substring, so `_int` does not pick up *_int8_unit.
         case "$FILTER" in
             _unit | _int | _e2e) pat="*$FILTER" ;;
             *) pat="*$FILTER*" ;;
@@ -107,8 +100,7 @@ if [ $# -eq 0 ]; then
         echo "No tests built in '$BIN_DIR'. Run 'make bin' first."
         exit 2
     fi
-    # Empty filter-result is informational — exit 0 so `make test-unit` is
-    # benign before the unit-suffix migration (Phase E-4) lands.
+    # An empty filter result is informational, not a failure.
     exit 0
 fi
 

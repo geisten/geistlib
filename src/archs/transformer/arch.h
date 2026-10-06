@@ -1,8 +1,8 @@
 /*
  * src/archs/transformer/arch.h — transformer decoder architecture.
  *
- * Layer: ARCHITECTURE. Implements the geist_arch_ops_decoder vtable for
- * Gemma 4 / Llama / Mistral / similar transformer-style decoders.
+ * Layer: ARCHITECTURE. Implements the geist_arch_ops_decoder vtable for the
+ * transformer-style decoders in arch_family.c (Gemma, Llama, Qwen, BitNet).
  *
  * The vtable shape itself lives in <geist_arch.h> (engine-owned interface);
  * this header only exports the concrete descriptor.

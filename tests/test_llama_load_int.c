@@ -1,5 +1,5 @@
 /*
- * test_llama_load_int — P1.5.d smoke test for the Llama family path.
+ * test_llama_load_int — smoke test for the Llama family path.
  *
  * Loads a Llama-family GGUF (default search location:
  * gguf_artifacts/smollm2-360m-instruct-q8_0.gguf — override with
@@ -17,11 +17,10 @@
  *   - state_create completes — every weight tensor for every
  *     layer + the two globals (token_embd, output_norm) loaded
  *     without missing-tensor errors
+ *   - a BPE-encoded prompt prefills and 8 greedy tokens decode
+ *     through the internal transformer path
  *
- * Does NOT attempt decode — that needs the GGUF-embedded BPE
- * tokenizer plumbed into the engine path (next phase). SKIPs
- * cleanly if no Llama GGUF is reachable so the test passes in CI
- * envs without the model downloaded.
+ * SKIPs cleanly if no Llama GGUF is reachable.
  */
 #include "test_helpers.h"
 
@@ -175,21 +174,14 @@ int main(void) {
            st->n_q_heads,
            st->n_kv_heads);
 
-    /* P1.5.e/.f: prefill a token sequence + decode the model's
-     * generation. We don't have a BPE encoder yet (P1.5.g), so the
-     * prompt IDs are arbitrary low-vocab IDs — the goal of THIS test
-     * is to confirm the full chain runs (load → prefill → forward
-     * through 32 Llama layers → lm_head → argmax → token-id decode).
-     * Coherent-text generation needs the BPE encoder so we can feed
-     * real prompts in; that's queued as P1.5.g. */
+    /* Confirm the full chain runs: load → prefill → forward through 32
+     * Llama layers → lm_head → argmax → token-id decode. */
     {
         /* GGUF-embedded BPE tokenizer load. SmolLM2 ships
          * tokenizer.ggml.model = "gpt2" + 49152 vocab in
-         * tokenizer.ggml.tokens. β-mode state_create closes the GGUF
-         * after weight load, so re-open it for the tokenizer (its
-         * token strings point into the mmap region — needs to stay
-         * open for the test's lifetime). Future: load + heap-copy
-         * the tokenizer inside state_create so the engine owns it. */
+         * tokenizer.ggml.tokens. The tokenizer gets its own GGUF handle:
+         * its token strings point into the mmap region, which must stay
+         * open for the test's lifetime. */
         const char           *terr = nullptr;
         struct gguf_ctx      *tg   = gguf_open(path, &terr);
         struct gguf_tokenizer tok  = {0};
@@ -207,8 +199,7 @@ int main(void) {
                    tok.eos_id);
         }
 
-        /* P1.5.g: encode a real English prompt via the GGUF-embedded
-         * BPE encoder. BOS + encoded tokens for "The capital of
+        /* BOS + the GGUF-embedded BPE encoding of "The capital of
          * France is". */
         geist_token_t prompt_ids[32] = {0};
         size_t        n_prompt       = 0;

@@ -5,9 +5,8 @@
  *
  * Each session holds a reference to the model and dispatches set_prompt,
  * prefill, decode_step, and attach_audio through the model's arch_ops
- * vtables. The arch-specific state is owned by geist_model (1:1 for now;
- * multi-session model sharing comes when the arch_state distinguishes
- * per-session KV from per-model weights).
+ * vtables. An arch with session_alloc gives each session its own arch
+ * session; otherwise the model's arch_state is its one session.
  */
 #define GEIST_INTERNAL_ENGINE_LAYER
 
@@ -25,7 +24,7 @@
 #include "gguf_tokenizer.h"
 
 #include <geist.h>
-#include <geist_util.h> /* tokenize/prefill/attach/peek/speculative/stats moved here in 0.2.0 */
+#include <geist_util.h> /* tokenize/prefill/attach/peek/speculative/stats */
 
 #include <stdalign.h>
 #include <stdarg.h>
@@ -66,12 +65,12 @@ struct geist_session_full {
     struct geist_model   *model;
     struct geist_backend *backend;
 
-    /* P1.2.f: per-session arch state. NULL when the architecture doesn't
+    /* Per-session arch state. NULL when the architecture doesn't
      * implement session_alloc — engine falls back to using the model's
      * default session (single-session-per-model semantics). */
     void *arch_session;
 
-    /* Sampler defaults; per-call overrides come in Phase B-4b. */
+    /* Sampler defaults from geist_session_opts. */
     float    temperature;
     float    top_p;
     int      top_k;
@@ -304,7 +303,7 @@ session_op_failed(struct geist_session_full *sf, enum geist_status s, const char
     };
     sf->err_msg[0] = '\0';
 
-    /* P1.2.f: allocate a per-session arch state if the architecture
+    /* Allocate a per-session arch state if the architecture
      * supports it. This gives the session its own KV cache + scratch
      * pool + sampler RNG, separate from any other session on the same
      * model. session_alloc already calls apply_opts inside, so the
@@ -325,7 +324,7 @@ session_op_failed(struct geist_session_full *sf, enum geist_status s, const char
             return GEIST_E_OOM;
         }
     } else if (opts != nullptr && ops != nullptr && ops->set_session_opts != nullptr) {
-        /* Legacy single-session path: push opts onto the arch's one
+        /* Single-session path: push opts onto the arch's one
          * session (= its arch_state). When multiple legacy sessions
          * share one model, the last set_session_opts call wins. */
         const enum geist_status os = ops->set_session_opts(m->text_decoder.arch_meta, opts);
@@ -350,9 +349,8 @@ void *geist_session_internal_arch_session(struct geist_session *s) {
  * finishing it. Idempotent: safe when no turn is open and safe to call
  * twice, so destroy can call it unconditionally.
  *
- * Both halves matter. The scratch is a session-lifetime allocation that
- * only audio_end used to free, so a session destroyed mid-turn leaked it.
- * And the encoder stream is state inside the ENCODER, shared across
+ * Both halves matter. The scratch would leak if a session is destroyed
+ * mid-turn. And the encoder stream is state inside the ENCODER, shared across
  * sessions of the same model: leaving it open outlives the session that
  * opened it. */
 static void session_audio_stream_release(struct geist_session_full *sf) {
@@ -377,8 +375,7 @@ void geist_session_destroy(struct geist_session *s) {
     const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
     /* A turn still open at destroy is aborted, not abandoned. */
     session_audio_stream_release(sf);
-    /* P1.2.f: release this session's per-session arch state if it owns
-     * one. */
+    /* Release this session's arch state if it owns one. */
     if (sf->arch_session != nullptr && ops != nullptr && ops->session_free != nullptr) {
         ops->session_free(sf->model->text_decoder.arch_meta, sf->arch_session);
         sf->arch_session = nullptr;
@@ -436,8 +433,7 @@ const char *geist_session_errmsg(const struct geist_session *s) {
         return GEIST_E_NOT_FOUND;
     }
 
-    /* P1.6: GGUF-embedded tokenizer path. Prepends BOS automatically;
-     * gguf_tokenizer_encode handles byte-level BPE + merges. */
+    /* GGUF-embedded tokenizer path. Prepends BOS when add_bos is set. */
     if (gtok != nullptr) {
         /* ≤ 1 id per byte + ▁ prefix + BOS. An SPM vocab without a ▁ piece
          * spends 3 byte ids per space; encode then fails, it never truncates. */
@@ -766,14 +762,9 @@ spec_fallback_single(struct geist_session *s, geist_token_t out_tokens[static 1]
     if (k <= 1)
         return spec_fallback_single(s, out_tokens, n_out);
 
-    /* Lazy-draft gate: skip the verify-forward pass when the n-gram
-     * match was weak (only seed-token matched, i.e. L=1). On novel-
-     * structure prompts (smart-home commands, fresh Python code) most
-     * positions only get L=1 matches with low accept rates — paying
-     * verify-forward (~1.6-2.3× single decode) to land 1 token there
-     * is a net loss. L≥2 means at least one prior token of context
-     * matched too, which empirically maps to materially higher accept
-     * rates. Override the threshold via GEIST_SPEC_MIN_L=N. */
+    /* Lazy-draft gate: skip verify-forward (~1.6-2.3x a single decode) when
+     * the n-gram match is shorter than GEIST_SPEC_MIN_L (default 2). A
+     * seed-only match (L=1) is accepted too rarely to pay for it. */
     /* Relaxed-atomic first-use cache: concurrent sessions reach this on
      * their own threads. */
     static _Atomic int min_L_cached = -1;
@@ -827,10 +818,9 @@ spec_fallback_single(struct geist_session *s, geist_token_t out_tokens[static 1]
 
     /* The last emit (bonus or correction) is not yet in the cache. The next
      * spec_step / decode_step needs pending logits computed from it, so push
-     * it now via a single-token prefill. Deferring it to the next call (the
-     * architecture retains the verified prediction) saves this prefill but
-     * shifts the call boundaries the n-gram drafter sees: 0.54x against
-     * 0.67x on the 27B, benchmark/results/QWEN35.md. */
+     * it now via a single-token prefill. Deferring it to the next call saves
+     * this prefill but shifts the call boundaries the n-gram drafter sees and
+     * costs more than it saves (benchmark/results/QWEN35.md). */
     const enum geist_status cs = ops->prefill(st, 1, &correction);
     if (cs != GEIST_OK) {
         return session_op_failed(sf, cs, "speculative correction prefill");
@@ -945,9 +935,8 @@ const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t)
         return GEIST_E_UNSUPPORTED;
     }
 
-    /* Size the soft-token buffer from the audio length (#247) — the old
-     * hardcoded 256 silently dropped everything past ~10 s while still
-     * paying the full encode. Fallback stays for encoders without the op. */
+    /* Size the soft-token buffer from the audio length so long audio is
+     * never cut (#247). The fallback is for encoders without the op. */
     size_t max_soft = 256;
     if (enc_ops->max_soft_tokens != nullptr) {
         max_soft = enc_ops->max_soft_tokens(enc_st, n_samples);
@@ -1025,12 +1014,9 @@ const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t)
     /* Scratch for poll/end, sized for the encoder's 30 s worst case so
      * incremental injection never reallocates mid-turn.
      *
-     * Allocated BEFORE stream_begin, deliberately. The other order left a
-     * window where the encoder stream was running and the allocation had
-     * failed: audio_begin returned OOM, audio_streaming stayed false, and
-     * nothing afterwards could reach the open stream to close it. Every
-     * fallible step now happens while there is still nothing to unwind,
-     * so the only thing after the commit point is bookkeeping. */
+     * Allocated BEFORE stream_begin: every fallible step happens while
+     * there is nothing to unwind, so a failure never leaves an encoder
+     * stream open that nothing can reach to close. */
     size_t cap = 256;
     if (enc_ops->max_soft_tokens != nullptr) {
         cap = enc_ops->max_soft_tokens(enc_st, (size_t) -1); /* clamped internally */
@@ -1056,7 +1042,7 @@ const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t)
     return GEIST_OK;
 }
 
-/* Inject whatever soft tokens the encoder has ready — phase 2 of #256:
+/* Inject whatever soft tokens the encoder has ready (#256):
  * called from the session thread between pushes, it overlaps the LM
  * prefill with the still-running capture, shrinking end()'s tail. */
 [[nodiscard]] enum geist_status geist_session_audio_poll(struct geist_session *s) {
@@ -1202,8 +1188,7 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
         return GEIST_E_UNSUPPORTED;
     }
 
-    /* Gemma 4: max 280 soft tokens per image. soft_dim is 1536 (== text
-     * hidden_size). */
+    /* Gemma 4: max 280 soft tokens per image; soft_dim == text hidden size. */
     const size_t max_soft = 280;
     const size_t soft_dim = enc_ops->soft_token_dim(enc_st);
     float       *soft = heap_alloc_n_aligned(max_soft, soft_dim * sizeof(float), alignof(float));
@@ -1234,7 +1219,7 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
 
 /* Video path: per-frame run_image → concat soft tokens →
  * decoder arch_ops->prefill_image. Reuses prefill_image since image
- * and video soft tokens share the 1536-dim wire format. */
+ * and video soft tokens share one wire format. */
 [[nodiscard]] enum geist_status geist_session_attach_video(struct geist_session *s,
                                                            size_t                n_frames,
                                                            size_t                height,
@@ -1273,8 +1258,7 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
         return GEIST_E_UNSUPPORTED;
     }
 
-    /* 70 soft tokens per frame × n_frames; soft_dim = 1536 (matches LM
-     * residual stream). */
+    /* 70 soft tokens per frame × n_frames; soft_dim == text hidden size. */
     size_t max_soft = 0;
     if (ckd_mul(&max_soft, (size_t) 70, n_frames)) {
         snprintf(sf->err_msg,
@@ -1455,8 +1439,8 @@ geist_session_restore(size_t n_bytes, const void *buf, struct geist_session *s) 
             .total_decode_ns       = sf->total_decode_ns,
             .total_prefill_ns      = sf->total_prefill_ns,
             .total_audio_encode_ns = sf->total_audio_encode_ns,
-            /* buffer_alloc_* and per_op_* still stubbed at zero — those need
-             * backend-side counters / opt-in op profiling. */
+            /* buffer_alloc_* and per_op_* stay zero: they need backend-side
+             * counters / opt-in op profiling. */
     };
     return GEIST_OK;
 }

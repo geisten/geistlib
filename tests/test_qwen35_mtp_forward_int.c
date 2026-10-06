@@ -37,7 +37,7 @@ int main(void) {
     if (path == nullptr)
         GEIST_SKIP("no Qwen3.5/3.8 GGUF with an MTP block");
 
-    /* PR 4 keeps MTP opt-in so ordinary decode has no synchronization cost. */
+    /* MTP is opt-in so ordinary decode has no synchronization cost. */
     if (setenv("GEIST_MTP", "1", 1) != 0)
         return GEIST_TEST_ERROR;
 
@@ -160,7 +160,7 @@ int main(void) {
     fails += geist_expect(finite_hidden && max_abs > 0.0f,
                           "MTP returns finite, non-zero hidden rows");
 
-    /* PR 5 routes recursive one-row drafts through the i8 sketch head. The
+    /* Recursive one-row drafts go through the i8 sketch head. The
      * dense fallback remains available, fast candidates are deterministic,
      * and shared scratch must not leak sparse-logit metadata into the
      * authoritative target state. End-to-end target-token equality is covered

@@ -1,6 +1,6 @@
 /*
  * test_backend_vulkan_linear_parity — numerical parity gate for the Vulkan
- * linear path (Phase 2): resolve_weight + linear_m1/linear_mN for Q4_K,
+ * linear path: resolve_weight + linear_m1/linear_mN for Q4_K,
  * Q5_K, Q6_K, Q4_0, Q4_1, Q8_0, TQ2_0, PQ2_0 and F32 weights (plus fused->linear_t, the
  * device-resident path the engine actually runs), compared against the
  * cpu_scalar resolver on the SAME weight bytes. cpu_scalar dequantizes with an independent
@@ -301,7 +301,7 @@ int main(void) {
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 37);
     run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 1, 1e-3);
     run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 37, 1e-3);
-    /* the existing dtypes through linear_t as well */
+    /* the dtypes above through linear_t as well */
     run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 383, 1, 1e-3);
     run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 1, 1e-3);
     run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_F32, "F32", 200, 130, 1, 1e-3);

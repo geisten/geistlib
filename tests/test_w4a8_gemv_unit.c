@@ -5,9 +5,7 @@
  * Test:      q4k_to_w4a8_row predecode + w4a8_quantize_acts_row + w4a8_gemv.
  *
  * Tolerance: dominated by the int8 activation quant (per-row symmetric,
- * ~127 levels). With n_in=512 random acts the per-output error stays
- * under ~2% relative. We assert ≤ 3% relative + 1e-4 absolute, slack to
- * accommodate kernel reorder + future ISA-tier variants.
+ * ~127 levels); the bound is derived at the check below.
  *
  * Deterministic; runs in <100 ms; no model, no fixture files.
  */

@@ -1,12 +1,13 @@
 /*
- * test_layers0to4 — Sub-Task E: chain layers 0-4 of Gemma 4 E2B.
+ * test_layers0to4 — chain layers 0-4 of Gemma 4 E2B.
  *
  * Layers 0-3 are sliding_attention (head_dim=256, theta=10000, full RoPE).
  * Layer 4 is full_attention (head_dim=512, theta=1e6, partial RoPE 25%).
  *
- * Validates against `layer_NN_output` hooks for N in 0..4.
+ * Writes each layer's output for comparison with the `layer_NN_output`
+ * hooks, N in 0..4.
  *
- * The PLE pre-compute (Step 12 from Sub-Task D) runs ONCE at model entry,
+ * The PLE pre-compute runs ONCE at model entry,
  * producing per_layer_inputs[seq, 35, 256]. Each layer i uses slice [:, i, :].
  */
 #include "safetensors_reader.h"
@@ -350,7 +351,7 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < n_ids * PLE_OUT; i++)
         per_layer_inputs[i] = (ple_proj[i] + ple_table_lookup[i]) * PLE_INPUT_SCALE;
 
-    /* Forward through 5 layers, validating each */
+    /* Forward through 5 layers, writing each output */
     float *h_buf2 = (float *) xmalloc(n_ids * HIDDEN * sizeof(float));
     char   path[1024];
     for (int li = 0; li < 5; li++) {

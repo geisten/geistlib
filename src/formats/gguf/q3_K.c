@@ -2,13 +2,9 @@
  * src/formats/gguf/q3_K.c — Q3_K block dequantization.
  *
  * Pure file-format decoder. The W3A8 NEON kernels live in
- * src/backends/cpu_neon/kernels/q3_K.c. struct block_q3_K_t lives in
- * internal.h so both files share one definition.
- *
- * Local NEON helpers (q3k_reconstruct_q32, q3k_store16_scaled) are
- * kept here because they are dequant-side. The kernel side duplicates
- * unpack_q3k_scales + q3k_reconstruct_q32 as static inline for the same
- * reason — DRY would mean a third header neither file fully owns.
+ * src/backends/cpu_neon/kernels/q3_K.c; both share struct block_q3_K_t
+ * from quant_blocks.h. The kernel file keeps its own copies of
+ * unpack_q3k_scales and q3k_reconstruct_q32.
  */
 #include "quant_blocks.h"
 #include "quant.h"

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""tests/test_ptqtp_p0_paper_parity.py — PTQTP Phase P0 gate.
+"""tests/test_ptqtp_p0_paper_parity.py — PTQTP paper-parity gate.
 
 Asserts that the clean-room PTQTP implementation in
-`tools/ptqtp_single_tensor.py` meets the two acceptance criteria from
-PTQTP-USP-PLAN.md Phase P0:
+`tools/ptqtp_single_tensor.py` meets two acceptance criteria:
 
     1. Cosine similarity ≥ 0.95 of reconstruction vs. original on a
        representative Gemma-class attention-Q tensor shape.
@@ -46,7 +45,7 @@ SHAPE = (1024, 1024)   # subsampled from (2560, 2560) for CI runtime budget
 SEED  = 0
 STD   = 0.02
 
-# Acceptance thresholds — see PTQTP-USP-PLAN.md §3 Phase P0.
+# Acceptance threshold for criterion 1.
 COS_SIM_THRESHOLD = 0.95
 
 

@@ -15,8 +15,8 @@
 # reference columns are the fixed REF_* numbers below.
 set -euo pipefail
 
-# Self-check the llama-bench field parse (the format is easy to mis-grep —
-# the model-size "2.88 GiB" column bit us once). Run: compare_metal.sh --test
+# Self-check the llama-bench field parse (the model-size "2.88 GiB" column is
+# easy to mis-grep). Run: compare_metal.sh --test
 if [ "${1:-}" = "--test" ]; then
   _t='| m | 2.88 GiB | 4.65 B | BLAS,MTL | 8 | pp512 | 1548.25 ± 2.30 |'
   _v=$(echo "$_t" | awk -F'|' '/pp512/{split($(NF-1),a,"±");gsub(/ /,"",a[1]);print a[1]}')

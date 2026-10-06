@@ -1,7 +1,7 @@
 /*
  * test_multi_session_parallel_int — concurrent sessions on one model.
  *
- * The session-threading refactor's contract: steady-state per-session ops
+ * The session threading contract: steady-state per-session ops
  * may run concurrently across different sessions of one model, one thread
  * per session. This test exercises exactly that — 4 sessions created
  * serially (setup is single-threaded per the contract), then 4 pthreads
@@ -36,9 +36,9 @@
 #define N_SESSIONS 4
 #define N_ROUNDS 2
 /* GEIST_TEST_LIGHT=1 (coverage CI) cuts decode length: line coverage is
- * identical after the first few tokens and the instrumented -O1 build
- * made this test the suite's whale (24 min of the 66-min ratchet job).
- * Race detection does not live here — that is the TSan job. */
+ * identical after the first few tokens, and the instrumented -O1 build
+ * makes the full length the suite's slowest test. Race detection does not
+ * live here — that is the TSan job. */
 static int n_decode(void) {
     const char *l = getenv("GEIST_TEST_LIGHT");
     return (l != NULL && l[0] == '1') ? 8 : 32;
@@ -113,8 +113,8 @@ int main(void) {
     struct geist_backend *be = nullptr;
     /* Best available CPU backend, in kernel-speed order. cpu_x86 matters
      * twice on the TSan leg: it is the backend whose per-thread workspace
-     * this test gates, and the scalar fallback it silently took before was
-     * both blind to that code and slow enough to blow the job timeout. */
+     * this test gates, and cpu_scalar is both blind to that code and slow
+     * enough to blow the job timeout. */
     /* GEIST_BACKEND picks one explicitly, e.g. metal (#544). */
     const char       *pin = getenv("GEIST_BACKEND");
     enum geist_status s   = pin != nullptr && pin[0] != '\0'

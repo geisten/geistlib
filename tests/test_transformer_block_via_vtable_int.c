@@ -35,9 +35,9 @@
  *                                                  ▼
  *                                                 y_out
  *
- * Phase B-4e Step 3 verification: proves the backend op-vocab assembled in
- * Steps 1+2 is sufficient to express a full transformer block. Random F32
- * weights (no quantization, no GGUF) — exercises only the vtable.
+ * Shows the backend op vocabulary is sufficient to express a full
+ * transformer block. Random F32 weights (no quantization, no GGUF) —
+ * exercises only the vtable.
  *
  * Cross-references the vtable path against a "reference path" that calls
  * the same gemma4_kernels.c / cblas_sgemm functions directly. Bit-identical
@@ -257,7 +257,7 @@ alloc_and_upload(struct geist_backend *be, const float *data, size_t n) {
     return buf;
 }
 
-/* P2-final helper: resolve a F32 DENSE weight once. n_in/n_out follow the
+/* Resolve a F32 DENSE weight once. n_in/n_out follow the
  * row-major (n_out, n_in) layout the resolvers expect. */
 static struct geist_weight
 resolve_w_f32(struct geist_backend *be, struct geist_buffer *bw, int32_t n_in, int32_t n_out) {
@@ -379,8 +379,8 @@ static int vtable_block_via_backend(const char  *backend_name,
     struct geist_buffer *b_cos = alloc_and_upload(be, cos, HEAD_DIM);
     struct geist_buffer *b_sin = alloc_and_upload(be, sin_, HEAD_DIM);
 
-    /* Tensor descriptors for non-linear ops. P2-final: linear is no longer
-     * a vtbl op — resolved weights below. */
+    /* Tensor descriptors for non-linear ops; linear runs through the
+     * resolved weights below. */
     struct geist_tensor t_x     = make_tensor(bx, 1, D_MODEL, 0, 0);
     struct geist_tensor t_xnorm = make_tensor(b_xnorm, 1, D_MODEL, 0, 0);
     struct geist_tensor t_w_an  = make_tensor(bw_an, 1, D_MODEL, 0, 0);

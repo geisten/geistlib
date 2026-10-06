@@ -136,18 +136,9 @@ void ptqtp_gemv_2plane_fp32alpha(size_t         n_in,
     }
 }
 
-/* fp16α path: kept for disk-/bench-only callers that want to avoid the 2×
- * alpha-memory cost of the fp32 arena. The production runtime path goes
- * through ptqtp_gemv_2plane_fp32alpha after the loader pre-promotes alpha
- * once at model-load time (see gguf_ptqtp.c:259-274). On M1, fp16α is ~5 %
- * slower than fp32α; on Pi 5 the gap is in the same range (DRAM-bandwidth
- * margin masks part of it). Two attempts to close that gap by changing
- * the FP16→FP32 promotion (pre-promote at row start; direct __fp16 load
- * per group) produced no measurable improvement — the compiler already
- * register-allocates the pair buffer below. The remaining delta is the
- * FCVT instruction itself, which cannot be eliminated without going to
- * fp32α. Documented decision: use fp32α at runtime, leave this path
- * untouched. */
+/* fp16α variant for callers that cannot afford the fp32 alpha arena. The
+ * runtime uses ptqtp_gemv_2plane_fp32alpha: the per-group FCVT here costs
+ * ~5 %. */
 void ptqtp_gemv_2plane_fp16alpha(size_t          n_in,
                                  size_t          n_out,
                                  size_t          group_size,
@@ -178,13 +169,8 @@ void ptqtp_gemv_2plane_fp16alpha(size_t          n_in,
                                     group_byte_size,
                                     &acc1,
                                     &acc2);
-            /* Convert 2 fp16 alpha values via hardware FCVT. We memcpy
-             * the bit pattern into a `__fp16[2]` typed local instead of
-             * casting `uint16_t*` to `__fp16*` — the latter is strict-
-             * aliasing UB (review #12 / V8) because __fp16 is not a
-             * character type and TBAA may reorder the init across the
-             * load under -O3 -flto. memcpy gives the same FCVT codegen
-             * without the UB. */
+            /* memcpy, not a `__fp16 *` cast: the cast is strict-aliasing
+             * UB; memcpy compiles to the same FCVT. */
             __fp16 pair[2];
             memcpy(pair, &row_alpha[g * 2], 2 * sizeof(uint16_t));
             const float a1 = (float) pair[0];
@@ -287,10 +273,7 @@ void ptqtp_gemm_2plane_fp32alpha(size_t         M,
  * BIT_EXPAND_LUT[b][i] = (b >> i) & 1 for i ∈ [0, 8).
  * Used by the 5-bit packed kernel's NEON path to expand the high-bit stream;
  * the scalar path does not read it, so it only exists where NEON does (clang
- * rejects an unused internal table under -Werror).
- * 256 × 8 = 2048 bytes — comfortably fits in L1 (4 cache lines per entry
- * is misleading; the lookup pattern is byte-stream sequential so each
- * accessed entry brings its 8-byte payload in one read). */
+ * rejects an unused internal table under -Werror). 2 KiB, L1-resident. */
 #if defined(__ARM_FEATURE_DOTPROD)
 alignas(16) static const uint8_t BIT_EXPAND_LUT[256][8] = {
 #define B0(b)                                                                          \

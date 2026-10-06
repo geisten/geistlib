@@ -2,12 +2,10 @@
  * test_session_null_args_unit — the public session API answers a null
  * array with GEIST_E_INVALID_ARG in every build mode.
  *
- * The array parameters used to be declared GEIST_AT_LEAST(n), i.e.
- * non-null, while the bodies checked them for null anyway. gcc and clang
- * believed the declaration and deleted the check at -O1 and above, so a
- * release build dereferenced the null instead. `make test-unit
- * MODE=release` is the build this test is for; against the old headers it
- * does not even compile (-Wnonnull).
+ * The array parameters are plain pointers, not GEIST_AT_LEAST(n): with a
+ * non-null declaration gcc and clang delete the bodies' null checks at -O1
+ * and above, and a release build dereferences the null instead.
+ * `make test-unit MODE=release` is the build this test is for.
  *
  * Every argument check runs before the session is touched, so a dummy
  * handle is enough: no model, no fixture.

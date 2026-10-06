@@ -1,8 +1,6 @@
 # Weekly Apple CPU guard. Gated on the RATIO to llama.cpp measured in the
-# same job on the same runner (#439): the absolute floor it used before
-# (60 tok/s prefill) saw 23.9, 14.4 and 38.0 from identical code on three
-# consecutive Sundays — a hosted macOS runner is whatever it is that day,
-# but it is the same thing for both engines within one job.
+# same job on the same runner (#439): a hosted macOS runner's absolute speed
+# varies week to week, but is the same for both engines within one job.
 name: Apple performance guard
 
 on:
@@ -88,21 +86,11 @@ jobs:
             -p 512 -n 64 -r 10 -t "$BENCH_THREADS" -o json > bench-artifacts/llama-bench.json
           cat bench-artifacts/llama-bench.json
 
-      # Cliff floors on the ratio. The first run of this gate measured geist
-      # at 0.40x prefill / 0.50x decode of llama.cpp on this runner (26.4 vs
-      # 66.8 and 9.3 vs 18.8 tok/s, 3 threads) — nowhere near the M1 Max
-      # numbers in the README, and an open question (#456). The floors sit
-      # under what is measured today and above a scalar-fallback cliff; they
-      # are raised when #456 moves the ratio, not before. The numbers land in
-      # the step summary and as an annotation either way.
-      #
-      # Lowered to 0.18 / 0.25 after #602: on 2026-10-05 identical main code
-      # measured 0.25x, 0.32x and 0.36x prefill (decode 0.34x-0.57x) in three
-      # jobs, and ten revisions from the last green Sunday to main, run back
-      # to back in ONE job (#616), spread from 24.8 to 33.0 tok/s prefill
-      # with no step anywhere, the green base at the low end. The old 0.25
-      # floor sat inside that spread; a scalar or -O0 cliff is still well
-      # below the new one.
+      # Cliff floors on the ratio, under what this runner measures (an open
+      # question, #456) and above a scalar-fallback cliff. Identical code spreads
+      # 0.25x-0.36x prefill and 0.34x-0.57x decode across jobs (#602, #616), so
+      # the floors sit below that spread. Raise them when #456 moves the ratio.
+      # The numbers land in the step summary and as an annotation either way.
       - name: Ratio gate
         run: |
           cat bench-artifacts/*_mac-omp_detailed.jsonl | python3 benchmark/perf_gate.py \
