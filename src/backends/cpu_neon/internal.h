@@ -2,10 +2,7 @@
  * src/backends/cpu_neon/internal.h — shared internal types for cpu_neon TUs.
  *
  * Layer: BACKEND. Internal to cpu_neon — other backends MUST NOT include
- * this. struct geist_buffer is intentionally backend-private.
- *
- * Buffer layout currently mirrors cpu_scalar (both wrap a host pointer)
- * but lives in its own translation unit so backend boundaries stay clean.
+ * this. struct geist_buffer is backend-private.
  */
 #ifndef GEIST_INTERNAL_BACKEND_CPU_NEON_INTERNAL_H
 #define GEIST_INTERNAL_BACKEND_CPU_NEON_INTERNAL_H
@@ -32,11 +29,9 @@ struct geist_buffer {
 /* Kernel scratch for temporary int8 / fp32 / int32 buffers. One
  * workspace PER CALLING THREAD, owned by the backend: concurrent
  * sessions (one thread each, see geist_arch.h) quantize activations
- * and stage dequant tiles here, so a single shared instance was a
- * cross-session data race (caught by test_multi_session_parallel_int).
- * Per-thread instances hang off cpu_neon_state.ws_head and are all
- * freed at backend destroy — keeping the lifetime fix of review #4 /
- * V12 (no scratch surviving the backend) while restoring isolation.
+ * and stage dequant tiles here, so a shared instance would race
+ * (test_multi_session_parallel_int). Per-thread instances hang off
+ * cpu_neon_state.ws_head; no scratch outlives the backend.
  *
  * Within one workspace the users still follow master-prepares-then-
  * OMP-fan-out: the owning thread fills the scratch, its OMP workers
@@ -75,7 +70,7 @@ struct cpu_neon_workspace {
      * (DEQ_TILE_ROWS × n_in_max). 64-byte aligned for AMX SGEMM. */
     float *dequant_w_fp32;
     size_t dequant_w_fp32_cap;
-    /* Experimental fused FFN tile path: gate/up/mid float tiles plus
+    /* Fused FFN tile path: gate/up/mid float tiles plus
      * quantized mid activations for Q6_K down accumulation. */
     float  *ffn_gate;
     size_t  ffn_gate_cap;
@@ -87,13 +82,13 @@ struct cpu_neon_workspace {
     size_t  ffn_mid_q8_cap;
     float  *ffn_mid_sc;
     size_t  ffn_mid_sc_cap;
-    /* F32 elementwise workspace (currently vForce tanh input). */
+    /* F32 elementwise scratch (vForce tanh input). */
     float *elt_f32;
     size_t elt_f32_cap;
     /* Shared W*A8 activation-quant scratch for the resolver wrappers.
      * Every quantized dtype with a _pre kernel variant quantizes into
-     * this instead of malloc'ing per call (geist_weight.h: linear_m1 /
-     * linear_mN must be allocation-free). One set is enough: a thread
+     * this (geist_weight.h: linear_m1 / linear_mN must be
+     * allocation-free). One set is enough: a thread
      * runs exactly one linear kernel at a time, and the pair kernels
      * quantize their shared x once and use it for both weights. */
     int8_t  *act_xq;
@@ -184,7 +179,7 @@ struct cpu_neon_workspace *cpu_neon_ws(struct cpu_neon_state *st);
 void                       cpu_neon_ws_destroy_all(struct cpu_neon_state *st);
 
 /* Prints the per-catalog-row tensor counts collected by the resolver, if
- * GEIST_LOG_KERNELS=1. Diagnostic; a no-op otherwise (#327). */
+ * GEIST_LOG_KERNELS=1. Diagnostic; a no-op otherwise. */
 void     cpu_neon_dump_kernel_hits(void);
 uint64_t cpu_neon_ws_next_generation(void);
 
@@ -267,23 +262,17 @@ void cpu_neon_w_f16_m1(const float               *x,
                        struct geist_backend      *be,
                        float                     *y);
 
-/* P1.1.b → P2.e: load-time weight resolver. Inspects w->dtype
- * and writes direct M=1 / M>1 kernel function pointers. Returns
- * GEIST_E_UNSUPPORTED for dtypes the backend doesn't implement —
- * after P2.e there's no legacy linear() fallback, so an unsupported
- * dtype fails fast at first dispatch. */
+/* Load-time weight resolver: inspects w->dtype and writes direct M=1 /
+ * M>1 kernel function pointers. Returns GEIST_E_UNSUPPORTED for dtypes
+ * the backend does not implement. */
 struct geist_weight;
 [[nodiscard]] enum geist_status cpu_neon_resolve_weight(struct geist_backend *be,
                                                         struct geist_weight  *w);
 
 /* Capability answer for a linear with a weight of `w_dtype`, derived
- * from the same kernel table and the same runtime ISA gating
- * cpu_neon_resolve_weight dispatches on. A hand-kept dtype list drifted
- * apart once already (Q5_K / IQ2_S / IQ3_S reported EMULATED and
- * TQ2_0 / I2_S reported NONE while all five had native kernels) —
- * test_resolve_weight_unit gates the equivalence. Backend-internal
- * since the public supports_op query was removed with the vtable
- * split. */
+ * from the same kernel table and runtime ISA gating
+ * cpu_neon_resolve_weight dispatches on, so the two cannot drift
+ * (test_resolve_weight_unit gates the equivalence). */
 enum cpu_neon_linear_support_kind {
     CPU_NEON_SUPPORT_NONE,     /* no kernel resolves this dtype */
     CPU_NEON_SUPPORT_EMULATED, /* generic dequant trampolines only */

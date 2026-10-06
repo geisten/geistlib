@@ -2,9 +2,8 @@
  * src/backends/cpu_neon/backend.h — ARM64 NEON-optimized backend.
  *
  * Layer: BACKEND. ARMv8-A AArch64 NEON intrinsics for hot kernels
- * (linear with quantized weights, fused attention, etc.). Falls back
- * to scalar paths inside the backend for ops that are not yet
- * NEON-accelerated; never reaches across to cpu_scalar's symbols.
+ * (quantized linear, fused attention, ...). Ops without a NEON path use
+ * scalar code inside this backend, never cpu_scalar's symbols.
  *
  * Defined in (src/backends/cpu_neon/):
  *   backend.c          — descriptor, lifecycle, capability
@@ -27,7 +26,6 @@
 
 struct geist_backend_vtbl;
 
-/* Same descriptor shape as cpu_scalar — engine treats them uniformly. */
 struct geist_backend_descriptor;
 
 extern const struct geist_backend_descriptor geist_backend_cpu_neon;

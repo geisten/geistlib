@@ -1,14 +1,8 @@
 /*
  * src/backends/cpu_neon/transformer_ops.c — rope_apply, embedding_lookup,
- * attention wrappers over gemma4_kernels.c.
+ * FP32 attention (NEON dot products) and the fused Q4_K/Q6_K GEGLU FFN.
  *
  * Layer: BACKEND.
- *
- * These are the heavyweight transformer ops the engine needs to fully
- * route lm.c's forward pass through the backend vtable. The
- * gemma4_kernels.c implementations are FP32 reference kernels with
- * partial NEON acceleration; cpu_scalar uses the same code path
- * (no SIMD difference for these particular ops today).
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -210,8 +204,6 @@ static size_t ffn_tile_blocks(void) {
     return GEIST_OK;
 }
 
-/* ---- rope_apply ---- */
-
 [[nodiscard]] enum geist_status cpu_neon_rope_apply(struct geist_backend      *be,
                                                     struct geist_tensor       *x,
                                                     const struct geist_tensor *cos,
@@ -248,8 +240,6 @@ static size_t ffn_tile_blocks(void) {
     rope_apply(seq_len, n_heads, head_dim, (size_t) cos->shape[cos->ndim - 1], xp, cosp, sinp);
     return GEIST_OK;
 }
-
-/* ---- embedding_lookup ---- */
 
 [[nodiscard]] enum geist_status cpu_neon_embedding_lookup(struct geist_backend      *be,
                                                           const struct geist_tensor *embed_table,
@@ -583,7 +573,7 @@ static bool attention_mqa_causal_kv_neon(const float *q,
                       s_lo,
                       s_hi,
                       head_dim,
-                      false, /* this path has always used the general dot */
+                      false, /* general dot, also at head_dim 256 */
                       out + (t * n_q_heads + h) * head_dim);
     }
     return true;

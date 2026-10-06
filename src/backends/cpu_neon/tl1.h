@@ -1,5 +1,5 @@
 /*
- * src/backends/cpu_neon/tl1.h — W1.58 × A8 LUT-GEMV decode (Phase D / P4).
+ * src/backends/cpu_neon/tl1.h — W1.58 × A8 LUT-GEMV decode.
  *
  * Layer: BACKEND (cpu_neon, internal). NOT part of the public ABI.
  *
@@ -9,19 +9,16 @@
  * pre-quantize x to int8, then precompute, per K-pair (a, b) of int8
  * activations, a 16-entry int8 LUT enumerating w0·a + w1·b for all 9
  * ternary (w0, w1) ∈ {-1,0,+1}² combinations. GEMV becomes a stream
- * of vqtbl1q_s8 lookups indexed by 4-bit weight nibbles — ~4× higher
- * throughput on Apple-Silicon vs fp32 FMAs.
+ * of vqtbl1q_s8 lookups indexed by 4-bit weight nibbles.
  *
  * Provenance: bitnet.cpp's TL1 (utils/codegen_tl1.py, preset_kernels/
- * bitnet_b1_58-large/bitnet-lut-kernels-tl1.h). We don't generate
- * shape-specialized kernels (their codegen step); instead we run one
- * parameterized kernel over (M, K, BM=32, BBK=128) that handles all
- * BitNet shapes (2B-4T, 700M, 8B-1.58). Performance loss vs codegen
- * is small at decode batch=1 — the inner loop is already inlined.
+ * bitnet_b1_58-large/bitnet-lut-kernels-tl1.h). Instead of their
+ * shape-specialized codegen, one kernel parameterized over
+ * (M, K, BM=32, BBK=128) handles all BitNet shapes.
  *
  * Source format: TQ2_0 GGUF blocks (256 elements, fp16 scale, 64
- * packed 2-bit trit bytes). At load time we walk each TQ2_0 row and
- * re-pack into TL1 tiles, alongside per-row fp32 scales.
+ * packed 2-bit trit bytes), repacked at load time into TL1 tiles that
+ * carry their rows' fp32 scales.
  *
  * Activation pipeline:
  *   (1) absmax-quant fp32 → int8 with one per-call scale `s = 127/max|x|`
@@ -34,10 +31,10 @@
  *   BM = 32   output rows per outer tile
  *   BBK= 128  K positions per outer tile (= 64 K-pairs, accumulator int16)
  *
- * Storage per weight tensor (M rows × K cols):
- *   - packed:  (M/BM) × (K/BBK) × (BM × BBK/4) bytes = M*K/8 bytes
- *   - scales:  M fp32 = M*4 bytes
- *   Total = M*K/8 + M*4 (≈ 12.5% of fp32 W).
+ * Storage per weight tensor (M rows × K cols), per (BM × BBK) tile:
+ *   - packed:  BM × BBK/4 bytes        (M*K/4 in total)
+ *   - scales:  BM fp32 = BM*4 bytes    (M*K/32 in total)
+
  *
  * Shape constraints: M % BM == 0, K % BBK == 0. Unaligned shapes
  * fall through to the existing W1.58 × A8 path.

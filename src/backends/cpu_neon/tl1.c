@@ -105,9 +105,8 @@ int tl1_pack_from_tq2_0(const void *tq2_0_rows, size_t n_in, size_t n_out, void 
     const size_t   n_k_tiles      = n_in / TL1_BBK;
     uint8_t       *out_bytes      = (uint8_t *) out;
 
-    /* Unpack each row's trits once per (rt, kt) and then re-emit into
-     * the row-interleaved layout. trits_row[TL1_BBK] holds the BBK
-     * trits for one (row, kt) tile. */
+    /* Per (rt, kt): unpack each row's BBK trits, then re-emit them in the
+     * row-interleaved layout. */
     int8_t trits_block[256];
 
     for (size_t rt = 0; rt < n_r_tiles; rt++) {
@@ -181,7 +180,7 @@ void cpu_neon_w_tl1_m1(const float               *x,
         xq_cache = heap_alloc_array_aligned(int8_t, n_in);
         if (xq_cache == nullptr) {
             xq_cap = 0;
-            geist_linear_ref(1, x, w, y); /* TQ2_0 in raw, as ever */
+            geist_linear_ref(1, x, w, y); /* raw still holds TQ2_0 */
             return;
         }
         xq_cap = n_in;
@@ -222,7 +221,7 @@ void cpu_neon_w_tl1_m1(const float               *x,
         lut_scratch_tl = heap_alloc_array_aligned(int8_t, lut_total);
         if (lut_scratch_tl == nullptr) {
             lut_cap = 0;
-            geist_linear_ref(1, x, w, y); /* TQ2_0 in raw, as ever */
+            geist_linear_ref(1, x, w, y); /* raw still holds TQ2_0 */
             return;
         }
         lut_cap = lut_total;

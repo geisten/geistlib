@@ -2,17 +2,11 @@
  * src/backends/cpu_neon/workspace.c — per-thread, backend-owned kernel
  * scratch.
  *
- * History: file-scope `_Thread_local` caches leaked peak working-set
- * across model reloads (review #4 / V12), so the scratch moved onto the
- * backend — which then made it SHARED across concurrent sessions and a
- * data race (caught by test_multi_session_parallel_int). This version
- * keeps both properties: one workspace per calling thread (isolation),
- * all of them owned and freed by the backend (lifetime).
- *
- * Allocation flows through heap.h. All grow helpers preserve any existing
- * pointer when no resize is needed,
- * matching the legacy TLS grow-on-demand behavior bit-for-bit.
+ * One workspace per calling thread, so concurrent sessions do not race
+ * (test_multi_session_parallel_int); all owned and freed by the backend,
+ * so no scratch outlives a model reload. Allocation flows through heap.h.
  */
+
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "internal.h"

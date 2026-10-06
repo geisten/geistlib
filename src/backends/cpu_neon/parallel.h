@@ -3,23 +3,16 @@
  *
  * Layer: BACKEND (cpu_neon, internal).
  *
- * Replaces `#pragma omp parallel for schedule(static)` in hot-path
- * matmul kernels with a custom pthread pool. The win comes from
- * lower per-call dispatch overhead:
- *
- *   OpenMP (libgomp / libomp) `parallel for` regions on a decode token:
- *     - 210 matmuls × ~30-50 μs per spawn-and-join even with active wait
- *     - Profile on Pi 5: 11% of decode time in __gomp_* (≈ 9 ms / 89 ms)
- *
- *   Custom pool: workers spin on an atomic epoch counter; the master
- *   sets task fields and bumps the epoch with one `atomic_fetch_add`.
- *   Each parallel_for is one atomic write + spin-wait for ack. ggml
- *   uses the same pattern and gets ~4% in their thread-coord slice.
+ * Opt-in (GEIST_PP=1) alternative to `#pragma omp parallel for` for the
+ * per-row decode kernels, with lower per-call dispatch cost: workers spin
+ * on an atomic epoch counter, and the master publishes a task with one
+ * `atomic_fetch_add`. OpenMP spawn-and-join costs ~30-50 μs per region,
+ * ~11 % of decode time on a Pi 5.
  *
  * API contract:
  *   - One global pool, lazily initialized on first parallel_for.
- *   - Pool size from GEIST_THREADS env (default: omp_get_max_threads()
- *     if libomp present, else hw_concurrency capped at 8).
+ *   - Pool size from GEIST_THREADS, else OMP_NUM_THREADS, else the
+ *     performance-core count (Apple) or online CPUs; capped at 16.
  *   - parallel_for splits `[0, n)` into `n_threads` contiguous chunks
  *     and dispatches one chunk per worker. parallel_for_grain uses a
  *     dynamic atomic chunk cursor, useful for kernels whose row cost is
@@ -64,8 +57,7 @@ bool geist_pp_enabled(void);
  * every case. */
 void cpu_neon_parallel_rows(size_t n, geist_pp_body_fn body_fn, void *ctx);
 
-/* Number of threads the pool will actually use. Returns the same
- * value passed via GEIST_THREADS / OMP_NUM_THREADS. Cheap to call. */
+/* Number of threads the pool uses (>= 1). Cheap to call. */
 size_t geist_pp_thread_count(void);
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_NEON_PARALLEL_H */

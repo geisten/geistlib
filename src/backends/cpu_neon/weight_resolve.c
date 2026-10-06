@@ -46,10 +46,9 @@
 #include <omp.h>
 #endif
 
-/* GEIST_PROFILE_QUANT=1: separate the W4A8/W6A8 activation-quantization wall
- * time from the matmul wall time in the m>1 (prefill) path, to decide whether a
- * quantize-once-per-activation refactor is worth it. Calls happen one matmul at
- * a time from the (single-threaded) forward loop, so plain accumulators suffice. */
+/* GEIST_PROFILE_QUANT=1: split the m>1 (prefill) wall time into W4A8/W6A8
+ * activation quantization and matmul, printed at exit. The accumulators are
+ * atomic: concurrent sessions share them. */
 static _Atomic uint64_t g_qprof_quant_ns = 0;
 static _Atomic uint64_t g_qprof_mm_ns    = 0;
 static _Atomic int      g_qprof_state    = -1;
@@ -66,10 +65,7 @@ static void             qprof_print(void) {
             tot > 0 ? 100.0 * mm / tot : 0.0);
 }
 /* pthread_once, not a racy first-use check: two threads both seeing the
- * uninitialized state would each call atexit(qprof_print) and the profile
- * would print twice. The accumulators are shared across concurrent
- * sessions too, so the "single-threaded forward loop" the comment above
- * assumed is not the whole truth — they are atomic now. */
+ * uninitialized state would each register atexit(qprof_print). */
 static void qprof_init_once(void) {
     const char *e  = getenv("GEIST_PROFILE_QUANT");
     const int   on = (e != nullptr && e[0] == '1') ? 1 : 0;
@@ -94,14 +90,6 @@ static inline uint64_t qprof_now_ns(void) {
  * fallback in a BLAS-free build. */
 #include "geist_gemm.h"
 
-/* TQ2_0 q8a scratch storage lives on the backend's cpu_neon_workspace
- * (see internal.h). Kernels reach it via the `be` parameter; the
- * `ws->m{1,N}_*` field names below are populated/grown by the kernels
- * exactly the way the previous file-scope _Thread_local globals were.
- * Lifetime is bound to the backend struct, not the OMP runtime — so a
- * model unload/reload cycle in a long-running process actually returns
- * the memory at backend destroy. */
-
 /* ---- M=1 (decode) trampolines ---------------------------------------- */
 
 /* Quantize `m` activation rows into the thread's workspace instead of a
@@ -111,7 +99,7 @@ static inline uint64_t qprof_now_ns(void) {
  *
  * Returns nullptr when that scratch cannot be had, having computed y with
  * geist_linear_ref, which needs none: the kernel signature is void, and a
- * zeroed y (what this did before) reads as an answer. */
+ * zeroed y would read as an answer. */
 static const int8_t *ws_quantize_act(struct geist_backend      *be,
                                      size_t                     m,
                                      size_t                     n_in,
@@ -205,9 +193,8 @@ static void cpu_neon_w_q4k_m1(const float               *x,
                               struct geist_backend      *be,
                               float                     *y) {
     (void) be;
-    /* The raw SDOT decode GEMV beats the predecoded-block path here: the latter
-     * re-quantizes + allocates per call and its m=1 form is a GEMM kernel, not a
-     * tuned GEMV (measured ~21 vs ~33 tg128 on M1 Max). Keep raw. */
+    /* The raw SDOT decode GEMV beats the predecoded-block path, whose m=1
+     * form is a GEMM kernel (M1 Max tg128: ~33 vs ~21). */
     linear_q4k_decode_w4a8((size_t) w->n_in, (size_t) w->n_out, x, w->raw, y);
 }
 
@@ -231,9 +218,8 @@ static void cpu_neon_w_q6k_m1(const float               *x,
                               const struct geist_weight *w,
                               struct geist_backend      *be,
                               float                     *y) {
-    /* The _pre kernels behind the scratch the others use: the quant.h
-     * wrappers kept their own and returned without writing y when it could
-     * not be had. Same quantize_x_int8_sym, so the same bits. */
+    /* The _pre kernels on the workspace scratch; same quantize_x_int8_sym
+     * as the quant.h wrappers, so the same bits. */
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
     const int8_t *xq = ws_quantize_act(be, 1, n_in, x, w, y, &sc);
@@ -303,10 +289,9 @@ static void cpu_neon_w_q4_0_mN(size_t                     m,
                                struct geist_backend      *be,
                                float                     *y) {
     const size_t n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
-    /* #295: int8 GEMM on the x8 layout beats both the row-major SDOT
-     * sweep and the dequant+SGEMM trampoline — one weight pass,
-     * amortized 4 tokens per block load. Falls through when the x8
-     * aux is absent (non-Mac defaults). */
+    /* int8 GEMM on the x8 layout beats both the row-major SDOT sweep and
+     * the dequant+SGEMM trampoline: one weight pass, 4 tokens per block
+     * load (#295). Falls through when the x8 aux is absent. */
     if (w->backend_layout == GEIST_W_LAYOUT_Q4_0_X8_GEMV && w->aux_fp32 != nullptr) {
         float        *sc  = nullptr;
         int32_t      *s32 = nullptr;
@@ -406,9 +391,8 @@ static void cpu_neon_w_iq4nl_m1(const float               *x,
     linear_iq4nl_decode_w4a8_pre(n_in, n_out, sc[0], xq, w->raw, y);
 }
 
-/* F32 dense (P1.1.e): cblas-backed SGEMV / SGEMM. Row-major weight is
- * [n_out, n_in]; we compute y = W @ x as a sgemv with TransA=NoTrans
- * since the row-major layout already has the right shape. */
+/* F32 dense: SGEMV / SGEMM through geist_gemm. The weight is row-major
+ * [n_out, n_in], so y = W @ x is a sgemv with TransA=NoTrans. */
 static void cpu_neon_w_f32_m1(const float               *x,
                               const struct geist_weight *w,
                               struct geist_backend      *be,
@@ -600,8 +584,7 @@ static void cpu_neon_q4k_run_prequantized(const struct cpu_neon_state     *st,
                                                                  y);
             } else {
                 /* mtile8 is bit-identical to mtile4 and falls back to
-                 * mtile4 for m<8; small win on Mac, larger expected
-                 * on Pi5 where per-loop overhead is more visible. */
+                 * mtile4 for m<8. */
                 linear_q4k_w4a8_prefill_predecoded_mtile8(m,
                                                           n_in,
                                                           n_out,
@@ -622,9 +605,8 @@ static void cpu_neon_q4k_run_prequantized(const struct cpu_neon_state     *st,
 }
 
 /* SGEMM-prefill path (m ≥ threshold): dequant W tile-by-tile into a
- * workspace-resident fp32 scratch, call cblas_sgemm per tile.
- * Implementation defined further down (after DEQ_TILE_ROWS + dequant_tile).
- * Activation x is consumed as fp32 — no quantize_x_for_q4k. */
+ * workspace-resident fp32 scratch, call cblas_sgemm per tile. Defined
+ * below dequant_tile. Activation x is consumed as fp32. */
 static bool
 cpu_neon_dequant_w_workspace_prepare(struct cpu_neon_workspace *ws, size_t tile_rows, size_t n_in);
 static void   cpu_neon_qk_sgemm_run(const float               *x,
@@ -828,10 +810,8 @@ static void cpu_neon_w_iq3s_mN(size_t                     m,
     linear_iq3s_w3a8_prefill_pre(m, n_in, n_out, xq, sc, w->raw, y);
 }
 
-/* P2.b: native Q5_K W5A8 NEON kernels. M=1 always wins over the
- * dequant trampoline. M>1 is platform-dependent — Mac AMX SGEMM beats
- * native NEON for high M, Pi 5 (no AMX) is the open question. The
- * env toggle below selects between them. */
+/* Native Q5_K W5A8 kernels. M=1 always beats the dequant trampoline;
+ * for M>1 the q5k_native_mn policy picks (Mac AMX SGEMM wins at high M). */
 static void cpu_neon_w_q5k_m1(const float               *x,
                               const struct geist_weight *w,
                               struct geist_backend      *be,
@@ -863,10 +843,8 @@ static void cpu_neon_w_q5k_mN(size_t                     m,
     linear_q5k_w5a8_prefill_pre(m, n_in, n_out, xq, sc, s32, w->raw, y);
 }
 
-/* P2.d: native Q8_0 W8A8 prefill kernel (M>1). M=1 already native
- * (cpu_neon_w_q8_0_m1 above). Same platform cross-over pattern as
- * Q5_K — Mac AMX SGEMM may win at high M, Pi 5 native expected to
- * win since OpenBLAS lags. */
+/* Native Q8_0 W8A8 prefill kernel (M>1); same q8_0_native_mn policy
+ * cross-over as Q5_K. */
 static void cpu_neon_w_q8_0_mN(size_t                     m,
                                const float               *x,
                                const struct geist_weight *w,
@@ -884,21 +862,10 @@ static void cpu_neon_w_q8_0_mN(size_t                     m,
     linear_q8_0_w8a8_prefill_pre(m, n_in, n_out, xq, sc, w->raw, y);
 }
 
-/* P2: dequant-and-cblas trampolines (Q5_K / F16 / BF16 / Q8_0 M>1).
- *
- * These don't have native NEON quantized-dot kernels (yet); they
- * cover the resolver path so the legacy v->linear() fallback can be
- * retired. Per-call cost is one dequant pass over the weight tile
- * plus a cblas call. Memory-efficient: tile by output rows (TILE
- * rows at a time) so the FP32 scratch stays bounded regardless of
- * tensor size — the largest Gemma 4 weight (lm_head 262144×1536)
- * would otherwise demand 1.5 GB transient.
- *
- * The performance ceiling here is the dequant pass + a cblas SGEMV
- * — for Q5_K the legacy `linear()` did the same thing as a single
- * full-tensor dequant + sgemm with a 1.5 GB malloc, so this is
- * functionally identical with a much smaller working set. A native
- * W5A8 kernel (Q5_K analog of Q4_K) is the obvious next step. */
+/* Dequant-and-cblas trampolines: for every format without a native path
+ * (or where the policy prefers SGEMM). Per call, one dequant pass over the
+ * weight plus a cblas call, tiled by output rows so the FP32 scratch stays
+ * bounded (a 262144×1536 lm_head would otherwise need 1.5 GB). */
 #define DEQ_TILE_ROWS_DEFAULT 32
 
 static size_t qk_sgemm_tile_rows_for(const struct cpu_neon_state *st) {
@@ -908,11 +875,8 @@ static size_t qk_sgemm_tile_rows_for(const struct cpu_neon_state *st) {
     return st->policy.qk_sgemm_tile_rows;
 }
 
-/* Exactly the family's signature — `const void *` for the blocks, length
- * first. It used to say `const uint8_t *` and every table entry cast to
- * it; calling a function through a pointer of incompatible type is
- * undefined regardless of how compatible the representations happen to
- * be, so the casts are gone with it. */
+/* Exactly the dequant family's signature: a call through an incompatible
+ * function pointer type is undefined (AGENT.md §6). */
 typedef void (*dequant_row_fn)(size_t n_elems, const void *blocks, float *out);
 static size_t blk_bytes_for(enum geist_dtype dt) {
     switch (dt) {
@@ -1012,8 +976,7 @@ dequant_tile(const struct geist_weight *w, size_t row_start, size_t tile_rows, f
         return;
     }
     if (dt == GEIST_DTYPE_F16) {
-        /* F16 row = 2 bytes per element. Use vcvt_f16_f32 if NEON,
-         * scalar otherwise. */
+        /* vcvt_f32_f16 with NEON fp16, scalar otherwise. */
         const uint16_t *src = (const uint16_t *) w->raw + row_start * n_in;
         for (size_t r = 0; r < tile_rows; r++) {
             float *dst = tile_fp32 + r * n_in;
@@ -1060,10 +1023,9 @@ dequant_tile(const struct geist_weight *w, size_t row_start, size_t tile_rows, f
 }
 
 /* The calling thread's dequant tile, at least n floats, kept for the next
- * call (as tl1.c and the Q4_K kernel keep theirs; the OpenMP workers
- * persist). The trampolines and cpu_neon_qk_sgemm_run run once per layer
- * per token or prefill chunk, and allocated a tile of up to megabytes
- * each time (AGENT.md §3). nullptr only if the first growth fails. */
+ * call (the OpenMP workers persist): the trampolines run once per layer
+ * per token, so no per-call allocation (AGENT.md §3). nullptr only if the
+ * growth fails. */
 static float *tl_dequant_tile(size_t n) {
     static _Thread_local float *tile = nullptr;
     static _Thread_local size_t cap  = 0;
@@ -1088,13 +1050,9 @@ static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
     const size_t tile_rows = qk_sgemm_tile_rows_for(st);
     const size_t n_in      = (size_t) w->n_in;
     const size_t n_out     = (size_t) w->n_out;
-    /* Decode-path optimization (P3.9): parallelize tile-by-tile across
-     * cores. Each iteration dequants its own tile and does an
-     * independent sgemv into a disjoint y[r0..r0+tr) slice — no shared
-     * state. Pi 5 win: ~2× decode tok/s on TQ2_0. Mac builds without
-     * libomp so _OPENMP is undefined and this collapses to the serial
-     * loop. We use a private tile per thread instead of the previous
-     * single shared tile so concurrent threads don't trample. */
+    /* Parallel over output-row tiles: each thread dequants into its own
+     * tile and runs an independent sgemv into a disjoint y[r0..r0+tr)
+     * slice. */
 #ifdef _OPENMP
 #pragma omp parallel
     {
@@ -1141,12 +1099,10 @@ static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
 #endif
 }
 
-/* Fused F16 × A32 GEMV (M=1) — reads the f16 weight once and converts
- * 4-at-a-time in-register (vcvt_f32_f16), accumulating directly against the
- * fp32 activation. Avoids the dequant-trampoline's full f32 materialization
- * (which reads 656 MB + writes 1.3 GB + BLAS-reads 1.3 GB per call on the
- * BitNet-2B-4T tied f16 lm_head — the decode bottleneck). Bandwidth-bound:
- * one pass over the f16 weight. */
+/* Fused F16 × A32 GEMV (M=1): one pass over the f16 weight, converted
+ * in-register (vcvt_f32_f16) and accumulated against the fp32 activation,
+ * instead of the trampoline's full f32 materialization (the BitNet-2B-4T
+ * tied f16 lm_head dominates decode). */
 #if defined(__ARM_NEON)
 void cpu_neon_w_f16_m1(const float               *x,
                        const struct geist_weight *w,
@@ -1201,19 +1157,17 @@ static void cpu_neon_qk_sgemm_run(const float               *x,
                                   float                     *y) {
     const size_t n_in  = (size_t) w->n_in;
     const size_t n_out = (size_t) w->n_out;
-    /* Tile-loop parallelization: each thread dequants its own slice of
-     * weight rows into its OWN stack-allocated tile then SGEMMs. This is
-     * critical on Mac — Accelerate's internal threading doesn't engage
-     * for small N (per-tile sizes are ~64x32x1536 which Accelerate runs
-     * single-threaded), so we have to parallelize at this level. */
+    /* Each thread dequants its own slice of weight rows into its own tile,
+     * then SGEMMs. Accelerate runs these small tile shapes single-threaded,
+     * so the parallelism has to come from this level. */
     (void) tile_fp32; /* workspace fallback used when OMP unavailable */
     const size_t n_tiles = (n_out + tile_rows - 1) / tile_rows;
     (void) n_tiles; /* only used in the _OPENMP tile loop below */
 #if defined(_OPENMP)
 #pragma omp parallel
     {
-        /* Per-thread tile buffer (32-row tile fp32), kept across calls.
-         * Avoid stack VLA — n_in can be large. */
+        /* Per-thread tile, kept across calls; not a stack VLA, n_in can be
+         * large. */
         float *t_tile = tl_dequant_tile(tile_rows * n_in);
 #pragma omp for schedule(dynamic, 1)
         for (size_t t = 0; t < n_tiles; t++) {
@@ -1272,15 +1226,9 @@ static void cpu_neon_w_dequant_trampoline_mN(size_t                     m,
     const size_t n_in  = (size_t) w->n_in;
     const size_t n_out = (size_t) w->n_out;
     /* Used for F16/BF16 dense and the quantized formats without a native
-     * mN kernel (Q5_K / Q8_0 / Q4_0 / Q4_1 on Mac). Parallelize the
-     * output-row tiles across OMP threads — each thread dequants its tile
-     * and runs a single-threaded cblas_sgemm. This threads via libgomp
-     * (NOT OpenBLAS's pthread pool, which won't spawn alongside libgomp).
-     * Previously gated to non-Accelerate on the theory that Accelerate
-     * threads its own cblas — it does NOT for these tile shapes (N = 32
-     * rows stays single-threaded; same finding as cpu_neon_qk_sgemm_run,
-     * the Q4_K prefill path), which left Mac Q8_0 prefill fully serial:
-     * the 3.6x qwen35-0.8B prefill gap vs llama.cpp in QWEN35.md. */
+     * mN kernel (Q5_K / Q8_0 / Q4_0 / Q4_1 on Mac). The output-row tiles
+     * run in parallel over OpenMP, each a single-threaded cblas_sgemm:
+     * neither Accelerate nor OpenBLAS threads these tile shapes. */
 #if defined(_OPENMP)
     const size_t n_tiles = (n_out + DEQ_TILE_ROWS_DEFAULT - 1) / DEQ_TILE_ROWS_DEFAULT;
 #pragma omp parallel
@@ -1346,14 +1294,12 @@ static void cpu_neon_w_dequant_trampoline_mN(size_t                     m,
  * order; the first row whose dtype matches AND whose `requires` is a
  * subset of the active host's ISA mask is installed.
  *
- * Adding a dtype = adding a row. Adding an ISA-specific specialization
- * = adding a row before the more general row for the same dtype. The
- * resolver itself stays a ~20-line generic dispatch.
+ * An ISA-specific specialization goes before the more general row for
+ * the same dtype.
  *
- * Policy overrides (Q5_K / Q8_0 / TQ2_0 native-vs-trampoline mN) and
- * the TQ2_0 TL1 install are applied AFTER the table match in
- * apply_resolver_post_hooks below — they are orthogonal to ISA
- * capability and don't belong in the capability table. */
+ * Policy overrides (native-vs-trampoline mN, layout repacks, TL1) are
+ * applied after the table match in apply_resolver_post_hooks: they are
+ * tuning decisions, not ISA capability. */
 static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
         /* K-series: all NEON-baseline. */
         {GEIST_DTYPE_Q3_K, CPU_NEON_ISA_NEON, cpu_neon_w_q3k_m1, cpu_neon_w_q3k_mN, "q3_K"},
@@ -1365,9 +1311,8 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
         /* IQ-series. */
         {GEIST_DTYPE_IQ2_S, CPU_NEON_ISA_NEON, cpu_neon_w_iq2s_m1, cpu_neon_w_iq2s_mN, "iq2_s"},
         {GEIST_DTYPE_IQ3_S, CPU_NEON_ISA_NEON, cpu_neon_w_iq3s_m1, cpu_neon_w_iq3s_mN, "iq3_s"},
-        /* IQ4: native W4A8 decode GEMVs (vqtbl1q LUT + SDOT); M>1
-         * prefill stays on the dequant+SGEMM trampoline, which already
-         * reaches Q8_0-class throughput through the batched GEMM. */
+        /* IQ4: native W4A8 decode GEMVs (vqtbl1q LUT + SDOT); IQ4_NL
+         * prefill on the dequant+SGEMM trampoline. */
         {GEIST_DTYPE_IQ4_NL,
          CPU_NEON_ISA_NEON,
          cpu_neon_w_iq4nl_m1,
@@ -1382,12 +1327,8 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
         /* F32 native both paths. */
         {GEIST_DTYPE_F32, CPU_NEON_ISA_NEON, cpu_neon_w_f32_m1, cpu_neon_w_f32_mN, "f32"},
 
-/* Dequant-and-cblas trampolines for formats without a native NEON
- * kernel: F16 / BF16 / Q4_0. M>1 prefill via OpenBLAS / Accelerate
- * SGEMM after dequant; M=1 via the same trampoline. */
-/* F16: fused in-register-convert GEMV for decode (M=1) — avoids the
- * trampoline's full f32 materialization (the BitNet-2B-4T tied lm_head is
- * f16 and dominates decode). M>1 prefill stays on the SGEMM trampoline. */
+/* F16: fused in-register-convert GEMV for decode (M=1); prefill and BF16
+ * on the dequant+SGEMM trampoline. */
 #if defined(__ARM_NEON)
         {GEIST_DTYPE_F16,
          CPU_NEON_ISA_NEON,
@@ -1426,9 +1367,9 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
          "tq2_0/fp32"},
 
 /* PQ2_0: PrismML ternary (Ternary-Bonsai). Decode through the SDOT
- * W2A8 GEMV; prefill on the dequant+SGEMM trampoline until a native
- * int8 GEMM earns its place. Hosts without dotprod take the trampoline
- * for both. */
+ * W2A8 GEMV, prefill on the dequant+SGEMM trampoline (the x8 repack
+ * replaces both, see install_pq2_0_x8_gemv_if_eligible). Hosts without
+ * dotprod take the trampoline for both. */
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
         {GEIST_DTYPE_PQ2_0,
          CPU_NEON_ISA_NEON | CPU_NEON_ISA_DOTPROD,
@@ -1442,9 +1383,8 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
          cpu_neon_w_dequant_trampoline_mN,
          "pq2_0/trampoline"},
 
-/* I2_S: BitNet b1.58 official ternary (Microsoft 2B-4T). Dotprod-only —
- * the SDOT i2_s kernels assume ARMv8.2; no fp32 fallback row yet (every
- * geist ARM target enables +dotprod). */
+/* I2_S: BitNet b1.58 official ternary (Microsoft 2B-4T). Dotprod-only:
+ * no fp32 fallback row (every geist ARM target enables +dotprod). */
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
         {GEIST_DTYPE_I2_S,
          CPU_NEON_ISA_NEON | CPU_NEON_ISA_DOTPROD,
@@ -1453,16 +1393,10 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
          "i2_s/q8a"},
 #endif
 };
-/* ---- Resolution counters (#327) ---------------------------------------
- *
- * "Which kernels does this model actually execute?" used to be answered by
- * reading the GGUF dtype histogram and reasoning about the table below —
- * which is how a Q4_0-only change came to be suspected of moving a Q4_K
- * model's throughput. With GEIST_LOG_KERNELS=1 the resolver counts its own
- * decisions and prints them at backend destroy, so the binary answers it.
- *
- * Diagnostic only: relaxed increments on an opt-in path, never read by the
- * engine. */
+/* Resolution counters: with GEIST_LOG_KERNELS=1 the resolver counts the
+ * tensors bound per table row and prints them at backend destroy, so the
+ * binary says which kernels a model executes (#327). Diagnostic only:
+ * relaxed increments on an opt-in path, never read by the engine. */
 static _Atomic uint32_t g_kernel_hits[sizeof(CPU_NEON_KERNELS) / sizeof(CPU_NEON_KERNELS[0])];
 
 static bool kernel_log_enabled(void) {
@@ -1487,10 +1421,9 @@ void cpu_neon_dump_kernel_hits(void) {
 static_assert(sizeof(CPU_NEON_KERNELS) / sizeof(CPU_NEON_KERNELS[0]) > 0,
               "kernel table must not be empty");
 
-/* TQ2_0 install hook: optional TL1 LUT-GEMV M=1 specialization (review
- * §Mac-decode catch-up). Allocates packed TL1 bytes via heap.h when the
- * shape is supported AND the policy enables it; falls back silently to
- * the table-selected q8a/fp32 kernel otherwise. */
+/* TQ2_0 install hook: optional TL1 LUT-GEMV M=1 specialization.
+ * Allocates packed TL1 bytes via heap.h when the shape is supported AND
+ * the policy enables it; otherwise keeps the table-selected kernel. */
 static enum geist_status
 install_tq2_0_tl1_if_eligible(struct geist_weight *w, const struct cpu_neon_kernel_policy *policy) {
     const size_t bytes = tl1_pack_size_bytes((size_t) w->n_in, (size_t) w->n_out);
@@ -1513,10 +1446,8 @@ install_tq2_0_tl1_if_eligible(struct geist_weight *w, const struct cpu_neon_kern
     w->backend_layout    = GEIST_W_LAYOUT_TQ2_0_TL1;
     w->backend_alignment = 64;
     w->linear_m1         = cpu_neon_w_tl1_m1;
-    /* Ternary prefill (m>1) stays on the mature SDOT q8a_mN path. The TL1
-     * LUT-GEMM mN kernel loses end-to-end on A76 (Pi 5 4t BitNet 2B-4T seq128
-     * prefill 21.0 TL1 vs 33.6 q8a) and paid ~383 MB extra RSS, so its opt-in
-     * flag (GEIST_TL1_PREFILL) was removed. */
+    /* Prefill (m>1) stays on the SDOT q8a_mN path: a TL1 LUT-GEMM loses
+     * there on A76 (Pi 5 BitNet 2B-4T prefill 21.0 vs 33.6 t/s). */
     return GEIST_OK;
 }
 
@@ -1601,12 +1532,11 @@ static enum geist_status
 install_q6k_x8_gemv_if_eligible(struct geist_weight                 *w,
                                 const struct cpu_neon_kernel_policy *policy) {
 #if defined(__ARM_NEON)
-    /* Interleaved-8-row Q6_K GEMV. Costs a packed copy of the tensor
-     * (~1x source size, heap) — the n_out gate below limits that to
-     * lm_head-class tensors, and the mmap'd source pages go cold after
-     * warmup, so steady-state resident cost is near zero. Mac default
-     * on (measured: 4B lm_head 16.1 -> 11.9 ms/token, +26%); Pi stays
-     * opt-in via GEIST_Q6K_X8_GEMV=1 (4 GB board, RSS headroom). */
+    /* Interleaved-8-row Q6_K GEMV. Costs a heap copy of the tensor, so
+     * the n_out gate limits it to lm_head-class tensors; the mmap'd
+     * source pages go cold after warmup. Default on with Accelerate
+     * (4B lm_head 16.1 -> 11.9 ms/token); opt-in elsewhere via
+     * GEIST_Q6K_X8_GEMV=1 for RSS headroom. */
     if (!policy->q6k_x8_gemv) {
         return GEIST_OK;
     }
@@ -1643,11 +1573,9 @@ install_q4_0_x8_gemv_if_eligible(struct geist_weight                 *w,
                                  const struct cpu_neon_kernel_policy *policy) {
 #if defined(__ARM_NEON)
     /* Interleaved-8-row Q4_0 GEMV. Unlike the Q6_K variant this hits
-     * every projection tensor, so the packed copies sum to ~1x the
-     * model's Q4_0 bytes — heap, with the mmap'd source going cold
-     * after warmup (measured on the Pi 5 4B: net RSS +0.5 GB, not
-     * +2.3 GB). Default on wherever SDOT exists since the Pi A/B
-     * (prefill 9.1->16.5 t/s); GEIST_Q4_0_X8_GEMV=0 opts out. */
+     * every projection tensor, so the heap copies sum to ~1x the model's
+     * Q4_0 bytes; the mmap'd source goes cold after warmup (Pi 5 4B: net
+     * RSS +0.5 GB). See kernel_catalog.c for the default. */
     if (!policy->q4_0_x8_gemv) {
         return GEIST_OK;
     }
@@ -1712,17 +1640,10 @@ static void install_pq2_0_x8_gemv_if_eligible(struct geist_weight               
 #endif
 }
 
-/* Apply per-dtype policy overrides after the table match. These are
- * platform-tuning decisions (native NEON vs Accelerate/OpenBLAS dequant
- * trampoline for M>1), not ISA-capability decisions. Q5_K + Q8_0 +
- * TQ2_0 all follow the same pattern: keep native mN if policy says so,
- * otherwise replace with the trampoline. See P2.c bench comments
- * preserved below.
- *
- *   Mac M1  trampoline (AMX SGEMM)   wins ~2-3× over native NEON M>1
- *   Pi 5    native NEON              wins ~1.3× over OpenBLAS SGEMM
- *
- * GEIST_*_NATIVE_MN env vars override the platform default per dtype. */
+/* Apply per-dtype policy overrides after the table match: layout repacks,
+ * and native NEON vs dequant+SGEMM trampoline for M>1. The trampoline wins
+ * ~2-3× with AMX SGEMM on Mac; native NEON wins ~1.3× over OpenBLAS on
+ * Pi 5. GEIST_*_NATIVE_MN env vars override the default per dtype. */
 static void apply_resolver_post_hooks(struct geist_weight                 *w,
                                       const struct cpu_neon_kernel_policy *policy) {
     switch ((enum geist_dtype) w->dtype) {
@@ -1743,7 +1664,7 @@ static void apply_resolver_post_hooks(struct geist_weight                 *w,
         return;
     case GEIST_DTYPE_IQ4_XS:
         /* Same crossover as Q4_0/Q8_0: Accelerate's dequant+SGEMM wins
-         * on Mac; Pi/Linux keeps the native #321 tile kernel. */
+         * on Mac; Pi/Linux keeps the native tile kernel. */
         if (!policy->iq4xs_native_mn) {
             w->linear_mN = cpu_neon_w_dequant_trampoline_mN;
         }
@@ -1765,8 +1686,8 @@ static void apply_resolver_post_hooks(struct geist_weight                 *w,
         if (w->dtype == GEIST_DTYPE_Q4_0) {
             (void) install_q4_0_x8_gemv_if_eligible(w, policy);
             if (w->backend_layout == GEIST_W_LAYOUT_Q4_0_X8_GEMV) {
-                /* #295: with the x8 aux present, the int8 mN GEMM
-                 * replaces the dequant+SGEMM trampoline. */
+                /* With the x8 aux present, the int8 mN GEMM replaces the
+                 * dequant+SGEMM trampoline (#295). */
                 w->linear_mN = cpu_neon_w_q4_0_mN;
             }
         }
@@ -1834,11 +1755,9 @@ enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_bac
     if (e == nullptr) {
         return CPU_NEON_SUPPORT_NONE;
     }
-    /* EMULATED means "dequant to fp32, then cblas" — i.e. both paths are
-     * the generic trampoline. A row with a purpose-built kernel on either
-     * path (f16 has a fused m1 GEMV but trampolines m>1; tq2_0/fp32 the
-     * same) counts as NATIVE: the backend does have a hand-written kernel
-     * for this dtype. */
+    /* EMULATED: both paths are the generic dequant trampoline. A
+     * purpose-built kernel on either path (f16's fused m1 GEMV) counts as
+     * NATIVE. */
     const bool m1_generic = e->linear_m1 == cpu_neon_w_dequant_trampoline_m1;
     const bool mN_generic = e->linear_mN == cpu_neon_w_dequant_trampoline_mN;
     return (m1_generic && mN_generic) ? CPU_NEON_SUPPORT_EMULATED : CPU_NEON_SUPPORT_NATIVE;
@@ -1849,21 +1768,15 @@ enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_bac
     if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0 || w->raw_nbytes == 0u) {
         return GEIST_E_INVALID_ARG;
     }
-    /* The source extent, before anything reads it. Several kernels install
-     * a repacked layout (Q4_K predecode, Q6_K n-tile, TL1) that streams the
-     * whole tensor in one pass; with `raw` sized from the caller's buffer
-     * rather than from (dtype, n_in, n_out), a short source used to be read
-     * straight past its end. Shape and storage have to agree here or not at
-     * all. */
+    /* The source extent, before anything reads it: the repacks (Q4_K
+     * predecode, Q6_K n-tile, TL1) stream the whole tensor, so raw_nbytes
+     * must cover (dtype, n_in, n_out). */
     if (!quant_weight_extent_ok(w)) {
         return GEIST_E_FORMAT;
     }
-    /* Fail-fast on missing backend state: the policy carries the runtime
-     * ISA bits that gate kernel installation. Silently falling back to a
-     * synthesized default policy here would mean a test stub or partly-
-     * initialized backend gets the wrong kernels with no diagnostic
-     * (see code-review finding #5 / V7). The engine guarantees
-     * geist_backend_create finishes before resolve_weight is called. */
+    /* Fail fast without backend state: the policy carries the runtime ISA
+     * bits that gate kernel installation, and a synthesized default could
+     * install the wrong kernels silently. */
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -1925,8 +1838,7 @@ enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_bac
         }
         return GEIST_OK;
     }
-    /* No row matched: either the dtype is unknown to cpu_neon
-     * (legacy vtable v->linear() fallback applies upstream), or every
-     * matching row required an ISA the host lacks. */
+    /* No row matched: the dtype is unknown to cpu_neon, or every matching
+     * row requires an ISA the host lacks. */
     return GEIST_E_UNSUPPORTED;
 }

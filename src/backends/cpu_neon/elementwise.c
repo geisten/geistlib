@@ -4,12 +4,11 @@
  *
  * Layer: BACKEND.
  *
- * These ops are FP32 and not currently NEON-specialized in
- * gemma4_kernels.c (they're scalar with potential gcc auto-vectorization);
- * the cpu_neon backend reuses the same kernels for now. When a true
- * NEON specialization lands (e.g. vrsqrteq_f32 for rmsnorm), it slots
- * in here without touching the engine.
+ * FP32 ops on the portable gemma4_kernels.c loops (left to
+ * auto-vectorization); on Apple with Accelerate, the GELU-tanh products use
+ * vvtanhf.
  */
+
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "internal.h"

@@ -51,10 +51,8 @@ struct cpu_neon_kernel_entry {
     enum geist_dtype dtype;
     cpu_neon_isa_mask
         requires;
-    /* The canonical types from geist_weight.h, not a hand-spelled copy.
-     * This table re-declared the signature inline and drifted out of step
-     * with the typedef the moment the parameter order changed; naming the
-     * typedef makes that impossible. */
+    /* The canonical typedefs from geist_weight.h, so the table cannot
+     * drift from the signature (AGENT.md §6). */
     geist_kernel_linear_m1_fn linear_m1;
     geist_kernel_linear_mN_fn linear_mN;
     const char               *name;
@@ -77,9 +75,8 @@ struct cpu_neon_kernel_policy {
      * Default true when has_accelerate (Mac); false on Pi 5/Linux. */
     bool q4k_sgemm_prefill;
     bool q6k_sgemm_prefill;
-    /* M-threshold for SGEMM-path crossover. Default 32 (empirical Mac M1
-     * crossover where dequant overhead is amortized by AMX speedup).
-     * Env: GEIST_QK_SGEMM_THRESHOLD. */
+    /* Smallest m that takes the SGEMM path (dequant overhead amortized).
+     * Default 64 with Accelerate, else 32. Env: GEIST_QK_SGEMM_THRESHOLD. */
     size_t qk_sgemm_threshold;
     /* Output rows per dequant→SGEMM tile. Default 64; larger tiles reduce
      * cblas call overhead, smaller tiles reduce fp32 scratch/cache pressure.
