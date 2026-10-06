@@ -18,10 +18,10 @@
 #include <stdint.h>
 
 /* Bind w->linear_m1 / linear_mN to the generic kernels when they can serve
- * the weight: a dtype with a whole-row decoder (quant.h's formats, F16,
- * BF16 — not I2_S, whose per-tensor scale sits past the last row and which
- * has native kernels) and n_in a whole number of its blocks. Returns false
- * and leaves `w` untouched otherwise.
+ * the weight: one of the dtypes that reach them (IQ2_S, IQ3_S, F16, BF16,
+ * and Q4_K / Q6_K when their repack fails) and n_in a whole number of its
+ * blocks. Every other dtype has a native kernel. Returns false and leaves
+ * `w` untouched otherwise.
  *
  * The kernels split rows across OpenMP threads; each thread dequantizes its
  * rows into a private row of the calling thread's workspace and dots them in

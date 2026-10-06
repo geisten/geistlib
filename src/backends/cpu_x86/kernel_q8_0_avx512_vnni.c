@@ -29,6 +29,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "kernel_q8_0_avx512_vnni.h"
+#include "linear_util.h" /* hsum512_ps: the tree of linear_q8_0.c's dot_row */
 
 #include <immintrin.h>
 #include <stddef.h>
@@ -50,15 +51,6 @@ static inline __m512i load_w_pair(const struct block_q8_0_t *wb) {
 /* [lo x8 | hi x8] */
 static inline __m512 halves(float lo, float hi) {
     return _mm512_insertf32x8(_mm512_castps256_ps512(_mm256_set1_ps(lo)), _mm256_set1_ps(hi), 1);
-}
-
-/* Same tree as linear_q8_0.c's dot_row: halves, then 8 -> 4 -> 2 -> 1. */
-static inline float reduce(__m512 v) {
-    const __m256 s  = _mm256_add_ps(_mm512_castps512_ps256(v), _mm512_extractf32x8_ps(v, 1));
-    __m128       s4 = _mm_add_ps(_mm256_castps256_ps128(s), _mm256_extractf128_ps(s, 1));
-    s4              = _mm_add_ps(s4, _mm_movehl_ps(s4, s4));
-    s4              = _mm_add_ss(s4, _mm_movehdup_ps(s4));
-    return _mm_cvtss_f32(s4);
 }
 
 /* rows x tokens outputs; rows <= TILE_ROWS and tokens <= TILE_TOKENS are
@@ -130,7 +122,7 @@ static inline float reduce(__m512 v) {
     }
     for (size_t r = 0; r < rows; r++) {
         for (size_t t = 0; t < tokens; t++) {
-            y[t * n_out + r] = reduce(acc[r][t]);
+            y[t * n_out + r] = hsum512_ps(acc[r][t]);
         }
     }
 }

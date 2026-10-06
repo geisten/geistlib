@@ -34,9 +34,8 @@
 
 #include "backend_state.h"
 #include "kernel_tq2_0_avx512_vnni.h"
-#include "kernel_w4a8.h" /* w4a8_dispatcher_tier: the ISA gate, GEIST_FORCE_ISA-clamped */
+#include "linear_util.h"
 
-#include "checked.h"
 #include "linear_ref.h"
 #include "quant.h"
 #include "quant_blocks.h"
@@ -57,57 +56,20 @@ constexpr size_t NR = 4;
 /* One activation row to int8 blocks of 256: d = amax / 127, q rounded to
  * nearest-even (|q| <= 127), plus each block's integer sum S. */
 static void quantize_row_q8_256(size_t nb, const float *x, int8_t *qx, float *dx, int32_t *sx) {
-    const __m256  abs_mask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
-    const __m256i perm     = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
-    const __m256i ones_u8  = _mm256_set1_epi8(1);
-    const __m256i ones_16  = _mm256_set1_epi16(1);
     for (size_t b = 0; b < nb; b++) {
-        const float *xb = x + b * QK;
-        __m256       m  = _mm256_setzero_ps();
-        for (size_t i = 0; i < QK; i += 8) {
-            m = _mm256_max_ps(m, _mm256_and_ps(_mm256_loadu_ps(xb + i), abs_mask));
-        }
-        __m128 m4        = _mm_max_ps(_mm256_extractf128_ps(m, 1), _mm256_castps256_ps128(m));
-        m4               = _mm_max_ps(m4, _mm_movehl_ps(m4, m4));
-        m4               = _mm_max_ss(m4, _mm_movehdup_ps(m4));
-        const float amax = _mm_cvtss_f32(m4);
-
+        const float *xb    = x + b * QK;
+        const float  amax  = amax_ps(QK, xb);
         dx[b]              = amax / 127.0f;
-        const __m256 scale = _mm256_set1_ps(amax > 0.0f ? 127.0f / amax : 0.0f);
+        const __m256 scale = q8_scale(amax);
         __m256i      s16   = _mm256_setzero_si256();
         for (size_t c = 0; c < QK; c += 32) {
-            const float *xc = xb + c;
-            __m256i      i0 = _mm256_cvtps_epi32(
-                    _mm256_round_ps(_mm256_mul_ps(_mm256_loadu_ps(xc), scale),
-                                    _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-            __m256i i1 = _mm256_cvtps_epi32(
-                    _mm256_round_ps(_mm256_mul_ps(_mm256_loadu_ps(xc + 8), scale),
-                                    _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-            __m256i i2 = _mm256_cvtps_epi32(
-                    _mm256_round_ps(_mm256_mul_ps(_mm256_loadu_ps(xc + 16), scale),
-                                    _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-            __m256i i3 = _mm256_cvtps_epi32(
-                    _mm256_round_ps(_mm256_mul_ps(_mm256_loadu_ps(xc + 24), scale),
-                                    _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-            i0 = _mm256_packs_epi32(i0, i1);
-            i2 = _mm256_packs_epi32(i2, i3);
-            i0 = _mm256_permutevar8x32_epi32(_mm256_packs_epi16(i0, i2), perm);
-            _mm256_storeu_si256((__m256i *) (qx + b * QK + c), i0);
-            s16 = _mm256_add_epi16(s16, _mm256_maddubs_epi16(ones_u8, i0)); /* |.| <= 2032 */
+            const __m256i q = quant32(xb + c, scale);
+            _mm256_storeu_si256((__m256i *) (qx + b * QK + c), q);
+            s16 = _mm256_add_epi16(s16,
+                                   _mm256_maddubs_epi16(_mm256_set1_epi8(1), q)); /* |.| <= 2032 */
         }
-        const __m256i s32 = _mm256_madd_epi16(s16, ones_16);
-        __m128i s4 = _mm_add_epi32(_mm256_castsi256_si128(s32), _mm256_extracti128_si256(s32, 1));
-        s4         = _mm_add_epi32(s4, _mm_shuffle_epi32(s4, _MM_SHUFFLE(1, 0, 3, 2)));
-        s4         = _mm_add_epi32(s4, _mm_shuffle_epi32(s4, _MM_SHUFFLE(2, 3, 0, 1)));
-        sx[b]      = _mm_cvtsi128_si32(s4);
+        sx[b] = hsum_epi32(_mm256_madd_epi16(s16, _mm256_set1_epi16(1)));
     }
-}
-
-static inline float hsum_ps(__m256 s) {
-    __m128 s4 = _mm_add_ps(_mm256_castps256_ps128(s), _mm256_extractf128_ps(s, 1));
-    s4        = _mm_add_ps(s4, _mm_movehl_ps(s4, s4));
-    s4        = _mm_add_ss(s4, _mm_movehdup_ps(s4));
-    return _mm_cvtss_f32(s4);
 }
 
 static inline float tq2_scale(const struct block_tq2_0_t *w) {
@@ -200,19 +162,6 @@ static void dot_rows(size_t                      nb,
     }
 }
 
-/* The calling thread's workspace with room for m quantized activation rows
- * (int8 values, one fp32 scale and one int32 sum per block), or nullptr. */
-static struct cpu_x86_workspace *acquire_acts(struct geist_backend *be, size_t m, size_t n_in) {
-    size_t acts_bytes = 0, n_blocks = 0, scale_bytes = 0, sum_bytes = 0;
-    if (be == nullptr || be->state == nullptr || ckd_mul(&acts_bytes, m, n_in) ||
-        ckd_mul(&n_blocks, m, n_in / QK) || ckd_mul(&scale_bytes, n_blocks, sizeof(float)) ||
-        ckd_mul(&sum_bytes, n_blocks, sizeof(int32_t))) {
-        return nullptr;
-    }
-    return cpu_x86_ws_acquire_mN(
-            (struct cpu_x86_state *) be->state, acts_bytes, sum_bytes, scale_bytes, 0);
-}
-
 static void cpu_x86_linear_tq2_0_m1(const float               *x,
                                     const struct geist_weight *w,
                                     struct geist_backend      *be,
@@ -220,7 +169,7 @@ static void cpu_x86_linear_tq2_0_m1(const float               *x,
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
     const size_t              nb    = n_in / QK;
-    struct cpu_x86_workspace *ws    = acquire_acts(be, 1, n_in);
+    struct cpu_x86_workspace *ws    = acquire_acts(be, 1, n_in, QK, QK);
     if (ws == nullptr) {
         geist_linear_ref(1, x, w, y); /* no scratch: the reference needs none */
         return;
@@ -238,68 +187,20 @@ static void cpu_x86_linear_tq2_0_m1(const float               *x,
     }
 }
 
-static void cpu_x86_linear_tq2_0_mN(size_t                     m,
-                                    const float               *x,
-                                    const struct geist_weight *w,
-                                    struct geist_backend      *be,
-                                    float                     *y) {
-    const size_t              n_in  = (size_t) w->n_in;
-    const size_t              n_out = (size_t) w->n_out;
-    const size_t              nb    = n_in / QK;
-    struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in);
-    if (ws == nullptr) {
-        geist_linear_ref(m, x, w, y);
-        return;
-    }
-    int8_t                     *qx    = ws->mN_acts;
-    float                      *dx    = ws->mN_scale;
-    int32_t                    *sx    = ws->mN_sum_a;
-    const struct block_tq2_0_t *wb    = (const struct block_tq2_0_t *) w->raw;
-    const size_t                m_til = m - m % NR;
-
-    /* One team: quantize the m rows, then the GEMM (implicit barrier
-     * between the two worksharing loops). */
-#if defined(_OPENMP)
-#pragma omp parallel
-#endif
-    {
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-        for (size_t i = 0; i < m; i++) {
-            quantize_row_q8_256(nb, x + i * n_in, qx + i * n_in, dx + i * nb, sx + i * nb);
-        }
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-        for (size_t j = 0; j < n_out; j++) {
-            const struct block_tq2_0_t *wr = wb + j * nb;
-            float                       out[NR];
-            for (size_t i = 0; i < m_til; i += NR) {
-                dot_rows(nb, n_in, wr, qx + i * n_in, dx + i * nb, sx + i * nb, out);
-                for (size_t r = 0; r < NR; r++) {
-                    y[(i + r) * n_out + j] = out[r];
-                }
-            }
-            for (size_t i = m_til; i < m; i++) {
-                y[i * n_out + j] = dot_row(nb, wr, qx + i * n_in, dx + i * nb, sx + i * nb);
-            }
-        }
-    }
-}
-
-/* M>1 on AVX-512 VNNI hosts: the same quantization, then the register
+/* M>1: one team quantizes the m rows, then runs the GEMM (implicit barrier
+ * between the two worksharing loops). With vnni, the GEMM is the register
  * tiles of kernel_tq2_0_avx512_vnni.c, one call per group of
  * TQ2_0_VNNI_TILE_ROWS output rows. */
-static void cpu_x86_linear_tq2_0_mN_vnni(size_t                     m,
-                                         const float               *x,
-                                         const struct geist_weight *w,
-                                         struct geist_backend      *be,
-                                         float                     *y) {
+static void linear_mN(bool                       vnni,
+                      size_t                     m,
+                      const float               *x,
+                      const struct geist_weight *w,
+                      struct geist_backend      *be,
+                      float                     *y) {
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
     const size_t              nb    = n_in / QK;
-    struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in);
+    struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in, QK, QK);
     if (ws == nullptr) {
         geist_linear_ref(m, x, w, y);
         return;
@@ -308,6 +209,7 @@ static void cpu_x86_linear_tq2_0_mN_vnni(size_t                     m,
     float                      *dx      = ws->mN_scale;
     int32_t                    *sx      = ws->mN_sum_a;
     const struct block_tq2_0_t *wb      = (const struct block_tq2_0_t *) w->raw;
+    const size_t                m_til   = m - m % NR;
     const size_t                n_tiles = (n_out + TQ2_0_VNNI_TILE_ROWS - 1) / TQ2_0_VNNI_TILE_ROWS;
 
 #if defined(_OPENMP)
@@ -320,33 +222,53 @@ static void cpu_x86_linear_tq2_0_mN_vnni(size_t                     m,
         for (size_t i = 0; i < m; i++) {
             quantize_row_q8_256(nb, x + i * n_in, qx + i * n_in, dx + i * nb, sx + i * nb);
         }
+        if (vnni) {
 #if defined(_OPENMP)
 #pragma omp for schedule(static)
 #endif
-        for (size_t g = 0; g < n_tiles; g++) {
-            const size_t j0 = g * TQ2_0_VNNI_TILE_ROWS;
-            const size_t rows =
-                    n_out - j0 < TQ2_0_VNNI_TILE_ROWS ? n_out - j0 : TQ2_0_VNNI_TILE_ROWS;
-            tq2_0_gemm_rows_avx512_vnni(m, nb, n_out, j0, rows, wb, qx, dx, sx, y);
+            for (size_t g = 0; g < n_tiles; g++) {
+                const size_t j0 = g * TQ2_0_VNNI_TILE_ROWS;
+                const size_t rows =
+                        n_out - j0 < TQ2_0_VNNI_TILE_ROWS ? n_out - j0 : TQ2_0_VNNI_TILE_ROWS;
+                tq2_0_gemm_rows_avx512_vnni(m, nb, n_out, j0, rows, wb, qx, dx, sx, y);
+            }
+        } else {
+#if defined(_OPENMP)
+#pragma omp for schedule(static)
+#endif
+            for (size_t j = 0; j < n_out; j++) {
+                const struct block_tq2_0_t *wr = wb + j * nb;
+                float                       out[NR];
+                for (size_t i = 0; i < m_til; i += NR) {
+                    dot_rows(nb, n_in, wr, qx + i * n_in, dx + i * nb, sx + i * nb, out);
+                    for (size_t r = 0; r < NR; r++) {
+                        y[(i + r) * n_out + j] = out[r];
+                    }
+                }
+                for (size_t i = m_til; i < m; i++) {
+                    y[i * n_out + j] = dot_row(nb, wr, qx + i * n_in, dx + i * nb, sx + i * nb);
+                }
+            }
         }
     }
 }
 
-/* Whether this host may run kernel_tq2_0_avx512_vnni.c: the dispatcher tier
- * (which honours GEIST_FORCE_ISA) and every AVX-512 subset that TU is
- * compiled for. Decided here, outside that TU — see mk/backend-cpu_x86.mk. */
-static bool vnni_tiles_usable(void) {
-    return w4a8_dispatcher_tier() >= W4A8_ISA_AVX512_VNNI && __builtin_cpu_supports("avx512f") &&
-           __builtin_cpu_supports("avx512bw") && __builtin_cpu_supports("avx512dq") &&
-           __builtin_cpu_supports("avx512vl") && __builtin_cpu_supports("avx512vnni");
+static void cpu_x86_linear_tq2_0_mN(size_t                     m,
+                                    const float               *x,
+                                    const struct geist_weight *w,
+                                    struct geist_backend      *be,
+                                    float                     *y) {
+    linear_mN(false, m, x, w, be, y);
 }
 
-bool cpu_x86_linear_tq2_0_bind(struct geist_weight *w) {
-    if (w == nullptr || w->dtype != GEIST_DTYPE_TQ2_0 || w->n_in <= 0 ||
-        (size_t) w->n_in % QK != 0) {
-        return false;
-    }
+static void cpu_x86_linear_tq2_0_mN_vnni(size_t                     m,
+                                         const float               *x,
+                                         const struct geist_weight *w,
+                                         struct geist_backend      *be,
+                                         float                     *y) {
+    linear_mN(true, m, x, w, be, y);
+}
+void cpu_x86_linear_tq2_0_bind(struct geist_weight *w) {
     w->linear_m1 = cpu_x86_linear_tq2_0_m1;
     w->linear_mN = vnni_tiles_usable() ? cpu_x86_linear_tq2_0_mN_vnni : cpu_x86_linear_tq2_0_mN;
-    return true;
 }

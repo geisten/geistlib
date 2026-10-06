@@ -311,21 +311,12 @@ q4kx8_gemv_one_row_tile(size_t                     n_super,
     return acc_row;
 }
 
-/* ---- Public fallback (used by kernel_q4kx8_gemm_avx512_full.c) ---- */
-
-void q4kx8_gemv_avx2_fallback(size_t                     M,
-                              size_t                     N,
-                              size_t                     K,
-                              const struct block_q8_Kx4 *X,
-                              const struct block_q4_Kx8 *W,
-                              float                      Y[static M * N]);
-
-void q4kx8_gemv_avx2_fallback(size_t                     M,
-                              size_t                     N,
-                              size_t                     K,
-                              const struct block_q8_Kx4 *X,
-                              const struct block_q4_Kx8 *W,
-                              float                      Y[static M * N]) {
+static void q4kx8_gemv_avx2_fallback(size_t                     M,
+                                     size_t                     N,
+                                     size_t                     K,
+                                     const struct block_q8_Kx4 *X,
+                                     const struct block_q4_Kx8 *W,
+                                     float                      Y[static M * N]) {
     const size_t n_super_k = K / 256;
     const size_t N_tiles   = N / 8;
     const size_t M_tiles   = M / 4;
