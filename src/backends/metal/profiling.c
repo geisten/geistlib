@@ -1,8 +1,5 @@
 /*
  * src/backends/metal/profiling.c — env gates, dispatch/wait profiling, capture, debug stats.
- *
- * Layer: BACKEND (metal). Split from the former monolithic backend.c;
- * pure moves, no behavior change.
  */
 #include "metal_internal.h"
 

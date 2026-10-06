@@ -1,8 +1,5 @@
 /*
  * src/backends/metal/lifecycle.c — device/queue lifecycle and runtime loading.
- *
- * Layer: BACKEND (metal). Split from the former monolithic backend.c;
- * pure moves, no behavior change.
  */
 #include "metal_internal.h"
 
@@ -232,12 +229,9 @@ void metal_destroy(struct geist_backend *be) {
     st->use_q4k_n4         = q4k_n4 == nullptr || strcmp(q4k_n4, "0") != 0;
     const char *q4k_m16_n2 = getenv("GEIST_METAL_Q4K_M16_N2");
     st->use_q4k_m16_n2     = q4k_m16_n2 != nullptr && strcmp(q4k_m16_n2, "1") == 0;
-    /* Simdgroup-matmul Q4_K GEMM (llama.cpp mul_mm-derived). Default ON: only
-     * runs for full tiles (dispatch guard requires rows%32==0 && n_out%64==0),
-     * so the partial-tile path never executes and non-conforming shapes fall
-     * back to the m16 kernel. test_backend_metal_parity_unit.c covers both
-     * (Q4_K m=32 x 384 and m=33 x 383). Set GEIST_METAL_Q4K_MM_SG=0 to
-     * disable. */
+    /* Simdgroup-matmul Q4_K GEMM (from llama.cpp mul_mm), on by default.
+     * Whole tiles only; other shapes fall back to the m16 kernel.
+     * GEIST_METAL_Q4K_MM_SG=0 disables. */
     const char *q4k_mm_sg    = getenv("GEIST_METAL_Q4K_MM_SG");
     st->use_q4k_mm_sg        = q4k_mm_sg == nullptr || strcmp(q4k_mm_sg, "0") != 0;
     const char *rmsnorm_simd = getenv("GEIST_METAL_RMSNORM_SIMD");
@@ -245,18 +239,14 @@ void metal_destroy(struct geist_backend *be) {
     const char *q6k_n4       = getenv("GEIST_METAL_Q6K_N4");
     st->use_q6k_n4           = q6k_n4 == nullptr || strcmp(q6k_n4, "0") != 0;
     metal_tuning_init(be, st);
-    /* Off by default: the plain-layout n4 kernel (llama mul_mv structure)
-     * outruns the packed nt4 path and needs no load-time repack. */
-    /* Command-buffer pipelining (llama n_cb-style): rotate every N
-     * dispatches, default 192 (~3 buffers per decode token — llama's
-     * measured optimum on M-series is 2-3 buffers per graph).
+    /* Command-buffer pipelining: rotate every N dispatches, default 192
+     * (~3 buffers per decode token; llama.cpp's n_cb optimum is 2-3).
      * GEIST_METAL_PIPELINE=0 disables, =N sets the rotation period. */
     const char *pipeline_env = getenv("GEIST_METAL_PIPELINE");
     st->seq_rotate_every     = pipeline_env != nullptr ? (uint32_t) atoi(pipeline_env) : 192u;
     st->profile_enabled      = metal_env_enabled("GEIST_METAL_PROFILE");
-    /* Chunked DeltaNet prefill (CPU dn_run_prefill_chunked port). Default
-     * ON for seq>1; GEIST_METAL_DN_CHUNK=0 falls back to the serial
-     * per-token mixer kernel. */
+    /* Chunked DeltaNet prefill for seq>1 (port of dn_run_prefill_chunked).
+     * GEIST_METAL_DN_CHUNK=0 uses the serial per-token mixer kernel. */
     const char *dn_chunk = getenv("GEIST_METAL_DN_CHUNK");
     st->use_dn_chunk     = dn_chunk == nullptr || strcmp(dn_chunk, "0") != 0;
 
@@ -283,7 +273,7 @@ void metal_destroy(struct geist_backend *be) {
         return GEIST_E_BACKEND;
     }
 
-    /* #530: keep what the GPU binds wired while the backend is in use.
+    /* Keep what the GPU binds wired while the backend is in use (#530).
      * GEIST_METAL_KEEP_ALIVE_S=n: for n s after the last dispatch (default
      * 180, as llama.cpp); 0 leaves the unwiring to macOS. */
     const char *keep_alive = getenv("GEIST_METAL_KEEP_ALIVE_S");
@@ -303,9 +293,9 @@ void metal_destroy(struct geist_backend *be) {
     return GEIST_OK;
 }
 
-/* Batched-submit region hooks. main brackets each prefill batch and each
- * decode step with these; we open one command buffer per region and encode
- * every op onto it. Host access to GPU-referenced buffers flushes early
+/* Batched-submit region hooks. The engine brackets each prefill batch and
+ * each decode step with these; one command buffer per region carries every
+ * op. Host access to GPU-referenced buffers flushes early
  * (see metal_flush_if_referenced). The engine treats the token as opaque;
  * flushes rotate st->sequence_token, so region_end closes the CURRENT
  * sequence, not the original token. */

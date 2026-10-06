@@ -1,13 +1,10 @@
 /*
  * tuning.c — per-device thresholds for the metal backend.
  *
- * Layer: BACKEND (metal). The kernel choices below are crossovers, not
- * constants: where a wider threadgroup starts to pay depends on the GPU's
- * core count and memory latency, and every seed here was measured on one
- * machine (M1 Max, Bonsai-27B shapes). Rather than growing a per-device
- * branch, they go through the same three-stage resolution cpu_neon uses:
- * built-in seed, then an applied calibration value (the driver keys its
- * blob on the micro-architecture, so an M5 gets its own), then the env
+ * The kernel choices below are crossovers that depend on the GPU's core
+ * count and memory latency; the seeds come from one machine (M1 Max,
+ * Bonsai-27B shapes). Resolution matches cpu_neon: built-in seed, then an
+ * applied calibration value (keyed on the micro-architecture), then the env
  * override. The sondes below are what `geist_backend_calibrate` runs.
  */
 #include "metal_internal.h"
@@ -17,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Seed: M1 Max, 27B shapes. See the tunable comment for the measurement. */
+/* Seed: M1 Max, 27B shapes (see metal_quant_pipes_for in ops.c). */
 static constexpr uint32_t SEED_PQ2_N8_MIN_N_OUT = 6144u;
 
 /* Sonde geometry: decode shape (rows == 1) on an FFN-class input width.
