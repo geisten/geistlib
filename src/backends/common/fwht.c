@@ -10,12 +10,9 @@ void fwht_orthonormal(size_t n, float a[static n]) {
         return; /* H_1 = [1], and 1/sqrt(1) == 1 */
     }
     /* Butterfly passes: unnormalized Hadamard (H_n = H_2 ⊗ H_{n/2}), all
-     * but the last. The passes of len 1, 2 and 4 have inner loops of 1, 2
-     * and 4 butterflies, too short for the compiler to vectorize, and they
-     * ran scalar: 2.0 ns per float of a 1024-float block on x86-64 (AVX2),
-     * against 0.63 ns with each spelled out per group of 2 len as one loop
-     * over the block, which it vectorizes. Same butterflies in the same
-     * order as the general loop, so the result does not move by a bit; the
+     * but the last. Passes of len 1, 2 and 4 are spelled out as one loop
+     * over the block so the compiler vectorizes them (~3x on AVX2). Same
+     * butterflies in the same order as the general loop, bit for bit; the
      * Vulkan and Metal ports run that order too (test_fwht_unit pins it). */
     const size_t half = n >> 1;
     if (half > 1) {
@@ -61,14 +58,8 @@ void fwht_orthonormal(size_t n, float a[static n]) {
             }
         }
     }
-    /* The last stage spans the whole block (one iteration of the outer
-     * loop above), so the 1/sqrt(n) that makes the transform orthonormal,
-     * self-inverse and dot-preserving folds into it. It used to be its own
-     * pass over a[], which on the prism.hadamard path is ~2.1 M floats per
-     * token re-read and rewritten for one multiply. Same two operations
-     * per element in the same order as before, so the result is unchanged
-     * bit for bit (test_fwht_unit pins the properties; the rotation tests
-     * pin the values). */
+    /* The last stage spans the whole block, so the orthonormal 1/sqrt(n)
+     * scale folds into it instead of costing a separate pass over a[]. */
     const float s = 1.0f / sqrtf((float) n);
     for (size_t j = 0; j < half; j++) {
         const float x = a[j];

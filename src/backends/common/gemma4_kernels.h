@@ -1,9 +1,8 @@
 /*
  * gemma4_kernels — math kernels for Gemma 4 forward pass (FP32).
  *
- * All kernels operate on FP32 buffers in standard row-major layout.
- * Weights stored as BF16 in safetensors are converted to FP32 at load
- * time (see helpers below) since we are computing in FP32 throughout.
+ * All kernels operate on FP32 buffers in row-major layout. BF16
+ * safetensors weights are converted to FP32 at load time (helpers below).
  */
 #ifndef GEMMA4_KERNELS_H
 #define GEMMA4_KERNELS_H
@@ -20,11 +19,8 @@ static inline float bf16_to_fp32(uint16_t bf) {
     return f;
 }
 
-/* Convert n BF16 values into a FP32 buffer. dst MUST be at least n*4 bytes.
- * src is void* on purpose: safetensors packs tensor data at arbitrary byte
- * offsets in the mapping, so it is read unaligned (see the .c) — which is
- * also why it gets no [static] contract: a void* has no element count.
- * dst does, and states it. */
+/* Convert n BF16 values into dst. src is void* because safetensors data
+ * sits at arbitrary byte offsets and is read unaligned. */
 void bf16_array_to_fp32(size_t n, const void *src, float dst[static n]);
 
 /* Allocate (calloc-style) FP32 array and convert n BF16 values into it.
@@ -38,12 +34,9 @@ float *bf16_alloc_fp32(size_t n, const void *src);
  *     y[i]    = x[i] * rsqrt * weight[i]
  *
  * weight may be nullptr (skip the per-element scale, e.g. for "with_scale=False").
- * x and y may alias (in-place is supported).
+ * x and y are [n_rows, hidden] and may alias. Plain pointers: the extent is a
+ * product of runtime dims that may be 0 (AGENT.md §1).
  */
-/* x and y are [n_rows, hidden] and stay plain pointers: the bound is a
- * product containing a runtime dimension that may be 0, and `[static 0]`
- * is a contract gcc's -Wstringop-overflow rightly refuses. The length-first
- * order is the part that matters here. */
 void rmsnorm_fp32(size_t       n_rows,
                   size_t       hidden,
                   const float *x,
@@ -69,13 +62,10 @@ void rope_compute(size_t seq_len,
                   float *cos_out,
                   float *sin_out);
 
-/* Apply RoPE in-place. x has shape [seq_len, n_heads, head_dim].
- * cos/sin are [seq_len, head_dim]. */
-/* NEOX-style rotary over the FIRST n_rot dims of each head, pairing
- * (i, i + n_rot/2) exactly as ggml does; dims at or above n_rot are left
- * alone. n_rot == head_dim is the common case and the one every family
- * except qwen35 uses; qwen35 rotates 64 of 256 (#432). The cos/sin rows
- * are n_rot wide, so the table itself states the rotated width. */
+/* Apply RoPE in place. x is [seq_len, n_heads, head_dim]; cos/sin are
+ * [seq_len, n_rot]. NEOX-style rotary over the FIRST n_rot dims of each
+ * head, pairing (i, i + n_rot/2) as ggml does; dims >= n_rot are left
+ * alone. qwen35 rotates 64 of 256 (#432); other families n_rot == head_dim. */
 void rope_apply(size_t      seq_len,
                 size_t      n_heads,
                 size_t      head_dim,
@@ -107,19 +97,11 @@ void attention_mqa_causal(size_t      seq_len,
  * and nothing is allocated per call. */
 enum { ATTN_F32_BLOCK = 512 };
 
-/* No attention softmax takes exp of (score - running max) below this. The
- * block loops are countable, so the compiler vectorizes expf (libmvec), and
- * the vector expf sends every lane below about -87.3 down a scalar slow
- * path: in a peaked softmax most lanes, which made a 15-head SmolLM2 decode
- * 7 % slower at 2048 positions. Weights near e^-87 times a V value or scale
- * are denormals besides, which cost a microcode assist each: floored at
- * -87, the INT8 cache's attention still ran twice as slow on peaked scores
- * as on flat ones. At -60 neither happens, and no result changes: raising
- * a weight to e^-60 (or dropping it to 0) moves it by less than 8.8e-27,
- * 2^24 of them move the sum by 1.5e-19 next to the max's 1, and e^-60
- * times anything above 1.3e-12 is a normal float. So every kernel clamps
- * the argument here, one max per lane, and takes a rescale or merge factor
- * below it as 0. */
+/* No attention softmax takes exp of (score - running max) below this:
+ * every kernel clamps the argument here and takes a rescale or merge factor
+ * below it as 0. Vectorized expf takes a scalar slow path below about
+ * -87.3, and weights near e^-87 produce denormals; at -60 neither happens,
+ * and the result is unchanged (a weight moves by < 8.8e-27). */
 static constexpr float ATTN_EXP_FLOOR = -60.0f;
 
 /* Decoupled-length variant for KV-cached inference.
@@ -146,20 +128,10 @@ void attention_mqa_causal_kv(size_t      n_q,
                              const float v[static n_kv * n_kv_heads * head_dim],
                              float       out[static n_q * n_q_heads * head_dim]);
 
-/* Rotary position embedding is defined on PAIRS of channels: element i is
- * rotated against element i + n_rot/2 within the rotated block. An odd
- * rotated width leaves the last
- * channel with no partner, and every function in this family then quietly
- * skips it — rope_compute_at fills only 2*(head_dim/2) table entries and
- * leaves the last one as the allocator left it, and the interleaved-layout
- * permutation in the arch layer copies that same uninitialized tail into
- * the activation. head_dim is model metadata (d_model / n_q_heads for the
- * Llama and BitNet families), so a malformed file can pick it.
- *
- * Rather than invent a meaning for a half-pair, the contract is: rotary
- * requires an even, non-zero head_dim, checked once when the RoPE plan is
- * built. This predicate is that check, in one place, so the load-time
- * rejection and the hot-path guard cannot drift apart. */
+/* Rotary requires an even, non-zero head_dim: channels rotate in pairs,
+ * and an odd width would leave an uninitialized table entry. head_dim is
+ * model metadata, so this is checked once when the RoPE plan is built; the
+ * load-time rejection and the hot-path guard share this predicate. */
 [[nodiscard]] static inline bool rope_head_dim_supported(const size_t head_dim) {
     return head_dim != 0u && (head_dim % 2u) == 0u;
 }
@@ -224,12 +196,9 @@ void mul_fp32(size_t n, const float a[static n], const float b[static n], float 
  * bias   shape [n_out]      row-major, may be nullptr
  * y      shape [m, n_out]   row-major
  *
- * Uses Apple Accelerate sgemm on darwin; falls back to a naive triple
- * loop otherwise. For seq_len = 1 this still goes through sgemm — the
- * library handles the gemv case efficiently.
+ * Goes through the geist_gemm facade (sgemv for m == 1, else sgemm).
+ * Plain pointers for the same reason as rmsnorm_fp32.
  */
-/* Same as rmsnorm_fp32: the extents are products over runtime dimensions
- * that may be 0, so they are documented above rather than declared. */
 void linear_fp32(size_t       m,
                  size_t       n_in,
                  size_t       n_out,

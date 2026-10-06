@@ -48,15 +48,9 @@ void gelu_tanh_fp32(size_t n, const float *x, float *y) {
     }
 }
 
-/* Opt-in Apple-only fast-tanh path: when env GEIST_FAST_TANH=1 is set at
- * process start, gelu_tanh_mul_fp32 uses Accelerate's vForce vvtanhf, which is
- * ~10x faster than scalar tanhf on M1 (vectorized via NEON/AMX) but
- * differs from libm tanhf by 1-2 ULP per call. Across 16 ViT layers
- * the ULP drift compounds to ~2e-2 absolute on magnitudes ~50, well
- * within fp32 noise but outside the strict parity gate.
- *
- * Cost on Mac vision tower: 1234 ms -> 275 ms (-960 ms / -27% on
- * remaining 3.6 s tower, ~13% total tower speedup). */
+/* Opt-in Apple-only fast tanh (GEIST_FAST_TANH=1 at process start):
+ * gelu_tanh_mul_fp32 uses Accelerate's vvtanhf, ~10x faster than tanhf but
+ * 1-2 ULP off libm, which compounds past the strict parity gate. */
 #if defined(__APPLE__)
 static int fast_tanh_enabled(void) {
     static _Atomic int v = -1;
@@ -94,10 +88,7 @@ void gelu_tanh_mul_fp32(size_t n, const float *x, const float *z, float *y) {
 }
 
 void relu_squared_fp32(size_t n, const float *x, float *y) {
-    /* BitNet b1.58 2B-4T FFN activation: y = max(x, 0)^2. The compiler
-     * auto-vectorizes this loop into NEON vmaxq+vmulq on aarch64; no
-     * intrinsics needed here. Fused threshold + square avoids a second
-     * pass through y. */
+    /* Auto-vectorizes (vmaxq + vmulq on aarch64). */
     for (size_t i = 0; i < n; i++) {
         float xi = x[i] > 0.0f ? x[i] : 0.0f;
         y[i]     = xi * xi;
@@ -171,8 +162,7 @@ void rope_apply(size_t       seq_len,
                 const float *sin) {
     /* Pair within the rotated block, not across the head: with n_rot 64 of
      * head_dim 256 the partners are (0,32)..(31,63), and dims 64.. keep
-     * their values. Pairing on head_dim/2 instead rotated dims 0..31
-     * against 128..159 at the wrong frequencies (#432). */
+     * their values (#432). */
     size_t half = n_rot / 2;
     for (size_t s = 0; s < seq_len; s++) {
         const float *cos_s = cos + s * n_rot;
@@ -331,7 +321,7 @@ void attention_mqa_causal(size_t       seq_len,
     /* Working buffer for one row of attention scores (length seq_len). */
     float *scores = heap_alloc_array_aligned(float, seq_len);
     if (scores == nullptr) {
-        /* See attention_mqa_causal_kv: zero + shout, no status channel. */
+        /* No status channel: zero the output and report on stderr. */
         memset(out, 0, seq_len * n_q_heads * head_dim * sizeof(float));
         fprintf(stderr,
                 "geist: attention_mqa_causal: score buffer alloc failed "
@@ -430,10 +420,8 @@ void rmsnorm_fp32(
         const float *xr = x + r * hidden;
         float       *yr = y + r * hidden;
 
-        /* Mean-of-squares: NEON path on ARM (16-wide unroll, 4 lanes of
-         * fp64 accumulators converted from fp32 squares per iteration
-         * to maintain fp64-equivalent precision for the strict-parity
-         * codepath HF compares against). Scalar fp64 fallback elsewhere. */
+        /* Mean of squares, accumulated in fp64 (fp32 squares widened into
+         * four fp64x2 accumulators on NEON) for the strict HF-parity path. */
         double sum_sq = 0.0;
 #if defined(__ARM_NEON)
         size_t      i  = 0;

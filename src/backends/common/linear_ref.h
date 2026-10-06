@@ -7,9 +7,8 @@
  * allocates nothing, so it has no failure path: it is cpu_scalar's kernel
  * for block-quantized and half-precision weights, and what a CPU backend's
  * fast kernel computes instead when that kernel's scratch cannot be had,
- * or when it is given more rows than it holds accumulators for. Such a
- * kernel returns void (geist_weight.h), so before this the caller got a y
- * of zeros, or an unwritten one, and no error.
+ * or when it is given more rows than it holds accumulators for (such a
+ * kernel returns void, geist_weight.h, so it must not fail).
  *
  * The weight must have passed quant_weight_extent_ok, as every
  * resolve_weight checks: rows of whole blocks, a source long enough. x is

@@ -13,11 +13,8 @@
 
 #include <stddef.h>
 
-/* ---- optional profiling (GEIST_PROFILE_GEMM=1) ---------------------------
- * Accumulates wall time spent in the dense-fp32 facade across the whole run
- * and prints it at exit. Used to size the dense-fp32 share of inference
- * (ROADMAP.md Step 2) — the gate for going BLAS-free on linux-arm64. Backend-
- * agnostic: wraps whichever backend is compiled in. */
+/* Optional profiling (GEIST_PROFILE_GEMM=1): accumulates wall time spent in
+ * the dense-fp32 facade and prints it to stderr at exit. */
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
@@ -93,14 +90,10 @@ extern void cblas_sgemv(int          order,
                         float       *y,
                         int          incy);
 
-/* OpenBLAS multithreads each cblas call via its own pool. geist already
- * parallelizes the heavy (quantized) matmuls itself and only routes small,
- * skinny F32/BF16 dense matmuls (e.g. Gemma 4's per-layer PLE projections,
- * called ~70× per prefill chunk) through cblas — there the per-call thread
- * spawn/sync overhead dominates. Pin BLAS to 1 thread once (measured +9% on
- * Gemma 4 prefill). OpenBLAS-only: the symbol doesn't exist under Accelerate
- * (which manages its own threading) and a weak undefined symbol is a hard
- * link error on Mach-O — so gate it on the openblas provider macro.
+/* Pin OpenBLAS to 1 thread: only small, skinny dense matmuls come through
+ * here (e.g. Gemma 4 PLE projections), where its per-call thread spawn/sync
+ * dominates (+9 % Gemma 4 prefill). OpenBLAS-only: the symbol does not exist
+ * under Accelerate, and a weak undefined symbol is a link error on Mach-O.
  *
  * pthread_once, not a first-use flag: the first cblas call of a process can
  * come from every thread of an omp team at once (the chunked DeltaNet prefill
@@ -161,12 +154,11 @@ static void geist_sgemv_impl(int          transA,
     cblas_sgemv(GEIST_CBLAS_ROW_MAJOR, transA, M, N, alpha, A, lda, x, incx, beta, y, incy);
 }
 
-#else /* ---- native, dependency-free fallback -------------------------------     \
-       * NEON-vectorized for the dominant y = x*W^T pattern (transA=N, transB=T,   \
-       * beta=0); a scalar triple loop covers the rare cases (N/N, transposed A,   \
-       * beta!=0). Used by the BLAS-free build only; the quant W*A8 hot path never \
-       * reaches here. Per ROADMAP.md Step 2, dense fp32 is ~2.6% of inference, so \
-       * "decent" suffices — this needs no OpenBLAS-grade blocking. */
+#else /* native, dependency-free provider */
+
+/* NEON-vectorized for the dominant y = x*W^T pattern (transA=N, transB=T,
+ * beta=0); a scalar triple loop covers the rest. Dense fp32 is a few percent
+ * of inference, so no OpenBLAS-grade blocking. */
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
 #endif
@@ -187,12 +179,9 @@ static void geist_sgemm_impl(int          transA,
 #if defined(__ARM_NEON)
     if (transA == GEIST_OP_N && transB == GEIST_OP_T && beta == 0.0f) {
         /* C[M,N] = alpha * A[M,K] * B[N,K]^T (the y = x*W^T pattern). 4x4
-         * register-blocked microkernel: a 4-row x 4-col C-tile is held in 16
-         * accumulators, so each B-row K-vector is reused across 4 A-rows (and
-         * vice versa) — 4x less weight traffic than a 1-row sweep, which on
-         * the big model_proj GEMM (B re-read once per token otherwise) is the
-         * difference between ~6x and ~1.5x off OpenBLAS. Edges handled scalar-
-         * vectorized. */
+         * register-blocked microkernel: a 4x4 C-tile in 16 accumulators, so
+         * each B row is reused across 4 A rows — 4x less weight traffic than
+         * a 1-row sweep. Edges below. */
         const int Kv = K & ~3;
         int       i  = 0;
         for (; i + 4 <= M; i += 4) {
