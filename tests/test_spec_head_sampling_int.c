@@ -3,18 +3,14 @@
  * decoded output (#102 Phase 1).
  *
  * Contract under test:
- *   1. Greedy: spec head ON vs exact dense head → byte-identical tokens
- *      (the long-standing spec-head guarantee, previously only verified
- *      manually — this pins it as a regression test).
+ *   1. Greedy: spec head ON vs exact dense head → byte-identical tokens.
  *   2. Sampling (temperature > 0): the spec head must NOT engage — decode
  *      falls back to the dense head, so spec ON vs OFF is identical by
- *      construction. This pins the #102 Phase 1 finding: extending the
- *      sketch to top-k sampling FAILED its exactness gate (the stride-4
- *      sketch's rank noise beyond rank 1 is enormous — some true top-40
- *      rows ranked outside the top-8192 rough candidates; perfect recall
- *      required a full-width phase 1, i.e. the same bytes as the dense Q8
- *      head). If someone re-enables sampling in spec_head.c without solving
- *      recall, this test fails.
+ *      construction. The stride-4 sketch cannot serve top-k sampling: its
+ *      rank noise beyond rank 1 pushes true top-40 rows outside the
+ *      top-8192 candidates, and perfect recall needs a full-width phase 1
+ *      (the dense Q8 head's bytes). Fails if sampling is re-enabled in
+ *      spec_head.c without solving recall.
  *
  * Both runs force GEIST_Q8_LMHEAD=0 so the dense reference is the exact
  * F16/W-native head. On hosts/models where the spec head is ineligible

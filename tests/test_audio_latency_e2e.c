@@ -8,7 +8,6 @@
  * Stages timed:
  *   t_wav   : WAV read off disk
  *   t_attach: audio_encoder forward + soft-token KV injection
- *             (this is the 280-405 ms residual measured by bench_audio_*)
  *   t_pre   : chat-template suffix prefill (LM processes 8-10 tokens)
  *   t_first : first decoded token wall time
  *   t_decode: remaining tokens until <eos>/<turn|> or DECODE_CAP
@@ -16,7 +15,7 @@
  *   t_total = t_wav + t_attach + t_pre + t_first + t_decode
  *
  * Reports against several short clips so the absolute numbers make
- * sense vs the spoken duration. Tests does NOT enforce a latency
+ * sense vs the spoken duration. The test does NOT enforce a latency
  * budget (pass condition is "pipeline runs and produces tokens") so it
  * is robust across dev (M1) and target (Pi 5) hardware, but the printed
  * numbers feed benchmark/results/PI5-audio.md updates.
@@ -67,8 +66,7 @@ static double now_ms(void) {
     return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec / 1e6;
 }
 
-/* Chunk-walking WAV reader (audio_test_util.h) — the fixed-44-byte
- * shortcut mis-read ffmpeg WAVs with a LIST chunk (#268). */
+/* Chunk-walking WAV reader (audio_test_util.h); handles ffmpeg's LIST chunk. */
 static int16_t *read_wav_pcm(const char *path, size_t *n_samples_out, int *sample_rate_out) {
     return audio_test_read_wav(path, n_samples_out, sample_rate_out);
 }

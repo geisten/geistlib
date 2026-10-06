@@ -14,9 +14,8 @@
  * Load-time geometry (#470): the probe answers exactly the shader limits
  * (d_k <= 256, d_v <= 128, conv 2..8), and an in-memory qwen35 hybrid
  * whose head_k is past them is refused at load, naming the limit, because
- * the host fallback cannot map this backend's VRAM state. Before, it
- * loaded and failed the first prefill. One within the limits loads and
- * prefills.
+ * the host fallback cannot map this backend's VRAM state. One within the
+ * limits loads and prefills.
  *
  * SKIPs (exit 77) when no Vulkan runtime/device is present. */
 #include "deltanet_ref.h"

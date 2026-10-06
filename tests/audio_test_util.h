@@ -1,10 +1,9 @@
 /*
  * audio_test_util.h — shared scaffolding for the audio-tower tests.
  *
- * One home for the pieces the audio parity tests kept copy-pasting:
- * the synthetic sweep clip (kept in sync with tools/gen_test_wav.py —
- * this is the ONLY C statement of that formula), tower discovery, and
- * the soft-token comparison helpers.
+ * The synthetic sweep clip (kept in sync with tools/gen_test_wav.py — this
+ * is the ONLY C statement of that formula), tower discovery, the WAV
+ * reader and the soft-token comparison helpers.
  */
 #ifndef GEIST_AUDIO_TEST_UTIL_H
 #define GEIST_AUDIO_TEST_UTIL_H
@@ -80,12 +79,9 @@ static inline double audio_test_token_cosine(const float *a, const float *b) {
 
 /* 16-bit mono WAV reader that WALKS THE RIFF CHUNKS to find 'data'.
  *
- * The fixed skip-44-bytes shortcut this replaces mis-read every WAV with
- * a chunk between 'fmt ' and 'data' — ffmpeg writes a LIST/INFO chunk
- * there, so all ffmpeg-converted eval clips reached the encoder shifted
- * by ~15 samples with a metadata click at t=0. That alone moved
- * LibriSpeech WER from single digits to ~77 % median (#268): the audio
- * pipeline itself is reference-exact.
+ * A fixed 44-byte header skip is wrong for ffmpeg output, which puts a
+ * LIST/INFO chunk between 'fmt ' and 'data': the encoder would see the
+ * metadata as ~15 samples of audio (#268).
  *
  * Returns malloc'd PCM (caller frees), sample count and rate via out
  * params; nullptr on malformed/non-mono-16-bit input. */

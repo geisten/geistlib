@@ -1,7 +1,6 @@
 /*
- * test_weight_load_via_backend_int — verifies the pattern by which the
- * B-4e production-swap will load Gemma 4 weights from a GGUF file into
- * backend-owned buffers.
+ * test_weight_load_via_backend_int — GGUF weight bytes survive the round
+ * trip through backend-owned buffers.
  *
  * For each weight tensor in blk.0 (one full transformer layer's worth):
  *   1. gguf_get_tensor(ctx, name) → pointer + size into mmap'd GGUF
@@ -10,9 +9,7 @@
  *   4. backend->buffer_download(dst, buf, bytes) → readback
  *   5. memcmp(dst, src, bytes) == 0
  *
- * This proves the buffer pipeline preserves quantized weight bytes exactly,
- * which is the foundation for routing lm.c's per-layer linear() calls
- * through backend->vtbl->linear with the same Q3_K / Q4_K bytes.
+ * This proves the buffer pipeline preserves quantized weight bytes exactly.
  *
  * SKIPs cleanly if no GGUF is available.
  */
@@ -30,7 +27,7 @@
 /* The test checks the backend's upload/download round trip, not any one
  * model's layout: it takes every tensor of blk.0 (whatever the family
  * names them — attention, DeltaNet, FFN) plus the two globals every
- * decoder has. A fixed Gemma name list failed on a qwen fixture (#452). */
+ * decoder has. */
 static const char *GLOBAL_TENSORS[] = {
         "token_embd.weight",
         "output_norm.weight",

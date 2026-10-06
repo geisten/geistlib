@@ -1,6 +1,6 @@
 /*
  * test_gemma3_family_unit — the gemma3 arch name is accepted, and the
- * embedding scale is no longer tied to per-layer embeddings.
+ * embedding scale is independent of per-layer embeddings.
  *
  * No model, no backend: this pins two decisions that are otherwise only
  * observable by loading a GGUF.
@@ -12,12 +12,10 @@
  *      lists of the same length with different contents would compile and
  *      then fail closed on a real model.
  *
- *   2. sqrt(d_model) embedding scaling used to ride on config.has_ple.
- *      That held only while the sole family with the scale also had
- *      per-layer embeddings. Gemma 3 has the scale and no PLE, so they had
- *      to split. The risk in splitting them is the reverse: silently
- *      dropping the scale for gemma4, which would degrade a shipping model
- *      without failing anything.
+ *   2. sqrt(d_model) embedding scaling (has_embed_scale) is separate from
+ *      per-layer embeddings (has_ple): Gemma 3 has the scale and no PLE.
+ *      The risk is silently dropping the scale for gemma4, which would
+ *      degrade a shipping model without failing anything.
  *
  * No assert(): release builds define NDEBUG.
  */
@@ -80,7 +78,7 @@ int main(void) {
     puts("=== embedding scale is independent of PLE ===");
 
     /* The struct is the contract here: two separate fields, so a family can
-     * have either without the other. Before the split these were one. */
+     * have either without the other. */
     struct geist_arch_config gemma3_like = {.has_embed_scale = true, .has_ple = false};
     struct geist_arch_config gemma4_like = {.has_embed_scale = true, .has_ple = true};
     struct geist_arch_config llama_like  = {.has_embed_scale = false, .has_ple = false};

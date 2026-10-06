@@ -5,8 +5,8 @@
  * Rotary position embedding rotates channel i against channel
  * i + head_dim/2. With an odd head_dim the last channel has no partner,
  * and rope_compute_at writes only 2*(head_dim/2) of the head_dim entries
- * it is handed — leaving the last one exactly as the allocator left it.
- * The arch layer then copies that tail into an activation. head_dim is
+ * it is handed — leaving the last one exactly as the allocator left it,
+ * for the arch layer to copy into an activation. head_dim is
  * model metadata (d_model / n_q_heads for Llama and BitNet), so a
  * malformed file can choose it.
  *
@@ -108,7 +108,6 @@ int main(void) {
      * Not a hypothetical. Calling the kernel with an odd head_dim is safe
      * (it writes fewer entries, it does not run off the end), so we can
      * show exactly what it leaves behind: one cos and one sin per position.
-     * That tail is what the arch layer used to copy into an activation.
      * If a future change ever makes odd head_dim fully defined, this
      * assertion is the one to revisit — together with the predicate. */
     const size_t odd_left = unwritten_after_compute(4, 5, 5);
@@ -121,11 +120,11 @@ int main(void) {
     }
 
     /* ---- partial rotary rotates the right pairs at the right rate ------
-     * The bug this pins (#432): pairing on head_dim/2 instead of n_rot/2
-     * rotated dims 0..31 against 128..159 for qwen35's 64-of-256 head, and
-     * the frequency exponent divided by head_dim instead of n_rot. Both
-     * collapse to the correct formula when n_rot == head_dim, which is why
-     * every other family stayed correct. The reference below is the
+     * Pins (#432) pairing on n_rot/2, not head_dim/2 (which rotates dims
+     * 0..31 against 128..159 for qwen35's 64-of-256 head), and the
+     * frequency exponent divided by n_rot, not head_dim. Both mistakes
+     * collapse to the correct formula when n_rot == head_dim, so only
+     * partial-rotary families expose them. The reference below is the
      * definition, written out: pair (i, i + n_rot/2), angle
      * pos * theta^(-2i/n_rot), dims at or above n_rot untouched. */
     {

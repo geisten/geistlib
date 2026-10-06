@@ -1,15 +1,14 @@
 /*
- * test_step5_attn_oproj — Steps 5+6+7 of Sub-Task D combined.
+ * test_step5_attn_oproj_int — Gemma 4 parity steps 5-7.
  *
  * Embedding -> input_layernorm -> Q/K/V proj -> Q/K/V norm
  *           -> RoPE on Q/K -> sliding-window-512 causal attention (MQA)
  *           -> O proj
  * Compares against dumps[T*]['layer_00_self_attn_o_proj'] (1, seq, 1536).
  *
- * Bigger step than the previous ones because there are no intermediate
- * hooks between v_norm and o_proj — RoPE + attention + o_proj must be
- * validated together. If this fails, drop in a RoPE hook in
- * dump_activations.py to localize.
+ * There are no intermediate hooks between v_norm and o_proj, so RoPE +
+ * attention + o_proj are validated together; a RoPE hook in the
+ * activation dump script would localize a failure.
  */
 #include "safetensors_reader.h"
 #include "gemma4_kernels.h"

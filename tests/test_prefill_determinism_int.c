@@ -2,17 +2,15 @@
  * test_prefill_determinism_int — same prompt prefilled twice must produce
  * bit-identical logits.
  *
- * Regression guard for GPU kernel races: a missing threadgroup barrier in
- * the Metal scalar attention online-softmax (fixed 2026-07-04) corrupted
- * attention nondeterministically, but ONLY when the prefill tail chunk
- * missed the flash gate (seq % 8 != 0 → scalar fallback) AND kv_len
- * spanned more than one 256-key tile. The 24-token greedy parity gate
- * (single tile) and pp512 benches (%8-aligned → flash path) both sat
- * outside that window, so the race survived every existing gate while
- * silently costing ~8 MMLU points at 5-shot prompt lengths.
+ * Guard for GPU kernel races. A missing threadgroup barrier in the Metal
+ * scalar attention online-softmax corrupts attention nondeterministically,
+ * but ONLY when the prefill tail chunk misses the flash gate (seq % 8 != 0
+ * → scalar fallback) AND kv_len spans more than one 256-key tile — a
+ * window the 24-token greedy parity gate (single tile) and the pp512
+ * benches (%8-aligned → flash path) both miss.
  *
  * This test prefills a 301-token prompt (chunks 128+128+45: tail 45%8!=0,
- * kv_len 301 > 256 — inside the historical race window) three times in
+ * kv_len 301 > 256 — inside that window) three times in
  * one process and memcmps the exposed logits. Any nondeterministic kernel
  * on the prefill path — attention, reductions, GEMM tiles — fails it.
  * Backend-agnostic: runs on whatever backend "auto" resolves to.
@@ -29,8 +27,7 @@
 
 #define N_PROMPT 301
 /* GEIST_TEST_LIGHT=1 (coverage CI): two repeats prove determinism
- * (one comparison) at 2/3 of the 12.6-minute instrumented cost;
- * the third repeat only re-executes identical lines. */
+ * (one comparison); the third only re-executes identical lines. */
 static int n_repeats(void) {
     const char *l = getenv("GEIST_TEST_LIGHT");
     return (l != NULL && l[0] == '1') ? 2 : 3;

@@ -1,5 +1,5 @@
 /*
- * test_step8to11_mlp_norms — Steps 8/9/10/11 of Sub-Task D combined.
+ * test_step8to11_mlp_norms_int — Gemma 4 parity steps 8-11.
  *
  * Continues from o_proj output (step 7) through:
  *   8. post_attention_layernorm
@@ -8,7 +8,7 @@
  *  10. MLP: gate_proj, up_proj, gelu-tanh, multiply, down_proj
  *  11. post_feedforward_layernorm
  *
- * Outputs five FP32 binaries, one per validation hook:
+ * Outputs six FP32 binaries, one per validation hook:
  *   <prefix>.post_attn_norm.bin
  *   <prefix>.pre_ff_norm.bin
  *   <prefix>.gate_proj.bin

@@ -2,8 +2,8 @@
  * test_q4k_to_q4kx8_unit — Q4_K → Q4_Kx8 repack basic correctness.
  *
  * Verifies the byte-level repack preserves d/dmin per row and that the
- * 8-byte interleaved qs stripes contain the right source bytes. Full
- * GEMM correctness lands in the next test once the inner kernel exists.
+ * 8-byte interleaved qs stripes contain the right source bytes. GEMM
+ * correctness is test_q4kx8_gemm_unit.
  *
  * Deterministic; runs in <50 ms.
  */

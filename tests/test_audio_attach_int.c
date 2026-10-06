@@ -11,8 +11,6 @@
  *   - mel_constants.bin (auto-found)
  *   - input wav file (path passed as argv[1], optional; defaults to
  *     audio_bench/de_hello.wav)
- *
- * Phase B-5 smoke test for the audio_conformer encoder arch.
  */
 #include "audio_test_util.h"
 #include "test_helpers.h"
@@ -25,8 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Chunk-walking WAV reader (audio_test_util.h) — the fixed-44-byte
- * shortcut mis-read ffmpeg WAVs with a LIST chunk (#268). */
+/* Chunk-walking WAV reader (audio_test_util.h); handles ffmpeg's LIST chunk. */
 static int16_t *read_wav_pcm(const char *path, size_t *n_samples_out, int *sample_rate_out) {
     return audio_test_read_wav(path, n_samples_out, sample_rate_out);
 }

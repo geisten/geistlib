@@ -1,13 +1,13 @@
 /*
- * test_audio_long_clip_int — audio past ~10 s is no longer truncated (#247).
+ * test_audio_long_clip_int — audio past ~10 s is not truncated (#247).
  *
- * A hardcoded max_soft = 256 (≈ 10.2 s at ~25 soft tokens/s) used to cap
- * the pipeline: a longer clip paid the full encode and silently lost
- * everything past the cap. The bound now derives from the audio length
- * (audio_encoder_max_soft_tokens / the encoder vtable's max_soft_tokens).
+ * The soft-token bound derives from the audio length
+ * (audio_encoder_max_soft_tokens / the encoder vtable's max_soft_tokens),
+ * not from a fixed 256 (≈ 10.2 s at ~25 soft tokens/s), so a longer clip
+ * keeps everything it paid to encode.
  *
  * Encodes a synthetic 12 s sweep and asserts the token count lands where
- * the duration says it must — above the old cap, and within ±15 % of the
+ * the duration says it must — above 256, and within ±15 % of the
  * ~25 tokens/s rate. Also pins the bound helper itself against the count.
  *
  * SKIPs cleanly when audio_tower.safetensors / mel_constants.bin are
@@ -24,7 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define SECONDS 12 /* > the old 256-token (~10.2 s) cap */
+#define SECONDS 12 /* > 256 tokens (~10.2 s) */
 #define N_PCM ((size_t) AUDIO_TEST_SR * SECONDS)
 
 int main(void) {

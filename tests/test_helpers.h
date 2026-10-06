@@ -50,9 +50,8 @@ static inline size_t xfwrite(const void *p, size_t sz, size_t n, FILE *f) {
 
 /* Allocation that cannot silently hand back null. Test code passes these
  * buffers to kernels whose parameters are declared `T x[static n]`, which
- * promises non-null — so an unchecked malloc is a contract violation gcc
- * now reports as "accessing N bytes in a region of size 0". Aborting here
- * is what the tests wanted anyway; they never checked. */
+ * promises non-null; gcc reports an unchecked malloc passed there as
+ * "accessing N bytes in a region of size 0". */
 static inline void *xmalloc(size_t n) {
     void *p = malloc(n);
     if (p == nullptr) {

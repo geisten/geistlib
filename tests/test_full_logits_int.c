@@ -1,5 +1,5 @@
 /*
- * test_full_logits — Sub-Task E final: full forward + LM head + softcap.
+ * test_full_logits_int — full forward + LM head + softcap.
  *
  * Forwards through all 35 decoder layers (with KV-sharing for layers 15-34
  * and double-wide MLP for those layers), applies the final RMSNorm, the

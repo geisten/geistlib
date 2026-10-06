@@ -2,13 +2,12 @@
  * test_gguf_tokenizer_overflow_unit — a text that needs more ids than the
  * caller has room for is an error, not a shortened encoding (AGENT.md §5).
  *
- * geist_session_tokenize documents GEIST_E_INVALID_ARG on overflow. Its
- * sp_bpe path did that; its GGUF-embedded path returned GEIST_OK with the
- * first out_capacity ids, because gguf_tokenizer_encode stopped at its cap
- * and still reported success. Pinned here on synthetic tokenizers for all
+ * geist_session_tokenize documents GEIST_E_INVALID_ARG on overflow; this
+ * checks its GGUF-embedded path, where gguf_tokenizer_encode must not stop
+ * at its cap and report success. Pinned on synthetic tokenizers for all
  * three encode paths — SPM (merges), unigram (scores, no merges) and gpt2 —
  * with a text that ends in ordinary pieces and one that ends in a special
- * token, whose write had a truncating guard of its own. No fixture needed.
+ * token, whose write has a bound of its own. No fixture needed.
  */
 #define GEIST_INTERNAL_ENGINE_LAYER
 

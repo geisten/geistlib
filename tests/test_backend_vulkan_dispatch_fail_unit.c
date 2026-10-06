@@ -3,12 +3,11 @@
  * error, not a silent host fallback (#474, item 2).
  *
  * The Vulkan ops try the GPU first and keep a host loop for geometries the
- * shaders do not cover. "Not applicable" and "the dispatch failed" used to
- * be one boolean, so a command-buffer or descriptor failure (device lost,
- * out of memory) re-ran the op on the host over mapped memory and returned
- * GEIST_OK. This test makes vkBeginCommandBuffer fail and calls each such
- * op on host-visible buffers, where the old fallback would have succeeded:
- * every op must return GEIST_E_BACKEND.
+ * shaders do not cover. A command-buffer or descriptor failure (device
+ * lost, out of memory) must not re-run the op on the host over mapped
+ * memory and return GEIST_OK. This test makes vkBeginCommandBuffer fail and
+ * calls each such op on host-visible buffers, where a host fallback would
+ * succeed: every op must return GEIST_E_BACKEND.
  *
  * SKIPs (exit 0) when the Vulkan backend is not built or has no device.
  */

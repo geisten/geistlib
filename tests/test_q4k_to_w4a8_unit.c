@@ -215,8 +215,6 @@ static int scenario_random_multi_super_block(void) {
     return compare_rows("random_multi", N_IN, ref, recon);
 }
 
-/* --------------------------------- main ---------------------------------- */
-
 int main(void) {
     int fails = 0;
     if (scenario_handcrafted_super_block() != 0) {

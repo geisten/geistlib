@@ -2,9 +2,8 @@
  * test_load_from_memory_opts_unit — geist_model_load_from_memory_with_opts
  * carries max_seq_len to the model, like geist_model_load_with_opts (#428).
  *
- * A model's max_seq_len caps every session created on it. The in-memory
- * loader used to pass no options, so an embedded model stayed at the 4096
- * default whatever its consumer needed. On an in-memory llama:
+ * A model's max_seq_len caps every session created on it. On an in-memory
+ * llama:
  *   - without options a 6000-token session is refused (cap 4096);
  *   - with opts.max_seq_len = 8192 the same session is created;
  *   - with opts.max_seq_len = 1024 a 2048-token session is refused, so the

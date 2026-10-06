@@ -2,12 +2,12 @@
  * test_sp_bpe_load_unit — sp_bpe_tokenizer_load trusts a tokenizer.bin's
  * lengths and counts only as far as the file backs them.
  *
- * Every length and count in the file is untrusted. The loader compared
- * `p + len > end`, which forms a pointer up to 64 KB past the mapping
- * before it compares (undefined; AGENT.md §4), and it allocated and cleared
- * the tables for whatever counts the header claimed before reading a single
- * entry: a 6 KB file claiming 2^20 tokens, merges or special tokens grew the
- * process by 25 to 66 MB before the truncation was noticed.
+ * Every length and count in the file is untrusted. A length is checked by
+ * subtraction, not `p + len > end`, which forms a pointer past the mapping
+ * (undefined; AGENT.md §4); and the tables must not be allocated for
+ * whatever counts the header claims before the entries are read: a 6 KB
+ * file claiming 2^20 tokens, merges or special tokens must not grow the
+ * process by tens of MB before the truncation is noticed.
  *
  * The tokenizer_fixtures vocab as a tokenizer.bin must load; every proper
  * prefix of it must be refused; and a header whose counts the rest of the

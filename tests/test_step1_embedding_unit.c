@@ -1,5 +1,5 @@
 /*
- * test_step1_embedding — first parity check for Sub-Task D.
+ * test_step1_embedding_unit — Gemma 4 parity step 1 (embedding).
  *
  * Validates: token embedding lookup + Gemma4TextScaledWordEmbedding scaling.
  *
@@ -13,11 +13,8 @@
  * Companion validate_step1.py loads dumps/T1.npz["token_embed"] and the
  * binary, prints diff stats.
  *
- * Build:
- *   cc -std=c23 -Wall -Wextra -O2 \
- *      safetensors_reader.c test_step1_embedding.c -o test_step1_embedding
  * Run:
- *   ./test_step1_embedding ../gemma-4-E2B-it/model.safetensors \
+ *   test_step1_embedding_unit ../gemma-4-E2B-it/model.safetensors \
  *      dumps/T1.npz_input_ids.bin step1_token_embed.bin
  * (input_ids file is produced by validate_step1.py prepass.)
  */

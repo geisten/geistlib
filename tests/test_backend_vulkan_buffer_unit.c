@@ -1,6 +1,6 @@
 /*
  * test_backend_vulkan_buffer_unit — buffer-op contract tests for the vulkan
- * backend on a discrete GPU (Phase 1).
+ * backend on a discrete GPU.
  *
  * Covers the three memory paths the backend distinguishes:
  *   1. host-visible (SCRATCH): map is non-null, upload/download round-trip

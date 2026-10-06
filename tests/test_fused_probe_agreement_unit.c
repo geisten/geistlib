@@ -368,9 +368,8 @@ static int check_backend(const char *name) {
     }
 
     /* ---- PLE block negative agreement: the metal kernels are decode
-     * GEMVs, so an m>1 probe must answer no. The missing m check here
-     * bound fuse_ple_block_mN and hard-failed every gemma4 Metal prefill
-     * at layer 0 (found 2026-08-27). */
+     * GEMVs, so an m>1 probe must answer no; a yes binds fuse_ple_block_mN
+     * and fails every gemma4 Metal prefill at layer 0. */
     {
         struct geist_weight       gate = {.dtype = GEIST_DTYPE_F32, .n_in = 64, .n_out = 32};
         struct geist_weight       up   = {.dtype = GEIST_DTYPE_F32, .n_in = 32, .n_out = 64};
@@ -407,7 +406,7 @@ static int check_backend(const char *name) {
                               "kernel entry checks agree: GEIST_E_UNSUPPORTED");
     }
 
-    /* ---- Newly bound stages: positive agreement on F32 buffers where
+    /* ---- Other bound stages: positive agreement on F32 buffers where
      * the op is expressible without model weights. */
     const struct geist_backend_vtbl *v = be->desc->vtbl;
     if (fused->supported != nullptr) {

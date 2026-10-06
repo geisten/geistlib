@@ -2,11 +2,11 @@
  * fuzz_tokenizer — fuzz the GGUF tokenizer: vocab, merges and the encoder.
  *
  * The token table, the scores, the token types and the BPE merge list all come
- * out of the model file, so they are attacker-controlled in exactly the sense
- * gguf_reader.c:153 means. The tokenizer then builds a hash table sized from
- * that vocab count, splits every merge entry on its first space, and runs an
- * encoder over caller text — length arithmetic on untrusted data at every step,
- * which is exactly where overflow and bounds bugs live.
+ * out of the model file, so they are attacker-controlled. The tokenizer then
+ * builds a hash table sized from that vocab count, splits every merge entry on
+ * its first space, and runs an encoder over caller text — length arithmetic on
+ * untrusted data at every step, which is exactly where overflow and bounds
+ * bugs live.
  *
  * The input is one GGUF. Its tail doubles as the text to encode, so a single
  * mutation surface reaches both the loader and the encoder. Decode runs on the

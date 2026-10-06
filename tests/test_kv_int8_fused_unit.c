@@ -15,11 +15,12 @@
  *    after a prefix, sliding windows, the rotated cache (GEIST_KV_ROT: Q
  *    rotated before, the output after, both in the architecture), and a
  *    head_dim the rotation does not cover; the INT4 cases the same over
- *    packed rows. The cache holds more rows than are live. Every output must be written (poisoned
- * first), the query left as the host loop leaves it (bit for bit), and the outputs must agree
- * within 1e-5 of their scale: the kernels differ only in how -ffast-math groups the softmax sums
- * (~1e-6 measured). A view one row short, the query position off by one, or a rotation left out is
- * off by 1e-3 or more.
+ *    packed rows. The cache holds more rows than are live. Every output
+ *    must be written (poisoned first), the query left as the host loop
+ *    leaves it (bit for bit), and the outputs must agree within 1e-5 of
+ *    their scale: the kernels differ only in how -ffast-math groups the
+ *    softmax sums (~1e-6 measured). A view one row short, the query
+ *    position off by one, or a rotation left out is off by 1e-3 or more.
  *
  * 2. A model. The llama of model_fixtures.h with 8 query heads on 2 KV
  *    heads of 64 is loaded twice, once as is and once with
@@ -29,10 +30,9 @@
  *    plain and rotated; their logits must agree within 5e-2 of their
  *    range. That bound is loose on purpose: cpu_x86 runs this fixture's
  *    F32 weights as W8A8 (int8 activations), so a last-bit difference in
- *    an attention output flips activation roundings downstream. Measured
- *    here: 5.6e-3 plain, 9.2e-3 rotated; the host loop against itself with
- *    1e-6 relative noise on its output, up to 1.6e-2; a rotation left out,
- *    0.89. Part 1 is the tight check.
+ *    an attention output flips activation roundings downstream (the host
+ *    loop against itself with 1e-6 relative noise reaches 1.6e-2; a
+ *    rotation left out, 0.89). Part 1 is the tight check.
  */
 #define _POSIX_C_SOURCE 200809L /* setenv, unsetenv */
 #define GEIST_INTERNAL_ARCH_LAYER

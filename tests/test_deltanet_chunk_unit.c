@@ -124,8 +124,8 @@ static int run_case(size_t C, size_t d_k, size_t d_v, float g_scale, bool forget
 
     /* From the empty state: the fresh chunk, which never reads S, on
      * garbage against the plain one on zeros, value for value (the sign
-     * of a zero aside). The garbage is not frand's, so the cases after
-     * this one draw what they drew before. */
+     * of a zero aside). The garbage does not come from frand, so it does
+     * not shift the later cases' draws. */
     static float S_zero[MAX_D * MAX_D], S_fresh[MAX_D * MAX_D];
     static float o_zero[MAX_C * MAX_D], o_fresh[MAX_C * MAX_D];
     for (size_t i = 0; i < d_k * d_v; i++) {

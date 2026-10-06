@@ -1,5 +1,5 @@
 /*
- * test_awq_int — verifies AWQ scale loading + application in v2.
+ * test_awq_int — verifies AWQ scale loading + application.
  *
  * Strategy: run two sessions on the same model, one with AWQ disabled
  * (default) and one with awq_scales_path set. Decode N tokens from each;
@@ -10,7 +10,7 @@
  * If AWQ either crashed, was no-op, or produced garbage (all -1), the
  * test fails.
  *
- * Phase 1 smoke test. SKIPs cleanly if either the GGUF model or the
+ * SKIPs cleanly if either the GGUF model or the
  * gemma4-e2b.awq_scales.bin file is missing.
  */
 #include "test_helpers.h"

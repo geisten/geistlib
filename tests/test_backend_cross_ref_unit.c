@@ -93,8 +93,7 @@ static void fill_random_f32(float *p, size_t n, uint32_t seed) {
     if (s != GEIST_OK)
         goto cleanup;
 
-    /* P2.e: resolve once, time the resolver-installed kernel. The
-     * legacy v->linear() vtable slot is gone after P2.e. */
+    /* Resolve once, time the resolver-installed kernel. */
     void *w_host = be->desc->vtbl->buffer_map(bw);
     if (w_host == nullptr) {
         s = GEIST_E_BACKEND;
@@ -160,9 +159,8 @@ int main(void) {
     float *y_neon   = aligned_alloc(64, M * N * sizeof(float));
     float *y_direct = aligned_alloc(64, M * N * sizeof(float));
 
-    /* Every exit goes through `done`. The SKIP-partial return on hosts
-     * without cpu_neon (every x86 build) used to leak all five buffers,
-     * which LeakSanitizer reports as a 17 MiB failure. */
+    /* Every exit goes through `done`, including the SKIP on hosts without
+     * cpu_neon, so LeakSanitizer sees all five buffers freed. */
     int                   rc        = GEIST_TEST_PASS;
     struct geist_backend *be_scalar = nullptr;
     struct geist_backend *be_neon   = nullptr;

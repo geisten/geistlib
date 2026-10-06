@@ -1,12 +1,12 @@
 /*
  * test_audio_stream_live_parity_int — the live streaming worker
- * (GEIST_AUDIO_STREAM=1, Phase 8b) must emit the same soft tokens as the
+ * (GEIST_AUDIO_STREAM=1) must emit the same soft tokens as the
  * monolithic path for the same audio (#235).
  *
  * Two encoders in one process (the env is read per create): the reference
  * encodes after end_input in one go; the live one gets the same synthetic
  * sweep pushed in 20 ms chunks with the worker encoding mid-stream.
- * Asserts identical token count (the padded-frame fix) and value parity.
+ * Asserts identical token count and value parity.
  *
  * SKIPs cleanly when audio_tower.safetensors / mel_constants.bin are
  * missing; the audio-smoke CI job runs it with fixtures mandatory.
@@ -25,7 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SECONDS 4 /* > one 48-frame worker kick, < the 256-token cap */
+#define SECONDS 4 /* > one 48-frame worker kick */
 #define N_PCM ((size_t) AUDIO_TEST_SR * SECONDS)
 #define PUSH_CHUNK 320 /* 20 ms — real push-to-talk granularity */
 

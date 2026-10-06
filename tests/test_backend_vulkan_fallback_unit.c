@@ -4,15 +4,14 @@
  *
  * The Vulkan backend declines a fused op (GEIST_E_UNSUPPORTED) when its
  * shader does not apply, and the arch then runs the op on the host; weights
- * without a GPU kernel run on a host row-dequant path. Both used to show up
- * only as a slowdown. Checked here:
+ * without a GPU kernel run on a host row-dequant path. Checked here:
  *
  *   - a declined fused op (argmax, linear_t, linear_t_pair, embedding,
  *     kv_append_f16, attn_qgate_split) counts one fallback at its site and
  *     still returns GEIST_E_UNSUPPORTED; under strict mode it returns
  *     GEIST_E_BACKEND with an error naming the site;
- *   - a failed argmax dispatch is GEIST_E_BACKEND, not a decline (it used to
- *     send the arch to a host scan of logits the GPU never wrote);
+ *   - a failed argmax dispatch is GEIST_E_BACKEND, not a decline (which
+ *     would send the arch to a host scan of logits the GPU never wrote);
  *   - a host view of a mapped tensor and a host buffer copy are counted, and
  *     refused under strict mode;
  *   - a weight resolved onto the host path is summed at resolve, its linear
