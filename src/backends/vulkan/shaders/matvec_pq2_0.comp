@@ -13,9 +13,8 @@
  * wasted although neighbouring lanes read rows 32 * blocks_per_row bytes
  * apart). Every lane of the warp needs the same 128 activations at the same
  * time — a broadcast — so activation traffic per weight byte is 1/32 of what a
- * lane-per-block-half mapping reads (that mapping measured ~135 GB/s against a
- * 505 GB/s pure weight-read roofline on the same access pattern: the
- * activation loads were the wall, not the arithmetic).
+ * lane-per-block-half mapping reads (that mapping is bound by the activation
+ * loads, at about a quarter of the weight-read roofline).
  *
  * A workgroup is 32 rows x 8 k-slices (warp w takes blocks w, w + 8, ...): a
  * short matrix (5120 rows) would otherwise put only 160 warps on the whole

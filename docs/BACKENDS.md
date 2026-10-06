@@ -1,115 +1,96 @@
 # Backends
 
-The engine binds kernels at load time from whatever backends are compiled in
-(`BACKENDS="..."` at build time); `geist_backend_create("auto")` picks the best
-one for the host. CPU backends are the product; the GPU backends are
+Backends are compiled in with `BACKENDS="..."` at build time (run `make clean`
+when you change the list). `geist_backend_create("auto")` takes the first
+compiled backend in preference order — `cpu_neon`, `cpu_x86`, `cpu_scalar`,
+then `metal`, `vulkan` — so GPU backends are selected by name or with
+`GEIST_BACKEND=<name>`. The CPU backends are the product; the GPU backends are
 experimental and never required.
 
-## CPU (the product)
+## CPU
 
 | Backend | ISA | Status |
 | :-- | :-- | :-- |
-| `cpu_neon` | ARM NEON + SDOT (Pi 5, Apple Silicon, any armv8.2+) | default on arm64 |
-| `cpu_x86` | AVX-512/VNNI, runtime-dispatched over an x86-64-v3 (AVX2) baseline — one binary, no SIGILL on older CPUs | default on x86-64 (`BACKENDS="cpu_x86 cpu_scalar"`) |
-| `cpu_scalar` | portable C, no SIMD | numerical reference; parity is dtype-specific (ternary W2A8 is intentionally not bit-exact to scalar W2A32) |
+| `cpu_neon` | ARM NEON + SDOT (Pi 5, Apple Silicon, any armv8.2+ with dot product) | default on arm64 |
+| `cpu_x86` | x86-64-v3 (AVX2) baseline with runtime-dispatched AVX-512/VNNI: one binary, no SIGILL on older CPUs | default on x86-64 |
+| `cpu_scalar` | portable C, no SIMD | numerical reference; parity is per dtype (ternary W2A8 is intentionally not bit-exact to scalar W2A32, see [ARCHITECTURE.md](ARCHITECTURE.md#where-the-oracle-stops-ternary)) |
 
-CI guarantees all three: NEON on arm64 runners, AVX-512/VNNI under Intel SDE
-emulation (a silent downgrade fails the build), scalar everywhere. Concurrency
-is TSan-gated. Details: [`CI_COVERAGE.md`](CI_COVERAGE.md).
+A build for armv8.2 refuses a CPU without dot product (Cortex-A72, Pi 4) at
+`geist_backend_create`, naming the missing feature. CI runs NEON on arm64,
+AVX-512/VNNI under Intel SDE (a silent downgrade fails), scalar everywhere,
+and TSan on concurrency: [CI_COVERAGE.md](CI_COVERAGE.md).
 
 ## Metal (Apple GPU, experimental)
 
-Build with `BACKENDS="metal cpu_neon cpu_scalar"`. Simdgroup GEMV/GEMM
-kernels cover 13 GGUF dtypes (incl. the IQ4/Q3_K/IQ3_S mixed quants) and a
-chunked DeltaNet prefill runs the qwen35 hybrids: the 27B decodes at
-**1.41× llama.cpp Metal** while prefill is 1.12× on an M1 Max; gemma4-e2b sits
-at 992 pp / 79 tg. Every PR executes the Metal device probe and the
-quant linear-parity gate on a real GPU in CI; a weekly smoke generates
-end-to-end on a gemma model. Ledger:
-[`../benchmark/results/QWEN35.md`](../benchmark/results/QWEN35.md) (current)
-and [`../benchmark/results/METAL.md`](../benchmark/results/METAL.md)
-(the 2026-07 gemma program).
+Build with `BACKENDS="metal cpu_neon cpu_scalar"`. Simdgroup GEMV/GEMM kernels
+cover 13 GGUF dtypes (incl. the IQ4/Q3_K/IQ3_S mixed quants), and a chunked
+DeltaNet prefill runs the qwen35 hybrids. On an M1 Max the Qwen3.8-27B decodes
+at **1.41× llama.cpp Metal** and prefills at 1.12×; gemma4-e2b reaches 992 pp /
+79 tg. CI runs the device probe and quant linear-parity gate on a real GPU for
+every PR, and a weekly smoke generates end to end with Gemma. Ledgers:
+[`QWEN35.md`](../benchmark/results/QWEN35.md) (current) and
+[`METAL.md`](../benchmark/results/METAL.md) (Gemma).
 
-The GPU reads the weights from the GGUF mapping in place. What it binds stays
+The GPU reads weights from the GGUF mapping in place. What it binds stays
 wired for `GEIST_METAL_KEEP_ALIVE_S` seconds after the last token (default
-180), so the next request does not pay to wire it again; `0` leaves that to
+180), so the next request does not pay to wire it again; `0` leaves it to
 macOS, which unwires about 2 s after the GPU goes idle.
 
 ## Vulkan (Linux GPU, experimental)
 
-Build with `BACKENDS="vulkan cpu_x86 cpu_scalar"` — `libvulkan` is dlopen'd at
-runtime, no link-time dependency. The first non-Apple GPU path (NVIDIA Turing
-tested): quality gate passed (MMLU-200 0.520 vs 0.490 on the CPU path, 14/14
-tool-calling) and decode reaches ~86 % of llama.cpp Vulkan (132.3 vs 154 t/s
-tg128); prefill is the open front. Every PR executes the registry, buffer and
-linear-parity tests on Mesa lavapipe in CI.
+Build with `BACKENDS="vulkan cpu_x86 cpu_scalar"`; `libvulkan` is loaded at run
+time (no link-time dependency). Tested on NVIDIA Turing: MMLU-200 0.520 vs
+0.490 on the CPU path, 14/14 tool-calling, decode ~86 % of llama.cpp Vulkan
+(132.3 vs 154 t/s tg128); prefill is the open front. CI runs the registry,
+buffer and linear-parity tests on Mesa lavapipe for every PR. Lab log:
+[`VULKAN.md`](../benchmark/results/VULKAN.md).
 
-The Qwen3.5/3.6/3.8 hybrids (Gated-DeltaNet + attention) run end to end on the
-device: the DeltaNet mixer (causal conv + delta rule, two dispatches), partial
-RoPE, SwiGLU/gate epilogues and Q4_0 / Q4_1 / Q8_0 / Q5_K / Q6_K / TQ2_0
-kernels, with logits bit-identical to `cpu_scalar` on an FP32 KV cache (the CPU
-backends default to an INT8 KV cache, Vulkan to F16 — pin `GEIST_KV_INT8=0
-GEIST_KV_F16=0` when comparing). The 27B Q4_0 (16 GB) needs a device that
-holds it: it runs on a 21 GiB integrated GPU (RADV, `GEIST_VK_DEVICE=1`); an
-11 GiB card fails the load with an out-of-memory error that names the MiB the
-failing allocation needs, the MiB in use and the device limit — there is no
-spill to host memory yet (#466). `GEIST_VK_VRAM_BUDGET` (bytes, K/M/G suffix)
-lowers that limit, to reproduce a smaller card. Weight matrices are read from the GGUF mmap and uploaded once
-(`caps.weights_device_copy`), so a model no longer needs its size twice in
-memory. Llama-family rows (interleaved RoPE) rotate on the device.
+**Models.** The Qwen3.5/3.6/3.8 hybrids run end to end on the device (DeltaNet
+mixer, partial RoPE, SwiGLU/gate epilogues, Q4_0 / Q4_1 / Q8_0 / Q5_K / Q6_K /
+TQ2_0 kernels), with logits bit-identical to `cpu_scalar` on an FP32 KV cache.
+Llama-family RoPE also runs on the device. Ternary-Bonsai-2-27B (PQ2_0 +
+`prism.hadamard`, 7.21 GB) runs fully on the GPU and fits an 11 GiB card: on an
+RTX 2080 Ti pp512 ≈ 395 t/s (≈ 517 with `GEIST_M_MAX=128`) and tg ≈ 36 t/s,
+0.93× the PrismML fork's prefill and 1.22× its decode
+([`TERNARY.md`](../benchmark/results/TERNARY.md)). Devices whose subgroup size
+is not 32 (RADV) still prefill PQ2_0 with per-row matvecs (#471).
 
-Ternary-Bonsai-2-27B (PQ2_0 + `prism.hadamard`, 7.21 GB) also runs on the device:
-PQ2_0 kernels (a tensor-core GEMM and a wide-load matvec), the embedding lookup
-and the blockwise Walsh-Hadamard rotation (`fused->hadamard_rotate`) are all on
-the GPU. It fits an 11 GiB card; on an RTX 2080 Ti it reaches pp512 ≈ 395 t/s
-(≈ 517 with `GEIST_M_MAX=128`) and tg ≈ 36 t/s — 0.93× the PrismML fork's Vulkan
-prefill and 1.22× its decode on the same card (the default chunk stays 64 so the
-scratch pool fits a 256 MB BAR heap). The tensor-core GEMM accumulates in f16 and
-folds into f32 every 64 k like the fork's default; `GEIST_VK_PQ2_F32_ACC=1`
-selects f32 accumulation. Devices whose subgroup size is not 32 (RADV) still fall
-back to per-row matvecs for prefill (#471). Details and the side-by-side
-profile: `benchmark/results/TERNARY.md`. Phase-by-phase lab log:
-[`../benchmark/results/VULKAN.md`](../benchmark/results/VULKAN.md).
+**Memory.** Weight matrices are read from the GGUF mapping and uploaded once.
+There is no spill to host memory (#466): a model must fit the device. The 27B
+Q4_0 (16 GB) runs on a 21 GiB integrated GPU (RADV, `GEIST_VK_DEVICE=1`); on an
+11 GiB card the load fails with an out-of-memory error naming the failing
+allocation, the memory in use and the device limit.
 
-**Scratch placement (#488).** A session's activation scratch is one pool,
-host-visible by default so the arch can map it. It goes into the BAR window
-(device-local and mappable) while that has room; past it — 256 MB without
-resizable BAR, e.g. an explicit `GEIST_M_MAX` of 128 or more on a 27B — it
-lands in system memory and every GPU op on it crosses the bus (prefill drops
-3×). `GEIST_VK_SCRATCH_DEVICE=1` (opt-in, experimental) puts every slot the host
-never maps into ordinary device-local VRAM instead, sliced with
-`buffer_create_view` (offset, no host pointer); only `h_a`, `h_b` and the logits
-rows stay host-visible, and the default chunk is then sized to those alone. The
-arch takes the device-local pool only for sessions with no host loop over those
-slots: dense (FP32/F16) KV, no PLE, DeltaNet, attention output gate, MTP,
-SubLN/projection norms or AWQ scales (a `prism.hadamard` rotation is fine — it
-runs on the device) — anything else
-keeps the mapped pool. A CPU fallback that would still need a device-local slot
-fails with an error (the Vulkan host view returns nullptr and counts the
-refusal; the arch's host linear returns `GEIST_E_BACKEND` naming it) rather than
-reading the bytes over the bus. A model with a weight dtype that has no Vulkan
-kernel therefore fails its first prefill under the opt-in. `GEIST_VK_VERBOSE=1`
-prints a note for every scratch buffer that lands in host memory and, at
-teardown, how many scratch buffers went to device-local memory, the BAR and the
-host. `test_backend_vulkan_scratch_placement_unit` checks the placement and
-that decoding gives the same tokens and logits either way.
+**Scratch placement.** A session's activation scratch is one host-visible
+pool. It goes into the BAR window (device-local and mappable) while that has
+room — 256 MB without resizable BAR — and past it into system memory, where
+every GPU op on it crosses the bus (prefill drops 3×; e.g. `GEIST_M_MAX` ≥ 128
+on a 27B). `GEIST_VK_SCRATCH_DEVICE=1` (experimental) puts every slot the host
+never maps into plain device-local VRAM; only `h_a`, `h_b` and the logits rows
+stay host-visible. The arch accepts it only for sessions with no host loop over
+those slots (dense FP32/F16 KV, no PLE, DeltaNet, attention output gate, MTP,
+SubLN/projection norms or AWQ scales; a `prism.hadamard` rotation is fine).
+Under it, a CPU fallback that would read a device-local slot fails with
+`GEIST_E_BACKEND` instead, so a weight dtype without a Vulkan kernel fails its
+first prefill.
 
-Work that leaves the GPU is counted per site: a fused op the shaders decline
-(the arch then runs it on the host), a host loop over mapped memory, a host
-buffer copy, and weights whose dtype or row length has no GPU kernel (Q3_K, a
-large F16/BF16 matrix, a row that is not a whole number of blocks), which run
-on a host row-dequant path. `GEIST_VK_VERBOSE=1` prints the counters at
-destroy, and the first host-path linear prints how many weights and MiB took
-that path. `GEIST_VK_STRICT=1` turns each of these into an error naming the
-site (a host-path weight is refused at load), so a coverage gap fails loudly
-instead of showing up only as a slowdown.
+**Errors.** A failed submit (device lost, out of memory) is reported at the
+next host access: `buffer_map` returns nullptr with `GEIST_E_BACKEND`, and
+argmax, downloads and host views return `GEIST_E_BACKEND`. Sizes or offsets
+beyond the shaders' 32-bit indices return `GEIST_E_INVALID_ARG`, and a weight
+whose `n_in` would not fit the 192 MB activation ring at the 512-row batch
+limit fails the load.
 
-A batch whose submit fails (device lost, out of memory) is reported at the
-next host access: `buffer_map` returns nullptr with `GEIST_E_BACKEND` as the
-backend error, and argmax, downloads and host views return `GEIST_E_BACKEND`.
-Sizes and offsets that do not fit the shaders' 32-bit indices make the op
-return `GEIST_E_INVALID_ARG`, and a weight whose `n_in` would not fit the
-192 MB activation ring at the 512-row batch limit fails the load.
+| Variable | Effect |
+| :-- | :-- |
+| `GEIST_VK_DEVICE=<index>` | pick a device (default: first discrete GPU, else device 0) |
+| `GEIST_VK_VRAM_BUDGET` | lower the device memory limit (bytes, K/M/G suffix) to reproduce a smaller card |
+| `GEIST_M_MAX` | prefill chunk rows (Vulkan default 128) |
+| `GEIST_VK_PQ2_F32_ACC=1` | f32 instead of f16 accumulation in the PQ2_0 tensor-core GEMM (default folds into f32 every 64 k) |
+| `GEIST_VK_SCRATCH_DEVICE=1` | device-local scratch, see above |
+| `GEIST_VK_VERBOSE=1` | print scratch placement and, at destroy, counters for work that left the GPU (declined fused ops, host loops, host copies, host-path weights) |
+| `GEIST_VK_STRICT=1` | turn each of those host fallbacks into an error naming the site; a host-path weight is refused at load |
+| `GEIST_KV_INT8=0 GEIST_KV_F16=0` | FP32 KV cache, for comparing against `cpu_scalar` (CPU defaults to INT8, Vulkan to F16) |
 
 ## Resident memory per backend
 

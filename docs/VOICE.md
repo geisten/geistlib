@@ -9,10 +9,10 @@ utterances, each utterance becomes one audio chat turn.
 ## What you need
 
 ```sh
-make                     # library + examples' prerequisites
+make lib                 # the library
 make fetch-model         # Gemma 4 E2B-it Q4_K_M (~3.1 GB)
-make fetch-audio-tower   # audio tower (~590 MB, SHA-pinned Range download)
-make -C examples         # builds examples/push_to_talk
+make fetch-audio-tower   # audio tower (~590 MB, SHA-pinned)
+make -C examples         # builds examples/push_to_talk and examples/dictate
 ```
 
 The audio tower + `audio_test_data/mel_constants.bin` (checked in) are
@@ -40,14 +40,12 @@ arecord -D plughw:1,0 -f S16_LE -r 16000 -c 1 -t raw | \
 ```
 
 `plughw` lets ALSA resample if the mic doesn't do 16 kHz natively.
-Expectations on a 4 GB Pi 5 (measured, `benchmark/results/PI5-audio.md`):
-~2 s attach for a ~3 s utterance, replies at ~7 tok/s. Transcription
-quality is ASR-grade since the #270 injection fix: **4.2 % aggregate WER**
-on the LibriSpeech harness set (median 0 %, 16/30 clips verbatim). W8A8
-attention/LConv is the default since its quality gates went green
-(−38 % encode; 4.3 % WER vs 4.2 % FP32 — inside noise);
-`GEIST_AUDIO_ATTN_W8A8=0 GEIST_AUDIO_LCONV_W8A8=0` opts back to the
-high-precision path.
+Measured on a 4 GB Pi 5 ([`PI5-audio.md`](../benchmark/results/PI5-audio.md)):
+~2 s attach for a ~3 s utterance, replies at ~7 tok/s, **4.2 % aggregate WER**
+on the LibriSpeech harness set (median 0 %, 16/30 clips verbatim). The audio
+encoder runs attention and LConv in W8A8 by default (−38 % encode time, WER
+within noise of FP32); `GEIST_AUDIO_ATTN_W8A8=0 GEIST_AUDIO_LCONV_W8A8=0`
+selects the FP32 path.
 
 Hardware advice: for an assistant that also *speaks*, prefer a USB
 speakerphone (Jabra Speak, Anker PowerConf class) — the built-in hardware
@@ -95,7 +93,7 @@ the loop *is*:
 | Goal | Prompt |
 | :-- | :-- |
 | assistant | `Answer the speaker briefly.` (default) |
-| dictation | `Transcribe this audio.` — best measured (4.2 % WER on the LibriSpeech harness set); wording matters mildly since #270 (instruction-heavy default: 6.1 %), see `PI5-audio.md` |
+| dictation | `Transcribe this audio.` — best measured (4.2 % WER on the LibriSpeech harness set; an instruction-heavy prompt measured 6.1 %), see `PI5-audio.md` |
 | command recognition | few-shot anchor: `The user gave a smart home command. Common commands: 'Lampe an', 'Licht aus', 'Musik an'. Which command did you hear?` |
 
 Short commands (< 1 s) need the few-shot vocabulary anchor — without it
@@ -131,15 +129,12 @@ arecord -f S16_LE -r 16000 -c 1 -t raw | \
 
 ## What runs where
 
-Everything here runs on the **CPU backends** (`cpu_neon` on ARM with
-runtime-probed DOTPROD kernels, AVX-512 VNNI on capable x86). On Apple
-Silicon the dense fp32 matmuls go through Accelerate (the AMX matrix
-unit); the experimental Metal/Vulkan GPU backends are not used by the
-audio path. The examples use the public experimental streaming turn
-(`audio_begin` → `audio_push` / `audio_poll` → `audio_end`), so encoder work
-overlaps capture; the measured residual tail is 202 ms on the Pi. The
-one-shot `attach_audio` API remains available as the monolithic convenience
-path.
+Everything here runs on the **CPU backends** (`cpu_neon` on ARM, AVX-512
+VNNI on capable x86); on Apple Silicon the dense fp32 matmuls go through
+Accelerate. The GPU backends are not used by the audio path. The examples use
+the experimental streaming turn (`audio_begin` → `audio_push` / `audio_poll`
+→ `audio_end`), so encoder work overlaps capture; the residual tail after
+speech ends is 202 ms on the Pi. `attach_audio` is the one-shot alternative.
 
 ## Troubleshooting
 
