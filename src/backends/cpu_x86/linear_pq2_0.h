@@ -16,10 +16,10 @@
 /* Bind w->linear_m1 / linear_mN to the int8 PQ2_0 kernels: weights
  * straight from the GGUF bytes, each activation row quantized to int8 once
  * per call (a GEMV for M=1, a GEMM for M>1: AVX2, or AMX-INT8 where
- * cpu_x86_linear_pq2_0_amx_usable). Returns false and leaves `w` untouched
- * unless w is PQ2_0 with n_in a whole number of 128-element blocks. No
- * repack, no aux memory. */
-[[nodiscard]] bool cpu_x86_linear_pq2_0_bind(struct geist_weight *w);
+ * cpu_x86_linear_pq2_0_amx_usable). w is PQ2_0 and has passed
+ * quant_weight_extent_ok, so n_in is a whole number of 128-element blocks.
+ * No repack, no aux memory. */
+void cpu_x86_linear_pq2_0_bind(struct geist_weight *w);
 
 /* Whether the bind installs the AMX-INT8 GEMM for M>1 on this host: the
  * dispatcher tier (GEIST_FORCE_ISA below avx512_vnni turns it off), cpuid,

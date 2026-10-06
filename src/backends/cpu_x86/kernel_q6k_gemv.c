@@ -22,6 +22,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "kernel_q6k_gemv.h"
+#include "linear_util.h"
 
 #include "quant.h" /* fp16_to_fp32 */
 #include "quant_blocks.h"
@@ -78,15 +79,6 @@ static inline __m128i scale_shuffle(int i) {
             11, 11, 11, 11, 11, 11, 11, 11, 12, 12, 12, 12, 12, 12, 12, 12, 13, 13, 13, 13, 13, 13,
             13, 13, 14, 14, 14, 14, 14, 14, 14, 14, 15, 15, 15, 15, 15, 15, 15, 15};
     return _mm_loadu_si128((const __m128i *) k + i);
-}
-
-static inline float hsum_ps_avx(__m256 v) {
-    const __m128 lo = _mm256_castps256_ps128(v);
-    const __m128 hi = _mm256_extractf128_ps(v, 1);
-    __m128       s  = _mm_add_ps(lo, hi);
-    s               = _mm_hadd_ps(s, s);
-    s               = _mm_hadd_ps(s, s);
-    return _mm_cvtss_f32(s);
 }
 
 /* The two formats this file reads. Both are 256-element super-blocks of 16
@@ -199,7 +191,7 @@ dot_q8k(enum kfmt f, size_t n_super, const uint8_t *w, const struct q8k_act *y) 
         sumi = _mm256_sub_epi32(sumi, q8sclsub);
         acc  = _mm256_fmadd_ps(_mm256_broadcast_ss(&d), _mm256_cvtepi32_ps(sumi), acc);
     }
-    return hsum_ps_avx(acc);
+    return hsum_ps_hadd(acc);
 }
 
 /* One instance per format. The OpenMP regions below are outlined once for
@@ -319,7 +311,7 @@ constexpr size_t KQ_NR = 4;
         }
     }
     for (size_t r = 0; r < KQ_NR; r++) {
-        out[r] = hsum_ps_avx(acc[r]);
+        out[r] = hsum_ps_hadd(acc[r]);
     }
 }
 

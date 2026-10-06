@@ -23,11 +23,11 @@
  *     heads, 32 of each of 2, 64 of one. The portable loop kept them in
  *     memory and stored every update: the int8 V row may alias them;
  *   - head_dim 64, 128 and 256 are compile-time constants, so the dots
- *     unroll; any other head_dim up to AI8_HEAD_DIM_MAX runs the same code
+ *     unroll; any other head_dim up to AX_HEAD_DIM_MAX runs the same code
  *     with the length at run time.
  * The work is split as in the portable loop — passes of up to four query
  * heads of one KV head, decode split across the context and merged — by a
- * plan measured for this kernel (ai8_plan_for); prefill takes its items KV
+ * plan measured for this kernel (ax_plan_for); prefill takes its items KV
  * head by KV head.
  * The integer dots and the order of every fp32 V sum are the portable
  * loop's. -ffast-math still lets the compiler group the softmax's double
@@ -38,6 +38,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "attention.h"
+#include "attention_driver.h"
 #include "backend_state.h"
 #include "kernel_w4a8.h" /* w4a8_dispatcher_tier */
 
@@ -63,131 +64,11 @@ struct geist_buffer {
     unsigned int           memory_flags;
 };
 
-/* The architecture refuses a larger head_dim at load
- * (TRANSFORMER_HEAD_DIM_MAX); the stack arrays below are sized by it. */
-constexpr size_t AI8_HEAD_DIM_MAX = 512;
-
-/* Context positions per online-softmax block, as in the portable loop.
- * 128 to 1024 measured within noise of each other here too. */
-constexpr size_t AI8_BLOCK = 512;
-
 /* V rows per pass over the output dimensions. */
 constexpr size_t AI8_PV_ROWS = 64;
 
-/* Query heads per pass, at most: the V accumulators of four heads fill
- * the eight registers the pass keeps (16 dimensions each). */
-constexpr size_t AI8_HEADS_PER_PASS_MAX = 4;
-
-/* Decode chunks per pass, at most: the part buffer holds that many
- * records per head. */
-constexpr size_t AI8_MAX_CHUNKS = 4;
-
-/* A decode is split into one chunk per this many positions, so that each
- * chunk's K and V stay in L2 ... */
-constexpr size_t AI8_CHUNK_SPAN = 1024;
-
-/* ... and into as many as give this many work items, if its passes give
- * fewer (MQA decode has one per pass) ... */
-constexpr size_t AI8_MIN_ITEMS = 8;
-
-/* ... but no chunk shorter than this: its setup and the merge would cost
- * more than it saves. */
-constexpr size_t AI8_CHUNK_MIN = 128;
-
-/* Prefill: queries per work item, at most. An item runs each block of the
- * context for all its queries before the next block, so that the block's K
- * and V bytes, fetched for the first query, are near for the others ... */
-constexpr size_t AI8_QUERIES_MAX = 4;
-
-/* ... where the K and V bytes a call reads exceed this: below it they stay
- * cached between queries anyway. */
-constexpr size_t AI8_REUSE_BYTES = (size_t) 1 << 20;
-
 size_t cpu_x86_attention_kv_int8_part_floats(size_t n_q_heads, size_t head_dim) {
-    return n_q_heads * AI8_MAX_CHUNKS * (head_dim + 2);
-}
-
-struct ai8_args {
-    size_t        n_q_heads, head_dim, n_kv, n_kv_heads, q_offset, sliding_window;
-    const float  *q;
-    const int8_t *k;
-    const float  *k_scale;
-    const int8_t *v;
-    const float  *v_scale;
-    float        *out;
-};
-
-/* The context positions [*s_lo, *s_hi] query t attends to. */
-static inline void ai8_span(const struct ai8_args *a, size_t t, size_t *s_lo, size_t *s_hi) {
-    const size_t q_pos = a->q_offset + t;
-    *s_lo = (a->sliding_window > 0 && q_pos + 1 > a->sliding_window) ? q_pos + 1 - a->sliding_window
-                                                                     : 0;
-    *s_hi = q_pos < a->n_kv ? q_pos : a->n_kv - 1;
-}
-
-struct ai8_plan {
-    size_t per_pass; /* query heads per pass */
-    size_t n_chunks; /* decode: context chunks per pass, merged afterwards */
-    size_t per_item; /* prefill: queries per work item */
-};
-
-/* How to run a call, from its shape alone (any thread count gives the same
- * bits); `span` is the number of positions the last query attends to.
- * Measured with every choice forced, 4 threads, decode and 64-row prefill
- * over 32/8 heads at head_dim 64, 16/8 and 24/8 at 128, 15/5 at 64, 8/1 at
- * 256 and 32/32 at 64, contexts 256-8192:
- *   - the widest pass that divides the KV group was never slower, prefill
- *     or decode (up to 2x faster than one head per item);
- *   - a decode split into a chunk per 1024 positions ran 7-45 % faster at
- *     8192 positions than unsplit (32/8 hd 64: 0.50 -> 0.44 ms; 8/1 hd
- *     256: 0.60 -> 0.30), within noise of it at 2048, and slower at 512,
- *     where the split is left to the item count.
- * A prefill puts its queries in items of up to AI8_QUERIES_MAX where a
- * span runs past one block and the call reads more than AI8_REUSE_BYTES
- * of K and V, in items of as many as leave at least AI8_MIN_ITEMS items;
- * the queries of an item do not change each other's arithmetic, so any
- * plan gives the same bits. Against one query an item, 64-token chunks: up
- * to 36 % faster at 2048 and 8192 positions where the call reads more than
- * 1 MB (at 1.3 MB, SmolLM2-360M at 2048 positions, the same); with the
- * queries forced into items anyway, a few percent slower within one block
- * and at 1 MB (MQA at 2048 positions), and with fewer items the threads
- * waited on the longest (MQA with four queries a call, two items, 20-80 %
- * slower in the VNNI kernel). */
-static struct ai8_plan ai8_plan_for(size_t n_q,
-                                    size_t n_q_heads,
-                                    size_t n_kv_heads,
-                                    size_t head_dim,
-                                    size_t span,
-                                    size_t part_floats) {
-    const size_t group    = n_q_heads / n_kv_heads;
-    size_t       per_pass = 1;
-    for (size_t g = AI8_HEADS_PER_PASS_MAX; g >= 2; g--) {
-        if (group % g == 0) {
-            per_pass = g;
-            break;
-        }
-    }
-    struct ai8_plan plan  = {.per_pass = per_pass, .n_chunks = 1, .per_item = 1};
-    const size_t    items = n_kv_heads * (group / per_pass); /* per query */
-    if (n_q == 1) {
-        const size_t for_items = (AI8_MIN_ITEMS + items - 1) / items;
-        const size_t fit       = span / AI8_CHUNK_MIN;
-        size_t       chunks    = span / AI8_CHUNK_SPAN;
-        chunks                 = chunks > for_items ? chunks : for_items;
-        chunks                 = chunks < AI8_MAX_CHUNKS ? chunks : AI8_MAX_CHUNKS;
-        chunks                 = chunks < fit ? chunks : fit;
-        if (chunks >= 2 && part_floats >= n_q_heads * chunks * (head_dim + 2)) {
-            plan.n_chunks = chunks;
-        }
-    } else if (span > AI8_BLOCK && span * n_kv_heads * head_dim * 2 > AI8_REUSE_BYTES) {
-        for (size_t per_item = AI8_QUERIES_MAX; per_item >= 2; per_item /= 2) {
-            if (items * ((n_q + per_item - 1) / per_item) >= AI8_MIN_ITEMS) {
-                plan.per_item = per_item;
-                break;
-            }
-        }
-    }
-    return plan;
+    return ax_part_floats(n_q_heads, head_dim);
 }
 
 /* ---- Scores ------------------------------------------------------------ */
@@ -254,8 +135,8 @@ static inline __m256 ai8_cvt8(const int8_t *v) {
                                                    size_t        row,
                                                    size_t        c,
                                                    const int8_t *v,
-                                                   const float (*w)[AI8_BLOCK],
-                                                   float (*acc)[AI8_HEAD_DIM_MAX]) {
+                                                   const float (*w)[AX_BLOCK],
+                                                   float (*acc)[AX_HEAD_DIM_MAX]) {
     __m256 l0 = _mm256_load_ps(acc[0] + c), h0 = _mm256_load_ps(acc[0] + c + 8);
     __m256 l1 = l0, h1 = h0, l2 = l0, h2 = h0, l3 = l0, h3 = h0;
     if (G > 1) {
@@ -316,8 +197,8 @@ static inline __m256 ai8_cvt8(const int8_t *v) {
                                                       size_t        row,
                                                       size_t        c,
                                                       const int8_t *v,
-                                                      const float (*w)[AI8_BLOCK],
-                                                      float (*acc)[AI8_HEAD_DIM_MAX]) {
+                                                      const float (*w)[AX_BLOCK],
+                                                      float (*acc)[AX_HEAD_DIM_MAX]) {
     const size_t  NV = 8 / NH;
     float        *a0 = acc[0] + c;
     float        *a1 = NH > 1 ? acc[1] + c : a0 + 32;
@@ -371,16 +252,16 @@ static inline __m256 ai8_cvt8(const int8_t *v) {
  * floats, the unnormalized V sums, the running max and the sum of
  * exponentials. G and HD are compile-time constants at every call site
  * (HD = 0: head_dim at run time). */
-[[gnu::always_inline]] static inline void ai8_item(size_t                 G,
-                                                   size_t                 HD,
-                                                   const struct ai8_args *a,
-                                                   size_t                 t0,
-                                                   size_t                 tn,
-                                                   size_t                 kv_h,
-                                                   size_t                 h0,
-                                                   const size_t           lo[static tn],
-                                                   const size_t           hi[static tn],
-                                                   float                 *part) {
+[[gnu::always_inline]] static inline void ai8_item(size_t                G,
+                                                   size_t                HD,
+                                                   const struct ax_args *a,
+                                                   size_t                t0,
+                                                   size_t                tn,
+                                                   size_t                kv_h,
+                                                   size_t                h0,
+                                                   const size_t          lo[static tn],
+                                                   const size_t          hi[static tn],
+                                                   float                *part) {
     /* Locals, not a->field in the loops: after OpenMP outlining `a` points
      * into the caller's frame, and every float store could alias it. */
     const size_t  head_dim  = HD != 0 ? HD : a->head_dim;
@@ -390,12 +271,12 @@ static inline __m256 ai8_cvt8(const int8_t *v) {
     const size_t  hd16    = head_dim & ~(size_t) 15;
     const float  *k_scale = a->k_scale;
     const float  *v_scale = a->v_scale;
-    const int8_t *kh      = a->k + kv_h * head_dim;
-    const int8_t *vh      = a->v + kv_h * head_dim;
+    const int8_t *kh      = (const int8_t *) a->k + kv_h * head_dim;
+    const int8_t *vh      = (const int8_t *) a->v + kv_h * head_dim;
 
     /* The queries, quantized per head exactly as the portable loop does. */
-    alignas(32) int8_t q_all[AI8_QUERIES_MAX][G][AI8_HEAD_DIM_MAX];
-    float              scale_all[AI8_QUERIES_MAX][G];
+    alignas(32) int8_t q_all[AX_QUERIES_MAX][G][AX_HEAD_DIM_MAX];
+    float              scale_all[AX_QUERIES_MAX][G];
     for (size_t i_q = 0; i_q < tn * G; i_q++) {
         const size_t tq = i_q / G, g = i_q % G;
         const float *qv   = a->q + ((t0 + tq) * n_q_heads + h0 + g) * head_dim;
@@ -420,12 +301,12 @@ static inline __m256 ai8_cvt8(const int8_t *v) {
 
     /* sc: the block's scores, then exp(score - max), then those times the
      * row's V scale — the weight of each V row. */
-    alignas(32) float sc[G][AI8_BLOCK];
-    alignas(32) float ks[AI8_BLOCK];
-    alignas(32) float vs[AI8_BLOCK];
-    alignas(32) float acc_all[AI8_QUERIES_MAX][G][AI8_HEAD_DIM_MAX];
-    float             max_all[AI8_QUERIES_MAX][G];
-    double            sum_all[AI8_QUERIES_MAX][G];
+    alignas(32) float sc[G][AX_BLOCK];
+    alignas(32) float ks[AX_BLOCK];
+    alignas(32) float vs[AX_BLOCK];
+    alignas(32) float acc_all[AX_QUERIES_MAX][G][AX_HEAD_DIM_MAX];
+    float             max_all[AX_QUERIES_MAX][G];
+    double            sum_all[AX_QUERIES_MAX][G];
     for (size_t i_q = 0; i_q < tn * G; i_q++) {
         for (size_t i = 0; i < head_dim; i++) {
             acc_all[i_q / G][i_q % G][i] = 0.0f;
@@ -436,21 +317,21 @@ static inline __m256 ai8_cvt8(const int8_t *v) {
         bool ran = false;
         for (size_t tq = 0; tq < tn; tq++) {
             /* Block blk of query tq's span, if it has one. */
-            if (blk * AI8_BLOCK > hi[tq] - lo[tq]) {
+            if (blk * AX_BLOCK > hi[tq] - lo[tq]) {
                 continue;
             }
             ran = true;
 
-            const size_t b0                        = lo[tq] + blk * AI8_BLOCK;
-            const size_t c_hi                      = hi[tq];
-            const int8_t (*q_q8)[AI8_HEAD_DIM_MAX] = q_all[tq];
-            const float *scale_q                   = scale_all[tq];
-            float (*acc)[AI8_HEAD_DIM_MAX]         = acc_all[tq];
-            float        *max_score                = max_all[tq];
-            double       *sum_exp                  = sum_all[tq];
-            const size_t  n  = c_hi - b0 < AI8_BLOCK ? c_hi - b0 + 1 : AI8_BLOCK;
-            const int8_t *kb = kh + b0 * row;
-            const int8_t *vb = vh + b0 * row;
+            const size_t b0                       = lo[tq] + blk * AX_BLOCK;
+            const size_t c_hi                     = hi[tq];
+            const int8_t (*q_q8)[AX_HEAD_DIM_MAX] = q_all[tq];
+            const float *scale_q                  = scale_all[tq];
+            float (*acc)[AX_HEAD_DIM_MAX]         = acc_all[tq];
+            float        *max_score               = max_all[tq];
+            double       *sum_exp                 = sum_all[tq];
+            const size_t  n                       = c_hi - b0 < AX_BLOCK ? c_hi - b0 + 1 : AX_BLOCK;
+            const int8_t *kb                      = kh + b0 * row;
+            const int8_t *vb                      = vh + b0 * row;
             for (size_t j = 0; j < n; j++) {
                 ks[j] = k_scale[(b0 + j) * n_kv_heads + kv_h];
                 vs[j] = v_scale[(b0 + j) * n_kv_heads + kv_h];
@@ -521,10 +402,10 @@ static inline __m256 ai8_cvt8(const int8_t *v) {
              * while every slice of the output dimensions passes over them
              * (128 KB a block at head_dim 256). The sums keep their order. */
             for (size_t r0 = 0; r0 < n; r0 += AI8_PV_ROWS) {
-                const size_t  nr            = n - r0 < AI8_PV_ROWS ? n - r0 : AI8_PV_ROWS;
-                const int8_t *vr            = vb + r0 * row;
-                const float (*w)[AI8_BLOCK] = (const float (*)[AI8_BLOCK]) & sc[0][r0];
-                size_t c                    = 0;
+                const size_t  nr           = n - r0 < AI8_PV_ROWS ? n - r0 : AI8_PV_ROWS;
+                const int8_t *vr           = vb + r0 * row;
+                const float (*w)[AX_BLOCK] = (const float (*)[AX_BLOCK]) & sc[0][r0];
+                size_t c                   = 0;
                 if (G <= 2) {
                     const size_t width = G == 1 ? 64 : 32;
                     for (; c + width <= head_dim; c += width) {
@@ -567,16 +448,16 @@ static inline __m256 ai8_cvt8(const int8_t *v) {
 
 /* One function per compiled shape (G, HD): in one function holding all of
  * them, every change to one moved the hot loops of the others. */
-#define AI8_ITEM_FN(G, HD)                                                                  \
-    [[gnu::noinline]] static void ai8_item_##G##_##HD(const struct ai8_args *a,             \
-                                                      size_t                 t0,            \
-                                                      size_t                 tn,            \
-                                                      size_t                 kv_h,          \
-                                                      size_t                 h0,            \
-                                                      const size_t           lo[static tn], \
-                                                      const size_t           hi[static tn], \
-                                                      float                 *part) {        \
-        ai8_item(G, HD, a, t0, tn, kv_h, h0, lo, hi, part);                                 \
+#define AI8_ITEM_FN(G, HD)                                                                 \
+    [[gnu::noinline]] static void ai8_item_##G##_##HD(const struct ax_args *a,             \
+                                                      size_t                t0,            \
+                                                      size_t                tn,            \
+                                                      size_t                kv_h,          \
+                                                      size_t                h0,            \
+                                                      const size_t          lo[static tn], \
+                                                      const size_t          hi[static tn], \
+                                                      float                *part) {        \
+        ai8_item(G, HD, a, t0, tn, kv_h, h0, lo, hi, part);                                \
     }
 #define AI8_ITEM_FNS(G) AI8_ITEM_FN(G, 64) AI8_ITEM_FN(G, 128) AI8_ITEM_FN(G, 256) AI8_ITEM_FN(G, 0)
 AI8_ITEM_FNS(1)
@@ -602,15 +483,15 @@ AI8_ITEM_FNS(4)
         }                                                          \
     } while (0)
 
-static void ai8_run_item(size_t                 per_pass,
-                         const struct ai8_args *a,
-                         size_t                 t0,
-                         size_t                 tn,
-                         size_t                 kv_h,
-                         size_t                 h0,
-                         const size_t           lo[static tn],
-                         const size_t           hi[static tn],
-                         float                 *part) {
+static void ax_run_item(size_t                per_pass,
+                        const struct ax_args *a,
+                        size_t                t0,
+                        size_t                tn,
+                        size_t                kv_h,
+                        size_t                h0,
+                        const size_t          lo[static tn],
+                        const size_t          hi[static tn],
+                        float                *part) {
     switch (per_pass) {
     case 4:
         AI8_ITEM_HD(4);
@@ -624,36 +505,6 @@ static void ai8_run_item(size_t                 per_pass,
     default:
         AI8_ITEM_HD(1);
         break;
-    }
-}
-
-/* One head's output from its n_chunks partial results (records `stride`
- * floats apart), rescaled to their common max and summed in chunk order:
- * the portable merge (attn_int8_merge). */
-static void
-ai8_merge(size_t n_chunks, size_t head_dim, size_t stride, const float *part, float *out) {
-    float max_score = part[head_dim];
-    for (size_t c = 1; c < n_chunks; c++) {
-        const float m = part[c * stride + head_dim];
-        max_score     = m > max_score ? m : max_score;
-    }
-    float  acc[AI8_HEAD_DIM_MAX];
-    double sum_exp = 0.0;
-    for (size_t i = 0; i < head_dim; i++) {
-        acc[i] = 0.0f;
-    }
-    for (size_t c = 0; c < n_chunks; c++) {
-        const float *rec = part + c * stride;
-        const float  d   = rec[head_dim] - max_score;
-        const float  w   = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
-        sum_exp += (double) rec[head_dim + 1] * w;
-        for (size_t i = 0; i < head_dim; i++) {
-            acc[i] += w * rec[i];
-        }
-    }
-    const float inv_sum = (float) (1.0 / sum_exp);
-    for (size_t i = 0; i < head_dim; i++) {
-        out[i] = acc[i] * inv_sum;
     }
 }
 
@@ -672,111 +523,23 @@ void cpu_x86_attention_kv_int8_run(size_t        n_q,
                                    const float  *v_scale,
                                    float        *out,
                                    float        *part) {
-    const struct ai8_args a      = {.n_q_heads      = n_q_heads,
-                                    .head_dim       = head_dim,
-                                    .n_kv           = n_kv,
-                                    .n_kv_heads     = n_kv_heads,
-                                    .q_offset       = q_offset,
-                                    .sliding_window = sliding_window,
-                                    .q              = q,
-                                    .k              = k,
-                                    .k_scale        = k_scale,
-                                    .v              = v,
-                                    .v_scale        = v_scale,
-                                    .out            = out};
-    const size_t          group  = n_q_heads / n_kv_heads;
-    size_t                dec_lo = 0, dec_hi = 0, last_lo = 0, last_hi = 0;
-    ai8_span(&a, 0, &dec_lo, &dec_hi);
-    ai8_span(&a, n_q - 1, &last_lo, &last_hi);
-    const struct ai8_plan plan     = ai8_plan_for(n_q,
-                                                  n_q_heads,
-                                                  n_kv_heads,
-                                                  head_dim,
-                                                  last_hi - last_lo + 1,
-                                                  part != nullptr ? part_floats : 0);
-    const size_t          per_pass = plan.per_pass;
-    const size_t          n_passes = group / per_pass;
-    if (plan.n_chunks > 1) {
-        /* Split decode (n_q == 1): items (KV head, pass, chunk) leave their
-         * partial results in `part`, then each head merges its chunks.
-         * Chunk c covers positions [dec_lo + c * len, ...], at least
-         * AI8_CHUNK_MIN each, so none is empty. */
-        const size_t n_chunks = plan.n_chunks;
-        const size_t len      = (dec_hi - dec_lo + n_chunks) / n_chunks;
-        const size_t rec      = per_pass * (head_dim + 2); /* one item's records */
-#if defined(_OPENMP)
-#pragma omp parallel
-#endif
-        {
-#if defined(_OPENMP)
-#pragma omp for collapse(3) schedule(dynamic)
-#endif
-            for (size_t kv_h = 0; kv_h < n_kv_heads; kv_h++) {
-                for (size_t pass = 0; pass < n_passes; pass++) {
-                    for (size_t c = 0; c < n_chunks; c++) {
-                        const size_t c_lo = dec_lo + c * len;
-                        const size_t c_hi = dec_hi - c_lo < len ? dec_hi : c_lo + len - 1;
-                        ai8_run_item(per_pass,
-                                     &a,
-                                     0,
-                                     1,
-                                     kv_h,
-                                     kv_h * group + pass * per_pass,
-                                     &c_lo,
-                                     &c_hi,
-                                     part + ((kv_h * n_passes + pass) * n_chunks + c) * rec);
-                    }
-                }
-            }
-#if defined(_OPENMP)
-#pragma omp for collapse(2)
-#endif
-            for (size_t kv_h = 0; kv_h < n_kv_heads; kv_h++) {
-                for (size_t hg = 0; hg < group; hg++) {
-                    const size_t pass = hg / per_pass;
-                    ai8_merge(n_chunks,
-                              head_dim,
-                              rec,
-                              part + (kv_h * n_passes + pass) * n_chunks * rec +
-                                      hg % per_pass * (head_dim + 2),
-                              out + (kv_h * group + hg) * head_dim);
-                }
-            }
-        }
-        return;
-    }
-    /* Items by KV head, then pass, then block of queries: the team works
-     * through one KV head's rows at a time, which then stay in each core's
-     * L2 (1 MB at 8192 positions and head_dim 64), where in query order
-     * every thread went through all KV heads' (five of them in
-     * SmolLM2-360M, 5 MB). Causal and window masks make later positions
-     * longer: dynamic. */
-    const size_t per_item = plan.per_item;
-    const size_t n_blocks = (n_q + per_item - 1) / per_item;
-#if defined(_OPENMP)
-#pragma omp parallel for collapse(3) schedule(dynamic)
-#endif
-    for (size_t kv_h = 0; kv_h < n_kv_heads; kv_h++) {
-        for (size_t pass = 0; pass < n_passes; pass++) {
-            for (size_t qb = 0; qb < n_blocks; qb++) {
-                const size_t t0 = qb * per_item;
-                const size_t tn = n_q - t0 < per_item ? n_q - t0 : per_item;
-                size_t       lo[AI8_QUERIES_MAX], hi[AI8_QUERIES_MAX];
-                for (size_t tq = 0; tq < tn; tq++) {
-                    ai8_span(&a, t0 + tq, &lo[tq], &hi[tq]);
-                }
-                ai8_run_item(per_pass,
-                             &a,
-                             t0,
-                             tn,
-                             kv_h,
-                             kv_h * group + pass * per_pass,
-                             lo,
-                             hi,
-                             nullptr);
-            }
-        }
-    }
+    ax_run(n_q,
+           n_q_heads,
+           head_dim,
+           n_kv,
+           n_kv_heads,
+           part_floats,
+           q_offset,
+           sliding_window,
+           1,
+           AX_CHUNK_SPAN_I8,
+           q,
+           k,
+           k_scale,
+           v,
+           v_scale,
+           out,
+           part);
 }
 
 /* ---- The fused op -------------------------------------------------------- */
@@ -804,7 +567,7 @@ static bool ai8_vnni_usable(void) {
 }
 
 bool cpu_x86_attention_kv_int8_supported(const struct geist_fusion_query *q) {
-    return q != nullptr && q->head_dim >= 1 && q->head_dim <= AI8_HEAD_DIM_MAX &&
+    return q != nullptr && q->head_dim >= 1 && q->head_dim <= AX_HEAD_DIM_MAX &&
            q->n_kv_heads >= 1 && q->n_q_heads >= q->n_kv_heads && q->n_q_heads % q->n_kv_heads == 0;
 }
 

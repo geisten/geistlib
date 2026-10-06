@@ -449,11 +449,6 @@ static size_t vk_parse_bytes(const char *v) {
     const char *strict  = getenv("GEIST_VK_STRICT");
     st->strict          = strict != nullptr && strcmp(strict, "0") != 0;
     st->vram_budget     = vk_parse_bytes(getenv("GEIST_VK_VRAM_BUDGET"));
-    /* Default on since #501's rollout validated cleanly (two models,
-     * two GPUs, several misaligned chunk sizes); GEIST_VK_ATTN_CM=0 is the
-     * escape hatch back to the scalar kernel. */
-    const char *attn_cm_env = getenv("GEIST_VK_ATTN_CM");
-    st->attn_cm             = attn_cm_env == nullptr || strcmp(attn_cm_env, "0") != 0;
     /* Opt-in (#488): device-local scratch pool; see vk_buffer_create_api. */
     const char *scratch_env = getenv("GEIST_VK_SCRATCH_DEVICE");
     st->scratch_device      = scratch_env != nullptr && strcmp(scratch_env, "1") == 0;
@@ -508,11 +503,10 @@ void vk_destroy(struct geist_backend *be) {
         struct vk_state *st = be->state;
         if (getenv("GEIST_VK_VERBOSE") != nullptr || st->profile_enabled) {
             fprintf(stderr,
-                    "geist vulkan stats: dispatches %llu, flushes %llu, host-op accesses "
-                    "%llu, barriers %llu (elided %llu)\n",
+                    "geist vulkan stats: dispatches %llu, flushes %llu, barriers %llu "
+                    "(elided %llu)\n",
                     (unsigned long long) st->stat_dispatches,
                     (unsigned long long) st->stat_flushes,
-                    (unsigned long long) st->stat_cpu_falls,
                     (unsigned long long) st->stat_barriers,
                     (unsigned long long) st->stat_barriers_elided);
             for (size_t i = 0; i < VK_FB_COUNT; i++) {
