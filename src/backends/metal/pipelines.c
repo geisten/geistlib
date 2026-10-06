@@ -1,8 +1,5 @@
 /*
  * src/backends/metal/pipelines.c — compute-pipeline compilation and caching.
- *
- * Layer: BACKEND (metal). Split from the former monolithic backend.c;
- * pure moves, no behavior change.
  */
 #include "metal_internal.h"
 #include "iq_grids.h"
@@ -312,9 +309,9 @@ void metal_release_pipeline_tables(struct metal_state *st) {
     void *q41_source =
             metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q41_source);
     /* The simdgroup quant kernels ship as several sub-4095-char C literals
-     * and compile as one MSL unit; concatenate them here. The IQ3_S grid
-     * (quant/iq_grids.h) is emitted as an MSL constant array at build
-     * time — 512 hex literals nobody wants to hand-maintain twice. */
+     * and compile as one MSL unit; concatenate them here. The IQ3_S grid is
+     * emitted from quant/iq_grids.h as an MSL constant array, so the 512
+     * entries live in one place. */
     void *quant_sg_source = nullptr;
     {
         enum { GRID_STR_CAP = 512 * 12 + 64 };

@@ -21,10 +21,6 @@
  *
  * Reference: transformers/models/gemma4/image_processing_pil_gemma4.py
  * (get_aspect_ratio_preserving_size, convert_image_to_patches).
- *
- * Phase status:
- *   P1   — header + stubs
- *   P2 ⇐ THIS — bicubic + patchify + pos ids, parity vs HF (eps <= 1e-4)
  */
 #ifndef IMAGE_PIPELINE_H
 #define IMAGE_PIPELINE_H

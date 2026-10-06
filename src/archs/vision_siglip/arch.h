@@ -8,7 +8,7 @@
  * The vtable shape itself lives in <geist_arch.h> (engine-owned interface);
  * this header only exports the concrete descriptor.
  *
- * Defined in (Phase P1 skeleton, fleshed out P2-P8):
+ * Defined in:
  *   src/archs/vision_siglip/arch.c            — descriptor, encode entry
  *   src/archs/vision_siglip/vision_encoder.c  — tower forward + weight load
  *   src/archs/vision_siglip/vision_kernels.c  — patch-embed, pool, 2D RoPE

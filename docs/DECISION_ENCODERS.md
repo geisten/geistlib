@@ -1,9 +1,9 @@
 # Optional pretrained encoder baselines (#587)
 
 ModernBERT-Large-Instruct and Laya Typed Decisions are **Python reference
-adapters**, not native geist C architectures. They provide a modular comparison
-before deciding whether to train a Bonsai classifier. The existing C API,
-`DECISION=0` default and GGUF/model capability checks are unchanged.
+adapters**, not native geist C architectures: a comparison point for deciding
+whether to train a Bonsai classifier. They do not touch the C API, the
+`DECISION=0` default or the GGUF/model capability checks.
 
 `tools/decision_encoders.py` imports no ML library until
 `create_backend(..., enabled=True)` is called. The runner additionally requires

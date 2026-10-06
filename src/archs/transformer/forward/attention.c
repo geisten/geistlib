@@ -230,18 +230,14 @@ void attention_kivi_via_buffers(size_t         n_q,
 
 /* Work items a grouped call must leave, unless the one-head loop has fewer:
  * a fixed count, not the team size, so that the path — and with it the
- * result — cannot depend on how many threads run it. 8 fills the 4-8-core
- * hosts this was measured on. A decode whose passes alone leave that many
- * (8 for Llama-3.2-1B, against the one-head loop's 32) is not split: here
- * that cost 4-8 %; with more cores than items the one-head loop would
- * spread wider (not measured). */
+ * result — cannot depend on how many threads run it. 8 fills 4-8-core
+ * hosts. */
 constexpr size_t ATTN_MIN_ITEMS = 8;
 
 /* Query heads per pass, at most. */
 constexpr size_t ATTN_HEADS_PER_PASS_MAX = 4;
 
-/* Grouped passes on x86 only for now: nothing was measured on NEON, where
- * cpu_neon runs the one-head loop below, with vdotq_s32, as its own kernel
+/* Grouped passes on x86 only: cpu_neon has its own one-head kernel
  * (src/backends/cpu_neon/attention_int8.c). */
 #if defined(__x86_64__)
 constexpr bool ATTN_GROUPED_PASSES = true;
@@ -250,8 +246,7 @@ constexpr bool ATTN_GROUPED_PASSES = false;
 #endif
 
 /* Context positions per online-softmax block: G * 512 scores (8 KB at
- * G = 4) stay in L1 between the dots, the exponentials and the V sums.
- * 128 to 1024 measured within noise of each other, 128 slowest. */
+ * G = 4) stay in L1 between the dots, the exponentials and the V sums. */
 constexpr size_t ATTN_BLOCK = 512;
 
 /* Context positions per decode chunk, at least: a shorter chunk spends more
@@ -295,16 +290,12 @@ struct attn_plan {
     size_t n_chunks; /* decode: context chunks per pass, merged afterwards */
 };
 
-/* How to run a call. Measured on a 4-thread Emerald Rapids
- * (bench_attention_int8 and sweeps with G and the chunks forced, contexts
- * 16-16384): passes of 4 heads, and any pass at head_dim >= 128, were never
- * slower (0 to -63 %); passes of 2 or 3 heads at head_dim 64 were 1-7 %
- * slower while the K/V of the layer stayed under about 1.5 MB, and faster
- * above (-2 to -12 % at 1.5 MB, -21 to -36 % from 2.5 MB). Decode is split
- * only where one pass per KV head leaves too few items, and then as wide
- * as the one-head loop: -38 to -47 % for 1 KV head at head_dim 256, -36 %
- * for 5 KV heads at head_dim 64 and 8192 positions. decode_span is the
- * context of a lone query; scratch_floats bounds the chunks. */
+/* How to run a call (bench_attention_int8 on Emerald Rapids): passes of 4
+ * heads, and any pass at head_dim >= 128, never lose; passes of 2 or 3
+ * heads at head_dim 64 pay only once the layer's K/V spills L2. Decode is
+ * split only where one pass per KV head leaves too few items, and then as
+ * wide as the one-head loop. decode_span is the context of a lone query;
+ * scratch_floats bounds the chunks. */
 static struct attn_plan attention_plan(size_t n_q,
                                        size_t n_q_heads,
                                        size_t n_kv_heads,
@@ -506,10 +497,9 @@ attn_int8_merge(size_t n_chunks, size_t head_dim, size_t stride, const float *pa
 }
 
 /* scores[j] = exp(scores[j] - max_score) for j < n, the exponent clamped at
- * ATTN_EXP_FLOOR (gemma4_kernels.h); returns their sum. Out of line: inlined
- * into the one-head loops below, the vector exp call changed the register
- * allocation of their whole loop nest, and INT4 decode ran 2-8 % slower
- * though the loop itself gained one vmaxps. */
+ * ATTN_EXP_FLOOR (gemma4_kernels.h); returns their sum. Out of line: inlined,
+ * the vector exp call disturbs register allocation of the whole loop nest
+ * and INT4 decode runs 2-8 % slower. */
 [[gnu::noinline]] static double attn_exp_block(size_t n, float scores[static n], float max_score) {
     double sum = 0.0;
     for (size_t j = 0; j < n; j++) {
@@ -526,11 +516,8 @@ attn_int8_merge(size_t n_chunks, size_t head_dim, size_t stride, const float *pa
  * dynamically quantized per-head per-token; the QK dot is exact in int32,
  * with scale_q * scale_k folded scalarly per (q_pos, k_pos) pair.
  *
- * Port of lm.c::attention_mqa_causal_kv_int8, adapted to read inputs
- * via backend buffer_map host pointers instead of raw float*. Portable:
- * this is the decomposed twin of fused->attention_kv_int8, which cpu_x86
- * (AVX2) and cpu_neon (vdotq_s32) implement; it runs where no backend
- * kernel is bound.
+ * Portable twin of fused->attention_kv_int8 (cpu_x86, cpu_neon); runs where
+ * no backend kernel is bound.
  *
  * Inputs (all host pointers obtained via buffer_map by the caller):
  *   q[seq, n_q_heads, head_dim]                   F32
@@ -667,16 +654,11 @@ void attention_int8_via_buffers(size_t        n_q,
      * slice plus a private `scores` scratch, so this parallelizes with no
      * change to any per-(t,h) reduction order — bit-exact vs serial.
      *
-     * collapse(2), NOT a plain loop over t: decode passes n_q == 1, and a
-     * parallel loop over one iteration runs on one thread. Measured on a Pi 5
-     * (BitNet 2B-4T i2_s), the cost of growing context was identical at 1 and
-     * at 3 threads — 22.87 vs 22.67 ms/token from a 32- to a 512-token prompt,
-     * a factor of 1.01 — while everything else in decode scaled 1.77x. The
+     * collapse(2), not a plain loop over t: decode passes n_q == 1, and the
      * heads are the axis that still has width when t does not.
      *
      * Causal + sliding-window masking makes per-t work uneven (later positions
-     * attend to more keys), so schedule(dynamic). Guarded so a non-OpenMP build
-     * (no -fopenmp) skips the pragma cleanly under -Wunknown-pragmas -Werror. */
+     * attend to more keys), so schedule(dynamic). */
 #if defined(_OPENMP)
 #pragma omp parallel for collapse(2) schedule(dynamic)
 #endif
@@ -690,8 +672,7 @@ void attention_int8_via_buffers(size_t        n_q,
                                          : 0;
             const size_t s_hi  = q_pos < n_kv ? q_pos : n_kv - 1;
             /* One block of the context at a time, private per (t,h): the
-             * softmax runs online (see the grouped passes), so the stack no
-             * longer holds n_kv scores. */
+             * softmax runs online (see the grouped passes). */
             float scores[ATTN_BLOCK];
 
             const size_t kv_h = h / kv_group_size;
@@ -775,11 +756,9 @@ void attention_int8_via_buffers(size_t        n_q,
     }
 }
 
-/* Packed-INT4 attention. Identical to attention_int8_via_buffers except each
- * K/V cache row is unpacked from head_dim/2 bytes into a stack int8 row
- * before the (reused) int8 dot / weighted-sum. See internal.h. Portable:
- * the decomposed twin of fused->attention_kv_int4, which cpu_neon
- * implements (vdotq_s32); it runs where no backend kernel is bound.
+/* Packed-INT4 attention: the INT8 one-head loop, with each K/V row unpacked
+ * from head_dim/2 bytes into a stack int8 row first. Portable twin of
+ * fused->attention_kv_int4 (cpu_neon); runs where no backend kernel is bound.
  *
  * int4_unpack_row fully writes [0,head_dim); the loops read only that
  * range, so GCC's -Wmaybe-uninitialized on the unpack buffers is a false

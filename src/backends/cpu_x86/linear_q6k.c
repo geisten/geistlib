@@ -10,10 +10,7 @@
  *   - the lane-parallel W8x8 / W8x16 interleave, on a VNNI host with
  *     n_out % 8 == 0 (w8x8_gemm / w8x16_gemm);
  *   - row-major otherwise (w8a8_gemm).
- * The weight keeps only the one its prefill reads. It used to keep the
- * row-major copy next to the interleave on every VNNI host, read by
- * nothing once the interleave was built: 394 MB for Llama-3.2-1B's
- * tied Q6_K output matrix.
+ * The weight keeps only the one its prefill reads.
  *
  * Q3_K shares the kernels (kernel_q6k_gemv.c reads both formats) and has no
  * predecode: decode and prefill both read its GGUF bytes (#410).
@@ -109,7 +106,7 @@ static void cpu_x86_linear_q6k_raw_mN(size_t                     m,
 }
 
 /* x86-64 transparent huge page: blobs this large are allocated aligned to
- * it so THP backs all of them (see linear_q4k.c, which measured why). */
+ * it so THP backs all of them (see linear_q4k.c). */
 constexpr size_t THP_BYTES = 2u << 20;
 
 [[nodiscard]] enum geist_status cpu_x86_linear_q6k_resolve(struct geist_weight *w) {
@@ -234,9 +231,8 @@ void cpu_x86_linear_q6k_m1(const float               *x,
 
 /* Prefill (M>1) path. Quantizes all m tokens to int8 once, then runs a
  * tiled W8A8 GEMM that reads each weight row once and reuses it across
- * the whole token batch — the amortization the scalar mN fallback lacked.
- * Q6_K ffn_down is the dominant prefill cost in Q4_K_M models; this is
- * what makes it cheap. */
+ * the whole token batch (Q6_K ffn_down dominates prefill in Q4_K_M
+ * models). */
 void cpu_x86_linear_q6k_mN(size_t                     m,
                            const float               *x,
                            const struct geist_weight *w,
@@ -251,9 +247,8 @@ void cpu_x86_linear_q6k_mN(size_t                     m,
     const float   *w_offsets;
     blob_pointers((const uint8_t *) w->aux_fp32, n_in, n_out, &weights, &w_scales, &w_offsets);
 
-    /* Prefill scratch: int8 acts + 16-elem sum_a + per-token scale, all m
-     * tokens (m=64, n_in=12288 ≈ 836 KB). #336 batch 3: from the per-thread
-     * workspace, not three heap_allocs per projection per layer per chunk. */
+    /* Prefill scratch from the per-thread workspace: int8 acts + 16-elem
+     * sum_a + per-token scale, all m tokens (m=64, n_in=12288 ≈ 836 KB). */
     size_t                    acts_bytes = 0, sum_elems = 0, sum_bytes = 0, scale_bytes = 0;
     struct cpu_x86_workspace *ws = nullptr;
     if (be != nullptr && be->state != nullptr && !ckd_mul(&acts_bytes, m, n_in) &&

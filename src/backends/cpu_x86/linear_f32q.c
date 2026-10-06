@@ -4,10 +4,9 @@
  * Layer: BACKEND (cpu_x86).
  *
  * Gemma 4's per-layer PLE projections (inp_gate 1536→256, proj 256→1536)
- * are stored F32 and were the dominant prefill gap: skinny cblas sgemm at
- * ~73 GFLOP/s. Quantize them to W8A8
- * (per-16-block asymmetric int8) at load and run geist's VPDPBUSD GEMM
- * (~2600 GFLOP/s, OMP-parallel) instead.
+ * are stored F32, and skinny cblas sgemm is slow on them. They are quantized
+ * to W8A8 (per-16-block asymmetric int8) at load and run on the VPDPBUSD
+ * GEMM instead.
  *
  * W8A8 decode contract: y = scale_x * sum_b ( w_scale[b]*u_w[b] -
  * w_offset[b]*sum_a[b] ), u_w in [0,255]. For an fp32 block with [min,max]:
@@ -209,9 +208,8 @@ void cpu_x86_linear_f32q_mN(size_t                     m,
     const float   *w_scales, *w_offsets;
     f32q_pointers((const uint8_t *) w->aux_fp32, n_in, n_out, &weights, &w_scales, &w_offsets);
 
-    /* #336 batch 3: four per-call heap_allocs became the per-thread
-     * workspace. `tmp` is the quantizer's throwaway sum buffer and rides in
-     * the aux slot, which no f32q path uses otherwise. */
+    /* Per-thread workspace. `tmp` is the quantizer's throwaway sum buffer
+     * and rides in the aux slot, which no f32q path uses otherwise. */
     size_t                    acts_bytes = 0, sum_elems = 0, sum_bytes = 0;
     size_t                    scale_bytes = 0, tmp_bytes = 0;
     struct cpu_x86_workspace *ws = nullptr;
@@ -223,8 +221,7 @@ void cpu_x86_linear_f32q_mN(size_t                     m,
                 (struct cpu_x86_state *) be->state, acts_bytes, sum_bytes, scale_bytes, tmp_bytes);
     }
     if (ws == nullptr) {
-        /* Was a bare `return` — leaving y untouched is a silently wrong
-         * answer. The M=1 kernel needs no prefill scratch. */
+        /* No prefill scratch: the M=1 kernel per row still writes y. */
         for (size_t row = 0; row < m; row++) {
             cpu_x86_linear_f32q_m1(x + row * n_in, w, be, y + row * n_out);
         }

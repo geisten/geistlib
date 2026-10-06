@@ -4,20 +4,14 @@
  *
  * Layer: BACKEND (cpu_x86).
  *
- * These dtypes (IQ2_S, IQ3_S, BF16, F16 prefill, and Q4_K / Q6_K when
- * their repack cannot be built) used to stay on cpu_scalar's resolver: the
- * correctness oracle, which allocates a row buffer on the heap per call,
- * dequantizes into it and dots in double, on one thread. On x86 that was the
- * production path — 225 heap allocations and no thread scaling per decoded
- * token on a Q8_0 model (#410, #504).
- *
- * This is the floor, not the goal: each OpenMP thread dequantizes its rows
- * with the format's own row decoder (quant.h) into a private row of the
- * calling thread's workspace (L1-resident for any realistic n_in), then dots
- * it in fp32 with AVX2/FMA. The M>1 path dequantizes each weight row once and
- * dots it against all m activation rows. No heap allocation once the
- * workspace has grown to the shape. A dtype that earns a native int8 kernel
- * moves off this path; nothing else changes for it.
+ * Serves IQ2_S, IQ3_S, BF16, F16 prefill, and Q4_K / Q6_K when their
+ * repack cannot be built, instead of cpu_scalar's single-threaded oracle
+ * (#410, #504). Each OpenMP thread dequantizes its rows with the format's
+ * row decoder (quant.h) into a private row of the calling thread's
+ * workspace (L1-resident for any realistic n_in), then dots it in fp32 with
+ * AVX2/FMA. The M>1 path dequantizes each weight row once and dots it
+ * against all m activation rows. No heap allocation once the workspace has
+ * grown to the shape.
  *
  * Numerics: fp32 accumulation in a fixed per-row order (4 x 8 lanes, then a
  * fixed reduction), so a row's result does not depend on the thread count.

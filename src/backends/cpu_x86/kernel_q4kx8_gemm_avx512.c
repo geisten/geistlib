@@ -12,16 +12,13 @@
  * Original code Copyright (c) 2023-2025 The ggml authors, MIT-licensed.
  * Adapted to geist's struct conventions + wrapped in OMP m-parallel.
  *
- * Key bug from the first port attempt and fix: scales_0 / scales_1 in
- * the original are __m128i then shuffle_epi8(scalemask) then
- * cvtepu8_epi16. The scalemask = {7,7,3,3,6,6,2,2,5,5,1,1,4,4,0,0}
- * duplicates each scale byte so the madd_epi16(iacc_0, scales_0) gets
- * the correct per-cell scale pair-multiply (both int16 lanes of one
- * int32 result come from the same cell's two int16 partial sums and
- * are both multiplied by THE SAME scale value). My initial port used
- * MM256_SET_M128I (duplicate the whole low-128) which scrambled the
- * scale-to-cell alignment. The mins_01 construction also relies on
- * mins_and_scales_* being __m128i (16 bytes total = [s0..s7, m0..m7]).
+ * scales_0 / scales_1 are __m128i, then shuffle_epi8(scalemask), then
+ * cvtepu8_epi16. scalemask = {7,7,3,3,6,6,2,2,5,5,1,1,4,4,0,0} duplicates
+ * each scale byte so madd_epi16(iacc_0, scales_0) multiplies both int16
+ * partial sums of one cell by that cell's scale; broadcasting the whole
+ * low 128 bits instead scrambles the scale-to-cell alignment. The mins_01
+ * construction also relies on mins_and_scales_* being __m128i (16 bytes:
+ * [s0..s7, m0..m7]).
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -340,11 +337,10 @@ static void q4kx8_gemv_avx2_fallback(size_t                     M,
         for (size_t i = 0; i < 4; i++) {
             const size_t m = mt * 4 + i;
 
-            /* Q8K_SEG super-blocks at a time, like q4kx8_gemv_m1: one
-             * segment (the old single pass) up to K = 16384, accumulated
-             * segments beyond it. The activations arrive already quantized
-             * per super-block, so segmenting changes only the order of the
-             * fp32 sum across segments. */
+            /* Q8K_SEG super-blocks at a time, like q4kx8_gemv_m1: one segment
+             * up to K = 16384, accumulated segments beyond it. The activations
+             * arrive already quantized per super-block, so segmenting changes
+             * only the order of the fp32 sum across segments. */
             struct q8k_row a[Q8K_SEG];
             for (size_t s0 = 0; s0 < n_super_k; s0 += Q8K_SEG) {
                 const size_t ns = n_super_k - s0 < Q8K_SEG ? n_super_k - s0 : Q8K_SEG;
@@ -386,11 +382,9 @@ static void q4kx8_gemv_avx2_fallback(size_t                     M,
  * Requires N % 8 == 0 and K % 256 == 0 (every Q4_K body matrix).
  *
  * The quantized activation lives on the stack, Q8K_SEG super-blocks at a
- * time. K up to Q8K_SEG * 256 = 16384 is one segment — exactly the old
- * single pass, bit for bit. A longer row (ffn_down of any model wider than
- * 16384) runs in segments, each quantized with its own scale and added into
- * y; that K used to return without writing y at all, and no caller had a
- * fallback for it. */
+ * time. K up to Q8K_SEG * 256 = 16384 is one segment. A longer row
+ * (ffn_down of any model wider than 16384) runs in segments, each quantized
+ * with its own scale and added into y. */
 void q4kx8_gemv_m1(
         size_t N, size_t K, const float *x, const struct block_q4_Kx8 *W, float y[static N]) {
     const size_t n_super = K / 256;
@@ -442,11 +436,8 @@ void q4kx8_gemv_m1(
  * gate). Both reads are once-initialised globals — negligible cost.
  *
  * The last prefill chunk of almost every prompt has an M that is not a
- * multiple of 16 (the chunk holds the prompt length mod 64). That chunk
- * used to go to the AVX2 GEMV whole: about 1.8x the time per token of a
- * multiple-of-16 chunk on an AVX-512 host (synthetic Llama-3.2-1B Q4_K,
- * seq 60: 12.9 ms/token vs seq 64: 6.9). Only the M - M16 tail rows take
- * it now.
+ * multiple of 16, so only its M - M16 tail rows take the AVX2 GEMV, which
+ * is about 1.8x slower per token than the panel.
  */
 bool q4kx8_avx512_usable(void) {
 #if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))

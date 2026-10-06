@@ -3,14 +3,12 @@
  *
  * Layer: BACKEND (cpu_x86).
  *
- * Q8_0 is the format of the small reference models (Qwen3-0.6B, Qwen3.5-
- * 0.8B, SmolLM2-360M) and had no x86 kernel: it ran the generic dequantize-
- * and-dot path (linear_generic.c), which spends its time turning int8 into
- * fp32. This one never leaves int8: the weights are read straight from the
- * GGUF bytes (no repack, no aux memory), the activation row is quantized to
- * Q8_0 blocks once per call (d = amax/127 per 32 elements, the same scheme
- * the reference engines use for Q8_0 x Q8_0), and each block's 32 products
- * are one maddubs + madd:
+ * Q8_0 is the format of the small reference models (Qwen3-0.6B, Qwen3.5-0.8B,
+ * SmolLM2-360M). The kernel never leaves int8: the weights are read straight
+ * from the GGUF bytes (no repack, no aux memory), the activation row is
+ * quantized to Q8_0 blocks once per call (d = amax/127 per 32 elements, the
+ * same scheme the reference engines use for Q8_0 x Q8_0), and each block's 32
+ * products are one maddubs + madd:
  *
  *   maddubs(|w|, sign(x, w))  — u8 x s8 pairs into s16. |w| <= 128 and
  *                               |x| <= 127, so a pair is at most 32512:

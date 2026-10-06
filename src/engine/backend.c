@@ -10,7 +10,7 @@
 #define GEIST_INTERNAL_ENGINE_LAYER
 
 #include <geist_util.h>
-#include "model.h" /* for geist_arch_registry forward decl pattern */
+#include "model.h"
 
 #include <geist.h>
 #include <geist_backend.h>

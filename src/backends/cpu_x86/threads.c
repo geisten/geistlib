@@ -3,16 +3,11 @@
  *
  * Layer: BACKEND (cpu_x86).
  *
- * Without these hooks cpu_x86 ran every phase at the ambient OpenMP team,
- * which is one thread per LOGICAL CPU unless OMP_NUM_THREADS says
- * otherwise. On an SMT host that doubles the decode team, and decode — an
- * M=1 GEMV streaming the weights from DRAM — gets contention, not
- * bandwidth, from the sibling threads. Ryzen 9 9950X, 16 cores / 32
- * threads (benchmark/results/THREAD-SWEEP-AMD9950X.md): decode 49.5 t/s at
- * 16 threads, 45.9 at 32; prefill 493.7 vs 500.0, i.e. flat. #504 saw
- * decode at 1.41 s with the default 32 threads against 0.88 s at 16.
+ * The ambient OpenMP team is one thread per logical CPU. Decode, an M=1
+ * GEMV streaming weights from DRAM, gets contention rather than bandwidth
+ * from SMT siblings (benchmark/results/THREAD-SWEEP-AMD9950X.md, #504).
  *
- * So, as cpu_neon does for its phases:
+ * Policy, as in cpu_neon:
  *   - decode: one thread per physical core when the probe sees SMT; only
  *     ever lowers the team;
  *   - prefill: the ambient team (compute-bound, the sweep shows no gain
@@ -21,8 +16,8 @@
  *   - GEIST_DECODE_THREADS / GEIST_PREFILL_THREADS override either phase
  *     (documented in docs/QUICKSTART.md for every CPU backend).
  *
- * Not done: pinning decode to one L3 domain. X86.md measured it 13-15 %
- * slower on the 9950X (half the cores, the same shared memory controller).
+ * Decode is not pinned to one L3 domain: 13-15 % slower on the 9950X
+ * (X86.md).
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 

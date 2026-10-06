@@ -7,8 +7,7 @@
  * never re-bases cached positions — the sliding window merely masks and does
  * not re-RoPE the cache. Any context-shift implementation must unpack,
  * un-rotate, apply RoPE again, rotate and repack cached rows; otherwise the
- * cache is corrupted (issue #71; llama.cpp#21038 had to add explicit
- * cache-shift support for exactly this reason).
+ * cache is corrupted (see #71).
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -28,9 +27,7 @@
  * sign cleared, the unsigned integers order as the values do (NaN aside),
  * and an integer max vectorizes under any floating-point flags, where
  * clang keeps a float compare-and-select scalar unless it may assume no
- * NaNs (not under -fno-finite-math-only). gcc 14 (x86-64-v3, aarch64) and
- * clang 19 (aarch64) all give vector code; on x86-64 it is as fast as the
- * float compare a row of 64 and 12-17 % faster at 128 and 256. */
+ * NaNs (not under -fno-finite-math-only). */
 static inline float kv_row_absmax(size_t n, const float x[static n]) {
     uint32_t m = 0;
     for (size_t i = 0; i < n; i++) {
@@ -82,9 +79,8 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
             cs = v->buffer_copy(
                     ctx->v_cache_buf, q_position * row_bytes, sess->scratch_v, 0, span_bytes);
         }
-        /* Bound (#352): the capability is decided at plan build, so a
-         * non-OK result here is a device error, not "this backend cannot
-         * do it" — returning it beats a host path that hides it. */
+        /* The capability is decided at plan build, so a non-OK result here
+         * is a device error, not "this backend cannot do it" (#352). */
         return cs;
     }
 
@@ -163,12 +159,12 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
         }
         const size_t row_elems      = kv_out;
         const size_t scales_per_row = st->n_kv_heads;
-        /* Issue #61: rotate each K/V head row before quantizing. Q is
+        /* Rotate each K/V head row before quantizing (#61). Q is
          * rotated symmetrically at attention time (kv_store_attention). */
         const bool rot = sess->kv_rot_enabled && fwht_supported(hd) && hd <= 512;
         float      krot[512];
         float      vrot[512];
-        /* Issue #61: low-bit quality-sim quantizes on an N-bit grid
+        /* Low-bit quality-sim quantizes on an N-bit grid
          * (amax / (2^(N-1)-1)); the int8 container then holds values in
          * [-(2^(N-1)-1), +...]. Rounding stays in range (|x| <= amax), so no
          * clamp is needed. qbits==0 is the native 8-bit path (denom 127). */
@@ -435,7 +431,7 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
             v_scalep == nullptr || outp == nullptr) {
             return GEIST_E_BACKEND; /* the backend said why */
         }
-        /* Issue #61: rotate Q by the same H used on K/V so QK scores are
+        /* Rotate Q by the same H used on K/V so QK scores are
          * unchanged; the kernel then quantizes rotated Q, and we rotate the
          * (V-rotated) output back below. H is its own inverse. */
         const bool   rot    = sess->kv_rot_enabled && fwht_supported(ctx->hd) && ctx->hd <= 512;

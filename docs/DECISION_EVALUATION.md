@@ -1,37 +1,29 @@
 # Offline decision evaluation on Apple Silicon (#587)
 
-This is evaluation infrastructure and its protocol. The completed development
-pilot supplies exploratory Bonsai evidence; it does not establish a
-quality-matched speedup or Jev equivalence. It builds on `docs/DECISION.md`
-and leaves the default build flag off. The first adapter supports **classic `cais/mmlu`, four choices and
-one integer gold label**. It does not implement MMLU-Redux's corrected and
-multiple-answer annotations.
+Evaluation infrastructure and protocol for the decision API
+([DECISION.md](DECISION.md)); the default build flag stays off. The adapter
+supports **classic `cais/mmlu`, four choices and one integer gold label**, not
+MMLU-Redux's corrected and multiple-answer annotations. The completed
+development pilot is exploratory Bonsai evidence; it does not establish a
+quality-matched speedup or Jev equivalence.
 
 Before a labelled campaign, settle the dataset variant, allowable accuracy
 loss, run scope and generation cap. The CLI deliberately requires the cap,
 margin and purpose. `manifest.json` freezes these and the precise commands
 before inference. An existing output directory is never overwritten.
 
-## Confirmed campaign choices (2026-10-04)
+## Campaign choices (2026-10-04)
 
-The user selected classic MMLU with five fixed subject-specific examples,
-a maximum two-percentage-point accuracy loss (paired 95% interval), and a
-small development pilot first on Apple CPU/Metal. These choices are saved in
-[DECISION_CAMPAIGN_PLAN.json](DECISION_CAMPAIGN_PLAN.json). The pilot supplies
-exploratory quality and runtime evidence, not held-out acceptance.
+Recorded in [DECISION_CAMPAIGN_PLAN.json](DECISION_CAMPAIGN_PLAN.json): classic
+MMLU with five fixed subject-specific examples, at most two percentage points
+of accuracy loss (paired 95% interval), explicit overlap exclusion (the
+held-out population is reported as a cleaned subset, not stock MMLU), and a
+development pilot first: eight questions from eight deterministic subjects,
+cap 512, `--warmup 0 --repeats 1` (two trials), Metal then CPU. Its
+399–695-token prompts and all 96 candidate boundaries were validated by
+tokenizer-only planning.
 
-The user also approved explicit overlap exclusion and the bounded pilot:
-eight development questions from eight deterministic subjects, cap512,
-`--warmup 0 --repeats 1` (two total trials), Metal first and CPU afterwards.
-The full held-out population is reported as a cleaned subset, not stock MMLU.
-Tokenizer-only planning of the eight-question subset finds 399–695 prompt
-tokens and validates all 96 candidate boundaries.
-At the saved planning rates, both trials of all eight arms with a 512-token
-generation cap would take approximately 18–26 minutes on Metal and 88–124
-minutes on CPU if every reasoning output reaches the cap. These spans exclude
-setup and host load; they are not measured campaign timings.
-
-The approved pilot is complete on both backends: 128 model calls each, all
+The pilot is complete on both backends: 128 model calls each, all
 exact selected/DENSE pairs and deterministic-repeat checks passed. Direct chat
 scoring and the capped reasoning baseline each answer 4/8 correctly; cloze
 scoring answers 6/8. Both reasoning baselines have four invalid answers at the

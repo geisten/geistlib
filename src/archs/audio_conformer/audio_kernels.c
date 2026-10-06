@@ -282,11 +282,9 @@ void softmax_fp32(size_t n_rows, size_t d, float *x) {
     }
 }
 
-/* Per-head attention primitives, moved from encoder_forward.c (#236).
- * HEAD_DIM=128, so 8 iterations of the 16-wide unroll cover one head. */
-/* NEON 16-wide unroll of the per-head dot product / axpy. HEAD_DIM=128, so
- * 8 iterations cover one head fully. The three attention triple-loops below
- * (matrix_ac, matrix_bd, attn@V) all collapse to these two primitives. */
+/* Per-head attention primitives: NEON 16-wide unroll of the per-head dot
+ * product / axpy. HEAD_DIM=128, so 8 iterations cover one head. The
+ * attention loops (matrix_ac, matrix_bd, attn@V) reduce to these. */
 #if defined(__ARM_NEON)
 float dot_head_fp32(const float *a, const float *b) {
     float32x4_t acc0 = vdupq_n_f32(0.0f), acc1 = vdupq_n_f32(0.0f);

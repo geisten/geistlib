@@ -179,10 +179,9 @@ static enum geist_status op_prefill_audio(void *session, size_t n, const float *
     return transformer_prefill_audio_batch(sess, n, soft_tokens);
 }
 
-/* Vision soft-tokens follow the same wire format as audio (1536-dim
- * fp32 per token). The transformer side just memcpys them into the
- * residual stream and runs the layer loop — no embedding lookup, no
- * scale. Delegate to the audio prefill batch path. */
+/* Vision soft-tokens have the audio wire format (d_model fp32 per token):
+ * copied into the residual stream, no embedding lookup, no scale. Shares
+ * the audio prefill batch path. */
 static enum geist_status op_prefill_image(void *session, size_t n, const float *soft_tokens) {
     struct transformer_arch_session *sess = session;
     if (sess == nullptr || soft_tokens == nullptr) {
@@ -365,7 +364,7 @@ static size_t op_kv_len(const void *session) {
     return sess != nullptr ? sess->kv_len + (sess->advance_deferred ? 1 : 0) : 0;
 }
 
-/* #622: a deferred advance is part of the length, so settle it first. */
+/* A deferred advance is part of the length, so settle it first. */
 static enum geist_status op_truncate(void *session, size_t n) {
     const enum geist_status s = settle(session);
     if (s != GEIST_OK) {
@@ -378,7 +377,7 @@ static enum geist_status op_kv_bytes_per_token(size_t *out_bytes, const void *se
     return transformer_kv_bytes_per_token(out_bytes, session);
 }
 
-/* Snapshot / restore (#548, snapshot.c). No settle: a decode_step whose
+/* Snapshot / restore (snapshot.c). No settle: a decode_step whose
  * forward is still owed is part of the state the image records, so taking
  * one costs no forward pass. */
 static enum geist_status op_snapshot_size(size_t *out_bytes, const void *session) {
@@ -402,7 +401,7 @@ static enum geist_status op_restore(size_t n_bytes, const void *buf, void *sessi
     return transformer_snapshot_restore(n_bytes, buf, session);
 }
 
-/* ---- Session lifecycle vtable hooks (P1.2.f) -------------------------- */
+/* ---- Session lifecycle vtable hooks ------------------------------------ */
 
 static void *op_session_alloc(void *arch_state, const struct geist_session_opts *opts) {
     return transformer_session_alloc(arch_state, opts);

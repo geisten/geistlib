@@ -1,98 +1,53 @@
 # Quickstart
 
-See geist generate text in two minutes, then embed it as a **library** in your
-own C program. Everything here uses the stable, public API (`include/geist.h` +
-`include/geist_util.h`) and the real Makefile targets.
-
-- New to the internals? See [ARCHITECTURE.md](ARCHITECTURE.md).
-- Want the numbers? See [../benchmark/results/PI5.md](../benchmark/results/PI5.md).
-
-geistlib is an engine, not an application: it loads models and produces tokens.
-Its API has no chat templating or tool use — those belong to whatever links it.
-Linux releases also package the thin `simple_generate` example as a convenience
-CLI, but it remains a raw completion demo rather than a product interface.
-
----
+Generate text from a source build, then embed geistlib as a library in your
+own C program. Everything here uses the public API (`include/geist.h` +
+`include/geist_util.h`). The library has no chat templating or tool use; those
+belong to the program that links it.
 
 ## 1. Generate text
 
-### Build
-
 ```bash
 make lib                   # target auto-detected: mac-omp / mac / pi5 / linux
-```
-
-Requirements: a C23 compiler (gcc ≥ 14, or Apple-clang ≥ 16) and `make`. On a
-Mac, `brew install libomp` enables multi-threading (the `mac-omp` target).
-
-### Get a model
-
-Use a GGUF for one of the supported model families and dtypes listed in
-[MODELS.md](MODELS.md). Two text-model helpers:
-
-```bash
-make fetch-bench-model     # BitNet b1.58 2B-4T, ternary, ~1.1 GB — the fast one
-make fetch-model           # Gemma 4 E2B-it Q4_K_M, ~3.1 GB — text weights
-```
-
-### Generate
-
-```bash
-# make run builds examples/simple_generate and sets OMP_WAIT_POLICY for you:
+make fetch-bench-model     # BitNet b1.58 2B-4T, ternary, ~1.2 GB
+make fetch-model           # or: Gemma 4 E2B-it Q4_K_M, ~3.1 GB (text weights)
 make run ARGS='gguf_artifacts/gemma4-e2b-Q4_K_M.gguf "The capital of France is"'
 # -> The capital of France is Paris.
 ```
 
-`examples/simple_generate.c` is the smallest useful program against the
-library — load a GGUF, prefill, greedy-decode — and uses only the STABLE core
-of `include/geist.h`. It is the thing to copy when you embed.
-`OMP_WAIT_POLICY=active` keeps the OpenMP threads spinning between tokens and
-noticeably improves multi-thread throughput; always set it.
+Requirements: gcc ≥ 14 or Apple clang ≥ 16, and `make`. On macOS,
+`brew install libomp` enables multi-threading (the `mac-omp` target). Other
+models: [MODELS.md](MODELS.md).
 
-For an interactive prompt loop, use the evaluation REPL:
+`make run` builds [`examples/simple_generate.c`](../examples/simple_generate.c)
+and runs it with `OMP_WAIT_POLICY=active`. For an interactive prompt loop, use
+the evaluation REPL:
 
 ```bash
 OMP_WAIT_POLICY=active bin/`mk/detect-target.sh`/release/tools/eval_geist \
     gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
 ```
 
----
+## 2. Use the library
 
-## 2. Use the library (C API)
+### Get the SDK
 
-The whole stable surface to run text generation is six calls:
-
-```
-geist_backend_create → geist_model_load → geist_session_create
-  → geist_session_set_prompt → geist_session_decode_step → geist_session_token_to_str
-```
-
-### Get the SDK — prebuilt or from source
-
-For **embedding into your own app or experiment**, get `libgeist.a` plus the
-public headers in one of two ways. The separate Linux convenience binaries on
-the release page are built from `examples/simple_generate.c`; they are not the
-SDK or a second API surface.
-
-- **Prebuilt** (per release): download `libgeist-<platform>.tar.gz` from the
-  [latest release](https://github.com/geisten/geistlib/releases/latest) — it holds
-  `libgeist.a`, `include/*.h` (the engine ABI) and `LICENSE`. Verify it
-  against `SHA256SUMS`. The archive is an OpenMP build, so link `-fopenmp`
-  (Linux) or `-framework Accelerate <libomp>/lib/libomp.a` (macOS).
-  Platforms: `macos-arm64`, `linux-arm64`, `linux-x86_64`.
+- **Prebuilt:** `libgeist-<platform>.tar.gz` from the
+  [latest release](https://github.com/geisten/geistlib/releases/latest)
+  (`macos-arm64`, `linux-arm64`, `linux-x86_64`) holds `libgeist.a`,
+  `include/*.h` and `LICENSE`. Verify it against `SHA256SUMS`.
 - **From source:** `make lib` builds `lib/<target>/<mode>/libgeist.a`.
 
-Link against it (`examples/embed_smoke.c` is the smallest model-free link check;
-the release workflow compiles it against each packaged artifact):
-
-```sh
-cc -std=c23 -Iinclude your_app.c libgeist.a -lm   # + your target's link flags
-```
-
-The public surface is versioned: declarations tagged `@stability STABLE` in the
-headers do not break within 0.x. Only the STABLE surface is the SDK contract.
+The archive is an OpenMP build, so link `-fopenmp` (Linux) or
+`-framework Accelerate <libomp>/lib/libomp.a` (macOS). Details:
+[DEPLOY.md](DEPLOY.md).
 
 ### Minimal program
+
+Six calls run text generation:
+`geist_backend_create` → `geist_model_load` → `geist_session_create` →
+`geist_session_set_prompt` → `geist_session_decode_step` →
+`geist_session_token_to_str`.
 
 ```c
 #include <stdio.h>
@@ -132,8 +87,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Stop cleanly on the model's end-of-sequence id (from geist_util.h),
-     * instead of string-matching the decoded text. */
+    /* Stop on the model's end-of-sequence id instead of matching text. */
     const geist_token_t eos = geist_model_eos_token(model);
 
     fputs(prompt, stdout);
@@ -154,38 +108,24 @@ int main(int argc, char **argv) {
 }
 ```
 
-> `geist_model_eos_token` lives in `geist_util.h` and returns `GEIST_TOKEN_NONE`
-> if the model has no tokenizer EOS — so a chat app stops on `tok == eos` rather
-> than scanning output for `<end_of_turn>`. The Gemma 4 GGUF reports eos = 106
-> (`<turn|>`), which doubles as the end-of-turn marker.
+`geist_model_eos_token` returns `GEIST_TOKEN_NONE` if the model has no
+tokenizer EOS. Gemma 4 reports eos = 106 (`<turn|>`), which doubles as the
+end-of-turn marker.
 
-### Build it against `libgeist.a`
+### Build it
 
-The simplest path reuses the repo's own per-target compiler/flags/libs, so your
-program links exactly like the library does — no per-platform knowledge to copy:
-
-```bash
-make lib                                   # builds lib/<target>/release/libgeist.a
-make -C examples                           # builds examples/simple_generate the same way
-```
-
-To compile a standalone file by hand, point the compiler at `include/` and the
-static archive, then add the platform link libs (Accelerate on macOS, OpenBLAS +
-OpenMP on Linux/Pi). The canonical, executable recipe is in
-[`examples/Makefile`](../examples/Makefile); inspect the fully expanded command
-for your detected target with:
+The simplest path reuses the repository's per-target compiler, flags and
+libraries:
 
 ```bash
-make lib
-make -n -C examples simple_generate
+make lib                     # lib/<target>/release/libgeist.a
+make -C examples             # builds the examples the same way
+make -n -C examples simple_generate   # print the expanded command for your target
 ```
 
-Do not paste Make variables such as `$(LDFLAGS_TARGET)` into a shell command:
-the shell interprets that syntax as command substitution. Copy the expanded
-flags printed by `make -n`, or add your program to the example Makefile.
-
-See [`examples/simple_generate.c`](../examples/simple_generate.c) for a complete,
-buildable version.
+[`examples/Makefile`](../examples/Makefile) is the canonical recipe. Copy the
+flags printed by `make -n` rather than pasting Make variables such as
+`$(LDFLAGS_TARGET)` into a shell, or add your program to that Makefile.
 
 ### Public headers
 
@@ -196,43 +136,32 @@ buildable version.
 | `geist_types.h` | author a backend | low-level tensor / op / dtype types |
 | `geist_backend.h` | author a backend | the backend vtable + descriptor |
 
-Pure text generation needs only `geist.h`; add `geist_util.h` for a clean EOS
-stop or anything multimodal/advanced.
+Declarations tagged `@stability STABLE` do not break within a major version;
+see [API_CONTRACT.md](API_CONTRACT.md).
 
----
+## 3. Ship one file
 
-## 3. Ship one file: model embedded in the binary
-
-The library links into a single dependency-free executable, and the **model**
-can be folded in too, so a deployment is *literally one file*. That is a
-property of an executable and this repository builds none — your app does it,
-via `geist_model_load_from_memory`.
-
-Weights are aliased **zero-copy** from the binary's read-only data, so this suits
-**small** models (the binary grows by the model size). Full single-file &
-deployment guide: [DEPLOY.md](DEPLOY.md).
-
-Your own app gets the same capability via the public API — load a GGUF that is
-already in memory (e.g. an `.incbin`-embedded blob, or one you `mmap`ed yourself):
+`geist_model_load_from_memory` loads a GGUF that is already in memory, such as
+a blob embedded in your executable, so a deployment can be a single file:
 
 ```c
 extern const unsigned char model_start[], model_end[];   /* your embedded blob */
 geist_model_load_from_memory(model_start, model_end - model_start, be, &model);
 ```
 
-The caller keeps the buffer alive for the model's lifetime (weights are aliased,
-not copied).
-
----
+Weights are aliased, not copied: keep the buffer alive for the model's
+lifetime. The binary grows by the model size, so this suits small models.
+Recipe: [DEPLOY.md](DEPLOY.md).
 
 ## 4. Performance knobs
 
 | Setting | Effect |
 | :-- | :-- |
-| `OMP_WAIT_POLICY=active` | keep OMP threads hot between tokens — set it for every run |
-| `GEIST_WEIGHT_MMAP=1` | mmap-alias weights instead of copying resident (the default; important on low-RAM boards) |
-| `GEIST_PREFILL_THREADS` / `GEIST_DECODE_THREADS` | override the auto thread split (prefill scales with all cores; decode is bandwidth-bound and often fastest one core below — on x86 with SMT it defaults to one thread per physical core unless `OMP_NUM_THREADS` is set) |
-| `GEIST_MMAP_PREFETCH=1` | `MADV_WILLNEED` prefault of the weight map — steadier first-token latency on 4 KB-page Linux (no-op on the Pi 5's 16 KB pages) |
+| `OMP_WAIT_POLICY=active` | keep OpenMP threads spinning between tokens; set it for every run |
+| `GEIST_WEIGHT_MMAP=1` | read weights from the file mapping instead of copying them (the default; matters on low-RAM boards) |
+| `GEIST_PREFILL_THREADS` / `GEIST_DECODE_THREADS` | override the automatic thread split. Prefill scales with all cores; decode is bandwidth-bound and often fastest one core below. On x86 with SMT, decode defaults to one thread per physical core unless `OMP_NUM_THREADS` is set |
+| `GEIST_MMAP_PREFETCH=1` | `MADV_WILLNEED` the weight mapping: steadier first-token latency on 4 KB-page Linux (no-op on the Pi 5's 16 KB pages) |
+| `GEIST_BACKEND=<name>` | override the `"auto"` backend choice (e.g. `metal`, `vulkan`) |
 
-Tuning rationale and measured numbers are in
+Backend-specific knobs: [BACKENDS.md](BACKENDS.md). Measured rationale:
 [../benchmark/results/PI5.md](../benchmark/results/PI5.md).

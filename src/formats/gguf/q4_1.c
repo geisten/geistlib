@@ -1,7 +1,5 @@
 /*
- * src/formats/gguf/q4_1.c — Q4_1 dequant (read-only; the type shows up
- * only for a handful of ffn_down tensors in unsloth "Q4_0" exports —
- * the generic dequant trampolines carry it, no dedicated hot path).
+ * src/formats/gguf/q4_1.c — Q4_1 block dequantization.
  *
  * Layer: BACKEND.
  */
