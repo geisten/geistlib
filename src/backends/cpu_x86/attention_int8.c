@@ -571,8 +571,8 @@ bool cpu_x86_attention_kv_int8_supported(const struct geist_fusion_query *q) {
            q->n_kv_heads >= 1 && q->n_q_heads >= q->n_kv_heads && q->n_q_heads % q->n_kv_heads == 0;
 }
 
-enum geist_status cpu_x86_attention_kv_int8(struct geist_backend                      *be,
-                                            const struct geist_attention_kv_int8_args *args) {
+enum geist_status cpu_x86_attention_kv_int8(struct geist_backend                 *be,
+                                            const struct geist_attention_kv_args *args) {
     if (be == nullptr || be->state == nullptr || args == nullptr) {
         return GEIST_E_INVALID_ARG;
     }

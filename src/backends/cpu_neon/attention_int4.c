@@ -28,8 +28,8 @@ bool cpu_neon_attention_kv_int4_supported(const struct geist_fusion_query *q) {
            q->n_q_heads % q->n_kv_heads == 0;
 }
 
-enum geist_status cpu_neon_attention_kv_int4(struct geist_backend                      *be,
-                                             const struct geist_attention_kv_int4_args *args) {
+enum geist_status cpu_neon_attention_kv_int4(struct geist_backend                 *be,
+                                             const struct geist_attention_kv_args *args) {
     if (be == nullptr || args == nullptr) {
         return GEIST_E_INVALID_ARG;
     }

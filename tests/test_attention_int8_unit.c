@@ -234,20 +234,9 @@ tensor(struct geist_buffer *b, enum geist_dtype dt, int ndim, size_t s0, size_t 
 /* The backend's op for this shape's cache: attention_kv_int4 on packed
  * rows, attention_kv_int8 otherwise; `a` carries the views either way. */
 static enum geist_status
-call_kernel(struct geist_backend *be, bool int4, const struct geist_attention_kv_int8_args *a) {
+call_kernel(struct geist_backend *be, bool int4, const struct geist_attention_kv_args *a) {
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
-    if (int4) {
-        const struct geist_attention_kv_int4_args b = {.q              = a->q,
-                                                       .k              = a->k,
-                                                       .k_scale        = a->k_scale,
-                                                       .v              = a->v,
-                                                       .v_scale        = a->v_scale,
-                                                       .out            = a->out,
-                                                       .q_offset       = a->q_offset,
-                                                       .sliding_window = a->sliding_window};
-        return fused->attention_kv_int4(be, &b);
-    }
-    return fused->attention_kv_int8(be, a);
+    return int4 ? fused->attention_kv_int4(be, a) : fused->attention_kv_int8(be, a);
 }
 
 /* fused->attention_kv_int8 (attention_kv_int4 for a packed shape) of backend
@@ -328,15 +317,15 @@ static int check_backend(size_t              bi,
     const struct geist_tensor tks = tensor(bks, GEIST_DTYPE_F32, 2, sh->n_kv, sh->n_kv_heads, 0);
     const struct geist_tensor tvs = tensor(bvs, GEIST_DTYPE_F32, 2, sh->n_kv, sh->n_kv_heads, 0);
     struct geist_tensor to = tensor(bo, GEIST_DTYPE_F32, 3, sh->n_q, sh->n_q_heads, sh->head_dim);
-    const struct geist_attention_kv_int8_args args = {.q              = &tq,
-                                                      .k              = &tk,
-                                                      .k_scale        = &tks,
-                                                      .v              = &tv,
-                                                      .v_scale        = &tvs,
-                                                      .out            = &to,
-                                                      .q_offset       = sh->n_kv - sh->n_q,
-                                                      .sliding_window = sh->window};
-    enum geist_status                         st   = call_kernel(be, sh->int4, &args);
+    const struct geist_attention_kv_args args = {.q              = &tq,
+                                                 .k              = &tk,
+                                                 .k_scale        = &tks,
+                                                 .v              = &tv,
+                                                 .v_scale        = &tvs,
+                                                 .out            = &to,
+                                                 .q_offset       = sh->n_kv - sh->n_q,
+                                                 .sliding_window = sh->window};
+    enum geist_status                    st   = call_kernel(be, sh->int4, &args);
     memcpy(out, vt->buffer_map(bo), q_elems * sizeof *out);
     vt->buffer_unmap(bo);
     size_t unwritten = 0;
@@ -390,8 +379,8 @@ static int check_backend(size_t              bi,
     }
 #endif
     /* The last query one position past the cache: refused, nothing written. */
-    struct geist_attention_kv_int8_args past = args;
-    past.q_offset                            = sh->n_kv - sh->n_q + 1;
+    struct geist_attention_kv_args past = args;
+    past.q_offset                       = sh->n_kv - sh->n_q + 1;
     memcpy(out1, vt->buffer_map(bo), q_elems * sizeof *out1);
     vt->buffer_unmap(bo);
     st                 = call_kernel(be, sh->int4, &past);

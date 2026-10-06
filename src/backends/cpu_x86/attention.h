@@ -26,10 +26,9 @@
 
 /* ---- attention_int8.c: attention over the INT8 KV cache ---------------- */
 
-/* fused->attention_kv_int8 (see geist_attention_kv_int8_args). */
+/* fused->attention_kv_int8 (see geist_attention_kv_args). */
 [[nodiscard]] enum geist_status
-cpu_x86_attention_kv_int8(struct geist_backend                      *be,
-                          const struct geist_attention_kv_int8_args *args);
+cpu_x86_attention_kv_int8(struct geist_backend *be, const struct geist_attention_kv_args *args);
 
 /* The probe's answer for GEIST_FUSED_ATTN_KV_INT8: any m, head_dim up to
  * 512, query heads a multiple of the KV heads. */

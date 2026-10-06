@@ -335,15 +335,15 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         struct geist_tensor t_v    = view_3d_u8(ctx->v_cache_q8_buf, n_kv, n_kh, packed);
         struct geist_tensor t_ks   = view_2d(ctx->k_cache_scale_buf, n_kv, n_kh);
         struct geist_tensor t_vs   = view_2d(ctx->v_cache_scale_buf, n_kv, n_kh);
-        const struct geist_attention_kv_int4_args args = {.q              = t_q_3d,
-                                                          .k              = &t_k,
-                                                          .k_scale        = &t_ks,
-                                                          .v              = &t_v,
-                                                          .v_scale        = &t_vs,
-                                                          .out            = t_attn_3d,
-                                                          .q_offset       = ctx->q_position,
-                                                          .sliding_window = L->sliding_window};
-        const enum geist_status                   s    = ctx->fused->attention_kv_int4(be, &args);
+        const struct geist_attention_kv_args args = {.q              = t_q_3d,
+                                                     .k              = &t_k,
+                                                     .k_scale        = &t_ks,
+                                                     .v              = &t_v,
+                                                     .v_scale        = &t_vs,
+                                                     .out            = t_attn_3d,
+                                                     .q_offset       = ctx->q_position,
+                                                     .sliding_window = L->sliding_window};
+        const enum geist_status              s    = ctx->fused->attention_kv_int4(be, &args);
         if (s != GEIST_OK) {
             return s;
         }
@@ -409,15 +409,15 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         struct geist_tensor t_v  = view_3d_i8(ctx->v_cache_q8_buf, n_kv, n_kh, (int64_t) ctx->hd);
         struct geist_tensor t_ks = view_2d(ctx->k_cache_scale_buf, n_kv, n_kh);
         struct geist_tensor t_vs = view_2d(ctx->v_cache_scale_buf, n_kv, n_kh);
-        const struct geist_attention_kv_int8_args args = {.q              = t_q_3d,
-                                                          .k              = &t_k,
-                                                          .k_scale        = &t_ks,
-                                                          .v              = &t_v,
-                                                          .v_scale        = &t_vs,
-                                                          .out            = t_attn_3d,
-                                                          .q_offset       = ctx->q_position,
-                                                          .sliding_window = L->sliding_window};
-        const enum geist_status                   s    = ctx->fused->attention_kv_int8(be, &args);
+        const struct geist_attention_kv_args args = {.q              = t_q_3d,
+                                                     .k              = &t_k,
+                                                     .k_scale        = &t_ks,
+                                                     .v              = &t_v,
+                                                     .v_scale        = &t_vs,
+                                                     .out            = t_attn_3d,
+                                                     .q_offset       = ctx->q_position,
+                                                     .sliding_window = L->sliding_window};
+        const enum geist_status              s    = ctx->fused->attention_kv_int8(be, &args);
         if (s != GEIST_OK) {
             return s;
         }

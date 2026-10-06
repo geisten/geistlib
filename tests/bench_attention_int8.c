@@ -123,13 +123,13 @@ static double time_kernel(struct geist_backend *be,
                 view(b[3], GEIST_DTYPE_I8, 3, n_kv, l->n_kv_heads, l->head_dim);
         const struct geist_tensor tvs = view(b[4], GEIST_DTYPE_F32, 2, n_kv, l->n_kv_heads, 0);
         struct geist_tensor to = view(b[5], GEIST_DTYPE_F32, 3, n_q, l->n_q_heads, l->head_dim);
-        const struct geist_attention_kv_int8_args args = {.q        = &tq,
-                                                          .k        = &tk,
-                                                          .k_scale  = &tks,
-                                                          .v        = &tv,
-                                                          .v_scale  = &tvs,
-                                                          .out      = &to,
-                                                          .q_offset = n_kv - n_q};
+        const struct geist_attention_kv_args args = {.q        = &tq,
+                                                     .k        = &tk,
+                                                     .k_scale  = &tks,
+                                                     .v        = &tv,
+                                                     .v_scale  = &tvs,
+                                                     .out      = &to,
+                                                     .q_offset = n_kv - n_q};
         bool ok = fused->attention_kv_int8(be, &args) == GEIST_OK; /* warm */
         for (int it = 0; it < iters && ok; it++) {
             const double t0 = now_ms();
