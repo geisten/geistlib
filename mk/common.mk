@@ -28,10 +28,8 @@ BIN_DIR   := bin/$(TARGET)/$(MODE)
 # perf    : -O3 + symbols for perf record / sampling profilers
 # fuzz    : asan + libFuzzer coverage instrumentation for `make fuzz-libfuzzer`.
 #           Its own mode, not asan plus EXTRA_CFLAGS, so the objects land in
-#           their own build dir: this build system has no flag hash, and an
-#           asan tree built without -fsanitize=fuzzer-no-link would be reused
-#           as-is, leaving the fuzzer running blind over an uninstrumented
-#           library (observed: cov: 22 after 24 M execs).
+#           their own build dir: there is no flag hash, and a reused asan
+#           tree would leave the fuzzer running over an uninstrumented library.
 
 ifeq      ($(MODE),release)
     CFLAGS_MODE  := -O3 -DNDEBUG
@@ -104,7 +102,7 @@ CFLAGS_BASE := -std=c23 $(WARNINGS_BASE) -fno-strict-aliasing \
                -Isrc/archs/vision_siglip \
                -Ithird_party/stb
 
-# ---- Backend selection (per Q18, Q28) ------------------------------------
+# ---- Backend selection ---------------------------------------------------
 # `make BACKENDS="cpu_scalar cpu_neon"` enables both at compile time;
 # runtime picks via geist_backend_create("name") or "auto".
 # Default is cpu_scalar so the build works on any target as fallback.
@@ -142,7 +140,7 @@ LDFLAGS := $(LDFLAGS_MODE) $(LDFLAGS_TARGET) $(EXTRA_LDFLAGS)
 LDLIBS  := $(LDLIBS_TARGET) $(GEMM_LDLIBS) $(EXTRA_LDLIBS)
 
 # ---- Sources -------------------------------------------------------------
-# Library sources: files without main(). Phase B moves these into src/.
+# Library sources: files without main().
 
 LIB_SOURCES := \
     src/base/heap.c \
@@ -261,9 +259,8 @@ DEMO_SOURCES := tools/bench_decision.c tools/eval_geist.c tools/dump_geist_logit
 
 # These tests call cblas_* directly as an independent reference to validate
 # geist's own kernels. They can't link under GEMM_PROVIDER=native (no cblas to
-# compare against) — that provider is the ship artifact (lib + CLI), validated
-# end-to-end by the quality benchmarks. Drop them there; they still run under
-# the cblas providers (accelerate / openblas).
+# compare against). Drop them there; they still run under the cblas providers
+# (accelerate / openblas).
 CBLAS_REF_TESTS := \
     tests/test_backend_cross_ref_unit.c tests/bench_q4k_kernel.c \
     tests/bench_sgemv.c tests/test_state_decode_int.c tests/test_iq_kernel_int.c \
@@ -277,7 +274,7 @@ endif
 # linear_iq*_, ...) directly, others tune tolerances or assumptions to the
 # NEON W4A8 path (state_layer_fwd, multi_session). When cpu_neon is not in
 # BACKENDS, drop them — otherwise they fail at link or assert on scalar
-# drift. The library, CLI, and vtable-routed tests still run without cpu_neon.
+# drift. The vtable-routed tests still run without cpu_neon.
 NEON_KERNEL_TESTS := \
     tests/test_q4k_kernel_int.c tests/test_q6k_prefill_int.c \
     tests/test_prefill_q3k_int.c tests/test_iq_kernel_int.c \
@@ -360,9 +357,8 @@ $(BUILD_DIR)/src/engine/decision.o: CFLAGS_STRICT += -DGEIST_ENABLE_DECISION=$(D
 $(BUILD_DIR)/tools/bench_decision.o $(BUILD_DIR)/tests/test_decision_errors_unit.o: CFLAGS += -fno-finite-math-only
 
 # Object compilation. -MMD -MP generates .d files for header tracking.
-# src/*.c uses CFLAGS_STRICT (adds -Wshadow -Wundef); the tools/ demos
-# (geist, eval_geist) and tests/ use the slightly more relaxed
-# CFLAGS. Both build clean under -Wall -Wextra -Werror.
+# src/*.c uses CFLAGS_STRICT (adds -Wshadow -Wundef); tools/ and tests/ use
+# the slightly more relaxed CFLAGS. Both build clean under -Wall -Wextra -Werror.
 $(BUILD_DIR)/src/%.o: src/%.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS_STRICT) -MMD -MP -c $< -o $@
@@ -378,24 +374,21 @@ $(BUILD_DIR)/%.o: %.c
 #
 # -fno-sanitize=object-size for the same reason: stb_image_resize2.h:6270
 # picks a scanline function-pointer table with a ternary and indexes it,
-# which UBSan reads as a load past the end of the chosen array. Vendored
-# code we do not police, and under MODE=asan CI runs halt_on_error=1, so
-# the check made the resize path — the normal path for every real image —
-# untestable. Narrow on purpose: alignment, overflow and bounds checks
-# stay on for stb. No-op in non-sanitizer modes.
+# which UBSan reads as a load past the end of the chosen array; with CI's
+# halt_on_error=1 that makes the resize path untestable. Narrow on purpose:
+# alignment, overflow and bounds checks stay on for stb. No-op in
+# non-sanitizer modes.
 $(STB_OBJ): third_party/stb/stb_impl.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS_MODE) $(CFLAGS_TARGET) -Ithird_party/stb -w \
 	    -fno-sanitize=object-size -MMD -MP -c $< -o $@
 
-# Static library
 $(LIB_FILE): $(LIB_OBJS)
 	@mkdir -p $(@D)
 	$(AR) rcs $@ $(LIB_OBJS)
 
-# Preprocessed-assembly rule (.S). The engine ships no .S source today; the
-# rule stays because a consumer building in-tree may add one, and because
-# EXTRA_ASFLAGS is how a caller passes -D to it.
+# Preprocessed-assembly rule (.S) for in-tree consumers; the engine ships no
+# .S source. EXTRA_ASFLAGS passes -D to it.
 EXTRA_ASFLAGS ?=
 $(BUILD_DIR)/%.o: %.S
 	@mkdir -p $(@D)

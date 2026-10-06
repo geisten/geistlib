@@ -17,16 +17,10 @@ CC ?= cc
 
 # ----- x86_64 path ----------------------------------------------------------
 #
-# Native cpu_x86 backend is the DEFAULT (#108). The old opt-in gate ("until
-# the Phase-2 win criteria are measured") is long met: matches-to-beats
-# llama.cpp on Gemma/Llama and beats bitnet.cpp by +61 % prefill / +90 %
-# decode on BitNet (benchmark/results/X86.md); every AVX-512 kernel is
-# runtime-gated behind hw_probe/cpuid (#96) so the x86-64-v3 baseline below
-# remains the only hardware floor; the CI x86 int/e2e strand (native +
-# GEIST_FORCE_ISA=avx2) is required. A plain `make` previously shipped the
-# ~200× slower scalar path — the same trap #102 fixed in bench_perf_sweep.
-# BACKENDS="cpu_scalar" still builds the portable reference (dedicated CI
-# job). Remember `make clean` when switching BACKENDS.
+# Native cpu_x86 backend is the default (#108). Every AVX-512 kernel is
+# runtime-gated behind hw_probe/cpuid (#96), so the x86-64-v3 baseline below
+# is the only hardware floor. BACKENDS="cpu_scalar" builds the portable
+# reference. Remember `make clean` when switching BACKENDS.
 # The -Wno-vla-parameter relaxation below is a GCC-only name; clang treats
 # unknown -Wno- options as errors under -Werror. Detect the compiler family once.
 # For clang, also keep INFINITY well-defined under -ffast-math
@@ -56,7 +50,7 @@ $(error TARGET=linux on $(LINUX_ARCH): 32-bit x86 is not supported.)
 
 else
 
-# ----- ARM64 path (existing — Graviton2+, Ampere Altra, generic ARMv8.2) ----
+# ----- ARM64 path (Graviton2+, Ampere Altra, generic ARMv8.2) --------------
 BACKENDS ?= cpu_neon cpu_scalar
 
 # Generic ARMv8.2-A tuning — runs on Graviton2+, Ampere Altra, and ARM64
@@ -85,9 +79,5 @@ endif
 
 # Feature-test macro, both architectures, every Linux libc. `-std=c23` (not
 # gnu23) defines __STRICT_ANSI__, and musl then hides everything outside ISO C
-# — `strdup` included — so a plain `make lib` on Alpine died on an implicit
-# declaration. glibc exposes it regardless, which is why this only ever
-# surfaced off the beaten path. It belongs here rather than in each caller:
-# the release workflow passed it by hand, so CI was green while the documented
-# build was not.
+# (`strdup` included). Set here, not by each caller.
 CFLAGS_TARGET += -D_GNU_SOURCE
