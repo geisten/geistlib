@@ -23,8 +23,7 @@
  * Q5_K is the same superblock with a fifth bit per q from 32 qh bytes (bit
  * 2j for the low nibbles of sub-block pair j, 2j + 1 for the high ones), q
  * in 0..31: the kernels OR it in after the nibble unpack and are otherwise
- * shared. Q5_K had no x86 kernel at all before; it ran the generic
- * dequantize-to-fp32 path (#410).
+ * shared.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 

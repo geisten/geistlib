@@ -7,9 +7,7 @@
  * PQ2_0 is PrismML's ternary format for Ternary-Bonsai: 128-element blocks
  * of [fp16 d][32 bytes of 2-bit codes], element j at byte j/4, bits
  * 2*(j%4), value (code - 1) * d (reference decoder: dequant_pq2_0_row,
- * src/formats/gguf/pq2_0.c). It ran on linear_generic.c, which decodes every
- * weight row to fp32 one element at a time: 88 % of a Ternary-Bonsai-2-27B
- * decode, about 1 GB/s of weights (benchmark/results/TERNARY.md).
+ * src/formats/gguf/pq2_0.c).
  *
  * This kernel reads the GGUF bytes as they are — no repack; the 27B file is
  * 7.2 GB, a copy would not fit next to it on a 16 GB host — and stays in
@@ -34,12 +32,12 @@
  *     once per call into lane 0 of an 8-lane vector per block.
  *
  * Decode streams every weight byte once per token and the dot keeps up with
- * DRAM, so the hardware prefetchers are what limits it: on a 4-vCPU Xeon
- * (Sapphire Rapids class) the loop reads 18 GB/s on its own and 42 GB/s
- * with a software prefetch PREFETCH_BYTES ahead — the host's read
- * bandwidth. Each thread's rows are contiguous (schedule(static)), so the
- * prefetch address runs on across row boundaries. A prefetch never faults,
- * past the end of the weight included.
+ * DRAM, so the hardware prefetchers limit it: a software prefetch
+ * PREFETCH_BYTES ahead more than doubles the read rate on a 4-vCPU Xeon
+ * (Sapphire Rapids class), to the host's read bandwidth. Each thread's rows
+ * are contiguous (schedule(static)), so the prefetch address runs on across
+ * row boundaries. A prefetch never faults, past the end of the weight
+ * included.
  *
  * Prefill (M>1) is the same arithmetic as a GEMM. Every token's row is
  * quantized with its own absmax scale, in the same code order, the blocks
@@ -100,8 +98,7 @@ constexpr size_t PREFETCH_BYTES = 4096;
 
 /* Weight rows per step of the prefill GEMM. A group reads each block's
  * activations (m x 128 bytes) once for all its rows, and its accumulators
- * (GEMM_ROWS x m x 32 bytes, 16 KB at m = 128) stay in L1. 2 and 8 measured
- * within noise of 4 at m = 64. */
+ * (GEMM_ROWS x m x 32 bytes, 16 KB at m = 128) stay in L1. */
 constexpr size_t GEMM_ROWS = 4;
 
 /* Within a 16-byte lane of 4 elements x 4 levels: the bytes grouped by
@@ -401,16 +398,13 @@ static void cpu_x86_linear_pq2_0_mN(size_t                     m,
 #ifndef GEIST_NO_AMX /* the assembler knows AMX; mk/backend-cpu_x86.mk */
 /* Token tiles per pass of the AMX GEMM. Each pass streams the weights once
  * and keeps the packed activations of its tokens (nb * tiles * 2 KB, 2.2 MB
- * for 8 tiles at n_in = 17408) near L2: 256 tokens in two passes measured
- * 12 % (17408 x 5120) and 17 % (5120 x 17408) faster than in one. */
+ * for 8 tiles at n_in = 17408) near L2. */
 constexpr size_t AMX_PASS_TILES = 8;
 
 /* Per-thread scratch starts on its own page and a page apart from the
  * next: the L2 prefetchers run on into the neighbouring page, and with the
- * neighbour storing there every step the lines bounce between the cores.
- * At m = 128 on 17408 x 5120, two threads ran at 0.31-0.35 instead of 0.20
- * ns per block, row and token and core with the scratch packed, and page
- * alignment without the gap did not help. */
+ * neighbour storing there every step the lines bounce between the cores
+ * (page alignment without the gap did not help). */
 constexpr size_t AMX_PAGE = 4096;
 
 /* M>1 on AMX: the activations quantized as for the AVX2 GEMM (XQ[b][t],

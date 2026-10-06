@@ -3,15 +3,12 @@
  *
  * Layer: BACKEND (cpu_x86).
  *
- * TQ2_0 (ternary BitNet weights, 2 bits per trit, one fp16 scale per 256)
- * had no x86 kernel: it ran the generic path (linear_generic.c), which
- * decodes every trit to fp32 before the dot — 14 tok/s prefill on
- * bitnet-large where llama.cpp runs 1374 (#410). This kernel never leaves
- * int8. The weights are read straight from the GGUF bytes (no repack, no
- * aux memory); the activations are quantized once per call to int8 with
- * one scale per 256 elements (d = amax / 127, as llama.cpp's Q8_K for this
- * format) plus each block's integer sum S. A weight block's 2-bit codes
- * v in {0, 1, 2} (trit = v - 1) go straight into maddubs:
+ * TQ2_0: ternary BitNet weights, 2 bits per trit, one fp16 scale per 256
+ * (#410). The kernel never leaves int8. The weights are read straight from the
+ * GGUF bytes (no repack, no aux memory); the activations are quantized once
+ * per call to int8 with one scale per 256 elements (d = amax / 127, as
+ * llama.cpp's Q8_K for this format) plus each block's integer sum S. A weight
+ * block's 2-bit codes v in {0, 1, 2} (trit = v - 1) go straight into maddubs:
  *
  *   maddubs(v, xq)  — a pair is at most 2 * 2 * 127 = 508, and the eight
  *                     32-element chunks of a block sum in int16 to at most

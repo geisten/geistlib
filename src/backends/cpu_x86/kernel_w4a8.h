@@ -36,7 +36,7 @@
  * --- Alignment ---------------------------------------------------------------
  *
  * Scalar reference: no alignment requirement.
- * AVX2 / AVX-512 variants: weights and acts SHOULD be 64-byte aligned for
+ * AVX-512 VNNI variant: weights and acts SHOULD be 64-byte aligned for
  *   peak throughput, but kernels use unaligned loads so misaligned inputs
  *   are correct, only slower. w_scales / w_offsets / sum_a have no alignment
  *   requirement.
