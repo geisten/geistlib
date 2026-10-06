@@ -32,7 +32,7 @@
 
 [[nodiscard]] static enum geist_status cpu_scalar_create(struct geist_backend            *be,
                                                          const struct geist_backend_opts *opts) {
-    (void) opts; /* B-2b will read max_threads, log_cb, etc. */
+    (void) opts;
 
     struct cpu_scalar_state *st =
             geist_backend_alloc(be, sizeof(*st), alignof(struct cpu_scalar_state));
@@ -129,7 +129,7 @@ static void cpu_scalar_buffer_destroy(struct geist_backend *be, struct geist_buf
     if (buf == nullptr) {
         return;
     }
-    /* Aliased buffers (P0.3): see cpu_neon mirror — don't free host_ptr. */
+    /* Aliased buffers do not own their host memory. */
     if ((buf->memory_flags & GEIST_MEMORY_ALIASED) == 0 && buf->host != nullptr) {
         safe_free(&buf->host);
     }
@@ -164,11 +164,6 @@ static void cpu_scalar_buffer_unmap(struct geist_buffer *buf) {
     /* No-op on CPU; nothing to sync. */
     (void) buf;
 }
-
-/* ---------- Op dispatcher: linear() -------------------------------------
- * Routes to the format-specific implementation based on (W.dtype,
- * W.layout). cpu_scalar_linear_f32_dense lives in linear.c; future
- * implementations (Q4_K, Q3_K, Q8_0) will join in B-2c. */
 
 /* ---------- Vtable + Descriptor ---------- */
 
@@ -207,8 +202,7 @@ static bool cpu_scalar_fused_supported(struct geist_backend            *be,
     }
 }
 
-/* Exported like the vtbl: cpu_x86 struct-copies these as its Phase-0
- * baseline. */
+/* Exported like the vtbl: cpu_x86 struct-copies these as its baseline. */
 const struct geist_backend_primitives cpu_scalar_prims = {
         .rmsnorm          = cpu_scalar_rmsnorm,
         .add              = cpu_scalar_add,

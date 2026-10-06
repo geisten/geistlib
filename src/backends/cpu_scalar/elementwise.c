@@ -4,10 +4,7 @@
  *
  * Layer: BACKEND.
  *
- * Provides scalar reference implementations of rmsnorm, add, mul, and
- * gelu_tanh. cpu_neon wraps the same gemma4_kernels.c entry points; the
- * scalar version here uses straightforward C loops with double-precision
- * reduction for rmsnorm.
+ * Plain C loops; rmsnorm reduces in double.
  *
  * Tensor contract for all ops: F32 DENSE, contiguous (stride = shape-tail).
  */

@@ -4,12 +4,8 @@
  *
  * Layer: BACKEND.
  *
- * The underlying kernels in gemma4_kernels.c are pure-C reference code
- * (no SIMD intrinsics for rope/attention). cpu_scalar can use them
- * directly without breaking its "scalar reference" contract — the
- * implementation is the algorithm reference. cpu_neon currently uses
- * the same kernels; a future NEON specialization can override only the
- * cpu_neon side.
+ * The gemma4_kernels.c rope/attention kernels are pure C, so they serve
+ * directly as cpu_scalar's reference implementation.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 

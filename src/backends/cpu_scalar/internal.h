@@ -26,13 +26,11 @@ struct geist_buffer {
 
 /* Per-instance backend state — kept opaque outside cpu_scalar. */
 struct cpu_scalar_state {
-    /* Reserved for B-2c+: scratch arena for activations, op profiling. */
-    int placeholder_;
+    int placeholder_; /* no state yet; keeps the struct non-empty */
 };
 
-/* P1.1.b → P2.e: load-time weight resolver. Inspects w->dtype and writes
- * direct M=1 / M>1 kernel function pointers. After the linear-slot drop
- * (P2-final), this is the only path the forward layer dispatches through. */
+/* Load-time weight resolver: inspects w->dtype and writes the direct
+ * M=1 / M>1 kernel function pointers the forward layer dispatches through. */
 struct geist_weight;
 [[nodiscard]] enum geist_status cpu_scalar_resolve_weight(struct geist_backend *be,
                                                           struct geist_weight  *w);
