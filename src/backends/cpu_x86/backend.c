@@ -8,8 +8,9 @@
  *   2. Override vtbl .create / .destroy (the per-instance scratch the
  *      quantized kernels use), .resolve_weight (below) and, under OpenMP,
  *      .parallel_region_begin / _end (threads.c); prims .attention,
- *      .gelu_tanh, .silu, .rmsnorm and .add; fused .gelu_tanh_mul,
- *      .gelu_tanh_mul_scaled and .silu_mul.
+ *      .gelu_tanh, .silu, .rmsnorm and .add; fused .supported,
+ *      .gelu_tanh_mul, .gelu_tanh_mul_scaled, .silu_mul and
+ *      .attention_kv_int8.
  * Constructor runs before main, so the descriptor's tables are always
  * filled by the time the engine calls geist_backend_create.
  *
@@ -62,7 +63,6 @@ extern const struct geist_backend_fused      cpu_scalar_fused;
 extern enum geist_status                     cpu_scalar_resolve_weight(struct geist_backend *be,
                                                                        struct geist_weight  *w);
 
-/* Mutable tables filled in at module-init time. */
 static struct geist_backend_vtbl       cpu_x86_vtbl;
 static struct geist_backend_primitives cpu_x86_prims;
 static struct geist_backend_fused      cpu_x86_fused;
@@ -156,11 +156,10 @@ static void cpu_x86_linear_i2s_m1(const float               *x,
     i2s_gemv_m1(n_out, n_in, x, raw, scale, y);
 }
 
-/* Per-thread prefill scratch for the I2S GEMMs (#336 batch 3). Returns
- * nullptr when the backend state is missing or the workspace cannot be
- * sized; both callers then take the path they already took when their
- * per-call malloc failed. `perm_bytes` is 0 for the x4 layout, which needs
- * no activation permute. */
+/* Per-thread prefill scratch for the I2S GEMMs, or nullptr when the
+ * backend state is missing or the workspace cannot be sized (callers then
+ * take their unbuffered path). The x4 layout needs no activation permute
+ * (`want_perm` false). */
 static struct cpu_x86_workspace *
 i2s_mN_scratch(struct geist_backend *be, size_t m, size_t n_in, bool want_perm) {
     if (be == nullptr || be->state == nullptr) {
@@ -318,11 +317,9 @@ static void cpu_x86_linear_i2s_x4_pair_m1(const float               *x,
                         y1);
 }
 
-/* Fuse gate+up / q+k decode (shared quant + one OMP region, 5 regions/layer →
- * 3). Re-measured for #102 (Phase 2, 9950X DDR5-6400, THP on, 16T active
- * wait): decode 93.4 → 94.6 t/s (+1.2 %, mean-of-5, best-case too) — earlier
- * "neutral" reading no longer holds. Default ON; GEIST_I2S_PAIR=0 disables.
- * Host-constant after first read. */
+/* Fused gate+up / q+k decode (shared quant, one OMP region; 5 regions per
+ * layer become 3, +1.2 % decode on the 9950X, #102). Default on;
+ * GEIST_I2S_PAIR=0 disables. Read once per process. */
 static int cpu_x86_i2s_pair_enabled(void) {
     static _Atomic int e = -1;
     if (e < 0) {
@@ -332,8 +329,8 @@ static int cpu_x86_i2s_pair_enabled(void) {
     return e;
 }
 
-/* t5 decode blob (1.6 bpw, #104): default ON, GEIST_I2S_T5=0 keeps the
- * 2-bit x4 decode. Host-constant after first read. */
+/* t5 decode blob (1.6 bpw, #104): default on, GEIST_I2S_T5=0 keeps the
+ * 2-bit x4 decode. Read once per process. */
 static int cpu_x86_i2s_t5_enabled(void) {
     static _Atomic int e = -1;
     if (e < 0) {
@@ -458,12 +455,13 @@ static bool q4k_reads_raw(void) {
     if (base != GEIST_OK) {
         return base;
     }
-    /* Rebind per dtype. Q4_K → Q4_Kx8 GEMV/GEMM; Q6_K → native GEMV +
-     * W8x16 GEMM; Q3_K / Q5_K → native GEMV / GEMM on the GGUF bytes; Q4_0 / Q4_1 / IQ4_NL / IQ4_XS
-     * → nibbles x Q8_0; TQ2_0 → trits x int8; Q8_0 → int8 Q8_0 x Q8_0; PQ2_0 → W2 x A8 GEMV / GEMM;
-     * I2_S → VNNI x4; F16 → Q8 or F16C GEMV for M=1; F32 → W8A8. Everything else — and Q4_K / Q6_K
-     * when their repack cannot be built — takes the generic kernels, never cpu_scalar's
-     * single-threaded ones.
+    /* Rebind per dtype. Q4_K → raw GGUF or Q4_Kx8 GEMV/GEMM; Q6_K → native
+     * GEMV + raw or W8A8 GEMM; Q3_K / Q5_K → native GEMV / GEMM on the GGUF
+     * bytes; Q4_0 / Q4_1 / IQ4_NL / IQ4_XS → nibbles x Q8_0; TQ2_0 → trits x
+     * int8; Q8_0 → int8 Q8_0 x Q8_0; PQ2_0 → W2 x A8 GEMV / GEMM; I2_S → VNNI
+     * x4; F16 → Q8 or F16C GEMV for M=1; F32 → W8A8. Everything else — and
+     * Q4_K / Q6_K when their repack cannot be built — takes the generic
+     * kernels, never cpu_scalar's single-threaded ones.
      *
      * The native binds cannot fail: they need only n_in a whole number of
      * blocks, which cpu_scalar_resolve_weight has checked (quant_weight_extent_ok).

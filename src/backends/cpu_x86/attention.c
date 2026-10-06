@@ -10,10 +10,7 @@
  *   - a work item takes up to four query heads of one KV head and, in a
  *     prefill, up to four queries, and runs each block of 512 context
  *     positions for all of them before the next, so that the block's K and
- *     V rows, fetched for the first, are in L1 or L2 for the others. It
- *     was one (query, head) a thread, each reading its KV head's rows on
- *     its own: at 1024 positions and 32/8 heads, 1 GB of K and V reads a
- *     64-token chunk;
+ *     V rows, fetched for the first, are in L1 or L2 for the others;
  *   - scores: eight positions at a time, reduced together;
  *   - V: eight fp32 accumulators stay in registers while 16 KB of the
  *     block's V rows go past — 16 output dimensions of each of 4 or 3
@@ -77,8 +74,7 @@ static float *get_f32_dense_ptr_full(const struct geist_tensor *t, size_t *out_n
 
 /* Bytes of V rows per pass over the output dimensions: they stay in L1
  * while every slice of the dimensions goes over them (64 rows at head_dim
- * 64, 8 at 512). 8 and 32 KB measured within 3 % of it, 64 KB 5-9 % slower
- * at head_dim 256 and 512. */
+ * 64, 8 at 512). 64 KB measured 5-9 % slower at head_dim 256 and 512. */
 constexpr size_t AF_PV_BYTES = 16384;
 
 /* ---- Scores ------------------------------------------------------------ */
