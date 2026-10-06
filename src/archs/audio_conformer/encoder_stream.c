@@ -1,22 +1,15 @@
 /*
  * src/archs/audio_conformer/encoder_stream.c — the streaming API and its worker thread.
- *
- * Layer: ARCHITECTURE (audio_conformer). Split from the former
- * monolithic audio_encoder.c.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "encoder_internal.h"
 
-/* Intra-module forward decls (definition order preserved from the split). */
 static void audio_stream_state_reset(struct audio_stream_state *ss);
 
-/* === Phase 8 streaming API ===================================================*/
-
 /* Lazily create the mel pipeline. GEIST_MEL_CONSTANTS_PATH wins (same
- * contract as the attach path in arch.c — the hardcoded default made
- * every installed binary deaf outside a repo checkout, found by the
- * geist-diktat e2e); the bringup-tree default remains the fallback. */
+ * contract as the attach path in arch.c), so installed binaries work
+ * outside a repo checkout; the in-tree path is the fallback. */
 static int ensure_mel(struct AudioEncoder *a) {
     if (a->mel)
         return 0;
@@ -39,9 +32,8 @@ int audio_encoder_push_pcm(struct AudioEncoder *a, size_t n, const int16_t sampl
     /* Advance mel pipeline as far as the now-larger PCM buffer allows.
      * Frame k uses padded[k*160 : k*160+320] where padded = 160 zeros +
      * pcm. So frame k requires pcm[0 .. (k+1)*160 - 1] available — i.e.
-     * we need at least (k+1)*160 PCM samples to produce frame k. Phase
-     * C: this work used to happen all-at-once after end_input; pushing
-     * it inside push_pcm overlaps it with capture. */
+     * we need at least (k+1)*160 PCM samples to produce frame k. Doing it
+     * in push_pcm overlaps it with capture. */
     if (a->mel == nullptr)
         (void) ensure_mel(a); /* lazy first time */
     if (a->mel != nullptr) {
@@ -57,7 +49,7 @@ int audio_encoder_push_pcm(struct AudioEncoder *a, size_t n, const int16_t sampl
         }
     }
 
-    /* Phase 2: if the streaming worker is active and we've crossed a
+    /* If the streaming worker is active and we've crossed a
      * sub-token-block boundary (~48 new mel frames = 12 sub-tokens) since
      * the last fire, kick the worker. This overlaps the Conformer compute
      * with the still-arriving PCM. */
@@ -82,7 +74,7 @@ void audio_encoder_end_input(struct AudioEncoder *a) {
 }
 
 /* Run subsample + Conformer + projections on the pre-computed mel buffer
- * (populated incrementally by push_pcm — Phase C). Caller holds a->mtx;
+ * (populated incrementally by push_pcm). Caller holds a->mtx;
  * we drop it during the heavy work and re-acquire afterwards. */
 static int compute_segment_locked(struct AudioEncoder *a) {
     /* Snapshot mel frame count under the lock. PCM is needed only as a
@@ -138,7 +130,7 @@ audio_encoder_pull_softtokens(struct AudioEncoder *a, size_t max_out, float *out
             return 0;
         }
 
-        /* Phase 2 streaming-worker path: drain incremental soft tokens from
+        /* Streaming-worker path: drain incremental soft tokens from
          * state->soft as the worker produces them. The worker may emit
          * tokens BEFORE end_input arrives, so we can return early without
          * waiting for the full segment. */
@@ -218,7 +210,7 @@ void audio_encoder_reset(struct AudioEncoder *a) {
     a->soft_tokens = nullptr;
     if (a->stream)
         audio_stream_state_reset(a->stream);
-    /* Phase 2 worker bookkeeping. */
+    /* Worker bookkeeping. */
     a->worker_kick     = false;
     a->worker_final    = false;
     a->worker_last_mel = 0;
@@ -231,8 +223,6 @@ void audio_encoder_shutdown(struct AudioEncoder *a) {
     pthread_cond_broadcast(&a->cv);
     pthread_mutex_unlock(&a->mtx);
 }
-
-/* === Phase 8b chunk-streaming scaffolding (impl in subsequent commit). === */
 
 struct audio_stream_state *audio_stream_state_create(size_t soft_dim) {
     struct audio_stream_state *s = heap_calloc_array_aligned(struct audio_stream_state, 1);
@@ -249,10 +239,9 @@ struct audio_stream_state *audio_stream_state_create(size_t soft_dim) {
     }
     s->sub_buf = heap_calloc_array_aligned(float, MAX_SUB_TOKENS *AUDIO_HIDDEN);
     s->soft    = heap_calloc_array_aligned(float, MAX_SUB_TOKENS *soft_dim);
-    /* Phase-3 subsample cache. l0 dominates the allocation - 128 channels
-     * × T_out0 × 64 freq positions × 4 B = up to ~49 MB at the 30 s mel
-     * cap. Allocated only when the stream worker may run; on Pi 5 we run
-     * with 4 GB so this is comfortable. */
+    /* Incremental subsample cache. l0 dominates the allocation - 128
+     * channels × T_out0 × 64 freq positions × 4 B = up to ~49 MB at the
+     * 30 s mel cap. */
     s->subs.l0 = heap_calloc_array_aligned(
             float, (size_t) SUBS_L0_CHANNELS * SUBS_T_OUT0_CAP * SUBS_W_OUT0);
     s->subs.l1 = heap_calloc_array_aligned(
@@ -290,15 +279,15 @@ static void audio_stream_state_reset(struct audio_stream_state *s) {
     }
     s->n_sub_total = 0;
     s->n_soft      = 0;
-    s->n_drained   = 0; /* forgotten before: pull after reset underflowed avail */
-    /* Phase-3 cache reset: just clear the counters; the conv2d_fp32_from
+    s->n_drained   = 0; /* else a pull after reset underflows avail */
+    /* Subsample cache reset: just clear the counters; the conv2d_fp32_from
      * overwrites the relevant cells before any subsequent reader. */
     s->subs.n_t_out0   = 0;
     s->subs.n_t_out1   = 0;
     s->subs.n_mel_seen = 0;
 }
 
-/* === Phase 1b: chunk-streaming forward (parity with audio_encoder_run). ===
+/* Chunk-streaming forward (parity with audio_encoder_run).
  *
  * Process one block of new sub-tokens through one Conformer layer, threading
  * K/V cache (attention) and depthwise conv state (LConv) through state.
@@ -623,8 +612,8 @@ static void audio_encoder_layer_run_streaming(const struct AudioEncoder *a,
 }
 
 /* Top-level streaming entry: drives chunk processing. Runs incremental
- * subsample on the cached l0/l1 intermediates (Phase 3 - extends the
- * cache with new time positions rather than recomputing from scratch),
+ * subsample on the cached l0/l1 intermediates (extends the cache with
+ * new time positions rather than recomputing from scratch),
  * identifies new sub-tokens, and pushes complete blocks (or the final
  * partial block if is_final) through the 12 streaming layers +
  * output_proj + embed_audio. Returns the number of NEW soft tokens
@@ -639,7 +628,7 @@ size_t audio_encoder_stream_push(struct AudioEncoder       *a,
         return 0;
 
     /* 1. Subsample. One-shot segments default to the full-mel re-run (the
-     *    alloc + memcpy overhead of the Phase-3 cache exceeds the conv2d
+     *    alloc + memcpy overhead of the incremental cache exceeds the conv2d
      *    savings on a single pass). The live worker calls this per 48-frame
      *    kick, where re-running from frame 0 is O(T²) over the clip — it
      *    defaults to the incremental path. GEIST_AUDIO_SUBSAMPLE_INC=0/1
@@ -748,7 +737,7 @@ size_t audio_stream_state_n_soft(const struct audio_stream_state *s) {
     return s ? s->n_soft : 0;
 }
 
-/* === Phase 2: streaming worker thread driver. === */
+/* Streaming worker thread driver. */
 
 /* Run one stream_push iteration. Caller has dropped a->mtx; we re-grab it
  * only to copy out the snapshot info, then drop again for the heavy
