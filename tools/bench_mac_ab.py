@@ -123,6 +123,8 @@ def run_variant(variant: dict, gguf: Path, protocol: dict, threads: int | None) 
         "--emit-jsonl",
     ]
     env = dict(os.environ)
+    # Measurement condition: active wait for every run, also on libgomp, where
+    # it is unbounded; harmless here because each run exits when it is done.
     env.setdefault("OMP_WAIT_POLICY", "active")
     if threads is not None:
         env["OMP_NUM_THREADS"] = str(threads)

@@ -178,6 +178,8 @@ def main() -> None:
     prompt_cap = max(len(c["prompt_ids"]) for c in cases)
     candidate_cap = max(len(c["candidate_ids"]) for c in cases)
     env = dict(os.environ, OMP_NUM_THREADS=str(args.threads))
+    # Measurement condition: active wait for every run, also on libgomp, where
+    # it is unbounded; harmless here because each run exits when it is done.
     env.setdefault("OMP_WAIT_POLICY", "active")
     command = [str(args.binary.resolve()), str(args.model.resolve()), args.backend,
                str(prompt_cap), str(candidate_cap), str(args.decode_n), str(args.warmup), str(args.repeats)]

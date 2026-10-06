@@ -97,6 +97,8 @@ def run_sweep(bin_dir: Path, gguf: str, threads: str | None,
 
     env = dict(os.environ)
     env["GEIST_GGUF_PATH"] = gguf
+    # Measurement condition: active wait for every run, also on libgomp, where
+    # it is unbounded; harmless here because each run exits when it is done.
     env.setdefault("OMP_WAIT_POLICY", "active")
     if threads:
         env["OMP_NUM_THREADS"] = threads

@@ -241,6 +241,8 @@ def find_geist_bench(target: str, mode: str) -> Path | None:
 
 def run_geist(binary: Path, gguf: Path, seq_lens: str | None = None,
               decode_n: int | None = None, repeats: int | None = None) -> list[dict]:
+    # Measurement condition: active wait for every run, also on libgomp, where
+    # it is unbounded; harmless here because each run exits when it is done.
     env = dict(os.environ, OMP_WAIT_POLICY=os.environ.get("OMP_WAIT_POLICY", "active"))
     cmd = [str(binary), "--gguf", str(gguf),
            "--seq-lens", seq_lens or PROTOCOL["seq_lens"],

@@ -15,6 +15,7 @@
 
 #include "hadamard.h"
 #include "heap.h"
+#include "omp_idle.h"
 #include "quant.h"
 
 #include <stdarg.h>
@@ -189,26 +190,28 @@ static int apple_perf_cores(void) {
 }
 #endif
 
-/* One-time OMP pool sizing, before any parallel region exists. The region
- * hooks only cap the active thread count; with a pool of all cores the
- * scheduler may still place that subset on efficiency cores (qwen3.5-4B
- * decode: 114 vs 47 ms/tok), so the pool itself is sized to the P-cores.
- * An explicit OMP_NUM_THREADS wins. */
+/* One-time OpenMP setup at backend create, through the environment only:
+ * libomp reads it at the first OpenMP API call, and a model's blocktime
+ * (prefill_tuning.c) comes later, at model load. An explicit setting in
+ * the environment wins.
+ * - OMP_WAIT_POLICY=active: decode runs ~200 tiny regions per token, and
+ *   a passive worker's wake-up dominates (qwen3.5-4B: 163 vs 46 ms/tok).
+ * - KMP_BLOCKTIME: bounds that spin once the work stops (omp_idle.h).
+ * - OMP_NUM_THREADS: the pool is sized to the P-cores, so the per-phase
+ *   caps never land on efficiency cores (qwen3.5-4B: 114 vs 47 ms/tok). */
 static void cpu_neon_omp_pool_init(void) {
     static _Atomic int done = 0;
     int                exp  = 0;
     if (!atomic_compare_exchange_strong(&done, &exp, 1))
         return;
-    /* Decode fires ~200 tiny parallel regions per token; with a passive
-     * wait policy the wake latency dominates (163 vs 46 ms/tok). The policy
-     * is read at runtime init, which has not happened yet here; overwrite=0
-     * keeps an explicit user policy. */
     setenv("OMP_WAIT_POLICY", "active", 0);
-    if (getenv("OMP_NUM_THREADS") != nullptr)
-        return;
+    geist_omp_idle_default();
     const int pc = apple_perf_cores();
-    if (pc > 0)
-        omp_set_num_threads(pc);
+    if (pc > 0) {
+        char n[16];
+        snprintf(n, sizeof n, "%d", pc);
+        setenv("OMP_NUM_THREADS", n, 0);
+    }
 }
 
 /* Target OMP thread count for `region`, cached on first use. 0 = "leave the

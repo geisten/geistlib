@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L /* setenv */
 /*
  * src/archs/transformer/prefill_tuning.c — per-model prefill knobs.
  *
@@ -8,9 +7,10 @@
 
 #include "prefill_tuning.h"
 
+#include "omp_idle.h"
+
 #include <stdbool.h>
 #include <stdlib.h>
-#include <stdio.h>
 #include <string.h>
 
 constexpr size_t GIB = (size_t) 1 << 30;
@@ -34,13 +34,16 @@ transformer_prefill_resolve(const char *family,
     if (getenv_fn == nullptr) {
         getenv_fn = sys_getenv;
     }
-    struct transformer_prefill_resolved out = {
-            .m_max = base_m_max, .prefill_blocktime_ms = -1, .m_max_from_env = false};
+    struct transformer_prefill_resolved out = {.m_max = base_m_max,
+                                               .prefill_blocktime_ms =
+                                                       geist_omp_idle_spin_ms(getenv_fn),
+                                               .m_max_from_env = false};
     /* qwen35 hybrids from 4 GiB up (Ternary-Bonsai-2-27B, Qwen3.5-27B):
      * 27B weights dequantized once per chunk are the prefill's cost, so
-     * twice the chunk (256 is no better than 128). Everything else keeps
-     * the platform default and the runtime's own spin policy — on a 0.8B,
-     * blocktime 0 costs more decode than it gains prefill. */
+     * twice the chunk (256 is no better than 128), and blocktime 0: the
+     * prefill SGEMM shares the cores idle workers would spin on. Everything
+     * else keeps the idle bound — on a 0.8B, blocktime 0 costs more decode
+     * than it gains prefill. */
     if (family != nullptr && strcmp(family, "qwen35") == 0 && weight_bytes >= 4 * GIB) {
         out.m_max                = base_m_max + 64;
         out.prefill_blocktime_ms = 0;
@@ -52,7 +55,7 @@ transformer_prefill_resolve(const char *family,
         out.m_max_from_env = true;
     }
     v = env_long(getenv_fn, "GEIST_PREFILL_BLOCKTIME_MS", &set);
-    if (set && v >= -1) {
+    if (set && v >= 0 && v <= 1000000) {
         out.prefill_blocktime_ms = (int) v;
     }
     if (cap_m_max > 0 && out.m_max > cap_m_max) {
@@ -62,10 +65,7 @@ transformer_prefill_resolve(const char *family,
 }
 
 void transformer_prefill_apply_blocktime(const struct transformer_prefill_resolved *r) {
-    if (r == nullptr || r->prefill_blocktime_ms < 0) {
-        return;
+    if (r != nullptr) {
+        geist_omp_blocktime_apply(r->prefill_blocktime_ms);
     }
-    char buf[16];
-    snprintf(buf, sizeof buf, "%d", r->prefill_blocktime_ms);
-    setenv("KMP_BLOCKTIME", buf, 0); /* overwrite=0: environment and first model win */
 }

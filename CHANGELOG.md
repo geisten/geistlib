@@ -797,6 +797,22 @@ minor release.
   create; a score needs no reset.
 
 ### Fixed
+- **An idle process on the CPU backend no longer keeps its OpenMP workers
+  spinning** (#651). cpu_neon asks libomp for `OMP_WAIT_POLICY=active`, which
+  made `KMP_BLOCKTIME` infinite. A process holding a model and waiting, such
+  as a chat at its prompt, kept 3-5 cores at 100 % until it exited: SmolLM2
+  360M on an M1 Max idled at ~440 %, now 0 %. The backend now also sets
+  `KMP_BLOCKTIME` to `GEIST_IDLE_SPIN_MS` (200 ms; override with the
+  variable of the same name). That is far above any gap between decode
+  steps. It also sizes the pool through `OMP_NUM_THREADS` instead of
+  `omp_set_num_threads()`, which had initialized libomp at backend create.
+  That initialization had kept the per-model blocktime (`0` for Qwen3.5 from
+  4 GiB, `GEIST_PREFILL_BLOCKTIME_MS`) from ever taking effect in-process;
+  it applies now. An explicit `KMP_BLOCKTIME`, `OMP_WAIT_POLICY` or
+  `OMP_NUM_THREADS` in the environment still wins. Linux builds (libgomp)
+  read these variables only at process start and were not affected unless
+  `OMP_WAIT_POLICY=active` came from the environment. The docs now pair
+  that with `GOMP_SPINCOUNT=200000000`.
 - **A Metal backend destroyed before its first op no longer leaks its device
   and command queue.** `metal_destroy_state` released the device, the queue
   and every library behind `if (st->f32_matmul_sg_pipeline != nullptr)`, a

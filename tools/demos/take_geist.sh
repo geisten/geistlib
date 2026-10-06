@@ -22,6 +22,8 @@ done
 
 # Pre-warm THIS engine's pages: on a 4 GB board the other engine's 1.2 GB
 # mmap has evicted them, and a cold first run halves tok/s.
+# OMP_WAIT_POLICY=active: the recorded decode speed. Unbounded on libgomp, but
+# every run below exits right after its last token.
 OMP_WAIT_POLICY=active "$BIN" "warm-up" 8 >/dev/null 2>&1
 
 asciinema rec --overwrite -c "

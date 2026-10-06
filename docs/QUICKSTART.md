@@ -20,11 +20,10 @@ Requirements: gcc ≥ 14 or Apple clang ≥ 16, and `make`. On macOS,
 models: [MODELS.md](MODELS.md).
 
 `make run` builds [`examples/simple_generate.c`](../examples/simple_generate.c)
-and runs it with `OMP_WAIT_POLICY=active`. For an interactive prompt loop, use
-the evaluation REPL:
+and runs it. For an interactive prompt loop, use the evaluation REPL:
 
 ```bash
-OMP_WAIT_POLICY=active bin/`mk/detect-target.sh`/release/tools/eval_geist \
+bin/`mk/detect-target.sh`/release/tools/eval_geist \
     gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
 ```
 
@@ -157,7 +156,9 @@ Recipe: [DEPLOY.md](DEPLOY.md).
 
 | Setting | Effect |
 | :-- | :-- |
-| `OMP_WAIT_POLICY=active` | keep OpenMP threads spinning between tokens; set it for every run |
+| `OMP_WAIT_POLICY=active` | keep OpenMP threads spinning between tokens. On macOS (libomp) the CPU backend sets it for you and bounds the spin: idle workers sleep `GEIST_IDLE_SPIN_MS` (200) after the last token. On Linux (gcc, libgomp) it only takes effect from the environment at process start, and unbounded: set it together with `GOMP_SPINCOUNT=200000000` (~0.2 s on a Pi 5, less on faster cores), or idle workers spin until the process exits |
+| `GEIST_IDLE_SPIN_MS` | how long idle OpenMP workers spin after the last parallel region (libomp, default 200 ms); an explicit `KMP_BLOCKTIME` wins |
+| `GEIST_PREFILL_BLOCKTIME_MS` | the same, as a per-model value replacing that default (Qwen3.5 from 4 GiB uses 0 for faster prefill) |
 | `GEIST_WEIGHT_MMAP=1` | read weights from the file mapping instead of copying them (the default; matters on low-RAM boards) |
 | `GEIST_PREFILL_THREADS` / `GEIST_DECODE_THREADS` | override the automatic thread split. Prefill scales with all cores; decode is bandwidth-bound and often fastest one core below. On x86 with SMT, decode defaults to one thread per physical core unless `OMP_NUM_THREADS` is set |
 | `GEIST_MMAP_PREFETCH=1` | `MADV_WILLNEED` the weight mapping: steadier first-token latency on 4 KB-page Linux (no-op on the Pi 5's 16 KB pages) |
