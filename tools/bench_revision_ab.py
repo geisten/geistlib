@@ -321,6 +321,8 @@ def main() -> int:
         shutil.copy2(variants[0]["binary"], control)
         variants.append({"label": CONTROL, "binary": control})
 
+    # Measurement condition: active wait for every run, also on libgomp, where
+    # it is unbounded; harmless here because each run exits when it is done.
     run_env = {"OMP_WAIT_POLICY": os.environ.get("OMP_WAIT_POLICY", "active"),
                **{name: value for name, _, value in env_pairs}}
     env = {**os.environ, **run_env}

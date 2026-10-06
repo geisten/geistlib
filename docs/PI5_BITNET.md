@@ -84,9 +84,11 @@ model sees your raw text as a document to continue, not as a question to
 answer. Phrase prompts as text to be continued ("The three largest moons of
 Jupiter are") rather than questions, and you get much better output.
 
-Performance knobs (environment variables): `OMP_WAIT_POLICY=active` keeps the
-OpenMP threads hot between tokens and is worth setting for every run; the rest
-(thread counts, prefetch) are documented in
+Performance knobs (environment variables): `OMP_WAIT_POLICY=active
+GOMP_SPINCOUNT=200000000` keeps the OpenMP threads hot between tokens and lets
+them sleep about 0.2 s after the last one. Without `GOMP_SPINCOUNT`, an idle
+process at its prompt keeps every worker core at 100 %. The rest (thread
+counts, prefetch) are documented in
 [`QUICKSTART.md`](QUICKSTART.md#4-performance-knobs).
 
 ## What to expect: startup and speed

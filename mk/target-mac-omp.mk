@@ -8,10 +8,13 @@
 # is /opt/homebrew/opt/libomp; override via LIBOMP_PREFIX.
 #
 # Build: `make TARGET=mac-omp BACKENDS="cpu_neon cpu_scalar"`
-# Run:   `OMP_WAIT_POLICY=active OMP_NUM_THREADS=6 bin/mac-omp/release/<binary>`
-#        - active wait (workers spin instead of sleep) matters: decode runs
-#          one omp parallel region per matmul, and passive wait pays a
-#          thread-pool wake-up for each. KMP_BLOCKTIME=infinite is equivalent.
+# Run:   `bin/mac-omp/release/<binary>`
+#        - The cpu_neon backend sets OMP_WAIT_POLICY=active (decode runs one
+#          parallel region per matmul, and passive wait pays a thread-pool
+#          wake-up for each) and KMP_BLOCKTIME=200, so idle workers sleep
+#          0.2 s after the last region (src/base/omp_idle.h). An explicit
+#          setting in the environment wins; KMP_BLOCKTIME=infinite keeps an
+#          idle process at 100 % on every worker core.
 #        - 6 threads on M-class (8 P-cores); 8+ contends on DRAM bandwidth.
 
 CC ?= clang

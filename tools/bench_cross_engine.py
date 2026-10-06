@@ -216,6 +216,8 @@ def run_geist(engine: dict, model: Path, workload: dict) -> dict:
     ]
     env = dict(os.environ)
     env.update({
+        # Measurement condition: active wait for every run, also on libgomp, where
+        # it is unbounded; harmless here because each run exits when it is done.
         "OMP_WAIT_POLICY": "active",
         "OMP_NUM_THREADS": str(workload["prefill_threads"]),
         "GEIST_PREFILL_THREADS": str(workload["prefill_threads"]),

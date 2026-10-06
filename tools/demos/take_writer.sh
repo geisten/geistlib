@@ -8,6 +8,8 @@ cd "$(dirname "$0")"
 BIN=${BIN:-./geist-bitnet}
 CAST=${CAST:-take_writer.cast}
 
+# OMP_WAIT_POLICY=active: the recorded decode speed. Unbounded on libgomp, but
+# every run below exits right after its last token.
 OMP_WAIT_POLICY=active "$BIN" "warm-up" 8 >/dev/null 2>&1
 
 DRAFT='Hi Dana, thanks for the quick turnaround on the review. I went through your comments and'

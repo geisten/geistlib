@@ -241,7 +241,7 @@ jobs:
         run: |
           # The runner directly: `make test-int` hard-codes its "_int" filter.
           mk/run-tests.sh bin/${{ matrix.target }}/release/tests qwen35
-          for t in test_prefill_determinism_int test_known_answer_e2e; do
+          for t in test_prefill_determinism_int test_known_answer_e2e test_idle_cpu_int; do
             echo "=== $t ==="
             bin/${{ matrix.target }}/release/tests/$t
           done

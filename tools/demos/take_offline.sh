@@ -10,6 +10,8 @@ BIN=${BIN:-./geist-bitnet}
 CAST=${CAST:-take_offline.cast}
 
 # Pre-warm outside the recording so the take starts instantly.
+# OMP_WAIT_POLICY=active: the recorded decode speed. Unbounded on libgomp, but
+# every run below exits right after its last token.
 OMP_WAIT_POLICY=active "$BIN" "warm-up" 8 >/dev/null 2>&1
 
 # Prompts the model verifiably gets right; see docs/PI5_BITNET.md#model-limits.
