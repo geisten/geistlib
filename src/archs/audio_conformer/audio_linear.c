@@ -2,8 +2,8 @@
  * audio_linear.c — quantized matmul kernels for the audio tower + the
  * load-time binding that picks them (#236).
  *
- * Two independent implementations per kernel: NEON (moved verbatim from
- * encoder_forward.c) and portable scalar. Selection is RUNTIME state from
+ * Two independent implementations per kernel: NEON and portable scalar.
+ * Selection is RUNTIME state from
  * geist_hw_probe_fill — a binary built with SIMD flags still binds scalar
  * on a host whose probe lacks the feature, so the audio path can never
  * SIGILL on a lesser core. GEIST_AUDIO_KERNEL=scalar forces the portable
@@ -286,9 +286,7 @@ static void w8a8_avx512vnni(const int8_t *w_q8,
 /* ------------------------------- binding ------------------------------- */
 
 /* Immutable kernel tables — resolve() returns a pointer into these, so a
- * concurrent first-call can never observe a half-written struct (#251
- * deleted the mutable g_ops/g_bound pair and the rebind test hook; the
- * parity test calls resolve() directly instead). */
+ * concurrent first call can never observe a half-written struct. */
 static const struct audio_linear_ops OPS_SCALAR = {
         .w8a8  = w8a8_scalar,
         .w8a32 = w8a32_scalar,

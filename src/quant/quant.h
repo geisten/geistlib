@@ -23,11 +23,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* FP16 -> FP32. On ARM64 (and Apple Silicon) where __fp16 is hardware-
- * native, this is a single `fcvt` instruction and inlines to zero call
- * overhead — important for the per-super-block scale conversion in the
- * Q4_K / Q6_K / Q3_K decode kernels (profile showed ~5% of decode time
- * was function-call overhead on this path).
+/* FP16 -> FP32. Inline where the hardware converts natively (one `fcvt` on
+ * ARM64): the K-quant decode kernels convert a scale per super-block, and an
+ * out-of-line call there is a measurable share of decode time.
  *
  * Falls back to the bit-exact IEEE-754 decode in src/formats/gguf/common.c
  * when no hardware fp16 is available. */
@@ -40,9 +38,7 @@ static inline float fp16_to_fp32(uint16_t h) {
     return (float) f;
 }
 #elif defined(__F16C__) && defined(__FLT16_MAX__)
-/* x86 with F16C (the x86-64-v3 floor of the Linux build): the same, as one
- * vcvtph2ps. Out of line it cost a call and the bit-by-bit decode per
- * super-block in the Q6_K and Q4_K kernels. */
+/* x86 with F16C (the x86-64-v3 floor of the Linux build): one vcvtph2ps. */
 #define GEIST_FP16_TO_FP32_INLINE 1
 #include <string.h>
 static inline float fp16_to_fp32(uint16_t h) {
@@ -141,8 +137,8 @@ void linear_iq4nl_decode_w4a8_pre(size_t       n_in,
                                   const int8_t x_q8[static n_in],
                                   const void  *w_iq4nl,
                                   float        y[static n_out]);
-/* IQ4_XS int8 mN prefill (#321): 4-token register tile over the LUT
- * decode; per (row, token) bit-identical to the m1 GEMV. */
+/* IQ4_XS int8 prefill: 4-token register tile over the LUT decode; per
+ * (row, token) bit-identical to the m=1 GEMV. */
 void linear_iq4xs_w4a8_prefill_pre(size_t        m,
                                    size_t        n_in,
                                    size_t        n_out,
@@ -268,8 +264,7 @@ static inline size_t i2_s_scale_offset(const size_t n_elems) {
 
 /* Bytes a tensor of `n_elems` elements occupies in its raw (on-disk /
  * as-loaded) form. This is the extent a resolver, a repack, or a dequant
- * kernel is allowed to read from `geist_weight::raw` — nothing computes it
- * privately any more.
+ * kernel is allowed to read from `geist_weight::raw`.
  *
  * Returns true (failure) for a dtype with no fixed raw layout, for an
  * element count that is not a whole number of blocks, or on overflow;
@@ -324,12 +319,11 @@ quant_raw_bytes(const enum geist_dtype dt, const size_t n_elems, size_t *out) {
  * per-row accumulators without heap in the inner loop. */
 constexpr size_t GEIST_QUANT_M_CAP = 128;
 
-/* W2A8 fast path for IQ2_S. Reconstructs 32 int8 weights per sub-block
+/* W2A8 decode for IQ2_S. Reconstructs 32 int8 weights per sub-block
  * from the 1024-entry codebook + sign byte, dots against pre-quantized
  * x_q8 via vdotq_s32. Per-sub-half int scale (2*s+1) folds via
  * vmlaq_n_s32; the (d/8 * scale_x) float multiply happens once per
- * super-block (256 elems). Replaces the FP32 dequant + sgemm slow path
- * (~1.7 GB/s) with int8 NEON dots (~5-7 GB/s target on Pi 5). */
+ * super-block (256 elems). */
 void linear_iq2s_decode_w2a8(size_t      n_in,
                              size_t      n_out,
                              const float x[static n_in],
@@ -342,7 +336,7 @@ void linear_iq2s_decode_w2a8_pre(size_t       n_in,
                                  const void  *w_iq2s,
                                  float        y[static n_out]);
 
-/* W3A8 fast path for IQ3_S. Mirrors IQ2_S design: 32 int8 weights per
+/* W3A8 decode for IQ3_S. Same design as IQ2_S: 32 int8 weights per
  * sub-block built from the 512-entry codebook + sign byte. Per-sub-block
  * int scale (2*s+1) folds via vmlaq_n_s32; d * scale_x float multiply
  * once per super-block. */
@@ -358,15 +352,12 @@ void linear_iq3s_decode_w3a8_pre(size_t       n_in,
                                  const void  *w_iq3s,
                                  float        y[static n_out]);
 
-/* W2A8 prefill (m>1) variant for IQ2_S. Mirrors W4A8 / W6A8 prefill
- * design: read each super-block once per output row, reconstruct the
- * 32 int8 weights per sub-block ONCE via the codebook+sign helper,
- * dot against m activation rows via vdotq_s32, fold sub-block int
- * scale (2*s+1) via vmlaq_n_s32 into per-row int32 accumulators.
- * One float multiply (d/8 * scale_x[i]) per super-block per row.
- *
- * Replaces the FP32 dequant + sgemm fallback for M>1 IQ2_S — Pi 5
- * primary win (no AMX). x is row-major (m, n_in); y row-major (m, n_out). */
+/* W2A8 prefill (m>1) for IQ2_S: read each super-block once per output
+ * row, reconstruct the 32 int8 weights per sub-block once via the
+ * codebook+sign helper, dot against m activation rows via vdotq_s32, fold
+ * sub-block int scale (2*s+1) via vmlaq_n_s32 into per-row int32
+ * accumulators. One float multiply (d/8 * scale_x[i]) per super-block per
+ * row. x is row-major (m, n_in); y row-major (m, n_out). */
 void linear_iq2s_w2a8_prefill(
         size_t m, size_t n_in, size_t n_out, const float *x, const void *w_iq2s, float *y);
 void linear_iq2s_w2a8_prefill_pre(size_t        m,
@@ -377,7 +368,7 @@ void linear_iq2s_w2a8_prefill_pre(size_t        m,
                                   const void   *w_iq2s,
                                   float        *y);
 
-/* W3A8 prefill (m>1) variant for IQ3_S. Same shape as IQ2_S prefill
+/* W3A8 prefill (m>1) for IQ3_S. Same shape as IQ2_S prefill
  * but uses iq3s codebook (512-entry, 4 elements per grid entry) and
  * the IQ3_S sub-block organisation (4 outer × 2 halves). */
 void linear_iq3s_w3a8_prefill(
@@ -394,10 +385,8 @@ void linear_iq3s_w3a8_prefill_pre(size_t        m,
  * gguf_dequant_row_to_fp32) lives in formats/gguf/gguf_dequant.h — it
  * depends on struct gguf_tensor_t and so is kept out of this neutral header. */
 
-/* Fused Q4_K vec-matmul (decode case, M=1) — FP32 reference path.
- *
- * Test/debug reference (kept for kernel A/B comparisons in test_q4k_kernel.c).
- * Production decode dispatch (linear_w) routes Q4_K through linear_q4k_decode_w4a8.
+/* Fused Q4_K GEMV (M=1), FP32 reference for kernel tests; production
+ * decode uses linear_q4k_decode_w4a8.
  *
  * W is in GGUF Q4_K layout: n_out rows of (n_in/256) super-blocks each.
  * n_in must be a multiple of Q4_K_BLOCK_ELEMS (256).
@@ -415,19 +404,13 @@ void linear_q6k_decode_fp32(size_t      n_in,
                             const void *w_q6k,
                             float       y[static n_out]);
 
-/* W4A8 path: quantize input vector to INT8 (symmetric, per-row scale)
- * once, then dot with Q4_K weights using NEON vdotq_s32 for ~4× FMA
- * throughput vs FP32 path. Used in linear_w when m=1 and weight is Q4_K.
- *
- * Workspace requirements (caller-allocated):
- *   x_q8: int8_t[n_in]   — quantized input
- * Returns: scale_x = max|x[i]| / 127 (one float).
+/* Symmetric INT8 quantization of x into caller-owned x_q8[n].
+ * Returns scale_x = max|x[i]| / 127.
  */
 float quantize_x_int8_sym(size_t n, const float x[static n], int8_t x_q8[static n]);
 
-/* Q4_0/Q4_1 W8A8 (#281 perf): int8-dot kernels for the 32-element
- * traditional quants; replaces the dequant trampoline for the qwen35
- * Q4_0 exports. Q4_1's min-offset folds via per-block activation sums. */
+/* Q4_0/Q4_1 int8-dot kernels for the 32-element legacy quants. Q4_1's
+ * min-offset folds via per-block activation sums. */
 void   linear_q4_0_decode_w4a8(size_t      n_in,
                                size_t      n_out,
                                const float x[static n_in],
@@ -510,9 +493,8 @@ void linear_q4k_decode_w4a8_pair(size_t       n_in,
                                  float       *y0,
                                  float       *y1);
 
-/* W4A8 prefill (m>1) variant. Mirror of W3A8 prefill for Q4_K weights —
- * eliminates the slow gguf_dequant_to_fp32 + cblas_sgemm path for prefill
- * on Pi 5 / non-AMX targets. x is row-major (m, n_in); y row-major (m, n_out). */
+/* W4A8 prefill (m>1) for Q4_K, same design as the Q3_K prefill.
+ * x is row-major (m, n_in); y row-major (m, n_out). */
 void linear_q4k_w4a8_prefill(
         size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q4k, float *y);
 void   linear_q4k_w4a8_prefill_pre(size_t         m,
@@ -599,10 +581,9 @@ void   linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(size_t         m,
                                                         const void    *packed,
                                                         float         *y);
 
-/* P2.b: native W5A8 kernels for Q5_K. Same activation-quant shape as
- * Q4_K (reuse quantize_x_for_q4k). The decode (M=1) and prefill (M>1)
- * kernels both use NEON vdotq_s32 on per-row reconstructed 5-bit
- * values; replaces the dequant-and-cblas trampoline path. */
+/* W5A8 kernels for Q5_K. Same activation quantization as Q4_K
+ * (quantize_x_for_q4k). Decode (M=1) and prefill (M>1) both use vdotq_s32
+ * on per-row reconstructed 5-bit values. */
 void linear_q5k_decode_w5a8(size_t      n_in,
                             size_t      n_out,
                             const float x[static n_in],
@@ -642,15 +623,12 @@ void linear_q4k_decode_w4a8_pre(size_t         n_in,
                                 const void    *w_q4k,
                                 float          y[static n_out]);
 
-/* W6A8 fast path for Q6_K. Reconstructs 6-bit quants (4-bit ql + 2-bit qh
+/* W6A8 decode for Q6_K. Reconstructs 6-bit quants (4-bit ql + 2-bit qh
  * → unsigned 6-bit, then minus 32 → int8 in [-32, 31]) one 16-element
  * sub-block at a time and dots against pre-quantized x_q8 via vdotq_s32.
  * Per-sub-block scale s_j (int8) and per-super-block d (fp16) are folded
- * in scalar after the dot.
- *
- * On Pi 5: replaces the FP32-input reference (1.7 GB/s) with int8 NEON
- * dots (~10 GB/s target). x_q8 must be pre-quantized via quantize_x_int8_sym;
- * no per-block sum32 needed (Q6_K has no min-offset like Q4_K). */
+ * in scalar after the dot. x_q8 must be pre-quantized via
+ * quantize_x_int8_sym; no per-block sum32 (Q6_K has no min-offset). */
 void   linear_q6k_decode_w6a8(size_t      n_in,
                               size_t      n_out,
                               const float x[static n_in],
@@ -676,10 +654,9 @@ void   linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
                                      const void  *packed,
                                      float        y[static n_out]);
 
-/* W6A8 prefill (m>1) variant for Q6_K. Mirrors the W3A8 / W4A8 prefill
- * design: read each super-block once per output row, extract 4 reconstructed
- * int8 streams, dot against m activation rows via vdotq_s32. Per-row float
- * accumulator folds in d * scale_x[i] * sub-block-scale at the end of each
+/* W6A8 prefill (m>1) for Q6_K. Same design as the W3A8 / W4A8 prefill: read each super-block once
+ * per output row, extract 4 reconstructed int8 streams, dot against m activation rows via
+ * vdotq_s32. Per-row float accumulator folds in d * scale_x[i] * sub-block-scale at the end of each
  * 16-element chunk. Used by speculative-decode verify (M=K) and any other
  * M>1 path that targets a Q6_K weight (e.g. lm_head with K-wide verify).
  * x is row-major (m, n_in); y row-major (m, n_out). */
@@ -720,7 +697,7 @@ void   linear_q6k_w6a8_prefill_predecoded_ntile4_stream(size_t        m,
                                                         const void   *packed,
                                                         float        *y);
 
-/* W3A8 fast path for Q3_K. Reconstructs 3-bit signed quants (low 2 bits from
+/* W3A8 decode for Q3_K. Reconstructs 3-bit signed quants (low 2 bits from
  * qs + high bit from hmask → q ∈ [-4, 3]) and dots against pre-quantized
  * x_q8 via vdotq_s32. Per-sub-group int8 scale and per-super-block fp16 d
  * folded scalarly after each dot. No min-offset (unlike Q4_K/Q5_K). */
@@ -736,10 +713,9 @@ void linear_q3k_decode_w3a8_pre(size_t       n_in,
                                 const void  *w_q3k,
                                 float        y[static n_out]);
 
-/* W3A8 prefill (m>1) variant. Reads weights once per output row and dots
- * against M activation rows — bandwidth amortization for prefill, replacing
- * the slow gguf_dequant_to_fp32 + cblas_sgemm fallback. x is row-major
- * (m, n_in); y is row-major (m, n_out). */
+/* W3A8 prefill (m>1) for Q3_K. Reads weights once per output row and dots
+ * against M activation rows. x is row-major (m, n_in); y is row-major
+ * (m, n_out). */
 void linear_q3k_w3a8_prefill(
         size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q3k, float *y);
 void linear_q3k_w3a8_prefill_pre(size_t        m,
@@ -754,8 +730,8 @@ void linear_q3k_w3a8_prefill_pre(size_t        m,
  * Public entry points: ptqtp_gemv_2plane_fp16alpha, ptqtp_gemv_3plane_fp32alpha,
  * ptqtp_gemm_2plane_fp32alpha. */
 
-/* W8A8 fast path for Q8_0. Mirrors the W4A8 design but for the simpler
- * Q8_0 block layout (32 elements, 1 fp16 scale + 32 int8 quants, no offset).
+/* W8A8 decode for Q8_0 (32 elements, 1 fp16 scale + 32 int8 quants, no
+ * offset).
  *
  * Math: dequant(q[i]) = d · q[i], so
  *   sum_i x[i] · dequant(q[i]) = d · scale_x · sum_i (x_q8[i] · q[i])
@@ -772,10 +748,8 @@ void linear_q8_0_decode_w8a8(size_t      n_in,
                              const void *w_q8,
                              float       y[static n_out]);
 
-/* P2.d: W8A8 prefill (m>1) for Q8_0. Replaces the dequant-and-cblas
- * trampoline for SmolLM2 / Llama-family Q8_0 prefill on platforms
- * where the native NEON kernel beats the SGEMM (Pi 5). On Mac the
- * resolver may still prefer the trampoline (Apple AMX). */
+/* W8A8 prefill (m>1) for Q8_0. Where SGEMM is faster (Apple AMX) the
+ * resolver may still pick the dequant+SGEMM trampoline. */
 void linear_q8_0_w8a8_prefill(
         size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q8, float *y);
 void linear_q8_0_w8a8_prefill_pre(size_t        m,

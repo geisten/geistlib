@@ -1,19 +1,11 @@
 /*
  * src/archs/audio_conformer/encoder_forward.c — the Conformer forward stages.
- *
- * Layer: ARCHITECTURE (audio_conformer). Split from the former
- * monolithic audio_encoder.c; pure moves, no behavior change.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "encoder_internal.h"
 
 #include "audio_linear.h"
-
-/* Quantized matmuls live in audio_linear.c, bound at load time from the
- * hardware probe (#236) — no compile-time ISA selection here. */
-
-/* ----------------------- Conformer per-stage helpers ----------------------- */
 
 /* Apply struct ClippableLinear: y = clamp(linear(clamp(x, in_min, in_max)), out_min, out_max).
  * x: (n, in_dim), y: (n, out_dim). x is mutated by the input-clamp pass. */
@@ -67,9 +59,6 @@ void ffn_run(const struct FFN *ffn, float *h, size_t n) {
     safe_free((void **) &residual);
 }
 
-/* dot_head_fp32 / axpy_head_fp32 / zero_head_fp32 live in audio_kernels.c
- * with the other elementwise kernels (#236). */
-
 /* Chunked self-attention with relative position bias. Reads (n, 1024) hidden,
  * pos_emb (13, 1024), attn_mask (num_blocks, 12, 24) bool. Writes (n, 1024).
  *
@@ -111,8 +100,7 @@ void attn_run(const struct Attn *attn,
     for (int t = 0; t < (int) n; t++) {
         for (int head_i = 0; head_i < N_HEADS; head_i++) {
             float *qrow = q + ((size_t) t * N_HEADS + head_i) * HEAD_DIM;
-            /* Plain elementwise mul — the compiler vectorizes this at -O3;
-             * the former hand-NEON added nothing (#236). */
+            /* Plain elementwise mul; the compiler vectorizes it at -O3. */
             for (int d = 0; d < HEAD_DIM; d++)
                 qrow[d] *= q_pds[d];
         }
@@ -422,7 +410,7 @@ bool *audio_encoder_compute_attn_mask(const struct AudioEncoder *a, size_t n) {
  * implemented by walking strides without an actual buffer transpose. */
 /* Subsample stage = conv2d + LayerNorm (HWC over C) + ReLU.
  * Default start_h=0 runs the whole h-axis (used by audio_encoder_run).
- * The Phase-3 streaming path passes start_h > 0 to skip already-computed
+ * The incremental streaming path passes start_h > 0 to skip already-computed
  * h positions; conv2d outputs at h < start_h must already be in `out`
  * (cached from a previous call). */
 static void subsample_layer_from(const float *w_conv,
@@ -487,7 +475,7 @@ static void subsample_layer_from(const float *w_conv,
     }
 }
 
-/* Thin wrapper for the existing call sites — full h_out range. */
+/* Full h_out range. */
 static void subsample_layer(const float *w_conv,
                             const float *w_norm,
                             const float *in,
@@ -586,7 +574,7 @@ size_t audio_encoder_subsample_run(const struct AudioEncoder *a,
     return (size_t) T_out1;
 }
 
-/* Phase-3 incremental subsample. Extends the cached `subs->l0` and
+/* Incremental subsample. Extends the cached `subs->l0` and
  * `subs->l1` buffers with new time positions and projects the new l1
  * rows into `out_sub_buf` at the right offset. Returns the new total
  * number of sub-tokens (== T_out1 for the current n_mel_total).
@@ -594,8 +582,8 @@ size_t audio_encoder_subsample_run(const struct AudioEncoder *a,
  * Conv2d outputs are stable for the time positions already computed
  * (kernel taps are at deterministic offsets from oh and the input
  * grows only at the right edge), so the old cached values for h <
- * subs->n_t_out0 stay correct. The Phase-3 `_from` family writes only
- * new h positions. */
+ * subs->n_t_out0 stay correct. The `_from` kernels write only new h
+ * positions. */
 size_t audio_encoder_subsample_run_inc(const struct AudioEncoder *a,
                                        struct subs_cache         *subs,
                                        const float               *mel_in,
@@ -628,17 +616,9 @@ size_t audio_encoder_subsample_run_inc(const struct AudioEncoder *a,
         in_for_conv0 = mel_masked;
     }
 
-    /* l0 is dimensioned (128, SUBS_T_OUT0_CAP, 64). conv2d_fp32_from writes
-     * outputs at oh ∈ [start_h, T_out0_new). The actual storage stride is
-     * SUBS_T_OUT0_CAP, but conv2d expects stride == h_out_new. We resolve
-     * by passing a per-channel sliced view = NOT possible with the
-     * existing kernel signature. Workaround: write to a temporary buffer
-     * sized (128, T_out0_new, 64) for the conv pass, then copy the *new*
-     * h rows into the cache.
-     *
-     * The temporary allocation is bounded by T_out0_new * 128 * 64 * 4 B
-     * = at most ~7 MB for 1 s of new audio. Heap-arena reuse keeps this
-     * cheap compared to a re-run that would compute ALL h positions. */
+    /* l0 is stored (128, SUBS_T_OUT0_CAP, 64), but conv2d_fp32_from expects
+     * stride == h_out. So the conv runs into a temporary (128, T_out0_new,
+     * 64) buffer and only the new h rows are copied into the cache. */
     const int new_h0 = T_out0_new - (int) subs->n_t_out0;
     float    *l0_tmp =
             heap_alloc_array_aligned(float, (size_t) SUBS_L0_CHANNELS * T_out0_new * W_out0);

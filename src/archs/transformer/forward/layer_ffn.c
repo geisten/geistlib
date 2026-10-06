@@ -247,15 +247,14 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
             s  = prims->mul(be, &t_gate_2d, &t_up_2d, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_MUL, t0);
         } else if (ctx->ffn_activation == GEIST_FFN_SWIGLU && P != nullptr && P->fuse_silu_mul) {
-            /* #322 3b: one fused pass instead of silu + mul — same
-             * formula, bit-identical, halves the FFN elementwise
-             * dispatches on batched-submit backends. */
+            /* One fused pass instead of silu + mul (#322): bit-identical,
+             * halves the FFN elementwise dispatches on batched backends. */
             t0 = profile ? transformer_profile_now_ns() : 0;
             s  = fused->silu_mul(be, &t_gate_2d, &t_up_2d, &t_gate_2d);
             transformer_profile_add(&g_ffn_profile, FFN_PROFILE_ACT, t0);
         } else if (ctx->ffn_activation == GEIST_FFN_SWIGLU) {
             t0 = profile ? transformer_profile_now_ns() : 0;
-            /* Bound once (#352). Every in-tree backend implements silu, so
+            /* Bound at plan build (#352). Every in-tree backend implements silu, so
              * the gelu_tanh arm is the documented alternative for an
              * out-of-tree backend that does not — it has never run here. */
             s = ctx->st->model_fusions.prim_silu ? prims->silu(be, &t_gate_2d, &t_gate_2d)
@@ -391,9 +390,8 @@ ffn_post:
      * uninterrupted GPU command sequence for Qwen3.5.
      *
      * The condition is ctx->run_ple, not ctx->apply_ple: a PLE family
-     * called with no per-layer input skips the PLE stage, so routing to
-     * the scratch buffer on apply_ple alone left h_out untouched and the
-     * caller reading whatever it already held. */
+     * called with no per-layer input skips the PLE stage, and routing on
+     * apply_ple would leave h_out unwritten. */
     struct geist_buffer *post_ff_buf    = ctx->run_ple ? sess->scratch_h_post_ff : ctx->h_out_buf;
     struct geist_tensor  t_h_post_ff_2d = view_2d(post_ff_buf, ctx->SEQ, st->d_model);
     t0                                  = profile ? transformer_profile_now_ns() : 0;

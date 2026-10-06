@@ -4,15 +4,8 @@
  * the W*A8 compute kernels (backends/cpu_neon).
  *
  * These `__attribute__((packed))` structs ARE the block-layout contract:
- * each is _Static_assert'd against its byte size from quant.h. They carry no
- * file-format types, so this header sits in the neutral quant/ module rather
- * than inside formats/gguf, where the NEON kernels used to reach it across a
- * layer boundary.
- *
- * Helpers here:
- *   - get_scale_min_k4: 6-bit scale/min unpack shared by Q4_K and Q5_K
- *   - quantize_x_int8_sym: per-vector symmetric INT8 quant, used by all
- *     W*A8 kernels (also declared in quant.h).
+ * each is _Static_assert'd against its byte size. They carry no file-format
+ * types, so formats/ and backends/ can both include this header.
  *
  * Per-format-only helpers (unpack_q3k_scales, q4k_subpair_dots,
  * iq2s/iq3s subblock decoders, q3k NEON inlines, etc.) live inside the
@@ -25,19 +18,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* ---- Block layouts ----------------------------------------------------
- *
- * These structs describe the exact on-disk byte layouts of GGUF quant
- * blocks. They are part of the format contract (every backend that
- * decodes GGUF needs to read these), so they live in this format-
- * internal header — kernels in src/backends/<arch>/kernels/ include
- * it to access the fields without duplicating the definition.
- *
- * `__attribute__((packed))` keeps the struct laid out exactly as the
- * file format dictates (no compiler-inserted padding). _Static_assert
- * on each definition verifies the size against the published constant.
- *
- * Block constants live in quant.h (the neutral quant contract). */
+/* Exact on-disk byte layouts of the GGUF quant blocks. `packed` rules out
+ * compiler padding; block constants live in quant.h. */
 
 struct block_q3_K_t {
     uint8_t  hmask[32];
@@ -144,9 +126,6 @@ static inline void get_scale_min_k4(int j, const uint8_t *q, uint8_t *d_out, uin
         *m_out = (q[j + 4] >> 4) | ((q[j] >> 6) << 4);
     }
 }
-
-/* quantize_x_int8_sym (symmetric INT8 activation quant) is declared in
- * quant.h — the W*A8 kernels here use it via that contract. */
 
 /* dot(x_q8[0..15], q_signed_int8[0..15]) using vdotq_s32 when NEON
  * is available. Shared across Q3_K / Q4_K / Q5_K / Q6_K / Q8_0 W*A8

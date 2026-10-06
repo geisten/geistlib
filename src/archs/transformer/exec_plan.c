@@ -105,7 +105,7 @@ static bool dn_state_host_mappable(struct geist_backend *be) {
            mapped;
 }
 
-/* #470: the DeltaNet mixer runs either on the backend (fused->deltanet_mix)
+/* The DeltaNet mixer runs either on the backend (fused->deltanet_mix)
  * or in the host oracle, which maps the session's recurrent state. Where
  * the backend's kernel does not cover this model's head geometry and the
  * state lives in device-only memory (Vulkan VRAM), neither can run, so
@@ -247,7 +247,7 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
 
         /* The post-attention norm+residual is the same op at a different
          * site: d_model rows, none of the FFN weights. Probed separately
-         * rather than reusing fuse_rmsnorm_add above (#352). */
+         * rather than reusing fuse_rmsnorm_add above. */
         q = (struct geist_fusion_query) {
                 .op = GEIST_FUSED_RMSNORM_ADD, .m = m_cap, .d_model = st->d_model};
         P->fuse_attn_rmsnorm_add = probe(be, q);
@@ -295,7 +295,7 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
     {
         struct geist_backend     *be = st->backend;
         struct geist_fusion_query q  = {.op = GEIST_FUSED_EMBEDDING_LOOKUP_SCALED, .m = 1};
-        /* #529: a table read one row per token is resident whole once a
+        /* A table read one row per token is resident whole once a
          * device binds it; gathered on the host it stays demand-paged.
          * token_embd only when untied — tied, the lm_head binds it anyway. */
         const bool host_lookup                = be->desc->caps.lookup_tables_on_host;
@@ -310,7 +310,7 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
                 .op = GEIST_FUSED_ARGMAX_F32, .m = 1, .d_model = st->vocab_size};
         st->model_fusions.argmax = probe(be, q);
 
-        /* Optional primitives: a plain null test, bound once (#352). There
+        /* Optional primitives: a plain null test, bound once. There
          * is no `supported` probe for prims — the pointer IS the
          * capability. */
         const struct geist_backend_primitives *prims = be->desc->prims;
@@ -321,10 +321,8 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         /* relu_squared has no bound alternative: it cannot be composed from
          * the other prims (there is no relu, and no max), and the two call
          * sites in layer_ffn.c invoke it UNCONDITIONALLY. Metal declares it
-         * nullptr. A model whose FFN activation selects it, on a backend
-         * that lacks it, was therefore a null function-pointer call in the
-         * per-layer path — refuse it here instead, where the message can
-         * name the cause. */
+         * nullptr. Refuse such a model here, where the message can name the
+         * cause, instead of calling a null pointer per layer. */
         if (geist_ffn_needs_relu_squared(st->config.ffn_activation) &&
             prims->relu_squared == nullptr) {
             geist_error_set_create_time(

@@ -9,15 +9,8 @@
  *   16 layers, hidden=768, heads=12, head_dim=64, intermediate=3072,
  *   GELU-tanh activation, RMSNorm (eps=1e-6), 2D RoPE theta=100,
  *   patch_size=16, pooling_kernel_size=3, use_clipped_linears=true,
- *   position_embedding_size=10240 (learned, interpolated to grid).
- *   Projector: 768 → LM_hidden (2048 for Gemma 4 E2B), 280 soft tokens.
- *
- * Phase status:
- *   P1 ⇐ THIS — skeleton: open/close, stub forward returning 0
- *   P2        — preprocessing parity (bicubic, patchify, pos-embed interp)
- *   P3        — per-block tower parity
- *   P4        — pool + projector parity (end-to-end soft tokens)
- *   P6        — batched video path
+ *   position_embedding_size=10240 (learned, indexed by patch x/y).
+ *   Projector: 768 → LM hidden (1536 E2B, 2560 E4B), 280 soft tokens.
  */
 #ifndef VISION_ENCODER_H
 #define VISION_ENCODER_H
@@ -49,16 +42,14 @@ size_t vision_encoder_soft_dim(const struct VisionEncoder *);
 
 /* Full image-tower forward: RGB uint8 → patchify → ViT → pool → projector.
  *   rgb:     (height, width, 3) row-major uint8
- *   out:     soft tokens, (n_out, VISION_SOFT_TOKEN_DIM) fp32
- * Returns n_out (≤ VISION_SOFT_TOKENS_PER_IMAGE), or 0 on error.
- *
- * P3: returns 0 (only the tower forward is implemented; the pooler and
- * projector land in P4). For per-block parity testing, call
- * vision_encoder_run_tower() directly. */
+ *   out:     soft tokens, (n_out, vision_encoder_soft_dim()) fp32
+ * Returns n_out (≤ VISION_SOFT_TOKENS_PER_IMAGE), or 0 on error. */
 size_t vision_encoder_run_image(
         const struct VisionEncoder *, size_t height, size_t width, const uint8_t *rgb, float *out);
 
-/* Batched video-tower forward. */
+/* Video forward: each frame is encoded independently into
+ * at most VISION_SOFT_TOKENS_PER_VIDEO_FRAME soft tokens, concatenated in
+ * out. Returns the total, or 0 on error. */
 size_t vision_encoder_run_video(const struct VisionEncoder *,
                                 size_t         n_frames,
                                 size_t         height,
@@ -66,7 +57,7 @@ size_t vision_encoder_run_video(const struct VisionEncoder *,
                                 const uint8_t *frames,
                                 float         *out);
 
-/* P3 entry point: full tower forward on pre-processed patches.
+/* Tower forward (no pool/projector) on pre-processed patches.
  *   patches_in:   (n_patches, 16*16*3 = 768) fp32 — output of
  *                 image_pipeline_preprocess (values in [0, 1]).
  *   positions:    (n_patches, 2) int32 (x, y) — output of
@@ -80,8 +71,8 @@ size_t vision_encoder_run_video(const struct VisionEncoder *,
  * also writes per-layer intermediate buffers to that dir as
  *   patch_embed_out.bin
  *   layer00.bin ... layer15.bin
- * (raw fp32 row-major, same layout as the HF parity dump). Used by the
- * P3 unit test to bisect parity failures. */
+ * (raw fp32 row-major, same layout as the HF parity dump), for bisecting
+ * parity failures. */
 bool vision_encoder_run_tower(const struct VisionEncoder *,
                               size_t         n_patches,
                               const float   *patches_in,

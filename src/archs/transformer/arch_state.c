@@ -96,10 +96,6 @@ static void release_layer_weight_aux(struct transformer_layer_weights *L) {
     release_weight_aux(&L->dn_out_w);
 }
 
-/* PLE scaling constants moved to forward.c (P1.3.a) — used only by the
- * per-layer-input precompute path which now lives there. */
-
-/* 4 sliding + 1 full, 7 cycles — same as lm.c::LAYER_IS_FULL. */
 /* ---- Runtime infrastructure: KV caches, RoPE tables, scratch ---------- */
 
 /* Allocate a single scratch buffer of `bytes` and clear it. */
@@ -118,7 +114,7 @@ alloc_scratch(struct geist_backend *be, size_t bytes, struct geist_buffer **out)
     return GEIST_OK;
 }
 
-/* #488: a slot of the device-local pool — a buffer_create_view slice, no
+/* A slot of the device-local pool (#488) — a buffer_create_view slice, no
  * host pointer. The pool was zeroed when it was created. */
 [[nodiscard]] static enum geist_status alloc_device_slice(struct transformer_arch_session *sess,
                                                           size_t                           bytes,
@@ -142,18 +138,10 @@ alloc_scratch(struct geist_backend *be, size_t bytes, struct geist_buffer **out)
             be, sess->scratch_dev_pool_buf, aligned, bytes, GEIST_BUFFER_SCRATCH, out_buf);
 }
 
-/* P1.2.c: bump-allocate from the per-state scratch pool and wrap the
- * slice in an aliased buffer. Pool is allocated once at create-time
- * with capacity = sum of all scratch slot sizes; the helper aligns
- * each slot to 64 B (NEON-friendly), zeros the slice (matches the
- * pre-P1.2.c alloc_scratch behavior), and constructs a
- * GEIST_MEMORY_ALIASED geist_buffer wrapping the pool offset.
- *
- * Buffer ownership: the buffer header (struct geist_buffer) is owned
- * by the backend allocator and destroyed normally via
- * buffer_destroy; the underlying bytes belong to the pool and are
- * released exactly once when transformer_state_destroy frees
- * scratch_pool_base.
+/* Bump-allocate a 64-byte-aligned, zeroed slice from the session's scratch
+ * pool and wrap it in an aliased buffer. The buffer header is destroyed via
+ * buffer_destroy; the bytes belong to the pool, released once in
+ * transformer_session_free.
  *
  * `host_mapped`: the host maps this slot (h_a, h_b, logits), so it stays in
  * the host-visible pool even when the session has a device-local one (#488);
@@ -212,10 +200,10 @@ zero_unmapped(struct geist_backend *be, size_t bytes, struct geist_buffer *buf) 
     return s;
 }
 
-/* #488: the device-local part of the scratch pool. The backend may still
+/* The device-local part of the scratch pool (#488). The backend may still
  * hand back mappable memory (Vulkan without GEIST_VK_SCRATCH_DEVICE=1, or no
  * device-local type left): the buffer is then released and the session keeps
- * one host-visible pool, as before — scratch_dev_pool_buf stays nullptr. */
+ * one host-visible pool — scratch_dev_pool_buf stays nullptr. */
 [[nodiscard]] static enum geist_status alloc_device_pool(struct transformer_arch_session *sess,
                                                          size_t                           bytes) {
     struct geist_backend            *be  = sess->model->backend;
@@ -300,14 +288,9 @@ zero_unmapped(struct geist_backend *be, size_t bytes, struct geist_buffer *buf) 
     return be->desc->vtbl->buffer_upload(*out, n_floats * sizeof(float), (const uint8_t *) src);
 }
 
-/* P1.2.f: model-owned runtime alloc — RoPE cos/sin tables. Per-layer
- * fields (head_dim, n_rotated_dims, rope_theta) come from the family
- * populator — Gemma 4 uses two sets (sliding 256-dim theta=1e4 full-
- * rotation, full 512-dim theta=1e6 25%-rotation); Llama / BitNet share
- * one set across all layers. We pick the largest-stride layer of each
- * (is_full=true / false) so a single table covers every layer that
- * indexes into it. */
-/* A representative sliding-attn and full-attn layer for the RoPE tables.
+/* A representative sliding-attn and full-attn layer for the RoPE tables
+ * (the first of each kind; Gemma 4 has two parameter sets, Llama / BitNet
+ * one).
  * Families without sliding (BitNet / Llama / Mistral) fall back to layer 0's
  * params for the sliding table too — the table won't be indexed at runtime
  * since is_full is always true. */
@@ -326,8 +309,8 @@ static void rope_layers(const struct transformer_arch_state *st, int *sliding_id
         *sliding_idx = *full_idx;
 }
 
-/* Floats per position of the sliding and the full RoPE table rows (#625:
- * allocate_runtime_rope sizes the tables by them, the plan reports them). */
+/* Floats per position of the sliding and the full RoPE table rows:
+ * allocate_runtime_rope sizes the tables by them, the plan reports them. */
 static void
 rope_row_widths(const struct transformer_arch_state *st, size_t *sl_width, size_t *fl_width) {
     int sl = 0, fl = 0;
@@ -346,7 +329,7 @@ rope_row_widths(const struct transformer_arch_state *st, size_t *sl_width, size_
     /* Called exactly once, from state_create — the tables are frozen for
      * the model's lifetime so concurrent sessions can read them without
      * coordination (session_alloc rejects larger max_seq_len requests).
-     * The destroy loop below is a create-time no-op kept for safety. */
+     * The destroy loop is a defensive no-op. */
     struct geist_buffer **old[] = {
             &st->rope_cos_sliding,
             &st->rope_sin_sliding,
@@ -431,7 +414,7 @@ rope_row_widths(const struct transformer_arch_state *st, size_t *sl_width, size_
 }
 
 /* The per-position share of the caches allocate_runtime_session creates
- * below (#622), branch for branch: keep the two in step. Fixed parts (the
+ * below, branch for branch: keep the two in step. Fixed parts (the
  * KIVI residual ring, block alignment, scratch, DeltaNet state) do not grow
  * with the length and are left out; the KIVI per-channel K scales and zeros,
  * one row per KIVI_K_GROUP_SIZE positions, are counted per position,
@@ -487,10 +470,8 @@ enum geist_status transformer_kv_bytes_per_token(size_t                         
     return transformer_kv_bytes_for(out_bytes, sess->model, &kl);
 }
 
-/* P1.2.f: session-owned runtime allocs — KV caches + scratch pool +
- * per-forward arena + ones-row scratch. Operates on the session currently
- * installed at st->sess; caller must install the target session before
- * calling and restore the previous one afterwards. */
+/* Session-owned runtime allocations: KV caches, scratch pool, per-forward
+ * arena, ones row, DeltaNet state and MTP cache. */
 [[nodiscard]] static enum geist_status
 allocate_runtime_session(struct transformer_arch_session *sess) {
 
@@ -498,14 +479,14 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
     struct geist_backend          *be = st->backend;
     enum geist_status              s;
 
-    /* ---- KV caches: per-layer for 0..14, NULL for 15..34 (those alias
-     * the source layer's cache at runtime). Three branches, exactly one
-     * fires per layer based on the kv_*_enabled flags. */
+    /* ---- KV caches for every layer that owns one (KV-shared layers alias
+     * their source's). Exactly one branch fires per layer, by the
+     * kv_*_enabled flags. */
     for (size_t li = 0; li < (size_t) st->n_layers; li++) {
         if (st->layers[li].is_kv_shared || st->layers[li].mixer == GEIST_MIXER_DELTANET) {
             continue; /* all KV pointer slots stay nullptr — shared layers
                        * alias an owner; DeltaNet layers carry recurrent
-                       * state instead (dn_conv_state / dn_S, #281) */
+                       * state instead (dn_conv_state / dn_S) */
         }
         const size_t hd       = st->layers[li].head_dim;
         const size_t n_elems  = sess->max_seq_len * st->n_kv_heads * hd;
@@ -595,9 +576,8 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
                 return s;
             }
         } else {
-            /* Dense KV caches carry the KV_CACHE role: after the append/
-             * attention ops went on-device (P3), GPU backends keep them in
-             * VRAM — the arch only touches them through buffer_copy and
+            /* Dense KV caches carry the KV_CACHE role: GPU backends keep them
+             * in VRAM — the arch only touches them through buffer_copy and
              * prims->attention, never through buffer_map. The memset skip in
              * alloc_scratch is safe: causal attention reads only rows that
              * a prior append wrote. */
@@ -652,14 +632,9 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
     }
     sess->kv_len = 0;
 
-    /* ---- Scratch buffers — sized for m_max tokens to support batched
-     * prefill. Decode (seq=1) only touches the first row of each buffer,
-     * extra capacity is just resident memory cost (~30 MB at m_max=64).
-     * max head_dim = 512, max intermediate = 12288, max q_out = 4096.
-     *
-     * P1.2.c (refactor v2): all 21 scratch buffers backed by a single
-     * heap_alloc_aligned'd pool. One allocation per state instead of
-     * 22 separate ones; each buffer is a GEIST_MEMORY_ALIASED slice. */
+    /* ---- Scratch buffers, sized for m_max tokens (batched prefill; decode
+     * touches only the first row). All are slices of one pool
+     * (scratch_plan.c). */
     struct transformer_scratch_plan scratch_plan;
     transformer_scratch_plan_build(st, sess->m_max, &scratch_plan);
     const size_t head_dim_max = TRANSFORMER_HEAD_DIM_MAX;
@@ -682,7 +657,7 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
                                       GEIST_MEMORY_MAPPED,
                                       &sess->scratch_pool_buf);
     if (s != GEIST_OK) {
-        return s; /* the backend said why (a GPU budget, #531) */
+        return s; /* the backend set the error (e.g. a GPU budget, #531) */
     }
     sess->scratch_pool_base = be->desc->vtbl->buffer_map(sess->scratch_pool_buf);
     if (sess->scratch_pool_base == nullptr) {
@@ -761,13 +736,8 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
     if (s != GEIST_OK) {
         return s;
     }
-    /* P1.5.d: PLE-only scratch buffers — sized to 0 for non-PLE
-     * families (sz_hidden_per / sz_ple_out depend on hidden_per_layer
-     * + ple_out which are 0 when has_ple is false). The backend
-     * rejects 0-byte aliased buffers, so skip these allocs entirely
-     * when the family doesn't need PLE. The forward path's PLE-skip
-     * guards (P1.5.b) leave these pointers null and the PLE block
-     * never executes. */
+    /* PLE-only scratch: sized 0 without PLE, and the backend rejects 0-byte
+     * aliased buffers, so these stay null; the PLE block never runs then. */
     if (st->config.has_ple) {
         s = alloc_pool_buffer(sess, scratch_plan.hidden_per, false, &sess->scratch_gate_ple);
         if (s != GEIST_OK) {
@@ -812,23 +782,8 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
         return s;
     }
 
-    /* All-ones buffer of length head_dim_max — used as the weight for the V
-     * rmsnorm step (lm.c passes NULL meaning all-ones; the vtable rmsnorm
-     * needs a real weight tensor). We slice this down to the layer's actual
-     * head_dim per call by setting the tensor view's shape[0].
-     *
-     * Pool-resident, not its own allocation: Vulkan's fused attn_qkv_prep
-     * binds q/k/v and the norm weights as offsets into ONE buffer and bails
-     * out with UNSUPPORTED when any of them lives elsewhere — which the
-     * plan-time probe does not catch, so prefill failed outright on GPU. */
-    /* P1.2.b (refactor v2): per-forward scratch arena. Sized for the
-     * current set of arena consumers (attention scores buffer); will
-     * grow as P1.2.c migrates more scratch sites into the arena.
-     *
-     *   scores  : max_seq_len floats = 16 KB on default config
-     *   slack   : a few KB for alignment + future small allocs
-     *
-     * Round to 64 KB. This caps the KIVI scores path at max_seq_len 16384;
+    /* Per-forward scratch arena: the attention scores (max_seq_len floats)
+     * plus slack, 64 KB. This caps the KIVI scores path at max_seq_len 16384;
      * frame_arena_alloc fails cleanly for longer windows; size this from
      * max_seq_len if KIVI needs them.
      *
@@ -856,6 +811,11 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
     }
     frame_arena_init(&sess->scratch_arena, sess->scratch_arena_base, sess->scratch_arena_bytes);
 
+    /* All-ones row of head_dim_max floats: the weight of the V rmsnorm
+     * (the vtable rmsnorm needs a real weight tensor), viewed down to the
+     * layer's head_dim per call. Pool-resident: Vulkan's fused attn_qkv_prep
+     * needs q/k/v and the norm weights in ONE buffer and returns UNSUPPORTED
+     * otherwise, which the plan-time probe does not catch. */
     s = alloc_pool_buffer(sess, scratch_plan.ones, false, &sess->scratch_ones_headdim_max);
     if (s != GEIST_OK) {
         return s;
@@ -883,7 +843,7 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
         }
     }
 
-    /* ---- Gated-DeltaNet recurrent state (#281/#296): backend buffers per DELTANET
+    /* ---- Gated-DeltaNet recurrent state: backend buffers per DELTANET
      * layer — conv history (kernel-1 x conv_dim) + delta state S
      * (n_v_heads x head_k x head_v). Zero-initialized = empty sequence. */
     {
@@ -1105,11 +1065,7 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
 /* Source of transformer_arch_state.snapshot_id. */
 static _Atomic uint64_t next_snapshot_id;
 
-/* Shared body: takes ownership of an already-open `gguf` (closes it on error,
- * and on success either keeps it open for zero-copy weight aliasing or closes
- * it after copying, depending on mmap_alias_mode). The path/from-memory entry
- * points below just open the gguf and delegate here. */
-/* The model's geometry from its GGUF metadata alone (#625): the family's
+/* The model's geometry from its GGUF metadata alone: the family's
  * config populator and the checks on it. No weight is read, nothing is
  * allocated on the backend; on failure the error is set on be and the
  * caller cleans up. Shared by state_create and transformer_plan. */
@@ -1132,7 +1088,7 @@ geometry_from_metadata(struct geist_backend             *be,
             .ffn_activation = GEIST_FFN_SWIGLU,
     };
 
-    /* P1.5: dispatch to the per-family populator selected by
+    /* Dispatch to the per-family populator selected by
      * `general.architecture`. Unknown / missing arch fails closed —
      * the engine gate (model.c) rejects such GGUFs before we get here,
      * so this branch only fires for callers bypassing the engine. */
@@ -1175,15 +1131,13 @@ geometry_from_metadata(struct geist_backend             *be,
     return GEIST_OK;
 }
 
-/* The per-layer geometry (#625): the layer arrays (host memory) and the
+/* The per-layer geometry: the layer arrays (host memory) and the
  * family's layer populator, with the head_dim bound. On failure the arrays
  * stay in st for the caller to free. */
 [[nodiscard]] static enum geist_status geometry_layers(struct geist_backend            *be,
                                                        struct transformer_arch_state   *st,
                                                        const struct transformer_family *fam) {
-    /* P1.4.c: heap-allocate the per-layer weight array sized to the
-     * model's actual layer count. (Was a compile-time `[NUM_LAYERS]`
-     * field; freed in state_destroy below.) */
+    /* Per-layer weight array, freed in state_destroy. */
     st->layers = heap_alloc_aligned(st->n_layers * sizeof(*st->layers),
                                     alignof(struct transformer_layer_weights));
     if (st->layers == nullptr) {
@@ -1209,13 +1163,10 @@ geometry_from_metadata(struct geist_backend             *be,
         memset(st->mtp_layers, 0, st->n_mtp_layers * sizeof(*st->mtp_layers));
     }
 
-    /* P1.5.c: fill per-layer geometry. The family populator decides
-     * the attention pattern (Gemma: sliding/full mix + KV sharing from
-     * GGUF metadata; Llama: uniform full-attn, no sharing).
-     * weight_load.c::load_one_layer reads these pre-filled fields
-     * instead of deriving them. Fails when the metadata doesn't pin
-     * the geometry — a named error beats a downstream wiring one
-     * (#258). */
+    /* Per-layer geometry from the family populator (Gemma: sliding/full mix
+     * + KV sharing from metadata; Llama: uniform full attention);
+     * load_one_layer reads these fields. Fails when the metadata doesn't pin
+     * the geometry — a named error beats a downstream wiring one (#258). */
     if (!fam->populate_layers(st)) {
         geist_backend_set_error(be,
                                 GEIST_E_UNSUPPORTED,
@@ -1229,9 +1180,8 @@ geometry_from_metadata(struct geist_backend             *be,
         return GEIST_E_UNSUPPORTED;
     }
     /* head_dim is metadata: a layer asking for more than the forward pass
-     * holds (TRANSFORMER_HEAD_DIM_MAX) is refused here — it used to load
-     * and then overflow the per-head stack arrays of the attention kernels
-     * on the first prefill. */
+     * holds (TRANSFORMER_HEAD_DIM_MAX) is refused here, before it can
+     * overflow the attention kernels' per-head stack arrays. */
     for (size_t i = 0; i < st->n_layers + st->n_mtp_layers; i++) {
         const size_t hd = i < st->n_layers ? st->layers[i].head_dim
                                            : st->mtp_layers[i - st->n_layers].block.head_dim;
@@ -1250,6 +1200,9 @@ geometry_from_metadata(struct geist_backend             *be,
     return GEIST_OK;
 }
 
+/* Shared body: takes ownership of an already-open `gguf` (closes it on
+ * error; on success keeps it open for zero-copy weight aliasing or closes
+ * it after copying, by mmap_alias_mode). */
 enum geist_status transformer_state_create_from_gguf(struct geist_backend            *be,
                                                      struct gguf_ctx                 *gguf,
                                                      const struct geist_session_opts *opts,
@@ -1278,27 +1231,16 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     /* Structural dims start at ZERO — every family populator fills them
      * from its GGUF metadata (or its own compiled-in defaults). A field
      * left at 0 fails loudly in populate_layers / weight wiring instead
-     * of silently inheriting another family's geometry (the pre-#281
-     * design defaulted everything to Gemma-4 E2B and made each other
-     * family strip it — a new config flag then had to be negated in
-     * every foreign populator or it leaked). */
+     * of silently inheriting another family's geometry. */
     st->max_seq_len = (opts != nullptr && opts->max_seq_len > 0) ? opts->max_seq_len : 4096;
 #if defined(GEIST_TARGET_PI5)
-    st->m_max = 64; /* Pi 5: m=32 was chosen pre-packing to keep the
-                     * activation tile L1-resident (else it re-fetched from
-                     * L2 per output row). Activation packing (q4_K.c §10.7)
-                     * now makes that access sequential/prefetchable (L1-miss
-                     * ~0.95% even at larger m), so the L1-fit constraint is
-                     * gone and the bigger batch wins by amortizing the
-                     * per-block-row weight setup (recon + scales) over more
-                     * tokens. Measured 2026-06-07 (seq256, 4t): m=32 27.8 →
-                     * m=64 29.3 (+5.4%); m=128 regresses to 27.0 (working
-                     * set too large). GEIST_M_MAX overrides. */
+    st->m_max = 64; /* Pi 5: with activation packing (q4_K.c §10.7) a
+                     * larger batch amortizes the per-block-row weight
+                     * setup; m=128 regresses (working set too large).
+                     * GEIST_M_MAX overrides. */
 #else
-    st->m_max = 64; /* Mac/Accelerate prefers larger batches: the
-                     * predecoded SGEMM path scales up to m=128 (m=32
-                     * regresses Accelerate). 64 keeps scratch under ~30 MB
-                     * while feeding Accelerate a decent batch. */
+    st->m_max = 64; /* 64 keeps scratch under ~30 MB while feeding the
+                     * SGEMM path a decent batch. */
     if (be->desc != nullptr && be->desc->caps.preferred_m_max > 0) {
         st->m_max = be->desc->caps.preferred_m_max; /* backend-measured sweet spot */
     }
@@ -1314,11 +1256,9 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
 
     /* DeltaNet hybrids prefer SMALL prefill chunks: the chunked
      * delta-rule carries O(C^2) work per chunk (A/attn matrices +
-     * substitution), so total prefill cost grows with the chunk size.
-     * Measured on the metal backend, 4B pp512: m_max 64 -> 626 tok/s,
-     * 128 -> 430, 256 -> 335 (llama.cpp's delta-net chunk is 64 too);
-     * attention-only models keep the backend's larger preferred value
-     * (gemma4-e2b: 972 at 256 vs 753 at 64). GEIST_M_MAX, read below,
+     * substitution), so total prefill cost grows with the chunk size (on
+     * Metal, 4B pp512, 64 beats 128 and 256 clearly); attention-only models
+     * keep the backend's larger preferred value. GEIST_M_MAX, read below,
      * still wins.
      * Backends whose deltanet_mix sub-chunks internally (caps.dn_subchunk)
      * skip the cap: their DN cost is chunk-size-invariant, and the
@@ -1354,7 +1294,7 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     }
 
     /* Storage mode (mmap-alias default vs β-mode override). mmap-alias
-     * (the P0.3 behavior) keeps weight bytes aliased to the GGUF mmap and
+     * keeps weight bytes aliased to the GGUF mmap and
      * demand-pages disk reads. This is the default because copying the
      * whole file resident blows RSS on memory-constrained targets: e.g.
      * Gemma 4 E2B Q4_K_M is 3.41 GB on disk but only ~1.49 GB is streamed
@@ -1365,7 +1305,7 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
      * table on a device: Metal pages in a bound buffer whole, so there the
      * host gathers lookup-only tables (caps.lookup_tables_on_host, #529).
      *
-     * GEIST_WEIGHT_MMAP=0 forces legacy β-mode (single backend arena, full
+     * GEIST_WEIGHT_MMAP=0 forces β-mode (single backend arena, full
      * copy, mmap dropped post-load — full backend ownership, no retained
      * fd). Any other value (or unset) keeps the mmap-alias default. */
     /* GPU backends default to the backend-arena mode: norm weights and
@@ -1380,9 +1320,8 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     }
 
     if (!mmap_alias_mode) {
-        /* P1.1.g: compute total weight arena capacity from GGUF metadata,
-         * then ONE heap_alloc_aligned. All weight tensors will bump-
-         * allocate from here. */
+        /* Total weight arena capacity from GGUF metadata, then ONE
+         * allocation; all weight tensors bump-allocate from it. */
         size_t            cap = 0;
         enum geist_status cs  = compute_weight_arena_capacity(be, gguf, &cap);
         if (cs != GEIST_OK) {
@@ -1446,8 +1385,7 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     /* The default session (KV + scratch pool + arena + sampler) is built
      * lazily by transformer_default_session — see arch_state.h. Keep the
      * opts it will need: transformer_session_alloc reads kv_mode + m_max from
-     * them; AUTO falls back to env / platform default for full backward
-     * compat. */
+     * them; AUTO falls back to env / platform default. */
     if (opts != nullptr) {
         st->default_opts     = *opts;
         st->has_default_opts = true;
@@ -1459,9 +1397,8 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         return s;
     }
 
-    /* Eager spec-head build (was lazy at first decode). Doing it here keeps
-     * the model immutable during steady-state, so concurrent sessions never
-     * race a first-use build. */
+    /* Spec-head build at load: the model stays immutable afterwards, so
+     * concurrent sessions never race a first-use build. */
     transformer_spec_head_init(st);
 
     /* AWQ (optional): fold attn_norm/ffn_norm gammas and stash per-layer
@@ -1602,17 +1539,15 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     safe_free((void **) &st->gains);
     st->n_gains = 0;
 
-    /* P1.2.f: tear down the default session first — releases its KV
-     * buffers + scratch pool + per-forward arena + sampler workspace +
-     * the session struct itself. Engine-owned sessions must have been
-     * destroyed via geist_session_destroy by now. */
+    /* Tear down the default session first. Engine-owned sessions must have
+     * been destroyed via geist_session_destroy by now. */
     if (st->default_sess != nullptr) {
         transformer_session_free(st, st->default_sess);
         st->default_sess = nullptr;
     }
 
     if (be != nullptr) {
-        /* The layer array may be missing: its allocation failed (#625). */
+        /* The layer array may be missing: its allocation failed. */
         for (size_t l = 0; st->layers != nullptr && l < (size_t) st->n_layers; l++) {
             struct transformer_layer_weights *L = &st->layers[l];
             release_layer_weight_aux(L);
@@ -1670,10 +1605,8 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     if (st->gguf != nullptr) {
         gguf_close((struct gguf_ctx *) st->gguf);
     }
-    /* P1.1.g: release the weight arena ONCE. All per-weight buffers
-     * were GEIST_MEMORY_ALIASED wrappers around slices of this arena
-     * — their buffer_destroy already ran above and skipped the free,
-     * so the underlying bytes are reachable here exactly. */
+    /* Release the weight arena once. The per-weight buffers were aliased
+     * slices of it; their buffer_destroy above did not free the bytes. */
     if (st->weight_arena_buf != nullptr) {
         st->backend->desc->vtbl->buffer_destroy(st->backend, st->weight_arena_buf);
         st->weight_arena_buf      = nullptr;
@@ -1689,7 +1622,6 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     st->rope_il_rows_capacity = 0;
     st->rope_il_rows_used     = 0;
     transformer_exec_plan_destroy(st);
-    /* P1.4.c: release the heap-allocated per-layer weight array. */
     if (st->layers != nullptr) {
         void *p_layers = st->layers;
         safe_free(&p_layers);
@@ -1704,7 +1636,7 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     safe_free(&p);
 }
 
-/* ---- Multi-session API (P1.2.f) --------------------------------------- */
+/* ---- Multi-session API ------------------------------------------------- */
 
 [[nodiscard]] static enum geist_kv_mode resolve_kv_mode(const struct geist_backend      *be,
                                                         const struct geist_session_opts *opts) {
@@ -1735,8 +1667,8 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
 }
 
 /* The KV cache layout a session gets: kv_mode, the GEIST_KV_* env and the
- * backend decide it (#622, #625: shared by session_alloc and the plan, so
- * the two cannot disagree). */
+ * backend decide it. Shared by session_alloc and the plan, so the two
+ * cannot disagree. */
 struct transformer_kv_layout
 transformer_kv_layout_resolve(const struct transformer_arch_state *state,
                               const struct geist_session_opts     *opts) {
@@ -1811,7 +1743,7 @@ static bool backend_scratch_unmappable(struct geist_backend *be) {
            !mapped;
 }
 
-/* #488: whether this session puts its scratch pool, all but h_a, h_b and
+/* Whether this session puts its scratch pool (#488), all but h_a, h_b and
  * logits, in device-local memory. Only where no host path maps one of
  * those slots: every op the forward runs on them must be the backend's, and
  * a host fallback the analysis missed must fail (buffer_map returns
@@ -1915,10 +1847,8 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     }
     sess->max_seq_len = req_seq;
 
-    /* P1.4.c: heap-allocate the 15 per-layer KV slot arrays. One
-     * combined allocation, partitioned across the 15 pointer-array
-     * slots; freed in one safe_free at session_free. Sized to the
-     * model's actual layer count, not a compile-time cap. */
+    /* The 15 per-layer KV slot arrays: one allocation of 15 * n_layers
+     * pointers, partitioned; freed in one safe_free at session_free. */
     const size_t          n_layers = state->n_layers;
     const size_t          kv_slots = 15;
     const size_t          kv_bytes = kv_slots * n_layers * sizeof(struct geist_buffer *);
@@ -1958,7 +1888,7 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     sess->kv_sim_qbits                    = kl.sim_qbits;
     sess->kv_rot_enabled                  = kl.rot;
     sess->kv_f16_enabled                  = kl.f16;
-    /* Issue #70: the rotation silently no-ops on a head_dim the FWHT can't
+    /* The rotation silently no-ops on a head_dim the FWHT can't
      * handle (non-power-of-two, or > 512) — packing/quant still run, so you
      * get the unrotated (worse) cache with no signal. Warn once so a
      * misconfiguration reads as deliberate, not a silent quality loss. The
@@ -2053,7 +1983,7 @@ void transformer_session_free(struct transformer_arch_state   *state,
     safe_free(&tail);
     sess->kivi_pin_tail = nullptr;
 
-    /* Gated-DeltaNet state + qwen35 gate scratch (#281). */
+    /* Gated-DeltaNet state + qwen35 gate scratch. */
     void *dn_ws = sess->dn_prefill_ws;
     safe_free(&dn_ws);
     sess->dn_prefill_ws        = nullptr;
@@ -2202,7 +2132,7 @@ void transformer_session_free(struct transformer_arch_state   *state,
         sess->scratch_arena_bytes = 0;
         sess->scratch_arena       = (struct frame_arena) {0};
     }
-    /* Scratch pool backing store — a backend buffer since P3. */
+    /* Scratch pool backing store. */
     if (sess->scratch_dev_pool_buf != nullptr) {
         be->desc->vtbl->buffer_destroy(be, sess->scratch_dev_pool_buf);
         sess->scratch_dev_pool_buf   = nullptr;
@@ -2223,11 +2153,8 @@ void transformer_session_free(struct transformer_arch_state   *state,
     geist_sampler_workspace_destroy(&sess->sampler_ws);
     transformer_spec_session_scratch_free(sess);
 
-    /* P1.4.c: release the combined 15-slot KV pointer block. The
-     * underlying geist_buffer headers were destroyed above; this just
-     * reclaims the pointer-array slab. k_cache happens to be the base
-     * pointer (slots 0..n_layers-1 of the block); the other 14 are
-     * slices that point further into the same allocation. */
+    /* The combined 15-slot KV pointer block; k_cache is its base, the
+     * other 14 point into it. */
     if (sess->k_cache != nullptr) {
         void *p_kv = sess->k_cache;
         safe_free(&p_kv);
@@ -2258,7 +2185,7 @@ struct transformer_arch_session *transformer_default_session(struct transformer_
     }
     if (state->default_sess == nullptr) {
         /* the spec-head sketch exists by now, so session_alloc also builds the
-         * session's spec scratch (unlike at state_create time, when it ran first) */
+         * session's spec scratch */
         state->default_sess = transformer_session_alloc(
                 state, state->has_default_opts ? &state->default_opts : nullptr);
     }

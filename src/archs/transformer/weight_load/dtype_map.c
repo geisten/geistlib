@@ -51,9 +51,3 @@ struct dtype_map_entry map_gguf_dtype(gguf_dtype_t gd) {
         return (struct dtype_map_entry) {0, 0, false};
     }
 }
-
-/* ---- Buffer/tensor loading primitives ---------------------------------- */
-
-/* Build a 2D tensor view [shape0, shape1] (row-major, contiguous) for a
- * tensor whose bytes have just been uploaded into `buf`. For BLOCK_QUANTIZED
- * layouts stride is unused; for DENSE layouts we set it. */

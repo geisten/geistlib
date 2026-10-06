@@ -1,7 +1,7 @@
 /*
  * vision_encoder — Gemma 4 vision tower (SigLIP-derived ViT).
  *
- * P3: weight loading + per-block forward.
+ * Weight loading + tower forward, pool and projector.
  *
  * Reference (transformers/models/gemma4/modeling_gemma4.py):
  *   Gemma4VisionPatchEmbedder, Gemma4VisionEncoder,
@@ -25,10 +25,7 @@
  *   scaled softmax → o_proj.
  *
  * Weights are bf16 in safetensors; loaded once at create-time and held
- * as fp32 fields. Clipped-linear input/output_min/max scalars are
- * captured but unused for now — they're +/- inf in shipped checkpoints
- * (no actual clipping) and adding clamp ops would only slow inference
- * without changing values.
+ * as fp32 fields.
  */
 #include "vision_encoder.h"
 

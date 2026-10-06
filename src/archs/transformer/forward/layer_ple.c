@@ -118,9 +118,8 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
             return s;
         }
         t0 = prof ? transformer_profile_now_ns() : 0;
-        /* Bound once (#352). The old form fell through to the two-op host
-         * path when the fused op FAILED as well as when it was absent —
-         * re-running gelu over a buffer it may already have written. */
+        /* Bound at plan build (#352): a failing fused op is an error, never
+         * a host fallback that re-runs gelu over output it may have written. */
         if (ctx->P != nullptr && ctx->P->fuse_ple_gelu_mul) {
             s = fused->gelu_tanh_mul(be, &t_gate_ple_2d, &t_ple_in_2d, &t_gate_ple_2d);
             transformer_profile_add(&g_ple_profile, PLE_GELU, t0);
@@ -184,18 +183,15 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
 
 enum geist_status transformer_layer_scale_output(struct transformer_layer_forward_ctx *ctx) {
     /* Only Gemma 4 (PLE) carries a layer scale; every other model loads 1,
-     * and a pass over the hidden state that multiplies by 1 changes no bit
-     * on the CPU backends. It cost a serial 11 ms of a 1.1 s 64-token
-     * prefill of the synthetic Ternary-Bonsai-2-27B on cpu_x86, and the GPU
-     * backends a dispatch per layer. */
+     * and multiplying by 1 changes no bit, so skip the pass (a serial host
+     * loop on CPU, a dispatch per layer on GPU). */
     if (ctx->L->layer_scalar == 1.0f) {
         return GEIST_OK;
     }
-    /* Bound once (#352): batched GPU backends keep the per-layer scale
-     * on-device instead of flushing their pipeline for a host loop; the CPU
-     * backends have no scale_f32 and take the host loop. This used to fall
-     * through to the host loop when the device op FAILED as well as when it
-     * was absent — which scales twice if the op failed after writing. */
+    /* Bound at plan build (#352): batched GPU backends keep the per-layer
+     * scale on-device instead of flushing for a host loop; the CPU backends
+     * have no scale_f32 and take the host loop. A failing device op is an
+     * error, not a fallback, which could scale twice. */
     if (ctx->st->model_fusions.prim_scale_f32) {
         struct geist_tensor t_h = view_2d(ctx->h_out_buf, ctx->SEQ, ctx->st->d_model);
         return ctx->prims->scale_f32(ctx->be, &t_h, ctx->L->layer_scalar, &t_h);

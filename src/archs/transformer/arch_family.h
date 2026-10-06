@@ -15,16 +15,10 @@
  * belt-and-suspenders for callers that bypass the engine.
  *
  * Families differ in:
- *   - which meta keys carry the geometry (`gemma4.*` vs `llama.*` vs
- *     `mistral.*`)
- *   - the Gemma-specific bits (PLE precompute, logit softcap, KV-
- *     shared layer pattern) — these flip via the config flags
- *     `has_ple`, `logit_softcap > 0`, and (forthcoming) the per-
- *     layer mask. Forward.c reads those flags to skip family-
- *     specific stages.
- *
- * P1.5: registry + dispatch + softcap guard land. Llama / Mistral
- * populators are TODO — see ARCHITECTURE.md P1.5.b/.c.
+ *   - which meta keys carry the geometry (`gemma4.*` vs `llama.*` ...)
+ *   - the feature flags in geist_arch_config (PLE, logit softcap, KV
+ *     sharing, SubLN, DeltaNet, ...); the forward pass reads those flags
+ *     to skip family-specific stages.
  */
 #ifndef GEIST_INTERNAL_ARCH_TRANSFORMER_FAMILY_H
 #define GEIST_INTERNAL_ARCH_TRANSFORMER_FAMILY_H
@@ -38,27 +32,26 @@
 
 struct transformer_family {
     /* Lowercase identifier matching the `general.architecture` GGUF
-     * value (e.g. "gemma4", "llama", "mistral"). */
+     * value (e.g. "gemma4", "llama"). */
     const char *name;
 
     /* Populator: read the family-specific metadata keys and write
      * the runtime fields on `st` (n_layers, d_model, n_q_heads, ...)
      * + the family-specific bits of `st->config` (rms_eps,
-     * logit_softcap, has_ple, kv_*_src, ...). Called AFTER state has
-     * Gemma-4 defaults already installed, so the populator only needs
-     * to override what differs. */
+     * logit_softcap, has_ple, kv_*_src, ...). Called on a NEUTRAL config
+     * (every feature off), so the populator declares only what the family
+     * has. */
     void (*populate)(struct gguf_ctx *gguf, struct transformer_arch_state *st);
 
-    /* Per-layer geometry filler (P1.5.c). Called AFTER state_create
+    /* Per-layer geometry filler. Called AFTER state_create
      * has heap-allocated st->layers to the right count. Fills the
      * geometry fields of every layer slot — `is_full`,
      * `is_kv_shared`, `head_dim`, `q_out`, `kv_out`, `intermediate`,
      * `sliding_window`, `rope_theta`, `n_rotated_dims`, `layer_idx`.
      *
-     * weight_load.c::load_one_layer reads these pre-filled fields
-     * instead of deriving them; that way the layer pattern (Gemma's
-     * sliding/full mix + KV sharing vs Llama's uniform full-attn)
-     * becomes a family concern, not the loader's.
+     * load_one_layer reads these pre-filled fields, so the layer pattern
+     * (Gemma's sliding/full mix + KV sharing vs Llama's uniform full-attn)
+     * is a family concern, not the loader's.
      *
      * Returns false when the geometry is NOT derivable (metadata keys
      * missing for a non-default layer count, inconsistent pattern

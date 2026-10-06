@@ -2,8 +2,8 @@
  * src/formats/gguf/q5_K.c — Q5_K block dequantization.
  *
  * Pure file-format decoder. The W5A8 NEON kernels live in
- * src/backends/cpu_neon/kernels/q5_K.c. struct block_q5_K_t lives in
- * internal.h so both can share it.
+ * src/backends/cpu_neon/kernels/q5_K.c; both share struct block_q5_K_t
+ * from quant_blocks.h.
  */
 #include "quant_blocks.h"
 #include "quant.h"

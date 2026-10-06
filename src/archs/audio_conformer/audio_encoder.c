@@ -1,10 +1,7 @@
 /*
  * src/archs/audio_conformer/audio_encoder.c — encoder orchestration
- * (create/destroy) and the profiling accumulators.
- *
- * Layer: ARCHITECTURE (audio_conformer). The heavy lifting lives in
- * encoder_weights.c / encoder_stream.c / encoder_forward.c since the
- * module split; this file wires them together.
+ * (create/destroy) and the profiling accumulators. The work lives in
+ * encoder_weights.c / encoder_stream.c / encoder_forward.c.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -182,17 +179,16 @@ struct AudioEncoder *audio_encoder_create(const char *safetensors_path) {
     a->pcm_buf = heap_alloc_array_aligned(int16_t, a->pcm_cap);
     a->mel_cap = MEL_BUF_CAP;
     a->mel_buf = heap_calloc_array_aligned(float, a->mel_cap *MEL_N_MEL);
-    /* Phase 8b chunk-streaming state (per-layer K/V caches + LConv history).
-     * Allocated eagerly so push_pcm doesn't pay heap-arena cost on the
-     * audio path. Unused until the streaming forward (Phase 1b) lands. */
+    /* Chunk-streaming state (per-layer K/V caches + LConv history).
+     * Allocated eagerly so push_pcm doesn't pay allocation cost on the
+     * audio path. */
     a->stream = audio_stream_state_create(a->soft_dim);
     if (a->stream == nullptr) {
         audio_encoder_destroy(a);
         return nullptr;
     }
-    /* Phase 2: opt-in streaming worker thread. Default off so existing
-     * sync pull-after-end_input behaviour stays bit-identical until the
-     * worker path is validated on Pi 5. */
+    /* Opt-in streaming worker thread; default is the sync
+     * pull-after-end_input path. Sessions start it lazily in stream_begin. */
     const char *env_stream = getenv("GEIST_AUDIO_STREAM");
     if (env_stream != nullptr && env_stream[0] == '1') {
         if (!stream_worker_start(a)) {
