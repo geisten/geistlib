@@ -6,8 +6,7 @@ Implements Algorithm 1 from arxiv 2509.16989 (PTQTP: Post-Training Quantization
 to Trit-Planes). No source code released by authors as of 2025-12, this is a
 clean-room implementation from the paper's Sections 3-4.
 
-Goal: verify cos sim ≥ 0.95 on a single tensor (vs Q4_K reference) BEFORE
-investing in full multi-tensor pipeline + C kernel.
+Checks cos sim ≥ 0.95 on a single tensor against the Q4_K reference.
 
 Usage:
     python3 ptqtp_single_tensor.py \\

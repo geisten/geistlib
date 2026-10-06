@@ -7,8 +7,6 @@
  *   - Top-k temperature sample → at least one decode within 8 must
  *     differ from greedy (proves sampling is engaged and reads opts).
  *   - Same seed twice → identical token sequence (RNG is deterministic).
- *
- * Phase D-1 verification.
  */
 #include "test_helpers.h"
 

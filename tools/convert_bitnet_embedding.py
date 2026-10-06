@@ -14,9 +14,9 @@ The I2_S layout is NOT the naive "four consecutive values per byte" the upstream
 guide's prose suggests. It is strided, and the packing below mirrors, byte for
 byte, geistlib's own reference implementations:
 
-  - pack:   tests/test_i2_s_parity_unit.c:30 (pack_i2_s)
-  - unpack: src/backends/cpu_scalar/weight_resolve.c:109
-  - extent: src/quant/quant.h:162 (I2_S_BLOCK_ELEMS/BYTES, i2_s_scale_offset)
+  - pack:   tests/test_i2_s_parity_unit.c (pack_i2_s)
+  - unpack: src/backends/common/linear_ref.c (GEIST_DTYPE_I2_S)
+  - extent: src/quant/quant.h (I2_S_BLOCK_ELEMS/BYTES, i2_s_scale_offset)
 
 Element b*256 + h*128 + g*32 + bb lives in byte b*64 + h*32 + bb at shift
 6-2g, trits are stored as trit+1 (so -1,0,+1 -> 0,1,2), and ONE f32 scale for
@@ -52,9 +52,9 @@ VT_U32, VT_F32, VT_BOOL, VT_STRING, VT_ARRAY = 4, 6, 7, 8, 9
 GGML_F32, GGML_F16, GGML_I2_S = 0, 1, 36
 
 GGUF_VERSION = 3
-GGUF_ALIGNMENT = 32  # the spec default geistlib assumes (gguf_reader.c:367)
+GGUF_ALIGNMENT = 32  # the spec default geistlib assumes (gguf_reader.c)
 
-# I2_S blocking, from src/quant/quant.h:162.
+# I2_S blocking, from src/quant/quant.h.
 I2S_BLOCK_ELEMS = 256
 I2S_BLOCK_BYTES = 64
 
@@ -260,7 +260,7 @@ def pooling_of(model_dir: Path) -> str:
     `{arch}.pooling_type`. The bitnet-embedding cards say "last-token
     pooling" in prose while their published GGUFs say mean, and only mean
     reproduces the embedding those same cards print -- so the checkpoint
-    wins over the prose, and hardcoding either is how this got it wrong.
+    wins over the prose.
     """
     cfg = model_dir / "1_Pooling" / "config.json"
     if cfg.is_file():
@@ -346,12 +346,10 @@ def plan_tensor(
     """Decide a tensor's output dtype and how to produce its bytes.
 
     2-D projection weights go to I2_S in ternary mode and the embedding
-    table stays F16. Every 1-D norm is written F32 because geistlib's
-    loader requires it: load_norm_1d in
-    src/archs/transformer/weight_load/layer_wiring.c:65 rejects anything
-    else outright, as do the output_norm and per_layer_proj_norm paths at
-    :848 and :866. Upstream's tensor-type table lists these as F16; a file
-    that follows it loads nowhere in this engine.
+    table stays F16. Every 1-D norm is written F32, the dtype geistlib's
+    norm loader keeps as-is (src/archs/transformer/weight_load/); its
+    per_layer_proj_norm path rejects anything else. Upstream's tensor-type
+    table lists these as F16.
     """
     shape = st.shape
     dims = tuple(reversed(shape))  # GGUF stores fastest-varying first

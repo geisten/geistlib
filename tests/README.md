@@ -7,7 +7,7 @@ contract is purely the **exit code** plus optional stdout output.
 ## Running Tests
 
 ```sh
-make test          # all unit + integration tests (excludes _e2e)
+make test          # unit + integration + python tests (excludes _e2e)
 make test-unit     # only fast kernel-level tests (suffix _unit)
 make test-int      # only multi-module integration tests (suffix _int)
 make test-e2e      # only end-to-end tests (suffix _e2e — slow, may need GGUF)
@@ -45,9 +45,9 @@ stdout is informational. The exit code is authoritative.
 
 | Suffix       | Speed | Scope | Example |
 |--------------|-------|-------|---------|
-| `_unit`      | <1s   | one kernel/function | `test_q3k_unit.c` |
-| `_int`       | <30s  | several modules together | `test_attention_int.c` |
-| `_e2e`       | minutes | full LM forward, GGUF-bound | `test_chat_audio_e2e.c` |
+| `_unit`      | <1s   | one kernel/function | `test_x86_q3k_unit.c` |
+| `_int`       | <30s  | several modules together | `test_prefill_q3k_int.c` |
+| `_e2e`       | minutes | full LM forward, GGUF-bound | `test_audio_chat_e2e.c` |
 
 Bench-style timing probes (no pass/fail) live alongside as `bench_*.c` and
 are run via `make bench` rather than the test runner.
@@ -65,7 +65,7 @@ are run via `make bench` rather than the test runner.
 
 Recommended tolerances:
 
-| Pfad                  | rtol  | atol |
+| Path                  | rtol  | atol |
 |-----------------------|-------|------|
 | FP32-FP32 reference   | 1e-5  | 1e-7 |
 | Quantized W3A8/W4A8   | 1e-3  | 1e-2 |

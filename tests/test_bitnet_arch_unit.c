@@ -2,11 +2,10 @@
  * test_bitnet_arch_unit — the FFN-activation selection logic, no model.
  *
  * geist_ffn_activation_select decides which FFN nonlinearity a model runs from
- * its general.architecture + an optional feed_forward_activation override. This
- * is the exact decision that, when it wrongly defaulted BitNet b1.58 2B-4T to
- * SwiGLU instead of gated squared-ReLU, dropped its MMLU to chance (25.5% ->
- * 50%). Pin it here so that regression can't return silently. No assert() —
- * checks set a flag, the exit code carries PASS/FAIL.
+ * its general.architecture + an optional feed_forward_activation override.
+ * Defaulting BitNet b1.58 2B-4T to SwiGLU instead of gated squared-ReLU drops
+ * its MMLU to chance, so the decision is pinned here. No assert() — checks
+ * set a flag, the exit code carries PASS/FAIL.
  */
 #define _POSIX_C_SOURCE 200809L
 #define GEIST_INTERNAL_ARCH_LAYER /* arch_config.h is layer-internal */
@@ -26,7 +25,7 @@ static enum geist_ffn_activation_kind sel(const char *a, size_t al, const char *
 }
 
 int main(void) {
-    /* Arch-keyed default with NO explicit key (act = nullptr) — the BitNet bug. */
+    /* Arch-keyed default with NO explicit key (act = nullptr). */
     fails += geist_expect(sel(S("bitnet-b1.58"), nullptr, 0) == GEIST_FFN_GATED_SQUARED_RELU,
                           "bitnet-b1.58 default -> gated squared-ReLU (the 2B-4T fix)");
     fails += geist_expect(sel(S("bitnet"), nullptr, 0) == GEIST_FFN_SWIGLU,

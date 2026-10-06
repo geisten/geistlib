@@ -26,11 +26,8 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        # The trigger is the VERSION, not the file it lives in. `git diff
-        # include/geist.h` was a proxy for that, and it fires on any edit to the
-        # header — which then demands an empty [Unreleased] and so forbids the
-        # CHANGELOG note AGENT.md §6 requires for exactly those changes. Compare
-        # the version strings instead; the gate itself is unchanged.
+        # The trigger is the VERSION, not the header: any edit to include/geist.h
+        # needs a CHANGELOG note (AGENT.md §6), so compare the version strings.
         run: |
           base_version=$(git show "$BASE_SHA":include/geist.h \
             | sed -n 's/^#define GEIST_VERSION_STRING "\(.*\)"/\1/p')
@@ -68,10 +65,9 @@ jobs:
       matrix:
         include:
           # -std=c23 needs gcc >= 14 and Apple-clang >= 16 (Xcode 16 / macOS 15).
-          # macOS builds the metal backend alongside the CPU pair (#181):
-          # the hosted macos-15 runners expose a real Metal device (proved
-          # by the metal-probe spike), so the probe and the linear-parity
-          # gate below actually execute on GPU in every PR.
+          # macOS builds the metal backend alongside the CPU pair (#181): the hosted
+          # macos-15 runners expose a real Metal device, so the probe and parity gate
+          # below execute on GPU.
           - name: macOS arm64
             runner: macos-15
             target: mac-omp
@@ -133,11 +129,10 @@ jobs:
       - name: Decision feature on/off (same build directory)
         run: make test-decision TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
-      # Sanitizers on macOS, both arches: the `asan`/`asan-x86_64` legs are
-      # Linux+gcc only, so clang-specific breakage at -O1 reached main unseen —
-      # an `omp simd` request the sanitizer instrumentation cannot satisfy is a
-      # -Wpass-failed error under -Werror, and it never shows at -O3. Model-free
-      # suite, same backends as the release build above.
+      # Sanitizers on macOS, both arches: the asan legs are Linux+gcc only, and
+      # clang fails differently at -O1 (an `omp simd` the sanitizer instrumentation
+      # cannot satisfy is a -Wpass-failed error under -Werror). Model-free suite,
+      # same backends as the release build above.
       - name: ASan + UBSan unit tests (macOS)
         if: runner.os == 'macOS'
         run: make MODE=asan test-unit TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }} AUTO_FETCH_MODEL=0
@@ -161,26 +156,20 @@ jobs:
           GEIST_TEST_METAL_RESOURCES=1 ./bin/${{ matrix.target }}/asan/tests/test_metal_resources_unit
           GEIST_TEST_METAL_AUTORELEASE=1 ./bin/${{ matrix.target }}/release/tests/test_metal_autorelease_unit
 
-      # Hermetic Python suite (algorithm reference impls). Part of `make test`,
-      # so it must stay green — a suite nothing runs is a suite that rots (#146).
+      # Hermetic Python suite (algorithm reference impls). Part of `make test` (#146).
       - name: Python tests
         if: matrix.target == 'linux'
         run: make test-py
 
-      # The BitNet embedding chain, executed rather than inspected. The unit
-      # tests stop at scratch sizing and the converter test at the GGUF header,
-      # so nothing else here would notice a file the loader cannot read.
-      # Called directly, not via `make test-embedding`, whose 77 is a benign
-      # skip without numpy: this leg installs numpy and Build made the tool,
-      # so a skip is a failure, as in the asan job's leak-detection step.
+      # The BitNet embedding chain, executed end to end. Called directly, not via
+      # `make test-embedding`, whose 77 is a benign skip without numpy: here numpy
+      # is installed and the tool is built, so a skip is a failure.
       - name: Embedding chain end-to-end (synthetic model, a skip is a failure)
         if: matrix.target == 'linux'
         run: python3 tests/scripts/embedding_e2e_smoke.py bin/${{ matrix.target }}/release/tools/dump_geist_embedding
 
       # Contract enforcement, include half: every public header compiles on its
-      # own as C23 and as C++17. A C++ consumer is not exotic (bindings, game
-      # engines, Qt front-ends), and `extern "C"` alone does not make
-      # `T arr[static n]` parse — see GEIST_AT_LEAST in include/geist.h.
+      # own as C23 and as C++17 (see GEIST_AT_LEAST in include/geist.h).
       - name: Public headers compile as C and C++
         run: make check-headers TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
@@ -205,12 +194,9 @@ jobs:
           path: gguf_artifacts
           key: geist-model-gemma4-e2b-q4km-v1
 
-      # A second architecture family: gemma alone never exercises the llama
-      # populator or its tokenizer mode, so test_llama_{load,e2e}_int skipped
-      # on every run. 369 MB, cached under its own key so a change here does
-      # not invalidate the 2.9 GB download above. The key embeds the content
-      # pin (LLAMA_MODEL_SHA256 prefix) — re-pinning the model in the
-      # Makefile rotates the cache; fetch-llama-model verifies the full hash.
+      # A second architecture family: the llama populator and its tokenizer mode.
+      # 369 MB, cached under its own key derived from the content pin
+      # (LLAMA_MODEL_SHA256 prefix), so re-pinning rotates the cache.
       - name: Cache Llama reference model
         if: matrix.target == 'linux'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -243,13 +229,11 @@ jobs:
         if: matrix.target == 'linux'
         run: make fetch-qwen3-model
 
-      # Integration on macOS (#441). Until now the Accelerate/AMX and Metal
-      # product paths ran no real forward per PR outside the perf sweep.
-      # qwen3.5 is the fixture this leg caches, so: its family suite (load,
-      # e2e, and the Metal e2e that skips everywhere else) plus the
-      # model-agnostic determinism and known-answer checks pointed at it.
-      # Not the whole int suite: with GEIST_GGUF_PATH at a qwen model six
-      # gemma-shaped tests fail on the fixture, not the code (#452).
+      # Integration on macOS (#441): the Accelerate/AMX and Metal product paths
+      # on the cached qwen3.5 fixture — its family suite plus the model-agnostic
+      # determinism and known-answer checks. Not the whole int suite: with
+      # GEIST_GGUF_PATH at a qwen model, gemma-shaped tests fail on the fixture,
+      # not the code (#452).
       - name: Integration tests on macOS (qwen3.5 fixture)
         if: runner.os == 'macOS'
         env:
@@ -262,12 +246,10 @@ jobs:
             bin/${{ matrix.target }}/release/tests/$t
           done
 
-      # GEIST_STRICT_FIXTURES=gguf turns "GGUF model not found" from a skip
-      # into a failure. Scoped to THIS step on purpose: it is the only one
-      # where both models are guaranteed present (cached + fetched above).
-      # The unit step runs AUTO_FETCH_MODEL=0 and must keep skipping cleanly.
-      # Without this, a rotated cache key or an HTTP 404 would silently drop
-      # every model-gated test and leave the suite green.
+      # GEIST_STRICT_FIXTURES=gguf turns "GGUF model not found" from a skip into
+      # a failure. Scoped to this step: the only one where both models are
+      # guaranteed present. The unit step runs AUTO_FETCH_MODEL=0 and must keep
+      # skipping cleanly.
       - name: Integration + e2e tests (real models, fixtures mandatory)
         if: matrix.target == 'linux'
         env:
@@ -286,11 +268,9 @@ jobs:
           python3 -m pip install --quiet --break-system-packages gguf
           python3 tests/scripts/validate_gguf_dequant.py gguf_artifacts/*.gguf
 
-      # The README claims "any language FFIs in with no shim" — prove it on
-      # every PR: build the shared object from the freshly built archive and
-      # run the ctypes example (the complete Python integration, ~30 lines)
-      # against the small llama fixture. Python is the one FFI leg CI pays
-      # for; the Rust/Go/JS examples share the same 11 symbols.
+      # Build the shared object from the archive and run the ctypes example
+      # against the small llama fixture: the README's no-shim FFI claim, checked.
+      # The Rust/Go/JS examples share the same symbols.
       - name: FFI example (Python ctypes)
         if: matrix.target == 'linux'
         run: |
@@ -300,15 +280,11 @@ jobs:
           python3 examples/ffi/generate.py ./libgeist.so \
             gguf_artifacts/smollm2-360m-instruct-q8_0.gguf "The capital of France is" | head -c 400
 
-      # Coarse perf-regression gate on the (noisy) shared runner: generous
-      # floors catch a cliff — scalar fallback, -O0, OpenMP off, an early-return
-      # kernel — not subtle drift. The Pi 5 stays the precise arbiter. Floors are
-      # conservative; tighten toward ~60% of the runner's real numbers once the
-      # log shows them. Reuses the model already built + cached above.
-      # The floors catch cliffs; drift is for a reader. perf_gate --record
-      # puts this run's numbers in the step summary next to the last main
-      # run's, restored here from the cache (#442). Saved on main only, so a
-      # PR compares against main and never becomes the reference itself.
+      # Coarse perf-regression gate on the (noisy) shared runner: generous floors
+      # catch a cliff — scalar fallback, -O0, OpenMP off, an early-return kernel —
+      # not drift. The Pi 5 stays the precise arbiter. perf_gate --record puts
+      # this run's numbers in the step summary next to the last main run's (#442);
+      # saved on main only, so a PR never becomes the reference.
       - name: Last main perf numbers
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -316,21 +292,10 @@ jobs:
           key: perf-${{ matrix.name }}-${{ github.run_id }}
           restore-keys: perf-${{ matrix.name }}-
       # The model and floors are matrix fields. Linux gates the Q4_K gemma4
-      # reference; the Apple leg (#327) the qwen3.5 0.8B Q8_0 it already
-      # caches — the gemma4 reference is a 3.1 GB download the mac runner
-      # deliberately does not do.
-      #
-      # On the Apple leg four runs of the same code measured, in order:
-      #   prefill 127.5  108.7  132.3  75.1
-      #   decode   59.2   46.7   58.7  25.5
-      # A 1.8x spread. Floors first set from one sample, then from the lower
-      # of two, and the fourth run failed the gate on code that had nothing
-      # to do with it. That is a flaky gate, which is worse than none.
-      # Its floors are ~40% of the WORST observed run, not a percentage of
-      # the best: this is a cliff detector, and the cliffs it exists for
-      # (scalar fallback, -O0, OpenMP off, an early-returning kernel) are
-      # multiples, not percentages. Raise them only with a sample count that
-      # justifies it.
+      # reference; the Apple leg (#327) the qwen3.5 0.8B Q8_0 it already caches.
+      # Apple runner numbers spread 1.8x across runs of the same code, so its
+      # floors are ~40% of the WORST observed run: the cliffs this gate exists
+      # for are multiples, not percentages. Raise them only with enough samples.
       - name: Perf regression gate (${{ matrix.perf_gguf }})
         if: matrix.perf_gguf
         run: |
@@ -348,27 +313,11 @@ jobs:
       - name: Build example
         run: make -C examples TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
-  # Test what we ship: the release artifact is a musl-static binary (release.yml),
-  # but the matrix above only exercises glibc. musl gates POSIX symbols behind the
-  # same feature macros and differs in some libc behaviour, so build+run on musl
-  # too — catching musl-specific issues before they reach geisten.net. Mirrors the
-  # release build flags (GEMM_PROVIDER=native + -D_GNU_SOURCE) and adds the tests.
-  # Build the way the README tells a newcomer to, in images nobody develops on.
-  #
-  # Two bugs shipped because the build only ever ran on maintainer machines and
-  # in CI jobs that pass flags the docs never mention:
-  #   - mk/detect-target.sh had a bash shebang; images without bash produced an
-  #     empty TARGET and the build died pointing at mk/target-.mk
-  #   - -std=c23 defines __STRICT_ANSI__, under which musl hides strdup. CI was
-  #     green only because release.yml passed EXTRA_CFLAGS=-D_GNU_SOURCE
-  #
-  # The point of this job is what it does NOT pass. No EXTRA_CFLAGS, no
-  # GEMM_PROVIDER, no bash in the image: only the prerequisites the README
-  # states (gcc >= 14 and make) and the command it prints. If the documented
-  # build breaks, this is the job that says so.
-  #
-  # `lib` on purpose: that is the README's first command, and it is also the
-  # goal that needs no BLAS -- linking is the consumer's business.
+  # Build the way the README tells a newcomer to, in images nobody develops
+  # on. The point of this job is what it does NOT pass: no EXTRA_CFLAGS, no
+  # GEMM_PROVIDER, no bash in the image — only the prerequisites the README
+  # states (gcc >= 14 and make) and the command it prints. `lib` on purpose:
+  # it is the README's first command and needs no BLAS.
   readme-build:
     name: documented build (${{ matrix.image }})
     runs-on: ubuntu-24.04
@@ -385,9 +334,8 @@ jobs:
           - image: alpine:3.21
             setup: apk add --no-cache build-base
             build: make lib
-          # Ubuntu 24.04 ships gcc 13, which predates -std=c23. The README says
-          # so and prescribes gcc-14 + CC=gcc-14; this asserts that recipe still
-          # works, so the note cannot go stale either.
+          # Ubuntu 24.04 ships gcc 13, which predates -std=c23. The README prescribes
+          # gcc-14 + CC=gcc-14; this asserts that recipe works.
           - image: ubuntu:24.04
             setup: apt-get update -qq && apt-get install -y -qq gcc-14 make
             build: make CC=gcc-14 lib
@@ -417,14 +365,11 @@ jobs:
             make test-unit $FLAGS AUTO_FETCH_MODEL=0    # run the model-free unit suite
           '
 
-  # Cover the SHIPPED x86_64 path. release.yml builds linux-x86_64 (AVX-512/VNNI
-  # cpu_x86 backend, runtime-dispatched via hw_probe over an x86-64-v3 baseline),
-  # but the matrix above never tests x86_64 at all — an AVX-512 kernel bug would
-  # ship unseen. This job builds + unit + int + e2e with the release backends on
-  # a glibc x86_64 runner. GitHub runners don't guarantee AVX-512, so the CPU
-  # feature check reports whether the AVX-512 kernels were actually exercised;
-  # the runtime dispatch makes the run safe (AVX2/scalar fallback, no SIGILL)
-  # either way, and build-test-x86_64-scalar below guarantees the SIMD-free path.
+  # Cover the shipped x86_64 path (release.yml linux-x86_64: cpu_x86,
+  # runtime-dispatched over an x86-64-v3 baseline) with unit + int + e2e.
+  # Hosted runners don't guarantee AVX-512, so the CPU feature check reports
+  # whether the AVX-512 kernels ran; build-test-x86_64-scalar covers the
+  # SIMD-free path.
   build-test-x86_64:
     name: build + tests (Linux x86_64, cpu_x86 AVX-512 + scalar)
     runs-on: ubuntu-24.04
@@ -498,16 +443,11 @@ jobs:
       # kernel gets installed without a runtime CPU check (SIGILL on v3 CPUs).
       - name: Integration tests, non-AVX512 dispatch (GEIST_FORCE_ISA=avx2)
         run: GEIST_FORCE_ISA=avx2 make test-int TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
-      # Coarse perf cliff detector for cpu_x86, the one CPU backend no gate
-      # measured. The model is the hermetic synthetic Llama 3.2 1B Q4_K
-      # (tools/gen_synth_gguf.py: about 6 s, no download, the same bytes on
-      # every run), written outside gguf_artifacts so the model cache above
-      # never stores it. The floors are ~25% of what a 4-vCPU x86 VM
-      # measures with this build (prefill ~160, decode ~32 tok/s); the cliff
-      # they are for is far below them: the scalar reference backend gives
-      # 3.9 / 1.4. Tighten them once this runner's numbers are in the logs.
-      # perf_gate --record puts this run next to the last main run in the
-      # step summary (#442), as on the arm64 leg.
+      # Coarse perf cliff detector for cpu_x86 on the hermetic synthetic
+      # Llama 3.2 1B Q4_K (tools/gen_synth_gguf.py; written outside gguf_artifacts
+      # so the model cache never stores it). Floors are ~25% of a 4-vCPU x86 VM
+      # (prefill ~160, decode ~32 tok/s); the scalar backend gives 3.9 / 1.4.
+      # perf_gate --record as on the arm64 leg (#442).
       - name: Last main perf numbers (x86, synthetic)
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -547,19 +487,12 @@ jobs:
           make TARGET=linux CC=gcc-14 BACKENDS="cpu_scalar" GEMM_PROVIDER=native
           make test-unit TARGET=linux CC=gcc-14 BACKENDS="cpu_scalar" GEMM_PROVIDER=native AUTO_FETCH_MODEL=0
 
-  # clang on x86_64. Every other x86_64 leg uses gcc, and the macOS clang legs
-  # build a different configuration, so a clang-only x86 failure ships unseen:
-  # at v0.10.8 this exact configuration aborted in instruction selection
-  # ("Cannot select: X86ISD::VPDPBUSD") under clang-19 *and* clang-21, because
-  # clang outlines an OpenMP `parallel for` body into a function that does not
-  # inherit the kernel's target attribute. #415 fixed that by keeping the
-  # intrinsics in a separately attributed function; this leg keeps it fixed.
-  # Build + unit tests suffice — the failure is a compile abort, not a wrong
-  # result. libomp-19-dev is required: clang brings its own OpenMP runtime and
-  # omp.h, and without it the build stops at `#include <omp.h>` instead.
-  # libclang-rt-19-dev likewise: -fsanitize=fuzzer needs the sanitizer runtime,
-  # and libclang-common-19-dev only *recommends* it — which --no-install-
-  # recommends then skips.
+  # clang on x86_64. Every other x86_64 leg uses gcc: clang outlines an
+  # OpenMP `parallel for` body into a function that does not inherit the
+  # kernel's target attribute, which aborted instruction selection before
+  # #415. Build + unit tests suffice — the failure mode is a compile abort.
+  # libomp-19-dev provides omp.h; libclang-rt-19-dev the sanitizer runtime
+  # -fsanitize=fuzzer needs (libclang-common-19-dev only recommends it).
   build-test-x86_64-clang:
     name: build + unit tests (Linux x86_64, clang)
     runs-on: ubuntu-24.04
@@ -575,28 +508,21 @@ jobs:
           make TARGET=linux CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
           make test-unit TARGET=linux CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native AUTO_FETCH_MODEL=0
 
-      # Coverage-guided fuzzing needs clang, so it rides along here (the same
-      # split geist-memory uses). MODE=fuzz rebuilds the library with
-      # -fsanitize=fuzzer-no-link into its own tree, which is why this cannot
-      # reuse the objects above. 30 s per target reaches ~7 M executions;
-      # the corpus is seeded by the harness itself, no fixture, no network.
-      # UBSan halts, as in the deterministic gate: in its default recover
-      # mode a finding is printed and libFuzzer runs on to a green exit.
+      # Coverage-guided fuzzing needs clang, so it rides along here. MODE=fuzz
+      # rebuilds the library with -fsanitize=fuzzer-no-link into its own tree.
+      # The corpus is seeded by the harness itself. UBSan halts, as in the
+      # deterministic gate: in recover mode libFuzzer runs on to a green exit.
       - name: Fuzz harnesses (libFuzzer, 30 s per target)
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: make fuzz-libfuzzer TARGET=linux CC=clang-19 FUZZ_CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native FUZZ_SECONDS=30
 
-  # Audio harness smoke (#234). The Pi 5 audio baseline is produced by
-  # bench_audio_encode and test_audio_latency_e2e; everywhere else in CI those
-  # binaries SKIP for missing fixtures, so the harness could rot unnoticed.
-  # This job RUNS them: the audio tower is Range-extracted from the public
-  # checkpoint and SHA-pinned (tools/fetch_audio_tower.py, ~590 MB instead of
-  # the 9.7 GB file, cached), mel constants are checked in, the clip is
-  # synthesized (tools/gen_test_wav.py — no voice recording in the repo).
-  # arm64 runner on purpose: NEON kernels, the Pi 5 code path. A skip
-  # (exit 77) fails the step — every fixture is guaranteed present. No
-  # timing is asserted; pass condition is "pipeline runs and emits tokens".
+  # Audio harness smoke (#234): runs bench_audio_encode and
+  # test_audio_latency_e2e, which SKIP elsewhere for missing fixtures. The
+  # audio tower is Range-extracted and SHA-pinned (tools/fetch_audio_tower.py,
+  # cached), mel constants are checked in, the clip is synthesized
+  # (tools/gen_test_wav.py). arm64 for the NEON / Pi 5 code path. A skip fails
+  # the step; no timing is asserted.
   audio-smoke:
     name: audio harness smoke (Linux arm64, NEON)
     runs-on: ubuntu-24.04-arm
@@ -661,10 +587,8 @@ jobs:
           GEIST_GGUF_PATH: ${{ github.workspace }}/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
         run: ./bin/linux/release/tests/test_audio_stream_session_int
 
-  # x86_64 counterpart to audio-smoke. The W8A8 parity test ran on NEON only,
-  # so the AVX-512/VNNI audio path had no gate at all, and geistkit's model
-  # profile hit the first failure there the moment it supplied the tower.
-  # Only the tower is needed, not Gemma: the encoder runs without an LLM.
+  # x86_64 counterpart to audio-smoke: the AVX-512/VNNI audio path. Only the
+  # tower is needed: the encoder runs without an LLM.
   audio-parity-x86_64:
     name: audio W8A8 parity (Linux x86_64, AVX-512 VNNI)
     runs-on: ubuntu-24.04
@@ -697,18 +621,14 @@ jobs:
           key: geist-audio-tower-d6c45a6c2762
       - name: Fetch audio tower (Range-extracted, SHA-pinned)
         run: make fetch-audio-tower
-      # The tower is present, so a skip (exit 77) fails the step — a silent
-      # skip is exactly how this platform went unmeasured until now.
+      # The tower is present, so a skip (exit 77) fails the step.
       - name: Attn/LConv W8A8 parity vs shipping precision (a skip is a failure)
         run: ./bin/linux/release/tests/test_audio_attn_w8a8_parity_int
 
-  # TARGET=pi5 is the primary deployment target yet no CI leg built it — the
-  # 0.8.0 _GNU_SOURCE fix landed in target-linux.mk only, and TARGET=pi5
-  # broke unseen until a build on the physical board caught it (#244). The
-  # arm64 runner compiles the exact pi5 flag set (-mcpu=cortex-a76 is a
-  # codegen choice, not a run requirement), so target bit-rot fails here
-  # instead of on the board. Build-only: the Pi 5 itself stays the arbiter
-  # for anything measured.
+  # TARGET=pi5 is the primary deployment target (#244). The arm64 runner
+  # compiles the exact pi5 flag set (-mcpu=cortex-a76 is a codegen choice,
+  # not a run requirement). Build-only: the Pi 5 stays the arbiter for
+  # anything measured.
   pi5-target-build:
     name: build (TARGET=pi5 flag set, Linux arm64)
     runs-on: ubuntu-24.04-arm
@@ -1000,10 +920,9 @@ jobs:
           if-no-files-found: warn
 
   # Build MODE=asan (-fsanitize=address,undefined) and run the model-free unit
-  # suite — catches use-after-free / overflow / UB in the kernels + engine the
-  # unit tests exercise. UBSAN_OPTIONS=halt_on_error makes UB a hard failure
-  # (UBSan only logs by default, which would pass CI); leak detection is off for
-  # now (short-lived test binaries intentionally don't free at exit).
+  # suite. UBSAN_OPTIONS=halt_on_error makes UB a hard failure (UBSan only
+  # logs by default); leak detection is off here (short-lived test binaries
+  # don't free at exit).
   asan:
     name: ASan + UBSan (Linux arm64)
     runs-on: ubuntu-24.04-arm
@@ -1029,27 +948,20 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0
         run: make MODE=asan test-unit TARGET=linux CC="ccache gcc-14" AUTO_FETCH_MODEL=0
 
-      # Leak detection ON here, unlike the unit step above: this leg loads a
-      # model and tears the session down, which is where the leaks are. It
-      # caught scratch_proj_in, allocated for the per-projection norms and
-      # never freed — invisible to every other job because no other model
-      # sets the flag.
-      # Called directly, not via `make test-embedding`, whose 77 is a benign
-      # skip for a contributor without numpy: here numpy is installed and the
-      # unit step's `bin` built the tool, so a skip is a failure. Through make,
-      # a missing numpy left this gate a green no-op for its first month.
+      # Leak detection ON here: this leg loads a model and tears the session
+      # down. Called directly, not via `make test-embedding`, whose 77 is a
+      # benign skip without numpy: here numpy is installed and the tool is
+      # built, so a skip is a failure.
       - name: ASan embedding chain (leak detection on, a skip is a failure)
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           ASAN_OPTIONS: detect_leaks=1
         run: python3 tests/scripts/embedding_e2e_smoke.py bin/linux/asan/tools/dump_geist_embedding
 
-  # The x86_64 leg of the same gate. The arm64 job above never compiles the
-  # cpu_x86 kernels or their tests, so their sanitizer build went unchecked and
-  # three unit tests broke there unseen: a -O1-only build error, a NaN
-  # comparison that -ffast-math folds at -O1, and a leak on the no-cpu_neon exit
-  # path. Same backends and GEMM as build-test-x86_64 (the release binary).
-  # Leak detection is ON: the x86_64 unit suite is leak-clean; keep it that way.
+  # The x86_64 leg of the same gate: the arm64 job never compiles the
+  # cpu_x86 kernels or their tests. Same backends and GEMM as
+  # build-test-x86_64 (the release binary). Leak detection is ON: the x86_64
+  # unit suite is leak-clean.
   asan-x86_64:
     name: ASan + UBSan (Linux x86_64)
     runs-on: ubuntu-24.04
@@ -1086,11 +998,9 @@ jobs:
         run: make MODE=asan fuzz TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
 
   # The concurrent-session contract (#183): distinct sessions of one model may
-  # run from different threads. MODE=tsan proved it on cpu_neon (and caught the
-  # shared-workspace race there); this leg proves it on the x86 backend, whose
-  # workspace uses the same per-thread mechanism. Only the two multi-session
-  # tests run — a full suite under TSan would blow the job budget for no extra
-  # coverage of the cross-session races this job exists to catch.
+  # run from different threads. This leg proves it on the x86 backend. Only
+  # the two multi-session tests run; a full suite under TSan would blow the
+  # job budget for no extra cross-session coverage.
   tsan:
     name: TSan multi-session (Linux x86_64, cpu_x86)
     runs-on: ubuntu-24.04
@@ -1130,8 +1040,7 @@ jobs:
         env:
           TSAN_OPTIONS: halt_on_error=1
         # Only the PARALLEL test: the serial interleave variant runs in the
-        # regular int suites and exercises no concurrency — under TSan it
-        # just burned 17 of the 30 minutes that then killed this leg.
+        # regular int suites and exercises no concurrency.
         run: |
           export GEIST_GGUF_PATH="$PWD/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf"
           bin/linux/tsan/tests/test_multi_session_parallel_int
@@ -1149,18 +1058,14 @@ jobs:
   # test tests/test_coverage_gate_py.py proves the gate actually fires.
   coverage:
     name: coverage ratchet (Linux arm64, unit + int)
-    # Not on pull_request: the instrumented run is 60-100 minutes, twice
-    # the next-slowest job, and its verdict rarely changes a review. It
-    # runs on every push to main (and on dispatch), so a coverage drop is
-    # still caught — one merge later instead of one PR earlier. This
-    # replaced a docs-only classifier job that only ever skipped the .md
-    # PRs; the 60-minute wait on every code PR was the actual cost.
+    # Not on pull_request: the instrumented run takes 60-100 minutes. It runs
+    # on every push to main (and on dispatch), so a coverage drop is caught
+    # one merge later.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04-arm
-    # An instrumented -O1 build prefills the real model many times across
-    # the int suite: 58 minutes measured. e2e re-drives the same engine
-    # paths through the CLI wrappers for another ~half hour and moved the
-    # per-subsystem numbers by noise, so the measurement is unit + int.
+    # The instrumented -O1 build prefills the real model many times across
+    # the int suite. e2e adds ~half an hour and moves the per-subsystem
+    # numbers only by noise, so the measurement is unit + int.
     timeout-minutes: 100
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -1182,10 +1087,9 @@ jobs:
         with:
           path: gguf_artifacts
           key: geist-model-gemma4-e2b-q4km-v1
-      # test-unit runs first under GEIST_STRICT_FIXTURES and has no model
-      # prerequisite, so a cache miss (eviction: the repo sits near the 10 GB
-      # cache limit) failed test_gguf_reader_unit / test_gguf_spm_tokenizer_unit
-      # instead of downloading. No-op on a cache hit.
+      # test-unit runs first under GEIST_STRICT_FIXTURES with no model
+      # prerequisite, so fetch here in case the cache was evicted. No-op on a
+      # cache hit.
       - name: Fetch reference model
         run: make fetch-model
       # The audio engine paths (attach + the #256 streaming turn) only
@@ -1252,9 +1156,6 @@ jobs:
 
   format:
     name: clang-format
-    # ARM64 runner: `make format-check` auto-detects the target, and the linux
-    # target $(error)s on x86_64 (kernels are NEON-only) before clang-format
-    # even runs. aarch64 detects cleanly.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     # Hard gate: the tree is clang-format-clean (clang-format 22.1.x), enforced.

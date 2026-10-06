@@ -2,7 +2,7 @@
  * test_fwht_unit — verifies the orthonormal FWHT used to rotate attention
  * Q/K/V before INT8 KV-cache quantization (issue #61).
  *
- * Three properties that the rotation trick depends on:
+ * Four properties that the rotation trick depends on:
  *   1. Self-inverse:  H(H(x)) == x. One matrix serves forward (Q/K/V) and
  *      backward (attention output) rotation.
  *   2. Dot-product preserving:  (Hx)·(Hy) == x·y. This is why rotating Q and

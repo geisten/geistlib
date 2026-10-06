@@ -2,19 +2,18 @@
  * fuzz_gguf — fuzz the GGUF reader, the one parser that reads a whole file
  * an attacker may have written.
  *
- * gguf_reader.c:153 says it plainly: model metadata is attacker-controlled.
- * The reader walks a header, a metadata table of variable-length strings and
- * arrays, and a tensor table, then hands out pointers into the mapping. Every
- * rule — ckd_mul before an allocation, bounds by
- * subtraction before the pointer moves — is an invariant this harness tries to
- * break with bytes instead of with review.
+ * Model metadata is attacker-controlled. The reader walks a header, a
+ * metadata table of variable-length strings and arrays, and a tensor table,
+ * then hands out pointers into the mapping. Every rule — ckd_mul before an
+ * allocation, bounds by subtraction before the pointer moves — is an
+ * invariant this harness tries to break with bytes instead of with review.
  *
  * gguf_open_memory is the entry point, so no file, no model and no network:
  * the input IS the GGUF. Accessors run after a successful parse, because a
  * reader that accepts a malformed file and then hands out a bad pointer is the
  * bug that matters, and it only shows on use.
  *
- * Two modes, following geist-memory's fuzz_store.c:
+ * Two modes:
  *   libFuzzer  LLVMFuzzerTestOneInput, coverage-guided (clang).
  *   standalone GEIST_FUZZ_STANDALONE, deterministic PRNG mutations of the
  *              seed, so the gate also runs where CI has only gcc.

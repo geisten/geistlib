@@ -304,11 +304,11 @@ def update_benchmark_md(path: Path, row: dict) -> None:
                     cells = [c.strip() for c in line.strip().strip("|").split("|")]
                     # Only OUR rows: the first cell is an ISO date. Hand-written
                     # prose tables may follow the marker and must not be slurped
-                    # into the auto table (the old exact-width check hid this).
+                    # into the auto table.
                     if not cells or not DATE_RE.fullmatch(cells[0]):
                         continue
                     # Rows recorded before Spread/TTFT existed are padded rather
-                    # than dropped — an old row is history, not garbage.
+                    # than dropped.
                     if len(cells) < len(COLUMNS):
                         cells += ["—"] * (len(COLUMNS) - len(cells))
                     if len(cells) == len(COLUMNS):

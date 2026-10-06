@@ -4,8 +4,8 @@
  *
  * The STABLE signature keeps the backend parameter, but a session on a
  * different backend instance than the model's would mix buffer
- * ownership and per-backend workspaces. Since the strict check landed,
- * passing any backend other than the one the model was loaded on
+ * ownership and per-backend workspaces. Passing any backend other than
+ * the one the model was loaded on
  * (pointer identity — two instances of the same backend type are
  * different backends) fails with GEIST_E_INVALID_ARG.
  *

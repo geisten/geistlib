@@ -127,9 +127,8 @@ static int scenario_endtoend_m4(void) {
     float Y_test[M * N];
     q4kx8_gemm_scalar(M, N, K, X_q8kx4, W_q4kx8, Y_test);
 
-    /* Also run the AVX-512 path. The current scaffold re-quantizes acts
-     * per row internally so the result differs from the scalar reference
-     * by an additional int8-quant rounding (~1.5% RMS). */
+    /* Also run the AVX-512 entry; at M = 4 it takes the AVX2 GEMV for every
+     * row. Held to the same tolerance against the fp32 reference. */
     float Y_avx[M * N];
     q4kx8_gemm_avx512(M, N, K, X_q8kx4, W_q4kx8, Y_avx);
 

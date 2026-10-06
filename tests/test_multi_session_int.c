@@ -1,5 +1,5 @@
 /*
- * test_multi_session_int — verifies P1.2.f multi-session-per-model.
+ * test_multi_session_int — several sessions on one model.
  *
  * Loads one model, creates two sessions on it with different prompts,
  * interleaves decode steps, and checks that each session keeps its own

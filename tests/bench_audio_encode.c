@@ -30,8 +30,7 @@ static double now_ms(void) {
     return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec / 1e6;
 }
 
-/* Chunk-walking WAV reader (audio_test_util.h) — the fixed-44-byte
- * shortcut mis-read ffmpeg WAVs with a LIST chunk (#268). */
+/* Chunk-walking WAV reader (audio_test_util.h); handles ffmpeg's LIST chunk. */
 static int16_t *read_wav_pcm(const char *path, size_t *n_samples_out, int *sample_rate_out) {
     return audio_test_read_wav(path, n_samples_out, sample_rate_out);
 }

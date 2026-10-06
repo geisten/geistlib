@@ -607,8 +607,8 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2n8", 512, 6150, 1);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2n8", 512, 6144, 1);
     /* n_out < 4 at m = 1 is the one shape the n4 GEMV refuses. The
-     * gemm_only formats have no naive kernel under it, so before the
-     * GEMM was widened to take it they dispatched a nil pipeline. */
+     * gemm_only formats have no naive kernel under it, so the GEMM must
+     * take it. */
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2tiny", 512, 3, 1);
     /* TQ2_0 (#559): GEMV with an odd row tail, GEMM bounded and full
      * tiles, and n_out < 4, which the GEMM takes at rows == 1. */
@@ -636,8 +636,8 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_F32, "F32", 256, 130, 1);
     run_case(mt, ref, GEIST_DTYPE_F32, "F32", 256, 130, 8);
-    /* The prefill kernels m = 1 and 8 do not reach. Appended here so every
-     * case above keeps the random data it has always had.
+    /* The prefill kernels m = 1 and 8 do not reach. Appended last so the
+     * cases above keep their random data.
      * Q4_K m=33 x n_out=383: n_out off the 64-column tile and an unaligned
      * y row stride keep the simdgroup GEMM out: the m16 kernel, last tile
      * partial.

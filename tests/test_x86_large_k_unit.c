@@ -1,13 +1,13 @@
 /*
  * test_x86_large_k_unit — cpu_x86 Q4_K / Q6_K linears at K > 16384.
  *
- * The decode GEMVs quantized the activation row into a fixed 64-entry stack
- * array of 256-element super-blocks (K = 16384) and returned early for any
- * longer row, leaving y unwritten; the callers have no fallback. ffn_down's K
- * is the FFN width, so every model wider than 16384 (Qwen3-14B 17408,
- * Gemma-3-27B 21504, Llama-3-70B 28672) decoded from stale scratch on x86.
+ * Guards against a decode GEMV that sizes its quantized activation row for
+ * at most 64 super-blocks of 256 (K = 16384) and returns early for a longer
+ * one, leaving y unwritten; the callers have no fallback. ffn_down's K is
+ * the FFN width, so models wider than 16384 (Qwen3-14B 17408, Gemma-3-27B
+ * 21504, Llama-3-70B 28672) depend on it.
  *
- * Every cpu_x86 Q4_K / Q6_K path is driven on both sides of the old limit —
+ * Every cpu_x86 Q4_K / Q6_K path is driven on both sides of K = 16384 —
  * m = 1 decode, m % 4 != 0 (per-row), m < 16 (AVX2 tiles), m % 16 == 0 (the
  * AVX-512 panel where the host has it) — against the cpu_scalar reference.
  * y is poisoned before each call and compared by bit pattern, so an element

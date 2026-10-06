@@ -1,12 +1,10 @@
 /*
  * test_x86_kernel_no_alloc_unit — the allocation-free linear-kernel
- * contract on cpu_x86 (issue #336, batch 3).
+ * contract on cpu_x86 (#336).
  *
- * The x86 M>1 kernels allocated their activation scratch on every call:
- * three raw `malloc`s in the I2S pair (also giving 16-byte alignment to
- * buffers that feed AVX-512 loads), three or four `heap_alloc_aligned`s in
- * the Q4_K / Q6_K / F32 prefill paths — per projection, per layer, per
- * chunk. They now take the per-thread backend workspace.
+ * The x86 M>1 kernels (I2S, Q4_K / Q6_K / F32 prefill) take their
+ * activation scratch from the per-thread backend workspace instead of
+ * allocating per projection, per layer, per chunk.
  *
  * Where the cpu_neon sibling test has to use the workspace's own capacity
  * as a proxy ("observing no malloc portably is not possible"), this one
@@ -68,9 +66,9 @@ static size_t bytes_q6k(void) {
 static size_t bytes_f32(void) {
     return N_IN * N_OUT * sizeof(float);
 }
-/* The dtypes below run on the generic kernels (linear_generic.c). Until
- * those existed they stayed on cpu_scalar's reference kernels, which
- * allocate a row buffer on every call. */
+/* The dtypes below run on the generic kernels (linear_generic.c), not on
+ * cpu_scalar's reference kernels, which allocate a row buffer on every
+ * call. */
 static size_t bytes_q8_0(void) {
     return (N_IN / Q8_0_BLOCK_ELEMS) * Q8_0_BLOCK_BYTES * N_OUT;
 }
@@ -171,7 +169,7 @@ static bool run_case(struct geist_backend *be, const struct dtype_case *c, float
      * a Q6_K super-block scale can decode to an fp16 NaN (rows 6 and 38 here),
      * so the kernel correctly writes NaN. This file builds with -ffast-math,
      * and at -O0/-O1 gcc then evaluates `NaN != POISON` as false, reporting a
-     * written row as unwritten (MODE=asan failed, MODE=release passed). */
+     * written row as unwritten. */
     constexpr float POISON = -7.5e30f;
     uint32_t        poison_bits;
     memcpy(&poison_bits, &POISON, sizeof poison_bits);

@@ -1,14 +1,12 @@
 /*
- * test_backend_cpu_scalar_unit — walking-skeleton smoke test for the
- * cpu_scalar backend (Phase B-2a).
+ * test_backend_cpu_scalar_unit — smoke test for the cpu_scalar backend.
  *
  * Verifies:
  *   - geist_backend_create("cpu_scalar") succeeds
  *   - backend name + version helpers report sensible values
  *   - buffer_create / upload / download / map / destroy round-trip
+ *   - an F32 DENSE linear through the resolver
  *   - geist_backend_destroy frees the handle without leaking
- *
- * Real op tests (linear etc.) land in B-2b once the kernels are ported.
  */
 #include "test_helpers.h"
 
@@ -117,8 +115,7 @@ int main(void) {
         s = be->desc->vtbl->buffer_upload(bw, sizeof(wdata), (const uint8_t *) wdata);
         fails += check(s == GEIST_OK, "upload w OK");
 
-        /* P2-final: linear vtbl slot is gone. Route through the resolver
-         * and call the installed wkr.linear_mN function pointer. */
+        /* Linear runs through the resolver's installed wkr.linear_mN. */
         void *w_host = be->desc->vtbl->buffer_map(bw);
         fails += check(w_host != nullptr, "buffer_map w OK");
         struct geist_weight wkr = {

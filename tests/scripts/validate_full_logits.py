@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""validate_full_logits.py — Sub-Task E final: full forward + LM head logit parity.
+"""validate_full_logits.py — full forward + LM head logit parity.
 
 Validates against `dumps[T*]['logits']` AND checks greedy top-1 token agreement.
 """

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""validate_layers0to4.py — Sub-Task E: chain layers 0-4 (sliding + first full)."""
+"""validate_layers0to14.py — chain layers 0-14."""
 import subprocess, sys, tempfile
 from pathlib import Path
 import numpy as np

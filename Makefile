@@ -23,7 +23,6 @@
 TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
-# Phony targets — do not match files.
 .PHONY: all lib bin fuzz fuzz-libfuzzer fuzz-libfuzzer-run run agent-contract-smoke runtime-contract-smoke release-check release-state-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-qwen3-model fetch-qwen35-model fetch-e4b-model fetch-audio-tower bench bench-synth bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
 
 # Default goal. `lib` is the deliverable; `bin` builds the in-tree test and
@@ -62,8 +61,7 @@ test-decision:
 # runtime links these symbols across a release boundary, so a signature change
 # must fail HERE, not in the consumer's build. Compiling pins the signatures,
 # linking pins their existence.
-# This is the last thing in the engine that knows an agent exists, and it is
-# deliberate: it is a promise, not a dependency.
+
 # The gate a release passes before the tag: the four version sites agree, the
 # API contract holds, no `STABLE since` names a version newer than this one,
 # and nothing is stranded under CHANGELOG [Unreleased]. NOT a per-PR check —
@@ -93,8 +91,8 @@ $(RUNTIME_CONTRACT_SMOKE): examples/runtime_contract_smoke.c $(LIB_FILE) include
 	$(CC) -std=c23 -Wall -Wextra -Wpedantic -Werror -Iinclude $(LDFLAGS) -o $@ $< $(LIB_FILE) $(LDLIBS)
 
 # `make run ARGS='model.gguf "your prompt"'` — build the smallest useful
-# program against the library and run it. The engine ships no CLI of its own
-# any more; examples/simple_generate.c is the STABLE-core demo.
+# program against the library and run it. The engine ships no CLI;
+# examples/simple_generate.c is the STABLE-core demo.
 run: lib
 	@$(MAKE) -C examples TARGET=$(TARGET) MODE=$(MODE)
 	@OMP_WAIT_POLICY=active examples/simple_generate $(ARGS)
@@ -280,11 +278,8 @@ test-dequant: bin
 test-all: $(MODEL_PREREQ) test-unit test-int test-py test-e2e
 
 # Download the reference GGUF (~3.1 GB) once into MODEL_DIR. Idempotent: the
-# file rule no-ops when the model already exists, so it is safe to depend on
-# and cheap to re-run. Downloads to a .part file and renames on success so an
-# interrupted transfer never leaves a truncated model at the final path
-# (curl -C - resumes the .part on the next run). Override source via MODEL_URL;
-# pass HF_TOKEN=... for gated mirrors.
+# file rule no-ops when the model already exists. Override source via
+# MODEL_URL; pass HF_TOKEN=... for gated mirrors.
 fetch-model: $(MODEL_PATH)
 	$(call verify_sha256,$(MODEL_PATH),$(MODEL_SHA256))
 	@echo "Reference model ready (SHA-256 verified): $(MODEL_PATH)"
@@ -383,11 +378,8 @@ LLAMA_MODEL_DIR  ?= gguf_artifacts
 LLAMA_MODEL_FILE ?= smollm2-360m-instruct-q8_0.gguf
 LLAMA_MODEL_PATH := $(LLAMA_MODEL_DIR)/$(LLAMA_MODEL_FILE)
 LLAMA_MODEL_URL  ?= https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/resolve/593b5a2e04c8f3e4ee880263f93e0bd2901ad47f/smollm2-360m-instruct-q8_0.gguf
-# Pinned content hash (= the upstream LFS oid, Apache-2.0 model). Verified on
-# every fetch-llama-model run, so a truncated download, a corrupted CI cache
-# and a silently changed upstream all fail loudly BEFORE a test runs — and
-# each prints which of the two hashes disagrees. Changing the model means
-# changing this pin, which also rotates the CI cache key derived from it.
+# Pinned content hash (= the upstream LFS oid, Apache-2.0 model); checked by
+# verify_sha256 on every fetch-llama-model run.
 LLAMA_MODEL_SHA256 := 48ab3034d0dd401fbc721eb1df3217902fee7dab9078992d66431f09b7750201
 
 $(LLAMA_MODEL_PATH):
@@ -518,7 +510,6 @@ bench-mmlu: bin $(MODEL_PREREQ)
 	  --gguf "$${GEIST_GGUF_PATH:-$(abspath $(MODEL_PATH))}" \
 	  --hf --shuffle --limit $(MMLU_LIMIT) --shots $(MMLU_SHOTS)
 
-# Cleanup.
 clean:
 	@rm -rf build/$(TARGET)/$(MODE) lib/$(TARGET)/$(MODE) bin/$(TARGET)/$(MODE)
 	@echo "Cleaned $(TARGET)/$(MODE)."
@@ -571,7 +562,6 @@ format-check:
 	@$(CLANG_FORMAT) --dry-run --Werror $(FORMAT_FILES) && \
 	echo "All $(words $(FORMAT_FILES)) files conform to .clang-format"
 
-# Help text.
 help:
 	@printf '%s\n' \
 	"geist build system   (detected TARGET=$(TARGET), MODE=$(MODE), CC=$(CC))" \

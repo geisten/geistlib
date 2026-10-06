@@ -9,10 +9,10 @@
  *      and marks every DeltaNet layer fresh: no pass over the state.
  *   2. After a reset whose buffers are then filled with garbage, the
  *      logits and the state equal those after a reset that clears the
- *      buffers (the old reset), for prompts of 1 token (the token loop),
- *      2 and 3 (shorter than the conv), 40, 64 (one fresh sub-chunk), 100
- *      and 150 (a fresh sub-chunk, then ones that read S, over two forward
- *      calls), and again after two decode steps.
+ *      buffers, for prompts of 1 token (the token loop), 2 and 3 (shorter
+ *      than the conv), 40, 64 (one fresh sub-chunk), 100 and 150 (a fresh
+ *      sub-chunk, then ones that read S, over two forward calls), and again
+ *      after two decode steps.
  *   3. The same for a speculative verify right after the reset, whose
  *      snapshot copies the buffers, truncated to 1 and 2 accepted tokens,
  *      against a prefill of those tokens.
@@ -92,7 +92,7 @@ static void count_garbage(float *x, size_t n, size_t k, void *ctx) {
         *(size_t *) ctx += x[i] == GARBAGE + (float) (i % 7);
 }
 
-/* The reset before dn_fresh: the buffers cleared, nothing marked. */
+/* A clearing reset: the buffers zeroed, no layer marked fresh. */
 static bool reset_clearing(struct fixture *fx) {
     if (geist_session_reset(fx->s) != GEIST_OK || !each_state(fx, put_zero, nullptr))
         return false;

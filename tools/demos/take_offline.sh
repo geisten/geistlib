@@ -12,9 +12,7 @@ CAST=${CAST:-take_offline.cast}
 # Pre-warm outside the recording so the take starts instantly.
 OMP_WAIT_POLICY=active "$BIN" "warm-up" 8 >/dev/null 2>&1
 
-# Pick prompts the model verifiably gets right (see the PR #214 notes: the
-# confidently-wrong radiator answer stayed on the cutting-room floor, and
-# docs/PI5_BITNET.md#model-limits exists for exactly that reason).
+# Prompts the model verifiably gets right; see docs/PI5_BITNET.md#model-limits.
 asciinema rec --overwrite -c "unshare -n bash -c '
   ping -c 1 -W 2 1.1.1.1 || true;
   OMP_WAIT_POLICY=active $BIN \"The difference between baking soda and baking powder is\" 80;

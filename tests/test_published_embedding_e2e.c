@@ -9,11 +9,10 @@
  * Point GEIST_EMBED_GGUF_PATH at it. SKIPs without it — the file is 428 MB
  * and not in CI.
  *
- * That file differs from ours in three ways that each used to be fatal: its
- * norm gammas are F16, its blocks carry 20 tensors, and it spells the
- * embedding metadata as gguf-py's numeric `{arch}.pooling_type` rather than
- * our `bitnet.embedding.*` keys. This test is the end-to-end statement that
- * none of that matters any more.
+ * That file differs from ours in three ways: its norm gammas are F16, its
+ * blocks carry 20 tensors, and it spells the embedding metadata as gguf-py's
+ * numeric `{arch}.pooling_type` rather than our `bitnet.embedding.*` keys.
+ * This test checks end to end that none of that matters.
  *
  * The gate is the vendor's own published embedding. Their model card prints
  * the first seven components of the vector for one exact prompt, and that is
@@ -118,8 +117,8 @@ int main(void) {
         return GEIST_TEST_ERROR;
     }
 
-    /* The load itself is a check: F16 gammas and a 20-tensor block both used
-     * to fail here, before any embedding was computed. */
+    /* The load itself is a check: F16 gammas and a 20-tensor block must
+     * load before any embedding is computed. */
     struct geist_model *m = nullptr;
     s                     = geist_model_load(path, be, &m);
     if (s != GEIST_OK) {

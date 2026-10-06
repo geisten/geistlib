@@ -1,18 +1,15 @@
 /*
  * test_arch_gate_unit — the fail-closed architecture gate.
  *
- * geist_model_load* used to map every GGUF onto the transformer descriptor
- * regardless of general.architecture, and the family layer silently fell
- * back to Gemma-4 — an unknown model "loaded" and then failed obscurely at
- * tensor-shape mismatch, or worse, ran with the wrong geometry. The gate
- * now rejects unknown or missing architecture names with
- * GEIST_E_UNSUPPORTED before any weight is touched. Pin the reject path
- * here; the accept paths are covered by the gemma4/llama/bitnet int tests.
+ * geist_model_load* must reject an unknown or missing general.architecture
+ * with GEIST_E_UNSUPPORTED before any weight is touched, rather than fall
+ * back to a default family and run with the wrong geometry. This pins the
+ * reject path; the accept paths are covered by the gemma4/llama/bitnet int
+ * tests.
  *
- * Uses hand-crafted minimal GGUF v3 blobs (header + one string kv, no
- * tensors) through geist_model_load_from_memory — no fixture file needed,
- * and it exercises the from-memory path that previously hardcoded its
- * lookup.
+ * Uses hand-crafted minimal GGUF v3 blobs (header + one string kv) through
+ * geist_model_load_from_memory, so no fixture file is needed and the
+ * from-memory lookup is exercised too.
  */
 #include "test_helpers.h"
 

@@ -5,12 +5,10 @@
  * test_multi_session_parallel_int already runs concurrent sessions, but
  * with every environment-gated path at its default and profiling off —
  * which is exactly the state in which these particular races do not
- * happen. The forward profiler's counters are file-scope, shared by all
- * sessions, and were incremented with a plain `+=`; its `registered` flag
- * was written under a mutex and read outside one; and the first-use
- * caches in the NEON Q4_K/Q6_K kernels, the vision and audio softmaxes,
- * and the speculative decoder were plain ints initialized by whichever
- * thread arrived first.
+ * happen. The forward profiler's counters and its `registered` flag are
+ * file-scope, shared by all sessions; the NEON Q4_K/Q6_K kernels, the
+ * vision and audio softmaxes and the speculative decoder each cache a
+ * policy on first use, initialized by whichever thread arrives first.
  *
  * So this test arms all of it BEFORE any session exists — profiling on,
  * every policy cache explicitly set — and then has several threads reach

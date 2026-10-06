@@ -5,9 +5,8 @@ Compares two sets of sentence embeddings for the SAME prompts in the SAME
 order and fails if any pair drifts below a floor. Two uses, one mechanism:
 
   1. Parity against upstream. geistlib's vectors vs the same prompts run
-     through bitnet.cpp's llama-embedding. This is the oracle phases 1 and 2
-     are missing — until it passes, "the forward path is correct" is a
-     hypothesis (docs/BITNET_EMBEDDINGS_PLAN.md).
+     through bitnet.cpp's llama-embedding: the correctness oracle for the
+     forward path (docs/BITNET_EMBEDDINGS_PLAN.md).
 
   2. Conversion fidelity. F16 GGUF vs I2_S GGUF from the same checkpoint,
      which is what upstream reports as a 0.0032 average delta on the 0.6B.

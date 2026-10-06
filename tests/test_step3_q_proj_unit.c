@@ -1,5 +1,5 @@
 /*
- * test_step3_q_proj — Step 3 of Sub-Task D.
+ * test_step3_q_proj_unit — Gemma 4 parity step 3.
  *
  * Embedding -> input_layernorm -> q_proj
  * Compares against dumps[T1]['layer_00_self_attn_q_proj']

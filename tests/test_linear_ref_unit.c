@@ -13,9 +13,8 @@
  * the double sums, which may round the float result the other way.
  *
  * cpu_scalar's linear_m1 / linear_mN for those dtypes must give the same
- * bits as geist_linear_ref and allocate nothing: geist_weight.h has them
- * allocation-free, and they used to take a heap row buffer per call and
- * return without writing y when it failed.
+ * bits as geist_linear_ref and allocate nothing (geist_weight.h has them
+ * allocation-free), so a failed allocation can never leave y unwritten.
  */
 #include "test_helpers.h"
 

@@ -2,10 +2,9 @@
  * test_wav_reader_unit — audio_test_read_wav must parse WAVs by walking
  * RIFF chunks, not by skipping a fixed 44-byte header.
  *
- * The regression this pins: ffmpeg writes a LIST/INFO chunk between
- * 'fmt ' and 'data'; the old fixed-offset readers returned metadata
- * bytes as PCM and shifted the whole clip (#268 — measured as ~77 %
- * median LibriSpeech WER on a reference-exact pipeline).
+ * ffmpeg writes a LIST/INFO chunk between 'fmt ' and 'data'; a
+ * fixed-offset reader returns metadata bytes as PCM and shifts the whole
+ * clip (#268).
  *
  * Writes two temp WAVs with identical PCM — one minimal 44-byte layout,
  * one with a LIST chunk before 'data' — and asserts both parse to the

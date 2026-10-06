@@ -1,9 +1,8 @@
 /*
  * test_chat_audio_int — coherent audio→text chat via Gemma 4 chat template.
  *
- * Mirrors test_chat_image_int but for audio. Validates that the shared
- * prefill_audio path produces coherent text post the PLE pad-embedding
- * fix in transformer_prefill_audio_batch.
+ * Mirrors test_chat_image_int but for audio: the shared prefill_audio path
+ * must produce coherent text.
  *
  *   <bos><|turn>user\n<|audio>      ← prefix (tokenize → prefill)
  *   [N audio soft tokens]           ← attach_audio
@@ -30,8 +29,8 @@
 
 #define PROMPT_CAP 1024
 
-/* Chunk-walking WAV reader (audio_test_util.h) — the fixed-44-byte
- * shortcut mis-read ffmpeg WAVs with a LIST chunk (#268). */
+/* Chunk-walking WAV reader (audio_test_util.h): ffmpeg WAVs carry a LIST
+ * chunk, so the data does not start at byte 44 (#268). */
 static int16_t *read_wav_pcm(const char *path, size_t *n_samples_out, int *sample_rate_out) {
     return audio_test_read_wav(path, n_samples_out, sample_rate_out);
 }

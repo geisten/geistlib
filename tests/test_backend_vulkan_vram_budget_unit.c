@@ -3,10 +3,10 @@
  * device fails with needed vs. available bytes (#466).
  *
  * The Vulkan path keeps weights, the KV cache and the x ring in device
- * memory and has no spill to host memory. A model larger than the device
- * used to fail with a bare driver status from whichever allocation ran out.
- * Device-local allocations are now checked against the heap (lowered by
- * GEIST_VK_VRAM_BUDGET) before they are made. Checked here:
+ * memory and has no spill to host memory. Device-local allocations are
+ * checked against the heap (lowered by GEIST_VK_VRAM_BUDGET) before they
+ * are made, so a model larger than the device fails with a named error, not
+ * a bare driver status. Checked here:
  *
  *   - GEIST_VK_VRAM_BUDGET parses bytes and K/M/G suffixes; a malformed or
  *     overflowing value is ignored;

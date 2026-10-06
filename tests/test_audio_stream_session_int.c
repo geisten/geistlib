@@ -18,7 +18,7 @@
  * Reproducing a timing-dependent divergence (#506): GEIST_TEST_PUSH_CHUNK
  * (samples per push, default 320) and GEIST_TEST_PUSH_PACE_US (sleep after
  * each push) pin where the encoder worker snapshots the mel — 15040/600000
- * puts it at 94 frames, the cut that emitted a wrong block before the fix.
+ * puts it at 94 frames, the cut #506 is about.
  */
 #include "audio_test_util.h"
 #include "test_helpers.h"
@@ -180,8 +180,7 @@ int main(void) {
     }
 
     /* C: streaming turn with incremental injection (poll between pushes,
-     * session thread) — phase 2 of #256 must land at the same greedy
-     * prediction. */
+     * session thread) must land at the same greedy prediction. */
     struct geist_session *sess_c = nullptr;
     if (geist_session_create(model, be, &opts, &sess_c) != GEIST_OK)
         return GEIST_TEST_ERROR;

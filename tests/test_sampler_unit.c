@@ -2,8 +2,8 @@
  * test_sampler_unit — verifies argmax, temperature, top-k, top-p sampling
  * on synthetic FP32 logit arrays. Deterministic via xorshift RNG seed.
  *
- * Phase B-4b smoke test — the sampler module operates standalone on
- * caller-provided logit arrays; no LM* required.
+ * The sampler operates standalone on caller-provided logit arrays; no
+ * model required.
  */
 #define GEIST_INTERNAL_ENGINE_LAYER
 

@@ -1,13 +1,8 @@
 /*
- * test_step2_input_layernorm — Step 2 of Sub-Task D.
+ * test_step2_input_layernorm_unit — Gemma 4 parity step 2.
  *
  * Embedding (validated by Step 1) -> input_layernorm.
  * Compares against dumps[T1]['layer_00_input_layernorm'].
- *
- * Build:
- *   cc -std=c23 -Wall -Wextra -O2 \
- *      safetensors_reader.c gemma4_kernels.c \
- *      test_step2_input_layernorm.c -o test_step2_input_layernorm
  */
 #include "safetensors_reader.h"
 #include "gemma4_kernels.h"

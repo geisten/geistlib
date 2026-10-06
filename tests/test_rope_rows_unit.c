@@ -1,14 +1,13 @@
 /*
  * test_rope_rows_unit — the load-time q/k row reorder of NORM-RoPE GGUFs (#464).
  *
- * The forward pass used to permute every q/k head (x[2i], x[2i+1]) ->
- * (x[i], x[i + hd/2]) after the projection, on every layer and token. The
- * loader now reorders the projection's rows once instead. Two properties pin
- * that down, no model needed:
+ * The loader reorders the q/k projection's rows once, so the forward pass
+ * need not permute every head (x[2i], x[2i+1]) -> (x[i], x[i + hd/2]) on
+ * every layer and token. Two properties pin that down, no model needed:
  *   - the byte mapping: row 2i of each head lands at i, row 2i+1 at i + hd/2,
  *     whole rows of any width (a quantized row is opaque bytes);
  *   - the equivalence: projecting with the reordered rows gives exactly, bit
- *     for bit, the projection the old runtime permutation produced.
+ *     for bit, the projection followed by that per-head permutation.
  */
 #define GEIST_INTERNAL_ARCH_LAYER /* weight_load/internal.h is layer-internal */
 
@@ -105,7 +104,7 @@ static void check_equivalence(size_t n_heads, size_t head_dim, size_t n_in) {
         x[k] = (float) (int32_t) (seed >> 8) / (float) (1 << 23) - 1.0f;
     }
 
-    /* Before: project, then permute each head the way the forward pass did. */
+    /* Reference: project, then permute each head. */
     matvec(n_rows, n_in, w, x, y_old);
     const size_t half = head_dim / 2;
     for (size_t h = 0; h < n_heads; h++) {
@@ -117,7 +116,7 @@ static void check_equivalence(size_t n_heads, size_t head_dim, size_t n_in) {
         memcpy(yh, tmp, head_dim * sizeof(float));
     }
 
-    /* After: reorder the rows at load, project. */
+    /* Under test: reorder the rows at load, project. */
     permute_rope_rows(n_rows, n_in * sizeof(float), head_dim, (const uint8_t *) w, (uint8_t *) w2);
     matvec(n_rows, n_in, w2, x, y_new);
 

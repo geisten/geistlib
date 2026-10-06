@@ -4,7 +4,7 @@
  * (#488).
  *
  * The transformer arch slices one scratch pool into ~20 activation slots.
- * It used to be host-visible always: mapped, then sliced with
+ * By default it is host-visible: mapped, then sliced with
  * buffer_create_aliased(host pointer). Without resizable BAR a large pool
  * spills into system memory and every GPU op on it crosses the bus. Under
  * GEIST_VK_SCRATCH_DEVICE=1 a session whose host paths never map those

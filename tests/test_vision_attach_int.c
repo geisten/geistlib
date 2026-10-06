@@ -12,7 +12,7 @@
  *   - input PNG (path passed as argv[1], optional; defaults to
  *     vision_bench/syn_320x224.png)
  *
- * Phase P5 smoke test for the vision_siglip encoder arch.
+ * Smoke test for the vision_siglip encoder arch.
  */
 #include "test_helpers.h"
 

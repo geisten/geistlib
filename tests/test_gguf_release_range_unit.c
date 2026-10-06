@@ -3,9 +3,9 @@
  * copied to its device do not stay resident (#468 item 3).
  *
  * With caps.weights_device_copy (Vulkan) the big matrices alias the GGUF
- * mmap and are uploaded at resolve; the file pages stayed in the process
- * afterwards, beside the device copy — on a unified-memory GPU the model
- * twice. gguf_release_range drops them. Checked here:
+ * mmap and are uploaded at resolve; left alone, the file pages stay resident
+ * beside the device copy (on a unified-memory GPU, the model twice).
+ * gguf_release_range drops them. Checked here:
  *
  *   - gguf_release_range on a file-backed context drops the touched pages
  *     (the mapping's Rss falls, counted per path: on tmpfs the pages are

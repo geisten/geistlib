@@ -163,9 +163,9 @@ static int scenario(size_t N, size_t K) {
         /* (5) fused pair == two separate m1, BYTE-exact. Two DISTINCT weights
          * with different n_out (like q 2560 + k 640, gate/up 6912): a slot or
          * offset mix-up between the pair's two weights is invisible when both
-         * slots get the same buffer — that hole hid the #102 Phase 2 pair
-         * regression, so this now builds a second weight (different trits,
-         * N2 = N/2 rounded to a multiple of 4) and memcmp's both outputs. */
+         * slots get the same buffer (#102), so this builds a second weight
+         * (different trits, N2 = N/2 rounded to a multiple of 4) and
+         * memcmp's both outputs. */
         size_t N2 = (N / 2) & ~(size_t) 3;
         if (N2 == 0) {
             N2 = N;
@@ -239,7 +239,7 @@ static int scenario(size_t N, size_t K) {
         }
 
         /* (7) t5 fused pair == two separate t5 m1, byte-exact, distinct
-         * weights with different n_out (the #102 pair-test hardening). */
+         * weights with different n_out, as in (5). */
         uint8_t *t5_2 = malloc(N2 * i2s_t5_row_bytes(K));
         i2s_to_t5(N2, K, W2, t5_2);
         float *tp0   = malloc(N * sizeof(float));

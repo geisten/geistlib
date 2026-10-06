@@ -1,10 +1,6 @@
 /*
  * test_backend_ops_unit — verifies the elementwise + rmsnorm ops in both
  * cpu_scalar and cpu_neon backends produce the same outputs.
- *
- * Phase B-4e foundation: with these ops in the backend vtable, lm.c's
- * forward pass can be migrated op-by-op through backend->vtbl->* instead
- * of direct calls into gemma4_kernels.c.
  */
 #include "test_helpers.h"
 
