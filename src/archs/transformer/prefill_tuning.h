@@ -9,10 +9,9 @@
  *   m_max      rows per prefill chunk. Every chunk dequantizes every
  *              weight again, so a bigger chunk amortizes that over more
  *              tokens and feeds the GEMM a taller batch — until the
- *              activation scratch stops fitting. Measured on the 27B
- *              ternary Bonsai (M1 Max, pp512): 64 -> 128 is +5-14 %, 256
- *              gains nothing more. Small models do not pay the dequant
- *              enough to notice.
+ *              activation scratch stops fitting. The 27B ternary Bonsai
+ *              gains from 64 -> 128, not beyond; small models do not pay
+ *              the dequant enough to notice.
  *   blocktime  how long an idle OpenMP worker spins before it sleeps,
  *              in ms (libomp reads KMP_BLOCKTIME once, at its first
  *              parallel region). Infinite (the OMP_WAIT_POLICY=active the
@@ -20,10 +19,10 @@
  *              regions per token, a sleeping worker's wake-up costs more
  *              than the region. A prefill SGEMM runs 30-50 ms though, and
  *              on Apple Accelerate threads it on the very cores the other
- *              workers spin on: KMP_BLOCKTIME=0 measured +21-33 % prefill
- *              on the 27B, and -16 % decode on a 0.8B. Switching it per
- *              phase at run time (kmp_set_blocktime) measured nothing but
- *              its own cost, so the knob is one value per process, applied
+ *              workers spin on: KMP_BLOCKTIME=0 speeds up the 27B's prefill
+ *              but slows a 0.8B's decode. Switching it per phase at run
+ *              time (kmp_set_blocktime) costs more than it saves, so the
+ *              knob is one value per process, applied
  *              from the table of the FIRST model loaded, before its weight
  *              packing runs the first parallel region.
  *
@@ -49,10 +48,6 @@ struct transformer_prefill_resolved {
     bool   m_max_from_env;
 };
 
-/* Resolves both knobs for (family, weight_bytes) from `base_m_max` and
- * the backend's row cap (0 = uncapped), reading GEIST_M_MAX and
- * GEIST_PREFILL_BLOCKTIME_MS from `getenv_fn` (nullptr = getenv; tests
- * inject). Never fails: an unknown model gets the defaults. */
 /* Applies the resolved blocktime as the process's KMP_BLOCKTIME. libomp
  * reads it once, at its first parallel region, so this has to run before
  * weight packing; an explicit KMP_BLOCKTIME in the environment wins, and
@@ -60,6 +55,10 @@ struct transformer_prefill_resolved {
  * leaves everything alone. */
 void transformer_prefill_apply_blocktime(const struct transformer_prefill_resolved *r);
 
+/* Resolves both knobs for (family, weight_bytes) from `base_m_max` and
+ * the backend's row cap (0 = uncapped), reading GEIST_M_MAX and
+ * GEIST_PREFILL_BLOCKTIME_MS from `getenv_fn` (nullptr = getenv; tests
+ * inject). Never fails: an unknown model gets the defaults. */
 struct transformer_prefill_resolved
 transformer_prefill_resolve(const char *family,
                             size_t      weight_bytes,

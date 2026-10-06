@@ -3,25 +3,10 @@
  *
  * Layer: ARCHITECTURE (internal).
  *
- * Populated at load time from a combination of GGUF tensor shapes
- * (where derivable) and arch-family defaults. The model state holds
- * one instance; every per-call access to a "Gemma-specific numeric
- * knob" goes through st->config.X rather than a global macro, so
- * adding a sibling arch family (Llama / Mistral / Phi) becomes a
- * matter of swapping the populator, not the consumer.
- *
- * Scope at P1.4:
- *   - Gemma-specific numeric knobs (RMS eps, logit softcap, PLE
- *     scales, KV-shared layer mapping) are migrated to this struct.
- *   - Structural dimensions (HIDDEN, NUM_LAYERS, VOCAB, head counts)
- *     remain as compile-time macros in arch_state.h because they
- *     size fixed-length arrays in struct transformer_arch_state.
- *     Migration of those follows in P1.4.b (the struct must lose its
- *     compile-time-sized member arrays first).
- *
- * Future: extend the GGUF reader to expose metadata KV pairs and
- * derive the metadata-only fields (RoPE theta, RMS eps,
- * sliding-window length, logit softcap) from GGUF directly.
+ * Filled at load time by the family populator (arch_family.c) from GGUF
+ * metadata and family defaults. The model state holds one instance; the
+ * forward pass reads family-specific knobs and feature flags through
+ * st->config.X. Structural dimensions live on transformer_arch_state.
  */
 #ifndef GEIST_INTERNAL_ARCH_TRANSFORMER_CONFIG_H
 #define GEIST_INTERNAL_ARCH_TRANSFORMER_CONFIG_H
@@ -35,12 +20,12 @@
 #include <stdint.h>
 #include <string.h>
 
-/* FFN activation kind. Constexpr-able (single enum byte), consumed by
- * the FFN forward branch in transformer/forward.c.
- *   GEGLU              — gelu_tanh(gate) * up; Gemma 3/4. Default.
- *   SWIGLU             — silu(gate) * up; Llama 2/3, BitNet 3B (community).
- *   SQUARED_RELU       — relu(up)^2; gateless. (Not currently emitted by
- *                        any model we've validated — reserved.)
+/* FFN activation kind, consumed by the FFN forward branch
+ * (forward/layer_ffn.c).
+ *   GEGLU              — gelu_tanh(gate) * up; Gemma 3/4.
+ *   SWIGLU             — silu(gate) * up; Llama 2/3, Qwen, BitNet 3B
+ *                        (community). The neutral default.
+ *   SQUARED_RELU       — relu(up)^2; gateless. No validated model uses it.
  *   GATED_SQUARED_RELU — relu(gate)^2 * up; Microsoft BitNet b1.58 2B-4T
  *                        (HF config: hidden_act = "relu2").
  */
@@ -56,10 +41,8 @@ enum geist_ffn_activation_kind {
  *   NONE       — generative model: no pooling, the forward pass ends in the
  *                LM head and the session emits tokens.
  *   LAST_TOKEN — the last non-padding position's hidden state, L2-normalised.
- *                What the BitNet embedding models (July 2026) use.
- *   MEAN       — recognised so a mean-pooled GGUF is REFUSED with a clear
- *                error rather than silently pooled the wrong way. Not
- *                implemented; implement it here when such a model appears.
+ *                What the BitNet embedding models use.
+ *   MEAN       — the mean over all prefilled positions, L2-normalised.
  */
 enum geist_pooling_kind {
     GEIST_POOLING_NONE = 0,
@@ -127,9 +110,8 @@ static inline bool geist_pooling_is_embedding(enum geist_pooling_kind k) {
  * default is keyed on `general.architecture`: only "bitnet-b1.58" (Microsoft's
  * official 2B-4T — gated squared-ReLU, and its GGUF carries NO activation key)
  * defaults to GATED_SQUARED_RELU; everything else (community "bitnet", llama,
- * gemma) defaults to SwiGLU. Pure (no GGUF) so it is unit-testable — this is the
- * exact decision that, when it wrongly defaulted 2B-4T to SwiGLU, dropped MMLU
- * to chance. Keep test_bitnet_arch_unit in sync. */
+ * gemma) defaults to SwiGLU (2B-4T under SwiGLU scores chance on MMLU). Pure
+ * (no GGUF) so it is unit-testable. Keep test_bitnet_arch_unit in sync. */
 static inline enum geist_ffn_activation_kind
 geist_ffn_activation_select(size_t arch_len, size_t act_len, const char *arch, const char *act) {
     enum geist_ffn_activation_kind out =
@@ -165,9 +147,8 @@ geist_ffn_activation_select(size_t arch_len, size_t act_len, const char *arch, c
 }
 
 struct geist_arch_config {
-    /* ---- Family identity. Future use by sub-vtable dispatch
-     * (PLE precompute / logit softcap routing). */
-    const char *family; /* "gemma4" today; "llama", "mistral", … later */
+    /* ---- Family identity: the transformer_family name. */
+    const char *family; /* "gemma4", "llama", "qwen35", … */
 
     /* ---- Numerics. */
     float rms_eps;       /* RMSNorm epsilon. Gemma 4: 1e-6f. */
@@ -175,12 +156,7 @@ struct geist_arch_config {
 
     /* ---- Embedding scale: multiply looked-up token embeddings by
      * sqrt(d_model). The Gemma families do this; Llama/Qwen/BitNet do not.
-     *
-     * Split out from has_ple, which it used to ride on. That worked only
-     * as long as the sole family with the scale also had per-layer
-     * embeddings — Gemma 3 has the scale and NO PLE, so the two had to
-     * stop being the same question. Every existing family keeps its
-     * behaviour: gemma4 sets both, everyone else sets neither. */
+     * Independent of has_ple: Gemma 3 has the scale and no PLE. */
     bool has_embed_scale;
 
     /* ---- PLE (Per-Layer Embedding, Gemma 4 family only). When
@@ -197,14 +173,14 @@ struct geist_arch_config {
     int kv_sliding_src;
     int kv_full_src;
 
-    /* ---- Gemma-family extra per-layer norms (P1.5.d). Gemma 3/4
+    /* ---- Gemma-family extra per-layer norms. Gemma 3/4
      * adds q_norm and k_norm after the Q/K projections, plus
      * post_attention_norm and post_ffw_norm in the residual pipeline.
-     * Llama / Mistral don't have these; the loader skips the tensor
+     * Other families don't have these; the loader skips the tensor
      * lookup and the forward pass skips the rmsnorm calls. */
     bool has_gemma_attn_norms;
 
-    /* ---- Per-head Q/K RMSNorm alone (qwen3, #275). Gates ONLY the
+    /* ---- Per-head Q/K RMSNorm alone (qwen3). Gates ONLY the
      * attn_q_norm / attn_k_norm load + the pre-RoPE rmsnorm on Q and K.
      * Distinct from has_gemma_attn_norms, which additionally V-norms,
      * drops the 1/sqrt(head_dim) Q scale and adds the post_attention /
@@ -218,17 +194,17 @@ struct geist_arch_config {
      *   BitLinear (between attn-output and o_proj, between FFN
      *   activation and down_proj). The forward path skips these
      *   norms when the flag is false. The norm weight tensors are
-     *   loaded as L->attn_sub_norm / L->ffn_sub_norm (P1.4 weight loader).
+     *   loaded as L->attn_sub_norm / L->ffn_sub_norm.
      *
      * ffn_activation: which FFN structure the layer runs. Gemma 3/4
-     *   keeps GEGLU (default 0). Llama family is SWIGLU. BitNet b1.58
+     *   use GEGLU. Llama family is SWIGLU. BitNet b1.58
      *   2B-4T is GATED_SQUARED_RELU (relu(gate)^2 * up; gate/up/down all
      *   present). The gateless SQUARED_RELU variant skips the gate
      *   projection but isn't what the official 2B-4T uses. */
     bool                           has_sub_ln;
     enum geist_ffn_activation_kind ffn_activation;
 
-    /* ---- BitNet embedding models (July 2026): an RMSNorm on the INPUT of
+    /* ---- BitNet embedding models: an RMSNorm on the INPUT of
      * every BitLinear projection, seven per layer — the pattern upstream
      * calls "per-projection norms" and that no standard architecture has
      * (docs/BITNET_EMBEDDINGS_PLAN.md).
@@ -240,8 +216,8 @@ struct geist_arch_config {
      * forward code applies them, so this flag adds only the five that
      * precede q, k, v, gate and up — all shaped [d_model].
      *
-     * The five are the reason the flag also has a cost: q/k/v share one
-     * normalised input today (and so do gate/up), which is what lets the
+     * The five are the reason the flag also has a cost: q/k/v otherwise
+     * share one normalised input (and so do gate/up), which is what lets the
      * fused triple-QKV and gate_up kernels run. Per-projection norms give
      * each its own input, so those fusions are disabled while this is
      * set — see exec_plan.c. */
@@ -287,14 +263,13 @@ struct geist_arch_config {
      *   true (qwen35): ggml's layout — the table is n_rotated_dims wide,
      *     pairs are (i, i + n_rotated_dims/2) inside that block, the
      *     frequency exponent divides by n_rotated_dims, and channels at
-     *     or above it are left alone. Rotating qwen35 the Gemma way put
-     *     dims 0..31 against 128..159 four times too slowly and cost it
+     *     or above it are left alone. The Gemma layout on qwen35 costs
      *     in-context recall (#432).
      *
      * With n_rotated_dims == head_dim both collapse to the same thing. */
     bool rope_partial_block;
 
-    /* ---- qwen35 hybrid family (#281) ---------------------------------- *
+    /* ---- qwen35 hybrid family ------------------------------------------ *
      *
      * has_attn_output_gate: the attention q_proj jointly produces
      *   query + a per-head gate (2x rows, per-head layout

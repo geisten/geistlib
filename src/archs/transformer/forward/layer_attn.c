@@ -178,7 +178,7 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
         }
         transformer_profile_add(&g_attn_profile, ATTN_PROFILE_QKV, t0);
     } else if (ctx->compute_kv && proj_norms) {
-        /* q, k and v no longer share an input, so the fused triple call
+        /* q, k and v do not share an input, so the fused triple call
          * cannot express this. Three sequential projections, each reading
          * its own normalisation out of scratch_proj_in. */
         struct geist_tensor t_k_2d = view_2d(sess->scratch_k, ctx->SEQ, (int64_t) ctx->kv_out);
@@ -503,9 +503,8 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
         struct geist_tensor t_post_attn_2d =
                 view_2d(sess->scratch_post_attn, ctx->SEQ, st->d_model);
         struct geist_tensor t_w_post_attn = view_1d(L->post_attn_norm.buffer, st->d_model);
-        /* Bound once (#352). The old form re-ran norm+add on the host when
-         * the fused op FAILED as well as when it was absent — over an
-         * output the fused kernel may already have written. */
+        /* Bound at plan build (#352): a failing fused op is an error, never
+         * a host fallback over output it may already have written. */
         if (ctx->P != nullptr && ctx->P->fuse_attn_rmsnorm_add) {
             s = fused->rmsnorm_add(
                     be, &t_h_in_2d, &t_o_2d, &t_w_post_attn, ctx->eps, &t_h_post_attn_2d);

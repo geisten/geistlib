@@ -1,13 +1,7 @@
 /*
- * src/archs/transformer/forward/head.c — output-head finalize_logits
- * family (single-row, batched, last-row).
- *
- * Layer: ARCHITECTURE.
- * The three finalize_* routines share the same shape: take the
- * residual stream at the post-layer point, optionally apply the embed
- * scale, project through the lm_head linear, and write logits into the
- * session scratch. They differ in batch shape and where the next-token
- * argmax goes.
+ * src/archs/transformer/forward/head.c — output head: output_norm +
+ * lm_head + softcap + argmax/sampler for one row or a verify batch, and
+ * the embedding-model terminal steps (last-token and mean pooling).
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -75,9 +69,9 @@ static struct transformer_forward_profile g_head_profile = {
      * [1, HIDDEN] buffer for the output head). */
     {
         const size_t bytes = st->d_model * sizeof(float);
-        /* Bound once (#352): the device copy keeps batched GPU backends from
-         * flushing, and a failure of it is a device error — it used to fall
-         * through to the host memcpy, hiding that. */
+        /* Bound at plan build (#352): the device copy keeps batched GPU
+         * backends from flushing, and its failure is a device error, not a
+         * reason to fall back to a host memcpy. */
         if (st->model_fusions.backend_buffer_copy) {
             const enum geist_status cs =
                     v->buffer_copy(sess->scratch_h_a, 0, sess->scratch_h_b, row_idx * bytes, bytes);
@@ -168,9 +162,8 @@ static struct transformer_forward_profile g_head_profile = {
         return GEIST_OK;
     }
 
-    /* Softcap. P1.5: family-conditional. H1: skip in greedy mode — tanh is
-     * monotonic so argmax is identical with or without softcap. Saves
-     * ~262 144 × tanhf calls per token (~5% of decode on Gemma 4). */
+    /* Softcap, family-conditional. Skipped in greedy mode: tanh is
+     * monotonic, so argmax is unchanged (~5% of Gemma 4 decode). */
     const bool sampler_needs_softcap = sess->temperature > 0.0f;
     if (st->config.logit_softcap > 0.0f && sampler_needs_softcap) {
         t0       = profile ? transformer_profile_now_ns() : 0;
@@ -189,8 +182,7 @@ static struct transformer_forward_profile g_head_profile = {
 
     /* Sampler dispatch. scratch_logits already holds the softcapped
      * row; on CPU backends buffer_map returns the host pointer directly,
-     * so the sampler reads it without a copy. P0.1 (2026-05-15): no more
-     * per-call 1 MB heap_alloc_aligned. */
+     * so the sampler reads it without a copy. */
     geist_token_t best_id;
     {
         t0                  = profile ? transformer_profile_now_ns() : 0;
@@ -302,11 +294,9 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
 
     /* Per-row softcap + sampler. Softcap is monotonic, so for greedy
      * (temperature=0) argmax is identical with or without it — skip
-     * the ~262k tanhf calls per row. Stochastic modes still need it
-     * to preserve the correct logit distribution. P0.1 (2026-05-15):
-     * the row is softcapped in place inside scratch_logits and the
-     * sampler reads the same row directly — no per-row 1 MB
-     * heap_alloc_aligned, no per-row memcpy. */
+     * the ~262k tanhf calls per row. Stochastic modes still need it.
+     * The row is softcapped in place in scratch_logits and the sampler
+     * reads it directly, without a copy. */
     {
         float *all = (float *) v->buffer_map(sess->scratch_logits);
         if (all == nullptr) {
@@ -366,18 +356,6 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
     return GEIST_OK;
 }
 
-/* Embedding models end here instead of in the LM head: pool one row out of
- * the post-layer hidden states, apply output_norm, L2-normalise.
- *
- * The first two steps are exactly what finalize_logits_one_row does before
- * projecting, and for the same reason — scratch_h_a is the clean [1, HIDDEN]
- * staging row every backend can read back. What differs is only what
- * replaces the vocab projection.
- *
- * `seq` is the number of rows the final chunk wrote; last-token pooling
- * takes row seq-1. No LM head runs, which is the point: these GGUFs have no
- * output.weight, and projecting through the tied embedding table would cost
- * a 151936-wide matmul whose result is discarded. */
 /* The output head's front half on `k` rows: copy them out of scratch_h_b,
  * apply output_norm to all of them, leave the result in scratch_h_a. That is
  * HF's `last_hidden_state` -- what a mean-pooled embedding sums -- and it is
@@ -476,6 +454,11 @@ transformer_embedding_accumulate(struct transformer_arch_session *sess, size_t k
     return GEIST_OK;
 }
 
+/* Embedding models end here instead of in the LM head: pool row seq-1 of
+ * the post-layer hidden states, apply output_norm, L2-normalise into
+ * scratch_h_a, the [1, HIDDEN] staging row every backend can read back.
+ * No LM head runs: these GGUFs have no output.weight, and projecting
+ * through the tied embedding table would be a discarded vocab-wide matmul. */
 [[nodiscard]] enum geist_status finalize_embedding_last_row(struct transformer_arch_session *sess,
                                                             size_t                           seq) {
     struct transformer_arch_state *st = sess->model;

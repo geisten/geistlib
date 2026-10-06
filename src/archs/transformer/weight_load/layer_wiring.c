@@ -108,15 +108,9 @@ load_layer_proj_rope_il(struct transformer_arch_state    *st,
                 be, GEIST_E_INTERNAL, "transformer: layer buffer list overflow on '%s'", name);
         return GEIST_E_INTERNAL;
     }
-    /* P1.1.c (refactor v2): also populate the pre-resolved kernel
-     * pointer table when caller asks for it. Falls back to legacy
-     * v->linear() at the call site when resolve_weight returns
-     * unsupported (e.g. Q5_K, F32 dense).
-     *
-     * Buffer's host pointer is exposed via buffer_map; struct geist_buffer
-     * is opaque to the arch layer (the full definition lives in each
-     * backend's internal.h). This is load-time, called once per weight,
-     * so the buffer_map indirection cost is irrelevant. */
+    /* Also populate the pre-resolved kernel pointers when the caller asks
+     * for them. struct geist_buffer is opaque to the arch layer, so the
+     * host pointer comes from buffer_map (load time, once per weight). */
     if (out_weight != nullptr) {
         const struct geist_backend_vtbl *v    = be->desc->vtbl;
         void                            *host = v->buffer_map(buf);
@@ -148,19 +142,13 @@ load_layer_proj_rope_il(struct transformer_arch_state    *st,
             if (rs == GEIST_OK && weight_skips_arena(be, t)) {
                 gguf_release_range(gguf, out_weight->raw, out_weight->raw_nbytes);
             }
-            /* On UNSUPPORTED, linear_m1 / linear_mN stay null — that's
-             * the "use legacy" signal. */
             /* A backend without a half-precision dense linear (vulkan) gets
              * a SMALL tensor widened to F32 once, the same way norm gammas
-             * are: Ternary-Bonsai keeps its DeltaNet alpha/beta projections
-             * (48 x 5120, 1 MB widened) in BF16. Widening doubles the
-             * resident bytes, so a model's main matrices stay out of it.
-             * Past the cap nothing can run the matrix: the legacy
-             * v->linear() fallback is gone (P2.e) and no tensor path takes
-             * a half-precision weight its resolver refused, so the load
-             * fails here, naming the tensor, instead of at the first
-             * prefill (#564). The half-precision copy stays tracked (a few
-             * MB on a 27B); untrack it if that ever matters. */
+             * are (e.g. BF16 DeltaNet alpha/beta projections). Widening
+             * doubles the resident bytes, so a model's main matrices stay
+             * out of it. Past the cap nothing can run the matrix, so the
+             * load fails here, naming the tensor, instead of at the first
+             * prefill (#564). The half-precision copy stays tracked. */
             constexpr size_t widen_max_elems = 4u << 20; /* 16 MB as F32 */
             const bool       half = dm.dtype == GEIST_DTYPE_F16 || dm.dtype == GEIST_DTYPE_BF16;
             if (rs == GEIST_E_UNSUPPORTED && half && n_out * n_in > widen_max_elems) {
@@ -257,12 +245,10 @@ load_layer_proj(struct transformer_arch_state    *st,
 
     struct geist_backend *be = st->backend;
 
-    /* P1.5.c: geometry (is_full / is_kv_shared / head_dim / q_out /
-     * kv_out / intermediate / sliding_window / rope_theta /
-     * n_rotated_dims / layer_idx) is pre-filled by the family
-     * populator's populate_layers hook in arch_family.c, before this
-     * loader runs. The loader trusts those fields and just reads
-     * tensors. */
+    /* Geometry (is_full / is_kv_shared / head_dim / q_out / kv_out /
+     * intermediate / sliding_window / rope_theta / n_rotated_dims /
+     * layer_idx) is pre-filled by the family's populate_layers hook in
+     * arch_family.c; this loader trusts those fields and reads tensors. */
     L->n_bufs = 0;
 
     char              path[64];
@@ -270,7 +256,7 @@ load_layer_proj(struct transformer_arch_state    *st,
 
 #define LP(suffix) snprintf(path, sizeof path, "blk.%d." suffix, L->layer_idx)
 
-    /* ---- Gated-DeltaNet layer (#281): its own compact tensor set.
+    /* ---- Gated-DeltaNet layer: its own compact tensor set.
      * attn_norm + pre-FFN norm + FFN are shared with the attention
      * shape; everything between is the dn_* group. The qwen35
      * converter names the pre-FFN norm "post_attention_norm" (the HF
@@ -359,7 +345,7 @@ load_layer_proj(struct transformer_arch_state    *st,
         return GEIST_OK;
     }
 
-    /* Norms — all F32. Family-conditional gating (P1.5.d):
+    /* Norms — all F32. Family-conditional:
      * attn_q_norm, attn_k_norm, post_attention_norm, post_ffw_norm
      * are Gemma 3/4 family extras that Llama / Mistral don't have. */
     LP("attn_norm.weight");
@@ -403,7 +389,7 @@ load_layer_proj(struct transformer_arch_state    *st,
     } else {
         L->post_ffw_norm = (struct geist_tensor) {0};
     }
-    /* P1.5.c: post_per_layer_norm is part of the PLE injection block —
+    /* post_per_layer_norm is part of the PLE injection block —
      * only present in Gemma-family GGUFs. */
     if (st->config.has_ple) {
         LP("post_norm.weight");
@@ -415,14 +401,12 @@ load_layer_proj(struct transformer_arch_state    *st,
         L->post_per_layer_norm = (struct geist_tensor) {0};
     }
 
-    /* Projections — quantized or F32. P1.1.d (refactor v2): every
-     * per-layer projection now populates a geist_weight so the
-     * forward hot path uses the pre-resolved kernel pointers. Sites
-     * fall back to legacy v->linear() when the backend resolver
-     * returns UNSUPPORTED (Q5_K, F32, etc.). */
+    /* Projections — quantized or F32. Every per-layer projection
+     * populates a geist_weight so the forward hot path uses the
+     * pre-resolved kernel pointers. */
     LP("attn_q.weight");
     /* qwen35: q_proj jointly produces query+gate — 2x rows, per-head
-     * [query(hd) | gate(hd)] (#281). */
+     * [query(hd) | gate(hd)]. */
     const size_t q_rows = st->config.has_attn_output_gate ? 2 * L->q_out : L->q_out;
     /* Llama GGUFs store q/k rows in interleaved RoPE pair order; reorder
      * them once here so the forward pass rotates half-split pairs like
@@ -445,8 +429,7 @@ load_layer_proj(struct transformer_arch_state    *st,
      *
      * BitNet embedding models reach the same slot under a different
      * tensor name: their per-projection norm on o_proj's input has
-     * exactly this shape and position, so it loads here and the existing
-     * forward code applies it unchanged. */
+     * exactly this shape and position, so it loads here. */
     if (st->config.has_projection_input_norms) {
         LP("attn_output_norm_in.weight");
         s = load_layer_norm(st, gguf, L, path, L->q_out, &L->attn_sub_norm);
@@ -579,7 +562,7 @@ load_layer_proj(struct transformer_arch_state    *st,
         return s;
     }
 
-    /* P1.5.c: per-layer PLE projections (inp_gate, proj) + layer
+    /* Per-layer PLE projections (inp_gate, proj) + layer
      * scalar are Gemma-family-only. Skip for !has_ple families;
      * default scalar to 1.0 so the forward "*= layer_scalar" is a
      * no-op. */
@@ -695,16 +678,10 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
         be->desc->vtbl->buffer_destroy(be, buf);
         return GEIST_E_INTERNAL;
     }
-    /* P1.1.d (refactor v2): pre-resolve lm_head kernel pointers. Most
-     * Llama-family BitNets tie lm_head to token_embd; in that case
-     * embed_table_w just wraps the same buffer. P3.6: some 1bitLLM
-     * variants (HF1BitLLM/Llama3-8B-1.58) ship a SEPARATE `output.weight`
-     * tensor (Q6_K) alongside a Q4_K token_embd — different shapes-as-
-     * stored, different roles. Try to load a standalone output.weight
-     * first; fall back to tied if it isn't present.
-     *
-     * Unsupported dtypes (Q5_K bartowski variants) leave linear_m1 null
-     * and the callers fall back to v->linear. */
+    /* Pre-resolve lm_head kernel pointers. A standalone `output.weight`
+     * (e.g. HF1BitLLM/Llama3-8B-1.58: Q6_K beside a Q4_K token_embd) is
+     * used when present; otherwise lm_head is tied and embed_table_w wraps
+     * the token_embd buffer. */
     {
         const struct geist_backend_vtbl *v = be->desc->vtbl;
 
@@ -776,7 +753,7 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
         }
     }
 
-    /* P1.5.c: PLE-only globals (per_layer_token_embd,
+    /* PLE-only globals (per_layer_token_embd,
      * per_layer_model_proj, per_layer_proj_norm) skipped for
      * !has_ple families. Zero-init the tensor views so any accidental
      * access faults loudly at the buffer dereference. */
@@ -814,13 +791,10 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
         return GEIST_E_INTERNAL;
     }
 
-    /* per_layer_model_proj: [PLE_OUT, HIDDEN]. The Q3_K_M GGUF stores this
-     * as F16, which neither cpu_scalar nor cpu_neon linear() supports today
-     * (they handle F32 DENSE and Q3/4/5/6_K + Q8_0 BLOCK_QUANTIZED only).
-     * Mirror lm.c's approach: dequantize at load time to F32 once. Cost is
-     * ~52 MB resident, ~negligible. Other quantized globals (token_embd,
-     * per_layer_token_embd) stay native — embedding_lookup will handle
-     * those via row dequant in sub-step 3. */
+    /* per_layer_model_proj: [PLE_OUT, HIDDEN], stored F16 in the GGUF;
+     * dequantized to F32 once at load (~52 MB resident) so every backend
+     * can run it. Other quantized globals (token_embd, per_layer_token_embd)
+     * stay native and are dequantized per row at lookup. */
     t = gguf_get_tensor(gguf, "per_layer_model_proj.weight");
     if (t == nullptr) {
         geist_backend_set_error(
@@ -841,15 +815,13 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
                                     gguf_dtype_name(t->dtype));
             return GEIST_E_FORMAT;
         }
-        /* per_layer_model_proj is always heap-resident: GGUF stores it
-         * as F16; we dequant to F32 (no mmap-alias possible because
-         * the F32 form isn't a slice of the file). Two storage paths:
+        /* The F32 form is not a slice of the file, so it cannot alias the
+         * mmap. Two storage paths:
          *
          *   β mode  → bump-allocate from arena, memcpy in, then free
          *             the dequant scratch.
-         *   mmap    → backend allocates its own buffer (the legacy
-         *             path); we buffer_upload into it. arena is
-         *             nullptr in mmap mode so we can't use it. */
+         *   mmap    → no arena; the backend allocates its own buffer
+         *             and we buffer_upload into it. */
         const size_t bytes = (size_t) st->ple_out * st->d_model * sizeof(float);
         if (st->weight_arena != nullptr) {
             void *arena_ptr = arena_alloc(st, bytes, 64);
@@ -893,7 +865,7 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
         be->desc->vtbl->buffer_destroy(be, buf);
         return GEIST_E_INTERNAL;
     }
-    /* P1.1.e: pre-resolve model_proj (F32 dense → cblas trampolines). */
+    /* Pre-resolve model_proj (F32 dense). */
     {
         const struct geist_backend_vtbl *v    = be->desc->vtbl;
         void                            *host = v->buffer_map(buf);

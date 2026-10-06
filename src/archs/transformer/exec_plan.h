@@ -3,10 +3,8 @@
  *
  * Layer: ARCHITECTURE.
  *
- * Built once after weight loading. The first iteration stores resolved
- * booleans/enums that the hot path can consume without re-deriving model
- * family decisions. Later iterations can replace these fields with bound
- * function pointers for fused CPU kernels.
+ * Built once after weight loading: resolved booleans/enums the hot path
+ * consumes without re-deriving family decisions or re-probing the backend.
  */
 #ifndef GEIST_INTERNAL_ARCH_TRANSFORMER_EXEC_PLAN_H
 #define GEIST_INTERNAL_ARCH_TRANSFORMER_EXEC_PLAN_H
@@ -26,11 +24,9 @@ struct transformer_arch_state;
 struct transformer_arch_session;
 struct transformer_layer_forward_ctx;
 
-/* No KV-append / attention-kind state here: those are derived from
- * sess->kv_{kivi,int8,f16}_enabled at hot-path entry. A cached copy
- * would be baked from default_sess at construction time and become stale
- * when transformer_session_attach swaps in a session with a different KV
- * mode (see review #7 / V6). */
+/* No KV-append / attention-kind state here: the plan is per model and
+ * sessions differ in KV mode, so those are derived from
+ * sess->kv_{kivi,int8,f16}_enabled at hot-path entry. */
 struct transformer_layer_exec_plan {
     int                            kv_src;
     bool                           compute_kv;
@@ -63,7 +59,7 @@ struct transformer_layer_exec_plan {
     bool fuse_ple_block_m1;        /* fused PLE block, decode */
     bool fuse_ple_block_mN;        /* fused PLE block, prefill */
 
-    /* Two more sites bound in batch 2 (#352). Each needs its OWN probe:
+    /* Each of these needs its OWN probe:
      * geist_fusion_query carries shapes and the layer's weight pointers, so
      * a bit probed for the FFN geometry does not answer for the attention
      * post-norm or the PLE gate, even where a given backend happens to
@@ -91,26 +87,16 @@ struct transformer_model_fusion_plan {
      * the prim UNCONDITIONALLY and propagates its status; bound false
      * selects the host path, decided once here rather than re-tested at
      * every call. Backend capability, so model-level rather than per-layer.
-     *
-     * These replaced call sites of the form
-     *
-     *     if (prims->op == nullptr || prims->op(...) != GEIST_OK) { host }
-     *
-     * which conflate "absent" with "failed". The second arm re-did work the
-     * op may already have done — layer.c's PLE combine carries a comment
-     * about exactly that hazard for `add`, while the `scale_f32` sites had
-     * the same shape and no such guard. Probe true ⇒ must succeed
-     * (geist_backend.h), so a failure is now returned, not papered over. */
+     * Never "absent or failed → host": a host retry could redo work the op
+     * already did, and a real failure must be returned. */
     bool prim_scale_f32; /* Metal + Vulkan; the CPU backends take the host loop */
     bool prim_silu;      /* every in-tree backend; gelu_tanh is the bound alternative */
 
     /* Same treatment for the one BACKEND vtable member that is optional and
-     * sits in a per-token path (#352 batch 3). buffer_copy exists on the
-     * batched-submit backends (Metal, Vulkan) and nowhere else: its whole
-     * point is that mapping a buffer would force those backends to flush a
-     * pending pipeline, so the copy stays on the device. The five call
-     * sites tested the pointer AND fell back to a host memcpy when the copy
-     * FAILED, which turns a real device error into a silent slow path. */
+     * sits in a per-token path. buffer_copy exists on the batched-submit
+     * backends (Metal, Vulkan) and nowhere else: mapping a buffer would force
+     * those backends to flush a pending pipeline, so the copy stays on the
+     * device. A failed copy is an error, not a cue for a host memcpy. */
     bool backend_buffer_copy;
 };
 
