@@ -16,6 +16,19 @@ measured line goes to GITHUB_STEP_SUMMARY next to whatever FILE held from
 the previous run (CI restores it from the last main run's cache), then FILE
 is overwritten with this run's numbers for the next one. No verdict rides
 on that comparison — a shared runner's spread is why the floors are coarse.
+
+--llama FILE gates on the RATIO to llama.cpp measured in the same job instead
+(FILE is `llama-bench -o json`, floors --min-prefill-ratio/--min-decode-ratio):
+
+  python3 benchmark/perf_gate.py --llama llama.json \
+      --min-prefill-ratio 0.6 --min-decode-ratio 0.5 < geist.jsonl
+
+An absolute tok/s floor cannot survive a hosted macOS runner: the Apple guard
+saw 23.9, 14.4 and 38.0 prefill tok/s on three consecutive Sundays from the
+same code, against a floor of 60. Whatever that runner is on a given day, it
+is the same for both engines in one job, so the ratio cancels most of it
+(benchmark/METHODOLOGY.md: "the ratio on your own box is the number that
+travels"). The ratio floors are cliff floors too.
 """
 import argparse
 import json
@@ -57,6 +70,47 @@ def summary_row(pp: float, tg: float, sha: str, record: Path | None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def llama_tps(path: Path) -> tuple[float, float]:
+    rows = json.loads(path.read_text())
+    pp = [r["avg_ts"] for r in rows if r.get("n_gen", 0) == 0]
+    tg = [r["avg_ts"] for r in rows if r.get("n_prompt", 0) == 0]
+    if not pp or not tg:
+        sys.exit(f"perf_gate: {path} lacks a prompt-only or gen-only row")
+    return float(pp[-1]), float(tg[-1])
+
+
+def ratio_report(g: tuple[float, float], l: tuple[float, float]) -> tuple[str, float, float]:
+    rp, rd = g[0] / l[0], g[1] / l[1]
+    md = ("| tok/s | prefill | decode |\n| :-- | --: | --: |\n"
+          f"| geist | {g[0]:.1f} | {g[1]:.1f} |\n| llama.cpp | {l[0]:.1f} | {l[1]:.1f} |\n"
+          f"| **ratio** | **{rp:.2f}×** | **{rd:.2f}×** |\n")
+    return md, rp, rd
+
+
+def ratio_gate(g: tuple[float, float], l: tuple[float, float], min_rp: float, min_rd: float) -> None:
+    md, rp, rd = ratio_report(g, l)
+    print(md)
+    # The numbers as a check-run annotation too: the step summary and the
+    # raw log are not readable through the checks API, an annotation is, so
+    # a red nightly names its own ratios wherever it is looked at.
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::notice title=geist vs llama.cpp::prefill {g[0]:.1f}/{l[0]:.1f} tok/s = {rp:.2f}x"
+              f" (floor {min_rp}), decode {g[1]:.1f}/{l[1]:.1f} tok/s = {rd:.2f}x"
+              f" (floor {min_rd})")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as fh:
+            fh.write("## geist vs llama.cpp, same runner, same model\n\n" + md + "\n")
+    bad = []
+    if rp < min_rp:
+        bad.append(f"prefill ratio {rp:.2f} < {min_rp}")
+    if rd < min_rd:
+        bad.append(f"decode ratio {rd:.2f} < {min_rd}")
+    if bad:
+        sys.exit("PERF REGRESSION vs llama.cpp: " + "; ".join(bad))
+    print("perf ratio gate: ok")
+
+
 def gate(line: str, min_prefill: float, min_decode: float) -> str | None:
     """Return an error string if below a floor, else None."""
     pp, tg = parse(line)
@@ -94,6 +148,9 @@ def main() -> None:
     ap.add_argument("--min-decode", type=float, default=0.0)
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--record", help="JSON file with the previous run's numbers; rewritten with this run's")
+    ap.add_argument("--llama", type=Path, help="llama-bench -o json from the same job: gate on the ratio")
+    ap.add_argument("--min-prefill-ratio", type=float, default=0.6)
+    ap.add_argument("--min-decode-ratio", type=float, default=0.5)
     args = ap.parse_args()
     if args.selftest:
         return _selftest()
@@ -105,6 +162,8 @@ def main() -> None:
             line = ln  # last JSON line wins (one seq-len)
     if not line:
         sys.exit("perf_gate: no JSON line on stdin (did bench_perf_sweep run?)")
+    if args.llama:
+        return ratio_gate(parse(line), llama_tps(args.llama), args.min_prefill_ratio, args.min_decode_ratio)
     err = gate(line, args.min_prefill, args.min_decode)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary or args.record:

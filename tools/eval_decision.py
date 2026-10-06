@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from datetime import datetime, timezone
+from functools import partial
 import hashlib
 import json
 import math
@@ -31,14 +32,8 @@ PROFILES = {
 NUMERIC = {"decision_dense", "decision_selected", "scorealt_dense"}
 
 
-def read_json(path):
-    def invalid(value):
-        raise ValueError(f"nonfinite JSON value: {value}")
-    return json.loads(path.read_text(), parse_constant=invalid)
-
-
-def write_json(path, value):
-    path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
+read_json = data.read_json
+write_json = partial(data.write_json, ensure_ascii=True)
 
 
 def load_cases(directory, split, purpose):

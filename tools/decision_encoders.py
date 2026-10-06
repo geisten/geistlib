@@ -7,31 +7,18 @@ would shorten are rejected before inference.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 import json
 import math
 from pathlib import Path
 import time
 
+from bench_decision import sha256
+from decision_dataset import read_json
 import decision_metrics as metrics
 
 
 class InputRejected(ValueError):
     """The complete request cannot be represented by this backend."""
-
-
-def read_json(path):
-    def invalid(value):
-        raise ValueError(f"nonfinite JSON: {value}")
-    return json.loads(Path(path).read_text(), parse_constant=invalid)
-
-
-def sha256(path):
-    h = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            h.update(block)
-    return h.hexdigest()
 
 
 def artifact_manifest(directory):
