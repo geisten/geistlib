@@ -39,8 +39,8 @@ void cpu_x86_linear_q6k_mN(
         size_t m, const float *x, const struct geist_weight *w, struct geist_backend *be, float *y);
 
 /* Bind the Q3_K kernels (q3k_gemv_m1 / q3k_gemm on w->raw; nothing is
- * allocated). False, and w untouched, when the shape is not a whole number of
- * 256-element blocks. */
-bool cpu_x86_linear_q3k_bind(struct geist_weight *w);
+ * allocated). w is Q3_K and has passed quant_weight_extent_ok, so n_in is a
+ * whole number of 256-element blocks. */
+void cpu_x86_linear_q3k_bind(struct geist_weight *w);
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_LINEAR_Q6K_H */

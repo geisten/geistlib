@@ -23,7 +23,7 @@ def load_module(name: str, relative: str):
 quality = load_module("bench_quality_perf", "tools/bench_quality_perf.py")
 apple_ab = load_module("bench_mac_ab", "tools/bench_mac_ab.py")
 revision_ab = load_module("bench_revision_ab", "tools/bench_revision_ab.py")
-ratio_gate = load_module("perf_ratio_gate", "benchmark/perf_ratio_gate.py")
+perf_gate = load_module("perf_gate", "benchmark/perf_gate.py")
 
 
 class PerfRatioGateTest(unittest.TestCase):
@@ -33,9 +33,8 @@ class PerfRatioGateTest(unittest.TestCase):
             llama.write_text(json.dumps([
                 {"n_prompt": 512, "n_gen": 0, "avg_ts": 100.0},
                 {"n_prompt": 0, "n_gen": 64, "avg_ts": 20.0}]))
-            geist = Path(d) / "geist.jsonl"
-            geist.write_text('{"metadata": {}, "measurement": {"prefill_tps": 130.0, "decode_tps": 18.0}}\n')
-            md, rp, rd = ratio_gate.report(ratio_gate.geist_tps(geist), ratio_gate.llama_tps(llama))
+            geist = '{"metadata": {}, "measurement": {"prefill_tps": 130.0, "decode_tps": 18.0}}'
+            md, rp, rd = perf_gate.ratio_report(perf_gate.parse(geist), perf_gate.llama_tps(llama))
             self.assertAlmostEqual(rp, 1.3)
             self.assertAlmostEqual(rd, 0.9)
             self.assertIn("**1.30×**", md)

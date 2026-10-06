@@ -30,9 +30,8 @@
 
 #include "linear_q4k_raw.h"
 
-#include "backend_state.h"
+#include "linear_util.h"
 
-#include "checked.h"
 #include "linear_ref.h"
 #include "quant.h"
 #include "quant_blocks.h"
@@ -56,47 +55,15 @@ constexpr size_t NR = 4;
 /* One activation row to int8 blocks of 256 (d = amax / 127, round to
  * nearest-even) plus each 32-element sub-block's integer sum. */
 static void quantize_row_q8_k(size_t nb, const float *x, int8_t *qx, float *dx, int32_t *sx) {
-    const __m256  abs_mask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
-    const __m256i perm     = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
-    const __m256i ones_u8  = _mm256_set1_epi8(1);
-    const __m256i ones_16  = _mm256_set1_epi16(1);
     for (size_t b = 0; b < nb; b++) {
-        const float *xb = x + b * QK;
-        __m256       m  = _mm256_setzero_ps();
-        for (size_t i = 0; i < QK; i += 8) {
-            m = _mm256_max_ps(m, _mm256_and_ps(_mm256_loadu_ps(xb + i), abs_mask));
-        }
-        __m128 m4        = _mm_max_ps(_mm256_extractf128_ps(m, 1), _mm256_castps256_ps128(m));
-        m4               = _mm_max_ps(m4, _mm_movehl_ps(m4, m4));
-        m4               = _mm_max_ss(m4, _mm_movehdup_ps(m4));
-        const float amax = _mm_cvtss_f32(m4);
-
+        const float *xb    = x + b * QK;
+        const float  amax  = amax_ps(QK, xb);
         dx[b]              = amax / 127.0f;
-        const __m256 scale = _mm256_set1_ps(amax > 0.0f ? 127.0f / amax : 0.0f);
+        const __m256 scale = q8_scale(amax);
         for (size_t c = 0; c < NSB; c++) {
-            const float *xc = xb + c * 32;
-            __m256i      i0 = _mm256_cvtps_epi32(
-                    _mm256_round_ps(_mm256_mul_ps(_mm256_loadu_ps(xc), scale),
-                                    _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-            __m256i i1 = _mm256_cvtps_epi32(
-                    _mm256_round_ps(_mm256_mul_ps(_mm256_loadu_ps(xc + 8), scale),
-                                    _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-            __m256i i2 = _mm256_cvtps_epi32(
-                    _mm256_round_ps(_mm256_mul_ps(_mm256_loadu_ps(xc + 16), scale),
-                                    _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-            __m256i i3 = _mm256_cvtps_epi32(
-                    _mm256_round_ps(_mm256_mul_ps(_mm256_loadu_ps(xc + 24), scale),
-                                    _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-            i0 = _mm256_packs_epi32(i0, i1);
-            i2 = _mm256_packs_epi32(i2, i3);
-            i0 = _mm256_permutevar8x32_epi32(_mm256_packs_epi16(i0, i2), perm);
-            _mm256_storeu_si256((__m256i *) (qx + b * QK + c * 32), i0);
-            const __m256i s32 = _mm256_madd_epi16(_mm256_maddubs_epi16(ones_u8, i0), ones_16);
-            __m128i       s4 =
-                    _mm_add_epi32(_mm256_castsi256_si128(s32), _mm256_extracti128_si256(s32, 1));
-            s4              = _mm_add_epi32(s4, _mm_shuffle_epi32(s4, _MM_SHUFFLE(1, 0, 3, 2)));
-            s4              = _mm_add_epi32(s4, _mm_shuffle_epi32(s4, _MM_SHUFFLE(2, 3, 0, 1)));
-            sx[b * NSB + c] = _mm_cvtsi128_si32(s4);
+            const __m256i q = quant32(xb + c * 32, scale);
+            _mm256_storeu_si256((__m256i *) (qx + b * QK + c * 32), q);
+            sx[b * NSB + c] = hsum_epi32(sum_i8(q));
         }
     }
 }
@@ -116,13 +83,6 @@ unpack_scales(const uint8_t packed[static 12], uint8_t sc[static 8], uint8_t mn[
     memcpy(sc + 4, &s1, 4);
     memcpy(mn, &m0, 4);
     memcpy(mn + 4, &m1, 4);
-}
-
-static inline float hsum_ps(__m256 s) {
-    __m128 s4 = _mm_add_ps(_mm256_castps256_ps128(s), _mm256_extractf128_ps(s, 1));
-    s4        = _mm_add_ps(s4, _mm_movehl_ps(s4, s4));
-    s4        = _mm_add_ss(s4, _mm_movehdup_ps(s4));
-    return _mm_cvtss_f32(s4);
 }
 
 /* One superblock format: Q4_K (4-bit q) or Q5_K (q gets a fifth bit from
@@ -269,20 +229,6 @@ static inline int32_t min_term(const uint8_t mn[static 8], const int32_t sx[stat
     }
 }
 
-/* The calling thread's workspace with room for m quantized activation rows
- * (int8 values, one fp32 scale per 256 and one int32 sum per 32), or
- * nullptr. */
-static struct cpu_x86_workspace *acquire_acts(struct geist_backend *be, size_t m, size_t n_in) {
-    size_t acts_bytes = 0, n_blocks = 0, scale_bytes = 0, n_sums = 0, sum_bytes = 0;
-    if (be == nullptr || be->state == nullptr || ckd_mul(&acts_bytes, m, n_in) ||
-        ckd_mul(&n_blocks, m, n_in / QK) || ckd_mul(&scale_bytes, n_blocks, sizeof(float)) ||
-        ckd_mul(&n_sums, m, n_in / 32) || ckd_mul(&sum_bytes, n_sums, sizeof(int32_t))) {
-        return nullptr;
-    }
-    return cpu_x86_ws_acquire_mN(
-            (struct cpu_x86_state *) be->state, acts_bytes, sum_bytes, scale_bytes, 0);
-}
-
 [[gnu::always_inline]] static inline void linear_m1(struct fmt                 f,
                                                     const float               *x,
                                                     const struct geist_weight *w,
@@ -291,7 +237,8 @@ static struct cpu_x86_workspace *acquire_acts(struct geist_backend *be, size_t m
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
     const size_t              nb    = n_in / QK;
-    struct cpu_x86_workspace *ws    = acquire_acts(be, 1, n_in);
+    struct cpu_x86_workspace *ws =
+            acquire_acts(be, 1, n_in, QK, 32); /* a scale per 256, a sum per 32 */
     if (ws == nullptr) {
         geist_linear_ref(1, x, w, y); /* no scratch: the reference needs none */
         return;
@@ -319,7 +266,7 @@ static struct cpu_x86_workspace *acquire_acts(struct geist_backend *be, size_t m
     const size_t              n_out = (size_t) w->n_out;
     const size_t              nb    = n_in / QK;
     const size_t              nsx   = n_in / 32;
-    struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in);
+    struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in, QK, 32);
     if (ws == nullptr) {
         geist_linear_ref(m, x, w, y);
         return;
@@ -389,22 +336,12 @@ static void cpu_x86_linear_q5k_mN(size_t                     m,
     linear_mN(FMT_Q5_K, m, x, w, be, y);
 }
 
-bool cpu_x86_linear_q4k_raw_bind(struct geist_weight *w) {
-    if (w == nullptr || w->dtype != GEIST_DTYPE_Q4_K || w->n_in <= 0 ||
-        (size_t) w->n_in % QK != 0) {
-        return false;
-    }
+void cpu_x86_linear_q4k_raw_bind(struct geist_weight *w) {
     w->linear_m1 = cpu_x86_linear_q4k_raw_m1;
     w->linear_mN = cpu_x86_linear_q4k_raw_mN;
-    return true;
 }
 
-bool cpu_x86_linear_q5k_bind(struct geist_weight *w) {
-    if (w == nullptr || w->dtype != GEIST_DTYPE_Q5_K || w->n_in <= 0 ||
-        (size_t) w->n_in % QK != 0) {
-        return false;
-    }
+void cpu_x86_linear_q5k_bind(struct geist_weight *w) {
     w->linear_m1 = cpu_x86_linear_q5k_m1;
     w->linear_mN = cpu_x86_linear_q5k_mN;
-    return true;
 }
