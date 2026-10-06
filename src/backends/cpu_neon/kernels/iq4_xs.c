@@ -3,12 +3,10 @@
  * decode GEMVs.
  *
  * Both formats store 4-bit indices into the fixed 16-value kvalues_iq4nl
- * table — exactly one vqtbl1q_s8 per 16 nibbles, no reconstruction
- * scratch. Block layouts from src/quant/quant_blocks.h. Replaces the
- * dequant-and-sgemv trampoline for M=1 (Pi 5 baseline: 4.4 tok/s decode
- * on a 0.8B IQ4_XS vs 13.2 on the twice-as-large Q8_0) and — for
- * IQ4_XS on non-Accelerate hosts — for M>1 via the #321 tile kernel
- * below. IQ4_NL prefill stays on the trampoline.
+ * table — one vqtbl1q_s8 per 16 nibbles, no reconstruction scratch.
+ * Block layouts from src/quant/quant_blocks.h. IQ4_XS also has an M>1
+ * tile kernel (used on non-Accelerate hosts); IQ4_NL prefill uses the
+ * dequant+SGEMM path.
  */
 #include "heap.h"
 #include "quant.h"
@@ -93,17 +91,11 @@ void linear_iq4xs_decode_w4a8(size_t      n_in,
     safe_free((void **) &x_q8);
 }
 
-/* ---- IQ4_XS int8 mN prefill (#321) ------------------------------------ *
- *
- * Replaces the dequant+SGEMM trampoline for M>1. Row-major sweep with a
- * 4-token register tile: each 136-byte block is LUT-decoded ONCE (16
- * vqtbl1q) and dotted against 4 activation rows, and the row's blocks
- * stay L1-resident across all token groups, so both decode work and
- * weight traffic amortize. Per (row, token) the op order matches the m1
- * kernel exactly — the output is bit-identical to calling it m times
- * (pinned by test_iq4_dequant_unit). No repack, no extra RSS; the
- * 8-row interleaved lane-SDOT variant stays a documented follow-up if
- * this plateau is not enough. */
+/* IQ4_XS int8 mN prefill (see #321). Row-major sweep with a 4-token
+ * register tile: each 136-byte block is LUT-decoded once and dotted
+ * against 4 activation rows; the row's blocks stay L1-resident across
+ * token groups. Per (row, token) the op order matches the m1 kernel, so
+ * the output is bit-identical to m decode calls (test_iq4_dequant_unit). */
 void linear_iq4xs_w4a8_prefill_pre(size_t        m,
                                    size_t        n_in,
                                    size_t        n_out,

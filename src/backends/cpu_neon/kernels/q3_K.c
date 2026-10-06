@@ -1,10 +1,9 @@
 /*
  * src/backends/cpu_neon/kernels/q3_K.c — Q3_K W3A8 NEON kernels.
  *
- * Block layout from src/quant/quant_blocks.h. Two helpers are
- * shared with the format-side dequant in src/formats/gguf/q3_K.c
- * (unpack_q3k_scales, q3k_reconstruct_q32); both are `static inline`
- * and duplicated here rather than promoted to a cross-layer header.
+ * Block layout from src/quant/quant_blocks.h. unpack_q3k_scales and
+ * q3k_reconstruct_q32 duplicate the static helpers in
+ * src/formats/gguf/q3_K.c; keep both copies in sync.
  */
 #include "quant_blocks.h"
 #include "heap.h"
@@ -23,7 +22,7 @@
 #include <omp.h>
 #endif
 
-/* Shared with formats/gguf/q3_K.c (pure scalar, format-decode helper). */
+/* Unpack the 12-byte packed scales into 16 signed 6-bit scales. */
 static inline void unpack_q3k_scales(const uint8_t *sc_packed, int8_t *sc_out) {
     for (int j = 0; j < 16; j++) {
         const uint8_t low4  = (uint8_t) ((sc_packed[j % 8] >> ((j / 8) * 4u)) & 0x0Fu);
@@ -33,7 +32,7 @@ static inline void unpack_q3k_scales(const uint8_t *sc_packed, int8_t *sc_out) {
 }
 
 #if defined(__ARM_NEON)
-/* Shared with formats/gguf/q3_K.c (NEON-only dequant helper). */
+/* Rebuild 32 signed 3-bit weights from 2 low bits (qs) and 1 high bit (hmask). */
 static inline void q3k_reconstruct_q32(uint8x16_t qs_shifted_lo,
                                        uint8x16_t qs_shifted_hi,
                                        uint8x16_t hm_shifted_lo,
@@ -51,7 +50,7 @@ static inline void q3k_reconstruct_q32(uint8x16_t qs_shifted_lo,
     *out_hi = vsubq_s8(vreinterpretq_s8_u8(vaddq_u8(low2_h, vshlq_n_u8(hi1_h, 2))), bias4);
 }
 
-/* Kernel-only: accumulator variant for the W3A8 inner loop. */
+/* Rebuild 32 weights, dot them with xb_g32 and add the scaled dots to acc. */
 static inline int32x4_t q3k_w3a8_acc32(int32x4_t     acc,
                                        uint8x16_t    qs_shifted_lo,
                                        uint8x16_t    qs_shifted_hi,
@@ -114,8 +113,7 @@ void linear_q3k_decode_w3a8_pre(size_t       n_in,
             const uint8x16_t qsB_lo = vld1q_u8(blk->qs + 32);
             const uint8x16_t qsB_hi = vld1q_u8(blk->qs + 48);
 
-            /* Accumulator-style: scaled int dots fold into int32x4_t via
-             * vmlaq_n_s32, reduce ONCE at end of super-block (1 vaddvq vs 16). */
+            /* Scaled dots accumulate in int32x4; one horizontal add per super-block. */
             int32x4_t int_acc = vdupq_n_s32(0);
             int_acc = q3k_w3a8_acc32(int_acc, qsA_lo, qsA_hi, hm_lo, hm_hi, xb + 0, sc[0], sc[1]);
             int_acc = q3k_w3a8_acc32(int_acc,

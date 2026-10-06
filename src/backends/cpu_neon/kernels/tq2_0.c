@@ -1,19 +1,16 @@
 /*
  * src/backends/cpu_neon/kernels/tq2_0.c — TQ2_0 W1.58×A8 NEON kernels.
  *
- * Layer: BACKEND (cpu_neon). Keeps the ternary (BitNet b1.58 / TQ2_0)
- * compute path separate from the shared weight resolver and the Q4_K/Q6_K
- * kernels.
- *
- * Owns the M=1 decode (q8a + fp32 fallback) and M>1 prefill paths for
- * TQ2_0 weights, plus the block-dot helpers and the per-row activation
- * absmax-quant. The pure file-format decoder (dequant_tq2_0_row) and the
- * block struct stay in src/formats/gguf/. The TL1 LUT path lives in tl1.c.
+ * Layer: BACKEND (cpu_neon). Ternary (BitNet b1.58) kernels: TQ2_0 and
+ * I2_S decode and prefill, the block-dot helpers and the per-row absmax
+ * activation quant. The format decoder (dequant_tq2_0_row) lives in
+ * src/formats/gguf/; the TL1 LUT path in tl1.c.
  *
  * Entry points (declared in internal.h, referenced by the resolver table):
  *   cpu_neon_w_tq2_0_q8a_m1  — M=1 decode, int8 SDOT (dotprod hosts)
  *   cpu_neon_w_tq2_0_q8a_mN  — M>1 prefill, int8 SDOT (dotprod hosts)
  *   cpu_neon_w_tq2_0_m1      — M=1 fp32 fallback (no-dotprod hosts)
+ *   cpu_neon_w_i2_s_q8a_m1 / _mN — I2_S decode / prefill
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -36,12 +33,9 @@
 #include <arm_neon.h>
 #endif
 
-/* P3.10: direct TQ2_0 W1.58 A32 NEON kernel — fused dequant+dot. The
- * dequant trampoline materializes 32-row tiles into fp32 then cblas_sgemv
- * — two memory passes per row + one extra MB of L2 churn per tile. This
- * fused path unpacks trits from the packed 2-bit format on-the-fly,
- * converts to fp32 inside NEON registers, and FMAs directly against the
- * activation, never writing the dequanted weights to memory.
+/* TQ2_0 W1.58 x A32 block dot, fused dequant + dot: trits are unpacked
+ * and converted to fp32 in registers and FMA'd against the activation,
+ * never written to memory. Used by the cpu_neon_w_tq2_0_m1 fallback.
  *
  * Block layout (per TQ2_0_BLOCK_ELEMS=256 elements, 66 bytes):
  *   qs[ 0..31]  — packed trits for first 128 elements. Byte (j+m), bit
@@ -50,18 +44,7 @@
  *   d[2]        — fp16 row scale.
  * trit ∈ {0,1,2} representing {-1, 0, +1}; final value = (q-1) * d.
  *
- * Each NEON inner stride handles 32 elements: load 16 packed bytes, then
- * per-l (compile-time unrolled) extract the 32 trits across the two
- * halves of the byte block, expand to int8 → int16 → int32 → fp32, and
- * fma against 32 contiguous activations.
- *
- * Theoretical: 8 fp32 FMAs per element across the 256-element block.
- * Versus the trampoline: same final FMA count, but no intermediate fp32
- * store/reload. Pi 5 A76 wins from L2 bandwidth savings on the
- * weight-row stream. */
-/* Used by cpu_neon_w_tq2_0_m1 fp32 fallback. Always compiled so the
- * fallback can be selected at runtime on dotprod-built binaries that
- * end up on non-dotprod hosts. */
+ */
 #if defined(__ARM_NEON)
 static inline float tq2_0_block_dot_neon(const uint8_t *qs, const float *xb) {
     const uint8x16_t three  = vdupq_n_u8(3);
@@ -70,8 +53,7 @@ static inline float tq2_0_block_dot_neon(const uint8_t *qs, const float *xb) {
 
 /* DO_PAIR(P, SHIFT, X_OFF): for the 16 packed bytes in `P`, extract
  * one trit per byte (the SHIFT-th 2-bit slot), convert to fp32, and
- * fma against `xb + X_OFF` (16 activations). Repeats for the 16
- * higher elements via a second invocation. */
+ * fma against `xb + X_OFF` (16 activations). */
 /* SHIFT==0: skip vshrq (the intrinsic requires shift ≥ 1); just mask. */
 #define DO_PAIR(P, SHIFT, X_OFF)                                                                    \
     do {                                                                                            \
@@ -123,13 +105,8 @@ static inline float tq2_0_block_dot_neon(const uint8_t *qs, const float *xb) {
 }
 #endif
 
-/* P3.11: W1.58 × A8 — int8 activation quant + ternary×int8 NEON dot.
- *
- * Where P3.10's W1.58 × A32 kernel did fp32 FMAs against fp32 trits,
- * this kernel quantizes the activation to int8 once per call and then
- * uses ARMv8.2 vdotq_s32 (4-way int8×int8 → int32) for the per-block
- * dot. Each vdotq replaces 4 vfmaq calls — fewer instructions and
- * higher throughput on Pi 5 A76 (ARM dotprod extension).
+/* W1.58 × A8: the activation is quantized to int8 once per call and each
+ * block is dotted with ARMv8.2 vdotq_s32 (int8×int8 → int32).
  *
  * Equivalence with HF's BitLinear at inference:
  *   y = round(x · s) · w_ternary · weight_d / s
@@ -137,35 +114,21 @@ static inline float tq2_0_block_dot_neon(const uint8_t *qs, const float *xb) {
  * where s = act_scale = 127/max|x|, x_q8 = round(x · s) clamped [-128,127],
  * and the per-block weight_d comes from TQ2_0's fp16 scale.
  *
- * Geist's forward.c already calls apply_bitnet_input_quant_inplace before
- * each BitLinear (round-trip fake-quant — x values are already
- * representable as int8/s). Re-quanting here is a no-op modulo rounding
- * (the second quant lands on the same grid). The cost is one O(n_in)
- * pass per kernel call (~2560 mul-round-cmp per matmul on 2B-4T;
- * negligible vs the ~6M dot ops). */
+ * The forward pass already fake-quantizes x before each BitLinear
+ * (apply_bitnet_input_quant_inplace), so re-quantizing here lands on the
+ * same grid; the cost is one O(n_in) pass per call. */
 #if defined(__ARM_NEON)
-/* Block dot product with deferred -1 bias.
- *
- * TQ2_0 trits are stored as {0, 1, 2} representing {-1, 0, +1}. The
- * "obvious" path subtracts 1 from each unpacked nibble before vdotq:
- *
- *   dot = Σ (trit_i - 1) × xq_i
- *
- * which costs one vsubq_s8 per nibble level (16 subs per 256-elem
- * block). The unbiased variant skips the subtract — vdotq sees raw
- * 0/1/2 weights — and the caller applies the bias correction once
- * per block:
+/* Block dot product with deferred -1 bias. Trits {0, 1, 2} encode
+ * {-1, 0, +1}; vdotq sees the raw codes and the caller folds the bias
+ * out once per block, saving a vsubq_s8 per nibble level:
  *
  *   dot_raw = Σ trit_i × xq_i        (this function)
  *   dot     = dot_raw - Σ xq_i        (caller, using precomputed bsum)
  *
- * Identical math, ~25% fewer NEON ops in the inner kernel. Pattern
- * mirrors llama.cpp's ggml_vec_dot_tq2_0_q8_K. */
+ * Same pattern as llama.cpp's ggml_vec_dot_tq2_0_q8_K. */
 static inline int32_t tq2_0_block_dot_q8a_neon_unbiased(const uint8_t *qs, const int8_t *xb) {
     const uint8x16_t three = vdupq_n_u8(3);
-    /* Two int32 accumulators so the Cortex-A76 / Apple-Silicon dual NEON
-     * pipes can issue independent vdotq_s32 instructions in parallel.
-     * Single-acc serializes the dependency chain. */
+    /* Two accumulators: independent vdotq chains for the two NEON pipes. */
     int32x4_t acc0 = vdupq_n_s32(0);
     int32x4_t acc1 = vdupq_n_s32(0);
 
@@ -228,13 +191,9 @@ static inline int32_t tq2_0_block_dot_q8a_neon_unbiased(const uint8_t *qs, const
     return vaddvq_s32(vaddq_s32(acc0, acc1));
 }
 
-/* MT=4 token-tile of the unbiased block dot. Unpacks the 16 trit
- * sub-vectors of one weight block ONCE and dots each against the SAME
- * position in FOUR tokens' activations (xb0..xb3), amortizing the 2-bit
- * unpack 4x — exactly bitnet.cpp's i2_s 1x4 register-blocking. The four
- * per-token int32 accumulators give natural dual-NEON-pipe ILP (no need
- * for the single-token acc0/acc1 split). Bit-identical to calling the
- * single-token dot four times (same vdotq ops, same order per token). */
+/* MT=4 token tile of the unbiased block dot: one weight-block unpack is
+ * dotted against four tokens (xb0..xb3), as bitnet.cpp's i2_s 1x4
+ * register blocking. Bit-identical to four single-token calls. */
 static inline void tq2_0_block_dot_q8a_neon_unbiased_mt4(const uint8_t *qs,
                                                          const int8_t  *xb0,
                                                          const int8_t  *xb1,
@@ -283,13 +242,9 @@ static inline void tq2_0_block_dot_q8a_neon_unbiased_mt4(const uint8_t *qs,
     out[3] = vaddvq_s32(a3);
 }
 
-/* MT=8 variant: unpack one weight block once, dot against 8 tokens —
- * amortizes the 2-bit unpack over 8 tokens (vs 4). Eight per-token int32
- * accumulators stay in registers; the transient weight sub-vector + the
- * 8 activation loads pressure but fit the 32 NEON registers. Bit-identical
- * to 8x the single-token dot. */
-/* Only referenced from the _OPENMP prefill tile below; a vanilla-mac
- * build (no libomp) hits -Werror=unused-function otherwise. */
+/* MT=8 variant: one weight-block unpack against 8 tokens; the eight
+ * accumulators fit the 32 NEON registers. Bit-identical to 8 single-token
+ * calls. Only the _OPENMP prefill panel uses it, hence [[maybe_unused]]. */
 [[maybe_unused]] static inline void tq2_0_block_dot_q8a_neon_unbiased_mt8(const uint8_t      *qs,
                                                                           const int8_t *const xb[8],
                                                                           int32_t out[8]) {
@@ -346,9 +301,7 @@ static inline int32_t q8a_block_bsum(const int8_t *xb) {
 }
 #endif
 
-/* Per-row work body for cpu_neon_w_tq2_0_q8a_m1. File-scope so both
- * the custom thread pool (which takes a function pointer) and the OMP
- * fallback can invoke it. */
+/* Per-row body for cpu_neon_w_tq2_0_q8a_m1, run by cpu_neon_parallel_rows. */
 struct q8a_m1_ctx {
     const uint8_t *W;
     const int8_t  *xq;
@@ -418,11 +371,8 @@ void cpu_neon_w_tq2_0_q8a_m1(const float               *x,
     const float act_scale     = 127.0f / max_abs;
     const float inv_act_scale = max_abs / 127.0f;
 
-    /* Thread-local int8 activation scratch — avoids reallocation per
-     * ~210 kernel calls per decode token. Grows on demand; released
-     * either at thread exit or via cpu_neon_release_thread_caches() at
-     * backend destroy time (review #4 / V12). The cache pointers live
-     * at file scope so the release helper can find them. */
+    /* Int8 activation scratch in the per-thread workspace; grows on
+     * demand, freed at backend destroy. */
     if (ws->m1_xq_cap < n_in) {
         safe_free((void **) &ws->m1_xq);
         ws->m1_xq = heap_alloc_array_aligned(int8_t, n_in);
@@ -445,9 +395,8 @@ void cpu_neon_w_tq2_0_q8a_m1(const float               *x,
     }
 
 #if defined(__ARM_NEON)
-    /* Precompute per-block sum-of-activations for the deferred -1 bias.
-     * One int32 per 256-element block. Reused across all n_out rows.
-     * File-scope TLS so backend destroy can release on demand. */
+    /* Per-block activation sums for the deferred -1 bias, one int32 per
+     * 256-element block, reused across all n_out rows. */
     if (ws->m1_bsum_cap < blocks_per_row) {
         safe_free((void **) &ws->m1_bsum);
         ws->m1_bsum = heap_alloc_array_aligned(int32_t, blocks_per_row);
@@ -461,8 +410,7 @@ void cpu_neon_w_tq2_0_q8a_m1(const float               *x,
     for (size_t b = 0; b < blocks_per_row; b++) {
         ws->m1_bsum[b] = q8a_block_bsum(xq + b * 256);
     }
-    /* Snapshot thread-local pointers so worker threads (whose own
-     * _Thread_local storage is NULL) see the main thread's buffers. */
+    /* Workers have their own workspaces; pass this thread's buffers. */
     const int32_t *const bsum_cache = ws->m1_bsum;
 #endif
 
@@ -479,19 +427,12 @@ void cpu_neon_w_tq2_0_q8a_m1(const float               *x,
     };
 
     cpu_neon_parallel_rows(n_out, q8a_m1_row_body, &ctx);
-    /* xq, bsum point to thread-local cache; nothing to free. */
 }
 
-/* P3.13: W1.58 × A8 prefill kernel (M>1). Per-input-row int8 quant
- * (each of the m activation rows has its own absmax/scale), then for
- * each (output_row, input_row) cell the dot reuses the same NEON
- * block kernel as M=1.
- *
- * Loop order: outer parallel-over-output-rows; inner serial-over-
- * input-rows. Each output row r streams its weight row through L1
- * once and dots against all m input rows in turn — good cache reuse
- * on the weight bytes (the dominant memory traffic). Each thread
- * holds its own (xq, inv_scales) scratch.
+/* W1.58 × A8 prefill (M>1). Each of the m activation rows is int8
+ * quantized with its own absmax, once, on the calling thread. Output
+ * rows are parallel; each streams its weight row once and dots it
+ * against all m activation rows.
  *
  * y layout: [m, n_out] row-major (same convention as cblas_sgemm). */
 struct q8a_mN_ctx {
@@ -595,9 +536,8 @@ void cpu_neon_w_tq2_0_q8a_mN(size_t                     m,
         return;
     }
 
-    /* Per-row int8 quant of x. Each row has its own absmax. xq is
-     * [m, n_in] int8; inv_scales[i] = max_abs_row_i / 127. File-scope
-     * TLS so backend destroy can release on demand (review #4 / V12). */
+    /* Per-row int8 quant of x: xq is [m, n_in], inv_scales[i] =
+     * max_abs_row_i / 127. */
     const size_t xq_need = m * n_in;
     if (ws->mN_xq_cap < xq_need) {
         safe_free((void **) &ws->mN_xq);
@@ -770,9 +710,8 @@ void cpu_neon_w_tq2_0_q8a_mN(size_t                     m,
     }
 }
 
-/* P3.10 fp32 fallback for pre-ARMv8.2 (no dotprod) hosts. Always compiled
- * so the resolver can select it at load time on dotprod-built binaries
- * that end up running on a non-dotprod CPU (cross-build / emulator). */
+/* fp32 fallback for hosts without dotprod. Always compiled so the
+ * resolver can select it on a non-dotprod CPU (cross-build / emulator). */
 void cpu_neon_w_tq2_0_m1(const float               *x,
                          const struct geist_weight *w,
                          struct geist_backend      *be,
@@ -1031,7 +970,7 @@ static inline void i2_s_block_dot_q8a_neon_unbiased_mt4(const uint8_t *qs,
 /* MT=8 i2_s block dot — 8 tokens per weight-block unpack (reversed shifts).
  * ACCUMULATES into the caller's int32x4 lanes ACROSS blocks (no per-block
  * horizontal reduce — the caller reduces once per row), keeping the vdotq
- * pipeline full. This is the structural prefill win. */
+ * pipeline full. */
 #if defined(__ARM_NEON)
 static inline void
 i2_s_block_dot_q8a_mt8_accum(const uint8_t *qs, const int8_t *const xb[8], int32x4_t acc[8]) {
@@ -1082,9 +1021,8 @@ static void i2s_mN_row_body(size_t r, void *vctx) {
     const float              sc  = c->scale;
     size_t                   i   = 0;
 #if defined(__ARM_NEON)
-    /* mt8 is the sweet spot: mt16 (16 accumulators) spills NEON registers on
-     * the A76 and regresses (measured 31 vs 48 tps). The unpack overhead is
-     * instruction-count-bound (~2 IPC) but can't be amortized wider here. */
+    /* 8 tokens per tile: 16 accumulators spill NEON registers on the A76
+     * and measured slower. */
     for (; i + 8 <= c->m; i += 8) {
         const int8_t  *xb[8];
         const int32_t *bs[8];
@@ -1156,7 +1094,7 @@ static void i2s_mN_row_body(size_t r, void *vctx) {
 }
 
 /* M>1 prefill: per-row int8 activation quant (shared across output rows), then
- * mt4 token-tiled dots reusing each weight row once. Mirrors tq2_0/q8a_mN. */
+ * mt8/mt4 token-tiled dots reusing each weight row once. Mirrors tq2_0/q8a_mN. */
 void cpu_neon_w_i2_s_q8a_mN(size_t                     m,
                             const float               *x,
                             const struct geist_weight *w,
@@ -1171,7 +1109,7 @@ void cpu_neon_w_i2_s_q8a_mN(size_t                     m,
     if (m == 0)
         return;
     if (ws == nullptr || m > GEIST_QUANT_M_CAP) {
-        geist_linear_ref(m, x, w, y); /* as the TQ2_0 kernel above */
+        geist_linear_ref(m, x, w, y);
         return;
     }
 

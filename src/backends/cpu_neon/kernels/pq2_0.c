@@ -20,8 +20,8 @@
  * after which each shift level of a 16-byte weight load is a plain
  * vdotq against 16 contiguous activation bytes.
  *
- * Entry point (declared in internal.h, referenced by the resolver table):
- *   cpu_neon_w_pq2_0_q8a_m1 — M=1 decode, int8 SDOT (dotprod hosts)
+ * Entry points are declared in internal.h and referenced by the resolver
+ * table; all need dotprod.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -105,12 +105,11 @@ pq2_0_prep(struct cpu_neon_workspace *ws, size_t n_in, const float *x, float *in
         !cpu_neon_grow_i32(&ws->m1_bsum, &ws->m1_bsum_cap, nb)) {
         return false;
     }
-    /* n_in is a whole number of 128-element blocks (checked above), so
-     * both loops run whole vectors. The quant loop is the permute at
-     * pq2_0_permute_x with an int8 convert bolted on: vld4q's four lanes
-     * are the four l values, and each of them lands as 4 contiguous
-     * bytes at 16*l + 4*q. Rounding is the scalar +-0.5-then-truncate,
-     * expressed as vcvtq (truncating), so the result is bit-identical. */
+    /* n_in is a whole number of blocks (checked above), so both loops run
+     * whole vectors. The quant loop is pq2_0_permute_x plus an int8
+     * convert: vld4q's four lanes are the four l values, each stored as 4
+     * contiguous bytes at 16*l + 4*q. Rounding is +-0.5 then truncate
+     * (vcvtq), bit-identical to the scalar quantizer. */
     float32x4_t mx = vdupq_n_f32(1e-5f);
     for (size_t i = 0; i < n_in; i += 4) {
         mx = vmaxq_f32(mx, vabsq_f32(vld1q_f32(x + i)));
@@ -222,11 +221,9 @@ void cpu_neon_w_pq2_0_q8a_pair_m1(const float               *x,
     cpu_neon_parallel_rows(n0 + n1, pq2_0_pair_body, &pc);
 }
 
-/* ---- x8: eight rows interleaved (decode) ---------------------------------
- *
- * The row kernel streams one 1.4-17 KB row per output and reaches ~55 GB/s
- * on the 27B; Q4_0's x8 layout (#291) shows what one sequential stream
- * serving eight rows buys. Block = 8 rows x 128 elements, 272 bytes:
+/* x8: eight rows interleaved (decode). One sequential stream serves eight
+ * output rows, as in Q4_0's x8 layout (#291). Block = 8 rows x 128
+ * elements, 272 bytes:
  *
  *   [8 x fp16 d][256 bytes of codes]
  *
@@ -261,10 +258,9 @@ void pq2_0_x8_pack(const void *src, size_t n_in, size_t n_out, void *dst) {
     const uint8_t *s  = (const uint8_t *) src;
     uint8_t       *d  = (uint8_t *) dst;
     const size_t   nb = n_in / PQ2_0_BLOCK_ELEMS;
-    /* Load-time repack of the whole tensor (7 GB on a 27B), so it runs
-     * over the threads and moves 4 bytes at a time: for a fixed (r, c)
-     * the destination index is contiguous in m within each group of 4,
-     * and so is the source. */
+    /* Load-time repack of the whole tensor (7 GB on a 27B): threaded, 4
+     * bytes at a time, since for fixed (r, c) both source and destination
+     * are contiguous in m within each group of 4. */
     const size_t n_tiles = n_out / 8;
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static) if (n_tiles > 1)
@@ -316,7 +312,7 @@ static void pq2_0_x8_tile_body(size_t tile, void *vctx) {
             const int8x16_t x1 = vld1q_s8(xb + ch * 64 + 16);
             const int8x16_t x2 = vld1q_s8(xb + ch * 64 + 32);
             const int8x16_t x3 = vld1q_s8(xb + ch * 64 + 48);
-/* lane index must be a literal: unrolled per lane j */
+/* vdotq_laneq_s32 needs a literal lane index, hence the macro. */
 #define PQ2_X8_LANE(j)                                                                 \
     do {                                                                               \
         const uint8x16_t w0_ = vld1q_u8(qs + ch * 128 + (j) * 16);                     \
@@ -401,21 +397,15 @@ void cpu_neon_w_pq2_0_x8_pair_m1(const float               *x,
     cpu_neon_parallel_rows(n0 / 8 + n1 / 8, pq2_0_pair_body, &pc);
 }
 
-/* ---- x8 prefill: dequant straight from the x8 copy + SGEMM ---------------
- *
- * The generic trampoline dequantizes 32-row tiles of the row-major source
- * with the scalar reference decoder, which also keeps the 7 GB mmap warm
- * next to the x8 copy. Here the tile comes out of the x8 layout with NEON,
- * in the codes' element order (xq order above: position 16l + m of a
- * 64-element chunk is element 4m + l), and x is permuted into the same
- * order once per call — a dot product does not care about the order of
- * its terms as long as both sides agree. */
+/* x8 prefill: NEON dequant straight from the x8 copy + SGEMM, so the
+ * row-major source mmap is not touched. Tiles come out in the codes'
+ * element order (position 16l + m of a 64-element chunk is element
+ * 4m + l) and x is permuted into the same order once per call; a dot
+ * product only needs both sides to agree on the order. */
 
 /* xp[t][b*128 + c*64 + 16l + m] = x[t][b*128 + c*64 + 4m + l]. */
 static void pq2_0_permute_x(size_t m, size_t n_in, const float *x, float *xp) {
-    /* Rows are independent; at m = 128 this is ~22 MB in and 22 MB out
-     * per layer, so leaving it on the calling thread parked the other
-     * cores in front of the tile loop. */
+    /* Threaded: at m = 128 this moves ~22 MB each way per layer. */
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static) if (m > 1)
 #endif
@@ -489,23 +479,13 @@ static void pq2_0_x8_dequant8(const uint8_t *W, size_t nb, size_t n_in, size_t t
 }
 
 /* Rows per dequant tile and per SGEMM call. Each thread dequantizes its
- * own tile and runs its own SGEMM, so dequant overlaps the AMX work of the
- * others. Measured on the 27B FFN matrix (M1 Max, 8 threads), GFLOP/s at
- * m = 64 / 128 / 256: T=32 642/878/1090, T=64 901/903/907, T=128
- * 901/1002/1134, T=256 920/1058/1090; the generic trampoline 628/765/676.
- * Dequantizing a shared panel for one big SGEMM lost at small m
- * (358/574/695 with 8192-row panels). Re-measured end to end on the 27B
- * with the panel dequant PARALLEL (the earlier note's was serial, so it
- * did not answer the question): 2048-row panels 12.46/12.46 t/s pp256 and
- * 8192-row 11.88/13.77 against 13.51/13.65 for these tiles. Per-thread
- * tiles win because each thread's dequant overlaps the others' AMX work;
- * a panel serializes the two phases. */
+ * own tile and runs its own SGEMM, so dequant overlaps the others' AMX
+ * work; a shared panel for one big SGEMM serializes the two phases and
+ * measured slower. 128 was the best tile size on the 27B (M1 Max). */
 constexpr size_t PQ2_0_X8_TILE_ROWS = 128;
 
-/* The tile loop, against an x already permuted into kernel order. Split
- * out so the pair path can permute once and run it twice: at m = 128 the
- * permute moves ~22 MB in and 22 MB out per layer, and gate/up or q/k/v
- * were each paying for it separately. */
+/* The tile loop, against an x already permuted into kernel order; the
+ * pair path permutes once and runs it twice. */
 static void pq2_0_x8_gemm_permuted(struct cpu_neon_state     *st,
                                    size_t                     m,
                                    size_t                     n_in,
@@ -575,7 +555,7 @@ void cpu_neon_w_pq2_0_x8_mN(size_t                     m,
     const uint8_t             *W     = (const uint8_t *) w->aux_fp32;
     const float               *xp    = pq2_0_permuted_x(ws, m, n_in, x);
     if (W == nullptr || xp == nullptr) {
-        geist_linear_ref(m, x, w, y); /* as the m1 kernels: the reference */
+        geist_linear_ref(m, x, w, y);
         return;
     }
     pq2_0_x8_gemm_permuted(st, m, n_in, n_out, W, xp, x, w, y);

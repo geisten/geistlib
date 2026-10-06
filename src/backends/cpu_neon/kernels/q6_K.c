@@ -2,10 +2,10 @@
  * src/backends/cpu_neon/kernels/q6_K.c — Q6_K W6A8 NEON kernels.
  *
  * Pure compute. Block layout from src/quant/quant_blocks.h; the
- * file-format decoder dequant_q6_K_row stays in src/formats/gguf/q6_K.c.
+ * dequantizer dequant_q6_K_row lives in src/formats/gguf/q6_K.c.
  *
- * Owns the M=1 decode (with deferred -32 bias correction), the M>1
- * prefill (per-row workspace allocation), and the FP32 reference.
+ * M=1 decode (deferred -32 bias), the x8 and predecoded repacks with
+ * their kernels, M>1 prefill, and an FP32 GEMV (linear_q6k_decode_fp32).
  */
 #include "quant_blocks.h"
 #include "heap.h"
@@ -390,18 +390,15 @@ void linear_q6k_decode_w6a8_pre(size_t       n_in,
 #if defined(__ARM_NEON)
     const size_t n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
 
-    /* Precompute per-(super-block, sub-block) activation sums for the
-     * deferred -32 bias. The Q6_K weight is encoded as q ∈ [0, 63];
-     * true value is (q - 32). The "obvious" path subtracts 32 from each
-     * element before vdotq_s32 (16 vsubq_s8 per super-block). Instead
-     * we use raw q in vdotq and correct once per super-block via
+    /* Per-(super-block, sub-block) activation sums for the deferred -32
+     * bias. Weights are q ∈ [0, 63] with value q - 32; vdotq uses raw q
+     * and each super-block is corrected once:
      *
      *   isum_mins = Σ_j scales[j] × bsums[j]
      *   row_acc  += d * scale_x * (isum_dots - 32 * isum_mins)
      *
-     * where bsums[j] is the sum of 16 contiguous int8 activations for
-     * sub-block j. Saves 16 vsubq_s8 per super-block (~25% of inner
-     * NEON ops). Mirrors ggml_vec_dot_q6_K_q8_K's deferred-bias trick. */
+     * where bsums[j] sums the 16 int8 activations of sub-block j. Saves 16
+     * vsubq_s8 per super-block (as ggml_vec_dot_q6_K_q8_K). */
     static _Thread_local int16_t *bsums_tl  = nullptr;
     static _Thread_local size_t   bsums_cap = 0;
     /* 16 int16 sub-block bsums per super-block. */
@@ -466,7 +463,6 @@ void linear_q6k_decode_w6a8_pre(size_t       n_in,
     }
 #endif
 #else
-    /* Scalar fallback for non-NEON: reuse FP32 reference by dequant-on-fly. */
     (void) x_q8;
     (void) scale_x;
     (void) w_q6k;
@@ -710,16 +706,9 @@ static void q6k_decode_one_row(size_t n, const struct q6k_pp_ctx *c) {
                           vmull_s16(vget_high_s16(q8sums.val[1]), vget_high_s16(q6scales.val[1]))));
         const int32_t isum_mins = vaddvq_s32(prod);
 
-        /* Inner dot accumulation as raw int32 (sum of stream contributions
-         * weighted by per-stream scales), without -32 subtract.
-         *
-         * Phase 1 NOTE: we tried the acc32 pattern here (sustained
-         * int32x4_t accumulator + vmlaq_n_s32 + single vaddvq_s32) and
-         * measured a -6 % regression on Mac M1. Q6_K already has 4
-         * independent vdotq_s32 + scalar fold pattern that keeps the
-         * NEON and integer pipelines busy in parallel; the acc32 change
-         * collapses both into the NEON pipeline and loses ILP. Leaving
-         * the explicit scalar isum here is the right shape for Q6_K. */
+        /* Raw int32 dot (per-stream scaled, no -32 subtract). Off Pi 5 the
+         * scalar fold keeps NEON and integer pipes busy in parallel; an
+         * int32x4 vmlaq accumulator measured ~6% slower on M1. */
 #if defined(GEIST_TARGET_PI5)
         int32x4_t isumv = vdupq_n_s32(0);
 #else
@@ -801,13 +790,11 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
     const struct block_q6_K_t *w                = (const struct block_q6_K_t *) w_q6k;
     const size_t               n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
 
-    /* Activation packing (§10.11): pack x ONCE into block-major layout
-     * packed[(b*m + t)*256 + e] so per-token reads are sequential instead of
-     * strided by n_in (=6144 for down) — the same lever that won gate_up
-     * (+4-6%, L1-miss 2.4%->0.95%). down is the #1 prefill gap vs llama-BLAS:
-     * strided access made it slower AND thrash at large m. GEIST_Q6K_PACK_ACT=0
-     * disables. Reused thread-local high-water buffer (kernel runs on the single
-     * layer-loop thread; its omp panels only READ the buffer). m<2 skipped. */
+    /* Pack x once into block-major layout packed[(b*m + t)*256 + e] so
+     * per-token reads are sequential instead of strided by n_in.
+     * GEIST_Q6K_PACK_ACT=0 disables; skipped for m < 2. Thread-local
+     * high-water buffer: filled by the calling thread, only read by the
+     * omp panels. */
     static _Atomic int q6k_pack_act = -1;
     int                pack_on      = atomic_load_explicit(&q6k_pack_act, memory_order_relaxed);
     if (pack_on < 0) {
@@ -860,10 +847,9 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
             240, /* half 1: sub0, sub16 */
     };
 
-/* Recon-once-per-block (Plan A §10.3): unpack a Q6_K block ONCE into a
- * 16×int8x16 L1 scratch (QREG) + per-vector int32 scales (SREG); all m
- * tokens then SDOT against it. Bit-identical (same integer ops + deferred
- * fp32 scale). Uses mask_lo4/mask_lo2/bias_32 + sub_off from the caller. */
+/* Unpack a Q6_K block once into 16 int8x16 vectors (QREG) and their int32
+ * scales (SREG); all m tokens then SDOT against it. Uses mask_lo4,
+ * mask_lo2 and bias_32 from the caller. */
 #define Q6K_RECON_BLOCK(BLK, QREG, SREG)                                                           \
     do {                                                                                           \
         int g_ = 0;                                                                                \
@@ -901,10 +887,8 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
 
     const size_t n_pairs = n_out / 2;
 
-    /* NR=2 microkernel (Plan A + NR-tiling §10.3): compute TWO output rows per
-     * activation read so each x[token,block] L2 load feeds both rows' SDOTs —
-     * halves activation L2->L1 traffic, which is the bound once recon is
-     * amortized. qreg0/qreg1 (1 KB total) live in L1 scratch. */
+    /* NR=2 microkernel: two output rows per activation read, halving
+     * activation L2->L1 traffic (the bound once recon is amortized). */
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(dynamic, 2)
 #endif
@@ -1001,8 +985,7 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
         }
     }
 
-    /* NR=1 tail for odd n_out (n_out=1536 is even for Gemma 4 down, so this is
-     * a correctness fallback). */
+    /* NR=1 tail for odd n_out. */
     for (size_t n = n_pairs * 2; n < n_out; n++) {
         const struct block_q6_K_t *row = w + n * n_blocks_per_row;
         float                      accs[GEIST_QUANT_M_CAP] __attribute__((aligned(16)));
@@ -1176,14 +1159,12 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4(size_t        m,
         const size_t                      valid_nr = (nt * 4 + 4 <= n_out) ? 4 : (n_out - nt * 4);
         const struct q6k_predecode_block *tile     = w + nt * n_blocks_per_row * 4;
 
-        /* Recon-free deferred-int32 microkernel (Plan B §10.4): qs is already the
-         * dequantized int8 weight in element order, so the dot is pure SDOT — no
-         * 6-bit unpack. NR=4 rows (contiguous in the ntile4 pack) × MR=2 tokens:
-         * each x[token,sub] load feeds all 4 rows; per-block int32 accumulation
-         * with int scales[is] and ONE vaddvq per (row,token,block) — the deferred
-         * scale that the original per-sub-fp32 kernel lacked. Padded rows (n>=
-         * n_out) are zero in the pack, so all 4 rows compute branch-free; only
-         * valid_nr outputs are written. */
+        /* qs is already the int8 weight in element order, so the dot is pure
+         * SDOT. NR=4 rows (contiguous in the ntile4 pack) × MR=2 tokens: each
+         * x[token,sub] load feeds all 4 rows; int32 accumulation with integer
+         * scales and one vaddvq per (row, token, block). Padded rows
+         * (n >= n_out) are zero in the pack, so all 4 rows compute
+         * branch-free; only valid_nr outputs are written. */
         size_t mt = 0;
         for (; mt + 2 <= m; mt += 2) {
             const float sx0   = scale_x[mt + 0];
