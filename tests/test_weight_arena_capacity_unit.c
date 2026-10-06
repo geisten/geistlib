@@ -7,9 +7,8 @@
  * backend's resolve_weight refuses it, and in arena mode that stages the
  * source a second time and adds the F32 copy. Metal refuses F16, leaves the
  * cap false (it defaults to mmap-alias) and still runs the arena under
- * GEIST_WEIGHT_MMAP=0: llama-3.2-3B with F16 attn_k ran ~500 MB past the
- * arena at blk.22. compute_weight_arena_capacity only counted the widen when
- * the cap was set.
+ * GEIST_WEIGHT_MMAP=0, so compute_weight_arena_capacity must count the
+ * widen whether or not the cap is set.
  *
  * A two-tensor in-memory GGUF (a 32x64 F16 matrix, a 16-element F32 vector)
  * and a descriptor carrying nothing but caps: the capacity is the same with

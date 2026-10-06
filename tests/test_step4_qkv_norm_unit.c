@@ -1,5 +1,5 @@
 /*
- * test_step4_qkv_norm — Step 4 of Sub-Task D.
+ * test_step4_qkv_norm_unit — Gemma 4 parity step 4.
  *
  * Embedding -> input_layernorm -> {Q,K,V} proj -> {Q,K,V} norm
  * (norms are per-head RMSNorm on last dim head_dim=256).

@@ -2,13 +2,11 @@
  * test_tensor_view_unit — malformed tensor views must be refused, on
  * every CPU backend (issue #330).
  *
- * The elementwise ops used to unpack a view by folding shape[0..ndim)
- * with an unchecked multiply and adding `offset` to the host pointer.
- * ndim was tested for >= 1 but never against the eight slots shape[]
- * actually has, the product could wrap, the resulting byte range was
- * never compared with the buffer, and alignment was not considered. Each
- * case below is one of those, aimed at whichever CPU backends this build
- * contains — the point is that they agree.
+ * The elementwise ops unpack a view by folding shape[0..ndim) and adding
+ * `offset` to the host pointer. Each case below breaks one check that
+ * unpacking needs — ndim within the eight slots shape[] has, a product
+ * that does not wrap, a byte range inside the buffer, alignment — aimed at
+ * whichever CPU backends this build contains; the point is that they agree.
  *
  * The positive control matters as much as the rejections: a validator
  * that refuses everything would pass a suite of only negative cases.
@@ -98,7 +96,7 @@ static void run_backend(const char *backend) {
     t.ndim = 0;
     expect_rejected(be, backend, &good, &t, &y, "ndim = 0 accepted");
 
-    /* shape[] has eight slots; ndim was only ever checked for >= 1. */
+    /* shape[] has eight slots. */
     t      = b;
     t.ndim = 9;
     expect_rejected(be, backend, &good, &t, &y, "ndim = 9 accepted (shape[] holds 8)");

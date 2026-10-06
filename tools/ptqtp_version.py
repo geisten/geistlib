@@ -1,8 +1,7 @@
 """ptqtp_version — single source of truth for the PTQTP algorithm version.
 
-Imported by every PTQTP entry point (`ptqtp_quantize_full.py`,
-`ptqtp_single_tensor.py`, `ptqtp_quality_probe.py`) and by the P0 paper-
-parity test. Recipe artifacts emitted by the quantizer must record this
+Imported by the PTQTP entry point (`ptqtp_single_tensor.py`) and by the P0
+paper-parity test. Recipe artifacts emitted by the quantizer must record this
 string so a later reader can tell which algorithm produced them.
 
 ## Versioning rule

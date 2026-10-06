@@ -89,9 +89,8 @@ int main(void) {
     /* The per-layer owning-buffer list must hold every tensor one layer
      * loads, and a BitNet embedding layer is the widest case: 2 block norms
      * + 2 QK norms + 4 attention projections + 3 FFN projections = 11, plus
-     * the 7 per-projection input norms = 18. When the list was sized 16 the
-     * seventh norm overflowed it, and layer_track_buf turns that into a
-     * load failure on the last tensor it happens to reach --
+     * the 7 per-projection input norms = 18. An overflow surfaces as
+     * layer_track_buf's load failure on whichever tensor it reaches --
      * 'layer buffer list overflow on blk.0.ffn_down_norm_in.weight' -- which
      * names a symptom, not the cause. Pin the capacity so growing a family
      * by one tensor fails here, at a line that says what is wrong. */

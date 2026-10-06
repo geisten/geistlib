@@ -253,13 +253,10 @@ def read_tensor_infos(path: Path) -> dict[str, tuple[int, int]]:
 
 
 def test_norms_are_f32() -> None:
-    """Every 1-D norm must be F32, because geistlib's loader accepts nothing else.
+    """Every 1-D norm must be written F32, even where the projections are F16.
 
-    load_norm_1d (src/archs/transformer/weight_load/layer_wiring.c:65) and the
-    output_norm path (:866) both reject a non-F32 norm outright, so a converter
-    that follows upstream's F16 tensor-type table produces a file this engine
-    refuses to load. That failure is invisible until a real checkpoint is on
-    disk, which is exactly why it is pinned here.
+    Every norm kernel reads F32 gammas; the converter must not follow
+    upstream's F16 tensor-type table for them.
     """
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

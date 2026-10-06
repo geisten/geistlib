@@ -84,7 +84,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Pick representative tensors of each new dtype. */
+    /* Pick representative tensors of each dtype. */
     const struct gguf_tensor_t *iq2s = gguf_get_tensor(ctx, "blk.0.attn_q.weight");
     const struct gguf_tensor_t *iq3s = gguf_get_tensor(ctx, "blk.0.attn_output.weight");
     if (iq2s) {

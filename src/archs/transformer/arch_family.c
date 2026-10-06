@@ -4,8 +4,8 @@
  *
  * Layer: ARCHITECTURE.
  *
- * Registry: gemma4, llama, bitnet-b1.58, bitnet — a static array iterated
- * linearly; no hash table needed at this size.
+ * Registry: gemma4, gemma3, llama, qwen3, qwen35, bitnet-b1.58, bitnet — a
+ * static array searched linearly.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -18,7 +18,7 @@
 #include <stdio.h>
 #include <string.h>
 
-/* ---- Gemma 4 (current default) ---------------------------------------- */
+/* ---- Gemma 4 ----------------------------------------------------------- */
 
 /* Fallback attention pattern for GGUFs without the
  * gemma4.attention.sliding_window_pattern key: the E2B layout — 4
@@ -99,8 +99,7 @@ static bool populate_layers_gemma4(struct transformer_arch_state *st) {
     }
 
     /* KV sharing: the LAST shared_kv_layers layers alias earlier
-     * caches. E2B: 35-20 → owners 0..14 (matches the old hardcoded
-     * threshold 15). E4B: 42-18 → owners 0..23. */
+     * caches. E2B: 35-20 → owners 0..14. E4B: 42-18 → owners 0..23. */
     uint32_t shared_kv = 20;
     if (g != nullptr)
         gguf_get_meta_u32(g, "gemma4.attention.shared_kv_layers", &shared_kv);
@@ -160,8 +159,8 @@ static bool populate_layers_gemma4(struct transformer_arch_state *st) {
     }
 
     /* KV-share sources: each shared layer reads the cache of the LAST
-     * owner layer of its own attention type. E2B: full←14, sliding←13
-     * (the previously hardcoded values). E4B: full←23, sliding←22. */
+     * owner layer of its own attention type. E2B: full←14, sliding←13.
+     * E4B: full←23, sliding←22. */
     int last_full = -1, last_sliding = -1;
     for (size_t i = 0; i < kv_share_threshold; i++) {
         if (st->layers[i].is_full)
@@ -177,7 +176,7 @@ static bool populate_layers_gemma4(struct transformer_arch_state *st) {
     return true;
 }
 
-/* ---- Llama (P1.5.d) --------------------------------------------------- */
+/* ---- Llama ------------------------------------------------------------- */
 
 static void populate_llama(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
     /* Neutral config from state_create covers Llama; the two family
@@ -210,13 +209,9 @@ static bool populate_layers_llama(struct transformer_arch_state *st) {
     /* Llama is uniform: all layers full-attention, no KV sharing,
      * head_dim derived from d_model / n_q_heads. RoPE rotates the
      * full head_dim (no partial rotation like Gemma's 25% on full
-     * layers). FFN intermediate is uniform via feed_forward_length.
-     *
-     * The actual feed_forward_length must come from meta — we cache
-     * it from llama.feed_forward_length once. Pull it lazily here. */
+     * layers). FFN intermediate is uniform: llama.feed_forward_length. */
     const size_t head_dim     = (st->n_q_heads > 0) ? (st->d_model / st->n_q_heads) : 0;
     uint32_t     intermediate = 0;
-    /* Re-read from the GGUF cached on st. */
     if (st->gguf != nullptr) {
         gguf_get_meta_u32((struct gguf_ctx *) st->gguf, "llama.feed_forward_length", &intermediate);
     }
@@ -230,7 +225,7 @@ static bool populate_layers_llama(struct transformer_arch_state *st) {
         L->kv_out                           = st->n_kv_heads * head_dim;
         L->intermediate                     = intermediate;
         L->sliding_window                   = 0;
-        L->rope_theta                       = 100000.0f; /* default; populator should override */
+        L->rope_theta                       = 100000.0f; /* default; freq_base overrides below */
         L->n_rotated_dims                   = (int) head_dim;
     }
     /* RoPE theta override from llama.rope.freq_base. */
@@ -260,8 +255,6 @@ static bool populate_layers_llama(struct transformer_arch_state *st) {
  *   norms as tensors only, and the pooling as gguf-py's standard numeric
  *   `{arch}.pooling_type`.
  *
- * Reading only our converter's keys meant a user had to re-convert from
- * ~1.2 GB of safetensors to reach a model that ships as a ready-made GGUF.
  * Both spellings are read here; neither weakens the guarantee that the file
  * has to actually contain what the metadata promises.
  */
@@ -269,8 +262,7 @@ static void populate_bitnet_embedding_meta(struct gguf_ctx               *gguf,
                                            const char                    *arch,
                                            struct transformer_arch_state *st) {
     /* Projection-input norms. The TENSOR is the evidence — metadata must
-     * not promise norms the file lacks, which is why the key alone was
-     * never enough and is why the key is now not required at all. An
+     * not promise norms the file lacks, so the key is not required. An
      * explicit `false` still wins, so a converter can opt out. */
     const bool have_norm_tensors = gguf_get_tensor(gguf, "blk.0.attn_q_norm_in.weight") != nullptr;
     bool       proj_norms        = true;
@@ -304,7 +296,7 @@ static void populate_bitnet_embedding_meta(struct gguf_ctx               *gguf,
     }
 }
 
-/* ---- Qwen3 (#275) ------------------------------------------------------ */
+/* ---- Qwen3 ------------------------------------------------------------- */
 /*
  * Llama-style uniform stack (GQA, SwiGLU, full attention, no KV sharing,
  * no PLE, no softcap) with two deviations:
@@ -496,7 +488,7 @@ static bool populate_layers_gemma3(struct transformer_arch_state *st) {
     return true;
 }
 
-/* ---- qwen35 (Qwen3.5/3.6/3.8 hybrid, #281) ----------------------------- */
+/* ---- qwen35 (Qwen3.5/3.6/3.8 hybrid) ----------------------------------- */
 /*
  * Hybrid token-mixer stack: with full_attention_interval N (default 4),
  * layer i is softmax attention iff (i+1) % N == 0, else gated DeltaNet
@@ -547,7 +539,7 @@ static void populate_qwen35(struct gguf_ctx *gguf, struct transformer_arch_state
         if (gguf_get_meta_array_info(gguf, "tokenizer.ggml.tokens", &elem_vt, &count, &payload))
             st->vocab_size = (size_t) count;
     }
-    /* DeltaNet geometry. GGUF key mapping (see #281 spec): state_size =
+    /* DeltaNet geometry. GGUF key mapping (#281): state_size =
      * head_k (= head_v), group_count = n_k_heads, time_step_rank =
      * n_v_heads, inner_size = n_v_heads * head_v. */
     if (gguf_get_meta_u32(gguf, "qwen35.ssm.group_count", &u))
@@ -624,15 +616,14 @@ static bool populate_layers_qwen35(struct transformer_arch_state *st) {
     return true;
 }
 
-/* ---- BitNet b1.58 (P1.3) --------------------------------------------- */
+/* ---- BitNet b1.58 ------------------------------------------------------ */
 /*
  * BitNet b1.58 is Llama-style transformer with two architectural
  * additions over the Llama family populator:
  *
  *   1. SubLN: an extra RMSNorm before each BitLinear (between
- *      attn-output and o_proj, between FFN activation and down_proj).
- *      Forward path is in P1.4; we set has_sub_ln so the loader knows
- *      to pull the extra norm weights.
+ *      attn-output and o_proj, between FFN activation and down_proj),
+ *      gated by has_sub_ln.
  *
  *   2. FFN activation: BitNet b1.58 2B-4T (Microsoft flagship) uses *gated*
  *      squared-ReLU — relu(gate)^2 * up, with gate/up/down all present (HF
@@ -641,17 +632,17 @@ static bool populate_layers_qwen35(struct transformer_arch_state *st) {
  *      default by general.architecture ("bitnet-b1.58" -> gated squared-ReLU,
  *      "bitnet" -> SwiGLU) and a *.feed_forward_activation key overrides it.
  *
- * Tensor weights are TQ2_0 (see P1.2). Tokenizer is Llama3-style BPE
- * for 2B-4T, Llama2-style SentencePiece for 3B — both routed through
- * the existing GGUF-embedded tokenizer path.
+ * Tensor weights are typically TQ2_0. Tokenizer is Llama3-style BPE
+ * for 2B-4T, Llama2-style SentencePiece for 3B — both through the
+ * GGUF-embedded tokenizer path.
  */
 static enum geist_ffn_activation_kind ffn_activation_from_meta(struct gguf_ctx *gguf) {
     /* Read general.architecture + an optional *.feed_forward_activation override
      * and let geist_ffn_activation_select (pure, unit-tested) decide. The default
      * is arch-keyed because the activation is NOT in the GGUF and the BitNet
      * families differ: "bitnet-b1.58" (Microsoft 2B-4T) needs gated squared-ReLU
-     * — verified MMLU 25.5% (SwiGLU, chance) -> 50% (relu2, ~published ~53%) —
-     * while community "bitnet" uses SwiGLU. The official 2B-4T converter / mainline
+     * (SwiGLU scores chance on MMLU) while community "bitnet" uses SwiGLU.
+     * The official 2B-4T converter / mainline
      * llama.cpp don't emit the activation key. */
     size_t      al = 0, len = 0;
     const char *arch = gguf_get_meta_string(gguf, "general.architecture", &al);

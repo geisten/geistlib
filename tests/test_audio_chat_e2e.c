@@ -11,8 +11,7 @@
  * opposed to merely "the pipeline runs without crashing"). Failures
  * here usually indicate one of:
  *   - audio encoder quantization regressed quality below recognition
- *   - chat-template wrap was changed and no longer matches Gemma 4
- *     audio query format
+ *   - chat-template wrap does not match the Gemma 4 audio query format
  *   - PLE soft-token injection regressed
  *   - WAV file changed or model was re-quantized
  *
@@ -56,8 +55,8 @@ struct audio_case {
     const char *expect_any[4];
 };
 
-/* Hand-curated from observed Gemma 4 E2B responses on these clips at
- * commit 528f1ab6. Each expected-keyword set captures the SEMANTIC
+/* Hand-curated from observed Gemma 4 E2B responses on these clips.
+ * Each expected-keyword set captures the SEMANTIC
  * content of the spoken phrase, not a specific phrasing - the model
  * may answer the question ("capital of Afghanistan?" -> "Kabul"),
  * repeat the words ("fox jumps over"), or acknowledge in some other
@@ -110,8 +109,7 @@ static struct audio_case cases[] = {
         },
 };
 
-/* Chunk-walking WAV reader (audio_test_util.h) — the fixed-44-byte
- * shortcut mis-read ffmpeg WAVs with a LIST chunk (#268). */
+/* Chunk-walking WAV reader (audio_test_util.h); handles ffmpeg's LIST chunk. */
 static int16_t *read_wav_pcm(const char *path, size_t *n_samples_out, int *sample_rate_out) {
     return audio_test_read_wav(path, n_samples_out, sample_rate_out);
 }
@@ -141,10 +139,7 @@ static enum geist_status tokenize_drop_bos(struct geist_session *s,
  *      becomes a regular space - lets prompts written with normal text
  *      match the model's "▁word" pieces.
  *   2. Control bytes < 0x20 (except real whitespace 0x09 \t, 0x0A \n,
- *      0x0D \r) are stripped. geist_session_token_to_str used to return
- *      tokenizer.bin pieces unterminated, so the next entry's length byte
- *      trailed each one ("Lam" -> "Lam\x12") and fragmented "Lampe"; the
- *      strings are NUL-terminated now (test_token_to_str_unit). */
+ *      0x0D \r) are stripped. */
 static void normalize_sp(const char *in, char *out, size_t out_cap) {
     size_t j = 0;
     for (size_t i = 0; in[i] != '\0' && j + 1 < out_cap; i++) {

@@ -18,8 +18,7 @@
  * produces deltas far above 2 — verified: garbage variants score
  * >20) and (b) no argmax flip where the reference top-2 gap exceeds
  * that jitter. Greedy continuations are informational: each step
- * re-rolls the jitter, so exact chain equality is platform luck
- * (holds on Accelerate, flipped once on the 4-core CI runner).
+ * re-rolls the jitter, so exact chain equality is platform luck.
  *
  * Two prompt lengths: one inside a single engine batch (m_max = 64)
  * and one spanning multiple batches, which additionally exercises the

@@ -125,8 +125,8 @@ int main(void) {
                                   .n_in       = N_IN,
                                   .n_out      = N_OUT,
                                   .dtype      = GEIST_DTYPE_IQ4_NL};
-        /* 256/32 = 8 blocks/row x 18 B = 144 B/row < 136*... reuse blob,
-         * pin each block's d. */
+        /* 256/32 = 8 blocks/row x 18 B = 144 B/row: reuse the blob, pin
+         * each block's d. */
         for (int r = 0; r < N_OUT; r++) {
             for (int b = 0; b < N_IN / 32; b++) {
                 put_f16_one(wblob + (size_t) r * (N_IN / 32) * 18 + (size_t) b * 18);

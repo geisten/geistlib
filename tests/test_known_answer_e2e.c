@@ -4,9 +4,9 @@
  * Scores a handful of trivial cloze facts by LOG-PROBABILITY (argmax over the
  * first token of each candidate continuation), NOT by free generation — greedy
  * decoding loops or drifts on base models even when the logits are fine, so a
- * generation-based known-answer check would be flaky. Logprob cloze is exactly
- * what MMLU does (gemma scores 52.8% that way), and it is what caught the BitNet
- * 2B-4T relu2 bug: a broken forward scores at chance here, a sane one aces these.
+ * generation-based known-answer check would be flaky. Logprob cloze is what MMLU
+ * does: a broken forward (e.g. a wrong FFN activation) scores at chance here, a
+ * sane one aces these.
  *
  * Gated on GEIST_GGUF_PATH (skips cleanly without it). Runs against whatever
  * model is pointed at — gemma in CI, a BitNet GGUF locally — so it guards every

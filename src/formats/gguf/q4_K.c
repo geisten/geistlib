@@ -1,13 +1,9 @@
 /*
  * src/formats/gguf/q4_K.c — Q4_K block dequantization.
  *
- * Pure file-format decoder: reads on-disk Q4_K super-blocks
- * (144 bytes / 256 elements) and produces FP32 output. Backend-
- * agnostic; the W4A8 NEON kernels that consume the same block
- * layout live in src/backends/cpu_neon/kernels/q4_K.c.
- *
- * The struct block_q4_K_t lives in internal.h so the NEON kernels
- * can also see the layout.
+ * Pure file-format decoder: Q4_K super-blocks (144 bytes / 256 elements)
+ * to FP32. The W4A8 NEON kernels live in src/backends/cpu_neon/kernels/q4_K.c;
+ * both share struct block_q4_K_t from quant_blocks.h.
  */
 #include "quant_blocks.h"
 #include "quant.h"
@@ -19,9 +15,8 @@ void dequant_q4_K_row(size_t n_elems, const void *blocks, float out[static n_ele
     const struct block_q4_K_t *b  = (const struct block_q4_K_t *) blocks;
     size_t                     nb = n_elems / Q4_K_BLOCK_ELEMS;
 
-    /* Note: gcc -O3 -march=native auto-vectorizes the inner loops well. A
-     * hand-rolled NEON path benchmarked 2× slower on Pi 5 (Cortex-A76) due
-     * to register pressure / spill — leave the auto-vectorizer to it. */
+    /* Left to the auto-vectorizer: a hand-written NEON version was slower
+     * on Pi 5 (register spills). */
     for (size_t i = 0; i < nb; i++) {
         const float    d    = fp16_to_fp32(b[i].d);
         const float    dmin = fp16_to_fp32(b[i].dmin);

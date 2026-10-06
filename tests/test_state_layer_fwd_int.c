@@ -1,15 +1,16 @@
 /*
- * test_state_layer_fwd_int — Phase B-4e sub-step 2a verification.
+ * test_state_layer_fwd_int — one transformer layer via the vtable vs a
+ * direct-kernel reference.
  *
  * Drives one Gemma 4 layer through transformer_forward_one_layer (pure
  * backend->vtbl path) and checks the output against a direct-kernel
- * reference that calls gemma4_kernels.c primitives in the same order
- * lm.c::forward_layer_kv does. Both paths use the same dequantized FP32
+ * reference that calls gemma4_kernels.c primitives in Gemma 4 layer
+ * order. Both paths use the same dequantized FP32
  * mirrors of the layer's projection weights — the comparison isolates
  * the vtable-composition logic from kernel correctness (which has its
  * own cross-reference tests).
  *
- * Coverage in this commit:
+ * Coverage:
  *   - layer 0 (sliding, non-shared, head_dim=256, window=512, theta=1e4)
  *   - layer 4 (full,    non-shared, head_dim=512, window=0,   theta=1e6)
  *   - layer 15 (sliding, KV-shared from layer 13) — primes layer 13's
@@ -44,9 +45,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Gemma-4 E2B reference geometry — the fixture this test runs against.
- * (Were GEIST_GEMMA4_* macros in arch_state.h until the neutral-defaults
- * inversion moved family defaults into the populators.) */
+/* Gemma-4 E2B reference geometry — the fixture this test runs against. */
 #define GEIST_GEMMA4_HIDDEN 1536
 #define GEIST_GEMMA4_NUM_LAYERS 35
 #define GEIST_GEMMA4_HIDDEN_PER_LAYER 256
@@ -58,8 +57,7 @@
 #define HIDDEN GEIST_GEMMA4_HIDDEN
 #define N_Q_HEADS GEIST_GEMMA4_N_Q_HEADS
 #define N_KV_HEADS GEIST_GEMMA4_N_KV_HEADS
-/* RMS eps moved to struct geist_arch_config (P1.4.a); the value is a
- * Gemma-4 family default. Test mirrors the hardcoded reference. */
+/* Gemma-4 family RMS eps (struct geist_arch_config default). */
 #define RMS_EPS 1e-6f
 
 /* Deterministic-seeded uniform random in [-0.5, 0.5]. */
@@ -146,9 +144,8 @@ static float *dequant_proj_to_fp32(struct geist_backend      *be,
     return fp32;
 }
 
-/* Reference path: forward_layer_kv equivalent, PLE-input=0. The math
- * mirrors lm.c forward_layer_kv exactly — same kernel call sequence,
- * same eps, same q_norm/k_norm/v_norm ordering. */
+/* Reference path, PLE-input=0: the Gemma 4 layer as a direct kernel call
+ * sequence — same eps, same q_norm/k_norm/v_norm ordering as the vtable. */
 static void reference_layer_forward(
         /* Per-layer geometry. */
         bool   is_full,
@@ -530,10 +527,9 @@ static int check_one_layer(struct transformer_arch_state *st, int layer_idx) {
  * A full numerical cross-reference for shared layers requires running the
  * source layer first (to populate the cache) in both the reference and
  * vtable paths, capturing K/V from the source layer, then verifying that
- * the shared layer's attention reuses those K/V correctly. That depends
- * on the layer-loop (sub-step 2c) for the source-layer priming step.
+ * the shared layer's attention reuses those K/V correctly.
  *
- * For now we run a smoke test: prime layer 13's cache via the vtable
+ * This is a smoke test instead: prime layer 13's cache via the vtable
  * (already verified for non-shared layers), then run layer 15 (kv-shared
  * sliding, sourcing from 13). Confirm the call returns GEIST_OK, produces
  * finite values, and has a non-zero magnitude (catches the obvious

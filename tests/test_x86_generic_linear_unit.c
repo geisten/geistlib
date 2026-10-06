@@ -2,13 +2,10 @@
  * test_x86_generic_linear_unit — cpu_x86 binds its own kernels for every
  * dtype without a native x86 one, and they match the cpu_scalar oracle.
  *
- * Those dtypes (IQ2_S, IQ3_S, BF16 and F16 prefill; Q8_0, PQ2_0, Q4_0,
- * Q4_1, TQ2_0, Q5_K, Q3_K, IQ4_NL and IQ4_XS until they got native
- * kernels, test_x86_q8_0_unit, test_pq2_0_unit, test_x86_q4_0_unit,
- * test_x86_tq2_0_unit, test_x86_q5k_unit, test_x86_q3k_unit and
- * test_x86_iq4_unit) used
- * to stay bound to cpu_scalar's own kernels — the
- * single-threaded, heap-allocating reference — on the default x86 backend.
+ * Those dtypes (IQ2_S, IQ3_S, BF16 and F16 prefill) must not stay bound to
+ * cpu_scalar's own kernels — the single-threaded, heap-allocating
+ * reference — on the default x86 backend. Dtypes with native kernels have
+ * their own tests (test_x86_q8_0_unit, test_x86_q4_0_unit, ...).
  * Two checks per dtype:
  *
  *   1. cpu_x86's resolver did not leave cpu_scalar's function pointers in

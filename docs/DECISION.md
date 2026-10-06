@@ -8,14 +8,14 @@ force compile/archive/link even with one-second build timestamps.
 `make test-decision` verifies both modes in the same output directory;
 `make MODE=asan test-decision` repeats that gate with sanitizers. The runtime query
 `geist_decision_available()` describes the linked library, not the caller's
-compiler flags. Existing generation and Bonsai support stay available.
+compiler flags.
 
 ## Integration
 
 `include/geist_decision.h` is an independent, additive API. A handle owns a
 private session and candidate workspace. It borrows the model and backend;
 destroy handles before the model, then the backend. Architecture dispatch
-owns KV/SSM state and model-conformant logits. The appended decoder vtable
+owns KV/SSM state and model-conformant logits. The decoder vtable
 capability `logits_vocab_size` lets the engine reject embedding-only models and
 validate IDs before inference. Architectures without independent sessions,
 reset, prefill or logits are unsupported. A backend must expose host-readable
@@ -54,8 +54,8 @@ prompt overflow returns `GEIST_E_TOO_MANY_TOKENS`. Selected NaN/Inf logits or
 missing runtime logits return `GEIST_E_BACKEND`. Non-selected logits do not
 enter normalization. The numerical API and its adversarial/reference checks
 compile with `-fno-finite-math-only`, so target-wide GCC fast-math cannot remove
-NaN/Inf validation. Inference kernel flags are unaffected. A failed prefill propagates its status, and the next
-valid query resets again. No partially filled result escapes.
+NaN/Inf validation; inference kernel flags are unaffected. A failed prefill
+propagates its status, and the next valid query resets again. No partially filled result escapes.
 
 Setup/teardown are serialized with every other operation on the model.
 Steady-state scoring may run concurrently on different handles, one thread
@@ -89,7 +89,7 @@ example PQ2 n8 remains n8 even for four candidates. Native tiles can include
 neighboring output rows; they are discarded before conditional normalization.
 The borrowed result still has exactly the requested candidates in input order.
 
-Initial capability boundaries:
+Capability boundaries:
 
 | Backend | Selected-row support |
 | --- | --- |
@@ -99,8 +99,8 @@ Initial capability boundaries:
 | Other backends | Explicitly unsupported for this mode; DENSE remains available |
 
 NEON F32 is excluded because changing BLAS matrix geometry changes rounding.
-NEON repacks other than PQ2_0 x8 are currently excluded rather than reinterpreted
-as source rows. I2_S **output heads** have a shared tensor scale and are excluded;
+NEON repacks other than PQ2_0 x8 are excluded rather than reinterpreted as
+source rows. I2_S **output heads** have a shared tensor scale and are excluded;
 this does not exclude models with an I2_S backbone and a supported F16 head.
 Backend errors and capacity failures remain explicit.
 
@@ -113,7 +113,7 @@ microbenchmark to isolate projection cost.
 DENSE reports its vocabulary size and logical logit-buffer byte count, with
 `head_ns = 0`. Byte counts describe logical staging, not physical bus traffic
 on unified memory. Private sessions still reserve the architecture's ordinary
-scratch buffers; this change does not claim to remove their dense-logit storage.
+scratch buffers, including their dense-logit storage.
 Existing backend thread-local high-water buffers may grow on their first use;
 repeated selected kernel calls are checked for zero geist heap allocations.
 CPU tiles run the same row kernels with one OpenMP thread to avoid repeatedly
@@ -128,11 +128,10 @@ bit for bit, including PQ2 n8, source/repacked CPU layouts and tail rows. Set
 `GEIST_BENCH_SELECTED_ROWS=1` to also measure synthetic, model-sized Qwen/Bonsai
 head geometries. These are head microbenchmarks, not model quality evaluations.
 
-The rollout order is Apple Silicon CPU/Metal, followed by other backends.
-Ticket #587 starts with MMLU and must define its quality baseline and acceptance
-margin before evaluation. Head speedup and end-to-end speedup are different:
-the backbone still processes every prompt token, so neither head timing nor
-short-label latency establishes Jev parity or a quality-matched reasoning win.
+Head speedup and end-to-end speedup are different: the backbone still
+processes every prompt token, so neither head timing nor short-label latency
+establishes Jev parity or a quality-matched reasoning win. Quality evaluation
+(#587): [DECISION_EVALUATION.md](DECISION_EVALUATION.md).
 
 ## Score semantics and model suitability
 
@@ -261,9 +260,7 @@ Normal generation is covered by the 32/128-token prefill/decode sweep and a
 five-repeat confirmation at length 32 in reverse process order. Raw samples
 show substantial run-to-run drift and do not support fine-grained speedup
 claims. Full logits and eight generated token IDs remain byte-identical
-before/after on Qwen, Bonsai and Gemma, CPU and Metal. Extraction of the shared
-head preparation adds 20 glue instructions on arm64; projection arithmetic
-is unchanged. MMLU quality and calibration remain the next stage in #587.
+before/after on Qwen, Bonsai and Gemma, CPU and Metal.
 
 ## Initial protocol smoke baseline
 
@@ -278,7 +275,7 @@ one warmup and five measured repeats. No chat wrapper or generated reasoning.
 | Qwen3 0.6B Q8_0 | 117.55 ms | 119.76 ms | 119.30 ms | 297.37 ms |
 | Bonsai 2 27B PQ2_0 | 2974.13 ms | 2925.23 ms | 2880.10 ms | 5641.53 ms |
 
-The new interface performs the same dense forward as the reference. On this
+The decision API performs the same dense forward as the reference. On this
 single workload, it has essentially one-token latency and avoids subsequent
 decode work (2.53x/1.90x versus 16 tokens respectively). The numeric paths
 selected the expected digit; generation's first token was outside the digit
@@ -288,7 +285,5 @@ one smoke example, not independent evidence of task accuracy, reasoning
 quality, calibrated confidence, or Jev parity. #586 optimizes the head; #587
 must establish quality and latency on representative held-out tasks.
 
-For the offline MMLU preparation, final-answer parsing, calibration and paired
-quality gates added under #587, see [DECISION_EVALUATION.md](DECISION_EVALUATION.md).
-That framework retains separate exploratory and held-out runs; it supplies no
-MMLU quality evidence until its declared campaign is actually executed.
+Offline MMLU preparation, final-answer parsing, calibration and paired quality
+gates: [DECISION_EVALUATION.md](DECISION_EVALUATION.md).

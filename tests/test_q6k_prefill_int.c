@@ -3,14 +3,14 @@
  * the FP32 dequant + sgemv reference, for M ∈ {2, 4, 8}.
  *
  * Loads a real Q6_K weight tensor (typically lm_head) from a GGUF model,
- * generates M random input vectors, and compares the new M>1 NEON kernel
+ * generates M random input vectors, and compares the M>1 NEON kernel
  * to the FP32 reference path (dequant_q6_K_row + cblas_sgemv per row).
  *
  * Pass criterion: cosine similarity ≥ 0.999 for every output row of every
  * M (int8-quantized x is the only material noise source vs FP32).
  *
  * Speculative-decoding verify pass uses this kernel at M=K (typically
- * K=4-8) on lm_head, replacing the slow FP32 dequant + sgemm fallback.
+ * K=4-8) on lm_head.
  *
  * SKIPs cleanly if no GGUF model is reachable.
  */

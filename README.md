@@ -14,29 +14,26 @@ chmod +x geist-bitnet
 ```
 
 Run it with no arguments for a minimal REPL (each line completes
-independently; the model stays loaded). Full guide — cooling, cold-start
-times, errors, model limits: [`docs/PI5_BITNET.md`](docs/PI5_BITNET.md).
+independently; the model stays loaded). Cooling, cold-start times, errors and
+model limits: [`docs/PI5_BITNET.md`](docs/PI5_BITNET.md).
 
 <p align="center">
   <img src="assets/demo-pi5-bitnet.gif" alt="On a Raspberry Pi 5: real-time BitNet b1.58 2B-4T text generation from a single dependency-free binary" width="100%">
 </p>
 
-*Real-time on a Raspberry Pi 5 — ternary BitNet b1.58 2B-4T generating text from
-a single dependency-free binary. No GPU, no driver stack.*
+*Real time on a Raspberry Pi 5: ternary BitNet b1.58 2B-4T from a single
+dependency-free binary. No GPU, no driver stack.*
 
-- **Tested on a 4 GB Pi 5.** The [reference runs](benchmark/reference_runs.json)
-  come from a Raspberry Pi 5 Model B with 4 GB RAM — not an 8 GB board, not a
-  cross-compile guess.
-- **15–18 decode tokens/s**, depending on context — measured 17.9 t/s at a short
-  prompt, 15.0 t/s at a 512-token prompt (frozen protocol, 10 repeats,
+- **Tested on a 4 GB Pi 5** (Raspberry Pi 5 Model B, 64-bit Raspberry Pi OS) —
+  see the [reference runs](benchmark/reference_runs.json).
+- **15–18 decode tokens/s** depending on context: 17.9 t/s at a short prompt,
+  15.0 t/s at a 512-token prompt (frozen protocol, 10 repeats,
   [methodology](benchmark/README.md)).
-- **~1.2 GB download**, model included. **Private and offline after download** —
-  nothing ever leaves the device.
+- **~1.2 GB download**, model included. **Offline after download**: nothing
+  leaves the device.
 
-**Platform:** tested on Raspberry Pi 5 (4 GB), 64-bit Raspberry Pi OS. The
-prebuilt one-file binaries ship for Linux arm64 **and** x86_64 (swap the
-`-linux-arm64` suffix for `-linux-x86_64` above). Also runs on macOS —
-[build from source](#build-from-source) there, or use the
+Prebuilt binaries ship for Linux arm64 and x86_64 (swap `-linux-arm64` for
+`-linux-x86_64`). On macOS, [build from source](#build-from-source) or use the
 [prebuilt SDK](#embed-the-library).
 
 [![CI](https://github.com/geisten/geistlib/actions/workflows/ci.yml/badge.svg)](https://github.com/geisten/geistlib/actions/workflows/ci.yml)
@@ -48,44 +45,36 @@ prebuilt one-file binaries ship for Linux arm64 **and** x86_64 (swap the
 [![Discussions](https://img.shields.io/badge/Discussions-ask%20%26%20share-5865F2.svg)](https://github.com/geisten/geistlib/discussions)
 [![Good first issues](https://img.shields.io/github/issues/geisten/geistlib/good%20first%20issue?label=good%20first%20issue&color=7057ff)](https://github.com/geisten/geistlib/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 
-**Questions, ideas, or stuck?** → [GitHub Discussions](https://github.com/geisten/geistlib/discussions) · **Found a bug?** → [open an issue](https://github.com/geisten/geistlib/issues/new) · **Want to build?** → [good first issues](https://github.com/geisten/geistlib/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+**Questions?** → [Discussions](https://github.com/geisten/geistlib/discussions) · **Bug?** → [open an issue](https://github.com/geisten/geistlib/issues/new) · **Want to help?** → [good first issues](https://github.com/geisten/geistlib/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 
 ---
 
-## How it works
+## What it is
 
-geistlib is **one C23 inference engine** — no Python, no runtime, no container,
-a small static binary with zero dependencies (the engine itself is <1 MB; the slim CLI ships at ~2 MB). Two properties carry the
-Pi 5 result:
+geistlib is a **C23 inference engine** shipped as a static library
+(`libgeist.a`) with no runtime dependencies. It loads GGUF models and produces
+tokens.
 
-- **Ternary kernels, first-class.** BitNet b1.58 weighs every parameter as
-  −1/0/+1, and geistlib runs it with integer-only dot products — ARM SDOT
-  (add/subtract, no multiplies) on the Pi, AVX-512 VNNI on x86. The whole 2B
-  model is 1.1 GiB, a third the footprint of a comparable 4-bit model — which is
-  what makes a 4 GB board roomy instead of impossible.
+- **Ternary kernels, first-class.** BitNet b1.58 stores every weight as
+  −1/0/+1; geistlib runs it with integer-only dot products (ARM SDOT on the Pi,
+  AVX-512 VNNI on x86). The 2B model is 1.1 GiB, about a third of a comparable
+  4-bit model.
 - **Zero-copy weights.** The GGUF is mmapped (or, in `geist-bitnet`, aliased
-  straight out of the binary's read-only data) and demand-paged — weights cost
-  disk, not RAM, and loading is near-instant. Some CPU kernels keep a repacked
-  copy of a dtype for speed; [`docs/BACKENDS.md`](docs/BACKENDS.md#resident-memory-per-backend)
-  lists them and the switch for each.
+  out of the binary's read-only data) and demand-paged. Some CPU kernels keep
+  a repacked copy of a dtype for speed;
+  [`docs/BACKENDS.md`](docs/BACKENDS.md#resident-memory-per-backend) lists them
+  and the switch for each.
+- **An engine, not an application.** No chat templates, tool use or system
+  prompts — those belong to whatever links the library. The boundary is in
+  [`docs/README.md`](docs/README.md).
 
-The deeper tour — three layers, load-time kernel binding, why C —
-is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
-
-## An engine, not an application
-
-geistlib loads models and produces tokens — and has **no opinion** about chat
-templates, tool use, system prompts, or whether a model may act. That is the
-deal: an engine that stays application-neutral is one *anyone* can embed — in
-an agent, an appliance, a game, a pipeline — without inheriting someone else's
-product decisions. Policy belongs to whatever links the engine;
-[`docs/README.md`](docs/README.md) draws that boundary explicitly.
+Architecture (layers, load-time kernel binding, why C):
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Bring your own model
 
-The slim CLI (release asset `geist-linux-arm64`, ~2 MB — the platform suffix
-belongs to the download, not to your disk) runs any GGUF that carries its own
-tokenizer:
+The slim CLI (release asset `geist-linux-arm64` or `geist-linux-x86_64`,
+~2 MB) runs any supported GGUF that carries its own tokenizer:
 
 ```bash
 curl -L -o geist https://github.com/geisten/geistlib/releases/latest/download/geist-linux-arm64
@@ -93,158 +82,134 @@ chmod +x geist
 ./geist model.gguf "your prompt" [max_new_tokens]
 ```
 
-Gemma 4 (text + vision + audio), Llama-family models, and the 207 MB
-`TQ2_0` BitNet are covered in [`docs/MODELS.md`](docs/MODELS.md).
+Model families: Gemma 4 (text, vision, audio), Llama, Qwen3, Qwen3.5/3.6/3.8
+dense hybrids (incl. Ternary-Bonsai-2-27B) and BitNet b1.58. Downloads, sizes
+and RAM needs: [`docs/MODELS.md`](docs/MODELS.md).
 
 ## Build from source
 
-Three commands from clone to generated text, on macOS and Linux (arm64 +
-x86-64). Prerequisites: **gcc ≥ 14** or Apple-clang ≥ 16, and `make`; on macOS,
-Homebrew `libomp`.
+macOS and Linux (arm64, x86-64). Needs **gcc ≥ 14** or Apple clang ≥ 16, and
+`make`; on macOS also Homebrew `libomp` for multi-threading.
 
 ```bash
 git clone https://github.com/geisten/geistlib && cd geistlib
-make lib                     # auto-detects target; or: make TARGET=mac-omp | pi5 | linux
+make lib                     # auto-detects target; or TARGET=mac-omp | mac | pi5 | linux
 make fetch-bench-model       # BitNet b1.58 2B-4T, ternary, ~1.2 GB
 make run ARGS='gguf_artifacts/bitnet-2b4t-i2_s.gguf "The capital of France is"'
 ```
 
-`make run` builds and runs [`examples/simple_generate.c`](examples/simple_generate.c)
-— load, prefill, greedy-decode in ~15 lines against the STABLE core, and the
-thing to copy when you embed the library.
+- Ubuntu 24.04 ships gcc 13: `apt install gcc-14` and pass `CC=gcc-14`.
+- Linux links OpenBLAS by default (`libopenblas-dev`); `GEMM_PROVIDER=native`
+  builds without it.
+- `make help` lists every target and option.
+
+`make run` builds and runs [`examples/simple_generate.c`](examples/simple_generate.c):
+load, prefill, decode against the STABLE API only — the program to copy when
+you embed the library.
 
 ## Embed the library
 
 Every [release](https://github.com/geisten/geistlib/releases/latest) ships
-`libgeist-<platform>.tar.gz` — `libgeist.a`, `include/*.h` and `LICENSE`, for
-`macos-arm64`, `linux-arm64` and `linux-x86_64`. Verify against `SHA256SUMS`
-and, to prove the file was built by this repository's release workflow, with
+`libgeist-<platform>.tar.gz` (`libgeist.a`, `include/*.h`, `LICENSE`) for
+`macos-arm64`, `linux-arm64` and `linux-x86_64`. Verify it against
+`SHA256SUMS` and its build provenance with
 `gh attestation verify libgeist-linux-arm64.tar.gz --repo geisten/geistlib`,
 then link:
 
 ```bash
 cc -std=c23 -I libgeist-linux-arm64/include my_app.c \
    libgeist-linux-arm64/libgeist.a -fopenmp -lm -o my_app
+# macOS: replace -fopenmp with -framework Accelerate "$(brew --prefix libomp)/lib/libomp.a"
 ```
 
-The stable text path is ~15 lines: `geist_backend_create` →
-`geist_model_load` → `geist_session_create` → loop `geist_session_decode_step`.
-The header **is** the ABI — any language FFIs in with no shim
-([`examples/ffi/`](examples/ffi/) proves it: the complete integration in
-Python, Rust, Go and JavaScript, ~30-40 lines each, no bindings package), and
-the [engine-not-application](#an-engine-not-an-application) neutrality means
-your app keeps every product decision. Walkthrough:
-[`docs/QUICKSTART.md`](docs/QUICKSTART.md); API: [`include/geist.h`](include/geist.h)
-(`STABLE`/`EXPERIMENTAL` tags); deployment, incl. folding a model into your own
-binary: [`docs/DEPLOY.md`](docs/DEPLOY.md).
+The text path is `geist_backend_create` → `geist_model_load` →
+`geist_session_create` → `geist_session_set_prompt` → loop
+`geist_session_decode_step`. The header is the ABI: any language can call it
+through its FFI without bindings — [`examples/ffi/`](examples/ffi/) has the
+complete integration in Python, Rust, Go and JavaScript (~30–40 lines each).
 
-<sub>The static archive is an OpenMP build, so a consumer supplies the OpenMP
-runtime: `-fopenmp` on Linux, `-framework Accelerate <libomp>/lib/libomp.a` on
-macOS.</sub>
+- Walkthrough: [`docs/QUICKSTART.md`](docs/QUICKSTART.md)
+- API: [`include/geist.h`](include/geist.h) (`STABLE` / `EXPERIMENTAL` tags),
+  promises: [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md)
+- SDK, cross-builds, a model folded into your binary: [`docs/DEPLOY.md`](docs/DEPLOY.md)
+
+## Backends
+
+| Backend | Hardware | Default |
+| :-- | :-- | :-- |
+| `cpu_neon` | ARM64 with dot product (Pi 5, Apple Silicon, armv8.2+) | arm64 |
+| `cpu_x86` | x86-64-v3 (AVX2) with runtime AVX-512/VNNI dispatch | x86-64 |
+| `cpu_scalar` | portable C, numerical reference | always built |
+| `metal` | Apple GPU, experimental | opt-in |
+| `vulkan` | Linux GPU, experimental | opt-in |
+
+Select at build time with `BACKENDS="..."` (`make clean` when you change it).
+Details, knobs and memory use per backend: [`docs/BACKENDS.md`](docs/BACKENDS.md).
 
 ## How fast?
 
 Same GGUF, greedy decode, both engines measured in the same run on the same
-box, thermally gated. geistlib beats Microsoft's own bitnet.cpp on ternary
-BitNet on both a Pi 5 (**~2×** decode) and an AMD 9950X, and matches-to-beats
-llama.cpp on the CPU paths:
+box, thermally gated. geistlib beats Microsoft's bitnet.cpp on ternary BitNet
+on a Pi 5 (**~2×** decode) and an AMD 9950X, and matches-to-beats llama.cpp on
+the CPU paths:
 
 <p align="center">
   <img src="assets/versus-bitnetcpp.gif" alt="Side-by-side terminal recording on one Raspberry Pi 5: geistlib finishes 110 tokens in 7.1 s (15.5 tok/s) while bitnet.cpp needs 11.7 s (9.3 tok/s), same GGUF, both greedy, thermally gated" width="100%">
 </p>
 
 *One board, one GGUF, recorded sequentially with a thermal gate and shown side
-by side — [how this was made, and more demos](docs/DEMOS.md).*
+by side — [how it was made, and more demos](docs/DEMOS.md).*
 
 <p align="center">
   <img src="assets/headline_benchmarks.svg" alt="Decode-throughput scoreboard: geistlib divided by its baseline engine, decode tokens/s, grouped by system. Raspberry Pi 5 (Linux): BitNet decode 1.96x bitnet.cpp, BitNet prefill 0.99x bitnet.cpp, Gemma decode 1.1x llama.cpp. AMD Ryzen 9 9950X (Linux): BitNet decode 1.9x bitnet.cpp, Gemma decode 1.1x llama.cpp, Llama 3.2 decode 1.0x llama.cpp. Sub-parity rows are shown too." width="100%">
 </p>
 
-**Don't trust the numbers — run them.** `make bench` measures geistlib *and*
-any `llama.cpp`/`bitnet.cpp` it finds on your box, against the byte-identical
-GGUF, and prints the spread. Greedy output is bit-identical to the scalar
-reference before any speedup is quoted. Frozen protocol, raw data and full
-per-system tables: [`benchmark/`](benchmark/README.md). The experimental GPU
-backends are catching up fast — Metal decodes the Qwen3.8-27B at 1.48×
-llama.cpp Metal on an M1 Max: [`docs/BACKENDS.md`](docs/BACKENDS.md).
+**Run them yourself:** `make bench` measures geistlib and any `llama.cpp` /
+`bitnet.cpp` binary it finds on your machine, on the byte-identical GGUF, and
+prints the spread. Greedy output is checked bit-identical to the scalar
+reference before a speedup is quoted. Protocol, raw data and per-system
+tables: [`benchmark/`](benchmark/README.md). GPU numbers (Metal decodes
+Qwen3.8-27B at 1.41× llama.cpp Metal on an M1 Max):
+[`docs/BACKENDS.md`](docs/BACKENDS.md#gpu-numbers-at-a-glance).
 
 ---
 
 ## Status
 
-`main` is the **experimental development branch**. For binaries and a citable,
-immutable version, use the [latest published release](https://github.com/geisten/geistlib/releases/latest).
-The `STABLE` core (load → session → decode → tokenize) is the part to build on;
-`EXPERIMENTAL`-tagged surfaces
-(KV-cache modes, speculative decode, multimodal attach, GPU backends) may
-change between minor versions. It runs Gemma 4 (text + vision + audio) end to
-end on the CPU backends and has a broad C test suite (`make test`).
+`main` is the experimental development branch; for binaries and a citable
+version use the [latest release](https://github.com/geisten/geistlib/releases/latest).
+The `STABLE` core (load → session → decode → tokenize) is the part to build on.
+`EXPERIMENTAL` surfaces (KV-cache modes, speculative decode, multimodal attach,
+GPU backends) may change between minor versions.
 
-## Where this is going
-
-geistlib started as one developer's way of understanding how these models
-actually work — by building the engine, kernel by kernel, from scratch. The
-throughline is one belief: **small, heavily quantized models can do far more
-than people assume, if the whole stack is built around them.**
-
-- **Squeeze the model, not the user** — ternary and binary quantization as
-  first-class citizens, not afterthoughts.
-- **Optimized for what people actually own** — CPUs and small GPUs, all the way
-  down to a Raspberry Pi 5.
-- **One-step install** — engine plus model, nothing else to set up.
-- **Models that adapt** — dynamically specializing to a task, learning,
-  self-organizing over time.
-
-Most of this is barely started. That's the point — [come build it with
-us](#contributing). Track by track: [`ROADMAP.md`](ROADMAP.md).
+Direction — ternary and binary quantization as first-class citizens, hardware
+people own, one-step install, models that adapt — is laid out track by track
+in [`ROADMAP.md`](ROADMAP.md).
 
 ## Contributing
 
-The interesting work is wide open — low-level kernels and quantization
-research, not yet-another-wrapper. **From clone to green tests in one
-command:**
-
 ```bash
-make lib && make test      # builds libgeist.a, runs the full C suite
+make lib && make test      # builds libgeist.a, runs the C suite
 ```
 
-Where the leverage is right now:
-
-- **NEON / AVX-512 microkernels** — the ternary and Q4_K paths, measured per cycle.
-- **Low-bit quantization** — TQ2_0, IQ variants, and whatever is smaller than 1.58 bits.
-- **Portability** — Windows, wider x86-64 quant coverage, the open Vulkan prefill front.
-
-Ground rules, build modes and the review bar: [`CONTRIBUTING.md`](CONTRIBUTING.md).
-Coding rules in checkable form — parameter order, allocation, bounds, error
-contracts — [`AGENT.md`](AGENT.md); source comments cite it by name.
-Not sure where to start? Ask in
-[Discussions](https://github.com/geisten/geistlib/discussions) — a half-formed
-idea is a fine opening message.
+Open fronts: NEON / AVX-512 microkernels, low-bit quantization (TQ2_0, IQ
+variants, below 1.58 bits), portability (Windows, x86-64 quant coverage, Vulkan
+prefill). Workflow and review bar: [`CONTRIBUTING.md`](CONTRIBUTING.md); coding
+rules that source comments cite: [`AGENT.md`](AGENT.md). Unsure where to start?
+Ask in [Discussions](https://github.com/geisten/geistlib/discussions).
 
 ## Documentation
 
-The complete map is in [`docs/README.md`](docs/README.md).
-
-| Document | What it covers |
-| :-- | :-- |
-| [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Embed the library in two minutes. |
-| [`docs/PI5_BITNET.md`](docs/PI5_BITNET.md) | The Pi 5 BitNet binary — install, speed, errors, model limits. |
-| [`docs/DEMOS.md`](docs/DEMOS.md) | Recorded demos — vs bitnet.cpp, offline box, writing assistant. |
-| [`docs/MODELS.md`](docs/MODELS.md) | Supported models — Gemma (vision/audio), Llama, ternary BitNet. |
-| [`docs/BACKENDS.md`](docs/BACKENDS.md) | CPU backends and the experimental Metal / Vulkan GPU paths. |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The three layers, kernel binding, and why C. |
-| [`docs/DEPLOY.md`](docs/DEPLOY.md) | Building, the packaged SDK, single-file deployment. |
-| [`benchmark/`](benchmark/README.md) | Methodology, raw reference runs, per-system results. |
+All documents, with what each covers: [`docs/README.md`](docs/README.md).
 
 ## Citation
 
-Using geistlib in research? Open the exact version you used on the
-[release page](https://github.com/geisten/geistlib/releases/latest), then use
-GitHub's "Cite this repository" action. Each release carries its matching
-[`CITATION.cff`](CITATION.cff); `main` deliberately does not hard-code the
-published release number.
+Open the version you used on the
+[release page](https://github.com/geisten/geistlib/releases/latest) and use
+GitHub's "Cite this repository" action; each release carries its matching
+[`CITATION.cff`](CITATION.cff).
 
 ## License
 
-Licensed under the **Apache License 2.0** — permissive, with an explicit patent
-grant. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+[Apache License 2.0](LICENSE) — permissive, with an explicit patent grant. See
+also [NOTICE](NOTICE).

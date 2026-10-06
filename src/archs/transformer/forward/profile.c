@@ -75,11 +75,8 @@ static bool transformer_profile_env_enabled(void) {
 }
 
 static void transformer_profile_register(struct transformer_forward_profile *profile) {
-    /* The uncontended fast path reads `registered` without the mutex —
-     * that is the point of it — so the flag has to be atomic. It used to
-     * be a plain bool written under the lock and read outside it, which
-     * is a race in the exact case the fast path exists for: every call
-     * after the first, on every thread. */
+    /* The fast path reads `registered` without the mutex, so the flag
+     * has to be atomic. */
     if (profile == nullptr || atomic_load_explicit(&profile->registered, memory_order_acquire)) {
         return;
     }

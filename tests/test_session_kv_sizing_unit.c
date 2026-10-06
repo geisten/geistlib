@@ -3,9 +3,7 @@
  * max_seq_len, not the model's cap (#577).
  *
  * docs/API_CONTRACT.md promises that sessions taking a smaller cap than the
- * model get KV caches sized from it. The allocation read the model's cap
- * instead, so every session on a model loaded with max_seq_len 32768 held
- * 32768 rows of KV whatever it asked for. On cpu_scalar, for each KV mode:
+ * model get KV caches sized from it. On cpu_scalar, for each KV mode:
  *
  *   - a session with max_seq_len 64 adds far less resident memory than one
  *     at the model cap (the KV is memset at create, so it is resident at

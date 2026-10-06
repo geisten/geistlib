@@ -10,8 +10,8 @@
  * that pays for lazily sized workspaces, with greedy and with sampling
  * (temperature, top-k, top-p). The prompt is 32 tokens because Metal's
  * attention takes its fast paths from 32 KV rows on (metal_attention,
- * ops.c); with 8, the measured decode steps ran the fallback kernel that
- * production leaves behind after 31 tokens. The models are built in
+ * ops.c), so the measured decode steps run the kernels production runs
+ * after 31 tokens, not the fallback. The models are built in
  * memory with F32 weights (model_fixtures.h): a two-layer GQA llama, and a
  * Qwen3.5-style hybrid of three gated-DeltaNet blocks and an attention
  * block. Quantized-weight kernels have their own tests
@@ -19,18 +19,11 @@
  *
  * It is a ratchet. Each KV mode has a ceiling of allocations per attention
  * layer per call, and each DeltaNet block one per prefill; above it a
- * check fails, below it the test says so, and the change that got it there
- * lowers the ceiling. All are at 0. The FP32 cache's attention was the
- * last KV mode to allocate (a score buffer per call in cpu_x86
- * attention.c, the gemma4_kernels.c reference and cpu_neon
- * transformer_ops.c) and now scores a stack-sized block at a time. A
- * DeltaNet block staged its chunked prefill in a heap buffer per call
- * (dn_run_prefill_chunked, layer_deltanet.c); the session keeps that
- * staging now, sized by its first chunked prefill (the warm-up here).
- * On Metal, every forward staged the layer loop's self-copy through a
- * temporary buffer (metal_buffer_copy), and the FP32 cache's f16 attention
- * staging grew with the KV length (ops.c); the copy is skipped now, and
- * the staging is sized for the whole cache by its first use.
+ * check fails, below it the test says so, and the ceiling should be
+ * lowered. All are at 0. The session keeps the DeltaNet chunked-prefill
+ * staging (dn_run_prefill_chunked), sized by its first chunked prefill, and
+ * Metal sizes the FP32 cache's f16 attention staging for the whole cache on
+ * first use; the warm-up pays for both.
  */
 #include "test_helpers.h"
 #include "heap.h"

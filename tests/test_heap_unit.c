@@ -3,8 +3,7 @@
  *
  * heap.c is the project-wide allocation interface. These cases
  * lock down the safety guarantees that the engine and the GGUF loaders rely
- * on, in particular the ones added to stop silent integer-overflow
- * under-allocation:
+ * on, in particular against silent integer-overflow under-allocation:
  *
  *   - zero-size / empty inputs return nullptr (well-defined, no alloc)
  *   - minimal valid allocations succeed, are aligned, and are writable
@@ -78,11 +77,9 @@ int main(void) {
     safe_free((void **) &zeros);
 
     /* ---- heap_alloc_n_aligned + the array macro (issue #330) -----------
-     * heap_alloc_array_aligned used to compute `count * sizeof(type)` at
-     * the call site and hand the allocator the wrapped product: a request
-     * for 2^62 int32s became a 0-byte or 16-byte allocation that the
-     * caller then wrote 16 exabytes into. The count and the element size
-     * stay apart until the check now. */
+     * The count and the element size stay apart until the overflow check,
+     * so a request for 2^62 int32s is refused, not wrapped into a 0- or
+     * 16-byte allocation. */
 
     CHECK(heap_alloc_n_aligned(0, 4, 64) == nullptr, "alloc_n(0,*) null");
     CHECK(heap_alloc_n_aligned(4, 0, 64) == nullptr, "alloc_n(*,0) null");

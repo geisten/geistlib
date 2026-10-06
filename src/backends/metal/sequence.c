@@ -1,8 +1,5 @@
 /*
  * src/backends/metal/sequence.c — batched-submit command sequencing and flush tracking.
- *
- * Layer: BACKEND (metal). Split from the former monolithic backend.c;
- * pure moves, no behavior change.
  */
 #include "metal_internal.h"
 

@@ -35,9 +35,8 @@ if grep -qE 'status-experimental%20\(v[0-9]|`geistlib` is \*\*v[0-9]|version = \
 fi
 
 # The numeric components are a second source of the same fact, and
-# geist_version_components() is what a consumer version-gates on. In 0.7.0
-# MINOR still read 6, so the library reported 0.6.0 while the string said
-# 0.7.0. Reassemble and compare rather than trusting them to be edited together.
+# geist_version_components() is what a consumer version-gates on. Reassemble
+# and compare rather than trusting them to be edited together.
 maj=$(sed -n 's/.*GEIST_VERSION_MAJOR \([0-9][0-9]*\).*/\1/p' include/geist.h | head -1)
 min=$(sed -n 's/.*GEIST_VERSION_MINOR \([0-9][0-9]*\).*/\1/p' include/geist.h | head -1)
 pat=$(sed -n 's/.*GEIST_VERSION_PATCH \([0-9][0-9]*\).*/\1/p' include/geist.h | head -1)

@@ -28,7 +28,7 @@ void f16_gemv_m1(
     /* if(n_out > 1): the spec head calls this via a one-row weight view, once
      * per finalist — skip the OMP fork there so the SAME compiled row loop
      * serves both the dense head and the spec phase-3 without region cost
-     * (bit-identical logits by construction, #102 Phase 2). */
+     * (bit-identical logits by construction, #102). */
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static) if (n_out > 1)
 #endif

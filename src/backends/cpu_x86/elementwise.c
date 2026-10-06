@@ -4,13 +4,10 @@
  *
  * Layer: BACKEND (cpu_x86).
  *
- * The cpu_scalar gelu_tanh* are a single-threaded scalar `tanhf` per
- * element — the dominant FFN "act" cost at prefill once the matmuls are
- * fast. These overrides (a) OMP-parallel
- * over the work and (b) compute tanh as 1 - 2/(e^2u+1) so the inner loop's
- * expf auto-vectorizes via glibc libmvec under -ffast-math -fopenmp (the
- * project's standard flags). u is clamped to ±10 (tanh(10) is 1 to float
- * precision) so e^2u can't overflow to inf. Same math as the scalar
+ * gelu_tanh*: OMP-parallel, with tanh computed as (e^2u-1)/(e^2u+1) so the
+ * inner loop's expf auto-vectorizes via glibc libmvec under -ffast-math
+ * -fopenmp (the project's standard flags). u is clamped to ±10 (tanh(10) is 1
+ * to float precision) so e^2u can't overflow to inf. Same math as the scalar
  * reference within float epsilon; cross-checked in test_gelu_x86_unit.c.
  *
  * SiLU and the fused SiLU x mul, RMSNorm and the residual add follow below;
@@ -134,12 +131,10 @@ cpu_x86_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct
 
 /* ---- SiLU ----------------------------------------------------------------
  *
- * cpu_scalar_silu is a libm expf and a division per element on one thread
- * (the branch between its two forms keeps it scalar): 56 ms of a 1.6 s
- * prefill of the synthetic Ternary-Bonsai-2-27B, and the mul after it 27 ms
- * more. Here eight lanes at a time on the whole team, in the same
- * overflow-safe form: e = exp(-|v|) <= 1, silu(v) = (v >= 0 ? v : v * e) /
- * (1 + e). The fused silu_mul makes the FFN's SwiGLU epilogue one pass.
+ * Eight lanes at a time on the whole team (cpu_scalar_silu is scalar and
+ * single-threaded), in the same overflow-safe form: e = exp(-|v|) <= 1,
+ * silu(v) = (v >= 0 ? v : v * e) / (1 + e). The fused silu_mul makes the
+ * FFN's SwiGLU epilogue one pass.
  *
  * exp is Cephes' expf (Cody-Waite reduction by ln 2, a degree-5
  * polynomial, about 1 ulp) in AVX2 rather than libm's: a vectorized expf
@@ -249,12 +244,10 @@ cpu_x86_silu(struct geist_backend *be, const struct geist_tensor *x, struct geis
 
 /* ---- RMSNorm and the residual add ----------------------------------------
  *
- * cpu_scalar's rmsnorm and add run on the calling thread while the team
- * waits: two of each per layer, 47 ms of a 1.1 s 64-token prefill of the
- * synthetic Ternary-Bonsai-2-27B. Here the rows of the norm, and 4 KB
- * chunks of the add, are spread over the team. Below EW_PARALLEL_MIN
- * floats, a decode token's 5120 among them, the calling thread does it
- * alone: waking the team would cost more than it saves.
+ * The rows of the norm, and 4 KB chunks of the add, are spread over the team
+ * (cpu_scalar runs both on the calling thread). Below EW_PARALLEL_MIN floats,
+ * a decode token's 5120 among them, the calling thread does it alone: waking
+ * the team would cost more than it saves.
  *
  * The sum of squares is a double, as in cpu_scalar: a float's square is
  * exact in double, and four accumulators keep the FMA latency from bounding

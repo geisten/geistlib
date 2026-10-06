@@ -1,6 +1,6 @@
 /*
  * src/formats/gguf/tq2_0.c — TQ2_0 dequant (BitNet ternary; W1.58A8 kernels live in
- * cpu_neon/weight_resolve.c).
+ * cpu_neon/kernels/tq2_0.c).
  *
  * Layer: BACKEND.
  */

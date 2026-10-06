@@ -31,14 +31,8 @@ extern "C" {
 /* ====================================================================== */
 
 /* `T arr[GEIST_AT_LEAST(n)]` — "non-null, and at least n elements".
- * Expands to C's `static n` array-parameter
- * form; C++ has no such syntax and `extern "C"` does not help, since it
- * changes linkage and not the grammar. A C++ consumer therefore sees plain
- * `T arr[]` — the same parameter type, both decay to `T *` — instead of a
- * header it cannot parse at all.
- *
- * Public headers use the macro. Internal code under src/ keeps the plain
- * `[static n]` form; nothing includes it from C++. */
+ * Expands to `static n` in C and to nothing in C++, which has no such
+ * syntax; both forms declare the same parameter type (`T *`). */
 #ifdef __cplusplus
 #define GEIST_AT_LEAST(n)
 #else
@@ -179,34 +173,27 @@ struct geist_model;
 enum geist_status
 geist_model_load(const char *path, struct geist_backend *be, struct geist_model **out);
 
-/* Declared before use: geist_session_opts is defined further down in this
- * header, and a struct first named inside a parameter list belongs to that
- * list's scope — a different type from the one defined below. */
+/* Forward declaration: a struct first named inside a parameter list would
+ * be scoped to that list, a different type from the one defined below. */
 struct geist_session_opts;
 
 /* @stability STABLE since 0.12.0 — geist-runtime contract (#622).
- * Like geist_model_load, but the load-time options also size the buffers the
- * model owns — RoPE tables and the default session's scratch. geist_model_load
- * passes nullptr here, which keeps the architecture's own defaults: for a
- * 4096-token default that is resident memory no caller can reach when its
- * sessions are created with a smaller max_seq_len. A consumer that knows its
- * bound (an embedder pinned to its model's context, say) passes it once at
- * load and again at session_create. Only `max_seq_len` is read at load time;
- * the sampler fields apply per session. */
+ * geist_model_load with load-time options: `opts->max_seq_len` sizes the
+ * buffers the model owns (RoPE tables, the default session's scratch) and
+ * caps every session created on it. nullptr opts (what geist_model_load
+ * passes) keeps the architecture's default. Only `max_seq_len` is read at
+ * load time; pass the same value again to geist_session_create. */
 enum geist_status geist_model_load_with_opts(const char                      *path,
                                              struct geist_backend            *be,
                                              const struct geist_session_opts *opts,
                                              struct geist_model             **out);
 
 /* @stability STABLE since 0.2.1
- * Load a GGUF that is already in memory — e.g. embedded in the executable, so
- * the engine *and* the model ship as a single binary. The bytes are aliased
- * read-only (zero-copy, like the file path's mmap) and are NOT freed by
- * geist_model_destroy: the caller must keep `data` valid for the model's
- * lifetime (for an `.incbin`-embedded blob that is automatic — it lives in
- * .rodata). The GGUF must carry its own tokenizer (no sibling file is searched)
- * and is text-only (no external vision/audio safetensors). An out-of-tree runtime
- * uses this to ship engine and model as one file. */
+ * Load a GGUF that is already in memory (e.g. embedded in the executable).
+ * The bytes are aliased read-only, zero-copy, and NOT freed by
+ * geist_model_destroy: `data` must stay valid for the model's lifetime.
+ * The GGUF must carry its own tokenizer (no sibling file is searched);
+ * text-only (no external vision/audio safetensors). */
 enum geist_status geist_model_load_from_memory(const void           *data,
                                                size_t                size,
                                                struct geist_backend *be,
@@ -216,10 +203,9 @@ void        geist_model_destroy(struct geist_model *m);
 const char *geist_model_errmsg(const struct geist_model *m);
 
 /* @stability STABLE since 0.12.0 — geist-runtime contract (#622).
- * geist_model_load_from_memory with load-time options, the in-memory twin of
- * geist_model_load_with_opts: `opts->max_seq_len` sets the model's sequence
- * cap (0 or nullptr opts: 4096), which bounds every session created on it.
- * The same aliasing rule applies: `data` must outlive the model. */
+ * In-memory twin of geist_model_load_with_opts: `opts->max_seq_len` caps
+ * every session on the model (0 or nullptr opts: 4096). `data` must outlive
+ * the model. */
 enum geist_status geist_model_load_from_memory_with_opts(const void                      *data,
                                                          size_t                           size,
                                                          struct geist_backend            *be,
@@ -228,11 +214,9 @@ enum geist_status geist_model_load_from_memory_with_opts(const void             
 
 /* @stability STABLE since 0.9.0 — agent-runtime contract (docs/API_CONTRACT.md).
  * The GGUF's general.architecture string ("gemma4", "bitnet-b1.58", "llama", …),
- * captured at load; "transformer" if the key is absent. Lets a chat/agent layer
- * pick a model-specific template by family — since the agent layer moved out of
- * tree, this is the key that selection is made on, and the only half of the
- * mapping the engine can supply. The returned pointer is owned by the model and
- * stays valid until geist_model_destroy. */
+ * captured at load; "transformer" if the key is absent. A chat layer selects
+ * its model-specific template by this key. Owned by the model; valid until
+ * geist_model_destroy. */
 const char *geist_model_arch(const struct geist_model *m);
 
 /* @stability EXPERIMENTAL (#622)
@@ -240,16 +224,13 @@ const char *geist_model_arch(const struct geist_model *m);
  * "general.name", …), kept from load. nullptr if the key is absent or its
  * value is not a string. The value is NUL-terminated and owned by the model
  * until geist_model_destroy; GGUF strings may contain NUL bytes, so
- * *out_len (when out_len is not nullptr) gives the full length. One parser
- * for the file: a runtime need not read the GGUF a second time, which a
- * model loaded from memory would not even allow. */
+ * *out_len (when out_len is not nullptr) gives the full length. */
 const char *geist_model_metadata_str(const struct geist_model *m, const char *key, size_t *out_len);
 
 /* @stability EXPERIMENTAL (#622)
  * The context length the model was trained for (<arch>.context_length), or
- * 0 if the GGUF does not say. Independent of the max_seq_len a model or
- * session was created with: that is the caller's choice, this is the
- * model's own limit. */
+ * 0 if the GGUF does not say. Independent of the max_seq_len the model or a
+ * session was created with. */
 [[nodiscard]] size_t geist_model_context_length(const struct geist_model *m);
 
 /* ====================================================================== */
@@ -271,9 +252,9 @@ enum geist_kv_mode {
     GEIST_KV_KIVI = 3,
     GEIST_KV_F16  = 4,
     /* Packed symmetric 4-bit KV cache (2 values/byte, per-token per-head
-     * scale). Half the INT8 footprint, near-lossless. Enables the Hadamard
-     * rotation by default (issue #61) — GEIST_KV_ROT=0 opts out. No
-     * per-channel/group bookkeeping (unlike KIVI). Env: GEIST_KV_INT4=1. */
+     * scale): half the INT8 footprint, near-lossless. Enables the Hadamard
+     * rotation by default (#61); GEIST_KV_ROT=0 opts out. Env:
+     * GEIST_KV_INT4=1. */
     GEIST_KV_INT4 = 5,
 };
 
@@ -281,9 +262,8 @@ struct geist_session_opts {
     /* Sequence length cap; 0 = use model default. */
     size_t max_seq_len;
 
-    /* Sampler configuration. Applied per-session at session_create time
-     * via the architecture's set_session_opts hook; not yet overridable
-     * on individual decode_step calls.
+    /* Sampler configuration, applied at session_create; not overridable
+     * per decode_step.
      *
      *   temperature  0.0    → greedy argmax (default). >0 → softmax-sample.
      *   top_k        0 or 1 → no top-k filter (or argmax when temp=0).
@@ -300,9 +280,8 @@ struct geist_session_opts {
     uint64_t random_seed;
 
     /* @stability EXPERIMENTAL — AWQ (Activation-aware Weight Quantization)
-     * scales file. nullptr = no AWQ. When set, the arch loads scales from
-     * the given path and folds attn_norm/ffn_norm gamma at load time plus
-     * applies the o_proj/down_proj input scale at runtime. Orthogonal to
+     * scales file; nullptr = no AWQ. Folds into attn_norm/ffn_norm gamma at
+     * load and scales the o_proj/down_proj input at runtime. Independent of
      * the weight quantization format. */
     const char *awq_scales_path;
 
@@ -312,8 +291,8 @@ struct geist_session_opts {
      * Different sessions on the same model may use different modes. */
     enum geist_kv_mode kv_mode;
 
-    /* @stability EXPERIMENTAL — verify-forward batch cap. Sizes scratch
-     * buffers + KIVI residual ring. 0 = arch default (transformer = 64). */
+    /* @stability EXPERIMENTAL — verify-forward batch cap; sizes scratch
+     * buffers and the KIVI residual ring. 0 = arch default (transformer: 64). */
     size_t m_max;
 };
 

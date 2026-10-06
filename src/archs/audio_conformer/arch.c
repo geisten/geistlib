@@ -1,10 +1,7 @@
 /*
- * src/archs/audio_conformer/arch.c — Gemma 4 audio Conformer encoder.
- *
- * Layer: ARCHITECTURE.
- *
- * Phase B-5: wrap existing audio_encoder.c + mel_pipeline.c into the
- * engine's geist_arch_ops_encoder vtable.
+ * src/archs/audio_conformer/arch.c — Gemma 4 audio Conformer encoder:
+ * wraps audio_encoder.c + mel_pipeline.c in the geist_arch_ops_encoder
+ * vtable.
  *
  * Search heuristics for aux files (audio_tower.safetensors + mel_constants.bin):
  *   - $GEIST_AUDIO_MODEL_PATH / $GEIST_MEL_CONSTANTS_PATH env overrides
@@ -70,7 +67,7 @@ static char *find_file(const char        *env_name,
 }
 
 static void *audio_conformer_state_create(struct geist_backend *be, const char *aux_root) {
-    (void) be; /* B-5: audio encoder still uses its own allocation; B-6 cleanup will route. */
+    (void) be; /* the audio encoder allocates on its own, not through the backend */
 
     static const char *audio_fallbacks[] = {
             "./audio_bench/audio_tower.safetensors",
@@ -139,9 +136,7 @@ static void audio_conformer_state_destroy(void *encoder_state) {
  * 0 on bad input. Framing per HF's Gemma4AudioFeatureExtractor and
  * identical to the streaming path (encoder_stream.c push_pcm): 10 ms hop
  * (MEL_HOP), one 160-sample zero left-pad. Frame i reads
- * padded[i*160 .. i*160+319] = pcm[i*160-160 .. i*160+159].
- * (This path ran a 20 ms hop with no pad until the framing-parity fix —
- * half the tokens of the reference for the same audio.) */
+ * padded[i*160 .. i*160+319] = pcm[i*160-160 .. i*160+159]. */
 static size_t pcm_to_mel(struct MelState *mel,
                          const int16_t   *pcm,
                          size_t           n_samples,
@@ -175,7 +170,7 @@ static size_t audio_conformer_encode_pcm(void          *encoder_state,
     }
     struct audio_conformer_state *st = encoder_state;
 
-    /* Refuse (not silently truncate — #247) input beyond the 30 s the
+    /* Refuse (not silently truncate, #247) input beyond the 30 s the
      * model was built for. The session surfaces this as an error. */
     const size_t n_frames = n_samples / MEL_HOP;
     if (n_frames == 0 || n_frames > AUDIO_MAX_MEL_FRAMES) {

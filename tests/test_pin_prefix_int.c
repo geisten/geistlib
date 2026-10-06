@@ -12,7 +12,7 @@
  * A and B must be identical: proves the prefix KV state survived reset
  * and the second prefill(Q) appended only Q (not re-running P).
  *
- * Phase B-4f smoke test. SKIPs cleanly if no GGUF model is available.
+ * SKIPs cleanly if no GGUF model is available.
  */
 #include "test_helpers.h"
 
@@ -154,10 +154,8 @@ int main(void) {
                geist_session_errmsg(sess));
     }
 
-    /* Out-of-vocabulary ids must be rejected, not indexed. An id past
-     * vocab_size used to read the embed table out of bounds and segfault
-     * (caught with the Gemma-4-sized ids this test once hardcoded, run
-     * against a 128k-vocab BitNet model). */
+    /* Out-of-vocabulary ids must be rejected, not indexed: an id past
+     * vocab_size would read the embed table out of bounds. */
     const geist_token_t bad_ids[] = {2, 1 << 30, -1};
     s = geist_session_prefill_tokens(sess, sizeof(bad_ids) / sizeof(bad_ids[0]), bad_ids);
     if (s == GEIST_OK) {

@@ -1,5 +1,5 @@
 /*
- * test_step12to14_ple — Steps 12, 13, 14 of Sub-Task D combined.
+ * test_step12to14_ple_int — Gemma 4 parity steps 12-14 (PLE).
  *
  * Implements:
  *  12. Model-level PLE pre-compute (runs once at model entry):

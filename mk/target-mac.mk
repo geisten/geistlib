@@ -7,12 +7,10 @@
 # Most users want `make TARGET=mac-omp` instead — `mk/detect-target.sh`
 # auto-picks it when /opt/homebrew/opt/libomp/lib/libomp.dylib exists.
 # Without libomp, the cpu_neon backend's `#pragma omp parallel for`
-# directives are silently ignored, capping prefill / decode at ~1/4 of
-# llama.cpp's multi-thread CPU performance (Gemma 4 Q4_K_M: pp 17.8
-# vs 92.4 tps, tg 9.8 vs 28.0 tps on M1 Max).
+# directives are silently ignored, which caps prefill / decode at about
+# a quarter of the multi-threaded speed.
 $(warning building plain mac target without OpenMP — install libomp via Homebrew and rebuild for ~5x multi-thread speedup. Run: brew install libomp.)
 
-# Compiler
 CC ?= clang
 
 # Apple silicon builds the NEON pair. An Intel Mac builds the x86 pair with
@@ -31,13 +29,9 @@ endif
 #
 # `-ffast-math -fno-finite-math-only`: enables fp reassociation +
 # vectorizer-friendly assumptions while keeping `-INFINITY` semantics
-# (Apple-clang's `-ffast-math` alone disallows `-INFINITY` macros and
-# would force a code refactor away from `-INFINITY` sentinel values
-# used for attention softmax init). Combined effect on BitNet 2B-4T:
-#   single-thread: 16.2 → 17.4 tps (+7%)
-#   mac-omp t=6 active: 48.3 → 60.9 tps (+26%, closes gap to
-#     bitnet.cpp from 1.36× to 1.07×)
-# Greedy decode bit-identical on test prompts.
+# (Apple-clang's `-ffast-math` alone rejects `-INFINITY`, which the
+# attention softmax uses as its init sentinel). Greedy decode is
+# bit-identical on the test prompts.
 CFLAGS_TARGET  := -DHAVE_ACCELERATE=1 -ffast-math -fno-finite-math-only $(MAC_ARCH_CFLAGS)
 
 # Accelerate framework provides BLAS + vDSP (FFT).

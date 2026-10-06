@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Scorer normalization must be Unicode-safe (#266).
 
-The regression this pins: the ASCII-only character class split German
-words at their umlauts ("schön" -> "sch n"), inflating non-English WER
-with phantom errors.
+An ASCII-only character class splits German words at their umlauts
+("schön" -> "sch n"), inflating non-English WER with phantom errors.
 """
 import sys
 from pathlib import Path

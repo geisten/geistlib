@@ -12,11 +12,8 @@ OPENBLAS_CFLAGS ?= $(shell pkg-config --cflags openblas 2>/dev/null)
 # OpenBLAS compiles every object first and then dies on `cannot find
 # -lopenblas` with no hint that a BLAS-free build exists, minutes in.
 #
-# But only for goals that actually link. `make lib` archives objects and never
-# resolves -lopenblas, and the README's quickstart is exactly `make lib` with
-# gcc and make as the only stated prerequisites — erroring there would break
-# the documented build on every Linux box without OpenBLAS. Verified in a
-# clean alpine:3.21: `make lib` stays green, `make test-unit` gets the message.
+# But only for goals that actually link: `make lib` never resolves -lopenblas,
+# and it is the README quickstart, which must work without OpenBLAS.
 OPENBLAS_LINKLESS_GOALS := lib clean distclean help format format-check \
                            fetch-model fetch-bench-model fetch-llama-model \
                            fetch-qwen3-model fetch-qwen35-model fetch-e4b-model fetch-audio-tower

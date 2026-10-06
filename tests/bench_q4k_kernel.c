@@ -255,7 +255,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
                 linear_q4k_w4a8_prefill_predecoded_mtile8(
                         M_BENCH, n_in, n_out, xm_q8, xm_sx, xm_sum, packed, ym8);
             const double dt8 = (now_ms() - t08) / it8;
-            (void) (dt4 / dt8); /* legacy speedup (mt4 → mt8) — see new columns below */
+            (void) (dt4 / dt8); /* mt4 vs mt8 is reported in the columns below */
 
             /* SGEMM path: dequant Q4_K → fp32 + cblas_sgemm per tile. */
             extern void  cblas_sgemm(int,
@@ -423,7 +423,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
     }
 
     /* For Q6_K only: also bench (a) the W6A8 NEON variant and (b) the
-     * dequant→FP32 sgemv path used today for lm_head. Verify W6A8 matches
+     * dequant→FP32 sgemv path used for lm_head. Verify W6A8 matches
      * the FP32 reference numerically (cosine similarity ≥ 0.999). */
     if (t->dtype == GGUF_TYPE_Q6_K) {
         /* Reference output from FP32 path stored in `y` from the calibration

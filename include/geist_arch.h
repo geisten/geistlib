@@ -2,16 +2,11 @@
  * geist_arch.h — extension API for architecture authors.
  *
  * Include this in addition to <geist.h> when implementing a new
- * architecture (transformer, audio conformer, vision siglip, a future
- * Mamba/SSM, etc.). Defines the three arch_ops vtables the engine
- * dispatches through; each concrete arch exports a descriptor wiring its
- * implementations, registered in src/engine/arch_registry.c.
- *
- * Parallel to geist_backend.h: the engine owns the interface here, the
- * arch layer implements it. Keeping the vtable shapes in this neutral
- * header (rather than inside a concrete arch's private header) lets the
- * engine dispatch without including any specific architecture — adding an
- * architecture touches only its own sources plus the registry.
+ * architecture (transformer, audio conformer, vision siglip, ...). Defines
+ * the three arch_ops vtables the engine dispatches through; each concrete
+ * arch exports a descriptor wiring its implementations, registered in
+ * src/engine/arch_registry.c. The engine owns the interface, the arch
+ * layer implements it (as with geist_backend.h).
  *
  * @stability EXPERIMENTAL — vtable layout may evolve until 1.0.
  */
@@ -28,14 +23,12 @@ extern "C" {
 /* Decoder arch_ops vtable — what every decoder-arch must implement.       */
 /* ====================================================================== */
 
-/* The vtable operates on two opaque handles to keep arch implementations
- * decoupled from the engine's full session definition:
+/* The vtable operates on two opaque handles:
  *
  *   `void *arch_state` — the MODEL: weights, geometry, precomputed
  *       tables. Immutable after state_create; shared by all sessions.
- *   `void *session`    — ONE inference stream's mutable state: for a
- *       transformer the KV cache, scratch, sampler; for Mamba the SSM
- *       hidden vector. Minted by session_alloc. For architectures
+ *   `void *session`    — ONE inference stream's mutable state (KV cache,
+ *       recurrent state, scratch, sampler). Minted by session_alloc. For architectures
  *       WITHOUT session_alloc the engine passes the arch_state itself
  *       as the session handle — such an arch's model is its one
  *       session.
@@ -48,17 +41,19 @@ extern "C" {
  * sessions of one model — one thread per session; a single session is
  * never called from two threads at once. Encoder ops (audio/vision) and
  * the engine's tokenizers are NOT covered by this guarantee — serialize
- * them externally. */
-struct gguf_ctx; /* the engine's GGUF reader, opaque here (#625) */
+ * them externally.
+ *
+ * New optional slots are appended at the end so existing field offsets do
+ * not move. */
+struct gguf_ctx; /* the engine's GGUF reader, opaque here */
 
 struct geist_arch_ops_decoder {
     const char *name;
 
-    /* state_create: allocate arch_state on backend. Returns nullptr on
-     * failure (engine reports OOM/IO via error path). Caller passes
-     * the GGUF path that model_load used to find the file. opts is
-     * typically nullptr at model-load time (no session yet); session
-     * options arrive later via set_session_opts. */
+    /* state_create: load the GGUF at gguf_path into a new arch_state on
+     * `be`; nullptr on failure. opts carries load-time options
+     * (geist_model_load_with_opts) and may be nullptr; sampler options
+     * arrive later via set_session_opts. */
     void *(*state_create)(struct geist_backend            *be,
                           const char                      *gguf_path,
                           const struct geist_session_opts *opts);
@@ -84,15 +79,14 @@ struct geist_arch_ops_decoder {
      * which callers must treat as "tuning unavailable", not an error. */
     enum geist_status (*gains)(void *arch_state, float **out, size_t *n);
 
-    /* Optional: push session opts into the session. Engine calls this
-     * from geist_session_create so per-session sampler config (temperature,
-     * top_p, top_k, random_seed) reaches the decode hot path. nullptr
-     * means the architecture ignores session opts (greedy-only). May fail
-     * (sampler workspace allocation) — the caller must propagate. */
+    /* Optional: apply session opts (sampler config) to the session; called
+     * from geist_session_create. nullptr = the architecture ignores them
+     * (greedy-only). May fail (sampler workspace allocation); the caller
+     * propagates. */
     enum geist_status (*set_session_opts)(void *session, const struct geist_session_opts *opts);
 
-    /* state_reset: drop the session's conversational state (KV / SSM
-     * hidden), keep weights. Used by geist_session_reset. */
+    /* state_reset: drop the session's conversational state (KV, recurrent
+     * state), keep weights. Used by geist_session_reset. */
     void (*state_reset)(void *session);
 
     /* prefill: append `n` tokens to the session's recurrent state.
@@ -142,11 +136,9 @@ struct geist_arch_ops_decoder {
      * one. Same ownership and lifetime contract as peek_logits. */
     const float *(*peek_embedding)(size_t *n_dims, void *session);
 
-    /* Optional: residual-stream width (d_model) of the loaded model.
-     * The engine refuses a modality tower whose soft-token width doesn't
-     * match (e.g. an E2B 1536-dim tower next to an E4B 2560-dim GGUF —
-     * same family, wrong geometry, #258). nullptr = unknown; the engine
-     * then skips the check. */
+    /* Optional: residual-stream width (d_model) of the loaded model. The
+     * engine refuses a modality tower whose soft-token width differs (e.g.
+     * an E2B tower next to an E4B GGUF). nullptr = unknown; check skipped. */
     size_t (*hidden_dim)(const void *arch_state);
 
     /* Speculative-decode primitives. Optional — leave nullptr if the
@@ -187,9 +179,8 @@ struct geist_arch_ops_decoder {
     void *(*session_alloc)(void *arch_state, const struct geist_session_opts *opts);
     void (*session_free)(void *arch_state, void *session);
 
-    /* Optional architecture-native drafter. Appended to preserve offsets of
-     * the pre-existing decoder ABI. Returns a candidate chain whose first
-     * token is `seed`; GEIST_E_UNSUPPORTED asks the engine to use its generic
+    /* Optional architecture-native drafter. Returns a candidate chain whose
+     * first token is `seed`; GEIST_E_UNSUPPORTED asks the engine to use its generic
      * n-gram drafter instead. */
     enum geist_status (*draft_tokens)(void          *session,
                                       size_t         k_max,
@@ -198,16 +189,14 @@ struct geist_arch_ops_decoder {
                                       size_t        *n_out);
     /* Optional model-level capability for numeric decisions. The next-token
      * logits vocabulary, or 0 for an embedding-only/unsupported model.
-     * Allows the engine to validate all input IDs before a forward pass.
-     * Appended: existing vtable field offsets remain unchanged. */
+     * Allows the engine to validate all input IDs before a forward pass. */
     size_t (*logits_vocab_size)(const void *arch_state);
 
     /* Optional independent decision readout. Capability is resolved at
      * creation; unsupported pairs return GEIST_E_UNSUPPORTED, never dense.
      * The readout owns bounded workspace and borrows its private session.
      * prefill_rows skips ordinary logits finalization and returns only the
-     * requested model-conformant logits. Outputs are zero on failure.
-     * Appended EXPERIMENTAL hooks; ordinary prefill/decode are unchanged. */
+     * requested model-conformant logits. Outputs are zero on failure. */
     bool (*decision_rows_supported)(const void *arch_state);
     enum geist_status (*decision_rows_create)(void *session, size_t max_candidates, void **out);
     void (*decision_rows_destroy)(void *readout);
@@ -227,13 +216,12 @@ struct geist_arch_ops_decoder {
      * the bytes snapshot needs now; snapshot writes them to buf[capacity]
      * and their count to *out_bytes; neither changes the session's state.
      * restore replaces the session's state with an image, GEIST_E_FORMAT
-     * if it is not one that fits. nullptr when the architecture cannot.
-     * Appended: existing vtable field offsets remain unchanged. */
+     * if it is not one that fits. nullptr when the architecture cannot. */
     enum geist_status (*snapshot_size)(size_t *out_bytes, const void *session);
     enum geist_status (*snapshot)(size_t *out_bytes, size_t capacity, void *buf, void *session);
     enum geist_status (*restore)(size_t n_bytes, const void *buf, void *session);
 
-    /* Optional (#622): geist_session_truncate. Drop the session's state after
+    /* Optional: geist_session_truncate. Drop the session's state after
      * its first n positions, so the next prefill continues at n; pending
      * logits are invalid afterwards. GEIST_E_INVALID_ARG past the session's
      * length or below a pinned prefix; GEIST_E_UNSUPPORTED where the state
@@ -242,17 +230,15 @@ struct geist_arch_ops_decoder {
      * kv_bytes_per_token: the KV-cache bytes one more position costs in
      * this session, for its resolved KV mode; fixed buffers and recurrent
      * state, which do not grow with the length, are not included.
-     * nullptr when the architecture cannot.
-     * Appended: existing vtable field offsets remain unchanged. */
+     * nullptr when the architecture cannot. */
     enum geist_status (*truncate)(void *session, size_t n);
     enum geist_status (*kv_bytes_per_token)(size_t *out_bytes, const void *session);
 
-    /* Optional (#625): geist_model_plan. From an open GGUF (metadata and
+    /* Optional: geist_model_plan. From an open GGUF (metadata and
      * tensor table; no weight read, nothing allocated on be): the KV bytes
      * per position a session created with opts would report through
      * kv_bytes_per_token, and the model's bytes per position of
-     * max_seq_len. nullptr when the architecture cannot plan.
-     * Appended: existing vtable field offsets remain unchanged. */
+     * max_seq_len. nullptr when the architecture cannot plan. */
     enum geist_status (*plan)(struct geist_backend            *be,
                               struct gguf_ctx                 *gguf,
                               const struct geist_session_opts *opts,
@@ -293,19 +279,17 @@ struct geist_arch_ops_encoder {
      * Gemma 4 audio tower). */
     size_t (*soft_token_dim)(const void *encoder_state);
 
-    /* Optional streaming encode (#256): begin, push (repeated), end must
-     * be equivalent to one encode_pcm over the concatenated PCM — that
-     * equivalence is the testable contract. The encoder overlaps the
-     * heavy work with the arriving PCM, so end() returns after only the
-     * tail. push is safe to call from a capture thread (the encoder
+    /* Optional streaming encode: begin, push (repeated), end must be
+     * equivalent to one encode_pcm over the concatenated PCM. The encoder
+     * overlaps the heavy work with the arriving PCM, so end() only encodes
+     * the tail. push is safe to call from a capture thread (the encoder
      * serializes internally); begin/end from the inference thread.
      * All three nullptr when the encoder has no streaming path. */
     bool (*stream_begin)(void *encoder_state);
     /* Returns false on overflow (>30 s buffered) or before begin. */
     bool (*stream_push)(void *encoder_state, size_t n, const int16_t *pcm);
     /* Non-blocking: drain whatever soft tokens are ready NOW (0 when
-     * none). Lets the session inject tokens into the LM while the user
-     * is still speaking — phase 2 of #256. */
+     * none), so the session can inject them while the user is speaking. */
     size_t (*stream_poll)(void *encoder_state, size_t max_soft, float *out_soft);
 
     /* Finish the tail, write up to max_soft soft tokens, return the
@@ -314,22 +298,15 @@ struct geist_arch_ops_encoder {
 
     /* Drop an open stream without finishing it: discard buffered audio
      * and any soft tokens the worker has produced, and leave the encoder
-     * ready for the next stream_begin. Unlike stream_end it computes
-     * nothing and returns nothing — it exists so a caller that cannot
-     * continue (an allocation failed, the session is being destroyed) can
-     * close the stream instead of leaking it. Must be safe to call when
-     * no stream is open, and safe to call twice.
-     *
-     * Optional: an encoder without it leaves the caller only stream_end,
-     * which pays for a tail nobody will read. */
+     * ready for the next stream_begin; computes nothing. For callers that
+     * cannot continue (allocation failure, session teardown). Must be safe
+     * with no stream open and when called twice. Optional; without it the
+     * caller can only stream_end. */
     void (*stream_abort)(void *encoder_state);
 
     /* max_soft_tokens: upper bound on soft tokens encode_pcm can produce
-     * for n_samples of PCM — lets the engine size the output buffer from
-     * the audio length instead of guessing a fixed cap (#247: a hardcoded
-     * 256 silently truncated everything past ~10 s while still paying the
-     * full encode). Optional; nullptr means the engine falls back to a
-     * conservative default. */
+     * for n_samples of PCM, used to size the output buffer. Optional;
+     * nullptr = the engine uses a conservative default. */
     size_t (*max_soft_tokens)(const void *encoder_state, size_t n_samples);
 };
 

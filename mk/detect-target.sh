@@ -2,14 +2,13 @@
 # Detect the build target based on the host system.
 #
 # POSIX sh on purpose, not bash: this runs before anything else in the build,
-# and minimal containers (Alpine, distroless) ship no bash. With a bash
-# shebang, detection failed silently there and make died on `mk/target-.mk`.
+# and minimal containers (Alpine, distroless) ship no bash.
 # Output: mac | mac-omp | pi5 | linux | unknown
 # Override at make-time: make TARGET=mac
 #
 # On Darwin, mac-omp is preferred when Homebrew libomp is installed —
 # without it geist's per-matmul `#pragma omp parallel for` directives
-# are silently ignored, capping multi-thread perf at ~1/4 of llama.cpp.
+# are silently ignored.
 # The plain `mac` target stays available as a fallback when libomp is
 # missing or for serial debugging.
 

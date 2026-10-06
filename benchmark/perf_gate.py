@@ -23,11 +23,10 @@ on that comparison — a shared runner's spread is why the floors are coarse.
   python3 benchmark/perf_gate.py --llama llama.json \
       --min-prefill-ratio 0.6 --min-decode-ratio 0.5 < geist.jsonl
 
-An absolute tok/s floor cannot survive a hosted macOS runner: the Apple guard
-saw 23.9, 14.4 and 38.0 prefill tok/s on three consecutive Sundays from the
-same code, against a floor of 60. Whatever that runner is on a given day, it
-is the same for both engines in one job, so the ratio cancels most of it
-(benchmark/METHODOLOGY.md: "the ratio on your own box is the number that
+An absolute tok/s floor cannot survive a hosted macOS runner: its prefill
+tok/s varies by more than 2x week to week on the same code. Whatever that
+runner is on a given day, it is the same for both engines in one job, so the
+ratio cancels most of it (benchmark/METHODOLOGY.md: "the ratio on your own box is the number that
 travels"). The ratio floors are cliff floors too.
 """
 import argparse

@@ -6,30 +6,17 @@
  * are not latched), encodes the same synthetic 2 s sweep, and asserts
  * per-token cosine similarity against the shipping-precision reference.
  *
- * Thresholds are calibrated from measured runs on macOS, Pi 5 and x86_64
- * (#238; x86_64 added after geistkit's model profile ran this test on Zen 5
- * for the first time). Real quantization noise lands at mean 1-cos ~1e-3
- * with one outlier token per clip; a broken quant path (wrong scale,
- * misapplied correction) blows up the MEAN. Measured on Zen 5 with
- * AVX-512/VNNI, 51 tokens:
+ * Thresholds are calibrated on macOS, Pi 5 and x86_64 (#238). Correct
+ * quantization lands at mean 1-cos of a few 1e-3 with one outlier token per
+ * clip (mid-clip, not at a boundary); a broken quant path (wrong scale,
+ * misapplied correction) raises the MEAN 8-43x, while its worst token can
+ * read better than a correct path's. So the mean discriminates and
+ * COS_WORST_MIN only guards against a total collapse.
  *
- *   config      correct (mean / worst)   +128 correction removed
- *   attn        3.4e-03 / 5.5e-02        2.8e-02 / 3.1e-02
- *   attn+lconv  6.1e-03 / 1.6e-01        2.6e-01 / 2.8e-01
- *
- * Two things follow. The mean is what discriminates — it moves by a factor
- * of 8 to 43 — while the worst token of a BROKEN path can read *better*
- * than a correct one (3.1e-02 against 5.5e-02), so COS_WORST_MIN only
- * guards against a total collapse and is set with room to spare. And the
- * outlier is not a clip-boundary artefact as first assumed: it sits at
- * token 30 of 51, with the runner-up at 9.0e-02.
- *
- * The x86 kernels are not the reason this platform drifts further than the
- * ARM ones: GEIST_AUDIO_KERNEL=scalar and GEIST_FORCE_ISA=avx2 reproduce
- * the VNNI numbers bit for bit, because both kernels accumulate exactly in
- * int32. Semantic quality is separately pinned by test_audio_chat_e2e run
- * with GEIST_AUDIO_ATTN_W8A8=1, and geist-diktat measures 0.0 % WER on this
- * precision.
+ * x86_64 drifts further than ARM, but not because of its kernels: scalar,
+ * AVX2 and VNNI give the same bits (exact int32 accumulation). Semantic
+ * quality is pinned separately by test_audio_chat_e2e with
+ * GEIST_AUDIO_ATTN_W8A8=1.
  *
  * SKIPs cleanly when audio_tower.safetensors / mel_constants.bin are
  * missing; the audio-smoke CI job runs it with fixtures mandatory.
@@ -51,9 +38,8 @@
 #define SECONDS 2
 #define N_PCM ((size_t) AUDIO_TEST_SR * SECONDS)
 
-/* 0.80: the measured x86_64 outlier is 0.842, and a collapsed path lands far
- * below either number — see the table above for why the mean carries the
- * discrimination and this bound only catches a collapse. */
+/* 0.80: the x86_64 outlier is 0.842, and a collapsed path lands far below
+ * either number; the mean carries the discrimination (see above). */
 #define COS_WORST_MIN 0.80
 #define COS_MEAN_MIN 0.99
 
@@ -129,8 +115,8 @@ int main(void) {
      * beats the quant kernels there) — force the quant paths so this test
      * exercises W8A8 on every platform, not just the Pi. */
     setenv("GEIST_AUDIO_FORCE_QUANT", "1", 1);
-    /* W8A8 is the default since the quality gates went green — the
-     * high-precision reference now has to opt OUT explicitly. */
+    /* W8A8 is the default, so the high-precision reference opts out
+     * explicitly. */
     setenv("GEIST_AUDIO_ATTN_W8A8", "0", 1);
     setenv("GEIST_AUDIO_LCONV_W8A8", "0", 1);
     size_t n_ref = encode_once(tower, pcm, soft_ref);

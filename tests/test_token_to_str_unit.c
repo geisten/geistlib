@@ -3,12 +3,10 @@
  * surface form as a NUL-terminated string that stays valid for the
  * session's lifetime, as include/geist.h promises (STABLE since 0.1.0).
  *
- * It did not. For a GGUF-embedded tokenizer it decoded into one thread-local
- * 256-byte buffer: each call overwrote the string the call before had
- * returned, and a token longer than 254 bytes came back cut short. For a
- * tokenizer.bin it returned the piece's bytes inside the file's mapping,
- * which are not NUL-terminated, so strlen ran on into the next entry's
- * length field (the "trailer byte" test_audio_chat_e2e strips).
+ * Guards against decoding into one shared fixed-size buffer (each call
+ * overwrites the previous string; long tokens come back cut short) and
+ * against returning a tokenizer.bin piece inside the file's mapping, which
+ * is not NUL-terminated (strlen runs on into the next entry's length field).
  *
  * One-layer llama GGUFs with F32 weights carry the tokenizer_fixtures vocab,
  * plus long tokens (255 to 70000 bytes), as every tokenizer the loader
@@ -34,7 +32,7 @@
 enum { D = 64, FFN = 64 };
 
 /* Letters only, so every kind decodes them to themselves: either side of a
- * 256-byte buffer, past the old 254-byte cut, and past 4 KB and 64 KB. A
+ * 256-byte buffer, past 254 bytes, and past 4 KB and 64 KB. A
  * tokenizer.bin stores 16-bit lengths, so it gets all but the last. */
 static const size_t LONG_TOKENS[] = {255, 256, 300, 5000, 70000};
 enum { N_LONG = sizeof LONG_TOKENS / sizeof LONG_TOKENS[0] };
@@ -185,7 +183,7 @@ static int check_model(struct geist_backend  *be,
     fails += expect_none_wrong(n_wrong(got, k, v), n, k, "after the second session ended");
 
     /* Out of range: the GGUF tokenizer decodes it as "<unk>", a tokenizer.bin
-     * has nothing; a negative id is nothing everywhere. Unchanged behaviour. */
+     * has nothing; a negative id is nothing everywhere. */
     const char *past = geist_session_token_to_str(s, (geist_token_t) n);
     snprintf(what,
              sizeof what,

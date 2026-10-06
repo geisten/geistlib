@@ -4,9 +4,9 @@
  *
  * The turn owns two things that outlive a single call: a session-lifetime
  * scratch buffer, and a stream inside the ENCODER, which is shared across
- * sessions of the same model. Both used to be released only by a
- * successful audio_end. A session destroyed mid-turn leaked the scratch
- * and left the encoder stream open for whoever came next.
+ * sessions of the same model. Both must be released on every exit, not
+ * only by a successful audio_end: a session destroyed mid-turn must free
+ * the scratch and close the encoder stream for whoever comes next.
  *
  * Run this under ASan/LSan — the leak half of the contract is not visible
  * any other way:
@@ -98,7 +98,7 @@ int main(void) {
           "audio_begin twice must be refused");
 
     /* ---- destroy mid-turn ----------------------------------------------
-     * The case the issue is about: push audio, then destroy without ever
+     * The main case: push audio, then destroy without ever
      * calling end. The scratch must be freed (LSan) and the encoder
      * stream must be closed — which the next section proves by opening a
      * new one. */

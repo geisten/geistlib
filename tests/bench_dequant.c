@@ -1,7 +1,6 @@
 /*
  * bench_dequant — isolate cost of dequant_q3_K_row + dequant_q4_K_row.
- * Measures GB/s for the scalar (current) implementation against synthetic
- * tensor data sized like Gemma 4 E2B FFN weights.
+ * Measures GB/s on synthetic tensor data sized like Gemma 4 E2B FFN weights.
  */
 #include "quant.h"
 #include <stdio.h>

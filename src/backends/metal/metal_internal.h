@@ -2,10 +2,8 @@
  * src/backends/metal/metal_internal.h — shared state, types, and
  * cross-module prototypes of the Metal backend.
  *
- * Layer: BACKEND (metal, internal). The backend is split by
- * responsibility: lifecycle.c, resources.c, pipelines.c, sequence.c,
- * ops.c, profiling.c. Everything here is internal to those six
- * translation units.
+ * Layer: BACKEND (metal, internal). Shared by the backend's translation
+ * units (lifecycle, resources, pipelines, sequence, ops, profiling, tuning).
  */
 #ifndef GEIST_INTERNAL_METAL_INTERNAL_H
 #define GEIST_INTERNAL_METAL_INTERNAL_H
@@ -17,8 +15,7 @@
 #include "heap.h"
 #include <math.h>
 
-/* Which GPU command sequence a capture/profile wait belongs to. Last
- * survivor of metal_legacy_ops.h; the legacy op structs died in Stage 6. */
+/* Which GPU command sequence a capture/profile wait belongs to. */
 enum geist_command_sequence_kind {
     GEIST_COMMAND_SEQUENCE_DECODE_LAYER_LOOP,
     GEIST_COMMAND_SEQUENCE_DECODE_GREEDY_STEP,
@@ -111,7 +108,7 @@ struct metal_profile_stat {
 
 /* Registry entry mapping a live buffer's host contents range back to its
  * geist_buffer, so resolver-installed linear kernels can translate the raw
- * host pointers main's engine passes (buffer_map aliases, w->raw) into
+ * host pointers the engine passes (buffer_map aliases, w->raw) into
  * (MTLBuffer, offset) pairs for GPU dispatch. */
 struct metal_buf_reg_entry {
     const uint8_t       *base;
@@ -214,7 +211,7 @@ struct metal_state {
      * measurements, then a calibration blob, then the env. */
     struct metal_tuning {
         uint32_t pq2_n8_min_n_out;
-        /* Cleared once the calibration blob has been folded in; see
+        /* Set once the calibration blob has been folded in; see
          * metal_tuning_resolve. */
         bool resolved;
     } tuning;
@@ -429,7 +426,7 @@ struct metal_state {
     void    *attention_flash_sg8_f16_function;
     void    *attention_flash_sg8_f16_pipeline;
     void    *attn_flash_sg8_f16_library;
-    /* persistent f32->f16 K/V staging for the plain flash path (main's
+    /* persistent f32->f16 K/V staging for the plain flash path (the
      * engine keeps the KV cache f32). */
     struct geist_buffer *attn_kf16_buffer;
     struct geist_buffer *attn_vf16_buffer;
@@ -485,8 +482,8 @@ struct metal_state {
     /* #530: an MTLResidencySet on the command queue (macOS 15+; null there
      * otherwise, or with GEIST_METAL_KEEP_ALIVE_S=0). macOS unwires what a
      * command buffer made resident about 2 s after the GPU goes idle, and
-     * the next submission wires it again: +250 ms on the first token after
-     * a pause on qwen3.8-27B. res_thread requests the set's residency every
+     * the next submission wires it again, stalling the first token after a
+     * pause. res_thread requests the set's residency every
      * 500 ms until res_keep_s pass without a dispatch (res_used), which
      * keeps the members wired across such pauses; then it sleeps
      * (res_parked) until the next dispatch.

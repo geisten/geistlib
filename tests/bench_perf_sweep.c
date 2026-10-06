@@ -214,9 +214,8 @@ int main(int argc, char **argv) {
      * without affecting the metric being measured. */
     setenv("GEIST_TEXT_ONLY", "1", 0);
 
-    /* "auto" = registry preference order (cpu_neon/cpu_x86 before cpu_scalar).
-     * The old default of "cpu_neon" + silent cpu_scalar fallback measured the
-     * scalar path on x86 builds unless GEIST_BENCH_BACKEND was set (#102). */
+    /* "auto" = registry preference order (cpu_neon/cpu_x86 before cpu_scalar),
+     * so x86 builds do not silently measure cpu_scalar (#102). */
     const char *backend_name = getenv("GEIST_BENCH_BACKEND");
     if (backend_name == nullptr || backend_name[0] == '\0') {
         backend_name = "auto";

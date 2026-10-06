@@ -1,11 +1,11 @@
 /*
- * test_llama_e2e_int — P1.6 end-to-end check: geist_model_load →
+ * test_llama_e2e_int — end-to-end check: geist_model_load →
  * geist_session_create → geist_session_set_prompt(real text) →
  * decode_step loop → decoded output text.
  *
  * Exercises the public engine API on a Llama-family GGUF. No
  * external tokenizer.bin needed — set_prompt auto-detects the
- * GGUF-embedded BPE tokenizer (P1.6 dispatch).
+ * GGUF-embedded BPE tokenizer.
  *
  * SKIPs cleanly when no Llama GGUF is reachable; set
  * GEIST_LLAMA_GGUF_PATH to override the search.
@@ -70,8 +70,8 @@ int main(void) {
     }
     printf("loaded: arch=%s\n", geist_model_arch(model));
 
-    /* Confirm the engine attached the GGUF-embedded tokenizer (not
-     * the legacy sp_bpe path). */
+    /* Confirm the engine attached the GGUF-embedded tokenizer, not
+     * sp_bpe. */
     struct gguf_tokenizer *gtok = geist_model_internal_gguf_tokenizer(model);
     if (gtok == nullptr) {
         fprintf(stderr, "FAIL: model has no GGUF-embedded tokenizer attached\n");
@@ -95,7 +95,7 @@ int main(void) {
     }
 
     /* Drive a real English prompt through the public API. set_prompt
-     * encodes via the GGUF tokenizer (P1.5.g/.h hash-indexed), the
+     * encodes via the GGUF tokenizer, the
      * arch's prefill chunks through 32 Llama layers, and decode_step
      * emits next tokens. Print the decoded continuation. */
     int         fails       = 0;

@@ -1,7 +1,7 @@
 /*
- * test_state_weights_int — Phase B-4e sub-step 1 verification.
+ * test_state_weights_int — loaded weights are byte-identical to the GGUF.
  *
- * Loads Gemma 4 weights through transformer_state_create (the new
+ * Loads Gemma 4 weights through transformer_state_create (the
  * backend-buffer path) and verifies that every byte of every weight matches
  * the corresponding mmap'd region in the GGUF reader. Covers:
  *   - 5 global tensors (token_embd, per_layer_token_embd, per_layer_model_proj,
@@ -12,8 +12,8 @@
  * The comparison: gguf_get_tensor(name)->data is the authoritative byte
  * source. We download each backend buffer back to host and memcmp.
  *
- * This is a strict byte-identity check, not a numerical-equivalence check.
- * Sub-steps 2-3 add the forward-pass numerical checks.
+ * This is a strict byte-identity check, not a numerical-equivalence check;
+ * test_state_layer_fwd_int covers the forward pass numerically.
  *
  * SKIPs cleanly if no GGUF is available.
  */
@@ -32,9 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Gemma-4 E2B reference geometry — the fixture this test runs against.
- * (Were GEIST_GEMMA4_* macros in arch_state.h until the neutral-defaults
- * inversion moved family defaults into the populators.) */
+/* Gemma-4 E2B reference geometry — the fixture this test runs against. */
 #define GEIST_GEMMA4_HIDDEN 1536
 #define GEIST_GEMMA4_NUM_LAYERS 35
 #define GEIST_GEMMA4_HIDDEN_PER_LAYER 256

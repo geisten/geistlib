@@ -1,121 +1,87 @@
 # geistlib examples
 
-Four small C programs against what geistlib actually ships: `include/geist.h`
-and `include/geist_util.h`. One is meant to be read and copied; two are release
-gates that run in CI and are the only check of their kind — don't delete them
-for looking trivial.
+Small C programs built from **outside** the library, against what geistlib
+ships: `include/*.h` and `libgeist.a`. `tests/` is the opposite —
+`mk/common.mk` builds `tests/test_*.c` against the repository tree.
 
-The tool-use programs that used to live here moved out of tree with the agent
-layer.
-
-| File | Role | Proves | Built by |
+| File | Role | Shows / proves | Built by |
 | :-- | :-- | :-- | :-- |
 | `simple_generate.c` | example | the STABLE core generates text | `make -C examples` |
-| `push_to_talk.c` | example | a real-time voice loop: mic → VAD → audio attach → spoken-to answer | `make -C examples` |
+| `push_to_talk.c` | example | real-time voice loop: mic → VAD → audio attach → answer | `make -C examples` |
+| `dictate.c` | example | dictation: one transcript line per utterance on stdout | `make -C examples` |
+| `geist_calibrate.c` | example | the caller side of the calibration API: when to measure, where to store, reacting to staleness | `make -C examples` |
 | `embed_smoke.c` | release gate | the packaged `libgeist.a` links and runs with no model | `release.yml` |
-| `agent_contract_smoke.c` | release gate | the symbols the out-of-tree agent runtime links still exist, with the same signatures | `release.yml` + `make agent-contract-smoke` |
+| `agent_contract_smoke.c` | release gate | the symbols an out-of-tree agent runtime links keep their signatures | `release.yml` + `make agent-contract-smoke` |
+| `runtime_contract_smoke.c` | release gate | the same for [geist-runtime](https://github.com/geisten/geist-runtime) | `release.yml` + `make runtime-contract-smoke` |
+| [`ffi/`](ffi/README.md) | example | the same integration in Python, Rust, Go and JavaScript | by hand |
 
-The `_smoke` suffix is the marker: every `*_smoke.c` here is compiled by
-`release.yml` against the *packaged* SDK, with `-I <package>/include` and the
-repo tree off the include path. They live beside the example because they share
-the one property that defines this directory — everything here is built from
-**outside** the library, against the artifact geistlib publishes. `tests/` is
-the opposite: `mk/common.mk` globs `tests/test_*.c` and builds them against the
-repo tree, which is precisely the check a packaging gate must not do.
-
-`agent_contract_smoke.c` is the exception that proves it: it also builds from
-the repo tree on every PR (`make agent-contract-smoke`, wired into `ci.yml`).
-That is deliberate — a broken contract should fail on the PR that breaks it, not
-weeks later at release. The release run is the one that matters, because only it
-proves the *shipped* headers still hold.
+`make -C examples` includes `mk/target-$(TARGET).mk`, so the examples link
+with exactly the compiler, flags and libraries of the library (override with
+`TARGET=pi5`, `MODE=debug`, …).
 
 ## `simple_generate`
 
-Loads a GGUF, prefills a prompt, greedy-decodes a continuation.
+Loads a GGUF, prefills a prompt, decodes a continuation.
 
 ```sh
-make                 # libgeist.a for the detected target
-make -C examples     # the example against it
-
+make lib && make -C examples
 OMP_WAIT_POLICY=active examples/simple_generate \
     gguf_artifacts/gemma4-e2b-Q4_K_M.gguf "The capital of France is"
 # -> The capital of France is Paris.
 ```
 
-Arguments: `simple_generate <model.gguf> [prompt] [max_new_tokens]`.
+Usage: `simple_generate <model.gguf> [prompt] [max_new_tokens] [-t|--temperature <float>]`.
+Temperature 0 (default) is greedy and deterministic.
 
 It uses only `geist_backend_create` → `geist_model_load` →
 `geist_session_create` → `geist_session_set_prompt` → `geist_session_decode_step`
-→ `geist_session_token_to_str`. That is the whole stable surface needed to run
-text generation; multimodal (`attach_audio` / `attach_image` / `attach_video`)
-and the speculative / KV-mode knobs are `EXPERIMENTAL` extensions on top.
+→ `geist_session_token_to_str`. Multimodal attach, speculative decode and the
+KV modes are `EXPERIMENTAL` extensions on top. The release CLIs
+`geist-linux-*` and `geist-bitnet-linux-*` are built from this file.
 
-`make -C examples` includes `mk/target-$(TARGET).mk`, so the example links with
-exactly the compiler, flags and libraries the library itself uses — pass
-`TARGET=pi5` / `MODE=debug` to override.
+## `push_to_talk` and `dictate`
 
-## `push_to_talk`
-
-The complete real-time voice pattern in ~200 lines of public API: raw
-16 kHz mono s16le PCM on stdin (exactly what `arecord` emits), a simple
-energy VAD to segment utterances, one Gemma 4 audio turn per utterance.
+Raw 16 kHz mono s16le PCM on stdin (what `arecord` emits), an energy VAD to
+segment utterances, one Gemma 4 audio turn per utterance. `push_to_talk`
+answers; `dictate` prints a transcript line per utterance, for piping into a
+typing tool.
 
 ```sh
-make -C examples
 arecord -f S16_LE -r 16000 -c 1 -t raw | \
     examples/push_to_talk gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
 ```
 
-No microphone? Pipe any 16 kHz WAV plus a second of silence:
+The second argument is the VAD threshold (default 300 RMS);
+`GEIST_PTT_PROMPT` / `GEIST_DICTATE_PROMPT` set the instruction. Run from the
+repo root (or set `GEIST_AUDIO_MODEL_PATH`) so the audio tower is found. macOS
+capture, calibration, prompts and troubleshooting:
+[docs/VOICE.md](../docs/VOICE.md).
+
+## `geist_calibrate`
 
 ```sh
-(tail -c +45 clip.wav; dd if=/dev/zero bs=32000 count=1) | \
-    examples/push_to_talk model.gguf
+examples/geist_calibrate <dir> [--force]   # measure, write <dir>/<key> (--force skips the load gate)
+examples/geist_calibrate --apply <file>    # validate a stored blob against this machine
 ```
 
-On macOS there is no `arecord`; ffmpeg's avfoundation input is the
-equivalent (verified live — speaker-to-mic loop on a MacBook):
+The library only measures, serializes and validates; this program shows the
+policy a consumer owns. Uses the `cpu_neon` backend.
 
-```sh
-ffmpeg -f avfoundation -list_devices true -i ""   # find your mic index
-ffmpeg -hide_banner -loglevel error -f avfoundation -i ":1" \
-       -ar 16000 -ac 1 -f s16le - | \
-    examples/push_to_talk model.gguf 1200
-```
+## Release gates
 
-(`:1` = the built-in mic on a typical MacBook; grant the terminal
-microphone permission on first use. `brew install sox` and
-`rec -q -t raw -r 16000 -e signed -b 16 -c 1 -` works too.) Calibrate
-the threshold against your room: ambient frame RMS on a MacBook mic is
-~800, so the default 300 would trigger constantly — measure a few
-seconds of silence and set the knob above its peak.
+The `*_smoke.c` files are compile-and-link assertions, compiled by
+`release.yml` in all three release jobs against the *packaged* SDK, with
+`-I <package>/include` and the repo tree off the include path.
 
-`GEIST_PTT_PROMPT` sets the per-utterance instruction; the second CLI
-argument tunes the VAD threshold (default 300 RMS — every room, mic and
-gain combination needs the knob). Run from the repo root (or set
-`GEIST_AUDIO_MODEL_PATH`) so the audio tower is found; the program uses
-`geist_model_modalities()` to fail fast when the model cannot hear.
+- **`embed_smoke.c`** calls only model-free STABLE entry points (version,
+  status). If it fails, the shipped `libgeist.a` is unusable for every
+  consumer.
+- **`agent_contract_smoke.c`** and **`runtime_contract_smoke.c`** bind each
+  contracted symbol of [docs/API_CONTRACT.md](../docs/API_CONTRACT.md) to an
+  explicitly typed function pointer: a changed signature fails to compile, a
+  removed symbol fails to link. Nothing is called, so no model is needed. Both
+  also build from the repo tree on every PR (`make agent-contract-smoke`,
+  `make runtime-contract-smoke`), so a break fails on the PR that causes it.
 
-## The two release gates
-
-Both run in all three release jobs — `linux-arm64`, `linux-x86_64`,
-`macos-arm64` — against that platform's packaged SDK. Neither is called for its
-output; each is a compile-and-link assertion, which is why 136 lines are worth
-keeping:
-
-- **`embed_smoke.c`** (27 lines) calls only model-free STABLE entry points
-  (version, status), so it needs no backend and no GGUF. If it fails, the
-  shipped `libgeist.a` is unusable for every embedder — the broadest possible
-  failure, caught by the smallest possible program.
-
-- **`agent_contract_smoke.c`** (109 lines) binds each symbol of
-  [`docs/API_CONTRACT.md`](../docs/API_CONTRACT.md) to an explicitly typed
-  function pointer. A **changed signature fails to compile**, a **removed symbol
-  fails to link**. Nothing is invoked, so no model is needed; taking a
-  function's address is enough to force the linker to resolve it. The
-  out-of-tree agent runtime links these across a release boundary, so a break
-  must surface here rather than in someone else's build.
-
-To reproduce either locally, point `-I` at an unpacked tarball instead of
-`include/`. For the contract one, `make agent-contract-smoke` is the quicker
-check — it compiles the same assertions against the working tree.
+To reproduce a gate against a release, point `-I` at an unpacked tarball
+instead of `include/`.

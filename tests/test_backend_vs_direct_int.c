@@ -121,10 +121,9 @@ int main(void) {
     if (s != GEIST_OK)
         goto fail;
 
-    /* P2.e: route through the resolver, not v->linear (which has been
-     * removed). Build a geist_weight that wraps the same raw bytes,
-     * let cpu_neon's resolve_weight install the kernel function
-     * pointer, then call it directly. */
+    /* Build a geist_weight that wraps the same raw bytes, let cpu_neon's
+     * resolve_weight install the kernel function pointer, then call it
+     * directly. */
     void *w_host = be->desc->vtbl->buffer_map(bw);
     if (w_host == nullptr)
         goto fail;

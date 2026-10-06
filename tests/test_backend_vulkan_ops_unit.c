@@ -1,4 +1,4 @@
-/* Vulkan elementwise / layout ops added for the qwen35 family, each compared
+/* Vulkan elementwise / layout ops of the qwen35 family, each compared
  * with the host reference formula:
  *
  *   - rope_apply with a rotated prefix narrower than head_dim (partial
@@ -295,9 +295,9 @@ static void test_elementwise(size_t rows, size_t cols) {
 }
 
 /* rmsnorm and rmsnorm_add on VRAM-only buffers, against a double-precision
- * host reference. Both shaders reduce with one shared slot per subgroup:
- * sized for 32-lane subgroups, the 8-lane llvmpipe (and Intel's 8/16) wrote
- * past the array and every row came back wrong. */
+ * host reference. Both shaders reduce with one shared slot per subgroup, so
+ * the 8-lane llvmpipe (and Intel's 8/16) must not overrun an array sized
+ * for 32-lane subgroups. */
 static void test_rmsnorm(size_t rows, size_t feat) {
     const size_t n  = rows * feat;
     float       *x  = geist_test_fill(n, 0.13f, 0.3f, 4.0f, 0.0f),

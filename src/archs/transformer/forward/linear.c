@@ -11,18 +11,13 @@
 /* ZO-tuning gain (GEIST_TUNE builds only). Scales one linear's output by
  * the model-owned, caller-writable gain that geist_model_gains hands out.
  *
- * Applied to the mapped output buffer AFTER the kernel rather than inside
- * each kernel invocation: the weight's own bytes stay frozen and read-only
- * (that is the whole point — the trits never move), and one helper covers
- * the single / pair / triple dispatchers alike.
+ * Applied to the mapped output after the kernel, so the weight bytes stay
+ * frozen and read-only and one helper covers the single / pair / triple
+ * dispatchers.
  *
- * Not applied on the fused tensor path (fused->linear_t, GPU backends):
- * those write device memory and return before this point. The gains op
- * refuses such a backend outright — see op_gains in arch.c — so this is a
- * closed gap, not a silent one.
- *
- * Without GEIST_TUNE this compiles away entirely and the dispatchers are
- * byte-for-byte what they were. */
+ * Not applied on the fused tensor path (fused->linear_t, GPU backends);
+ * op_gains in arch.c refuses such a backend. Without GEIST_TUNE this
+ * compiles away. */
 #ifdef GEIST_TUNE
 static inline void apply_gain(size_t seq, const struct geist_weight *w, float *y) {
     if (w->gain_slot == nullptr) {

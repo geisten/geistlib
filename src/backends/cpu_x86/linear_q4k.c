@@ -12,8 +12,6 @@
  *   - otherwise: the W4A8 SoA — packed nibbles (n_in/2 bytes), per-block
  *     scales and offsets (n_in/32 fp32 each) per row (0.75 B/wt), for the
  *     w4a8_gemv decode; prefill runs that per row.
- * The blob used to carry both for every weight, and the W4A8 part was
- * never read when n_out % 8 == 0: 0.73 GB of a Llama-3.2-1B Q4_K model.
  *
  * The hot-path kernel reconstructs the pointers from w->aux_fp32 +
  * w->n_in + w->n_out arithmetic; no per-call allocation.
@@ -105,9 +103,8 @@ static void w4a8_pointers(const uint8_t  *blob,
     }
 
     /* Every token streams these bytes: align a blob of huge-page size or
-     * more to a huge page so THP backs all of it. With 64-byte alignment
-     * decode measured 1.0-1.8 % slower (Llama-3.2-1B Q4_K); the price is
-     * the partly used last huge page of each blob. */
+     * more to a huge page so THP backs all of it (decode 1-2 % faster on
+     * Llama-3.2-1B Q4_K), at the price of a partly used last huge page. */
     const size_t blob_bytes = blob_total_bytes(n_in, n_out);
     uint8_t     *blob =
             heap_alloc_aligned(blob_bytes, blob_bytes >= THP_BYTES ? THP_BYTES : OPTIMAL_ALIGNMENT);
@@ -193,18 +190,14 @@ void cpu_x86_linear_q4k_m1(const float               *x,
               y);
 }
 
-/* Q4_Kx8 lane-parallel GEMM via VPMADDUBSW. 8 cells per inst
- * (vs our previous 1 cell per VPDPBUSD): the per-cell kernel ran at an
- * IPC of 0.47 when profiled. The per-row acts get quantized to Q8_Kx4 (4 m-rows
- * interleaved in 8-byte stripes) in heap scratch; the GEMV-style
- * AVX kernel handles the 8-cell tile per (m, n_tile) call.
+/* Q4_Kx8 lane-parallel GEMM via VPMADDUBSW, 8 cells per instruction. The
+ * activations are quantized to Q8_Kx4 (4 rows interleaved in 8-byte
+ * stripes) in the per-thread workspace. q4kx8_gemm_avx512 guards its own
+ * ISA at run time (AVX2 GEMV fallback on non-AVX-512 hosts).
  *
- * Fallback: if n_out is not divisible by 8 (no Gemma 4 matrix is, this
- * is purely defensive), drop to the per-row m1 path. q4kx8_gemm_avx512
- * guards its own ISA at runtime (AVX2 GEMV fallback on non-AVX512 hosts).
- * The GEMM takes whole Q8_Kx4 groups of 4 rows; the last m % 4 rows of a
- * chunk go to the M=1 GEMV. (The whole chunk used to, for any m that is
- * not a multiple of 4: 12.1 ms/token at seq 61 vs 6.9 at seq 64.) */
+ * The GEMM takes whole Q8_Kx4 groups of 4 rows; the last m % 4 rows go to
+ * the M=1 GEMV, as does every row of a weight in the W4A8 layout (n_out
+ * not a multiple of 8). */
 void cpu_x86_linear_q4k_mN(size_t                     m,
                            const float               *x,
                            const struct geist_weight *w,
@@ -214,8 +207,7 @@ void cpu_x86_linear_q4k_mN(size_t                     m,
     const size_t n_out = (size_t) w->n_out;
 
     if (!uses_q4kx8(n_out)) {
-        /* Defensive scalar fallback for shapes the Q4_Kx8 kernel doesn't
-         * cover. Gemma 4 never hits this. */
+        /* W4A8 layout: the M=1 kernel per row. */
         for (size_t row = 0; row < m; row++) {
             cpu_x86_linear_q4k_m1(x + row * n_in, w, be, y + row * n_out);
         }
@@ -229,11 +221,9 @@ void cpu_x86_linear_q4k_mN(size_t                     m,
         return;
     }
 
-    /* Quantize acts into block_q8_Kx4 scratch — 4 rows interleaved per
-     * super-block, m/4 × n_in/256 × ~1.2 KB (≈36 KB at m=128, n_in=1536).
-     * #336 batch 3: this came from the per-thread workspace instead of a
-     * per-call heap_alloc, so a prefill sweep allocates once and then not
-     * again. */
+    /* Quantize acts into block_q8_Kx4 workspace scratch — 4 rows interleaved
+     * per super-block, m/4 × n_in/256 × ~1.2 KB (≈36 KB at m=128,
+     * n_in=1536). */
     const size_t              n_super_k   = n_in / 256;
     size_t                    q8kx4_count = 0;
     size_t                    acts_bytes  = 0;

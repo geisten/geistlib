@@ -1,5 +1,5 @@
 /*
- * bench_t5_unpack — #104 Phase A feasibility spike (kill-switch).
+ * bench_t5_unpack — feasibility probe for base-3 "T5" weight packing (#104).
  *
  * Question: does a base-3 "T5" weight packing (5 trits/byte, 1.6 bpw,
  * −18.75 % bytes vs the shipping 2-bit x4 layout) win or lose on the
@@ -22,9 +22,8 @@
  * Output: weights/s and effective GB/s for both, plus an exact int32
  * correctness check of (b)'s unpack against the ground-truth trits.
  *
- * GATE (#104): ship Phase B/C only if T5 weights/s ≥ 1.05× X4 weights/s
- * (i.e. the byte saving survives the extra ALU). Below that, close the
- * issue with these numbers.
+ * T5 is worth integrating only if its weights/s is ≥ 1.05× X4's, i.e. the
+ * byte saving survives the extra ALU.
  */
 #define _POSIX_C_SOURCE 200809L
 

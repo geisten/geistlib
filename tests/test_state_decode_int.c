@@ -1,17 +1,15 @@
 /*
- * test_state_decode_int — Phase B-4e sub-step 4: end-to-end token gate.
+ * test_state_decode_int — end-to-end token gate.
  *
  * Runs transformer_decode_step (pure backend-vtable forward) for the
  * "Hello" prompt under whatever Gemma 4 GGUF is provided and asserts the
- * produced tokens match the canonical [9259, 9259, 9259] sequence. That
- * canonical was originally cross-validated against lm.c — the lm.c
- * reference oracle was dropped along with the legacy archive in B-6
- * cleanup; the [9259, 9259, 9259] expectation is independently verified
- * via test_session_lifecycle_int which drives the public session API.
+ * produced tokens match the canonical [9259, 9259, 9259] sequence. The
+ * same expectation is checked through the public session API by
+ * test_session_lifecycle_int.
  *
- * Prefill is via repeated decode_step calls (decode-only path; the
- * batched-m>1 prefill optimization is deferred). The KV cache built up
- * by the prefill calls is what the actual decode-3-tokens reads from.
+ * Prefill is via repeated decode_step calls (decode-only path). The KV
+ * cache built up by the prefill calls is what the actual decode-3-tokens
+ * reads from.
  *
  * SKIPs cleanly if no GGUF is available.
  */
@@ -38,8 +36,7 @@
 int main(void) {
     GEIST_REQUIRE_GGUF(model_path);
 
-    /* cpu_neon now handles Q5_K via dequant + cblas_sgemm (added alongside
-     * the production swap). Falls back to cpu_scalar if neon isn't built. */
+    /* Prefer cpu_neon; fall back to cpu_scalar if neon isn't built. */
     struct geist_backend *be = nullptr;
     enum geist_status     s  = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
     if (s != GEIST_OK) {
@@ -50,7 +47,6 @@ int main(void) {
         return GEIST_TEST_ERROR;
     }
 
-    /* ---- v2 path ---- */
     struct transformer_arch_state *st = nullptr;
     s                                 = transformer_state_create(be, model_path, nullptr, &st);
     struct transformer_arch_session *sess [[maybe_unused]] = transformer_default_session(st);

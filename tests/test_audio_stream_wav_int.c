@@ -8,8 +8,8 @@
  * push_pcm / pull_softtokens API on actual speech, so it catches
  * regressions in:
  *   - mel_pipeline frame computation on real PCM
- *   - end_input / Phase 2 worker handoff timing
- *   - pull_softtokens loop (drain incrementally vs sync sync compute)
+ *   - end_input / streaming worker handoff timing
+ *   - pull_softtokens loop (drain incrementally vs sync compute)
  *
  * The check is intentionally shape-and-sanity rather than parity-
  * against-a-baseline: we verify the encoder produced the expected
@@ -38,8 +38,7 @@
 #define MAX_SOFT 256
 #define PUSH_CHUNK_S 320 /* 20 ms @ 16 kHz - matches push-to-talk frontends */
 
-/* Chunk-walking WAV reader (audio_test_util.h) — the fixed-44-byte
- * shortcut mis-read ffmpeg WAVs with a LIST chunk (#268). */
+/* Chunk-walking WAV reader (audio_test_util.h); handles ffmpeg's LIST chunk. */
 static int16_t *read_wav_pcm(const char *path, size_t *n_samples_out, int *sample_rate_out) {
     return audio_test_read_wav(path, n_samples_out, sample_rate_out);
 }
@@ -87,8 +86,8 @@ int main(int argc, char **argv) {
     }
 
     /* Drive in 20 ms chunks like a real push-to-talk frontend. This
-     * exercises mel-frame increments per push (Phase C) and lets the
-     * Phase 2 worker fire mid-stream when GEIST_AUDIO_STREAM=1. */
+     * exercises mel-frame increments per push and lets the streaming
+     * worker fire mid-stream when GEIST_AUDIO_STREAM=1. */
     for (size_t off = 0; off < n_samples; off += PUSH_CHUNK_S) {
         size_t take = (n_samples - off) < PUSH_CHUNK_S ? (n_samples - off) : PUSH_CHUNK_S;
         if (audio_encoder_push_pcm(enc, take, pcm + off) != 0) {
@@ -101,7 +100,7 @@ int main(int argc, char **argv) {
     audio_encoder_end_input(enc);
     free(pcm);
 
-    /* Drain until segment_done — the Phase 2 worker emits tokens
+    /* Drain until segment_done — the streaming worker emits tokens
      * incrementally, so we may need multiple pull calls. */
     float *soft = calloc(MAX_SOFT * SOFT_DIM, sizeof(float));
     if (soft == nullptr) {

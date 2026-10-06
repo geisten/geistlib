@@ -36,9 +36,8 @@
 
 /* Counting: every family continues it with margins of several logits per
  * step, each step depends on the position (a RoPE fault breaks the count),
- * and no instruct model ends its turn after one token — the first prompt
- * tried, a world-knowledge cloze, had gemma emit <end_of_turn> and EOS by
- * step 2 and qwen3 on a 0.05-logit tie at step 1, guarding nothing. */
+ * and no instruct model ends its turn after one token (a world-knowledge
+ * cloze ends early or ties within 0.05 logits, guarding nothing). */
 static const char *PROMPT = "Count from one to thirty: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,";
 
 enum { GOLDEN_STEPS = 12 };

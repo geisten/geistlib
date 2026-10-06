@@ -24,8 +24,8 @@
  * Zen 5 has avx512_vnni (u8×s8 VPDPBUSD) but NOT avx_vnni_int8 (s8×s8),
  * which is exactly why the biased-u8 formulation is used.
  *
- * The hot path is allocation-free apart from a per-call activation scratch
- * (int8 quants in the VPDPBUSD-pairing permutation). Caller owns `y`.
+ * Decode quantizes the activation into stack scratch; prefill takes caller
+ * scratch (the _pre forms). Caller owns `y`.
  */
 #ifndef GEIST_INTERNAL_BACKEND_CPU_X86_KERNEL_I2S_H
 #define GEIST_INTERNAL_BACKEND_CPU_X86_KERNEL_I2S_H
@@ -72,10 +72,9 @@ void i2s_gemm_mN(size_t        m,
                  float         tensor_scale,
                  float         y[]);
 
-/* Same GEMM on caller-owned scratch (#336 batch 3): the backend resolver
- * hands over the per-thread workspace so the hot path allocates nothing.
- * `xq` and `perm` are [m*n_in], `sum_a` and `scale` are [m]. The wrapper
- * above is the convenience form kept for tests and one-off callers. */
+/* Same GEMM on caller-owned scratch (the backend passes its per-thread
+ * workspace). `xq` and `perm` are [m*n_in], `sum_a` and `scale` are [m].
+ * The wrapper above is the convenience form for tests and one-off callers. */
 void i2s_gemm_mN_pre(size_t        m,
                      size_t        n_out,
                      size_t        n_in,
@@ -129,8 +128,8 @@ void i2s_x4_gemm_mN(size_t        m,
                     float         tensor_scale,
                     float         y[]);
 
-/* x4 prefill on caller-owned scratch (#336 batch 3). No `perm` — the x4
- * layout reads activations in natural order. */
+/* x4 prefill on caller-owned scratch. No `perm` — the x4 layout reads
+ * activations in natural order. */
 void i2s_x4_gemm_mN_pre(size_t        m,
                         size_t        n_out,
                         size_t        n_in,
@@ -143,9 +142,9 @@ void i2s_x4_gemm_mN_pre(size_t        m,
                         float         y[]);
 
 /* Fused decode of two same-`n_in` weights (gate+up, q+k) sharing one
- * activation quant + one OMP region. Opt-in via GEIST_I2S_PAIR=1 (perf-neutral
- * at the DDR5 BW ceiling; a win only on slower RAM). x is [n_in]; each weight
- * has its own x4 blob, per-tensor scale, n_out, and output. */
+ * activation quant + one OMP region (default on; GEIST_I2S_PAIR=0 disables,
+ * see backend.c). x is [n_in]; each weight has its own x4 blob, per-tensor
+ * scale, n_out, and output. */
 void i2s_x4_gemv_pair_m1(size_t        n_in,
                          const float  *x,
                          const uint8_t x4_0[],
@@ -170,9 +169,8 @@ void i2s_x4_gemv_pair_m1(size_t        n_in,
  * columns g*320 + plane*64 + c. n_in is zero-padded up to a multiple of
  * 320 at pack time (padded trits 0) and the activation scratch is padded
  * with zeros, so padded columns contribute exactly nothing to the biased
- * dot. −18.75 % weight bytes vs the 2-bit x4 layout; the Phase-A spike
- * (bench_t5_unpack) measured the unpack ALU fits in the 9950X's VNNI
- * slack: 362 vs 298 Gwt/s (ratio 1.21) on a DRAM-resident stream. */
+ * dot. −18.75 % weight bytes vs the 2-bit x4 layout; the unpack ALU fits in
+ * the 9950X's VNNI slack (bench_t5_unpack). */
 
 /* Padded column count / bytes per packed row. */
 static inline size_t i2s_t5_cols_pad(size_t n_in) {

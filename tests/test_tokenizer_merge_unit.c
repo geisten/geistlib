@@ -1,7 +1,7 @@
 /*
  * test_tokenizer_merge_unit — the O(n log n) merge engine (pair_merge.h)
- * makes the same merges as the quadratic rescan it replaced, and the
- * encoders built on it produce the same tokens.
+ * makes the same merges as a quadratic rescan reference, and the encoders
+ * built on it produce the same tokens.
  *
  * 1. Engine against the rescan. Random symbol sequences, merged by a key
  *    that depends only on the two symbols' bytes (as the rank and the
@@ -12,7 +12,7 @@
  *
  * 2. Encoders against the rescan. Synthetic SPM (merges) and unigram
  *    (scores) tokenizers from tokenizer_fixtures.h, and sp_bpe_tokenizer
- *    on the same vocabulary. The reference here re-implements the old
+ *    on the same vocabulary. The reference here is a rescan-based
  *    encode of a text without specials: ▁ normalization (plus the leading
  *    ▁ of add_space_prefix for the GGUF SPM modes), one symbol per byte of
  *    this ASCII text, the rescan, vocab lookup. Texts of words, of one
@@ -72,8 +72,8 @@ static void init_syms(size_t n, struct pair_merge_sym *syms) {
     }
 }
 
-/* The loop pair_merge_run replaced: rescan every pair, merge the lowest
- * key, leftmost among equal keys. */
+/* Reference: rescan every pair, merge the lowest key, leftmost among equal
+ * keys. */
 static void rescan_merge(size_t n, struct pair_merge_sym *syms, const char *buf) {
     if (n < 2) {
         return;
@@ -241,7 +241,7 @@ ref_rank(const struct ref_vocab *rv, const char *l, size_t ll, const char *r, si
     return ref_map_get(&rv->merge, k, ll + 1 + rl);
 }
 
-/* The old encode of an ASCII text without specials into ids; returns count. */
+/* Reference encode of an ASCII text without specials into ids; returns count. */
 static size_t
 ref_encode(const struct ref_vocab *rv, const char *text, bool space_prefix, int32_t *ids) {
     const struct tf_vocab *v   = rv->v;

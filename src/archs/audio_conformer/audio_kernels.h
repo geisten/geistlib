@@ -32,7 +32,7 @@ void conv2d_fp32(int          c_in,
  * deterministic kernel taps relative to oh, outputs at oh < start_h
  * computed under an earlier (smaller) h_in remain bit-equivalent to the
  * current values, so the caller can keep the prior cached writes and
- * skip them here. Used by the Phase-3 incremental subsample. */
+ * skip them here. Used by the incremental subsample. */
 void conv2d_fp32_from(int          c_in,
                       int          c_out,
                       int          h_in,

@@ -54,9 +54,8 @@ _Static_assert(sizeof(struct block_q8_Kx4) == Q8_KX4_BLOCK_BYTES, "block_q8_Kx4 
  * super-block. Each row has n_in fp32 elements; n_in must be a multiple
  * of 256. Output buffer must hold (n_in / 256) blocks.
  *
- * After this call, out[s].qs[256*s + 8*k*4 + r*8 + b] holds row r's
- * element at K-position (s*256 + k*64 + ...) in the interleaved layout,
- * and out[s].bsums[r*16 + g] holds row r's sum of int8s for sub-block g.
+ * out[s].qs is in the stripe layout above, and out[s].bsums[r*16 + g]
+ * holds row r's sum of the int8s of 16-element group g.
  */
 void quantize_q8_Kx4(size_t n_in, const float x_rows[static 4 * n_in], struct block_q8_Kx4 *out);
 

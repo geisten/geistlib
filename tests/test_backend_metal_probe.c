@@ -1,24 +1,20 @@
 /*
  * test_backend_metal_probe — does this host expose a usable Metal device?
  *
- * A spike, not a coverage test. The Metal backend has 52 compute kernels,
- * 8 of them hand-written simdgroup GEMMs, and no numerical parity gate at
- * all (vulkan has three). Before writing that gate it is worth knowing
- * whether CI can ever run it: GitHub's macOS runners are virtualized, and
- * a parity test that SKIPs forever is not a gate.
- *
- * So this asks the narrow question and prints the answer: create the
- * backend, then round-trip a buffer through it. Backend create alone is
- * not enough — it proves a device handle, not that the device works.
+ * A probe, not a coverage test (numerical parity is
+ * test_backend_metal_parity_unit). GitHub's macOS runners are virtualized,
+ * and a Metal gate that SKIPs forever is not a gate, so this asks the narrow
+ * question and prints the answer: create the backend, then round-trip a
+ * buffer through it. Backend create alone is not enough — it proves a
+ * device handle, not that the device works.
  *
  * SKIPs (exit 0) when metal is not compiled in or no device is present,
  * which is every default build. Run it with:
  *
  *   make test-unit TARGET=mac-omp BACKENDS="metal cpu_neon cpu_scalar"
  *
- * If this reports PASS on a CI runner, the parity gate is worth building
- * and wiring into a job. If it reports SKIP there, the gate would only
- * ever run on a developer's Mac and should be documented as such.
+ * PASS on a CI runner means Metal gates can run there; SKIP means they
+ * only run on a developer's Mac.
  */
 #include "test_helpers.h"
 
@@ -42,7 +38,7 @@ int main(void) {
     if (s == GEIST_E_UNSUPPORTED || s == GEIST_E_NOT_FOUND) {
         /* NOT_FOUND: not compiled in (BACKENDS without "metal").
          * UNSUPPORTED: no Metal device at runtime. Both are environment
-         * facts — and telling them apart is the point of the spike. */
+         * facts, reported separately. */
         fprintf(stderr,
                 "SKIP: metal backend unavailable (%s): %s\n",
                 s == GEIST_E_NOT_FOUND ? "not built into this binary" : "no device at runtime",
