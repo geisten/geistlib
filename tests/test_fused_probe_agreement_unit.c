@@ -111,23 +111,23 @@ static int kv_quant_agreement(struct geist_backend *be,
     } else {
         enum geist_status s;
         if (int4) {
-            const struct geist_attention_kv_int4_args args = {.q        = &tq,
-                                                              .k        = &tk,
-                                                              .k_scale  = &tks,
-                                                              .v        = &tv,
-                                                              .v_scale  = &tvs,
-                                                              .out      = &to,
-                                                              .q_offset = 1};
-            s                                              = fused->attention_kv_int4(be, &args);
+            const struct geist_attention_kv_args args = {.q        = &tq,
+                                                         .k        = &tk,
+                                                         .k_scale  = &tks,
+                                                         .v        = &tv,
+                                                         .v_scale  = &tvs,
+                                                         .out      = &to,
+                                                         .q_offset = 1};
+            s                                         = fused->attention_kv_int4(be, &args);
         } else {
-            const struct geist_attention_kv_int8_args args = {.q        = &tq,
-                                                              .k        = &tk,
-                                                              .k_scale  = &tks,
-                                                              .v        = &tv,
-                                                              .v_scale  = &tvs,
-                                                              .out      = &to,
-                                                              .q_offset = 1};
-            s                                              = fused->attention_kv_int8(be, &args);
+            const struct geist_attention_kv_args args = {.q        = &tq,
+                                                         .k        = &tk,
+                                                         .k_scale  = &tks,
+                                                         .v        = &tv,
+                                                         .v_scale  = &tvs,
+                                                         .out      = &to,
+                                                         .q_offset = 1};
+            s                                         = fused->attention_kv_int8(be, &args);
         }
         snprintf(msg,
                  sizeof msg,

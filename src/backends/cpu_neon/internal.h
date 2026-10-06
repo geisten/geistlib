@@ -345,20 +345,18 @@ struct geist_hadamard_args;
 
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
 /* attention_int8.c: attention over the INT8 KV cache (FEAT_DotProd). */
-struct geist_attention_kv_int8_args;
+struct geist_attention_kv_args;
 struct geist_fusion_query;
 [[nodiscard]] enum geist_status
-cpu_neon_attention_kv_int8(struct geist_backend                      *be,
-                           const struct geist_attention_kv_int8_args *args);
+cpu_neon_attention_kv_int8(struct geist_backend *be, const struct geist_attention_kv_args *args);
 /* The probe's answer for GEIST_FUSED_ATTN_KV_INT8: any m, head_dim up to
  * 512, query heads a multiple of the KV heads. */
 [[nodiscard]] bool cpu_neon_attention_kv_int8_supported(const struct geist_fusion_query *q);
 
 /* attention_int4.c: attention over the packed INT4 KV cache (FEAT_DotProd). */
-struct geist_attention_kv_int4_args;
+struct geist_attention_kv_args;
 [[nodiscard]] enum geist_status
-cpu_neon_attention_kv_int4(struct geist_backend                      *be,
-                           const struct geist_attention_kv_int4_args *args);
+cpu_neon_attention_kv_int4(struct geist_backend *be, const struct geist_attention_kv_args *args);
 /* The probe's answer for GEIST_FUSED_ATTN_KV_INT4: any m, an even head_dim
  * up to 512, query heads a multiple of the KV heads. */
 [[nodiscard]] bool cpu_neon_attention_kv_int4_supported(const struct geist_fusion_query *q);

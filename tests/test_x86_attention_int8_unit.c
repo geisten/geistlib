@@ -262,14 +262,14 @@ static bool call_fused(struct geist_backend *be,
         const struct geist_tensor tks = tensor(bks, GEIST_DTYPE_F32, 2, n_kv, kvh, 0);
         const struct geist_tensor tvs = tensor(bvs, GEIST_DTYPE_F32, 2, n_kv, kvh, 0);
         struct geist_tensor       to  = tensor(bo, GEIST_DTYPE_F32, 3, sh->n_q, sh->n_q_heads, hd);
-        const struct geist_attention_kv_int8_args a = {.q              = &tq,
-                                                       .k              = &tk,
-                                                       .k_scale        = &tks,
-                                                       .v              = &tv,
-                                                       .v_scale        = &tvs,
-                                                       .out            = &to,
-                                                       .q_offset       = n_kv - sh->n_q,
-                                                       .sliding_window = sh->window};
+        const struct geist_attention_kv_args a = {.q              = &tq,
+                                                  .k              = &tk,
+                                                  .k_scale        = &tks,
+                                                  .v              = &tv,
+                                                  .v_scale        = &tvs,
+                                                  .out            = &to,
+                                                  .q_offset       = n_kv - sh->n_q,
+                                                  .sliding_window = sh->window};
         ok = geist_backend_fused_tbl(be)->attention_kv_int8(be, &a) == GEIST_OK;
         if (ok) {
             memcpy(out, vt->buffer_map(bo), n_out * sizeof(float));

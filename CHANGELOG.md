@@ -275,6 +275,12 @@ minor release.
   `GEIST_KV_INT8_FUSED=0` keeps both host loops.
 
 ### Changed
+- **`geist_attention_kv_int8_args` and `geist_attention_kv_int4_args` are one
+  struct, `geist_attention_kv_args`** (`geist_backend.h`, EXPERIMENTAL, #631).
+  The two had the same fields; the INT4 cache layout is now documented on the
+  `attention_kv_int4` slot. Backends implementing either slot rename the
+  argument type; nothing else changes.
+
 - **Promoted to STABLE for the geist-runtime contract** (#622):
   `geist_model_load_with_opts`, `geist_model_load_from_memory_with_opts`,
   `geist_model_add_bos` and `geist_model_add_eos`.
