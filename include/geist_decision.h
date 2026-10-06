@@ -33,8 +33,8 @@ struct geist_decision_opts {
  * Borrowed arrays in candidate input order. Probabilities are softmax over
  * ONLY the supplied alternatives, at temperature 1. They are neither
  * full-vocabulary probabilities nor calibrated correctness confidence.
- * Ties select the first maximum. Arrays are valid until the next score/reset
- * call (even a failed call) or destruction of THIS handle. */
+ * Ties select the first maximum. Arrays are valid until the next score call
+ * (even a failed call) or destruction of THIS handle. */
 struct geist_decision_result {
     size_t                   n_candidates;
     const float             *logits;
@@ -50,13 +50,10 @@ struct geist_decision_result {
 /* @stability EXPERIMENTAL — build capability; false in DECISION=0 builds. */
 [[nodiscard]] bool geist_decision_available(void);
 
-/* @stability EXPERIMENTAL — also requires independent sessions, reset and a
- * generative logits vocabulary. False for embedding-only/legacy archs.
- * Backend failures can still occur during creation/scoring. */
-[[nodiscard]] bool geist_decision_supported(const struct geist_model *m);
-
-/* @stability EXPERIMENTAL — specific mode capability for this loaded pair.
- * false for unknown modes or feature-off builds. */
+/* @stability EXPERIMENTAL — mode capability for this loaded pair. Every mode
+ * requires independent sessions, reset and a generative logits vocabulary:
+ * false for embedding-only/legacy archs, unknown modes or feature-off
+ * builds. Backend failures can still occur during creation/scoring. */
 [[nodiscard]] bool geist_decision_mode_supported(const struct geist_model *m,
                                                  enum geist_decision_mode  mode);
 
@@ -68,7 +65,7 @@ struct geist_decision_result {
  * decoder architecture's session contract. Never call one handle concurrently.
  * No tokenizer, sampler mode or model weights are modified.
  * On failure *out is nullptr; diagnostics use geist_last_create_error().
- * Disabled builds return GEIST_E_UNSUPPORTED (also for reset/score). */
+ * Disabled builds return GEIST_E_UNSUPPORTED (also for score). */
 [[nodiscard]] enum geist_status geist_decision_create(struct geist_model               *m,
                                                       struct geist_backend             *be,
                                                       const struct geist_decision_opts *opts,
@@ -77,14 +74,10 @@ struct geist_decision_result {
 /* @stability EXPERIMENTAL — nullptr is a no-op. */
 void geist_decision_destroy(struct geist_decision *d);
 
-/* @stability EXPERIMENTAL — invalidate borrowed results and empty KV/SSM state.
- * score already resets before each query; no prefix sharing in this mode. */
-[[nodiscard]] enum geist_status geist_decision_reset(struct geist_decision *d);
-
 /* @stability EXPERIMENTAL — loaded logits vocabulary, or 0 for nullptr/off. */
 [[nodiscard]] size_t geist_decision_vocab_size(const struct geist_decision *d);
 
-/* @stability EXPERIMENTAL — borrowed diagnostic, valid until score/reset/destroy.
+/* @stability EXPERIMENTAL — borrowed diagnostic, valid until score/destroy.
  * nullptr handle returns a static diagnostic. */
 const char *geist_decision_errmsg(const struct geist_decision *d);
 

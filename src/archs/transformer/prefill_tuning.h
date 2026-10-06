@@ -30,27 +30,18 @@
  * Resolution is DEFAULT + DELTA + OVERRIDE, in that order:
  *   default   what the platform and backend already choose (arch_state.c:
  *             64, or caps.preferred_m_max); blocktime 0
- *   delta     the row below matching (family, weight bytes): a signed
- *             number of rows added to m_max, and a blocktime for that
- *             model class (-1 = keep the default)
+ *   delta     per model class (prefill_tuning.c): rows added to m_max,
+ *             and a blocktime for that class; today only qwen35 from
+ *             4 GiB up has one (+64, blocktime 0)
  *   override  GEIST_M_MAX and GEIST_PREFILL_BLOCKTIME_MS, absolute
  *
- * A row with family "*" matches every family; the first match wins, so
- * specific rows go first. Sizes are the GGUF's tensor bytes, the one
- * number every model carries without a parameter count in its metadata.
+ * Sizes are the GGUF's tensor bytes, the one number every model carries
+ * without a parameter count in its metadata.
  */
 #ifndef GEIST_INTERNAL_TRANSFORMER_PREFILL_TUNING_H
 #define GEIST_INTERNAL_TRANSFORMER_PREFILL_TUNING_H
 
 #include <stddef.h>
-
-struct transformer_prefill_tuning {
-    const char *family;    /* arch family name, or "*" */
-    size_t      min_bytes; /* weight bytes, inclusive */
-    size_t      max_bytes; /* exclusive; SIZE_MAX = open */
-    int         m_max_delta;
-    int         prefill_blocktime_ms; /* -1: default */
-};
 
 struct transformer_prefill_resolved {
     size_t m_max;

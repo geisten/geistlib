@@ -33,8 +33,8 @@ static int run(const struct tf_buf *g, const char *backend, enum geist_decision_
         fails = geist_expect(false, "fixture model and reference session load");
         goto done;
     }
-    fails +=
-            geist_expect(geist_decision_supported(m), "loaded generative model supports decisions");
+    fails += geist_expect(geist_decision_mode_supported(m, GEIST_DECISION_DENSE),
+                          "loaded generative model supports decisions");
     if (strcmp(backend, "cpu_x86") == 0) {
         fails += geist_expect(!geist_decision_mode_supported(m, GEIST_DECISION_SELECTED_ROWS),
                               "x86 wrapper cannot inherit Scalar row capability");
@@ -128,10 +128,9 @@ static int run(const struct tf_buf *g, const char *backend, enum geist_decision_
     fails += geist_expect(geist_decision_score(a, 12, 4, prompt, ids, nullptr) ==
                                   GEIST_E_INVALID_ARG,
                           "null output rejected");
-    fails += geist_expect(geist_decision_reset(a) == GEIST_OK &&
-                                  geist_decision_score(a, 12, 4, prompt, ids, &out) == GEIST_OK &&
+    fails += geist_expect(geist_decision_score(a, 12, 4, prompt, ids, &out) == GEIST_OK &&
                                   memcmp(out.logits, saved, sizeof saved) == 0,
-                          "reset and recovery after errors");
+                          "recovery after errors");
     const geist_token_t reversed[] = {32, 21, 7, 1};
     fails += geist_expect(geist_decision_score(a, 12, 4, prompt, reversed, &out) == GEIST_OK,
                           "candidate order can change");
@@ -142,7 +141,7 @@ static int run(const struct tf_buf *g, const char *backend, enum geist_decision_
     fails += geist_expect(geist_decision_score(a, 12, 1, prompt, ids, &out) == GEIST_OK &&
                                   out.probabilities[0] == 1 && out.best_index == 0,
                           "one candidate has conditional probability one");
-    printf("  %s: public dense reference, reset, isolation, validation PASS\n", backend);
+    printf("  %s: public dense reference, isolation, validation PASS\n", backend);
 done:
     geist_decision_destroy(b);
     geist_decision_destroy(a);
@@ -161,7 +160,8 @@ int main(void) {
     if (!geist_decision_available()) {
         struct geist_decision       *d   = (struct geist_decision *) (uintptr_t) 1;
         struct geist_decision_result out = {.n_candidates = 9, .best_index = 1};
-        int fails = geist_expect(!geist_decision_supported(nullptr), "disabled capability false");
+        int fails = geist_expect(!geist_decision_mode_supported(nullptr, GEIST_DECISION_DENSE),
+                                 "disabled capability false");
         fails += geist_expect(geist_decision_create(nullptr, nullptr, nullptr, &d) ==
                                               GEIST_E_UNSUPPORTED &&
                                       d == nullptr,
@@ -169,14 +169,14 @@ int main(void) {
         fails += empty_result(geist_decision_score(nullptr, 0, 0, nullptr, nullptr, &out),
                               GEIST_E_UNSUPPORTED,
                               &out);
-        fails += geist_expect(geist_decision_reset(nullptr) == GEIST_E_UNSUPPORTED &&
-                                      geist_decision_vocab_size(nullptr) == 0,
-                              "disabled reset/vocabulary contract");
+        fails += geist_expect(geist_decision_vocab_size(nullptr) == 0,
+                              "disabled vocabulary contract");
         geist_decision_destroy(nullptr);
         printf("decision: disabled stubs PASS\n");
         return fails ? GEIST_TEST_FAIL : GEIST_TEST_PASS;
     }
-    int fails         = geist_expect(!geist_decision_supported(nullptr), "null model unsupported");
+    int fails         = geist_expect(!geist_decision_mode_supported(nullptr, GEIST_DECISION_DENSE),
+                                     "null model unsupported");
     struct tf_vocab v = tf_make_vocab("\xc4\xa0", false);
     struct tf_buf   models[] = {
             mf_llama_gguf(&(struct mf_llama) {.layers   = 2,

@@ -35,7 +35,6 @@
 #include <geist.h>
 #include <geist_backend.h>
 
-#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1304,23 +1303,6 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         st->m_max = be->desc->caps.preferred_m_max; /* backend-measured sweet spot */
     }
 #endif
-    { /* GEIST_M_MAX override — for tuning the prefill activation tile vs L1
-       * fit (m×n_in int8 should fit the 64 KB L1: m=32→48 KB, m=64→96 KB).
-       * caps.max_m carries the backend's per-call row limit (CPU quant
-       * kernels size stack arrays from it; batched-submit GPUs allow
-       * larger tiles). 0 = uncapped. */
-        const size_t be_cap = be->desc != nullptr ? be->desc->caps.max_m : 0;
-        const int    cap    = be_cap > 0 ? (int) be_cap : INT_MAX;
-        const char  *mm     = getenv("GEIST_M_MAX");
-        if (mm != nullptr && mm[0] != '\0') {
-            const int v = atoi(mm);
-            if (v > 0 && v <= cap) {
-                st->m_max          = (size_t) v;
-                st->m_max_from_env = true;
-            }
-        }
-    }
-
     const struct transformer_family *fam = nullptr;
     enum geist_status                gs  = geometry_from_metadata(be, gguf, st, &fam);
     if (gs != GEIST_OK) {
@@ -1336,18 +1318,19 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
      * Measured on the metal backend, 4B pp512: m_max 64 -> 626 tok/s,
      * 128 -> 430, 256 -> 335 (llama.cpp's delta-net chunk is 64 too);
      * attention-only models keep the backend's larger preferred value
-     * (gemma4-e2b: 972 at 256 vs 753 at 64). GEIST_M_MAX still wins.
+     * (gemma4-e2b: 972 at 256 vs 753 at 64). GEIST_M_MAX, read below,
+     * still wins.
      * Backends whose deltanet_mix sub-chunks internally (caps.dn_subchunk)
      * skip the cap: their DN cost is chunk-size-invariant, and the
      * surrounding GEMMs need the large batch for occupancy (#322). */
-    if (st->config.dn_n_v_heads > 0 && !st->m_max_from_env && st->m_max > 64 &&
+    if (st->config.dn_n_v_heads > 0 && st->m_max > 64 &&
         (be->desc == nullptr || !be->desc->caps.dn_subchunk)) {
         st->m_max = 64;
     }
 
-    /* Per-model prefill knobs (prefill_tuning.h): the chunk gets the row's
-     * delta for this family and weight size, and the row's OpenMP spin
-     * policy becomes the process default — here, before weight packing
+    /* Per-model prefill knobs (prefill_tuning.h): the chunk gets the delta
+     * for this family and weight size, and its OpenMP spin policy becomes
+     * the process default — here, before weight packing
      * runs the first parallel region. GEIST_M_MAX and
      * GEIST_PREFILL_BLOCKTIME_MS still win. Weight bytes are the GGUF's
      * tensor bytes, the size every model states. */
@@ -1359,10 +1342,8 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         const size_t cap = be->desc != nullptr ? be->desc->caps.max_m : 0;
         const struct transformer_prefill_resolved pt = transformer_prefill_resolve(
                 st->config.family, weight_bytes, st->m_max, cap, nullptr);
-        if (!st->m_max_from_env) {
-            st->m_max = pt.m_max;
-        }
-        st->m_max_from_env |= pt.m_max_from_env;
+        st->m_max          = pt.m_max;
+        st->m_max_from_env = pt.m_max_from_env;
         transformer_prefill_apply_blocktime(&pt);
     }
 
@@ -1753,11 +1734,6 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     return GEIST_KV_FP32;
 }
 
-/* Whether this backend serves a SCRATCH buffer asked for device-local as
- * memory the host cannot map (#488) and can slice one by offset. Vulkan
- * does only under GEIST_VK_SCRATCH_DEVICE=1; every other backend either
- * has no buffer_create_view or maps everything. A one-float probe, as
- * exec_plan.c's dn_state_host_mappable. */
 /* The KV cache layout a session gets: kv_mode, the GEIST_KV_* env and the
  * backend decide it (#622, #625: shared by session_alloc and the plan, so
  * the two cannot disagree). */
@@ -1823,21 +1799,16 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
     return kl;
 }
 
+/* Whether this backend serves a SCRATCH buffer asked for device-local as
+ * memory the host cannot map (#488) and can slice one by offset. Vulkan
+ * does only under GEIST_VK_SCRATCH_DEVICE=1; every other backend either
+ * has no buffer_create_view or maps everything. */
 static bool backend_scratch_unmappable(struct geist_backend *be) {
-    const struct geist_backend_vtbl *v = be->desc->vtbl;
-    struct geist_buffer             *b = nullptr;
-    if (v->buffer_create_view == nullptr ||
-        v->buffer_create(be, sizeof(float), GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, &b) !=
-                GEIST_OK ||
-        b == nullptr) {
-        return false;
-    }
-    const bool mapped = v->buffer_map(b) != nullptr;
-    if (mapped) {
-        v->buffer_unmap(b);
-    }
-    v->buffer_destroy(be, b);
-    return !mapped;
+    bool mapped = true;
+    return be->desc->vtbl->buffer_create_view != nullptr &&
+           transformer_buffer_probe_mappable(
+                   be, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, &mapped) &&
+           !mapped;
 }
 
 /* #488: whether this session puts its scratch pool, all but h_a, h_b and
