@@ -536,8 +536,10 @@ total grows with it. Verified: `test_backend_vulkan_linear_parity`,
 tokens) and `test_qwen35_vulkan_e2e_int`, all green with the flag on and off
 on both the RTX 2080 Ti and RADV.
 
-Promoted to the default (`GEIST_VK_ATTN_CM=0` is the escape hatch back to the
-scalar kernel) after validating on a second, differently-sized model
+Promoted to the default (`GEIST_VK_ATTN_CM=0` was the escape hatch back to the
+scalar kernel until #633 removed it; the kernel runs wherever the device has
+cooperative matrices and head_dim is 256, like the tensor-core GEMMs) after
+validating on a second, differently-sized model
 (qwen3.5-4B, also head_dim = 256) on both GPUs, plus several misaligned
 chunk sizes (`GEIST_M_MAX` 100/65/33/17 — non-multiples of BR/BC = 16, so the
 causal-masking boundary logic runs on tiles that straddle it, not just
