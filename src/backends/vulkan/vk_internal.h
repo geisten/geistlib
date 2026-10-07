@@ -14,6 +14,7 @@
 #include <geist_backend.h>
 #include <geist_types.h>
 #include <geist_weight.h>
+#include <geist_util.h> /* struct geist_backend_memory */
 
 #include "checked.h"        /* ckd_* size arithmetic (AGENT.md §3) */
 #include "gemma4_kernels.h" /* shared reference rope/attention kernels */
@@ -39,6 +40,7 @@ struct vk_fns {
     PFN_vkGetPhysicalDeviceProperties2           GetPhysicalDeviceProperties2;
     PFN_vkGetPhysicalDeviceQueueFamilyProperties GetPhysicalDeviceQueueFamilyProperties;
     PFN_vkGetPhysicalDeviceMemoryProperties      GetPhysicalDeviceMemoryProperties;
+    PFN_vkGetPhysicalDeviceMemoryProperties2     GetPhysicalDeviceMemoryProperties2;
     PFN_vkGetPhysicalDeviceFeatures2             GetPhysicalDeviceFeatures2;
     PFN_vkEnumerateDeviceExtensionProperties     EnumerateDeviceExtensionProperties;
     PFN_vkCreateDevice                           CreateDevice;
@@ -255,8 +257,13 @@ struct vk_state {
      * so an oversized model fails with needed vs. available bytes instead
      * of a bare driver error (#466). vram_budget is GEIST_VK_VRAM_BUDGET
      * (bytes, K/M/G suffix) or 0: the heap size of the memory type. */
-    size_t          vram_used;
-    size_t          vram_budget;
+    size_t vram_used;
+    size_t vram_budget;
+    /* VK_EXT_memory_budget is enabled: vk_heap_budget reports the driver's
+     * budget and usage, which see every allocation on the device (#665). */
+    bool has_mem_budget;
+    /* An integrated GPU: its device-local heap is system RAM. */
+    bool            unified_memory;
     VkCommandPool   cmd_pool;
     VkCommandBuffer xfer_cmd;
     VkFence         xfer_fence;
@@ -549,6 +556,10 @@ struct vk_weight_entry *vk_weight_entry_of(const struct vk_state *st, const void
 [[nodiscard]] enum geist_status vk_weight_index_add(struct geist_backend *be, size_t idx);
 struct geist_buffer            *vk_weight_of(struct vk_state *st, const struct geist_tensor *t);
 size_t                          vk_fast_host_bytes(struct geist_backend *be);
+/* geist_backend_descriptor::memory_info: the device-local heap's size and
+ * what is left of it (see geist_backend_memory). */
+[[nodiscard]] enum geist_status vk_memory_info(const struct geist_backend  *be,
+                                               struct geist_backend_memory *out);
 
 struct vk_access vk_acc(uint64_t lo_bytes, uint64_t n_bytes, bool write);
 
