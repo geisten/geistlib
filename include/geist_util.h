@@ -469,6 +469,36 @@ struct geist_backend_resources {
 geist_backend_resources_snapshot(const struct geist_backend     *be,
                                  struct geist_backend_resources *out);
 
+/* @stability EXPERIMENTAL — the memory a GPU backend allocates from, so a
+ * runtime can size a model's context window from what the device has left
+ * rather than from system RAM.
+ *
+ *   total_bytes     the device memory heap the backend places weights and KV
+ *                   caches in (Vulkan: the device-local heap, lowered by
+ *                   GEIST_VK_VRAM_BUDGET; Metal: the recommended working set).
+ *   free_bytes      what a new allocation can still get, <= total_bytes.
+ *   device_wide     free_bytes accounts for every allocation on the device,
+ *                   other backends and processes included (Vulkan with
+ *                   VK_EXT_memory_budget). false: it only subtracts this
+ *                   backend's own allocations, so it can overstate.
+ *   unified_memory  the heap is system RAM shared with the CPU (an integrated
+ *                   GPU, Apple silicon): budget it together with RAM, not on
+ *                   top of it.
+ *
+ * Values are a snapshot; the driver's budget moves with other processes. Do
+ * not call concurrently with buffer creation on the same backend. Failure
+ * zero-initializes out. CPU backends return GEIST_E_UNSUPPORTED: their memory
+ * is system RAM, which the caller can query from the OS directly. */
+#define GEIST_HAS_BACKEND_MEMORY_INFO 1 /* for consumers built against several engines */
+struct geist_backend_memory {
+    uint64_t total_bytes;
+    uint64_t free_bytes;
+    bool     device_wide;
+    bool     unified_memory;
+};
+[[nodiscard]] enum geist_status geist_backend_memory_info(const struct geist_backend  *be,
+                                                          struct geist_backend_memory *out);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
