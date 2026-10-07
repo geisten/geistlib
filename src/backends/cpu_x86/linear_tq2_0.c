@@ -113,6 +113,14 @@ static inline float dot_row(size_t                      nb,
     return hsum_ps(_mm256_add_ps(acc0, acc1));
 }
 
+/* acc + d (P - S) for one block's int16 product sums p16: fma_block's tail,
+ * in the same order. */
+static inline __m256 flush_block(__m256i p16, int32_t sx, float d, __m256 acc) {
+    const __m256i p = _mm256_sub_epi32(_mm256_madd_epi16(p16, _mm256_set1_epi16(1)),
+                                       _mm256_zextsi128_si256(_mm_cvtsi32_si128(sx)));
+    return _mm256_fmadd_ps(_mm256_set1_ps(d), _mm256_cvtepi32_ps(p), acc);
+}
+
 /* NR activation rows against one weight row: each chunk of codes unpacked
  * once, one accumulator per activation row. The integer block sums are the
  * same as dot_row's; only the fp32 summation order differs, so M=1 and M>1
@@ -124,39 +132,44 @@ static void dot_rows(size_t                      nb,
                      const float                *dx,
                      const int32_t              *sx,
                      float                       out[static NR]) {
+    static_assert(NR == 4, "the accumulators below are spelled out for 4 rows");
     const __m256i mask = _mm256_set1_epi8(3);
-    __m256        acc[NR];
-    for (size_t r = 0; r < NR; r++) {
-        acc[r] = _mm256_setzero_ps();
-    }
-    for (size_t b = 0; b < nb; b++) {
-        __m256i p16[NR];
-        for (size_t r = 0; r < NR; r++) {
-            p16[r] = _mm256_setzero_si256();
+    const int8_t *x0 = qx, *x1 = qx + n_in, *x2 = qx + 2 * n_in, *x3 = qx + 3 * n_in;
+    __m256        a0 = _mm256_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+    __m256i       p0 = _mm256_setzero_si256(), p1 = p0, p2 = p0, p3 = p0;
+    /* Named accumulators and one loop over the 32-byte halves, flushed into
+     * the float sums after each block's second half (#662). With acc[NR] /
+     * p16[NR] arrays and a nested 2 x 4 x NR loop, gcc 15 unrolled a whole
+     * block, hoisted the maddubs ahead of their adds and kept the products
+     * on the stack (as in #660's I2_S kernel). */
+    for (size_t hh = 0; hh < 2 * nb; hh++) {
+        const size_t  b = hh >> 1;
+        const __m256i q = _mm256_loadu_si256((const __m256i *) (w[b].qs + (hh & 1) * 32));
+        for (int l = 0; l < 4; l++) {
+            const __m256i v   = _mm256_and_si256(_mm256_srli_epi16(q, 2 * l), mask);
+            const size_t  off = b * QK + (hh & 1) * 128 + (size_t) l * 32;
+            p0                = _mm256_add_epi16(
+                    p0, _mm256_maddubs_epi16(v, _mm256_loadu_si256((const __m256i *) (x0 + off))));
+            p1 = _mm256_add_epi16(
+                    p1, _mm256_maddubs_epi16(v, _mm256_loadu_si256((const __m256i *) (x1 + off))));
+            p2 = _mm256_add_epi16(
+                    p2, _mm256_maddubs_epi16(v, _mm256_loadu_si256((const __m256i *) (x2 + off))));
+            p3 = _mm256_add_epi16(
+                    p3, _mm256_maddubs_epi16(v, _mm256_loadu_si256((const __m256i *) (x3 + off))));
         }
-        for (size_t h = 0; h < 2; h++) {
-            const __m256i q = _mm256_loadu_si256((const __m256i *) (w[b].qs + h * 32));
-            for (int l = 0; l < 4; l++) {
-                const __m256i v   = _mm256_and_si256(_mm256_srli_epi16(q, 2 * l), mask);
-                const size_t  off = b * QK + h * 128 + (size_t) l * 32;
-                for (size_t r = 0; r < NR; r++) {
-                    const __m256i x = _mm256_loadu_si256((const __m256i *) (qx + r * n_in + off));
-                    p16[r]          = _mm256_add_epi16(p16[r], _mm256_maddubs_epi16(v, x));
-                }
-            }
-        }
-        const float dw = tq2_scale(&w[b]);
-        for (size_t r = 0; r < NR; r++) {
-            const __m256i p =
-                    _mm256_sub_epi32(_mm256_madd_epi16(p16[r], _mm256_set1_epi16(1)),
-                                     _mm256_zextsi128_si256(_mm_cvtsi32_si128(sx[r * nb + b])));
-            acc[r] = _mm256_fmadd_ps(
-                    _mm256_set1_ps(dw * dx[r * nb + b]), _mm256_cvtepi32_ps(p), acc[r]);
+        if (hh & 1) {
+            const float dw = tq2_scale(&w[b]);
+            a0             = flush_block(p0, sx[b], dw * dx[b], a0);
+            a1             = flush_block(p1, sx[nb + b], dw * dx[nb + b], a1);
+            a2             = flush_block(p2, sx[2 * nb + b], dw * dx[2 * nb + b], a2);
+            a3             = flush_block(p3, sx[3 * nb + b], dw * dx[3 * nb + b], a3);
+            p0 = p1 = p2 = p3 = _mm256_setzero_si256();
         }
     }
-    for (size_t r = 0; r < NR; r++) {
-        out[r] = hsum_ps(acc[r]);
-    }
+    out[0] = hsum_ps(a0);
+    out[1] = hsum_ps(a1);
+    out[2] = hsum_ps(a2);
+    out[3] = hsum_ps(a3);
 }
 
 static void cpu_x86_linear_tq2_0_m1(const float               *x,

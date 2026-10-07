@@ -8,6 +8,15 @@ minor release.
 
 ## [Unreleased]
 
+### Changed
+
+- **cpu_x86: TQ2_0 prefill on AVX2 hosts 11 % faster (#662).** The M>1 kernel
+  `dot_rows` (hosts without AVX-512 VNNI) uses named accumulators and one loop
+  over the 32-byte halves instead of `acc[NR]` / `p16[NR]` arrays in a nested
+  loop, which gcc 15 unrolled and kept on the stack. Output is bit-identical.
+  Ryzen 9 9950X with `GEIST_FORCE_ISA=avx2`, bitnet-b1.58-large TQ2_0, pp512:
+  −11.0 % prefill time (95 % interval −12.2 % … −8.8 %, 12/12 cycles).
+
 ## [0.20.0] — 2026-10-07
 
 ### Added
