@@ -113,10 +113,10 @@ jobs:
 
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            gcc-14 libopenblas-dev ccache python3-numpy
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14 libopenblas-dev ccache python3-numpy
 
       - name: Build
         run: make TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
@@ -394,9 +394,10 @@ jobs:
           key: ccache-x86_64-${{ github.run_id }}
           restore-keys: ccache-x86_64-
       - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-14 ccache
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14 ccache
       # Same backends/GEMM as the shipped release binary (release.yml linux-x86_64).
       - name: Build
         run: make TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
@@ -479,9 +480,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-14
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14
       - name: Build + unit tests (scalar only, no SIMD)
         run: |
           make TARGET=linux CC=gcc-14 BACKENDS="cpu_scalar" GEMM_PROVIDER=native
@@ -500,9 +502,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang-19 libomp-19-dev libclang-rt-19-dev
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: clang-19 libomp-19-dev libclang-rt-19-dev
       - name: Build + unit tests (release backends, clang)
         run: |
           make TARGET=linux CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
@@ -541,9 +544,10 @@ jobs:
             ccache-audio-smoke-
             ccache-Linux arm64-
       - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev ccache
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14 libopenblas-dev ccache
       - name: Build
         run: make TARGET=linux CC="ccache gcc-14" bin
       - name: Cache reference model
@@ -607,9 +611,10 @@ jobs:
             ccache-audio-parity-x86_64-
             ccache-build-test-x86_64-
       - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev ccache
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14 libopenblas-dev ccache
       - name: Build
         run: make TARGET=linux CC="ccache gcc-14" bin
       # Same cache key as audio-smoke on purpose: one 614 MB entry serves both
@@ -645,9 +650,10 @@ jobs:
           key: ccache-pi5-${{ github.run_id }}
           restore-keys: ccache-pi5-
       - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev ccache
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14 libopenblas-dev ccache
       - name: Build lib + all test binaries
         run: make TARGET=pi5 CC="ccache gcc-14" lib bin
 
@@ -704,9 +710,10 @@ jobs:
           key: ccache-sde-${{ github.run_id }}
           restore-keys: ccache-sde-
       - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-14 ccache
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14 ccache
       - name: Install Intel SDE
         uses: petarpetrovt/setup-sde@6d2773bc0ef3005fd52e0ae0bb91782321793aec # v6.0
         with:
@@ -781,10 +788,10 @@ jobs:
           key: ccache-vulkan-${{ github.run_id }}
           restore-keys: ccache-vulkan-
       - name: Install deps (loader, lavapipe ICD, headers)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            gcc-14 ccache libvulkan-dev libvulkan1 mesa-vulkan-drivers vulkan-tools
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14 ccache libvulkan-dev libvulkan1 mesa-vulkan-drivers vulkan-tools
       # Kept as an artifact, not just a log line: lavapipe is a moving target
       # (Mesa updates land under us), so when this job goes red the first
       # question is what changed in the environment. if: always() so the
@@ -939,9 +946,10 @@ jobs:
           key: ccache-asan-${{ github.run_id }}
           restore-keys: ccache-asan-
       - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev ccache python3-numpy
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14 libopenblas-dev ccache python3-numpy
       - name: ASan/UBSan unit tests
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
@@ -978,9 +986,10 @@ jobs:
           key: ccache-asan-x86_64-${{ github.run_id }}
           restore-keys: ccache-asan-x86_64-
       - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-14 ccache
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14 ccache
       - name: ASan/UBSan unit tests (leak detection on)
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
@@ -1019,9 +1028,10 @@ jobs:
           key: ccache-tsan-${{ github.run_id }}
           restore-keys: ccache-tsan-
       - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-14 ccache
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14 ccache
       - name: Cache reference model
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -1079,9 +1089,10 @@ jobs:
           key: ccache-cov-${{ github.run_id }}
           restore-keys: ccache-cov-
       - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-14 libopenblas-dev ccache gcovr
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14 libopenblas-dev ccache gcovr
       - name: Cache reference model
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
