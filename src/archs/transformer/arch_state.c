@@ -201,7 +201,7 @@ zero_unmapped(struct geist_backend *be, size_t bytes, struct geist_buffer *buf) 
 }
 
 /* The device-local part of the scratch pool (#488). The backend may still
- * hand back mappable memory (Vulkan without GEIST_VK_SCRATCH_DEVICE=1, or no
+ * hand back mappable memory (Vulkan under GEIST_VK_SCRATCH_DEVICE=0, a UMA device, or no
  * device-local type left): the buffer is then released and the session keeps
  * one host-visible pool — scratch_dev_pool_buf stays nullptr. */
 [[nodiscard]] static enum geist_status alloc_device_pool(struct transformer_arch_session *sess,
@@ -1733,7 +1733,7 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
 
 /* Whether this backend serves a SCRATCH buffer asked for device-local as
  * memory the host cannot map (#488) and can slice one by offset. Vulkan
- * does only under GEIST_VK_SCRATCH_DEVICE=1; every other backend either
+ * does unless GEIST_VK_SCRATCH_DEVICE=0; every other backend either
  * has no buffer_create_view or maps everything. */
 static bool backend_scratch_unmappable(struct geist_backend *be) {
     bool mapped = true;

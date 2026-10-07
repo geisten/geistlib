@@ -444,9 +444,11 @@ static size_t vk_parse_bytes(const char *v) {
     const char *strict  = getenv("GEIST_VK_STRICT");
     st->strict          = strict != nullptr && strcmp(strict, "0") != 0;
     st->vram_budget     = vk_parse_bytes(getenv("GEIST_VK_VRAM_BUDGET"));
-    /* Opt-in (#488): device-local scratch pool; see vk_buffer_create_api. */
+    /* Device-local scratch pool (#488), default on; GEIST_VK_SCRATCH_DEVICE=0
+     * keeps it host-visible. The arch still asks only where no host path
+     * maps a pool slot (scratch_device_wanted); see vk_buffer_create_api. */
     const char *scratch_env = getenv("GEIST_VK_SCRATCH_DEVICE");
-    st->scratch_device      = scratch_env != nullptr && strcmp(scratch_env, "1") == 0;
+    st->scratch_device      = scratch_env == nullptr || strcmp(scratch_env, "0") != 0;
 
     enum geist_status s = vk_load_runtime(be, st);
     if (s != GEIST_OK) {

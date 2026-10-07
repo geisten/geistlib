@@ -19,6 +19,15 @@ minor release.
   pp512 with the flag: 356 → 1739 t/s at M 256, 349 → 1785 at M 512 (1385 at
   the default 64); E4B at M 512: 239 → 809. Decode no longer drops at large M
   (117 → 151 t/s).
+- **Vulkan: the device-local scratch pool is the default.**
+  `GEIST_VK_SCRATCH_DEVICE=0` keeps the host-visible pool; the arch still uses
+  the device pool only where no host path maps a slot, so the other models
+  are unchanged. At the default chunk this stops Gemma 4 from shrinking its
+  chunk or spilling its pool to fit the BAR window. RTX 2080 Ti, defaults:
+  Gemma 4 E2B pp512 1384 → 1621 t/s, E4B pp512 272 → 748 t/s and tg 74 → 91
+  t/s; Llama 3.2 3B and Qwen3 0.6B within ±1 %. The default chunk stays 128:
+  256 gained 3–4 % on the device-pool models but cost Bonsai 2 27B 20 % and
+  Qwen3.5 4B part of its pool to system RAM.
 
 ## [0.20.0] — 2026-10-07
 
