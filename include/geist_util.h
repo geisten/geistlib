@@ -38,7 +38,7 @@ extern "C" {
 geist_token_t geist_model_eos_token(const struct geist_model *m);
 geist_token_t geist_model_bos_token(const struct geist_model *m);
 
-/* @stability STABLE since 0.12.0 — the tokenizer's add_bos_token /
+/* @stability STABLE since 0.20.0 — the tokenizer's add_bos_token /
  * add_eos_token metadata (geist-runtime contract, #622).
  *
  * geist_session_tokenize returns content tokens only; these say whether the

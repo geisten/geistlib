@@ -8,6 +8,8 @@ minor release.
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-10-07
+
 ### Added
 - **Plan a model before loading it** (#625). `geist_model_plan` /
   `geist_model_plan_from_memory` read only the GGUF's header and tensor
@@ -2620,7 +2622,8 @@ First public release.
   reproducible perf benchmark harness (`make bench-small`).
 - `examples/simple_generate` demonstrating the stable text-generation core.
 
-[Unreleased]: https://github.com/geisten/geistlib/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/geisten/geistlib/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/geisten/geistlib/compare/v0.11.0...v0.20.0
 [0.11.0]: https://github.com/geisten/geistlib/compare/v0.10.8...v0.11.0
 [0.10.8]: https://github.com/geisten/geistlib/compare/v0.10.1...v0.10.8
 [0.10.1]: https://github.com/geisten/geistlib/compare/v0.10.0...v0.10.1
