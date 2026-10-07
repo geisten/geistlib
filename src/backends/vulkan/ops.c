@@ -685,6 +685,8 @@ void vk_linear_cm_route(struct vk_state *st,
         cm = VK_PIPE_MM_Q6K_CM;
     } else if (*pipe == VK_PIPE_MATMUL_Q8_0) {
         cm = VK_PIPE_MM_Q8_0_CM;
+    } else if (*pipe == VK_PIPE_MATMUL_Q4_0) {
+        cm = VK_PIPE_MM_Q4_0_CM;
     } else if (*pipe == VK_PIPE_MATMUL_PQ2_0) {
         /* 128-token tile from a full tile of tokens up; the 128 x 64 tile below
          * it (a 128-wide tile would run half empty at the default chunk of 64) */
@@ -694,7 +696,7 @@ void vk_linear_cm_route(struct vk_state *st,
         return;
     }
     /* PQ2_0 tiles cover 128 weight rows and 128 (or 64) tokens, the k-quant
-     * and Q8_0 tiles 64 x 64 */
+     * and Q8_0 / Q4_0 tiles 64 x 64 */
     const bool     pq2       = cm == VK_PIPE_MM_PQ2_0_CM || cm == VK_PIPE_MM_PQ2_0_CM_F32 ||
                                cm == VK_PIPE_MM_PQ2_0_CM64;
     const uint32_t tile_rows = pq2 ? 128u : 64u;

@@ -342,6 +342,13 @@ int main(void) {
     run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-split", 512, 256, 37, 2e-2);
     run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-split", 512, 256, 37, 2e-2);
     run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-split", 768, 4096, 53, 2e-2);
+    /* Q4_0 on the tensor cores (#467), the Q8_0 shapes again: odd k-step
+     * count, a partly empty token tile, linear_t, and the m % 16 split. */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_0, "Q4_0-cm", 512, 256, 16, 2e-2);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_0, "Q4_0-cm", 1120, 128, 64, 2e-2);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_0, "Q4_0-cm", 512, 192, 112, 2e-2);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q4_0, "Q4_0-cm", 1120, 128, 48, 2e-2);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_0, "Q4_0-split", 1120, 128, 101, 2e-2);
     geist_backend_destroy(vk);
 
     /* the exact f32-accumulate tensor-core GEMM (GEIST_VK_PQ2_F32_ACC) */

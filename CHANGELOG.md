@@ -9,6 +9,11 @@ minor release.
 ## [Unreleased]
 
 ### Changed
+- **Vulkan: Q4_0 prefill GEMM on the tensor cores (#467).** The Q8_0
+  coopmat kernel's body now takes a Q4_0 A stage too (shared
+  `matmul_legacy_cm_body.glsl`). RTX 2080 Ti, Qwen3.5 4B Q4_0 pp512: the Q4_0
+  GEMM 1739 → 323 ms, prefill 253 → 817 t/s; CPU-vs-Vulkan logits unchanged
+  (corr 0.99968).
 
 - **Vulkan: Q8_0 GEMMs run on the tensor cores.** Batched Q8_0 linears with
   `n_out % 64 == 0` and `m % 16 == 0` take a new `KHR_coopmat` kernel (the
