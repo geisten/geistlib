@@ -226,3 +226,11 @@ provider callback; third-party backends recompile with a zero/null callback
 to keep explicit unsupported behavior. `test_metal_resources_unit`
 (opt-in, `GEIST_TEST_METAL_RESOURCES=1`) checks the counter against direct
 device queries, including under concurrent allocate/release.
+
+`geist_backend_memory_info` follows the same rules (null handles/outputs are
+invalid, a missing provider is unsupported, failure clears the output). It
+answers a planning question, how much device memory is left, not an
+accounting one: Vulkan reports the device-local heap and, with
+`VK_EXT_memory_budget`, the driver's budget minus usage, which other processes
+move between two calls (`device_wide` says which kind of number it is). CPU
+backends are unsupported by design; their memory is system RAM.
