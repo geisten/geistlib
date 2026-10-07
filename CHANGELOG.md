@@ -8,6 +8,17 @@ minor release.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Vulkan: a cached descriptor set could rebind another dispatch to the wrong
+  buffer (#665).** When a buffer was destroyed, every cached descriptor set
+  became reusable, and a reused set was rewritten for a dispatch with more
+  bindings than its layout had (`VUID-VkWriteDescriptorSet-dstBinding-00315`).
+  The overrun landed in a neighbouring set, so qwen35 sessions created next to
+  other live sessions occasionally computed with a wrong buffer (logits off by
+  up to ~6), and `test_session_snapshot_unit` failed about every second run on
+  an RTX 2080 Ti. Reuse now requires the same binding count.
+
 ## [0.20.0] — 2026-10-07
 
 ### Added
