@@ -28,6 +28,14 @@ minor release.
   t/s; Llama 3.2 3B and Qwen3 0.6B within ±1 %. The default chunk stays 128:
   256 gained 3–4 % on the device-pool models but cost Bonsai 2 27B 20 % and
   Qwen3.5 4B part of its pool to system RAM.
+- **Vulkan: sessions with a device-local scratch pool default to 512-row
+  prefill chunks when the device has room.** The device pool takes the BAR
+  window out of the chunk's limits, and a bigger chunk feeds the GEMMs. The
+  chunk grows only when the bigger pool fits in half of the free device memory
+  (`geist_backend_memory_info`); sessions on a host-visible pool (DeltaNet,
+  quantized KV, …) keep the chunk the BAR allows. RTX 2080 Ti, defaults, pp512:
+  Gemma 4 E2B 1641 → 1839 t/s, E4B 754 → 865, Llama 3.2 3B 1229 → 1334; Qwen3
+  0.6B Q8_0 with the tensor-core GEMM ~5000 → 6630.
 
 ### Added
 - **`geist_backend_memory_info`: how much device memory a GPU backend has
