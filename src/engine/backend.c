@@ -173,6 +173,25 @@ enum geist_status geist_backend_resources_snapshot(const struct geist_backend   
     return status;
 }
 
+enum geist_status geist_backend_memory_info(const struct geist_backend  *be,
+                                            struct geist_backend_memory *out) {
+    if (out == nullptr)
+        return GEIST_E_INVALID_ARG;
+    *out = (struct geist_backend_memory) {0};
+    if (be == nullptr || be->desc == nullptr)
+        return GEIST_E_INVALID_ARG;
+    if (be->desc->memory_info == nullptr)
+        return GEIST_E_UNSUPPORTED;
+    struct geist_backend_memory sample = {0};
+    enum geist_status           status = be->desc->memory_info(be, &sample);
+    if (status != GEIST_OK)
+        return status;
+    if (sample.free_bytes > sample.total_bytes)
+        sample.free_bytes = sample.total_bytes;
+    *out = sample;
+    return GEIST_OK;
+}
+
 const struct geist_backend_fused geist_backend_no_fused = {0};
 
 /* ---------- Backend-side helpers (declared in geist_backend.h) ---------- */
