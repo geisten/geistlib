@@ -44,9 +44,9 @@ extern "C" {
 /* ====================================================================== */
 
 #define GEIST_VERSION_MAJOR 0
-#define GEIST_VERSION_MINOR 11
+#define GEIST_VERSION_MINOR 20
 #define GEIST_VERSION_PATCH 0
-#define GEIST_VERSION_STRING "0.11.0"
+#define GEIST_VERSION_STRING "0.20.0"
 
 /* @stability STABLE since 0.1.0 */
 const char *geist_version_string(void);
@@ -177,7 +177,7 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
  * be scoped to that list, a different type from the one defined below. */
 struct geist_session_opts;
 
-/* @stability STABLE since 0.12.0 — geist-runtime contract (#622).
+/* @stability STABLE since 0.20.0 — geist-runtime contract (#622).
  * geist_model_load with load-time options: `opts->max_seq_len` sizes the
  * buffers the model owns (RoPE tables, the default session's scratch) and
  * caps every session created on it. nullptr opts (what geist_model_load
@@ -202,7 +202,7 @@ enum geist_status geist_model_load_from_memory(const void           *data,
 void        geist_model_destroy(struct geist_model *m);
 const char *geist_model_errmsg(const struct geist_model *m);
 
-/* @stability STABLE since 0.12.0 — geist-runtime contract (#622).
+/* @stability STABLE since 0.20.0 — geist-runtime contract (#622).
  * In-memory twin of geist_model_load_with_opts: `opts->max_seq_len` caps
  * every session on the model (0 or nullptr opts: 4096). `data` must outlive
  * the model. */

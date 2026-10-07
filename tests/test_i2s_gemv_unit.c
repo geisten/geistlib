@@ -6,6 +6,8 @@
  *   (1) i2s_gemv_m1 (dispatch: VNNI when available) vs i2s_gemv_m1_scalar
  *       — both run the identical int8-quantized integer math, so they must
  *       agree to within fp rounding of the final scale (Δ <= 1e-3 abs).
+ *   (1b) i2s_gemv_m1_avx2 (the no-VNNI path, run on every host) vs the
+ *       scalar oracle — the same exact integer dot, so bit-identical.
  *   (2) the scalar oracle vs a pure-f32 reference (trit·x, no act quant)
  *       — only per-row int8 activation quant differs; pass at cosine
  *       similarity >= 0.999 per output row.
@@ -90,6 +92,15 @@ static int scenario(size_t N, size_t K) {
         fprintf(stderr, "  [N=%zu K=%zu] dispatch vs scalar Δ=%.3e > 1e-3\n", N, K, max_dd);
         fail = 1;
     }
+
+    /* (1b) AVX2 path vs scalar: bit-identical. */
+    float *y_avx2 = malloc(N * sizeof(float));
+    i2s_gemv_m1_avx2(N, K, x, W, scale, y_avx2);
+    if (memcmp(y_avx2, y_scal, N * sizeof(float)) != 0) {
+        fprintf(stderr, "  [N=%zu K=%zu] avx2 vs scalar not bit-identical\n", N, K);
+        fail = 1;
+    }
+    free(y_avx2);
 
     /* (2) scalar oracle vs f32 ref: cosine similarity. */
     double dot = 0.0, na = 0.0, nb = 0.0;
