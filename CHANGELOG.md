@@ -9,6 +9,23 @@ minor release.
 ## [Unreleased]
 
 ### Added
+
+- **`tools/convert_hf.py`: reproducible Hugging Face → GGUF conversion with a
+  quality gate (#623).** `convert` takes a pinned HF commit through llama.cpp's
+  converter at the protocol pin (`2d8d612e4`), optionally `llama-quantize`, and
+  writes a manifest with the sha256 of every input, the converter commit, its
+  Python dependencies and the output hash; `--check-determinism` converts twice
+  and fails unless the files are byte-identical. `gate` compares the
+  candidate's perplexity with the source precision through `eval_geist` on a
+  fixed public-domain text (`tools/data/ppl_alice.txt`), honouring the model's
+  BOS, against documented bounds per quantization (wider below 2 B
+  parameters). `manifest` turns a gated manifest into a geist-runtime catalog
+  entry. Verified on Qwen3 0.6B (BF16 / Q8_0 / Q4_K_M) and Gemma 4 E2B
+  (BF16 / Q8_0): all conversions reproducible, Q8_0 within 0.3 % of the
+  source; the `convert-gate` workflow runs SmolLM2 135M end to end. The gate
+  found #674 (Gemma 3 270M logits) and #675 (Q5_0 weights).
+
+### Added
 - **`geist_backend_memory_info`: how much device memory a GPU backend has
   left**. EXPERIMENTAL, in `geist_util.h`, through a new optional
   descriptor callback `memory_info`. Reports the heap weights and KV caches

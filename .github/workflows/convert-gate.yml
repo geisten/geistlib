@@ -1,0 +1,66 @@
+name: convert-gate
+
+# The #623 pipeline end to end on a small model: a pinned Hugging Face
+# revision converted twice (byte-identical or fail), the perplexity gate
+# against the source precision, and the generated geist-runtime catalog
+# entry. Runs when the tool or its text changes, weekly (the HF and llama.cpp
+# pins do not move, so a change of verdict is ours), and on demand.
+
+on:
+  pull_request:
+    paths:
+      - tools/convert_hf.py
+      - tools/data/**
+      - .github/workflows/convert-gate.yml
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+env:
+  HF_REPO: HuggingFaceTB/SmolLM2-135M-Instruct
+  HF_REVISION: 12fd25f77366fa6b3b4b768ec3050bf629380bac
+  LLAMA_PIN: 2d8d612e4c68d3801e556a1b4a028f55ec33ecbb
+
+jobs:
+  convert-gate:
+    name: HF -> GGUF conversion + quality gate (SmolLM2 135M)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build geist (eval_geist)
+        run: make TARGET=linux BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin -j"$(nproc)"
+      - name: llama.cpp converter at the pin
+        run: |
+          git init -q llama.cpp
+          git -C llama.cpp fetch -q --depth 1 https://github.com/ggml-org/llama.cpp "$LLAMA_PIN"
+          git -C llama.cpp checkout -q FETCH_HEAD
+      - name: Python environment
+        run: |
+          python3 -m venv venv
+          venv/bin/pip install -q --index-url https://download.pytorch.org/whl/cpu torch
+          venv/bin/pip install -q "numpy~=1.26.4" "transformers>=5" sentencepiece protobuf \
+            safetensors huggingface_hub -e llama.cpp/gguf-py
+      - name: Convert twice (BF16 reference, Q8_0)
+        run: |
+          for q in bf16 q8_0; do
+            venv/bin/python tools/convert_hf.py convert --repo "$HF_REPO" --revision "$HF_REVISION" \
+              --quant "$q" --llama-cpp llama.cpp --out-dir out --check-determinism
+          done
+      - name: Perplexity gate
+        run: |
+          python3 tools/convert_hf.py gate --ref out/smollm2-135m-instruct-bf16.gguf \
+            --cand out/smollm2-135m-instruct-q8_0.gguf
+      - name: Catalog entry
+        run: |
+          python3 tools/convert_hf.py manifest out/smollm2-135m-instruct-q8_0.gguf.manifest.json \
+            --id smollm2-135m --display-name "SmolLM2 135M" | tee out/catalog-entry.json
+      - name: Upload manifests
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: convert-gate
+          path: |
+            out/*.manifest.json
+            out/catalog-entry.json
+          if-no-files-found: warn
