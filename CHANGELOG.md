@@ -28,6 +28,7 @@ minor release.
   t/s; Llama 3.2 3B and Qwen3 0.6B within ±1 %. The default chunk stays 128:
   256 gained 3–4 % on the device-pool models but cost Bonsai 2 27B 20 % and
   Qwen3.5 4B part of its pool to system RAM.
+
 ### Added
 - **`geist_backend_memory_info`: how much device memory a GPU backend has
   left**. EXPERIMENTAL, in `geist_util.h`, through a new optional
