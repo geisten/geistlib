@@ -18,6 +18,29 @@ minor release.
   other live sessions occasionally computed with a wrong buffer (logits off by
   up to ~6), and `test_session_snapshot_unit` failed about every second run on
   an RTX 2080 Ti. Reuse now requires the same binding count.
+### Added
+- **`geist_backend_memory_info`: how much device memory a GPU backend has
+  left**. EXPERIMENTAL, in `geist_util.h`, through a new optional
+  descriptor callback `memory_info`. Reports the heap weights and KV caches
+  are placed in (`total_bytes`), what a new allocation can still get
+  (`free_bytes`), whether that number counts every process on the device
+  (`device_wide`) and whether the heap is system RAM (`unified_memory`). A
+  runtime that sized the context window from system RAM gave Gemma 4 E2B a
+  131072-token window on an 11 GiB RTX 2080 Ti (5.7 GB of KV cache); it can
+  now size it from the device. Vulkan enables `VK_EXT_memory_budget` where
+  the device has it and reports the driver's budget minus usage (other
+  processes included), else the heap minus this backend's own allocations;
+  Metal reports the recommended working set minus `currentAllocatedSize`;
+  CPU backends return `GEIST_E_UNSUPPORTED` (their memory is system RAM, which
+  the caller queries from the OS). `GEIST_HAS_BACKEND_MEMORY_INFO` is defined
+  with it, so a consumer pinned to an older engine can still build. Test:
+  `test_backend_memory_info_unit` (vulkan-gpu CI leg).
+
+### Changed
+- **The Vulkan out-of-device-memory error names what the whole device holds**. It used to report only this backend's own usage ("4315 of 11264 MiB
+  are in use"), which reads as impossible when another model or process holds
+  the rest; with `VK_EXT_memory_budget` it adds "the device reports 10950 of
+  11264 MiB in use (other models or processes included ...)".
 
 ## [0.20.0] — 2026-10-07
 
