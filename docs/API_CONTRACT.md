@@ -125,7 +125,7 @@ does.
 
 The backend, model and session lifecycle above, plus
 `geist_backend_name`, `geist_backend_errmsg`, `geist_model_errmsg`,
-`geist_session_errmsg` and, promoted for this contract in 0.12.0:
+`geist_session_errmsg` and, promoted for this contract in 0.20.0:
 
 | Symbol | Why the runtime needs it |
 | :-- | :-- |
