@@ -1,0 +1,60 @@
+diff --git a/src/backends/vulkan/lifecycle.c b/src/backends/vulkan/lifecycle.c
+index fa19977..802a708 100644
+--- a/src/backends/vulkan/lifecycle.c
++++ b/src/backends/vulkan/lifecycle.c
+@@ -589,6 +589,7 @@ void vk_destroy(struct geist_backend *be) {
+             fprintf(stderr, "geist vulkan gpu profile:\n");
+             for (int i = 0; i <= VK_PIPE_COUNT; ++i) {
+                 if (st->prof_calls[i] > 0) {
++                    fprintf(stderr, "PIPEIDX %d %s\n", i, names[i]);
+                     fprintf(stderr,
+                             "  %-12s %8.1f ms  %8llu calls  %6.1f us/call\n",
+                             names[i],
+diff --git a/src/backends/vulkan/sequence.c b/src/backends/vulkan/sequence.c
+index ee87acc..ffe92f0 100644
+--- a/src/backends/vulkan/sequence.c
++++ b/src/backends/vulkan/sequence.c
+@@ -1,3 +1,5 @@
++#include <string.h>
++#include <stdlib.h>
+ /*
+  * src/backends/vulkan/sequence.c — batched-submit command sequencing, hazards, dispatch, and
+  * timing.
+@@ -5,6 +7,8 @@
+  * Layer: BACKEND (vulkan).
+  */
+ #include "vk_internal.h"
++static uint32_t prof_shape[VK_SEQ_MAX_DISPATCH + 8][3];
++static uint32_t prof_cur[3];
+ 
+ void vk_seq_flush(struct vk_state *st) {
+     if (st == nullptr || !st->seq_open) {
+@@ -50,6 +54,8 @@ void vk_seq_flush(struct vk_state *st) {
+                 const uint64_t d = ts[i] - ts[i - 1];
+                 st->prof_ns[st->ts_pipe[i]] += (uint64_t) ((double) d * (double) st->ts_period_ns);
+                 st->prof_calls[st->ts_pipe[i]]++;
++                if (getenv("GEIST_VK_PROFILE_SHAPES") != nullptr)
++                    fprintf(stderr, "SHAPE %u %u %u %u %.0f\n", st->ts_pipe[i], prof_shape[i][0], prof_shape[i][1], prof_shape[i][2], (double) d * (double) st->ts_period_ns);
+             }
+         }
+     }
+@@ -159,6 +165,8 @@ void vk_prof_stamp(struct vk_state *st, uint32_t slot) {
+     st->fn.CmdWriteTimestamp(
+             st->seq_cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, st->ts_pool, st->ts_count);
+     st->ts_pipe[st->ts_count] = (uint8_t) slot;
++    memcpy(prof_shape[st->ts_count], prof_cur, sizeof prof_cur);
++    prof_cur[0] = prof_cur[1] = prof_cur[2] = 0;
+     st->ts_count++;
+ }
+ 
+@@ -341,6 +349,10 @@ void vk_seq_hazard(struct vk_state              *st,
+     st->seq_dispatches++;
+     st->seq_in_cmd++;
+     st->stat_dispatches++;
++    if (push_bytes >= 16) {
++        const uint32_t *pu = push;
++        prof_cur[0] = pu[0]; prof_cur[1] = pu[1]; prof_cur[2] = pu[3];
++    }
+     vk_prof_stamp(st, (uint32_t) pipe);
+     if (st->seq_in_cmd >= VK_SEQ_ROTATE) {
+         vk_seq_roll(st);
