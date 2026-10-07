@@ -37,10 +37,10 @@ jobs:
           echo "i8mm:"; grep -m1 -o "i8mm" /proc/cpuinfo || echo "absent (expected — matches A76)"
 
       - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            gcc-14 libopenblas-dev cmake git curl ca-certificates
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14 libopenblas-dev cmake git curl ca-certificates
 
       - name: Build geist (linux ARM64, OpenBLAS+OpenMP)
         run: |

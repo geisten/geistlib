@@ -1,0 +1,31 @@
+name: apt-install
+description: >
+  apt-get update + install with network timeouts and retries. A hanging
+  mirror fails within minutes and is retried, instead of using up the job's
+  timeout (a silent `apt-get update` once ran 75 min until the tsan job was
+  cancelled). Callers also set `timeout-minutes` on the step: composite
+  actions cannot set their own.
+inputs:
+  packages:
+    description: Space-separated package list for apt-get install.
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30
+              -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120)
+        for attempt in 1 2 3; do
+          # shellcheck disable=SC2086  # PACKAGES is a word list
+          if timeout 120 sudo apt-get "${opts[@]}" update &&
+             timeout 300 sudo apt-get "${opts[@]}" install -y --no-install-recommends $PACKAGES; then
+            exit 0
+          fi
+          echo "::warning::apt-get attempt $attempt of 3 failed; retrying in 20 s"
+          sleep 20
+        done
+        echo "::error::apt-get failed 3 times: $PACKAGES"
+        exit 1
