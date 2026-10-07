@@ -36,24 +36,111 @@ static size_t vk_vram_limit(const struct vk_state *st, uint32_t mem_type) {
     return st->vram_used <= limit && n <= limit - st->vram_used;
 }
 
+/* The driver's view of heap `heap` (VK_EXT_memory_budget): `budget` is what
+ * this process may allocate from it, which already leaves out what other
+ * processes hold, and `usage` is what this process holds. false without the
+ * extension. */
+[[nodiscard]] static bool
+vk_heap_budget(const struct vk_state *st, uint32_t heap, size_t *budget, size_t *usage) {
+    if (!st->has_mem_budget || heap >= VK_MAX_MEMORY_HEAPS) {
+        return false;
+    }
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT b = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+    VkPhysicalDeviceMemoryProperties2 p = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, .pNext = &b};
+    st->fn.GetPhysicalDeviceMemoryProperties2(st->phys, &p);
+    if (b.heapBudget[heap] == 0) {
+        return false; /* a driver that does not fill the struct */
+    }
+    *budget = (size_t) b.heapBudget[heap];
+    *usage  = (size_t) b.heapUsage[heap];
+    return true;
+}
+
+/* Bytes of heap `heap` in use on the whole device, by every process, as the
+ * driver reports it: the heap minus what this process can still allocate. */
+[[nodiscard]] static bool vk_heap_in_use(const struct vk_state *st, uint32_t heap, size_t *out) {
+    size_t budget = 0, usage = 0;
+    if (!vk_heap_budget(st, heap, &budget, &usage)) {
+        return false;
+    }
+    const size_t size  = (size_t) st->mem_props.memoryHeaps[heap].size;
+    const size_t avail = budget > usage ? budget - usage : 0;
+    *out               = size > avail ? size - avail : 0;
+    return true;
+}
+
 /* The error of a device-local allocation that does not fit: what it needs,
  * what is in use and the limit, so a model larger than the device fails
- * with numbers instead of a bare driver status. There is no host spill. */
+ * with numbers instead of a bare driver status. There is no host spill.
+ * With VK_EXT_memory_budget it also names what the whole device holds: when
+ * another model or process has the memory, this backend's own count alone
+ * makes the failure look impossible. */
 static void vk_vram_exhausted(struct geist_backend  *be,
                               uint32_t               mem_type,
                               size_t                 n,
                               enum geist_buffer_role role) {
-    const struct vk_state *st = be->state;
+    const struct vk_state *st     = be->state;
+    const uint32_t         heap   = st->mem_props.memoryTypes[mem_type].heapIndex;
+    const char            *what   = role == GEIST_BUFFER_KV_CACHE ? "KV-cache" : "device";
+    const char            *capped = st->vram_budget != 0 ? " (GEIST_VK_VRAM_BUDGET)" : "";
+    size_t                 device = 0;
+    if (vk_heap_in_use(st, heap, &device)) {
+        geist_backend_set_error(be,
+                                GEIST_E_OOM,
+                                "vulkan: out of device memory: a %s buffer needs %zu MiB, %zu of "
+                                "%zu MiB are in use by this backend%s; the device reports %zu of "
+                                "%zu MiB in use (other models or processes included; there is no "
+                                "spill to host memory)",
+                                what,
+                                (n + (1u << 20) - 1) >> 20,
+                                st->vram_used >> 20,
+                                vk_vram_limit(st, mem_type) >> 20,
+                                capped,
+                                device >> 20,
+                                (size_t) st->mem_props.memoryHeaps[heap].size >> 20);
+        return;
+    }
     geist_backend_set_error(be,
                             GEIST_E_OOM,
                             "vulkan: out of device memory: a %s buffer needs %zu MiB, %zu of "
                             "%zu MiB are in use%s (the model does not fit; there is no "
                             "spill to host memory)",
-                            role == GEIST_BUFFER_KV_CACHE ? "KV-cache" : "device",
+                            what,
                             (n + (1u << 20) - 1) >> 20,
                             st->vram_used >> 20,
                             vk_vram_limit(st, mem_type) >> 20,
-                            st->vram_budget != 0 ? " (GEIST_VK_VRAM_BUDGET)" : "");
+                            capped);
+}
+
+/* The heap device-local buffers (weights, KV cache) are placed in, its size
+ * lowered by GEIST_VK_VRAM_BUDGET, and what is left of it: the driver's
+ * budget minus this process's usage when VK_EXT_memory_budget is there (every
+ * process counted), else the limit minus this backend's own allocations. */
+enum geist_status vk_memory_info(const struct geist_backend *be, struct geist_backend_memory *out) {
+    const struct vk_state *st = be->state;
+    if (st == nullptr || st->device == VK_NULL_HANDLE) {
+        return GEIST_E_INVALID_STATE;
+    }
+    const uint32_t type = vk_find_mem_type(st, UINT32_MAX, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (type == UINT32_MAX) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const size_t limit  = vk_vram_limit(st, type);
+    size_t       free   = limit > st->vram_used ? limit - st->vram_used : 0;
+    size_t       budget = 0, usage = 0;
+    const bool   wide =
+            vk_heap_budget(st, st->mem_props.memoryTypes[type].heapIndex, &budget, &usage);
+    if (wide) {
+        const size_t avail = budget > usage ? budget - usage : 0;
+        free               = avail < free ? avail : free;
+    }
+    *out = (struct geist_backend_memory) {.total_bytes    = limit,
+                                          .free_bytes     = free,
+                                          .device_wide    = wide,
+                                          .unified_memory = st->unified_memory};
+    return GEIST_OK;
 }
 
 [[nodiscard]] enum geist_status vk_buffer_create(struct geist_backend  *be,

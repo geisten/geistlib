@@ -2377,19 +2377,20 @@ static const struct geist_backend_fused vk_fused = {
 };
 
 const struct geist_backend_descriptor geist_backend_vulkan = {
-        .name  = "vulkan",
-        .vtbl  = &vk_vtbl,
-        .prims = &vk_prims,
-        .fused = &vk_fused,
-        .caps  = {.kv_f16_attention           = true,
-                  .batched_submit             = true,
-                  .weights_need_backend_arena = true,
-                  .weights_device_copy        = true,
-                  .max_m                      = VK_MAX_M,
-                  /* the DeltaNet mixer is sequential over tokens: its cost does not
-                   * grow with the chunk, so GEIST_M_MAX above 64 is not capped for
-                   * qwen35 hybrids. The default chunk stays 64: 128 makes the
-                   * scratch pool spill out of a 256 MB BAR heap (#488) */
+        .name        = "vulkan",
+        .memory_info = vk_memory_info,
+        .vtbl        = &vk_vtbl,
+        .prims       = &vk_prims,
+        .fused       = &vk_fused,
+        .caps        = {.kv_f16_attention           = true,
+                        .batched_submit             = true,
+                        .weights_need_backend_arena = true,
+                        .weights_device_copy        = true,
+                        .max_m                      = VK_MAX_M,
+                        /* the DeltaNet mixer is sequential over tokens: its cost does not
+                         * grow with the chunk, so GEIST_M_MAX above 64 is not capped for
+                         * qwen35 hybrids. The default chunk stays 64: 128 makes the
+                         * scratch pool spill out of a 256 MB BAR heap (#488) */
                  /* 128 where the scratch pool fits the BAR window (the PQ2_0
                   * tensor-core tile is 128 tokens wide); the arch lowers it to
                   * 64 when it does not (vtbl->fast_host_bytes) */
