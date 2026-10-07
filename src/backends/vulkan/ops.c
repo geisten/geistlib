@@ -705,8 +705,10 @@ void vk_linear_cm_route(struct vk_state *st,
         return;
     }
     /* small n_out starves the SMs on the 64-row tile — use the 32x32 one
-     * (workgroup count is the wall clock at ~1 workgroup/SM) */
-    if (cm == VK_PIPE_MM_Q4K_CM && n_out < 4096u &&
+     * (workgroup count is the wall clock at ~1 workgroup/SM). Only for small
+     * batches: from 256 rows the 64 x 64 tile already has workgroups enough
+     * (1536 x 512 -> 192) and is ~15-20 % faster end to end (#658). */
+    if (cm == VK_PIPE_MM_Q4K_CM && n_out < 4096u && m < 256u &&
         st->pipes[VK_PIPE_MM_Q4K_CM32] != VK_NULL_HANDLE) {
         *pipe = VK_PIPE_MM_Q4K_CM32;
         *gx   = n_out / 32u;

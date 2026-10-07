@@ -36,6 +36,13 @@ minor release.
   quantized KV, …) keep the chunk the BAR allows. RTX 2080 Ti, defaults, pp512:
   Gemma 4 E2B 1641 → 1839 t/s, E4B 754 → 865, Llama 3.2 3B 1229 → 1334; Qwen3
   0.6B Q8_0 with the tensor-core GEMM ~5000 → 6630.
+- **Vulkan: narrow k-quant GEMMs keep the 64 × 64 tensor-core tile from 256
+  rows on, and the Q6_K tile is double-buffered (#658).** The 32 × 32 tile
+  was chosen for every `n_out < 4096` so that a 64-row chunk had workgroups
+  enough; with 512-row chunks the 64 × 64 tile already has 192 and is faster.
+  RTX 2080 Ti, defaults, pp512: Gemma 4 E2B 1813 → 2079 t/s, E4B 851 → 968,
+  Llama 3.2 3B 1315 → 1595. The Q6_K kernel now stages k-step ks+1 while the
+  MMAs consume ks, as the Q4_K one does: 407 → 392 µs per call on Gemma.
 
 ### Added
 - **`geist_backend_memory_info`: how much device memory a GPU backend has
