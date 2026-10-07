@@ -334,6 +334,14 @@ int main(void) {
     run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-cm", 1120, 128, 64, 2e-2);
     run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-cm", 512, 192, 112, 2e-2);
     run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-cm", 1120, 128, 48, 2e-2);
+    /* m % 16 != 0 on conforming shapes: the leading m & ~15 rows run on the
+     * tensor cores, the tail on the register-tiled GEMM (vk_gemm_dispatch);
+     * m = 20 is a 16-row head and a 4-row tail, m = 101 a 96-row head */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-split", 512, 192, 20, 2e-2);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-split", 1120, 128, 101, 2e-2);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-split", 512, 256, 37, 2e-2);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-split", 512, 256, 37, 2e-2);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-split", 768, 4096, 53, 2e-2);
     geist_backend_destroy(vk);
 
     /* the exact f32-accumulate tensor-core GEMM (GEIST_VK_PQ2_F32_ACC) */

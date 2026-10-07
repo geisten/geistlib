@@ -17,6 +17,13 @@ minor release.
   Qwen3 0.6B Q8_0 2130 → 5570 t/s, Qwen3.5 0.8B Q8_0 1890 → 5360 t/s; decode
   unchanged. Root cause and ranking in
   `benchmark/results/VULKAN-PREFILL-GAP-2080TI-2026-10-07.md` (#467).
+- **Vulkan: GEMMs with a row count that is not a multiple of 16 still use the
+  tensor cores.** The leading `m & ~15` rows take the tensor-core kernel and
+  only the tail runs on the register-tiled GEMM (before, the whole chunk fell
+  back). A prompt that fits one prefill chunk now hits the tensor cores
+  regardless of its length. RTX 2080 Ti: Gemma 4 E2B pp100 787 → 1128 t/s,
+  pp500 1131 → 1324; Qwen3 0.6B Q8_0 pp100 2222 → 3957; Bonsai 2 27B pp100
+  39 → 260, pp500 126 → 393; aligned lengths (pp512) unchanged.
 
 ## [0.20.0] — 2026-10-07
 
