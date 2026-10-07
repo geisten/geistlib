@@ -237,18 +237,119 @@ void i2s_gemv_m1(size_t        n_out,
 
 /* --- Prefill GEMM -------------------------------------------------------- */
 
-/* Without VNNI: one GEMV per token. ponytail: each token re-reads the
- * weights; an AVX2 token-tiled GEMM (as linear_tq2_0.c's dot_rows) is the
- * upgrade if prefill on AVX2-only hosts matters (#655). */
-static void i2s_gemm_mN_avx2(size_t        m,
-                             size_t        n_out,
-                             size_t        n_in,
-                             const float  *x,
-                             const uint8_t w_raw[],
-                             float         tensor_scale,
-                             float         y[]) {
+/* Without VNNI and without scratch: one GEMV per token. */
+static void i2s_gemm_mN_avx2_rows(size_t        m,
+                                  size_t        n_out,
+                                  size_t        n_in,
+                                  const float  *x,
+                                  const uint8_t w_raw[],
+                                  float         tensor_scale,
+                                  float         y[]) {
     for (size_t i = 0; i < m; i++) {
         i2s_gemv_m1_avx2(n_out, n_in, x + i * n_in, w_raw, tensor_scale, y + i * n_out);
+    }
+}
+
+/* Activation tile height of the AVX2 GEMM (#655). */
+constexpr size_t I2S_AVX2_NR = 4;
+
+/* i2s_row_dot_avx2 for NR activation rows (stride n_in) against one weight
+ * row: each chunk of codes is unpacked once and fed to NR maddubs. The
+ * integer sums are i2s_row_dot_avx2's, so the GEMM is bit-identical to the
+ * GEMV per token. */
+static void i2s_row_dot_avx2_nr(size_t         n_blocks,
+                                size_t         n_in,
+                                const uint8_t *Wr,
+                                const int8_t  *xq,
+                                int32_t        out[static I2S_AVX2_NR]) {
+    static_assert(I2S_AVX2_NR == 4, "the accumulators below are spelled out for 4 tokens");
+    const __m256i mask = _mm256_set1_epi8(3);
+    const __m256i ones = _mm256_set1_epi16(1);
+    const int8_t *x0 = xq, *x1 = xq + n_in, *x2 = xq + 2 * n_in, *x3 = xq + 3 * n_in;
+    __m256i       a0 = _mm256_setzero_si256(), a1 = a0, a2 = a0, a3 = a0;
+    __m256i       p0 = a0, p1 = a0, p2 = a0, p3 = a0;
+    /* Named accumulators and one loop over the 32-byte halves (128
+     * contiguous elements each), the int16 sums flushed after every second
+     * half. With acc[4] / p16[4] arrays and a nested 2 x 4 loop, gcc 15
+     * unrolled a whole block, hoisted all 32 maddubs ahead of their adds
+     * and kept the accumulators on the stack. */
+    for (size_t hh = 0; hh < 2 * n_blocks; hh++) {
+        const __m256i q = _mm256_loadu_si256((const __m256i *) (Wr + hh * 32));
+        for (int g = 0; g < 4; g++) {
+            const __m256i v   = _mm256_and_si256(_mm256_srli_epi16(q, 6 - 2 * g), mask);
+            const size_t  off = hh * 128 + (size_t) g * 32;
+            p0                = _mm256_add_epi16(
+                    p0, _mm256_maddubs_epi16(v, _mm256_loadu_si256((const __m256i *) (x0 + off))));
+            p1 = _mm256_add_epi16(
+                    p1, _mm256_maddubs_epi16(v, _mm256_loadu_si256((const __m256i *) (x1 + off))));
+            p2 = _mm256_add_epi16(
+                    p2, _mm256_maddubs_epi16(v, _mm256_loadu_si256((const __m256i *) (x2 + off))));
+            p3 = _mm256_add_epi16(
+                    p3, _mm256_maddubs_epi16(v, _mm256_loadu_si256((const __m256i *) (x3 + off))));
+        }
+        if (hh & 1) {
+            a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(p0, ones));
+            a1 = _mm256_add_epi32(a1, _mm256_madd_epi16(p1, ones));
+            a2 = _mm256_add_epi32(a2, _mm256_madd_epi16(p2, ones));
+            a3 = _mm256_add_epi32(a3, _mm256_madd_epi16(p3, ones));
+            p0 = p1 = p2 = p3 = _mm256_setzero_si256();
+        }
+    }
+    out[0] = hsum_epi32(a0);
+    out[1] = hsum_epi32(a1);
+    out[2] = hsum_epi32(a2);
+    out[3] = hsum_epi32(a3);
+}
+
+/* Without VNNI, on quantized activations. Each thread owns a contiguous
+ * slice of weight rows (as the per-token GEMV's static schedule) and walks
+ * the tokens NR at a time over its whole slice: the slice stays in L2
+ * across the token tiles and NR activation rows stay in L1 across the
+ * slice, so the activations stream once per thread and the weights are
+ * unpacked once per NR tokens. Walking all m tokens per row instead, or
+ * per block of rows, re-streams the activations from L3 once per row or
+ * block; on the 6912-row FFN matrices at m = 512 that lost to the
+ * per-token GEMV. */
+static void i2s_gemm_avx2(size_t         m,
+                          size_t         n_out,
+                          size_t         n_in,
+                          const int8_t  *xq,
+                          const int32_t *sum_a,
+                          const float   *scale,
+                          const uint8_t  w_raw[],
+                          float          y[]) {
+    const size_t n_blocks  = n_in / I2S_BLOCK_ELEMS;
+    const size_t row_bytes = n_in / 4;
+    const size_t m_til     = m - m % I2S_AVX2_NR;
+#if defined(_OPENMP)
+#pragma omp parallel
+#endif
+    {
+#if defined(_OPENMP)
+        const size_t tid = (size_t) omp_get_thread_num();
+        const size_t nth = (size_t) omp_get_num_threads();
+#else
+        const size_t tid = 0;
+        const size_t nth = 1;
+#endif
+        const size_t r0 = n_out * tid / nth;
+        const size_t r1 = n_out * (tid + 1) / nth;
+        for (size_t i = 0; i < m_til; i += I2S_AVX2_NR) {
+            for (size_t r = r0; r < r1; r++) {
+                int32_t dot[I2S_AVX2_NR];
+                i2s_row_dot_avx2_nr(n_blocks, n_in, w_raw + r * row_bytes, xq + i * n_in, dot);
+                for (size_t t = 0; t < I2S_AVX2_NR; t++) {
+                    y[(i + t) * n_out + r] = (float) (dot[t] - sum_a[i + t]) * scale[i + t];
+                }
+            }
+        }
+        for (size_t i = m_til; i < m; i++) {
+            for (size_t r = r0; r < r1; r++) {
+                const int32_t dot =
+                        i2s_row_dot_avx2(n_blocks, w_raw + r * row_bytes, xq + i * n_in) - sum_a[i];
+                y[i * n_out + r] = (float) dot * scale[i];
+            }
+        }
     }
 }
 
@@ -282,8 +383,8 @@ void i2s_gemm_mN_pre(size_t        m,
         i2s_gemm_mN_scalar(m, n_out, n_in, x, w_raw, tensor_scale, y);
         return;
     }
-    if (!i2s_isa_is_vnni() || xq == nullptr || sum_a == nullptr || scale == nullptr) {
-        i2s_gemm_mN_avx2(m, n_out, n_in, x, w_raw, tensor_scale, y);
+    if (xq == nullptr || sum_a == nullptr || scale == nullptr) {
+        i2s_gemm_mN_avx2_rows(m, n_out, n_in, x, w_raw, tensor_scale, y);
         return;
     }
 #if defined(_OPENMP)
@@ -291,6 +392,10 @@ void i2s_gemm_mN_pre(size_t        m,
 #endif
     for (size_t i = 0; i < m; i++) {
         scale[i] = tensor_scale * quantize_act_row(n_in, x + i * n_in, xq + i * n_in, &sum_a[i]);
+    }
+    if (!i2s_isa_is_vnni()) {
+        i2s_gemm_avx2(m, n_out, n_in, xq, sum_a, scale, w_raw, y);
+        return;
     }
     /* A null `perm` is not an error — the GEMM falls back to its M=1 loop. */
     i2s_gemm_avx512_vnni(m, n_out, n_in, xq, sum_a, scale, w_raw, perm, y);
@@ -313,19 +418,12 @@ void i2s_gemm_mN(size_t        m,
         i2s_gemm_mN_scalar(m, n_out, n_in, x, w_raw, tensor_scale, y);
         return;
     }
-    if (!i2s_isa_is_vnni()) {
-        i2s_gemm_mN_avx2(m, n_out, n_in, x, w_raw, tensor_scale, y);
-        return;
-    }
     int8_t  *xq    = heap_alloc_n_aligned(m, n_in, OPTIMAL_ALIGNMENT);
     int32_t *sum_a = heap_alloc_n_aligned(m, sizeof(int32_t), OPTIMAL_ALIGNMENT);
     float   *scale = heap_alloc_n_aligned(m, sizeof(float), OPTIMAL_ALIGNMENT);
     int8_t  *perm  = heap_alloc_n_aligned(m, n_in, OPTIMAL_ALIGNMENT);
-    if (xq == nullptr || sum_a == nullptr || scale == nullptr) {
-        i2s_gemm_mN_scalar(m, n_out, n_in, x, w_raw, tensor_scale, y);
-    } else {
-        i2s_gemm_mN_pre(m, n_out, n_in, x, w_raw, tensor_scale, xq, sum_a, scale, perm, y);
-    }
+    /* _pre takes a failed (null) allocation as "no scratch". */
+    i2s_gemm_mN_pre(m, n_out, n_in, x, w_raw, tensor_scale, xq, sum_a, scale, perm, y);
     safe_free((void **) &xq);
     safe_free((void **) &sum_a);
     safe_free((void **) &scale);
