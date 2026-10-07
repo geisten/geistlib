@@ -325,6 +325,15 @@ int main(void) {
     run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 640, 128, 64, 0.25);
     run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 512, 4096, 48, 0.25);
     run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 5120, 256, 128, 0.25);
+    /* Q8_0 on the tensor cores: 1120 = 35 blocks (odd k-step count), m = 112
+     * leaves the second 64-token tile partly empty, and linear_t reaches the
+     * same kernel through the staged-x path. Kept after the PQ2_0 cases: the
+     * test data come from one sequential generator, and the loose PQ2_0 bound
+     * above is tuned to the data it sees today. */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-cm", 512, 256, 16, 2e-2);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-cm", 1120, 128, 64, 2e-2);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-cm", 512, 192, 112, 2e-2);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-cm", 1120, 128, 48, 2e-2);
     geist_backend_destroy(vk);
 
     /* the exact f32-accumulate tensor-core GEMM (GEIST_VK_PQ2_F32_ACC) */

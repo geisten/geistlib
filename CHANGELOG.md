@@ -8,6 +8,16 @@ minor release.
 
 ## [Unreleased]
 
+### Changed
+
+- **Vulkan: Q8_0 GEMMs run on the tensor cores.** Batched Q8_0 linears with
+  `n_out % 64 == 0` and `m % 16 == 0` take a new `KHR_coopmat` kernel (the
+  64 × 64 double-buffered frame of the Q4_K one, f16 operands, f32
+  accumulation) instead of the register-tiled GEMM. RTX 2080 Ti pp512:
+  Qwen3 0.6B Q8_0 2130 → 5570 t/s, Qwen3.5 0.8B Q8_0 1890 → 5360 t/s; decode
+  unchanged. Root cause and ranking in
+  `benchmark/results/VULKAN-PREFILL-GAP-2080TI-2026-10-07.md` (#467).
+
 ## [0.20.0] — 2026-10-07
 
 ### Added
