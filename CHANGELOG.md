@@ -10,7 +10,7 @@ minor release.
 
 ### Added
 - **`geist_backend_memory_info`: how much device memory a GPU backend has
-  left** (#665). EXPERIMENTAL, in `geist_util.h`, through a new optional
+  left**. EXPERIMENTAL, in `geist_util.h`, through a new optional
   descriptor callback `memory_info`. Reports the heap weights and KV caches
   are placed in (`total_bytes`), what a new allocation can still get
   (`free_bytes`), whether that number counts every process on the device
@@ -27,8 +27,7 @@ minor release.
   `test_backend_memory_info_unit` (vulkan-gpu CI leg).
 
 ### Changed
-- **The Vulkan out-of-device-memory error names what the whole device holds**
-  (#665). It used to report only this backend's own usage ("4315 of 11264 MiB
+- **The Vulkan out-of-device-memory error names what the whole device holds**. It used to report only this backend's own usage ("4315 of 11264 MiB
   are in use"), which reads as impossible when another model or process holds
   the rest; with `VK_EXT_memory_budget` it adds "the device reports 10950 of
   11264 MiB in use (other models or processes included ...)".
