@@ -61,6 +61,7 @@ static PFN_vkVoidFunction vk_iproc(struct vk_state *st, const char *name) {
     VK_LOAD_I(st, GetPhysicalDeviceProperties2);
     VK_LOAD_I(st, GetPhysicalDeviceQueueFamilyProperties);
     VK_LOAD_I(st, GetPhysicalDeviceMemoryProperties);
+    VK_LOAD_I(st, GetPhysicalDeviceMemoryProperties2);
     VK_LOAD_I(st, GetPhysicalDeviceFeatures2);
     VK_LOAD_I(st, EnumerateDeviceExtensionProperties);
     VK_LOAD_I(st, CreateDevice);
@@ -235,8 +236,10 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     VkPhysicalDeviceProperties2 pprops = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
                                           .pNext = &sgp};
     st->fn.GetPhysicalDeviceProperties2(st->phys, &pprops);
-    st->ts_period_ns  = pprops.properties.limits.timestampPeriod;
-    st->subgroup_size = sgp.subgroupSize;
+    st->ts_period_ns   = pprops.properties.limits.timestampPeriod;
+    st->unified_memory = pprops.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ||
+                         pprops.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+    st->subgroup_size  = sgp.subgroupSize;
     /* Range half of the 32-lane pin; vk_create_device adds the features. */
     st->sg32_pinnable = p13.minSubgroupSize <= 32u && p13.maxSubgroupSize >= 32u &&
                         (p13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0u &&
@@ -284,7 +287,8 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
                                        .pNext = &have11};
     st->fn.GetPhysicalDeviceFeatures2(st->phys, &have2);
 
-    bool coop_ext = false;
+    bool coop_ext   = false;
+    bool budget_ext = false;
     {
         uint32_t next = 0;
         (void) st->fn.EnumerateDeviceExtensionProperties(st->phys, nullptr, &next, nullptr);
@@ -297,6 +301,9 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
             for (uint32_t i = 0; i < next; ++i) {
                 if (strcmp(exts[i].extensionName, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME) == 0) {
                     coop_ext = true;
+                }
+                if (strcmp(exts[i].extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0) {
+                    budget_ext = true;
                 }
             }
             geist_backend_free(be, exts);
@@ -343,10 +350,15 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
                                        .pNext = &want11};
     want2.features.shaderInt16      = have2.features.shaderInt16;
 
-    const char *ext_names[1];
+    const char *ext_names[2];
     uint32_t    n_ext = 0;
     if (st->has_coopmat) {
         ext_names[n_ext++] = VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME;
+    }
+    /* Device-wide memory numbers for geist_backend_memory_info and the
+     * out-of-memory error: what other processes hold is invisible without it. */
+    if (budget_ext) {
+        ext_names[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
     }
 
     const float             prio  = 1.0f;
@@ -365,6 +377,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: vkCreateDevice failed (%d)", (int) r);
         return GEIST_E_BACKEND;
     }
+    st->has_mem_budget = budget_ext;
     st->fn.GetDeviceQueue(st->device, family, 0, &st->queue);
 
     VkCommandPoolCreateInfo pinfo = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,

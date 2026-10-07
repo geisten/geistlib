@@ -4595,9 +4595,30 @@ static enum geist_status metal_resources_snapshot(const struct geist_backend    
     return GEIST_OK;
 }
 
+/* The working set the admission check (metal_budget_admit) enforces and
+ * what is left of it. currentAllocatedSize counts this device's buffers in
+ * this process only, so the answer is not device-wide. */
+static enum geist_status metal_memory_info(const struct geist_backend  *be,
+                                           struct geist_backend_memory *out) {
+    struct metal_state *st = be->state;
+    if (st == nullptr || st->device == nullptr)
+        return GEIST_E_INVALID_STATE;
+    if (st->ws_budget == 0)
+        return GEIST_E_UNSUPPORTED;
+    const uint64_t used = metal_msg_send_ulong0(st, st->device, "currentAllocatedSize");
+    *out                = (struct geist_backend_memory) {
+            .total_bytes    = st->ws_budget,
+            .free_bytes     = used < st->ws_budget ? st->ws_budget - used : 0,
+            .device_wide    = false,
+            .unified_memory = metal_msg_send_bool0(st, st->device, "hasUnifiedMemory"),
+    };
+    return GEIST_OK;
+}
+
 const struct geist_backend_descriptor geist_backend_metal = {
         .name               = "metal",
         .resources_snapshot = metal_resources_snapshot,
+        .memory_info        = metal_memory_info,
         .vtbl               = &metal_vtbl,
         .prims              = &metal_prims,
         .fused              = &metal_fused,
