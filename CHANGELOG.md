@@ -8,6 +8,18 @@ minor release.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Vulkan: Gemma 4 keeps its scratch pool in VRAM under
+  `GEIST_VK_SCRATCH_DEVICE=1` (#488).** The device-local pool skipped every
+  model with per-layer embeddings, although PLE's host loops only run when the
+  on-device row lookup is unbound. Gemma 4 therefore requested its whole pool
+  host-visible; from `GEIST_M_MAX=256` on it no longer fit the 256 MB BAR and
+  fell back to system RAM, and prefill collapsed. RTX 2080 Ti, Gemma 4 E2B
+  pp512 with the flag: 356 → 1739 t/s at M 256, 349 → 1785 at M 512 (1385 at
+  the default 64); E4B at M 512: 239 → 809. Decode no longer drops at large M
+  (117 → 151 t/s).
+
 ## [0.20.0] — 2026-10-07
 
 ### Added

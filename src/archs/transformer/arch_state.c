@@ -1752,7 +1752,8 @@ static bool backend_scratch_unmappable(struct geist_backend *be) {
  *   - a quantized or KIVI KV cache, or a rotated one: kv_store.c quantizes
  *     scratch_k / scratch_v and the INT8 attention reads scratch_q on the
  *     host;
- *   - per-layer embeddings, DeltaNet mixers, an attention output gate, MTP
+ *   - per-layer embeddings without the on-device row lookup, DeltaNet
+ *     mixers, an attention output gate, MTP
  *     heads, BitNet SubLN or per-projection norms, AWQ scales: each has a
  *     host loop over pool slots (layer.c, layer_deltanet.c, layer_attn.c,
  *     mtp.c, internal.h). A prism.hadamard rotation is fine: it only runs
@@ -1770,7 +1771,11 @@ static bool scratch_device_wanted(const struct transformer_arch_session *sess) {
         sess->mtp_enabled) {
         return false;
     }
-    if (st->config.has_ple || st->config.has_sub_ln || st->config.has_projection_input_norms ||
+    /* PLE's host loops (layer.c: the row gather, the model_proj scale, the
+     * add+scale combine) all sit behind !ple_lookup_scaled or
+     * !prim_scale_f32; with both bound PLE runs on the backend (#488). */
+    const bool ple_on_host = st->config.has_ple && !st->model_fusions.ple_lookup_scaled;
+    if (ple_on_host || st->config.has_sub_ln || st->config.has_projection_input_norms ||
         st->config.has_attn_output_gate || !st->model_fusions.backend_buffer_copy ||
         !st->model_fusions.prim_scale_f32) {
         return false;
