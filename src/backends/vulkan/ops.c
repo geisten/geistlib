@@ -575,9 +575,28 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
         geist_backend_set_error(be, GEIST_E_FORMAT, "vulkan: weight size overflows");
         return GEIST_E_FORMAT;
     }
-    struct geist_buffer *gpu = nullptr;
-    enum geist_status    s =
-            vk_buffer_create(be, bytes, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_DEVICE, &gpu);
+    /* A weight that does not fit the VRAM left over the reserve (or that the
+     * driver refuses: another process may hold it) goes to host memory and
+     * is read over the bus (#466): a 27B Q4_0 then runs on an 11 GiB card,
+     * decode bound by PCIe for the spilled share. GEIST_MEMORY_HOST keeps it
+     * out of the 256 MB BAR window the scratch pool needs. */
+    struct geist_buffer *gpu   = nullptr;
+    bool                 spill = !vk_weight_fits_vram(st, bytes);
+    enum geist_status    s     = vk_buffer_create(
+            be, bytes, GEIST_BUFFER_WEIGHT, spill ? GEIST_MEMORY_HOST : GEIST_MEMORY_DEVICE, &gpu);
+    if (s == GEIST_E_OOM && !spill) {
+        spill = true;
+        s     = vk_buffer_create(be, bytes, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_HOST, &gpu);
+    }
+    if (s == GEIST_OK && spill) {
+        if (st->spilled_weights++ == 0) {
+            fprintf(stderr,
+                    "geist vulkan: device memory is full (%zu MiB in use); further weights "
+                    "go to host memory and are read over the bus (#466)\n",
+                    st->vram_used >> 20);
+        }
+        st->spilled_weight_bytes += bytes;
+    }
     if (s == GEIST_OK) {
         bool     failed = false;
         uint8_t *packed = vk_repack_weight(w, bytes, &failed);

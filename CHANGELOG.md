@@ -54,6 +54,15 @@ minor release.
   `test_backend_memory_info_unit` (vulkan-gpu CI leg).
 
 ### Changed
+- **Vulkan: weights that do not fit the device spill to host memory (#466).**
+  A model larger than VRAM used to fail at load. Weights now go to VRAM until
+  one would leave less than a reserve (1/16 of the device; overridden by
+  `GEIST_VK_WEIGHT_RESERVE`; other processes' usage counted through
+  `VK_EXT_memory_budget`); the rest live in host memory and are read over the
+  bus, with one note on stderr. Qwen3.8 27B Q4_0 on an RTX 2080 Ti: pp512
+  18.7 t/s, tg 2.2 t/s (cpu_x86 on a 9950X: 32.6 / 4.8). The KV cache does not
+  spill. `test_backend_vulkan_vram_budget_unit` checks a spilled model decodes
+  the same tokens.
 - **The Vulkan out-of-device-memory error names what the whole device holds**. It used to report only this backend's own usage ("4315 of 11264 MiB
   are in use"), which reads as impossible when another model or process holds
   the rest; with `VK_EXT_memory_budget` it adds "the device reports 10950 of

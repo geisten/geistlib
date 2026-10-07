@@ -457,6 +457,8 @@ static size_t vk_parse_bytes(const char *v) {
     const char *strict  = getenv("GEIST_VK_STRICT");
     st->strict          = strict != nullptr && strcmp(strict, "0") != 0;
     st->vram_budget     = vk_parse_bytes(getenv("GEIST_VK_VRAM_BUDGET"));
+    const char *reserve = getenv("GEIST_VK_WEIGHT_RESERVE");
+    st->weight_reserve  = reserve != nullptr ? vk_parse_bytes(reserve) : SIZE_MAX;
     /* Opt-in (#488): device-local scratch pool; see vk_buffer_create_api. */
     const char *scratch_env = getenv("GEIST_VK_SCRATCH_DEVICE");
     st->scratch_device      = scratch_env != nullptr && strcmp(scratch_env, "1") == 0;
