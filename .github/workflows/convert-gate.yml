@@ -28,8 +28,13 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install gcc-14 (C23)
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14
       - name: Build geist (eval_geist)
-        run: make TARGET=linux BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin -j"$(nproc)"
+        run: make TARGET=linux CC=gcc-14 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin -j"$(nproc)"
       - name: llama.cpp converter at the pin
         run: |
           git init -q llama.cpp
