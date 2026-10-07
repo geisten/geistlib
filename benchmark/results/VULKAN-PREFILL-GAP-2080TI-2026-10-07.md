@@ -38,7 +38,7 @@ Erwarteter pp512-Gewinn, wenn **nur** diese Ursache auf llama.cpp-Niveau bei gle
 | :-- | :-- | --: | --: | --: | --: | :-: | :-- |
 | 1 | **A** Kein Tensor-Core-GEMM für Q4_0/Q4_1/Q5_K/Q8_0 | — | **+583 %** | **+156 %** | — | L | #467 |
 | 2 | **E** Chunkgröße 64 statt 512 (blockiert durch Scratch-Einbruch) | +94 % | +57 % | +116 % | +74 % | M | #488 |
-| 3 | **B** Q4_K/Q6_K-Tensor-Core-Kernels 1,3–2,4× langsamer | **+46 %** | — | — | — | M | neu |
+| 3 | **B** Q4_K/Q6_K-Tensor-Core-Kernels 1,3–2,4× langsamer | **+46 %** | — | — | — | M | #658 |
 | 4 | **C** Tensor-Core-Attention nur für head_dim 256 ohne Sliding Window | +11 % | +0 % | +15 % | +1 % | M | #475 |
 | 5 | **D** DeltaNet-Kernels (`dn_delta` 2,3–2,8× langsamer) | — | +1 % | — | +4 % | S | #467 |
 | 6 | **F** f32/bf16-GEMM (`matmul_f32`, Gemma PLE/Projektionen) 3,5–3,8× | +4 % | — | — | — | S | — |
