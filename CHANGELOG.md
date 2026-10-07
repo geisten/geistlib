@@ -26,6 +26,16 @@ minor release.
   found #674 (Gemma 3 270M logits) and #675 (Q5_0 weights).
 
 ### Added
+- **`geist_session_cancel`: stop a prefill from another thread (#628).**
+  EXPERIMENTAL, in `geist_util.h`. Safe from any thread; a prefill checks
+  before each sub-batch (the session's `m_max` positions) and a `decode_step`
+  before it starts, and the call that sees the request returns the new status
+  `GEIST_E_CANCELLED`. The prefill keeps the sub-batches it finished
+  (`geist_session_length`) and leaves no logits pending; a request made while
+  no call runs stops the next one, so a cancel racing the start of a prefill
+  is not lost. Architectures opt in through a new optional `bind_cancel` slot
+  in `struct geist_arch_ops_decoder`. A chat UI's stop button no longer waits
+  for the whole prompt. Test: `test_session_cancel_unit`, also on the TSan leg.
 - **`geist_backend_memory_info`: how much device memory a GPU backend has
   left**. EXPERIMENTAL, in `geist_util.h`, through a new optional
   descriptor callback `memory_info`. Reports the heap weights and KV caches
