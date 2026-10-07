@@ -3,7 +3,8 @@
  *
  * Layer: BACKEND (cpu_x86).
  *
- * Compiled at baseline -march=x86-64-v3; the AVX-512+VNNI variant lives in
+ * Compiled at baseline -march=x86-64-v3, which carries the AVX2 GEMV for
+ * hosts without VNNI; the AVX-512+VNNI variant lives in
  * kernel_i2s_avx512_vnni.c with -mavx512vnni. See kernel_i2s.h for the
  * ternary algebra.
  */
@@ -12,6 +13,9 @@
 #include "kernel_i2s.h"
 
 #include "kernel_w4a8.h" /* w4a8_dispatcher_init — shared ISA selection */
+#include "linear_util.h" /* hsum_epi32 */
+
+#include <immintrin.h>
 
 #include <math.h>
 #include <stddef.h>
@@ -152,6 +156,54 @@ void i2s_gemv_m1_scalar(size_t        n_out,
     }
 }
 
+/* --- AVX2 (no VNNI) ------------------------------------------------------ */
+
+/* Sum of code * xq over one row, code in {0, 1, 2}. Each 32-byte half of a
+ * block holds four 32-element chunks, chunk g at shift 6 - 2g; the codes go
+ * straight into maddubs (unsigned codes, signed activations). A pair is at
+ * most 2 * 2 * 128 = 512 and a block's eight chunks sum in int16 to at most
+ * 4096: no saturation, the sum is exact. The caller subtracts sum_a. */
+static int32_t i2s_row_dot_avx2(size_t n_blocks, const uint8_t *Wr, const int8_t *xq) {
+    const __m256i mask = _mm256_set1_epi8(3);
+    __m256i       acc  = _mm256_setzero_si256();
+    for (size_t b = 0; b < n_blocks; b++) {
+        __m256i p16 = _mm256_setzero_si256();
+        for (size_t h = 0; h < 2; h++) {
+            const __m256i q =
+                    _mm256_loadu_si256((const __m256i *) (Wr + b * I2S_BLOCK_BYTES + h * 32));
+            for (int g = 0; g < 4; g++) {
+                const __m256i v = _mm256_and_si256(_mm256_srli_epi16(q, 6 - 2 * g), mask);
+                const __m256i a = _mm256_loadu_si256(
+                        (const __m256i *) (xq + b * I2S_BLOCK_ELEMS + h * 128 + (size_t) g * 32));
+                p16 = _mm256_add_epi16(p16, _mm256_maddubs_epi16(v, a));
+            }
+        }
+        acc = _mm256_add_epi32(acc, _mm256_madd_epi16(p16, _mm256_set1_epi16(1)));
+    }
+    return hsum_epi32(acc);
+}
+
+void i2s_gemv_m1_avx2(size_t        n_out,
+                      size_t        n_in,
+                      const float  *x,
+                      const uint8_t w_raw[],
+                      float         tensor_scale,
+                      float         y[static n_out]) {
+    const size_t n_blocks  = n_in / I2S_BLOCK_ELEMS;
+    const size_t row_bytes = n_in / 4;
+    int8_t      *xq        = (int8_t *) __builtin_alloca(n_in);
+    int32_t      sum_a;
+    const float  scale = tensor_scale * quantize_act_row(n_in, x, xq, &sum_a);
+
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t r = 0; r < n_out; r++) {
+        const int32_t dot = i2s_row_dot_avx2(n_blocks, w_raw + r * row_bytes, xq) - sum_a;
+        y[r]              = (float) dot * scale;
+    }
+}
+
 /* --- Dispatch ------------------------------------------------------------ */
 static _Atomic int g_i2s_vnni = -1;
 
@@ -174,7 +226,7 @@ void i2s_gemv_m1(size_t        n_out,
         return;
     }
     if (!i2s_isa_is_vnni()) {
-        i2s_gemv_m1_scalar(n_out, n_in, x, w_raw, tensor_scale, y);
+        i2s_gemv_m1_avx2(n_out, n_in, x, w_raw, tensor_scale, y);
         return;
     }
     int8_t     *xq = (int8_t *) __builtin_alloca(n_in);
@@ -184,6 +236,22 @@ void i2s_gemv_m1(size_t        n_out,
 }
 
 /* --- Prefill GEMM -------------------------------------------------------- */
+
+/* Without VNNI: one GEMV per token. ponytail: each token re-reads the
+ * weights; an AVX2 token-tiled GEMM (as linear_tq2_0.c's dot_rows) is the
+ * upgrade if prefill on AVX2-only hosts matters (#655). */
+static void i2s_gemm_mN_avx2(size_t        m,
+                             size_t        n_out,
+                             size_t        n_in,
+                             const float  *x,
+                             const uint8_t w_raw[],
+                             float         tensor_scale,
+                             float         y[]) {
+    for (size_t i = 0; i < m; i++) {
+        i2s_gemv_m1_avx2(n_out, n_in, x + i * n_in, w_raw, tensor_scale, y + i * n_out);
+    }
+}
+
 void i2s_gemm_mN_scalar(size_t        m,
                         size_t        n_out,
                         size_t        n_in,
@@ -210,9 +278,12 @@ void i2s_gemm_mN_pre(size_t        m,
     if (m == 0) {
         return;
     }
-    if (n_in % I2S_BLOCK_ELEMS != 0 || !i2s_isa_is_vnni() || xq == nullptr || sum_a == nullptr ||
-        scale == nullptr) {
+    if (n_in % I2S_BLOCK_ELEMS != 0) {
         i2s_gemm_mN_scalar(m, n_out, n_in, x, w_raw, tensor_scale, y);
+        return;
+    }
+    if (!i2s_isa_is_vnni() || xq == nullptr || sum_a == nullptr || scale == nullptr) {
+        i2s_gemm_mN_avx2(m, n_out, n_in, x, w_raw, tensor_scale, y);
         return;
     }
 #if defined(_OPENMP)
@@ -238,8 +309,12 @@ void i2s_gemm_mN(size_t        m,
     if (m == 0) {
         return;
     }
-    if (n_in % I2S_BLOCK_ELEMS != 0 || !i2s_isa_is_vnni()) {
+    if (n_in % I2S_BLOCK_ELEMS != 0) {
         i2s_gemm_mN_scalar(m, n_out, n_in, x, w_raw, tensor_scale, y);
+        return;
+    }
+    if (!i2s_isa_is_vnni()) {
+        i2s_gemm_mN_avx2(m, n_out, n_in, x, w_raw, tensor_scale, y);
         return;
     }
     int8_t  *xq    = heap_alloc_n_aligned(m, n_in, OPTIMAL_ALIGNMENT);
