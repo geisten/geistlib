@@ -840,6 +840,7 @@ struct geist_tunable {
 /* Each backend exports one of these as a `const` extern. The engine's
  * registry array points at descriptors of compiled-in backends. */
 struct geist_backend_resources;
+struct geist_backend_memory;
 struct geist_backend_descriptor {
     const char *name;
 
@@ -862,6 +863,12 @@ struct geist_backend_descriptor {
      * the public status is the capability result, never inferred from name. */
     enum geist_status (*resources_snapshot)(const struct geist_backend     *be,
                                             struct geist_backend_resources *out);
+
+    /* Optional, observational: the device memory the backend allocates from.
+     * Consumer: geist_backend_memory_info (a runtime sizing the context
+     * window on a GPU). nullptr = unsupported (CPU backends). */
+    enum geist_status (*memory_info)(const struct geist_backend  *be,
+                                     struct geist_backend_memory *out);
 
     /* Explicit capability bits (by value; zero-init = none). */
     struct geist_backend_caps caps;
