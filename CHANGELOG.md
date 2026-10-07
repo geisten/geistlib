@@ -38,6 +38,16 @@ minor release.
   `test_backend_memory_info_unit` (vulkan-gpu CI leg).
 
 ### Changed
+- **One internal parallel-for, with or without OpenMP (#618, first batch).**
+  `geist_par_for` (`src/base/par.h`) runs a loop as one OpenMP region where
+  the build has OpenMP, on GCD `dispatch_apply` on Apple without it, and on a
+  small pthread pool otherwise (idle workers spin for `GEIST_IDLE_SPIN_MS`,
+  then sleep). The cpu_x86 BitNet kernels go through it — every I2_S GEMV and
+  GEMM (native, x4, t5, the fused pairs) and the F16 / Q8 lm_head — and
+  cpu_x86's per-phase thread count (`GEIST_DECODE_THREADS`, …) now applies in
+  a build without OpenMP too. Output is bit-identical. The other ~160
+  `#pragma omp` sites still run serially without OpenMP. Test:
+  `test_par_for_unit`, also on the TSan leg.
 - **The Vulkan out-of-device-memory error names what the whole device holds**. It used to report only this backend's own usage ("4315 of 11264 MiB
   are in use"), which reads as impossible when another model or process holds
   the rest; with `VK_EXT_memory_budget` it adds "the device reports 10950 of
