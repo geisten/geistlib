@@ -43,13 +43,24 @@ constexpr size_t I2S_BLOCK_BYTES = 64;
 /* Decode (M=1) ternary GEMV. n_in % 256 == 0. w_raw points at the packed
  * weight bytes (n_out rows × n_in/4 bytes); tensor_scale is the single
  * fp32 scale the caller read from w_raw + n_in*n_out/4. Dispatches to the
- * AVX-512+VNNI path when available, else the scalar reference. */
+ * AVX-512+VNNI path when available, else the AVX2 path; the scalar
+ * reference only for n_in % 256 != 0. */
 void i2s_gemv_m1(size_t        n_out,
                  size_t        n_in,
                  const float  *x,
                  const uint8_t w_raw[],
                  float         tensor_scale,
                  float         y[static n_out]);
+
+/* AVX2 GEMV for hosts without VNNI (Haswell .. Zen 3): the same integer
+ * dot as the scalar oracle, so the output is bit-identical to it.
+ * n_in % 256 == 0. */
+void i2s_gemv_m1_avx2(size_t        n_out,
+                      size_t        n_in,
+                      const float  *x,
+                      const uint8_t w_raw[],
+                      float         tensor_scale,
+                      float         y[static n_out]);
 
 /* Scalar reference (the oracle): same int8-quantized math the VNNI path
  * implements. Always available regardless of host ISA. */
@@ -63,7 +74,7 @@ void i2s_gemv_m1_scalar(size_t        n_out,
 /* Prefill GEMM: M token rows × n_out output rows. x is [M, n_in] row-major;
  * y is [M, n_out] row-major (y[i*n_out + r]). Each weight row is read once
  * and reused across a token-tile (VPDPBUSD amortization). Dispatches to
- * AVX-512+VNNI when available, else the scalar reference. */
+ * AVX-512+VNNI when available, else one i2s_gemv_m1 per token. */
 void i2s_gemm_mN(size_t        m,
                  size_t        n_out,
                  size_t        n_in,
