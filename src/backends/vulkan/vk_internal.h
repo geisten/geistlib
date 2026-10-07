@@ -144,14 +144,16 @@ enum vk_pipe {
     VK_PIPE_MATMUL_TQ2_0,
     VK_PIPE_MATVEC_PQ2_0,
     VK_PIPE_MATMUL_PQ2_0,
-    VK_PIPE_SILU,             /* y = silu(x) */
-    VK_PIPE_HADAMARD,         /* blockwise orthonormal WHT of rows (prism.hadamard) */
-    VK_PIPE_RELU2,            /* y = relu(x)^2 (BitNet FFN) */
-    VK_PIPE_ACT_QUANT,        /* BitNet int8 absmax activation round trip, in place */
-    VK_PIPE_SILU_MUL,         /* y = silu(a) * b (SwiGLU epilogue) */
-    VK_PIPE_SIGMOID_MUL,      /* y = a * sigmoid(gate) (qwen35 attention gate) */
-    VK_PIPE_QGATE_SPLIT,      /* [query | gate] per-head split (qwen35) */
-    VK_PIPE_ATTENTION_F16_CM, /* tensor-core causal attention, no sliding window, head_dim==256 */
+    VK_PIPE_SILU,                   /* y = silu(x) */
+    VK_PIPE_HADAMARD,               /* blockwise orthonormal WHT of rows (prism.hadamard) */
+    VK_PIPE_RELU2,                  /* y = relu(x)^2 (BitNet FFN) */
+    VK_PIPE_ACT_QUANT,              /* BitNet int8 absmax activation round trip, in place */
+    VK_PIPE_SILU_MUL,               /* y = silu(a) * b (SwiGLU epilogue) */
+    VK_PIPE_SIGMOID_MUL,            /* y = a * sigmoid(gate) (qwen35 attention gate) */
+    VK_PIPE_QGATE_SPLIT,            /* [query | gate] per-head split (qwen35) */
+    VK_PIPE_ATTENTION_F16_CM,       /* tensor-core causal attention, head_dim 256 */
+    VK_PIPE_ATTENTION_F16_HD128_CM, /* the same, head_dim 128 */
+    VK_PIPE_ATTENTION_F16_HD512_CM, /* the same, head_dim 512 (two column halves) */
     VK_PIPE_COUNT,
 };
 
@@ -160,7 +162,8 @@ enum vk_pipe {
 static inline bool vk_pipe_needs_coopmat(int pipe) {
     return pipe == VK_PIPE_MM_Q4K_CM || pipe == VK_PIPE_MM_Q6K_CM || pipe == VK_PIPE_MM_Q4K_CM32 ||
            pipe == VK_PIPE_MM_PQ2_0_CM || pipe == VK_PIPE_MM_PQ2_0_CM_F32 ||
-           pipe == VK_PIPE_MM_PQ2_0_CM64 || pipe == VK_PIPE_ATTENTION_F16_CM;
+           pipe == VK_PIPE_MM_PQ2_0_CM64 || pipe == VK_PIPE_ATTENTION_F16_CM ||
+           pipe == VK_PIPE_ATTENTION_F16_HD128_CM || pipe == VK_PIPE_ATTENTION_F16_HD512_CM;
 }
 
 /* The register-tiled GEMMs: one output row per 32-lane subgroup
@@ -412,60 +415,62 @@ struct vk_state {
 
 /* binding count per pipeline (descriptor set layout selector) */
 static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
-        [VK_PIPE_MATVEC_Q4K]       = 3,
-        [VK_PIPE_MATMUL_Q4K]       = 3,
-        [VK_PIPE_MATVEC_Q6K]       = 3,
-        [VK_PIPE_MATMUL_Q6K]       = 3,
-        [VK_PIPE_MATVEC_F32]       = 3,
-        [VK_PIPE_MATMUL_F32]       = 3,
-        [VK_PIPE_ADD]              = 3,
-        [VK_PIPE_MUL]              = 3,
-        [VK_PIPE_GELU]             = 2,
-        [VK_PIPE_GELU_MUL]         = 3,
-        [VK_PIPE_SCALE]            = 2,
-        [VK_PIPE_RMSNORM]          = 3,
-        [VK_PIPE_RMSNORM_ADD]      = 4,
-        [VK_PIPE_ROPE]             = 3,
-        [VK_PIPE_ATTENTION]        = 4,
-        [VK_PIPE_ARGMAX]           = 2,
-        [VK_PIPE_EMBED]            = 2,
-        [VK_PIPE_FFN_GATE_UP]      = 4,
-        [VK_PIPE_QKV_PREP]         = 6,
-        [VK_PIPE_MM_Q4K_CM]        = 3,
-        [VK_PIPE_MM_Q6K_CM]        = 3,
-        [VK_PIPE_ATTENTION_F16]    = 4,
-        [VK_PIPE_QKV_PREP_F16]     = 6,
-        [VK_PIPE_KV_APPEND_F16]    = 4,
-        [VK_PIPE_ATTN_PART_F16]    = 4,
-        [VK_PIPE_ATTN_COMB]        = 2,
-        [VK_PIPE_MM_Q4K_CM32]      = 3,
-        [VK_PIPE_MM_PQ2_0_CM]      = 3,
-        [VK_PIPE_MM_PQ2_0_CM_F32]  = 3,
-        [VK_PIPE_MM_PQ2_0_CM64]    = 3,
-        [VK_PIPE_PLE_GATE]         = 4,
-        [VK_PIPE_FFN_NORM_GU]      = 5,
-        [VK_PIPE_DN_CONV]          = 3,
-        [VK_PIPE_DN_DELTA]         = 8,
-        [VK_PIPE_MATVEC_Q4_0]      = 3,
-        [VK_PIPE_MATMUL_Q4_0]      = 3,
-        [VK_PIPE_MATVEC_Q4_1]      = 3,
-        [VK_PIPE_MATMUL_Q4_1]      = 3,
-        [VK_PIPE_MATVEC_Q8_0]      = 3,
-        [VK_PIPE_MATMUL_Q8_0]      = 3,
-        [VK_PIPE_MATVEC_Q5K]       = 3,
-        [VK_PIPE_MATMUL_Q5K]       = 3,
-        [VK_PIPE_MATVEC_TQ2_0]     = 3,
-        [VK_PIPE_MATMUL_TQ2_0]     = 3,
-        [VK_PIPE_MATVEC_PQ2_0]     = 3,
-        [VK_PIPE_MATMUL_PQ2_0]     = 3,
-        [VK_PIPE_SILU]             = 2,
-        [VK_PIPE_RELU2]            = 2,
-        [VK_PIPE_HADAMARD]         = 3,
-        [VK_PIPE_ACT_QUANT]        = 2,
-        [VK_PIPE_SILU_MUL]         = 3,
-        [VK_PIPE_SIGMOID_MUL]      = 3,
-        [VK_PIPE_QGATE_SPLIT]      = 3,
-        [VK_PIPE_ATTENTION_F16_CM] = 4,
+        [VK_PIPE_MATVEC_Q4K]             = 3,
+        [VK_PIPE_MATMUL_Q4K]             = 3,
+        [VK_PIPE_MATVEC_Q6K]             = 3,
+        [VK_PIPE_MATMUL_Q6K]             = 3,
+        [VK_PIPE_MATVEC_F32]             = 3,
+        [VK_PIPE_MATMUL_F32]             = 3,
+        [VK_PIPE_ADD]                    = 3,
+        [VK_PIPE_MUL]                    = 3,
+        [VK_PIPE_GELU]                   = 2,
+        [VK_PIPE_GELU_MUL]               = 3,
+        [VK_PIPE_SCALE]                  = 2,
+        [VK_PIPE_RMSNORM]                = 3,
+        [VK_PIPE_RMSNORM_ADD]            = 4,
+        [VK_PIPE_ROPE]                   = 3,
+        [VK_PIPE_ATTENTION]              = 4,
+        [VK_PIPE_ARGMAX]                 = 2,
+        [VK_PIPE_EMBED]                  = 2,
+        [VK_PIPE_FFN_GATE_UP]            = 4,
+        [VK_PIPE_QKV_PREP]               = 6,
+        [VK_PIPE_MM_Q4K_CM]              = 3,
+        [VK_PIPE_MM_Q6K_CM]              = 3,
+        [VK_PIPE_ATTENTION_F16]          = 4,
+        [VK_PIPE_QKV_PREP_F16]           = 6,
+        [VK_PIPE_KV_APPEND_F16]          = 4,
+        [VK_PIPE_ATTN_PART_F16]          = 4,
+        [VK_PIPE_ATTN_COMB]              = 2,
+        [VK_PIPE_MM_Q4K_CM32]            = 3,
+        [VK_PIPE_MM_PQ2_0_CM]            = 3,
+        [VK_PIPE_MM_PQ2_0_CM_F32]        = 3,
+        [VK_PIPE_MM_PQ2_0_CM64]          = 3,
+        [VK_PIPE_PLE_GATE]               = 4,
+        [VK_PIPE_FFN_NORM_GU]            = 5,
+        [VK_PIPE_DN_CONV]                = 3,
+        [VK_PIPE_DN_DELTA]               = 8,
+        [VK_PIPE_MATVEC_Q4_0]            = 3,
+        [VK_PIPE_MATMUL_Q4_0]            = 3,
+        [VK_PIPE_MATVEC_Q4_1]            = 3,
+        [VK_PIPE_MATMUL_Q4_1]            = 3,
+        [VK_PIPE_MATVEC_Q8_0]            = 3,
+        [VK_PIPE_MATMUL_Q8_0]            = 3,
+        [VK_PIPE_MATVEC_Q5K]             = 3,
+        [VK_PIPE_MATMUL_Q5K]             = 3,
+        [VK_PIPE_MATVEC_TQ2_0]           = 3,
+        [VK_PIPE_MATMUL_TQ2_0]           = 3,
+        [VK_PIPE_MATVEC_PQ2_0]           = 3,
+        [VK_PIPE_MATMUL_PQ2_0]           = 3,
+        [VK_PIPE_SILU]                   = 2,
+        [VK_PIPE_RELU2]                  = 2,
+        [VK_PIPE_HADAMARD]               = 3,
+        [VK_PIPE_ACT_QUANT]              = 2,
+        [VK_PIPE_SILU_MUL]               = 3,
+        [VK_PIPE_SIGMOID_MUL]            = 3,
+        [VK_PIPE_QGATE_SPLIT]            = 3,
+        [VK_PIPE_ATTENTION_F16_CM]       = 4,
+        [VK_PIPE_ATTENTION_F16_HD128_CM] = 4,
+        [VK_PIPE_ATTENTION_F16_HD512_CM] = 4,
 };
 
 struct geist_buffer {
