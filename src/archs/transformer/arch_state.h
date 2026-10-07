@@ -391,6 +391,10 @@ struct transformer_arch_session {
 
     /* ---- Last-decode prediction (consumed by next decode_step). */
     bool logits_valid;
+    /* geist_session_cancel (#628): checked before each prefill sub-batch;
+     * nullptr until the engine binds it. */
+    bool (*cancel_requested)(void *ctx);
+    void *cancel_ctx;
     /* Embedding models only: scratch_h_a holds the pooled, output-normed,
      * L2-normalised [d_model] vector for the sequence prefilled so far.
      * Mutually exclusive with logits_valid in practice — an embedding model
