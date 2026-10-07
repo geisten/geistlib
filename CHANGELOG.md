@@ -43,6 +43,17 @@ minor release.
   the rest; with `VK_EXT_memory_budget` it adds "the device reports 10950 of
   11264 MiB in use (other models or processes included ...)".
 
+### Fixed
+
+- **Stock Gemma 3 predicts text (#674).** A generative Gemma 3 GGUF (e.g.
+  google/gemma-3-270m-it) ran every layer as global attention with the global
+  RoPE base, scaled the queries by 1/sqrt(head_dim) and normalized V like
+  Gemma 4: perplexity 2983 where llama.cpp has 17.1. Five of every six layers
+  are now local (`attention.sliding_window`, `rope.freq_base_swa`), the
+  queries take query_pre_attn_scalar^-1/2 and V is left alone; the perplexity
+  is 17.3 (+1.1 %; +0.6 % over 3.5k tokens). Embedding Gemma 3 models keep the
+  all-global stack. `test_gemma3_generative_e2e` (GEIST_GEMMA3_GGUF_PATH).
+
 ## [0.20.0] — 2026-10-07
 
 ### Added
