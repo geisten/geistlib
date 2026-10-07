@@ -185,11 +185,7 @@ static const struct vk_dtype *vk_linear_dtype(enum geist_dtype dt) {
                                  .rows           = m32,
                                  .x_stride       = n_in32,
                                  .y_stride       = n_out32};
-    enum vk_pipe         eff  = pipe;
-    uint32_t             gx   = vk_linear_gx(pipe, n_out32);
-    uint32_t             gy   = vk_linear_gy(pipe, m32);
-    vk_linear_cm_route(st, &eff, m32, n_out32, &gx, &gy);
-    s = vk_seq_dispatch(be, eff, binfo, &push, sizeof(push), gx, gy, 1);
+    s                         = vk_gemm_dispatch(be, pipe, binfo, nullptr, &push);
     if (s != GEIST_OK) {
         return s;
     }
@@ -718,6 +714,53 @@ void vk_linear_cm_route(struct vk_state *st,
     *pipe = cm;
     *gx   = n_out / tile_rows;
     *gy   = (m + tile_toks - 1u) / tile_toks;
+}
+
+/* Dispatch one linear of push->rows batch rows through `pipe` (a matvec for
+ * one row, else a register-tiled GEMM). The tensor-core kernels need a
+ * multiple of 16 rows, so a GEMM whose row count is not one runs its leading
+ * m & ~15 rows on the tensor cores and the tail on `pipe` — otherwise a
+ * prompt that fits one chunk would miss them 15 times in 16. `acc` may be
+ * nullptr (no hazard ranges); both halves are given the whole ranges, which
+ * costs at most one barrier between them. */
+[[nodiscard]] enum geist_status vk_gemm_dispatch(struct geist_backend         *be,
+                                                 enum vk_pipe                  pipe,
+                                                 const VkDescriptorBufferInfo *infos,
+                                                 const struct vk_access       *acc,
+                                                 const struct vk_push         *push) {
+    struct vk_state *st   = be->state;
+    const uint32_t   m    = push->rows;
+    const uint32_t   m_hi = m & ~15u;
+    enum vk_pipe     cm   = pipe;
+    uint32_t         gx   = vk_linear_gx(pipe, push->n_out);
+    uint32_t         gy   = vk_linear_gy(pipe, m);
+    if (m > 1 && m_hi != 0) {
+        vk_linear_cm_route(st, &cm, m_hi, push->n_out, &gx, &gy);
+    }
+    if (cm == pipe) {
+        return vk_seq_dispatch_acc(be, pipe, infos, acc, push, sizeof(*push), gx, gy, 1);
+    }
+    struct vk_push head = *push;
+    head.rows           = m_hi;
+    enum geist_status s = vk_seq_dispatch_acc(be, cm, infos, acc, &head, sizeof(head), gx, gy, 1);
+    if (s != GEIST_OK || m_hi == m) {
+        return s;
+    }
+    struct vk_push tail = *push;
+    tail.rows           = m - m_hi;
+    if (vk_ckd_u32((size_t) push->x_offset + (size_t) m_hi * push->x_stride, &tail.x_offset) ||
+        vk_ckd_u32((size_t) push->y_offset + (size_t) m_hi * push->y_stride, &tail.y_offset)) {
+        return vk_too_wide(be, "linear");
+    }
+    return vk_seq_dispatch_acc(be,
+                               pipe,
+                               infos,
+                               acc,
+                               &tail,
+                               sizeof(tail),
+                               vk_linear_gx(pipe, push->n_out),
+                               vk_linear_gy(pipe, tail.rows),
+                               1);
 }
 
 /* GPU-first attempt for the 3-buffer elementwise family (add, mul, gelu_mul,
@@ -1577,20 +1620,14 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
         }
         return GEIST_OK;
     }
-    enum vk_pipe lpipe = m == 1 ? mv : mm;
-    uint32_t     gx    = vk_linear_gx(lpipe, n_out);
-    uint32_t     gy    = vk_linear_gy(lpipe, m32);
     /* Tensor-core path for conforming GEMMs (shaders assume w_offset == 0,
      * which holds for all registry uploads). */
-    if (m > 1) {
-        vk_linear_cm_route(st, &lpipe, m32, n_out, &gx, &gy);
-    }
     const struct vk_access acc[3] = {
             t_x->buffer->device_mem ? vk_acc_tensor(t_x, false)
                                     : vk_acc((uint64_t) xo * 4u, (uint64_t) m * n_in * 4u, false),
             vk_acc_all(false),
             vk_acc_tensor(t_y, true)};
-    return vk_seq_dispatch_acc(be, lpipe, bi, acc, &push, sizeof(push), gx, gy, 1);
+    return vk_gemm_dispatch(be, m == 1 ? mv : mm, bi, acc, &push);
 }
 
 [[nodiscard]] static enum geist_status vk_linear_t_pair(struct geist_backend      *be,

@@ -653,4 +653,10 @@ void vk_linear_cm_route(struct vk_state *st,
                         uint32_t        *gx,
                         uint32_t        *gy);
 
+[[nodiscard]] enum geist_status vk_gemm_dispatch(struct geist_backend         *be,
+                                                 enum vk_pipe                  pipe,
+                                                 const VkDescriptorBufferInfo *infos,
+                                                 const struct vk_access       *acc,
+                                                 const struct vk_push         *push);
+
 #endif /* GEIST_INTERNAL_VK_INTERNAL_H */
