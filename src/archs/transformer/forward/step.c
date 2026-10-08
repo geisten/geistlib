@@ -385,7 +385,7 @@ transformer_run_one_step(struct transformer_arch_session *sess,
     }
 
     geist_token_t best_id;
-    s = finalize_logits_one_row(sess, 0, &best_id);
+    s = finalize_logits_one_row(sess, 0, q_position + 1, &best_id);
     if (s != GEIST_OK) {
         return s;
     }
@@ -420,6 +420,7 @@ enum geist_status transformer_decode_step(struct transformer_arch_session *sess,
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
     const int                        region_tok =
             v->parallel_region_begin ? v->parallel_region_begin(be, GEIST_REGION_DECODE_STEP) : 0;
+    transformer_hist_put(sess, sess->kv_len, 1, &input_token);
     /* Embed the input token into scratch_h_a, scale by sqrt(HIDDEN). */
     enum geist_status s = embed_lookup_and_scale(sess, input_token, sess->scratch_h_a);
     if (s == GEIST_OK) {
@@ -453,6 +454,7 @@ enum geist_status transformer_advance_audio_token(struct transformer_arch_sessio
         memcpy(dst, h_in_host, bytes);
         v->buffer_unmap(sess->scratch_h_a);
     }
+    transformer_hist_put(sess, sess->kv_len, 1, nullptr);
     /* PLE token-identity is the pad token (0) per HF masked-scatter. */
     geist_token_t out_unused;
     return transformer_run_one_step(sess, 0, &out_unused);
@@ -593,5 +595,15 @@ enum geist_status transformer_session_apply_opts(struct transformer_arch_session
             return ws;
         }
     }
-    return GEIST_OK;
+
+    /* Repetition control (#695). geist_session_create validated the opts
+     * already; the model's default session gets the load-time opts, which
+     * did not pass through it. */
+    struct geist_sampler_penalty_params pp;
+    enum geist_status                   ps = geist_sampler_penalty_params_from_opts(&pp, opts);
+    if (ps != GEIST_OK) {
+        return ps;
+    }
+    return geist_sampler_penalties_init(
+            &sess->pen, &pp, (size_t) sess->model->vocab_size, sess->max_seq_len);
 }
