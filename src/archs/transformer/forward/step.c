@@ -294,8 +294,8 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
     if (token_id < 0 || (size_t) token_id >= (size_t) st->vocab_size) {
         return GEIST_E_INVALID_ARG;
     }
-    struct geist_backend            *be = st->backend;
-    const struct geist_backend_vtbl *v  = be->desc->vtbl;
+    struct geist_backend *be    = st->backend;
+    const float           scale = st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
 
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
     /* Device path: fused lookup+scale keeps batched GPU backends from
@@ -303,7 +303,6 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
      * plan build. */
     if (st->model_fusions.embed_lookup_scaled) {
         struct geist_tensor     t_out = view_1d(out_h_buf, st->d_model);
-        const float             scale = st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
         const enum geist_status es =
                 fused->embedding_lookup_scaled(be, &st->embed_table, token_id, scale, &t_out);
         if (es != GEIST_OK) {
@@ -315,22 +314,13 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
                        : GEIST_OK;
     }
 
-    float *dst = (float *) v->buffer_map(out_h_buf);
-    if (dst == nullptr) {
-        return GEIST_E_BACKEND; /* the backend said why */
-    }
-    enum geist_status s = dequant_one_row(be, &st->embed_table, (size_t) token_id, dst);
+    /* Host path: the row is gathered on the host (an untied table on a
+     * device-copy or unified-memory backend, or a CPU backend). */
+    enum geist_status s = transformer_gather_rows(
+            sess, &st->embed_table, 1, &token_id, st->d_model, scale, out_h_buf);
     if (s != GEIST_OK) {
-        v->buffer_unmap(out_h_buf);
         return s;
     }
-    if (st->config.has_ple) {
-        const float scale = sqrtf((float) st->d_model);
-        for (size_t i = 0; i < (size_t) st->d_model; i++) {
-            dst[i] *= scale;
-        }
-    }
-    v->buffer_unmap(out_h_buf);
     return st->rotation.embed_inverse
                    ? transformer_rotate(st, 1, st->d_model, false, true, out_h_buf, out_h_buf)
                    : GEIST_OK;

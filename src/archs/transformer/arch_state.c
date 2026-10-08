@@ -1779,8 +1779,11 @@ static bool scratch_device_wanted(const struct transformer_arch_session *sess) {
     }
     /* PLE's host loops (layer.c: the row gather, the model_proj scale, the
      * add+scale combine) all sit behind !ple_lookup_scaled or
-     * !prim_scale_f32; with both bound PLE runs on the backend (#488). */
-    const bool ple_on_host = st->config.has_ple && !st->model_fusions.ple_lookup_scaled;
+     * !prim_scale_f32; with both bound PLE runs on the backend (#488). A
+     * host gather that uploads its rows (transformer_lookup_on_host) maps
+     * no pool slot. */
+    const bool ple_on_host = st->config.has_ple && !st->model_fusions.ple_lookup_scaled &&
+                             !transformer_lookup_on_host(st->backend);
     if (ple_on_host || st->config.has_sub_ln || st->config.has_projection_input_norms ||
         st->config.has_attn_output_gate || !st->model_fusions.backend_buffer_copy ||
         !st->model_fusions.prim_scale_f32) {

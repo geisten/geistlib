@@ -78,7 +78,7 @@ struct transformer_layer_exec_plan {
 struct transformer_model_fusion_plan {
     bool embed_lookup_scaled; /* embed_table on-device lookup+scale; false
                                * also when the host gathers an untied table
-                               * (caps.lookup_tables_on_host) */
+                               * (transformer_lookup_on_host) */
     bool ple_lookup_scaled;   /* ple_table on-device lookup+scale; same */
     bool argmax;              /* device argmax over [1, vocab] logits */
 

@@ -365,8 +365,8 @@ struct transformer_arch_session {
     float *dn_prefill_ws;
     size_t dn_prefill_ws_floats;
     /* Host staging of lookup rows the host gathers for a prefill chunk on a
-     * backend with caps.lookup_tables_on_host (transformer_gather_rows,
-     * #529): the embedding or PLE rows of one chunk, uploaded from here.
+     * backend where transformer_lookup_on_host holds (transformer_gather_rows,
+     * #529, #468): the embedding or PLE rows of one chunk, uploaded from here.
      * Grown on demand; nothing in it outlives a call. */
     float *lookup_rows;
     size_t lookup_rows_floats;

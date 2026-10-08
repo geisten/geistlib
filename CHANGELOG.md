@@ -33,6 +33,18 @@ minor release.
 
 ### Fixed
 
+- **Vulkan: lookup tables are no longer uploaded inside the forward pass
+  (#468).** The embedding lookup registered an untied `token_embd`, and
+  Gemma 4's per-layer embedding table, with `resolve_weight` on the first
+  token: a repack and upload in the middle of the forward pass that could
+  run out of device memory mid-decode, and that ran again on every token
+  when the resolve chose the host path. The rows of such a table are now
+  dequantized on the host and uploaded per call (the staged gather Metal
+  uses, #529); a tied `token_embd` is still looked up in the lm_head's
+  device copy. Gemma 4 E2B on an RTX 2080 Ti uses 1.8 GiB less device
+  memory after its first prompt (3.3 → 1.5 GiB with a 300-token prefill),
+  Bonsai 27B (untied, PQ2_0) 0.3 GiB less. Logits are bit-identical for
+  Gemma 4 E2B, Qwen3.5 0.8B / 4B and Bonsai 27B.
 - **cpu_x86: the Q4_Kx8 kernels quantize activations with one scale per
   256-element super-block (#694).** `quantize_q8_Kx4` (prefill) and the M = 1
   GEMV's quantizer took one max-abs over the whole row and wrote it into every
