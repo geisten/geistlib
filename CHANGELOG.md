@@ -113,6 +113,11 @@ minor release.
   without a window. RTX 2080 Ti, pp512, attention GPU time: Qwen3 0.6B 42.8 →
   15.7 ms (prefill 1454 → 1635 t/s); Gemma 4 E2B unchanged in total (global
   hd-512 layers 19.3 → 16.0 ms, windowed hd-256 layers ~even).
+- **Vulkan shaders: one `silu()` (#465).** `silu.glsl` replaces the four
+  copies in `silu_f32`, `silu_mul_f32` and the two DeltaNet kernels; the
+  DeltaNet epilogue's norm reduces one value instead of feeding `reduce2` a
+  dummy zero. No behaviour change (DeltaNet parity and qwen3.5 0.8B
+  CPU-vs-Vulkan logits unchanged).
 - **One internal parallel-for, with or without OpenMP (#618, first batch).**
   `geist_par_for` (`src/base/par.h`) runs a loop as one OpenMP region where
   the build has OpenMP, on GCD `dispatch_apply` on Apple without it, and on a
