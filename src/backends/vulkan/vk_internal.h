@@ -154,6 +154,7 @@ enum vk_pipe {
     VK_PIPE_ATTENTION_F16_CM, /* tensor-core causal attention, no sliding window, head_dim==256 */
     VK_PIPE_MM_Q8_0_CM,       /* Q8_0 tensor-core GEMM, 64 x 64 tile */
     VK_PIPE_MM_Q4_0_CM,       /* Q4_0 tensor-core GEMM, 64 x 64 tile */
+    VK_PIPE_MM_Q5K_CM,        /* Q5_K tensor-core GEMM, 64 x 64 tile */
     VK_PIPE_COUNT,
 };
 
@@ -163,7 +164,7 @@ static inline bool vk_pipe_needs_coopmat(int pipe) {
     return pipe == VK_PIPE_MM_Q4K_CM || pipe == VK_PIPE_MM_Q6K_CM || pipe == VK_PIPE_MM_Q4K_CM32 ||
            pipe == VK_PIPE_MM_PQ2_0_CM || pipe == VK_PIPE_MM_PQ2_0_CM_F32 ||
            pipe == VK_PIPE_MM_PQ2_0_CM64 || pipe == VK_PIPE_ATTENTION_F16_CM ||
-           pipe == VK_PIPE_MM_Q8_0_CM || pipe == VK_PIPE_MM_Q4_0_CM;
+           pipe == VK_PIPE_MM_Q8_0_CM || pipe == VK_PIPE_MM_Q4_0_CM || pipe == VK_PIPE_MM_Q5K_CM;
 }
 
 /* The register-tiled GEMMs: one output row per 32-lane subgroup
@@ -471,6 +472,7 @@ static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
         [VK_PIPE_ATTENTION_F16_CM] = 4,
         [VK_PIPE_MM_Q8_0_CM]       = 3,
         [VK_PIPE_MM_Q4_0_CM]       = 3,
+        [VK_PIPE_MM_Q5K_CM]        = 3,
 };
 
 struct geist_buffer {

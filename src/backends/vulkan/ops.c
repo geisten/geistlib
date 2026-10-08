@@ -683,6 +683,8 @@ void vk_linear_cm_route(struct vk_state *st,
         cm = VK_PIPE_MM_Q4K_CM;
     } else if (*pipe == VK_PIPE_MATMUL_Q6K) {
         cm = VK_PIPE_MM_Q6K_CM;
+    } else if (*pipe == VK_PIPE_MATMUL_Q5K) {
+        cm = VK_PIPE_MM_Q5K_CM;
     } else if (*pipe == VK_PIPE_MATMUL_Q8_0) {
         cm = VK_PIPE_MM_Q8_0_CM;
     } else if (*pipe == VK_PIPE_MATMUL_Q4_0) {

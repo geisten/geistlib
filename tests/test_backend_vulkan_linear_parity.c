@@ -374,6 +374,13 @@ int main(void) {
     run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q4_0, "Q4_0-cm", 1120, 128, 48, PARITY_MAG, 2e-3);
     run_parity(
             VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_0, "Q4_0-split", 1120, 128, 101, PARITY_MAG, 2e-3);
+    /* Q5_K on the tensor cores (#467): its 5-bit products leave f16's exact
+     * integer range as Q6_K's do, so judged by PARITY_MAG; two superblocks
+     * per row, a partly empty token tile, linear_t, the m % 16 split */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-cm", 512, 256, 16, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-cm", 768, 128, 112, PARITY_MAG, 2e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-cm", 512, 192, 48, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-split", 512, 128, 37, PARITY_MAG, 2e-3);
     geist_backend_destroy(vk);
 
     /* the exact f32-accumulate tensor-core GEMM (GEIST_VK_PQ2_F32_ACC) */
