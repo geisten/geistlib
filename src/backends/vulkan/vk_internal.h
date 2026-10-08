@@ -78,6 +78,9 @@ struct vk_fns {
     PFN_vkCreatePipelineLayout       CreatePipelineLayout;
     PFN_vkDestroyPipelineLayout      DestroyPipelineLayout;
     PFN_vkCreateComputePipelines     CreateComputePipelines;
+    PFN_vkCreatePipelineCache        CreatePipelineCache;
+    PFN_vkDestroyPipelineCache       DestroyPipelineCache;
+    PFN_vkGetPipelineCacheData       GetPipelineCacheData;
     PFN_vkDestroyPipeline            DestroyPipeline;
     PFN_vkCreateDescriptorPool       CreateDescriptorPool;
     PFN_vkDestroyDescriptorPool      DestroyDescriptorPool;
@@ -287,6 +290,12 @@ struct vk_state {
     uint8_t       *up_map;
 
     char device_name[256];
+    /* Compiled pipelines persisted across processes (#469): building all of
+     * them costs ~1.5 s on a 2080 Ti the first time in a process, and the
+     * driver's own shader cache does not cover it. Loaded from and saved to
+     * vk_pcache_path; VK_NULL_HANDLE when disabled or unavailable. */
+    VkPipelineCache pcache;
+    uint8_t         pcache_uuid[VK_UUID_SIZE];
 
     /* From VkPhysicalDeviceSubgroupProperties. The register-tiled GEMM
      * shaders assume 32 lanes (2080-Ti-first). */
