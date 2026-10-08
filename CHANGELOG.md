@@ -108,6 +108,11 @@ minor release.
   overhead, not the dot products. Test: `test_q5_0_unit`.
 
 ### Changed
+- **Vulkan shaders: one `silu()` (#465).** `silu.glsl` replaces the four
+  copies in `silu_f32`, `silu_mul_f32` and the two DeltaNet kernels; the
+  DeltaNet epilogue's norm reduces one value instead of feeding `reduce2` a
+  dummy zero. No behaviour change (DeltaNet parity and qwen3.5 0.8B
+  CPU-vs-Vulkan logits unchanged).
 - **One internal parallel-for, with or without OpenMP (#618, first batch).**
   `geist_par_for` (`src/base/par.h`) runs a loop as one OpenMP region where
   the build has OpenMP, on GCD `dispatch_apply` on Apple without it, and on a
