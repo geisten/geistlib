@@ -1,5 +1,6 @@
 #version 450
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#include "vk_limits.h"
 
 /* f16-KV variant of attention_f32 (K/V offsets in f16 elements).
  * Causal (+ sliding-window) MQA/GQA attention, one workgroup per
@@ -33,7 +34,7 @@ layout(push_constant) uniform Push {
     uint out_offset;
 } pc;
 
-shared vec4 q_sh4[128];
+shared vec4 q_sh4[VK_ATTN_MAX_HEAD_DIM / 4u];
 shared float red[256];
 shared float w_sh[256];
 
@@ -43,7 +44,7 @@ void main() {
     uint q_head = gl_WorkGroupID.y;
     uint lid = gl_LocalInvocationID.x;
     if (q_pos >= pc.n_q || q_head >= pc.n_q_heads ||
-        pc.n_kv == 0 || pc.head_dim == 0 || pc.head_dim > 512) {
+        pc.n_kv == 0 || pc.head_dim == 0 || pc.head_dim > VK_ATTN_MAX_HEAD_DIM) {
         return;
     }
 

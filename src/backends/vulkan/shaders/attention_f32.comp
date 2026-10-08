@@ -1,4 +1,5 @@
 #version 450
+#include "vk_limits.h"
 
 /* Causal (+ sliding-window) MQA/GQA attention, one workgroup per
  * (q_pos, q_head). Online-softmax over 256-position chunks:
@@ -29,7 +30,7 @@ layout(push_constant) uniform Push {
     uint out_offset;
 } pc;
 
-shared float q_sh[512];
+shared float q_sh[VK_ATTN_MAX_HEAD_DIM];
 shared float red[256];
 shared float w_sh[256];
 
@@ -39,7 +40,7 @@ void main() {
     uint q_head = gl_WorkGroupID.y;
     uint lid = gl_LocalInvocationID.x;
     if (q_pos >= pc.n_q || q_head >= pc.n_q_heads ||
-        pc.n_kv == 0 || pc.head_dim == 0 || pc.head_dim > 512) {
+        pc.n_kv == 0 || pc.head_dim == 0 || pc.head_dim > VK_ATTN_MAX_HEAD_DIM) {
         return;
     }
 
