@@ -115,17 +115,28 @@ enum parity_path {
                    * the path the transformer forward runs */
 };
 
+/* How a case's error is normalized. PARITY_ELEM: each element against its
+ * own reference magnitude (floored at 1) — strict, right for the f32 paths.
+ * PARITY_MAG: the largest absolute error against the largest reference
+ * magnitude — for tensor-core paths whose f16 operands are not exact on the
+ * test data (Q6_K products reach +-4096, past f16's exact-integer range): on
+ * outputs that cancel to near zero that rounding is a large fraction of the
+ * element, while it stays ~1e-4 of the output scale. */
+enum parity_metric { PARITY_ELEM, PARITY_MAG };
+
 /* One parity case: the same random weight and activations through the Vulkan
- * path `via` and through cpu_scalar, compared at relative tolerance tol. */
-static void run_parity(enum parity_path      via,
-                       struct geist_backend *vk,
-                       struct geist_backend *ref,
-                       int                   dtype,
-                       const char           *name,
-                       size_t                n_in,
-                       size_t                n_out,
-                       size_t                m,
-                       double                tol) {
+ * path `via` and through cpu_scalar, compared at tolerance tol under
+ * `metric`. */
+static void run_parity_metric(enum parity_path      via,
+                              struct geist_backend *vk,
+                              struct geist_backend *ref,
+                              int                   dtype,
+                              const char           *name,
+                              size_t                n_in,
+                              size_t                n_out,
+                              size_t                m,
+                              enum parity_metric    metric,
+                              double                tol) {
     const struct geist_backend_fused *f = geist_backend_fused_tbl(vk);
     if (via == VIA_LINEAR_T && f->linear_t == nullptr) {
         check(false, "vulkan linear_t missing");
@@ -192,16 +203,23 @@ static void run_parity(enum parity_path      via,
         w_rf.linear_mN(m, x, &w_rf, ref, y_rf);
     }
 
-    double max_rel = 0.0, ref_mag = 0.0;
+    double max_rel = 0.0, ref_mag = 0.0, max_abs = 0.0;
     for (size_t i = 0; i < m * n_out; i++) {
         const double b   = y_rf[i];
-        const double rel = fabs((double) y_vk[i] - b) / (fabs(b) > 1.0 ? fabs(b) : 1.0);
+        const double err = fabs((double) y_vk[i] - b);
+        const double rel = err / (fabs(b) > 1.0 ? fabs(b) : 1.0);
         if (rel > max_rel) {
             max_rel = rel;
+        }
+        if (!(err <= max_abs)) { /* a NaN output fails the case */
+            max_abs = err;
         }
         if (fabs(b) > ref_mag) {
             ref_mag = fabs(b);
         }
+    }
+    if (metric == PARITY_MAG) {
+        max_rel = max_abs / (ref_mag > 1.0 ? ref_mag : 1.0);
     }
     /* A comparison of two all-zero outputs proves nothing (a failed dispatch
      * zeroes y): the reference itself must be non-trivial. */
@@ -237,6 +255,18 @@ done:
     free(x);
     free(y_vk);
     free(y_rf);
+}
+
+static void run_parity(enum parity_path      via,
+                       struct geist_backend *vk,
+                       struct geist_backend *ref,
+                       int                   dtype,
+                       const char           *name,
+                       size_t                n_in,
+                       size_t                n_out,
+                       size_t                m,
+                       double                tol) {
+    run_parity_metric(via, vk, ref, dtype, name, n_in, n_out, m, PARITY_ELEM, tol);
 }
 
 int main(void) {
@@ -327,6 +357,27 @@ int main(void) {
     run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 5120, 256, 128, 0.25);
     /* n_out < 4096 at 256 rows takes the 64 x 64 tile, not the 32 x 32 one */
     run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 256, 256, 2e-2);
+    /* Q4_K / Q6_K in the 128 x 128 PQ2_0 frame. It takes a GEMM from
+     * n_out * m >= 5 * 2^16 (3 * 2^16 where the 32 x 32 Q4_K tile is the
+     * alternative), so the narrow cases need many tokens. 768 = 3 superblocks
+     * (odd); m = 912 and 1296 end in a partial token tile; m = 16 and Q6_K at
+     * 2048 x 112 stay on the smaller tiles; m = 904 % 16 != 0 the
+     * register-tiled fallback. f16 operands, f32 accumulate: judged by output
+     * scale (PARITY_MAG). */
+    static const int   kq[]  = {GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q6_K};
+    static const char *kqn[] = {"Q4_K-cm128", "Q6_K-cm128"};
+    for (size_t i = 0; i < 2; i++) {
+        run_parity_metric(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 512, 128, 2560, PARITY_MAG, 2e-3);
+        run_parity_metric(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 768, 256, 1280, PARITY_MAG, 2e-3);
+        run_parity_metric(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 768, 384, 912, PARITY_MAG, 2e-3);
+        run_parity_metric(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 512, 2048, 112, PARITY_MAG, 2e-3);
+        run_parity_metric(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 512, 6144, 64, PARITY_MAG, 2e-3);
+        run_parity_metric(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 256, 4096, 128, PARITY_MAG, 2e-3);
+        run_parity_metric(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 768, 256, 16, PARITY_MAG, 2e-3);
+        run_parity_metric(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 768, 384, 904, PARITY_MAG, 2e-3);
+        run_parity_metric(VIA_LINEAR_T, vk, ref, kq[i], kqn[i], 768, 384, 1024, PARITY_MAG, 2e-3);
+        run_parity_metric(VIA_LINEAR_T, vk, ref, kq[i], kqn[i], 512, 256, 1296, PARITY_MAG, 2e-3);
+    }
     geist_backend_destroy(vk);
 
     /* the exact f32-accumulate tensor-core GEMM (GEIST_VK_PQ2_F32_ACC) */

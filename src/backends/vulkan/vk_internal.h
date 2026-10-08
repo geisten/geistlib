@@ -152,6 +152,8 @@ enum vk_pipe {
     VK_PIPE_SIGMOID_MUL,      /* y = a * sigmoid(gate) (qwen35 attention gate) */
     VK_PIPE_QGATE_SPLIT,      /* [query | gate] per-head split (qwen35) */
     VK_PIPE_ATTENTION_F16_CM, /* tensor-core causal attention, no sliding window, head_dim==256 */
+    VK_PIPE_MM_Q4K_CM128,     /* Q4_K in the 128 x 128 PQ2_0 tensor-core frame */
+    VK_PIPE_MM_Q6K_CM128,     /* Q6_K in the same frame */
     VK_PIPE_COUNT,
 };
 
@@ -160,7 +162,8 @@ enum vk_pipe {
 static inline bool vk_pipe_needs_coopmat(int pipe) {
     return pipe == VK_PIPE_MM_Q4K_CM || pipe == VK_PIPE_MM_Q6K_CM || pipe == VK_PIPE_MM_Q4K_CM32 ||
            pipe == VK_PIPE_MM_PQ2_0_CM || pipe == VK_PIPE_MM_PQ2_0_CM_F32 ||
-           pipe == VK_PIPE_MM_PQ2_0_CM64 || pipe == VK_PIPE_ATTENTION_F16_CM;
+           pipe == VK_PIPE_MM_PQ2_0_CM64 || pipe == VK_PIPE_ATTENTION_F16_CM ||
+           pipe == VK_PIPE_MM_Q4K_CM128 || pipe == VK_PIPE_MM_Q6K_CM128;
 }
 
 /* The register-tiled GEMMs: one output row per 32-lane subgroup
@@ -466,6 +469,8 @@ static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
         [VK_PIPE_SIGMOID_MUL]      = 3,
         [VK_PIPE_QGATE_SPLIT]      = 3,
         [VK_PIPE_ATTENTION_F16_CM] = 4,
+        [VK_PIPE_MM_Q4K_CM128]     = 3,
+        [VK_PIPE_MM_Q6K_CM128]     = 3,
 };
 
 struct geist_buffer {
