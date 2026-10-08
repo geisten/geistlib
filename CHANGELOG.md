@@ -10,6 +10,40 @@ minor release.
 
 ### Changed
 
+- **One row-dequant dispatch, `quant_dequant_row` (#465).** The per-dtype
+  "decode a weight row to f32" switch existed six times: the reference
+  linear kernel behind cpu_scalar and Vulkan's host path
+  (`common/linear_ref.c`), the transformer's embedding / PLE row lookup, the
+  Metal host fallback, the spec head and the two GGUF helpers. All of them
+  now call `quant_dequant_row` (declared in `quant.h` next to
+  `quant_raw_bytes`), which decodes F32, F16, BF16, every block format with
+  a row codec and I2_S, and refuses a run that is not whole blocks or
+  overruns the tensor. Output is bit-identical for every dtype a copy
+  handled before (new `test_quant_dequant_row_unit`; Qwen3-0.6B and Gemma 4
+  E2B logits unchanged on cpu_scalar and cpu_x86). Copies that lacked a
+  dtype gain it: the embedding / PLE lookup TQ2_0; the Metal host fallback
+  Q3_K, Q5_0, IQ*, TQ2_0, PQ2_0 and I2_S (it read them as zeros);
+  `gguf_dequant_to_fp32` / `gguf_dequant_row_to_fp32` Q4_0, Q4_1, Q5_0 and
+  I2_S. `gguf_dequant_row_to_fp32` also refuses a row past the tensor.
+
+- **Vulkan: the tensor-core prefill attention runs four subgroups per
+  workgroup in one online-softmax pass (#475, #658).** The previous kernel
+  gave each 16-query-row block one 32-lane subgroup, stepped over 16 keys
+  with four workgroup barriers each and computed QK^T twice (a max pass,
+  then exp and P@V). The new `attention_f16_{,hd128_,hd512_}mw_cm` kernels
+  split each 64-key step across four subgroups (QK^T by key, P@V by output
+  column, K and V read straight from global memory), need two barriers per
+  step and one QK^T pass: the row max only moves when a tile exceeds it by
+  more than e^8, and then the O tiles are rescaled through shared memory.
+  head_dim 512 no longer splits into two workgroups that both recompute
+  QK^T. Routed on 32-lane subgroups only; other widths keep the old kernel.
+  RTX 2080 Ti, `GEIST_VK_PROFILE` attention time at pp512: Gemma 4 E2B
+  36.5 → 6.8 ms (llama.cpp: 11.6), E4B 32.3 → 8.1, Llama 3.2 3B 15.2 → 5.8,
+  Qwen3 0.6B 17.0 → 4.1, Qwen3.5 4B 6.8 → 2.3; at pp2048 E2B 266 → 54 ms.
+  End-to-end pp512 (best of four alternating rounds, t/s): E2B 3671 → 4319,
+  E4B 1849 → 2015, Llama 3.2 3B 3578 → 3823, Qwen3 0.6B 10513 → 12405,
+  Qwen3.5 4B 1353 → 1368. CPU-vs-Vulkan logits at 300/512 tokens match
+  main's.
 - **Vulkan: a single-buffered 128 x 128 Q4_K/Q6_K tile for wide prefill
   GEMMs (#658).** The double-buffered tile holds ~40 KB of shared memory, so
   Turing ran one workgroup per SM. A variant with one shared buffer pair (one
@@ -38,6 +72,23 @@ minor release.
   buffer fits the BAR. RTX 2080 Ti, pp512 / tg16: E4B 1561 → 1893 t/s prefill,
   99.2 → 101.7 t/s decode; E2B and Llama 3.2 3B unchanged. CPU backends and
   Metal load it as before; logits are unchanged.
+- **Vulkan: the Gated-DeltaNet mixer splits each head's state across
+  workgroups (#467).** The delta rule is independent per value column, so
+  the new `deltanet_scan_f32` gives each column to 8 lanes (16 state rows
+  each, in registers) and a head to 8 workgroups, where `deltanet_delta_f32`
+  ran one workgroup per head with a 128-step serial chain per token. q/k
+  l2norm and the gated RMSNorm move to a small `deltanet_norm_f32` pass, and
+  the causal conv loads its tokens in batches of 8 instead of one load
+  behind each in-place store. DeltaNet GPU time at pp512 on the RTX 2080 Ti:
+  Qwen3.5 0.8B 30–41 → 9 ms, 4B 43 → 17 ms, Ternary-Bonsai 27B 100 → 53 ms
+  (RADV iGPU, 0.8B: 270 → 123 ms). Prefill: 0.8B 4150–5130 → 6640 t/s, 4B
+  1257–1271 → 1308–1344 t/s, 27B 465 → 478 t/s; decode 0.8B 277 → 314 t/s,
+  4B 112 → 117 t/s. Runs where the device has clustered subgroup ops with
+  subgroups of at least 8 lanes and d_k ≤ 128 is a multiple of 4; other
+  devices and geometries keep `deltanet_delta_f32`. CPU-vs-Vulkan logits are
+  unchanged (corr 0.99982 on the 0.8B, 0.99972 on the 4B).
+  `geist_deltanet_mix_args` now documents that `qkv` is scratch the backend
+  may overwrite, which the conv already did.
 - **Vulkan (internal): one table lists the compute pipelines (#469).**
   `src/backends/vulkan/vk_pipes.def` has one row per pipeline (enum id,
   SPIR-V blob, profiler name, binding count, plain / tiled-GEMM / coopmat),

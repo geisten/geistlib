@@ -1,0 +1,161 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_clustered : enable
+#include "vk_limits.h"
+
+/* Gated-DeltaNet recurrence, column-split (fused->deltanet_mix fast path,
+ * #467). The delta rule is independent per value column j:
+ *
+ *   kv_j = decay * sum_i S[i][j] k[i];  delta_j = (v_j - kv_j) * beta
+ *   S[i][j] = decay * S[i][j] + k[i] * delta_j;  o_j = sum_i S[i][j] q[i]
+ *
+ * so S splits across workgroups by column with no communication. LANES
+ * adjacent lanes own one column, each holding ROWS rows of it in registers
+ * for the whole dispatch; the two row sums are clustered subgroup adds.
+ * That shortens the per-token serial chain LANES-fold against
+ * deltanet_delta_f32's one-lane-per-column layout and spreads a head over
+ * gy workgroups instead of one.
+ *
+ * Rows are dealt out in vec4 groups, group g = c * LANES + lane for
+ * c < ROWS / 4: one q or k load instruction of a cluster reads LANES
+ * consecutive vec4s, and every cluster of the subgroup reads the same ones.
+ * The token's loads are the scan's main cost, hence the vec4 view, the
+ * next token's loads issued ahead of this token's arithmetic, and qkv bound
+ * twice — restrict readonly for the loads, writeonly for the o store — so
+ * the store does not pin the loads behind it. restrict holds for every
+ * load whose value is used: a lane stores o only over the v it already
+ * read (the clamped prefetch on the last token reads it again, unused).
+ *
+ * q/k arrive l2-normalized (deltanet_norm_f32 mode 0). o is written over
+ * v_j in qkv — only this cluster read it — and the per-head RMSNorm plus
+ * the silu(z) gate run afterwards (deltanet_norm_f32 mode 1): it needs all
+ * d_v columns, which no longer share a workgroup.
+ *
+ * Host-checked: clustered subgroup ops with subgroups of at least LANES
+ * lanes; d_k <= LANES * ROWS; d_k, conv_dim and the qkv offset multiples
+ * of 4 (the vec4 view). Idle lanes (j >= d_v) compute on column 0 and
+ * never store, so every cluster stays converged.
+ *
+ * Bindings: 0 qkv (vec4, read), 1 beta, 2 alpha, 3 ssm_a, 4 dt_bias,
+ * 5 delta_state, 6 qkv (o out). Dispatch: gx = n_vh, gy = ceil(d_v / COLS). */
+
+layout(local_size_x = VK_DN_SCAN_WG) in;
+
+const uint LANES = VK_DN_SCAN_LANES;
+const uint G = VK_DN_SCAN_ROWS / 4u; /* vec4 row groups per lane */
+const uint COLS = VK_DN_SCAN_WG / VK_DN_SCAN_LANES;
+
+layout(set = 0, binding = 0) restrict readonly buffer QKV { vec4 qkv4[]; };
+layout(set = 0, binding = 1) readonly buffer Beta { float beta_in[]; };
+layout(set = 0, binding = 2) readonly buffer Alpha { float alpha_in[]; };
+layout(set = 0, binding = 3) readonly buffer A { float ssm_a[]; };
+layout(set = 0, binding = 4) readonly buffer DT { float dt_bias[]; };
+layout(set = 0, binding = 5) buffer S { float state[]; };
+layout(set = 0, binding = 6) restrict writeonly buffer OUT { float qkv_out[]; };
+
+layout(push_constant) uniform Push {
+    uint seq;
+    uint n_kh;
+    uint n_vh;
+    uint dk;
+    uint dv;
+    uint keyd;
+    uint convd;
+    uint qkv_off;
+    uint beta_off;
+    uint alpha_off;
+    uint a_off;
+    uint dtb_off;
+    uint s_off;
+} pc;
+
+void load_tok(uint t, uint qo4, uint ko4, uint row4, uint ng, uint lane, uint vo, uint hv,
+              float dtb, out vec4 kr[G], out vec4 qr[G], out float v, out float b, out float x) {
+    for (uint c = 0u; c < G; ++c) {
+        uint g = c * LANES + lane;
+        bool ok = g < ng;
+        kr[c] = ok ? qkv4[ko4 + t * row4 + g] : vec4(0.0);
+        qr[c] = ok ? qkv4[qo4 + t * row4 + g] : vec4(0.0);
+    }
+    uint vat = vo + t * pc.convd;
+    v = qkv4[vat / 4u][vat % 4u];
+    b = beta_in[pc.beta_off + t * pc.n_vh + hv];
+    x = alpha_in[pc.alpha_off + t * pc.n_vh + hv] + dtb;
+}
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint lane = tid % LANES;
+    uint hv = gl_WorkGroupID.x;
+    uint hk = hv % pc.n_kh;
+    uint j = gl_WorkGroupID.y * COLS + tid / LANES;
+    bool col_ok = j < pc.dv;
+    uint jc = col_ok ? j : 0u;
+    uint ng = pc.dk / 4u; /* valid vec4 groups */
+    uint sbase = pc.s_off + hv * pc.dk * pc.dv;
+    uint qo4 = (pc.qkv_off + hk * pc.dk) / 4u; /* all multiples of 4 */
+    uint ko4 = (pc.qkv_off + pc.keyd + hk * pc.dk) / 4u;
+    uint row4 = pc.convd / 4u;
+    uint vo = pc.qkv_off + 2u * pc.keyd + hv * pc.dv + jc;
+    float A = ssm_a[pc.a_off + hv];
+    float dtb = dt_bias[pc.dtb_off + hv];
+
+    vec4 s[G];
+    for (uint c = 0u; c < G; ++c) {
+        uint g = c * LANES + lane;
+        s[c] = vec4(0.0);
+        if (col_ok && g < ng) {
+            uint at = sbase + 4u * g * pc.dv + j;
+            s[c] = vec4(state[at], state[at + pc.dv], state[at + 2u * pc.dv],
+                        state[at + 3u * pc.dv]);
+        }
+    }
+
+    /* token t + 1's loads are issued before token t's arithmetic */
+    vec4 kc[G], qc[G];
+    float vc, bc, xc;
+    load_tok(0u, qo4, ko4, row4, ng, lane, vo, hv, dtb, kc, qc, vc, bc, xc);
+    for (uint t = 0u; t < pc.seq; ++t) {
+        vec4 kn[G], qn[G];
+        float vn, bn, xn;
+        load_tok(min(t + 1u, pc.seq - 1u), qo4, ko4, row4, ng, lane, vo, hv, dtb,
+                 kn, qn, vn, bn, xn);
+        uint vat = vo + t * pc.convd;
+        float beta = 1.0 / (1.0 + exp(-bc));
+        float sp = xc > 30.0 ? xc : log(1.0 + exp(xc));
+        float decay = exp(A * sp);
+
+        vec4 p = vec4(0.0);
+        for (uint c = 0u; c < G; ++c) {
+            p = fma(s[c], kc[c], p);
+        }
+        float kvm = subgroupClusteredAdd((p.x + p.y) + (p.z + p.w), LANES) * decay;
+        float delta = (vc - kvm) * beta;
+        vec4 o4 = vec4(0.0);
+        for (uint c = 0u; c < G; ++c) {
+            s[c] = fma(kc[c], vec4(delta), s[c] * decay);
+            o4 = fma(s[c], qc[c], o4);
+        }
+        float o = subgroupClusteredAdd((o4.x + o4.y) + (o4.z + o4.w), LANES);
+        if (col_ok && lane == 0u) {
+            qkv_out[vat] = o;
+        }
+        kc = kn;
+        qc = qn;
+        vc = vn;
+        bc = bn;
+        xc = xn;
+    }
+
+    for (uint c = 0u; c < G; ++c) {
+        uint g = c * LANES + lane;
+        if (col_ok && g < ng) {
+            uint at = sbase + 4u * g * pc.dv + j;
+            state[at] = s[c].x;
+            state[at + pc.dv] = s[c].y;
+            state[at + 2u * pc.dv] = s[c].z;
+            state[at + 3u * pc.dv] = s[c].w;
+        }
+    }
+}

@@ -28,6 +28,7 @@
 
 #include "hw_probe.h"
 #include "par.h"
+#include "parse.h"
 
 #include <limits.h>
 #include <stdatomic.h>
@@ -49,8 +50,8 @@ static int env_count(const char *name) {
     if (e == nullptr || e[0] == '\0') {
         return -1;
     }
-    const int v = atoi(e);
-    return v > 0 ? v : 0;
+    long v;
+    return geist_parse_long(e, &v) && v > 0 && v <= INT_MAX ? (int) v : 0;
 }
 
 /* Team size for each phase, 0 = ambient. Computed once, on the first
