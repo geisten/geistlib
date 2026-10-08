@@ -82,6 +82,20 @@ geist_token_t geist_model_token_by_text(const struct geist_model *m, const char 
 [[nodiscard]] enum geist_status
 geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_token_t *ids);
 
+/* @stability EXPERIMENTAL (#628) — interrupt a prefill from another thread.
+ *
+ * Asks the session to stop: safe from any thread, while a call runs on the
+ * session or not. A prefill (set_prompt, prefill_tokens, attached soft
+ * tokens) checks before each of its sub-batches (the session's m_max
+ * positions) and a decode_step before it starts; the call that sees the
+ * request returns GEIST_E_CANCELLED and consumes it. A prefill keeps the
+ * sub-batches it finished — geist_session_length says how far it got, and
+ * geist_session_truncate can drop them — and leaves no logits pending:
+ * prefill again before the next decode_step. A request made while no call
+ * runs stops the next one at its first check, so a cancel racing the start
+ * of a prefill is not lost. */
+void geist_session_cancel(struct geist_session *s);
+
 /* ====================================================================== */
 /* Multimodal soft-token attach                                            */
 /* ====================================================================== */

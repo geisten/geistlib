@@ -244,6 +244,14 @@ struct geist_arch_ops_decoder {
                               const struct geist_session_opts *opts,
                               size_t                          *kv_bytes_per_token,
                               size_t                          *model_bytes_per_token);
+
+    /* Optional: geist_session_cancel (#628). The engine hands the session a
+     * check it calls between prefill sub-batches; `requested(ctx)` returns
+     * true once per geist_session_cancel and consumes it. The prefill then
+     * returns GEIST_E_CANCELLED with the finished sub-batches kept and no
+     * logits pending. nullptr = the architecture cannot stop mid-prefill
+     * (the engine still stops a decode_step before it starts). */
+    void (*bind_cancel)(void *session, bool (*requested)(void *ctx), void *ctx);
 };
 
 /* ====================================================================== */
