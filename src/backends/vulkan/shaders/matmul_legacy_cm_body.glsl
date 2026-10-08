@@ -3,15 +3,18 @@
 #extension GL_KHR_memory_scope_semantics : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 
-/* Q8_0 / Q4_0 / Q4_1 GEMM on tensor cores — the frame of matmul_q4k_cm.comp (64x64
- * tile, BK = 32, double-buffered: one barrier per step) with a legacy-block A
- * stage, picked by DT_Q8_0, DT_Q4_0 or DT_Q4_1 in the including .comp. One k-step is
- * exactly one 32-element block, so each row needs one scale per step. Weight
+/* Q8_0 / Q4_0 / Q4_1 / TQ2_0 GEMM on tensor cores — the frame of
+ * matmul_q4k_cm.comp (64x64 tile, BK = 32, double-buffered: one barrier per
+ * step) with a legacy-block A stage, picked by DT_Q8_0, DT_Q4_0, DT_Q4_1 or
+ * DT_TQ2_0 in the including .comp. One k-step is exactly one 32-element
+ * block (TQ2_0: one of a 256-element block's eight 32-element runs), so each
+ * row needs one scale per step. Weight
  * layout as in mm_legacy.glsl: LPB quant words per block (8 for Q8_0, 4 for
  * Q4_0), then all fp16 scales packed two per word after the n_out * nb * LPB
  * quant words; Q4_1 keeps its native 20-byte block (d | m << 16, then the
  * quants). In both 4-bit types byte j holds element j (low nibble) and
- * j + 16 (high).
+ * j + 16 (high). TQ2_0 keeps the SOA layout of matvec_tq2_0.comp; its
+ * values d * {-1, 0, 1} are exact in f16.
  * Requires n_out % 64 == 0, rows % 16 == 0 (n_in % 32 == 0 is the format's).
  * Dispatch: gx = n_out/64, gy = ceil(rows/64). */
 
@@ -53,9 +56,24 @@ void stage(uint buf, uint ks, uint lid, uint row0, uint tb0) {
     {
         uint row = lid >> 1u;
         uint hk = lid & 1u;
-        uint bi = (row0 + row) * pc.blocks_per_row + ks;
+        uint bi = (row0 + row) * pc.blocks_per_row + ks; /* TQ2_0: unused */
         uint abase = row * ASTRIDE + hk * 16u;
-#if defined(DT_Q4_1)
+#if defined(DT_TQ2_0)
+        /* SOA layout of matvec_tq2_0.comp: 16 quant words per 256-element
+         * block, then the f16 scales. Step ks is the block's 32-element run
+         * e = g*128 + l*32 + m (sub = ks % 8 = g*4 + l): byte g*32 + m, bits 2l. */
+        uint sub = ks & 7u;
+        uint tb = (row0 + row) * pc.blocks_per_row + (ks >> 3u);
+        float d = unpackHalf2x16(w[pc.n_out * pc.blocks_per_row * 16u + (tb >> 1u)] >> ((tb & 1u) * 16u)).x;
+        uint qw0 = tb * 16u + (sub >> 2u) * 8u + hk * 4u;
+        uint sh = 2u * (sub & 3u);
+        for (uint u = 0; u < 4u; u++) {
+            uint qw = w[qw0 + u] >> sh;
+            for (uint j = 0; j < 4u; j++) {
+                Ash[buf][abase + u * 4u + j] = float16_t(d * (float((qw >> (8u * j)) & 3u) - 1.0));
+            }
+        }
+#elif defined(DT_Q4_1)
         /* native 20-byte block: word 0 = d | m << 16, words 1..4 = quants */
         vec2 dm = unpackHalf2x16(w[bi * 5u]);
         for (uint u = 0; u < 4u; u++) {

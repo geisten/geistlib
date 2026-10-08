@@ -709,6 +709,8 @@ void vk_linear_cm_route(struct vk_state *st,
         cm = VK_PIPE_MM_Q8_0_CM;
     } else if (*pipe == VK_PIPE_MATMUL_Q4_0) {
         cm = VK_PIPE_MM_Q4_0_CM;
+    } else if (*pipe == VK_PIPE_MATMUL_TQ2_0) {
+        cm = VK_PIPE_MM_TQ2_0_CM;
     } else if (*pipe == VK_PIPE_MATMUL_PQ2_0) {
         /* 128-token tile from a full tile of tokens up; the 128 x 64 tile below
          * it (a 128-wide tile would run half empty at the default chunk of 64) */
@@ -718,7 +720,8 @@ void vk_linear_cm_route(struct vk_state *st,
         return;
     }
     /* PQ2_0 tiles cover 128 weight rows and 128 (or 64) tokens, the k-quant
-     * and Q8_0 / Q4_0 tiles 64 x 64 */
+     * and Q8_0 / Q4_0 / Q4_1 / TQ2_0 tiles 64 x 64 (TQ2_0 moves to its
+     * 128 x 128 tile below) */
     const bool     pq2       = cm == VK_PIPE_MM_PQ2_0_CM || cm == VK_PIPE_MM_PQ2_0_CM_F32 ||
                                cm == VK_PIPE_MM_PQ2_0_CM64;
     const uint32_t tile_rows = pq2 ? 128u : 64u;
@@ -733,6 +736,17 @@ void vk_linear_cm_route(struct vk_state *st,
         *pipe = VK_PIPE_MM_Q4K_CM32;
         *gx   = n_out / 32u;
         *gy   = (m + 31u) / 32u;
+        return;
+    }
+    /* TQ2_0 in the 128 x 128 PQ2_0 frame once it has workgroups enough: one
+     * of its workgroups costs the same however few tokens it holds. Measured
+     * on an RTX 2080 Ti with BitNet b1.58-large (prefill chunk 128): n_out
+     * 4096 x 64 tokens wins on it, 1536 x 128 still loses (#467). */
+    if (cm == VK_PIPE_MM_TQ2_0_CM && n_out % 128u == 0 &&
+        st->pipes[VK_PIPE_MM_TQ2_0_CM128] != VK_NULL_HANDLE && (uint64_t) n_out * m >= 4u << 16) {
+        *pipe = VK_PIPE_MM_TQ2_0_CM128;
+        *gx   = n_out / 128u;
+        *gy   = (m + 127u) / 128u;
         return;
     }
     *pipe = cm;
