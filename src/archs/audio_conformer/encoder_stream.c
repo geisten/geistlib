@@ -4,6 +4,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "encoder_internal.h"
+#include "par.h"
 
 static void audio_stream_state_reset(struct audio_stream_state *ss);
 
@@ -287,6 +288,84 @@ static void audio_stream_state_reset(struct audio_stream_state *s) {
     s->subs.n_mel_seen = 0;
 }
 
+struct attn_stream_job {
+    const float *q;
+    const float *k_ctx;
+    const float *v_ctx;
+    const float *rel_k;
+    const bool  *block_mask;
+    float       *attn_out;
+    size_t       hd_per_t;
+};
+
+/* attn_run_streaming_block's heads [i0, i1), for geist_par_for. */
+static void attn_stream_heads(void *ctx, size_t i0, size_t i1) {
+    const struct attn_stream_job *job        = ctx;
+    const float                  *q          = job->q;
+    const float                  *k_ctx      = job->k_ctx;
+    const float                  *v_ctx      = job->v_ctx;
+    const float                  *rel_k      = job->rel_k;
+    const bool                   *block_mask = job->block_mask;
+    float                        *attn_out   = job->attn_out;
+    const size_t                  hd_per_t   = job->hd_per_t;
+    for (size_t it = i0; it < i1; it++) {
+        const int hd = (int) it;
+
+        float scores_ac[CHUNK_SIZE * CONTEXT_SIZE];
+        float scores_bd[CHUNK_SIZE * CONTEXT_SIZE];
+        float bd_padded[CHUNK_SIZE * (CONTEXT_SIZE + 1)];
+
+        const float *q_bh = q + (size_t) hd * HEAD_DIM;
+        const float *k_bh = k_ctx + (size_t) hd * HEAD_DIM;
+        const float *v_bh = v_ctx + (size_t) hd * HEAD_DIM;
+        const float *rk_h = rel_k + (size_t) hd * HEAD_DIM;
+
+        for (int i = 0; i < CHUNK_SIZE; i++) {
+            const float *qi = q_bh + (size_t) i * hd_per_t;
+            for (int j = 0; j < CONTEXT_SIZE; j++) {
+                const float *kj                 = k_bh + (size_t) j * hd_per_t;
+                scores_ac[i * CONTEXT_SIZE + j] = dot_head_fp32(qi, kj);
+            }
+        }
+        for (int i = 0; i < CHUNK_SIZE; i++) {
+            const float *qi = q_bh + (size_t) i * hd_per_t;
+            for (int p = 0; p < POS_LEN; p++) {
+                const float *rp                       = rk_h + (size_t) p * AUDIO_HIDDEN;
+                bd_padded[i * (CONTEXT_SIZE + 1) + p] = dot_head_fp32(qi, rp);
+            }
+            for (int p = POS_LEN; p <= CONTEXT_SIZE; p++) {
+                bd_padded[i * (CONTEXT_SIZE + 1) + p] = 0.0f;
+            }
+        }
+        /* rel_shift — flat copy from bd_padded (stride CONTEXT_SIZE+1) into
+         * scores_bd (stride CONTEXT_SIZE). This is a cyclic row shift that
+         * aligns the relative-position bias across the chunk; same as the
+         * monolithic attn_run. */
+        for (int idx = 0; idx < CHUNK_SIZE * CONTEXT_SIZE; idx++) {
+            scores_bd[idx] = bd_padded[idx];
+        }
+        for (int i = 0; i < CHUNK_SIZE; i++) {
+            for (int j = 0; j < CONTEXT_SIZE; j++) {
+                float s = scores_ac[i * CONTEXT_SIZE + j] + scores_bd[i * CONTEXT_SIZE + j];
+                s       = tanhf(s / ATTN_SOFTCAP) * ATTN_SOFTCAP;
+                if (!block_mask[i * CONTEXT_SIZE + j])
+                    s = -1e9f;
+                scores_ac[i * CONTEXT_SIZE + j] = s;
+            }
+        }
+        softmax_fp32(CHUNK_SIZE, CONTEXT_SIZE, scores_ac);
+        for (int i = 0; i < CHUNK_SIZE; i++) {
+            float *out_row = attn_out + (size_t) i * AUDIO_HIDDEN + (size_t) hd * HEAD_DIM;
+            zero_head_fp32(out_row);
+            for (int j = 0; j < CONTEXT_SIZE; j++) {
+                const float  w  = scores_ac[i * CONTEXT_SIZE + j];
+                const float *vj = v_bh + (size_t) j * hd_per_t;
+                axpy_head_fp32(out_row, w, vj);
+            }
+        }
+    }
+}
+
 /* Chunk-streaming forward (parity with audio_encoder_run).
  *
  * Process one block of new sub-tokens through one Conformer layer, threading
@@ -398,63 +477,14 @@ static void attn_run_streaming_block(struct audio_stream_state *state,
     /* 7. Attention output (CHUNK_SIZE, AUDIO_HIDDEN); only first n_valid used. */
     float *attn_out = heap_calloc_array_aligned(float, (size_t) CHUNK_SIZE *AUDIO_HIDDEN);
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (int hd = 0; hd < N_HEADS; hd++) {
-        float scores_ac[CHUNK_SIZE * CONTEXT_SIZE];
-        float scores_bd[CHUNK_SIZE * CONTEXT_SIZE];
-        float bd_padded[CHUNK_SIZE * (CONTEXT_SIZE + 1)];
-
-        const float *q_bh = q + (size_t) hd * HEAD_DIM;
-        const float *k_bh = k_ctx + (size_t) hd * HEAD_DIM;
-        const float *v_bh = v_ctx + (size_t) hd * HEAD_DIM;
-        const float *rk_h = rel_k + (size_t) hd * HEAD_DIM;
-
-        for (int i = 0; i < CHUNK_SIZE; i++) {
-            const float *qi = q_bh + (size_t) i * hd_per_t;
-            for (int j = 0; j < CONTEXT_SIZE; j++) {
-                const float *kj                 = k_bh + (size_t) j * hd_per_t;
-                scores_ac[i * CONTEXT_SIZE + j] = dot_head_fp32(qi, kj);
-            }
-        }
-        for (int i = 0; i < CHUNK_SIZE; i++) {
-            const float *qi = q_bh + (size_t) i * hd_per_t;
-            for (int p = 0; p < POS_LEN; p++) {
-                const float *rp                       = rk_h + (size_t) p * AUDIO_HIDDEN;
-                bd_padded[i * (CONTEXT_SIZE + 1) + p] = dot_head_fp32(qi, rp);
-            }
-            for (int p = POS_LEN; p <= CONTEXT_SIZE; p++) {
-                bd_padded[i * (CONTEXT_SIZE + 1) + p] = 0.0f;
-            }
-        }
-        /* rel_shift — flat copy from bd_padded (stride CONTEXT_SIZE+1) into
-         * scores_bd (stride CONTEXT_SIZE). This is a cyclic row shift that
-         * aligns the relative-position bias across the chunk; same as the
-         * monolithic attn_run. */
-        for (int idx = 0; idx < CHUNK_SIZE * CONTEXT_SIZE; idx++) {
-            scores_bd[idx] = bd_padded[idx];
-        }
-        for (int i = 0; i < CHUNK_SIZE; i++) {
-            for (int j = 0; j < CONTEXT_SIZE; j++) {
-                float s = scores_ac[i * CONTEXT_SIZE + j] + scores_bd[i * CONTEXT_SIZE + j];
-                s       = tanhf(s / ATTN_SOFTCAP) * ATTN_SOFTCAP;
-                if (!block_mask[i * CONTEXT_SIZE + j])
-                    s = -1e9f;
-                scores_ac[i * CONTEXT_SIZE + j] = s;
-            }
-        }
-        softmax_fp32(CHUNK_SIZE, CONTEXT_SIZE, scores_ac);
-        for (int i = 0; i < CHUNK_SIZE; i++) {
-            float *out_row = attn_out + (size_t) i * AUDIO_HIDDEN + (size_t) hd * HEAD_DIM;
-            zero_head_fp32(out_row);
-            for (int j = 0; j < CONTEXT_SIZE; j++) {
-                const float  w  = scores_ac[i * CONTEXT_SIZE + j];
-                const float *vj = v_bh + (size_t) j * hd_per_t;
-                axpy_head_fp32(out_row, w, vj);
-            }
-        }
-    }
+    const struct attn_stream_job job = {.q          = q,
+                                        .k_ctx      = k_ctx,
+                                        .v_ctx      = v_ctx,
+                                        .rel_k      = rel_k,
+                                        .block_mask = block_mask,
+                                        .attn_out   = attn_out,
+                                        .hd_per_t   = hd_per_t};
+    geist_par_for(N_HEADS, attn_stream_heads, (void *) &job);
 
     safe_free((void **) &rel_k);
     safe_free((void **) &k_ctx);
