@@ -679,12 +679,24 @@ uint32_t vk_linear_gy(enum vk_pipe pipe, uint32_t m) {
 void vk_linear_cm_route(struct vk_state *st,
                         enum vk_pipe    *pipe,
                         uint32_t         m,
+                        uint32_t         n_in,
                         uint32_t         n_out,
                         uint32_t        *gx,
                         uint32_t        *gy) {
     /* The tensor-core tiles keep the native subgroup size (only the tiled
      * GEMMs are pinned to 32), and they were written for 32 lanes. */
     if (st->subgroup_size != 32u) {
+        return;
+    }
+    /* F32 weights (Gemma 4's PLE projections) in the 128 x 128 frame (#658):
+     * the register-tiled matmul_f32 ran them at under 1 TFLOPS */
+    if (*pipe == VK_PIPE_MATMUL_F32) {
+        if ((m & 15u) == 0 && n_out % 128u == 0 && n_in % 32u == 0 &&
+            st->pipes[VK_PIPE_MM_F32_CM128] != VK_NULL_HANDLE) {
+            *pipe = VK_PIPE_MM_F32_CM128;
+            *gx   = n_out / 128u;
+            *gy   = (m + 127u) / 128u;
+        }
         return;
     }
     enum vk_pipe cm;
@@ -740,6 +752,15 @@ void vk_linear_cm_route(struct vk_state *st,
         *pipe = c128;
         *gx   = n_out / 128u;
         *gy   = (m + 127u) / 128u;
+        /* With more workgroups than the GPU has SMs, the single-buffered
+         * variant (half the shared memory, two workgroups per SM) wins:
+         * 20-45 % on an RTX 2080 Ti (68 SMs) from 80 workgroups up, 3-7 %
+         * slower at 64 and below, where the SMs are not all busy anyway. */
+        const enum vk_pipe sb =
+                c128 == VK_PIPE_MM_Q4K_CM128 ? VK_PIPE_MM_Q4K_CM128_SB : VK_PIPE_MM_Q6K_CM128_SB;
+        if (*gx * *gy > 64u && st->pipes[sb] != VK_NULL_HANDLE) {
+            *pipe = sb;
+        }
         return;
     }
     if (cm32) {
@@ -783,7 +804,7 @@ void vk_linear_cm_route(struct vk_state *st,
     uint32_t         gx   = vk_linear_gx(pipe, push->n_out);
     uint32_t         gy   = vk_linear_gy(pipe, m);
     if (m > 1 && m_hi != 0) {
-        vk_linear_cm_route(st, &cm, m_hi, push->n_out, &gx, &gy);
+        vk_linear_cm_route(st, &cm, m_hi, push->n_in, push->n_out, &gx, &gy);
     }
     if (cm == pipe) {
         return vk_seq_dispatch_acc(be, pipe, infos, acc, push, sizeof(*push), gx, gy, 1);
@@ -1433,6 +1454,26 @@ attn_generic:;
                                          : hd == 256 ? VK_PIPE_ATTENTION_F16_CM
                                          : hd == 512 ? VK_PIPE_ATTENTION_F16_HD512_CM
                                                      : VK_PIPE_COUNT;
+            /* Four subgroups per workgroup sharing 64-key steps, one online-
+             * softmax pass (#475): written for 32-lane subgroups (it maps
+             * subgroup ids and softmax lanes onto that), so other widths keep
+             * the one-subgroup kernel, as vk_linear_cm_route does. */
+            const enum vk_pipe mw_pipe = hd == 128   ? VK_PIPE_ATTENTION_F16_HD128_MW_CM
+                                         : hd == 256 ? VK_PIPE_ATTENTION_F16_MW_CM
+                                         : hd == 512 ? VK_PIPE_ATTENTION_F16_HD512_MW_CM
+                                                     : VK_PIPE_COUNT;
+            if (kv16 && n_q > 1 && mw_pipe != VK_PIPE_COUNT && stt->subgroup_size == 32u &&
+                stt->pipes[mw_pipe] != VK_NULL_HANDLE) {
+                return vk_seq_dispatch_acc(be,
+                                           mw_pipe,
+                                           bi,
+                                           acc,
+                                           push,
+                                           sizeof(push),
+                                           n_q / 16u + (n_q % 16u != 0u ? 1u : 0u),
+                                           qh,
+                                           1);
+            }
             if (kv16 && n_q > 1 && cm_pipe != VK_PIPE_COUNT &&
                 stt->pipes[cm_pipe] != VK_NULL_HANDLE) {
                 return vk_seq_dispatch_acc(be,
