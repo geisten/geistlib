@@ -144,6 +144,9 @@ jobs:
           GGML_VK_VISIBLE_DEVICES: "0"
         run: |
           set -eo pipefail
+          # only a GPU campaign holds the card (#706); a CPU campaign must not
+          # block other repositories' GPU jobs for hours
+          if [ "${{ inputs.protocol }}" = gpu ]; then . scripts/gpu-lock.sh; fi
           python3 tools/bench_cross_engine.py \
             --geist bin/linux/release/tests/bench_perf_sweep \
             --llama "$LLAMA_BENCH" \
