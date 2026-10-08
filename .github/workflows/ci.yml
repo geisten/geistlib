@@ -1064,9 +1064,11 @@ jobs:
         # cuts decode to 8 tokens: every step runs the same code, so TSan
         # sees the same races, and the job drops from 11-24 to ~5-9 min.
         # The full 32-token bit-identity check runs in the regular int suites.
+        # GEIST_TEST_NO_SERIAL_REF skips the serial rerun (no concurrency,
+        # 2/3 of the remaining time); the int suites keep it too.
         run: |
           export GEIST_GGUF_PATH="$PWD/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf"
-          GEIST_TEST_LIGHT=1 bin/linux/tsan/tests/test_multi_session_parallel_int
+          GEIST_TEST_LIGHT=1 GEIST_TEST_NO_SERIAL_REF=1 bin/linux/tsan/tests/test_multi_session_parallel_int
           # geist_session_cancel from a second thread (#628)
           bin/linux/tsan/tests/test_session_cancel_unit
           # geist_par_for's pthread pool (no OpenMP here), concurrent callers (#618)
