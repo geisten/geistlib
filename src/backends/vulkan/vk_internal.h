@@ -19,7 +19,8 @@
 #include "checked.h"        /* ckd_* size arithmetic (AGENT.md §3) */
 #include "gemma4_kernels.h" /* shared reference rope/attention kernels */
 #include "heap.h"
-#include "quant.h" /* CPU dequant helpers for the non-GPU dtype fallback */
+#include "quant.h"             /* CPU dequant helpers for the non-GPU dtype fallback */
+#include "shaders/vk_limits.h" /* constants shared with the shaders (#474) */
 
 #include <dlfcn.h>
 #include <math.h>
@@ -144,16 +145,18 @@ enum vk_pipe {
     VK_PIPE_MATMUL_TQ2_0,
     VK_PIPE_MATVEC_PQ2_0,
     VK_PIPE_MATMUL_PQ2_0,
-    VK_PIPE_SILU,                   /* y = silu(x) */
-    VK_PIPE_HADAMARD,               /* blockwise orthonormal WHT of rows (prism.hadamard) */
-    VK_PIPE_RELU2,                  /* y = relu(x)^2 (BitNet FFN) */
-    VK_PIPE_ACT_QUANT,              /* BitNet int8 absmax activation round trip, in place */
-    VK_PIPE_SILU_MUL,               /* y = silu(a) * b (SwiGLU epilogue) */
-    VK_PIPE_SIGMOID_MUL,            /* y = a * sigmoid(gate) (qwen35 attention gate) */
-    VK_PIPE_QGATE_SPLIT,            /* [query | gate] per-head split (qwen35) */
-    VK_PIPE_ATTENTION_F16_CM,       /* tensor-core causal attention, head_dim 256 */
+    VK_PIPE_SILU,             /* y = silu(x) */
+    VK_PIPE_HADAMARD,         /* blockwise orthonormal WHT of rows (prism.hadamard) */
+    VK_PIPE_RELU2,            /* y = relu(x)^2 (BitNet FFN) */
+    VK_PIPE_ACT_QUANT,        /* BitNet int8 absmax activation round trip, in place */
+    VK_PIPE_SILU_MUL,         /* y = silu(a) * b (SwiGLU epilogue) */
+    VK_PIPE_SIGMOID_MUL,      /* y = a * sigmoid(gate) (qwen35 attention gate) */
+    VK_PIPE_QGATE_SPLIT,      /* [query | gate] per-head split (qwen35) */
+    VK_PIPE_ATTENTION_F16_CM, /* tensor-core causal attention, no sliding window, head_dim==256 */
     VK_PIPE_ATTENTION_F16_HD128_CM, /* the same, head_dim 128 */
     VK_PIPE_ATTENTION_F16_HD512_CM, /* the same, head_dim 512 (two column halves) */
+    VK_PIPE_MM_Q8_0_CM,             /* Q8_0 tensor-core GEMM, 64 x 64 tile */
+    VK_PIPE_MM_Q4_0_CM,             /* Q4_0 tensor-core GEMM, 64 x 64 tile */
     VK_PIPE_COUNT,
 };
 
@@ -163,6 +166,7 @@ static inline bool vk_pipe_needs_coopmat(int pipe) {
     return pipe == VK_PIPE_MM_Q4K_CM || pipe == VK_PIPE_MM_Q6K_CM || pipe == VK_PIPE_MM_Q4K_CM32 ||
            pipe == VK_PIPE_MM_PQ2_0_CM || pipe == VK_PIPE_MM_PQ2_0_CM_F32 ||
            pipe == VK_PIPE_MM_PQ2_0_CM64 || pipe == VK_PIPE_ATTENTION_F16_CM ||
+           pipe == VK_PIPE_MM_Q8_0_CM || pipe == VK_PIPE_MM_Q4_0_CM ||
            pipe == VK_PIPE_ATTENTION_F16_HD128_CM || pipe == VK_PIPE_ATTENTION_F16_HD512_CM;
 }
 
@@ -471,6 +475,8 @@ static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
         [VK_PIPE_ATTENTION_F16_CM]       = 4,
         [VK_PIPE_ATTENTION_F16_HD128_CM] = 4,
         [VK_PIPE_ATTENTION_F16_HD512_CM] = 4,
+        [VK_PIPE_MM_Q8_0_CM]             = 3,
+        [VK_PIPE_MM_Q4_0_CM]             = 3,
 };
 
 struct geist_buffer {
@@ -665,5 +671,11 @@ void vk_linear_cm_route(struct vk_state *st,
                         uint32_t         n_out,
                         uint32_t        *gx,
                         uint32_t        *gy);
+
+[[nodiscard]] enum geist_status vk_gemm_dispatch(struct geist_backend         *be,
+                                                 enum vk_pipe                  pipe,
+                                                 const VkDescriptorBufferInfo *infos,
+                                                 const struct vk_access       *acc,
+                                                 const struct vk_push         *push);
 
 #endif /* GEIST_INTERNAL_VK_INTERNAL_H */

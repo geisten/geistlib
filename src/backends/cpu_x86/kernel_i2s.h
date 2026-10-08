@@ -153,7 +153,7 @@ void i2s_x4_gemm_mN_pre(size_t        m,
                         float         y[]);
 
 /* Fused decode of two same-`n_in` weights (gate+up, q+k) sharing one
- * activation quant + one OMP region (default on; GEIST_I2S_PAIR=0 disables,
+ * activation quant + one parallel region (default on; GEIST_I2S_PAIR=0 disables,
  * see backend.c). x is [n_in]; each weight has its own x4 blob, per-tensor
  * scale, n_out, and output. */
 void i2s_x4_gemv_pair_m1(size_t        n_in,

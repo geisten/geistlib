@@ -14,8 +14,11 @@
  * Dispatch: gx = ceil(n_out / 8), gy = ceil(rows / 32). */
 #extension GL_KHR_shader_subgroup_basic : enable
 #extension GL_KHR_shader_subgroup_arithmetic : enable
+#include "vk_limits.h"
 
-layout(local_size_x = 256) in;
+layout(local_size_x = VK_MM_ROWS_PER_WG * 32u) in; /* one row per 32-lane subgroup */
+
+const uint TM = VK_MM_TOKENS_PER_WG; /* batch rows per workgroup */
 
 layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
 layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
@@ -66,11 +69,11 @@ vec4 trits(uint bits, uint sh) {
 void main() {
     uint row = gl_WorkGroupID.x * gl_NumSubgroups + gl_SubgroupID;
     uint lane = gl_SubgroupInvocationID;
-    uint t0 = gl_WorkGroupID.y * 32u;
+    uint t0 = gl_WorkGroupID.y * TM;
     if (t0 >= pc.rows) {
         return;
     }
-    uint tm = min(32u, pc.rows - t0);
+    uint tm = min(TM, pc.rows - t0);
 #if defined(DT_TQ2_0)
     uint g = lane >> 4u;
     uint l = (lane >> 2u) & 3u;
@@ -89,8 +92,8 @@ void main() {
     uint wq = lane % LPB;
 #endif
 
-    float s[32];
-    for (uint t = 0u; t < 32u; ++t) {
+    float s[TM];
+    for (uint t = 0u; t < TM; ++t) {
         s[t] = 0.0;
     }
 #if defined(DT_Q4_0)
@@ -108,7 +111,7 @@ void main() {
             vec4 wv0 = d * trits(w[qw], sh);
             vec4 wv1 = d * trits(w[qw + 1u], sh);
             uint e_base = pc.x_offset + b * 256u + g * 128u + l * 32u + m0;
-            for (uint t = 0u; t < 32u; ++t) {
+            for (uint t = 0u; t < TM; ++t) {
                 if (t >= tm) {
                     break;
                 }
@@ -126,7 +129,7 @@ void main() {
                 vec4 wv0 = d * trits(bits, 0u);
                 vec4 wv1 = d * trits(bits, 8u);
                 uint e_base = pc.x_offset + b * 128u + wq * 8u;
-                for (uint t = 0u; t < 32u; ++t) {
+                for (uint t = 0u; t < TM; ++t) {
                     if (t >= tm) {
                         break;
                     }
@@ -179,7 +182,7 @@ void main() {
                        vec4(dmn);
 
             uint e_base = pc.x_offset + b * 256u + sub * 32u + idx8;
-            for (uint t = 0u; t < 32u; ++t) {
+            for (uint t = 0u; t < TM; ++t) {
                 if (t >= tm) {
                     break;
                 }
@@ -198,7 +201,7 @@ void main() {
                 float d = block_scale(bi, sc0);
                 vec4 wv = d * vec4(float(bitfieldExtract(qw, 0, 8)), float(bitfieldExtract(qw, 8, 8)),
                                    float(bitfieldExtract(qw, 16, 8)), float(bitfieldExtract(qw, 24, 8)));
-                for (uint t = 0u; t < 32u; ++t) {
+                for (uint t = 0u; t < TM; ++t) {
                     if (t >= tm) {
                         break;
                     }
@@ -219,7 +222,7 @@ void main() {
                 wlo = dm.x * vec4(unpack8(qw & 0x0F0F0F0Fu)) + vec4(dm.y);
                 whi = dm.x * vec4(unpack8((qw >> 4u) & 0x0F0F0F0Fu)) + vec4(dm.y);
 #endif
-                for (uint t = 0u; t < 32u; ++t) {
+                for (uint t = 0u; t < TM; ++t) {
                     if (t >= tm) {
                         break;
                     }
@@ -232,7 +235,7 @@ void main() {
 #endif
     }
 
-    for (uint t = 0u; t < 32u; ++t) {
+    for (uint t = 0u; t < TM; ++t) {
         if (t >= tm) {
             break;
         }
