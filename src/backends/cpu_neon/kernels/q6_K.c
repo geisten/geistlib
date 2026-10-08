@@ -825,6 +825,28 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
         }
     }
 
+    /* The activation scales block-major, xs_bm[b * m + t], so the epilogues
+     * below load four tokens' scales of one super-block as one vector, as
+     * they did the row scales before #698. Same high-water buffer pattern;
+     * without it each panel gathers its block's scales itself. */
+    const float *xs_bm = nullptr;
+    {
+        static _Thread_local float *q6kxs_tl  = nullptr;
+        static _Thread_local size_t q6kxs_cap = 0;
+        const size_t                need      = m * n_blocks_per_row;
+        if (need > q6kxs_cap) {
+            safe_free((void **) &q6kxs_tl);
+            q6kxs_tl  = heap_alloc_array_aligned(float, need);
+            q6kxs_cap = (q6kxs_tl != nullptr) ? need : 0;
+        }
+        if (q6kxs_cap >= need) {
+            for (size_t b = 0; b < n_blocks_per_row; b++)
+                for (size_t t = 0; t < m; t++)
+                    q6kxs_tl[b * m + t] = x_scales[t * n_blocks_per_row + b];
+            xs_bm = q6kxs_tl;
+        }
+    }
+
     /* Activation offset (within the 256-elem block) for each of the 16
      * reconstructed q-vectors, in (half, sub_off, chunk) iteration order.
      * q-vector g maps to x[blk_off + xoff_tab[g] .. +15]. */
@@ -924,7 +946,13 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
             Q6K_RECON_BLOCK(blk0, qreg0, sreg0);
             Q6K_RECON_BLOCK(blk1, qreg1, sreg1);
 
-            const size_t  blk_off = b * Q6_K_BLOCK_ELEMS;
+            const size_t blk_off = b * Q6_K_BLOCK_ELEMS;
+            float        xs_tmp[GEIST_QUANT_M_CAP];
+            const float *xsb = xs_bm != nullptr ? xs_bm + b * m : xs_tmp;
+            if (xs_bm == nullptr) {
+                for (size_t t = 0; t < m; t++)
+                    xs_tmp[t] = x_scales[t * n_blocks_per_row + b];
+            }
             const int8_t *xblk;
             size_t        xstride;
             if (packed) {
@@ -959,22 +987,14 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
                     a12                = vmlaq_n_s32(a12, vdotq_s32(vdupq_n_s32(0), q1, v2), s1);
                     a13                = vmlaq_n_s32(a13, vdotq_s32(vdupq_n_s32(0), q1, v3), s1);
                 }
-                accs0[i + 0] +=
-                        d0 * x_scales[(i + 0) * n_blocks_per_row + b] * (float) vaddvq_s32(a00);
-                accs0[i + 1] +=
-                        d0 * x_scales[(i + 1) * n_blocks_per_row + b] * (float) vaddvq_s32(a01);
-                accs0[i + 2] +=
-                        d0 * x_scales[(i + 2) * n_blocks_per_row + b] * (float) vaddvq_s32(a02);
-                accs0[i + 3] +=
-                        d0 * x_scales[(i + 3) * n_blocks_per_row + b] * (float) vaddvq_s32(a03);
-                accs1[i + 0] +=
-                        d1 * x_scales[(i + 0) * n_blocks_per_row + b] * (float) vaddvq_s32(a10);
-                accs1[i + 1] +=
-                        d1 * x_scales[(i + 1) * n_blocks_per_row + b] * (float) vaddvq_s32(a11);
-                accs1[i + 2] +=
-                        d1 * x_scales[(i + 2) * n_blocks_per_row + b] * (float) vaddvq_s32(a12);
-                accs1[i + 3] +=
-                        d1 * x_scales[(i + 3) * n_blocks_per_row + b] * (float) vaddvq_s32(a13);
+                accs0[i + 0] += d0 * xsb[i + 0] * (float) vaddvq_s32(a00);
+                accs0[i + 1] += d0 * xsb[i + 1] * (float) vaddvq_s32(a01);
+                accs0[i + 2] += d0 * xsb[i + 2] * (float) vaddvq_s32(a02);
+                accs0[i + 3] += d0 * xsb[i + 3] * (float) vaddvq_s32(a03);
+                accs1[i + 0] += d1 * xsb[i + 0] * (float) vaddvq_s32(a10);
+                accs1[i + 1] += d1 * xsb[i + 1] * (float) vaddvq_s32(a11);
+                accs1[i + 2] += d1 * xsb[i + 2] * (float) vaddvq_s32(a12);
+                accs1[i + 3] += d1 * xsb[i + 3] * (float) vaddvq_s32(a13);
             }
             for (; i < m; i++) { /* token remainder */
                 int32x4_t acc0 = vdupq_n_s32(0), acc1 = vdupq_n_s32(0);
@@ -983,8 +1003,8 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
                     acc0 = vmlaq_n_s32(acc0, vdotq_s32(vdupq_n_s32(0), qreg0[g], v), sreg0[g]);
                     acc1 = vmlaq_n_s32(acc1, vdotq_s32(vdupq_n_s32(0), qreg1[g], v), sreg1[g]);
                 }
-                accs0[i] += d0 * x_scales[i * n_blocks_per_row + b] * (float) vaddvq_s32(acc0);
-                accs1[i] += d1 * x_scales[i * n_blocks_per_row + b] * (float) vaddvq_s32(acc1);
+                accs0[i] += d0 * xsb[i] * (float) vaddvq_s32(acc0);
+                accs1[i] += d1 * xsb[i] * (float) vaddvq_s32(acc1);
             }
         }
         for (size_t i = 0; i < m; i++) {
@@ -1011,7 +1031,13 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
             int32_t                    sreg[16] __attribute__((aligned(16)));
             Q6K_RECON_BLOCK(blk, qreg, sreg);
 
-            const size_t  blk_off = b * Q6_K_BLOCK_ELEMS;
+            const size_t blk_off = b * Q6_K_BLOCK_ELEMS;
+            float        xs_tmp[GEIST_QUANT_M_CAP];
+            const float *xsb = xs_bm != nullptr ? xs_bm + b * m : xs_tmp;
+            if (xs_bm == nullptr) {
+                for (size_t t = 0; t < m; t++)
+                    xs_tmp[t] = x_scales[t * n_blocks_per_row + b];
+            }
             const int8_t *xblk;
             size_t        xstride;
             if (packed) {
@@ -1028,7 +1054,7 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
                     acc              = vmlaq_n_s32(
                             acc, vdotq_s32(vdupq_n_s32(0), qreg[g], vld1q_s8(xb)), sreg[g]);
                 }
-                accs[i] += d * x_scales[i * n_blocks_per_row + b] * (float) vaddvq_s32(acc);
+                accs[i] += d * xsb[i] * (float) vaddvq_s32(acc);
             }
         }
         for (size_t i = 0; i < m; i++)

@@ -661,8 +661,10 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
 
 /* Loop-reordered blocked GEMM: tile output rows into NC-row panels; per
  * panel, loop blocks OUTER and rows INNER so each activation block (m×256)
- * stays L1-resident across all NC rows. Partials accumulate in an L1 ytile
- * (m×NC); each super-block's partial carries its activation scale. */
+ * stays L1-resident across all NC rows. Each super-block's unscaled terms
+ * land in btile (m×NC); once its NC rows are done, ytile += x_scale × btile,
+ * one broadcast FMA per 4 outputs, so the per-row inner loop does no more
+ * float work than it did with a row-wide scale (#698). */
 #define NC 64
     const size_t n_panels = (n_out + (size_t) NC - 1) / (size_t) NC;
 
@@ -710,6 +712,7 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
         const size_t nc0 = p * (size_t) NC;
         const size_t nc  = (n_out - nc0 < (size_t) NC) ? (n_out - nc0) : (size_t) NC;
         float        ytile[GEIST_QUANT_M_CAP * NC] __attribute__((aligned(16)));
+        float        btile[GEIST_QUANT_M_CAP * NC] __attribute__((aligned(16)));
         for (size_t i = 0; i < m; i++)
             for (size_t r = 0; r < nc; r++)
                 ytile[i * (size_t) NC + r] = 0.0f;
@@ -764,9 +767,8 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
                         int32_t        mc = 0;
                         for (int j = 0; j < 8; j++)
                             mc += (int32_t) mins[j] * sp[j];
-                        ytile[ii * (size_t) NC + r] +=
-                                x_scales[ii * n_blocks_per_row + b] *
-                                (d_blk * (float) vaddvq_s32(acc[t]) - dmin_blk * (float) mc);
+                        btile[ii * (size_t) NC + r] =
+                                d_blk * (float) vaddvq_s32(acc[t]) - dmin_blk * (float) mc;
                     }
                 }
                 for (; i < m; i++) {
@@ -802,10 +804,31 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
                     int32_t        mc = 0;
                     for (int j = 0; j < 8; j++)
                         mc += (int32_t) mins[j] * sp[j];
-                    ytile[i * (size_t) NC + r] +=
-                            x_scales[i * n_blocks_per_row + b] *
-                            (d_blk * (float) vaddvq_s32(acc) - dmin_blk * (float) mc);
+                    btile[i * (size_t) NC + r] =
+                            d_blk * (float) vaddvq_s32(acc) - dmin_blk * (float) mc;
                 }
+            }
+            /* Fused multiply-add as before, so the sums are bit-identical to
+             * scaling each term in the row loop. */
+            for (size_t i = 0; i < m; i++) {
+                const float  sx = x_scales[i * n_blocks_per_row + b];
+                float       *yt = ytile + i * (size_t) NC;
+                const float *bt = btile + i * (size_t) NC;
+                size_t       r  = 0;
+                if (nc == (size_t) NC) { /* every panel but the last: fixed trip count */
+                    for (; r < (size_t) NC; r += 8) {
+                        const float32x4_t y0 =
+                                vfmaq_n_f32(vld1q_f32(yt + r), vld1q_f32(bt + r), sx);
+                        const float32x4_t y1 =
+                                vfmaq_n_f32(vld1q_f32(yt + r + 4), vld1q_f32(bt + r + 4), sx);
+                        vst1q_f32(yt + r, y0);
+                        vst1q_f32(yt + r + 4, y1);
+                    }
+                }
+                for (; r + 4 <= nc; r += 4)
+                    vst1q_f32(yt + r, vfmaq_n_f32(vld1q_f32(yt + r), vld1q_f32(bt + r), sx));
+                for (; r < nc; r++)
+                    yt[r] = fmaf(bt[r], sx, yt[r]);
             }
         }
         for (size_t i = 0; i < m; i++)
