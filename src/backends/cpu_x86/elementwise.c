@@ -4,7 +4,7 @@
  *
  * Layer: BACKEND (cpu_x86).
  *
- * gelu_tanh*: OMP-parallel, with tanh computed as (e^2u-1)/(e^2u+1) so the
+ * gelu_tanh*: in parallel, with tanh computed as (e^2u-1)/(e^2u+1) so the
  * inner loop's expf auto-vectorizes via glibc libmvec under -ffast-math
  * -fopenmp (the project's standard flags). u is clamped to ±10 (tanh(10) is 1
  * to float precision) so e^2u can't overflow to inf. Same math as the scalar
@@ -17,6 +17,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "elementwise.h"
+#include "par.h"
 #include "tensor_view.h"
 
 #include <geist.h>
@@ -55,6 +56,58 @@ static inline float gelu1(float v) {
     return 0.5f * v * (1.0f + t);
 }
 
+/* One elementwise call for geist_par_for: y = op(x[, z][, scale]), over
+ * elements, rows of `feat` or chunks of EW_CHUNK, as the body says. */
+struct ew_call {
+    const float *x;
+    const float *z;
+    const float *w; /* gelu_tanh_mul_scaled's scale, rmsnorm's weight */
+    float       *y;
+    size_t       n;    /* elements */
+    size_t       feat; /* elements per row */
+    float        eps;
+};
+
+/* Elements [i0, i1). The pointers are locals so the loop vectorizes (clang
+ * refuses a `simd` loop over shared ones, and -Werror stops the build:
+ * "loop not vectorized: ... requested transformation"). */
+static void gelu_range(void *ctx, size_t i0, size_t i1) {
+    const struct ew_call c  = *(const struct ew_call *) ctx;
+    const float         *xp = c.x;
+    float               *yp = c.y;
+#pragma omp simd
+    for (size_t i = i0; i < i1; i++) {
+        yp[i] = gelu1(xp[i]);
+    }
+}
+
+static void gelu_mul_range(void *ctx, size_t i0, size_t i1) {
+    const struct ew_call c  = *(const struct ew_call *) ctx;
+    const float         *xp = c.x;
+    const float         *zp = c.z;
+    float               *yp = c.y;
+#pragma omp simd
+    for (size_t i = i0; i < i1; i++) {
+        yp[i] = gelu1(xp[i]) * zp[i];
+    }
+}
+
+/* Rows [r0, r1) of feat elements, each times scale. */
+static void gelu_mul_scaled_rows(void *ctx, size_t r0, size_t r1) {
+    const struct ew_call c     = *(const struct ew_call *) ctx;
+    const size_t         feat  = c.feat;
+    const float         *scale = c.w;
+    for (size_t r = r0; r < r1; r++) {
+        const float *xr = c.x + r * feat;
+        const float *zr = c.z + r * feat;
+        float       *yr = c.y + r * feat;
+#pragma omp simd
+        for (size_t j = 0; j < feat; j++) {
+            yr[j] = gelu1(xr[j]) * zr[j] * scale[j];
+        }
+    }
+}
+
 [[nodiscard]] enum geist_status
 cpu_x86_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
     size_t       nx = 0, ny = 0;
@@ -64,14 +117,8 @@ cpu_x86_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 gelu_tanh: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
-    /* firstprivate: with the pointers shared, clang cannot perform the
-     * requested simd vectorization of the outlined loop and -Werror stops
-     * the build ("loop not vectorized: ... requested transformation");
-     * private copies let it vectorize. gcc privatizes them either way. */
-#pragma omp parallel for simd schedule(static) firstprivate(xp, yp)
-    for (size_t i = 0; i < nx; i++) {
-        yp[i] = gelu1(xp[i]);
-    }
+    struct ew_call c = {.x = xp, .y = yp};
+    geist_par_for(nx, gelu_range, &c);
     return GEIST_OK;
 }
 
@@ -87,10 +134,8 @@ cpu_x86_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 gelu_tanh_mul: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
-#pragma omp parallel for simd schedule(static) firstprivate(xp, zp, yp) /* see gelu_tanh */
-    for (size_t i = 0; i < nx; i++) {
-        yp[i] = gelu1(xp[i]) * zp[i];
-    }
+    struct ew_call c = {.x = xp, .z = zp, .y = yp};
+    geist_par_for(nx, gelu_mul_range, &c);
     return GEIST_OK;
 }
 
@@ -115,17 +160,8 @@ cpu_x86_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct
                 be, GEIST_E_INVALID_ARG, "cpu_x86 gelu_tanh_mul_scaled: feature mismatch");
         return GEIST_E_INVALID_ARG;
     }
-    const size_t rows = nx / feat;
-#pragma omp parallel for schedule(static)
-    for (size_t r = 0; r < rows; r++) {
-        const float *xr = xp + r * feat;
-        const float *zr = zp + r * feat;
-        float       *yr = yp + r * feat;
-#pragma omp simd
-        for (size_t j = 0; j < feat; j++) {
-            yr[j] = gelu1(xr[j]) * zr[j] * scale[j];
-        }
-    }
+    struct ew_call c = {.x = xp, .z = zp, .w = scale, .y = yp, .feat = feat};
+    geist_par_for(nx / feat, gelu_mul_scaled_rows, &c);
     return GEIST_OK;
 }
 
@@ -203,14 +239,19 @@ static void silu_span(size_t n, const float *x, const float *z, float *y) {
     }
 }
 
-static void silu_all(size_t n, const float *x, const float *z, float *y) {
-    const size_t chunks = (n + EW_CHUNK - 1) / EW_CHUNK;
-#pragma omp parallel for schedule(static)
-    for (size_t c = 0; c < chunks; c++) {
-        const size_t i0  = c * EW_CHUNK;
-        const size_t len = n - i0 < EW_CHUNK ? n - i0 : EW_CHUNK;
-        silu_span(len, x + i0, z != nullptr ? z + i0 : nullptr, y + i0);
+/* Chunks [c0, c1) of EW_CHUNK floats. */
+static void silu_chunks(void *ctx, size_t c0, size_t c1) {
+    const struct ew_call c = *(const struct ew_call *) ctx;
+    for (size_t k = c0; k < c1; k++) {
+        const size_t i0  = k * EW_CHUNK;
+        const size_t len = c.n - i0 < EW_CHUNK ? c.n - i0 : EW_CHUNK;
+        silu_span(len, c.x + i0, c.z != nullptr ? c.z + i0 : nullptr, c.y + i0);
     }
+}
+
+static void silu_all(size_t n, const float *x, const float *z, float *y) {
+    struct ew_call c = {.x = x, .z = z, .y = y, .n = n};
+    geist_par_for((n + EW_CHUNK - 1) / EW_CHUNK, silu_chunks, &c);
 }
 
 [[nodiscard]] enum geist_status
@@ -295,6 +336,14 @@ static void rmsnorm_row(
     }
 }
 
+/* Rows [r0, r1) of feat floats. */
+static void rmsnorm_rows(void *ctx, size_t r0, size_t r1) {
+    const struct ew_call c = *(const struct ew_call *) ctx;
+    for (size_t r = r0; r < r1; r++) {
+        rmsnorm_row(c.feat, c.x + r * c.feat, c.w, c.eps, c.y + r * c.feat);
+    }
+}
+
 [[nodiscard]] enum geist_status cpu_x86_rmsnorm(struct geist_backend      *be,
                                                 const struct geist_tensor *x,
                                                 const struct geist_tensor *w,
@@ -328,10 +377,8 @@ static void rmsnorm_row(
         }
         return GEIST_OK;
     }
-#pragma omp parallel for schedule(static)
-    for (size_t r = 0; r < rows; r++) {
-        rmsnorm_row(feat, xp + r * feat, wp, eps, yp + r * feat);
-    }
+    struct ew_call c = {.x = xp, .w = wp, .y = yp, .feat = feat, .eps = eps};
+    geist_par_for(rows, rmsnorm_rows, &c);
     return GEIST_OK;
 }
 
@@ -347,6 +394,15 @@ static void add_span(size_t n, const float *a, const float *b, float *y) {
                 y + i,
                 m,
                 _mm256_add_ps(_mm256_maskload_ps(a + i, m), _mm256_maskload_ps(b + i, m)));
+    }
+}
+
+/* Chunks [c0, c1) of EW_CHUNK floats: y = x + z. */
+static void add_chunks(void *ctx, size_t c0, size_t c1) {
+    const struct ew_call c = *(const struct ew_call *) ctx;
+    for (size_t k = c0; k < c1; k++) {
+        const size_t i0 = k * EW_CHUNK;
+        add_span(c.n - i0 < EW_CHUNK ? c.n - i0 : EW_CHUNK, c.x + i0, c.z + i0, c.y + i0);
     }
 }
 
@@ -379,11 +435,7 @@ static void add_span(size_t n, const float *a, const float *b, float *y) {
         add_span(na, ap, bp, yp);
         return GEIST_OK;
     }
-    const size_t chunks = (na + EW_CHUNK - 1) / EW_CHUNK;
-#pragma omp parallel for schedule(static)
-    for (size_t c = 0; c < chunks; c++) {
-        const size_t i0 = c * EW_CHUNK;
-        add_span(na - i0 < EW_CHUNK ? na - i0 : EW_CHUNK, ap + i0, bp + i0, yp + i0);
-    }
+    struct ew_call c = {.x = ap, .z = bp, .y = yp, .n = na};
+    geist_par_for((na + EW_CHUNK - 1) / EW_CHUNK, add_chunks, &c);
     return GEIST_OK;
 }
