@@ -170,6 +170,8 @@ LIB_SOURCES := \
     src/engine/arch_registry.c \
     src/engine/model.c \
     src/engine/sampler.c \
+    src/engine/sampler_penalties.c \
+    src/engine/dry_breakers.c \
     src/engine/session.c \
     src/engine/decision.c \
     src/engine/sp_bpe_tokenizer.c \
@@ -373,6 +375,11 @@ $(BUILD_DIR)/src/engine/decision.o: $(BUILD_DIR)/decision-config
 # numeric API guards must observe NaN/Inf; leave the inference kernels alone.
 $(BUILD_DIR)/src/engine/decision.o: CFLAGS_STRICT += -DGEIST_ENABLE_DECISION=$(DECISION) -fno-finite-math-only
 $(BUILD_DIR)/tools/bench_decision.o $(BUILD_DIR)/tests/test_decision_errors_unit.o: CFLAGS += -fno-finite-math-only
+# The repetition penalties match llama.cpp's floats exactly: no reciprocal
+# division, no fused multiply-add, and option checks that see NaN/Inf.
+$(BUILD_DIR)/src/engine/sampler_penalties.o: CFLAGS_STRICT += -fno-fast-math -ffp-contract=off
+$(BUILD_DIR)/tests/test_sampler_penalties_unit.o: CFLAGS += -fno-finite-math-only
+$(BUILD_DIR)/tests/test_session_penalties_int.o: CFLAGS += -fno-fast-math -ffp-contract=off
 
 # Object compilation. -MMD -MP generates .d files for header tracking.
 # src/*.c uses CFLAGS_STRICT (adds -Wshadow -Wundef); tools/ and tests/ use

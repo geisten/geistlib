@@ -297,6 +297,61 @@ struct geist_session_opts {
     /* @stability EXPERIMENTAL — verify-forward batch cap; sizes scratch
      * buffers and the KIVI residual ring. 0 = arch default (transformer: 64). */
     size_t m_max;
+
+    /* @stability EXPERIMENTAL — repetition control (#695). Every field is
+     * off when zero, so a zero-initialized struct decodes as before, bit
+     * for bit. The arithmetic is llama.cpp's (its `penalties` and `dry`
+     * samplers), applied in its order: penalties, then DRY, then the
+     * top-k / top-p / temperature filters above. Greedy decoding
+     * (temperature 0) takes the argmax of the penalized logits.
+     *
+     * The history the penalties look back over is every text token in the
+     * session's context: the prompt, the decoded tokens and tokens fed with
+     * geist_session_prefill_tokens, as llama.cpp's server accepts its
+     * prompt into the sampler. Audio and image soft tokens are skipped.
+     * geist_session_peek_logits keeps returning the model's logits, not the
+     * penalized ones.
+     *
+     *   repeat_penalty      0 or 1 → off. Over the distinct tokens of the
+     *                       last repeat_last_n: a logit > 0 is divided by
+     *                       it, any other multiplied. Must be > 0.
+     *   repeat_last_n       window of the three penalties, in tokens.
+     *                       0 → 64 (llama.cpp's default). Must be >= 0.
+     *   frequency_penalty   0 → off. logit -= count * frequency_penalty,
+     *   presence_penalty    0 → off.        - (count > 0) * presence_penalty,
+     *                       count = occurrences in the same window
+     *                       (OpenAI's formula, llama.cpp's window).
+     *   dry_multiplier      0 → DRY off. A token that would extend a
+     *                       sequence already in the window beyond
+     *                       dry_allowed_length tokens gets
+     *                       logit -= dry_multiplier
+     *                                * dry_base^(length - dry_allowed_length).
+     *   dry_base            0 → 1.75. Must be >= 1.
+     *   dry_allowed_length  0 → 2 (llama.cpp's 0 is not expressible).
+     *   dry_penalty_last_n  DRY's window in tokens. 0 → 64.
+     *   dry_sequence_breakers, n_dry_sequence_breakers
+     *                       strings a repeat may not run across. nullptr →
+     *                       llama.cpp's defaults "\n", ":", "\"", "*"; a
+     *                       non-null array with n == 0 → none. Matched
+     *                       against the vocabulary at geist_session_create
+     *                       exactly as llama.cpp does (each truncated to 40
+     *                       bytes); the strings are not kept. Needs the
+     *                       GGUF-embedded tokenizer — a model with only an
+     *                       external tokenizer.bin gets no breakers.
+     *
+     * Invalid values (a non-finite one, a negative window, a
+     * repeat_penalty < 0, a dry_base in (0, 1)) fail geist_session_create
+     * with GEIST_E_INVALID_ARG. */
+    float              repeat_penalty;
+    int32_t            repeat_last_n;
+    float              frequency_penalty;
+    float              presence_penalty;
+    float              dry_multiplier;
+    float              dry_base;
+    int32_t            dry_allowed_length;
+    int32_t            dry_penalty_last_n;
+    const char *const *dry_sequence_breakers;
+    size_t             n_dry_sequence_breakers;
 };
 
 /* @stability STABLE since 0.1.0

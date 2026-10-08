@@ -1924,7 +1924,19 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     sess->top_p       = 1.0f;
     sess->top_k       = 0;
     sess->sampler_ws  = (struct geist_sampler_workspace) {0};
+    sess->pen         = (struct geist_sampler_penalties) {0};
     geist_rng_seed(&sess->rng, 0xCAFEBABE1234ULL);
+    /* One token id per position (#695): 4 bytes against the KV cache's
+     * kilobytes per position. */
+    sess->tok_hist = heap_alloc_array_aligned(geist_token_t, sess->max_seq_len);
+    if (sess->tok_hist == nullptr) {
+        geist_backend_set_error(be,
+                                GEIST_E_OOM,
+                                "transformer_session_alloc: token history (%zu positions)",
+                                sess->max_seq_len);
+        transformer_session_free(state, sess);
+        return nullptr;
+    }
 
     /* After the KV mode: whether the scratch pool can be device-local
      * depends on it (scratch_device_wanted). */
@@ -2181,6 +2193,8 @@ void transformer_session_free(struct transformer_arch_state   *state,
         sess->scratch_pool_used  = 0;
     }
     geist_sampler_workspace_destroy(&sess->sampler_ws);
+    geist_sampler_penalties_destroy(&sess->pen);
+    safe_free((void **) &sess->tok_hist);
     transformer_spec_session_scratch_free(sess);
 
     /* The combined 15-slot KV pointer block; k_cache is its base, the

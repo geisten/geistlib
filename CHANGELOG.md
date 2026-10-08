@@ -102,6 +102,29 @@ minor release.
   39 → 260, pp500 126 → 393; aligned lengths (pp512) unchanged.
 ### Added
 
+- **Repetition control in the sampler: `repeat_penalty`, frequency /
+  presence penalties and DRY (#695, EXPERIMENTAL).** New
+  `geist_session_opts` fields `repeat_penalty`, `repeat_last_n`,
+  `frequency_penalty`, `presence_penalty`, `dry_multiplier`, `dry_base`,
+  `dry_allowed_length`, `dry_penalty_last_n`, `dry_sequence_breakers`,
+  `n_dry_sequence_breakers`, appended to the struct and all off when zero: a
+  zero-initialized struct decodes bit for bit as before (logit and token
+  hashes unchanged on Qwen3 0.6B and Gemma 3 270M, greedy and sampled).
+  The arithmetic is llama.cpp's `penalties` and `dry` samplers (pinned
+  `2d8d612e4`), applied in its order before top-k / top-p / temperature;
+  greedy decoding takes the argmax of the penalized logits. The history is
+  every text token in the session's context (prompt, decoded and prefilled
+  tokens, as llama.cpp's server accepts its prompt), tracked per position so
+  truncate, reset, the speculative rewind and snapshots carry it (snapshot
+  format version 2). DRY sequence breakers are strings (default
+  `"\n" ":" "\"" "*"`), matched against the vocabulary at session create the
+  way llama.cpp does and handed to the architecture through a new optional
+  `set_dry_breakers` slot at the end of `geist_arch_ops_decoder`. Qwen3 0.6B
+  Q4_K_M at temperature 0, "Write a poem about the sea.": "The sea is a
+  metaphor for the human soul." repeated without end; with
+  `repeat_penalty = 1.1` it writes on. The struct grew: binaries built
+  against older headers must be rebuilt. `examples/simple_generate` takes
+  `--repeat-penalty`.
 - **`tools/convert_hf.py`: reproducible Hugging Face → GGUF conversion with a
   quality gate (#623).** `convert` takes a pinned HF commit through llama.cpp's
   converter at the protocol pin (`2d8d612e4`), optionally `llama-quantize`, and
