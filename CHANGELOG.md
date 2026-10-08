@@ -10,6 +10,22 @@ minor release.
 
 ### Fixed
 
+- **cpu_x86: the Q4_Kx8 kernels quantize activations with one scale per
+  256-element super-block (#694).** `quantize_q8_Kx4` (prefill) and the M = 1
+  GEMV's quantizer took one max-abs over the whole row and wrote it into every
+  super-block's scale, so a single activation outlier coarsened the rest of
+  the row; llama.cpp's Q8_K, which the layout copies, scales per super-block.
+  Q4_K weights on AVX-512 hosts change numerically (prefill and decode); the
+  kernels and their speed are unchanged.
+- **cpu_x86: the W8A8 kernels take one activation scale per 256 elements
+  (#694).** Q6_K prefill on AVX-512 VNNI hosts and every F32 dense weight
+  (Gemma 4's per-layer-embedding gate and projection) quantized each
+  activation row with a single scale. Gemma 4 E2B Q4_K_M on a decision
+  prompt: the layer outputs' error against the fp32 oracle, averaged over the
+  prompt, falls from 2.2 % / 15.3 % / 13.3 % (layers 0 / 10 / 34) to 1.2 % /
+  7.7 % / 6.8 %, about llama.cpp's level. Prefill speed is unchanged within
+  noise (9950X, pp128 / pp512).
+
 - **Vulkan: Gemma 4 keeps its scratch pool in VRAM under
   `GEIST_VK_SCRATCH_DEVICE=1` (#488).** The device-local pool skipped every
   model with per-layer embeddings, although PLE's host loops only run when the

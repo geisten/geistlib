@@ -25,7 +25,7 @@ typedef float (*w8a8_dot_fn)(size_t        n_blocks,
                              const float   w_offsets[static n_blocks],
                              const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
                              const int32_t sum_a_per_block[static n_blocks],
-                             float         scale_x);
+                             const float   act_scales[static w8a8_act_groups(n_blocks)]);
 
 [[nodiscard]] float w8a8_dot_avx512_vnni(size_t        n_blocks,
                                          const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
@@ -33,7 +33,7 @@ typedef float (*w8a8_dot_fn)(size_t        n_blocks,
                                          const float   w_offsets[static n_blocks],
                                          const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
                                          const int32_t sum_a_per_block[static n_blocks],
-                                         float         scale_x);
+                                         const float act_scales[static w8a8_act_groups(n_blocks)]);
 
 void w8a8_gemm_avx512_vnni(
         size_t        n_tokens,
@@ -44,7 +44,7 @@ void w8a8_gemm_avx512_vnni(
         const float   w_offsets[static n_rows * n_blocks_per_row],
         const int8_t  acts[static n_tokens * n_blocks_per_row * W8A8_BLOCK_ELEMS],
         const int32_t sum_a_per_block[static n_tokens * n_blocks_per_row],
-        const float   scale_x[static n_tokens],
+        const float   act_scales[static n_tokens * w8a8_act_groups(n_blocks_per_row)],
         float         out[static n_tokens * n_rows]);
 
 static w8a8_dot_fn g_dot8    = nullptr;
@@ -71,11 +71,11 @@ static void w8a8_dispatch_init(void) {
                              const float   w_offsets[static n_blocks],
                              const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
                              const int32_t sum_a_per_block[static n_blocks],
-                             float         scale_x) {
+                             const float   act_scales[static w8a8_act_groups(n_blocks)]) {
     if (g_inited8 == 0) {
         w8a8_dispatch_init();
     }
-    return g_dot8(n_blocks, weights, w_scales, w_offsets, acts, sum_a_per_block, scale_x);
+    return g_dot8(n_blocks, weights, w_scales, w_offsets, acts, sum_a_per_block, act_scales);
 }
 
 [[nodiscard]] int w8a8_isa_is_vnni(void) {
@@ -94,8 +94,7 @@ struct w8a8_rows {
     const float   *w_offsets;
     const int8_t  *acts;
     const int32_t *sum_a;
-    const float   *scale_x;  /* the GEMM's, one per token */
-    float          scale_x1; /* the GEMV's */
+    const float   *act_scales; /* w8a8_act_groups(n_blocks) per token */
     float         *out;
 };
 
@@ -107,7 +106,7 @@ static void w8a8_gemv_rows(void *ctx, size_t m0, size_t m1) {
         const uint8_t *w_row = c.weights + m * bytes_per_row;
         const float   *s_row = c.w_scales + m * scales_per_row;
         const float   *o_row = c.w_offsets + m * scales_per_row;
-        c.out[m]             = c.dot(c.n_blocks, w_row, s_row, o_row, c.acts, c.sum_a, c.scale_x1);
+        c.out[m] = c.dot(c.n_blocks, w_row, s_row, o_row, c.acts, c.sum_a, c.act_scales);
     }
 }
 
@@ -118,21 +117,21 @@ void w8a8_gemv(size_t        n_rows,
                const float   w_offsets[static n_rows * n_blocks_per_row],
                const int8_t  acts[static n_blocks_per_row * W8A8_BLOCK_ELEMS],
                const int32_t sum_a_per_block[static n_blocks_per_row],
-               float         scale_x,
+               const float   act_scales[static w8a8_act_groups(n_blocks_per_row)],
                float         out[static n_rows]) {
     if (g_inited8 == 0) {
         w8a8_dispatch_init();
     }
-    struct w8a8_rows c = {.n_tokens  = 1,
-                          .n_blocks  = n_blocks_per_row,
-                          .dot       = g_dot8,
-                          .weights   = weights,
-                          .w_scales  = w_scales,
-                          .w_offsets = w_offsets,
-                          .acts      = acts,
-                          .sum_a     = sum_a_per_block,
-                          .scale_x1  = scale_x,
-                          .out       = out};
+    struct w8a8_rows c = {.n_tokens   = 1,
+                          .n_blocks   = n_blocks_per_row,
+                          .dot        = g_dot8,
+                          .weights    = weights,
+                          .w_scales   = w_scales,
+                          .w_offsets  = w_offsets,
+                          .acts       = acts,
+                          .sum_a      = sum_a_per_block,
+                          .act_scales = act_scales,
+                          .out        = out};
     geist_par_for(n_rows, w8a8_gemv_rows, &c);
 }
 
@@ -152,7 +151,7 @@ static void w8a8_gemm_rows(void *ctx, size_t r0, size_t r1) {
                                             o_row,
                                             c.acts + j * bytes_per_row,
                                             c.sum_a + j * scales_per_row,
-                                            c.scale_x[j]);
+                                            c.act_scales + j * w8a8_act_groups(c.n_blocks));
         }
     }
 }
@@ -165,7 +164,7 @@ void w8a8_gemm(size_t        n_tokens,
                const float   w_offsets[static n_rows * n_blocks_per_row],
                const int8_t  acts[static n_tokens * n_blocks_per_row * W8A8_BLOCK_ELEMS],
                const int32_t sum_a_per_block[static n_tokens * n_blocks_per_row],
-               const float   scale_x[static n_tokens],
+               const float   act_scales[static n_tokens * w8a8_act_groups(n_blocks_per_row)],
                float         out[static n_tokens * n_rows]) {
     if (g_inited8 == 0) {
         w8a8_dispatch_init();
@@ -179,22 +178,22 @@ void w8a8_gemm(size_t        n_tokens,
                               w_offsets,
                               acts,
                               sum_a_per_block,
-                              scale_x,
+                              act_scales,
                               out);
         return;
     }
     /* Scalar fallback: one dispatched dot product per token and row. This path
      * is intentionally untiled because it runs only on x86 without VNNI. */
-    struct w8a8_rows c = {.n_tokens  = n_tokens,
-                          .n_rows    = n_rows,
-                          .n_blocks  = n_blocks_per_row,
-                          .dot       = g_dot8,
-                          .weights   = weights,
-                          .w_scales  = w_scales,
-                          .w_offsets = w_offsets,
-                          .acts      = acts,
-                          .sum_a     = sum_a_per_block,
-                          .scale_x   = scale_x,
-                          .out       = out};
+    struct w8a8_rows c = {.n_tokens   = n_tokens,
+                          .n_rows     = n_rows,
+                          .n_blocks   = n_blocks_per_row,
+                          .dot        = g_dot8,
+                          .weights    = weights,
+                          .w_scales   = w_scales,
+                          .w_offsets  = w_offsets,
+                          .acts       = acts,
+                          .sum_a      = sum_a_per_block,
+                          .act_scales = act_scales,
+                          .out        = out};
     geist_par_for(n_rows, w8a8_gemm_rows, &c);
 }
