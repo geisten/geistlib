@@ -46,7 +46,6 @@ minor release.
   source; the `convert-gate` workflow runs SmolLM2 135M end to end. The gate
   found #674 (Gemma 3 270M logits) and #675 (Q5_0 weights).
 
-### Added
 - **`geist_session_cancel`: stop a prefill from another thread (#628).**
   EXPERIMENTAL, in `geist_util.h`. Safe from any thread; a prefill checks
   before each sub-batch (the session's `m_max` positions) and a `decode_step`
@@ -74,7 +73,6 @@ minor release.
   with it, so a consumer pinned to an older engine can still build. Test:
   `test_backend_memory_info_unit` (vulkan-gpu CI leg).
 
-### Changed
 - **The Vulkan out-of-device-memory error names what the whole device holds**. It used to report only this backend's own usage ("4315 of 11264 MiB
   are in use"), which reads as impossible when another model or process holds
   the rest; with `VK_EXT_memory_budget` it adds "the device reports 10950 of
