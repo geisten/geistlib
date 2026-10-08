@@ -597,6 +597,8 @@ void vk_destroy(struct geist_backend *be) {
                     [VK_PIPE_SIGMOID_MUL]      = "sigmoid_mul",
                     [VK_PIPE_QGATE_SPLIT]      = "qgate_split",
                     [VK_PIPE_ATTENTION_F16_CM] = "attention_f16_cm",
+                    [VK_PIPE_MM_Q8_0_CM]       = "mm_q8_0_cm",
+                    [VK_PIPE_MM_Q4_0_CM]       = "mm_q4_0_cm",
                     [VK_PIPE_COUNT]            = "copy",
                     /* vkCmdCopyBuffer stamps */};
             fprintf(stderr, "geist vulkan gpu profile:\n");
