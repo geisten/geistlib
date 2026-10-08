@@ -317,46 +317,11 @@ static size_t spec_row_stride(uint16_t dt, size_t n) {
     }
 }
 
-/* Dequantize one embedding row (`row` points at its first byte) to f32. */
+/* Dequantize one embedding row (`row` points at its first byte) to f32. The
+ * row is decoded as a tensor of its own: every spec_dtype_ok dtype is
+ * self-contained per block (no per-tensor scale). */
 static void spec_row_to_f32(uint16_t dt, const uint8_t *row, size_t n, float *dst) {
-    switch (dt) {
-    case GEIST_DTYPE_F16: {
-        const uint16_t *w = (const uint16_t *) row;
-        for (size_t i = 0; i < n; i++) {
-            dst[i] = fp16_to_fp32(w[i]);
-        }
-        break;
-    }
-    case GEIST_DTYPE_BF16: {
-        const uint16_t *w = (const uint16_t *) row;
-        for (size_t i = 0; i < n; i++) {
-            uint32_t f = (uint32_t) w[i] << 16;
-            memcpy(&dst[i], &f, sizeof f);
-        }
-        break;
-    }
-    case GEIST_DTYPE_F32:
-        memcpy(dst, row, n * sizeof(float));
-        break;
-    case GEIST_DTYPE_Q3_K:
-        dequant_q3_K_row(n, row, dst);
-        break;
-    case GEIST_DTYPE_Q4_K:
-        dequant_q4_K_row(n, row, dst);
-        break;
-    case GEIST_DTYPE_Q5_K:
-        dequant_q5_K_row(n, row, dst);
-        break;
-    case GEIST_DTYPE_Q6_K:
-        dequant_q6_K_row(n, row, dst);
-        break;
-    case GEIST_DTYPE_Q8_0:
-        dequant_q8_0_row(n, row, dst);
-        break;
-    default:
-        memset(dst, 0, n * sizeof(float));
-        break;
-    }
+    (void) quant_dequant_row((enum geist_dtype) dt, n, 0, n, row, dst);
 }
 
 /* spec_head_build's per-row pass, for geist_par_for. */

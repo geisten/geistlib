@@ -459,9 +459,10 @@ static void test_attention_f16(size_t      n_q,
                                size_t      kvh,
                                size_t      hd,
                                size_t      sliding,
+                               float       q_amp,
                                const char *name) {
     const size_t nq = n_q * qh * hd, nk = n_kv * kvh * hd;
-    float       *q = geist_test_fill(nq, 0.031f, 0.3f, 0.6f, 0.0f),
+    float       *q = geist_test_fill(nq, 0.031f, 0.3f, q_amp, 0.0f),
           *k       = geist_test_fill(nk, 0.023f, 0.3f, 0.6f, 0.0f);
     float    *v    = geist_test_fill(nk, 0.017f, 0.3f, 1.0f, 0.0f);
     float    *ref = malloc(nq * sizeof(float)), *got = malloc(nq * sizeof(float));
@@ -553,13 +554,27 @@ int main(void) {
     test_attention(9, 40, 31, 8, 2, 256, 0, "chunked prefill q_off=31");
     test_attention(16, 16, 0, 16, 16, 128, 0, "MHA 16x128");
     test_attention(1, 300, 299, 8, 2, 256, 0, "decode kv=300 (flash path)");
-    test_attention_f16(37, 37, 0, 8, 2, 256, 0, "prefill 37 (8/2x256)");
-    test_attention_f16(37, 37, 0, 16, 8, 128, 0, "prefill 37 (16/8x128)");
-    test_attention_f16(37, 37, 0, 8, 1, 512, 0, "prefill 37 (8/1x512)");
-    test_attention_f16(70, 100, 30, 8, 2, 256, 32, "chunk q_off=30, window 32");
-    test_attention_f16(70, 100, 30, 8, 1, 512, 20, "x512 q_off=30, window 20");
-    test_attention_f16(40, 40, 0, 16, 8, 128, 7, "x128 window 7 (< tile)");
-    test_attention_f16(1, 50, 49, 8, 2, 256, 16, "decode kv=50, window 16");
+    test_attention_f16(37, 37, 0, 8, 2, 256, 0, 0.6f, "prefill 37 (8/2x256)");
+    test_attention_f16(37, 37, 0, 16, 8, 128, 0, 0.6f, "prefill 37 (16/8x128)");
+    test_attention_f16(37, 37, 0, 8, 1, 512, 0, 0.6f, "prefill 37 (8/1x512)");
+    test_attention_f16(70, 100, 30, 8, 2, 256, 32, 0.6f, "chunk q_off=30, window 32");
+    test_attention_f16(70, 100, 30, 8, 1, 512, 20, 0.6f, "x512 q_off=30, window 20");
+    test_attention_f16(40, 40, 0, 16, 8, 128, 7, 0.6f, "x128 window 7 (< tile)");
+    test_attention_f16(1, 50, 49, 8, 2, 256, 16, 0.6f, "decode kv=50, window 16");
+    /* longer prefills: several 64-key steps, the n_kv tail, GQA 1/2/8 */
+    test_attention_f16(200, 200, 0, 8, 8, 128, 0, 0.6f, "prefill 200 MHA x128");
+    test_attention_f16(200, 200, 0, 8, 4, 256, 0, 0.6f, "prefill 200 GQA2 x256");
+    test_attention_f16(200, 200, 0, 8, 1, 512, 0, 0.6f, "prefill 200 GQA8 x512");
+    test_attention_f16(600, 700, 100, 8, 1, 256, 0, 0.6f, "600 q_off=100 GQA8 x256");
+    test_attention_f16(600, 700, 100, 16, 8, 128, 0, 0.6f, "600 q_off=100 GQA2 x128");
+    test_attention_f16(600, 650, 50, 4, 1, 512, 128, 0.6f, "600 q_off=50 x512 win 128");
+    test_attention_f16(300, 300, 0, 8, 2, 256, 5, 0.6f, "300 x256 window 5 (< tile)");
+    test_attention_f16(300, 340, 40, 8, 1, 256, 100, 0.6f, "300 q_off=40 window 100");
+    /* larger logits: the running row max moves by more than the online
+     * softmax's rescale threshold between key steps */
+    test_attention_f16(300, 300, 0, 8, 2, 256, 0, 4.0f, "300 x256 large logits");
+    test_attention_f16(260, 300, 40, 8, 1, 512, 0, 3.0f, "260 x512 large logits");
+    test_attention_f16(260, 260, 0, 16, 8, 128, 64, 6.0f, "260 x128 win 64 large");
     geist_backend_destroy(g_be);
     for (size_t i = 0; i < sizeof tables / sizeof tables[0]; i++) {
         free(tables[i]);

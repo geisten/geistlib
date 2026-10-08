@@ -31,6 +31,7 @@
 #include "fwht.h"
 #include "kivi.h"
 #include "ptqtp_awq.h"
+#include "parse.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -1696,10 +1697,10 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
     {
         int         qbits     = 0;
         const char *env_qbits = getenv("GEIST_KV_QBITS");
-        if (!kl.int4_packed && env_qbits != nullptr) {
-            const int q = atoi(env_qbits);
+        long        q         = 0;
+        if (!kl.int4_packed && geist_parse_long(env_qbits, &q)) {
             if (q >= 2 && q <= 8) {
-                qbits = (q == 8) ? 0 : q; /* 8-bit is the native path */
+                qbits = (q == 8) ? 0 : (int) q; /* 8-bit is the native path */
             }
         }
         kl.sim_qbits = qbits;

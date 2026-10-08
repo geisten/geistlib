@@ -1,0 +1,7 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* Multi-subgroup tensor-core prefill attention, head_dim 128. Body and notes:
+ * attention_f16_mw_body.glsl. */
+#define HD 128
+#include "attention_f16_mw_body.glsl"

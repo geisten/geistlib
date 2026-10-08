@@ -25,6 +25,58 @@ minor release.
   backend uploads from, as `per_layer_model_proj`'s does (#658). Vulkan
   arena, RTX 2080 Ti: Qwen3.5 0.8B / 4B 73 → 32 MiB, Gemma 4 E2B 87 → 34 MiB,
   Bonsai 27B 255 → 32 MiB. CPU backends and Metal load as before.
+- **One row-dequant dispatch, `quant_dequant_row` (#465).** The per-dtype
+  "decode a weight row to f32" switch existed six times: the reference
+  linear kernel behind cpu_scalar and Vulkan's host path
+  (`common/linear_ref.c`), the transformer's embedding / PLE row lookup, the
+  Metal host fallback, the spec head and the two GGUF helpers. All of them
+  now call `quant_dequant_row` (declared in `quant.h` next to
+  `quant_raw_bytes`), which decodes F32, F16, BF16, every block format with
+  a row codec and I2_S, and refuses a run that is not whole blocks or
+  overruns the tensor. Output is bit-identical for every dtype a copy
+  handled before (new `test_quant_dequant_row_unit`; Qwen3-0.6B and Gemma 4
+  E2B logits unchanged on cpu_scalar and cpu_x86). Copies that lacked a
+  dtype gain it: the embedding / PLE lookup TQ2_0; the Metal host fallback
+  Q3_K, Q5_0, IQ*, TQ2_0, PQ2_0 and I2_S (it read them as zeros);
+  `gguf_dequant_to_fp32` / `gguf_dequant_row_to_fp32` Q4_0, Q4_1, Q5_0 and
+  I2_S. `gguf_dequant_row_to_fp32` also refuses a row past the tensor.
+
+- **Vulkan: the tensor-core prefill attention runs four subgroups per
+  workgroup in one online-softmax pass (#475, #658).** The previous kernel
+  gave each 16-query-row block one 32-lane subgroup, stepped over 16 keys
+  with four workgroup barriers each and computed QK^T twice (a max pass,
+  then exp and P@V). The new `attention_f16_{,hd128_,hd512_}mw_cm` kernels
+  split each 64-key step across four subgroups (QK^T by key, P@V by output
+  column, K and V read straight from global memory), need two barriers per
+  step and one QK^T pass: the row max only moves when a tile exceeds it by
+  more than e^8, and then the O tiles are rescaled through shared memory.
+  head_dim 512 no longer splits into two workgroups that both recompute
+  QK^T. Routed on 32-lane subgroups only; other widths keep the old kernel.
+  RTX 2080 Ti, `GEIST_VK_PROFILE` attention time at pp512: Gemma 4 E2B
+  36.5 → 6.8 ms (llama.cpp: 11.6), E4B 32.3 → 8.1, Llama 3.2 3B 15.2 → 5.8,
+  Qwen3 0.6B 17.0 → 4.1, Qwen3.5 4B 6.8 → 2.3; at pp2048 E2B 266 → 54 ms.
+  End-to-end pp512 (best of four alternating rounds, t/s): E2B 3671 → 4319,
+  E4B 1849 → 2015, Llama 3.2 3B 3578 → 3823, Qwen3 0.6B 10513 → 12405,
+  Qwen3.5 4B 1353 → 1368. CPU-vs-Vulkan logits at 300/512 tokens match
+  main's.
+- **Vulkan: a single-buffered 128 x 128 Q4_K/Q6_K tile for wide prefill
+  GEMMs (#658).** The double-buffered tile holds ~40 KB of shared memory, so
+  Turing ran one workgroup per SM. A variant with one shared buffer pair (one
+  extra barrier per k-step) runs two, and takes every Q4_K/Q6_K GEMM with more
+  than 64 workgroups (n_out ≥ 2560 at 512 tokens); narrower ones keep the
+  double-buffered tile, which is 3-7 % faster while the SMs are not all busy.
+  Per shape at m = 512: Q4_K 6144x1536 482 → 283 us, 8192x3072 935 → 667 us,
+  Q6_K 2560x10240 1.70 → 1.35 ms. RTX 2080 Ti, pp512: Gemma 4 E2B 4187 → 4547
+  t/s, E4B 2130 → 2540, Llama 3.2 3B 3443 → 4325; decode unchanged.
+- **Vulkan: F32-weight prefill GEMMs run on the tensor cores (#658).** Gemma
+  4's per-layer-embedding projections (`inp_gate`, `proj` and the widened
+  `per_layer_model_proj`) are F32, and the register-tiled `matmul_f32` ran
+  them at under 1 TFLOPS: 36 ms of a 512-token Gemma 4 E2B prefill against
+  ~7 ms in llama.cpp. They now take the 128 x 128 Q4_K/Q6_K tile with an F32
+  A stage (weights and activations rounded to f16, f32 accumulation) when
+  n_out % 128 == 0 and n_in % 32 == 0; 6 ms. RTX 2080 Ti, pp512: Gemma 4 E2B
+  3557 → 4183 t/s, E4B 1806 → 2122; Llama 3.2 3B (no F32 weights) and decode
+  unchanged. CPU-vs-Vulkan logits as before.
 - **Vulkan: Gemma 4's F32 PLE projection no longer sits in the weight arena
   (#658).** `per_layer_model_proj`, widened from F16 to F32 at load, was the
   one large matrix kept in the arena, so on Gemma 4 E4B the arena grew to
@@ -45,6 +97,15 @@ minor release.
   compile and a binding count outside 2..`VK_MAX_BINDINGS` is a
   `static_assert`. Pipeline order, the generated tables and the profile
   output are unchanged.
+- **Vulkan shaders (internal): one body for the register-tiled GEMMs
+  (#465).** `matmul_q4k`, `matmul_q6k` and `matmul_f32` were the last
+  register-tiled GEMMs with their own copy of the tile loop and the
+  `subgroupAdd` tail; they now include `mm_legacy.glsl` with a `DT_Q4K` /
+  `DT_Q6K` / `DT_F32` hook beside Q4_0, Q4_1, Q8_0, TQ2_0, PQ2_0 and Q5_K
+  (`matmul_q5k` and `matmul_tq2_0` were already folded). Each kernel keeps its
+  thread mapping, workgroup geometry and arithmetic order; glslc emits
+  byte-identical SPIR-V for all nine `mm_legacy` users, so the `_spv.h`
+  headers are unchanged.
 
 ### Fixed
 

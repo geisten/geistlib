@@ -2,6 +2,7 @@
  * src/backends/metal/lifecycle.c — device/queue lifecycle and runtime loading.
  */
 #include "metal_internal.h"
+#include "parse.h"
 
 static void metal_destroy_state(struct geist_backend *be, struct metal_state *st) {
     if (be == nullptr || st == nullptr) {
@@ -243,8 +244,12 @@ void metal_destroy(struct geist_backend *be) {
      * (~3 buffers per decode token; llama.cpp's n_cb optimum is 2-3).
      * GEIST_METAL_PIPELINE=0 disables, =N sets the rotation period. */
     const char *pipeline_env = getenv("GEIST_METAL_PIPELINE");
-    st->seq_rotate_every     = pipeline_env != nullptr ? (uint32_t) atoi(pipeline_env) : 192u;
-    st->profile_enabled      = metal_env_enabled("GEIST_METAL_PROFILE");
+    long        rotate       = 0;
+    st->seq_rotate_every =
+            geist_parse_long(pipeline_env, &rotate) && rotate >= 0 && rotate <= UINT32_MAX
+                    ? (uint32_t) rotate
+                    : 192u;
+    st->profile_enabled = metal_env_enabled("GEIST_METAL_PROFILE");
     /* Chunked DeltaNet prefill for seq>1 (port of dn_run_prefill_chunked).
      * GEIST_METAL_DN_CHUNK=0 uses the serial per-token mixer kernel. */
     const char *dn_chunk = getenv("GEIST_METAL_DN_CHUNK");

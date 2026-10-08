@@ -33,10 +33,20 @@
     *out = (size_t) value;
     return true;
 }
+/* scanf's %zu on a number that does not fit is undefined; read the token
+ * and let number() range-check it. 1 = read, 0 = malformed, EOF = no token. */
+[[nodiscard]] static int scan_number(size_t *out) {
+    char      token[24];
+    const int got = scanf("%23s", token);
+    if (got != 1) {
+        return got;
+    }
+    return number(out, token) ? 1 : 0;
+}
 [[nodiscard]] static bool read_ids(size_t n, size_t vocab, geist_token_t ids[static n]) {
     for (size_t i = 0; i < n; i++) {
-        int64_t id;
-        if (scanf("%" SCNd64, &id) != 1 || id < 0 || (uint64_t) id >= vocab || id > INT32_MAX) {
+        size_t id;
+        if (scan_number(&id) != 1 || id >= vocab || id > INT32_MAX) {
             return false;
         }
         ids[i] = (geist_token_t) id;
@@ -190,8 +200,8 @@ int main(int argc, char **argv) {
             active[n_modes++] = i;
     size_t case_index = 0, np, nc;
     int    read;
-    while ((read = scanf("%zu %zu", &np, &nc)) == 2) {
-        if (np == 0 || np > prompt_cap || nc == 0 || nc > candidate_cap ||
+    while ((read = scan_number(&np)) == 1) {
+        if (scan_number(&nc) != 1 || np == 0 || np > prompt_cap || nc == 0 || nc > candidate_cap ||
             !read_ids(np, geist_decision_vocab_size(d), prompt) ||
             !read_ids(nc, geist_decision_vocab_size(d), candidates)) {
             fprintf(stderr, "invalid wire input at case %zu\n", case_index);
