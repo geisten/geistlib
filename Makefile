@@ -8,12 +8,14 @@
 #   make test                  # unit + integration + python suites
 #   make bench                 # reproducible benchmark vs llama.cpp / bitnet.cpp
 #   make DECISION=1            # optional numeric decision API
+#   make OPENMP=0              # without OpenMP (geist_par_for's own threads)
 #   make help                  # show all options
 #
 # Output layout (per-target, per-mode segregated):
 #   build/$(TARGET)/$(MODE)/   *.o, *.d
 #   lib/$(TARGET)/$(MODE)/     libgeist.a
 #   bin/$(TARGET)/$(MODE)/     tests/test_*, tests/bench_*, tools/eval_geist, ...
+#   (each $(MODE)-noomp under OPENMP=0, a build without OpenMP)
 #
 # Adding a new target architecture:
 #   1. Create mk/target-<name>.mk (set CC, CFLAGS_TARGET, LDFLAGS_TARGET, LDLIBS_TARGET)
@@ -511,8 +513,8 @@ bench-mmlu: bin $(MODEL_PREREQ)
 	  --hf --shuffle --limit $(MMLU_LIMIT) --shots $(MMLU_SHOTS)
 
 clean:
-	@rm -rf build/$(TARGET)/$(MODE) lib/$(TARGET)/$(MODE) bin/$(TARGET)/$(MODE)
-	@echo "Cleaned $(TARGET)/$(MODE)."
+	@rm -rf $(BUILD_DIR) $(LIB_DIR) $(BIN_DIR)
+	@echo "Cleaned $(BUILD_DIR)."
 
 distclean:
 	@rm -rf build lib bin
@@ -571,6 +573,7 @@ help:
 	"  make run ARGS='m.gguf \"hi\"'      build + run examples/simple_generate" \
 	"  make lib | bin             only the static lib | only the binaries" \
 	"  make DECISION=1            enable experimental numeric candidate scoring" \
+	"  make OPENMP=0              build without OpenMP, into <MODE>-noomp dirs" \
 	"  make MODE=debug|asan|tsan|cov|perf   gdb | ASan+UBSan | TSan races | coverage | -O3+g profiling" \
 	"  make clean | distclean     remove current TARGET/MODE | remove everything" \
 	"" \

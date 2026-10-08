@@ -15,9 +15,14 @@
  * Everything here is static inline: each including file compiles its own
  * copy with its own -m flags, so the driver of the VNNI kernel is VNNI
  * code and no EVEX instruction reaches the AVX2 files. Each including file
- * defines ax_run_item, its item kernel (declared below), which ax_run
- * calls by name: a function pointer would reach the OpenMP-outlined loops
- * as an indirect call.
+ * defines ax_run_item, its item kernel (declared below), which the range
+ * bodies of ax_run call by name: a function pointer would make every item
+ * an indirect call.
+ *
+ * Items run on geist_par_for. Their cost varies (causal and window masks
+ * make later positions longer), so they are handed out one at a time from
+ * a shared counter, in order, to one range per thread: OpenMP's
+ * schedule(dynamic), which these loops used before.
  */
 #ifndef GEIST_INTERNAL_BACKEND_CPU_X86_ATTENTION_DRIVER_H
 #define GEIST_INTERNAL_BACKEND_CPU_X86_ATTENTION_DRIVER_H
@@ -28,7 +33,10 @@
 
 #include "gemma4_kernels.h" /* ATTN_EXP_FLOOR */
 
+#include "par.h"
+
 #include <math.h>
+#include <stdatomic.h>
 #include <stddef.h>
 
 /* The architecture refuses a larger head_dim at load
@@ -201,6 +209,92 @@ static void ax_run_item(size_t                per_pass,
                         const size_t          hi[static tn],
                         float                *part);
 
+/* One call's work for geist_par_for. */
+struct ax_job {
+    const struct ax_args *a;
+    size_t                group, per_pass, n_passes;
+    size_t                n_chunks, len, rec, dec_lo, dec_hi; /* split decode */
+    size_t                n_q, per_item, n_blocks;            /* otherwise */
+    size_t                n_items;
+    float                *part;
+    atomic_size_t         next; /* the next item to hand out */
+};
+
+/* Split decode: items (KV head, pass, chunk), in that order, until none is
+ * left; each leaves its partial results in `part`. Chunk c covers positions
+ * [dec_lo + c * len, ...], at least AX_CHUNK_MIN each, so none is empty. */
+static inline void ax_chunk_items(void *ctx, size_t, size_t) {
+    struct ax_job *j = ctx;
+    for (size_t i;
+         (i = atomic_fetch_add_explicit(&j->next, 1, memory_order_relaxed)) < j->n_items;) {
+        const size_t c    = i % j->n_chunks;
+        const size_t pass = i / j->n_chunks % j->n_passes;
+        const size_t kv_h = i / j->n_chunks / j->n_passes;
+        const size_t c_lo = j->dec_lo + c * j->len;
+        const size_t c_hi = j->dec_hi - c_lo < j->len ? j->dec_hi : c_lo + j->len - 1;
+        ax_run_item(j->per_pass,
+                    j->a,
+                    0,
+                    1,
+                    kv_h,
+                    kv_h * j->group + pass * j->per_pass,
+                    &c_lo,
+                    &c_hi,
+                    j->part + i * j->rec);
+    }
+}
+
+/* Split decode: query heads [h0, h1) merge their chunks. */
+static inline void ax_merge_heads(void *ctx, size_t h0, size_t h1) {
+    const struct ax_job *j        = ctx;
+    const size_t         head_dim = j->a->head_dim;
+    for (size_t h = h0; h < h1; h++) {
+        const size_t kv_h = h / j->group;
+        const size_t hg   = h % j->group;
+        const size_t pass = hg / j->per_pass;
+        ax_merge(j->n_chunks,
+                 head_dim,
+                 j->rec,
+                 j->part + (kv_h * j->n_passes + pass) * j->n_chunks * j->rec +
+                         hg % j->per_pass * (head_dim + 2),
+                 j->a->out + h * head_dim);
+    }
+}
+
+/* Otherwise: items (KV head, pass, block of queries), in that order, until
+ * none is left. */
+static inline void ax_query_items(void *ctx, size_t, size_t) {
+    struct ax_job *j = ctx;
+    for (size_t i;
+         (i = atomic_fetch_add_explicit(&j->next, 1, memory_order_relaxed)) < j->n_items;) {
+        const size_t qb   = i % j->n_blocks;
+        const size_t pass = i / j->n_blocks % j->n_passes;
+        const size_t kv_h = i / j->n_blocks / j->n_passes;
+        const size_t t0   = qb * j->per_item;
+        const size_t tn   = j->n_q - t0 < j->per_item ? j->n_q - t0 : j->per_item;
+        size_t       lo[AX_QUERIES_MAX], hi[AX_QUERIES_MAX];
+        for (size_t tq = 0; tq < tn; tq++) {
+            ax_span(j->a, t0 + tq, &lo[tq], &hi[tq]);
+        }
+        ax_run_item(j->per_pass,
+                    j->a,
+                    t0,
+                    tn,
+                    kv_h,
+                    kv_h * j->group + pass * j->per_pass,
+                    lo,
+                    hi,
+                    nullptr);
+    }
+}
+
+/* Runs fn on min(n_items, threads) ranges, one item counter for all. */
+static inline void ax_dynamic(struct ax_job *j, geist_par_fn fn) {
+    const size_t threads = geist_par_max_threads();
+    atomic_init(&j->next, 0);
+    geist_par_for(j->n_items < threads ? j->n_items : threads, fn, j);
+}
+
 /* The kernel on host pointers, validated by the caller (see struct
  * ax_args; n_q_heads a multiple of n_kv_heads, head_dim at most
  * AX_HEAD_DIM_MAX); `part` holds part_floats floats for a split decode, or
@@ -238,95 +332,42 @@ static void ax_run_item(size_t                per_pass,
     size_t               dec_lo = 0, dec_hi = 0, last_lo = 0, last_hi = 0;
     ax_span(&a, 0, &dec_lo, &dec_hi);
     ax_span(&a, n_q - 1, &last_lo, &last_hi);
-    const size_t         span     = last_lo <= last_hi ? last_hi - last_lo + 1 : 0;
-    const struct ax_plan plan     = ax_plan_for(n_q,
-                                                n_q_heads,
-                                                n_kv_heads,
-                                                head_dim,
-                                                kv_bytes,
-                                                chunk_span,
-                                                span,
-                                                part != nullptr ? part_floats : 0);
-    const size_t         per_pass = plan.per_pass;
-    const size_t         n_passes = group / per_pass;
+    const size_t         span = last_lo <= last_hi ? last_hi - last_lo + 1 : 0;
+    const struct ax_plan plan = ax_plan_for(n_q,
+                                            n_q_heads,
+                                            n_kv_heads,
+                                            head_dim,
+                                            kv_bytes,
+                                            chunk_span,
+                                            span,
+                                            part != nullptr ? part_floats : 0);
+    struct ax_job        j    = {.a        = &a,
+                                 .group    = group,
+                                 .per_pass = plan.per_pass,
+                                 .n_passes = group / plan.per_pass,
+                                 .part     = part};
     if (plan.n_chunks > 1) {
-        /* Split decode (n_q == 1): items (KV head, pass, chunk) leave their
-         * partial results in `part`, then each head merges its chunks.
-         * Chunk c covers positions [dec_lo + c * len, ...], at least
-         * AX_CHUNK_MIN each, so none is empty. */
-        const size_t n_chunks = plan.n_chunks;
-        const size_t len      = (dec_hi - dec_lo + n_chunks) / n_chunks;
-        const size_t rec      = per_pass * (head_dim + 2); /* one item's records */
-#if defined(_OPENMP)
-#pragma omp parallel
-#endif
-        {
-#if defined(_OPENMP)
-#pragma omp for collapse(3) schedule(dynamic)
-#endif
-            for (size_t kv_h = 0; kv_h < n_kv_heads; kv_h++) {
-                for (size_t pass = 0; pass < n_passes; pass++) {
-                    for (size_t c = 0; c < n_chunks; c++) {
-                        const size_t c_lo = dec_lo + c * len;
-                        const size_t c_hi = dec_hi - c_lo < len ? dec_hi : c_lo + len - 1;
-                        ax_run_item(per_pass,
-                                    &a,
-                                    0,
-                                    1,
-                                    kv_h,
-                                    kv_h * group + pass * per_pass,
-                                    &c_lo,
-                                    &c_hi,
-                                    part + ((kv_h * n_passes + pass) * n_chunks + c) * rec);
-                    }
-                }
-            }
-#if defined(_OPENMP)
-#pragma omp for collapse(2)
-#endif
-            for (size_t kv_h = 0; kv_h < n_kv_heads; kv_h++) {
-                for (size_t hg = 0; hg < group; hg++) {
-                    const size_t pass = hg / per_pass;
-                    ax_merge(n_chunks,
-                             head_dim,
-                             rec,
-                             part + (kv_h * n_passes + pass) * n_chunks * rec +
-                                     hg % per_pass * (head_dim + 2),
-                             out + (kv_h * group + hg) * head_dim);
-                }
-            }
-        }
+        /* Split decode (n_q == 1): the items, then each head merges its
+         * chunks. Item i = (kv_h, pass, c) writes its records at part +
+         * i * rec, so a pass's chunks lie side by side for the merge. */
+        j.n_chunks = plan.n_chunks;
+        j.len      = (dec_hi - dec_lo + j.n_chunks) / j.n_chunks;
+        j.rec      = plan.per_pass * (head_dim + 2); /* one item's records */
+        j.dec_lo   = dec_lo;
+        j.dec_hi   = dec_hi;
+        j.n_items  = n_kv_heads * j.n_passes * j.n_chunks;
+        ax_dynamic(&j, ax_chunk_items);
+        geist_par_for(n_q_heads, ax_merge_heads, &j);
         return;
     }
-    /* Items by KV head, then pass, then block of queries: the team works
+    /* Items by KV head, then pass, then block of queries: the threads work
      * through one KV head's rows at a time, which then stay in each core's
-     * L2. Causal and window masks make later positions longer: dynamic. */
-    const size_t per_item = plan.per_item;
-    const size_t n_blocks = (n_q + per_item - 1) / per_item;
-#if defined(_OPENMP)
-#pragma omp parallel for collapse(3) schedule(dynamic)
-#endif
-    for (size_t kv_h = 0; kv_h < n_kv_heads; kv_h++) {
-        for (size_t pass = 0; pass < n_passes; pass++) {
-            for (size_t qb = 0; qb < n_blocks; qb++) {
-                const size_t t0 = qb * per_item;
-                const size_t tn = n_q - t0 < per_item ? n_q - t0 : per_item;
-                size_t       lo[AX_QUERIES_MAX], hi[AX_QUERIES_MAX];
-                for (size_t tq = 0; tq < tn; tq++) {
-                    ax_span(&a, t0 + tq, &lo[tq], &hi[tq]);
-                }
-                ax_run_item(per_pass,
-                            &a,
-                            t0,
-                            tn,
-                            kv_h,
-                            kv_h * group + pass * per_pass,
-                            lo,
-                            hi,
-                            nullptr);
-            }
-        }
-    }
+     * L2. */
+    j.per_item = plan.per_item;
+    j.n_blocks = (n_q + plan.per_item - 1) / plan.per_item;
+    j.n_q      = n_q;
+    j.n_items  = n_kv_heads * j.n_passes * j.n_blocks;
+    ax_dynamic(&j, ax_query_items);
 }
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_ATTENTION_DRIVER_H */

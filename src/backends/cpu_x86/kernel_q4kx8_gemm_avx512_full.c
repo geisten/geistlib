@@ -8,7 +8,7 @@
  * pinned at commit 7c082bc417bbe53210a83df4ba5b49e18ce6193c).
  *
  * Original code Copyright (c) 2023-2025 The ggml authors, MIT-licensed.
- * Adapted to geist's struct conventions + wrapped in OMP outer parallel.
+ * Adapted to geist's struct conventions + split over panels by geist_par_for.
  *
  * The inner per-(sb, rp) block emits ~32 VPMADDUBSWs that produce 16 lanes
  * of 16 partial-sum int16 cells = 256 cells per pass. Combined with the
@@ -30,9 +30,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#if defined(_OPENMP)
-#include <omp.h>
-#endif
+#include "par.h"
 
 #define AVX512_TARGET "avx2,avx,f16c,fma,avx512f,avx512bw,avx512dq,avx512vl"
 
@@ -790,31 +788,38 @@ q4kx8_gemm16x16_tile_avx512(size_t                     nb,
  * and the AVX2 tail therefore live in kernel_q4kx8_gemm_avx512.c, which is
  * built without -mavx512*; q4kx8_gemm_avx512() there is the public entry.
  */
+/* The 16x16 panels for geist_par_for. */
+struct panel_call {
+    size_t                     N, n_super_k, N16;
+    const struct block_q8_Kx4 *X;
+    const struct block_q4_Kx8 *W;
+    float                     *Y;
+};
+
+/* Panels [p0, p1), flat over (y16, x16) as the collapsed loop it replaces. */
+static void panels(void *ctx, size_t p0, size_t p1) {
+    const struct panel_call c = *(const struct panel_call *) ctx;
+    for (size_t p = p0; p < p1; p++) {
+        const size_t y16 = p / c.N16;
+        const size_t x16 = p % c.N16;
+        /* 16 m-rows = 4 Q8_Kx4 blocks; 16 n-cells = 2 Q4_Kx8 blocks. */
+        const struct block_q8_Kx4 *a_ptrs[4];
+        for (int rp = 0; rp < 4; rp++) {
+            a_ptrs[rp] = c.X + (y16 * 4 + rp) * c.n_super_k;
+        }
+        const struct block_q4_Kx8 *b_ptr_0 = c.W + (x16 * 2 + 0) * c.n_super_k;
+        const struct block_q4_Kx8 *b_ptr_1 = c.W + (x16 * 2 + 1) * c.n_super_k;
+        float                     *dst     = c.Y + (y16 * 16) * c.N + (x16 * 16);
+        q4kx8_gemm16x16_tile_avx512(c.n_super_k, b_ptr_0, b_ptr_1, a_ptrs, dst, c.N);
+    }
+}
+
 void q4kx8_gemm16x16_avx512_bulk(size_t                     M,
                                  size_t                     N,
                                  size_t                     K,
                                  const struct block_q8_Kx4 *X,
                                  const struct block_q4_Kx8 *W,
                                  float                      Y[static M * N]) {
-    const size_t n_super_k = K / 256;
-
-    const size_t M16 = M / 16;
-    const size_t N16 = N / 16;
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static) collapse(2)
-#endif
-    for (size_t y16 = 0; y16 < M16; y16++) {
-        for (size_t x16 = 0; x16 < N16; x16++) {
-            /* 16 m-rows = 4 Q8_Kx4 blocks; 16 n-cells = 2 Q4_Kx8 blocks. */
-            const struct block_q8_Kx4 *a_ptrs[4];
-            for (int rp = 0; rp < 4; rp++) {
-                a_ptrs[rp] = X + (y16 * 4 + rp) * n_super_k;
-            }
-            const struct block_q4_Kx8 *b_ptr_0 = W + (x16 * 2 + 0) * n_super_k;
-            const struct block_q4_Kx8 *b_ptr_1 = W + (x16 * 2 + 1) * n_super_k;
-            float                     *dst     = Y + (y16 * 16) * N + (x16 * 16);
-            q4kx8_gemm16x16_tile_avx512(n_super_k, b_ptr_0, b_ptr_1, a_ptrs, dst, N);
-        }
-    }
+    struct panel_call c = {.N = N, .n_super_k = K / 256, .N16 = N / 16, .X = X, .W = W, .Y = Y};
+    geist_par_for(M / 16 * (N / 16), panels, &c);
 }
