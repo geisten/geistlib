@@ -23,7 +23,13 @@
  * GPU layout = struct-of-arrays (see matvec_pq2_0.comp): 8 quant words per
  * 128-element block, all blocks first, then one f16 scale per block.
  * Requires n_out % 128 == 0, rows % 16 == 0, n_in % 128 == 0.
- * Dispatch: gx = n_out / 128, gy = ceil(rows / 128). */
+ * Dispatch: gx = n_out / 128, gy = ceil(rows / 128).
+ *
+ * DT_TQ2_0 replaces the A stage with TQ2_0's (#467), in the SOA layout of
+ * matvec_tq2_0.comp: 16 quant words per 256-element block, then the f16
+ * scales. A k-step is one of the block's eight 32-element runs
+ * e = g*128 + l*32 + m (bytes g*32 + m, bits 2l); each thread loads its 16
+ * bytes as one 128-bit word. Requires n_in % 256 == 0 for it. */
 
 #ifdef ACC_F16
 #define ACCUM(i, j) hac##i##j
@@ -36,6 +42,9 @@ layout(local_size_x = 256) in;
 layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
 layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
 layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
+#if defined(DT_TQ2_0)
+layout(set = 0, binding = 1) readonly buffer W4 { uvec4 w4[]; };
+#endif
 
 layout(push_constant) uniform Push {
     uint n_in;
@@ -59,6 +68,15 @@ const uint STRIDE4 = BK / 8u + 1u;
 shared uvec4 Ash[2][BM * STRIDE4];
 shared uvec4 Bsh[2][BN * STRIDE4];
 
+#if defined(DT_TQ2_0)
+/* 4 quant bytes, 2-bit code at `sh` in each -> 4 packed f16 values
+ * (code - 1) * d, exact in f16 */
+uvec2 deq4_tq2(uint qw, uint sh, float d) {
+    uvec4 c = (uvec4(qw) >> (uvec4(0u, 8u, 16u, 24u) + sh)) & 3u;
+    vec4 v = (vec4(c) - 1.0) * d;
+    return uvec2(packHalf2x16(v.xy), packHalf2x16(v.zw));
+}
+#else
 /* 8 ternary codes (16 bits) -> 8 packed f16 values (code - 1) * d, exact in
  * f16 for -d, 0, d and 2d */
 uvec4 expand8(uint bits, float d) {
@@ -69,11 +87,17 @@ uvec4 expand8(uint bits, float d) {
     }
     return r;
 }
+#endif
 
 /* Global -> registers for k-step ks (the loads stay in flight while the MMAs
  * of the previous step run); registers -> shared afterwards (store_tiles). */
 struct Fetch {
+#if defined(DT_TQ2_0)
+    uvec4 qs; /* this thread's 16 quant bytes */
+    uint sh;  /* 2 * l of k-step ks */
+#else
     uint qw;
+#endif
     float d;
     vec4 x0;
     vec4 x1;
@@ -86,10 +110,19 @@ Fetch fetch_tiles(uint ks, uint lid, uint row0, uint tb0) {
     uint r = lid >> 1u;
     uint hk = lid & 1u;
     Fetch f;
+#if defined(DT_TQ2_0)
+    uint bi = (row0 + r) * pc.blocks_per_row + (k0 >> 8u);
+    uint sub = (k0 & 255u) >> 5u;
+    f.qs = w4[bi * 4u + (sub >> 2u) * 2u + hk];
+    f.sh = 2u * (sub & 3u);
+    f.d = unpackHalf2x16(w[pc.n_out * pc.blocks_per_row * 16u + (bi >> 1u)] >>
+                         ((bi & 1u) * 16u)).x;
+#else
     uint bi = (row0 + r) * pc.blocks_per_row + (k0 >> 7u);
     f.qw = w[bi * 8u + ((k0 & 127u) >> 4u) + hk];
     f.d = unpackHalf2x16(w[pc.n_out * pc.blocks_per_row * 8u + (bi >> 1u)] >>
                          ((bi & 1u) * 16u)).x;
+#endif
     uint t = tb0 + r;
     f.x0 = vec4(0.0);
     f.x1 = vec4(0.0);
@@ -109,8 +142,13 @@ void store_tiles(uint buf, uint lid, Fetch f) {
     uint r = lid >> 1u;
     uint hk = lid & 1u;
     uint abase = r * STRIDE4 + hk * 2u;
+#if defined(DT_TQ2_0)
+    Ash[buf][abase] = uvec4(deq4_tq2(f.qs.x, f.sh, f.d), deq4_tq2(f.qs.y, f.sh, f.d));
+    Ash[buf][abase + 1u] = uvec4(deq4_tq2(f.qs.z, f.sh, f.d), deq4_tq2(f.qs.w, f.sh, f.d));
+#else
     Ash[buf][abase] = expand8(f.qw & 0xffffu, f.d);
     Ash[buf][abase + 1u] = expand8(f.qw >> 16u, f.d);
+#endif
     uint bbase = r * STRIDE4 + hk * 2u;
     Bsh[buf][bbase] = uvec4(packHalf2x16(f.x0.xy), packHalf2x16(f.x0.zw), packHalf2x16(f.x1.xy),
                             packHalf2x16(f.x1.zw));
