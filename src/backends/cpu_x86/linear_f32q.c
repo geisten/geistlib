@@ -8,8 +8,9 @@
  * to W8A8 (per-16-block asymmetric int8) at load and run on the VPDPBUSD
  * GEMM instead.
  *
- * W8A8 decode contract: y = scale_x * sum_b ( w_scale[b]*u_w[b] -
- * w_offset[b]*sum_a[b] ), u_w in [0,255]. For an fp32 block with [min,max]:
+ * W8A8 contract (kernel_w8a8.h): y = sum over 256-element groups g of
+ * act_scale[g] * sum_{b in g} ( w_scale[b]*d_b - w_offset[b]*sum_a[b] ),
+ * u_w in [0,255]. For an fp32 block with [min,max]:
  *   scale  = (max-min)/255,  u_w = round((w-min)/scale),
  *   w_scale = scale,  w_offset = -min
  * gives w[i] = scale*u_w[i] + min, exactly reconstructing the dot. Accuracy
@@ -21,7 +22,6 @@
 
 #include "backend_state.h"
 #include "checked.h"
-#include "kernel_w4a8.h" /* w4a8_quantize_acts_row */
 #include "kernel_w8a8.h"
 #include "linear_ref.h"
 
@@ -153,47 +153,34 @@ void f32_to_w8a8_row(
     return GEIST_OK;
 }
 
-/* int8-quantize one activation row → acts + 16-block sum_a. The W4A8
- * quantizer's 32-elem sums scribble into sum_a first (n_in/16 entries ≥
- * the n_in/32 it writes), then the re-sum below overwrites them. */
-static float quant_act_row(size_t n_in, const float *x, int8_t *acts, int32_t *sum_a) {
-    const float  scale_x = w4a8_quantize_acts_row(n_in, x, acts, sum_a);
-    const size_t nblk    = n_in / W8A8_BLOCK_ELEMS;
-    for (size_t b = 0; b < nblk; b++) {
-        int32_t s = 0;
-        for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++)
-            s += (int32_t) acts[b * W8A8_BLOCK_ELEMS + i];
-        sum_a[b] = s;
-    }
-    return scale_x;
-}
-
 void cpu_x86_linear_f32q_m1(const float               *x,
                             const struct geist_weight *w,
                             struct geist_backend      *be,
                             float                     *y) {
-    struct cpu_x86_state *st    = (struct cpu_x86_state *) be->state;
-    const size_t          n_in  = (size_t) w->n_in;
-    const size_t          n_out = (size_t) w->n_out;
-    const uint8_t        *weights;
-    const float          *w_scales, *w_offsets;
+    const size_t   n_in     = (size_t) w->n_in;
+    const size_t   n_out    = (size_t) w->n_out;
+    const size_t   nblk     = n_in / W8A8_BLOCK_ELEMS;
+    const size_t   n_groups = w8a8_act_groups(nblk);
+    const uint8_t *weights;
+    const float   *w_scales, *w_offsets;
     f32q_pointers((const uint8_t *) w->aux_fp32, n_in, n_out, &weights, &w_scales, &w_offsets);
 
-    struct cpu_x86_workspace *ws = cpu_x86_ws_acquire(st, n_in);
+    /* One row of this thread's M>1 scratch (it has the scales slot). */
+    struct cpu_x86_workspace *ws = nullptr;
+    if (be != nullptr && be->state != nullptr) {
+        ws = cpu_x86_ws_acquire_mN((struct cpu_x86_state *) be->state,
+                                   n_in,
+                                   nblk * sizeof(int32_t),
+                                   n_groups * sizeof(float),
+                                   0);
+    }
     if (ws == nullptr) {
         geist_linear_ref(1, x, w, y); /* no scratch: the reference needs none */
         return;
     }
-    const float scale_x = quant_act_row(n_in, x, ws->acts_scratch, ws->sum_a_scratch);
-    w8a8_gemv(n_out,
-              n_in / W8A8_BLOCK_ELEMS,
-              weights,
-              w_scales,
-              w_offsets,
-              ws->acts_scratch,
-              ws->sum_a_scratch,
-              scale_x,
-              y);
+    w8a8_quantize_acts_row(n_in, x, ws->mN_acts, ws->mN_sum_a, ws->mN_scale);
+    w8a8_gemv(
+            n_out, nblk, weights, w_scales, w_offsets, ws->mN_acts, ws->mN_sum_a, ws->mN_scale, y);
 }
 
 void cpu_x86_linear_f32q_mN(size_t                     m,
@@ -208,17 +195,16 @@ void cpu_x86_linear_f32q_mN(size_t                     m,
     const float   *w_scales, *w_offsets;
     f32q_pointers((const uint8_t *) w->aux_fp32, n_in, n_out, &weights, &w_scales, &w_offsets);
 
-    /* Per-thread workspace. `tmp` is the quantizer's throwaway sum buffer
-     * and rides in the aux slot, which no f32q path uses otherwise. */
+    /* Per-thread workspace: int8 acts, 16-element sums, 256-element scales. */
+    const size_t              n_groups   = w8a8_act_groups(nblk);
     size_t                    acts_bytes = 0, sum_elems = 0, sum_bytes = 0;
-    size_t                    scale_bytes = 0, tmp_bytes = 0;
+    size_t                    scale_elems = 0, scale_bytes = 0;
     struct cpu_x86_workspace *ws = nullptr;
     if (be != nullptr && be->state != nullptr && !ckd_mul(&acts_bytes, m, n_in) &&
         !ckd_mul(&sum_elems, m, nblk) && !ckd_mul(&sum_bytes, sum_elems, sizeof(int32_t)) &&
-        !ckd_mul(&scale_bytes, m, sizeof(float)) &&
-        !ckd_mul(&tmp_bytes, n_in / 32 + 1, sizeof(int32_t))) {
+        !ckd_mul(&scale_elems, m, n_groups) && !ckd_mul(&scale_bytes, scale_elems, sizeof(float))) {
         ws = cpu_x86_ws_acquire_mN(
-                (struct cpu_x86_state *) be->state, acts_bytes, sum_bytes, scale_bytes, tmp_bytes);
+                (struct cpu_x86_state *) be->state, acts_bytes, sum_bytes, scale_bytes, 0);
     }
     if (ws == nullptr) {
         /* No prefill scratch: the M=1 kernel per row still writes y. */
@@ -227,31 +213,23 @@ void cpu_x86_linear_f32q_mN(size_t                     m,
         }
         return;
     }
-    int8_t  *acts    = ws->mN_acts;
-    int32_t *sum_a   = ws->mN_sum_a;
-    float   *scale_x = ws->mN_scale;
-    int32_t *tmp     = (int32_t *) ws->mN_aux;
+    int8_t  *acts       = ws->mN_acts;
+    int32_t *sum_a      = ws->mN_sum_a;
+    float   *act_scales = ws->mN_scale;
     for (size_t j = 0; j < m; j++) {
-        scale_x[j] = w4a8_quantize_acts_row(n_in, x + j * n_in, acts + j * n_in, tmp);
-        int8_t  *a = acts + j * n_in;
-        int32_t *s = sum_a + j * nblk;
-        for (size_t b = 0; b < nblk; b++) {
-            int32_t v = 0;
-            for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++)
-                v += (int32_t) a[b * W8A8_BLOCK_ELEMS + i];
-            s[b] = v;
-        }
+        w8a8_quantize_acts_row(
+                n_in, x + j * n_in, acts + j * n_in, sum_a + j * nblk, act_scales + j * n_groups);
     }
     if (f32q_use_w8x8(n_out)) {
         const uint8_t *iq;
         const float   *is, *io;
         f32q_w8x8_pointers((const uint8_t *) w->aux_fp32, n_in, n_out, &iq, &is, &io);
         if (n_out % W8X16_NROWS == 0) {
-            w8x16_gemm(m, n_out, nblk, iq, is, io, acts, sum_a, scale_x, y);
+            w8x16_gemm(m, n_out, nblk, iq, is, io, acts, sum_a, act_scales, y);
         } else {
-            w8x8_gemm(m, n_out, nblk, iq, is, io, acts, sum_a, scale_x, y);
+            w8x8_gemm(m, n_out, nblk, iq, is, io, acts, sum_a, act_scales, y);
         }
     } else {
-        w8a8_gemm(m, n_out, nblk, weights, w_scales, w_offsets, acts, sum_a, scale_x, y);
+        w8a8_gemm(m, n_out, nblk, weights, w_scales, w_offsets, acts, sum_a, act_scales, y);
     }
 }
