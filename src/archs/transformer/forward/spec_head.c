@@ -55,16 +55,14 @@
 #include "../../../engine/sampler.h"
 #include "quant.h"
 #include "heap.h"
+#include "par.h"
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
@@ -361,6 +359,94 @@ static void spec_row_to_f32(uint16_t dt, const uint8_t *row, size_t n, float *ds
     }
 }
 
+/* spec_head_build's per-row pass, for geist_par_for. */
+struct spec_build_job {
+    uint16_t        dt;
+    const uint8_t  *Wbase;
+    size_t          row_bytes, H, SD;
+    const uint32_t *dims;
+    const bool     *kept;
+    float          *scratch; /* one H-float row per slot */
+    int8_t         *sketch;
+    float          *rscale, *wdrop, *wl1;
+    atomic_size_t   next_slot; /* the next range's scratch row, below nthr */
+};
+
+/* Rows [r0, r1): dequantize, sketch, row scale and the bound's row halves. */
+static void spec_build_rows(void *ctx, size_t r0, size_t r1) {
+    struct spec_build_job *j         = ctx;
+    const uint16_t         dt        = j->dt;
+    const uint8_t *const   Wbase     = j->Wbase;
+    const size_t           row_bytes = j->row_bytes;
+    const size_t           H         = j->H;
+    const size_t           SD        = j->SD;
+    const uint32_t        *dims      = j->dims;
+    const bool            *kept      = j->kept;
+    int8_t                *sketch    = j->sketch;
+    float                 *rscale    = j->rscale;
+    float                 *wdrop     = j->wdrop;
+    float                 *wl1       = j->wl1;
+    float *tmp = j->scratch + atomic_fetch_add_explicit(&j->next_slot, 1, memory_order_relaxed) * H;
+    for (size_t r = r0; r < r1; r++) {
+        spec_row_to_f32(dt, Wbase + r * row_bytes, H, tmp);
+        float amax = 1e-8f;
+        for (size_t s = 0; s < SD; s++) {
+            const float v = tmp[dims[s]];
+            const float a = v < 0.0f ? -v : v;
+            if (a > amax) {
+                amax = a;
+            }
+        }
+        const float scale = 127.0f / amax;
+        int8_t     *sk    = sketch + r * SD;
+        for (size_t s = 0; s < SD; s++) {
+            int32_t q = (int32_t) lrintf(tmp[dims[s]] * scale);
+            if (q > 127) {
+                q = 127;
+            }
+            if (q < -127) {
+                q = -127;
+            }
+            sk[s] = (int8_t) q;
+        }
+        rscale[r] = amax / 127.0f;
+        /* The sketch is blind to the dropped dimensions, so their combined
+         * contribution is what Cauchy-Schwarz has to cover. */
+        float sq = 0.0f, l1 = 0.0f;
+        for (size_t i = 0; i < H; i++) {
+            if (kept != nullptr && kept[i]) {
+                l1 += tmp[i] < 0.0f ? -tmp[i] : tmp[i];
+            } else {
+                sq += tmp[i] * tmp[i];
+            }
+        }
+        wdrop[r] = sqrtf(sq);
+        wl1[r]   = l1;
+    }
+}
+
+/* Phase 1 of spec_head_try, for geist_par_for. */
+struct spec_rough_job {
+    const int8_t *a_sk, *sketch;
+    const float  *rscale;
+    size_t        SD;
+    float        *rough;
+};
+
+/* Rows [r0, r1): rough scores via the i8 sketch. */
+static void spec_rough_rows(void *ctx, size_t r0, size_t r1) {
+    const struct spec_rough_job *j      = ctx;
+    const int8_t *const          a_sk   = j->a_sk;
+    const int8_t *const          sketch = j->sketch;
+    const float *const           rscale = j->rscale;
+    const size_t                 SD     = j->SD;
+    float *const                 rough  = j->rough;
+    for (size_t r = r0; r < r1; r++) {
+        const int32_t d = spec_i8dot(a_sk, sketch + r * SD, SD);
+        rough[r]        = (float) d * rscale[r];
+    }
+}
+
 /* Build the sketch table + per-row scales from the tied lm_head (any dtype in
  * spec_dtype_ok). Returns true on success, false if ineligible/OOM. */
 static bool spec_head_build(struct transformer_arch_state *st) {
@@ -412,14 +498,10 @@ static bool spec_head_build(struct transformer_arch_state *st) {
     float  *rscale = heap_alloc_array_aligned(float, V);
     /* Row halves of the safety bound: two floats a row -- 1 MB against an
      * 82 MB sketch on the 2B-4T. */
-    float *wdrop = heap_alloc_array_aligned(float, V);
-    float *wl1   = heap_alloc_array_aligned(float, V);
-#ifdef _OPENMP
-    const size_t nthr = (size_t) omp_get_max_threads();
-#else
-    const size_t nthr = 1;
-#endif
-    float *scratch = heap_alloc_array_aligned(float, nthr *H); /* per-thread */
+    float       *wdrop   = heap_alloc_array_aligned(float, V);
+    float       *wl1     = heap_alloc_array_aligned(float, V);
+    const size_t nthr    = geist_par_max_threads();
+    float       *scratch = heap_alloc_array_aligned(float, nthr *H); /* per-thread */
     if (sketch == nullptr || rscale == nullptr || scratch == nullptr || wdrop == nullptr ||
         wl1 == nullptr) {
         safe_free((void **) &wdrop);
@@ -510,50 +592,20 @@ static bool spec_head_build(struct transformer_arch_state *st) {
             kept[dims[s]] = true;
         }
     }
-#ifdef _OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t r = 0; r < V; r++) {
-#ifdef _OPENMP
-        float *tmp = scratch + (size_t) omp_get_thread_num() * H;
-#else
-        float *tmp = scratch;
-#endif
-        spec_row_to_f32(dt, Wbase + r * row_bytes, H, tmp);
-        float amax = 1e-8f;
-        for (size_t s = 0; s < SD; s++) {
-            const float v = tmp[dims[s]];
-            const float a = v < 0.0f ? -v : v;
-            if (a > amax) {
-                amax = a;
-            }
-        }
-        const float scale = 127.0f / amax;
-        int8_t     *sk    = sketch + r * SD;
-        for (size_t s = 0; s < SD; s++) {
-            int32_t q = (int32_t) lrintf(tmp[dims[s]] * scale);
-            if (q > 127) {
-                q = 127;
-            }
-            if (q < -127) {
-                q = -127;
-            }
-            sk[s] = (int8_t) q;
-        }
-        rscale[r] = amax / 127.0f;
-        /* The sketch is blind to the dropped dimensions, so their combined
-         * contribution is what Cauchy-Schwarz has to cover. */
-        float sq = 0.0f, l1 = 0.0f;
-        for (size_t i = 0; i < H; i++) {
-            if (kept != nullptr && kept[i]) {
-                l1 += tmp[i] < 0.0f ? -tmp[i] : tmp[i];
-            } else {
-                sq += tmp[i] * tmp[i];
-            }
-        }
-        wdrop[r] = sqrtf(sq);
-        wl1[r]   = l1;
-    }
+    struct spec_build_job job = {.dt        = dt,
+                                 .Wbase     = Wbase,
+                                 .row_bytes = row_bytes,
+                                 .H         = H,
+                                 .SD        = SD,
+                                 .dims      = dims,
+                                 .kept      = kept,
+                                 .scratch   = scratch,
+                                 .sketch    = sketch,
+                                 .rscale    = rscale,
+                                 .wdrop     = wdrop,
+                                 .wl1       = wl1};
+    atomic_init(&job.next_slot, 0);
+    geist_par_for(V, spec_build_rows, &job);
     safe_free((void **) &scratch);
 
     st->spec_sketch     = sketch;
@@ -604,6 +656,11 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
      * full-width int8 phase 1 delivers — no win over the dense head (#102,
      * tests/test_spec_head_sampling_int.c). */
     if (sess->temperature != 0.0f) {
+        return false;
+    }
+    /* Nor with repetition penalties (#695): they can lift a token the
+     * sketch left out of its candidates. */
+    if (geist_sampler_penalties_active(&sess->pen)) {
         return false;
     }
 
@@ -657,16 +714,12 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
 
     /* Phase 1: rough scores over the whole vocab via the i8 sketch. The
      * common x_scale factor is dropped — it does not affect the ranking. */
-    float        *rough  = sess->spec_rough;
-    const int8_t *sketch = st->spec_sketch;
-    const float  *rscale = st->spec_row_scale;
-#ifdef _OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t r = 0; r < V; r++) {
-        const int32_t d = spec_i8dot(a_sk, sketch + r * SD, SD);
-        rough[r]        = (float) d * rscale[r];
-    }
+    float                      *rough  = sess->spec_rough;
+    const int8_t               *sketch = st->spec_sketch;
+    const float                *rscale = st->spec_row_scale;
+    const struct spec_rough_job rj     = {
+            .a_sk = a_sk, .sketch = sketch, .rscale = rscale, .SD = SD, .rough = rough};
+    geist_par_for(V, spec_rough_rows, (void *) &rj);
 
     /* Activation halves of the bound: L1 over the dimensions the sketch keeps,
      * L2 over those it drops. One O(H) pass. */

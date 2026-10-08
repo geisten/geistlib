@@ -16,7 +16,8 @@
  *               the Q4_K min-term once per super-block instead of
  *               per-inner-iteration.
  *
- * Quantization is symmetric int8 per row: scale_x = max|x| / 127.
+ * Quantization is symmetric int8 per row and super-block:
+ * d[r] = max|x| / 127 over that row's 256 elements.
  *
  * The interleaved qs layout matches what the lane-parallel GEMM kernel
  * loads via 32-byte vector reads: bytes 0..7 = row 0, bytes 8..15 = row 1,

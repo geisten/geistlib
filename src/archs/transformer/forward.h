@@ -117,9 +117,11 @@ void                            transformer_decision_destroy(void *r);
  * stream. Writes scratch_logits and sets next_token_pending +
  * logits_valid. row_idx selects which row of scratch_h_a/h_b to read
  * from (decode hot path passes 0; prefill last-row variants pass
- * seq-1). */
+ * seq-1). n_ctx counts the positions up to and including that row: the
+ * repetition penalties (#695) look back over tok_hist[0, n_ctx). */
 [[nodiscard]] enum geist_status finalize_logits_one_row(struct transformer_arch_session *sess,
                                                         size_t                           row_idx,
+                                                        size_t                           n_ctx,
                                                         geist_token_t                   *out_token);
 
 /* Speculative i8-sketch output head (GEIST_SPEC_HEAD=1). On a large tied F16

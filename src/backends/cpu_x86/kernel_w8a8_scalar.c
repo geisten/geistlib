@@ -8,6 +8,7 @@
 
 #include "kernel_w8a8.h"
 
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -17,20 +18,52 @@
                                     const float   w_offsets[static n_blocks],
                                     const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
                                     const int32_t sum_a_per_block[static n_blocks],
-                                    float         scale_x) {
+                                    const float   act_scales[static w8a8_act_groups(n_blocks)]) {
     float acc = 0.0f;
-    for (size_t b = 0; b < n_blocks; b++) {
-        const uint8_t *w_block = weights + b * W8A8_BLOCK_ELEMS;
-        const int8_t  *a_block = acts + b * W8A8_BLOCK_ELEMS;
-        int32_t        d_b     = 0;
-        for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++) {
-            d_b += (int32_t) w_block[i] * (int32_t) a_block[i];
+    for (size_t g0 = 0; g0 < n_blocks; g0 += W8A8_ACT_GROUP_BLOCKS) {
+        const size_t g1 =
+                n_blocks - g0 < W8A8_ACT_GROUP_BLOCKS ? n_blocks : g0 + W8A8_ACT_GROUP_BLOCKS;
+        float acc_g = 0.0f;
+        for (size_t b = g0; b < g1; b++) {
+            const uint8_t *w_block = weights + b * W8A8_BLOCK_ELEMS;
+            const int8_t  *a_block = acts + b * W8A8_BLOCK_ELEMS;
+            int32_t        d_b     = 0;
+            for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++) {
+                d_b += (int32_t) w_block[i] * (int32_t) a_block[i];
+            }
+            acc_g += w_scales[b] * (float) d_b - w_offsets[b] * (float) sum_a_per_block[b];
         }
-        const float block_term =
-                w_scales[b] * (float) d_b - w_offsets[b] * (float) sum_a_per_block[b];
-        acc += block_term;
+        acc += act_scales[g0 / W8A8_ACT_GROUP_BLOCKS] * acc_g;
     }
-    return scale_x * acc;
+    return acc;
+}
+
+void w8a8_quantize_acts_row(size_t      n_in,
+                            const float x[static n_in],
+                            int8_t      acts[static n_in],
+                            int32_t     sum_a_per_block[static n_in / W8A8_BLOCK_ELEMS],
+                            float act_scales[static w8a8_act_groups(n_in / W8A8_BLOCK_ELEMS)]) {
+    constexpr size_t group_elems = W8A8_ACT_GROUP_BLOCKS * W8A8_BLOCK_ELEMS;
+    for (size_t e0 = 0; e0 < n_in; e0 += group_elems) {
+        const size_t ne   = n_in - e0 < group_elems ? n_in - e0 : group_elems;
+        float        amax = 0.0f;
+        for (size_t i = 0; i < ne; i++) {
+            amax = fmaxf(amax, fabsf(x[e0 + i]));
+        }
+        const float scale            = amax > 0.0f ? amax / 127.0f : 1.0f;
+        const float inv              = amax > 0.0f ? 127.0f / amax : 0.0f;
+        act_scales[e0 / group_elems] = scale;
+        for (size_t i = 0; i < ne; i++) {
+            acts[e0 + i] = (int8_t) lrintf(x[e0 + i] * inv);
+        }
+    }
+    for (size_t b = 0; b < n_in / W8A8_BLOCK_ELEMS; b++) {
+        int32_t sum = 0;
+        for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++) {
+            sum += acts[b * W8A8_BLOCK_ELEMS + i];
+        }
+        sum_a_per_block[b] = sum;
+    }
 }
 
 /* Shared interleave for W8x8 / W8x16 — nrows = 8 or 16. */

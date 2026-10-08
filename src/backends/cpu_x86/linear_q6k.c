@@ -21,12 +21,12 @@
 
 #include "backend_state.h"
 #include "checked.h"
-#include "kernel_w4a8.h" /* w4a8_quantize_acts_row */
 #include "kernel_w8a8.h"
 #include "kernel_q6k_gemv.h"
 #include "q6k_to_w8a8.h"
 
 #include "heap.h"
+#include "par.h"
 #include "quant.h" /* Q3_K / Q6_K block sizes */
 
 #include <geist_backend.h>
@@ -109,6 +109,70 @@ static void cpu_x86_linear_q6k_raw_mN(size_t                     m,
  * it so THP backs all of them (see linear_q4k.c). */
 constexpr size_t THP_BYTES = 2u << 20;
 
+/* One repack for geist_par_for: Q6_K rows to the W8A8 blob, row-major or
+ * (nrows > 0) interleaved by groups of nrows rows. */
+struct q6_repack {
+    size_t         n_in, nrows;
+    const uint8_t *q6k;
+    uint8_t       *blob_w;
+    float         *blob_s;
+    float         *blob_o;
+    atomic_bool    oom; /* a range found no staging buffer */
+};
+
+static void w8a8_repack_rows(void *ctx, size_t m0, size_t m1) {
+    const struct q6_repack *c             = ctx;
+    const size_t            n_in          = c->n_in;
+    const size_t            q6k_row_bytes = (n_in / Q6_K_BLOCK_ELEMS) * Q6_K_BLOCK_BYTES;
+    const size_t            w_row_bytes   = weights_bytes_per_row(n_in);
+    const size_t            s_row_count   = blocks_per_row(n_in);
+    for (size_t m = m0; m < m1; m++) {
+        q6k_to_w8a8_row(n_in,
+                        c->q6k + m * q6k_row_bytes,
+                        c->blob_w + m * w_row_bytes,
+                        c->blob_s + m * s_row_count,
+                        c->blob_o + m * s_row_count);
+    }
+}
+
+/* Groups [g0, g1), each predecoded into the range's own staging buffer
+ * (shared out as in q4k_to_q4kx8_matrix), then repacked into place. */
+static void w8x_repack_groups(void *ctx, size_t g0, size_t g1) {
+    struct q6_repack *c             = ctx;
+    const size_t      n_in          = c->n_in;
+    const size_t      nrows         = c->nrows;
+    const size_t      q6k_row_bytes = (n_in / Q6_K_BLOCK_ELEMS) * Q6_K_BLOCK_BYTES;
+    const size_t      w_row_bytes   = weights_bytes_per_row(n_in);
+    const size_t      s_row_count   = blocks_per_row(n_in);
+    const size_t      stage_bytes   = nrows * w_row_bytes + 2 * nrows * s_row_count * sizeof(float);
+    uint8_t          *stage_w       = heap_alloc_aligned(stage_bytes, OPTIMAL_ALIGNMENT);
+    if (stage_w == nullptr) {
+        atomic_store_explicit(&c->oom, true, memory_order_relaxed);
+        return;
+    }
+    float *stage_s = (float *) (stage_w + nrows * w_row_bytes);
+    float *stage_o = stage_s + nrows * s_row_count;
+    for (size_t g = g0; g < g1; g++) {
+        for (size_t r = 0; r < nrows; r++) {
+            q6k_to_w8a8_row(n_in,
+                            c->q6k + (g * nrows + r) * q6k_row_bytes,
+                            stage_w + r * w_row_bytes,
+                            stage_s + r * s_row_count,
+                            stage_o + r * s_row_count);
+        }
+        uint8_t *qs_g = c->blob_w + g * nrows * w_row_bytes;
+        float   *sc_g = c->blob_s + g * nrows * s_row_count;
+        float   *of_g = c->blob_o + g * nrows * s_row_count;
+        if (nrows == W8X16_NROWS) {
+            w8x16_repack(nrows, n_in, stage_w, stage_s, stage_o, qs_g, sc_g, of_g);
+        } else {
+            w8x8_repack(nrows, n_in, stage_w, stage_s, stage_o, qs_g, sc_g, of_g);
+        }
+    }
+    void *p = stage_w;
+    safe_free(&p);
+}
+
 [[nodiscard]] enum geist_status cpu_x86_linear_q6k_resolve(struct geist_weight *w) {
     if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0) {
         return GEIST_E_INVALID_ARG;
@@ -140,69 +204,21 @@ constexpr size_t THP_BYTES = 2u << 20;
     float   *blob_s = (float *) bs;
     float   *blob_o = (float *) bo;
 
-    const size_t   q6k_row_bytes = (n_in / Q6_K_BLOCK_ELEMS) * Q6_K_BLOCK_BYTES;
-    const size_t   w_row_bytes   = weights_bytes_per_row(n_in);
-    const size_t   s_row_count   = blocks_per_row(n_in);
-    const uint8_t *q6k_raw       = (const uint8_t *) w->raw;
+    const uint8_t   *q6k_raw = (const uint8_t *) w->raw;
+    struct q6_repack c       = {
+            .n_in = n_in, .q6k = q6k_raw, .blob_w = blob_w, .blob_s = blob_s, .blob_o = blob_o};
     if (!q6k_use_w8x8(n_out)) {
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static) /* see q4k_to_q4kx8_matrix */
-#endif
-        for (size_t m = 0; m < n_out; m++) {
-            q6k_to_w8a8_row(n_in,
-                            q6k_raw + m * q6k_row_bytes,
-                            blob_w + m * w_row_bytes,
-                            blob_s + m * s_row_count,
-                            blob_o + m * s_row_count);
-        }
+        geist_par_for(n_out, w8a8_repack_rows, &c); /* see q4k_to_q4kx8_matrix */
     } else {
         /* The interleave is group-major (W8X16_NROWS or W8X8_NROWS rows per
          * group, each group contiguous in all three arrays), so predecode
          * one group at a time into a small row-major staging buffer and
          * repack it into place: the same bytes as repacking the whole
          * row-major matrix, without holding it. */
-        const size_t nrows = n_out % W8X16_NROWS == 0 ? W8X16_NROWS : W8X8_NROWS;
-        /* The groups are shared out as in q4k_to_q4kx8_matrix, each thread
-         * with its own staging buffer. */
-        const size_t stage_bytes = nrows * w_row_bytes + 2 * nrows * s_row_count * sizeof(float);
-        atomic_bool  oom         = false;
-#if defined(_OPENMP)
-#pragma omp parallel
-#endif
-        {
-            uint8_t *stage_w = heap_alloc_aligned(stage_bytes, OPTIMAL_ALIGNMENT);
-            if (stage_w == nullptr) {
-                atomic_store_explicit(&oom, true, memory_order_relaxed);
-            }
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-            for (size_t g = 0; g < n_out / nrows; g++) {
-                if (stage_w == nullptr) {
-                    continue;
-                }
-                float *stage_s = (float *) (stage_w + nrows * w_row_bytes);
-                float *stage_o = stage_s + nrows * s_row_count;
-                for (size_t r = 0; r < nrows; r++) {
-                    q6k_to_w8a8_row(n_in,
-                                    q6k_raw + (g * nrows + r) * q6k_row_bytes,
-                                    stage_w + r * w_row_bytes,
-                                    stage_s + r * s_row_count,
-                                    stage_o + r * s_row_count);
-                }
-                uint8_t *qs_g = blob_w + g * nrows * w_row_bytes;
-                float   *sc_g = blob_s + g * nrows * s_row_count;
-                float   *of_g = blob_o + g * nrows * s_row_count;
-                if (nrows == W8X16_NROWS) {
-                    w8x16_repack(nrows, n_in, stage_w, stage_s, stage_o, qs_g, sc_g, of_g);
-                } else {
-                    w8x8_repack(nrows, n_in, stage_w, stage_s, stage_o, qs_g, sc_g, of_g);
-                }
-            }
-            void *p = stage_w;
-            safe_free(&p);
-        }
-        if (atomic_load_explicit(&oom, memory_order_relaxed)) {
+        c.nrows = n_out % W8X16_NROWS == 0 ? W8X16_NROWS : W8X8_NROWS;
+        atomic_init(&c.oom, false);
+        geist_par_for(n_out / c.nrows, w8x_repack_groups, &c);
+        if (atomic_load_explicit(&c.oom, memory_order_relaxed)) {
             void *p = blob;
             safe_free(&p);
             return GEIST_E_OOM;
@@ -248,13 +264,16 @@ void cpu_x86_linear_q6k_mN(size_t                     m,
     blob_pointers((const uint8_t *) w->aux_fp32, n_in, n_out, &weights, &w_scales, &w_offsets);
 
     /* Prefill scratch from the per-thread workspace: int8 acts + 16-elem
-     * sum_a + per-token scale, all m tokens (m=64, n_in=12288 ≈ 836 KB). */
+     * sum_a + one scale per 256 elements, all m tokens (m=64, n_in=12288
+     * ≈ 836 KB). */
+    const size_t              n_groups   = w8a8_act_groups(n_blocks_per_row);
     size_t                    acts_bytes = 0, sum_elems = 0, sum_bytes = 0, scale_bytes = 0;
-    struct cpu_x86_workspace *ws = nullptr;
+    size_t                    scale_elems = 0;
+    struct cpu_x86_workspace *ws          = nullptr;
     if (be != nullptr && be->state != nullptr && !ckd_mul(&acts_bytes, m, n_in) &&
         !ckd_mul(&sum_elems, m, n_blocks_per_row) &&
-        !ckd_mul(&sum_bytes, sum_elems, sizeof(int32_t)) &&
-        !ckd_mul(&scale_bytes, m, sizeof(float))) {
+        !ckd_mul(&sum_bytes, sum_elems, sizeof(int32_t)) && !ckd_mul(&scale_elems, m, n_groups) &&
+        !ckd_mul(&scale_bytes, scale_elems, sizeof(float))) {
         ws = cpu_x86_ws_acquire_mN(
                 (struct cpu_x86_state *) be->state, acts_bytes, sum_bytes, scale_bytes, 0);
     }
@@ -265,26 +284,16 @@ void cpu_x86_linear_q6k_mN(size_t                     m,
         return;
     }
 
-    int8_t  *acts    = ws->mN_acts;
-    int32_t *sum_a   = ws->mN_sum_a;
-    float   *scale_x = ws->mN_scale;
+    int8_t  *acts       = ws->mN_acts;
+    int32_t *sum_a      = ws->mN_sum_a;
+    float   *act_scales = ws->mN_scale;
 
     for (size_t j = 0; j < m; j++) {
-        /* w4a8 quantizer gives int8 acts + per-row scale; its 32-elem sum_a
-         * is the wrong granularity for W8A8. Let it scribble into this row's
-         * sum_a slot (n_in/16 entries ≥ the n_in/32 it writes), then
-         * overwrite with the 16-elem re-sum — no shared scratch involved. */
-        scale_x[j] = w4a8_quantize_acts_row(
-                n_in, x + j * n_in, acts + j * n_in, sum_a + j * n_blocks_per_row);
-        const int8_t *a  = acts + j * n_in;
-        int32_t      *sa = sum_a + j * n_blocks_per_row;
-        for (size_t b = 0; b < n_blocks_per_row; b++) {
-            int32_t s = 0;
-            for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++) {
-                s += (int32_t) a[b * W8A8_BLOCK_ELEMS + i];
-            }
-            sa[b] = s;
-        }
+        w8a8_quantize_acts_row(n_in,
+                               x + j * n_in,
+                               acts + j * n_in,
+                               sum_a + j * n_blocks_per_row,
+                               act_scales + j * n_groups);
     }
 
     if (q6k_use_w8x8(n_out)) {
@@ -298,7 +307,7 @@ void cpu_x86_linear_q6k_mN(size_t                     m,
                        w_offsets,
                        acts,
                        sum_a,
-                       scale_x,
+                       act_scales,
                        y);
         } else {
             w8x8_gemm(m,
@@ -309,12 +318,20 @@ void cpu_x86_linear_q6k_mN(size_t                     m,
                       w_offsets,
                       acts,
                       sum_a,
-                      scale_x,
+                      act_scales,
                       y);
         }
     } else {
-        w8a8_gemm(
-                m, n_out, n_blocks_per_row, weights, w_scales, w_offsets, acts, sum_a, scale_x, y);
+        w8a8_gemm(m,
+                  n_out,
+                  n_blocks_per_row,
+                  weights,
+                  w_scales,
+                  w_offsets,
+                  acts,
+                  sum_a,
+                  act_scales,
+                  y);
     }
 }
 

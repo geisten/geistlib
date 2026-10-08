@@ -7,6 +7,7 @@
 
 #include "checked.h"
 #include "hadamard.h" /* host fallback of hadamard_rotate */
+#include "linear_ref.h"
 
 /* Everything the backend knows per weight dtype, in one place (#465): the
  * file block, how the VRAM copy lays it out, the (matvec, matmul) pipeline
@@ -38,7 +39,7 @@ struct vk_dtype {
     bool             scale_first;
     bool             has_linear;
     enum vk_pipe     mv, mm;
-    int32_t          embed_code; /* embed_lookup_scaled.comp dtype, -1: none */
+    int32_t          embed_code; /* VK_EMBED_DT_* (vk_limits.h), -1: none */
 };
 
 static const struct vk_dtype vk_dtypes[] = {
@@ -50,9 +51,25 @@ static const struct vk_dtype vk_dtypes[] = {
          true,
          VK_PIPE_MATVEC_F32,
          VK_PIPE_MATMUL_F32,
-         0},
-        {GEIST_DTYPE_F16, 1, 2, VK_LAYOUT_DENSE, false, false, VK_PIPE_COUNT, VK_PIPE_COUNT, 1},
-        {GEIST_DTYPE_BF16, 1, 2, VK_LAYOUT_DENSE, false, false, VK_PIPE_COUNT, VK_PIPE_COUNT, 2},
+         VK_EMBED_DT_F32},
+        {GEIST_DTYPE_F16,
+         1,
+         2,
+         VK_LAYOUT_DENSE,
+         false,
+         false,
+         VK_PIPE_COUNT,
+         VK_PIPE_COUNT,
+         VK_EMBED_DT_F16},
+        {GEIST_DTYPE_BF16,
+         1,
+         2,
+         VK_LAYOUT_DENSE,
+         false,
+         false,
+         VK_PIPE_COUNT,
+         VK_PIPE_COUNT,
+         VK_EMBED_DT_BF16},
         {GEIST_DTYPE_Q4_0,
          Q4_0_BLOCK_ELEMS,
          Q4_0_BLOCK_BYTES,
@@ -61,7 +78,7 @@ static const struct vk_dtype vk_dtypes[] = {
          true,
          VK_PIPE_MATVEC_Q4_0,
          VK_PIPE_MATMUL_Q4_0,
-         3},
+         VK_EMBED_DT_Q4_0},
         {GEIST_DTYPE_Q4_1,
          Q4_1_BLOCK_ELEMS,
          Q4_1_BLOCK_BYTES,
@@ -70,7 +87,7 @@ static const struct vk_dtype vk_dtypes[] = {
          true,
          VK_PIPE_MATVEC_Q4_1,
          VK_PIPE_MATMUL_Q4_1,
-         4},
+         VK_EMBED_DT_Q4_1},
         {GEIST_DTYPE_Q8_0,
          Q8_0_BLOCK_ELEMS,
          Q8_0_BLOCK_BYTES,
@@ -79,7 +96,7 @@ static const struct vk_dtype vk_dtypes[] = {
          true,
          VK_PIPE_MATVEC_Q8_0,
          VK_PIPE_MATMUL_Q8_0,
-         5},
+         VK_EMBED_DT_Q8_0},
         {GEIST_DTYPE_Q4_K,
          Q4_K_BLOCK_ELEMS,
          Q4_K_BLOCK_BYTES,
@@ -88,7 +105,7 @@ static const struct vk_dtype vk_dtypes[] = {
          true,
          VK_PIPE_MATVEC_Q4K,
          VK_PIPE_MATMUL_Q4K,
-         8},
+         VK_EMBED_DT_Q4_K},
         {GEIST_DTYPE_Q5_K,
          Q5_K_BLOCK_ELEMS,
          Q5_K_BLOCK_BYTES,
@@ -97,7 +114,7 @@ static const struct vk_dtype vk_dtypes[] = {
          true,
          VK_PIPE_MATVEC_Q5K,
          VK_PIPE_MATMUL_Q5K,
-         9},
+         VK_EMBED_DT_Q5_K},
         {GEIST_DTYPE_Q6_K,
          Q6_K_BLOCK_ELEMS,
          Q6_K_BLOCK_BYTES,
@@ -106,7 +123,7 @@ static const struct vk_dtype vk_dtypes[] = {
          true,
          VK_PIPE_MATVEC_Q6K,
          VK_PIPE_MATMUL_Q6K,
-         10},
+         VK_EMBED_DT_Q6_K},
         {GEIST_DTYPE_PQ2_0,
          PQ2_0_BLOCK_ELEMS,
          PQ2_0_BLOCK_BYTES,
@@ -115,7 +132,7 @@ static const struct vk_dtype vk_dtypes[] = {
          true,
          VK_PIPE_MATVEC_PQ2_0,
          VK_PIPE_MATMUL_PQ2_0,
-         11},
+         VK_EMBED_DT_PQ2_0},
         {GEIST_DTYPE_TQ2_0,
          TQ2_0_BLOCK_ELEMS,
          TQ2_0_BLOCK_BYTES,
@@ -185,11 +202,7 @@ static const struct vk_dtype *vk_linear_dtype(enum geist_dtype dt) {
                                  .rows           = m32,
                                  .x_stride       = n_in32,
                                  .y_stride       = n_out32};
-    enum vk_pipe         eff  = pipe;
-    uint32_t             gx   = vk_linear_gx(pipe, n_out32);
-    uint32_t             gy   = vk_linear_gy(pipe, m32);
-    vk_linear_cm_route(st, &eff, m32, n_out32, &gx, &gy);
-    s = vk_seq_dispatch(be, eff, binfo, &push, sizeof(push), gx, gy, 1);
+    s                         = vk_gemm_dispatch(be, pipe, binfo, nullptr, &push);
     if (s != GEIST_OK) {
         return s;
     }
@@ -245,55 +258,11 @@ vk_w_m1(const float *x, const struct geist_weight *w, struct geist_backend *be, 
 }
 
 /* ---- CPU fallback for dtypes without a GPU kernel (F16/BF16/...) -------
- * Row-dequant + naive dot, following cpu_scalar_w_quant_*, so mixed-dtype
- * GGUFs still load. */
+ * geist_linear_ref (common/linear_ref.c), split over output rows with
+ * OpenMP, so mixed-dtype GGUFs still load. Its numerics are cpu_scalar's. */
 
-static bool vk_dequant_row(const struct geist_weight *w, size_t j, float *row) {
-    const uint8_t *base = (const uint8_t *) w->raw;
-    const size_t   n_in = (size_t) w->n_in;
-    switch ((enum geist_dtype) w->dtype) {
-    case GEIST_DTYPE_F16: {
-        const uint8_t *r = base + j * n_in * 2;
-        for (size_t i = 0; i < n_in; i++) {
-            const uint16_t h = (uint16_t) r[2 * i] | ((uint16_t) r[2 * i + 1] << 8);
-            row[i]           = fp16_to_fp32(h);
-        }
-        return true;
-    }
-    case GEIST_DTYPE_BF16: {
-        const uint8_t *r = base + j * n_in * 2;
-        for (size_t i = 0; i < n_in; i++) {
-            const uint32_t b = (uint32_t) ((uint16_t) r[2 * i] | ((uint16_t) r[2 * i + 1] << 8))
-                               << 16;
-            memcpy(&row[i], &b, sizeof b);
-        }
-        return true;
-    }
-    case GEIST_DTYPE_Q3_K:
-        dequant_q3_K_row(n_in, base + j * n_in / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_Q5_K:
-        dequant_q5_K_row(n_in, base + j * n_in / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_Q8_0:
-        dequant_q8_0_row(n_in, base + j * n_in / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_TQ2_0:
-        dequant_tq2_0_row(n_in, base + j * n_in / TQ2_0_BLOCK_ELEMS * TQ2_0_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_PQ2_0:
-        dequant_pq2_0_row(n_in, base + j * n_in / PQ2_0_BLOCK_ELEMS * PQ2_0_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_Q4_0:
-        dequant_q4_0_row(n_in, base + j * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_Q4_1:
-        dequant_q4_1_row(n_in, base + j * n_in / Q4_1_BLOCK_ELEMS * Q4_1_BLOCK_BYTES, row);
-        return true;
-    default:
-        return false;
-    }
-}
+/* Output rows per OpenMP work item. */
+constexpr size_t VK_HOST_ROWS = 64;
 
 static void vk_w_cpu_mN(size_t                     m,
                         const float               *x,
@@ -312,36 +281,41 @@ static void vk_w_cpu_mN(size_t                     m,
                 st->host_weights,
                 st->host_weight_bytes >> 20);
     }
-    /* Row scratch lives in the backend state (grown on demand, freed at
-     * destroy): the resolved kernels are allocation-free in steady state, and
-     * a failed grow zeroes y and says why instead of leaving it unwritten. */
-    if (st->cpu_row_cap < n_in) {
-        float *bigger = geist_backend_alloc(be, n_in * sizeof(float), OPTIMAL_ALIGNMENT);
+    /* x and y are mapped backend buffers, which sit in the BAR window when
+     * the device has one: uncached for the CPU. The kernel reads every x
+     * element once per output row, so it runs on cached copies (#675: read
+     * in place, one Qwen3-0.6B decode step took tens of seconds). The copies
+     * live in the backend state (grown on demand, freed at destroy), so the
+     * resolved kernels are allocation-free in steady state; a failed grow
+     * zeroes y and says why instead of leaving it unwritten. */
+    size_t need = 0, need_bytes = 0;
+    if (ckd_mul(&need, m, n_in + n_out) || ckd_mul(&need_bytes, need, sizeof(float))) {
+        geist_backend_set_error(be, GEIST_E_OOM, "vulkan: host linear scratch size overflows");
+        memset(y, 0, m * n_out * sizeof(float));
+        return;
+    }
+    if (st->cpu_row_cap < need) {
+        float *bigger = geist_backend_alloc(be, need_bytes, OPTIMAL_ALIGNMENT);
         if (bigger == nullptr) {
-            geist_backend_set_error(be, GEIST_E_OOM, "vulkan: row scratch alloc failed");
+            geist_backend_set_error(be, GEIST_E_OOM, "vulkan: host linear scratch alloc failed");
             memset(y, 0, m * n_out * sizeof(float));
             return;
         }
         geist_backend_free(be, st->cpu_row);
         st->cpu_row     = bigger;
-        st->cpu_row_cap = n_in;
+        st->cpu_row_cap = need;
     }
-    float *row = st->cpu_row;
-    for (size_t j = 0; j < n_out; j++) {
-        if (!vk_dequant_row(w, j, row)) {
-            for (size_t i = 0; i < m; i++) {
-                y[i * n_out + j] = 0;
-            }
-            continue;
-        }
-        for (size_t i = 0; i < m; i++) {
-            double acc = 0.0;
-            for (size_t k = 0; k < n_in; k++) {
-                acc += (double) x[i * n_in + k] * (double) row[k];
-            }
-            y[i * n_out + j] = (float) acc;
-        }
+    float *xs = st->cpu_row;
+    float *ys = xs + m * n_in;
+    memcpy(xs, x, m * n_in * sizeof(float));
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t j0 = 0; j0 < n_out; j0 += VK_HOST_ROWS) {
+        const size_t nj = n_out - j0 < VK_HOST_ROWS ? n_out - j0 : VK_HOST_ROWS;
+        geist_linear_ref_rows(m, j0, nj, n_out, xs, w, ys + j0);
     }
+    memcpy(y, ys, m * n_out * sizeof(float));
 }
 
 static void
@@ -355,6 +329,15 @@ vk_w_cpu_m1(const float *x, const struct geist_weight *w, struct geist_backend *
 [[nodiscard]] static enum geist_status vk_resolve_host(struct geist_backend *be,
                                                        struct geist_weight  *w) {
     struct vk_state *st = be->state;
+    if (!geist_linear_ref_decodes(w->dtype)) {
+        geist_backend_set_error(be,
+                                GEIST_E_UNSUPPORTED,
+                                "vulkan: no kernel for weight dtype %u (%dx%d)",
+                                (unsigned) w->dtype,
+                                (int) w->n_out,
+                                (int) w->n_in);
+        return GEIST_E_UNSUPPORTED;
+    }
     if (st->strict) {
         geist_backend_set_error(be,
                                 GEIST_E_BACKEND,
@@ -521,6 +504,7 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
             }
             [[fallthrough]];
         case GEIST_DTYPE_Q3_K:
+        case GEIST_DTYPE_Q5_0: /* no shader yet: the odd Q4_K_M tensor (#675) */
             return vk_resolve_host(be, w);
         default:
             geist_backend_set_error(be,
@@ -534,8 +518,8 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
     }
     if (w->dtype != GEIST_DTYPE_F32 && (size_t) w->n_in % ld->block_elems != 0) {
         /* Row length is not a whole number of blocks: the GPU kernels index
-         * by block. Every dtype but the two native k-quants has a CPU dequant
-         * row (vk_dequant_row) and keeps working through it. */
+         * by block. Every dtype but the two native k-quants keeps working
+         * through the host path (geist_linear_ref). */
         if (w->dtype != GEIST_DTYPE_Q4_K && w->dtype != GEIST_DTYPE_Q6_K) {
             return vk_resolve_host(be, w);
         }
@@ -575,9 +559,28 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
         geist_backend_set_error(be, GEIST_E_FORMAT, "vulkan: weight size overflows");
         return GEIST_E_FORMAT;
     }
-    struct geist_buffer *gpu = nullptr;
-    enum geist_status    s =
-            vk_buffer_create(be, bytes, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_DEVICE, &gpu);
+    /* A weight that does not fit the VRAM left over the reserve (or that the
+     * driver refuses: another process may hold it) goes to host memory and
+     * is read over the bus (#466): a 27B Q4_0 then runs on an 11 GiB card,
+     * decode bound by PCIe for the spilled share. GEIST_MEMORY_HOST keeps it
+     * out of the 256 MB BAR window the scratch pool needs. */
+    struct geist_buffer *gpu   = nullptr;
+    bool                 spill = !vk_weight_fits_vram(st, bytes);
+    enum geist_status    s     = vk_buffer_create(
+            be, bytes, GEIST_BUFFER_WEIGHT, spill ? GEIST_MEMORY_HOST : GEIST_MEMORY_DEVICE, &gpu);
+    if (s == GEIST_E_OOM && !spill) {
+        spill = true;
+        s     = vk_buffer_create(be, bytes, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_HOST, &gpu);
+    }
+    if (s == GEIST_OK && spill) {
+        if (st->spilled_weights++ == 0) {
+            fprintf(stderr,
+                    "geist vulkan: device memory is full (%zu MiB in use); further weights "
+                    "go to host memory and are read over the bus (#466)\n",
+                    st->vram_used >> 20);
+        }
+        st->spilled_weight_bytes += bytes;
+    }
     if (s == GEIST_OK) {
         bool     failed = false;
         uint8_t *packed = vk_repack_weight(w, bytes, &failed);
@@ -622,31 +625,33 @@ static uint32_t vk_groups(uint32_t n) {
     return n / 256u + (n % 256u != 0u ? 1u : 0u);
 }
 
-/* Dispatch geometry of the linear pipes (rows per workgroup in the shader
- * headers). Register-tiled quant GEMMs: 8 output rows x 32 batch rows;
+/* Dispatch geometry of the linear pipes (rows per workgroup: vk_limits.h).
+ * Register-tiled quant GEMMs: 8 output rows x 32 batch rows;
  * matmul_q6k / matmul_f32: 4 x 16. */
 uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out) {
     switch (pipe) {
     case VK_PIPE_MATVEC_Q4K:
     case VK_PIPE_MATVEC_Q6K:
-    case VK_PIPE_MATMUL_Q4K:
     case VK_PIPE_MATVEC_Q4_0:
     case VK_PIPE_MATVEC_Q4_1:
     case VK_PIPE_MATVEC_Q8_0:
     case VK_PIPE_MATVEC_Q5K:
     case VK_PIPE_MATVEC_TQ2_0:
+        return (n_out + VK_MV_ROWS_PER_WG - 1u) / VK_MV_ROWS_PER_WG;
+    case VK_PIPE_MATMUL_Q4K:
     case VK_PIPE_MATMUL_TQ2_0:
     case VK_PIPE_MATMUL_PQ2_0:
     case VK_PIPE_MATMUL_Q4_0:
     case VK_PIPE_MATMUL_Q4_1:
     case VK_PIPE_MATMUL_Q8_0:
     case VK_PIPE_MATMUL_Q5K:
-        return (n_out + 7u) / 8u; /* 8 rows per workgroup */
+        return (n_out + VK_MM_ROWS_PER_WG - 1u) / VK_MM_ROWS_PER_WG;
     case VK_PIPE_MATVEC_PQ2_0:
-        return (n_out + 31u) / 32u; /* 32 rows (lanes) x 8 k-slices (warps) */
+        /* one row per lane x 8 k-slices (warps) */
+        return (n_out + VK_MV_PQ2_0_ROWS_PER_WG - 1u) / VK_MV_PQ2_0_ROWS_PER_WG;
     case VK_PIPE_MATMUL_Q6K:
     case VK_PIPE_MATMUL_F32:
-        return (n_out + 3u) / 4u;
+        return (n_out + VK_MM_SMALL_ROWS_PER_WG - 1u) / VK_MM_SMALL_ROWS_PER_WG;
     default:
         return n_out;
     }
@@ -661,10 +666,10 @@ uint32_t vk_linear_gy(enum vk_pipe pipe, uint32_t m) {
     case VK_PIPE_MATMUL_Q5K:
     case VK_PIPE_MATMUL_TQ2_0:
     case VK_PIPE_MATMUL_PQ2_0:
-        return (m + 31u) / 32u; /* 32 batch rows per workgroup */
+        return (m + VK_MM_TOKENS_PER_WG - 1u) / VK_MM_TOKENS_PER_WG;
     case VK_PIPE_MATMUL_Q6K:
     case VK_PIPE_MATMUL_F32:
-        return (m + 15u) / 16u;
+        return (m + VK_MM_SMALL_TOKENS_PER_WG - 1u) / VK_MM_SMALL_TOKENS_PER_WG;
     default:
         return m;
     }
@@ -687,6 +692,16 @@ void vk_linear_cm_route(struct vk_state *st,
         cm = VK_PIPE_MM_Q4K_CM;
     } else if (*pipe == VK_PIPE_MATMUL_Q6K) {
         cm = VK_PIPE_MM_Q6K_CM;
+    } else if (*pipe == VK_PIPE_MATMUL_Q5K) {
+        cm = VK_PIPE_MM_Q5K_CM;
+    } else if (*pipe == VK_PIPE_MATMUL_Q4_1) {
+        cm = VK_PIPE_MM_Q4_1_CM;
+    } else if (*pipe == VK_PIPE_MATMUL_Q8_0) {
+        cm = VK_PIPE_MM_Q8_0_CM;
+    } else if (*pipe == VK_PIPE_MATMUL_Q4_0) {
+        cm = VK_PIPE_MM_Q4_0_CM;
+    } else if (*pipe == VK_PIPE_MATMUL_TQ2_0) {
+        cm = VK_PIPE_MM_TQ2_0_CM;
     } else if (*pipe == VK_PIPE_MATMUL_PQ2_0) {
         /* 128-token tile from a full tile of tokens up; the 128 x 64 tile below
          * it (a 128-wide tile would run half empty at the default chunk of 64) */
@@ -696,7 +711,8 @@ void vk_linear_cm_route(struct vk_state *st,
         return;
     }
     /* PQ2_0 tiles cover 128 weight rows and 128 (or 64) tokens, the k-quant
-     * tiles 64 x 64 */
+     * and Q8_0 / Q4_0 / Q4_1 / TQ2_0 tiles 64 x 64 (TQ2_0 moves to its
+     * 128 x 128 tile below) */
     const bool     pq2       = cm == VK_PIPE_MM_PQ2_0_CM || cm == VK_PIPE_MM_PQ2_0_CM_F32 ||
                                cm == VK_PIPE_MM_PQ2_0_CM64;
     const uint32_t tile_rows = pq2 ? 128u : 64u;
@@ -705,17 +721,94 @@ void vk_linear_cm_route(struct vk_state *st,
         return;
     }
     /* small n_out starves the SMs on the 64-row tile — use the 32x32 one
-     * (workgroup count is the wall clock at ~1 workgroup/SM) */
-    if (cm == VK_PIPE_MM_Q4K_CM && n_out < 4096u &&
-        st->pipes[VK_PIPE_MM_Q4K_CM32] != VK_NULL_HANDLE) {
+     * (workgroup count is the wall clock at ~1 workgroup/SM). Only for small
+     * batches: from 256 rows the 64 x 64 tile already has workgroups enough
+     * (1536 x 512 -> 192) and is ~15-20 % faster end to end (#658). */
+    const bool cm32 = cm == VK_PIPE_MM_Q4K_CM && n_out < 4096u && m < 256u &&
+                      st->pipes[VK_PIPE_MM_Q4K_CM32] != VK_NULL_HANDLE;
+    /* Q4_K / Q6_K in the 128 x 128 PQ2_0 frame (#658): about twice the
+     * throughput of the smaller tiles once it has workgroups enough, but one
+     * of its workgroups costs the same however few tokens it holds, while the
+     * smaller tiles' cost shrinks with n_out * m. Measured on an RTX 2080 Ti
+     * across the Gemma 4 / Llama 3.2 shapes: it wins from n_out * m >= 3 * 2^16
+     * against the 32 x 32 tile and from 5 * 2^16 against the 64 x 64 one. */
+    const enum vk_pipe c128 = cm == VK_PIPE_MM_Q4K_CM   ? VK_PIPE_MM_Q4K_CM128
+                              : cm == VK_PIPE_MM_Q6K_CM ? VK_PIPE_MM_Q6K_CM128
+                                                        : VK_PIPE_COUNT;
+    if (c128 != VK_PIPE_COUNT && n_out % 128u == 0 && st->pipes[c128] != VK_NULL_HANDLE &&
+        (uint64_t) n_out * m >= (cm32 ? 3u << 16 : 5u << 16)) {
+        *pipe = c128;
+        *gx   = n_out / 128u;
+        *gy   = (m + 127u) / 128u;
+        return;
+    }
+    if (cm32) {
         *pipe = VK_PIPE_MM_Q4K_CM32;
         *gx   = n_out / 32u;
         *gy   = (m + 31u) / 32u;
         return;
     }
+    /* TQ2_0 in the 128 x 128 PQ2_0 frame once it has workgroups enough: one
+     * of its workgroups costs the same however few tokens it holds. Measured
+     * on an RTX 2080 Ti with BitNet b1.58-large (prefill chunk 128): n_out
+     * 4096 x 64 tokens wins on it, 1536 x 128 still loses (#467). */
+    if (cm == VK_PIPE_MM_TQ2_0_CM && n_out % 128u == 0 &&
+        st->pipes[VK_PIPE_MM_TQ2_0_CM128] != VK_NULL_HANDLE && (uint64_t) n_out * m >= 4u << 16) {
+        *pipe = VK_PIPE_MM_TQ2_0_CM128;
+        *gx   = n_out / 128u;
+        *gy   = (m + 127u) / 128u;
+        return;
+    }
     *pipe = cm;
     *gx   = n_out / tile_rows;
     *gy   = (m + tile_toks - 1u) / tile_toks;
+}
+
+/* Dispatch one linear of push->rows batch rows through `pipe` (a matvec for
+ * one row, else a register-tiled GEMM). The tensor-core kernels need a
+ * multiple of 16 rows, so a GEMM whose row count is not one runs its leading
+ * m & ~15 rows on the tensor cores and the tail on `pipe` — otherwise a
+ * prompt that fits one chunk would miss them 15 times in 16. `acc` may be
+ * nullptr (no hazard ranges); both halves are given the whole ranges, which
+ * costs at most one barrier between them. */
+[[nodiscard]] enum geist_status vk_gemm_dispatch(struct geist_backend         *be,
+                                                 enum vk_pipe                  pipe,
+                                                 const VkDescriptorBufferInfo *infos,
+                                                 const struct vk_access       *acc,
+                                                 const struct vk_push         *push) {
+    struct vk_state *st   = be->state;
+    const uint32_t   m    = push->rows;
+    const uint32_t   m_hi = m & ~15u;
+    enum vk_pipe     cm   = pipe;
+    uint32_t         gx   = vk_linear_gx(pipe, push->n_out);
+    uint32_t         gy   = vk_linear_gy(pipe, m);
+    if (m > 1 && m_hi != 0) {
+        vk_linear_cm_route(st, &cm, m_hi, push->n_out, &gx, &gy);
+    }
+    if (cm == pipe) {
+        return vk_seq_dispatch_acc(be, pipe, infos, acc, push, sizeof(*push), gx, gy, 1);
+    }
+    struct vk_push head = *push;
+    head.rows           = m_hi;
+    enum geist_status s = vk_seq_dispatch_acc(be, cm, infos, acc, &head, sizeof(head), gx, gy, 1);
+    if (s != GEIST_OK || m_hi == m) {
+        return s;
+    }
+    struct vk_push tail = *push;
+    tail.rows           = m - m_hi;
+    if (vk_ckd_u32((size_t) push->x_offset + (size_t) m_hi * push->x_stride, &tail.x_offset) ||
+        vk_ckd_u32((size_t) push->y_offset + (size_t) m_hi * push->y_stride, &tail.y_offset)) {
+        return vk_too_wide(be, "linear");
+    }
+    return vk_seq_dispatch_acc(be,
+                               pipe,
+                               infos,
+                               acc,
+                               &tail,
+                               sizeof(tail),
+                               vk_linear_gx(pipe, push->n_out),
+                               vk_linear_gy(pipe, tail.rows),
+                               1);
 }
 
 /* GPU-first attempt for the 3-buffer elementwise family (add, mul, gelu_mul,
@@ -1128,13 +1221,19 @@ vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_ten
     return vk_seq_dispatch_acc(be, VK_PIPE_ACT_QUANT, bi, acc, push, sizeof(push), rows32, 1, 1);
 }
 
-/* Largest Hadamard block the shader stages in shared memory. */
-enum { VK_HADAMARD_MAX_BLOCK = 1024 };
+/* hadamard_f32.comp's push block, field for field. */
+struct vk_hadamard_push {
+    uint32_t width, block, blocks_per_row, perm_hd, perm_nk, perm_rep;
+    uint32_t flags; /* bit 0: inverse, bit 1: signs bound */
+    uint32_t x_offset, s_offset, y_offset;
+    float    scale;
+};
+static_assert(sizeof(struct vk_hadamard_push) == 11 * 4, "hadamard_f32.comp push block");
 
 /* fused->hadamard_rotate (Ternary-Bonsai's rotated weight basis). The op is not
  * optional — a model that needs it refuses to load without it — so a geometry
- * the shader does not cover (block > 1024, host-side tensors) runs the shared
- * host implementation on mapped memory instead of failing. */
+ * the shader does not cover (block > VK_HADAMARD_MAX_BLOCK, host-side tensors)
+ * runs the shared host implementation on mapped memory instead of failing. */
 [[nodiscard]] static enum geist_status vk_hadamard_rotate(struct geist_backend             *be,
                                                           const struct geist_hadamard_args *args) {
     if (args == nullptr || args->x == nullptr || args->y == nullptr || args->x->ndim != 2) {
@@ -1161,31 +1260,26 @@ enum { VK_HADAMARD_MAX_BLOCK = 1024 };
             bi[1]  = bi[0]; /* bound but never read (flags bit 1 clear) */
             off[1] = 0;
         }
-        const float scale    = 1.0f / sqrtf((float) block);
-        uint32_t    push[11] = {0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                (args->inverse ? 1u : 0u) | (has_signs ? 2u : 0u),
-                                off[0],
-                                off[1],
-                                off[2],
-                                0};
-        uint32_t    groups;
-        if (vk_ckd_u32(width, &push[0]) || vk_ckd_u32(block, &push[1]) ||
-            vk_ckd_u32(width / block, &push[2]) || vk_ckd_u32(args->perm_hd, &push[3]) ||
-            vk_ckd_u32(args->perm_nk, &push[4]) || vk_ckd_u32(rep, &push[5]) ||
-            vk_ckd_u32(rows * (width / block), &groups)) {
+        struct vk_hadamard_push push = {
+                .flags    = (args->inverse ? 1u : 0u) | (has_signs ? 2u : 0u),
+                .x_offset = off[0],
+                .s_offset = off[1],
+                .y_offset = off[2],
+                .scale    = 1.0f / sqrtf((float) block),
+        };
+        uint32_t groups;
+        if (vk_ckd_u32(width, &push.width) || vk_ckd_u32(block, &push.block) ||
+            vk_ckd_u32(width / block, &push.blocks_per_row) ||
+            vk_ckd_u32(args->perm_hd, &push.perm_hd) || vk_ckd_u32(args->perm_nk, &push.perm_nk) ||
+            vk_ckd_u32(rep, &push.perm_rep) || vk_ckd_u32(rows * (width / block), &groups)) {
             return vk_too_wide(be, "hadamard_rotate");
         }
-        memcpy(&push[10], &scale, sizeof scale);
         const struct vk_access acc[3] = {vk_acc_tensor(args->x, false),
                                          has_signs ? vk_acc_tensor(args->signs, false)
                                                    : vk_acc_tensor(args->x, false),
                                          vk_acc_tensor(args->y, true)};
-        return vk_seq_dispatch_acc(be, VK_PIPE_HADAMARD, bi, acc, push, sizeof(push), groups, 1, 1);
+        return vk_seq_dispatch_acc(
+                be, VK_PIPE_HADAMARD, bi, acc, &push, sizeof(push), groups, 1, 1);
     }
     size_t                  nx = 0, ns = 0, ny = 0;
     const float            *xp = vk_tensor_host(args->x, &nx);
@@ -1223,6 +1317,17 @@ enum { VK_HADAMARD_MAX_BLOCK = 1024 };
     return GEIST_OK;
 }
 
+/* attn_part_f16.comp's and attn_comb.comp's push blocks, field for field. */
+struct vk_attn_part_push {
+    uint32_t n_kv, n_q_heads, n_kv_heads, hd, q_abs, sliding_window;
+    uint32_t q_offset, k_offset, v_offset, p_offset, n_chunks;
+};
+static_assert(sizeof(struct vk_attn_part_push) == 11 * 4, "attn_part_f16.comp push block");
+struct vk_attn_comb_push {
+    uint32_t n_q_heads, hd, n_chunks, p_offset, out_offset;
+};
+static_assert(sizeof(struct vk_attn_comb_push) == 5 * 4, "attn_comb.comp push block");
+
 [[nodiscard]] static enum geist_status vk_attention(struct geist_backend      *be,
                                                     const struct geist_tensor *q,
                                                     const struct geist_tensor *k,
@@ -1236,7 +1341,7 @@ enum { VK_HADAMARD_MAX_BLOCK = 1024 };
     struct vk_state *stt = be->state;
     if (q != nullptr && k != nullptr && v != nullptr && out != nullptr && q->ndim == 3 &&
         q->shape[0] == 1 && k->dtype == GEIST_DTYPE_F16 && (size_t) k->shape[0] > 192 &&
-        q->shape[2] <= 512 && vk_t_n(q) != 0 && vk_t_n16(k) != 0 &&
+        q->shape[2] <= VK_ATTN_MAX_HEAD_DIM && vk_t_n(q) != 0 && vk_t_n16(k) != 0 &&
         stt->pipes[VK_PIPE_ATTN_PART_F16] != VK_NULL_HANDLE) {
         uint32_t qh, hd, n_kv, kvh, qpos, win;
         if (vk_ckd_u32((size_t) q->shape[1], &qh) || vk_ckd_u32((size_t) q->shape[2], &hd) ||
@@ -1244,7 +1349,8 @@ enum { VK_HADAMARD_MAX_BLOCK = 1024 };
             vk_ckd_u32(q_offset, &qpos) || vk_ckd_u32(sliding_window, &win)) {
             return vk_too_wide(be, "attention");
         }
-        const uint32_t         n_chunks   = n_kv / 128u + (n_kv % 128u != 0u ? 1u : 0u);
+        const uint32_t n_chunks =
+                n_kv / VK_ATTN_PART_CHUNK + (n_kv % VK_ATTN_PART_CHUNK != 0u ? 1u : 0u);
         const size_t           part_bytes = (size_t) qh * n_chunks * (hd + 2u) * 4u;
         VkDescriptorBufferInfo bq, bk, bv, bo;
         uint32_t               qo, ko, vo, oo;
@@ -1267,25 +1373,26 @@ enum { VK_HADAMARD_MAX_BLOCK = 1024 };
         if (vk_ckd_u32(stt->xring_used / 4u, &po)) {
             return vk_too_wide(be, "attention");
         }
-        const uint32_t         push1[11] = {n_kv, qh, kvh, hd, qpos, win, qo, ko, vo, po, n_chunks};
-        VkDescriptorBufferInfo bi1[4]    = {
+        const struct vk_attn_part_push push1 = {
+                n_kv, qh, kvh, hd, qpos, win, qo, ko, vo, po, n_chunks};
+        VkDescriptorBufferInfo bi1[4] = {
                 bq, bk, bv, {.buffer = stt->xring->buf, .range = VK_WHOLE_SIZE}};
         const struct vk_access acc1[4] = {vk_acc_tensor(q, false),
                                           vk_acc_tensor16(k, false),
                                           vk_acc_tensor16(v, false),
                                           vk_acc(stt->xring_used, part_bytes, true)};
         if (vk_seq_dispatch_acc(
-                    be, VK_PIPE_ATTN_PART_F16, bi1, acc1, push1, sizeof(push1), n_chunks, qh, 1) !=
+                    be, VK_PIPE_ATTN_PART_F16, bi1, acc1, &push1, sizeof(push1), n_chunks, qh, 1) !=
             GEIST_OK) {
             goto attn_generic;
         }
-        const uint32_t         push2[5] = {qh, hd, n_chunks, po, oo};
-        VkDescriptorBufferInfo bi2[2]   = {{.buffer = stt->xring->buf, .range = VK_WHOLE_SIZE}, bo};
-        const struct vk_access acc2[2]  = {vk_acc(stt->xring_used, part_bytes, false),
-                                           vk_acc_tensor(out, true)};
-        stt->xring_used                 = (stt->xring_used + part_bytes + 63u) & ~(size_t) 63u;
+        const struct vk_attn_comb_push push2 = {qh, hd, n_chunks, po, oo};
+        VkDescriptorBufferInfo bi2[2]  = {{.buffer = stt->xring->buf, .range = VK_WHOLE_SIZE}, bo};
+        const struct vk_access acc2[2] = {vk_acc(stt->xring_used, part_bytes, false),
+                                          vk_acc_tensor(out, true)};
+        stt->xring_used                = (stt->xring_used + part_bytes + 63u) & ~(size_t) 63u;
         return vk_seq_dispatch_acc(
-                be, VK_PIPE_ATTN_COMB, bi2, acc2, push2, sizeof(push2), qh, 1, 1);
+                be, VK_PIPE_ATTN_COMB, bi2, acc2, &push2, sizeof(push2), qh, 1, 1);
     }
 attn_generic:;
     {
@@ -1293,6 +1400,7 @@ attn_generic:;
         uint32_t               off[4];
         const bool             kv16 = k != nullptr && k->dtype == GEIST_DTYPE_F16;
         if (q != nullptr && k != nullptr && q->ndim == 3 && k->ndim == 3 && vk_t_n(q) != 0 &&
+            q->shape[2] <= VK_ATTN_MAX_HEAD_DIM /* q staged in shared memory */ &&
             (kv16 ? (vk_t_n16(k) != 0 && vk_t_n16(v) != 0 &&
                      vk_tensor_gpu_f16(k, &bi[1], &off[1]) && vk_tensor_gpu_f16(v, &bi[2], &off[2]))
                   : (vk_t_n(k) != 0 && vk_t_n(v) != 0 && vk_tensor_gpu(k, &bi[1], &off[1]) &&
@@ -1316,22 +1424,26 @@ attn_generic:;
                     kv16 ? vk_acc_tensor16(v, false) : vk_acc_tensor(v, false),
                     vk_acc_tensor(out, true)};
             /* Tensor-core kernel: prefill only (n_q > 1; decode has the
-             * attn_part_f16/attn_comb path above), no sliding window
-             * (2-pass causal masking assumes a single contiguous valid range
-             * per row), head_dim == 256 (HD_TILES == 16 in the shader, qwen35/Bonsai's
-             * full-attention shape). Same push layout and bindings as
-             * VK_PIPE_ATTENTION_F16, just a 16-row dispatch. */
-            if (kv16 && n_q > 1 && sliding_window == 0 && hd == 256 &&
-                stt->pipes[VK_PIPE_ATTENTION_F16_CM] != VK_NULL_HANDLE) {
+             * attn_part_f16/attn_comb path above), one variant per head_dim
+             * (128: Qwen3; 256: qwen35/Bonsai, Gemma's local layers; 512:
+             * Gemma 4's global layers, two column halves in z). Same push
+             * layout and bindings as VK_PIPE_ATTENTION_F16, sliding window
+             * included, just a 16-row dispatch. */
+            const enum vk_pipe cm_pipe = hd == 128   ? VK_PIPE_ATTENTION_F16_HD128_CM
+                                         : hd == 256 ? VK_PIPE_ATTENTION_F16_CM
+                                         : hd == 512 ? VK_PIPE_ATTENTION_F16_HD512_CM
+                                                     : VK_PIPE_COUNT;
+            if (kv16 && n_q > 1 && cm_pipe != VK_PIPE_COUNT &&
+                stt->pipes[cm_pipe] != VK_NULL_HANDLE) {
                 return vk_seq_dispatch_acc(be,
-                                           VK_PIPE_ATTENTION_F16_CM,
+                                           cm_pipe,
                                            bi,
                                            acc,
                                            push,
                                            sizeof(push),
                                            n_q / 16u + (n_q % 16u != 0u ? 1u : 0u),
                                            qh,
-                                           1);
+                                           hd == 512 ? 2u : 1u);
             }
             return vk_seq_dispatch_acc(be,
                                        kv16 ? VK_PIPE_ATTENTION_F16 : VK_PIPE_ATTENTION,
@@ -1575,20 +1687,14 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
         }
         return GEIST_OK;
     }
-    enum vk_pipe lpipe = m == 1 ? mv : mm;
-    uint32_t     gx    = vk_linear_gx(lpipe, n_out);
-    uint32_t     gy    = vk_linear_gy(lpipe, m32);
     /* Tensor-core path for conforming GEMMs (shaders assume w_offset == 0,
      * which holds for all registry uploads). */
-    if (m > 1) {
-        vk_linear_cm_route(st, &lpipe, m32, n_out, &gx, &gy);
-    }
     const struct vk_access acc[3] = {
             t_x->buffer->device_mem ? vk_acc_tensor(t_x, false)
                                     : vk_acc((uint64_t) xo * 4u, (uint64_t) m * n_in * 4u, false),
             vk_acc_all(false),
             vk_acc_tensor(t_y, true)};
-    return vk_seq_dispatch_acc(be, lpipe, bi, acc, &push, sizeof(push), gx, gy, 1);
+    return vk_gemm_dispatch(be, m == 1 ? mv : mm, bi, acc, &push);
 }
 
 [[nodiscard]] static enum geist_status vk_linear_t_pair(struct geist_backend      *be,
@@ -1690,6 +1796,7 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
         float    scale;
         uint32_t n_rows;
     } push = {0, 0, dtype_code, 0, w_elem_off, yo, scale, 0};
+    static_assert(sizeof push == 8 * 4, "embed_lookup_scaled.comp push block");
     /* 0 <= token_id < vocab was checked above. */
     if (vk_ckd_u32((size_t) d, &push.n_in) || vk_ckd_u32((size_t) token_id, &push.token) ||
         vk_ckd_u32((size_t) vocab, &push.n_rows)) {
@@ -1716,7 +1823,7 @@ static bool vk_ffn_gate_up_geometry_ok(bool             with_norm,
                                        int64_t          up_n_out) {
     return gate_dtype == GEIST_DTYPE_Q4_K && up_dtype == GEIST_DTYPE_Q4_K && n_in > 0 &&
            n_out > 0 && n_in <= UINT32_MAX && n_out <= UINT32_MAX && n_in % 256 == 0 &&
-           (!with_norm || n_out % 8 == 0) && up_n_in == n_in && up_n_out == n_out;
+           (!with_norm || n_out % VK_MV_ROWS_PER_WG == 0) && up_n_in == n_in && up_n_out == n_out;
 }
 
 /* Fused decode FFN front (m == 1, both weights Q4_K): one dispatch for
@@ -1774,8 +1881,15 @@ static bool vk_ffn_gate_up_geometry_ok(bool             with_norm,
                                      vk_acc_all(false),
                                      vk_acc_all(false),
                                      vk_acc_tensor(y, true)};
-    return vk_seq_dispatch_acc(
-            be, VK_PIPE_FFN_GATE_UP, bi, acc, &push, sizeof(push), (n_out + 3u) / 4u, 1, 1);
+    return vk_seq_dispatch_acc(be,
+                               VK_PIPE_FFN_GATE_UP,
+                               bi,
+                               acc,
+                               &push,
+                               sizeof(push),
+                               (n_out + VK_FFN_GU_ROWS_PER_WG - 1u) / VK_FFN_GU_ROWS_PER_WG,
+                               1,
+                               1);
 }
 
 /* ffn_gate_up with the pre-FFN rmsnorm folded into the kernel's x loads
@@ -1822,14 +1936,15 @@ static bool vk_ffn_gate_up_geometry_ok(bool             with_norm,
     const struct {
         uint32_t n_in, n_out, blocks_per_row, x_offset, nw_offset, y_offset;
         float    eps;
-    } push                        = {n_in, n_out, n_in / 256u, xo, nwo, yo, eps};
+    } push = {n_in, n_out, n_in / 256u, xo, nwo, yo, eps};
+    static_assert(sizeof push == 7 * 4, "ffn_norm_gate_up_q4k.comp push block");
     const struct vk_access acc[5] = {vk_acc_tensor(t_x, false),
                                      vk_acc_all(false),
                                      vk_acc_all(false),
                                      vk_acc_tensor(norm_w, false),
                                      vk_acc_tensor(y, true)};
     return vk_seq_dispatch_acc(
-            be, VK_PIPE_FFN_NORM_GU, bi, acc, &push, sizeof(push), n_out / 8u, 1, 1);
+            be, VK_PIPE_FFN_NORM_GU, bi, acc, &push, sizeof(push), n_out / VK_MV_ROWS_PER_WG, 1, 1);
 }
 
 /* Gemma-3n PLE block in THREE dispatches (replaces gate matvec +
@@ -1913,9 +2028,6 @@ static bool vk_ffn_gate_up_geometry_ok(bool             with_norm,
     return vk_rmsnorm_add(be, res, proj_scratch, norm_w, eps, y);
 }
 
-/* sh[512] in qkv_prep_f{16,32}.comp: one head row in shared memory. */
-static constexpr uint32_t VK_QKV_PREP_MAX_HEAD_DIM = 512;
-
 /* Fused q/k/v prep: per-head norms + rope + F32 cache append in ONE
  * dispatch (which-axis on WorkGroupID.z). Falls back (UNSUPPORTED) when
  * the tensors don't share the expected pool/arena buffers. */
@@ -1985,23 +2097,24 @@ static constexpr uint32_t VK_QKV_PREP_MAX_HEAD_DIM = 512;
         uint32_t seq, qh, kvh, hd, q_position, has_kv;
         uint32_t qo, ko, vo, qwo, kwo, vwo, co, so, kco, vco;
         float    eps;
-    } push              = {seq,
-                           qh,
-                           kvh,
-                           hd,
-                           qpos,
-                           has_kv ? 1u : 0u,
-                           qo,
-                           ko,
-                           vo,
-                           qwo,
-                           kwo,
-                           vwo,
-                           co,
-                           so,
-                           kco,
-                           vco,
-                           eps};
+    } push = {seq,
+              qh,
+              kvh,
+              hd,
+              qpos,
+              has_kv ? 1u : 0u,
+              qo,
+              ko,
+              vo,
+              qwo,
+              kwo,
+              vwo,
+              co,
+              so,
+              kco,
+              vco,
+              eps};
+    static_assert(sizeof push == 17 * 4, "qkv_prep_f{16,32}.comp push block");
     struct vk_access a0 = vk_acc_tensor(q, true);
     if (has_kv) {
         const struct vk_access ak = vk_acc_tensor(k, true);
@@ -2082,14 +2195,14 @@ static constexpr uint32_t VK_QKV_PREP_MAX_HEAD_DIM = 512;
  * exactly once per input row. UNSUPPORTED (before anything was dispatched)
  * lets the architecture take its host path — which cannot see VRAM-resident
  * state, so the geometry limits below cover every published qwen35 variant. */
-/* The geometry vk_deltanet_mix runs: the shaders cover d_k <= 256 (q/k
- * staging), d_v <= 128 (one thread per value column) and a conv of 2..8
- * taps, with every row index in uint32. The probe and the op both ask
- * this (#470). */
+/* The geometry vk_deltanet_mix runs: the shaders cover d_k <= VK_DN_MAX_DK
+ * (q/k staging), d_v <= VK_DN_MAX_DV (one thread per value column) and a conv
+ * of 2..VK_DN_MAX_CONV_K taps, with every row index in uint32. The probe and
+ * the op both ask this (#470). */
 static bool
 vk_deltanet_geometry_ok(size_t seq, size_t n_kh, size_t n_vh, size_t dk, size_t dv, size_t K) {
-    if (seq == 0 || n_kh == 0 || n_vh == 0 || n_vh % n_kh != 0 || dk == 0 || dk > 256 || dv == 0 ||
-        dv > 128 || K < 2 || K > 8) {
+    if (seq == 0 || n_kh == 0 || n_vh == 0 || n_vh % n_kh != 0 || dk == 0 || dk > VK_DN_MAX_DK ||
+        dv == 0 || dv > VK_DN_MAX_DV || K < 2 || K > VK_DN_MAX_CONV_K) {
         return false;
     }
     size_t keyd = 0, vald = 0, convd = 0;
@@ -2144,16 +2257,16 @@ vk_deltanet_geometry_ok(size_t seq, size_t n_kh, size_t n_vh, size_t dk, size_t 
         const struct vk_access       acc[3]  = {vk_acc_tensor(a->qkv, true),
                                                 vk_acc_tensor(a->conv_w, false),
                                                 vk_acc_tensor(a->conv_state, true)};
-        const enum geist_status      s =
-                vk_seq_dispatch_acc(be,
-                                    VK_PIPE_DN_CONV,
-                                    bi,
-                                    acc,
-                                    push,
-                                    sizeof(push),
-                                    convd32 / 128u + (convd32 % 128u != 0u ? 1u : 0u),
-                                    1,
-                                    1);
+        const enum geist_status      s       = vk_seq_dispatch_acc(
+                be,
+                VK_PIPE_DN_CONV,
+                bi,
+                acc,
+                push,
+                sizeof(push),
+                convd32 / VK_DN_CONV_WG + (convd32 % VK_DN_CONV_WG != 0u ? 1u : 0u),
+                1,
+                1);
         if (s != GEIST_OK) {
             return s;
         }

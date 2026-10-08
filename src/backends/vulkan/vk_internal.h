@@ -19,7 +19,8 @@
 #include "checked.h"        /* ckd_* size arithmetic (AGENT.md §3) */
 #include "gemma4_kernels.h" /* shared reference rope/attention kernels */
 #include "heap.h"
-#include "quant.h" /* CPU dequant helpers for the non-GPU dtype fallback */
+#include "quant.h"             /* CPU dequant helpers for the non-GPU dtype fallback */
+#include "shaders/vk_limits.h" /* constants shared with the shaders (#474) */
 
 #include <dlfcn.h>
 #include <math.h>
@@ -77,6 +78,9 @@ struct vk_fns {
     PFN_vkCreatePipelineLayout       CreatePipelineLayout;
     PFN_vkDestroyPipelineLayout      DestroyPipelineLayout;
     PFN_vkCreateComputePipelines     CreateComputePipelines;
+    PFN_vkCreatePipelineCache        CreatePipelineCache;
+    PFN_vkDestroyPipelineCache       DestroyPipelineCache;
+    PFN_vkGetPipelineCacheData       GetPipelineCacheData;
     PFN_vkDestroyPipeline            DestroyPipeline;
     PFN_vkCreateDescriptorPool       CreateDescriptorPool;
     PFN_vkDestroyDescriptorPool      DestroyDescriptorPool;
@@ -95,82 +99,41 @@ struct vk_fns {
     PFN_vkGetQueryPoolResults        GetQueryPoolResults;
 };
 
-/* One compute pipeline per (op, dtype) pair; all share a single
- * 3-storage-buffer descriptor layout and the unified 9-u32 push block. */
+/* One compute pipeline per (op, dtype) pair; each row of vk_pipes.def is one
+ * pipeline (enum, SPIR-V blob, profiler name, binding count, kind). The
+ * descriptor layout is chosen by binding count; all share the unified
+ * push block. */
 enum vk_pipe {
-    VK_PIPE_MATVEC_Q4K,
-    VK_PIPE_MATMUL_Q4K,
-    VK_PIPE_MATVEC_Q6K,
-    VK_PIPE_MATMUL_Q6K,
-    VK_PIPE_MATVEC_F32,
-    VK_PIPE_MATMUL_F32,
-    VK_PIPE_ADD,
-    VK_PIPE_MUL,
-    VK_PIPE_GELU,
-    VK_PIPE_GELU_MUL,
-    VK_PIPE_SCALE,
-    VK_PIPE_RMSNORM,
-    VK_PIPE_RMSNORM_ADD,
-    VK_PIPE_ROPE,
-    VK_PIPE_ATTENTION,
-    VK_PIPE_ARGMAX,
-    VK_PIPE_EMBED,
-    VK_PIPE_FFN_GATE_UP,
-    VK_PIPE_QKV_PREP,
-    VK_PIPE_MM_Q4K_CM, /* tensor-core GEMMs; created only with coopmat */
-    VK_PIPE_MM_Q6K_CM,
-    VK_PIPE_ATTENTION_F16,
-    VK_PIPE_QKV_PREP_F16,
-    VK_PIPE_KV_APPEND_F16,
-    VK_PIPE_ATTN_PART_F16,
-    VK_PIPE_ATTN_COMB,
-    VK_PIPE_MM_Q4K_CM32,     /* small-n_out tensor-core tile */
-    VK_PIPE_MM_PQ2_0_CM,     /* PQ2_0 tensor-core GEMM, f16 acc folded into f32 */
-    VK_PIPE_MM_PQ2_0_CM_F32, /* the same with f32 accumulation throughout (GEIST_VK_PQ2_F32_ACC) */
-    VK_PIPE_MM_PQ2_0_CM64,   /* 128 x 64 tile (f32 acc) for batches under 128 tokens */
-    VK_PIPE_PLE_GATE,        /* fused PLE gate: gelu(x.gate_w) * ple_in */
-    VK_PIPE_FFN_NORM_GU,     /* ffn_gate_up with the pre-FFN rmsnorm folded in */
-    VK_PIPE_DN_CONV,         /* gated-DeltaNet causal conv + silu (deltanet_mix stage 1) */
-    VK_PIPE_DN_DELTA,        /* gated-DeltaNet recurrence + gated rmsnorm (stage 2) */
-    VK_PIPE_MATVEC_Q4_0,
-    VK_PIPE_MATMUL_Q4_0,
-    VK_PIPE_MATVEC_Q4_1,
-    VK_PIPE_MATMUL_Q4_1,
-    VK_PIPE_MATVEC_Q8_0,
-    VK_PIPE_MATMUL_Q8_0,
-    VK_PIPE_MATVEC_Q5K,
-    VK_PIPE_MATMUL_Q5K,
-    VK_PIPE_MATVEC_TQ2_0,
-    VK_PIPE_MATMUL_TQ2_0,
-    VK_PIPE_MATVEC_PQ2_0,
-    VK_PIPE_MATMUL_PQ2_0,
-    VK_PIPE_SILU,             /* y = silu(x) */
-    VK_PIPE_HADAMARD,         /* blockwise orthonormal WHT of rows (prism.hadamard) */
-    VK_PIPE_RELU2,            /* y = relu(x)^2 (BitNet FFN) */
-    VK_PIPE_ACT_QUANT,        /* BitNet int8 absmax activation round trip, in place */
-    VK_PIPE_SILU_MUL,         /* y = silu(a) * b (SwiGLU epilogue) */
-    VK_PIPE_SIGMOID_MUL,      /* y = a * sigmoid(gate) (qwen35 attention gate) */
-    VK_PIPE_QGATE_SPLIT,      /* [query | gate] per-head split (qwen35) */
-    VK_PIPE_ATTENTION_F16_CM, /* tensor-core causal attention, no sliding window, head_dim==256 */
+#define X(id, spv, name, nbind, kind) id,
+#include "vk_pipes.def"
+#undef X
     VK_PIPE_COUNT,
+};
+
+/* vk_pipes.def's kind column. */
+enum vk_pipe_kind {
+    VK_PK_PLAIN,
+    VK_PK_TILED,   /* register-tiled GEMM: one output row per 32-lane subgroup */
+    VK_PK_COOPMAT, /* needs VK_KHR_cooperative_matrix */
+};
+
+static const enum vk_pipe_kind vk_pipe_kinds[VK_PIPE_COUNT] = {
+#define X(id, spv, name, nbind, kind) [id] = VK_PK_##kind,
+#include "vk_pipes.def"
+#undef X
 };
 
 /* Pipelines that exist only with VK_KHR_cooperative_matrix; without it they
  * stay VK_NULL_HANDLE and vk_linear_cm_route keeps the register-tiled GEMM. */
 static inline bool vk_pipe_needs_coopmat(int pipe) {
-    return pipe == VK_PIPE_MM_Q4K_CM || pipe == VK_PIPE_MM_Q6K_CM || pipe == VK_PIPE_MM_Q4K_CM32 ||
-           pipe == VK_PIPE_MM_PQ2_0_CM || pipe == VK_PIPE_MM_PQ2_0_CM_F32 ||
-           pipe == VK_PIPE_MM_PQ2_0_CM64 || pipe == VK_PIPE_ATTENTION_F16_CM;
+    return pipe >= 0 && pipe < VK_PIPE_COUNT && vk_pipe_kinds[pipe] == VK_PK_COOPMAT;
 }
 
 /* The register-tiled GEMMs: one output row per 32-lane subgroup
  * (mm_legacy.glsl and its siblings). The tensor-core variants are not on
  * this list; they keep the native subgroup size. */
 static inline bool vk_pipe_is_tiled_gemm(int pipe) {
-    return pipe == VK_PIPE_MATMUL_Q4K || pipe == VK_PIPE_MATMUL_Q6K || pipe == VK_PIPE_MATMUL_F32 ||
-           pipe == VK_PIPE_MATMUL_Q4_0 || pipe == VK_PIPE_MATMUL_Q4_1 ||
-           pipe == VK_PIPE_MATMUL_Q8_0 || pipe == VK_PIPE_MATMUL_Q5K ||
-           pipe == VK_PIPE_MATMUL_TQ2_0 || pipe == VK_PIPE_MATMUL_PQ2_0;
+    return pipe >= 0 && pipe < VK_PIPE_COUNT && vk_pipe_kinds[pipe] == VK_PK_TILED;
 }
 
 struct vk_push {
@@ -217,6 +180,7 @@ enum {
 struct vk_dset_entry {
     uint64_t        key; /* hash of nbind + buffer handles; 0 = empty */
     VkDescriptorSet set;
+    uint32_t        nbind; /* bindings of the layout `set` was allocated with */
 };
 
 enum {
@@ -259,6 +223,14 @@ struct vk_state {
      * (bytes, K/M/G suffix) or 0: the heap size of the memory type. */
     size_t vram_used;
     size_t vram_budget;
+    /* Weights stop going to VRAM once one would leave less than
+     * weight_reserve of the limit for the KV cache, scratch and x ring; the
+     * rest live in host memory and the shaders read them over the bus
+     * (#466). SIZE_MAX: the default, 1/16 of the limit;
+     * GEIST_VK_WEIGHT_RESERVE (bytes, K/M/G) overrides it. */
+    size_t weight_reserve;
+    size_t spilled_weights;
+    size_t spilled_weight_bytes;
     /* VK_EXT_memory_budget is enabled: vk_heap_budget reports the driver's
      * budget and usage, which see every allocation on the device (#665). */
     bool has_mem_budget;
@@ -267,8 +239,21 @@ struct vk_state {
     VkCommandPool   cmd_pool;
     VkCommandBuffer xfer_cmd;
     VkFence         xfer_fence;
+    /* Persistent host-visible staging buffer for uploads (#469): created on
+     * the first staged upload, VK_UP_STAGE_BYTES, reused for every chunk —
+     * a fresh full-size staging buffer per weight cost page faults on
+     * hundreds of MB per tensor. */
+    VkBuffer       up_buf;
+    VkDeviceMemory up_mem;
+    uint8_t       *up_map;
 
     char device_name[256];
+    /* Compiled pipelines persisted across processes (#469): building all of
+     * them costs ~1.5 s on a 2080 Ti the first time in a process, and the
+     * driver's own shader cache does not cover it. Loaded from and saved to
+     * vk_pcache_path; VK_NULL_HANDLE when disabled or unavailable. */
+    VkPipelineCache pcache;
+    uint8_t         pcache_uuid[VK_UUID_SIZE];
 
     /* From VkPhysicalDeviceSubgroupProperties. The register-tiled GEMM
      * shaders assume 32 lanes (2080-Ti-first). */
@@ -297,7 +282,7 @@ struct vk_state {
      * clears it — see vk_seq_take_failure. */
     bool seq_failed;
 
-    /* Row scratch of the host row-dequant linear (vk_w_cpu_mN). */
+    /* Cached copies of x and y for the host linear (vk_w_cpu_mN), in floats. */
     float *cpu_row;
     size_t cpu_row_cap;
 
@@ -412,61 +397,14 @@ struct vk_state {
 
 /* binding count per pipeline (descriptor set layout selector) */
 static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
-        [VK_PIPE_MATVEC_Q4K]       = 3,
-        [VK_PIPE_MATMUL_Q4K]       = 3,
-        [VK_PIPE_MATVEC_Q6K]       = 3,
-        [VK_PIPE_MATMUL_Q6K]       = 3,
-        [VK_PIPE_MATVEC_F32]       = 3,
-        [VK_PIPE_MATMUL_F32]       = 3,
-        [VK_PIPE_ADD]              = 3,
-        [VK_PIPE_MUL]              = 3,
-        [VK_PIPE_GELU]             = 2,
-        [VK_PIPE_GELU_MUL]         = 3,
-        [VK_PIPE_SCALE]            = 2,
-        [VK_PIPE_RMSNORM]          = 3,
-        [VK_PIPE_RMSNORM_ADD]      = 4,
-        [VK_PIPE_ROPE]             = 3,
-        [VK_PIPE_ATTENTION]        = 4,
-        [VK_PIPE_ARGMAX]           = 2,
-        [VK_PIPE_EMBED]            = 2,
-        [VK_PIPE_FFN_GATE_UP]      = 4,
-        [VK_PIPE_QKV_PREP]         = 6,
-        [VK_PIPE_MM_Q4K_CM]        = 3,
-        [VK_PIPE_MM_Q6K_CM]        = 3,
-        [VK_PIPE_ATTENTION_F16]    = 4,
-        [VK_PIPE_QKV_PREP_F16]     = 6,
-        [VK_PIPE_KV_APPEND_F16]    = 4,
-        [VK_PIPE_ATTN_PART_F16]    = 4,
-        [VK_PIPE_ATTN_COMB]        = 2,
-        [VK_PIPE_MM_Q4K_CM32]      = 3,
-        [VK_PIPE_MM_PQ2_0_CM]      = 3,
-        [VK_PIPE_MM_PQ2_0_CM_F32]  = 3,
-        [VK_PIPE_MM_PQ2_0_CM64]    = 3,
-        [VK_PIPE_PLE_GATE]         = 4,
-        [VK_PIPE_FFN_NORM_GU]      = 5,
-        [VK_PIPE_DN_CONV]          = 3,
-        [VK_PIPE_DN_DELTA]         = 8,
-        [VK_PIPE_MATVEC_Q4_0]      = 3,
-        [VK_PIPE_MATMUL_Q4_0]      = 3,
-        [VK_PIPE_MATVEC_Q4_1]      = 3,
-        [VK_PIPE_MATMUL_Q4_1]      = 3,
-        [VK_PIPE_MATVEC_Q8_0]      = 3,
-        [VK_PIPE_MATMUL_Q8_0]      = 3,
-        [VK_PIPE_MATVEC_Q5K]       = 3,
-        [VK_PIPE_MATMUL_Q5K]       = 3,
-        [VK_PIPE_MATVEC_TQ2_0]     = 3,
-        [VK_PIPE_MATMUL_TQ2_0]     = 3,
-        [VK_PIPE_MATVEC_PQ2_0]     = 3,
-        [VK_PIPE_MATMUL_PQ2_0]     = 3,
-        [VK_PIPE_SILU]             = 2,
-        [VK_PIPE_RELU2]            = 2,
-        [VK_PIPE_HADAMARD]         = 3,
-        [VK_PIPE_ACT_QUANT]        = 2,
-        [VK_PIPE_SILU_MUL]         = 3,
-        [VK_PIPE_SIGMOID_MUL]      = 3,
-        [VK_PIPE_QGATE_SPLIT]      = 3,
-        [VK_PIPE_ATTENTION_F16_CM] = 4,
+#define X(id, spv, name, nbind, kind) [id] = nbind,
+#include "vk_pipes.def"
+#undef X
 };
+#define X(id, spv, name, nbind, kind) \
+    static_assert(nbind >= 2 && nbind <= VK_MAX_BINDINGS, #id ": binding count out of range");
+#include "vk_pipes.def"
+#undef X
 
 struct geist_buffer {
     struct vk_state       *owner;
@@ -631,6 +569,9 @@ void vk_seq_hazard(struct vk_state              *st,
                    const struct vk_access       *acc,
                    uint32_t                      n);
 
+/* A weight of n bytes still fits in VRAM with weight_reserve left over. */
+[[nodiscard]] bool vk_weight_fits_vram(const struct vk_state *st, size_t n);
+
 [[nodiscard]] enum geist_status vk_seq_dispatch_acc(struct geist_backend         *be,
                                                     enum vk_pipe                  pipe,
                                                     const VkDescriptorBufferInfo *infos,
@@ -660,5 +601,11 @@ void vk_linear_cm_route(struct vk_state *st,
                         uint32_t         n_out,
                         uint32_t        *gx,
                         uint32_t        *gy);
+
+[[nodiscard]] enum geist_status vk_gemm_dispatch(struct geist_backend         *be,
+                                                 enum vk_pipe                  pipe,
+                                                 const VkDescriptorBufferInfo *infos,
+                                                 const struct vk_access       *acc,
+                                                 const struct vk_push         *push);
 
 #endif /* GEIST_INTERNAL_VK_INTERNAL_H */

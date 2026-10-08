@@ -431,6 +431,14 @@ struct transformer_arch_session {
     int                            top_k;
     struct geist_rng               rng;
     struct geist_sampler_workspace sampler_ws;
+    /* Repetition control (#695): penalties and DRY, applied to a copy of
+     * the logits before the sampler above when active. */
+    struct geist_sampler_penalties pen;
+    /* [max_seq_len] the token at each cached position, -1 for an audio or
+     * image soft token: the history the penalties look back over. Written
+     * by every path that feeds a position, so truncate, reset and the
+     * speculative rewind need nothing more than kv_len. */
+    geist_token_t *tok_hist;
 
     /* ---- Spec-head per-token scratch (written every decode step, so it
      * lives here, not on the model — the sketch itself and its bound
@@ -503,6 +511,12 @@ struct transformer_arch_state {
     void  *rope_il_rows;
     size_t rope_il_rows_used;
     size_t rope_il_rows_capacity;
+    /* per_layer_model_proj widened to F32 on a weights_device_copy backend
+     * (#658): plain host memory the backend copies to the device at
+     * resolve_weight, so the matrix stays out of the arena and of any device
+     * heap the backend budgets for scratch (Vulkan's BAR window). Released
+     * in transformer_state_destroy. */
+    void *model_proj_host;
 
     /* ---- Per-layer weight blocks, heap-sized to st->n_layers. */
     struct transformer_layer_weights     *layers;
@@ -906,6 +920,21 @@ transformer_kv_bytes_per_token(size_t *out_bytes, const struct transformer_arch_
 [[nodiscard]] enum geist_status
 transformer_session_apply_opts(struct transformer_arch_session *sess,
                                const struct geist_session_opts *opts);
+
+/* Record the tokens about to fill positions [pos, pos + n) in tok_hist (#695);
+ * `ids` nullptr records soft tokens. Positions past max_seq_len are not
+ * recorded: the forward that would fill them fails its KV-room check. */
+static inline void transformer_hist_put(struct transformer_arch_session *sess,
+                                        size_t                           pos,
+                                        size_t                           n,
+                                        const geist_token_t             *ids) {
+    if (sess->tok_hist == nullptr || pos > sess->max_seq_len || n > sess->max_seq_len - pos) {
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        sess->tok_hist[pos + i] = ids != nullptr ? ids[i] : -1;
+    }
+}
 
 /* ---- Multi-session API -------------------------------------------------- *
  *

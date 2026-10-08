@@ -34,6 +34,7 @@
 
 #include <geist.h>
 #include <geist_backend.h>
+#include <geist_util.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -201,7 +202,7 @@ zero_unmapped(struct geist_backend *be, size_t bytes, struct geist_buffer *buf) 
 }
 
 /* The device-local part of the scratch pool (#488). The backend may still
- * hand back mappable memory (Vulkan without GEIST_VK_SCRATCH_DEVICE=1, or no
+ * hand back mappable memory (Vulkan under GEIST_VK_SCRATCH_DEVICE=0, a UMA device, or no
  * device-local type left): the buffer is then released and the session keeps
  * one host-visible pool — scratch_dev_pool_buf stays nullptr. */
 [[nodiscard]] static enum geist_status alloc_device_pool(struct transformer_arch_session *sess,
@@ -1621,6 +1622,7 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     safe_free(&st->rope_il_rows); /* same lifetime as the arena slices */
     st->rope_il_rows_capacity = 0;
     st->rope_il_rows_used     = 0;
+    safe_free(&st->model_proj_host); /* its buffer handle is gone with the globals */
     transformer_exec_plan_destroy(st);
     if (st->layers != nullptr) {
         void *p_layers = st->layers;
@@ -1733,7 +1735,7 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
 
 /* Whether this backend serves a SCRATCH buffer asked for device-local as
  * memory the host cannot map (#488) and can slice one by offset. Vulkan
- * does only under GEIST_VK_SCRATCH_DEVICE=1; every other backend either
+ * does unless GEIST_VK_SCRATCH_DEVICE=0; every other backend either
  * has no buffer_create_view or maps everything. */
 static bool backend_scratch_unmappable(struct geist_backend *be) {
     bool mapped = true;
@@ -1752,7 +1754,8 @@ static bool backend_scratch_unmappable(struct geist_backend *be) {
  *   - a quantized or KIVI KV cache, or a rotated one: kv_store.c quantizes
  *     scratch_k / scratch_v and the INT8 attention reads scratch_q on the
  *     host;
- *   - per-layer embeddings, DeltaNet mixers, an attention output gate, MTP
+ *   - per-layer embeddings without the on-device row lookup, DeltaNet
+ *     mixers, an attention output gate, MTP
  *     heads, BitNet SubLN or per-projection norms, AWQ scales: each has a
  *     host loop over pool slots (layer.c, layer_deltanet.c, layer_attn.c,
  *     mtp.c, internal.h). A prism.hadamard rotation is fine: it only runs
@@ -1761,6 +1764,10 @@ static bool backend_scratch_unmappable(struct geist_backend *be) {
  *     fallbacks are host memcpy / host loops (exec_plan.h);
  *   - the whole-FFN tile kernel, which takes host pointers.
  * Then the backend decides (backend_scratch_unmappable). */
+/* The default chunk of a session whose scratch pool is device-local (see
+ * transformer_session_alloc). */
+constexpr size_t DEVICE_POOL_M_MAX = 512;
+
 static bool scratch_device_wanted(const struct transformer_arch_session *sess) {
     const struct transformer_arch_state *st = sess->model;
     if (st->backend == nullptr || st->backend->desc == nullptr) {
@@ -1770,7 +1777,11 @@ static bool scratch_device_wanted(const struct transformer_arch_session *sess) {
         sess->mtp_enabled) {
         return false;
     }
-    if (st->config.has_ple || st->config.has_sub_ln || st->config.has_projection_input_norms ||
+    /* PLE's host loops (layer.c: the row gather, the model_proj scale, the
+     * add+scale combine) all sit behind !ple_lookup_scaled or
+     * !prim_scale_f32; with both bound PLE runs on the backend (#488). */
+    const bool ple_on_host = st->config.has_ple && !st->model_fusions.ple_lookup_scaled;
+    if (ple_on_host || st->config.has_sub_ln || st->config.has_projection_input_norms ||
         st->config.has_attn_output_gate || !st->model_fusions.backend_buffer_copy ||
         !st->model_fusions.prim_scale_f32) {
         return false;
@@ -1914,7 +1925,19 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     sess->top_p       = 1.0f;
     sess->top_k       = 0;
     sess->sampler_ws  = (struct geist_sampler_workspace) {0};
+    sess->pen         = (struct geist_sampler_penalties) {0};
     geist_rng_seed(&sess->rng, 0xCAFEBABE1234ULL);
+    /* One token id per position (#695): 4 bytes against the KV cache's
+     * kilobytes per position. */
+    sess->tok_hist = heap_alloc_array_aligned(geist_token_t, sess->max_seq_len);
+    if (sess->tok_hist == nullptr) {
+        geist_backend_set_error(be,
+                                GEIST_E_OOM,
+                                "transformer_session_alloc: token history (%zu positions)",
+                                sess->max_seq_len);
+        transformer_session_free(state, sess);
+        return nullptr;
+    }
 
     /* After the KV mode: whether the scratch pool can be device-local
      * depends on it (scratch_device_wanted). */
@@ -1941,6 +1964,26 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
                 sess->m_max = sess->m_max / 2 < 64 ? 64 : sess->m_max / 2;
                 transformer_scratch_plan_build(state, sess->m_max, &fit);
                 need = sess->scratch_device ? fit.host_bytes : fit.pool_bytes;
+            }
+        }
+        /* A device-local pool takes the BAR window out of the chunk's limits
+         * (only h_a, h_b and the logits rows stay host-visible), and a bigger
+         * chunk feeds the GEMMs: Gemma 4 E2B pp512 on an RTX 2080 Ti 1641 ->
+         * 1813 t/s at 512, E4B 754 -> 839, Llama 3.2 3B 1229 -> 1298. Grow to
+         * 512 when the device has room for the bigger pool, with half of what
+         * is free left for the KV cache and everything else. Sessions that
+         * keep a host-visible pool (DeltaNet, quantized KV, ...) never get
+         * here: their chunk stays what the BAR allows. */
+        if (!state->m_max_from_env && sess->scratch_device && sess->m_max < DEVICE_POOL_M_MAX &&
+            DEVICE_POOL_M_MAX <= m_cap) {
+            struct geist_backend_memory     mem;
+            struct transformer_scratch_plan now, big;
+            transformer_scratch_plan_build(state, sess->m_max, &now);
+            transformer_scratch_plan_build(state, DEVICE_POOL_M_MAX, &big);
+            const size_t grow = big.pool_bytes - now.pool_bytes;
+            if (geist_backend_memory_info(be, &mem) == GEIST_OK && !mem.unified_memory &&
+                grow <= mem.free_bytes / 2) {
+                sess->m_max = DEVICE_POOL_M_MAX;
             }
         }
     }
@@ -2151,6 +2194,8 @@ void transformer_session_free(struct transformer_arch_state   *state,
         sess->scratch_pool_used  = 0;
     }
     geist_sampler_workspace_destroy(&sess->sampler_ws);
+    geist_sampler_penalties_destroy(&sess->pen);
+    safe_free((void **) &sess->tok_hist);
     transformer_spec_session_scratch_free(sess);
 
     /* The combined 15-slot KV pointer block; k_cache is its base, the

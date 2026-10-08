@@ -6,6 +6,7 @@
 #include "encoder_internal.h"
 
 #include "audio_linear.h"
+#include "par.h"
 
 /* Apply struct ClippableLinear: y = clamp(linear(clamp(x, in_min, in_max)), out_min, out_max).
  * x: (n, in_dim), y: (n, out_dim). x is mutated by the input-clamp pass. */
@@ -57,6 +58,106 @@ void ffn_run(const struct FFN *ffn, float *h, size_t n) {
     for (size_t i = 0; i < hsize; i++)
         h[i] = h[i] * 0.5f + residual[i];
     safe_free((void **) &residual);
+}
+
+/* attn_run's per-(block, head) attention, for geist_par_for. */
+struct attn_run_job {
+    const float *q;
+    const float *k_ctx;
+    const float *v_ctx;
+    const float *rel_k;
+    const bool  *attn_mask;
+    float       *attn_out;
+    size_t       hd_per_t;
+    int          n_padded;
+};
+
+/* Items [i0, i1) of (block b, head hd), in that order. Scratch arrays are
+ * declared inside the body so each range has its own. */
+static void attn_run_items(void *ctx, size_t i0, size_t i1) {
+    const struct attn_run_job *job       = ctx;
+    const float               *q         = job->q;
+    const float               *k_ctx     = job->k_ctx;
+    const float               *v_ctx     = job->v_ctx;
+    const float               *rel_k     = job->rel_k;
+    const bool                *attn_mask = job->attn_mask;
+    float                     *attn_out  = job->attn_out;
+    const size_t               hd_per_t  = job->hd_per_t;
+    const int                  n_padded  = job->n_padded;
+    for (size_t it = i0; it < i1; it++) {
+        const int b  = (int) (it / N_HEADS);
+        const int hd = (int) (it % N_HEADS);
+
+        float scores_ac[CHUNK_SIZE * CONTEXT_SIZE];
+        float scores_bd[CHUNK_SIZE * CONTEXT_SIZE];
+        float bd_padded[CHUNK_SIZE * (CONTEXT_SIZE + 1)];
+        /* Q rows for this block/head: (CHUNK_SIZE, HEAD_DIM). */
+        const float *q_bh = q + ((size_t) b * CHUNK_SIZE) * hd_per_t + (size_t) hd * HEAD_DIM;
+        /* K rows: (CONTEXT_SIZE, HEAD_DIM). */
+        const float *k_bh = k_ctx + ((size_t) b * CONTEXT_SIZE) * hd_per_t + (size_t) hd * HEAD_DIM;
+        /* V rows: same layout as K. */
+        const float *v_bh = v_ctx + ((size_t) b * CONTEXT_SIZE) * hd_per_t + (size_t) hd * HEAD_DIM;
+        /* Relative-K rows: (POS_LEN, HEAD_DIM). */
+        const float *rk_h = rel_k + (size_t) hd * HEAD_DIM;
+        /* Note: rel_k layout is (POS_LEN, N_HEADS, HEAD_DIM) flat as (POS_LEN, 1024).
+         * To pick head `hd`, stride POS_LEN times by AUDIO_HIDDEN. */
+
+        /* matrix_ac[i, j] = sum_d q[i, d] * k[j, d]   for i in chunk, j in context. */
+        for (int i = 0; i < CHUNK_SIZE; i++) {
+            const float *qi = q_bh + (size_t) i * hd_per_t;
+            for (int j = 0; j < CONTEXT_SIZE; j++) {
+                const float *kj                 = k_bh + (size_t) j * hd_per_t;
+                scores_ac[i * CONTEXT_SIZE + j] = dot_head_fp32(qi, kj);
+            }
+        }
+
+        /* matrix_bd[i, p] = sum_d q[i, d] * rel_k[p, d]   for i in chunk, p in pos_len.
+         * Then rel_shift to (CHUNK_SIZE, CONTEXT_SIZE). */
+        for (int i = 0; i < CHUNK_SIZE; i++) {
+            const float *qi = q_bh + (size_t) i * hd_per_t;
+            for (int p = 0; p < POS_LEN; p++) {
+                const float *rp                       = rk_h + (size_t) p * AUDIO_HIDDEN;
+                bd_padded[i * (CONTEXT_SIZE + 1) + p] = dot_head_fp32(qi, rp);
+            }
+            /* zero-pad the rest of this row (positions POS_LEN..CONTEXT_SIZE) */
+            for (int p = POS_LEN; p <= CONTEXT_SIZE; p++) {
+                bd_padded[i * (CONTEXT_SIZE + 1) + p] = 0.0f;
+            }
+        }
+        /* rel_shift: flatten (CHUNK_SIZE, CONTEXT_SIZE+1) → CHUNK_SIZE * (CONTEXT_SIZE+1)
+         * then take the first CHUNK_SIZE * CONTEXT_SIZE entries, view as
+         * (CHUNK_SIZE, CONTEXT_SIZE). */
+        for (int idx = 0; idx < CHUNK_SIZE * CONTEXT_SIZE; idx++) {
+            scores_bd[idx] = bd_padded[idx];
+        }
+
+        /* Combine + soft-cap + mask + softmax. */
+        for (int i = 0; i < CHUNK_SIZE; i++) {
+            for (int j = 0; j < CONTEXT_SIZE; j++) {
+                float s = scores_ac[i * CONTEXT_SIZE + j] + scores_bd[i * CONTEXT_SIZE + j];
+                s       = tanhf(s / ATTN_SOFTCAP) * ATTN_SOFTCAP;
+                if (attn_mask && !attn_mask[((size_t) b * CHUNK_SIZE + i) * CONTEXT_SIZE + j]) {
+                    s = -1e9f;
+                }
+                scores_ac[i * CONTEXT_SIZE + j] = s; /* reuse scores_ac as combined */
+            }
+        }
+        softmax_fp32(CHUNK_SIZE, CONTEXT_SIZE, scores_ac);
+
+        /* attn @ V → (CHUNK_SIZE, HEAD_DIM) into attn_out at this block/head slot. */
+        for (int i = 0; i < CHUNK_SIZE; i++) {
+            const int t_out = b * CHUNK_SIZE + i;
+            if (t_out >= n_padded)
+                break;
+            float *out_row = attn_out + (size_t) t_out * AUDIO_HIDDEN + (size_t) hd * HEAD_DIM;
+            zero_head_fp32(out_row);
+            for (int j = 0; j < CONTEXT_SIZE; j++) {
+                const float  w  = scores_ac[i * CONTEXT_SIZE + j];
+                const float *vj = v_bh + (size_t) j * hd_per_t;
+                axpy_head_fp32(out_row, w, vj);
+            }
+        }
+    }
 }
 
 /* Chunked self-attention with relative position bias. Reads (n, 1024) hidden,
@@ -141,86 +242,16 @@ void attn_run(const struct Attn *attn,
     /* Output of attention before post-proj: (n_padded, 1024). */
     float *attn_out = heap_calloc_array_aligned(float, (size_t) n_padded *AUDIO_HIDDEN);
 
-    /* Per-block, per-head attention. (b, hd) pairs are independent — parallelize.
-     * Scratch arrays are declared inside the body so each thread has its own. */
-#if defined(_OPENMP)
-#pragma omp parallel for collapse(2) schedule(static)
-#endif
-    for (int b = 0; b < num_blocks; b++) {
-        for (int hd = 0; hd < N_HEADS; hd++) {
-            float scores_ac[CHUNK_SIZE * CONTEXT_SIZE];
-            float scores_bd[CHUNK_SIZE * CONTEXT_SIZE];
-            float bd_padded[CHUNK_SIZE * (CONTEXT_SIZE + 1)];
-            /* Q rows for this block/head: (CHUNK_SIZE, HEAD_DIM). */
-            const float *q_bh = q + ((size_t) b * CHUNK_SIZE) * hd_per_t + (size_t) hd * HEAD_DIM;
-            /* K rows: (CONTEXT_SIZE, HEAD_DIM). */
-            const float *k_bh =
-                    k_ctx + ((size_t) b * CONTEXT_SIZE) * hd_per_t + (size_t) hd * HEAD_DIM;
-            /* V rows: same layout as K. */
-            const float *v_bh =
-                    v_ctx + ((size_t) b * CONTEXT_SIZE) * hd_per_t + (size_t) hd * HEAD_DIM;
-            /* Relative-K rows: (POS_LEN, HEAD_DIM). */
-            const float *rk_h = rel_k + (size_t) hd * HEAD_DIM;
-            /* Note: rel_k layout is (POS_LEN, N_HEADS, HEAD_DIM) flat as (POS_LEN, 1024).
-             * To pick head `hd`, stride POS_LEN times by AUDIO_HIDDEN. */
-
-            /* matrix_ac[i, j] = sum_d q[i, d] * k[j, d]   for i in chunk, j in context. */
-            for (int i = 0; i < CHUNK_SIZE; i++) {
-                const float *qi = q_bh + (size_t) i * hd_per_t;
-                for (int j = 0; j < CONTEXT_SIZE; j++) {
-                    const float *kj                 = k_bh + (size_t) j * hd_per_t;
-                    scores_ac[i * CONTEXT_SIZE + j] = dot_head_fp32(qi, kj);
-                }
-            }
-
-            /* matrix_bd[i, p] = sum_d q[i, d] * rel_k[p, d]   for i in chunk, p in pos_len.
-             * Then rel_shift to (CHUNK_SIZE, CONTEXT_SIZE). */
-            for (int i = 0; i < CHUNK_SIZE; i++) {
-                const float *qi = q_bh + (size_t) i * hd_per_t;
-                for (int p = 0; p < POS_LEN; p++) {
-                    const float *rp                       = rk_h + (size_t) p * AUDIO_HIDDEN;
-                    bd_padded[i * (CONTEXT_SIZE + 1) + p] = dot_head_fp32(qi, rp);
-                }
-                /* zero-pad the rest of this row (positions POS_LEN..CONTEXT_SIZE) */
-                for (int p = POS_LEN; p <= CONTEXT_SIZE; p++) {
-                    bd_padded[i * (CONTEXT_SIZE + 1) + p] = 0.0f;
-                }
-            }
-            /* rel_shift: flatten (CHUNK_SIZE, CONTEXT_SIZE+1) → CHUNK_SIZE * (CONTEXT_SIZE+1)
-             * then take the first CHUNK_SIZE * CONTEXT_SIZE entries, view as
-             * (CHUNK_SIZE, CONTEXT_SIZE). */
-            for (int idx = 0; idx < CHUNK_SIZE * CONTEXT_SIZE; idx++) {
-                scores_bd[idx] = bd_padded[idx];
-            }
-
-            /* Combine + soft-cap + mask + softmax. */
-            for (int i = 0; i < CHUNK_SIZE; i++) {
-                for (int j = 0; j < CONTEXT_SIZE; j++) {
-                    float s = scores_ac[i * CONTEXT_SIZE + j] + scores_bd[i * CONTEXT_SIZE + j];
-                    s       = tanhf(s / ATTN_SOFTCAP) * ATTN_SOFTCAP;
-                    if (attn_mask && !attn_mask[((size_t) b * CHUNK_SIZE + i) * CONTEXT_SIZE + j]) {
-                        s = -1e9f;
-                    }
-                    scores_ac[i * CONTEXT_SIZE + j] = s; /* reuse scores_ac as combined */
-                }
-            }
-            softmax_fp32(CHUNK_SIZE, CONTEXT_SIZE, scores_ac);
-
-            /* attn @ V → (CHUNK_SIZE, HEAD_DIM) into attn_out at this block/head slot. */
-            for (int i = 0; i < CHUNK_SIZE; i++) {
-                const int t_out = b * CHUNK_SIZE + i;
-                if (t_out >= n_padded)
-                    break;
-                float *out_row = attn_out + (size_t) t_out * AUDIO_HIDDEN + (size_t) hd * HEAD_DIM;
-                zero_head_fp32(out_row);
-                for (int j = 0; j < CONTEXT_SIZE; j++) {
-                    const float  w  = scores_ac[i * CONTEXT_SIZE + j];
-                    const float *vj = v_bh + (size_t) j * hd_per_t;
-                    axpy_head_fp32(out_row, w, vj);
-                }
-            }
-        }
-    }
+    /* Per-block, per-head attention. (b, hd) pairs are independent — parallelize. */
+    const struct attn_run_job job = {.q         = q,
+                                     .k_ctx     = k_ctx,
+                                     .v_ctx     = v_ctx,
+                                     .rel_k     = rel_k,
+                                     .attn_mask = attn_mask,
+                                     .attn_out  = attn_out,
+                                     .hd_per_t  = hd_per_t,
+                                     .n_padded  = n_padded};
+    geist_par_for((size_t) num_blocks * N_HEADS, attn_run_items, (void *) &job);
     safe_free((void **) &rel_k);
     safe_free((void **) &k_ctx);
     safe_free((void **) &v_ctx);

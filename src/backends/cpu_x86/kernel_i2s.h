@@ -74,7 +74,8 @@ void i2s_gemv_m1_scalar(size_t        n_out,
 /* Prefill GEMM: M token rows × n_out output rows. x is [M, n_in] row-major;
  * y is [M, n_out] row-major (y[i*n_out + r]). Each weight row is read once
  * and reused across a token-tile (VPDPBUSD amortization). Dispatches to
- * AVX-512+VNNI when available, else one i2s_gemv_m1 per token. */
+ * AVX-512+VNNI when available, else to the AVX2 token-tiled GEMM, whose
+ * rows are bit-identical to i2s_gemv_m1 per token. */
 void i2s_gemm_mN(size_t        m,
                  size_t        n_out,
                  size_t        n_in,
@@ -153,7 +154,7 @@ void i2s_x4_gemm_mN_pre(size_t        m,
                         float         y[]);
 
 /* Fused decode of two same-`n_in` weights (gate+up, q+k) sharing one
- * activation quant + one OMP region (default on; GEIST_I2S_PAIR=0 disables,
+ * activation quant + one parallel region (default on; GEIST_I2S_PAIR=0 disables,
  * see backend.c). x is [n_in]; each weight has its own x4 blob, per-tensor
  * scale, n_out, and output. */
 void i2s_x4_gemv_pair_m1(size_t        n_in,

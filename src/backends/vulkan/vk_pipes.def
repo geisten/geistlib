@@ -1,0 +1,115 @@
+/*
+ * src/backends/vulkan/vk_pipes.def — the one list of Vulkan compute pipelines.
+ *
+ * Layer: BACKEND (vulkan). An X-macro table, not a header: define
+ * X(id, spv, name, nbind, kind), include this file, undefine X. vk_internal.h
+ * builds enum vk_pipe, vk_pipe_nbind[] and vk_pipe_kind[] from it,
+ * pipelines.c the SPIR-V blob table, lifecycle.c the GEIST_VK_PROFILE names.
+ *
+ *   id     enum vk_pipe constant. Row order is enum order and the order of the
+ *          GEIST_VK_PROFILE report; nothing persists the values.
+ *   spv    SPIR-V array from shaders/<stem>_spv.h (`make vulkan-shaders`).
+ *          pipelines.c includes the header; a row without its #include does
+ *          not compile, an #include without a row warns as unused.
+ *   name   GEIST_VK_PROFILE label.
+ *   nbind  storage-buffer bindings, 2..VK_MAX_BINDINGS (descriptor layout).
+ *   kind   PLAIN, TILED (register-tiled GEMM, pinned to 32-lane subgroups)
+ *          or COOPMAT (created only with VK_KHR_cooperative_matrix; without
+ *          it the pipe stays VK_NULL_HANDLE and vk_linear_cm_route keeps the
+ *          register-tiled GEMM).
+ *
+ * Adding a pipeline: one row here, one #include in pipelines.c.
+ * Not run through clang-format (make format covers *.c / *.h only).
+ */
+
+X(VK_PIPE_MATVEC_Q4K,             matvec_q4k_spv,              "matvec_q4k",             3, PLAIN)
+X(VK_PIPE_MATMUL_Q4K,             matmul_q4k_spv,              "matmul_q4k",             3, TILED)
+X(VK_PIPE_MATVEC_Q6K,             matvec_q6k_spv,              "matvec_q6k",             3, PLAIN)
+X(VK_PIPE_MATMUL_Q6K,             matmul_q6k_spv,              "matmul_q6k",             3, TILED)
+X(VK_PIPE_MATVEC_F32,             matvec_f32_spv,              "matvec_f32",             3, PLAIN)
+X(VK_PIPE_MATMUL_F32,             matmul_f32_spv,              "matmul_f32",             3, TILED)
+X(VK_PIPE_ADD,                    add_f32_spv,                 "add",                    3, PLAIN)
+X(VK_PIPE_MUL,                    mul_f32_spv,                 "mul",                    3, PLAIN)
+X(VK_PIPE_GELU,                   gelu_tanh_f32_spv,           "gelu",                   2, PLAIN)
+X(VK_PIPE_GELU_MUL,               gelu_tanh_mul_f32_spv,       "gelu_mul",               3, PLAIN)
+X(VK_PIPE_SCALE,                  scale_f32_spv,               "scale",                  2, PLAIN)
+X(VK_PIPE_RMSNORM,                rmsnorm_f32_spv,             "rmsnorm",                3, PLAIN)
+X(VK_PIPE_RMSNORM_ADD,            rmsnorm_add_f32_spv,         "rmsnorm_add",            4, PLAIN)
+X(VK_PIPE_ROPE,                   rope_f32_spv,                "rope",                   3, PLAIN)
+X(VK_PIPE_ATTENTION,              attention_f32_spv,           "attention",              4, PLAIN)
+X(VK_PIPE_ARGMAX,                 argmax_f32_spv,              "argmax",                 2, PLAIN)
+X(VK_PIPE_EMBED,                  embed_lookup_scaled_spv,     "embed",                  2, PLAIN)
+X(VK_PIPE_FFN_GATE_UP,            ffn_gate_up_gelu_q4k_spv,    "ffn_gate_up",            4, PLAIN)
+X(VK_PIPE_QKV_PREP,               qkv_prep_f32_spv,            "qkv_prep",               6, PLAIN)
+/* tensor-core GEMMs; created only with coopmat */
+X(VK_PIPE_MM_Q4K_CM,              matmul_q4k_cm_spv,           "mm_q4k_cm",              3, COOPMAT)
+X(VK_PIPE_MM_Q6K_CM,              matmul_q6k_cm_spv,           "mm_q6k_cm",              3, COOPMAT)
+X(VK_PIPE_ATTENTION_F16,          attention_f16_spv,           "attention_f16",          4, PLAIN)
+X(VK_PIPE_QKV_PREP_F16,           qkv_prep_f16_spv,            "qkv_prep_f16",           6, PLAIN)
+X(VK_PIPE_KV_APPEND_F16,          kv_append_f16_spv,           "kv_append_f16",          4, PLAIN)
+X(VK_PIPE_ATTN_PART_F16,          attn_part_f16_spv,           "attn_part_f16",          4, PLAIN)
+X(VK_PIPE_ATTN_COMB,              attn_comb_spv,               "attn_comb",              2, PLAIN)
+/* small-n_out tensor-core tile */
+X(VK_PIPE_MM_Q4K_CM32,            matmul_q4k_cm32_spv,         "mm_q4k_cm32",            3, COOPMAT)
+/* PQ2_0 tensor-core GEMM, f16 acc folded into f32 */
+X(VK_PIPE_MM_PQ2_0_CM,            matmul_pq2_0_cm_spv,         "mm_pq2_0_cm",            3, COOPMAT)
+/* the same with f32 accumulation throughout (GEIST_VK_PQ2_F32_ACC) */
+X(VK_PIPE_MM_PQ2_0_CM_F32,        matmul_pq2_0_f32acc_cm_spv,  "mm_pq2_0_cm_f32",        3, COOPMAT)
+/* 128 x 64 tile (f32 acc) for batches under 128 tokens */
+X(VK_PIPE_MM_PQ2_0_CM64,          matmul_pq2_0_t64_cm_spv,     "mm_pq2_0_cm64",          3, COOPMAT)
+/* fused PLE gate: gelu(x.gate_w) * ple_in */
+X(VK_PIPE_PLE_GATE,               ple_gate_f32_spv,            "ple_gate",               4, PLAIN)
+/* ffn_gate_up with the pre-FFN rmsnorm folded in */
+X(VK_PIPE_FFN_NORM_GU,            ffn_norm_gate_up_q4k_spv,    "ffn_norm_gu",            5, PLAIN)
+/* gated-DeltaNet causal conv + silu (deltanet_mix stage 1) */
+X(VK_PIPE_DN_CONV,                deltanet_conv_f32_spv,       "dn_conv",                3, PLAIN)
+/* gated-DeltaNet recurrence + gated rmsnorm (stage 2) */
+X(VK_PIPE_DN_DELTA,               deltanet_delta_f32_spv,      "dn_delta",               8, PLAIN)
+X(VK_PIPE_MATVEC_Q4_0,            matvec_q4_0_spv,             "matvec_q4_0",            3, PLAIN)
+X(VK_PIPE_MATMUL_Q4_0,            matmul_q4_0_spv,             "matmul_q4_0",            3, TILED)
+X(VK_PIPE_MATVEC_Q4_1,            matvec_q4_1_spv,             "matvec_q4_1",            3, PLAIN)
+X(VK_PIPE_MATMUL_Q4_1,            matmul_q4_1_spv,             "matmul_q4_1",            3, TILED)
+X(VK_PIPE_MATVEC_Q8_0,            matvec_q8_0_spv,             "matvec_q8_0",            3, PLAIN)
+X(VK_PIPE_MATMUL_Q8_0,            matmul_q8_0_spv,             "matmul_q8_0",            3, TILED)
+X(VK_PIPE_MATVEC_Q5K,             matvec_q5k_spv,              "matvec_q5k",             3, PLAIN)
+X(VK_PIPE_MATMUL_Q5K,             matmul_q5k_spv,              "matmul_q5k",             3, TILED)
+X(VK_PIPE_MATVEC_TQ2_0,           matvec_tq2_0_spv,            "matvec_tq2_0",           3, PLAIN)
+X(VK_PIPE_MATMUL_TQ2_0,           matmul_tq2_0_spv,            "matmul_tq2_0",           3, TILED)
+X(VK_PIPE_MATVEC_PQ2_0,           matvec_pq2_0_spv,            "matvec_pq2_0",           3, PLAIN)
+X(VK_PIPE_MATMUL_PQ2_0,           matmul_pq2_0_spv,            "matmul_pq2_0",           3, TILED)
+/* y = silu(x) */
+X(VK_PIPE_SILU,                   silu_f32_spv,                "silu",                   2, PLAIN)
+/* blockwise orthonormal WHT of rows (prism.hadamard) */
+X(VK_PIPE_HADAMARD,               hadamard_f32_spv,            "hadamard",               3, PLAIN)
+/* y = relu(x)^2 (BitNet FFN) */
+X(VK_PIPE_RELU2,                  relu2_f32_spv,               "relu2",                  2, PLAIN)
+/* BitNet int8 absmax activation round trip, in place */
+X(VK_PIPE_ACT_QUANT,              act_quant_i8_f32_spv,        "act_quant",              2, PLAIN)
+/* y = silu(a) * b (SwiGLU epilogue) */
+X(VK_PIPE_SILU_MUL,               silu_mul_f32_spv,            "silu_mul",               3, PLAIN)
+/* y = a * sigmoid(gate) (qwen35 attention gate) */
+X(VK_PIPE_SIGMOID_MUL,            sigmoid_mul_f32_spv,         "sigmoid_mul",            3, PLAIN)
+/* [query | gate] per-head split (qwen35) */
+X(VK_PIPE_QGATE_SPLIT,            qgate_split_f32_spv,         "qgate_split",            3, PLAIN)
+/* tensor-core causal attention, no sliding window, head_dim==256 */
+X(VK_PIPE_ATTENTION_F16_CM,       attention_f16_cm_spv,        "attention_f16_cm",       4, COOPMAT)
+/* the same, head_dim 128 */
+X(VK_PIPE_ATTENTION_F16_HD128_CM, attention_f16_hd128_cm_spv,  "attention_f16_hd128_cm", 4, COOPMAT)
+/* the same, head_dim 512 (two column halves) */
+X(VK_PIPE_ATTENTION_F16_HD512_CM, attention_f16_hd512_cm_spv,  "attention_f16_hd512_cm", 4, COOPMAT)
+/* Q8_0 tensor-core GEMM, 64 x 64 tile */
+X(VK_PIPE_MM_Q8_0_CM,             matmul_q8_0_cm_spv,          "mm_q8_0_cm",             3, COOPMAT)
+/* Q4_0 tensor-core GEMM, 64 x 64 tile */
+X(VK_PIPE_MM_Q4_0_CM,             matmul_q4_0_cm_spv,          "mm_q4_0_cm",             3, COOPMAT)
+/* Q4_K in the 128 x 128 PQ2_0 tensor-core frame */
+X(VK_PIPE_MM_Q4K_CM128,           matmul_q4k_t128_cm_spv,      "mm_q4k_cm128",           3, COOPMAT)
+/* Q6_K in the same frame */
+X(VK_PIPE_MM_Q6K_CM128,           matmul_q6k_t128_cm_spv,      "mm_q6k_cm128",           3, COOPMAT)
+/* Q5_K tensor-core GEMM, 64 x 64 tile */
+X(VK_PIPE_MM_Q5K_CM,              matmul_q5k_cm_spv,           "mm_q5k_cm",              3, COOPMAT)
+/* Q4_1 tensor-core GEMM, 64 x 64 tile */
+X(VK_PIPE_MM_Q4_1_CM,             matmul_q4_1_cm_spv,          "mm_q4_1_cm",             3, COOPMAT)
+/* TQ2_0 tensor-core GEMM, 64 x 64 tile */
+X(VK_PIPE_MM_TQ2_0_CM,            matmul_tq2_0_cm_spv,         "mm_tq2_0_cm",            3, COOPMAT)
+/* TQ2_0 tensor-core GEMM, 128 x 128 tile */
+X(VK_PIPE_MM_TQ2_0_CM128,         matmul_tq2_0_t128_cm_spv,    "mm_tq2_0_cm128",         3, COOPMAT)

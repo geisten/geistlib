@@ -4,11 +4,11 @@
  *
  * Layer: BACKEND (cpu_x86).
  *
- * Serves IQ2_S, IQ3_S, BF16, F16 prefill, and Q4_K / Q6_K when their
+ * Serves Q5_0, IQ2_S, IQ3_S, BF16, F16 prefill, and Q4_K / Q6_K when their
  * repack cannot be built, instead of cpu_scalar's single-threaded oracle
- * (#410, #504). Each OpenMP thread dequantizes its rows with the format's
- * row decoder (quant.h) into a private row of the calling thread's
- * workspace (L1-resident for any realistic n_in), then dots it in fp32 with
+ * (#410, #504). Each range of rows (geist_par_for) is dequantized with the
+ * format's row decoder (quant.h) into a private row of the calling thread's
+ * workspace (L1-resident for any realistic n_in), then dotted in fp32 with
  * AVX2/FMA. The M>1 path dequantizes each weight row once and dots it
  * against all m activation rows. No heap allocation once the workspace has
  * grown to the shape.
@@ -27,6 +27,7 @@
 
 #include "checked.h"
 #include "linear_ref.h"
+#include "par.h"
 #include "quant.h"
 
 #include <geist_backend.h>
@@ -36,10 +37,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-
-#if defined(_OPENMP)
-#include <omp.h>
-#endif
 
 typedef void (*row_dequant_fn)(size_t n, const void *src, float *out);
 
@@ -69,6 +66,8 @@ static row_dequant_fn row_dequant_for(uint16_t dtype) {
         return dequant_q4_K_row;
     case GEIST_DTYPE_Q6_K:
         return dequant_q6_K_row;
+    case GEIST_DTYPE_Q5_0:
+        return dequant_q5_0_row;
     case GEIST_DTYPE_IQ2_S:
         return dequant_iq2_s_row;
     case GEIST_DTYPE_IQ3_S:
@@ -108,13 +107,19 @@ static inline float dot_f32(size_t n, const float *restrict x, const float *rest
 }
 
 /* Everything a call needs, or false with nothing acquired. One dequantized
- * row per possible thread, each padded to a 64-byte multiple so no two
- * threads' rows share a cache line. */
+ * row per possible range (par_slot), each padded to a 64-byte multiple so
+ * no two ranges' rows share a cache line. */
 struct generic_plan {
     row_dequant_fn deq;
     size_t         row_bytes;
-    size_t         stride; /* floats between thread rows */
+    size_t         stride; /* floats between range rows */
     float         *rows;
+    /* the call, for geist_par_for */
+    size_t         m, n_in, n_out;
+    const uint8_t *raw;
+    const float   *x;
+    float         *y;
+    atomic_size_t  slot;
 };
 
 [[nodiscard]] static bool
@@ -139,32 +144,44 @@ plan_call(const struct geist_weight *w, struct geist_backend *be, struct generic
     return true;
 }
 
+/* Output rows [j0, j1), each dequantized into the range's own row, then
+ * dotted against every activation row. */
+static void generic_rows(void *ctx, size_t j0, size_t j1) {
+    struct generic_plan *p         = ctx;
+    float               *row       = p->rows + par_slot(&p->slot) * p->stride;
+    const row_dequant_fn deq       = p->deq;
+    const size_t         row_bytes = p->row_bytes;
+    const size_t         m         = p->m;
+    const size_t         n_in      = p->n_in;
+    const size_t         n_out     = p->n_out;
+    const uint8_t       *raw       = p->raw;
+    const float         *x         = p->x;
+    float               *y         = p->y;
+    for (size_t j = j0; j < j1; j++) {
+        deq(n_in, raw + j * row_bytes, row);
+        for (size_t i = 0; i < m; i++) {
+            y[i * n_out + j] = dot_f32(n_in, x + i * n_in, row);
+        }
+    }
+}
+
 static void cpu_x86_linear_generic_m1(const float               *x,
                                       const struct geist_weight *w,
                                       struct geist_backend      *be,
                                       float                     *y) {
-    const size_t        n_in  = (size_t) w->n_in;
-    const size_t        n_out = (size_t) w->n_out;
     struct generic_plan p;
     if (!plan_call(w, be, &p)) {
         geist_linear_ref(1, x, w, y); /* no scratch: the reference needs none */
         return;
     }
-    const uint8_t *raw = (const uint8_t *) w->raw;
-
-#if defined(_OPENMP)
-#pragma omp parallel
-#endif
-    {
-        float *row = p.rows + team_id() * p.stride;
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-        for (size_t j = 0; j < n_out; j++) {
-            p.deq(n_in, raw + j * p.row_bytes, row);
-            y[j] = dot_f32(n_in, x, row);
-        }
-    }
+    p.m     = 1;
+    p.n_in  = (size_t) w->n_in;
+    p.n_out = (size_t) w->n_out;
+    p.raw   = (const uint8_t *) w->raw;
+    p.x     = x;
+    p.y     = y;
+    atomic_init(&p.slot, 0);
+    geist_par_for(p.n_out, generic_rows, &p);
 }
 
 static void cpu_x86_linear_generic_mN(size_t                     m,
@@ -172,30 +189,19 @@ static void cpu_x86_linear_generic_mN(size_t                     m,
                                       const struct geist_weight *w,
                                       struct geist_backend      *be,
                                       float                     *y) {
-    const size_t        n_in  = (size_t) w->n_in;
-    const size_t        n_out = (size_t) w->n_out;
     struct generic_plan p;
     if (!plan_call(w, be, &p)) {
         geist_linear_ref(m, x, w, y);
         return;
     }
-    const uint8_t *raw = (const uint8_t *) w->raw;
-
-#if defined(_OPENMP)
-#pragma omp parallel
-#endif
-    {
-        float *row = p.rows + team_id() * p.stride;
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-        for (size_t j = 0; j < n_out; j++) {
-            p.deq(n_in, raw + j * p.row_bytes, row);
-            for (size_t i = 0; i < m; i++) {
-                y[i * n_out + j] = dot_f32(n_in, x + i * n_in, row);
-            }
-        }
-    }
+    p.m     = m;
+    p.n_in  = (size_t) w->n_in;
+    p.n_out = (size_t) w->n_out;
+    p.raw   = (const uint8_t *) w->raw;
+    p.x     = x;
+    p.y     = y;
+    atomic_init(&p.slot, 0);
+    geist_par_for(p.n_out, generic_rows, &p);
 }
 
 bool cpu_x86_linear_generic_bind(struct geist_weight *w) {

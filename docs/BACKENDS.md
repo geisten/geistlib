@@ -56,20 +56,28 @@ RTX 2080 Ti pp512 ≈ 395 t/s (≈ 517 with `GEIST_M_MAX=128`) and tg ≈ 36 t/s
 is not 32 (RADV) still prefill PQ2_0 with per-row matvecs (#471).
 
 **Memory.** Weight matrices are read from the GGUF mapping and uploaded once.
-There is no spill to host memory (#466): a model must fit the device. The 27B
-Q4_0 (16 GB) runs on a 21 GiB integrated GPU (RADV, `GEIST_VK_DEVICE=1`); on an
-11 GiB card the load fails with an out-of-memory error naming the failing
-allocation, the memory in use and the device limit.
+Weights go to VRAM until one would leave less than a reserve for the KV cache
+and scratch (1/16 of the device, `GEIST_VK_WEIGHT_RESERVE` in bytes with a K/M/G
+suffix overrides it, also counting what other processes hold); the rest go to
+host memory and the shaders read them over the bus (#466), with a one-line note
+on stderr. The 27B Q4_0 (15 GiB) then runs on an 11 GiB RTX 2080 Ti with ~5 GiB
+spilled: pp512 18.7 t/s, tg 2.2 t/s, slower than cpu_x86 on the 9950X (32.6 /
+4.8), so the spill is for hosts whose CPU is the weaker side. The KV cache and
+the x ring do not spill: a session that does not fit fails with an
+out-of-memory error naming the allocation, the memory in use and the limit.
 
 **Scratch placement.** A session's activation scratch is one host-visible
 pool. It goes into the BAR window (device-local and mappable) while that has
 room — 256 MB without resizable BAR — and past it into system memory, where
 every GPU op on it crosses the bus (prefill drops 3×; e.g. `GEIST_M_MAX` ≥ 128
-on a 27B). `GEIST_VK_SCRATCH_DEVICE=1` (experimental) puts every slot the host
-never maps into plain device-local VRAM; only `h_a`, `h_b` and the logits rows
-stay host-visible. The arch accepts it only for sessions with no host loop over
-those slots (dense FP32/F16 KV, no PLE, DeltaNet, attention output gate, MTP,
-SubLN/projection norms or AWQ scales; a `prism.hadamard` rotation is fine).
+on a 27B). By default every slot the host never maps goes into plain
+device-local VRAM instead; only `h_a`, `h_b` and the logits rows stay
+host-visible (`GEIST_VK_SCRATCH_DEVICE=0` turns this off). The arch does this
+only for sessions with no host loop over those slots (dense FP32/F16 KV, PLE
+only with the on-device row lookup, no DeltaNet, attention output gate, MTP,
+SubLN/projection norms or AWQ scales; a `prism.hadamard` rotation is fine);
+the others keep the host-visible pool, and their default chunk shrinks until
+it fits the BAR window.
 Under it, a CPU fallback that would read a device-local slot fails with
 `GEIST_E_BACKEND` instead, so a weight dtype without a Vulkan kernel fails its
 first prefill.
@@ -85,9 +93,10 @@ limit fails the load.
 | :-- | :-- |
 | `GEIST_VK_DEVICE=<index>` | pick a device (default: first discrete GPU, else device 0) |
 | `GEIST_VK_VRAM_BUDGET` | lower the device memory limit (bytes, K/M/G suffix) to reproduce a smaller card |
+| `GEIST_VK_PIPELINE_CACHE` | compiled-pipeline cache file (default `$XDG_CACHE_HOME/geist` or `~/.cache/geist`, one file per driver build); `0` turns it off. The NVIDIA driver's own cache is per executable, so without it every new binary spends ~2 s compiling pipelines |
 | `GEIST_M_MAX` | prefill chunk rows (Vulkan default 128) |
 | `GEIST_VK_PQ2_F32_ACC=1` | f32 instead of f16 accumulation in the PQ2_0 tensor-core GEMM (default folds into f32 every 64 k) |
-| `GEIST_VK_SCRATCH_DEVICE=1` | device-local scratch, see above |
+| `GEIST_VK_SCRATCH_DEVICE=0` | keep the scratch pool host-visible (default: device-local where the arch allows it), see above |
 | `GEIST_VK_VERBOSE=1` | print scratch placement and, at destroy, counters for work that left the GPU (declined fused ops, host loops, host copies, host-path weights) |
 | `GEIST_VK_STRICT=1` | turn each of those host fallbacks into an error naming the site; a host-path weight is refused at load |
 | `GEIST_KV_INT8=0 GEIST_KV_F16=0` | FP32 KV cache, for comparing against `cpu_scalar` (CPU defaults to INT8, Vulkan to F16) |

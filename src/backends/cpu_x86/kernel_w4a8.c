@@ -28,9 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(_OPENMP)
-#include <omp.h>
-#endif
+#include "par.h"
 
 typedef float (*w4a8_dot_fn)(size_t        n_blocks,
                              const uint8_t weights[static n_blocks * W4A8_BLOCK_BYTES_WEIGHTS],
@@ -156,6 +154,31 @@ enum w4a8_isa w4a8_dispatcher_tier(void) {
     return g_dot(n_blocks, weights, w_scales, w_offsets, acts, sum_a_per_block, scale_x);
 }
 
+/* One GEMV for geist_par_for. */
+struct w4a8_rows {
+    size_t         n_blocks;
+    w4a8_dot_fn    dot;
+    const uint8_t *weights;
+    const float   *w_scales;
+    const float   *w_offsets;
+    const int8_t  *acts;
+    const int32_t *sum_a;
+    float          scale_x;
+    float         *out;
+};
+
+static void w4a8_gemv_rows(void *ctx, size_t m0, size_t m1) {
+    const struct w4a8_rows c              = *(const struct w4a8_rows *) ctx;
+    const size_t           bytes_per_row  = c.n_blocks * W4A8_BLOCK_BYTES_WEIGHTS;
+    const size_t           scales_per_row = c.n_blocks;
+    for (size_t m = m0; m < m1; m++) {
+        const uint8_t *w_row = c.weights + m * bytes_per_row;
+        const float   *s_row = c.w_scales + m * scales_per_row;
+        const float   *o_row = c.w_offsets + m * scales_per_row;
+        c.out[m]             = c.dot(c.n_blocks, w_row, s_row, o_row, c.acts, c.sum_a, c.scale_x);
+    }
+}
+
 void w4a8_gemv(size_t        n_rows,
                size_t        n_blocks_per_row,
                const uint8_t weights[static n_rows * n_blocks_per_row * W4A8_BLOCK_BYTES_WEIGHTS],
@@ -165,23 +188,21 @@ void w4a8_gemv(size_t        n_rows,
                const int32_t sum_a_per_block[static n_blocks_per_row],
                float         scale_x,
                float         out[static n_rows]) {
-    /* Ensure the dispatcher is wired before the OMP region: lazy init from
-     * inside #pragma omp parallel would race on first-use. */
+    /* Ensure the dispatcher is wired before the parallel loop: lazy init
+     * from inside it would race on first-use. */
     if (g_inited == 0) {
         (void) w4a8_dispatcher_init();
     }
-    const size_t bytes_per_row  = n_blocks_per_row * W4A8_BLOCK_BYTES_WEIGHTS;
-    const size_t scales_per_row = n_blocks_per_row;
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t m = 0; m < n_rows; m++) {
-        const uint8_t *w_row = weights + m * bytes_per_row;
-        const float   *s_row = w_scales + m * scales_per_row;
-        const float   *o_row = w_offsets + m * scales_per_row;
-        out[m] = g_dot(n_blocks_per_row, w_row, s_row, o_row, acts, sum_a_per_block, scale_x);
-    }
+    struct w4a8_rows c = {n_blocks_per_row,
+                          g_dot,
+                          weights,
+                          w_scales,
+                          w_offsets,
+                          acts,
+                          sum_a_per_block,
+                          scale_x,
+                          out};
+    geist_par_for(n_rows, w4a8_gemv_rows, &c);
 }
 
 [[nodiscard]] float
