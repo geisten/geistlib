@@ -110,8 +110,32 @@ static struct transformer_forward_profile g_head_profile = {
     return GEIST_OK;
 }
 
+/* One row of logits to a token: the repetition penalties (#695) on a copy
+ * when they are on, then the configured sampler. `n_ctx` positions of
+ * tok_hist precede the predicted one. */
+[[nodiscard]] static geist_token_t
+sample_row(struct transformer_arch_session *sess, size_t n_ctx, const float *logits) {
+    const size_t V = (size_t) sess->model->vocab_size;
+    if (geist_sampler_penalties_active(&sess->pen)) {
+        logits = geist_sampler_penalties_apply(&sess->pen, n_ctx, sess->tok_hist, logits);
+    }
+    if (sess->temperature == 0.0f) {
+        return geist_sampler_argmax(V, logits);
+    }
+    if (sess->top_k > 1) {
+        return geist_sampler_top_k_ws(
+                &sess->sampler_ws, logits, sess->top_k, sess->temperature, &sess->rng);
+    }
+    if (sess->top_p > 0.0f && sess->top_p < 1.0f) {
+        return geist_sampler_top_p_ws(
+                &sess->sampler_ws, logits, sess->top_p, sess->temperature, &sess->rng);
+    }
+    return geist_sampler_temperature_ws(&sess->sampler_ws, logits, sess->temperature, &sess->rng);
+}
+
 [[nodiscard]] enum geist_status finalize_logits_one_row(struct transformer_arch_session *sess,
                                                         size_t                           row_idx,
+                                                        size_t                           n_ctx,
                                                         geist_token_t *out_token) {
     struct transformer_arch_state    *st    = sess->model;
     struct geist_backend             *be    = st->backend;
@@ -149,8 +173,10 @@ static struct transformer_forward_profile g_head_profile = {
     }
 
     /* Greedy fast path: device argmax reads back a 4-byte index instead
-     * of mapping the 1 MB logits row (softcap skipped — tanh monotonic). */
-    if (sess->temperature == 0.0f && st->model_fusions.argmax) {
+     * of mapping the 1 MB logits row (softcap skipped — tanh monotonic).
+     * Not with repetition penalties: they need the row on the host. */
+    const bool penalties = geist_sampler_penalties_active(&sess->pen);
+    if (sess->temperature == 0.0f && !penalties && st->model_fusions.argmax) {
         t0          = profile ? transformer_profile_now_ns() : 0;
         int32_t idx = -1;
         s           = fused->argmax_f32(be, &t_logits_2d, &idx);
@@ -163,8 +189,10 @@ static struct transformer_forward_profile g_head_profile = {
     }
 
     /* Softcap, family-conditional. Skipped in greedy mode: tanh is
-     * monotonic, so argmax is unchanged (~5% of Gemma 4 decode). */
-    const bool sampler_needs_softcap = sess->temperature > 0.0f;
+     * monotonic, so argmax is unchanged (~5% of Gemma 4 decode). The
+     * penalties are not monotonic, so they see the softcapped logits, as
+     * llama.cpp's sampler does. */
+    const bool sampler_needs_softcap = sess->temperature > 0.0f || penalties;
     if (st->config.logit_softcap > 0.0f && sampler_needs_softcap) {
         t0       = profile ? transformer_profile_now_ns() : 0;
         float *p = (float *) v->buffer_map(sess->scratch_logits);
@@ -190,18 +218,7 @@ static struct transformer_forward_profile g_head_profile = {
         if (logits == nullptr) {
             return GEIST_E_BACKEND;
         }
-        if (sess->temperature == 0.0f) {
-            best_id = geist_sampler_argmax((size_t) st->vocab_size, logits);
-        } else if (sess->top_k > 1) {
-            best_id = geist_sampler_top_k_ws(
-                    &sess->sampler_ws, logits, sess->top_k, sess->temperature, &sess->rng);
-        } else if (sess->top_p > 0.0f && sess->top_p < 1.0f) {
-            best_id = geist_sampler_top_p_ws(
-                    &sess->sampler_ws, logits, sess->top_p, sess->temperature, &sess->rng);
-        } else {
-            best_id = geist_sampler_temperature_ws(
-                    &sess->sampler_ws, logits, sess->temperature, &sess->rng);
-        }
+        best_id = sample_row(sess, n_ctx, logits);
         v->buffer_unmap(sess->scratch_logits);
         transformer_profile_add(&g_head_profile, HEAD_PROFILE_SAMPLE, t0);
     }
@@ -302,9 +319,11 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
         if (all == nullptr) {
             return GEIST_E_BACKEND;
         }
-        const float c                     = st->config.logit_softcap;
-        const bool  sampler_needs_softcap = sess->temperature > 0.0f;
-        const bool  do_softcap            = c > 0.0f && sampler_needs_softcap;
+        const float c = st->config.logit_softcap;
+        const bool  sampler_needs_softcap =
+                sess->temperature > 0.0f || geist_sampler_penalties_active(&sess->pen);
+        const bool   do_softcap = c > 0.0f && sampler_needs_softcap;
+        const size_t base       = sess->kv_len - k; /* verify_forward advanced it */
         for (size_t row = 0; row < k; row++) {
             float *p = all + row * (size_t) st->vocab_size;
             if (do_softcap) {
@@ -313,20 +332,9 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
                 }
             }
 
-            geist_token_t best_id;
-            if (sess->temperature == 0.0f) {
-                best_id = geist_sampler_argmax((size_t) st->vocab_size, p);
-            } else if (sess->top_k > 1) {
-                best_id = geist_sampler_top_k_ws(
-                        &sess->sampler_ws, p, sess->top_k, sess->temperature, &sess->rng);
-            } else if (sess->top_p > 0.0f && sess->top_p < 1.0f) {
-                best_id = geist_sampler_top_p_ws(
-                        &sess->sampler_ws, p, sess->top_p, sess->temperature, &sess->rng);
-            } else {
-                best_id = geist_sampler_temperature_ws(
-                        &sess->sampler_ws, p, sess->temperature, &sess->rng);
-            }
-            out_tokens[row] = best_id;
+            /* Row `row` predicts the token after ids[row]: its history
+             * ends there, as if the rows had been decoded one by one. */
+            out_tokens[row] = sample_row(sess, base + row + 1, p);
         }
         /* The last row predicts the token after the verified batch. Keep its
          * logits in the canonical row zero so peek_logits and the next-token
@@ -347,7 +355,7 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
 [[nodiscard]] enum geist_status finalize_logits_last_row(struct transformer_arch_session *sess,
                                                          size_t                           seq) {
     geist_token_t     tok = -1;
-    enum geist_status s   = finalize_logits_one_row(sess, seq - 1, &tok);
+    enum geist_status s   = finalize_logits_one_row(sess, seq - 1, sess->kv_len, &tok);
     if (s != GEIST_OK) {
         return s;
     }

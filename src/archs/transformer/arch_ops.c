@@ -396,7 +396,8 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
 
         /* 3. Layer loop seq=chunk. */
         const size_t q_pos = sess->kv_len;
-        s                  = transformer_run_all_layers(
+        transformer_hist_put(sess, q_pos, chunk, ids + off);
+        s = transformer_run_all_layers(
                 sess, q_pos, chunk, sess->scratch_h_a, ple_buf, sess->scratch_h_b);
         if (s != GEIST_OK) {
             return s;
@@ -565,6 +566,7 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
     if (s != GEIST_OK)
         return s;
     const size_t q_pos = sess->kv_len;
+    transformer_hist_put(sess, q_pos, k, ids);
     s = transformer_run_all_layers(sess, q_pos, k, sess->scratch_h_a, ple_buf, sess->scratch_h_b);
     if (s != GEIST_OK) {
         deltanet_txn_restore(sess);
@@ -599,7 +601,7 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
      * The lm_head linear dominates verify_forward; the batched path
      * amortizes its weight stream over k columns. */
     if (k == 1) {
-        s = finalize_logits_one_row(sess, 0, &out_tokens[0]);
+        s = finalize_logits_one_row(sess, 0, sess->kv_len, &out_tokens[0]);
         if (s != GEIST_OK) {
             const enum geist_status restore = deltanet_txn_restore(sess);
             if (restore != GEIST_OK)
@@ -776,7 +778,8 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_sessio
 
         /* 3. Layer loop. */
         const size_t q_pos = sess->kv_len;
-        rc                 = transformer_run_all_layers(
+        transformer_hist_put(sess, q_pos, chunk, nullptr);
+        rc = transformer_run_all_layers(
                 sess, q_pos, chunk, sess->scratch_h_a, ple_buf, sess->scratch_h_b);
         if (rc != GEIST_OK) {
             goto cleanup;

@@ -125,6 +125,16 @@ static enum geist_status op_gains(void *arch_state, float **out, size_t *n) {
     return s;
 }
 
+/* DRY sequence breakers (#695), resolved by the engine at session create. */
+static enum geist_status
+op_set_dry_breakers(void *session, size_t n_words, const geist_token_t *packed) {
+    struct transformer_arch_session *sess = session;
+    if (sess == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    return geist_sampler_penalties_set_breakers(&sess->pen, n_words, packed);
+}
+
 static void op_bind_cancel(void *session, bool (*requested)(void *ctx), void *ctx) {
     struct transformer_arch_session *sess = session;
     if (sess != nullptr) {
@@ -438,6 +448,7 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .prefill                  = op_prefill,
         .decode_step              = op_decode_step,
         .bind_cancel              = op_bind_cancel,
+        .set_dry_breakers         = op_set_dry_breakers,
         .pin_prefix               = op_pin_prefix,
         .prefill_audio            = op_prefill_audio,
         .prefill_image            = op_prefill_image,

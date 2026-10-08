@@ -84,4 +84,89 @@ void                            geist_sampler_workspace_destroy(struct geist_sam
                                                    float             temperature,
                                                    struct geist_rng *rng);
 
+/* ---- Repetition control (#695) -----------------------------------------
+ *
+ * llama.cpp's `penalties` and `dry` samplers (src/llama-sampler.cpp), ported
+ * operation for operation so a fixed history and fixed logits give the same
+ * floats (tests/test_sampler_penalties_unit.c pins them against llama.cpp).
+ * They run on a copy of the logits, before the filters above. */
+
+/* Resolved parameters: defaults filled in, validated. */
+struct geist_sampler_penalty_params {
+    size_t last_n; /* window of the three penalties */
+    float  repeat;
+    float  freq;
+    float  present;
+    float  dry_multiplier;
+    float  dry_base;
+    size_t dry_allowed_length;
+    size_t dry_last_n;
+};
+
+/* The opts' repetition fields with their zero defaults resolved (see
+ * geist.h). GEIST_E_INVALID_ARG for a value geist.h rules out; `out` is
+ * all-off then. nullptr opts → all off. */
+[[nodiscard]] enum geist_status
+geist_sampler_penalty_params_from_opts(struct geist_sampler_penalty_params *out,
+                                       const struct geist_session_opts     *opts);
+
+/* llama.cpp's own enable tests: the penalties sampler is a no-op when
+ * last_n is 0 or all three are neutral, DRY when the multiplier is 0, the
+ * base below 1 or the window 0. */
+[[nodiscard]] bool geist_sampler_penalties_on(const struct geist_sampler_penalty_params *p);
+[[nodiscard]] bool geist_sampler_dry_on(const struct geist_sampler_penalty_params *p);
+
+/* One DRY sequence breaker: its head token and its tail, tail_len ids at
+ * tails[tail_off] (llama.cpp's dry_processed_breakers multimap, flat). */
+struct geist_dry_breaker {
+    geist_token_t head;
+    uint32_t      tail_off;
+    uint32_t      tail_len;
+};
+
+/* Parameters, breakers and the scratch the per-token call needs, all
+ * allocated up front: geist_sampler_penalties_apply allocates nothing. */
+struct geist_sampler_penalties {
+    struct geist_sampler_penalty_params p;
+    size_t                              n_vocab;
+    size_t                              cap; /* history tokens the window holds */
+
+    struct geist_dry_breaker *breakers; /* sorted by head */
+    size_t                    n_breakers;
+    geist_token_t            *tails;
+
+    float         *logits;       /* [n_vocab] the penalized copy */
+    uint32_t      *counts;       /* [n_vocab] zero between calls */
+    uint32_t      *dry_max;      /* [n_vocab] longest repeat + 1, zero between calls */
+    geist_token_t *window;       /* [cap] */
+    uint32_t      *repeat_count; /* [cap] */
+    geist_token_t *touched;      /* [cap] */
+};
+
+/* Size the scratch for `n_vocab` logits and a history of up to `max_ctx`
+ * positions. Nothing is allocated when neither sampler is on. */
+[[nodiscard]] enum geist_status
+geist_sampler_penalties_init(struct geist_sampler_penalties            *pen,
+                             const struct geist_sampler_penalty_params *p,
+                             size_t                                     n_vocab,
+                             size_t                                     max_ctx);
+void geist_sampler_penalties_destroy(struct geist_sampler_penalties *pen);
+
+[[nodiscard]] bool geist_sampler_penalties_active(const struct geist_sampler_penalties *pen);
+
+/* Replace the DRY breakers with the sequences in `packed` (geist_arch.h,
+ * set_dry_breakers: [len, head, tail...] back to back). GEIST_E_INVALID_ARG
+ * on a malformed packing, GEIST_E_OOM; the old breakers stay then. */
+[[nodiscard]] enum geist_status geist_sampler_penalties_set_breakers(
+        struct geist_sampler_penalties *pen, size_t n_words, const geist_token_t *packed);
+
+/* Apply the penalties, then DRY, for a context whose tokens are hist[0..n)
+ * (oldest first; a negative id — a soft token — is skipped, as are ids
+ * outside the vocabulary). Returns the penalized copy (pen->logits), or
+ * `logits` itself when neither sampler is on. */
+[[nodiscard]] const float *geist_sampler_penalties_apply(struct geist_sampler_penalties *pen,
+                                                         size_t                          n_hist,
+                                                         const geist_token_t            *hist,
+                                                         const float                    *logits);
+
 #endif /* GEIST_INTERNAL_SAMPLER_H */
