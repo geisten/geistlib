@@ -132,6 +132,14 @@ minor release.
   18.7 t/s, tg 2.2 t/s (cpu_x86 on a 9950X: 32.6 / 4.8). The KV cache does not
   spill. `test_backend_vulkan_vram_budget_unit` checks a spilled model decodes
   the same tokens.
+- **Vulkan: compiled pipelines persist across processes (#469).** Backend
+  creation built ~70 compute pipelines, ~2 s on an RTX 2080 Ti the first time
+  any new executable ran (the NVIDIA driver keys its shader cache by
+  executable). A `VkPipelineCache` is now loaded from and saved to
+  `~/.cache/geist/vulkan-pipelines-<pipelineCacheUUID>.bin` (or
+  `$XDG_CACHE_HOME/geist`; `GEIST_VK_PIPELINE_CACHE` names the file, `0` turns
+  it off): a new executable's first backend 1962 → 306 ms. Written through a
+  temporary file and a rename; an unreadable or foreign file is an empty cache.
 - **Vulkan shaders: one `silu()` (#465).** `silu.glsl` replaces the four
   copies in `silu_f32`, `silu_mul_f32` and the two DeltaNet kernels; the
   DeltaNet epilogue's norm reduces one value instead of feeding `reduce2` a

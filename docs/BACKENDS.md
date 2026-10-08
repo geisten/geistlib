@@ -90,6 +90,7 @@ limit fails the load.
 | :-- | :-- |
 | `GEIST_VK_DEVICE=<index>` | pick a device (default: first discrete GPU, else device 0) |
 | `GEIST_VK_VRAM_BUDGET` | lower the device memory limit (bytes, K/M/G suffix) to reproduce a smaller card |
+| `GEIST_VK_PIPELINE_CACHE` | compiled-pipeline cache file (default `$XDG_CACHE_HOME/geist` or `~/.cache/geist`, one file per driver build); `0` turns it off. The NVIDIA driver's own cache is per executable, so without it every new binary spends ~2 s compiling pipelines |
 | `GEIST_M_MAX` | prefill chunk rows (Vulkan default 128) |
 | `GEIST_VK_PQ2_F32_ACC=1` | f32 instead of f16 accumulation in the PQ2_0 tensor-core GEMM (default folds into f32 every 64 k) |
 | `GEIST_VK_SCRATCH_DEVICE=1` | device-local scratch, see above |
