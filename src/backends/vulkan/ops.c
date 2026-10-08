@@ -752,6 +752,15 @@ void vk_linear_cm_route(struct vk_state *st,
         *pipe = c128;
         *gx   = n_out / 128u;
         *gy   = (m + 127u) / 128u;
+        /* With more workgroups than the GPU has SMs, the single-buffered
+         * variant (half the shared memory, two workgroups per SM) wins:
+         * 20-45 % on an RTX 2080 Ti (68 SMs) from 80 workgroups up, 3-7 %
+         * slower at 64 and below, where the SMs are not all busy anyway. */
+        const enum vk_pipe sb =
+                c128 == VK_PIPE_MM_Q4K_CM128 ? VK_PIPE_MM_Q4K_CM128_SB : VK_PIPE_MM_Q6K_CM128_SB;
+        if (*gx * *gy > 64u && st->pipes[sb] != VK_NULL_HANDLE) {
+            *pipe = sb;
+        }
         return;
     }
     if (cm32) {

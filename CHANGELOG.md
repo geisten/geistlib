@@ -10,6 +10,15 @@ minor release.
 
 ### Changed
 
+- **Vulkan: a single-buffered 128 x 128 Q4_K/Q6_K tile for wide prefill
+  GEMMs (#658).** The double-buffered tile holds ~40 KB of shared memory, so
+  Turing ran one workgroup per SM. A variant with one shared buffer pair (one
+  extra barrier per k-step) runs two, and takes every Q4_K/Q6_K GEMM with more
+  than 64 workgroups (n_out ≥ 2560 at 512 tokens); narrower ones keep the
+  double-buffered tile, which is 3-7 % faster while the SMs are not all busy.
+  Per shape at m = 512: Q4_K 6144x1536 482 → 283 us, 8192x3072 935 → 667 us,
+  Q6_K 2560x10240 1.70 → 1.35 ms. RTX 2080 Ti, pp512: Gemma 4 E2B 4187 → 4547
+  t/s, E4B 2130 → 2540, Llama 3.2 3B 3443 → 4325; decode unchanged.
 - **Vulkan: F32-weight prefill GEMMs run on the tensor cores (#658).** Gemma
   4's per-layer-embedding projections (`inp_gate`, `proj` and the widened
   `per_layer_model_proj`) are F32, and the register-tiled `matmul_f32` ran

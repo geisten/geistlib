@@ -42,7 +42,14 @@
  *
  * DT_F32 reads dense row-major f32 weights (the PLE projections, #658): each
  * thread loads 16 consecutive weights of its row like its 16 activations and
- * rounds them to f16 the same way. Requires n_in % 32 == 0 for it. */
+ * rounds them to f16 the same way. Requires n_in % 32 == 0 for it.
+ *
+ * SINGLE_BUF keeps one shared buffer pair instead of two (#658): the next
+ * k-step's loads still fly during the MMAs, but are stored only after a
+ * second barrier. That halves the ~40 KiB of shared memory, so Turing runs
+ * two workgroups per SM instead of one; it pays once a GEMM has more
+ * workgroups than the GPU has SMs, and costs the extra barrier below that
+ * (vk_linear_cm_route picks). */
 
 #ifdef ACC_F16
 #define ACCUM(i, j) hac##i##j
@@ -84,8 +91,13 @@ const uint BK = 32;
  * 16-byte aligned for coopMatLoad) */
 const uint STRIDE4 = BK / 8u + 1u;
 
+#ifdef SINGLE_BUF
+shared uvec4 Ash[1][BM * STRIDE4];
+shared uvec4 Bsh[1][BN * STRIDE4];
+#else
 shared uvec4 Ash[2][BM * STRIDE4];
 shared uvec4 Bsh[2][BN * STRIDE4];
+#endif
 
 #if defined(DT_Q4K)
 /* 4 quant bytes, nibble at `shift` -> 4 packed f16 values dsc * q - dmn */
@@ -324,7 +336,11 @@ void main() {
     barrier();
 
     for (uint ks = 0; ks < ksteps; ks++) {
+#ifdef SINGLE_BUF
+        uint cur = 0u;
+#else
         uint cur = ks & 1u;
+#endif
         Fetch nxt;
         bool more = ks + 1u < ksteps;
         if (more) {
@@ -365,7 +381,12 @@ void main() {
             }
         }
         if (more) {
+#ifdef SINGLE_BUF
+            barrier(); /* every subgroup is done reading the pair */
+            store_tiles(0u, lid, nxt);
+#else
             store_tiles(cur ^ 1u, lid, nxt);
+#endif
         }
         barrier();
 #ifdef ACC_F16

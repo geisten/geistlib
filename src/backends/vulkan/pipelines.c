@@ -54,6 +54,8 @@
 #include "shaders/matmul_tq2_0_cm_spv.h"
 #include "shaders/matmul_tq2_0_t128_cm_spv.h"
 #include "shaders/matmul_f32_t128_cm_spv.h"
+#include "shaders/matmul_q4k_t128_sb_cm_spv.h"
+#include "shaders/matmul_q6k_t128_sb_cm_spv.h"
 #include "shaders/matmul_q4_1_cm_spv.h"
 #include "shaders/matmul_q8_0_spv.h"
 #include "shaders/matmul_tq2_0_spv.h"
