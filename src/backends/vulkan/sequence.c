@@ -264,12 +264,17 @@ void vk_seq_hazard(struct vk_state              *st,
     uint32_t        slot   = (uint32_t) (h & (VK_DSET_CACHE - 1));
     for (uint32_t probe = 0; probe < 16; ++probe, slot = (slot + 1) & (VK_DSET_CACHE - 1)) {
         const uint64_t k = st->dset_cache[slot].key;
-        if (k == h) {
+        /* A set only fits a dispatch with its layout's binding count:
+         * writing binding 2 of a 2-binding set (VUID-VkWriteDescriptorSet-
+         * dstBinding-00315) overruns into a neighbouring set and rebinds
+         * another cached dispatch to the wrong buffer (#665). */
+        const bool same_layout = st->dset_cache[slot].nbind == nbind;
+        if (k == h && same_layout) {
             set = st->dset_cache[slot].set;
             st->stat_dset_hits++;
             break;
         }
-        if (islot == UINT32_MAX && (k == 0 || k == UINT64_MAX)) {
+        if (islot == UINT32_MAX && (k == 0 || (k == UINT64_MAX && same_layout))) {
             islot  = slot;
             iempty = k == 0;
         }
@@ -280,8 +285,8 @@ void vk_seq_hazard(struct vk_state              *st,
     if (set == VK_NULL_HANDLE) {
         st->stat_dset_miss++;
         slot = islot != UINT32_MAX ? islot : slot;
-        /* tombstoned slots reuse their old set object; empty slots get a
-         * fresh one from the cache pool */
+        /* tombstoned slots reuse their old set object (same layout, see
+         * above); empty slots get a fresh one from the cache pool */
         const bool cacheable = islot != UINT32_MAX;
         if (cacheable && !iempty && st->dset_cache[slot].set != VK_NULL_HANDLE) {
             set                      = st->dset_cache[slot].set;
@@ -307,7 +312,8 @@ void vk_seq_hazard(struct vk_state              *st,
                     }
                 }
             } else if (cacheable) {
-                st->dset_cache[slot] = (struct vk_dset_entry) {.key = h, .set = set};
+                st->dset_cache[slot] =
+                        (struct vk_dset_entry) {.key = h, .set = set, .nbind = nbind};
             }
         }
         VkWriteDescriptorSet writes[VK_MAX_BINDINGS];

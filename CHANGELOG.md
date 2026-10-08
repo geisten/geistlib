@@ -19,6 +19,14 @@ minor release.
   pp512 with the flag: 356 → 1739 t/s at M 256, 349 → 1785 at M 512 (1385 at
   the default 64); E4B at M 512: 239 → 809. Decode no longer drops at large M
   (117 → 151 t/s).
+- **Vulkan: a cached descriptor set could rebind another dispatch to the wrong
+  buffer (#665).** When a buffer was destroyed, every cached descriptor set
+  became reusable, and a reused set was rewritten for a dispatch with more
+  bindings than its layout had (`VUID-VkWriteDescriptorSet-dstBinding-00315`).
+  The overrun landed in a neighbouring set, so qwen35 sessions created next to
+  other live sessions occasionally computed with a wrong buffer (logits off by
+  up to ~6), and `test_session_snapshot_unit` failed about every second run on
+  an RTX 2080 Ti. Reuse now requires the same binding count.
 ### Changed
 - **Vulkan: weight uploads reuse one staging buffer (#469).** Each staged
   upload created, mapped and freed a host-visible buffer of the weight's full
