@@ -1,12 +1,12 @@
 # Gemma 4 E2B decision fixtures on the Pi 5 (#694, #698): candidate logits
-# from geist cpu_neon, the cpu_scalar full-precision oracle and pinned
-# llama.cpp, all on the same aarch64 board, against geist-runtime's frozen
-# reference. Evidence only: the job fails on a crash, never on a logit gap.
+# from geist cpu_neon and the cpu_scalar full-precision oracle on the board,
+# against geist-runtime's frozen reference. Evidence only: the job fails on a
+# crash, never on a logit gap. Make and C only; no llama.cpp leg.
 #
 # Cortex-A76 has dotprod but no i8mm, so cpu_neon may take a different
 # kernel path than the Apple run that produced the fixture's geist numbers.
-# Both geist and llama.cpp run with an FP32 KV cache (bench_decision and
-# reference_score hard-code it), so what's left is the weight/activation path.
+# bench_decision hard-codes an FP32 KV cache, so what's left is the
+# weight/activation path.
 name: pi5-decision
 
 on:
@@ -15,9 +15,6 @@ on:
       runtime_ref:
         description: "geist-runtime ref holding tests/fixtures/decisions"
         default: main
-      llama_pin:
-        description: "llama.cpp commit (the fixture's reference_revision)"
-        default: 01ae597e3f7d4742909e1e831abb12fe3d24b2cf
 
 permissions:
   contents: read
@@ -37,14 +34,12 @@ jobs:
           repository: geisten/geist-runtime
           ref: ${{ inputs.runtime_ref }}
           path: runtime
-          sparse-checkout: |
-            tests/fixtures/decisions
-            tools/reference_score.cpp
+          sparse-checkout: tests/fixtures/decisions
       - name: fixture model (SHA-gated, the fixture's artifact_sha256)
         run: make fetch-model
       - name: build bench_decision (DECISION=1)
         run: ~/bin/with-pi-lock make TARGET=pi5 DECISION=1 bin/pi5/release/tools/bench_decision
-      # Same wire format for both engines: n_prompt n_candidates ids... cands...
+      # bench_decision's wire format: n_prompt n_candidates ids... cands...
       - name: wire input from the fixture
         run: |
           echo "OUT=$RUNNER_TEMP/decision" >> "$GITHUB_ENV"
@@ -61,35 +56,13 @@ jobs:
               gguf_artifacts/gemma4-e2b-Q4_K_M.gguf "$be" 512 4 2 0 1 --modes decision_dense \
               < "$OUT/wire.txt" > "$OUT/geist-$be.jsonl"
           done
-      # Persistent checkout outside the workspace; rebuilt only when the pin
-      # moves. CPU only, no BLAS: the fixture's reference ran without a GPU.
-      - name: pinned llama.cpp + reference_score
-        env:
-          PIN: ${{ inputs.llama_pin }}
-        run: |
-          set -e
-          DIR="$HOME/llama.cpp-decision" BUILD="$HOME/llama.cpp-decision/build-cpu"
-          if [ "$(git -C "$DIR" rev-parse HEAD 2>/dev/null)" != "$PIN" ] || [ ! -f "$BUILD/bin/libllama.so" ]; then
-            [ -d "$DIR/.git" ] || git clone https://github.com/ggml-org/llama.cpp "$DIR"
-            git -C "$DIR" fetch origin "$PIN" && git -C "$DIR" checkout "$PIN"
-            cmake -S "$DIR" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
-              -DGGML_BLAS=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
-            ~/bin/with-pi-lock cmake --build "$BUILD" -j4 --target llama
-          fi
-          # ponytail: the oracle hard-codes six threads; the board has four.
-          sed 's/= 6;/= 4;/' runtime/tools/reference_score.cpp > "$OUT/reference_score.cpp"
-          g++ -O2 -std=c++17 -I"$DIR/include" -I"$DIR/ggml/include" "$OUT/reference_score.cpp" \
-            -L"$BUILD/bin" -lllama -lggml -lggml-base -Wl,-rpath,"$BUILD/bin" -o "$OUT/reference_score"
-      - name: llama.cpp candidate logits
-        run: ~/bin/with-pi-lock "$OUT/reference_score" gguf_artifacts/gemma4-e2b-Q4_K_M.gguf < "$OUT/wire.txt" > "$OUT/llama.jsonl"
       - name: summary
         run: |
           python3 - runtime/tests/fixtures/decisions/gemma4_numeric.json "$OUT" >> "$GITHUB_STEP_SUMMARY" <<'EOF'
           import json, sys, pathlib
           ref, out = json.load(open(sys.argv[1]))["outputs"], pathlib.Path(sys.argv[2])
           rows = lambda p: [json.loads(l) for l in p.read_text().splitlines() if l.startswith("{")]
-          runs = {"fixture reference (arm64 macOS)": ref,
-                  "llama.cpp pi5": rows(out / "llama.jsonl")}
+          runs = {"fixture reference (arm64 macOS)": ref}
           for be in ("cpu_neon", "cpu_scalar"):
               runs[f"geist {be} pi5"] = [r for r in rows(out / f"geist-{be}.jsonl")
                                          if r.get("kind") == "sample" and r.get("logits")]
