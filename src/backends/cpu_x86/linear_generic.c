@@ -4,7 +4,7 @@
  *
  * Layer: BACKEND (cpu_x86).
  *
- * Serves IQ2_S, IQ3_S, BF16, F16 prefill, and Q4_K / Q6_K when their
+ * Serves Q5_0, IQ2_S, IQ3_S, BF16, F16 prefill, and Q4_K / Q6_K when their
  * repack cannot be built, instead of cpu_scalar's single-threaded oracle
  * (#410, #504). Each OpenMP thread dequantizes its rows with the format's
  * row decoder (quant.h) into a private row of the calling thread's
@@ -69,6 +69,8 @@ static row_dequant_fn row_dequant_for(uint16_t dtype) {
         return dequant_q4_K_row;
     case GEIST_DTYPE_Q6_K:
         return dequant_q6_K_row;
+    case GEIST_DTYPE_Q5_0:
+        return dequant_q5_0_row;
     case GEIST_DTYPE_IQ2_S:
         return dequant_iq2_s_row;
     case GEIST_DTYPE_IQ3_S:

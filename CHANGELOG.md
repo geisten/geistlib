@@ -72,6 +72,25 @@ minor release.
   the caller queries from the OS). `GEIST_HAS_BACKEND_MEMORY_INFO` is defined
   with it, so a consumer pinned to an older engine can still build. Test:
   `test_backend_memory_info_unit` (vulkan-gpu CI leg).
+- **GGUF Q5_0 weights load and run (#675).** `llama-quantize ... Q4_K_M`
+  keeps some tensors of small models in Q5_0 (ggml type 6), and the loader
+  refused them (`'blk.0.attn_q.weight' has unsupported dtype Q5_0`). New
+  `GEIST_DTYPE_Q5_0` in `geist_types.h`, appended after `GEIST_DTYPE_PQ2_0`
+  (value 23) so no published dtype value moves; `GEIST_DTYPE_COUNT` grows by
+  one. There is no native kernel yet: cpu_scalar runs the reference,
+  cpu_x86 the multi-threaded generic dequant linear, cpu_neon the dequant
+  trampolines, and Vulkan installs its host path (refused under
+  `GEIST_VK_STRICT=1`); Metal resolves nothing for it and the first linear
+  fails with `linear_w: backend resolver installed no kernel`. Token
+  embeddings in Q5_0 dequantize on the host. Qwen3-0.6B quantized to Q5_0
+  by llama-quantize: perplexity 24.65 against 24.01 for BF16 (llama.cpp:
+  23.39 / 22.99). Vulkan's host linear (all dtypes without a shader) now runs
+  `geist_linear_ref` split over OpenMP threads, on host copies of x and y
+  rather than reading the mapped buffers (BAR-resident when the device has
+  a BAR window) once per output row, single-threaded. That model's 8-token
+  prompt plus 16 decoded tokens did not finish in 20 minutes before and
+  takes 83 s now, on a loaded host; most of what is left is per-linear
+  overhead, not the dot products. Test: `test_q5_0_unit`.
 
 ### Changed
 - **Vulkan: tensor-core prefill attention for head_dim 128 and 512 and for
