@@ -44,6 +44,14 @@ minor release.
   Llama 3.2 3B 1315 → 1595. The Q6_K kernel now stages k-step ks+1 while the
   MMAs consume ks, as the Q4_K one does: 407 → 392 µs per call on Gemma.
 
+- **Vulkan: a cached descriptor set could rebind another dispatch to the wrong
+  buffer (#665).** When a buffer was destroyed, every cached descriptor set
+  became reusable, and a reused set was rewritten for a dispatch with more
+  bindings than its layout had (`VUID-VkWriteDescriptorSet-dstBinding-00315`).
+  The overrun landed in a neighbouring set, so qwen35 sessions created next to
+  other live sessions occasionally computed with a wrong buffer (logits off by
+  up to ~6), and `test_session_snapshot_unit` failed about every second run on
+  an RTX 2080 Ti. Reuse now requires the same binding count.
 ### Changed
 - **Vulkan: weight uploads reuse one staging buffer (#469).** Each staged
   upload created, mapped and freed a host-visible buffer of the weight's full
