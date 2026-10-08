@@ -8,6 +8,27 @@ minor release.
 
 ## [Unreleased]
 
+### Changed
+- **Vulkan: Q4_0 prefill GEMM on the tensor cores (#467).** The Q8_0
+  coopmat kernel's body now takes a Q4_0 A stage too (shared
+  `matmul_legacy_cm_body.glsl`). RTX 2080 Ti, Qwen3.5 4B Q4_0 pp512: the Q4_0
+  GEMM 1739 → 323 ms, prefill 253 → 817 t/s; CPU-vs-Vulkan logits unchanged
+  (corr 0.99968).
+
+- **Vulkan: Q8_0 GEMMs run on the tensor cores.** Batched Q8_0 linears with
+  `n_out % 64 == 0` and `m % 16 == 0` take a new `KHR_coopmat` kernel (the
+  64 × 64 double-buffered frame of the Q4_K one, f16 operands, f32
+  accumulation) instead of the register-tiled GEMM. RTX 2080 Ti pp512:
+  Qwen3 0.6B Q8_0 2130 → 5570 t/s, Qwen3.5 0.8B Q8_0 1890 → 5360 t/s; decode
+  unchanged. Root cause and ranking in
+  `benchmark/results/VULKAN-PREFILL-GAP-2080TI-2026-10-07.md` (#467).
+- **Vulkan: GEMMs with a row count that is not a multiple of 16 still use the
+  tensor cores.** The leading `m & ~15` rows take the tensor-core kernel and
+  only the tail runs on the register-tiled GEMM (before, the whole chunk fell
+  back). A prompt that fits one prefill chunk now hits the tensor cores
+  regardless of its length. RTX 2080 Ti: Gemma 4 E2B pp100 787 → 1128 t/s,
+  pp500 1131 → 1324; Qwen3 0.6B Q8_0 pp100 2222 → 3957; Bonsai 2 27B pp100
+  39 → 260, pp500 126 → 393; aligned lengths (pp512) unchanged.
 ### Added
 
 - **`tools/convert_hf.py`: reproducible Hugging Face → GGUF conversion with a
@@ -25,7 +46,6 @@ minor release.
   source; the `convert-gate` workflow runs SmolLM2 135M end to end. The gate
   found #674 (Gemma 3 270M logits) and #675 (Q5_0 weights).
 
-### Added
 - **`geist_session_cancel`: stop a prefill from another thread (#628).**
   EXPERIMENTAL, in `geist_util.h`. Safe from any thread; a prefill checks
   before each sub-batch (the session's `m_max` positions) and a `decode_step`
@@ -53,7 +73,6 @@ minor release.
   with it, so a consumer pinned to an older engine can still build. Test:
   `test_backend_memory_info_unit` (vulkan-gpu CI leg).
 
-### Changed
 - **The Vulkan out-of-device-memory error names what the whole device holds**. It used to report only this backend's own usage ("4315 of 11264 MiB
   are in use"), which reads as impossible when another model or process holds
   the rest; with `VK_EXT_memory_budget` it adds "the device reports 10950 of
