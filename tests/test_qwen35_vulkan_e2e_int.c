@@ -13,7 +13,10 @@
  *      (~1 % relative error in the attention output, which flips near-tied
  *      greedy choices) and Vulkan to F16, so the default configurations are
  *      not comparable token for token — the FP32 configuration is, and there
- *      the logits agree to ~1e-7.
+ *      the logits agree to ~1e-7. A third prompt (> 64 tokens at
+ *      GEIST_M_MAX=64) routes the first chunk through the tensor-core GEMM,
+ *      whose f16 operands loosen that agreement; its greedy continuation
+ *      must still match.
  *   3. Reset equivalence: decode, session_reset, decode the same prompt again
  *      — identical tokens. The DeltaNet conv/delta state lives in VRAM here
  *      (not host-mappable), so this pins the upload-based zeroing path.
@@ -165,12 +168,26 @@ int main(void) {
             "code, one numeric opcode at a time. Later, assemblers introduced mnemonics, and "
             "then compilers let people describe what they wanted in a language closer to "
             "mathematics. The most important consequence of this history is that",
+            /* over 64 tokens, run at GEIST_M_MAX=64: the first prefill chunk
+             * is a full 64-row GEMM and takes the Q8_0 tensor-core kernel
+             * (f16 operands; m % 16 == 0 is its routing condition) */
+            "The river begins as snowmelt high in the mountains, gathers into narrow streams "
+            "that cut through granite, and widens as it reaches the valley floor. Farmers along "
+            "its banks have relied on the spring floods for centuries, timing their planting to "
+            "the rise and fall of the water. When engineers proposed a dam upstream, the villages "
+            "argued for months about what it would mean for their fields, and in the end they "
+            "agreed that",
     };
     int fails = 0;
-    for (size_t p = 0; p < 2; p++) {
+    for (size_t p = 0; p < sizeof prompts / sizeof prompts[0]; p++) {
         struct run vk = {0}, vk2 = {0}, ref = {0};
-        if (!generate("vulkan", path, prompts[p], &vk, p == 0 ? &vk2 : nullptr) ||
-            !generate(cpu, path, prompts[p], &ref, nullptr)) {
+        if (p == 2) {
+            setenv("GEIST_M_MAX", "64", 1);
+        }
+        const bool gen_ok = generate("vulkan", path, prompts[p], &vk, p == 0 ? &vk2 : nullptr) &&
+                            generate(cpu, path, prompts[p], &ref, nullptr);
+        unsetenv("GEIST_M_MAX");
+        if (!gen_ok) {
             fprintf(stderr, "FAIL: generation failed (prompt %zu)\n", p);
             fails++;
             continue;
