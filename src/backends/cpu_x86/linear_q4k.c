@@ -39,9 +39,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#if defined(_OPENMP)
-#include <omp.h>
-#endif
+#include "par.h"
 
 /* Layout sizes for one weight (row-major SoA). Per-row blocks = n_in/32. */
 static inline size_t weights_bytes_per_row(size_t n_in) {
@@ -91,6 +89,29 @@ static void w4a8_pointers(const uint8_t  *blob,
     *offsets_out = *scales_out + scales_count;
 }
 
+/* The W4A8 repack's rows for geist_par_for. */
+struct w4a8_repack {
+    size_t         n_in;
+    const uint8_t *q4k_raw;
+    uint8_t       *blob_w;
+    float         *blob_s;
+    float         *blob_o;
+};
+
+static void w4a8_repack_rows(void *ctx, size_t m0, size_t m1) {
+    const struct w4a8_repack c             = *(const struct w4a8_repack *) ctx;
+    const size_t             q4k_row_bytes = (c.n_in / Q4_K_BLOCK_ELEMS) * Q4_K_BLOCK_BYTES;
+    const size_t             w_row_bytes   = weights_bytes_per_row(c.n_in);
+    const size_t             s_row_count   = scales_count_per_row(c.n_in);
+    for (size_t m = m0; m < m1; m++) {
+        q4k_to_w4a8_row(c.n_in,
+                        c.q4k_raw + m * q4k_row_bytes,
+                        c.blob_w + m * w_row_bytes,
+                        c.blob_s + m * s_row_count,
+                        c.blob_o + m * s_row_count);
+    }
+}
+
 [[nodiscard]] enum geist_status cpu_x86_linear_q4k_resolve(struct cpu_x86_state *st,
                                                            struct geist_weight  *w) {
     if (st == nullptr || w == nullptr || w->n_in <= 0 || w->n_out <= 0) {
@@ -119,22 +140,11 @@ static void w4a8_pointers(const uint8_t  *blob,
         const float   *blob_s_const;
         const float   *blob_o_const;
         w4a8_pointers(blob, n_in, n_out, &blob_w_const, &blob_s_const, &blob_o_const);
-        uint8_t     *blob_w        = (uint8_t *) blob_w_const;
-        float       *blob_s        = (float *) blob_s_const;
-        float       *blob_o        = (float *) blob_o_const;
-        const size_t q4k_row_bytes = (n_in / Q4_K_BLOCK_ELEMS) * Q4_K_BLOCK_BYTES;
-        const size_t w_row_bytes   = weights_bytes_per_row(n_in);
-        const size_t s_row_count   = scales_count_per_row(n_in);
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static) /* see q4k_to_q4kx8_matrix */
-#endif
-        for (size_t m = 0; m < n_out; m++) {
-            q4k_to_w4a8_row(n_in,
-                            q4k_raw + m * q4k_row_bytes,
-                            blob_w + m * w_row_bytes,
-                            blob_s + m * s_row_count,
-                            blob_o + m * s_row_count);
-        }
+        uint8_t           *blob_w = (uint8_t *) blob_w_const;
+        float             *blob_s = (float *) blob_s_const;
+        float             *blob_o = (float *) blob_o_const;
+        struct w4a8_repack c      = {n_in, q4k_raw, blob_w, blob_s, blob_o};
+        geist_par_for(n_out, w4a8_repack_rows, &c); /* see q4k_to_q4kx8_matrix */
     }
 
     /* aux_fp32 reinterpreted as the blob pointer; engine frees it on
@@ -178,7 +188,7 @@ void cpu_x86_linear_q4k_m1(const float               *x,
     }
     const float scale_x = w4a8_quantize_acts_row(n_in, x, ws->acts_scratch, ws->sum_a_scratch);
 
-    /* Multi-row GEMV fallback (n_out not a multiple of 8). OMP-parallel. */
+    /* Multi-row GEMV fallback (n_out not a multiple of 8), rows in parallel. */
     w4a8_gemv(n_out,
               n_blocks_per_row,
               weights,
