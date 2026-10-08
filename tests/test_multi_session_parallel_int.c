@@ -35,10 +35,11 @@
 
 #define N_SESSIONS 4
 #define N_ROUNDS 2
-/* GEIST_TEST_LIGHT=1 (coverage CI) cuts decode length: line coverage is
- * identical after the first few tokens, and the instrumented -O1 build
- * makes the full length the suite's slowest test. Race detection does not
- * live here — that is the TSan job. */
+/* GEIST_TEST_LIGHT=1 (coverage and TSan CI) cuts decode length: every
+ * decode step runs the same code, so line coverage and the races TSan can
+ * see are identical after the first few tokens, while the instrumented
+ * builds make the full length the slowest test. The regular int suites run
+ * the full length. */
 static int n_decode(void) {
     const char *l = getenv("GEIST_TEST_LIGHT");
     return (l != NULL && l[0] == '1') ? 8 : 32;
