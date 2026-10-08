@@ -3,6 +3,7 @@
 #extension GL_EXT_control_flow_attributes : enable
 #extension GL_KHR_shader_subgroup_arithmetic : enable
 #extension GL_KHR_shader_subgroup_basic : enable
+#include "vk_limits.h"
 
 /* ffn_gate_up_gelu_q4k with the pre-FFN rmsnorm folded in:
  *   xn = rmsnorm(x) * nw;  y = gelu_tanh(xn . gate^T) * (xn . up^T)
@@ -42,7 +43,7 @@ void main() {
     uint tid = gl_LocalInvocationID.x;
     uint wrp = tid >> 5u;
     uint lane = tid & 31u;
-    uint first_row = gl_WorkGroupID.x * 8u + wrp * NUM_ROWS;
+    uint first_row = gl_WorkGroupID.x * VK_MV_ROWS_PER_WG + wrp * NUM_ROWS;
     uint itid = lane & 15u;
     uint ix = lane >> 4u;
 

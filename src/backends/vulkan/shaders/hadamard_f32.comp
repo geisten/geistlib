@@ -1,4 +1,5 @@
 #version 450
+#include "vk_limits.h"
 
 /* Blockwise orthonormal Walsh-Hadamard transform of rows (Ternary-Bonsai's
  * prism.hadamard basis), same math and operation order as the host
@@ -34,7 +35,7 @@ layout(push_constant) uniform Push {
     float scale;
 } pc;
 
-shared float sh[1024];
+shared float sh[VK_HADAMARD_MAX_BLOCK];
 
 void main() {
     uint tid = gl_LocalInvocationID.x;

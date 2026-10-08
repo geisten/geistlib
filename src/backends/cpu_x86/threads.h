@@ -1,5 +1,5 @@
 /*
- * src/backends/cpu_x86/threads.h — cpu_x86's OpenMP team size per phase.
+ * src/backends/cpu_x86/threads.h — cpu_x86's thread count per phase.
  *
  * Layer: BACKEND (cpu_x86, internal). See threads.c.
  */
@@ -29,8 +29,8 @@
 [[nodiscard]] int
 cpu_x86_decode_threads(int env_decode, bool omp_threads_set, size_t logical, size_t physical);
 
-/* The vtable's parallel_region_begin / _end. Defined in OpenMP builds only;
- * backend.c installs them there and leaves both slots null otherwise. */
+/* The vtable's parallel_region_begin / _end: set geist_par_max_threads for
+ * the phase (OpenMP or not) and restore it. */
 int  cpu_x86_parallel_region_begin(struct geist_backend *be, enum geist_parallel_region region);
 void cpu_x86_parallel_region_end(struct geist_backend *be, int token);
 
