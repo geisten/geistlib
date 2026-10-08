@@ -32,12 +32,16 @@
 #include "shaders/matmul_q4_1_spv.h"
 #include "shaders/matmul_q4k_cm32_spv.h"
 #include "shaders/matmul_q4k_cm_spv.h"
+#include "shaders/matmul_q5k_cm_spv.h"
 #include "shaders/matmul_q4k_spv.h"
 #include "shaders/matmul_q5k_spv.h"
 #include "shaders/matmul_q6k_cm_spv.h"
 #include "shaders/matmul_q6k_spv.h"
 #include "shaders/matmul_q8_0_cm_spv.h"
 #include "shaders/matmul_q4_0_cm_spv.h"
+#include "shaders/matmul_tq2_0_cm_spv.h"
+#include "shaders/matmul_tq2_0_t128_cm_spv.h"
+#include "shaders/matmul_q4_1_cm_spv.h"
 #include "shaders/matmul_q8_0_spv.h"
 #include "shaders/matmul_tq2_0_spv.h"
 #include "shaders/matvec_f32_spv.h"
@@ -257,6 +261,10 @@ static uint32_t vk_spirv_local_size_x(size_t n_words, const uint32_t code[static
             [VK_PIPE_ATTENTION_F16_CM] = {attention_f16_cm_spv, sizeof(attention_f16_cm_spv)},
             [VK_PIPE_MM_Q8_0_CM]       = {matmul_q8_0_cm_spv, sizeof(matmul_q8_0_cm_spv)},
             [VK_PIPE_MM_Q4_0_CM]       = {matmul_q4_0_cm_spv, sizeof(matmul_q4_0_cm_spv)},
+            [VK_PIPE_MM_Q5K_CM]        = {matmul_q5k_cm_spv, sizeof(matmul_q5k_cm_spv)},
+            [VK_PIPE_MM_Q4_1_CM]       = {matmul_q4_1_cm_spv, sizeof(matmul_q4_1_cm_spv)},
+            [VK_PIPE_MM_TQ2_0_CM]      = {matmul_tq2_0_cm_spv, sizeof(matmul_tq2_0_cm_spv)},
+            [VK_PIPE_MM_TQ2_0_CM128] = {matmul_tq2_0_t128_cm_spv, sizeof(matmul_tq2_0_t128_cm_spv)},
     };
     for (int i = 0; i < VK_PIPE_COUNT; ++i) {
         if (blobs[i].code == nullptr || blobs[i].bytes == 0) {
