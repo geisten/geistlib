@@ -163,6 +163,22 @@ minor release.
   100-102 % of the OpenMP build (was 16 % prefill, 55 % decode), Qwen3.5 4B
   decode at 99 % and prefill at 83 % (its DeltaNet layers' loops in
   `layer_deltanet.c` are still OpenMP).
+- **The architecture layer and the shared kernels on the same parallel-for
+  (#618, third batch).** The DeltaNet mixer (prefill conv + gating, the
+  per-head chunked delta rule, the decode step's heads), the portable INT8 /
+  INT4 KV attention (split decode, grouped passes, one-head loop; still
+  handed out item by item as OpenMP's `schedule(dynamic)` did), the
+  speculative lm_head (sketch build and rough scores), the audio tower's
+  linears and attention (batch and streaming), the vision tower's attention,
+  the Hadamard rows (`hadamard.c`), the PTQTP kernels and the selected-rows
+  thread toggle no longer use OpenMP directly. Per-thread scratch (DeltaNet
+  staging, sketch rows, vision scores) is claimed per range. Output is
+  bit-identical with and without OpenMP. cpu_x86 and these files have no
+  `#pragma omp` left outside the AMX PQ2_0 GEMM; cpu_neon and vulkan still
+  do. Ryzen 9 9950X, 16 threads: with OpenMP, Qwen3.5 4B Q4_0 and Gemma 4
+  E2B within noise of before; without, Qwen3.5 4B runs at 100 % of the
+  OpenMP build in prefill (was 83 %) and 101 % in decode, Gemma 4 E2B at
+  100 % / 102 %.
 - **The Vulkan out-of-device-memory error names what the whole device holds**. It used to report only this backend's own usage ("4315 of 11264 MiB
   are in use"), which reads as impossible when another model or process holds
   the rest; with `VK_EXT_memory_budget` it adds "the device reports 10950 of
