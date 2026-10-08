@@ -54,6 +54,14 @@ minor release.
   `test_backend_memory_info_unit` (vulkan-gpu CI leg).
 
 ### Changed
+- **Vulkan: compiled pipelines persist across processes (#469).** Backend
+  creation built ~70 compute pipelines, ~2 s on an RTX 2080 Ti the first time
+  any new executable ran (the NVIDIA driver keys its shader cache by
+  executable). A `VkPipelineCache` is now loaded from and saved to
+  `~/.cache/geist/vulkan-pipelines-<pipelineCacheUUID>.bin` (or
+  `$XDG_CACHE_HOME/geist`; `GEIST_VK_PIPELINE_CACHE` names the file, `0` turns
+  it off): a new executable's first backend 1962 → 306 ms. Written through a
+  temporary file and a rename; an unreadable or foreign file is an empty cache.
 - **The Vulkan out-of-device-memory error names what the whole device holds**. It used to report only this backend's own usage ("4315 of 11264 MiB
   are in use"), which reads as impossible when another model or process holds
   the rest; with `VK_EXT_memory_budget` it adds "the device reports 10950 of

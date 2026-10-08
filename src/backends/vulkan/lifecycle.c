@@ -99,6 +99,9 @@ static PFN_vkVoidFunction vk_iproc(struct vk_state *st, const char *name) {
     VK_LOAD_I(st, CreatePipelineLayout);
     VK_LOAD_I(st, DestroyPipelineLayout);
     VK_LOAD_I(st, CreateComputePipelines);
+    VK_LOAD_I(st, CreatePipelineCache);
+    VK_LOAD_I(st, DestroyPipelineCache);
+    VK_LOAD_I(st, GetPipelineCacheData);
     VK_LOAD_I(st, DestroyPipeline);
     VK_LOAD_I(st, CreateDescriptorPool);
     VK_LOAD_I(st, DestroyDescriptorPool);
@@ -147,6 +150,9 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
             if (st->pipes[i] != VK_NULL_HANDLE) {
                 st->fn.DestroyPipeline(st->device, st->pipes[i], nullptr);
             }
+        }
+        if (st->pcache != VK_NULL_HANDLE) {
+            st->fn.DestroyPipelineCache(st->device, st->pcache, nullptr);
         }
         if (st->seq_pool != VK_NULL_HANDLE) {
             st->fn.DestroyDescriptorPool(st->device, st->seq_pool, nullptr);
@@ -211,6 +217,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
                            props.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)) {
             pick = (int) i;
             snprintf(st->device_name, sizeof(st->device_name), "%s", props.properties.deviceName);
+            memcpy(st->pcache_uuid, props.properties.pipelineCacheUUID, VK_UUID_SIZE);
         }
     }
     if (pick < 0 && wanted < 0) {
@@ -221,6 +228,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
                 .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
         st->fn.GetPhysicalDeviceProperties2(devs[0], &props);
         snprintf(st->device_name, sizeof(st->device_name), "%s", props.properties.deviceName);
+        memcpy(st->pcache_uuid, props.properties.pipelineCacheUUID, VK_UUID_SIZE);
     }
     if (pick < 0) {
         geist_backend_set_error(
