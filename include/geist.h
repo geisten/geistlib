@@ -82,6 +82,9 @@ enum geist_status {
     GEIST_E_STALE_CALIBRATION, /* blob valid but keyed to another
                                 * machine / kernel generation — normal
                                 * signal to recalibrate, not a bug */
+
+    /* -- EXPERIMENTAL (#628) -- */
+    GEIST_E_CANCELLED, /* geist_session_cancel stopped the call */
 };
 
 /* @stability STABLE since 0.1.0
