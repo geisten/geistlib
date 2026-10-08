@@ -602,6 +602,7 @@ uint32_t vk_linear_gy(enum vk_pipe pipe, uint32_t m);
 void vk_linear_cm_route(struct vk_state *st,
                         enum vk_pipe    *pipe,
                         uint32_t         m,
+                        uint32_t         n_in,
                         uint32_t         n_out,
                         uint32_t        *gx,
                         uint32_t        *gy);
