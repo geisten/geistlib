@@ -5,7 +5,7 @@
  * to Q8_Kx4, runs the scalar GEMM, and compares to the reference path:
  * dequant_q4_K_row each weight row + fp32 sgemm against fp32 acts.
  *
- * Tolerance: dominated by int8 act quant (per-row, ~127 levels).
+ * Tolerance: dominated by int8 act quant (per super-block, ~127 levels).
  *
  * Deterministic; runs in <500 ms.
  */
@@ -305,6 +305,116 @@ static int scenario_endtoend_m16(size_t M, size_t N, size_t K) {
     return fails;
 }
 
+/* #694: one activation outlier must not coarsen the other super-blocks of
+ * its row. Row r of the activations carries a single |x| = 100 element in
+ * super-block 0 and |x| <= 1 elsewhere (Gemma's FFN activations look like
+ * this). With one Q8 scale per row the rest of the row lands on a grid of
+ * 100/127 and the dot is off by a large fraction of its magnitude; with one
+ * scale per 256-element super-block (Q8_K) only super-block 0 is coarse.
+ * The tolerance is far below the per-row error and checks the GEMM (scalar
+ * and AVX-512 entry) and the M=1 GEMV, which quantizes on its own. */
+static int scenario_outlier_superblock(void) {
+    constexpr size_t N       = 8;
+    constexpr size_t M       = 4;
+    constexpr size_t K       = 1024;
+    constexpr size_t N_SUPER = K / 256;
+
+    struct block_q4_K_t W_q4k[N * N_SUPER];
+    uint32_t            s = 0x0B5E55EDu;
+    for (size_t r = 0; r < N * N_SUPER; r++) {
+        memset(&W_q4k[r], 0, sizeof(W_q4k[r]));
+        W_q4k[r].d    = fp32_to_fp16(0.002f + 0.005f * ((prng_next(&s) & 0xFFFFu) / 65536.0f));
+        W_q4k[r].dmin = fp32_to_fp16(0.001f + 0.003f * ((prng_next(&s) & 0xFFFFu) / 65536.0f));
+        for (int sb = 0; sb < 8; sb++) {
+            set_scale_min_k4(sb,
+                             W_q4k[r].scales,
+                             (uint8_t) (prng_next(&s) & 0x3Fu),
+                             (uint8_t) (prng_next(&s) & 0x3Fu));
+        }
+        for (size_t k = 0; k < 128; k++) {
+            W_q4k[r].qs[k] = (uint8_t) (prng_next(&s) & 0xFFu);
+        }
+    }
+    /* Super-block 0 (the outlier's) gets zero weights, so the output error
+     * is that of the quiet super-blocks alone. */
+    for (size_t r = 0; r < N; r++) {
+        W_q4k[r * N_SUPER].d    = 0;
+        W_q4k[r * N_SUPER].dmin = 0;
+    }
+    struct block_q4_Kx8 W_q4kx8[N_SUPER];
+    q4k_to_q4kx8_matrix(K, N, (const uint8_t *) W_q4k, W_q4kx8);
+
+    float X[M * K];
+    for (size_t i = 0; i < M * K; i++) {
+        X[i] = prng_uniform_pm1(prng_next(&s));
+    }
+    for (size_t i = 0; i < M; i++) {
+        X[i * K + 17] = 100.0f;
+    }
+
+    struct block_q8_Kx4 X_q8kx4[N_SUPER];
+    quantize_q8_Kx4(K, X, X_q8kx4);
+    float Y_scl[M * N], Y_avx[M * N], Y_gemv[M * N];
+    q4kx8_gemm_scalar(M, N, K, X_q8kx4, W_q4kx8, Y_scl);
+    q4kx8_gemm_avx512(M, N, K, X_q8kx4, W_q4kx8, Y_avx);
+    for (size_t i = 0; i < M; i++) {
+        q4kx8_gemv_m1(N, K, X + i * K, W_q4kx8, Y_gemv + i * N);
+    }
+
+    /* fp32 reference. */
+    float W_fp32[N * K];
+    for (size_t r = 0; r < N; r++) {
+        dequant_q4_K_row(K, &W_q4k[r * N_SUPER], W_fp32 + r * K);
+    }
+    int   fails    = 0;
+    float max_diff = 0.0f;
+    for (size_t i = 0; i < M; i++) {
+        for (size_t j = 0; j < N; j++) {
+            double ref = 0.0, quiet_abs = 0.0;
+            for (size_t k = 0; k < K; k++) {
+                ref += (double) X[i * K + k] * (double) W_fp32[j * K + k];
+                if (k >= 256)
+                    quiet_abs += fabs((double) X[i * K + k] * (double) W_fp32[j * K + k]);
+            }
+            /* Worst case on a grid of <= 1/127: each element rounds by at
+             * most half a step. A row-wide scale (100/127) misses it by far. */
+            const float tol     = (float) (0.5 * (1.0 / 127.0) * quiet_abs + 1e-3);
+            const float outs[3] = {Y_scl[i * N + j], Y_avx[i * N + j], Y_gemv[i * N + j]};
+            for (int v = 0; v < 3; v++) {
+                const float d = fabsf(outs[v] - (float) ref);
+                if (d > max_diff)
+                    max_diff = d;
+                if (d > tol) {
+                    if (fails < 8)
+                        fprintf(stderr,
+                                "outlier: path=%d i=%zu j=%zu ref=%g got=%g diff=%g tol=%g\n",
+                                v,
+                                i,
+                                j,
+                                ref,
+                                (double) outs[v],
+                                (double) d,
+                                (double) tol);
+                    fails++;
+                }
+            }
+        }
+        /* The quantizer itself: super-blocks 1..3 keep their own scale. */
+        for (size_t sb = 1; sb < N_SUPER; sb++) {
+            if (X_q8kx4[sb].d[i] > 1.0f / 127.0f * 1.0001f) {
+                fprintf(stderr,
+                        "outlier: row %zu super-block %zu scale %g is not its own\n",
+                        i,
+                        sb,
+                        (double) X_q8kx4[sb].d[i]);
+                fails++;
+            }
+        }
+    }
+    fprintf(stdout, "[q4kx8 outlier K=%zu] max |Δ| = %g, fails=%d\n", K, (double) max_diff, fails);
+    return fails;
+}
+
 int main(void) {
 #if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
     /* q4kx8_gemm_avx512 is __attribute__((target(avx512f,bw,dq,vl))) with no
@@ -349,6 +459,10 @@ int main(void) {
     }
     if (scenario_endtoend_m16(60, 32, 512) != 0) {
         fputs("scenario_endtoend_m16(60,32,512) FAILED\n", stderr);
+        fails++;
+    }
+    if (scenario_outlier_superblock() != 0) {
+        fputs("scenario_outlier_superblock FAILED\n", stderr);
         fails++;
     }
     return fails == 0 ? GEIST_TEST_PASS : GEIST_TEST_FAIL;
