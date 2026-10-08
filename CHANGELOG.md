@@ -58,6 +58,16 @@ minor release.
   are in use"), which reads as impossible when another model or process holds
   the rest; with `VK_EXT_memory_budget` it adds "the device reports 10950 of
   11264 MiB in use (other models or processes included ...)".
+- **Vulkan host and shader constants have one source** (#474 item 7).
+  `src/backends/vulkan/shaders/vk_limits.h`, included by `ops.c` and the
+  `.comp` files, holds the embedding dtype codes, rows and batch rows per
+  workgroup of the linear kernels, and the shared-memory limits (Hadamard
+  block, attention / qkv-prep head_dim, flash-decode chunk, DeltaNet d_k /
+  d_v / conv taps). The hadamard, attn_part and attn_comb push blocks are
+  named structs, and those and the embed / ffn_norm_gate_up / qkv_prep blocks
+  carry a `static_assert` on their size. Every regenerated SPIR-V header is
+  byte-identical. The generic attention path now refuses head_dim > 512 to
+  the host instead of dispatching a shader that returns without writing.
 
 ## [0.20.0] — 2026-10-07
 
