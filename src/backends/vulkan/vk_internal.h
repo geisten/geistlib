@@ -99,99 +99,41 @@ struct vk_fns {
     PFN_vkGetQueryPoolResults        GetQueryPoolResults;
 };
 
-/* One compute pipeline per (op, dtype) pair; all share a single
- * 3-storage-buffer descriptor layout and the unified 9-u32 push block. */
+/* One compute pipeline per (op, dtype) pair; each row of vk_pipes.def is one
+ * pipeline (enum, SPIR-V blob, profiler name, binding count, kind). The
+ * descriptor layout is chosen by binding count; all share the unified
+ * push block. */
 enum vk_pipe {
-    VK_PIPE_MATVEC_Q4K,
-    VK_PIPE_MATMUL_Q4K,
-    VK_PIPE_MATVEC_Q6K,
-    VK_PIPE_MATMUL_Q6K,
-    VK_PIPE_MATVEC_F32,
-    VK_PIPE_MATMUL_F32,
-    VK_PIPE_ADD,
-    VK_PIPE_MUL,
-    VK_PIPE_GELU,
-    VK_PIPE_GELU_MUL,
-    VK_PIPE_SCALE,
-    VK_PIPE_RMSNORM,
-    VK_PIPE_RMSNORM_ADD,
-    VK_PIPE_ROPE,
-    VK_PIPE_ATTENTION,
-    VK_PIPE_ARGMAX,
-    VK_PIPE_EMBED,
-    VK_PIPE_FFN_GATE_UP,
-    VK_PIPE_QKV_PREP,
-    VK_PIPE_MM_Q4K_CM, /* tensor-core GEMMs; created only with coopmat */
-    VK_PIPE_MM_Q6K_CM,
-    VK_PIPE_ATTENTION_F16,
-    VK_PIPE_QKV_PREP_F16,
-    VK_PIPE_KV_APPEND_F16,
-    VK_PIPE_ATTN_PART_F16,
-    VK_PIPE_ATTN_COMB,
-    VK_PIPE_MM_Q4K_CM32,     /* small-n_out tensor-core tile */
-    VK_PIPE_MM_PQ2_0_CM,     /* PQ2_0 tensor-core GEMM, f16 acc folded into f32 */
-    VK_PIPE_MM_PQ2_0_CM_F32, /* the same with f32 accumulation throughout (GEIST_VK_PQ2_F32_ACC) */
-    VK_PIPE_MM_PQ2_0_CM64,   /* 128 x 64 tile (f32 acc) for batches under 128 tokens */
-    VK_PIPE_PLE_GATE,        /* fused PLE gate: gelu(x.gate_w) * ple_in */
-    VK_PIPE_FFN_NORM_GU,     /* ffn_gate_up with the pre-FFN rmsnorm folded in */
-    VK_PIPE_DN_CONV,         /* gated-DeltaNet causal conv + silu (deltanet_mix stage 1) */
-    VK_PIPE_DN_DELTA,        /* gated-DeltaNet recurrence + gated rmsnorm (stage 2) */
-    VK_PIPE_DN_NORM,         /* DeltaNet q/k l2norm and gated output rmsnorm (fast path) */
-    VK_PIPE_DN_SCAN,         /* column-split DeltaNet recurrence; needs clustered subgroups */
-    VK_PIPE_MATVEC_Q4_0,
-    VK_PIPE_MATMUL_Q4_0,
-    VK_PIPE_MATVEC_Q4_1,
-    VK_PIPE_MATMUL_Q4_1,
-    VK_PIPE_MATVEC_Q8_0,
-    VK_PIPE_MATMUL_Q8_0,
-    VK_PIPE_MATVEC_Q5K,
-    VK_PIPE_MATMUL_Q5K,
-    VK_PIPE_MATVEC_TQ2_0,
-    VK_PIPE_MATMUL_TQ2_0,
-    VK_PIPE_MATVEC_PQ2_0,
-    VK_PIPE_MATMUL_PQ2_0,
-    VK_PIPE_SILU,             /* y = silu(x) */
-    VK_PIPE_HADAMARD,         /* blockwise orthonormal WHT of rows (prism.hadamard) */
-    VK_PIPE_RELU2,            /* y = relu(x)^2 (BitNet FFN) */
-    VK_PIPE_ACT_QUANT,        /* BitNet int8 absmax activation round trip, in place */
-    VK_PIPE_SILU_MUL,         /* y = silu(a) * b (SwiGLU epilogue) */
-    VK_PIPE_SIGMOID_MUL,      /* y = a * sigmoid(gate) (qwen35 attention gate) */
-    VK_PIPE_QGATE_SPLIT,      /* [query | gate] per-head split (qwen35) */
-    VK_PIPE_ATTENTION_F16_CM, /* tensor-core causal attention, no sliding window, head_dim==256 */
-    VK_PIPE_ATTENTION_F16_HD128_CM, /* the same, head_dim 128 */
-    VK_PIPE_ATTENTION_F16_HD512_CM, /* the same, head_dim 512 (two column halves) */
-    VK_PIPE_MM_Q8_0_CM,             /* Q8_0 tensor-core GEMM, 64 x 64 tile */
-    VK_PIPE_MM_Q4_0_CM,             /* Q4_0 tensor-core GEMM, 64 x 64 tile */
-    VK_PIPE_MM_Q4K_CM128,           /* Q4_K in the 128 x 128 PQ2_0 tensor-core frame */
-    VK_PIPE_MM_Q6K_CM128,           /* Q6_K in the same frame */
-    VK_PIPE_MM_Q5K_CM,              /* Q5_K tensor-core GEMM, 64 x 64 tile */
-    VK_PIPE_MM_Q4_1_CM,             /* Q4_1 tensor-core GEMM, 64 x 64 tile */
-    VK_PIPE_MM_TQ2_0_CM,            /* TQ2_0 tensor-core GEMM, 64 x 64 tile */
-    VK_PIPE_MM_TQ2_0_CM128,         /* TQ2_0 tensor-core GEMM, 128 x 128 tile */
+#define X(id, spv, name, nbind, kind) id,
+#include "vk_pipes.def"
+#undef X
     VK_PIPE_COUNT,
+};
+
+/* vk_pipes.def's kind column. */
+enum vk_pipe_kind {
+    VK_PK_PLAIN,
+    VK_PK_TILED,   /* register-tiled GEMM: one output row per 32-lane subgroup */
+    VK_PK_COOPMAT, /* needs VK_KHR_cooperative_matrix */
+};
+
+static const enum vk_pipe_kind vk_pipe_kinds[VK_PIPE_COUNT] = {
+#define X(id, spv, name, nbind, kind) [id] = VK_PK_##kind,
+#include "vk_pipes.def"
+#undef X
 };
 
 /* Pipelines that exist only with VK_KHR_cooperative_matrix; without it they
  * stay VK_NULL_HANDLE and vk_linear_cm_route keeps the register-tiled GEMM. */
 static inline bool vk_pipe_needs_coopmat(int pipe) {
-    return pipe == VK_PIPE_MM_Q4K_CM || pipe == VK_PIPE_MM_Q6K_CM || pipe == VK_PIPE_MM_Q4K_CM32 ||
-           pipe == VK_PIPE_MM_PQ2_0_CM || pipe == VK_PIPE_MM_PQ2_0_CM_F32 ||
-           pipe == VK_PIPE_MM_PQ2_0_CM64 || pipe == VK_PIPE_ATTENTION_F16_CM ||
-           pipe == VK_PIPE_MM_Q8_0_CM || pipe == VK_PIPE_MM_Q4_0_CM || pipe == VK_PIPE_MM_Q5K_CM ||
-           pipe == VK_PIPE_MM_Q4_1_CM || pipe == VK_PIPE_MM_TQ2_0_CM ||
-           pipe == VK_PIPE_MM_TQ2_0_CM128 || pipe == VK_PIPE_ATTENTION_F16_HD128_CM ||
-           pipe == VK_PIPE_ATTENTION_F16_HD512_CM || pipe == VK_PIPE_MM_Q4K_CM128 ||
-           pipe == VK_PIPE_MM_Q6K_CM128;
+    return pipe >= 0 && pipe < VK_PIPE_COUNT && vk_pipe_kinds[pipe] == VK_PK_COOPMAT;
 }
 
 /* The register-tiled GEMMs: one output row per 32-lane subgroup
  * (mm_legacy.glsl and its siblings). The tensor-core variants are not on
  * this list; they keep the native subgroup size. */
 static inline bool vk_pipe_is_tiled_gemm(int pipe) {
-    return pipe == VK_PIPE_MATMUL_Q4K || pipe == VK_PIPE_MATMUL_Q6K || pipe == VK_PIPE_MATMUL_F32 ||
-           pipe == VK_PIPE_MATMUL_Q4_0 || pipe == VK_PIPE_MATMUL_Q4_1 ||
-           pipe == VK_PIPE_MATMUL_Q8_0 || pipe == VK_PIPE_MATMUL_Q5K ||
-           pipe == VK_PIPE_MATMUL_TQ2_0 || pipe == VK_PIPE_MATMUL_PQ2_0;
+    return pipe >= 0 && pipe < VK_PIPE_COUNT && vk_pipe_kinds[pipe] == VK_PK_TILED;
 }
 
 struct vk_push {
@@ -459,73 +401,14 @@ struct vk_state {
 
 /* binding count per pipeline (descriptor set layout selector) */
 static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
-        [VK_PIPE_MATVEC_Q4K]             = 3,
-        [VK_PIPE_MATMUL_Q4K]             = 3,
-        [VK_PIPE_MATVEC_Q6K]             = 3,
-        [VK_PIPE_MATMUL_Q6K]             = 3,
-        [VK_PIPE_MATVEC_F32]             = 3,
-        [VK_PIPE_MATMUL_F32]             = 3,
-        [VK_PIPE_ADD]                    = 3,
-        [VK_PIPE_MUL]                    = 3,
-        [VK_PIPE_GELU]                   = 2,
-        [VK_PIPE_GELU_MUL]               = 3,
-        [VK_PIPE_SCALE]                  = 2,
-        [VK_PIPE_RMSNORM]                = 3,
-        [VK_PIPE_RMSNORM_ADD]            = 4,
-        [VK_PIPE_ROPE]                   = 3,
-        [VK_PIPE_ATTENTION]              = 4,
-        [VK_PIPE_ARGMAX]                 = 2,
-        [VK_PIPE_EMBED]                  = 2,
-        [VK_PIPE_FFN_GATE_UP]            = 4,
-        [VK_PIPE_QKV_PREP]               = 6,
-        [VK_PIPE_MM_Q4K_CM]              = 3,
-        [VK_PIPE_MM_Q6K_CM]              = 3,
-        [VK_PIPE_ATTENTION_F16]          = 4,
-        [VK_PIPE_QKV_PREP_F16]           = 6,
-        [VK_PIPE_KV_APPEND_F16]          = 4,
-        [VK_PIPE_ATTN_PART_F16]          = 4,
-        [VK_PIPE_ATTN_COMB]              = 2,
-        [VK_PIPE_MM_Q4K_CM32]            = 3,
-        [VK_PIPE_MM_PQ2_0_CM]            = 3,
-        [VK_PIPE_MM_PQ2_0_CM_F32]        = 3,
-        [VK_PIPE_MM_PQ2_0_CM64]          = 3,
-        [VK_PIPE_PLE_GATE]               = 4,
-        [VK_PIPE_FFN_NORM_GU]            = 5,
-        [VK_PIPE_DN_CONV]                = 3,
-        [VK_PIPE_DN_DELTA]               = 8,
-        [VK_PIPE_DN_NORM]                = 3,
-        [VK_PIPE_DN_SCAN]                = 7,
-        [VK_PIPE_MATVEC_Q4_0]            = 3,
-        [VK_PIPE_MATMUL_Q4_0]            = 3,
-        [VK_PIPE_MATVEC_Q4_1]            = 3,
-        [VK_PIPE_MATMUL_Q4_1]            = 3,
-        [VK_PIPE_MATVEC_Q8_0]            = 3,
-        [VK_PIPE_MATMUL_Q8_0]            = 3,
-        [VK_PIPE_MATVEC_Q5K]             = 3,
-        [VK_PIPE_MATMUL_Q5K]             = 3,
-        [VK_PIPE_MATVEC_TQ2_0]           = 3,
-        [VK_PIPE_MATMUL_TQ2_0]           = 3,
-        [VK_PIPE_MATVEC_PQ2_0]           = 3,
-        [VK_PIPE_MATMUL_PQ2_0]           = 3,
-        [VK_PIPE_SILU]                   = 2,
-        [VK_PIPE_RELU2]                  = 2,
-        [VK_PIPE_HADAMARD]               = 3,
-        [VK_PIPE_ACT_QUANT]              = 2,
-        [VK_PIPE_SILU_MUL]               = 3,
-        [VK_PIPE_SIGMOID_MUL]            = 3,
-        [VK_PIPE_QGATE_SPLIT]            = 3,
-        [VK_PIPE_ATTENTION_F16_CM]       = 4,
-        [VK_PIPE_ATTENTION_F16_HD128_CM] = 4,
-        [VK_PIPE_ATTENTION_F16_HD512_CM] = 4,
-        [VK_PIPE_MM_Q8_0_CM]             = 3,
-        [VK_PIPE_MM_Q4_0_CM]             = 3,
-        [VK_PIPE_MM_Q4K_CM128]           = 3,
-        [VK_PIPE_MM_Q6K_CM128]           = 3,
-        [VK_PIPE_MM_Q5K_CM]              = 3,
-        [VK_PIPE_MM_Q4_1_CM]             = 3,
-        [VK_PIPE_MM_TQ2_0_CM]            = 3,
-        [VK_PIPE_MM_TQ2_0_CM128]         = 3,
+#define X(id, spv, name, nbind, kind) [id] = nbind,
+#include "vk_pipes.def"
+#undef X
 };
+#define X(id, spv, name, nbind, kind) \
+    static_assert(nbind >= 2 && nbind <= VK_MAX_BINDINGS, #id ": binding count out of range");
+#include "vk_pipes.def"
+#undef X
 
 struct geist_buffer {
     struct vk_state       *owner;

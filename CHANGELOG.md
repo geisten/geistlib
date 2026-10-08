@@ -37,6 +37,16 @@ minor release.
   unchanged (corr 0.99982 on the 0.8B, 0.99972 on the 4B).
   `geist_deltanet_mix_args` now documents that `qkv` is scratch the backend
   may overwrite, which the conv already did.
+- **Vulkan (internal): one table lists the compute pipelines (#469).**
+  `src/backends/vulkan/vk_pipes.def` has one row per pipeline (enum id,
+  SPIR-V blob, profiler name, binding count, plain / tiled-GEMM / coopmat),
+  and `enum vk_pipe`, `vk_pipe_nbind[]`, `vk_pipe_needs_coopmat()`,
+  `vk_pipe_is_tiled_gemm()`, the blob table and the `GEIST_VK_PROFILE` names
+  are generated from it. A new pipeline is one row plus its `_spv.h`
+  `#include` instead of edits in six places; a missing include fails to
+  compile and a binding count outside 2..`VK_MAX_BINDINGS` is a
+  `static_assert`. Pipeline order, the generated tables and the profile
+  output are unchanged.
 
 ### Fixed
 
