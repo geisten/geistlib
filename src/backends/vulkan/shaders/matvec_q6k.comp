@@ -1,4 +1,5 @@
 #version 450
+#include "vk_limits.h"
 
 /* Q6_K matvec, 8 rows per 256-thread workgroup (8 virtual warps of 32).
  * Lane owns 8 consecutive elements — one (half, stream, l-run), so scale,
@@ -45,7 +46,7 @@ void main() {
     uint lid = gl_LocalInvocationID.x;
     uint warp = lid >> 5;
     uint lane = lid & 31u;
-    uint row = gl_WorkGroupID.x * 8u + warp;
+    uint row = gl_WorkGroupID.x * VK_MV_ROWS_PER_WG + warp;
 
     uint nv = pc.n_in >> 2u;
     bool x_shared = nv <= 1536u;

@@ -19,7 +19,8 @@
 #include "checked.h"        /* ckd_* size arithmetic (AGENT.md §3) */
 #include "gemma4_kernels.h" /* shared reference rope/attention kernels */
 #include "heap.h"
-#include "quant.h" /* CPU dequant helpers for the non-GPU dtype fallback */
+#include "quant.h"             /* CPU dequant helpers for the non-GPU dtype fallback */
+#include "shaders/vk_limits.h" /* constants shared with the shaders (#474) */
 
 #include <dlfcn.h>
 #include <math.h>

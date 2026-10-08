@@ -1,4 +1,5 @@
 #version 450
+#include "vk_limits.h"
 
 /* TQ2_0 (ternary) matvec, one row per 32-lane "warp" derived from the thread
  * id (any hardware subgroup size works), 8 rows per 256-thread workgroup.
@@ -42,7 +43,7 @@ void main() {
     uint tid = gl_LocalInvocationID.x;
     uint wrp = tid >> 5u;
     uint lane = tid & 31u;
-    uint row = gl_WorkGroupID.x * 8u + wrp;
+    uint row = gl_WorkGroupID.x * VK_MV_ROWS_PER_WG + wrp;
     uint g = lane >> 4u;
     uint l = (lane >> 2u) & 3u;
     uint m0 = (lane & 3u) * 8u;
