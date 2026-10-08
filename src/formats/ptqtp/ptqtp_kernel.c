@@ -5,10 +5,12 @@
  * vqtbl1q / vqtbl2q for trit lookup. Scalar fallback for non-NEON.
  *
  * No allocations in the hot path; all buffers are caller-provided.
- * Thread parallelism via OpenMP over the output-row dimension. The kernels
+ * Thread parallelism via geist_par_for over the output-row dimension. The kernels
  * never modify input buffers and never escape pointers.
  */
 #include "ptqtp_kernel.h"
+
+#include "par.h"
 
 #include <string.h>
 
@@ -16,9 +18,19 @@
 #include <arm_neon.h>
 #endif
 
-#if defined(_OPENMP)
-#include <omp.h>
-#endif
+/* One call's operands, for the per-row bodies below (geist_par_for over
+ * output rows). Each kernel reads the fields it needs. */
+struct ptqtp_rows_job {
+    size_t          M, n_in, n_out, group_size, n_groups, row_byte_stride;
+    size_t          group_byte_size, low_bytes_row;
+    const int8_t   *x_q8;
+    float           scale_x;
+    const float    *scale_xs; /* GEMM: one per row of x */
+    const uint8_t  *trits;
+    const float    *alpha_fp32;
+    const uint16_t *alpha_fp16;
+    float          *y;
+};
 
 /* ---------------- 2-plane LUTs (joint nibble encoding) ----------------
  * Each weight encoded as 4-bit idx = (T1+1)*3 + (T2+1) ∈ {0..8}; bytes 9..15
@@ -93,24 +105,19 @@ static inline void ptqtp_2plane_group_neon(const uint8_t *g_trits,
     *out_acc2 = a2;
 }
 
-void ptqtp_gemv_2plane_fp32alpha(size_t         n_in,
-                                 size_t         n_out,
-                                 size_t         group_size,
-                                 const int8_t  *x_q8,
-                                 float          scale_x,
-                                 const uint8_t *trits,
-                                 const float   *alpha_fp32,
-                                 float         *y) {
-    if (group_size == 0 || n_in % group_size != 0 || group_size % 32 != 0)
-        return;
-    const size_t n_groups        = n_in / group_size;
-    const size_t row_byte_stride = n_in / 2;
-    const size_t group_byte_size = group_size / 2;
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+/* Output rows [n0, n1) of ptqtp_gemv_2plane_fp32alpha. */
+static void ptqtp_gemv_2plane_fp32alpha_rows(void *ctx, size_t n0, size_t n1) {
+    const struct ptqtp_rows_job *job             = ctx;
+    const size_t                 group_size      = job->group_size;
+    const size_t                 n_groups        = job->n_groups;
+    const size_t                 row_byte_stride = job->row_byte_stride;
+    const size_t                 group_byte_size = job->group_byte_size;
+    const int8_t                *x_q8            = job->x_q8;
+    const float                  scale_x         = job->scale_x;
+    const uint8_t               *trits           = job->trits;
+    const float                 *alpha_fp32      = job->alpha_fp32;
+    float                       *y               = job->y;
+    for (size_t n = n0; n < n1; n++) {
         const uint8_t *row_trits = trits + n * row_byte_stride;
         const float   *row_alpha = alpha_fp32 + n * n_groups * 2;
         float          acc       = 0.0f;
@@ -136,27 +143,45 @@ void ptqtp_gemv_2plane_fp32alpha(size_t         n_in,
     }
 }
 
-/* fp16α variant for callers that cannot afford the fp32 alpha arena. The
- * runtime uses ptqtp_gemv_2plane_fp32alpha: the per-group FCVT here costs
- * ~5 %. */
-void ptqtp_gemv_2plane_fp16alpha(size_t          n_in,
-                                 size_t          n_out,
-                                 size_t          group_size,
-                                 const int8_t   *x_q8,
-                                 float           scale_x,
-                                 const uint8_t  *trits,
-                                 const uint16_t *alpha_fp16,
-                                 float          *y) {
+void ptqtp_gemv_2plane_fp32alpha(size_t         n_in,
+                                 size_t         n_out,
+                                 size_t         group_size,
+                                 const int8_t  *x_q8,
+                                 float          scale_x,
+                                 const uint8_t *trits,
+                                 const float   *alpha_fp32,
+                                 float         *y) {
     if (group_size == 0 || n_in % group_size != 0 || group_size % 32 != 0)
         return;
     const size_t n_groups        = n_in / group_size;
     const size_t row_byte_stride = n_in / 2;
     const size_t group_byte_size = group_size / 2;
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+    const struct ptqtp_rows_job job = {.group_size      = group_size,
+                                       .n_groups        = n_groups,
+                                       .row_byte_stride = row_byte_stride,
+                                       .group_byte_size = group_byte_size,
+                                       .x_q8            = x_q8,
+                                       .scale_x         = scale_x,
+                                       .trits           = trits,
+                                       .alpha_fp32      = alpha_fp32,
+                                       .y               = y};
+    geist_par_for(n_out, ptqtp_gemv_2plane_fp32alpha_rows, (void *) &job);
+}
+
+/* Output rows [n0, n1) of ptqtp_gemv_2plane_fp16alpha. */
+static void ptqtp_gemv_2plane_fp16alpha_rows(void *ctx, size_t n0, size_t n1) {
+    const struct ptqtp_rows_job *job             = ctx;
+    const size_t                 group_size      = job->group_size;
+    const size_t                 n_groups        = job->n_groups;
+    const size_t                 row_byte_stride = job->row_byte_stride;
+    const size_t                 group_byte_size = job->group_byte_size;
+    const int8_t                *x_q8            = job->x_q8;
+    const float                  scale_x         = job->scale_x;
+    const uint8_t               *trits           = job->trits;
+    const uint16_t              *alpha_fp16      = job->alpha_fp16;
+    float                       *y               = job->y;
+    for (size_t n = n0; n < n1; n++) {
         const uint8_t  *row_trits = trits + n * row_byte_stride;
         const uint16_t *row_alpha = alpha_fp16 + n * n_groups * 2;
         float           acc       = 0.0f;
@@ -206,32 +231,51 @@ void ptqtp_gemv_2plane_fp16alpha(size_t          n_in,
     }
 }
 
-void ptqtp_gemm_2plane_fp32alpha(size_t         M,
-                                 size_t         n_in,
-                                 size_t         n_out,
-                                 size_t         group_size,
-                                 const int8_t  *x_q8,
-                                 const float   *scale_x,
-                                 const uint8_t *trits,
-                                 const float   *alpha_fp32,
-                                 float         *y) {
-    if (M == 0)
-        return;
-    if (M == 1) {
-        ptqtp_gemv_2plane_fp32alpha(
-                n_in, n_out, group_size, x_q8, scale_x[0], trits, alpha_fp32, y);
-        return;
-    }
+/* fp16α variant for callers that cannot afford the fp32 alpha arena. The
+ * runtime uses ptqtp_gemv_2plane_fp32alpha: the per-group FCVT here costs
+ * ~5 %. */
+void ptqtp_gemv_2plane_fp16alpha(size_t          n_in,
+                                 size_t          n_out,
+                                 size_t          group_size,
+                                 const int8_t   *x_q8,
+                                 float           scale_x,
+                                 const uint8_t  *trits,
+                                 const uint16_t *alpha_fp16,
+                                 float          *y) {
     if (group_size == 0 || n_in % group_size != 0 || group_size % 32 != 0)
         return;
     const size_t n_groups        = n_in / group_size;
     const size_t row_byte_stride = n_in / 2;
     const size_t group_byte_size = group_size / 2;
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+    const struct ptqtp_rows_job job = {.group_size      = group_size,
+                                       .n_groups        = n_groups,
+                                       .row_byte_stride = row_byte_stride,
+                                       .group_byte_size = group_byte_size,
+                                       .x_q8            = x_q8,
+                                       .scale_x         = scale_x,
+                                       .trits           = trits,
+                                       .alpha_fp16      = alpha_fp16,
+                                       .y               = y};
+    geist_par_for(n_out, ptqtp_gemv_2plane_fp16alpha_rows, (void *) &job);
+}
+
+/* Output rows [n0, n1) of ptqtp_gemm_2plane_fp32alpha. */
+static void ptqtp_gemm_2plane_fp32alpha_rows(void *ctx, size_t n0, size_t n1) {
+    const struct ptqtp_rows_job *job             = ctx;
+    const size_t                 group_size      = job->group_size;
+    const size_t                 M               = job->M;
+    const size_t                 n_in            = job->n_in;
+    const size_t                 n_out           = job->n_out;
+    const size_t                 n_groups        = job->n_groups;
+    const size_t                 row_byte_stride = job->row_byte_stride;
+    const size_t                 group_byte_size = job->group_byte_size;
+    const int8_t                *x_q8            = job->x_q8;
+    const float                 *scale_x         = job->scale_xs;
+    const uint8_t               *trits           = job->trits;
+    const float                 *alpha_fp32      = job->alpha_fp32;
+    float                       *y               = job->y;
+    for (size_t n = n0; n < n1; n++) {
         const uint8_t *row_trits = trits + n * row_byte_stride;
         const float   *row_alpha = alpha_fp32 + n * n_groups * 2;
 
@@ -269,6 +313,43 @@ void ptqtp_gemm_2plane_fp32alpha(size_t         M,
     }
 }
 
+void ptqtp_gemm_2plane_fp32alpha(size_t         M,
+                                 size_t         n_in,
+                                 size_t         n_out,
+                                 size_t         group_size,
+                                 const int8_t  *x_q8,
+                                 const float   *scale_x,
+                                 const uint8_t *trits,
+                                 const float   *alpha_fp32,
+                                 float         *y) {
+    if (M == 0)
+        return;
+    if (M == 1) {
+        ptqtp_gemv_2plane_fp32alpha(
+                n_in, n_out, group_size, x_q8, scale_x[0], trits, alpha_fp32, y);
+        return;
+    }
+    if (group_size == 0 || n_in % group_size != 0 || group_size % 32 != 0)
+        return;
+    const size_t n_groups        = n_in / group_size;
+    const size_t row_byte_stride = n_in / 2;
+    const size_t group_byte_size = group_size / 2;
+
+    const struct ptqtp_rows_job job = {.group_size      = group_size,
+                                       .M               = M,
+                                       .n_in            = n_in,
+                                       .n_out           = n_out,
+                                       .n_groups        = n_groups,
+                                       .row_byte_stride = row_byte_stride,
+                                       .group_byte_size = group_byte_size,
+                                       .x_q8            = x_q8,
+                                       .scale_xs        = scale_x,
+                                       .trits           = trits,
+                                       .alpha_fp32      = alpha_fp32,
+                                       .y               = y};
+    geist_par_for(n_out, ptqtp_gemm_2plane_fp32alpha_rows, (void *) &job);
+}
+
 /* ---------------- Bit-expansion LUT (256 → 8 bytes) ----------------
  * BIT_EXPAND_LUT[b][i] = (b >> i) & 1 for i ∈ [0, 8).
  * Used by the 5-bit packed kernel's NEON path to expand the high-bit stream;
@@ -297,27 +378,19 @@ alignas(16) static const uint8_t BIT_EXPAND_LUT[256][8] = {
 static_assert(sizeof(BIT_EXPAND_LUT) == 2048, "BIT_EXPAND_LUT must be 2 KiB");
 #endif /* __ARM_FEATURE_DOTPROD */
 
-void ptqtp_gemv_3plane_packed5_fp32alpha(size_t         n_in,
-                                         size_t         n_out,
-                                         size_t         group_size,
-                                         const int8_t  *x_q8,
-                                         float          scale_x,
-                                         const uint8_t *trits,
-                                         const float   *alpha_fp32,
-                                         float         *y) {
-    if (group_size == 0 || n_in % group_size != 0)
-        return;
-    if (n_in % 8 != 0 || group_size % 16 != 0)
-        return;
-    const size_t n_groups        = n_in / group_size;
-    const size_t low_bytes_row   = n_in / 2; /* low nibble stream */
-    const size_t hi_bytes_row    = n_in / 8; /* high-bit stream  */
-    const size_t row_byte_stride = low_bytes_row + hi_bytes_row;
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+/* Output rows [n0, n1) of ptqtp_gemv_3plane_packed5_fp32alpha. */
+static void ptqtp_gemv_3plane_packed5_fp32alpha_rows(void *ctx, size_t n0, size_t n1) {
+    const struct ptqtp_rows_job *job             = ctx;
+    const size_t                 group_size      = job->group_size;
+    const size_t                 n_groups        = job->n_groups;
+    const size_t                 row_byte_stride = job->row_byte_stride;
+    const size_t                 low_bytes_row   = job->low_bytes_row;
+    const int8_t                *x_q8            = job->x_q8;
+    const float                  scale_x         = job->scale_x;
+    const uint8_t               *trits           = job->trits;
+    const float                 *alpha_fp32      = job->alpha_fp32;
+    float                       *y               = job->y;
+    for (size_t n = n0; n < n1; n++) {
         const uint8_t *row       = trits + n * row_byte_stride;
         const uint8_t *row_low   = row;
         const uint8_t *row_high  = row + low_bytes_row;
@@ -402,23 +475,47 @@ void ptqtp_gemv_3plane_packed5_fp32alpha(size_t         n_in,
     }
 }
 
-void ptqtp_gemv_3plane_fp32alpha(size_t         n_in,
-                                 size_t         n_out,
-                                 size_t         group_size,
-                                 const int8_t  *x_q8,
-                                 float          scale_x,
-                                 const uint8_t *trits,
-                                 const float   *alpha_fp32,
-                                 float         *y) {
-    if (group_size == 0 || n_in % group_size != 0 || group_size % 16 != 0)
+void ptqtp_gemv_3plane_packed5_fp32alpha(size_t         n_in,
+                                         size_t         n_out,
+                                         size_t         group_size,
+                                         const int8_t  *x_q8,
+                                         float          scale_x,
+                                         const uint8_t *trits,
+                                         const float   *alpha_fp32,
+                                         float         *y) {
+    if (group_size == 0 || n_in % group_size != 0)
+        return;
+    if (n_in % 8 != 0 || group_size % 16 != 0)
         return;
     const size_t n_groups        = n_in / group_size;
-    const size_t row_byte_stride = n_in; /* 1 byte per weight */
+    const size_t low_bytes_row   = n_in / 2; /* low nibble stream */
+    const size_t hi_bytes_row    = n_in / 8; /* high-bit stream  */
+    const size_t row_byte_stride = low_bytes_row + hi_bytes_row;
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+    const struct ptqtp_rows_job job = {.group_size      = group_size,
+                                       .n_groups        = n_groups,
+                                       .row_byte_stride = row_byte_stride,
+                                       .low_bytes_row   = low_bytes_row,
+                                       .x_q8            = x_q8,
+                                       .scale_x         = scale_x,
+                                       .trits           = trits,
+                                       .alpha_fp32      = alpha_fp32,
+                                       .y               = y};
+    geist_par_for(n_out, ptqtp_gemv_3plane_packed5_fp32alpha_rows, (void *) &job);
+}
+
+/* Output rows [n0, n1) of ptqtp_gemv_3plane_fp32alpha. */
+static void ptqtp_gemv_3plane_fp32alpha_rows(void *ctx, size_t n0, size_t n1) {
+    const struct ptqtp_rows_job *job             = ctx;
+    const size_t                 group_size      = job->group_size;
+    const size_t                 n_groups        = job->n_groups;
+    const size_t                 row_byte_stride = job->row_byte_stride;
+    const int8_t                *x_q8            = job->x_q8;
+    const float                  scale_x         = job->scale_x;
+    const uint8_t               *trits           = job->trits;
+    const float                 *alpha_fp32      = job->alpha_fp32;
+    float                       *y               = job->y;
+    for (size_t n = n0; n < n1; n++) {
         const uint8_t *row_trits = trits + n * row_byte_stride;
         const float   *row_alpha = alpha_fp32 + n * n_groups * 3;
         float          acc       = 0.0f;
@@ -469,4 +566,28 @@ void ptqtp_gemv_3plane_fp32alpha(size_t         n_in,
         }
         y[n] = scale_x * acc;
     }
+}
+
+void ptqtp_gemv_3plane_fp32alpha(size_t         n_in,
+                                 size_t         n_out,
+                                 size_t         group_size,
+                                 const int8_t  *x_q8,
+                                 float          scale_x,
+                                 const uint8_t *trits,
+                                 const float   *alpha_fp32,
+                                 float         *y) {
+    if (group_size == 0 || n_in % group_size != 0 || group_size % 16 != 0)
+        return;
+    const size_t n_groups        = n_in / group_size;
+    const size_t row_byte_stride = n_in; /* 1 byte per weight */
+
+    const struct ptqtp_rows_job job = {.group_size      = group_size,
+                                       .n_groups        = n_groups,
+                                       .row_byte_stride = row_byte_stride,
+                                       .x_q8            = x_q8,
+                                       .scale_x         = scale_x,
+                                       .trits           = trits,
+                                       .alpha_fp32      = alpha_fp32,
+                                       .y               = y};
+    geist_par_for(n_out, ptqtp_gemv_3plane_fp32alpha_rows, (void *) &job);
 }

@@ -6,6 +6,7 @@
 
 #include "checked.h"
 #include "fwht.h"
+#include "par.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -42,40 +43,34 @@ bool geist_hadamard_geometry_ok(
     return !inverse && !ckd_mul(&n, perm_hd, perm_nk) && !ckd_mul(&n, n, perm_rep) && n == width;
 }
 
-enum geist_status geist_hadamard_rows(size_t       rows,
-                                      size_t       width,
-                                      size_t       block,
-                                      size_t       perm_hd,
-                                      size_t       perm_nk,
-                                      size_t       perm_rep,
-                                      bool         inverse,
-                                      const float *x,
-                                      const float *signs,
-                                      float       *y) {
-    const bool permute = perm_rep > 1;
-    if (!geist_hadamard_geometry_ok(width, block, perm_hd, perm_nk, perm_rep, inverse)) {
-        return GEIST_E_INVALID_ARG;
-    }
-    if (rows == 0) {
-        return GEIST_OK;
-    }
-    size_t total = 0;
-    if (x == nullptr || y == nullptr || ckd_mul(&total, rows, width)) {
-        return GEIST_E_INVALID_ARG;
-    }
-    if (x != y && ranges_overlap(x, y, total)) {
-        return GEIST_E_INVALID_ARG;
-    }
-    if (permute && x == y) {
-        return GEIST_E_INVALID_ARG;
-    }
+/* geist_hadamard_rows's operands, for geist_par_for. */
+struct hadamard_job {
+    size_t       width;
+    size_t       block;
+    size_t       perm_hd;
+    size_t       perm_nk;
+    size_t       perm_rep;
+    bool         inverse;
+    bool         permute;
+    const float *x;
+    const float *signs;
+    float       *y;
+};
 
-    /* Rows are independent: split them across OpenMP threads for prefill
-     * (decode is one row and stays on the caller). */
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static) if (rows > 1)
-#endif
-    for (size_t r = 0; r < rows; r++) {
+/* Rows [r0, r1). */
+static void hadamard_row_range(void *ctx, size_t r0, size_t r1) {
+    const struct hadamard_job *job      = ctx;
+    const size_t               width    = job->width;
+    const size_t               block    = job->block;
+    const size_t               perm_hd  = job->perm_hd;
+    const size_t               perm_nk  = job->perm_nk;
+    const size_t               perm_rep = job->perm_rep;
+    const bool                 inverse  = job->inverse;
+    const bool                 permute  = job->permute;
+    const float               *x        = job->x;
+    const float               *signs    = job->signs;
+    float                     *y        = job->y;
+    for (size_t r = r0; r < r1; r++) {
         const float *xr = x + r * width;
         float       *yr = y + r * width;
         /* S is folded into the gather/copy on the forward path; on the
@@ -109,6 +104,49 @@ enum geist_status geist_hadamard_rows(size_t       rows,
             }
         }
     }
+}
+
+enum geist_status geist_hadamard_rows(size_t       rows,
+                                      size_t       width,
+                                      size_t       block,
+                                      size_t       perm_hd,
+                                      size_t       perm_nk,
+                                      size_t       perm_rep,
+                                      bool         inverse,
+                                      const float *x,
+                                      const float *signs,
+                                      float       *y) {
+    const bool permute = perm_rep > 1;
+    if (!geist_hadamard_geometry_ok(width, block, perm_hd, perm_nk, perm_rep, inverse)) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (rows == 0) {
+        return GEIST_OK;
+    }
+    size_t total = 0;
+    if (x == nullptr || y == nullptr || ckd_mul(&total, rows, width)) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (x != y && ranges_overlap(x, y, total)) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (permute && x == y) {
+        return GEIST_E_INVALID_ARG;
+    }
+
+    /* Rows are independent: split them across threads for prefill (decode
+     * is one row, which geist_par_for runs on the caller). */
+    const struct hadamard_job job = {.width    = width,
+                                     .block    = block,
+                                     .perm_hd  = perm_hd,
+                                     .perm_nk  = perm_nk,
+                                     .perm_rep = perm_rep,
+                                     .inverse  = inverse,
+                                     .permute  = permute,
+                                     .x        = x,
+                                     .signs    = signs,
+                                     .y        = y};
+    geist_par_for(rows, hadamard_row_range, (void *) &job);
     return GEIST_OK;
 }
 
