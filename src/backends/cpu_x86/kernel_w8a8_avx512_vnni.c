@@ -18,9 +18,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#if defined(_OPENMP)
-#include <omp.h>
-#endif
+#include "par.h"
 
 [[nodiscard]] float w8a8_dot_avx512_vnni(size_t        n_blocks,
                                          const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
@@ -84,24 +82,36 @@ static inline void reduce_dot8(__m256i dot8, int32_t *d0, int32_t *d1) {
  * the fp-add latency on Zen 5 while the weight stays resident in L1. The
  * per-block horizontal reductions set the throughput ceiling; w8x8_gemm
  * below avoids them with a lane-parallel layout. */
+/* One GEMM for geist_par_for: the arguments of w8a8_gemm_avx512_vnni,
+ * w8x8_gemm and w8x16_gemm (qs, scales, offsets in the weight fields). */
+struct w8_gemm {
+    size_t         n_tokens, n_rows, n_blocks;
+    const uint8_t *weights;
+    const float   *w_scales;
+    const float   *w_offsets;
+    const int8_t  *acts;
+    const int32_t *sum_a_per_block;
+    const float   *scale_x;
+    float         *out;
+};
+
 #define W8A8_JT 4
 
-void w8a8_gemm_avx512_vnni(size_t        n_tokens,
-                           size_t        n_rows,
-                           size_t        n_blocks,
-                           const uint8_t weights[static n_rows * n_blocks * W8A8_BLOCK_ELEMS],
-                           const float   w_scales[static n_rows * n_blocks],
-                           const float   w_offsets[static n_rows * n_blocks],
-                           const int8_t  acts[static n_tokens * n_blocks * W8A8_BLOCK_ELEMS],
-                           const int32_t sum_a_per_block[static n_tokens * n_blocks],
-                           const float   scale_x[static n_tokens],
-                           float         out[static n_tokens * n_rows]) {
-    const size_t row_bytes = n_blocks * W8A8_BLOCK_ELEMS;
+static void w8a8_gemm_rows(void *ctx, size_t r0, size_t r1) {
+    const struct w8_gemm c               = *(const struct w8_gemm *) ctx;
+    const size_t         n_tokens        = c.n_tokens;
+    const size_t         n_rows          = c.n_rows;
+    const size_t         n_blocks        = c.n_blocks;
+    const uint8_t       *weights         = c.weights;
+    const float         *w_scales        = c.w_scales;
+    const float         *w_offsets       = c.w_offsets;
+    const int8_t        *acts            = c.acts;
+    const int32_t       *sum_a_per_block = c.sum_a_per_block;
+    const float         *scale_x         = c.scale_x;
+    float               *out             = c.out;
+    const size_t         row_bytes       = n_blocks * W8A8_BLOCK_ELEMS;
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t r = 0; r < n_rows; r++) {
+    for (size_t r = r0; r < r1; r++) {
         const uint8_t *w_row = weights + r * row_bytes;
         const float   *ws    = w_scales + r * n_blocks;
         const float   *wo    = w_offsets + r * n_blocks;
@@ -153,6 +163,29 @@ void w8a8_gemm_avx512_vnni(size_t        n_tokens,
     }
 }
 
+void w8a8_gemm_avx512_vnni(size_t        n_tokens,
+                           size_t        n_rows,
+                           size_t        n_blocks,
+                           const uint8_t weights[static n_rows * n_blocks * W8A8_BLOCK_ELEMS],
+                           const float   w_scales[static n_rows * n_blocks],
+                           const float   w_offsets[static n_rows * n_blocks],
+                           const int8_t  acts[static n_tokens * n_blocks * W8A8_BLOCK_ELEMS],
+                           const int32_t sum_a_per_block[static n_tokens * n_blocks],
+                           const float   scale_x[static n_tokens],
+                           float         out[static n_tokens * n_rows]) {
+    struct w8_gemm c = {n_tokens,
+                        n_rows,
+                        n_blocks,
+                        weights,
+                        w_scales,
+                        w_offsets,
+                        acts,
+                        sum_a_per_block,
+                        scale_x,
+                        out};
+    geist_par_for(n_rows, w8a8_gemm_rows, &c);
+}
+
 /* Lane-parallel W8x8 GEMM. One VPDPBUSD lands W8X8_NROWS=8 output rows in
  * the 8 int32 lanes (no per-row hadd); the per-block scale/offset apply as
  * one 8-wide fp32 FMA for all 8 rows. JT tokens kept live per group so the
@@ -160,25 +193,23 @@ void w8a8_gemm_avx512_vnni(size_t        n_tokens,
  * for the interleaved layout. */
 #define W8X8_JT 4
 
-void w8x8_gemm(size_t        n_tokens,
-               size_t        n_rows,
-               size_t        n_blocks,
-               const uint8_t qs[static n_rows * n_blocks * W8A8_BLOCK_ELEMS],
-               const float   scales[static n_rows * n_blocks],
-               const float   offsets[static n_rows * n_blocks],
-               const int8_t  acts[static n_tokens * n_blocks * W8A8_BLOCK_ELEMS],
-               const int32_t sum_a_per_block[static n_tokens * n_blocks],
-               const float   scale_x[static n_tokens],
-               float         out[static n_tokens * n_rows]) {
-    const size_t n_in       = n_blocks * W8A8_BLOCK_ELEMS;
-    const size_t qs_per_grp = n_in * W8X8_NROWS;     /* bytes per 8-row group */
-    const size_t sc_per_grp = n_blocks * W8X8_NROWS; /* floats per group */
-    const size_t NG         = n_rows / W8X8_NROWS;
+static void w8x8_groups(void *ctx, size_t g0, size_t g1) {
+    const struct w8_gemm c               = *(const struct w8_gemm *) ctx;
+    const size_t         n_tokens        = c.n_tokens;
+    const size_t         n_rows          = c.n_rows;
+    const size_t         n_blocks        = c.n_blocks;
+    const uint8_t       *qs              = c.weights;
+    const float         *scales          = c.w_scales;
+    const float         *offsets         = c.w_offsets;
+    const int8_t        *acts            = c.acts;
+    const int32_t       *sum_a_per_block = c.sum_a_per_block;
+    const float         *scale_x         = c.scale_x;
+    float               *out             = c.out;
+    const size_t         n_in            = n_blocks * W8A8_BLOCK_ELEMS;
+    const size_t         qs_per_grp      = n_in * W8X8_NROWS;     /* bytes per 8-row group */
+    const size_t         sc_per_grp      = n_blocks * W8X8_NROWS; /* floats per group */
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t g = 0; g < NG; g++) {
+    for (size_t g = g0; g < g1; g++) {
         const uint8_t *qs_g = qs + g * qs_per_grp;
         const float   *sc_g = scales + g * sc_per_grp;
         const float   *of_g = offsets + g * sc_per_grp;
@@ -226,29 +257,42 @@ void w8x8_gemm(size_t        n_tokens,
     }
 }
 
+void w8x8_gemm(size_t        n_tokens,
+               size_t        n_rows,
+               size_t        n_blocks,
+               const uint8_t qs[static n_rows * n_blocks * W8A8_BLOCK_ELEMS],
+               const float   scales[static n_rows * n_blocks],
+               const float   offsets[static n_rows * n_blocks],
+               const int8_t  acts[static n_tokens * n_blocks * W8A8_BLOCK_ELEMS],
+               const int32_t sum_a_per_block[static n_tokens * n_blocks],
+               const float   scale_x[static n_tokens],
+               float         out[static n_tokens * n_rows]) {
+    struct w8_gemm c = {
+            n_tokens, n_rows, n_blocks, qs, scales, offsets, acts, sum_a_per_block, scale_x, out};
+    geist_par_for(n_rows / W8X8_NROWS, w8x8_groups, &c);
+}
+
 /* 512-bit / 16-row variant of w8x8_gemm: one VPDPBUSD lands 16 output rows
  * in the 16 int32 lanes. ~1.5× w8x8 on Zen 5's full-width AVX-512 datapath. */
 #define W8X16_JT 4
 
-void w8x16_gemm(size_t        n_tokens,
-                size_t        n_rows,
-                size_t        n_blocks,
-                const uint8_t qs[static n_rows * n_blocks * W8A8_BLOCK_ELEMS],
-                const float   scales[static n_rows * n_blocks],
-                const float   offsets[static n_rows * n_blocks],
-                const int8_t  acts[static n_tokens * n_blocks * W8A8_BLOCK_ELEMS],
-                const int32_t sum_a_per_block[static n_tokens * n_blocks],
-                const float   scale_x[static n_tokens],
-                float         out[static n_tokens * n_rows]) {
-    const size_t n_in       = n_blocks * W8A8_BLOCK_ELEMS;
-    const size_t qs_per_grp = n_in * W8X16_NROWS;     /* bytes per 16-row group */
-    const size_t sc_per_grp = n_blocks * W8X16_NROWS; /* floats per group */
-    const size_t NG         = n_rows / W8X16_NROWS;
+static void w8x16_groups(void *ctx, size_t g0, size_t g1) {
+    const struct w8_gemm c               = *(const struct w8_gemm *) ctx;
+    const size_t         n_tokens        = c.n_tokens;
+    const size_t         n_rows          = c.n_rows;
+    const size_t         n_blocks        = c.n_blocks;
+    const uint8_t       *qs              = c.weights;
+    const float         *scales          = c.w_scales;
+    const float         *offsets         = c.w_offsets;
+    const int8_t        *acts            = c.acts;
+    const int32_t       *sum_a_per_block = c.sum_a_per_block;
+    const float         *scale_x         = c.scale_x;
+    float               *out             = c.out;
+    const size_t         n_in            = n_blocks * W8A8_BLOCK_ELEMS;
+    const size_t         qs_per_grp      = n_in * W8X16_NROWS;     /* bytes per 16-row group */
+    const size_t         sc_per_grp      = n_blocks * W8X16_NROWS; /* floats per group */
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t g = 0; g < NG; g++) {
+    for (size_t g = g0; g < g1; g++) {
         const uint8_t *qs_g = qs + g * qs_per_grp;
         const float   *sc_g = scales + g * sc_per_grp;
         const float   *of_g = offsets + g * sc_per_grp;
@@ -292,4 +336,19 @@ void w8x16_gemm(size_t        n_tokens,
             }
         }
     }
+}
+
+void w8x16_gemm(size_t        n_tokens,
+                size_t        n_rows,
+                size_t        n_blocks,
+                const uint8_t qs[static n_rows * n_blocks * W8A8_BLOCK_ELEMS],
+                const float   scales[static n_rows * n_blocks],
+                const float   offsets[static n_rows * n_blocks],
+                const int8_t  acts[static n_tokens * n_blocks * W8A8_BLOCK_ELEMS],
+                const int32_t sum_a_per_block[static n_tokens * n_blocks],
+                const float   scale_x[static n_tokens],
+                float         out[static n_tokens * n_rows]) {
+    struct w8_gemm c = {
+            n_tokens, n_rows, n_blocks, qs, scales, offsets, acts, sum_a_per_block, scale_x, out};
+    geist_par_for(n_rows / W8X16_NROWS, w8x16_groups, &c);
 }
