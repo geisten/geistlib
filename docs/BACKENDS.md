@@ -70,11 +70,14 @@ out-of-memory error naming the allocation, the memory in use and the limit.
 pool. It goes into the BAR window (device-local and mappable) while that has
 room — 256 MB without resizable BAR — and past it into system memory, where
 every GPU op on it crosses the bus (prefill drops 3×; e.g. `GEIST_M_MAX` ≥ 128
-on a 27B). `GEIST_VK_SCRATCH_DEVICE=1` (experimental) puts every slot the host
-never maps into plain device-local VRAM; only `h_a`, `h_b` and the logits rows
-stay host-visible. The arch accepts it only for sessions with no host loop over
-those slots (dense FP32/F16 KV, no PLE, DeltaNet, attention output gate, MTP,
-SubLN/projection norms or AWQ scales; a `prism.hadamard` rotation is fine).
+on a 27B). By default every slot the host never maps goes into plain
+device-local VRAM instead; only `h_a`, `h_b` and the logits rows stay
+host-visible (`GEIST_VK_SCRATCH_DEVICE=0` turns this off). The arch does this
+only for sessions with no host loop over those slots (dense FP32/F16 KV, PLE
+only with the on-device row lookup, no DeltaNet, attention output gate, MTP,
+SubLN/projection norms or AWQ scales; a `prism.hadamard` rotation is fine);
+the others keep the host-visible pool, and their default chunk shrinks until
+it fits the BAR window.
 Under it, a CPU fallback that would read a device-local slot fails with
 `GEIST_E_BACKEND` instead, so a weight dtype without a Vulkan kernel fails its
 first prefill.
@@ -93,7 +96,7 @@ limit fails the load.
 | `GEIST_VK_PIPELINE_CACHE` | compiled-pipeline cache file (default `$XDG_CACHE_HOME/geist` or `~/.cache/geist`, one file per driver build); `0` turns it off. The NVIDIA driver's own cache is per executable, so without it every new binary spends ~2 s compiling pipelines |
 | `GEIST_M_MAX` | prefill chunk rows (Vulkan default 128) |
 | `GEIST_VK_PQ2_F32_ACC=1` | f32 instead of f16 accumulation in the PQ2_0 tensor-core GEMM (default folds into f32 every 64 k) |
-| `GEIST_VK_SCRATCH_DEVICE=1` | device-local scratch, see above |
+| `GEIST_VK_SCRATCH_DEVICE=0` | keep the scratch pool host-visible (default: device-local where the arch allows it), see above |
 | `GEIST_VK_VERBOSE=1` | print scratch placement and, at destroy, counters for work that left the GPU (declined fused ops, host loops, host copies, host-path weights) |
 | `GEIST_VK_STRICT=1` | turn each of those host fallbacks into an error naming the site; a host-path weight is refused at load |
 | `GEIST_KV_INT8=0 GEIST_KV_F16=0` | FP32 KV cache, for comparing against `cpu_scalar` (CPU defaults to INT8, Vulkan to F16) |
