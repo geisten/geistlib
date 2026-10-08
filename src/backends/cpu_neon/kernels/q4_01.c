@@ -13,11 +13,16 @@
  *   sum_j x_j * (d*q_j + m) = sx * (d * dot(x_q8, q) + m * bsum)
  * where bsum = sum of x_q8 over the block — computed once per x, not
  * per row.
+ *
+ * Activations carry one scale sx per 32-element block (GEIST_ACT_Q8_0_ELEMS,
+ * llama.cpp's Q8_0 / Q8_1 for these weights), so x_scales[b] pairs with
+ * weight block b (#698).
  */
 #include "quant_blocks.h"
 #include "heap.h"
 #include "quant.h"
 
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -63,7 +68,7 @@ static inline int32_t q4_nibble_dot(const int8_t *xb, const uint8_t *qs, int bia
 
 void linear_q4_0_decode_w4a8_pre(size_t       n_in,
                                  size_t       n_out,
-                                 float        scale_x,
+                                 const float *x_scales,
                                  const int8_t x_q8[static n_in],
                                  const void  *w_q4,
                                  float        y[static n_out]) {
@@ -80,9 +85,9 @@ void linear_q4_0_decode_w4a8_pre(size_t       n_in,
         float acc = 0.0f;
         for (size_t b = 0; b < nb_per_row; b++) {
             const int32_t dot = q4_nibble_dot(x_q8 + b * Q4_0_BLOCK_ELEMS, row[b].qs, 1);
-            acc += fp16_to_fp32(row[b].d) * (float) dot;
+            acc               = fmaf(fp16_to_fp32(row[b].d) * x_scales[b], (float) dot, acc);
         }
-        y[n] = acc * scale_x;
+        y[n] = acc;
     }
 }
 
@@ -92,14 +97,21 @@ void linear_q4_0_decode_w4a8(size_t      n_in,
                              const void *w_q4,
                              float       y[static n_out]) {
     int8_t *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
-    float   scale_x = quantize_x_int8_sym(n_in, x, x_q8);
-    linear_q4_0_decode_w4a8_pre(n_in, n_out, scale_x, x_q8, w_q4, y);
+    float *x_scales = heap_alloc_array_aligned(float, geist_act_groups(n_in, GEIST_ACT_Q8_0_ELEMS));
+    if (x_q8 == nullptr || x_scales == nullptr) {
+        safe_free((void **) &x_q8);
+        safe_free((void **) &x_scales);
+        return;
+    }
+    quantize_x_q8_groups(n_in, GEIST_ACT_Q8_0_ELEMS, x, x_q8, x_scales, nullptr);
+    linear_q4_0_decode_w4a8_pre(n_in, n_out, x_scales, x_q8, w_q4, y);
     safe_free((void **) &x_q8);
+    safe_free((void **) &x_scales);
 }
 
 void linear_q4_1_decode_w4a8_pre(size_t         n_in,
                                  size_t         n_out,
-                                 float          scale_x,
+                                 const float   *x_scales,
                                  const int8_t   x_q8[static n_in],
                                  const int32_t *bsum,
                                  const void    *w_q4,
@@ -117,9 +129,10 @@ void linear_q4_1_decode_w4a8_pre(size_t         n_in,
         float acc = 0.0f;
         for (size_t b = 0; b < nb_per_row; b++) {
             const int32_t dot = q4_nibble_dot(x_q8 + b * Q4_1_BLOCK_ELEMS, row[b].qs, 0);
-            acc += fp16_to_fp32(row[b].d) * (float) dot + fp16_to_fp32(row[b].m) * (float) bsum[b];
+            acc += x_scales[b] * (fp16_to_fp32(row[b].d) * (float) dot +
+                                  fp16_to_fp32(row[b].m) * (float) bsum[b]);
         }
-        y[n] = acc * scale_x;
+        y[n] = acc;
     }
 }
 
@@ -128,19 +141,21 @@ void linear_q4_1_decode_w4a8(size_t      n_in,
                              const float x[static n_in],
                              const void *w_q4,
                              float       y[static n_out]) {
-    const size_t nb      = n_in / Q4_1_BLOCK_ELEMS;
-    int8_t      *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
-    int32_t     *bsum    = heap_alloc_array_aligned(int32_t, nb);
-    float        scale_x = quantize_x_int8_sym(n_in, x, x_q8);
-    for (size_t b = 0; b < nb; b++) {
-        int32_t s = 0;
-        for (size_t j = 0; j < Q4_1_BLOCK_ELEMS; j++)
-            s += x_q8[b * Q4_1_BLOCK_ELEMS + j];
-        bsum[b] = s;
+    const size_t nb       = n_in / Q4_1_BLOCK_ELEMS;
+    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, n_in);
+    int32_t     *bsum     = heap_alloc_array_aligned(int32_t, nb);
+    float       *x_scales = heap_alloc_array_aligned(float, nb);
+    if (x_q8 == nullptr || bsum == nullptr || x_scales == nullptr) {
+        safe_free((void **) &x_q8);
+        safe_free((void **) &bsum);
+        safe_free((void **) &x_scales);
+        return;
     }
-    linear_q4_1_decode_w4a8_pre(n_in, n_out, scale_x, x_q8, bsum, w_q4, y);
+    quantize_x_q8_groups(n_in, GEIST_ACT_Q8_0_ELEMS, x, x_q8, x_scales, bsum);
+    linear_q4_1_decode_w4a8_pre(n_in, n_out, x_scales, x_q8, bsum, w_q4, y);
     safe_free((void **) &x_q8);
     safe_free((void **) &bsum);
+    safe_free((void **) &x_scales);
 }
 
 /* Q4_0 x8 interleaved GEMV (see #281). Same idea as the Q6_K x8 layout: pack 8 consecutive output
@@ -218,7 +233,7 @@ static int q4_0_x8_valid(const void *packed, size_t n_in, size_t n_out) {
 
 void linear_q4_0_decode_w4a8_x8_pre(size_t         n_in,
                                     size_t         n_out,
-                                    float          scale_x,
+                                    const float   *x_scales,
                                     const int8_t   x_q8[static n_in],
                                     const int32_t *bsum,
                                     const void    *packed,
@@ -248,8 +263,8 @@ void linear_q4_0_decode_w4a8_x8_pre(size_t         n_in,
             const int8x16_t   xa     = vld1q_s8(xb);
             const int8x16_t   xz     = vld1q_s8(xb + 16);
             const float16x8_t dh     = vreinterpretq_f16_u16(vld1q_u16(blk->d));
-            const float32x4_t d0     = vcvt_f32_f16(vget_low_f16(dh));
-            const float32x4_t d1     = vcvt_f32_f16(vget_high_f16(dh));
+            const float32x4_t d0     = vmulq_n_f32(vcvt_f32_f16(vget_low_f16(dh)), x_scales[b]);
+            const float32x4_t d1     = vmulq_n_f32(vcvt_f32_f16(vget_high_f16(dh)), x_scales[b]);
             int32x4_t         a0     = vdupq_n_s32(0);
             int32x4_t         a1     = vdupq_n_s32(0);
 /* vdotq_laneq_s32 needs a literal lane index, hence the macro. */
@@ -270,8 +285,8 @@ void linear_q4_0_decode_w4a8_x8_pre(size_t         n_in,
             accv0 = vfmaq_f32(accv0, d0, vsubq_f32(vcvtq_f32_s32(a0), bias8v));
             accv1 = vfmaq_f32(accv1, d1, vsubq_f32(vcvtq_f32_s32(a1), bias8v));
         }
-        vst1q_f32(y + tile * 8 + 0, vmulq_n_f32(accv0, scale_x));
-        vst1q_f32(y + tile * 8 + 4, vmulq_n_f32(accv1, scale_x));
+        vst1q_f32(y + tile * 8 + 0, accv0);
+        vst1q_f32(y + tile * 8 + 4, accv1);
 #else
         float accf[8] = {0};
         for (size_t b = 0; b < nb_per_row; b++) {
@@ -285,11 +300,11 @@ void linear_q4_0_decode_w4a8_x8_pre(size_t         n_in,
                     acc += (int32_t) xb[j] * (int32_t) (qb & 0x0F);
                     acc += (int32_t) xb[j + 16] * (int32_t) (qb >> 4);
                 }
-                accf[r] += fp16_to_fp32(blk->d[r]) * ((float) acc - bias8);
+                accf[r] += fp16_to_fp32(blk->d[r]) * x_scales[b] * ((float) acc - bias8);
             }
         }
         for (int r = 0; r < 8; r++)
-            y[tile * 8 + r] = accf[r] * scale_x;
+            y[tile * 8 + r] = accf[r];
 #endif
     }
 }
@@ -299,24 +314,21 @@ void linear_q4_0_decode_w4a8_x8(size_t      n_in,
                                 const float x[static n_in],
                                 const void *packed,
                                 float       y[static n_out]) {
-    const size_t nb   = n_in / Q4_0_BLOCK_ELEMS;
-    int8_t      *x_q8 = heap_alloc_array_aligned(int8_t, n_in);
-    int32_t     *bsum = heap_alloc_array_aligned(int32_t, nb);
-    if (x_q8 == nullptr || bsum == nullptr) {
+    const size_t nb       = n_in / Q4_0_BLOCK_ELEMS;
+    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, n_in);
+    int32_t     *bsum     = heap_alloc_array_aligned(int32_t, nb);
+    float       *x_scales = heap_alloc_array_aligned(float, nb);
+    if (x_q8 == nullptr || bsum == nullptr || x_scales == nullptr) {
         safe_free((void **) &x_q8);
         safe_free((void **) &bsum);
+        safe_free((void **) &x_scales);
         return;
     }
-    const float scale_x = quantize_x_int8_sym(n_in, x, x_q8);
-    for (size_t b = 0; b < nb; b++) {
-        int32_t s = 0;
-        for (size_t j = 0; j < Q4_0_BLOCK_ELEMS; j++)
-            s += x_q8[b * Q4_0_BLOCK_ELEMS + j];
-        bsum[b] = s;
-    }
-    linear_q4_0_decode_w4a8_x8_pre(n_in, n_out, scale_x, x_q8, bsum, packed, y);
+    quantize_x_q8_groups(n_in, GEIST_ACT_Q8_0_ELEMS, x, x_q8, x_scales, bsum);
+    linear_q4_0_decode_w4a8_x8_pre(n_in, n_out, x_scales, x_q8, bsum, packed, y);
     safe_free((void **) &x_q8);
     safe_free((void **) &bsum);
+    safe_free((void **) &x_scales);
 }
 
 /* Q4_0 x8 int8 mN GEMM (see #295). Int8 GEMM directly on the x8 layout
@@ -327,16 +339,15 @@ void linear_q4_0_w4a8_prefill_x8_pre(size_t         m,
                                      size_t         n_in,
                                      size_t         n_out,
                                      const int8_t  *x_q8,
-                                     const float    scale_x[static m],
+                                     const float   *x_scales,
                                      const int32_t *bsums,
                                      const void    *packed,
                                      float         *y) {
     if (!q4_0_x8_valid(packed, n_in, n_out) || m == 0)
         return;
-    const size_t                nb     = n_in / Q4_0_BLOCK_ELEMS;
-    const float                *scales = scale_x;
-    const struct q4_0_x8_block *w = (const struct q4_0_x8_block *) ((const uint8_t *) packed +
-                                                                    sizeof(struct q4_0_x8_header));
+    const size_t                nb = n_in / Q4_0_BLOCK_ELEMS;
+    const struct q4_0_x8_block *w  = (const struct q4_0_x8_block *) ((const uint8_t *) packed +
+                                                                     sizeof(struct q4_0_x8_header));
 
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
@@ -395,16 +406,19 @@ void linear_q4_0_w4a8_prefill_x8_pre(size_t         m,
                     a1                 = vdotq_laneq_s32(a1, th1[2], xz, 2);
                     a1                 = vdotq_laneq_s32(a1, th1[3], xz, 3);
                     const float bias8  = 8.0f * (float) bsums[(t0 + t) * nb + b];
-                    facc[t][0]         = vfmaq_f32(
-                            facc[t][0], d0, vsubq_f32(vcvtq_f32_s32(a0), vdupq_n_f32(bias8)));
-                    facc[t][1] = vfmaq_f32(
-                            facc[t][1], d1, vsubq_f32(vcvtq_f32_s32(a1), vdupq_n_f32(bias8)));
+                    const float sx     = x_scales[(t0 + t) * nb + b];
+                    facc[t][0] = vfmaq_f32(facc[t][0],
+                                           vmulq_n_f32(d0, sx),
+                                           vsubq_f32(vcvtq_f32_s32(a0), vdupq_n_f32(bias8)));
+                    facc[t][1] = vfmaq_f32(facc[t][1],
+                                           vmulq_n_f32(d1, sx),
+                                           vsubq_f32(vcvtq_f32_s32(a1), vdupq_n_f32(bias8)));
                 }
             }
             for (size_t t = 0; t < tcnt; t++) {
                 float *yt = y + (t0 + t) * n_out + tile * 8;
-                vst1q_f32(yt + 0, vmulq_n_f32(facc[t][0], scales[t0 + t]));
-                vst1q_f32(yt + 4, vmulq_n_f32(facc[t][1], scales[t0 + t]));
+                vst1q_f32(yt + 0, facc[t][0]);
+                vst1q_f32(yt + 4, facc[t][1]);
             }
 #else
             for (size_t t = 0; t < tcnt; t++) {
@@ -420,10 +434,10 @@ void linear_q4_0_w4a8_prefill_x8_pre(size_t         m,
                             dt += (int32_t) xb[j] * (int32_t) (qb & 0x0F);
                             dt += (int32_t) xb[j + 16] * (int32_t) (qb >> 4);
                         }
-                        acc_f += fp16_to_fp32(blk->d[r]) *
+                        acc_f += fp16_to_fp32(blk->d[r]) * x_scales[(t0 + t) * nb + b] *
                                  ((float) dt - 8.0f * (float) bsums[(t0 + t) * nb + b]);
                     }
-                    yt[r] = acc_f * scales[t0 + t];
+                    yt[r] = acc_f;
                 }
             }
 #endif
@@ -435,41 +449,39 @@ void linear_q4_0_w4a8_prefill_x8(
         size_t m, size_t n_in, size_t n_out, const float *x, const void *packed, float *y) {
     if (m == 0)
         return;
-    const size_t nb     = n_in / Q4_0_BLOCK_ELEMS;
-    int8_t      *x_q8   = heap_alloc_array_aligned(int8_t, m *n_in);
-    float       *scales = heap_alloc_array_aligned(float, m);
-    int32_t     *bsums  = heap_alloc_array_aligned(int32_t, m *nb);
-    if (x_q8 == nullptr || scales == nullptr || bsums == nullptr) {
+    const size_t nb       = n_in / Q4_0_BLOCK_ELEMS;
+    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, m *n_in);
+    float       *x_scales = heap_alloc_array_aligned(float, m *nb);
+    int32_t     *bsums    = heap_alloc_array_aligned(int32_t, m *nb);
+    if (x_q8 == nullptr || x_scales == nullptr || bsums == nullptr) {
         safe_free((void **) &x_q8);
-        safe_free((void **) &scales);
+        safe_free((void **) &x_scales);
         safe_free((void **) &bsums);
         return;
     }
     for (size_t i = 0; i < m; i++) {
-        scales[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
-        for (size_t b = 0; b < nb; b++) {
-            int32_t acc = 0;
-            for (size_t j = 0; j < Q4_0_BLOCK_ELEMS; j++)
-                acc += x_q8[i * n_in + b * Q4_0_BLOCK_ELEMS + j];
-            bsums[i * nb + b] = acc;
-        }
+        quantize_x_q8_groups(n_in,
+                             GEIST_ACT_Q8_0_ELEMS,
+                             x + i * n_in,
+                             x_q8 + i * n_in,
+                             x_scales + i * nb,
+                             bsums + i * nb);
     }
-    linear_q4_0_w4a8_prefill_x8_pre(m, n_in, n_out, x_q8, scales, bsums, packed, y);
+    linear_q4_0_w4a8_prefill_x8_pre(m, n_in, n_out, x_q8, x_scales, bsums, packed, y);
     safe_free((void **) &x_q8);
-    safe_free((void **) &scales);
+    safe_free((void **) &x_scales);
     safe_free((void **) &bsums);
 }
 
-/* M>1 prefill on the row-major layout: activations quantized once per row. */
+/* M>1 prefill on the row-major layout: activations quantized once per call. */
 
 void linear_q4_0_w4a8_prefill_pre(size_t        m,
                                   size_t        n_in,
                                   size_t        n_out,
                                   const int8_t *x_q8,
-                                  const float   scale_x[static m],
+                                  const float  *x_scales,
                                   const void   *w_q4,
                                   float        *y) {
-    const float                *scales     = scale_x;
     const struct block_q4_0k_t *w          = (const struct block_q4_0k_t *) w_q4;
     const size_t                nb_per_row = n_in / Q4_0_BLOCK_ELEMS;
 
@@ -480,42 +492,49 @@ void linear_q4_0_w4a8_prefill_pre(size_t        m,
         const struct block_q4_0k_t *row = w + n * nb_per_row;
         for (size_t i = 0; i < m; i++) {
             const int8_t *xr  = x_q8 + i * n_in;
+            const float  *sx  = x_scales + i * nb_per_row;
             float         acc = 0.0f;
             for (size_t b = 0; b < nb_per_row; b++) {
                 const int32_t dot = q4_nibble_dot(xr + b * Q4_0_BLOCK_ELEMS, row[b].qs, 1);
-                acc += fp16_to_fp32(row[b].d) * (float) dot;
+                acc               = fmaf(fp16_to_fp32(row[b].d) * sx[b], (float) dot, acc);
             }
-            y[i * n_out + n] = acc * scales[i];
+            y[i * n_out + n] = acc;
         }
     }
 }
 
 void linear_q4_0_w4a8_prefill(
         size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q4, float *y) {
-    int8_t *x_q8   = heap_alloc_array_aligned(int8_t, m *n_in);
-    float  *scales = heap_alloc_array_aligned(float, m);
-    if (x_q8 == nullptr || scales == nullptr) {
+    const size_t nb       = n_in / Q4_0_BLOCK_ELEMS;
+    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, m *n_in);
+    float       *x_scales = heap_alloc_array_aligned(float, m *nb);
+    if (x_q8 == nullptr || x_scales == nullptr) {
         safe_free((void **) &x_q8);
-        safe_free((void **) &scales);
+        safe_free((void **) &x_scales);
         return;
     }
-    for (size_t i = 0; i < m; i++)
-        scales[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
-    linear_q4_0_w4a8_prefill_pre(m, n_in, n_out, x_q8, scales, w_q4, y);
+    for (size_t i = 0; i < m; i++) {
+        quantize_x_q8_groups(n_in,
+                             GEIST_ACT_Q8_0_ELEMS,
+                             x + i * n_in,
+                             x_q8 + i * n_in,
+                             x_scales + i * nb,
+                             nullptr);
+    }
+    linear_q4_0_w4a8_prefill_pre(m, n_in, n_out, x_q8, x_scales, w_q4, y);
     safe_free((void **) &x_q8);
-    safe_free((void **) &scales);
+    safe_free((void **) &x_scales);
 }
 
 void linear_q4_1_w4a8_prefill_pre(size_t         m,
                                   size_t         n_in,
                                   size_t         n_out,
                                   const int8_t  *x_q8,
-                                  const float    scale_x[static m],
+                                  const float   *x_scales,
                                   const int32_t *bsums,
                                   const void    *w_q4,
                                   float         *y) {
     const size_t                nb         = n_in / Q4_1_BLOCK_ELEMS;
-    const float                *scales     = scale_x;
     const struct block_q4_1k_t *w          = (const struct block_q4_1k_t *) w_q4;
     const size_t                nb_per_row = n_in / Q4_1_BLOCK_ELEMS;
 
@@ -527,40 +546,40 @@ void linear_q4_1_w4a8_prefill_pre(size_t         m,
         for (size_t i = 0; i < m; i++) {
             const int8_t  *xr  = x_q8 + i * n_in;
             const int32_t *bs  = bsums + i * nb;
+            const float   *sx  = x_scales + i * nb;
             float          acc = 0.0f;
             for (size_t b = 0; b < nb_per_row; b++) {
                 const int32_t dot = q4_nibble_dot(xr + b * Q4_1_BLOCK_ELEMS, row[b].qs, 0);
-                acc += fp16_to_fp32(row[b].d) * (float) dot +
-                       fp16_to_fp32(row[b].m) * (float) bs[b];
+                acc += sx[b] * (fp16_to_fp32(row[b].d) * (float) dot +
+                                fp16_to_fp32(row[b].m) * (float) bs[b]);
             }
-            y[i * n_out + n] = acc * scales[i];
+            y[i * n_out + n] = acc;
         }
     }
 }
 
 void linear_q4_1_w4a8_prefill(
         size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q4, float *y) {
-    const size_t nb     = n_in / Q4_1_BLOCK_ELEMS;
-    int8_t      *x_q8   = heap_alloc_array_aligned(int8_t, m *n_in);
-    float       *scales = heap_alloc_array_aligned(float, m);
-    int32_t     *bsums  = heap_alloc_array_aligned(int32_t, m *nb);
-    if (x_q8 == nullptr || scales == nullptr || bsums == nullptr) {
+    const size_t nb       = n_in / Q4_1_BLOCK_ELEMS;
+    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, m *n_in);
+    float       *x_scales = heap_alloc_array_aligned(float, m *nb);
+    int32_t     *bsums    = heap_alloc_array_aligned(int32_t, m *nb);
+    if (x_q8 == nullptr || x_scales == nullptr || bsums == nullptr) {
         safe_free((void **) &x_q8);
-        safe_free((void **) &scales);
+        safe_free((void **) &x_scales);
         safe_free((void **) &bsums);
         return;
     }
     for (size_t i = 0; i < m; i++) {
-        scales[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
-        for (size_t b = 0; b < nb; b++) {
-            int32_t s = 0;
-            for (size_t j = 0; j < Q4_1_BLOCK_ELEMS; j++)
-                s += x_q8[i * n_in + b * Q4_1_BLOCK_ELEMS + j];
-            bsums[i * nb + b] = s;
-        }
+        quantize_x_q8_groups(n_in,
+                             GEIST_ACT_Q8_0_ELEMS,
+                             x + i * n_in,
+                             x_q8 + i * n_in,
+                             x_scales + i * nb,
+                             bsums + i * nb);
     }
-    linear_q4_1_w4a8_prefill_pre(m, n_in, n_out, x_q8, scales, bsums, w_q4, y);
+    linear_q4_1_w4a8_prefill_pre(m, n_in, n_out, x_q8, x_scales, bsums, w_q4, y);
     safe_free((void **) &x_q8);
-    safe_free((void **) &scales);
+    safe_free((void **) &x_scales);
     safe_free((void **) &bsums);
 }

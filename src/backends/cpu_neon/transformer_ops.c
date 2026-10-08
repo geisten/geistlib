@@ -122,7 +122,7 @@ static size_t ffn_tile_blocks(void) {
     struct cpu_neon_workspace *ws                  = cpu_neon_ws(st);
     const size_t               xq_need             = m * d_model;
     const size_t               sum_need            = m * (d_model / 32);
-    const size_t               xsc_need            = m;
+    const size_t               xsc_need            = m * (d_model / Q4_K_BLOCK_ELEMS);
     const size_t               blocks_per_gate_row = d_model / Q4_K_BLOCK_ELEMS;
     const size_t               total_inter_blocks  = inter / Q6_K_BLOCK_ELEMS;
     const size_t               tile_blocks_req     = ffn_tile_blocks();
@@ -130,7 +130,7 @@ static size_t ffn_tile_blocks(void) {
     if (!grow_i8(&ws->qk_mN_xq, &ws->qk_mN_xq_cap, xq_need) ||
         !grow_i32(&ws->qk_mN_sum32, &ws->qk_mN_sum32_cap, sum_need) ||
         !grow_f32(&ws->qk_mN_sc, &ws->qk_mN_sc_cap, xsc_need) ||
-        !grow_f32(&ws->ffn_mid_sc, &ws->ffn_mid_sc_cap, m)) {
+        !grow_f32(&ws->ffn_mid_sc, &ws->ffn_mid_sc_cap, m * tile_blocks_req)) {
         return GEIST_E_OOM;
     }
 
@@ -138,10 +138,12 @@ static size_t ffn_tile_blocks(void) {
 #pragma omp parallel for schedule(static) if (m >= 4)
 #endif
     for (size_t i = 0; i < m; i++) {
-        ws->qk_mN_sc[i] = quantize_x_for_q4k(d_model,
-                                             x + i * d_model,
-                                             ws->qk_mN_xq + i * d_model,
-                                             ws->qk_mN_sum32 + i * (d_model / 32));
+        quantize_x_q8_groups(d_model,
+                             GEIST_ACT_Q8K_ELEMS,
+                             x + i * d_model,
+                             ws->qk_mN_xq + i * d_model,
+                             ws->qk_mN_sc + i * blocks_per_gate_row,
+                             ws->qk_mN_sum32 + i * (d_model / 32));
     }
 
     memset(y, 0, m * d_model * sizeof(float));
@@ -193,9 +195,14 @@ static size_t ffn_tile_blocks(void) {
             ws->ffn_mid[i] = v;
         }
 
+        /* One scale per 256-element Q6_K block of the tile row (#698). */
         for (size_t i = 0; i < m; i++) {
-            ws->ffn_mid_sc[i] = quantize_x_int8_sym(
-                    tile_n, ws->ffn_mid + i * tile_n, ws->ffn_mid_q8 + i * tile_n);
+            quantize_x_q8_groups(tile_n,
+                                 GEIST_ACT_Q8K_ELEMS,
+                                 ws->ffn_mid + i * tile_n,
+                                 ws->ffn_mid_q8 + i * tile_n,
+                                 ws->ffn_mid_sc + i * nb,
+                                 nullptr);
         }
 
         linear_q6k_w6a8_prefill_pre_accum_blocks(

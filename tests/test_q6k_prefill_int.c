@@ -135,13 +135,18 @@ static int verify_q6k_prefill(const struct gguf_tensor_t *t, size_t m) {
         fails++;
     } else {
         int8_t *x_q8    = malloc(m * n_in);
-        float  *scale_x = malloc(m * sizeof(float));
+        float  *scale_x = malloc(m * (n_in / Q6_K_BLOCK_ELEMS) * sizeof(float));
         if (x_q8 == nullptr || scale_x == nullptr) {
             fprintf(stderr, "  Q6_K ntile4 scratch alloc failed\n");
             fails++;
         } else {
             for (size_t i = 0; i < m; i++) {
-                scale_x[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
+                quantize_x_q8_groups(n_in,
+                                     GEIST_ACT_Q8K_ELEMS,
+                                     x + i * n_in,
+                                     x_q8 + i * n_in,
+                                     scale_x + i * (n_in / Q6_K_BLOCK_ELEMS),
+                                     nullptr);
             }
             memset(y_fast, 0, m * n_out * sizeof(float));
             linear_q6k_w6a8_prefill_predecoded_ntile4(
@@ -170,13 +175,18 @@ static int verify_q6k_prefill(const struct gguf_tensor_t *t, size_t m) {
         fails++;
     } else {
         int8_t *x_q8    = malloc(m * n_in);
-        float  *scale_x = malloc(m * sizeof(float));
+        float  *scale_x = malloc(m * (n_in / Q6_K_BLOCK_ELEMS) * sizeof(float));
         if (x_q8 == nullptr || scale_x == nullptr) {
             fprintf(stderr, "  Q6_K ntile4 stream scratch alloc failed\n");
             fails++;
         } else {
             for (size_t i = 0; i < m; i++) {
-                scale_x[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
+                quantize_x_q8_groups(n_in,
+                                     GEIST_ACT_Q8K_ELEMS,
+                                     x + i * n_in,
+                                     x_q8 + i * n_in,
+                                     scale_x + i * (n_in / Q6_K_BLOCK_ELEMS),
+                                     nullptr);
             }
             memset(y_fast, 0, m * n_out * sizeof(float));
             linear_q6k_w6a8_prefill_predecoded_ntile4_stream(
