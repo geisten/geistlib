@@ -3,13 +3,15 @@
 #extension GL_KHR_memory_scope_semantics : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 
-/* Q8_0 / Q4_0 GEMM on tensor cores — the frame of matmul_q4k_cm.comp (64x64
+/* Q8_0 / Q4_0 / Q4_1 GEMM on tensor cores — the frame of matmul_q4k_cm.comp (64x64
  * tile, BK = 32, double-buffered: one barrier per step) with a legacy-block A
- * stage, picked by DT_Q8_0 or DT_Q4_0 in the including .comp. One k-step is
+ * stage, picked by DT_Q8_0, DT_Q4_0 or DT_Q4_1 in the including .comp. One k-step is
  * exactly one 32-element block, so each row needs one scale per step. Weight
  * layout as in mm_legacy.glsl: LPB quant words per block (8 for Q8_0, 4 for
  * Q4_0), then all fp16 scales packed two per word after the n_out * nb * LPB
- * quant words. Q4_0 byte j holds element j (low nibble) and j + 16 (high).
+ * quant words; Q4_1 keeps its native 20-byte block (d | m << 16, then the
+ * quants). In both 4-bit types byte j holds element j (low nibble) and
+ * j + 16 (high).
  * Requires n_out % 64 == 0, rows % 16 == 0 (n_in % 32 == 0 is the format's).
  * Dispatch: gx = n_out/64, gy = ceil(rows/64). */
 
@@ -33,7 +35,7 @@ layout(push_constant) uniform Push {
 
 #if defined(DT_Q8_0)
 const uint LPB = 8u;
-#elif defined(DT_Q4_0)
+#elif defined(DT_Q4_0) || defined(DT_Q4_1)
 const uint LPB = 4u;
 #endif
 const uint BM = 64;
@@ -52,9 +54,20 @@ void stage(uint buf, uint ks, uint lid, uint row0, uint tb0) {
         uint row = lid >> 1u;
         uint hk = lid & 1u;
         uint bi = (row0 + row) * pc.blocks_per_row + ks;
+        uint abase = row * ASTRIDE + hk * 16u;
+#if defined(DT_Q4_1)
+        /* native 20-byte block: word 0 = d | m << 16, words 1..4 = quants */
+        vec2 dm = unpackHalf2x16(w[bi * 5u]);
+        for (uint u = 0; u < 4u; u++) {
+            uint qw = w[bi * 5u + 1u + u] >> (hk * 4u);
+            for (uint j = 0; j < 4u; j++) {
+                Ash[buf][abase + u * 4u + j] = float16_t(dm.x * float((qw >> (8u * j)) & 15u) + dm.y);
+            }
+        }
+#else
         uint sw = w[pc.n_out * pc.blocks_per_row * LPB + (bi >> 1u)];
         float d = unpackHalf2x16(sw >> ((bi & 1u) * 16u)).x;
-        uint abase = row * ASTRIDE + hk * 16u;
+#endif
 #if defined(DT_Q8_0)
         uint qw0 = bi * 8u + hk * 4u;
         for (uint u = 0; u < 4u; u++) {

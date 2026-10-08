@@ -9,6 +9,10 @@ minor release.
 ## [Unreleased]
 
 ### Changed
+- **Vulkan: Q4_1 prefill GEMM on the tensor cores (#467).** A Q4_1 A stage
+  (native 20-byte block) in `matmul_legacy_cm_body.glsl`. Qwen3.5 4B Q4_0 (its
+  Q4_1 tensors) on an RTX 2080 Ti, pp512: Q4_1 GEMM 55.0 → 11.9 ms, prefill
+  876 → 1071 t/s.
 - **Vulkan: Q5_K prefill GEMM on the tensor cores (#467).** The Q4_K coopmat
   kernel's body (`matmul_kq_cm_body.glsl`) now takes a Q5_K A stage (the qh
   fifth bit). Qwen3.8 27B Q4_0 (its Q5_K tensors) on an RTX 2080 Ti with the

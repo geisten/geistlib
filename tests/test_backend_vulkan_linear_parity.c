@@ -381,6 +381,11 @@ int main(void) {
     run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-cm", 768, 128, 112, PARITY_MAG, 2e-3);
     run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-cm", 512, 192, 48, PARITY_MAG, 2e-3);
     run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-split", 512, 128, 37, PARITY_MAG, 2e-3);
+    /* Q4_1 on the tensor cores (#467): its native 20-byte block */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_1, "Q4_1-cm", 512, 256, 16, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_1, "Q4_1-cm", 1120, 128, 112, PARITY_MAG, 2e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q4_1, "Q4_1-cm", 512, 192, 48, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_1, "Q4_1-split", 512, 128, 37, PARITY_MAG, 2e-3);
     geist_backend_destroy(vk);
 
     /* the exact f32-accumulate tensor-core GEMM (GEIST_VK_PQ2_F32_ACC) */
