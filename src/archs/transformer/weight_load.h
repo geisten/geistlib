@@ -14,18 +14,19 @@
 #include "arch_state.h"
 #include "gguf_reader.h"
 
-/* Pre-scan the GGUF to compute the total byte budget for the backend
- * weight arena. Sum of every arena-resident tensor's payload + per-tensor
- * 64-byte alignment slack. */
+/* Size of the first weight-arena chunk. Without caps.weights_device_copy
+ * every tensor lives in the arena, so this is the sum of the file's tensor
+ * payloads (64-byte aligned each) plus the F32 widening of small
+ * half-precision matrices and headroom: one chunk holds the model. With it,
+ * only the tensors the loader marks WEIGHT_BIND do, a decision made per
+ * call site that a scan of the file cannot repeat; the arena then starts
+ * at one chunk and grows (arena_alloc). */
 [[nodiscard]] enum geist_status compute_weight_arena_capacity(const struct geist_backend *be,
                                                               struct gguf_ctx            *gguf,
                                                               size_t *out_bytes);
 
-/* True when `t` stays out of the backend arena: the backend copies such a
- * matrix to the device itself (caps.weights_device_copy), so the GGUF mmap
- * page range is aliased instead of duplicated in host memory. */
-[[nodiscard]] bool weight_skips_arena(const struct geist_backend *be,
-                                      const struct gguf_tensor_t *t);
+/* Open the β-mode weight arena with a first chunk of `bytes`. */
+[[nodiscard]] enum geist_status weight_arena_open(struct transformer_arch_state *st, size_t bytes);
 
 /* Load one transformer block (layer L) from the GGUF: attention or
  * DeltaNet, FFN, and per-layer norm + scalar tensors. L's geometry is

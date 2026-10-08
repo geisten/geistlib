@@ -748,11 +748,13 @@ struct geist_backend_caps {
      * mode). Unified-memory GPUs (metal) leave this false. */
     bool weights_need_backend_arena;
 
-    /* resolve_weight uploads the large 2-D matrices into private device
-     * buffers, so the host-side copy of those matrices is dead once the
-     * model is loaded. Consumer: weight loading leaves them out of the
-     * backend arena (read straight from the GGUF mmap at resolve time and
-     * keeps the mmap open) — otherwise a model needs its size twice. Only
+    /* resolve_weight uploads the matrices into private device buffers, so
+     * the host-side copy of those matrices is dead once the model is
+     * loaded. Consumer: weight loading leaves every matrix it resolves out
+     * of the backend arena (read straight from the GGUF mmap at resolve
+     * time and keeps the mmap open) — otherwise a model needs its size
+     * twice; lookup-only tables (an untied token_embd, the PLE table) are
+     * not resolved and their rows are gathered on the host. Only
      * meaningful together with weights_need_backend_arena. */
     bool weights_device_copy;
 

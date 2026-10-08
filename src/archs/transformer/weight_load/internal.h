@@ -76,23 +76,43 @@ static inline struct geist_tensor make_view_1d(struct geist_buffer *buf,
     return t;
 }
 
-/* ---- Weight arena allocator (inline; bump on caller-owned bytes) ------ *
+/* ---- Storage intent --------------------------------------------------- *
  *
- * Returns aligned slices from st->weight_arena. nullptr when the arena
- * is exhausted (programmer error: undersized initial allocation).
+ * What the model does with a tensor, which decides where its bytes live.
+ * The loader knows it from the call site; it is the only input to the
+ * arena decision (weight_off_arena), so a new tensor needs no rule of its
+ * own (#468).
  */
-static inline void *arena_alloc(struct transformer_arch_state *st, size_t bytes, size_t align) {
-    if (align < 64)
-        align = 64;
-    const size_t mask         = align - 1;
-    const size_t aligned_used = (st->weight_arena_used + mask) & ~mask;
-    if (aligned_used + bytes > st->weight_arena_capacity) {
-        return nullptr;
-    }
-    void *p               = (uint8_t *) st->weight_arena + aligned_used;
-    st->weight_arena_used = aligned_used + bytes;
-    return p;
+enum weight_storage {
+    /* Kernels bind the buffer itself: norm gammas, biases, conv taps, the
+     * F32 widening of a small half-precision matrix. In the arena in β
+     * mode. */
+    WEIGHT_BIND,
+    /* A matrix behind a geist_weight: resolve_weight runs on it, and the
+     * backend reads it through what that returns. */
+    WEIGHT_LINEAR,
+    /* A table read one row per token (an untied token_embd, the PLE table).
+     * On a weights_device_copy backend the host gathers its rows. */
+    WEIGHT_LOOKUP,
+};
+
+/* True when a tensor of this intent stays out of the β-mode arena: the
+ * backend copies its matrices to the device itself
+ * (caps.weights_device_copy) and gathers lookup tables on the host, so
+ * neither needs a bindable host copy and the GGUF mmap page range is
+ * aliased instead of duplicated. */
+static inline bool weight_off_arena(const struct geist_backend *be, enum weight_storage storage) {
+    return be->desc->caps.weights_device_copy && storage != WEIGHT_BIND;
 }
+
+/* ---- Weight arena allocator ------------------------------------------ *
+ *
+ * A 64-byte-aligned (or `align`-aligned) slice of the weight arena, bump-
+ * allocated from its newest chunk; a request that does not fit opens a
+ * new chunk (weight_load/tensor_views.c). nullptr, with the backend error
+ * set, when that allocation fails. Only in β mode (st->weight_arena set).
+ */
+[[nodiscard]] void *arena_alloc(struct transformer_arch_state *st, size_t bytes, size_t align);
 
 /* ---- Cross-TU functions ----------------------------------------------- *
  *
@@ -123,7 +143,13 @@ void permute_rope_rows(
                                                         const char                    *name,
                                                         size_t                expected_elems,
                                                         size_t                rope_il_head_dim,
+                                                        enum weight_storage   storage,
                                                         struct geist_buffer **out_buf);
+
+/* Hand `p` (a heap_alloc_aligned block holding a weight the backend reads
+ * through an aliased buffer) to the state, which frees it at destroy. On
+ * failure `p` is freed here. */
+[[nodiscard]] enum geist_status keep_host_weight(struct transformer_arch_state *st, void *p);
 
 /* As load_tensor_to_buffer, with the rows of a llama-family attn_q /
  * attn_k reordered from interleaved to half-split RoPE pairs, head by head,
@@ -131,8 +157,9 @@ void permute_rope_rows(
 [[nodiscard]] enum geist_status load_tensor_to_buffer_rope_il(struct transformer_arch_state *st,
                                                               struct gguf_ctx               *gguf,
                                                               const char                    *name,
-                                                              size_t expected_elems,
-                                                              size_t rope_il_head_dim,
+                                                              size_t              expected_elems,
+                                                              size_t              rope_il_head_dim,
+                                                              enum weight_storage storage,
                                                               const struct gguf_tensor_t **out_t,
                                                               struct geist_buffer        **out_buf);
 
@@ -140,5 +167,6 @@ void permute_rope_rows(
                                                       struct gguf_ctx               *gguf,
                                                       const char                    *name,
                                                       size_t                         expected_elems,
+                                                      enum weight_storage            storage,
                                                       const struct gguf_tensor_t   **out_t,
                                                       struct geist_buffer          **out_buf);

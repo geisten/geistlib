@@ -118,8 +118,11 @@ static void test_act_quant(size_t rows, size_t n) {
 }
 
 /* fused->embedding_lookup_scaled on a PQ2_0 table (repacked struct-of-arrays
- * on the device, resolved lazily by the op) against the host row dequant. */
-static void test_embed_pq2_0(size_t vocab, size_t d, int32_t token) {
+ * on the device) against the host row dequant. The op never resolves a
+ * table itself (#468): an unresolved one is declined, and the table runs on
+ * the device once resolve_weight has copied it, as a tied lm_head is at
+ * load. */
+static uint8_t *test_embed_pq2_0(size_t vocab, size_t d, int32_t token) {
     const size_t nb = d / PQ2_0_BLOCK_ELEMS, row_bytes = nb * PQ2_0_BLOCK_BYTES;
     uint8_t     *blob = malloc(vocab * row_bytes);
     for (size_t i = 0; i < vocab * nb; i++) {
@@ -147,15 +150,26 @@ static void test_embed_pq2_0(size_t vocab, size_t d, int32_t token) {
     check(bo != nullptr, "embed out buffer");
     struct geist_tensor out = geist_test_tensor_f32(bo, 1, (int64_t) d, 0, 0);
     check(g_be->desc->fused->embedding_lookup_scaled != nullptr, "embed entry");
+    check(g_be->desc->fused->embedding_lookup_scaled(g_be, &table, token, scale, &out) != GEIST_OK,
+          "embed declines an unresolved table");
+    struct geist_weight w = {.raw        = blob,
+                             .raw_nbytes = vocab * row_bytes,
+                             .n_in       = (int32_t) d,
+                             .n_out      = (int32_t) vocab,
+                             .dtype      = (uint16_t) GEIST_DTYPE_PQ2_0};
+    check(g_be->desc->vtbl->resolve_weight(g_be, &w) == GEIST_OK, "embed table resolve");
     check(g_be->desc->fused->embedding_lookup_scaled(g_be, &table, token, scale, &out) == GEIST_OK,
           "embed dispatch");
     check(download(bo, got, d), "embed download");
     const double e = geist_test_max_abs(d, got, ref);
     printf("  embed pq2_0 %zux%zu tok %d max_abs %.2e\n", vocab, d, (int) token, e);
     check(e < 1e-6, "embed pq2_0");
-    free(blob);
     free(ref);
     free(got);
+    /* The device copy stays registered under the table's address, so the
+     * table outlives the remaining cases: a reused address would look
+     * resolved. */
+    return blob;
 }
 
 /* fused->hadamard_rotate on VRAM-only buffers against the host implementation
@@ -515,9 +529,9 @@ int main(void) {
     test_rope(5, 3, 256, 64, "partial 64/256");
     test_rope(4, 2, 128, 128, "full 128/128");
     test_rope(3, 2, 96, 32, "partial 32/96");
-    test_embed_pq2_0(37, 384, 0);
-    test_embed_pq2_0(37, 384, 36);
-    test_embed_pq2_0(64, 1024, 17);
+    uint8_t *tables[3] = {test_embed_pq2_0(37, 384, 0),
+                          test_embed_pq2_0(37, 384, 36),
+                          test_embed_pq2_0(64, 1024, 17)};
     test_hadamard(3, 5120, 1024, true, false, 0, 0, 0, false, "fwd 5120/1024 signs");
     test_hadamard(3, 5120, 1024, true, true, 0, 0, 0, false, "inv 5120/1024 signs");
     test_hadamard(2, 6144, 1024, true, false, 128, 16, 3, false, "fwd 6144 grouped-v perm");
@@ -562,6 +576,9 @@ int main(void) {
     test_attention_f16(260, 300, 40, 8, 1, 512, 0, 3.0f, "260 x512 large logits");
     test_attention_f16(260, 260, 0, 16, 8, 128, 64, 6.0f, "260 x128 win 64 large");
     geist_backend_destroy(g_be);
+    for (size_t i = 0; i < sizeof tables / sizeof tables[0]; i++) {
+        free(tables[i]);
+    }
     if (g_fail == 0) {
         printf("PASS: Vulkan qwen35 ops (partial and interleaved rope, hadamard, PQ2_0 embed, "
                "relu2, "
