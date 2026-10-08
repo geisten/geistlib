@@ -14,6 +14,21 @@ minor release.
   size (page faults on hundreds of MB per tensor). A persistent 64 MiB buffer
   now carries every upload in chunks. Ternary Bonsai 2 27B (7.2 GB) loads in
   3.1–3.5 s instead of 4.2–5.5 s on an RTX 2080 Ti (three interleaved runs).
+- **Vulkan: TQ2_0 prefill GEMM on the tensor cores (#467).** A TQ2_0 A stage
+  in `matmul_legacy_cm_body.glsl` (64 x 64 tile) and in the 128 x 128 PQ2_0
+  frame (`matmul_pq2_0_cm_body.glsl`), which takes over from
+  `n_out * m >= 4 * 2^16`. BitNet b1.58-large TQ2_0 on an RTX 2080 Ti, pp512:
+  TQ2_0 GEMM GPU time ~210 → ~37 ms, prefill 412 → 84 ms (1243 → 6070 t/s);
+  CPU-vs-Vulkan logits unchanged (corr 0.99958, 0.99959 before).
+- **Vulkan: Q4_1 prefill GEMM on the tensor cores (#467).** A Q4_1 A stage
+  (native 20-byte block) in `matmul_legacy_cm_body.glsl`. Qwen3.5 4B Q4_0 (its
+  Q4_1 tensors) on an RTX 2080 Ti, pp512: Q4_1 GEMM 55.0 → 11.9 ms, prefill
+  876 → 1071 t/s.
+- **Vulkan: Q5_K prefill GEMM on the tensor cores (#467).** The Q4_K coopmat
+  kernel's body (`matmul_kq_cm_body.glsl`) now takes a Q5_K A stage (the qh
+  fifth bit). Qwen3.8 27B Q4_0 (its Q5_K tensors) on an RTX 2080 Ti with the
+  #466 spill, pp256 GPU time 864 → 290 ms for Q5_K; with the Q4_0 kernel the
+  27B prefills at 50.8 t/s (18.7 before).
 - **Vulkan: Q4_0 prefill GEMM on the tensor cores (#467).** The Q8_0
   coopmat kernel's body now takes a Q4_0 A stage too (shared
   `matmul_legacy_cm_body.glsl`). RTX 2080 Ti, Qwen3.5 4B Q4_0 pp512: the Q4_0

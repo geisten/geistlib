@@ -1,0 +1,7 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* TQ2_0 GEMM on the tensor cores in the 128 x 128 PQ2_0 frame, f32
+ * accumulation. Body and notes: matmul_pq2_0_cm_body.glsl. */
+#define DT_TQ2_0 1
+#include "matmul_pq2_0_cm_body.glsl"
