@@ -7,7 +7,8 @@
  * image: the attention layers' KV rows [0, kv_len), every Gated-DeltaNet
  * layer's conv and recurrent state, the pending next-token logits and the
  * bookkeeping around them (kv_len, the pinned prefix, a decode_step whose
- * forward is still owed, the sampler RNG). Restoring it into any session
+ * forward is still owed, the sampler RNG) and the token at each position,
+ * which the repetition penalties look back over (#695). Restoring it into any session
  * of the SAME loaded model, the one it came from or another, puts that
  * session exactly where the source was: the next decode_step, peek_logits
  * or prefill gives the same result.
@@ -39,7 +40,7 @@
 #include <string.h>
 
 constexpr uint32_t SNAP_MAGIC   = 0x504E5347u; /* "GSNP" */
-constexpr uint32_t SNAP_VERSION = 1;
+constexpr uint32_t SNAP_VERSION = 2;           /* 2: the token history (#695) */
 
 /* Flags in snap_header.flags. */
 constexpr uint32_t SNAP_LOGITS_VALID      = 1u << 0;
@@ -141,6 +142,10 @@ snap_bytes(const struct transformer_arch_session *sess, size_t kv_len, bool logi
             return true;
         }
     }
+    size_t hist;
+    if (ckd_mul(&hist, kv_len, sizeof(geist_token_t)) || ckd_add(&total, total, hist)) {
+        return true;
+    }
     *out = total;
     return false;
 }
@@ -203,6 +208,15 @@ snap_bytes(const struct transformer_arch_session *sess, size_t kv_len, bool logi
     if (s == GEIST_OK && logits) {
         s = transformer_buffer_xfer(
                 be, sess->scratch_logits, st->vocab_size * sizeof(float), p, to_device);
+        p += st->vocab_size * sizeof(float);
+    }
+    /* The token history (#695): host memory, after everything else. */
+    if (s == GEIST_OK && kv_len > 0) {
+        if (to_device) {
+            memcpy(sess->tok_hist, p, kv_len * sizeof(geist_token_t));
+        } else {
+            memcpy(p, sess->tok_hist, kv_len * sizeof(geist_token_t));
+        }
     }
     return s;
 }

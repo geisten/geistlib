@@ -252,6 +252,16 @@ struct geist_arch_ops_decoder {
      * logits pending. nullptr = the architecture cannot stop mid-prefill
      * (the engine still stops a decode_step before it starts). */
     void (*bind_cancel)(void *session, bool (*requested)(void *ctx), void *ctx);
+
+    /* Optional: the DRY sequence breakers of geist_session_opts (#695), as
+     * token sequences the engine resolved against the vocabulary at
+     * geist_session_create. `packed` holds the sequences back to back, each
+     * as its length followed by that many token ids (head first); n_words
+     * counts all of it. Called once, after session_alloc, only when the
+     * opts enable DRY and at least one breaker resolved (n_words > 0). The
+     * session copies what it keeps. nullptr = the architecture runs DRY
+     * without breakers. */
+    enum geist_status (*set_dry_breakers)(void *session, size_t n_words, const geist_token_t *packed);
 };
 
 /* ====================================================================== */
