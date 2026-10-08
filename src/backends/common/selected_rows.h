@@ -3,11 +3,9 @@
 #include <geist_backend.h>
 #include "quant.h"
 #include "tensor_view.h"
+#include "par.h"
 #include <math.h>
 #include <string.h>
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 [[nodiscard]] static inline enum geist_status
 geist_cpu_selected_rows(size_t                     n_tiles,
@@ -53,12 +51,10 @@ geist_cpu_selected_rows(size_t                     n_tiles,
     for (size_t i = 0; i < count; i++)
         yp[i] = NAN;
     /* A native tile is at most eight CPU rows. Keep the same row kernel,
-     * but avoid launching an OpenMP team for every tiny tile. The ICV is
-     * private to the calling task; restore it on success and failure. */
-#ifdef _OPENMP
-    const int prior_threads = omp_get_max_threads();
-    omp_set_num_threads(1);
-#endif
+     * but avoid launching a thread team for every tiny tile. The count is
+     * private to the calling thread; restore it on success and failure. */
+    const size_t prior_threads = geist_par_max_threads();
+    geist_par_set_max_threads(1);
     enum geist_status status = GEIST_OK;
     for (size_t i = 0; i < n_tiles; i++) {
         size_t off;
@@ -79,9 +75,7 @@ geist_cpu_selected_rows(size_t                     n_tiles,
         }
         row.linear_m1(xp, &row, be, yp + i * tile);
     }
-#ifdef _OPENMP
-    omp_set_num_threads(prior_threads);
-#endif
+    geist_par_set_max_threads(prior_threads);
     v->buffer_unmap(x->buffer);
     v->buffer_unmap(y->buffer);
     return status;
