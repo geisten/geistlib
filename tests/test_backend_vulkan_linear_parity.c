@@ -2,7 +2,8 @@
  * test_backend_vulkan_linear_parity — numerical parity gate for the Vulkan
  * linear path: resolve_weight + linear_m1/linear_mN for Q4_K,
  * Q5_K, Q6_K, Q4_0, Q4_1, Q8_0, TQ2_0, PQ2_0 and F32 weights (plus fused->linear_t, the
- * device-resident path the engine actually runs), compared against the
+ * device-resident path the engine actually runs), and Q5_0, which has no
+ * shader and must resolve to the host row-dequant path, compared against the
  * cpu_scalar resolver on the SAME weight bytes. cpu_scalar dequantizes with an independent
  * implementation (src/formats/gguf), so agreement means the GLSL dequant
  * and the full dispatch chain (VRAM upload, registry, staging, shader) are
@@ -47,6 +48,7 @@ static const struct qfmt QF[] = {
         {GEIST_DTYPE_Q8_0, 32, 34, 2},
         {GEIST_DTYPE_TQ2_0, 256, 66, -2}, /* d is the TRAILING f16 */
         {GEIST_DTYPE_PQ2_0, 128, 34, 2},
+        {GEIST_DTYPE_Q5_0, 32, 22, 2},
 };
 
 static const struct qfmt *qfmt_of(int dtype) {
@@ -374,6 +376,10 @@ int main(void) {
     run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q4_0, "Q4_0-cm", 1120, 128, 48, PARITY_MAG, 2e-3);
     run_parity(
             VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_0, "Q4_0-split", 1120, 128, 101, PARITY_MAG, 2e-3);
+    /* Q5_0: no shader; the host row-dequant kernels must be installed and
+     * agree with cpu_scalar. */
+    run_case(vk, ref, GEIST_DTYPE_Q5_0, "Q5_0", 512, 383, 1);
+    run_case(vk, ref, GEIST_DTYPE_Q5_0, "Q5_0", 352, 45, 8);
     /* n_out < 4096 at 256 rows takes the 64 x 64 tile, not the 32 x 32 one */
     run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 256, 256, PARITY_MAG, 2e-3);
     geist_backend_destroy(vk);

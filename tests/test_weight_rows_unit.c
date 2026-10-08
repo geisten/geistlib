@@ -35,6 +35,7 @@ static const struct {
 } DTYPES[] = {
         {GEIST_DTYPE_Q4_0, "Q4_0", Q4_0_BLOCK_ELEMS},
         {GEIST_DTYPE_Q4_1, "Q4_1", Q4_1_BLOCK_ELEMS},
+        {GEIST_DTYPE_Q5_0, "Q5_0", Q5_0_BLOCK_ELEMS},
         {GEIST_DTYPE_Q8_0, "Q8_0", Q8_0_BLOCK_ELEMS},
         {GEIST_DTYPE_Q3_K, "Q3_K", Q3_K_BLOCK_ELEMS},
         {GEIST_DTYPE_Q4_K, "Q4_K", Q4_K_BLOCK_ELEMS},
