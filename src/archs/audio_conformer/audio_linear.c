@@ -20,6 +20,7 @@
 
 #include "heap.h"
 #include "hw_probe.h"
+#include "par.h"
 
 #include <math.h>
 #include <pthread.h>
@@ -28,7 +29,43 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* One call's operands, for the per-row bodies below. */
+struct audio_rows_job {
+    const int8_t  *w_q8;
+    const float   *w_scales;
+    const float   *x;    /* w8a32 */
+    const int8_t  *x_q8; /* w8a8 */
+    const uint8_t *x_u8; /* w8a8 VNNI: q + 128 */
+    float          scale_x;
+    size_t         m, in_dim, out_dim;
+    float         *y;
+};
+
 /* ------------------------------- scalar -------------------------------- */
+
+/* Output rows [n0, n1) of w8a8_scalar. */
+static void w8a8_scalar_rows(void *ctx, size_t n0, size_t n1) {
+    const struct audio_rows_job *j        = ctx;
+    const int8_t                *w_q8     = j->w_q8;
+    const float                 *w_scales = j->w_scales;
+    const size_t                 m        = j->m;
+    const size_t                 in_dim   = j->in_dim;
+    const size_t                 out_dim  = j->out_dim;
+    float                       *y        = j->y;
+    const int8_t                *x_q8     = j->x_q8;
+    const float                  scale_x  = j->scale_x;
+    for (size_t n = n0; n < n1; n++) {
+        const int8_t *wrow   = w_q8 + n * in_dim;
+        const float   wscale = w_scales[n];
+        for (size_t i = 0; i < m; i++) {
+            const int8_t *xrow = x_q8 + i * in_dim;
+            int32_t       isum = 0;
+            for (size_t k = 0; k < in_dim; k++)
+                isum += (int32_t) wrow[k] * (int32_t) xrow[k];
+            y[i * out_dim + n] = wscale * scale_x * (float) isum;
+        }
+    }
+}
 
 static void w8a8_scalar(const int8_t *w_q8,
                         const float  *w_scales,
@@ -46,34 +83,29 @@ static void w8a8_scalar(const int8_t *w_q8,
         float q = roundf(x[i] * scale_x_inv);
         x_q8[i] = (int8_t) (q > 127.0f ? 127.0f : (q < -128.0f ? -128.0f : q));
     }
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < out_dim; n++) {
-        const int8_t *wrow   = w_q8 + n * in_dim;
-        const float   wscale = w_scales[n];
-        for (size_t i = 0; i < m; i++) {
-            const int8_t *xrow = x_q8 + i * in_dim;
-            int32_t       isum = 0;
-            for (size_t k = 0; k < in_dim; k++)
-                isum += (int32_t) wrow[k] * (int32_t) xrow[k];
-            y[i * out_dim + n] = wscale * scale_x * (float) isum;
-        }
-    }
+    struct audio_rows_job job = {.w_q8     = w_q8,
+                                 .w_scales = w_scales,
+                                 .x_q8     = x_q8,
+                                 .scale_x  = scale_x,
+                                 .m        = m,
+                                 .in_dim   = in_dim,
+                                 .out_dim  = out_dim,
+                                 .y        = y};
+    geist_par_for(out_dim, w8a8_scalar_rows, &job);
     safe_free((void **) &x_q8);
 }
 
-static void w8a32_scalar(const int8_t *w_q8,
-                         const float  *w_scales,
-                         const float  *x,
-                         size_t        m,
-                         size_t        in_dim,
-                         size_t        out_dim,
-                         float        *y) {
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < out_dim; n++) {
+/* Output rows [n0, n1) of w8a32_scalar. */
+static void w8a32_scalar_rows(void *ctx, size_t n0, size_t n1) {
+    const struct audio_rows_job *j        = ctx;
+    const int8_t                *w_q8     = j->w_q8;
+    const float                 *w_scales = j->w_scales;
+    const size_t                 m        = j->m;
+    const size_t                 in_dim   = j->in_dim;
+    const size_t                 out_dim  = j->out_dim;
+    float                       *y        = j->y;
+    const float                 *x        = j->x;
+    for (size_t n = n0; n < n1; n++) {
         const float wscale = w_scales[n];
         for (size_t i = 0; i < m; i++) {
             float dot = 0.0f;
@@ -84,12 +116,58 @@ static void w8a32_scalar(const int8_t *w_q8,
     }
 }
 
+static void w8a32_scalar(const int8_t *w_q8,
+                         const float  *w_scales,
+                         const float  *x,
+                         size_t        m,
+                         size_t        in_dim,
+                         size_t        out_dim,
+                         float        *y) {
+    struct audio_rows_job job = {.w_q8     = w_q8,
+                                 .w_scales = w_scales,
+                                 .x        = x,
+                                 .m        = m,
+                                 .in_dim   = in_dim,
+                                 .out_dim  = out_dim,
+                                 .y        = y};
+    geist_par_for(out_dim, w8a32_scalar_rows, &job);
+}
+
 /* -------------------------------- NEON --------------------------------- */
 
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
 
 #if defined(__ARM_FEATURE_DOTPROD)
+/* Output rows [n0, n1) of w8a8_neon. */
+static void w8a8_neon_rows(void *ctx, size_t n0, size_t n1) {
+    const struct audio_rows_job *j        = ctx;
+    const int8_t                *w_q8     = j->w_q8;
+    const float                 *w_scales = j->w_scales;
+    const size_t                 m        = j->m;
+    const size_t                 in_dim   = j->in_dim;
+    const size_t                 out_dim  = j->out_dim;
+    float                       *y        = j->y;
+    const int8_t                *x_q8     = j->x_q8;
+    const float                  scale_x  = j->scale_x;
+    for (size_t n = n0; n < n1; n++) {
+        const int8_t *wrow   = w_q8 + n * in_dim;
+        const float   wscale = w_scales[n];
+        for (size_t i = 0; i < m; i++) {
+            const int8_t *xrow = x_q8 + i * in_dim;
+            int32x4_t     acc  = vdupq_n_s32(0);
+            size_t        k    = 0;
+            for (; k + 16 <= in_dim; k += 16) {
+                acc = vdotq_s32(acc, vld1q_s8(wrow + k), vld1q_s8(xrow + k));
+            }
+            int32_t isum = vaddvq_s32(acc);
+            for (; k < in_dim; k++)
+                isum += (int32_t) wrow[k] * (int32_t) xrow[k];
+            y[i * out_dim + n] = wscale * scale_x * (float) isum;
+        }
+    }
+}
+
 static void w8a8_neon(const int8_t *w_q8,
                       const float  *w_scales,
                       const float  *x,
@@ -118,40 +196,30 @@ static void w8a8_neon(const int8_t *w_q8,
             qrow[k] = (int8_t) lrintf(xrow[k] * scale_x_inv);
     }
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < out_dim; n++) {
-        const int8_t *wrow   = w_q8 + n * in_dim;
-        const float   wscale = w_scales[n];
-        for (size_t i = 0; i < m; i++) {
-            const int8_t *xrow = x_q8 + i * in_dim;
-            int32x4_t     acc  = vdupq_n_s32(0);
-            size_t        k    = 0;
-            for (; k + 16 <= in_dim; k += 16) {
-                acc = vdotq_s32(acc, vld1q_s8(wrow + k), vld1q_s8(xrow + k));
-            }
-            int32_t isum = vaddvq_s32(acc);
-            for (; k < in_dim; k++)
-                isum += (int32_t) wrow[k] * (int32_t) xrow[k];
-            y[i * out_dim + n] = wscale * scale_x * (float) isum;
-        }
-    }
+    struct audio_rows_job job = {.w_q8     = w_q8,
+                                 .w_scales = w_scales,
+                                 .x_q8     = x_q8,
+                                 .scale_x  = scale_x,
+                                 .m        = m,
+                                 .in_dim   = in_dim,
+                                 .out_dim  = out_dim,
+                                 .y        = y};
+    geist_par_for(out_dim, w8a8_neon_rows, &job);
     safe_free((void **) &x_q8);
 }
 #endif /* __ARM_FEATURE_DOTPROD */
 
-static void w8a32_neon(const int8_t *w_q8,
-                       const float  *w_scales,
-                       const float  *x,
-                       size_t        m,
-                       size_t        in_dim,
-                       size_t        out_dim,
-                       float        *y) {
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < out_dim; n++) {
+/* Output rows [n0, n1) of w8a32_neon. */
+static void w8a32_neon_rows(void *ctx, size_t n0, size_t n1) {
+    const struct audio_rows_job *j        = ctx;
+    const int8_t                *w_q8     = j->w_q8;
+    const float                 *w_scales = j->w_scales;
+    const size_t                 m        = j->m;
+    const size_t                 in_dim   = j->in_dim;
+    const size_t                 out_dim  = j->out_dim;
+    float                       *y        = j->y;
+    const float                 *x        = j->x;
+    for (size_t n = n0; n < n1; n++) {
         const int8_t *wrow   = w_q8 + n * in_dim;
         const float   wscale = w_scales[n];
         for (size_t i = 0; i < m; i++) {
@@ -183,6 +251,23 @@ static void w8a32_neon(const int8_t *w_q8,
         }
     }
 }
+
+static void w8a32_neon(const int8_t *w_q8,
+                       const float  *w_scales,
+                       const float  *x,
+                       size_t        m,
+                       size_t        in_dim,
+                       size_t        out_dim,
+                       float        *y) {
+    struct audio_rows_job job = {.w_q8     = w_q8,
+                                 .w_scales = w_scales,
+                                 .x        = x,
+                                 .m        = m,
+                                 .in_dim   = in_dim,
+                                 .out_dim  = out_dim,
+                                 .y        = y};
+    geist_par_for(out_dim, w8a32_neon_rows, &job);
+}
 #endif /* __ARM_NEON */
 
 /* ----------------------------- AVX-512 VNNI ----------------------------- */
@@ -211,10 +296,10 @@ static inline int32_t hsum_epi32(__m256i v) {
  * is hot in cache — no second pass over the weight matrix.
  *
  * One output row n, written to y[i * out_dim + n] for every i < m. Kept out
- * of the OpenMP loop below on purpose: clang outlines a `parallel for` body
- * into a new function that does not inherit AUDIO_VNNI_TARGET, and VPDPBUSD
- * in that body aborts code generation ("Cannot select: X86ISD::VPDPBUSD").
- * The outlined body only calls this function, which carries the target. */
+ * of the range body below on purpose: that body is a geist_par_for callback
+ * without AUDIO_VNNI_TARGET (as clang's outlined OpenMP body was, where
+ * VPDPBUSD aborted code generation, "Cannot select: X86ISD::VPDPBUSD"). It
+ * only calls this function, which carries the target. */
 AUDIO_VNNI_TARGET
 static void w8a8_avx512vnni_row(size_t         m,
                                 size_t         in_dim,
@@ -253,6 +338,23 @@ static void w8a8_avx512vnni_row(size_t         m,
     }
 }
 
+/* Output rows [n0, n1) of w8a8_avx512vnni. */
+static void w8a8_avx512vnni_rows(void *ctx, size_t n0, size_t n1) {
+    const struct audio_rows_job *j        = ctx;
+    const int8_t                *w_q8     = j->w_q8;
+    const float                 *w_scales = j->w_scales;
+    const size_t                 m        = j->m;
+    const size_t                 in_dim   = j->in_dim;
+    const size_t                 out_dim  = j->out_dim;
+    float                       *y        = j->y;
+    const uint8_t               *x_u8     = j->x_u8;
+    const float                  scale_x  = j->scale_x;
+    for (size_t n = n0; n < n1; n++) {
+        w8a8_avx512vnni_row(
+                m, in_dim, out_dim, n, w_scales[n], scale_x, w_q8 + n * in_dim, x_u8, y);
+    }
+}
+
 AUDIO_VNNI_TARGET
 static void w8a8_avx512vnni(const int8_t *w_q8,
                             const float  *w_scales,
@@ -272,13 +374,15 @@ static void w8a8_avx512vnni(const int8_t *w_q8,
         x_u8[i] = (uint8_t) ((int32_t) q + 128);
     }
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < out_dim; n++) {
-        w8a8_avx512vnni_row(
-                m, in_dim, out_dim, n, w_scales[n], scale_x, w_q8 + n * in_dim, x_u8, y);
-    }
+    struct audio_rows_job job = {.w_q8     = w_q8,
+                                 .w_scales = w_scales,
+                                 .x_u8     = x_u8,
+                                 .scale_x  = scale_x,
+                                 .m        = m,
+                                 .in_dim   = in_dim,
+                                 .out_dim  = out_dim,
+                                 .y        = y};
+    geist_par_for(out_dim, w8a8_avx512vnni_rows, &job);
     safe_free((void **) &x_u8);
 }
 #endif /* __x86_64__ */
