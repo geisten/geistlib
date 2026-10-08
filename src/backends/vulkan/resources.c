@@ -512,31 +512,63 @@ size_t vk_fast_host_bytes(struct geist_backend *be) {
     return heap > st->bar_used + reserve ? heap - st->bar_used - reserve : 0;
 }
 
-/* One blocking staging round-trip. Direction: upload (src != nullptr) or
- * download (dst != nullptr). Each call allocates a fresh staging buffer, so
- * this is suitable for load-time transfers but not a transfer hot path. */
-[[nodiscard]] static enum geist_status
-vk_staged_copy(struct geist_buffer *buf, size_t n_bytes, const uint8_t *src, uint8_t *dst) {
-    struct vk_state      *st = buf->owner;
-    struct geist_backend *be = st->backend;
+/* Copies `size` bytes between buf (at its base_off + off) and `staging`
+ * (at 0) on the transfer command buffer and waits for it. */
+[[nodiscard]] static enum geist_status vk_xfer_wait(struct vk_state     *st,
+                                                    struct geist_buffer *buf,
+                                                    VkBuffer             staging,
+                                                    size_t               off,
+                                                    size_t               size,
+                                                    bool                 upload) {
+    struct geist_backend    *be     = st->backend;
+    VkCommandBufferBeginInfo begin  = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                       .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    const VkBufferCopy       region = {.srcOffset = upload ? 0 : buf->base_off + off,
+                                       .dstOffset = upload ? buf->base_off + off : 0,
+                                       .size      = size};
+    if (st->fn.BeginCommandBuffer(st->xfer_cmd, &begin) != VK_SUCCESS) {
+        geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: begin transfer cmd failed");
+        return GEIST_E_BACKEND;
+    }
+    if (upload) {
+        st->fn.CmdCopyBuffer(st->xfer_cmd, staging, buf->buf, 1, &region);
+    } else {
+        st->fn.CmdCopyBuffer(st->xfer_cmd, buf->buf, staging, 1, &region);
+    }
+    VkSubmitInfo submit = {.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                           .commandBufferCount = 1,
+                           .pCommandBuffers    = &st->xfer_cmd};
+    if (st->fn.EndCommandBuffer(st->xfer_cmd) != VK_SUCCESS ||
+        st->fn.QueueSubmit(st->queue, 1, &submit, st->xfer_fence) != VK_SUCCESS ||
+        st->fn.WaitForFences(st->device, 1, &st->xfer_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+        geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: transfer submit/wait failed");
+        return GEIST_E_BACKEND;
+    }
+    (void) st->fn.ResetFences(st->device, 1, &st->xfer_fence);
+    return GEIST_OK;
+}
 
-    VkBufferCreateInfo binfo       = {.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                                      .size        = n_bytes,
-                                      .usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                                     VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                      .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    VkBuffer           staging     = VK_NULL_HANDLE;
-    VkDeviceMemory     staging_mem = VK_NULL_HANDLE;
-    void              *mapped      = nullptr;
-    enum geist_status  status      = GEIST_E_BACKEND;
-
-    if (st->fn.CreateBuffer(st->device, &binfo, nullptr, &staging) != VK_SUCCESS) {
-        geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: staging buffer failed");
+/* A host-visible, mapped staging buffer of `size` bytes. */
+[[nodiscard]] static enum geist_status vk_staging_create(struct vk_state *st,
+                                                         size_t           size,
+                                                         VkBuffer        *out_buf,
+                                                         VkDeviceMemory  *out_mem,
+                                                         void           **out_map) {
+    VkBufferCreateInfo binfo = {.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                .size        = size,
+                                .usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                               VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    *out_buf                 = VK_NULL_HANDLE;
+    *out_mem                 = VK_NULL_HANDLE;
+    *out_map                 = nullptr;
+    if (st->fn.CreateBuffer(st->device, &binfo, nullptr, out_buf) != VK_SUCCESS) {
+        geist_backend_set_error(st->backend, GEIST_E_BACKEND, "vulkan: staging buffer failed");
         return GEIST_E_BACKEND;
     }
     VkMemoryRequirements req;
-    st->fn.GetBufferMemoryRequirements(st->device, staging, &req);
-    uint32_t             mem_type = vk_find_mem_type(st,
+    st->fn.GetBufferMemoryRequirements(st->device, *out_buf, &req);
+    const uint32_t       mem_type = vk_find_mem_type(st,
                                                      req.memoryTypeBits,
                                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -544,60 +576,71 @@ vk_staged_copy(struct geist_buffer *buf, size_t n_bytes, const uint8_t *src, uin
                                      .allocationSize  = req.size,
                                      .memoryTypeIndex = mem_type};
     if (mem_type == UINT32_MAX ||
-        st->fn.AllocateMemory(st->device, &minfo, nullptr, &staging_mem) != VK_SUCCESS ||
-        st->fn.BindBufferMemory(st->device, staging, staging_mem, 0) != VK_SUCCESS ||
-        st->fn.MapMemory(st->device, staging_mem, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) {
+        st->fn.AllocateMemory(st->device, &minfo, nullptr, out_mem) != VK_SUCCESS ||
+        st->fn.BindBufferMemory(st->device, *out_buf, *out_mem, 0) != VK_SUCCESS ||
+        st->fn.MapMemory(st->device, *out_mem, 0, VK_WHOLE_SIZE, 0, out_map) != VK_SUCCESS) {
+        if (*out_mem != VK_NULL_HANDLE) {
+            st->fn.FreeMemory(st->device, *out_mem, nullptr);
+        }
+        st->fn.DestroyBuffer(st->device, *out_buf, nullptr);
+        *out_buf = VK_NULL_HANDLE;
+        *out_mem = VK_NULL_HANDLE;
+        *out_map = nullptr;
         geist_backend_set_error(
-                be, GEIST_E_OOM, "vulkan: staging alloc/map failed (%zu B)", n_bytes);
-        status = GEIST_E_OOM;
-        goto out;
+                st->backend, GEIST_E_OOM, "vulkan: staging alloc/map failed (%zu B)", size);
+        return GEIST_E_OOM;
     }
-    if (src != nullptr) {
-        memcpy(mapped, src, n_bytes);
-    }
+    return GEIST_OK;
+}
 
-    VkCommandBufferBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                                      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-    /* A view (buffer_create_view) starts base_off bytes into its VkBuffer. */
-    const VkBufferCopy region = {.srcOffset = src != nullptr ? 0 : buf->base_off,
-                                 .dstOffset = src != nullptr ? buf->base_off : 0,
-                                 .size      = n_bytes};
-    if (st->fn.BeginCommandBuffer(st->xfer_cmd, &begin) != VK_SUCCESS) {
-        geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: begin transfer cmd failed");
-        goto out;
-    }
-    if (src != nullptr) {
-        st->fn.CmdCopyBuffer(st->xfer_cmd, staging, buf->buf, 1, &region);
-    } else {
-        st->fn.CmdCopyBuffer(st->xfer_cmd, buf->buf, staging, 1, &region);
-    }
-    if (st->fn.EndCommandBuffer(st->xfer_cmd) != VK_SUCCESS) {
-        geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: end transfer cmd failed");
-        goto out;
-    }
-    VkSubmitInfo submit = {.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                           .commandBufferCount = 1,
-                           .pCommandBuffers    = &st->xfer_cmd};
-    if (st->fn.QueueSubmit(st->queue, 1, &submit, st->xfer_fence) != VK_SUCCESS ||
-        st->fn.WaitForFences(st->device, 1, &st->xfer_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
-        geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: transfer submit/wait failed");
-        goto out;
-    }
-    (void) st->fn.ResetFences(st->device, 1, &st->xfer_fence);
-    if (dst != nullptr) {
-        memcpy(dst, mapped, n_bytes);
-    }
-    status = GEIST_OK;
+/* ponytail: 64 MiB, synchronous chunks; double-buffer (memcpy of chunk i+1
+ * while chunk i transfers) if loads still show up as the bottleneck. */
+constexpr size_t VK_UP_STAGE_BYTES = (size_t) 64 << 20;
 
-out:
-    if (mapped != nullptr) {
-        st->fn.UnmapMemory(st->device, staging_mem);
+/* Upload through the persistent staging buffer, VK_UP_STAGE_BYTES at a time. */
+[[nodiscard]] static enum geist_status
+vk_staged_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t *src) {
+    struct vk_state *st = buf->owner;
+    if (st->up_buf == VK_NULL_HANDLE) {
+        void                   *map = nullptr;
+        const enum geist_status s =
+                vk_staging_create(st, VK_UP_STAGE_BYTES, &st->up_buf, &st->up_mem, &map);
+        if (s != GEIST_OK) {
+            return s;
+        }
+        st->up_map = map;
     }
-    if (staging_mem != VK_NULL_HANDLE) {
-        st->fn.FreeMemory(st->device, staging_mem, nullptr);
+    for (size_t off = 0; off < n_bytes; off += VK_UP_STAGE_BYTES) {
+        const size_t k = n_bytes - off < VK_UP_STAGE_BYTES ? n_bytes - off : VK_UP_STAGE_BYTES;
+        memcpy(st->up_map, src + off, k);
+        const enum geist_status s = vk_xfer_wait(st, buf, st->up_buf, off, k, true);
+        if (s != GEIST_OK) {
+            return s;
+        }
     }
+    return GEIST_OK;
+}
+
+/* One blocking download through a staging buffer of its own size (reads are
+ * rare and small: logits, test checks). */
+[[nodiscard]] static enum geist_status
+vk_staged_download(struct geist_buffer *buf, size_t n_bytes, uint8_t *dst) {
+    struct vk_state  *st      = buf->owner;
+    VkBuffer          staging = VK_NULL_HANDLE;
+    VkDeviceMemory    mem     = VK_NULL_HANDLE;
+    void             *map     = nullptr;
+    enum geist_status s       = vk_staging_create(st, n_bytes, &staging, &mem, &map);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    s = vk_xfer_wait(st, buf, staging, 0, n_bytes, false);
+    if (s == GEIST_OK) {
+        memcpy(dst, map, n_bytes);
+    }
+    st->fn.UnmapMemory(st->device, mem);
+    st->fn.FreeMemory(st->device, mem, nullptr);
     st->fn.DestroyBuffer(st->device, staging, nullptr);
-    return status;
+    return s;
 }
 
 [[nodiscard]] enum geist_status
@@ -614,7 +657,7 @@ vk_buffer_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t src[sta
         memcpy(buf->mapped, src, n_bytes);
         return GEIST_OK;
     }
-    return vk_staged_copy(buf, n_bytes, src, nullptr);
+    return vk_staged_upload(buf, n_bytes, src);
 }
 
 [[nodiscard]] enum geist_status
@@ -634,7 +677,7 @@ vk_buffer_download(size_t n_bytes, uint8_t dst[static n_bytes], const struct gei
         memcpy(dst, buf->mapped, n_bytes);
         return GEIST_OK;
     }
-    return vk_staged_copy((struct geist_buffer *) buf, n_bytes, nullptr, dst);
+    return vk_staged_download((struct geist_buffer *) buf, n_bytes, dst);
 }
 
 void *vk_buffer_map(struct geist_buffer *buf) {
