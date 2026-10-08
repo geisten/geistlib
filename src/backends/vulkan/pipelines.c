@@ -29,6 +29,8 @@
 #include "shaders/attn_part_f16_spv.h"
 #include "shaders/deltanet_conv_f32_spv.h"
 #include "shaders/deltanet_delta_f32_spv.h"
+#include "shaders/deltanet_norm_f32_spv.h"
+#include "shaders/deltanet_scan_f32_spv.h"
 #include "shaders/embed_lookup_scaled_spv.h"
 #include "shaders/ffn_gate_up_gelu_q4k_spv.h"
 #include "shaders/ffn_norm_gate_up_q4k_spv.h"
@@ -325,6 +327,9 @@ vk_pcache_save(struct geist_backend *be, struct vk_state *st, const char *path, 
     for (int i = 0; i < VK_PIPE_COUNT; ++i) {
         if (vk_pipe_needs_coopmat(i) && !st->has_coopmat) {
             continue; /* stays VK_NULL_HANDLE; linear_t falls back */
+        }
+        if (i == VK_PIPE_DN_SCAN && !st->dn_scan) {
+            continue; /* stays VK_NULL_HANDLE; deltanet_mix runs deltanet_delta_f32 */
         }
         /* Full subgroups need local_size_x to be a multiple of 32; every
          * tiled GEMM is 128 or 256 wide, so a miss is a shader edit that

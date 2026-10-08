@@ -336,94 +336,16 @@ enum geist_status transformer_forward_mtp_layer(struct transformer_arch_session 
     }
     const size_t      n_in = (size_t) t->shape[1];
     enum geist_status rc   = GEIST_OK;
-    switch (t->dtype) {
-    case GEIST_DTYPE_F32:
-        memcpy(dst, raw + row_idx * n_in * sizeof(float), n_in * sizeof(float));
-        break;
-    case GEIST_DTYPE_F16: {
-        const uint8_t *r = raw + row_idx * n_in * 2;
-        for (size_t i = 0; i < n_in; i++) {
-            uint16_t h = (uint16_t) r[2 * i] | ((uint16_t) r[2 * i + 1] << 8);
-            dst[i]     = fp16_to_fp32(h);
-        }
-        break;
-    }
-    case GEIST_DTYPE_BF16: {
-        const uint8_t *r = raw + row_idx * n_in * 2;
-        for (size_t i = 0; i < n_in; i++) {
-            uint16_t b = (uint16_t) r[2 * i] | ((uint16_t) r[2 * i + 1] << 8);
-            uint32_t f = (uint32_t) b << 16;
-            memcpy(&dst[i], &f, sizeof f);
-        }
-        break;
-    }
-    case GEIST_DTYPE_Q3_K:
-        dequant_q3_K_row(n_in, raw + row_idx * n_in / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES, dst);
-        break;
-    case GEIST_DTYPE_Q4_0:
-        dequant_q4_0_row(n_in, raw + row_idx * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, dst);
-        break;
-    case GEIST_DTYPE_Q4_1:
-        dequant_q4_1_row(n_in, raw + row_idx * n_in / Q4_1_BLOCK_ELEMS * Q4_1_BLOCK_BYTES, dst);
-        break;
-    case GEIST_DTYPE_Q5_0:
-        dequant_q5_0_row(n_in, raw + row_idx * n_in / Q5_0_BLOCK_ELEMS * Q5_0_BLOCK_BYTES, dst);
-        break;
-    case GEIST_DTYPE_Q4_K:
-        dequant_q4_K_row(n_in, raw + row_idx * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES, dst);
-        break;
-    case GEIST_DTYPE_Q5_K:
-        dequant_q5_K_row(n_in, raw + row_idx * n_in / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES, dst);
-        break;
-    case GEIST_DTYPE_Q6_K:
-        dequant_q6_K_row(n_in, raw + row_idx * n_in / Q6_K_BLOCK_ELEMS * Q6_K_BLOCK_BYTES, dst);
-        break;
-    case GEIST_DTYPE_Q8_0:
-        dequant_q8_0_row(n_in, raw + row_idx * n_in / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, dst);
-        break;
-    case GEIST_DTYPE_IQ2_S:
-        dequant_iq2_s_row(n_in, raw + row_idx * n_in / IQ2_S_BLOCK_ELEMS * IQ2_S_BLOCK_BYTES, dst);
-        break;
-    case GEIST_DTYPE_IQ3_S:
-        dequant_iq3_s_row(n_in, raw + row_idx * n_in / IQ3_S_BLOCK_ELEMS * IQ3_S_BLOCK_BYTES, dst);
-        break;
-    case GEIST_DTYPE_IQ4_NL:
-        dequant_iq4_nl_row(
-                n_in, raw + row_idx * n_in / IQ4_NL_BLOCK_ELEMS * IQ4_NL_BLOCK_BYTES, dst);
-        break;
-    case GEIST_DTYPE_IQ4_XS:
-        dequant_iq4_xs_row(
-                n_in, raw + row_idx * n_in / IQ4_XS_BLOCK_ELEMS * IQ4_XS_BLOCK_BYTES, dst);
-        break;
-    case GEIST_DTYPE_PQ2_0:
-        dequant_pq2_0_row(n_in, raw + row_idx * n_in / PQ2_0_BLOCK_ELEMS * PQ2_0_BLOCK_BYTES, dst);
-        break;
-    case GEIST_DTYPE_I2_S: {
-        /* BitNet i2_s: 256-elem/64-byte ternary blocks, reversed in-byte field
-         * order vs TQ2_0, ONE f32 per-TENSOR scale at the tail (offset
-         * total_elems/4). Used for the token-embedding table on BitNet-2B-4T. */
-        const size_t total = (size_t) t->shape[0] * (size_t) t->shape[1];
-        float        scale;
-        memcpy(&scale, raw + i2_s_scale_offset(total), sizeof scale);
-        const uint8_t *row = raw + row_idx * (n_in / 4);
-        for (size_t b = 0; b < n_in / 256; b++) {
-            const uint8_t *qs = row + b * 64;
-            for (size_t h = 0; h < 2; h++) {
-                for (size_t bb = 0; bb < 32; bb++) {
-                    const uint8_t byte = qs[h * 32 + bb];
-                    for (size_t g = 0; g < 4; g++) {
-                        const int trit = (int) ((byte >> (6 - 2 * g)) & 3) - 1;
-                        dst[b * 256 + h * 128 + g * 32 + bb] = (float) trit * scale;
-                    }
-                }
-            }
-        }
-        break;
-    }
-    default:
+    if (!quant_dequant_row((enum geist_dtype) t->dtype,
+                           (size_t) t->shape[0] * n_in,
+                           row_idx * n_in,
+                           n_in,
+                           raw,
+                           dst)) {
         geist_backend_set_error(be,
                                 GEIST_E_UNSUPPORTED,
-                                "transformer: unsupported dtype %d for row dequant",
+                                "transformer: cannot dequant row %zu of a dtype-%d table",
+                                row_idx,
                                 (int) t->dtype);
         rc = GEIST_E_UNSUPPORTED;
     }
