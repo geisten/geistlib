@@ -9,6 +9,11 @@ minor release.
 ## [Unreleased]
 
 ### Changed
+- **Vulkan: weight uploads reuse one staging buffer (#469).** Each staged
+  upload created, mapped and freed a host-visible buffer of the weight's full
+  size (page faults on hundreds of MB per tensor). A persistent 64 MiB buffer
+  now carries every upload in chunks. Ternary Bonsai 2 27B (7.2 GB) loads in
+  3.1–3.5 s instead of 4.2–5.5 s on an RTX 2080 Ti (three interleaved runs).
 - **Vulkan: Q4_0 prefill GEMM on the tensor cores (#467).** The Q8_0
   coopmat kernel's body now takes a Q4_0 A stage too (shared
   `matmul_legacy_cm_body.glsl`). RTX 2080 Ti, Qwen3.5 4B Q4_0 pp512: the Q4_0
