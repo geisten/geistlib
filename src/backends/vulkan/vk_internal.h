@@ -230,6 +230,7 @@ enum {
 struct vk_dset_entry {
     uint64_t        key; /* hash of nbind + buffer handles; 0 = empty */
     VkDescriptorSet set;
+    uint32_t        nbind; /* bindings of the layout `set` was allocated with */
 };
 
 enum {
