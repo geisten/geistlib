@@ -156,7 +156,8 @@ static int check_hooks(void) {
         }
         fails += check_region(v, be, GEIST_REGION_PREFILL_BATCH, "prefill, max_threads 2", 4, 2);
         fails += check_region(v, be, GEIST_REGION_DECODE_STEP, "decode, max_threads 2", 4, 2);
-        fails += check_region(v, be, GEIST_REGION_DECODE_STEP, "decode, max_threads 2", 1, 1); /* never raises */
+        fails += check_region(
+                v, be, GEIST_REGION_DECODE_STEP, "decode, max_threads 2", 1, 1); /* never raises */
         geist_backend_destroy(be);
     }
     return fails;

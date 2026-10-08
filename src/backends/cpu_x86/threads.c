@@ -86,8 +86,8 @@ static int region_threads(enum geist_parallel_region region) {
 }
 
 int cpu_x86_parallel_region_begin(struct geist_backend *be, enum geist_parallel_region region) {
-    const struct cpu_x86_state *st  = be != nullptr ? be->state : nullptr;
-    const int                   cap = st != nullptr ? st->max_threads : 0;
+    const struct cpu_x86_state *st     = be != nullptr ? be->state : nullptr;
+    const int                   cap    = st != nullptr ? st->max_threads : 0;
     int                         target = region_threads(region);
     if (cap > 0 && (target <= 0 || target > cap)) {
         target = cap;
