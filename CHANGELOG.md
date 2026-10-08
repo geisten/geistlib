@@ -61,7 +61,6 @@ minor release.
   source; the `convert-gate` workflow runs SmolLM2 135M end to end. The gate
   found #674 (Gemma 3 270M logits) and #675 (Q5_0 weights).
 
-### Added
 - **`geist_session_cancel`: stop a prefill from another thread (#628).**
   EXPERIMENTAL, in `geist_util.h`. Safe from any thread; a prefill checks
   before each sub-batch (the session's `m_max` positions) and a `decode_step`
