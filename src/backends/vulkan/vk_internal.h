@@ -160,6 +160,8 @@ enum vk_pipe {
     VK_PIPE_ATTENTION_F16_HD512_CM, /* the same, head_dim 512 (two column halves) */
     VK_PIPE_MM_Q8_0_CM,             /* Q8_0 tensor-core GEMM, 64 x 64 tile */
     VK_PIPE_MM_Q4_0_CM,             /* Q4_0 tensor-core GEMM, 64 x 64 tile */
+    VK_PIPE_MM_Q4K_CM128,           /* Q4_K in the 128 x 128 PQ2_0 tensor-core frame */
+    VK_PIPE_MM_Q6K_CM128,           /* Q6_K in the same frame */
     VK_PIPE_MM_Q5K_CM,              /* Q5_K tensor-core GEMM, 64 x 64 tile */
     VK_PIPE_MM_Q4_1_CM,             /* Q4_1 tensor-core GEMM, 64 x 64 tile */
     VK_PIPE_MM_TQ2_0_CM,            /* TQ2_0 tensor-core GEMM, 64 x 64 tile */
@@ -176,7 +178,8 @@ static inline bool vk_pipe_needs_coopmat(int pipe) {
            pipe == VK_PIPE_MM_Q8_0_CM || pipe == VK_PIPE_MM_Q4_0_CM || pipe == VK_PIPE_MM_Q5K_CM ||
            pipe == VK_PIPE_MM_Q4_1_CM || pipe == VK_PIPE_MM_TQ2_0_CM ||
            pipe == VK_PIPE_MM_TQ2_0_CM128 || pipe == VK_PIPE_ATTENTION_F16_HD128_CM ||
-           pipe == VK_PIPE_ATTENTION_F16_HD512_CM;
+           pipe == VK_PIPE_ATTENTION_F16_HD512_CM || pipe == VK_PIPE_MM_Q4K_CM128 ||
+           pipe == VK_PIPE_MM_Q6K_CM128;
 }
 
 /* The register-tiled GEMMs: one output row per 32-lane subgroup
@@ -508,6 +511,8 @@ static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
         [VK_PIPE_ATTENTION_F16_HD512_CM] = 4,
         [VK_PIPE_MM_Q8_0_CM]             = 3,
         [VK_PIPE_MM_Q4_0_CM]             = 3,
+        [VK_PIPE_MM_Q4K_CM128]           = 3,
+        [VK_PIPE_MM_Q6K_CM128]           = 3,
         [VK_PIPE_MM_Q5K_CM]              = 3,
         [VK_PIPE_MM_Q4_1_CM]             = 3,
         [VK_PIPE_MM_TQ2_0_CM]            = 3,
