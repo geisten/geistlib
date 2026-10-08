@@ -9,6 +9,12 @@ minor release.
 ## [Unreleased]
 
 ### Changed
+- **Vulkan: TQ2_0 prefill GEMM on the tensor cores (#467).** A TQ2_0 A stage
+  in `matmul_legacy_cm_body.glsl` (64 x 64 tile) and in the 128 x 128 PQ2_0
+  frame (`matmul_pq2_0_cm_body.glsl`), which takes over from
+  `n_out * m >= 4 * 2^16`. BitNet b1.58-large TQ2_0 on an RTX 2080 Ti, pp512:
+  TQ2_0 GEMM GPU time ~210 → ~37 ms, prefill 412 → 84 ms (1243 → 6070 t/s);
+  CPU-vs-Vulkan logits unchanged (corr 0.99958, 0.99959 before).
 - **Vulkan: Q4_1 prefill GEMM on the tensor cores (#467).** A Q4_1 A stage
   (native 20-byte block) in `matmul_legacy_cm_body.glsl`. Qwen3.5 4B Q4_0 (its
   Q4_1 tensors) on an RTX 2080 Ti, pp512: Q4_1 GEMM 55.0 → 11.9 ms, prefill
