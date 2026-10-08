@@ -601,6 +601,10 @@ void vk_destroy(struct geist_backend *be) {
                     [VK_PIPE_ATTENTION_F16_HD512_CM] = "attention_f16_hd512_cm",
                     [VK_PIPE_MM_Q8_0_CM]             = "mm_q8_0_cm",
                     [VK_PIPE_MM_Q4_0_CM]             = "mm_q4_0_cm",
+                    [VK_PIPE_MM_Q5K_CM]              = "mm_q5k_cm",
+                    [VK_PIPE_MM_Q4_1_CM]             = "mm_q4_1_cm",
+                    [VK_PIPE_MM_TQ2_0_CM]            = "mm_tq2_0_cm",
+                    [VK_PIPE_MM_TQ2_0_CM128]         = "mm_tq2_0_cm128",
                     [VK_PIPE_COUNT]                  = "copy",
                     /* vkCmdCopyBuffer stamps */};
             fprintf(stderr, "geist vulkan gpu profile:\n");

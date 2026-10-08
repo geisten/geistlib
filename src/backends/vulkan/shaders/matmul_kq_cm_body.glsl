@@ -3,19 +3,12 @@
 #extension GL_KHR_memory_scope_semantics : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 
-/* Q8_0 / Q4_0 / Q4_1 / TQ2_0 GEMM on tensor cores — the frame of
- * matmul_q4k_cm.comp (64x64 tile, BK = 32, double-buffered: one barrier per
- * step) with a legacy-block A stage, picked by DT_Q8_0, DT_Q4_0, DT_Q4_1 or
- * DT_TQ2_0 in the including .comp. One k-step is exactly one 32-element
- * block (TQ2_0: one of a 256-element block's eight 32-element runs), so each
- * row needs one scale per step. Weight
- * layout as in mm_legacy.glsl: LPB quant words per block (8 for Q8_0, 4 for
- * Q4_0), then all fp16 scales packed two per word after the n_out * nb * LPB
- * quant words; Q4_1 keeps its native 20-byte block (d | m << 16, then the
- * quants). In both 4-bit types byte j holds element j (low nibble) and
- * j + 16 (high). TQ2_0 keeps the SOA layout of matvec_tq2_0.comp; its
- * values d * {-1, 0, 1} are exact in f16.
- * Requires n_out % 64 == 0, rows % 16 == 0 (n_in % 32 == 0 is the format's).
+/* Q4_K / Q5_K GEMM on tensor cores (DT_Q4K or DT_Q5K from the including
+ * .comp), double-buffered: while the MMAs consume
+ * k-step ks from one shared buffer pair, all 128 threads dequantize and
+ * stage k-step ks+1 into the other — one barrier per step and the memory
+ * latency hides behind tensor work. Tile 64x64, BK = 32 per buffer.
+ * Requires n_out % 64 == 0, rows % 16 == 0, n_in % 256 == 0.
  * Dispatch: gx = n_out/64, gy = ceil(rows/64). */
 
 layout(local_size_x = 128) in;
@@ -36,10 +29,15 @@ layout(push_constant) uniform Push {
     uint y_stride;
 } pc;
 
-#if defined(DT_Q8_0)
-const uint LPB = 8u;
-#elif defined(DT_Q4_0) || defined(DT_Q4_1)
-const uint LPB = 4u;
+/* Superblock bytes and the word the 4-bit quants start at: Q4_K is d, dmin,
+ * 12 scale bytes, qs[128]; Q5_K puts qh[32] (bit s of qh[l] is the fifth bit
+ * of element l of sub-block s) between the scales and qs. */
+#if defined(DT_Q4K)
+const uint BLOCK_BYTES = 144u;
+const uint QS_WORD = 4u;
+#elif defined(DT_Q5K)
+const uint BLOCK_BYTES = 176u;
+const uint QS_WORD = 12u;
 #endif
 const uint BM = 64;
 const uint BN = 64;
@@ -52,58 +50,48 @@ shared float16_t Bsh[2][BK * BSTRIDE];
 
 void stage(uint buf, uint ks, uint lid, uint row0, uint tb0) {
     uint k0 = ks * BK;
-    /* A: 64 rows x 32 k — thread -> (row = lid/2, half-block = lid&1) */
+    /* A: 64 rows x 32 k — thread -> (row = lid/2, half-k = lid&1) */
     {
         uint row = lid >> 1u;
         uint hk = lid & 1u;
-        uint bi = (row0 + row) * pc.blocks_per_row + ks; /* TQ2_0: unused */
+        uint r = row0 + row;
+        uint b = k0 >> 8u;
+        uint sub = (k0 & 255u) >> 5u;
+        uint blk = ((r * pc.blocks_per_row + b) * BLOCK_BYTES) >> 2u;
+        uint h0 = w[blk];
+        uint h1 = w[blk + 1u];
+        uint h2 = w[blk + 2u];
+        uint h3 = w[blk + 3u];
+        vec2 dd = unpackHalf2x16(h0);
+        uint sc_u, mn_u;
+        if (sub < 4u) {
+            sc_u = (h1 >> (8u * sub)) & 63u;
+            mn_u = (h2 >> (8u * sub)) & 63u;
+        } else {
+            uint j = sub - 4u;
+            uint q_j4 = (h3 >> (8u * j)) & 0xffu;
+            sc_u = (q_j4 & 15u) | ((((h1 >> (8u * j)) & 0xffu) >> 6u) << 4u);
+            mn_u = (q_j4 >> 4u) | ((((h2 >> (8u * j)) & 0xffu) >> 6u) << 4u);
+        }
+        float dsc = dd.x * float(sc_u);
+        float dmn = dd.y * float(mn_u);
+        uint shift = (sub & 1u) * 4u;
+        uint qsw = blk + QS_WORD + (sub >> 1u) * 8u + hk * 4u;
         uint abase = row * ASTRIDE + hk * 16u;
-#if defined(DT_TQ2_0)
-        /* SOA layout of matvec_tq2_0.comp: 16 quant words per 256-element
-         * block, then the f16 scales. Step ks is the block's 32-element run
-         * e = g*128 + l*32 + m (sub = ks % 8 = g*4 + l): byte g*32 + m, bits 2l. */
-        uint sub = ks & 7u;
-        uint tb = (row0 + row) * pc.blocks_per_row + (ks >> 3u);
-        float d = unpackHalf2x16(w[pc.n_out * pc.blocks_per_row * 16u + (tb >> 1u)] >> ((tb & 1u) * 16u)).x;
-        uint qw0 = tb * 16u + (sub >> 2u) * 8u + hk * 4u;
-        uint sh = 2u * (sub & 3u);
         for (uint u = 0; u < 4u; u++) {
-            uint qw = w[qw0 + u] >> sh;
-            for (uint j = 0; j < 4u; j++) {
-                Ash[buf][abase + u * 4u + j] = float16_t(d * (float((qw >> (8u * j)) & 3u) - 1.0));
-            }
-        }
-#elif defined(DT_Q4_1)
-        /* native 20-byte block: word 0 = d | m << 16, words 1..4 = quants */
-        vec2 dm = unpackHalf2x16(w[bi * 5u]);
-        for (uint u = 0; u < 4u; u++) {
-            uint qw = w[bi * 5u + 1u + u] >> (hk * 4u);
-            for (uint j = 0; j < 4u; j++) {
-                Ash[buf][abase + u * 4u + j] = float16_t(dm.x * float((qw >> (8u * j)) & 15u) + dm.y);
-            }
-        }
-#else
-        uint sw = w[pc.n_out * pc.blocks_per_row * LPB + (bi >> 1u)];
-        float d = unpackHalf2x16(sw >> ((bi & 1u) * 16u)).x;
+            uint qw = w[qsw + u];
+#if defined(DT_Q5K)
+            /* the fifth bit of element l of sub-block sub: bit sub of qh[l] */
+            uint hw = w[blk + 4u + hk * 4u + u] >> sub;
 #endif
-#if defined(DT_Q8_0)
-        uint qw0 = bi * 8u + hk * 4u;
-        for (uint u = 0; u < 4u; u++) {
-            int qw = int(w[qw0 + u]);
             for (uint j = 0; j < 4u; j++) {
-                Ash[buf][abase + u * 4u + j] = float16_t(d * float(bitfieldExtract(qw, int(8u * j), 8)));
-            }
-        }
-#elif defined(DT_Q4_0)
-        /* both halves read the block's 4 words: hk 0 the low nibbles, 1 the high */
-        uint qw0 = bi * 4u;
-        for (uint u = 0; u < 4u; u++) {
-            uint qw = w[qw0 + u] >> (hk * 4u);
-            for (uint j = 0; j < 4u; j++) {
-                Ash[buf][abase + u * 4u + j] = float16_t(d * (float((qw >> (8u * j)) & 15u) - 8.0));
-            }
-        }
+                float q = float((qw >> (8u * j + shift)) & 15u);
+#if defined(DT_Q5K)
+                q += float(((hw >> (8u * j)) & 1u) << 4u);
 #endif
+                Ash[buf][abase + u * 4u + j] = float16_t(dsc * q - dmn);
+            }
+        }
     }
     /* B: 32 k x 64 cols — thread -> (col = lid&63, half-k = lid>>6) */
     {
