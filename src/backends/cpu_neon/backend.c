@@ -16,9 +16,11 @@
 #include "hadamard.h"
 #include "heap.h"
 #include "omp_idle.h"
+#include "parse.h"
 #include "quant.h"
 
 #include <stdarg.h>
+#include <limits.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -226,8 +228,8 @@ static int cpu_neon_region_thread_count(enum geist_parallel_region region) {
         if (n < 0) {
             const char *env = getenv("GEIST_PREFILL_THREADS");
             if (env != nullptr && env[0] != '\0') {
-                const int v = atoi(env);
-                n           = (v > 0) ? v : 0;
+                long v;
+                n = geist_parse_long(env, &v) && v > 0 && v <= INT_MAX ? (int) v : 0;
             } else {
                 const int pc = apple_perf_cores();
                 n            = (pc > 0) ? pc : omp_get_num_procs();
@@ -242,8 +244,8 @@ static int cpu_neon_region_thread_count(enum geist_parallel_region region) {
     if (n < 0) {
         const char *env = getenv("GEIST_DECODE_THREADS");
         if (env != nullptr && env[0] != '\0') {
-            const int v = atoi(env);
-            n           = (v > 0) ? v : 0;
+            long v;
+            n = geist_parse_long(env, &v) && v > 0 && v <= INT_MAX ? (int) v : 0;
         } else {
 #if defined(GEIST_TARGET_PI5)
             n = 3;

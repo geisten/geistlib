@@ -6,8 +6,10 @@
 #include "vk_internal.h"
 
 #include "checked.h"
+#include "parse.h"
 
 #include <errno.h>
+#include <limits.h>
 
 static PFN_vkVoidFunction vk_iproc(struct vk_state *st, const char *name) {
     return st->fn.GetInstanceProcAddr(st->instance, name);
@@ -212,9 +214,10 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     }
     (void) st->fn.EnumeratePhysicalDevices(st->instance, &count, devs);
 
-    const char *env    = getenv("GEIST_VK_DEVICE");
-    int         wanted = env != nullptr ? atoi(env) : -1;
-    int         pick   = -1;
+    const char *env = getenv("GEIST_VK_DEVICE");
+    long        index;
+    int wanted = geist_parse_long(env, &index) && index >= 0 && index <= INT_MAX ? (int) index : -1;
+    int pick   = -1;
     for (uint32_t i = 0; i < count; ++i) {
         VkPhysicalDeviceProperties2 props = {
                 .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
