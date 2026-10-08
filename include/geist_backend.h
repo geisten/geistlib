@@ -351,7 +351,8 @@ struct geist_fusion_query {
 /* Complete Gated-DeltaNet mixer after its four input projections. All
  * tensors are F32 DENSE backend views. qkv is [seq, conv_dim], z is
  * [seq, n_v_heads * head_v] and is overwritten with the mixer output,
- * beta/alpha are [seq, n_v_heads]. conv_state and delta_state are
+ * beta/alpha are [seq, n_v_heads]. qkv is scratch: a backend may
+ * overwrite it. conv_state and delta_state are
  * persistent, mutable session state. A backend fusion must advance both
  * state tensors exactly once for every input row before returning OK. */
 struct geist_deltanet_mix_args {

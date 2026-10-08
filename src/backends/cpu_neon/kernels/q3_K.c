@@ -78,7 +78,7 @@ static inline int32x4_t q3k_w3a8_acc32(int32x4_t     acc,
 
 void linear_q3k_decode_w3a8_pre(size_t       n_in,
                                 size_t       n_out,
-                                float        scale_x,
+                                const float *x_scales,
                                 const int8_t x_q8[static n_in],
                                 const void  *w_q3k,
                                 float        y[static n_out]) {
@@ -174,13 +174,13 @@ void linear_q3k_decode_w3a8_pre(size_t       n_in,
                                      sc[15]);
             const int32_t block_acc = vaddvq_s32(int_acc);
 
-            acc += d * scale_x * (float) block_acc;
+            acc += d * x_scales[b] * (float) block_acc;
         }
         y[n] = acc;
     }
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) w_q3k;
     (void) n_in;
     (void) n_out;
@@ -194,17 +194,24 @@ void linear_q3k_decode_w3a8(size_t      n_in,
                             const float x[static n_in],
                             const void *w_q3k,
                             float       y[static n_out]) {
-    int8_t *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
-    float   scale_x = quantize_x_int8_sym(n_in, x, x_q8);
-    linear_q3k_decode_w3a8_pre(n_in, n_out, scale_x, x_q8, w_q3k, y);
+    int8_t *x_q8     = heap_alloc_array_aligned(int8_t, n_in);
+    float  *x_scales = heap_alloc_array_aligned(float, geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS));
+    if (x_q8 == nullptr || x_scales == nullptr) {
+        safe_free((void **) &x_q8);
+        safe_free((void **) &x_scales);
+        return;
+    }
+    quantize_x_q8_groups(n_in, GEIST_ACT_Q8K_ELEMS, x, x_q8, x_scales, nullptr);
+    linear_q3k_decode_w3a8_pre(n_in, n_out, x_scales, x_q8, w_q3k, y);
     safe_free((void **) &x_q8);
+    safe_free((void **) &x_scales);
 }
 
 void linear_q3k_w3a8_prefill_pre(size_t        m,
                                  size_t        n_in,
                                  size_t        n_out,
                                  const int8_t *x_q8,
-                                 const float   scale_x[static m],
+                                 const float  *x_scales,
                                  const void   *w_q3k,
                                  float        *y) {
 #if defined(__ARM_NEON)
@@ -300,7 +307,7 @@ void linear_q3k_w3a8_prefill_pre(size_t        m,
 #undef PROCESS_GROUP_M
 
             for (size_t i = 0; i < m; i++) {
-                my_accs[i] += d * scale_x[i] * (float) block_int_accs[i];
+                my_accs[i] += d * x_scales[i * n_blocks_per_row + b] * (float) block_int_accs[i];
             }
         }
         for (size_t i = 0; i < m; i++)
@@ -308,7 +315,7 @@ void linear_q3k_w3a8_prefill_pre(size_t        m,
     }
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) m;
     (void) w_q3k;
     (void) n_in;
@@ -320,12 +327,23 @@ void linear_q3k_w3a8_prefill_pre(size_t        m,
 
 void linear_q3k_w3a8_prefill(
         size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q3k, float *y) {
-    int8_t *x_q8    = heap_alloc_array_aligned(int8_t, m *n_in);
-    float  *scale_x = heap_alloc_array_aligned(float, m);
-    for (size_t i = 0; i < m; i++) {
-        scale_x[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
+    const size_t n_groups = geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS);
+    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, m *n_in);
+    float       *x_scales = heap_alloc_array_aligned(float, m *n_groups);
+    if (x_q8 == nullptr || x_scales == nullptr) {
+        safe_free((void **) &x_q8);
+        safe_free((void **) &x_scales);
+        return;
     }
-    linear_q3k_w3a8_prefill_pre(m, n_in, n_out, x_q8, scale_x, w_q3k, y);
+    for (size_t i = 0; i < m; i++) {
+        quantize_x_q8_groups(n_in,
+                             GEIST_ACT_Q8K_ELEMS,
+                             x + i * n_in,
+                             x_q8 + i * n_in,
+                             x_scales + i * n_groups,
+                             nullptr);
+    }
+    linear_q3k_w3a8_prefill_pre(m, n_in, n_out, x_q8, x_scales, w_q3k, y);
     safe_free((void **) &x_q8);
-    safe_free((void **) &scale_x);
+    safe_free((void **) &x_scales);
 }

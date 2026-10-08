@@ -87,6 +87,23 @@ minor release.
   buffer fits the BAR. RTX 2080 Ti, pp512 / tg16: E4B 1561 → 1893 t/s prefill,
   99.2 → 101.7 t/s decode; E2B and Llama 3.2 3B unchanged. CPU backends and
   Metal load it as before; logits are unchanged.
+- **Vulkan: the Gated-DeltaNet mixer splits each head's state across
+  workgroups (#467).** The delta rule is independent per value column, so
+  the new `deltanet_scan_f32` gives each column to 8 lanes (16 state rows
+  each, in registers) and a head to 8 workgroups, where `deltanet_delta_f32`
+  ran one workgroup per head with a 128-step serial chain per token. q/k
+  l2norm and the gated RMSNorm move to a small `deltanet_norm_f32` pass, and
+  the causal conv loads its tokens in batches of 8 instead of one load
+  behind each in-place store. DeltaNet GPU time at pp512 on the RTX 2080 Ti:
+  Qwen3.5 0.8B 30–41 → 9 ms, 4B 43 → 17 ms, Ternary-Bonsai 27B 100 → 53 ms
+  (RADV iGPU, 0.8B: 270 → 123 ms). Prefill: 0.8B 4150–5130 → 6640 t/s, 4B
+  1257–1271 → 1308–1344 t/s, 27B 465 → 478 t/s; decode 0.8B 277 → 314 t/s,
+  4B 112 → 117 t/s. Runs where the device has clustered subgroup ops with
+  subgroups of at least 8 lanes and d_k ≤ 128 is a multiple of 4; other
+  devices and geometries keep `deltanet_delta_f32`. CPU-vs-Vulkan logits are
+  unchanged (corr 0.99982 on the 0.8B, 0.99972 on the 4B).
+  `geist_deltanet_mix_args` now documents that `qkv` is scratch the backend
+  may overwrite, which the conv already did.
 - **Vulkan (internal): one table lists the compute pipelines (#469).**
   `src/backends/vulkan/vk_pipes.def` has one row per pipeline (enum id,
   SPIR-V blob, profiler name, binding count, plain / tiled-GEMM / coopmat),
@@ -138,6 +155,29 @@ minor release.
   prompt, falls from 2.2 % / 15.3 % / 13.3 % (layers 0 / 10 / 34) to 1.2 % /
   7.7 % / 6.8 %, about llama.cpp's level. Prefill speed is unchanged within
   noise (9950X, pp128 / pp512).
+- **cpu_neon: the W*A8 kernels quantize activations with one scale per 256
+  elements, or per 32 for the 32-element formats (#698).** Every int8
+  activation quantizer on cpu_neon (Q4_K, Q5_K, Q6_K, Q3_K, IQ2_S, IQ3_S,
+  IQ4_XS, IQ4_NL, Q4_0, Q4_1, Q8_0; decode, prefill, the pair kernels, the
+  Q4_K / Q6_K repacked layouts and the fused GEGLU tile) took one scale for
+  the whole row, so one outlier in Gemma's FFN activations put every other
+  element of the row on its grid. The scales now follow llama.cpp's vec_dot
+  type for each weight: Q8_K (256) for the K-quants and IQ formats, Q8_0 (32)
+  for Q4_0, Q4_1, Q8_0 and IQ4_NL. The `_pre` kernels in `quant.h` take
+  `x_scales` (one per group, row-major) instead of `scale_x`, and
+  `quantize_x_q8_groups` replaces `quantize_x_for_q4k` and
+  `quantize_x_for_q4k_blocks`. Gemma 4 E2B Q4_K_M on the geist-runtime
+  decision fixtures, Pi 5 build (cortex-a76, FP32 KV; run under qemu, which
+  reproduces the board's numbers to the hundredth): the "Choose the even
+  number" candidate logits move from -2.83 / 4.34 (wrong winner) to 11.29 /
+  6.56 against cpu_scalar's 10.34 / 7.15; the largest gap to cpu_scalar over
+  the three fixtures falls from 13.2 to 3.6. With prefill forced onto fp32
+  SGEMM the gap is 0.2, so what remains is the int8 activations themselves, as
+  in llama.cpp. Outputs change on every cpu_neon host for those weight types;
+  the dequant + SGEMM trampolines (Apple prefill at m >= 64), F32 / F16 /
+  BF16, the ternary kernels and every other backend are bit-identical.
+  `test_neon_act_outlier_unit` puts one |x| = 100 element in each token row:
+  relative error 0.33-0.51 with per-row scales, 0.004-0.005 now (bar 0.02).
 
 - **Vulkan: Gemma 4 keeps its scratch pool in VRAM under
   `GEIST_VK_SCRATCH_DEVICE=1` (#488).** The device-local pool skipped every
