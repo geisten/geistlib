@@ -67,6 +67,16 @@ struct block_q4_1_t {
 } __attribute__((packed));
 _Static_assert(sizeof(struct block_q4_1_t) == Q4_1_BLOCK_BYTES, "struct block_q4_1_t size");
 
+/* Element j's 5-bit code is the low nibble of qs[j] plus bit j of qh (read
+ * as a little-endian uint32) as bit 4; element j + 16 is the high nibble of
+ * qs[j] plus bit j + 16. Value = d * (code - 16). */
+struct block_q5_0_t {
+    uint16_t d;     /* scale (fp16) */
+    uint8_t  qh[4]; /* fifth bit of each element */
+    uint8_t  qs[16];
+} __attribute__((packed));
+_Static_assert(sizeof(struct block_q5_0_t) == Q5_0_BLOCK_BYTES, "struct block_q5_0_t size");
+
 /* Element (h * 128 + l * 32 + k) is bits 2l..2l+1 of qs[h * 32 + k], h < 2,
  * l < 4, k < 32; the trit is that value minus 1. */
 struct block_tq2_0_t {
