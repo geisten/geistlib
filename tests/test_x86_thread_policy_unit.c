@@ -1,5 +1,5 @@
 /*
- * test_x86_thread_policy_unit — cpu_x86's OpenMP team per phase.
+ * test_x86_thread_policy_unit — cpu_x86's thread count per phase.
  *
  * 1. The pure decode policy (cpu_x86_decode_threads) over the topologies it
  *    has to get right: an SMT desktop (16 cores / 32 threads), a 4C/8T
@@ -7,9 +7,10 @@
  *    explicit OMP_NUM_THREADS, and the GEIST_DECODE_THREADS override.
  * 2. The hooks as the arch layer calls them, through the backend's vtable:
  *    GEIST_DECODE_THREADS / GEIST_PREFILL_THREADS are set before the first
- *    region (they are read once per process), then the team inside each
- *    region and its restoration afterwards are checked — decode only ever
- *    lowers the team, prefill moves it either way.
+ *    region (they are read once per process), then the count inside each
+ *    region (and with OpenMP the team) and its restoration afterwards are
+ *    checked — decode only ever lowers it, prefill moves it either way.
+ *    Without OpenMP the hooks size geist_par_for's pool (#618).
  * 3. caps.manages_host_threads mirrors the hooks' presence.
  */
 #define _POSIX_C_SOURCE 200809L /* setenv */
@@ -30,6 +31,7 @@ int main(void) {
 #else
 
 #define GEIST_INTERNAL_BACKEND_LAYER
+#include "par.h"
 #include "src/backends/cpu_x86/threads.h"
 
 #if defined(_OPENMP)
@@ -83,6 +85,7 @@ static int team_size(void) {
     }
     return n;
 }
+#endif
 
 /* Enter `region` with `ambient` threads configured; expect `inside` inside
  * and `ambient` again after. */
@@ -92,12 +95,16 @@ static int check_region(const struct geist_backend_vtbl *v,
                         const char                      *name,
                         int                              ambient,
                         int                              inside) {
-    omp_set_num_threads(ambient);
-    const int tok  = v->parallel_region_begin(be, region);
-    const int got  = omp_get_max_threads();
+    geist_par_set_max_threads((size_t) ambient);
+    const int tok = v->parallel_region_begin(be, region);
+    const int got = (int) geist_par_max_threads();
+#if defined(_OPENMP)
     const int team = team_size();
+#else
+    const int team = got;
+#endif
     v->parallel_region_end(be, tok);
-    const int after = omp_get_max_threads();
+    const int after = (int) geist_par_max_threads();
     if (got != inside || team != inside || after != ambient) {
         fprintf(stderr,
                 "FAIL: %s from %d threads: %d configured / %d in the team (want %d), %d after "
@@ -113,13 +120,10 @@ static int check_region(const struct geist_backend_vtbl *v,
     }
     return 0;
 }
-#endif
 
 static int check_hooks(void) {
-#if defined(_OPENMP)
     setenv("GEIST_DECODE_THREADS", "2", 1);
     setenv("GEIST_PREFILL_THREADS", "3", 1);
-#endif
     struct geist_backend *be = nullptr;
     if (geist_backend_create("cpu_x86", nullptr, nullptr, &be) != GEIST_OK || be == nullptr) {
         printf("SKIP: cpu_x86 backend did not register on this host\n");
@@ -133,9 +137,8 @@ static int check_hooks(void) {
         fprintf(stderr, "FAIL: region hooks and caps.manages_host_threads disagree\n");
         fails++;
     }
-#if defined(_OPENMP)
     if (!hooks) {
-        fprintf(stderr, "FAIL: OpenMP build without cpu_x86 region hooks\n");
+        fprintf(stderr, "FAIL: cpu_x86 without region hooks\n");
         fails++;
     } else {
         fails += check_region(v, be, GEIST_REGION_DECODE_STEP, "decode", 4, 2);
@@ -143,12 +146,6 @@ static int check_hooks(void) {
         fails += check_region(v, be, GEIST_REGION_PREFILL_BATCH, "prefill", 4, 3);
         fails += check_region(v, be, GEIST_REGION_PREFILL_BATCH, "prefill", 2, 3);
     }
-#else
-    if (hooks) {
-        fprintf(stderr, "FAIL: region hooks installed in a build without OpenMP\n");
-        fails++;
-    }
-#endif
     geist_backend_destroy(be);
     return fails;
 }

@@ -1,0 +1,6 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* Q8_0 GEMM on the tensor cores. Body and notes: matmul_legacy_cm_body.glsl. */
+#define DT_Q8_0 1
+#include "matmul_legacy_cm_body.glsl"
