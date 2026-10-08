@@ -280,6 +280,13 @@ struct vk_state {
     VkCommandPool   cmd_pool;
     VkCommandBuffer xfer_cmd;
     VkFence         xfer_fence;
+    /* Persistent host-visible staging buffer for uploads (#469): created on
+     * the first staged upload, VK_UP_STAGE_BYTES, reused for every chunk —
+     * a fresh full-size staging buffer per weight cost page faults on
+     * hundreds of MB per tensor. */
+    VkBuffer       up_buf;
+    VkDeviceMemory up_mem;
+    uint8_t       *up_map;
 
     char device_name[256];
 

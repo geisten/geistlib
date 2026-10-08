@@ -171,6 +171,13 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         if (st->xfer_fence != VK_NULL_HANDLE) {
             st->fn.DestroyFence(st->device, st->xfer_fence, nullptr);
         }
+        if (st->up_mem != VK_NULL_HANDLE) {
+            st->fn.UnmapMemory(st->device, st->up_mem);
+            st->fn.FreeMemory(st->device, st->up_mem, nullptr);
+        }
+        if (st->up_buf != VK_NULL_HANDLE) {
+            st->fn.DestroyBuffer(st->device, st->up_buf, nullptr);
+        }
         if (st->cmd_pool != VK_NULL_HANDLE) {
             st->fn.DestroyCommandPool(st->device, st->cmd_pool, nullptr);
         }
