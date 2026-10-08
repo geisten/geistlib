@@ -117,6 +117,11 @@ minor release.
   18.7 t/s, tg 2.2 t/s (cpu_x86 on a 9950X: 32.6 / 4.8). The KV cache does not
   spill. `test_backend_vulkan_vram_budget_unit` checks a spilled model decodes
   the same tokens.
+- **Vulkan shaders: one `silu()` (#465).** `silu.glsl` replaces the four
+  copies in `silu_f32`, `silu_mul_f32` and the two DeltaNet kernels; the
+  DeltaNet epilogue's norm reduces one value instead of feeding `reduce2` a
+  dummy zero. No behaviour change (DeltaNet parity and qwen3.5 0.8B
+  CPU-vs-Vulkan logits unchanged).
 - **One internal parallel-for, with or without OpenMP (#618, first batch).**
   `geist_par_for` (`src/base/par.h`) runs a loop as one OpenMP region where
   the build has OpenMP, on GCD `dispatch_apply` on Apple without it, and on a
