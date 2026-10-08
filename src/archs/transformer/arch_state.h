@@ -511,6 +511,12 @@ struct transformer_arch_state {
     void  *rope_il_rows;
     size_t rope_il_rows_used;
     size_t rope_il_rows_capacity;
+    /* per_layer_model_proj widened to F32 on a weights_device_copy backend
+     * (#658): plain host memory the backend copies to the device at
+     * resolve_weight, so the matrix stays out of the arena and of any device
+     * heap the backend budgets for scratch (Vulkan's BAR window). Released
+     * in transformer_state_destroy. */
+    void *model_proj_host;
 
     /* ---- Per-layer weight blocks, heap-sized to st->n_layers. */
     struct transformer_layer_weights     *layers;

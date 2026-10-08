@@ -8,6 +8,19 @@ minor release.
 
 ## [Unreleased]
 
+### Changed
+
+- **Vulkan: Gemma 4's F32 PLE projection no longer sits in the weight arena
+  (#658).** `per_layer_model_proj`, widened from F16 to F32 at load, was the
+  one large matrix kept in the arena, so on Gemma 4 E4B the arena grew to
+  157 MB of the 256 MB BAR window and the 42 MiB host-visible scratch buffer
+  fell back to system RAM. On backends that copy weights to the device the
+  widened matrix now lives in host memory of its own, and `resolve_weight`
+  uploads it to VRAM as before; the arena shrinks to 104 MB and the scratch
+  buffer fits the BAR. RTX 2080 Ti, pp512 / tg16: E4B 1561 → 1893 t/s prefill,
+  99.2 → 101.7 t/s decode; E2B and Llama 3.2 3B unchanged. CPU backends and
+  Metal load it as before; logits are unchanged.
+
 ### Fixed
 
 - **cpu_x86: the Q4_Kx8 kernels quantize activations with one scale per
