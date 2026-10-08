@@ -34,6 +34,7 @@ static const struct {
         {GEIST_DTYPE_BF16, "BF16", 1, 2, nullptr, {-1, -1}},
         {GEIST_DTYPE_Q4_0, "Q4_0", Q4_0_BLOCK_ELEMS, Q4_0_BLOCK_BYTES, dequant_q4_0_row, {0, -1}},
         {GEIST_DTYPE_Q4_1, "Q4_1", Q4_1_BLOCK_ELEMS, Q4_1_BLOCK_BYTES, dequant_q4_1_row, {0, 2}},
+        {GEIST_DTYPE_Q5_0, "Q5_0", Q5_0_BLOCK_ELEMS, Q5_0_BLOCK_BYTES, dequant_q5_0_row, {0, -1}},
         {GEIST_DTYPE_Q8_0, "Q8_0", Q8_0_BLOCK_ELEMS, Q8_0_BLOCK_BYTES, dequant_q8_0_row, {0, -1}},
         {GEIST_DTYPE_Q3_K, "Q3_K", Q3_K_BLOCK_ELEMS, Q3_K_BLOCK_BYTES, dequant_q3_K_row, {108, -1}},
         {GEIST_DTYPE_Q4_K, "Q4_K", Q4_K_BLOCK_ELEMS, Q4_K_BLOCK_BYTES, dequant_q4_K_row, {0, 2}},
