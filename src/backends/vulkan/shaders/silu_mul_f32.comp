@@ -2,10 +2,9 @@
 #extension GL_GOOGLE_include_directive : enable
 
 /* y = silu(a) * b — the SwiGLU epilogue (twin of gelu_tanh_mul). */
+#include "silu.glsl"
 float ew_op(float v, float b) {
-    float e = exp(-abs(v));
-    float s = v >= 0.0 ? v / (1.0 + e) : (v * e) / (1.0 + e);
-    return s * b;
+    return silu(v) * b;
 }
 
 #include "ew3.glsl"

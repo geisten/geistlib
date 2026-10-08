@@ -12,7 +12,6 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "../src/backends/cpu_x86/kernel_w8a8.h"
-#include "../src/backends/cpu_x86/kernel_w4a8.h" /* w4a8_quantize_acts_row */
 
 #include <math.h>
 #include <stdint.h>
@@ -44,25 +43,19 @@ static int scenario(size_t M, size_t N, size_t K) {
     for (size_t i = 0; i < M * K; i++)
         X[i] = 2.0f * ((prng_next(&s) & 0xFFFFu) / 65536.0f) - 1.0f;
 
-    int8_t  *acts = malloc(M * K);
-    int32_t *sa   = malloc(M * NB * sizeof(int32_t));
-    float   *sx   = malloc(M * sizeof(float));
-    int32_t *tmp  = malloc((K / W4A8_BLOCK_ELEMS) * sizeof(int32_t));
+    const size_t NG   = w8a8_act_groups(NB);
+    int8_t      *acts = malloc(M * K);
+    int32_t     *sa   = malloc(M * NB * sizeof(int32_t));
+    float       *sx   = malloc(M * NG * sizeof(float));
     for (size_t j = 0; j < M; j++) {
-        sx[j] = w4a8_quantize_acts_row(K, X + j * K, acts + j * K, tmp);
-        for (size_t b = 0; b < NB; b++) {
-            int32_t t = 0;
-            for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++)
-                t += acts[j * K + b * W8A8_BLOCK_ELEMS + i];
-            sa[j * NB + b] = t;
-        }
+        w8a8_quantize_acts_row(K, X + j * K, acts + j * K, sa + j * NB, sx + j * NG);
     }
 
     float *Yg   = malloc(M * N * sizeof(float));
     float *Yref = malloc(M * N * sizeof(float));
     w8a8_gemm(M, N, NB, W, ws, wo, acts, sa, sx, Yg);
     for (size_t j = 0; j < M; j++)
-        w8a8_gemv(N, NB, W, ws, wo, acts + j * K, sa + j * NB, sx[j], Yref + j * N);
+        w8a8_gemv(N, NB, W, ws, wo, acts + j * K, sa + j * NB, sx + j * NG, Yref + j * N);
 
     double maxd  = 0.0;
     int    fails = 0;
@@ -147,7 +140,6 @@ static int scenario(size_t M, size_t N, size_t K) {
     free(acts);
     free(sa);
     free(sx);
-    free(tmp);
     free(Yg);
     free(Yref);
     return fails;
@@ -158,6 +150,7 @@ int main(void) {
     fails += scenario(4, 32, 256);      /* JT-exact, small */
     fails += scenario(7, 48, 512);      /* M not divisible by JT (=4) → tail */
     fails += scenario(64, 1536, 12288); /* real Gemma 4 ffn_down shape */
+    fails += scenario(5, 32, 1040);     /* K % 256 != 0: a short last scale group */
     if (fails == 0)
         fprintf(stdout, "OK\n");
     return fails == 0 ? 0 : 1;

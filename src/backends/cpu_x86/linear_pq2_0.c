@@ -35,7 +35,7 @@
  * DRAM, so the hardware prefetchers limit it: a software prefetch
  * PREFETCH_BYTES ahead more than doubles the read rate on a 4-vCPU Xeon
  * (Sapphire Rapids class), to the host's read bandwidth. Each thread's rows
- * are contiguous (schedule(static)), so the prefetch address runs on across
+ * are contiguous (geist_par_for), so the prefetch address runs on across
  * row boundaries. A prefetch never faults, past the end of the weight
  * included.
  *
@@ -65,6 +65,7 @@
 #include "checked.h"
 #include "hw_probe.h"
 #include "linear_ref.h"
+#include "par.h"
 #include "quant.h"
 
 #include <geist_backend.h>
@@ -250,6 +251,37 @@ static inline float row_dot(size_t nb, const uint8_t *w, const int8_t *xq, const
     return hsum_ps(_mm256_add_ps(acc0, acc1));
 }
 
+/* One call for geist_par_for: the weight, the activation rows x and their
+ * int8 codes (xq, the block sums, the factors: written by quant_tokens, read
+ * by the rest), y; for the GEMM one accumulator block per range. */
+struct pq2_call {
+    size_t         m, n_in, n_out, nb, rb, acc_elems;
+    const uint8_t *raw;
+    const float   *x;
+    int8_t        *xq;
+    int32_t       *bias; /* M=1: the bias vectors; M>1: minus the block sums */
+    float         *inv;  /* M>1: per token */
+    float          inv1; /* M=1 */
+    float         *accs;
+    float         *y;
+    atomic_size_t  slot;
+};
+
+/* M=1: output rows [j0, j1). */
+static void rows_m1(void *ctx, size_t j0, size_t j1) {
+    const struct pq2_call *pc   = ctx;
+    const size_t           nb   = pc->nb;
+    const size_t           rb   = pc->rb;
+    const uint8_t         *raw  = pc->raw;
+    const int8_t          *xq   = pc->xq;
+    const int32_t         *bias = pc->bias;
+    const float            inv  = pc->inv1;
+    float                 *y    = pc->y;
+    for (size_t j = j0; j < j1; j++) {
+        y[j] = row_dot(nb, raw + j * rb, xq, bias) * inv;
+    }
+}
+
 static void cpu_x86_linear_pq2_0_m1(const float               *x,
                                     const struct geist_weight *w,
                                     struct geist_backend      *be,
@@ -267,18 +299,14 @@ static void cpu_x86_linear_pq2_0_m1(const float               *x,
         geist_linear_ref(1, x, w, y); /* no scratch: the reference needs none */
         return;
     }
-    int8_t        *xq   = ws->mN_acts;
-    int32_t       *bias = ws->mN_sum_a;
-    const float    inv  = quantize_acts(nb, x, xq, bias);
-    const uint8_t *raw  = (const uint8_t *) w->raw;
-    const size_t   rb   = nb * BB;
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t j = 0; j < n_out; j++) {
-        y[j] = row_dot(nb, raw + j * rb, xq, bias) * inv;
-    }
+    struct pq2_call c = {.nb   = nb,
+                         .rb   = nb * BB,
+                         .raw  = (const uint8_t *) w->raw,
+                         .xq   = ws->mN_acts,
+                         .bias = ws->mN_sum_a,
+                         .y    = y};
+    c.inv1            = quantize_acts(nb, x, c.xq, c.bias);
+    geist_par_for(n_out, rows_m1, &c);
 }
 
 /* codes . xq over one block, as 8 int32 lanes, minus the block's xq sum
@@ -326,9 +354,52 @@ static inline float hsum8(const float *v) {
     return hsum_ps(_mm256_load_ps(v));
 }
 
+/* M>1: tokens [t0, t1) to int8 in the GEMM layout. */
+static void quant_tokens(void *ctx, size_t t0, size_t t1) {
+    const struct pq2_call *c = ctx;
+    for (size_t t = t0; t < t1; t++) {
+        c->inv[t] = quantize_token(c->m, c->nb, c->x + t * c->n_in, c->xq + t * QK, c->bias + t);
+    }
+}
+
+/* M>1: groups [g0, g1) of GEMM_ROWS weight rows, on the range's own
+ * accumulators. */
+static void gemm_groups(void *ctx, size_t g0, size_t g1) {
+    struct pq2_call *pc      = ctx;
+    const size_t     m       = pc->m;
+    const size_t     n_out   = pc->n_out;
+    const size_t     nb      = pc->nb;
+    const size_t     rb      = pc->rb;
+    const uint8_t   *raw     = pc->raw;
+    const int8_t    *xq      = pc->xq;
+    const int32_t   *neg_sum = pc->bias;
+    const float     *inv     = pc->inv;
+    float           *y       = pc->y;
+    float           *acc     = pc->accs + par_slot(&pc->slot) * pc->acc_elems;
+    for (size_t g = g0; g < g1; g++) {
+        const size_t r0 = g * GEMM_ROWS;
+        const size_t nr = n_out - r0 < GEMM_ROWS ? n_out - r0 : GEMM_ROWS;
+        memset(acc, 0, nr * m * 8 * sizeof(float));
+        for (size_t b = 0; b < nb; b++) {
+            for (size_t r = 0; r < nr; r++) {
+                block_tokens(m,
+                             raw + (r0 + r) * rb + b * BB,
+                             xq + b * m * QK,
+                             neg_sum + b * m,
+                             acc + r * m * 8);
+            }
+        }
+        for (size_t r = 0; r < nr; r++) {
+            for (size_t t = 0; t < m; t++) {
+                y[t * n_out + r0 + r] = hsum8(acc + (r * m + t) * 8) * inv[t];
+            }
+        }
+    }
+}
+
 /* M>1: all m rows quantized (in parallel, one token per iteration), then the
- * GEMM by groups of GEMM_ROWS weight rows, each thread with its own
- * accumulators. The workspace holds the int8 activations (mN_acts), the
+ * GEMM by groups of GEMM_ROWS weight rows, each range with its own
+ * accumulators (par_slot). The workspace holds the int8 activations (mN_acts), the
  * block sums (mN_sum_a), the per-token factors (mN_scale) and the
  * accumulators (mN_aux). */
 static void cpu_x86_linear_pq2_0_mN(size_t                     m,
@@ -351,48 +422,22 @@ static void cpu_x86_linear_pq2_0_mN(size_t                     m,
         geist_linear_ref(m, x, w, y); /* no scratch: the reference needs none */
         return;
     }
-    int8_t        *xq      = ws->mN_acts;
-    int32_t       *neg_sum = ws->mN_sum_a;
-    float         *inv     = ws->mN_scale;
-    float         *accs_ws = (float *) (void *) ws->mN_aux;
-    const uint8_t *raw     = (const uint8_t *) w->raw;
-    const size_t   rb      = nb * BB;
-    const size_t   groups  = (n_out + GEMM_ROWS - 1) / GEMM_ROWS;
-
-#if defined(_OPENMP)
-#pragma omp parallel
-#endif
-    {
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-        for (size_t t = 0; t < m; t++) {
-            inv[t] = quantize_token(m, nb, x + t * n_in, xq + t * QK, neg_sum + t);
-        }
-        float *acc = accs_ws + team_id() * acc_elems;
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-        for (size_t g = 0; g < groups; g++) {
-            const size_t r0 = g * GEMM_ROWS;
-            const size_t nr = n_out - r0 < GEMM_ROWS ? n_out - r0 : GEMM_ROWS;
-            memset(acc, 0, nr * m * 8 * sizeof(float));
-            for (size_t b = 0; b < nb; b++) {
-                for (size_t r = 0; r < nr; r++) {
-                    block_tokens(m,
-                                 raw + (r0 + r) * rb + b * BB,
-                                 xq + b * m * QK,
-                                 neg_sum + b * m,
-                                 acc + r * m * 8);
-                }
-            }
-            for (size_t r = 0; r < nr; r++) {
-                for (size_t t = 0; t < m; t++) {
-                    y[t * n_out + r0 + r] = hsum8(acc + (r * m + t) * 8) * inv[t];
-                }
-            }
-        }
-    }
+    struct pq2_call c = {.m         = m,
+                         .n_in      = n_in,
+                         .n_out     = n_out,
+                         .nb        = nb,
+                         .rb        = nb * BB,
+                         .acc_elems = acc_elems,
+                         .raw       = (const uint8_t *) w->raw,
+                         .x         = x,
+                         .xq        = ws->mN_acts,
+                         .bias      = ws->mN_sum_a,
+                         .inv       = ws->mN_scale,
+                         .accs      = (float *) (void *) ws->mN_aux,
+                         .y         = y};
+    atomic_init(&c.slot, 0);
+    geist_par_for(m, quant_tokens, &c);
+    geist_par_for((n_out + GEMM_ROWS - 1) / GEMM_ROWS, gemm_groups, &c);
 }
 
 #ifndef GEIST_NO_AMX /* the assembler knows AMX; mk/backend-cpu_x86.mk */
@@ -491,9 +536,11 @@ static void cpu_x86_linear_pq2_0_mN_amx(size_t                     m,
  * permission for the 8 KB of tile data per thread (arch_prctl
  * ARCH_REQ_XCOMP_PERM, Linux 5.16+; process-wide and idempotent, so asking
  * once per bind is harmless). Decided here, outside that TU — see
- * mk/backend-cpu_x86.mk. */
+ * mk/backend-cpu_x86.mk. Also OpenMP: the AMX GEMM is still an OpenMP
+ * region, one thread without it, slower than the AVX2 GEMM on
+ * geist_par_for (#618). */
 bool cpu_x86_linear_pq2_0_amx_usable(void) {
-#if defined(__linux__) && defined(SYS_arch_prctl) && !defined(GEIST_NO_AMX)
+#if defined(__linux__) && defined(SYS_arch_prctl) && !defined(GEIST_NO_AMX) && defined(_OPENMP)
     struct geist_hw_probe hw;
     geist_hw_probe_isa(&hw);
     constexpr long ARCH_REQ_XCOMP_PERM = 0x1023;

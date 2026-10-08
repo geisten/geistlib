@@ -60,7 +60,7 @@ static const char *weight_path_dtype_name(enum geist_dtype dtype) {
             [GEIST_DTYPE_I2_S] = "i2_s",     [GEIST_DTYPE_IQ4_NL] = "iq4_nl",
             [GEIST_DTYPE_IQ4_XS] = "iq4_xs", [GEIST_DTYPE_PQ2_0] = "pq2_0",
             [GEIST_DTYPE_BINARY] = "binary", [GEIST_DTYPE_TERNARY] = "ternary",
-            [GEIST_DTYPE_CUSTOM] = "custom",
+            [GEIST_DTYPE_CUSTOM] = "custom", [GEIST_DTYPE_Q5_0] = "q5_0",
     };
     return names[dtype] != nullptr ? names[dtype] : "unknown";
 }

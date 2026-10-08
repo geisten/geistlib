@@ -1,7 +1,8 @@
 /*
  * src/backends/cpu_x86/q8_kx4.c — Q8_Kx4 activation quantizer.
  *
- * Per-row symmetric int8 quantization with the interleaved 8-byte-stripe
+ * Symmetric int8 quantization, one scale per row and 256-element
+ * super-block (as Q8_K), with the interleaved 8-byte-stripe
  * layout the lane-parallel GEMM kernel expects. Plus precomputed
  * 16-element-sub-block sums (bsums) so the Q4_K min-term can be applied
  * once per super-block in the inner kernel.
@@ -21,19 +22,6 @@
 void quantize_q8_Kx4(size_t n_in, const float x_rows[static 4 * n_in], struct block_q8_Kx4 *out) {
     const size_t n_super = n_in / 256;
 
-    /* Per row: find max-abs, derive scale_x = max|x| / 127. */
-    float scale_x[4];
-    for (int r = 0; r < 4; r++) {
-        float amax = 0.0f;
-        for (size_t k = 0; k < n_in; k++) {
-            const float a = fabsf(x_rows[(size_t) r * n_in + k]);
-            if (a > amax) {
-                amax = a;
-            }
-        }
-        scale_x[r] = (amax == 0.0f) ? 1.0f : (amax / 127.0f);
-    }
-
     /* Per super-block: quantize + interleave + compute bsums.
      *
      * qs layout per super-block (offset within out[s].qs[]):
@@ -47,8 +35,18 @@ void quantize_q8_Kx4(size_t n_in, const float x_rows[static 4 * n_in], struct bl
      */
     for (size_t s = 0; s < n_super; s++) {
         struct block_q8_Kx4 *b = &out[s];
+        /* One scale per row and super-block, as Q8_K has: a row-wide
+         * max-abs lets one outlier coarsen the quantization of every other
+         * super-block in the row (#694). */
+        float scale_x[4];
         for (int r = 0; r < 4; r++) {
-            b->d[r] = scale_x[r];
+            const float *row  = x_rows + (size_t) r * n_in + s * 256;
+            float        amax = 0.0f;
+            for (size_t k = 0; k < 256; k++) {
+                amax = fmaxf(amax, fabsf(row[k]));
+            }
+            scale_x[r] = (amax == 0.0f) ? 1.0f : (amax / 127.0f);
+            b->d[r]    = scale_x[r];
         }
 
         for (int sb = 0; sb < 4; sb++) {

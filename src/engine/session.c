@@ -21,6 +21,8 @@
 #include "heap.h"
 #include "parse.h"
 #include "image_pipeline.h"
+#include "dry_breakers.h"
+#include "sampler.h"
 #include "sp_bpe_tokenizer.h"
 #include "gguf_tokenizer.h"
 
@@ -270,6 +272,34 @@ void geist_session_cancel(struct geist_session *s) {
     }
 }
 
+/* DRY sequence breakers (#695): the opts' strings, or llama.cpp's defaults,
+ * matched against the vocabulary here, where the tokenizer is, and handed
+ * to the architecture as token sequences. Only when DRY is on. */
+[[nodiscard]] static enum geist_status
+set_dry_breakers(struct geist_session_full                 *sf,
+                 const struct geist_sampler_penalty_params *p,
+                 const struct geist_session_opts           *opts) {
+    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
+    if (!geist_sampler_dry_on(p) || ops == nullptr || ops->set_dry_breakers == nullptr) {
+        return GEIST_OK;
+    }
+    const char *const *strs   = opts->dry_sequence_breakers;
+    size_t             n_strs = opts->n_dry_sequence_breakers;
+    if (strs == nullptr) {
+        strs   = geist_dry_default_breakers;
+        n_strs = sizeof geist_dry_default_breakers / sizeof geist_dry_default_breakers[0];
+    }
+    size_t            n_words = 0;
+    geist_token_t    *packed  = nullptr;
+    enum geist_status s       = geist_dry_breakers_resolve(
+            &n_words, &packed, geist_model_internal_gguf_tokenizer(sf->model), n_strs, strs);
+    if (s == GEIST_OK && n_words > 0) {
+        s = ops->set_dry_breakers(arch_sess(sf), n_words, packed);
+    }
+    safe_free((void **) &packed);
+    return s;
+}
+
 [[nodiscard]] enum geist_status geist_session_create(struct geist_model              *m,
                                                      struct geist_backend            *be,
                                                      const struct geist_session_opts *opts,
@@ -295,6 +325,18 @@ void geist_session_cancel(struct geist_session *s) {
                                     m->backend != nullptr ? geist_backend_name(m->backend)
                                                           : "(null)",
                                     geist_backend_name(be));
+        return GEIST_E_INVALID_ARG;
+    }
+
+    /* Repetition control (#695): refuse invalid values before anything is
+     * allocated; the architecture resolves the same parameters again. */
+    struct geist_sampler_penalty_params pen;
+    if (geist_sampler_penalty_params_from_opts(&pen, opts) != GEIST_OK) {
+        geist_error_set_create_time(GEIST_E_INVALID_ARG,
+                                    "geist_session_create",
+                                    "invalid repetition penalty options (a value is not finite, "
+                                    "a window or length is negative, repeat_penalty < 0 or "
+                                    "dry_base in (0, 1))");
         return GEIST_E_INVALID_ARG;
     }
 
@@ -355,6 +397,16 @@ void geist_session_cancel(struct geist_session *s) {
             void *tmp = sf;
             safe_free(&tmp);
             return os;
+        }
+    }
+
+    if (opts != nullptr) {
+        const enum geist_status ds = set_dry_breakers(sf, &pen, opts);
+        if (ds != GEIST_OK) {
+            geist_error_set_create_time(
+                    ds, "geist_session_create", "DRY sequence breakers could not be resolved");
+            geist_session_destroy((struct geist_session *) sf);
+            return ds;
         }
     }
 

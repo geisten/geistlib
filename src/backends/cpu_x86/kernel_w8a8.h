@@ -13,14 +13,21 @@
  *
  *   for each block b in [0, n_blocks):
  *       d_b = sum over i in [0, 16) of u_w[b, i] * a[b, i]
- *   y = scale_x * sum_b ( w_scales[b] * d_b - w_offsets[b] * sum_a[b] )
+ *   y = sum_g act_scales[g] * sum_{b in group g}
+ *                                 ( w_scales[b] * d_b - w_offsets[b] * sum_a[b] )
  *
  * where:
  *   u_w[b, i] ∈ [0, 255] unsigned 8-bit (Q6_K predecoder writes [0, 63]).
- *   a[b, i]   ∈ [-127, 127] signed int8, pre-quantized per row.
+ *   a[b, i]   ∈ [-127, 127] signed int8 (w8a8_quantize_acts_row).
  *   w_scales[b], w_offsets[b] fp32 per-block.
  *   sum_a[b]  int32 per-block sum of a[b, .].
- *   scale_x   per-row fp32 activation scale.
+ *   act_scales[g] fp32 activation scale of group g: W8A8_ACT_GROUP_BLOCKS
+ *             blocks (256 elements, the Q8_K super-block); the last group
+ *             of a row may be shorter.
+ *
+ * One activation scale per 256 elements, not per row (#694): a row-wide
+ * scale lets one outlier — Gemma's FFN activations have them — flatten the
+ * resolution of every other element of the row.
  *
  * The hot path is allocation-free. The caller owns every buffer.
  */
@@ -36,13 +43,31 @@
 
 constexpr size_t W8A8_BLOCK_ELEMS = 16;
 
+/* Blocks per activation scale: 16 x 16 = 256 elements. */
+constexpr size_t W8A8_ACT_GROUP_BLOCKS = 16;
+
+/* Activation scales per row of n_blocks blocks. */
+static inline size_t w8a8_act_groups(size_t n_blocks) {
+    return (n_blocks + W8A8_ACT_GROUP_BLOCKS - 1) / W8A8_ACT_GROUP_BLOCKS;
+}
+
+/* Quantize one fp32 activation row to symmetric int8 with one scale per
+ * group (act_scales[g] = max|x| / 127 over the group, 1.0 when all-zero)
+ * and the per-block sums the kernels' offset term needs. n_in must be a
+ * positive multiple of W8A8_BLOCK_ELEMS. Allocation-free. */
+void w8a8_quantize_acts_row(size_t      n_in,
+                            const float x[static n_in],
+                            int8_t      acts[static n_in],
+                            int32_t     sum_a_per_block[static n_in / W8A8_BLOCK_ELEMS],
+                            float act_scales[static w8a8_act_groups(n_in / W8A8_BLOCK_ELEMS)]);
+
 [[nodiscard]] float w8a8_dot_scalar(size_t        n_blocks,
                                     const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
                                     const float   w_scales[static n_blocks],
                                     const float   w_offsets[static n_blocks],
                                     const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
                                     const int32_t sum_a_per_block[static n_blocks],
-                                    float         scale_x);
+                                    const float   act_scales[static w8a8_act_groups(n_blocks)]);
 
 [[nodiscard]] float w8a8_dot(size_t        n_blocks,
                              const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
@@ -50,7 +75,7 @@ constexpr size_t W8A8_BLOCK_ELEMS = 16;
                              const float   w_offsets[static n_blocks],
                              const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
                              const int32_t sum_a_per_block[static n_blocks],
-                             float         scale_x);
+                             const float   act_scales[static w8a8_act_groups(n_blocks)]);
 
 /* Multi-row GEMV: n_rows independent dots, OMP-parallel internally. */
 void w8a8_gemv(size_t        n_rows,
@@ -60,7 +85,7 @@ void w8a8_gemv(size_t        n_rows,
                const float   w_offsets[static n_rows * n_blocks_per_row],
                const int8_t  acts[static n_blocks_per_row * W8A8_BLOCK_ELEMS],
                const int32_t sum_a_per_block[static n_blocks_per_row],
-               float         scale_x,
+               const float   act_scales[static w8a8_act_groups(n_blocks_per_row)],
                float         out[static n_rows]);
 
 /* Prefill GEMM: M tokens × n_rows output rows. Y is token-major row-major
@@ -76,7 +101,7 @@ void w8a8_gemm(size_t        n_tokens,
                const float   w_offsets[static n_rows * n_blocks_per_row],
                const int8_t  acts[static n_tokens * n_blocks_per_row * W8A8_BLOCK_ELEMS],
                const int32_t sum_a_per_block[static n_tokens * n_blocks_per_row],
-               const float   scale_x[static n_tokens],
+               const float   act_scales[static n_tokens * w8a8_act_groups(n_blocks_per_row)],
                float         out[static n_tokens * n_rows]);
 
 /* --- Lane-parallel W8A8 (W8x8) ---------------------------------------------
@@ -138,7 +163,7 @@ void w8x16_gemm(size_t        n_tokens,
                 const float   offsets[static n_rows * n_blocks_per_row],
                 const int8_t  acts[static n_tokens * n_blocks_per_row * W8A8_BLOCK_ELEMS],
                 const int32_t sum_a_per_block[static n_tokens * n_blocks_per_row],
-                const float   scale_x[static n_tokens],
+                const float   act_scales[static n_tokens * w8a8_act_groups(n_blocks_per_row)],
                 float         out[static n_tokens * n_rows]);
 
 /* Lane-parallel prefill GEMM. n_rows % W8X8_NROWS == 0. Y is token-major
@@ -152,9 +177,10 @@ void w8x8_gemm(size_t        n_tokens,
                const float   offsets[static n_rows * n_blocks_per_row],
                const int8_t  acts[static n_tokens * n_blocks_per_row * W8A8_BLOCK_ELEMS],
                const int32_t sum_a_per_block[static n_tokens * n_blocks_per_row],
-               const float   scale_x[static n_tokens],
+               const float   act_scales[static n_tokens * w8a8_act_groups(n_blocks_per_row)],
                float         out[static n_tokens * n_rows]);
 
-/* Activations are quantized by w4a8_quantize_acts_row (kernel_w4a8.h). */
+/* Activations are quantized by w8a8_quantize_acts_row above; the GEMMs
+ * read token j's scales at act_scales[j * w8a8_act_groups(n_blocks)]. */
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_KERNEL_W8A8_H */

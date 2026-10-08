@@ -4,16 +4,16 @@
  * (#488).
  *
  * The transformer arch slices one scratch pool into ~20 activation slots.
- * By default it is host-visible: mapped, then sliced with
+ * Under GEIST_VK_SCRATCH_DEVICE=0 it is host-visible: mapped, then sliced with
  * buffer_create_aliased(host pointer). Without resizable BAR a large pool
- * spills into system memory and every GPU op on it crosses the bus. Under
- * GEIST_VK_SCRATCH_DEVICE=1 a session whose host paths never map those
+ * spills into system memory and every GPU op on it crosses the bus. By
+ * default (or =1) a session whose host paths never map those
  * slots puts them in device-local memory, sliced with buffer_create_view
  * (offset, no host pointer); h_a, h_b and logits — which the host reads —
  * stay in a small host-visible pool. Checked here on the in-memory llama:
  *
- *   1. placement: by default every slot is host-visible (no device pool);
- *      opted in, every slot but h_a / h_b / logits is device-local and
+ *   1. placement: opted out, every slot is host-visible (no device pool);
+ *      otherwise every slot but h_a / h_b / logits is device-local and
  *      unmappable, and those three are mappable. The backend's scratch
  *      counters move with it.
  *   2. the all-ones slot (uploaded through a view, not mapped) holds ones;
@@ -68,11 +68,7 @@ struct rig {
  * 99 setup failure. */
 static int rig_open(bool device, const struct tf_buf *g, struct rig *r) {
     *r = (struct rig) {0};
-    if (device) {
-        setenv("GEIST_VK_SCRATCH_DEVICE", "1", 1);
-    } else {
-        unsetenv("GEIST_VK_SCRATCH_DEVICE");
-    }
+    setenv("GEIST_VK_SCRATCH_DEVICE", device ? "1" : "0", 1);
     const enum geist_status s = geist_backend_create("vulkan", nullptr, nullptr, &r->be);
     unsetenv("GEIST_VK_SCRATCH_DEVICE");
     if (s != GEIST_OK || r->be == nullptr) {
@@ -389,7 +385,7 @@ int main(void) {
     if (fails != 0) {
         return GEIST_TEST_FAIL;
     }
-    printf("PASS: scratch placed device-local only when opted in, decoding unchanged, CPU "
+    printf("PASS: scratch placed device-local unless opted out, decoding unchanged, CPU "
            "fallbacks on device-local scratch refused\n");
     return GEIST_TEST_PASS;
 }

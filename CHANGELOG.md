@@ -8,7 +8,176 @@ minor release.
 
 ## [Unreleased]
 
+### Changed
+
+- **Vulkan: Gemma 4's F32 PLE projection no longer sits in the weight arena
+  (#658).** `per_layer_model_proj`, widened from F16 to F32 at load, was the
+  one large matrix kept in the arena, so on Gemma 4 E4B the arena grew to
+  157 MB of the 256 MB BAR window and the 42 MiB host-visible scratch buffer
+  fell back to system RAM. On backends that copy weights to the device the
+  widened matrix now lives in host memory of its own, and `resolve_weight`
+  uploads it to VRAM as before; the arena shrinks to 104 MB and the scratch
+  buffer fits the BAR. RTX 2080 Ti, pp512 / tg16: E4B 1561 → 1893 t/s prefill,
+  99.2 → 101.7 t/s decode; E2B and Llama 3.2 3B unchanged. CPU backends and
+  Metal load it as before; logits are unchanged.
+- **Vulkan (internal): one table lists the compute pipelines (#469).**
+  `src/backends/vulkan/vk_pipes.def` has one row per pipeline (enum id,
+  SPIR-V blob, profiler name, binding count, plain / tiled-GEMM / coopmat),
+  and `enum vk_pipe`, `vk_pipe_nbind[]`, `vk_pipe_needs_coopmat()`,
+  `vk_pipe_is_tiled_gemm()`, the blob table and the `GEIST_VK_PROFILE` names
+  are generated from it. A new pipeline is one row plus its `_spv.h`
+  `#include` instead of edits in six places; a missing include fails to
+  compile and a binding count outside 2..`VK_MAX_BINDINGS` is a
+  `static_assert`. Pipeline order, the generated tables and the profile
+  output are unchanged.
+
+### Fixed
+
+- **cpu_x86: the Q4_Kx8 kernels quantize activations with one scale per
+  256-element super-block (#694).** `quantize_q8_Kx4` (prefill) and the M = 1
+  GEMV's quantizer took one max-abs over the whole row and wrote it into every
+  super-block's scale, so a single activation outlier coarsened the rest of
+  the row; llama.cpp's Q8_K, which the layout copies, scales per super-block.
+  Q4_K weights on AVX-512 hosts change numerically (prefill and decode); the
+  kernels and their speed are unchanged.
+- **cpu_x86: the W8A8 kernels take one activation scale per 256 elements
+  (#694).** Q6_K prefill on AVX-512 VNNI hosts and every F32 dense weight
+  (Gemma 4's per-layer-embedding gate and projection) quantized each
+  activation row with a single scale. Gemma 4 E2B Q4_K_M on a decision
+  prompt: the layer outputs' error against the fp32 oracle, averaged over the
+  prompt, falls from 2.2 % / 15.3 % / 13.3 % (layers 0 / 10 / 34) to 1.2 % /
+  7.7 % / 6.8 %, about llama.cpp's level. Prefill speed is unchanged within
+  noise (9950X, pp128 / pp512).
+
+- **Vulkan: Gemma 4 keeps its scratch pool in VRAM under
+  `GEIST_VK_SCRATCH_DEVICE=1` (#488).** The device-local pool skipped every
+  model with per-layer embeddings, although PLE's host loops only run when the
+  on-device row lookup is unbound. Gemma 4 therefore requested its whole pool
+  host-visible; from `GEIST_M_MAX=256` on it no longer fit the 256 MB BAR and
+  fell back to system RAM, and prefill collapsed. RTX 2080 Ti, Gemma 4 E2B
+  pp512 with the flag: 356 → 1739 t/s at M 256, 349 → 1785 at M 512 (1385 at
+  the default 64); E4B at M 512: 239 → 809. Decode no longer drops at large M
+  (117 → 151 t/s).
+- **Vulkan: the device-local scratch pool is the default.**
+  `GEIST_VK_SCRATCH_DEVICE=0` keeps the host-visible pool; the arch still uses
+  the device pool only where no host path maps a slot, so the other models
+  are unchanged. At the default chunk this stops Gemma 4 from shrinking its
+  chunk or spilling its pool to fit the BAR window. RTX 2080 Ti, defaults:
+  Gemma 4 E2B pp512 1384 → 1621 t/s, E4B pp512 272 → 748 t/s and tg 74 → 91
+  t/s; Llama 3.2 3B and Qwen3 0.6B within ±1 %. The default chunk stays 128:
+  256 gained 3–4 % on the device-pool models but cost Bonsai 2 27B 20 % and
+  Qwen3.5 4B part of its pool to system RAM.
+- **Vulkan: sessions with a device-local scratch pool default to 512-row
+  prefill chunks when the device has room.** The device pool takes the BAR
+  window out of the chunk's limits, and a bigger chunk feeds the GEMMs. The
+  chunk grows only when the bigger pool fits in half of the free device memory
+  (`geist_backend_memory_info`); sessions on a host-visible pool (DeltaNet,
+  quantized KV, …) keep the chunk the BAR allows. RTX 2080 Ti, defaults, pp512:
+  Gemma 4 E2B 1641 → 1839 t/s, E4B 754 → 865, Llama 3.2 3B 1229 → 1334; Qwen3
+  0.6B Q8_0 with the tensor-core GEMM ~5000 → 6630.
+- **Vulkan: narrow k-quant GEMMs keep the 64 × 64 tensor-core tile from 256
+  rows on, and the Q6_K tile is double-buffered (#658).** The 32 × 32 tile
+  was chosen for every `n_out < 4096` so that a 64-row chunk had workgroups
+  enough; with 512-row chunks the 64 × 64 tile already has 192 and is faster.
+  RTX 2080 Ti, defaults, pp512: Gemma 4 E2B 1813 → 2079 t/s, E4B 851 → 968,
+  Llama 3.2 3B 1315 → 1595. The Q6_K kernel now stages k-step ks+1 while the
+  MMAs consume ks, as the Q4_K one does: 407 → 392 µs per call on Gemma.
+
+- **Vulkan: a cached descriptor set could rebind another dispatch to the wrong
+  buffer (#665).** When a buffer was destroyed, every cached descriptor set
+  became reusable, and a reused set was rewritten for a dispatch with more
+  bindings than its layout had (`VUID-VkWriteDescriptorSet-dstBinding-00315`).
+  The overrun landed in a neighbouring set, so qwen35 sessions created next to
+  other live sessions occasionally computed with a wrong buffer (logits off by
+  up to ~6), and `test_session_snapshot_unit` failed about every second run on
+  an RTX 2080 Ti. Reuse now requires the same binding count.
+### Changed
+
+- **cpu_x86: TQ2_0 prefill on AVX2 hosts 11 % faster (#662).** The M>1 kernel
+  `dot_rows` (hosts without AVX-512 VNNI) uses named accumulators and one loop
+  over the 32-byte halves instead of `acc[NR]` / `p16[NR]` arrays in a nested
+  loop, which gcc 15 unrolled and kept on the stack. Output is bit-identical.
+  Ryzen 9 9950X with `GEIST_FORCE_ISA=avx2`, bitnet-b1.58-large TQ2_0, pp512:
+  −11.0 % prefill time (95 % interval −12.2 % … −8.8 %, 12/12 cycles).
+- **Vulkan: weight uploads reuse one staging buffer (#469).** Each staged
+  upload created, mapped and freed a host-visible buffer of the weight's full
+  size (page faults on hundreds of MB per tensor). A persistent 64 MiB buffer
+  now carries every upload in chunks. Ternary Bonsai 2 27B (7.2 GB) loads in
+  3.1–3.5 s instead of 4.2–5.5 s on an RTX 2080 Ti (three interleaved runs).
+- **Vulkan: TQ2_0 prefill GEMM on the tensor cores (#467).** A TQ2_0 A stage
+  in `matmul_legacy_cm_body.glsl` (64 x 64 tile) and in the 128 x 128 PQ2_0
+  frame (`matmul_pq2_0_cm_body.glsl`), which takes over from
+  `n_out * m >= 4 * 2^16`. BitNet b1.58-large TQ2_0 on an RTX 2080 Ti, pp512:
+  TQ2_0 GEMM GPU time ~210 → ~37 ms, prefill 412 → 84 ms (1243 → 6070 t/s);
+  CPU-vs-Vulkan logits unchanged (corr 0.99958, 0.99959 before).
+- **Vulkan: Q4_1 prefill GEMM on the tensor cores (#467).** A Q4_1 A stage
+  (native 20-byte block) in `matmul_legacy_cm_body.glsl`. Qwen3.5 4B Q4_0 (its
+  Q4_1 tensors) on an RTX 2080 Ti, pp512: Q4_1 GEMM 55.0 → 11.9 ms, prefill
+  876 → 1071 t/s.
+- **Vulkan: Q5_K prefill GEMM on the tensor cores (#467).** The Q4_K coopmat
+  kernel's body (`matmul_kq_cm_body.glsl`) now takes a Q5_K A stage (the qh
+  fifth bit). Qwen3.8 27B Q4_0 (its Q5_K tensors) on an RTX 2080 Ti with the
+  #466 spill, pp256 GPU time 864 → 290 ms for Q5_K; with the Q4_0 kernel the
+  27B prefills at 50.8 t/s (18.7 before).
+- **Vulkan: Q4_0 prefill GEMM on the tensor cores (#467).** The Q8_0
+  coopmat kernel's body now takes a Q4_0 A stage too (shared
+  `matmul_legacy_cm_body.glsl`). RTX 2080 Ti, Qwen3.5 4B Q4_0 pp512: the Q4_0
+  GEMM 1739 → 323 ms, prefill 253 → 817 t/s; CPU-vs-Vulkan logits unchanged
+  (corr 0.99968).
+
+- **Vulkan: Q8_0 GEMMs run on the tensor cores.** Batched Q8_0 linears with
+  `n_out % 64 == 0` and `m % 16 == 0` take a new `KHR_coopmat` kernel (the
+  64 × 64 double-buffered frame of the Q4_K one, f16 operands, f32
+  accumulation) instead of the register-tiled GEMM. RTX 2080 Ti pp512:
+  Qwen3 0.6B Q8_0 2130 → 5570 t/s, Qwen3.5 0.8B Q8_0 1890 → 5360 t/s; decode
+  unchanged. Root cause and ranking in
+  `benchmark/results/VULKAN-PREFILL-GAP-2080TI-2026-10-07.md` (#467).
+- **Vulkan: GEMMs with a row count that is not a multiple of 16 still use the
+  tensor cores.** The leading `m & ~15` rows take the tensor-core kernel and
+  only the tail runs on the register-tiled GEMM (before, the whole chunk fell
+  back). A prompt that fits one prefill chunk now hits the tensor cores
+  regardless of its length. RTX 2080 Ti: Gemma 4 E2B pp100 787 → 1128 t/s,
+  pp500 1131 → 1324; Qwen3 0.6B Q8_0 pp100 2222 → 3957; Bonsai 2 27B pp100
+  39 → 260, pp500 126 → 393; aligned lengths (pp512) unchanged.
 ### Added
+
+- **Repetition control in the sampler: `repeat_penalty`, frequency /
+  presence penalties and DRY (#695, EXPERIMENTAL).** New
+  `geist_session_opts` fields `repeat_penalty`, `repeat_last_n`,
+  `frequency_penalty`, `presence_penalty`, `dry_multiplier`, `dry_base`,
+  `dry_allowed_length`, `dry_penalty_last_n`, `dry_sequence_breakers`,
+  `n_dry_sequence_breakers`, appended to the struct and all off when zero: a
+  zero-initialized struct decodes bit for bit as before (logit and token
+  hashes unchanged on Qwen3 0.6B and Gemma 3 270M, greedy and sampled).
+  The arithmetic is llama.cpp's `penalties` and `dry` samplers (pinned
+  `2d8d612e4`), applied in its order before top-k / top-p / temperature;
+  greedy decoding takes the argmax of the penalized logits. The history is
+  every text token in the session's context (prompt, decoded and prefilled
+  tokens, as llama.cpp's server accepts its prompt), tracked per position so
+  truncate, reset, the speculative rewind and snapshots carry it (snapshot
+  format version 2). DRY sequence breakers are strings (default
+  `"\n" ":" "\"" "*"`), matched against the vocabulary at session create the
+  way llama.cpp does and handed to the architecture through a new optional
+  `set_dry_breakers` slot at the end of `geist_arch_ops_decoder`. Qwen3 0.6B
+  Q4_K_M at temperature 0, "Write a poem about the sea.": "The sea is a
+  metaphor for the human soul." repeated without end; with
+  `repeat_penalty = 1.1` it writes on. The struct grew: binaries built
+  against older headers must be rebuilt. `examples/simple_generate` takes
+  `--repeat-penalty`.
+- **`tools/convert_hf.py`: reproducible Hugging Face → GGUF conversion with a
+  quality gate (#623).** `convert` takes a pinned HF commit through llama.cpp's
+  converter at the protocol pin (`2d8d612e4`), optionally `llama-quantize`, and
+  writes a manifest with the sha256 of every input, the converter commit, its
+  Python dependencies and the output hash; `--check-determinism` converts twice
+  and fails unless the files are byte-identical. `gate` compares the
+  candidate's perplexity with the source precision through `eval_geist` on a
+  fixed public-domain text (`tools/data/ppl_alice.txt`), honouring the model's
+  BOS, against documented bounds per quantization (wider below 2 B
+  parameters). `manifest` turns a gated manifest into a geist-runtime catalog
+  entry. Verified on Qwen3 0.6B (BF16 / Q8_0 / Q4_K_M) and Gemma 4 E2B
+  (BF16 / Q8_0): all conversions reproducible, Q8_0 within 0.3 % of the
+  source; the `convert-gate` workflow runs SmolLM2 135M end to end. The gate
+  found #674 (Gemma 3 270M logits) and #675 (Q5_0 weights).
 
 - **`geist_session_cancel`: stop a prefill from another thread (#628).**
   EXPERIMENTAL, in `geist_util.h`. Safe from any thread; a prefill checks
@@ -36,12 +205,137 @@ minor release.
   the caller queries from the OS). `GEIST_HAS_BACKEND_MEMORY_INFO` is defined
   with it, so a consumer pinned to an older engine can still build. Test:
   `test_backend_memory_info_unit` (vulkan-gpu CI leg).
+- **GGUF Q5_0 weights load and run (#675).** `llama-quantize ... Q4_K_M`
+  keeps some tensors of small models in Q5_0 (ggml type 6), and the loader
+  refused them (`'blk.0.attn_q.weight' has unsupported dtype Q5_0`). New
+  `GEIST_DTYPE_Q5_0` in `geist_types.h`, appended after `GEIST_DTYPE_PQ2_0`
+  (value 23) so no published dtype value moves; `GEIST_DTYPE_COUNT` grows by
+  one. There is no native kernel yet: cpu_scalar runs the reference,
+  cpu_x86 the multi-threaded generic dequant linear, cpu_neon the dequant
+  trampolines, and Vulkan installs its host path (refused under
+  `GEIST_VK_STRICT=1`); Metal resolves nothing for it and the first linear
+  fails with `linear_w: backend resolver installed no kernel`. Token
+  embeddings in Q5_0 dequantize on the host. Qwen3-0.6B quantized to Q5_0
+  by llama-quantize: perplexity 24.65 against 24.01 for BF16 (llama.cpp:
+  23.39 / 22.99). Vulkan's host linear (all dtypes without a shader) now runs
+  `geist_linear_ref` split over OpenMP threads, on host copies of x and y
+  rather than reading the mapped buffers (BAR-resident when the device has
+  a BAR window) once per output row, single-threaded. That model's 8-token
+  prompt plus 16 decoded tokens did not finish in 20 minutes before and
+  takes 83 s now, on a loaded host; most of what is left is per-linear
+  overhead, not the dot products. Test: `test_q5_0_unit`.
 
 ### Changed
+- **Vulkan: weights that do not fit the device spill to host memory (#466).**
+  A model larger than VRAM used to fail at load. Weights now go to VRAM until
+  one would leave less than a reserve (1/16 of the device; overridden by
+  `GEIST_VK_WEIGHT_RESERVE`; other processes' usage counted through
+  `VK_EXT_memory_budget`); the rest live in host memory and are read over the
+  bus, with one note on stderr. Qwen3.8 27B Q4_0 on an RTX 2080 Ti: pp512
+  18.7 t/s, tg 2.2 t/s (cpu_x86 on a 9950X: 32.6 / 4.8). The KV cache does not
+  spill. `test_backend_vulkan_vram_budget_unit` checks a spilled model decodes
+  the same tokens.
+- **Vulkan: tensor-core prefill attention for head_dim 128 and 512 and for
+  sliding windows (#475).** The coopmat attention ran only at head_dim 256
+  without a window. RTX 2080 Ti, pp512, attention GPU time: Qwen3 0.6B 42.8 →
+  15.7 ms (prefill 1454 → 1635 t/s); Gemma 4 E2B unchanged in total (global
+  hd-512 layers 19.3 → 16.0 ms, windowed hd-256 layers ~even).
+- **Vulkan: compiled pipelines persist across processes (#469).** Backend
+  creation built ~70 compute pipelines, ~2 s on an RTX 2080 Ti the first time
+  any new executable ran (the NVIDIA driver keys its shader cache by
+  executable). A `VkPipelineCache` is now loaded from and saved to
+  `~/.cache/geist/vulkan-pipelines-<pipelineCacheUUID>.bin` (or
+  `$XDG_CACHE_HOME/geist`; `GEIST_VK_PIPELINE_CACHE` names the file, `0` turns
+  it off): a new executable's first backend 1962 → 306 ms. Written through a
+  temporary file and a rename; an unreadable or foreign file is an empty cache.
+- **Vulkan shaders: one `silu()` (#465).** `silu.glsl` replaces the four
+  copies in `silu_f32`, `silu_mul_f32` and the two DeltaNet kernels; the
+  DeltaNet epilogue's norm reduces one value instead of feeding `reduce2` a
+  dummy zero. No behaviour change (DeltaNet parity and qwen3.5 0.8B
+  CPU-vs-Vulkan logits unchanged).
+- **One internal parallel-for, with or without OpenMP (#618, first batch).**
+  `geist_par_for` (`src/base/par.h`) runs a loop as one OpenMP region where
+  the build has OpenMP, on GCD `dispatch_apply` on Apple without it, and on a
+  small pthread pool otherwise (idle workers spin for `GEIST_IDLE_SPIN_MS`,
+  then sleep). The cpu_x86 BitNet kernels go through it — every I2_S GEMV and
+  GEMM (native, x4, t5, the fused pairs) and the F16 / Q8 lm_head — and
+  cpu_x86's per-phase thread count (`GEIST_DECODE_THREADS`, …) now applies in
+  a build without OpenMP too. Output is bit-identical. The other ~160
+  `#pragma omp` sites still run serially without OpenMP. Test:
+  `test_par_for_unit`, also on the TSan leg.
+- **The rest of cpu_x86 on the same parallel-for (#618, second batch).** Every
+  remaining OpenMP loop of the backend goes through `geist_par_for`: the
+  Q4_0 / Q4_1 / IQ4, Q8_0, TQ2_0, PQ2_0 (AVX2), Q4_K / Q5_K (raw), Q6_K /
+  Q3_K and generic linears, the Q4_Kx8 GEMV and GEMM, the W4A8 / W8A8 kernels,
+  the load-time repacks, gelu / SiLU / RMSNorm / add and the attention driver.
+  A region whose loops were separated by a barrier (quantize the activations,
+  then the GEMM; a split decode's chunks, then their merge) is now one call per
+  phase. Per-thread scratch is claimed per range (`par_slot`), and attention
+  keeps OpenMP's `schedule(dynamic)` by handing its items out from a shared
+  counter. Output is bit-identical with and without OpenMP. `make OPENMP=0`
+  builds without OpenMP into `<MODE>-noomp` directories (`tools/bench_revision_ab.py`
+  follows). Only the AMX PQ2_0 GEMM is left on OpenMP; a build without it
+  takes the AVX2 GEMM. Ryzen 9 9950X, 16 threads: with OpenMP, Gemma 4 E2B
+  and Qwen3.5 4B Q4_0 within noise of before; without, Gemma 4 E2B runs at
+  100-102 % of the OpenMP build (was 16 % prefill, 55 % decode), Qwen3.5 4B
+  decode at 99 % and prefill at 83 % (its DeltaNet layers' loops in
+  `layer_deltanet.c` are still OpenMP).
+- **The architecture layer and the shared kernels on the same parallel-for
+  (#618, third batch).** The DeltaNet mixer (prefill conv + gating, the
+  per-head chunked delta rule, the decode step's heads), the portable INT8 /
+  INT4 KV attention (split decode, grouped passes, one-head loop; still
+  handed out item by item as OpenMP's `schedule(dynamic)` did), the
+  speculative lm_head (sketch build and rough scores), the audio tower's
+  linears and attention (batch and streaming), the vision tower's attention,
+  the Hadamard rows (`hadamard.c`), the PTQTP kernels and the selected-rows
+  thread toggle no longer use OpenMP directly. Per-thread scratch (DeltaNet
+  staging, sketch rows, vision scores) is claimed per range. Output is
+  bit-identical with and without OpenMP. cpu_x86 and these files have no
+  `#pragma omp` left outside the AMX PQ2_0 GEMM; cpu_neon and vulkan still
+  do. Ryzen 9 9950X, 16 threads: with OpenMP, Qwen3.5 4B Q4_0 and Gemma 4
+  E2B within noise of before; without, Qwen3.5 4B runs at 100 % of the
+  OpenMP build in prefill (was 83 %) and 101 % in decode, Gemma 4 E2B at
+  100 % / 102 %.
 - **The Vulkan out-of-device-memory error names what the whole device holds**. It used to report only this backend's own usage ("4315 of 11264 MiB
   are in use"), which reads as impossible when another model or process holds
   the rest; with `VK_EXT_memory_budget` it adds "the device reports 10950 of
   11264 MiB in use (other models or processes included ...)".
+- **Vulkan: Q4_K and Q6_K prefill GEMMs run in the PQ2_0 tensor-core frame
+  (#658).** 128 weight rows × 128 tokens per 256-thread workgroup, 8
+  subgroups of 32 × 64, both tiles stored k-contiguous with 128-bit shared
+  stores, B loaded column-major, the next k-step's loads in flight during the
+  MMAs. `matmul_pq2_0_cm_body.glsl` takes a `DT_Q4K` / `DT_Q6K` A stage (the
+  PQ2_0 SPIR-V is unchanged); f32 accumulation as before, so the logits match
+  the 64 × 64 kernels'. The new tile costs the same per workgroup however few
+  tokens it holds, so `vk_linear_cm_route` gives it a GEMM only from
+  `n_out × m ≥ 3·2¹⁶` (against the 32 × 32 tile) or `5·2¹⁶` (against the
+  64 × 64 one); narrow k/v projections and small chunks keep the old tiles.
+  RTX 2080 Ti, pp512 at the default chunk, k-quant GEMM time per prefill and
+  t/s: Gemma 4 E2B 156 → 77 ms, 1978 → 3092 t/s; E4B 336 → 177 ms, 986 →
+  1369 t/s; Llama 3.2 3B 245 → 151 ms, 1583 → 2758 t/s. At `GEIST_M_MAX=128`
+  / `256`: E2B 1687 → 1949 / 2034 → 2577, E4B 800 → 1069 / 970 → 1429, Llama
+  1258 → 2024 / 1628 → 2640.
+- **Vulkan host and shader constants have one source** (#474 item 7).
+  `src/backends/vulkan/shaders/vk_limits.h`, included by `ops.c` and the
+  `.comp` files, holds the embedding dtype codes, rows and batch rows per
+  workgroup of the linear kernels, and the shared-memory limits (Hadamard
+  block, attention / qkv-prep head_dim, flash-decode chunk, DeltaNet d_k /
+  d_v / conv taps). The hadamard, attn_part and attn_comb push blocks are
+  named structs, and those and the embed / ffn_norm_gate_up / qkv_prep blocks
+  carry a `static_assert` on their size. Every regenerated SPIR-V header is
+  byte-identical. The generic attention path now refuses head_dim > 512 to
+  the host instead of dispatching a shader that returns without writing.
+
+### Fixed
+
+- **Stock Gemma 3 predicts text (#674).** A generative Gemma 3 GGUF (e.g.
+  google/gemma-3-270m-it) ran every layer as global attention with the global
+  RoPE base, scaled the queries by 1/sqrt(head_dim) and normalized V like
+  Gemma 4: perplexity 2983 where llama.cpp has 17.1. Five of every six layers
+  are now local (`attention.sliding_window`, `rope.freq_base_swa`), the
+  queries take query_pre_attn_scalar^-1/2 and V is left alone; the perplexity
+  is 17.3 (+1.1 %; +0.6 % over 3.5k tokens). Embedding Gemma 3 models keep the
+  all-global stack. `test_gemma3_generative_e2e` (GEIST_GEMMA3_GGUF_PATH).
 
 ## [0.20.0] — 2026-10-07
 

@@ -1,4 +1,5 @@
 #version 450
+#include "vk_limits.h"
 
 /* PQ2_0 (PrismML ternary, Ternary-Bonsai) matvec: 128-element blocks of an
  * f16 scale d and 32 quant bytes, 4 elements per byte (element j = bits
@@ -61,7 +62,7 @@ shared vec4 xsh[1024];
 void main() {
     uint lane = gl_LocalInvocationID.x & 31u;
     uint ks = gl_LocalInvocationID.x >> 5u;
-    uint row = gl_WorkGroupID.x * 32u + lane;
+    uint row = gl_WorkGroupID.x * VK_MV_PQ2_0_ROWS_PER_WG + lane;
     uint nb = pc.blocks_per_row;
     uint rrow = min(row, pc.n_out - 1u); /* tail lanes compute a valid row, store nothing */
     uint sc0 = pc.n_out * nb * 8u;       /* word index of the scale region */

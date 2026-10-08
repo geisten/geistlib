@@ -36,6 +36,7 @@ test_ptqtp_int
 # models / assets not in CI
 test_bonsai_e2e_int
 test_published_embedding_e2e
+test_gemma3_generative_e2e
 test_qwen35_mtp_forward_int
 test_awq_int
 

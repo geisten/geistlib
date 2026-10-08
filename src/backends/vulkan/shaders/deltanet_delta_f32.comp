@@ -1,6 +1,8 @@
 #version 450
+#extension GL_GOOGLE_include_directive : enable
 #extension GL_KHR_shader_subgroup_arithmetic : enable
 #extension GL_KHR_shader_subgroup_basic : enable
+#include "vk_limits.h"
 
 /* Gated-DeltaNet recurrence + gated per-head RMSNorm (fused->deltanet_mix,
  * stage 2). One workgroup per v-head walks the tokens in order:
@@ -30,7 +32,7 @@
  * Bindings: 0 qkv (conv output) 1 z in/out 2 beta 3 alpha 4 ssm_a 5 dt_bias
  * 6 norm_w 7 delta_state. Dispatch: gx = n_vh. */
 
-layout(local_size_x = 128) in;
+layout(local_size_x = VK_DN_MAX_DV) in; /* one lane per value column */
 
 layout(set = 0, binding = 0) readonly buffer QKV { float qkv[]; };
 layout(set = 0, binding = 1) buffer Z { float z[]; };
@@ -61,14 +63,11 @@ layout(push_constant) uniform Push {
     float qscale;
 } pc;
 
-shared float qs[256];
-shared float ks[256];
-shared vec2  reduce_partial[128]; /* one per subgroup; a subgroup can be 1 lane */
+shared float qs[VK_DN_MAX_DK];
+shared float ks[VK_DN_MAX_DK];
+shared vec2  reduce_partial[VK_DN_MAX_DV]; /* one per subgroup; a subgroup can be 1 lane */
 
-float silu(float v) {
-    float e = exp(-abs(v));
-    return v >= 0.0 ? v / (1.0 + e) : (v * e) / (1.0 + e);
-}
+#include "silu.glsl"
 
 /* Sum-reduce two values across the 128-thread workgroup: subgroupAdd per
  * subgroup, one tiny shared pass across the (<= 4) subgroup partials. Ends
@@ -90,12 +89,27 @@ void reduce2(inout float a, inout float b, uint tid) {
     barrier();
 }
 
+/* The same for one value (reduce_partial's y unused). */
+float reduce1(float a) {
+    a = subgroupAdd(a);
+    if (subgroupElect()) {
+        reduce_partial[gl_SubgroupID].x = a;
+    }
+    barrier();
+    float total = 0.0;
+    for (uint i = 0u; i < gl_NumSubgroups; i++) {
+        total += reduce_partial[i].x;
+    }
+    barrier();
+    return total;
+}
+
 /* q / k of one token's k-head into shared memory, l2-normalized (with the
  * q scale). Ends with a barrier; the reductions reuse red_a/red_b. */
 void load_qk(uint row, uint hk, uint tid) {
     float sq = 0.0;
     float sk = 0.0;
-    for (uint i = tid; i < pc.dk; i += 128u) {
+    for (uint i = tid; i < pc.dk; i += VK_DN_MAX_DV) {
         float qv = qkv[row + hk * pc.dk + i];
         float kv = qkv[row + pc.keyd + hk * pc.dk + i];
         qs[i] = qv;
@@ -106,7 +120,7 @@ void load_qk(uint row, uint hk, uint tid) {
     reduce2(sq, sk, tid);
     float inv_q = inversesqrt(sq + pc.eps) * pc.qscale;
     float inv_k = inversesqrt(sk + pc.eps);
-    for (uint i = tid; i < pc.dk; i += 128u) {
+    for (uint i = tid; i < pc.dk; i += VK_DN_MAX_DV) {
         qs[i] *= inv_q;
         ks[i] *= inv_k;
     }
@@ -124,9 +138,7 @@ void gates(uint t, uint hv, out float beta, out float decay) {
 
 /* per-head RMSNorm of o over d_v, then * silu(z), written over z */
 void epilogue(float o, uint t, uint hv, uint tid, bool col_ok) {
-    float ss = o * o;
-    float dummy = 0.0;
-    reduce2(ss, dummy, tid);
+    float ss = reduce1(o * o);
     float inv = inversesqrt(ss / float(pc.dv) + pc.eps);
     if (col_ok) {
         uint zi = pc.z_off + t * pc.n_vh * pc.dv + hv * pc.dv + tid;

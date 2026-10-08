@@ -816,14 +816,25 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
             return GEIST_E_FORMAT;
         }
         /* The F32 form is not a slice of the file, so it cannot alias the
-         * mmap. Two storage paths:
+         * mmap. Three storage paths:
          *
-         *   β mode  → bump-allocate from arena, memcpy in, then free
-         *             the dequant scratch.
-         *   mmap    → no arena; the backend allocates its own buffer
-         *             and we buffer_upload into it. */
+         *   device copy → keep the dequant result as host memory of the
+         *                 state's own and alias it; resolve_weight below
+         *                 uploads it. In the arena it took ~110 MB of
+         *                 Vulkan's BAR window on Gemma 4 E4B and pushed the
+         *                 scratch pool to system memory (#658).
+         *   β mode      → bump-allocate from arena, memcpy in, then free
+         *                 the dequant scratch.
+         *   mmap        → no arena; the backend allocates its own buffer
+         *                 and we buffer_upload into it. */
         const size_t bytes = (size_t) st->ple_out * st->d_model * sizeof(float);
-        if (st->weight_arena != nullptr) {
+        if (be->desc->caps.weights_device_copy) {
+            st->model_proj_host = fp32;
+            s = be->desc->vtbl->buffer_create_aliased(be, fp32, bytes, GEIST_BUFFER_WEIGHT, &buf);
+            if (s != GEIST_OK) {
+                return s; /* model_proj_host is freed with the state */
+            }
+        } else if (st->weight_arena != nullptr) {
             void *arena_ptr = arena_alloc(st, bytes, 64);
             if (arena_ptr == nullptr) {
                 void *p = fp32;

@@ -22,11 +22,8 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
-#if defined(_OPENMP)
-#include <omp.h>
-#endif
-
 #include "heap.h"
+#include "par.h"
 
 #include <stdlib.h>
 
@@ -115,6 +112,17 @@ quantize_act_row(size_t n_in, const float *x, int8_t *xq, int32_t *sum_a_out) {
     return max_abs / 127.0f; /* inv_act_scale */
 }
 
+/* One M=1 GEMV's rows for geist_par_for: y[r] = (dot(r) - sum_a) * scale. */
+struct i2s_rows {
+    size_t         n_blocks;
+    size_t         row_bytes;
+    const uint8_t *w_raw;
+    const int8_t  *xq;
+    int32_t        sum_a;
+    float          scale;
+    float         *y;
+};
+
 /* --- Scalar reference (oracle) ------------------------------------------- */
 static int32_t i2s_row_dot_scalar(size_t n_blocks, const uint8_t *Wr, const int8_t *xq) {
     int32_t acc = 0;
@@ -134,6 +142,14 @@ static int32_t i2s_row_dot_scalar(size_t n_blocks, const uint8_t *Wr, const int8
     return acc;
 }
 
+static void i2s_rows_scalar(void *ctx, size_t r0, size_t r1) {
+    const struct i2s_rows c = *(const struct i2s_rows *) ctx;
+    for (size_t r = r0; r < r1; r++) {
+        const int32_t dot = i2s_row_dot_scalar(c.n_blocks, c.w_raw + r * c.row_bytes, c.xq);
+        c.y[r]            = (float) dot * c.scale;
+    }
+}
+
 void i2s_gemv_m1_scalar(size_t        n_out,
                         size_t        n_in,
                         const float  *x,
@@ -147,13 +163,8 @@ void i2s_gemv_m1_scalar(size_t        n_out,
     const float  scale = tensor_scale * quantize_act_row(n_in, x, xq, &sum_a);
     (void) sum_a;
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t r = 0; r < n_out; r++) {
-        const int32_t dot = i2s_row_dot_scalar(n_blocks, w_raw + r * row_bytes, xq);
-        y[r]              = (float) dot * scale;
-    }
+    struct i2s_rows c = {n_blocks, row_bytes, w_raw, xq, 0, scale, y};
+    geist_par_for(n_out, i2s_rows_scalar, &c);
 }
 
 /* --- AVX2 (no VNNI) ------------------------------------------------------ */
@@ -183,6 +194,14 @@ static int32_t i2s_row_dot_avx2(size_t n_blocks, const uint8_t *Wr, const int8_t
     return hsum_epi32(acc);
 }
 
+static void i2s_rows_avx2(void *ctx, size_t r0, size_t r1) {
+    const struct i2s_rows c = *(const struct i2s_rows *) ctx;
+    for (size_t r = r0; r < r1; r++) {
+        const int32_t dot = i2s_row_dot_avx2(c.n_blocks, c.w_raw + r * c.row_bytes, c.xq) - c.sum_a;
+        c.y[r]            = (float) dot * c.scale;
+    }
+}
+
 void i2s_gemv_m1_avx2(size_t        n_out,
                       size_t        n_in,
                       const float  *x,
@@ -195,13 +214,8 @@ void i2s_gemv_m1_avx2(size_t        n_out,
     int32_t      sum_a;
     const float  scale = tensor_scale * quantize_act_row(n_in, x, xq, &sum_a);
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t r = 0; r < n_out; r++) {
-        const int32_t dot = i2s_row_dot_avx2(n_blocks, w_raw + r * row_bytes, xq) - sum_a;
-        y[r]              = (float) dot * scale;
-    }
+    struct i2s_rows c = {n_blocks, row_bytes, w_raw, xq, sum_a, scale, y};
+    geist_par_for(n_out, i2s_rows_avx2, &c);
 }
 
 /* --- Dispatch ------------------------------------------------------------ */
@@ -237,19 +251,139 @@ void i2s_gemv_m1(size_t        n_out,
 
 /* --- Prefill GEMM -------------------------------------------------------- */
 
-/* Without VNNI: one GEMV per token. ponytail: each token re-reads the
- * weights; an AVX2 token-tiled GEMM (as linear_tq2_0.c's dot_rows) is the
- * upgrade if prefill on AVX2-only hosts matters (#655). */
-static void i2s_gemm_mN_avx2(size_t        m,
-                             size_t        n_out,
-                             size_t        n_in,
-                             const float  *x,
-                             const uint8_t w_raw[],
-                             float         tensor_scale,
-                             float         y[]) {
+/* Activation quant of m token rows for geist_par_for. */
+struct i2s_quant_rows {
+    size_t       n_in;
+    float        tensor_scale;
+    const float *x;
+    int8_t      *xq;
+    int32_t     *sum_a;
+    float       *scale;
+};
+
+static void i2s_quant_rows(void *ctx, size_t i0, size_t i1) {
+    const struct i2s_quant_rows c = *(const struct i2s_quant_rows *) ctx;
+    for (size_t i = i0; i < i1; i++) {
+        c.scale[i] = c.tensor_scale *
+                     quantize_act_row(c.n_in, c.x + i * c.n_in, c.xq + i * c.n_in, &c.sum_a[i]);
+    }
+}
+
+/* Without VNNI and without scratch: one GEMV per token. */
+static void i2s_gemm_mN_avx2_rows(size_t        m,
+                                  size_t        n_out,
+                                  size_t        n_in,
+                                  const float  *x,
+                                  const uint8_t w_raw[],
+                                  float         tensor_scale,
+                                  float         y[]) {
     for (size_t i = 0; i < m; i++) {
         i2s_gemv_m1_avx2(n_out, n_in, x + i * n_in, w_raw, tensor_scale, y + i * n_out);
     }
+}
+
+/* Activation tile height of the AVX2 GEMM (#655). */
+constexpr size_t I2S_AVX2_NR = 4;
+
+/* i2s_row_dot_avx2 for NR activation rows (stride n_in) against one weight
+ * row: each chunk of codes is unpacked once and fed to NR maddubs. The
+ * integer sums are i2s_row_dot_avx2's, so the GEMM is bit-identical to the
+ * GEMV per token. */
+static void i2s_row_dot_avx2_nr(size_t         n_blocks,
+                                size_t         n_in,
+                                const uint8_t *Wr,
+                                const int8_t  *xq,
+                                int32_t        out[static I2S_AVX2_NR]) {
+    static_assert(I2S_AVX2_NR == 4, "the accumulators below are spelled out for 4 tokens");
+    const __m256i mask = _mm256_set1_epi8(3);
+    const __m256i ones = _mm256_set1_epi16(1);
+    const int8_t *x0 = xq, *x1 = xq + n_in, *x2 = xq + 2 * n_in, *x3 = xq + 3 * n_in;
+    __m256i       a0 = _mm256_setzero_si256(), a1 = a0, a2 = a0, a3 = a0;
+    __m256i       p0 = a0, p1 = a0, p2 = a0, p3 = a0;
+    /* Named accumulators and one loop over the 32-byte halves (128
+     * contiguous elements each), the int16 sums flushed after every second
+     * half. With acc[4] / p16[4] arrays and a nested 2 x 4 loop, gcc 15
+     * unrolled a whole block, hoisted all 32 maddubs ahead of their adds
+     * and kept the accumulators on the stack. */
+    for (size_t hh = 0; hh < 2 * n_blocks; hh++) {
+        const __m256i q = _mm256_loadu_si256((const __m256i *) (Wr + hh * 32));
+        for (int g = 0; g < 4; g++) {
+            const __m256i v   = _mm256_and_si256(_mm256_srli_epi16(q, 6 - 2 * g), mask);
+            const size_t  off = hh * 128 + (size_t) g * 32;
+            p0                = _mm256_add_epi16(
+                    p0, _mm256_maddubs_epi16(v, _mm256_loadu_si256((const __m256i *) (x0 + off))));
+            p1 = _mm256_add_epi16(
+                    p1, _mm256_maddubs_epi16(v, _mm256_loadu_si256((const __m256i *) (x1 + off))));
+            p2 = _mm256_add_epi16(
+                    p2, _mm256_maddubs_epi16(v, _mm256_loadu_si256((const __m256i *) (x2 + off))));
+            p3 = _mm256_add_epi16(
+                    p3, _mm256_maddubs_epi16(v, _mm256_loadu_si256((const __m256i *) (x3 + off))));
+        }
+        if (hh & 1) {
+            a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(p0, ones));
+            a1 = _mm256_add_epi32(a1, _mm256_madd_epi16(p1, ones));
+            a2 = _mm256_add_epi32(a2, _mm256_madd_epi16(p2, ones));
+            a3 = _mm256_add_epi32(a3, _mm256_madd_epi16(p3, ones));
+            p0 = p1 = p2 = p3 = _mm256_setzero_si256();
+        }
+    }
+    out[0] = hsum_epi32(a0);
+    out[1] = hsum_epi32(a1);
+    out[2] = hsum_epi32(a2);
+    out[3] = hsum_epi32(a3);
+}
+
+/* Without VNNI, on quantized activations. geist_par_for gives each thread
+ * one contiguous slice of weight rows; the thread walks the tokens NR at a
+ * time over its whole slice: the slice stays in L2 across the token tiles
+ * and NR activation rows stay in L1 across the slice, so the activations
+ * stream once per thread and the weights are unpacked once per NR tokens.
+ * Walking all m tokens per row instead, or per block of rows, re-streams
+ * the activations from L3 once per row or block; on the 6912-row FFN
+ * matrices at m = 512 that lost to the per-token GEMV. */
+struct i2s_gemm_rows {
+    size_t         m, n_out, n_in, n_blocks, row_bytes;
+    const int8_t  *xq;
+    const int32_t *sum_a;
+    const float   *scale;
+    const uint8_t *w_raw;
+    float         *y;
+};
+
+static void i2s_gemm_rows_avx2(void *ctx, size_t r0, size_t r1) {
+    const struct i2s_gemm_rows c     = *(const struct i2s_gemm_rows *) ctx;
+    const size_t               m_til = c.m - c.m % I2S_AVX2_NR;
+    for (size_t i = 0; i < m_til; i += I2S_AVX2_NR) {
+        for (size_t r = r0; r < r1; r++) {
+            int32_t dot[I2S_AVX2_NR];
+            i2s_row_dot_avx2_nr(
+                    c.n_blocks, c.n_in, c.w_raw + r * c.row_bytes, c.xq + i * c.n_in, dot);
+            for (size_t t = 0; t < I2S_AVX2_NR; t++) {
+                c.y[(i + t) * c.n_out + r] = (float) (dot[t] - c.sum_a[i + t]) * c.scale[i + t];
+            }
+        }
+    }
+    for (size_t i = m_til; i < c.m; i++) {
+        for (size_t r = r0; r < r1; r++) {
+            const int32_t dot =
+                    i2s_row_dot_avx2(c.n_blocks, c.w_raw + r * c.row_bytes, c.xq + i * c.n_in) -
+                    c.sum_a[i];
+            c.y[i * c.n_out + r] = (float) dot * c.scale[i];
+        }
+    }
+}
+
+static void i2s_gemm_avx2(size_t         m,
+                          size_t         n_out,
+                          size_t         n_in,
+                          const int8_t  *xq,
+                          const int32_t *sum_a,
+                          const float   *scale,
+                          const uint8_t  w_raw[],
+                          float          y[]) {
+    struct i2s_gemm_rows c = {
+            m, n_out, n_in, n_in / I2S_BLOCK_ELEMS, n_in / 4, xq, sum_a, scale, w_raw, y};
+    geist_par_for(n_out, i2s_gemm_rows_avx2, &c);
 }
 
 void i2s_gemm_mN_scalar(size_t        m,
@@ -282,15 +416,15 @@ void i2s_gemm_mN_pre(size_t        m,
         i2s_gemm_mN_scalar(m, n_out, n_in, x, w_raw, tensor_scale, y);
         return;
     }
-    if (!i2s_isa_is_vnni() || xq == nullptr || sum_a == nullptr || scale == nullptr) {
-        i2s_gemm_mN_avx2(m, n_out, n_in, x, w_raw, tensor_scale, y);
+    if (xq == nullptr || sum_a == nullptr || scale == nullptr) {
+        i2s_gemm_mN_avx2_rows(m, n_out, n_in, x, w_raw, tensor_scale, y);
         return;
     }
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t i = 0; i < m; i++) {
-        scale[i] = tensor_scale * quantize_act_row(n_in, x + i * n_in, xq + i * n_in, &sum_a[i]);
+    struct i2s_quant_rows q = {n_in, tensor_scale, x, xq, sum_a, scale};
+    geist_par_for(m, i2s_quant_rows, &q);
+    if (!i2s_isa_is_vnni()) {
+        i2s_gemm_avx2(m, n_out, n_in, xq, sum_a, scale, w_raw, y);
+        return;
     }
     /* A null `perm` is not an error — the GEMM falls back to its M=1 loop. */
     i2s_gemm_avx512_vnni(m, n_out, n_in, xq, sum_a, scale, w_raw, perm, y);
@@ -313,19 +447,12 @@ void i2s_gemm_mN(size_t        m,
         i2s_gemm_mN_scalar(m, n_out, n_in, x, w_raw, tensor_scale, y);
         return;
     }
-    if (!i2s_isa_is_vnni()) {
-        i2s_gemm_mN_avx2(m, n_out, n_in, x, w_raw, tensor_scale, y);
-        return;
-    }
     int8_t  *xq    = heap_alloc_n_aligned(m, n_in, OPTIMAL_ALIGNMENT);
     int32_t *sum_a = heap_alloc_n_aligned(m, sizeof(int32_t), OPTIMAL_ALIGNMENT);
     float   *scale = heap_alloc_n_aligned(m, sizeof(float), OPTIMAL_ALIGNMENT);
     int8_t  *perm  = heap_alloc_n_aligned(m, n_in, OPTIMAL_ALIGNMENT);
-    if (xq == nullptr || sum_a == nullptr || scale == nullptr) {
-        i2s_gemm_mN_scalar(m, n_out, n_in, x, w_raw, tensor_scale, y);
-    } else {
-        i2s_gemm_mN_pre(m, n_out, n_in, x, w_raw, tensor_scale, xq, sum_a, scale, perm, y);
-    }
+    /* _pre takes a failed (null) allocation as "no scratch". */
+    i2s_gemm_mN_pre(m, n_out, n_in, x, w_raw, tensor_scale, xq, sum_a, scale, perm, y);
     safe_free((void **) &xq);
     safe_free((void **) &sum_a);
     safe_free((void **) &scale);
@@ -348,22 +475,32 @@ i2s_native_code(const uint8_t *w_raw, size_t row_bytes, size_t row, size_t col) 
     return (uint8_t) ((byte >> (6 - 2 * g)) & 3);
 }
 
-void i2s_to_x4(size_t n_out, size_t n_in, const uint8_t w_raw[], uint8_t x4[]) {
-    const size_t row_bytes = n_in / 4;
-    const size_t n_groups  = n_out / 4;
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t grp = 0; grp < n_groups; grp++) {
-        uint8_t *dst = x4 + grp * n_in;
+/* A weight repack for geist_par_for: n_in columns, native rows in, out. */
+struct i2s_repack {
+    size_t         n_in;
+    const uint8_t *w_raw;
+    uint8_t       *out;
+};
+
+static void i2s_to_x4_groups(void *ctx, size_t g0, size_t g1) {
+    const struct i2s_repack rp        = *(const struct i2s_repack *) ctx;
+    const size_t            n_in      = rp.n_in;
+    const size_t            row_bytes = n_in / 4;
+    for (size_t grp = g0; grp < g1; grp++) {
+        uint8_t *dst = rp.out + grp * n_in;
         for (size_t c = 0; c < n_in; c++) {
-            const uint8_t r0 = i2s_native_code(w_raw, row_bytes, grp * 4 + 0, c);
-            const uint8_t r1 = i2s_native_code(w_raw, row_bytes, grp * 4 + 1, c);
-            const uint8_t r2 = i2s_native_code(w_raw, row_bytes, grp * 4 + 2, c);
-            const uint8_t r3 = i2s_native_code(w_raw, row_bytes, grp * 4 + 3, c);
+            const uint8_t r0 = i2s_native_code(rp.w_raw, row_bytes, grp * 4 + 0, c);
+            const uint8_t r1 = i2s_native_code(rp.w_raw, row_bytes, grp * 4 + 1, c);
+            const uint8_t r2 = i2s_native_code(rp.w_raw, row_bytes, grp * 4 + 2, c);
+            const uint8_t r3 = i2s_native_code(rp.w_raw, row_bytes, grp * 4 + 3, c);
             dst[c]           = (uint8_t) ((r0 << 6) | (r1 << 4) | (r2 << 2) | r3);
         }
     }
+}
+
+void i2s_to_x4(size_t n_out, size_t n_in, const uint8_t w_raw[], uint8_t x4[]) {
+    struct i2s_repack rp = {n_in, w_raw, x4};
+    geist_par_for(n_out / 4, i2s_to_x4_groups, &rp);
 }
 
 void i2s_x4_gemv_m1(size_t        n_out,
@@ -394,12 +531,8 @@ void i2s_x4_gemm_mN_pre(size_t        m,
         }
         return;
     }
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t i = 0; i < m; i++) {
-        scale[i] = tensor_scale * quantize_act_row(n_in, x + i * n_in, xq + i * n_in, &sum_a[i]);
-    }
+    struct i2s_quant_rows q = {n_in, tensor_scale, x, xq, sum_a, scale};
+    geist_par_for(m, i2s_quant_rows, &q);
     i2s_x4_gemm_avx512_vnni(m, n_out, n_in, xq, sum_a, scale, x4, y);
 }
 
@@ -470,28 +603,32 @@ void i2s_t5_gemv_pair_m1_avx512_vnni(size_t        n_in_pad,
                                      size_t        n_out1,
                                      float        *y1);
 
-void i2s_to_t5(size_t n_out, size_t n_in, const uint8_t w_raw[], uint8_t t5[]) {
-    const size_t row_bytes_src = n_in / 4;
-    const size_t cols_pad      = i2s_t5_cols_pad(n_in);
-    const size_t row_bytes     = i2s_t5_row_bytes(n_in);
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t r = 0; r < n_out; r++) {
-        uint8_t *row = t5 + r * row_bytes;
+static void i2s_to_t5_rows(void *ctx, size_t r0, size_t r1) {
+    const struct i2s_repack rp            = *(const struct i2s_repack *) ctx;
+    const size_t            n_in          = rp.n_in;
+    const size_t            row_bytes_src = n_in / 4;
+    const size_t            cols_pad      = i2s_t5_cols_pad(n_in);
+    const size_t            row_bytes     = i2s_t5_row_bytes(n_in);
+    for (size_t r = r0; r < r1; r++) {
+        uint8_t *row = rp.out + r * row_bytes;
         for (size_t g = 0; g < cols_pad / 320; g++) {
             for (size_t c = 0; c < 64; c++) {
                 uint32_t n = 0;
                 for (size_t plane = 0; plane < 5; plane++) {
                     const size_t  col = g * 320 + plane * 64 + c;
                     const uint8_t code =
-                            (col < n_in) ? i2s_native_code(w_raw, row_bytes_src, r, col) : 0;
+                            (col < n_in) ? i2s_native_code(rp.w_raw, row_bytes_src, r, col) : 0;
                     n = n * 3 + code;
                 }
                 row[g * 64 + c] = (uint8_t) ((n * 256 + 242) / 243);
             }
         }
     }
+}
+
+void i2s_to_t5(size_t n_out, size_t n_in, const uint8_t w_raw[], uint8_t t5[]) {
+    struct i2s_repack rp = {n_in, w_raw, t5};
+    geist_par_for(n_out, i2s_to_t5_rows, &rp);
 }
 
 void i2s_t5_gemv_m1(size_t        n_out,

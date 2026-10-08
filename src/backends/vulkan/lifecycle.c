@@ -101,6 +101,9 @@ static PFN_vkVoidFunction vk_iproc(struct vk_state *st, const char *name) {
     VK_LOAD_I(st, CreatePipelineLayout);
     VK_LOAD_I(st, DestroyPipelineLayout);
     VK_LOAD_I(st, CreateComputePipelines);
+    VK_LOAD_I(st, CreatePipelineCache);
+    VK_LOAD_I(st, DestroyPipelineCache);
+    VK_LOAD_I(st, GetPipelineCacheData);
     VK_LOAD_I(st, DestroyPipeline);
     VK_LOAD_I(st, CreateDescriptorPool);
     VK_LOAD_I(st, DestroyDescriptorPool);
@@ -150,6 +153,9 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
                 st->fn.DestroyPipeline(st->device, st->pipes[i], nullptr);
             }
         }
+        if (st->pcache != VK_NULL_HANDLE) {
+            st->fn.DestroyPipelineCache(st->device, st->pcache, nullptr);
+        }
         if (st->seq_pool != VK_NULL_HANDLE) {
             st->fn.DestroyDescriptorPool(st->device, st->seq_pool, nullptr);
         }
@@ -172,6 +178,13 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         }
         if (st->xfer_fence != VK_NULL_HANDLE) {
             st->fn.DestroyFence(st->device, st->xfer_fence, nullptr);
+        }
+        if (st->up_mem != VK_NULL_HANDLE) {
+            st->fn.UnmapMemory(st->device, st->up_mem);
+            st->fn.FreeMemory(st->device, st->up_mem, nullptr);
+        }
+        if (st->up_buf != VK_NULL_HANDLE) {
+            st->fn.DestroyBuffer(st->device, st->up_buf, nullptr);
         }
         if (st->cmd_pool != VK_NULL_HANDLE) {
             st->fn.DestroyCommandPool(st->device, st->cmd_pool, nullptr);
@@ -214,6 +227,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
                            props.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)) {
             pick = (int) i;
             snprintf(st->device_name, sizeof(st->device_name), "%s", props.properties.deviceName);
+            memcpy(st->pcache_uuid, props.properties.pipelineCacheUUID, VK_UUID_SIZE);
         }
     }
     if (pick < 0 && wanted < 0) {
@@ -224,6 +238,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
                 .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
         st->fn.GetPhysicalDeviceProperties2(devs[0], &props);
         snprintf(st->device_name, sizeof(st->device_name), "%s", props.properties.deviceName);
+        memcpy(st->pcache_uuid, props.properties.pipelineCacheUUID, VK_UUID_SIZE);
     }
     if (pick < 0) {
         geist_backend_set_error(
@@ -460,9 +475,13 @@ static size_t vk_parse_bytes(const char *v) {
     const char *strict  = getenv("GEIST_VK_STRICT");
     st->strict          = strict != nullptr && strcmp(strict, "0") != 0;
     st->vram_budget     = vk_parse_bytes(getenv("GEIST_VK_VRAM_BUDGET"));
-    /* Opt-in (#488): device-local scratch pool; see vk_buffer_create_api. */
+    const char *reserve = getenv("GEIST_VK_WEIGHT_RESERVE");
+    st->weight_reserve  = reserve != nullptr ? vk_parse_bytes(reserve) : SIZE_MAX;
+    /* Device-local scratch pool (#488), default on; GEIST_VK_SCRATCH_DEVICE=0
+     * keeps it host-visible. The arch still asks only where no host path
+     * maps a pool slot (scratch_device_wanted); see vk_buffer_create_api. */
     const char *scratch_env = getenv("GEIST_VK_SCRATCH_DEVICE");
-    st->scratch_device      = scratch_env != nullptr && strcmp(scratch_env, "1") == 0;
+    st->scratch_device      = scratch_env == nullptr || strcmp(scratch_env, "0") != 0;
 
     enum geist_status s = vk_load_runtime(be, st);
     if (s != GEIST_OK) {
@@ -546,62 +565,11 @@ void vk_destroy(struct geist_backend *be) {
         }
         if (st->profile_enabled) {
             static const char *const names[VK_PIPE_COUNT + 1] = {
-                    [VK_PIPE_MATVEC_Q4K]       = "matvec_q4k",
-                    [VK_PIPE_MATMUL_Q4K]       = "matmul_q4k",
-                    [VK_PIPE_MATVEC_Q6K]       = "matvec_q6k",
-                    [VK_PIPE_MATMUL_Q6K]       = "matmul_q6k",
-                    [VK_PIPE_MATVEC_F32]       = "matvec_f32",
-                    [VK_PIPE_MATMUL_F32]       = "matmul_f32",
-                    [VK_PIPE_ADD]              = "add",
-                    [VK_PIPE_MUL]              = "mul",
-                    [VK_PIPE_GELU]             = "gelu",
-                    [VK_PIPE_GELU_MUL]         = "gelu_mul",
-                    [VK_PIPE_SCALE]            = "scale",
-                    [VK_PIPE_RMSNORM]          = "rmsnorm",
-                    [VK_PIPE_RMSNORM_ADD]      = "rmsnorm_add",
-                    [VK_PIPE_ROPE]             = "rope",
-                    [VK_PIPE_ATTENTION]        = "attention",
-                    [VK_PIPE_ARGMAX]           = "argmax",
-                    [VK_PIPE_EMBED]            = "embed",
-                    [VK_PIPE_FFN_GATE_UP]      = "ffn_gate_up",
-                    [VK_PIPE_QKV_PREP]         = "qkv_prep",
-                    [VK_PIPE_MM_Q4K_CM]        = "mm_q4k_cm",
-                    [VK_PIPE_MM_Q6K_CM]        = "mm_q6k_cm",
-                    [VK_PIPE_ATTENTION_F16]    = "attention_f16",
-                    [VK_PIPE_QKV_PREP_F16]     = "qkv_prep_f16",
-                    [VK_PIPE_KV_APPEND_F16]    = "kv_append_f16",
-                    [VK_PIPE_ATTN_PART_F16]    = "attn_part_f16",
-                    [VK_PIPE_ATTN_COMB]        = "attn_comb",
-                    [VK_PIPE_MM_Q4K_CM32]      = "mm_q4k_cm32",
-                    [VK_PIPE_MM_PQ2_0_CM]      = "mm_pq2_0_cm",
-                    [VK_PIPE_MM_PQ2_0_CM_F32]  = "mm_pq2_0_cm_f32",
-                    [VK_PIPE_MM_PQ2_0_CM64]    = "mm_pq2_0_cm64",
-                    [VK_PIPE_PLE_GATE]         = "ple_gate",
-                    [VK_PIPE_FFN_NORM_GU]      = "ffn_norm_gu",
-                    [VK_PIPE_DN_CONV]          = "dn_conv",
-                    [VK_PIPE_DN_DELTA]         = "dn_delta",
-                    [VK_PIPE_MATVEC_Q4_0]      = "matvec_q4_0",
-                    [VK_PIPE_MATMUL_Q4_0]      = "matmul_q4_0",
-                    [VK_PIPE_MATVEC_Q4_1]      = "matvec_q4_1",
-                    [VK_PIPE_MATMUL_Q4_1]      = "matmul_q4_1",
-                    [VK_PIPE_MATVEC_Q8_0]      = "matvec_q8_0",
-                    [VK_PIPE_MATMUL_Q8_0]      = "matmul_q8_0",
-                    [VK_PIPE_MATVEC_Q5K]       = "matvec_q5k",
-                    [VK_PIPE_MATMUL_Q5K]       = "matmul_q5k",
-                    [VK_PIPE_MATVEC_TQ2_0]     = "matvec_tq2_0",
-                    [VK_PIPE_MATMUL_TQ2_0]     = "matmul_tq2_0",
-                    [VK_PIPE_MATVEC_PQ2_0]     = "matvec_pq2_0",
-                    [VK_PIPE_MATMUL_PQ2_0]     = "matmul_pq2_0",
-                    [VK_PIPE_SILU]             = "silu",
-                    [VK_PIPE_HADAMARD]         = "hadamard",
-                    [VK_PIPE_RELU2]            = "relu2",
-                    [VK_PIPE_ACT_QUANT]        = "act_quant",
-                    [VK_PIPE_SILU_MUL]         = "silu_mul",
-                    [VK_PIPE_SIGMOID_MUL]      = "sigmoid_mul",
-                    [VK_PIPE_QGATE_SPLIT]      = "qgate_split",
-                    [VK_PIPE_ATTENTION_F16_CM] = "attention_f16_cm",
-                    [VK_PIPE_COUNT]            = "copy",
-                    /* vkCmdCopyBuffer stamps */};
+#define X(id, spv, name, nbind, kind) [id] = name,
+#include "vk_pipes.def"
+#undef X
+                    [VK_PIPE_COUNT] = "copy", /* vkCmdCopyBuffer stamps */
+            };
             fprintf(stderr, "geist vulkan gpu profile:\n");
             for (int i = 0; i <= VK_PIPE_COUNT; ++i) {
                 if (st->prof_calls[i] > 0) {

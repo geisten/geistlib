@@ -18,8 +18,8 @@
  *
  * M>1 tiles NR activation rows per pass over a weight row: each block's
  * codes are unpacked once and multiplied against NR activation blocks.
- * Rows split across OpenMP threads; each output element is a fixed-order
- * reduction, independent of the thread count.
+ * Rows split across threads (geist_par_for); each output element is a
+ * fixed-order reduction, independent of the thread count.
  *
  * On AVX-512 VNNI hosts M>1 binds kernel_tq2_0_avx512_vnni.c's 4-row x
  * 4-token register tiles instead (same int32 block sums, four VPDPBUSD per
@@ -34,6 +34,7 @@
 #include "linear_util.h"
 
 #include "linear_ref.h"
+#include "par.h"
 #include "quant.h"
 #include "quant_blocks.h"
 
@@ -113,6 +114,14 @@ static inline float dot_row(size_t                      nb,
     return hsum_ps(_mm256_add_ps(acc0, acc1));
 }
 
+/* acc + d (P - S) for one block's int16 product sums p16: fma_block's tail,
+ * in the same order. */
+static inline __m256 flush_block(__m256i p16, int32_t sx, float d, __m256 acc) {
+    const __m256i p = _mm256_sub_epi32(_mm256_madd_epi16(p16, _mm256_set1_epi16(1)),
+                                       _mm256_zextsi128_si256(_mm_cvtsi32_si128(sx)));
+    return _mm256_fmadd_ps(_mm256_set1_ps(d), _mm256_cvtepi32_ps(p), acc);
+}
+
 /* NR activation rows against one weight row: each chunk of codes unpacked
  * once, one accumulator per activation row. The integer block sums are the
  * same as dot_row's; only the fp32 summation order differs, so M=1 and M>1
@@ -124,38 +133,72 @@ static void dot_rows(size_t                      nb,
                      const float                *dx,
                      const int32_t              *sx,
                      float                       out[static NR]) {
+    static_assert(NR == 4, "the accumulators below are spelled out for 4 rows");
     const __m256i mask = _mm256_set1_epi8(3);
-    __m256        acc[NR];
-    for (size_t r = 0; r < NR; r++) {
-        acc[r] = _mm256_setzero_ps();
+    const int8_t *x0 = qx, *x1 = qx + n_in, *x2 = qx + 2 * n_in, *x3 = qx + 3 * n_in;
+    __m256        a0 = _mm256_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+    __m256i       p0 = _mm256_setzero_si256(), p1 = p0, p2 = p0, p3 = p0;
+    /* Named accumulators and one loop over the 32-byte halves, flushed into
+     * the float sums after each block's second half (#662). With acc[NR] /
+     * p16[NR] arrays and a nested 2 x 4 x NR loop, gcc 15 unrolled a whole
+     * block, hoisted the maddubs ahead of their adds and kept the products
+     * on the stack (as in #660's I2_S kernel). */
+    for (size_t hh = 0; hh < 2 * nb; hh++) {
+        const size_t  b = hh >> 1;
+        const __m256i q = _mm256_loadu_si256((const __m256i *) (w[b].qs + (hh & 1) * 32));
+        for (int l = 0; l < 4; l++) {
+            const __m256i v   = _mm256_and_si256(_mm256_srli_epi16(q, 2 * l), mask);
+            const size_t  off = b * QK + (hh & 1) * 128 + (size_t) l * 32;
+            p0                = _mm256_add_epi16(
+                    p0, _mm256_maddubs_epi16(v, _mm256_loadu_si256((const __m256i *) (x0 + off))));
+            p1 = _mm256_add_epi16(
+                    p1, _mm256_maddubs_epi16(v, _mm256_loadu_si256((const __m256i *) (x1 + off))));
+            p2 = _mm256_add_epi16(
+                    p2, _mm256_maddubs_epi16(v, _mm256_loadu_si256((const __m256i *) (x2 + off))));
+            p3 = _mm256_add_epi16(
+                    p3, _mm256_maddubs_epi16(v, _mm256_loadu_si256((const __m256i *) (x3 + off))));
+        }
+        if (hh & 1) {
+            const float dw = tq2_scale(&w[b]);
+            a0             = flush_block(p0, sx[b], dw * dx[b], a0);
+            a1             = flush_block(p1, sx[nb + b], dw * dx[nb + b], a1);
+            a2             = flush_block(p2, sx[2 * nb + b], dw * dx[2 * nb + b], a2);
+            a3             = flush_block(p3, sx[3 * nb + b], dw * dx[3 * nb + b], a3);
+            p0 = p1 = p2 = p3 = _mm256_setzero_si256();
+        }
     }
-    for (size_t b = 0; b < nb; b++) {
-        __m256i p16[NR];
-        for (size_t r = 0; r < NR; r++) {
-            p16[r] = _mm256_setzero_si256();
-        }
-        for (size_t h = 0; h < 2; h++) {
-            const __m256i q = _mm256_loadu_si256((const __m256i *) (w[b].qs + h * 32));
-            for (int l = 0; l < 4; l++) {
-                const __m256i v   = _mm256_and_si256(_mm256_srli_epi16(q, 2 * l), mask);
-                const size_t  off = b * QK + h * 128 + (size_t) l * 32;
-                for (size_t r = 0; r < NR; r++) {
-                    const __m256i x = _mm256_loadu_si256((const __m256i *) (qx + r * n_in + off));
-                    p16[r]          = _mm256_add_epi16(p16[r], _mm256_maddubs_epi16(v, x));
-                }
-            }
-        }
-        const float dw = tq2_scale(&w[b]);
-        for (size_t r = 0; r < NR; r++) {
-            const __m256i p =
-                    _mm256_sub_epi32(_mm256_madd_epi16(p16[r], _mm256_set1_epi16(1)),
-                                     _mm256_zextsi128_si256(_mm_cvtsi32_si128(sx[r * nb + b])));
-            acc[r] = _mm256_fmadd_ps(
-                    _mm256_set1_ps(dw * dx[r * nb + b]), _mm256_cvtepi32_ps(p), acc[r]);
-        }
+    out[0] = hsum_ps(a0);
+    out[1] = hsum_ps(a1);
+    out[2] = hsum_ps(a2);
+    out[3] = hsum_ps(a3);
+}
+
+/* One call for geist_par_for: the weight, the activation rows x and their
+ * Q8 blocks (qx, dx, sx: written by quant_rows, read by the rest), y. */
+struct tq2_call {
+    size_t                      m, n_in, n_out, nb;
+    const struct block_tq2_0_t *wb;
+    const float                *x;
+    int8_t                     *qx;
+    float                      *dx;
+    int32_t                    *sx;
+    float                      *y;
+};
+
+/* Activation rows [i0, i1) to Q8 blocks of 256 and their sums. */
+static void quant_rows(void *ctx, size_t i0, size_t i1) {
+    const struct tq2_call c = *(const struct tq2_call *) ctx;
+    for (size_t i = i0; i < i1; i++) {
+        quantize_row_q8_256(
+                c.nb, c.x + i * c.n_in, c.qx + i * c.n_in, c.dx + i * c.nb, c.sx + i * c.nb);
     }
-    for (size_t r = 0; r < NR; r++) {
-        out[r] = hsum_ps(acc[r]);
+}
+
+/* M=1: output rows [j0, j1). */
+static void rows_m1(void *ctx, size_t j0, size_t j1) {
+    const struct tq2_call c = *(const struct tq2_call *) ctx;
+    for (size_t j = j0; j < j1; j++) {
+        c.y[j] = dot_row(c.nb, c.wb + j * c.nb, c.qx, c.dx, c.sx);
     }
 }
 
@@ -172,22 +215,59 @@ static void cpu_x86_linear_tq2_0_m1(const float               *x,
         return;
     }
     quantize_row_q8_256(nb, x, ws->mN_acts, ws->mN_scale, ws->mN_sum_a);
-    const int8_t               *qx = ws->mN_acts;
-    const float                *dx = ws->mN_scale;
-    const int32_t              *sx = ws->mN_sum_a;
-    const struct block_tq2_0_t *wb = (const struct block_tq2_0_t *) w->raw;
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t j = 0; j < n_out; j++) {
-        y[j] = dot_row(nb, wb + j * nb, qx, dx, sx);
+    struct tq2_call c = {.m     = 1,
+                         .n_in  = n_in,
+                         .n_out = n_out,
+                         .nb    = nb,
+                         .wb    = (const struct block_tq2_0_t *) w->raw,
+                         .qx    = ws->mN_acts,
+                         .dx    = ws->mN_scale,
+                         .sx    = ws->mN_sum_a,
+                         .y     = y};
+    geist_par_for(n_out, rows_m1, &c);
+}
+
+/* M>1 with vnni: groups [g0, g1) of TQ2_0_VNNI_TILE_ROWS output rows. */
+static void tiles_vnni(void *ctx, size_t g0, size_t g1) {
+    const struct tq2_call c = *(const struct tq2_call *) ctx;
+    for (size_t g = g0; g < g1; g++) {
+        const size_t j0 = g * TQ2_0_VNNI_TILE_ROWS;
+        const size_t rows =
+                c.n_out - j0 < TQ2_0_VNNI_TILE_ROWS ? c.n_out - j0 : TQ2_0_VNNI_TILE_ROWS;
+        tq2_0_gemm_rows_avx512_vnni(c.m, c.nb, c.n_out, j0, rows, c.wb, c.qx, c.dx, c.sx, c.y);
     }
 }
 
-/* M>1: one team quantizes the m rows, then runs the GEMM (implicit barrier
- * between the two worksharing loops). With vnni, the GEMM is the register
- * tiles of kernel_tq2_0_avx512_vnni.c, one call per group of
- * TQ2_0_VNNI_TILE_ROWS output rows. */
+/* M>1 without: output rows [j0, j1), NR activation rows at a time. */
+static void rows_mN(void *ctx, size_t j0, size_t j1) {
+    const struct tq2_call c     = *(const struct tq2_call *) ctx;
+    const size_t          m     = c.m;
+    const size_t          n_in  = c.n_in;
+    const size_t          n_out = c.n_out;
+    const size_t          nb    = c.nb;
+    const size_t          m_til = m - m % NR;
+    const int8_t         *qx    = c.qx;
+    const float          *dx    = c.dx;
+    const int32_t        *sx    = c.sx;
+    float                *y     = c.y;
+    for (size_t j = j0; j < j1; j++) {
+        const struct block_tq2_0_t *wr = c.wb + j * nb;
+        float                       out[NR];
+        for (size_t i = 0; i < m_til; i += NR) {
+            dot_rows(nb, n_in, wr, qx + i * n_in, dx + i * nb, sx + i * nb, out);
+            for (size_t r = 0; r < NR; r++) {
+                y[(i + r) * n_out + j] = out[r];
+            }
+        }
+        for (size_t i = m_til; i < m; i++) {
+            y[i * n_out + j] = dot_row(nb, wr, qx + i * n_in, dx + i * nb, sx + i * nb);
+        }
+    }
+}
+
+/* M>1: the m rows quantized, then the GEMM, one geist_par_for each. With
+ * vnni, the GEMM is the register tiles of kernel_tq2_0_avx512_vnni.c, one
+ * call per group of TQ2_0_VNNI_TILE_ROWS output rows. */
 static void linear_mN(bool                       vnni,
                       size_t                     m,
                       const float               *x,
@@ -196,57 +276,26 @@ static void linear_mN(bool                       vnni,
                       float                     *y) {
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
-    const size_t              nb    = n_in / QK;
     struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in, QK, QK);
     if (ws == nullptr) {
         geist_linear_ref(m, x, w, y);
         return;
     }
-    int8_t                     *qx      = ws->mN_acts;
-    float                      *dx      = ws->mN_scale;
-    int32_t                    *sx      = ws->mN_sum_a;
-    const struct block_tq2_0_t *wb      = (const struct block_tq2_0_t *) w->raw;
-    const size_t                m_til   = m - m % NR;
-    const size_t                n_tiles = (n_out + TQ2_0_VNNI_TILE_ROWS - 1) / TQ2_0_VNNI_TILE_ROWS;
-
-#if defined(_OPENMP)
-#pragma omp parallel
-#endif
-    {
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-        for (size_t i = 0; i < m; i++) {
-            quantize_row_q8_256(nb, x + i * n_in, qx + i * n_in, dx + i * nb, sx + i * nb);
-        }
-        if (vnni) {
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-            for (size_t g = 0; g < n_tiles; g++) {
-                const size_t j0 = g * TQ2_0_VNNI_TILE_ROWS;
-                const size_t rows =
-                        n_out - j0 < TQ2_0_VNNI_TILE_ROWS ? n_out - j0 : TQ2_0_VNNI_TILE_ROWS;
-                tq2_0_gemm_rows_avx512_vnni(m, nb, n_out, j0, rows, wb, qx, dx, sx, y);
-            }
-        } else {
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-            for (size_t j = 0; j < n_out; j++) {
-                const struct block_tq2_0_t *wr = wb + j * nb;
-                float                       out[NR];
-                for (size_t i = 0; i < m_til; i += NR) {
-                    dot_rows(nb, n_in, wr, qx + i * n_in, dx + i * nb, sx + i * nb, out);
-                    for (size_t r = 0; r < NR; r++) {
-                        y[(i + r) * n_out + j] = out[r];
-                    }
-                }
-                for (size_t i = m_til; i < m; i++) {
-                    y[i * n_out + j] = dot_row(nb, wr, qx + i * n_in, dx + i * nb, sx + i * nb);
-                }
-            }
-        }
+    struct tq2_call c = {.m     = m,
+                         .n_in  = n_in,
+                         .n_out = n_out,
+                         .nb    = n_in / QK,
+                         .wb    = (const struct block_tq2_0_t *) w->raw,
+                         .x     = x,
+                         .qx    = ws->mN_acts,
+                         .dx    = ws->mN_scale,
+                         .sx    = ws->mN_sum_a,
+                         .y     = y};
+    geist_par_for(m, quant_rows, &c);
+    if (vnni) {
+        geist_par_for((n_out + TQ2_0_VNNI_TILE_ROWS - 1) / TQ2_0_VNNI_TILE_ROWS, tiles_vnni, &c);
+    } else {
+        geist_par_for(n_out, rows_mN, &c);
     }
 }
 

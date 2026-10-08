@@ -23,7 +23,22 @@
  * GPU layout = struct-of-arrays (see matvec_pq2_0.comp): 8 quant words per
  * 128-element block, all blocks first, then one f16 scale per block.
  * Requires n_out % 128 == 0, rows % 16 == 0, n_in % 128 == 0.
- * Dispatch: gx = n_out / 128, gy = ceil(rows / 128). */
+ * Dispatch: gx = n_out / 128, gy = ceil(rows / 128).
+ *
+ * The same frame serves the k-quants (#658): DT_Q4K or DT_Q6K replaces the A
+ * stage only. Each thread dequantizes 16 consecutive k of one weight row (one
+ * half of a 32-element sub-block, so one scale per thread and k-step) from the
+ * native superblocks: Q4_K's 144-byte blocks (16-byte aligned: header and
+ * quants come as two 128-bit loads), Q6_K's 216-byte padded blocks (8-byte
+ * aligned: ql and qh as 64-bit loads). The dequantized weights are rounded to
+ * f16, as in matmul_q4k_cm.comp. Requires n_in % 256 == 0 for those. Without a
+ * DT_* macro the body is PQ2_0.
+ *
+ * Likewise DT_TQ2_0 replaces the A stage with TQ2_0's (#467), in the SOA layout of
+ * matvec_tq2_0.comp: 16 quant words per 256-element block, then the f16
+ * scales. A k-step is one of the block's eight 32-element runs
+ * e = g*128 + l*32 + m (bytes g*32 + m, bits 2l); each thread loads its 16
+ * bytes as one 128-bit word. Requires n_in % 256 == 0 for it. */
 
 #ifdef ACC_F16
 #define ACCUM(i, j) hac##i##j
@@ -36,6 +51,13 @@ layout(local_size_x = 256) in;
 layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
 layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
 layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
+#if defined(DT_Q4K)
+layout(set = 0, binding = 1) readonly buffer W4 { uvec4 w4[]; };
+#elif defined(DT_Q6K)
+layout(set = 0, binding = 1) readonly buffer W2 { uvec2 w2[]; };
+#elif defined(DT_TQ2_0)
+layout(set = 0, binding = 1) readonly buffer W4 { uvec4 w4[]; };
+#endif
 
 layout(push_constant) uniform Push {
     uint n_in;
@@ -59,6 +81,31 @@ const uint STRIDE4 = BK / 8u + 1u;
 shared uvec4 Ash[2][BM * STRIDE4];
 shared uvec4 Bsh[2][BN * STRIDE4];
 
+#if defined(DT_Q4K)
+/* 4 quant bytes, nibble at `shift` -> 4 packed f16 values dsc * q - dmn */
+uvec2 deq4_q4k(uint qw, uint shift, float dsc, float dmn) {
+    uvec4 q = (uvec4(qw) >> (uvec4(0u, 8u, 16u, 24u) + shift)) & 15u;
+    vec4 v = vec4(q) * dsc - dmn;
+    return uvec2(packHalf2x16(v.xy), packHalf2x16(v.zw));
+}
+#elif defined(DT_Q6K)
+/* 4 ql bytes (nibble at qls) and 4 qh bytes (2 bits at qhs) -> 4 packed f16
+ * values dsc * (q - 32) */
+uvec2 deq4_q6k(uint l, uint h, uint qls, uint qhs, float dsc) {
+    uvec4 sh = uvec4(0u, 8u, 16u, 24u);
+    uvec4 q = ((uvec4(l) >> (sh + qls)) & 15u) | (((uvec4(h) >> (sh + qhs)) & 3u) << 4u);
+    vec4 v = dsc * (vec4(q) - 32.0);
+    return uvec2(packHalf2x16(v.xy), packHalf2x16(v.zw));
+}
+#elif defined(DT_TQ2_0)
+/* 4 quant bytes, 2-bit code at `sh` in each -> 4 packed f16 values
+ * (code - 1) * d, exact in f16 */
+uvec2 deq4_tq2(uint qw, uint sh, float d) {
+    uvec4 c = (uvec4(qw) >> (uvec4(0u, 8u, 16u, 24u) + sh)) & 3u;
+    vec4 v = (vec4(c) - 1.0) * d;
+    return uvec2(packHalf2x16(v.xy), packHalf2x16(v.zw));
+}
+#else
 /* 8 ternary codes (16 bits) -> 8 packed f16 values (code - 1) * d, exact in
  * f16 for -d, 0, d and 2d */
 uvec4 expand8(uint bits, float d) {
@@ -69,12 +116,29 @@ uvec4 expand8(uint bits, float d) {
     }
     return r;
 }
+#endif
 
 /* Global -> registers for k-step ks (the loads stay in flight while the MMAs
  * of the previous step run); registers -> shared afterwards (store_tiles). */
 struct Fetch {
+#if defined(DT_Q4K)
+    uvec4 hdr; /* d, dmin, 12 bytes of packed 6-bit scales and mins */
+    uvec4 qs;  /* 16 quant bytes: this thread's half of the sub-block */
+    uint sub;  /* 32-element sub-block of k-step ks within the superblock */
+#elif defined(DT_Q6K)
+    uvec4 ql;  /* 16 low-nibble bytes */
+    uvec4 qh;  /* 16 high-bit bytes */
+    uint scw;  /* the word holding this thread's int8 scale */
+    uint dw;   /* d in the low half */
+    uint sub;
+#elif defined(DT_TQ2_0)
+    uvec4 qs; /* this thread's 16 quant bytes */
+    uint sh;  /* 2 * l of k-step ks */
+    float d;
+#else
     uint qw;
     float d;
+#endif
     vec4 x0;
     vec4 x1;
     vec4 x2;
@@ -86,10 +150,40 @@ Fetch fetch_tiles(uint ks, uint lid, uint row0, uint tb0) {
     uint r = lid >> 1u;
     uint hk = lid & 1u;
     Fetch f;
+#if defined(DT_Q4K)
+    uint bi = (row0 + r) * pc.blocks_per_row + (k0 >> 8u);
+    uint b4 = bi * 9u; /* 144-byte blocks = 9 uvec4 */
+    f.sub = (k0 & 255u) >> 5u;
+    f.hdr = w4[b4];
+    /* qs: 32 bytes per pair of sub-blocks (low nibbles even, high odd) */
+    f.qs = w4[b4 + 1u + (f.sub >> 1u) * 2u + hk];
+#elif defined(DT_Q6K)
+    uint bi = (row0 + r) * pc.blocks_per_row + (k0 >> 8u);
+    uint b2 = bi * 27u; /* 216-byte padded blocks = 27 uvec2 */
+    f.sub = (k0 & 255u) >> 5u;
+    uint half_idx = f.sub >> 2u; /* 128-element half of the block */
+    uint stream = f.sub & 3u;    /* 32-element stream within the half */
+    /* ql at byte half * 64 + (stream & 1) * 32, qh at 128 + half * 32,
+     * scales at 192 + half * 8 + stream * 2 + hk, d at 208 */
+    uint qlv = b2 + half_idx * 8u + (stream & 1u) * 4u + hk * 2u;
+    f.ql = uvec4(w2[qlv], w2[qlv + 1u]);
+    uint qhv = b2 + 16u + half_idx * 4u + hk * 2u;
+    f.qh = uvec4(w2[qhv], w2[qhv + 1u]);
+    f.scw = w2[b2 + 24u + half_idx][stream >> 1u];
+    f.dw = w2[b2 + 26u].x;
+#elif defined(DT_TQ2_0)
+    uint bi = (row0 + r) * pc.blocks_per_row + (k0 >> 8u);
+    uint sub = (k0 & 255u) >> 5u;
+    f.qs = w4[bi * 4u + (sub >> 2u) * 2u + hk];
+    f.sh = 2u * (sub & 3u);
+    f.d = unpackHalf2x16(w[pc.n_out * pc.blocks_per_row * 16u + (bi >> 1u)] >>
+                         ((bi & 1u) * 16u)).x;
+#else
     uint bi = (row0 + r) * pc.blocks_per_row + (k0 >> 7u);
     f.qw = w[bi * 8u + ((k0 & 127u) >> 4u) + hk];
     f.d = unpackHalf2x16(w[pc.n_out * pc.blocks_per_row * 8u + (bi >> 1u)] >>
                          ((bi & 1u) * 16u)).x;
+#endif
     uint t = tb0 + r;
     f.x0 = vec4(0.0);
     f.x1 = vec4(0.0);
@@ -109,8 +203,43 @@ void store_tiles(uint buf, uint lid, Fetch f) {
     uint r = lid >> 1u;
     uint hk = lid & 1u;
     uint abase = r * STRIDE4 + hk * 2u;
+#if defined(DT_Q4K)
+    /* the dequant math runs here, after the MMAs, not where the loads issue */
+    uint sub = f.sub;
+    vec2 dd = unpackHalf2x16(f.hdr.x);
+    uint sc_u, mn_u;
+    if (sub < 4u) {
+        sc_u = (f.hdr.y >> (8u * sub)) & 63u;
+        mn_u = (f.hdr.z >> (8u * sub)) & 63u;
+    } else {
+        uint j = sub - 4u;
+        uint q_j4 = (f.hdr.w >> (8u * j)) & 0xffu;
+        sc_u = (q_j4 & 15u) | ((((f.hdr.y >> (8u * j)) & 0xffu) >> 6u) << 4u);
+        mn_u = (q_j4 >> 4u) | ((((f.hdr.z >> (8u * j)) & 0xffu) >> 6u) << 4u);
+    }
+    float dsc = dd.x * float(sc_u);
+    float dmn = dd.y * float(mn_u);
+    uint shift = (sub & 1u) * 4u;
+    Ash[buf][abase] = uvec4(deq4_q4k(f.qs.x, shift, dsc, dmn), deq4_q4k(f.qs.y, shift, dsc, dmn));
+    Ash[buf][abase + 1u] =
+            uvec4(deq4_q4k(f.qs.z, shift, dsc, dmn), deq4_q4k(f.qs.w, shift, dsc, dmn));
+#elif defined(DT_Q6K)
+    uint stream = f.sub & 3u;
+    float dsc = unpackHalf2x16(f.dw).x *
+                float(bitfieldExtract(int(f.scw), int(((stream * 2u + hk) & 3u) * 8u), 8));
+    uint qls = stream >= 2u ? 4u : 0u;
+    uint qhs = stream * 2u;
+    Ash[buf][abase] = uvec4(deq4_q6k(f.ql.x, f.qh.x, qls, qhs, dsc),
+                            deq4_q6k(f.ql.y, f.qh.y, qls, qhs, dsc));
+    Ash[buf][abase + 1u] = uvec4(deq4_q6k(f.ql.z, f.qh.z, qls, qhs, dsc),
+                                 deq4_q6k(f.ql.w, f.qh.w, qls, qhs, dsc));
+#elif defined(DT_TQ2_0)
+    Ash[buf][abase] = uvec4(deq4_tq2(f.qs.x, f.sh, f.d), deq4_tq2(f.qs.y, f.sh, f.d));
+    Ash[buf][abase + 1u] = uvec4(deq4_tq2(f.qs.z, f.sh, f.d), deq4_tq2(f.qs.w, f.sh, f.d));
+#else
     Ash[buf][abase] = expand8(f.qw & 0xffffu, f.d);
     Ash[buf][abase + 1u] = expand8(f.qw >> 16u, f.d);
+#endif
     uint bbase = r * STRIDE4 + hk * 2u;
     Bsh[buf][bbase] = uvec4(packHalf2x16(f.x0.xy), packHalf2x16(f.x0.zw), packHalf2x16(f.x1.xy),
                             packHalf2x16(f.x1.zw));

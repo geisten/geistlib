@@ -1,7 +1,7 @@
 /*
  * src/backends/cpu_x86/linear_util.h — small inline helpers the cpu_x86
  * linear kernels share: horizontal sums, the int8 activation quantizer's
- * steps, the activation workspace, the VNNI gate and the OpenMP team.
+ * steps, the activation workspace, the VNNI gate and the thread team.
  *
  * Layer: BACKEND (cpu_x86, internal).
  *
@@ -22,10 +22,12 @@
 #include "kernel_w4a8.h" /* w4a8_dispatcher_tier: the ISA gate, GEIST_FORCE_ISA-clamped */
 
 #include "checked.h"
+#include "par.h"
 
 #include <geist_backend.h>
 
 #include <immintrin.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -169,16 +171,21 @@ static inline bool vnni_tiles_usable(void) {
 }
 #endif
 
-/* The OpenMP team: the most threads a region may get, this thread's index,
- * and the size of the current one. 1 / 0 / 1 without OpenMP. */
+/* The most threads a geist_par_for call (or an OpenMP region) may run at
+ * once: per-thread scratch is sized by it. */
 static inline size_t team_max(void) {
-#if defined(_OPENMP)
-    return (size_t) omp_get_max_threads();
-#else
-    return 1;
-#endif
+    return geist_par_max_threads();
 }
 
+/* A geist_par_for body's scratch slot, below team_max(): each range of one
+ * call claims the next index from `next`, which the caller zeroes before
+ * the call. A call runs at most team_max() ranges, each once. */
+static inline size_t par_slot(atomic_size_t *next) {
+    return atomic_fetch_add_explicit(next, 1, memory_order_relaxed);
+}
+
+/* Inside an OpenMP region (the AMX PQ2_0 GEMM): this thread's index and the
+ * team's size; 0 / 1 without OpenMP. */
 static inline size_t team_id(void) {
 #if defined(_OPENMP)
     return (size_t) omp_get_thread_num();
