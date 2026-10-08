@@ -33,9 +33,7 @@
 #include <stdint.h>
 #include <string.h> /* memcpy */
 
-#if defined(_OPENMP)
-#include <omp.h>
-#endif
+#include "par.h"
 
 /* q8_K activation row: int8 quants + per-16 block sums + super-block scale. */
 struct q8k_act {
@@ -213,31 +211,51 @@ dot_fmt(enum kfmt f, size_t n_super, const uint8_t *w, const struct q8k_act *y) 
  * bound is a tile size, not a limit on K. */
 constexpr size_t Q8K_SEG = 64;
 
+/* One GEMV segment or GEMM call for geist_par_for. */
+struct kq_call {
+    size_t          M, N, K, n_super, row_bytes;
+    size_t          w_off; /* GEMV: the segment's byte offset in a row */
+    bool            first; /* GEMV: the first segment stores, the rest add */
+    const uint8_t  *raw;
+    const float    *x;
+    struct q8k_act *a;
+    float          *y;
+};
+
+/* GEMV: rows [r0, r1) of one segment of n_super super-blocks. */
+[[gnu::always_inline]] static inline void
+gemv_rows(enum kfmt f, const struct kq_call *pc, size_t r0, size_t r1) {
+    const struct kq_call c = *pc;
+    for (size_t r = r0; r < r1; r++) {
+        const float d = dot_fmt(f, c.n_super, c.raw + r * c.row_bytes + c.w_off, c.a);
+        c.y[r]        = c.first ? d : c.y[r] + d;
+    }
+}
+
+static void gemv_rows_q6k(void *ctx, size_t r0, size_t r1) {
+    gemv_rows(KF_Q6K, ctx, r0, r1);
+}
+static void gemv_rows_q3k(void *ctx, size_t r0, size_t r1) {
+    gemv_rows(KF_Q3K, ctx, r0, r1);
+}
+
 /* K up to Q8K_SEG * 256 = 16384 is one segment. Beyond it (ffn_down of any
  * model wider than 16384) each segment's partial dot is added into y. The
  * activation is quantized per super-block either way, so segmenting changes
  * only the order of the fp32 sum across segments. */
-[[gnu::always_inline]] static inline void
-gemv_m1(enum kfmt f, size_t N, size_t K, const float *x, const uint8_t *raw, float *y) {
+static void gemv_m1(enum kfmt f, size_t N, size_t K, const float *x, const uint8_t *raw, float *y) {
     const size_t n_super = K / 256;
     if (n_super == 0) {
         return; /* unreachable: the caller only binds K % 256 == 0, K >= 256 */
     }
-    const size_t row_bytes = n_super * kfmt_bytes(f);
-
     struct q8k_act a[Q8K_SEG];
+    struct kq_call c = {.N = N, .row_bytes = n_super * kfmt_bytes(f), .raw = raw, .a = a, .y = y};
     for (size_t s0 = 0; s0 < n_super; s0 += Q8K_SEG) {
-        const size_t ns    = n_super - s0 < Q8K_SEG ? n_super - s0 : Q8K_SEG;
-        const bool   first = s0 == 0;
-        quantize_q8k_act(ns, x + s0 * 256, a);
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-        for (size_t r = 0; r < N; r++) {
-            const float d = dot_fmt(f, ns, raw + r * row_bytes + s0 * kfmt_bytes(f), a);
-            y[r]          = first ? d : y[r] + d;
-        }
+        c.n_super = n_super - s0 < Q8K_SEG ? n_super - s0 : Q8K_SEG;
+        c.w_off   = s0 * kfmt_bytes(f);
+        c.first   = s0 == 0;
+        quantize_q8k_act(c.n_super, x + s0 * 256, a);
+        geist_par_for(N, f == KF_Q6K ? gemv_rows_q6k : gemv_rows_q3k, &c);
     }
 }
 
@@ -331,50 +349,71 @@ size_t q3k_gemm_scratch_bytes(size_t M, size_t K) {
     return q6k_gemm_scratch_bytes(M, K);
 }
 
-[[gnu::always_inline]] static inline void gemm(enum kfmt      f,
-                                               size_t         M,
-                                               size_t         N,
-                                               size_t         K,
-                                               const float   *x,
-                                               const uint8_t *raw,
-                                               void          *scratch,
-                                               float         *y) {
-    const size_t          n_super   = K / 256;
-    const size_t          row_bytes = n_super * kfmt_bytes(f);
-    struct q8k_act *const a         = scratch;
-    const size_t          m_til     = M - M % KQ_NR;
+/* GEMM: activation rows [i0, i1) to q8_K. */
+static void gemm_quant_rows(void *ctx, size_t i0, size_t i1) {
+    const struct kq_call c = *(const struct kq_call *) ctx;
+    for (size_t i = i0; i < i1; i++) {
+        quantize_q8k_act(c.n_super, c.x + i * c.K, c.a + i * c.n_super);
+    }
+}
 
-#if defined(_OPENMP)
-#pragma omp parallel
-#endif
-    {
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-        for (size_t i = 0; i < M; i++) {
-            quantize_q8k_act(n_super, x + i * K, a + i * n_super);
+/* GEMM: output rows [r0, r1), KQ_NR activation rows at a time. */
+[[gnu::always_inline]] static inline void
+gemm_rows(enum kfmt f, const struct kq_call *pc, size_t r0, size_t r1) {
+    const struct kq_call  c       = *pc;
+    const size_t          M       = c.M;
+    const size_t          N       = c.N;
+    const size_t          n_super = c.n_super;
+    const size_t          m_til   = M - M % KQ_NR;
+    const struct q8k_act *a       = c.a;
+    float                *y       = c.y;
+    for (size_t r = r0; r < r1; r++) {
+        const uint8_t *wr = c.raw + r * c.row_bytes;
+        float          out[KQ_NR];
+        for (size_t i = 0; i < m_til; i += KQ_NR) {
+            if (f == KF_Q6K) {
+                dot_rows_q6k(n_super, wr, a + i * n_super, out);
+            } else {
+                dot_rows_q3k(n_super, wr, a + i * n_super, out);
+            }
+            for (size_t t = 0; t < KQ_NR; t++) {
+                y[(i + t) * N + r] = out[t];
+            }
         }
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-        for (size_t r = 0; r < N; r++) {
-            const uint8_t *wr = raw + r * row_bytes;
-            float          out[KQ_NR];
-            for (size_t i = 0; i < m_til; i += KQ_NR) {
-                if (f == KF_Q6K) {
-                    dot_rows_q6k(n_super, wr, a + i * n_super, out);
-                } else {
-                    dot_rows_q3k(n_super, wr, a + i * n_super, out);
-                }
-                for (size_t t = 0; t < KQ_NR; t++) {
-                    y[(i + t) * N + r] = out[t];
-                }
-            }
-            for (size_t i = m_til; i < M; i++) {
-                y[i * N + r] = dot_fmt(f, n_super, wr, a + i * n_super);
-            }
+        for (size_t i = m_til; i < M; i++) {
+            y[i * N + r] = dot_fmt(f, n_super, wr, a + i * n_super);
         }
     }
+}
+
+static void gemm_rows_q6k(void *ctx, size_t r0, size_t r1) {
+    gemm_rows(KF_Q6K, ctx, r0, r1);
+}
+static void gemm_rows_q3k(void *ctx, size_t r0, size_t r1) {
+    gemm_rows(KF_Q3K, ctx, r0, r1);
+}
+
+/* The M rows quantized, then the GEMM, one geist_par_for each. */
+static void gemm(enum kfmt      f,
+                 size_t         M,
+                 size_t         N,
+                 size_t         K,
+                 const float   *x,
+                 const uint8_t *raw,
+                 void          *scratch,
+                 float         *y) {
+    const size_t   n_super = K / 256;
+    struct kq_call c       = {.M         = M,
+                              .N         = N,
+                              .K         = K,
+                              .n_super   = n_super,
+                              .row_bytes = n_super * kfmt_bytes(f),
+                              .raw       = raw,
+                              .x         = x,
+                              .a         = scratch,
+                              .y         = y};
+    geist_par_for(M, gemm_quant_rows, &c);
+    geist_par_for(N, f == KF_Q6K ? gemm_rows_q6k : gemm_rows_q3k, &c);
 }
 
 void q6k_gemm(size_t         M,

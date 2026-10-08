@@ -118,6 +118,23 @@ minor release.
   a build without OpenMP too. Output is bit-identical. The other ~160
   `#pragma omp` sites still run serially without OpenMP. Test:
   `test_par_for_unit`, also on the TSan leg.
+- **The rest of cpu_x86 on the same parallel-for (#618, second batch).** Every
+  remaining OpenMP loop of the backend goes through `geist_par_for`: the
+  Q4_0 / Q4_1 / IQ4, Q8_0, TQ2_0, PQ2_0 (AVX2), Q4_K / Q5_K (raw), Q6_K /
+  Q3_K and generic linears, the Q4_Kx8 GEMV and GEMM, the W4A8 / W8A8 kernels,
+  the load-time repacks, gelu / SiLU / RMSNorm / add and the attention driver.
+  A region whose loops were separated by a barrier (quantize the activations,
+  then the GEMM; a split decode's chunks, then their merge) is now one call per
+  phase. Per-thread scratch is claimed per range (`par_slot`), and attention
+  keeps OpenMP's `schedule(dynamic)` by handing its items out from a shared
+  counter. Output is bit-identical with and without OpenMP. `make OPENMP=0`
+  builds without OpenMP into `<MODE>-noomp` directories (`tools/bench_revision_ab.py`
+  follows). Only the AMX PQ2_0 GEMM is left on OpenMP; a build without it
+  takes the AVX2 GEMM. Ryzen 9 9950X, 16 threads: with OpenMP, Gemma 4 E2B
+  and Qwen3.5 4B Q4_0 within noise of before; without, Gemma 4 E2B runs at
+  100-102 % of the OpenMP build (was 16 % prefill, 55 % decode), Qwen3.5 4B
+  decode at 99 % and prefill at 83 % (its DeltaNet layers' loops in
+  `layer_deltanet.c` are still OpenMP).
 - **The Vulkan out-of-device-memory error names what the whole device holds**. It used to report only this backend's own usage ("4315 of 11264 MiB
   are in use"), which reads as impossible when another model or process holds
   the rest; with `VK_EXT_memory_budget` it adds "the device reports 10950 of

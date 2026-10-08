@@ -11,6 +11,7 @@
 
 #include "q4k_to_q4kx8.h"
 
+#include "par.h"
 #include "quant.h"
 #include "quant_blocks.h"
 
@@ -100,22 +101,28 @@ void q4k_to_q4kx8_octet(size_t               n_super,
     }
 }
 
+/* One matrix for geist_par_for. */
+struct x8_repack {
+    size_t               n_super;
+    const uint8_t       *q4k_data;
+    struct block_q4_Kx8 *out;
+};
+
+static void repack_octets(void *ctx, size_t o0, size_t o1) {
+    const struct x8_repack c         = *(const struct x8_repack *) ctx;
+    const size_t           row_bytes = c.n_super * Q4_K_BLOCK_BYTES;
+    for (size_t oct = o0; oct < o1; oct++) {
+        q4k_to_q4kx8_octet(c.n_super, c.q4k_data + oct * 8 * row_bytes, c.out + oct * c.n_super);
+    }
+}
+
 void q4k_to_q4kx8_matrix(size_t               n_in,
                          size_t               n_out,
                          const uint8_t       *q4k_data,
                          struct block_q4_Kx8 *q4kx8_out) {
-    const size_t n_super        = n_in / Q4_K_BLOCK_ELEMS;
-    const size_t row_bytes      = n_super * Q4_K_BLOCK_BYTES;
-    const size_t n_octets       = n_out / 8;
-    const size_t blocks_per_oct = n_super;
     /* Run at load, and the first write to the output faults its pages in:
      * one thread per share of the octets writes (and faults) its own part.
      * The bytes do not depend on the team. */
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t oct = 0; oct < n_octets; oct++) {
-        const uint8_t *row_base = q4k_data + oct * 8 * row_bytes;
-        q4k_to_q4kx8_octet(n_super, row_base, q4kx8_out + oct * blocks_per_oct);
-    }
+    struct x8_repack c = {n_in / Q4_K_BLOCK_ELEMS, q4k_data, q4kx8_out};
+    geist_par_for(n_out / 8, repack_octets, &c);
 }

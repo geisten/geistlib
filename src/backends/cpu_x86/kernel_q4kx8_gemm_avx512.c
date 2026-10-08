@@ -10,7 +10,7 @@
  * of one VPDPBUSD per cell.
  *
  * Original code Copyright (c) 2023-2025 The ggml authors, MIT-licensed.
- * Adapted to geist's struct conventions + wrapped in OMP m-parallel.
+ * Adapted to geist's struct conventions + split over rows by geist_par_for.
  *
  * scales_0 / scales_1 are __m128i, then shuffle_epi8(scalemask), then
  * cvtepu8_epi16. scalemask = {7,7,3,3,6,6,2,2,5,5,1,1,4,4,0,0} duplicates
@@ -30,9 +30,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#if defined(_OPENMP)
-#include <omp.h>
-#endif
+#include "par.h"
 
 /* ---- Q8_K per-row format ---- */
 
@@ -308,15 +306,72 @@ q4kx8_gemv_one_row_tile(size_t                     n_super,
     return acc_row;
 }
 
+/* One GEMV or fallback-GEMM call for geist_par_for. */
+struct x8_call {
+    size_t                     N, n_super, ns, s0;
+    bool                       first; /* GEMV: the first segment stores, the rest add */
+    const struct block_q8_Kx4 *X;
+    const struct block_q4_Kx8 *W;
+    const struct q8k_row      *a; /* GEMV: the segment's quantized activation */
+    float                     *y;
+};
+
+/* Fallback GEMM: activation rows [m0, m1) (flat over the M / 4 Q8_Kx4 groups
+ * of 4, as the collapsed loop it replaces). */
+static void fallback_rows(void *ctx, size_t m0, size_t m1) {
+    const struct x8_call       c         = *(const struct x8_call *) ctx;
+    const size_t               N         = c.N;
+    const size_t               n_super_k = c.n_super;
+    const size_t               N_tiles   = N / 8;
+    const struct block_q8_Kx4 *X         = c.X;
+    const struct block_q4_Kx8 *W         = c.W;
+    float                     *Y         = c.y;
+    for (size_t m = m0; m < m1; m++) {
+        const size_t mt = m / 4;
+        const size_t i  = m % 4;
+
+        /* Q8K_SEG super-blocks at a time, like q4kx8_gemv_m1: one segment
+         * up to K = 16384, accumulated segments beyond it. The activations
+         * arrive already quantized per super-block, so segmenting changes
+         * only the order of the fp32 sum across segments. */
+        struct q8k_row a[Q8K_SEG];
+        for (size_t s0 = 0; s0 < n_super_k; s0 += Q8K_SEG) {
+            const size_t ns = n_super_k - s0 < Q8K_SEG ? n_super_k - s0 : Q8K_SEG;
+            for (size_t s = 0; s < ns; s++) {
+                const struct block_q8_Kx4 *Xb = &X[mt * n_super_k + s0 + s];
+                a[s].d                        = Xb->d[i];
+                for (int sb = 0; sb < 4; sb++) {
+                    for (int stripe = 0; stripe < 8; stripe++) {
+                        const int8_t *src = Xb->qs + sb * 256 + stripe * 32 + i * 8;
+                        memcpy(a[s].qs + sb * 64 + stripe * 8, src, 8);
+                    }
+                }
+                for (int g = 0; g < 16; g++) {
+                    a[s].bsums[g] = Xb->bsums[i * 16 + g];
+                }
+            }
+
+            for (size_t nt = 0; nt < N_tiles; nt++) {
+                __m256       acc_min;
+                const __m256 acc_row =
+                        q4kx8_gemv_one_row_tile(ns, &W[nt * n_super_k + s0], a, &acc_min);
+                __m256 r = _mm256_sub_ps(acc_row, acc_min);
+                if (s0 != 0) {
+                    r = _mm256_add_ps(r, _mm256_loadu_ps(Y + m * N + nt * 8));
+                }
+                _mm256_storeu_ps(Y + m * N + nt * 8, r);
+            }
+        }
+    }
+}
+
 static void q4kx8_gemv_avx2_fallback(size_t                     M,
                                      size_t                     N,
                                      size_t                     K,
                                      const struct block_q8_Kx4 *X,
                                      const struct block_q4_Kx8 *W,
                                      float                      Y[static M * N]) {
-    const size_t n_super_k = K / 256;
-    const size_t N_tiles   = N / 8;
-    const size_t M_tiles   = M / 4;
+    const size_t M_tiles = M / 4;
 
     if (M_tiles == 0 || N == 0 || N % 8 != 0) {
         q4kx8_gemm_scalar(M, N, K, X, W, Y);
@@ -330,46 +385,22 @@ static void q4kx8_gemv_avx2_fallback(size_t                     M,
      *   sb = k / 64, stripe = (k % 64) / 8, pos = k % 8
      *   byte = Q8_Kx4.qs[sb * 256 + stripe * 32 + i * 8 + pos]
      * bsums and d are stored per-row already. */
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static) collapse(2)
-#endif
-    for (size_t mt = 0; mt < M_tiles; mt++) {
-        for (size_t i = 0; i < 4; i++) {
-            const size_t m = mt * 4 + i;
+    struct x8_call c = {.N = N, .n_super = K / 256, .X = X, .W = W, .y = Y};
+    geist_par_for(M_tiles * 4, fallback_rows, &c);
+}
 
-            /* Q8K_SEG super-blocks at a time, like q4kx8_gemv_m1: one segment
-             * up to K = 16384, accumulated segments beyond it. The activations
-             * arrive already quantized per super-block, so segmenting changes
-             * only the order of the fp32 sum across segments. */
-            struct q8k_row a[Q8K_SEG];
-            for (size_t s0 = 0; s0 < n_super_k; s0 += Q8K_SEG) {
-                const size_t ns = n_super_k - s0 < Q8K_SEG ? n_super_k - s0 : Q8K_SEG;
-                for (size_t s = 0; s < ns; s++) {
-                    const struct block_q8_Kx4 *Xb = &X[mt * n_super_k + s0 + s];
-                    a[s].d                        = Xb->d[i];
-                    for (int sb = 0; sb < 4; sb++) {
-                        for (int stripe = 0; stripe < 8; stripe++) {
-                            const int8_t *src = Xb->qs + sb * 256 + stripe * 32 + i * 8;
-                            memcpy(a[s].qs + sb * 64 + stripe * 8, src, 8);
-                        }
-                    }
-                    for (int g = 0; g < 16; g++) {
-                        a[s].bsums[g] = Xb->bsums[i * 16 + g];
-                    }
-                }
-
-                for (size_t nt = 0; nt < N_tiles; nt++) {
-                    __m256       acc_min;
-                    const __m256 acc_row =
-                            q4kx8_gemv_one_row_tile(ns, &W[nt * n_super_k + s0], a, &acc_min);
-                    __m256 r = _mm256_sub_ps(acc_row, acc_min);
-                    if (s0 != 0) {
-                        r = _mm256_add_ps(r, _mm256_loadu_ps(Y + m * N + nt * 8));
-                    }
-                    _mm256_storeu_ps(Y + m * N + nt * 8, r);
-                }
-            }
+/* GEMV: output tiles [t0, t1) of 8 cells, one segment. */
+static void gemv_tiles(void *ctx, size_t t0, size_t t1) {
+    const struct x8_call c = *(const struct x8_call *) ctx;
+    for (size_t nt = t0; nt < t1; nt++) {
+        __m256       acc_min;
+        const __m256 acc_row =
+                q4kx8_gemv_one_row_tile(c.ns, &c.W[nt * c.n_super + c.s0], c.a, &acc_min);
+        __m256 r = _mm256_sub_ps(acc_row, acc_min);
+        if (!c.first) {
+            r = _mm256_add_ps(r, _mm256_loadu_ps(c.y + nt * 8));
         }
+        _mm256_storeu_ps(c.y + nt * 8, r);
     }
 }
 
@@ -388,29 +419,18 @@ static void q4kx8_gemv_avx2_fallback(size_t                     M,
 void q4kx8_gemv_m1(
         size_t N, size_t K, const float *x, const struct block_q4_Kx8 *W, float y[static N]) {
     const size_t n_super = K / 256;
-    const size_t N_tiles = N / 8;
     if (n_super == 0 || N % 8 != 0) {
         return; /* unreachable: the resolver only binds N % 8 == 0, K >= 256 */
     }
 
     struct q8k_row a[Q8K_SEG];
+    struct x8_call c = {.N = N, .n_super = n_super, .W = W, .a = a, .y = y};
     for (size_t s0 = 0; s0 < n_super; s0 += Q8K_SEG) {
-        const size_t ns    = n_super - s0 < Q8K_SEG ? n_super - s0 : Q8K_SEG;
-        const bool   first = s0 == 0;
-        quantize_q8k_row(ns, x + s0 * 256, a);
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-        for (size_t nt = 0; nt < N_tiles; nt++) {
-            __m256       acc_min;
-            const __m256 acc_row = q4kx8_gemv_one_row_tile(ns, &W[nt * n_super + s0], a, &acc_min);
-            __m256       r       = _mm256_sub_ps(acc_row, acc_min);
-            if (!first) {
-                r = _mm256_add_ps(r, _mm256_loadu_ps(y + nt * 8));
-            }
-            _mm256_storeu_ps(y + nt * 8, r);
-        }
+        c.ns    = n_super - s0 < Q8K_SEG ? n_super - s0 : Q8K_SEG;
+        c.s0    = s0;
+        c.first = s0 == 0;
+        quantize_q8k_row(c.ns, x + s0 * 256, a);
+        geist_par_for(N / 8, gemv_tiles, &c);
     }
 }
 
