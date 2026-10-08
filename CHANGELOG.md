@@ -20,6 +20,16 @@ minor release.
   buffer fits the BAR. RTX 2080 Ti, pp512 / tg16: E4B 1561 → 1893 t/s prefill,
   99.2 → 101.7 t/s decode; E2B and Llama 3.2 3B unchanged. CPU backends and
   Metal load it as before; logits are unchanged.
+- **Vulkan (internal): one table lists the compute pipelines (#469).**
+  `src/backends/vulkan/vk_pipes.def` has one row per pipeline (enum id,
+  SPIR-V blob, profiler name, binding count, plain / tiled-GEMM / coopmat),
+  and `enum vk_pipe`, `vk_pipe_nbind[]`, `vk_pipe_needs_coopmat()`,
+  `vk_pipe_is_tiled_gemm()`, the blob table and the `GEIST_VK_PROFILE` names
+  are generated from it. A new pipeline is one row plus its `_spv.h`
+  `#include` instead of edits in six places; a missing include fails to
+  compile and a binding count outside 2..`VK_MAX_BINDINGS` is a
+  `static_assert`. Pipeline order, the generated tables and the profile
+  output are unchanged.
 
 ### Fixed
 
