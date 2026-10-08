@@ -39,17 +39,15 @@
 #include "checked.h"
 #include "geist_gemm.h"
 #include "heap.h"
+#include "par.h"
 
 #include <geist.h>
 #include <geist_backend.h>
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <string.h>
-
-#if defined(_OPENMP)
-#include <omp.h>
-#endif
 
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
@@ -540,6 +538,123 @@ void transformer_dn_conv_silu_row(size_t       t,
         y_t[c] = silu_f(y_t[c]);
 }
 
+/* A chunked prefill's arguments, for its two geist_par_for bodies. */
+struct dn_prefill_job {
+    float        *y, *betas, *gs, *ws_all, *S, *zg;
+    const float  *old_cst, *qkv, *convw, *bb, *baa, *aw, *dtb, *nrm;
+    size_t        seq, n_kh, n_vh, d_k, d_v, K, keyd, vald, convd, ws_f;
+    float         eps, qscale;
+    bool          fresh;
+    atomic_size_t next_slot; /* the next range's staging slot, below nthr */
+};
+
+/* Tokens [t0, t1): conv + silu (reads only pre-conv qkv + old state, so
+ * tokens are independent), per-head l2 norm + q scale, gating scalars. */
+static void dn_prefill_conv_rows(void *ctx, size_t t0, size_t t1) {
+    /* Locals, not j->: with -fno-strict-aliasing a store through a float
+     * pointer could change *j, and the reloads would keep the gating loop
+     * from vectorizing as it did before (different expf/log1pf bits). */
+    const struct dn_prefill_job *j       = ctx;
+    float *const                 y       = j->y;
+    float *const                 betas   = j->betas;
+    float *const                 gs      = j->gs;
+    const float *const           old_cst = j->old_cst;
+    const float *const           qkv     = j->qkv;
+    const float *const           convw   = j->convw;
+    const float *const           bb      = j->bb;
+    const float *const           baa     = j->baa;
+    const float *const           aw      = j->aw;
+    const float *const           dtb     = j->dtb;
+    const size_t                 n_kh    = j->n_kh;
+    const size_t                 n_vh    = j->n_vh;
+    const size_t                 d_k     = j->d_k;
+    const size_t                 K       = j->K;
+    const size_t                 keyd    = j->keyd;
+    const size_t                 convd   = j->convd;
+    const float                  eps     = j->eps;
+    const float                  qscale  = j->qscale;
+    for (size_t t = t0; t < t1; t++) {
+        float *y_t = y + t * convd;
+        transformer_dn_conv_silu_row(t, K, convd, old_cst, qkv, convw, y_t);
+        float *q = y_t;
+        float *k = y_t + keyd;
+        for (size_t h = 0; h < n_kh; h++) {
+            l2norm_row(q + h * d_k, d_k, eps);
+            l2norm_row(k + h * d_k, d_k, eps);
+            for (size_t i = 0; i < d_k; i++)
+                q[h * d_k + i] *= qscale;
+        }
+        for (size_t hv = 0; hv < n_vh; hv++) {
+            betas[t * n_vh + hv] = 1.0f / (1.0f + expf(-bb[t * n_vh + hv]));
+            const float sp       = log1pf(expf(baa[t * n_vh + hv] + dtb[hv]));
+            gs[t * n_vh + hv]    = aw[hv] * sp;
+        }
+    }
+}
+
+/* V-heads [h0, h1): the delta rule in sub-chunks of DN_SUBCHUNK tokens, S
+ * threaded through, then the gated RMSNorm, in this range's staging slot. */
+static void dn_prefill_heads(void *ctx, size_t h0, size_t h1) {
+    struct dn_prefill_job *j     = ctx;
+    const float *const     y     = j->y;
+    const float *const     betas = j->betas;
+    const float *const     gs    = j->gs;
+    float *const           S     = j->S;
+    float *const           zg    = j->zg;
+    const float *const     nrm   = j->nrm;
+    const bool             fresh = j->fresh;
+    const size_t           seq   = j->seq;
+    const size_t           n_kh  = j->n_kh;
+    const size_t           n_vh  = j->n_vh;
+    const size_t           d_k   = j->d_k;
+    const size_t           d_v   = j->d_v;
+    const size_t           convd = j->convd;
+    const size_t           keyd  = j->keyd;
+    const size_t           vald  = j->vald;
+    const size_t           ws_f  = j->ws_f;
+    const float            eps   = j->eps;
+    float                 *ws =
+            j->ws_all + atomic_fetch_add_explicit(&j->next_slot, 1, memory_order_relaxed) * ws_f;
+    float *o = ws + ws_f - seq * d_v;
+    for (size_t hv = h0; hv < h1; hv++) {
+        const size_t hk = hv % n_kh; /* tiled v-head order, see decode path */
+        for (size_t off = 0; off < seq; off += DN_SUBCHUNK) {
+            const size_t c  = seq - off < DN_SUBCHUNK ? seq - off : DN_SUBCHUNK;
+            const float *yr = y + off * convd;
+            float       *Sh = S + hv * d_k * d_v;
+            const float *qr = yr + hk * d_k;
+            const float *kr = yr + keyd + hk * d_k;
+            const float *vr = yr + 2 * keyd + hv * d_v;
+            const float *br = betas + off * n_vh + hv;
+            const float *gr = gs + off * n_vh + hv;
+            /* The first sub-chunk writes a fresh S, every later one reads it. */
+            transformer_dn_head_chunk(fresh && off == 0,
+                                      Sh,
+                                      qr,
+                                      convd,
+                                      kr,
+                                      convd,
+                                      vr,
+                                      convd,
+                                      br,
+                                      gr,
+                                      n_vh,
+                                      c,
+                                      d_k,
+                                      d_v,
+                                      o + off * d_v,
+                                      ws);
+        }
+        for (size_t t = 0; t < seq; t++) {
+            float *o_t = o + t * d_v;
+            float *z_t = zg + t * vald + hv * d_v;
+            rmsnorm_row(o_t, nrm, d_v, eps);
+            for (size_t i = 0; i < d_v; i++)
+                z_t[i] = o_t[i] * silu_f(z_t[i]); /* gate read, then slot reused as mix */
+        }
+    }
+}
+
 /* Chunked prefill. Conv + norms + gating run as whole-batch passes into
  * the session's staging (dn_prefill_ws), then the delta rule per v-head
  * (OMP) in sub-chunks of DN_SUBCHUNK tokens. Returns false if that staging
@@ -576,11 +691,7 @@ static bool dn_run_prefill_chunked(struct transformer_arch_session *sess,
      * caller batches, so the surrounding GEMMs may take larger m
      * (caps.dn_subchunk). Boundaries sit at multiples of DN_SUBCHUNK. */
     const size_t ws_f = dn_prefill_thread_ws_floats(seq, d_k, d_v);
-#if defined(_OPENMP)
-    const size_t nthr = (size_t) omp_get_max_threads();
-#else
-    const size_t nthr = 1;
-#endif
+    const size_t nthr = geist_par_max_threads();
     /* All staging up front — nothing inside the head loop, so a failure
      * here leaves state untouched and the sequential fallback stays
      * valid. The session keeps it across layers and calls. */
@@ -603,28 +714,35 @@ static bool dn_run_prefill_chunked(struct transformer_arch_session *sess,
     else
         memcpy(old_cst, cstate, old_f * sizeof(float));
 
-    /* Conv + silu for every token (reads only pre-conv qkv + old state,
-     * so tokens are independent), then gating scalars. */
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t t = 0; t < seq; t++) {
-        float *y_t = y + t * convd;
-        transformer_dn_conv_silu_row(t, K, convd, old_cst, qkv, convw, y_t);
-        float *q = y_t;
-        float *k = y_t + keyd;
-        for (size_t h = 0; h < n_kh; h++) {
-            l2norm_row(q + h * d_k, d_k, eps);
-            l2norm_row(k + h * d_k, d_k, eps);
-            for (size_t i = 0; i < d_k; i++)
-                q[h * d_k + i] *= qscale;
-        }
-        for (size_t hv = 0; hv < n_vh; hv++) {
-            betas[t * n_vh + hv] = 1.0f / (1.0f + expf(-bb[t * n_vh + hv]));
-            const float sp       = log1pf(expf(baa[t * n_vh + hv] + dtb[hv]));
-            gs[t * n_vh + hv]    = aw[hv] * sp;
-        }
-    }
+    struct dn_prefill_job job = {.y       = y,
+                                 .betas   = betas,
+                                 .gs      = gs,
+                                 .ws_all  = ws_all,
+                                 .S       = S,
+                                 .zg      = zg,
+                                 .old_cst = old_cst,
+                                 .qkv     = qkv,
+                                 .convw   = convw,
+                                 .bb      = bb,
+                                 .baa     = baa,
+                                 .aw      = aw,
+                                 .dtb     = dtb,
+                                 .nrm     = nrm,
+                                 .seq     = seq,
+                                 .n_kh    = n_kh,
+                                 .n_vh    = n_vh,
+                                 .d_k     = d_k,
+                                 .d_v     = d_v,
+                                 .K       = K,
+                                 .keyd    = keyd,
+                                 .vald    = vald,
+                                 .convd   = convd,
+                                 .ws_f    = ws_f,
+                                 .eps     = eps,
+                                 .qscale  = qscale,
+                                 .fresh   = fresh};
+    /* Conv + silu for every token, then gating scalars. */
+    geist_par_for(seq, dn_prefill_conv_rows, &job);
 
     /* Roll the conv state forward by seq tokens: the new last K-1
      * pre-conv rows, taking from old state when seq < K-1. */
@@ -634,53 +752,68 @@ static bool dn_run_prefill_chunked(struct transformer_arch_session *sess,
         memcpy(cstate + j * convd, row, convd * sizeof(float));
     }
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t hv = 0; hv < n_vh; hv++) {
-#if defined(_OPENMP)
-        float *ws = ws_all + (size_t) omp_get_thread_num() * ws_f;
-#else
-        float *ws = ws_all;
-#endif
-        float       *o  = ws + ws_f - seq * d_v;
-        const size_t hk = hv % n_kh; /* tiled v-head order, see decode path */
-        for (size_t off = 0; off < seq; off += DN_SUBCHUNK) {
-            const size_t c  = seq - off < DN_SUBCHUNK ? seq - off : DN_SUBCHUNK;
-            const float *yr = y + off * convd;
-            float       *Sh = S + hv * d_k * d_v;
-            const float *qr = yr + hk * d_k;
-            const float *kr = yr + keyd + hk * d_k;
-            const float *vr = yr + 2 * keyd + hv * d_v;
-            const float *br = betas + off * n_vh + hv;
-            const float *gr = gs + off * n_vh + hv;
-            /* The first sub-chunk writes a fresh S, every later one reads it. */
-            transformer_dn_head_chunk(fresh && off == 0,
-                                      Sh,
-                                      qr,
-                                      convd,
-                                      kr,
-                                      convd,
-                                      vr,
-                                      convd,
-                                      br,
-                                      gr,
-                                      n_vh,
-                                      c,
-                                      d_k,
-                                      d_v,
-                                      o + off * d_v,
-                                      ws);
-        }
-        for (size_t t = 0; t < seq; t++) {
-            float *o_t = o + t * d_v;
-            float *z_t = zg + t * vald + hv * d_v;
-            rmsnorm_row(o_t, nrm, d_v, eps);
-            for (size_t j = 0; j < d_v; j++)
-                z_t[j] = o_t[j] * silu_f(z_t[j]); /* gate read, then slot reused as mix */
+    /* Each range of v-heads claims one of the nthr staging slots: a call
+     * runs at most geist_par_max_threads() ranges, each once. */
+    atomic_init(&job.next_slot, 0);
+    geist_par_for(n_vh, dn_prefill_heads, &job);
+    return true;
+}
+
+/* One token's sequential step, for geist_par_for over its v-heads. */
+struct dn_step_job {
+    const float *q, *k, *val, *b_t, *a_t, *aw, *dtb, *nrm;
+    float       *S, *z_t, *o_t; /* o_t aliases z_t */
+    size_t       n_kh, d_k, d_v;
+    float        eps;
+};
+
+/* V-heads [h0, h1): gating scalars, the delta-rule recurrence, then the
+ * gated per-head RMSNorm. */
+static void dn_step_heads(void *ctx, size_t h0, size_t h1) {
+    const struct dn_step_job *j    = ctx; /* locals: see dn_prefill_conv_rows */
+    const float *const        q    = j->q;
+    const float *const        k    = j->k;
+    const float *const        val  = j->val;
+    const float *const        b_t  = j->b_t;
+    const float *const        a_t  = j->a_t;
+    const float *const        aw   = j->aw;
+    const float *const        dtb  = j->dtb;
+    const float *const        nrm  = j->nrm;
+    float *const              S    = j->S;
+    float *const              z_t  = j->z_t;
+    float *const              o_t  = j->o_t;
+    const size_t              n_kh = j->n_kh;
+    const size_t              d_k  = j->d_k;
+    const size_t              d_v  = j->d_v;
+    const float               eps  = j->eps;
+    for (size_t hv = h0; hv < h1; hv++) {
+        const float beta = 1.0f / (1.0f + expf(-b_t[hv]));
+        /* softplus in f32; aw = -exp(A_log) already */
+        const float sp    = log1pf(expf(a_t[hv] + dtb[hv]));
+        const float g     = aw[hv] * sp;
+        const float decay = expf(g);
+
+        /* GGUF v-heads are in TILED order [G0_v0, G1_v0, ...] (the
+         * converter's _reorder_v_heads): v-head position hv maps to
+         * k-head hv % n_kh. Identity when n_vh == n_kh (0.8B);
+         * load-bearing for the 27B's 16:48 split. */
+        const size_t hk = hv % n_kh;
+        const float *qh = q + hk * d_k;
+        const float *kh = k + hk * d_k;
+        const float *vh = val + hv * d_v;
+        float       *Sh = S + hv * d_k * d_v;
+
+        float kv_mem[512], delta[512], o_h[512];
+        transformer_dn_head_step(Sh, qh, kh, vh, decay, beta, d_k, d_v, kv_mem, delta, o_h);
+
+        /* 6. gated per-head RMSNorm + silu(z) gate. o_t aliases z_t,
+         * so read the gate BEFORE overwriting. */
+        rmsnorm_row(o_h, nrm, d_v, eps);
+        for (size_t i = 0; i < d_v; i++) {
+            const float gate  = silu_f(z_t[hv * d_v + i]);
+            o_t[hv * d_v + i] = o_h[i] * gate;
         }
     }
-    return true;
 }
 
 [[nodiscard]] enum geist_status
@@ -973,37 +1106,22 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
             float       *z_t = zg + t * vald;
             float       *o_t = mix + t * vald; /* == z_t buffer, overwritten below */
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-            for (size_t hv = 0; hv < n_vh; hv++) {
-                const float beta = 1.0f / (1.0f + expf(-b_t[hv]));
-                /* softplus in f32; aw = -exp(A_log) already */
-                const float sp    = log1pf(expf(a_t[hv] + dtb[hv]));
-                const float g     = aw[hv] * sp;
-                const float decay = expf(g);
-
-                /* GGUF v-heads are in TILED order [G0_v0, G1_v0, ...] (the
-                 * converter's _reorder_v_heads): v-head position hv maps to
-                 * k-head hv % n_kh. Identity when n_vh == n_kh (0.8B);
-                 * load-bearing for the 27B's 16:48 split. */
-                const size_t hk = hv % n_kh;
-                const float *qh = q + hk * d_k;
-                const float *kh = k + hk * d_k;
-                const float *vh = val + hv * d_v;
-                float       *Sh = S + hv * d_k * d_v;
-
-                float kv_mem[512], delta[512], o_h[512];
-                transformer_dn_head_step(Sh, qh, kh, vh, decay, beta, d_k, d_v, kv_mem, delta, o_h);
-
-                /* 6. gated per-head RMSNorm + silu(z) gate. o_t aliases z_t,
-                 * so read the gate BEFORE overwriting. */
-                rmsnorm_row(o_h, nrm, d_v, eps);
-                for (size_t j = 0; j < d_v; j++) {
-                    const float gate  = silu_f(z_t[hv * d_v + j]);
-                    o_t[hv * d_v + j] = o_h[j] * gate;
-                }
-            }
+            const struct dn_step_job job = {.q    = q,
+                                            .k    = k,
+                                            .val  = val,
+                                            .b_t  = b_t,
+                                            .a_t  = a_t,
+                                            .aw   = aw,
+                                            .dtb  = dtb,
+                                            .nrm  = nrm,
+                                            .S    = S,
+                                            .z_t  = z_t,
+                                            .o_t  = o_t,
+                                            .n_kh = n_kh,
+                                            .d_k  = d_k,
+                                            .d_v  = d_v,
+                                            .eps  = eps};
+            geist_par_for(n_vh, dn_step_heads, (void *) &job);
         }
 
         v->buffer_unmap(sess->dn_scratch_qkv);

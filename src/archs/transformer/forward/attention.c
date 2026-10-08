@@ -15,7 +15,10 @@
 #include "int4_kv.h"
 #include "kivi.h"
 
+#include "par.h"
+
 #include <math.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -509,6 +512,207 @@ attn_int8_merge(size_t n_chunks, size_t head_dim, size_t stride, const float *pa
     return sum;
 }
 
+/* One call's work for geist_par_for. Items cost unevenly (causal and
+ * window masks make later positions longer), so each thread's range takes
+ * them one at a time, in order, from `next`: OpenMP's schedule(dynamic),
+ * which these loops used before. */
+struct attn_job {
+    const struct attn_int8_args *a;
+    size_t                       group, per_pass, n_passes;
+    size_t                       n_chunks, len, rec, dec_lo, dec_hi; /* split decode */
+    size_t                       n_items;
+    float                       *scratch;
+    atomic_size_t                next; /* the next item to hand out */
+};
+
+/* Takes the next item of j, or returns false once none is left. */
+static inline bool attn_next_item(struct attn_job *j, size_t *i) {
+    *i = atomic_fetch_add_explicit(&j->next, 1, memory_order_relaxed);
+    return *i < j->n_items;
+}
+
+/* Runs fn on min(n_items, threads) ranges, one item counter for all. */
+static void attn_dynamic(struct attn_job *j, geist_par_fn fn) {
+    const size_t threads = geist_par_max_threads();
+    atomic_init(&j->next, 0);
+    geist_par_for(j->n_items < threads ? j->n_items : threads, fn, j);
+}
+
+/* The grouped pass of per_pass heads, item by the runtime count. */
+static inline void attn_int8_pass(size_t                       per_pass,
+                                  const struct attn_int8_args *a,
+                                  size_t                       t,
+                                  size_t                       kv_h,
+                                  size_t                       h0,
+                                  size_t                       s_lo,
+                                  size_t                       s_hi,
+                                  float                       *part) {
+    switch (per_pass) {
+    case 4:
+        attn_int8_item(4, a, t, kv_h, h0, s_lo, s_hi, part);
+        break;
+    case 3:
+        attn_int8_item(3, a, t, kv_h, h0, s_lo, s_hi, part);
+        break;
+    default:
+        attn_int8_item(2, a, t, kv_h, h0, s_lo, s_hi, part);
+        break;
+    }
+}
+
+/* Split decode: items (KV head, pass, chunk), in that order; item i leaves
+ * its partial results at scratch + i * rec, so a pass's chunks lie side by
+ * side for the merge. Chunk c covers positions [dec_lo + c * len, ...]:
+ * at least ATTN_CHUNK_MIN each, so none is empty. */
+static void attn_int8_chunk_items(void *ctx, size_t, size_t) {
+    struct attn_job *j = ctx;
+    for (size_t i; attn_next_item(j, &i);) {
+        const size_t c    = i % j->n_chunks;
+        const size_t pass = i / j->n_chunks % j->n_passes;
+        const size_t kv_h = i / j->n_chunks / j->n_passes;
+        const size_t h0   = kv_h * j->group + pass * j->per_pass;
+        const size_t c_lo = j->dec_lo + c * j->len;
+        const size_t c_hi = j->dec_hi - c_lo < j->len ? j->dec_hi : c_lo + j->len - 1;
+        attn_int8_pass(j->per_pass, j->a, 0, kv_h, h0, c_lo, c_hi, j->scratch + i * j->rec);
+    }
+}
+
+/* Split decode: query heads [h0, h1) merge their chunks. */
+static void attn_int8_merge_heads(void *ctx, size_t h0, size_t h1) {
+    const struct attn_job *j        = ctx;
+    const size_t           head_dim = j->a->head_dim;
+    for (size_t h = h0; h < h1; h++) {
+        const size_t kv_h = h / j->group;
+        const size_t hg   = h % j->group;
+        const size_t pass = hg / j->per_pass;
+        const float *part = j->scratch + (kv_h * j->n_passes + pass) * j->n_chunks * j->rec +
+                            hg % j->per_pass * (head_dim + 2);
+        attn_int8_merge(j->n_chunks, head_dim, j->rec, part, j->a->out + h * head_dim);
+    }
+}
+
+/* GQA-grouped passes: items (query, KV head, pass), in that order. */
+static void attn_int8_pass_items(void *ctx, size_t, size_t) {
+    struct attn_job *j = ctx;
+    for (size_t i; attn_next_item(j, &i);) {
+        const size_t pass = i % j->n_passes;
+        const size_t kv_h = i / j->n_passes % j->a->n_kv_heads;
+        const size_t t    = i / j->n_passes / j->a->n_kv_heads;
+        const size_t h0   = kv_h * j->group + pass * j->per_pass;
+        size_t       s_lo = 0, s_hi = 0;
+        attn_span(j->a, t, &s_lo, &s_hi);
+        attn_int8_pass(j->per_pass, j->a, t, kv_h, h0, s_lo, s_hi, nullptr);
+    }
+}
+
+/* The one-head loop: items (query t, head h), in that order. */
+static void attn_int8_head_items(void *ctx, size_t, size_t) {
+    struct attn_job             *job            = ctx;
+    const struct attn_int8_args *args           = job->a;
+    const size_t                 n_q_heads      = args->n_q_heads;
+    const size_t                 head_dim       = args->head_dim;
+    const size_t                 n_kv           = args->n_kv;
+    const size_t                 n_kv_heads     = args->n_kv_heads;
+    const size_t                 q_offset       = args->q_offset;
+    const size_t                 sliding_window = args->sliding_window;
+    const size_t                 kv_group_size  = job->group;
+    const float                 *q              = args->q;
+    const int8_t                *k_q8           = args->k_q8;
+    const float                 *k_scale        = args->k_scale;
+    const int8_t                *v_q8           = args->v_q8;
+    const float                 *v_scale        = args->v_scale;
+    float                       *out            = args->out;
+    for (size_t it; attn_next_item(job, &it);) {
+        const size_t t     = it / n_q_heads;
+        const size_t h     = it % n_q_heads;
+        const size_t q_pos = q_offset + t;
+        const size_t s_lo =
+                (sliding_window > 0 && q_pos + 1 > sliding_window) ? q_pos + 1 - sliding_window : 0;
+        const size_t s_hi = q_pos < n_kv ? q_pos : n_kv - 1;
+        /* One block of the context at a time, private per (t,h): the
+         * softmax runs online (see the grouped passes). */
+        float scores[ATTN_BLOCK];
+
+        const size_t kv_h = h / kv_group_size;
+        const float *qv   = q + (t * n_q_heads + h) * head_dim;
+
+        /* Per-head INT8 quant of Q[t,h,:]; head_dim <= TRANSFORMER_HEAD_DIM_MAX
+         * (enforced at load). */
+        int8_t q_q8[TRANSFORMER_HEAD_DIM_MAX];
+        float  amax = 0.0f;
+        for (size_t i = 0; i < head_dim; i++) {
+            float a = fabsf(qv[i]);
+            if (a > amax) {
+                amax = a;
+            }
+        }
+        float scale_q = amax / 127.0f;
+        if (scale_q == 0.0f) {
+            scale_q = 1.0f;
+        }
+        const float inv_q = 1.0f / scale_q;
+        for (size_t i = 0; i < head_dim; i++) {
+            q_q8[i] = (int8_t) lrintf(qv[i] * inv_q);
+        }
+
+        float *outv = out + (t * n_q_heads + h) * head_dim;
+        for (size_t i = 0; i < head_dim; i++) {
+            outv[i] = 0.0f;
+        }
+        float  max_score = 0.0f;
+        double sum_exp   = 0.0;
+        for (size_t b0 = s_lo; b0 <= s_hi; b0 += ATTN_BLOCK) {
+            const size_t n = s_hi - b0 < ATTN_BLOCK ? s_hi - b0 + 1 : ATTN_BLOCK;
+            for (size_t j = 0; j < n; j++) {
+                const size_t  s       = b0 + j;
+                const int8_t *k       = k_q8 + (s * n_kv_heads + kv_h) * head_dim;
+                const float   ks      = k_scale[s * n_kv_heads + kv_h];
+                int32_t       int_dot = 0;
+                for (size_t i = 0; i < head_dim; i++) {
+                    int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
+                }
+                scores[j] = (float) int_dot * scale_q * ks;
+            }
+
+            float block_max = scores[0];
+            for (size_t j = 1; j < n; j++) {
+                if (scores[j] > block_max) {
+                    block_max = scores[j];
+                }
+            }
+            if (b0 == s_lo) {
+                max_score = block_max;
+            } else if (block_max > max_score) {
+                /* The sum and the V sums so far were taken against the
+                 * lower max: scale them down to the new one (to 0 below
+                 * ATTN_EXP_FLOOR). */
+                const float d = max_score - block_max;
+                const float c = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
+                sum_exp *= c;
+                for (size_t i = 0; i < head_dim; i++) {
+                    outv[i] *= c;
+                }
+                max_score = block_max;
+            }
+            sum_exp += attn_exp_block(n, scores, max_score);
+
+            for (size_t j = 0; j < n; j++) {
+                const size_t  s   = b0 + j;
+                const int8_t *vv  = v_q8 + (s * n_kv_heads + kv_h) * head_dim;
+                const float   vs  = v_scale[s * n_kv_heads + kv_h];
+                const float   wvs = scores[j] * vs;
+                for (size_t i = 0; i < head_dim; i++) {
+                    outv[i] += wvs * (float) vv[i];
+                }
+            }
+        }
+        const float inv_sum = (float) (1.0 / sum_exp);
+        for (size_t i = 0; i < head_dim; i++) {
+            outv[i] *= inv_sum;
+        }
+    }
+}
+
 /* ---- INT8 attention helper for the KV-INT8 path -----------------------
  *
  * MQA causal attention with optional sliding window, where the K and V
@@ -558,95 +762,36 @@ void attention_int8_via_buffers(size_t        n_q,
                                                  .out            = out};
     size_t                      dec_lo = 0, dec_hi = 0;
     attn_span(&args, 0, &dec_lo, &dec_hi);
-    const struct attn_plan plan     = attention_plan(n_q,
-                                                     n_q_heads,
-                                                     n_kv_heads,
-                                                     n_kv,
-                                                     head_dim,
-                                                     dec_hi - dec_lo + 1,
-                                                     scratch != nullptr ? scratch_floats : 0);
-    const size_t           per_pass = plan.per_pass;
-    const size_t           n_passes = kv_group_size / per_pass;
-    if (per_pass > 1 && plan.n_chunks > 1) {
-        /* Split decode (n_q == 1): items (KV head, pass, chunk) leave their
-         * partial results in scratch, then each head merges its chunks.
-         * Chunk c covers positions [dec_lo + c * len, ...]: at least
-         * ATTN_CHUNK_MIN each, so none is empty. */
-        const size_t n_chunks = plan.n_chunks;
-        const size_t len      = (dec_hi - dec_lo + n_chunks) / n_chunks;
-        const size_t rec      = per_pass * (head_dim + 2); /* one item's records */
-#if defined(_OPENMP)
-#pragma omp parallel
-#endif
-        {
-#if defined(_OPENMP)
-#pragma omp for collapse(3) schedule(dynamic)
-#endif
-            for (size_t kv_h = 0; kv_h < n_kv_heads; kv_h++) {
-                for (size_t pass = 0; pass < n_passes; pass++) {
-                    for (size_t c = 0; c < n_chunks; c++) {
-                        const size_t h0   = kv_h * kv_group_size + pass * per_pass;
-                        const size_t c_lo = dec_lo + c * len;
-                        const size_t c_hi = dec_hi - c_lo < len ? dec_hi : c_lo + len - 1;
-                        float *part = scratch + ((kv_h * n_passes + pass) * n_chunks + c) * rec;
-                        switch (per_pass) {
-                        case 4:
-                            attn_int8_item(4, &args, 0, kv_h, h0, c_lo, c_hi, part);
-                            break;
-                        case 3:
-                            attn_int8_item(3, &args, 0, kv_h, h0, c_lo, c_hi, part);
-                            break;
-                        default:
-                            attn_int8_item(2, &args, 0, kv_h, h0, c_lo, c_hi, part);
-                            break;
-                        }
-                    }
-                }
-            }
-#if defined(_OPENMP)
-#pragma omp for collapse(2)
-#endif
-            for (size_t kv_h = 0; kv_h < n_kv_heads; kv_h++) {
-                for (size_t hg = 0; hg < kv_group_size; hg++) {
-                    const size_t pass = hg / per_pass;
-                    const float *part = scratch + (kv_h * n_passes + pass) * n_chunks * rec +
-                                        hg % per_pass * (head_dim + 2);
-                    attn_int8_merge(n_chunks,
-                                    head_dim,
-                                    rec,
-                                    part,
-                                    out + (kv_h * kv_group_size + hg) * head_dim);
-                }
-            }
-        }
+    const struct attn_plan plan = attention_plan(n_q,
+                                                 n_q_heads,
+                                                 n_kv_heads,
+                                                 n_kv,
+                                                 head_dim,
+                                                 dec_hi - dec_lo + 1,
+                                                 scratch != nullptr ? scratch_floats : 0);
+    struct attn_job        j    = {.a        = &args,
+                                   .group    = kv_group_size,
+                                   .per_pass = plan.per_pass,
+                                   .n_passes = kv_group_size / plan.per_pass,
+                                   .scratch  = scratch};
+    if (plan.per_pass > 1 && plan.n_chunks > 1) {
+        /* Split decode (n_q == 1): the items leave their partial results in
+         * scratch, then each head merges its chunks. */
+        j.n_chunks = plan.n_chunks;
+        j.len      = (dec_hi - dec_lo + j.n_chunks) / j.n_chunks;
+        j.rec      = plan.per_pass * (head_dim + 2); /* one item's records */
+        j.dec_lo   = dec_lo;
+        j.dec_hi   = dec_hi;
+        j.n_items  = n_kv_heads * j.n_passes * j.n_chunks;
+        attn_dynamic(&j, attn_int8_chunk_items);
+        geist_par_for(n_q_heads, attn_int8_merge_heads, &j);
         return;
     }
-    if (per_pass > 1) {
+    if (plan.per_pass > 1) {
         /* GQA-grouped passes (see attn_int8_item). Same item independence as
          * the one-head loop below. */
-#if defined(_OPENMP)
-#pragma omp parallel for collapse(3) schedule(dynamic)
-#endif
-        for (size_t t = 0; t < n_q; t++) {
-            for (size_t kv_h = 0; kv_h < n_kv_heads; kv_h++) {
-                for (size_t pass = 0; pass < n_passes; pass++) {
-                    const size_t h0   = kv_h * kv_group_size + pass * per_pass;
-                    size_t       s_lo = 0, s_hi = 0;
-                    attn_span(&args, t, &s_lo, &s_hi);
-                    switch (per_pass) {
-                    case 4:
-                        attn_int8_item(4, &args, t, kv_h, h0, s_lo, s_hi, nullptr);
-                        break;
-                    case 3:
-                        attn_int8_item(3, &args, t, kv_h, h0, s_lo, s_hi, nullptr);
-                        break;
-                    default:
-                        attn_int8_item(2, &args, t, kv_h, h0, s_lo, s_hi, nullptr);
-                        break;
-                    }
-                }
-            }
-        }
+        j.n_items = n_q * n_kv_heads * j.n_passes;
+        attn_dynamic(&j, attn_int8_pass_items);
         return;
     }
     /* The O(n^2) attention core. Every (t,h) is independent: it reads the
@@ -654,106 +799,10 @@ void attention_int8_via_buffers(size_t        n_q,
      * slice plus a private `scores` scratch, so this parallelizes with no
      * change to any per-(t,h) reduction order — bit-exact vs serial.
      *
-     * collapse(2), not a plain loop over t: decode passes n_q == 1, and the
-     * heads are the axis that still has width when t does not.
-     *
-     * Causal + sliding-window masking makes per-t work uneven (later positions
-     * attend to more keys), so schedule(dynamic). */
-#if defined(_OPENMP)
-#pragma omp parallel for collapse(2) schedule(dynamic)
-#endif
-    for (size_t t = 0; t < n_q; t++) {
-        for (size_t h = 0; h < n_q_heads; h++) {
-            /* Recomputed per (t,h) rather than hoisted to the t loop: three
-             * scalar ops, and perfect nesting is what collapse(2) requires. */
-            const size_t q_pos = q_offset + t;
-            const size_t s_lo  = (sliding_window > 0 && q_pos + 1 > sliding_window)
-                                         ? q_pos + 1 - sliding_window
-                                         : 0;
-            const size_t s_hi  = q_pos < n_kv ? q_pos : n_kv - 1;
-            /* One block of the context at a time, private per (t,h): the
-             * softmax runs online (see the grouped passes). */
-            float scores[ATTN_BLOCK];
-
-            const size_t kv_h = h / kv_group_size;
-            const float *qv   = q + (t * n_q_heads + h) * head_dim;
-
-            /* Per-head INT8 quant of Q[t,h,:]; head_dim <= TRANSFORMER_HEAD_DIM_MAX
-             * (enforced at load). */
-            int8_t q_q8[TRANSFORMER_HEAD_DIM_MAX];
-            float  amax = 0.0f;
-            for (size_t i = 0; i < head_dim; i++) {
-                float a = fabsf(qv[i]);
-                if (a > amax) {
-                    amax = a;
-                }
-            }
-            float scale_q = amax / 127.0f;
-            if (scale_q == 0.0f) {
-                scale_q = 1.0f;
-            }
-            const float inv_q = 1.0f / scale_q;
-            for (size_t i = 0; i < head_dim; i++) {
-                q_q8[i] = (int8_t) lrintf(qv[i] * inv_q);
-            }
-
-            float *outv = out + (t * n_q_heads + h) * head_dim;
-            for (size_t i = 0; i < head_dim; i++) {
-                outv[i] = 0.0f;
-            }
-            float  max_score = 0.0f;
-            double sum_exp   = 0.0;
-            for (size_t b0 = s_lo; b0 <= s_hi; b0 += ATTN_BLOCK) {
-                const size_t n = s_hi - b0 < ATTN_BLOCK ? s_hi - b0 + 1 : ATTN_BLOCK;
-                for (size_t j = 0; j < n; j++) {
-                    const size_t  s       = b0 + j;
-                    const int8_t *k       = k_q8 + (s * n_kv_heads + kv_h) * head_dim;
-                    const float   ks      = k_scale[s * n_kv_heads + kv_h];
-                    int32_t       int_dot = 0;
-                    for (size_t i = 0; i < head_dim; i++) {
-                        int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
-                    }
-                    scores[j] = (float) int_dot * scale_q * ks;
-                }
-
-                float block_max = scores[0];
-                for (size_t j = 1; j < n; j++) {
-                    if (scores[j] > block_max) {
-                        block_max = scores[j];
-                    }
-                }
-                if (b0 == s_lo) {
-                    max_score = block_max;
-                } else if (block_max > max_score) {
-                    /* The sum and the V sums so far were taken against the
-                     * lower max: scale them down to the new one (to 0 below
-                     * ATTN_EXP_FLOOR). */
-                    const float d = max_score - block_max;
-                    const float c = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
-                    sum_exp *= c;
-                    for (size_t i = 0; i < head_dim; i++) {
-                        outv[i] *= c;
-                    }
-                    max_score = block_max;
-                }
-                sum_exp += attn_exp_block(n, scores, max_score);
-
-                for (size_t j = 0; j < n; j++) {
-                    const size_t  s   = b0 + j;
-                    const int8_t *vv  = v_q8 + (s * n_kv_heads + kv_h) * head_dim;
-                    const float   vs  = v_scale[s * n_kv_heads + kv_h];
-                    const float   wvs = scores[j] * vs;
-                    for (size_t i = 0; i < head_dim; i++) {
-                        outv[i] += wvs * (float) vv[i];
-                    }
-                }
-            }
-            const float inv_sum = (float) (1.0 / sum_exp);
-            for (size_t i = 0; i < head_dim; i++) {
-                outv[i] *= inv_sum;
-            }
-        }
-    }
+     * Items are (t,h), not t: decode passes n_q == 1, and the heads are the
+     * axis that still has width when t does not. */
+    j.n_items = n_q * n_q_heads;
+    attn_dynamic(&j, attn_int8_head_items);
 }
 
 /* Packed-INT4 attention: the INT8 one-head loop, with each K/V row unpacked
@@ -767,6 +816,122 @@ void attention_int8_via_buffers(size_t        n_q,
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 #endif
+/* attention_int4_via_buffers's arguments, for its item body. */
+struct attn_int4_job {
+    size_t         n_q_heads, head_dim, n_kv, n_kv_heads, q_offset, sliding_window, n_items;
+    const float   *q;
+    const uint8_t *k_q4;
+    const float   *k_scale;
+    const uint8_t *v_q4;
+    const float   *v_scale;
+    float         *out;
+    atomic_size_t  next; /* the next item to hand out, as in struct attn_job */
+};
+
+/* Items (query t, head h), in that order. */
+static void attn_int4_head_items(void *ctx, size_t, size_t) {
+    struct attn_int4_job *job            = ctx;
+    const size_t          n_q_heads      = job->n_q_heads;
+    const size_t          head_dim       = job->head_dim;
+    const size_t          n_kv           = job->n_kv;
+    const size_t          n_kv_heads     = job->n_kv_heads;
+    const size_t          q_offset       = job->q_offset;
+    const size_t          sliding_window = job->sliding_window;
+    const size_t          kv_group_size  = n_q_heads / n_kv_heads;
+    const size_t          packed         = head_dim / 2; /* bytes per cache row */
+    const float          *q              = job->q;
+    const uint8_t        *k_q4           = job->k_q4;
+    const float          *k_scale        = job->k_scale;
+    const uint8_t        *v_q4           = job->v_q4;
+    const float          *v_scale        = job->v_scale;
+    float                *out            = job->out;
+    for (size_t it;
+         (it = atomic_fetch_add_explicit(&job->next, 1, memory_order_relaxed)) < job->n_items;) {
+        const size_t t     = it / n_q_heads;
+        const size_t h     = it % n_q_heads;
+        const size_t q_pos = q_offset + t;
+        const size_t s_lo =
+                (sliding_window > 0 && q_pos + 1 > sliding_window) ? q_pos + 1 - sliding_window : 0;
+        const size_t s_hi = q_pos < n_kv ? q_pos : n_kv - 1;
+        float        scores[ATTN_BLOCK]; /* one block, as in the INT8 core */
+
+        const size_t kv_h = h / kv_group_size;
+        const float *qv   = q + (t * n_q_heads + h) * head_dim;
+
+        int8_t q_q8[TRANSFORMER_HEAD_DIM_MAX];
+        float  amax = 0.0f;
+        for (size_t i = 0; i < head_dim; i++) {
+            float a = fabsf(qv[i]);
+            if (a > amax) {
+                amax = a;
+            }
+        }
+        float scale_q = amax / 127.0f;
+        if (scale_q == 0.0f) {
+            scale_q = 1.0f;
+        }
+        const float inv_q = 1.0f / scale_q;
+        for (size_t i = 0; i < head_dim; i++) {
+            q_q8[i] = (int8_t) lrintf(qv[i] * inv_q);
+        }
+
+        float *outv = out + (t * n_q_heads + h) * head_dim;
+        for (size_t i = 0; i < head_dim; i++) {
+            outv[i] = 0.0f;
+        }
+        float  max_score = 0.0f;
+        double sum_exp   = 0.0;
+        for (size_t b0 = s_lo; b0 <= s_hi; b0 += ATTN_BLOCK) {
+            const size_t n = s_hi - b0 < ATTN_BLOCK ? s_hi - b0 + 1 : ATTN_BLOCK;
+            for (size_t j = 0; j < n; j++) {
+                const size_t s = b0 + j;
+                int8_t       k[TRANSFORMER_HEAD_DIM_MAX];
+                int4_unpack_row(head_dim, k_q4 + (s * n_kv_heads + kv_h) * packed, k);
+                const float ks      = k_scale[s * n_kv_heads + kv_h];
+                int32_t     int_dot = 0;
+                for (size_t i = 0; i < head_dim; i++) {
+                    int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
+                }
+                scores[j] = (float) int_dot * scale_q * ks;
+            }
+
+            float block_max = scores[0];
+            for (size_t j = 1; j < n; j++) {
+                if (scores[j] > block_max) {
+                    block_max = scores[j];
+                }
+            }
+            if (b0 == s_lo) {
+                max_score = block_max;
+            } else if (block_max > max_score) {
+                const float d = max_score - block_max;
+                const float c = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
+                sum_exp *= c;
+                for (size_t i = 0; i < head_dim; i++) {
+                    outv[i] *= c;
+                }
+                max_score = block_max;
+            }
+            sum_exp += attn_exp_block(n, scores, max_score);
+
+            for (size_t j = 0; j < n; j++) {
+                const size_t s = b0 + j;
+                int8_t       vv[TRANSFORMER_HEAD_DIM_MAX];
+                int4_unpack_row(head_dim, v_q4 + (s * n_kv_heads + kv_h) * packed, vv);
+                const float vs  = v_scale[s * n_kv_heads + kv_h];
+                const float wvs = scores[j] * vs;
+                for (size_t i = 0; i < head_dim; i++) {
+                    outv[i] += wvs * (float) vv[i];
+                }
+            }
+        }
+        const float inv_sum = (float) (1.0 / sum_exp);
+        for (size_t i = 0; i < head_dim; i++) {
+            outv[i] *= inv_sum;
+        }
+    }
+}
+
 void attention_int4_via_buffers(size_t         n_q,
                                 size_t         n_q_heads,
                                 size_t         head_dim,
@@ -781,98 +946,24 @@ void attention_int4_via_buffers(size_t         n_q,
                                 const float   *v_scale,
                                 float         *out) {
 
-    const size_t kv_group_size = n_q_heads / n_kv_heads;
-    const size_t packed        = head_dim / 2; /* bytes per cache row */
-/* collapse(2) for the same reason as the INT8 core above: decode passes
- * n_q == 1, so only the head axis has width to parallelize over. */
-#if defined(_OPENMP)
-#pragma omp parallel for collapse(2) schedule(dynamic)
-#endif
-    for (size_t t = 0; t < n_q; t++) {
-        for (size_t h = 0; h < n_q_heads; h++) {
-            const size_t q_pos = q_offset + t;
-            const size_t s_lo  = (sliding_window > 0 && q_pos + 1 > sliding_window)
-                                         ? q_pos + 1 - sliding_window
-                                         : 0;
-            const size_t s_hi  = q_pos < n_kv ? q_pos : n_kv - 1;
-            float        scores[ATTN_BLOCK]; /* one block, as in the INT8 core */
-
-            const size_t kv_h = h / kv_group_size;
-            const float *qv   = q + (t * n_q_heads + h) * head_dim;
-
-            int8_t q_q8[TRANSFORMER_HEAD_DIM_MAX];
-            float  amax = 0.0f;
-            for (size_t i = 0; i < head_dim; i++) {
-                float a = fabsf(qv[i]);
-                if (a > amax) {
-                    amax = a;
-                }
-            }
-            float scale_q = amax / 127.0f;
-            if (scale_q == 0.0f) {
-                scale_q = 1.0f;
-            }
-            const float inv_q = 1.0f / scale_q;
-            for (size_t i = 0; i < head_dim; i++) {
-                q_q8[i] = (int8_t) lrintf(qv[i] * inv_q);
-            }
-
-            float *outv = out + (t * n_q_heads + h) * head_dim;
-            for (size_t i = 0; i < head_dim; i++) {
-                outv[i] = 0.0f;
-            }
-            float  max_score = 0.0f;
-            double sum_exp   = 0.0;
-            for (size_t b0 = s_lo; b0 <= s_hi; b0 += ATTN_BLOCK) {
-                const size_t n = s_hi - b0 < ATTN_BLOCK ? s_hi - b0 + 1 : ATTN_BLOCK;
-                for (size_t j = 0; j < n; j++) {
-                    const size_t s = b0 + j;
-                    int8_t       k[TRANSFORMER_HEAD_DIM_MAX];
-                    int4_unpack_row(head_dim, k_q4 + (s * n_kv_heads + kv_h) * packed, k);
-                    const float ks      = k_scale[s * n_kv_heads + kv_h];
-                    int32_t     int_dot = 0;
-                    for (size_t i = 0; i < head_dim; i++) {
-                        int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
-                    }
-                    scores[j] = (float) int_dot * scale_q * ks;
-                }
-
-                float block_max = scores[0];
-                for (size_t j = 1; j < n; j++) {
-                    if (scores[j] > block_max) {
-                        block_max = scores[j];
-                    }
-                }
-                if (b0 == s_lo) {
-                    max_score = block_max;
-                } else if (block_max > max_score) {
-                    const float d = max_score - block_max;
-                    const float c = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
-                    sum_exp *= c;
-                    for (size_t i = 0; i < head_dim; i++) {
-                        outv[i] *= c;
-                    }
-                    max_score = block_max;
-                }
-                sum_exp += attn_exp_block(n, scores, max_score);
-
-                for (size_t j = 0; j < n; j++) {
-                    const size_t s = b0 + j;
-                    int8_t       vv[TRANSFORMER_HEAD_DIM_MAX];
-                    int4_unpack_row(head_dim, v_q4 + (s * n_kv_heads + kv_h) * packed, vv);
-                    const float vs  = v_scale[s * n_kv_heads + kv_h];
-                    const float wvs = scores[j] * vs;
-                    for (size_t i = 0; i < head_dim; i++) {
-                        outv[i] += wvs * (float) vv[i];
-                    }
-                }
-            }
-            const float inv_sum = (float) (1.0 / sum_exp);
-            for (size_t i = 0; i < head_dim; i++) {
-                outv[i] *= inv_sum;
-            }
-        }
-    }
+    /* Items (t,h) for the same reason as the INT8 core above: decode passes
+     * n_q == 1, so only the head axis has width to parallelize over. */
+    struct attn_int4_job j       = {.n_q_heads      = n_q_heads,
+                                    .head_dim       = head_dim,
+                                    .n_kv           = n_kv,
+                                    .n_kv_heads     = n_kv_heads,
+                                    .q_offset       = q_offset,
+                                    .sliding_window = sliding_window,
+                                    .n_items        = n_q * n_q_heads,
+                                    .q              = q,
+                                    .k_q4           = k_q4,
+                                    .k_scale        = k_scale,
+                                    .v_q4           = v_q4,
+                                    .v_scale        = v_scale,
+                                    .out            = out};
+    const size_t         threads = geist_par_max_threads();
+    atomic_init(&j.next, 0);
+    geist_par_for(j.n_items < threads ? j.n_items : threads, attn_int4_head_items, &j);
 }
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
