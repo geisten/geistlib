@@ -434,6 +434,74 @@ static void test_attention(size_t      n_q,
     free(got);
 }
 
+/* The same with F16 K/V, the KV-cache dtype the GPU path uses, so prefill
+ * (n_q > 1) takes the tensor-core kernel for head_dim 128 / 256 / 512 and
+ * sliding windows (#475). The reference sees the f16-rounded Q/K/V; the
+ * kernel also rounds P to f16, hence the looser bound. */
+static void test_attention_f16(size_t      n_q,
+                               size_t      n_kv,
+                               size_t      q_off,
+                               size_t      qh,
+                               size_t      kvh,
+                               size_t      hd,
+                               size_t      sliding,
+                               const char *name) {
+    const size_t nq = n_q * qh * hd, nk = n_kv * kvh * hd;
+    float       *q = geist_test_fill(nq, 0.031f, 0.3f, 0.6f, 0.0f),
+          *k       = geist_test_fill(nk, 0.023f, 0.3f, 0.6f, 0.0f);
+    float    *v    = geist_test_fill(nk, 0.017f, 0.3f, 1.0f, 0.0f);
+    float    *ref = malloc(nq * sizeof(float)), *got = malloc(nq * sizeof(float));
+    _Float16 *k16 = malloc(nk * sizeof(_Float16)), *v16 = malloc(nk * sizeof(_Float16));
+    for (size_t i = 0; i < nq; i++) {
+        q[i] = (float) (_Float16) q[i];
+    }
+    for (size_t i = 0; i < nk; i++) {
+        k16[i] = (_Float16) k[i];
+        v16[i] = (_Float16) v[i];
+        k[i]   = (float) k16[i];
+        v[i]   = (float) v16[i];
+    }
+    attention_mqa_causal_kv(n_q, n_kv, q_off, qh, kvh, hd, sliding, q, k, v, ref);
+    const struct geist_backend_vtbl *vt = g_be->desc->vtbl;
+    struct geist_buffer             *bq = dev_buf(q, nq), *bo = dev_buf(nullptr, nq), *bk = nullptr,
+                        *bv = nullptr;
+    check(bq && bo &&
+                  vt->buffer_create(g_be, nk * 2, GEIST_BUFFER_KV_CACHE, GEIST_MEMORY_AUTO, &bk) ==
+                          GEIST_OK &&
+                  vt->buffer_create(g_be, nk * 2, GEIST_BUFFER_KV_CACHE, GEIST_MEMORY_AUTO, &bv) ==
+                          GEIST_OK &&
+                  vt->buffer_upload(bk, nk * 2, (const uint8_t *) k16) == GEIST_OK &&
+                  vt->buffer_upload(bv, nk * 2, (const uint8_t *) v16) == GEIST_OK,
+          "attention f16 buffers");
+    struct geist_tensor tq =
+            geist_test_tensor_f32(bq, 3, (int64_t) n_q, (int64_t) qh, (int64_t) hd);
+    struct geist_tensor tk =
+            geist_test_tensor_f32(bk, 3, (int64_t) n_kv, (int64_t) kvh, (int64_t) hd);
+    struct geist_tensor tv =
+            geist_test_tensor_f32(bv, 3, (int64_t) n_kv, (int64_t) kvh, (int64_t) hd);
+    struct geist_tensor to =
+            geist_test_tensor_f32(bo, 3, (int64_t) n_q, (int64_t) qh, (int64_t) hd);
+    tk.dtype = GEIST_DTYPE_F16;
+    tv.dtype = GEIST_DTYPE_F16;
+    check(g_be->desc->prims->attention(g_be, &tq, &tk, &tv, q_off, sliding, &to) == GEIST_OK,
+          "attention f16 dispatch");
+    check(download(bo, got, nq), "attention f16 download");
+    const double e = geist_test_max_abs(nq, got, ref);
+    printf("  attention f16 %-24s max_abs %.2e\n", name, e);
+    check(e < 1e-3, name);
+    vt->buffer_destroy(g_be, bq);
+    vt->buffer_destroy(g_be, bk);
+    vt->buffer_destroy(g_be, bv);
+    vt->buffer_destroy(g_be, bo);
+    free(q);
+    free(k);
+    free(v);
+    free(k16);
+    free(v16);
+    free(ref);
+    free(got);
+}
+
 int main(void) {
     enum geist_status s = geist_backend_create("vulkan", nullptr, nullptr, &g_be);
     if (s == GEIST_E_NOT_FOUND || s == GEIST_E_UNSUPPORTED) {
@@ -471,6 +539,13 @@ int main(void) {
     test_attention(9, 40, 31, 8, 2, 256, 0, "chunked prefill q_off=31");
     test_attention(16, 16, 0, 16, 16, 128, 0, "MHA 16x128");
     test_attention(1, 300, 299, 8, 2, 256, 0, "decode kv=300 (flash path)");
+    test_attention_f16(37, 37, 0, 8, 2, 256, 0, "prefill 37 (8/2x256)");
+    test_attention_f16(37, 37, 0, 16, 8, 128, 0, "prefill 37 (16/8x128)");
+    test_attention_f16(37, 37, 0, 8, 1, 512, 0, "prefill 37 (8/1x512)");
+    test_attention_f16(70, 100, 30, 8, 2, 256, 32, "chunk q_off=30, window 32");
+    test_attention_f16(70, 100, 30, 8, 1, 512, 20, "x512 q_off=30, window 20");
+    test_attention_f16(40, 40, 0, 16, 8, 128, 7, "x128 window 7 (< tile)");
+    test_attention_f16(1, 50, 49, 8, 2, 256, 16, "decode kv=50, window 16");
     geist_backend_destroy(g_be);
     if (g_fail == 0) {
         printf("PASS: Vulkan qwen35 ops (partial and interleaved rope, hadamard, PQ2_0 embed, "

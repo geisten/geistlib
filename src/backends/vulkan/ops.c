@@ -1405,22 +1405,26 @@ attn_generic:;
                     kv16 ? vk_acc_tensor16(v, false) : vk_acc_tensor(v, false),
                     vk_acc_tensor(out, true)};
             /* Tensor-core kernel: prefill only (n_q > 1; decode has the
-             * attn_part_f16/attn_comb path above), no sliding window
-             * (2-pass causal masking assumes a single contiguous valid range
-             * per row), head_dim == 256 (HD_TILES == 16 in the shader, qwen35/Bonsai's
-             * full-attention shape). Same push layout and bindings as
-             * VK_PIPE_ATTENTION_F16, just a 16-row dispatch. */
-            if (kv16 && n_q > 1 && sliding_window == 0 && hd == 256 &&
-                stt->pipes[VK_PIPE_ATTENTION_F16_CM] != VK_NULL_HANDLE) {
+             * attn_part_f16/attn_comb path above), one variant per head_dim
+             * (128: Qwen3; 256: qwen35/Bonsai, Gemma's local layers; 512:
+             * Gemma 4's global layers, two column halves in z). Same push
+             * layout and bindings as VK_PIPE_ATTENTION_F16, sliding window
+             * included, just a 16-row dispatch. */
+            const enum vk_pipe cm_pipe = hd == 128   ? VK_PIPE_ATTENTION_F16_HD128_CM
+                                         : hd == 256 ? VK_PIPE_ATTENTION_F16_CM
+                                         : hd == 512 ? VK_PIPE_ATTENTION_F16_HD512_CM
+                                                     : VK_PIPE_COUNT;
+            if (kv16 && n_q > 1 && cm_pipe != VK_PIPE_COUNT &&
+                stt->pipes[cm_pipe] != VK_NULL_HANDLE) {
                 return vk_seq_dispatch_acc(be,
-                                           VK_PIPE_ATTENTION_F16_CM,
+                                           cm_pipe,
                                            bi,
                                            acc,
                                            push,
                                            sizeof(push),
                                            n_q / 16u + (n_q % 16u != 0u ? 1u : 0u),
                                            qh,
-                                           1);
+                                           hd == 512 ? 2u : 1u);
             }
             return vk_seq_dispatch_acc(be,
                                        kv16 ? VK_PIPE_ATTENTION_F16 : VK_PIPE_ATTENTION,
