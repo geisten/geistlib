@@ -84,6 +84,13 @@ enum geist_dtype {
      * layout=GEIST_LAYOUT_BLOCK_QUANTIZED. */
     GEIST_DTYPE_PQ2_0,
 
+    /* GGUF Q5_0 (ggml type 6): 32-elem blocks of one fp16 scale, 4 bytes
+     * of fifth bits and 16 nibble bytes (22 bytes, 5.5 bpw); value
+     * (code - 16) * scale. llama-quantize keeps some tensors of Q4_K_M
+     * models in it. Appended here, not next to Q4_1, so no published value
+     * moves. layout=GEIST_LAYOUT_BLOCK_QUANTIZED. */
+    GEIST_DTYPE_Q5_0,
+
     /* Not a dtype: one past the last, for sizing tables keyed by dtype. */
     GEIST_DTYPE_COUNT,
 };

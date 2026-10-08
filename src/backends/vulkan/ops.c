@@ -7,6 +7,7 @@
 
 #include "checked.h"
 #include "hadamard.h" /* host fallback of hadamard_rotate */
+#include "linear_ref.h"
 
 /* Everything the backend knows per weight dtype, in one place (#465): the
  * file block, how the VRAM copy lays it out, the (matvec, matmul) pipeline
@@ -257,55 +258,11 @@ vk_w_m1(const float *x, const struct geist_weight *w, struct geist_backend *be, 
 }
 
 /* ---- CPU fallback for dtypes without a GPU kernel (F16/BF16/...) -------
- * Row-dequant + naive dot, following cpu_scalar_w_quant_*, so mixed-dtype
- * GGUFs still load. */
+ * geist_linear_ref (common/linear_ref.c), split over output rows with
+ * OpenMP, so mixed-dtype GGUFs still load. Its numerics are cpu_scalar's. */
 
-static bool vk_dequant_row(const struct geist_weight *w, size_t j, float *row) {
-    const uint8_t *base = (const uint8_t *) w->raw;
-    const size_t   n_in = (size_t) w->n_in;
-    switch ((enum geist_dtype) w->dtype) {
-    case GEIST_DTYPE_F16: {
-        const uint8_t *r = base + j * n_in * 2;
-        for (size_t i = 0; i < n_in; i++) {
-            const uint16_t h = (uint16_t) r[2 * i] | ((uint16_t) r[2 * i + 1] << 8);
-            row[i]           = fp16_to_fp32(h);
-        }
-        return true;
-    }
-    case GEIST_DTYPE_BF16: {
-        const uint8_t *r = base + j * n_in * 2;
-        for (size_t i = 0; i < n_in; i++) {
-            const uint32_t b = (uint32_t) ((uint16_t) r[2 * i] | ((uint16_t) r[2 * i + 1] << 8))
-                               << 16;
-            memcpy(&row[i], &b, sizeof b);
-        }
-        return true;
-    }
-    case GEIST_DTYPE_Q3_K:
-        dequant_q3_K_row(n_in, base + j * n_in / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_Q5_K:
-        dequant_q5_K_row(n_in, base + j * n_in / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_Q8_0:
-        dequant_q8_0_row(n_in, base + j * n_in / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_TQ2_0:
-        dequant_tq2_0_row(n_in, base + j * n_in / TQ2_0_BLOCK_ELEMS * TQ2_0_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_PQ2_0:
-        dequant_pq2_0_row(n_in, base + j * n_in / PQ2_0_BLOCK_ELEMS * PQ2_0_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_Q4_0:
-        dequant_q4_0_row(n_in, base + j * n_in / Q4_0_BLOCK_ELEMS * Q4_0_BLOCK_BYTES, row);
-        return true;
-    case GEIST_DTYPE_Q4_1:
-        dequant_q4_1_row(n_in, base + j * n_in / Q4_1_BLOCK_ELEMS * Q4_1_BLOCK_BYTES, row);
-        return true;
-    default:
-        return false;
-    }
-}
+/* Output rows per OpenMP work item. */
+constexpr size_t VK_HOST_ROWS = 64;
 
 static void vk_w_cpu_mN(size_t                     m,
                         const float               *x,
@@ -324,36 +281,41 @@ static void vk_w_cpu_mN(size_t                     m,
                 st->host_weights,
                 st->host_weight_bytes >> 20);
     }
-    /* Row scratch lives in the backend state (grown on demand, freed at
-     * destroy): the resolved kernels are allocation-free in steady state, and
-     * a failed grow zeroes y and says why instead of leaving it unwritten. */
-    if (st->cpu_row_cap < n_in) {
-        float *bigger = geist_backend_alloc(be, n_in * sizeof(float), OPTIMAL_ALIGNMENT);
+    /* x and y are mapped backend buffers, which sit in the BAR window when
+     * the device has one: uncached for the CPU. The kernel reads every x
+     * element once per output row, so it runs on cached copies (#675: read
+     * in place, one Qwen3-0.6B decode step took tens of seconds). The copies
+     * live in the backend state (grown on demand, freed at destroy), so the
+     * resolved kernels are allocation-free in steady state; a failed grow
+     * zeroes y and says why instead of leaving it unwritten. */
+    size_t need = 0, need_bytes = 0;
+    if (ckd_mul(&need, m, n_in + n_out) || ckd_mul(&need_bytes, need, sizeof(float))) {
+        geist_backend_set_error(be, GEIST_E_OOM, "vulkan: host linear scratch size overflows");
+        memset(y, 0, m * n_out * sizeof(float));
+        return;
+    }
+    if (st->cpu_row_cap < need) {
+        float *bigger = geist_backend_alloc(be, need_bytes, OPTIMAL_ALIGNMENT);
         if (bigger == nullptr) {
-            geist_backend_set_error(be, GEIST_E_OOM, "vulkan: row scratch alloc failed");
+            geist_backend_set_error(be, GEIST_E_OOM, "vulkan: host linear scratch alloc failed");
             memset(y, 0, m * n_out * sizeof(float));
             return;
         }
         geist_backend_free(be, st->cpu_row);
         st->cpu_row     = bigger;
-        st->cpu_row_cap = n_in;
+        st->cpu_row_cap = need;
     }
-    float *row = st->cpu_row;
-    for (size_t j = 0; j < n_out; j++) {
-        if (!vk_dequant_row(w, j, row)) {
-            for (size_t i = 0; i < m; i++) {
-                y[i * n_out + j] = 0;
-            }
-            continue;
-        }
-        for (size_t i = 0; i < m; i++) {
-            double acc = 0.0;
-            for (size_t k = 0; k < n_in; k++) {
-                acc += (double) x[i * n_in + k] * (double) row[k];
-            }
-            y[i * n_out + j] = (float) acc;
-        }
+    float *xs = st->cpu_row;
+    float *ys = xs + m * n_in;
+    memcpy(xs, x, m * n_in * sizeof(float));
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (size_t j0 = 0; j0 < n_out; j0 += VK_HOST_ROWS) {
+        const size_t nj = n_out - j0 < VK_HOST_ROWS ? n_out - j0 : VK_HOST_ROWS;
+        geist_linear_ref_rows(m, j0, nj, n_out, xs, w, ys + j0);
     }
+    memcpy(y, ys, m * n_out * sizeof(float));
 }
 
 static void
@@ -367,6 +329,15 @@ vk_w_cpu_m1(const float *x, const struct geist_weight *w, struct geist_backend *
 [[nodiscard]] static enum geist_status vk_resolve_host(struct geist_backend *be,
                                                        struct geist_weight  *w) {
     struct vk_state *st = be->state;
+    if (!geist_linear_ref_decodes(w->dtype)) {
+        geist_backend_set_error(be,
+                                GEIST_E_UNSUPPORTED,
+                                "vulkan: no kernel for weight dtype %u (%dx%d)",
+                                (unsigned) w->dtype,
+                                (int) w->n_out,
+                                (int) w->n_in);
+        return GEIST_E_UNSUPPORTED;
+    }
     if (st->strict) {
         geist_backend_set_error(be,
                                 GEIST_E_BACKEND,
@@ -533,6 +504,7 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
             }
             [[fallthrough]];
         case GEIST_DTYPE_Q3_K:
+        case GEIST_DTYPE_Q5_0: /* no shader yet: the odd Q4_K_M tensor (#675) */
             return vk_resolve_host(be, w);
         default:
             geist_backend_set_error(be,
@@ -546,8 +518,8 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
     }
     if (w->dtype != GEIST_DTYPE_F32 && (size_t) w->n_in % ld->block_elems != 0) {
         /* Row length is not a whole number of blocks: the GPU kernels index
-         * by block. Every dtype but the two native k-quants has a CPU dequant
-         * row (vk_dequant_row) and keeps working through it. */
+         * by block. Every dtype but the two native k-quants keeps working
+         * through the host path (geist_linear_ref). */
         if (w->dtype != GEIST_DTYPE_Q4_K && w->dtype != GEIST_DTYPE_Q6_K) {
             return vk_resolve_host(be, w);
         }
