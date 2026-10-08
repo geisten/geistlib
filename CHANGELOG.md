@@ -65,6 +65,15 @@ minor release.
   compile and a binding count outside 2..`VK_MAX_BINDINGS` is a
   `static_assert`. Pipeline order, the generated tables and the profile
   output are unchanged.
+- **Vulkan shaders (internal): one body for the register-tiled GEMMs
+  (#465).** `matmul_q4k`, `matmul_q6k` and `matmul_f32` were the last
+  register-tiled GEMMs with their own copy of the tile loop and the
+  `subgroupAdd` tail; they now include `mm_legacy.glsl` with a `DT_Q4K` /
+  `DT_Q6K` / `DT_F32` hook beside Q4_0, Q4_1, Q8_0, TQ2_0, PQ2_0 and Q5_K
+  (`matmul_q5k` and `matmul_tq2_0` were already folded). Each kernel keeps its
+  thread mapping, workgroup geometry and arithmetic order; glslc emits
+  byte-identical SPIR-V for all nine `mm_legacy` users, so the `_spv.h`
+  headers are unchanged.
 
 ### Fixed
 
