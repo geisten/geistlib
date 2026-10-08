@@ -219,6 +219,7 @@ LIB_SOURCES := \
     src/formats/gguf/q8_0.c \
     src/formats/gguf/q4_0.c \
     src/formats/gguf/q4_1.c \
+    src/formats/gguf/q5_0.c \
     src/formats/gguf/q3_K.c \
     src/formats/gguf/q4_K.c \
     src/formats/gguf/q5_K.c \

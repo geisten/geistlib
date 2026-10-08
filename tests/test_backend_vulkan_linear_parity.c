@@ -2,7 +2,8 @@
  * test_backend_vulkan_linear_parity — numerical parity gate for the Vulkan
  * linear path: resolve_weight + linear_m1/linear_mN for Q4_K,
  * Q5_K, Q6_K, Q4_0, Q4_1, Q8_0, TQ2_0, PQ2_0 and F32 weights (plus fused->linear_t, the
- * device-resident path the engine actually runs), compared against the
+ * device-resident path the engine actually runs), and Q5_0, which has no
+ * shader and must resolve to the host row-dequant path, compared against the
  * cpu_scalar resolver on the SAME weight bytes. cpu_scalar dequantizes with an independent
  * implementation (src/formats/gguf), so agreement means the GLSL dequant
  * and the full dispatch chain (VRAM upload, registry, staging, shader) are
@@ -47,6 +48,7 @@ static const struct qfmt QF[] = {
         {GEIST_DTYPE_Q8_0, 32, 34, 2},
         {GEIST_DTYPE_TQ2_0, 256, 66, -2}, /* d is the TRAILING f16 */
         {GEIST_DTYPE_PQ2_0, 128, 34, 2},
+        {GEIST_DTYPE_Q5_0, 32, 22, 2},
 };
 
 static const struct qfmt *qfmt_of(int dtype) {
@@ -374,6 +376,66 @@ int main(void) {
     run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q4_0, "Q4_0-cm", 1120, 128, 48, PARITY_MAG, 2e-3);
     run_parity(
             VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_0, "Q4_0-split", 1120, 128, 101, PARITY_MAG, 2e-3);
+    /* Q5_0: no shader; the host row-dequant kernels must be installed and
+     * agree with cpu_scalar. */
+    run_case(vk, ref, GEIST_DTYPE_Q5_0, "Q5_0", 512, 383, 1);
+    run_case(vk, ref, GEIST_DTYPE_Q5_0, "Q5_0", 352, 45, 8);
+    /* Q5_K on the tensor cores (#467): its 5-bit products leave f16's exact
+     * integer range as Q6_K's do, so judged by PARITY_MAG; two superblocks
+     * per row, a partly empty token tile, linear_t, the m % 16 split */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-cm", 512, 256, 16, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-cm", 768, 128, 112, PARITY_MAG, 2e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-cm", 512, 192, 48, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-split", 512, 128, 37, PARITY_MAG, 2e-3);
+    /* Q4_1 on the tensor cores (#467): its native 20-byte block */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_1, "Q4_1-cm", 512, 256, 16, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_1, "Q4_1-cm", 1120, 128, 112, PARITY_MAG, 2e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q4_1, "Q4_1-cm", 512, 192, 48, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_1, "Q4_1-split", 512, 128, 37, PARITY_MAG, 2e-3);
+    /* TQ2_0 on the tensor cores (#467): eight k-steps per 256-element block;
+     * one, two and three (odd) superblocks per row, a partly empty token tile,
+     * linear_t, the m % 16 split */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0-cm", 256, 256, 16, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0-cm", 768, 128, 64, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0-cm", 512, 256, 112, PARITY_MAG, 2e-3);
+    run_parity(
+            VIA_LINEAR_T, vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0-cm", 768, 256, 48, PARITY_MAG, 2e-3);
+    run_parity(
+            VIA_WEIGHT, vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0-split", 768, 128, 37, PARITY_MAG, 2e-3);
+    /* ... and in its 128 x 128 tile (n_out * m >= 4 * 2^16): a full token
+     * tile, a partly empty second one, linear_t, the m % 16 split */
+    run_parity(
+            VIA_WEIGHT, vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0-cm128", 768, 4096, 64, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT,
+               vk,
+               ref,
+               GEIST_DTYPE_TQ2_0,
+               "TQ2_0-cm128",
+               512,
+               2048,
+               144,
+               PARITY_MAG,
+               2e-3);
+    run_parity(VIA_LINEAR_T,
+               vk,
+               ref,
+               GEIST_DTYPE_TQ2_0,
+               "TQ2_0-cm128",
+               768,
+               2048,
+               128,
+               PARITY_MAG,
+               2e-3);
+    run_parity(VIA_WEIGHT,
+               vk,
+               ref,
+               GEIST_DTYPE_TQ2_0,
+               "TQ2_0-split128",
+               256,
+               2048,
+               133,
+               PARITY_MAG,
+               2e-3);
     geist_backend_destroy(vk);
 
     /* the exact f32-accumulate tensor-core GEMM (GEIST_VK_PQ2_F32_ACC) */

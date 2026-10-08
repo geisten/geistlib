@@ -9,6 +9,21 @@ minor release.
 ## [Unreleased]
 
 ### Changed
+- **Vulkan: TQ2_0 prefill GEMM on the tensor cores (#467).** A TQ2_0 A stage
+  in `matmul_legacy_cm_body.glsl` (64 x 64 tile) and in the 128 x 128 PQ2_0
+  frame (`matmul_pq2_0_cm_body.glsl`), which takes over from
+  `n_out * m >= 4 * 2^16`. BitNet b1.58-large TQ2_0 on an RTX 2080 Ti, pp512:
+  TQ2_0 GEMM GPU time ~210 → ~37 ms, prefill 412 → 84 ms (1243 → 6070 t/s);
+  CPU-vs-Vulkan logits unchanged (corr 0.99958, 0.99959 before).
+- **Vulkan: Q4_1 prefill GEMM on the tensor cores (#467).** A Q4_1 A stage
+  (native 20-byte block) in `matmul_legacy_cm_body.glsl`. Qwen3.5 4B Q4_0 (its
+  Q4_1 tensors) on an RTX 2080 Ti, pp512: Q4_1 GEMM 55.0 → 11.9 ms, prefill
+  876 → 1071 t/s.
+- **Vulkan: Q5_K prefill GEMM on the tensor cores (#467).** The Q4_K coopmat
+  kernel's body (`matmul_kq_cm_body.glsl`) now takes a Q5_K A stage (the qh
+  fifth bit). Qwen3.8 27B Q4_0 (its Q5_K tensors) on an RTX 2080 Ti with the
+  #466 spill, pp256 GPU time 864 → 290 ms for Q5_K; with the Q4_0 kernel the
+  27B prefills at 50.8 t/s (18.7 before).
 - **Vulkan: Q4_0 prefill GEMM on the tensor cores (#467).** The Q8_0
   coopmat kernel's body now takes a Q4_0 A stage too (shared
   `matmul_legacy_cm_body.glsl`). RTX 2080 Ti, Qwen3.5 4B Q4_0 pp512: the Q4_0
@@ -72,6 +87,25 @@ minor release.
   the caller queries from the OS). `GEIST_HAS_BACKEND_MEMORY_INFO` is defined
   with it, so a consumer pinned to an older engine can still build. Test:
   `test_backend_memory_info_unit` (vulkan-gpu CI leg).
+- **GGUF Q5_0 weights load and run (#675).** `llama-quantize ... Q4_K_M`
+  keeps some tensors of small models in Q5_0 (ggml type 6), and the loader
+  refused them (`'blk.0.attn_q.weight' has unsupported dtype Q5_0`). New
+  `GEIST_DTYPE_Q5_0` in `geist_types.h`, appended after `GEIST_DTYPE_PQ2_0`
+  (value 23) so no published dtype value moves; `GEIST_DTYPE_COUNT` grows by
+  one. There is no native kernel yet: cpu_scalar runs the reference,
+  cpu_x86 the multi-threaded generic dequant linear, cpu_neon the dequant
+  trampolines, and Vulkan installs its host path (refused under
+  `GEIST_VK_STRICT=1`); Metal resolves nothing for it and the first linear
+  fails with `linear_w: backend resolver installed no kernel`. Token
+  embeddings in Q5_0 dequantize on the host. Qwen3-0.6B quantized to Q5_0
+  by llama-quantize: perplexity 24.65 against 24.01 for BF16 (llama.cpp:
+  23.39 / 22.99). Vulkan's host linear (all dtypes without a shader) now runs
+  `geist_linear_ref` split over OpenMP threads, on host copies of x and y
+  rather than reading the mapped buffers (BAR-resident when the device has
+  a BAR window) once per output row, single-threaded. That model's 8-token
+  prompt plus 16 decoded tokens did not finish in 20 minutes before and
+  takes 83 s now, on a loaded host; most of what is left is per-linear
+  overhead, not the dot products. Test: `test_q5_0_unit`.
 
 ### Changed
 - **One internal parallel-for, with or without OpenMP (#618, first batch).**
