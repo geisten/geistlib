@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : enable
 #extension GL_KHR_shader_subgroup_arithmetic : enable
 #extension GL_KHR_shader_subgroup_basic : enable
 #include "vk_limits.h"
@@ -66,10 +67,7 @@ shared float qs[VK_DN_MAX_DK];
 shared float ks[VK_DN_MAX_DK];
 shared vec2  reduce_partial[VK_DN_MAX_DV]; /* one per subgroup; a subgroup can be 1 lane */
 
-float silu(float v) {
-    float e = exp(-abs(v));
-    return v >= 0.0 ? v / (1.0 + e) : (v * e) / (1.0 + e);
-}
+#include "silu.glsl"
 
 /* Sum-reduce two values across the 128-thread workgroup: subgroupAdd per
  * subgroup, one tiny shared pass across the (<= 4) subgroup partials. Ends
@@ -89,6 +87,21 @@ void reduce2(inout float a, inout float b, uint tid) {
     a = total.x;
     b = total.y;
     barrier();
+}
+
+/* The same for one value (reduce_partial's y unused). */
+float reduce1(float a) {
+    a = subgroupAdd(a);
+    if (subgroupElect()) {
+        reduce_partial[gl_SubgroupID].x = a;
+    }
+    barrier();
+    float total = 0.0;
+    for (uint i = 0u; i < gl_NumSubgroups; i++) {
+        total += reduce_partial[i].x;
+    }
+    barrier();
+    return total;
 }
 
 /* q / k of one token's k-head into shared memory, l2-normalized (with the
@@ -125,9 +138,7 @@ void gates(uint t, uint hv, out float beta, out float decay) {
 
 /* per-head RMSNorm of o over d_v, then * silu(z), written over z */
 void epilogue(float o, uint t, uint hv, uint tid, bool col_ok) {
-    float ss = o * o;
-    float dummy = 0.0;
-    reduce2(ss, dummy, tid);
+    float ss = reduce1(o * o);
     float inv = inversesqrt(ss / float(pc.dv) + pc.eps);
     if (col_ok) {
         uint zi = pc.z_off + t * pc.n_vh * pc.dv + hv * pc.dv + tid;

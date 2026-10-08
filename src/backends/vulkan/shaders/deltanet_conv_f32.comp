@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : enable
 #include "vk_limits.h"
 
 /* Gated-DeltaNet causal depthwise conv + SiLU (fused->deltanet_mix, stage 1).
@@ -31,11 +32,7 @@ layout(push_constant) uniform Push {
     uint st_off;
 } pc;
 
-float silu(float v) {
-    /* overflow-safe form, same as the host oracle */
-    float e = exp(-abs(v));
-    return v >= 0.0 ? v / (1.0 + e) : (v * e) / (1.0 + e);
-}
+#include "silu.glsl"
 
 void main() {
     uint c = gl_GlobalInvocationID.x;
