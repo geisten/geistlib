@@ -275,3 +275,14 @@ gcc-15 -std=c23 -O3 -DNDEBUG -fopenmp -Wall -Wextra -Wpedantic -Werror \
 
 Commits: one logical change each, and say *why*. For kernel or perf work,
 include before/after numbers and the host.
+
+## 8. Merging
+
+`main` requires a PR branch to be up to date with it. After a merge, update
+**only the PR that merges next** (`gh pr update-branch N`, then
+`gh pr merge N --merge --auto`); leave the others behind until their turn.
+
+Updating every open PR at once restarts CI on all of them. Five PRs × 24 jobs
+exceed the hosted-runner limit: jobs queue for up to 9 minutes, and the next
+merge makes the whole wave stale again. On 2026-10-08 one PR waited three
+hours this way.
