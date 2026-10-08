@@ -12,16 +12,13 @@
 #include <geist_types.h>
 
 #include "heap.h"
+#include "par.h"
 
 #include <math.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
-
-#if defined(_OPENMP)
-#include <omp.h>
-#endif
 
 /* Dense fp32 matmul via the geist_gemm facade (Accelerate / OpenBLAS / native). */
 #include "geist_gemm.h"
@@ -172,66 +169,34 @@ void rope_2d_split_fp32(size_t         n_tokens,
     safe_free((void **) &sin_y);
 }
 
-void vision_attention_bidir_fp32(size_t       n_tokens,
-                                 size_t       n_heads,
-                                 size_t       head_dim,
-                                 const float *q,
-                                 const float *k,
-                                 const float *v,
-                                 float       *out) {
-    /* Per-head attention with OpenMP parallelism over heads.
-     *
-     * Q/K/V/O live in interleaved (n, n_heads, head_dim) layout; BLAS
-     * strides (lda = n_heads * head_dim) read per-head tiles without
-     * copying. Each head's QK^T + softmax + AV runs in its own thread;
-     * the per-thread scores scratch is allocated once and indexed by
-     * omp_get_thread_num(). On macOS, Accelerate stays single-threaded
-     * for these small (K=64) GEMMs on its own.
-     */
-    const float scale     = 1.0f;
-    const int   hd_stride = (int) (n_heads * head_dim);
+/* vision_attention_bidir_fp32's heads, for geist_par_for. */
+struct vision_attn_job {
+    size_t        n_tokens, head_dim;
+    int           hd_stride, fe;
+    float         scale;
+    const float  *q, *k, *v;
+    float        *out;
+    float        *scores_pool; /* per_thread_scores floats per slot */
+    size_t        per_thread_scores;
+    atomic_size_t next_slot; /* the next range's scores slot, below the thread count */
+};
 
-#if defined(_OPENMP)
-    const int n_threads = omp_get_max_threads();
-#else
-    const int n_threads = 1;
-#endif
-    const size_t per_thread_scores = n_tokens * n_tokens;
-    float *scores_pool = heap_alloc_array_aligned(float, (size_t) n_threads *per_thread_scores);
-    if (scores_pool == nullptr)
-        return;
-
-    /* GEIST_FAST_TANH=1 enables vForce vvexpf for softmax — ~10x faster
-     * than scalar expf loop, but introduces 1-2 ULP per element drift.
-     * Reuses the GEIST_FAST_TANH env flag (same precision/perf trade). */
-    /* Racy-benign first-use cache: several sessions can reach it at once.
-     * Both would compute the same answer, but a plain int read/written
-     * concurrently is still a data race (and TSan says so). Relaxed
-     * atomics make it defined at no cost — the load is a plain load on
-     * every target. */
-    static _Atomic int fast_expf = -1;
-    int                fe        = atomic_load_explicit(&fast_expf, memory_order_relaxed);
-    if (fe < 0) {
-        const char *s = getenv("GEIST_FAST_TANH");
-        fe            = (s != nullptr && s[0] == '1') ? 1 : 0;
-        atomic_store_explicit(&fast_expf, fe, memory_order_relaxed);
-    }
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t h = 0; h < n_heads; h++) {
-#if defined(_OPENMP)
-        const int tid = omp_get_thread_num();
-#else
-        const int tid = 0;
-#endif
-        float *scores = scores_pool + (size_t) tid * per_thread_scores;
-
-        const float *qh = q + h * head_dim;
-        const float *kh = k + h * head_dim;
-        const float *vh = v + h * head_dim;
-        float       *oh = out + h * head_dim;
+/* Heads [h0, h1): QK^T, softmax, AV in this range's scores slot. */
+static void vision_attn_heads(void *ctx, size_t h0, size_t h1) {
+    struct vision_attn_job    *job       = ctx;
+    const size_t               n_tokens  = job->n_tokens;
+    const size_t               head_dim  = job->head_dim;
+    const int                  hd_stride = job->hd_stride;
+    [[maybe_unused]] const int fe        = job->fe; /* read on Apple only */
+    const float                scale     = job->scale;
+    float                     *scores =
+            job->scores_pool + atomic_fetch_add_explicit(&job->next_slot, 1, memory_order_relaxed) *
+                                       job->per_thread_scores;
+    for (size_t h = h0; h < h1; h++) {
+        const float *qh = job->q + h * head_dim;
+        const float *kh = job->k + h * head_dim;
+        const float *vh = job->v + h * head_dim;
+        float       *oh = job->out + h * head_dim;
 
         /* scores = qh @ kh^T  → (n, n). Strided lda/ldb to read from
          * the interleaved layout in-place. */
@@ -309,6 +274,62 @@ void vision_attention_bidir_fp32(size_t       n_tokens,
                     oh,
                     hd_stride);
     }
+}
+
+void vision_attention_bidir_fp32(size_t       n_tokens,
+                                 size_t       n_heads,
+                                 size_t       head_dim,
+                                 const float *q,
+                                 const float *k,
+                                 const float *v,
+                                 float       *out) {
+    /* Per-head attention, parallel over heads.
+     *
+     * Q/K/V/O live in interleaved (n, n_heads, head_dim) layout; BLAS
+     * strides (lda = n_heads * head_dim) read per-head tiles without
+     * copying. Each head's QK^T + softmax + AV runs on geist_par_for;
+     * the per-thread scores scratch is allocated once and each range
+     * claims one slot of it. On macOS, Accelerate stays single-threaded
+     * for these small (K=64) GEMMs on its own.
+     */
+    const float scale     = 1.0f;
+    const int   hd_stride = (int) (n_heads * head_dim);
+
+    const size_t n_threads         = geist_par_max_threads();
+    const size_t per_thread_scores = n_tokens * n_tokens;
+    float *scores_pool = heap_alloc_array_aligned(float, (size_t) n_threads *per_thread_scores);
+    if (scores_pool == nullptr)
+        return;
+
+    /* GEIST_FAST_TANH=1 enables vForce vvexpf for softmax — ~10x faster
+     * than scalar expf loop, but introduces 1-2 ULP per element drift.
+     * Reuses the GEIST_FAST_TANH env flag (same precision/perf trade). */
+    /* Racy-benign first-use cache: several sessions can reach it at once.
+     * Both would compute the same answer, but a plain int read/written
+     * concurrently is still a data race (and TSan says so). Relaxed
+     * atomics make it defined at no cost — the load is a plain load on
+     * every target. */
+    static _Atomic int fast_expf = -1;
+    int                fe        = atomic_load_explicit(&fast_expf, memory_order_relaxed);
+    if (fe < 0) {
+        const char *s = getenv("GEIST_FAST_TANH");
+        fe            = (s != nullptr && s[0] == '1') ? 1 : 0;
+        atomic_store_explicit(&fast_expf, fe, memory_order_relaxed);
+    }
+
+    struct vision_attn_job job = {.n_tokens          = n_tokens,
+                                  .head_dim          = head_dim,
+                                  .hd_stride         = hd_stride,
+                                  .fe                = fe,
+                                  .scale             = scale,
+                                  .q                 = q,
+                                  .k                 = k,
+                                  .v                 = v,
+                                  .out               = out,
+                                  .scores_pool       = scores_pool,
+                                  .per_thread_scores = per_thread_scores};
+    atomic_init(&job.next_slot, 0);
+    geist_par_for(n_heads, vision_attn_heads, &job);
 
     safe_free((void **) &scores_pool);
 }
