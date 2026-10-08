@@ -17,7 +17,7 @@
  *
  * maddubs(q, xq) pairs reach 2 * 15 * 127 = 3810 (no int16 saturation),
  * madd with sc_j (<= 63) makes int32 lanes, and the sum over j stays exact
- * in int32. Rows split across OpenMP threads; M>1 tiles NR tokens per pass
+ * in int32. Rows split across threads; M>1 tiles NR tokens per pass
  * over a weight row so each block's nibbles are unpacked once per tile.
  *
  * Q5_K is the same superblock with a fifth bit per q from 32 qh bytes (bit
@@ -32,6 +32,7 @@
 #include "linear_util.h"
 
 #include "linear_ref.h"
+#include "par.h"
 #include "quant.h"
 #include "quant_blocks.h"
 
@@ -228,11 +229,84 @@ static inline int32_t min_term(const uint8_t mn[static 8], const int32_t sx[stat
     }
 }
 
-[[gnu::always_inline]] static inline void linear_m1(struct fmt                 f,
-                                                    const float               *x,
-                                                    const struct geist_weight *w,
-                                                    struct geist_backend      *be,
-                                                    float                     *y) {
+/* One call for geist_par_for: the weight, the activation rows x and their
+ * int8 blocks (qx, dx, sx: written by quant_rows, read by the rest), y. */
+struct kraw_call {
+    size_t         m, n_in, n_out, nb, nsx;
+    const uint8_t *wb;
+    const float   *x;
+    int8_t        *qx;
+    float         *dx;
+    int32_t       *sx;
+    float         *y;
+};
+
+/* Activation rows [i0, i1) to int8 blocks and their sub-block sums. */
+static void quant_rows(void *ctx, size_t i0, size_t i1) {
+    const struct kraw_call c = *(const struct kraw_call *) ctx;
+    for (size_t i = i0; i < i1; i++) {
+        quantize_row_q8_k(
+                c.nb, c.x + i * c.n_in, c.qx + i * c.n_in, c.dx + i * c.nb, c.sx + i * c.nsx);
+    }
+}
+
+/* M=1: output rows [j0, j1). */
+[[gnu::always_inline]] static inline void
+rows_m1(struct fmt f, const struct kraw_call *pc, size_t j0, size_t j1) {
+    const struct kraw_call c = *pc;
+    for (size_t j = j0; j < j1; j++) {
+        c.y[j] = dot_row(f, c.nb, c.wb + j * c.nb * f.stride, c.qx, c.dx, c.sx);
+    }
+}
+
+/* M>1: output rows [j0, j1), NR activation rows at a time. */
+[[gnu::always_inline]] static inline void
+rows_mN(struct fmt f, const struct kraw_call *pc, size_t j0, size_t j1) {
+    const struct kraw_call c     = *pc;
+    const size_t           m     = c.m;
+    const size_t           n_in  = c.n_in;
+    const size_t           n_out = c.n_out;
+    const size_t           nb    = c.nb;
+    const size_t           nsx   = c.nsx;
+    const size_t           m_til = m - m % NR;
+    const int8_t          *qx    = c.qx;
+    const float           *dx    = c.dx;
+    const int32_t         *sx    = c.sx;
+    float                 *y     = c.y;
+    for (size_t j = j0; j < j1; j++) {
+        const uint8_t *wr = c.wb + j * nb * f.stride;
+        float          out[NR];
+        for (size_t i = 0; i < m_til; i += NR) {
+            dot_rows(f, nb, n_in, wr, qx + i * n_in, dx + i * nb, sx + i * nsx, out);
+            for (size_t r = 0; r < NR; r++) {
+                y[(i + r) * n_out + j] = out[r];
+            }
+        }
+        for (size_t i = m_til; i < m; i++) {
+            y[i * n_out + j] = dot_row(f, nb, wr, qx + i * n_in, dx + i * nb, sx + i * nsx);
+        }
+    }
+}
+
+/* The range bodies, one instance per format. */
+static void q4k_rows_m1(void *ctx, size_t j0, size_t j1) {
+    rows_m1(FMT_Q4_K, ctx, j0, j1);
+}
+static void q5k_rows_m1(void *ctx, size_t j0, size_t j1) {
+    rows_m1(FMT_Q5_K, ctx, j0, j1);
+}
+static void q4k_rows_mN(void *ctx, size_t j0, size_t j1) {
+    rows_mN(FMT_Q4_K, ctx, j0, j1);
+}
+static void q5k_rows_mN(void *ctx, size_t j0, size_t j1) {
+    rows_mN(FMT_Q5_K, ctx, j0, j1);
+}
+
+static void linear_m1(geist_par_fn               rows,
+                      const float               *x,
+                      const struct geist_weight *w,
+                      struct geist_backend      *be,
+                      float                     *y) {
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
     const size_t              nb    = n_in / QK;
@@ -243,73 +317,53 @@ static inline int32_t min_term(const uint8_t mn[static 8], const int32_t sx[stat
         return;
     }
     quantize_row_q8_k(nb, x, ws->mN_acts, ws->mN_scale, ws->mN_sum_a);
-    const int8_t  *qx = ws->mN_acts;
-    const float   *dx = ws->mN_scale;
-    const int32_t *sx = ws->mN_sum_a;
-    const uint8_t *wb = (const uint8_t *) w->raw;
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t j = 0; j < n_out; j++) {
-        y[j] = dot_row(f, nb, wb + j * nb * f.stride, qx, dx, sx);
-    }
+    struct kraw_call c = {.m     = 1,
+                          .n_in  = n_in,
+                          .n_out = n_out,
+                          .nb    = nb,
+                          .nsx   = n_in / 32,
+                          .wb    = (const uint8_t *) w->raw,
+                          .qx    = ws->mN_acts,
+                          .dx    = ws->mN_scale,
+                          .sx    = ws->mN_sum_a,
+                          .y     = y};
+    geist_par_for(n_out, rows, &c);
 }
 
-[[gnu::always_inline]] static inline void linear_mN(struct fmt                 f,
-                                                    size_t                     m,
-                                                    const float               *x,
-                                                    const struct geist_weight *w,
-                                                    struct geist_backend      *be,
-                                                    float                     *y) {
+/* M>1: the m rows quantized, then the GEMM, one geist_par_for each. */
+static void linear_mN(geist_par_fn               rows,
+                      size_t                     m,
+                      const float               *x,
+                      const struct geist_weight *w,
+                      struct geist_backend      *be,
+                      float                     *y) {
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
-    const size_t              nb    = n_in / QK;
-    const size_t              nsx   = n_in / 32;
     struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in, QK, 32);
     if (ws == nullptr) {
         geist_linear_ref(m, x, w, y);
         return;
     }
-    int8_t        *qx    = ws->mN_acts;
-    float         *dx    = ws->mN_scale;
-    int32_t       *sx    = ws->mN_sum_a;
-    const uint8_t *wb    = (const uint8_t *) w->raw;
-    const size_t   m_til = m - m % NR;
-
-#if defined(_OPENMP)
-#pragma omp parallel
-#endif
-    {
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-        for (size_t i = 0; i < m; i++) {
-            quantize_row_q8_k(nb, x + i * n_in, qx + i * n_in, dx + i * nb, sx + i * nsx);
-        }
-#if defined(_OPENMP)
-#pragma omp for schedule(static)
-#endif
-        for (size_t j = 0; j < n_out; j++) {
-            const uint8_t *wr = wb + j * nb * f.stride;
-            float          out[NR];
-            for (size_t i = 0; i < m_til; i += NR) {
-                dot_rows(f, nb, n_in, wr, qx + i * n_in, dx + i * nb, sx + i * nsx, out);
-                for (size_t r = 0; r < NR; r++) {
-                    y[(i + r) * n_out + j] = out[r];
-                }
-            }
-            for (size_t i = m_til; i < m; i++) {
-                y[i * n_out + j] = dot_row(f, nb, wr, qx + i * n_in, dx + i * nb, sx + i * nsx);
-            }
-        }
-    }
+    struct kraw_call c = {.m     = m,
+                          .n_in  = n_in,
+                          .n_out = n_out,
+                          .nb    = n_in / QK,
+                          .nsx   = n_in / 32,
+                          .wb    = (const uint8_t *) w->raw,
+                          .x     = x,
+                          .qx    = ws->mN_acts,
+                          .dx    = ws->mN_scale,
+                          .sx    = ws->mN_sum_a,
+                          .y     = y};
+    geist_par_for(m, quant_rows, &c);
+    geist_par_for(n_out, rows, &c);
 }
 
 static void cpu_x86_linear_q4k_raw_m1(const float               *x,
                                       const struct geist_weight *w,
                                       struct geist_backend      *be,
                                       float                     *y) {
-    linear_m1(FMT_Q4_K, x, w, be, y);
+    linear_m1(q4k_rows_m1, x, w, be, y);
 }
 
 static void cpu_x86_linear_q4k_raw_mN(size_t                     m,
@@ -317,14 +371,14 @@ static void cpu_x86_linear_q4k_raw_mN(size_t                     m,
                                       const struct geist_weight *w,
                                       struct geist_backend      *be,
                                       float                     *y) {
-    linear_mN(FMT_Q4_K, m, x, w, be, y);
+    linear_mN(q4k_rows_mN, m, x, w, be, y);
 }
 
 static void cpu_x86_linear_q5k_m1(const float               *x,
                                   const struct geist_weight *w,
                                   struct geist_backend      *be,
                                   float                     *y) {
-    linear_m1(FMT_Q5_K, x, w, be, y);
+    linear_m1(q5k_rows_m1, x, w, be, y);
 }
 
 static void cpu_x86_linear_q5k_mN(size_t                     m,
@@ -332,7 +386,7 @@ static void cpu_x86_linear_q5k_mN(size_t                     m,
                                   const struct geist_weight *w,
                                   struct geist_backend      *be,
                                   float                     *y) {
-    linear_mN(FMT_Q5_K, m, x, w, be, y);
+    linear_mN(q5k_rows_mN, m, x, w, be, y);
 }
 
 void cpu_x86_linear_q4k_raw_bind(struct geist_weight *w) {
