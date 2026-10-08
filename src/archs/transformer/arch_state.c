@@ -1321,28 +1321,20 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     }
 
     if (!mmap_alias_mode) {
-        /* Total weight arena capacity from GGUF metadata, then ONE
-         * allocation; all weight tensors bump-allocate from it. */
+        /* First arena chunk from the GGUF's tensor table (the whole model
+         * without caps.weights_device_copy); every arena-resident tensor
+         * bump-allocates from it and the arena grows past it. Through the
+         * backend (see scratch pool): GPU backends can then bind norm
+         * weights / embed tables that live inside it. */
         size_t            cap = 0;
         enum geist_status cs  = compute_weight_arena_capacity(be, gguf, &cap);
+        if (cs == GEIST_OK) {
+            cs = weight_arena_open(st, cap);
+        }
         if (cs != GEIST_OK) {
             transformer_state_destroy(st);
             return cs;
         }
-        /* Arena through the backend (see scratch pool): GPU backends can
-         * then bind norm weights / embed tables that live inside it. */
-        enum geist_status as = be->desc->vtbl->buffer_create(
-                be, cap, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_MAPPED, &st->weight_arena_buf);
-        st->weight_arena =
-                as == GEIST_OK ? be->desc->vtbl->buffer_map(st->weight_arena_buf) : nullptr;
-        if (st->weight_arena == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_OOM, "transformer: weight arena alloc failed (%zu bytes)", cap);
-            transformer_state_destroy(st);
-            return GEIST_E_OOM;
-        }
-        st->weight_arena_capacity = cap;
-        st->weight_arena_used     = 0;
     }
     /* mmap-alias mode: leave weight_arena == nullptr. load_tensor_to_buffer
      * branches on this to pick its storage path. */
@@ -1608,21 +1600,33 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     }
     /* Release the weight arena once. The per-weight buffers were aliased
      * slices of it; their buffer_destroy above did not free the bytes. */
-    if (st->weight_arena_buf != nullptr) {
-        st->backend->desc->vtbl->buffer_destroy(st->backend, st->weight_arena_buf);
-        st->weight_arena_buf      = nullptr;
-        st->weight_arena          = nullptr;
-        st->weight_arena_capacity = 0;
-        st->weight_arena_used     = 0;
-    } else if (st->weight_arena != nullptr) {
-        safe_free(&st->weight_arena);
-        st->weight_arena_capacity = 0;
-        st->weight_arena_used     = 0;
+    for (size_t i = 0; i < st->n_weight_arena_chunks; i++) {
+        st->backend->desc->vtbl->buffer_destroy(st->backend, st->weight_arena_chunks[i]);
     }
+    {
+        void *chunks = st->weight_arena_chunks;
+        safe_free(&chunks);
+    }
+    st->weight_arena_chunks     = nullptr;
+    st->n_weight_arena_chunks   = 0;
+    st->cap_weight_arena_chunks = 0;
+    st->weight_arena            = nullptr;
+    st->weight_arena_capacity   = 0;
+    st->weight_arena_used       = 0;
     safe_free(&st->rope_il_rows); /* same lifetime as the arena slices */
     st->rope_il_rows_capacity = 0;
     st->rope_il_rows_used     = 0;
-    safe_free(&st->model_proj_host); /* its buffer handle is gone with the globals */
+    /* Their buffer handles are gone with the layers and globals. */
+    for (size_t i = 0; i < st->n_host_weights; i++) {
+        safe_free(&st->host_weights[i]);
+    }
+    {
+        void *list = st->host_weights;
+        safe_free(&list);
+    }
+    st->host_weights     = nullptr;
+    st->n_host_weights   = 0;
+    st->cap_host_weights = 0;
     transformer_exec_plan_destroy(st);
     if (st->layers != nullptr) {
         void *p_layers = st->layers;

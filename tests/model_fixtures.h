@@ -35,6 +35,9 @@ struct mf_llama {
     /* attn_q stored as F16 instead of F32 (backends that widen or refuse
      * half-precision projections). */
     bool f16_q;
+    /* A separate output.weight (lm_head), so token_embd is a lookup-only
+     * table; tied otherwise. */
+    bool untied;
     /* tokenizer.chat_template when set; its length in chat_template_len, so
      * a template may contain NUL bytes (0: strlen). */
     const char *chat_template;
@@ -154,6 +157,9 @@ static inline struct tf_buf mf_llama_gguf(const struct mf_llama *c) {
     struct mf_tensors ts = {0};
     mf_add(&ts, c->d_model, c->vocab, MF_RAND, "token_embd.weight");
     mf_add(&ts, c->d_model, 0, MF_ONE, "output_norm.weight");
+    if (c->untied) {
+        mf_add(&ts, c->d_model, c->vocab, MF_RAND, "output.weight");
+    }
     for (uint32_t l = 0; l < c->layers; l++) {
         mf_add(&ts, c->d_model, 0, MF_ONE, "blk.%u.attn_norm.weight", l);
         mf_add(&ts, c->d_model, c->heads * hd, MF_RAND, "blk.%u.attn_q.weight", l);

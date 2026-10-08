@@ -493,17 +493,20 @@ struct transformer_arch_state {
     size_t m_max;            /* prefill chunk size — scratch sized for this many
                               * tokens; longer prompts are chunked. Default 64. */
 
-    /* ---- Weight arena. -------------------------------------------------- *
-     * ONE heap_alloc_aligned(arena_capacity) at load time; every weight
-     * tensor bump-allocates into it. Released once in
-     * transformer_state_destroy. */
-    void  *weight_arena;
-    size_t weight_arena_used;
-    /* Arena allocated through the backend (see
-     * scratch_pool_buf) so norm weights / embed tables inside it are
-     * GPU-bindable. nullptr in mmap-alias mode or on heap fallback. */
-    struct geist_buffer *weight_arena_buf;
-    size_t               weight_arena_capacity;
+    /* ---- Weight arena (β mode). ----------------------------------------- *
+     * Mapped backend buffers (chunks), allocated through the backend so the
+     * weights inside them are GPU-bindable; every arena-resident tensor
+     * bump-allocates from the newest chunk. The first chunk is sized at
+     * state create (compute_weight_arena_capacity); a tensor that does not
+     * fit opens another one (arena_alloc). weight_arena is the newest
+     * chunk's mapping, nullptr in mmap-alias mode; used / capacity are that
+     * chunk's. Released once in transformer_state_destroy. */
+    void                 *weight_arena;
+    size_t                weight_arena_used;
+    size_t                weight_arena_capacity;
+    struct geist_buffer **weight_arena_chunks;
+    size_t                n_weight_arena_chunks;
+    size_t                cap_weight_arena_chunks;
     /* Permuted llama attn_q / attn_k rows (#464) on a weights_device_copy
      * backend, which keeps those matrices out of the arena: the file's pages
      * are read-only. One allocation sized on first use; released in
@@ -511,12 +514,15 @@ struct transformer_arch_state {
     void  *rope_il_rows;
     size_t rope_il_rows_used;
     size_t rope_il_rows_capacity;
-    /* per_layer_model_proj widened to F32 on a weights_device_copy backend
-     * (#658): plain host memory the backend copies to the device at
-     * resolve_weight, so the matrix stays out of the arena and of any device
-     * heap the backend budgets for scratch (Vulkan's BAR window). Released
-     * in transformer_state_destroy. */
-    void *model_proj_host;
+    /* Matrices widened to F32 on a weights_device_copy backend
+     * (per_layer_model_proj #658, a small half-precision projection #468):
+     * plain host memory the backend copies to the device at resolve_weight,
+     * so they stay out of the arena and of any device heap the backend
+     * budgets for scratch (Vulkan's BAR window). Released in
+     * transformer_state_destroy. */
+    void **host_weights;
+    size_t n_host_weights;
+    size_t cap_host_weights;
 
     /* ---- Per-layer weight blocks, heap-sized to st->n_layers. */
     struct transformer_layer_weights     *layers;

@@ -10,6 +10,21 @@ minor release.
 
 ### Changed
 
+- **Weight loading: the loader's storage intent decides what the weight arena
+  holds (#468).** The arena-skip rule of backends that copy weights to the
+  device (`caps.weights_device_copy`, Vulkan) was a size proxy ("2-D and at
+  least 1 MiB"), evaluated again by the capacity pre-scan. Each load call now
+  says what the tensor is for — bound by kernels (norms, biases, conv taps),
+  a matrix behind `resolve_weight`, or a lookup-only table — and only the
+  first kind is copied into the arena; matrices of any size and lookup tables
+  alias the GGUF mapping. The arena now grows in 32 MiB chunks when a tensor
+  does not fit, so its size no longer has to be predicted on a device-copy
+  backend; elsewhere the pre-scan still sizes one chunk for the whole model.
+  A small half-precision matrix widened to F32 is no longer staged in the
+  arena a second time, and on Vulkan its F32 copy lives in host memory the
+  backend uploads from, as `per_layer_model_proj`'s does (#658). Vulkan
+  arena, RTX 2080 Ti: Qwen3.5 0.8B / 4B 73 → 32 MiB, Gemma 4 E2B 87 → 34 MiB,
+  Bonsai 27B 255 → 32 MiB. CPU backends and Metal load as before.
 - **Vulkan: Gemma 4's F32 PLE projection no longer sits in the weight arena
   (#658).** `per_layer_model_proj`, widened from F16 to F32 at load, was the
   one large matrix kept in the arena, so on Gemma 4 E4B the arena grew to
@@ -41,9 +56,11 @@ minor release.
   when the resolve chose the host path. The rows of such a table are now
   dequantized on the host and uploaded per call (the staged gather Metal
   uses, #529); a tied `token_embd` is still looked up in the lm_head's
-  device copy. Gemma 4 E2B on an RTX 2080 Ti uses 1.8 GiB less device
-  memory after its first prompt (3.3 → 1.5 GiB with a 300-token prefill),
-  Bonsai 27B (untied, PQ2_0) 0.3 GiB less. Logits are bit-identical for
+  device copy. Gemma 4 E2B on an RTX 2080 Ti uses 1.5 GiB less device
+  memory after its first prompt (3.3 → 1.8 GiB with a 300-token prefill),
+  Bonsai 27B (untied, PQ2_0) 0.3 GiB less, and Gemma's host RSS in
+  `bench_perf_sweep` drops from 2.1 to 0.6 GB: the table's file pages are
+  no longer read whole for the upload. Logits are bit-identical for
   Gemma 4 E2B, Qwen3.5 0.8B / 4B and Bonsai 27B.
 - **cpu_x86: the Q4_Kx8 kernels quantize activations with one scale per
   256-element super-block (#694).** `quantize_q8_Kx4` (prefill) and the M = 1
