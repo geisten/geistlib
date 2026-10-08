@@ -76,17 +76,19 @@ generate(struct geist_session *sess, geist_token_t eos, const char *prompt, int 
 }
 
 int main(int argc, char **argv) {
-    /* Strip -t/--temperature from argv before the positional parsing below,
+    /* Strip -t/--temperature and --repeat-penalty from argv before the positional parsing below,
      * so the flag works in any position for both the file-loading and the
      * embedded-model builds. As boring as the rest of the file: no getopt. */
-    float temperature = 0.0f;
+    float temperature    = 0.0f;
+    float repeat_penalty = 0.0f;
     for (int i = 1; i < argc;) {
-        if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--temperature") == 0) {
+        const bool temp_flag = strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--temperature") == 0;
+        if (temp_flag || strcmp(argv[i], "--repeat-penalty") == 0) {
             if (i + 1 >= argc) {
-                fprintf(stderr, "%s expects a value, e.g. --temperature 0.8\n", argv[i]);
+                fprintf(stderr, "%s expects a value, e.g. %s 1.1\n", argv[i], argv[i]);
                 return 2;
             }
-            temperature = strtof(argv[i + 1], nullptr);
+            *(temp_flag ? &temperature : &repeat_penalty) = strtof(argv[i + 1], nullptr);
             memmove(&argv[i], &argv[i + 2], (size_t) (argc - i - 2) * sizeof *argv);
             argc -= 2;
         } else {
@@ -99,8 +101,9 @@ int main(int argc, char **argv) {
 #else
     if (argc < 2) {
         fprintf(stderr,
-                "usage: %s <model.gguf> [prompt] [max_new_tokens] [-t|--temperature <float>]\n"
-                "  temperature 0 (default) = greedy, deterministic; >0 = sampled\n",
+                "usage: %s <model.gguf> [prompt] [max_new_tokens] [-t|--temperature <float>] [--repeat-penalty <float>]\n"
+                "  temperature 0 (default) = greedy, deterministic; >0 = sampled\n"
+                "  repeat-penalty 0 (default) = off; 1.1 = llama.cpp-style, stops loops\n",
                 argv[0]);
         return 2;
     }
@@ -154,6 +157,7 @@ int main(int argc, char **argv) {
      * same sample every run. */
     struct geist_session_opts opts = {0};
     opts.temperature               = temperature;
+    opts.repeat_penalty            = repeat_penalty; /* 0 = off; 1.1 stops most greedy loops */
     if (temperature > 0.0f) {
         struct timespec ts;
         timespec_get(&ts, TIME_UTC);

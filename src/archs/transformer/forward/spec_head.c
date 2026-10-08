@@ -658,6 +658,11 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
     if (sess->temperature != 0.0f) {
         return false;
     }
+    /* Nor with repetition penalties (#695): they can lift a token the
+     * sketch left out of its candidates. */
+    if (geist_sampler_penalties_active(&sess->pen)) {
+        return false;
+    }
 
     struct geist_backend            *be     = st->backend;
     const struct geist_backend_vtbl *v      = be->desc->vtbl;
