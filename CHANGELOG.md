@@ -10,6 +10,40 @@ minor release.
 
 ### Fixed
 
+- **Vulkan: Gemma 4 keeps its scratch pool in VRAM under
+  `GEIST_VK_SCRATCH_DEVICE=1` (#488).** The device-local pool skipped every
+  model with per-layer embeddings, although PLE's host loops only run when the
+  on-device row lookup is unbound. Gemma 4 therefore requested its whole pool
+  host-visible; from `GEIST_M_MAX=256` on it no longer fit the 256 MB BAR and
+  fell back to system RAM, and prefill collapsed. RTX 2080 Ti, Gemma 4 E2B
+  pp512 with the flag: 356 → 1739 t/s at M 256, 349 → 1785 at M 512 (1385 at
+  the default 64); E4B at M 512: 239 → 809. Decode no longer drops at large M
+  (117 → 151 t/s).
+- **Vulkan: the device-local scratch pool is the default.**
+  `GEIST_VK_SCRATCH_DEVICE=0` keeps the host-visible pool; the arch still uses
+  the device pool only where no host path maps a slot, so the other models
+  are unchanged. At the default chunk this stops Gemma 4 from shrinking its
+  chunk or spilling its pool to fit the BAR window. RTX 2080 Ti, defaults:
+  Gemma 4 E2B pp512 1384 → 1621 t/s, E4B pp512 272 → 748 t/s and tg 74 → 91
+  t/s; Llama 3.2 3B and Qwen3 0.6B within ±1 %. The default chunk stays 128:
+  256 gained 3–4 % on the device-pool models but cost Bonsai 2 27B 20 % and
+  Qwen3.5 4B part of its pool to system RAM.
+- **Vulkan: sessions with a device-local scratch pool default to 512-row
+  prefill chunks when the device has room.** The device pool takes the BAR
+  window out of the chunk's limits, and a bigger chunk feeds the GEMMs. The
+  chunk grows only when the bigger pool fits in half of the free device memory
+  (`geist_backend_memory_info`); sessions on a host-visible pool (DeltaNet,
+  quantized KV, …) keep the chunk the BAR allows. RTX 2080 Ti, defaults, pp512:
+  Gemma 4 E2B 1641 → 1839 t/s, E4B 754 → 865, Llama 3.2 3B 1229 → 1334; Qwen3
+  0.6B Q8_0 with the tensor-core GEMM ~5000 → 6630.
+- **Vulkan: narrow k-quant GEMMs keep the 64 × 64 tensor-core tile from 256
+  rows on, and the Q6_K tile is double-buffered (#658).** The 32 × 32 tile
+  was chosen for every `n_out < 4096` so that a 64-row chunk had workgroups
+  enough; with 512-row chunks the 64 × 64 tile already has 192 and is faster.
+  RTX 2080 Ti, defaults, pp512: Gemma 4 E2B 1813 → 2079 t/s, E4B 851 → 968,
+  Llama 3.2 3B 1315 → 1595. The Q6_K kernel now stages k-step ks+1 while the
+  MMAs consume ks, as the Q4_K one does: 407 → 392 µs per call on Gemma.
+
 - **Vulkan: a cached descriptor set could rebind another dispatch to the wrong
   buffer (#665).** When a buffer was destroyed, every cached descriptor set
   became reusable, and a reused set was rewritten for a dispatch with more

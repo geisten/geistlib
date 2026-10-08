@@ -327,8 +327,8 @@ enum geist_status vk_memory_info(const struct geist_backend *be, struct geist_ba
 
 /* The vtable's buffer_create. One policy on top of vk_buffer_create: the
  * arch asks for its scratch pool device-local (SCRATCH role, DEVICE flag, no
- * host flag) when its host paths never map the pool (#488). Honoured only
- * under GEIST_VK_SCRATCH_DEVICE=1; otherwise the request is served
+ * host flag) when its host paths never map the pool (#488). Honoured unless
+ * GEIST_VK_SCRATCH_DEVICE=0; then the request is served
  * host-visible and the arch keeps its mapped pool. Internal callers (the x
  * ring, weight copies) call vk_buffer_create and are not affected. */
 [[nodiscard]] enum geist_status vk_buffer_create_api(struct geist_backend  *be,

@@ -436,6 +436,8 @@ int main(void) {
                133,
                PARITY_MAG,
                2e-3);
+    /* n_out < 4096 at 256 rows takes the 64 x 64 tile, not the 32 x 32 one */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 256, 256, PARITY_MAG, 2e-3);
     geist_backend_destroy(vk);
 
     /* the exact f32-accumulate tensor-core GEMM (GEIST_VK_PQ2_F32_ACC) */
