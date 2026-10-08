@@ -125,6 +125,14 @@ static enum geist_status op_gains(void *arch_state, float **out, size_t *n) {
     return s;
 }
 
+static void op_bind_cancel(void *session, bool (*requested)(void *ctx), void *ctx) {
+    struct transformer_arch_session *sess = session;
+    if (sess != nullptr) {
+        sess->cancel_requested = requested;
+        sess->cancel_ctx       = ctx;
+    }
+}
+
 static void op_state_reset(void *session) {
     if (session != nullptr) {
         transformer_session_reset(session);
@@ -429,6 +437,7 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .set_session_opts         = op_set_session_opts,
         .prefill                  = op_prefill,
         .decode_step              = op_decode_step,
+        .bind_cancel              = op_bind_cancel,
         .pin_prefix               = op_pin_prefix,
         .prefill_audio            = op_prefill_audio,
         .prefill_image            = op_prefill_image,

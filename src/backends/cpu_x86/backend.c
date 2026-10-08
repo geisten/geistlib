@@ -6,7 +6,7 @@
  * The tables are filled at module load via __attribute__((constructor)):
  *   1. Struct-copy cpu_scalar's vtbl, prims and fused tables.
  *   2. Override vtbl .create / .destroy (the per-instance scratch the
- *      quantized kernels use), .resolve_weight (below) and, under OpenMP,
+ *      quantized kernels use), .resolve_weight (below) and
  *      .parallel_region_begin / _end (threads.c); prims .attention,
  *      .gelu_tanh, .silu, .rmsnorm and .add; fused .supported,
  *      .gelu_tanh_mul, .gelu_tanh_mul_scaled, .silu_mul and
@@ -288,7 +288,7 @@ static void cpu_x86_linear_i2s_x4_mN(size_t                     m,
 }
 
 /* Fused decode of two same-input I2_S x4 weights (gate+up, q+k): one shared
- * activation quant + one OMP region. Each weight's per-tensor scale is at the
+ * activation quant + one parallel region. Each weight's per-tensor scale is at the
  * tail of its own w->raw, its x4 codes in its own w->aux_fp32. */
 static void cpu_x86_linear_i2s_x4_pair_m1(const float               *x,
                                           const struct geist_weight *w0,
@@ -317,7 +317,7 @@ static void cpu_x86_linear_i2s_x4_pair_m1(const float               *x,
                         y1);
 }
 
-/* Fused gate+up / q+k decode (shared quant, one OMP region; 5 regions per
+/* Fused gate+up / q+k decode (shared quant, one parallel region; 5 regions per
  * layer become 3, +1.2 % decode on the 9950X, #102). Default on;
  * GEIST_I2S_PAIR=0 disables. Read once per process. */
 static int cpu_x86_i2s_pair_enabled(void) {
@@ -377,7 +377,7 @@ static bool cpu_x86_linear_i2s_x4_resolve(struct geist_weight *w) {
 }
 
 /* F16 dense decode (BitNet's tied lm_head, 657 MB read once per token):
- * OMP + F16C GEMV, far faster than the serial cpu_scalar dequant-dot. */
+ * Parallel F16C GEMV, far faster than the serial cpu_scalar dequant-dot. */
 static void cpu_x86_linear_f16_m1(const float               *x,
                                   const struct geist_weight *w,
                                   struct geist_backend      *be,
@@ -561,11 +561,9 @@ __attribute__((constructor)) static void cpu_x86_init_vtbl(void) {
     cpu_x86_vtbl.create         = cpu_x86_create;
     cpu_x86_vtbl.destroy        = cpu_x86_destroy;
     cpu_x86_vtbl.resolve_weight = cpu_x86_resolve_weight;
-#if defined(_OPENMP)
-    /* Per-phase OpenMP team (threads.c): decode on physical cores. */
+    /* Per-phase thread count (threads.c): decode on physical cores. */
     cpu_x86_vtbl.parallel_region_begin = cpu_x86_parallel_region_begin;
     cpu_x86_vtbl.parallel_region_end   = cpu_x86_parallel_region_end;
-#endif
 
     cpu_x86_prims           = cpu_scalar_prims;
     cpu_x86_prims.gelu_tanh = cpu_x86_gelu_tanh;
@@ -587,12 +585,10 @@ const struct geist_backend_descriptor geist_backend_cpu_x86 = {
         .vtbl  = &cpu_x86_vtbl,
         .prims = &cpu_x86_prims,
         .fused = &cpu_x86_fused,
-        .caps  = {.max_m             = GEIST_QUANT_M_CAP,
-                  .preferred_kv_mode = GEIST_KV_INT8,
-                  .kv_q8_block       = true, /* K and V apart in the cache sets */
-                  .kv_dense_block    = true,
-#if defined(_OPENMP)
-                 .manages_host_threads = true, /* the region hooks above */
-#endif
-                 .dn_subchunk = true /* host DeltaNet sub-chunks */},
+        .caps  = {.max_m                = GEIST_QUANT_M_CAP,
+                  .preferred_kv_mode    = GEIST_KV_INT8,
+                  .kv_q8_block          = true, /* K and V apart in the cache sets */
+                  .kv_dense_block       = true,
+                  .manages_host_threads = true, /* the region hooks above */
+                  .dn_subchunk          = true /* host DeltaNet sub-chunks */},
 };

@@ -57,13 +57,15 @@ pins a specific device when a host has more than one discrete GPU.
 ## Model e2e (GGUF)
 
 The GPU leg runs `test_known_answer_e2e` (five cloze prompts, argmax, floor
-4/5) and `test_prefill_determinism_int` on the physical device. One repo
-setting drives it, under Settings -> Secrets and variables -> Actions ->
-Variables:
+4/5), `test_prefill_determinism_int` and `test_qwen35_vulkan_e2e_int` (qwen35
+greedy continuations against `cpu_scalar`, token for token) on the physical
+device. Two repo settings drive it, under Settings -> Secrets and variables ->
+Actions -> Variables:
 
 | variable | value |
 | :-- | :-- |
 | `GEIST_GGUF_PATH` | absolute path to the GGUF **on the runner host**, e.g. `/home/<user>/models/gemma/gemma-4-E2B-it-Q4_K_M.gguf` |
+| `GEIST_QWEN35_GGUF_PATH` | the same for Qwen3.5 0.8B Q8_0 (`make fetch-qwen35-model`), e.g. `/home/<user>/models/qwen/qwen3.5-0.8b-q8_0.gguf` |
 
 The path must lie outside the runner's workspace: `actions/checkout` runs
 `git clean -ffdx`, which deletes `gguf_artifacts/` — it is gitignored. A

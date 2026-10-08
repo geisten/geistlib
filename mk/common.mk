@@ -25,6 +25,8 @@ BIN_DIR   := bin/$(TARGET)/$(MODE)
 #           floods the report with false positives at barriers); the omp
 #           pragmas compile to serial loops, which is exactly right — the
 #           races under test are cross-session, not intra-kernel.
+#           geist_par_for (src/base/par.h) runs on its own pthread pool
+#           here, so this is also the leg that checks that pool (#618).
 # perf    : -O3 + symbols for perf record / sampling profilers
 # fuzz    : asan + libFuzzer coverage instrumentation for `make fuzz-libfuzzer`.
 #           Its own mode, not asan plus EXTRA_CFLAGS, so the objects land in
@@ -148,6 +150,7 @@ LIB_SOURCES := \
     src/base/hw_probe.c \
     src/base/calibration.c \
     src/base/omp_idle.c \
+    src/base/par.c \
     src/engine/allocator.c \
     src/engine/backend.c \
     src/engine/backend_registry.c \

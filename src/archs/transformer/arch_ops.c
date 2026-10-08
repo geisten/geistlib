@@ -274,6 +274,17 @@ static enum geist_status deltanet_txn_restore(struct transformer_arch_session *s
 
 /* ---- Batched text prefill -------------------------------------------- */
 
+/* geist_session_cancel (#628): true when the engine says stop. A stopped
+ * prefill computed no logits for its last token, so none stay pending —
+ * not even those of an earlier call, which belong to a shorter state. */
+static bool transformer_cancel_requested(struct transformer_arch_session *sess) {
+    if (sess->cancel_requested == nullptr || !sess->cancel_requested(sess->cancel_ctx)) {
+        return false;
+    }
+    sess->logits_valid = false;
+    return true;
+}
+
 static enum geist_status prefill_text_batch_inner(struct transformer_arch_session     *sess,
                                                   size_t                               n,
                                                   const geist_token_t                 *ids,
@@ -304,6 +315,9 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
      * sized with sess->m_max (arch_state.c), which may be smaller. */
     for (size_t off = 0; off < n; off += sess->m_max) {
         const size_t chunk = (n - off > sess->m_max) ? sess->m_max : (n - off);
+        if (transformer_cancel_requested(sess)) {
+            return GEIST_E_CANCELLED; /* kv_len counts the finished sub-batches */
+        }
 
         /* 1. Embed all chunk tokens into scratch_h_a [chunk, HIDDEN].
          * Device path first: per-row fused lookup+scale dispatches keep
@@ -711,6 +725,10 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_sessio
     const size_t      m_max = sess->m_max;
     for (size_t off = 0; off < n; off += m_max) {
         const size_t chunk = (n - off > m_max) ? m_max : (n - off);
+        if (transformer_cancel_requested(sess)) {
+            rc = GEIST_E_CANCELLED; /* kv_len counts the finished sub-batches */
+            break;
+        }
 
         /* HF reference, two PLE components at multimodal positions
          * (language_model.forward):

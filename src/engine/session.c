@@ -98,6 +98,10 @@ struct geist_session_full {
     size_t         audio_stream_injected;
 
     struct token_strs strs; /* geist_session_token_to_str; empty until then */
+
+    /* geist_session_cancel (#628): set from any thread, consumed by the
+     * call that sees it (cancel_requested, through the arch's check). */
+    _Atomic bool cancel;
 };
 
 static inline uint64_t monotonic_ns(void) {
@@ -252,6 +256,19 @@ session_op_failed(struct geist_session_full *sf, enum geist_status s, const char
     return s;
 }
 
+/* The arch's view of geist_session_cancel: true once per request. */
+static bool cancel_requested(void *ctx) {
+    struct geist_session_full *sf = ctx;
+    return atomic_load_explicit(&sf->cancel, memory_order_relaxed) &&
+           atomic_exchange_explicit(&sf->cancel, false, memory_order_acq_rel);
+}
+
+void geist_session_cancel(struct geist_session *s) {
+    if (s != nullptr) {
+        atomic_store_explicit(&as_full(s)->cancel, true, memory_order_release);
+    }
+}
+
 [[nodiscard]] enum geist_status geist_session_create(struct geist_model              *m,
                                                      struct geist_backend            *be,
                                                      const struct geist_session_opts *opts,
@@ -322,6 +339,9 @@ session_op_failed(struct geist_session_full *sf, enum geist_status s, const char
             void *tmp = sf;
             safe_free(&tmp);
             return GEIST_E_OOM;
+        }
+        if (ops->bind_cancel != nullptr) {
+            ops->bind_cancel(sf->arch_session, cancel_requested, sf);
         }
     } else if (opts != nullptr && ops != nullptr && ops->set_session_opts != nullptr) {
         /* Single-session path: push opts onto the arch's one
@@ -569,6 +589,11 @@ geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_toke
     const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
     if (ops == nullptr || ops->decode_step == nullptr) {
         return GEIST_E_INVALID_STATE;
+    }
+    if (cancel_requested(sf)) {
+        snprintf(sf->err_msg, sizeof(sf->err_msg), "decode_step cancelled");
+        sf->err_code = GEIST_E_CANCELLED;
+        return GEIST_E_CANCELLED;
     }
     const uint64_t          t0 = monotonic_ns();
     const enum geist_status ds = ops->decode_step(arch_sess(sf), out_token);
