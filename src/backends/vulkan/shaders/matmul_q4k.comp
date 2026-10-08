@@ -1,6 +1,7 @@
 #version 450
 #extension GL_KHR_shader_subgroup_ballot : enable
 #extension GL_KHR_shader_subgroup_arithmetic : enable
+#include "vk_limits.h"
 
 /* Q4_K GEMM, register-tiled: 8 output rows (one per subgroup) x 32 batch
  * rows per 256-thread workgroup. Each lane dequantizes its 8 weights ONCE
@@ -8,7 +9,9 @@
  * Dispatch: gx = ceil(n_out / 8), gy = ceil(rows / 32).
  * Assumes subgroup size 32 (2080-Ti-first). */
 
-layout(local_size_x = 256) in;
+layout(local_size_x = VK_MM_ROWS_PER_WG * 32u) in; /* one row per 32-lane subgroup */
+
+const uint TM = VK_MM_TOKENS_PER_WG; /* batch rows per workgroup */
 
 layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
 layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
@@ -29,14 +32,14 @@ layout(push_constant) uniform Push {
 void main() {
     uint row = gl_WorkGroupID.x * gl_NumSubgroups + gl_SubgroupID;
     uint lane = gl_SubgroupInvocationID;
-    uint t0 = gl_WorkGroupID.y * 32u;
+    uint t0 = gl_WorkGroupID.y * TM;
     if (t0 >= pc.rows) {
         return;
     }
-    uint tm = min(32u, pc.rows - t0);
+    uint tm = min(TM, pc.rows - t0);
 
-    float s[32];
-    for (uint t = 0; t < 32u; t++) {
+    float s[TM];
+    for (uint t = 0; t < TM; t++) {
         s[t] = 0.0;
     }
 
@@ -92,7 +95,7 @@ void main() {
                                   float((q1 >> (24u + shift)) & 15u)) - vec4(dmn);
 
             uint e_base = pc.x_offset + b * 256u + sub * 32u + idx8;
-            for (uint t = 0; t < 32u; t++) {
+            for (uint t = 0; t < TM; t++) {
                 if (t >= tm) {
                     break;
                 }
@@ -102,7 +105,7 @@ void main() {
         }
     }
 
-    for (uint t = 0; t < 32u; t++) {
+    for (uint t = 0; t < TM; t++) {
         if (t >= tm) {
             break;
         }

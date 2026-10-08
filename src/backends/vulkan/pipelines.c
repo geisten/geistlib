@@ -42,6 +42,8 @@
 #include "shaders/matmul_q5k_spv.h"
 #include "shaders/matmul_q6k_cm_spv.h"
 #include "shaders/matmul_q6k_spv.h"
+#include "shaders/matmul_q8_0_cm_spv.h"
+#include "shaders/matmul_q4_0_cm_spv.h"
 #include "shaders/matmul_q8_0_spv.h"
 #include "shaders/matmul_tq2_0_spv.h"
 #include "shaders/matvec_f32_spv.h"
@@ -352,6 +354,8 @@ vk_pcache_save(struct geist_backend *be, struct vk_state *st, const char *path, 
             [VK_PIPE_SIGMOID_MUL]      = {sigmoid_mul_f32_spv, sizeof(sigmoid_mul_f32_spv)},
             [VK_PIPE_QGATE_SPLIT]      = {qgate_split_f32_spv, sizeof(qgate_split_f32_spv)},
             [VK_PIPE_ATTENTION_F16_CM] = {attention_f16_cm_spv, sizeof(attention_f16_cm_spv)},
+            [VK_PIPE_MM_Q8_0_CM]       = {matmul_q8_0_cm_spv, sizeof(matmul_q8_0_cm_spv)},
+            [VK_PIPE_MM_Q4_0_CM]       = {matmul_q4_0_cm_spv, sizeof(matmul_q4_0_cm_spv)},
     };
     char         pcache_path[1100];
     const bool   use_pcache = vk_pcache_path(st, sizeof pcache_path, pcache_path);

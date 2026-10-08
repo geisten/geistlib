@@ -18,6 +18,8 @@
  * x loads; the workgroup is 2 warps = 8 rows. Dispatch: gx = ceil(n_out / 8).
  * Reduction is a shared-memory tree. */
 
+#include "vk_limits.h"
+
 layout(local_size_x = 64) in;
 
 layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
@@ -56,7 +58,7 @@ void main() {
     uint tid = gl_LocalInvocationID.x;
     uint wrp = tid >> 5u;
     uint lane = tid & 31u;
-    uint first_row = gl_WorkGroupID.x * 8u + wrp * NUM_ROWS;
+    uint first_row = gl_WorkGroupID.x * VK_MV_ROWS_PER_WG + wrp * NUM_ROWS;
     uint ib = lane / LPB;
     uint wq = lane % LPB;
     uint nb = pc.blocks_per_row;
