@@ -4,6 +4,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "encoder_internal.h"
+#include "parse.h"
 
 static void quantize_clippable_w8(struct ClippableLinear *cl, size_t out_dim, size_t in_dim);
 
@@ -99,13 +100,9 @@ struct audio_prec_policy audio_prec_policy_resolve(void) {
 #if defined(__APPLE__) && defined(HAVE_ACCELERATE)
     p.force_fp32 = getenv("GEIST_AUDIO_FORCE_QUANT") == nullptr;
 #endif
-    const char *s = getenv("GEIST_AUDIO_W8A8_LAYER_LIMIT");
-    if (s != nullptr) {
-        p.layer_limit = atoi(s);
-        if (p.layer_limit < 0)
-            p.layer_limit = 0;
-        if (p.layer_limit > N_LAYERS)
-            p.layer_limit = N_LAYERS;
+    long limit;
+    if (geist_parse_long(getenv("GEIST_AUDIO_W8A8_LAYER_LIMIT"), &limit)) {
+        p.layer_limit = limit < 0 ? 0 : limit > N_LAYERS ? N_LAYERS : (int) limit;
     }
     return p;
 }

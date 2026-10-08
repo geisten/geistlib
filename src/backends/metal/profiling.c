@@ -2,6 +2,7 @@
  * src/backends/metal/profiling.c — env gates, dispatch/wait profiling, capture, debug stats.
  */
 #include "metal_internal.h"
+#include "parse.h"
 
 const char *const metal_profile_stage_names[METAL_PROFILE_STAGE_COUNT] = {
         [METAL_PROFILE_WAIT_DECODE_LAYER_LOOP]        = "wait.decode_layer_loop",
@@ -125,7 +126,8 @@ void metal_profile_add_wait(struct metal_state      *st,
  * timing only. */
 static bool metal_skip_grid_match(struct metal_size groups) {
     const char *h = getenv("GEIST_SKIP_H");
-    return h == nullptr || (uint32_t) atoi(h) == groups.height;
+    long        height;
+    return h == nullptr || (geist_parse_long(h, &height) && height == (long) groups.height);
 }
 
 static bool metal_skip_stage(enum metal_profile_stage s) {
@@ -282,7 +284,8 @@ void metal_capture_begin(struct metal_state *st, enum geist_command_sequence_kin
         return;
     }
     const char *skip_env = getenv("GEIST_METAL_CAPTURE_SKIP");
-    if (skip_env != nullptr && st->capture_skipped < atoi(skip_env)) {
+    long        skip;
+    if (geist_parse_long(skip_env, &skip) && st->capture_skipped < skip) {
         st->capture_skipped++;
         return;
     }

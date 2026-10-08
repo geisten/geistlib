@@ -65,6 +65,10 @@ X(VK_PIPE_FFN_NORM_GU,            ffn_norm_gate_up_q4k_spv,    "ffn_norm_gu",   
 X(VK_PIPE_DN_CONV,                deltanet_conv_f32_spv,       "dn_conv",                3, PLAIN)
 /* gated-DeltaNet recurrence + gated rmsnorm (stage 2) */
 X(VK_PIPE_DN_DELTA,               deltanet_delta_f32_spv,      "dn_delta",               8, PLAIN)
+/* DeltaNet q/k l2norm and gated output rmsnorm (fast path) */
+X(VK_PIPE_DN_NORM,                deltanet_norm_f32_spv,       "dn_norm",                3, PLAIN)
+/* column-split DeltaNet recurrence; needs clustered subgroups (st->dn_scan) */
+X(VK_PIPE_DN_SCAN,                deltanet_scan_f32_spv,       "dn_scan",                7, PLAIN)
 X(VK_PIPE_MATVEC_Q4_0,            matvec_q4_0_spv,             "matvec_q4_0",            3, PLAIN)
 X(VK_PIPE_MATMUL_Q4_0,            matmul_q4_0_spv,             "matmul_q4_0",            3, TILED)
 X(VK_PIPE_MATVEC_Q4_1,            matvec_q4_1_spv,             "matvec_q4_1",            3, PLAIN)
@@ -97,6 +101,11 @@ X(VK_PIPE_ATTENTION_F16_CM,       attention_f16_cm_spv,        "attention_f16_cm
 X(VK_PIPE_ATTENTION_F16_HD128_CM, attention_f16_hd128_cm_spv,  "attention_f16_hd128_cm", 4, COOPMAT)
 /* the same, head_dim 512 (two column halves) */
 X(VK_PIPE_ATTENTION_F16_HD512_CM, attention_f16_hd512_cm_spv,  "attention_f16_hd512_cm", 4, COOPMAT)
+/* the same three, four subgroups per workgroup sharing 64-key steps, one
+ * online-softmax pass (32-lane subgroups only) */
+X(VK_PIPE_ATTENTION_F16_MW_CM,       attention_f16_mw_cm_spv,       "attention_f16_mw_cm",       4, COOPMAT)
+X(VK_PIPE_ATTENTION_F16_HD128_MW_CM, attention_f16_hd128_mw_cm_spv, "attention_f16_hd128_mw_cm", 4, COOPMAT)
+X(VK_PIPE_ATTENTION_F16_HD512_MW_CM, attention_f16_hd512_mw_cm_spv, "attention_f16_hd512_mw_cm", 4, COOPMAT)
 /* Q8_0 tensor-core GEMM, 64 x 64 tile */
 X(VK_PIPE_MM_Q8_0_CM,             matmul_q8_0_cm_spv,          "mm_q8_0_cm",             3, COOPMAT)
 /* Q4_0 tensor-core GEMM, 64 x 64 tile */
@@ -113,3 +122,9 @@ X(VK_PIPE_MM_Q4_1_CM,             matmul_q4_1_cm_spv,          "mm_q4_1_cm",    
 X(VK_PIPE_MM_TQ2_0_CM,            matmul_tq2_0_cm_spv,         "mm_tq2_0_cm",            3, COOPMAT)
 /* TQ2_0 tensor-core GEMM, 128 x 128 tile */
 X(VK_PIPE_MM_TQ2_0_CM128,         matmul_tq2_0_t128_cm_spv,    "mm_tq2_0_cm128",         3, COOPMAT)
+/* F32-weight GEMM in the 128 x 128 PQ2_0 frame (the PLE projections) */
+X(VK_PIPE_MM_F32_CM128,           matmul_f32_t128_cm_spv,      "mm_f32_cm128",           3, COOPMAT)
+/* the Q4_K / Q6_K 128 x 128 tiles with one shared buffer pair: two
+ * workgroups per SM, for GEMMs with more workgroups than SMs */
+X(VK_PIPE_MM_Q4K_CM128_SB,        matmul_q4k_t128_sb_cm_spv,   "mm_q4k_cm128_sb",        3, COOPMAT)
+X(VK_PIPE_MM_Q6K_CM128_SB,        matmul_q6k_t128_sb_cm_spv,   "mm_q6k_cm128_sb",        3, COOPMAT)

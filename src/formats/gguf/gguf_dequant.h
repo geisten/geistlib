@@ -14,15 +14,17 @@
 
 #include "gguf_reader.h"
 
-/* Generic dispatch: dequantize a GGUF tensor of any supported dtype to a
- * fresh heap.h FP32 array; caller frees with safe_free. Returns nullptr on error
- * (unsupported dtype or alloc failure). */
+/* Generic dispatch: dequantize a GGUF tensor of any dtype quant_dequant_row
+ * (quant.h) decodes to a fresh heap.h FP32 array; caller frees with
+ * safe_free. Returns nullptr on error (unsupported dtype or alloc failure). */
 float *gguf_dequant_to_fp32(const struct gguf_tensor_t *t);
 
 /* Dequant a single row of a 2D tensor into the caller-provided buffer.
  * row_elems must equal the row length (= columns); must be a multiple of
- * the block size for Q-formats. Used by callers that can't afford to
- * dequant the whole tensor (e.g. PLE table on memory-constrained Pi 5). */
+ * the block size for Q-formats. false (out zeroed) for an unsupported
+ * dtype, a row that is not whole blocks, or a row past the tensor. Used by
+ * callers that can't afford to dequant the whole tensor (e.g. PLE table on
+ * memory-constrained Pi 5). */
 bool gguf_dequant_row_to_fp32(const struct gguf_tensor_t *t,
                               size_t                      row_idx,
                               size_t                      row_elems,

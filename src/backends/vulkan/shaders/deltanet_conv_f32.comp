@@ -11,7 +11,8 @@
  * the K-1 most recent PRE-conv vectors, exactly as the host oracle rolls it
  * (layer_deltanet.c). One thread owns one channel and walks the tokens in
  * order with its window in registers, so the in-place overwrite of qkv is
- * safe: x[t,c] is read into the window before y[t,c] replaces it.
+ * safe: x[t,c] is read into the window before y[t,c] replaces it. The taps
+ * past K are zero weights, so the window loop has constant bounds (#467).
  *
  * Bindings: 0 qkv [seq, convd] in/out, 1 conv_w [convd, K], 2 conv_state
  * [(K-1), convd] in/out. Dispatch: gx = ceil(convd / 128). Size-agnostic
@@ -34,6 +35,10 @@ layout(push_constant) uniform Push {
 
 #include "silu.glsl"
 
+/* Tokens per load batch: the batch's loads go out together, ahead of its
+ * in-place stores (which the compiler will not move loads across). */
+const uint BATCH = 8u;
+
 void main() {
     uint c = gl_GlobalInvocationID.x;
     if (c >= pc.convd) {
@@ -41,25 +46,43 @@ void main() {
     }
     const uint KMAX = VK_DN_MAX_CONV_K;
     uint hist = pc.K - 1u;
-    float win[KMAX];
-    for (uint j = 0u; j < hist; ++j) {
-        win[j] = cst[pc.st_off + j * pc.convd + c];
+    /* window and taps in registers: constant indices, guarded by hist */
+    float win[KMAX - 1u];
+    float w[KMAX - 1u];
+    for (uint j = 0u; j < KMAX - 1u; ++j) {
+        win[j] = j < hist ? cst[pc.st_off + j * pc.convd + c] : 0.0;
+        w[j] = j < hist ? cw[pc.w_off + c * pc.K + j] : 0.0;
     }
-    for (uint t = 0u; t < pc.seq; ++t) {
-        uint at = pc.qkv_off + t * pc.convd + c;
-        float xt = qkv[at];
-        float acc = 0.0;
-        for (uint j = 0u; j < hist; ++j) {
-            acc = fma(cw[pc.w_off + c * pc.K + j], win[j], acc);
+    float wx = cw[pc.w_off + c * pc.K + hist];
+    for (uint t0 = 0u; t0 < pc.seq; t0 += BATCH) {
+        float xb[BATCH];
+        for (uint b = 0u; b < BATCH; ++b) {
+            xb[b] = t0 + b < pc.seq ? qkv[pc.qkv_off + (t0 + b) * pc.convd + c] : 0.0;
         }
-        acc = fma(cw[pc.w_off + c * pc.K + hist], xt, acc);
-        qkv[at] = silu(acc);
-        for (uint j = 0u; j + 1u < hist; ++j) {
-            win[j] = win[j + 1u];
+        for (uint b = 0u; b < BATCH; ++b) {
+            if (t0 + b >= pc.seq) {
+                break;
+            }
+            float xt = xb[b];
+            float acc = 0.0;
+            for (uint j = 0u; j < KMAX - 1u; ++j) {
+                acc = fma(w[j], win[j], acc); /* w[j] = 0 past hist */
+            }
+            acc = fma(wx, xt, acc);
+            qkv[pc.qkv_off + (t0 + b) * pc.convd + c] = silu(acc);
+            /* roll: win[0..hist-2] <- win[1..hist-1], win[hist-1] <- xt */
+            for (uint j = 0u; j < KMAX - 1u; ++j) {
+                if (j + 1u < hist) {
+                    win[j] = win[j + 1u];
+                } else if (j + 1u == hist) {
+                    win[j] = xt;
+                }
+            }
         }
-        win[hist - 1u] = xt; /* hist = K - 1 >= 1 (the host rejects K < 2) */
     }
-    for (uint j = 0u; j < hist; ++j) {
-        cst[pc.st_off + j * pc.convd + c] = win[j];
+    for (uint j = 0u; j < KMAX - 1u; ++j) {
+        if (j < hist) {
+            cst[pc.st_off + j * pc.convd + c] = win[j];
+        }
     }
 }

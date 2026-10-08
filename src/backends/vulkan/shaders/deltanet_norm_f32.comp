@@ -1,0 +1,91 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_KHR_shader_subgroup_basic : enable
+#include "vk_limits.h"
+
+/* The two per-head normalizations around deltanet_scan_f32 (the clustered
+ * fast path of fused->deltanet_mix). One workgroup per (head vector,
+ * token); every vector of the qkv row is normalized independently.
+ *
+ *   mode 0 (before the scan): l2-normalize q and k of every k-head in
+ *     place, q also times qscale. Vector v < n_kh is q head v, v >= n_kh is
+ *     k head v - n_kh; both sit at row + v * dk. len = dk.
+ *   mode 1 (after the scan): o of v-head v sits in the v slot of the row
+ *     (row + 2 * keyd + v * dv, written there by the scan);
+ *     z = rmsnorm(o, norm_w) * silu(z). len = dv.
+ *
+ * The reduction order matches deltanet_delta_f32's (subgroupAdd + one
+ * shared pass). Bindings: 0 qkv, 1 z, 2 norm_w. Dispatch: gx = vectors,
+ * gy = min(seq, 65535); the token loop covers the rest. */
+
+layout(local_size_x = VK_DN_NORM_WG) in;
+
+layout(set = 0, binding = 0) buffer QKV { float qkv[]; };
+layout(set = 0, binding = 1) buffer Z { float z[]; };
+layout(set = 0, binding = 2) readonly buffer NW { float nw[]; };
+
+layout(push_constant) uniform Push {
+    uint mode;
+    uint seq;
+    uint len;
+    uint n_kh;
+    uint n_vh;
+    uint keyd;
+    uint convd;
+    uint qkv_off;
+    uint z_off;
+    uint nw_off;
+    float eps;
+    float qscale;
+} pc;
+
+shared float partial[VK_DN_NORM_WG]; /* one per subgroup; a subgroup can be 1 lane */
+
+#include "silu.glsl"
+
+const uint PER = VK_DN_MAX_DK / VK_DN_NORM_WG; /* elements per lane */
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint vec = gl_WorkGroupID.x;
+    for (uint t = gl_WorkGroupID.y; t < pc.seq; t += gl_NumWorkGroups.y) {
+        uint base = pc.qkv_off + t * pc.convd +
+                    (pc.mode == 0u ? vec * pc.len : 2u * pc.keyd + vec * pc.len);
+        float x[PER];
+        float ss = 0.0;
+        for (uint e = 0u; e < PER; ++e) {
+            uint i = tid + e * VK_DN_NORM_WG;
+            x[e] = i < pc.len ? qkv[base + i] : 0.0;
+            ss = fma(x[e], x[e], ss);
+        }
+        ss = subgroupAdd(ss);
+        if (subgroupElect()) {
+            partial[gl_SubgroupID] = ss;
+        }
+        barrier();
+        float total = 0.0;
+        for (uint i = 0u; i < gl_NumSubgroups; i++) {
+            total += partial[i];
+        }
+        barrier(); /* partial is rewritten next token */
+        if (pc.mode == 0u) {
+            float inv = inversesqrt(total + pc.eps) * (vec < pc.n_kh ? pc.qscale : 1.0);
+            for (uint e = 0u; e < PER; ++e) {
+                uint i = tid + e * VK_DN_NORM_WG;
+                if (i < pc.len) {
+                    qkv[base + i] = x[e] * inv;
+                }
+            }
+        } else {
+            float inv = inversesqrt(total / float(pc.len) + pc.eps);
+            for (uint e = 0u; e < PER; ++e) {
+                uint i = tid + e * VK_DN_NORM_WG;
+                if (i < pc.len) {
+                    uint zi = pc.z_off + t * pc.n_vh * pc.len + vec * pc.len + i;
+                    z[zi] = (x[e] * inv * nw[pc.nw_off + i]) * silu(z[zi]);
+                }
+            }
+        }
+    }
+}
