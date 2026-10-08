@@ -1,4 +1,5 @@
 #version 450
+#include "vk_limits.h"
 
 layout(local_size_x = 256) in;
 
@@ -16,16 +17,16 @@ layout(push_constant) uniform Push {
     uint n_rows; /* table rows: locates the scale region of the SoA layouts */
 } pc;
 
-const uint DTYPE_F32 = 0u;
-const uint DTYPE_F16 = 1u;
-const uint DTYPE_BF16 = 2u;
-const uint DTYPE_Q4_0 = 3u;
-const uint DTYPE_Q4_1 = 4u;
-const uint DTYPE_Q8_0 = 5u;
-const uint DTYPE_Q4_K = 8u;
-const uint DTYPE_Q5_K = 9u;
-const uint DTYPE_Q6_K = 10u;
-const uint DTYPE_PQ2_0 = 11u;
+const uint DTYPE_F32 = VK_EMBED_DT_F32;
+const uint DTYPE_F16 = VK_EMBED_DT_F16;
+const uint DTYPE_BF16 = VK_EMBED_DT_BF16;
+const uint DTYPE_Q4_0 = VK_EMBED_DT_Q4_0;
+const uint DTYPE_Q4_1 = VK_EMBED_DT_Q4_1;
+const uint DTYPE_Q8_0 = VK_EMBED_DT_Q8_0;
+const uint DTYPE_Q4_K = VK_EMBED_DT_Q4_K;
+const uint DTYPE_Q5_K = VK_EMBED_DT_Q5_K;
+const uint DTYPE_Q6_K = VK_EMBED_DT_Q6_K;
+const uint DTYPE_PQ2_0 = VK_EMBED_DT_PQ2_0;
 
 uint load_u8(uint byte_offset) {
     uint word = w[byte_offset >> 2];

@@ -65,6 +65,13 @@ constexpr size_t Q4_1_BLOCK_ELEMS = 32;
 constexpr size_t Q4_1_BLOCK_BYTES = 20;
 void             dequant_q4_1_row(size_t n_elems, const void *blocks, float out[static n_elems]);
 
+/* Q5_0 block: 32 elements, fp16 d + 4 bytes of high bits + 16 nibble bytes
+ * = 22 bytes. Codes 0..31 biased to signed [-16..+15]; layout in
+ * quant_blocks.h. llama-quantize keeps it for some tensors of Q4_K_M. */
+constexpr size_t Q5_0_BLOCK_ELEMS = 32;
+constexpr size_t Q5_0_BLOCK_BYTES = 22;
+void             dequant_q5_0_row(size_t n_elems, const void *blocks, float out[static n_elems]);
+
 /* Q3_K super-block: 256 elements, 110 bytes:
  *   32 hmask (high bit), 64 qs (low 2 bits), 12 scales (16 × 6-bit signed), 1 fp16 d */
 constexpr size_t Q3_K_BLOCK_ELEMS = 256;
@@ -214,6 +221,9 @@ static inline size_t i2_s_scale_offset(const size_t n_elems) {
         break;
     case GEIST_DTYPE_Q4_1:
         blk_elems = Q4_1_BLOCK_ELEMS, blk_bytes = Q4_1_BLOCK_BYTES;
+        break;
+    case GEIST_DTYPE_Q5_0:
+        blk_elems = Q5_0_BLOCK_ELEMS, blk_bytes = Q5_0_BLOCK_BYTES;
         break;
     case GEIST_DTYPE_Q8_0:
         blk_elems = Q8_0_BLOCK_ELEMS, blk_bytes = Q8_0_BLOCK_BYTES;

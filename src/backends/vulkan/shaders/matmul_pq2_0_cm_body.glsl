@@ -32,7 +32,13 @@
  * quants come as two 128-bit loads), Q6_K's 216-byte padded blocks (8-byte
  * aligned: ql and qh as 64-bit loads). The dequantized weights are rounded to
  * f16, as in matmul_q4k_cm.comp. Requires n_in % 256 == 0 for those. Without a
- * DT_* macro the body is PQ2_0. */
+ * DT_* macro the body is PQ2_0.
+ *
+ * Likewise DT_TQ2_0 replaces the A stage with TQ2_0's (#467), in the SOA layout of
+ * matvec_tq2_0.comp: 16 quant words per 256-element block, then the f16
+ * scales. A k-step is one of the block's eight 32-element runs
+ * e = g*128 + l*32 + m (bytes g*32 + m, bits 2l); each thread loads its 16
+ * bytes as one 128-bit word. Requires n_in % 256 == 0 for it. */
 
 #ifdef ACC_F16
 #define ACCUM(i, j) hac##i##j
@@ -49,6 +55,8 @@ layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
 layout(set = 0, binding = 1) readonly buffer W4 { uvec4 w4[]; };
 #elif defined(DT_Q6K)
 layout(set = 0, binding = 1) readonly buffer W2 { uvec2 w2[]; };
+#elif defined(DT_TQ2_0)
+layout(set = 0, binding = 1) readonly buffer W4 { uvec4 w4[]; };
 #endif
 
 layout(push_constant) uniform Push {
@@ -89,6 +97,14 @@ uvec2 deq4_q6k(uint l, uint h, uint qls, uint qhs, float dsc) {
     vec4 v = dsc * (vec4(q) - 32.0);
     return uvec2(packHalf2x16(v.xy), packHalf2x16(v.zw));
 }
+#elif defined(DT_TQ2_0)
+/* 4 quant bytes, 2-bit code at `sh` in each -> 4 packed f16 values
+ * (code - 1) * d, exact in f16 */
+uvec2 deq4_tq2(uint qw, uint sh, float d) {
+    uvec4 c = (uvec4(qw) >> (uvec4(0u, 8u, 16u, 24u) + sh)) & 3u;
+    vec4 v = (vec4(c) - 1.0) * d;
+    return uvec2(packHalf2x16(v.xy), packHalf2x16(v.zw));
+}
 #else
 /* 8 ternary codes (16 bits) -> 8 packed f16 values (code - 1) * d, exact in
  * f16 for -d, 0, d and 2d */
@@ -115,6 +131,10 @@ struct Fetch {
     uint scw;  /* the word holding this thread's int8 scale */
     uint dw;   /* d in the low half */
     uint sub;
+#elif defined(DT_TQ2_0)
+    uvec4 qs; /* this thread's 16 quant bytes */
+    uint sh;  /* 2 * l of k-step ks */
+    float d;
 #else
     uint qw;
     float d;
@@ -151,6 +171,13 @@ Fetch fetch_tiles(uint ks, uint lid, uint row0, uint tb0) {
     f.qh = uvec4(w2[qhv], w2[qhv + 1u]);
     f.scw = w2[b2 + 24u + half_idx][stream >> 1u];
     f.dw = w2[b2 + 26u].x;
+#elif defined(DT_TQ2_0)
+    uint bi = (row0 + r) * pc.blocks_per_row + (k0 >> 8u);
+    uint sub = (k0 & 255u) >> 5u;
+    f.qs = w4[bi * 4u + (sub >> 2u) * 2u + hk];
+    f.sh = 2u * (sub & 3u);
+    f.d = unpackHalf2x16(w[pc.n_out * pc.blocks_per_row * 16u + (bi >> 1u)] >>
+                         ((bi & 1u) * 16u)).x;
 #else
     uint bi = (row0 + r) * pc.blocks_per_row + (k0 >> 7u);
     f.qw = w[bi * 8u + ((k0 & 127u) >> 4u) + hk];
@@ -206,6 +233,9 @@ void store_tiles(uint buf, uint lid, Fetch f) {
                             deq4_q6k(f.ql.y, f.qh.y, qls, qhs, dsc));
     Ash[buf][abase + 1u] = uvec4(deq4_q6k(f.ql.z, f.qh.z, qls, qhs, dsc),
                                  deq4_q6k(f.ql.w, f.qh.w, qls, qhs, dsc));
+#elif defined(DT_TQ2_0)
+    Ash[buf][abase] = uvec4(deq4_tq2(f.qs.x, f.sh, f.d), deq4_tq2(f.qs.y, f.sh, f.d));
+    Ash[buf][abase + 1u] = uvec4(deq4_tq2(f.qs.z, f.sh, f.d), deq4_tq2(f.qs.w, f.sh, f.d));
 #else
     Ash[buf][abase] = expand8(f.qw & 0xffffu, f.d);
     Ash[buf][abase + 1u] = expand8(f.qw >> 16u, f.d);

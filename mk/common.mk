@@ -12,9 +12,12 @@
 
 # ---- Layout --------------------------------------------------------------
 
-BUILD_DIR := build/$(TARGET)/$(MODE)
-LIB_DIR   := lib/$(TARGET)/$(MODE)
-BIN_DIR   := bin/$(TARGET)/$(MODE)
+# OPENMP=0 builds without OpenMP (below) into trees of their own: the
+# objects do not record the flags they were built with.
+OMP_SUFFIX := $(if $(filter 0,$(OPENMP)),-noomp)
+BUILD_DIR := build/$(TARGET)/$(MODE)$(OMP_SUFFIX)
+LIB_DIR   := lib/$(TARGET)/$(MODE)$(OMP_SUFFIX)
+BIN_DIR   := bin/$(TARGET)/$(MODE)$(OMP_SUFFIX)
 
 # ---- Mode flags ----------------------------------------------------------
 # release : production
@@ -25,6 +28,8 @@ BIN_DIR   := bin/$(TARGET)/$(MODE)
 #           floods the report with false positives at barriers); the omp
 #           pragmas compile to serial loops, which is exactly right — the
 #           races under test are cross-session, not intra-kernel.
+#           geist_par_for (src/base/par.h) runs on its own pthread pool
+#           here, so this is also the leg that checks that pool (#618).
 # perf    : -O3 + symbols for perf record / sampling profilers
 # fuzz    : asan + libFuzzer coverage instrumentation for `make fuzz-libfuzzer`.
 #           Its own mode, not asan plus EXTRA_CFLAGS, so the objects land in
@@ -71,6 +76,16 @@ else ifeq ($(MODE),cov)
     LDFLAGS_MODE := --coverage
 else
     $(error Unknown MODE=$(MODE). Use one of: release, debug, asan, tsan, fuzz, perf, cov)
+endif
+
+# OPENMP=0: any mode without OpenMP, as iOS, a mac without libomp or MSVC
+# build. geist_par_for (src/base/par.h) runs on its pthread pool (GCD on
+# Apple); -fopenmp-simd keeps the `#pragma omp simd` loops vectorized as
+# with OpenMP; the other omp pragmas left compile to serial loops (#618).
+ifeq ($(OPENMP),0)
+    CFLAGS_TARGET  := $(filter-out -Xpreprocessor -fopenmp,$(CFLAGS_TARGET)) \
+                      -fopenmp-simd -Wno-unknown-pragmas -Wno-unused-function
+    LDFLAGS_TARGET := $(filter-out -fopenmp -lomp,$(LDFLAGS_TARGET))
 endif
 
 # ---- Base CFLAGS ---------------------------------------------------------
@@ -148,6 +163,7 @@ LIB_SOURCES := \
     src/base/hw_probe.c \
     src/base/calibration.c \
     src/base/omp_idle.c \
+    src/base/par.c \
     src/engine/allocator.c \
     src/engine/backend.c \
     src/engine/backend_registry.c \
@@ -203,6 +219,7 @@ LIB_SOURCES := \
     src/formats/gguf/q8_0.c \
     src/formats/gguf/q4_0.c \
     src/formats/gguf/q4_1.c \
+    src/formats/gguf/q5_0.c \
     src/formats/gguf/q3_K.c \
     src/formats/gguf/q4_K.c \
     src/formats/gguf/q5_K.c \

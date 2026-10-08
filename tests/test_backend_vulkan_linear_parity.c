@@ -2,7 +2,8 @@
  * test_backend_vulkan_linear_parity — numerical parity gate for the Vulkan
  * linear path: resolve_weight + linear_m1/linear_mN for Q4_K,
  * Q5_K, Q6_K, Q4_0, Q4_1, Q8_0, TQ2_0, PQ2_0 and F32 weights (plus fused->linear_t, the
- * device-resident path the engine actually runs), compared against the
+ * device-resident path the engine actually runs), and Q5_0, which has no
+ * shader and must resolve to the host row-dequant path, compared against the
  * cpu_scalar resolver on the SAME weight bytes. cpu_scalar dequantizes with an independent
  * implementation (src/formats/gguf), so agreement means the GLSL dequant
  * and the full dispatch chain (VRAM upload, registry, staging, shader) are
@@ -47,6 +48,7 @@ static const struct qfmt QF[] = {
         {GEIST_DTYPE_Q8_0, 32, 34, 2},
         {GEIST_DTYPE_TQ2_0, 256, 66, -2}, /* d is the TRAILING f16 */
         {GEIST_DTYPE_PQ2_0, 128, 34, 2},
+        {GEIST_DTYPE_Q5_0, 32, 22, 2},
 };
 
 static const struct qfmt *qfmt_of(int dtype) {
@@ -118,25 +120,25 @@ enum parity_path {
 /* How a case's error is normalized. PARITY_ELEM: each element against its
  * own reference magnitude (floored at 1) — strict, right for the f32 paths.
  * PARITY_MAG: the largest absolute error against the largest reference
- * magnitude — for tensor-core paths whose f16 operands are not exact on the
- * test data (Q6_K products reach +-4096, past f16's exact-integer range): on
- * outputs that cancel to near zero that rounding is a large fraction of the
- * element, while it stays ~1e-4 of the output scale. */
+ * magnitude — for the tensor-core paths, whose f16 operands carry a relative
+ * error of ~2^-11 per product; on outputs that cancel to near zero that
+ * rounding is a large fraction of the element, while it stays ~1e-4 of the
+ * output scale. */
 enum parity_metric { PARITY_ELEM, PARITY_MAG };
 
 /* One parity case: the same random weight and activations through the Vulkan
  * path `via` and through cpu_scalar, compared at tolerance tol under
  * `metric`. */
-static void run_parity_metric(enum parity_path      via,
-                              struct geist_backend *vk,
-                              struct geist_backend *ref,
-                              int                   dtype,
-                              const char           *name,
-                              size_t                n_in,
-                              size_t                n_out,
-                              size_t                m,
-                              enum parity_metric    metric,
-                              double                tol) {
+static void run_parity(enum parity_path      via,
+                       struct geist_backend *vk,
+                       struct geist_backend *ref,
+                       int                   dtype,
+                       const char           *name,
+                       size_t                n_in,
+                       size_t                n_out,
+                       size_t                m,
+                       enum parity_metric    metric,
+                       double                tol) {
     const struct geist_backend_fused *f = geist_backend_fused_tbl(vk);
     if (via == VIA_LINEAR_T && f->linear_t == nullptr) {
         check(false, "vulkan linear_t missing");
@@ -211,7 +213,7 @@ static void run_parity_metric(enum parity_path      via,
         if (rel > max_rel) {
             max_rel = rel;
         }
-        if (!(err <= max_abs)) { /* a NaN output fails the case */
+        if (err > max_abs) {
             max_abs = err;
         }
         if (fabs(b) > ref_mag) {
@@ -257,18 +259,6 @@ done:
     free(y_rf);
 }
 
-static void run_parity(enum parity_path      via,
-                       struct geist_backend *vk,
-                       struct geist_backend *ref,
-                       int                   dtype,
-                       const char           *name,
-                       size_t                n_in,
-                       size_t                n_out,
-                       size_t                m,
-                       double                tol) {
-    run_parity_metric(via, vk, ref, dtype, name, n_in, n_out, m, PARITY_ELEM, tol);
-}
-
 int main(void) {
     struct geist_backend *vk = nullptr;
     enum geist_status     vs = geist_backend_create("vulkan", nullptr, nullptr, &vk);
@@ -286,7 +276,7 @@ int main(void) {
     }
 
 #define run_case(vk, ref, dt, name, ni, no, m) \
-    run_parity(VIA_WEIGHT, vk, ref, dt, name, ni, no, m, 1e-3)
+    run_parity(VIA_WEIGHT, vk, ref, dt, name, ni, no, m, PARITY_ELEM, 1e-3)
     /* n_in must be a multiple of 256 for k-quants; n_out deliberately not a
      * multiple of the workgroup count to catch tail bugs. */
     run_case(vk, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 383, 1);
@@ -306,20 +296,20 @@ int main(void) {
         run_case(vk, ref, newq[i], newn[i], 1120, 131, 1);
         run_case(vk, ref, newq[i], newn[i], 352, 45, 8);
         run_case(vk, ref, newq[i], newn[i], 1120, 131, 37);
-        run_parity(VIA_LINEAR_T, vk, ref, newq[i], newn[i], 1120, 131, 1, 1e-3);
-        run_parity(VIA_LINEAR_T, vk, ref, newq[i], newn[i], 512, 383, 37, 1e-3);
-        run_parity(VIA_LINEAR_T, vk, ref, newq[i], newn[i], 352, 45, 64, 1e-3);
+        run_parity(VIA_LINEAR_T, vk, ref, newq[i], newn[i], 1120, 131, 1, PARITY_ELEM, 1e-3);
+        run_parity(VIA_LINEAR_T, vk, ref, newq[i], newn[i], 512, 383, 37, PARITY_ELEM, 1e-3);
+        run_parity(VIA_LINEAR_T, vk, ref, newq[i], newn[i], 352, 45, 64, PARITY_ELEM, 1e-3);
     }
     run_case(vk, ref, GEIST_DTYPE_Q5_K, "Q5_K", 512, 383, 1);
     run_case(vk, ref, GEIST_DTYPE_Q5_K, "Q5_K", 768, 131, 8);
     run_case(vk, ref, GEIST_DTYPE_Q5_K, "Q5_K", 768, 131, 37);
-    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K", 768, 131, 1, 1e-3);
-    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K", 512, 383, 37, 1e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K", 768, 131, 1, PARITY_ELEM, 1e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K", 512, 383, 37, PARITY_ELEM, 1e-3);
     run_case(vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0", 512, 383, 1);
     run_case(vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0", 768, 131, 8);
     run_case(vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0", 768, 131, 37);
-    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0", 768, 131, 1, 1e-3);
-    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0", 512, 383, 37, 1e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0", 768, 131, 1, PARITY_ELEM, 1e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0", 512, 383, 37, PARITY_ELEM, 1e-3);
     /* PQ2_0: 128-element blocks, two blocks per warp step — 1408 = 11 blocks
      * exercises the odd tail, 384 a single-step row. */
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 1);
@@ -329,54 +319,144 @@ int main(void) {
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 17408, 96, 1);
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 384, 45, 8);
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 37);
-    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 1, 1e-3);
-    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 37, 1e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 1, PARITY_ELEM, 1e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 37, PARITY_ELEM, 1e-3);
     /* the dtypes above through linear_t as well */
-    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 383, 1, 1e-3);
-    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 1, 1e-3);
-    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_F32, "F32", 200, 130, 1, 1e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 383, 1, PARITY_ELEM, 1e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 1, PARITY_ELEM, 1e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_F32, "F32", 200, 130, 1, PARITY_ELEM, 1e-3);
 
-    /* coopmat tensor-core path (m%16==0, n_out%64==0): f16 inputs, f32
-     * accumulate — looser tolerance by design (prefill-only path; the
-     * MMLU gate judges end-to-end). */
-    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 256, 16, 2e-2);
-    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 768, 128, 64, 2e-2);
+    /* coopmat tensor-core path (m%16==0, n_out%64==0): f16 operands, f32
+     * accumulate, judged by PARITY_MAG — f16 rounding is ~2^-11 of a product,
+     * observed <= 3.2e-4 of the output scale on this data; 2e-3 leaves 6x. */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 256, 16, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 768, 128, 64, PARITY_MAG, 2e-3);
     /* wide n_out routes to the 128-row register-tiled kernel */
-    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 4096, 16, 2e-2);
-    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 4096, 64, 2e-2);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 4096, 16, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 4096, 64, PARITY_MAG, 2e-3);
     /* PQ2_0 on the tensor cores. The ternary values are exact in f16; the
      * activations are rounded to f16 and the default kernel accumulates in f16
-     * (folded into f32 every 64 k): the test data (activations up to +-4,
-     * outputs in the hundreds, cancelling sums) makes that a few percent of a
-     * small output, so the bound is loose here — the model-level check (logits
-     * vs cpu_scalar, the fork goldens) is the real gate. The f32-accumulate
-     * variant is exact on this data (second backend below). */
-    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 512, 256, 16, 0.25);
-    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 640, 128, 64, 0.25);
-    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 512, 4096, 48, 0.25);
-    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 5120, 256, 128, 0.25);
+     * (folded into f32 every 64 k), so its bound is wider than the f32-
+     * accumulate kernels'. The model-level check (logits vs cpu_scalar, the
+     * fork goldens) remains the real gate; the f32-accumulate variant is exact
+     * on this data (second backend below). */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 512, 256, 16, PARITY_MAG, 1e-2);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 640, 128, 64, PARITY_MAG, 1e-2);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 512, 4096, 48, PARITY_MAG, 1e-2);
+    run_parity(
+            VIA_WEIGHT, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm", 5120, 256, 128, PARITY_MAG, 1e-2);
+    /* Q8_0 on the tensor cores: 1120 = 35 blocks (odd k-step count), m = 112
+     * leaves the second 64-token tile partly empty, and linear_t reaches the
+     * same kernel through the staged-x path. */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-cm", 512, 256, 16, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-cm", 1120, 128, 64, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-cm", 512, 192, 112, PARITY_MAG, 2e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-cm", 1120, 128, 48, PARITY_MAG, 2e-3);
+    /* m % 16 != 0 on conforming shapes: the leading m & ~15 rows run on the
+     * tensor cores, the tail on the register-tiled GEMM (vk_gemm_dispatch);
+     * m = 20 is a 16-row head and a 4-row tail, m = 101 a 96-row head */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-split", 512, 192, 20, PARITY_MAG, 2e-3);
+    run_parity(
+            VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-split", 1120, 128, 101, PARITY_MAG, 2e-3);
+    run_parity(
+            VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-split", 512, 256, 37, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-split", 512, 256, 37, PARITY_MAG, 2e-3);
+    run_parity(
+            VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-split", 768, 4096, 53, PARITY_MAG, 2e-3);
+    /* Q6_K on the tensor cores: its products reach +-4096 on this data, past
+     * f16's exact-integer range, so it is the case PARITY_ELEM cannot judge */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q6_K, "Q6_K-cm", 512, 128, 16, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q6_K, "Q6_K-cm", 768, 256, 64, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q6_K, "Q6_K-split", 512, 128, 23, PARITY_MAG, 2e-3);
+    /* Q4_0 on the tensor cores (#467), the Q8_0 shapes again: odd k-step
+     * count, a partly empty token tile, linear_t, and the m % 16 split. */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_0, "Q4_0-cm", 512, 256, 16, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_0, "Q4_0-cm", 1120, 128, 64, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_0, "Q4_0-cm", 512, 192, 112, PARITY_MAG, 2e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q4_0, "Q4_0-cm", 1120, 128, 48, PARITY_MAG, 2e-3);
+    run_parity(
+            VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_0, "Q4_0-split", 1120, 128, 101, PARITY_MAG, 2e-3);
+    /* Q5_0: no shader; the host row-dequant kernels must be installed and
+     * agree with cpu_scalar. */
+    run_case(vk, ref, GEIST_DTYPE_Q5_0, "Q5_0", 512, 383, 1);
+    run_case(vk, ref, GEIST_DTYPE_Q5_0, "Q5_0", 352, 45, 8);
+    /* Q5_K on the tensor cores (#467): its 5-bit products leave f16's exact
+     * integer range as Q6_K's do, so judged by PARITY_MAG; two superblocks
+     * per row, a partly empty token tile, linear_t, the m % 16 split */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-cm", 512, 256, 16, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-cm", 768, 128, 112, PARITY_MAG, 2e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-cm", 512, 192, 48, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-split", 512, 128, 37, PARITY_MAG, 2e-3);
+    /* Q4_1 on the tensor cores (#467): its native 20-byte block */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_1, "Q4_1-cm", 512, 256, 16, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_1, "Q4_1-cm", 1120, 128, 112, PARITY_MAG, 2e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q4_1, "Q4_1-cm", 512, 192, 48, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_1, "Q4_1-split", 512, 128, 37, PARITY_MAG, 2e-3);
+    /* TQ2_0 on the tensor cores (#467): eight k-steps per 256-element block;
+     * one, two and three (odd) superblocks per row, a partly empty token tile,
+     * linear_t, the m % 16 split */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0-cm", 256, 256, 16, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0-cm", 768, 128, 64, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0-cm", 512, 256, 112, PARITY_MAG, 2e-3);
+    run_parity(
+            VIA_LINEAR_T, vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0-cm", 768, 256, 48, PARITY_MAG, 2e-3);
+    run_parity(
+            VIA_WEIGHT, vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0-split", 768, 128, 37, PARITY_MAG, 2e-3);
+    /* ... and in its 128 x 128 tile (n_out * m >= 4 * 2^16): a full token
+     * tile, a partly empty second one, linear_t, the m % 16 split */
+    run_parity(
+            VIA_WEIGHT, vk, ref, GEIST_DTYPE_TQ2_0, "TQ2_0-cm128", 768, 4096, 64, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT,
+               vk,
+               ref,
+               GEIST_DTYPE_TQ2_0,
+               "TQ2_0-cm128",
+               512,
+               2048,
+               144,
+               PARITY_MAG,
+               2e-3);
+    run_parity(VIA_LINEAR_T,
+               vk,
+               ref,
+               GEIST_DTYPE_TQ2_0,
+               "TQ2_0-cm128",
+               768,
+               2048,
+               128,
+               PARITY_MAG,
+               2e-3);
+    run_parity(VIA_WEIGHT,
+               vk,
+               ref,
+               GEIST_DTYPE_TQ2_0,
+               "TQ2_0-split128",
+               256,
+               2048,
+               133,
+               PARITY_MAG,
+               2e-3);
     /* n_out < 4096 at 256 rows takes the 64 x 64 tile, not the 32 x 32 one */
-    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 256, 256, 2e-2);
-    /* Q4_K / Q6_K in the 128 x 128 PQ2_0 frame. It takes a GEMM from
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 256, 256, PARITY_MAG, 2e-3);
+    /* Q4_K / Q6_K in the 128 x 128 PQ2_0 frame (#658). It takes a GEMM from
      * n_out * m >= 5 * 2^16 (3 * 2^16 where the 32 x 32 Q4_K tile is the
      * alternative), so the narrow cases need many tokens. 768 = 3 superblocks
      * (odd); m = 912 and 1296 end in a partial token tile; m = 16 and Q6_K at
-     * 2048 x 112 stay on the smaller tiles; m = 904 % 16 != 0 the
-     * register-tiled fallback. f16 operands, f32 accumulate: judged by output
-     * scale (PARITY_MAG). */
+     * 2048 x 112 stay on the smaller tiles; m = 904 splits into an 896-row
+     * tensor-core head and an 8-row register-tiled tail. */
     static const int   kq[]  = {GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q6_K};
     static const char *kqn[] = {"Q4_K-cm128", "Q6_K-cm128"};
     for (size_t i = 0; i < 2; i++) {
-        run_parity_metric(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 512, 128, 2560, PARITY_MAG, 2e-3);
-        run_parity_metric(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 768, 256, 1280, PARITY_MAG, 2e-3);
-        run_parity_metric(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 768, 384, 912, PARITY_MAG, 2e-3);
-        run_parity_metric(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 512, 2048, 112, PARITY_MAG, 2e-3);
-        run_parity_metric(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 512, 6144, 64, PARITY_MAG, 2e-3);
-        run_parity_metric(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 256, 4096, 128, PARITY_MAG, 2e-3);
-        run_parity_metric(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 768, 256, 16, PARITY_MAG, 2e-3);
-        run_parity_metric(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 768, 384, 904, PARITY_MAG, 2e-3);
-        run_parity_metric(VIA_LINEAR_T, vk, ref, kq[i], kqn[i], 768, 384, 1024, PARITY_MAG, 2e-3);
-        run_parity_metric(VIA_LINEAR_T, vk, ref, kq[i], kqn[i], 512, 256, 1296, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 512, 128, 2560, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 768, 256, 1280, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 768, 384, 912, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 512, 2048, 112, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 512, 6144, 64, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 256, 4096, 128, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 768, 256, 16, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 768, 384, 904, PARITY_MAG, 2e-3);
+        run_parity(VIA_LINEAR_T, vk, ref, kq[i], kqn[i], 768, 384, 1024, PARITY_MAG, 2e-3);
+        run_parity(VIA_LINEAR_T, vk, ref, kq[i], kqn[i], 512, 256, 1296, PARITY_MAG, 2e-3);
     }
     geist_backend_destroy(vk);
 
@@ -385,9 +465,36 @@ int main(void) {
     struct geist_backend *vk32 = nullptr;
     check(geist_backend_create("vulkan", nullptr, nullptr, &vk32) == GEIST_OK, "vulkan f32-acc");
     if (vk32 != nullptr) {
-        run_parity(VIA_WEIGHT, vk32, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm32", 512, 256, 16, 1e-3);
-        run_parity(VIA_WEIGHT, vk32, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm32", 640, 128, 64, 1e-3);
-        run_parity(VIA_WEIGHT, vk32, ref, GEIST_DTYPE_PQ2_0, "PQ2_0-cm32", 5120, 256, 128, 1e-3);
+        run_parity(VIA_WEIGHT,
+                   vk32,
+                   ref,
+                   GEIST_DTYPE_PQ2_0,
+                   "PQ2_0-cm32",
+                   512,
+                   256,
+                   16,
+                   PARITY_ELEM,
+                   1e-3);
+        run_parity(VIA_WEIGHT,
+                   vk32,
+                   ref,
+                   GEIST_DTYPE_PQ2_0,
+                   "PQ2_0-cm32",
+                   640,
+                   128,
+                   64,
+                   PARITY_ELEM,
+                   1e-3);
+        run_parity(VIA_WEIGHT,
+                   vk32,
+                   ref,
+                   GEIST_DTYPE_PQ2_0,
+                   "PQ2_0-cm32",
+                   5120,
+                   256,
+                   128,
+                   PARITY_ELEM,
+                   1e-3);
         geist_backend_destroy(vk32);
     }
     unsetenv("GEIST_VK_PQ2_F32_ACC");

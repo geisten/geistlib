@@ -1,0 +1,6 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* Q5_K GEMM on the tensor cores. Body and notes: matmul_kq_cm_body.glsl. */
+#define DT_Q5K 1
+#include "matmul_kq_cm_body.glsl"

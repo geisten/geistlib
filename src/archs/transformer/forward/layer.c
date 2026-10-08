@@ -366,6 +366,9 @@ enum geist_status transformer_forward_mtp_layer(struct transformer_arch_session 
     case GEIST_DTYPE_Q4_1:
         dequant_q4_1_row(n_in, raw + row_idx * n_in / Q4_1_BLOCK_ELEMS * Q4_1_BLOCK_BYTES, dst);
         break;
+    case GEIST_DTYPE_Q5_0:
+        dequant_q5_0_row(n_in, raw + row_idx * n_in / Q5_0_BLOCK_ELEMS * Q5_0_BLOCK_BYTES, dst);
+        break;
     case GEIST_DTYPE_Q4_K:
         dequant_q4_K_row(n_in, raw + row_idx * n_in / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES, dst);
         break;

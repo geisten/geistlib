@@ -19,7 +19,8 @@
 #include "checked.h"        /* ckd_* size arithmetic (AGENT.md §3) */
 #include "gemma4_kernels.h" /* shared reference rope/attention kernels */
 #include "heap.h"
-#include "quant.h" /* CPU dequant helpers for the non-GPU dtype fallback */
+#include "quant.h"             /* CPU dequant helpers for the non-GPU dtype fallback */
+#include "shaders/vk_limits.h" /* constants shared with the shaders (#474) */
 
 #include <dlfcn.h>
 #include <math.h>
@@ -77,6 +78,9 @@ struct vk_fns {
     PFN_vkCreatePipelineLayout       CreatePipelineLayout;
     PFN_vkDestroyPipelineLayout      DestroyPipelineLayout;
     PFN_vkCreateComputePipelines     CreateComputePipelines;
+    PFN_vkCreatePipelineCache        CreatePipelineCache;
+    PFN_vkDestroyPipelineCache       DestroyPipelineCache;
+    PFN_vkGetPipelineCacheData       GetPipelineCacheData;
     PFN_vkDestroyPipeline            DestroyPipeline;
     PFN_vkCreateDescriptorPool       CreateDescriptorPool;
     PFN_vkDestroyDescriptorPool      DestroyDescriptorPool;
@@ -152,8 +156,16 @@ enum vk_pipe {
     VK_PIPE_SIGMOID_MUL,      /* y = a * sigmoid(gate) (qwen35 attention gate) */
     VK_PIPE_QGATE_SPLIT,      /* [query | gate] per-head split (qwen35) */
     VK_PIPE_ATTENTION_F16_CM, /* tensor-core causal attention, no sliding window, head_dim==256 */
-    VK_PIPE_MM_Q4K_CM128,     /* Q4_K in the 128 x 128 PQ2_0 tensor-core frame */
-    VK_PIPE_MM_Q6K_CM128,     /* Q6_K in the same frame */
+    VK_PIPE_ATTENTION_F16_HD128_CM, /* the same, head_dim 128 */
+    VK_PIPE_ATTENTION_F16_HD512_CM, /* the same, head_dim 512 (two column halves) */
+    VK_PIPE_MM_Q8_0_CM,             /* Q8_0 tensor-core GEMM, 64 x 64 tile */
+    VK_PIPE_MM_Q4_0_CM,             /* Q4_0 tensor-core GEMM, 64 x 64 tile */
+    VK_PIPE_MM_Q4K_CM128,           /* Q4_K in the 128 x 128 PQ2_0 tensor-core frame */
+    VK_PIPE_MM_Q6K_CM128,           /* Q6_K in the same frame */
+    VK_PIPE_MM_Q5K_CM,              /* Q5_K tensor-core GEMM, 64 x 64 tile */
+    VK_PIPE_MM_Q4_1_CM,             /* Q4_1 tensor-core GEMM, 64 x 64 tile */
+    VK_PIPE_MM_TQ2_0_CM,            /* TQ2_0 tensor-core GEMM, 64 x 64 tile */
+    VK_PIPE_MM_TQ2_0_CM128,         /* TQ2_0 tensor-core GEMM, 128 x 128 tile */
     VK_PIPE_COUNT,
 };
 
@@ -163,7 +175,11 @@ static inline bool vk_pipe_needs_coopmat(int pipe) {
     return pipe == VK_PIPE_MM_Q4K_CM || pipe == VK_PIPE_MM_Q6K_CM || pipe == VK_PIPE_MM_Q4K_CM32 ||
            pipe == VK_PIPE_MM_PQ2_0_CM || pipe == VK_PIPE_MM_PQ2_0_CM_F32 ||
            pipe == VK_PIPE_MM_PQ2_0_CM64 || pipe == VK_PIPE_ATTENTION_F16_CM ||
-           pipe == VK_PIPE_MM_Q4K_CM128 || pipe == VK_PIPE_MM_Q6K_CM128;
+           pipe == VK_PIPE_MM_Q8_0_CM || pipe == VK_PIPE_MM_Q4_0_CM || pipe == VK_PIPE_MM_Q5K_CM ||
+           pipe == VK_PIPE_MM_Q4_1_CM || pipe == VK_PIPE_MM_TQ2_0_CM ||
+           pipe == VK_PIPE_MM_TQ2_0_CM128 || pipe == VK_PIPE_ATTENTION_F16_HD128_CM ||
+           pipe == VK_PIPE_ATTENTION_F16_HD512_CM || pipe == VK_PIPE_MM_Q4K_CM128 ||
+           pipe == VK_PIPE_MM_Q6K_CM128;
 }
 
 /* The register-tiled GEMMs: one output row per 32-lane subgroup
@@ -220,6 +236,7 @@ enum {
 struct vk_dset_entry {
     uint64_t        key; /* hash of nbind + buffer handles; 0 = empty */
     VkDescriptorSet set;
+    uint32_t        nbind; /* bindings of the layout `set` was allocated with */
 };
 
 enum {
@@ -270,8 +287,21 @@ struct vk_state {
     VkCommandPool   cmd_pool;
     VkCommandBuffer xfer_cmd;
     VkFence         xfer_fence;
+    /* Persistent host-visible staging buffer for uploads (#469): created on
+     * the first staged upload, VK_UP_STAGE_BYTES, reused for every chunk —
+     * a fresh full-size staging buffer per weight cost page faults on
+     * hundreds of MB per tensor. */
+    VkBuffer       up_buf;
+    VkDeviceMemory up_mem;
+    uint8_t       *up_map;
 
     char device_name[256];
+    /* Compiled pipelines persisted across processes (#469): building all of
+     * them costs ~1.5 s on a 2080 Ti the first time in a process, and the
+     * driver's own shader cache does not cover it. Loaded from and saved to
+     * vk_pcache_path; VK_NULL_HANDLE when disabled or unavailable. */
+    VkPipelineCache pcache;
+    uint8_t         pcache_uuid[VK_UUID_SIZE];
 
     /* From VkPhysicalDeviceSubgroupProperties. The register-tiled GEMM
      * shaders assume 32 lanes (2080-Ti-first). */
@@ -300,7 +330,7 @@ struct vk_state {
      * clears it — see vk_seq_take_failure. */
     bool seq_failed;
 
-    /* Row scratch of the host row-dequant linear (vk_w_cpu_mN). */
+    /* Cached copies of x and y for the host linear (vk_w_cpu_mN), in floats. */
     float *cpu_row;
     size_t cpu_row_cap;
 
@@ -415,62 +445,70 @@ struct vk_state {
 
 /* binding count per pipeline (descriptor set layout selector) */
 static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
-        [VK_PIPE_MATVEC_Q4K]       = 3,
-        [VK_PIPE_MATMUL_Q4K]       = 3,
-        [VK_PIPE_MATVEC_Q6K]       = 3,
-        [VK_PIPE_MATMUL_Q6K]       = 3,
-        [VK_PIPE_MATVEC_F32]       = 3,
-        [VK_PIPE_MATMUL_F32]       = 3,
-        [VK_PIPE_ADD]              = 3,
-        [VK_PIPE_MUL]              = 3,
-        [VK_PIPE_GELU]             = 2,
-        [VK_PIPE_GELU_MUL]         = 3,
-        [VK_PIPE_SCALE]            = 2,
-        [VK_PIPE_RMSNORM]          = 3,
-        [VK_PIPE_RMSNORM_ADD]      = 4,
-        [VK_PIPE_ROPE]             = 3,
-        [VK_PIPE_ATTENTION]        = 4,
-        [VK_PIPE_ARGMAX]           = 2,
-        [VK_PIPE_EMBED]            = 2,
-        [VK_PIPE_FFN_GATE_UP]      = 4,
-        [VK_PIPE_QKV_PREP]         = 6,
-        [VK_PIPE_MM_Q4K_CM]        = 3,
-        [VK_PIPE_MM_Q6K_CM]        = 3,
-        [VK_PIPE_ATTENTION_F16]    = 4,
-        [VK_PIPE_QKV_PREP_F16]     = 6,
-        [VK_PIPE_KV_APPEND_F16]    = 4,
-        [VK_PIPE_ATTN_PART_F16]    = 4,
-        [VK_PIPE_ATTN_COMB]        = 2,
-        [VK_PIPE_MM_Q4K_CM32]      = 3,
-        [VK_PIPE_MM_PQ2_0_CM]      = 3,
-        [VK_PIPE_MM_PQ2_0_CM_F32]  = 3,
-        [VK_PIPE_MM_PQ2_0_CM64]    = 3,
-        [VK_PIPE_PLE_GATE]         = 4,
-        [VK_PIPE_FFN_NORM_GU]      = 5,
-        [VK_PIPE_DN_CONV]          = 3,
-        [VK_PIPE_DN_DELTA]         = 8,
-        [VK_PIPE_MATVEC_Q4_0]      = 3,
-        [VK_PIPE_MATMUL_Q4_0]      = 3,
-        [VK_PIPE_MATVEC_Q4_1]      = 3,
-        [VK_PIPE_MATMUL_Q4_1]      = 3,
-        [VK_PIPE_MATVEC_Q8_0]      = 3,
-        [VK_PIPE_MATMUL_Q8_0]      = 3,
-        [VK_PIPE_MATVEC_Q5K]       = 3,
-        [VK_PIPE_MATMUL_Q5K]       = 3,
-        [VK_PIPE_MATVEC_TQ2_0]     = 3,
-        [VK_PIPE_MATMUL_TQ2_0]     = 3,
-        [VK_PIPE_MATVEC_PQ2_0]     = 3,
-        [VK_PIPE_MATMUL_PQ2_0]     = 3,
-        [VK_PIPE_SILU]             = 2,
-        [VK_PIPE_RELU2]            = 2,
-        [VK_PIPE_HADAMARD]         = 3,
-        [VK_PIPE_ACT_QUANT]        = 2,
-        [VK_PIPE_SILU_MUL]         = 3,
-        [VK_PIPE_SIGMOID_MUL]      = 3,
-        [VK_PIPE_QGATE_SPLIT]      = 3,
-        [VK_PIPE_ATTENTION_F16_CM] = 4,
-        [VK_PIPE_MM_Q4K_CM128]     = 3,
-        [VK_PIPE_MM_Q6K_CM128]     = 3,
+        [VK_PIPE_MATVEC_Q4K]             = 3,
+        [VK_PIPE_MATMUL_Q4K]             = 3,
+        [VK_PIPE_MATVEC_Q6K]             = 3,
+        [VK_PIPE_MATMUL_Q6K]             = 3,
+        [VK_PIPE_MATVEC_F32]             = 3,
+        [VK_PIPE_MATMUL_F32]             = 3,
+        [VK_PIPE_ADD]                    = 3,
+        [VK_PIPE_MUL]                    = 3,
+        [VK_PIPE_GELU]                   = 2,
+        [VK_PIPE_GELU_MUL]               = 3,
+        [VK_PIPE_SCALE]                  = 2,
+        [VK_PIPE_RMSNORM]                = 3,
+        [VK_PIPE_RMSNORM_ADD]            = 4,
+        [VK_PIPE_ROPE]                   = 3,
+        [VK_PIPE_ATTENTION]              = 4,
+        [VK_PIPE_ARGMAX]                 = 2,
+        [VK_PIPE_EMBED]                  = 2,
+        [VK_PIPE_FFN_GATE_UP]            = 4,
+        [VK_PIPE_QKV_PREP]               = 6,
+        [VK_PIPE_MM_Q4K_CM]              = 3,
+        [VK_PIPE_MM_Q6K_CM]              = 3,
+        [VK_PIPE_ATTENTION_F16]          = 4,
+        [VK_PIPE_QKV_PREP_F16]           = 6,
+        [VK_PIPE_KV_APPEND_F16]          = 4,
+        [VK_PIPE_ATTN_PART_F16]          = 4,
+        [VK_PIPE_ATTN_COMB]              = 2,
+        [VK_PIPE_MM_Q4K_CM32]            = 3,
+        [VK_PIPE_MM_PQ2_0_CM]            = 3,
+        [VK_PIPE_MM_PQ2_0_CM_F32]        = 3,
+        [VK_PIPE_MM_PQ2_0_CM64]          = 3,
+        [VK_PIPE_PLE_GATE]               = 4,
+        [VK_PIPE_FFN_NORM_GU]            = 5,
+        [VK_PIPE_DN_CONV]                = 3,
+        [VK_PIPE_DN_DELTA]               = 8,
+        [VK_PIPE_MATVEC_Q4_0]            = 3,
+        [VK_PIPE_MATMUL_Q4_0]            = 3,
+        [VK_PIPE_MATVEC_Q4_1]            = 3,
+        [VK_PIPE_MATMUL_Q4_1]            = 3,
+        [VK_PIPE_MATVEC_Q8_0]            = 3,
+        [VK_PIPE_MATMUL_Q8_0]            = 3,
+        [VK_PIPE_MATVEC_Q5K]             = 3,
+        [VK_PIPE_MATMUL_Q5K]             = 3,
+        [VK_PIPE_MATVEC_TQ2_0]           = 3,
+        [VK_PIPE_MATMUL_TQ2_0]           = 3,
+        [VK_PIPE_MATVEC_PQ2_0]           = 3,
+        [VK_PIPE_MATMUL_PQ2_0]           = 3,
+        [VK_PIPE_SILU]                   = 2,
+        [VK_PIPE_RELU2]                  = 2,
+        [VK_PIPE_HADAMARD]               = 3,
+        [VK_PIPE_ACT_QUANT]              = 2,
+        [VK_PIPE_SILU_MUL]               = 3,
+        [VK_PIPE_SIGMOID_MUL]            = 3,
+        [VK_PIPE_QGATE_SPLIT]            = 3,
+        [VK_PIPE_ATTENTION_F16_CM]       = 4,
+        [VK_PIPE_ATTENTION_F16_HD128_CM] = 4,
+        [VK_PIPE_ATTENTION_F16_HD512_CM] = 4,
+        [VK_PIPE_MM_Q8_0_CM]             = 3,
+        [VK_PIPE_MM_Q4_0_CM]             = 3,
+        [VK_PIPE_MM_Q4K_CM128]           = 3,
+        [VK_PIPE_MM_Q6K_CM128]           = 3,
+        [VK_PIPE_MM_Q5K_CM]              = 3,
+        [VK_PIPE_MM_Q4_1_CM]             = 3,
+        [VK_PIPE_MM_TQ2_0_CM]            = 3,
+        [VK_PIPE_MM_TQ2_0_CM128]         = 3,
 };
 
 struct geist_buffer {
@@ -665,5 +703,11 @@ void vk_linear_cm_route(struct vk_state *st,
                         uint32_t         n_out,
                         uint32_t        *gx,
                         uint32_t        *gy);
+
+[[nodiscard]] enum geist_status vk_gemm_dispatch(struct geist_backend         *be,
+                                                 enum vk_pipe                  pipe,
+                                                 const VkDescriptorBufferInfo *infos,
+                                                 const struct vk_access       *acc,
+                                                 const struct vk_push         *push);
 
 #endif /* GEIST_INTERNAL_VK_INTERNAL_H */

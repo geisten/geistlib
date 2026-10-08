@@ -1,5 +1,6 @@
 #version 450
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#include "vk_limits.h"
 
 /* Q5_K matvec (native 176-byte superblocks, no repack): one row per 32-lane
  * "warp" (derived from the thread id — any hardware subgroup size works),
@@ -39,7 +40,7 @@ void main() {
     uint tid = gl_LocalInvocationID.x;
     uint wrp = tid >> 5u;
     uint lane = tid & 31u;
-    uint row = gl_WorkGroupID.x * 8u + wrp;
+    uint row = gl_WorkGroupID.x * VK_MV_ROWS_PER_WG + wrp;
     uint sub = lane >> 2u;
     uint idx8 = (lane & 3u) * 8u;
     uint shift = (sub & 1u) * 4u;
