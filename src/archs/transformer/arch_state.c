@@ -34,6 +34,7 @@
 
 #include <geist.h>
 #include <geist_backend.h>
+#include <geist_util.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -1762,6 +1763,10 @@ static bool backend_scratch_unmappable(struct geist_backend *be) {
  *     fallbacks are host memcpy / host loops (exec_plan.h);
  *   - the whole-FFN tile kernel, which takes host pointers.
  * Then the backend decides (backend_scratch_unmappable). */
+/* The default chunk of a session whose scratch pool is device-local (see
+ * transformer_session_alloc). */
+constexpr size_t DEVICE_POOL_M_MAX = 512;
+
 static bool scratch_device_wanted(const struct transformer_arch_session *sess) {
     const struct transformer_arch_state *st = sess->model;
     if (st->backend == nullptr || st->backend->desc == nullptr) {
@@ -1946,6 +1951,26 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
                 sess->m_max = sess->m_max / 2 < 64 ? 64 : sess->m_max / 2;
                 transformer_scratch_plan_build(state, sess->m_max, &fit);
                 need = sess->scratch_device ? fit.host_bytes : fit.pool_bytes;
+            }
+        }
+        /* A device-local pool takes the BAR window out of the chunk's limits
+         * (only h_a, h_b and the logits rows stay host-visible), and a bigger
+         * chunk feeds the GEMMs: Gemma 4 E2B pp512 on an RTX 2080 Ti 1641 ->
+         * 1813 t/s at 512, E4B 754 -> 839, Llama 3.2 3B 1229 -> 1298. Grow to
+         * 512 when the device has room for the bigger pool, with half of what
+         * is free left for the KV cache and everything else. Sessions that
+         * keep a host-visible pool (DeltaNet, quantized KV, ...) never get
+         * here: their chunk stays what the BAR allows. */
+        if (!state->m_max_from_env && sess->scratch_device && sess->m_max < DEVICE_POOL_M_MAX &&
+            DEVICE_POOL_M_MAX <= m_cap) {
+            struct geist_backend_memory     mem;
+            struct transformer_scratch_plan now, big;
+            transformer_scratch_plan_build(state, sess->m_max, &now);
+            transformer_scratch_plan_build(state, DEVICE_POOL_M_MAX, &big);
+            const size_t grow = big.pool_bytes - now.pool_bytes;
+            if (geist_backend_memory_info(be, &mem) == GEIST_OK && !mem.unified_memory &&
+                grow <= mem.free_bytes / 2) {
+                sess->m_max = DEVICE_POOL_M_MAX;
             }
         }
     }

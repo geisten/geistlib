@@ -185,11 +185,16 @@ static int run_model(const struct tf_buf *g,
         snprintf(msg, sizeof msg, "budget %s: load (%s)", budget, geist_last_create_error());
         fails += geist_expect(false, msg);
     } else {
-        struct vk_state          *st     = be->state;
-        const size_t              loaded = st->vram_used;
-        struct geist_session_opts o  = {.kv_mode = GEIST_KV_F16, .top_p = 1.0f, .max_seq_len = ctx};
-        struct geist_session     *s  = nullptr;
-        enum geist_status         ss = geist_session_create(m, be, &o, &s);
+        struct vk_state *st     = be->state;
+        const size_t     loaded = st->vram_used;
+        /* A fixed chunk: the default grows with free device memory (a
+         * device-local pool goes to 512 rows when it fits), which would make
+         * the budget measured in the unlimited run larger than what a tight
+         * run allocates. */
+        struct geist_session_opts o = {
+                .kv_mode = GEIST_KV_F16, .top_p = 1.0f, .max_seq_len = ctx, .m_max = 128};
+        struct geist_session *s  = nullptr;
+        enum geist_status     ss = geist_session_create(m, be, &o, &s);
         if (expect == SESSION_FAILS) {
             const char *err = geist_backend_errmsg(be);
             snprintf(msg,
