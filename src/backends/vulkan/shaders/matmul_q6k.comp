@@ -1,13 +1,16 @@
 #version 450
 #extension GL_KHR_shader_subgroup_ballot : enable
 #extension GL_KHR_shader_subgroup_arithmetic : enable
+#include "vk_limits.h"
 
 /* Q6_K GEMM, register-tiled like matmul_q4k: 4 output rows x 16 batch
  * rows per 128-thread workgroup; lane dequantizes its 8 elements once per
  * block, x arrives as vec4 pairs. 210-byte blocks are not 4-aligned, so
  * ql/qh stay byte-assembled. Dispatch: gx = ceil(n_out/4), gy = ceil(rows/16). */
 
-layout(local_size_x = 128) in;
+layout(local_size_x = VK_MM_SMALL_ROWS_PER_WG * 32u) in; /* one row per 32-lane subgroup */
+
+const uint TM = VK_MM_SMALL_TOKENS_PER_WG; /* batch rows per workgroup */
 
 layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
 layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
@@ -42,14 +45,14 @@ int load_i8(uint byte_offset) {
 void main() {
     uint row = gl_WorkGroupID.x * gl_NumSubgroups + gl_SubgroupID;
     uint lane = gl_SubgroupInvocationID;
-    uint t0 = gl_WorkGroupID.y * 16u;
+    uint t0 = gl_WorkGroupID.y * TM;
     if (t0 >= pc.rows) {
         return;
     }
-    uint tm = min(16u, pc.rows - t0);
+    uint tm = min(TM, pc.rows - t0);
 
-    float s[16];
-    for (uint t = 0; t < 16u; t++) {
+    float s[TM];
+    for (uint t = 0; t < TM; t++) {
         s[t] = 0.0;
     }
 
@@ -83,7 +86,7 @@ void main() {
             vec4 wv1 = dsc * q_hi;
 
             uint e_base = pc.x_offset + b * 256u + e0;
-            for (uint t = 0; t < 16u; t++) {
+            for (uint t = 0; t < TM; t++) {
                 if (t >= tm) {
                     break;
                 }
@@ -93,7 +96,7 @@ void main() {
         }
     }
 
-    for (uint t = 0; t < 16u; t++) {
+    for (uint t = 0; t < TM; t++) {
         if (t >= tm) {
             break;
         }

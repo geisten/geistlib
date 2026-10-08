@@ -1,4 +1,5 @@
 #version 450
+#include "vk_limits.h"
 
 /* Fused Gemma attention q/k/v prep: per-head RMSNorm (+weight), half-split
  * RoPE for q/k, and F32 KV-cache append — one dispatch instead of ~7.
@@ -37,7 +38,7 @@ layout(push_constant) uniform Push {
 } pc;
 
 shared float red[256];
-shared float sh[512];
+shared float sh[VK_QKV_PREP_MAX_HEAD_DIM];
 
 void main() {
     uint pos = gl_WorkGroupID.x;
@@ -45,7 +46,8 @@ void main() {
     uint z = gl_WorkGroupID.z;
     uint lid = gl_LocalInvocationID.x;
     uint heads = z == 0u ? pc.n_q_heads : pc.n_kv_heads;
-    if (pos >= pc.seq || head >= heads || (z > 0u && pc.has_kv == 0u) || pc.hd > 512u) {
+    if (pos >= pc.seq || head >= heads || (z > 0u && pc.has_kv == 0u) ||
+        pc.hd > VK_QKV_PREP_MAX_HEAD_DIM) {
         return;
     }
     uint hd = pc.hd;

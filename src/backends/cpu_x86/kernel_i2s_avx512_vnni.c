@@ -18,9 +18,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#if defined(_OPENMP)
-#include <omp.h>
-#endif
+#include "par.h"
 
 /* Permute one token's int8 activations into the VPDPBUSD pairing order:
  * for block b, group g (the 2-bit field at shift 6-2g), the 64-lane vector
@@ -38,26 +36,24 @@ static void build_acts_perm(size_t n_blocks, const int8_t *xq, int8_t *perm) {
     }
 }
 
-void i2s_gemv_m1_avx512_vnni(size_t        n_out,
-                             size_t        n_in,
-                             const int8_t *xq,
-                             int32_t       sum_a,
-                             const uint8_t w_raw[],
-                             float         scale,
-                             float         y[static n_out]) {
-    const size_t n_blocks  = n_in / I2S_BLOCK_ELEMS;
-    const size_t row_bytes = n_in / 4;
+/* The native-layout GEMV's rows for geist_par_for. */
+struct i2s_m1_rows {
+    size_t         n_blocks;
+    size_t         row_bytes;
+    const uint8_t *w_raw;
+    const int8_t  *perm;
+    int32_t        sum_a;
+    float          scale;
+    float         *y;
+};
 
-    int8_t *perm = (int8_t *) __builtin_alloca(n_in);
-    build_acts_perm(n_blocks, xq, perm);
-
-    const __m512i m3 = _mm512_set1_epi8(3);
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t r = 0; r < n_out; r++) {
-        const uint8_t *Wr  = w_raw + r * row_bytes;
+static void i2s_m1_rows(void *ctx, size_t r0, size_t r1) {
+    const struct i2s_m1_rows c        = *(const struct i2s_m1_rows *) ctx;
+    const size_t             n_blocks = c.n_blocks;
+    const int8_t            *perm     = c.perm;
+    const __m512i            m3       = _mm512_set1_epi8(3);
+    for (size_t r = r0; r < r1; r++) {
+        const uint8_t *Wr  = c.w_raw + r * c.row_bytes;
         __m512i        acc = _mm512_setzero_si512();
         for (size_t b = 0; b < n_blocks; b++) {
             const __m512i w  = _mm512_loadu_si512((const void *) (Wr + b * I2S_BLOCK_BYTES));
@@ -73,9 +69,25 @@ void i2s_gemv_m1_avx512_vnni(size_t        n_out,
             acc = _mm512_dpbusd_epi32(acc, c2, _mm512_loadu_si512((const void *) (ab + 128)));
             acc = _mm512_dpbusd_epi32(acc, c3, _mm512_loadu_si512((const void *) (ab + 192)));
         }
-        const int32_t dot = _mm512_reduce_add_epi32(acc) - sum_a;
-        y[r]              = (float) dot * scale;
+        const int32_t dot = _mm512_reduce_add_epi32(acc) - c.sum_a;
+        c.y[r]            = (float) dot * c.scale;
     }
+}
+
+void i2s_gemv_m1_avx512_vnni(size_t        n_out,
+                             size_t        n_in,
+                             const int8_t *xq,
+                             int32_t       sum_a,
+                             const uint8_t w_raw[],
+                             float         scale,
+                             float         y[static n_out]) {
+    const size_t n_blocks = n_in / I2S_BLOCK_ELEMS;
+
+    int8_t *perm = (int8_t *) __builtin_alloca(n_in);
+    build_acts_perm(n_blocks, xq, perm);
+
+    struct i2s_m1_rows c = {n_blocks, n_in / 4, w_raw, perm, sum_a, scale, y};
+    geist_par_for(n_out, i2s_m1_rows, &c);
 }
 
 /* Prefill GEMM. JT tokens share each weight-row load: the 4 unpacked code
@@ -85,41 +97,40 @@ void i2s_gemv_m1_avx512_vnni(size_t        n_out,
  * 9950X (#212); 8 spills the acc[] registers. */
 #define I2S_JT 4
 
-void i2s_gemm_avx512_vnni(size_t         m,
-                          size_t         n_out,
-                          size_t         n_in,
-                          const int8_t  *xq,
-                          const int32_t *sum_a,
-                          const float   *scale,
-                          const uint8_t  w_raw[],
-                          int8_t         perm[],
-                          float          y[]) {
-    const size_t n_blocks  = n_in / I2S_BLOCK_ELEMS;
-    const size_t row_bytes = n_in / 4;
+/* The native-layout GEMM for geist_par_for: perm rows, then output rows. */
+struct i2s_mN {
+    size_t         m;
+    size_t         n_out;
+    size_t         n_in;
+    const int8_t  *xq;
+    const int32_t *sum_a;
+    const float   *scale;
+    const uint8_t *w_raw;
+    int8_t        *perm;
+    float         *y;
+};
 
-    /* `perm` is caller-owned scratch of m*n_in bytes; without it, the M=1
-     * loop below. */
-    if (perm == nullptr) {
-        for (size_t i = 0; i < m; i++) {
-            i2s_gemv_m1_avx512_vnni(
-                    n_out, n_in, xq + i * n_in, sum_a[i], w_raw, scale[i], y + i * n_out);
-        }
-        return;
+static void i2s_mN_perm(void *ctx, size_t i0, size_t i1) {
+    const struct i2s_mN c = *(const struct i2s_mN *) ctx;
+    for (size_t i = i0; i < i1; i++) {
+        build_acts_perm(c.n_in / I2S_BLOCK_ELEMS, c.xq + i * c.n_in, c.perm + i * c.n_in);
     }
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t i = 0; i < m; i++) {
-        build_acts_perm(n_blocks, xq + i * n_in, perm + i * n_in);
-    }
+}
 
-    const __m512i m3 = _mm512_set1_epi8(3);
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t r = 0; r < n_out; r++) {
-        const uint8_t *Wr = w_raw + r * row_bytes;
+static void i2s_mN_rows(void *ctx, size_t r0, size_t r1) {
+    const struct i2s_mN c         = *(const struct i2s_mN *) ctx;
+    const size_t        m         = c.m;
+    const size_t        n_out     = c.n_out;
+    const size_t        n_in      = c.n_in;
+    const size_t        n_blocks  = n_in / I2S_BLOCK_ELEMS;
+    const size_t        row_bytes = n_in / 4;
+    const int8_t       *perm      = c.perm;
+    const int32_t      *sum_a     = c.sum_a;
+    const float        *scale     = c.scale;
+    float              *y         = c.y;
+    const __m512i       m3        = _mm512_set1_epi8(3);
+    for (size_t r = r0; r < r1; r++) {
+        const uint8_t *Wr = c.w_raw + r * row_bytes;
         for (size_t j0 = 0; j0 < m; j0 += I2S_JT) {
             const size_t jt = (m - j0 < I2S_JT) ? (m - j0) : I2S_JT;
             __m512i      acc[I2S_JT];
@@ -148,6 +159,29 @@ void i2s_gemm_avx512_vnni(size_t         m,
             }
         }
     }
+}
+
+void i2s_gemm_avx512_vnni(size_t         m,
+                          size_t         n_out,
+                          size_t         n_in,
+                          const int8_t  *xq,
+                          const int32_t *sum_a,
+                          const float   *scale,
+                          const uint8_t  w_raw[],
+                          int8_t         perm[],
+                          float          y[]) {
+    /* `perm` is caller-owned scratch of m*n_in bytes; without it, the M=1
+     * loop below. */
+    if (perm == nullptr) {
+        for (size_t i = 0; i < m; i++) {
+            i2s_gemv_m1_avx512_vnni(
+                    n_out, n_in, xq + i * n_in, sum_a[i], w_raw, scale[i], y + i * n_out);
+        }
+        return;
+    }
+    struct i2s_mN c = {m, n_out, n_in, xq, sum_a, scale, w_raw, perm, y};
+    geist_par_for(m, i2s_mN_perm, &c);
+    geist_par_for(n_out, i2s_mN_rows, &c);
 }
 
 /* ===================== x4 row-interleaved kernels ========================= */
@@ -188,6 +222,48 @@ static inline void i2s_x4_group_m1(const uint8_t *Wg,
     yo[3] = (float) (_mm512_reduce_add_epi32(a3) - sum_a) * scale;
 }
 
+/* The 4-row groups of one or two M=1 GEMVs for geist_par_for: groups below
+ * g0 are weight 0's, the rest weight 1's. Shared by the x4 and t5 kernels
+ * (`n_in` is the padded column count for t5). */
+struct i2s_groups {
+    size_t         n_in;
+    const int8_t  *xq;
+    int32_t        sum_a;
+    size_t         g0;
+    const uint8_t *w0;
+    float          scale0;
+    float         *y0;
+    const uint8_t *w1;
+    float          scale1;
+    float         *y1;
+};
+
+static void i2s_x4_groups(void *ctx, size_t ga, size_t gb) {
+    const struct i2s_groups c         = *(const struct i2s_groups *) ctx;
+    const size_t            n_in      = c.n_in;
+    const size_t            n_cblocks = n_in / 64;
+    const __m512i           m3        = _mm512_set1_epi8(3);
+    for (size_t g = ga; g < gb; g++) {
+        if (g < c.g0) {
+            i2s_x4_group_m1(c.w0 + g * n_in, c.xq, n_cblocks, m3, c.sum_a, c.scale0, c.y0 + g * 4);
+        } else {
+            const size_t grp = g - c.g0;
+            i2s_x4_group_m1(
+                    c.w1 + grp * n_in, c.xq, n_cblocks, m3, c.sum_a, c.scale1, c.y1 + grp * 4);
+        }
+    }
+}
+
+/* One weight only (no branch per group, as the pair's loop has). */
+static void i2s_x4_groups_single(void *ctx, size_t ga, size_t gb) {
+    const struct i2s_groups c         = *(const struct i2s_groups *) ctx;
+    const size_t            n_cblocks = c.n_in / 64;
+    const __m512i           m3        = _mm512_set1_epi8(3);
+    for (size_t g = ga; g < gb; g++) {
+        i2s_x4_group_m1(c.w0 + g * c.n_in, c.xq, n_cblocks, m3, c.sum_a, c.scale0, c.y0 + g * 4);
+    }
+}
+
 void i2s_x4_gemv_m1_avx512_vnni(size_t        n_out,
                                 size_t        n_in,
                                 const int8_t *xq,
@@ -195,19 +271,12 @@ void i2s_x4_gemv_m1_avx512_vnni(size_t        n_out,
                                 const uint8_t x4[],
                                 float         scale,
                                 float         y[static n_out]) {
-    const size_t  n_groups  = n_out / 4;
-    const size_t  n_cblocks = n_in / 64;
-    const __m512i m3        = _mm512_set1_epi8(3);
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t grp = 0; grp < n_groups; grp++) {
-        i2s_x4_group_m1(x4 + grp * n_in, xq, n_cblocks, m3, sum_a, scale, y + grp * 4);
-    }
+    const size_t      n_groups = n_out / 4;
+    struct i2s_groups c        = {n_in, xq, sum_a, n_groups, x4, scale, y, nullptr, 0.0f, nullptr};
+    geist_par_for(n_groups, i2s_x4_groups_single, &c);
 }
 
-/* Fused pair: two same-n_in weights (gate+up, q+k) under ONE OMP region,
+/* Fused pair: two same-n_in weights (gate+up, q+k) under ONE geist_par_for,
  * sharing the single pre-quantized activation — fewer fork/joins + no
  * redundant activation quant, and the combined output rows amortize better
  * than two separate small GEMVs. Default on; GEIST_I2S_PAIR=0 disables
@@ -223,22 +292,9 @@ void i2s_x4_gemv_pair_m1_avx512_vnni(size_t        n_in,
                                      float         scale1,
                                      size_t        n_out1,
                                      float        *y1) {
-    const size_t  g0        = n_out0 / 4;
-    const size_t  gt        = g0 + n_out1 / 4;
-    const size_t  n_cblocks = n_in / 64;
-    const __m512i m3        = _mm512_set1_epi8(3);
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t g = 0; g < gt; g++) {
-        if (g < g0) {
-            i2s_x4_group_m1(x4_0 + g * n_in, xq, n_cblocks, m3, sum_a, scale0, y0 + g * 4);
-        } else {
-            const size_t grp = g - g0;
-            i2s_x4_group_m1(x4_1 + grp * n_in, xq, n_cblocks, m3, sum_a, scale1, y1 + grp * 4);
-        }
-    }
+    const size_t      g0 = n_out0 / 4;
+    struct i2s_groups c  = {n_in, xq, sum_a, g0, x4_0, scale0, y0, x4_1, scale1, y1};
+    geist_par_for(g0 + n_out1 / 4, i2s_x4_groups, &c);
 }
 
 /* ===================== t5 base-3 kernels (#104) =========================== */
@@ -299,6 +355,42 @@ static inline void i2s_t5_group_m1(const uint8_t *Wg, /* 4 rows x row_bytes, row
     yo[3] = (float) (_mm512_reduce_add_epi32(acc3) - sum_a) * scale;
 }
 
+static void i2s_t5_groups(void *ctx, size_t ga, size_t gb) {
+    const struct i2s_groups c         = *(const struct i2s_groups *) ctx;
+    const size_t            row_bytes = c.n_in / 5;
+    const size_t            n_g320    = c.n_in / 320;
+    for (size_t g = ga; g < gb; g++) {
+        if (g < c.g0) {
+            i2s_t5_group_m1(c.w0 + g * 4 * row_bytes,
+                            row_bytes,
+                            c.xq,
+                            n_g320,
+                            c.sum_a,
+                            c.scale0,
+                            c.y0 + g * 4);
+        } else {
+            const size_t grp = g - c.g0;
+            i2s_t5_group_m1(c.w1 + grp * 4 * row_bytes,
+                            row_bytes,
+                            c.xq,
+                            n_g320,
+                            c.sum_a,
+                            c.scale1,
+                            c.y1 + grp * 4);
+        }
+    }
+}
+
+static void i2s_t5_groups_single(void *ctx, size_t ga, size_t gb) {
+    const struct i2s_groups c         = *(const struct i2s_groups *) ctx;
+    const size_t            row_bytes = c.n_in / 5;
+    const size_t            n_g320    = c.n_in / 320;
+    for (size_t g = ga; g < gb; g++) {
+        i2s_t5_group_m1(
+                c.w0 + g * 4 * row_bytes, row_bytes, c.xq, n_g320, c.sum_a, c.scale0, c.y0 + g * 4);
+    }
+}
+
 void i2s_t5_gemv_m1_avx512_vnni(size_t        n_out,
                                 size_t        n_in_pad,
                                 const int8_t *xq,
@@ -306,14 +398,9 @@ void i2s_t5_gemv_m1_avx512_vnni(size_t        n_out,
                                 const uint8_t t5[],
                                 float         scale,
                                 float         y[static n_out]) {
-    const size_t row_bytes = n_in_pad / 5;
-    const size_t n_g320    = n_in_pad / 320;
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t grp = 0; grp < n_out / 4; grp++) {
-        i2s_t5_group_m1(t5 + grp * 4 * row_bytes, row_bytes, xq, n_g320, sum_a, scale, y + grp * 4);
-    }
+    const size_t      n_groups = n_out / 4;
+    struct i2s_groups c = {n_in_pad, xq, sum_a, n_groups, t5, scale, y, nullptr, 0.0f, nullptr};
+    geist_par_for(n_groups, i2s_t5_groups_single, &c);
 }
 
 void i2s_t5_gemv_pair_m1_avx512_vnni(size_t        n_in_pad,
@@ -327,44 +414,38 @@ void i2s_t5_gemv_pair_m1_avx512_vnni(size_t        n_in_pad,
                                      float         scale1,
                                      size_t        n_out1,
                                      float        *y1) {
-    const size_t row_bytes = n_in_pad / 5;
-    const size_t n_g320    = n_in_pad / 320;
-    const size_t g0        = n_out0 / 4;
-    const size_t gt        = g0 + n_out1 / 4;
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t g = 0; g < gt; g++) {
-        if (g < g0) {
-            i2s_t5_group_m1(
-                    t5_0 + g * 4 * row_bytes, row_bytes, xq, n_g320, sum_a, scale0, y0 + g * 4);
-        } else {
-            const size_t grp = g - g0;
-            i2s_t5_group_m1(
-                    t5_1 + grp * 4 * row_bytes, row_bytes, xq, n_g320, sum_a, scale1, y1 + grp * 4);
-        }
-    }
+    const size_t      g0 = n_out0 / 4;
+    struct i2s_groups c  = {n_in_pad, xq, sum_a, g0, t5_0, scale0, y0, t5_1, scale1, y1};
+    geist_par_for(g0 + n_out1 / 4, i2s_t5_groups, &c);
 }
 
 #define I2S_X4_TT 4 /* 16 live accumulators; 4 measured best of 2/4/8 on the 9950X (#102) */
 
-void i2s_x4_gemm_avx512_vnni(size_t         m,
-                             size_t         n_out,
-                             size_t         n_in,
-                             const int8_t  *xq,
-                             const int32_t *sum_a,
-                             const float   *scale,
-                             const uint8_t  x4[],
-                             float          y[]) {
-    const size_t  n_groups  = n_out / 4;
-    const size_t  n_cblocks = n_in / 64;
-    const __m512i m3        = _mm512_set1_epi8(3);
+/* The x4 GEMM's row groups for geist_par_for. */
+struct i2s_x4_mN {
+    size_t         m;
+    size_t         n_out;
+    size_t         n_in;
+    const int8_t  *xq;
+    const int32_t *sum_a;
+    const float   *scale;
+    const uint8_t *x4;
+    float         *y;
+};
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t grp = 0; grp < n_groups; grp++) {
-        const uint8_t *Wg = x4 + grp * n_in;
+static void i2s_x4_mN_groups(void *ctx, size_t ga, size_t gb) {
+    const struct i2s_x4_mN c         = *(const struct i2s_x4_mN *) ctx;
+    const size_t           m         = c.m;
+    const size_t           n_out     = c.n_out;
+    const size_t           n_in      = c.n_in;
+    const int8_t          *xq        = c.xq;
+    const int32_t         *sum_a     = c.sum_a;
+    const float           *scale     = c.scale;
+    float                 *y         = c.y;
+    const size_t           n_cblocks = n_in / 64;
+    const __m512i          m3        = _mm512_set1_epi8(3);
+    for (size_t grp = ga; grp < gb; grp++) {
+        const uint8_t *Wg = c.x4 + grp * n_in;
         for (size_t j0 = 0; j0 < m; j0 += I2S_X4_TT) {
             const size_t tt = (m - j0 < I2S_X4_TT) ? (m - j0) : I2S_X4_TT;
             /* acc[row][token] */
@@ -400,4 +481,16 @@ void i2s_x4_gemm_avx512_vnni(size_t         m,
             }
         }
     }
+}
+
+void i2s_x4_gemm_avx512_vnni(size_t         m,
+                             size_t         n_out,
+                             size_t         n_in,
+                             const int8_t  *xq,
+                             const int32_t *sum_a,
+                             const float   *scale,
+                             const uint8_t  x4[],
+                             float          y[]) {
+    struct i2s_x4_mN c = {m, n_out, n_in, xq, sum_a, scale, x4, y};
+    geist_par_for(n_out / 4, i2s_x4_mN_groups, &c);
 }
