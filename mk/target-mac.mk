@@ -6,10 +6,10 @@
 #
 # Most users want `make TARGET=mac-omp` instead — `mk/detect-target.sh`
 # auto-picks it when /opt/homebrew/opt/libomp/lib/libomp.dylib exists.
-# Without libomp, the cpu_neon backend's `#pragma omp parallel for`
-# directives are silently ignored, which caps prefill / decode at about
-# a quarter of the multi-threaded speed.
-$(warning building plain mac target without OpenMP — install libomp via Homebrew and rebuild for ~5x multi-thread speedup. Run: brew install libomp.)
+# Without libomp, the cpu_neon kernels run their loops on GCD
+# (geist_par_for, src/base/par.h; #618). That path is not yet measured
+# against mac-omp on Apple Silicon; mac-omp is the benchmarked build.
+$(warning building plain mac target without OpenMP — the kernels run on GCD, not yet benchmarked against TARGET=mac-omp (#618). For the measured build: brew install libomp.)
 
 CC ?= clang
 

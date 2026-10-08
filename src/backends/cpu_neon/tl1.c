@@ -20,6 +20,7 @@
 
 #include "internal.h"
 #include "linear_ref.h"
+#include "par.h"
 #include "quant.h"
 
 #include <geist_weight.h>
@@ -162,78 +163,25 @@ int tl1_pack_from_tq2_0(const void *tq2_0_rows, size_t n_in, size_t n_out, void 
     return 0;
 }
 
-void cpu_neon_w_tl1_m1(const float               *x,
-                       const struct geist_weight *w,
-                       struct geist_backend      *be,
-                       float                     *y) {
-    (void) be;
-    const size_t n_in  = (size_t) w->n_in;
-    const size_t n_out = (size_t) w->n_out;
-    /* TL1 packed bytes live in aux_fp32 (the M>1 prefill kernel still
-     * reads TQ2_0 from raw, so raw must stay intact). */
-    const uint8_t *base = (const uint8_t *) w->aux_fp32;
-
-    static _Thread_local int8_t *xq_cache = nullptr;
-    static _Thread_local size_t  xq_cap   = 0;
-    if (xq_cap < n_in) {
-        safe_free((void **) &xq_cache);
-        xq_cache = heap_alloc_array_aligned(int8_t, n_in);
-        if (xq_cache == nullptr) {
-            xq_cap = 0;
-            geist_linear_ref(1, x, w, y); /* raw still holds TQ2_0 */
-            return;
-        }
-        xq_cap = n_in;
-    }
-    int8_t *xq      = xq_cache;
-    float   max_abs = 1e-5f;
-    for (size_t i = 0; i < n_in; i++) {
-        const float a = x[i] < 0.0f ? -x[i] : x[i];
-        if (a > max_abs)
-            max_abs = a;
-    }
-    const float act_scale     = 127.0f / max_abs;
-    const float inv_act_scale = max_abs / 127.0f;
-    for (size_t i = 0; i < n_in; i++) {
-        const float q  = x[i] * act_scale;
-        int32_t     qi = (int32_t) (q < 0.0f ? q - 0.5f : q + 0.5f);
-        if (qi > 127)
-            qi = 127;
-        if (qi < -128)
-            qi = -128;
-        xq[i] = (int8_t) qi;
-    }
-
-    const size_t n_r_tiles = n_out / TL1_BM;
-    const size_t n_k_tiles = n_in / TL1_BBK;
-
 #if defined(__ARM_NEON)
-    /* Precompute activation LUTs once per matmul (depends only on x).
-     * Layout: lut_scratch[kt][c][p][hi/lo][16]. Total bytes per kt =
-     * 16 c * 4 p * 2 (hi/lo) * 16 = 2 KB; fits L1 with margin. */
-    const size_t                 lut_bytes_per_inner = TL1_KPAIRS_PER_INNER * 2 * 16;   /* 128 */
-    const size_t                 lut_bytes_per_kt = TL1_K_INNERS * lut_bytes_per_inner; /* 2048 */
-    const size_t                 lut_total        = n_k_tiles * lut_bytes_per_kt;
-    static _Thread_local int8_t *lut_scratch_tl   = nullptr;
-    static _Thread_local size_t  lut_cap          = 0;
-    if (lut_cap < lut_total) {
-        safe_free((void **) &lut_scratch_tl);
-        lut_scratch_tl = heap_alloc_array_aligned(int8_t, lut_total);
-        if (lut_scratch_tl == nullptr) {
-            lut_cap = 0;
-            geist_linear_ref(1, x, w, y); /* raw still holds TQ2_0 */
-            return;
-        }
-        lut_cap = lut_total;
-    }
-    /* Snapshot the thread-local pointer to a plain local so the OpenMP
-     * parallel region below shares it across worker threads (workers
-     * have their own _Thread_local storage initialized to NULL). */
-    int8_t *const lut_scratch = lut_scratch_tl;
-#ifdef _OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t kt = 0; kt < n_k_tiles; kt++) {
+/* One cpu_neon_w_tl1_m1 call, for the range bodies below. */
+struct tl1_job {
+    const int8_t  *xq;
+    int8_t        *lut_scratch;
+    const uint8_t *base;
+    size_t         n_k_tiles, lut_bytes_per_inner, lut_bytes_per_kt;
+    float          inv_act_scale;
+    float         *y;
+};
+
+/* The activation LUTs of K-tiles [kt0, kt1). */
+static void tl1_lut_range(void *ctx, size_t kt0, size_t kt1) {
+    const struct tl1_job *job                 = ctx;
+    const int8_t         *xq                  = job->xq;
+    int8_t *const         lut_scratch         = job->lut_scratch;
+    const size_t          lut_bytes_per_inner = job->lut_bytes_per_inner;
+    const size_t          lut_bytes_per_kt    = job->lut_bytes_per_kt;
+    for (size_t kt = kt0; kt < kt1; kt++) {
         int8_t *kt_lut = lut_scratch + kt * lut_bytes_per_kt;
         for (size_t c = 0; c < TL1_K_INNERS; c++) {
             int8_t      *c_lut   = kt_lut + c * lut_bytes_per_inner;
@@ -256,10 +204,19 @@ void cpu_neon_w_tl1_m1(const float               *x,
             }
         }
     }
-#ifdef _OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t rt = 0; rt < n_r_tiles; rt++) {
+}
+
+/* Output row tiles [rt0, rt1). */
+static void tl1_row_tiles(void *ctx, size_t rt0, size_t rt1) {
+    const struct tl1_job *job                 = ctx;
+    const uint8_t        *base                = job->base;
+    const int8_t *const   lut_scratch         = job->lut_scratch;
+    const size_t          n_k_tiles           = job->n_k_tiles;
+    const size_t          lut_bytes_per_inner = job->lut_bytes_per_inner;
+    const size_t          lut_bytes_per_kt    = job->lut_bytes_per_kt;
+    const float           inv_act_scale       = job->inv_act_scale;
+    float                *y                   = job->y;
+    for (size_t rt = rt0; rt < rt1; rt++) {
         float row_sum_fp32[TL1_BM] __attribute__((aligned(16)));
         for (size_t r = 0; r < TL1_BM; r++)
             row_sum_fp32[r] = 0.0f;
@@ -351,6 +308,85 @@ void cpu_neon_w_tl1_m1(const float               *x,
             vst1q_f32(y + rt * TL1_BM + r, v);
         }
     }
+}
+#endif /* __ARM_NEON */
+
+void cpu_neon_w_tl1_m1(const float               *x,
+                       const struct geist_weight *w,
+                       struct geist_backend      *be,
+                       float                     *y) {
+    (void) be;
+    const size_t n_in  = (size_t) w->n_in;
+    const size_t n_out = (size_t) w->n_out;
+    /* TL1 packed bytes live in aux_fp32 (the M>1 prefill kernel still
+     * reads TQ2_0 from raw, so raw must stay intact). */
+    const uint8_t *base = (const uint8_t *) w->aux_fp32;
+
+    static _Thread_local int8_t *xq_cache = nullptr;
+    static _Thread_local size_t  xq_cap   = 0;
+    if (xq_cap < n_in) {
+        safe_free((void **) &xq_cache);
+        xq_cache = heap_alloc_array_aligned(int8_t, n_in);
+        if (xq_cache == nullptr) {
+            xq_cap = 0;
+            geist_linear_ref(1, x, w, y); /* raw still holds TQ2_0 */
+            return;
+        }
+        xq_cap = n_in;
+    }
+    int8_t *xq      = xq_cache;
+    float   max_abs = 1e-5f;
+    for (size_t i = 0; i < n_in; i++) {
+        const float a = x[i] < 0.0f ? -x[i] : x[i];
+        if (a > max_abs)
+            max_abs = a;
+    }
+    const float act_scale     = 127.0f / max_abs;
+    const float inv_act_scale = max_abs / 127.0f;
+    for (size_t i = 0; i < n_in; i++) {
+        const float q  = x[i] * act_scale;
+        int32_t     qi = (int32_t) (q < 0.0f ? q - 0.5f : q + 0.5f);
+        if (qi > 127)
+            qi = 127;
+        if (qi < -128)
+            qi = -128;
+        xq[i] = (int8_t) qi;
+    }
+
+    const size_t n_r_tiles = n_out / TL1_BM;
+    const size_t n_k_tiles = n_in / TL1_BBK;
+
+#if defined(__ARM_NEON)
+    /* Precompute activation LUTs once per matmul (depends only on x).
+     * Layout: lut_scratch[kt][c][p][hi/lo][16]. Total bytes per kt =
+     * 16 c * 4 p * 2 (hi/lo) * 16 = 2 KB; fits L1 with margin. */
+    const size_t                 lut_bytes_per_inner = TL1_KPAIRS_PER_INNER * 2 * 16;   /* 128 */
+    const size_t                 lut_bytes_per_kt = TL1_K_INNERS * lut_bytes_per_inner; /* 2048 */
+    const size_t                 lut_total        = n_k_tiles * lut_bytes_per_kt;
+    static _Thread_local int8_t *lut_scratch_tl   = nullptr;
+    static _Thread_local size_t  lut_cap          = 0;
+    if (lut_cap < lut_total) {
+        safe_free((void **) &lut_scratch_tl);
+        lut_scratch_tl = heap_alloc_array_aligned(int8_t, lut_total);
+        if (lut_scratch_tl == nullptr) {
+            lut_cap = 0;
+            geist_linear_ref(1, x, w, y); /* raw still holds TQ2_0 */
+            return;
+        }
+        lut_cap = lut_total;
+    }
+    /* Snapshot the thread-local pointer for the ranges below, which may
+     * run on other threads (whose _Thread_local copies are their own). */
+    struct tl1_job job = {.xq                  = xq,
+                          .lut_scratch         = lut_scratch_tl,
+                          .base                = base,
+                          .n_k_tiles           = n_k_tiles,
+                          .lut_bytes_per_inner = lut_bytes_per_inner,
+                          .lut_bytes_per_kt    = lut_bytes_per_kt,
+                          .inv_act_scale       = inv_act_scale,
+                          .y                   = y};
+    geist_par_for(n_k_tiles, tl1_lut_range, &job);
+    geist_par_for(n_r_tiles, tl1_row_tiles, &job);
 #else  /* !__ARM_NEON: scalar reference */
     int16_t lut[TL1_KPAIRS_PER_INNER][16];
     for (size_t rt = 0; rt < n_r_tiles; rt++) {

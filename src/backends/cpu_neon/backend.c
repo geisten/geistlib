@@ -16,8 +16,10 @@
 #include "hadamard.h"
 #include "heap.h"
 #include "omp_idle.h"
+#include "par.h"
 #include "quant.h"
 
+#include <limits.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stddef.h>
@@ -164,12 +166,16 @@ static void cpu_neon_buffer_unmap(struct geist_buffer *buf) {
     (void) buf;
 }
 
-/* Parallel-region hooks. The kernels use OpenMP `parallel for`, and the
+/* Parallel-region hooks. The kernels run on geist_par_for (par.h), and the
  * thread count that suits one phase hurts another: the arch layer calls
- * these around each phase, which set omp_set_num_threads for it and restore
- * the previous count afterwards. */
+ * these around each phase, which set geist_par_set_max_threads for it (the
+ * OpenMP team with OpenMP, the pool's count without) and restore the
+ * previous count afterwards. */
 #if defined(_OPENMP)
 #include <omp.h>
+#else
+#include <unistd.h>
+#endif
 
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
@@ -190,7 +196,7 @@ static int apple_perf_cores(void) {
 }
 #endif
 
-/* One-time OpenMP setup at backend create, through the environment only:
+/* One-time thread setup at backend create, through the environment only:
  * libomp reads it at the first OpenMP API call, and a model's blocktime
  * (prefill_tuning.c) comes later, at model load. An explicit setting in
  * the environment wins.
@@ -198,7 +204,8 @@ static int apple_perf_cores(void) {
  *   a passive worker's wake-up dominates (qwen3.5-4B: 163 vs 46 ms/tok).
  * - KMP_BLOCKTIME: bounds that spin once the work stops (omp_idle.h).
  * - OMP_NUM_THREADS: the pool is sized to the P-cores, so the per-phase
- *   caps never land on efficiency cores (qwen3.5-4B: 114 vs 47 ms/tok). */
+ *   caps never land on efficiency cores (qwen3.5-4B: 114 vs 47 ms/tok).
+ *   geist_par_for's own pool (no OpenMP) reads it too. */
 static void cpu_neon_omp_pool_init(void) {
     static _Atomic int done = 0;
     int                exp  = 0;
@@ -214,7 +221,17 @@ static void cpu_neon_omp_pool_init(void) {
     }
 }
 
-/* Target OMP thread count for `region`, cached on first use. 0 = "leave the
+/* The processors this process may use. */
+static int online_cpus(void) {
+#if defined(_OPENMP)
+    return omp_get_num_procs();
+#else
+    const long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 && n <= INT_MAX ? (int) n : 1;
+#endif
+}
+
+/* Target thread count for `region`, cached on first use. 0 = "leave the
  * ambient OMP_NUM_THREADS alone". Env overrides force a count (>0) or disable
  * the adjustment (0): GEIST_PREFILL_THREADS, GEIST_DECODE_THREADS. */
 static int cpu_neon_region_thread_count(enum geist_parallel_region region) {
@@ -230,7 +247,7 @@ static int cpu_neon_region_thread_count(enum geist_parallel_region region) {
                 n           = (v > 0) ? v : 0;
             } else {
                 const int pc = apple_perf_cores();
-                n            = (pc > 0) ? pc : omp_get_num_procs();
+                n            = (pc > 0) ? pc : online_cpus();
             }
         }
         return n;
@@ -265,36 +282,22 @@ static int cpu_neon_parallel_region_begin(struct geist_backend      *be,
     const int target = cpu_neon_region_thread_count(region);
     if (target <= 0)
         return 0;
-    const int prev = omp_get_max_threads();
+    const size_t max  = geist_par_max_threads();
+    const int    prev = max > (size_t) INT_MAX ? INT_MAX : (int) max;
     /* Prefill bumps in either direction; decode only caps DOWN — never adds
      * threads to a memory-bound GEMV. */
     const bool apply = (region == GEIST_REGION_DECODE_STEP) ? (target < prev) : (target != prev);
     if (!apply)
         return 0;
-    omp_set_num_threads(target);
+    geist_par_set_max_threads((size_t) target);
     return prev; /* >0: restore to this in _end */
 }
 
 static void cpu_neon_parallel_region_end(struct geist_backend *be, int token) {
     (void) be;
     if (token > 0)
-        omp_set_num_threads(token);
+        geist_par_set_max_threads((size_t) token);
 }
-#else  /* !_OPENMP — no host threading to manage. */
-static void cpu_neon_omp_pool_init(void) {
-}
-
-static int cpu_neon_parallel_region_begin(struct geist_backend      *be,
-                                          enum geist_parallel_region region) {
-    (void) be;
-    (void) region;
-    return 0;
-}
-static void cpu_neon_parallel_region_end(struct geist_backend *be, int token) {
-    (void) be;
-    (void) token;
-}
-#endif /* _OPENMP */
 
 static const struct geist_backend_vtbl cpu_neon_vtbl = {
         .create                = cpu_neon_create,

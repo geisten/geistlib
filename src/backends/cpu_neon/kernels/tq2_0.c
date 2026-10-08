@@ -244,7 +244,7 @@ static inline void tq2_0_block_dot_q8a_neon_unbiased_mt4(const uint8_t *qs,
 
 /* MT=8 variant: one weight-block unpack against 8 tokens; the eight
  * accumulators fit the 32 NEON registers. Bit-identical to 8 single-token
- * calls. Only the _OPENMP prefill panel uses it, hence [[maybe_unused]]. */
+ * calls. Only the NEON prefill panel uses it, hence [[maybe_unused]]. */
 [[maybe_unused]] static inline void tq2_0_block_dot_q8a_neon_unbiased_mt8(const uint8_t      *qs,
                                                                           const int8_t *const xb[8],
                                                                           int32_t out[8]) {
@@ -301,7 +301,7 @@ static inline int32_t q8a_block_bsum(const int8_t *xb) {
 }
 #endif
 
-/* Per-row body for cpu_neon_w_tq2_0_q8a_m1, run by cpu_neon_parallel_rows. */
+/* One cpu_neon_w_tq2_0_q8a_m1 call, and its per-row body. */
 struct q8a_m1_ctx {
     const uint8_t *W;
     const int8_t  *xq;
@@ -314,10 +314,9 @@ struct q8a_m1_ctx {
     size_t blocks_per_row;
 };
 
-static void q8a_m1_row_body(size_t r, void *vctx) {
-    const struct q8a_m1_ctx *c       = (const struct q8a_m1_ctx *) vctx;
-    const uint8_t           *Wr      = c->W + r * c->row_bytes;
-    float                    row_sum = 0.0f;
+static inline void q8a_m1_row(size_t r, const struct q8a_m1_ctx *c) {
+    const uint8_t *Wr      = c->W + r * c->row_bytes;
+    float          row_sum = 0.0f;
     for (size_t b = 0; b < c->blocks_per_row; b++) {
         const uint8_t *qs     = Wr + b * 66;
         const uint16_t d_bits = (uint16_t) qs[64] | ((uint16_t) qs[65] << 8);
@@ -343,6 +342,15 @@ static void q8a_m1_row_body(size_t r, void *vctx) {
 #endif
     }
     c->y[r] = row_sum * c->inv_act_scale;
+}
+
+/* Output rows [r0, r1) of cpu_neon_w_tq2_0_q8a_m1; the ctx is copied so the loop reads no field
+ * through the pointer (a store to y may alias it under -fno-strict-aliasing). */
+static void q8a_m1_rows(void *vctx, size_t r0, size_t r1) {
+    const struct q8a_m1_ctx c = *(const struct q8a_m1_ctx *) vctx;
+    for (size_t r = r0; r < r1; r++) {
+        q8a_m1_row(r, &c);
+    }
 }
 
 void cpu_neon_w_tq2_0_q8a_m1(const float               *x,
@@ -426,7 +434,7 @@ void cpu_neon_w_tq2_0_q8a_m1(const float               *x,
             .blocks_per_row = blocks_per_row,
     };
 
-    cpu_neon_parallel_rows(n_out, q8a_m1_row_body, &ctx);
+    geist_par_for(n_out, q8a_m1_rows, &ctx);
 }
 
 /* W1.58 × A8 prefill (M>1). Each of the m activation rows is int8
@@ -450,11 +458,10 @@ struct q8a_mN_ctx {
     size_t       row_bytes;
 };
 
-static void q8a_mN_row_body(size_t r, void *vctx) {
-    const struct q8a_mN_ctx *c   = (const struct q8a_mN_ctx *) vctx;
-    const uint8_t           *Wr  = c->W + r * c->row_bytes;
-    const size_t             bpr = c->blocks_per_row;
-    size_t                   i   = 0;
+static inline void q8a_mN_row(size_t r, const struct q8a_mN_ctx *c) {
+    const uint8_t *Wr  = c->W + r * c->row_bytes;
+    const size_t   bpr = c->blocks_per_row;
+    size_t         i   = 0;
 #if defined(__ARM_NEON)
     /* MT=4 token tiles: unpack each weight block once, dot against 4 tokens
      * (amortizes the 2-bit unpack 4x). Bit-identical to the per-token path. */
@@ -516,6 +523,101 @@ static void q8a_mN_row_body(size_t r, void *vctx) {
     }
 }
 
+/* Output rows [r0, r1) of cpu_neon_w_tq2_0_q8a_mN without NEON (with NEON the panels below); the
+ * ctx is copied so the loop reads no field through the pointer (a store to y may alias it under
+ * -fno-strict-aliasing). */
+[[maybe_unused]] static void q8a_mN_rows(void *vctx, size_t r0, size_t r1) {
+    const struct q8a_mN_ctx c = *(const struct q8a_mN_ctx *) vctx;
+    for (size_t r = r0; r < r1; r++) {
+        q8a_mN_row(r, &c);
+    }
+}
+
+#if defined(__ARM_NEON)
+/* Loop-reordered NC-row panels (q4_K cache-blocking applied to ternary):
+ * per panel, loop K-blocks OUTER and output rows INNER so each block's
+ * m-token activation (m*256 B) is loaded once and reused L1-resident
+ * across all NC rows — eliminating the per-row activation re-stream.
+ * Bit-identical: same MT=4 dots, same per-token block-order float
+ * accumulation; only the row/block loop nest is reordered. */
+#define TQ2_NC 32
+
+/* Panels [p0, p1) of cpu_neon_w_tq2_0_q8a_mN. */
+static void q8a_mN_panels(void *vctx, size_t p0, size_t p1) {
+    const struct q8a_mN_ctx *c              = vctx;
+    const uint8_t           *W              = c->W;
+    const int8_t            *xq             = c->xq;
+    const int32_t           *bsum_cache_mN  = c->bsum_cache;
+    const float             *inv_scales     = c->inv_scales;
+    float                   *y              = c->y;
+    const size_t             m              = c->m;
+    const size_t             n_in           = c->n_in;
+    const size_t             n_out          = c->n_out;
+    const size_t             blocks_per_row = c->blocks_per_row;
+    const size_t             row_bytes      = c->row_bytes;
+    for (size_t p = p0; p < p1; p++) {
+        const size_t nc0 = p * (size_t) TQ2_NC;
+        const size_t nc  = (n_out - nc0 < (size_t) TQ2_NC) ? (n_out - nc0) : (size_t) TQ2_NC;
+        float        ytile[GEIST_QUANT_M_CAP * TQ2_NC];
+        for (size_t t = 0; t < m * (size_t) TQ2_NC; t++)
+            ytile[t] = 0.0f;
+        for (size_t b = 0; b < blocks_per_row; b++) {
+            for (size_t rl = 0; rl < nc; rl++) {
+                const uint8_t *qs     = W + (nc0 + rl) * row_bytes + b * 66;
+                const uint16_t d_bits = (uint16_t) qs[64] | ((uint16_t) qs[65] << 8);
+                const float    d      = fp16_to_fp32(d_bits);
+                size_t         i      = 0;
+                for (; i + 8 <= m; i += 8) {
+                    const int8_t *xb[8] = {
+                            xq + (i + 0) * n_in + b * 256,
+                            xq + (i + 1) * n_in + b * 256,
+                            xq + (i + 2) * n_in + b * 256,
+                            xq + (i + 3) * n_in + b * 256,
+                            xq + (i + 4) * n_in + b * 256,
+                            xq + (i + 5) * n_in + b * 256,
+                            xq + (i + 6) * n_in + b * 256,
+                            xq + (i + 7) * n_in + b * 256,
+                    };
+                    int32_t dots[8];
+                    tq2_0_block_dot_q8a_neon_unbiased_mt8(qs, xb, dots);
+                    for (int k = 0; k < 8; k++)
+                        ytile[(i + (size_t) k) * (size_t) TQ2_NC + rl] +=
+                                (float) (dots[k] -
+                                         bsum_cache_mN[(i + (size_t) k) * blocks_per_row + b]) *
+                                d;
+                }
+                for (; i + 4 <= m; i += 4) {
+                    int32_t dots[4];
+                    tq2_0_block_dot_q8a_neon_unbiased_mt4(qs,
+                                                          xq + (i + 0) * n_in + b * 256,
+                                                          xq + (i + 1) * n_in + b * 256,
+                                                          xq + (i + 2) * n_in + b * 256,
+                                                          xq + (i + 3) * n_in + b * 256,
+                                                          dots);
+                    ytile[(i + 0) * (size_t) TQ2_NC + rl] +=
+                            (float) (dots[0] - bsum_cache_mN[(i + 0) * blocks_per_row + b]) * d;
+                    ytile[(i + 1) * (size_t) TQ2_NC + rl] +=
+                            (float) (dots[1] - bsum_cache_mN[(i + 1) * blocks_per_row + b]) * d;
+                    ytile[(i + 2) * (size_t) TQ2_NC + rl] +=
+                            (float) (dots[2] - bsum_cache_mN[(i + 2) * blocks_per_row + b]) * d;
+                    ytile[(i + 3) * (size_t) TQ2_NC + rl] +=
+                            (float) (dots[3] - bsum_cache_mN[(i + 3) * blocks_per_row + b]) * d;
+                }
+                for (; i < m; i++) {
+                    const int32_t dot =
+                            tq2_0_block_dot_q8a_neon_unbiased(qs, xq + i * n_in + b * 256) -
+                            bsum_cache_mN[i * blocks_per_row + b];
+                    ytile[i * (size_t) TQ2_NC + rl] += (float) dot * d;
+                }
+            }
+        }
+        for (size_t i = 0; i < m; i++)
+            for (size_t rl = 0; rl < nc; rl++)
+                y[i * n_out + (nc0 + rl)] = ytile[i * (size_t) TQ2_NC + rl] * inv_scales[i];
+    }
+}
+#endif
+
 void cpu_neon_w_tq2_0_q8a_mN(size_t                     m,
                              const float               *x,
                              const struct geist_weight *w,
@@ -529,7 +631,7 @@ void cpu_neon_w_tq2_0_q8a_mN(size_t                     m,
     const uint8_t             *W              = (const uint8_t *) w->raw;
     if (m == 0)
         return;
-    /* The OMP panel below indexes a fixed-size ytile[GEIST_QUANT_M_CAP *
+    /* The NEON panels index a fixed-size ytile[GEIST_QUANT_M_CAP *
      * TQ2_NC]; beyond that m, or with no workspace, the reference. */
     if (ws == nullptr || m > GEIST_QUANT_M_CAP) {
         geist_linear_ref(m, x, w, y);
@@ -564,7 +666,7 @@ void cpu_neon_w_tq2_0_q8a_mN(size_t                     m,
 
     /* Per-(activation-row, K-block) bsum for the deferred -1 bias.
      * Layout: bsum[i * blocks_per_row + b]. Built once before fanning
-     * out output rows to OMP workers. */
+     * out output rows to the threads. */
 #if defined(__ARM_NEON)
     const size_t bsum_need_mN = m * blocks_per_row;
     if (ws->mN_bsum_cap < bsum_need_mN) {
@@ -622,111 +724,34 @@ void cpu_neon_w_tq2_0_q8a_mN(size_t                     m,
             .row_bytes      = row_bytes,
     };
 
-    const bool pp_enabled = geist_pp_enabled();
-#if defined(__ARM_NEON) && defined(_OPENMP)
-    if (!pp_enabled) {
-/* Loop-reordered NC-row panels (q4_K cache-blocking applied to ternary):
- * per panel, loop K-blocks OUTER and output rows INNER so each block's
- * m-token activation (m*256 B) is loaded once and reused L1-resident
- * across all NC rows — eliminating the per-row activation re-stream.
- * Bit-identical: same MT=4 dots, same per-token block-order float
- * accumulation; only the row/block loop nest is reordered. */
-#define TQ2_NC 32
-        const size_t n_panels = (n_out + (size_t) TQ2_NC - 1) / (size_t) TQ2_NC;
-#pragma omp parallel for schedule(dynamic, 1)
-        for (size_t p = 0; p < n_panels; p++) {
-            const size_t nc0 = p * (size_t) TQ2_NC;
-            const size_t nc  = (n_out - nc0 < (size_t) TQ2_NC) ? (n_out - nc0) : (size_t) TQ2_NC;
-            float        ytile[GEIST_QUANT_M_CAP * TQ2_NC];
-            for (size_t t = 0; t < m * (size_t) TQ2_NC; t++)
-                ytile[t] = 0.0f;
-            for (size_t b = 0; b < blocks_per_row; b++) {
-                for (size_t rl = 0; rl < nc; rl++) {
-                    const uint8_t *qs     = W + (nc0 + rl) * row_bytes + b * 66;
-                    const uint16_t d_bits = (uint16_t) qs[64] | ((uint16_t) qs[65] << 8);
-                    const float    d      = fp16_to_fp32(d_bits);
-                    size_t         i      = 0;
-                    for (; i + 8 <= m; i += 8) {
-                        const int8_t *xb[8] = {
-                                xq + (i + 0) * n_in + b * 256,
-                                xq + (i + 1) * n_in + b * 256,
-                                xq + (i + 2) * n_in + b * 256,
-                                xq + (i + 3) * n_in + b * 256,
-                                xq + (i + 4) * n_in + b * 256,
-                                xq + (i + 5) * n_in + b * 256,
-                                xq + (i + 6) * n_in + b * 256,
-                                xq + (i + 7) * n_in + b * 256,
-                        };
-                        int32_t dots[8];
-                        tq2_0_block_dot_q8a_neon_unbiased_mt8(qs, xb, dots);
-                        for (int k = 0; k < 8; k++)
-                            ytile[(i + (size_t) k) * (size_t) TQ2_NC + rl] +=
-                                    (float) (dots[k] -
-                                             bsum_cache_mN[(i + (size_t) k) * blocks_per_row + b]) *
-                                    d;
-                    }
-                    for (; i + 4 <= m; i += 4) {
-                        int32_t dots[4];
-                        tq2_0_block_dot_q8a_neon_unbiased_mt4(qs,
-                                                              xq + (i + 0) * n_in + b * 256,
-                                                              xq + (i + 1) * n_in + b * 256,
-                                                              xq + (i + 2) * n_in + b * 256,
-                                                              xq + (i + 3) * n_in + b * 256,
-                                                              dots);
-                        ytile[(i + 0) * (size_t) TQ2_NC + rl] +=
-                                (float) (dots[0] - bsum_cache_mN[(i + 0) * blocks_per_row + b]) * d;
-                        ytile[(i + 1) * (size_t) TQ2_NC + rl] +=
-                                (float) (dots[1] - bsum_cache_mN[(i + 1) * blocks_per_row + b]) * d;
-                        ytile[(i + 2) * (size_t) TQ2_NC + rl] +=
-                                (float) (dots[2] - bsum_cache_mN[(i + 2) * blocks_per_row + b]) * d;
-                        ytile[(i + 3) * (size_t) TQ2_NC + rl] +=
-                                (float) (dots[3] - bsum_cache_mN[(i + 3) * blocks_per_row + b]) * d;
-                    }
-                    for (; i < m; i++) {
-                        const int32_t dot =
-                                tq2_0_block_dot_q8a_neon_unbiased(qs, xq + i * n_in + b * 256) -
-                                bsum_cache_mN[i * blocks_per_row + b];
-                        ytile[i * (size_t) TQ2_NC + rl] += (float) dot * d;
-                    }
-                }
-            }
-            for (size_t i = 0; i < m; i++)
-                for (size_t rl = 0; rl < nc; rl++)
-                    y[i * n_out + (nc0 + rl)] = ytile[i * (size_t) TQ2_NC + rl] * inv_scales[i];
-        }
-#undef TQ2_NC
-        return;
-    }
+#if defined(__ARM_NEON)
+    cpu_neon_par_for_dynamic(
+            (n_out + (size_t) TQ2_NC - 1) / (size_t) TQ2_NC, 1, q8a_mN_panels, (void *) &ctx);
+#else
+    geist_par_for(n_out, q8a_mN_rows, (void *) &ctx);
 #endif
-    if (pp_enabled) {
-        geist_pp_parallel_for_grain(n_out, 4, q8a_mN_row_body, (void *) &ctx);
-        return;
-    }
-#ifdef _OPENMP
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t r = 0; r < n_out; r++) {
-        q8a_mN_row_body(r, (void *) &ctx);
-    }
 }
-
-/* fp32 fallback for hosts without dotprod. Always compiled so the
- * resolver can select it on a non-dotprod CPU (cross-build / emulator). */
-void cpu_neon_w_tq2_0_m1(const float               *x,
-                         const struct geist_weight *w,
-                         struct geist_backend      *be,
-                         float                     *y) {
-    (void) be;
-    const size_t   n_in           = (size_t) w->n_in;
-    const size_t   n_out          = (size_t) w->n_out;
-    const size_t   blocks_per_row = n_in / 256;
-    const size_t   row_bytes      = blocks_per_row * 66;
-    const uint8_t *W              = (const uint8_t *) w->raw;
-
-#ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#if defined(__ARM_NEON)
+#undef TQ2_NC
 #endif
-    for (size_t r = 0; r < n_out; r++) {
+
+/* One cpu_neon_w_tq2_0_m1 call. */
+struct tq2_0_m1_job {
+    const uint8_t *W;
+    const float   *x;
+    float         *y;
+    size_t         blocks_per_row, row_bytes;
+};
+
+/* Output rows [r0, r1) of cpu_neon_w_tq2_0_m1. */
+static void tq2_0_m1_rows(void *ctx, size_t r0, size_t r1) {
+    const struct tq2_0_m1_job *job            = ctx;
+    const uint8_t             *W              = job->W;
+    const float               *x              = job->x;
+    float                     *y              = job->y;
+    const size_t               blocks_per_row = job->blocks_per_row;
+    const size_t               row_bytes      = job->row_bytes;
+    for (size_t r = r0; r < r1; r++) {
         const uint8_t *Wr      = W + r * row_bytes;
         float          row_sum = 0.0f;
         for (size_t b = 0; b < blocks_per_row; b++) {
@@ -754,6 +779,23 @@ void cpu_neon_w_tq2_0_m1(const float               *x,
         }
         y[r] = row_sum;
     }
+}
+
+/* fp32 fallback for hosts without dotprod. Always compiled so the
+ * resolver can select it on a non-dotprod CPU (cross-build / emulator). */
+void cpu_neon_w_tq2_0_m1(const float               *x,
+                         const struct geist_weight *w,
+                         struct geist_backend      *be,
+                         float                     *y) {
+    (void) be;
+    const size_t        n_in           = (size_t) w->n_in;
+    const size_t        n_out          = (size_t) w->n_out;
+    const size_t        blocks_per_row = n_in / 256;
+    const size_t        row_bytes      = blocks_per_row * 66;
+    const uint8_t      *W              = (const uint8_t *) w->raw;
+    struct tq2_0_m1_job job            = {
+            .W = W, .x = x, .y = y, .blocks_per_row = blocks_per_row, .row_bytes = row_bytes};
+    geist_par_for(n_out, tq2_0_m1_rows, &job);
 }
 
 /* ======================= I2_S (BitNet b1.58 official) ======================
@@ -824,10 +866,9 @@ struct i2s_m1_ctx {
     size_t blocks_per_row;
 };
 
-static void i2s_m1_row_body(size_t r, void *vctx) {
-    const struct i2s_m1_ctx *c   = (const struct i2s_m1_ctx *) vctx;
-    const uint8_t           *Wr  = c->W + r * c->row_bytes;
-    int64_t                  acc = 0;
+static inline void i2s_m1_row(size_t r, const struct i2s_m1_ctx *c) {
+    const uint8_t *Wr  = c->W + r * c->row_bytes;
+    int64_t        acc = 0;
     for (size_t b = 0; b < c->blocks_per_row; b++) {
         const uint8_t *qs = Wr + b * 64;
 #if defined(__ARM_NEON)
@@ -847,6 +888,15 @@ static void i2s_m1_row_body(size_t r, void *vctx) {
 #endif
     }
     c->y[r] = (float) acc * c->scale;
+}
+
+/* Output rows [r0, r1) of cpu_neon_w_i2_s_q8a_m1; the ctx is copied so the loop reads no field
+ * through the pointer (a store to y may alias it under -fno-strict-aliasing). */
+static void i2s_m1_rows(void *vctx, size_t r0, size_t r1) {
+    const struct i2s_m1_ctx c = *(const struct i2s_m1_ctx *) vctx;
+    for (size_t r = r0; r < r1; r++) {
+        i2s_m1_row(r, &c);
+    }
 }
 
 void cpu_neon_w_i2_s_q8a_m1(const float               *x,
@@ -923,7 +973,7 @@ void cpu_neon_w_i2_s_q8a_m1(const float               *x,
             .blocks_per_row = blocks_per_row,
     };
 
-    cpu_neon_parallel_rows(n_out, i2s_m1_row_body, &ctx);
+    geist_par_for(n_out, i2s_m1_rows, &ctx);
 }
 
 /* MT=4 i2_s block dot — like the tq2_0 mt4 but with the reversed shift↔offset
@@ -1014,12 +1064,11 @@ struct i2s_mN_ctx {
     size_t         m, n_in, n_out, blocks_per_row, row_bytes;
 };
 
-static void i2s_mN_row_body(size_t r, void *vctx) {
-    const struct i2s_mN_ctx *c   = (const struct i2s_mN_ctx *) vctx;
-    const uint8_t           *Wr  = c->W + r * c->row_bytes;
-    const size_t             bpr = c->blocks_per_row;
-    const float              sc  = c->scale;
-    size_t                   i   = 0;
+static inline void i2s_mN_row(size_t r, const struct i2s_mN_ctx *c) {
+    const uint8_t *Wr  = c->W + r * c->row_bytes;
+    const size_t   bpr = c->blocks_per_row;
+    const float    sc  = c->scale;
+    size_t         i   = 0;
 #if defined(__ARM_NEON)
     /* 8 tokens per tile: 16 accumulators spill NEON registers on the A76
      * and measured slower. */
@@ -1090,6 +1139,15 @@ static void i2s_mN_row_body(size_t r, void *vctx) {
 #endif
         }
         c->y[i * c->n_out + r] = (float) acc * sc * c->inv_scales[i];
+    }
+}
+
+/* Output rows [r0, r1) of cpu_neon_w_i2_s_q8a_mN; the ctx is copied so the loop reads no field
+ * through the pointer (a store to y may alias it under -fno-strict-aliasing). */
+static void i2s_mN_rows(void *vctx, size_t r0, size_t r1) {
+    const struct i2s_mN_ctx c = *(const struct i2s_mN_ctx *) vctx;
+    for (size_t r = r0; r < r1; r++) {
+        i2s_mN_row(r, &c);
     }
 }
 
@@ -1195,5 +1253,5 @@ void cpu_neon_w_i2_s_q8a_mN(size_t                     m,
             .row_bytes      = row_bytes,
     };
 
-    cpu_neon_parallel_rows(n_out, i2s_mN_row_body, (void *) &ctx);
+    geist_par_for(n_out, i2s_mN_rows, (void *) &ctx);
 }

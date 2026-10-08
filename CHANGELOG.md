@@ -364,6 +364,28 @@ minor release.
   E2B within noise of before; without, Qwen3.5 4B runs at 100 % of the
   OpenMP build in prefill (was 83 %) and 101 % in decode, Gemma 4 E2B at
   100 % / 102 %.
+- **cpu_neon and Vulkan on the same parallel-for (#618, cpu_neon batch).**
+  Every OpenMP loop of cpu_neon goes through `geist_par_for`: the Q4_K, Q6_K,
+  Q5_K, Q3_K, Q8_0, Q4_0 / Q4_1 (row-major and x8), IQ2_S / IQ3_S / IQ4_XS /
+  IQ4_NL, TQ2_0 / I2_S, PQ2_0 and TL1 kernels, the dequant + SGEMM/SGEMV
+  trampolines and the F16 GEMV (`weight_resolve.c`), the fused FFN's
+  activation quantization, the FP32 and INT8 / INT4 KV attention, and
+  Vulkan's host linear and weight repacks. Loops that used
+  `schedule(dynamic, n)` (the short decode GEMVs, the prefill tiles, the
+  dequant tiles, attention) still hand out n items at a time, from a shared
+  counter (`cpu_neon/parallel.h`). The dequant trampolines' fp32 tiles,
+  thread-local in each OpenMP worker before, are one slot per thread in the
+  calling thread's workspace: a call without them takes the reference
+  whole instead of mixing reference and kernel rows when some worker's tile
+  cannot grow. `GEIST_ATTENTION_OMP_SCHEDULE` keeps
+  working (`guided` is now taken as `dynamic`). The kernels' "already inside
+  an OpenMP team" work-sharing branches are gone (no caller is), and so is
+  the opt-in `GEIST_PP=1` spin pool (`cpu_neon/parallel.c`): a build without
+  OpenMP gets the same kind of spinning pool from `geist_par_for`. cpu_neon's
+  per-phase thread count (`GEIST_DECODE_THREADS`, Pi 5's 3 decode threads)
+  now applies without OpenMP too. Output is bit-identical with and without
+  OpenMP (logits of a prefill and 8 greedy decode steps under qemu,
+  Cortex-A76, 4 threads). Only the cpu_x86 AMX PQ2_0 GEMM is left on OpenMP.
 - **The Vulkan out-of-device-memory error names what the whole device holds**. It used to report only this backend's own usage ("4315 of 11264 MiB
   are in use"), which reads as impossible when another model or process holds
   the rest; with `VK_EXT_memory_budget` it adds "the device reports 10950 of
