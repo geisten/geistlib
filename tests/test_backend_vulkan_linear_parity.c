@@ -458,6 +458,15 @@ int main(void) {
         run_parity(VIA_LINEAR_T, vk, ref, kq[i], kqn[i], 768, 384, 1024, PARITY_MAG, 2e-3);
         run_parity(VIA_LINEAR_T, vk, ref, kq[i], kqn[i], 512, 256, 1296, PARITY_MAG, 2e-3);
     }
+    /* F32 weights in the 128 x 128 frame (#658), rounded to f16: n_in % 32
+     * == 0 and n_out % 128 == 0; a partial token tile, the m % 16 split, and
+     * n_in = 200, which keeps the register-tiled matmul_f32 */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_F32, "F32-cm128", 96, 256, 16, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_F32, "F32-cm128", 1536, 128, 144, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_F32, "F32-cm128", 256, 384, 37, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_F32, "F32-cm128", 200, 256, 64, PARITY_MAG, 2e-3);
+    run_parity(
+            VIA_LINEAR_T, vk, ref, GEIST_DTYPE_F32, "F32-cm128", 320, 256, 512, PARITY_MAG, 2e-3);
     geist_backend_destroy(vk);
 
     /* the exact f32-accumulate tensor-core GEMM (GEIST_VK_PQ2_F32_ACC) */

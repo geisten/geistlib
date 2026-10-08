@@ -10,6 +10,15 @@ minor release.
 
 ### Changed
 
+- **Vulkan: F32-weight prefill GEMMs run on the tensor cores (#658).** Gemma
+  4's per-layer-embedding projections (`inp_gate`, `proj` and the widened
+  `per_layer_model_proj`) are F32, and the register-tiled `matmul_f32` ran
+  them at under 1 TFLOPS: 36 ms of a 512-token Gemma 4 E2B prefill against
+  ~7 ms in llama.cpp. They now take the 128 x 128 Q4_K/Q6_K tile with an F32
+  A stage (weights and activations rounded to f16, f32 accumulation) when
+  n_out % 128 == 0 and n_in % 32 == 0; 6 ms. RTX 2080 Ti, pp512: Gemma 4 E2B
+  3557 → 4183 t/s, E4B 1806 → 2122; Llama 3.2 3B (no F32 weights) and decode
+  unchanged. CPU-vs-Vulkan logits as before.
 - **Vulkan: Gemma 4's F32 PLE projection no longer sits in the weight arena
   (#658).** `per_layer_model_proj`, widened from F16 to F32 at load, was the
   one large matrix kept in the arena, so on Gemma 4 E4B the arena grew to
