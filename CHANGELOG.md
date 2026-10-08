@@ -130,6 +130,11 @@ minor release.
   overhead, not the dot products. Test: `test_q5_0_unit`.
 
 ### Changed
+- **Vulkan: tensor-core prefill attention for head_dim 128 and 512 and for
+  sliding windows (#475).** The coopmat attention ran only at head_dim 256
+  without a window. RTX 2080 Ti, pp512, attention GPU time: Qwen3 0.6B 42.8 →
+  15.7 ms (prefill 1454 → 1635 t/s); Gemma 4 E2B unchanged in total (global
+  hd-512 layers 19.3 → 16.0 ms, windowed hd-256 layers ~even).
 - **Vulkan: compiled pipelines persist across processes (#469).** Backend
   creation built ~70 compute pipelines, ~2 s on an RTX 2080 Ti the first time
   any new executable ran (the NVIDIA driver keys its shader cache by
