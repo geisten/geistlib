@@ -308,7 +308,7 @@ struct vk_state {
      * clears it — see vk_seq_take_failure. */
     bool seq_failed;
 
-    /* Row scratch of the host row-dequant linear (vk_w_cpu_mN). */
+    /* Cached copies of x and y for the host linear (vk_w_cpu_mN), in floats. */
     float *cpu_row;
     size_t cpu_row_cap;
 

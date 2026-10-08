@@ -24,6 +24,7 @@ bool geist_linear_ref_decodes(uint16_t dtype) {
     case GEIST_DTYPE_BF16:
     case GEIST_DTYPE_Q4_0:
     case GEIST_DTYPE_Q4_1:
+    case GEIST_DTYPE_Q5_0:
     case GEIST_DTYPE_Q8_0:
     case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_Q4_K:
@@ -73,6 +74,9 @@ decode_tile(const struct geist_weight *w, size_t j, size_t k0, size_t n, float o
         return;
     case GEIST_DTYPE_Q4_1:
         dequant_q4_1_row(n, raw + e0 / Q4_1_BLOCK_ELEMS * Q4_1_BLOCK_BYTES, out);
+        return;
+    case GEIST_DTYPE_Q5_0:
+        dequant_q5_0_row(n, raw + e0 / Q5_0_BLOCK_ELEMS * Q5_0_BLOCK_BYTES, out);
         return;
     case GEIST_DTYPE_Q8_0:
         dequant_q8_0_row(n, raw + e0 / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES, out);
