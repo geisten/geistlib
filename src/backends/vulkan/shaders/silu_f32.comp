@@ -1,10 +1,10 @@
 #version 450
 #extension GL_GOOGLE_include_directive : enable
 
-/* y = silu(x) = x * sigmoid(x), overflow-safe form (same as the host silu). */
+/* y = silu(x) */
+#include "silu.glsl"
 float ew_op(float v) {
-    float e = exp(-abs(v));
-    return v >= 0.0 ? v / (1.0 + e) : (v * e) / (1.0 + e);
+    return silu(v);
 }
 
 #include "ew2.glsl"

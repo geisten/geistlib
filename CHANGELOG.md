@@ -54,6 +54,11 @@ minor release.
   `test_backend_memory_info_unit` (vulkan-gpu CI leg).
 
 ### Changed
+- **Vulkan shaders: one `silu()` (#465).** `silu.glsl` replaces the four
+  copies in `silu_f32`, `silu_mul_f32` and the two DeltaNet kernels; the
+  DeltaNet epilogue's norm reduces one value instead of feeding `reduce2` a
+  dummy zero. No behaviour change (DeltaNet parity and qwen3.5 0.8B
+  CPU-vs-Vulkan logits unchanged).
 - **The Vulkan out-of-device-memory error names what the whole device holds**. It used to report only this backend's own usage ("4315 of 11264 MiB
   are in use"), which reads as impossible when another model or process holds
   the rest; with `VK_EXT_memory_budget` it adds "the device reports 10950 of
