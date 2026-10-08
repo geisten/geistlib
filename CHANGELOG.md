@@ -20,6 +20,23 @@ minor release.
   buffer fits the BAR. RTX 2080 Ti, pp512 / tg16: E4B 1561 → 1893 t/s prefill,
   99.2 → 101.7 t/s decode; E2B and Llama 3.2 3B unchanged. CPU backends and
   Metal load it as before; logits are unchanged.
+- **Vulkan: the Gated-DeltaNet mixer splits each head's state across
+  workgroups (#467).** The delta rule is independent per value column, so
+  the new `deltanet_scan_f32` gives each column to 8 lanes (16 state rows
+  each, in registers) and a head to 8 workgroups, where `deltanet_delta_f32`
+  ran one workgroup per head with a 128-step serial chain per token. q/k
+  l2norm and the gated RMSNorm move to a small `deltanet_norm_f32` pass, and
+  the causal conv loads its tokens in batches of 8 instead of one load
+  behind each in-place store. DeltaNet GPU time at pp512 on the RTX 2080 Ti:
+  Qwen3.5 0.8B 30–41 → 9 ms, 4B 43 → 17 ms, Ternary-Bonsai 27B 100 → 53 ms
+  (RADV iGPU, 0.8B: 270 → 123 ms). Prefill: 0.8B 4150–5130 → 6640 t/s, 4B
+  1257–1271 → 1308–1344 t/s, 27B 465 → 478 t/s; decode 0.8B 277 → 314 t/s,
+  4B 112 → 117 t/s. Runs where the device has clustered subgroup ops with
+  subgroups of at least 8 lanes and d_k ≤ 128 is a multiple of 4; other
+  devices and geometries keep `deltanet_delta_f32`. CPU-vs-Vulkan logits are
+  unchanged (corr 0.99982 on the 0.8B, 0.99972 on the 4B).
+  `geist_deltanet_mix_args` now documents that `qkv` is scratch the backend
+  may overwrite, which the conv already did.
 
 ### Fixed
 

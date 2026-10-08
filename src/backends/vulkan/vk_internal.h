@@ -136,6 +136,8 @@ enum vk_pipe {
     VK_PIPE_FFN_NORM_GU,     /* ffn_gate_up with the pre-FFN rmsnorm folded in */
     VK_PIPE_DN_CONV,         /* gated-DeltaNet causal conv + silu (deltanet_mix stage 1) */
     VK_PIPE_DN_DELTA,        /* gated-DeltaNet recurrence + gated rmsnorm (stage 2) */
+    VK_PIPE_DN_NORM,         /* DeltaNet q/k l2norm and gated output rmsnorm (fast path) */
+    VK_PIPE_DN_SCAN,         /* column-split DeltaNet recurrence; needs clustered subgroups */
     VK_PIPE_MATVEC_Q4_0,
     VK_PIPE_MATMUL_Q4_0,
     VK_PIPE_MATVEC_Q4_1,
@@ -321,6 +323,10 @@ struct vk_state {
      * creation, or the native size is 32. When false the mN dispatch
      * loops the (size-agnostic) matvec kernels instead (#471). */
     bool gemm_sg32;
+    /* deltanet_scan_f32 can run: clustered subgroup ops in compute, and no
+     * subgroup narrower than its VK_DN_SCAN_LANES cluster. Otherwise the
+     * DeltaNet mixer stays on deltanet_delta_f32 (#467). */
+    bool dn_scan;
 
     /* Device feature probes. */
     bool has_fp16;     /* shaderFloat16 + 16-bit storage */
@@ -487,6 +493,8 @@ static const uint32_t vk_pipe_nbind[VK_PIPE_COUNT] = {
         [VK_PIPE_FFN_NORM_GU]            = 5,
         [VK_PIPE_DN_CONV]                = 3,
         [VK_PIPE_DN_DELTA]               = 8,
+        [VK_PIPE_DN_NORM]                = 3,
+        [VK_PIPE_DN_SCAN]                = 7,
         [VK_PIPE_MATVEC_Q4_0]            = 3,
         [VK_PIPE_MATMUL_Q4_0]            = 3,
         [VK_PIPE_MATVEC_Q4_1]            = 3,

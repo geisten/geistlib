@@ -24,6 +24,8 @@
 #include "shaders/attn_part_f16_spv.h"
 #include "shaders/deltanet_conv_f32_spv.h"
 #include "shaders/deltanet_delta_f32_spv.h"
+#include "shaders/deltanet_norm_f32_spv.h"
+#include "shaders/deltanet_scan_f32_spv.h"
 #include "shaders/embed_lookup_scaled_spv.h"
 #include "shaders/ffn_gate_up_gelu_q4k_spv.h"
 #include "shaders/ffn_norm_gate_up_q4k_spv.h"
@@ -338,6 +340,8 @@ vk_pcache_save(struct geist_backend *be, struct vk_state *st, const char *path, 
             [VK_PIPE_FFN_NORM_GU]   = {ffn_norm_gate_up_q4k_spv, sizeof(ffn_norm_gate_up_q4k_spv)},
             [VK_PIPE_DN_CONV]       = {deltanet_conv_f32_spv, sizeof(deltanet_conv_f32_spv)},
             [VK_PIPE_DN_DELTA]      = {deltanet_delta_f32_spv, sizeof(deltanet_delta_f32_spv)},
+            [VK_PIPE_DN_NORM]       = {deltanet_norm_f32_spv, sizeof(deltanet_norm_f32_spv)},
+            [VK_PIPE_DN_SCAN]       = {deltanet_scan_f32_spv, sizeof(deltanet_scan_f32_spv)},
             [VK_PIPE_MATVEC_Q4_0]   = {matvec_q4_0_spv, sizeof(matvec_q4_0_spv)},
             [VK_PIPE_MATMUL_Q4_0]   = {matmul_q4_0_spv, sizeof(matmul_q4_0_spv)},
             [VK_PIPE_MATVEC_Q4_1]   = {matvec_q4_1_spv, sizeof(matvec_q4_1_spv)},
@@ -393,6 +397,9 @@ vk_pcache_save(struct geist_backend *be, struct vk_state *st, const char *path, 
         }
         if (vk_pipe_needs_coopmat(i) && !st->has_coopmat) {
             continue; /* stays VK_NULL_HANDLE; linear_t falls back */
+        }
+        if (i == VK_PIPE_DN_SCAN && !st->dn_scan) {
+            continue; /* stays VK_NULL_HANDLE; deltanet_mix runs deltanet_delta_f32 */
         }
         /* Full subgroups need local_size_x to be a multiple of 32; every
          * tiled GEMM is 128 or 256 wide, so a miss is a shader edit that

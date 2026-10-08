@@ -259,6 +259,10 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     st->sg32_pinnable = p13.minSubgroupSize <= 32u && p13.maxSubgroupSize >= 32u &&
                         (p13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0u &&
                         p13.maxComputeWorkgroupSubgroups * 32u >= 256u;
+    st->dn_scan       = (sgp.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0u &&
+                        (sgp.supportedOperations & VK_SUBGROUP_FEATURE_CLUSTERED_BIT) != 0u &&
+                        sgp.subgroupSize >= VK_DN_SCAN_LANES &&
+                        (p13.minSubgroupSize == 0u || p13.minSubgroupSize >= VK_DN_SCAN_LANES);
     return GEIST_OK;
 }
 
@@ -596,6 +600,8 @@ void vk_destroy(struct geist_backend *be) {
                     [VK_PIPE_FFN_NORM_GU]            = "ffn_norm_gu",
                     [VK_PIPE_DN_CONV]                = "dn_conv",
                     [VK_PIPE_DN_DELTA]               = "dn_delta",
+                    [VK_PIPE_DN_NORM]                = "dn_norm",
+                    [VK_PIPE_DN_SCAN]                = "dn_scan",
                     [VK_PIPE_MATVEC_Q4_0]            = "matvec_q4_0",
                     [VK_PIPE_MATMUL_Q4_0]            = "matmul_q4_0",
                     [VK_PIPE_MATVEC_Q4_1]            = "matvec_q4_1",
