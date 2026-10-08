@@ -702,9 +702,28 @@ void vk_linear_cm_route(struct vk_state *st,
         return;
     }
     /* small n_out starves the SMs on the 64-row tile — use the 32x32 one
-     * (workgroup count is the wall clock at ~1 workgroup/SM) */
-    if (cm == VK_PIPE_MM_Q4K_CM && n_out < 4096u &&
-        st->pipes[VK_PIPE_MM_Q4K_CM32] != VK_NULL_HANDLE) {
+     * (workgroup count is the wall clock at ~1 workgroup/SM). Only for small
+     * batches: from 256 rows the 64 x 64 tile already has workgroups enough
+     * (1536 x 512 -> 192) and is ~15-20 % faster end to end (#658). */
+    const bool cm32 = cm == VK_PIPE_MM_Q4K_CM && n_out < 4096u && m < 256u &&
+                      st->pipes[VK_PIPE_MM_Q4K_CM32] != VK_NULL_HANDLE;
+    /* Q4_K / Q6_K in the 128 x 128 PQ2_0 frame (#658): about twice the
+     * throughput of the smaller tiles once it has workgroups enough, but one
+     * of its workgroups costs the same however few tokens it holds, while the
+     * smaller tiles' cost shrinks with n_out * m. Measured on an RTX 2080 Ti
+     * across the Gemma 4 / Llama 3.2 shapes: it wins from n_out * m >= 3 * 2^16
+     * against the 32 x 32 tile and from 5 * 2^16 against the 64 x 64 one. */
+    const enum vk_pipe c128 = cm == VK_PIPE_MM_Q4K_CM   ? VK_PIPE_MM_Q4K_CM128
+                              : cm == VK_PIPE_MM_Q6K_CM ? VK_PIPE_MM_Q6K_CM128
+                                                        : VK_PIPE_COUNT;
+    if (c128 != VK_PIPE_COUNT && n_out % 128u == 0 && st->pipes[c128] != VK_NULL_HANDLE &&
+        (uint64_t) n_out * m >= (cm32 ? 3u << 16 : 5u << 16)) {
+        *pipe = c128;
+        *gx   = n_out / 128u;
+        *gy   = (m + 127u) / 128u;
+        return;
+    }
+    if (cm32) {
         *pipe = VK_PIPE_MM_Q4K_CM32;
         *gx   = n_out / 32u;
         *gy   = (m + 31u) / 32u;
