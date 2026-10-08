@@ -323,6 +323,26 @@ quant_raw_bytes(const enum geist_dtype dt, const size_t n_elems, size_t *out) {
     return w->raw_nbytes >= need;
 }
 
+/* Decode elements [e0, e0 + n) of a tensor of `n_total` elements of `dt`,
+ * stored raw (as quant_raw_bytes describes it) at `raw`, into out — one
+ * weight row (e0 = row * n_in, n = n_in) or a whole-block run inside one.
+ * The single per-dtype row-dequant dispatch: the host fallbacks of every
+ * backend, the embedding / PLE row lookups and the GGUF dequant helpers
+ * all go through it.
+ *
+ * Covers F32, F16, BF16 and every block format with a dequant_*_row codec
+ * above, plus I2_S (whose per-tensor scale is why n_total is needed).
+ *
+ * Returns false — with out zeroed — for a dtype it cannot decode, or when
+ * e0 / n are not whole blocks or the run does not fit in n_total. The
+ * caller guarantees `raw` holds quant_raw_bytes(dt, n_total) bytes. */
+[[nodiscard]] bool quant_dequant_row(enum geist_dtype dt,
+                                     size_t           n_total,
+                                     size_t           e0,
+                                     size_t           n,
+                                     const void      *raw,
+                                     float            out[static n]);
+
 /* Hard cap on the M dimension of native prefill kernels. The engine's
  * default m_max remains lower, but sessions can opt into larger prefill
  * chunks up to this cap when memory allows. Lets kernels stack-allocate

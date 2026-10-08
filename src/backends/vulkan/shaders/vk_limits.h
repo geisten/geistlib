@@ -58,5 +58,16 @@
 #define VK_DN_MAX_DV 128u
 #define VK_DN_MAX_CONV_K 8u
 #define VK_DN_CONV_WG 128u
+/* deltanet_scan_f32 (the fast path, #467): LANES adjacent lanes own one
+ * value column with ROWS state rows each, so it takes d_k <= LANES * ROWS;
+ * a workgroup covers WG / LANES columns. LANES is the subgroupClusteredAdd
+ * cluster, so the device's subgroups must be at least that wide. 8 x 16
+ * measured best on the RTX 2080 Ti (4 x 32 and 16 x 8 were 8 % and 19 %
+ * slower). deltanet_norm_f32: one workgroup per head vector of up to
+ * VK_DN_MAX_DK elements. */
+#define VK_DN_SCAN_WG 128u
+#define VK_DN_SCAN_LANES 8u
+#define VK_DN_SCAN_ROWS 16u
+#define VK_DN_NORM_WG 128u
 
 #endif /* GEIST_VK_LIMITS_H */
