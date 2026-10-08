@@ -1,0 +1,10 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* F32-weight GEMM on the tensor cores in the PQ2_0 frame: 128 weight rows x
+ * 128 tokens x BK = 32 per 256-thread workgroup, weights and activations
+ * rounded to f16, f32 accumulation (#658). Body and notes:
+ * matmul_pq2_0_cm_body.glsl. Requires n_out % 128 == 0, rows % 16 == 0,
+ * n_in % 32 == 0; other shapes keep matmul_f32.comp (vk_linear_cm_route). */
+#define DT_F32 1
+#include "matmul_pq2_0_cm_body.glsl"
