@@ -15,7 +15,10 @@
  *   - In any mode, the outputs are compared token-for-token against a
  *     serial rerun of the same prompts on fresh sessions — greedy decode
  *     is deterministic, so cross-session KV contamination shows up as a
- *     mismatch even when it doesn't race.
+ *     mismatch even when it doesn't race. GEIST_TEST_NO_SERIAL_REF=1 (the
+ *     TSan job) skips that rerun — two thirds of the test's time under
+ *     TSan, and no concurrency in it — and compares round 2 against
+ *     round 1 instead, which still catches contamination across rounds.
  *
  * Prompts are pre-tokenized ids (fixed arrays): the tokenizers are
  * caller-serialized in v1 and stay out of the parallel section.
@@ -163,23 +166,29 @@ int main(void) {
     /* ---- Serial rerun on fresh sessions: greedy decode is deterministic,
      * so any cross-session contamination in the parallel phase shows up
      * as a token mismatch here. */
+    const char *no_ref     = getenv("GEIST_TEST_NO_SERIAL_REF");
+    const bool  serial_ref = no_ref == nullptr || no_ref[0] != '1';
     for (int i = 0; i < N_SESSIONS; i++) {
         struct geist_session *ref = nullptr;
-        if (geist_session_create(model, be, &opts, &ref) != GEIST_OK) {
-            fprintf(stderr, "serial session_create %d failed\n", i);
-            return GEIST_TEST_ERROR;
-        }
-        geist_token_t ref_out[N_DECODE];
-        int           ok = 1;
-        if (geist_session_prefill_tokens(ref, PROMPT_LEN, PROMPTS[i]) != GEIST_OK) {
-            ok = 0;
-        }
-        for (int t = 0; ok && t < n_decode(); t++) {
-            if (geist_session_decode_step(ref, &ref_out[t]) != GEIST_OK) {
+        geist_token_t         ref_buf[N_DECODE];
+        const geist_token_t  *ref_out = workers[i].out[0];
+        int                   ok      = 1;
+        if (serial_ref) {
+            if (geist_session_create(model, be, &opts, &ref) != GEIST_OK) {
+                fprintf(stderr, "serial session_create %d failed\n", i);
+                return GEIST_TEST_ERROR;
+            }
+            if (geist_session_prefill_tokens(ref, PROMPT_LEN, PROMPTS[i]) != GEIST_OK) {
                 ok = 0;
             }
+            for (int t = 0; ok && t < n_decode(); t++) {
+                if (geist_session_decode_step(ref, &ref_buf[t]) != GEIST_OK) {
+                    ok = 0;
+                }
+            }
+            fails += geist_expect(ok, "serial reference decode succeeded");
+            ref_out = ref_buf;
         }
-        fails += geist_expect(ok, "serial reference decode succeeded");
         if (ok) {
             for (int round = 0; round < N_ROUNDS; round++) {
                 const bool same = memcmp(workers[i].out[round],
@@ -187,10 +196,11 @@ int main(void) {
                                          (size_t) n_decode() * sizeof(geist_token_t)) == 0;
                 if (!same) {
                     fprintf(stderr,
-                            "session %d round %d: parallel tokens diverge from serial "
+                            "session %d round %d: parallel tokens diverge from %s "
                             "(first at ",
                             i,
-                            round);
+                            round,
+                            serial_ref ? "serial" : "round 1");
                     for (int t = 0; t < n_decode(); t++) {
                         if (workers[i].out[round][t] != ref_out[t]) {
                             fprintf(stderr,
@@ -219,9 +229,10 @@ int main(void) {
         return GEIST_TEST_FAIL;
     }
     printf("multi-session parallel: %d sessions × %d rounds × %d tokens, "
-           "bit-identical to serial\n",
+           "bit-identical to %s\n",
            N_SESSIONS,
            N_ROUNDS,
-           n_decode());
+           n_decode(),
+           serial_ref ? "serial" : "round 1");
     return GEIST_TEST_PASS;
 }
