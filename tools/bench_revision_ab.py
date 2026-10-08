@@ -76,10 +76,11 @@ def parse_revs(values: list[str]) -> list[tuple[str, str]]:
 
 
 def bench_relpath(make_args: list[str], target: str) -> Path:
-    """Where the Makefile puts the bench: bin/$(TARGET)/$(MODE)/tests."""
+    """Where the Makefile puts the bench: bin/$(TARGET)/$(MODE)/tests, the
+    mode suffixed -noomp under OPENMP=0."""
     overrides = dict(arg.split("=", 1) for arg in make_args if "=" in arg)
-    return (Path("bin") / overrides.get("TARGET", target) / overrides.get("MODE", "release")
-            / "tests" / BENCH)
+    mode = overrides.get("MODE", "release") + ("-noomp" if overrides.get("OPENMP") == "0" else "")
+    return Path("bin") / overrides.get("TARGET", target) / mode / "tests" / BENCH
 
 
 def resolve(ref: str) -> str:

@@ -12,9 +12,12 @@
 
 # ---- Layout --------------------------------------------------------------
 
-BUILD_DIR := build/$(TARGET)/$(MODE)
-LIB_DIR   := lib/$(TARGET)/$(MODE)
-BIN_DIR   := bin/$(TARGET)/$(MODE)
+# OPENMP=0 builds without OpenMP (below) into trees of their own: the
+# objects do not record the flags they were built with.
+OMP_SUFFIX := $(if $(filter 0,$(OPENMP)),-noomp)
+BUILD_DIR := build/$(TARGET)/$(MODE)$(OMP_SUFFIX)
+LIB_DIR   := lib/$(TARGET)/$(MODE)$(OMP_SUFFIX)
+BIN_DIR   := bin/$(TARGET)/$(MODE)$(OMP_SUFFIX)
 
 # ---- Mode flags ----------------------------------------------------------
 # release : production
@@ -73,6 +76,16 @@ else ifeq ($(MODE),cov)
     LDFLAGS_MODE := --coverage
 else
     $(error Unknown MODE=$(MODE). Use one of: release, debug, asan, tsan, fuzz, perf, cov)
+endif
+
+# OPENMP=0: any mode without OpenMP, as iOS, a mac without libomp or MSVC
+# build. geist_par_for (src/base/par.h) runs on its pthread pool (GCD on
+# Apple); -fopenmp-simd keeps the `#pragma omp simd` loops vectorized as
+# with OpenMP; the other omp pragmas left compile to serial loops (#618).
+ifeq ($(OPENMP),0)
+    CFLAGS_TARGET  := $(filter-out -Xpreprocessor -fopenmp,$(CFLAGS_TARGET)) \
+                      -fopenmp-simd -Wno-unknown-pragmas -Wno-unused-function
+    LDFLAGS_TARGET := $(filter-out -fopenmp -lomp,$(LDFLAGS_TARGET))
 endif
 
 # ---- Base CFLAGS ---------------------------------------------------------
