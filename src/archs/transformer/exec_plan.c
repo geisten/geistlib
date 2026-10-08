@@ -260,13 +260,15 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         /* Session KV-mode conditions (kivi/int8 off, f16-vs-f32 cache
          * views) stay inline at the call site — sess->kv_*_enabled is
          * the per-session overlay, frozen at session_alloc. */
-        q                     = base;
-        q.op                  = GEIST_FUSED_ATTN_QKV_PREP;
-        q.m                   = m_cap;
-        q.head_dim            = L->head_dim;
-        q.n_q_heads           = st->n_q_heads;
-        q.n_kv_heads          = st->n_kv_heads;
-        P->fuse_attn_qkv_prep = P->apply_gemma_attn_norms && probe(be, q);
+        q            = base;
+        q.op         = GEIST_FUSED_ATTN_QKV_PREP;
+        q.m          = m_cap;
+        q.head_dim   = L->head_dim;
+        q.n_q_heads  = st->n_q_heads;
+        q.n_kv_heads = st->n_kv_heads;
+        /* the fused prep is Gemma 4's (V norm, no Q scale): not for Gemma 3 */
+        P->fuse_attn_qkv_prep =
+                P->apply_gemma_attn_norms && st->config.gemma3_q_scale == 0.0f && probe(be, q);
 
         /* Any m: decode and every prefill chunk take the same kernel. */
         q                    = (struct geist_fusion_query) {.op         = GEIST_FUSED_ATTN_KV_INT8,
