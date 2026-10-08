@@ -144,9 +144,9 @@ static int detect_thread_count(void) {
     const char *env = getenv("GEIST_THREADS");
     if (!env)
         env = getenv("OMP_NUM_THREADS");
-    long n;
-    if (geist_parse_long(env, &n) && n > 0)
-        return n > GEIST_PP_MAX_THREADS ? GEIST_PP_MAX_THREADS : (int) n;
+    long want;
+    if (geist_parse_long(env, &want) && want > 0)
+        return want > GEIST_PP_MAX_THREADS ? GEIST_PP_MAX_THREADS : (int) want;
     /* Fallback: performance cores on Apple, else online CPUs. */
 #if defined(__APPLE__)
     int    ncpu = 0;
