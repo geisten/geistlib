@@ -1454,6 +1454,26 @@ attn_generic:;
                                          : hd == 256 ? VK_PIPE_ATTENTION_F16_CM
                                          : hd == 512 ? VK_PIPE_ATTENTION_F16_HD512_CM
                                                      : VK_PIPE_COUNT;
+            /* Four subgroups per workgroup sharing 64-key steps, one online-
+             * softmax pass (#475): written for 32-lane subgroups (it maps
+             * subgroup ids and softmax lanes onto that), so other widths keep
+             * the one-subgroup kernel, as vk_linear_cm_route does. */
+            const enum vk_pipe mw_pipe = hd == 128   ? VK_PIPE_ATTENTION_F16_HD128_MW_CM
+                                         : hd == 256 ? VK_PIPE_ATTENTION_F16_MW_CM
+                                         : hd == 512 ? VK_PIPE_ATTENTION_F16_HD512_MW_CM
+                                                     : VK_PIPE_COUNT;
+            if (kv16 && n_q > 1 && mw_pipe != VK_PIPE_COUNT && stt->subgroup_size == 32u &&
+                stt->pipes[mw_pipe] != VK_NULL_HANDLE) {
+                return vk_seq_dispatch_acc(be,
+                                           mw_pipe,
+                                           bi,
+                                           acc,
+                                           push,
+                                           sizeof(push),
+                                           n_q / 16u + (n_q % 16u != 0u ? 1u : 0u),
+                                           qh,
+                                           1);
+            }
             if (kv16 && n_q > 1 && cm_pipe != VK_PIPE_COUNT &&
                 stt->pipes[cm_pipe] != VK_NULL_HANDLE) {
                 return vk_seq_dispatch_acc(be,

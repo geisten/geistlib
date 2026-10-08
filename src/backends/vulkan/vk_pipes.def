@@ -101,6 +101,11 @@ X(VK_PIPE_ATTENTION_F16_CM,       attention_f16_cm_spv,        "attention_f16_cm
 X(VK_PIPE_ATTENTION_F16_HD128_CM, attention_f16_hd128_cm_spv,  "attention_f16_hd128_cm", 4, COOPMAT)
 /* the same, head_dim 512 (two column halves) */
 X(VK_PIPE_ATTENTION_F16_HD512_CM, attention_f16_hd512_cm_spv,  "attention_f16_hd512_cm", 4, COOPMAT)
+/* the same three, four subgroups per workgroup sharing 64-key steps, one
+ * online-softmax pass (32-lane subgroups only) */
+X(VK_PIPE_ATTENTION_F16_MW_CM,       attention_f16_mw_cm_spv,       "attention_f16_mw_cm",       4, COOPMAT)
+X(VK_PIPE_ATTENTION_F16_HD128_MW_CM, attention_f16_hd128_mw_cm_spv, "attention_f16_hd128_mw_cm", 4, COOPMAT)
+X(VK_PIPE_ATTENTION_F16_HD512_MW_CM, attention_f16_hd512_mw_cm_spv, "attention_f16_hd512_mw_cm", 4, COOPMAT)
 /* Q8_0 tensor-core GEMM, 64 x 64 tile */
 X(VK_PIPE_MM_Q8_0_CM,             matmul_q8_0_cm_spv,          "mm_q8_0_cm",             3, COOPMAT)
 /* Q4_0 tensor-core GEMM, 64 x 64 tile */

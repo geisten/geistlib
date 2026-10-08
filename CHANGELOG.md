@@ -10,6 +10,24 @@ minor release.
 
 ### Changed
 
+- **Vulkan: the tensor-core prefill attention runs four subgroups per
+  workgroup in one online-softmax pass (#475, #658).** The previous kernel
+  gave each 16-query-row block one 32-lane subgroup, stepped over 16 keys
+  with four workgroup barriers each and computed QK^T twice (a max pass,
+  then exp and P@V). The new `attention_f16_{,hd128_,hd512_}mw_cm` kernels
+  split each 64-key step across four subgroups (QK^T by key, P@V by output
+  column, K and V read straight from global memory), need two barriers per
+  step and one QK^T pass: the row max only moves when a tile exceeds it by
+  more than e^8, and then the O tiles are rescaled through shared memory.
+  head_dim 512 no longer splits into two workgroups that both recompute
+  QK^T. Routed on 32-lane subgroups only; other widths keep the old kernel.
+  RTX 2080 Ti, `GEIST_VK_PROFILE` attention time at pp512: Gemma 4 E2B
+  36.5 → 6.8 ms (llama.cpp: 11.6), E4B 32.3 → 8.1, Llama 3.2 3B 15.2 → 5.8,
+  Qwen3 0.6B 17.0 → 4.1, Qwen3.5 4B 6.8 → 2.3; at pp2048 E2B 266 → 54 ms.
+  End-to-end pp512 (best of four alternating rounds, t/s): E2B 3671 → 4319,
+  E4B 1849 → 2015, Llama 3.2 3B 3578 → 3823, Qwen3 0.6B 10513 → 12405,
+  Qwen3.5 4B 1353 → 1368. CPU-vs-Vulkan logits at 300/512 tokens match
+  main's.
 - **Vulkan: a single-buffered 128 x 128 Q4_K/Q6_K tile for wide prefill
   GEMMs (#658).** The double-buffered tile holds ~40 KB of shared memory, so
   Turing ran one workgroup per SM. A variant with one shared buffer pair (one
