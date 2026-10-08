@@ -15,6 +15,7 @@
 #include "gguf_reader.h"
 
 #include <stddef.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -398,20 +399,18 @@ static bool populate_layers_qwen3(struct transformer_arch_state *st) {
  * Gemma 3 text, as the BitNet embedding 270M ships it. Structurally it sits
  * between llama and gemma4: it has Gemma's extra residual norms (post-attn,
  * post-FFW) and QK-norms and the sqrt(d_model) embedding scale, but NO
- * per-layer embeddings, no KV sharing and no sliding-window pattern.
+ * per-layer embeddings and no KV sharing. A stock (generative) Gemma 3 also
+ * alternates local sliding-window and global layers (populate_layers_gemma3).
  *
  * Two geometry notes, both of which the default derivations get wrong:
  *   - head_dim is 256 while d_model/n_heads is 640/4 = 160, so key_length
  *     must come from metadata (the same trap qwen3 documents).
- *   - query_pre_attn_scalar is 256. The attention scale is 1/sqrt(head_dim)
- *     and head_dim is also 256 here, so the two coincide for this model and
- *     nothing extra is needed. A Gemma 3 variant where they DIFFER would
- *     need the scalar plumbed into the attention scale — untested, and
- *     deliberately not written on speculation.
+ *   - the queries are scaled by query_pre_attn_scalar^-1/2 (1/16 on the
+ *     270M) and V is not normalized: unlike Gemma 4, whose Q/K norms carry
+ *     the scale (config.gemma3_q_scale, #674).
  *
- * Scope: this populator is written for, and only exercised by, the BitNet
- * embedding 270M. Whether a stock Google Gemma-3 GGUF loads through it is
- * untested.
+ * Scope: the BitNet embedding 270M (test_published_embedding_e2e) and the
+ * stock google/gemma-3-270m-it (perplexity against llama.cpp, #674).
  */
 static void populate_gemma3(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
     st->config.has_gemma_attn_norms = true;
@@ -457,10 +456,25 @@ static bool populate_layers_gemma3(struct transformer_arch_state *st) {
 
     uint32_t head_dim = 0, intermediate = 0;
     float    freq_base = 10000.0f;
+    /* Stock Gemma 3 (#674): with attention.sliding_window set, five of every
+     * six layers are local — that window and the local RoPE base
+     * rope.freq_base_swa (10000) — and every sixth is global with
+     * rope.freq_base (1e6 on the 270M). llama.cpp's gemma3 reads the same
+     * keys with the same defaults. Running every layer global with the
+     * global base gave the 270M a perplexity of 3489 against llama.cpp's
+     * 45. Embedding models keep the all-global stack the BitNet embedding
+     * 270M was verified with (test_published_embedding_e2e). */
+    uint32_t sliding = 0, swa_period = 6;
+    float    freq_base_swa = 10000.0f;
     if (g != nullptr) {
         gguf_get_meta_u32(g, "gemma3.attention.key_length", &head_dim);
         gguf_get_meta_u32(g, "gemma3.feed_forward_length", &intermediate);
         gguf_get_meta_f32(g, "gemma3.rope.freq_base", &freq_base);
+        if (st->config.pooling == GEIST_POOLING_NONE) {
+            gguf_get_meta_u32(g, "gemma3.attention.sliding_window", &sliding);
+            gguf_get_meta_u32(g, "gemma3.attention.sliding_window_pattern", &swa_period);
+            gguf_get_meta_f32(g, "gemma3.rope.freq_base_swa", &freq_base_swa);
+        }
     }
     /* Only as a last resort: for the 270M the quotient is 160 and the real
      * head_dim is 256, so a GGUF without the key is the #258 failure mode. */
@@ -471,19 +485,28 @@ static bool populate_layers_gemma3(struct transformer_arch_state *st) {
         return false;
     }
 
+    /* query_pre_attn_scalar: head_dim, except the 27B's d_model / n_heads —
+     * the rule llama.cpp's gemma3 hard-codes (the GGUF has no key). */
+    const float qpas          = st->n_layers == 62 && st->n_q_heads > 0
+                                        ? (float) st->d_model / (float) st->n_q_heads
+                                        : (float) head_dim;
+    st->config.gemma3_q_scale = 1.0f / sqrtf(qpas);
     for (size_t i = 0; i < st->n_layers; i++) {
         struct transformer_layer_weights *L = &st->layers[i];
         L->layer_idx                        = (int) i;
-        L->mixer                            = GEIST_MIXER_ATTN;
-        L->is_full                          = true;
-        L->is_kv_shared                     = false;
-        L->head_dim                         = head_dim;
-        L->q_out                            = st->n_q_heads * head_dim;
-        L->kv_out                           = st->n_kv_heads * head_dim;
-        L->intermediate                     = intermediate;
-        L->sliding_window                   = 0;
-        L->rope_theta                       = freq_base;
-        L->n_rotated_dims                   = (int) head_dim;
+        /* llama.cpp's set_swa_pattern: local unless il % period is the
+         * period's last slot; period 0 means every layer local */
+        const bool local  = sliding > 0 && (swa_period == 0 || i % swa_period < swa_period - 1);
+        L->mixer          = GEIST_MIXER_ATTN;
+        L->is_full        = !local;
+        L->is_kv_shared   = false;
+        L->head_dim       = head_dim;
+        L->q_out          = st->n_q_heads * head_dim;
+        L->kv_out         = st->n_kv_heads * head_dim;
+        L->intermediate   = intermediate;
+        L->sliding_window = local ? sliding : 0;
+        L->rope_theta     = local ? freq_base_swa : freq_base;
+        L->n_rotated_dims = (int) head_dim;
     }
     return true;
 }

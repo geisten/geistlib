@@ -180,6 +180,12 @@ struct geist_arch_config {
      * lookup and the forward pass skips the rmsnorm calls. */
     bool has_gemma_attn_norms;
 
+    /* ---- Gemma 3 attention (#674): the Gemma norms above, but with the
+     * queries scaled by query_pre_attn_scalar^-1/2 and no V norm — Gemma 4
+     * folds the scale into its Q/K norms and normalizes V, Gemma 3 (as
+     * Hugging Face and llama.cpp run it) does neither. 0 = not Gemma 3. */
+    float gemma3_q_scale;
+
     /* ---- Per-head Q/K RMSNorm alone (qwen3). Gates ONLY the
      * attn_q_norm / attn_k_norm load + the pre-RoPE rmsnorm on Q and K.
      * Distinct from has_gemma_attn_norms, which additionally V-norms,
