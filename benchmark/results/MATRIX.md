@@ -11,15 +11,16 @@ Coverage work is tracked in [#364](https://github.com/geisten/geistlib/issues/36
 
 | Model / quantization | Apple CPU | Pi 5 CPU | AMD AVX-512 CPU | Apple Metal | NVIDIA Vulkan |
 | :-- | :--: | :--: | :--: | :--: | :--: |
-| Gemma 4 E2B-it Q4_K_M | [pp ~−47% / tg ~−28%](CROSS-ENGINE-APPLE-M1MAX.md) | [pp ~-13% / tg ~+11%](CROSS-ENGINE-PI5.md) | [pp ~16% / tg ~15%](CROSS-ENGINE-AMD9950X.md) | [pp ~−36% / tg ~−18%](CROSS-ENGINE-APPLE-M1MAX-METAL.md) | [pp ~−71% / tg ~−10%](CROSS-ENGINE-NVIDIA2080TI-VULKAN.md) |
-| Gemma 4 E4B-it Q4_K_M | not measured | does not fit 4 GB reference host | [pp ~−5% / tg ~+11%](CROSS-ENGINE-AMD9950X-ROWS.md) | not measured | geist fails at depth 1024 ([#409](https://github.com/geisten/geistlib/issues/409)) |
-| Llama 3.2 3B Q4_K_M | not measured | not measured | [pp ~−17% / tg ~+1%](CROSS-ENGINE-AMD9950X-ROWS.md) | not measured | [pp ~−99% / tg ~−99%](CROSS-ENGINE-NVIDIA2080TI-VULKAN-ROWS.md) ([#410](https://github.com/geisten/geistlib/issues/410)) |
+| Gemma 4 E2B-it Q4_K_M | [pp ~−47% / tg ~−28%](CROSS-ENGINE-APPLE-M1MAX.md) | [pp ~-13% / tg ~+11%](CROSS-ENGINE-PI5.md) | [pp ~−1% / tg ~+20%](MAIN-VS-V011-AMD9950X-2026-10-07.md) | [pp ~−36% / tg ~−18%](CROSS-ENGINE-APPLE-M1MAX-METAL.md) | [pp ~−70% / tg ~+3%](MAIN-VS-V011-AMD9950X-2026-10-07.md) |
+| Gemma 4 E4B-it Q4_K_M | not measured | does not fit 4 GB reference host | [pp ~−1% / tg ~+16%](raw/matrix-2026-10-08/2026-10-08T024520Z_geist_llama_cpu_gemma4-e4b-q4km.md) | not measured | [pp ~−90% / tg ~−22%](raw/matrix-2026-10-08/2026-10-08T014743Z_geist_llama_gpu_gemma4-e4b-q4km.md) |
+| Llama 3.2 3B Q4_K_M | not measured | not measured | [pp ~−17% / tg ~+7%](raw/matrix-2026-10-08/2026-10-08T021610Z_geist_llama_cpu_llama32-3b-q4km.md) | not measured | [pp ~−73% / tg ~−18%](raw/matrix-2026-10-08/2026-10-08T013424Z_geist_llama_gpu_llama32-3b-q4km.md) |
 | BitNet b1.58 2B-4T I2_S | reference engine has no I2_S type | reference engine has no I2_S type | reference engine has no I2_S type | reference engine has no I2_S type | reference engine has no I2_S type |
-| BitNet b1.58-large TQ2_0 | not measured | not measured | [pp ~−99% / tg ~−95%](CROSS-ENGINE-AMD9950X-ROWS.md) ([#410](https://github.com/geisten/geistlib/issues/410)) | not measured | geist fails at depth 1024 ([#409](https://github.com/geisten/geistlib/issues/409)) |
-| Qwen3 0.6B Q8_0 | not measured | not measured | [pp ~−99% / tg ~−89%](CROSS-ENGINE-AMD9950X-ROWS.md) ([#410](https://github.com/geisten/geistlib/issues/410)) | not measured | geist hang ([#409](https://github.com/geisten/geistlib/issues/409)) |
-| Qwen3.5 0.8B Q8_0 † | not measured | not measured | [pp ~−98% / tg ~−87%](CROSS-ENGINE-AMD9950X-ROWS.md) ([#410](https://github.com/geisten/geistlib/issues/410)) | not measured | geist vulkan lacks the arch ([#409](https://github.com/geisten/geistlib/issues/409)) |
-| Qwen3.5 4B Q4_0 † | not measured | not measured | [pp ~−99% / tg ~−93%](CROSS-ENGINE-AMD9950X-ROWS.md) ([#410](https://github.com/geisten/geistlib/issues/410)) | not measured | geist vulkan lacks the arch ([#409](https://github.com/geisten/geistlib/issues/409)) |
-| Qwen3.8 27B Q4_0 † | not measured | does not fit reference host | measurement in progress | not measured | does not fit 11 GB device |
+| BitNet b1.58-large TQ2_0 | not measured | not measured | [pp ~+60% / tg ~+56%](raw/matrix-2026-10-08/2026-10-08T020258Z_geist_llama_cpu_bitnet-large-tq2.md) | not measured | [pp ~−90% / tg ~−7%](raw/matrix-2026-10-08/2026-10-07T235556Z_geist_llama_gpu_bitnet-large-tq2.md) |
+| Qwen3 0.6B Q8_0 | not measured | not measured | [pp ~+19% / tg ~+10%](MAIN-VS-V011-AMD9950X-2026-10-07.md) | not measured | [pp ~−87% / tg ~−13%](MAIN-VS-V011-AMD9950X-2026-10-07.md) |
+| Qwen3.5 0.8B Q8_0 † | not measured | not measured | [pp ~−15% / tg ~+19%](MAIN-VS-V011-AMD9950X-2026-10-07.md) | not measured | [pp ~−84% / tg ~−1%](MAIN-VS-V011-AMD9950X-2026-10-07.md) |
+| Qwen3.5 4B Q4_0 † | not measured | not measured | [pp ~−33% / tg ~+13%](MAIN-VS-V011-AMD9950X-2026-10-07.md) | not measured | [pp ~−91% / tg ~−7%](MAIN-VS-V011-AMD9950X-2026-10-07.md) |
+| Qwen3.8 27B Q4_0 † | not measured | does not fit reference host | [pp ~−32% / tg ~+9%](MAIN-VS-V011-AMD9950X-2026-10-07.md) | not measured | does not fit 11 GB device |
+| Ternary Bonsai 2 27B PQ2_0 ‡ | not measured | does not fit reference host | [pp ~−19% / tg ~+13%](MAIN-VS-V011-AMD9950X-2026-10-07.md) | not measured | [pp ~−12% / tg ~+24%](MAIN-VS-V011-AMD9950X-2026-10-07.md) |
 
 A filled cell states the geist-vs-llama.cpp ratio at pp512 and tg64 at depth
 512, rounded, and links the full sweep. Rounded on purpose: two runs of the
@@ -27,6 +28,19 @@ identical protocol on the same host drift by more than the within-run MAD, so a
 cell quoted to a decimal would claim a precision the protocol does not deliver
 (see the reproducibility section in the linked report). Ratios are comparable within a column; absolute
 tokens/s across columns describe hardware, not engine efficiency.
+
+‡ Reference engine: the PrismML llama.cpp fork (upstream llama.cpp has no
+PQ2_0 type); the row is shape-parity only like the qwen35 rows it is built on.
+
+The 2026-10-06 refresh ([#364](https://github.com/geisten/geistlib/issues/364))
+re-ran the AMD and NVIDIA columns for the rows linked to
+[`MAIN-VS-V011-AMD9950X-2026-10-07.md`](MAIN-VS-V011-AMD9950X-2026-10-07.md)
+at geist `1b5380a`, under the current protocol hashes, against the same model
+files (SHA-256 in the raw artifacts, `raw/main-vs-v011-2026-10-06/main/`).
+The E4B, Llama 3.2 3B and BitNet TQ2_0 cells followed on 2026-10-08 at geist
+`c696fbe` (`raw/matrix-2026-10-08/`, same protocol): the #409 failures and the
+#410 CPU gaps are gone. The Vulkan prefill cells predate the coopmat GEMM work
+of #681/#683/#686, which the next refresh will show.
 
 † Qwen3.5/3.8 rows are shape-parity only: DeltaNet state depends on token
 identity and the engines use their native synthetic streams (see the token
