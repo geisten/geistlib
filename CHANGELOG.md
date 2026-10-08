@@ -28,6 +28,24 @@ minor release.
   E4B 1849 → 2015, Llama 3.2 3B 3578 → 3823, Qwen3 0.6B 10513 → 12405,
   Qwen3.5 4B 1353 → 1368. CPU-vs-Vulkan logits at 300/512 tokens match
   main's.
+- **Vulkan: a single-buffered 128 x 128 Q4_K/Q6_K tile for wide prefill
+  GEMMs (#658).** The double-buffered tile holds ~40 KB of shared memory, so
+  Turing ran one workgroup per SM. A variant with one shared buffer pair (one
+  extra barrier per k-step) runs two, and takes every Q4_K/Q6_K GEMM with more
+  than 64 workgroups (n_out ≥ 2560 at 512 tokens); narrower ones keep the
+  double-buffered tile, which is 3-7 % faster while the SMs are not all busy.
+  Per shape at m = 512: Q4_K 6144x1536 482 → 283 us, 8192x3072 935 → 667 us,
+  Q6_K 2560x10240 1.70 → 1.35 ms. RTX 2080 Ti, pp512: Gemma 4 E2B 4187 → 4547
+  t/s, E4B 2130 → 2540, Llama 3.2 3B 3443 → 4325; decode unchanged.
+- **Vulkan: F32-weight prefill GEMMs run on the tensor cores (#658).** Gemma
+  4's per-layer-embedding projections (`inp_gate`, `proj` and the widened
+  `per_layer_model_proj`) are F32, and the register-tiled `matmul_f32` ran
+  them at under 1 TFLOPS: 36 ms of a 512-token Gemma 4 E2B prefill against
+  ~7 ms in llama.cpp. They now take the 128 x 128 Q4_K/Q6_K tile with an F32
+  A stage (weights and activations rounded to f16, f32 accumulation) when
+  n_out % 128 == 0 and n_in % 32 == 0; 6 ms. RTX 2080 Ti, pp512: Gemma 4 E2B
+  3557 → 4183 t/s, E4B 1806 → 2122; Llama 3.2 3B (no F32 weights) and decode
+  unchanged. CPU-vs-Vulkan logits as before.
 - **Vulkan: Gemma 4's F32 PLE projection no longer sits in the weight arena
   (#658).** `per_layer_model_proj`, widened from F16 to F32 at load, was the
   one large matrix kept in the arena, so on Gemma 4 E4B the arena grew to

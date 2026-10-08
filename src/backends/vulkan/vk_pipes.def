@@ -118,3 +118,9 @@ X(VK_PIPE_MM_Q4_1_CM,             matmul_q4_1_cm_spv,          "mm_q4_1_cm",    
 X(VK_PIPE_MM_TQ2_0_CM,            matmul_tq2_0_cm_spv,         "mm_tq2_0_cm",            3, COOPMAT)
 /* TQ2_0 tensor-core GEMM, 128 x 128 tile */
 X(VK_PIPE_MM_TQ2_0_CM128,         matmul_tq2_0_t128_cm_spv,    "mm_tq2_0_cm128",         3, COOPMAT)
+/* F32-weight GEMM in the 128 x 128 PQ2_0 frame (the PLE projections) */
+X(VK_PIPE_MM_F32_CM128,           matmul_f32_t128_cm_spv,      "mm_f32_cm128",           3, COOPMAT)
+/* the Q4_K / Q6_K 128 x 128 tiles with one shared buffer pair: two
+ * workgroups per SM, for GEMMs with more workgroups than SMs */
+X(VK_PIPE_MM_Q4K_CM128_SB,        matmul_q4k_t128_sb_cm_spv,   "mm_q4k_cm128_sb",        3, COOPMAT)
+X(VK_PIPE_MM_Q6K_CM128_SB,        matmul_q6k_t128_sb_cm_spv,   "mm_q6k_cm128_sb",        3, COOPMAT)
