@@ -222,6 +222,21 @@ minor release.
   are in use"), which reads as impossible when another model or process holds
   the rest; with `VK_EXT_memory_budget` it adds "the device reports 10950 of
   11264 MiB in use (other models or processes included ...)".
+- **Vulkan: Q4_K and Q6_K prefill GEMMs run in the PQ2_0 tensor-core frame
+  (#658).** 128 weight rows × 128 tokens per 256-thread workgroup, 8
+  subgroups of 32 × 64, both tiles stored k-contiguous with 128-bit shared
+  stores, B loaded column-major, the next k-step's loads in flight during the
+  MMAs. `matmul_pq2_0_cm_body.glsl` takes a `DT_Q4K` / `DT_Q6K` A stage (the
+  PQ2_0 SPIR-V is unchanged); f32 accumulation as before, so the logits match
+  the 64 × 64 kernels'. The new tile costs the same per workgroup however few
+  tokens it holds, so `vk_linear_cm_route` gives it a GEMM only from
+  `n_out × m ≥ 3·2¹⁶` (against the 32 × 32 tile) or `5·2¹⁶` (against the
+  64 × 64 one); narrow k/v projections and small chunks keep the old tiles.
+  RTX 2080 Ti, pp512 at the default chunk, k-quant GEMM time per prefill and
+  t/s: Gemma 4 E2B 156 → 77 ms, 1978 → 3092 t/s; E4B 336 → 177 ms, 986 →
+  1369 t/s; Llama 3.2 3B 245 → 151 ms, 1583 → 2758 t/s. At `GEIST_M_MAX=128`
+  / `256`: E2B 1687 → 1949 / 2034 → 2577, E4B 800 → 1069 / 970 → 1429, Llama
+  1258 → 2024 / 1628 → 2640.
 - **Vulkan host and shader constants have one source** (#474 item 7).
   `src/backends/vulkan/shaders/vk_limits.h`, included by `ops.c` and the
   `.comp` files, holds the embedding dtype codes, rows and batch rows per

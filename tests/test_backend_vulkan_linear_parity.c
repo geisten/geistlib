@@ -438,6 +438,26 @@ int main(void) {
                2e-3);
     /* n_out < 4096 at 256 rows takes the 64 x 64 tile, not the 32 x 32 one */
     run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q4_K, "Q4_K-cm", 512, 256, 256, PARITY_MAG, 2e-3);
+    /* Q4_K / Q6_K in the 128 x 128 PQ2_0 frame (#658). It takes a GEMM from
+     * n_out * m >= 5 * 2^16 (3 * 2^16 where the 32 x 32 Q4_K tile is the
+     * alternative), so the narrow cases need many tokens. 768 = 3 superblocks
+     * (odd); m = 912 and 1296 end in a partial token tile; m = 16 and Q6_K at
+     * 2048 x 112 stay on the smaller tiles; m = 904 splits into an 896-row
+     * tensor-core head and an 8-row register-tiled tail. */
+    static const int   kq[]  = {GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q6_K};
+    static const char *kqn[] = {"Q4_K-cm128", "Q6_K-cm128"};
+    for (size_t i = 0; i < 2; i++) {
+        run_parity(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 512, 128, 2560, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 768, 256, 1280, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 768, 384, 912, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 512, 2048, 112, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 512, 6144, 64, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 256, 4096, 128, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 768, 256, 16, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, kq[i], kqn[i], 768, 384, 904, PARITY_MAG, 2e-3);
+        run_parity(VIA_LINEAR_T, vk, ref, kq[i], kqn[i], 768, 384, 1024, PARITY_MAG, 2e-3);
+        run_parity(VIA_LINEAR_T, vk, ref, kq[i], kqn[i], 512, 256, 1296, PARITY_MAG, 2e-3);
+    }
     geist_backend_destroy(vk);
 
     /* the exact f32-accumulate tensor-core GEMM (GEIST_VK_PQ2_F32_ACC) */
