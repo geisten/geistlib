@@ -7,7 +7,7 @@
  *
  * The motivating case is BitNet-2B-4T's tied lm_head (F16, 128 K × 2560 =
  * 657 MB): read once per decode step, so this is bandwidth-bound and the
- * lever is OMP across rows + an in-register F16C convert (no f32
+ * lever is threads across rows + an in-register F16C convert (no f32
  * materialization of the weight). Compiled at the x86-64-v3 baseline
  * (F16C + FMA are in v3); no AVX-512 needed.
  */
