@@ -365,8 +365,9 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
         }
     }
 
-    if (!ctx->apply_gemma_attn_norms) {
-        const float scale = 1.0f / sqrtf((float) ctx->hd);
+    const float gemma3_q_scale = ctx->st->config.gemma3_q_scale;
+    if (!ctx->apply_gemma_attn_norms || gemma3_q_scale > 0.0f) {
+        const float scale = gemma3_q_scale > 0.0f ? gemma3_q_scale : 1.0f / sqrtf((float) ctx->hd);
         if (ctx->st->model_fusions.prim_scale_f32) {
             s = prims->scale_f32(be, &t_q_2d, scale, &t_q_2d);
             if (s != GEIST_OK)
@@ -395,9 +396,9 @@ enum geist_status transformer_layer_run_attention_block(struct transformer_layer
                 return s;
             }
         }
-        /* Gemma-only: V is RMS-normalized too (no learned scale). qwen3
-         * QK-norm leaves V untouched. */
-        if (ctx->apply_gemma_attn_norms) {
+        /* Gemma 4 only: V is RMS-normalized too (no learned scale). qwen3
+         * QK-norm and Gemma 3 leave V untouched. */
+        if (ctx->apply_gemma_attn_norms && gemma3_q_scale == 0.0f) {
             struct geist_tensor t_v_perhead =
                     view_2d(sess->scratch_v, ctx->SEQ * st->n_kv_heads, (int64_t) ctx->hd);
             struct geist_tensor t_ones_hd =
