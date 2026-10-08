@@ -45,6 +45,11 @@ minor release.
   MMAs consume ks, as the Q4_K one does: 407 → 392 µs per call on Gemma.
 
 ### Changed
+- **Vulkan: weight uploads reuse one staging buffer (#469).** Each staged
+  upload created, mapped and freed a host-visible buffer of the weight's full
+  size (page faults on hundreds of MB per tensor). A persistent 64 MiB buffer
+  now carries every upload in chunks. Ternary Bonsai 2 27B (7.2 GB) loads in
+  3.1–3.5 s instead of 4.2–5.5 s on an RTX 2080 Ti (three interleaved runs).
 - **Vulkan: TQ2_0 prefill GEMM on the tensor cores (#467).** A TQ2_0 A stage
   in `matmul_legacy_cm_body.glsl` (64 x 64 tile) and in the 128 x 128 PQ2_0
   frame (`matmul_pq2_0_cm_body.glsl`), which takes over from
