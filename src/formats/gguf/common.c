@@ -54,110 +54,172 @@ float fp16_to_fp32(uint16_t h) {
 }
 #endif
 
+/* I2_S (BitNet b1.58, bitnet.cpp): 256-element / 64-byte ternary blocks,
+ * four 2-bit fields per byte in REVERSE order (element 32*g + bb of each
+ * 128-element half at shift 6 - 2g), one f32 per-TENSOR scale. */
+static void dequant_i2_s_blocks(size_t n, const uint8_t *blocks, float scale, float out[static n]) {
+    for (size_t b = 0; b < n / I2_S_BLOCK_ELEMS; b++) {
+        const uint8_t *qs = blocks + b * I2_S_BLOCK_BYTES;
+        float         *o  = out + b * I2_S_BLOCK_ELEMS;
+        for (size_t h = 0; h < 2; h++) {
+            for (size_t bb = 0; bb < 32; bb++) {
+                const uint8_t byte = qs[h * 32 + bb];
+                for (size_t g = 0; g < 4; g++) {
+                    const int trit           = (int) ((byte >> (6 - 2 * g)) & 3) - 1;
+                    o[h * 128 + g * 32 + bb] = (float) trit * scale;
+                }
+            }
+        }
+    }
+}
+
+bool quant_dequant_row(enum geist_dtype dt,
+                       size_t           n_total,
+                       size_t           e0,
+                       size_t           n,
+                       const void      *raw,
+                       float            out[static n]) {
+    size_t blk_elems = 0;
+    size_t blk_bytes = 0;
+    size_t tail      = 0;
+    if (!quant_block_layout(dt, &blk_elems, &blk_bytes, &tail) || e0 % blk_elems != 0u ||
+        n % blk_elems != 0u || n > n_total || e0 > n_total - n) {
+        memset(out, 0, n * sizeof *out);
+        return false;
+    }
+    /* In bounds of the caller's quant_raw_bytes(dt, n_total) extent. */
+    const uint8_t *src = (const uint8_t *) raw + e0 / blk_elems * blk_bytes;
+    switch (dt) {
+    case GEIST_DTYPE_F32:
+        memcpy(out, src, n * sizeof(float));
+        return true;
+    case GEIST_DTYPE_F16:
+        /* Little-endian storage, assembled bytewise: `src` need not be
+         * 2-byte aligned. */
+        for (size_t i = 0; i < n; i++) {
+            const uint8_t *h = src + i * 2;
+            out[i]           = fp16_to_fp32((uint16_t) ((uint16_t) h[0] | ((uint16_t) h[1] << 8)));
+        }
+        return true;
+    case GEIST_DTYPE_BF16:
+        /* BF16 = top 16 bits of FP32; left-shift restores fp32 layout. */
+        for (size_t i = 0; i < n; i++) {
+            const uint8_t *h = src + i * 2;
+            const uint32_t b = (uint32_t) ((uint16_t) h[0] | ((uint16_t) h[1] << 8)) << 16;
+            memcpy(&out[i], &b, sizeof b);
+        }
+        return true;
+    case GEIST_DTYPE_Q4_0:
+        dequant_q4_0_row(n, src, out);
+        return true;
+    case GEIST_DTYPE_Q4_1:
+        dequant_q4_1_row(n, src, out);
+        return true;
+    case GEIST_DTYPE_Q5_0:
+        dequant_q5_0_row(n, src, out);
+        return true;
+    case GEIST_DTYPE_Q8_0:
+        dequant_q8_0_row(n, src, out);
+        return true;
+    case GEIST_DTYPE_Q3_K:
+        dequant_q3_K_row(n, src, out);
+        return true;
+    case GEIST_DTYPE_Q4_K:
+        dequant_q4_K_row(n, src, out);
+        return true;
+    case GEIST_DTYPE_Q5_K:
+        dequant_q5_K_row(n, src, out);
+        return true;
+    case GEIST_DTYPE_Q6_K:
+        dequant_q6_K_row(n, src, out);
+        return true;
+    case GEIST_DTYPE_IQ2_S:
+        dequant_iq2_s_row(n, src, out);
+        return true;
+    case GEIST_DTYPE_IQ3_S:
+        dequant_iq3_s_row(n, src, out);
+        return true;
+    case GEIST_DTYPE_IQ4_NL:
+        dequant_iq4_nl_row(n, src, out);
+        return true;
+    case GEIST_DTYPE_IQ4_XS:
+        dequant_iq4_xs_row(n, src, out);
+        return true;
+    case GEIST_DTYPE_TQ2_0:
+        dequant_tq2_0_row(n, src, out);
+        return true;
+    case GEIST_DTYPE_PQ2_0:
+        dequant_pq2_0_row(n, src, out);
+        return true;
+    case GEIST_DTYPE_I2_S: {
+        float scale;
+        memcpy(&scale, (const uint8_t *) raw + i2_s_scale_offset(n_total), sizeof scale);
+        dequant_i2_s_blocks(n, src, scale, out);
+        return true;
+    }
+    default:
+        /* I8 / U8: a raw layout but no f32 decode here. */
+        memset(out, 0, n * sizeof *out);
+        return false;
+    }
+}
+
+/* The geist dtype a GGUF tensor's rows decode as; GEIST_DTYPE_CUSTOM (no
+ * decoder) for a GGUF type quant_dequant_row does not cover. */
+static enum geist_dtype gguf_row_dtype(gguf_dtype_t gd) {
+    switch (gd) {
+    case GGUF_TYPE_F32:
+        return GEIST_DTYPE_F32;
+    case GGUF_TYPE_F16:
+        return GEIST_DTYPE_F16;
+    case GGUF_TYPE_BF16:
+        return GEIST_DTYPE_BF16;
+    case GGUF_TYPE_Q4_0:
+        return GEIST_DTYPE_Q4_0;
+    case GGUF_TYPE_Q4_1:
+        return GEIST_DTYPE_Q4_1;
+    case GGUF_TYPE_Q5_0:
+        return GEIST_DTYPE_Q5_0;
+    case GGUF_TYPE_Q8_0:
+        return GEIST_DTYPE_Q8_0;
+    case GGUF_TYPE_Q3_K:
+        return GEIST_DTYPE_Q3_K;
+    case GGUF_TYPE_Q4_K:
+        return GEIST_DTYPE_Q4_K;
+    case GGUF_TYPE_Q5_K:
+        return GEIST_DTYPE_Q5_K;
+    case GGUF_TYPE_Q6_K:
+        return GEIST_DTYPE_Q6_K;
+    case GGUF_TYPE_IQ2_S:
+        return GEIST_DTYPE_IQ2_S;
+    case GGUF_TYPE_IQ3_S:
+        return GEIST_DTYPE_IQ3_S;
+    case GGUF_TYPE_IQ4_NL:
+        return GEIST_DTYPE_IQ4_NL;
+    case GGUF_TYPE_IQ4_XS:
+        return GEIST_DTYPE_IQ4_XS;
+    case GGUF_TYPE_TQ2_0:
+        return GEIST_DTYPE_TQ2_0;
+    case GGUF_TYPE_PQ2_0:
+        return GEIST_DTYPE_PQ2_0;
+    case GGUF_TYPE_I2_S:
+        return GEIST_DTYPE_I2_S;
+    default:
+        return GEIST_DTYPE_CUSTOM;
+    }
+}
+
 bool gguf_dequant_row_to_fp32(const struct gguf_tensor_t *t,
                               size_t                      row_idx,
                               size_t                      row_elems,
                               float                      *out) {
-    if (!t)
-        return false;
-    switch (t->dtype) {
-    case GGUF_TYPE_F32:
-        memcpy(out, (const float *) t->data + row_idx * row_elems, row_elems * sizeof(float));
-        return true;
-    case GGUF_TYPE_F16: {
-        const uint16_t *h = (const uint16_t *) t->data + row_idx * row_elems;
-        for (size_t i = 0; i < row_elems; i++)
-            out[i] = fp16_to_fp32(h[i]);
-        return true;
-    }
-    case GGUF_TYPE_BF16: {
-        /* BF16 = top 16 bits of FP32; left-shift restores fp32 layout. */
-        const uint16_t *h = (const uint16_t *) t->data + row_idx * row_elems;
-        uint32_t       *o = (uint32_t *) out;
-        for (size_t i = 0; i < row_elems; i++)
-            o[i] = ((uint32_t) h[i]) << 16;
-        return true;
-    }
-    case GGUF_TYPE_Q8_0: {
-        const size_t   blocks_per_row = row_elems / Q8_0_BLOCK_ELEMS;
-        const uint8_t *base =
-                (const uint8_t *) t->data + row_idx * blocks_per_row * Q8_0_BLOCK_BYTES;
-        dequant_q8_0_row(row_elems, base, out);
-        return true;
-    }
-    case GGUF_TYPE_Q3_K: {
-        const size_t   blocks_per_row = row_elems / Q3_K_BLOCK_ELEMS;
-        const uint8_t *base =
-                (const uint8_t *) t->data + row_idx * blocks_per_row * Q3_K_BLOCK_BYTES;
-        dequant_q3_K_row(row_elems, base, out);
-        return true;
-    }
-    case GGUF_TYPE_Q4_K: {
-        const size_t   blocks_per_row = row_elems / Q4_K_BLOCK_ELEMS;
-        const uint8_t *base =
-                (const uint8_t *) t->data + row_idx * blocks_per_row * Q4_K_BLOCK_BYTES;
-        dequant_q4_K_row(row_elems, base, out);
-        return true;
-    }
-    case GGUF_TYPE_Q5_K: {
-        const size_t   blocks_per_row = row_elems / Q5_K_BLOCK_ELEMS;
-        const uint8_t *base =
-                (const uint8_t *) t->data + row_idx * blocks_per_row * Q5_K_BLOCK_BYTES;
-        dequant_q5_K_row(row_elems, base, out);
-        return true;
-    }
-    case GGUF_TYPE_Q6_K: {
-        const size_t   blocks_per_row = row_elems / Q6_K_BLOCK_ELEMS;
-        const uint8_t *base =
-                (const uint8_t *) t->data + row_idx * blocks_per_row * Q6_K_BLOCK_BYTES;
-        dequant_q6_K_row(row_elems, base, out);
-        return true;
-    }
-    case GGUF_TYPE_IQ2_S: {
-        const size_t   blocks_per_row = row_elems / 256;
-        const uint8_t *base =
-                (const uint8_t *) t->data + row_idx * blocks_per_row * IQ2_S_BLOCK_BYTES;
-        dequant_iq2_s_row(row_elems, base, out);
-        return true;
-    }
-    case GGUF_TYPE_IQ3_S: {
-        const size_t   blocks_per_row = row_elems / 256;
-        const uint8_t *base =
-                (const uint8_t *) t->data + row_idx * blocks_per_row * IQ3_S_BLOCK_BYTES;
-        dequant_iq3_s_row(row_elems, base, out);
-        return true;
-    }
-    case GGUF_TYPE_IQ4_NL: {
-        const size_t   blocks_per_row = row_elems / IQ4_NL_BLOCK_ELEMS;
-        const uint8_t *base =
-                (const uint8_t *) t->data + row_idx * blocks_per_row * IQ4_NL_BLOCK_BYTES;
-        dequant_iq4_nl_row(row_elems, base, out);
-        return true;
-    }
-    case GGUF_TYPE_IQ4_XS: {
-        const size_t   blocks_per_row = row_elems / IQ4_XS_BLOCK_ELEMS;
-        const uint8_t *base =
-                (const uint8_t *) t->data + row_idx * blocks_per_row * IQ4_XS_BLOCK_BYTES;
-        dequant_iq4_xs_row(row_elems, base, out);
-        return true;
-    }
-    case GGUF_TYPE_TQ2_0: {
-        const size_t   blocks_per_row = row_elems / TQ2_0_BLOCK_ELEMS;
-        const uint8_t *base =
-                (const uint8_t *) t->data + row_idx * blocks_per_row * TQ2_0_BLOCK_BYTES;
-        dequant_tq2_0_row(row_elems, base, out);
-        return true;
-    }
-    case GGUF_TYPE_PQ2_0: {
-        const size_t   blocks_per_row = row_elems / PQ2_0_BLOCK_ELEMS;
-        const uint8_t *base =
-                (const uint8_t *) t->data + row_idx * blocks_per_row * PQ2_0_BLOCK_BYTES;
-        dequant_pq2_0_row(row_elems, base, out);
-        return true;
-    }
-    default:
+    size_t e0 = 0;
+    if (!t || ckd_mul(&e0, row_idx, row_elems)) {
+        memset(out, 0, row_elems * sizeof *out);
         return false;
     }
+    return quant_dequant_row(
+            gguf_row_dtype(t->dtype), gguf_tensor_elem_count(t), e0, row_elems, t->data, out);
 }
 
 float *gguf_dequant_to_fp32(const struct gguf_tensor_t *t) {
@@ -167,59 +229,7 @@ float *gguf_dequant_to_fp32(const struct gguf_tensor_t *t) {
     float *out   = heap_alloc_array_aligned(float, elems);
     if (!out)
         return nullptr;
-
-    switch (t->dtype) {
-    case GGUF_TYPE_F32:
-        memcpy(out, t->data, elems * sizeof(float));
-        break;
-    case GGUF_TYPE_F16: {
-        const uint16_t *h = (const uint16_t *) t->data;
-        for (size_t i = 0; i < elems; i++)
-            out[i] = fp16_to_fp32(h[i]);
-        break;
-    }
-    case GGUF_TYPE_BF16: {
-        /* BF16 = top 16 bits of FP32; left-shift restores fp32 layout. */
-        const uint16_t *h = (const uint16_t *) t->data;
-        uint32_t       *o = (uint32_t *) out;
-        for (size_t i = 0; i < elems; i++)
-            o[i] = ((uint32_t) h[i]) << 16;
-        break;
-    }
-    case GGUF_TYPE_Q8_0:
-        dequant_q8_0_row(elems, t->data, out);
-        break;
-    case GGUF_TYPE_Q3_K:
-        dequant_q3_K_row(elems, t->data, out);
-        break;
-    case GGUF_TYPE_Q4_K:
-        dequant_q4_K_row(elems, t->data, out);
-        break;
-    case GGUF_TYPE_Q5_K:
-        dequant_q5_K_row(elems, t->data, out);
-        break;
-    case GGUF_TYPE_Q6_K:
-        dequant_q6_K_row(elems, t->data, out);
-        break;
-    case GGUF_TYPE_IQ2_S:
-        dequant_iq2_s_row(elems, t->data, out);
-        break;
-    case GGUF_TYPE_IQ3_S:
-        dequant_iq3_s_row(elems, t->data, out);
-        break;
-    case GGUF_TYPE_IQ4_NL:
-        dequant_iq4_nl_row(elems, t->data, out);
-        break;
-    case GGUF_TYPE_IQ4_XS:
-        dequant_iq4_xs_row(elems, t->data, out);
-        break;
-    case GGUF_TYPE_TQ2_0:
-        dequant_tq2_0_row(elems, t->data, out);
-        break;
-    case GGUF_TYPE_PQ2_0:
-        dequant_pq2_0_row(elems, t->data, out);
-        break;
-    default:
+    if (!quant_dequant_row(gguf_row_dtype(t->dtype), elems, 0, elems, t->data, out)) {
         safe_free((void **) &out);
         return nullptr;
     }

@@ -10,6 +10,22 @@ minor release.
 
 ### Changed
 
+- **One row-dequant dispatch, `quant_dequant_row` (#465).** The per-dtype
+  "decode a weight row to f32" switch existed six times: the reference
+  linear kernel behind cpu_scalar and Vulkan's host path
+  (`common/linear_ref.c`), the transformer's embedding / PLE row lookup, the
+  Metal host fallback, the spec head and the two GGUF helpers. All of them
+  now call `quant_dequant_row` (declared in `quant.h` next to
+  `quant_raw_bytes`), which decodes F32, F16, BF16, every block format with
+  a row codec and I2_S, and refuses a run that is not whole blocks or
+  overruns the tensor. Output is bit-identical for every dtype a copy
+  handled before (new `test_quant_dequant_row_unit`; Qwen3-0.6B and Gemma 4
+  E2B logits unchanged on cpu_scalar and cpu_x86). Copies that lacked a
+  dtype gain it: the embedding / PLE lookup TQ2_0; the Metal host fallback
+  Q3_K, Q5_0, IQ*, TQ2_0, PQ2_0 and I2_S (it read them as zeros);
+  `gguf_dequant_to_fp32` / `gguf_dequant_row_to_fp32` Q4_0, Q4_1, Q5_0 and
+  I2_S. `gguf_dequant_row_to_fp32` also refuses a row past the tensor.
+
 - **Vulkan: Gemma 4's F32 PLE projection no longer sits in the weight arena
   (#658).** `per_layer_model_proj`, widened from F16 to F32 at load, was the
   one large matrix kept in the arena, so on Gemma 4 E4B the arena grew to
