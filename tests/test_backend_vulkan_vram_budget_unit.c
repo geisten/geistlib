@@ -1,21 +1,23 @@
 /*
- * test_backend_vulkan_vram_budget_unit — a model that does not fit the
- * device fails with needed vs. available bytes (#466).
+ * test_backend_vulkan_vram_budget_unit — device memory budget and the
+ * weight spill (#466).
  *
- * The Vulkan path keeps weights, the KV cache and the x ring in device
- * memory and has no spill to host memory. Device-local allocations are
- * checked against the heap (lowered by GEIST_VK_VRAM_BUDGET) before they
- * are made, so a model larger than the device fails with a named error, not
- * a bare driver status. Checked here:
+ * The Vulkan path keeps the KV cache and the x ring in device memory;
+ * weights go there too until one would leave less than a reserve, then to
+ * host memory (read over the bus). Device-local allocations are checked
+ * against the heap (lowered by GEIST_VK_VRAM_BUDGET) before they are made,
+ * so what does not fit fails with a named error, not a bare driver status.
+ * Checked here:
  *
  *   - GEIST_VK_VRAM_BUDGET parses bytes and K/M/G suffixes; a malformed or
  *     overflowing value is ignored;
  *   - a device-local buffer past the budget is GEIST_E_OOM with an error
  *     naming the MiB it needs, the MiB in use and the limit; freeing a
  *     buffer returns its bytes; host-visible buffers are not counted;
- *   - loading a model whose weights do not fit fails at load with that
- *     error, and a KV cache that does not fit fails session creation with
- *     it; with room the same model loads and decodes.
+ *   - a model whose weights do not fit loads with them in host memory and
+ *     decodes the same tokens as with them in VRAM; a KV cache that does
+ *     not fit fails session creation with that error; with room the model
+ *     loads without spilling and decodes.
  *
  * SKIPs when the Vulkan backend is not built or has no device.
  */
@@ -38,19 +40,30 @@ constexpr size_t MIB = (size_t) 1 << 20;
  * 4096 rows of F16 KV (8 MiB here) are enough to tell the budgets apart. */
 constexpr size_t CTX = 4096;
 
-/* A Vulkan backend created under GEIST_VK_VRAM_BUDGET=v (unset: nullptr). */
-static struct geist_backend *backend_with(const char *v) {
+/* A Vulkan backend created under GEIST_VK_VRAM_BUDGET=v and
+ * GEIST_VK_WEIGHT_RESERVE=reserve (nullptr: unset). */
+static struct geist_backend *backend_reserve(const char *v, const char *reserve) {
     if (v != nullptr) {
         setenv("GEIST_VK_VRAM_BUDGET", v, 1);
     } else {
         unsetenv("GEIST_VK_VRAM_BUDGET");
+    }
+    if (reserve != nullptr) {
+        setenv("GEIST_VK_WEIGHT_RESERVE", reserve, 1);
+    } else {
+        unsetenv("GEIST_VK_WEIGHT_RESERVE");
     }
     struct geist_backend *be = nullptr;
     if (geist_backend_create("vulkan", nullptr, nullptr, &be) != GEIST_OK) {
         be = nullptr;
     }
     unsetenv("GEIST_VK_VRAM_BUDGET");
+    unsetenv("GEIST_VK_WEIGHT_RESERVE");
     return be;
+}
+
+static struct geist_backend *backend_with(const char *v) {
+    return backend_reserve(v, nullptr);
 }
 
 static int check_parse(void) {
@@ -149,19 +162,22 @@ static int check_buffers(void) {
 
 /* `budget` nullptr: no limit beyond the heap. Returns failures; `expect`
  * is what the load + session + decode should end in. */
-enum outcome { RUNS, LOAD_FAILS, SESSION_FAILS };
+enum outcome { RUNS, SESSION_FAILS };
 
-/* Device bytes after the load and after the session, for sizing budgets. */
+/* Device bytes after the load and after the session (for sizing budgets),
+ * weights spilled to host memory, and the decoded tokens. */
 struct usage {
-    size_t load, session;
+    size_t        load, session, spilled;
+    geist_token_t tok[4];
 };
 
 static int run_model(const struct tf_buf *g,
                      const char          *budget,
+                     const char          *reserve,
                      size_t               ctx,
                      enum outcome         expect,
                      struct usage        *out) {
-    struct geist_backend *be = backend_with(budget);
+    struct geist_backend *be = backend_reserve(budget, reserve);
     if (be == nullptr) {
         return geist_expect(false, "backend for a model run");
     }
@@ -169,19 +185,7 @@ static int run_model(const struct tf_buf *g,
     char                msg[384];
     struct geist_model *m  = nullptr;
     enum geist_status   ls = geist_model_load_from_memory(g->b, g->n, be, &m);
-    if (expect == LOAD_FAILS) {
-        const char *err = geist_last_create_error();
-        snprintf(msg,
-                 sizeof msg,
-                 "budget %s: the load fails with an out-of-device-memory error (%d: %s)",
-                 budget,
-                 (int) ls,
-                 err);
-        fails += geist_expect(ls != GEIST_OK && m == nullptr && err != nullptr &&
-                                      strstr(err, "out of device memory") != nullptr &&
-                                      strstr(err, "MiB") != nullptr,
-                              msg);
-    } else if (ls != GEIST_OK) {
+    if (ls != GEIST_OK) {
         snprintf(msg, sizeof msg, "budget %s: load (%s)", budget, geist_last_create_error());
         fails += geist_expect(false, msg);
     } else {
@@ -209,10 +213,10 @@ static int run_model(const struct tf_buf *g,
                                   msg);
         } else {
             static const geist_token_t prompt[] = {1, 5, 9, 13};
-            geist_token_t              tok      = -1;
+            geist_token_t              tok[4]   = {-1, -1, -1, -1};
             bool ok = ss == GEIST_OK && geist_session_prefill_tokens(s, 4, prompt) == GEIST_OK;
             for (int i = 0; ok && i < 4; i++) {
-                ok = geist_session_decode_step(s, &tok) == GEIST_OK;
+                ok = geist_session_decode_step(s, &tok[i]) == GEIST_OK;
             }
             snprintf(msg,
                      sizeof msg,
@@ -222,7 +226,9 @@ static int run_model(const struct tf_buf *g,
                      geist_backend_errmsg(be));
             fails += geist_expect(ok, msg);
             if (out != nullptr) {
-                *out = (struct usage) {loaded, st->vram_used};
+                *out = (struct usage) {
+                        .load = loaded, .session = st->vram_used, .spilled = st->spilled_weights};
+                memcpy(out->tok, tok, sizeof tok);
             }
         }
         if (s != nullptr) {
@@ -261,22 +267,34 @@ int main(void) {
                                                           .context  = 4096,
                                                           .seed     = 3});
     struct usage  use = {0};
-    fails += run_model(&g, nullptr, CTX, RUNS, &use);
+    fails += run_model(&g, nullptr, nullptr, CTX, RUNS, &use);
     char msg[160];
     snprintf(msg,
              sizeof msg,
              "weights (%zu B) and the KV cache (%zu B) are in device memory",
              use.load,
              use.session - use.load);
-    fails += geist_expect(use.load >= 4 * MIB && use.session - use.load >= 4 * MIB, msg);
-    fails += run_model(&g, "1M", CTX, LOAD_FAILS, nullptr);
-    /* Room for the weights and half the KV cache: the load works, the
-     * session does not. Room for both: it runs. */
+    fails += geist_expect(
+            use.load >= 4 * MIB && use.session - use.load >= 4 * MIB && use.spilled == 0, msg);
+    /* A budget of exactly the load, default reserve (1/16 of it, more than
+     * the weights): the weights spill to host memory, and a short session
+     * (32 KiB of KV) decodes the same tokens as with them in VRAM. */
     char budget[32];
+    snprintf(budget, sizeof budget, "%zuK", use.load >> 10);
+    struct usage spill = {0};
+    fails += run_model(&g, budget, nullptr, 16, RUNS, &spill);
+    snprintf(msg, sizeof msg, "%zu weights spilled, same tokens as in VRAM", spill.spilled);
+    fails +=
+            geist_expect(spill.spilled > 0 && memcmp(spill.tok, use.tok, sizeof use.tok) == 0, msg);
+    /* No reserve, so the weights fill the budget before they spill. Room
+     * for the weights and half the KV cache: the load works, the session
+     * does not. Room for both: it runs, nothing spilled. */
     snprintf(budget, sizeof budget, "%zuK", (use.load + (use.session - use.load) / 2) >> 10);
-    fails += run_model(&g, budget, CTX, SESSION_FAILS, nullptr);
+    fails += run_model(&g, budget, "0", CTX, SESSION_FAILS, nullptr);
     snprintf(budget, sizeof budget, "%zuK", (use.session + MIB) >> 10);
-    fails += run_model(&g, budget, CTX, RUNS, nullptr);
+    struct usage room = {0};
+    fails += run_model(&g, budget, "0", CTX, RUNS, &room);
+    fails += geist_expect(room.spilled == 0, "with room nothing spills");
     free(g.b);
 
     if (fails > 0) {

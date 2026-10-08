@@ -56,10 +56,15 @@ RTX 2080 Ti pp512 ≈ 395 t/s (≈ 517 with `GEIST_M_MAX=128`) and tg ≈ 36 t/s
 is not 32 (RADV) still prefill PQ2_0 with per-row matvecs (#471).
 
 **Memory.** Weight matrices are read from the GGUF mapping and uploaded once.
-There is no spill to host memory (#466): a model must fit the device. The 27B
-Q4_0 (16 GB) runs on a 21 GiB integrated GPU (RADV, `GEIST_VK_DEVICE=1`); on an
-11 GiB card the load fails with an out-of-memory error naming the failing
-allocation, the memory in use and the device limit.
+Weights go to VRAM until one would leave less than a reserve for the KV cache
+and scratch (1/16 of the device, `GEIST_VK_WEIGHT_RESERVE` in bytes with a K/M/G
+suffix overrides it, also counting what other processes hold); the rest go to
+host memory and the shaders read them over the bus (#466), with a one-line note
+on stderr. The 27B Q4_0 (15 GiB) then runs on an 11 GiB RTX 2080 Ti with ~5 GiB
+spilled: pp512 18.7 t/s, tg 2.2 t/s, slower than cpu_x86 on the 9950X (32.6 /
+4.8), so the spill is for hosts whose CPU is the weaker side. The KV cache and
+the x ring do not spill: a session that does not fit fails with an
+out-of-memory error naming the allocation, the memory in use and the limit.
 
 **Scratch placement.** A session's activation scratch is one host-visible
 pool. It goes into the BAR window (device-local and mappable) while that has

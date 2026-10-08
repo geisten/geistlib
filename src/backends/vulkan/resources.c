@@ -58,6 +58,23 @@ vk_heap_budget(const struct vk_state *st, uint32_t heap, size_t *budget, size_t 
     return true;
 }
 
+bool vk_weight_fits_vram(const struct vk_state *st, size_t n) {
+    const uint32_t type = vk_find_mem_type(st, UINT32_MAX, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (type == UINT32_MAX) {
+        return false;
+    }
+    const size_t limit   = vk_vram_limit(st, type);
+    const size_t reserve = st->weight_reserve == SIZE_MAX ? limit / 16u : st->weight_reserve;
+    size_t       free    = limit > st->vram_used ? limit - st->vram_used : 0;
+    size_t       budget = 0, usage = 0;
+    /* what other processes hold is not ours to fill (VK_EXT_memory_budget) */
+    if (vk_heap_budget(st, st->mem_props.memoryTypes[type].heapIndex, &budget, &usage)) {
+        const size_t avail = budget > usage ? budget - usage : 0;
+        free               = avail < free ? avail : free;
+    }
+    return free > reserve && n <= free - reserve;
+}
+
 /* Bytes of heap `heap` in use on the whole device, by every process, as the
  * driver reports it: the heap minus what this process can still allocate. */
 [[nodiscard]] static bool vk_heap_in_use(const struct vk_state *st, uint32_t heap, size_t *out) {
@@ -73,7 +90,8 @@ vk_heap_budget(const struct vk_state *st, uint32_t heap, size_t *budget, size_t 
 
 /* The error of a device-local allocation that does not fit: what it needs,
  * what is in use and the limit, so a model larger than the device fails
- * with numbers instead of a bare driver status. There is no host spill.
+ * with numbers instead of a bare driver status. Weights spill to host
+ * memory before they get here (vk_resolve_weight); KV and scratch do not.
  * With VK_EXT_memory_budget it also names what the whole device holds: when
  * another model or process has the memory, this backend's own count alone
  * makes the failure look impossible. */
@@ -91,8 +109,7 @@ static void vk_vram_exhausted(struct geist_backend  *be,
                                 GEIST_E_OOM,
                                 "vulkan: out of device memory: a %s buffer needs %zu MiB, %zu of "
                                 "%zu MiB are in use by this backend%s; the device reports %zu of "
-                                "%zu MiB in use (other models or processes included; there is no "
-                                "spill to host memory)",
+                                "%zu MiB in use (other models or processes included)",
                                 what,
                                 (n + (1u << 20) - 1) >> 20,
                                 st->vram_used >> 20,
@@ -105,8 +122,7 @@ static void vk_vram_exhausted(struct geist_backend  *be,
     geist_backend_set_error(be,
                             GEIST_E_OOM,
                             "vulkan: out of device memory: a %s buffer needs %zu MiB, %zu of "
-                            "%zu MiB are in use%s (the model does not fit; there is no "
-                            "spill to host memory)",
+                            "%zu MiB are in use%s (the model does not fit)",
                             what,
                             (n + (1u << 20) - 1) >> 20,
                             st->vram_used >> 20,
@@ -194,7 +210,7 @@ enum geist_status vk_memory_info(const struct geist_backend *be, struct geist_ba
                                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     uint32_t                    mem_type = UINT32_MAX;
     if (!device_local && bytes <= (200u << 20) && role != GEIST_BUFFER_STAGING &&
-        role != GEIST_BUFFER_IO) {
+        role != GEIST_BUFFER_IO && (memory_flags & GEIST_MEMORY_HOST) == 0) {
         /* BAR helps buffers the GPU reads hot and the host rarely touches
          * (scratch pool, rope tables). Staging/IO stay in system RAM: the
          * host READS those, and CPU reads from BAR are uncached PCIe. */

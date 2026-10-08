@@ -472,6 +472,8 @@ static size_t vk_parse_bytes(const char *v) {
     const char *strict  = getenv("GEIST_VK_STRICT");
     st->strict          = strict != nullptr && strcmp(strict, "0") != 0;
     st->vram_budget     = vk_parse_bytes(getenv("GEIST_VK_VRAM_BUDGET"));
+    const char *reserve = getenv("GEIST_VK_WEIGHT_RESERVE");
+    st->weight_reserve  = reserve != nullptr ? vk_parse_bytes(reserve) : SIZE_MAX;
     /* Device-local scratch pool (#488), default on; GEIST_VK_SCRATCH_DEVICE=0
      * keeps it host-visible. The arch still asks only where no host path
      * maps a pool slot (scratch_device_wanted); see vk_buffer_create_api. */

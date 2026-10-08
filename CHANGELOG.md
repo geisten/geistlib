@@ -216,6 +216,15 @@ minor release.
   overhead, not the dot products. Test: `test_q5_0_unit`.
 
 ### Changed
+- **Vulkan: weights that do not fit the device spill to host memory (#466).**
+  A model larger than VRAM used to fail at load. Weights now go to VRAM until
+  one would leave less than a reserve (1/16 of the device; overridden by
+  `GEIST_VK_WEIGHT_RESERVE`; other processes' usage counted through
+  `VK_EXT_memory_budget`); the rest live in host memory and are read over the
+  bus, with one note on stderr. Qwen3.8 27B Q4_0 on an RTX 2080 Ti: pp512
+  18.7 t/s, tg 2.2 t/s (cpu_x86 on a 9950X: 32.6 / 4.8). The KV cache does not
+  spill. `test_backend_vulkan_vram_budget_unit` checks a spilled model decodes
+  the same tokens.
 - **Vulkan: tensor-core prefill attention for head_dim 128 and 512 and for
   sliding windows (#475).** The coopmat attention ran only at head_dim 256
   without a window. RTX 2080 Ti, pp512, attention GPU time: Qwen3 0.6B 42.8 →

@@ -279,6 +279,14 @@ struct vk_state {
      * (bytes, K/M/G suffix) or 0: the heap size of the memory type. */
     size_t vram_used;
     size_t vram_budget;
+    /* Weights stop going to VRAM once one would leave less than
+     * weight_reserve of the limit for the KV cache, scratch and x ring; the
+     * rest live in host memory and the shaders read them over the bus
+     * (#466). SIZE_MAX: the default, 1/16 of the limit;
+     * GEIST_VK_WEIGHT_RESERVE (bytes, K/M/G) overrides it. */
+    size_t weight_reserve;
+    size_t spilled_weights;
+    size_t spilled_weight_bytes;
     /* VK_EXT_memory_budget is enabled: vk_heap_budget reports the driver's
      * budget and usage, which see every allocation on the device (#665). */
     bool has_mem_budget;
@@ -673,6 +681,9 @@ void vk_seq_hazard(struct vk_state              *st,
                    const VkDescriptorBufferInfo *infos,
                    const struct vk_access       *acc,
                    uint32_t                      n);
+
+/* A weight of n bytes still fits in VRAM with weight_reserve left over. */
+[[nodiscard]] bool vk_weight_fits_vram(const struct vk_state *st, size_t n);
 
 [[nodiscard]] enum geist_status vk_seq_dispatch_acc(struct geist_backend         *be,
                                                     enum vk_pipe                  pipe,
