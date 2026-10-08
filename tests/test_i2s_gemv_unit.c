@@ -137,6 +137,11 @@ static int scenario(size_t N, size_t K) {
         fprintf(stderr, "  [N=%zu K=%zu] gemm vs m1 Δ=%.3e > 1e-3\n", N, K, max_gd);
         fail = 1;
     }
+    /* Without VNNI both sides are the AVX2 path: exact (any Δ is a bug). */
+    if (!i2s_isa_is_vnni() && max_gd != 0.0) {
+        fprintf(stderr, "  [N=%zu K=%zu] avx2 gemm vs m1 not bit-identical\n", N, K);
+        fail = 1;
+    }
 
     /* (4) x4 row-interleaved path vs scalar oracle (VNNI only). */
     double max_x4 = 0.0, max_x4g = 0.0;
