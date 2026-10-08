@@ -60,6 +60,7 @@ struct cpu_x86_ws_node {
 };
 
 struct cpu_x86_state {
+    int      max_threads; /* geist_backend_opts.max_threads: caps every region; 0 = no cap */
     uint64_t ws_generation;
     struct cpu_x86_ws_node *_Atomic ws_head;
 };

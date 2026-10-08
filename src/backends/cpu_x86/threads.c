@@ -14,7 +14,10 @@
  *     from fewer threads);
  *   - an explicit OMP_NUM_THREADS is the user's choice and stays;
  *   - GEIST_DECODE_THREADS / GEIST_PREFILL_THREADS override either phase
- *     (documented in docs/QUICKSTART.md for every CPU backend).
+ *     (documented in docs/QUICKSTART.md for every CPU backend);
+ *   - geist_backend_opts.max_threads caps both phases: an application that
+ *     shares the machine (geist-runtime#93) gets at most that many threads,
+ *     in every region.
  *
  * Decode is not pinned to one L3 domain: 13-15 % slower on the 9950X
  * (X86.md).
@@ -25,6 +28,8 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "threads.h"
+
+#include "backend_state.h"
 
 #include "hw_probe.h"
 #include "par.h"
@@ -81,8 +86,12 @@ static int region_threads(enum geist_parallel_region region) {
 }
 
 int cpu_x86_parallel_region_begin(struct geist_backend *be, enum geist_parallel_region region) {
-    (void) be;
-    const int target = region_threads(region);
+    const struct cpu_x86_state *st  = be != nullptr ? be->state : nullptr;
+    const int                   cap = st != nullptr ? st->max_threads : 0;
+    int                         target = region_threads(region);
+    if (cap > 0 && (target <= 0 || target > cap)) {
+        target = cap;
+    }
     if (target <= 0) {
         return 0;
     }

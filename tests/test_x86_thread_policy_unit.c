@@ -12,6 +12,7 @@
  *    checked — decode only ever lowers it, prefill moves it either way.
  *    Without OpenMP the hooks size geist_par_for's pool (#618).
  * 3. caps.manages_host_threads mirrors the hooks' presence.
+ * 4. geist_backend_opts.max_threads caps both regions (geist-runtime#93).
  */
 #define _POSIX_C_SOURCE 200809L /* setenv */
 
@@ -147,6 +148,17 @@ static int check_hooks(void) {
         fails += check_region(v, be, GEIST_REGION_PREFILL_BATCH, "prefill", 2, 3);
     }
     geist_backend_destroy(be);
+    if (hooks) { /* max_threads 2: below the env's 3 for prefill, equal for decode, a cap in both */
+        struct geist_backend_opts o = {.max_threads = 2};
+        if (geist_backend_create("cpu_x86", &o, nullptr, &be) != GEIST_OK || be == nullptr) {
+            fprintf(stderr, "FAIL: cpu_x86 with max_threads\n");
+            return fails + 1;
+        }
+        fails += check_region(v, be, GEIST_REGION_PREFILL_BATCH, "prefill, max_threads 2", 4, 2);
+        fails += check_region(v, be, GEIST_REGION_DECODE_STEP, "decode, max_threads 2", 4, 2);
+        fails += check_region(v, be, GEIST_REGION_DECODE_STEP, "decode, max_threads 2", 1, 1); /* never raises */
+        geist_backend_destroy(be);
+    }
     return fails;
 }
 
