@@ -28,11 +28,10 @@
 
 bool weight_skips_arena(const struct geist_backend *be, const struct gguf_tensor_t *t) {
     /* 1 MiB: norms, biases and small mixer tensors keep bindable arena
-     * storage; only the big matrices go through the device copy. The PLE
-     * projection is widened to F32 into the arena (its capacity share is
-     * the source size), so it is not one of them. */
-    return be->desc->caps.weights_device_copy && t->n_dims == 2 && t->nbytes >= (1u << 20) &&
-           strcmp(t->name, "per_layer_model_proj.weight") != 0;
+     * storage; only the big matrices go through the device copy. That
+     * includes the PLE projection: its F32 widening lives in host memory of
+     * its own (layer_wiring.c), not in the arena (#658). */
+    return be->desc->caps.weights_device_copy && t->n_dims == 2 && t->nbytes >= (1u << 20);
 }
 
 [[nodiscard]] enum geist_status compute_weight_arena_capacity(const struct geist_backend *be,
@@ -60,8 +59,9 @@ bool weight_skips_arena(const struct geist_backend *be, const struct gguf_tensor
         }
     }
     /* Headroom for derived buffers: per_layer_model_proj FP32 (2× the
-     * F16 source, ~28 MB extra on Gemma 4 E2B). Round up to 64 MB to
-     * absorb any other small dequant'd globals. */
+     * F16 source, ~28 MB extra on Gemma 4 E2B; not in the arena at all on a
+     * weights_device_copy backend). Round up to 64 MB to absorb any other
+     * small dequant'd globals. */
     total += 64ULL * 1024 * 1024;
     *out_bytes = total;
     return GEIST_OK;
