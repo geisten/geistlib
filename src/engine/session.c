@@ -19,6 +19,7 @@
 
 #include "checked.h"
 #include "heap.h"
+#include "parse.h"
 #include "image_pipeline.h"
 #include "sp_bpe_tokenizer.h"
 #include "gguf_tokenizer.h"
@@ -796,8 +797,10 @@ spec_fallback_single(struct geist_session *s, geist_token_t out_tokens[static 1]
     int                min_L        = atomic_load_explicit(&min_L_cached, memory_order_relaxed);
     if (min_L < 0) {
         const char *env = getenv("GEIST_SPEC_MIN_L");
-        const long  v   = (env != nullptr) ? atol(env) : 2;
-        min_L           = (v <= 0) ? 1 : (v > 8 ? 8 : (int) v);
+        long        v;
+        if (!geist_parse_long(env, &v))
+            v = 2;
+        min_L = (v <= 0) ? 1 : (v > 8 ? 8 : (int) v);
         atomic_store_explicit(&min_L_cached, min_L, memory_order_relaxed);
     }
     if (!native_draft && (int) match_L < min_L) {

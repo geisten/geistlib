@@ -17,6 +17,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "parallel.h"
+#include "parse.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -143,11 +144,9 @@ static int detect_thread_count(void) {
     const char *env = getenv("GEIST_THREADS");
     if (!env)
         env = getenv("OMP_NUM_THREADS");
-    if (env) {
-        const int n = atoi(env);
-        if (n > 0)
-            return n > GEIST_PP_MAX_THREADS ? GEIST_PP_MAX_THREADS : n;
-    }
+    long n;
+    if (geist_parse_long(env, &n) && n > 0)
+        return n > GEIST_PP_MAX_THREADS ? GEIST_PP_MAX_THREADS : (int) n;
     /* Fallback: performance cores on Apple, else online CPUs. */
 #if defined(__APPLE__)
     int    ncpu = 0;
