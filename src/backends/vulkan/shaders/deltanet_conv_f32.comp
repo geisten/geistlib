@@ -1,5 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : enable
+#include "vk_limits.h"
 
 /* Gated-DeltaNet causal depthwise conv + SiLU (fused->deltanet_mix, stage 1).
  *
@@ -16,7 +17,7 @@
  * [(K-1), convd] in/out. Dispatch: gx = ceil(convd / 128). Size-agnostic
  * (no subgroup ops). */
 
-layout(local_size_x = 128) in;
+layout(local_size_x = VK_DN_CONV_WG) in;
 
 layout(set = 0, binding = 0) buffer QKV { float qkv[]; };
 layout(set = 0, binding = 1) readonly buffer W { float cw[]; };
@@ -38,7 +39,7 @@ void main() {
     if (c >= pc.convd) {
         return;
     }
-    const uint KMAX = 8u;
+    const uint KMAX = VK_DN_MAX_CONV_K;
     uint hist = pc.K - 1u;
     float win[KMAX];
     for (uint j = 0u; j < hist; ++j) {

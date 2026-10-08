@@ -1,5 +1,6 @@
 #version 450
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#include "vk_limits.h"
 
 /* f16-cache variant of qkv_prep_f32 (cache offsets in f16 elements).
  * Fused Gemma attention q/k/v prep: per-head RMSNorm (+weight), half-split
@@ -39,7 +40,7 @@ layout(push_constant) uniform Push {
 } pc;
 
 shared float red[256];
-shared float sh[512];
+shared float sh[VK_QKV_PREP_MAX_HEAD_DIM];
 
 void main() {
     uint pos = gl_WorkGroupID.x;
@@ -47,7 +48,8 @@ void main() {
     uint z = gl_WorkGroupID.z;
     uint lid = gl_LocalInvocationID.x;
     uint heads = z == 0u ? pc.n_q_heads : pc.n_kv_heads;
-    if (pos >= pc.seq || head >= heads || (z > 0u && pc.has_kv == 0u) || pc.hd > 512u) {
+    if (pos >= pc.seq || head >= heads || (z > 0u && pc.has_kv == 0u) ||
+        pc.hd > VK_QKV_PREP_MAX_HEAD_DIM) {
         return;
     }
     uint hd = pc.hd;

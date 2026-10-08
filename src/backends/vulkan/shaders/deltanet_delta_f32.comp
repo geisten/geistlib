@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : enable
 #extension GL_KHR_shader_subgroup_arithmetic : enable
 #extension GL_KHR_shader_subgroup_basic : enable
+#include "vk_limits.h"
 
 /* Gated-DeltaNet recurrence + gated per-head RMSNorm (fused->deltanet_mix,
  * stage 2). One workgroup per v-head walks the tokens in order:
@@ -31,7 +32,7 @@
  * Bindings: 0 qkv (conv output) 1 z in/out 2 beta 3 alpha 4 ssm_a 5 dt_bias
  * 6 norm_w 7 delta_state. Dispatch: gx = n_vh. */
 
-layout(local_size_x = 128) in;
+layout(local_size_x = VK_DN_MAX_DV) in; /* one lane per value column */
 
 layout(set = 0, binding = 0) readonly buffer QKV { float qkv[]; };
 layout(set = 0, binding = 1) buffer Z { float z[]; };
@@ -62,9 +63,9 @@ layout(push_constant) uniform Push {
     float qscale;
 } pc;
 
-shared float qs[256];
-shared float ks[256];
-shared vec2  reduce_partial[128]; /* one per subgroup; a subgroup can be 1 lane */
+shared float qs[VK_DN_MAX_DK];
+shared float ks[VK_DN_MAX_DK];
+shared vec2  reduce_partial[VK_DN_MAX_DV]; /* one per subgroup; a subgroup can be 1 lane */
 
 #include "silu.glsl"
 
@@ -108,7 +109,7 @@ float reduce1(float a) {
 void load_qk(uint row, uint hk, uint tid) {
     float sq = 0.0;
     float sk = 0.0;
-    for (uint i = tid; i < pc.dk; i += 128u) {
+    for (uint i = tid; i < pc.dk; i += VK_DN_MAX_DV) {
         float qv = qkv[row + hk * pc.dk + i];
         float kv = qkv[row + pc.keyd + hk * pc.dk + i];
         qs[i] = qv;
@@ -119,7 +120,7 @@ void load_qk(uint row, uint hk, uint tid) {
     reduce2(sq, sk, tid);
     float inv_q = inversesqrt(sq + pc.eps) * pc.qscale;
     float inv_k = inversesqrt(sk + pc.eps);
-    for (uint i = tid; i < pc.dk; i += 128u) {
+    for (uint i = tid; i < pc.dk; i += VK_DN_MAX_DV) {
         qs[i] *= inv_q;
         ks[i] *= inv_k;
     }
