@@ -128,6 +128,14 @@ minor release.
   without a window. RTX 2080 Ti, pp512, attention GPU time: Qwen3 0.6B 42.8 →
   15.7 ms (prefill 1454 → 1635 t/s); Gemma 4 E2B unchanged in total (global
   hd-512 layers 19.3 → 16.0 ms, windowed hd-256 layers ~even).
+- **Vulkan: compiled pipelines persist across processes (#469).** Backend
+  creation built ~70 compute pipelines, ~2 s on an RTX 2080 Ti the first time
+  any new executable ran (the NVIDIA driver keys its shader cache by
+  executable). A `VkPipelineCache` is now loaded from and saved to
+  `~/.cache/geist/vulkan-pipelines-<pipelineCacheUUID>.bin` (or
+  `$XDG_CACHE_HOME/geist`; `GEIST_VK_PIPELINE_CACHE` names the file, `0` turns
+  it off): a new executable's first backend 1962 → 306 ms. Written through a
+  temporary file and a rename; an unreadable or foreign file is an empty cache.
 - **Vulkan shaders: one `silu()` (#465).** `silu.glsl` replaces the four
   copies in `silu_f32`, `silu_mul_f32` and the two DeltaNet kernels; the
   DeltaNet epilogue's norm reduces one value instead of feeding `reduce2` a
