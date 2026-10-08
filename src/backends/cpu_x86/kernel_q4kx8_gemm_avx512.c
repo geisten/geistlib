@@ -48,8 +48,10 @@ constexpr size_t Q8K_SEG = 64;
 __attribute__((unused)) static void quantize_q8k_row(size_t         n_super,
                                                      const float    x[static n_super * 256],
                                                      struct q8k_row out[static n_super]) {
-    float amax = 0.0f;
+    /* One scale per super-block, as Q8_K has: a row-wide max-abs lets one
+     * outlier coarsen every other super-block of the row (#694). */
     for (size_t s = 0; s < n_super; s++) {
+        float amax = 0.0f;
         for (size_t k = 0; k < 256; k++) {
             const float a  = x[s * 256 + k];
             const float ax = a < 0.0f ? -a : a;
@@ -57,11 +59,9 @@ __attribute__((unused)) static void quantize_q8k_row(size_t         n_super,
                 amax = ax;
             }
         }
-    }
-    const float scale = (amax == 0.0f) ? 1.0f : (amax / 127.0f);
-    const float inv   = 1.0f / scale;
-    for (size_t s = 0; s < n_super; s++) {
-        out[s].d = scale;
+        const float scale = (amax == 0.0f) ? 1.0f : (amax / 127.0f);
+        const float inv   = 1.0f / scale;
+        out[s].d          = scale;
         for (size_t k = 0; k < 256; k++) {
             const float v = x[s * 256 + k] * inv;
             const int   q = (int) (v < 0.0f ? v - 0.5f : v + 0.5f);
@@ -414,8 +414,8 @@ static void gemv_tiles(void *ctx, size_t t0, size_t t1) {
  *
  * The quantized activation lives on the stack, Q8K_SEG super-blocks at a
  * time. K up to Q8K_SEG * 256 = 16384 is one segment. A longer row
- * (ffn_down of any model wider than 16384) runs in segments, each quantized
- * with its own scale and added into y. */
+ * (ffn_down of any model wider than 16384) runs in segments added into y;
+ * every super-block carries its own activation scale either way. */
 void q4kx8_gemv_m1(
         size_t N, size_t K, const float *x, const struct block_q4_Kx8 *W, float y[static N]) {
     const size_t n_super = K / 256;

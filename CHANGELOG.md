@@ -10,6 +10,14 @@ minor release.
 
 ### Fixed
 
+- **cpu_x86: the Q4_Kx8 kernels quantize activations with one scale per
+  256-element super-block (#694).** `quantize_q8_Kx4` (prefill) and the M = 1
+  GEMV's quantizer took one max-abs over the whole row and wrote it into every
+  super-block's scale, so a single activation outlier coarsened the rest of
+  the row; llama.cpp's Q8_K, which the layout copies, scales per super-block.
+  Q4_K weights on AVX-512 hosts change numerically (prefill and decode); the
+  kernels and their speed are unchanged.
+
 - **Vulkan: Gemma 4 keeps its scratch pool in VRAM under
   `GEIST_VK_SCRATCH_DEVICE=1` (#488).** The device-local pool skipped every
   model with per-layer embeddings, although PLE's host loops only run when the
