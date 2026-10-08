@@ -5,10 +5,12 @@
  * Layer: ARCHITECTURE.
  * Contains:
  *
- *   compute_weight_arena_capacity — sum tensor bytes for arena sizing
- *   load_tensor_to_buffer         — bump-alloc + memcpy, or mmap-alias
+ *   compute_weight_arena_capacity — first arena chunk from the tensor table
+ *   arena_alloc / weight_arena_open — the chunked β-mode weight arena
+ *   load_tensor_to_buffer         — bump-alloc + memcpy, or mmap-alias,
+ *                                   by the caller's storage intent
  *
- * make_view_2d / make_view_1d / arena_alloc live as static inline in
+ * make_view_2d / make_view_1d / weight_off_arena live as static inline in
  * internal.h.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
@@ -17,6 +19,7 @@
 
 #include "gguf_dequant.h"
 #include "gguf_reader.h"
+#include "checked.h"
 #include "heap.h"
 
 #include <geist.h>
@@ -26,45 +29,136 @@
 #include <stdint.h>
 #include <string.h>
 
-bool weight_skips_arena(const struct geist_backend *be, const struct gguf_tensor_t *t) {
-    /* 1 MiB: norms, biases and small mixer tensors keep bindable arena
-     * storage; only the big matrices go through the device copy. That
-     * includes the PLE projection: its F32 widening lives in host memory of
-     * its own (layer_wiring.c), not in the arena (#658). */
-    return be->desc->caps.weights_device_copy && t->n_dims == 2 && t->nbytes >= (1u << 20);
-}
+/* Growth step of the weight arena: a tensor that does not fit the newest
+ * chunk opens one of this size, or of its own size when larger. A device-
+ * copy backend keeps only bindable tensors there (tens of MiB on the
+ * models in tree), and a chunk is the most a model leaves unused. */
+constexpr size_t WEIGHT_ARENA_CHUNK = 32u << 20;
 
 [[nodiscard]] enum geist_status compute_weight_arena_capacity(const struct geist_backend *be,
                                                               struct gguf_ctx            *gguf,
                                                               size_t *out_bytes) {
-
+    if (be->desc->caps.weights_device_copy) {
+        *out_bytes = WEIGHT_ARENA_CHUNK;
+        return GEIST_OK;
+    }
     size_t       total = 0;
     const size_t n     = gguf_tensor_count(gguf);
     for (size_t i = 0; i < n; i++) {
         const struct gguf_tensor_t *t = gguf_tensor_at(gguf, i);
-        if (t == nullptr || weight_skips_arena(be, t))
+        if (t == nullptr) {
             continue;
-        const size_t aligned = (t->nbytes + 63u) & ~((size_t) 63u);
-        total += aligned;
+        }
+        total += (t->nbytes + 63u) & ~((size_t) 63u);
         /* A small half-precision matrix a backend refuses to resolve is
-         * widened to F32 (load_layer_proj): load_norm_to_f32_buffer stages the
-         * source in the arena a second time and adds the F32 copy — the bump
-         * allocator frees nothing. Counted whatever the caps say: the refusal
-         * comes from resolve_weight, not from a cap (#561). A backend that
-         * resolves the matrix natively leaves the surcharge unused. */
+         * widened to F32 (load_layer_proj), which adds the F32 copy to the
+         * arena beside the file's bytes. Counted whatever the caps say: the
+         * refusal comes from resolve_weight, not from a cap (#561). A
+         * backend that resolves the matrix natively leaves it unused. */
         const size_t elems = gguf_tensor_elem_count(t);
         if (t->n_dims == 2 && (t->dtype == GGUF_TYPE_F16 || t->dtype == GGUF_TYPE_BF16) &&
             elems <= (4u << 20)) {
-            total += aligned + ((elems * sizeof(float) + 63u) & ~((size_t) 63u));
+            total += (elems * sizeof(float) + 63u) & ~((size_t) 63u);
         }
     }
     /* Headroom for derived buffers: per_layer_model_proj FP32 (2× the
-     * F16 source, ~28 MB extra on Gemma 4 E2B; not in the arena at all on a
-     * weights_device_copy backend). Round up to 64 MB to absorb any other
-     * small dequant'd globals. */
+     * F16 source, ~28 MB extra on Gemma 4 E2B) and the F32 form of a
+     * narrower norm gamma. Round up to 64 MB to absorb any other small
+     * dequant'd globals; past it the arena grows a chunk. */
     total += 64ULL * 1024 * 1024;
     *out_bytes = total;
     return GEIST_OK;
+}
+
+/* Append a mapped backend buffer of `bytes` as the arena's newest chunk. */
+[[nodiscard]] static enum geist_status arena_add_chunk(struct transformer_arch_state *st,
+                                                       size_t                         bytes) {
+    struct geist_backend            *be = st->backend;
+    const struct geist_backend_vtbl *v  = be->desc->vtbl;
+    if (st->n_weight_arena_chunks == st->cap_weight_arena_chunks) {
+        const size_t cap = st->cap_weight_arena_chunks == 0 ? 4 : 2 * st->cap_weight_arena_chunks;
+        struct geist_buffer **nc = heap_alloc_array_aligned(struct geist_buffer *, cap);
+        if (nc == nullptr) {
+            geist_backend_set_error(be, GEIST_E_OOM, "transformer: weight arena chunk list");
+            return GEIST_E_OOM;
+        }
+        if (st->n_weight_arena_chunks > 0) {
+            memcpy(nc, st->weight_arena_chunks, st->n_weight_arena_chunks * sizeof *nc);
+        }
+        void *old = st->weight_arena_chunks;
+        safe_free(&old);
+        st->weight_arena_chunks     = nc;
+        st->cap_weight_arena_chunks = cap;
+    }
+    struct geist_buffer *buf = nullptr;
+    enum geist_status    s =
+            v->buffer_create(be, bytes, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_MAPPED, &buf);
+    void *base = s == GEIST_OK ? v->buffer_map(buf) : nullptr;
+    if (base == nullptr) {
+        if (buf != nullptr) {
+            v->buffer_destroy(be, buf);
+        }
+        geist_backend_set_error(
+                be, GEIST_E_OOM, "transformer: weight arena alloc failed (%zu bytes)", bytes);
+        return GEIST_E_OOM;
+    }
+    st->weight_arena_chunks[st->n_weight_arena_chunks++] = buf;
+    st->weight_arena                                     = base;
+    st->weight_arena_capacity                            = bytes;
+    st->weight_arena_used                                = 0;
+    return GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status keep_host_weight(struct transformer_arch_state *st, void *p) {
+    if (st->n_host_weights == st->cap_host_weights) {
+        const size_t cap = st->cap_host_weights == 0 ? 16 : 2 * st->cap_host_weights;
+        void       **nl  = heap_alloc_array_aligned(void *, cap);
+        if (nl == nullptr) {
+            safe_free(&p);
+            geist_backend_set_error(st->backend, GEIST_E_OOM, "transformer: host weight list");
+            return GEIST_E_OOM;
+        }
+        if (st->n_host_weights > 0) {
+            memcpy(nl, st->host_weights, st->n_host_weights * sizeof *nl);
+        }
+        void *old = st->host_weights;
+        safe_free(&old);
+        st->host_weights     = nl;
+        st->cap_host_weights = cap;
+    }
+    st->host_weights[st->n_host_weights++] = p;
+    return GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status weight_arena_open(struct transformer_arch_state *st, size_t bytes) {
+    return arena_add_chunk(st, bytes);
+}
+
+void *arena_alloc(struct transformer_arch_state *st, size_t bytes, size_t align) {
+    if (align < 64) {
+        align = 64;
+    }
+    const size_t mask         = align - 1;
+    size_t       aligned_used = (st->weight_arena_used + mask) & ~mask;
+    if (aligned_used > st->weight_arena_capacity ||
+        bytes > st->weight_arena_capacity - aligned_used) {
+        /* A chunk's mapping is at least 64-byte aligned, so a fresh one
+         * starts aligned for any align <= 64; a wider one pads. */
+        size_t need;
+        if (ckd_add(&need, bytes, align)) {
+            geist_backend_set_error(st->backend, GEIST_E_OOM, "transformer: weight arena overflow");
+            return nullptr;
+        }
+        if (arena_add_chunk(st, need > WEIGHT_ARENA_CHUNK ? need : WEIGHT_ARENA_CHUNK) !=
+            GEIST_OK) {
+            return nullptr;
+        }
+        const uintptr_t base = (uintptr_t) st->weight_arena;
+        aligned_used         = (size_t) (((base + mask) & ~(uintptr_t) mask) - base);
+    }
+    void *p               = (uint8_t *) st->weight_arena + aligned_used;
+    st->weight_arena_used = aligned_used + bytes;
+    return p;
 }
 
 /* Reorder the rows of a llama-family attn_q / attn_k from the GGUF's
@@ -134,7 +228,7 @@ rope_il_rows_alloc(struct transformer_arch_state *st, struct gguf_ctx *gguf, siz
                                                         const char                    *name,
                                                         size_t                expected_elems,
                                                         struct geist_buffer **out_buf) {
-    return load_f32_buffer_rope_il(st, gguf, name, expected_elems, 0, out_buf);
+    return load_f32_buffer_rope_il(st, gguf, name, expected_elems, 0, WEIGHT_BIND, out_buf);
 }
 
 [[nodiscard]] enum geist_status load_f32_buffer_rope_il(struct transformer_arch_state *st,
@@ -142,29 +236,37 @@ rope_il_rows_alloc(struct transformer_arch_state *st, struct gguf_ctx *gguf, siz
                                                         const char                    *name,
                                                         size_t                expected_elems,
                                                         size_t                rope_il_head_dim,
+                                                        enum weight_storage   storage,
                                                         struct geist_buffer **out_buf) {
     struct geist_backend *be = st->backend;
     *out_buf                 = nullptr;
 
-    /* Only an F32 tensor keeps its staged buffer, so only that one is staged
-     * permuted; a narrower one is permuted after widening, below. */
-    const struct gguf_tensor_t *t0  = gguf_get_tensor(gguf, name);
-    const bool                  f32 = t0 != nullptr && t0->dtype == GGUF_TYPE_F32;
-    const struct gguf_tensor_t *t   = nullptr;
-    struct geist_buffer        *buf = nullptr;
-    enum geist_status           s   = load_tensor_to_buffer_rope_il(
-            st, gguf, name, expected_elems, f32 ? rope_il_head_dim : 0, &t, &buf);
-    if (s != GEIST_OK) {
-        return s;
+    /* An F32 tensor is the buffer itself, staged (and permuted) as kernels
+     * bind it. A narrower one is widened straight from the file's bytes,
+     * below, and permuted after widening; nothing of it is staged. */
+    const struct gguf_tensor_t *t = gguf_get_tensor(gguf, name);
+    if (t != nullptr && t->dtype == GGUF_TYPE_F32) {
+        const struct gguf_tensor_t *t_staged = nullptr;
+        return load_tensor_to_buffer_rope_il(
+                st, gguf, name, expected_elems, rope_il_head_dim, storage, &t_staged, out_buf);
     }
-    if (t->dtype == GGUF_TYPE_F32) {
-        *out_buf = buf;
-        return GEIST_OK;
+    if (t == nullptr) {
+        geist_backend_set_error(
+                be, GEIST_E_NOT_FOUND, "transformer: tensor '%s' not found in GGUF", name);
+        return GEIST_E_NOT_FOUND;
+    }
+    if (gguf_tensor_elem_count(t) != expected_elems) {
+        geist_backend_set_error(be,
+                                GEIST_E_FORMAT,
+                                "transformer: '%s' has %zu elements, expected %zu",
+                                name,
+                                gguf_tensor_elem_count(t),
+                                expected_elems);
+        return GEIST_E_FORMAT;
     }
     const size_t n_rows = t->n_dims == 2 ? (size_t) t->dims[1] : 0;
     if (rope_il_head_dim > 0 &&
         (rope_il_head_dim % 2 != 0 || n_rows == 0 || n_rows % rope_il_head_dim != 0)) {
-        be->desc->vtbl->buffer_destroy(be, buf);
         geist_backend_set_error(be,
                                 GEIST_E_FORMAT,
                                 "transformer: '%s' cannot be permuted for RoPE "
@@ -177,12 +279,10 @@ rope_il_rows_alloc(struct transformer_arch_state *st, struct gguf_ctx *gguf, siz
 
     /* Not F32 in the file (e.g. the F16 gammas of bitnet-embedding GGUFs).
      * Every kernel that consumes a norm gamma reads F32, so convert once
-     * here rather than teaching rmsnorm a dtype. The staged buffer is
-     * dropped: its bytes are the file's, not the F32 we need. */
-    be->desc->vtbl->buffer_destroy(be, buf);
-    buf = nullptr;
-
-    float *fp32 = gguf_dequant_to_fp32(t);
+     * here rather than teaching rmsnorm a dtype. */
+    struct geist_buffer *buf = nullptr;
+    enum geist_status    s;
+    float               *fp32 = gguf_dequant_to_fp32(t);
     if (fp32 == nullptr) {
         geist_backend_set_error(be,
                                 GEIST_E_FORMAT,
@@ -210,14 +310,21 @@ rope_il_rows_alloc(struct transformer_arch_state *st, struct gguf_ctx *gguf, siz
         safe_free(&p);
         fp32 = permuted;
     }
+    if (st->weight_arena != nullptr && weight_off_arena(be, storage)) {
+        /* A matrix the backend copies to the device: the F32 form is host
+         * memory of the state's own, aliased like the mmap pages of an F32
+         * matrix would be. */
+        s = keep_host_weight(st, fp32);
+        return s != GEIST_OK ? s
+                             : be->desc->vtbl->buffer_create_aliased(
+                                       be, fp32, bytes, GEIST_BUFFER_WEIGHT, out_buf);
+    }
     if (st->weight_arena != nullptr) {
         void *arena_ptr = arena_alloc(st, bytes, 64);
         if (arena_ptr == nullptr) {
             void *p = fp32;
             safe_free(&p);
-            geist_backend_set_error(
-                    be, GEIST_E_OOM, "transformer: weight arena exhausted at '%s' fp32", name);
-            return GEIST_E_OOM;
+            return GEIST_E_OOM; /* arena_alloc said why */
         }
         memcpy(arena_ptr, fp32, bytes);
         void *p = fp32;
@@ -245,16 +352,19 @@ rope_il_rows_alloc(struct transformer_arch_state *st, struct gguf_ctx *gguf, siz
                                                       struct gguf_ctx               *gguf,
                                                       const char                    *name,
                                                       size_t                         expected_elems,
+                                                      enum weight_storage            storage,
                                                       const struct gguf_tensor_t   **out_t,
                                                       struct geist_buffer          **out_buf) {
-    return load_tensor_to_buffer_rope_il(st, gguf, name, expected_elems, 0, out_t, out_buf);
+    return load_tensor_to_buffer_rope_il(
+            st, gguf, name, expected_elems, 0, storage, out_t, out_buf);
 }
 
 [[nodiscard]] enum geist_status load_tensor_to_buffer_rope_il(struct transformer_arch_state *st,
                                                               struct gguf_ctx               *gguf,
                                                               const char                    *name,
-                                                              size_t expected_elems,
-                                                              size_t rope_il_head_dim,
+                                                              size_t              expected_elems,
+                                                              size_t              rope_il_head_dim,
+                                                              enum weight_storage storage,
                                                               const struct gguf_tensor_t **out_t,
                                                               struct geist_buffer **out_buf) {
 
@@ -285,7 +395,9 @@ rope_il_rows_alloc(struct transformer_arch_state *st, struct gguf_ctx *gguf, siz
      *   β mode (the default where caps.weights_need_backend_arena is
      *   set, i.e. Vulkan; GEIST_WEIGHT_MMAP=0 elsewhere): weight bytes
      *   are copied from the GGUF mmap into a backend-owned arena via
-     *   bump-allocation; gguf_close runs after all loads.
+     *   bump-allocation; gguf_close runs after all loads. On a
+     *   weights_device_copy backend only WEIGHT_BIND tensors are; the rest
+     *   alias the mmap as below (weight_off_arena).
      *
      *   mmap-alias mode (the CPU and Metal default): weight bytes are NOT
      *   copied; the mmap pointer is wrapped in an aliased buffer.
@@ -319,7 +431,7 @@ rope_il_rows_alloc(struct transformer_arch_state *st, struct gguf_ctx *gguf, siz
                                     rope_il_head_dim);
             return GEIST_E_FORMAT;
         }
-        if (st->weight_arena == nullptr || weight_skips_arena(be, t)) {
+        if (st->weight_arena == nullptr || weight_off_arena(be, storage)) {
             const size_t row_bytes = t->nbytes / n_rows;
             if (be->desc->caps.weights_device_copy) {
                 void *rows = rope_il_rows_alloc(st, gguf, t->nbytes);
@@ -358,19 +470,11 @@ rope_il_rows_alloc(struct transformer_arch_state *st, struct gguf_ctx *gguf, siz
             return GEIST_OK;
         }
     }
-    if (st->weight_arena != nullptr && !weight_skips_arena(be, t)) {
+    if (st->weight_arena != nullptr && !weight_off_arena(be, storage)) {
         /* β: bump-allocate + memcpy. */
         raw_ptr = arena_alloc(st, t->nbytes, 64);
         if (raw_ptr == nullptr) {
-            geist_backend_set_error(be,
-                                    GEIST_E_OOM,
-                                    "transformer: weight arena exhausted at '%s' "
-                                    "(used %zu, capacity %zu, need %zu)",
-                                    name,
-                                    st->weight_arena_used,
-                                    st->weight_arena_capacity,
-                                    t->nbytes);
-            return GEIST_E_OOM;
+            return GEIST_E_OOM; /* arena_alloc said why */
         }
         if (rope_il_head_dim > 0) {
             permute_rope_rows(n_rows,

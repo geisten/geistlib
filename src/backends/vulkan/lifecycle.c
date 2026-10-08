@@ -262,6 +262,10 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     st->sg32_pinnable = p13.minSubgroupSize <= 32u && p13.maxSubgroupSize >= 32u &&
                         (p13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0u &&
                         p13.maxComputeWorkgroupSubgroups * 32u >= 256u;
+    st->dn_scan       = (sgp.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0u &&
+                        (sgp.supportedOperations & VK_SUBGROUP_FEATURE_CLUSTERED_BIT) != 0u &&
+                        sgp.subgroupSize >= VK_DN_SCAN_LANES &&
+                        (p13.minSubgroupSize == 0u || p13.minSubgroupSize >= VK_DN_SCAN_LANES);
     return GEIST_OK;
 }
 

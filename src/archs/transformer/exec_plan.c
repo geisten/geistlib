@@ -5,6 +5,7 @@
 
 #include "exec_plan.h"
 #include "arch_state.h"
+#include "forward.h"
 
 #include "error.h"
 #include "heap.h"
@@ -297,10 +298,11 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
     {
         struct geist_backend     *be = st->backend;
         struct geist_fusion_query q  = {.op = GEIST_FUSED_EMBEDDING_LOOKUP_SCALED, .m = 1};
-        /* A table read one row per token is resident whole once a
-         * device binds it; gathered on the host it stays demand-paged.
-         * token_embd only when untied — tied, the lm_head binds it anyway. */
-        const bool host_lookup                = be->desc->caps.lookup_tables_on_host;
+        /* A table read one row per token is gathered on the host where
+         * transformer_lookup_on_host says so: it stays demand-paged in the
+         * mmap and costs no device memory. token_embd only when untied —
+         * tied, the lm_head's device copy serves the lookup. */
+        const bool host_lookup                = transformer_lookup_on_host(be);
         const bool embed_only                 = st->output_table.buffer != st->embed_table.buffer;
         q.d_model                             = st->d_model;
         q.table_dtype                         = st->embed_table.dtype;

@@ -265,6 +265,10 @@ struct vk_state {
      * creation, or the native size is 32. When false the mN dispatch
      * loops the (size-agnostic) matvec kernels instead (#471). */
     bool gemm_sg32;
+    /* deltanet_scan_f32 can run: clustered subgroup ops in compute, and no
+     * subgroup narrower than its VK_DN_SCAN_LANES cluster. Otherwise the
+     * DeltaNet mixer stays on deltanet_delta_f32 (#467). */
+    bool dn_scan;
 
     /* Device feature probes. */
     bool has_fp16;     /* shaderFloat16 + 16-bit storage */

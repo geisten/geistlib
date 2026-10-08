@@ -86,8 +86,11 @@ load_layer_proj_rope_il(struct transformer_arch_state    *st,
     struct geist_backend       *be  = st->backend;
     const struct gguf_tensor_t *t   = nullptr;
     struct geist_buffer        *buf = nullptr;
-    enum geist_status           s =
-            load_tensor_to_buffer_rope_il(st, gguf, name, n_out * n_in, rope_il_head_dim, &t, &buf);
+    /* A matrix behind a geist_weight is resolved below; one without is
+     * bound as it is. */
+    const enum weight_storage storage = out_weight != nullptr ? WEIGHT_LINEAR : WEIGHT_BIND;
+    enum geist_status         s       = load_tensor_to_buffer_rope_il(
+            st, gguf, name, n_out * n_in, rope_il_head_dim, storage, &t, &buf);
     if (s != GEIST_OK) {
         return s;
     }
@@ -139,7 +142,7 @@ load_layer_proj_rope_il(struct transformer_arch_state    *st,
              * skipped the arena: the GGUF pages behind it need not stay
              * resident (#468). A host fallback that still reads them faults
              * them back in from the file. */
-            if (rs == GEIST_OK && weight_skips_arena(be, t)) {
+            if (rs == GEIST_OK && weight_off_arena(be, storage)) {
                 gguf_release_range(gguf, out_weight->raw, out_weight->raw_nbytes);
             }
             /* A backend without a half-precision dense linear (vulkan) gets
@@ -165,7 +168,8 @@ load_layer_proj_rope_il(struct transformer_arch_state    *st,
             }
             if (rs == GEIST_E_UNSUPPORTED && half) {
                 struct geist_buffer *buf32 = nullptr;
-                s = load_f32_buffer_rope_il(st, gguf, name, n_out * n_in, rope_il_head_dim, &buf32);
+                s                          = load_f32_buffer_rope_il(
+                        st, gguf, name, n_out * n_in, rope_il_head_dim, WEIGHT_LINEAR, &buf32);
                 if (s != GEIST_OK) {
                     return s;
                 }
@@ -657,9 +661,18 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
     const struct gguf_tensor_t *t   = nullptr;
     struct geist_buffer        *buf = nullptr;
 
-    /* token_embd: [VOCAB, HIDDEN], any supported dtype. */
-    enum geist_status s = load_tensor_to_buffer(
-            st, gguf, "token_embd.weight", (size_t) st->vocab_size * st->d_model, &t, &buf);
+    /* token_embd: [VOCAB, HIDDEN], any supported dtype. The lm_head when
+     * tied; beside a usable output.weight only a lookup table. */
+    const struct gguf_tensor_t *t_lm = gguf_get_tensor(gguf, "output.weight");
+    const bool        tied = t_lm == nullptr || !map_gguf_dtype(t_lm->dtype).supported ||
+                             gguf_tensor_elem_count(t_lm) != (size_t) st->vocab_size * st->d_model;
+    enum geist_status s    = load_tensor_to_buffer(st,
+                                                   gguf,
+                                                   "token_embd.weight",
+                                                   (size_t) st->vocab_size * st->d_model,
+                                                   tied ? WEIGHT_LINEAR : WEIGHT_LOOKUP,
+                                                   &t,
+                                                   &buf);
     if (s != GEIST_OK) {
         return s;
     }
@@ -680,51 +693,51 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
     }
     /* Pre-resolve lm_head kernel pointers. A standalone `output.weight`
      * (e.g. HF1BitLLM/Llama3-8B-1.58: Q6_K beside a Q4_K token_embd) is
-     * used when present; otherwise lm_head is tied and embed_table_w wraps
-     * the token_embd buffer. */
+     * used when present in a supported dtype and shape; otherwise lm_head
+     * is tied and embed_table_w wraps the token_embd buffer. */
     {
         const struct geist_backend_vtbl *v = be->desc->vtbl;
 
         const struct gguf_tensor_t *t_out   = nullptr;
         struct geist_buffer        *buf_out = nullptr;
         bool                        untied  = false;
-        if (load_tensor_to_buffer(st,
-                                  gguf,
-                                  "output.weight",
-                                  (size_t) st->vocab_size * st->d_model,
-                                  &t_out,
-                                  &buf_out) == GEIST_OK) {
-            struct dtype_map_entry dmo = map_gguf_dtype(t_out->dtype);
-            if (dmo.supported) {
-                if (global_track_buf(st, buf_out) != 0) {
-                    be->desc->vtbl->buffer_destroy(be, buf_out);
-                    return GEIST_E_INTERNAL;
-                }
-                void *host_out = v->buffer_map(buf_out);
-                if (host_out == nullptr) {
-                    geist_backend_set_error(be,
-                                            GEIST_E_BACKEND,
-                                            "transformer: buffer_map(output.weight) returned null");
-                    return GEIST_E_BACKEND;
-                }
-                st->embed_table_w = (struct geist_weight) {
-                        .raw        = host_out,
-                        .raw_nbytes = t_out->nbytes,
-                        .n_in       = (int32_t) st->d_model,
-                        .n_out      = (int32_t) st->vocab_size,
-                        .dtype      = (uint16_t) dmo.dtype,
-                };
-                st->output_table = make_view_2d(buf_out,
-                                                dmo.dtype,
-                                                dmo.layout,
-                                                (int64_t) st->vocab_size,
-                                                (int64_t) st->d_model);
-                v->buffer_unmap(buf_out);
-                untied = true;
-            } else {
-                /* dtype unsupported — drop the buffer, fall back to tied. */
-                be->desc->vtbl->buffer_destroy(be, buf_out);
+        if (!tied) {
+            s = load_tensor_to_buffer(st,
+                                      gguf,
+                                      "output.weight",
+                                      (size_t) st->vocab_size * st->d_model,
+                                      WEIGHT_LINEAR,
+                                      &t_out,
+                                      &buf_out);
+            if (s != GEIST_OK) {
+                return s;
             }
+            const struct dtype_map_entry dmo = map_gguf_dtype(t_out->dtype); /* supported */
+            if (global_track_buf(st, buf_out) != 0) {
+                be->desc->vtbl->buffer_destroy(be, buf_out);
+                return GEIST_E_INTERNAL;
+            }
+            void *host_out = v->buffer_map(buf_out);
+            if (host_out == nullptr) {
+                geist_backend_set_error(be,
+                                        GEIST_E_BACKEND,
+                                        "transformer: buffer_map(output.weight) returned null");
+                return GEIST_E_BACKEND;
+            }
+            st->embed_table_w = (struct geist_weight) {
+                    .raw        = host_out,
+                    .raw_nbytes = t_out->nbytes,
+                    .n_in       = (int32_t) st->d_model,
+                    .n_out      = (int32_t) st->vocab_size,
+                    .dtype      = (uint16_t) dmo.dtype,
+            };
+            st->output_table = make_view_2d(buf_out,
+                                            dmo.dtype,
+                                            dmo.layout,
+                                            (int64_t) st->vocab_size,
+                                            (int64_t) st->d_model);
+            v->buffer_unmap(buf_out);
+            untied = true;
         }
 
         if (!untied) {
@@ -770,6 +783,7 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
                               gguf,
                               "per_layer_token_embd.weight",
                               (size_t) st->vocab_size * st->ple_out,
+                              WEIGHT_LOOKUP,
                               &t,
                               &buf);
     if (s != GEIST_OK) {
@@ -828,11 +842,14 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
          *   mmap        → no arena; the backend allocates its own buffer
          *                 and we buffer_upload into it. */
         const size_t bytes = (size_t) st->ple_out * st->d_model * sizeof(float);
-        if (be->desc->caps.weights_device_copy) {
-            st->model_proj_host = fp32;
-            s = be->desc->vtbl->buffer_create_aliased(be, fp32, bytes, GEIST_BUFFER_WEIGHT, &buf);
+        if (weight_off_arena(be, WEIGHT_LINEAR)) {
+            s = keep_host_weight(st, fp32);
+            if (s == GEIST_OK) {
+                s = be->desc->vtbl->buffer_create_aliased(
+                        be, fp32, bytes, GEIST_BUFFER_WEIGHT, &buf);
+            }
             if (s != GEIST_OK) {
-                return s; /* model_proj_host is freed with the state */
+                return s; /* fp32 is freed with the state, or already was */
             }
         } else if (st->weight_arena != nullptr) {
             void *arena_ptr = arena_alloc(st, bytes, 64);
@@ -903,8 +920,13 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
     }
 
     /* per_layer_proj_norm: [HIDDEN_PER_LAYER], F32. */
-    s = load_tensor_to_buffer(
-            st, gguf, "per_layer_proj_norm.weight", (size_t) st->hidden_per_layer, &t, &buf);
+    s = load_tensor_to_buffer(st,
+                              gguf,
+                              "per_layer_proj_norm.weight",
+                              (size_t) st->hidden_per_layer,
+                              WEIGHT_BIND,
+                              &t,
+                              &buf);
     if (s != GEIST_OK) {
         return s;
     }

@@ -383,7 +383,7 @@ enum geist_status transformer_gather_rows(struct transformer_arch_session *sess,
     if (ckd_mul(&floats, n, row)) {
         return GEIST_E_INVALID_ARG;
     }
-    const bool staged = be->desc->caps.lookup_tables_on_host;
+    const bool staged = transformer_lookup_on_host(be);
     float     *rows   = staged ? lookup_rows(sess, floats) : (float *) v->buffer_map(dst);
     if (rows == nullptr) {
         return staged ? GEIST_E_OOM : GEIST_E_BACKEND;
@@ -436,19 +436,16 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_se
             on_device = true;
         }
         if (!on_device) {
-            float *dst = (float *) v->buffer_map(sess->scratch_ple_lookup);
-            if (dst == nullptr) {
-                return GEIST_E_BACKEND; /* the backend said why */
-            }
-            s = dequant_one_row(be, &st->ple_table, (size_t) token_id, dst);
+            s = transformer_gather_rows(sess,
+                                        &st->ple_table,
+                                        1,
+                                        &token_id,
+                                        st->ple_out,
+                                        st->config.ple_table_scale,
+                                        sess->scratch_ple_lookup);
             if (s != GEIST_OK) {
-                v->buffer_unmap(sess->scratch_ple_lookup);
                 return s;
             }
-            for (size_t i = 0; i < (size_t) st->ple_out; i++) {
-                dst[i] *= st->config.ple_table_scale;
-            }
-            v->buffer_unmap(sess->scratch_ple_lookup);
         }
     }
 

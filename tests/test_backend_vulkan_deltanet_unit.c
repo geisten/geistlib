@@ -5,11 +5,14 @@
  * this backend keeps in VRAM (not host-mappable) — the placement the engine
  * uses for a real session.
  *
- * Each geometry runs a multi-row prefill and then a single decode row that
- * continues from the advanced state: that catches state reset, double
- * advance and the seq == 1 path. Covers the qwen35 shapes that matter: a
- * 1:1 head ratio, the 27B-style 1:3 k/v-head sharing (tiled hk = hv % n_kh),
- * 128-wide heads, odd sizes, and conv kernels other than 4.
+ * Each geometry runs a multi-row prefill and then a second call that
+ * continues from the advanced state (one decode row, or a second prefill):
+ * that catches state reset, double advance and the seq == 1 path. Covers the
+ * qwen35 shapes that matter: a 1:1 head ratio, the 27B-style 1:3 k/v-head
+ * sharing (tiled hk = hv % n_kh), 128-wide heads, odd sizes, conv kernels
+ * other than 4, and prefills longer than the conv's load batch and the
+ * scan's column tile (#467). Where the device runs deltanet_scan_f32, d_k
+ * not a multiple of 4 and d_k > 128 still take deltanet_delta_f32.
  *
  * Load-time geometry (#470): the probe answers exactly the shader limits
  * (d_k <= 256, d_v <= 128, conv 2..8), and an in-memory qwen35 hybrid
@@ -35,6 +38,7 @@ struct geom {
     const char *name;
     size_t      nkh, nvh, dk, dv, K, seq;
     double      tol;
+    size_t      seq2; /* rows of the continuation call; 0 = one decode row */
 };
 
 static bool make_buf(struct geist_backend  *be,
@@ -163,18 +167,20 @@ static bool run_geom(struct geist_backend *be, const struct geom *g) {
            se);
     ok = ok && ze < g->tol && ce < 1e-6 && se < g->tol;
 
-    /* One decode row continuing from the advanced state. */
-    float *qd  = geist_test_fill(cd, 0.19f, 0.0f, 0.35f, 0.0f),
-          *zd  = geist_test_fill(vd, 0.23f, 0.0f, 0.25f, 0.0f);
-    float *bd1 = malloc(g->nvh * sizeof(float)), *ad1 = malloc(g->nvh * sizeof(float));
-    for (size_t i = 0; i < g->nvh; i++) {
-        bd1[i] = 0.2f - (float) i * 0.3f;
-        ad1[i] = -0.1f + (float) i * 0.2f;
+    /* The continuation call from the advanced state (the buffers hold
+     * g->seq rows, so seq2 <= seq). */
+    const size_t n2 = g->seq2 != 0 ? g->seq2 : 1;
+    float       *qd = geist_test_fill(n2 * cd, 0.19f, 0.0f, 0.35f, 0.0f),
+          *zd       = geist_test_fill(n2 * vd, 0.23f, 0.0f, 0.25f, 0.0f);
+    float *bd1 = malloc(n2 * g->nvh * sizeof(float)), *ad1 = malloc(n2 * g->nvh * sizeof(float));
+    for (size_t i = 0; i < n2 * g->nvh; i++) {
+        bd1[i] = 0.2f - (float) (i % 7) * 0.3f;
+        ad1[i] = -0.1f + (float) (i % 5) * 0.2f;
     }
-    float *qd_ref = malloc(cd * sizeof(float)), *zd_ref = malloc(vd * sizeof(float));
-    memcpy(qd_ref, qd, cd * sizeof(float));
-    memcpy(zd_ref, zd, vd * sizeof(float));
-    deltanet_mix_ref(1,
+    float *qd_ref = malloc(n2 * cd * sizeof(float)), *zd_ref = malloc(n2 * vd * sizeof(float));
+    memcpy(qd_ref, qd, n2 * cd * sizeof(float));
+    memcpy(zd_ref, zd, n2 * vd * sizeof(float));
+    deltanet_mix_ref(n2,
                      g->nkh,
                      g->nvh,
                      g->dk,
@@ -191,25 +197,27 @@ static bool run_geom(struct geist_backend *be, const struct geom *g) {
                      zd_ref,
                      cs_ref,
                      s_ref);
-    ok       = ok && v->buffer_upload(bq, cd * sizeof(float), (const uint8_t *) qd) == GEIST_OK &&
-               v->buffer_upload(bz, vd * sizeof(float), (const uint8_t *) zd) == GEIST_OK &&
-               v->buffer_upload(bb, g->nvh * sizeof(float), (const uint8_t *) bd1) == GEIST_OK &&
-               v->buffer_upload(ba, g->nvh * sizeof(float), (const uint8_t *) ad1) == GEIST_OK;
-    tq       = geist_test_tensor_f32(bq, 2, 1, (int64_t) cd, 0);
-    tz       = geist_test_tensor_f32(bz, 2, 1, (int64_t) vd, 0);
-    tb       = geist_test_tensor_f32(bb, 2, 1, (int64_t) g->nvh, 0);
-    ta       = geist_test_tensor_f32(ba, 2, 1, (int64_t) g->nvh, 0);
-    args.seq = 1;
-    ok       = ok && f->deltanet_mix(be, &args) == GEIST_OK;
-    float *zd_got = malloc(vd * sizeof(float));
-    ok = ok && v->buffer_download(vd * sizeof(float), (uint8_t *) zd_got, bz) == GEIST_OK &&
+    ok = ok && v->buffer_upload(bq, n2 * cd * sizeof(float), (const uint8_t *) qd) == GEIST_OK &&
+         v->buffer_upload(bz, n2 * vd * sizeof(float), (const uint8_t *) zd) == GEIST_OK &&
+         v->buffer_upload(bb, n2 * g->nvh * sizeof(float), (const uint8_t *) bd1) == GEIST_OK &&
+         v->buffer_upload(ba, n2 * g->nvh * sizeof(float), (const uint8_t *) ad1) == GEIST_OK;
+    tq = geist_test_tensor_f32(bq, 2, (int64_t) n2, (int64_t) cd, 0);
+    tz = geist_test_tensor_f32(bz, 2, (int64_t) n2, (int64_t) vd, 0);
+    tb = geist_test_tensor_f32(bb, 2, (int64_t) n2, (int64_t) g->nvh, 0);
+    ta = geist_test_tensor_f32(ba, 2, (int64_t) n2, (int64_t) g->nvh, 0);
+    args.seq      = n2;
+    ok            = ok && f->deltanet_mix(be, &args) == GEIST_OK;
+    float *zd_got = malloc(n2 * vd * sizeof(float));
+    ok = ok && v->buffer_download(n2 * vd * sizeof(float), (uint8_t *) zd_got, bz) == GEIST_OK &&
          v->buffer_download(cn * sizeof(float), (uint8_t *) cs_got, bc) == GEIST_OK &&
          v->buffer_download(sn * sizeof(float), (uint8_t *) s_got, bs) == GEIST_OK;
-    const double dze = geist_test_max_abs(vd, zd_got, zd_ref),
+    const double dze = geist_test_max_abs(n2 * vd, zd_got, zd_ref),
                  dce = geist_test_max_abs(cn, cs_got, cs_ref);
     const double dse = geist_test_max_abs(sn, s_got, s_ref);
-    printf("  %-22s decode  seq=1    z %.2e  conv-state %.2e  delta-state %.2e\n",
+    printf("  %-22s %s seq=%-3zu  z %.2e  conv-state %.2e  delta-state %.2e\n",
            g->name,
+           g->seq2 != 0 ? "then   " : "decode ",
+           n2,
            dze,
            dce,
            dse);
@@ -311,11 +319,16 @@ int main(void) {
         return GEIST_TEST_FAIL;
     }
     static const struct geom geoms[] = {
-            {"tiny 1:2 odd dv", 1, 2, 7, 12, 4, 4, 2e-5},
-            {"0.8B-like 1:1 128", 4, 4, 128, 128, 4, 13, 1e-4},
-            {"27B-like 1:3 128", 2, 6, 128, 128, 4, 19, 1e-4},
-            {"K=5 window", 1, 3, 16, 16, 5, 7, 2e-5},
-            {"K=2 window", 2, 2, 32, 24, 2, 5, 2e-5},
+            {"tiny 1:2 odd dv", 1, 2, 7, 12, 4, 4, 2e-5, 0},
+            {"0.8B-like 1:1 128", 4, 4, 128, 128, 4, 13, 1e-4, 0},
+            {"27B-like 1:3 128", 2, 6, 128, 128, 4, 19, 1e-4, 0},
+            {"K=5 window", 1, 3, 16, 16, 5, 7, 2e-5, 0},
+            {"K=2 window", 2, 2, 32, 24, 2, 5, 2e-5, 0},
+            /* #467: long prefills and a multi-row continuation */
+            {"0.8B-like long", 4, 8, 128, 128, 4, 200, 2e-4, 77},
+            {"27B-like 1:3 long", 2, 6, 128, 128, 4, 130, 2e-4, 64},
+            {"dv off the col tile", 2, 4, 64, 40, 4, 37, 5e-5, 21},
+            {"dk 256 (delta_f32)", 1, 2, 256, 64, 4, 40, 1e-4, 9},
     };
     bool ok = true;
     for (size_t i = 0; i < sizeof geoms / sizeof geoms[0]; i++) {

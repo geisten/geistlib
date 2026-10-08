@@ -65,7 +65,7 @@ jobs:
           runs = {"fixture reference (arm64 macOS)": ref}
           for be in ("cpu_neon", "cpu_scalar"):
               runs[f"geist {be} pi5"] = [r for r in rows(out / f"geist-{be}.jsonl")
-                                         if r.get("kind") == "sample" and r.get("logits")]
+                                         if r.get("kind") == "sample" and r.get("phase") == "first"]
           print("| run | fixture 0 | fixture 1 | fixture 2 |\n|---|---|---|---|")
           for name, cases in runs.items():
               cells = [", ".join(f"{x:.2f}" + ("✓" if i == c["best_index"] else "")

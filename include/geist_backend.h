@@ -351,7 +351,8 @@ struct geist_fusion_query {
 /* Complete Gated-DeltaNet mixer after its four input projections. All
  * tensors are F32 DENSE backend views. qkv is [seq, conv_dim], z is
  * [seq, n_v_heads * head_v] and is overwritten with the mixer output,
- * beta/alpha are [seq, n_v_heads]. conv_state and delta_state are
+ * beta/alpha are [seq, n_v_heads]. qkv is scratch: a backend may
+ * overwrite it. conv_state and delta_state are
  * persistent, mutable session state. A backend fusion must advance both
  * state tensors exactly once for every input row before returning OK. */
 struct geist_deltanet_mix_args {
@@ -747,11 +748,13 @@ struct geist_backend_caps {
      * mode). Unified-memory GPUs (metal) leave this false. */
     bool weights_need_backend_arena;
 
-    /* resolve_weight uploads the large 2-D matrices into private device
-     * buffers, so the host-side copy of those matrices is dead once the
-     * model is loaded. Consumer: weight loading leaves them out of the
-     * backend arena (read straight from the GGUF mmap at resolve time and
-     * keeps the mmap open) — otherwise a model needs its size twice. Only
+    /* resolve_weight uploads the matrices into private device buffers, so
+     * the host-side copy of those matrices is dead once the model is
+     * loaded. Consumer: weight loading leaves every matrix it resolves out
+     * of the backend arena (read straight from the GGUF mmap at resolve
+     * time and keeps the mmap open) — otherwise a model needs its size
+     * twice; lookup-only tables (an untied token_embd, the PLE table) are
+     * not resolved and their rows are gathered on the host. Only
      * meaningful together with weights_need_backend_arena. */
     bool weights_device_copy;
 

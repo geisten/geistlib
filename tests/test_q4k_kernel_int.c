@@ -123,7 +123,7 @@ int main(int argc, char **argv) {
     float       *xm      = (float *) malloc(m_test * n_in * sizeof(float));
     int8_t      *xm_q8   = (int8_t *) malloc(m_test * n_in);
     int32_t     *sum32   = (int32_t *) malloc(m_test * (n_in / 32) * sizeof(int32_t));
-    float       *scale_x = (float *) malloc(m_test * sizeof(float));
+    float       *scale_x = (float *) malloc(m_test * (n_in / Q4_K_BLOCK_ELEMS) * sizeof(float));
     float *scale_blocks  = (float *) malloc(m_test * (n_in / Q4_K_BLOCK_ELEMS) * sizeof(float));
     float *y_pd          = (float *) malloc(m_test * n_out * sizeof(float));
     float *y_mt          = (float *) malloc(m_test * n_out * sizeof(float));
@@ -143,8 +143,12 @@ int main(int argc, char **argv) {
         xm[i] = ((float) rand() / (float) RAND_MAX) * 2.0f - 1.0f;
     }
     for (size_t i = 0; i < m_test; i++) {
-        scale_x[i] =
-                quantize_x_for_q4k(n_in, xm + i * n_in, xm_q8 + i * n_in, sum32 + i * (n_in / 32));
+        quantize_x_q8_groups(n_in,
+                             GEIST_ACT_Q8K_ELEMS,
+                             xm + i * n_in,
+                             xm_q8 + i * n_in,
+                             scale_x + i * (n_in / Q4_K_BLOCK_ELEMS),
+                             sum32 + i * (n_in / 32));
     }
     linear_q4k_w4a8_prefill_predecoded(m_test, n_in, n_out, xm_q8, scale_x, sum32, packed, y_pd);
     linear_q4k_w4a8_prefill_predecoded_mtile4(
@@ -339,11 +343,12 @@ int main(int argc, char **argv) {
     }
 
     for (size_t i = 0; i < m_test; i++) {
-        quantize_x_for_q4k_blocks(n_in,
-                                  xm + i * n_in,
-                                  xm_q8 + i * n_in,
-                                  sum32 + i * (n_in / 32),
-                                  scale_blocks + i * (n_in / Q4_K_BLOCK_ELEMS));
+        quantize_x_q8_groups(n_in,
+                             GEIST_ACT_Q8K_ELEMS,
+                             xm + i * n_in,
+                             xm_q8 + i * n_in,
+                             scale_blocks + i * (n_in / Q4_K_BLOCK_ELEMS),
+                             sum32 + i * (n_in / 32));
         linear_q4k_decode_fp32(n_in, n_out, xm + i * n_in, t->data, y_ref_m + i * n_out);
     }
     linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(

@@ -17,7 +17,7 @@
 
 void linear_q8_0_decode_w8a8_pre(size_t       n_in,
                                  size_t       n_out,
-                                 float        scale_x,
+                                 const float *x_scales,
                                  const int8_t x_q8[static n_in],
                                  const void  *w_q8,
                                  float        y[static n_out]) {
@@ -45,7 +45,7 @@ void linear_q8_0_decode_w8a8_pre(size_t       n_in,
                 int_dot += (int32_t) xb[j] * (int32_t) blk->qs[j];
             }
 #endif
-            acc += d * scale_x * (float) int_dot;
+            acc += d * x_scales[b] * (float) int_dot;
         }
         y[n] = acc;
     }
@@ -57,16 +57,23 @@ void linear_q8_0_decode_w8a8(size_t      n_in,
                              const void *w_q8,
                              float       y[static n_out]) {
     int8_t *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
-    float   scale_x = quantize_x_int8_sym(n_in, x, x_q8);
-    linear_q8_0_decode_w8a8_pre(n_in, n_out, scale_x, x_q8, w_q8, y);
+    float *x_scales = heap_alloc_array_aligned(float, geist_act_groups(n_in, GEIST_ACT_Q8_0_ELEMS));
+    if (x_q8 == nullptr || x_scales == nullptr) {
+        safe_free((void **) &x_q8);
+        safe_free((void **) &x_scales);
+        return;
+    }
+    quantize_x_q8_groups(n_in, GEIST_ACT_Q8_0_ELEMS, x, x_q8, x_scales, nullptr);
+    linear_q8_0_decode_w8a8_pre(n_in, n_out, x_scales, x_q8, w_q8, y);
     safe_free((void **) &x_q8);
+    safe_free((void **) &x_scales);
 }
 
 void linear_q8_0_w8a8_prefill_pre(size_t        m,
                                   size_t        n_in,
                                   size_t        n_out,
                                   const int8_t *x_q8,
-                                  const float   scale_x[static m],
+                                  const float  *x_scales,
                                   const void   *w_q8,
                                   float        *y) {
 #if defined(__ARM_NEON)
@@ -98,7 +105,7 @@ void linear_q8_0_w8a8_prefill_pre(size_t        m,
             for (size_t i = 0; i < m; i++) {
                 const int8_t *xb      = x_q8 + i * n_in + b * Q8_0_BLOCK_ELEMS;
                 int32_t       int_dot = dot16_i8(xb, qv0) + dot16_i8(xb + 16, qv1);
-                accs[i] += d * scale_x[i] * (float) int_dot;
+                accs[i] += d * x_scales[i * nb_per_row + b] * (float) int_dot;
             }
         }
         for (size_t i = 0; i < m; i++)
@@ -106,7 +113,7 @@ void linear_q8_0_w8a8_prefill_pre(size_t        m,
     }
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) m;
     (void) w_q8;
     (void) n_in;
@@ -118,12 +125,23 @@ void linear_q8_0_w8a8_prefill_pre(size_t        m,
 
 void linear_q8_0_w8a8_prefill(
         size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q8, float *y) {
-    int8_t *x_q8    = heap_alloc_array_aligned(int8_t, m *n_in);
-    float  *scale_x = heap_alloc_array_aligned(float, m);
-    for (size_t i = 0; i < m; i++) {
-        scale_x[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
+    const size_t n_groups = geist_act_groups(n_in, GEIST_ACT_Q8_0_ELEMS);
+    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, m *n_in);
+    float       *x_scales = heap_alloc_array_aligned(float, m *n_groups);
+    if (x_q8 == nullptr || x_scales == nullptr) {
+        safe_free((void **) &x_q8);
+        safe_free((void **) &x_scales);
+        return;
     }
-    linear_q8_0_w8a8_prefill_pre(m, n_in, n_out, x_q8, scale_x, w_q8, y);
+    for (size_t i = 0; i < m; i++) {
+        quantize_x_q8_groups(n_in,
+                             GEIST_ACT_Q8_0_ELEMS,
+                             x + i * n_in,
+                             x_q8 + i * n_in,
+                             x_scales + i * n_groups,
+                             nullptr);
+    }
+    linear_q8_0_w8a8_prefill_pre(m, n_in, n_out, x_q8, x_scales, w_q8, y);
     safe_free((void **) &x_q8);
-    safe_free((void **) &scale_x);
+    safe_free((void **) &x_scales);
 }
