@@ -129,7 +129,7 @@ void linear_iq4xs_decode_w4a8(size_t      n_in,
                               float       y[static n_out]);
 void linear_iq4xs_decode_w4a8_pre(size_t       n_in,
                                   size_t       n_out,
-                                  float        scale_x,
+                                  const float *x_scales,
                                   const int8_t x_q8[static n_in],
                                   const void  *w_iq4xs,
                                   float        y[static n_out]);
@@ -140,7 +140,7 @@ void linear_iq4nl_decode_w4a8(size_t      n_in,
                               float       y[static n_out]);
 void linear_iq4nl_decode_w4a8_pre(size_t       n_in,
                                   size_t       n_out,
-                                  float        scale_x,
+                                  const float *x_scales,
                                   const int8_t x_q8[static n_in],
                                   const void  *w_iq4nl,
                                   float        y[static n_out]);
@@ -150,7 +150,7 @@ void linear_iq4xs_w4a8_prefill_pre(size_t        m,
                                    size_t        n_in,
                                    size_t        n_out,
                                    const int8_t *x_q8,
-                                   const float   scale_x[static m],
+                                   const float  *x_scales,
                                    const void   *w_iq4xs,
                                    float        *y);
 void linear_iq4xs_w4a8_prefill(
@@ -332,7 +332,7 @@ constexpr size_t GEIST_QUANT_M_CAP = 128;
 /* W2A8 decode for IQ2_S. Reconstructs 32 int8 weights per sub-block
  * from the 1024-entry codebook + sign byte, dots against pre-quantized
  * x_q8 via vdotq_s32. Per-sub-half int scale (2*s+1) folds via
- * vmlaq_n_s32; the (d/8 * scale_x) float multiply happens once per
+ * vmlaq_n_s32; the (d/8 * x_scale) float multiply happens once per
  * super-block (256 elems). */
 void linear_iq2s_decode_w2a8(size_t      n_in,
                              size_t      n_out,
@@ -341,14 +341,14 @@ void linear_iq2s_decode_w2a8(size_t      n_in,
                              float       y[static n_out]);
 void linear_iq2s_decode_w2a8_pre(size_t       n_in,
                                  size_t       n_out,
-                                 float        scale_x,
+                                 const float *x_scales,
                                  const int8_t x_q8[static n_in],
                                  const void  *w_iq2s,
                                  float        y[static n_out]);
 
 /* W3A8 decode for IQ3_S. Same design as IQ2_S: 32 int8 weights per
  * sub-block built from the 512-entry codebook + sign byte. Per-sub-block
- * int scale (2*s+1) folds via vmlaq_n_s32; d * scale_x float multiply
+ * int scale (2*s+1) folds via vmlaq_n_s32; d * x_scale float multiply
  * once per super-block. */
 void linear_iq3s_decode_w3a8(size_t      n_in,
                              size_t      n_out,
@@ -357,7 +357,7 @@ void linear_iq3s_decode_w3a8(size_t      n_in,
                              float       y[static n_out]);
 void linear_iq3s_decode_w3a8_pre(size_t       n_in,
                                  size_t       n_out,
-                                 float        scale_x,
+                                 const float *x_scales,
                                  const int8_t x_q8[static n_in],
                                  const void  *w_iq3s,
                                  float        y[static n_out]);
@@ -366,7 +366,7 @@ void linear_iq3s_decode_w3a8_pre(size_t       n_in,
  * row, reconstruct the 32 int8 weights per sub-block once via the
  * codebook+sign helper, dot against m activation rows via vdotq_s32, fold
  * sub-block int scale (2*s+1) via vmlaq_n_s32 into per-row int32
- * accumulators. One float multiply (d/8 * scale_x[i]) per super-block per
+ * accumulators. One float multiply (d/8 * x_scale) per super-block per
  * row. x is row-major (m, n_in); y row-major (m, n_out). */
 void linear_iq2s_w2a8_prefill(
         size_t m, size_t n_in, size_t n_out, const float *x, const void *w_iq2s, float *y);
@@ -374,7 +374,7 @@ void linear_iq2s_w2a8_prefill_pre(size_t        m,
                                   size_t        n_in,
                                   size_t        n_out,
                                   const int8_t *x_q8,
-                                  const float   scale_x[static m],
+                                  const float  *x_scales,
                                   const void   *w_iq2s,
                                   float        *y);
 
@@ -387,7 +387,7 @@ void linear_iq3s_w3a8_prefill_pre(size_t        m,
                                   size_t        n_in,
                                   size_t        n_out,
                                   const int8_t *x_q8,
-                                  const float   scale_x[static m],
+                                  const float  *x_scales,
                                   const void   *w_iq3s,
                                   float        *y);
 
@@ -419,6 +419,41 @@ void linear_q6k_decode_fp32(size_t      n_in,
  */
 float quantize_x_int8_sym(size_t n, const float x[static n], int8_t x_q8[static n]);
 
+/* Activation scales of the cpu_neon W*A8 kernels (#698).
+ *
+ * Every `_pre` kernel below takes x_q8 with one fp32 scale per group of
+ * activation elements, never one per row: a row-wide scale lets a single
+ * outlier (Gemma's FFN activations have them) put every other element of
+ * the row on a coarse grid. The group is the one llama.cpp's vec_dot uses
+ * for the weight type:
+ *
+ *   GEIST_ACT_Q8K_ELEMS (256, Q8_K)  Q3_K Q4_K Q5_K Q6_K IQ2_S IQ3_S IQ4_XS
+ *   GEIST_ACT_Q8_0_ELEMS (32, Q8_0)  Q4_0 Q4_1 Q8_0 IQ4_NL
+ *
+ * x_scales holds geist_act_groups(n_in, group) scales per activation row;
+ * row i's start at x_scales + i * geist_act_groups(n_in, group). Each is
+ * max|x| / 127 over its group (1.0 for an all-zero group). The kernels
+ * require n_in to be a multiple of their block size, which is a multiple of
+ * the group, so no group is partial there. */
+constexpr size_t GEIST_ACT_Q8K_ELEMS  = 256;
+constexpr size_t GEIST_ACT_Q8_0_ELEMS = 32;
+
+static inline size_t geist_act_groups(size_t n, size_t group) {
+    return n / group + (n % group != 0 ? 1u : 0u);
+}
+
+/* Symmetric int8 quantization of x[n] with one scale per `group` elements
+ * (the last group may be shorter), written to x_scales[geist_act_groups(n,
+ * group)]. sum32, when non-null, receives the n/32 sums of x_q8 over each
+ * 32 elements (the min-offset term of Q4_K / Q5_K / Q4_0 x8 / Q4_1); n must
+ * then be a multiple of 32. group must be positive. Allocation-free. */
+void quantize_x_q8_groups(size_t      n,
+                          size_t      group,
+                          const float x[static n],
+                          int8_t      x_q8[static n],
+                          float      *x_scales,
+                          int32_t    *sum32);
+
 /* Q4_0/Q4_1 int8-dot kernels for the 32-element legacy quants. Q4_1's
  * min-offset folds via per-block activation sums. */
 void   linear_q4_0_decode_w4a8(size_t      n_in,
@@ -428,7 +463,7 @@ void   linear_q4_0_decode_w4a8(size_t      n_in,
                                float       y[static n_out]);
 void   linear_q4_0_decode_w4a8_pre(size_t       n_in,
                                    size_t       n_out,
-                                   float        scale_x,
+                                   const float *x_scales,
                                    const int8_t x_q8[static n_in],
                                    const void  *w_q4,
                                    float        y[static n_out]);
@@ -439,7 +474,7 @@ void   linear_q4_1_decode_w4a8(size_t      n_in,
                                float       y[static n_out]);
 void   linear_q4_1_decode_w4a8_pre(size_t         n_in,
                                    size_t         n_out,
-                                   float          scale_x,
+                                   const float   *x_scales,
                                    const int8_t   x_q8[static n_in],
                                    const int32_t *bsum,
                                    const void    *w_q4,
@@ -453,7 +488,7 @@ void   linear_q4_0_decode_w4a8_x8(size_t      n_in,
                                   float       y[static n_out]);
 void   linear_q4_0_decode_w4a8_x8_pre(size_t         n_in,
                                       size_t         n_out,
-                                      float          scale_x,
+                                      const float   *x_scales,
                                       const int8_t   x_q8[static n_in],
                                       const int32_t *bsum,
                                       const void    *packed,
@@ -463,7 +498,7 @@ void linear_q4_0_w4a8_prefill_x8_pre(size_t         m,
                                      size_t         n_in,
                                      size_t         n_out,
                                      const int8_t  *x_q8,
-                                     const float    scale_x[static m],
+                                     const float   *x_scales,
                                      const int32_t *bsums,
                                      const void    *packed,
                                      float         *y);
@@ -473,7 +508,7 @@ void linear_q4_0_w4a8_prefill_pre(size_t        m,
                                   size_t        n_in,
                                   size_t        n_out,
                                   const int8_t *x_q8,
-                                  const float   scale_x[static m],
+                                  const float  *x_scales,
                                   const void   *w_q4,
                                   float        *y);
 void linear_q4_0_w4a8_prefill(
@@ -482,7 +517,7 @@ void linear_q4_1_w4a8_prefill_pre(size_t         m,
                                   size_t         n_in,
                                   size_t         n_out,
                                   const int8_t  *x_q8,
-                                  const float    scale_x[static m],
+                                  const float   *x_scales,
                                   const int32_t *bsums,
                                   const void    *w_q4,
                                   float         *y);
@@ -511,7 +546,7 @@ void   linear_q4k_w4a8_prefill_pre(size_t         m,
                                    size_t         n_in,
                                    size_t         n_out,
                                    const int8_t  *x_q8,
-                                   const float    scale_x[static m],
+                                   const float   *x_scales,
                                    const int32_t *sum32,
                                    const void    *w_q4k,
                                    float         *y);
@@ -528,7 +563,7 @@ void   linear_q4k_w4a8_prefill_predecoded(size_t         m,
                                           size_t         n_in,
                                           size_t         n_out,
                                           const int8_t  *x_q8,
-                                          const float    scale_x[static m],
+                                          const float   *x_scales,
                                           const int32_t *sum32,
                                           const void    *packed,
                                           float         *y);
@@ -536,7 +571,7 @@ void   linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
                                                  size_t         n_in,
                                                  size_t         n_out,
                                                  const int8_t  *x_q8,
-                                                 const float    scale_x[static m],
+                                                 const float   *x_scales,
                                                  const int32_t *sum32,
                                                  const void    *packed,
                                                  float         *y);
@@ -544,7 +579,7 @@ void   linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
                                                  size_t         n_in,
                                                  size_t         n_out,
                                                  const int8_t  *x_q8,
-                                                 const float    scale_x[static m],
+                                                 const float   *x_scales,
                                                  const int32_t *sum32,
                                                  const void    *packed,
                                                  float         *y);
@@ -552,7 +587,7 @@ void   linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(size_t         m,
                                                         size_t         n_in,
                                                         size_t         n_out,
                                                         const int8_t  *x_q8,
-                                                        const float    scale_x[static m],
+                                                        const float   *x_scales,
                                                         const int32_t *sum32,
                                                         const void    *packed,
                                                         float         *y);
@@ -560,7 +595,7 @@ void   linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
                                                                size_t         n_in,
                                                                size_t         n_out,
                                                                const int8_t  *x_q8,
-                                                               const float    scale_x[static m],
+                                                               const float   *x_scales,
                                                                const int32_t *sum32,
                                                                const void    *packed,
                                                                float         *y);
@@ -568,7 +603,7 @@ void   linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
                                                                size_t         n_in,
                                                                size_t         n_out,
                                                                const int8_t  *x_q8,
-                                                               const float    scale_x[static m],
+                                                               const float   *x_scales,
                                                                const int32_t *sum32,
                                                                const void    *packed,
                                                                float         *y);
@@ -576,7 +611,7 @@ void   linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t      
                                                                     size_t         n_in,
                                                                     size_t         n_out,
                                                                     const int8_t  *x_q8,
-                                                                    const float    scale_x[static m],
+                                                                    const float   *x_scales,
                                                                     const int32_t *sum32,
                                                                     const void    *packed0,
                                                                     const void    *packed1,
@@ -586,14 +621,14 @@ void   linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(size_t         m,
                                                         size_t         n_in,
                                                         size_t         n_out,
                                                         const int8_t  *x_q8,
-                                                        const float   *scale_blocks,
+                                                        const float   *x_scales,
                                                         const int32_t *sum32,
                                                         const void    *packed,
                                                         float         *y);
 
 /* W5A8 kernels for Q5_K. Same activation quantization as Q4_K
- * (quantize_x_for_q4k). Decode (M=1) and prefill (M>1) both use vdotq_s32
- * on per-row reconstructed 5-bit values. */
+ * (quantize_x_q8_groups, 256-element groups, with sum32). Decode (M=1) and prefill (M>1) both use
+ * vdotq_s32 on per-row reconstructed 5-bit values. */
 void linear_q5k_decode_w5a8(size_t      n_in,
                             size_t      n_out,
                             const float x[static n_in],
@@ -601,7 +636,7 @@ void linear_q5k_decode_w5a8(size_t      n_in,
                             float       y[static n_out]);
 void linear_q5k_decode_w5a8_pre(size_t         n_in,
                                 size_t         n_out,
-                                float          scale_x,
+                                const float   *x_scales,
                                 const int8_t   x_q8[static n_in],
                                 const int32_t *sum32,
                                 const void    *w_q5k,
@@ -612,22 +647,18 @@ void linear_q5k_w5a8_prefill_pre(size_t         m,
                                  size_t         n_in,
                                  size_t         n_out,
                                  const int8_t  *x_q8,
-                                 const float    scale_x[static m],
+                                 const float   *x_scales,
                                  const int32_t *sum32,
                                  const void    *w_q5k,
                                  float         *y);
 
-/* Pre-quantized W4A8 path: caller owns x_q8[n_in] and sum32[n_in/32], having
- * filled them via quantize_x_for_q4k. Lets callers share one quantization of
- * x across multiple matmul targets (q/k/v from attn_norm out, gate/up from
- * pre_ffn_norm out). n_in must be a multiple of 32.
- */
-float quantize_x_for_q4k(size_t n, const float x[static n], int8_t x_q8[static n], int32_t *sum32);
-void  quantize_x_for_q4k_blocks(
-        size_t n, const float *x, int8_t *x_q8, int32_t *sum32, float *scale_blocks);
+/* Pre-quantized W4A8 path: the caller owns x_q8[n_in], the scales and
+ * sum32[n_in/32], filled by quantize_x_q8_groups with GEIST_ACT_Q8K_ELEMS
+ * groups. Lets callers share one quantization of x across several matmul
+ * targets (q/k/v from attn_norm out, gate/up from pre_ffn_norm out). */
 void linear_q4k_decode_w4a8_pre(size_t         n_in,
                                 size_t         n_out,
-                                float          scale_x,
+                                const float   *x_scales,
                                 const int8_t   x_q8[static n_in],
                                 const int32_t *sum32,
                                 const void    *w_q4k,
@@ -646,7 +677,7 @@ void   linear_q6k_decode_w6a8(size_t      n_in,
                               float       y[static n_out]);
 void   linear_q6k_decode_w6a8_pre(size_t       n_in,
                                   size_t       n_out,
-                                  float        scale_x,
+                                  const float *x_scales,
                                   const int8_t x_q8[static n_in],
                                   const void  *w_q6k,
                                   float        y[static n_out]);
@@ -659,33 +690,36 @@ void   linear_q6k_decode_w6a8_x8(size_t      n_in,
                                  float       y[static n_out]);
 void   linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
                                      size_t       n_out,
-                                     float        scale_x,
+                                     const float *x_scales,
                                      const int8_t x_q8[static n_in],
                                      const void  *packed,
                                      float        y[static n_out]);
 
 /* W6A8 prefill (m>1) for Q6_K. Same design as the W3A8 / W4A8 prefill: read each super-block once
  * per output row, extract 4 reconstructed int8 streams, dot against m activation rows via
- * vdotq_s32. Per-row float accumulator folds in d * scale_x[i] * sub-block-scale at the end of each
+ * vdotq_s32. Per-row float accumulator folds in d * x_scale * sub-block-scale at the end of each
  * 16-element chunk. Used by speculative-decode verify (M=K) and any other
  * M>1 path that targets a Q6_K weight (e.g. lm_head with K-wide verify).
  * x is row-major (m, n_in); y row-major (m, n_out). */
 void linear_q6k_w6a8_prefill(
         size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q6k, float *y);
-void   linear_q6k_w6a8_prefill_pre(size_t        m,
-                                   size_t        n_in,
-                                   size_t        n_out,
-                                   const int8_t *x_q8,
-                                   const float   scale_x[static m],
-                                   const void   *w_q6k,
-                                   float        *y);
+void linear_q6k_w6a8_prefill_pre(size_t        m,
+                                 size_t        n_in,
+                                 size_t        n_out,
+                                 const int8_t *x_q8,
+                                 const float  *x_scales,
+                                 const void   *w_q6k,
+                                 float        *y);
+/* y += the product over super-blocks [block_start, block_start + n_blocks)
+ * of W. x_q8 is that tile only, [m, n_blocks * 256], and x_scales its
+ * [m, n_blocks] super-block scales. */
 void   linear_q6k_w6a8_prefill_pre_accum_blocks(size_t        m,
                                                 size_t        n_in_total,
                                                 size_t        n_out,
                                                 size_t        block_start,
                                                 size_t        n_blocks,
                                                 const int8_t *x_q8,
-                                                const float  *scale_x,
+                                                const float  *x_scales,
                                                 const void   *w_q6k,
                                                 float        *y);
 size_t q6k_predecode_ntile4_size_bytes(size_t n_in, size_t n_out);
@@ -696,14 +730,14 @@ void   linear_q6k_w6a8_prefill_predecoded_ntile4(size_t        m,
                                                  size_t        n_in,
                                                  size_t        n_out,
                                                  const int8_t *x_q8,
-                                                 const float   scale_x[static m],
+                                                 const float  *x_scales,
                                                  const void   *packed,
                                                  float        *y);
 void   linear_q6k_w6a8_prefill_predecoded_ntile4_stream(size_t        m,
                                                         size_t        n_in,
                                                         size_t        n_out,
                                                         const int8_t *x_q8,
-                                                        const float   scale_x[static m],
+                                                        const float  *x_scales,
                                                         const void   *packed,
                                                         float        *y);
 
@@ -718,7 +752,7 @@ void linear_q3k_decode_w3a8(size_t      n_in,
                             float       y[static n_out]);
 void linear_q3k_decode_w3a8_pre(size_t       n_in,
                                 size_t       n_out,
-                                float        scale_x,
+                                const float *x_scales,
                                 const int8_t x_q8[static n_in],
                                 const void  *w_q3k,
                                 float        y[static n_out]);
@@ -732,7 +766,7 @@ void linear_q3k_w3a8_prefill_pre(size_t        m,
                                  size_t        n_in,
                                  size_t        n_out,
                                  const int8_t *x_q8,
-                                 const float   scale_x[static m],
+                                 const float  *x_scales,
                                  const void   *w_q3k,
                                  float        *y);
 
@@ -744,11 +778,11 @@ void linear_q3k_w3a8_prefill_pre(size_t        m,
  * offset).
  *
  * Math: dequant(q[i]) = d · q[i], so
- *   sum_i x[i] · dequant(q[i]) = d · scale_x · sum_i (x_q8[i] · q[i])
+ *   sum_i x[i] · dequant(q[i]) = d · x_scale · sum_i (x_q8[i] · q[i])
  *
  * Caller-friendly variants:
  *   linear_q8_0_decode_w8a8        — single shot: quantize x → matmul → free.
- *   linear_q8_0_decode_w8a8_pre    — caller owns x_q8 + scale_x (lets multiple
+ *   linear_q8_0_decode_w8a8_pre    — caller owns x_q8 + x_scales (lets multiple
  *                                    matmuls share one quantization of x).
  *
  * NEON: uses vdotq_s32 (int8x16 · int8x16 → int32x4). */
@@ -766,13 +800,13 @@ void linear_q8_0_w8a8_prefill_pre(size_t        m,
                                   size_t        n_in,
                                   size_t        n_out,
                                   const int8_t *x_q8,
-                                  const float   scale_x[static m],
+                                  const float  *x_scales,
                                   const void   *w_q8,
                                   float        *y);
 
 void linear_q8_0_decode_w8a8_pre(size_t       n_in,
                                  size_t       n_out,
-                                 float        scale_x,
+                                 const float *x_scales,
                                  const int8_t x_q8[static n_in],
                                  const void  *w_q8,
                                  float        y[static n_out]);

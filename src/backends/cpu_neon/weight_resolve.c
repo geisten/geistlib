@@ -93,9 +93,12 @@ static inline uint64_t qprof_now_ns(void) {
 /* ---- M=1 (decode) trampolines ---------------------------------------- */
 
 /* Quantize `m` activation rows into the thread's workspace instead of a
- * per-call malloc. geist_weight.h declares linear_m1 / linear_mN
- * allocation-free; the kernels' convenience wrappers in quant.h are not,
- * so the resolver binds the _pre variants and supplies the scratch.
+ * per-call malloc, one scale per `group` elements (quant.h, #698: 256 for
+ * the K-quants and IQ formats, 32 for Q4_0 / Q4_1 / Q8_0 / IQ4_NL).
+ * geist_weight.h declares linear_m1 / linear_mN allocation-free; the
+ * kernels' convenience wrappers in quant.h are not, so the resolver binds
+ * the _pre variants and supplies the scratch. With `out_sum32` non-null the
+ * per-32-element activation sums are filled too (Q4_0 x8, Q4_1, Q5_K).
  *
  * Returns nullptr when that scratch cannot be had, having computed y with
  * geist_linear_ref, which needs none: the kernel signature is void, and a
@@ -103,63 +106,44 @@ static inline uint64_t qprof_now_ns(void) {
 static const int8_t *ws_quantize_act(struct geist_backend      *be,
                                      size_t                     m,
                                      size_t                     n_in,
+                                     size_t                     group,
                                      const float               *x,
                                      const struct geist_weight *w,
                                      float                     *y,
-                                     float                    **out_scales) {
-    struct cpu_neon_state *st = (struct cpu_neon_state *) be->state;
-    if (st == nullptr) {
-        geist_linear_ref(m, x, w, y);
-        return nullptr;
-    }
-    struct cpu_neon_workspace *ws      = cpu_neon_ws(st);
-    size_t                     xq_need = 0;
-    if (ws == nullptr || ckd_mul(&xq_need, m, n_in) ||
-        !cpu_neon_grow_i8(&ws->act_xq, &ws->act_xq_cap, xq_need) ||
-        !cpu_neon_grow_f32(&ws->act_scale, &ws->act_scale_cap, m)) {
-        geist_linear_ref(m, x, w, y);
-        return nullptr;
-    }
-    for (size_t i = 0; i < m; i++) {
-        ws->act_scale[i] = quantize_x_int8_sym(n_in, x + i * n_in, ws->act_xq + i * n_in);
-    }
-    *out_scales = ws->act_scale;
-    return ws->act_xq;
-}
-
-/* Same, for the k-quant kernels whose _pre variants also want per-block
- * activation sums (Q5_K; Q4_K/Q6_K already carry their own workspace
- * fields). quantize_x_for_q4k fills both in one pass. */
-static const int8_t *ws_quantize_act_q4k(struct geist_backend      *be,
-                                         size_t                     m,
-                                         size_t                     n_in,
-                                         const float               *x,
-                                         const struct geist_weight *w,
-                                         float                     *y,
-                                         float                    **out_scales,
-                                         int32_t                  **out_sum32) {
+                                     float                    **out_scales,
+                                     int32_t                  **out_sum32) {
     struct cpu_neon_state *st = (struct cpu_neon_state *) be->state;
     if (st == nullptr) {
         geist_linear_ref(m, x, w, y);
         return nullptr;
     }
     struct cpu_neon_workspace *ws       = cpu_neon_ws(st);
+    const size_t               n_groups = geist_act_groups(n_in, group);
     size_t                     xq_need  = 0;
+    size_t                     sc_need  = 0;
     size_t                     sum_need = 0;
-    if (ws == nullptr || ckd_mul(&xq_need, m, n_in) || ckd_mul(&sum_need, m, n_in / 32u) ||
+    if (ws == nullptr || ckd_mul(&xq_need, m, n_in) || ckd_mul(&sc_need, m, n_groups) ||
+        ckd_mul(&sum_need, m, n_in / 32u) ||
         !cpu_neon_grow_i8(&ws->act_xq, &ws->act_xq_cap, xq_need) ||
-        !cpu_neon_grow_f32(&ws->act_scale, &ws->act_scale_cap, m) ||
-        !cpu_neon_grow_i32(&ws->act_sum32, &ws->act_sum32_cap, sum_need)) {
+        !cpu_neon_grow_f32(&ws->act_scale, &ws->act_scale_cap, sc_need) ||
+        (out_sum32 != nullptr &&
+         !cpu_neon_grow_i32(&ws->act_sum32, &ws->act_sum32_cap, sum_need))) {
         geist_linear_ref(m, x, w, y);
         return nullptr;
     }
     const size_t blocks = n_in / 32u;
     for (size_t i = 0; i < m; i++) {
-        ws->act_scale[i] = quantize_x_for_q4k(
-                n_in, x + i * n_in, ws->act_xq + i * n_in, ws->act_sum32 + i * blocks);
+        quantize_x_q8_groups(n_in,
+                             group,
+                             x + i * n_in,
+                             ws->act_xq + i * n_in,
+                             ws->act_scale + i * n_groups,
+                             out_sum32 != nullptr ? ws->act_sum32 + i * blocks : nullptr);
     }
     *out_scales = ws->act_scale;
-    *out_sum32  = ws->act_sum32;
+    if (out_sum32 != nullptr) {
+        *out_sum32 = ws->act_sum32;
+    }
     return ws->act_xq;
 }
 
@@ -181,11 +165,11 @@ static void cpu_neon_w_q3k_m1(const float               *x,
                               float                     *y) {
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, w, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, GEIST_ACT_Q8K_ELEMS, x, w, y, &sc, nullptr);
     if (xq == nullptr) {
         return;
     }
-    linear_q3k_decode_w3a8_pre(n_in, n_out, sc[0], xq, w->raw, y);
+    linear_q3k_decode_w3a8_pre(n_in, n_out, sc, xq, w->raw, y);
 }
 
 static void cpu_neon_w_q4k_m1(const float               *x,
@@ -218,19 +202,19 @@ static void cpu_neon_w_q6k_m1(const float               *x,
                               const struct geist_weight *w,
                               struct geist_backend      *be,
                               float                     *y) {
-    /* The _pre kernels on the workspace scratch; same quantize_x_int8_sym
+    /* The _pre kernels on the workspace scratch; same quantize_x_q8_groups
      * as the quant.h wrappers, so the same bits. */
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, w, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, GEIST_ACT_Q8K_ELEMS, x, w, y, &sc, nullptr);
     if (xq == nullptr) {
         return;
     }
     if (w->backend_layout == GEIST_W_LAYOUT_Q6_K_X8_GEMV && w->aux_fp32 != nullptr) {
-        linear_q6k_decode_w6a8_x8_pre(n_in, n_out, sc[0], xq, w->aux_fp32, y);
+        linear_q6k_decode_w6a8_x8_pre(n_in, n_out, sc, xq, w->aux_fp32, y);
         return;
     }
-    linear_q6k_decode_w6a8_pre(n_in, n_out, sc[0], xq, w->raw, y);
+    linear_q6k_decode_w6a8_pre(n_in, n_out, sc, xq, w->raw, y);
 }
 
 static void cpu_neon_w_q8_0_m1(const float               *x,
@@ -239,11 +223,11 @@ static void cpu_neon_w_q8_0_m1(const float               *x,
                                float                     *y) {
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, w, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, GEIST_ACT_Q8_0_ELEMS, x, w, y, &sc, nullptr);
     if (xq == nullptr) {
         return;
     }
-    linear_q8_0_decode_w8a8_pre(n_in, n_out, sc[0], xq, w->raw, y);
+    linear_q8_0_decode_w8a8_pre(n_in, n_out, sc, xq, w->raw, y);
 }
 
 static void cpu_neon_w_q4_0_m1(const float               *x,
@@ -254,19 +238,19 @@ static void cpu_neon_w_q4_0_m1(const float               *x,
     if (w->backend_layout == GEIST_W_LAYOUT_Q4_0_X8_GEMV && w->aux_fp32 != nullptr) {
         float        *sc  = nullptr;
         int32_t      *s32 = nullptr;
-        const int8_t *xq  = ws_quantize_act_q4k(be, 1, n_in, x, w, y, &sc, &s32);
+        const int8_t *xq  = ws_quantize_act(be, 1, n_in, GEIST_ACT_Q8_0_ELEMS, x, w, y, &sc, &s32);
         if (xq == nullptr) {
             return;
         }
-        linear_q4_0_decode_w4a8_x8_pre(n_in, n_out, sc[0], xq, s32, w->aux_fp32, y);
+        linear_q4_0_decode_w4a8_x8_pre(n_in, n_out, sc, xq, s32, w->aux_fp32, y);
         return;
     }
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, w, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, GEIST_ACT_Q8_0_ELEMS, x, w, y, &sc, nullptr);
     if (xq == nullptr) {
         return;
     }
-    linear_q4_0_decode_w4a8_pre(n_in, n_out, sc[0], xq, w->raw, y);
+    linear_q4_0_decode_w4a8_pre(n_in, n_out, sc, xq, w->raw, y);
 }
 
 static void cpu_neon_w_q4_1_m1(const float               *x,
@@ -276,11 +260,11 @@ static void cpu_neon_w_q4_1_m1(const float               *x,
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc  = nullptr;
     int32_t      *s32 = nullptr;
-    const int8_t *xq  = ws_quantize_act_q4k(be, 1, n_in, x, w, y, &sc, &s32);
+    const int8_t *xq  = ws_quantize_act(be, 1, n_in, GEIST_ACT_Q8_0_ELEMS, x, w, y, &sc, &s32);
     if (xq == nullptr) {
         return;
     }
-    linear_q4_1_decode_w4a8_pre(n_in, n_out, sc[0], xq, s32, w->raw, y);
+    linear_q4_1_decode_w4a8_pre(n_in, n_out, sc, xq, s32, w->raw, y);
 }
 
 static void cpu_neon_w_q4_0_mN(size_t                     m,
@@ -295,7 +279,7 @@ static void cpu_neon_w_q4_0_mN(size_t                     m,
     if (w->backend_layout == GEIST_W_LAYOUT_Q4_0_X8_GEMV && w->aux_fp32 != nullptr) {
         float        *sc  = nullptr;
         int32_t      *s32 = nullptr;
-        const int8_t *xq  = ws_quantize_act_q4k(be, m, n_in, x, w, y, &sc, &s32);
+        const int8_t *xq  = ws_quantize_act(be, m, n_in, GEIST_ACT_Q8_0_ELEMS, x, w, y, &sc, &s32);
         if (xq == nullptr) {
             return;
         }
@@ -303,7 +287,7 @@ static void cpu_neon_w_q4_0_mN(size_t                     m,
         return;
     }
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, m, n_in, x, w, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, m, n_in, GEIST_ACT_Q8_0_ELEMS, x, w, y, &sc, nullptr);
     if (xq == nullptr) {
         return;
     }
@@ -318,7 +302,7 @@ static void cpu_neon_w_q4_1_mN(size_t                     m,
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc  = nullptr;
     int32_t      *s32 = nullptr;
-    const int8_t *xq  = ws_quantize_act_q4k(be, m, n_in, x, w, y, &sc, &s32);
+    const int8_t *xq  = ws_quantize_act(be, m, n_in, GEIST_ACT_Q8_0_ELEMS, x, w, y, &sc, &s32);
     if (xq == nullptr) {
         return;
     }
@@ -331,11 +315,11 @@ static void cpu_neon_w_iq2s_m1(const float               *x,
                                float                     *y) {
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, w, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, GEIST_ACT_Q8K_ELEMS, x, w, y, &sc, nullptr);
     if (xq == nullptr) {
         return;
     }
-    linear_iq2s_decode_w2a8_pre(n_in, n_out, sc[0], xq, w->raw, y);
+    linear_iq2s_decode_w2a8_pre(n_in, n_out, sc, xq, w->raw, y);
 }
 
 static void cpu_neon_w_iq3s_m1(const float               *x,
@@ -344,11 +328,11 @@ static void cpu_neon_w_iq3s_m1(const float               *x,
                                float                     *y) {
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, w, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, GEIST_ACT_Q8K_ELEMS, x, w, y, &sc, nullptr);
     if (xq == nullptr) {
         return;
     }
-    linear_iq3s_decode_w3a8_pre(n_in, n_out, sc[0], xq, w->raw, y);
+    linear_iq3s_decode_w3a8_pre(n_in, n_out, sc, xq, w->raw, y);
 }
 
 static void cpu_neon_w_iq4xs_m1(const float               *x,
@@ -357,11 +341,11 @@ static void cpu_neon_w_iq4xs_m1(const float               *x,
                                 float                     *y) {
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, w, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, GEIST_ACT_Q8K_ELEMS, x, w, y, &sc, nullptr);
     if (xq == nullptr) {
         return;
     }
-    linear_iq4xs_decode_w4a8_pre(n_in, n_out, sc[0], xq, w->raw, y);
+    linear_iq4xs_decode_w4a8_pre(n_in, n_out, sc, xq, w->raw, y);
 }
 
 static void cpu_neon_w_iq4xs_mN(size_t                     m,
@@ -371,7 +355,7 @@ static void cpu_neon_w_iq4xs_mN(size_t                     m,
                                 float                     *y) {
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, m, n_in, x, w, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, m, n_in, GEIST_ACT_Q8K_ELEMS, x, w, y, &sc, nullptr);
     if (xq == nullptr) {
         return;
     }
@@ -384,11 +368,11 @@ static void cpu_neon_w_iq4nl_m1(const float               *x,
                                 float                     *y) {
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, 1, n_in, x, w, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, GEIST_ACT_Q8_0_ELEMS, x, w, y, &sc, nullptr);
     if (xq == nullptr) {
         return;
     }
-    linear_iq4nl_decode_w4a8_pre(n_in, n_out, sc[0], xq, w->raw, y);
+    linear_iq4nl_decode_w4a8_pre(n_in, n_out, sc, xq, w->raw, y);
 }
 
 /* F32 dense: SGEMV / SGEMM through geist_gemm. The weight is row-major
@@ -445,7 +429,7 @@ static void cpu_neon_w_q3k_mN(size_t                     m,
     }
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, m, n_in, x, w, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, m, n_in, GEIST_ACT_Q8K_ELEMS, x, w, y, &sc, nullptr);
     if (xq == nullptr) {
         return;
     }
@@ -486,50 +470,35 @@ static bool cpu_neon_qk_mN_workspace_prepare(struct cpu_neon_workspace *ws, size
     return true;
 }
 
+/* Q4_K M>1 activation quantization into the qk_mN workspace: one scale per
+ * 256-element super-block (#698) and the per-32 sums of the min-offset term.
+ * Every Q4_K prefill kernel reads that layout, so the block-scale policy
+ * (q4k_block_q8_prefill) now only picks between two bit-identical kernels. */
 static void
 cpu_neon_qk_mN_quantize_x(struct cpu_neon_workspace *ws, const float *x, size_t m, size_t n_in) {
+    const size_t n_groups = n_in / Q4_K_BLOCK_ELEMS;
 #if defined(_OPENMP)
     if (omp_in_parallel()) {
 #pragma omp for schedule(static) nowait
         for (size_t i = 0; i < m; i++) {
-            ws->qk_mN_sc[i] = quantize_x_for_q4k(
-                    n_in, x + i * n_in, ws->qk_mN_xq + i * n_in, ws->qk_mN_sum32 + i * (n_in / 32));
+            quantize_x_q8_groups(n_in,
+                                 GEIST_ACT_Q8K_ELEMS,
+                                 x + i * n_in,
+                                 ws->qk_mN_xq + i * n_in,
+                                 ws->qk_mN_sc + i * n_groups,
+                                 ws->qk_mN_sum32 + i * (n_in / 32));
         }
         return;
     }
 #pragma omp parallel for schedule(static) if (m >= 4)
 #endif
     for (size_t i = 0; i < m; i++) {
-        ws->qk_mN_sc[i] = quantize_x_for_q4k(
-                n_in, x + i * n_in, ws->qk_mN_xq + i * n_in, ws->qk_mN_sum32 + i * (n_in / 32));
-    }
-}
-
-static void cpu_neon_qk_mN_quantize_x_blocks(struct cpu_neon_workspace *ws,
-                                             const float               *x,
-                                             size_t                     m,
-                                             size_t                     n_in) {
-    const size_t n_blocks = n_in / Q4_K_BLOCK_ELEMS;
-#if defined(_OPENMP)
-    if (omp_in_parallel()) {
-#pragma omp for schedule(static) nowait
-        for (size_t i = 0; i < m; i++) {
-            quantize_x_for_q4k_blocks(n_in,
-                                      x + i * n_in,
-                                      ws->qk_mN_xq + i * n_in,
-                                      ws->qk_mN_sum32 + i * (n_in / 32),
-                                      ws->qk_mN_sc + i * n_blocks);
-        }
-        return;
-    }
-#pragma omp parallel for schedule(static) if (m >= 4)
-#endif
-    for (size_t i = 0; i < m; i++) {
-        quantize_x_for_q4k_blocks(n_in,
-                                  x + i * n_in,
-                                  ws->qk_mN_xq + i * n_in,
-                                  ws->qk_mN_sum32 + i * (n_in / 32),
-                                  ws->qk_mN_sc + i * n_blocks);
+        quantize_x_q8_groups(n_in,
+                             GEIST_ACT_Q8K_ELEMS,
+                             x + i * n_in,
+                             ws->qk_mN_xq + i * n_in,
+                             ws->qk_mN_sc + i * n_groups,
+                             ws->qk_mN_sum32 + i * (n_in / 32));
     }
 }
 
@@ -649,11 +618,7 @@ static void cpu_neon_w_q4k_mN(size_t                     m,
                                   q4k_weight_predecoded(w) && !q4k_weight_ntile4(w);
     const bool qp               = qprof_on();
     uint64_t   t0               = qp ? qprof_now_ns() : 0;
-    if (use_block_scales) {
-        cpu_neon_qk_mN_quantize_x_blocks(ws, x, m, n_in);
-    } else {
-        cpu_neon_qk_mN_quantize_x(ws, x, m, n_in);
-    }
+    cpu_neon_qk_mN_quantize_x(ws, x, m, n_in);
     if (qp) {
         atomic_fetch_add_explicit(&g_qprof_quant_ns, qprof_now_ns() - t0, memory_order_relaxed);
         t0 = qprof_now_ns();
@@ -702,11 +667,7 @@ static void cpu_neon_w_q4k_pair_mN(size_t                     m,
     const bool use_block_scales = st->policy.q4k_mtile_prefill && st->policy.q4k_block_q8_prefill &&
                                   q4k_weight_predecoded(w0) && q4k_weight_predecoded(w1) &&
                                   !q4k_weight_ntile4(w0) && !q4k_weight_ntile4(w1);
-    if (use_block_scales) {
-        cpu_neon_qk_mN_quantize_x_blocks(ws, x, m, n_in);
-    } else {
-        cpu_neon_qk_mN_quantize_x(ws, x, m, n_in);
-    }
+    cpu_neon_qk_mN_quantize_x(ws, x, m, n_in);
 
     if (!use_block_scales && q4k_weight_ntile4(w0) && q4k_weight_ntile4(w1) &&
         w0->n_out == w1->n_out) {
@@ -755,7 +716,12 @@ static void cpu_neon_w_q6k_mN(size_t                     m,
     const bool qp6 = qprof_on();
     uint64_t   t6  = qp6 ? qprof_now_ns() : 0;
     for (size_t i = 0; i < m; i++) {
-        ws->qk_mN_sc[i] = quantize_x_int8_sym(n_in, x + i * n_in, ws->qk_mN_xq + i * n_in);
+        quantize_x_q8_groups(n_in,
+                             GEIST_ACT_Q8K_ELEMS,
+                             x + i * n_in,
+                             ws->qk_mN_xq + i * n_in,
+                             ws->qk_mN_sc + i * (n_in / Q6_K_BLOCK_ELEMS),
+                             nullptr);
     }
     if (qp6) {
         atomic_fetch_add_explicit(&g_qprof_quant_ns, qprof_now_ns() - t6, memory_order_relaxed);
@@ -786,7 +752,7 @@ static void cpu_neon_w_iq2s_mN(size_t                     m,
     }
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, m, n_in, x, w, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, m, n_in, GEIST_ACT_Q8K_ELEMS, x, w, y, &sc, nullptr);
     if (xq == nullptr) {
         return;
     }
@@ -803,7 +769,7 @@ static void cpu_neon_w_iq3s_mN(size_t                     m,
     }
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, m, n_in, x, w, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, m, n_in, GEIST_ACT_Q8K_ELEMS, x, w, y, &sc, nullptr);
     if (xq == nullptr) {
         return;
     }
@@ -819,11 +785,11 @@ static void cpu_neon_w_q5k_m1(const float               *x,
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc  = nullptr;
     int32_t      *s32 = nullptr;
-    const int8_t *xq  = ws_quantize_act_q4k(be, 1, n_in, x, w, y, &sc, &s32);
+    const int8_t *xq  = ws_quantize_act(be, 1, n_in, GEIST_ACT_Q8K_ELEMS, x, w, y, &sc, &s32);
     if (xq == nullptr) {
         return;
     }
-    linear_q5k_decode_w5a8_pre(n_in, n_out, sc[0], xq, s32, w->raw, y);
+    linear_q5k_decode_w5a8_pre(n_in, n_out, sc, xq, s32, w->raw, y);
 }
 static void cpu_neon_w_q5k_mN(size_t                     m,
                               const float               *x,
@@ -836,7 +802,7 @@ static void cpu_neon_w_q5k_mN(size_t                     m,
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc  = nullptr;
     int32_t      *s32 = nullptr;
-    const int8_t *xq  = ws_quantize_act_q4k(be, m, n_in, x, w, y, &sc, &s32);
+    const int8_t *xq  = ws_quantize_act(be, m, n_in, GEIST_ACT_Q8K_ELEMS, x, w, y, &sc, &s32);
     if (xq == nullptr) {
         return;
     }
@@ -855,7 +821,7 @@ static void cpu_neon_w_q8_0_mN(size_t                     m,
     }
     const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     float        *sc = nullptr;
-    const int8_t *xq = ws_quantize_act(be, m, n_in, x, w, y, &sc);
+    const int8_t *xq = ws_quantize_act(be, m, n_in, GEIST_ACT_Q8_0_ELEMS, x, w, y, &sc, nullptr);
     if (xq == nullptr) {
         return;
     }

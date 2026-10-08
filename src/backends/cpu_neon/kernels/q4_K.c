@@ -4,9 +4,9 @@
  * Layer: BACKEND (cpu_neon).
  *
  * M=1 decode and M>1 prefill paths for Q4_K weights, the activation
- * quant helper (`quantize_x_for_q4k`) they share, and an fp32 GEMV
- * (`linear_q4k_decode_fp32`). The format decoder (`dequant_q4_K_row`)
- * and the block struct live in src/formats/gguf/.
+ * quantizer every cpu_neon W*A8 kernel shares (`quantize_x_q8_groups`), and
+ * an fp32 GEMV (`linear_q4k_decode_fp32`). The format decoder
+ * (`dequant_q4_K_row`) and the block struct live in src/formats/gguf/.
  */
 #include "quant_blocks.h"
 #include "heap.h"
@@ -291,8 +291,19 @@ static inline void q4k_subpair_dots(const uint8_t *q,
 #endif
 }
 
-float quantize_x_for_q4k(size_t n, const float x[static n], int8_t x_q8[static n], int32_t *sum32) {
-    float        scale    = quantize_x_int8_sym(n, x, x_q8);
+void quantize_x_q8_groups(size_t      n,
+                          size_t      group,
+                          const float x[static n],
+                          int8_t      x_q8[static n],
+                          float      *x_scales,
+                          int32_t    *sum32) {
+    for (size_t g = 0, off = 0; off < n; g++, off += group) {
+        const size_t len = n - off < group ? n - off : group;
+        x_scales[g]      = quantize_x_int8_sym(len, x + off, x_q8 + off);
+    }
+    if (sum32 == nullptr) {
+        return;
+    }
     const size_t n_chunks = n / 32;
     for (size_t s = 0; s < n_chunks; s++) {
 #if defined(__ARM_NEON)
@@ -306,42 +317,13 @@ float quantize_x_for_q4k(size_t n, const float x[static n], int8_t x_q8[static n
         sum32[s] = sum;
 #endif
     }
-    return scale;
-}
-
-void quantize_x_for_q4k_blocks(
-        size_t n, const float *x, int8_t *x_q8, int32_t *sum32, float *scale_blocks) {
-    if (x == nullptr || x_q8 == nullptr || sum32 == nullptr || scale_blocks == nullptr)
-        return;
-    if (n % Q4_K_BLOCK_ELEMS != 0)
-        return;
-    const size_t n_blocks = n / Q4_K_BLOCK_ELEMS;
-    for (size_t b = 0; b < n_blocks; b++) {
-        const size_t elem_off = b * Q4_K_BLOCK_ELEMS;
-        scale_blocks[b] = quantize_x_int8_sym(Q4_K_BLOCK_ELEMS, x + elem_off, x_q8 + elem_off);
-        for (size_t s = 0; s < Q4_K_BLOCK_ELEMS / 32; s++) {
-#if defined(__ARM_NEON)
-            const int8_t *p  = x_q8 + elem_off + s * 32;
-            int8x16_t     lo = vld1q_s8(p + 0);
-            int8x16_t     hi = vld1q_s8(p + 16);
-            sum32[b * (Q4_K_BLOCK_ELEMS / 32) + s] =
-                    (int32_t) vaddlvq_s8(lo) + (int32_t) vaddlvq_s8(hi);
-#else
-            int32_t sum = 0;
-            for (int j = 0; j < 32; j++) {
-                sum += x_q8[elem_off + s * 32 + (size_t) j];
-            }
-            sum32[b * (Q4_K_BLOCK_ELEMS / 32) + s] = sum;
-#endif
-        }
-    }
 }
 
 struct q4k_decode_ctx {
     const struct block_q4_K_t *w;
     const int8_t              *x_q8;
     const int32_t             *sum32;
-    float                      scale_x;
+    const float               *x_scales; /* one per super-block */
     float                     *y;
     size_t                     n_blocks_per_row;
     size_t                     n_out;
@@ -365,7 +347,7 @@ static inline void q4k_decode_one_row(size_t n, const struct q4k_decode_ctx *c) 
         /* Mins correction factored out of the sub-pair loop. Per super-block:
          *   sumi      = Σ_is scales[is] × dot[is]    (int32)
          *   mins_corr = Σ_is mins[is]   × sump[is]   (int32)
-         *   acc += scale_x * (d_blk * sumi - dmin_blk * mins_corr)
+         *   acc += x_scales[b] * (d_blk * sumi - dmin_blk * mins_corr)
          * sumi stays in an int32x4 accumulator; one vaddvq per super-block. */
         uint8_t scales[8], mins[8];
         for (int is = 0; is < 8; is++) {
@@ -403,7 +385,7 @@ static inline void q4k_decode_one_row(size_t n, const struct q4k_decode_ctx *c) 
             sumi += (int32_t) scales[is + 0] * acc1 + (int32_t) scales[is + 1] * acc2;
         }
 #endif
-        acc += c->scale_x * (d_blk * (float) sumi - dmin_blk * (float) mins_corr);
+        acc += c->x_scales[b] * (d_blk * (float) sumi - dmin_blk * (float) mins_corr);
     }
     c->y[n] = acc;
 }
@@ -414,7 +396,7 @@ static void q4k_pp_row(size_t n, void *vctx) {
 
 void linear_q4k_decode_w4a8_pre(size_t         n_in,
                                 size_t         n_out,
-                                float          scale_x,
+                                const float   *x_scales,
                                 const int8_t   x_q8[static n_in],
                                 const int32_t *sum32,
                                 const void    *w_q4k,
@@ -423,7 +405,7 @@ void linear_q4k_decode_w4a8_pre(size_t         n_in,
             .w                = (const struct block_q4_K_t *) w_q4k,
             .x_q8             = x_q8,
             .sum32            = sum32,
-            .scale_x          = scale_x,
+            .x_scales         = x_scales,
             .y                = y,
             .n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS,
             .n_out            = n_out,
@@ -493,28 +475,31 @@ void linear_q4k_decode_w4a8(size_t      n_in,
                             const void *w_q4k,
                             float       y[static n_out]) {
     /* Per-thread quantize cache: q/k/v and gate/up share one input x, so
-     * x_q8 + sum32 + scale are reused across the group. Key: the x pointer,
+     * x_q8 + sum32 + scales are reused across the group. Key: the x pointer,
      * n_in and a full copy of x, because the next rmsnorm rewrites the same
      * buffer and a partial sample could falsely match
      * (test_neon_q4k_act_cache_unit). Comparing costs a fraction of
      * quantizing. Runs on the calling thread before the OMP team starts. */
-    static _Thread_local int8_t      *tl_x_q8         = nullptr;
-    static _Thread_local int32_t     *tl_sum32        = nullptr;
-    static _Thread_local float       *tl_x_copy       = nullptr;
-    static _Thread_local size_t       tl_cap_n_in     = 0;
-    static _Thread_local const float *tl_last_x       = nullptr;
-    static _Thread_local size_t       tl_last_n_in    = 0;
-    static _Thread_local float        tl_last_scale_x = 0.0f;
+    static _Thread_local int8_t      *tl_x_q8      = nullptr;
+    static _Thread_local int32_t     *tl_sum32     = nullptr;
+    static _Thread_local float       *tl_x_scales  = nullptr;
+    static _Thread_local float       *tl_x_copy    = nullptr;
+    static _Thread_local size_t       tl_cap_n_in  = 0;
+    static _Thread_local const float *tl_last_x    = nullptr;
+    static _Thread_local size_t       tl_last_n_in = 0;
 
     if (n_in > tl_cap_n_in) {
         safe_free((void **) &tl_x_q8);
         safe_free((void **) &tl_sum32);
+        safe_free((void **) &tl_x_scales);
         safe_free((void **) &tl_x_copy);
-        tl_x_q8   = heap_alloc_array_aligned(int8_t, n_in);
-        tl_sum32  = heap_alloc_array_aligned(int32_t, n_in / 32);
-        tl_x_copy = heap_alloc_array_aligned(float, n_in);
-        tl_last_x = nullptr;
-        if (tl_x_q8 == nullptr || tl_sum32 == nullptr || tl_x_copy == nullptr) {
+        tl_x_q8     = heap_alloc_array_aligned(int8_t, n_in);
+        tl_sum32    = heap_alloc_array_aligned(int32_t, n_in / 32);
+        tl_x_scales = heap_alloc_array_aligned(float, geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS));
+        tl_x_copy   = heap_alloc_array_aligned(float, n_in);
+        tl_last_x   = nullptr;
+        if (tl_x_q8 == nullptr || tl_sum32 == nullptr || tl_x_scales == nullptr ||
+            tl_x_copy == nullptr) {
             tl_cap_n_in = 0;
             q4k_decode_ref(n_in, n_out, x, w_q4k, y);
             return;
@@ -522,18 +507,14 @@ void linear_q4k_decode_w4a8(size_t      n_in,
         tl_cap_n_in = n_in;
     }
 
-    float scale_x;
-    if (tl_last_x == x && tl_last_n_in == n_in && memcmp(tl_x_copy, x, n_in * sizeof *x) == 0) {
-        scale_x = tl_last_scale_x;
-    } else {
-        scale_x = quantize_x_for_q4k(n_in, x, tl_x_q8, tl_sum32);
+    if (tl_last_x != x || tl_last_n_in != n_in || memcmp(tl_x_copy, x, n_in * sizeof *x) != 0) {
+        quantize_x_q8_groups(n_in, GEIST_ACT_Q8K_ELEMS, x, tl_x_q8, tl_x_scales, tl_sum32);
         memcpy(tl_x_copy, x, n_in * sizeof *x);
-        tl_last_x       = x;
-        tl_last_n_in    = n_in;
-        tl_last_scale_x = scale_x;
+        tl_last_x    = x;
+        tl_last_n_in = n_in;
     }
 
-    linear_q4k_decode_w4a8_pre(n_in, n_out, scale_x, tl_x_q8, tl_sum32, w_q4k, y);
+    linear_q4k_decode_w4a8_pre(n_in, n_out, tl_x_scales, tl_x_q8, tl_sum32, w_q4k, y);
 }
 
 void linear_q4k_decode_w4a8_pair(size_t       n_in,
@@ -551,14 +532,17 @@ void linear_q4k_decode_w4a8_pair(size_t       n_in,
 
     static _Thread_local int8_t  *tl_x_q8     = nullptr;
     static _Thread_local int32_t *tl_sum32    = nullptr;
+    static _Thread_local float   *tl_x_scales = nullptr;
     static _Thread_local size_t   tl_cap_n_in = 0;
 
     if (n_in > tl_cap_n_in) {
         safe_free((void **) &tl_x_q8);
         safe_free((void **) &tl_sum32);
-        tl_x_q8  = heap_alloc_array_aligned(int8_t, n_in);
-        tl_sum32 = heap_alloc_array_aligned(int32_t, n_in / 32);
-        if (tl_x_q8 == nullptr || tl_sum32 == nullptr) {
+        safe_free((void **) &tl_x_scales);
+        tl_x_q8     = heap_alloc_array_aligned(int8_t, n_in);
+        tl_sum32    = heap_alloc_array_aligned(int32_t, n_in / 32);
+        tl_x_scales = heap_alloc_array_aligned(float, geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS));
+        if (tl_x_q8 == nullptr || tl_sum32 == nullptr || tl_x_scales == nullptr) {
             tl_cap_n_in = 0;
             q4k_decode_ref(n_in, n_out0, x, w0_q4k, y0);
             q4k_decode_ref(n_in, n_out1, x, w1_q4k, y1);
@@ -567,12 +551,12 @@ void linear_q4k_decode_w4a8_pair(size_t       n_in,
         tl_cap_n_in = n_in;
     }
 
-    const float                 scale_x = quantize_x_for_q4k(n_in, x, tl_x_q8, tl_sum32);
-    const struct q4k_decode_ctx c0      = {
+    quantize_x_q8_groups(n_in, GEIST_ACT_Q8K_ELEMS, x, tl_x_q8, tl_x_scales, tl_sum32);
+    const struct q4k_decode_ctx c0 = {
             .w                = (const struct block_q4_K_t *) w0_q4k,
             .x_q8             = tl_x_q8,
             .sum32            = tl_sum32,
-            .scale_x          = scale_x,
+            .x_scales         = tl_x_scales,
             .y                = y0,
             .n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS,
             .n_out            = n_out0,
@@ -581,7 +565,7 @@ void linear_q4k_decode_w4a8_pair(size_t       n_in,
             .w                = (const struct block_q4_K_t *) w1_q4k,
             .x_q8             = tl_x_q8,
             .sum32            = tl_sum32,
-            .scale_x          = scale_x,
+            .x_scales         = tl_x_scales,
             .y                = y1,
             .n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS,
             .n_out            = n_out1,
@@ -661,7 +645,7 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
                                  size_t         n_in,
                                  size_t         n_out,
                                  const int8_t  *x_q8,
-                                 const float    scale_x[static m],
+                                 const float   *x_scales,
                                  const int32_t *sum32,
                                  const void    *w_q4k,
                                  float         *y) {
@@ -678,8 +662,7 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
 /* Loop-reordered blocked GEMM: tile output rows into NC-row panels; per
  * panel, loop blocks OUTER and rows INNER so each activation block (m×256)
  * stays L1-resident across all NC rows. Partials accumulate in an L1 ytile
- * (m×NC); scale_x is applied once at panel end. Bit-identical to the
- * row-major form. */
+ * (m×NC); each super-block's partial carries its activation scale. */
 #define NC 64
     const size_t n_panels = (n_out + (size_t) NC - 1) / (size_t) NC;
 
@@ -782,7 +765,8 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
                         for (int j = 0; j < 8; j++)
                             mc += (int32_t) mins[j] * sp[j];
                         ytile[ii * (size_t) NC + r] +=
-                                d_blk * (float) vaddvq_s32(acc[t]) - dmin_blk * (float) mc;
+                                x_scales[ii * n_blocks_per_row + b] *
+                                (d_blk * (float) vaddvq_s32(acc[t]) - dmin_blk * (float) mc);
                     }
                 }
                 for (; i < m; i++) {
@@ -819,19 +803,20 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
                     for (int j = 0; j < 8; j++)
                         mc += (int32_t) mins[j] * sp[j];
                     ytile[i * (size_t) NC + r] +=
-                            d_blk * (float) vaddvq_s32(acc) - dmin_blk * (float) mc;
+                            x_scales[i * n_blocks_per_row + b] *
+                            (d_blk * (float) vaddvq_s32(acc) - dmin_blk * (float) mc);
                 }
             }
         }
         for (size_t i = 0; i < m; i++)
             for (size_t r = 0; r < nc; r++)
-                y[i * n_out + (nc0 + r)] = ytile[i * (size_t) NC + r] * scale_x[i];
+                y[i * n_out + (nc0 + r)] = ytile[i * (size_t) NC + r];
     }
 #undef NC
 #undef MT
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) sum32;
     (void) m;
     (void) w_q4k;
@@ -846,7 +831,7 @@ void linear_q4k_w4a8_prefill_predecoded(size_t         m,
                                         size_t         n_in,
                                         size_t         n_out,
                                         const int8_t  *x_q8,
-                                        const float    scale_x[static m],
+                                        const float   *x_scales,
                                         const int32_t *sum32,
                                         const void    *packed,
                                         float         *y) {
@@ -901,8 +886,8 @@ void linear_q4k_w4a8_prefill_predecoded(size_t         m,
             }
 
             for (size_t i = 0; i < m; i++) {
-                accs[i] +=
-                        scale_x[i] * (blk->d * (float) sumi[i] - blk->dmin * (float) mins_corr[i]);
+                accs[i] += x_scales[i * n_blocks_per_row + b] *
+                           (blk->d * (float) sumi[i] - blk->dmin * (float) mins_corr[i]);
             }
         }
         for (size_t i = 0; i < m; i++)
@@ -910,7 +895,7 @@ void linear_q4k_w4a8_prefill_predecoded(size_t         m,
     }
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) sum32;
     (void) m;
     (void) packed;
@@ -925,7 +910,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
                                                size_t         n_in,
                                                size_t         n_out,
                                                const int8_t  *x_q8,
-                                               const float    scale_x[static m],
+                                               const float   *x_scales,
                                                const int32_t *sum32,
                                                const void    *packed,
                                                float         *y) {
@@ -935,7 +920,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
     if (!q4k_predecode_valid(packed, n_in, n_out))
         return;
     if (m < 4) {
-        linear_q4k_w4a8_prefill_predecoded(m, n_in, n_out, x_q8, scale_x, sum32, packed, y);
+        linear_q4k_w4a8_prefill_predecoded(m, n_in, n_out, x_q8, x_scales, sum32, packed, y);
         return;
     }
 
@@ -953,14 +938,14 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
 
         size_t mt = 0;
         for (; mt + 4 <= m; mt += 4) {
-            const float sx0  = scale_x[mt + 0];
-            const float sx1  = scale_x[mt + 1];
-            const float sx2  = scale_x[mt + 2];
-            const float sx3  = scale_x[mt + 3];
-            float       acc0 = 0.0f;
-            float       acc1 = 0.0f;
-            float       acc2 = 0.0f;
-            float       acc3 = 0.0f;
+            const float *sx0  = x_scales + (mt + 0) * n_blocks_per_row;
+            const float *sx1  = x_scales + (mt + 1) * n_blocks_per_row;
+            const float *sx2  = x_scales + (mt + 2) * n_blocks_per_row;
+            const float *sx3  = x_scales + (mt + 3) * n_blocks_per_row;
+            float        acc0 = 0.0f;
+            float        acc1 = 0.0f;
+            float        acc2 = 0.0f;
+            float        acc3 = 0.0f;
 
             for (size_t b = 0; b < n_blocks_per_row; b++) {
                 const struct q4k_predecode_block *blk = &row[b];
@@ -1001,10 +986,10 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
 
                 const float d    = blk->d;
                 const float dmin = blk->dmin;
-                acc0 += sx0 * (d * (float) sumi0 - dmin * (float) min0);
-                acc1 += sx1 * (d * (float) sumi1 - dmin * (float) min1);
-                acc2 += sx2 * (d * (float) sumi2 - dmin * (float) min2);
-                acc3 += sx3 * (d * (float) sumi3 - dmin * (float) min3);
+                acc0 += sx0[b] * (d * (float) sumi0 - dmin * (float) min0);
+                acc1 += sx1[b] * (d * (float) sumi1 - dmin * (float) min1);
+                acc2 += sx2[b] * (d * (float) sumi2 - dmin * (float) min2);
+                acc3 += sx3[b] * (d * (float) sumi3 - dmin * (float) min3);
             }
 
             y[(mt + 0) * n_out + n] = acc0;
@@ -1014,8 +999,8 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
         }
 
         for (; mt < m; mt++) {
-            const float sx  = scale_x[mt];
-            float       acc = 0.0f;
+            const float *sx  = x_scales + mt * n_blocks_per_row;
+            float        acc = 0.0f;
             for (size_t b = 0; b < n_blocks_per_row; b++) {
                 const struct q4k_predecode_block *blk       = &row[b];
                 int32_t                           sumi      = 0;
@@ -1031,14 +1016,14 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
                     sumi += (int32_t) blk->scales[is] * dot;
                     mins_corr += (int32_t) blk->mins[is] * sum32[mt * n_chunks + sum_idx];
                 }
-                acc += sx * (blk->d * (float) sumi - blk->dmin * (float) mins_corr);
+                acc += sx[b] * (blk->d * (float) sumi - blk->dmin * (float) mins_corr);
             }
             y[mt * n_out + n] = acc;
         }
     }
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) sum32;
     (void) m;
     (void) packed;
@@ -1050,13 +1035,13 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
 }
 
 /* mtile8 = mtile4 with the inner M-tile widened to 8 rows. Same buffer
- * contracts (x_q8/scale_x/sum32/packed/y), no new workspace. Falls back
+ * contracts (x_q8/x_scales/sum32/packed/y), no new workspace. Falls back
  * to mtile4 when m < 8. */
 void linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
                                                size_t         n_in,
                                                size_t         n_out,
                                                const int8_t  *x_q8,
-                                               const float    scale_x[static m],
+                                               const float   *x_scales,
                                                const int32_t *sum32,
                                                const void    *packed,
                                                float         *y) {
@@ -1066,7 +1051,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
     if (!q4k_predecode_valid(packed, n_in, n_out))
         return;
     if (m < 8) {
-        linear_q4k_w4a8_prefill_predecoded_mtile4(m, n_in, n_out, x_q8, scale_x, sum32, packed, y);
+        linear_q4k_w4a8_prefill_predecoded_mtile4(m, n_in, n_out, x_q8, x_scales, sum32, packed, y);
         return;
     }
 
@@ -1084,16 +1069,16 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
 
         size_t mt = 0;
         for (; mt + 8 <= m; mt += 8) {
-            const float sx0  = scale_x[mt + 0];
-            const float sx1  = scale_x[mt + 1];
-            const float sx2  = scale_x[mt + 2];
-            const float sx3  = scale_x[mt + 3];
-            const float sx4  = scale_x[mt + 4];
-            const float sx5  = scale_x[mt + 5];
-            const float sx6  = scale_x[mt + 6];
-            const float sx7  = scale_x[mt + 7];
-            float       acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
-            float       acc4 = 0.0f, acc5 = 0.0f, acc6 = 0.0f, acc7 = 0.0f;
+            const float *sx0  = x_scales + (mt + 0) * n_blocks_per_row;
+            const float *sx1  = x_scales + (mt + 1) * n_blocks_per_row;
+            const float *sx2  = x_scales + (mt + 2) * n_blocks_per_row;
+            const float *sx3  = x_scales + (mt + 3) * n_blocks_per_row;
+            const float *sx4  = x_scales + (mt + 4) * n_blocks_per_row;
+            const float *sx5  = x_scales + (mt + 5) * n_blocks_per_row;
+            const float *sx6  = x_scales + (mt + 6) * n_blocks_per_row;
+            const float *sx7  = x_scales + (mt + 7) * n_blocks_per_row;
+            float        acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
+            float        acc4 = 0.0f, acc5 = 0.0f, acc6 = 0.0f, acc7 = 0.0f;
 
             for (size_t b = 0; b < n_blocks_per_row; b++) {
                 const struct q4k_predecode_block *blk = &row[b];
@@ -1144,14 +1129,14 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
 
                 const float d    = blk->d;
                 const float dmin = blk->dmin;
-                acc0 += sx0 * (d * (float) sumi0 - dmin * (float) min0);
-                acc1 += sx1 * (d * (float) sumi1 - dmin * (float) min1);
-                acc2 += sx2 * (d * (float) sumi2 - dmin * (float) min2);
-                acc3 += sx3 * (d * (float) sumi3 - dmin * (float) min3);
-                acc4 += sx4 * (d * (float) sumi4 - dmin * (float) min4);
-                acc5 += sx5 * (d * (float) sumi5 - dmin * (float) min5);
-                acc6 += sx6 * (d * (float) sumi6 - dmin * (float) min6);
-                acc7 += sx7 * (d * (float) sumi7 - dmin * (float) min7);
+                acc0 += sx0[b] * (d * (float) sumi0 - dmin * (float) min0);
+                acc1 += sx1[b] * (d * (float) sumi1 - dmin * (float) min1);
+                acc2 += sx2[b] * (d * (float) sumi2 - dmin * (float) min2);
+                acc3 += sx3[b] * (d * (float) sumi3 - dmin * (float) min3);
+                acc4 += sx4[b] * (d * (float) sumi4 - dmin * (float) min4);
+                acc5 += sx5[b] * (d * (float) sumi5 - dmin * (float) min5);
+                acc6 += sx6[b] * (d * (float) sumi6 - dmin * (float) min6);
+                acc7 += sx7[b] * (d * (float) sumi7 - dmin * (float) min7);
             }
 
             y[(mt + 0) * n_out + n] = acc0;
@@ -1166,11 +1151,11 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
 
         /* Residual: 4-row chunk for m % 8 ≥ 4, mirrors mtile4 inner loop. */
         for (; mt + 4 <= m; mt += 4) {
-            const float sx0  = scale_x[mt + 0];
-            const float sx1  = scale_x[mt + 1];
-            const float sx2  = scale_x[mt + 2];
-            const float sx3  = scale_x[mt + 3];
-            float       acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
+            const float *sx0  = x_scales + (mt + 0) * n_blocks_per_row;
+            const float *sx1  = x_scales + (mt + 1) * n_blocks_per_row;
+            const float *sx2  = x_scales + (mt + 2) * n_blocks_per_row;
+            const float *sx3  = x_scales + (mt + 3) * n_blocks_per_row;
+            float        acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
 
             for (size_t b = 0; b < n_blocks_per_row; b++) {
                 const struct q4k_predecode_block *blk   = &row[b];
@@ -1199,10 +1184,10 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
                 }
                 const float d    = blk->d;
                 const float dmin = blk->dmin;
-                acc0 += sx0 * (d * (float) sumi0 - dmin * (float) min0);
-                acc1 += sx1 * (d * (float) sumi1 - dmin * (float) min1);
-                acc2 += sx2 * (d * (float) sumi2 - dmin * (float) min2);
-                acc3 += sx3 * (d * (float) sumi3 - dmin * (float) min3);
+                acc0 += sx0[b] * (d * (float) sumi0 - dmin * (float) min0);
+                acc1 += sx1[b] * (d * (float) sumi1 - dmin * (float) min1);
+                acc2 += sx2[b] * (d * (float) sumi2 - dmin * (float) min2);
+                acc3 += sx3[b] * (d * (float) sumi3 - dmin * (float) min3);
             }
             y[(mt + 0) * n_out + n] = acc0;
             y[(mt + 1) * n_out + n] = acc1;
@@ -1212,8 +1197,8 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
 
         /* 1-row residual for m % 4. */
         for (; mt < m; mt++) {
-            const float sx  = scale_x[mt];
-            float       acc = 0.0f;
+            const float *sx  = x_scales + mt * n_blocks_per_row;
+            float        acc = 0.0f;
             for (size_t b = 0; b < n_blocks_per_row; b++) {
                 const struct q4k_predecode_block *blk       = &row[b];
                 int32_t                           sumi      = 0;
@@ -1229,14 +1214,14 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
                     sumi += (int32_t) blk->scales[is] * dot;
                     mins_corr += (int32_t) blk->mins[is] * sum32[mt * n_chunks + sum_idx];
                 }
-                acc += sx * (blk->d * (float) sumi - blk->dmin * (float) mins_corr);
+                acc += sx[b] * (blk->d * (float) sumi - blk->dmin * (float) mins_corr);
             }
             y[mt * n_out + n] = acc;
         }
     }
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) sum32;
     (void) m;
     (void) packed;
@@ -1251,7 +1236,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(size_t         m,
                                                       size_t         n_in,
                                                       size_t         n_out,
                                                       const int8_t  *x_q8,
-                                                      const float    scale_x[static m],
+                                                      const float   *x_scales,
                                                       const int32_t *sum32,
                                                       const void    *packed,
                                                       float         *y) {
@@ -1261,7 +1246,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(size_t         m,
     if (!q4k_predecode_valid(packed, n_in, n_out))
         return;
     if (m < 4 || n_out < 4) {
-        linear_q4k_w4a8_prefill_predecoded_mtile4(m, n_in, n_out, x_q8, scale_x, sum32, packed, y);
+        linear_q4k_w4a8_prefill_predecoded_mtile4(m, n_in, n_out, x_q8, x_scales, sum32, packed, y);
         return;
     }
 
@@ -1281,14 +1266,14 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(size_t         m,
 
         size_t mt = 0;
         for (; mt + 4 <= m; mt += 4) {
-            const float sx0 = scale_x[mt + 0];
-            const float sx1 = scale_x[mt + 1];
-            const float sx2 = scale_x[mt + 2];
-            const float sx3 = scale_x[mt + 3];
-            float       a00 = 0.0f, a01 = 0.0f, a02 = 0.0f, a03 = 0.0f;
-            float       a10 = 0.0f, a11 = 0.0f, a12 = 0.0f, a13 = 0.0f;
-            float       a20 = 0.0f, a21 = 0.0f, a22 = 0.0f, a23 = 0.0f;
-            float       a30 = 0.0f, a31 = 0.0f, a32 = 0.0f, a33 = 0.0f;
+            const float *sx0 = x_scales + (mt + 0) * n_blocks_per_row;
+            const float *sx1 = x_scales + (mt + 1) * n_blocks_per_row;
+            const float *sx2 = x_scales + (mt + 2) * n_blocks_per_row;
+            const float *sx3 = x_scales + (mt + 3) * n_blocks_per_row;
+            float        a00 = 0.0f, a01 = 0.0f, a02 = 0.0f, a03 = 0.0f;
+            float        a10 = 0.0f, a11 = 0.0f, a12 = 0.0f, a13 = 0.0f;
+            float        a20 = 0.0f, a21 = 0.0f, a22 = 0.0f, a23 = 0.0f;
+            float        a30 = 0.0f, a31 = 0.0f, a32 = 0.0f, a33 = 0.0f;
 
             for (size_t b = 0; b < n_blocks_per_row; b++) {
                 const struct q4k_predecode_block *blks[4] = {
@@ -1330,15 +1315,15 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(size_t         m,
                     }
                 }
 
-#define Q4K_ACC_ROW(NR, A0, A1, A2, A3)                                           \
-    do {                                                                          \
-        const struct q4k_predecode_block *blk  = blks[(NR)];                      \
-        const float                       d    = blk->d;                          \
-        const float                       dmin = blk->dmin;                       \
-        (A0) += sx0 * (d * (float) sumi[(NR)][0] - dmin * (float) minc[(NR)][0]); \
-        (A1) += sx1 * (d * (float) sumi[(NR)][1] - dmin * (float) minc[(NR)][1]); \
-        (A2) += sx2 * (d * (float) sumi[(NR)][2] - dmin * (float) minc[(NR)][2]); \
-        (A3) += sx3 * (d * (float) sumi[(NR)][3] - dmin * (float) minc[(NR)][3]); \
+#define Q4K_ACC_ROW(NR, A0, A1, A2, A3)                                              \
+    do {                                                                             \
+        const struct q4k_predecode_block *blk  = blks[(NR)];                         \
+        const float                       d    = blk->d;                             \
+        const float                       dmin = blk->dmin;                          \
+        (A0) += sx0[b] * (d * (float) sumi[(NR)][0] - dmin * (float) minc[(NR)][0]); \
+        (A1) += sx1[b] * (d * (float) sumi[(NR)][1] - dmin * (float) minc[(NR)][1]); \
+        (A2) += sx2[b] * (d * (float) sumi[(NR)][2] - dmin * (float) minc[(NR)][2]); \
+        (A3) += sx3[b] * (d * (float) sumi[(NR)][3] - dmin * (float) minc[(NR)][3]); \
     } while (0)
                 Q4K_ACC_ROW(0, a00, a10, a20, a30);
                 Q4K_ACC_ROW(1, a01, a11, a21, a31);
@@ -1371,11 +1356,11 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(size_t         m,
     }
 
     if (n_tile_end < n_out || (m & (size_t) 3) != 0) {
-        linear_q4k_w4a8_prefill_predecoded_mtile4(m, n_in, n_out, x_q8, scale_x, sum32, packed, y);
+        linear_q4k_w4a8_prefill_predecoded_mtile4(m, n_in, n_out, x_q8, x_scales, sum32, packed, y);
     }
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) sum32;
     (void) m;
     (void) packed;
@@ -1390,7 +1375,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
                                                              size_t         n_in,
                                                              size_t         n_out,
                                                              const int8_t  *x_q8,
-                                                             const float    scale_x[static m],
+                                                             const float   *x_scales,
                                                              const int32_t *sum32,
                                                              const void    *packed,
                                                              float         *y) {
@@ -1413,14 +1398,14 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
 
         size_t mt = 0;
         for (; mt + 4 <= m; mt += 4) {
-            const float sx0 = scale_x[mt + 0];
-            const float sx1 = scale_x[mt + 1];
-            const float sx2 = scale_x[mt + 2];
-            const float sx3 = scale_x[mt + 3];
-            float       a00 = 0.0f, a01 = 0.0f, a02 = 0.0f, a03 = 0.0f;
-            float       a10 = 0.0f, a11 = 0.0f, a12 = 0.0f, a13 = 0.0f;
-            float       a20 = 0.0f, a21 = 0.0f, a22 = 0.0f, a23 = 0.0f;
-            float       a30 = 0.0f, a31 = 0.0f, a32 = 0.0f, a33 = 0.0f;
+            const float *sx0 = x_scales + (mt + 0) * n_blocks_per_row;
+            const float *sx1 = x_scales + (mt + 1) * n_blocks_per_row;
+            const float *sx2 = x_scales + (mt + 2) * n_blocks_per_row;
+            const float *sx3 = x_scales + (mt + 3) * n_blocks_per_row;
+            float        a00 = 0.0f, a01 = 0.0f, a02 = 0.0f, a03 = 0.0f;
+            float        a10 = 0.0f, a11 = 0.0f, a12 = 0.0f, a13 = 0.0f;
+            float        a20 = 0.0f, a21 = 0.0f, a22 = 0.0f, a23 = 0.0f;
+            float        a30 = 0.0f, a31 = 0.0f, a32 = 0.0f, a33 = 0.0f;
 
             for (size_t b = 0; b < n_blocks_per_row; b++) {
                 const struct q4k_predecode_block *blks       = tile + b * 4;
@@ -1457,17 +1442,17 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
                     }
                 }
 
-#define Q4K_ACC_ROW_PACKED(NR, A0, A1, A2, A3)                                        \
-    do {                                                                              \
-        if ((NR) < valid_nr) {                                                        \
-            const struct q4k_predecode_block *blk  = blks + (NR);                     \
-            const float                       d    = blk->d;                          \
-            const float                       dmin = blk->dmin;                       \
-            (A0) += sx0 * (d * (float) sumi[(NR)][0] - dmin * (float) minc[(NR)][0]); \
-            (A1) += sx1 * (d * (float) sumi[(NR)][1] - dmin * (float) minc[(NR)][1]); \
-            (A2) += sx2 * (d * (float) sumi[(NR)][2] - dmin * (float) minc[(NR)][2]); \
-            (A3) += sx3 * (d * (float) sumi[(NR)][3] - dmin * (float) minc[(NR)][3]); \
-        }                                                                             \
+#define Q4K_ACC_ROW_PACKED(NR, A0, A1, A2, A3)                                           \
+    do {                                                                                 \
+        if ((NR) < valid_nr) {                                                           \
+            const struct q4k_predecode_block *blk  = blks + (NR);                        \
+            const float                       d    = blk->d;                             \
+            const float                       dmin = blk->dmin;                          \
+            (A0) += sx0[b] * (d * (float) sumi[(NR)][0] - dmin * (float) minc[(NR)][0]); \
+            (A1) += sx1[b] * (d * (float) sumi[(NR)][1] - dmin * (float) minc[(NR)][1]); \
+            (A2) += sx2[b] * (d * (float) sumi[(NR)][2] - dmin * (float) minc[(NR)][2]); \
+            (A3) += sx3[b] * (d * (float) sumi[(NR)][3] - dmin * (float) minc[(NR)][3]); \
+        }                                                                                \
     } while (0)
                 Q4K_ACC_ROW_PACKED(0, a00, a10, a20, a30);
                 Q4K_ACC_ROW_PACKED(1, a01, a11, a21, a31);
@@ -1524,7 +1509,8 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
                         sumi += (int32_t) blk->scales[is] * dot;
                         mins_corr += (int32_t) blk->mins[is] * sum32[mt * n_chunks + sum_idx];
                     }
-                    acc += scale_x[mt] * (blk->d * (float) sumi - blk->dmin * (float) mins_corr);
+                    acc += x_scales[mt * n_blocks_per_row + b] *
+                           (blk->d * (float) sumi - blk->dmin * (float) mins_corr);
                 }
                 y[mt * n_out + nt * 4 + nr] = acc;
             }
@@ -1532,7 +1518,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
     }
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) sum32;
     (void) m;
     (void) packed;
@@ -1551,7 +1537,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
                                                              size_t         n_in,
                                                              size_t         n_out,
                                                              const int8_t  *x_q8,
-                                                             const float    scale_x[static m],
+                                                             const float   *x_scales,
                                                              const int32_t *sum32,
                                                              const void    *packed,
                                                              float         *y) {
@@ -1562,7 +1548,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
         return;
     if (m < 8) {
         linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(
-                m, n_in, n_out, x_q8, scale_x, sum32, packed, y);
+                m, n_in, n_out, x_q8, x_scales, sum32, packed, y);
         return;
     }
     const struct q4k_predecode_block *w                = q4k_predecode_ntile4_blocks(packed);
@@ -1581,14 +1567,18 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
 
         size_t mt = 0;
         for (; mt + 8 <= m; mt += 8) {
-            const float sx0 = scale_x[mt + 0], sx1 = scale_x[mt + 1];
-            const float sx2 = scale_x[mt + 2], sx3 = scale_x[mt + 3];
-            const float sx4 = scale_x[mt + 4], sx5 = scale_x[mt + 5];
-            const float sx6 = scale_x[mt + 6], sx7 = scale_x[mt + 7];
-            float       a00 = 0, a01 = 0, a02 = 0, a03 = 0, a10 = 0, a11 = 0, a12 = 0, a13 = 0;
-            float       a20 = 0, a21 = 0, a22 = 0, a23 = 0, a30 = 0, a31 = 0, a32 = 0, a33 = 0;
-            float       a40 = 0, a41 = 0, a42 = 0, a43 = 0, a50 = 0, a51 = 0, a52 = 0, a53 = 0;
-            float       a60 = 0, a61 = 0, a62 = 0, a63 = 0, a70 = 0, a71 = 0, a72 = 0, a73 = 0;
+            const float *sx0 = x_scales + (mt + 0) * n_blocks_per_row,
+                        *sx1 = x_scales + (mt + 1) * n_blocks_per_row;
+            const float *sx2 = x_scales + (mt + 2) * n_blocks_per_row,
+                        *sx3 = x_scales + (mt + 3) * n_blocks_per_row;
+            const float *sx4 = x_scales + (mt + 4) * n_blocks_per_row,
+                        *sx5 = x_scales + (mt + 5) * n_blocks_per_row;
+            const float *sx6 = x_scales + (mt + 6) * n_blocks_per_row,
+                        *sx7 = x_scales + (mt + 7) * n_blocks_per_row;
+            float a00 = 0, a01 = 0, a02 = 0, a03 = 0, a10 = 0, a11 = 0, a12 = 0, a13 = 0;
+            float a20 = 0, a21 = 0, a22 = 0, a23 = 0, a30 = 0, a31 = 0, a32 = 0, a33 = 0;
+            float a40 = 0, a41 = 0, a42 = 0, a43 = 0, a50 = 0, a51 = 0, a52 = 0, a53 = 0;
+            float a60 = 0, a61 = 0, a62 = 0, a63 = 0, a70 = 0, a71 = 0, a72 = 0, a73 = 0;
 
             for (size_t b = 0; b < n_blocks_per_row; b++) {
                 const struct q4k_predecode_block *blks       = tile + b * 4;
@@ -1641,21 +1631,21 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
                     }
                 }
 
-#define Q4K_ACC_8(NR, A0, A1, A2, A3, A4, A5, A6, A7)                                 \
-    do {                                                                              \
-        if ((NR) < valid_nr) {                                                        \
-            const struct q4k_predecode_block *blk  = blks + (NR);                     \
-            const float                       d    = blk->d;                          \
-            const float                       dmin = blk->dmin;                       \
-            (A0) += sx0 * (d * (float) sumi[(NR)][0] - dmin * (float) minc[(NR)][0]); \
-            (A1) += sx1 * (d * (float) sumi[(NR)][1] - dmin * (float) minc[(NR)][1]); \
-            (A2) += sx2 * (d * (float) sumi[(NR)][2] - dmin * (float) minc[(NR)][2]); \
-            (A3) += sx3 * (d * (float) sumi[(NR)][3] - dmin * (float) minc[(NR)][3]); \
-            (A4) += sx4 * (d * (float) sumi[(NR)][4] - dmin * (float) minc[(NR)][4]); \
-            (A5) += sx5 * (d * (float) sumi[(NR)][5] - dmin * (float) minc[(NR)][5]); \
-            (A6) += sx6 * (d * (float) sumi[(NR)][6] - dmin * (float) minc[(NR)][6]); \
-            (A7) += sx7 * (d * (float) sumi[(NR)][7] - dmin * (float) minc[(NR)][7]); \
-        }                                                                             \
+#define Q4K_ACC_8(NR, A0, A1, A2, A3, A4, A5, A6, A7)                                    \
+    do {                                                                                 \
+        if ((NR) < valid_nr) {                                                           \
+            const struct q4k_predecode_block *blk  = blks + (NR);                        \
+            const float                       d    = blk->d;                             \
+            const float                       dmin = blk->dmin;                          \
+            (A0) += sx0[b] * (d * (float) sumi[(NR)][0] - dmin * (float) minc[(NR)][0]); \
+            (A1) += sx1[b] * (d * (float) sumi[(NR)][1] - dmin * (float) minc[(NR)][1]); \
+            (A2) += sx2[b] * (d * (float) sumi[(NR)][2] - dmin * (float) minc[(NR)][2]); \
+            (A3) += sx3[b] * (d * (float) sumi[(NR)][3] - dmin * (float) minc[(NR)][3]); \
+            (A4) += sx4[b] * (d * (float) sumi[(NR)][4] - dmin * (float) minc[(NR)][4]); \
+            (A5) += sx5[b] * (d * (float) sumi[(NR)][5] - dmin * (float) minc[(NR)][5]); \
+            (A6) += sx6[b] * (d * (float) sumi[(NR)][6] - dmin * (float) minc[(NR)][6]); \
+            (A7) += sx7[b] * (d * (float) sumi[(NR)][7] - dmin * (float) minc[(NR)][7]); \
+        }                                                                                \
     } while (0)
                 Q4K_ACC_8(0, a00, a10, a20, a30, a40, a50, a60, a70);
                 Q4K_ACC_8(1, a01, a11, a21, a31, a41, a51, a61, a71);
@@ -1716,10 +1706,12 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
 
         /* 4-row residual: delegate to mtile4_ntile4_packed inline body. */
         for (; mt + 4 <= m; mt += 4) {
-            const float sx0 = scale_x[mt + 0], sx1 = scale_x[mt + 1];
-            const float sx2 = scale_x[mt + 2], sx3 = scale_x[mt + 3];
-            float       a00 = 0, a01 = 0, a02 = 0, a03 = 0, a10 = 0, a11 = 0, a12 = 0, a13 = 0;
-            float       a20 = 0, a21 = 0, a22 = 0, a23 = 0, a30 = 0, a31 = 0, a32 = 0, a33 = 0;
+            const float *sx0 = x_scales + (mt + 0) * n_blocks_per_row,
+                        *sx1 = x_scales + (mt + 1) * n_blocks_per_row;
+            const float *sx2 = x_scales + (mt + 2) * n_blocks_per_row,
+                        *sx3 = x_scales + (mt + 3) * n_blocks_per_row;
+            float a00 = 0, a01 = 0, a02 = 0, a03 = 0, a10 = 0, a11 = 0, a12 = 0, a13 = 0;
+            float a20 = 0, a21 = 0, a22 = 0, a23 = 0, a30 = 0, a31 = 0, a32 = 0, a33 = 0;
             for (size_t b = 0; b < n_blocks_per_row; b++) {
                 const struct q4k_predecode_block *blks       = tile + b * 4;
                 int32_t                           sumi[4][4] = {{0}};
@@ -1748,17 +1740,17 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
                         minc[nr][3] += mn * sum32[(mt + 3) * n_chunks + sum_idx];
                     }
                 }
-#define Q4K_ACC_4(NR, A0, A1, A2, A3)                                                 \
-    do {                                                                              \
-        if ((NR) < valid_nr) {                                                        \
-            const struct q4k_predecode_block *blk  = blks + (NR);                     \
-            const float                       d    = blk->d;                          \
-            const float                       dmin = blk->dmin;                       \
-            (A0) += sx0 * (d * (float) sumi[(NR)][0] - dmin * (float) minc[(NR)][0]); \
-            (A1) += sx1 * (d * (float) sumi[(NR)][1] - dmin * (float) minc[(NR)][1]); \
-            (A2) += sx2 * (d * (float) sumi[(NR)][2] - dmin * (float) minc[(NR)][2]); \
-            (A3) += sx3 * (d * (float) sumi[(NR)][3] - dmin * (float) minc[(NR)][3]); \
-        }                                                                             \
+#define Q4K_ACC_4(NR, A0, A1, A2, A3)                                                    \
+    do {                                                                                 \
+        if ((NR) < valid_nr) {                                                           \
+            const struct q4k_predecode_block *blk  = blks + (NR);                        \
+            const float                       d    = blk->d;                             \
+            const float                       dmin = blk->dmin;                          \
+            (A0) += sx0[b] * (d * (float) sumi[(NR)][0] - dmin * (float) minc[(NR)][0]); \
+            (A1) += sx1[b] * (d * (float) sumi[(NR)][1] - dmin * (float) minc[(NR)][1]); \
+            (A2) += sx2[b] * (d * (float) sumi[(NR)][2] - dmin * (float) minc[(NR)][2]); \
+            (A3) += sx3[b] * (d * (float) sumi[(NR)][3] - dmin * (float) minc[(NR)][3]); \
+        }                                                                                \
     } while (0)
                 Q4K_ACC_4(0, a00, a10, a20, a30);
                 Q4K_ACC_4(1, a01, a11, a21, a31);
@@ -1814,7 +1806,8 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
                         sumi += (int32_t) blk->scales[is] * dot;
                         mins_corr += (int32_t) blk->mins[is] * sum32[mt * n_chunks + sum_idx];
                     }
-                    acc += scale_x[mt] * (blk->d * (float) sumi - blk->dmin * (float) mins_corr);
+                    acc += x_scales[mt * n_blocks_per_row + b] *
+                           (blk->d * (float) sumi - blk->dmin * (float) mins_corr);
                 }
                 y[mt * n_out + nt * 4 + nr] = acc;
             }
@@ -1822,7 +1815,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
     }
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) sum32;
     (void) m;
     (void) packed;
@@ -1837,7 +1830,7 @@ void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t        
                                                                   size_t         n_in,
                                                                   size_t         n_out,
                                                                   const int8_t  *x_q8,
-                                                                  const float    scale_x[static m],
+                                                                  const float   *x_scales,
                                                                   const int32_t *sum32,
                                                                   const void    *packed0,
                                                                   const void    *packed1,
@@ -1869,14 +1862,14 @@ void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t        
 
         size_t mt = 0;
         for (; mt + 4 <= m; mt += 4) {
-            const float sx0 = scale_x[mt + 0];
-            const float sx1 = scale_x[mt + 1];
-            const float sx2 = scale_x[mt + 2];
-            const float sx3 = scale_x[mt + 3];
-            float       a00 = 0.0f, a01 = 0.0f, a02 = 0.0f, a03 = 0.0f;
-            float       a10 = 0.0f, a11 = 0.0f, a12 = 0.0f, a13 = 0.0f;
-            float       a20 = 0.0f, a21 = 0.0f, a22 = 0.0f, a23 = 0.0f;
-            float       a30 = 0.0f, a31 = 0.0f, a32 = 0.0f, a33 = 0.0f;
+            const float *sx0 = x_scales + (mt + 0) * n_blocks_per_row;
+            const float *sx1 = x_scales + (mt + 1) * n_blocks_per_row;
+            const float *sx2 = x_scales + (mt + 2) * n_blocks_per_row;
+            const float *sx3 = x_scales + (mt + 3) * n_blocks_per_row;
+            float        a00 = 0.0f, a01 = 0.0f, a02 = 0.0f, a03 = 0.0f;
+            float        a10 = 0.0f, a11 = 0.0f, a12 = 0.0f, a13 = 0.0f;
+            float        a20 = 0.0f, a21 = 0.0f, a22 = 0.0f, a23 = 0.0f;
+            float        a30 = 0.0f, a31 = 0.0f, a32 = 0.0f, a33 = 0.0f;
 
             for (size_t b = 0; b < n_blocks_per_row; b++) {
                 const struct q4k_predecode_block *blks       = tile + b * 4;
@@ -1913,17 +1906,17 @@ void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t        
                     }
                 }
 
-#define Q4K_PAIR_ACC_ROW(NR, A0, A1, A2, A3)                                          \
-    do {                                                                              \
-        if ((NR) < valid_nr) {                                                        \
-            const struct q4k_predecode_block *blk  = blks + (NR);                     \
-            const float                       d    = blk->d;                          \
-            const float                       dmin = blk->dmin;                       \
-            (A0) += sx0 * (d * (float) sumi[(NR)][0] - dmin * (float) minc[(NR)][0]); \
-            (A1) += sx1 * (d * (float) sumi[(NR)][1] - dmin * (float) minc[(NR)][1]); \
-            (A2) += sx2 * (d * (float) sumi[(NR)][2] - dmin * (float) minc[(NR)][2]); \
-            (A3) += sx3 * (d * (float) sumi[(NR)][3] - dmin * (float) minc[(NR)][3]); \
-        }                                                                             \
+#define Q4K_PAIR_ACC_ROW(NR, A0, A1, A2, A3)                                             \
+    do {                                                                                 \
+        if ((NR) < valid_nr) {                                                           \
+            const struct q4k_predecode_block *blk  = blks + (NR);                        \
+            const float                       d    = blk->d;                             \
+            const float                       dmin = blk->dmin;                          \
+            (A0) += sx0[b] * (d * (float) sumi[(NR)][0] - dmin * (float) minc[(NR)][0]); \
+            (A1) += sx1[b] * (d * (float) sumi[(NR)][1] - dmin * (float) minc[(NR)][1]); \
+            (A2) += sx2[b] * (d * (float) sumi[(NR)][2] - dmin * (float) minc[(NR)][2]); \
+            (A3) += sx3[b] * (d * (float) sumi[(NR)][3] - dmin * (float) minc[(NR)][3]); \
+        }                                                                                \
     } while (0)
                 Q4K_PAIR_ACC_ROW(0, a00, a10, a20, a30);
                 Q4K_PAIR_ACC_ROW(1, a01, a11, a21, a31);
@@ -1980,7 +1973,8 @@ void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t        
                         sumi += (int32_t) blk->scales[is] * dot;
                         mins_corr += (int32_t) blk->mins[is] * sum32[mt * n_chunks + sum_idx];
                     }
-                    acc += scale_x[mt] * (blk->d * (float) sumi - blk->dmin * (float) mins_corr);
+                    acc += x_scales[mt * n_blocks_per_row + b] *
+                           (blk->d * (float) sumi - blk->dmin * (float) mins_corr);
                 }
                 y[mt * n_out + nt * 4 + nr] = acc;
             }
@@ -1988,7 +1982,7 @@ void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t        
     }
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) sum32;
     (void) m;
     (void) packed0;
@@ -2006,7 +2000,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(size_t         m,
                                                       size_t         n_in,
                                                       size_t         n_out,
                                                       const int8_t  *x_q8,
-                                                      const float   *scale_blocks,
+                                                      const float   *x_scales,
                                                       const int32_t *sum32,
                                                       const void    *packed,
                                                       float         *y) {
@@ -2074,10 +2068,10 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(size_t         m,
 
                 const float d    = blk->d;
                 const float dmin = blk->dmin;
-                const float sx0  = scale_blocks[(mt + 0) * n_blocks_per_row + b];
-                const float sx1  = scale_blocks[(mt + 1) * n_blocks_per_row + b];
-                const float sx2  = scale_blocks[(mt + 2) * n_blocks_per_row + b];
-                const float sx3  = scale_blocks[(mt + 3) * n_blocks_per_row + b];
+                const float sx0  = x_scales[(mt + 0) * n_blocks_per_row + b];
+                const float sx1  = x_scales[(mt + 1) * n_blocks_per_row + b];
+                const float sx2  = x_scales[(mt + 2) * n_blocks_per_row + b];
+                const float sx3  = x_scales[(mt + 3) * n_blocks_per_row + b];
                 acc0 += sx0 * (d * (float) sumi0 - dmin * (float) min0);
                 acc1 += sx1 * (d * (float) sumi1 - dmin * (float) min1);
                 acc2 += sx2 * (d * (float) sumi2 - dmin * (float) min2);
@@ -2107,7 +2101,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(size_t         m,
                     sumi += (int32_t) blk->scales[is] * dot;
                     mins_corr += (int32_t) blk->mins[is] * sum32[mt * n_chunks + sum_idx];
                 }
-                const float sx = scale_blocks[mt * n_blocks_per_row + b];
+                const float sx = x_scales[mt * n_blocks_per_row + b];
                 acc += sx * (blk->d * (float) sumi - blk->dmin * (float) mins_corr);
             }
             y[mt * n_out + n] = acc;
@@ -2115,7 +2109,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(size_t         m,
     }
 #else
     (void) x_q8;
-    (void) scale_blocks;
+    (void) x_scales;
     (void) sum32;
     (void) m;
     (void) packed;
@@ -2130,23 +2124,28 @@ void linear_q4k_w4a8_prefill(
         size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q4k, float *y) {
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
-    int8_t  *x_q8    = heap_alloc_array_aligned(int8_t, m *n_in);
-    int32_t *sum32   = heap_alloc_array_aligned(int32_t, m *(n_in / 32));
-    float   *scale_x = heap_alloc_array_aligned(float, m);
-    if (x_q8 == nullptr || sum32 == nullptr || scale_x == nullptr) {
+    const size_t n_groups = geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS);
+    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, m *n_in);
+    int32_t     *sum32    = heap_alloc_array_aligned(int32_t, m *(n_in / 32));
+    float       *x_scales = heap_alloc_array_aligned(float, m *n_groups);
+    if (x_q8 == nullptr || sum32 == nullptr || x_scales == nullptr) {
         safe_free((void **) &x_q8);
         safe_free((void **) &sum32);
-        safe_free((void **) &scale_x);
+        safe_free((void **) &x_scales);
         return;
     }
     for (size_t i = 0; i < m; i++) {
-        scale_x[i] =
-                quantize_x_for_q4k(n_in, x + i * n_in, x_q8 + i * n_in, sum32 + i * (n_in / 32));
+        quantize_x_q8_groups(n_in,
+                             GEIST_ACT_Q8K_ELEMS,
+                             x + i * n_in,
+                             x_q8 + i * n_in,
+                             x_scales + i * n_groups,
+                             sum32 + i * (n_in / 32));
     }
-    linear_q4k_w4a8_prefill_pre(m, n_in, n_out, x_q8, scale_x, sum32, w_q4k, y);
+    linear_q4k_w4a8_prefill_pre(m, n_in, n_out, x_q8, x_scales, sum32, w_q4k, y);
     safe_free((void **) &x_q8);
     safe_free((void **) &sum32);
-    safe_free((void **) &scale_x);
+    safe_free((void **) &x_scales);
 }
 
 void linear_q4k_decode_w4a8_predecoded(size_t      n_in,
@@ -2156,17 +2155,20 @@ void linear_q4k_decode_w4a8_predecoded(size_t      n_in,
                                        float       y[static n_out]) {
     if (!q4k_predecode_valid(packed, n_in, n_out))
         return;
-    int8_t  *x_q8  = heap_alloc_array_aligned(int8_t, n_in);
-    int32_t *sum32 = heap_alloc_array_aligned(int32_t, n_in / 32);
-    if (x_q8 == nullptr || sum32 == nullptr) {
+    int8_t  *x_q8   = heap_alloc_array_aligned(int8_t, n_in);
+    int32_t *sum32  = heap_alloc_array_aligned(int32_t, n_in / 32);
+    float *x_scales = heap_alloc_array_aligned(float, geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS));
+    if (x_q8 == nullptr || sum32 == nullptr || x_scales == nullptr) {
         safe_free((void **) &x_q8);
         safe_free((void **) &sum32);
+        safe_free((void **) &x_scales);
         return;
     }
-    const float scale_x = quantize_x_for_q4k(n_in, x, x_q8, sum32);
-    linear_q4k_w4a8_prefill_predecoded(1, n_in, n_out, x_q8, &scale_x, sum32, packed, y);
+    quantize_x_q8_groups(n_in, GEIST_ACT_Q8K_ELEMS, x, x_q8, x_scales, sum32);
+    linear_q4k_w4a8_prefill_predecoded(1, n_in, n_out, x_q8, x_scales, sum32, packed, y);
     safe_free((void **) &x_q8);
     safe_free((void **) &sum32);
+    safe_free((void **) &x_scales);
 }
 
 void linear_q4k_decode_fp32(size_t      n_in,

@@ -48,6 +48,29 @@ minor release.
   prompt, falls from 2.2 % / 15.3 % / 13.3 % (layers 0 / 10 / 34) to 1.2 % /
   7.7 % / 6.8 %, about llama.cpp's level. Prefill speed is unchanged within
   noise (9950X, pp128 / pp512).
+- **cpu_neon: the W*A8 kernels quantize activations with one scale per 256
+  elements, or per 32 for the 32-element formats (#698).** Every int8
+  activation quantizer on cpu_neon (Q4_K, Q5_K, Q6_K, Q3_K, IQ2_S, IQ3_S,
+  IQ4_XS, IQ4_NL, Q4_0, Q4_1, Q8_0; decode, prefill, the pair kernels, the
+  Q4_K / Q6_K repacked layouts and the fused GEGLU tile) took one scale for
+  the whole row, so one outlier in Gemma's FFN activations put every other
+  element of the row on its grid. The scales now follow llama.cpp's vec_dot
+  type for each weight: Q8_K (256) for the K-quants and IQ formats, Q8_0 (32)
+  for Q4_0, Q4_1, Q8_0 and IQ4_NL. The `_pre` kernels in `quant.h` take
+  `x_scales` (one per group, row-major) instead of `scale_x`, and
+  `quantize_x_q8_groups` replaces `quantize_x_for_q4k` and
+  `quantize_x_for_q4k_blocks`. Gemma 4 E2B Q4_K_M on the geist-runtime
+  decision fixtures, Pi 5 build (cortex-a76, FP32 KV; run under qemu, which
+  reproduces the board's numbers to the hundredth): the "Choose the even
+  number" candidate logits move from -2.83 / 4.34 (wrong winner) to 11.29 /
+  6.56 against cpu_scalar's 10.34 / 7.15; the largest gap to cpu_scalar over
+  the three fixtures falls from 13.2 to 3.6. With prefill forced onto fp32
+  SGEMM the gap is 0.2, so what remains is the int8 activations themselves, as
+  in llama.cpp. Outputs change on every cpu_neon host for those weight types;
+  the dequant + SGEMM trampolines (Apple prefill at m >= 64), F32 / F16 /
+  BF16, the ternary kernels and every other backend are bit-identical.
+  `test_neon_act_outlier_unit` puts one |x| = 100 element in each token row:
+  relative error 0.33-0.51 with per-row scales, 0.004-0.005 now (bar 0.02).
 
 - **Vulkan: Gemma 4 keeps its scratch pool in VRAM under
   `GEIST_VK_SCRATCH_DEVICE=1` (#488).** The device-local pool skipped every

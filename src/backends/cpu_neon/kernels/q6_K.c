@@ -147,7 +147,7 @@ struct q6k_pp_ctx {
     const int16_t *bsums; /* 16 int16 per super-block */
     size_t         n_blocks_per_row;
     size_t         n_out;
-    float          scale_x;
+    const float   *x_scales; /* one per super-block */
     float         *y;
 };
 #if defined(__ARM_NEON)
@@ -383,7 +383,7 @@ int q6k_x8_gemv_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst) {
 
 void linear_q6k_decode_w6a8_pre(size_t       n_in,
                                 size_t       n_out,
-                                float        scale_x,
+                                const float *x_scales,
                                 const int8_t x_q8[static n_in],
                                 const void  *w_q6k,
                                 float        y[static n_out]) {
@@ -395,7 +395,7 @@ void linear_q6k_decode_w6a8_pre(size_t       n_in,
      * and each super-block is corrected once:
      *
      *   isum_mins = Σ_j scales[j] × bsums[j]
-     *   row_acc  += d * scale_x * (isum_dots - 32 * isum_mins)
+     *   row_acc  += d * x_scales[b] * (isum_dots - 32 * isum_mins)
      *
      * where bsums[j] sums the 16 int8 activations of sub-block j. Saves 16
      * vsubq_s8 per super-block (as ggml_vec_dot_q6_K_q8_K). */
@@ -427,7 +427,7 @@ void linear_q6k_decode_w6a8_pre(size_t       n_in,
             .bsums            = bsums,
             .n_blocks_per_row = n_blocks_per_row,
             .n_out            = n_out,
-            .scale_x          = scale_x,
+            .x_scales         = x_scales,
             .y                = y,
     };
     if (q6k_pp_enabled()) {
@@ -464,7 +464,7 @@ void linear_q6k_decode_w6a8_pre(size_t       n_in,
 #endif
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) w_q6k;
     (void) n_in;
     (void) n_out;
@@ -475,7 +475,7 @@ void linear_q6k_decode_w6a8_pre(size_t       n_in,
 
 void linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
                                    size_t       n_out,
-                                   float        scale_x,
+                                   const float *x_scales,
                                    const int8_t x_q8[static n_in],
                                    const void  *packed,
                                    float        y[static n_out]) {
@@ -496,7 +496,7 @@ void linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
     }
     for (size_t b = 0; b < n_blocks_per_row; b++) {
         struct q8k_activation_block *qb = q8_tl + b;
-        qb->d                           = scale_x;
+        qb->d                           = x_scales[b];
         memcpy(qb->qs, x_q8 + b * Q6_K_BLOCK_ELEMS, Q6_K_BLOCK_ELEMS);
         for (int s = 0; s < 16; s++) {
             qb->bsums[s] = (int16_t) vaddlvq_s8(vld1q_s8(qb->qs + s * 16));
@@ -648,7 +648,7 @@ void linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
     }
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) packed;
     (void) n_in;
     (void) n_out;
@@ -664,7 +664,7 @@ static void q6k_decode_one_row(size_t n, const struct q6k_pp_ctx *c) {
     const size_t               n_out            = c->n_out;
     const int8_t              *x_q8             = c->x_q8;
     const int16_t             *bsums            = c->bsums;
-    const float                scale_x          = c->scale_x;
+    const float               *x_scales         = c->x_scales;
     float                     *y                = c->y;
 
     const struct block_q6_K_t *row = w + n * n_blocks_per_row;
@@ -771,7 +771,7 @@ static void q6k_decode_one_row(size_t n, const struct q6k_pp_ctx *c) {
 #if defined(GEIST_TARGET_PI5)
         const int32_t isum = vaddvq_s32(isumv);
 #endif
-        acc += d * scale_x * (float) (isum - 32 * isum_mins);
+        acc += d * x_scales[b] * (float) (isum - 32 * isum_mins);
     }
     y[n] = acc;
 }
@@ -781,7 +781,7 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
                                  size_t        n_in,
                                  size_t        n_out,
                                  const int8_t *x_q8,
-                                 const float   scale_x[static m],
+                                 const float  *x_scales,
                                  const void   *w_q6k,
                                  float        *y) {
 #if defined(__ARM_NEON)
@@ -959,14 +959,22 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
                     a12                = vmlaq_n_s32(a12, vdotq_s32(vdupq_n_s32(0), q1, v2), s1);
                     a13                = vmlaq_n_s32(a13, vdotq_s32(vdupq_n_s32(0), q1, v3), s1);
                 }
-                accs0[i + 0] += d0 * scale_x[i + 0] * (float) vaddvq_s32(a00);
-                accs0[i + 1] += d0 * scale_x[i + 1] * (float) vaddvq_s32(a01);
-                accs0[i + 2] += d0 * scale_x[i + 2] * (float) vaddvq_s32(a02);
-                accs0[i + 3] += d0 * scale_x[i + 3] * (float) vaddvq_s32(a03);
-                accs1[i + 0] += d1 * scale_x[i + 0] * (float) vaddvq_s32(a10);
-                accs1[i + 1] += d1 * scale_x[i + 1] * (float) vaddvq_s32(a11);
-                accs1[i + 2] += d1 * scale_x[i + 2] * (float) vaddvq_s32(a12);
-                accs1[i + 3] += d1 * scale_x[i + 3] * (float) vaddvq_s32(a13);
+                accs0[i + 0] +=
+                        d0 * x_scales[(i + 0) * n_blocks_per_row + b] * (float) vaddvq_s32(a00);
+                accs0[i + 1] +=
+                        d0 * x_scales[(i + 1) * n_blocks_per_row + b] * (float) vaddvq_s32(a01);
+                accs0[i + 2] +=
+                        d0 * x_scales[(i + 2) * n_blocks_per_row + b] * (float) vaddvq_s32(a02);
+                accs0[i + 3] +=
+                        d0 * x_scales[(i + 3) * n_blocks_per_row + b] * (float) vaddvq_s32(a03);
+                accs1[i + 0] +=
+                        d1 * x_scales[(i + 0) * n_blocks_per_row + b] * (float) vaddvq_s32(a10);
+                accs1[i + 1] +=
+                        d1 * x_scales[(i + 1) * n_blocks_per_row + b] * (float) vaddvq_s32(a11);
+                accs1[i + 2] +=
+                        d1 * x_scales[(i + 2) * n_blocks_per_row + b] * (float) vaddvq_s32(a12);
+                accs1[i + 3] +=
+                        d1 * x_scales[(i + 3) * n_blocks_per_row + b] * (float) vaddvq_s32(a13);
             }
             for (; i < m; i++) { /* token remainder */
                 int32x4_t acc0 = vdupq_n_s32(0), acc1 = vdupq_n_s32(0);
@@ -975,8 +983,8 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
                     acc0 = vmlaq_n_s32(acc0, vdotq_s32(vdupq_n_s32(0), qreg0[g], v), sreg0[g]);
                     acc1 = vmlaq_n_s32(acc1, vdotq_s32(vdupq_n_s32(0), qreg1[g], v), sreg1[g]);
                 }
-                accs0[i] += d0 * scale_x[i] * (float) vaddvq_s32(acc0);
-                accs1[i] += d1 * scale_x[i] * (float) vaddvq_s32(acc1);
+                accs0[i] += d0 * x_scales[i * n_blocks_per_row + b] * (float) vaddvq_s32(acc0);
+                accs1[i] += d1 * x_scales[i * n_blocks_per_row + b] * (float) vaddvq_s32(acc1);
             }
         }
         for (size_t i = 0; i < m; i++) {
@@ -1020,7 +1028,7 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
                     acc              = vmlaq_n_s32(
                             acc, vdotq_s32(vdupq_n_s32(0), qreg[g], vld1q_s8(xb)), sreg[g]);
                 }
-                accs[i] += d * scale_x[i] * (float) vaddvq_s32(acc);
+                accs[i] += d * x_scales[i * n_blocks_per_row + b] * (float) vaddvq_s32(acc);
             }
         }
         for (size_t i = 0; i < m; i++)
@@ -1029,7 +1037,7 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
 #undef Q6K_RECON_BLOCK
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) m;
     (void) w_q6k;
     (void) n_in;
@@ -1045,12 +1053,12 @@ void linear_q6k_w6a8_prefill_pre_accum_blocks(size_t        m,
                                               size_t        block_start,
                                               size_t        n_blocks,
                                               const int8_t *x_q8,
-                                              const float  *scale_x,
+                                              const float  *x_scales,
                                               const void   *w_q6k,
                                               float        *y) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP || n_blocks == 0 || x_q8 == nullptr || scale_x == nullptr ||
-        w_q6k == nullptr || y == nullptr) {
+    if (m == 0 || m > GEIST_QUANT_M_CAP || n_blocks == 0 || x_q8 == nullptr ||
+        x_scales == nullptr || w_q6k == nullptr || y == nullptr) {
         return;
     }
     const struct block_q6_K_t *w                = (const struct block_q6_K_t *) w_q6k;
@@ -1111,8 +1119,8 @@ void linear_q6k_w6a8_prefill_pre_accum_blocks(size_t        m,
 
                     for (size_t i = 0; i < m; i++) {
                         const int8_t *xb = x_q8 + i * n_in_tile + xb_half_off + (size_t) sub_off;
-                        accs[i] +=
-                                q6k_dot4_scaled(xb, q0, q1, q2, q3, scale_x[i], ds0, ds1, ds2, ds3);
+                        accs[i] += q6k_dot4_scaled(
+                                xb, q0, q1, q2, q3, x_scales[i * n_blocks + b], ds0, ds1, ds2, ds3);
                     }
                 }
                 sc += 8;
@@ -1123,7 +1131,7 @@ void linear_q6k_w6a8_prefill_pre_accum_blocks(size_t        m,
     }
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) m;
     (void) w_q6k;
     (void) n_in_total;
@@ -1139,7 +1147,7 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4(size_t        m,
                                                size_t        n_in,
                                                size_t        n_out,
                                                const int8_t *x_q8,
-                                               const float   scale_x[static m],
+                                               const float  *x_scales,
                                                const void   *packed,
                                                float        *y) {
 #if defined(__ARM_NEON)
@@ -1167,9 +1175,9 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4(size_t        m,
          * branch-free; only valid_nr outputs are written. */
         size_t mt = 0;
         for (; mt + 2 <= m; mt += 2) {
-            const float sx0   = scale_x[mt + 0];
-            const float sx1   = scale_x[mt + 1];
-            float       r0[4] = {0}, r1[4] = {0};
+            const float *sx0   = x_scales + (mt + 0) * n_blocks_per_row;
+            const float *sx1   = x_scales + (mt + 1) * n_blocks_per_row;
+            float        r0[4] = {0}, r1[4] = {0};
 
             for (size_t b = 0; b < n_blocks_per_row; b++) {
                 const struct q6k_predecode_block *blks = tile + b * 4;
@@ -1200,14 +1208,14 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4(size_t        m,
                     a30 = vmlaq_n_s32(a30, vdotq_s32(vdupq_n_s32(0), q3, x0), s3);
                     a31 = vmlaq_n_s32(a31, vdotq_s32(vdupq_n_s32(0), q3, x1), s3);
                 }
-                r0[0] += blks[0].d * sx0 * (float) vaddvq_s32(a00);
-                r1[0] += blks[0].d * sx1 * (float) vaddvq_s32(a01);
-                r0[1] += blks[1].d * sx0 * (float) vaddvq_s32(a10);
-                r1[1] += blks[1].d * sx1 * (float) vaddvq_s32(a11);
-                r0[2] += blks[2].d * sx0 * (float) vaddvq_s32(a20);
-                r1[2] += blks[2].d * sx1 * (float) vaddvq_s32(a21);
-                r0[3] += blks[3].d * sx0 * (float) vaddvq_s32(a30);
-                r1[3] += blks[3].d * sx1 * (float) vaddvq_s32(a31);
+                r0[0] += blks[0].d * sx0[b] * (float) vaddvq_s32(a00);
+                r1[0] += blks[0].d * sx1[b] * (float) vaddvq_s32(a01);
+                r0[1] += blks[1].d * sx0[b] * (float) vaddvq_s32(a10);
+                r1[1] += blks[1].d * sx1[b] * (float) vaddvq_s32(a11);
+                r0[2] += blks[2].d * sx0[b] * (float) vaddvq_s32(a20);
+                r1[2] += blks[2].d * sx1[b] * (float) vaddvq_s32(a21);
+                r0[3] += blks[3].d * sx0[b] * (float) vaddvq_s32(a30);
+                r1[3] += blks[3].d * sx1[b] * (float) vaddvq_s32(a31);
             }
 
             float *y0 = y + (mt + 0) * n_out + nt * 4;
@@ -1231,7 +1239,7 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4(size_t        m,
                         a                  = vmlaq_n_s32(
                                 a, vdotq_s32(vdupq_n_s32(0), qv, xb), (int32_t) blk->scales[is]);
                     }
-                    acc += scale_x[mt] * blk->d * (float) vaddvq_s32(a);
+                    acc += x_scales[mt * n_blocks_per_row + b] * blk->d * (float) vaddvq_s32(a);
                 }
                 y[mt * n_out + nt * 4 + nr] = acc;
             }
@@ -1239,7 +1247,7 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4(size_t        m,
     }
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) m;
     (void) packed;
     (void) n_in;
@@ -1253,7 +1261,7 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4_stream(size_t        m,
                                                       size_t        n_in,
                                                       size_t        n_out,
                                                       const int8_t *x_q8,
-                                                      const float   scale_x[static m],
+                                                      const float  *x_scales,
                                                       const void   *packed,
                                                       float        *y) {
 #if defined(__ARM_NEON)
@@ -1275,14 +1283,14 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4_stream(size_t        m,
 
         size_t mt = 0;
         for (; mt + 4 <= m; mt += 4) {
-            const float sx0 = scale_x[mt + 0];
-            const float sx1 = scale_x[mt + 1];
-            const float sx2 = scale_x[mt + 2];
-            const float sx3 = scale_x[mt + 3];
-            float       a00 = 0.0f, a01 = 0.0f, a02 = 0.0f, a03 = 0.0f;
-            float       a10 = 0.0f, a11 = 0.0f, a12 = 0.0f, a13 = 0.0f;
-            float       a20 = 0.0f, a21 = 0.0f, a22 = 0.0f, a23 = 0.0f;
-            float       a30 = 0.0f, a31 = 0.0f, a32 = 0.0f, a33 = 0.0f;
+            const float *sx0 = x_scales + (mt + 0) * n_blocks_per_row;
+            const float *sx1 = x_scales + (mt + 1) * n_blocks_per_row;
+            const float *sx2 = x_scales + (mt + 2) * n_blocks_per_row;
+            const float *sx3 = x_scales + (mt + 3) * n_blocks_per_row;
+            float        a00 = 0.0f, a01 = 0.0f, a02 = 0.0f, a03 = 0.0f;
+            float        a10 = 0.0f, a11 = 0.0f, a12 = 0.0f, a13 = 0.0f;
+            float        a20 = 0.0f, a21 = 0.0f, a22 = 0.0f, a23 = 0.0f;
+            float        a30 = 0.0f, a31 = 0.0f, a32 = 0.0f, a33 = 0.0f;
 
             for (size_t b = 0; b < n_blocks_per_row; b++) {
                 const struct q6k_predecode_stream4 *blk = tile + b;
@@ -1293,16 +1301,16 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4_stream(size_t        m,
                     const int8_t *xb2    = x_q8 + (mt + 2) * n_in + xb_off;
                     const int8_t *xb3    = x_q8 + (mt + 3) * n_in + xb_off;
 
-#define Q6K_STREAM4_ACC(NR, A0, A1, A2, A3)                 \
-    do {                                                    \
-        if ((NR) < valid_nr) {                              \
-            const int8x16_t qv = vld1q_s8(blk->qs[is][NR]); \
-            const float     ds = blk->ds[is][NR];           \
-            (A0) += sx0 * ds * (float) dot16_i8(xb0, qv);   \
-            (A1) += sx1 * ds * (float) dot16_i8(xb1, qv);   \
-            (A2) += sx2 * ds * (float) dot16_i8(xb2, qv);   \
-            (A3) += sx3 * ds * (float) dot16_i8(xb3, qv);   \
-        }                                                   \
+#define Q6K_STREAM4_ACC(NR, A0, A1, A2, A3)                  \
+    do {                                                     \
+        if ((NR) < valid_nr) {                               \
+            const int8x16_t qv = vld1q_s8(blk->qs[is][NR]);  \
+            const float     ds = blk->ds[is][NR];            \
+            (A0) += sx0[b] * ds * (float) dot16_i8(xb0, qv); \
+            (A1) += sx1[b] * ds * (float) dot16_i8(xb1, qv); \
+            (A2) += sx2[b] * ds * (float) dot16_i8(xb2, qv); \
+            (A3) += sx3[b] * ds * (float) dot16_i8(xb3, qv); \
+        }                                                    \
     } while (0)
                     Q6K_STREAM4_ACC(0, a00, a10, a20, a30);
                     Q6K_STREAM4_ACC(1, a01, a11, a21, a31);
@@ -1352,7 +1360,7 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4_stream(size_t        m,
                         const int8_t   *xb     = x_q8 + mt * n_in + xb_off;
                         const int8x16_t qv     = vld1q_s8(blk->qs[is][nr]);
                         const int32_t   dot    = dot16_i8(xb, qv);
-                        acc += scale_x[mt] * blk->ds[is][nr] * (float) dot;
+                        acc += x_scales[mt * n_blocks_per_row + b] * blk->ds[is][nr] * (float) dot;
                     }
                 }
                 y[mt * n_out + nt * 4 + nr] = acc;
@@ -1361,7 +1369,7 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4_stream(size_t        m,
     }
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) m;
     (void) packed;
     (void) n_in;
@@ -1375,19 +1383,25 @@ void linear_q6k_w6a8_prefill(
         size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q6k, float *y) {
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
-    int8_t *x_q8    = heap_alloc_array_aligned(int8_t, m *n_in);
-    float  *scale_x = heap_alloc_array_aligned(float, m);
-    if (x_q8 == nullptr || scale_x == nullptr) {
+    const size_t n_groups = geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS);
+    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, m *n_in);
+    float       *x_scales = heap_alloc_array_aligned(float, m *n_groups);
+    if (x_q8 == nullptr || x_scales == nullptr) {
         safe_free((void **) &x_q8);
-        safe_free((void **) &scale_x);
+        safe_free((void **) &x_scales);
         return;
     }
     for (size_t i = 0; i < m; i++) {
-        scale_x[i] = quantize_x_int8_sym(n_in, x + i * n_in, x_q8 + i * n_in);
+        quantize_x_q8_groups(n_in,
+                             GEIST_ACT_Q8K_ELEMS,
+                             x + i * n_in,
+                             x_q8 + i * n_in,
+                             x_scales + i * n_groups,
+                             nullptr);
     }
-    linear_q6k_w6a8_prefill_pre(m, n_in, n_out, x_q8, scale_x, w_q6k, y);
+    linear_q6k_w6a8_prefill_pre(m, n_in, n_out, x_q8, x_scales, w_q6k, y);
     safe_free((void **) &x_q8);
-    safe_free((void **) &scale_x);
+    safe_free((void **) &x_scales);
 }
 
 void linear_q6k_decode_w6a8(size_t      n_in,
@@ -1396,18 +1410,21 @@ void linear_q6k_decode_w6a8(size_t      n_in,
                             const void *w_q6k,
                             float       y[static n_out]) {
     static _Thread_local int8_t *tl_x_q8     = nullptr;
+    static _Thread_local float  *tl_x_scales = nullptr;
     static _Thread_local size_t  tl_cap_n_in = 0;
     if (n_in > tl_cap_n_in) {
         safe_free((void **) &tl_x_q8);
-        tl_x_q8 = heap_alloc_array_aligned(int8_t, n_in);
-        if (tl_x_q8 == nullptr) {
+        safe_free((void **) &tl_x_scales);
+        tl_x_q8     = heap_alloc_array_aligned(int8_t, n_in);
+        tl_x_scales = heap_alloc_array_aligned(float, geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS));
+        if (tl_x_q8 == nullptr || tl_x_scales == nullptr) {
             tl_cap_n_in = 0;
             return;
         }
         tl_cap_n_in = n_in;
     }
-    float scale_x = quantize_x_int8_sym(n_in, x, tl_x_q8);
-    linear_q6k_decode_w6a8_pre(n_in, n_out, scale_x, tl_x_q8, w_q6k, y);
+    quantize_x_q8_groups(n_in, GEIST_ACT_Q8K_ELEMS, x, tl_x_q8, tl_x_scales, nullptr);
+    linear_q6k_decode_w6a8_pre(n_in, n_out, tl_x_scales, tl_x_q8, w_q6k, y);
 }
 
 void linear_q6k_decode_w6a8_x8(size_t      n_in,
@@ -1416,18 +1433,21 @@ void linear_q6k_decode_w6a8_x8(size_t      n_in,
                                const void *packed,
                                float       y[static n_out]) {
     static _Thread_local int8_t *tl_x_q8     = nullptr;
+    static _Thread_local float  *tl_x_scales = nullptr;
     static _Thread_local size_t  tl_cap_n_in = 0;
     if (n_in > tl_cap_n_in) {
         safe_free((void **) &tl_x_q8);
-        tl_x_q8 = heap_alloc_array_aligned(int8_t, n_in);
-        if (tl_x_q8 == nullptr) {
+        safe_free((void **) &tl_x_scales);
+        tl_x_q8     = heap_alloc_array_aligned(int8_t, n_in);
+        tl_x_scales = heap_alloc_array_aligned(float, geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS));
+        if (tl_x_q8 == nullptr || tl_x_scales == nullptr) {
             tl_cap_n_in = 0;
             return;
         }
         tl_cap_n_in = n_in;
     }
-    float scale_x = quantize_x_int8_sym(n_in, x, tl_x_q8);
-    linear_q6k_decode_w6a8_x8_pre(n_in, n_out, scale_x, tl_x_q8, packed, y);
+    quantize_x_q8_groups(n_in, GEIST_ACT_Q8K_ELEMS, x, tl_x_q8, tl_x_scales, nullptr);
+    linear_q6k_decode_w6a8_x8_pre(n_in, n_out, tl_x_scales, tl_x_q8, packed, y);
 }
 
 void linear_q6k_decode_fp32(size_t      n_in,

@@ -20,7 +20,7 @@
 
 void linear_q5k_decode_w5a8_pre(size_t         n_in,
                                 size_t         n_out,
-                                float          scale_x,
+                                const float   *x_scales,
                                 const int8_t   x_q8[static n_in],
                                 const int32_t *sum32,
                                 const void    *w_q5k,
@@ -80,8 +80,8 @@ void linear_q5k_decode_w5a8_pre(size_t         n_in,
                     acc2 += (int32_t) q2 * (int32_t) xb[32 + l];
                 }
 #endif
-                acc += scale_x * (d1 * (float) acc1 - m1f * (float) sump[0]);
-                acc += scale_x * (d2 * (float) acc2 - m2f * (float) sump[1]);
+                acc += x_scales[b] * (d1 * (float) acc1 - m1f * (float) sump[0]);
+                acc += x_scales[b] * (d2 * (float) acc2 - m2f * (float) sump[1]);
                 u1 <<= 2;
                 u2 <<= 2;
             }
@@ -95,19 +95,27 @@ void linear_q5k_decode_w5a8(size_t      n_in,
                             const float x[static n_in],
                             const void *w_q5k,
                             float       y[static n_out]) {
-    int8_t  *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
-    int32_t *sum32   = heap_alloc_array_aligned(int32_t, (n_in / 32));
-    float    scale_x = quantize_x_for_q4k(n_in, x, x_q8, sum32);
-    linear_q5k_decode_w5a8_pre(n_in, n_out, scale_x, x_q8, sum32, w_q5k, y);
+    int8_t  *x_q8   = heap_alloc_array_aligned(int8_t, n_in);
+    int32_t *sum32  = heap_alloc_array_aligned(int32_t, (n_in / 32));
+    float *x_scales = heap_alloc_array_aligned(float, geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS));
+    if (x_q8 == nullptr || sum32 == nullptr || x_scales == nullptr) {
+        safe_free((void **) &x_q8);
+        safe_free((void **) &sum32);
+        safe_free((void **) &x_scales);
+        return;
+    }
+    quantize_x_q8_groups(n_in, GEIST_ACT_Q8K_ELEMS, x, x_q8, x_scales, sum32);
+    linear_q5k_decode_w5a8_pre(n_in, n_out, x_scales, x_q8, sum32, w_q5k, y);
     safe_free((void **) &x_q8);
     safe_free((void **) &sum32);
+    safe_free((void **) &x_scales);
 }
 
 void linear_q5k_w5a8_prefill_pre(size_t         m,
                                  size_t         n_in,
                                  size_t         n_out,
                                  const int8_t  *x_q8,
-                                 const float    scale_x[static m],
+                                 const float   *x_scales,
                                  const int32_t *sum32,
                                  const void    *w_q5k,
                                  float         *y) {
@@ -181,8 +189,9 @@ void linear_q5k_w5a8_prefill_pre(size_t         m,
                 for (size_t i = 0; i < m; i++) {
                     const int32_t s_lo = sum32[i * n_chunks + sump_lo_idx];
                     const int32_t s_hi = sum32[i * n_chunks + sump_hi_idx];
-                    accs[i] += scale_x[i] * (d1 * (float) acc1[i] - m1f * (float) s_lo);
-                    accs[i] += scale_x[i] * (d2 * (float) acc2[i] - m2f * (float) s_hi);
+                    const float   sx   = x_scales[i * n_blocks_per_row + b];
+                    accs[i] += sx * (d1 * (float) acc1[i] - m1f * (float) s_lo);
+                    accs[i] += sx * (d2 * (float) acc2[i] - m2f * (float) s_hi);
                 }
                 u1 <<= 2;
                 u2 <<= 2;
@@ -193,7 +202,7 @@ void linear_q5k_w5a8_prefill_pre(size_t         m,
     }
 #else
     (void) x_q8;
-    (void) scale_x;
+    (void) x_scales;
     (void) sum32;
     (void) m;
     (void) w_q5k;
@@ -206,15 +215,26 @@ void linear_q5k_w5a8_prefill_pre(size_t         m,
 
 void linear_q5k_w5a8_prefill(
         size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q5k, float *y) {
-    int8_t  *x_q8    = heap_alloc_array_aligned(int8_t, m *n_in);
-    int32_t *sum32   = heap_alloc_array_aligned(int32_t, m *(n_in / 32));
-    float   *scale_x = heap_alloc_array_aligned(float, m);
-    for (size_t i = 0; i < m; i++) {
-        scale_x[i] =
-                quantize_x_for_q4k(n_in, x + i * n_in, x_q8 + i * n_in, sum32 + i * (n_in / 32));
+    const size_t n_groups = geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS);
+    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, m *n_in);
+    int32_t     *sum32    = heap_alloc_array_aligned(int32_t, m *(n_in / 32));
+    float       *x_scales = heap_alloc_array_aligned(float, m *n_groups);
+    if (x_q8 == nullptr || sum32 == nullptr || x_scales == nullptr) {
+        safe_free((void **) &x_q8);
+        safe_free((void **) &sum32);
+        safe_free((void **) &x_scales);
+        return;
     }
-    linear_q5k_w5a8_prefill_pre(m, n_in, n_out, x_q8, scale_x, sum32, w_q5k, y);
+    for (size_t i = 0; i < m; i++) {
+        quantize_x_q8_groups(n_in,
+                             GEIST_ACT_Q8K_ELEMS,
+                             x + i * n_in,
+                             x_q8 + i * n_in,
+                             x_scales + i * n_groups,
+                             sum32 + i * (n_in / 32));
+    }
+    linear_q5k_w5a8_prefill_pre(m, n_in, n_out, x_q8, x_scales, sum32, w_q5k, y);
     safe_free((void **) &x_q8);
     safe_free((void **) &sum32);
-    safe_free((void **) &scale_x);
+    safe_free((void **) &x_scales);
 }
