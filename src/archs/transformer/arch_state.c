@@ -1622,6 +1622,7 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     safe_free(&st->rope_il_rows); /* same lifetime as the arena slices */
     st->rope_il_rows_capacity = 0;
     st->rope_il_rows_used     = 0;
+    safe_free(&st->model_proj_host); /* its buffer handle is gone with the globals */
     transformer_exec_plan_destroy(st);
     if (st->layers != nullptr) {
         void *p_layers = st->layers;
