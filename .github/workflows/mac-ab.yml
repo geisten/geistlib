@@ -59,7 +59,7 @@ jobs:
         run: make fetch-model
       - name: Build the variants
         env:
-          MODE: ${{ inputs.mode }}
+          AB_MODE: ${{ inputs.mode }}
           BASE: ${{ inputs.base }}
           NEW: ${{ inputs.new }}
         run: |
@@ -74,7 +74,7 @@ jobs:
             # bench_mac_ab records the commit of the binary's checkout
             echo "$tree/bin/$3/release/tests/bench_perf_sweep" > "$out/$1.path"
           }
-          if [ "$MODE" = gcd-vs-omp ]; then
+          if [ "$AB_MODE" = gcd-vs-omp ]; then
             build omp "$NEW" mac-omp
             build gcd "$NEW" mac
           else
@@ -84,7 +84,7 @@ jobs:
       - name: A/B (interleaved, frozen protocol)
         env:
           GEIST_BENCH_BACKEND: ${{ inputs.backend }}
-          MODE: ${{ inputs.mode }}
+          AB_MODE: ${{ inputs.mode }}
           EXTRA_ENV: ${{ inputs.env }}
         run: |
           set -eu
@@ -92,7 +92,7 @@ jobs:
             case $kv in [A-Z_]*=*) export "$kv" ;; *) echo "bad env entry: $kv" >&2; exit 1 ;; esac
           done
           b="$RUNNER_TEMP/bins"
-          if [ "$MODE" = gcd-vs-omp ]; then a=omp; c=gcd; else a=base; c=new; fi
+          if [ "$AB_MODE" = gcd-vs-omp ]; then a=omp; c=gcd; else a=base; c=new; fi
           python3 tools/bench_mac_ab.py \
             --variant "$a=$(cat "$b/$a.path")" --variant "$c=$(cat "$b/$c.path")" \
             --gguf gguf_artifacts/gemma4-e2b-Q4_K_M.gguf --out-dir "$RUNNER_TEMP/ab"
