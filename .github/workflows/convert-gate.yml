@@ -44,7 +44,7 @@ jobs:
         run: |
           python3 -m venv venv
           venv/bin/pip install -q --index-url https://download.pytorch.org/whl/cpu torch
-          venv/bin/pip install -q "numpy~=1.26.4" "transformers>=5" sentencepiece protobuf \
+          venv/bin/pip install -q "numpy~=2.2.6" "transformers>=5" sentencepiece protobuf \
             safetensors huggingface_hub -e llama.cpp/gguf-py
       - name: Convert twice (BF16 reference, Q8_0)
         run: |
