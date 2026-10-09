@@ -53,6 +53,10 @@ struct geist_hw_probe {
     bool has_amx_int8;
     bool has_accelerate;
     bool has_openmp;
+    /* Running as a guest under a hypervisor. Probed on Apple silicon only
+     * (kern.hv_vmm_present), false elsewhere. The guest has no AMX, so
+     * Accelerate's sgemm runs at NEON speed there (#456). */
+    bool is_virtual_machine;
 
     size_t logical_cores;  /* 0 when unknown. */
     size_t physical_cores; /* 0 when unknown. SMT collapsed (Linux only today). */

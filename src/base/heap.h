@@ -1,6 +1,7 @@
 /*
  * src/base/heap.h — aligned, overflow-checked allocation (AGENT.md §3).
- * Every allocation here frees with safe_free()/free().
+ * Every allocation here frees with safe_free(); all but heap_alloc_large's
+ * also free with free().
  */
 #pragma once
 #include <stdbool.h>
@@ -62,5 +63,15 @@ void heap_fail_allocations(bool on);
 #define heap_calloc_array_aligned(_type, _num) \
     ((_type *) heap_calloc_aligned((_num), sizeof(_type), alignof(_type)))
 
-/* free(*ptr) and set *ptr = nullptr; tolerates null ptr and null *ptr. */
+/* Long-lived weight-sized buffers (backend repacks, encoder weights): at
+ * HEAP_LARGE_MIN and above, an anonymous mmap that safe_free unmaps, so the
+ * pages leave the process when the model goes. macOS malloc caches freed
+ * large blocks (~1.3 GB after a cpu_neon model destroy, #733). Page-aligned
+ * and zero-filled; smaller requests, or alignment above a page, fall back to
+ * heap_alloc_aligned. Free with safe_free() only, never free(). */
+#define HEAP_LARGE_MIN ((size_t) 1u << 20)
+void *heap_alloc_large(size_t size, size_t alignment);
+
+/* Release *ptr (free(), or munmap for a heap_alloc_large mapping) and set
+ * *ptr = nullptr; tolerates null ptr and null *ptr. */
 void safe_free(void **ptr);
