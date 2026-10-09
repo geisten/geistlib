@@ -7,9 +7,9 @@
 #include <stdint.h>
 #include <string.h>
 
-#if defined(__linux__)
+#include <pthread.h>
 #include <sys/mman.h>
-#endif
+#include <unistd.h>
 
 /* See heap_alloc_count(). Relaxed: readers want a count, not ordering. */
 static _Atomic uint64_t g_heap_allocs;
@@ -132,9 +132,110 @@ void *heap_calloc_aligned(const size_t count, const size_t size, const size_t al
     return memory;
 }
 
-void safe_free(void **ptr) {
-    if (ptr != nullptr && *ptr != nullptr) {
-        free(*ptr);
-        *ptr = nullptr;
+/* heap_alloc_large mappings, so safe_free can tell one from a malloc block
+ * and hand it back with munmap (#733). A small array: a model holds a few
+ * hundred, and only a page-aligned pointer is looked up. */
+struct large_map {
+    void  *p;
+    size_t len;
+};
+static pthread_mutex_t   g_large_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct large_map *g_large;
+static size_t            g_large_cap;
+static _Atomic size_t    g_large_n;
+
+static size_t page_bytes(void) {
+    static _Atomic size_t page;
+    size_t                v = atomic_load_explicit(&page, memory_order_relaxed);
+    if (v == 0u) {
+        const long sc = sysconf(_SC_PAGESIZE);
+        v             = sc > 0 ? (size_t) sc : 4096u;
+        atomic_store_explicit(&page, v, memory_order_relaxed);
     }
+    return v;
+}
+
+static bool large_register(void *p, const size_t len) {
+    pthread_mutex_lock(&g_large_lock);
+    const size_t n  = atomic_load_explicit(&g_large_n, memory_order_relaxed);
+    bool         ok = true;
+    if (n == g_large_cap) {
+        const size_t      cap  = g_large_cap != 0u ? 2u * g_large_cap : 256u;
+        struct large_map *grow = realloc(g_large, cap * sizeof *grow);
+        ok                     = grow != nullptr;
+        if (ok) {
+            g_large     = grow;
+            g_large_cap = cap;
+        }
+    }
+    if (ok) {
+        g_large[n] = (struct large_map) {.p = p, .len = len};
+        atomic_store_explicit(&g_large_n, n + 1u, memory_order_relaxed);
+    }
+    pthread_mutex_unlock(&g_large_lock);
+    return ok;
+}
+
+/* Removes p from the registry; its mapping length, or 0 if p is not one. */
+static size_t large_unregister(const void *p) {
+    size_t len = 0;
+    pthread_mutex_lock(&g_large_lock);
+    const size_t n = atomic_load_explicit(&g_large_n, memory_order_relaxed);
+    for (size_t i = 0; i < n; i++) {
+        if (g_large[i].p == p) {
+            len        = g_large[i].len;
+            g_large[i] = g_large[n - 1u];
+            atomic_store_explicit(&g_large_n, n - 1u, memory_order_relaxed);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_large_lock);
+    return len;
+}
+
+void *heap_alloc_large(const size_t size, const size_t alignment) {
+    const size_t page = page_bytes();
+    size_t       len  = 0;
+    if (size < HEAP_LARGE_MIN || alignment > page || !size_is_pow2(page) ||
+        geist_ckd_round_up_pow2(size, page, &len)) {
+        return heap_alloc_aligned(size, alignment);
+    }
+    if ((alignment != 0u && !size_is_pow2(alignment)) ||
+        atomic_load_explicit(&g_heap_fail, memory_order_relaxed)) {
+        return nullptr;
+    }
+    void *p = mmap(nullptr, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) {
+        return nullptr;
+    }
+    if (!large_register(p, len)) {
+        (void) munmap(p, len);
+        return nullptr;
+    }
+    atomic_fetch_add_explicit(&g_heap_allocs, 1u, memory_order_relaxed);
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+    /* THP as in heap_alloc_aligned; the mapping is page-aligned. */
+    if (len >= (2u << 20) && getenv("GEIST_NO_HUGEPAGE") == nullptr) {
+        (void) madvise(p, len, MADV_HUGEPAGE);
+    }
+#endif
+    return p;
+}
+
+void safe_free(void **ptr) {
+    if (ptr == nullptr || *ptr == nullptr) {
+        return;
+    }
+    /* Mappings are page-aligned; anything else is a malloc block. */
+    size_t len = 0;
+    if (atomic_load_explicit(&g_large_n, memory_order_relaxed) != 0u &&
+        ((uintptr_t) *ptr & (page_bytes() - 1u)) == 0u) {
+        len = large_unregister(*ptr);
+    }
+    if (len != 0u) {
+        (void) munmap(*ptr, len);
+    } else {
+        free(*ptr);
+    }
+    *ptr = nullptr;
 }

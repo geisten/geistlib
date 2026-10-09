@@ -21,6 +21,7 @@
 #include <geist_backend.h>
 #include <geist_weight.h>
 
+#include "heap.h"
 #include "quant.h"
 
 #include <stdio.h>
@@ -65,7 +66,7 @@ resolve(struct geist_backend *be, enum geist_dtype dt, size_t n_in, size_t n_out
     const enum geist_status s = be->desc->vtbl->resolve_weight(be, &w);
     if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0) {
         void *aux = (void *) w.aux_fp32;
-        free(aux);
+        safe_free(&aux);
     }
     free(raw);
     return s;

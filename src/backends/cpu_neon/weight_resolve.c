@@ -1384,7 +1384,7 @@ install_tq2_0_tl1_if_eligible(struct geist_weight *w, const struct cpu_neon_kern
         bytes == 0 || bytes > (size_t) INT32_MAX) { /* aux_n is int32_t */
         return GEIST_OK;
     }
-    void *tl1_buf = heap_alloc_aligned(bytes, 64);
+    void *tl1_buf = heap_alloc_large(bytes, 64);
     if (tl1_buf == nullptr) {
         return GEIST_OK;
     } /* stay on the q8a path */
@@ -1418,7 +1418,7 @@ install_q4k_predecode_if_eligible(struct geist_weight                 *w,
     if (bytes == 0 || bytes > (size_t) INT32_MAX) {
         return GEIST_OK;
     }
-    void *buf = heap_alloc_aligned(bytes, 64);
+    void *buf = heap_alloc_large(bytes, 64);
     if (buf == nullptr) {
         return GEIST_OK;
     }
@@ -1459,7 +1459,7 @@ install_q6k_ntile_if_eligible(struct geist_weight *w, const struct cpu_neon_kern
     if (bytes == 0 || bytes > (size_t) INT32_MAX) {
         return GEIST_OK;
     }
-    void *buf = heap_alloc_aligned(bytes, 64);
+    void *buf = heap_alloc_large(bytes, 64);
     if (buf == nullptr) {
         return GEIST_OK;
     }
@@ -1501,7 +1501,7 @@ install_q6k_x8_gemv_if_eligible(struct geist_weight                 *w,
     if (bytes == 0 || bytes > (size_t) INT32_MAX) {
         return GEIST_OK;
     }
-    void *buf = heap_alloc_aligned(bytes, 64);
+    void *buf = heap_alloc_large(bytes, 64);
     if (buf == nullptr) {
         return GEIST_OK;
     }
@@ -1540,7 +1540,7 @@ install_q4_0_x8_gemv_if_eligible(struct geist_weight                 *w,
     if (bytes == 0 || bytes > (size_t) INT32_MAX) {
         return GEIST_OK;
     }
-    void *buf = heap_alloc_aligned(bytes, 64);
+    void *buf = heap_alloc_large(bytes, 64);
     if (buf == nullptr) {
         return GEIST_OK;
     }
@@ -1573,7 +1573,7 @@ static void install_pq2_0_x8_gemv_if_eligible(struct geist_weight               
     if (bytes == 0 || bytes > (size_t) INT32_MAX) {
         return;
     }
-    void *buf = heap_alloc_aligned(bytes, 64);
+    void *buf = heap_alloc_large(bytes, 64);
     if (buf == nullptr) {
         return;
     }

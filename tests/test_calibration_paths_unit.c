@@ -12,6 +12,8 @@
 #include <geist_backend.h>
 #include <geist_weight.h>
 
+#include "heap.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -64,7 +66,8 @@ static bool run_variant(const char      *env_name,
         w.linear_mN(M, x, &w, be, y);
     }
     if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0 && w.aux_fp32 != nullptr) {
-        free((void *) (uintptr_t) w.aux_fp32);
+        void *aux = (void *) (uintptr_t) w.aux_fp32;
+        safe_free(&aux);
     }
     geist_backend_destroy(be);
     return ran;
