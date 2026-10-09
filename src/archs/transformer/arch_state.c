@@ -1985,6 +1985,19 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
                 transformer_scratch_plan_build(state, sess->m_max, &fit);
                 need = sess->scratch_device ? fit.host_bytes : fit.pool_bytes;
             }
+            /* ...and a host-visible pool of a small model grows while the
+             * window still holds it, as a device-local pool does below: the
+             * bigger chunk feeds the GEMMs. BitNet b1.58-large (sub-LN keeps
+             * its pool host-visible) on an RTX 2080 Ti, pp512 at 128 -> 512:
+             * 6830 -> 13160 t/s (#739). */
+            while (!sess->scratch_device && sess->m_max < DEVICE_POOL_M_MAX &&
+                   sess->m_max * 2 <= m_cap) {
+                transformer_scratch_plan_build(state, sess->m_max * 2, &fit);
+                if (fit.pool_bytes + fit.pool_bytes / 4 > fast) {
+                    break;
+                }
+                sess->m_max *= 2;
+            }
         }
         /* A device-local pool takes the BAR window out of the chunk's limits
          * (only h_a, h_b and the logits rows stay host-visible), and a bigger

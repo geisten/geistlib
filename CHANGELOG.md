@@ -9,6 +9,13 @@ minor release.
 ## [Unreleased]
 
 ### Changed
+- **Vulkan prefill for head_dim 96 and host-visible scratch pools (#739).**
+  head_dim 96 (BitNet b1.58-large) gets the tensor-core attention kernel
+  instead of the one-row-per-query fallback, and a host-visible scratch pool
+  now grows its prefill chunk up to 512 while the BAR window holds it, as a
+  device-local pool already did. BitNet b1.58-large TQ2_0 on an RTX 2080 Ti:
+  pp512 6190 -> 13180 t/s, pp1024 4690 -> 11910 t/s (llama.cpp v0.6.0:
+  14070 at pp512). Models with a device-local pool are unchanged.
 - **cpu_neon in a macOS VM uses the Linux kernel set, and Apple decode keeps
   a spare core only from 6 P-cores up (#456).** The hosted `macos-15` runner
   is an `Apple M1 (Virtual)` guest with 3 cores and no AMX: Accelerate's sgemm
