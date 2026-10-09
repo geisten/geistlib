@@ -27,6 +27,7 @@
 #include "shaders/attention_f32_spv.h"
 #include "shaders/attn_comb_spv.h"
 #include "shaders/attn_part_f16_spv.h"
+#include "shaders/attn_part_g2_f16_spv.h"
 #include "shaders/deltanet_conv_f32_spv.h"
 #include "shaders/deltanet_delta_f32_spv.h"
 #include "shaders/deltanet_norm_f32_spv.h"
