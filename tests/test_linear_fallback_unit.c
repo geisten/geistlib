@@ -35,6 +35,7 @@
 #define _POSIX_C_SOURCE 200809L /* setenv, unsetenv */
 
 #include "test_helpers.h"
+#include "weight_aux.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -128,10 +129,7 @@ static bool has_pair_mN(const struct wpair *p) {
 
 static void wpair_free(struct wpair *p) {
     for (size_t i = 0; i < 2; i++) {
-        if ((p->w[i].flags & GEIST_W_AUX_HEAP_OWNED) != 0) {
-            void *aux = (void *) p->w[i].aux_fp32;
-            free(aux);
-        }
+        weight_aux_free(&p->w[i]);
         free(p->raw[i]);
         p->raw[i] = nullptr;
     }

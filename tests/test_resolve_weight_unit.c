@@ -14,6 +14,7 @@
  * gate do.
  */
 #include "test_helpers.h"
+#include "weight_aux.h"
 
 #include <stdio.h>
 
@@ -91,10 +92,7 @@ static int expect_resolved(struct geist_backend *be,
         free(raw);
         return 1;
     }
-    if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0 && w.aux_fp32 != nullptr) {
-        void *aux = (void *) w.aux_fp32;
-        free(aux);
-    }
+    weight_aux_free(&w);
     free(raw);
     return 0;
 }
@@ -119,10 +117,7 @@ expect_support_agrees(struct geist_backend *be, enum geist_dtype dtype, const ch
             .dtype      = (uint16_t) dtype,
     };
     const bool resolves = be->desc->vtbl->resolve_weight(be, &w) == GEIST_OK;
-    if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0 && w.aux_fp32 != nullptr) {
-        void *aux = (void *) w.aux_fp32;
-        free(aux);
-    }
+    weight_aux_free(&w);
     free(raw);
 
     const bool advertised = cpu_neon_linear_support(be, dtype) != CPU_NEON_SUPPORT_NONE;
@@ -174,9 +169,8 @@ expect_short_buffer_rejected(struct geist_backend *be, enum geist_dtype dtype, c
         bad = 1;
     }
     if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0 && w.aux_fp32 != nullptr) {
-        void *aux = (void *) w.aux_fp32;
-        free(aux);
         fprintf(stderr, "  [%s] rejected resolve still allocated aux\n", name);
+        weight_aux_free(&w);
         bad = 1;
     }
     free(raw);

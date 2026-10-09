@@ -11,6 +11,7 @@
  *   - size_t-overflowing sizes are refused, not wrapped to a tiny buffer
  *   - heap_calloc_aligned refuses count*size overflow
  *   - safe_free tolerates null and nulls the caller's pointer
+ *   - heap_alloc_pages / heap_free_pages on both sides of the mapped bound
  *
  * Deterministic, allocation-bounded (the overflow cases never reach
  * aligned_alloc — the guards return before that), ASan/UBSan friendly.
@@ -111,6 +112,29 @@ int main(void) {
     void *nullp = nullptr;
     safe_free(&nullp);
     safe_free(nullptr);
+
+    /* ---- heap_alloc_pages / heap_free_pages (#733) ---------------------
+     * Both sides of the 256 KiB bound: aligned, writable end to end, freed
+     * by size; a failed allocation is refused on the mapped path too. */
+    const size_t page_sizes[] = {0, 1, (256u << 10) - 1, 256u << 10, 3u << 20};
+    for (size_t i = 0; i < sizeof page_sizes / sizeof page_sizes[0]; i++) {
+        const size_t n  = page_sizes[i];
+        void        *pp = heap_alloc_pages(n);
+        if (n == 0) {
+            CHECK(pp == nullptr, "alloc_pages(0) should be null");
+            continue;
+        }
+        CHECK(pp != nullptr, "alloc_pages should succeed");
+        CHECK(((uintptr_t) pp & (OPTIMAL_ALIGNMENT - 1)) == 0, "alloc_pages alignment");
+        memset(pp, 0x5A, n);
+        heap_free_pages(&pp, n);
+        CHECK(pp == nullptr, "heap_free_pages should null the pointer");
+    }
+    heap_fail_allocations(true);
+    CHECK(heap_alloc_pages(1u << 20) == nullptr, "alloc_pages honors the failure hook");
+    heap_fail_allocations(false);
+    heap_free_pages(&nullp, 1u << 20);
+    heap_free_pages(nullptr, 0);
 
     printf("PASS: heap alloc/calloc/alloc_n — zero/overflow/alignment guards, "
            "including the array macros at the SIZE_MAX boundary\n");

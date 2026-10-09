@@ -1,5 +1,6 @@
 /* Exact selected-tile versus ordinary resolved head kernels, including tails. */
 #include "test_helpers.h"
+#include "weight_aux.h"
 #include "quant.h"
 #include "heap.h"
 #include <geist_backend.h>
@@ -265,10 +266,7 @@ static int run(struct geist_backend *be, enum geist_dtype dtype, size_t h, size_
            vocab,
            fails ? "FAIL" : "PASS");
 done:
-    if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0) {
-        void *aux = (void *) w.aux_fp32;
-        safe_free(&aux);
-    }
+    weight_aux_free(&w);
     if (bs)
         v->buffer_destroy(be, bs);
     if (bd)

@@ -18,6 +18,7 @@
  * Deterministic, no model needed.
  */
 #include "test_helpers.h"
+#include "weight_aux.h"
 
 #include <geist_backend.h>
 #include <geist_types.h>
@@ -289,10 +290,7 @@ static int check_backend(const char *name) {
                 fails += geist_expect(ok, what);
             }
         }
-        if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0) {
-            void *aux = (void *) w.aux_fp32;
-            safe_free(&aux);
-        }
+        weight_aux_free(&w);
         free(W);
         free(x);
         free(y);

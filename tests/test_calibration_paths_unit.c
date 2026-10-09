@@ -7,6 +7,7 @@
  * makes calibration quality-safe by construction: it may only ever
  * pick between paths CI has proven equivalent — on every CI µarch. */
 #include "test_helpers.h"
+#include "weight_aux.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -63,9 +64,7 @@ static bool run_variant(const char      *env_name,
     if (ran) {
         w.linear_mN(M, x, &w, be, y);
     }
-    if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0 && w.aux_fp32 != nullptr) {
-        free((void *) (uintptr_t) w.aux_fp32);
-    }
+    weight_aux_free(&w);
     geist_backend_destroy(be);
     return ran;
 }

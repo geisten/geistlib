@@ -7,7 +7,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#if defined(__linux__)
+#if defined(__unix__) || defined(__APPLE__)
 #include <sys/mman.h>
 #endif
 
@@ -130,6 +130,49 @@ void *heap_calloc_aligned(const size_t count, const size_t size, const size_t al
     }
     memset(memory, 0, bytes);
     return memory;
+}
+
+/* From this size up heap_alloc_pages maps pages of its own. Below it the
+ * malloc caches cost little; above it macOS keeps freed blocks in its large
+ * cache (1.4 GB of cpu_neon repacks after a model destroy, #733).
+ * ponytail: one fixed bound, a knob if a platform wants another. */
+constexpr size_t HEAP_PAGES_MIN = 256u << 10;
+
+void *heap_alloc_pages(const size_t size) {
+#if defined(MAP_ANONYMOUS)
+    if (size >= HEAP_PAGES_MIN) {
+        if (atomic_load_explicit(&g_heap_fail, memory_order_relaxed)) {
+            return nullptr;
+        }
+        void *p = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (p == MAP_FAILED) {
+            return nullptr;
+        }
+        atomic_fetch_add_explicit(&g_heap_allocs, 1u, memory_order_relaxed);
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+        /* As heap_alloc_aligned: THP for the streaming reads. */
+        if (size >= (2u << 20) && getenv("GEIST_NO_HUGEPAGE") == nullptr) {
+            (void) madvise(p, size, MADV_HUGEPAGE);
+        }
+#endif
+        return p;
+    }
+#endif
+    return heap_alloc_aligned(size, 0);
+}
+
+void heap_free_pages(void **ptr, const size_t size) {
+    if (ptr == nullptr || *ptr == nullptr) {
+        return;
+    }
+#if defined(MAP_ANONYMOUS)
+    if (size >= HEAP_PAGES_MIN) {
+        (void) munmap(*ptr, size);
+        *ptr = nullptr;
+        return;
+    }
+#endif
+    safe_free(ptr);
 }
 
 void safe_free(void **ptr) {

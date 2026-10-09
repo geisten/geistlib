@@ -26,6 +26,7 @@
 
 #include "gguf_reader.h"
 #include "gemma4_kernels.h"
+#include "weight_aux.h"
 #include "checked.h"
 #include "heap.h"
 #include "fwht.h"
@@ -68,12 +69,9 @@ static void release_weight_aux(struct geist_weight *w) {
         return;
     }
     if ((w->flags & GEIST_W_AUX_HEAP_OWNED) != 0) {
-        void *p = (void *) w->aux_fp32;
-        safe_free(&p);
-        w->aux_fp32 = nullptr;
-        w->aux_n    = 0;
-        w->flags &= (uint16_t) ~(GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK |
-                                 GEIST_W_RAW_COLD);
+        weight_aux_free(w);
+        w->aux_n = 0;
+        w->flags &= (uint16_t) ~(GEIST_W_AUX_BACKEND_REPACK | GEIST_W_RAW_COLD);
         w->backend_layout    = GEIST_W_LAYOUT_SOURCE;
         w->backend_alignment = 0;
     }

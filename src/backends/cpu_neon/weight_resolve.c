@@ -1384,18 +1384,18 @@ install_tq2_0_tl1_if_eligible(struct geist_weight *w, const struct cpu_neon_kern
         bytes == 0 || bytes > (size_t) INT32_MAX) { /* aux_n is int32_t */
         return GEIST_OK;
     }
-    void *tl1_buf = heap_alloc_aligned(bytes, 64);
+    void *tl1_buf = heap_alloc_pages(bytes);
     if (tl1_buf == nullptr) {
         return GEIST_OK;
     } /* stay on the q8a path */
     if (tl1_pack_from_tq2_0(w->raw, (size_t) w->n_in, (size_t) w->n_out, tl1_buf) != 0) {
         /* Pack rejected: free and stay on the q8a path. */
-        safe_free(&tl1_buf);
+        heap_free_pages(&tl1_buf, bytes);
         return GEIST_OK;
     }
     w->aux_fp32 = (const float *) tl1_buf;
     w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
+    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_PAGES | GEIST_W_AUX_BACKEND_REPACK;
     w->backend_layout    = GEIST_W_LAYOUT_TQ2_0_TL1;
     w->backend_alignment = 64;
     w->linear_m1         = cpu_neon_w_tl1_m1;
@@ -1418,7 +1418,7 @@ install_q4k_predecode_if_eligible(struct geist_weight                 *w,
     if (bytes == 0 || bytes > (size_t) INT32_MAX) {
         return GEIST_OK;
     }
-    void *buf = heap_alloc_aligned(bytes, 64);
+    void *buf = heap_alloc_pages(bytes);
     if (buf == nullptr) {
         return GEIST_OK;
     }
@@ -1427,12 +1427,12 @@ install_q4k_predecode_if_eligible(struct geist_weight                 *w,
                     ? q4k_predecode_ntile4_pack(w->raw, (size_t) w->n_in, (size_t) w->n_out, buf)
                     : q4k_predecode_pack(w->raw, (size_t) w->n_in, (size_t) w->n_out, buf);
     if (pack_status != 0) {
-        safe_free(&buf);
+        heap_free_pages(&buf, bytes);
         return GEIST_OK;
     }
     w->aux_fp32 = (const float *) buf;
     w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
+    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_PAGES | GEIST_W_AUX_BACKEND_REPACK;
     w->backend_layout =
             use_ntile_pack ? GEIST_W_LAYOUT_Q4_K_PREDECODE_NTILE4 : GEIST_W_LAYOUT_Q4_K_PREDECODE;
     w->backend_alignment = 64;
@@ -1459,7 +1459,7 @@ install_q6k_ntile_if_eligible(struct geist_weight *w, const struct cpu_neon_kern
     if (bytes == 0 || bytes > (size_t) INT32_MAX) {
         return GEIST_OK;
     }
-    void *buf = heap_alloc_aligned(bytes, 64);
+    void *buf = heap_alloc_pages(bytes);
     if (buf == nullptr) {
         return GEIST_OK;
     }
@@ -1469,12 +1469,12 @@ install_q6k_ntile_if_eligible(struct geist_weight *w, const struct cpu_neon_kern
                               w->raw, (size_t) w->n_in, (size_t) w->n_out, buf)
                     : q6k_predecode_ntile4_pack(w->raw, (size_t) w->n_in, (size_t) w->n_out, buf);
     if (pack_status != 0) {
-        safe_free(&buf);
+        heap_free_pages(&buf, bytes);
         return GEIST_OK;
     }
     w->aux_fp32 = (const float *) buf;
     w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
+    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_PAGES | GEIST_W_AUX_BACKEND_REPACK;
     w->backend_layout    = use_stream ? GEIST_W_LAYOUT_Q6_K_PREDECODE_NTILE4_STREAM
                                       : GEIST_W_LAYOUT_Q6_K_PREDECODE_NTILE4;
     w->backend_alignment = 64;
@@ -1501,17 +1501,17 @@ install_q6k_x8_gemv_if_eligible(struct geist_weight                 *w,
     if (bytes == 0 || bytes > (size_t) INT32_MAX) {
         return GEIST_OK;
     }
-    void *buf = heap_alloc_aligned(bytes, 64);
+    void *buf = heap_alloc_pages(bytes);
     if (buf == nullptr) {
         return GEIST_OK;
     }
     if (q6k_x8_gemv_pack(w->raw, (size_t) w->n_in, (size_t) w->n_out, buf) != 0) {
-        safe_free(&buf);
+        heap_free_pages(&buf, bytes);
         return GEIST_OK;
     }
     w->aux_fp32 = (const float *) buf;
     w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
+    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_PAGES | GEIST_W_AUX_BACKEND_REPACK;
     w->backend_layout    = GEIST_W_LAYOUT_Q6_K_X8_GEMV;
     w->backend_alignment = 64;
 #else
@@ -1540,17 +1540,18 @@ install_q4_0_x8_gemv_if_eligible(struct geist_weight                 *w,
     if (bytes == 0 || bytes > (size_t) INT32_MAX) {
         return GEIST_OK;
     }
-    void *buf = heap_alloc_aligned(bytes, 64);
+    void *buf = heap_alloc_pages(bytes);
     if (buf == nullptr) {
         return GEIST_OK;
     }
     if (q4_0_x8_gemv_pack(w->raw, (size_t) w->n_in, (size_t) w->n_out, buf) != 0) {
-        safe_free(&buf);
+        heap_free_pages(&buf, bytes);
         return GEIST_OK;
     }
     w->aux_fp32 = (const float *) buf;
     w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK | GEIST_W_RAW_COLD;
+    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_PAGES | GEIST_W_AUX_BACKEND_REPACK |
+                GEIST_W_RAW_COLD;
     w->backend_layout    = GEIST_W_LAYOUT_Q4_0_X8_GEMV;
     w->backend_alignment = 64;
 #else
@@ -1573,14 +1574,15 @@ static void install_pq2_0_x8_gemv_if_eligible(struct geist_weight               
     if (bytes == 0 || bytes > (size_t) INT32_MAX) {
         return;
     }
-    void *buf = heap_alloc_aligned(bytes, 64);
+    void *buf = heap_alloc_pages(bytes);
     if (buf == nullptr) {
         return;
     }
     pq2_0_x8_pack(w->raw, (size_t) w->n_in, (size_t) w->n_out, buf);
     w->aux_fp32 = (const float *) buf;
     w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK | GEIST_W_RAW_COLD;
+    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_PAGES | GEIST_W_AUX_BACKEND_REPACK |
+                GEIST_W_RAW_COLD;
     w->backend_layout    = GEIST_W_LAYOUT_PQ2_0_X8_GEMV;
     w->backend_alignment = 64;
     w->linear_m1         = cpu_neon_w_pq2_0_x8_m1;

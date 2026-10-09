@@ -9,6 +9,15 @@ minor release.
 ## [Unreleased]
 
 ### Changed
+- **cpu_neon weight repacks return their memory at model destroy (#733).**
+  The repacks (TL1, Q4_K predecode, Q6_K n-tile, Q6_K / Q4_0 / PQ2_0 x8)
+  come from `heap_alloc_pages`, which maps 256 KiB and larger blocks of
+  their own and unmaps them when freed, instead of malloc, whose large
+  cache on macOS kept 1.4-1.6 GB in RSS after `geist_model_destroy`. Such a
+  weight carries the new `GEIST_W_AUX_PAGES` flag beside
+  `GEIST_W_AUX_HEAP_OWNED`; code that frees an owned `aux_fp32` itself goes
+  through `weight_aux_free` (src/backends/common/weight_aux.h), which frees
+  either kind. Kernels and their output are unchanged.
 - **Vulkan decode attention reads each K/V row once per GQA group (#475).**
   The flash-decoding partial pass (`attn_part_f16`, n_q == 1, f16 KV, more
   than 192 keys) ran one workgroup per (128-key chunk, q-head), so every

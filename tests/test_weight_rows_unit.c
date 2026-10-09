@@ -16,6 +16,7 @@
  * resolve, or the backend has no kernel for the dtype).
  */
 #include "test_helpers.h"
+#include "weight_aux.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -63,10 +64,7 @@ resolve(struct geist_backend *be, enum geist_dtype dt, size_t n_in, size_t n_out
                                  .n_out      = (int32_t) n_out,
                                  .dtype      = (uint16_t) dt};
     const enum geist_status s = be->desc->vtbl->resolve_weight(be, &w);
-    if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0) {
-        void *aux = (void *) w.aux_fp32;
-        free(aux);
-    }
+    weight_aux_free(&w);
     free(raw);
     return s;
 }

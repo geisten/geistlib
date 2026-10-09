@@ -35,6 +35,7 @@
  */
 #define _POSIX_C_SOURCE 200809L /* setenv, fork, waitpid */
 #include "test_helpers.h"
+#include "weight_aux.h"
 
 #include <geist_backend.h>
 #include <geist_types.h>
@@ -363,10 +364,7 @@ static int check_backend(const char *name, bool x8_policy) {
         for (size_t i = 0; i < n_ms; i++) {
             fails += check_mN(name, n_out, n_in, ms[i], W, x, &w, be);
         }
-        if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0) {
-            void *aux = (void *) w.aux_fp32;
-            safe_free(&aux);
-        }
+        weight_aux_free(&w);
         free(W);
         free(x);
         free(y);
@@ -444,10 +442,7 @@ static int check_pair(const char *name) {
         fails += geist_expect(memcmp(a1, b1, m * n_out[1] * sizeof(float)) == 0, what);
     }
     for (size_t i = 0; i < 2; i++) {
-        if ((w[i].flags & GEIST_W_AUX_HEAP_OWNED) != 0) {
-            void *aux = (void *) w[i].aux_fp32;
-            safe_free(&aux);
-        }
+        weight_aux_free(&w[i]);
         free(W[i]);
     }
     free(x);

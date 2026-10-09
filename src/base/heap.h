@@ -64,3 +64,14 @@ void heap_fail_allocations(bool on);
 
 /* free(*ptr) and set *ptr = nullptr; tolerates null ptr and null *ptr. */
 void safe_free(void **ptr);
+
+/* `size` bytes, OPTIMAL_ALIGNMENT-aligned, whose pages go back to the system
+ * when freed: from 256 KiB up a mapping of their own, below that
+ * heap_alloc_aligned. For model-lifetime buffers such as weight repacks,
+ * which the malloc caches would otherwise keep after a model destroy (#733).
+ * nullptr on a zero size or OOM. */
+[[nodiscard]] void *heap_alloc_pages(size_t size);
+
+/* Frees a heap_alloc_pages block of the same `size` and nulls *ptr;
+ * tolerates null ptr and null *ptr. */
+void heap_free_pages(void **ptr, size_t size);

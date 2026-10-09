@@ -29,6 +29,7 @@
 
 #include "heap.h"
 #include "quant.h"
+#include "weight_aux.h"
 
 #include <geist_backend.h>
 #include <geist_weight.h>
@@ -120,10 +121,7 @@ static enum geist_status cal_time_resolved(const uint8_t   *panel,
             break;
         }
     }
-    if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0 && w.aux_fp32 != nullptr) {
-        void *aux = (void *) (uintptr_t) w.aux_fp32;
-        safe_free(&aux);
-    }
+    weight_aux_free(&w);
     geist_backend_destroy(tb);
     *out_ns = best;
     return GEIST_OK;

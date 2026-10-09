@@ -20,6 +20,7 @@
  * Deterministic; no GGUF needed. Skips without cpu_neon.
  */
 #include "test_helpers.h"
+#include "weight_aux.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -145,10 +146,7 @@ static void check(const char *dtype, const char *path, size_t m, const float *y,
 }
 
 static void free_aux(struct geist_weight *w) {
-    if ((w->flags & GEIST_W_AUX_HEAP_OWNED) != 0 && w->aux_fp32 != nullptr) {
-        void *aux = (void *) w->aux_fp32;
-        safe_free(&aux);
-    }
+    weight_aux_free(w);
     w->aux_fp32 = nullptr;
 }
 
