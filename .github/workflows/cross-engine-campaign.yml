@@ -68,7 +68,7 @@ jobs:
         # validation rejects it.
         env:
           LLAMA_REPO: ${{ inputs.llama_repo }}
-          LLAMA_PIN: ${{ inputs.llama_pin || '2d8d612e4c68d3801e556a1b4a028f55ec33ecbb' }}
+          LLAMA_PIN: ${{ inputs.llama_pin || 'd81235049384534c167caea52b85a694f6103d14' }}
           VARIANT: ${{ inputs.protocol }}
         run: |
           set -e

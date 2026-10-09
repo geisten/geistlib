@@ -19,7 +19,7 @@ on:
 env:
   HF_REPO: HuggingFaceTB/SmolLM2-135M-Instruct
   HF_REVISION: 12fd25f77366fa6b3b4b768ec3050bf629380bac
-  LLAMA_PIN: 2d8d612e4c68d3801e556a1b4a028f55ec33ecbb
+  LLAMA_PIN: d81235049384534c167caea52b85a694f6103d14
 
 jobs:
   convert-gate:
