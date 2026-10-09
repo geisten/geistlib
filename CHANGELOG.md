@@ -9,6 +9,13 @@ minor release.
 ## [Unreleased]
 
 ### Changed
+- **The llama.cpp reference moves to v0.6.0 (`d8123504`, was `2d8d612e`).**
+  The cross-engine campaign, the Apple performance guard and the HF → GGUF
+  converter run at the release; convert-gate needs numpy 2.2 for its
+  gguf-py. The AMD 9950X and RTX 2080 Ti matrix columns are re-measured
+  against it (`benchmark/results/MATRIX.md`): v0.6.0 is 15–20 % faster in CPU
+  prefill, and geist's Vulkan prefill now leads or ties on every model but
+  TQ2_0.
 - **cpu_neon in a macOS VM uses the Linux kernel set, and Apple decode keeps
   a spare core only from 6 P-cores up (#456).** The hosted `macos-15` runner
   is an `Apple M1 (Virtual)` guest with 3 cores and no AMX: Accelerate's sgemm
