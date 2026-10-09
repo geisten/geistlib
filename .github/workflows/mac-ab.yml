@@ -28,6 +28,9 @@ on:
         type: choice
         options: [cpu_neon, metal]
         default: cpu_neon
+      env:
+        description: "extra environment for every bench run, space-separated VAR=VALUE (e.g. OMP_NUM_THREADS=3 GEIST_PROFILE_PREFILL=1)"
+        default: ""
 
 permissions:
   contents: read
@@ -82,8 +85,12 @@ jobs:
         env:
           GEIST_BENCH_BACKEND: ${{ inputs.backend }}
           MODE: ${{ inputs.mode }}
+          EXTRA_ENV: ${{ inputs.env }}
         run: |
           set -eu
+          for kv in $EXTRA_ENV; do
+            case $kv in [A-Z_]*=*) export "$kv" ;; *) echo "bad env entry: $kv" >&2; exit 1 ;; esac
+          done
           b="$RUNNER_TEMP/bins"
           if [ "$MODE" = gcd-vs-omp ]; then a=omp; c=gcd; else a=base; c=new; fi
           python3 tools/bench_mac_ab.py \
