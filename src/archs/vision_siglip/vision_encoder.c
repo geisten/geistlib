@@ -173,7 +173,12 @@ static float *load_bf16(struct st_ctx *sf, const char *name, size_t n) {
                 n * 2);
         return nullptr;
     }
-    return bf16_alloc_fp32(n, t->data);
+    /* Weight-sized: mmap'd, so destroy returns the pages (#733). */
+    float *dst = heap_alloc_large(n * sizeof(float), alignof(float));
+    if (dst != nullptr) {
+        bf16_array_to_fp32(n, t->data, dst);
+    }
+    return dst;
 }
 
 static bool load_layer(struct st_ctx *sf, int idx, struct vision_layer *L) {
@@ -213,7 +218,7 @@ static bool load_layer(struct st_ctx *sf, int idx, struct vision_layer *L) {
             safe_free((void **) &k_tmp);
             return false;
         }
-        L->qkv_proj = heap_alloc_array_aligned(float, 3 * (size_t) VTH * VTH);
+        L->qkv_proj = heap_alloc_large(3 * (size_t) VTH * VTH * sizeof(float), alignof(float));
         if (L->qkv_proj == nullptr) {
             safe_free((void **) &q_tmp);
             safe_free((void **) &k_tmp);
@@ -247,7 +252,8 @@ static bool load_layer(struct st_ctx *sf, int idx, struct vision_layer *L) {
             safe_free((void **) &gate_tmp);
             return false;
         }
-        L->gate_up_proj = heap_alloc_array_aligned(float, 2 * (size_t) V_INTER * VTH);
+        L->gate_up_proj =
+                heap_alloc_large(2 * (size_t) V_INTER * VTH * sizeof(float), alignof(float));
         if (L->gate_up_proj == nullptr) {
             safe_free((void **) &gate_tmp);
             safe_free((void **) &up_tmp);

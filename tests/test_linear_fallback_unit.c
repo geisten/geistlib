@@ -130,7 +130,7 @@ static void wpair_free(struct wpair *p) {
     for (size_t i = 0; i < 2; i++) {
         if ((p->w[i].flags & GEIST_W_AUX_HEAP_OWNED) != 0) {
             void *aux = (void *) p->w[i].aux_fp32;
-            free(aux);
+            safe_free(&aux);
         }
         free(p->raw[i]);
         p->raw[i] = nullptr;

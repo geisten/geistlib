@@ -35,6 +35,7 @@ int main(void) {
 #include <geist_weight.h>
 #include <geist_util.h>
 
+#include "heap.h"
 #include "quant.h"
 
 #define GEIST_INTERNAL_BACKEND_LAYER /* cpu_neon_linear_support (internal.h) */
@@ -93,7 +94,7 @@ static int expect_resolved(struct geist_backend *be,
     }
     if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0 && w.aux_fp32 != nullptr) {
         void *aux = (void *) w.aux_fp32;
-        free(aux);
+        safe_free(&aux);
     }
     free(raw);
     return 0;
@@ -121,7 +122,7 @@ expect_support_agrees(struct geist_backend *be, enum geist_dtype dtype, const ch
     const bool resolves = be->desc->vtbl->resolve_weight(be, &w) == GEIST_OK;
     if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0 && w.aux_fp32 != nullptr) {
         void *aux = (void *) w.aux_fp32;
-        free(aux);
+        safe_free(&aux);
     }
     free(raw);
 
@@ -175,7 +176,7 @@ expect_short_buffer_rejected(struct geist_backend *be, enum geist_dtype dtype, c
     }
     if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0 && w.aux_fp32 != nullptr) {
         void *aux = (void *) w.aux_fp32;
-        free(aux);
+        safe_free(&aux);
         fprintf(stderr, "  [%s] rejected resolve still allocated aux\n", name);
         bad = 1;
     }
