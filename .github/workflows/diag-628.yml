@@ -21,13 +21,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: ${{ matrix.build }} -j4
       - run: make fetch-qwen3-model
-      - name: 5000 tokens, one call vs 1024 / 256 / 64, twice (order flipped)
+      - name: 4000 tokens, one call vs 1024 / 256 / 64, twice (order flipped)
         env:
           GEIST_BENCH_BACKEND: cpu_neon
         run: |
           m=$(ls gguf_artifacts/qwen3-0.6b*.gguf | head -1)
-          ${{ matrix.bin }} "$m" 5000 0 1024 256 64
-          ${{ matrix.bin }} "$m" 5000 64 256 1024 0
+          ${{ matrix.bin }} "$m" 4000 0 1024 256 64
+          ${{ matrix.bin }} "$m" 4000 64 256 1024 0
   pin-prefix-metal:
     # #578: HELIO's pin_prefix pattern on Metal (E2B: E4B does not fit the 7 GB runner)
     runs-on: macos-15

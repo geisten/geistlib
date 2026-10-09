@@ -40,10 +40,10 @@ int main(int argc, char **argv) {
     }
     for (int a = 3; a < argc; a++) {
         const size_t chunk = strtoul(argv[a], nullptr, 10);
-        struct geist_session_opts o = {.max_seq_len = n + 16, .temperature = 0.0f};
+        struct geist_session_opts o = {.temperature = 0.0f} /* model default 4096 */;
         struct geist_session     *s = nullptr;
         if (geist_session_create(m, be, &o, &s) != GEIST_OK) {
-            fprintf(stderr, "session_create failed\n");
+            fprintf(stderr, "session_create failed: %s\n", geist_last_create_error());
             return 1;
         }
         const double t0 = now_s();

@@ -53,11 +53,11 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < n; i++) {
         ids[i] = (geist_token_t) (100 + (i * 7919u) % 20000u);
     }
-    struct geist_session_opts o = {.max_seq_len = n + 16, .temperature = 0.0f};
+    struct geist_session_opts o = {.temperature = 0.0f} /* model default 4096 */;
     struct geist_session     *a = nullptr, *b = nullptr;
     if (geist_session_create(m, be, &o, &a) != GEIST_OK ||
         geist_session_create(m, be, &o, &b) != GEIST_OK) {
-        fprintf(stderr, "session_create failed\n");
+        fprintf(stderr, "session_create failed: %s\n", geist_last_create_error());
         return 1;
     }
     double t = now_ms();
