@@ -1,0 +1,100 @@
+# A/B on a hosted Apple-silicon runner (macos-15: a virtualized M1, 3 cores,
+# a real Metal device). Absolute speed is not the M1 Max's and drifts between
+# runs, but variants measured interleaved in ONE job share the machine, so the
+# ratio between them holds (tools/bench_mac_ab.py, the frozen
+# benchmark/apple_cpu_protocol.json, Gemma 4 E2B Q4_K_M).
+#
+#   gh workflow run mac-ab.yml -f new=origin/<branch>                 # base vs new
+#   gh workflow run mac-ab.yml -f new=origin/main -f mode=gcd-vs-omp  # #618
+#   gh workflow run mac-ab.yml -f new=origin/<branch> -f backend=metal
+name: mac-ab
+
+on:
+  workflow_dispatch:
+    inputs:
+      new:
+        description: "revision under test, e.g. origin/fix/456-..."
+        required: true
+      base:
+        description: "baseline revision (mode revisions)"
+        default: origin/main
+      mode:
+        description: "revisions: base vs new (TARGET=mac-omp); gcd-vs-omp: new built with libomp vs without (GCD, #618)"
+        type: choice
+        options: [revisions, gcd-vs-omp]
+        default: revisions
+      backend:
+        description: "GEIST_BENCH_BACKEND"
+        type: choice
+        options: [cpu_neon, metal]
+        default: cpu_neon
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-ab-${{ inputs.new }}-${{ inputs.mode }}-${{ inputs.backend }}
+  cancel-in-progress: false
+
+jobs:
+  ab:
+    name: mac-ab (${{ inputs.mode }}, ${{ inputs.backend }})
+    runs-on: macos-15
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # both revisions must resolve locally
+      - name: Install libomp
+        run: brew install libomp
+      - name: Cache reference model
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
+          key: geist-apple-perf-gemma4-e2b-q4km-740185b21d22
+      - name: Fetch reference model
+        run: make fetch-model
+      - name: Build the variants
+        env:
+          MODE: ${{ inputs.mode }}
+          BASE: ${{ inputs.base }}
+          NEW: ${{ inputs.new }}
+        run: |
+          set -eu
+          out="$RUNNER_TEMP/bins"; mkdir -p "$out"
+          build() { # label ref target
+            tree="$RUNNER_TEMP/tree_$1"
+            git worktree add --detach "$tree" "$2"
+            make -C "$tree" TARGET="$3" BACKENDS="metal cpu_neon cpu_scalar" -j"$(sysctl -n hw.ncpu)" \
+              lib "bin/$3/release/tests/bench_perf_sweep" > "$out/build_$1.log" 2>&1 \
+              || { tail -40 "$out/build_$1.log"; exit 1; }
+            # bench_mac_ab records the commit of the binary's checkout
+            echo "$tree/bin/$3/release/tests/bench_perf_sweep" > "$out/$1.path"
+          }
+          if [ "$MODE" = gcd-vs-omp ]; then
+            build omp "$NEW" mac-omp
+            build gcd "$NEW" mac
+          else
+            build base "$BASE" mac-omp
+            build new "$NEW" mac-omp
+          fi
+      - name: A/B (interleaved, frozen protocol)
+        env:
+          GEIST_BENCH_BACKEND: ${{ inputs.backend }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -eu
+          b="$RUNNER_TEMP/bins"
+          if [ "$MODE" = gcd-vs-omp ]; then a=omp; c=gcd; else a=base; c=new; fi
+          python3 tools/bench_mac_ab.py \
+            --variant "$a=$(cat "$b/$a.path")" --variant "$c=$(cat "$b/$c.path")" \
+            --gguf gguf_artifacts/gemma4-e2b-Q4_K_M.gguf --out-dir "$RUNNER_TEMP/ab"
+          cat "$RUNNER_TEMP"/ab/*.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: mac-ab-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/ab/
+            ${{ runner.temp }}/bins/*.log
+          if-no-files-found: ignore
