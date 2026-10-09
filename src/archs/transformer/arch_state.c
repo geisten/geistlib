@@ -72,7 +72,8 @@ static void release_weight_aux(struct geist_weight *w) {
         safe_free(&p);
         w->aux_fp32 = nullptr;
         w->aux_n    = 0;
-        w->flags &= (uint16_t) ~(GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK);
+        w->flags &= (uint16_t) ~(GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK |
+                                 GEIST_W_RAW_COLD);
         w->backend_layout    = GEIST_W_LAYOUT_SOURCE;
         w->backend_alignment = 0;
     }
