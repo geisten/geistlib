@@ -266,11 +266,17 @@ static int cpu_neon_region_thread_count(enum geist_parallel_region region) {
 #if defined(GEIST_TARGET_PI5)
             n = 3;
 #else
-            /* One P-core left for the OMP master and the OS: ~210 tiny
-             * matmuls per token contend with coordination work otherwise
-             * (M1 Max tg128: 8 P-cores ~25 tps noisy, 7 ~30 tps stable). */
-            const int pc = apple_perf_cores();
-            n            = (pc > 1) ? pc - 1 : 0;
+            /* One P-core left for the OMP master and the OS once the
+             * P-cores saturate memory: ~210 tiny matmuls per token contend
+             * with coordination work otherwise (M1 Max tg128: 8 P-cores
+             * ~25 tps noisy, 7 ~30 tps stable). Below that the GEMV is
+             * compute-bound per core (~17 GB/s each, APPLE.md) and every
+             * core counts: a 3-core M1 VM decodes 11.0 tps on 2 threads,
+             * 16.6 on 3 (#456). The spare starts at 6 P-cores: 8 on the
+             * measured M1 Max, 4 on the base chips. */
+            constexpr int spare_from = 6;
+            const int     pc         = apple_perf_cores();
+            n                        = (pc >= spare_from) ? pc - 1 : pc;
 #endif
         }
     }

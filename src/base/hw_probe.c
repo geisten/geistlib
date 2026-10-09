@@ -362,6 +362,9 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
             snprintf(out->uarch, sizeof(out->uarch), "apple:%s:%dP+%dE", brand, p_cores, e_cores);
         }
     }
+    /* A macOS guest ("Apple M1 (Virtual)", the hosted CI runners): 1 under
+     * Apple's hypervisor, absent or 0 on bare metal. */
+    out->is_virtual_machine = sysctl_bool("kern.hv_vmm_present", false);
 #else
     if (out->cpu != GEIST_HW_CPU_UNKNOWN) {
         snprintf(out->uarch,

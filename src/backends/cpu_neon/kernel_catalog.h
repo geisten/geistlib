@@ -72,7 +72,8 @@ struct cpu_neon_kernel_policy {
     /* Mac AMX/Accelerate dequant→cblas_sgemm prefill path. When set AND
      * m ≥ qk_sgemm_threshold, the Q4_K/Q6_K W*A8 NEON kernels are bypassed
      * in favor of dequant_q?_K_row + cblas_sgemm (tiled DEQ_TILE_ROWS=32).
-     * Default true when has_accelerate (Mac); false on Pi 5/Linux. */
+     * Default true when has_accelerate (Mac) outside a VM; false in a
+     * macOS guest (no AMX, #456) and on Pi 5/Linux. */
     bool q4k_sgemm_prefill;
     bool q6k_sgemm_prefill;
     /* Smallest m that takes the SGEMM path (dequant overhead amortized).
