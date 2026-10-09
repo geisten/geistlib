@@ -378,11 +378,21 @@ jobs:
   # runtime-dispatched over an x86-64-v3 baseline) with unit + int + e2e.
   # Hosted runners don't guarantee AVX-512, so the CPU feature check reports
   # whether the AVX-512 kernels ran; build-test-x86_64-scalar covers the
-  # SIMD-free path.
+  # SIMD-free path. Two legs in parallel: the full suite, and the int suite
+  # once more under GEIST_FORCE_ISA=avx2 — sequential they were the slowest
+  # job of every PR run.
   build-test-x86_64:
-    name: build + tests (Linux x86_64, cpu_x86 AVX-512 + scalar)
+    name: ${{ matrix.name }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: full
+            name: build + tests (Linux x86_64, cpu_x86 AVX-512 + scalar)
+          - leg: avx2
+            name: integration tests (Linux x86_64, cpu_x86 forced AVX2)
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
@@ -411,6 +421,7 @@ jobs:
       - name: Build
         run: make TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
       - name: Unit tests
+        if: matrix.leg == 'full'
         run: make test-unit TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native AUTO_FETCH_MODEL=0
       - name: Cache reference model
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -441,6 +452,7 @@ jobs:
       - name: Fetch Qwen3 reference model
         run: make fetch-qwen3-model
       - name: Integration + e2e tests (real models, fixtures mandatory)
+        if: matrix.leg == 'full'
         env:
           GEIST_STRICT_FIXTURES: gguf
           # Skips outside this list fail (#443): the suite may not shrink quietly.
@@ -452,6 +464,7 @@ jobs:
       # when the runner CPU has AVX-512. Guards regressions where an AVX-512
       # kernel gets installed without a runtime CPU check (SIGILL on v3 CPUs).
       - name: Integration tests, non-AVX512 dispatch (GEIST_FORCE_ISA=avx2)
+        if: matrix.leg == 'avx2'
         run: GEIST_FORCE_ISA=avx2 make test-int TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
       # Coarse perf cliff detector for cpu_x86 on the hermetic synthetic
       # Llama 3.2 1B Q4_K (tools/gen_synth_gguf.py; written outside gguf_artifacts
@@ -459,12 +472,14 @@ jobs:
       # (prefill ~160, decode ~32 tok/s); the scalar backend gives 3.9 / 1.4.
       # perf_gate --record as on the arm64 leg (#442).
       - name: Last main perf numbers (x86, synthetic)
+        if: matrix.leg == 'full'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: perf-last
           key: perf-x86_64-synth-${{ github.run_id }}
           restore-keys: perf-x86_64-synth-
       - name: Perf regression gate (x86, synthetic Q4_K)
+        if: matrix.leg == 'full'
         run: |
           python3 tools/gen_synth_gguf.py "$RUNNER_TEMP/llama32-1b-q4_k.gguf" --preset llama32-1b-q4_k
           bin/linux/release/tests/bench_perf_sweep \
@@ -472,7 +487,7 @@ jobs:
             --seq-lens 128 --decode-n 16 --warmup 4 --repeats 3 \
             | python3 benchmark/perf_gate.py --min-prefill 40 --min-decode 8 --record perf-last/main.json
       - name: Save perf numbers for the next comparison (main only, x86)
-        if: github.ref == 'refs/heads/main' && hashFiles('perf-last/main.json') != ''
+        if: matrix.leg == 'full' && github.ref == 'refs/heads/main' && hashFiles('perf-last/main.json') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: perf-last

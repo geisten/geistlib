@@ -609,8 +609,8 @@ struct gguf_ctx *gguf_open(const char *path, const char **errmsg) {
 }
 
 void gguf_release_range(const struct gguf_ctx *ctx, const void *p, size_t n) {
-#if defined(__linux__) && defined(MADV_DONTNEED)
-    if (ctx == nullptr || !ctx->owns_map || p == nullptr || n == 0) {
+#if defined(__APPLE__) || (defined(__linux__) && defined(MADV_DONTNEED))
+    if (ctx == nullptr || !ctx->owns_map || ctx->fd < 0 || p == nullptr || n == 0) {
         return;
     }
     const uintptr_t base = (uintptr_t) ctx->map;
@@ -627,7 +627,21 @@ void gguf_release_range(const struct gguf_ctx *ctx, const void *p, size_t n) {
     const uintptr_t first = (lo + mask) & ~mask; /* whole pages inside the range */
     const uintptr_t last  = (lo + n) & ~mask;
     if (first < last) {
+#if defined(__APPLE__)
+        /* Darwin keeps MADV_DONTNEED'd file pages in the task's resident
+         * set (#729). Mapping the same file range over them in place
+         * leaves the new range empty; the bytes stay readable from the
+         * file. Never reached for a Metal-wired mapping: Metal neither
+         * copies nor repacks. */
+        (void) mmap((void *) first,
+                    last - first,
+                    PROT_READ,
+                    gguf_map_flags | MAP_FIXED,
+                    ctx->fd,
+                    (off_t) (first - base));
+#else
         (void) madvise((void *) first, last - first, MADV_DONTNEED);
+#endif
     }
 #else
     (void) ctx;

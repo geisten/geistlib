@@ -1527,8 +1527,8 @@ install_q4_0_x8_gemv_if_eligible(struct geist_weight                 *w,
 #if defined(__ARM_NEON)
     /* Interleaved-8-row Q4_0 GEMV. Unlike the Q6_K variant this hits
      * every projection tensor, so the heap copies sum to ~1x the model's
-     * Q4_0 bytes; the mmap'd source goes cold after warmup (Pi 5 4B: net
-     * RSS +0.5 GB). See kernel_catalog.c for the default. */
+     * Q4_0 bytes; GEIST_W_RAW_COLD lets the loader drop the mmap'd
+     * source pages (#729). See kernel_catalog.c for the default. */
     if (!policy->q4_0_x8_gemv) {
         return GEIST_OK;
     }
@@ -1550,7 +1550,7 @@ install_q4_0_x8_gemv_if_eligible(struct geist_weight                 *w,
     }
     w->aux_fp32 = (const float *) buf;
     w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
+    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK | GEIST_W_RAW_COLD;
     w->backend_layout    = GEIST_W_LAYOUT_Q4_0_X8_GEMV;
     w->backend_alignment = 64;
 #else
@@ -1580,7 +1580,7 @@ static void install_pq2_0_x8_gemv_if_eligible(struct geist_weight               
     pq2_0_x8_pack(w->raw, (size_t) w->n_in, (size_t) w->n_out, buf);
     w->aux_fp32 = (const float *) buf;
     w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
+    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK | GEIST_W_RAW_COLD;
     w->backend_layout    = GEIST_W_LAYOUT_PQ2_0_X8_GEMV;
     w->backend_alignment = 64;
     w->linear_m1         = cpu_neon_w_pq2_0_x8_m1;

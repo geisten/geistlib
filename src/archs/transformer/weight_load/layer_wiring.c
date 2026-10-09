@@ -139,10 +139,14 @@ load_layer_proj_rope_il(struct transformer_arch_state    *st,
                 return rs;
             }
             /* The backend holds its own device copy of a matrix that
-             * skipped the arena: the GGUF pages behind it need not stay
-             * resident (#468). A host fallback that still reads them faults
+             * skipped the arena (#468), or a host repack its kernels read
+             * instead of the source (#729): the GGUF pages behind it need
+             * not stay resident. A fallback that still reads them faults
              * them back in from the file. */
-            if (rs == GEIST_OK && weight_off_arena(be, storage)) {
+            const bool own_copy =
+                    weight_off_arena(be, storage) ||
+                    (storage == WEIGHT_LINEAR && (out_weight->flags & GEIST_W_RAW_COLD) != 0);
+            if (rs == GEIST_OK && own_copy) {
                 gguf_release_range(gguf, out_weight->raw, out_weight->raw_nbytes);
             }
             /* A backend without a half-precision dense linear (vulkan) gets

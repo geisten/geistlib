@@ -105,6 +105,10 @@ enum geist_weight_flags {
     /* aux_fp32 points at backend-private packed bytes, not FP32 data.
      * backend_layout describes the exact representation. */
     GEIST_W_AUX_BACKEND_REPACK = 1U << 3,
+    /* The repack in aux_fp32 replaces the source for every kernel the
+     * backend installed: raw is read only by a fallback, so the loader may
+     * drop its mmap pages (#729). A read faults them back in. */
+    GEIST_W_RAW_COLD = 1U << 4,
 };
 
 enum geist_weight_backend_layout {

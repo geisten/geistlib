@@ -17,7 +17,8 @@
  *     the same tokens as the same GGUF loaded from memory (where nothing is
  *     released).
  *
- * The residency checks read /proc/self/smaps and run on Linux only.
+ * The residency checks read /proc/self/smaps on Linux and the task's
+ * resident size on Darwin, where MADV_DONTNEED kept the pages (#729).
  */
 #include "test_helpers.h"
 #include "model_fixtures.h"
@@ -32,6 +33,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#if defined(__APPLE__)
+#include <mach/mach.h>
+
+/* Resident KiB of the whole task: the file pages of this process's GGUF
+ * mapping are the only thing the check changes between two reads. */
+static long task_rss_kib(void) {
+    mach_task_basic_info_data_t i;
+    mach_msg_type_number_t      n = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t) &i, &n) != KERN_SUCCESS) {
+        return -1;
+    }
+    return (long) (i.resident_size >> 10);
+}
+#endif
 
 /* Resident KiB of this process's mappings of the file at `path` (summed
  * over /proc/self/smaps), or -1 where /proc is not there. */
@@ -110,10 +126,16 @@ static int check_release(const struct tf_buf *g, const char *path) {
     const uint8_t *p   = big->data;
     const size_t   n   = big->nbytes;
     const uint64_t ref = touch(n, p);
-    const long     in  = rss_of_path_kib(path);
+#if defined(__APPLE__)
+    const long in = task_rss_kib();
+    gguf_release_range(ctx, p, n);
+    const long out = task_rss_kib();
+#else
+    const long in = rss_of_path_kib(path);
     gguf_release_range(ctx, p, n);
     const long out = rss_of_path_kib(path);
-#if defined(__linux__)
+#endif
+#if defined(__linux__) || defined(__APPLE__)
     char msg[192];
     snprintf(msg,
              sizeof msg,
