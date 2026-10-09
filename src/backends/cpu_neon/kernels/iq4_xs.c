@@ -9,6 +9,7 @@
  * dequant+SGEMM path.
  */
 #include "heap.h"
+#include "par.h"
 #include "quant.h"
 #include "quant_blocks.h"
 
@@ -25,22 +26,28 @@ static const int8_t kvalues_iq4nl_k[16] = {
         -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
 #endif
 
-void linear_iq4xs_decode_w4a8_pre(size_t       n_in,
-                                  size_t       n_out,
-                                  const float *x_scales,
-                                  const int8_t x_q8[static n_in],
-                                  const void  *w_iq4xs,
-                                  float        y[static n_out]) {
+/* One call's operands, for the range bodies below. */
+struct iq4_rows_job {
+    const void   *w;
+    const int8_t *x_q8;
+    const float  *x_scales;
+    size_t        m, n_in, n_out, n_blocks_per_row;
+    float        *y;
+};
+
 #if defined(__ARM_NEON)
-    const struct block_iq4_xs_t *w                = (const struct block_iq4_xs_t *) w_iq4xs;
-    const size_t                 n_blocks_per_row = n_in / IQ4_XS_BLOCK_ELEMS;
+/* Output rows [n0, n1) of linear_iq4xs_decode_w4a8_pre. */
+static void iq4xs_decode_rows(void *ctx, size_t n0, size_t n1) {
+    const struct iq4_rows_job   *job              = ctx;
+    const struct block_iq4_xs_t *w                = job->w;
+    const int8_t                *x_q8             = job->x_q8;
+    const float                 *x_scales         = job->x_scales;
+    const size_t                 n_out            = job->n_out;
+    const size_t                 n_blocks_per_row = job->n_blocks_per_row;
+    float                       *y                = job->y;
     const int8x16_t              kv               = vld1q_s8(kvalues_iq4nl_k);
     const uint8x16_t             low4             = vdupq_n_u8(0x0f);
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+    for (size_t n = n0; n < n1; n++) {
         const struct block_iq4_xs_t *row = w + n * n_blocks_per_row;
         float                        acc = 0.0f;
         if (n + 1 < n_out)
@@ -70,6 +77,26 @@ void linear_iq4xs_decode_w4a8_pre(size_t       n_in,
         }
         y[n] = acc;
     }
+}
+#endif
+
+void linear_iq4xs_decode_w4a8_pre(size_t       n_in,
+                                  size_t       n_out,
+                                  const float *x_scales,
+                                  const int8_t x_q8[static n_in],
+                                  const void  *w_iq4xs,
+                                  float        y[static n_out]) {
+#if defined(__ARM_NEON)
+    const struct block_iq4_xs_t *w                = (const struct block_iq4_xs_t *) w_iq4xs;
+    const size_t                 n_blocks_per_row = n_in / IQ4_XS_BLOCK_ELEMS;
+
+    struct iq4_rows_job job = {.w                = w,
+                               .x_q8             = x_q8,
+                               .x_scales         = x_scales,
+                               .n_out            = n_out,
+                               .n_blocks_per_row = n_blocks_per_row,
+                               .y                = y};
+    geist_par_for(n_out, iq4xs_decode_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -99,30 +126,21 @@ void linear_iq4xs_decode_w4a8(size_t      n_in,
     safe_free((void **) &x_scales);
 }
 
-/* IQ4_XS int8 mN prefill (see #321). Row-major sweep with a 4-token
- * register tile: each 136-byte block is LUT-decoded once and dotted
- * against 4 activation rows; the row's blocks stay L1-resident across
- * token groups. Per (row, token) the op order matches the m1 kernel, so
- * the output is bit-identical to m decode calls (test_iq4_dequant_unit). */
-void linear_iq4xs_w4a8_prefill_pre(size_t        m,
-                                   size_t        n_in,
-                                   size_t        n_out,
-                                   const int8_t *x_q8,
-                                   const float  *x_scales,
-                                   const void   *w_iq4xs,
-                                   float        *y) {
 #if defined(__ARM_NEON)
-    if (m == 0)
-        return;
-    const struct block_iq4_xs_t *w                = (const struct block_iq4_xs_t *) w_iq4xs;
-    const size_t                 n_blocks_per_row = n_in / IQ4_XS_BLOCK_ELEMS;
+/* Output rows [n0, n1) of linear_iq4xs_w4a8_prefill_pre. */
+static void iq4xs_prefill_rows(void *ctx, size_t n0, size_t n1) {
+    const struct iq4_rows_job   *job              = ctx;
+    const struct block_iq4_xs_t *w                = job->w;
+    const int8_t                *x_q8             = job->x_q8;
+    const float                 *x_scales         = job->x_scales;
+    const size_t                 m                = job->m;
+    const size_t                 n_in             = job->n_in;
+    const size_t                 n_out            = job->n_out;
+    const size_t                 n_blocks_per_row = job->n_blocks_per_row;
+    float                       *y                = job->y;
     const int8x16_t              kv               = vld1q_s8(kvalues_iq4nl_k);
     const uint8x16_t             low4             = vdupq_n_u8(0x0f);
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+    for (size_t n = n0; n < n1; n++) {
         const struct block_iq4_xs_t *row = w + n * n_blocks_per_row;
         for (size_t t0 = 0; t0 < m; t0 += 4) {
             const size_t tcnt    = (m - t0 < 4) ? (m - t0) : 4;
@@ -159,6 +177,36 @@ void linear_iq4xs_w4a8_prefill_pre(size_t        m,
                 y[(t0 + t) * n_out + n] = accf[t];
         }
     }
+}
+#endif
+
+/* IQ4_XS int8 mN prefill (see #321). Row-major sweep with a 4-token
+ * register tile: each 136-byte block is LUT-decoded once and dotted
+ * against 4 activation rows; the row's blocks stay L1-resident across
+ * token groups. Per (row, token) the op order matches the m1 kernel, so
+ * the output is bit-identical to m decode calls (test_iq4_dequant_unit). */
+void linear_iq4xs_w4a8_prefill_pre(size_t        m,
+                                   size_t        n_in,
+                                   size_t        n_out,
+                                   const int8_t *x_q8,
+                                   const float  *x_scales,
+                                   const void   *w_iq4xs,
+                                   float        *y) {
+#if defined(__ARM_NEON)
+    if (m == 0)
+        return;
+    const struct block_iq4_xs_t *w                = (const struct block_iq4_xs_t *) w_iq4xs;
+    const size_t                 n_blocks_per_row = n_in / IQ4_XS_BLOCK_ELEMS;
+
+    struct iq4_rows_job job = {.w                = w,
+                               .x_q8             = x_q8,
+                               .x_scales         = x_scales,
+                               .m                = m,
+                               .n_in             = n_in,
+                               .n_out            = n_out,
+                               .n_blocks_per_row = n_blocks_per_row,
+                               .y                = y};
+    geist_par_for(n_out, iq4xs_prefill_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -194,22 +242,18 @@ void linear_iq4xs_w4a8_prefill(
     safe_free((void **) &x_scales);
 }
 
-void linear_iq4nl_decode_w4a8_pre(size_t       n_in,
-                                  size_t       n_out,
-                                  const float *x_scales,
-                                  const int8_t x_q8[static n_in],
-                                  const void  *w_iq4nl,
-                                  float        y[static n_out]) {
 #if defined(__ARM_NEON)
-    const struct block_iq4_nl_t *w                = (const struct block_iq4_nl_t *) w_iq4nl;
-    const size_t                 n_blocks_per_row = n_in / IQ4_NL_BLOCK_ELEMS;
+/* Output rows [n0, n1) of linear_iq4nl_decode_w4a8_pre. */
+static void iq4nl_decode_rows(void *ctx, size_t n0, size_t n1) {
+    const struct iq4_rows_job   *job              = ctx;
+    const struct block_iq4_nl_t *w                = job->w;
+    const int8_t                *x_q8             = job->x_q8;
+    const float                 *x_scales         = job->x_scales;
+    const size_t                 n_blocks_per_row = job->n_blocks_per_row;
+    float                       *y                = job->y;
     const int8x16_t              kv               = vld1q_s8(kvalues_iq4nl_k);
     const uint8x16_t             low4             = vdupq_n_u8(0x0f);
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+    for (size_t n = n0; n < n1; n++) {
         const struct block_iq4_nl_t *row = w + n * n_blocks_per_row;
         float                        acc = 0.0f;
         for (size_t b = 0; b < n_blocks_per_row; b++) {
@@ -224,6 +268,25 @@ void linear_iq4nl_decode_w4a8_pre(size_t       n_in,
         }
         y[n] = acc;
     }
+}
+#endif
+
+void linear_iq4nl_decode_w4a8_pre(size_t       n_in,
+                                  size_t       n_out,
+                                  const float *x_scales,
+                                  const int8_t x_q8[static n_in],
+                                  const void  *w_iq4nl,
+                                  float        y[static n_out]) {
+#if defined(__ARM_NEON)
+    const struct block_iq4_nl_t *w                = (const struct block_iq4_nl_t *) w_iq4nl;
+    const size_t                 n_blocks_per_row = n_in / IQ4_NL_BLOCK_ELEMS;
+
+    struct iq4_rows_job job = {.w                = w,
+                               .x_q8             = x_q8,
+                               .x_scales         = x_scales,
+                               .n_blocks_per_row = n_blocks_per_row,
+                               .y                = y};
+    geist_par_for(n_out, iq4nl_decode_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;

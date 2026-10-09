@@ -8,6 +8,7 @@
 #include "checked.h"
 #include "hadamard.h" /* host fallback of hadamard_rotate */
 #include "linear_ref.h"
+#include "par.h"
 
 /* Everything the backend knows per weight dtype, in one place (#465): the
  * file block, how the VRAM copy lays it out, the (matvec, matmul) pipeline
@@ -259,10 +260,33 @@ vk_w_m1(const float *x, const struct geist_weight *w, struct geist_backend *be, 
 
 /* ---- CPU fallback for dtypes without a GPU kernel (F16/BF16/...) -------
  * geist_linear_ref (common/linear_ref.c), split over output rows with
- * OpenMP, so mixed-dtype GGUFs still load. Its numerics are cpu_scalar's. */
+ * geist_par_for, so mixed-dtype GGUFs still load. Its numerics are
+ * cpu_scalar's. */
 
-/* Output rows per OpenMP work item. */
+/* Output rows per work item. */
 constexpr size_t VK_HOST_ROWS = 64;
+
+/* One vk_w_cpu_mN call, for vk_host_rows. */
+struct vk_host_rows_job {
+    const struct geist_weight *w;
+    const float               *xs;
+    size_t                     m, n_out;
+    float                     *ys;
+};
+
+/* Work items [t0, t1): output rows [t0 * VK_HOST_ROWS, t1 * VK_HOST_ROWS). */
+static void vk_host_rows(void *ctx, size_t t0, size_t t1) {
+    const struct vk_host_rows_job *job   = ctx;
+    const struct geist_weight     *w     = job->w;
+    const float                   *xs    = job->xs;
+    const size_t                   m     = job->m;
+    const size_t                   n_out = job->n_out;
+    float                         *ys    = job->ys;
+    for (size_t j0 = t0 * VK_HOST_ROWS; j0 < n_out && j0 < t1 * VK_HOST_ROWS; j0 += VK_HOST_ROWS) {
+        const size_t nj = n_out - j0 < VK_HOST_ROWS ? n_out - j0 : VK_HOST_ROWS;
+        geist_linear_ref_rows(m, j0, nj, n_out, xs, w, ys + j0);
+    }
+}
 
 static void vk_w_cpu_mN(size_t                     m,
                         const float               *x,
@@ -308,13 +332,8 @@ static void vk_w_cpu_mN(size_t                     m,
     float *xs = st->cpu_row;
     float *ys = xs + m * n_in;
     memcpy(xs, x, m * n_in * sizeof(float));
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t j0 = 0; j0 < n_out; j0 += VK_HOST_ROWS) {
-        const size_t nj = n_out - j0 < VK_HOST_ROWS ? n_out - j0 : VK_HOST_ROWS;
-        geist_linear_ref_rows(m, j0, nj, n_out, xs, w, ys + j0);
-    }
+    struct vk_host_rows_job job = {.w = w, .xs = xs, .m = m, .n_out = n_out, .ys = ys};
+    geist_par_for((n_out + VK_HOST_ROWS - 1) / VK_HOST_ROWS, vk_host_rows, &job);
     memcpy(y, ys, m * n_out * sizeof(float));
 }
 
@@ -402,6 +421,41 @@ enum { VK_Q6K_GPU_BLOCK = 216 };
     return ovf ? 0 : bytes;
 }
 
+/* One vk_repack_weight call, for the block bodies below. */
+struct vk_repack_job {
+    const uint8_t *src;
+    uint8_t       *packed, *sc;
+    size_t         bb, qbytes, qskip, scoff;
+};
+
+/* Blocks [i0, i1) into the 216-byte padded layout. */
+static void vk_repack_pad216(void *ctx, size_t i0, size_t i1) {
+    const struct vk_repack_job *job    = ctx;
+    const uint8_t              *src    = job->src;
+    uint8_t                    *packed = job->packed;
+    const size_t                bb     = job->bb;
+    for (size_t i = i0; i < i1; ++i) {
+        memcpy(packed + i * VK_Q6K_GPU_BLOCK, src + i * bb, bb);
+        memset(packed + i * VK_Q6K_GPU_BLOCK + bb, 0, VK_Q6K_GPU_BLOCK - bb);
+    }
+}
+
+/* Blocks [i0, i1) into the quants-then-scales layout. */
+static void vk_repack_soa(void *ctx, size_t i0, size_t i1) {
+    const struct vk_repack_job *job    = ctx;
+    const uint8_t              *src    = job->src;
+    uint8_t                    *qs     = job->packed;
+    uint8_t                    *sc     = job->sc;
+    const size_t                bb     = job->bb;
+    const size_t                qbytes = job->qbytes;
+    const size_t                qskip  = job->qskip;
+    const size_t                scoff  = job->scoff;
+    for (size_t i = i0; i < i1; ++i) {
+        memcpy(qs + i * qbytes, src + i * bb + qskip, qbytes);
+        memcpy(sc + i * 2, src + i * bb + scoff, 2);
+    }
+}
+
 /* Source layout -> GPU layout for the dtypes that are not uploaded verbatim.
  * `bytes` is vk_weight_bytes(w). Returns a heap block of `bytes` bytes
  * (caller frees), or nullptr when the dtype uploads as-is; `*failed` is set
@@ -422,29 +476,17 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
         *failed = true;
         return nullptr;
     }
+    struct vk_repack_job job = {.src = src, .packed = packed, .bb = bb};
     if (d->layout == VK_LAYOUT_PAD216) {
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-        for (size_t i = 0; i < n_blocks; ++i) {
-            memcpy(packed + i * VK_Q6K_GPU_BLOCK, src + i * bb, bb);
-            memset(packed + i * VK_Q6K_GPU_BLOCK + bb, 0, VK_Q6K_GPU_BLOCK - bb);
-        }
+        geist_par_for(n_blocks, vk_repack_pad216, &job);
         return packed;
     }
-    const size_t qbytes = bb - 2;
-    const size_t qskip  = d->scale_first ? 2 : 0;
-    const size_t scoff  = d->scale_first ? 0 : qbytes;
-    uint8_t     *qs     = packed;
-    uint8_t     *sc     = packed + n_blocks * qbytes;
-    memset(sc + n_blocks * 2, 0, bytes - n_blocks * qbytes - n_blocks * 2); /* word pad */
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t i = 0; i < n_blocks; ++i) {
-        memcpy(qs + i * qbytes, src + i * bb + qskip, qbytes);
-        memcpy(sc + i * 2, src + i * bb + scoff, 2);
-    }
+    job.qbytes = bb - 2;
+    job.qskip  = d->scale_first ? 2 : 0;
+    job.scoff  = d->scale_first ? 0 : job.qbytes;
+    job.sc     = packed + n_blocks * job.qbytes;
+    memset(job.sc + n_blocks * 2, 0, bytes - n_blocks * job.qbytes - n_blocks * 2); /* word pad */
+    geist_par_for(n_blocks, vk_repack_soa, &job);
     return packed;
 }
 
