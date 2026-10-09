@@ -16,7 +16,13 @@
  * subgroup, so any subgroup size works) covers 32 / LPB blocks per step, LPB
  * lanes per block; each lane owns one quant word. 4 rows per warp reuse the
  * x loads; the workgroup is 2 warps = 8 rows. Dispatch: gx = ceil(n_out / 8).
- * Reduction is a shared-memory tree. */
+ * Reduction is a shared-memory tree.
+ *
+ * MV_BATCH (matvec_q8_0_mt.comp) runs one batch row per gl_WorkGroupID.y
+ * (x and y advanced by x_stride / y_stride; x_stride % 4 == 0): the GEMMs
+ * whose n_out is too narrow for any tensor-core tile (Qwen3.5's 16- and
+ * 32-row DeltaNet alpha / beta projections, #467). The weight rows are
+ * re-read per batch row, from L2. Dispatch: gx = ceil(n_out / 8), gy = rows. */
 
 #include "vk_limits.h"
 
@@ -68,7 +74,11 @@ void main() {
     for (uint n = 0u; n < NUM_ROWS; ++n) {
         temp[n] = 0.0;
     }
+#ifdef MV_BATCH
+    uint xbase = (pc.x_offset + gl_WorkGroupID.y * pc.x_stride) >> 2u;
+#else
     uint xbase = pc.x_offset >> 2u;
+#endif
 #if defined(DT_Q4_0)
     uint sc0 = pc.n_out * nb * 4u;
 #elif defined(DT_Q8_0)
@@ -121,6 +131,10 @@ void main() {
         barrier();
     }
     if (lane < num_rows) {
+#ifdef MV_BATCH
+        y[pc.y_offset + gl_WorkGroupID.y * pc.y_stride + first_row + lane] = tmpsh[wrp][lane][0];
+#else
         y[pc.y_offset + first_row + lane] = tmpsh[wrp][lane][0];
+#endif
     }
 }
