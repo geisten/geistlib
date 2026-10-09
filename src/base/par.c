@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 200809L /* sysconf, clock_gettime, sched_yield */
+#define _DARWIN_C_SOURCE 1      /* macOS hides _SC_NPROCESSORS_ONLN under strict POSIX */
 /*
  * src/base/par.c — geist_par_for on OpenMP, GCD or a pthread pool. See par.h.
  *
