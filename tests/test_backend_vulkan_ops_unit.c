@@ -449,7 +449,7 @@ static void test_attention(size_t      n_q,
 }
 
 /* The same with F16 K/V, the KV-cache dtype the GPU path uses, so prefill
- * (n_q > 1) takes the tensor-core kernel for head_dim 128 / 256 / 512 and
+ * (n_q > 1) takes the tensor-core kernel for head_dim 96 / 128 / 256 / 512 and
  * sliding windows (#475). The reference sees the f16-rounded Q/K/V; the
  * kernel also rounds P to f16, hence the looser bound. */
 static void test_attention_f16(size_t      n_q,
@@ -575,6 +575,11 @@ int main(void) {
     test_attention_f16(300, 300, 0, 8, 2, 256, 0, 4.0f, "300 x256 large logits");
     test_attention_f16(260, 300, 40, 8, 1, 512, 0, 3.0f, "260 x512 large logits");
     test_attention_f16(260, 260, 0, 16, 8, 128, 64, 6.0f, "260 x128 win 64 large");
+    /* head_dim 96 (BitNet b1.58-large, #739): the one-subgroup tensor-core
+     * kernel with six O accumulators */
+    test_attention_f16(37, 37, 0, 16, 16, 96, 0, 0.6f, "prefill 37 MHA x96");
+    test_attention_f16(600, 700, 100, 16, 4, 96, 0, 0.6f, "600 q_off=100 GQA4 x96");
+    test_attention_f16(300, 300, 0, 8, 2, 96, 40, 4.0f, "300 x96 win 40 large");
     /* decode (n_q == 1, kv > 192): the flash-decoding partial/combine path
      * (#475). One workgroup serves up to 4 q-heads of a GQA group (groups of
      * 1, 2, 3 and 4 in one batch; 8 and 16 in batches of 4); key spans start

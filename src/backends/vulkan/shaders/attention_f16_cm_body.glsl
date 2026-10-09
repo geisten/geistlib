@@ -9,7 +9,7 @@
  * coopMatMulAdd per head_dim/16 tile -- no array-of-coopmat-in-a-loop
  * (measured 4x slower elsewhere, see matmul_pq2_0_cm_body.glsl).
  *
- * HD (the head_dim, 128 / 256 / 512) is fixed per variant by the including
+ * HD (the head_dim, 96 / 128 / 256 / 512) is fixed per variant by the including
  * .comp; the host routes only that head_dim to it. One workgroup writes
  * OHD = min(HD, 256) output columns (OT = OHD / 16 named O accumulators): at
  * HD 512 gl_WorkGroupID.z picks the half, both halves recompute QK^T over
@@ -172,7 +172,7 @@ void main() {
     }
 
     /* ---- pass B: exp(s - m_final), accumulate l and O = P @ V ----
-     * OT (8 or 16) named accumulators, not an array indexed in a loop
+     * OT (6, 8 or 16) named accumulators, not an array indexed in a loop
      * (measured 4x slower elsewhere, see matmul_pq2_0_cm_body.glsl). */
 #define GEIST_ATTN_CM_DECLO(N)                                                        \
     coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> O##N =          \
@@ -183,8 +183,10 @@ void main() {
     GEIST_ATTN_CM_DECLO(3)
     GEIST_ATTN_CM_DECLO(4)
     GEIST_ATTN_CM_DECLO(5)
+#if HD > 96
     GEIST_ATTN_CM_DECLO(6)
     GEIST_ATTN_CM_DECLO(7)
+#endif
 #if HD > 128
     GEIST_ATTN_CM_DECLO(8)
     GEIST_ATTN_CM_DECLO(9)
@@ -274,8 +276,10 @@ void main() {
         GEIST_ATTN_CM_PV(3, 6u)
         GEIST_ATTN_CM_PV(4, 8u)
         GEIST_ATTN_CM_PV(5, 10u)
+#if HD > 96
         GEIST_ATTN_CM_PV(6, 12u)
         GEIST_ATTN_CM_PV(7, 14u)
+#endif
 #if HD > 128
         GEIST_ATTN_CM_PV(8, 16u)
         GEIST_ATTN_CM_PV(9, 18u)
@@ -315,8 +319,10 @@ void main() {
     GEIST_ATTN_CM_FINISH(O3, 3u)
     GEIST_ATTN_CM_FINISH(O4, 4u)
     GEIST_ATTN_CM_FINISH(O5, 5u)
+#if HD > 96
     GEIST_ATTN_CM_FINISH(O6, 6u)
     GEIST_ATTN_CM_FINISH(O7, 7u)
+#endif
 #if HD > 128
     GEIST_ATTN_CM_FINISH(O8, 8u)
     GEIST_ATTN_CM_FINISH(O9, 9u)

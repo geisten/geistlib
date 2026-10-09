@@ -1,0 +1,7 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* Tensor-core prefill attention, head_dim 96 (BitNet b1.58-large, #739).
+ * Body and notes: attention_f16_cm_body.glsl. */
+#define HD 96
+#include "attention_f16_cm_body.glsl"
