@@ -477,6 +477,84 @@ int main(void) {
     run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_F32, "F32-cm128", 200, 256, 64, PARITY_MAG, 2e-3);
     run_parity(
             VIA_LINEAR_T, vk, ref, GEIST_DTYPE_F32, "F32-cm128", 320, 256, 512, PARITY_MAG, 2e-3);
+    /* Q4_0 / Q8_0 / Q4_1 in the 128 x 128 frame (#467), taken from
+     * n_out * m >= 7 * 2^16: 1120 = 35 blocks (odd k-step count); 4096 x 128 is
+     * one token tile of 32 workgroups, 2560 x 208 ends in a partial one,
+     * 4096 x 136 splits off an 8-row tail, 4096 x 512 (128 workgroups) and
+     * 2560 x 496 take the single-buffered variant; 2560 x 128 stays on the
+     * 64 x 64 tile. */
+    static const int   lq[]  = {GEIST_DTYPE_Q4_0, GEIST_DTYPE_Q8_0, GEIST_DTYPE_Q4_1};
+    static const char *lqn[] = {"Q4_0-cm128", "Q8_0-cm128", "Q4_1-cm128"};
+    for (size_t i = 0; i < 3; i++) {
+        run_parity(VIA_WEIGHT, vk, ref, lq[i], lqn[i], 1120, 4096, 128, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, lq[i], lqn[i], 1120, 2560, 208, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, lq[i], lqn[i], 512, 4096, 136, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, lq[i], lqn[i], 352, 4096, 512, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, lq[i], lqn[i], 1120, 2560, 496, PARITY_MAG, 2e-3);
+        run_parity(VIA_WEIGHT, vk, ref, lq[i], lqn[i], 512, 2560, 128, PARITY_MAG, 2e-3);
+        run_parity(VIA_LINEAR_T, vk, ref, lq[i], lqn[i], 1120, 4096, 128, PARITY_MAG, 2e-3);
+        run_parity(VIA_LINEAR_T, vk, ref, lq[i], lqn[i], 352, 2560, 504, PARITY_MAG, 2e-3);
+    }
+    /* Q5_K in the same frame from n_out * m >= 5 * 2^16, as Q4_K / Q6_K:
+     * 768 = 3 superblocks, a full and a partial token tile, the 8-row tail,
+     * the single-buffered variant, linear_t */
+    run_parity(
+            VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-cm128", 768, 2560, 128, PARITY_MAG, 2e-3);
+    run_parity(
+            VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-cm128", 512, 2560, 208, PARITY_MAG, 2e-3);
+    run_parity(
+            VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q5_K, "Q5_K-cm128", 768, 4096, 136, PARITY_MAG, 2e-3);
+    run_parity(VIA_WEIGHT,
+               vk,
+               ref,
+               GEIST_DTYPE_Q5_K,
+               "Q5_K-cm128sb",
+               512,
+               2560,
+               512,
+               PARITY_MAG,
+               2e-3);
+    run_parity(VIA_LINEAR_T,
+               vk,
+               ref,
+               GEIST_DTYPE_Q5_K,
+               "Q5_K-cm128",
+               768,
+               2560,
+               144,
+               PARITY_MAG,
+               2e-3);
+    /* Q8_0 GEMMs of at most 2^15 outputs as a matvec per batch row (#467):
+     * Qwen3.5's 32- and 16-row DeltaNet projections, n_out not a multiple of
+     * 8 (a partial warp), a shape that would otherwise take the 64 x 64
+     * tile, linear_t, and the m % 16 tail of a tensor-core head (1024 x 140
+     * = a 128-row head and a 12-row matvec tail) */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-mt", 2560, 32, 128, PARITY_ELEM, 1e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-mt", 1024, 16, 37, PARITY_ELEM, 1e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-mt", 1120, 45, 64, PARITY_ELEM, 1e-3);
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-mt", 512, 256, 128, PARITY_ELEM, 1e-3);
+    run_parity(
+            VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-mt", 2560, 32, 512, PARITY_ELEM, 1e-3);
+    run_parity(VIA_WEIGHT,
+               vk,
+               ref,
+               GEIST_DTYPE_Q8_0,
+               "Q8_0-mt-split",
+               512,
+               1024,
+               140,
+               PARITY_MAG,
+               2e-3);
+    /* The small "Q8_0-cm" / "Q8_0-split" shapes above are now under 2^15
+     * outputs and run as matvecs; these keep the 64 x 64 Q8_0 tile covered:
+     * odd k-step count with a partly empty token tile, linear_t, and a
+     * 4096 x 9 tail too wide for the matvec (register-tiled) */
+    run_parity(VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-cm", 1120, 384, 112, PARITY_MAG, 2e-3);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-cm", 1120, 768, 48, PARITY_MAG, 2e-3);
+    run_parity(
+            VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-split", 1120, 384, 101, PARITY_MAG, 2e-3);
+    run_parity(
+            VIA_WEIGHT, vk, ref, GEIST_DTYPE_Q8_0, "Q8_0-split", 512, 4096, 137, PARITY_MAG, 2e-3);
     geist_backend_destroy(vk);
 
     /* the exact f32-accumulate tensor-core GEMM (GEIST_VK_PQ2_F32_ACC) */
