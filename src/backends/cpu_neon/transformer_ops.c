@@ -7,6 +7,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "internal.h"
+#include "parallel.h"
 
 #include "gemma4_kernels.h"
 #include "quant.h"
@@ -16,6 +17,7 @@
 #include <geist_backend.h>
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -23,10 +25,6 @@
 
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
-#endif
-
-#ifdef _OPENMP
-#include <omp.h>
 #endif
 
 static float *get_f32_dense_ptr_full(const struct geist_tensor *t, size_t *out_n) {
@@ -94,6 +92,34 @@ static size_t ffn_tile_blocks(void) {
     return 2;
 }
 
+/* One activation quantization of the fused FFN, for ffn_quant_rows. */
+struct ffn_quant_job {
+    const float *x;
+    size_t       d_model, n_groups;
+    int8_t      *xq;
+    float       *sc;
+    int32_t     *sum32;
+};
+
+/* Rows [i0, i1) of the fused FFN's activation quantization. */
+static void ffn_quant_rows(void *ctx, size_t i0, size_t i1) {
+    const struct ffn_quant_job *job      = ctx;
+    const float                *x        = job->x;
+    const size_t                d_model  = job->d_model;
+    const size_t                n_groups = job->n_groups;
+    int8_t                     *xq       = job->xq;
+    float                      *sc       = job->sc;
+    int32_t                    *sum32    = job->sum32;
+    for (size_t i = i0; i < i1; i++) {
+        quantize_x_q8_groups(d_model,
+                             GEIST_ACT_Q8K_ELEMS,
+                             x + i * d_model,
+                             xq + i * d_model,
+                             sc + i * n_groups,
+                             sum32 + i * (d_model / 32));
+    }
+}
+
 [[nodiscard]] enum geist_status cpu_neon_ffn_geglu_q4q6_mN(struct geist_backend      *be,
                                                            size_t                     m,
                                                            size_t                     d_model,
@@ -134,16 +160,16 @@ static size_t ffn_tile_blocks(void) {
         return GEIST_E_OOM;
     }
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static) if (m >= 4)
-#endif
-    for (size_t i = 0; i < m; i++) {
-        quantize_x_q8_groups(d_model,
-                             GEIST_ACT_Q8K_ELEMS,
-                             x + i * d_model,
-                             ws->qk_mN_xq + i * d_model,
-                             ws->qk_mN_sc + i * blocks_per_gate_row,
-                             ws->qk_mN_sum32 + i * (d_model / 32));
+    struct ffn_quant_job qj = {.x        = x,
+                               .d_model  = d_model,
+                               .xq       = ws->qk_mN_xq,
+                               .sc       = ws->qk_mN_sc,
+                               .sum32    = ws->qk_mN_sum32,
+                               .n_groups = blocks_per_gate_row};
+    if (m >= 4) {
+        geist_par_for(m, ffn_quant_rows, &qj);
+    } else {
+        ffn_quant_rows(&qj, 0, m);
     }
 
     memset(y, 0, m * d_model * sizeof(float));
@@ -388,39 +414,45 @@ static inline void add_scaled_f32_neon_256(float *dst, const float *src, float s
     }
 }
 
-#ifdef _OPENMP
-static void attention_set_omp_schedule(void) {
-    static int initialized = 0;
-    if (initialized) {
-        return;
+/* The FP32 attention's chunk: items (query, head) are handed out `chunk`
+ * at a time, or split statically for 0. GEIST_ATTENTION_OMP_SCHEDULE,
+ * read once: "dynamic[,c]" (the default, c = 8), "guided[,c]" (taken as
+ * dynamic: geist_par_for has no guided schedule), "static" (a chunk after
+ * it is ignored: the split is static either way and the output the same). */
+static size_t attention_chunk(void) {
+    static _Atomic long cached = -1;
+    long                chunk  = atomic_load_explicit(&cached, memory_order_relaxed);
+    if (chunk >= 0) {
+        return (size_t) chunk;
     }
-    initialized = 1;
-
-    const char *env   = getenv("GEIST_ATTENTION_OMP_SCHEDULE");
-    omp_sched_t kind  = omp_sched_dynamic;
-    int         chunk = 8;
+    chunk           = 8;
+    const char *env = getenv("GEIST_ATTENTION_OMP_SCHEDULE");
     if (env != nullptr && env[0] != '\0') {
-        if (strncmp(env, "dynamic", 7) == 0) {
-            kind  = omp_sched_dynamic;
-            chunk = 8;
-        } else if (strncmp(env, "guided", 6) == 0) {
-            kind  = omp_sched_guided;
-            chunk = 8;
-        } else if (strncmp(env, "static", 6) == 0) {
-            kind  = omp_sched_static;
-            chunk = 0;
-        }
-        const char *comma = strchr(env, ',');
+        const bool  is_static = strncmp(env, "static", 6) == 0;
+        const char *comma     = strchr(env, ',');
         if (comma != nullptr && comma[1] != '\0') {
             const long parsed = strtol(comma + 1, nullptr, 10);
             if (parsed > 0 && parsed < (1L << 20)) {
-                chunk = (int) parsed;
+                chunk = parsed;
             }
         }
+        if (is_static) {
+            chunk = 0;
+        }
     }
-    omp_set_schedule(kind, chunk);
+    atomic_store_explicit(&cached, chunk, memory_order_relaxed);
+    return (size_t) chunk;
 }
-#endif
+
+/* Runs fn over the `total` attention items on attention_chunk()'s schedule. */
+static void attention_par(size_t total, geist_par_fn fn, void *ctx) {
+    const size_t chunk = attention_chunk();
+    if (chunk == 0) {
+        geist_par_for(total, fn, ctx);
+    } else {
+        cpu_neon_par_for_dynamic(total, chunk, fn, ctx);
+    }
+}
 
 static inline void scale_f32_neon(float *x, float scale, size_t n) {
     size_t            i = 0;
@@ -496,6 +528,81 @@ static inline void attn_row_neon(const float *qv,
     }
 }
 
+/* One FP32 attention call, for the item bodies below. */
+struct attn_job {
+    const float *q, *k, *v;
+    size_t       n_kv, q_offset, n_q_heads, n_kv_heads, head_dim, sliding_window;
+    bool         hd256;
+    float       *out;
+};
+
+/* Items [i0, i1) of attention_mqa1_causal_kv_neon, item idx the query
+ * position idx / n_q_heads and head idx % n_q_heads. */
+static void attn_mqa1_items(void *ctx, size_t i0, size_t i1) {
+    const struct attn_job *job            = ctx;
+    const float           *q              = job->q;
+    const float           *k              = job->k;
+    const float           *v              = job->v;
+    const size_t           n_kv           = job->n_kv;
+    const size_t           q_offset       = job->q_offset;
+    const size_t           n_q_heads      = job->n_q_heads;
+    const size_t           head_dim       = job->head_dim;
+    const size_t           sliding_window = job->sliding_window;
+    const bool             hd256          = job->hd256;
+    float                 *out            = job->out;
+    for (size_t idx = i0; idx < i1; idx++) {
+        const size_t t     = idx / n_q_heads;
+        const size_t h     = idx - t * n_q_heads;
+        const size_t q_pos = q_offset + t;
+        const size_t s_lo =
+                (sliding_window > 0 && q_pos + 1 > sliding_window) ? q_pos + 1 - sliding_window : 0;
+        const size_t s_hi = q_pos < n_kv ? q_pos : n_kv - 1;
+        attn_row_neon(q + (t * n_q_heads + h) * head_dim,
+                      k,
+                      v,
+                      head_dim,
+                      s_lo,
+                      s_hi,
+                      head_dim,
+                      hd256,
+                      out + (t * n_q_heads + h) * head_dim);
+    }
+}
+
+/* Items [i0, i1) of attention_mqa_causal_kv_neon, as attn_mqa1_items. */
+static void attn_mqa_items(void *ctx, size_t i0, size_t i1) {
+    const struct attn_job *job            = ctx;
+    const float           *q              = job->q;
+    const float           *k              = job->k;
+    const float           *v              = job->v;
+    const size_t           n_kv           = job->n_kv;
+    const size_t           q_offset       = job->q_offset;
+    const size_t           n_q_heads      = job->n_q_heads;
+    const size_t           n_kv_heads     = job->n_kv_heads;
+    const size_t           head_dim       = job->head_dim;
+    const size_t           sliding_window = job->sliding_window;
+    float                 *out            = job->out;
+    const size_t           kv_group_size  = n_q_heads / n_kv_heads;
+    for (size_t idx = i0; idx < i1; idx++) {
+        const size_t t     = idx / n_q_heads;
+        const size_t h     = idx - t * n_q_heads;
+        const size_t q_pos = q_offset + t;
+        const size_t s_lo =
+                (sliding_window > 0 && q_pos + 1 > sliding_window) ? q_pos + 1 - sliding_window : 0;
+        const size_t s_hi = q_pos < n_kv ? q_pos : n_kv - 1;
+        const size_t kv_h = h / kv_group_size;
+        attn_row_neon(q + (t * n_q_heads + h) * head_dim,
+                      k + kv_h * head_dim,
+                      v + kv_h * head_dim,
+                      n_kv_heads * head_dim,
+                      s_lo,
+                      s_hi,
+                      head_dim,
+                      false, /* general dot, also at head_dim 256 */
+                      out + (t * n_q_heads + h) * head_dim);
+    }
+}
+
 static bool attention_mqa1_causal_kv_neon(const float *q,
                                           const float *k,
                                           const float *v,
@@ -516,27 +623,17 @@ static bool attention_mqa1_causal_kv_neon(const float *q,
     }
     const bool hd256 = head_dim == 256;
 
-#ifdef _OPENMP
-    attention_set_omp_schedule();
-#pragma omp parallel for schedule(runtime)
-#endif
-    for (size_t idx = 0; idx < total; idx++) {
-        const size_t t     = idx / n_q_heads;
-        const size_t h     = idx - t * n_q_heads;
-        const size_t q_pos = q_offset + t;
-        const size_t s_lo =
-                (sliding_window > 0 && q_pos + 1 > sliding_window) ? q_pos + 1 - sliding_window : 0;
-        const size_t s_hi = q_pos < n_kv ? q_pos : n_kv - 1;
-        attn_row_neon(q + (t * n_q_heads + h) * head_dim,
-                      k,
-                      v,
-                      head_dim,
-                      s_lo,
-                      s_hi,
-                      head_dim,
-                      hd256,
-                      out + (t * n_q_heads + h) * head_dim);
-    }
+    struct attn_job job = {.q              = q,
+                           .k              = k,
+                           .v              = v,
+                           .n_kv           = n_kv,
+                           .q_offset       = q_offset,
+                           .n_q_heads      = n_q_heads,
+                           .head_dim       = head_dim,
+                           .sliding_window = sliding_window,
+                           .hd256          = hd256,
+                           .out            = out};
+    attention_par(total, attn_mqa1_items, &job);
     return true;
 }
 
@@ -559,30 +656,17 @@ static bool attention_mqa_causal_kv_neon(const float *q,
     if (total < 16) {
         return false;
     }
-    const size_t kv_group_size = n_q_heads / n_kv_heads;
-
-#ifdef _OPENMP
-    attention_set_omp_schedule();
-#pragma omp parallel for schedule(runtime)
-#endif
-    for (size_t idx = 0; idx < total; idx++) {
-        const size_t t     = idx / n_q_heads;
-        const size_t h     = idx - t * n_q_heads;
-        const size_t q_pos = q_offset + t;
-        const size_t s_lo =
-                (sliding_window > 0 && q_pos + 1 > sliding_window) ? q_pos + 1 - sliding_window : 0;
-        const size_t s_hi = q_pos < n_kv ? q_pos : n_kv - 1;
-        const size_t kv_h = h / kv_group_size;
-        attn_row_neon(q + (t * n_q_heads + h) * head_dim,
-                      k + kv_h * head_dim,
-                      v + kv_h * head_dim,
-                      n_kv_heads * head_dim,
-                      s_lo,
-                      s_hi,
-                      head_dim,
-                      false, /* general dot, also at head_dim 256 */
-                      out + (t * n_q_heads + h) * head_dim);
-    }
+    struct attn_job job = {.q              = q,
+                           .k              = k,
+                           .v              = v,
+                           .n_kv           = n_kv,
+                           .q_offset       = q_offset,
+                           .n_q_heads      = n_q_heads,
+                           .n_kv_heads     = n_kv_heads,
+                           .head_dim       = head_dim,
+                           .sliding_window = sliding_window,
+                           .out            = out};
+    attention_par(total, attn_mqa_items, &job);
     return true;
 }
 #endif

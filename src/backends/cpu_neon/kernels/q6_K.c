@@ -9,7 +9,10 @@
  */
 #include "quant_blocks.h"
 #include "heap.h"
+#include "par.h"
 #include "quant.h"
+
+#include "../parallel.h"
 
 #include <stddef.h>
 #include <stdatomic.h>
@@ -20,29 +23,6 @@
 
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
-#endif
-
-#ifdef _OPENMP
-#include <omp.h>
-#endif
-
-typedef void (*geist_pp_body_fn)(size_t i, void *ctx);
-extern void geist_pp_parallel_for(size_t n, geist_pp_body_fn body_fn, void *ctx)
-        __attribute__((weak));
-
-#if defined(__ARM_NEON)
-static int q6k_pp_enabled(void) {
-    static _Atomic int enabled = -1;
-    if (enabled >= 0)
-        return enabled;
-    const char *e = getenv("GEIST_PP");
-    if (e != nullptr && e[0] != '\0') {
-        enabled = (e[0] == '1') ? 1 : 0;
-        return enabled;
-    }
-    enabled = 0;
-    return enabled;
-}
 #endif
 
 struct q6k_predecode_header {
@@ -141,7 +121,7 @@ static inline bool q6k_x8_valid(const void *packed, size_t n_in, size_t n_out) {
            h->block_bytes == sizeof(struct q6k_x8_block);
 }
 
-struct q6k_pp_ctx {
+struct q6k_decode_ctx {
     const void    *w_q6k;
     const int8_t  *x_q8;
     const int16_t *bsums; /* 16 int16 per super-block */
@@ -151,10 +131,7 @@ struct q6k_pp_ctx {
     float         *y;
 };
 #if defined(__ARM_NEON)
-static void q6k_decode_one_row(size_t n, const struct q6k_pp_ctx *c);
-static void q6k_pp_row(size_t n, void *vctx) {
-    q6k_decode_one_row(n, (const struct q6k_pp_ctx *) vctx);
-}
+static void q6k_decode_rows(void *ctx, size_t n0, size_t n1);
 
 static inline float q6k_dot4_scaled(const int8_t *xb,
                                     int8x16_t     q0,
@@ -421,7 +398,7 @@ void linear_q6k_decode_w6a8_pre(size_t       n_in,
     }
     int16_t *const bsums = bsums_tl; /* shared with workers */
 
-    const struct q6k_pp_ctx ctx = {
+    struct q6k_decode_ctx ctx = {
             .w_q6k            = w_q6k,
             .x_q8             = x_q8,
             .bsums            = bsums,
@@ -430,38 +407,11 @@ void linear_q6k_decode_w6a8_pre(size_t       n_in,
             .x_scales         = x_scales,
             .y                = y,
     };
-    if (q6k_pp_enabled()) {
-#if defined(_OPENMP)
-        if (!omp_in_parallel())
-#endif
-        {
-            geist_pp_parallel_for(n_out, q6k_pp_row, (void *) &ctx);
-            return;
-        }
-    }
-
-#if defined(_OPENMP)
-    if (omp_in_parallel()) {
-#pragma omp for schedule(static) nowait
-        for (size_t n = 0; n < n_out; n++) {
-            q6k_decode_one_row(n, &ctx);
-        }
-    } else if (n_out >= 4096) {
-#pragma omp parallel for schedule(static)
-        for (size_t n = 0; n < n_out; n++) {
-            q6k_decode_one_row(n, &ctx);
-        }
+    if (n_out >= 4096) {
+        geist_par_for(n_out, q6k_decode_rows, &ctx);
     } else {
-#pragma omp parallel for schedule(dynamic, 4)
-        for (size_t n = 0; n < n_out; n++) {
-            q6k_decode_one_row(n, &ctx);
-        }
+        cpu_neon_par_for_dynamic(n_out, 4, q6k_decode_rows, &ctx);
     }
-#else
-    for (size_t n = 0; n < n_out; n++) {
-        q6k_decode_one_row(n, &ctx);
-    }
-#endif
 #else
     (void) x_q8;
     (void) x_scales;
@@ -473,46 +423,26 @@ void linear_q6k_decode_w6a8_pre(size_t       n_in,
 #endif
 }
 
-void linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
-                                   size_t       n_out,
-                                   const float *x_scales,
-                                   const int8_t x_q8[static n_in],
-                                   const void  *packed,
-                                   float        y[static n_out]) {
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
-    if (!q6k_x8_valid(packed, n_in, n_out))
-        return;
-    const size_t                                      n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
-    static _Thread_local struct q8k_activation_block *q8_tl            = nullptr;
-    static _Thread_local size_t                       q8_cap           = 0;
-    if (q8_cap < n_blocks_per_row) {
-        safe_free((void **) &q8_tl);
-        q8_tl = heap_alloc_array_aligned(struct q8k_activation_block, n_blocks_per_row);
-        if (q8_tl == nullptr) {
-            q8_cap = 0;
-            return;
-        }
-        q8_cap = n_blocks_per_row;
-    }
-    for (size_t b = 0; b < n_blocks_per_row; b++) {
-        struct q8k_activation_block *qb = q8_tl + b;
-        qb->d                           = x_scales[b];
-        memcpy(qb->qs, x_q8 + b * Q6_K_BLOCK_ELEMS, Q6_K_BLOCK_ELEMS);
-        for (int s = 0; s < 16; s++) {
-            qb->bsums[s] = (int16_t) vaddlvq_s8(vld1q_s8(qb->qs + s * 16));
-        }
-    }
-    struct q8k_activation_block *const q8_blocks = q8_tl;
+/* One linear_q6k_decode_w6a8_x8_pre call. */
+struct q6k_x8_job {
+    const struct q6k_x8_block         *w;
+    const struct q8k_activation_block *q8;
+    size_t                             n_blocks_per_row;
+    float                             *y;
+};
 
-    const struct q6k_x8_block *w                = q6k_x8_blocks(packed);
-    const uint8x16_t           mask_lo4         = vdupq_n_u8(0x0F);
-    const uint8x16_t           mask_lo2         = vdupq_n_u8(0x03);
-    const uint8x16_t           mask_hi2_shifted = vdupq_n_u8(0x30);
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t tile = 0; tile < n_out / 8; tile++) {
+/* Tiles of 8 output rows [t0, t1) of linear_q6k_decode_w6a8_x8_pre. */
+static void q6k_x8_tiles(void *ctx, size_t t0, size_t t1) {
+    const struct q6k_x8_job           *job              = ctx;
+    const struct q6k_x8_block         *w                = job->w;
+    const struct q8k_activation_block *q8_blocks        = job->q8;
+    const size_t                       n_blocks_per_row = job->n_blocks_per_row;
+    float                             *y                = job->y;
+    const uint8x16_t                   mask_lo4         = vdupq_n_u8(0x0F);
+    const uint8x16_t                   mask_lo2         = vdupq_n_u8(0x03);
+    const uint8x16_t                   mask_hi2_shifted = vdupq_n_u8(0x30);
+    for (size_t tile = t0; tile < t1; tile++) {
         float32x4_t                acc_f32_0 = vdupq_n_f32(0.0f);
         float32x4_t                acc_f32_1 = vdupq_n_f32(0.0f);
         const struct q6k_x8_block *row       = w + tile * n_blocks_per_row;
@@ -646,6 +576,45 @@ void linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
         vst1q_f32(dst + 0, acc_f32_0);
         vst1q_f32(dst + 4, acc_f32_1);
     }
+}
+#endif
+
+void linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
+                                   size_t       n_out,
+                                   const float *x_scales,
+                                   const int8_t x_q8[static n_in],
+                                   const void  *packed,
+                                   float        y[static n_out]) {
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+    if (!q6k_x8_valid(packed, n_in, n_out))
+        return;
+    const size_t                                      n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
+    static _Thread_local struct q8k_activation_block *q8_tl            = nullptr;
+    static _Thread_local size_t                       q8_cap           = 0;
+    if (q8_cap < n_blocks_per_row) {
+        safe_free((void **) &q8_tl);
+        q8_tl = heap_alloc_array_aligned(struct q8k_activation_block, n_blocks_per_row);
+        if (q8_tl == nullptr) {
+            q8_cap = 0;
+            return;
+        }
+        q8_cap = n_blocks_per_row;
+    }
+    for (size_t b = 0; b < n_blocks_per_row; b++) {
+        struct q8k_activation_block *qb = q8_tl + b;
+        qb->d                           = x_scales[b];
+        memcpy(qb->qs, x_q8 + b * Q6_K_BLOCK_ELEMS, Q6_K_BLOCK_ELEMS);
+        for (int s = 0; s < 16; s++) {
+            qb->bsums[s] = (int16_t) vaddlvq_s8(vld1q_s8(qb->qs + s * 16));
+        }
+    }
+    struct q8k_activation_block *const q8_blocks = q8_tl;
+
+    struct q6k_x8_job job = {.w                = q6k_x8_blocks(packed),
+                             .q8               = q8_blocks,
+                             .n_blocks_per_row = n_blocks_per_row,
+                             .y                = y};
+    geist_par_for(n_out / 8, q6k_x8_tiles, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -658,7 +627,7 @@ void linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
 }
 
 #if defined(__ARM_NEON)
-static void q6k_decode_one_row(size_t n, const struct q6k_pp_ctx *c) {
+static void q6k_decode_one_row(size_t n, const struct q6k_decode_ctx *c) {
     const struct block_q6_K_t *w                = (const struct block_q6_K_t *) c->w_q6k;
     const size_t               n_blocks_per_row = c->n_blocks_per_row;
     const size_t               n_out            = c->n_out;
@@ -775,99 +744,49 @@ static void q6k_decode_one_row(size_t n, const struct q6k_pp_ctx *c) {
     }
     y[n] = acc;
 }
+
+/* Output rows [n0, n1) of linear_q6k_decode_w6a8_pre. */
+static void q6k_decode_rows(void *ctx, size_t n0, size_t n1) {
+    const struct q6k_decode_ctx c = *(const struct q6k_decode_ctx *) ctx;
+    for (size_t n = n0; n < n1; n++) {
+        q6k_decode_one_row(n, &c);
+    }
+}
 #endif
 
-void linear_q6k_w6a8_prefill_pre(size_t        m,
-                                 size_t        n_in,
-                                 size_t        n_out,
-                                 const int8_t *x_q8,
-                                 const float  *x_scales,
-                                 const void   *w_q6k,
-                                 float        *y) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
-        return;
-    const struct block_q6_K_t *w                = (const struct block_q6_K_t *) w_q6k;
-    const size_t               n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
+/* One linear_q6k_w6a8_prefill_pre call (also the per-block kernels below). */
+struct q6k_prefill_job {
+    const struct block_q6_K_t *w;
+    const int8_t              *x_q8;
+    const int8_t              *packed; /* x_q8 block-major, or nullptr */
+    const float               *x_scales;
+    const float               *xs_bm; /* x_scales block-major, or nullptr */
+    size_t                     m, n_in, n_out, n_blocks_per_row;
+    float                     *y;
+};
 
-    /* Pack x once into block-major layout packed[(b*m + t)*256 + e] so
-     * per-token reads are sequential instead of strided by n_in.
-     * GEIST_Q6K_PACK_ACT=0 disables; skipped for m < 2. Thread-local
-     * high-water buffer: filled by the calling thread, only read by the
-     * omp panels. */
-    static _Atomic int q6k_pack_act = -1;
-    int                pack_on      = atomic_load_explicit(&q6k_pack_act, memory_order_relaxed);
-    if (pack_on < 0) {
-        const char *e = getenv("GEIST_Q6K_PACK_ACT");
-        pack_on       = (e != nullptr && e[0] == '0') ? 0 : 1;
-        atomic_store_explicit(&q6k_pack_act, pack_on, memory_order_relaxed);
-    }
-    const int8_t *packed = nullptr;
-    if (pack_on && m >= 2) {
-        static _Thread_local int8_t *q6kpack_tl  = nullptr;
-        static _Thread_local size_t  q6kpack_cap = 0;
-        const size_t                 need        = m * n_in;
-        if (need > q6kpack_cap) {
-            /* The packing loop fully repopulates the buffer before any read,
-             * so dropping the old contents on grow is safe. */
-            safe_free((void **) &q6kpack_tl);
-            q6kpack_tl  = heap_alloc_array_aligned(int8_t, need);
-            q6kpack_cap = (q6kpack_tl != nullptr) ? need : 0;
-        }
-        if (q6kpack_cap >= need) {
-            int8_t *pk = q6kpack_tl;
-            for (size_t b = 0; b < n_blocks_per_row; b++)
-                for (size_t t = 0; t < m; t++)
-                    memcpy(pk + (b * m + t) * Q6_K_BLOCK_ELEMS,
-                           x_q8 + t * n_in + b * Q6_K_BLOCK_ELEMS,
-                           Q6_K_BLOCK_ELEMS);
-            packed = pk;
-        }
-    }
-
-    /* The activation scales block-major, xs_bm[b * m + t], so the epilogues
-     * below load four tokens' scales of one super-block as one vector, as
-     * they did the row scales before #698. Same high-water buffer pattern;
-     * without it each panel gathers its block's scales itself. */
-    const float *xs_bm = nullptr;
-    {
-        static _Thread_local float *q6kxs_tl  = nullptr;
-        static _Thread_local size_t q6kxs_cap = 0;
-        const size_t                need      = m * n_blocks_per_row;
-        if (need > q6kxs_cap) {
-            safe_free((void **) &q6kxs_tl);
-            q6kxs_tl  = heap_alloc_array_aligned(float, need);
-            q6kxs_cap = (q6kxs_tl != nullptr) ? need : 0;
-        }
-        if (q6kxs_cap >= need) {
-            for (size_t b = 0; b < n_blocks_per_row; b++)
-                for (size_t t = 0; t < m; t++)
-                    q6kxs_tl[b * m + t] = x_scales[t * n_blocks_per_row + b];
-            xs_bm = q6kxs_tl;
-        }
-    }
-
-    /* Activation offset (within the 256-elem block) for each of the 16
-     * reconstructed q-vectors, in (half, sub_off, chunk) iteration order.
-     * q-vector g maps to x[blk_off + xoff_tab[g] .. +15]. */
-    static const int xoff_tab[16] = {
-            0,
-            32,
-            64,
-            96,
-            16,
-            48,
-            80,
-            112, /* half 0: sub0, sub16 */
-            128,
-            160,
-            192,
-            224,
-            144,
-            176,
-            208,
-            240, /* half 1: sub0, sub16 */
-    };
+/* Activation offset (within the 256-elem block) for each of the 16
+ * reconstructed q-vectors, in (half, sub_off, chunk) iteration order.
+ * q-vector g maps to x[blk_off + xoff_tab[g] .. +15]. */
+static const int xoff_tab[16] = {
+        0,
+        32,
+        64,
+        96,
+        16,
+        48,
+        80,
+        112, /* half 0: sub0, sub16 */
+        128,
+        160,
+        192,
+        224,
+        144,
+        176,
+        208,
+        240, /* half 1: sub0, sub16 */
+};
 
 /* Unpack a Q6_K block once into 16 int8x16 vectors (QREG) and their int32
  * scales (SREG); all m tokens then SDOT against it. Uses mask_lo4,
@@ -907,14 +826,22 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
         }                                                                                          \
     } while (0)
 
-    const size_t n_pairs = n_out / 2;
-
-    /* NR=2 microkernel: two output rows per activation read, halving
-     * activation L2->L1 traffic (the bound once recon is amortized). */
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 2)
-#endif
-    for (size_t np = 0; np < n_pairs; np++) {
+/* Row pairs [np0, np1) of linear_q6k_w6a8_prefill_pre. NR=2 microkernel:
+ * two output rows per activation read, halving activation L2->L1 traffic
+ * (the bound once recon is amortized). */
+static void q6k_prefill_pre_pairs(void *ctx, size_t np0, size_t np1) {
+    const struct q6k_prefill_job *job              = ctx;
+    const struct block_q6_K_t    *w                = job->w;
+    const int8_t                 *x_q8             = job->x_q8;
+    const int8_t                 *packed           = job->packed;
+    const float                  *x_scales         = job->x_scales;
+    const float                  *xs_bm            = job->xs_bm;
+    const size_t                  m                = job->m;
+    const size_t                  n_in             = job->n_in;
+    const size_t                  n_out            = job->n_out;
+    const size_t                  n_blocks_per_row = job->n_blocks_per_row;
+    float                        *y                = job->y;
+    for (size_t np = np0; np < np1; np++) {
         const size_t               n    = np * 2;
         const struct block_q6_K_t *row0 = w + n * n_blocks_per_row;
         const struct block_q6_K_t *row1 = w + (n + 1) * n_blocks_per_row;
@@ -1012,6 +939,92 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
             y[i * n_out + n + 1] = accs1[i];
         }
     }
+}
+#endif
+
+void linear_q6k_w6a8_prefill_pre(size_t        m,
+                                 size_t        n_in,
+                                 size_t        n_out,
+                                 const int8_t *x_q8,
+                                 const float  *x_scales,
+                                 const void   *w_q6k,
+                                 float        *y) {
+#if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
+    const struct block_q6_K_t *w                = (const struct block_q6_K_t *) w_q6k;
+    const size_t               n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
+
+    /* Pack x once into block-major layout packed[(b*m + t)*256 + e] so
+     * per-token reads are sequential instead of strided by n_in.
+     * GEIST_Q6K_PACK_ACT=0 disables; skipped for m < 2. Thread-local
+     * high-water buffer: filled by the calling thread, only read by the
+     * parallel panels. */
+    static _Atomic int q6k_pack_act = -1;
+    int                pack_on      = atomic_load_explicit(&q6k_pack_act, memory_order_relaxed);
+    if (pack_on < 0) {
+        const char *e = getenv("GEIST_Q6K_PACK_ACT");
+        pack_on       = (e != nullptr && e[0] == '0') ? 0 : 1;
+        atomic_store_explicit(&q6k_pack_act, pack_on, memory_order_relaxed);
+    }
+    const int8_t *packed = nullptr;
+    if (pack_on && m >= 2) {
+        static _Thread_local int8_t *q6kpack_tl  = nullptr;
+        static _Thread_local size_t  q6kpack_cap = 0;
+        const size_t                 need        = m * n_in;
+        if (need > q6kpack_cap) {
+            /* The packing loop fully repopulates the buffer before any read,
+             * so dropping the old contents on grow is safe. */
+            safe_free((void **) &q6kpack_tl);
+            q6kpack_tl  = heap_alloc_array_aligned(int8_t, need);
+            q6kpack_cap = (q6kpack_tl != nullptr) ? need : 0;
+        }
+        if (q6kpack_cap >= need) {
+            int8_t *pk = q6kpack_tl;
+            for (size_t b = 0; b < n_blocks_per_row; b++)
+                for (size_t t = 0; t < m; t++)
+                    memcpy(pk + (b * m + t) * Q6_K_BLOCK_ELEMS,
+                           x_q8 + t * n_in + b * Q6_K_BLOCK_ELEMS,
+                           Q6_K_BLOCK_ELEMS);
+            packed = pk;
+        }
+    }
+
+    /* The activation scales block-major, xs_bm[b * m + t], so the epilogues
+     * below load four tokens' scales of one super-block as one vector, as
+     * they did the row scales before #698. Same high-water buffer pattern;
+     * without it each panel gathers its block's scales itself. */
+    const float *xs_bm = nullptr;
+    {
+        static _Thread_local float *q6kxs_tl  = nullptr;
+        static _Thread_local size_t q6kxs_cap = 0;
+        const size_t                need      = m * n_blocks_per_row;
+        if (need > q6kxs_cap) {
+            safe_free((void **) &q6kxs_tl);
+            q6kxs_tl  = heap_alloc_array_aligned(float, need);
+            q6kxs_cap = (q6kxs_tl != nullptr) ? need : 0;
+        }
+        if (q6kxs_cap >= need) {
+            for (size_t b = 0; b < n_blocks_per_row; b++)
+                for (size_t t = 0; t < m; t++)
+                    q6kxs_tl[b * m + t] = x_scales[t * n_blocks_per_row + b];
+            xs_bm = q6kxs_tl;
+        }
+    }
+
+    const size_t n_pairs = n_out / 2;
+
+    struct q6k_prefill_job job = {.w                = w,
+                                  .x_q8             = x_q8,
+                                  .packed           = packed,
+                                  .x_scales         = x_scales,
+                                  .xs_bm            = xs_bm,
+                                  .m                = m,
+                                  .n_in             = n_in,
+                                  .n_out            = n_out,
+                                  .n_blocks_per_row = n_blocks_per_row,
+                                  .y                = y};
+    cpu_neon_par_for_dynamic(n_pairs, 2, q6k_prefill_pre_pairs, &job);
 
     /* NR=1 tail for odd n_out. */
     for (size_t n = n_pairs * 2; n < n_out; n++) {
@@ -1073,30 +1086,35 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
 #endif
 }
 
-void linear_q6k_w6a8_prefill_pre_accum_blocks(size_t        m,
-                                              size_t        n_in_total,
-                                              size_t        n_out,
-                                              size_t        block_start,
-                                              size_t        n_blocks,
-                                              const int8_t *x_q8,
-                                              const float  *x_scales,
-                                              const void   *w_q6k,
-                                              float        *y) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP || n_blocks == 0 || x_q8 == nullptr ||
-        x_scales == nullptr || w_q6k == nullptr || y == nullptr) {
-        return;
-    }
-    const struct block_q6_K_t *w                = (const struct block_q6_K_t *) w_q6k;
-    const size_t               n_blocks_per_row = n_in_total / Q6_K_BLOCK_ELEMS;
-    const size_t               n_in_tile        = n_blocks * Q6_K_BLOCK_ELEMS;
-    if (block_start + n_blocks > n_blocks_per_row)
-        return;
+/* One linear_q6k_w6a8_prefill_pre_accum_blocks call. */
+struct q6k_accum_job {
+    const struct block_q6_K_t *w;
+    const int8_t              *x_q8;
+    const float               *x_scales;
+    size_t                     m;
+    size_t                     n_out;
+    size_t                     block_start;
+    size_t                     n_blocks;
+    size_t                     n_blocks_per_row;
+    size_t                     n_in_tile;
+    float                     *y;
+};
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+/* Output rows [n0, n1) of linear_q6k_w6a8_prefill_pre_accum_blocks. */
+static void q6k_accum_rows(void *ctx, size_t n0, size_t n1) {
+    const struct q6k_accum_job *job              = ctx;
+    const struct block_q6_K_t  *w                = job->w;
+    const int8_t               *x_q8             = job->x_q8;
+    const float                *x_scales         = job->x_scales;
+    const size_t                m                = job->m;
+    const size_t                n_out            = job->n_out;
+    const size_t                block_start      = job->block_start;
+    const size_t                n_blocks         = job->n_blocks;
+    const size_t                n_blocks_per_row = job->n_blocks_per_row;
+    const size_t                n_in_tile        = job->n_in_tile;
+    float                      *y                = job->y;
+    for (size_t n = n0; n < n1; n++) {
         const struct block_q6_K_t *row = w + n * n_blocks_per_row + block_start;
 
         float accs[GEIST_QUANT_M_CAP] __attribute__((aligned(16)));
@@ -1155,6 +1173,40 @@ void linear_q6k_w6a8_prefill_pre_accum_blocks(size_t        m,
         for (size_t i = 0; i < m; i++)
             y[i * n_out + n] += accs[i];
     }
+}
+#endif
+
+void linear_q6k_w6a8_prefill_pre_accum_blocks(size_t        m,
+                                              size_t        n_in_total,
+                                              size_t        n_out,
+                                              size_t        block_start,
+                                              size_t        n_blocks,
+                                              const int8_t *x_q8,
+                                              const float  *x_scales,
+                                              const void   *w_q6k,
+                                              float        *y) {
+#if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP || n_blocks == 0 || x_q8 == nullptr ||
+        x_scales == nullptr || w_q6k == nullptr || y == nullptr) {
+        return;
+    }
+    const struct block_q6_K_t *w                = (const struct block_q6_K_t *) w_q6k;
+    const size_t               n_blocks_per_row = n_in_total / Q6_K_BLOCK_ELEMS;
+    const size_t               n_in_tile        = n_blocks * Q6_K_BLOCK_ELEMS;
+    if (block_start + n_blocks > n_blocks_per_row)
+        return;
+
+    struct q6k_accum_job job = {.w                = w,
+                                .x_q8             = x_q8,
+                                .x_scales         = x_scales,
+                                .m                = m,
+                                .n_out            = n_out,
+                                .block_start      = block_start,
+                                .n_blocks         = n_blocks,
+                                .n_blocks_per_row = n_blocks_per_row,
+                                .n_in_tile        = n_in_tile,
+                                .y                = y};
+    cpu_neon_par_for_dynamic(n_out, 4, q6k_accum_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1169,27 +1221,31 @@ void linear_q6k_w6a8_prefill_pre_accum_blocks(size_t        m,
 #endif
 }
 
-void linear_q6k_w6a8_prefill_predecoded_ntile4(size_t        m,
-                                               size_t        n_in,
-                                               size_t        n_out,
-                                               const int8_t *x_q8,
-                                               const float  *x_scales,
-                                               const void   *packed,
-                                               float        *y) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
-        return;
-    if (!q6k_predecode_ntile4_valid(packed, n_in, n_out))
-        return;
+/* One linear_q6k_w6a8_prefill_predecoded_ntile4 call. */
+struct q6k_ntile4_job {
+    const struct q6k_predecode_block *w;
+    const int8_t                     *x_q8;
+    const float                      *x_scales;
+    size_t                            m;
+    size_t                            n_in;
+    size_t                            n_out;
+    size_t                            n_blocks_per_row;
+    float                            *y;
+};
 
-    const struct q6k_predecode_block *w                = q6k_predecode_ntile4_blocks(packed);
-    const size_t                      n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
-    const size_t                      n_tiles          = (n_out + 3) / 4;
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
-#endif
-    for (size_t nt = 0; nt < n_tiles; nt++) {
+/* Tiles of 4 output rows [nt0, nt1) of linear_q6k_w6a8_prefill_predecoded_ntile4. */
+static void q6k_ntile4_tiles(void *ctx, size_t nt0, size_t nt1) {
+    const struct q6k_ntile4_job      *job              = ctx;
+    const struct q6k_predecode_block *w                = job->w;
+    const int8_t                     *x_q8             = job->x_q8;
+    const float                      *x_scales         = job->x_scales;
+    const size_t                      m                = job->m;
+    const size_t                      n_in             = job->n_in;
+    const size_t                      n_out            = job->n_out;
+    const size_t                      n_blocks_per_row = job->n_blocks_per_row;
+    float                            *y                = job->y;
+    for (size_t nt = nt0; nt < nt1; nt++) {
         const size_t                      valid_nr = (nt * 4 + 4 <= n_out) ? 4 : (n_out - nt * 4);
         const struct q6k_predecode_block *tile     = w + nt * n_blocks_per_row * 4;
 
@@ -1271,6 +1327,35 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4(size_t        m,
             }
         }
     }
+}
+#endif
+
+void linear_q6k_w6a8_prefill_predecoded_ntile4(size_t        m,
+                                               size_t        n_in,
+                                               size_t        n_out,
+                                               const int8_t *x_q8,
+                                               const float  *x_scales,
+                                               const void   *packed,
+                                               float        *y) {
+#if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
+    if (!q6k_predecode_ntile4_valid(packed, n_in, n_out))
+        return;
+
+    const struct q6k_predecode_block *w                = q6k_predecode_ntile4_blocks(packed);
+    const size_t                      n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
+    const size_t                      n_tiles          = (n_out + 3) / 4;
+
+    struct q6k_ntile4_job job = {.w                = w,
+                                 .x_q8             = x_q8,
+                                 .x_scales         = x_scales,
+                                 .m                = m,
+                                 .n_in             = n_in,
+                                 .n_out            = n_out,
+                                 .n_blocks_per_row = n_blocks_per_row,
+                                 .y                = y};
+    cpu_neon_par_for_dynamic(n_tiles, 4, q6k_ntile4_tiles, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1283,27 +1368,31 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4(size_t        m,
 #endif
 }
 
-void linear_q6k_w6a8_prefill_predecoded_ntile4_stream(size_t        m,
-                                                      size_t        n_in,
-                                                      size_t        n_out,
-                                                      const int8_t *x_q8,
-                                                      const float  *x_scales,
-                                                      const void   *packed,
-                                                      float        *y) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
-        return;
-    if (!q6k_predecode_ntile4_stream_valid(packed, n_in, n_out))
-        return;
+/* One linear_q6k_w6a8_prefill_predecoded_ntile4_stream call. */
+struct q6k_stream4_job {
+    const struct q6k_predecode_stream4 *w;
+    const int8_t                       *x_q8;
+    const float                        *x_scales;
+    size_t                              m;
+    size_t                              n_in;
+    size_t                              n_out;
+    size_t                              n_blocks_per_row;
+    float                              *y;
+};
 
-    const struct q6k_predecode_stream4 *w = q6k_predecode_ntile4_stream_blocks(packed);
-    const size_t                        n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
-    const size_t                        n_tiles          = (n_out + 3) / 4;
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
-#endif
-    for (size_t nt = 0; nt < n_tiles; nt++) {
+/* Tiles of 4 output rows [nt0, nt1) of linear_q6k_w6a8_prefill_predecoded_ntile4_stream. */
+static void q6k_stream4_tiles(void *ctx, size_t nt0, size_t nt1) {
+    const struct q6k_stream4_job       *job              = ctx;
+    const struct q6k_predecode_stream4 *w                = job->w;
+    const int8_t                       *x_q8             = job->x_q8;
+    const float                        *x_scales         = job->x_scales;
+    const size_t                        m                = job->m;
+    const size_t                        n_in             = job->n_in;
+    const size_t                        n_out            = job->n_out;
+    const size_t                        n_blocks_per_row = job->n_blocks_per_row;
+    float                              *y                = job->y;
+    for (size_t nt = nt0; nt < nt1; nt++) {
         const size_t                        valid_nr = (nt * 4 + 4 <= n_out) ? 4 : (n_out - nt * 4);
         const struct q6k_predecode_stream4 *tile     = w + nt * n_blocks_per_row;
 
@@ -1393,6 +1482,35 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4_stream(size_t        m,
             }
         }
     }
+}
+#endif
+
+void linear_q6k_w6a8_prefill_predecoded_ntile4_stream(size_t        m,
+                                                      size_t        n_in,
+                                                      size_t        n_out,
+                                                      const int8_t *x_q8,
+                                                      const float  *x_scales,
+                                                      const void   *packed,
+                                                      float        *y) {
+#if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
+    if (!q6k_predecode_ntile4_stream_valid(packed, n_in, n_out))
+        return;
+
+    const struct q6k_predecode_stream4 *w = q6k_predecode_ntile4_stream_blocks(packed);
+    const size_t                        n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
+    const size_t                        n_tiles          = (n_out + 3) / 4;
+
+    struct q6k_stream4_job job = {.w                = w,
+                                  .x_q8             = x_q8,
+                                  .x_scales         = x_scales,
+                                  .m                = m,
+                                  .n_in             = n_in,
+                                  .n_out            = n_out,
+                                  .n_blocks_per_row = n_blocks_per_row,
+                                  .y                = y};
+    cpu_neon_par_for_dynamic(n_tiles, 4, q6k_stream4_tiles, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1476,18 +1594,22 @@ void linear_q6k_decode_w6a8_x8(size_t      n_in,
     linear_q6k_decode_w6a8_x8_pre(n_in, n_out, tl_x_scales, tl_x_q8, packed, y);
 }
 
-void linear_q6k_decode_fp32(size_t      n_in,
-                            size_t      n_out,
-                            const float x[static n_in],
-                            const void *w_q6k,
-                            float       y[static n_out]) {
-    const struct block_q6_K_t *w                = (const struct block_q6_K_t *) w_q6k;
-    const size_t               n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
+/* One linear_q6k_decode_fp32 call. */
+struct q6k_fp32_job {
+    const struct block_q6_K_t *w;
+    const float               *x;
+    size_t                     n_blocks_per_row;
+    float                     *y;
+};
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+/* Output rows [n0, n1) of linear_q6k_decode_fp32. */
+static void q6k_fp32_rows(void *ctx, size_t n0, size_t n1) {
+    const struct q6k_fp32_job *job              = ctx;
+    const struct block_q6_K_t *w                = job->w;
+    const float               *x                = job->x;
+    const size_t               n_blocks_per_row = job->n_blocks_per_row;
+    float                     *y                = job->y;
+    for (size_t n = n0; n < n1; n++) {
         const struct block_q6_K_t *row = w + n * n_blocks_per_row;
         float                      acc = 0.0f;
         for (size_t b = 0; b < n_blocks_per_row; b++) {
@@ -1520,4 +1642,16 @@ void linear_q6k_decode_fp32(size_t      n_in,
         }
         y[n] = acc;
     }
+}
+
+void linear_q6k_decode_fp32(size_t      n_in,
+                            size_t      n_out,
+                            const float x[static n_in],
+                            const void *w_q6k,
+                            float       y[static n_out]) {
+    const struct block_q6_K_t *w                = (const struct block_q6_K_t *) w_q6k;
+    const size_t               n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
+
+    struct q6k_fp32_job job = {.w = w, .x = x, .n_blocks_per_row = n_blocks_per_row, .y = y};
+    cpu_neon_par_for_dynamic(n_out, 4, q6k_fp32_rows, &job);
 }

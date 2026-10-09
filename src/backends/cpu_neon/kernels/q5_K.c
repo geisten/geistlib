@@ -6,6 +6,7 @@
  */
 #include "quant_blocks.h"
 #include "heap.h"
+#include "par.h"
 #include "quant.h"
 
 #include <math.h>
@@ -18,20 +19,27 @@
 #include <arm_neon.h>
 #endif
 
-void linear_q5k_decode_w5a8_pre(size_t         n_in,
-                                size_t         n_out,
-                                const float   *x_scales,
-                                const int8_t   x_q8[static n_in],
-                                const int32_t *sum32,
-                                const void    *w_q5k,
-                                float          y[static n_out]) {
-    const struct block_q5_K_t *w                = (const struct block_q5_K_t *) w_q5k;
-    const size_t               n_blocks_per_row = n_in / Q5_K_BLOCK_ELEMS;
+/* One Q5_K W5A8 call, for the row bodies below. */
+struct q5k_rows_job {
+    const struct block_q5_K_t *w;
+    const int8_t              *x_q8;
+    const float               *x_scales;
+    const int32_t             *sum32;
+    size_t                     m, n_in, n_out, n_blocks_per_row, n_chunks;
+    float                     *y;
+};
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+/* Output rows [n0, n1) of linear_q5k_decode_w5a8_pre. */
+static void q5k_decode_rows(void *ctx, size_t n0, size_t n1) {
+    const struct q5k_rows_job *job              = ctx;
+    const struct block_q5_K_t *w                = job->w;
+    const int8_t              *x_q8             = job->x_q8;
+    const float               *x_scales         = job->x_scales;
+    const int32_t             *sum32            = job->sum32;
+    const size_t               n_out            = job->n_out;
+    const size_t               n_blocks_per_row = job->n_blocks_per_row;
+    float                     *y                = job->y;
+    for (size_t n = n0; n < n1; n++) {
         const struct block_q5_K_t *row = w + n * n_blocks_per_row;
         float                      acc = 0.0f;
         if (n + 1 < n_out)
@@ -90,6 +98,26 @@ void linear_q5k_decode_w5a8_pre(size_t         n_in,
     }
 }
 
+void linear_q5k_decode_w5a8_pre(size_t         n_in,
+                                size_t         n_out,
+                                const float   *x_scales,
+                                const int8_t   x_q8[static n_in],
+                                const int32_t *sum32,
+                                const void    *w_q5k,
+                                float          y[static n_out]) {
+    const struct block_q5_K_t *w                = (const struct block_q5_K_t *) w_q5k;
+    const size_t               n_blocks_per_row = n_in / Q5_K_BLOCK_ELEMS;
+
+    struct q5k_rows_job job = {.w                = w,
+                               .x_q8             = x_q8,
+                               .x_scales         = x_scales,
+                               .sum32            = sum32,
+                               .n_out            = n_out,
+                               .n_blocks_per_row = n_blocks_per_row,
+                               .y                = y};
+    geist_par_for(n_out, q5k_decode_rows, &job);
+}
+
 void linear_q5k_decode_w5a8(size_t      n_in,
                             size_t      n_out,
                             const float x[static n_in],
@@ -111,25 +139,21 @@ void linear_q5k_decode_w5a8(size_t      n_in,
     safe_free((void **) &x_scales);
 }
 
-void linear_q5k_w5a8_prefill_pre(size_t         m,
-                                 size_t         n_in,
-                                 size_t         n_out,
-                                 const int8_t  *x_q8,
-                                 const float   *x_scales,
-                                 const int32_t *sum32,
-                                 const void    *w_q5k,
-                                 float         *y) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
-        return;
-    const struct block_q5_K_t *w                = (const struct block_q5_K_t *) w_q5k;
-    const size_t               n_blocks_per_row = n_in / Q5_K_BLOCK_ELEMS;
-    const size_t               n_chunks         = n_in / 32;
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+/* Output rows [n0, n1) of linear_q5k_w5a8_prefill_pre. */
+static void q5k_prefill_rows(void *ctx, size_t n0, size_t n1) {
+    const struct q5k_rows_job *job              = ctx;
+    const struct block_q5_K_t *w                = job->w;
+    const int8_t              *x_q8             = job->x_q8;
+    const float               *x_scales         = job->x_scales;
+    const int32_t             *sum32            = job->sum32;
+    const size_t               m                = job->m;
+    const size_t               n_in             = job->n_in;
+    const size_t               n_out            = job->n_out;
+    const size_t               n_blocks_per_row = job->n_blocks_per_row;
+    const size_t               n_chunks         = job->n_chunks;
+    float                     *y                = job->y;
+    for (size_t n = n0; n < n1; n++) {
         const struct block_q5_K_t *row = w + n * n_blocks_per_row;
         if (n + 1 < n_out)
             __builtin_prefetch(row + n_blocks_per_row, 0, 0);
@@ -200,6 +224,35 @@ void linear_q5k_w5a8_prefill_pre(size_t         m,
         for (size_t i = 0; i < m; i++)
             y[i * n_out + n] = accs[i];
     }
+}
+#endif
+
+void linear_q5k_w5a8_prefill_pre(size_t         m,
+                                 size_t         n_in,
+                                 size_t         n_out,
+                                 const int8_t  *x_q8,
+                                 const float   *x_scales,
+                                 const int32_t *sum32,
+                                 const void    *w_q5k,
+                                 float         *y) {
+#if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
+    const struct block_q5_K_t *w                = (const struct block_q5_K_t *) w_q5k;
+    const size_t               n_blocks_per_row = n_in / Q5_K_BLOCK_ELEMS;
+    const size_t               n_chunks         = n_in / 32;
+
+    struct q5k_rows_job job = {.w                = w,
+                               .x_q8             = x_q8,
+                               .x_scales         = x_scales,
+                               .sum32            = sum32,
+                               .m                = m,
+                               .n_in             = n_in,
+                               .n_out            = n_out,
+                               .n_blocks_per_row = n_blocks_per_row,
+                               .n_chunks         = n_chunks,
+                               .y                = y};
+    geist_par_for(n_out, q5k_prefill_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;

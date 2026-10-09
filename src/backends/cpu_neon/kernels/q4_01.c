@@ -20,6 +20,7 @@
  */
 #include "quant_blocks.h"
 #include "heap.h"
+#include "par.h"
 #include "quant.h"
 
 #include <math.h>
@@ -66,19 +67,26 @@ static inline int32_t q4_nibble_dot(const int8_t *xb, const uint8_t *qs, int bia
 #endif
 }
 
-void linear_q4_0_decode_w4a8_pre(size_t       n_in,
-                                 size_t       n_out,
-                                 const float *x_scales,
-                                 const int8_t x_q8[static n_in],
-                                 const void  *w_q4,
-                                 float        y[static n_out]) {
-    const struct block_q4_0k_t *w          = (const struct block_q4_0k_t *) w_q4;
-    const size_t                nb_per_row = n_in / Q4_0_BLOCK_ELEMS;
+/* One call's operands, for the range bodies below. */
+struct q4_rows_job {
+    const void    *w;
+    const int8_t  *x_q8;
+    const float   *x_scales;
+    const int32_t *bsum, *bsums;
+    size_t         m, n_in, n_out, nb_per_row, nb;
+    float         *y;
+};
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+/* Output rows [n0, n1) of linear_q4_0_decode_w4a8_pre. */
+static void q4_0_decode_rows(void *ctx, size_t n0, size_t n1) {
+    const struct q4_rows_job   *job        = ctx;
+    const struct block_q4_0k_t *w          = job->w;
+    const int8_t               *x_q8       = job->x_q8;
+    const float                *x_scales   = job->x_scales;
+    const size_t                n_out      = job->n_out;
+    const size_t                nb_per_row = job->nb_per_row;
+    float                      *y          = job->y;
+    for (size_t n = n0; n < n1; n++) {
         const struct block_q4_0k_t *row = w + n * nb_per_row;
         if (n + 1 < n_out)
             __builtin_prefetch(row + nb_per_row, 0, 0);
@@ -89,6 +97,24 @@ void linear_q4_0_decode_w4a8_pre(size_t       n_in,
         }
         y[n] = acc;
     }
+}
+
+void linear_q4_0_decode_w4a8_pre(size_t       n_in,
+                                 size_t       n_out,
+                                 const float *x_scales,
+                                 const int8_t x_q8[static n_in],
+                                 const void  *w_q4,
+                                 float        y[static n_out]) {
+    const struct block_q4_0k_t *w          = (const struct block_q4_0k_t *) w_q4;
+    const size_t                nb_per_row = n_in / Q4_0_BLOCK_ELEMS;
+
+    struct q4_rows_job job = {.w          = w,
+                              .x_q8       = x_q8,
+                              .x_scales   = x_scales,
+                              .n_out      = n_out,
+                              .nb_per_row = nb_per_row,
+                              .y          = y};
+    geist_par_for(n_out, q4_0_decode_rows, &job);
 }
 
 void linear_q4_0_decode_w4a8(size_t      n_in,
@@ -109,20 +135,17 @@ void linear_q4_0_decode_w4a8(size_t      n_in,
     safe_free((void **) &x_scales);
 }
 
-void linear_q4_1_decode_w4a8_pre(size_t         n_in,
-                                 size_t         n_out,
-                                 const float   *x_scales,
-                                 const int8_t   x_q8[static n_in],
-                                 const int32_t *bsum,
-                                 const void    *w_q4,
-                                 float          y[static n_out]) {
-    const struct block_q4_1k_t *w          = (const struct block_q4_1k_t *) w_q4;
-    const size_t                nb_per_row = n_in / Q4_1_BLOCK_ELEMS;
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+/* Output rows [n0, n1) of linear_q4_1_decode_w4a8_pre. */
+static void q4_1_decode_rows(void *ctx, size_t n0, size_t n1) {
+    const struct q4_rows_job   *job        = ctx;
+    const struct block_q4_1k_t *w          = job->w;
+    const int8_t               *x_q8       = job->x_q8;
+    const float                *x_scales   = job->x_scales;
+    const int32_t              *bsum       = job->bsum;
+    const size_t                n_out      = job->n_out;
+    const size_t                nb_per_row = job->nb_per_row;
+    float                      *y          = job->y;
+    for (size_t n = n0; n < n1; n++) {
         const struct block_q4_1k_t *row = w + n * nb_per_row;
         if (n + 1 < n_out)
             __builtin_prefetch(row + nb_per_row, 0, 0);
@@ -134,6 +157,26 @@ void linear_q4_1_decode_w4a8_pre(size_t         n_in,
         }
         y[n] = acc;
     }
+}
+
+void linear_q4_1_decode_w4a8_pre(size_t         n_in,
+                                 size_t         n_out,
+                                 const float   *x_scales,
+                                 const int8_t   x_q8[static n_in],
+                                 const int32_t *bsum,
+                                 const void    *w_q4,
+                                 float          y[static n_out]) {
+    const struct block_q4_1k_t *w          = (const struct block_q4_1k_t *) w_q4;
+    const size_t                nb_per_row = n_in / Q4_1_BLOCK_ELEMS;
+
+    struct q4_rows_job job = {.w          = w,
+                              .x_q8       = x_q8,
+                              .x_scales   = x_scales,
+                              .bsum       = bsum,
+                              .n_out      = n_out,
+                              .nb_per_row = nb_per_row,
+                              .y          = y};
+    geist_par_for(n_out, q4_1_decode_rows, &job);
 }
 
 void linear_q4_1_decode_w4a8(size_t      n_in,
@@ -231,23 +274,16 @@ static int q4_0_x8_valid(const void *packed, size_t n_in, size_t n_out) {
            h->n_out == n_out && h->block_bytes == sizeof(struct q4_0_x8_block);
 }
 
-void linear_q4_0_decode_w4a8_x8_pre(size_t         n_in,
-                                    size_t         n_out,
-                                    const float   *x_scales,
-                                    const int8_t   x_q8[static n_in],
-                                    const int32_t *bsum,
-                                    const void    *packed,
-                                    float          y[static n_out]) {
-    if (!q4_0_x8_valid(packed, n_in, n_out))
-        return;
-    const size_t                nb_per_row = n_in / Q4_0_BLOCK_ELEMS;
-    const struct q4_0_x8_block *w = (const struct q4_0_x8_block *) ((const uint8_t *) packed +
-                                                                    sizeof(struct q4_0_x8_header));
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t tile = 0; tile < n_out / 8; tile++) {
+/* Row tiles [tile0, tile1) of linear_q4_0_decode_w4a8_x8_pre. */
+static void q4_0_x8_decode_tiles(void *ctx, size_t tile0, size_t tile1) {
+    const struct q4_rows_job   *job        = ctx;
+    const struct q4_0_x8_block *w          = job->w;
+    const int8_t               *x_q8       = job->x_q8;
+    const float                *x_scales   = job->x_scales;
+    const int32_t              *bsum       = job->bsum;
+    const size_t                nb_per_row = job->nb_per_row;
+    float                      *y          = job->y;
+    for (size_t tile = tile0; tile < tile1; tile++) {
         const struct q4_0_x8_block *row = w + tile * nb_per_row;
 #if defined(__ARM_NEON)
         /* Lane-SDOT on the pre-transposed layout: each accumulator lane is
@@ -309,6 +345,28 @@ void linear_q4_0_decode_w4a8_x8_pre(size_t         n_in,
     }
 }
 
+void linear_q4_0_decode_w4a8_x8_pre(size_t         n_in,
+                                    size_t         n_out,
+                                    const float   *x_scales,
+                                    const int8_t   x_q8[static n_in],
+                                    const int32_t *bsum,
+                                    const void    *packed,
+                                    float          y[static n_out]) {
+    if (!q4_0_x8_valid(packed, n_in, n_out))
+        return;
+    const size_t                nb_per_row = n_in / Q4_0_BLOCK_ELEMS;
+    const struct q4_0_x8_block *w = (const struct q4_0_x8_block *) ((const uint8_t *) packed +
+                                                                    sizeof(struct q4_0_x8_header));
+
+    struct q4_rows_job job = {.w          = w,
+                              .x_q8       = x_q8,
+                              .x_scales   = x_scales,
+                              .bsum       = bsum,
+                              .nb_per_row = nb_per_row,
+                              .y          = y};
+    geist_par_for(n_out / 8, q4_0_x8_decode_tiles, &job);
+}
+
 void linear_q4_0_decode_w4a8_x8(size_t      n_in,
                                 size_t      n_out,
                                 const float x[static n_in],
@@ -335,24 +393,19 @@ void linear_q4_0_decode_w4a8_x8(size_t      n_in,
  * instead of dequant + SGEMM: each 144-byte block (8 rows x 32 elems) is
  * loaded once and dotted against up to 4 activation rows with SDOT. */
 
-void linear_q4_0_w4a8_prefill_x8_pre(size_t         m,
-                                     size_t         n_in,
-                                     size_t         n_out,
-                                     const int8_t  *x_q8,
-                                     const float   *x_scales,
-                                     const int32_t *bsums,
-                                     const void    *packed,
-                                     float         *y) {
-    if (!q4_0_x8_valid(packed, n_in, n_out) || m == 0)
-        return;
-    const size_t                nb = n_in / Q4_0_BLOCK_ELEMS;
-    const struct q4_0_x8_block *w  = (const struct q4_0_x8_block *) ((const uint8_t *) packed +
-                                                                     sizeof(struct q4_0_x8_header));
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t tile = 0; tile < n_out / 8; tile++) {
+/* Row tiles [tile0, tile1) of linear_q4_0_w4a8_prefill_x8_pre. */
+static void q4_0_x8_prefill_tiles(void *ctx, size_t tile0, size_t tile1) {
+    const struct q4_rows_job   *job      = ctx;
+    const struct q4_0_x8_block *w        = job->w;
+    const int8_t               *x_q8     = job->x_q8;
+    const float                *x_scales = job->x_scales;
+    const int32_t              *bsums    = job->bsums;
+    const size_t                m        = job->m;
+    const size_t                n_in     = job->n_in;
+    const size_t                n_out    = job->n_out;
+    const size_t                nb       = job->nb;
+    float                      *y        = job->y;
+    for (size_t tile = tile0; tile < tile1; tile++) {
         const struct q4_0_x8_block *row = w + tile * nb;
         for (size_t t0 = 0; t0 < m; t0 += 4) {
             const size_t tcnt = (m - t0 < 4) ? (m - t0) : 4;
@@ -445,6 +498,32 @@ void linear_q4_0_w4a8_prefill_x8_pre(size_t         m,
     }
 }
 
+void linear_q4_0_w4a8_prefill_x8_pre(size_t         m,
+                                     size_t         n_in,
+                                     size_t         n_out,
+                                     const int8_t  *x_q8,
+                                     const float   *x_scales,
+                                     const int32_t *bsums,
+                                     const void    *packed,
+                                     float         *y) {
+    if (!q4_0_x8_valid(packed, n_in, n_out) || m == 0)
+        return;
+    const size_t                nb = n_in / Q4_0_BLOCK_ELEMS;
+    const struct q4_0_x8_block *w  = (const struct q4_0_x8_block *) ((const uint8_t *) packed +
+                                                                     sizeof(struct q4_0_x8_header));
+
+    struct q4_rows_job job = {.w        = w,
+                              .x_q8     = x_q8,
+                              .x_scales = x_scales,
+                              .bsums    = bsums,
+                              .m        = m,
+                              .n_in     = n_in,
+                              .n_out    = n_out,
+                              .nb       = nb,
+                              .y        = y};
+    geist_par_for(n_out / 8, q4_0_x8_prefill_tiles, &job);
+}
+
 void linear_q4_0_w4a8_prefill_x8(
         size_t m, size_t n_in, size_t n_out, const float *x, const void *packed, float *y) {
     if (m == 0)
@@ -475,20 +554,18 @@ void linear_q4_0_w4a8_prefill_x8(
 
 /* M>1 prefill on the row-major layout: activations quantized once per call. */
 
-void linear_q4_0_w4a8_prefill_pre(size_t        m,
-                                  size_t        n_in,
-                                  size_t        n_out,
-                                  const int8_t *x_q8,
-                                  const float  *x_scales,
-                                  const void   *w_q4,
-                                  float        *y) {
-    const struct block_q4_0k_t *w          = (const struct block_q4_0k_t *) w_q4;
-    const size_t                nb_per_row = n_in / Q4_0_BLOCK_ELEMS;
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+/* Output rows [n0, n1) of linear_q4_0_w4a8_prefill_pre. */
+static void q4_0_prefill_rows(void *ctx, size_t n0, size_t n1) {
+    const struct q4_rows_job   *job        = ctx;
+    const struct block_q4_0k_t *w          = job->w;
+    const int8_t               *x_q8       = job->x_q8;
+    const float                *x_scales   = job->x_scales;
+    const size_t                m          = job->m;
+    const size_t                n_in       = job->n_in;
+    const size_t                n_out      = job->n_out;
+    const size_t                nb_per_row = job->nb_per_row;
+    float                      *y          = job->y;
+    for (size_t n = n0; n < n1; n++) {
         const struct block_q4_0k_t *row = w + n * nb_per_row;
         for (size_t i = 0; i < m; i++) {
             const int8_t *xr  = x_q8 + i * n_in;
@@ -501,6 +578,27 @@ void linear_q4_0_w4a8_prefill_pre(size_t        m,
             y[i * n_out + n] = acc;
         }
     }
+}
+
+void linear_q4_0_w4a8_prefill_pre(size_t        m,
+                                  size_t        n_in,
+                                  size_t        n_out,
+                                  const int8_t *x_q8,
+                                  const float  *x_scales,
+                                  const void   *w_q4,
+                                  float        *y) {
+    const struct block_q4_0k_t *w          = (const struct block_q4_0k_t *) w_q4;
+    const size_t                nb_per_row = n_in / Q4_0_BLOCK_ELEMS;
+
+    struct q4_rows_job job = {.w          = w,
+                              .x_q8       = x_q8,
+                              .x_scales   = x_scales,
+                              .m          = m,
+                              .n_in       = n_in,
+                              .n_out      = n_out,
+                              .nb_per_row = nb_per_row,
+                              .y          = y};
+    geist_par_for(n_out, q4_0_prefill_rows, &job);
 }
 
 void linear_q4_0_w4a8_prefill(
@@ -526,22 +624,20 @@ void linear_q4_0_w4a8_prefill(
     safe_free((void **) &x_scales);
 }
 
-void linear_q4_1_w4a8_prefill_pre(size_t         m,
-                                  size_t         n_in,
-                                  size_t         n_out,
-                                  const int8_t  *x_q8,
-                                  const float   *x_scales,
-                                  const int32_t *bsums,
-                                  const void    *w_q4,
-                                  float         *y) {
-    const size_t                nb         = n_in / Q4_1_BLOCK_ELEMS;
-    const struct block_q4_1k_t *w          = (const struct block_q4_1k_t *) w_q4;
-    const size_t                nb_per_row = n_in / Q4_1_BLOCK_ELEMS;
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+/* Output rows [n0, n1) of linear_q4_1_w4a8_prefill_pre. */
+static void q4_1_prefill_rows(void *ctx, size_t n0, size_t n1) {
+    const struct q4_rows_job   *job        = ctx;
+    const struct block_q4_1k_t *w          = job->w;
+    const int8_t               *x_q8       = job->x_q8;
+    const float                *x_scales   = job->x_scales;
+    const int32_t              *bsums      = job->bsums;
+    const size_t                m          = job->m;
+    const size_t                n_in       = job->n_in;
+    const size_t                n_out      = job->n_out;
+    const size_t                nb_per_row = job->nb_per_row;
+    const size_t                nb         = job->nb;
+    float                      *y          = job->y;
+    for (size_t n = n0; n < n1; n++) {
         const struct block_q4_1k_t *row = w + n * nb_per_row;
         for (size_t i = 0; i < m; i++) {
             const int8_t  *xr  = x_q8 + i * n_in;
@@ -556,6 +652,31 @@ void linear_q4_1_w4a8_prefill_pre(size_t         m,
             y[i * n_out + n] = acc;
         }
     }
+}
+
+void linear_q4_1_w4a8_prefill_pre(size_t         m,
+                                  size_t         n_in,
+                                  size_t         n_out,
+                                  const int8_t  *x_q8,
+                                  const float   *x_scales,
+                                  const int32_t *bsums,
+                                  const void    *w_q4,
+                                  float         *y) {
+    const size_t                nb         = n_in / Q4_1_BLOCK_ELEMS;
+    const struct block_q4_1k_t *w          = (const struct block_q4_1k_t *) w_q4;
+    const size_t                nb_per_row = n_in / Q4_1_BLOCK_ELEMS;
+
+    struct q4_rows_job job = {.w          = w,
+                              .x_q8       = x_q8,
+                              .x_scales   = x_scales,
+                              .bsums      = bsums,
+                              .m          = m,
+                              .n_in       = n_in,
+                              .n_out      = n_out,
+                              .nb_per_row = nb_per_row,
+                              .nb         = nb,
+                              .y          = y};
+    geist_par_for(n_out, q4_1_prefill_rows, &job);
 }
 
 void linear_q4_1_w4a8_prefill(

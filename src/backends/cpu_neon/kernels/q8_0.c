@@ -5,6 +5,7 @@
  */
 #include "quant_blocks.h"
 #include "heap.h"
+#include "par.h"
 #include "quant.h"
 
 #include <stdint.h>
@@ -15,19 +16,24 @@
 #include <arm_neon.h>
 #endif
 
-void linear_q8_0_decode_w8a8_pre(size_t       n_in,
-                                 size_t       n_out,
-                                 const float *x_scales,
-                                 const int8_t x_q8[static n_in],
-                                 const void  *w_q8,
-                                 float        y[static n_out]) {
-    const struct block_q8_0_t *w          = (const struct block_q8_0_t *) w_q8;
-    const size_t               nb_per_row = n_in / Q8_0_BLOCK_ELEMS;
+/* One Q8_0 W8A8 call, for the row bodies below. */
+struct q8_0_rows_job {
+    const struct block_q8_0_t *w;
+    const int8_t              *x_q8;
+    const float               *x_scales;
+    size_t                     m, n_in, n_out, nb_per_row;
+    float                     *y;
+};
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+/* Output rows [n0, n1) of linear_q8_0_decode_w8a8_pre. */
+static void q8_0_decode_rows(void *ctx, size_t n0, size_t n1) {
+    const struct q8_0_rows_job *job        = ctx;
+    const struct block_q8_0_t  *w          = job->w;
+    const int8_t               *x_q8       = job->x_q8;
+    const float                *x_scales   = job->x_scales;
+    const size_t                nb_per_row = job->nb_per_row;
+    float                      *y          = job->y;
+    for (size_t n = n0; n < n1; n++) {
         const struct block_q8_0_t *row = w + n * nb_per_row;
         float                      acc = 0.0f;
         for (size_t b = 0; b < nb_per_row; b++) {
@@ -51,6 +57,22 @@ void linear_q8_0_decode_w8a8_pre(size_t       n_in,
     }
 }
 
+void linear_q8_0_decode_w8a8_pre(size_t       n_in,
+                                 size_t       n_out,
+                                 const float *x_scales,
+                                 const int8_t x_q8[static n_in],
+                                 const void  *w_q8,
+                                 float        y[static n_out]) {
+    struct q8_0_rows_job job = {.w          = (const struct block_q8_0_t *) w_q8,
+                                .x_q8       = x_q8,
+                                .x_scales   = x_scales,
+                                .n_in       = n_in,
+                                .n_out      = n_out,
+                                .nb_per_row = n_in / Q8_0_BLOCK_ELEMS,
+                                .y          = y};
+    geist_par_for(n_out, q8_0_decode_rows, &job);
+}
+
 void linear_q8_0_decode_w8a8(size_t      n_in,
                              size_t      n_out,
                              const float x[static n_in],
@@ -69,23 +91,19 @@ void linear_q8_0_decode_w8a8(size_t      n_in,
     safe_free((void **) &x_scales);
 }
 
-void linear_q8_0_w8a8_prefill_pre(size_t        m,
-                                  size_t        n_in,
-                                  size_t        n_out,
-                                  const int8_t *x_q8,
-                                  const float  *x_scales,
-                                  const void   *w_q8,
-                                  float        *y) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
-        return;
-    const struct block_q8_0_t *w          = (const struct block_q8_0_t *) w_q8;
-    const size_t               nb_per_row = n_in / Q8_0_BLOCK_ELEMS;
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+/* Output rows [n0, n1) of linear_q8_0_w8a8_prefill_pre. */
+static void q8_0_prefill_rows(void *ctx, size_t n0, size_t n1) {
+    const struct q8_0_rows_job *j          = ctx;
+    const struct block_q8_0_t  *w          = j->w;
+    const int8_t               *x_q8       = j->x_q8;
+    const float                *x_scales   = j->x_scales;
+    const size_t                m          = j->m;
+    const size_t                n_in       = j->n_in;
+    const size_t                n_out      = j->n_out;
+    const size_t                nb_per_row = j->nb_per_row;
+    float                      *y          = j->y;
+    for (size_t n = n0; n < n1; n++) {
         const struct block_q8_0_t *row = w + n * nb_per_row;
         if (n + 1 < n_out)
             __builtin_prefetch(row + nb_per_row, 0, 0);
@@ -111,6 +129,28 @@ void linear_q8_0_w8a8_prefill_pre(size_t        m,
         for (size_t i = 0; i < m; i++)
             y[i * n_out + n] = accs[i];
     }
+}
+#endif
+
+void linear_q8_0_w8a8_prefill_pre(size_t        m,
+                                  size_t        n_in,
+                                  size_t        n_out,
+                                  const int8_t *x_q8,
+                                  const float  *x_scales,
+                                  const void   *w_q8,
+                                  float        *y) {
+#if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
+    struct q8_0_rows_job job = {.w          = (const struct block_q8_0_t *) w_q8,
+                                .x_q8       = x_q8,
+                                .x_scales   = x_scales,
+                                .m          = m,
+                                .n_in       = n_in,
+                                .n_out      = n_out,
+                                .nb_per_row = n_in / Q8_0_BLOCK_ELEMS,
+                                .y          = y};
+    geist_par_for(n_out, q8_0_prefill_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;

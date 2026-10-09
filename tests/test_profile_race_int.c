@@ -75,7 +75,6 @@ static void arm_env_gated_paths(void) {
             {"GEIST_PROFILE_QUANT", "1"},   /* NEON activation-quant profiler */
             {"GEIST_Q4K_PACK_ACT", "1"},    /* Q4_K prefill activation packing */
             {"GEIST_Q6K_PACK_ACT", "1"},    /* Q6_K prefill activation packing */
-            {"GEIST_PP", "0"},              /* Q4_K predecode parallel-for */
             {"GEIST_FAST_TANH", "0"},       /* vision/audio softmax exp path */
             {"GEIST_SPEC_MIN_L", "2"},      /* speculative min match length */
     };
