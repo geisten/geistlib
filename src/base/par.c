@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 200809L /* sysconf, clock_gettime, sched_yield */
+#define _DARWIN_C_SOURCE 1      /* macOS hides _SC_NPROCESSORS_ONLN under strict POSIX */
 /*
  * src/base/par.c — geist_par_for on OpenMP, GCD or a pthread pool. See par.h.
  *
@@ -134,7 +135,9 @@ void geist_par_for(size_t n, geist_par_fn fn, void *ctx) {
         return;
     }
     struct gcd_job job = {.n = n, .T = T, .fn = fn, .ctx = ctx};
-    dispatch_apply_f(T, DISPATCH_APPLY_AUTO, &job, gcd_range);
+    /* the global concurrent queue: DISPATCH_APPLY_AUTO expands to a cast
+     * with a _Nonnull qualifier, a Clang extension -Werror rejects */
+    dispatch_apply_f(T, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), &job, gcd_range);
 }
 
 #else /* pthread pool */
