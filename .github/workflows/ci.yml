@@ -76,6 +76,15 @@ jobs:
             apple_silicon: true
             perf_gguf: qwen3.5-0.8b-q8_0.gguf
             perf_floors: --min-prefill 30 --min-decode 10
+          # No OpenMP (TARGET=mac): cpu_neon's loops run on GCD through
+          # geist_par_for (#618). The only leg that executes that backend;
+          # CPU pair only, so the Metal gate and perf floors stay with the
+          # leg above.
+          - name: macOS arm64 GCD (no OpenMP)
+            runner: macos-15
+            target: mac
+            cc: clang
+            bflags: BACKENDS="cpu_neon cpu_scalar"
           # Intel Mac: target-mac*.mk picks the x86 pair from `uname -m`.
           # The Metal probe/parity gate and the Apple perf floors are sized
           # for Apple silicon, so neither runs here.
