@@ -9,6 +9,28 @@ minor release.
 ## [Unreleased]
 
 ### Changed
+- **cpu_neon in a macOS VM uses the Linux kernel set, and Apple decode keeps
+  a spare core only from 6 P-cores up (#456).** The hosted `macos-15` runner
+  is an `Apple M1 (Virtual)` guest with 3 cores and no AMX: Accelerate's sgemm
+  runs at NEON fp32 speed there (84-112 GFLOP/s per thread, against
+  200-256 GOP/s of int8 SDOT). The Apple kernel defaults assume AMX
+  (dequant + `cblas_sgemm` prefill from m = 64, predecoded Q4_K/Q6_K layouts,
+  the interleaved Q6_K decode GEMV), so the hosted runner measured them at
+  NEON speed. `hw_probe` now reads `kern.hv_vmm_present` into
+  `is_virtual_machine`, and a guest gets the Linux defaults; bare-metal Macs
+  keep the Apple ones, and every `GEIST_*` policy variable still overrides.
+  Decode left one P-core idle on every Apple host (7 of 8 threads measured
+  best on the M1 Max). On 3 cores that leaves 2 threads for a GEMV that is
+  compute-bound per core, so the spare now starts at 6 P-cores. Hosted M1 VM,
+  Gemma 4 E2B Q4_K_M, `mac-ab` (main vs this change, 3 interleaved cycles):
+  prefill 29.1 / 27.2 / 25.2 / 23.6 -> 61.8 / 60.7 / 55.9 / 47.0 tok/s at
+  128 / 256 / 512 / 1024 (+99 to +123 %), decode 11.9 / 12.5 / 10.5 / 9.1 ->
+  16.9 / 13.4 / 11.9 / 10.6 (+8 to +41 %). A second job measured pp512 24.2 ->
+  49.5 and tg64 8.2 -> 9.7 (2 cycles x 10 samples), with llama.cpp at 57-77
+  and 19-22 in the same job. The bare-metal M1 Max cell
+  (`CROSS-ENGINE-APPLE-M1MAX.md`) is unchanged by construction and was not
+  re-measured.
+
 - **Vulkan decode attention reads each K/V row once per GQA group (#475).**
   The flash-decoding partial pass (`attn_part_f16`, n_q == 1, f16 KV, more
   than 192 keys) ran one workgroup per (128-key chunk, q-head), so every
