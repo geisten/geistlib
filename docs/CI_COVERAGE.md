@@ -22,9 +22,13 @@ Every environment in [`release.yml`](../.github/workflows/release.yml)
 top of the matrix, dedicated legs gate every PR: TSan multi-session (x86_64),
 the coverage ratchet (arm64), AVX-512 under Intel SDE, Vulkan on lavapipe, the
 Metal GPU step inside the macOS arm64 leg, and `check-headers` (every public
-header compiled standalone as C23 and C++17, inside `build-test`). Vulkan on a
-physical GPU (`vulkan-gpu`) runs on a self-hosted runner and gates branch PRs
-only, not fork PRs.
+header compiled standalone as C23 and C++17, inside `build-test`).
+
+No self-hosted runner is attached to this repository: on a public repo, any
+pull request can edit a workflow to target it. The hardware tier (Pi 5,
+native AVX-512, Vulkan on a physical GPU, A/B and cross-engine benchmarks)
+lives in the private `geisten/geistlib-hw`, which checks out this repo at a
+given ref — nightly on `main`, and on demand for a branch or a reviewed PR.
 
 ## Caveats and deliberate gaps
 
@@ -68,10 +72,9 @@ targeted W4A8/W8A8/Q4Kx8/Q6K/i2s and INT8-KV attention kernel tests execute
 with their built-in scalar-parity checks. Coverage tiers for x86 SIMD are therefore: **built**
 (all legs) → **opportunistically executed** (`build-test-x86_64`, CPU
 permitting, reported per run) → **guaranteed executed under emulation**
-(`avx512-sde`) → **real-hardware perf/e2e** (self-hosted only; runner
-contract: labels `[self-hosted, linux, x64, geist-avx512]`, mandatory
-AVX-512F/BW/DQ/VL+VNNI enforced by the same dispatch test, BF16 reported
-explicitly either way).
+(`avx512-sde`) → **real hardware** (`native-avx512` in `geisten/geistlib-hw`, nightly;
+mandatory AVX-512F/BW/DQ/VL+VNNI enforced by the same dispatch test, BF16
+reported explicitly either way).
 
 ## Model fixtures — what the int/e2e legs actually load
 
@@ -117,7 +120,7 @@ suite. The weekly `gemma4-metal-smoke` workflow generates end to end with the
 E2B reference on a hosted macOS runner (#305–#307); Qwen35 Metal e2e is a
 manual, fixture-provisioned gate.
 
-## Vulkan: software tier on every PR, hardware tier self-hosted
+## Vulkan: software tier on every PR, hardware tier nightly
 
 The `vulkan-lavapipe` job builds `BACKENDS="vulkan cpu_x86 cpu_scalar"` and
 executes `test_backend_vulkan_registry_unit`, the buffer round-trip test and
@@ -128,14 +131,12 @@ loader/device) fails the job. `vulkaninfo --summary` is logged per run.
 Tolerances live in the parity test: 1e-3 relative (f32 paths), 2e-2 for the
 f16 coopmat path where exposed. Minimum Vulkan: 1.2.
 
-Physical-GPU validation is self-hosted: the `vulkan-gpu` job runs the same
-three tests on a desktop with a discrete GPU — runner contract: labels
-`[self-hosted, linux, x64, geist-vulkan]`, working loader + ICD for the
-physical device, toolchain installed on the host (the job has no apt step).
-A missing device is a failure, not a skip, same as the lavapipe leg. Fork
-PRs are excluded by a `head.repo.full_name` guard — the runner is not
-sandboxed and this repo is public — so a fork gets no hardware tier.
-Setup and operational notes: `docs/CI_SELF_HOSTED.md`.
+Physical-GPU validation is the `vulkan-gpu` workflow in the private
+`geisten/geistlib-hw`, nightly on `main` and on demand for a ref: the same
+tests on a desktop with a discrete GPU (RTX 2080 Ti). A missing device is a
+failure, not a skip, same as the lavapipe leg. It does not gate PRs — a PR
+that touches the Vulkan backend is dispatched there by hand before merging.
+Runner setup and operational notes: that repo's README.
 
 On top of the three, this tier runs model e2e the emulated tiers cannot
 afford: `test_known_answer_e2e` (five cloze prompts, floor 4/5) and
@@ -151,7 +152,6 @@ pass or fail:
 | job | artifact | holds |
 | :-- | :-- | :-- |
 | `vulkan-lavapipe` | `vulkan-lavapipe-diagnostics` | `vulkaninfo --summary`, mesa/loader package versions, per-test output |
-| `vulkan-gpu` | `vulkan-gpu-diagnostics` | `vulkaninfo --summary`, `nvidia-smi`, per-test output |
 | `avx512-sde` | `avx512-sde-diagnostics` | host `lscpu`, per-test output under SDE |
 
 A Mesa or driver update can land under the job without a change in this

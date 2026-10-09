@@ -9,6 +9,14 @@ minor release.
 ## [Unreleased]
 
 ### Changed
+- **CI: no self-hosted runner on this public repository.** A pull request
+  can edit a workflow to target any runner attached to the repo, and a
+  job-level `if:` guard is part of the file it edits. The Pi 5, native
+  AVX-512 and Vulkan-GPU workflows (`pi5`, `pi5-ab`, `pi5-decision`,
+  `native-avx512`, `vulkan-ab`, `cross-engine-campaign`, and `ci.yml`'s
+  `vulkan-gpu` job) moved to the private `geisten/geistlib-hw`, which checks
+  this repo out at a ref: nightly on `main`, on demand for a branch or a
+  reviewed PR. `vulkan-gpu` no longer runs on branch PRs.
 - **cpu_neon in a macOS VM uses the Linux kernel set, and Apple decode keeps
   a spare core only from 6 P-cores up (#456).** The hosted `macos-15` runner
   is an `Apple M1 (Virtual)` guest with 3 cores and no AMX: Accelerate's sgemm
