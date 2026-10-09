@@ -9,6 +9,25 @@ minor release.
 ## [Unreleased]
 
 ### Changed
+- **Vulkan decode attention reads each K/V row once per GQA group (#475).**
+  The flash-decoding partial pass (`attn_part_f16`, n_q == 1, f16 KV, more
+  than 192 keys) ran one workgroup per (128-key chunk, q-head), so every
+  q-head of a group re-read its kv-head's cache. It now runs one workgroup
+  per (key span, kv-head, batch of up to 4 q-heads) and scores each K/V row
+  against all q-heads of the batch; spans start at the sliding window's
+  first key and walk 16/32/64-key tiles with an online softmax, sized so the
+  dispatch still fills the GPU with few kv-heads. Two variants
+  (`attn_part_g2_f16` for groups of 1-2, `attn_part_f16` for larger ones,
+  in batches of 4). `attn_comb` merges the spans in parallel per dim block
+  with subgroup reductions; the partial layout is now acc `[head][span][hd]`
+  followed by `(m, l)` `[head][span][2]`. RTX 2080 Ti, 3072 context, 2
+  alternating rounds: attention partial pass per call Qwen3 0.6B 46.6 ->
+  32.4 us, Gemma 4 E2B 32.0 -> 18.0, Llama 3.2 3B 68.9 -> 38.8, Qwen3.5 4B
+  77.5 -> 40.4; decode tok/s at 3072 Qwen3 0.6B 246 -> 268 (+9 %), Gemma 4
+  E2B 145 -> 153 (+5 %), Llama 3.2 3B 124 -> 136 (+10 %), Qwen3.5 4B 113
+  -> 116 (+3 %); 512 context unchanged within noise. Greedy tokens equal
+  main's at 1000 and 3000 context on all four models.
+
 - **CI: the self-hosted GPU steps take the machine-wide GPU lock (#706).**
   `scripts/gpu-lock.sh` (sourced at the top of a step) takes the same
   `flock` on `$GEIST_GPU_LOCK` (default `/tmp/geist-gpu.lock`) as

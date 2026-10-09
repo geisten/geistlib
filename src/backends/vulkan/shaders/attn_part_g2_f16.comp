@@ -1,0 +1,7 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+/* Flash-decoding partial pass serving GQA groups of 1..2 q-heads per kv-head
+ * (Qwen3 0.6B: 2). Body and notes: attn_part_f16_body.glsl. */
+#define GROUP 2u
+#include "attn_part_f16_body.glsl"

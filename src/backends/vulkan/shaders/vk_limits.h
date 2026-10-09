@@ -49,8 +49,21 @@
 
 /* attention_f{16,32} and attn_part_f16: q staged in shared memory. */
 #define VK_ATTN_MAX_HEAD_DIM 512u
-/* attn_part_f16: KV positions per workgroup (one per lane). */
-#define VK_ATTN_PART_CHUNK 128u
+/* attn_part_f16{,_g2}: lanes per workgroup (>= VK_ATTN_MAX_HEAD_DIM / 4: a
+ * lane per 4-wide dim slice), the largest tile of key positions it scores at
+ * once, and the most q-heads of a GQA group one workgroup serves (q staged
+ * as MAX_GROUP x MAX_HEAD_DIM floats; the _g2 variant serves up to 2). */
+#define VK_ATTN_PART_WG 128u
+#define VK_ATTN_PART_TILE_MAX 64u
+#define VK_ATTN_PART_MAX_GROUP 4u
+/* attn_part_f16 dispatch size the host aims for (ops.c). */
+#define VK_ATTN_PART_TARGET_WG 256u
+/* attn_comb: lanes per workgroup, 4-wide dim slices per workgroup (y blocks
+ * cover the head) and the spans whose merge factors it caches in shared
+ * memory (more are recomputed). */
+#define VK_ATTN_COMB_WG 256u
+#define VK_ATTN_COMB_SLICES 32u
+#define VK_ATTN_COMB_MAX_FAC 2048u
 
 /* deltanet_delta_f32: q/k staged in shared memory (d_k), one lane per value
  * column (d_v). deltanet_conv_f32: the tap window lives in registers. */

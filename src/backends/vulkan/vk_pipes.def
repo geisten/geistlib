@@ -48,6 +48,7 @@ X(VK_PIPE_ATTENTION_F16,          attention_f16_spv,           "attention_f16", 
 X(VK_PIPE_QKV_PREP_F16,           qkv_prep_f16_spv,            "qkv_prep_f16",           6, PLAIN)
 X(VK_PIPE_KV_APPEND_F16,          kv_append_f16_spv,           "kv_append_f16",          4, PLAIN)
 X(VK_PIPE_ATTN_PART_F16,          attn_part_f16_spv,           "attn_part_f16",          4, PLAIN)
+X(VK_PIPE_ATTN_PART_G2_F16,       attn_part_g2_f16_spv,        "attn_part_g2_f16",       4, PLAIN)
 X(VK_PIPE_ATTN_COMB,              attn_comb_spv,               "attn_comb",              2, PLAIN)
 /* small-n_out tensor-core tile */
 X(VK_PIPE_MM_Q4K_CM32,            matmul_q4k_cm32_spv,         "mm_q4k_cm32",            3, COOPMAT)

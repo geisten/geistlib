@@ -1340,14 +1340,36 @@ static_assert(sizeof(struct vk_hadamard_push) == 11 * 4, "hadamard_f32.comp push
 
 /* attn_part_f16.comp's and attn_comb.comp's push blocks, field for field. */
 struct vk_attn_part_push {
-    uint32_t n_kv, n_q_heads, n_kv_heads, hd, q_abs, sliding_window;
-    uint32_t q_offset, k_offset, v_offset, p_offset, n_chunks;
+    uint32_t n_q_heads, n_kv_heads, hd, s_lo, s_end, tile, n_tiles, gb;
+    uint32_t q_offset, k_offset, v_offset, p_offset, n_spans;
 };
-static_assert(sizeof(struct vk_attn_part_push) == 11 * 4, "attn_part_f16.comp push block");
+static_assert(sizeof(struct vk_attn_part_push) == 13 * 4, "attn_part_f16.comp push block");
 struct vk_attn_comb_push {
     uint32_t n_q_heads, hd, n_chunks, p_offset, out_offset;
 };
 static_assert(sizeof(struct vk_attn_comb_push) == 5 * 4, "attn_comb.comp push block");
+
+/* attn_part_f16's span geometry for `active` keys: enough workgroups
+ * (spans x kv-heads x q-head batches) to fill the GPU, otherwise the longest
+ * spans (fewest partials for attn_comb). Smaller tiles only when 64-key
+ * tiles alone cannot reach the target (few kv-heads, short windows). */
+static void vk_attn_part_geometry(uint32_t  active,
+                                  uint32_t  wg_per_span,
+                                  uint32_t *tile,
+                                  uint32_t *n_tiles,
+                                  uint32_t *n_spans) {
+    const uint32_t target = VK_ATTN_PART_TARGET_WG;
+    uint32_t       t      = VK_ATTN_PART_TILE_MAX;
+    while (t > 16u && (uint64_t) wg_per_span * (active / t + (active % t != 0u)) < target) {
+        t >>= 1u;
+    }
+    const uint32_t tiles = active == 0u ? 1u : active / t + (active % t != 0u);
+    const uint32_t want  = target / wg_per_span + (target % wg_per_span != 0u); /* spans wanted */
+    const uint32_t per   = want >= tiles ? 1u : (tiles + want - 1u) / want;
+    *tile                = t;
+    *n_tiles             = per;
+    *n_spans             = (tiles + per - 1u) / per;
+}
 
 [[nodiscard]] static enum geist_status vk_attention(struct geist_backend      *be,
                                                     const struct geist_tensor *q,
@@ -1357,21 +1379,33 @@ static_assert(sizeof(struct vk_attn_comb_push) == 5 * 4, "attn_comb.comp push bl
                                                     size_t                     sliding_window,
                                                     struct geist_tensor       *out) {
     /* Flash-decoding: n_q == 1 with f16 KV and enough context to make the
-     * 8-workgroup direct kernel starve the GPU. Partials go into the
-     * device x-ring; a combine pass reduces per head. */
+     * one-workgroup-per-head direct kernel starve the GPU. Partials go into
+     * the device x-ring; a combine pass reduces per head. */
     struct vk_state *stt = be->state;
     if (q != nullptr && k != nullptr && v != nullptr && out != nullptr && q->ndim == 3 &&
         q->shape[0] == 1 && k->dtype == GEIST_DTYPE_F16 && (size_t) k->shape[0] > 192 &&
-        q->shape[2] <= VK_ATTN_MAX_HEAD_DIM && vk_t_n(q) != 0 && vk_t_n16(k) != 0 &&
-        stt->pipes[VK_PIPE_ATTN_PART_F16] != VK_NULL_HANDLE) {
+        q->shape[2] <= VK_ATTN_MAX_HEAD_DIM && q->shape[2] % 4 == 0 && k->shape[1] > 0 &&
+        q->shape[1] % k->shape[1] == 0 && vk_t_n(q) != 0 && vk_t_n16(k) != 0 &&
+        stt->pipes[VK_PIPE_ATTN_PART_F16] != VK_NULL_HANDLE &&
+        stt->pipes[VK_PIPE_ATTN_PART_G2_F16] != VK_NULL_HANDLE) {
         uint32_t qh, hd, n_kv, kvh, qpos, win;
         if (vk_ckd_u32((size_t) q->shape[1], &qh) || vk_ckd_u32((size_t) q->shape[2], &hd) ||
             vk_ckd_u32((size_t) k->shape[0], &n_kv) || vk_ckd_u32((size_t) k->shape[1], &kvh) ||
             vk_ckd_u32(q_offset, &qpos) || vk_ckd_u32(sliding_window, &win)) {
             return vk_too_wide(be, "attention");
         }
-        const uint32_t n_chunks =
-                n_kv / VK_ATTN_PART_CHUNK + (n_kv % VK_ATTN_PART_CHUNK != 0u ? 1u : 0u);
+        /* keys [s_lo, s_end): causal and sliding-window bounds of the query */
+        const uint32_t s_end = qpos < n_kv ? qpos + 1u : n_kv;
+        const uint32_t s_lo  = win > 0u && qpos >= win ? qpos + 1u - win : 0u;
+        /* q-heads per workgroup: the whole GQA group, in batches of at most
+         * VK_ATTN_PART_MAX_GROUP; the narrowest variant that holds one */
+        const uint32_t grp  = qh / kvh;
+        const uint32_t n_zb = grp / VK_ATTN_PART_MAX_GROUP + (grp % VK_ATTN_PART_MAX_GROUP != 0u);
+        const uint32_t gb   = grp / n_zb + (grp % n_zb != 0u);
+        const enum vk_pipe part_pipe = gb <= 2u ? VK_PIPE_ATTN_PART_G2_F16 : VK_PIPE_ATTN_PART_F16;
+        uint32_t           tile, n_tiles, n_chunks;
+        vk_attn_part_geometry(
+                s_lo < s_end ? s_end - s_lo : 0u, kvh * n_zb, &tile, &n_tiles, &n_chunks);
         const size_t           part_bytes = (size_t) qh * n_chunks * (hd + 2u) * 4u;
         VkDescriptorBufferInfo bq, bk, bv, bo;
         uint32_t               qo, ko, vo, oo;
@@ -1395,7 +1429,7 @@ static_assert(sizeof(struct vk_attn_comb_push) == 5 * 4, "attn_comb.comp push bl
             return vk_too_wide(be, "attention");
         }
         const struct vk_attn_part_push push1 = {
-                n_kv, qh, kvh, hd, qpos, win, qo, ko, vo, po, n_chunks};
+                qh, kvh, hd, s_lo, s_end, tile, n_tiles, gb, qo, ko, vo, po, n_chunks};
         VkDescriptorBufferInfo bi1[4] = {
                 bq, bk, bv, {.buffer = stt->xring->buf, .range = VK_WHOLE_SIZE}};
         const struct vk_access acc1[4] = {vk_acc_tensor(q, false),
@@ -1403,7 +1437,7 @@ static_assert(sizeof(struct vk_attn_comb_push) == 5 * 4, "attn_comb.comp push bl
                                           vk_acc_tensor16(v, false),
                                           vk_acc(stt->xring_used, part_bytes, true)};
         if (vk_seq_dispatch_acc(
-                    be, VK_PIPE_ATTN_PART_F16, bi1, acc1, &push1, sizeof(push1), n_chunks, qh, 1) !=
+                    be, part_pipe, bi1, acc1, &push1, sizeof(push1), n_chunks, kvh, n_zb) !=
             GEIST_OK) {
             goto attn_generic;
         }
@@ -1412,8 +1446,16 @@ static_assert(sizeof(struct vk_attn_comb_push) == 5 * 4, "attn_comb.comp push bl
         const struct vk_access acc2[2] = {vk_acc(stt->xring_used, part_bytes, false),
                                           vk_acc_tensor(out, true)};
         stt->xring_used                = (stt->xring_used + part_bytes + 63u) & ~(size_t) 63u;
-        return vk_seq_dispatch_acc(
-                be, VK_PIPE_ATTN_COMB, bi2, acc2, &push2, sizeof(push2), qh, 1, 1);
+        const uint32_t hd4             = hd / 4u;
+        return vk_seq_dispatch_acc(be,
+                                   VK_PIPE_ATTN_COMB,
+                                   bi2,
+                                   acc2,
+                                   &push2,
+                                   sizeof(push2),
+                                   qh,
+                                   hd4 / VK_ATTN_COMB_SLICES + (hd4 % VK_ATTN_COMB_SLICES != 0u),
+                                   1);
     }
 attn_generic:;
     {

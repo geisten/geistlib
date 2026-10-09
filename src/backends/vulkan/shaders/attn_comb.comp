@@ -1,60 +1,128 @@
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_KHR_shader_subgroup_basic : enable
+#include "vk_limits.h"
 
-/* Flash-decoding combine: one workgroup per q-head merges its chunk
- * partials [head][chunk][hd+2] into out[head][hd]. */
+/* Flash-decoding combine: one workgroup per (q-head, block of up to
+ * VK_ATTN_COMB_SLICES 4-wide dim slices) merges the head's span partials
+ * into out[head][hd]. Partials (attn_part_f16.comp): acc as
+ * [head][span][hd] at p_offset, then (m, l) as [head][span][2]. The
+ * workgroup reduces the global max and the denominator over all spans in
+ * parallel, then the lanes split into dim slices x span groups (loads
+ * batched, UNR in flight) and merge through shared memory. */
 
-layout(local_size_x = 256) in;
+layout(local_size_x = VK_ATTN_COMB_WG) in;
 
 layout(set = 0, binding = 0) readonly buffer P { float part[]; };
+layout(set = 0, binding = 0) readonly buffer P4 { vec4 part4[]; };
 layout(set = 0, binding = 1) writeonly buffer O { float out_v[]; };
 
 layout(push_constant) uniform Push {
     uint n_q_heads;
     uint hd;
     uint n_chunks;
-    uint p_offset;
+    uint p_offset; /* multiple of 4 (vec4 view) */
     uint out_offset;
 } pc;
 
-shared float m_sh;
-shared float l_sh;
+const uint WG = VK_ATTN_COMB_WG;
+const uint SLICES = VK_ATTN_COMB_SLICES;
+const uint UNR = 8u;
+const float NEG_INF = -1.0 / 0.0;
+
+shared float red[WG];
+shared vec4 acc_sh[WG];
+shared float fac[VK_ATTN_COMB_MAX_FAC];
 
 void main() {
     uint head = gl_WorkGroupID.x;
     uint lid = gl_LocalInvocationID.x;
-    if (head >= pc.n_q_heads) {
+    uint hd = pc.hd;
+    uint sl0 = gl_WorkGroupID.y * SLICES; /* first dim slice of the block */
+    if (head >= pc.n_q_heads || (hd & 3u) != 0u || sl0 >= (hd >> 2u)) {
         return;
     }
-    uint hd = pc.hd;
-    uint pb = pc.p_offset + head * pc.n_chunks * (hd + 2u);
+    uint hd4 = hd >> 2u;
+    uint ns = min(SLICES, hd4 - sl0); /* slices in this block */
+    uint n = pc.n_chunks;
+    uint ml = pc.p_offset + pc.n_q_heads * n * hd + head * n * 2u; /* (m, l) pairs */
 
-    if (lid == 0u) {
-        float m = (-1.0 / 0.0);
-        for (uint c = 0; c < pc.n_chunks; c++) {
-            m = max(m, part[pb + c * (hd + 2u) + hd]);
-        }
-        float l = 0.0;
-        for (uint c = 0; c < pc.n_chunks; c++) {
-            float mc = part[pb + c * (hd + 2u) + hd];
-            if (mc > (-1.0 / 0.0)) {
-                l += part[pb + c * (hd + 2u) + hd + 1u] * exp(mc - m);
-            }
-        }
-        m_sh = m;
-        l_sh = l;
+    float m = NEG_INF;
+    for (uint c = lid; c < n; c += WG) {
+        m = max(m, part[ml + 2u * c]);
+    }
+    m = subgroupMax(m); /* then one shared pass over the subgroups */
+    if (subgroupElect()) {
+        red[gl_SubgroupID] = m;
     }
     barrier();
-    float m = m_sh;
-    float inv_l = l_sh > 0.0 ? 1.0 / l_sh : 0.0;
+    for (uint i = 0; i < gl_NumSubgroups; i++) {
+        m = max(m, red[i]);
+    }
+    barrier();
 
-    for (uint d = lid; d < hd; d += 256u) {
-        float acc = 0.0;
-        for (uint c = 0; c < pc.n_chunks; c++) {
-            float mc = part[pb + c * (hd + 2u) + hd];
-            if (mc > (-1.0 / 0.0)) {
-                acc += part[pb + c * (hd + 2u) + d] * exp(mc - m);
+    float l = 0.0;
+    for (uint c = lid; c < n; c += WG) {
+        float mc = part[ml + 2u * c];
+        float f = mc > NEG_INF ? exp(mc - m) : 0.0;
+        if (c < VK_ATTN_COMB_MAX_FAC) {
+            fac[c] = f;
+        }
+        l += part[ml + 2u * c + 1u] * f;
+    }
+    l = subgroupAdd(l);
+    if (subgroupElect()) {
+        red[gl_SubgroupID] = l;
+    }
+    barrier(); /* also publishes fac[] */
+    l = 0.0;
+    for (uint i = 0; i < gl_NumSubgroups; i++) {
+        l += red[i];
+    }
+    float inv_l = l > 0.0 ? 1.0 / l : 0.0;
+
+    uint ngrp = WG / ns;
+    uint grp = lid / ns;
+    uint sl = lid - grp * ns;
+    vec4 a = vec4(0.0);
+    if (grp < ngrp) {
+        uint ab4 = (pc.p_offset >> 2u) + head * n * hd4 + sl0 + sl;
+        for (uint c0 = grp; c0 < n; c0 += UNR * ngrp) {
+            vec4 pv[UNR];
+            [[unroll]] for (uint u = 0; u < UNR; u++) {
+                uint c = c0 + u * ngrp;
+                pv[u] = c < n ? part4[ab4 + c * hd4] : vec4(0.0);
+            }
+            [[unroll]] for (uint u = 0; u < UNR; u++) {
+                uint c = c0 + u * ngrp;
+                if (c < n) {
+                    float f;
+                    if (c < VK_ATTN_COMB_MAX_FAC) {
+                        f = fac[c];
+                    } else {
+                        float mc = part[ml + 2u * c];
+                        f = mc > NEG_INF ? exp(mc - m) : 0.0;
+                    }
+                    if (f > 0.0) {
+                        a += f * pv[u];
+                    }
+                }
             }
         }
-        out_v[pc.out_offset + head * hd + d] = acc * inv_l;
+        acc_sh[grp * ns + sl] = a;
+    }
+    barrier();
+    if (lid < ns) {
+        vec4 s = vec4(0.0);
+        for (uint g = 0; g < ngrp; g++) {
+            s += acc_sh[g * ns + lid];
+        }
+        s *= inv_l;
+        uint ob = pc.out_offset + head * hd + 4u * (sl0 + lid);
+        out_v[ob + 0u] = s.x;
+        out_v[ob + 1u] = s.y;
+        out_v[ob + 2u] = s.z;
+        out_v[ob + 3u] = s.w;
     }
 }

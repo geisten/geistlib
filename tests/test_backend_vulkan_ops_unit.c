@@ -575,6 +575,23 @@ int main(void) {
     test_attention_f16(300, 300, 0, 8, 2, 256, 0, 4.0f, "300 x256 large logits");
     test_attention_f16(260, 300, 40, 8, 1, 512, 0, 3.0f, "260 x512 large logits");
     test_attention_f16(260, 260, 0, 16, 8, 128, 64, 6.0f, "260 x128 win 64 large");
+    /* decode (n_q == 1, kv > 192): the flash-decoding partial/combine path
+     * (#475). One workgroup serves up to 4 q-heads of a GQA group (groups of
+     * 1, 2, 3 and 4 in one batch; 8 and 16 in batches of 4); key spans start
+     * at the window's first key and walk 16-, 32- or 64-key tiles, so the
+     * cases put the range ends on and off tile and span boundaries, with
+     * head_dim 64 / 96 / 128 / 256 / 512. */
+    test_attention_f16(1, 300, 299, 8, 8, 64, 0, 0.6f, "decode kv=300 MHA x64");
+    test_attention_f16(1, 512, 511, 16, 8, 128, 0, 0.6f, "decode kv=512 GQA2 x128");
+    test_attention_f16(1, 513, 512, 16, 8, 128, 0, 0.6f, "decode kv=513 GQA2 x128");
+    test_attention_f16(1, 1025, 1024, 24, 8, 96, 0, 0.6f, "decode kv=1025 GQA3 x96");
+    test_attention_f16(1, 2049, 2048, 8, 1, 512, 0, 0.6f, "decode kv=2049 GQA8 x512");
+    test_attention_f16(1, 2049, 2048, 8, 1, 256, 512, 0.6f, "decode 2049 GQA8 x256 w512");
+    test_attention_f16(1, 700, 699, 8, 1, 256, 100, 3.0f, "decode 700 GQA8 w100 large");
+    test_attention_f16(1, 1000, 999, 16, 1, 128, 0, 4.0f, "decode 1000 GQA16 large");
+    test_attention_f16(1, 333, 332, 16, 4, 256, 17, 0.6f, "decode 333 GQA4 w17");
+    test_attention_f16(1, 400, 250, 8, 2, 128, 0, 0.6f, "decode kv=400 q_off=250");
+    test_attention_f16(1, 3072, 3071, 16, 8, 128, 0, 6.0f, "decode 3072 GQA2 large");
     geist_backend_destroy(g_be);
     for (size_t i = 0; i < sizeof tables / sizeof tables[0]; i++) {
         free(tables[i]);
