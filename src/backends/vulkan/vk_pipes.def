@@ -128,3 +128,16 @@ X(VK_PIPE_MM_F32_CM128,           matmul_f32_t128_cm_spv,      "mm_f32_cm128",  
  * workgroups per SM, for GEMMs with more workgroups than SMs */
 X(VK_PIPE_MM_Q4K_CM128_SB,        matmul_q4k_t128_sb_cm_spv,   "mm_q4k_cm128_sb",        3, COOPMAT)
 X(VK_PIPE_MM_Q6K_CM128_SB,        matmul_q6k_t128_sb_cm_spv,   "mm_q6k_cm128_sb",        3, COOPMAT)
+/* Q4_0 / Q8_0 / Q4_1 / Q5_K in the 128 x 128 PQ2_0 tensor-core frame, each
+ * also single-buffered (#467) */
+X(VK_PIPE_MM_Q4_0_CM128,          matmul_q4_0_t128_cm_spv,     "mm_q4_0_cm128",          3, COOPMAT)
+X(VK_PIPE_MM_Q4_0_CM128_SB,       matmul_q4_0_t128_sb_cm_spv,  "mm_q4_0_cm128_sb",       3, COOPMAT)
+X(VK_PIPE_MM_Q8_0_CM128,          matmul_q8_0_t128_cm_spv,     "mm_q8_0_cm128",          3, COOPMAT)
+X(VK_PIPE_MM_Q8_0_CM128_SB,       matmul_q8_0_t128_sb_cm_spv,  "mm_q8_0_cm128_sb",       3, COOPMAT)
+X(VK_PIPE_MM_Q4_1_CM128,          matmul_q4_1_t128_cm_spv,     "mm_q4_1_cm128",          3, COOPMAT)
+X(VK_PIPE_MM_Q4_1_CM128_SB,       matmul_q4_1_t128_sb_cm_spv,  "mm_q4_1_cm128_sb",       3, COOPMAT)
+X(VK_PIPE_MM_Q5K_CM128,           matmul_q5k_t128_cm_spv,      "mm_q5k_cm128",           3, COOPMAT)
+X(VK_PIPE_MM_Q5K_CM128_SB,        matmul_q5k_t128_sb_cm_spv,   "mm_q5k_cm128_sb",        3, COOPMAT)
+/* Q8_0 matvec over a batch (one row per workgroup row), for GEMMs too narrow
+ * for the tensor-core tiles */
+X(VK_PIPE_MATVEC_Q8_0_MT,         matvec_q8_0_mt_spv,          "matvec_q8_0_mt",         3, PLAIN)

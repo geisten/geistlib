@@ -738,26 +738,59 @@ void vk_linear_cm_route(struct vk_state *st,
      * (1536 x 512 -> 192) and is ~15-20 % faster end to end (#658). */
     const bool cm32 = cm == VK_PIPE_MM_Q4K_CM && n_out < 4096u && m < 256u &&
                       st->pipes[VK_PIPE_MM_Q4K_CM32] != VK_NULL_HANDLE;
-    /* Q4_K / Q6_K in the 128 x 128 PQ2_0 frame (#658): about twice the
-     * throughput of the smaller tiles once it has workgroups enough, but one
-     * of its workgroups costs the same however few tokens it holds, while the
-     * smaller tiles' cost shrinks with n_out * m. Measured on an RTX 2080 Ti
-     * across the Gemma 4 / Llama 3.2 shapes: it wins from n_out * m >= 3 * 2^16
-     * against the 32 x 32 tile and from 5 * 2^16 against the 64 x 64 one. */
-    const enum vk_pipe c128 = cm == VK_PIPE_MM_Q4K_CM   ? VK_PIPE_MM_Q4K_CM128
-                              : cm == VK_PIPE_MM_Q6K_CM ? VK_PIPE_MM_Q6K_CM128
-                                                        : VK_PIPE_COUNT;
+    /* Q4_K / Q6_K / Q5_K in the 128 x 128 PQ2_0 frame (#658, #467): about
+     * twice the throughput of the smaller tiles once it has workgroups enough,
+     * but one of its workgroups costs the same however few tokens it holds,
+     * while the smaller tiles' cost shrinks with n_out * m. Measured on an
+     * RTX 2080 Ti across the Gemma 4 / Llama 3.2 / Qwen3.5 shapes: it wins
+     * from n_out * m >= 3 * 2^16 against the 32 x 32 tile and from 5 * 2^16
+     * against the 64 x 64 one. The legacy types' 64 x 64 tile dequantizes
+     * more cheaply, so Q4_0 / Q8_0 / Q4_1 move only from 7 * 2^16 (at 128
+     * tokens n_out 3584 and up win, e.g. Q8_0 1024 -> 3584: 116 -> 104 us;
+     * 3072 x 128 and 6144 x 64 still lose by 3-25 %). */
+    enum vk_pipe c128 = VK_PIPE_COUNT, sb = VK_PIPE_COUNT;
+    uint64_t     c128_min = cm32 ? 3u << 16 : 5u << 16;
+    switch (cm) {
+    case VK_PIPE_MM_Q4K_CM:
+        c128 = VK_PIPE_MM_Q4K_CM128;
+        sb   = VK_PIPE_MM_Q4K_CM128_SB;
+        break;
+    case VK_PIPE_MM_Q6K_CM:
+        c128 = VK_PIPE_MM_Q6K_CM128;
+        sb   = VK_PIPE_MM_Q6K_CM128_SB;
+        break;
+    case VK_PIPE_MM_Q5K_CM:
+        c128 = VK_PIPE_MM_Q5K_CM128;
+        sb   = VK_PIPE_MM_Q5K_CM128_SB;
+        break;
+    case VK_PIPE_MM_Q4_0_CM:
+        c128     = VK_PIPE_MM_Q4_0_CM128;
+        sb       = VK_PIPE_MM_Q4_0_CM128_SB;
+        c128_min = 7u << 16;
+        break;
+    case VK_PIPE_MM_Q8_0_CM:
+        c128     = VK_PIPE_MM_Q8_0_CM128;
+        sb       = VK_PIPE_MM_Q8_0_CM128_SB;
+        c128_min = 7u << 16;
+        break;
+    case VK_PIPE_MM_Q4_1_CM:
+        c128     = VK_PIPE_MM_Q4_1_CM128;
+        sb       = VK_PIPE_MM_Q4_1_CM128_SB;
+        c128_min = 7u << 16;
+        break;
+    default:
+        break;
+    }
     if (c128 != VK_PIPE_COUNT && n_out % 128u == 0 && st->pipes[c128] != VK_NULL_HANDLE &&
-        (uint64_t) n_out * m >= (cm32 ? 3u << 16 : 5u << 16)) {
+        (uint64_t) n_out * m >= c128_min) {
         *pipe = c128;
         *gx   = n_out / 128u;
         *gy   = (m + 127u) / 128u;
         /* With more workgroups than the GPU has SMs, the single-buffered
          * variant (half the shared memory, two workgroups per SM) wins:
-         * 20-45 % on an RTX 2080 Ti (68 SMs) from 80 workgroups up, 3-7 %
-         * slower at 64 and below, where the SMs are not all busy anyway. */
-        const enum vk_pipe sb =
-                c128 == VK_PIPE_MM_Q4K_CM128 ? VK_PIPE_MM_Q4K_CM128_SB : VK_PIPE_MM_Q6K_CM128_SB;
+         * 20-45 % on an RTX 2080 Ti (68 SMs) from 72-80 workgroups up (Q4_0
+         * 9216 x 128: 360 -> 260 us), 3-7 % slower at 64 and below, where
+         * the SMs are not all busy anyway. */
         if (*gx * *gy > 64u && st->pipes[sb] != VK_NULL_HANDLE) {
             *pipe = sb;
         }
@@ -785,6 +818,20 @@ void vk_linear_cm_route(struct vk_state *st,
     *gy   = (m + tile_toks - 1u) / tile_toks;
 }
 
+/* A Q8_0 GEMM of at most 2^15 outputs runs as a matvec per batch row
+ * (matvec_q8_0_mt.comp, #467). The tiled GEMMs walk the whole k range in one
+ * workgroup per tile, so a GEMM of few tiles is one long serial loop: Qwen3.5's
+ * 32 x 2560 DeltaNet alpha / beta projections at 128 tokens took 164 us on the
+ * register-tiled kernel (4 x 4 workgroups) and take 16 us this way; measured
+ * on an RTX 2080 Ti, it also beats the 64 x 64 tensor-core tile up to
+ * n_out * rows = 2^15 (256 x 128: 145 -> 91 us) and the register-tiled
+ * m % 16 tails (2048 x 12: 106 -> 69 us). */
+static bool vk_q8_0_narrow(const struct vk_state *st, enum vk_pipe pipe, const struct vk_push *p) {
+    return pipe == VK_PIPE_MATMUL_Q8_0 && p->rows > 1 && p->rows <= 65535u &&
+           (uint64_t) p->n_out * p->rows <= 1u << 15 && p->x_stride % 4u == 0 &&
+           st->pipes[VK_PIPE_MATVEC_Q8_0_MT] != VK_NULL_HANDLE;
+}
+
 /* Dispatch one linear of push->rows batch rows through `pipe` (a matvec for
  * one row, else a register-tiled GEMM). The tensor-core kernels need a
  * multiple of 16 rows, so a GEMM whose row count is not one runs its leading
@@ -803,6 +850,17 @@ void vk_linear_cm_route(struct vk_state *st,
     enum vk_pipe     cm   = pipe;
     uint32_t         gx   = vk_linear_gx(pipe, push->n_out);
     uint32_t         gy   = vk_linear_gy(pipe, m);
+    if (vk_q8_0_narrow(st, pipe, push)) {
+        return vk_seq_dispatch_acc(be,
+                                   VK_PIPE_MATVEC_Q8_0_MT,
+                                   infos,
+                                   acc,
+                                   push,
+                                   sizeof(*push),
+                                   vk_linear_gx(VK_PIPE_MATVEC_Q8_0, push->n_out),
+                                   m,
+                                   1);
+    }
     if (m > 1 && m_hi != 0) {
         vk_linear_cm_route(st, &cm, m_hi, push->n_in, push->n_out, &gx, &gy);
     }
@@ -820,6 +878,17 @@ void vk_linear_cm_route(struct vk_state *st,
     if (vk_ckd_u32((size_t) push->x_offset + (size_t) m_hi * push->x_stride, &tail.x_offset) ||
         vk_ckd_u32((size_t) push->y_offset + (size_t) m_hi * push->y_stride, &tail.y_offset)) {
         return vk_too_wide(be, "linear");
+    }
+    if (vk_q8_0_narrow(st, pipe, &tail)) {
+        return vk_seq_dispatch_acc(be,
+                                   VK_PIPE_MATVEC_Q8_0_MT,
+                                   infos,
+                                   acc,
+                                   &tail,
+                                   sizeof(tail),
+                                   vk_linear_gx(VK_PIPE_MATVEC_Q8_0, push->n_out),
+                                   tail.rows,
+                                   1);
     }
     return vk_seq_dispatch_acc(be,
                                pipe,

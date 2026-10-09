@@ -1,0 +1,9 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+
+/* Q8_0 matvec over a batch, one row per gl_WorkGroupID.y, for GEMMs too
+ * narrow for the tensor-core tiles (#467) — body and notes in mv_legacy.glsl */
+#define DT_Q8_0 1
+#define MV_BATCH 1
+#include "mv_legacy.glsl"
