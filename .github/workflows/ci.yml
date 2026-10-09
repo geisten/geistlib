@@ -80,7 +80,7 @@ jobs:
           # geist_par_for (#618). The only leg that executes that backend;
           # CPU pair only, so the Metal gate and perf floors stay with the
           # leg above.
-          - name: macOS arm64, GCD (no OpenMP)
+          - name: macOS arm64 GCD (no OpenMP)
             runner: macos-15
             target: mac
             cc: clang
