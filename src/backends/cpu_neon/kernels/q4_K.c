@@ -11,6 +11,7 @@
 #include "quant_blocks.h"
 #include "heap.h"
 #include "linear_ref.h"
+#include "par.h"
 #include "quant.h"
 #include "gemma4_kernels.h"
 
@@ -25,25 +26,7 @@
 #include <arm_neon.h>
 #endif
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
-
-typedef void (*geist_pp_body_fn)(size_t i, void *ctx);
-extern void geist_pp_parallel_for(size_t n, geist_pp_body_fn body_fn, void *ctx)
-        __attribute__((weak));
-
-static int q4k_pp_enabled(void) {
-    static _Atomic int enabled = -1;
-    int                v       = atomic_load_explicit(&enabled, memory_order_relaxed);
-    if (v >= 0) {
-        return v;
-    }
-    const char *e = getenv("GEIST_PP");
-    v             = (e != nullptr && e[0] == '1') ? 1 : 0;
-    atomic_store_explicit(&enabled, v, memory_order_relaxed);
-    return v;
-}
+#include "../parallel.h"
 
 struct q4k_predecode_header {
     uint32_t magic;
@@ -390,8 +373,11 @@ static inline void q4k_decode_one_row(size_t n, const struct q4k_decode_ctx *c) 
     c->y[n] = acc;
 }
 
-static void q4k_pp_row(size_t n, void *vctx) {
-    q4k_decode_one_row(n, (const struct q4k_decode_ctx *) vctx);
+/* Output rows [n0, n1) of one decode; the ctx copied into a local. */
+static void q4k_decode_rows(void *ctx, size_t n0, size_t n1) {
+    const struct q4k_decode_ctx c = *(const struct q4k_decode_ctx *) ctx;
+    for (size_t n = n0; n < n1; n++)
+        q4k_decode_one_row(n, &c);
 }
 
 void linear_q4k_decode_w4a8_pre(size_t         n_in,
@@ -401,7 +387,7 @@ void linear_q4k_decode_w4a8_pre(size_t         n_in,
                                 const int32_t *sum32,
                                 const void    *w_q4k,
                                 float          y[static n_out]) {
-    const struct q4k_decode_ctx ctx = {
+    struct q4k_decode_ctx ctx = {
             .w                = (const struct block_q4_K_t *) w_q4k,
             .x_q8             = x_q8,
             .sum32            = sum32,
@@ -411,47 +397,30 @@ void linear_q4k_decode_w4a8_pre(size_t         n_in,
             .n_out            = n_out,
     };
 
-    if (q4k_pp_enabled()) {
-#if defined(_OPENMP)
-        if (!omp_in_parallel())
-#endif
-        {
-            geist_pp_parallel_for(n_out, q4k_pp_row, (void *) &ctx);
-            return;
-        }
-    }
-
-#if defined(_OPENMP)
-    if (omp_in_parallel()) {
-#pragma omp for schedule(static) nowait
-        for (size_t n = 0; n < n_out; n++)
-            q4k_decode_one_row(n, &ctx);
-    } else if (n_out >= 4096) {
-#pragma omp parallel for schedule(static)
-        for (size_t n = 0; n < n_out; n++)
-            q4k_decode_one_row(n, &ctx);
+    if (n_out >= 4096) {
+        geist_par_for(n_out, q4k_decode_rows, &ctx);
     } else {
-#pragma omp parallel for schedule(dynamic, 4)
-        for (size_t n = 0; n < n_out; n++)
-            q4k_decode_one_row(n, &ctx);
+        cpu_neon_par_for_dynamic(n_out, 4, q4k_decode_rows, &ctx);
     }
-#else
-    for (size_t n = 0; n < n_out; n++)
-        q4k_decode_one_row(n, &ctx);
-#endif
 }
 
 struct q4k_pair_ctx {
-    const struct q4k_decode_ctx *c0;
-    const struct q4k_decode_ctx *c1;
+    struct q4k_decode_ctx c0;
+    struct q4k_decode_ctx c1;
 };
 
-static void q4k_pp_pair_row(size_t n, void *vctx) {
-    const struct q4k_pair_ctx *c = (const struct q4k_pair_ctx *) vctx;
-    if (n < c->c0->n_out)
-        q4k_decode_one_row(n, c->c0);
-    if (n < c->c1->n_out)
-        q4k_decode_one_row(n, c->c1);
+/* Rows [n0, n1) of both decodes of a pair, as far as each has them. */
+static void q4k_decode_pair_rows(void *ctx, size_t n0, size_t n1) {
+    const struct q4k_decode_ctx c0     = ((const struct q4k_pair_ctx *) ctx)->c0;
+    const struct q4k_decode_ctx c1     = ((const struct q4k_pair_ctx *) ctx)->c1;
+    const size_t                n_out0 = c0.n_out;
+    const size_t                n_out1 = c1.n_out;
+    for (size_t n = n0; n < n1; n++) {
+        if (n < n_out0)
+            q4k_decode_one_row(n, &c0);
+        if (n < n_out1)
+            q4k_decode_one_row(n, &c1);
+    }
 }
 
 /* y from geist_linear_ref, for when the wrappers below cannot have their
@@ -552,72 +521,49 @@ void linear_q4k_decode_w4a8_pair(size_t       n_in,
     }
 
     quantize_x_q8_groups(n_in, GEIST_ACT_Q8K_ELEMS, x, tl_x_q8, tl_x_scales, tl_sum32);
-    const struct q4k_decode_ctx c0 = {
-            .w                = (const struct block_q4_K_t *) w0_q4k,
-            .x_q8             = tl_x_q8,
-            .sum32            = tl_sum32,
-            .x_scales         = tl_x_scales,
-            .y                = y0,
-            .n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS,
-            .n_out            = n_out0,
-    };
-    const struct q4k_decode_ctx c1 = {
-            .w                = (const struct block_q4_K_t *) w1_q4k,
-            .x_q8             = tl_x_q8,
-            .sum32            = tl_sum32,
-            .x_scales         = tl_x_scales,
-            .y                = y1,
-            .n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS,
-            .n_out            = n_out1,
+    struct q4k_pair_ctx pc = {
+            .c0 =
+                    {
+                            .w                = (const struct block_q4_K_t *) w0_q4k,
+                            .x_q8             = tl_x_q8,
+                            .sum32            = tl_sum32,
+                            .x_scales         = tl_x_scales,
+                            .y                = y0,
+                            .n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS,
+                            .n_out            = n_out0,
+                    },
+            .c1 =
+                    {
+                            .w                = (const struct block_q4_K_t *) w1_q4k,
+                            .x_q8             = tl_x_q8,
+                            .sum32            = tl_sum32,
+                            .x_scales         = tl_x_scales,
+                            .y                = y1,
+                            .n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS,
+                            .n_out            = n_out1,
+                    },
     };
     const size_t n_out_max = n_out0 > n_out1 ? n_out0 : n_out1;
 
-    if (q4k_pp_enabled()) {
-#if defined(_OPENMP)
-        if (!omp_in_parallel())
-#endif
-        {
-            const struct q4k_pair_ctx pc = {.c0 = &c0, .c1 = &c1};
-            geist_pp_parallel_for(n_out_max, q4k_pp_pair_row, (void *) &pc);
-            return;
-        }
-    }
-
-#if defined(_OPENMP)
-    if (omp_in_parallel()) {
-#pragma omp for schedule(static) nowait
-        for (size_t n = 0; n < n_out_max; n++) {
-            if (n < n_out0)
-                q4k_decode_one_row(n, &c0);
-            if (n < n_out1)
-                q4k_decode_one_row(n, &c1);
-        }
-    } else if (n_out_max >= 4096) {
-#pragma omp parallel for schedule(static)
-        for (size_t n = 0; n < n_out_max; n++) {
-            if (n < n_out0)
-                q4k_decode_one_row(n, &c0);
-            if (n < n_out1)
-                q4k_decode_one_row(n, &c1);
-        }
+    if (n_out_max >= 4096) {
+        geist_par_for(n_out_max, q4k_decode_pair_rows, &pc);
     } else {
-#pragma omp parallel for schedule(dynamic, 4)
-        for (size_t n = 0; n < n_out_max; n++) {
-            if (n < n_out0)
-                q4k_decode_one_row(n, &c0);
-            if (n < n_out1)
-                q4k_decode_one_row(n, &c1);
-        }
+        cpu_neon_par_for_dynamic(n_out_max, 4, q4k_decode_pair_rows, &pc);
     }
-#else
-    for (size_t n = 0; n < n_out_max; n++) {
-        if (n < n_out0)
-            q4k_decode_one_row(n, &c0);
-        if (n < n_out1)
-            q4k_decode_one_row(n, &c1);
-    }
-#endif
 }
+
+/* One Q4_K W4A8 prefill call, for the range bodies below: the operands of
+ * the linear_q4k_w4a8_prefill_* entry points (w = w_q4k or the predecoded
+ * weight; w1 / y1 the pair's second; act the packed activation, if any). */
+struct q4k_prefill_job {
+    size_t         m, n_in, n_out;
+    const int8_t  *x_q8;
+    const float   *x_scales;
+    const int32_t *sum32;
+    const void    *w, *w1;
+    const int8_t  *act;
+    float         *y, *y1;
+};
 
 #if defined(__ARM_NEON)
 /* Vectorized 6-bit Q4_K scale/min unpack into scales[8]/mins[8]; bit-identical
@@ -641,22 +587,7 @@ static inline void q4k_unpack_scales_mins(const uint8_t *s, uint8_t scales[8], u
 }
 #endif
 
-void linear_q4k_w4a8_prefill_pre(size_t         m,
-                                 size_t         n_in,
-                                 size_t         n_out,
-                                 const int8_t  *x_q8,
-                                 const float   *x_scales,
-                                 const int32_t *sum32,
-                                 const void    *w_q4k,
-                                 float         *y) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
-        return;
-    const struct block_q4_K_t *w                = (const struct block_q4_K_t *) w_q4k;
-    const size_t               n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS;
-    const size_t               n_chunks         = n_in / 32;
-
-    const uint8x16_t MASK0F = vdupq_n_u8(0x0F);
 #define MT 2
 
 /* Loop-reordered blocked GEMM: tile output rows into NC-row panels; per
@@ -666,49 +597,26 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
  * one broadcast FMA per 4 outputs, so the per-row inner loop does no more
  * float work than it did with a row-wide scale (#698). */
 #define NC 64
-    const size_t n_panels = (n_out + (size_t) NC - 1) / (size_t) NC;
 
-    /* Pack the activation once into block-major
-     * packed[((b*4+k)*m + t)*64 + e] so the panels stream sequentially
-     * instead of gathering at stride n_in. GEIST_Q4K_PACK_ACT=0 disables;
-     * skipped for m < 2. Thread-local high-water buffer: filled by the
-     * calling thread, only read by the omp panels. */
-    static _Atomic int pack_act = -1;
-    int                pack_on  = atomic_load_explicit(&pack_act, memory_order_relaxed);
-    if (pack_on < 0) {
-        const char *e = getenv("GEIST_Q4K_PACK_ACT");
-        pack_on       = (e != nullptr && e[0] == '0') ? 0 : 1;
-        atomic_store_explicit(&pack_act, pack_on, memory_order_relaxed);
-    }
-    int8_t *packed = nullptr;
-    if (pack_on && m >= 2) {
-        static _Thread_local int8_t *pack_tl  = nullptr;
-        static _Thread_local size_t  pack_cap = 0;
-        const size_t                 need     = m * n_in;
-        if (need > pack_cap) {
-            /* The packing loop fully repopulates the buffer before any read,
-             * so dropping the old contents on grow is safe. */
-            safe_free((void **) &pack_tl);
-            pack_tl  = heap_alloc_array_aligned(int8_t, need);
-            pack_cap = (pack_tl != nullptr) ? need : 0;
-        }
-        if (pack_cap >= need) {
-            packed = pack_tl;
-            for (size_t b = 0; b < n_blocks_per_row; b++) {
-                for (int k = 0; k < 4; k++) {
-                    int8_t       *dst = packed + (size_t) (b * 4 + (size_t) k) * m * 64;
-                    const int8_t *src = x_q8 + b * Q4_K_BLOCK_ELEMS + (size_t) k * 64;
-                    for (size_t t = 0; t < m; t++)
-                        memcpy(dst + t * 64, src + t * n_in, 64);
-                }
-            }
-        }
-    }
+/* Panels [p0, p1) of linear_q4k_w4a8_prefill_pre; packed = job->act, the
+ * packed activation, or nullptr. */
+static void q4k_prefill_panels(void *ctx, size_t p0, size_t p1) {
+    const struct q4k_prefill_job *job              = ctx;
+    const size_t                  m                = job->m;
+    const size_t                  n_in             = job->n_in;
+    const size_t                  n_out            = job->n_out;
+    const int8_t                 *x_q8             = job->x_q8;
+    const float                  *x_scales         = job->x_scales;
+    const int32_t                *sum32            = job->sum32;
+    const int8_t                 *packed           = job->act;
+    float                        *y                = job->y;
+    const struct block_q4_K_t    *w                = (const struct block_q4_K_t *) job->w;
+    const size_t                  n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS;
+    const size_t                  n_chunks         = n_in / 32;
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 1)
-#endif
-    for (size_t p = 0; p < n_panels; p++) {
+    const uint8x16_t MASK0F = vdupq_n_u8(0x0F);
+
+    for (size_t p = p0; p < p1; p++) {
         const size_t nc0 = p * (size_t) NC;
         const size_t nc  = (n_out - nc0 < (size_t) NC) ? (n_out - nc0) : (size_t) NC;
         float        ytile[GEIST_QUANT_M_CAP * NC] __attribute__((aligned(16)));
@@ -835,6 +743,70 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
             for (size_t r = 0; r < nc; r++)
                 y[i * n_out + (nc0 + r)] = ytile[i * (size_t) NC + r];
     }
+}
+#endif
+
+void linear_q4k_w4a8_prefill_pre(size_t         m,
+                                 size_t         n_in,
+                                 size_t         n_out,
+                                 const int8_t  *x_q8,
+                                 const float   *x_scales,
+                                 const int32_t *sum32,
+                                 const void    *w_q4k,
+                                 float         *y) {
+#if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
+    const size_t n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS;
+    const size_t n_panels         = (n_out + (size_t) NC - 1) / (size_t) NC;
+
+    /* Pack the activation once into block-major
+     * packed[((b*4+k)*m + t)*64 + e] so the panels stream sequentially
+     * instead of gathering at stride n_in. GEIST_Q4K_PACK_ACT=0 disables;
+     * skipped for m < 2. Thread-local high-water buffer: filled by the
+     * calling thread, only read by the panels' ranges. */
+    static _Atomic int pack_act = -1;
+    int                pack_on  = atomic_load_explicit(&pack_act, memory_order_relaxed);
+    if (pack_on < 0) {
+        const char *e = getenv("GEIST_Q4K_PACK_ACT");
+        pack_on       = (e != nullptr && e[0] == '0') ? 0 : 1;
+        atomic_store_explicit(&pack_act, pack_on, memory_order_relaxed);
+    }
+    int8_t *packed = nullptr;
+    if (pack_on && m >= 2) {
+        static _Thread_local int8_t *pack_tl  = nullptr;
+        static _Thread_local size_t  pack_cap = 0;
+        const size_t                 need     = m * n_in;
+        if (need > pack_cap) {
+            /* The packing loop fully repopulates the buffer before any read,
+             * so dropping the old contents on grow is safe. */
+            safe_free((void **) &pack_tl);
+            pack_tl  = heap_alloc_array_aligned(int8_t, need);
+            pack_cap = (pack_tl != nullptr) ? need : 0;
+        }
+        if (pack_cap >= need) {
+            packed = pack_tl;
+            for (size_t b = 0; b < n_blocks_per_row; b++) {
+                for (int k = 0; k < 4; k++) {
+                    int8_t       *dst = packed + (size_t) (b * 4 + (size_t) k) * m * 64;
+                    const int8_t *src = x_q8 + b * Q4_K_BLOCK_ELEMS + (size_t) k * 64;
+                    for (size_t t = 0; t < m; t++)
+                        memcpy(dst + t * 64, src + t * n_in, 64);
+                }
+            }
+        }
+    }
+
+    struct q4k_prefill_job job = {.m        = m,
+                                  .n_in     = n_in,
+                                  .n_out    = n_out,
+                                  .x_q8     = x_q8,
+                                  .x_scales = x_scales,
+                                  .sum32    = sum32,
+                                  .w        = w_q4k,
+                                  .act      = packed,
+                                  .y        = y};
+    cpu_neon_par_for_dynamic(n_panels, 1, q4k_prefill_panels, &job);
 #undef NC
 #undef MT
 #else
@@ -850,27 +822,23 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
 #endif
 }
 
-void linear_q4k_w4a8_prefill_predecoded(size_t         m,
-                                        size_t         n_in,
-                                        size_t         n_out,
-                                        const int8_t  *x_q8,
-                                        const float   *x_scales,
-                                        const int32_t *sum32,
-                                        const void    *packed,
-                                        float         *y) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
-        return;
-    if (!q4k_predecode_valid(packed, n_in, n_out))
-        return;
+/* [n0, n1) of linear_q4k_w4a8_prefill_predecoded's loop. */
+static void q4k_prefill_predecoded_rows(void *ctx, size_t n0, size_t n1) {
+    const struct q4k_prefill_job     *job              = ctx;
+    const size_t                      m                = job->m;
+    const size_t                      n_in             = job->n_in;
+    const size_t                      n_out            = job->n_out;
+    const int8_t                     *x_q8             = job->x_q8;
+    const float                      *x_scales         = job->x_scales;
+    const int32_t                    *sum32            = job->sum32;
+    const void                       *packed           = job->w;
+    float                            *y                = job->y;
     const struct q4k_predecode_block *w                = q4k_predecode_blocks(packed);
     const size_t                      n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS;
     const size_t                      n_chunks         = n_in / 32;
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+    for (size_t n = n0; n < n1; n++) {
         const struct q4k_predecode_block *row = w + n * n_blocks_per_row;
         if (n + 1 < n_out)
             __builtin_prefetch(row + n_blocks_per_row, 0, 0);
@@ -916,6 +884,33 @@ void linear_q4k_w4a8_prefill_predecoded(size_t         m,
         for (size_t i = 0; i < m; i++)
             y[i * n_out + n] = accs[i];
     }
+}
+
+#endif
+
+void linear_q4k_w4a8_prefill_predecoded(size_t         m,
+                                        size_t         n_in,
+                                        size_t         n_out,
+                                        const int8_t  *x_q8,
+                                        const float   *x_scales,
+                                        const int32_t *sum32,
+                                        const void    *packed,
+                                        float         *y) {
+#if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
+    if (!q4k_predecode_valid(packed, n_in, n_out))
+        return;
+
+    struct q4k_prefill_job job = {.m        = m,
+                                  .n_in     = n_in,
+                                  .n_out    = n_out,
+                                  .x_q8     = x_q8,
+                                  .x_scales = x_scales,
+                                  .sum32    = sum32,
+                                  .w        = packed,
+                                  .y        = y};
+    cpu_neon_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -929,32 +924,23 @@ void linear_q4k_w4a8_prefill_predecoded(size_t         m,
 #endif
 }
 
-void linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
-                                               size_t         n_in,
-                                               size_t         n_out,
-                                               const int8_t  *x_q8,
-                                               const float   *x_scales,
-                                               const int32_t *sum32,
-                                               const void    *packed,
-                                               float         *y) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
-        return;
-    if (!q4k_predecode_valid(packed, n_in, n_out))
-        return;
-    if (m < 4) {
-        linear_q4k_w4a8_prefill_predecoded(m, n_in, n_out, x_q8, x_scales, sum32, packed, y);
-        return;
-    }
-
+/* [n0, n1) of linear_q4k_w4a8_prefill_predecoded_mtile4's loop. */
+static void q4k_prefill_predecoded_mtile4_rows(void *ctx, size_t n0, size_t n1) {
+    const struct q4k_prefill_job     *job              = ctx;
+    const size_t                      m                = job->m;
+    const size_t                      n_in             = job->n_in;
+    const size_t                      n_out            = job->n_out;
+    const int8_t                     *x_q8             = job->x_q8;
+    const float                      *x_scales         = job->x_scales;
+    const int32_t                    *sum32            = job->sum32;
+    const void                       *packed           = job->w;
+    float                            *y                = job->y;
     const struct q4k_predecode_block *w                = q4k_predecode_blocks(packed);
     const size_t                      n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS;
     const size_t                      n_chunks         = n_in / 32;
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+    for (size_t n = n0; n < n1; n++) {
         const struct q4k_predecode_block *row = w + n * n_blocks_per_row;
         if (n + 1 < n_out)
             __builtin_prefetch(row + n_blocks_per_row, 0, 0);
@@ -1044,6 +1030,37 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
             y[mt * n_out + n] = acc;
         }
     }
+}
+
+#endif
+
+void linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
+                                               size_t         n_in,
+                                               size_t         n_out,
+                                               const int8_t  *x_q8,
+                                               const float   *x_scales,
+                                               const int32_t *sum32,
+                                               const void    *packed,
+                                               float         *y) {
+#if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
+    if (!q4k_predecode_valid(packed, n_in, n_out))
+        return;
+    if (m < 4) {
+        linear_q4k_w4a8_prefill_predecoded(m, n_in, n_out, x_q8, x_scales, sum32, packed, y);
+        return;
+    }
+
+    struct q4k_prefill_job job = {.m        = m,
+                                  .n_in     = n_in,
+                                  .n_out    = n_out,
+                                  .x_q8     = x_q8,
+                                  .x_scales = x_scales,
+                                  .sum32    = sum32,
+                                  .w        = packed,
+                                  .y        = y};
+    cpu_neon_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_mtile4_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1057,35 +1074,23 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
 #endif
 }
 
-/* mtile8 = mtile4 with the inner M-tile widened to 8 rows. Same buffer
- * contracts (x_q8/x_scales/sum32/packed/y), no new workspace. Falls back
- * to mtile4 when m < 8. */
-void linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
-                                               size_t         n_in,
-                                               size_t         n_out,
-                                               const int8_t  *x_q8,
-                                               const float   *x_scales,
-                                               const int32_t *sum32,
-                                               const void    *packed,
-                                               float         *y) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
-        return;
-    if (!q4k_predecode_valid(packed, n_in, n_out))
-        return;
-    if (m < 8) {
-        linear_q4k_w4a8_prefill_predecoded_mtile4(m, n_in, n_out, x_q8, x_scales, sum32, packed, y);
-        return;
-    }
-
+/* [n0, n1) of linear_q4k_w4a8_prefill_predecoded_mtile8's loop. */
+static void q4k_prefill_predecoded_mtile8_rows(void *ctx, size_t n0, size_t n1) {
+    const struct q4k_prefill_job     *job              = ctx;
+    const size_t                      m                = job->m;
+    const size_t                      n_in             = job->n_in;
+    const size_t                      n_out            = job->n_out;
+    const int8_t                     *x_q8             = job->x_q8;
+    const float                      *x_scales         = job->x_scales;
+    const int32_t                    *sum32            = job->sum32;
+    const void                       *packed           = job->w;
+    float                            *y                = job->y;
     const struct q4k_predecode_block *w                = q4k_predecode_blocks(packed);
     const size_t                      n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS;
     const size_t                      n_chunks         = n_in / 32;
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+    for (size_t n = n0; n < n1; n++) {
         const struct q4k_predecode_block *row = w + n * n_blocks_per_row;
         if (n + 1 < n_out)
             __builtin_prefetch(row + n_blocks_per_row, 0, 0);
@@ -1242,6 +1247,40 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
             y[mt * n_out + n] = acc;
         }
     }
+}
+
+#endif
+
+/* mtile8 = mtile4 with the inner M-tile widened to 8 rows. Same buffer
+ * contracts (x_q8/x_scales/sum32/packed/y), no new workspace. Falls back
+ * to mtile4 when m < 8. */
+void linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
+                                               size_t         n_in,
+                                               size_t         n_out,
+                                               const int8_t  *x_q8,
+                                               const float   *x_scales,
+                                               const int32_t *sum32,
+                                               const void    *packed,
+                                               float         *y) {
+#if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
+    if (!q4k_predecode_valid(packed, n_in, n_out))
+        return;
+    if (m < 8) {
+        linear_q4k_w4a8_prefill_predecoded_mtile4(m, n_in, n_out, x_q8, x_scales, sum32, packed, y);
+        return;
+    }
+
+    struct q4k_prefill_job job = {.m        = m,
+                                  .n_in     = n_in,
+                                  .n_out    = n_out,
+                                  .x_q8     = x_q8,
+                                  .x_scales = x_scales,
+                                  .sum32    = sum32,
+                                  .w        = packed,
+                                  .y        = y};
+    cpu_neon_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_mtile8_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1255,33 +1294,23 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
 #endif
 }
 
-void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(size_t         m,
-                                                      size_t         n_in,
-                                                      size_t         n_out,
-                                                      const int8_t  *x_q8,
-                                                      const float   *x_scales,
-                                                      const int32_t *sum32,
-                                                      const void    *packed,
-                                                      float         *y) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
-        return;
-    if (!q4k_predecode_valid(packed, n_in, n_out))
-        return;
-    if (m < 4 || n_out < 4) {
-        linear_q4k_w4a8_prefill_predecoded_mtile4(m, n_in, n_out, x_q8, x_scales, sum32, packed, y);
-        return;
-    }
-
+/* [nt0, nt1) of linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4's loop. */
+static void q4k_prefill_predecoded_mtile4_ntile4_tiles(void *ctx, size_t nt0, size_t nt1) {
+    const struct q4k_prefill_job     *job              = ctx;
+    const size_t                      m                = job->m;
+    const size_t                      n_in             = job->n_in;
+    const size_t                      n_out            = job->n_out;
+    const int8_t                     *x_q8             = job->x_q8;
+    const float                      *x_scales         = job->x_scales;
+    const int32_t                    *sum32            = job->sum32;
+    const void                       *packed           = job->w;
+    float                            *y                = job->y;
     const struct q4k_predecode_block *w                = q4k_predecode_blocks(packed);
     const size_t                      n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS;
     const size_t                      n_chunks         = n_in / 32;
-    const size_t                      n_tile_end       = n_out & ~(size_t) 3;
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
-#endif
-    for (size_t nt = 0; nt < n_tile_end; nt += 4) {
+    for (size_t nt = nt0 * 4; nt < nt1 * 4; nt += 4) {
         const struct q4k_predecode_block *row0 = w + (nt + 0) * n_blocks_per_row;
         const struct q4k_predecode_block *row1 = w + (nt + 1) * n_blocks_per_row;
         const struct q4k_predecode_block *row2 = w + (nt + 2) * n_blocks_per_row;
@@ -1377,6 +1406,39 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(size_t         m,
             y3[3]     = a33;
         }
     }
+}
+
+#endif
+
+void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(size_t         m,
+                                                      size_t         n_in,
+                                                      size_t         n_out,
+                                                      const int8_t  *x_q8,
+                                                      const float   *x_scales,
+                                                      const int32_t *sum32,
+                                                      const void    *packed,
+                                                      float         *y) {
+#if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
+    if (!q4k_predecode_valid(packed, n_in, n_out))
+        return;
+    if (m < 4 || n_out < 4) {
+        linear_q4k_w4a8_prefill_predecoded_mtile4(m, n_in, n_out, x_q8, x_scales, sum32, packed, y);
+        return;
+    }
+
+    const size_t n_tile_end = n_out & ~(size_t) 3;
+
+    struct q4k_prefill_job job = {.m        = m,
+                                  .n_in     = n_in,
+                                  .n_out    = n_out,
+                                  .x_q8     = x_q8,
+                                  .x_scales = x_scales,
+                                  .sum32    = sum32,
+                                  .w        = packed,
+                                  .y        = y};
+    cpu_neon_par_for_dynamic(n_tile_end / 4, 4, q4k_prefill_predecoded_mtile4_ntile4_tiles, &job);
 
     if (n_tile_end < n_out || (m & (size_t) 3) != 0) {
         linear_q4k_w4a8_prefill_predecoded_mtile4(m, n_in, n_out, x_q8, x_scales, sum32, packed, y);
@@ -1394,28 +1456,23 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(size_t         m,
 #endif
 }
 
-void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
-                                                             size_t         n_in,
-                                                             size_t         n_out,
-                                                             const int8_t  *x_q8,
-                                                             const float   *x_scales,
-                                                             const int32_t *sum32,
-                                                             const void    *packed,
-                                                             float         *y) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
-        return;
-    if (!q4k_predecode_ntile4_valid(packed, n_in, n_out))
-        return;
+/* [nt0, nt1) of linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed's loop. */
+static void q4k_prefill_predecoded_mtile4_ntile4_packed_tiles(void *ctx, size_t nt0, size_t nt1) {
+    const struct q4k_prefill_job     *job              = ctx;
+    const size_t                      m                = job->m;
+    const size_t                      n_in             = job->n_in;
+    const size_t                      n_out            = job->n_out;
+    const int8_t                     *x_q8             = job->x_q8;
+    const float                      *x_scales         = job->x_scales;
+    const int32_t                    *sum32            = job->sum32;
+    const void                       *packed           = job->w;
+    float                            *y                = job->y;
     const struct q4k_predecode_block *w                = q4k_predecode_ntile4_blocks(packed);
     const size_t                      n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS;
     const size_t                      n_chunks         = n_in / 32;
-    const size_t                      n_tiles          = (n_out + 3) / 4;
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
-#endif
-    for (size_t nt = 0; nt < n_tiles; nt++) {
+    for (size_t nt = nt0; nt < nt1; nt++) {
         const size_t                      valid_nr = (nt * 4 + 4 <= n_out) ? 4 : (n_out - nt * 4);
         const struct q4k_predecode_block *tile     = w + nt * n_blocks_per_row * 4;
 
@@ -1539,6 +1596,34 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
             }
         }
     }
+}
+
+#endif
+
+void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
+                                                             size_t         n_in,
+                                                             size_t         n_out,
+                                                             const int8_t  *x_q8,
+                                                             const float   *x_scales,
+                                                             const int32_t *sum32,
+                                                             const void    *packed,
+                                                             float         *y) {
+#if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
+    if (!q4k_predecode_ntile4_valid(packed, n_in, n_out))
+        return;
+    const size_t n_tiles = (n_out + 3) / 4;
+
+    struct q4k_prefill_job job = {.m        = m,
+                                  .n_in     = n_in,
+                                  .n_out    = n_out,
+                                  .x_q8     = x_q8,
+                                  .x_scales = x_scales,
+                                  .sum32    = sum32,
+                                  .w        = packed,
+                                  .y        = y};
+    cpu_neon_par_for_dynamic(n_tiles, 4, q4k_prefill_predecoded_mtile4_ntile4_packed_tiles, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1552,39 +1637,23 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
 #endif
 }
 
-/* mtile8_ntile4_packed = mtile4_ntile4_packed with the M-tile widened
- * to 8, on the same ntile4 packed format: each inner (is, b) iteration
- * amortizes 4 weight loads across 8 input rows (32 dots). Falls back to
- * mtile4_ntile4_packed for m < 8. */
-void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
-                                                             size_t         n_in,
-                                                             size_t         n_out,
-                                                             const int8_t  *x_q8,
-                                                             const float   *x_scales,
-                                                             const int32_t *sum32,
-                                                             const void    *packed,
-                                                             float         *y) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
-        return;
-    if (!q4k_predecode_ntile4_valid(packed, n_in, n_out))
-        return;
-    if (m < 8) {
-        linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(
-                m, n_in, n_out, x_q8, x_scales, sum32, packed, y);
-        return;
-    }
+/* [nt0, nt1) of linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed's loop. */
+static void q4k_prefill_predecoded_mtile8_ntile4_packed_tiles(void *ctx, size_t nt0, size_t nt1) {
+    const struct q4k_prefill_job     *job              = ctx;
+    const size_t                      m                = job->m;
+    const size_t                      n_in             = job->n_in;
+    const size_t                      n_out            = job->n_out;
+    const int8_t                     *x_q8             = job->x_q8;
+    const float                      *x_scales         = job->x_scales;
+    const int32_t                    *sum32            = job->sum32;
+    const void                       *packed           = job->w;
+    float                            *y                = job->y;
     const struct q4k_predecode_block *w                = q4k_predecode_ntile4_blocks(packed);
     const size_t                      n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS;
     const size_t                      n_chunks         = n_in / 32;
-    const size_t                      n_tiles          = (n_out + 3) / 4;
 
-    /* Dynamic schedule, chunks of 4 tiles (16 rows): with E-cores in the
-     * team a static schedule waits on the slowest core. */
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
-#endif
-    for (size_t nt = 0; nt < n_tiles; nt++) {
+    for (size_t nt = nt0; nt < nt1; nt++) {
         const size_t                      valid_nr = (nt * 4 + 4 <= n_out) ? 4 : (n_out - nt * 4);
         const struct q4k_predecode_block *tile     = w + nt * n_blocks_per_row * 4;
 
@@ -1836,6 +1905,45 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
             }
         }
     }
+}
+
+#endif
+
+/* mtile8_ntile4_packed = mtile4_ntile4_packed with the M-tile widened
+ * to 8, on the same ntile4 packed format: each inner (is, b) iteration
+ * amortizes 4 weight loads across 8 input rows (32 dots). Falls back to
+ * mtile4_ntile4_packed for m < 8. */
+void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
+                                                             size_t         n_in,
+                                                             size_t         n_out,
+                                                             const int8_t  *x_q8,
+                                                             const float   *x_scales,
+                                                             const int32_t *sum32,
+                                                             const void    *packed,
+                                                             float         *y) {
+#if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
+    if (!q4k_predecode_ntile4_valid(packed, n_in, n_out))
+        return;
+    if (m < 8) {
+        linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(
+                m, n_in, n_out, x_q8, x_scales, sum32, packed, y);
+        return;
+    }
+    const size_t n_tiles = (n_out + 3) / 4;
+
+    /* Dynamic schedule, chunks of 4 tiles (16 rows): with E-cores in the
+     * team a static schedule waits on the slowest core. */
+    struct q4k_prefill_job job = {.m        = m,
+                                  .n_in     = n_in,
+                                  .n_out    = n_out,
+                                  .x_q8     = x_q8,
+                                  .x_scales = x_scales,
+                                  .sum32    = sum32,
+                                  .w        = packed,
+                                  .y        = y};
+    cpu_neon_par_for_dynamic(n_tiles, 4, q4k_prefill_predecoded_mtile8_ntile4_packed_tiles, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1849,32 +1957,26 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
 #endif
 }
 
-void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t         m,
-                                                                  size_t         n_in,
-                                                                  size_t         n_out,
-                                                                  const int8_t  *x_q8,
-                                                                  const float   *x_scales,
-                                                                  const int32_t *sum32,
-                                                                  const void    *packed0,
-                                                                  const void    *packed1,
-                                                                  float         *y0,
-                                                                  float         *y1) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
-        return;
-    if (!q4k_predecode_ntile4_valid(packed0, n_in, n_out) ||
-        !q4k_predecode_ntile4_valid(packed1, n_in, n_out)) {
-        return;
-    }
-    const size_t n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS;
-    const size_t n_chunks         = n_in / 32;
-    const size_t n_tiles          = (n_out + 3) / 4;
-    const size_t total_tiles      = n_tiles * 2;
+/* [tt0, tt1) of linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed's loop. */
+static void
+q4k_prefill_pair_predecoded_mtile4_ntile4_packed_tiles(void *ctx, size_t tt0, size_t tt1) {
+    const struct q4k_prefill_job *job              = ctx;
+    const size_t                  m                = job->m;
+    const size_t                  n_in             = job->n_in;
+    const size_t                  n_out            = job->n_out;
+    const int8_t                 *x_q8             = job->x_q8;
+    const float                  *x_scales         = job->x_scales;
+    const int32_t                *sum32            = job->sum32;
+    const void                   *packed0          = job->w;
+    const void                   *packed1          = job->w1;
+    float                        *y0               = job->y;
+    float                        *y1               = job->y1;
+    const size_t                  n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS;
+    const size_t                  n_chunks         = n_in / 32;
+    const size_t                  n_tiles          = (n_out + 3) / 4;
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
-#endif
-    for (size_t tt = 0; tt < total_tiles; tt++) {
+    for (size_t tt = tt0; tt < tt1; tt++) {
         const bool                        second   = tt >= n_tiles;
         const size_t                      nt       = second ? (tt - n_tiles) : tt;
         const void                       *packed   = second ? packed1 : packed0;
@@ -2003,6 +2105,42 @@ void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t        
             }
         }
     }
+}
+
+#endif
+
+void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t         m,
+                                                                  size_t         n_in,
+                                                                  size_t         n_out,
+                                                                  const int8_t  *x_q8,
+                                                                  const float   *x_scales,
+                                                                  const int32_t *sum32,
+                                                                  const void    *packed0,
+                                                                  const void    *packed1,
+                                                                  float         *y0,
+                                                                  float         *y1) {
+#if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
+    if (!q4k_predecode_ntile4_valid(packed0, n_in, n_out) ||
+        !q4k_predecode_ntile4_valid(packed1, n_in, n_out)) {
+        return;
+    }
+    const size_t n_tiles     = (n_out + 3) / 4;
+    const size_t total_tiles = n_tiles * 2;
+
+    struct q4k_prefill_job job = {.m        = m,
+                                  .n_in     = n_in,
+                                  .n_out    = n_out,
+                                  .x_q8     = x_q8,
+                                  .x_scales = x_scales,
+                                  .sum32    = sum32,
+                                  .w        = packed0,
+                                  .w1       = packed1,
+                                  .y        = y0,
+                                  .y1       = y1};
+    cpu_neon_par_for_dynamic(
+            total_tiles, 4, q4k_prefill_pair_predecoded_mtile4_ntile4_packed_tiles, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -2019,28 +2157,23 @@ void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t        
 #endif
 }
 
-void linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(size_t         m,
-                                                      size_t         n_in,
-                                                      size_t         n_out,
-                                                      const int8_t  *x_q8,
-                                                      const float   *x_scales,
-                                                      const int32_t *sum32,
-                                                      const void    *packed,
-                                                      float         *y) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
-        return;
-    if (!q4k_predecode_valid(packed, n_in, n_out))
-        return;
-
+/* [n0, n1) of linear_q4k_w4a8_prefill_predecoded_mtile4_bscale's loop. */
+static void q4k_prefill_predecoded_mtile4_bscale_rows(void *ctx, size_t n0, size_t n1) {
+    const struct q4k_prefill_job     *job              = ctx;
+    const size_t                      m                = job->m;
+    const size_t                      n_in             = job->n_in;
+    const size_t                      n_out            = job->n_out;
+    const int8_t                     *x_q8             = job->x_q8;
+    const float                      *x_scales         = job->x_scales;
+    const int32_t                    *sum32            = job->sum32;
+    const void                       *packed           = job->w;
+    float                            *y                = job->y;
     const struct q4k_predecode_block *w                = q4k_predecode_blocks(packed);
     const size_t                      n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS;
     const size_t                      n_chunks         = n_in / 32;
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+    for (size_t n = n0; n < n1; n++) {
         const struct q4k_predecode_block *row = w + n * n_blocks_per_row;
         if (n + 1 < n_out)
             __builtin_prefetch(row + n_blocks_per_row, 0, 0);
@@ -2130,6 +2263,33 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(size_t         m,
             y[mt * n_out + n] = acc;
         }
     }
+}
+
+#endif
+
+void linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(size_t         m,
+                                                      size_t         n_in,
+                                                      size_t         n_out,
+                                                      const int8_t  *x_q8,
+                                                      const float   *x_scales,
+                                                      const int32_t *sum32,
+                                                      const void    *packed,
+                                                      float         *y) {
+#if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
+    if (!q4k_predecode_valid(packed, n_in, n_out))
+        return;
+
+    struct q4k_prefill_job job = {.m        = m,
+                                  .n_in     = n_in,
+                                  .n_out    = n_out,
+                                  .x_q8     = x_q8,
+                                  .x_scales = x_scales,
+                                  .sum32    = sum32,
+                                  .w        = packed,
+                                  .y        = y};
+    cpu_neon_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_mtile4_bscale_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;

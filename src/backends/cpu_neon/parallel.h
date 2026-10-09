@@ -1,63 +1,63 @@
 /*
- * src/backends/cpu_neon/parallel.h — minimal spin-pool parallel_for.
+ * src/backends/cpu_neon/parallel.h — OpenMP's schedule(dynamic, grain) on
+ * geist_par_for (#618).
  *
  * Layer: BACKEND (cpu_neon, internal).
  *
- * Opt-in (GEIST_PP=1) alternative to `#pragma omp parallel for` for the
- * per-row decode kernels, with lower per-call dispatch cost: workers spin
- * on an atomic epoch counter, and the master publishes a task with one
- * `atomic_fetch_add`. OpenMP spawn-and-join costs ~30-50 μs per region,
- * ~11 % of decode time on a Pi 5.
- *
- * API contract:
- *   - One global pool, lazily initialized on first parallel_for.
- *   - Pool size from GEIST_THREADS, else OMP_NUM_THREADS, else the
- *     performance-core count (Apple) or online CPUs; capped at 16.
- *   - parallel_for splits `[0, n)` into `n_threads` contiguous chunks
- *     and dispatches one chunk per worker. parallel_for_grain uses a
- *     dynamic atomic chunk cursor, useful for kernels whose row cost is
- *     not uniform.
- *   - body_fn is called for each i ∈ [0, n) exactly once.
- *   - body_fn must be lock-free (workers run concurrently).
- *
- * Thread safety: NOT re-entrant. Nested geist_pp_parallel_for from
- * within a body_fn will deadlock. (No nesting in current callers.)
+ * The cpu_neon kernels run their loops on geist_par_for (src/base/par.h),
+ * which splits [0, n) into schedule(static) ranges. Loops whose items cost
+ * unequal time (short GEMV rows, dequant tiles, attention heads) used
+ * schedule(dynamic, grain); cpu_neon_par_for_dynamic keeps that: it runs
+ * one range per thread, and each takes `grain` items at a time, in order,
+ * from a shared atomic counter until none is left, as attention_driver.h
+ * does for cpu_x86. A body whose items write disjoint outputs gives the
+ * same bytes either way.
  */
 #ifndef GEIST_INTERNAL_BACKEND_CPU_NEON_PARALLEL_H
 #define GEIST_INTERNAL_BACKEND_CPU_NEON_PARALLEL_H
 
-#ifndef GEIST_INTERNAL_BACKEND_LAYER
-#error "cpu_neon/parallel.h is internal to the backend layer."
-#endif
+#include "par.h"
 
-#include <stdbool.h>
+#include <stdatomic.h>
 #include <stddef.h>
 
-typedef void (*geist_pp_body_fn)(size_t i, void *ctx);
+/* One cpu_neon_par_for_dynamic call. */
+struct cpu_neon_par_dyn {
+    geist_par_fn  fn;
+    void         *ctx;
+    size_t        n, grain;
+    atomic_size_t next; /* the first item of the next chunk */
+};
 
-/* Run `body_fn(i, ctx)` for each `i` in `[0, n)`. Returns when all
- * iterations are complete. Master participates as worker 0; workers
- * 1..N-1 are spun up on first call. */
-void geist_pp_parallel_for(size_t n, geist_pp_body_fn body_fn, void *ctx);
+static inline void cpu_neon_par_dyn_range(void *p, size_t, size_t) {
+    struct cpu_neon_par_dyn *d     = p;
+    const size_t             n     = d->n;
+    const size_t             grain = d->grain;
+    for (size_t lo; (lo = atomic_fetch_add_explicit(&d->next, grain, memory_order_relaxed)) < n;) {
+        d->fn(d->ctx, lo, n - lo < grain ? n : lo + grain);
+    }
+}
 
-/* Dynamic-chunk variant. `grain` is the number of contiguous iterations
- * each worker claims at a time; 0 is treated as 1. This costs one
- * atomic fetch_add per chunk but gives better load balance for kernels
- * with uneven row/tile cost. */
-void geist_pp_parallel_for_grain(size_t n, size_t grain, geist_pp_body_fn body_fn, void *ctx);
-
-/* Whether GEIST_PP=1 routes the row kernels to this pool instead of
- * OpenMP. Read once, then cached. */
-bool geist_pp_enabled(void);
-
-/* Run `body_fn(i, ctx)` for each `i` in `[0, n)` the way the per-row
- * decode kernels dispatch: on this pool under GEIST_PP=1; else as an
- * `omp for` work-share when already inside a team (no team spawn); else
- * as an `omp parallel for`, serial without OpenMP. Static schedule in
- * every case. */
-void cpu_neon_parallel_rows(size_t n, geist_pp_body_fn body_fn, void *ctx);
-
-/* Number of threads the pool uses (>= 1). Cheap to call. */
-size_t geist_pp_thread_count(void);
+/* Runs fn over [0, n) in chunks of `grain` items (0 is taken as 1) handed
+ * out in order, on up to geist_par_max_threads() threads; returns when all
+ * are done. One chunk, one thread, or a call from inside a geist_par_for
+ * body runs fn(ctx, 0, n) on the calling thread. */
+static inline void cpu_neon_par_for_dynamic(size_t n, size_t grain, geist_par_fn fn, void *ctx) {
+    if (n == 0) {
+        return;
+    }
+    if (grain == 0) {
+        grain = 1;
+    }
+    const size_t chunks  = n / grain + (n % grain != 0);
+    const size_t threads = geist_par_max_threads();
+    if (chunks <= 1 || threads <= 1) {
+        fn(ctx, 0, n);
+        return;
+    }
+    struct cpu_neon_par_dyn d = {.fn = fn, .ctx = ctx, .n = n, .grain = grain};
+    atomic_init(&d.next, 0);
+    geist_par_for(chunks < threads ? chunks : threads, cpu_neon_par_dyn_range, &d);
+}
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_NEON_PARALLEL_H */

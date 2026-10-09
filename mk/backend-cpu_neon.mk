@@ -24,7 +24,6 @@ BACKEND_SOURCES += \
     src/backends/cpu_neon/kernels/q8_0.c \
     src/backends/cpu_neon/kernels/pq2_0.c \
     src/backends/cpu_neon/kernels/tq2_0.c \
-    src/backends/cpu_neon/parallel.c \
     src/backends/cpu_neon/tl1.c \
     src/backends/cpu_neon/transformer_ops.c \
     src/backends/cpu_neon/weight_resolve.c \

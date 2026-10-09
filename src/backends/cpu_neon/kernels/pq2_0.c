@@ -77,10 +77,9 @@ struct pq2_0_m1_ctx {
     size_t         blocks_per_row;
 };
 
-static void pq2_0_m1_row_body(size_t r, void *vctx) {
-    const struct pq2_0_m1_ctx *c   = (const struct pq2_0_m1_ctx *) vctx;
-    const uint8_t             *Wr  = c->W + r * c->row_bytes;
-    float                      sum = 0.0f;
+static inline void pq2_0_m1_row(size_t r, const struct pq2_0_m1_ctx *c) {
+    const uint8_t *Wr  = c->W + r * c->row_bytes;
+    float          sum = 0.0f;
     for (size_t b = 0; b < c->blocks_per_row; b++) {
         const uint8_t *blk = Wr + b * PQ2_0_BLOCK_BYTES;
         const float    d   = fp16_to_fp32((uint16_t) blk[0] | ((uint16_t) blk[1] << 8));
@@ -88,6 +87,16 @@ static void pq2_0_m1_row_body(size_t r, void *vctx) {
         sum += (float) (dot - c->bsum[b]) * d;
     }
     c->y[r] = sum * c->inv_act_scale;
+}
+
+/* Output rows [r0, r1); the ctx is copied so the loop reads no field
+ * through the pointer (stores to y may alias it under
+ * -fno-strict-aliasing). */
+static void pq2_0_m1_rows(void *vctx, size_t r0, size_t r1) {
+    const struct pq2_0_m1_ctx c = *(const struct pq2_0_m1_ctx *) vctx;
+    for (size_t r = r0; r < r1; r++) {
+        pq2_0_m1_row(r, &c);
+    }
 }
 
 /* Per-call activation prep shared by both kernels: absmax int8 quant in
@@ -166,7 +175,7 @@ void cpu_neon_w_pq2_0_q8a_m1(const float               *x,
             .row_bytes      = n_in / PQ2_0_BLOCK_ELEMS * PQ2_0_BLOCK_BYTES,
             .blocks_per_row = n_in / PQ2_0_BLOCK_ELEMS,
     };
-    cpu_neon_parallel_rows(n_out, pq2_0_m1_row_body, &ctx);
+    geist_par_for(n_out, pq2_0_m1_rows, &ctx);
 }
 
 /* Two projections over one x (FFN gate/up, attention q/k/v): the int8
@@ -174,19 +183,21 @@ void cpu_neon_w_pq2_0_q8a_m1(const float               *x,
  * are computed once and both row loops read them. The row space is walked
  * as one range, so the thread dispatch is shared too -- the workspace
  * invariant in internal.h asks for exactly this. Items [0, a_n) are
- * body(i, a), the rest body(i - a_n, b); the m1 and x8 pairs both use it. */
+ * body(a, ...), the rest body(b, ...) shifted down by a_n; the m1 and x8
+ * pairs both use it. */
 struct pq2_0_pair {
-    void (*body)(size_t, void *);
-    void  *a, *b;
-    size_t a_n;
+    geist_par_fn body;
+    void        *a, *b;
+    size_t       a_n;
 };
 
-static void pq2_0_pair_body(size_t i, void *vctx) {
+static void pq2_0_pair_range(void *vctx, size_t i0, size_t i1) {
     const struct pq2_0_pair *p = (const struct pq2_0_pair *) vctx;
-    if (i < p->a_n) {
-        p->body(i, p->a);
-    } else {
-        p->body(i - p->a_n, p->b);
+    if (i0 < p->a_n) {
+        p->body(p->a, i0, i1 < p->a_n ? i1 : p->a_n);
+    }
+    if (i1 > p->a_n) {
+        p->body(p->b, (i0 > p->a_n ? i0 : p->a_n) - p->a_n, i1 - p->a_n);
     }
 }
 
@@ -217,8 +228,8 @@ void cpu_neon_w_pq2_0_q8a_pair_m1(const float               *x,
     struct pq2_0_m1_ctx b  = a;
     b.W                    = (const uint8_t *) w1->raw;
     b.y                    = y1;
-    struct pq2_0_pair pc   = {.body = pq2_0_m1_row_body, .a = &a, .b = &b, .a_n = n0};
-    cpu_neon_parallel_rows(n0 + n1, pq2_0_pair_body, &pc);
+    struct pq2_0_pair pc   = {.body = pq2_0_m1_rows, .a = &a, .b = &b, .a_n = n0};
+    geist_par_for(n0 + n1, pq2_0_pair_range, &pc);
 }
 
 /* x8: eight rows interleaved (decode). One sequential stream serves eight
@@ -254,18 +265,20 @@ size_t pq2_0_x8_size_bytes(size_t n_in, size_t n_out) {
     return bytes;
 }
 
-void pq2_0_x8_pack(const void *src, size_t n_in, size_t n_out, void *dst) {
-    const uint8_t *s  = (const uint8_t *) src;
-    uint8_t       *d  = (uint8_t *) dst;
-    const size_t   nb = n_in / PQ2_0_BLOCK_ELEMS;
-    /* Load-time repack of the whole tensor (7 GB on a 27B): threaded, 4
-     * bytes at a time, since for fixed (r, c) both source and destination
-     * are contiguous in m within each group of 4. */
-    const size_t n_tiles = n_out / 8;
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static) if (n_tiles > 1)
-#endif
-    for (size_t tile = 0; tile < n_tiles; tile++) {
+/* One pq2_0_x8_pack call. */
+struct pq2_0_x8_pack_job {
+    const uint8_t *s;
+    uint8_t       *d;
+    size_t         nb;
+};
+
+/* Row tiles [t0, t1) of pq2_0_x8_pack. */
+static void pq2_0_x8_pack_tiles(void *ctx, size_t t0, size_t t1) {
+    const struct pq2_0_x8_pack_job *job = ctx;
+    const uint8_t                  *s   = job->s;
+    uint8_t                        *d   = job->d;
+    const size_t                    nb  = job->nb;
+    for (size_t tile = t0; tile < t1; tile++) {
         for (size_t b = 0; b < nb; b++) {
             uint8_t *ob = d + (tile * nb + b) * PQ2_0_X8_BLOCK_BYTES;
             for (size_t r = 0; r < 8; r++) {
@@ -282,6 +295,17 @@ void pq2_0_x8_pack(const void *src, size_t n_in, size_t n_out, void *dst) {
     }
 }
 
+void pq2_0_x8_pack(const void *src, size_t n_in, size_t n_out, void *dst) {
+    const uint8_t *s  = (const uint8_t *) src;
+    uint8_t       *d  = (uint8_t *) dst;
+    const size_t   nb = n_in / PQ2_0_BLOCK_ELEMS;
+    /* Load-time repack of the whole tensor (7 GB on a 27B): threaded, 4
+     * bytes at a time, since for fixed (r, c) both source and destination
+     * are contiguous in m within each group of 4. */
+    struct pq2_0_x8_pack_job job = {.s = s, .d = d, .nb = nb};
+    geist_par_for(n_out / 8, pq2_0_x8_pack_tiles, &job); /* one tile: on this thread */
+}
+
 struct pq2_0_x8_ctx {
     const uint8_t *W;
     const int8_t  *xq;
@@ -291,12 +315,11 @@ struct pq2_0_x8_ctx {
     size_t         blocks_per_row;
 };
 
-static void pq2_0_x8_tile_body(size_t tile, void *vctx) {
-    const struct pq2_0_x8_ctx *c    = (const struct pq2_0_x8_ctx *) vctx;
-    const uint8_t             *row  = c->W + tile * c->blocks_per_row * PQ2_0_X8_BLOCK_BYTES;
-    const uint8x16_t           mask = vdupq_n_u8(3);
-    float32x4_t                acc0 = vdupq_n_f32(0.0f);
-    float32x4_t                acc1 = vdupq_n_f32(0.0f);
+static inline void pq2_0_x8_tile(size_t tile, const struct pq2_0_x8_ctx *c) {
+    const uint8_t   *row  = c->W + tile * c->blocks_per_row * PQ2_0_X8_BLOCK_BYTES;
+    const uint8x16_t mask = vdupq_n_u8(3);
+    float32x4_t      acc0 = vdupq_n_f32(0.0f);
+    float32x4_t      acc1 = vdupq_n_f32(0.0f);
     for (size_t b = 0; b < c->blocks_per_row; b++) {
         const uint8_t *blk = row + b * PQ2_0_X8_BLOCK_BYTES;
         __builtin_prefetch(blk + 2 * PQ2_0_X8_BLOCK_BYTES, 0, 0);
@@ -344,6 +367,14 @@ static void pq2_0_x8_tile_body(size_t tile, void *vctx) {
     vst1q_f32(c->y + tile * 8 + 4, vmulq_n_f32(acc1, c->inv_act_scale));
 }
 
+/* Row tiles [t0, t1), on a copy of the ctx as pq2_0_m1_rows. */
+static void pq2_0_x8_tiles(void *vctx, size_t t0, size_t t1) {
+    const struct pq2_0_x8_ctx c = *(const struct pq2_0_x8_ctx *) vctx;
+    for (size_t tile = t0; tile < t1; tile++) {
+        pq2_0_x8_tile(tile, &c);
+    }
+}
+
 void cpu_neon_w_pq2_0_x8_m1(const float               *x,
                             const struct geist_weight *w,
                             struct geist_backend      *be,
@@ -364,7 +395,7 @@ void cpu_neon_w_pq2_0_x8_m1(const float               *x,
             .inv_act_scale  = inv,
             .blocks_per_row = n_in / PQ2_0_BLOCK_ELEMS,
     };
-    cpu_neon_parallel_rows(n_out / 8, pq2_0_x8_tile_body, &ctx);
+    geist_par_for(n_out / 8, pq2_0_x8_tiles, &ctx);
 }
 
 /* The x8 twin of cpu_neon_w_pq2_0_q8a_pair_m1. */
@@ -393,8 +424,8 @@ void cpu_neon_w_pq2_0_x8_pair_m1(const float               *x,
     struct pq2_0_x8_ctx b = a;
     b.W                   = (const uint8_t *) w1->aux_fp32;
     b.y                   = y1;
-    struct pq2_0_pair pc  = {.body = pq2_0_x8_tile_body, .a = &a, .b = &b, .a_n = n0 / 8};
-    cpu_neon_parallel_rows(n0 / 8 + n1 / 8, pq2_0_pair_body, &pc);
+    struct pq2_0_pair pc  = {.body = pq2_0_x8_tiles, .a = &a, .b = &b, .a_n = n0 / 8};
+    geist_par_for(n0 / 8 + n1 / 8, pq2_0_pair_range, &pc);
 }
 
 /* x8 prefill: NEON dequant straight from the x8 copy + SGEMM, so the
@@ -403,13 +434,20 @@ void cpu_neon_w_pq2_0_x8_pair_m1(const float               *x,
  * 4m + l) and x is permuted into the same order once per call; a dot
  * product only needs both sides to agree on the order. */
 
-/* xp[t][b*128 + c*64 + 16l + m] = x[t][b*128 + c*64 + 4m + l]. */
-static void pq2_0_permute_x(size_t m, size_t n_in, const float *x, float *xp) {
-    /* Threaded: at m = 128 this moves ~22 MB each way per layer. */
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static) if (m > 1)
-#endif
-    for (size_t t = 0; t < m; t++) {
+/* One pq2_0_permute_x call. */
+struct pq2_0_permute_job {
+    size_t       n_in;
+    const float *x;
+    float       *xp;
+};
+
+/* Rows [t0, t1) of pq2_0_permute_x. */
+static void pq2_0_permute_rows(void *ctx, size_t t0, size_t t1) {
+    const struct pq2_0_permute_job *job  = ctx;
+    const size_t                    n_in = job->n_in;
+    const float                    *x    = job->x;
+    float                          *xp   = job->xp;
+    for (size_t t = t0; t < t1; t++) {
         const float *xr = x + t * n_in;
         float       *pr = xp + t * n_in;
         for (size_t base = 0; base < n_in; base += 64) {
@@ -422,6 +460,14 @@ static void pq2_0_permute_x(size_t m, size_t n_in, const float *x, float *xp) {
             }
         }
     }
+}
+
+/* xp[t][b*128 + c*64 + 16l + m] = x[t][b*128 + c*64 + 4m + l]. Threaded:
+ * at m = 128 this moves ~22 MB each way per layer; one row runs on this
+ * thread. */
+static void pq2_0_permute_x(size_t m, size_t n_in, const float *x, float *xp) {
+    struct pq2_0_permute_job job = {.n_in = n_in, .x = x, .xp = xp};
+    geist_par_for(m, pq2_0_permute_rows, &job);
 }
 
 /* 16 codes (one shift level of a row's 16 bytes) -> 16 floats (code-1)*d. */
@@ -486,22 +532,30 @@ constexpr size_t PQ2_0_X8_TILE_ROWS = 128;
 
 /* The tile loop, against an x already permuted into kernel order; the
  * pair path permutes once and runs it twice. */
-static void pq2_0_x8_gemm_permuted(struct cpu_neon_state     *st,
-                                   size_t                     m,
-                                   size_t                     n_in,
-                                   size_t                     n_out,
-                                   const uint8_t             *W,
-                                   const float               *xp,
-                                   const float               *x,
-                                   const struct geist_weight *w,
-                                   float                     *y) {
-    const size_t nb      = n_in / PQ2_0_BLOCK_ELEMS;
-    const size_t T       = PQ2_0_X8_TILE_ROWS;
-    const size_t n_tiles = (n_out + T - 1) / T;
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 1)
-#endif
-    for (size_t ti = 0; ti < n_tiles; ti++) {
+struct pq2_0_x8_gemm_job {
+    struct cpu_neon_state     *st;
+    size_t                     m, n_in, n_out;
+    const uint8_t             *W;
+    const float               *xp, *x;
+    const struct geist_weight *w;
+    float                     *y;
+};
+
+/* Tiles [t0, t1) of pq2_0_x8_gemm_permuted. */
+static void pq2_0_x8_gemm_tiles(void *ctx, size_t t0, size_t t1) {
+    const struct pq2_0_x8_gemm_job *job   = ctx;
+    struct cpu_neon_state          *st    = job->st;
+    const size_t                    m     = job->m;
+    const size_t                    n_in  = job->n_in;
+    const size_t                    n_out = job->n_out;
+    const uint8_t                  *W     = job->W;
+    const float                    *xp    = job->xp;
+    const float                    *x     = job->x;
+    const struct geist_weight      *w     = job->w;
+    float                          *y     = job->y;
+    const size_t                    nb    = n_in / PQ2_0_BLOCK_ELEMS;
+    const size_t                    T     = PQ2_0_X8_TILE_ROWS;
+    for (size_t ti = t0; ti < t1; ti++) {
         struct cpu_neon_workspace *tws = cpu_neon_ws(st);
         const size_t               r0  = ti * T;
         const size_t               tr  = n_out - r0 < T ? n_out - r0 : T;
@@ -528,6 +582,28 @@ static void pq2_0_x8_gemm_permuted(struct cpu_neon_state     *st,
                     y + r0,
                     (int) n_out);
     }
+}
+
+static void pq2_0_x8_gemm_permuted(struct cpu_neon_state     *st,
+                                   size_t                     m,
+                                   size_t                     n_in,
+                                   size_t                     n_out,
+                                   const uint8_t             *W,
+                                   const float               *xp,
+                                   const float               *x,
+                                   const struct geist_weight *w,
+                                   float                     *y) {
+    const size_t             T   = PQ2_0_X8_TILE_ROWS;
+    struct pq2_0_x8_gemm_job job = {.st    = st,
+                                    .m     = m,
+                                    .n_in  = n_in,
+                                    .n_out = n_out,
+                                    .W     = W,
+                                    .xp    = xp,
+                                    .x     = x,
+                                    .w     = w,
+                                    .y     = y};
+    cpu_neon_par_for_dynamic((n_out + T - 1) / T, 1, pq2_0_x8_gemm_tiles, &job);
 }
 
 /* Grows the shared permute buffer and fills it. Returns nullptr on
