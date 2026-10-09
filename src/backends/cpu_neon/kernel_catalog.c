@@ -55,7 +55,12 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_default(const struct geist_
 struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geist_hw_probe *hw,
                                                                const struct geist_backend  *be) {
 
-    const bool has_accelerate = hw != nullptr && hw->has_accelerate;
+    /* The Apple defaults below assume Accelerate runs on AMX. A macOS guest
+     * has no AMX: there Accelerate's sgemm is NEON fp32 (~100 GFLOP/s a
+     * core against ~230 GOP/s of SDOT on the 3-core hosted M1 VM), and the
+     * Linux kernel set prefills Gemma 4 E2B Q4_K_M ~2x faster than the
+     * Apple one (#456), so a guest takes the Linux defaults. */
+    const bool amx = hw != nullptr && hw->has_accelerate && !hw->is_virtual_machine;
 #if defined(GEIST_TARGET_PI5)
     /* The Pi5 OpenBLAS SGEMM-prefill path is currently not quality-safe for
      * Gemma Q4_K/Q6_K end-to-end generation. Keep it opt-in via
@@ -74,28 +79,28 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geis
 
             /* Apple AMX/Accelerate wins for high-M dequant+SGEMM; Pi/Linux
              * wins with native per-row NEON kernels for these tile sizes. */
-            .q5k_native_mn             = !has_accelerate,
-            .q4k_predecode             = has_accelerate,
-            .q4k_mtile_prefill         = has_accelerate,
-            .q4k_ntile_prefill         = has_accelerate,
+            .q5k_native_mn             = !amx,
+            .q4k_predecode             = amx,
+            .q4k_mtile_prefill         = amx,
+            .q4k_ntile_prefill         = amx,
             .q4k_block_q8_prefill      = false,
-            .q4k_sgemm_prefill         = has_accelerate || pi5_sgemm_prefill,
-            .q6k_sgemm_prefill         = has_accelerate || pi5_sgemm_prefill,
-            .qk_sgemm_threshold        = has_accelerate ? 64 : (pi5_sgemm_prefill ? 16 : 32),
+            .q4k_sgemm_prefill         = amx || pi5_sgemm_prefill,
+            .q6k_sgemm_prefill         = amx || pi5_sgemm_prefill,
+            .qk_sgemm_threshold        = amx ? 64 : (pi5_sgemm_prefill ? 16 : 32),
             .qk_sgemm_tile_rows        = 64,
-            .q6k_ntile_prefill         = has_accelerate,
-            .q6k_ntile4_stream_prefill = has_accelerate,
-            .q6k_x8_gemv               = has_accelerate,
+            .q6k_ntile_prefill         = amx,
+            .q6k_ntile4_stream_prefill = amx,
+            .q6k_x8_gemv               = amx,
             /* Default-on wherever SDOT exists: the cold Q4_0 mmap pages get
              * evicted, so the packed copy costs ~0.5 GB RSS, not 1x model
              * bytes (Pi 5 4B: prefill 9.1->16.5 t/s). GEIST_Q4_0_X8_GEMV=0
              * trades the speed back for RAM. */
-            .q4_0_x8_gemv    = has_accelerate || (hw != nullptr && hw->has_dotprod),
+            .q4_0_x8_gemv    = amx || (hw != nullptr && hw->has_dotprod),
             .pq2_0_x8_gemv   = hw != nullptr && hw->has_dotprod,
-            .q8_0_native_mn  = !has_accelerate,
-            .q4_01_native_mn = !has_accelerate,
-            .iq4xs_native_mn = !has_accelerate,
-            .tq2_0_native_mn = !has_accelerate,
+            .q8_0_native_mn  = !amx,
+            .q4_01_native_mn = !amx,
+            .iq4xs_native_mn = !amx,
+            .tq2_0_native_mn = !amx,
             .tq2_0_tl1_m1    = false,
     };
 
