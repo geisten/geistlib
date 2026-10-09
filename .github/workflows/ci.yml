@@ -715,8 +715,9 @@ jobs:
   #      scalar-reference parity checks. Whole-suite-under-SDE is
   #      deliberately out: 10-50× emulation overhead buys no additional SIMD
   #      coverage.
-  # Real hardware runs nightly in the private geisten/geistlib-hw
-  # (native-avx512): no self-hosted runner is attached to this public repo.
+  # Real hardware runs nightly in the private Gitea repo
+  # git.geisten.net/geisten-hw/geistlib-hw (native-avx512): no self-hosted
+  # runner is attached to this public repo.
   avx512-sde:
     name: AVX-512/VNNI guaranteed (Linux x86_64, Intel SDE)
     runs-on: ubuntu-24.04
@@ -792,8 +793,8 @@ jobs:
   # fails the job instead of counting as green. The parity tolerances are
   # encoded in the test (1e-3 relative; 2e-2 for the f16 coopmat path,
   # which lavapipe may not expose). The same tests plus a model e2e run
-  # on the physical GPU nightly in the private geisten/geistlib-hw
-  # (vulkan-gpu).
+  # on the physical GPU nightly in the private Gitea repo
+  # git.geisten.net/geisten-hw/geistlib-hw (vulkan-gpu).
   vulkan-lavapipe:
     name: Vulkan backend (Linux x86_64, lavapipe)
     runs-on: ubuntu-24.04
