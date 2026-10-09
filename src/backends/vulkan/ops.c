@@ -1599,11 +1599,12 @@ attn_generic:;
                     vk_acc_tensor(out, true)};
             /* Tensor-core kernel: prefill only (n_q > 1; decode has the
              * attn_part_f16/attn_comb path above), one variant per head_dim
-             * (128: Qwen3; 256: qwen35/Bonsai, Gemma's local layers; 512:
+             * (96: BitNet b1.58-large; 128: Qwen3; 256: qwen35/Bonsai, Gemma's local layers; 512:
              * Gemma 4's global layers, two column halves in z). Same push
              * layout and bindings as VK_PIPE_ATTENTION_F16, sliding window
              * included, just a 16-row dispatch. */
-            const enum vk_pipe cm_pipe = hd == 128   ? VK_PIPE_ATTENTION_F16_HD128_CM
+            const enum vk_pipe cm_pipe = hd == 96    ? VK_PIPE_ATTENTION_F16_HD96_CM
+                                         : hd == 128 ? VK_PIPE_ATTENTION_F16_HD128_CM
                                          : hd == 256 ? VK_PIPE_ATTENTION_F16_CM
                                          : hd == 512 ? VK_PIPE_ATTENTION_F16_HD512_CM
                                                      : VK_PIPE_COUNT;

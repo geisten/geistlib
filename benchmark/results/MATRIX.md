@@ -15,7 +15,7 @@ Coverage work is tracked in [#364](https://github.com/geisten/geistlib/issues/36
 | Gemma 4 E4B-it Q4_K_M | not measured | does not fit 4 GB reference host | [pp ~−19% / tg ~+16%](raw/matrix-2026-10-09-llama060/2026-10-09T121522Z_geist_llama_cpu_gemma4-e4b-q4km.md) | not measured | [pp ~−3% / tg ~−6%](raw/matrix-2026-10-09-llama060/2026-10-09T154148Z_geist_llama_gpu_gemma4-e4b-q4km.md) |
 | Llama 3.2 3B Q4_K_M | not measured | not measured | [pp ~−26% / tg ~+8%](raw/matrix-2026-10-09-llama060/2026-10-09T124041Z_geist_llama_cpu_llama32-3b-q4km.md) | not measured | [pp ~+4% / tg ~−16%](raw/matrix-2026-10-09-llama060/2026-10-09T155527Z_geist_llama_gpu_llama32-3b-q4km.md) |
 | BitNet b1.58 2B-4T I2_S | reference engine has no I2_S type | reference engine has no I2_S type | reference engine has no I2_S type | reference engine has no I2_S type | reference engine has no I2_S type |
-| BitNet b1.58-large TQ2_0 | not measured | not measured | [pp ~+61% / tg ~+47%](raw/matrix-2026-10-09-llama060/2026-10-09T130112Z_geist_llama_cpu_bitnet-large-tq2.md) | not measured | [pp ~−56% / tg ~−7%](raw/matrix-2026-10-09-llama060/2026-10-09T160829Z_geist_llama_gpu_bitnet-large-tq2.md) |
+| BitNet b1.58-large TQ2_0 | not measured | not measured | [pp ~+61% / tg ~+47%](raw/matrix-2026-10-09-llama060/2026-10-09T130112Z_geist_llama_cpu_bitnet-large-tq2.md) | not measured | [pp ~−6% / tg ~−7%](raw/matrix-2026-10-09-llama060/2026-10-09T184857Z_geist_llama_gpu_bitnet-large-tq2.md) |
 | Qwen3 0.6B Q8_0 | not measured | not measured | [pp ~+18% / tg ~+9%](raw/matrix-2026-10-09-llama060/2026-10-09T131443Z_geist_llama_cpu_qwen3-0.6b-q8.md) | not measured | [pp ~+12% / tg ~−9%](raw/matrix-2026-10-09-llama060/2026-10-09T162101Z_geist_llama_gpu_qwen3-0.6b-q8.md) |
 | Qwen3.5 0.8B Q8_0 † | not measured | not measured | [pp ~+72% / tg ~+17%](raw/matrix-2026-10-09-llama060/2026-10-09T132823Z_geist_llama_cpu_qwen35-0.8b-q8.md) | not measured | [pp ~+30% / tg ~+13%](raw/matrix-2026-10-09-llama060/2026-10-09T163331Z_geist_llama_gpu_qwen35-0.8b-q8.md) |
 | Qwen3.5 4B Q4_0 † | not measured | not measured | [pp ~−18% / tg ~+13%](raw/matrix-2026-10-09-llama060/2026-10-09T134243Z_geist_llama_cpu_qwen35-4b-q4.md) | not measured | [pp ~+5% / tg ~−2%](raw/matrix-2026-10-09-llama060/2026-10-09T164607Z_geist_llama_gpu_qwen35-4b-q4.md) |
@@ -45,7 +45,10 @@ mind:
   or rose (E2B 527 → 528, Qwen3.5 4B 182 → 257, Qwen3.5 0.8B 866 → 1756).
 - geist's Vulkan prefill gained the coopmat GEMMs and attention of
   #681/#683/#686/#712/#719/#720 and the DeltaNet kernels of #708: the NVIDIA
-  column went from −70…−91 % to −3…+30 %, except TQ2_0 (−56 %).
+  column went from −70…−91 % to −3…+30 %. TQ2_0 (BitNet b1.58-large) followed
+  with #741, which added head_dim 96 tensor-core attention and a 512-token chunk
+  for host-visible pools: −56 → −6 %, re-measured at geist `db7f140` (#741's head) the same
+  evening.
 
 The Apple and Pi 5 columns and the Bonsai row (PrismML fork) are older
 measurements against `2d8d612e`; their reports name the pin.

@@ -9,6 +9,13 @@ minor release.
 ## [Unreleased]
 
 ### Changed
+- **Vulkan prefill for head_dim 96 and host-visible scratch pools (#739).**
+  head_dim 96 (BitNet b1.58-large) gets the tensor-core attention kernel
+  instead of the one-row-per-query fallback, and a host-visible scratch pool
+  now grows its prefill chunk up to 512 while the BAR window holds it, as a
+  device-local pool already did. BitNet b1.58-large TQ2_0 on an RTX 2080 Ti:
+  pp512 6190 -> 13180 t/s, pp1024 4690 -> 11910 t/s (llama.cpp v0.6.0:
+  14070 at pp512). Models with a device-local pool are unchanged.
 - **The llama.cpp reference moves to v0.6.0 (`d8123504`, was `2d8d612e`).**
   The cross-engine campaign, the Apple performance guard and the HF → GGUF
   converter run at the release; convert-gate needs numpy 2.2 for its
