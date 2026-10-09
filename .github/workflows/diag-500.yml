@@ -1,0 +1,64 @@
+name: diag-500 (N2 i8mm profile, not for merge)
+on:
+  push:
+    branches: [perf/500-i8mm-gemm]
+  workflow_dispatch:
+
+jobs:
+  profile:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: CPU
+        run: |
+          lscpu | head -30
+          grep -m1 Features /proc/cpuinfo
+          nproc
+      - name: Install deps
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14 libopenblas-dev
+      - name: perf tools (best effort)
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y --no-install-recommends linux-tools-common "linux-tools-$(uname -r)" || \
+            sudo apt-get install -y --no-install-recommends linux-tools-azure || true
+          sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0 || true
+          perf --version || true
+      - name: Cache reference model
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: gguf_artifacts
+          key: geist-model-gemma4-e2b-q4km-v1
+      - name: Cache Qwen3 reference model
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: gguf_artifacts/qwen3-0.6b-q8_0.gguf
+          key: geist-model-qwen3-0.6b-q8-9465e63a22ad
+      - name: Fetch models
+        run: make fetch-model fetch-qwen3-model
+      - name: Build
+        run: make TARGET=linux CC=gcc-14 EXTRA_CFLAGS=-fno-omit-frame-pointer
+      - name: Baseline sweep + kernels
+        run: |
+          B=bin/linux/release/tests/bench_perf_sweep
+          for g in gemma4-e2b-Q4_K_M.gguf qwen3-0.6b-q8_0.gguf; do
+            echo "=== $g default"
+            GEIST_LOG_KERNELS=1 GEIST_PROFILE_QUANT=1 $B --gguf gguf_artifacts/$g \
+              --seq-lens 128,512 --decode-n 32 --warmup 2 --repeats 3
+            echo "=== $g sgemm prefill (Q4K/Q6K/Q8_0 via dequant+OpenBLAS)"
+            GEIST_Q4K_SGEMM_PREFILL=1 GEIST_Q6K_SGEMM_PREFILL=1 GEIST_Q8_0_NATIVE_MN=0 \
+              $B --gguf gguf_artifacts/$g --seq-lens 128,512 --decode-n 32 --warmup 2 --repeats 3
+          done
+      - name: perf profile pp512
+        continue-on-error: true
+        run: |
+          B=bin/linux/release/tests/bench_perf_sweep
+          for g in gemma4-e2b-Q4_K_M.gguf qwen3-0.6b-q8_0.gguf; do
+            echo "=== $g"
+            perf record -g -o perf-$g.data -- $B --gguf gguf_artifacts/$g \
+              --seq-lens 512 --decode-n 1 --warmup 1 --repeats 3 > /dev/null
+            perf report -i perf-$g.data --no-children --sort symbol --stdio 2>/dev/null | grep -v '^$' | head -60
+          done
