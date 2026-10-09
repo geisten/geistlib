@@ -100,6 +100,8 @@ X(VK_PIPE_QGATE_SPLIT,            qgate_split_f32_spv,         "qgate_split",   
 X(VK_PIPE_ATTENTION_F16_CM,       attention_f16_cm_spv,        "attention_f16_cm",       4, COOPMAT)
 /* the same, head_dim 128 */
 X(VK_PIPE_ATTENTION_F16_HD128_CM, attention_f16_hd128_cm_spv,  "attention_f16_hd128_cm", 4, COOPMAT)
+/* the same, head_dim 96 */
+X(VK_PIPE_ATTENTION_F16_HD96_CM,  attention_f16_hd96_cm_spv,   "attention_f16_hd96_cm",  4, COOPMAT)
 /* the same, head_dim 512 (two column halves) */
 X(VK_PIPE_ATTENTION_F16_HD512_CM, attention_f16_hd512_cm_spv,  "attention_f16_hd512_cm", 4, COOPMAT)
 /* the same three, four subgroups per workgroup sharing 64-key steps, one

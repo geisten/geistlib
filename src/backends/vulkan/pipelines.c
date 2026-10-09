@@ -22,6 +22,7 @@
 #include "shaders/attention_f16_hd128_mw_cm_spv.h"
 #include "shaders/attention_f16_hd512_cm_spv.h"
 #include "shaders/attention_f16_hd512_mw_cm_spv.h"
+#include "shaders/attention_f16_hd96_cm_spv.h"
 #include "shaders/attention_f16_mw_cm_spv.h"
 #include "shaders/attention_f16_spv.h"
 #include "shaders/attention_f32_spv.h"
