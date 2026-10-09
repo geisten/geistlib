@@ -65,9 +65,10 @@ struct cpu_neon_workspace {
     size_t   qk_mN_sc_cap;
     int32_t *qk_mN_sum32;
     size_t   qk_mN_sum32_cap;
-    /* Q4_K/Q6_K dequant→cblas_sgemm prefill path (m ≥ threshold):
-     * 32-row tile of dequant'd weights in fp32. Cap is in floats
-     * (DEQ_TILE_ROWS × n_in_max). 64-byte aligned for AMX SGEMM. */
+    /* The dequant trampolines and the Q4_K/Q6_K dequant→cblas_sgemm
+     * prefill path (m ≥ threshold): one tile of dequant'd weights in fp32
+     * per thread of the call. Cap is in floats (threads × tile rows ×
+     * n_in_max). 64-byte aligned for AMX SGEMM. */
     float *dequant_w_fp32;
     size_t dequant_w_fp32_cap;
     /* Fused FFN tile path: gate/up/mid float tiles plus

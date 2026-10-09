@@ -1,8 +1,7 @@
 # mk/target-mac-omp.mk — macOS / Apple Silicon target WITH OpenMP.
 #
-# The custom NEON kernels in cpu_neon parallelize only when libomp is
-# linked; target-mac.mk relies on Accelerate's internal threading for
-# sgemm alone.
+# The custom NEON kernels in cpu_neon run their loops as OpenMP regions
+# here (geist_par_for, src/base/par.h); target-mac.mk runs them on GCD.
 #
 # Dependency: Homebrew libomp (`brew install libomp`). Default path
 # is /opt/homebrew/opt/libomp; override via LIBOMP_PREFIX.

@@ -5,6 +5,7 @@
  */
 #include "quant_blocks.h"
 #include "heap.h"
+#include "par.h"
 #include "quant.h"
 #include "iq_grids.h"
 
@@ -15,10 +16,6 @@
 
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
-#endif
-
-#ifdef _OPENMP
-#include <omp.h>
 #endif
 
 /* Decode one 32-element IQ3_S sub-block (grid lookup + signs) to int8. */
@@ -58,20 +55,26 @@ static inline void iq3s_subblock_to_int8(int8_t         out[32],
 #endif
 }
 
-void linear_iq3s_decode_w3a8_pre(size_t       n_in,
-                                 size_t       n_out,
-                                 const float *x_scales,
-                                 const int8_t x_q8[static n_in],
-                                 const void  *w_iq3s,
-                                 float        y[static n_out]) {
-#if defined(__ARM_NEON)
-    const struct block_iq3_s_t *w                = (const struct block_iq3_s_t *) w_iq3s;
-    const size_t                n_blocks_per_row = n_in / IQ3_S_BLOCK_ELEMS;
+/* One call's operands, for the range bodies below. */
+struct iq3s_rows_job {
+    const void   *w;
+    const int8_t *x_q8;
+    const float  *x_scales;
+    size_t        m, n_in, n_out, n_blocks_per_row;
+    float        *y;
+};
 
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+#if defined(__ARM_NEON)
+/* Output rows [n0, n1) of linear_iq3s_decode_w3a8_pre. */
+static void iq3s_decode_rows(void *ctx, size_t n0, size_t n1) {
+    const struct iq3s_rows_job *job              = ctx;
+    const struct block_iq3_s_t *w                = job->w;
+    const int8_t               *x_q8             = job->x_q8;
+    const float                *x_scales         = job->x_scales;
+    const size_t                n_out            = job->n_out;
+    const size_t                n_blocks_per_row = job->n_blocks_per_row;
+    float                      *y                = job->y;
+    for (size_t n = n0; n < n1; n++) {
         const struct block_iq3_s_t *row = w + n * n_blocks_per_row;
         float                       acc = 0.0f;
         if (n + 1 < n_out)
@@ -125,6 +128,26 @@ void linear_iq3s_decode_w3a8_pre(size_t       n_in,
         }
         y[n] = acc;
     }
+}
+#endif
+
+void linear_iq3s_decode_w3a8_pre(size_t       n_in,
+                                 size_t       n_out,
+                                 const float *x_scales,
+                                 const int8_t x_q8[static n_in],
+                                 const void  *w_iq3s,
+                                 float        y[static n_out]) {
+#if defined(__ARM_NEON)
+    const struct block_iq3_s_t *w                = (const struct block_iq3_s_t *) w_iq3s;
+    const size_t                n_blocks_per_row = n_in / IQ3_S_BLOCK_ELEMS;
+
+    struct iq3s_rows_job job = {.w                = w,
+                                .x_q8             = x_q8,
+                                .x_scales         = x_scales,
+                                .n_out            = n_out,
+                                .n_blocks_per_row = n_blocks_per_row,
+                                .y                = y};
+    geist_par_for(n_out, iq3s_decode_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -154,23 +177,19 @@ void linear_iq3s_decode_w3a8(size_t      n_in,
     safe_free((void **) &x_scales);
 }
 
-void linear_iq3s_w3a8_prefill_pre(size_t        m,
-                                  size_t        n_in,
-                                  size_t        n_out,
-                                  const int8_t *x_q8,
-                                  const float  *x_scales,
-                                  const void   *w_iq3s,
-                                  float        *y) {
 #if defined(__ARM_NEON)
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
-        return;
-    const struct block_iq3_s_t *w                = (const struct block_iq3_s_t *) w_iq3s;
-    const size_t                n_blocks_per_row = n_in / IQ3_S_BLOCK_ELEMS;
-
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(static)
-#endif
-    for (size_t n = 0; n < n_out; n++) {
+/* Output rows [n0, n1) of linear_iq3s_w3a8_prefill_pre. */
+static void iq3s_prefill_rows(void *ctx, size_t n0, size_t n1) {
+    const struct iq3s_rows_job *job              = ctx;
+    const struct block_iq3_s_t *w                = job->w;
+    const int8_t               *x_q8             = job->x_q8;
+    const float                *x_scales         = job->x_scales;
+    const size_t                m                = job->m;
+    const size_t                n_in             = job->n_in;
+    const size_t                n_out            = job->n_out;
+    const size_t                n_blocks_per_row = job->n_blocks_per_row;
+    float                      *y                = job->y;
+    for (size_t n = n0; n < n1; n++) {
         const struct block_iq3_s_t *row = w + n * n_blocks_per_row;
         if (n + 1 < n_out)
             __builtin_prefetch(row + n_blocks_per_row, 0, 0);
@@ -232,6 +251,31 @@ void linear_iq3s_w3a8_prefill_pre(size_t        m,
         for (size_t i = 0; i < m; i++)
             y[i * n_out + n] = accs[i];
     }
+}
+#endif
+
+void linear_iq3s_w3a8_prefill_pre(size_t        m,
+                                  size_t        n_in,
+                                  size_t        n_out,
+                                  const int8_t *x_q8,
+                                  const float  *x_scales,
+                                  const void   *w_iq3s,
+                                  float        *y) {
+#if defined(__ARM_NEON)
+    if (m == 0 || m > GEIST_QUANT_M_CAP)
+        return;
+    const struct block_iq3_s_t *w                = (const struct block_iq3_s_t *) w_iq3s;
+    const size_t                n_blocks_per_row = n_in / IQ3_S_BLOCK_ELEMS;
+
+    struct iq3s_rows_job job = {.w                = w,
+                                .x_q8             = x_q8,
+                                .x_scales         = x_scales,
+                                .m                = m,
+                                .n_in             = n_in,
+                                .n_out            = n_out,
+                                .n_blocks_per_row = n_blocks_per_row,
+                                .y                = y};
+    geist_par_for(n_out, iq3s_prefill_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;
