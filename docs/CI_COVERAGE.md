@@ -160,7 +160,9 @@ was; hence `if: always()`.
 
 ## Coverage ratchet
 
-The `coverage` job builds `MODE=cov` (gcc-14, `-O1 --coverage`, Linux arm64)
+The `coverage` job runs on every push to `main` (not on PRs: ~65 min), and
+pushes to `main` are never cancelled by a later merge, so every main commit
+is measured. It builds `MODE=cov` (gcc-14, `-O1 --coverage`, Linux arm64)
 and runs the model-free unit suite plus the real-model int suite with
 `GEIST_STRICT_FIXTURES=gguf` — a fixture skip would hollow out the
 measurement, so it fails instead. (e2e is not measured: it re-drives the same
@@ -170,8 +172,11 @@ produces JSON + Cobertura XML + HTML (uploaded as the `coverage-report` artifact
 against the versioned baselines in `benchmark/coverage_baselines.json`, with
 the overall figure and per-subsystem table published to the job summary.
 
-- **Scope**: `src/base`, `src/engine`, `src/io`, `src/formats`,
-  `src/archs/transformer`, `src/backends/common`, `src/backends/cpu_scalar`.
+- **Scope**: `src/base`, `src/engine`, `src/io`, `src/formats`, `src/quant`,
+  `src/archs/transformer`, `src/archs/audio_conformer`,
+  `src/archs/vision_siglip`, `src/backends/common`, `src/backends/cpu_scalar`.
+  `vision_siglip` is barely reached by unit + int (~12 % line); its baseline
+  only keeps it from falling.
 - **Exclusions, each deliberate**: `src/backends/cpu_x86`, `metal/`,
   `vulkan/` cannot execute on this runner (their correctness legs live in
   the x86/metal/vulkan jobs); `cpu_neon` is measured but not gated (SIMD
@@ -183,7 +188,7 @@ the overall figure and per-subsystem table published to the job summary.
   fails the gate and prints the measured value, so new subsystems enter by
   deliberate commit, not by silent adoption.
 - **Security floor**: `src/io` (the malformed-GGUF parser surface) holds a
-  hard 35 % line-coverage floor regardless of the ratchet. Raise it with the
+  hard 85 % line-coverage floor regardless of the ratchet. Raise it with the
   coverage; never let it drift down.
 - **Self-test**: `tests/test_coverage_gate_py.py` (hermetic, runs in
   `make test-py`) proves the gate fires on regression, empty scope, unset
