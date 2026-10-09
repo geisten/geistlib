@@ -28,3 +28,18 @@ jobs:
           m=$(ls gguf_artifacts/qwen3-0.6b*.gguf | head -1)
           ${{ matrix.bin }} "$m" 5000 0 1024 256 64
           ${{ matrix.bin }} "$m" 5000 64 256 1024 0
+  pin-prefix-metal:
+    # #578: HELIO's pin_prefix pattern on Metal (E2B: E4B does not fit the 7 GB runner)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: brew install libomp && make -j3 TARGET=mac-omp BACKENDS="metal cpu_neon cpu_scalar" lib bin/mac-omp/release/tests/bench_pin_prefix
+      - run: make fetch-model
+      - name: 1500-token prompt, 40 % pinned, 64-token calls, 10 requests
+        env:
+          GEIST_BENCH_BACKEND: metal
+        run: |
+          m=$(ls gguf_artifacts/gemma4-e2b*.gguf | head -1)
+          bin/mac-omp/release/tests/bench_pin_prefix "$m" 1500 600 64 10
+          bin/mac-omp/release/tests/bench_pin_prefix "$m" 1500 600 256 5
