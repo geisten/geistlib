@@ -1759,12 +1759,17 @@ static bool backend_scratch_unmappable(struct geist_backend *be) {
  *   - a quantized or KIVI KV cache, or a rotated one: kv_store.c quantizes
  *     scratch_k / scratch_v and the INT8 attention reads scratch_q on the
  *     host;
- *   - per-layer embeddings without the on-device row lookup, DeltaNet
- *     mixers, an attention output gate, MTP
- *     heads, BitNet SubLN or per-projection norms, AWQ scales: each has a
- *     host loop over pool slots (layer.c, layer_deltanet.c, layer_attn.c,
- *     mtp.c, internal.h). A prism.hadamard rotation is fine: it only runs
- *     as the backend's hadamard_rotate (the model does not load otherwise);
+ *   - per-layer embeddings without the on-device row lookup, an attention
+ *     output gate without the backend's attn_qgate_split and sigmoid_mul,
+ *     MTP heads, BitNet SubLN or per-projection norms, AWQ scales: each has
+ *     a host loop over pool slots (layer.c, layer_attn.c, mtp.c,
+ *     internal.h). A prism.hadamard rotation is fine: it only runs as the
+ *     backend's hadamard_rotate (the model does not load otherwise). So is
+ *     a DeltaNet mixer: its host oracle (layer_deltanet.c, taken when
+ *     deltanet_mix declines) maps the dn_scratch_* slabs and the recurrent
+ *     state, which are buffers of their own, not pool slots; everything
+ *     around it on the pool (input norm, projections, residual add) is
+ *     backend ops;
  *   - a backend without device buffer_copy or scale_f32, whose bound
  *     fallbacks are host memcpy / host loops (exec_plan.h);
  *   - the whole-FFN tile kernel, which takes host pointers.
@@ -1789,15 +1794,21 @@ static bool scratch_device_wanted(const struct transformer_arch_session *sess) {
      * no pool slot. */
     const bool ple_on_host = st->config.has_ple && !st->model_fusions.ple_lookup_scaled &&
                              !transformer_lookup_on_host(st->backend);
-    if (ple_on_host || st->config.has_sub_ln || st->config.has_projection_input_norms ||
-        st->config.has_attn_output_gate || !st->model_fusions.backend_buffer_copy ||
+    /* qwen35's attention output gate (layer_attn.c): the query/gate split
+     * writes scratch_q and the sigmoid gate scratch_attn on the host unless
+     * the backend has the op. Vulkan's ops decline only on a shape the forward
+     * never passes or a buffer without a VkBuffer behind it. */
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(st->backend);
+    const bool gate_on_host = st->config.has_attn_output_gate &&
+                              (fused->attn_qgate_split == nullptr || fused->sigmoid_mul == nullptr);
+    if (ple_on_host || gate_on_host || st->config.has_sub_ln ||
+        st->config.has_projection_input_norms || !st->model_fusions.backend_buffer_copy ||
         !st->model_fusions.prim_scale_f32) {
         return false;
     }
     for (size_t li = 0; li < st->n_layers; li++) {
         const struct transformer_layer_weights *L = &st->layers[li];
-        if (L->mixer != GEIST_MIXER_ATTN || L->o_awq_inv_scale != nullptr ||
-            L->down_awq_inv_scale != nullptr ||
+        if (L->o_awq_inv_scale != nullptr || L->down_awq_inv_scale != nullptr ||
             (st->layer_plans != nullptr && st->layer_plans[li].fuse_ffn_geglu_tile_mN)) {
             return false;
         }
@@ -1980,8 +1991,8 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
          * 1813 t/s at 512, E4B 754 -> 839, Llama 3.2 3B 1229 -> 1298. Grow to
          * 512 when the device has room for the bigger pool, with half of what
          * is free left for the KV cache and everything else. Sessions that
-         * keep a host-visible pool (DeltaNet, quantized KV, ...) never get
-         * here: their chunk stays what the BAR allows. */
+         * keep a host-visible pool (quantized KV, ...) never get here: their
+         * chunk stays what the BAR allows. */
         if (!state->m_max_from_env && sess->scratch_device && sess->m_max < DEVICE_POOL_M_MAX &&
             DEVICE_POOL_M_MAX <= m_cap) {
             struct geist_backend_memory     mem;

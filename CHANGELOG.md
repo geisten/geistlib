@@ -10,6 +10,22 @@ minor release.
 
 ### Changed
 
+- **Qwen3.5 sessions get the device-local scratch pool and the 512-row
+  prefill chunk on Vulkan (#467).** `scratch_device_wanted` kept every model
+  with a DeltaNet mixer or an attention output gate on the host-visible pool,
+  whose chunk the 256 MB BAR window held to 128 rows (`GEIST_M_MAX=512`
+  spilled the pool into system memory: ~1000 t/s). The DeltaNet host oracle
+  maps only the `dn_scratch_*` slabs and the recurrent state, buffers of
+  their own, not pool slots; the gate's host loops over `scratch_q` /
+  `scratch_attn` run only without the backend's `attn_qgate_split` /
+  `sigmoid_mul`. The predicate now asks exactly that, so the pool goes
+  device-local and the auto-chunk growth of #671 takes the chunk to 512,
+  measured best for every qwen35 model (256 is 10-25 % slower). RTX 2080 Ti,
+  mean of two alternating rounds: Qwen3.5-4B Q4_0 pp512 2002 -> 3475 t/s
+  (+74 %), pp1024 1966 -> 3361, pp2048 1945 -> 3284; Qwen3.5-0.8B Q8_0
+  pp512 9060 -> 15448 (+71 %); Ternary-Bonsai-2-27B PQ2_0 500 -> 633
+  (+27 %). Decode, Gemma 4 E2B and Llama 3.2 3B unchanged; CPU-vs-Vulkan
+  logits as before.
 - **Vulkan: Q4_0 / Q8_0 / Q4_1 / Q5_K prefill GEMMs on the 128 x 128
   tensor-core frame, narrow Q8_0 GEMMs as batched matvecs (#467).** The
   PQ2_0-frame body that runs Q4_K / Q6_K / TQ2_0 / F32 gains A stages for

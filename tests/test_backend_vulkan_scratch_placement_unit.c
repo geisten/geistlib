@@ -10,7 +10,10 @@
  * default (or =1) a session whose host paths never map those
  * slots puts them in device-local memory, sliced with buffer_create_view
  * (offset, no host pointer); h_a, h_b and logits — which the host reads —
- * stay in a small host-visible pool. Checked here on the in-memory llama:
+ * stay in a small host-visible pool. Checked here on the in-memory llama
+ * and on an in-memory qwen35 hybrid (gated DeltaNet blocks and attention
+ * with the output gate, #467), whose host loops over pool slots all sit
+ * behind ops Vulkan has (attn_qgate_split, sigmoid_mul):
  *
  *   1. placement: opted out, every slot is host-visible (no device pool);
  *      otherwise every slot but h_a / h_b / logits is device-local and
@@ -53,9 +56,10 @@
 #include "src/backends/vulkan/vk_internal.h"
 #include "src/engine/model.h"
 
-constexpr size_t VOCAB  = 512;
-constexpr size_t PROMPT = 70;
-constexpr size_t DECODE = 8;
+constexpr size_t VOCAB     = 512; /* the llama's; the qwen35's is its tokenizer's */
+constexpr size_t VOCAB_MAX = 1024;
+constexpr size_t PROMPT    = 70;
+constexpr size_t DECODE    = 8;
 
 /* One backend and the fixture model loaded on it. */
 struct rig {
@@ -196,15 +200,18 @@ static int check_op_fallback(struct rig *r, struct transformer_arch_session *ses
 
 /* ---- 1 + 2: placement ---------------------------------------------------- */
 
-static int check_placement(struct rig *r, bool device) {
+/* fallbacks: also force the CPU fallbacks of part 4 (llama only: the host
+ * linear check takes layer 0's q_proj, which a DeltaNet block has not). */
+static int check_placement(struct rig *r, const char *name, bool device, bool fallbacks) {
     struct transformer_arch_state   *st   = geist_model_internal_arch_meta(r->m);
     struct vk_state                 *vs   = r->be->state;
     const struct geist_backend_vtbl *vt   = r->be->desc->vtbl;
     const uint64_t                   dev0 = vs->stat_scratch_n[VK_PLACEMENT_DEVICE];
     const struct geist_session_opts  o    = {.top_p = 1.0f};
     struct transformer_arch_session *sess = transformer_session_alloc(st, &o);
-    const char                      *tag  = device ? "opted in" : "default";
-    char                             msg[192];
+    char                             tag[64];
+    snprintf(tag, sizeof tag, "%s %s", name, device ? "opted in" : "default");
+    char msg[192];
     snprintf(msg, sizeof msg, "%s: session", tag);
     int fails = geist_expect(sess != nullptr, msg);
     if (sess == nullptr) {
@@ -280,7 +287,7 @@ static int check_placement(struct rig *r, bool device) {
     snprintf(msg, sizeof msg, "%s: the all-ones slot holds ones", tag);
     fails += geist_expect(all, msg);
 
-    if (device) {
+    if (device && fallbacks) {
         fails += check_host_linear_refused(r, sess);
         fails += check_op_fallback(r, sess);
     }
@@ -293,14 +300,15 @@ static int check_placement(struct rig *r, bool device) {
 /* Prefill PROMPT tokens and greedily decode DECODE more on a fresh session
  * of `m_max` (0: the default); the tokens and the final logits. */
 static enum geist_status decode_run(struct rig   *r,
+                                    size_t        vocab,
                                     size_t        m_max,
                                     geist_token_t out[static DECODE],
-                                    float         logits[static VOCAB]) {
+                                    float         logits[static vocab]) {
     const struct geist_session_opts o = {.top_p = 1.0f, .m_max = m_max};
     struct geist_session           *s = nullptr;
     geist_token_t                   prompt[PROMPT];
     for (size_t i = 0; i < PROMPT; i++) {
-        prompt[i] = (geist_token_t) (2 + (i * 97 + i / 7) % (VOCAB - 2));
+        prompt[i] = (geist_token_t) (2 + (i * 97 + i / 7) % (vocab - 2));
     }
     enum geist_status st = geist_session_create(r->m, r->be, &o, &s);
     if (st == GEIST_OK) {
@@ -312,28 +320,33 @@ static enum geist_status decode_run(struct rig   *r,
     if (st == GEIST_OK) {
         size_t       n = 0;
         const float *l = geist_session_peek_logits(&n, s);
-        if (l == nullptr || n != VOCAB) {
+        if (l == nullptr || n != vocab) {
             st = GEIST_E_BACKEND;
         } else {
-            memcpy(logits, l, VOCAB * sizeof(float));
+            memcpy(logits, l, vocab * sizeof(float));
         }
     }
     geist_session_destroy(s);
     return st;
 }
 
-static int check_parity(struct rig *host, struct rig *dev, size_t m_max) {
-    geist_token_t           th[DECODE], td[DECODE];
-    static float            lh[VOCAB], ld[VOCAB];
+static int
+check_parity(struct rig *host, struct rig *dev, const char *name, size_t vocab, size_t m_max) {
+    geist_token_t th[DECODE], td[DECODE];
+    static float  lh[VOCAB_MAX], ld[VOCAB_MAX];
+    if (vocab > VOCAB_MAX) {
+        return geist_expect(false, "the fixture vocabulary fits VOCAB_MAX");
+    }
     struct vk_state        *vs     = dev->be->state;
     const uint64_t          dev0   = vs->stat_scratch_n[VK_PLACEMENT_DEVICE];
     const uint64_t          denied = vs->stat_host_denied;
-    const enum geist_status sh     = decode_run(host, m_max, th, lh);
-    const enum geist_status sd     = decode_run(dev, m_max, td, ld);
+    const enum geist_status sh     = decode_run(host, vocab, m_max, th, lh);
+    const enum geist_status sd     = decode_run(dev, vocab, m_max, td, ld);
     char                    msg[192];
     snprintf(msg,
              sizeof msg,
-             "m_max %zu: both sessions prefill and decode (host-visible %d, device-local %d)",
+             "%s m_max %zu: both sessions prefill and decode (host-visible %d, device-local %d)",
+             name,
              m_max,
              (int) sh,
              (int) sd);
@@ -341,17 +354,27 @@ static int check_parity(struct rig *host, struct rig *dev, size_t m_max) {
     if (fails != 0) {
         return fails;
     }
-    snprintf(msg, sizeof msg, "m_max %zu: the decoding session had a device-local pool", m_max);
+    snprintf(msg,
+             sizeof msg,
+             "%s m_max %zu: the decoding session had a device-local pool",
+             name,
+             m_max);
     fails += geist_expect(vs->stat_scratch_n[VK_PLACEMENT_DEVICE] > dev0, msg);
-    snprintf(msg, sizeof msg, "m_max %zu: no host view of device memory was needed", m_max);
+    snprintf(
+            msg, sizeof msg, "%s m_max %zu: no host view of device memory was needed", name, m_max);
     fails += geist_expect(vs->stat_host_denied == denied, msg);
-    snprintf(msg, sizeof msg, "m_max %zu: the same %zu greedy tokens", m_max, DECODE);
+    snprintf(msg, sizeof msg, "%s m_max %zu: the same %zu greedy tokens", name, m_max, DECODE);
     fails += geist_expect(memcmp(th, td, sizeof th) == 0, msg);
     size_t diff = 0;
-    for (size_t i = 0; i < VOCAB; i++) {
+    for (size_t i = 0; i < vocab; i++) {
         diff += lh[i] != ld[i] || !isfinite(lh[i]);
     }
-    snprintf(msg, sizeof msg, "m_max %zu: identical finite logits (%zu differ)", m_max, diff);
+    snprintf(msg,
+             sizeof msg,
+             "%s m_max %zu: identical finite logits (%zu differ)",
+             name,
+             m_max,
+             diff);
     return fails + geist_expect(diff == 0, msg);
 }
 
@@ -375,13 +398,50 @@ int main(void) {
         free(g.b);
         return rc;
     }
-    int fails = check_placement(&host, false);
-    fails += check_placement(&dev, true);
-    fails += check_parity(&host, &dev, 0);
-    fails += check_parity(&host, &dev, 16);
+    int fails = check_placement(&host, "llama", false, false);
+    fails += check_placement(&dev, "llama", true, true);
+    fails += check_parity(&host, &dev, "llama", VOCAB, 0);
+    fails += check_parity(&host, &dev, "llama", VOCAB, 16);
     rig_close(&dev);
     rig_close(&host);
     free(g.b);
+
+    /* qwen35: gated DeltaNet blocks (every one but the fourth) and gated
+     * attention. Prefill in one chunk and in five (m_max 16, the DeltaNet
+     * state carried across them). */
+    struct tf_vocab tok = tf_make_vocab("\xc4\xa0", false);
+    struct tf_buf   q   = mf_qwen35_gguf(&(struct mf_qwen35) {.layers     = 4,
+                                                              .interval   = 4,
+                                                              .d_model    = 64,
+                                                              .heads      = 4,
+                                                              .kv_heads   = 2,
+                                                              .head_dim   = 16,
+                                                              .rope_dims  = 8,
+                                                              .ffn        = 128,
+                                                              .dn_k_heads = 2,
+                                                              .dn_v_heads = 4,
+                                                              .dn_head_k  = 16,
+                                                              .dn_head_v  = 16,
+                                                              .dn_conv    = 4,
+                                                              .seed       = 1,
+                                                              .tok        = &tok});
+    rc                  = rig_open(false, &q, &host);
+    if (rc == 0) {
+        rc = rig_open(true, &q, &dev);
+    }
+    if (rc == 0) {
+        fails += check_placement(&host, "qwen35", false, false);
+        fails += check_placement(&dev, "qwen35", true, false);
+        fails += check_parity(&host, &dev, "qwen35", tok.n_tok, 0);
+        fails += check_parity(&host, &dev, "qwen35", tok.n_tok, 16);
+    }
+    rig_close(&dev);
+    rig_close(&host);
+    free(q.b);
+    tf_free_vocab(&tok);
+    if (rc != 0) {
+        return rc;
+    }
     if (fails != 0) {
         return GEIST_TEST_FAIL;
     }
