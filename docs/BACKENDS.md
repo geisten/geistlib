@@ -74,10 +74,13 @@ on a 27B). By default every slot the host never maps goes into plain
 device-local VRAM instead; only `h_a`, `h_b` and the logits rows stay
 host-visible (`GEIST_VK_SCRATCH_DEVICE=0` turns this off). The arch does this
 only for sessions with no host loop over those slots (dense FP32/F16 KV, PLE
-only with the on-device row lookup, no DeltaNet, attention output gate, MTP,
-SubLN/projection norms or AWQ scales; a `prism.hadamard` rotation is fine);
-the others keep the host-visible pool, and their default chunk shrinks until
-it fits the BAR window.
+only with the on-device row lookup, the attention output gate only with the
+backend's `attn_qgate_split` and `sigmoid_mul`, no MTP, SubLN/projection
+norms or AWQ scales; a `prism.hadamard` rotation and DeltaNet mixers are
+fine, the latter's host fallback maps only buffers of its own); the others
+keep the host-visible pool, and their default chunk shrinks until it fits
+the BAR window. A session with the device-local pool grows its default chunk
+to 512 when half the free VRAM covers the bigger pool.
 Under it, a CPU fallback that would read a device-local slot fails with
 `GEIST_E_BACKEND` instead, so a weight dtype without a Vulkan kernel fails its
 first prefill.
