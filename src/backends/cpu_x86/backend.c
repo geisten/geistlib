@@ -71,7 +71,6 @@ static struct geist_backend_fused      cpu_x86_fused;
 
 [[nodiscard]] static enum geist_status cpu_x86_create(struct geist_backend            *be,
                                                       const struct geist_backend_opts *opts) {
-    (void) opts;
     struct cpu_x86_state *st = geist_backend_alloc(be, sizeof(*st), alignof(struct cpu_x86_state));
     if (st == nullptr) {
         geist_backend_set_error(
@@ -79,6 +78,7 @@ static struct geist_backend_fused      cpu_x86_fused;
         return GEIST_E_OOM;
     }
     *st               = (struct cpu_x86_state) {0};
+    st->max_threads   = opts != nullptr && opts->max_threads > 0 ? opts->max_threads : 0;
     st->ws_generation = cpu_x86_ws_next_generation();
     be->state         = st;
     return GEIST_OK;

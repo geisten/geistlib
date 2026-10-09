@@ -9,7 +9,28 @@ minor release.
 ## [Unreleased]
 
 ### Changed
+- **CI: the self-hosted GPU steps take the machine-wide GPU lock (#706).**
+  `scripts/gpu-lock.sh` (sourced at the top of a step) takes the same
+  `flock` on `$GEIST_GPU_LOCK` (default `/tmp/geist-gpu.lock`) as
+  geist-runtime's `scripts/test-gpu.sh`, waits up to an hour, and logs load
+  and GPU memory. Used by `ci.yml`'s two vulkan-gpu steps, `vulkan-ab.yml`
+  and GPU cross-engine campaigns; builds and CPU campaigns stay outside it.
 
+- **Weight loading: the loader's storage intent decides what the weight arena
+  holds (#468).** The arena-skip rule of backends that copy weights to the
+  device (`caps.weights_device_copy`, Vulkan) was a size proxy ("2-D and at
+  least 1 MiB"), evaluated again by the capacity pre-scan. Each load call now
+  says what the tensor is for — bound by kernels (norms, biases, conv taps),
+  a matrix behind `resolve_weight`, or a lookup-only table — and only the
+  first kind is copied into the arena; matrices of any size and lookup tables
+  alias the GGUF mapping. The arena now grows in 32 MiB chunks when a tensor
+  does not fit, so its size no longer has to be predicted on a device-copy
+  backend; elsewhere the pre-scan still sizes one chunk for the whole model.
+  A small half-precision matrix widened to F32 is no longer staged in the
+  arena a second time, and on Vulkan its F32 copy lives in host memory the
+  backend uploads from, as `per_layer_model_proj`'s does (#658). Vulkan
+  arena, RTX 2080 Ti: Qwen3.5 0.8B / 4B 73 → 32 MiB, Gemma 4 E2B 87 → 34 MiB,
+  Bonsai 27B 255 → 32 MiB. CPU backends and Metal load as before.
 - **One row-dequant dispatch, `quant_dequant_row` (#465).** The per-dtype
   "decode a weight row to f32" switch existed six times: the reference
   linear kernel behind cpu_scalar and Vulkan's host path
@@ -111,6 +132,20 @@ minor release.
 
 ### Fixed
 
+- **Vulkan: lookup tables are no longer uploaded inside the forward pass
+  (#468).** The embedding lookup registered an untied `token_embd`, and
+  Gemma 4's per-layer embedding table, with `resolve_weight` on the first
+  token: a repack and upload in the middle of the forward pass that could
+  run out of device memory mid-decode, and that ran again on every token
+  when the resolve chose the host path. The rows of such a table are now
+  dequantized on the host and uploaded per call (the staged gather Metal
+  uses, #529); a tied `token_embd` is still looked up in the lm_head's
+  device copy. Gemma 4 E2B on an RTX 2080 Ti uses 1.5 GiB less device
+  memory after its first prompt (3.3 → 1.8 GiB with a 300-token prefill),
+  Bonsai 27B (untied, PQ2_0) 0.3 GiB less, and Gemma's host RSS in
+  `bench_perf_sweep` drops from 2.1 to 0.6 GB: the table's file pages are
+  no longer read whole for the upload. Logits are bit-identical for
+  Gemma 4 E2B, Qwen3.5 0.8B / 4B and Bonsai 27B.
 - **cpu_x86: the Q4_Kx8 kernels quantize activations with one scale per
   256-element super-block (#694).** `quantize_q8_Kx4` (prefill) and the M = 1
   GEMV's quantizer took one max-abs over the whole row and wrote it into every

@@ -80,6 +80,9 @@ jobs:
       - name: A/B
         run: |
           set -eo pipefail
+          # bench_revision_ab builds and measures in one go, so the lock covers
+          # its builds too (#706)
+          . scripts/gpu-lock.sh
           mkdir -p ab-out
           git fetch origin main
           python3 tools/bench_revision_ab.py \

@@ -1827,28 +1827,16 @@ vk_embedding_lookup_scaled(struct geist_backend      *be,
         return GEIST_E_UNSUPPORTED;
     }
     const uint32_t dtype_code = (uint32_t) ed->embed_code;
-    /* Table bytes: prefer the resolve-time VRAM copy (embed tables go
-     * through resolve_weight); fall back to a bindable host region. */
+    /* Table bytes: the resolve-time VRAM copy of a tied table (the lm_head
+     * resolves it at load), else a bindable host region (the arena). A
+     * lookup-only table is never resolved: the arch gathers its rows on the
+     * host instead (caps.weights_device_copy, #468), so nothing registers
+     * or uploads a table here, inside the forward pass. */
     const uint8_t *host =
             embed_table->buffer->host_alias != nullptr
                     ? (const uint8_t *) embed_table->buffer->host_alias + embed_table->offset
                     : nullptr;
-    struct geist_buffer *wbuf = host != nullptr ? vk_weight_lookup(st, host) : nullptr;
-    if (wbuf == nullptr && host != nullptr && embed_table->buffer->bytes > embed_table->offset &&
-        vk_linear_dtype((enum geist_dtype) embed_table->dtype) != nullptr) {
-        /* An untied table (separate output.weight) is never resolved by the
-         * arch layer: register it now, so the repacked dtypes can be read.
-         * Only dtypes with a GPU copy: a host-path table is not a weight
-         * that left the GPU, and strict mode must not refuse it here. */
-        struct geist_weight ew = {.raw        = host,
-                                  .raw_nbytes = embed_table->buffer->bytes - embed_table->offset,
-                                  .n_in       = (int32_t) d,
-                                  .n_out      = (int32_t) vocab,
-                                  .dtype      = (uint16_t) embed_table->dtype};
-        if (vk_resolve_weight(be, &ew) == GEIST_OK) {
-            wbuf = vk_weight_lookup(st, host);
-        }
-    }
+    struct geist_buffer   *wbuf = host != nullptr ? vk_weight_lookup(st, host) : nullptr;
     VkDescriptorBufferInfo bi[2];
     uint32_t               w_elem_off = 0;
     if (wbuf != nullptr) {
