@@ -49,7 +49,19 @@
  * second barrier. That halves the ~40 KiB of shared memory, so Turing runs
  * two workgroups per SM instead of one; it pays once a GEMM has more
  * workgroups than the GPU has SMs, and costs the extra barrier below that
- * (vk_linear_cm_route picks). */
+ * (vk_linear_cm_route picks).
+ *
+ * DT_Q4_0, DT_Q8_0, DT_Q4_1 and DT_Q5K replace the A stage with the legacy
+ * 32-element blocks' and Q5_K's (#467). A k-step is one 32-element block
+ * (Q5_K: one sub-block), so each thread converts 16 elements under one
+ * scale: Q4_0 and Q8_0 in the struct-of-arrays layout of mv_legacy.glsl
+ * (the block's quant bytes as one 128-bit load, the f16 scales after all
+ * n_out * blocks_per_row blocks), Q4_1 in its native 20-byte block (4-byte
+ * aligned: five 32-bit loads), Q5_K in its native 176-byte block (16-byte
+ * aligned: header, qh half and qs half as three 128-bit loads). The 4-bit
+ * types' byte j holds element j (low nibble) and j + 16 (high), so half hk
+ * of a block takes nibble hk of all 16 bytes. Requires n_in % 32 == 0
+ * (Q5_K: n_in % 256 == 0). */
 
 #ifdef ACC_F16
 #define ACCUM(i, j) hac##i##j
@@ -70,6 +82,8 @@ layout(set = 0, binding = 1) readonly buffer W2 { uvec2 w2[]; };
 layout(set = 0, binding = 1) readonly buffer W4 { uvec4 w4[]; };
 #elif defined(DT_F32)
 layout(set = 0, binding = 1) readonly buffer WF { vec4 wf4[]; };
+#elif defined(DT_Q4_0) || defined(DT_Q8_0) || defined(DT_Q5K)
+layout(set = 0, binding = 1) readonly buffer W4 { uvec4 w4[]; };
 #endif
 
 layout(push_constant) uniform Push {
@@ -123,6 +137,30 @@ uvec2 deq4_tq2(uint qw, uint sh, float d) {
     vec4 v = (vec4(c) - 1.0) * d;
     return uvec2(packHalf2x16(v.xy), packHalf2x16(v.zw));
 }
+#elif defined(DT_Q4_0) || defined(DT_Q4_1)
+/* 4 quant bytes, nibble at `shift` -> 4 packed f16 values (q + off) * d, as
+ * the 64 x 64 tile computes them (Q4_0: off = -8; Q4_1: d * q + m) */
+uvec2 deq4_nib(uint qw, uint shift, float d, float m, float off) {
+    uvec4 q = (uvec4(qw) >> (uvec4(0u, 8u, 16u, 24u) + shift)) & 15u;
+    vec4 v = d * (vec4(q) + off) + m;
+    return uvec2(packHalf2x16(v.xy), packHalf2x16(v.zw));
+}
+#elif defined(DT_Q8_0)
+/* 4 int8 quants -> 4 packed f16 values d * q */
+uvec2 deq4_q8(uint qw, float d) {
+    ivec4 q = ivec4(uvec4(qw) << uvec4(24u, 16u, 8u, 0u)) >> 24; /* sign-extending */
+    vec4 v = d * vec4(q);
+    return uvec2(packHalf2x16(v.xy), packHalf2x16(v.zw));
+}
+#elif defined(DT_Q5K)
+/* 4 qs bytes (nibble at `shift`) and 4 qh bytes (bit `sub`) -> 4 packed f16
+ * values dsc * q - dmn */
+uvec2 deq4_q5k(uint qw, uint hw, uint shift, uint sub, float dsc, float dmn) {
+    uvec4 sh = uvec4(0u, 8u, 16u, 24u);
+    uvec4 q = ((uvec4(qw) >> (sh + shift)) & 15u) | (((uvec4(hw) >> (sh + sub)) & 1u) << 4u);
+    vec4 v = vec4(q) * dsc - dmn;
+    return uvec2(packHalf2x16(v.xy), packHalf2x16(v.zw));
+}
 #else
 /* 8 ternary codes (16 bits) -> 8 packed f16 values (code - 1) * d, exact in
  * f16 for -d, 0, d and 2d */
@@ -158,6 +196,17 @@ struct Fetch {
     vec4 w1;
     vec4 w2;
     vec4 w3;
+#elif defined(DT_Q4_0) || defined(DT_Q8_0)
+    uvec4 qs; /* Q4_0: the block's 16 quant bytes; Q8_0: this thread's 16 */
+    float d;
+#elif defined(DT_Q4_1)
+    uvec4 qs;
+    uint dm; /* d | m << 16 */
+#elif defined(DT_Q5K)
+    uvec4 hdr; /* d, dmin, 12 bytes of packed 6-bit scales and mins */
+    uvec4 qh;  /* this thread's 16 qh bytes */
+    uvec4 qs;  /* this thread's 16 qs bytes of the sub-block pair */
+    uint sub;
 #else
     uint qw;
     float d;
@@ -207,6 +256,27 @@ Fetch fetch_tiles(uint ks, uint lid, uint row0, uint tb0) {
     f.w1 = wf4[wv + 1u];
     f.w2 = wf4[wv + 2u];
     f.w3 = wf4[wv + 3u];
+#elif defined(DT_Q4_0) || defined(DT_Q8_0)
+    uint bi = (row0 + r) * pc.blocks_per_row + ks;
+#if defined(DT_Q4_0)
+    f.qs = w4[bi];
+    uint sc0 = pc.n_out * pc.blocks_per_row * 4u;
+#else
+    f.qs = w4[bi * 2u + hk];
+    uint sc0 = pc.n_out * pc.blocks_per_row * 8u;
+#endif
+    f.d = unpackHalf2x16(w[sc0 + (bi >> 1u)] >> ((bi & 1u) * 16u)).x;
+#elif defined(DT_Q4_1)
+    uint b5 = ((row0 + r) * pc.blocks_per_row + ks) * 5u;
+    f.dm = w[b5];
+    f.qs = uvec4(w[b5 + 1u], w[b5 + 2u], w[b5 + 3u], w[b5 + 4u]);
+#elif defined(DT_Q5K)
+    uint bi = (row0 + r) * pc.blocks_per_row + (k0 >> 8u);
+    uint b11 = bi * 11u; /* 176-byte blocks = 11 uvec4: header, qh[32], qs[128] */
+    f.sub = (k0 & 255u) >> 5u;
+    f.hdr = w4[b11];
+    f.qh = w4[b11 + 1u + hk];
+    f.qs = w4[b11 + 3u + (f.sub >> 1u) * 2u + hk];
 #else
     uint bi = (row0 + r) * pc.blocks_per_row + (k0 >> 7u);
     f.qw = w[bi * 8u + ((k0 & 127u) >> 4u) + hk];
@@ -270,6 +340,40 @@ void store_tiles(uint buf, uint lid, Fetch f) {
                             packHalf2x16(f.w1.zw));
     Ash[buf][abase + 1u] = uvec4(packHalf2x16(f.w2.xy), packHalf2x16(f.w2.zw),
                                  packHalf2x16(f.w3.xy), packHalf2x16(f.w3.zw));
+#elif defined(DT_Q4_0) || defined(DT_Q4_1)
+#if defined(DT_Q4_0)
+    float d = f.d, m = 0.0, off = -8.0;
+#else
+    vec2 dmv = unpackHalf2x16(f.dm);
+    float d = dmv.x, m = dmv.y, off = 0.0;
+#endif
+    uint shift = hk * 4u;
+    Ash[buf][abase] = uvec4(deq4_nib(f.qs.x, shift, d, m, off), deq4_nib(f.qs.y, shift, d, m, off));
+    Ash[buf][abase + 1u] =
+            uvec4(deq4_nib(f.qs.z, shift, d, m, off), deq4_nib(f.qs.w, shift, d, m, off));
+#elif defined(DT_Q8_0)
+    Ash[buf][abase] = uvec4(deq4_q8(f.qs.x, f.d), deq4_q8(f.qs.y, f.d));
+    Ash[buf][abase + 1u] = uvec4(deq4_q8(f.qs.z, f.d), deq4_q8(f.qs.w, f.d));
+#elif defined(DT_Q5K)
+    uint sub = f.sub;
+    vec2 dd = unpackHalf2x16(f.hdr.x);
+    uint sc_u, mn_u;
+    if (sub < 4u) {
+        sc_u = (f.hdr.y >> (8u * sub)) & 63u;
+        mn_u = (f.hdr.z >> (8u * sub)) & 63u;
+    } else {
+        uint j = sub - 4u;
+        uint q_j4 = (f.hdr.w >> (8u * j)) & 0xffu;
+        sc_u = (q_j4 & 15u) | ((((f.hdr.y >> (8u * j)) & 0xffu) >> 6u) << 4u);
+        mn_u = (q_j4 >> 4u) | ((((f.hdr.z >> (8u * j)) & 0xffu) >> 6u) << 4u);
+    }
+    float dsc = dd.x * float(sc_u);
+    float dmn = dd.y * float(mn_u);
+    uint shift = (sub & 1u) * 4u;
+    Ash[buf][abase] = uvec4(deq4_q5k(f.qs.x, f.qh.x, shift, sub, dsc, dmn),
+                            deq4_q5k(f.qs.y, f.qh.y, shift, sub, dsc, dmn));
+    Ash[buf][abase + 1u] = uvec4(deq4_q5k(f.qs.z, f.qh.z, shift, sub, dsc, dmn),
+                                 deq4_q5k(f.qs.w, f.qh.w, shift, sub, dsc, dmn));
 #else
     Ash[buf][abase] = expand8(f.qw & 0xffffu, f.d);
     Ash[buf][abase + 1u] = expand8(f.qw >> 16u, f.d);

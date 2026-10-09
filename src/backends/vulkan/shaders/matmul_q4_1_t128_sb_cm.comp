@@ -1,0 +1,10 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* Q4_1 GEMM in the 128 x 128 PQ2_0 frame with one shared buffer pair
+ * (SINGLE_BUF): two workgroups per SM on Turing, for GEMMs with more
+ * workgroups than SMs (#467). Body and notes: matmul_pq2_0_cm_body.glsl.
+ * Requires n_out % 128 == 0, rows % 16 == 0, n_in % 32 == 0. */
+#define DT_Q4_1 1
+#define SINGLE_BUF 1
+#include "matmul_pq2_0_cm_body.glsl"

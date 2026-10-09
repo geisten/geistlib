@@ -35,6 +35,24 @@ minor release.
   and GPU memory. Used by `ci.yml`'s two vulkan-gpu steps, `vulkan-ab.yml`
   and GPU cross-engine campaigns; builds and CPU campaigns stay outside it.
 
+- **Vulkan: Q4_0 / Q8_0 / Q4_1 / Q5_K prefill GEMMs on the 128 x 128
+  tensor-core frame, narrow Q8_0 GEMMs as batched matvecs (#467).** The
+  PQ2_0-frame body that runs Q4_K / Q6_K / TQ2_0 / F32 gains A stages for
+  the legacy 32-element blocks (Q4_0 and Q8_0 in their struct-of-arrays
+  layout, Q4_1 in its native block) and Q5_K, each also single-buffered for
+  GEMMs of more than 64 workgroups. `vk_linear_cm_route` moves Q5_K there
+  from n_out x m >= 5 x 2^16 like Q4_K / Q6_K, and the legacy types from
+  7 x 2^16, below which their 64 x 64 tile stays faster. Qwen3.5's 16- and
+  32-row DeltaNet alpha / beta projections (Q8_0) fit no tensor-core tile
+  and ran on the register-tiled `matmul_q8_0`, 4 x 4 workgroups each walking
+  the whole k range: 192 calls per 4B pp512 at 118 us. A Q8_0 GEMM of at
+  most 2^15 outputs, including an m % 16 tail, now runs as a matvec per
+  batch row (`matvec_q8_0_mt`, 12 us). Existing shaders compile to
+  byte-identical SPIR-V. RTX 2080 Ti, pp512 (chunk 128), mean of two
+  alternating rounds: Qwen3.5-4B Q4_0 1469 -> 2004 t/s (+36 %),
+  Qwen3.5-0.8B Q8_0 7230 -> 9052 (+25 %), Qwen3-0.6B Q8_0 12382 -> 18073
+  (+46 %); Gemma 4 E2B Q4_K_M (5671 -> 5659), BitNet b1.58-large TQ2_0
+  (6088 -> 6090) and decode unchanged.
 - **Weight loading: the loader's storage intent decides what the weight arena
   holds (#468).** The arena-skip rule of backends that copy weights to the
   device (`caps.weights_device_copy`, Vulkan) was a size proxy ("2-D and at

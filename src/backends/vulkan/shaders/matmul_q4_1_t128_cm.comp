@@ -1,0 +1,10 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* Q4_1 GEMM on the tensor cores in the PQ2_0 frame: 128 weight rows x 128
+ * tokens x BK = 32 per 256-thread workgroup, f32 accumulation (#467). Body
+ * and notes: matmul_pq2_0_cm_body.glsl. The 64 x 64 tile (matmul_q4_1_cm.comp)
+ * keeps n_out % 128 != 0 and GEMMs too small to fill it (vk_linear_cm_route).
+ * Requires n_out % 128 == 0, rows % 16 == 0, n_in % 32 == 0. */
+#define DT_Q4_1 1
+#include "matmul_pq2_0_cm_body.glsl"
