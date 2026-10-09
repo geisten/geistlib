@@ -886,6 +886,7 @@ jobs:
         # whose whole point is the real device must not pass by not finding one.
         run: |
           set -eo pipefail
+          . scripts/gpu-lock.sh
           for t in test_backend_vulkan_registry_unit \
                    test_backend_vulkan_buffer_unit \
                    test_backend_vulkan_linear_parity \
@@ -922,6 +923,7 @@ jobs:
           GEIST_STRICT_FIXTURES: gguf
         run: |
           set -eo pipefail
+          . scripts/gpu-lock.sh
           for t in test_known_answer_e2e test_prefill_determinism_int test_qwen35_vulkan_e2e_int; do
             echo "=== $t ==="
             bin/linux/release/tests/"$t" 2>&1 | tee -a ci-diagnostics/vulkan-tests.txt

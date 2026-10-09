@@ -9,6 +9,12 @@ minor release.
 ## [Unreleased]
 
 ### Changed
+- **CI: the self-hosted GPU steps take the machine-wide GPU lock (#706).**
+  `scripts/gpu-lock.sh` (sourced at the top of a step) takes the same
+  `flock` on `$GEIST_GPU_LOCK` (default `/tmp/geist-gpu.lock`) as
+  geist-runtime's `scripts/test-gpu.sh`, waits up to an hour, and logs load
+  and GPU memory. Used by `ci.yml`'s two vulkan-gpu steps, `vulkan-ab.yml`
+  and GPU cross-engine campaigns; builds and CPU campaigns stay outside it.
 
 - **Weight loading: the loader's storage intent decides what the weight arena
   holds (#468).** The arena-skip rule of backends that copy weights to the
