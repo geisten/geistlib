@@ -24,12 +24,12 @@ the coverage ratchet (arm64), AVX-512 under Intel SDE, Vulkan on lavapipe, the
 Metal GPU step inside the macOS arm64 leg, and `check-headers` (every public
 header compiled standalone as C23 and C++17, inside `build-test`).
 
-No self-hosted runner is attached to this repository: on a public repo, any
-pull request can edit a workflow to target it. The hardware tier (Pi 5, native
-AVX-512, Vulkan on a physical GPU, A/B and cross-engine benchmarks) lives in
-the private `git.geisten.net/geisten-hw/geistlib-hw` (self-hosted Gitea),
-which checks out this repo at a given ref — nightly on `main`, and on demand
-for a branch or a reviewed PR.
+No self-hosted runner is attached to the public GitHub mirror: there, any pull
+request can edit a workflow to target it. The hardware tier (Pi 5, native
+AVX-512, Vulkan on a physical GPU, A/B and cross-engine benchmarks) runs from
+this repository's workflows on git.geisten.net, where the repository is
+private — nightly on `main`, and on demand for a branch or a reviewed PR
+([HARDWARE_CI.md](HARDWARE_CI.md)).
 
 ## Caveats and deliberate gaps
 
@@ -74,7 +74,7 @@ with their built-in scalar-parity checks. Coverage tiers for x86 SIMD are theref
 (all legs) → **opportunistically executed** (`build-test-x86_64`, CPU
 permitting, reported per run) → **guaranteed executed under emulation**
 (`avx512-sde`) → **real hardware** (`native-avx512` in
-`git.geisten.net/geisten-hw/geistlib-hw`, nightly; mandatory
+`.gitea/workflows/native-avx512.yml`, nightly; mandatory
 AVX-512F/BW/DQ/VL+VNNI enforced by the same dispatch test, BF16 reported
 explicitly either way).
 
@@ -134,11 +134,11 @@ Tolerances live in the parity test: 1e-3 relative (f32 paths), 2e-2 for the
 f16 coopmat path where exposed. Minimum Vulkan: 1.2.
 
 Physical-GPU validation is the `vulkan-gpu` workflow in the private
-`git.geisten.net/geisten-hw/geistlib-hw`, nightly on `main` and on demand for
+`.gitea/workflows/vulkan-gpu.yml` on git.geisten.net, nightly on `main` and on demand for
 a ref: the same tests on a desktop with a discrete GPU (RTX 2080 Ti). A
 missing device is a failure, not a skip, same as the lavapipe leg. It does not
 gate PRs — a PR that touches the Vulkan backend is dispatched there by hand
-before merging. Runner setup and operational notes: that repo's README.
+before merging. Runner setup and operational notes: [HARDWARE_CI.md](HARDWARE_CI.md).
 
 On top of the three, this tier runs model e2e the emulated tiers cannot
 afford: `test_known_answer_e2e` (five cloze prompts, floor 4/5) and

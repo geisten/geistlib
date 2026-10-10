@@ -23,7 +23,8 @@ minor release.
   `if:` guard is part of the file it edits. The Pi 5, native AVX-512 and
   Vulkan-GPU workflows (`pi5`, `pi5-ab`, `pi5-decision`, `native-avx512`,
   `vulkan-ab`, `cross-engine-campaign`, and `ci.yml`'s `vulkan-gpu` job) moved
-  to the private `git.geisten.net/geisten-hw/geistlib-hw` (self-hosted Gitea),
+  to git.geisten.net (self-hosted Gitea; now `.gitea/workflows/` of the
+  private primary repository, see `docs/HARDWARE_CI.md`),
   which checks this repo out at a ref: nightly on `main`, on demand for a
   branch or a reviewed PR. `vulkan-gpu` no longer runs on branch PRs.
 - **Vulkan prefill for head_dim 96 and host-visible scratch pools (#739).**
