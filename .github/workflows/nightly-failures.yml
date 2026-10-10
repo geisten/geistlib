@@ -9,8 +9,6 @@ on:
       - Apple performance guard
       - E4B smoke
       - gemma4 Metal smoke
-      - native-avx512
-      - pi5
       - Published release state
     types: [completed]
 
