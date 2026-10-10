@@ -20,6 +20,7 @@ produces tokens.
 | [DECISION_EVALUATION.md](DECISION_EVALUATION.md) | Offline MMLU evaluation protocol for the decision API |
 | [DECISION_ENCODERS.md](DECISION_ENCODERS.md) | Python encoder baselines for that evaluation |
 | [CI_COVERAGE.md](CI_COVERAGE.md) | What each CI job verifies |
+| [HARDWARE_CI.md](HARDWARE_CI.md) | The self-hosted Pi 5 and GPU desktop jobs |
 | [RELEASING.md](RELEASING.md) | The guarded release workflow and recovery |
 | [../benchmark/](../benchmark/README.md) | Benchmark methodology, raw runs, per-system results |
 

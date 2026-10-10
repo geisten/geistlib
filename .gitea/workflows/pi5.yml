@@ -1,0 +1,97 @@
+# Raspberry Pi 5 — the primary deployment target, on the real board. The
+# arm64 cloud runner only proves the pi5 flag set compiles; this runs it:
+# build, the model-free unit suite, the integration suite against the
+# reference models, and the frozen `make bench` protocol with its report.
+#
+# The board is shared (other repos' runners, agents over SSH): every heavy
+# step goes through ~/bin/with-pi-lock, and nothing measures unless the
+# board is cool and idle. Manual, plus nightly — not per push.
+name: pi5
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "geistlib ref to check out"
+        default: main
+      reset_baseline:
+        description: "accept this run as the new last-green without comparing (after a deliberate slowdown)"
+        type: boolean
+        default: false
+  schedule:
+    # 22:17 UTC. GitHub fires this repo's crons hours late; an off-the-hour
+    # minute this early lands the run in the small hours, on a cool board.
+    - cron: "17 22 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pi5
+  cancel-in-progress: false
+
+jobs:
+  board:
+    runs-on: pi5
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || 'main' }}
+      - name: build (TARGET=pi5, cortex-a76 flag set)
+        run: ~/bin/with-pi-lock make TARGET=pi5 bin
+      - name: unit suite (model-free)
+        run: ~/bin/with-pi-lock make TARGET=pi5 test-unit AUTO_FETCH_MODEL=0
+      # Models land in gguf_artifacts/ of the runner's persistent work tree;
+      # every fetch is SHA-gated, so after the first run these are no-ops.
+      - name: reference models (SHA-gated)
+        run: make fetch-llama-model fetch-qwen35-model fetch-qwen3-model fetch-bench-model
+      - name: integration suite
+        run: ~/bin/with-pi-lock make TARGET=pi5 test-int AUTO_FETCH_MODEL=0
+      - name: board must be cool and idle before measuring
+        run: |
+          for i in $(seq 1 30); do
+            t=$(cat /sys/class/thermal/thermal_zone0/temp); l=$(cut -d' ' -f1 /proc/loadavg)
+            echo "temp=$t load=$l"
+            [ "$t" -lt 60000 ] && [ "${l%.*}" -lt 1 ] && exit 0
+            sleep 10
+          done
+          echo "board not cool/idle after 5 min; skipping the measurement" && exit 1
+      # The frozen protocol behind benchmark/results/PI5.md (tools/
+      # bench_reproduce.py): ~14 min on the board, decode and prefill against
+      # the recorded bitnet.cpp baselines, report printed and kept as an
+      # artifact. bench-smoke is deliberately NOT used: it runs every
+      # bench_* binary, including the audio/video ones that need fixtures.
+      # Output goes to the job's temp dir, not ~/bench-geistlib: the board's
+      # own 01:00 cron writes there under the same date-based file name, so
+      # "the newest raw.json" would not reliably be this run.
+      - name: make bench (BitNet 2B, frozen protocol)
+        run: OMP_NUM_THREADS=4 ~/bin/with-pi-lock make TARGET=pi5 bench AUTO_FETCH_MODEL=0 BENCH_ARGS="--out-dir $RUNNER_TEMP/bench"
+      # The regression signal. last-green.json is the raw JSON of the last run
+      # this step passed; it lives in the runner's home, outside the workspace
+      # checkout cleans. The thresholds (3 % decode, 5 % prefill) sit above
+      # the board's measured night-to-night noise on an unchanged commit —
+      # benchmark/bench_compare.py has the numbers. A deliberate slowdown
+      # leaves this red until someone re-runs with reset_baseline.
+      # Exit 3 = the run's own spread says the board was busy: neither a
+      # verdict nor a new baseline (#446), the step summary says why.
+      - name: regression vs the last green run
+        id: compare
+        if: ${{ !inputs.reset_baseline }}
+        run: |
+          python3 benchmark/bench_compare.py "$RUNNER_TEMP"/bench/*_raw.json --baseline ~/bench-geistlib/last-green.json && rc=0 || rc=$?
+          echo "comparable=$([ "$rc" -eq 3 ] && echo false || echo true)" >> "$GITHUB_OUTPUT"
+          [ "$rc" -eq 3 ] && exit 0 || exit "$rc"
+      - name: promote this run to last green
+        if: ${{ steps.compare.outputs.comparable != 'false' }}
+        run: cp "$RUNNER_TEMP"/bench/*_raw.json ~/bench-geistlib/last-green.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 14
+          name: pi5-bench-${{ github.run_id }}
+          path: ${{ runner.temp }}/bench/
+          if-no-files-found: ignore
+      - name: thermal state after the run
+        if: always()
+        run: echo "temp=$(cat /sys/class/thermal/thermal_zone0/temp) throttled=$(vcgencmd get_throttled 2>/dev/null || echo n/a)"
