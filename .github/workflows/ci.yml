@@ -6,10 +6,12 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Cancel superseded runs on the same ref.
+# Cancel superseded runs on the same PR. A push to main runs to the end:
+# merges land faster than the 65 min coverage job, and with cancellation
+# most main commits were never fully measured (perf record, coverage).
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   version-consistency:
@@ -1105,8 +1107,9 @@ jobs:
   # scripts/coverage_gate.py. One reproducible run: model-free unit suite
   # plus the real-model int suite with fixtures mandatory — a fixture
   # skip would silently hollow out the measurement, so it fails instead.
-  # Scope: the portable engine (src/base, engine, io, formats,
-  # archs/transformer, backends/common, backends/cpu_scalar). Excluded from
+  # Scope: the portable engine (src/base, engine, io, formats, quant,
+  # archs/transformer, archs/audio_conformer, archs/vision_siglip,
+  # backends/common, backends/cpu_scalar). Excluded from
   # the GATE (still visible in the report): cpu_neon (SIMD leg, only this
   # runner family executes it), cpu_x86/metal/vulkan (cannot execute on
   # this runner), third_party and generated *_spv.h (not ours). The control
