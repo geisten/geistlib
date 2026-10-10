@@ -30,8 +30,8 @@ glibc program with a musl static library is not reliable.
 
 Each release attaches `libgeist-<platform>.tar.gz` for `macos-arm64`,
 `linux-arm64` and `linux-x86_64`, holding `libgeist.a`, `include/*.h` and
-`LICENSE`. Digests are in `SHA256SUMS`; every asset carries a signed
-build-provenance attestation (`gh attestation verify <file> --repo geisten/geistlib`).
+`LICENSE`, at [geisten.net/download/geistlib](https://geisten.net/download/geistlib/latest/).
+Digests are in `SHA256SUMS` (`sha256sum -c SHA256SUMS`).
 
 The archive holds geist's objects, not its dependencies. It is an OpenMP
 build, so the consumer supplies the OpenMP runtime:
@@ -53,8 +53,8 @@ before publication.
 
 `geist_model_load_from_memory` loads a GGUF embedded in your executable
 (e.g. via `.incbin`); weights are aliased zero-copy from the read-only data,
-so RAM cost equals the mmap path. `geist-bitnet` is built this way — see
-[release.yml](../.github/workflows/release.yml) and
+so RAM cost equals the mmap path. Releases up to v0.20.0 shipped
+`geist-bitnet` built this way; the recipe is in
 [QUICKSTART.md](QUICKSTART.md#3-ship-one-file).
 
 ## Consuming from another repository
@@ -69,8 +69,9 @@ signature changes.
 
 | Asset | Built by | Use |
 | :-- | :-- | :-- |
-| `libgeist-<platform>.tar.gz` + `SHA256SUMS` | `.github/workflows/release.yml` | the SDK |
-| `geist-linux-{arm64,x86_64}` | same workflow | raw-completion CLI for any GGUF |
-| `geist-bitnet-linux-{arm64,x86_64}` | same workflow | one-file BitNet appliance ([PI5_BITNET.md](PI5_BITNET.md)) |
+| `libgeist-<platform>.tar.gz` + `SHA256SUMS` | `.gitea/workflows/release.yml` (git.geisten.net) | the SDK |
+| `geist-linux-{arm64,x86_64}` | same workflow | raw-completion CLI for any GGUF ([PI5_BITNET.md](PI5_BITNET.md)) |
+
+All at [geisten.net/download/geistlib](https://geisten.net/download/geistlib/latest/).
 
 There is no container image: a library is not a runnable artifact.

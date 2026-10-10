@@ -2,8 +2,9 @@
 
 Everything on this page was recorded on the 4 GB Raspberry Pi 5 the
 [benchmarks](../benchmark/README.md) run on, against the shipped
-BitNet binary (release asset `geist-bitnet-linux-arm64`) from the
-[release page](https://github.com/geisten/geistlib/releases/latest); the
+self-contained BitNet binary (`geist-bitnet-linux-arm64`, the model folded
+into the CLI) of the
+[v0.20.0 release](https://github.com/geisten/geistlib/releases/tag/v0.20.0); the
 recordings show the un-renamed asset name.
 Nothing is sped up; the recordings play at wall-clock speed.
 
@@ -69,7 +70,7 @@ template); the REPL (run with no arguments) does the same interactively.
 The same engine embeds in your own binary; the model can be folded in too,
 so the deployment is literally one file (that is exactly how `geist-bitnet`
 itself is built — see
-[release.yml](../.github/workflows/release.yml)):
+[release.yml](../.gitea/workflows/release.yml)):
 
 ```c
 extern const unsigned char geist_model_start[], geist_model_end[];

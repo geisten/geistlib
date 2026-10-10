@@ -9,6 +9,15 @@ minor release.
 ## [Unreleased]
 
 ### Changed
+- **Releases are downloaded from geisten.net, not GitHub; no more
+  BitNet-embedded binaries.** Development and releases moved to
+  git.geisten.net; github.com/geisten/geistlib is the public mirror and gets no
+  new releases. The SDK archives, slim CLIs and `SHA256SUMS` are at
+  `https://geisten.net/download/geistlib/<tag>/` (`latest/` for the newest).
+  The `geist-bitnet-*` CLIs with the model folded in (1.1 GB each) are no
+  longer built: the slim CLI plus the BitNet GGUF from Hugging Face does the
+  same, and the apps download their models themselves. Releases no longer
+  carry Sigstore build-provenance attestations; verify against `SHA256SUMS`.
 - **CI: no self-hosted runner on this public repository.** A pull request can
   edit a workflow to target any runner attached to the repo, and a job-level
   `if:` guard is part of the file it edits. The Pi 5, native AVX-512 and

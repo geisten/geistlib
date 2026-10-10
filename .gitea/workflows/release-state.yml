@@ -1,0 +1,21 @@
+name: Published release state
+
+# The public download (geisten.net/download/geistlib/latest/) matches main's
+# source version, is complete and verifies against SHA256SUMS; the release tag
+# is an ancestor of main. Daily, and on demand.
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: latest release matches main and is complete
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Verify public release state
+        run: sh scripts/check-published-release.sh

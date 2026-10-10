@@ -2,7 +2,7 @@
 
 What each shipped environment is tested with, and the deliberate gaps. Source of
 truth: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) (per-push /
-per-PR) and [`release.yml`](../.github/workflows/release.yml) (per-tag build +
+per-PR) and [`release.yml`](../.gitea/workflows/release.yml) (per-tag build +
 smoke). Goal: **every environment we ship a release artifact for is exercised by
 the test suite**, not just built.
 
@@ -17,7 +17,7 @@ the test suite**, not just built.
 | **Linux x86_64** (cpu_scalar, no SIMD) | ✅ | ✅ | — | — | — | `build-test-x86_64-scalar` |
 | **Linux x86_64** (cpu_x86, clang) | ✅ | ✅ | — | — | — | `build-test-x86_64-clang`⁵ |
 
-Every environment in [`release.yml`](../.github/workflows/release.yml)
+Every environment in [`release.yml`](../.gitea/workflows/release.yml)
 (macos-arm64, linux-arm64, linux-x86_64) has build **and** test coverage. On
 top of the matrix, dedicated legs gate every PR: TSan multi-session (x86_64),
 the coverage ratchet (arm64), AVX-512 under Intel SDE, Vulkan on lavapipe, the

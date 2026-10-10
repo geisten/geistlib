@@ -101,6 +101,12 @@ make format-check    # verify only (hard CI gate)
 
 ## Pull requests
 
+Development happens on `git.geisten.net/geisten/geistlib`; this GitHub
+repository is its public mirror. Pull requests here are welcome: a maintainer
+reviews them, brings them over to Gitea (`scripts/import-github-pr.sh`) and
+merges them there, after which GitHub shows them as merged.
+
+
 1. Branch from `main`.
 2. One logical change per PR; explain *why*, not just *what*.
 3. `make MODE=asan test` should pass (or document the skips).

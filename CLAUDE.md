@@ -14,3 +14,13 @@ Fastest orientation:
 
 Build, test and benchmark commands: `CONTRIBUTING.md`.
 Architecture: `docs/ARCHITECTURE.md`. API promises: `docs/API_CONTRACT.md`.
+
+**Where the repository lives.** Development, CI and releases are on
+`git.geisten.net/geisten/geistlib` (Gitea, private). `github.com/geisten/geistlib`
+is a push mirror of it: anything pushed to GitHub directly is overwritten on
+the next mirror sync, so never push there. Push branches to the Gitea remote
+and open PRs with `tea pulls create --login git.geisten.net --repo
+geisten/geistlib`; merge with a merge commit. CI is `.gitea/workflows/`
+(`.github/workflows/` only serves pull requests on the mirror). A PR opened on
+GitHub by someone else comes over with `scripts/import-github-pr.sh <n>`
+after reading it. Releases: `docs/RELEASING.md`.
