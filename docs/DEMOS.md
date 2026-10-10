@@ -70,7 +70,7 @@ template); the REPL (run with no arguments) does the same interactively.
 The same engine embeds in your own binary; the model can be folded in too,
 so the deployment is literally one file (that is exactly how `geist-bitnet`
 itself is built — see
-[release.yml](../.github/workflows/release.yml)):
+[release.yml](../.gitea/workflows/release.yml)):
 
 ```c
 extern const unsigned char geist_model_start[], geist_model_end[];

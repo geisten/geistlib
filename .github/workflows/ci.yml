@@ -1,8 +1,10 @@
 name: CI
 
+# This repository on GitHub is the public mirror of git.geisten.net/geisten/
+# geistlib, where development happens and .gitea/workflows/ci.yml (generated
+# from this file by scripts/gitea-ci.py) gates every change. Here CI runs for
+# pull requests from contributors, on GitHub's runners.
 on:
-  push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
