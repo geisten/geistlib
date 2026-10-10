@@ -89,7 +89,14 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$hdr" >> "$GITHUB_OUTPUT"
       - name: Release self-consistency
-        run: sh scripts/check-release.sh
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        # a rehearsal may run on a main that is not release-ready yet: it
+        # reports the gate and goes on to test the build and upload path
+        run: |
+          sh scripts/check-release.sh && exit 0
+          [ "$DRY_RUN" = true ] || exit 1
+          echo "::warning::release gate fails; a release needs the release PR first (rehearsal continues)"
 
   linux-arm64:
     name: linux-arm64 (musl-static, dependency-free)
