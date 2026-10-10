@@ -12,7 +12,6 @@ releases (its old ones stay). Users download from:
 | what | where |
 | :-- | :-- |
 | SDK archives, slim CLIs, `SHA256SUMS` | `https://geisten.net/download/geistlib/<tag>/`, `latest/` → the newest |
-| BitNet-embedded CLIs (1.1 GB each) | `https://huggingface.co/geisten/geist-bitnet` — `main` is the newest, each release a tag; digests in `BITNET-SHA256SUMS` beside the others |
 
 The Gitea release in the private repo holds the small files as the record.
 
@@ -22,7 +21,6 @@ The Gitea release in the private repo holds the small files as the record.
    - `DOWNLOAD_SSH_KEY` — may only rsync into
      `/var/www/htdocs/www.geisten.net/download` on the web server
      (`restrict,command="/usr/local/bin/rrsync -wo …"` in `authorized_keys`).
-   - `HF_GEISTEN` — write access to `geisten/geist-bitnet` on Hugging Face.
 2. Protect `main` on Gitea with pull requests and required CI; do not allow
    force pushes.
 3. Release tags are created only by the release workflow; never push one by
@@ -46,8 +44,8 @@ Do not put a concrete release number in `README.md`: its links resolve
 After the release PR is merged and all required `main` checks are green:
 
 ```sh
-# rehearsal: builds everything, uploads to download/geistlib/rehearsal/ and the
-# Hugging Face branch `rehearsal`, verifies, publishes nothing
+# rehearsal: builds everything, uploads to download/geistlib/rehearsal/,
+# verifies, publishes nothing
 tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib \
   --ref main -i version=0.21.0 -i ref=main -i dry_run=true release.yml
 # the release
@@ -57,12 +55,10 @@ tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib \
 
 The workflow pins the current `main` SHA before any build. The build jobs
 (Pi: linux-arm64, desktop: linux-x86_64, Mac: macos-arm64) smoke-test every
-artifact; the embedded CLIs go straight to the Hugging Face branch
-`candidate-<tag>`. The release job then drafts the Gitea release, uploads the
-version directory to geisten.net, verifies every file over HTTPS against
-`SHA256SUMS` and the Hugging Face files against the built digests, and only
-then publishes: the Gitea release (which creates the tag at that SHA), the
-Hugging Face `main` commit and tag, and `latest/`.
+artifact. The release job then drafts the Gitea release, uploads the version
+directory to geisten.net, verifies every file over HTTPS against `SHA256SUMS`,
+and only then publishes: the Gitea release (which creates the tag at that SHA)
+and `latest/`.
 
 Run `make release-state-check` to verify the public postconditions again; the
 scheduled `release-state` workflow runs it daily.
@@ -71,6 +67,6 @@ scheduled `release-state` workflow runs it daily.
 
 Failure before the publish step leaves no tag and nothing under `latest/`:
 fix and rerun the same version. A failure after the Gitea release is published
-leaves the tag; finish by hand from the log (Hugging Face `main`, `latest/`),
+leaves the tag; finish by hand from the log (`latest/`),
 never by moving the tag. To repair a published release, increment the patch
 version and release again.

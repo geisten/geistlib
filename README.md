@@ -5,15 +5,16 @@
 # geistlib 👻
 
 > **Run Microsoft BitNet 2B locally on a 4 GB Raspberry Pi 5.**
-> One binary. No Python, no model setup, no cloud.
+> One binary and one model file. No Python, no cloud.
 
 ```bash
-curl -L -o geist-bitnet https://huggingface.co/geisten/geist-bitnet/resolve/main/geist-bitnet-linux-arm64
-chmod +x geist-bitnet
-./geist-bitnet "The capital of France is"
+curl -L -o geist https://geisten.net/download/geistlib/latest/geist-linux-arm64
+curl -L -o bitnet.gguf https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf
+chmod +x geist
+./geist bitnet.gguf "The capital of France is"
 ```
 
-Run it with no arguments for a minimal REPL (each line completes
+Run it with only the model for a minimal REPL (each line completes
 independently; the model stays loaded). Cooling, cold-start times, errors and
 model limits: [`docs/PI5_BITNET.md`](docs/PI5_BITNET.md).
 
@@ -59,8 +60,8 @@ tokens.
   −1/0/+1; geistlib runs it with integer-only dot products (ARM SDOT on the Pi,
   AVX-512 VNNI on x86). The 2B model is 1.1 GiB, about a third of a comparable
   4-bit model.
-- **Zero-copy weights.** The GGUF is mmapped (or, in `geist-bitnet`, aliased
-  out of the binary's read-only data) and demand-paged. Some CPU kernels keep
+- **Zero-copy weights.** The GGUF is mmapped (or, when embedded in an
+  executable, aliased out of its read-only data) and demand-paged. Some CPU kernels keep
   a repacked copy of a dtype for speed;
   [`docs/BACKENDS.md`](docs/BACKENDS.md#resident-memory-per-backend) lists them
   and the switch for each.

@@ -9,14 +9,15 @@ minor release.
 ## [Unreleased]
 
 ### Changed
-- **Releases are downloaded from geisten.net and Hugging Face, not GitHub.**
-  Development and releases moved to git.geisten.net; github.com/geisten/geistlib
-  is the public mirror and gets no new releases. The SDK archives, slim CLIs
-  and `SHA256SUMS` are at `https://geisten.net/download/geistlib/<tag>/`
-  (`latest/` for the newest); the BitNet-embedded CLIs at
-  `https://huggingface.co/geisten/geist-bitnet` (`main` = newest, a tag per
-  release), with their digests in `BITNET-SHA256SUMS`. Releases no longer
-  carry Sigstore build-provenance attestations; verify against the digests.
+- **Releases are downloaded from geisten.net, not GitHub; no more
+  BitNet-embedded binaries.** Development and releases moved to
+  git.geisten.net; github.com/geisten/geistlib is the public mirror and gets no
+  new releases. The SDK archives, slim CLIs and `SHA256SUMS` are at
+  `https://geisten.net/download/geistlib/<tag>/` (`latest/` for the newest).
+  The `geist-bitnet-*` CLIs with the model folded in (1.1 GB each) are no
+  longer built: the slim CLI plus the BitNet GGUF from Hugging Face does the
+  same, and the apps download their models themselves. Releases no longer
+  carry Sigstore build-provenance attestations; verify against `SHA256SUMS`.
 - **Vulkan prefill for head_dim 96 and host-visible scratch pools (#739).**
   head_dim 96 (BitNet b1.58-large) gets the tensor-core attention kernel
   instead of the one-row-per-query fallback, and a host-visible scratch pool
