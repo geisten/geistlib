@@ -20,7 +20,6 @@ produces tokens.
 | [DECISION_EVALUATION.md](DECISION_EVALUATION.md) | Offline MMLU evaluation protocol for the decision API |
 | [DECISION_ENCODERS.md](DECISION_ENCODERS.md) | Python encoder baselines for that evaluation |
 | [CI_COVERAGE.md](CI_COVERAGE.md) | What each CI job verifies |
-| [CI_SELF_HOSTED.md](CI_SELF_HOSTED.md) | The self-hosted Vulkan GPU runner |
 | [RELEASING.md](RELEASING.md) | The guarded release workflow and recovery |
 | [../benchmark/](../benchmark/README.md) | Benchmark methodology, raw runs, per-system results |
 
