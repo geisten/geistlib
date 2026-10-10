@@ -1,0 +1,440 @@
+name: Release
+
+# Gitea copy of .github/workflows/release.yml: development and releases happen
+# on git.geisten.net; the public release users download stays on GitHub
+# (github.com/geisten/geistlib/releases/latest, the README links there).
+# This workflow builds on the geisten org's runners (Pi: linux-arm64, desktop:
+# linux-x86_64, Mac: macos-arm64), drafts the release on GitHub and on Gitea,
+# verifies both, and publishes. dry_run=true does everything but publish and
+# deletes both drafts again: a full rehearsal without a tag.
+# Not carried over: the Sigstore build-provenance statements (they need
+# GitHub's OIDC issuer) and the protected `release` environment (Gitea has
+# none; only people with write access to this private repo can dispatch).
+# Secret GH_RELEASE_TOKEN: a GitHub token with contents:write on
+# geisten/geistlib.
+
+# Build the per-platform libgeist SDK (ROADMAP.md, "Distribution").
+# Ships macos-arm64, linux-arm64 and linux-x86_64 (AVX-512) — all dependency-free
+# static/self-contained builds. Windows still waits. A maintainer starts this
+# workflow once from main; it validates and pins that exact SHA, builds every
+# artifact, prepares a draft, verifies it, then publishes the tag and release.
+# There is no separate `git tag` / `git push` step to forget.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish, without the v prefix (for example 0.10.8). Must match include/geist.h.'
+        required: true
+        type: string
+      ref:
+        description: 'Source ref. Releases must resolve to the current main tip.'
+        required: true
+        default: main
+        type: string
+      dry_run:
+        description: 'Rehearsal: build, draft and verify on GitHub and Gitea, then delete the drafts instead of publishing.'
+        required: false
+        default: false
+        type: boolean
+      embed_model_url:
+        description: 'GGUF URL to bake into the single-file `geist-<platform>-embedded` artifact (<~1.5 GB). Empty = the default below (BitNet b1.58 2B-4T).'
+        required: false
+        default: ''
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+
+# A release publishes the SDK and nothing else: libgeist.a plus the public
+# headers, per platform. Runnable artefacts — a CLI, a resident daemon, a
+# binary with a model baked in — are built by whoever links this engine.
+
+jobs:
+  version-guard:
+    name: pin main SHA and validate release candidate
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.candidate.outputs.sha }}
+      tag: ${{ steps.candidate.outputs.tag }}
+      version: ${{ steps.candidate.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: gh (the public release lives on GitHub)
+        run: command -v gh >/dev/null || { sudo apt-get -qq update && sudo apt-get -qq install -y gh >/dev/null; }
+      - name: Resolve and validate the candidate
+        id: candidate
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -eu
+          git fetch -q --tags origin main
+          sha=$(git rev-parse HEAD)
+          main_sha=$(git rev-parse origin/main)
+          test "$sha" = "$main_sha" || {
+            echo "::error::release ref resolves to $sha, but current main is $main_sha"
+            exit 1
+          }
+          hdr=$(sed -n 's/.*GEIST_VERSION_STRING "\([0-9][0-9.]*\)".*/\1/p' include/geist.h | head -1)
+          test "$hdr" = "$REQUESTED_VERSION" || {
+            echo "::error::requested $REQUESTED_VERSION, but include/geist.h says $hdr"
+            exit 1
+          }
+          tag="v$hdr"
+          # a rehearsal drafts under its own tag, so an already published
+          # version can be rehearsed; nothing with that tag is ever published
+          [ "$DRY_RUN" = true ] && tag="v$hdr-rehearsal.$GITHUB_RUN_NUMBER"
+          latest=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)
+          git merge-base --is-ancestor "$latest^{}" HEAD || {
+            echo "::error::published release $latest is not an ancestor of $sha"
+            exit 1
+          }
+
+          # A rerun may resume an existing draft for this exact SHA. GitHub does
+          # not create the tag ref for a draft until it is published, so validate
+          # the draft target here and verify the tag after publication below.
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+            test "$draft" = true || {
+              echo "::error::$tag is already published"
+              exit 1
+            }
+            draft_target=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
+              --json targetCommitish --jq .targetCommitish)
+            test "$draft_target" = "$sha" || {
+              echo "::error::$tag draft targets $draft_target, expected $sha"
+              exit 1
+            }
+          elif git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 ||
+               git ls-remote --exit-code --tags https://github.com/geisten/geistlib "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::$tag exists without a resumable draft release"
+            exit 1
+          fi
+
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$hdr" >> "$GITHUB_OUTPUT"
+      - name: Release self-consistency
+        run: sh scripts/check-release.sh
+
+  linux-arm64:
+    name: linux-arm64 (musl-static, dependency-free)
+    needs: version-guard
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version-guard.outputs.sha }}
+      # Build fully static against **musl** (not glibc): the result has literally
+      # no libc dependency, is more portable than a glibc -static binary (no NSS /
+      # glibc-version quirks), and is much smaller. Alpine 3.21 ships gcc 14
+      # (needed for -std=c23) and a musl-built libgomp for OpenMP. The host job
+      # stays on ubuntu-arm so checkout / upload-artifact (Node actions) work;
+      # only the compile runs in the container, writing into the mounted volume.
+      # GEMM_PROVIDER=native -> native NEON fp32 + vendored FFT (no OpenBLAS/FFTW),
+      # so the archive carries no BLAS dependency into a consumer's link. The
+      # artifact is libgeist.a plus headers: link flags like -static belong to
+      # whoever links it, not to building an archive, so this job passes none.
+      - name: Build + smoke + package libgeist SDK
+        env:
+          EMBED_MODEL_URL: ${{ inputs.embed_model_url || 'https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf' }}
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src -e EMBED_MODEL_URL alpine:3.21 sh -c '
+            set -e
+            apk add --no-cache build-base linux-headers curl
+            make TARGET=linux CC=gcc GEMM_PROVIDER=native lib
+            mkdir -p dist/libgeist-linux-arm64/include
+            cp lib/linux/release/libgeist.a dist/libgeist-linux-arm64/
+            cp include/*.h dist/libgeist-linux-arm64/include/
+            cp LICENSE dist/libgeist-linux-arm64/
+            d=dist/libgeist-linux-arm64
+            # --whole-archive: a static link only pulls referenced objects, so a
+            # plain smoke link can pass while an object the smoke never reaches
+            # still has unresolved deps (geistlib#144). Forcing every object in
+            # makes the link itself assert the full archive resolves with the
+            # documented consumer flags.
+            cc -std=c23 -I "$d/include" examples/embed_smoke.c \
+              -Wl,--whole-archive "$d/libgeist.a" -Wl,--no-whole-archive \
+              -fopenmp -lm -o /tmp/sdk_smoke
+            /tmp/sdk_smoke
+            cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/agent_smoke
+            /tmp/agent_smoke
+            cc -std=c23 -I "$d/include" examples/runtime_contract_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/runtime_smoke
+            /tmp/runtime_smoke
+
+            # ---- CLI binaries ------------------------------------------------
+            # geist-linux-arm64: the slim bring-your-own-GGUF CLI (<1 MB).
+            # Fully static (musl + libgomp.a): runs on any 64-bit Pi OS with
+            # no toolchain, no Python, no shared libs.
+            cc -std=c23 -static -I "$d/include" examples/simple_generate.c \
+              "$d/libgeist.a" -fopenmp -lm -o dist/geist-linux-arm64
+            # No model in this smoke: exit 2 + usage is the contract.
+            ./dist/geist-linux-arm64 2>/dev/null || [ $? -eq 2 ]
+
+            # geist-bitnet-linux-arm64: same CLI with the MIT-licensed BitNet
+            # b1.58 2B-4T GGUF folded in via .incbin — literally one file,
+            # ~1.2 GB. The weights alias zero-copy from .rodata and are
+            # demand-paged like an mmap, so RAM behavior on a 4 GB Pi equals
+            # the file-based load. GNU ld handles the >1 GB section (ld64
+            # does not, which is why macOS gets no embedded artifact).
+            curl -fLsS --retry 3 -o /tmp/model.gguf "$EMBED_MODEL_URL"
+            {
+              echo "  .section .rodata"
+              echo "  .balign 64"
+              echo "  .globl geist_model_start"
+              echo "geist_model_start:"
+              echo "  .incbin \"/tmp/model.gguf\""
+              echo "  .globl geist_model_end"
+              echo "geist_model_end:"
+            } > /tmp/model_blob.s
+            cc -std=c23 -static -DGEIST_EMBED_MODEL -I "$d/include" \
+              examples/simple_generate.c /tmp/model_blob.s \
+              "$d/libgeist.a" -fopenmp -lm -o dist/geist-bitnet-linux-arm64
+            # Real smoke: load the embedded 2B model and decode a few tokens.
+            OMP_WAIT_POLICY=active ./dist/geist-bitnet-linux-arm64 "The capital of France is" 8
+          '
+          tar -C dist -czf libgeist-linux-arm64.tar.gz libgeist-linux-arm64
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: libgeist-linux-arm64
+          path: libgeist-linux-arm64.tar.gz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: geist-cli-linux-arm64
+          path: |
+            dist/geist-linux-arm64
+            dist/geist-bitnet-linux-arm64
+          compression-level: 0
+
+  linux-x86_64:
+    name: linux-x86_64 (musl-static, AVX-512, dependency-free)
+    needs: version-guard
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version-guard.outputs.sha }}
+      # Same musl-static recipe as arm64, on x86_64, with the native
+      # AVX-512/VNNI backend (BACKENDS="cpu_x86 cpu_scalar"). Baseline is
+      # x86-64-v3 with the AVX-512 kernels compiled per-TU and runtime-dispatched
+      # via hw_probe, so the one binary runs on any x86-64-v3 CPU (no SIGILL).
+      # GEMM_PROVIDER=native -> BLAS-free (portable scalar fp32 for the
+      # vision/audio dense path; the quantized text kernels never touch BLAS).
+      - name: Build + smoke + package libgeist SDK
+        env:
+          EMBED_MODEL_URL: ${{ inputs.embed_model_url || 'https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf' }}
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src -e EMBED_MODEL_URL alpine:3.21 sh -c '
+            set -e
+            apk add --no-cache build-base linux-headers curl
+            make TARGET=linux CC=gcc BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native lib
+            mkdir -p dist/libgeist-linux-x86_64/include
+            cp lib/linux/release/libgeist.a dist/libgeist-linux-x86_64/
+            cp include/*.h dist/libgeist-linux-x86_64/include/
+            cp LICENSE dist/libgeist-linux-x86_64/
+            d=dist/libgeist-linux-x86_64
+            # --whole-archive: see the arm64 job (geistlib#144).
+            cc -std=c23 -I "$d/include" examples/embed_smoke.c \
+              -Wl,--whole-archive "$d/libgeist.a" -Wl,--no-whole-archive \
+              -fopenmp -lm -o /tmp/sdk_smoke
+            /tmp/sdk_smoke
+            cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/agent_smoke
+            /tmp/agent_smoke
+            cc -std=c23 -I "$d/include" examples/runtime_contract_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/runtime_smoke
+            /tmp/runtime_smoke
+
+            # ---- CLI binaries — mirror of the arm64 job (geistlib#217) ------
+            # geist-linux-x86_64: the slim bring-your-own-GGUF CLI. Fully
+            # static (musl + libgomp.a); x86-64-v3 baseline with AVX-512
+            # runtime-dispatched, so it runs on any Haswell/Zen+ machine.
+            cc -std=c23 -static -I "$d/include" examples/simple_generate.c \
+              "$d/libgeist.a" -fopenmp -lm -o dist/geist-linux-x86_64
+            # No model in this smoke: exit 2 + usage is the contract.
+            ./dist/geist-linux-x86_64 2>/dev/null || [ $? -eq 2 ]
+
+            # geist-bitnet-linux-x86_64: same CLI with the MIT-licensed BitNet
+            # b1.58 2B-4T GGUF folded in via .incbin (see the arm64 job for
+            # the full rationale — zero-copy .rodata alias, demand-paged).
+            curl -fLsS --retry 3 -o /tmp/model.gguf "$EMBED_MODEL_URL"
+            {
+              echo "  .section .rodata"
+              echo "  .balign 64"
+              echo "  .globl geist_model_start"
+              echo "geist_model_start:"
+              echo "  .incbin \"/tmp/model.gguf\""
+              echo "  .globl geist_model_end"
+              echo "geist_model_end:"
+            } > /tmp/model_blob.s
+            cc -std=c23 -static -DGEIST_EMBED_MODEL -I "$d/include" \
+              examples/simple_generate.c /tmp/model_blob.s \
+              "$d/libgeist.a" -fopenmp -lm -o dist/geist-bitnet-linux-x86_64
+            # Real smoke: load the embedded 2B model and decode a few tokens.
+            OMP_WAIT_POLICY=active ./dist/geist-bitnet-linux-x86_64 "The capital of France is" 8
+          '
+          tar -C dist -czf libgeist-linux-x86_64.tar.gz libgeist-linux-x86_64
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: libgeist-linux-x86_64
+          path: libgeist-linux-x86_64.tar.gz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: geist-cli-linux-x86_64
+          path: |
+            dist/geist-linux-x86_64
+            dist/geist-bitnet-linux-x86_64
+          compression-level: 0
+
+  macos-arm64:
+    name: macos-arm64 (Accelerate/AMX)
+    needs: version-guard
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version-guard.outputs.sha }}
+      - name: Install libomp
+        run: brew install libomp
+      # GEIST_STATIC_OMP=1 -> mk/target-mac-omp.mk links the static libomp.a
+      # rather than -lomp, so geistlib's OWN binaries depend only on system
+      # frameworks (Accelerate/libSystem, always present). It does not change
+      # the packaged archive; see the note at the smoke link below.
+      - name: Build + smoke + package libgeist SDK
+        run: |
+          make TARGET=mac-omp CC=clang GEIST_STATIC_OMP=1 lib
+          mkdir -p dist/libgeist-macos-arm64/include
+          cp lib/mac-omp/release/libgeist.a dist/libgeist-macos-arm64/
+          cp include/*.h dist/libgeist-macos-arm64/include/
+          cp LICENSE dist/libgeist-macos-arm64/
+          d=dist/libgeist-macos-arm64
+          # The archive holds geist's objects, not the OpenMP runtime: an .a is
+          # not a link. GEIST_STATIC_OMP=1 governs how geistlib links its OWN
+          # binaries, so a consumer of the packaged SDK still supplies libomp
+          # and Accelerate itself — the same flags mk/target-mac-omp.mk uses.
+          # Linking the smokes the way a real consumer must is the whole point
+          # of a packaging gate (geistlib#144).
+          omp=$(brew --prefix libomp)
+          link="-framework Accelerate $omp/lib/libomp.a -lm"
+          # -force_load = ld64's --whole-archive: every object must resolve
+          # with the documented consumer flags, not just the ones the smoke
+          # happens to reference (geistlib#144).
+          cc -std=c23 -I "$d/include" examples/embed_smoke.c \
+            -Wl,-force_load,"$d/libgeist.a" $link -o /tmp/sdk_smoke
+          /tmp/sdk_smoke
+          cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" $link -o /tmp/agent_smoke
+          /tmp/agent_smoke
+          cc -std=c23 -I "$d/include" examples/runtime_contract_smoke.c "$d/libgeist.a" $link -o /tmp/runtime_smoke
+          /tmp/runtime_smoke
+          tar -C dist -czf libgeist-macos-arm64.tar.gz libgeist-macos-arm64
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: libgeist-macos-arm64
+          path: libgeist-macos-arm64.tar.gz
+
+  release:
+    name: verify draft and publish release
+    needs: [version-guard, linux-arm64, linux-x86_64, macos-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version-guard.outputs.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+      - name: Checksum the assets and verify the set
+        run: |
+          set -eu
+          find dist \( -name '*.tar.gz' -o -name 'geist-*' \) -type f -exec sha256sum {} \; | \
+            sed 's#  dist/[^/]*/#  #' | sort -k2 > SHA256SUMS
+          chmod +x dist/*/geist-* || true
+
+          printf '%s\n' \
+            SHA256SUMS \
+            geist-bitnet-linux-arm64 \
+            geist-bitnet-linux-x86_64 \
+            geist-linux-arm64 \
+            geist-linux-x86_64 \
+            libgeist-linux-arm64.tar.gz \
+            libgeist-linux-x86_64.tar.gz \
+            libgeist-macos-arm64.tar.gz | sort > /tmp/expected-assets
+          find dist \( -name '*.tar.gz' -o -name 'geist-*' \) -type f \
+            -exec basename {} \; | sort > /tmp/built-assets
+          { printf '%s\n' SHA256SUMS; cat /tmp/built-assets; } | sort > /tmp/all-built-assets
+          diff -u /tmp/expected-assets /tmp/all-built-assets
+      - name: gh (the public release lives on GitHub)
+        run: command -v gh >/dev/null || { sudo apt-get -qq update && sudo apt-get -qq install -y gh >/dev/null; }
+      - name: Create, verify and publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+          GITEA_TOKEN: ${{ github.token }}
+          GITEA_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          RELEASE_SHA: ${{ needs.version-guard.outputs.sha }}
+          RELEASE_TAG: ${{ needs.version-guard.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.version-guard.outputs.version }}
+        run: |
+          set -eu
+          awk -v version="$RELEASE_VERSION" '
+            $0 ~ "^## \\[" version "\\] — " { found=1; next }
+            found && /^## \[[0-9]/ { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > /tmp/release-notes.md
+          test -s /tmp/release-notes.md
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" SHA256SUMS dist/*/*.tar.gz dist/*/geist-* \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$RELEASE_TAG" SHA256SUMS dist/*/*.tar.gz dist/*/geist-* \
+              --repo "$GITHUB_REPOSITORY" --target "$RELEASE_SHA" --draft \
+              --title "geist $RELEASE_TAG" --notes-file /tmp/release-notes.md
+          fi
+
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name' | sort > /tmp/uploaded-assets
+          diff -u /tmp/expected-assets /tmp/uploaded-assets
+
+          # The same release on Gitea, where development happens. A draft
+          # first; publishing it creates the tag here at RELEASE_SHA, which the
+          # push mirror then finds identical on GitHub.
+          gitea() { curl -fsS -H "Authorization: token $GITEA_TOKEN" "$@"; }
+          rid=$(gitea "$GITEA_API/releases/tags/$RELEASE_TAG" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' || true)
+          if [ -z "$rid" ]; then
+            rid=$(gitea -X POST -H 'Content-Type: application/json' "$GITEA_API/releases" \
+              -d "$(python3 -c 'import json,os; print(json.dumps({"tag_name": os.environ["RELEASE_TAG"], "target_commitish": os.environ["RELEASE_SHA"], "name": "geist " + os.environ["RELEASE_TAG"], "body": open("/tmp/release-notes.md").read(), "draft": True}))')" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+          fi
+          gitea "$GITEA_API/releases/$rid/assets" | python3 -c 'import json,sys; [print(a["name"]) for a in json.load(sys.stdin)]' > /tmp/gitea-have
+          for f in SHA256SUMS dist/*/*.tar.gz dist/*/geist-*; do
+            grep -qx "$(basename "$f")" /tmp/gitea-have ||
+              gitea -X POST -F "attachment=@$f" "$GITEA_API/releases/$rid/assets?name=$(basename "$f")" >/dev/null
+          done
+          gitea "$GITEA_API/releases/$rid/assets" | python3 -c 'import json,sys; [print(a["name"]) for a in json.load(sys.stdin)]' | sort > /tmp/gitea-assets
+          diff -u /tmp/expected-assets /tmp/gitea-assets
+
+          if [ "$DRY_RUN" = true ]; then
+            gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes
+            gitea -X DELETE "$GITEA_API/releases/$rid"
+            gitea -X DELETE "$GITEA_API/tags/$RELEASE_TAG" 2>/dev/null || true  # if the draft made one
+            echo "dry run: both drafts verified with the complete asset set and deleted; nothing published"
+            exit 0
+          fi
+
+          draft_target=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json targetCommitish --jq .targetCommitish)
+          test "$draft_target" = "$RELEASE_SHA"
+          gitea -X PATCH -H 'Content-Type: application/json' "$GITEA_API/releases/$rid" -d '{"draft": false}' >/dev/null
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+
+          git fetch -q origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$RELEASE_SHA"
+          test "$(git ls-remote https://github.com/geisten/geistlib "refs/tags/$RELEASE_TAG" | cut -f1)" = "$RELEASE_SHA"
+          sh scripts/check-published-release.sh
