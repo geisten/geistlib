@@ -73,8 +73,11 @@ jobs:
             exit 1
           }
           tag="v$hdr"
+          # a rehearsal drafts under its own tag: deleting its draft afterwards
+          # must never touch a real release tag
+          [ "$DRY_RUN" = true ] && tag="v$hdr-rehearsal.$GITHUB_RUN_NUMBER"
           # the newest release tag must be part of this candidate's history
-          latest=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+          latest=$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -v rehearsal | head -1)
           git merge-base --is-ancestor "$latest^{}" HEAD || {
             echo "::error::release $latest is not an ancestor of $sha"
             exit 1
