@@ -8,7 +8,7 @@
 > One binary. No Python, no model setup, no cloud.
 
 ```bash
-curl -L -o geist-bitnet https://github.com/geisten/geistlib/releases/latest/download/geist-bitnet-linux-arm64
+curl -L -o geist-bitnet https://huggingface.co/geisten/geist-bitnet/resolve/main/geist-bitnet-linux-arm64
 chmod +x geist-bitnet
 ./geist-bitnet "The capital of France is"
 ```
@@ -40,7 +40,7 @@ Prebuilt binaries ship for Linux arm64 and x86_64 (swap `-linux-arm64` for
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![C Standard](https://img.shields.io/badge/C-C23-orange.svg)](https://en.wikipedia.org/wiki/C23_(C_standard_revision))
 [![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%205%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#build-from-source)
-[![Latest release](https://img.shields.io/github/v/release/geisten/geistlib?display_name=tag&sort=semver&label=latest%20release)](https://github.com/geisten/geistlib/releases/latest)
+[![Latest release](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fgeisten.net%2Fdownload%2Fgeistlib%2Flatest%2Frelease.json&query=%24.tag&label=latest%20release)](https://geisten.net/download/geistlib/latest/)
 [![Status](https://img.shields.io/badge/status-experimental-yellow.svg)](#status)
 [![Discussions](https://img.shields.io/badge/Discussions-ask%20%26%20share-5865F2.svg)](https://github.com/geisten/geistlib/discussions)
 [![Good first issues](https://img.shields.io/github/issues/geisten/geistlib/good%20first%20issue?label=good%20first%20issue&color=7057ff)](https://github.com/geisten/geistlib/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
@@ -77,7 +77,7 @@ The slim CLI (release asset `geist-linux-arm64` or `geist-linux-x86_64`,
 ~2 MB) runs any supported GGUF that carries its own tokenizer:
 
 ```bash
-curl -L -o geist https://github.com/geisten/geistlib/releases/latest/download/geist-linux-arm64
+curl -L -o geist https://geisten.net/download/geistlib/latest/geist-linux-arm64
 chmod +x geist
 ./geist model.gguf "your prompt" [max_new_tokens]
 ```
@@ -109,12 +109,10 @@ you embed the library.
 
 ## Embed the library
 
-Every [release](https://github.com/geisten/geistlib/releases/latest) ships
+Every [release](https://geisten.net/download/geistlib/latest/) ships
 `libgeist-<platform>.tar.gz` (`libgeist.a`, `include/*.h`, `LICENSE`) for
 `macos-arm64`, `linux-arm64` and `linux-x86_64`. Verify it against
-`SHA256SUMS` and its build provenance with
-`gh attestation verify libgeist-linux-arm64.tar.gz --repo geisten/geistlib`,
-then link:
+`SHA256SUMS` (`sha256sum -c SHA256SUMS`), then link:
 
 ```bash
 cc -std=c23 -I libgeist-linux-arm64/include my_app.c \
@@ -177,7 +175,7 @@ Qwen3.8-27B at 1.41× llama.cpp Metal on an M1 Max):
 ## Status
 
 `main` is the experimental development branch; for binaries and a citable
-version use the [latest release](https://github.com/geisten/geistlib/releases/latest).
+version use the [latest release](https://geisten.net/download/geistlib/latest/).
 The `STABLE` core (load → session → decode → tokenize) is the part to build on.
 `EXPERIMENTAL` surfaces (KV-cache modes, speculative decode, multimodal attach,
 GPU backends) may change between minor versions.
@@ -204,10 +202,9 @@ All documents, with what each covers: [`docs/README.md`](docs/README.md).
 
 ## Citation
 
-Open the version you used on the
-[release page](https://github.com/geisten/geistlib/releases/latest) and use
-GitHub's "Cite this repository" action; each release carries its matching
-[`CITATION.cff`](CITATION.cff).
+Cite the version you used: each release tag carries its matching
+[`CITATION.cff`](CITATION.cff), which GitHub's "Cite this repository" action
+reads.
 
 ## License
 

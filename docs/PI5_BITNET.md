@@ -1,8 +1,8 @@
 # BitNet on a Raspberry Pi 5 — user guide
 
-Running the self-contained BitNet binary (release asset
-`geist-bitnet-linux-arm64`, renamed to `geist-bitnet` below) from the
-[release page](https://github.com/geisten/geistlib/releases/latest) on a
+Running the self-contained BitNet binary (`geist-bitnet-linux-arm64`, renamed
+to `geist-bitnet` below) from
+[Hugging Face](https://huggingface.co/geisten/geist-bitnet) on a
 Raspberry Pi 5. Every number here was measured on the reference board below.
 
 ## Tested configuration
@@ -45,11 +45,11 @@ vcgencmd measure_temp && vcgencmd get_throttled   # 0x0 = never throttled
 
 ```bash
 # install (the asset carries a platform suffix; your copy doesn't have to)
-curl -LO https://github.com/geisten/geistlib/releases/latest/download/geist-bitnet-linux-arm64
+curl -LO https://huggingface.co/geisten/geist-bitnet/resolve/main/geist-bitnet-linux-arm64
 
 # verify (optional, recommended — BEFORE renaming, so the checksum file matches)
-curl -LO https://github.com/geisten/geistlib/releases/latest/download/SHA256SUMS
-sha256sum -c --ignore-missing SHA256SUMS
+curl -LO https://geisten.net/download/geistlib/latest/BITNET-SHA256SUMS
+sha256sum -c --ignore-missing BITNET-SHA256SUMS
 
 mv geist-bitnet-linux-arm64 geist-bitnet && chmod +x geist-bitnet
 

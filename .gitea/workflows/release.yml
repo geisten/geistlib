@@ -1,29 +1,28 @@
 name: Release
 
-# Gitea copy of .github/workflows/release.yml: development and releases happen
-# on git.geisten.net; the public release users download stays on GitHub
-# (github.com/geisten/geistlib/releases/latest, the README links there).
-# This workflow builds on the geisten org's runners (Pi: linux-arm64, desktop:
-# linux-x86_64, Mac: macos-arm64), drafts the release on GitHub and on Gitea,
-# verifies both, and publishes. dry_run=true does everything but publish and
-# deletes both drafts again: a full rehearsal without a tag.
-# Not carried over: the Sigstore build-provenance statements (they need
-# GitHub's OIDC issuer) and the protected `release` environment (Gitea has
-# none; only people with write access to this private repo can dispatch).
-# Secret GH_RELEASE_TOKEN: a GitHub token with contents:write on
-# geisten/geistlib.
-
-# Build the per-platform libgeist SDK (ROADMAP.md, "Distribution").
-# Ships macos-arm64, linux-arm64 and linux-x86_64 (AVX-512) — all dependency-free
-# static/self-contained builds. Windows still waits. A maintainer starts this
-# workflow once from main; it validates and pins that exact SHA, builds every
-# artifact, prepares a draft, verifies it, then publishes the tag and release.
-# There is no separate `git tag` / `git push` step to forget.
+# Build, verify and publish a geistlib release from git.geisten.net.
+# Public downloads live on https://geisten.net/download/geistlib/ (one
+# directory per version plus latest -> that version); the Gitea release in
+# this private repo is the record with the same files. GitHub gets no new
+# releases; its old ones stay.
+# A maintainer dispatches this once from main. It pins that exact SHA, builds
+# every platform on the geisten org's runners (Pi: linux-arm64, desktop:
+# linux-x86_64, Mac: macos-arm64), drafts the Gitea release, uploads the
+# files to geisten.net, verifies them over HTTPS against SHA256SUMS, and only
+# then publishes the Gitea release (which creates the tag) and moves latest.
+# dry_run=true does all of it into download/geistlib/rehearsal/ instead, under
+# no tag, and deletes the draft: a full rehearsal that publishes nothing.
+# Not carried over from the GitHub workflow: the BitNet-embedded CLIs
+# (1.1 GB each; the slim CLI plus a downloaded GGUF does the same), the
+# Sigstore provenance (GitHub OIDC only) and the protected environment.
+# Org secret DOWNLOAD_SSH_KEY: may only rsync into /var/www/htdocs/
+# www.geisten.net/download on the web server (rrsync -wo in authorized_keys).
+# Org secret HF_GEISTEN: write access to geisten/geist-bitnet on Hugging Face.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish, without the v prefix (for example 0.10.8). Must match include/geist.h.'
+        description: 'Version to publish, without the v prefix (for example 0.21.0). Must match include/geist.h.'
         required: true
         type: string
       ref:
@@ -32,24 +31,14 @@ on:
         default: main
         type: string
       dry_run:
-        description: 'Rehearsal: build, draft and verify on GitHub and Gitea, then delete the drafts instead of publishing.'
+        description: 'Rehearsal: build and upload to download/geistlib/rehearsal/, publish nothing.'
         required: false
         default: false
         type: boolean
-      embed_model_url:
-        description: 'GGUF URL to bake into the single-file `geist-<platform>-embedded` artifact (<~1.5 GB). Empty = the default below (BitNet b1.58 2B-4T).'
-        required: false
-        default: ''
-        type: string
 
 concurrency:
   group: release
   cancel-in-progress: false
-
-
-# A release publishes the SDK and nothing else: libgeist.a plus the public
-# headers, per platform. Runnable artefacts — a CLI, a resident daemon, a
-# binary with a model baked in — are built by whoever links this engine.
 
 jobs:
   version-guard:
@@ -64,12 +53,9 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
-      - name: gh (the public release lives on GitHub)
-        run: command -v gh >/dev/null || { sudo apt-get -qq update && sudo apt-get -qq install -y gh >/dev/null; }
       - name: Resolve and validate the candidate
         id: candidate
         env:
-          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
           REQUESTED_VERSION: ${{ inputs.version }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
@@ -87,36 +73,18 @@ jobs:
             exit 1
           }
           tag="v$hdr"
-          # a rehearsal drafts under its own tag, so an already published
-          # version can be rehearsed; nothing with that tag is ever published
-          [ "$DRY_RUN" = true ] && tag="v$hdr-rehearsal.$GITHUB_RUN_NUMBER"
-          latest=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)
+          # the newest release tag must be part of this candidate's history
+          latest=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
           git merge-base --is-ancestor "$latest^{}" HEAD || {
-            echo "::error::published release $latest is not an ancestor of $sha"
+            echo "::error::release $latest is not an ancestor of $sha"
             exit 1
           }
-
-          # A rerun may resume an existing draft for this exact SHA. GitHub does
-          # not create the tag ref for a draft until it is published, so validate
-          # the draft target here and verify the tag after publication below.
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
-            test "$draft" = true || {
-              echo "::error::$tag is already published"
-              exit 1
-            }
-            draft_target=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
-              --json targetCommitish --jq .targetCommitish)
-            test "$draft_target" = "$sha" || {
-              echo "::error::$tag draft targets $draft_target, expected $sha"
-              exit 1
-            }
-          elif git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 ||
-               git ls-remote --exit-code --tags https://github.com/geisten/geistlib "refs/tags/$tag" >/dev/null 2>&1; then
-            echo "::error::$tag exists without a resumable draft release"
+          if [ "$DRY_RUN" = true ]; then
+            echo "rehearsal of $tag at $sha"
+          elif git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::$tag already exists; never move a release tag, bump the version"
             exit 1
           fi
-
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$hdr" >> "$GITHUB_OUTPUT"
@@ -126,6 +94,8 @@ jobs:
   linux-arm64:
     name: linux-arm64 (musl-static, dependency-free)
     needs: version-guard
+    outputs:
+      bitnet_sha256: ${{ steps.bitnet.outputs.sha256 }}
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -143,7 +113,7 @@ jobs:
       # whoever links it, not to building an archive, so this job passes none.
       - name: Build + smoke + package libgeist SDK
         env:
-          EMBED_MODEL_URL: ${{ inputs.embed_model_url || 'https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf' }}
+          EMBED_MODEL_URL: https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf
         run: |
           docker run --rm -v "$PWD:/src" -w /src -e EMBED_MODEL_URL alpine:3.21 sh -c '
             set -e
@@ -200,21 +170,46 @@ jobs:
             OMP_WAIT_POLICY=active ./dist/geist-bitnet-linux-arm64 "The capital of France is" 8
           '
           tar -C dist -czf libgeist-linux-arm64.tar.gz libgeist-linux-arm64
+      # The BitNet-embedded CLI (1.1 GB) goes straight to Hugging Face, never
+      # through the Gitea server: to the candidate branch now, onto main when
+      # the release job publishes (rehearsal: the rehearsal branch).
+      - name: Embedded CLI to Hugging Face (candidate branch)
+        id: bitnet
+        env:
+          HF_TOKEN: ${{ secrets.HF_GEISTEN }}
+          HF_BRANCH: ${{ (inputs.dry_run == true || inputs.dry_run == 'true') && 'rehearsal' || format('candidate-{0}', needs.version-guard.outputs.tag) }}
+          RELEASE_TAG: ${{ needs.version-guard.outputs.tag }}
+          F: geist-bitnet-linux-arm64
+        run: |
+          set -eu
+          python3 -m pip install -q --break-system-packages huggingface_hub 2>/dev/null || python3 -m pip install -q huggingface_hub
+          python3 - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          api, repo, f = HfApi(token=os.environ["HF_TOKEN"]), "geisten/geist-bitnet", os.environ["F"]
+          api.create_repo(repo, exist_ok=True)
+          api.create_branch(repo, branch=os.environ["HF_BRANCH"], exist_ok=True)
+          api.upload_file(path_or_fileobj=f"dist/{f}", path_in_repo=f, repo_id=repo,
+                          revision=os.environ["HF_BRANCH"], commit_message=f"{f} for {os.environ['RELEASE_TAG']}")
+          PY
+          echo "sha256=$(sha256sum "dist/$F" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 14
           name: libgeist-linux-arm64
           path: libgeist-linux-arm64.tar.gz
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 14
           name: geist-cli-linux-arm64
-          path: |
-            dist/geist-linux-arm64
-            dist/geist-bitnet-linux-arm64
+          path: dist/geist-linux-arm64
           compression-level: 0
 
   linux-x86_64:
     name: linux-x86_64 (musl-static, AVX-512, dependency-free)
     needs: version-guard
+    outputs:
+      bitnet_sha256: ${{ steps.bitnet.outputs.sha256 }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -228,7 +223,7 @@ jobs:
       # vision/audio dense path; the quantized text kernels never touch BLAS).
       - name: Build + smoke + package libgeist SDK
         env:
-          EMBED_MODEL_URL: ${{ inputs.embed_model_url || 'https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf' }}
+          EMBED_MODEL_URL: https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/resolve/main/ggml-model-i2_s.gguf
         run: |
           docker run --rm -v "$PWD:/src" -w /src -e EMBED_MODEL_URL alpine:3.21 sh -c '
             set -e
@@ -278,16 +273,39 @@ jobs:
             OMP_WAIT_POLICY=active ./dist/geist-bitnet-linux-x86_64 "The capital of France is" 8
           '
           tar -C dist -czf libgeist-linux-x86_64.tar.gz libgeist-linux-x86_64
+      # The BitNet-embedded CLI (1.1 GB) goes straight to Hugging Face, never
+      # through the Gitea server: to the candidate branch now, onto main when
+      # the release job publishes (rehearsal: the rehearsal branch).
+      - name: Embedded CLI to Hugging Face (candidate branch)
+        id: bitnet
+        env:
+          HF_TOKEN: ${{ secrets.HF_GEISTEN }}
+          HF_BRANCH: ${{ (inputs.dry_run == true || inputs.dry_run == 'true') && 'rehearsal' || format('candidate-{0}', needs.version-guard.outputs.tag) }}
+          RELEASE_TAG: ${{ needs.version-guard.outputs.tag }}
+          F: geist-bitnet-linux-x86_64
+        run: |
+          set -eu
+          python3 -m pip install -q --break-system-packages huggingface_hub 2>/dev/null || python3 -m pip install -q huggingface_hub
+          python3 - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          api, repo, f = HfApi(token=os.environ["HF_TOKEN"]), "geisten/geist-bitnet", os.environ["F"]
+          api.create_repo(repo, exist_ok=True)
+          api.create_branch(repo, branch=os.environ["HF_BRANCH"], exist_ok=True)
+          api.upload_file(path_or_fileobj=f"dist/{f}", path_in_repo=f, repo_id=repo,
+                          revision=os.environ["HF_BRANCH"], commit_message=f"{f} for {os.environ['RELEASE_TAG']}")
+          PY
+          echo "sha256=$(sha256sum "dist/$F" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 14
           name: libgeist-linux-x86_64
           path: libgeist-linux-x86_64.tar.gz
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 14
           name: geist-cli-linux-x86_64
-          path: |
-            dist/geist-linux-x86_64
-            dist/geist-bitnet-linux-x86_64
+          path: dist/geist-linux-x86_64
           compression-level: 0
 
   macos-arm64:
@@ -333,11 +351,11 @@ jobs:
           tar -C dist -czf libgeist-macos-arm64.tar.gz libgeist-macos-arm64
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          retention-days: 14
           name: libgeist-macos-arm64
           path: libgeist-macos-arm64.tar.gz
-
   release:
-    name: verify draft and publish release
+    name: verify, upload to geisten.net and publish
     needs: [version-guard, linux-arm64, linux-x86_64, macos-arm64]
     runs-on: ubuntu-latest
     steps:
@@ -351,36 +369,33 @@ jobs:
       - name: Checksum the assets and verify the set
         run: |
           set -eu
-          find dist \( -name '*.tar.gz' -o -name 'geist-*' \) -type f -exec sha256sum {} \; | \
-            sed 's#  dist/[^/]*/#  #' | sort -k2 > SHA256SUMS
-          chmod +x dist/*/geist-* || true
-
+          mkdir -p out
+          find dist \( -name '*.tar.gz' -o -name 'geist-*' \) -type f -exec cp {} out/ \;
+          chmod +x out/geist-*
+          (cd out && sha256sum *.tar.gz geist-* | sort -k2 > SHA256SUMS)
           printf '%s\n' \
             SHA256SUMS \
-            geist-bitnet-linux-arm64 \
-            geist-bitnet-linux-x86_64 \
             geist-linux-arm64 \
             geist-linux-x86_64 \
             libgeist-linux-arm64.tar.gz \
             libgeist-linux-x86_64.tar.gz \
             libgeist-macos-arm64.tar.gz | sort > /tmp/expected-assets
-          find dist \( -name '*.tar.gz' -o -name 'geist-*' \) -type f \
-            -exec basename {} \; | sort > /tmp/built-assets
-          { printf '%s\n' SHA256SUMS; cat /tmp/built-assets; } | sort > /tmp/all-built-assets
-          diff -u /tmp/expected-assets /tmp/all-built-assets
-      - name: gh (the public release lives on GitHub)
-        run: command -v gh >/dev/null || { sudo apt-get -qq update && sudo apt-get -qq install -y gh >/dev/null; }
-      - name: Create, verify and publish the release
+          ls out | sort | diff -u /tmp/expected-assets -
+      - name: Draft on Gitea, upload to geisten.net, verify, publish
         env:
-          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
           GITEA_TOKEN: ${{ github.token }}
           GITEA_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          DOWNLOAD_SSH_KEY: ${{ secrets.DOWNLOAD_SSH_KEY }}
+          HF_TOKEN: ${{ secrets.HF_GEISTEN }}
+          BITNET_SHA_ARM64: ${{ needs.linux-arm64.outputs.bitnet_sha256 }}
+          BITNET_SHA_X86_64: ${{ needs.linux-x86_64.outputs.bitnet_sha256 }}
           DRY_RUN: ${{ inputs.dry_run }}
           RELEASE_SHA: ${{ needs.version-guard.outputs.sha }}
           RELEASE_TAG: ${{ needs.version-guard.outputs.tag }}
           RELEASE_VERSION: ${{ needs.version-guard.outputs.version }}
         run: |
           set -eu
+          command -v rsync >/dev/null || { sudo apt-get -qq update && sudo apt-get -qq install -y rsync >/dev/null; }
           awk -v version="$RELEASE_VERSION" '
             $0 ~ "^## \\[" version "\\] — " { found=1; next }
             found && /^## \[[0-9]/ { exit }
@@ -388,53 +403,96 @@ jobs:
             END { if (!found) exit 1 }
           ' CHANGELOG.md > /tmp/release-notes.md
           test -s /tmp/release-notes.md
+          echo "$RELEASE_VERSION" > out/VERSION
+          printf '{"version": "%s", "tag": "%s"}\n' "$RELEASE_VERSION" "$RELEASE_TAG" > out/release.json  # README badge
 
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" SHA256SUMS dist/*/*.tar.gz dist/*/geist-* \
-              --repo "$GITHUB_REPOSITORY" --clobber
-          else
-            gh release create "$RELEASE_TAG" SHA256SUMS dist/*/*.tar.gz dist/*/geist-* \
-              --repo "$GITHUB_REPOSITORY" --target "$RELEASE_SHA" --draft \
-              --title "geist $RELEASE_TAG" --notes-file /tmp/release-notes.md
-          fi
-
-          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --json assets --jq '.assets[].name' | sort > /tmp/uploaded-assets
-          diff -u /tmp/expected-assets /tmp/uploaded-assets
-
-          # The same release on Gitea, where development happens. A draft
-          # first; publishing it creates the tag here at RELEASE_SHA, which the
-          # push mirror then finds identical on GitHub.
+          # 1. the Gitea release as a draft (no tag yet), with every file
           gitea() { curl -fsS -H "Authorization: token $GITEA_TOKEN" "$@"; }
-          rid=$(gitea "$GITEA_API/releases/tags/$RELEASE_TAG" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' || true)
+          id_of() { python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])'; }
+          rid=$(gitea "$GITEA_API/releases/tags/$RELEASE_TAG" 2>/dev/null | id_of || true)
+          [ -z "$rid" ] || [ "$DRY_RUN" = true ] || {
+            draft=$(gitea "$GITEA_API/releases/$rid" | python3 -c 'import json,sys; print(json.load(sys.stdin)["draft"])')
+            [ "$draft" = True ] || { echo "::error::$RELEASE_TAG is already published"; exit 1; }
+          }
           if [ -z "$rid" ]; then
-            rid=$(gitea -X POST -H 'Content-Type: application/json' "$GITEA_API/releases" \
-              -d "$(python3 -c 'import json,os; print(json.dumps({"tag_name": os.environ["RELEASE_TAG"], "target_commitish": os.environ["RELEASE_SHA"], "name": "geist " + os.environ["RELEASE_TAG"], "body": open("/tmp/release-notes.md").read(), "draft": True}))')" \
-              | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+            rid=$(python3 -c 'import json,os; print(json.dumps({"tag_name": os.environ["RELEASE_TAG"], "target_commitish": os.environ["RELEASE_SHA"], "name": "geist " + os.environ["RELEASE_TAG"], "body": open("/tmp/release-notes.md").read(), "draft": True}))' \
+              | gitea -X POST -H 'Content-Type: application/json' "$GITEA_API/releases" -d @- | id_of)
           fi
-          gitea "$GITEA_API/releases/$rid/assets" | python3 -c 'import json,sys; [print(a["name"]) for a in json.load(sys.stdin)]' > /tmp/gitea-have
-          for f in SHA256SUMS dist/*/*.tar.gz dist/*/geist-*; do
-            grep -qx "$(basename "$f")" /tmp/gitea-have ||
-              gitea -X POST -F "attachment=@$f" "$GITEA_API/releases/$rid/assets?name=$(basename "$f")" >/dev/null
+          names() { gitea "$GITEA_API/releases/$rid/assets" | python3 -c 'import json,sys; [print(a["name"]) for a in json.load(sys.stdin)]' | sort; }
+          for f in $(cat /tmp/expected-assets); do
+            names | grep -qx "$f" || gitea -X POST -F "attachment=@out/$f" "$GITEA_API/releases/$rid/assets?name=$f" >/dev/null
           done
-          gitea "$GITEA_API/releases/$rid/assets" | python3 -c 'import json,sys; [print(a["name"]) for a in json.load(sys.stdin)]' | sort > /tmp/gitea-assets
-          diff -u /tmp/expected-assets /tmp/gitea-assets
+          names | diff -u /tmp/expected-assets -
+
+          # 2. geisten.net: the version directory (rehearsal/ in a dry run)
+          dir=$RELEASE_TAG; [ "$DRY_RUN" = true ] && dir=rehearsal
+          mkdir -p ~/.ssh && umask 077
+          printf '%s\n' "$DOWNLOAD_SSH_KEY" > ~/.ssh/download_key
+          echo "www.geisten.net ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO66CjOfnd/GIiCFyqhGxLudBXi/mCD0IA8DBbbZ2O2i" > ~/.ssh/known_hosts_download
+          ssh_cmd="ssh -F /dev/null -i $HOME/.ssh/download_key -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts_download"
+          mkdir -p "stage/geistlib/$dir" && cp out/* "stage/geistlib/$dir/"
+          printf '%s  %s\n' "$BITNET_SHA_ARM64" geist-bitnet-linux-arm64 "$BITNET_SHA_X86_64" geist-bitnet-linux-x86_64 \
+            > "stage/geistlib/$dir/BITNET-SHA256SUMS"  # the embedded CLIs live on Hugging Face
+          # httpd lists no directories: a plain index per version
+          { echo "<!doctype html><meta charset=utf-8><title>geistlib $RELEASE_TAG</title>"
+            echo "<h1>geistlib $RELEASE_TAG</h1><p>Release notes: CHANGELOG.md in the source. Verify with <code>sha256sum -c SHA256SUMS</code>.</p><ul>"
+            while read -r sum f; do echo "<li><a href=\"$f\">$f</a> <code>$sum</code></li>"; done < out/SHA256SUMS
+            hf=https://huggingface.co/geisten/geist-bitnet/resolve/$RELEASE_TAG
+            echo "<li><a href=\"$hf/geist-bitnet-linux-arm64\">geist-bitnet-linux-arm64</a> (BitNet 2B embedded, on Hugging Face) <code>$BITNET_SHA_ARM64</code></li>"
+            echo "<li><a href=\"$hf/geist-bitnet-linux-x86_64\">geist-bitnet-linux-x86_64</a> (BitNet 2B embedded, on Hugging Face) <code>$BITNET_SHA_X86_64</code></li>"
+            echo "<li><a href=\"SHA256SUMS\">SHA256SUMS</a></li></ul>"; } > "stage/geistlib/$dir/index.html"
+          chmod 644 stage/geistlib/$dir/* && chmod 755 stage/geistlib/$dir/geist-*
+          rsync -rlt --chmod=Du=rwx,Dgo=rx -e "$ssh_cmd" stage/ germar@www.geisten.net:
+          base=https://geisten.net/download/geistlib/$dir
+          verify() {
+            mkdir -p /tmp/fetched && rm -f /tmp/fetched/*
+            for f in $(cat /tmp/expected-assets) VERSION; do curl -fsS -o "/tmp/fetched/$f" "$1/$f"; done
+            (cd /tmp/fetched && sha256sum -c SHA256SUMS) && cmp /tmp/fetched/SHA256SUMS out/SHA256SUMS \
+              && test "$(cat /tmp/fetched/VERSION)" = "$RELEASE_VERSION"
+          }
+          verify "$base"
+
+          # 3. Hugging Face: the embedded CLIs on the candidate branch must be
+          # the bytes the build jobs smoke-tested
+          python3 -m pip install -q --break-system-packages huggingface_hub 2>/dev/null || python3 -m pip install -q huggingface_hub
+          hf_branch=candidate-$RELEASE_TAG; [ "$DRY_RUN" = true ] && hf_branch=rehearsal
+          export hf_branch
+          python3 - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          api, repo, br = HfApi(token=os.environ["HF_TOKEN"]), "geisten/geist-bitnet", os.environ["hf_branch"]
+          want = {"geist-bitnet-linux-arm64": os.environ["BITNET_SHA_ARM64"], "geist-bitnet-linux-x86_64": os.environ["BITNET_SHA_X86_64"]}
+          got = {i.path: i.lfs.sha256 for i in api.get_paths_info(repo, list(want), revision=br, expand=True)}
+          assert got == want, (got, want)
+          print("hugging face", br, "matches the built bytes:", got)
+          PY
 
           if [ "$DRY_RUN" = true ]; then
-            gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes
             gitea -X DELETE "$GITEA_API/releases/$rid"
-            gitea -X DELETE "$GITEA_API/tags/$RELEASE_TAG" 2>/dev/null || true  # if the draft made one
-            echo "dry run: both drafts verified with the complete asset set and deleted; nothing published"
+            gitea -X DELETE "$GITEA_API/tags/$RELEASE_TAG" 2>/dev/null || true
+            echo "rehearsal OK: all files verified at $base; Gitea draft deleted, nothing published"
             exit 0
           fi
 
-          draft_target=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --json targetCommitish --jq .targetCommitish)
-          test "$draft_target" = "$RELEASE_SHA"
+          # 3. publish: the Gitea release (creates the tag at RELEASE_SHA), then latest
           gitea -X PATCH -H 'Content-Type: application/json' "$GITEA_API/releases/$rid" -d '{"draft": false}' >/dev/null
-          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
-
           git fetch -q origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$RELEASE_SHA"
-          test "$(git ls-remote https://github.com/geisten/geistlib "refs/tags/$RELEASE_TAG" | cut -f1)" = "$RELEASE_SHA"
+          # the candidate files onto main (a server-side copy, nothing is
+          # uploaded again), tagged with the release
+          python3 - <<'PY'
+          import os
+          from huggingface_hub import HfApi, CommitOperationCopy
+          api, repo, br, tag = HfApi(token=os.environ["HF_TOKEN"]), "geisten/geist-bitnet", os.environ["hf_branch"], os.environ["RELEASE_TAG"]
+          files = ["geist-bitnet-linux-arm64", "geist-bitnet-linux-x86_64"]
+          api.create_commit(repo, operations=[CommitOperationCopy(src_path_in_repo=f, path_in_repo=f, src_revision=br) for f in files],
+                            commit_message=f"geist {tag}", revision="main")
+          api.create_tag(repo, tag=tag, revision="main", exist_ok=True)
+          api.delete_branch(repo, branch=br)
+          info = {i.path: i.lfs.sha256 for i in api.get_paths_info(repo, files, revision=tag, expand=True)}
+          assert info == {"geist-bitnet-linux-arm64": os.environ["BITNET_SHA_ARM64"], "geist-bitnet-linux-x86_64": os.environ["BITNET_SHA_X86_64"]}, info
+          PY
+          rm -rf stage && mkdir -p stage/geistlib && ln -s "$RELEASE_TAG" stage/geistlib/latest
+          rsync -rlt -e "$ssh_cmd" stage/ germar@www.geisten.net:
+          verify https://geisten.net/download/geistlib/latest
           sh scripts/check-published-release.sh

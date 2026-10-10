@@ -601,7 +601,7 @@ help:
 	"Format:  make format | format-check          (clang-format, reads .clang-format)" \
 	"" \
 	"Release: make release-check                  candidate metadata and published ancestry" \
-	"         make release-state-check            GitHub latest tag, ancestry and assets" \
+	"         make release-state-check            geisten.net latest: version, ancestry, assets" \
 	"" \
 	"Targets: mac, mac-omp (Accelerate), pi5 (OpenBLAS+OpenMP), linux" \
 	"  cross-compile:   make TARGET=pi5 CC=aarch64-linux-gnu-gcc-14" \

@@ -7,7 +7,7 @@ jobs:
     steps:
       - env:
           DOWNLOAD_SSH_KEY: ${{ secrets.DOWNLOAD_SSH_KEY }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_GEISTEN }}
         run: |
           set -eu
           TAG=v0.20.0; V=0.20.0

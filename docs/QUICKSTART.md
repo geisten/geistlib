@@ -32,7 +32,7 @@ bin/`mk/detect-target.sh`/release/tools/eval_geist \
 ### Get the SDK
 
 - **Prebuilt:** `libgeist-<platform>.tar.gz` from the
-  [latest release](https://github.com/geisten/geistlib/releases/latest)
+  [latest release](https://geisten.net/download/geistlib/latest/)
   (`macos-arm64`, `linux-arm64`, `linux-x86_64`) holds `libgeist.a`,
   `include/*.h` and `LICENSE`. Verify it against `SHA256SUMS`.
 - **From source:** `make lib` builds `lib/<target>/<mode>/libgeist.a`.

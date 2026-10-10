@@ -2,26 +2,31 @@
 
 The public release is a transaction, not a version string. A release is done
 only when the exact `main` commit has passed the release gate, all platform
-artifacts exist, the GitHub Release is published, and the postcondition check
-passes.
+artifacts exist, they are downloadable and verified where users fetch them,
+and the postcondition check passes.
 
-## One-time repository settings
+Development and releases happen on `git.geisten.net` (`geisten/geistlib`,
+private); `github.com/geisten/geistlib` is the public mirror and gets no new
+releases (its old ones stay). Users download from:
 
-1. Create a protected GitHub Environment named `release` and require a
-   maintainer approval for deployments to it.
-2. Protect `main` with pull requests and required CI. Disable force pushes and
-   do not grant an ordinary maintainer bypass for that rule.
-3. Add a tag ruleset for `v*` that blocks updates and deletions without a
-   bypass. Create release tags only through the release workflow. GitHub does
-   not allow a personal repository to select the built-in GitHub Actions app
-   as the sole creation bypass, so the workflow guard and postcondition enforce
-   the creation policy while the ruleset makes published tags immutable.
-4. Enable immutable releases before publishing. The workflow deliberately
-   creates a draft, attaches and verifies every asset, and only then publishes
-   it; publication makes the tag and assets immutable.
+| what | where |
+| :-- | :-- |
+| SDK archives, slim CLIs, `SHA256SUMS` | `https://geisten.net/download/geistlib/<tag>/`, `latest/` → the newest |
+| BitNet-embedded CLIs (1.1 GB each) | `https://huggingface.co/geisten/geist-bitnet` — `main` is the newest, each release a tag; digests in `BITNET-SHA256SUMS` beside the others |
 
-Repository settings are part of the release boundary. They cannot be enforced
-by files in this checkout, so review them whenever release ownership changes.
+The Gitea release in the private repo holds the small files as the record.
+
+## One-time settings
+
+1. Organisation secrets on Gitea (`geisten`):
+   - `DOWNLOAD_SSH_KEY` — may only rsync into
+     `/var/www/htdocs/www.geisten.net/download` on the web server
+     (`restrict,command="/usr/local/bin/rrsync -wo …"` in `authorized_keys`).
+   - `HF_GEISTEN` — write access to `geisten/geist-bitnet` on Hugging Face.
+2. Protect `main` on Gitea with pull requests and required CI; do not allow
+   force pushes.
+3. Release tags are created only by the release workflow; never push one by
+   hand, never move or delete a published one.
 
 ## Prepare a release
 
@@ -33,34 +38,39 @@ Make one release-only pull request. It must:
 - update the `[Unreleased]` and version comparison links;
 - pass `make release-check` from a clean checkout.
 
-Do not put a concrete release number in `README.md`. The README badge and links
-resolve the latest published release from GitHub, so a source candidate cannot
-masquerade as something users can download.
+Do not put a concrete release number in `README.md`: its links resolve
+`latest/` and Hugging Face `main`.
 
-## Publish
+## Rehearse, then publish
 
 After the release PR is merged and all required `main` checks are green:
 
-1. Open **Actions → Release → Run workflow**.
-2. Select `main`, enter the version without `v`, and leave `ref` as `main`.
-3. Review and approve the protected `release` environment.
+```sh
+# rehearsal: builds everything, uploads to download/geistlib/rehearsal/ and the
+# Hugging Face branch `rehearsal`, verifies, publishes nothing
+tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib \
+  --ref main -i version=0.21.0 -i ref=main -i dry_run=true release.yml
+# the release
+tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib \
+  --ref main -i version=0.21.0 -i ref=main release.yml
+```
 
-The workflow pins the current `main` SHA before any build. It then builds and
-smoke-tests all platforms, creates or resumes a draft release for that exact
-SHA, verifies the complete asset set, and only then publishes it as latest.
-The tag is created by this workflow; never create or push a release tag by
-hand.
+The workflow pins the current `main` SHA before any build. The build jobs
+(Pi: linux-arm64, desktop: linux-x86_64, Mac: macos-arm64) smoke-test every
+artifact; the embedded CLIs go straight to the Hugging Face branch
+`candidate-<tag>`. The release job then drafts the Gitea release, uploads the
+version directory to geisten.net, verifies every file over HTTPS against
+`SHA256SUMS` and the Hugging Face files against the built digests, and only
+then publishes: the Gitea release (which creates the tag at that SHA), the
+Hugging Face `main` commit and tag, and `latest/`.
 
-Run `make release-state-check` to verify the public postconditions again. A
-scheduled workflow runs the same check daily and after every successful release
-workflow.
+Run `make release-state-check` to verify the public postconditions again; the
+scheduled `release-state` workflow runs it daily.
 
 ## Failure and retry
 
-Failure before the publish job leaves no tag or release. Failure during the
-publish job may leave a draft release and its tag; rerun the same version and
-SHA to resume it. The guard refuses to overwrite a published release, a tag
-pointing to another commit, or a non-`main` source.
-
-Never delete or move a published tag to repair a release. Increment the patch
-version and publish a new release instead.
+Failure before the publish step leaves no tag and nothing under `latest/`:
+fix and rerun the same version. A failure after the Gitea release is published
+leaves the tag; finish by hand from the log (Hugging Face `main`, `latest/`),
+never by moving the tag. To repair a published release, increment the patch
+version and release again.

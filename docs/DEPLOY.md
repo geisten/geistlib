@@ -30,8 +30,8 @@ glibc program with a musl static library is not reliable.
 
 Each release attaches `libgeist-<platform>.tar.gz` for `macos-arm64`,
 `linux-arm64` and `linux-x86_64`, holding `libgeist.a`, `include/*.h` and
-`LICENSE`. Digests are in `SHA256SUMS`; every asset carries a signed
-build-provenance attestation (`gh attestation verify <file> --repo geisten/geistlib`).
+`LICENSE`, at [geisten.net/download/geistlib](https://geisten.net/download/geistlib/latest/).
+Digests are in `SHA256SUMS` (`sha256sum -c SHA256SUMS`).
 
 The archive holds geist's objects, not its dependencies. It is an OpenMP
 build, so the consumer supplies the OpenMP runtime:

@@ -2,8 +2,8 @@
 
 Everything on this page was recorded on the 4 GB Raspberry Pi 5 the
 [benchmarks](../benchmark/README.md) run on, against the shipped
-BitNet binary (release asset `geist-bitnet-linux-arm64`) from the
-[release page](https://github.com/geisten/geistlib/releases/latest); the
+BitNet binary (`geist-bitnet-linux-arm64`) from
+[Hugging Face](https://huggingface.co/geisten/geist-bitnet); the
 recordings show the un-renamed asset name.
 Nothing is sped up; the recordings play at wall-clock speed.
 
