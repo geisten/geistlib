@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 60
     env:
       # The same llama.cpp pin the cross-engine campaign uses.
-      LLAMA_PIN: 2d8d612e4c68d3801e556a1b4a028f55ec33ecbb
+      LLAMA_PIN: d81235049384534c167caea52b85a694f6103d14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

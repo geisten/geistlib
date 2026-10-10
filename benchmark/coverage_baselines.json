@@ -2,55 +2,68 @@
   "_comment": [
     "Coverage ratchet baselines (#185), consumed by scripts/coverage_gate.py.",
     "Measured on main by the coverage CI job (MODE=cov, gcc-14, Linux arm64,",
-    "unit + int with both reference models, run 2026-08-03) and rounded DOWN",
-    "to whole percent. Raising after an improvement is routine; lowering",
+    "unit + int with the reference models; runs 37868242302, 37890700255,",
+    "37928982436 on 2026-10-09) and rounded DOWN to whole percent from the",
+    "lowest of the three. Raising after an improvement is routine; lowering",
     "requires a justified, reviewed edit. null = not yet measured, which the",
     "gate treats as a failure that prints the measured value.",
-    "floors are hard minimums outside the ratchet. src/io (the malformed-GGUF",
-    "parser surface) is at the intended 35% parser-security floor since #219:",
-    "test_io_malformed_unit exercises both readers hermetically (synthetic",
-    "GGUF buffers + tiny synthetic safetensors files, no fixtures), so the",
-    "previously fixture-gated safetensors half no longer skips on CI \u2014 raise",
-    "the floor with the coverage, do not let it drift down."
+    "floors are hard minimums outside the ratchet. src/io is the malformed-GGUF",
+    "parser surface: test_io_malformed_unit drives both readers hermetically,",
+    "and the floor sits just under what it reaches (86.5 %) - raise it with the",
+    "coverage, do not let it drift down.",
+    "src/archs/vision_siglip is mostly unexercised by the unit + int suites",
+    "(12 %); the baseline only stops it from falling further."
   ],
   "tolerance_pp": 0.5,
   "subsystems": {
     "src/base": {
-      "line": 76,
-      "branch": 54
+      "line": 92,
+      "branch": 66
     },
     "src/engine": {
-      "line": 56,
-      "branch": 42
+      "line": 80,
+      "branch": 65
     },
     "src/io": {
-      "line": 35,
-      "branch": 26
+      "line": 86,
+      "branch": 72
     },
     "src/formats": {
-      "line": 21,
-      "branch": 14
+      "line": 56,
+      "branch": 41
+    },
+    "src/quant": {
+      "line": 100,
+      "branch": 75
     },
     "src/archs/transformer": {
-      "line": 58,
-      "branch": 40
+      "line": 67,
+      "branch": 51
+    },
+    "src/archs/audio_conformer": {
+      "line": 93,
+      "branch": 75
+    },
+    "src/archs/vision_siglip": {
+      "line": 12,
+      "branch": 9
     },
     "src/backends/common": {
-      "line": 72,
-      "branch": 60
+      "line": 84,
+      "branch": 74
     },
     "src/backends/cpu_scalar": {
-      "line": 58,
-      "branch": 40
+      "line": 80,
+      "branch": 56
     }
   },
   "floors": {
     "src/io": {
-      "line": 35.0
+      "line": 85.0
     }
   },
   "overall": {
-    "line": 53,
-    "branch": 38
+    "line": 72,
+    "branch": 56
   }
 }

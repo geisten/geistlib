@@ -50,7 +50,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # The llama.cpp commit the converter runs at: the one the cross-engine
 # benchmark protocol pins (benchmark/cross_engine_*_protocol.json users).
-LLAMA_PIN = "2d8d612e4c68d3801e556a1b4a028f55ec33ecbb"
+LLAMA_PIN = "d81235049384534c167caea52b85a694f6103d14"
 
 # Output types the converter writes itself; everything else goes through
 # llama-quantize from the BF16 conversion.
