@@ -1,0 +1,73 @@
+name: seed-downloads
+# temporary: publish the existing v0.20.0 GitHub release on geisten.net and Hugging Face
+on: workflow_dispatch
+jobs:
+  seed:
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          DOWNLOAD_SSH_KEY: ${{ secrets.DOWNLOAD_SSH_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -eu
+          TAG=v0.20.0; V=0.20.0
+          command -v rsync >/dev/null || { sudo apt-get -qq update && sudo apt-get -qq install -y rsync >/dev/null; }
+          mkdir -p out big && cd out
+          for f in SHA256SUMS geist-linux-arm64 geist-linux-x86_64 libgeist-linux-arm64.tar.gz libgeist-linux-x86_64.tar.gz libgeist-macos-arm64.tar.gz; do
+            curl -fsSL -o "$f" "https://github.com/geisten/geistlib/releases/download/$TAG/$f"
+          done
+          for f in geist-bitnet-linux-arm64 geist-bitnet-linux-x86_64; do
+            curl -fsSL -o "../big/$f" "https://github.com/geisten/geistlib/releases/download/$TAG/$f"
+          done
+          # SHA256SUMS of the GitHub release covers all eight files: check, then split
+          cp SHA256SUMS ../ALLSUMS
+          (cp ../big/* . && sha256sum -c ../ALLSUMS && rm geist-bitnet-*)
+          grep -v geist-bitnet ../ALLSUMS > SHA256SUMS
+          echo "$V" > VERSION
+          printf '{"version": "%s", "tag": "%s"}\n' "$V" "$TAG" > release.json
+          { echo "<!doctype html><meta charset=utf-8><title>geistlib $TAG</title>"
+            echo "<h1>geistlib $TAG</h1><p>Verify with <code>sha256sum -c SHA256SUMS</code>.</p><ul>"
+            while read -r sum f; do echo "<li><a href=\"$f\">$f</a> <code>$sum</code></li>"; done < SHA256SUMS
+            grep geist-bitnet ../ALLSUMS | while read -r sum f; do echo "<li><a href=\"https://huggingface.co/geisten/geist-bitnet/resolve/$TAG/$f\">$f</a> (BitNet 2B embedded, on Hugging Face) <code>$sum</code></li>"; done
+            echo "<li><a href=\"SHA256SUMS\">SHA256SUMS</a></li></ul>"; } > index.html
+          chmod 644 * && chmod 755 geist-*
+          cd ..
+          mkdir -p stage/geistlib/$TAG && cp out/* stage/geistlib/$TAG/ && ln -s $TAG stage/geistlib/latest
+          mkdir -p ~/.ssh && umask 077 && printf '%s\n' "$DOWNLOAD_SSH_KEY" > ~/.ssh/download_key
+          echo "www.geisten.net ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO66CjOfnd/GIiCFyqhGxLudBXi/mCD0IA8DBbbZ2O2i" > ~/.ssh/known_hosts_download
+          umask 022
+          rsync -rlt --chmod=Du=rwx,Dgo=rx -e "ssh -F /dev/null -i $HOME/.ssh/download_key -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts_download" stage/ germar@www.geisten.net:
+          mkdir -p fetched && for f in SHA256SUMS geist-linux-arm64 geist-linux-x86_64 libgeist-linux-arm64.tar.gz libgeist-linux-x86_64.tar.gz libgeist-macos-arm64.tar.gz VERSION; do curl -fsS -o fetched/$f https://geisten.net/download/geistlib/latest/$f; done
+          (cd fetched && sha256sum -c SHA256SUMS) && echo "geisten.net latest OK: $(cat fetched/VERSION)"
+          python3 -m pip install -q --break-system-packages huggingface_hub 2>/dev/null || python3 -m pip install -q huggingface_hub
+          python3 - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          api, repo = HfApi(token=os.environ["HF_TOKEN"]), "geisten/geist-bitnet"
+          api.create_repo(repo, exist_ok=True)
+          card = """---
+          license: mit
+          base_model: microsoft/bitnet-b1.58-2B-4T-gguf
+          tags: [bitnet, geistlib, raspberry-pi]
+          ---
+          # geist-bitnet
+
+          Microsoft BitNet b1.58 2B-4T (MIT) folded into one static
+          [geistlib](https://github.com/geisten/geistlib) CLI: no Python, no model setup.
+
+          ```bash
+          curl -L -o geist-bitnet https://huggingface.co/geisten/geist-bitnet/resolve/main/geist-bitnet-linux-arm64
+          chmod +x geist-bitnet && ./geist-bitnet "The capital of France is"
+          ```
+
+          `main` is the latest release; each release is a tag (`v0.20.0`, ...). The other
+          release files (SDK, slim CLI) and SHA256SUMS: https://geisten.net/download/geistlib/
+          """
+          open("big/README.md", "w").write("\n".join(l[10:] if l.startswith(" " * 10) else l for l in card.splitlines()) + "\n")
+          api.upload_folder(repo_id=repo, folder_path="big", commit_message="geist v0.20.0")
+          api.create_tag(repo, tag="v0.20.0", revision="main", exist_ok=True)
+          sums = dict(reversed(l.split()) for l in open("ALLSUMS") if "geist-bitnet" in l)
+          got = {i.path: i.lfs.sha256 for i in api.get_paths_info(repo, list(sums), revision="v0.20.0", expand=True)}
+          assert got == sums, (got, sums)
+          print("hugging face v0.20.0 OK:", got)
+          PY
