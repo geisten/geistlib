@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MATRIX = ROOT / "benchmark" / "bench_matrix.json"
 THRESHOLD = 5.0  # percent; two protocol runs on one host drift ~2-4 %
 SEQ = "512"
-HISTORY = 30
+SPARK = 30  # runs in a cell's trend line
 
 
 def plan(which: str, only: str | None) -> list[dict]:
@@ -103,60 +103,114 @@ def spark(values: list[float]) -> str:
         return ""
     lo, hi = min(values), max(values)
     span = (hi - lo) or 1
-    pts = " ".join(f"{i * 60 / (len(values) - 1):.1f},{14 - (v - lo) / span * 12:.1f}"
+    pts = " ".join(f"{i * 64 / (len(values) - 1):.1f},{15 - (v - lo) / span * 13:.1f}"
                    for i, v in enumerate(values))
-    return (f'<svg width="60" height="16" viewBox="0 0 60 16" aria-hidden="true">'
-            f'<polyline points="{pts}" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>')
+    return (f'<svg class="spark" width="64" height="16" viewBox="0 0 64 16" aria-hidden="true">'
+            f'<polyline points="{pts}"/></svg>')
 
 
 def cell(column: str, model: str, runs: list[dict]) -> str:
     if not runs:
-        return "<td class=na>—</td>"
-    last = runs[-1]
-    href = f"runs/{column}/{model}/{last['report'] or last['file']}"
+        return '<td class="na">—</td>'
+    last, recent = runs[-1], runs[-SPARK:]
     bad = " bad" if regressions(runs) else ""
-    return (f'<td class="c{bad}"><a href="{html.escape(href)}">'
-            f'pp {last["pp_vs"]:+.0f} % · tg {last["tg_vs"]:+.0f} %</a>'
-            f'<small>{last["pp"]:.0f} / {last["tg"]:.1f} t/s</small>'
-            f'<span class=s>{spark([r["pp"] for r in runs])}{spark([r["tg"] for r in runs])}</span>'
-            f'<small>{last["date"]} · {last["commit"]}</small></td>')
+    return (f'<td class="c{bad}"><a href="runs/{column}/{model}/">'
+            f'<span class="x">pp {last["pp_vs"]:+.0f} % · tg {last["tg_vs"]:+.0f} %</span></a>'
+            f'<small>{last["pp"]:.0f} / {last["tg"]:.1f} tok/s</small>'
+            f'<small>{spark([r["pp"] for r in recent])} {spark([r["tg"] for r in recent])}</small>'
+            f'<small>{last["date"][:10]} · <code>{last["commit"]}</code></small></td>')
 
 
-PAGE = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>geist benchmarks</title>
-<style>
-:root {{ --bg:#fff; --fg:#1b1b1b; --mute:#666; --line:#ddd; --bad:#b3261e; --badbg:#fdecea; }}
-@media (prefers-color-scheme: dark) {{ :root {{ --bg:#141414; --fg:#e8e8e8; --mute:#999; --line:#333; --bad:#ff8a80; --badbg:#3a1d1b; }} }}
-body {{ background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, sans-serif; margin:0 auto; padding:24px 16px; max-width:1200px; }}
-a {{ color:inherit; }}
-.wrap {{ overflow-x:auto; }}
-table {{ border-collapse:collapse; min-width:100%; }}
-th, td {{ border:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }}
-td.c small, td.c .s {{ display:block; color:var(--mute); white-space:nowrap; }}
-td.c a {{ white-space:nowrap; font-variant-numeric:tabular-nums; }}
-td.bad {{ background:var(--badbg); }} td.bad a {{ color:var(--bad); font-weight:600; }}
-td.na {{ color:var(--mute); text-align:center; }}
-p {{ color:var(--mute); max-width:70ch; }}
-</style></head><body>
-<h1>geist vs llama.cpp</h1>
-<p>Frozen cross-engine protocol (pp{seq}, tg64 at depth {seq}; median of 12 samples) per model and host,
-measured on a quiet host by the nightly and weekly runs of geistlib's bench-matrix workflow.
-A cell shows geist's speed relative to llama.cpp, geist's own tokens/s (prefill / decode) with their trend
-over the last {n} runs, and the run's date and geist commit. Ratios compare within a column;
-tokens/s across columns describe hardware. Red: geist slowed by more than {thr:.0f} % against the previous run
-while llama.cpp did not. Each cell links its report; every run's numbers: <a href="history.json">history.json</a>.</p>
-<div class="wrap"><table>
-<tr><th>model</th>{head}</tr>
-{rows}
-</table></div>
-</body></html>
+# Page chrome copied from the webapp repository (partials/header.html and
+# footer.html, research link dropped); /css/site.css is the live site's.
+HEADER = """<a class="skip-link" href="#main-content">Skip to content</a>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/" aria-label="geisten home"><svg viewBox="125 110 262 315" aria-hidden="true"><path class="mark-shell" d="M256 125C320 125 372 175 372 238V293C372 348 330 395 256 410C182 395 140 348 140 293V238C140 175 192 125 256 125Z"/><path class="mark-inset" d="M256 150C306 150 347 190 347 240V289C347 331 313 365 256 378C199 365 165 331 165 289V240C165 190 206 150 256 150Z"/><path class="mark-seed" d="M256 188C284 188 306 211 306 238C306 271 281 299 256 325C231 299 206 271 206 238C206 211 228 188 256 188Z"/><path class="mark-anchor" d="M204 300C220 320 236 331 256 336C276 331 292 320 308 300M226 346H286"/></svg>geisten</a>
+    <nav class="nav" aria-label="Main">
+      <a href="/#services">Services</a>
+      <a href="/#platform">Platform</a>
+      <a href="/#evidence">Evidence</a>
+      <a href="/about.html">About</a>
+      <a class="cta" href="/#contact">Contact</a>
+    </nav>
+  </div>
+</header>"""
+FOOTER = """<footer class="site-footer">
+  <div class="wrap">
+    <span>© 2024–2026 geisten Holding UG (haftungsbeschränkt) · Kaarst, Germany</span>
+    <span class="links"><a href="https://github.com/geisten" rel="noopener noreferrer">GitHub</a><a href="/impressum.html">Legal notice</a><a href="/datenschutz.html">Privacy</a></span>
+  </div>
+</footer>"""
+
+STYLE = """<style>
+.bench th, .bench td { vertical-align: top; }
+.bench tr > :first-child { position: sticky; left: 0; background: var(--bg); padding-right: 1rem; }
+.bench td.c small { display: block; color: var(--muted); font-size: 0.8rem; }
+.bench td.c a { text-decoration: none; }
+.bench td.na { color: var(--muted); }
+.bench td.bad { box-shadow: inset 3px 0 0 #c4362b; }
+.bench td.bad .x { color: #c4362b; }
+.spark { vertical-align: middle; }
+.spark polyline { fill: none; stroke: currentColor; stroke-width: 1.2; }
+</style>"""
+
+
+def page(title: str, description: str, label: str, heading: str, lede: str, body: str) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <title>{html.escape(title)} · geisten</title>
+  <meta name="description" content="{html.escape(description)}"/>
+  <link rel="icon" href="/logo/geisten-mark.svg" type="image/svg+xml"/>
+  <link rel="stylesheet" href="/css/site.css"/>
+  {STYLE}
+</head>
+<body>
+{HEADER}
+<main id="main-content">
+  <div class="wrap page-head">
+    <p class="label">{label}</p>
+    <h1>{heading}</h1>
+    <p class="lede">{lede}</p>
+  </div>
+  <section class="section">
+    <div class="wrap figure bench">
+{body}
+    </div>
+  </section>
+</main>
+{FOOTER}
+</body>
+</html>
 """
+
+
+def archive_page(column: str, model: str, labels: dict, runs: list[dict]) -> str:
+    rows = "\n".join(
+        f'<tr><td>{r["date"]}</td><td><code>{r["commit"]}</code></td><td><code>{r["llama"][:9]}</code></td>'
+        f'<td class="n">{r["pp"]:.1f}</td><td class="n x">{r["pp_vs"]:+.0f} %</td>'
+        f'<td class="n">{r["tg"]:.1f}</td><td class="n x">{r["tg_vs"]:+.0f} %</td>'
+        f'<td><a href="{r["report"] or r["file"]}">report</a> · <a href="{r["file"]}">raw</a></td></tr>'
+        for r in reversed(runs))
+    body = f"""      <table>
+        <thead><tr><th>Run (UTC)</th><th>geist</th><th>llama.cpp</th><th class="n">pp{SEQ} tok/s</th><th class="n">vs llama</th><th class="n">tg64 tok/s</th><th class="n">vs llama</th><th>Files</th></tr></thead>
+        <tbody>
+{rows}
+        </tbody>
+      </table>
+      <p class="note">Every run of this cell, newest first. pp{SEQ}: prefill of {SEQ} tokens; tg64: decode of 64 tokens at depth {SEQ}; median of 12 samples. The raw file holds every sample and the full host, engine and model provenance. <a href="../../../">Back to the matrix</a>.</p>"""
+    name = labels["models"].get(model, model)
+    host = labels["columns"].get(column, column)
+    return page(f"{name} on {host}", f"Benchmark history of geistlib against llama.cpp: {name} on {host}.",
+                "Benchmark archive", html.escape(name), f"{html.escape(host)} · {len(runs)} runs", body)
 
 
 def publish(root: Path) -> int:
     matrix = json.loads(MATRIX.read_text())
+    labels = matrix["labels"]
     columns = list(matrix["columns"])
     models = list(dict.fromkeys(m for spec in matrix["columns"].values()
                                 for m in spec["nightly"] + spec["weekly"]))
@@ -167,17 +221,30 @@ def publish(root: Path) -> int:
     history, bad = {}, []
     for column in columns:
         for model in models:
-            runs = [r for p in sorted((root / "runs" / column / model).glob("*.jsonl"))
-                    if (r := load_run(p))][-HISTORY:]
+            cell_dir = root / "runs" / column / model
+            runs = [r for p in sorted(cell_dir.glob("*.jsonl")) if (r := load_run(p))]
             if runs:
                 history[f"{column}/{model}"] = runs
                 bad += [f"{column}/{model}: {msg}" for msg in regressions(runs)]
+                (cell_dir / "index.html").write_text(archive_page(column, model, labels, runs))
     rows = "\n".join(
-        f"<tr><th>{html.escape(model)}</th>"
+        f'<tr><td>{html.escape(labels["models"].get(model, model))}</td>'
         + "".join(cell(c, model, history.get(f"{c}/{model}", [])) for c in columns) + "</tr>"
         for model in models)
-    head = "".join(f"<th>{html.escape(c)}</th>" for c in columns)
-    (root / "index.html").write_text(PAGE.format(seq=SEQ, n=HISTORY, thr=THRESHOLD, head=head, rows=rows))
+    head = "".join(f"<th>{html.escape(labels['columns'].get(c, c))}</th>" for c in columns)
+    body = f"""      <table>
+        <thead><tr><th>Model</th>{head}</tr></thead>
+        <tbody>
+{rows}
+        </tbody>
+      </table>
+      <p class="note">Each cell: geistlib's speed relative to llama.cpp for prefill (pp{SEQ}) and decode (tg64 at depth {SEQ}), geistlib's own tokens/s, the trend over the last {SPARK} runs, and the date and geistlib commit of the newest run. Ratios compare within a column; tokens/s across columns describe the hardware. A red mark: geistlib slowed by more than {THRESHOLD:.0f} % against the cell's previous run while llama.cpp did not.</p>
+      <p class="note">Method: the frozen cross-engine protocol of geistlib (same model file by SHA-256, same shapes and threads for both engines, 4 alternating cycles × 3 samples, median), run on a quiet host by the nightly and weekly <code>bench-matrix</code> workflow. Speed only, not a quality comparison. Click a cell for its archive of every run; all numbers as JSON: <a href="history.json">history.json</a>.</p>"""
+    (root / "index.html").write_text(page(
+        "Benchmark matrix", "Nightly geistlib against llama.cpp benchmarks per model and machine, with history.",
+        "Benchmarks", "geistlib against llama.cpp",
+        "Every model on every machine it fits, measured nightly under one frozen protocol. Each run is archived with its raw samples.",
+        body))
     (root / "history.json").write_text(json.dumps(history, indent=1) + "\n")
     for line in bad:
         print(f"REGRESSION {line}")
