@@ -1,0 +1,144 @@
+name: bench-matrix
+
+# The model × host matrix of benchmark/results/MATRIX.md, measured on a
+# schedule instead of by hand: one job per (host column, model) from
+# benchmark/bench_matrix.json, each running the frozen cross-engine protocol
+# (geist vs a pinned llama.cpp) on a quiet host. Models come from the host's
+# cache (tools/fetch_bench_model.py, SHA-gated). Raw runs and reports land on
+# https://geisten.net/bench/; the publish job rebuilds the index there and
+# goes red when geist slowed against its previous run while llama.cpp did not.
+#
+# Nightly: a few models per column. Sundays: every model that fits.
+# Org secret BENCH_SSH_KEY may only rsync inside /var/www/htdocs/
+# www.geisten.net/bench on the web server (rrsync in authorized_keys).
+
+on:
+  schedule:
+    - cron: "37 0 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "geistlib ref to measure"
+        default: main
+      set:
+        description: "nightly or weekly (all models)"
+        type: choice
+        options: [nightly, weekly]
+        default: nightly
+      only:
+        description: "restrict to one column or column/model, e.g. pi5 or nvidia_2080ti_vulkan/bonsai2-27b-pq2"
+        type: string
+        default: ""
+      publish:
+        description: "upload to geisten.net/bench"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-matrix
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || 'main' }}
+      - id: plan
+        run: |
+          SET="${{ inputs.set }}"
+          [ -n "$SET" ] || SET=$([ "$(date -u +%u)" = 7 ] && echo weekly || echo nightly)
+          echo "matrix=$(python3 tools/bench_matrix.py plan --set "$SET" --only "${{ inputs.only }}")" >> "$GITHUB_OUTPUT"
+
+  measure:
+    needs: plan
+    name: ${{ matrix.column }} · ${{ matrix.model }}
+    runs-on: ${{ matrix.runner }}
+    # Gitea's ENDLESS_TASK_TIMEOUT (3 h by default) caps this as well.
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || 'main' }}
+      - name: Build geist
+        run: ${{ matrix.build }}
+      - name: Ensure pinned llama.cpp build
+        run: |
+          set -eo pipefail
+          echo "LLAMA_BENCH=$(${{ matrix.prefix }} scripts/ensure-llama-bench.sh ${{ matrix.llama }} "${{ matrix.llama_repo }}" "${{ matrix.llama_pin }}")" >> "$GITHUB_ENV"
+      - name: Fetch the model (host cache, SHA-gated)
+        env:
+          GEIST_MODEL_CACHE: ${{ vars.GEIST_MODEL_CACHE }}
+        run: |
+          set -eo pipefail
+          echo "MODEL_PATH=$(python3 tools/fetch_bench_model.py --model ${{ matrix.model }} --protocol benchmark/cross_engine_${{ matrix.protocol }}_protocol.json)" >> "$GITHUB_ENV"
+      - name: Measure (frozen protocol, quiet-host gate)
+        env:
+          # The desktop also enumerates a Raphael iGPU; pin llama.cpp to the
+          # discrete card. Ignored elsewhere.
+          GGML_VK_VISIBLE_DEVICES: "0"
+        run: |
+          set -eo pipefail
+          if [ "${{ matrix.llama }}" = vulkan ]; then . scripts/gpu-lock.sh; fi
+          ${{ matrix.prefix }} python3 tools/bench_cross_engine.py \
+            --geist "$(find bin -path '*/release*/tests/bench_perf_sweep' | head -1)" \
+            --llama "$LLAMA_BENCH" --gguf "$MODEL_PATH" \
+            --protocol benchmark/cross_engine_${{ matrix.protocol }}_protocol.json \
+            --host-profile ${{ matrix.column }} --model ${{ matrix.model }} \
+            --out-dir bench-out
+          mkdir -p "site/runs/${{ matrix.column }}/${{ matrix.model }}"
+          mv bench-out/*.jsonl bench-out/*.md "site/runs/${{ matrix.column }}/${{ matrix.model }}/"
+      - name: Upload to geisten.net/bench
+        if: inputs.publish != false
+        env:
+          BENCH_SSH_KEY: ${{ secrets.BENCH_SSH_KEY }}
+        run: |
+          set -eo pipefail
+          umask 077
+          key=$(mktemp); trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$BENCH_SSH_KEY" > "$key"
+          rsync -rlt --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
+            -e "ssh -F /dev/null -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts" \
+            site/ germar@www.geisten.net:
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: bench-${{ matrix.column }}-${{ matrix.model }}
+          path: site/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  publish:
+    needs: measure
+    if: always() && inputs.publish != false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || 'main' }}
+      - name: Rebuild the index, gate on regressions
+        env:
+          BENCH_SSH_KEY: ${{ secrets.BENCH_SSH_KEY }}
+        run: |
+          set -eo pipefail
+          command -v rsync >/dev/null || { sudo apt-get -qq update && sudo apt-get -qq install -y rsync >/dev/null; }
+          umask 077
+          key=$(mktemp); trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$BENCH_SSH_KEY" > "$key"
+          ssh_cmd="ssh -F /dev/null -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts"
+          umask 022
+          mkdir site
+          rsync -rlt -e "$ssh_cmd" germar@www.geisten.net:runs site/
+          rc=0; python3 tools/bench_matrix.py publish site | tee -a "$GITHUB_STEP_SUMMARY" || rc=$?
+          rsync -rlt -e "$ssh_cmd" site/index.html site/history.json germar@www.geisten.net:
+          exit $rc
