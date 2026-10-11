@@ -47,7 +47,13 @@ if [ ! -x "$BUILD/bin/llama-bench" ] || [ "$(git -C "$DIR" rev-parse HEAD)" != "
     *) echo "unknown variant $VARIANT" >&2; exit 2 ;;
     esac
     cmake -S "$DIR" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF "$@"
-    cmake --build "$BUILD" --target llama-bench -j
+    # Bounded by RAM, not only cores: an unbounded -j took the 4 GB Pi
+    # down (llama-model.cpp and friends need ~1.5 GB per compiler).
+    CORES=$(getconf _NPROCESSORS_ONLN)
+    MEM=$(sysctl -n hw.memsize 2>/dev/null || echo $(( $(getconf _PHYS_PAGES) * $(getconf PAGESIZE) )))
+    MEM_JOBS=$(( MEM / 1536 / 1048576 ))
+    JOBS=$(( MEM_JOBS < CORES ? MEM_JOBS : CORES ))
+    cmake --build "$BUILD" --target llama-bench -j "$(( JOBS > 0 ? JOBS : 1 ))"
 fi
 echo "llama.cpp $REPO @ $(git -C "$DIR" rev-parse HEAD) ($VARIANT)"
 } >&2
