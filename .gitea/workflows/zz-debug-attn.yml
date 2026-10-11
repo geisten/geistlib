@@ -18,8 +18,6 @@ jobs:
             bin/linux/release/tests/$t > /tmp/o.txt 2>&1; rc=$?
             echo "$1: exit=$rc fails=$(grep -c FAIL /tmp/o.txt)"
           }
-          variant "O1"                      "-O1 -g" "" ""
-          variant "O1+coverage"             "-O1 -g --coverage" "" "--coverage"
-          variant "O1+coverage+no-fastmath" "-O1 -g --coverage" "-fno-fast-math" "--coverage"
-          variant "O2+coverage"             "-O2 -g --coverage" "" "--coverage"
-          variant "O1+profile-arcs only"    "-O1 -g -fprofile-arcs" "" "--coverage"
+          variant "O1+coverage+no-finite-math-only" "-O1 -g --coverage" "-fno-finite-math-only" "--coverage"
+          variant "O1+coverage+fno-reciprocal-math"   "-O1 -g --coverage" "-fno-reciprocal-math" "--coverage"
+          variant "O1+coverage+fno-associative-math"  "-O1 -g --coverage" "-fno-associative-math" "--coverage"
