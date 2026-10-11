@@ -13,6 +13,6 @@ jobs:
           for mode in cov release; do
             make -s MODE=$mode TARGET=linux CC=gcc-14 bin/linux/$mode/tests/test_attention_int8_unit bin/linux/$mode/tests/test_x86_attention_int8_unit >/dev/null 2>&1 || echo "build $mode failed"
             for t in test_attention_int8_unit test_x86_attention_int8_unit; do
-              echo "===== $mode $t"; bin/linux/$mode/tests/$t 2>&1 | tail -25; echo "exit=$?"
+              echo "===== $mode $t"; bin/linux/$mode/tests/$t > /tmp/o.txt 2>&1; echo "exit=$?"; grep -E "FAIL|PASS|thread|bits" /tmp/o.txt | head -20
             done
           done
