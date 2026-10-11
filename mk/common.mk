@@ -74,12 +74,17 @@ else ifeq ($(MODE),cov)
     # ratchet comparison stays apples-to-apples.
     CFLAGS_MODE  := -O1 -g --coverage -fno-omit-frame-pointer
     LDFLAGS_MODE := --coverage
-    # gcc's -O1 + --coverage path analysis reports an unchecked malloc() passed
-    # to a [static n] parameter as a read/write of a zero-size region (seen in
-    # the x86 tests). The release and sanitizer builds keep these as errors;
-    # this build only measures. gcc only: clang does not know the options.
+    # gcc only (clang does not know these options), seen on x86:
+    # - its -O1 + --coverage path analysis reports an unchecked malloc() passed
+    #   to a [static n] parameter as an access to a zero-size region; the
+    #   release and sanitizer builds keep these as errors, this one measures;
+    # - -O1 + -fprofile-arcs + -freciprocal-math (from -ffast-math) puts the
+    #   INT8 attention kernels 1e-5..7e-3 off the reference
+    #   (test_x86_attention_int8_unit, test_attention_int8_unit); -O1, -O2
+    #   with coverage, and release all pass.
     ifneq ($(findstring gcc,$(CC)),)
-        CFLAGS_MODE += -Wno-error=stringop-overflow -Wno-error=stringop-overread
+        CFLAGS_MODE += -Wno-error=stringop-overflow -Wno-error=stringop-overread \
+                       -fno-reciprocal-math
     endif
 else
     $(error Unknown MODE=$(MODE). Use one of: release, debug, asan, tsan, fuzz, perf, cov)
