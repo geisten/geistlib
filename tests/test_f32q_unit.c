@@ -35,7 +35,13 @@ static float frand(uint32_t *s) {
 
 static int scenario(size_t N, size_t K, bool outlier) {
     const size_t nblk = K / W8A8_BLOCK_ELEMS;
-    uint32_t     s    = 0xA5A5F00Du;
+    if (nblk == 0) { /* every scenario is whole blocks; this also tells gcc the
+                      * [static nblk] buffers below are never empty
+                      * (-Wstringop-overread at -O1 --coverage on x86) */
+        fprintf(stderr, "scenario: K=%zu is less than one block\n", K);
+        return 1;
+    }
+    uint32_t s = 0xA5A5F00Du;
 
     float *W = malloc(N * K * sizeof(float));
     float *x = malloc(K * sizeof(float));
