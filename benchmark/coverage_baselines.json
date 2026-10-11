@@ -1,60 +1,63 @@
 {
   "_comment": [
     "Coverage ratchet baselines (#185), consumed by scripts/coverage_gate.py.",
-    "Measured on main by the coverage CI job (MODE=cov, gcc-14, Linux arm64,",
-    "unit + int with the reference models; runs 37868242302, 37890700255,",
-    "37928982436 on 2026-10-09) and rounded DOWN to whole percent from the",
-    "lowest of the three. Raising after an improvement is routine; lowering",
+    "Measured on main's coverage job (MODE=cov, gcc-14 -O2, Linux x86_64 on the",
+    "git.geisten.net desktop runner, unit + int with the reference models; run",
+    "809, 2026-10-11): rounded down to whole percent, minus one point of",
+    "headroom (a single run). Raising after an improvement is routine; lowering",
     "requires a justified, reviewed edit. null = not yet measured, which the",
     "gate treats as a failure that prints the measured value.",
+    "Moving from arm64 to x86_64 lowered src/base (92 -> 49 line):",
+    "src/base/calibration.c is only reached through cpu_neon's and Metal's",
+    "tunables, which x86 has none of, so it is unmeasured here.",
     "floors are hard minimums outside the ratchet. src/io is the malformed-GGUF",
-    "parser surface: test_io_malformed_unit drives both readers hermetically,",
-    "and the floor sits just under what it reaches (86.5 %) - raise it with the",
-    "coverage, do not let it drift down.",
+    "parser surface: test_io_malformed_unit drives both readers hermetically;",
+    "the floor sits just under what it reaches - raise it with the coverage,",
+    "do not let it drift down.",
     "src/archs/vision_siglip is mostly unexercised by the unit + int suites",
-    "(12 %); the baseline only stops it from falling further."
+    "(13 %); the baseline only stops it from falling further."
   ],
   "tolerance_pp": 0.5,
   "subsystems": {
     "src/base": {
-      "line": 92,
-      "branch": 66
+      "line": 48,
+      "branch": 31
     },
     "src/engine": {
-      "line": 80,
-      "branch": 65
+      "line": 79,
+      "branch": 64
     },
     "src/io": {
-      "line": 86,
-      "branch": 72
+      "line": 85,
+      "branch": 63
     },
     "src/formats": {
-      "line": 56,
-      "branch": 41
+      "line": 51,
+      "branch": 38
     },
     "src/quant": {
-      "line": 100,
-      "branch": 75
+      "line": 99,
+      "branch": 79
     },
     "src/archs/transformer": {
-      "line": 67,
-      "branch": 51
+      "line": 68,
+      "branch": 52
     },
     "src/archs/audio_conformer": {
-      "line": 93,
-      "branch": 75
+      "line": 92,
+      "branch": 73
     },
     "src/archs/vision_siglip": {
       "line": 12,
       "branch": 9
     },
     "src/backends/common": {
-      "line": 84,
-      "branch": 74
+      "line": 79,
+      "branch": 70
     },
     "src/backends/cpu_scalar": {
-      "line": 80,
-      "branch": 56
+      "line": 81,
+      "branch": 57
     }
   },
   "floors": {
@@ -63,7 +66,7 @@
     }
   },
   "overall": {
-    "line": 72,
-    "branch": 56
+    "line": 70,
+    "branch": 55
   }
 }

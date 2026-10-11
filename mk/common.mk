@@ -69,11 +69,25 @@ else ifeq ($(MODE),perf)
     LDFLAGS_MODE :=
 else ifeq ($(MODE),cov)
     # Line/branch coverage build for the CI gate (scripts/coverage_gate.py).
-    # -O1, not -O0: the coverage run includes a real-model prefill/decode and
-    # -O0 makes that unaffordable. The baselines were measured at -O1, so the
-    # ratchet comparison stays apples-to-apples.
-    CFLAGS_MODE  := -O1 -g --coverage -fno-omit-frame-pointer
+    # -O2, not -O0/-O1: the run includes real-model prefill/decode, which -O0
+    # makes unaffordable; and with gcc on x86, -O1 + --coverage + -ffast-math
+    # pushed tolerance-checked tests over their limits (INT8 attention, the
+    # audio W8A8 parity) that pass at -O1 alone, at -O2 with coverage and in
+    # release. The baselines are measured with these flags.
+    CFLAGS_MODE  := -O2 -g --coverage -fno-omit-frame-pointer
     LDFLAGS_MODE := --coverage
+    # gcc only (clang does not know these options), seen on x86:
+    # - its --coverage path analysis reports an unchecked malloc() passed
+    #   to a [static n] parameter as an access to a zero-size region; the
+    #   release and sanitizer builds keep these as errors, this one measures;
+    # - -fprofile-arcs + -freciprocal-math (from -ffast-math) put the INT8
+    #   attention kernels 1e-5..7e-3 off the reference at -O1
+    #   (test_x86_attention_int8_unit); the CI runs pass with it off.
+    ifneq ($(findstring gcc,$(CC)),)
+        CFLAGS_MODE += -Wno-error=stringop-overflow -Wno-error=stringop-overread
+        # after CFLAGS_TARGET, or its -ffast-math turns it back on
+        CFLAGS_MODE_LATE := -fno-reciprocal-math
+    endif
 else
     $(error Unknown MODE=$(MODE). Use one of: release, debug, asan, tsan, fuzz, perf, cov)
 endif
@@ -136,7 +150,7 @@ BACKEND_DEFINES := $(foreach b,$(BACKENDS),-DGEIST_BACKEND_$(shell echo $(b) | t
 GEMM_PROVIDER ?= native
 include mk/gemm-$(GEMM_PROVIDER).mk  # sets GEMM_CFLAGS / GEMM_LDLIBS
 
-CFLAGS        := $(CFLAGS_BASE) $(BACKEND_DEFINES) $(GEMM_CFLAGS) $(CFLAGS_MODE) $(CFLAGS_TARGET) $(EXTRA_CFLAGS)
+CFLAGS        := $(CFLAGS_BASE) $(BACKEND_DEFINES) $(GEMM_CFLAGS) $(CFLAGS_MODE) $(CFLAGS_TARGET) $(CFLAGS_MODE_LATE) $(EXTRA_CFLAGS)
 # Strict CFLAGS for the src/ tree — adds -Wshadow -Wundef on top of CFLAGS.
 CFLAGS_STRICT := -std=c23 $(WARNINGS_STRICT) -fno-strict-aliasing \
                  -Iinclude -I. \
@@ -150,7 +164,7 @@ CFLAGS_STRICT := -std=c23 $(WARNINGS_STRICT) -fno-strict-aliasing \
                  -Isrc/archs/audio_conformer \
                  -Isrc/archs/vision_siglip \
                  -Ithird_party/stb \
-                 $(BACKEND_DEFINES) $(GEMM_CFLAGS) $(CFLAGS_MODE) $(CFLAGS_TARGET) $(EXTRA_CFLAGS)
+                 $(BACKEND_DEFINES) $(GEMM_CFLAGS) $(CFLAGS_MODE) $(CFLAGS_TARGET) $(CFLAGS_MODE_LATE) $(EXTRA_CFLAGS)
 LDFLAGS := $(LDFLAGS_MODE) $(LDFLAGS_TARGET) $(EXTRA_LDFLAGS)
 LDLIBS  := $(LDLIBS_TARGET) $(GEMM_LDLIBS) $(EXTRA_LDLIBS)
 

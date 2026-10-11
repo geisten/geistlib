@@ -33,12 +33,22 @@ static float frand(uint32_t *s) {
     return 2.0f * ((prng(s) & 0xFFFFu) / 65536.0f) - 1.0f;
 }
 
+/* A failed allocation fails the scenario. Checking every buffer also tells
+ * gcc that the [static n] arguments below are not NULL: at -O1 --coverage on
+ * x86 it reports a possibly-NULL buffer as -Wstringop-overread. */
+static int oom(void) {
+    fprintf(stderr, "scenario: out of memory\n");
+    return 1;
+}
+
 static int scenario(size_t N, size_t K, bool outlier) {
     const size_t nblk = K / W8A8_BLOCK_ELEMS;
     uint32_t     s    = 0xA5A5F00Du;
 
     float *W = malloc(N * K * sizeof(float));
     float *x = malloc(K * sizeof(float));
+    if (!W || !x)
+        return oom();
     for (size_t i = 0; i < N * K; i++)
         W[i] = frand(&s) * 0.05f; /* PLE-ish magnitudes */
     for (size_t k = 0; k < K; k++)
@@ -52,6 +62,8 @@ static int scenario(size_t N, size_t K, bool outlier) {
 
     /* Exact F32 reference. */
     float *y_ref = malloc(N * sizeof(float));
+    if (!y_ref)
+        return oom();
     for (size_t r = 0; r < N; r++) {
         double d = 0.0;
         for (size_t k = 0; k < K; k++)
@@ -63,6 +75,8 @@ static int scenario(size_t N, size_t K, bool outlier) {
     uint8_t *uw = malloc(N * K);
     float   *ws = malloc(N * nblk * sizeof(float));
     float   *wo = malloc(N * nblk * sizeof(float));
+    if (!uw || !ws || !wo)
+        return oom();
     for (size_t r = 0; r < N; r++) {
         f32_to_w8a8_row(K, W + r * K, uw + r * K, ws + r * nblk, wo + r * nblk);
     }
@@ -71,9 +85,13 @@ static int scenario(size_t N, size_t K, bool outlier) {
     int8_t  *acts = malloc(K);
     int32_t *sa   = malloc(nblk * sizeof(int32_t));
     float   *sx   = malloc(w8a8_act_groups(nblk) * sizeof(float));
+    if (!acts || !sa || !sx)
+        return oom();
     w8a8_quantize_acts_row(K, x, acts, sa, sx);
 
     float *y = malloc(N * sizeof(float));
+    if (!y)
+        return oom();
     w8a8_gemv(N, nblk, uw, ws, wo, acts, sa, sx, y);
 
     double dp = 0.0, na = 0.0, nb = 0.0;
