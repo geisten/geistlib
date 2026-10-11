@@ -69,19 +69,20 @@ else ifeq ($(MODE),perf)
     LDFLAGS_MODE :=
 else ifeq ($(MODE),cov)
     # Line/branch coverage build for the CI gate (scripts/coverage_gate.py).
-    # -O1, not -O0: the coverage run includes a real-model prefill/decode and
-    # -O0 makes that unaffordable. The baselines were measured at -O1, so the
-    # ratchet comparison stays apples-to-apples.
-    CFLAGS_MODE  := -O1 -g --coverage -fno-omit-frame-pointer
+    # -O2, not -O0/-O1: the run includes real-model prefill/decode, which -O0
+    # makes unaffordable; and with gcc on x86, -O1 + --coverage + -ffast-math
+    # pushed tolerance-checked tests over their limits (INT8 attention, the
+    # audio W8A8 parity) that pass at -O1 alone, at -O2 with coverage and in
+    # release. The baselines are measured with these flags.
+    CFLAGS_MODE  := -O2 -g --coverage -fno-omit-frame-pointer
     LDFLAGS_MODE := --coverage
     # gcc only (clang does not know these options), seen on x86:
-    # - its -O1 + --coverage path analysis reports an unchecked malloc() passed
+    # - its --coverage path analysis reports an unchecked malloc() passed
     #   to a [static n] parameter as an access to a zero-size region; the
     #   release and sanitizer builds keep these as errors, this one measures;
-    # - -O1 + -fprofile-arcs + -freciprocal-math (from -ffast-math) puts the
-    #   INT8 attention kernels 1e-5..7e-3 off the reference
-    #   (test_x86_attention_int8_unit, test_attention_int8_unit); -O1, -O2
-    #   with coverage, and release all pass.
+    # - -fprofile-arcs + -freciprocal-math (from -ffast-math) put the INT8
+    #   attention kernels 1e-5..7e-3 off the reference at -O1
+    #   (test_x86_attention_int8_unit); the CI runs pass with it off.
     ifneq ($(findstring gcc,$(CC)),)
         CFLAGS_MODE += -Wno-error=stringop-overflow -Wno-error=stringop-overread
         # after CFLAGS_TARGET, or its -ffast-math turns it back on

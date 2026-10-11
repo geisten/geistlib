@@ -1029,7 +1029,7 @@ jobs:
     # one merge later.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
-    # The instrumented -O1 build prefills the real model many times across
+    # The instrumented build prefills the real model many times across
     # the int suite. e2e adds ~half an hour and moves the per-subsystem
     # numbers only by noise, so the measurement is unit + int.
     timeout-minutes: 150
@@ -1100,7 +1100,7 @@ jobs:
           GEIST_STRICT_FIXTURES: gguf
           # Repetition-heavy int tests honor this by shrinking their loop
           # counts: line coverage is identical (same code paths), but the
-          # instrumented -O1 build stops paying 24 min for 4x32x2 parallel
+          # instrumented build stops paying 24 min for 4x32x2 parallel
           # decodes (races are the TSan job's business, not this one's).
           GEIST_TEST_LIGHT: 1
         run: |
