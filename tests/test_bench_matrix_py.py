@@ -2,7 +2,8 @@
 """tests/test_bench_matrix_py.py — the scheduled benchmark matrix.
 
 plan: every listed model exists in its column's protocol, weekly is a
-superset of nightly, --only narrows. publish: a geist slowdown that
+superset of nightly, --only narrows, and the workflow's literal matrix
+matches the JSON. publish: a geist slowdown that
 llama.cpp does not share is a regression; a host-wide slowdown (both engines
 slower, ratio unchanged) and a llama.cpp pin change are not. Hermetic.
 """
@@ -35,6 +36,8 @@ expect(all(j["model"] in protocols[j["protocol"]]["models"]
 expect({(j["column"], j["model"]) for j in nightly} < {(j["column"], j["model"]) for j in weekly},
        "weekly is a strict superset of nightly")
 expect(len({(j["column"], j["model"]) for j in weekly}) == len(weekly), "no duplicate cells")
+workflow = (ROOT / ".gitea" / "workflows" / "bench-matrix.yml").read_text()
+expect(bm.include() in workflow, "bench-matrix.yml carries the current include (tools/bench_matrix.py include)")
 expect([j["model"] for j in bm.plan("weekly", "pi5/qwen3-0.6b-q8")] == ["qwen3-0.6b-q8"], "--only narrows")
 
 

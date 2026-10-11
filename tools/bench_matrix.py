@@ -5,6 +5,10 @@
         Print the job matrix (JSON list) for .gitea/workflows/bench-matrix.yml
         from benchmark/bench_matrix.json; weekly includes the nightly models.
 
+    include
+        Print the literal matrix include for bench-matrix.yml (Gitea cannot
+        expand a matrix from another job's output); tests check it is current.
+
     publish DIR
         DIR mirrors https://geisten.net/bench/: runs/<column>/<model>/*.jsonl
         (+ .md reports) from bench_cross_engine.py. Writes DIR/index.html and
@@ -46,6 +50,14 @@ def plan(which: str, only: str | None) -> list[dict]:
                          "llama": spec["llama"], "prefix": spec["prefix"],
                          "llama_repo": llama.get("repo", ""), "llama_pin": llama.get("pin", "")})
     return jobs
+
+
+def include() -> str:
+    nightly = {(j["column"], j["model"]) for j in plan("nightly", None)}
+    return "\n".join(
+        f'          - {{column: {j["column"]}, model: {j["model"]}, runner: {j["runner"]}, '
+        f'weekly: {str((j["column"], j["model"]) not in nightly).lower()}}}'
+        for j in plan("weekly", None))
 
 
 def load_run(path: Path) -> dict | None:
@@ -173,11 +185,15 @@ def main() -> int:
     p = sub.add_parser("plan")
     p.add_argument("--set", choices=("nightly", "weekly"), default="nightly")
     p.add_argument("--only")
+    sub.add_parser("include")
     q = sub.add_parser("publish")
     q.add_argument("dir", type=Path)
     args = parser.parse_args()
     if args.cmd == "plan":
         print(json.dumps(plan(args.set, args.only)))
+        return 0
+    if args.cmd == "include":
+        print(include())
         return 0
     return publish(args.dir)
 
