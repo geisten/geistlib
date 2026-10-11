@@ -1,5 +1,5 @@
 name: zz-debug-attn
-# temporary: why the int8 attention tests fail in MODE=cov on x86
+# temporary: which flag makes the int8 attention tests fail in MODE=cov on x86
 on: workflow_dispatch
 jobs:
   dbg:
@@ -10,9 +10,16 @@ jobs:
         with:
           packages: gcc-14 libopenblas-dev
       - run: |
-          for mode in cov release; do
-            make -s MODE=$mode TARGET=linux CC=gcc-14 bin/linux/$mode/tests/test_attention_int8_unit bin/linux/$mode/tests/test_x86_attention_int8_unit >/dev/null 2>&1 || echo "build $mode failed"
-            for t in test_attention_int8_unit test_x86_attention_int8_unit; do
-              echo "===== $mode $t"; rc=0; bin/linux/$mode/tests/$t > /tmp/o.txt 2>&1 || rc=$?; echo "exit=$rc"; grep -E "FAIL|PASS|thread|bits" /tmp/o.txt | head -20
-            done
-          done
+          set +e
+          t=test_x86_attention_int8_unit
+          variant() {  # name, CFLAGS_MODE, extra target flags
+            rm -rf build/linux/release bin/linux/release
+            make -s MODE=release TARGET=linux CC=gcc-14 CFLAGS_MODE="$2" EXTRA_CFLAGS="$3" LDFLAGS_MODE="$4" bin/linux/release/tests/$t >/dev/null 2>&1 || { echo "$1: build failed"; return; }
+            bin/linux/release/tests/$t > /tmp/o.txt 2>&1; rc=$?
+            echo "$1: exit=$rc fails=$(grep -c FAIL /tmp/o.txt)"
+          }
+          variant "O1"                      "-O1 -g" "" ""
+          variant "O1+coverage"             "-O1 -g --coverage" "" "--coverage"
+          variant "O1+coverage+no-fastmath" "-O1 -g --coverage" "-fno-fast-math" "--coverage"
+          variant "O2+coverage"             "-O2 -g --coverage" "" "--coverage"
+          variant "O1+profile-arcs only"    "-O1 -g -fprofile-arcs" "" "--coverage"
