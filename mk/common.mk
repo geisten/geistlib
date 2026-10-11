@@ -83,8 +83,9 @@ else ifeq ($(MODE),cov)
     #   (test_x86_attention_int8_unit, test_attention_int8_unit); -O1, -O2
     #   with coverage, and release all pass.
     ifneq ($(findstring gcc,$(CC)),)
-        CFLAGS_MODE += -Wno-error=stringop-overflow -Wno-error=stringop-overread \
-                       -fno-reciprocal-math
+        CFLAGS_MODE += -Wno-error=stringop-overflow -Wno-error=stringop-overread
+        # after CFLAGS_TARGET, or its -ffast-math turns it back on
+        CFLAGS_MODE_LATE := -fno-reciprocal-math
     endif
 else
     $(error Unknown MODE=$(MODE). Use one of: release, debug, asan, tsan, fuzz, perf, cov)
@@ -148,7 +149,7 @@ BACKEND_DEFINES := $(foreach b,$(BACKENDS),-DGEIST_BACKEND_$(shell echo $(b) | t
 GEMM_PROVIDER ?= native
 include mk/gemm-$(GEMM_PROVIDER).mk  # sets GEMM_CFLAGS / GEMM_LDLIBS
 
-CFLAGS        := $(CFLAGS_BASE) $(BACKEND_DEFINES) $(GEMM_CFLAGS) $(CFLAGS_MODE) $(CFLAGS_TARGET) $(EXTRA_CFLAGS)
+CFLAGS        := $(CFLAGS_BASE) $(BACKEND_DEFINES) $(GEMM_CFLAGS) $(CFLAGS_MODE) $(CFLAGS_TARGET) $(CFLAGS_MODE_LATE) $(EXTRA_CFLAGS)
 # Strict CFLAGS for the src/ tree — adds -Wshadow -Wundef on top of CFLAGS.
 CFLAGS_STRICT := -std=c23 $(WARNINGS_STRICT) -fno-strict-aliasing \
                  -Iinclude -I. \
@@ -162,7 +163,7 @@ CFLAGS_STRICT := -std=c23 $(WARNINGS_STRICT) -fno-strict-aliasing \
                  -Isrc/archs/audio_conformer \
                  -Isrc/archs/vision_siglip \
                  -Ithird_party/stb \
-                 $(BACKEND_DEFINES) $(GEMM_CFLAGS) $(CFLAGS_MODE) $(CFLAGS_TARGET) $(EXTRA_CFLAGS)
+                 $(BACKEND_DEFINES) $(GEMM_CFLAGS) $(CFLAGS_MODE) $(CFLAGS_TARGET) $(CFLAGS_MODE_LATE) $(EXTRA_CFLAGS)
 LDFLAGS := $(LDFLAGS_MODE) $(LDFLAGS_TARGET) $(EXTRA_LDFLAGS)
 LDLIBS  := $(LDLIBS_TARGET) $(GEMM_LDLIBS) $(EXTRA_LDLIBS)
 
