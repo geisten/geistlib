@@ -374,3 +374,17 @@ jobs:
           rsync -rlt -e "$ssh_cmd" stage/ germar@www.geisten.net:
           verify https://geisten.net/download/geistlib/latest
           sh scripts/check-published-release.sh
+      # The benchmark matrix as it stands at this release, frozen in the
+      # bench-results archive and shown at geisten.net/bench/releases/<tag>/.
+      # Best effort: a failure here does not undo a published release, and
+      # a regression flag (exit 1) belongs to the nightly run, not to this.
+      - name: Freeze the benchmark matrix for this release
+        # inputs may arrive as the string "true" (as DRY_RUN does above)
+        if: inputs.dry_run != true && inputs.dry_run != 'true'
+        continue-on-error: true
+        env:
+          BENCH_SSH_KEY: ${{ secrets.BENCH_SSH_KEY }}
+          BENCH_RESULTS_KEY: ${{ secrets.BENCH_RESULTS_KEY }}
+        run: |
+          command -v rsync >/dev/null || { sudo apt-get -qq update && sudo apt-get -qq install -y rsync >/dev/null; }
+          scripts/bench-publish.sh "${{ needs.version-guard.outputs.tag }}" || [ $? = 1 ]

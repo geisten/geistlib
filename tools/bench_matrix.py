@@ -9,6 +9,10 @@
         Print the literal matrix include for bench-matrix.yml (Gitea cannot
         expand a matrix from another job's output); tests check it is current.
 
+    snapshot DIR TAG
+        Freeze the newest run of every cell under DIR/runs as
+        DIR/releases/TAG.json (called by the release workflow).
+
     publish DIR
         DIR mirrors https://geisten.net/bench/: runs/<column>/<model>/*.jsonl
         (+ .md reports) from bench_cross_engine.py. Writes DIR/index.html and
@@ -28,6 +32,7 @@ import argparse
 import html
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -109,12 +114,12 @@ def spark(values: list[float]) -> str:
             f'<polyline points="{pts}"/></svg>')
 
 
-def cell(column: str, model: str, runs: list[dict]) -> str:
+def cell(column: str, model: str, runs: list[dict], prefix: str = "") -> str:
     if not runs:
         return '<td class="na">—</td>'
     last, recent = runs[-1], runs[-SPARK:]
     bad = " bad" if regressions(runs) else ""
-    return (f'<td class="c{bad}"><a href="runs/{column}/{model}/">'
+    return (f'<td class="c{bad}"><a href="{prefix}runs/{column}/{model}/">'
             f'<span class="x">pp {last["pp_vs"]:+.0f} % · tg {last["tg_vs"]:+.0f} %</span></a>'
             f'<small>{last["pp"]:.0f} / {last["tg"]:.1f} tok/s</small>'
             f'<small>{spark([r["pp"] for r in recent])} {spark([r["tg"] for r in recent])}</small>'
@@ -208,6 +213,32 @@ def archive_page(column: str, model: str, labels: dict, runs: list[dict]) -> str
                 "Benchmark archive", html.escape(name), f"{html.escape(host)} · {len(runs)} runs", body)
 
 
+def matrix_table(columns: list[str], models: list[str], labels: dict, history: dict, prefix: str = "") -> str:
+    rows = "\n".join(
+        f'<tr><td>{html.escape(labels["models"].get(model, model))}</td>'
+        + "".join(cell(c, model, history.get(f"{c}/{model}", []), prefix) for c in columns) + "</tr>"
+        for model in models)
+    head = "".join(f"<th>{html.escape(labels['columns'].get(c, c))}</th>" for c in columns)
+    return f"""      <table>
+        <thead><tr><th>Model</th>{head}</tr></thead>
+        <tbody>
+{rows}
+        </tbody>
+      </table>"""
+
+
+def snapshot(root: Path, tag: str) -> None:
+    """Freeze the newest run of every cell as releases/<tag>.json."""
+    cells = {}
+    for cell_dir in sorted((root / "runs").glob("*/*")):
+        runs = [r for p in sorted(cell_dir.glob("*.jsonl")) if (r := load_run(p))]
+        if runs:
+            cells[f"{cell_dir.parent.name}/{cell_dir.name}"] = runs[-1]
+    (root / "releases").mkdir(exist_ok=True)
+    (root / "releases" / f"{tag}.json").write_text(json.dumps(
+        {"tag": tag, "created_utc": datetime.now(timezone.utc).isoformat(), "cells": cells}, indent=1) + "\n")
+
+
 def publish(root: Path) -> int:
     matrix = json.loads(MATRIX.read_text())
     labels = matrix["labels"]
@@ -227,19 +258,24 @@ def publish(root: Path) -> int:
                 history[f"{column}/{model}"] = runs
                 bad += [f"{column}/{model}: {msg}" for msg in regressions(runs)]
                 (cell_dir / "index.html").write_text(archive_page(column, model, labels, runs))
-    rows = "\n".join(
-        f'<tr><td>{html.escape(labels["models"].get(model, model))}</td>'
-        + "".join(cell(c, model, history.get(f"{c}/{model}", [])) for c in columns) + "</tr>"
-        for model in models)
-    head = "".join(f"<th>{html.escape(labels['columns'].get(c, c))}</th>" for c in columns)
-    body = f"""      <table>
-        <thead><tr><th>Model</th>{head}</tr></thead>
-        <tbody>
-{rows}
-        </tbody>
-      </table>
+    table = matrix_table(columns, models, labels, history)
+    snaps = sorted((json.loads(p.read_text()) for p in (root / "releases").glob("*.json")),
+                   key=lambda snap: snap["created_utc"], reverse=True)  # git checkouts share one mtime
+    for snap in snaps:
+        cells = {k: [v] for k, v in snap["cells"].items()}
+        (root / "releases" / snap["tag"]).mkdir(exist_ok=True)
+        (root / "releases" / snap["tag"] / "index.html").write_text(page(
+            f"Benchmarks at {snap['tag']}", f"geistlib against llama.cpp as measured at release {snap['tag']}.",
+            "Benchmarks at a release", f"geistlib {html.escape(snap['tag'])}",
+            f"The matrix as it stood when {html.escape(snap['tag'])} was released ({snap['created_utc'][:10]}): "
+            "the newest run of every cell at that time, with the geistlib commit it measured.",
+            matrix_table(columns, models, labels, cells, prefix="../../")
+            + '\n      <p class="note"><a href="../../">Back to the live matrix</a>.</p>'))
+    release_links = " · ".join(f'<a href="releases/{s["tag"]}/">{html.escape(s["tag"])}</a>' for s in snaps)
+    body = table + f"""
       <p class="note">Each cell: geistlib's speed relative to llama.cpp for prefill (pp{SEQ}) and decode (tg64 at depth {SEQ}), geistlib's own tokens/s, the trend over the last {SPARK} runs, and the date and geistlib commit of the newest run. Ratios compare within a column; tokens/s across columns describe the hardware. A red mark: geistlib slowed by more than {THRESHOLD:.0f} % against the cell's previous run while llama.cpp did not.</p>
-      <p class="note">Method: the frozen cross-engine protocol of geistlib (same model file by SHA-256, same shapes and threads for both engines, 4 alternating cycles × 3 samples, median), run on a quiet host by the nightly and weekly <code>bench-matrix</code> workflow. Speed only, not a quality comparison. Click a cell for its archive of every run; all numbers as JSON: <a href="history.json">history.json</a>.</p>"""
+      <p class="note">Method: the frozen cross-engine protocol of geistlib (same model file by SHA-256, same shapes and threads for both engines, 4 alternating cycles × 3 samples, median), run on a quiet host by the nightly and weekly <code>bench-matrix</code> workflow. Speed only, not a quality comparison. Click a cell for its archive of every run; all numbers as JSON: <a href="history.json">history.json</a>.</p>""" + (
+        f'\n      <p class="note">The matrix at each release: {release_links}.</p>' if release_links else "")
     (root / "index.html").write_text(page(
         "Benchmark matrix", "Nightly geistlib against llama.cpp benchmarks per model and machine, with history.",
         "Benchmarks", "geistlib against llama.cpp",
@@ -258,11 +294,17 @@ def main() -> int:
     p.add_argument("--set", choices=("nightly", "weekly"), default="nightly")
     p.add_argument("--only")
     sub.add_parser("include")
+    r = sub.add_parser("snapshot")
+    r.add_argument("dir", type=Path)
+    r.add_argument("tag")
     q = sub.add_parser("publish")
     q.add_argument("dir", type=Path)
     args = parser.parse_args()
     if args.cmd == "plan":
         print(json.dumps(plan(args.set, args.only)))
+        return 0
+    if args.cmd == "snapshot":
+        snapshot(args.dir, args.tag)
         return 0
     if args.cmd == "include":
         print(include())

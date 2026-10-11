@@ -82,6 +82,13 @@ with tempfile.TemporaryDirectory() as tmp:
     expect('href="/css/site.css"' in page, "index uses the site's stylesheet")
     archive = (root / "runs" / "amd_9950x/qwen35-0.8b-q8" / "index.html").read_text()
     expect(archive.count("<tr><td>2026-10-") == 2, "each cell gets an archive page with every run")
+    bm.snapshot(root, "v9.9.9")
+    with contextlib.redirect_stdout(io.StringIO()):
+        bm.publish(root)
+    snap = json.loads((root / "releases" / "v9.9.9.json").read_text())
+    expect(snap["cells"]["amd_9950x/qwen35-0.8b-q8"]["pp"] == 900, "a release snapshot freezes each cell's newest run")
+    expect('href="releases/v9.9.9/"' in (root / "index.html").read_text()
+           and (root / "releases" / "v9.9.9" / "index.html").exists(), "the matrix links the release page")
     history = json.loads((root / "history.json").read_text())
     expect(len(history["nvidia_2080ti_vulkan/gemma4-e2b-q4km"]) == 2, "an interrupted run is skipped")
 

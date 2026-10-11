@@ -10,7 +10,9 @@ name: bench-matrix
 #
 # Nightly: a few models per column. Sundays: every model that fits.
 # Org secret BENCH_SSH_KEY may only rsync inside /var/www/htdocs/
-# www.geisten.net/bench on the web server (rrsync in authorized_keys).
+# www.geisten.net/bench on the web server (rrsync in authorized_keys);
+# BENCH_RESULTS_KEY is the write deploy key of geisten/bench-results, the
+# archive every run is committed to (scripts/bench-publish.sh).
 
 on:
   schedule:
@@ -178,19 +180,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref || 'main' }}
-      - name: Rebuild the index, gate on regressions
+      - name: Archive the runs, rebuild the site, gate on regressions
         env:
           BENCH_SSH_KEY: ${{ secrets.BENCH_SSH_KEY }}
+          BENCH_RESULTS_KEY: ${{ secrets.BENCH_RESULTS_KEY }}
         run: |
           set -eo pipefail
           command -v rsync >/dev/null || { sudo apt-get -qq update && sudo apt-get -qq install -y rsync >/dev/null; }
-          umask 077
-          key=$(mktemp); trap 'rm -f "$key"' EXIT
-          printf '%s\n' "$BENCH_SSH_KEY" > "$key"
-          ssh_cmd="ssh -F /dev/null -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts"
-          umask 022
-          mkdir site
-          rsync -rlt -e "$ssh_cmd" germar@www.geisten.net:runs site/
-          rc=0; python3 tools/bench_matrix.py publish site | tee -a "$GITHUB_STEP_SUMMARY" || rc=$?
-          rsync -rlt -e "$ssh_cmd" site/ germar@www.geisten.net:
+          rc=0; scripts/bench-publish.sh | tee -a "$GITHUB_STEP_SUMMARY" || rc=$?
           exit $rc
