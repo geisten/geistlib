@@ -72,13 +72,15 @@ else ifeq ($(MODE),cov)
     # -O1, not -O0: the coverage run includes a real-model prefill/decode and
     # -O0 makes that unaffordable. The baselines were measured at -O1, so the
     # ratchet comparison stays apples-to-apples.
+    CFLAGS_MODE  := -O1 -g --coverage -fno-omit-frame-pointer
+    LDFLAGS_MODE := --coverage
     # gcc's -O1 + --coverage path analysis reports an unchecked malloc() passed
     # to a [static n] parameter as a read/write of a zero-size region (seen in
-    # the x86 tests). The release, sanitizer and clang builds keep these as
-    # errors; this build only measures.
-    CFLAGS_MODE  := -O1 -g --coverage -fno-omit-frame-pointer \
-                    -Wno-error=stringop-overflow -Wno-error=stringop-overread
-    LDFLAGS_MODE := --coverage
+    # the x86 tests). The release and sanitizer builds keep these as errors;
+    # this build only measures. gcc only: clang does not know the options.
+    ifneq ($(findstring gcc,$(CC)),)
+        CFLAGS_MODE += -Wno-error=stringop-overflow -Wno-error=stringop-overread
+    endif
 else
     $(error Unknown MODE=$(MODE). Use one of: release, debug, asan, tsan, fuzz, perf, cov)
 endif
