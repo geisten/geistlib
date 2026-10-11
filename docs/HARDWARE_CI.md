@@ -26,6 +26,23 @@ tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib \
 | `vulkan-gpu` | `geist-vulkan` | nightly + dispatch: Vulkan suite + model e2e on the discrete GPU |
 | `vulkan-ab` | `geist-vulkan` | dispatch: A/B on one Vulkan device or the Zen 5 CPU |
 | `cross-engine-campaign` | `geist-vulkan` | dispatch: one cell of the cross-engine matrix |
+| `bench-matrix` | per column (`geist-avx512`, `geist-vulkan`, `macos-15`, `pi5`) | nightly (Sundays: every model) + dispatch: the cross-engine matrix, published to [geisten.net/bench](https://geisten.net/bench/) |
+
+### Benchmark matrix
+
+`benchmark/bench_matrix.json` lists which protocol model runs on which host
+column and how often; `tools/bench_matrix.py plan` turns it into one job per
+cell. Each job fetches its model into the host cache (`GEIST_MODEL_CACHE`,
+default `~/geist-models`) with `tools/fetch_bench_model.py` — the URL comes
+from `benchmark/model_sources.json`, the SHA-256 from the protocol — builds
+the pinned llama.cpp (`scripts/ensure-llama-bench.sh`) and runs
+`tools/bench_cross_engine.py` inside the host lock: `/tmp/geist-bench.lock`
+on the desktop (the docker CI runner's health check pauses it while held),
+`with-pi-lock` on the Pi; the Mac relies on the protocol's quiet-host gate.
+Runs go to `https://geisten.net/bench/runs/<column>/<model>/` (org secret
+`BENCH_SSH_KEY`, rrsync-restricted to that directory); the publish job
+rebuilds `index.html`/`history.json` and fails when geist slowed by more than
+5 % against the cell's previous run while its ratio to llama.cpp fell too.
 
 ## Runners
 

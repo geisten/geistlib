@@ -1,0 +1,196 @@
+name: bench-matrix
+
+# The model × host matrix of benchmark/results/MATRIX.md, measured on a
+# schedule instead of by hand: one job per (host column, model) from
+# benchmark/bench_matrix.json, each running the frozen cross-engine protocol
+# (geist vs a pinned llama.cpp) on a quiet host. Models come from the host's
+# cache (tools/fetch_bench_model.py, SHA-gated). Raw runs and reports land on
+# https://geisten.net/bench/; the publish job rebuilds the index there and
+# goes red when geist slowed against its previous run while llama.cpp did not.
+#
+# Nightly: a few models per column. Sundays: every model that fits.
+# Org secret BENCH_SSH_KEY may only rsync inside /var/www/htdocs/
+# www.geisten.net/bench on the web server (rrsync in authorized_keys).
+
+on:
+  schedule:
+    - cron: "37 0 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "geistlib ref to measure"
+        default: main
+      set:
+        description: "nightly or weekly (all models)"
+        type: choice
+        options: [nightly, weekly]
+        default: nightly
+      only:
+        description: "restrict to one column or column/model, e.g. pi5 or nvidia_2080ti_vulkan/bonsai2-27b-pq2"
+        type: string
+        default: ""
+      publish:
+        description: "upload to geisten.net/bench"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-matrix
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    name: ${{ matrix.column }} · ${{ matrix.model }}
+    runs-on: ${{ matrix.runner }}
+    # Gitea's ENDLESS_TASK_TIMEOUT (3 h by default) caps this as well.
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        # Generated: python3 tools/bench_matrix.py include. Literal, because
+        # Gitea cannot expand a matrix from another job's output.
+        include:
+          - {column: amd_9950x, model: qwen35-0.8b-q8, runner: geist-avx512, weekly: false}
+          - {column: amd_9950x, model: gemma4-e2b-q4km, runner: geist-avx512, weekly: false}
+          - {column: amd_9950x, model: bitnet-large-tq2, runner: geist-avx512, weekly: false}
+          - {column: amd_9950x, model: gemma4-e4b-q4km, runner: geist-avx512, weekly: true}
+          - {column: amd_9950x, model: llama32-3b-q4km, runner: geist-avx512, weekly: true}
+          - {column: amd_9950x, model: qwen3-0.6b-q8, runner: geist-avx512, weekly: true}
+          - {column: amd_9950x, model: qwen35-4b-q4, runner: geist-avx512, weekly: true}
+          - {column: amd_9950x, model: qwen38-27b-q4, runner: geist-avx512, weekly: true}
+          - {column: amd_9950x, model: bonsai2-27b-pq2, runner: geist-avx512, weekly: true}
+          - {column: nvidia_2080ti_vulkan, model: qwen35-0.8b-q8, runner: geist-vulkan, weekly: false}
+          - {column: nvidia_2080ti_vulkan, model: gemma4-e2b-q4km, runner: geist-vulkan, weekly: false}
+          - {column: nvidia_2080ti_vulkan, model: bonsai2-27b-pq2, runner: geist-vulkan, weekly: false}
+          - {column: nvidia_2080ti_vulkan, model: gemma4-e4b-q4km, runner: geist-vulkan, weekly: true}
+          - {column: nvidia_2080ti_vulkan, model: llama32-3b-q4km, runner: geist-vulkan, weekly: true}
+          - {column: nvidia_2080ti_vulkan, model: bitnet-large-tq2, runner: geist-vulkan, weekly: true}
+          - {column: nvidia_2080ti_vulkan, model: qwen3-0.6b-q8, runner: geist-vulkan, weekly: true}
+          - {column: nvidia_2080ti_vulkan, model: qwen35-4b-q4, runner: geist-vulkan, weekly: true}
+          - {column: apple_m1max, model: qwen35-0.8b-q8, runner: macos-15, weekly: false}
+          - {column: apple_m1max, model: gemma4-e2b-q4km, runner: macos-15, weekly: false}
+          - {column: apple_m1max, model: gemma4-e4b-q4km, runner: macos-15, weekly: true}
+          - {column: apple_m1max, model: llama32-3b-q4km, runner: macos-15, weekly: true}
+          - {column: apple_m1max, model: bitnet-large-tq2, runner: macos-15, weekly: true}
+          - {column: apple_m1max, model: qwen3-0.6b-q8, runner: macos-15, weekly: true}
+          - {column: apple_m1max, model: qwen35-4b-q4, runner: macos-15, weekly: true}
+          - {column: apple_m1max, model: qwen38-27b-q4, runner: macos-15, weekly: true}
+          - {column: apple_m1max, model: bonsai2-27b-pq2, runner: macos-15, weekly: true}
+          - {column: apple_m1max_metal, model: gemma4-e2b-q4km, runner: macos-15, weekly: false}
+          - {column: apple_m1max_metal, model: bonsai2-27b-pq2, runner: macos-15, weekly: false}
+          - {column: apple_m1max_metal, model: gemma4-e4b-q4km, runner: macos-15, weekly: true}
+          - {column: apple_m1max_metal, model: llama32-3b-q4km, runner: macos-15, weekly: true}
+          - {column: apple_m1max_metal, model: bitnet-large-tq2, runner: macos-15, weekly: true}
+          - {column: apple_m1max_metal, model: qwen3-0.6b-q8, runner: macos-15, weekly: true}
+          - {column: apple_m1max_metal, model: qwen35-0.8b-q8, runner: macos-15, weekly: true}
+          - {column: apple_m1max_metal, model: qwen35-4b-q4, runner: macos-15, weekly: true}
+          - {column: apple_m1max_metal, model: qwen38-27b-q4, runner: macos-15, weekly: true}
+          - {column: pi5, model: qwen3-0.6b-q8, runner: pi5, weekly: false}
+          - {column: pi5, model: qwen35-0.8b-q8, runner: pi5, weekly: false}
+          - {column: pi5, model: gemma4-e2b-q4km, runner: pi5, weekly: true}
+          - {column: pi5, model: bitnet-large-tq2, runner: pi5, weekly: true}
+          - {column: pi5, model: llama32-3b-q4km, runner: pi5, weekly: true}
+          - {column: pi5, model: qwen35-4b-q4, runner: pi5, weekly: true}
+    steps:
+      - name: Select
+        id: sel
+        run: |
+          SET="${{ inputs.set }}"
+          [ -n "$SET" ] || SET=$([ "$(date -u +%u)" = 7 ] && echo weekly || echo nightly)
+          ONLY="${{ inputs.only }}"
+          run=1
+          if [ "${{ matrix.weekly }}" = true ] && [ "$SET" != weekly ]; then run=0; fi
+          case "$ONLY" in ""|"${{ matrix.column }}"|"${{ matrix.column }}/${{ matrix.model }}") ;; *) run=0 ;; esac
+          echo "set=$SET run=$run"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.sel.outputs.run == '1'
+        with:
+          ref: ${{ inputs.ref || 'main' }}
+      - name: Cell settings
+        if: steps.sel.outputs.run == '1'
+        run: |
+          python3 tools/bench_matrix.py plan --set weekly --only "${{ matrix.column }}/${{ matrix.model }}" | python3 -c '
+          import json, sys
+          job = json.load(sys.stdin)[0]
+          for key in ("build", "llama", "prefix", "protocol", "llama_repo", "llama_pin"):
+              print(f"CELL_{key.upper()}={job[key]}")' >> "$GITHUB_ENV"
+      - name: Build geist
+        if: steps.sel.outputs.run == '1'
+        run: eval "$CELL_BUILD"
+      - name: Ensure pinned llama.cpp build
+        if: steps.sel.outputs.run == '1'
+        run: |
+          set -eo pipefail
+          echo "LLAMA_BENCH=$(eval "$CELL_PREFIX" scripts/ensure-llama-bench.sh "$CELL_LLAMA" "'$CELL_LLAMA_REPO'" "'$CELL_LLAMA_PIN'")" >> "$GITHUB_ENV"
+      - name: Fetch the model (host cache, SHA-gated)
+        if: steps.sel.outputs.run == '1'
+        env:
+          GEIST_MODEL_CACHE: ${{ vars.GEIST_MODEL_CACHE }}
+        run: |
+          set -eo pipefail
+          echo "MODEL_PATH=$(python3 tools/fetch_bench_model.py --model ${{ matrix.model }} --protocol benchmark/cross_engine_${CELL_PROTOCOL}_protocol.json)" >> "$GITHUB_ENV"
+      - name: Measure (frozen protocol, quiet-host gate)
+        if: steps.sel.outputs.run == '1'
+        env:
+          # The desktop also enumerates a Raphael iGPU; pin llama.cpp to the
+          # discrete card. Ignored elsewhere.
+          GGML_VK_VISIBLE_DEVICES: "0"
+        run: |
+          set -eo pipefail
+          if [ "$CELL_LLAMA" = vulkan ]; then . scripts/gpu-lock.sh; fi
+          GEIST_BIN=$(find bin -path '*/release*/tests/bench_perf_sweep' | head -1)
+          eval "$CELL_PREFIX" python3 tools/bench_cross_engine.py \
+            --geist "$GEIST_BIN" --llama "$LLAMA_BENCH" --gguf "$MODEL_PATH" \
+            --protocol "benchmark/cross_engine_${CELL_PROTOCOL}_protocol.json" \
+            --host-profile ${{ matrix.column }} --model ${{ matrix.model }} \
+            --out-dir bench-out
+          mkdir -p "site/runs/${{ matrix.column }}/${{ matrix.model }}"
+          mv bench-out/*.jsonl bench-out/*.md "site/runs/${{ matrix.column }}/${{ matrix.model }}/"
+      - name: Upload to geisten.net/bench
+        if: steps.sel.outputs.run == '1' && inputs.publish != false
+        env:
+          BENCH_SSH_KEY: ${{ secrets.BENCH_SSH_KEY }}
+        run: |
+          set -eo pipefail
+          umask 077
+          key=$(mktemp); trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$BENCH_SSH_KEY" > "$key"
+          rsync -rlt --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
+            -e "ssh -F /dev/null -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts" \
+            site/ germar@www.geisten.net:
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && steps.sel.outputs.run == '1'
+        with:
+          name: bench-${{ matrix.column }}-${{ matrix.model }}
+          path: site/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  publish:
+    needs: measure
+    if: always() && inputs.publish != false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || 'main' }}
+      - name: Rebuild the index, gate on regressions
+        env:
+          BENCH_SSH_KEY: ${{ secrets.BENCH_SSH_KEY }}
+        run: |
+          set -eo pipefail
+          command -v rsync >/dev/null || { sudo apt-get -qq update && sudo apt-get -qq install -y rsync >/dev/null; }
+          umask 077
+          key=$(mktemp); trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$BENCH_SSH_KEY" > "$key"
+          ssh_cmd="ssh -F /dev/null -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts"
+          umask 022
+          mkdir site
+          rsync -rlt -e "$ssh_cmd" germar@www.geisten.net:runs site/
+          rc=0; python3 tools/bench_matrix.py publish site | tee -a "$GITHUB_STEP_SUMMARY" || rc=$?
+          rsync -rlt -e "$ssh_cmd" site/ germar@www.geisten.net:
+          exit $rc

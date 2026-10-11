@@ -1,0 +1,54 @@
+{
+  "schema": "geist.benchmark.matrix.v1",
+  "note": "Which protocol model runs on which host column, and how often (.gitea/workflows/bench-matrix.yml, tools/bench_matrix.py). A model is listed only where it fits: no 27B on the 4 GB Pi, no 16 GB Qwen3.8 on the 11 GB card. nightly runs every night, weekly adds the rest on Sundays. prefix wraps the measurement in the host lock: the desktop CI runner pauses while /tmp/geist-bench.lock is held, the Pi has with-pi-lock, the Mac relies on the protocol's quiet-host gate.",
+  "llama_overrides": {
+    "bonsai2-27b-pq2": {"repo": "PrismML-Eng/llama.cpp", "pin": "adfffbe41", "why": "upstream llama.cpp has no PQ2_0 type"}
+  },
+  "columns": {
+    "amd_9950x": {
+      "runner": "geist-avx512",
+      "protocol": "cpu",
+      "build": "make TARGET=linux BACKENDS=\"cpu_x86 cpu_scalar\" GEMM_PROVIDER=native bin",
+      "llama": "cpu",
+      "prefix": "flock /tmp/geist-bench.lock",
+      "nightly": ["qwen35-0.8b-q8", "gemma4-e2b-q4km", "bitnet-large-tq2"],
+      "weekly": ["gemma4-e4b-q4km", "llama32-3b-q4km", "qwen3-0.6b-q8", "qwen35-4b-q4", "qwen38-27b-q4", "bonsai2-27b-pq2"]
+    },
+    "nvidia_2080ti_vulkan": {
+      "runner": "geist-vulkan",
+      "protocol": "gpu",
+      "build": "make TARGET=linux BACKENDS=\"vulkan cpu_x86 cpu_scalar\" GEMM_PROVIDER=native bin",
+      "llama": "vulkan",
+      "prefix": "flock /tmp/geist-bench.lock",
+      "nightly": ["qwen35-0.8b-q8", "gemma4-e2b-q4km", "bonsai2-27b-pq2"],
+      "weekly": ["gemma4-e4b-q4km", "llama32-3b-q4km", "bitnet-large-tq2", "qwen3-0.6b-q8", "qwen35-4b-q4"]
+    },
+    "apple_m1max": {
+      "runner": "macos-15",
+      "protocol": "cpu",
+      "build": "make TARGET=mac-omp bin",
+      "llama": "cpu",
+      "prefix": "",
+      "nightly": ["qwen35-0.8b-q8", "gemma4-e2b-q4km"],
+      "weekly": ["gemma4-e4b-q4km", "llama32-3b-q4km", "bitnet-large-tq2", "qwen3-0.6b-q8", "qwen35-4b-q4", "qwen38-27b-q4", "bonsai2-27b-pq2"]
+    },
+    "apple_m1max_metal": {
+      "runner": "macos-15",
+      "protocol": "gpu",
+      "build": "make TARGET=mac-omp BACKENDS=\"cpu_neon cpu_scalar metal\" bin",
+      "llama": "metal",
+      "prefix": "",
+      "nightly": ["gemma4-e2b-q4km", "bonsai2-27b-pq2"],
+      "weekly": ["gemma4-e4b-q4km", "llama32-3b-q4km", "bitnet-large-tq2", "qwen3-0.6b-q8", "qwen35-0.8b-q8", "qwen35-4b-q4", "qwen38-27b-q4"]
+    },
+    "pi5": {
+      "runner": "pi5",
+      "protocol": "cpu",
+      "build": "~/bin/with-pi-lock make TARGET=pi5 bin",
+      "llama": "cpu",
+      "prefix": "~/bin/with-pi-lock",
+      "nightly": ["qwen3-0.6b-q8", "qwen35-0.8b-q8"],
+      "weekly": ["gemma4-e2b-q4km", "bitnet-large-tq2", "llama32-3b-q4km", "qwen35-4b-q4"]
+    }
+  }
+}

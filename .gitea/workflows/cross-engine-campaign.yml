@@ -26,10 +26,6 @@ on:
         description: "models key from the protocol"
         type: string
         default: gemma4-e2b-q4km
-      model_url:
-        description: "optional download URL when no local candidate matches the SHA"
-        type: string
-        default: ""
       llama_repo:
         description: "llama.cpp repository for the reference engine (owner/name); a fork for formats upstream cannot read, e.g. PrismML-Eng/llama.cpp for PQ2_0"
         type: string
@@ -67,79 +63,20 @@ jobs:
           fi
           make TARGET=linux BACKENDS="$BACKENDS" GEMM_PROVIDER=native bin
       - name: Ensure pinned llama.cpp build
-        # Dedicated persistent checkout outside the workspace (survives
-        # checkout's git clean); rebuilt only when the pin moves. The cpu
-        # build must not link a GPU backend or the runner's CPU-only
-        # validation rejects it.
-        env:
-          LLAMA_REPO: ${{ inputs.llama_repo }}
-          LLAMA_PIN: ${{ inputs.llama_pin || 'd81235049384534c167caea52b85a694f6103d14' }}
-          VARIANT: ${{ inputs.protocol }}
-        run: |
-          set -e
-          # One checkout per repository, so a fork build never shadows the
-          # upstream pin's (the cell records which one ran).
-          if [ "$LLAMA_REPO" = "ggml-org/llama.cpp" ]; then
-            DIR="$HOME/llama.cpp-cross-engine"
-          else
-            DIR="$HOME/llama.cpp-cross-engine-$(echo "$LLAMA_REPO" | tr '/' '_')"
-          fi
-          BUILD="$DIR/build-$([ "$VARIANT" = gpu ] && echo vulkan || echo cpu)"
-          if [ ! -x "$BUILD/bin/llama-bench" ] \
-             || [ "$(git -C "$DIR" rev-parse HEAD)" != "$LLAMA_PIN" ]; then
-            [ -d "$DIR/.git" ] || git clone "https://github.com/$LLAMA_REPO" "$DIR"
-            # A full SHA fetches directly; a short one or a branch needs
-            # the history first.
-            git -C "$DIR" fetch origin "$LLAMA_PIN" 2>/dev/null || git -C "$DIR" fetch origin
-            git -C "$DIR" checkout "$LLAMA_PIN"
-            if [ "$VARIANT" = gpu ]; then
-              # ggml-vulkan #includes spirv/unified1/spirv.hpp directly, so
-              # the headers must be on the compiler's include path.
-              SPIRV_INC="$HOME/.local/include"
-              if [ ! -f "$SPIRV_INC/spirv/unified1/spirv.hpp" ]; then
-                [ -d "$DIR/spirv-headers/.git" ] || git clone --depth 1 \
-                  https://github.com/KhronosGroup/SPIRV-Headers "$DIR/spirv-headers"
-                SPIRV_INC="$DIR/spirv-headers/include"
-              fi
-              cmake -S "$DIR" -B "$BUILD" -DGGML_VULKAN=ON \
-                -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF \
-                -DCMAKE_PREFIX_PATH="$HOME/.local" \
-                -DCMAKE_CXX_FLAGS="-I$SPIRV_INC"
-            else
-              cmake -S "$DIR" -B "$BUILD" -DGGML_VULKAN=OFF -DGGML_NATIVE=ON \
-                -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF
-            fi
-            cmake --build "$BUILD" --target llama-bench -j
-          fi
-          git -C "$DIR" rev-parse HEAD
-          echo "LLAMA_BENCH=$BUILD/bin/llama-bench" >> "$GITHUB_ENV"
-      - name: Resolve the campaign model by protocol SHA
-        env:
-          GEIST_GGUF_PATH: ${{ vars.GEIST_GGUF_PATH }}
-          MODEL_KEY: ${{ inputs.model }}
-          MODEL_URL: ${{ inputs.model_url }}
-          PROTOCOL_JSON: benchmark/cross_engine_${{ inputs.protocol }}_protocol.json
         run: |
           set -eo pipefail
-          WANT=$(python3 -c "import json,os; print(json.load(open(os.environ['PROTOCOL_JSON']))['models'][os.environ['MODEL_KEY']]['sha256'])")
-          FILE=$(python3 -c "import json,os; print(json.load(open(os.environ['PROTOCOL_JSON']))['models'][os.environ['MODEL_KEY']]['file'])")
-          MODEL=""
-          for cand in "$HOME/workplace/geistlib/gguf_artifacts/$FILE" \
-                      "$HOME/gguf-campaign/$FILE" \
-                      "$HOME"/workplace/geistlib-wt/*/gguf_artifacts/"$FILE" \
-                      "$GEIST_GGUF_PATH"; do
-            if [ -f "$cand" ] && [ "$(sha256sum "$cand" | cut -d' ' -f1)" = "$WANT" ]; then
-              MODEL="$cand"; break
-            fi
-          done
-          if [ -z "$MODEL" ] && [ -n "$MODEL_URL" ]; then
-            mkdir -p "$HOME/gguf-campaign"
-            curl -sL -o "$HOME/gguf-campaign/$FILE" "$MODEL_URL"
-            [ "$(sha256sum "$HOME/gguf-campaign/$FILE" | cut -d' ' -f1)" = "$WANT" ] \
-              && MODEL="$HOME/gguf-campaign/$FILE" \
-              || { echo "downloaded file does not match protocol SHA $WANT"; exit 1; }
-          fi
-          [ -n "$MODEL" ] || { echo "no candidate matches the protocol SHA $WANT and no model_url given"; exit 1; }
+          VARIANT=$([ "${{ inputs.protocol }}" = gpu ] && echo vulkan || echo cpu)
+          LLAMA_BENCH=$(scripts/ensure-llama-bench.sh "$VARIANT" "${{ inputs.llama_repo }}" "${{ inputs.llama_pin }}")
+          echo "LLAMA_BENCH=$LLAMA_BENCH" >> "$GITHUB_ENV"
+      - name: Fetch the campaign model (host cache, SHA-gated)
+        # benchmark/model_sources.json pins the URL; the file stays in the
+        # host's cache ($GEIST_MODEL_CACHE, default ~/geist-models) across runs.
+        env:
+          GEIST_MODEL_CACHE: ${{ vars.GEIST_MODEL_CACHE }}
+        run: |
+          set -eo pipefail
+          MODEL=$(python3 tools/fetch_bench_model.py --model "${{ inputs.model }}" \
+            --protocol "benchmark/cross_engine_${{ inputs.protocol }}_protocol.json")
           echo "campaign model: $MODEL"
           echo "MODEL_PATH=$MODEL" >> "$GITHUB_ENV"
       - name: Run the campaign (frozen protocol, quiet-host gate)
