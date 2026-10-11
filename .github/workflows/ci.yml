@@ -1032,8 +1032,12 @@ jobs:
     # The instrumented -O1 build prefills the real model many times across
     # the int suite. e2e adds ~half an hour and moves the per-subsystem
     # numbers only by noise, so the measurement is unit + int.
-    timeout-minutes: 100
+    timeout-minutes: 150
     env:
+      # gcc's coverage counters are shared by all threads: on the 16-core
+      # desktop 8 OpenMP threads made one int test take 32 minutes. Coverage
+      # does not depend on the thread count, only the run time does.
+      OMP_NUM_THREADS: "4"
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
     steps:
