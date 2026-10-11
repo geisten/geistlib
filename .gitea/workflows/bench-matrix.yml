@@ -54,7 +54,7 @@ jobs:
         run: |
           SET="${{ inputs.set }}"
           [ -n "$SET" ] || SET=$([ "$(date -u +%u)" = 7 ] && echo weekly || echo nightly)
-          echo "matrix=$(python3 tools/bench_matrix.py plan --set "$SET" --only "${{ inputs.only }}")" >> "$GITHUB_OUTPUT"
+          echo "matrix={\"include\":$(python3 tools/bench_matrix.py plan --set "$SET" --only "${{ inputs.only }}")}" >> "$GITHUB_OUTPUT"
 
   measure:
     needs: plan
@@ -64,8 +64,7 @@ jobs:
     timeout-minutes: 300
     strategy:
       fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
