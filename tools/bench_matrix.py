@@ -12,7 +12,8 @@
     publish DIR
         DIR mirrors https://geisten.net/bench/: runs/<column>/<model>/*.jsonl
         (+ .md reports) from bench_cross_engine.py. Writes DIR/index.html and
-        DIR/history.json and prints every cell whose newest run regressed
+        DIR/history.json (plus a .txt copy of each report, which httpd
+        displays instead of downloading) and prints every cell whose newest run regressed
         against the run before it; exit 1 if any did.
 
 A regression needs both: geist's own median throughput (pp512 or tg64 at
@@ -74,7 +75,7 @@ def load_run(path: Path) -> dict | None:
     llama = next(e for e in meta["engines"] if e["label"] == "llama.cpp")
     return {
         "file": path.name,
-        "report": path.with_suffix(".md").name if path.with_suffix(".md").exists() else None,
+        "report": path.with_suffix(".txt").name if path.with_suffix(".txt").exists() else None,
         "date": meta["created_utc"][:16].replace("T", " "),
         "commit": meta["runner"]["commit"][:9],
         "llama": llama.get("commit") or llama.get("binary_sha256", "")[:12],
@@ -159,6 +160,10 @@ def publish(root: Path) -> int:
     columns = list(matrix["columns"])
     models = list(dict.fromkeys(m for spec in matrix["columns"].values()
                                 for m in spec["nightly"] + spec["weekly"]))
+    # httpd serves .md as a download; a .txt copy opens in the browser
+    for report in (root / "runs").glob("*/*/*.md"):
+        if not report.with_suffix(".txt").exists():
+            report.with_suffix(".txt").write_bytes(report.read_bytes())
     history, bad = {}, []
     for column in columns:
         for model in models:

@@ -192,5 +192,5 @@ jobs:
           mkdir site
           rsync -rlt -e "$ssh_cmd" germar@www.geisten.net:runs site/
           rc=0; python3 tools/bench_matrix.py publish site | tee -a "$GITHUB_STEP_SUMMARY" || rc=$?
-          rsync -rlt -e "$ssh_cmd" site/index.html site/history.json germar@www.geisten.net:
+          rsync -rlt -e "$ssh_cmd" site/ germar@www.geisten.net:
           exit $rc
