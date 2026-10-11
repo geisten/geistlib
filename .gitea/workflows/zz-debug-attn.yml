@@ -1,0 +1,18 @@
+name: zz-debug-attn
+# temporary: why the int8 attention tests fail in MODE=cov on x86
+on: workflow_dispatch
+jobs:
+  dbg:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/apt-install
+        with:
+          packages: gcc-14 libopenblas-dev
+      - run: |
+          for mode in cov release; do
+            make -s MODE=$mode TARGET=linux CC=gcc-14 bin/linux/$mode/tests/test_attention_int8_unit bin/linux/$mode/tests/test_x86_attention_int8_unit >/dev/null 2>&1 || echo "build $mode failed"
+            for t in test_attention_int8_unit test_x86_attention_int8_unit; do
+              echo "===== $mode $t"; bin/linux/$mode/tests/$t 2>&1 | tail -25; echo "exit=$?"
+            done
+          done
