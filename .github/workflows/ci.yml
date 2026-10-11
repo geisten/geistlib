@@ -1016,17 +1016,19 @@ jobs:
   # Scope: the portable engine (src/base, engine, io, formats, quant,
   # archs/transformer, archs/audio_conformer, archs/vision_siglip,
   # backends/common, backends/cpu_scalar). Excluded from
-  # the GATE (still visible in the report): cpu_neon (SIMD leg, only this
-  # runner family executes it), cpu_x86/metal/vulkan (cannot execute on
+  # the GATE (still visible in the report): cpu_x86 (SIMD leg, only this
+  # runner family executes it), cpu_neon/metal/vulkan (cannot execute on
   # this runner), third_party and generated *_spv.h (not ours). The control
   # test tests/test_coverage_gate_py.py proves the gate actually fires.
+  # x86_64 since 2026-10: on git.geisten.net the only arm64 runner is the
+  # Pi 5, where this run took hours and held releases back.
   coverage:
-    name: coverage ratchet (Linux arm64, unit + int)
+    name: coverage ratchet (Linux x86_64, unit + int)
     # Not on pull_request: the instrumented run takes 60-100 minutes. It runs
     # on every push to main (and on dispatch), so a coverage drop is caught
     # one merge later.
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     # The instrumented -O1 build prefills the real model many times across
     # the int suite. e2e adds ~half an hour and moves the per-subsystem
     # numbers only by noise, so the measurement is unit + int.
@@ -1105,7 +1107,7 @@ jobs:
           mkdir -p coverage/html
           gcovr --root . --gcov-executable gcov-14 --filter 'src/' \
             --exclude 'src/backends/vulkan/' --exclude 'src/backends/metal/' \
-            --exclude 'src/backends/cpu_x86/' \
+            --exclude 'src/backends/cpu_neon/' \
             --gcov-ignore-parse-errors negative_hits.warn \
             --json coverage/coverage.json --xml coverage/cobertura.xml \
             --html-details coverage/html/index.html \
