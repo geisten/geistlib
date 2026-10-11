@@ -20,7 +20,7 @@ the test suite**, not just built.
 Every environment in [`release.yml`](../.gitea/workflows/release.yml)
 (macos-arm64, linux-arm64, linux-x86_64) has build **and** test coverage. On
 top of the matrix, dedicated legs gate every PR: TSan multi-session (x86_64),
-the coverage ratchet (arm64), AVX-512 under Intel SDE, Vulkan on lavapipe, the
+the coverage ratchet (x86_64), AVX-512 under Intel SDE, Vulkan on lavapipe, the
 Metal GPU step inside the macOS arm64 leg, and `check-headers` (every public
 header compiled standalone as C23 and C++17, inside `build-test`).
 
@@ -162,9 +162,10 @@ was; hence `if: always()`.
 
 ## Coverage ratchet
 
-The `coverage` job runs on every push to `main` (not on PRs: ~65 min), and
+The `coverage` job runs on every push to `main` (not on PRs: ~2 h), and
 pushes to `main` are never cancelled by a later merge, so every main commit
-is measured. It builds `MODE=cov` (gcc-14, `-O1 --coverage`, Linux arm64)
+is measured. It builds `MODE=cov` (gcc-14, `-O2 --coverage`, Linux x86_64 on
+the desktop runner; the only arm64 runner is the Pi 5, where it took hours)
 and runs the model-free unit suite plus the real-model int suite with
 `GEIST_STRICT_FIXTURES=gguf` — a fixture skip would hollow out the
 measurement, so it fails instead. (e2e is not measured: it re-drives the same
@@ -179,10 +180,12 @@ the overall figure and per-subsystem table published to the job summary.
   `src/archs/vision_siglip`, `src/backends/common`, `src/backends/cpu_scalar`.
   `vision_siglip` is barely reached by unit + int (~12 % line); its baseline
   only keeps it from falling.
-- **Exclusions, each deliberate**: `src/backends/cpu_x86`, `metal/`,
+- **Exclusions, each deliberate**: `src/backends/cpu_neon`, `metal/`,
   `vulkan/` cannot execute on this runner (their correctness legs live in
-  the x86/metal/vulkan jobs); `cpu_neon` is measured but not gated (SIMD
-  leg, one runner family); `third_party/` and generated `*_spv.h` are not
+  the arm64/metal/vulkan jobs); `cpu_x86` is measured but not gated (SIMD
+  leg, one runner family); `src/base/calibration.c` counts in `src/base` but
+  is only reached through cpu_neon's and Metal's tunables, so x86 leaves it
+  at 0 %; `third_party/` and generated `*_spv.h` are not
   our code; tests and benches are the instruments, not the subject.
 - **Ratchet**: measured on `main`, rounded DOWN to whole percent, tolerance
   0.5 pp per metric. Raising after an improvement is routine; lowering is a
