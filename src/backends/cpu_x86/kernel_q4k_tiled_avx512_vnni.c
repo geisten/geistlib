@@ -49,6 +49,9 @@ struct q4k_tiled_ws {
     alignas(64) uint8_t w_q[TILE * TILE];           /* [row][k] codes 0..15 */
     alignas(64) int32_t w_scale[TILE * NSUB_MAX];   /* [row][subblock] */
     alignas(64) int32_t w_min[TILE * NSUB_MAX];     /* [row][subblock], Q4_K only */
+    alignas(64) float w_fd[TILE * NSUB_MAX];        /* Q4_0/Q4_1: d per 32-block [row][sub] */
+    alignas(64) float w_fm[TILE * NSUB_MAX];        /* Q4_1: m per 32-block [row][sub] */
+    alignas(64) float a_fd[(TILE / 32) * TILE];     /* Q8_0 acts: d per 32-block [sub][row] */
     alignas(64) float w_d[TILE];                    /* per row */
     alignas(64) float w_dmin[TILE];                 /* per row */
     alignas(64) int8_t a_q[TILE * TILE];            /* [row][k], then banded */
@@ -150,6 +153,50 @@ static void unpack_w_q6k(size_t                     n_super,
     }
 }
 
+/* Weight rows [r0, r0 + n) of K block kb from the GGUF Q5_K bytes: Q4_K's
+ * nibbles and packed 6-bit scales and mins, plus a fifth bit per element
+ * from qh (element c*64 + l takes bit 2c of qh[l], c*64 + 32 + l bit
+ * 2c + 1), in dequant_q5_K_row's order (llama.cpp's Q5_K tiled unpack). */
+static void unpack_w_q5k(size_t                     n_super,
+                         size_t                     kb,
+                         size_t                     r0,
+                         int                        n,
+                         const struct block_q5_K_t *W,
+                         struct q4k_tiled_ws       *ws) {
+    const __m256i lo4 = _mm256_set1_epi8(0x0F), one = _mm256_set1_epi8(0x01);
+    for (int r = 0; r < n; r++) {
+        const struct block_q5_K_t *b = &W[(r0 + (size_t) r) * n_super + kb];
+        ws->w_d[r]                   = fp16_to_fp32(b->d);
+        ws->w_dmin[r]                = fp16_to_fp32(b->dmin);
+        for (int j = 0; j < 8; j++) {
+            int32_t s, m;
+            if (j < 4) {
+                s = b->scales[j] & 63;
+                m = b->scales[j + 4] & 63;
+            } else {
+                s = (b->scales[j + 4] & 15) | ((b->scales[j - 4] >> 6) << 4);
+                m = (b->scales[j + 4] >> 4) | ((b->scales[j] >> 6) << 4);
+            }
+            ws->w_scale[r * NSUB_MAX + j] = s;
+            ws->w_min[r * NSUB_MAX + j]   = m;
+        }
+        uint8_t      *q  = &ws->w_q[(size_t) r * TILE];
+        const __m256i qh = _mm256_loadu_si256((const __m256i *) b->qh);
+        for (int c = 0; c < 4; c++) {
+            const __m256i v = _mm256_loadu_si256((const __m256i *) (b->qs + 32 * c));
+            const __m256i hl =
+                    _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(qh, 2 * c), one), 4);
+            const __m256i hh =
+                    _mm256_slli_epi16(_mm256_and_si256(_mm256_srli_epi16(qh, 2 * c + 1), one), 4);
+            _mm256_storeu_si256((__m256i *) (q + 64 * c),
+                                _mm256_or_si256(_mm256_and_si256(v, lo4), hl));
+            _mm256_storeu_si256(
+                    (__m256i *) (q + 64 * c + 32),
+                    _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(v, 4), lo4), hh));
+        }
+    }
+}
+
 /* Activation rows [r0, r0 + n) of K block kb from Q8_Kx4: row r is lane
  * r % 4 of X[(r / 4) * n_super + kb], whose 64-element subblock sb keeps
  * the lane's 8-element stripe i at qs[sb * 256 + i * 32 + lane * 8].
@@ -183,6 +230,64 @@ static void unpack_a(size_t                     n_super,
             ws->a_bsum[g * TILE + r] = b->bsums[lane * 16 + g];
         }
         ws->a_d[r] = b->d[lane];
+    }
+}
+
+/* Weight rows [r0, r0 + n) of K block kb from GGUF Q4_0 (or Q4_1) bytes:
+ * eight 32-element blocks per K block, element j in the low nibble of
+ * qs[j] and j + 16 in the high one; d (and Q4_1's m) per block as float. */
+static void unpack_w_q4_0(
+        bool q4_1, size_t nb, size_t kb, size_t r0, int n, const void *W, struct q4k_tiled_ws *ws) {
+    const size_t  bytes = q4_1 ? sizeof(struct block_q4_1_t) : sizeof(struct block_q4_0_t);
+    const __m128i lo4   = _mm_set1_epi8(0x0F);
+    for (int r = 0; r < n; r++) {
+        const uint8_t *row = (const uint8_t *) W + ((r0 + (size_t) r) * nb + kb * 8) * bytes;
+        uint8_t       *q   = &ws->w_q[(size_t) r * TILE];
+        for (int b = 0; b < 8; b++) {
+            const uint8_t *blk = row + (size_t) b * bytes;
+            uint16_t       d, m = 0;
+            memcpy(&d, blk, 2);
+            if (q4_1) {
+                memcpy(&m, blk + 2, 2);
+            }
+            ws->w_fd[r * NSUB_MAX + b] = fp16_to_fp32(d);
+            ws->w_fm[r * NSUB_MAX + b] = fp16_to_fp32(m);
+            const __m128i v            = _mm_loadu_si128((const __m128i *) (blk + (q4_1 ? 4 : 2)));
+            _mm_storeu_si128((__m128i *) (q + 32 * b), _mm_and_si128(v, lo4));
+            _mm_storeu_si128((__m128i *) (q + 32 * b + 16),
+                             _mm_and_si128(_mm_srli_epi16(v, 4), lo4));
+        }
+    }
+}
+
+/* Activation rows [r0, r0 + n) of K block kb from per-row Q8_0 (int8
+ * codes, d and code sum per 32-element block); rows up to the next
+ * multiple of 16 are zeroed. */
+static void unpack_a_q8_0(size_t               nb,
+                          size_t               kb,
+                          size_t               r0,
+                          int                  n,
+                          const int8_t        *qx,
+                          const float         *dx,
+                          const int32_t       *sx,
+                          struct q4k_tiled_ws *ws) {
+    const int n_pad = (n + MICRO - 1) & ~(MICRO - 1);
+    for (int r = 0; r < n_pad; r++) {
+        int8_t *q = &ws->a_q[(size_t) r * TILE];
+        if (r >= n) {
+            memset(q, 0, TILE);
+            for (int b = 0; b < 8; b++) {
+                ws->a_bsum[b * TILE + r] = 0;
+                ws->a_fd[b * TILE + r]   = 0.0f;
+            }
+            continue;
+        }
+        const size_t row = r0 + (size_t) r;
+        memcpy(q, qx + row * nb * 32 + kb * TILE, TILE);
+        for (int b = 0; b < 8; b++) {
+            ws->a_bsum[b * TILE + r] = sx[row * nb + kb * 8 + (size_t) b];
+            ws->a_fd[b * TILE + r]   = dx[row * nb + kb * 8 + (size_t) b];
+        }
     }
 }
 
@@ -340,6 +445,63 @@ micro_8x16(int sub, bool mins, int bias, int i0, int j0, struct q4k_tiled_ws *ws
     }
 }
 
+/* The same 8x16 band for Q4_0 / Q4_1 x Q8_0: a float scale per 32-element
+ * block on both sides, so each block's exact int32 sum is scaled in float
+ * right away: Q4_0 w = d (q - 8) gives d dx (P - 8 S), Q4_1 w = d q + m
+ * gives d dx P + m dx S (P = sum q x, S = sum x, both exact). */
+static inline __attribute__((always_inline)) void
+micro_8x16_f(bool q4_1, int i0, int j0, struct q4k_tiled_ws *ws) {
+    enum { ROWS = 8 };
+    __m512 f[ROWS];
+    for (int t = 0; t < ROWS; t++) {
+        f[t] = _mm512_setzero_ps();
+    }
+    const uint8_t *band = (const uint8_t *) ws->a_q + (size_t) j0 * TILE;
+    for (int s = 0; s < 8; s++) {
+        __m512i acc[ROWS];
+        for (int t = 0; t < ROWS; t++) {
+            acc[t] = _mm512_setzero_si512();
+        }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC unroll 8
+#endif
+        for (int g = 0; g < 8; g++) {
+            const int     kg    = s * 8 + g;
+            const __m512i codes = _mm512_load_si512(
+                    (const void *) (band + (kg % MICRO) * TILE + (kg / MICRO) * (MICRO * 4)));
+            for (int t = 0; t < ROWS; t++) {
+                uint32_t w4;
+                memcpy(&w4, &ws->w_q[(size_t) (i0 + t) * TILE + kg * 4], 4);
+                acc[t] = _mm512_dpbusd_epi32(acc[t], _mm512_set1_epi32((int) w4), codes);
+            }
+        }
+        const __m512i asum = _mm512_load_si512((const void *) &ws->a_bsum[s * TILE + j0]);
+        const __m512  dx   = _mm512_load_ps(&ws->a_fd[s * TILE + j0]);
+        const __m512  sf   = _mm512_cvtepi32_ps(asum);
+        const __m512i bias = _mm512_slli_epi32(asum, 3); /* 8 S */
+        for (int t = 0; t < ROWS; t++) {
+            const int r = i0 + t;
+            if (q4_1) {
+                f[t] = _mm512_fmadd_ps(
+                        _mm512_cvtepi32_ps(acc[t]),
+                        _mm512_mul_ps(dx, _mm512_set1_ps(ws->w_fd[r * NSUB_MAX + s])),
+                        f[t]);
+                f[t] = _mm512_fmadd_ps(
+                        sf, _mm512_mul_ps(dx, _mm512_set1_ps(ws->w_fm[r * NSUB_MAX + s])), f[t]);
+            } else {
+                f[t] = _mm512_fmadd_ps(
+                        _mm512_cvtepi32_ps(_mm512_sub_epi32(acc[t], bias)),
+                        _mm512_mul_ps(dx, _mm512_set1_ps(ws->w_fd[r * NSUB_MAX + s])),
+                        f[t]);
+            }
+        }
+    }
+    for (int t = 0; t < ROWS; t++) {
+        float *p = &ws->acc[(size_t) (i0 + t) * TILE + j0];
+        _mm512_store_ps(p, _mm512_add_ps(_mm512_load_ps(p), f[t]));
+    }
+}
+
 /* Y[a0 + j][w0 + i] = acc[i][j], i < n_w, j < n_a. */
 static void
 store_window(int n_w, int n_a, size_t w0, size_t a0, size_t N, const float *acc, float *Y) {
@@ -351,17 +513,22 @@ store_window(int n_w, int n_a, size_t w0, size_t a0, size_t N, const float *acc,
     }
 }
 
-enum tiled_format { TILED_Q4KX8, TILED_Q6K };
+enum tiled_format { TILED_Q4KX8, TILED_Q5K, TILED_Q6K, TILED_Q4_0, TILED_Q4_1 };
 
 struct tiled_job {
     enum tiled_format          format;
     size_t                     M, N, n_super;
     size_t                     dw, da, nchunk_w;
     const struct block_q8_Kx4 *X;
-    const void                *W; /* block_q4_Kx8 or block_q6_K_t */
-    float                     *Y;
-    struct cpu_x86_state      *st;
-    atomic_bool                failed;
+    const void                *W; /* block_q4_Kx8, block_q5_K_t, block_q6_K_t, Q4_0, Q4_1 */
+    /* Q4_0 / Q4_1: per-row Q8_0 activations, nb32 blocks of 32 per row. */
+    const int8_t         *qx;
+    const float          *dx;
+    const int32_t        *sx;
+    size_t                nb32;
+    float                *Y;
+    struct cpu_x86_state *st;
+    atomic_bool           failed;
 };
 
 /* One chunk: weight rows [w_lo, w_hi) x activation rows [a_lo, a_hi), in
@@ -377,10 +544,30 @@ static void run_chunk(size_t                  w_lo,
         for (size_t w0 = w_lo; w0 < w_hi; w0 += TILE) {
             const int n_w = (int) (w_hi - w0 < TILE ? w_hi - w0 : TILE);
             memset(ws->acc, 0, sizeof ws->acc);
-            for (size_t kb = 0; kb < j->n_super; kb++) {
+            const bool f32s = j->format == TILED_Q4_0 || j->format == TILED_Q4_1;
+            for (size_t kb = 0; f32s && kb < j->n_super; kb++) {
+                const bool q4_1 = j->format == TILED_Q4_1;
+                unpack_w_q4_0(q4_1, j->nb32, kb, w0, n_w, j->W, ws);
+                unpack_a_q8_0(j->nb32, kb, a0, n_a, j->qx, j->dx, j->sx, ws);
+                for (int j0 = 0; j0 < n_a; j0 += MICRO) {
+                    band_interleave(j0, ws);
+                    for (int i0 = 0; i0 < n_w; i0 += MICRO) {
+                        if (q4_1) {
+                            micro_8x16_f(true, i0, j0, ws);
+                            micro_8x16_f(true, i0 + 8, j0, ws);
+                        } else {
+                            micro_8x16_f(false, i0, j0, ws);
+                            micro_8x16_f(false, i0 + 8, j0, ws);
+                        }
+                    }
+                }
+            }
+            for (size_t kb = 0; !f32s && kb < j->n_super; kb++) {
                 const bool q6k = j->format == TILED_Q6K;
                 if (q6k) {
                     unpack_w_q6k(j->n_super, kb, w0, n_w, j->W, ws);
+                } else if (j->format == TILED_Q5K) {
+                    unpack_w_q5k(j->n_super, kb, w0, n_w, j->W, ws);
                 } else {
                     unpack_w(j->n_super, kb, w0, n_w, j->W, ws);
                 }
@@ -427,6 +614,9 @@ static bool tiled_gemm(enum tiled_format          format,
                        size_t                     N,
                        size_t                     K,
                        const struct block_q8_Kx4 *X,
+                       const int8_t              *qx,
+                       const float               *dx,
+                       const int32_t             *sx,
                        const void                *W,
                        float                     *Y,
                        struct cpu_x86_state      *st) {
@@ -449,6 +639,10 @@ static bool tiled_gemm(enum tiled_format          format,
             .da       = chunk,
             .nchunk_w = ncw,
             .X        = X,
+            .qx       = qx,
+            .dx       = dx,
+            .sx       = sx,
+            .nb32     = K / 32,
             .W        = W,
             .Y        = Y,
             .st       = st,
@@ -465,7 +659,7 @@ bool q4k_tiled_gemm_avx512_vnni(size_t                     M,
                                 const struct block_q4_Kx8 *W,
                                 float                     *Y,
                                 struct cpu_x86_state      *st) {
-    return tiled_gemm(TILED_Q4KX8, M, N, K, X, W, Y, st);
+    return tiled_gemm(TILED_Q4KX8, M, N, K, X, nullptr, nullptr, nullptr, W, Y, st);
 }
 
 bool q6k_tiled_gemm_avx512_vnni(size_t                     M,
@@ -475,5 +669,28 @@ bool q6k_tiled_gemm_avx512_vnni(size_t                     M,
                                 const struct block_q6_K_t *W,
                                 float                     *Y,
                                 struct cpu_x86_state      *st) {
-    return tiled_gemm(TILED_Q6K, M, N, K, X, W, Y, st);
+    return tiled_gemm(TILED_Q6K, M, N, K, X, nullptr, nullptr, nullptr, W, Y, st);
+}
+
+bool q5k_tiled_gemm_avx512_vnni(size_t                     M,
+                                size_t                     N,
+                                size_t                     K,
+                                const struct block_q8_Kx4 *X,
+                                const struct block_q5_K_t *W,
+                                float                     *Y,
+                                struct cpu_x86_state      *st) {
+    return tiled_gemm(TILED_Q5K, M, N, K, X, nullptr, nullptr, nullptr, W, Y, st);
+}
+
+bool q4_0_tiled_gemm_avx512_vnni(size_t                M,
+                                 size_t                N,
+                                 size_t                K,
+                                 const int8_t         *qx,
+                                 const float          *dx,
+                                 const int32_t        *sx,
+                                 const void           *W,
+                                 bool                  q4_1,
+                                 float                *Y,
+                                 struct cpu_x86_state *st) {
+    return tiled_gemm(q4_1 ? TILED_Q4_1 : TILED_Q4_0, M, N, K, nullptr, qx, dx, sx, W, Y, st);
 }

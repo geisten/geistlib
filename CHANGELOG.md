@@ -23,6 +23,15 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **x86 prefill on Q4_0 models about 2x faster: the tiled int8 GEMM covers
+  Q4_0, Q4_1 and Q5_K (#18).** On AVX-512 VNNI hosts, Q4_0 / Q4_1 weights are
+  read from the GGUF bytes into the same int8 tiles; the per-32-block scales
+  of weights and Q8_0 activations stay per block, so the integer block sums
+  are the register-tile kernel's. AMD 9950X, prefill 512: Qwen3.5 4B Q4_0
+  2022 -> 986 ms, Qwen3.8 27B Q4_0 13094 -> 5074 ms (about 101 tok/s;
+  llama.cpp 54); decode unchanged. Logits stay as close to the cpu_scalar
+  oracle as before. GEIST_Q4_0_TILED=0 / GEIST_Q5K_TILED=0 restore the
+  previous kernels.
 - **x86: Q6_K prefill from the GGUF bytes, no W8A8 predecode on AVX-512
   VNNI (#18).** The tiled int8 GEMM now covers Q6_K too, at the speed of
   the predecode GEMM it replaces, so those hosts no longer keep the 1.5 B/wt

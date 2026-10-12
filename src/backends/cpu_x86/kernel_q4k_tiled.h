@@ -52,4 +52,29 @@
                                               float                     *Y,
                                               struct cpu_x86_state      *st);
 
+/* The same for GGUF Q5_K weights (row-major, any N). */
+[[nodiscard]] bool q5k_tiled_gemm_avx512_vnni(size_t                     M,
+                                              size_t                     N,
+                                              size_t                     K,
+                                              const struct block_q8_Kx4 *X,
+                                              const struct block_q5_K_t *W,
+                                              float                     *Y,
+                                              struct cpu_x86_state      *st);
+
+/* GGUF Q4_0 (or, with q4_1, Q4_1) weights x per-row Q8_0 activations:
+ * qx int8 [M][K], dx and sx (d and code sum of each 32-element block)
+ * [M][K / 32]. Any M and N, K a multiple of 256. The per-32-block scales
+ * stay per block on both sides, so the integer block sums are the Q4_0
+ * kernels' and only the float summation order differs. */
+[[nodiscard]] bool q4_0_tiled_gemm_avx512_vnni(size_t                M,
+                                               size_t                N,
+                                               size_t                K,
+                                               const int8_t         *qx,
+                                               const float          *dx,
+                                               const int32_t        *sx,
+                                               const void           *W,
+                                               bool                  q4_1,
+                                               float                *Y,
+                                               struct cpu_x86_state *st);
+
 #endif /* GEIST_CPU_X86_KERNEL_Q4K_TILED_H */

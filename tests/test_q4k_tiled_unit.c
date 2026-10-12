@@ -198,15 +198,17 @@ static float act_at(size_t K, const struct block_q8_Kx4 *xq, size_t r, size_t k)
            (float) (int8_t) b->qs[(e / 64) * 256 + ((e % 64) / 8) * 32 + lane * 8 + e % 8];
 }
 
-static int check_q6k(size_t M, size_t N, size_t K, struct cpu_x86_state *st) {
+/* q5k: Q5_K instead of Q6_K. */
+static int check_raw(bool q5k, size_t M, size_t N, size_t K, struct cpu_x86_state *st) {
     const size_t         n_super = K / 256;
     uint32_t             s       = 0x5EEDu ^ (uint32_t) (M * 31 + N * 3 + K);
     struct block_q6_K_t *wq      = calloc(N * n_super, sizeof *wq);
+    struct block_q5_K_t *w5      = calloc(N * n_super, sizeof *w5);
     float               *wf      = malloc(N * K * sizeof *wf);
     float               *x       = malloc(M * K * sizeof *x);
     struct block_q8_Kx4 *xq      = calloc(M / 4 * n_super, sizeof *xq);
     float               *got     = malloc(M * N * sizeof *got);
-    if (!wq || !wf || !x || !xq || !got) {
+    if (!wq || !w5 || !wf || !x || !xq || !got) {
         fprintf(stderr, "FAIL: allocation\n");
         exit(GEIST_TEST_FAIL);
     }
@@ -222,8 +224,28 @@ static int check_q6k(size_t M, size_t N, size_t K, struct cpu_x86_state *st) {
         }
         wq[b].d = fp32_to_fp16(0.0005f + 0.002f * (float) (prng_next(&s) & 0xFFFF) / 65536.0f);
     }
+    for (size_t b = 0; b < N * n_super; b++) {
+        w5[b].d    = fp32_to_fp16(0.002f + 0.004f * (float) (prng_next(&s) & 0xFFFF) / 65536.0f);
+        w5[b].dmin = fp32_to_fp16(0.001f + 0.003f * (float) (prng_next(&s) & 0xFFFF) / 65536.0f);
+        for (int sb = 0; sb < 8; sb++) {
+            set_scale_min_k4(sb,
+                             w5[b].scales,
+                             (uint8_t) (prng_next(&s) & 0x3F),
+                             (uint8_t) (prng_next(&s) & 0x3F));
+        }
+        for (int i = 0; i < 32; i++) {
+            w5[b].qh[i] = (uint8_t) prng_next(&s);
+        }
+        for (int i = 0; i < 128; i++) {
+            w5[b].qs[i] = (uint8_t) prng_next(&s);
+        }
+    }
     for (size_t r = 0; r < N; r++) {
-        dequant_q6_K_row(K, &wq[r * n_super], wf + r * K);
+        if (q5k) {
+            dequant_q5_K_row(K, &w5[r * n_super], wf + r * K);
+        } else {
+            dequant_q6_K_row(K, &wq[r * n_super], wf + r * K);
+        }
     }
     for (size_t i = 0; i < M * K; i++) {
         x[i] = prng_uniform_pm1(prng_next(&s));
@@ -235,8 +257,14 @@ static int check_q6k(size_t M, size_t N, size_t K, struct cpu_x86_state *st) {
         got[i] = NAN;
     }
     int fails = 0;
-    if (!q6k_tiled_gemm_avx512_vnni(M, N, K, xq, wq, got, st)) {
-        fprintf(stderr, "FAIL: Q6_K M=%zu N=%zu K=%zu: workspace failure\n", M, N, K);
+    if (!(q5k ? q5k_tiled_gemm_avx512_vnni(M, N, K, xq, w5, got, st)
+              : q6k_tiled_gemm_avx512_vnni(M, N, K, xq, wq, got, st))) {
+        fprintf(stderr,
+                "FAIL: %s M=%zu N=%zu K=%zu: workspace failure\n",
+                q5k ? "Q5_K" : "Q6_K",
+                M,
+                N,
+                K);
         fails = 1;
     }
     double worst = 0.0, rms = 0.0;
@@ -258,7 +286,8 @@ static int check_q6k(size_t M, size_t N, size_t K, struct cpu_x86_state *st) {
     rms = sqrt(rms / (double) (M * N));
     if (!fails && !(worst <= 1e-4 * (rms + 1e-6))) {
         fprintf(stderr,
-                "FAIL: Q6_K M=%zu N=%zu K=%zu: Y[%zu,%zu] = %.9g, |d| %.3g > 1e-4 * rms %.3g\n",
+                "FAIL: %s M=%zu N=%zu K=%zu: Y[%zu,%zu] = %.9g, |d| %.3g > 1e-4 * rms %.3g\n",
+                q5k ? "Q5_K" : "Q6_K",
                 M,
                 N,
                 K,
@@ -269,7 +298,8 @@ static int check_q6k(size_t M, size_t N, size_t K, struct cpu_x86_state *st) {
                 rms);
         fails = 1;
     }
-    printf("  Q6_K M=%4zu N=%4zu K=%4zu: max |d| %.3g (rms %.3g) %s\n",
+    printf("  %s M=%4zu N=%4zu K=%4zu: max |d| %.3g (rms %.3g) %s\n",
+           q5k ? "Q5_K" : "Q6_K",
            M,
            N,
            K,
@@ -277,9 +307,120 @@ static int check_q6k(size_t M, size_t N, size_t K, struct cpu_x86_state *st) {
            rms,
            fails ? "FAIL" : "ok");
     free(wq);
+    free(w5);
     free(wf);
     free(x);
     free(xq);
+    free(got);
+    return fails;
+}
+
+/* Q4_0 (q4_1: Q4_1) x per-row Q8_0, against the double product of the
+ * dequantized weights and activations. */
+static int check_q4_0(bool q4_1, size_t M, size_t N, size_t K, struct cpu_x86_state *st) {
+    const size_t nb  = K / 32;
+    const size_t bsz = q4_1 ? sizeof(struct block_q4_1_t) : sizeof(struct block_q4_0_t);
+    uint32_t     s   = 0xA11CEu ^ (uint32_t) (M * 7 + N * 13 + K + (q4_1 ? 1 : 0));
+    uint8_t     *w   = calloc(N * nb, bsz);
+    float       *wf  = malloc(N * K * sizeof *wf);
+    int8_t      *qx  = malloc(M * K);
+    float       *dx  = malloc(M * nb * sizeof *dx);
+    int32_t     *sx  = malloc(M * nb * sizeof *sx);
+    float       *got = malloc(M * N * sizeof *got);
+    if (!w || !wf || !qx || !dx || !sx || !got) {
+        fprintf(stderr, "FAIL: allocation\n");
+        exit(GEIST_TEST_FAIL);
+    }
+    for (size_t b = 0; b < N * nb; b++) {
+        uint8_t       *blk = w + b * bsz;
+        const uint16_t d =
+                fp32_to_fp16(0.004f + 0.01f * (float) (prng_next(&s) & 0xFFFF) / 65536.0f);
+        memcpy(blk, &d, 2);
+        if (q4_1) {
+            const uint16_t m = fp32_to_fp16(-0.05f * (float) (prng_next(&s) & 0xFFFF) / 65536.0f);
+            memcpy(blk + 2, &m, 2);
+        }
+        for (int i = 0; i < 16; i++) {
+            blk[(q4_1 ? 4 : 2) + i] = (uint8_t) prng_next(&s);
+        }
+    }
+    for (size_t r = 0; r < N; r++) {
+        if (q4_1) {
+            dequant_q4_1_row(K, w + r * nb * bsz, wf + r * K);
+        } else {
+            dequant_q4_0_row(K, w + r * nb * bsz, wf + r * K);
+        }
+    }
+    for (size_t r = 0; r < M; r++) {
+        for (size_t b = 0; b < nb; b++) {
+            float x[32], amax = 0.0f;
+            for (int i = 0; i < 32; i++) {
+                x[i] = prng_uniform_pm1(prng_next(&s));
+                amax = fmaxf(amax, fabsf(x[i]));
+            }
+            const float d   = amax / 127.0f;
+            int32_t     sum = 0;
+            for (int i = 0; i < 32; i++) {
+                const int8_t q         = (int8_t) lrintf(d != 0.0f ? x[i] / d : 0.0f);
+                qx[r * K + b * 32 + i] = q;
+                sum += q;
+            }
+            dx[r * nb + b] = d;
+            sx[r * nb + b] = sum;
+        }
+    }
+    for (size_t i = 0; i < M * N; i++) {
+        got[i] = NAN;
+    }
+    int fails = 0;
+    if (!q4_0_tiled_gemm_avx512_vnni(M, N, K, qx, dx, sx, w, q4_1, got, st)) {
+        fprintf(stderr, "FAIL: %s: workspace failure\n", q4_1 ? "Q4_1" : "Q4_0");
+        fails = 1;
+    }
+    double worst = 0.0, rms = 0.0;
+    size_t wi = 0;
+    for (size_t i = 0; i < M && !fails; i++) {
+        for (size_t j = 0; j < N; j++) {
+            double ref = 0.0;
+            for (size_t k = 0; k < K; k++) {
+                ref += (double) dx[i * nb + k / 32] * qx[i * K + k] * wf[j * K + k];
+            }
+            rms += ref * ref;
+            const double d = fabs((double) got[i * N + j] - ref);
+            if (!(d <= worst)) {
+                worst = isnan(d) ? INFINITY : d;
+                wi    = i * N + j;
+            }
+        }
+    }
+    rms = sqrt(rms / (double) (M * N));
+    if (!fails && !(worst <= 1e-4 * (rms + 1e-6))) {
+        fprintf(stderr,
+                "FAIL: %s M=%zu N=%zu K=%zu: Y[%zu,%zu] = %.9g, |d| %.3g > 1e-4 * rms %.3g\n",
+                q4_1 ? "Q4_1" : "Q4_0",
+                M,
+                N,
+                K,
+                wi / N,
+                wi % N,
+                (double) got[wi],
+                worst,
+                rms);
+        fails = 1;
+    }
+    printf("  %s M=%4zu N=%4zu K=%4zu: max |d| %.3g (rms %.3g) %s\n",
+           q4_1 ? "Q4_1" : "Q4_0",
+           M,
+           N,
+           K,
+           worst,
+           rms,
+           fails ? "FAIL" : "ok");
+    free(w);
+    free(wf);
+    free(qx);
+    free(dx);
+    free(sx);
     free(got);
     return fails;
 }
@@ -308,7 +449,18 @@ int main(void) {
             {260, 257, 768},
     };
     for (size_t i = 0; i < sizeof q6k_shapes / sizeof q6k_shapes[0]; i++) {
-        fails += check_q6k(q6k_shapes[i][0], q6k_shapes[i][1], q6k_shapes[i][2], &st);
+        fails += check_raw(false, q6k_shapes[i][0], q6k_shapes[i][1], q6k_shapes[i][2], &st);
+        fails += check_raw(true, q6k_shapes[i][0], q6k_shapes[i][1], q6k_shapes[i][2], &st);
+    }
+    static const size_t q40_shapes[][3] = {
+            {16, 16, 256},
+            {17, 40, 256},
+            {64, 136, 512},
+            {261, 257, 768},
+    };
+    for (size_t i = 0; i < sizeof q40_shapes / sizeof q40_shapes[0]; i++) {
+        fails += check_q4_0(false, q40_shapes[i][0], q40_shapes[i][1], q40_shapes[i][2], &st);
+        fails += check_q4_0(true, q40_shapes[i][0], q40_shapes[i][1], q40_shapes[i][2], &st);
     }
     cpu_x86_ws_destroy_all(&st);
     printf("test_q4k_tiled_unit: %s\n", fails ? "FAIL" : "PASS");
