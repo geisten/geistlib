@@ -40,7 +40,10 @@ the pinned llama.cpp (`scripts/ensure-llama-bench.sh`) and runs
 on the desktop (the docker CI runner's health check pauses it while held),
 `with-pi-lock` on the Pi, `~/bin/with-mac-lock` on the Mac (`/tmp/mac-heavy.lock`; the
 `mac-m1max` runner's hooks hold it for every job and its health check takes no
-job while an agent holds it).
+job while an agent holds it). The Apple profiles gate on idle CPU (>= 80 %
+over the settle window) instead of the load average, which macOS on a shared
+desktop never brings near 0.2/core, and measure a run again when its repeats
+spread by more than 5 % (`host_gate` in the protocol's host profile).
 Runs go to `https://geisten.net/bench/runs/<column>/<model>/` (org secret
 `BENCH_SSH_KEY`, rrsync-restricted to that directory); the publish job
 rebuilds `index.html`/`history.json` and fails when geist slowed by more than

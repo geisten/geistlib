@@ -20,11 +20,19 @@ fi
 BUILD="$DIR/build-$VARIANT"
 
 {
-if [ ! -x "$BUILD/bin/llama-bench" ] || [ "$(git -C "$DIR" rev-parse HEAD)" != "$(git -C "$DIR" rev-parse "$PIN^{commit}" 2>/dev/null)" ]; then
+# Each build directory records the commit it was built from: the variants
+# share one checkout, so a checkout already at the pin says nothing about a
+# build-vulkan last built at an older pin (bench-matrix run 850: every
+# upstream Vulkan cell refused its stale llama-bench).
+WANT=$(git -C "$DIR" rev-parse "$PIN^{commit}" 2>/dev/null || true)
+if [ ! -x "$BUILD/bin/llama-bench" ] || [ -z "$WANT" ] ||
+   [ "$(cat "$BUILD/.geist-built-from" 2>/dev/null)" != "$WANT" ] ||
+   [ "$(git -C "$DIR" rev-parse HEAD)" != "$WANT" ]; then
     [ -d "$DIR/.git" ] || git clone "https://github.com/$REPO" "$DIR"
     # A full SHA fetches directly; a short one or a branch needs the history.
     git -C "$DIR" fetch origin "$PIN" 2>/dev/null || git -C "$DIR" fetch origin
     git -C "$DIR" checkout -q "$PIN"
+    rm -f "$BUILD/.geist-built-from"
     case $VARIANT in
     vulkan)
         # ggml-vulkan #includes spirv/unified1/spirv.hpp directly, so the
@@ -54,6 +62,7 @@ if [ ! -x "$BUILD/bin/llama-bench" ] || [ "$(git -C "$DIR" rev-parse HEAD)" != "
     MEM_JOBS=$(( MEM / 1536 / 1048576 ))
     JOBS=$(( MEM_JOBS < CORES ? MEM_JOBS : CORES ))
     cmake --build "$BUILD" --target llama-bench -j "$(( JOBS > 0 ? JOBS : 1 ))"
+    git -C "$DIR" rev-parse HEAD > "$BUILD/.geist-built-from"
 fi
 echo "llama.cpp $REPO @ $(git -C "$DIR" rev-parse HEAD) ($VARIANT)"
 } >&2

@@ -133,6 +133,42 @@ def machine_state() -> dict:
     }
 
 
+def cpu_idle_pct(seconds: float = 3.0) -> float | None:
+    """Share of all cores idle over the next `seconds`, or None where it
+    cannot be read. macOS: top's second sample (the first covers the time
+    since boot); Linux: two /proc/stat snapshots."""
+    if platform.system() == "Darwin":
+        out = command_output(["top", "-l", "2", "-n", "0", "-s", str(max(1, round(seconds)))])
+        lines = [line for line in out.splitlines() if line.startswith("CPU usage:")]
+        if len(lines) < 2:
+            return None
+        try:
+            return float(lines[-1].split(",")[2].split("%")[0])
+        except (IndexError, ValueError):
+            return None
+    try:
+        def snap() -> list[int]:
+            with open("/proc/stat") as fh:
+                return [int(v) for v in fh.readline().split()[1:]]
+        a = snap()
+        time.sleep(seconds)
+        b = snap()
+    except (OSError, ValueError):
+        return None
+    delta = [y - x for x, y in zip(a, b)]
+    total = sum(delta)
+    return 100.0 * (delta[3] + delta[4]) / total if total > 0 else None
+
+
+def host_is_quiet(state: dict, gate: dict) -> bool:
+    """min_cpu_idle_pct, where a profile sets it, replaces the load-average
+    test: macOS on an interactive desktop never shows a load average near the
+    Linux hosts' (2026-10-12: load 4-8 at 73 % idle on the M1 Max)."""
+    if "min_cpu_idle_pct" in gate:
+        return state.get("cpu_idle_pct") is not None and state["cpu_idle_pct"] >= gate["min_cpu_idle_pct"]
+    return state["load_per_core"] <= gate["max_load_per_core"]
+
+
 def read_millic(sensor: str):
     try:
         with open(sensor) as fh:
@@ -160,39 +196,63 @@ def wait_for_temp(gate: dict) -> None:
         millic = read_millic(tg["sensor"])
 
 
+def gate_state(gate: dict) -> dict:
+    state = machine_state()
+    if "min_cpu_idle_pct" in gate:
+        state["cpu_idle_pct"] = cpu_idle_pct()
+    return state
+
+
 def wait_for_quiet(gate: dict) -> dict:
     wait_for_temp(gate)
     deadline = time.monotonic() + gate["timeout_seconds"]
     quiet_since: float | None = None
     last_report = float("-inf")
     while True:
-        state = machine_state()
+        state = gate_state(gate)
         now = time.monotonic()
-        if state["load_per_core"] <= gate["max_load_per_core"]:
+        if host_is_quiet(state, gate):
             quiet_since = quiet_since or now
             if now - quiet_since >= gate["settle_seconds"]:
                 print(f"  cooldown {gate['cooldown_seconds']}s", file=sys.stderr, flush=True)
                 time.sleep(gate["cooldown_seconds"])
-                state = machine_state()
-                if state["load_per_core"] <= gate["max_load_per_core"]:
+                state = gate_state(gate)
+                if host_is_quiet(state, gate):
                     return state
                 quiet_since = None
         else:
             quiet_since = None
+        idle = state.get("cpu_idle_pct")
         if now >= deadline:
             raise TimeoutError(
-                f"host did not become quiet: load/core={state['load_per_core']:.3f}, "
-                f"limit={gate['max_load_per_core']:.3f}"
+                f"host did not become quiet: load/core={state['load_per_core']:.3f}"
+                + (f", idle={idle:.1f} %" if idle is not None else "")
+                + f", gate={ {k: v for k, v in gate.items() if k != 'temp_gate'} }"
             )
         if now - last_report >= 60:
             print(
                 f"  waiting for quiet host: load {state['load_1m']:.2f} "
-                f"({state['load_per_core']:.3f}/core)",
+                f"({state['load_per_core']:.3f}/core)"
+                + (f", {idle:.1f} % idle" if idle is not None else ""),
                 file=sys.stderr,
                 flush=True,
             )
             last_report = now
         time.sleep(10)
+
+
+def repeat_spread_pct(result: dict) -> float:
+    """Largest (max - min) / median over one run's repeats, prefill and
+    decode, every sequence length: what other work on the host does to a
+    run that the gate before it cannot see."""
+    worst = 0.0
+    for row in result["rows"]:
+        for key in ("prefill_tps", "decode_tps"):
+            values = row[key]
+            mid = statistics.median(values)
+            if mid > 0:
+                worst = max(worst, (max(values) - min(values)) / mid * 100.0)
+    return worst
 
 
 def run_command(command: list[str], env: dict[str, str] | None = None) -> tuple[list[dict], list[str], float]:
@@ -502,7 +562,10 @@ def main() -> int:
     profile = protocol["host_profiles"][args.host_profile]
     workload = {**protocol["workload"], **profile, "host_profile": args.host_profile}
     metadata["host_profile"] = args.host_profile
-    gate = protocol["host_gate"]
+    # A profile may refine the gate for its host (the Apple profiles: idle
+    # CPU instead of load average, and a per-run spread limit).
+    gate = {**protocol["host_gate"], **profile.get("host_gate", {})}
+    metadata["host_gate"] = gate
     schedule = build_schedule(engines, workload["cycles"])
     if args.resume is not None:
         partial = args.resume.expanduser().resolve()
@@ -535,16 +598,28 @@ def main() -> int:
         stream.flush()
         for cycle, position, engine in schedule[len(runs):]:
             print(f"cycle {cycle + 1}/{workload['cycles']}: {engine['label']}", file=sys.stderr, flush=True)
+            discarded = []
             try:
-                before = wait_for_quiet(gate)
-                result = (run_geist(engine, model, workload) if engine["kind"] == "geist"
-                          else run_llama(engine, model, workload, cycle))
+                while True:
+                    before = wait_for_quiet(gate)
+                    result = (run_geist(engine, model, workload) if engine["kind"] == "geist"
+                              else run_llama(engine, model, workload, cycle))
+                    limit = gate.get("max_repeat_spread_pct")
+                    spread = repeat_spread_pct(result)
+                    if limit is None or spread <= limit:
+                        break
+                    discarded.append(round(spread, 2))
+                    print(f"  repeat spread {spread:.1f} % > {limit} %: host disturbed, measuring again",
+                          file=sys.stderr, flush=True)
+                    if len(discarded) > gate.get("max_retries", 3):
+                        raise RuntimeError(f"repeat spread stayed above {limit} %: {discarded}")
             except (RuntimeError, TimeoutError) as error:
                 print(f"ERROR: {error}", file=sys.stderr)
                 return ERROR
             run = {"kind": "run", "cycle": cycle, "position": position,
                    "engine": engine["label"], "machine_before": before,
-                   "machine_after": machine_state(), **result}
+                   "machine_after": machine_state(), **result,
+                   **({"discarded_spread_pct": discarded} if discarded else {})}
             runs.append(run)
             stream.write(json.dumps(run, sort_keys=True) + "\n")
             stream.flush()
