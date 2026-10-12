@@ -11,11 +11,18 @@
 
 #include <math.h>
 #include <stdalign.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
 #ifndef GEIST_ENABLE_DECISION
 #define GEIST_ENABLE_DECISION 0
+#endif
+#ifndef GEIST_ENABLE_DECISION_CONTEXT
+#define GEIST_ENABLE_DECISION_CONTEXT 0
+#endif
+#if GEIST_ENABLE_DECISION_CONTEXT && !GEIST_ENABLE_DECISION
+#error "DECISION_CONTEXT=1 requires DECISION=1"
 #endif
 
 static void clear_result(struct geist_decision_result *out) {
@@ -33,6 +40,8 @@ static void clear_result(struct geist_decision_result *out) {
 #endif
 
 struct geist_decision {
+    const struct geist_model            *model;
+    const struct geist_backend          *backend;
     struct geist_session                *session;
     const struct geist_arch_ops_decoder *ops;
     void                                *readout;
@@ -142,6 +151,8 @@ bool geist_decision_mode_supported(const struct geist_model *m, enum geist_decis
                 GEIST_E_OOM, "geist_decision_create", "decision allocation failed");
         return GEIST_E_OOM;
     }
+    d->model                = m;
+    d->backend              = be;
     d->ops                  = m->text_decoder.arch_ops;
     d->mode                 = o.mode;
     d->max_prompt           = prompt_cap;
@@ -212,32 +223,26 @@ const char *geist_decision_errmsg(const struct geist_decision *d) {
     return d != nullptr ? (d->error[0] != '\0' ? d->error : "(no error)") : "null decision";
 }
 
-[[nodiscard]] enum geist_status geist_decision_score(struct geist_decision        *d,
-                                                     size_t                        n_prompt,
-                                                     size_t                        n_candidates,
-                                                     const geist_token_t          *prompt_ids,
-                                                     const geist_token_t          *candidate_ids,
-                                                     struct geist_decision_result *out) {
-    clear_result(out);
-    if (d == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    d->error[0] = '\0';
-    if (out == nullptr || prompt_ids == nullptr || candidate_ids == nullptr || n_prompt == 0 ||
-        n_candidates == 0 || n_candidates > d->max_candidates) {
-        return fail(d, GEIST_E_INVALID_ARG, "invalid input or candidate capacity exceeded");
-    }
-    if (n_prompt > d->max_prompt) {
-        return fail(d, GEIST_E_TOO_MANY_TOKENS, "prompt capacity exceeded");
-    }
-    for (size_t i = 0; i < n_prompt; i++) {
-        if (prompt_ids[i] < 0 || (size_t) prompt_ids[i] >= d->vocab) {
-            return fail(d, GEIST_E_INVALID_ARG, "prompt token outside logits vocabulary");
+[[nodiscard]] static enum geist_status check_tokens(struct geist_decision *d,
+                                                    size_t                 n,
+                                                    const geist_token_t    ids[static n],
+                                                    const char            *why) {
+    for (size_t i = 0; i < n; i++) {
+        if (ids[i] < 0 || (size_t) ids[i] >= d->vocab) {
+            return fail(d, GEIST_E_INVALID_ARG, why);
         }
     }
+    return GEIST_OK;
+}
+
+/* Candidate IDs in the vocabulary and distinct (open addressing in seen). */
+[[nodiscard]] static enum geist_status
+check_candidates(struct geist_decision *d,
+                 size_t                 n_candidates,
+                 const geist_token_t    ids[static n_candidates]) {
     memset(d->seen, 0xff, d->seen_bytes);
     for (size_t i = 0; i < n_candidates; i++) {
-        const geist_token_t id = candidate_ids[i];
+        const geist_token_t id = ids[i];
         if (id < 0 || (size_t) id >= d->vocab) {
             return fail(d, GEIST_E_INVALID_ARG, "candidate token outside logits vocabulary");
         }
@@ -250,31 +255,20 @@ const char *geist_decision_errmsg(const struct geist_decision *d) {
         }
         d->seen[slot] = id;
     }
-    size_t            projected_rows = d->vocab;
-    size_t            readback_bytes = d->dense_readback_bytes;
-    uint64_t          head_ns        = 0;
-    enum geist_status status         = decision_reset(d);
-    if (status == GEIST_OK) {
-        if (d->mode == GEIST_DECISION_SELECTED_ROWS) {
-            status = d->ops->prefill_rows(&projected_rows,
-                                          &readback_bytes,
-                                          &head_ns,
-                                          d->readout,
-                                          n_prompt,
-                                          n_candidates,
-                                          prompt_ids,
-                                          candidate_ids,
-                                          d->logits);
-        } else {
-            status = geist_session_prefill_tokens(d->session, n_prompt, prompt_ids);
-        }
-    }
-    if (status != GEIST_OK) {
-        return fail(d,
-                    status,
-                    d->mode == GEIST_DECISION_SELECTED_ROWS ? "selected-row prefill/readout failed"
-                                                            : geist_session_errmsg(d->session));
-    }
+    return GEIST_OK;
+}
+
+/* Reads the candidates' logits (from the session's DENSE logits, or from
+ * d->logits where SELECTED_ROWS already wrote them), normalizes over them
+ * and fills *out. */
+[[nodiscard]] static enum geist_status
+finish(struct geist_decision        *d,
+       size_t                        n_candidates,
+       const geist_token_t           candidate_ids[static n_candidates],
+       size_t                        projected_rows,
+       size_t                        readback_bytes,
+       uint64_t                      head_ns,
+       struct geist_decision_result *out) {
     const float *logits = nullptr;
     if (d->mode == GEIST_DECISION_DENSE) {
         size_t n_logits = 0;
@@ -318,6 +312,60 @@ const char *geist_decision_errmsg(const struct geist_decision *d) {
             .best_index           = best,
     };
     return GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status geist_decision_score(struct geist_decision        *d,
+                                                     size_t                        n_prompt,
+                                                     size_t                        n_candidates,
+                                                     const geist_token_t          *prompt_ids,
+                                                     const geist_token_t          *candidate_ids,
+                                                     struct geist_decision_result *out) {
+    clear_result(out);
+    if (d == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    d->error[0] = '\0';
+    if (out == nullptr || prompt_ids == nullptr || candidate_ids == nullptr || n_prompt == 0 ||
+        n_candidates == 0 || n_candidates > d->max_candidates) {
+        return fail(d, GEIST_E_INVALID_ARG, "invalid input or candidate capacity exceeded");
+    }
+    if (n_prompt > d->max_prompt) {
+        return fail(d, GEIST_E_TOO_MANY_TOKENS, "prompt capacity exceeded");
+    }
+    enum geist_status status =
+            check_tokens(d, n_prompt, prompt_ids, "prompt token outside logits vocabulary");
+    if (status == GEIST_OK) {
+        status = check_candidates(d, n_candidates, candidate_ids);
+    }
+    if (status != GEIST_OK) {
+        return status;
+    }
+    size_t   projected_rows = d->vocab;
+    size_t   readback_bytes = d->dense_readback_bytes;
+    uint64_t head_ns        = 0;
+    status                  = decision_reset(d);
+    if (status == GEIST_OK) {
+        if (d->mode == GEIST_DECISION_SELECTED_ROWS) {
+            status = d->ops->prefill_rows(&projected_rows,
+                                          &readback_bytes,
+                                          &head_ns,
+                                          d->readout,
+                                          n_prompt,
+                                          n_candidates,
+                                          prompt_ids,
+                                          candidate_ids,
+                                          d->logits);
+        } else {
+            status = geist_session_prefill_tokens(d->session, n_prompt, prompt_ids);
+        }
+    }
+    if (status != GEIST_OK) {
+        return fail(d,
+                    status,
+                    d->mode == GEIST_DECISION_SELECTED_ROWS ? "selected-row prefill/readout failed"
+                                                            : geist_session_errmsg(d->session));
+    }
+    return finish(d, n_candidates, candidate_ids, projected_rows, readback_bytes, head_ns, out);
 }
 
 #else
@@ -369,5 +417,299 @@ const char *geist_decision_errmsg(const struct geist_decision *d) {
     (void) candidate_ids;
     clear_result(out);
     return GEIST_E_UNSUPPORTED;
+}
+#endif
+
+static void clear_info(struct geist_decision_prefix_info *out) {
+    if (out != nullptr) {
+        *out = (struct geist_decision_prefix_info) {0};
+    }
+}
+
+#if GEIST_ENABLE_DECISION && GEIST_ENABLE_DECISION_CONTEXT
+
+/* A prepared prefix: the complete session image after the prefix, and what
+ * it was taken under. Scoring only reads it. */
+struct geist_decision_prefix {
+    const struct geist_model   *model;
+    const struct geist_backend *backend;
+    size_t                      chunk, max_prompt, cached, bytes;
+    uint8_t                    *image;
+};
+
+bool geist_decision_prefix_available(void) {
+    return true;
+}
+
+/* GEIST_OK with the resolved chunk when d can keep and restore a prefix:
+ * DENSE, snapshot and geometry ops, a plain FP32 KV cache, and a session
+ * the snapshot accepts (no KIVI, no MTP drafter). Otherwise *chunk is 0 and
+ * *why says why; d is not written, so the const queries stay read-only. */
+[[nodiscard]] static enum geist_status
+prefix_geometry(const struct geist_decision *d, size_t *chunk, const char **why) {
+    *chunk = 0;
+    if (d->mode != GEIST_DECISION_DENSE) {
+        *why = "prefix scoring supports DENSE mode only";
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (d->ops->prefill_geometry == nullptr || d->ops->snapshot_size == nullptr ||
+        d->ops->snapshot == nullptr || d->ops->restore == nullptr) {
+        *why = "architecture cannot snapshot its prefill state";
+        return GEIST_E_UNSUPPORTED;
+    }
+    size_t                  resolved = 0;
+    bool                    kv_fp32  = false;
+    const enum geist_status gs       = d->ops->prefill_geometry(
+            &resolved, &kv_fp32, geist_session_internal_arch_session(d->session));
+    if (gs != GEIST_OK || resolved == 0) {
+        *why = "prefill geometry unavailable";
+        return gs != GEIST_OK ? gs : GEIST_E_INTERNAL;
+    }
+    if (!kv_fp32) {
+        *why = "prefix scoring needs a plain FP32 KV cache";
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* Runs the snapshot's own refusals (KIVI, MTP drafter, open audio
+     * stream) without copying anything. */
+    size_t                  probe = 0;
+    const enum geist_status ss    = geist_session_snapshot_size(&probe, d->session);
+    if (ss != GEIST_OK) {
+        *why = "session state cannot be snapshotted (KIVI, MTP drafter or open audio stream)";
+        return ss;
+    }
+    *chunk = resolved;
+    return GEIST_OK;
+}
+
+/* prefix_geometry for the mutating entry points: records why in d. */
+[[nodiscard]] static enum geist_status checked_geometry(struct geist_decision *d, size_t *chunk) {
+    const char             *why = nullptr;
+    const enum geist_status gs  = prefix_geometry(d, chunk, &why);
+    return gs == GEIST_OK ? GEIST_OK : fail(d, gs, why);
+}
+
+bool geist_decision_prefix_supported(const struct geist_decision *d) {
+    size_t      chunk = 0;
+    const char *why   = nullptr;
+    return d != nullptr && prefix_geometry(d, &chunk, &why) == GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status geist_decision_prefill_chunk(size_t                      *out_chunk,
+                                                             const struct geist_decision *d) {
+    if (out_chunk == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *out_chunk = 0;
+    if (d == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    const char *why = nullptr;
+    return prefix_geometry(d, out_chunk, &why);
+}
+
+void geist_decision_prefix_destroy(struct geist_decision_prefix *p) {
+    if (p == nullptr) {
+        return;
+    }
+    safe_free((void **) &p->image);
+    safe_free((void **) &p);
+}
+
+[[nodiscard]] enum geist_status geist_decision_prefix_prepare(struct geist_decision *d,
+                                                              size_t max_snapshot_bytes,
+                                                              size_t n_prefix,
+                                                              const geist_token_t *prefix_ids,
+                                                              struct geist_decision_prefix **out) {
+    if (out != nullptr) {
+        *out = nullptr;
+    }
+    if (d == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    d->error[0] = '\0';
+    if (out == nullptr || max_snapshot_bytes == 0 || (n_prefix > 0 && prefix_ids == nullptr)) {
+        return fail(d, GEIST_E_INVALID_ARG, "invalid prefix arguments");
+    }
+    if (n_prefix >= d->max_prompt) {
+        return fail(d, GEIST_E_TOO_MANY_TOKENS, "prefix leaves no room for a suffix");
+    }
+    if (n_prefix > 0) {
+        const enum geist_status ts =
+                check_tokens(d, n_prefix, prefix_ids, "prefix token outside logits vocabulary");
+        if (ts != GEIST_OK) {
+            return ts;
+        }
+    }
+    size_t            chunk  = 0;
+    enum geist_status status = checked_geometry(d, &chunk);
+    if (status != GEIST_OK) {
+        return status;
+    }
+    /* The empty prefix is the reset state itself: no zero-token prefill. */
+    status = decision_reset(d);
+    if (status == GEIST_OK && n_prefix > 0) {
+        status = geist_session_prefill_tokens(d->session, n_prefix, prefix_ids);
+        if (status != GEIST_OK) {
+            return fail(d, status, geist_session_errmsg(d->session));
+        }
+    }
+    if (status != GEIST_OK) {
+        return status;
+    }
+    size_t bytes = 0;
+    status       = geist_session_snapshot_size(&bytes, d->session);
+    if (status != GEIST_OK) {
+        return fail(d, status, geist_session_errmsg(d->session));
+    }
+    if (bytes == 0 || bytes > max_snapshot_bytes) {
+        return fail(d, GEIST_E_OOM, "prefix snapshot exceeds max_snapshot_bytes");
+    }
+    struct geist_decision_prefix *p = heap_calloc_array_aligned(struct geist_decision_prefix, 1);
+    if (p == nullptr || (p->image = heap_alloc_aligned(bytes, alignof(max_align_t))) == nullptr) {
+        geist_decision_prefix_destroy(p);
+        return fail(d, GEIST_E_OOM, "prefix snapshot allocation failed");
+    }
+    size_t written = 0;
+    status         = geist_session_snapshot(&written, bytes, p->image, d->session);
+    if (status != GEIST_OK || written != bytes) {
+        geist_decision_prefix_destroy(p);
+        return fail(d,
+                    status != GEIST_OK ? status : GEIST_E_INTERNAL,
+                    status != GEIST_OK ? geist_session_errmsg(d->session)
+                                       : "snapshot size changed between size and copy");
+    }
+    p->model      = d->model;
+    p->backend    = d->backend;
+    p->chunk      = chunk;
+    p->max_prompt = d->max_prompt;
+    p->cached     = n_prefix;
+    p->bytes      = bytes;
+    *out          = p;
+    return GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status
+geist_decision_score_from_prefix(struct geist_decision              *d,
+                                 const struct geist_decision_prefix *p,
+                                 size_t                              n_suffix,
+                                 size_t                              n_candidates,
+                                 const geist_token_t                *suffix_ids,
+                                 const geist_token_t                *candidate_ids,
+                                 struct geist_decision_result       *out) {
+    clear_result(out);
+    if (d == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    d->error[0] = '\0';
+    if (out == nullptr || p == nullptr || suffix_ids == nullptr || candidate_ids == nullptr ||
+        n_suffix == 0 || n_candidates == 0 || n_candidates > d->max_candidates) {
+        return fail(d, GEIST_E_INVALID_ARG, "invalid input or candidate capacity exceeded");
+    }
+    size_t            chunk  = 0;
+    enum geist_status status = checked_geometry(d, &chunk);
+    if (status != GEIST_OK) {
+        return status;
+    }
+    if (p->model != d->model || p->backend != d->backend || p->chunk != chunk ||
+        p->max_prompt != d->max_prompt) {
+        return fail(d, GEIST_E_INVALID_ARG, "prefix was prepared under another model or geometry");
+    }
+    size_t total = 0;
+    if (ckd_add(&total, p->cached, n_suffix) || total > d->max_prompt) {
+        return fail(d, GEIST_E_TOO_MANY_TOKENS, "prefix plus suffix exceed the prompt capacity");
+    }
+    status = check_tokens(d, n_suffix, suffix_ids, "suffix token outside logits vocabulary");
+    if (status == GEIST_OK) {
+        status = check_candidates(d, n_candidates, candidate_ids);
+    }
+    if (status != GEIST_OK) {
+        return status;
+    }
+    /* The whole image replaces the session's state, pending logits
+     * included, so nothing of an earlier question survives. */
+    status = geist_session_restore(p->bytes, p->image, d->session);
+    if (status == GEIST_OK) {
+        status = geist_session_prefill_tokens(d->session, n_suffix, suffix_ids);
+    }
+    if (status != GEIST_OK) {
+        return fail(d, status, geist_session_errmsg(d->session));
+    }
+    return finish(d, n_candidates, candidate_ids, d->vocab, d->dense_readback_bytes, 0, out);
+}
+
+[[nodiscard]] enum geist_status
+geist_decision_prefix_get_info(const struct geist_decision_prefix *p,
+                               struct geist_decision_prefix_info  *out) {
+    clear_info(out);
+    if (p == nullptr || out == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *out = (struct geist_decision_prefix_info) {
+            .cached_tokens     = p->cached,
+            .snapshot_bytes    = p->bytes,
+            .prefill_chunk     = p->chunk,
+            .max_prompt_tokens = p->max_prompt,
+            .kv_mode           = GEIST_KV_FP32,
+    };
+    return GEIST_OK;
+}
+
+#else
+
+bool geist_decision_prefix_available(void) {
+    return false;
+}
+bool geist_decision_prefix_supported(const struct geist_decision *d) {
+    (void) d;
+    return false;
+}
+[[nodiscard]] enum geist_status geist_decision_prefill_chunk(size_t                      *out_chunk,
+                                                             const struct geist_decision *d) {
+    (void) d;
+    if (out_chunk != nullptr) {
+        *out_chunk = 0;
+    }
+    return GEIST_E_UNSUPPORTED;
+}
+[[nodiscard]] enum geist_status geist_decision_prefix_prepare(struct geist_decision *d,
+                                                              size_t max_snapshot_bytes,
+                                                              size_t n_prefix,
+                                                              const geist_token_t *prefix_ids,
+                                                              struct geist_decision_prefix **out) {
+    (void) d;
+    (void) max_snapshot_bytes;
+    (void) n_prefix;
+    (void) prefix_ids;
+    if (out != nullptr) {
+        *out = nullptr;
+    }
+    return GEIST_E_UNSUPPORTED;
+}
+[[nodiscard]] enum geist_status
+geist_decision_score_from_prefix(struct geist_decision              *d,
+                                 const struct geist_decision_prefix *p,
+                                 size_t                              n_suffix,
+                                 size_t                              n_candidates,
+                                 const geist_token_t                *suffix_ids,
+                                 const geist_token_t                *candidate_ids,
+                                 struct geist_decision_result       *out) {
+    (void) d;
+    (void) p;
+    (void) n_suffix;
+    (void) n_candidates;
+    (void) suffix_ids;
+    (void) candidate_ids;
+    clear_result(out);
+    return GEIST_E_UNSUPPORTED;
+}
+[[nodiscard]] enum geist_status
+geist_decision_prefix_get_info(const struct geist_decision_prefix *p,
+                               struct geist_decision_prefix_info  *out) {
+    (void) p;
+    clear_info(out);
+    return GEIST_E_UNSUPPORTED;
+}
+void geist_decision_prefix_destroy(struct geist_decision_prefix *p) {
+    (void) p;
 }
 #endif

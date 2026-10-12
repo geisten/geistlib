@@ -110,7 +110,10 @@ without changing existing field offsets; the selected-row readout hooks and
 `geist_weight` row-tile callbacks are EXPERIMENTAL as well. `GEIST_DECISION_SELECTED_ROWS` requires explicit mode
 selection and a supported loaded model/backend pair; its result metadata reports
 row work, logical staging bytes and selected-head time. Unsupported modes never
-silently fall back to another execution path.
+silently fall back to another execution path. Prefix scoring
+(`geist_decision_prefix_*`, `geist_decision_score_from_prefix`, #5) needs
+`DECISION_CONTEXT=1` as well and is EXPERIMENTAL; its architecture hook
+`prefill_geometry` is appended to the end of the decoder vtable.
 
 ## The geist-runtime contract
 

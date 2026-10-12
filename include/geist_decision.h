@@ -101,6 +101,103 @@ const char *geist_decision_errmsg(const struct geist_decision *d);
                                                      const geist_token_t          *candidate_ids,
                                                      struct geist_decision_result *out);
 
+/* ---- Prefix scoring (DECISION_CONTEXT=1) --------------------------------
+ *
+ * Several questions over one long context: prefill the shared prefix once,
+ * keep the session's complete state (geist_session_snapshot: every KV row,
+ * each recurrent layer's conv and recurrent state, positions and pending
+ * logits), and per question restore it and prefill only the question's
+ * suffix. A question never sees another question's state: every score
+ * restores the whole image first. DENSE mode only.
+ *
+ * A prefix is bound to the decision handle's model and backend, a plain
+ * FP32 KV cache (create the handle with kv_mode = GEIST_KV_FP32) and the
+ * resolved prefill chunk; any handle on the same model with the same
+ * max_prompt_tokens, chunk and cache may score from it, others fail with
+ * GEIST_E_INVALID_ARG. It owns its snapshot; it borrows nothing from the
+ * handle that prepared it, but must be destroyed before the model.
+ * Scoring only reads it, so handles may share one prefix concurrently,
+ * each handle on its own thread.
+ *
+ * Bit-identity: restore + suffix gives the logits a fresh session gives for
+ * prefill(prefix) followed by prefill(suffix). A single prefill of the
+ * joined prompt splits into the same passes only when the prefix length is
+ * a multiple of geist_decision_prefill_chunk.
+ *
+ * Builds without DECISION_CONTEXT=1 keep these symbols: they return
+ * GEIST_E_UNSUPPORTED (or false / nothing) and clear their outputs. */
+
+struct geist_decision_prefix;
+
+/* @stability EXPERIMENTAL — read-only diagnostics of a prepared prefix. */
+struct geist_decision_prefix_info {
+    size_t             cached_tokens;     /* prefix length; 0 = reset state */
+    size_t             snapshot_bytes;    /* owned image size */
+    size_t             prefill_chunk;     /* resolved tokens per prefill pass */
+    size_t             max_prompt_tokens; /* cached + suffix must not exceed */
+    enum geist_kv_mode kv_mode;           /* always GEIST_KV_FP32 */
+};
+
+/* @stability EXPERIMENTAL — build capability; false unless DECISION=1 and
+ * DECISION_CONTEXT=1. */
+[[nodiscard]] bool geist_decision_prefix_available(void);
+
+/* @stability EXPERIMENTAL — handle capability: a DENSE handle whose
+ * architecture can snapshot, restore and report its prefill geometry, with a
+ * plain FP32 KV cache. false for nullptr and feature-off builds. */
+[[nodiscard]] bool geist_decision_prefix_supported(const struct geist_decision *d);
+
+/* @stability EXPERIMENTAL — the handle's resolved prefill chunk in
+ * *out_chunk (0 on failure). Choose prefix lengths that are multiples of it
+ * to cut where a single prefill would. */
+[[nodiscard]] enum geist_status geist_decision_prefill_chunk(size_t                      *out_chunk,
+                                                             const struct geist_decision *d);
+
+/* @stability EXPERIMENTAL
+ * Prefill n_prefix tokens into d's session and keep its complete state as a
+ * new prefix. n_prefix may be 0 (the reset state, no prefill runs) and must
+ * leave room for a suffix: n_prefix < max_prompt_tokens, else
+ * GEIST_E_TOO_MANY_TOKENS. Tokens outside the logits vocabulary are
+ * GEIST_E_INVALID_ARG. The snapshot size is checked against
+ * max_snapshot_bytes (nonzero) before anything is allocated; a larger image
+ * is GEIST_E_OOM with nothing allocated. Unsupported handles (SELECTED_ROWS,
+ * a non-FP32 KV cache, KIVI, an enabled MTP drafter, architectures without
+ * snapshots) are GEIST_E_UNSUPPORTED. Invalidates d's borrowed result. On
+ * failure *out is nullptr and geist_decision_errmsg(d) says why. */
+[[nodiscard]] enum geist_status
+geist_decision_prefix_prepare(struct geist_decision         *d,
+                              size_t                         max_snapshot_bytes,
+                              size_t                         n_prefix,
+                              const geist_token_t           *prefix_ids,
+                              struct geist_decision_prefix **out);
+
+/* @stability EXPERIMENTAL
+ * geist_decision_score with the prefix's state restored in place of a
+ * reset: prefills the n_suffix (>= 1) tokens after the cached ones and reads
+ * the candidates from the resulting DENSE logits, under every rule and with
+ * the result contract of geist_decision_score. cached + n_suffix beyond
+ * max_prompt_tokens is GEIST_E_TOO_MANY_TOKENS; a prefix bound to another
+ * model, backend or geometry is GEIST_E_INVALID_ARG. A failed restore leaves
+ * d's session reset; the next call restores again. */
+[[nodiscard]] enum geist_status
+geist_decision_score_from_prefix(struct geist_decision              *d,
+                                 const struct geist_decision_prefix *p,
+                                 size_t                              n_suffix,
+                                 size_t                              n_candidates,
+                                 const geist_token_t                *suffix_ids,
+                                 const geist_token_t                *candidate_ids,
+                                 struct geist_decision_result       *out);
+
+/* @stability EXPERIMENTAL — fills *out; nullptr inputs and feature-off
+ * builds are GEIST_E_INVALID_ARG / GEIST_E_UNSUPPORTED with *out zeroed. */
+[[nodiscard]] enum geist_status
+geist_decision_prefix_get_info(const struct geist_decision_prefix *p,
+                               struct geist_decision_prefix_info  *out);
+
+/* @stability EXPERIMENTAL — frees the prefix and its snapshot; nullptr is a
+ * no-op. */
+void geist_decision_prefix_destroy(struct geist_decision_prefix *p);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

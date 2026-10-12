@@ -51,3 +51,6 @@ test_prefill_q3k_int
 # test-decision exercises enabled/disabled public consumers in CI; this
 # real-GGUF parity check runs when DECISION=1 (including the local baseline).
 test_decision_int
+# Prefix scoring (#5) is off unless DECISION=1 DECISION_CONTEXT=1; its
+# real-GGUF bit-identity check runs in such builds (see docs/DECISION.md).
+test_decision_prefix_int

@@ -360,18 +360,29 @@ DEPS := $(LIB_OBJS:.o=.d) $(BIN_OBJS:.o=.d)
 # ---- Rules ---------------------------------------------------------------
 
 # Optional decision API. Always link its symbols; disabled builds use stubs.
+# DECISION_CONTEXT=1 adds snapshot-backed prefix scoring on top (#5).
 DECISION ?= 0
+DECISION_CONTEXT ?= 0
 ifneq ($(DECISION),0)
 ifneq ($(DECISION),1)
 $(error DECISION must be 0 or 1)
 endif
 endif
+ifneq ($(DECISION_CONTEXT),0)
+ifneq ($(DECISION_CONTEXT),1)
+$(error DECISION_CONTEXT must be 0 or 1)
+endif
+ifeq ($(DECISION),0)
+$(error DECISION_CONTEXT=1 requires DECISION=1)
+endif
+endif
+DECISION_CONFIG := $(DECISION) $(DECISION_CONTEXT)
 
 # Darwin make/archive timestamps can have one-second resolution. A flag
 # transition must force compilation, archiving and linking even when all
 # three outputs share the same timestamp. No extra work for an unchanged flag.
 DECISION_PREVIOUS := $(shell cat $(BUILD_DIR)/decision-config 2>/dev/null)
-ifneq ($(DECISION),$(DECISION_PREVIOUS))
+ifneq ($(DECISION_CONFIG),$(DECISION_PREVIOUS))
 .PHONY: force-decision-transition
 $(BUILD_DIR)/src/engine/decision.o $(LIB_FILE) $(BIN_TARGETS): force-decision-transition
 endif
@@ -381,13 +392,13 @@ endif
 .PHONY: force-decision-config
 $(BUILD_DIR)/decision-config: force-decision-config
 	@mkdir -p $(@D)
-	@if [ "$(DECISION)" != "$$(cat $@ 2>/dev/null)" ]; then \
-	    printf '%s\n' '$(DECISION)' > $@; \
+	@if [ "$(DECISION_CONFIG)" != "$$(cat $@ 2>/dev/null)" ]; then \
+	    printf '%s\n' '$(DECISION_CONFIG)' > $@; \
 	fi
 $(BUILD_DIR)/src/engine/decision.o: $(BUILD_DIR)/decision-config
 # GCC's target-wide -ffast-math otherwise folds isfinite to true. These
 # numeric API guards must observe NaN/Inf; leave the inference kernels alone.
-$(BUILD_DIR)/src/engine/decision.o: CFLAGS_STRICT += -DGEIST_ENABLE_DECISION=$(DECISION) -fno-finite-math-only
+$(BUILD_DIR)/src/engine/decision.o: CFLAGS_STRICT += -DGEIST_ENABLE_DECISION=$(DECISION) -DGEIST_ENABLE_DECISION_CONTEXT=$(DECISION_CONTEXT) -fno-finite-math-only
 $(BUILD_DIR)/tools/bench_decision.o $(BUILD_DIR)/tests/test_decision_errors_unit.o: CFLAGS += -fno-finite-math-only
 # NaN sentinels in C prove beta == 0 never reads it (#12).
 $(BUILD_DIR)/tests/test_geist_gemm_unit.o: CFLAGS += -fno-finite-math-only

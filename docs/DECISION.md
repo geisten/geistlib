@@ -66,6 +66,66 @@ the duplicate-detection table are sized with checked arithmetic at creation;
 scoring allocates no candidate workspace. Existing architecture/backend
 high-water scratch may warm on first use, as with ordinary prefill.
 
+## Several questions over one context: prefix scoring (#5)
+
+`make DECISION=1 DECISION_CONTEXT=1` adds a DENSE-only path that prefills a
+shared prefix once and answers each question from that state.
+`DECISION_CONTEXT=0` is the default; `DECISION=0 DECISION_CONTEXT=1` is
+rejected by the build. Off builds keep the symbols: they return
+`GEIST_E_UNSUPPORTED`, clear their outputs, and `geist_decision_prefix_available()`
+is false. `make test-decision` walks 1/1, 1/0, 0/0 and back to 1/1 in one
+output directory.
+
+```c
+/* d: a DENSE handle created with .kv_mode = GEIST_KV_FP32. */
+size_t chunk = 0;
+geist_decision_prefill_chunk(&chunk, d);  /* cut the prefix at a multiple */
+struct geist_decision_prefix *p = nullptr;
+status = geist_decision_prefix_prepare(d, max_snapshot_bytes,
+                                       n_prefix, prefix_ids, &p);
+for (each question) {
+    status = geist_decision_score_from_prefix(d, p, n_suffix, n_candidates,
+                                              suffix_ids, candidate_ids, &result);
+}
+geist_decision_prefix_destroy(p);  /* before the model */
+```
+
+The prefix is the session's complete state from `geist_session_snapshot`
+(#548): every used KV row, each gated-DeltaNet layer's conv and recurrent
+state, positions and pending logits. There is no second checkpoint format
+and no attention-only pinning, which cannot rewind a hybrid's recurrence.
+Every score restores the whole image before prefilling the suffix, so no
+question sees another's state, and a failed restore leaves the session reset
+for the next call to restore again.
+
+- **Binding.** A prefix records the model, backend, resolved prefill chunk
+  and `max_prompt_tokens` it was taken under, and requires a plain FP32 KV
+  cache. Any handle on the same model with the same geometry may score from
+  it; another model, backend, chunk or capacity is `GEIST_E_INVALID_ARG`.
+  INT8/INT4/F16/KIVI caches, an enabled MTP drafter, `SELECTED_ROWS` and
+  architectures without snapshots are capability-negative
+  (`geist_decision_prefix_supported`) and `GEIST_E_UNSUPPORTED`.
+- **Memory.** `prepare` checks the image size against `max_snapshot_bytes`
+  before allocating (`GEIST_E_OOM` with nothing allocated above it);
+  `geist_decision_prefix_get_info` reports cached tokens, snapshot bytes,
+  chunk, capacity and the cache mode. Warmed scoring allocates nothing.
+- **Capacity.** `n_prefix` may be 0 (the reset state; no zero-token prefill
+  runs) and must be below `max_prompt_tokens`; cached + suffix above it is
+  `GEIST_E_TOO_MANY_TOKENS`. The suffix carries the uncached tail of the
+  context plus the question and must be at least one token.
+- **Bit-identity.** Restore + suffix equals a fresh session that prefills the
+  prefix and then the suffix, bit for bit, on CPU NEON, scalar and Metal
+  (`tests/test_decision_prefix_unit.c`, `tests/test_decision_prefix_int.c`).
+  With `n_prefix` a multiple of the chunk it also equals scoring the joined
+  prompt in one call. Off the boundary the joined prompt splits into other
+  prefill passes; on the test fixtures the candidate logits then differ by at
+  most 8.5e-7 (recorded, not asserted).
+
+Measured on an M1 Max, Qwen3.5 0.8B Q8_0, a two-chunk prefix plus a 16-token
+question, per question: cpu_neon 86 ms from the prefix against 350 ms for the
+full prompt (4.1x; chunk 64, 128-token prefix, 23 MiB snapshot); Metal 34 ms
+against 228 ms (6.8x; chunk 256, 512-token prefix, 32 MiB snapshot).
+
 ## Selected-row execution on Apple Silicon (#586)
 
 Set `opts.mode = GEIST_DECISION_SELECTED_ROWS` explicitly and query
