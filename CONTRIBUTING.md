@@ -75,6 +75,13 @@ ASan + UBSan; TSan; and clang-format. Details:
 [docs/CI_COVERAGE.md](docs/CI_COVERAGE.md). Before pushing, run the checks in
 [AGENT.md §7](AGENT.md#7-before-you-push).
 
+`main` merges only when every CI job is green; the branch protection names
+each job in `.gitea/required-checks.txt`. Adding, renaming or removing a CI job
+(edit `.github/workflows/ci.yml`, then `python3 scripts/gitea-ci.py`) means
+regenerating that list with `scripts/required_checks.py print` in the same PR
+(CI fails until it matches) and, after the merge, applying it with
+`GITEA_TOKEN=<admin token> scripts/required_checks.py sync`.
+
 ## Benchmarks
 
 ```sh
