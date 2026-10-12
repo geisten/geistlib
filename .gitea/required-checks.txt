@@ -1,0 +1,30 @@
+# Status checks main's branch protection requires (git.geisten.net), one per
+# line: every job of .gitea/workflows/ci.yml under its pull_request status
+# name. CI fails while this differs from the workflow
+# (scripts/required_checks.py check). After changing CI jobs: regenerate with
+# `scripts/required_checks.py print`, merge, then push it to Gitea with
+# `GITEA_TOKEN=<admin token> scripts/required_checks.py sync`.
+CI / API contract documented and STABLE (docs/API_CONTRACT.md) (pull_request)
+CI / ASan + UBSan (Linux arm64) (pull_request)
+CI / ASan + UBSan (Linux x86_64) (pull_request)
+CI / AVX-512/VNNI guaranteed (Linux x86_64, Intel SDE) (pull_request)
+CI / TSan multi-session (Linux x86_64, cpu_x86) (pull_request)
+CI / Vulkan backend (Linux x86_64, lavapipe) (pull_request)
+CI / audio W8A8 parity (Linux x86_64, AVX-512 VNNI) (pull_request)
+CI / audio harness smoke (Linux arm64, NEON) (pull_request)
+CI / build (TARGET=pi5 flag set, Linux arm64) (pull_request)
+CI / build + tests (Linux x86_64, cpu_x86 AVX-512 + scalar) (pull_request)
+CI / build + unit tests (Linux arm64) (pull_request)
+CI / build + unit tests (Linux arm64, musl) (pull_request)
+CI / build + unit tests (Linux x86_64, clang) (pull_request)
+CI / build + unit tests (Linux x86_64, cpu_scalar portable reference) (pull_request)
+CI / build + unit tests (Linux x86_64, musl) (pull_request)
+CI / build + unit tests (macOS arm64 GCD (no OpenMP)) (pull_request)
+CI / build + unit tests (macOS arm64) (pull_request)
+CI / clang-format (pull_request)
+CI / coverage ratchet (Linux x86_64, unit + int) (pull_request)
+CI / documented build (alpine:3.21) (pull_request)
+CI / documented build (debian:13) (pull_request)
+CI / documented build (ubuntu:24.04) (pull_request)
+CI / integration tests (Linux x86_64, cpu_x86 forced AVX2) (pull_request)
+CI / source version consistent; README follows latest release (pull_request)

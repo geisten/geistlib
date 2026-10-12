@@ -30,6 +30,10 @@ jobs:
           fetch-depth: 0
       - run: sh -n scripts/check-version.sh scripts/check-release.sh scripts/check-published-release.sh
       - run: sh scripts/check-version.sh
+      # main's branch protection requires each CI job by name; a job added or
+      # renamed without .gitea/required-checks.txt would go unrequired.
+      - name: Required status checks match the CI jobs
+        run: python3 scripts/required_checks.py check
       - name: Full release gate when the source version changes
         if: github.event_name == 'pull_request'
         env:
