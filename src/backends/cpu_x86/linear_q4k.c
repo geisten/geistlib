@@ -22,10 +22,12 @@
 
 #include "backend_state.h"
 #include "checked.h"
+#include "kernel_q4k_tiled.h"  /* tiled int8 Q4_K GEMM, AVX-512 VNNI (#18) */
 #include "kernel_q4kx8_gemm.h" /* lane-parallel Q4_Kx8 GEMV / GEMM */
 #include "kernel_w4a8.h"
 #include "kernel_w8a8.h" /* sum_a sized for W8A8 to also cover Q6_K */
 #include "linear_ref.h"
+#include "linear_util.h" /* vnni_tiles_usable */
 #include "q4k_to_q4kx8.h"
 #include "q4k_to_w4a8.h"
 #include "q8_kx4.h"
@@ -35,8 +37,10 @@
 
 #include <geist_backend.h>
 
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "par.h"
@@ -200,6 +204,23 @@ void cpu_x86_linear_q4k_m1(const float               *x,
               y);
 }
 
+/* The tiled int8 GEMM (#18) from TILED_MIN_ROWS activation rows on hosts
+ * with AVX-512 VNNI: it unpacks each weight K block once per 256-row
+ * activation window, which pays off once a window holds enough rows.
+ * GEIST_Q4K_TILED=0 keeps the Q4_Kx8 GEMM (A/B and fallback switch). */
+enum { TILED_MIN_ROWS = 16 };
+
+static bool q4k_tiled_wanted(size_t m) {
+    static atomic_int enabled = -1;
+    int               e       = atomic_load_explicit(&enabled, memory_order_relaxed);
+    if (e < 0) {
+        const char *v = getenv("GEIST_Q4K_TILED");
+        e             = (v == nullptr || v[0] != '0') && vnni_tiles_usable();
+        atomic_store_explicit(&enabled, e, memory_order_relaxed);
+    }
+    return e != 0 && m >= TILED_MIN_ROWS;
+}
+
 /* Q4_Kx8 lane-parallel GEMM via VPMADDUBSW, 8 cells per instruction. The
  * activations are quantized to Q8_Kx4 (4 rows interleaved in 8-byte
  * stripes) in the per-thread workspace. q4kx8_gemm_avx512 guards its own
@@ -253,5 +274,11 @@ void cpu_x86_linear_q4k_mN(size_t                     m,
         quantize_q8_Kx4(n_in, x + mt * 4 * n_in, acts + mt * n_super_k);
     }
 
-    q4kx8_gemm_avx512(m4, n_out, n_in, acts, (const struct block_q4_Kx8 *) w->aux_fp32, y);
+    const struct block_q4_Kx8 *wx8 = (const struct block_q4_Kx8 *) w->aux_fp32;
+    if (q4k_tiled_wanted(m4) &&
+        q4k_tiled_gemm_avx512_vnni(
+                m4, n_out, n_in, acts, wx8, y, (struct cpu_x86_state *) be->state)) {
+        return;
+    }
+    q4kx8_gemm_avx512(m4, n_out, n_in, acts, wx8, y);
 }

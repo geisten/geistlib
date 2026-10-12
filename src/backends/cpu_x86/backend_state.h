@@ -49,6 +49,10 @@ struct cpu_x86_workspace {
     /* Split-decode partials of the INT8-KV attention (attention_int8.c). */
     float *attn_part;
     size_t attn_part_cap; /* bytes */
+    /* Tile workspace of the tiled Q4_K GEMM (kernel_q4k_tiled_avx512_vnni.c),
+     * zeroed when allocated: rows past a window's edge are read, never used. */
+    void  *tiled;
+    size_t tiled_cap; /* bytes */
 };
 
 /* One node per (backend, thread) pair; ws_head is a lock-free push-only
@@ -74,6 +78,10 @@ struct cpu_x86_workspace *cpu_x86_ws_acquire(struct cpu_x86_state *st, size_t n_
 /* The calling thread's workspace with the M>1 scratch grown to cover the
  * requested byte counts (0 = buffer unused), or nullptr on OOM or size
  * overflow; callers then fall back to their M=1 loop. */
+/* The calling thread's workspace with `tiled` covering `bytes`, or nullptr
+ * on OOM. */
+struct cpu_x86_workspace *cpu_x86_ws_acquire_tiled(struct cpu_x86_state *st, size_t bytes);
+
 struct cpu_x86_workspace *cpu_x86_ws_acquire_mN(struct cpu_x86_state *st,
                                                 size_t                acts_bytes,
                                                 size_t                sum_a_bytes,

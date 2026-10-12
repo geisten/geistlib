@@ -44,7 +44,8 @@ BACKEND_SOURCES += \
     src/backends/cpu_x86/q8_kx4.c \
     src/backends/cpu_x86/kernel_q4kx8_gemm_scalar.c \
     src/backends/cpu_x86/kernel_q4kx8_gemm_avx512.c \
-    src/backends/cpu_x86/kernel_q4kx8_gemm_avx512_full.c
+    src/backends/cpu_x86/kernel_q4kx8_gemm_avx512_full.c \
+    src/backends/cpu_x86/kernel_q4k_tiled_avx512_vnni.c
 
 # Per-TU ISA flags. CFLAGS_STRICT is set globally in mk/common.mk with `:=`,
 # but the compile recipe expands $(CFLAGS_STRICT) at recipe-run time, so the

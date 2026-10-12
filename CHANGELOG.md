@@ -23,6 +23,13 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **x86 prefill on Q4_K models 24–31 % faster: a tiled int8 Q4_K GEMM
+  (#18).** On AVX-512 VNNI hosts, Q4_K weights are unpacked once per K block
+  into int8 tiles and multiplied by an 8x16 VPDPBUSD microkernel (port of
+  llama.cpp's tiled k-quant matmul, d834d44e6). AMD 9950X, pp512: Gemma 4
+  E2B Q4_K_M 527 -> 694 tok/s, Llama 3.2 3B Q4_K_M 379 -> 547 tok/s, ahead
+  of llama.cpp (633 / 509); decode unchanged. GEIST_Q4K_TILED=0 restores the
+  previous kernel.
 - **x86 release builds: Qwen3.5 prefill about twice as fast (#12).** The
   BLAS-free native GEMM of the release binaries had no SIMD path on x86, so
   the gated-DeltaNet prefill ran its sgemm calls scalar. AVX2/FMA kernels
