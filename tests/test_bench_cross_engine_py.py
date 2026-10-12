@@ -113,6 +113,28 @@ class CrossEngineBenchmarkTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 BENCH.load_resume(path, current, engines)
 
+    def test_idle_gate_replaces_load_where_a_profile_sets_it(self) -> None:
+        load_gate = {"max_load_per_core": 0.2}
+        idle_gate = {"max_load_per_core": 0.2, "min_cpu_idle_pct": 80}
+        busy_load_idle_cpu = {"load_per_core": 0.5, "cpu_idle_pct": 85.0}
+        self.assertFalse(BENCH.host_is_quiet(busy_load_idle_cpu, load_gate))
+        self.assertTrue(BENCH.host_is_quiet(busy_load_idle_cpu, idle_gate))
+        self.assertFalse(BENCH.host_is_quiet({"load_per_core": 0.0, "cpu_idle_pct": 70.0}, idle_gate))
+        self.assertFalse(BENCH.host_is_quiet({"load_per_core": 0.0, "cpu_idle_pct": None}, idle_gate),
+                         "an unreadable idle share is not quiet")
+
+    def test_repeat_spread_is_the_worst_row_and_metric(self) -> None:
+        result = {"rows": [
+            {"prefill_tps": [100.0, 101.0, 99.0], "decode_tps": [10.0, 10.0, 10.0]},
+            {"prefill_tps": [50.0, 50.0, 50.0], "decode_tps": [20.0, 18.0, 19.0]},
+        ]}
+        self.assertAlmostEqual(BENCH.repeat_spread_pct(result), 2.0 / 19.0 * 100.0)
+
+    def test_cpu_idle_share_is_readable_here(self) -> None:
+        idle = BENCH.cpu_idle_pct(1.0)
+        self.assertIsNotNone(idle)
+        self.assertTrue(0.0 <= idle <= 100.0)
+
 
 if __name__ == "__main__":
     unittest.main()

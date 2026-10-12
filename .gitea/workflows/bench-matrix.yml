@@ -153,7 +153,9 @@ jobs:
           mkdir -p "site/runs/${{ matrix.column }}/${{ matrix.model }}"
           mv bench-out/*.jsonl bench-out/*.md "site/runs/${{ matrix.column }}/${{ matrix.model }}/"
       - name: Upload to geisten.net/bench
-        if: steps.sel.outputs.run == '1' && inputs.publish != false
+        # A schedule has no inputs, and '' == false in an expression: the
+        # first nightly run (850) skipped every upload this way.
+        if: steps.sel.outputs.run == '1' && (github.event_name == 'schedule' || inputs.publish == true || inputs.publish == 'true')
         env:
           BENCH_SSH_KEY: ${{ secrets.BENCH_SSH_KEY }}
         run: |
@@ -174,7 +176,7 @@ jobs:
 
   publish:
     needs: measure
-    if: always() && inputs.publish != false
+    if: always() && (github.event_name == 'schedule' || inputs.publish == true || inputs.publish == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
