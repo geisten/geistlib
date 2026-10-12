@@ -389,6 +389,8 @@ $(BUILD_DIR)/src/engine/decision.o: $(BUILD_DIR)/decision-config
 # numeric API guards must observe NaN/Inf; leave the inference kernels alone.
 $(BUILD_DIR)/src/engine/decision.o: CFLAGS_STRICT += -DGEIST_ENABLE_DECISION=$(DECISION) -fno-finite-math-only
 $(BUILD_DIR)/tools/bench_decision.o $(BUILD_DIR)/tests/test_decision_errors_unit.o: CFLAGS += -fno-finite-math-only
+# NaN sentinels in C prove beta == 0 never reads it (#12).
+$(BUILD_DIR)/tests/test_geist_gemm_unit.o: CFLAGS += -fno-finite-math-only
 # The repetition penalties match llama.cpp's floats exactly: no reciprocal
 # division, no fused multiply-add, and option checks that see NaN/Inf.
 $(BUILD_DIR)/src/engine/sampler_penalties.o: CFLAGS_STRICT += -fno-fast-math -ffp-contract=off

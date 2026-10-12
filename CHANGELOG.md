@@ -9,6 +9,12 @@ minor release.
 ## [Unreleased]
 
 ### Changed
+- **x86 release builds: Qwen3.5 prefill about twice as fast (#12).** The
+  BLAS-free native GEMM of the release binaries had no SIMD path on x86, so
+  the gated-DeltaNet prefill ran its sgemm calls scalar. AVX2/FMA kernels
+  (x86-64-v3, the target's baseline) bring it to the OpenBLAS build's level:
+  AMD 9950X, Qwen3.5 0.8B Q8_0 prefill 512 966 -> 431 ms (-56 %), Qwen3.5 4B
+  Q4_0 -33 %; decode unchanged. Builds linking OpenBLAS are not affected.
 - **Releases are downloaded from geisten.net, not GitHub; no more
   BitNet-embedded binaries.** Development and releases moved to
   git.geisten.net; github.com/geisten/geistlib is the public mirror and gets no
