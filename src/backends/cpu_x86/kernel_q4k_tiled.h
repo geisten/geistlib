@@ -20,6 +20,7 @@
 #include "backend_state.h"
 #include "q4k_to_q4kx8.h"
 #include "q8_kx4.h"
+#include "quant_blocks.h"
 
 #include <stddef.h>
 
@@ -38,6 +39,16 @@
                                               size_t                     K,
                                               const struct block_q8_Kx4 *X,
                                               const struct block_q4_Kx8 *W,
+                                              float                     *Y,
+                                              struct cpu_x86_state      *st);
+
+/* The same for GGUF Q6_K weights (W: N rows of K / 256 blocks, row-major),
+ * M a multiple of 4, any N. Reads the GGUF bytes directly; no repack. */
+[[nodiscard]] bool q6k_tiled_gemm_avx512_vnni(size_t                     M,
+                                              size_t                     N,
+                                              size_t                     K,
+                                              const struct block_q8_Kx4 *X,
+                                              const struct block_q6_K_t *W,
                                               float                     *Y,
                                               struct cpu_x86_state      *st);
 

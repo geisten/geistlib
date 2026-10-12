@@ -9,6 +9,11 @@
  * on both sides, N a multiple of 8 but not of 16, several K blocks, M at
  * the 16-row activation band and above.
  *
+ * The Q6_K GEMM reads GGUF bytes; it is held against the double-precision
+ * product of the dequantized Q6_K weights and the dequantized Q8_Kx4
+ * activations, which its exact integer sums must reproduce up to float
+ * rounding.
+ *
  * Skips on hosts without AVX-512 VNNI (the CI's AVX-512 legs run it).
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
@@ -185,6 +190,100 @@ static int check(size_t M, size_t N, size_t K, struct cpu_x86_state *st) {
     return fails;
 }
 
+/* Element k of activation row r, dequantized from the Q8_Kx4 layout. */
+static float act_at(size_t K, const struct block_q8_Kx4 *xq, size_t r, size_t k) {
+    const struct block_q8_Kx4 *b = &xq[(r / 4) * (K / 256) + k / 256];
+    const size_t               e = k % 256, lane = r % 4;
+    return b->d[lane] *
+           (float) (int8_t) b->qs[(e / 64) * 256 + ((e % 64) / 8) * 32 + lane * 8 + e % 8];
+}
+
+static int check_q6k(size_t M, size_t N, size_t K, struct cpu_x86_state *st) {
+    const size_t         n_super = K / 256;
+    uint32_t             s       = 0x5EEDu ^ (uint32_t) (M * 31 + N * 3 + K);
+    struct block_q6_K_t *wq      = calloc(N * n_super, sizeof *wq);
+    float               *wf      = malloc(N * K * sizeof *wf);
+    float               *x       = malloc(M * K * sizeof *x);
+    struct block_q8_Kx4 *xq      = calloc(M / 4 * n_super, sizeof *xq);
+    float               *got     = malloc(M * N * sizeof *got);
+    if (!wq || !wf || !x || !xq || !got) {
+        fprintf(stderr, "FAIL: allocation\n");
+        exit(GEIST_TEST_FAIL);
+    }
+    for (size_t b = 0; b < N * n_super; b++) {
+        for (int i = 0; i < 128; i++) {
+            wq[b].ql[i] = (uint8_t) prng_next(&s);
+        }
+        for (int i = 0; i < 64; i++) {
+            wq[b].qh[i] = (uint8_t) prng_next(&s);
+        }
+        for (int i = 0; i < 16; i++) {
+            wq[b].scales[i] = (int8_t) (prng_next(&s) & 0xFF); /* full int8 range */
+        }
+        wq[b].d = fp32_to_fp16(0.0005f + 0.002f * (float) (prng_next(&s) & 0xFFFF) / 65536.0f);
+    }
+    for (size_t r = 0; r < N; r++) {
+        dequant_q6_K_row(K, &wq[r * n_super], wf + r * K);
+    }
+    for (size_t i = 0; i < M * K; i++) {
+        x[i] = prng_uniform_pm1(prng_next(&s));
+    }
+    for (size_t g = 0; g < M / 4; g++) {
+        quantize_q8_Kx4(K, x + g * 4 * K, xq + g * n_super);
+    }
+    for (size_t i = 0; i < M * N; i++) {
+        got[i] = NAN;
+    }
+    int fails = 0;
+    if (!q6k_tiled_gemm_avx512_vnni(M, N, K, xq, wq, got, st)) {
+        fprintf(stderr, "FAIL: Q6_K M=%zu N=%zu K=%zu: workspace failure\n", M, N, K);
+        fails = 1;
+    }
+    double worst = 0.0, rms = 0.0;
+    size_t wi = 0;
+    for (size_t i = 0; i < M && !fails; i++) {
+        for (size_t j = 0; j < N; j++) {
+            double ref = 0.0;
+            for (size_t k = 0; k < K; k++) {
+                ref += (double) act_at(K, xq, i, k) * wf[j * K + k];
+            }
+            rms += ref * ref;
+            const double d = fabs((double) got[i * N + j] - ref);
+            if (!(d <= worst)) {
+                worst = isnan(d) ? INFINITY : d;
+                wi    = i * N + j;
+            }
+        }
+    }
+    rms = sqrt(rms / (double) (M * N));
+    if (!fails && !(worst <= 1e-4 * (rms + 1e-6))) {
+        fprintf(stderr,
+                "FAIL: Q6_K M=%zu N=%zu K=%zu: Y[%zu,%zu] = %.9g, |d| %.3g > 1e-4 * rms %.3g\n",
+                M,
+                N,
+                K,
+                wi / N,
+                wi % N,
+                (double) got[wi],
+                worst,
+                rms);
+        fails = 1;
+    }
+    printf("  Q6_K M=%4zu N=%4zu K=%4zu: max |d| %.3g (rms %.3g) %s\n",
+           M,
+           N,
+           K,
+           worst,
+           rms,
+           fails ? "FAIL" : "ok");
+    free(wq);
+    free(wf);
+    free(x);
+    free(xq);
+    free(got);
+    return fails;
+}
+
 int main(void) {
     if (!vnni_tiles_usable()) {
         GEIST_SKIP("no AVX-512 VNNI on this host");
@@ -201,6 +300,15 @@ int main(void) {
     int fails = 0;
     for (size_t i = 0; i < sizeof shapes / sizeof shapes[0]; i++) {
         fails += check(shapes[i][0], shapes[i][1], shapes[i][2], &st);
+    }
+    static const size_t q6k_shapes[][3] = {
+            {16, 16, 256},
+            {20, 40, 256},
+            {64, 136, 512},
+            {260, 257, 768},
+    };
+    for (size_t i = 0; i < sizeof q6k_shapes / sizeof q6k_shapes[0]; i++) {
+        fails += check_q6k(q6k_shapes[i][0], q6k_shapes[i][1], q6k_shapes[i][2], &st);
     }
     cpu_x86_ws_destroy_all(&st);
     printf("test_q4k_tiled_unit: %s\n", fails ? "FAIL" : "PASS");

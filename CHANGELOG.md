@@ -23,6 +23,12 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **x86: Q6_K prefill from the GGUF bytes, no W8A8 predecode on AVX-512
+  VNNI (#18).** The tiled int8 GEMM now covers Q6_K too, at the speed of
+  the predecode GEMM it replaces, so those hosts no longer keep the 1.5 B/wt
+  W8A8 copy of every Q6_K weight. AMD 9950X resident memory: Gemma 4 E2B
+  Q4_K_M 3308 -> 2922 MB, Llama 3.2 3B Q4_K_M 4839 -> 3685 MB; Llama 3.2 3B
+  prefill 512 -1.6 %. GEIST_Q6K_TILED=0 restores the predecode.
 - **x86 prefill on Q4_K models 24–31 % faster: a tiled int8 Q4_K GEMM
   (#18).** On AVX-512 VNNI hosts, Q4_K weights are unpacked once per K block
   into int8 tiles and multiplied by an 8x16 VPDPBUSD microkernel (port of

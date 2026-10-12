@@ -21,9 +21,12 @@
 
 #include "backend_state.h"
 #include "checked.h"
+#include "kernel_q4k_tiled.h" /* tiled int8 Q6_K GEMM, AVX-512 VNNI (#18) */
 #include "kernel_w8a8.h"
 #include "kernel_q6k_gemv.h"
+#include "linear_util.h" /* vnni_tiles_usable */
 #include "q6k_to_w8a8.h"
+#include "q8_kx4.h"
 
 #include "heap.h"
 #include "par.h"
@@ -103,6 +106,61 @@ static void cpu_x86_linear_q6k_raw_mN(size_t                     m,
         return;
     }
     q6k_gemm(m, n_out, n_in, x, (const uint8_t *) w->raw, ws->mN_acts, y);
+}
+
+/* The tiled int8 GEMM (#18) on hosts with AVX-512 VNNI reads the GGUF
+ * Q6_K bytes directly, so these weights need no W8A8 predecode (1.5 B/wt)
+ * there. GEIST_Q6K_TILED=0 keeps the predecode and its GEMMs. */
+enum { TILED_MIN_ROWS = 16 };
+
+static bool q6k_tiled_on(void) {
+    static atomic_int on = -1;
+    int               v  = atomic_load_explicit(&on, memory_order_relaxed);
+    if (v < 0) {
+        const char *e = getenv("GEIST_Q6K_TILED");
+        v             = (e == nullptr || e[0] != '0') && vnni_tiles_usable();
+        atomic_store_explicit(&on, v, memory_order_relaxed);
+    }
+    return v != 0;
+}
+
+/* Prefill from the GGUF bytes: whole Q8_Kx4 groups of rows through the
+ * tiled GEMM, the m % 4 tail through the M=1 GEMV; below TILED_MIN_ROWS,
+ * or when a workspace is missing, the raw Q6_K GEMM. */
+static void cpu_x86_linear_q6k_tiled_mN(size_t                     m,
+                                        const float               *x,
+                                        const struct geist_weight *w,
+                                        struct geist_backend      *be,
+                                        float                     *y) {
+    const size_t n_in = (size_t) w->n_in, n_out = (size_t) w->n_out, n_super = n_in / 256;
+    const size_t m4     = m / 4 * 4;
+    size_t       groups = 0, acts_bytes = 0;
+    struct cpu_x86_workspace *ws = nullptr;
+    if (m4 >= TILED_MIN_ROWS && be != nullptr && be->state != nullptr &&
+        !ckd_mul(&groups, m4 / 4, n_super) &&
+        !ckd_mul(&acts_bytes, groups, sizeof(struct block_q8_Kx4))) {
+        ws = cpu_x86_ws_acquire_mN((struct cpu_x86_state *) be->state, 0, 0, 0, acts_bytes);
+    }
+    if (ws == nullptr) {
+        cpu_x86_linear_q6k_raw_mN(m, x, w, be, y);
+        return;
+    }
+    struct block_q8_Kx4 *acts = (struct block_q8_Kx4 *) ws->mN_aux;
+    for (size_t g = 0; g < m4 / 4; g++) {
+        quantize_q8_Kx4(n_in, x + g * 4 * n_in, acts + g * n_super);
+    }
+    if (!q6k_tiled_gemm_avx512_vnni(m4,
+                                    n_out,
+                                    n_in,
+                                    acts,
+                                    (const struct block_q6_K_t *) w->raw,
+                                    y,
+                                    (struct cpu_x86_state *) be->state)) {
+        cpu_x86_linear_q6k_raw_mN(m4, x, w, be, y);
+    }
+    for (size_t row = m4; row < m; row++) {
+        cpu_x86_linear_q6k_m1(x + row * n_in, w, be, y + row * n_out);
+    }
 }
 
 /* x86-64 transparent huge page: blobs this large are allocated aligned to
@@ -185,6 +243,11 @@ static void w8x_repack_groups(void *ctx, size_t g0, size_t g1) {
     if (q6k_reads_raw()) {
         w->linear_m1 = cpu_x86_linear_q6k_m1;
         w->linear_mN = cpu_x86_linear_q6k_raw_mN;
+        return GEIST_OK;
+    }
+    if (q6k_tiled_on()) {
+        w->linear_m1 = cpu_x86_linear_q6k_m1;
+        w->linear_mN = cpu_x86_linear_q6k_tiled_mN;
         return GEIST_OK;
     }
 
