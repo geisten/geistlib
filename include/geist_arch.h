@@ -262,6 +262,16 @@ struct geist_arch_ops_decoder {
      * session copies what it keeps. nullptr = the architecture runs DRY
      * without breakers. */
     enum geist_status (*set_dry_breakers)(void *session, size_t n_words, const geist_token_t *packed);
+
+    /* Optional: the session's resolved prefill geometry (geist_decision
+     * prefix scoring, #5). *out_chunk is the number of tokens one prefill
+     * pass takes at most (the session's m_max): a prefix whose length is a
+     * multiple of it splits a longer prompt the way one prefill would.
+     * *out_kv_fp32 is true when the KV cache holds plain FP32 rows: no INT8,
+     * INT4, F16 or KIVI storage and no rotation or simulated quantization.
+     * Both outputs are written on GEIST_OK only. nullptr when the
+     * architecture cannot report it. */
+    enum geist_status (*prefill_geometry)(size_t *out_chunk, bool *out_kv_fp32, const void *session);
 };
 
 /* ====================================================================== */

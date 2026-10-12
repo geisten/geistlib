@@ -51,13 +51,21 @@ bin: $(BIN_TARGETS)
 # Exercise the same output directories in both feature modes. An environment
 # witness makes stale enabled/disabled objects a failure instead of a skip.
 .PHONY: test-decision
-DECISION_TESTS := $(BIN_DIR)/tests/test_decision_unit $(BIN_DIR)/tests/test_decision_errors_unit
+# DECISION/DECISION_CONTEXT: 1/1, 1/0, 0/0 and back to 1/1, so every
+# transition relinks (0/1 is rejected by mk/common.mk).
+DECISION_TESTS := $(BIN_DIR)/tests/test_decision_unit $(BIN_DIR)/tests/test_decision_errors_unit \
+                  $(BIN_DIR)/tests/test_decision_prefix_unit
 test-decision:
-	@for feature in 1 0; do \
-	    $(MAKE) DECISION=$$feature $(DECISION_TESTS) || exit $$?; \
-	    GEIST_EXPECT_DECISION=$$feature $(BIN_DIR)/tests/test_decision_unit || exit $$?; \
+	@for config in "1 1" "1 0" "0 0" "1 1"; do \
+	    set -- $$config; \
+	    $(MAKE) DECISION=$$1 DECISION_CONTEXT=$$2 $(DECISION_TESTS) || exit $$?; \
+	    GEIST_EXPECT_DECISION=$$1 $(BIN_DIR)/tests/test_decision_unit || exit $$?; \
 	    $(BIN_DIR)/tests/test_decision_errors_unit || exit $$?; \
+	    GEIST_EXPECT_DECISION_CONTEXT=$$2 $(BIN_DIR)/tests/test_decision_prefix_unit || exit $$?; \
 	done
+	@if $(MAKE) -n DECISION=0 DECISION_CONTEXT=1 lib >/dev/null 2>&1; then \
+	    echo "test-decision: DECISION=0 DECISION_CONTEXT=1 must be rejected"; exit 1; \
+	fi
 
 # Agent-runtime API contract (docs/API_CONTRACT.md). An out-of-tree agent
 # runtime links these symbols across a release boundary, so a signature change
@@ -573,6 +581,7 @@ help:
 	"  make run ARGS='m.gguf \"hi\"'      build + run examples/simple_generate" \
 	"  make lib | bin             only the static lib | only the binaries" \
 	"  make DECISION=1            enable experimental numeric candidate scoring" \
+	"  make DECISION=1 DECISION_CONTEXT=1  add snapshot-backed prefix scoring (#5)" \
 	"  make OPENMP=0              build without OpenMP, into <MODE>-noomp dirs" \
 	"  make MODE=debug|asan|tsan|cov|perf   gdb | ASan+UBSan | TSan races | coverage | -O3+g profiling" \
 	"  make clean | distclean     remove current TARGET/MODE | remove everything" \

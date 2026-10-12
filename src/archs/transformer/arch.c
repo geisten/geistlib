@@ -395,6 +395,19 @@ static enum geist_status op_kv_bytes_per_token(size_t *out_bytes, const void *se
     return transformer_kv_bytes_per_token(out_bytes, session);
 }
 
+static enum geist_status
+op_prefill_geometry(size_t *out_chunk, bool *out_kv_fp32, const void *session) {
+    const struct transformer_arch_session *sess = session;
+    if (out_chunk == nullptr || out_kv_fp32 == nullptr || sess == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *out_chunk   = sess->m_max;
+    *out_kv_fp32 = !sess->kv_int8_enabled && !sess->kv_int4_packed_enabled &&
+                   !sess->kv_f16_enabled && !sess->kv_kivi_enabled && !sess->kv_rot_enabled &&
+                   sess->kv_sim_qbits == 0;
+    return GEIST_OK;
+}
+
 /* Snapshot / restore (snapshot.c). No settle: a decode_step whose
  * forward is still owed is part of the state the image records, so taking
  * one costs no forward pass. */
@@ -473,4 +486,5 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .snapshot_size            = op_snapshot_size,
         .snapshot                 = op_snapshot,
         .restore                  = op_restore,
+        .prefill_geometry         = op_prefill_geometry,
 };

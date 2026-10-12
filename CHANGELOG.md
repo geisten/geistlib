@@ -8,6 +8,20 @@ minor release.
 
 ## [Unreleased]
 
+### Added
+- **Decision prefix scoring (#5, EXPERIMENTAL, `DECISION=1 DECISION_CONTEXT=1`).**
+  `geist_decision_prefix_prepare` prefills a shared context once and keeps
+  the session's complete snapshot (KV rows, DeltaNet conv and recurrent
+  state, positions, pending logits); `geist_decision_score_from_prefix`
+  restores it and prefills only the question. Bit-identical to prefilling
+  prefix and question in a fresh session; DENSE and FP32 KV cache only, with
+  the snapshot budget checked before allocation. Qwen3.5 0.8B on an M1 Max,
+  per question with a two-chunk prefix: 4.1x faster on CPU, 6.8x on Metal.
+  New queries `geist_decision_prefix_available`, `_supported`,
+  `geist_decision_prefill_chunk`, `geist_decision_prefix_get_info`; the
+  decoder vtable gains the optional `prefill_geometry` hook at its end.
+  `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
+
 ### Changed
 - **Releases are downloaded from geisten.net, not GitHub; no more
   BitNet-embedded binaries.** Development and releases moved to
