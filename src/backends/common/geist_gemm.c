@@ -163,6 +163,243 @@ static void geist_sgemv_impl(int          transA,
 #include <arm_neon.h>
 #endif
 
+#if defined(__AVX2__) && defined(__FMA__)
+#include <immintrin.h>
+
+/* x86 AVX2/FMA kernels (#12). x86-64-v3, the Linux x86 target's baseline,
+ * guarantees both. Before them the native provider ran every x86 sgemm
+ * through the scalar triple loop below, and Qwen3.5's chunked DeltaNet
+ * prefill (eight sgemm per chunk) ran at half the OpenBLAS build's speed. */
+
+/* Lanes [0, n) of an 8-float vector, for column tails; n <= 0 is empty,
+ * n >= 8 full. A masked load of an empty mask reads nothing. */
+static inline __m256i avx2_lane_mask(int n) {
+    return _mm256_cmpgt_epi32(_mm256_set1_epi32(n), _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7));
+}
+
+/* C[i0:i0+MR, j0:j0+w] = alpha * op(A) B + beta C for B not transposed,
+ * w <= 16: each k broadcasts one op(A) element per row and FMAs it into two
+ * 8-float accumulators per row against a contiguous row of B. MR is a
+ * constant at every call, so the accumulators live in registers (6x16:
+ * 12 accumulators, 2 B vectors, 1 broadcast of the 16 ymm registers). */
+#define AVX2_MR 6
+static inline __attribute__((always_inline)) void avx2_tile_bn(int          MR,
+                                                               int          w,
+                                                               int          transA,
+                                                               int          K,
+                                                               float        alpha,
+                                                               const float *A,
+                                                               int          lda,
+                                                               const float *B,
+                                                               int          ldb,
+                                                               float        beta,
+                                                               float       *C,
+                                                               int          ldc) {
+    const __m256i m0 = avx2_lane_mask(w), m1 = avx2_lane_mask(w - 8);
+    __m256        acc[AVX2_MR][2];
+    for (int r = 0; r < MR; r++)
+        acc[r][0] = acc[r][1] = _mm256_setzero_ps();
+    for (int k = 0; k < K; k++) {
+        const float *Bk = B + (size_t) k * ldb;
+        __m256       b0, b1;
+        if (w == 16) {
+            b0 = _mm256_loadu_ps(Bk);
+            b1 = _mm256_loadu_ps(Bk + 8);
+        } else {
+            b0 = _mm256_maskload_ps(Bk, m0);
+            b1 = _mm256_maskload_ps(Bk + 8, m1);
+        }
+        for (int r = 0; r < MR; r++) {
+            const float a =
+                    transA == GEIST_OP_N ? A[(size_t) r * lda + k] : A[(size_t) k * lda + r];
+            const __m256 av = _mm256_broadcast_ss(&a);
+            acc[r][0]       = _mm256_fmadd_ps(av, b0, acc[r][0]);
+            acc[r][1]       = _mm256_fmadd_ps(av, b1, acc[r][1]);
+        }
+    }
+    const __m256 va = _mm256_set1_ps(alpha), vb = _mm256_set1_ps(beta);
+    for (int r = 0; r < MR; r++) {
+        float *Cr = C + (size_t) r * ldc;
+        for (int h = 0; h < 2; h++) {
+            const __m256i m = h == 0 ? m0 : m1;
+            __m256        v = _mm256_mul_ps(va, acc[r][h]);
+            /* beta == 0: C is write-only and may hold anything, even NaN */
+            if (beta != 0.0f)
+                v = _mm256_fmadd_ps(vb, _mm256_maskload_ps(Cr + 8 * h, m), v);
+            _mm256_maskstore_ps(Cr + 8 * h, m, v);
+        }
+    }
+}
+
+static void avx2_sgemm_bn(int          transA,
+                          int          M,
+                          int          N,
+                          int          K,
+                          float        alpha,
+                          const float *A,
+                          int          lda,
+                          const float *B,
+                          int          ldb,
+                          float        beta,
+                          float       *C,
+                          int          ldc) {
+    for (int j = 0; j < N; j += 16) {
+        const int w = N - j < 16 ? N - j : 16;
+        int       i = 0;
+        /* op(A) row i starts at A[i*lda] (N) or column i at A[i] (T). */
+        for (; i + AVX2_MR <= M; i += AVX2_MR)
+            avx2_tile_bn(AVX2_MR,
+                         w,
+                         transA,
+                         K,
+                         alpha,
+                         transA == GEIST_OP_N ? A + (size_t) i * lda : A + i,
+                         lda,
+                         B + j,
+                         ldb,
+                         beta,
+                         C + (size_t) i * ldc + j,
+                         ldc);
+        for (; i < M; i++)
+            avx2_tile_bn(1,
+                         w,
+                         transA,
+                         K,
+                         alpha,
+                         transA == GEIST_OP_N ? A + (size_t) i * lda : A + i,
+                         lda,
+                         B + j,
+                         ldb,
+                         beta,
+                         C + (size_t) i * ldc + j,
+                         ldc);
+    }
+}
+
+static inline float avx2_hsum(__m256 v) {
+    __m128 s = _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps(v, 1));
+    s        = _mm_add_ps(s, _mm_movehl_ps(s, s));
+    s        = _mm_add_ss(s, _mm_movehdup_ps(s));
+    return _mm_cvtss_f32(s);
+}
+
+/* C[i0:i0+MR, j0:j0+NR] for C = alpha A B^T + beta C (both operands
+ * K-contiguous): dot products along K, 8 at a time, a K tail under a mask.
+ * 2x4 tiles: 8 accumulators. */
+static inline __attribute__((always_inline)) void avx2_tile_nt(int          MR,
+                                                               int          NR,
+                                                               int          K,
+                                                               float        alpha,
+                                                               const float *A,
+                                                               int          lda,
+                                                               const float *B,
+                                                               int          ldb,
+                                                               float        beta,
+                                                               float       *C,
+                                                               int          ldc) {
+    __m256 acc[2][4];
+    for (int r = 0; r < MR; r++)
+        for (int c = 0; c < NR; c++)
+            acc[r][c] = _mm256_setzero_ps();
+    int k = 0;
+    for (; k + 8 <= K; k += 8) {
+        __m256 a[2];
+        for (int r = 0; r < MR; r++)
+            a[r] = _mm256_loadu_ps(A + (size_t) r * lda + k);
+        for (int c = 0; c < NR; c++) {
+            const __m256 b = _mm256_loadu_ps(B + (size_t) c * ldb + k);
+            for (int r = 0; r < MR; r++)
+                acc[r][c] = _mm256_fmadd_ps(a[r], b, acc[r][c]);
+        }
+    }
+    if (k < K) {
+        const __m256i m = avx2_lane_mask(K - k);
+        __m256        a[2];
+        for (int r = 0; r < MR; r++)
+            a[r] = _mm256_maskload_ps(A + (size_t) r * lda + k, m);
+        for (int c = 0; c < NR; c++) {
+            const __m256 b = _mm256_maskload_ps(B + (size_t) c * ldb + k, m);
+            for (int r = 0; r < MR; r++)
+                acc[r][c] = _mm256_fmadd_ps(a[r], b, acc[r][c]);
+        }
+    }
+    for (int r = 0; r < MR; r++)
+        for (int c = 0; c < NR; c++) {
+            float      *dst = C + (size_t) r * ldc + c;
+            const float v   = alpha * avx2_hsum(acc[r][c]);
+            *dst            = beta == 0.0f ? v : v + beta * *dst;
+        }
+}
+
+static void avx2_sgemm_nt(int          M,
+                          int          N,
+                          int          K,
+                          float        alpha,
+                          const float *A,
+                          int          lda,
+                          const float *B,
+                          int          ldb,
+                          float        beta,
+                          float       *C,
+                          int          ldc) {
+    int i = 0;
+    for (; i + 2 <= M; i += 2) {
+        int j = 0;
+        for (; j + 4 <= N; j += 4)
+            avx2_tile_nt(2,
+                         4,
+                         K,
+                         alpha,
+                         A + (size_t) i * lda,
+                         lda,
+                         B + (size_t) j * ldb,
+                         ldb,
+                         beta,
+                         C + (size_t) i * ldc + j,
+                         ldc);
+        for (; j < N; j++)
+            avx2_tile_nt(2,
+                         1,
+                         K,
+                         alpha,
+                         A + (size_t) i * lda,
+                         lda,
+                         B + (size_t) j * ldb,
+                         ldb,
+                         beta,
+                         C + (size_t) i * ldc + j,
+                         ldc);
+    }
+    for (; i < M; i++) {
+        int j = 0;
+        for (; j + 4 <= N; j += 4)
+            avx2_tile_nt(1,
+                         4,
+                         K,
+                         alpha,
+                         A + (size_t) i * lda,
+                         lda,
+                         B + (size_t) j * ldb,
+                         ldb,
+                         beta,
+                         C + (size_t) i * ldc + j,
+                         ldc);
+        for (; j < N; j++)
+            avx2_tile_nt(1,
+                         1,
+                         K,
+                         alpha,
+                         A + (size_t) i * lda,
+                         lda,
+                         B + (size_t) j * ldb,
+                         ldb,
+                         beta,
+                         C + (size_t) i * ldc + j,
+                         ldc);
+    }
+}
+#endif
+
 static void geist_sgemm_impl(int          transA,
                              int          transB,
                              int          M,
@@ -274,6 +511,18 @@ static void geist_sgemm_impl(int          transA,
             }
         }
         return;
+    }
+#endif
+#if defined(__AVX2__) && defined(__FMA__)
+    if (M > 0 && N > 0 && K > 0) {
+        if (transB == GEIST_OP_N) {
+            avx2_sgemm_bn(transA, M, N, K, alpha, A, lda, B, ldb, beta, C, ldc);
+            return;
+        }
+        if (transA == GEIST_OP_N) {
+            avx2_sgemm_nt(M, N, K, alpha, A, lda, B, ldb, beta, C, ldc);
+            return;
+        }
     }
 #endif
     for (int i = 0; i < M; i++) {
