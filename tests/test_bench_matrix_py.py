@@ -35,6 +35,9 @@ expect(all(j["model"] in protocols[j["protocol"]]["models"]
        "every planned model and column exists in its protocol")
 expect({(j["column"], j["model"]) for j in nightly} < {(j["column"], j["model"]) for j in weekly},
        "weekly is a strict superset of nightly")
+labels = json.loads(bm.MATRIX.read_text())["labels"]
+expect(all(j["column"] in labels["columns"] and j["model"] in labels["models"] for j in weekly),
+       "every column and model has a display label")
 expect(len({(j["column"], j["model"]) for j in weekly}) == len(weekly), "no duplicate cells")
 workflow = (ROOT / ".gitea" / "workflows" / "bench-matrix.yml").read_text()
 expect(bm.include() in workflow, "bench-matrix.yml carries the current include (tools/bench_matrix.py include)")
@@ -76,6 +79,16 @@ with tempfile.TemporaryDirectory() as tmp:
            "only the geist-only slowdown is a regression")
     page = (root / "index.html").read_text()
     expect('class="c bad"' in page and page.count("<svg") >= 2, "index marks the regressed cell, draws trends")
+    expect('href="/css/site.css"' in page, "index uses the site's stylesheet")
+    archive = (root / "runs" / "amd_9950x/qwen35-0.8b-q8" / "index.html").read_text()
+    expect(archive.count("<tr><td>2026-10-") == 2, "each cell gets an archive page with every run")
+    bm.snapshot(root, "v9.9.9")
+    with contextlib.redirect_stdout(io.StringIO()):
+        bm.publish(root)
+    snap = json.loads((root / "releases" / "v9.9.9.json").read_text())
+    expect(snap["cells"]["amd_9950x/qwen35-0.8b-q8"]["pp"] == 900, "a release snapshot freezes each cell's newest run")
+    expect('href="releases/v9.9.9/"' in (root / "index.html").read_text()
+           and (root / "releases" / "v9.9.9" / "index.html").exists(), "the matrix links the release page")
     history = json.loads((root / "history.json").read_text())
     expect(len(history["nvidia_2080ti_vulkan/gemma4-e2b-q4km"]) == 2, "an interrupted run is skipped")
 

@@ -1,6 +1,26 @@
 {
   "schema": "geist.benchmark.matrix.v1",
   "note": "Which protocol model runs on which host column, and how often (.gitea/workflows/bench-matrix.yml, tools/bench_matrix.py). A model is listed only where it fits: no 27B on the 4 GB Pi, no 16 GB Qwen3.8 on the 11 GB card. nightly runs every night, weekly adds the rest on Sundays. prefix wraps the measurement in the host lock: the desktop CI runner pauses while /tmp/geist-bench.lock is held, the Pi has with-pi-lock, the Mac relies on the protocol's quiet-host gate.",
+  "labels": {
+    "columns": {
+      "amd_9950x": "AMD Ryzen 9 9950X · CPU",
+      "nvidia_2080ti_vulkan": "RTX 2080 Ti · Vulkan",
+      "apple_m1max": "Apple M1 Max · CPU",
+      "apple_m1max_metal": "Apple M1 Max · Metal",
+      "pi5": "Raspberry Pi 5 · CPU"
+    },
+    "models": {
+      "gemma4-e2b-q4km": "Gemma 4 E2B Q4_K_M",
+      "gemma4-e4b-q4km": "Gemma 4 E4B Q4_K_M",
+      "llama32-3b-q4km": "Llama 3.2 3B Q4_K_M",
+      "bitnet-large-tq2": "BitNet b1.58-large TQ2_0",
+      "qwen3-0.6b-q8": "Qwen3 0.6B Q8_0",
+      "qwen35-0.8b-q8": "Qwen3.5 0.8B Q8_0",
+      "qwen35-4b-q4": "Qwen3.5 4B Q4_0",
+      "qwen38-27b-q4": "Qwen3.8 27B Q4_0",
+      "bonsai2-27b-pq2": "Ternary Bonsai 2 27B PQ2_0"
+    }
+  },
   "llama_overrides": {
     "bonsai2-27b-pq2": {"repo": "PrismML-Eng/llama.cpp", "pin": "adfffbe41", "why": "upstream llama.cpp has no PQ2_0 type"}
   },
