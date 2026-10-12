@@ -8,6 +8,8 @@
  * one with its NEON / AVX2 kernels) must agree with the reference within
  * the error bound of an fp32 dot product: |err| <= 4 * K * eps * sum|a*b|
  * (+ beta's term), the accumulation order being the provider's choice.
+ * Built with -fno-finite-math-only (mk/common.mk): the NaN sentinels are the
+ * point, and the Linux targets' -ffast-math would fold isnan() away.
  */
 #include "test_helpers.h"
 
@@ -17,6 +19,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static uint64_t rng = 0x9E3779B97F4A7C15ull;
 
@@ -91,20 +94,24 @@ static int check(int ta, int tb, int M, int N, int K, float alpha, float beta, i
             }
         }
     }
-    /* Padding columns of C are not part of the result and must stay. */
+    /* Padding columns of C are not part of the result and must stay, bit
+     * for bit (NaN sentinels included, so compare bytes, not floats). */
     for (int i = 0; i < M && !bad; i++)
-        for (int j = N; j < ldc; j++)
-            if (!(C[(size_t) i * ldc + j] == C0[(size_t) i * ldc + j] ||
-                  (isnan(C[(size_t) i * ldc + j]) && isnan(C0[(size_t) i * ldc + j])))) {
-                fprintf(stderr,
-                        "FAIL: write past N into C's row padding (op %c%c M=%d N=%d)\n",
-                        ta == GEIST_OP_N ? 'N' : 'T',
-                        tb == GEIST_OP_N ? 'N' : 'T',
-                        M,
-                        N);
-                bad = 1;
-                break;
-            }
+        if (ldc > N && memcmp(C + (size_t) i * ldc + N,
+                              C0 + (size_t) i * ldc + N,
+                              (size_t) (ldc - N) * sizeof *C) != 0) {
+            fprintf(stderr,
+                    "FAIL: write past N into C's row padding (op %c%c M=%d N=%d K=%d alpha=%g "
+                    "beta=%g)\n",
+                    ta == GEIST_OP_N ? 'N' : 'T',
+                    tb == GEIST_OP_N ? 'N' : 'T',
+                    M,
+                    N,
+                    K,
+                    (double) alpha,
+                    (double) beta);
+            bad = 1;
+        }
     free(A);
     free(B);
     free(C);
