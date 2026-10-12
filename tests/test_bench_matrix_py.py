@@ -44,10 +44,12 @@ expect(bm.include() in workflow, "bench-matrix.yml carries the current include (
 expect([j["model"] for j in bm.plan("weekly", "pi5/qwen3-0.6b-q8")] == ["qwen3-0.6b-q8"], "--only narrows")
 
 
-def run(path: Path, day: int, pp: float, pp_vs: float, tg: float, tg_vs: float, llama: str = "L1") -> None:
+def run(path: Path, day: int, pp: float, pp_vs: float, tg: float, tg_vs: float, llama: str = "L1",
+        libs: tuple = ()) -> None:
     meta = {"kind": "metadata", "created_utc": f"2026-10-{day:02d}T01:00:00+00:00",
             "runner": {"commit": f"c{day:08d}"},
-            "engines": [{"label": "geist"}, {"label": "llama.cpp", "commit": llama}]}
+            "engines": [{"label": "geist", "commit": f"g{day:08d}", "linked_libraries": list(libs)},
+                        {"label": "llama.cpp", "commit": llama}]}
     side = lambda tps, vs: {"median_tps": tps, "vs_llama_pct": vs}  # noqa: E731
     summary = {"kind": "summary", "summary": {"geist": {bm.SEQ: {
         "prefill": side(pp, pp_vs), "decode": side(tg, tg_vs)}}}}
@@ -69,6 +71,10 @@ with tempfile.TemporaryDirectory() as tmp:
     run(d / "a.jsonl", 1, 100, 10, 20, 5)
     run(d / "b.jsonl", 2, 80, 0, 20, 5, llama="L2")                                       # new pin
     (d / "c.jsonl").write_text(json.dumps({"kind": "metadata"}) + "\n")                    # interrupted
+    d = root / "runs" / "amd_9950x/gemma4-e2b-q4km"
+    d.mkdir(parents=True)
+    run(d / "a.jsonl", 1, 100, 10, 20, 5, libs=("libopenblas.so.0 => /usr/lib/libopenblas.so.0",))
+    run(d / "b.jsonl", 2, 50, -40, 20, 5)                                                 # native GEMM
 
     import contextlib, io  # noqa: E401
     out = io.StringIO()
@@ -90,6 +96,10 @@ with tempfile.TemporaryDirectory() as tmp:
     expect('href="releases/v9.9.9/"' in (root / "index.html").read_text()
            and (root / "releases" / "v9.9.9" / "index.html").exists(), "the matrix links the release page")
     history = json.loads((root / "history.json").read_text())
+    expect([r["gemm"] for r in history["amd_9950x/gemma4-e2b-q4km"]] == ["openblas", "native"],
+           "a run records its GEMM; another GEMM is not a regression")
+    expect(history["pi5/qwen3-0.6b-q8"][-1]["commit"].startswith("g"),
+           "a cell names the measured geist binary's commit, not the runner's")
     expect(len(history["nvidia_2080ti_vulkan/gemma4-e2b-q4km"]) == 2, "an interrupted run is skipped")
 
 print("PASS" if not fails else f"FAIL ({fails})")
