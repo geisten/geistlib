@@ -66,6 +66,17 @@ def include() -> str:
         for j in plan("weekly", None))
 
 
+def gemm_of(engine: dict) -> str:
+    """The fp32 GEMM the geist binary was built with, from its linked
+    libraries: Linux release builds are BLAS-free (native), a default Linux
+    build links OpenBLAS, macOS links Accelerate."""
+    libs = " ".join(engine.get("linked_libraries", [])).lower()
+    for name in ("openblas", "accelerate", "mkl", "blis"):
+        if name in libs:
+            return name
+    return "native"
+
+
 def load_run(path: Path) -> dict | None:
     meta = summary = None
     for line in path.read_text().splitlines():
@@ -78,11 +89,14 @@ def load_run(path: Path) -> dict | None:
         return None  # an interrupted run has no summary
     geist = summary["geist"][SEQ]
     llama = next(e for e in meta["engines"] if e["label"] == "llama.cpp")
+    geist_engine = next((e for e in meta["engines"] if e["label"] == "geist"), {})
     return {
         "file": path.name,
         "report": path.with_suffix(".txt").name if path.with_suffix(".txt").exists() else None,
         "date": meta["created_utc"][:16].replace("T", " "),
-        "commit": meta["runner"]["commit"][:9],
+        # the measured geist binary's commit; the runner's checkout may differ
+        "commit": geist_engine.get("commit", meta["runner"]["commit"])[:9],
+        "gemm": gemm_of(geist_engine),
         "llama": llama.get("commit") or llama.get("binary_sha256", "")[:12],
         "pp": geist["prefill"]["median_tps"], "pp_vs": geist["prefill"]["vs_llama_pct"],
         "tg": geist["decode"]["median_tps"], "tg_vs": geist["decode"]["vs_llama_pct"],
@@ -90,7 +104,8 @@ def load_run(path: Path) -> dict | None:
 
 
 def regressions(runs: list[dict]) -> list[str]:
-    if len(runs) < 2 or runs[-1]["llama"] != runs[-2]["llama"]:
+    if len(runs) < 2 or runs[-1]["llama"] != runs[-2]["llama"] or \
+            runs[-1].get("gemm") != runs[-2].get("gemm"):
         return []
     old, new = runs[-2], runs[-1]
     found = []
@@ -123,7 +138,7 @@ def cell(column: str, model: str, runs: list[dict], prefix: str = "") -> str:
             f'<span class="x">pp {last["pp_vs"]:+.0f} % · tg {last["tg_vs"]:+.0f} %</span></a>'
             f'<small>{last["pp"]:.0f} / {last["tg"]:.1f} tok/s</small>'
             f'<small>{spark([r["pp"] for r in recent])} {spark([r["tg"] for r in recent])}</small>'
-            f'<small>{last["date"][:10]} · <code>{last["commit"]}</code></small></td>')
+            f'<small>{last["date"][:10]} · <code>{last["commit"]}</code> · {last["gemm"]}</small></td>')
 
 
 # Page chrome copied from the webapp repository (partials/header.html and
@@ -195,13 +210,13 @@ def page(title: str, description: str, label: str, heading: str, lede: str, body
 
 def archive_page(column: str, model: str, labels: dict, runs: list[dict]) -> str:
     rows = "\n".join(
-        f'<tr><td>{r["date"]}</td><td><code>{r["commit"]}</code></td><td><code>{r["llama"][:9]}</code></td>'
+        f'<tr><td>{r["date"]}</td><td><code>{r["commit"]}</code></td><td><code>{r["llama"][:9]}</code></td><td>{r["gemm"]}</td>'
         f'<td class="n">{r["pp"]:.1f}</td><td class="n x">{r["pp_vs"]:+.0f} %</td>'
         f'<td class="n">{r["tg"]:.1f}</td><td class="n x">{r["tg_vs"]:+.0f} %</td>'
         f'<td><a href="{r["report"] or r["file"]}">report</a> · <a href="{r["file"]}">raw</a></td></tr>'
         for r in reversed(runs))
     body = f"""      <table>
-        <thead><tr><th>Run (UTC)</th><th>geist</th><th>llama.cpp</th><th class="n">pp{SEQ} tok/s</th><th class="n">vs llama</th><th class="n">tg64 tok/s</th><th class="n">vs llama</th><th>Files</th></tr></thead>
+        <thead><tr><th>Run (UTC)</th><th>geist</th><th>llama.cpp</th><th>GEMM</th><th class="n">pp{SEQ} tok/s</th><th class="n">vs llama</th><th class="n">tg64 tok/s</th><th class="n">vs llama</th><th>Files</th></tr></thead>
         <tbody>
 {rows}
         </tbody>
@@ -273,7 +288,7 @@ def publish(root: Path) -> int:
             + '\n      <p class="note"><a href="../../">Back to the live matrix</a>.</p>'))
     release_links = " · ".join(f'<a href="releases/{s["tag"]}/">{html.escape(s["tag"])}</a>' for s in snaps)
     body = table + f"""
-      <p class="note">Each cell: geistlib's speed relative to llama.cpp for prefill (pp{SEQ}) and decode (tg64 at depth {SEQ}), geistlib's own tokens/s, the trend over the last {SPARK} runs, and the date and geistlib commit of the newest run. Ratios compare within a column; tokens/s across columns describe the hardware. A red mark: geistlib slowed by more than {THRESHOLD:.0f} % against the cell's previous run while llama.cpp did not.</p>
+      <p class="note">Each cell: geistlib's speed relative to llama.cpp for prefill (pp{SEQ}) and decode (tg64 at depth {SEQ}), geistlib's own tokens/s, the trend over the last {SPARK} runs, and the date, geistlib commit and fp32 GEMM of the newest run (the Linux columns measure the BLAS-free release build, native; runs with another GEMM are not compared with it). Ratios compare within a column; tokens/s across columns describe the hardware. A red mark: geistlib slowed by more than {THRESHOLD:.0f} % against the cell's previous run while llama.cpp did not.</p>
       <p class="note">Method: the frozen cross-engine protocol of geistlib (same model file by SHA-256, same shapes and threads for both engines, 4 alternating cycles × 3 samples, median), run on a quiet host by the nightly and weekly <code>bench-matrix</code> workflow. Speed only, not a quality comparison. Click a cell for its archive of every run; all numbers as JSON: <a href="history.json">history.json</a>; every raw run as a git archive: <a href="https://github.com/geisten/bench-results">geisten/bench-results</a>.</p>""" + (
         f'\n      <p class="note">The matrix at each release: {release_links}.</p>' if release_links else "")
     (root / "index.html").write_text(page(
