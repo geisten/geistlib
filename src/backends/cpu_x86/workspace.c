@@ -121,6 +121,23 @@ struct cpu_x86_workspace *cpu_x86_ws_acquire_mN(struct cpu_x86_state *st,
     return ws;
 }
 
+struct cpu_x86_workspace *cpu_x86_ws_acquire_tiled(struct cpu_x86_state *st, size_t bytes) {
+    struct cpu_x86_workspace *ws = ws_find_or_mint(st);
+    if (ws == nullptr) {
+        return nullptr;
+    }
+    if (ws->tiled_cap < bytes) {
+        void *fresh = heap_calloc_aligned(1, bytes, OPTIMAL_ALIGNMENT);
+        if (fresh == nullptr) {
+            return nullptr;
+        }
+        safe_free(&ws->tiled);
+        ws->tiled     = fresh;
+        ws->tiled_cap = bytes;
+    }
+    return ws;
+}
+
 float *cpu_x86_ws_attn_part(struct cpu_x86_state *st, size_t floats) {
     struct cpu_x86_workspace *ws    = ws_find_or_mint(st);
     size_t                    bytes = 0;
@@ -138,6 +155,7 @@ void cpu_x86_ws_destroy_all(struct cpu_x86_state *st) {
         safe_free((void **) &n->ws.acts_scratch);
         safe_free((void **) &n->ws.sum_a_scratch);
         safe_free((void **) &n->ws.mN_acts);
+        safe_free(&n->ws.tiled);
         safe_free((void **) &n->ws.mN_sum_a);
         safe_free((void **) &n->ws.mN_scale);
         safe_free((void **) &n->ws.mN_aux);

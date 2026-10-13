@@ -29,6 +29,11 @@
 
 #include "linear_q4k_raw.h"
 
+#include "backend_state.h"
+#include "checked.h"
+#include "kernel_q4k_tiled.h" /* tiled int8 Q5_K GEMM, AVX-512 VNNI (#18) */
+#include "q8_kx4.h"
+
 #include "linear_util.h"
 
 #include "linear_ref.h"
@@ -37,6 +42,8 @@
 #include "quant_blocks.h"
 
 #include <geist_backend.h>
+#include <stdatomic.h>
+#include <stdlib.h>
 #include <geist_types.h>
 
 #include <immintrin.h>
@@ -381,11 +388,54 @@ static void cpu_x86_linear_q5k_m1(const float               *x,
     linear_m1(q5k_rows_m1, x, w, be, y);
 }
 
+/* The tiled int8 GEMM (#18) on hosts with AVX-512 VNNI, from 16 rows:
+ * Q5_K reads the GGUF bytes there as well. GEIST_Q5K_TILED=0 keeps the
+ * row kernel. */
+enum { Q5K_TILED_MIN_ROWS = 16 };
+
+static bool q5k_tiled_on(void) {
+    static atomic_int on = -1;
+    int               v  = atomic_load_explicit(&on, memory_order_relaxed);
+    if (v < 0) {
+        const char *e = getenv("GEIST_Q5K_TILED");
+        v             = (e == nullptr || e[0] != '0') && vnni_tiles_usable();
+        atomic_store_explicit(&on, v, memory_order_relaxed);
+    }
+    return v != 0;
+}
+
 static void cpu_x86_linear_q5k_mN(size_t                     m,
                                   const float               *x,
                                   const struct geist_weight *w,
                                   struct geist_backend      *be,
                                   float                     *y) {
+    const size_t n_in = (size_t) w->n_in, n_out = (size_t) w->n_out, n_super = n_in / 256;
+    const size_t m4     = m / 4 * 4;
+    size_t       groups = 0, acts_bytes = 0;
+    struct cpu_x86_workspace *ws = nullptr;
+    if (m4 >= Q5K_TILED_MIN_ROWS && q5k_tiled_on() && be != nullptr && be->state != nullptr &&
+        !ckd_mul(&groups, m4 / 4, n_super) &&
+        !ckd_mul(&acts_bytes, groups, sizeof(struct block_q8_Kx4))) {
+        ws = cpu_x86_ws_acquire_mN((struct cpu_x86_state *) be->state, 0, 0, 0, acts_bytes);
+    }
+    if (ws != nullptr) {
+        struct block_q8_Kx4 *acts = (struct block_q8_Kx4 *) ws->mN_aux;
+        for (size_t g = 0; g < m4 / 4; g++) {
+            quantize_q8_Kx4(n_in, x + g * 4 * n_in, acts + g * n_super);
+        }
+        if (q5k_tiled_gemm_avx512_vnni(m4,
+                                       n_out,
+                                       n_in,
+                                       acts,
+                                       (const struct block_q5_K_t *) w->raw,
+                                       y,
+                                       (struct cpu_x86_state *) be->state)) {
+            if (m4 < m) {
+                linear_mN(q5k_rows_mN, m - m4, x + m4 * n_in, w, be, y + m4 * n_out);
+            }
+            return;
+        }
+    }
     linear_mN(q5k_rows_mN, m, x, w, be, y);
 }
 

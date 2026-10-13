@@ -23,6 +23,28 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **x86 prefill on Q4_0 models about 2x faster: the tiled int8 GEMM covers
+  Q4_0, Q4_1 and Q5_K (#18).** On AVX-512 VNNI hosts, Q4_0 / Q4_1 weights are
+  read from the GGUF bytes into the same int8 tiles; the per-32-block scales
+  of weights and Q8_0 activations stay per block, so the integer block sums
+  are the register-tile kernel's. AMD 9950X, prefill 512: Qwen3.5 4B Q4_0
+  2022 -> 986 ms, Qwen3.8 27B Q4_0 13094 -> 5074 ms (about 101 tok/s;
+  llama.cpp 54); decode unchanged. Logits stay as close to the cpu_scalar
+  oracle as before. GEIST_Q4_0_TILED=0 / GEIST_Q5K_TILED=0 restore the
+  previous kernels.
+- **x86: Q6_K prefill from the GGUF bytes, no W8A8 predecode on AVX-512
+  VNNI (#18).** The tiled int8 GEMM now covers Q6_K too, at the speed of
+  the predecode GEMM it replaces, so those hosts no longer keep the 1.5 B/wt
+  W8A8 copy of every Q6_K weight. AMD 9950X resident memory: Gemma 4 E2B
+  Q4_K_M 3308 -> 2922 MB, Llama 3.2 3B Q4_K_M 4839 -> 3685 MB; Llama 3.2 3B
+  prefill 512 -1.6 %. GEIST_Q6K_TILED=0 restores the predecode.
+- **x86 prefill on Q4_K models 24–31 % faster: a tiled int8 Q4_K GEMM
+  (#18).** On AVX-512 VNNI hosts, Q4_K weights are unpacked once per K block
+  into int8 tiles and multiplied by an 8x16 VPDPBUSD microkernel (port of
+  llama.cpp's tiled k-quant matmul, d834d44e6). AMD 9950X, pp512: Gemma 4
+  E2B Q4_K_M 527 -> 694 tok/s, Llama 3.2 3B Q4_K_M 379 -> 547 tok/s, ahead
+  of llama.cpp (633 / 509); decode unchanged. GEIST_Q4K_TILED=0 restores the
+  previous kernel.
 - **x86 release builds: Qwen3.5 prefill about twice as fast (#12).** The
   BLAS-free native GEMM of the release binaries had no SIMD path on x86, so
   the gated-DeltaNet prefill ran its sgemm calls scalar. AVX2/FMA kernels
