@@ -53,6 +53,10 @@ struct cpu_x86_workspace {
      * zeroed when allocated: rows past a window's edge are read, never used. */
     void  *tiled;
     size_t tiled_cap; /* bytes */
+    /* The tiled GEMM's prepared activations of one call, written by all
+     * threads and read by all; it lives in the calling thread's node. */
+    void  *tiled_acts;
+    size_t tiled_acts_cap; /* bytes */
 };
 
 /* One node per (backend, thread) pair; ws_head is a lock-free push-only
@@ -81,6 +85,10 @@ struct cpu_x86_workspace *cpu_x86_ws_acquire(struct cpu_x86_state *st, size_t n_
 /* The calling thread's workspace with `tiled` covering `bytes`, or nullptr
  * on OOM. */
 struct cpu_x86_workspace *cpu_x86_ws_acquire_tiled(struct cpu_x86_state *st, size_t bytes);
+
+/* The calling thread's workspace with `tiled_acts` covering `bytes`, or
+ * nullptr on OOM. */
+struct cpu_x86_workspace *cpu_x86_ws_acquire_tiled_acts(struct cpu_x86_state *st, size_t bytes);
 
 struct cpu_x86_workspace *cpu_x86_ws_acquire_mN(struct cpu_x86_state *st,
                                                 size_t                acts_bytes,

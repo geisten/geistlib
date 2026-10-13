@@ -23,6 +23,15 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **x86 prefill 4–11 % faster on every tiled format: the activations are
+  prepared once per GEMM.** The tiled int8 GEMM (#18) unpacked and
+  transposed the activation tile again for every weight window. One
+  parallel pass now prepares them per K block, and every window reads
+  them. AMD 9950X, prefill 512 against the parallel quantization:
+  Qwen3.8 27B Q4_0 -4 %, Qwen3.5 4B Q4_0 -4 %, Gemma 4 E2B Q4_K_M -8 %,
+  Llama 3.2 3B Q4_K_M -11 % (-16 % at 128). Same integer sums; long
+  prompts go in blocks of 512 rows (at most 12 MB of prepared
+  activations at K = 17408).
 - **Apple CPU prefill on Q4_K models about 30 % faster (#16).** Two
   changes on the M1 Max (cpu_neon):
   - Full prefill chunks stay on the int8 SDOT kernels. Before, each

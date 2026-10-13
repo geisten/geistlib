@@ -31,6 +31,7 @@
 
 #include "kernel_q4k_tiled.h"
 
+#include "checked.h"
 #include "par.h"
 #include "quant.h"
 
@@ -46,18 +47,14 @@ enum { TILE = 256, MICRO = 16, NSUB_MAX = 16 };
 /* One thread's tiles. Rows past a window's edge hold stale or zero values;
  * the microkernel computes them and the store drops them. */
 struct q4k_tiled_ws {
-    alignas(64) uint8_t w_q[TILE * TILE];           /* [row][k] codes 0..15 */
-    alignas(64) int32_t w_scale[TILE * NSUB_MAX];   /* [row][subblock] */
-    alignas(64) int32_t w_min[TILE * NSUB_MAX];     /* [row][subblock], Q4_K only */
-    alignas(64) float w_fd[TILE * NSUB_MAX];        /* Q4_0/Q4_1: d per 32-block [row][sub] */
-    alignas(64) float w_fm[TILE * NSUB_MAX];        /* Q4_1: m per 32-block [row][sub] */
-    alignas(64) float a_fd[(TILE / 32) * TILE];     /* Q8_0 acts: d per 32-block [sub][row] */
-    alignas(64) float w_d[TILE];                    /* per row */
-    alignas(64) float w_dmin[TILE];                 /* per row */
-    alignas(64) int8_t a_q[TILE * TILE];            /* [row][k], then banded */
-    alignas(64) int32_t a_bsum[(TILE / 16) * TILE]; /* [group of 16][row] */
-    alignas(64) float a_d[TILE];                    /* per row */
-    alignas(64) float acc[TILE * TILE];             /* [weight row][act row] */
+    alignas(64) uint8_t w_q[TILE * TILE];         /* [row][k] codes 0..15 */
+    alignas(64) int32_t w_scale[TILE * NSUB_MAX]; /* [row][subblock] */
+    alignas(64) int32_t w_min[TILE * NSUB_MAX];   /* [row][subblock], Q4_K only */
+    alignas(64) float w_fd[TILE * NSUB_MAX];      /* Q4_0/Q4_1: d per 32-block [row][sub] */
+    alignas(64) float w_fm[TILE * NSUB_MAX];      /* Q4_1: m per 32-block [row][sub] */
+    alignas(64) float w_d[TILE];                  /* per row */
+    alignas(64) float w_dmin[TILE];               /* per row */
+    alignas(64) float acc[TILE * TILE];           /* [weight row][act row] */
 };
 
 size_t q4k_tiled_ws_bytes(void) {
@@ -197,42 +194,6 @@ static void unpack_w_q5k(size_t                     n_super,
     }
 }
 
-/* Activation rows [r0, r0 + n) of K block kb from Q8_Kx4: row r is lane
- * r % 4 of X[(r / 4) * n_super + kb], whose 64-element subblock sb keeps
- * the lane's 8-element stripe i at qs[sb * 256 + i * 32 + lane * 8].
- * Rows up to the next multiple of 16 are zeroed. */
-static void unpack_a(size_t                     n_super,
-                     size_t                     kb,
-                     size_t                     r0,
-                     int                        n,
-                     const struct block_q8_Kx4 *X,
-                     struct q4k_tiled_ws       *ws) {
-    const int n_pad = (n + MICRO - 1) & ~(MICRO - 1);
-    for (int r = 0; r < n_pad; r++) {
-        int8_t *q = &ws->a_q[(size_t) r * TILE];
-        if (r >= n) {
-            memset(q, 0, TILE);
-            for (int g = 0; g < 16; g++) {
-                ws->a_bsum[g * TILE + r] = 0;
-            }
-            ws->a_d[r] = 0.0f;
-            continue;
-        }
-        const size_t               row  = r0 + (size_t) r;
-        const int                  lane = (int) (row % 4);
-        const struct block_q8_Kx4 *b    = &X[(row / 4) * n_super + kb];
-        for (int sb = 0; sb < 4; sb++) {
-            for (int i = 0; i < 8; i++) {
-                memcpy(q + sb * 64 + i * 8, b->qs + sb * 256 + i * 32 + lane * 8, 8);
-            }
-        }
-        for (int g = 0; g < 16; g++) {
-            ws->a_bsum[g * TILE + r] = b->bsums[lane * 16 + g];
-        }
-        ws->a_d[r] = b->d[lane];
-    }
-}
-
 /* Weight rows [r0, r0 + n) of K block kb from GGUF Q4_0 (or Q4_1) bytes:
  * eight 32-element blocks per K block, element j in the low nibble of
  * qs[j] and j + 16 in the high one; d (and Q4_1's m) per block as float. */
@@ -260,42 +221,10 @@ static void unpack_w_q4_0(
     }
 }
 
-/* Activation rows [r0, r0 + n) of K block kb from per-row Q8_0 (int8
- * codes, d and code sum per 32-element block); rows up to the next
- * multiple of 16 are zeroed. */
-static void unpack_a_q8_0(size_t               nb,
-                          size_t               kb,
-                          size_t               r0,
-                          int                  n,
-                          const int8_t        *qx,
-                          const float         *dx,
-                          const int32_t       *sx,
-                          struct q4k_tiled_ws *ws) {
-    const int n_pad = (n + MICRO - 1) & ~(MICRO - 1);
-    for (int r = 0; r < n_pad; r++) {
-        int8_t *q = &ws->a_q[(size_t) r * TILE];
-        if (r >= n) {
-            memset(q, 0, TILE);
-            for (int b = 0; b < 8; b++) {
-                ws->a_bsum[b * TILE + r] = 0;
-                ws->a_fd[b * TILE + r]   = 0.0f;
-            }
-            continue;
-        }
-        const size_t row = r0 + (size_t) r;
-        memcpy(q, qx + row * nb * 32 + kb * TILE, TILE);
-        for (int b = 0; b < 8; b++) {
-            ws->a_bsum[b * TILE + r] = sx[row * nb + kb * 8 + (size_t) b];
-            ws->a_fd[b * TILE + r]   = dx[row * nb + kb * 8 + (size_t) b];
-        }
-    }
-}
-
 /* Transpose one 16-row band of activation codes in place from [row][k]
  * into [kg % 16][kg / 16][row][4], kg = k / 4: four 16x16 int32
  * transposes per band (llama.cpp's tiled_repack_src1, VNNI branch). */
-static void band_interleave(int row0, struct q4k_tiled_ws *ws) {
-    uint8_t *base = (uint8_t *) ws->a_q + (size_t) row0 * TILE;
+static void band_interleave(uint8_t *base) {
     for (int t = 0; t < TILE / (MICRO * 4); t++) {
         uint8_t *cbase = base + t * (MICRO * 4);
         __m512i  v[16];
@@ -357,6 +286,89 @@ static void band_interleave(int row0, struct q4k_tiled_ws *ws) {
     }
 }
 
+/* The activations of one GEMM call, prepared once (prep_acts) and read by
+ * every weight window: per K block a slab of stride (rows rounded up to 16)
+ * rows, the int8 codes banded for the microkernel and, per row, the scales
+ * and code sums. Q8_Kx4 (k-quants): bsum per 16 codes [16][stride], d per
+ * row; Q8_0 (Q4_0 / Q4_1): bsum and fd per 32 codes [8][stride]. */
+struct act_view {
+    const uint8_t *q;    /* row a0 of the slab; rows of TILE bytes */
+    const int32_t *bsum; /* [group][stride], from row a0 */
+    const float   *d;    /* [stride], from row a0 */
+    const float   *fd;   /* [8][stride], from row a0 */
+    size_t         stride;
+};
+
+static size_t act_slab_bytes(size_t stride) {
+    return stride * (TILE + 16 * sizeof(int32_t) + sizeof(float) + 8 * sizeof(float));
+}
+
+static struct act_view act_slab(void *acts, size_t stride, size_t kb, size_t a0) {
+    uint8_t *slab = (uint8_t *) acts + kb * act_slab_bytes(stride);
+    int32_t *bsum = (int32_t *) (slab + stride * TILE);
+    float   *d    = (float *) (bsum + 16 * stride);
+    float   *fd   = d + stride;
+    return (struct act_view) {
+            .q = slab + a0 * TILE, .bsum = bsum + a0, .d = d + a0, .fd = fd + a0, .stride = stride};
+}
+
+/* Rows [row0, row0 + 16) of K block kb into its slab, then the band's
+ * interleave. Rows at or past M are zero. Q8_Kx4: X has M / 4 groups of
+ * n_super blocks; row r is lane r % 4 of X[(r / 4) * n_super + kb], whose
+ * 64-element subblock sb keeps the lane's 8-element stripe i at
+ * qs[sb * 256 + i * 32 + lane * 8]. Q8_0: qx [M][K], dx and sx [M][nb]. */
+static void prep_band(bool                       q8_0,
+                      size_t                     n_super,
+                      size_t                     kb,
+                      size_t                     row0,
+                      size_t                     M,
+                      const struct block_q8_Kx4 *X,
+                      const int8_t              *qx,
+                      const float               *dx,
+                      const int32_t             *sx,
+                      void                      *acts,
+                      size_t                     stride) {
+    const struct act_view v    = act_slab(acts, stride, kb, row0);
+    uint8_t              *q0   = (uint8_t *) v.q;
+    int32_t              *bsum = (int32_t *) v.bsum;
+    float                *d    = (float *) v.d;
+    float                *fd   = (float *) v.fd;
+    const size_t          nb   = n_super * 8;
+    for (size_t r = 0; r < MICRO; r++) {
+        const size_t row = row0 + r;
+        uint8_t     *q   = q0 + r * TILE;
+        if (row >= M) {
+            memset(q, 0, TILE);
+            for (int g = 0; g < 16; g++) {
+                bsum[g * stride + r] = 0;
+            }
+            for (int b = 0; b < 8; b++) {
+                fd[b * stride + r] = 0.0f;
+            }
+            d[r] = 0.0f;
+        } else if (q8_0) {
+            memcpy(q, qx + row * nb * 32 + kb * TILE, TILE);
+            for (int b = 0; b < 8; b++) {
+                bsum[b * stride + r] = sx[row * nb + kb * 8 + (size_t) b];
+                fd[b * stride + r]   = dx[row * nb + kb * 8 + (size_t) b];
+            }
+        } else {
+            const int                  lane = (int) (row % 4);
+            const struct block_q8_Kx4 *b    = &X[(row / 4) * n_super + kb];
+            for (int sb = 0; sb < 4; sb++) {
+                for (int i = 0; i < 8; i++) {
+                    memcpy(q + sb * 64 + i * 8, b->qs + sb * 256 + i * 32 + lane * 8, 8);
+                }
+            }
+            for (int g = 0; g < 16; g++) {
+                bsum[g * stride + r] = b->bsums[lane * 16 + g];
+            }
+            d[r] = b->d[lane];
+        }
+    }
+    band_interleave(q0);
+}
+
 /* acc[i0 + t][j0 .. j0 + 16) += the K block's contribution, t < 8: exact
  * int32 subblock sums by VPDPBUSD (unsigned weight codes x signed
  * activation codes), the integer scale, min and code-bias corrections,
@@ -365,17 +377,22 @@ static void band_interleave(int row0, struct q4k_tiled_ws *ws) {
  *   sub   elements per subblock (32 Q4_K, 16 Q6_K)
  *   mins  the format subtracts a scaled min (Q4_K)
  *   bias  the stored code is value + bias (32 Q6_K, 0 Q4_K). */
-static inline __attribute__((always_inline)) void
-micro_8x16(int sub, bool mins, int bias, int i0, int j0, struct q4k_tiled_ws *ws) {
+static inline __attribute__((always_inline)) void micro_8x16(int                    sub,
+                                                             bool                   mins,
+                                                             int                    bias,
+                                                             int                    i0,
+                                                             int                    j0,
+                                                             const struct act_view *av,
+                                                             struct q4k_tiled_ws   *ws) {
     enum { ROWS = 8 };
     const int    nsub = TILE / sub, per16 = sub / 16, groups = sub / 4;
-    const __m512 a_d = _mm512_load_ps(&ws->a_d[j0]);
+    const __m512 a_d = _mm512_load_ps(&av->d[j0]);
     __m512i      s1[ROWS], s2[ROWS];
     for (int t = 0; t < ROWS; t++) {
         s1[t] = _mm512_setzero_si512();
         s2[t] = _mm512_setzero_si512();
     }
-    const uint8_t *band = (const uint8_t *) ws->a_q + (size_t) j0 * TILE;
+    const uint8_t *band = av->q + (size_t) j0 * TILE;
     for (int s = 0; s < nsub; s++) {
         __m512i acc[ROWS];
         for (int t = 0; t < ROWS; t++) {
@@ -396,11 +413,13 @@ micro_8x16(int sub, bool mins, int bias, int i0, int j0, struct q4k_tiled_ws *ws
         }
         if (bias != 0) {
             /* sum (code - bias) * a = raw - bias * (activation sum) */
-            __m512i asum = _mm512_load_si512((const void *) &ws->a_bsum[(s * per16) * TILE + j0]);
+            __m512i asum =
+                    _mm512_load_si512((const void *) &av->bsum[(s * per16) * av->stride + j0]);
             for (int u = 1; u < per16; u++) {
                 asum = _mm512_add_epi32(
                         asum,
-                        _mm512_load_si512((const void *) &ws->a_bsum[(s * per16 + u) * TILE + j0]));
+                        _mm512_load_si512(
+                                (const void *) &av->bsum[(s * per16 + u) * av->stride + j0]));
             }
             const __m512i corr = _mm512_mullo_epi32(asum, _mm512_set1_epi32(bias));
             for (int t = 0; t < ROWS; t++) {
@@ -419,11 +438,13 @@ micro_8x16(int sub, bool mins, int bias, int i0, int j0, struct q4k_tiled_ws *ws
      * registers there. */
     if (mins) {
         for (int s = 0; s < nsub; s++) {
-            __m512i asum = _mm512_load_si512((const void *) &ws->a_bsum[(s * per16) * TILE + j0]);
+            __m512i asum =
+                    _mm512_load_si512((const void *) &av->bsum[(s * per16) * av->stride + j0]);
             for (int u = 1; u < per16; u++) {
                 asum = _mm512_add_epi32(
                         asum,
-                        _mm512_load_si512((const void *) &ws->a_bsum[(s * per16 + u) * TILE + j0]));
+                        _mm512_load_si512(
+                                (const void *) &av->bsum[(s * per16 + u) * av->stride + j0]));
             }
             for (int t = 0; t < ROWS; t++) {
                 s2[t] = _mm512_add_epi32(
@@ -450,13 +471,13 @@ micro_8x16(int sub, bool mins, int bias, int i0, int j0, struct q4k_tiled_ws *ws
  * right away: Q4_0 w = d (q - 8) gives d dx (P - 8 S), Q4_1 w = d q + m
  * gives d dx P + m dx S (P = sum q x, S = sum x, both exact). */
 static inline __attribute__((always_inline)) void
-micro_8x16_f(bool q4_1, int i0, int j0, struct q4k_tiled_ws *ws) {
+micro_8x16_f(bool q4_1, int i0, int j0, const struct act_view *av, struct q4k_tiled_ws *ws) {
     enum { ROWS = 8 };
     __m512 f[ROWS];
     for (int t = 0; t < ROWS; t++) {
         f[t] = _mm512_setzero_ps();
     }
-    const uint8_t *band = (const uint8_t *) ws->a_q + (size_t) j0 * TILE;
+    const uint8_t *band = av->q + (size_t) j0 * TILE;
     for (int s = 0; s < 8; s++) {
         __m512i acc[ROWS];
         for (int t = 0; t < ROWS; t++) {
@@ -475,8 +496,8 @@ micro_8x16_f(bool q4_1, int i0, int j0, struct q4k_tiled_ws *ws) {
                 acc[t] = _mm512_dpbusd_epi32(acc[t], _mm512_set1_epi32((int) w4), codes);
             }
         }
-        const __m512i asum = _mm512_load_si512((const void *) &ws->a_bsum[s * TILE + j0]);
-        const __m512  dx   = _mm512_load_ps(&ws->a_fd[s * TILE + j0]);
+        const __m512i asum = _mm512_load_si512((const void *) &av->bsum[s * av->stride + j0]);
+        const __m512  dx   = _mm512_load_ps(&av->fd[s * av->stride + j0]);
         const __m512  sf   = _mm512_cvtepi32_ps(asum);
         const __m512i bias = _mm512_slli_epi32(asum, 3); /* 8 S */
         for (int t = 0; t < ROWS; t++) {
@@ -529,7 +550,30 @@ struct tiled_job {
     float                *Y;
     struct cpu_x86_state *st;
     atomic_bool           failed;
+    /* The prepared activations (prep_acts): one slab per K block. */
+    void  *acts;
+    size_t stride;
 };
+
+/* Units of prep_acts: (K block, band of 16 rows). */
+static void prep_units(void *ctx, size_t u0, size_t u1) {
+    const struct tiled_job *j      = ctx;
+    const size_t            nbands = j->stride / MICRO;
+    const bool              q8_0   = j->format == TILED_Q4_0 || j->format == TILED_Q4_1;
+    for (size_t u = u0; u < u1; u++) {
+        prep_band(q8_0,
+                  j->n_super,
+                  u / nbands,
+                  (u % nbands) * MICRO,
+                  j->M,
+                  j->X,
+                  j->qx,
+                  j->dx,
+                  j->sx,
+                  j->acts,
+                  j->stride);
+    }
+}
 
 /* One chunk: weight rows [w_lo, w_hi) x activation rows [a_lo, a_hi), in
  * windows of 256 x 256. */
@@ -548,16 +592,15 @@ static void run_chunk(size_t                  w_lo,
             for (size_t kb = 0; f32s && kb < j->n_super; kb++) {
                 const bool q4_1 = j->format == TILED_Q4_1;
                 unpack_w_q4_0(q4_1, j->nb32, kb, w0, n_w, j->W, ws);
-                unpack_a_q8_0(j->nb32, kb, a0, n_a, j->qx, j->dx, j->sx, ws);
+                const struct act_view av = act_slab(j->acts, j->stride, kb, a0);
                 for (int j0 = 0; j0 < n_a; j0 += MICRO) {
-                    band_interleave(j0, ws);
                     for (int i0 = 0; i0 < n_w; i0 += MICRO) {
                         if (q4_1) {
-                            micro_8x16_f(true, i0, j0, ws);
-                            micro_8x16_f(true, i0 + 8, j0, ws);
+                            micro_8x16_f(true, i0, j0, &av, ws);
+                            micro_8x16_f(true, i0 + 8, j0, &av, ws);
                         } else {
-                            micro_8x16_f(false, i0, j0, ws);
-                            micro_8x16_f(false, i0 + 8, j0, ws);
+                            micro_8x16_f(false, i0, j0, &av, ws);
+                            micro_8x16_f(false, i0 + 8, j0, &av, ws);
                         }
                     }
                 }
@@ -571,16 +614,15 @@ static void run_chunk(size_t                  w_lo,
                 } else {
                     unpack_w(j->n_super, kb, w0, n_w, j->W, ws);
                 }
-                unpack_a(j->n_super, kb, a0, n_a, j->X, ws);
+                const struct act_view av = act_slab(j->acts, j->stride, kb, a0);
                 for (int j0 = 0; j0 < n_a; j0 += MICRO) {
-                    band_interleave(j0, ws);
                     for (int i0 = 0; i0 < n_w; i0 += MICRO) {
                         if (q6k) {
-                            micro_8x16(16, false, 32, i0, j0, ws);
-                            micro_8x16(16, false, 32, i0 + 8, j0, ws);
+                            micro_8x16(16, false, 32, i0, j0, &av, ws);
+                            micro_8x16(16, false, 32, i0 + 8, j0, &av, ws);
                         } else {
-                            micro_8x16(32, true, 0, i0, j0, ws);
-                            micro_8x16(32, true, 0, i0 + 8, j0, ws);
+                            micro_8x16(32, true, 0, i0, j0, &av, ws);
+                            micro_8x16(32, true, 0, i0 + 8, j0, &av, ws);
                         }
                     }
                 }
@@ -609,17 +651,17 @@ static void tiled_chunks(void *ctx, size_t c0, size_t c1) {
     }
 }
 
-static bool tiled_gemm(enum tiled_format          format,
-                       size_t                     M,
-                       size_t                     N,
-                       size_t                     K,
-                       const struct block_q8_Kx4 *X,
-                       const int8_t              *qx,
-                       const float               *dx,
-                       const int32_t             *sx,
-                       const void                *W,
-                       float                     *Y,
-                       struct cpu_x86_state      *st) {
+static bool tiled_gemm_rows(enum tiled_format          format,
+                            size_t                     M,
+                            size_t                     N,
+                            size_t                     K,
+                            const struct block_q8_Kx4 *X,
+                            const int8_t              *qx,
+                            const float               *dx,
+                            const int32_t             *sx,
+                            const void                *W,
+                            float                     *Y,
+                            struct cpu_x86_state      *st) {
     /* Chunks of 256 x 256, halved while there are fewer than four per
      * thread (llama.cpp's driver), down to one microtile. */
     const size_t threads = geist_par_max_threads();
@@ -648,8 +690,55 @@ static bool tiled_gemm(enum tiled_format          format,
             .st       = st,
     };
     atomic_init(&j.failed, false);
+    j.stride     = (M + MICRO - 1) / MICRO * MICRO;
+    size_t bytes = 0;
+    if (ckd_mul(&bytes, j.n_super, act_slab_bytes(j.stride))) {
+        return false;
+    }
+    struct cpu_x86_workspace *cws = cpu_x86_ws_acquire_tiled_acts(st, bytes);
+    if (cws == nullptr) {
+        return false;
+    }
+    j.acts = cws->tiled_acts;
+    geist_par_for(j.n_super * (j.stride / MICRO), prep_units, &j);
     geist_par_for(ncw * nca, tiled_chunks, &j);
     return !atomic_load(&j.failed);
+}
+
+/* Rows of activations per tiled_gemm_rows call: bounds the prepared
+ * activations at 512 * 356 bytes per K block (12 MB at K = 17408). A
+ * multiple of 256, so the windows inside a call stay as before. */
+enum { TILED_ROWS = 512 };
+
+static bool tiled_gemm(enum tiled_format          format,
+                       size_t                     M,
+                       size_t                     N,
+                       size_t                     K,
+                       const struct block_q8_Kx4 *X,
+                       const int8_t              *qx,
+                       const float               *dx,
+                       const int32_t             *sx,
+                       const void                *W,
+                       float                     *Y,
+                       struct cpu_x86_state      *st) {
+    const size_t nb = K / 32, n_super = K / 256;
+    for (size_t m0 = 0; m0 < M; m0 += TILED_ROWS) {
+        const size_t m = M - m0 < TILED_ROWS ? M - m0 : TILED_ROWS;
+        if (!tiled_gemm_rows(format,
+                             m,
+                             N,
+                             K,
+                             X != nullptr ? X + m0 / 4 * n_super : nullptr,
+                             qx != nullptr ? qx + m0 * K : nullptr,
+                             dx != nullptr ? dx + m0 * nb : nullptr,
+                             sx != nullptr ? sx + m0 * nb : nullptr,
+                             W,
+                             Y + m0 * N,
+                             st)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool q4k_tiled_gemm_avx512_vnni(size_t                     M,
