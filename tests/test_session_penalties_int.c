@@ -163,19 +163,27 @@ int main(void) {
          * pending logits, so cut one token more and feed it again (a
          * one-token prefill, which the comparison session does too: its
          * logits need not match the batched prompt's bit for bit). */
-        geist_token_t again[N_DEC];
-        check(geist_session_truncate(s, prompt_n - 1) == GEIST_OK, "truncate to prompt - 1");
-        check(geist_session_prefill_tokens(s, 1, &prompt[prompt_n - 1]) == GEIST_OK, "refeed");
-        check(decode(s, N_DEC, again), "decode after truncate");
-        geist_session_destroy(s);
-        struct geist_session *f = open_session(&PEN, prompt_n - 1, prompt);
-        geist_token_t         fresh[N_DEC];
-        check(f != nullptr &&
-                      geist_session_prefill_tokens(f, 1, &prompt[prompt_n - 1]) == GEIST_OK &&
-                      decode(f, N_DEC, fresh),
-              "fresh session, same feeding");
-        check(memcmp(again, fresh, sizeof fresh) == 0, "truncate restores the history");
-        geist_session_destroy(f);
+        geist_token_t     again[N_DEC];
+        enum geist_status ts = geist_session_truncate(s, prompt_n - 1);
+        if (ts == GEIST_E_UNSUPPORTED) {
+            /* Recurrent (DeltaNet) layers cannot go back (geist_util.h);
+             * 3b covers the history through snapshot / restore there. */
+            printf("truncate unsupported here (%s), 3a skipped\n", geist_status_to_string(ts));
+            geist_session_destroy(s);
+        } else {
+            check(ts == GEIST_OK, "truncate to prompt - 1");
+            check(geist_session_prefill_tokens(s, 1, &prompt[prompt_n - 1]) == GEIST_OK, "refeed");
+            check(decode(s, N_DEC, again), "decode after truncate");
+            geist_session_destroy(s);
+            struct geist_session *f = open_session(&PEN, prompt_n - 1, prompt);
+            geist_token_t         fresh[N_DEC];
+            check(f != nullptr &&
+                          geist_session_prefill_tokens(f, 1, &prompt[prompt_n - 1]) == GEIST_OK &&
+                          decode(f, N_DEC, fresh),
+                  "fresh session, same feeding");
+            check(memcmp(again, fresh, sizeof fresh) == 0, "truncate restores the history");
+            geist_session_destroy(f);
+        }
     }
 
     /* ---- 2. Speculative decoding: each verify row sees the history up to
