@@ -1,7 +1,7 @@
 /*
  * test_x86_thread_policy_unit — cpu_x86's thread count per phase.
  *
- * 1. The pure decode policy (cpu_x86_decode_threads) over the topologies it
+ * 1. The pure phase policy (cpu_x86_phase_threads) over the topologies it
  *    has to get right: an SMT desktop (16 cores / 32 threads), a 4C/8T
  *    handheld, 4-way SMT, no SMT (typical CI VMs), an unknown topology, an
  *    explicit OMP_NUM_THREADS, and the GEIST_DECODE_THREADS override.
@@ -61,7 +61,7 @@ static int check_policy(void) {
     };
     int fails = 0;
     for (size_t i = 0; i < sizeof CASES / sizeof *CASES; i++) {
-        const int got = cpu_x86_decode_threads(
+        const int got = cpu_x86_phase_threads(
                 CASES[i].env, CASES[i].omp, CASES[i].logical, CASES[i].physical);
         if (got != CASES[i].want) {
             fprintf(stderr,

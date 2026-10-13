@@ -7,11 +7,15 @@
  * GEMV streaming weights from DRAM, gets contention rather than bandwidth
  * from SMT siblings (benchmark/results/THREAD-SWEEP-AMD9950X.md, #504).
  *
- * Policy, as in cpu_neon:
+ * Policy:
  *   - decode: one thread per physical core when the probe sees SMT; only
  *     ever lowers the team;
- *   - prefill: the ambient team (compute-bound, the sweep shows no gain
- *     from fewer threads);
+ *   - prefill: also one thread per physical core with SMT. The tiled int8
+ *     GEMM alone gains 20 % from the SMT siblings, but the rest of a
+ *     prefill (DeltaNet, norms, attention, the barriers between them)
+ *     loses more: 9950X pp512 at 32 threads against 16, after #18:
+ *     Qwen3.5 4B -9 %, Qwen3.8 27B -4 %, Gemma 4 E2B -20 %. (The 2026-09
+ *     sweep, before the tiled kernels, saw no difference.)
  *   - an explicit OMP_NUM_THREADS is the user's choice and stays;
  *   - GEIST_DECODE_THREADS / GEIST_PREFILL_THREADS override either phase
  *     (documented in docs/QUICKSTART.md for every CPU backend);
@@ -39,9 +43,9 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 
-int cpu_x86_decode_threads(int env_decode, bool omp_threads_set, size_t logical, size_t physical) {
-    if (env_decode >= 0) {
-        return env_decode;
+int cpu_x86_phase_threads(int env, bool omp_threads_set, size_t logical, size_t physical) {
+    if (env >= 0) {
+        return env;
     }
     if (omp_threads_set || physical == 0 || physical >= logical || physical > (size_t) INT_MAX) {
         return 0;
@@ -70,14 +74,19 @@ static int region_threads(enum geist_parallel_region region) {
     if (atomic_load_explicit(&decode, memory_order_acquire) == INT_MIN) {
         struct geist_hw_probe hw;
         geist_hw_probe_fill(&hw);
-        const char *omp = getenv("OMP_NUM_THREADS");
-        const int   p   = env_count("GEIST_PREFILL_THREADS");
-        atomic_store_explicit(&prefill, p > 0 ? p : 0, memory_order_relaxed);
+        const char *omp     = getenv("OMP_NUM_THREADS");
+        const bool  omp_set = omp != nullptr && omp[0] != '\0';
+        atomic_store_explicit(&prefill,
+                              cpu_x86_phase_threads(env_count("GEIST_PREFILL_THREADS"),
+                                                    omp_set,
+                                                    hw.logical_cores,
+                                                    hw.physical_cores),
+                              memory_order_relaxed);
         atomic_store_explicit(&decode,
-                              cpu_x86_decode_threads(env_count("GEIST_DECODE_THREADS"),
-                                                     omp != nullptr && omp[0] != '\0',
-                                                     hw.logical_cores,
-                                                     hw.physical_cores),
+                              cpu_x86_phase_threads(env_count("GEIST_DECODE_THREADS"),
+                                                    omp_set,
+                                                    hw.logical_cores,
+                                                    hw.physical_cores),
                               memory_order_release);
     }
     return region == GEIST_REGION_DECODE_STEP

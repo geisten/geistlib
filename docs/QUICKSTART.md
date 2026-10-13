@@ -160,7 +160,7 @@ Recipe: [DEPLOY.md](DEPLOY.md).
 | `GEIST_IDLE_SPIN_MS` | how long idle OpenMP workers spin after the last parallel region (libomp, default 200 ms); an explicit `KMP_BLOCKTIME` wins |
 | `GEIST_PREFILL_BLOCKTIME_MS` | the same, applied at model load. `0` speeds up a 27B prefill by ~10 % but slows its decode by ~18 % |
 | `GEIST_WEIGHT_MMAP=1` | read weights from the file mapping instead of copying them (the default; matters on low-RAM boards) |
-| `GEIST_PREFILL_THREADS` / `GEIST_DECODE_THREADS` | override the automatic thread split. Prefill scales with all cores; decode is bandwidth-bound and often fastest one core below. On x86 with SMT, decode defaults to one thread per physical core unless `OMP_NUM_THREADS` is set |
+| `GEIST_PREFILL_THREADS` / `GEIST_DECODE_THREADS` | override the automatic thread split. Decode is bandwidth-bound and often fastest one core below. On x86 with SMT, prefill and decode default to one thread per physical core unless `OMP_NUM_THREADS` is set (SMT siblings slow a whole prefill down: 9950X −4 to −20 %) |
 | `GEIST_MMAP_PREFETCH=1` | `MADV_WILLNEED` the weight mapping: steadier first-token latency on 4 KB-page Linux (no-op on the Pi 5's 16 KB pages) |
 | `GEIST_BACKEND=<name>` | override the `"auto"` backend choice (e.g. `metal`, `vulkan`) |
 
