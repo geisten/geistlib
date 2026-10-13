@@ -270,9 +270,7 @@ void cpu_x86_linear_q4k_mN(size_t                     m,
         return;
     }
     struct block_q8_Kx4 *acts = (struct block_q8_Kx4 *) ws->mN_aux;
-    for (size_t mt = 0; mt < m4 / 4; mt++) {
-        quantize_q8_Kx4(n_in, x + mt * 4 * n_in, acts + mt * n_super_k);
-    }
+    quantize_q8_Kx4_groups(m4 / 4, n_in, x, acts);
 
     const struct block_q4_Kx8 *wx8 = (const struct block_q4_Kx8 *) w->aux_fp32;
     if (q4k_tiled_wanted(m4) &&

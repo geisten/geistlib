@@ -14,6 +14,8 @@
 
 #include "q8_kx4.h"
 
+#include "par.h"
+
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -92,4 +94,25 @@ void quantize_q8_Kx4(size_t n_in, const float x_rows[static 4 * n_in], struct bl
             }
         }
     }
+}
+
+struct q8_kx4_call {
+    size_t               n_in;
+    const float         *x;
+    struct block_q8_Kx4 *out;
+};
+
+static void quantize_groups(void *ctx, size_t g0, size_t g1) {
+    const struct q8_kx4_call c = *(const struct q8_kx4_call *) ctx;
+    for (size_t g = g0; g < g1; g++) {
+        quantize_q8_Kx4(c.n_in, c.x + g * 4 * c.n_in, c.out + g * (c.n_in / 256));
+    }
+}
+
+void quantize_q8_Kx4_groups(size_t               n_groups,
+                            size_t               n_in,
+                            const float         *x,
+                            struct block_q8_Kx4 *out) {
+    struct q8_kx4_call c = {.n_in = n_in, .x = x, .out = out};
+    geist_par_for(n_groups, quantize_groups, &c);
 }

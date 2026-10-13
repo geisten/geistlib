@@ -420,9 +420,7 @@ static void cpu_x86_linear_q5k_mN(size_t                     m,
     }
     if (ws != nullptr) {
         struct block_q8_Kx4 *acts = (struct block_q8_Kx4 *) ws->mN_aux;
-        for (size_t g = 0; g < m4 / 4; g++) {
-            quantize_q8_Kx4(n_in, x + g * 4 * n_in, acts + g * n_super);
-        }
+        quantize_q8_Kx4_groups(m4 / 4, n_in, x, acts);
         if (q5k_tiled_gemm_avx512_vnni(m4,
                                        n_out,
                                        n_in,

@@ -23,6 +23,12 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **x86 prefill on Q4_K models 14–15 % faster: the activations are
+  quantized on all threads.** The tiled k-quant GEMMs (Q4_K, Q5_K, Q6_K,
+  #18) quantized their Q8_Kx4 activations on one thread before the GEMM ran
+  on all of them. AMD 9950X, prefill 512: Llama 3.2 3B Q4_K_M 916 -> 775 ms,
+  Gemma 4 E2B Q4_K_M 1063 -> 886 ms; decode unchanged. Each group of 4 rows
+  is independent, so the result is bit-identical.
 - **x86 prefill without thread settings up to 30 % faster: one thread per
   physical core.** With SMT, the default prefill team was every logical
   CPU. After the tiled kernels (#18) the SMT siblings cost more than they
