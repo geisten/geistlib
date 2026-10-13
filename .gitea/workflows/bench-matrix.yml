@@ -106,6 +106,13 @@ jobs:
           run=1
           if [ "${{ matrix.weekly }}" = true ] && [ "$SET" != weekly ]; then run=0; fi
           case "$ONLY" in ""|"${{ matrix.column }}"|"${{ matrix.column }}/${{ matrix.model }}") ;; *) run=0 ;; esac
+          # A cell before this one on the same host timed out waiting for a
+          # quiet host (see Measure): fail at once instead of waiting again.
+          # Host runners (macOS) share /tmp across jobs; the marker is per run.
+          if [ "$run" = 1 ] && [ -e "/tmp/geist-bench-busy-${{ github.run_id }}" ]; then
+            echo "::error::host busy earlier in run ${{ github.run_id }}: not measured"
+            exit 1
+          fi
           echo "set=$SET run=$run"
           echo "run=$run" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -149,7 +156,11 @@ jobs:
             --geist "$GEIST_BIN" --llama "$LLAMA_BENCH" --gguf "$MODEL_PATH" \
             --protocol "benchmark/cross_engine_${CELL_PROTOCOL}_protocol.json" \
             --host-profile ${{ matrix.column }} --model ${{ matrix.model }} \
-            --out-dir bench-out
+            --out-dir bench-out 2> >(tee gate.err >&2) || {
+            sleep 1 # tee writes asynchronously
+            grep -q 'host did not become quiet' gate.err && touch "/tmp/geist-bench-busy-${{ github.run_id }}"
+            exit 1
+          }
           mkdir -p "site/runs/${{ matrix.column }}/${{ matrix.model }}"
           mv bench-out/*.jsonl bench-out/*.md "site/runs/${{ matrix.column }}/${{ matrix.model }}/"
       - name: Upload to geisten.net/bench
