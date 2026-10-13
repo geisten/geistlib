@@ -33,6 +33,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "profile.h"
 #include "../rotation.h"
 #include "../arch_state.h"
 
@@ -816,6 +817,42 @@ static void dn_step_heads(void *ctx, size_t h0, size_t h1) {
     }
 }
 
+enum dn_profile_stage {
+    DN_PROFILE_NORM = 0,
+    DN_PROFILE_BETA_ALPHA,
+    DN_PROFILE_QKV,
+    DN_PROFILE_Z,
+    DN_PROFILE_MIX,
+    DN_PROFILE_OUT,
+    DN_PROFILE_COUNT,
+};
+
+static _Atomic uint64_t  g_dn_profile_ns[DN_PROFILE_COUNT];
+static _Atomic uint64_t  g_dn_profile_calls[DN_PROFILE_COUNT];
+static const char *const g_dn_profile_names[DN_PROFILE_COUNT] = {
+        "norm",
+        "beta_alpha",
+        "qkv",
+        "z",
+        "mix",
+        "out",
+};
+static struct transformer_forward_profile g_dn_profile = {
+        .title       = "transformer deltanet",
+        .stage_names = g_dn_profile_names,
+        .stage_count = DN_PROFILE_COUNT,
+        .ns          = g_dn_profile_ns,
+        .calls       = g_dn_profile_calls,
+};
+
+/* Close stage `stage` and start the next one at now. */
+static inline void dn_profile_mark(size_t stage, uint64_t *t0) {
+    if (*t0 != 0) {
+        transformer_profile_add(&g_dn_profile, stage, *t0);
+        *t0 = transformer_profile_now_ns();
+    }
+}
+
 [[nodiscard]] enum geist_status
 transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) {
     struct transformer_arch_session       *sess  = ctx->sess;
@@ -852,9 +889,11 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
     struct geist_tensor t_h_2d  = view_2d(ctx->h_in_buf, ctx->SEQ, st->d_model);
     struct geist_tensor t_x_2d  = view_2d(sess->scratch_normed, ctx->SEQ, st->d_model);
     struct geist_tensor t_gamma = view_1d(L->attn_norm.buffer, st->d_model);
-    enum geist_status   s       = prims->rmsnorm(be, &t_h_2d, &t_gamma, eps, &t_x_2d);
+    uint64_t t0 = transformer_profile_enabled(&g_dn_profile) ? transformer_profile_now_ns() : 0;
+    enum geist_status s = prims->rmsnorm(be, &t_h_2d, &t_gamma, eps, &t_x_2d);
     if (s != GEIST_OK)
         return s;
+    dn_profile_mark(DN_PROFILE_NORM, &t0);
 
     /* 2. Projections through the backend linear kernels. beta and alpha
      * run first: on a prism.hadamard model they are the one pair that
@@ -888,6 +927,7 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
     if (s != GEIST_OK)
         return s;
 
+    dn_profile_mark(DN_PROFILE_BETA_ALPHA, &t0);
     s = transformer_rotate_rows(st, seq, st->d_model, sess->scratch_normed);
     if (s != GEIST_OK)
         return s;
@@ -903,6 +943,7 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
                                                    &t_qkv);
     if (s != GEIST_OK)
         return s;
+    dn_profile_mark(DN_PROFILE_QKV, &t0);
     struct geist_tensor t_z = view_2d(sess->dn_scratch_z, ctx->SEQ, (int64_t) vald);
     s                       = linear_w_or_legacy(be,
                                                  v,
@@ -915,6 +956,7 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
                                                  &t_z);
     if (s != GEIST_OK)
         return s;
+    dn_profile_mark(DN_PROFILE_Z, &t0);
     /* 3..7: a batched-submit backend may keep the complete stateful mixer
      * on-device. Unsupported is side-effect free by contract, so the host
      * oracle below remains the universal fallback. */
@@ -1141,6 +1183,7 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
      * block reads the same place as after an attention block). */
     /* A rotated ssm_out reads H(S P mix): permuted, so out of place, into
      * the qkv scratch the mixer has finished with. */
+    dn_profile_mark(DN_PROFILE_MIX, &t0);
     struct geist_buffer *mix_buf = sess->dn_scratch_z;
     if (st->rotation.active) {
         s = transformer_rotate(
@@ -1159,6 +1202,7 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
     s                            = prims->add(be, &t_h_2d, &t_o_2d, &t_h_post);
     if (s != GEIST_OK)
         return s;
+    dn_profile_mark(DN_PROFILE_OUT, &t0);
     /* Recurrent state advanced — there is no KV to advance, but the
      * shared kv_len bookkeeping still drives positions for the attn
      * layers; ctx->kv_len_now is applied by the caller as usual. */
