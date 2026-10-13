@@ -23,6 +23,14 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **x86 prefill without thread settings up to 30 % faster: one thread per
+  physical core.** With SMT, the default prefill team was every logical
+  CPU. After the tiled kernels (#18) the SMT siblings cost more than they
+  add. AMD 9950X, pp512, no thread variables set, before / after:
+  Qwen3.5 4B 470 / 518 tok/s, Gemma 4 E2B 547 / 707 tok/s (Qwen3.8 27B
+  about +4 % at 16 against 32 threads); decode unchanged. This is the rule
+  decode already had; `OMP_NUM_THREADS` and `GEIST_PREFILL_THREADS` still
+  decide when set.
 - **x86 prefill on Q4_0 models about 2x faster: the tiled int8 GEMM covers
   Q4_0, Q4_1 and Q5_K (#18).** On AVX-512 VNNI hosts, Q4_0 / Q4_1 weights are
   read from the GGUF bytes into the same int8 tiles; the per-32-block scales

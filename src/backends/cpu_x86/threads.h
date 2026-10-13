@@ -14,20 +14,23 @@
 
 #include <stddef.h>
 
-/* Decode team size, or 0 to keep the ambient one. Pure — every input is an
- * argument — so the policy is unit-tested without the host it describes.
+/* Team size of one phase (prefill or decode), or 0 to keep the ambient
+ * one. Pure — every input is an argument — so the policy is unit-tested
+ * without the host it describes.
  *
- *   env_decode       GEIST_DECODE_THREADS: -1 unset, 0 "leave the team
- *                    alone", n > 0 a size (the hook only ever lowers it)
+ *   env              GEIST_PREFILL_THREADS / GEIST_DECODE_THREADS: -1 unset,
+ *                    0 "leave the team alone", n > 0 a size (decode's hook
+ *                    only ever lowers it)
  *   omp_threads_set  OMP_NUM_THREADS is set: the user sized the team
  *   logical,
  *   physical         hw_probe's counts; physical 0 = unknown
  *
  * With neither variable set: one thread per physical core when the probe
  * sees SMT (physical < logical). Decode streams the weights from DRAM, and
- * an SMT sibling adds contention, not bandwidth. */
+ * an SMT sibling adds contention, not bandwidth; prefill loses more outside
+ * the GEMMs than the siblings add inside them (threads.c). */
 [[nodiscard]] int
-cpu_x86_decode_threads(int env_decode, bool omp_threads_set, size_t logical, size_t physical);
+cpu_x86_phase_threads(int env, bool omp_threads_set, size_t logical, size_t physical);
 
 /* The vtable's parallel_region_begin / _end: set geist_par_max_threads for
  * the phase (OpenMP or not) and restore it. */
