@@ -114,6 +114,16 @@ static inline bool weight_off_arena(const struct geist_backend *be, enum weight_
  */
 [[nodiscard]] void *arena_alloc(struct transformer_arch_state *st, size_t bytes, size_t align);
 
+/* weight_load/layer_wiring.c — one per-layer F32 norm (`name` is the
+ * full GGUF tensor name), tracked in L->bufs. Exported for the family
+ * units' wire_layer hooks (arch_family.h). */
+[[nodiscard]] enum geist_status load_layer_norm(struct transformer_arch_state    *st,
+                                                struct gguf_ctx                  *gguf,
+                                                struct transformer_layer_weights *L,
+                                                const char                       *name,
+                                                size_t                            expected_elems,
+                                                struct geist_tensor              *out_view);
+
 /* ---- Cross-TU functions ----------------------------------------------- *
  *
  * weight_load/tensor_views.c — GGUF tensor → backend buffer staging.

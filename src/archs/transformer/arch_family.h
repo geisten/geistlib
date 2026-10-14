@@ -30,6 +30,8 @@
 #include "arch_state.h"
 #include "gguf_reader.h"
 
+struct transformer_layer_forward_ctx;
+
 struct transformer_family {
     /* Lowercase identifier matching the `general.architecture` GGUF
      * value (e.g. "gemma4", "llama"). */
@@ -58,7 +60,27 @@ struct transformer_family {
      * length, ...) — state_create then fails with a message naming
      * the geometry instead of a downstream weight-wiring error (#258). */
     bool (*populate_layers)(struct transformer_arch_state *st);
+
+    /* ---- Optional family unit hooks (#37). nullptr = the generic code.
+     *
+     * wire_layer: load the family's own per-layer tensors after the
+     *   generic set (load_one_layer). The generic loader knows nothing
+     *   about them.
+     * attention_block / ffn_block: replace the generic layer stages
+     *   (forward/layer_attn.c, forward/layer_ffn.c) for every attention
+     *   layer of this family. They read no family flag; whatever the
+     *   family cannot run must be refused at load, not routed back to the
+     *   generic stages. */
+    enum geist_status (*wire_layer)(struct transformer_arch_state    *st,
+                                    struct gguf_ctx                  *gguf,
+                                    struct transformer_layer_weights *L);
+    enum geist_status (*attention_block)(struct transformer_layer_forward_ctx *ctx);
+    enum geist_status (*ffn_block)(struct transformer_layer_forward_ctx *ctx);
 };
+
+/* Families that live in their own unit (families/<name>.c). */
+extern const struct transformer_family transformer_family_bitnet_b158;
+extern const struct transformer_family transformer_family_bitnet;
 
 /* Select a family by `general.architecture` string. Returns the
  * matching family entry, or nullptr when the key is absent or no

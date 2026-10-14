@@ -14,6 +14,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "../arch_family.h"
 #include "../arch_state.h"
 #include "../forward.h"
 
@@ -215,28 +216,22 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
     frame_arena_reset(&sess->scratch_arena);
 
     const bool profile = transformer_profile_enabled();
-    /* Experiment #37: a bound family forward replaces all four stages
-     * below. Profiling keeps the generic stages, which carry the timers. */
-    if (st->model_fusions.bitnet_forward && !profile) {
-        enum geist_status s = transformer_bitnet_forward_layer(&ctx);
-        if (s == GEIST_OK && ctx.advance_kv) {
-            sess->kv_len = ctx.kv_len_now;
-        }
-        return s;
-    }
-    uint64_t t0 = profile ? transformer_profile_now_ns() : 0;
+    uint64_t   t0      = profile ? transformer_profile_now_ns() : 0;
     /* Per-layer token mixer: DeltaNet layers replace the whole
      * attention block (incl. its residual add); the FFN/PLE stages are
      * mixer-agnostic. */
-    enum geist_status s = st->layers[layer_idx].mixer == GEIST_MIXER_DELTANET
-                                  ? transformer_layer_run_deltanet_block(&ctx)
-                                  : transformer_layer_run_attention_block(&ctx);
+    const struct transformer_family *fam = st->family;
+    enum geist_status                s   = st->layers[layer_idx].mixer == GEIST_MIXER_DELTANET
+                                                   ? transformer_layer_run_deltanet_block(&ctx)
+                                           : fam->attention_block != nullptr
+                                                   ? fam->attention_block(&ctx)
+                                                   : transformer_layer_run_attention_block(&ctx);
     transformer_profile_add(TRANSFORMER_PROFILE_ATTENTION, t0);
     if (s != GEIST_OK) {
         return s;
     }
     t0 = profile ? transformer_profile_now_ns() : 0;
-    s  = transformer_layer_run_ffn_block(&ctx);
+    s  = fam->ffn_block != nullptr ? fam->ffn_block(&ctx) : transformer_layer_run_ffn_block(&ctx);
     transformer_profile_add(TRANSFORMER_PROFILE_FFN, t0);
     if (s != GEIST_OK) {
         return s;

@@ -1105,6 +1105,7 @@ geometry_from_metadata(struct geist_backend             *be,
         return GEIST_E_UNSUPPORTED;
     }
     st->config.family = fam->name;
+    st->family        = fam;
     fam->populate(gguf, st);
     if (st->n_layers == 0) {
         geist_backend_set_error(be,

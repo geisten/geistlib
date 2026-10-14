@@ -98,13 +98,6 @@ struct transformer_model_fusion_plan {
      * those backends to flush a pending pipeline, so the copy stays on the
      * device. A failed copy is an error, not a cue for a host memcpy. */
     bool backend_buffer_copy;
-
-    /* Experiment #37: every layer runs the BitNet family forward
-     * (forward/family_bitnet.c) instead of the flag-driven generic blocks.
-     * Set only when the model matches what that forward hard-codes; any
-     * deviation keeps the generic path. GEIST_FAMILY_FORWARD=0 forces the
-     * generic path for A/B runs. */
-    bool bitnet_forward;
 };
 
 enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st);

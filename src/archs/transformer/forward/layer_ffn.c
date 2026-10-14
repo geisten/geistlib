@@ -135,30 +135,8 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
     struct geist_tensor  t_mid_2d;
     bool                 mid_already_down_scaled = false;
 
-    if (ctx->ffn_activation == GEIST_FFN_SQUARED_RELU) {
-        t0 = profile ? transformer_profile_now_ns() : 0;
-        s  = linear_w_or_legacy(be,
-                                v,
-                                sess->scratch_pre_ff,
-                                sess->scratch_up,
-                                &L->up_proj_w,
-                                ctx->seq,
-                                &t_pre_ff_2d,
-                                &L->up_proj,
-                                &t_up_2d);
-        transformer_profile_add(&g_ffn_profile, FFN_PROFILE_GATE_UP, t0);
-        if (s != GEIST_OK) {
-            return s;
-        }
-        t0 = profile ? transformer_profile_now_ns() : 0;
-        s  = prims->relu_squared(be, &t_up_2d, &t_up_2d);
-        transformer_profile_add(&g_ffn_profile, FFN_PROFILE_ACT, t0);
-        if (s != GEIST_OK) {
-            return s;
-        }
-        mid_buf  = sess->scratch_up;
-        t_mid_2d = t_up_2d;
-    } else {
+    /* The squared-ReLU activations are BitNet's (families/bitnet.c). */
+    {
         struct geist_tensor t_gate_2d = view_2d(sess->scratch_gate, ctx->SEQ, (int64_t) ctx->inter);
         if (ffn_front_fused) {
             mid_buf  = sess->scratch_gate;
@@ -236,17 +214,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
             return s;
         }
 
-        if (ctx->ffn_activation == GEIST_FFN_GATED_SQUARED_RELU) {
-            t0 = profile ? transformer_profile_now_ns() : 0;
-            s  = prims->relu_squared(be, &t_gate_2d, &t_gate_2d);
-            transformer_profile_add(&g_ffn_profile, FFN_PROFILE_ACT, t0);
-            if (s != GEIST_OK) {
-                return s;
-            }
-            t0 = profile ? transformer_profile_now_ns() : 0;
-            s  = prims->mul(be, &t_gate_2d, &t_up_2d, &t_gate_2d);
-            transformer_profile_add(&g_ffn_profile, FFN_PROFILE_MUL, t0);
-        } else if (ctx->ffn_activation == GEIST_FFN_SWIGLU && P != nullptr && P->fuse_silu_mul) {
+        if (ctx->ffn_activation == GEIST_FFN_SWIGLU && P != nullptr && P->fuse_silu_mul) {
             /* One fused pass instead of silu + mul (#322): bit-identical,
              * halves the FFN elementwise dispatches on batched backends. */
             t0 = profile ? transformer_profile_now_ns() : 0;
