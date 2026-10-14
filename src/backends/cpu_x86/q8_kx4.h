@@ -60,4 +60,10 @@ _Static_assert(sizeof(struct block_q8_Kx4) == Q8_KX4_BLOCK_BYTES, "block_q8_Kx4 
  */
 void quantize_q8_Kx4(size_t n_in, const float x_rows[static 4 * n_in], struct block_q8_Kx4 *out);
 
+/* quantize_q8_Kx4 over n_groups groups of 4 rows (x: 4 * n_groups rows of
+ * n_in), group g into out[g * n_in / 256 ...], split across threads with
+ * geist_par_for. Each group is independent, so the result does not depend
+ * on the thread count. */
+void quantize_q8_Kx4_groups(size_t n_groups, size_t n_in, const float *x, struct block_q8_Kx4 *out);
+
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_Q8_KX4_H */
