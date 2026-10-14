@@ -146,46 +146,52 @@ static const char metal_q4k_source[] =
  * structure): no bounds checks, vectorized 8-wide activation staging,
  * direct simdgroup_store output. Dispatched only when rows%32==0,
  * n_out%64==0, n_in%32==0 and x is 8-float aligned. */
-#define GEIST_METAL_MM_SG_FAST_KERNEL(NAME, BLK, DQ, QKNL)                                    \
-    "kernel void matmul_" NAME "_mm_sg_fast(device const float*x[[buffer(0)]],device const "  \
-    "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup " \
-    "char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],ushort "           \
-    "ti[[thread_index_in_threadgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){\n"       \
-    "threadgroup half*sa=(threadgroup half*)shmem;threadgroup half*sb=(threadgroup "          \
-    "half*)(shmem+4096);"                                                                     \
-    "constexpr short NK=32;constexpr short NL0=2;constexpr short NL1=4;constexpr short "      \
-    "QK_NL=" QKNL ";"                                                                         \
-    "uint r0=tg.y*64u;uint r1=tg.x*32u;"                                                      \
-    "short lr0=short(ti/NL0);short lr1=short(ti/NL1);short il0=short(ti%NL0);short il=il0;"   \
-    "device const " BLK "*wp=(device const " BLK "*)(w+p.wo)+(r0+uint(lr0))*p.bpr;"           \
-    "short iy=short(8*(ti%NL1));"                                                             \
-    "device const float*xp=x+p.xo+(r1+uint(lr1))*p.xs+uint(iy);"                              \
-    "simdgroup_half8x8 ma[4];simdgroup_half8x8 mb[2];simdgroup_float8x8 mc[8];"               \
-    "FOR_UNROLL(short i=0;i<8;i++){mc[i]=make_filled_simdgroup_matrix<float,8>(0.0f);}"       \
-    "short sx=short(ti%NL1);short sy=short((ti/NL1)/8);short lyb=short((ti/NL1)%8);short "    \
-    "ibb=short(4*sx+sy);"                                                                     \
-    "for(uint loop_k=0u;loop_k<p.ni;loop_k+=uint(NK)){"                                       \
-    "half4x4 ta;" DQ "(wp,il,ta);"                                                            \
-    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                        \
-    "FOR_UNROLL(short i=0;i<16;i++){short ax=short(2*il0+i/8);short ay=short((ti/NL0)/8);"    \
-    "short lx=short((ti/NL0)%8);short ly=short(i%8);short "                                   \
-    "ib=short(8*ax+ay);*(sa+64*ib+8*ly+lx)=ta[i/4][i%4];}"                                    \
-    "*(threadgroup half2x4*)(sb+64*ibb+8*lyb)=half2x4(*((device const float2x4*)xp));"        \
-    "il=(il+2<QK_NL)?il+2:il%2;wp=(il<2)?wp+1:wp;xp+=NK;"                                     \
-    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                        \
-    "threadgroup const half*lsma=sa+4*64*(sg%2);threadgroup const half*lsmb=sb+2*64*(sg/2);"  \
-    "FOR_UNROLL(short ik=0;ik<NK/8;ik++){"                                                    \
-    "simdgroup_barrier(mem_flags::mem_none);"                                                 \
-    "FOR_UNROLL(short i=0;i<4;i++){simdgroup_load(ma[i],lsma+64*i,8,0,false);}"               \
-    "simdgroup_barrier(mem_flags::mem_none);"                                                 \
-    "FOR_UNROLL(short i=0;i<2;i++){simdgroup_load(mb[i],lsmb+64*i,8,0,false);}"               \
-    "simdgroup_barrier(mem_flags::mem_none);"                                                 \
-    "FOR_UNROLL(short i=0;i<8;i++){simdgroup_multiply_accumulate(mc[i],mb[i/4],ma[i%4],"      \
-    "mc[i]);}"                                                                                \
-    "lsma+=8*64;lsmb+=4*64;}}"                                                                \
-    "device float*C=y+p.yo+(r1+16u*uint(sg>>1))*p.ys+r0+32u*uint(sg&1);"                      \
-    "FOR_UNROLL(short i=0;i<8;i++){simdgroup_store(mc[i],C+8*(i%4)+8*p.ys*(i/4),p.ys,0,"      \
-    "false);}"                                                                                \
+#define GEIST_METAL_MM_SG_FAST_KERNEL(NAME, BLK, DQ, QKNL)                                        \
+    "kernel void matmul_" NAME "_mm_sg_fast(device const float*x[[buffer(0)]],device const "      \
+    "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup "     \
+    "char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],ushort "               \
+    "ti[[thread_index_in_threadgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){\n"           \
+    "threadgroup half*sa=(threadgroup half*)shmem;threadgroup half*sb=(threadgroup "              \
+    "half*)(shmem+4096);"                                                                         \
+    "constexpr short NK=32;constexpr short NL0=2;constexpr short NL1=4;constexpr short "          \
+    "QK_NL=" QKNL ";"                                                                             \
+    "uint r0=tg.y*64u;uint r1=tg.x*32u;"                                                          \
+    "short lr0=short(ti/NL0);short lr1=short(ti/NL1);short il0=short(ti%NL0);short il=il0;"       \
+    "device const " BLK "*wp=(device const " BLK "*)(w+p.wo)+(r0+uint(lr0))*p.bpr;"               \
+    "short iy=short(8*(ti%NL1));"                                                                 \
+    "device const float*xp=x+p.xo+min(r1+uint(lr1),p.rows-1u)*p.xs+uint(iy);"                     \
+    "simdgroup_half8x8 ma[4];simdgroup_half8x8 mb[2];simdgroup_float8x8 mc[8];"                   \
+    "FOR_UNROLL(short i=0;i<8;i++){mc[i]=make_filled_simdgroup_matrix<float,8>(0.0f);}"           \
+    "short sx=short(ti%NL1);short sy=short((ti/NL1)/8);short lyb=short((ti/NL1)%8);short "        \
+    "ibb=short(4*sx+sy);"                                                                         \
+    "for(uint loop_k=0u;loop_k<p.ni;loop_k+=uint(NK)){"                                           \
+    "half4x4 ta;" DQ "(wp,il,ta);"                                                                \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                            \
+    "FOR_UNROLL(short i=0;i<16;i++){short ax=short(2*il0+i/8);short ay=short((ti/NL0)/8);"        \
+    "short lx=short((ti/NL0)%8);short ly=short(i%8);short "                                       \
+    "ib=short(8*ax+ay);*(sa+64*ib+8*ly+lx)=ta[i/4][i%4];}"                                        \
+    "*(threadgroup half2x4*)(sb+64*ibb+8*lyb)=half2x4(*((device const float2x4*)xp));"            \
+    "il=(il+2<QK_NL)?il+2:il%2;wp=(il<2)?wp+1:wp;xp+=NK;"                                         \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                            \
+    "threadgroup const half*lsma=sa+4*64*(sg%2);threadgroup const half*lsmb=sb+2*64*(sg/2);"      \
+    "FOR_UNROLL(short ik=0;ik<NK/8;ik++){"                                                        \
+    "simdgroup_barrier(mem_flags::mem_none);"                                                     \
+    "FOR_UNROLL(short i=0;i<4;i++){simdgroup_load(ma[i],lsma+64*i,8,0,false);}"                   \
+    "simdgroup_barrier(mem_flags::mem_none);"                                                     \
+    "FOR_UNROLL(short i=0;i<2;i++){simdgroup_load(mb[i],lsmb+64*i,8,0,false);}"                   \
+    "simdgroup_barrier(mem_flags::mem_none);"                                                     \
+    "FOR_UNROLL(short i=0;i<8;i++){simdgroup_multiply_accumulate(mc[i],mb[i/4],ma[i%4],"          \
+    "mc[i]);}"                                                                                    \
+    "lsma+=8*64;lsmb+=4*64;}}"                                                                    \
+    "if(r1+32u<=p.rows){device float*C=y+p.yo+(r1+16u*uint(sg>>1))*p.ys+r0+32u*uint(sg&1);"       \
+    "FOR_UNROLL(short i=0;i<8;i++){simdgroup_store(mc[i],C+8*(i%4)+8*p.ys*(i/4),p.ys,0,false);}}" \
+    "else{threadgroup_barrier(mem_flags::mem_threadgroup);threadgroup float*T=(threadgroup "      \
+    "float*)shmem;"                                                                               \
+    "FOR_UNROLL(short "                                                                           \
+    "i=0;i<8;i++){simdgroup_store(mc[i],T+32*(sg&1)+1024*(sg>>1)+8*(i%4)+512*(i/4),64,0,false);}" \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);for(uint "                                   \
+    "j=uint(ti);j<(p.rows-r1)*64u;j+=128u)"                                                       \
+    "{y[p.yo+(r1+j/64u)*p.ys+r0+j%64u]=T[j];}}"                                                   \
     "}\n"
 
 /* Correctness-first row-major Q4_0/Q8_0 linear kernels. Both formats use
@@ -990,7 +996,7 @@ static const char metal_q4k_mm_sg_fast_source[] =
         "short lr0=short(ti/NL0);short lr1=short(ti/NL1);short il0=short(ti%NL0);short il=il0;"
         "device const block_q4_K*wp=(device const block_q4_K*)(w+p.wo)+(r0+uint(lr0))*p.bpr;"
         "short iy=short(8*(ti%NL1));"
-        "device const float*xp=x+p.xo+(r1+uint(lr1))*p.xs+uint(iy);"
+        "device const float*xp=x+p.xo+min(r1+uint(lr1),p.rows-1u)*p.xs+uint(iy);"
         "simdgroup_half8x8 ma[4];simdgroup_half8x8 mb[2];simdgroup_float8x8 mc[8];"
         "FOR_UNROLL(short i=0;i<8;i++){mc[i]=make_filled_simdgroup_matrix<float,8>(0.0f);}"
         "short sx=short(ti%NL1);short sy=short((ti/NL1)/8);short lyb=short((ti/NL1)%8);short "
@@ -1013,8 +1019,17 @@ static const char metal_q4k_mm_sg_fast_source[] =
         "simdgroup_barrier(mem_flags::mem_none);"
         "FOR_UNROLL(short i=0;i<8;i++){simdgroup_multiply_accumulate(mc[i],mb[i/4],ma[i%4],mc[i]);}"
         "lsma+=8*64;lsmb+=4*64;}}"
-        "device float*C=y+p.yo+(r1+16u*uint(sg>>1))*p.ys+r0+32u*uint(sg&1);"
-        "FOR_UNROLL(short i=0;i<8;i++){simdgroup_store(mc[i],C+8*(i%4)+8*p.ys*(i/4),p.ys,0,false);}"
+        "if(r1+32u<=p.rows){device float*C=y+p.yo+(r1+16u*uint(sg>>1))*p.ys+r0+32u*uint(sg&1);"
+        "FOR_UNROLL(short "
+        "i=0;i<8;i++){simdgroup_store(mc[i],C+8*(i%4)+8*p.ys*(i/4),p.ys,0,false);}}"
+        "else{threadgroup_barrier(mem_flags::mem_threadgroup);threadgroup float*T=(threadgroup "
+        "float*)shmem;"
+        "FOR_UNROLL(short "
+        "i=0;i<8;i++){simdgroup_store(mc[i],T+32*(sg&1)+1024*(sg>>1)+8*(i%4)+512*(i/"
+        "4),64,0,false);}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);for(uint "
+        "j=uint(ti);j<(p.rows-r1)*64u;j+=128u)"
+        "{y[p.yo+(r1+j/64u)*p.ys+r0+j%64u]=T[j];}}"
         "}\n";
 
 /* matmul_q4k_mm_sg_fast's structure on Q6_K blocks (210 bytes), for full
@@ -1047,7 +1062,7 @@ static const char metal_q6k_mm32_source[] =
         "short lr0=short(ti/NL0);short lr1=short(ti/NL1);short il0=short(ti%NL0);short il=il0;"
         "device const uchar*wp=w+p.wo+(r0+uint(lr0))*p.bpr*210u;"
         "short iy=short(8*(ti%NL1));"
-        "device const float*xp=x+p.xo+(r1+uint(lr1))*p.xs+uint(iy);"
+        "device const float*xp=x+p.xo+min(r1+uint(lr1),p.rows-1u)*p.xs+uint(iy);"
         "simdgroup_half8x8 ma[4];simdgroup_half8x8 mb[2];simdgroup_float8x8 mc[8];"
         "FOR_UNROLL(short i=0;i<8;i++){mc[i]=make_filled_simdgroup_matrix<float,8>(0.0f);}"
         "short sx=short(ti%NL1);short sy=short((ti/NL1)/8);short lyb=short((ti/NL1)%8);short "
@@ -1070,8 +1085,17 @@ static const char metal_q6k_mm32_source[] =
         "simdgroup_barrier(mem_flags::mem_none);"
         "FOR_UNROLL(short i=0;i<8;i++){simdgroup_multiply_accumulate(mc[i],mb[i/4],ma[i%4],mc[i]);}"
         "lsma+=8*64;lsmb+=4*64;}}"
-        "device float*C=y+p.yo+(r1+16u*uint(sg>>1))*p.ys+r0+32u*uint(sg&1);"
-        "FOR_UNROLL(short i=0;i<8;i++){simdgroup_store(mc[i],C+8*(i%4)+8*p.ys*(i/4),p.ys,0,false);}"
+        "if(r1+32u<=p.rows){device float*C=y+p.yo+(r1+16u*uint(sg>>1))*p.ys+r0+32u*uint(sg&1);"
+        "FOR_UNROLL(short "
+        "i=0;i<8;i++){simdgroup_store(mc[i],C+8*(i%4)+8*p.ys*(i/4),p.ys,0,false);}}"
+        "else{threadgroup_barrier(mem_flags::mem_threadgroup);threadgroup float*T=(threadgroup "
+        "float*)shmem;"
+        "FOR_UNROLL(short "
+        "i=0;i<8;i++){simdgroup_store(mc[i],T+32*(sg&1)+1024*(sg>>1)+8*(i%4)+512*(i/"
+        "4),64,0,false);}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);for(uint "
+        "j=uint(ti);j<(p.rows-r1)*64u;j+=128u)"
+        "{y[p.yo+(r1+j/64u)*p.ys+r0+j%64u]=T[j];}}"
         "}\n";
 
 static const char metal_q6k_source[] =
@@ -1651,7 +1675,7 @@ static const char metal_f32_mm_source[] =
         "short lr0=short(ti/NL0);short lr1=short(ti/NL1);short il0=short(ti%NL0);"
         "device const float*wpf=w+p.wo+(r0+uint(lr0))*p.ni+uint(16*il0);"
         "short iy=short(8*(ti%NL1));"
-        "device const float*xp=x+p.xo+(r1+uint(lr1))*p.xs+uint(iy);"
+        "device const float*xp=x+p.xo+min(r1+uint(lr1),p.rows-1u)*p.xs+uint(iy);"
         "simdgroup_float8x8 ma[4];simdgroup_float8x8 mb[2];simdgroup_float8x8 mc[8];"
         "FOR_UNROLL(short i=0;i<8;i++){mc[i]=make_filled_simdgroup_matrix<float,8>(0.0f);}"
         "short ay=short((ti/NL0)/8);short lx=short((ti/NL0)%8);"
@@ -1675,8 +1699,17 @@ static const char metal_f32_mm_source[] =
         "simdgroup_barrier(mem_flags::mem_none);"
         "FOR_UNROLL(short i=0;i<8;i++){simdgroup_multiply_accumulate(mc[i],mb[i/4],ma[i%4],mc[i]);}"
         "lsma+=8*64;lsmb+=4*64;}}"
-        "device float*C=y+p.yo+(r1+16u*uint(sg>>1))*p.ys+r0+32u*uint(sg&1);"
-        "FOR_UNROLL(short i=0;i<8;i++){simdgroup_store(mc[i],C+8*(i%4)+8*p.ys*(i/4),p.ys,0,false);}"
+        "if(r1+32u<=p.rows){device float*C=y+p.yo+(r1+16u*uint(sg>>1))*p.ys+r0+32u*uint(sg&1);"
+        "FOR_UNROLL(short "
+        "i=0;i<8;i++){simdgroup_store(mc[i],C+8*(i%4)+8*p.ys*(i/4),p.ys,0,false);}}"
+        "else{threadgroup_barrier(mem_flags::mem_threadgroup);threadgroup float*T=(threadgroup "
+        "float*)shmem;"
+        "FOR_UNROLL(short "
+        "i=0;i<8;i++){simdgroup_store(mc[i],T+32*(sg&1)+1024*(sg>>1)+8*(i%4)+512*(i/"
+        "4),64,0,false);}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);for(uint "
+        "j=uint(ti);j<(p.rows-r1)*64u;j+=128u)"
+        "{y[p.yo+(r1+j/64u)*p.ys+r0+j%64u]=T[j];}}"
         "}\n";
 
 static const char metal_q_norm_rope_source[] =
@@ -2216,7 +2249,7 @@ static const char metal_attn_flash_sg_f16_plain_head[] =
         "uint hd=p.hd,h=tg.y,q0=tg.x*8u;"
         "uint kvh=h/(p.qh/p.kvh),kstr=p.kvh*hd;"
         "for(uint rr=0u;rr<2u;rr++){"
-        "uint r=sg*2u+rr,row=q0+r,base=p.qo+row*p.qh*hd+h*hd;"
+        "uint r=sg*2u+rr,row=min(q0+r,p.rows-1u),base=p.qo+row*p.qh*hd+h*hd;"
         "for(uint i=ln;i<hd;i+=32u){Qt[r*hd+i]=half(q[base+i]);}}"
         "if(lid<8u){Mt[lid]=-3.402823466e+38f;Lt[lid]=0.0f;}"
         "if(lid<64u)Dg[lid]=0.0f;"
@@ -2281,7 +2314,11 @@ static const char metal_attn_flash_sg_f16_source_b[] =
         "threadgroup_barrier(mem_flags::mem_threadgroup);"
         "simdgroup_float8x8 mfin;simdgroup_load(mfin,Dg,8);"
         "for(uint cc=0u;cc<nO;cc++){simdgroup_float8x8 t;simdgroup_multiply(t,mfin,O[cc]);"
-        "simdgroup_store(t,y+p.yo+q0*p.qh*hd+h*hd+c0+cc*8u,p.qh*hd);}"
+        "if(q0+8u<=p.rows){simdgroup_store(t,y+p.yo+q0*p.qh*hd+h*hd+c0+cc*8u,p.qh*hd);}"
+        "else{simdgroup_store(t,Sred+sg*64u,8);simdgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(uint e=ln;e<64u;e+=32u){if(q0+e/8u<p.rows)"
+        "y[p.yo+(q0+e/8u)*p.qh*hd+h*hd+c0+cc*8u+e%8u]=Sred[sg*64u+e];}"
+        "simdgroup_barrier(mem_flags::mem_threadgroup);}}"
         "}\n";
 
 /* 8-simdgroup / 256-thread variant of the prefill flash for head_dim
@@ -2299,7 +2336,8 @@ static const char metal_attn_flash_sg8_f16_source_a[] =
         "half Qt[4096];threadgroup float Sred[2048];threadgroup float Sf[256];threadgroup half "
         "Pt[256];threadgroup float Mt[8];threadgroup float Lt[8];threadgroup float "
         "Dg[64];threadgroup float Mn[8];uint hd=p.hd,h=tg.y,q0=tg.x*8u;uint "
-        "kvh=h/(p.qh/p.kvh),kstr=p.kvh*hd;{uint r=sg,row=q0+r,base=p.qo+row*p.qh*hd+h*hd;for(uint "
+        "kvh=h/(p.qh/p.kvh),kstr=p.kvh*hd;{uint "
+        "r=sg,row=min(q0+r,p.rows-1u),base=p.qo+row*p.qh*hd+h*hd;for(uint "
         "i=ln;i<hd;i+=32u){Qt[r*hd+i]=half(q[base+i]);}}if(lid<8u){Mt[lid]=-3.402823466e+38f;Lt["
         "lid]=0.0f;}if(lid<64u)Dg[lid]=0.0f;threadgroup_barrier(mem_flags::mem_threadgroup);uint "
         "slc=hd/8u,c0=sg*slc,nO=slc/8u;simdgroup_float8x8 O[8];for(uint "
@@ -2338,8 +2376,11 @@ static const char metal_attn_flash_sg8_f16_source_b[] =
         "threadgroup);}if(lid<8u)Dg[lid*9u]=1.0f/"
         "Lt[lid];threadgroup_barrier(mem_flags::mem_threadgroup);simdgroup_float8x8 "
         "mfin;simdgroup_load(mfin,Dg,8);for(uint cc=0u;cc<nO;cc++){simdgroup_float8x8 "
-        "t;simdgroup_multiply(t,mfin,O[cc]);simdgroup_store(t,y+p.yo+q0*p.qh*hd+h*hd+c0+cc*8u,p.qh*"
-        "hd);}}\n";
+        "t;simdgroup_multiply(t,mfin,O[cc]);if(q0+8u<=p.rows){simdgroup_store(t,y+p.yo+q0*p.qh*hd+"
+        "h*hd+c0+cc*8u,p.qh*hd);}else{simdgroup_store(t,Sred+sg*64u,8);simdgroup_barrier(mem_flags:"
+        ":"
+        "mem_threadgroup);for(uint e=ln;e<64u;e+=32u){if(q0+e/8u<p.rows)y[p.yo+(q0+e/8u)*p.qh*hd+"
+        "h*hd+c0+cc*8u+e%8u]=Sred[sg*64u+e];}simdgroup_barrier(mem_flags::mem_threadgroup);}}}\n";
 
 /* Split-KV decode flash for 256 < head_dim <= 512 (the gemma-3n
  * full-attention layers): 16-chunk QK/PV lane unroll (a0..a15),

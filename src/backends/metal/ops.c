@@ -18,20 +18,6 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
                                     const struct geist_tensor     *y,
                                     const struct metal_q4k_params *params,
                                     bool                           m_tile8) {
-    /* Split a ragged batch so its whole 32-row tiles take the interior fast
-     * kernel and only the tail takes a bounded one (#578). The two
-     * dispatches write disjoint rows of y. */
-    if (m_tile8 && params->rows > 32u && (params->rows % 32u) != 0u) {
-        struct metal_q4k_params head = *params;
-        struct metal_q4k_params tail = *params;
-        head.rows                    = params->rows & ~31u;
-        tail.rows                    = params->rows - head.rows;
-        tail.x_offset += head.rows * params->x_row_stride;
-        tail.y_offset += head.rows * params->y_row_stride;
-        metal_encode_q4k_linear(st, enc, x, w, y, &head, true);
-        metal_encode_q4k_linear(st, enc, x, w, y, &tail, true);
-        return;
-    }
     /* A few rows (a ragged tail, a short appended turn) go row by row
      * through the matvec kernel: the m8 tile kernel costs as much as a full
      * 64-row GEMM for any row count (#578). */
@@ -52,14 +38,18 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
      * partial tile out through threadgroup memory, so any rows >= 8 shape
      * takes it, as the other formats' GEMMs do (#578). The partial-tile
      * epilogue stores float4s, so y rows must start 16-byte aligned. */
+    /* The fast kernel covers a ragged last row tile itself (#35): it
+     * clamps its activation row and writes a partial tile through
+     * threadgroup memory, so only n_out has to fill whole 64-wide tiles. */
     const bool full_tiles = (params->rows % 32u) == 0u && (params->n_out % 64u) == 0u;
+    const bool fast_tiles = (params->n_out % 64u) == 0u;
     const bool m_tile_sg =
             m_tile8 && st->use_q4k_mm_sg && st->q4k_mm_sg_pipeline != nullptr &&
             params->rows >= 8u && params->n_out >= 64u &&
             (full_tiles || ((params->y_offset % 4u) == 0u && (params->y_row_stride % 4u) == 0u));
     /* interior fast variant: no bounds checks, vectorized activation
      * staging (needs full tiles, n_in%32 and 8-float-aligned x rows). */
-    const bool m_tile_sg_fast = m_tile_sg && full_tiles && st->q4k_mm_sg_fast_pipeline != nullptr &&
+    const bool m_tile_sg_fast = m_tile_sg && fast_tiles && st->q4k_mm_sg_fast_pipeline != nullptr &&
                                 (params->n_in % 32u) == 0u && (params->x_offset % 8u) == 0u &&
                                 (params->x_row_stride % 8u) == 0u;
     const bool m_tile8_active = m_tile8 && !m_tile16;
@@ -78,7 +68,8 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
     if (m_tile_sg) {
-        metal_msg_send_set_threadgroup_memory(st, enc, m_tile_sg_fast ? 6144u : 8192u, 0u);
+        metal_msg_send_set_threadgroup_memory(
+                st, enc, m_tile_sg_fast && (params->rows % 32u) == 0u ? 6144u : 8192u, 0u);
     }
 
     const struct metal_size groups = {
@@ -105,6 +96,42 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
+/* matmul_q6k_mm_sg_fast, the Q4_K fast kernel's structure (32-wide K
+ * steps, every thread dequantizes) on Q6_K blocks (#17), for any row count:
+ * a ragged last row tile is clamped and copied out through threadgroup
+ * memory (#35). matmul_q6k_sg_fast steps K by 8 with a quarter of the
+ * threads dequantizing. GEIST_METAL_Q6K_MM_FAST=0 keeps the old kernels.
+ * False when the shape does not fit; nothing is encoded then. */
+static bool metal_encode_q6k_mm32(struct metal_state            *st,
+                                  void                          *enc,
+                                  const struct geist_tensor     *x,
+                                  const struct geist_tensor     *w,
+                                  const struct geist_tensor     *y,
+                                  const struct metal_q4k_params *params) {
+    static int mm_fast_env = -1;
+    if (mm_fast_env < 0) {
+        const char *e = getenv("GEIST_METAL_Q6K_MM_FAST");
+        mm_fast_env   = e == nullptr || e[0] != '0';
+    }
+    if (!mm_fast_env || st->q6k_mm32_pipeline == nullptr || (params->n_out % 64u) != 0u ||
+        (params->n_in % 32u) != 0u || (params->x_offset % 8u) != 0u ||
+        (params->x_row_stride % 8u) != 0u) {
+        return false;
+    }
+    metal_msg_send_set_pipeline(st, enc, st->q6k_mm32_pipeline);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
+    metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
+    metal_msg_send_set_threadgroup_memory(st, enc, (params->rows % 32u) == 0u ? 6144u : 8192u, 0u);
+    const struct metal_size groups = {
+            .width = (params->rows + 31u) / 32u, .height = params->n_out / 64u, .depth = 1};
+    const struct metal_size threads = {.width = 32u, .height = 4u, .depth = 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_Q6K_LINEAR_BASE, groups);
+    metal_msg_send_dispatch(st, enc, groups, threads);
+    return true;
+}
+
 static void metal_encode_q6k_linear(struct metal_state            *st,
                                     void                          *enc,
                                     const struct geist_tensor     *x,
@@ -112,6 +139,10 @@ static void metal_encode_q6k_linear(struct metal_state            *st,
                                     const struct geist_tensor     *y,
                                     const struct metal_q4k_params *params,
                                     bool                           m_tile8) {
+    if (m_tile8 && params->rows > METAL_MATVEC_MAX_ROWS &&
+        metal_encode_q6k_mm32(st, enc, x, w, y, params)) {
+        return;
+    }
     /* As for Q4_K, whole 64-row tiles take the fast kernel and only a
      * ragged tail the bounded one (#578). */
     if (m_tile8 && params->rows > 64u && (params->rows % 64u) != 0u) {
@@ -134,32 +165,6 @@ static void metal_encode_q6k_linear(struct metal_state            *st,
             one.y_offset += r * params->y_row_stride;
             metal_encode_q6k_linear(st, enc, x, w, y, &one, false);
         }
-        return;
-    }
-    /* Full 64-output x 32-row tiles take matmul_q6k_mm_sg_fast, the Q4_K
-     * fast kernel's structure (32-wide K steps, every thread dequantizes)
-     * on Q6_K blocks; matmul_q6k_sg_fast below steps K by 8 with a quarter
-     * of the threads dequantizing (#17). GEIST_METAL_Q6K_MM_FAST=0 keeps
-     * the old kernel. */
-    static int mm_fast_env = -1;
-    if (mm_fast_env < 0) {
-        const char *e = getenv("GEIST_METAL_Q6K_MM_FAST");
-        mm_fast_env   = e == nullptr || e[0] != '0';
-    }
-    if (m_tile8 && mm_fast_env && st->q6k_mm32_pipeline != nullptr && params->rows >= 32u &&
-        (params->rows % 32u) == 0u && (params->n_out % 64u) == 0u && (params->n_in % 32u) == 0u &&
-        (params->x_offset % 8u) == 0u && (params->x_row_stride % 8u) == 0u) {
-        metal_msg_send_set_pipeline(st, enc, st->q6k_mm32_pipeline);
-        metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
-        metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
-        metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
-        metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
-        metal_msg_send_set_threadgroup_memory(st, enc, 6144u, 0u);
-        const struct metal_size groups = {
-                .width = params->rows / 32u, .height = params->n_out / 64u, .depth = 1};
-        const struct metal_size threads = {.width = 32u, .height = 4u, .depth = 1};
-        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_Q6K_LINEAR_BASE, groups);
-        metal_msg_send_dispatch(st, enc, groups, threads);
         return;
     }
     /* rows==1 always takes the matvec kernel — the 64-row GEMM tile is a
@@ -328,7 +333,7 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
             p.mm != nullptr;
     /* interior fast variant: no bounds checks, vectorized activation
      * staging (needs full tiles, n_in%32 and 8-float-aligned x rows). */
-    const bool m_tile_sg_fast = m_tile_sg && p.mm_fast != nullptr && (params->rows % 32u) == 0u &&
+    const bool m_tile_sg_fast = m_tile_sg && p.mm_fast != nullptr && (params->rows >= 8u) &&
                                 (params->n_out % 64u) == 0u && (params->n_in % 32u) == 0u &&
                                 (params->x_offset % 8u) == 0u && (params->x_row_stride % 8u) == 0u;
     const bool tiled          = !n_tile4 && !m_tile_sg && params->rows >= 8u;
@@ -347,7 +352,8 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
     if (m_tile_sg) {
-        metal_msg_send_set_threadgroup_memory(st, enc, m_tile_sg_fast ? 6144u : 8192u, 0u);
+        metal_msg_send_set_threadgroup_memory(
+                st, enc, m_tile_sg_fast && (params->rows % 32u) == 0u ? 6144u : 8192u, 0u);
     }
     if (n_tile4 && dtype == GEIST_DTYPE_PQ2_0) {
         /* matvec_pq2_n{4,8}'s 256-entry half4 code table */
@@ -770,7 +776,7 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
     const bool use_sg = params->rows > 1u && sg_pipe != nullptr;
     const bool use_mm = use_sg && w->dtype == GEIST_DTYPE_F32 &&
                         st->f32_matmul_mm_pipeline != nullptr &&
-                        !metal_env_disabled("GEIST_METAL_F32_MM") && (params->rows % 32u) == 0u &&
+                        !metal_env_disabled("GEIST_METAL_F32_MM") && params->rows >= 8u &&
                         (params->n_out % 64u) == 0u && (params->n_in % 32u) == 0u &&
                         (params->x_offset % 8u) == 0u && (params->x_row_stride % 8u) == 0u &&
                         (params->w_offset % 4u) == 0u;
@@ -788,7 +794,7 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
         metal_msg_send_set_threadgroup_memory(st, enc, 12288u, 0u);
     }
     const struct metal_size groups = {
-            .width  = use_mm   ? params->rows / 32u
+            .width  = use_mm   ? (params->rows + 31u) / 32u
                       : use_sg ? (params->n_out + 7u) / 8u
                                : params->n_out,
             .height = use_mm   ? params->n_out / 64u
@@ -2705,7 +2711,7 @@ metal_embedding_lookup(struct geist_backend      *be,
     metal_msg_send_set_buffer(st, enc, vf16, 0, 2);
     metal_msg_send_set_buffer(st, enc, out->buffer->buffer, out->buffer->base_off, 3);
     metal_msg_send_set_bytes(st, enc, &fp, sizeof(fp), 4);
-    const struct metal_size fgroups  = {q_rows / 8u, q_heads, 1};
+    const struct metal_size fgroups  = {(q_rows + 7u) / 8u, q_heads, 1};
     const struct metal_size fthreads = {sg8 ? 256u : 128u, 1, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ATTENTION_ROWS, fgroups);
     metal_msg_send_dispatch(st, enc, fgroups, fthreads);
@@ -3694,7 +3700,9 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
         }
         /* fall through to the scalar kernel on failure */
     }
-    if (q_rows > 1u && (q_rows % 8u) == 0u &&
+    /* Any q_rows > 1: the flash kernels clamp the query rows of a ragged
+     * last 8-row tile and write only the valid ones (#35). */
+    if (q_rows > 1u &&
         ((head_dim <= 256u && (head_dim % 32u) == 0u) ||
          (head_dim <= 512u && (head_dim % 64u) == 0u &&
           st->attention_flash_sg8_f16_pipeline != nullptr)) &&
