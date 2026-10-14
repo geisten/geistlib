@@ -375,11 +375,53 @@ static void cpu_neon_w_iq4nl_m1(const float               *x,
 
 /* F32 dense: SGEMV / SGEMM through geist_gemm. The weight is row-major
  * [n_out, n_in], so y = W @ x is a sgemv with TransA=NoTrans. */
+/* Output-row blocks of a parallel F32 GEMV (cpu_neon_w_f32_m1). */
+struct f32_m1_job {
+    const float *x, *w;
+    float       *y;
+    size_t       n_in, n_out;
+};
+
+enum { F32_M1_ROWS = 32 };
+
+static void f32_m1_rows(void *ctx, size_t c0, size_t c1) {
+    const struct f32_m1_job *j = ctx;
+    for (size_t c = c0; c < c1; c++) {
+        const size_t r0 = c * F32_M1_ROWS;
+        const size_t tr = j->n_out - r0 < F32_M1_ROWS ? j->n_out - r0 : F32_M1_ROWS;
+        geist_sgemv(GEIST_OP_N,
+                    (int) tr,
+                    (int) j->n_in,
+                    1.0f,
+                    j->w + r0 * j->n_in,
+                    (int) j->n_in,
+                    j->x,
+                    1,
+                    0.0f,
+                    j->y + r0,
+                    1);
+    }
+}
+
 static void cpu_neon_w_f32_m1(const float               *x,
                               const struct geist_weight *w,
                               struct geist_backend      *be,
                               float                     *y) {
     (void) be;
+    /* A decode-time F32 GEMV reads its matrix once, so it is bandwidth
+     * bound, and one thread (Accelerate's sgemv runs M=1 on the caller)
+     * reaches a fraction of the memory bandwidth. Gemma 4's per-layer
+     * F32 gates (2 x 1536 x 256 a layer) took 16 % of a Gemma 4 E2B
+     * decode on the M1 Max that way (#16). Above 256K weights the rows
+     * go to all threads in blocks of F32_M1_ROWS; every output is the
+     * same row dot product. */
+    const size_t n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    if (n_in * n_out >= (size_t) 1 << 18 && n_out >= 2 * F32_M1_ROWS) {
+        struct f32_m1_job j = {
+                .x = x, .w = (const float *) w->raw, .y = y, .n_in = n_in, .n_out = n_out};
+        geist_par_for((n_out + F32_M1_ROWS - 1) / F32_M1_ROWS, f32_m1_rows, &j);
+        return;
+    }
     geist_sgemv(GEIST_OP_N,
                 (int) w->n_out,
                 (int) w->n_in,

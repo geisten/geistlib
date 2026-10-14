@@ -23,6 +23,11 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **cpu_neon: decode-time F32 GEMVs use all threads (#16).** A large F32
+  linear at M=1 ran Accelerate's sgemv on the calling thread. From 256K
+  weights it now splits its output rows across the threads. Gemma 4's
+  per-layer F32 gates (2 x 1536 x 256 a layer): `gate_lin` -34 %,
+  `proj_lin` -20 % on the M1 Max, Gemma 4 E2B decode about -3 to -6 %.
 - **cpu_neon: Q4_K/Q6_K decode GEMVs split their rows statically at every
   size (#16).** Below 4096 output rows they handed out 4-row chunks through
   one shared atomic counter, a leftover of OpenMP's `schedule(dynamic, 4)`.
