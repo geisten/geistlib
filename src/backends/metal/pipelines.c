@@ -160,6 +160,7 @@ static const struct metal_pipeline_row metal_quant_rows[] = {
 static const struct metal_pipeline_row metal_q4k_mm_sg_rows[] = {
         METAL_PIPE(q4k_mm_sg, "matmul_q4k_mm_sg", q4k_mm_sg),
         METAL_PIPE(q4k_mm_sg_fast, "matmul_q4k_mm_sg_fast", q4k_mm_sg_fast),
+        METAL_PIPE(q6k_mm32, "matmul_q6k_mm_sg_fast", q6k_mm32),
 };
 
 static void **metal_state_slot(struct metal_state *st, size_t offset) {
@@ -380,6 +381,11 @@ void metal_release_pipeline_tables(struct metal_state *st) {
             st->use_q4k_mm_sg
                     ? metal_msg_send_id_cstr(
                               st, ns_string, "stringWithUTF8String:", metal_q4k_mm_sg_fast_source)
+                    : nullptr;
+    void *q6k_mm32_ns_source =
+            st->use_q4k_mm_sg
+                    ? metal_msg_send_id_cstr(
+                              st, ns_string, "stringWithUTF8String:", metal_q6k_mm32_source)
                     : nullptr;
     void *q4k_gate_up_n4_src = metal_msg_send_id_cstr(
             st, ns_string, "stringWithUTF8String:", metal_q4k_gate_up_n4_source);
@@ -609,6 +615,22 @@ void metal_release_pipeline_tables(struct metal_state *st) {
             geist_backend_set_error(be,
                                     GEIST_E_BACKEND,
                                     "metal: Q4_K simdgroup mm fast shader compile failed%s%s",
+                                    msg != nullptr ? ": " : "",
+                                    msg != nullptr ? msg : "");
+            return GEIST_E_BACKEND;
+        }
+        err                  = nullptr;
+        st->q6k_mm32_library = metal_msg_send_id_id_id_err(st,
+                                                           st->device,
+                                                           "newLibraryWithSource:options:error:",
+                                                           q6k_mm32_ns_source,
+                                                           nullptr,
+                                                           &err);
+        if (st->q6k_mm32_library == nullptr) {
+            const char *msg = metal_nserror_message(st, err);
+            geist_backend_set_error(be,
+                                    GEIST_E_BACKEND,
+                                    "metal: Q6_K simdgroup mm fast shader compile failed%s%s",
                                     msg != nullptr ? ": " : "",
                                     msg != nullptr ? msg : "");
             return GEIST_E_BACKEND;

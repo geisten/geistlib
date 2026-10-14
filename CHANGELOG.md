@@ -23,6 +23,14 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **Metal prefill on Q4_K_M models 15–40 % faster: a new Q6_K GEMM (#17).**
+  The Q6_K simdgroup GEMM stepped K by 8 with two barriers per step, and a
+  quarter of the threads dequantized. Full 64 x 32 tiles now take
+  `matmul_q6k_mm_sg_fast`, the Q4_K fast kernel's structure on Q6_K blocks.
+  M1 Max, pp512, 3 alternating rounds: Gemma 4 E2B Q4_K_M 841–996 ->
+  1007–1283 tok/s, Llama 3.2 3B Q4_K_M 543–585 -> 621–978 tok/s (noisy
+  host). Same half products and float accumulation order, so the logits
+  are bit-identical. `GEIST_METAL_Q6K_MM_FAST=0` keeps the old kernel.
 - **x86 prefill on Q4_K models 14–15 % faster: the activations are
   quantized on all threads.** The tiled k-quant GEMMs (Q4_K, Q5_K, Q6_K,
   #18) quantized their Q8_Kx4 activations on one thread before the GEMM ran
