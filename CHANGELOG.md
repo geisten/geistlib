@@ -23,6 +23,14 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **Apple CPU: Q4_K prefill about 30 % faster, a register-tiled SDOT kernel
+  (#16).** The ntile4 Q4_K prefill kernel formed one 16-byte dot product
+  per (row, token) and reduced it to a scalar. The new kernel accumulates 4
+  weight rows at once with `vdotq_laneq_s32` over 8 tokens, and the
+  gate/up pair runs through it. M1 Max, pp512, 3 rounds: Gemma 4 E2B
+  Q4_K_M 159-166 -> 206-215 tok/s, Llama 3.2 3B Q4_K_M 99-109 -> 142-144
+  tok/s; decode unchanged. Results are bit-identical to the old kernel.
+  `GEIST_Q4K_SDOT_PREFILL=0` keeps it.
 - **cpu_neon: decode-time F32 GEMVs use all threads (#16).** A large F32
   linear at M=1 ran Accelerate's sgemv on the calling thread. From 256K
   weights it now splits its output rows across the threads. Gemma 4's
