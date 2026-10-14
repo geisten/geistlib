@@ -437,6 +437,7 @@ int main(void) {
             {64, 128, 512},  /* a prefill chunk, two K blocks */
             {260, 264, 768}, /* windows past 256 on both sides */
             {512, 136, 1024},
+            {520, 24, 512}, /* past one 512-row block of prepared activations */
     };
     int fails = 0;
     for (size_t i = 0; i < sizeof shapes / sizeof shapes[0]; i++) {
@@ -447,6 +448,7 @@ int main(void) {
             {20, 40, 256},
             {64, 136, 512},
             {260, 257, 768},
+            {520, 40, 256},
     };
     for (size_t i = 0; i < sizeof q6k_shapes / sizeof q6k_shapes[0]; i++) {
         fails += check_raw(false, q6k_shapes[i][0], q6k_shapes[i][1], q6k_shapes[i][2], &st);
@@ -457,6 +459,7 @@ int main(void) {
             {17, 40, 256},
             {64, 136, 512},
             {261, 257, 768},
+            {517, 40, 256},
     };
     for (size_t i = 0; i < sizeof q40_shapes / sizeof q40_shapes[0]; i++) {
         fails += check_q4_0(false, q40_shapes[i][0], q40_shapes[i][1], q40_shapes[i][2], &st);
