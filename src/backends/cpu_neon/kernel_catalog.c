@@ -79,13 +79,18 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geis
 
             /* Apple AMX/Accelerate wins for high-M dequant+SGEMM; Pi/Linux
              * wins with native per-row NEON kernels for these tile sizes. */
-            .q5k_native_mn             = !amx,
-            .q4k_predecode             = amx,
-            .q4k_mtile_prefill         = amx,
-            .q4k_ntile_prefill         = amx,
-            .q4k_block_q8_prefill      = false,
-            .q4k_sgemm_prefill         = amx || pi5_sgemm_prefill,
-            .q6k_sgemm_prefill         = amx || pi5_sgemm_prefill,
+            .q5k_native_mn        = !amx,
+            .q4k_predecode        = amx,
+            .q4k_mtile_prefill    = amx,
+            .q4k_ntile_prefill    = amx,
+            .q4k_block_q8_prefill = false,
+            /* Full prefill chunks stay on the int8 SDOT kernels on Apple
+             * too: dequantizing each 64-row tile to FP32 for Accelerate's
+             * sgemm was slower on the M1 Max (#16, 3 alternating rounds,
+             * pp512: Gemma 4 E2B Q4_K_M 130 -> 159 tok/s, Llama 3.2 3B
+             * Q4_K_M 88 -> 105). GEIST_Q{4,6}K_SGEMM_PREFILL=1 restores it. */
+            .q4k_sgemm_prefill         = pi5_sgemm_prefill,
+            .q6k_sgemm_prefill         = pi5_sgemm_prefill,
             .qk_sgemm_threshold        = amx ? 64 : (pi5_sgemm_prefill ? 16 : 32),
             .qk_sgemm_tile_rows        = 64,
             .q6k_ntile_prefill         = amx,

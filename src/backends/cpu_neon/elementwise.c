@@ -18,6 +18,8 @@
 #include "gemma4_kernels.h"
 #include "heap.h"
 
+#include "par.h"
+
 #include <geist.h>
 #include <geist_backend.h>
 
@@ -68,6 +70,59 @@ static float *get_f32_dense_ptr(const struct geist_tensor *t, size_t *out_n) {
     return GEIST_OK;
 }
 
+#if defined(__APPLE__) && defined(HAVE_ACCELERATE)
+/* y = gelu_tanh(x) [* z] [* scale[i % feat]], the tanh through Accelerate's
+ * vvtanhf, in blocks of GELU_BLOCK elements split across threads: a
+ * prefill chunk is 64 tokens x the FFN width, and one thread took 8-9 % of
+ * a Gemma 4 E2B prefill on the M1 Max. Each element gets the same
+ * operations as before, whatever the split. y may alias x. */
+enum { GELU_BLOCK = 2048 };
+
+struct gelu_job {
+    const float *x, *z, *scale;
+    float       *y;
+    size_t       n, feat;
+};
+
+static void gelu_blocks(void *ctx, size_t b0, size_t b1) {
+    const struct gelu_job *j      = ctx;
+    const float            kAlpha = 0.7978845608028654f;
+    const float            kBeta  = 0.044715f;
+    float                  tmp[GELU_BLOCK];
+    for (size_t b = b0; b < b1; b++) {
+        const size_t i0 = b * GELU_BLOCK;
+        const size_t n  = j->n - i0 < GELU_BLOCK ? j->n - i0 : GELU_BLOCK;
+        for (size_t i = 0; i < n; i++) {
+            const float xi = j->x[i0 + i];
+            tmp[i]         = kAlpha * (xi + kBeta * xi * xi * xi);
+        }
+        int n_i32 = (int) n;
+        vvtanhf(tmp, tmp, &n_i32);
+        for (size_t i = 0; i < n; i++) {
+            float v = 0.5f * j->x[i0 + i] * (1.0f + tmp[i]);
+            if (j->z != nullptr) {
+                v *= j->z[i0 + i];
+            }
+            if (j->scale != nullptr) {
+                v *= j->scale[(i0 + i) % j->feat];
+            }
+            j->y[i0 + i] = v;
+        }
+    }
+}
+
+static void gelu_accelerate(
+        size_t n, const float *x, const float *z, const float *scale, size_t feat, float *y) {
+    struct gelu_job job = {.x = x, .z = z, .scale = scale, .y = y, .n = n, .feat = feat};
+    const size_t    nb  = (n + GELU_BLOCK - 1) / GELU_BLOCK;
+    if (nb < 4) {
+        gelu_blocks(&job, 0, nb);
+    } else {
+        geist_par_for(nb, gelu_blocks, &job);
+    }
+}
+#endif
+
 [[nodiscard]] enum geist_status
 cpu_neon_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
     size_t       nx = 0, ny = 0;
@@ -77,6 +132,10 @@ cpu_neon_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struc
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon gelu_tanh: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
+#if defined(__APPLE__) && defined(HAVE_ACCELERATE)
+    gelu_accelerate(nx, xp, nullptr, nullptr, 1, yp);
+    return GEIST_OK;
+#endif
     gelu_tanh_fp32(nx, xp, yp);
     return GEIST_OK;
 }
@@ -94,32 +153,8 @@ cpu_neon_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struc
         return GEIST_E_INVALID_ARG;
     }
 #if defined(__APPLE__) && defined(HAVE_ACCELERATE)
-    if (be != nullptr && be->state != nullptr && nx <= (size_t) INT32_MAX) {
-        struct cpu_neon_state     *st = (struct cpu_neon_state *) be->state;
-        struct cpu_neon_workspace *ws = cpu_neon_ws(st);
-        if (ws->elt_f32_cap < nx) {
-            safe_free((void **) &ws->elt_f32);
-            ws->elt_f32 = heap_alloc_array_aligned(float, nx);
-            if (ws->elt_f32 == nullptr) {
-                ws->elt_f32_cap = 0;
-                return GEIST_E_BACKEND;
-            }
-            ws->elt_f32_cap = nx;
-        }
-        const float kAlpha = 0.7978845608028654f;
-        const float kBeta  = 0.044715f;
-        float      *tmp    = ws->elt_f32;
-        for (size_t i = 0; i < nx; i++) {
-            const float xi = xp[i];
-            tmp[i]         = kAlpha * (xi + kBeta * xi * xi * xi);
-        }
-        int n_i32 = (int) nx;
-        vvtanhf(tmp, tmp, &n_i32);
-        for (size_t i = 0; i < nx; i++) {
-            yp[i] = (0.5f * xp[i] * (1.0f + tmp[i])) * zp[i];
-        }
-        return GEIST_OK;
-    }
+    gelu_accelerate(nx, xp, zp, nullptr, 1, yp);
+    return GEIST_OK;
 #endif
     gelu_tanh_mul_fp32(nx, xp, zp, yp);
     return GEIST_OK;
@@ -147,32 +182,8 @@ cpu_neon_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struc
         return GEIST_E_INVALID_ARG;
     }
 #if defined(__APPLE__) && defined(HAVE_ACCELERATE)
-    if (be != nullptr && be->state != nullptr && nx <= (size_t) INT32_MAX) {
-        struct cpu_neon_state     *st = (struct cpu_neon_state *) be->state;
-        struct cpu_neon_workspace *ws = cpu_neon_ws(st);
-        if (ws->elt_f32_cap < nx) {
-            safe_free((void **) &ws->elt_f32);
-            ws->elt_f32 = heap_alloc_array_aligned(float, nx);
-            if (ws->elt_f32 == nullptr) {
-                ws->elt_f32_cap = 0;
-                return GEIST_E_BACKEND;
-            }
-            ws->elt_f32_cap = nx;
-        }
-        const float kAlpha = 0.7978845608028654f;
-        const float kBeta  = 0.044715f;
-        float      *tmp    = ws->elt_f32;
-        for (size_t i = 0; i < nx; i++) {
-            const float xi = xp[i];
-            tmp[i]         = kAlpha * (xi + kBeta * xi * xi * xi);
-        }
-        int n_i32 = (int) nx;
-        vvtanhf(tmp, tmp, &n_i32);
-        for (size_t i = 0; i < nx; i++) {
-            yp[i] = (0.5f * xp[i] * (1.0f + tmp[i])) * zp[i] * scale[i % feat];
-        }
-        return GEIST_OK;
-    }
+    gelu_accelerate(nx, xp, zp, scale, feat, yp);
+    return GEIST_OK;
 #endif
     const float  kAlpha = 0.7978845608028654f;
     const float  kBeta  = 0.044715f;

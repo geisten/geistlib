@@ -23,6 +23,17 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **Apple CPU prefill on Q4_K models about 30 % faster (#16).** Two
+  changes on the M1 Max (cpu_neon):
+  - Full prefill chunks stay on the int8 SDOT kernels. Before, each
+    64-row weight tile was dequantized to FP32 for Accelerate's sgemm.
+    Over 3 alternating rounds the int8 path ran +22 % on Gemma 4 E2B
+    Q4_K_M (pp512) and +18 % on Llama 3.2 3B Q4_K_M. Its logits are as
+    close to the cpu_scalar oracle or closer (Gemma KL 0.00014 against
+    0.0012). `GEIST_Q{4,6}K_SGEMM_PREFILL=1` restores the old path.
+  - The GELU (Accelerate `vvtanhf`) runs on all threads in blocks instead
+    of one thread: Gemma 4 E2B prefill -8 % on its own.
+  Decode is unchanged.
 - **Metal prefill on Q4_K_M models 15–40 % faster: a new Q6_K GEMM (#17).**
   The Q6_K simdgroup GEMM stepped K by 8 with two barriers per step, and a
   quarter of the threads dequantized. Full 64 x 32 tiles now take
