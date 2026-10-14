@@ -47,8 +47,13 @@ jobs:
   measure:
     name: ${{ matrix.column }} · ${{ matrix.model }}
     runs-on: ${{ matrix.runner }}
-    # Gitea's ENDLESS_TASK_TIMEOUT (3 h by default) caps this as well.
-    timeout-minutes: 300
+    # Gitea's task timeout (3 h) caps a job anyway, so 300 promised nothing.
+    # Nightly cells take 13-18 min on the desktop and the GPU and 42-46 min
+    # on the Pi (run 1097); the weekly Pi cells (3B/4B) need the rest. A
+    # busy host no longer eats this: the Apple profiles wait at most 20 min
+    # for a quiet host, then fail as "host busy" and the run's later cells
+    # on that host fail at once (#14, #23).
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
