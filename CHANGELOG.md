@@ -23,6 +23,12 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **INT8 attention no longer depends on reciprocal math (#4).** Its query
+  quantization, lrintf(q / (amax / 127)), compiles with
+  `-fno-reciprocal-math` in every kernel and reference TU. gcc at
+  `-O1 --coverage` had turned one division into a multiply in one TU and not
+  another, and codes next to a .5 boundary rounded differently: up to 7.6e-3
+  of the scale.
 - **x86 prefill 4–11 % faster on every tiled format: the activations are
   prepared once per GEMM.** The tiled int8 GEMM (#18) unpacked and
   transposed the activation tile again for every weight window. One

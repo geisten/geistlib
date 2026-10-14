@@ -406,6 +406,13 @@ $(BUILD_DIR)/tests/test_geist_gemm_unit.o: CFLAGS += -fno-finite-math-only
 # The repetition penalties match llama.cpp's floats exactly: no reciprocal
 # division, no fused multiply-add, and option checks that see NaN/Inf.
 $(BUILD_DIR)/src/engine/sampler_penalties.o: CFLAGS_STRICT += -fno-fast-math -ffp-contract=off
+# INT8 attention quantizes each query row as lrintf(q / (amax / 127)). With
+# -freciprocal-math gcc may turn either division into a multiply in one TU
+# and not in another (seen at -O1 --coverage on x86): a value next to a .5
+# boundary then rounds to a different code, and kernel and reference differ
+# by ~1e-3 of the scale (#4). These TUs keep the divisions as written.
+$(BUILD_DIR)/src/archs/transformer/forward/attention.o $(BUILD_DIR)/src/backends/cpu_neon/attention_int4.o $(BUILD_DIR)/src/backends/cpu_neon/attention_int8.o $(BUILD_DIR)/src/backends/cpu_x86/attention_int8.o $(BUILD_DIR)/src/backends/cpu_x86/attention_int8_avx512_vnni.o: CFLAGS_STRICT += -fno-reciprocal-math
+$(BUILD_DIR)/tests/test_attention_int8_unit.o $(BUILD_DIR)/tests/test_x86_attention_int8_unit.o: CFLAGS += -fno-reciprocal-math
 $(BUILD_DIR)/tests/test_sampler_penalties_unit.o: CFLAGS += -fno-finite-math-only
 $(BUILD_DIR)/tests/test_session_penalties_int.o: CFLAGS += -fno-fast-math -ffp-contract=off
 
