@@ -49,11 +49,12 @@ int main(void) {
      * attn_q.weight is 2048 x 1536, which is 256-aligned for Q4_K. */
     const struct gguf_tensor_t *t = gguf_get_tensor(ctx, "blk.0.attn_q.weight");
     if (t == nullptr || t->dtype != GGUF_TYPE_Q4_K) {
-        fprintf(stderr,
-                "blk.0.attn_q.weight not present or not Q4_K (got dtype=%d)\n",
-                t == nullptr ? -1 : (int) t->dtype);
+        /* A model without a Q4_K attn_q (Q8_0, Q4_0, ternary) is outside
+         * this test, not a failure of it (#32). */
+        printf("SKIP: blk.0.attn_q.weight not present or not Q4_K (got dtype=%d)\n",
+               t == nullptr ? -1 : (int) t->dtype);
         gguf_close(ctx);
-        return t == nullptr ? GEIST_TEST_SKIP : GEIST_TEST_FAIL;
+        return GEIST_TEST_SKIP;
     }
     if (t->n_dims != 2) {
         gguf_close(ctx);
