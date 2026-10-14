@@ -374,6 +374,10 @@ transformer_kv_store_attention(struct transformer_layer_forward_ctx *ctx,
 [[nodiscard]] enum geist_status
 transformer_layer_run_ffn_block(struct transformer_layer_forward_ctx *ctx);
 
+/* forward/family_bitnet.c — bound by model_fusions.bitnet_forward (#37) */
+[[nodiscard]] enum geist_status
+transformer_bitnet_forward_layer(struct transformer_layer_forward_ctx *ctx);
+
 /* forward/layer_ple.c */
 [[nodiscard]] enum geist_status
 transformer_layer_run_ple_or_copy(struct transformer_layer_forward_ctx *ctx);

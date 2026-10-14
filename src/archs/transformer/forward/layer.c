@@ -215,7 +215,16 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
     frame_arena_reset(&sess->scratch_arena);
 
     const bool profile = transformer_profile_enabled();
-    uint64_t   t0      = profile ? transformer_profile_now_ns() : 0;
+    /* Experiment #37: a bound family forward replaces all four stages
+     * below. Profiling keeps the generic stages, which carry the timers. */
+    if (st->model_fusions.bitnet_forward && !profile) {
+        enum geist_status s = transformer_bitnet_forward_layer(&ctx);
+        if (s == GEIST_OK && ctx.advance_kv) {
+            sess->kv_len = ctx.kv_len_now;
+        }
+        return s;
+    }
+    uint64_t t0 = profile ? transformer_profile_now_ns() : 0;
     /* Per-layer token mixer: DeltaNet layers replace the whole
      * attention block (incl. its residual add); the FFN/PLE stages are
      * mixer-agnostic. */

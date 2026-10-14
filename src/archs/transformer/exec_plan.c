@@ -38,6 +38,42 @@ static bool kv_int8_fused_enabled(void) {
     return env == nullptr || env[0] != '0';
 }
 
+/* Experiment #37: the BitNet family forward hard-codes the plain BitNet
+ * b1.58 layer (pre-norm, act quant, SubLN, gated squared-ReLU or SwiGLU,
+ * no AWQ, no rotation). It is bound only when the model is exactly that;
+ * every other feature combination keeps the generic blocks. On unless
+ * GEIST_FAMILY_FORWARD=0, which keeps the generic path for A/B runs. */
+static bool bitnet_forward_eligible(const struct transformer_arch_state *st) {
+    const char *env = getenv("GEIST_FAMILY_FORWARD");
+    if (env != nullptr && env[0] == '0') {
+        return false;
+    }
+    const struct geist_arch_config *c = &st->config;
+    if (c->family == nullptr ||
+        (strcmp(c->family, "bitnet-b1.58") != 0 && strcmp(c->family, "bitnet") != 0)) {
+        return false;
+    }
+    if (!c->has_sub_ln || c->has_projection_input_norms || c->has_gemma_attn_norms ||
+        c->has_qk_norms || c->has_ple || c->has_attn_output_gate || c->gemma3_q_scale != 0.0f ||
+        (c->ffn_activation != GEIST_FFN_GATED_SQUARED_RELU &&
+         c->ffn_activation != GEIST_FFN_SWIGLU)) {
+        return false;
+    }
+    if (st->rotation.active || !st->runtime_flags.bitnet_sub_ln_enabled ||
+        st->runtime_flags.dump_act_sparsity) {
+        return false;
+    }
+    for (size_t i = 0; i < st->n_layers; i++) {
+        const struct transformer_layer_weights *L = &st->layers[i];
+        if (L->mixer != GEIST_MIXER_ATTN || L->is_kv_shared || L->o_awq_inv_scale != nullptr ||
+            L->down_awq_inv_scale != nullptr || L->attn_sub_norm.buffer == nullptr ||
+            L->ffn_sub_norm.buffer == nullptr || L->layer_scalar != 1.0f) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
     /* The probed slot must actually exist — a probe answering for a
@@ -321,6 +357,7 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         st->model_fusions.prim_scale_f32             = prims->scale_f32 != nullptr;
         st->model_fusions.prim_silu                  = prims->silu != nullptr;
         st->model_fusions.backend_buffer_copy        = be->desc->vtbl->buffer_copy != nullptr;
+        st->model_fusions.bitnet_forward             = bitnet_forward_eligible(st);
 
         /* relu_squared has no bound alternative: it cannot be composed from
          * the other prims (there is no relu, and no max), and the two call
