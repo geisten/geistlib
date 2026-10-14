@@ -23,6 +23,13 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **Pi 5 / cpu_neon: Q8_0 prefill 2.3-2.6x faster (#7).** The W8A8 M>1 kernel
+  ran one output row at a time and reduced every 16-byte SDOT to a scalar.
+  A register-tiled kernel now runs 4 rows x 8 tokens on `vdotq_laneq_s32`
+  (8 independent int32 chains, weights transposed once per block).
+  Raspberry Pi 5, Qwen3 0.6B Q8_0: prefill 128 tokens 77 -> 203 tok/s,
+  512 tokens 69 -> 156 tok/s (llama.cpp 215 / 188); decode unchanged.
+  `GEIST_Q8_0_SDOT_PREFILL=0` keeps the old kernel.
 - **bench: BitNet 2B-4T baselines re-measured against pinned bitnet.cpp
   commits (#29).** Pi 5: decode (32p) 19.16 vs 9.44 tok/s (2.03x), prefill
   (512p) 47.1 vs 47.5 (0.99x) against bitnet.cpp `01eb415`. 9950X: 132.9 vs
