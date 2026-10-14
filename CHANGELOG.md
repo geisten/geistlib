@@ -23,6 +23,13 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **Linux: geistlib respects container CPU limits (#27).** The parallel team
+  was one thread per host CPU even inside `docker run --cpus=4` or under
+  `taskset`, so CFS throttled the cgroup every period. geist_par now caps
+  its team at the affinity mask and the cgroup quota (v2 `cpu.max`, v1
+  `cfs_quota_us`, rounded up), unless `OMP_NUM_THREADS` is set. AMD 9950X
+  in a `--cpus=4` container, Qwen3.5 4B Q4_0: prefill 62–75 -> 232–241
+  tok/s, decode 2.3–5.3 -> 20.6–21.7 tok/s.
 - **Pi 5 / cpu_neon: Q8_0 prefill 2.3-2.6x faster (#7).** The W8A8 M>1 kernel
   ran one output row at a time and reduced every 16-byte SDOT to a scalar.
   A register-tiled kernel now runs 4 rows x 8 tokens on `vdotq_laneq_s32`
