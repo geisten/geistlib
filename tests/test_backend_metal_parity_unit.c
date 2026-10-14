@@ -632,6 +632,10 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_Q3_K, "Q3Ktiny", 512, 2, 1);
     run_case(mt, ref, GEIST_DTYPE_IQ4_NL, "IQ4NLtiny", 512, 3, 1);
     run_case(mt, ref, GEIST_DTYPE_IQ3_S, "IQ3Stiny", 512, 2, 1);
+    /* Full 64-output x 32-row tiles: matmul_q6k_mm_sg_fast (#17); m=96
+     * splits into a 64-row head and a 32-row tail, both full tiles. */
+    run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 384, 32);
+    run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 384, 96);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 383, 8);
     run_case(mt, ref, GEIST_DTYPE_F32, "F32", 256, 130, 1);

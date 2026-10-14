@@ -115,6 +115,7 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->q4k_m16_n2_library, "release");
         metal_msg_send_void0(st, st->q4k_mm_sg_library, "release");
         metal_msg_send_void0(st, st->q4k_mm_sg_fast_library, "release");
+        metal_msg_send_void0(st, st->q6k_mm32_library, "release");
         metal_msg_send_void0(st, st->q6k_n4_library, "release");
         metal_msg_send_void0(st, st->q6k_library, "release");
         metal_msg_send_void0(st, st->q4k_library, "release");

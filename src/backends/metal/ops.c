@@ -136,6 +136,32 @@ static void metal_encode_q6k_linear(struct metal_state            *st,
         }
         return;
     }
+    /* Full 64-output x 32-row tiles take matmul_q6k_mm_sg_fast, the Q4_K
+     * fast kernel's structure (32-wide K steps, every thread dequantizes)
+     * on Q6_K blocks; matmul_q6k_sg_fast below steps K by 8 with a quarter
+     * of the threads dequantizing (#17). GEIST_METAL_Q6K_MM_FAST=0 keeps
+     * the old kernel. */
+    static int mm_fast_env = -1;
+    if (mm_fast_env < 0) {
+        const char *e = getenv("GEIST_METAL_Q6K_MM_FAST");
+        mm_fast_env   = e == nullptr || e[0] != '0';
+    }
+    if (m_tile8 && mm_fast_env && st->q6k_mm32_pipeline != nullptr && params->rows >= 32u &&
+        (params->rows % 32u) == 0u && (params->n_out % 64u) == 0u && (params->n_in % 32u) == 0u &&
+        (params->x_offset % 8u) == 0u && (params->x_row_stride % 8u) == 0u) {
+        metal_msg_send_set_pipeline(st, enc, st->q6k_mm32_pipeline);
+        metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+        metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+        metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
+        metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
+        metal_msg_send_set_threadgroup_memory(st, enc, 6144u, 0u);
+        const struct metal_size groups = {
+                .width = params->rows / 32u, .height = params->n_out / 64u, .depth = 1};
+        const struct metal_size threads = {.width = 32u, .height = 4u, .depth = 1};
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_Q6K_LINEAR_BASE, groups);
+        metal_msg_send_dispatch(st, enc, groups, threads);
+        return;
+    }
     /* rows==1 always takes the matvec kernel — the 64-row GEMM tile is a
      * waste for a single row, and n4 (llama mul_mv structure) wins at any
      * n_out that fills at least one threadgroup. */

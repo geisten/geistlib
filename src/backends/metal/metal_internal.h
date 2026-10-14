@@ -259,6 +259,9 @@ struct metal_state {
     void *q4k_mm_sg_fast_library;
     void *q4k_mm_sg_fast_function;
     void *q4k_mm_sg_fast_pipeline;
+    void *q6k_mm32_library; /* matmul_q6k_mm_sg_fast (#17) */
+    void *q6k_mm32_function;
+    void *q6k_mm32_pipeline;
     void *q4k_qk_library;
     void *q4k_qk_function;
     void *q4k_qk_pipeline;
