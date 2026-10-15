@@ -16,7 +16,8 @@
   "temp_c_geist_start": "board temperature when geist started",
   "j_per_decode_token": "board energy per decoded token, from the phase-separated probes",
   "j_per_prefill_token": "board energy per prefill token, from the prefill-only probe",
-  "baselines": "every competing engine measured in the same run, each with its own start temperature and gate status. A list because a box can carry more than one relevant opponent -- bitnet.cpp for ternary, llama.cpp otherwise -- and measuring only the first silently dropped llama.cpp everywhere both existed"
+  "baselines": "every competing engine measured in the same run, each with its own start temperature and gate status. A list because a box can carry more than one relevant opponent -- bitnet.cpp for ternary, llama.cpp otherwise -- and measuring only the first silently dropped llama.cpp everywhere both existed. Each carries `version` (the baseline's own commit) and `llama_cpp_commit` (the ggml/llama.cpp build llama-bench reports; bitnet.cpp's bundled fork); `--record` refuses a run without them (#29). Older entries say `unpinned`.",
+  "model_sha256": "sha256 of the GGUF, where recorded"
  },
  "runs": [
   {
@@ -47,7 +48,8 @@
      "decode_ratio_short_ctx": 1.9563457330415754,
      "prefill_ratio_512": 0.9926200873362446,
      "temp_c_start": -1.0,
-     "thermal_gate": "cooled"
+     "thermal_gate": "cooled",
+     "version": "unpinned"
     }
    ]
   },
@@ -81,7 +83,8 @@
      "decode_ratio_short_ctx": 1.9872527472527473,
      "prefill_ratio_512": 0.9923969072164949,
      "temp_c_start": 54.9,
-     "thermal_gate": "cooled"
+     "thermal_gate": "cooled",
+     "version": "unpinned"
     }
    ]
   },
@@ -111,7 +114,8 @@
      "decode_ratio_short_ctx": 1.9542888165038,
      "prefill_ratio_512": 0.9929873472013724,
      "temp_c_start": 56.0,
-     "thermal_gate": "cooled"
+     "thermal_gate": "cooled",
+     "version": "unpinned"
     }
    ],
    "temp_c_geist_start": 48.8,
@@ -144,7 +148,8 @@
      "decode_ratio_short_ctx": 1.0617148097203117,
      "prefill_ratio_512": 1.7120973131934232,
      "temp_c_start": 53.8,
-     "thermal_gate": "cooled"
+     "thermal_gate": "cooled",
+     "version": "unpinned"
     },
     {
      "engine": "llama.cpp",
@@ -153,12 +158,86 @@
      "decode_ratio_short_ctx": 0.9434100631493174,
      "prefill_ratio_512": 2.4826904438844735,
      "temp_c_start": 54.3,
-     "thermal_gate": "cooled"
+     "thermal_gate": "cooled",
+     "version": "unpinned"
     }
    ],
    "temp_c_geist_start": 49.4,
    "j_per_decode_token": 0.12917359691764405,
    "j_per_prefill_token": 0.051884053132070486
+  },
+  {
+   "date": "2026-10-15",
+   "system": "Raspberry Pi 5 Model B Rev 1.1",
+   "cores": 4,
+   "ram_gb": 4.0,
+   "os": "Linux 6.18.33+rpt-rpi-2712",
+   "model": "bitnet-b1.58-2B-4T-i2_s.gguf",
+   "model_sha256": "4221b252fdd5fd25e15847adfeb5ee88886506ba50b8a34548374492884c2162",
+   "model_source": "microsoft/BitNet-b1.58-2B-4T-gguf @ a1f2f1c765812aa8af3f6eda4a313707064bba15",
+   "commit": "f8cc322",
+   "protocol": {
+    "seq_lens": "32,128,512",
+    "decode_n": 64,
+    "warmup": 64,
+    "repeats": 10,
+    "agg": "mean"
+   },
+   "decode_tps_512": 15.876,
+   "prefill_tps_512": 47.102,
+   "spread_pct": 1.041,
+   "decode_tps_short": 19.16,
+   "temp_c_geist_start": 52.35,
+   "baselines": [
+    {
+     "engine": "bitnet.cpp",
+     "version": "01eb415",
+     "llama_cpp_commit": "1f86f058",
+     "decode_tps": 9.436,
+     "prefill_tps": 47.545,
+     "decode_ratio_short_ctx": 2.031,
+     "prefill_ratio_512": 0.991,
+     "temp_c_start": 55.1,
+     "thermal_gate": "cooled"
+    }
+   ],
+   "notes": "2 rounds, geist and bitnet.cpp alternating under the 56 C gate (CI run 1164). bitnet.cpp is pinned at 01eb415: its main 0b341e582 (fork 390c30775) runs this model at 1.66 tok/s prefill and 1.47 tok/s decode on the Pi, about 30x slower, also when its fork is built directly with GGML_NATIVE. Upstream llama.cpp d81235049 cannot load I2_S."
+  },
+  {
+   "date": "2026-10-14",
+   "system": "AMD Ryzen 9 9950X",
+   "cores": 32,
+   "os": "Linux 7.0.0-38-generic",
+   "model": "bitnet-b1.58-2B-4T-i2_s.gguf",
+   "model_sha256": "4221b252fdd5fd25e15847adfeb5ee88886506ba50b8a34548374492884c2162",
+   "model_source": "microsoft/BitNet-b1.58-2B-4T-gguf @ a1f2f1c765812aa8af3f6eda4a313707064bba15",
+   "commit": "f8cc322",
+   "protocol": {
+    "seq_lens": "32,128,512",
+    "decode_n": 64,
+    "warmup": 64,
+    "repeats": 10,
+    "agg": "mean"
+   },
+   "threads": 16,
+   "decode_tps_512": 125.82,
+   "prefill_tps_512": 974.841,
+   "spread_pct": 0.608,
+   "decode_tps_short": 132.946,
+   "baselines": [
+    {
+     "engine": "bitnet.cpp",
+     "version": "0b341e582",
+     "llama_cpp_commit": "390c30775",
+     "decode_tps": 58.269,
+     "prefill_tps": 719.654,
+     "decode_ratio_short_ctx": 2.282,
+     "prefill_ratio_512": 1.355,
+     "temp_c_start": null,
+     "thermal_gate": "none (no sensor in the job)"
+    }
+   ],
+   "notes": "2 rounds, alternating, both engines on 16 threads (CI run 1147). bitnet.cpp 0b341e582 because 01eb415 does not build with clang here (ggml-bitnet-mad.cpp:811, const int8_t* to int8_t*). Upstream llama.cpp d81235049 cannot load I2_S."
   }
  ]
 }

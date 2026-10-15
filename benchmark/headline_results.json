@@ -1,6 +1,6 @@
 {
  "title": "Headline benchmarks \u2014 geist vs the baseline",
- "note": "Each row is a measured number for that model/system \u2014 a DIFFERENT metric and baseline. Comparable only as a ratio (geist / baseline). Sub-parity rows are kept on purpose (honesty). baseline_version: llama.cpp commit, or 'master' for bitnet.cpp (microsoft/BitNet upstream, --depth 1 clone of its bundled llama.cpp fork \u2014 no pinned commit). Sources: README headline table, BENCHMARK.md, BENCHMARK_PI5.md, TERNARY_BITNET.md, BENCHMARK_X86.md. BitNet Pi 5 rows come from reference_runs.json 2026-08-01: same run, same GGUF, both engines started under a 56 C thermal gate. Only like-for-like pairs are listed -- bitnet.cpp's generation benchmark runs from an empty context, so geist's long-context decode has no counterpart and is deliberately absent rather than divided by the wrong number.",
+ "note": "Each row is a measured number for that model/system \u2014 a DIFFERENT metric and baseline. Comparable only as a ratio (geist / baseline). Sub-parity rows are kept on purpose (honesty). baseline_version: llama.cpp commit, or for bitnet.cpp its commit plus the commit of its bundled llama.cpp fork (#29). The Pi uses bitnet.cpp 01eb415 because its main 0b341e582 is ~30x slower on the Pi's I2_S path; the 9950X uses 0b341e582 because 01eb415 does not build with clang there. Sources: README headline table, BENCHMARK.md, BENCHMARK_PI5.md, TERNARY_BITNET.md, BENCHMARK_X86.md. BitNet rows come from reference_runs.json 2026-10-14/15 (model sha256 4221b252): same run, same GGUF, both engines started under a 56 C thermal gate. Only like-for-like pairs are listed -- bitnet.cpp's generation benchmark runs from an empty context, so geist's long-context decode has no counterpart and is deliberately absent rather than divided by the wrong number.",
  "rows": [
   {
    "model": "Gemma 4 E2B-it",
@@ -52,10 +52,10 @@
    "os": "Pi 5",
    "os_family": "Linux",
    "metric": "decode \u00b7 32p",
-   "geist": 17.88,
-   "baseline": 9.14,
+   "geist": 19.16,
+   "baseline": 9.44,
    "baseline_engine": "bitnet.cpp",
-   "baseline_version": "master"
+   "baseline_version": "01eb415 (llama.cpp fork 1f86f058)"
   },
   {
    "model": "BitNet b1.58 2B-4T",
@@ -63,10 +63,10 @@
    "os": "Pi 5",
    "os_family": "Linux",
    "metric": "prefill \u00b7 512p",
-   "geist": 45.46,
-   "baseline": 45.8,
+   "geist": 47.1,
+   "baseline": 47.54,
    "baseline_engine": "bitnet.cpp",
-   "baseline_version": "master"
+   "baseline_version": "01eb415 (llama.cpp fork 1f86f058)"
   },
   {
    "model": "Gemma 4 E2B-it",
@@ -84,22 +84,22 @@
    "quant": "i2_s",
    "os": "AMD 9950X",
    "os_family": "Linux",
-   "metric": "prefill (pp128)",
-   "geist": 1098,
-   "baseline": 679.9,
+   "metric": "decode \u00b7 32p",
+   "geist": 132.95,
+   "baseline": 58.27,
    "baseline_engine": "bitnet.cpp",
-   "baseline_version": "master"
+   "baseline_version": "0b341e582 (llama.cpp fork 390c30775)"
   },
   {
    "model": "BitNet b1.58 2B-4T",
    "quant": "i2_s",
    "os": "AMD 9950X",
    "os_family": "Linux",
-   "metric": "decode (tg128)",
-   "geist": 103.1,
-   "baseline": 54.3,
+   "metric": "prefill \u00b7 512p",
+   "geist": 974.84,
+   "baseline": 719.65,
    "baseline_engine": "bitnet.cpp",
-   "baseline_version": "master"
+   "baseline_version": "0b341e582 (llama.cpp fork 390c30775)"
   },
   {
    "model": "Gemma 4 E2B-it",
