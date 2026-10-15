@@ -6,6 +6,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "blocks.h"
+#include "../rotation.h"
 #include "gemma4_kernels.h" /* rope_table_width: shared RoPE geometry, lives here today */
 
 enum geist_status blk_rmsnorm(struct transformer_layer_forward_ctx *ctx,
@@ -71,6 +72,20 @@ enum geist_status blk_qkv(struct transformer_layer_forward_ctx *ctx, struct geis
                                      &t_q,
                                      &t_k,
                                      &t_v);
+}
+
+enum geist_status blk_qk_norm(struct transformer_layer_forward_ctx *ctx,
+                              const struct geist_tensor            *q_w,
+                              const struct geist_tensor            *k_w) {
+    const int64_t       hd   = (int64_t) ctx->hd;
+    struct geist_tensor t_q  = view_2d(ctx->sess->scratch_q, ctx->SEQ * ctx->st->n_q_heads, hd);
+    struct geist_tensor t_k  = view_2d(ctx->sess->scratch_k, ctx->SEQ * ctx->st->n_kv_heads, hd);
+    struct geist_tensor t_qw = view_1d(q_w->buffer, hd);
+    struct geist_tensor t_kw = view_1d(k_w->buffer, hd);
+    enum geist_status   s    = ctx->prims->rmsnorm(ctx->be, &t_q, &t_qw, ctx->eps, &t_q);
+    if (s == GEIST_OK)
+        s = ctx->prims->rmsnorm(ctx->be, &t_k, &t_kw, ctx->eps, &t_k);
+    return s;
 }
 
 enum geist_status blk_rope_qk(struct transformer_layer_forward_ctx *ctx, float q_scale) {
@@ -178,4 +193,40 @@ enum geist_status blk_silu_mul(struct transformer_layer_forward_ctx *ctx,
         return s;
     }
     return ctx->prims->mul(ctx->be, &t_g, &t_u, &t_g);
+}
+
+enum geist_status blk_ffn_swiglu(struct transformer_layer_forward_ctx *ctx) {
+    struct transformer_arch_state    *st   = ctx->st;
+    struct transformer_arch_session  *sess = ctx->sess;
+    struct transformer_layer_weights *L    = ctx->L;
+    const size_t                      d    = st->d_model;
+    const size_t                      n    = ctx->inter;
+    struct geist_buffer              *x    = sess->scratch_pre_ff;
+    struct geist_buffer              *mid  = sess->scratch_gate;
+
+    /* Each step runs only while s is GEIST_OK (see families/bitnet.c). */
+    enum geist_status s = blk_rmsnorm(ctx, d, sess->scratch_h_post_attn, &L->ffn_norm, x);
+    if (s == GEIST_OK)
+        s = transformer_rotate_rows(st, ctx->seq, d, x);
+    if (s == GEIST_OK)
+        s = blk_gate_up(ctx, x);
+    if (s == GEIST_OK)
+        s = blk_silu_mul(ctx, n, mid, sess->scratch_up);
+    /* The sparsity probe counts zeros of the scaled activation before the
+     * rotation mixes each block. */
+    const float *down_scale = L->down_awq_inv_scale;
+    if (s == GEIST_OK && st->runtime_flags.dump_act_sparsity) {
+        blk_scale_cols(ctx, n, down_scale, mid);
+        down_scale = nullptr;
+        transformer_probe_ffn_sparsity(ctx->v, true, ctx->layer_idx, mid, ctx->seq * n);
+    }
+    if (s == GEIST_OK)
+        s = transformer_rotate_rows(st, ctx->seq, n, mid);
+    if (s == GEIST_OK)
+        blk_scale_cols(ctx, n, down_scale, mid);
+    if (s == GEIST_OK)
+        s = blk_linear(ctx, mid, &L->down_proj, &L->down_proj_w, sess->scratch_ffn_out);
+    if (s == GEIST_OK)
+        s = blk_add(ctx, d, sess->scratch_h_post_attn, sess->scratch_ffn_out, ctx->h_out_buf);
+    return s;
 }

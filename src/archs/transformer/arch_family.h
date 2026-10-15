@@ -81,6 +81,14 @@ struct transformer_family {
 /* Families that live in their own unit (families/<name>.c). */
 extern const struct transformer_family transformer_family_bitnet_b158;
 extern const struct transformer_family transformer_family_bitnet;
+extern const struct transformer_family transformer_family_llama;
+extern const struct transformer_family transformer_family_qwen3;
+
+/* arch_family.c — the BitNet embedding variant's metadata (per-projection
+ * input norms, pooling), read by the qwen3 and gemma3 populators. */
+void populate_bitnet_embedding_meta(struct gguf_ctx               *gguf,
+                                    const char                    *arch,
+                                    struct transformer_arch_state *st);
 
 /* Select a family by `general.architecture` string. Returns the
  * matching family entry, or nullptr when the key is absent or no

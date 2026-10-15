@@ -177,70 +177,6 @@ static bool populate_layers_gemma4(struct transformer_arch_state *st) {
     return true;
 }
 
-/* ---- Llama ------------------------------------------------------------- */
-
-static void populate_llama(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
-    /* Neutral config from state_create covers Llama; the two family
-     * specifics: SwiGLU (already the neutral default, stated for
-     * clarity) and interleaved RoPE (weights are pre-permuted). */
-    st->config.ffn_activation   = GEIST_FFN_SWIGLU;
-    st->config.rope_interleaved = true; /* LLAMA_ARCH = NORM RoPE */
-
-    uint32_t u;
-    float    f;
-    if (gguf_get_meta_u32(gguf, "llama.block_count", &u))
-        st->n_layers = u;
-    if (gguf_get_meta_u32(gguf, "llama.embedding_length", &u))
-        st->d_model = u;
-    if (gguf_get_meta_u32(gguf, "llama.attention.head_count", &u))
-        st->n_q_heads = u;
-    if (gguf_get_meta_u32(gguf, "llama.attention.head_count_kv", &u))
-        st->n_kv_heads = u;
-    if (gguf_get_meta_u32(gguf, "llama.vocab_size", &u))
-        st->vocab_size = u;
-    if (gguf_get_meta_f32(gguf, "llama.attention.layer_norm_rms_epsilon", &f))
-        st->config.rms_eps = f;
-    /* Llama doesn't have PLE — zero out the PLE-derived dims so any
-     * accidental access traps on size==0. */
-    st->hidden_per_layer = 0;
-    st->ple_out          = 0;
-}
-
-static bool populate_layers_llama(struct transformer_arch_state *st) {
-    /* Llama is uniform: all layers full-attention, no KV sharing,
-     * head_dim derived from d_model / n_q_heads. RoPE rotates the
-     * full head_dim (no partial rotation like Gemma's 25% on full
-     * layers). FFN intermediate is uniform: llama.feed_forward_length. */
-    const size_t head_dim     = (st->n_q_heads > 0) ? (st->d_model / st->n_q_heads) : 0;
-    uint32_t     intermediate = 0;
-    if (st->gguf != nullptr) {
-        gguf_get_meta_u32((struct gguf_ctx *) st->gguf, "llama.feed_forward_length", &intermediate);
-    }
-    for (size_t i = 0; i < st->n_layers; i++) {
-        struct transformer_layer_weights *L = &st->layers[i];
-        L->layer_idx                        = (int) i;
-        L->is_full                          = true;
-        L->is_kv_shared                     = false;
-        L->head_dim                         = head_dim;
-        L->q_out                            = st->n_q_heads * head_dim;
-        L->kv_out                           = st->n_kv_heads * head_dim;
-        L->intermediate                     = intermediate;
-        L->sliding_window                   = 0;
-        L->rope_theta                       = 100000.0f; /* default; freq_base overrides below */
-        L->n_rotated_dims                   = (int) head_dim;
-    }
-    /* RoPE theta override from llama.rope.freq_base. */
-    if (st->gguf != nullptr) {
-        float freq_base;
-        if (gguf_get_meta_f32((struct gguf_ctx *) st->gguf, "llama.rope.freq_base", &freq_base)) {
-            for (size_t i = 0; i < st->n_layers; i++) {
-                st->layers[i].rope_theta = freq_base;
-            }
-        }
-    }
-    return true;
-}
-
 /* ---- BitNet embedding metadata ----------------------------------------- */
 /*
  * The two facts that turn a stock qwen3 / gemma3 GGUF into an embedding
@@ -259,9 +195,9 @@ static bool populate_layers_llama(struct transformer_arch_state *st) {
  * Both spellings are read here; neither weakens the guarantee that the file
  * has to actually contain what the metadata promises.
  */
-static void populate_bitnet_embedding_meta(struct gguf_ctx               *gguf,
-                                           const char                    *arch,
-                                           struct transformer_arch_state *st) {
+void populate_bitnet_embedding_meta(struct gguf_ctx               *gguf,
+                                    const char                    *arch,
+                                    struct transformer_arch_state *st) {
     /* Projection-input norms. The TENSOR is the evidence — metadata must
      * not promise norms the file lacks, so the key is not required. An
      * explicit `false` still wins, so a converter can opt out. */
@@ -295,103 +231,6 @@ static void populate_bitnet_embedding_meta(struct gguf_ctx               *gguf,
         st->config.pooling             = GEIST_POOLING_NONE;
         st->config.pooling_unsupported = true;
     }
-}
-
-/* ---- Qwen3 ------------------------------------------------------------- */
-/*
- * Llama-style uniform stack (GQA, SwiGLU, full attention, no KV sharing,
- * no PLE, no softcap) with two deviations:
- *
- *   1. Per-head QK-norm: RMSNorm over [head_dim] on Q and K before RoPE
- *      (has_qk_norms — the Gemma V-norm / scale semantics do NOT apply,
- *      Qwen3 keeps the standard 1/sqrt(head_dim) scale).
- *   2. head_dim is decoupled from d_model: qwen3.attention.key_length
- *      (128 on 0.6B where d_model/n_heads would give 64), so
- *      q_out = n_heads * head_dim can EXCEED d_model. o_proj is
- *      [d_model, q_out] and scratch sizes from q_out — already the
- *      Gemma-4 full-attn shape, no special casing needed.
- *
- * RoPE is NEOX-style half-split like Gemma (no weight pre-permute), so
- * rope_interleaved stays false — unlike llama.
- */
-static void populate_qwen3(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
-    /* Neutral config + the two qwen3 specifics: per-head QK-norm and
-     * SwiGLU. NEOX RoPE (no pre-permute) is the neutral default. */
-    st->config.has_qk_norms   = true;
-    st->config.ffn_activation = GEIST_FFN_SWIGLU;
-
-    uint32_t u;
-    float    f;
-    if (gguf_get_meta_u32(gguf, "qwen3.block_count", &u))
-        st->n_layers = u;
-    if (gguf_get_meta_u32(gguf, "qwen3.embedding_length", &u))
-        st->d_model = u;
-    if (gguf_get_meta_u32(gguf, "qwen3.attention.head_count", &u))
-        st->n_q_heads = u;
-    if (gguf_get_meta_u32(gguf, "qwen3.attention.head_count_kv", &u))
-        st->n_kv_heads = u;
-    if (gguf_get_meta_u32(gguf, "qwen3.vocab_size", &u)) {
-        st->vocab_size = u;
-    } else {
-        /* Qwen's GGUFs omit the vocab_size key — fall back to the
-         * tokenizer.ggml.tokens array length (same as BitNet). */
-        uint32_t       elem_vt = 0;
-        uint64_t       count   = 0;
-        const uint8_t *payload = nullptr;
-        if (gguf_get_meta_array_info(gguf, "tokenizer.ggml.tokens", &elem_vt, &count, &payload)) {
-            st->vocab_size = (size_t) count;
-        }
-    }
-    if (gguf_get_meta_f32(gguf, "qwen3.attention.layer_norm_rms_epsilon", &f))
-        st->config.rms_eps = f;
-
-    populate_bitnet_embedding_meta(gguf, "qwen3", st);
-
-    st->hidden_per_layer = 0;
-    st->ple_out          = 0;
-}
-
-static bool populate_layers_qwen3(struct transformer_arch_state *st) {
-    struct gguf_ctx *g = (struct gguf_ctx *) st->gguf;
-
-    /* A pooling this build cannot perform is a load failure, not something
-     * to fall back from: every fallback here would return a vector that
-     * looks fine and means something else. */
-    if (st->config.pooling_unsupported) {
-        return false;
-    }
-
-    /* head_dim from metadata — NOT d_model / n_heads (0.6B: key_length
-     * 128 vs quotient 64). Missing key on a geometry where the quotient
-     * would be wrong is exactly the #258 failure mode, so fall back to
-     * the quotient only as a last resort and fail on zero. */
-    uint32_t head_dim = 0, intermediate = 0;
-    float    freq_base = 1000000.0f;
-    if (g != nullptr) {
-        gguf_get_meta_u32(g, "qwen3.attention.key_length", &head_dim);
-        gguf_get_meta_u32(g, "qwen3.feed_forward_length", &intermediate);
-        gguf_get_meta_f32(g, "qwen3.rope.freq_base", &freq_base);
-    }
-    if (head_dim == 0 && st->n_q_heads > 0) {
-        head_dim = (uint32_t) (st->d_model / st->n_q_heads);
-    }
-    if (head_dim == 0 || intermediate == 0) {
-        return false;
-    }
-    for (size_t i = 0; i < st->n_layers; i++) {
-        struct transformer_layer_weights *L = &st->layers[i];
-        L->layer_idx                        = (int) i;
-        L->is_full                          = true;
-        L->is_kv_shared                     = false;
-        L->head_dim                         = head_dim;
-        L->q_out                            = st->n_q_heads * head_dim;
-        L->kv_out                           = st->n_kv_heads * head_dim;
-        L->intermediate                     = intermediate;
-        L->sliding_window                   = 0;
-        L->rope_theta                       = freq_base;
-        L->n_rotated_dims                   = (int) head_dim;
-    }
-    return true;
 }
 
 /* ---- gemma3 (BitNet-embedding-270M's backbone) -------------------------- */
@@ -647,22 +486,10 @@ static const struct transformer_family FAMILY_GEMMA4 = {
         .populate_layers = populate_layers_gemma4,
 };
 
-static const struct transformer_family FAMILY_LLAMA = {
-        .name            = "llama",
-        .populate        = populate_llama,
-        .populate_layers = populate_layers_llama,
-};
-
 static const struct transformer_family FAMILY_GEMMA3 = {
         .name            = "gemma3",
         .populate        = populate_gemma3,
         .populate_layers = populate_layers_gemma3,
-};
-
-static const struct transformer_family FAMILY_QWEN3 = {
-        .name            = "qwen3",
-        .populate        = populate_qwen3,
-        .populate_layers = populate_layers_qwen3,
 };
 
 static const struct transformer_family FAMILY_QWEN35 = {
@@ -674,8 +501,8 @@ static const struct transformer_family FAMILY_QWEN35 = {
 static const struct transformer_family *const REGISTRY[] = {
         &FAMILY_GEMMA4,
         &FAMILY_GEMMA3,
-        &FAMILY_LLAMA,
-        &FAMILY_QWEN3,
+        &transformer_family_llama, /* families/llama.c */
+        &transformer_family_qwen3, /* families/qwen3.c */
         &FAMILY_QWEN35,
         &transformer_family_bitnet_b158, /* families/bitnet.c */
         &transformer_family_bitnet,

@@ -51,6 +51,11 @@ void blk_scale_cols(struct transformer_layer_forward_ctx *ctx,
 [[nodiscard]] enum geist_status blk_qkv(struct transformer_layer_forward_ctx *ctx,
                                         struct geist_buffer                  *x);
 
+/* Per-head RMSNorm over head_dim on scratch_q and scratch_k (QK-norm). */
+[[nodiscard]] enum geist_status blk_qk_norm(struct transformer_layer_forward_ctx *ctx,
+                                            const struct geist_tensor            *q_w,
+                                            const struct geist_tensor            *k_w);
+
 /* RoPE on q, q *= q_scale, RoPE on k, in that order (scratch_q, scratch_k). */
 [[nodiscard]] enum geist_status blk_rope_qk(struct transformer_layer_forward_ctx *ctx,
                                             float                                 q_scale);
@@ -78,3 +83,13 @@ blk_relu_sq(struct transformer_layer_forward_ctx *ctx, size_t n, struct geist_bu
                                              size_t                                n,
                                              struct geist_buffer                  *gate,
                                              struct geist_buffer                  *up);
+
+/* ---- Composite blocks ---------------------------------------------------
+ * A standard sequence several families share verbatim. Still family-free:
+ * what varies between families is a different block, not a flag here. */
+
+/* Pre-norm SwiGLU FFN with residual (Llama, Qwen3):
+ *   h_out = h_post_attn + down(silu(gate(x)) * up(x)),  x = rmsnorm(h_post_attn)
+ * Model-level features ride along: AWQ inverse scales on down's input,
+ * prism rotation, GEIST_DUMP_ACT_SPARSITY. */
+[[nodiscard]] enum geist_status blk_ffn_swiglu(struct transformer_layer_forward_ctx *ctx);
