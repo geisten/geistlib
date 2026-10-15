@@ -197,6 +197,7 @@ LIB_SOURCES := \
     src/archs/transformer/prefill_tuning.c \
     src/archs/transformer/arch_family.c \
     src/archs/transformer/families/bitnet.c \
+    src/archs/transformer/families/gemma3.c \
     src/archs/transformer/families/llama.c \
     src/archs/transformer/families/qwen3.c \
     src/archs/transformer/exec_plan.c \

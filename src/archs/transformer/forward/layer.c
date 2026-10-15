@@ -164,7 +164,6 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
                                                       : layer_idx);
     ctx->compute_kv = P != nullptr ? P->compute_kv : !L->is_kv_shared;
     ctx->apply_bitnet_input_quant = plan_apply_sub_ln;
-    ctx->apply_sub_ln             = plan_apply_sub_ln && st->runtime_flags.bitnet_sub_ln_enabled;
     /* Needs the scratch slice as well as the flag: a session built before
      * the family was known would have no proj_in buffer to normalise into. */
     ctx->apply_projection_input_norms =
@@ -279,7 +278,6 @@ enum geist_status transformer_forward_mtp_layer(struct transformer_arch_session 
     ctx.kv_src                       = -1;
     ctx.compute_kv                   = true;
     ctx.apply_bitnet_input_quant     = false;
-    ctx.apply_sub_ln                 = false;
     ctx.apply_projection_input_norms = false;
     ctx.apply_gemma_attn_norms       = false;
     ctx.apply_qk_norms               = true;

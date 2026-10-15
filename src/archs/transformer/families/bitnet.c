@@ -170,9 +170,7 @@ bitnet_attention_block(struct transformer_layer_forward_ctx *ctx) {
     struct transformer_arch_session  *sess = ctx->sess;
     struct transformer_layer_weights *L    = ctx->L;
     const size_t                      d    = st->d_model;
-    const size_t                      q    = ctx->q_out;
     struct geist_buffer              *x    = sess->scratch_normed;
-    struct geist_buffer              *attn = sess->scratch_attn;
 
     enum geist_status s = blk_rmsnorm(ctx, d, ctx->h_in_buf, &L->attn_norm, x);
     if (s == GEIST_OK)
@@ -186,13 +184,7 @@ bitnet_attention_block(struct transformer_layer_forward_ctx *ctx) {
     if (s == GEIST_OK)
         s = blk_attend(ctx);
     if (s == GEIST_OK)
-        blk_scale_cols(ctx, q, L->o_awq_inv_scale, attn);
-    if (s == GEIST_OK && st->runtime_flags.bitnet_sub_ln_enabled) /* GEIST_BITNET_NO_SUBLN */
-        s = blk_rmsnorm(ctx, q, attn, &L->attn_sub_norm, attn);
-    if (s == GEIST_OK)
-        s = transformer_rotate_rows(st, ctx->seq, q, attn);
-    if (s == GEIST_OK)
-        s = blk_linear(ctx, attn, &L->o_proj, &L->o_proj_w, sess->scratch_o);
+        s = blk_o_proj(ctx); /* SubLN, GEIST_BITNET_NO_SUBLN, AWQ, rotation */
     if (s == GEIST_OK)
         s = blk_add(ctx, d, ctx->h_in_buf, sess->scratch_o, sess->scratch_h_post_attn);
     return s;
@@ -226,22 +218,8 @@ bitnet_attention_block(struct transformer_layer_forward_ctx *ctx) {
     if (s == GEIST_OK && act == GEIST_FFN_SWIGLU)
         s = blk_silu_mul(ctx, n, mid, up);
 
-    if (s == GEIST_OK && st->runtime_flags.bitnet_sub_ln_enabled)
-        s = blk_rmsnorm(ctx, n, mid, &L->ffn_sub_norm, mid);
-    /* GEIST_DUMP_ACT_SPARSITY counts zeros of the scaled activation before
-     * the rotation mixes each block. */
-    const float *down_scale = L->down_awq_inv_scale;
-    if (s == GEIST_OK && st->runtime_flags.dump_act_sparsity) {
-        blk_scale_cols(ctx, n, down_scale, mid);
-        down_scale = nullptr;
-        transformer_probe_ffn_sparsity(ctx->v, true, ctx->layer_idx, mid, ctx->seq * n);
-    }
     if (s == GEIST_OK)
-        s = transformer_rotate_rows(st, ctx->seq, n, mid);
-    if (s == GEIST_OK)
-        blk_scale_cols(ctx, n, down_scale, mid);
-    if (s == GEIST_OK)
-        s = blk_linear(ctx, mid, &L->down_proj, &L->down_proj_w, sess->scratch_ffn_out);
+        s = blk_down(ctx, mid, L->down_awq_inv_scale); /* SubLN, probe, rotation */
     /* No PLE stage in this family: the residual goes straight to h_out. */
     if (s == GEIST_OK)
         s = blk_add(ctx, d, sess->scratch_h_post_attn, sess->scratch_ffn_out, ctx->h_out_buf);

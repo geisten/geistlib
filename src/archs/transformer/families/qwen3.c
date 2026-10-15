@@ -10,9 +10,9 @@
  *   h_out       = blk_ffn_swiglu(h_post_attn)
  *
  * The BitNet embedding models that ship as "qwen3" (an RMSNorm on every
- * projection's input, populate_bitnet_embedding_meta) are a different
- * layer. They share it with gemma3 and still run the generic stages, by
- * the explicit hand-off below, until they get a unit of their own.
+ * projection's input, populate_bitnet_embedding_meta) run the same
+ * composition: the blocks apply the per-projection norms and the norm on
+ * o_proj's and down's input when the model has them.
  *
  * Removing the family is this file, its registry lines in arch_family.c and
  * arch_family.h, and its line in mk/common.mk.
@@ -134,13 +134,8 @@ qwen3_attention_block(struct transformer_layer_forward_ctx *ctx) {
     struct transformer_arch_session  *sess = ctx->sess;
     struct transformer_layer_weights *L    = ctx->L;
     const size_t                      d    = st->d_model;
-    const size_t                      q    = ctx->q_out;
     struct geist_buffer              *x    = sess->scratch_normed;
-    struct geist_buffer              *attn = sess->scratch_attn;
 
-    if (st->config.has_projection_input_norms) { /* BitNet embedding variant */
-        return transformer_layer_run_attention_block(ctx);
-    }
     enum geist_status s = blk_rmsnorm(ctx, d, ctx->h_in_buf, &L->attn_norm, x);
     if (s == GEIST_OK)
         s = transformer_rotate_rows(st, ctx->seq, d, x);
@@ -153,21 +148,10 @@ qwen3_attention_block(struct transformer_layer_forward_ctx *ctx) {
     if (s == GEIST_OK)
         s = blk_attend(ctx);
     if (s == GEIST_OK)
-        blk_scale_cols(ctx, q, L->o_awq_inv_scale, attn);
-    if (s == GEIST_OK)
-        s = transformer_rotate_rows(st, ctx->seq, q, attn);
-    if (s == GEIST_OK)
-        s = blk_linear(ctx, attn, &L->o_proj, &L->o_proj_w, sess->scratch_o);
+        s = blk_o_proj(ctx);
     if (s == GEIST_OK)
         s = blk_add(ctx, d, ctx->h_in_buf, sess->scratch_o, sess->scratch_h_post_attn);
     return s;
-}
-
-[[nodiscard]] static enum geist_status qwen3_ffn_block(struct transformer_layer_forward_ctx *ctx) {
-    if (ctx->st->config.has_projection_input_norms) { /* BitNet embedding variant */
-        return transformer_layer_run_ffn_block(ctx);
-    }
-    return blk_ffn_swiglu(ctx);
 }
 
 /* ---- Registry entry --------------------------------------------------- */
@@ -177,5 +161,5 @@ const struct transformer_family transformer_family_qwen3 = {
         .populate        = populate_qwen3,
         .populate_layers = populate_layers_qwen3,
         .attention_block = qwen3_attention_block,
-        .ffn_block       = qwen3_ffn_block,
+        .ffn_block       = blk_ffn_swiglu,
 };

@@ -58,7 +58,6 @@ struct transformer_layer_forward_ctx {
     int  kv_src;
     bool compute_kv;
     bool apply_bitnet_input_quant;
-    bool apply_sub_ln;
     bool apply_gemma_attn_norms;
     bool apply_qk_norms;
     bool apply_ple;
@@ -243,35 +242,6 @@ static inline void bitnet_input_quant(const struct transformer_layer_forward_ctx
         }
     }
     apply_bitnet_input_quant_inplace(ctx->v, buf, ctx->seq, n);
-}
-
-/* Normalise one projection's input through its own gamma (BitNet
- * embedding models' per-projection input norms).
- *
- * `src` is the shared attn_norm / ffn_norm output; `dst` must view the
- * session's scratch_proj_in. One scratch buffer serves all five call
- * sites because each projection consumes its normalised input before
- * the next one is written.
- *
- * The BitNet activation fake-quant belongs HERE rather than on the
- * shared buffer: what the matmul sees is this vector, so that is what
- * has to be quantised.
- */
-[[nodiscard]] static inline enum geist_status
-norm_projection_input(size_t                                n,
-                      const struct geist_tensor            *norm_w,
-                      const struct geist_tensor            *src,
-                      struct geist_tensor                  *dst,
-                      struct transformer_layer_forward_ctx *ctx) {
-
-    enum geist_status s = ctx->prims->rmsnorm(ctx->be, src, norm_w, ctx->eps, dst);
-    if (s != GEIST_OK) {
-        return s;
-    }
-    if (ctx->apply_bitnet_input_quant) {
-        bitnet_input_quant(ctx, ctx->sess->scratch_proj_in, n);
-    }
-    return GEIST_OK;
 }
 
 /* ---- Cross-TU function declarations ----------------------------------- */

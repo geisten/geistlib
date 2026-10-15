@@ -15,7 +15,6 @@ enum ffn_profile_stage {
     FFN_PROFILE_GATE_UP,
     FFN_PROFILE_ACT,
     FFN_PROFILE_MUL,
-    FFN_PROFILE_SUB_NORM,
     FFN_PROFILE_DOWN_SCALE,
     FFN_PROFILE_DOWN,
     FFN_PROFILE_POST,
@@ -29,7 +28,6 @@ static const char *const g_ffn_profile_names[FFN_PROFILE_COUNT] = {
         "gate_up",
         "act",
         "mul",
-        "sub_norm",
         "down_scale",
         "down",
         "post",
@@ -98,8 +96,7 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         }
     }
 
-    const bool          has_ffn_sub_norm = ctx->apply_sub_ln && L->ffn_sub_norm.buffer != nullptr;
-    struct geist_tensor t_ffn_out_2d     = view_2d(sess->scratch_ffn_out, ctx->SEQ, st->d_model);
+    struct geist_tensor t_ffn_out_2d = view_2d(sess->scratch_ffn_out, ctx->SEQ, st->d_model);
     if (ctx->seq > 1 && P != nullptr && P->fuse_ffn_geglu_tile_mN) {
         const float *xp = (const float *) v->buffer_map(sess->scratch_pre_ff);
         float       *yp = (float *) v->buffer_map(sess->scratch_ffn_out);
@@ -158,57 +155,19 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
             goto ffn_mid_done;
         }
         t0 = profile ? transformer_profile_now_ns() : 0;
-        if (ctx->apply_projection_input_norms) {
-            /* gate and up read different inputs here, so the pair call
-             * cannot express it — one projection at a time, each behind
-             * its own input norm. */
-            struct geist_tensor t_proj_in_2d =
-                    view_2d(sess->scratch_proj_in, ctx->SEQ, st->d_model);
-            struct geist_tensor w_gate = view_1d(L->gate_norm_in.buffer, st->d_model);
-            s                          = norm_projection_input(
-                    (size_t) st->d_model, &w_gate, &t_pre_ff_2d, &t_proj_in_2d, ctx);
-            if (s == GEIST_OK) {
-                s = linear_w_or_legacy(be,
-                                       v,
-                                       sess->scratch_proj_in,
-                                       sess->scratch_gate,
-                                       &L->gate_proj_w,
-                                       ctx->seq,
-                                       &t_proj_in_2d,
-                                       &L->gate_proj,
-                                       &t_gate_2d);
-            }
-            if (s == GEIST_OK) {
-                struct geist_tensor w_up = view_1d(L->up_norm_in.buffer, st->d_model);
-                s                        = norm_projection_input(
-                        (size_t) st->d_model, &w_up, &t_pre_ff_2d, &t_proj_in_2d, ctx);
-            }
-            if (s == GEIST_OK) {
-                s = linear_w_or_legacy(be,
-                                       v,
-                                       sess->scratch_proj_in,
-                                       sess->scratch_up,
-                                       &L->up_proj_w,
-                                       ctx->seq,
-                                       &t_proj_in_2d,
-                                       &L->up_proj,
-                                       &t_up_2d);
-            }
-        } else {
-            s = linear_w_pair_or_legacy(be,
-                                        v,
-                                        sess->scratch_pre_ff,
-                                        sess->scratch_gate,
-                                        sess->scratch_up,
-                                        &L->gate_proj_w,
-                                        &L->up_proj_w,
-                                        ctx->seq,
-                                        &t_pre_ff_2d,
-                                        &L->gate_proj,
-                                        &L->up_proj,
-                                        &t_gate_2d,
-                                        &t_up_2d);
-        }
+        s  = linear_w_pair_or_legacy(be,
+                                     v,
+                                     sess->scratch_pre_ff,
+                                     sess->scratch_gate,
+                                     sess->scratch_up,
+                                     &L->gate_proj_w,
+                                     &L->up_proj_w,
+                                     ctx->seq,
+                                     &t_pre_ff_2d,
+                                     &L->gate_proj,
+                                     &L->up_proj,
+                                     &t_gate_2d,
+                                     &t_up_2d);
         transformer_profile_add(&g_ffn_profile, FFN_PROFILE_GATE_UP, t0);
         if (s != GEIST_OK) {
             return s;
@@ -261,16 +220,6 @@ enum geist_status transformer_layer_run_ffn_block(struct transformer_layer_forwa
         mid_buf  = sess->scratch_gate;
         t_mid_2d = t_gate_2d;
     ffn_mid_done:;
-    }
-
-    if (has_ffn_sub_norm) {
-        struct geist_tensor t_ffn_sub_w = view_1d(L->ffn_sub_norm.buffer, (int64_t) ctx->inter);
-        t0                              = profile ? transformer_profile_now_ns() : 0;
-        s = prims->rmsnorm(be, &t_mid_2d, &t_ffn_sub_w, ctx->eps, &t_mid_2d);
-        transformer_profile_add(&g_ffn_profile, FFN_PROFILE_SUB_NORM, t0);
-        if (s != GEIST_OK) {
-            return s;
-        }
     }
 
     /* The sparsity probe counts the gate's zeros, so it has to read

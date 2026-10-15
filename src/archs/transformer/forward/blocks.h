@@ -11,6 +11,11 @@
  *
  * Every block works on rows [ctx->seq, n] of session or layer buffers and
  * returns the backend status; outputs may alias inputs where noted.
+ *
+ * Blocks may read MODEL FEATURES that any family can carry — AWQ scales,
+ * prism rotation, per-projection input norms (BitNet embedding models), a
+ * SubLN slot, the KV mode, plan-bound fusions — but never which family is
+ * running.
  */
 #pragma once
 
@@ -88,8 +93,33 @@ blk_relu_sq(struct transformer_layer_forward_ctx *ctx, size_t n, struct geist_bu
  * A standard sequence several families share verbatim. Still family-free:
  * what varies between families is a different block, not a flag here. */
 
+/* scratch_o = o_proj(attn) with, when the model has them, the AWQ inverse
+ * scale, the SubLN / per-projection norm on o_proj's input, and rotation. */
+[[nodiscard]] enum geist_status blk_o_proj(struct transformer_layer_forward_ctx *ctx);
+
+/* scratch_ffn_out = down(mid), with the FFN sub-norm when the model has one,
+ * the sparsity probe, rotation and down_scale (AWQ; nullptr if already
+ * applied) on down's input. */
+[[nodiscard]] enum geist_status blk_down(struct transformer_layer_forward_ctx *ctx,
+                                         struct geist_buffer                  *mid,
+                                         const float                          *down_scale);
+
+/* out = res + rmsnorm(x) * w over d_model rows; the plan-bound fused op when
+ * `fused`, else rmsnorm into tmp and add. */
+[[nodiscard]] enum geist_status blk_norm_add(struct transformer_layer_forward_ctx *ctx,
+                                             bool                                  fused,
+                                             const struct geist_tensor            *w,
+                                             struct geist_buffer                  *x,
+                                             struct geist_buffer                  *res,
+                                             struct geist_buffer                  *tmp,
+                                             struct geist_buffer                  *out);
+
 /* Pre-norm SwiGLU FFN with residual (Llama, Qwen3):
- *   h_out = h_post_attn + down(silu(gate(x)) * up(x)),  x = rmsnorm(h_post_attn)
- * Model-level features ride along: AWQ inverse scales on down's input,
- * prism rotation, GEIST_DUMP_ACT_SPARSITY. */
+ *   h_out = h_post_attn + down(silu(gate(x)) * up(x)),  x = rmsnorm(h_post_attn) */
 [[nodiscard]] enum geist_status blk_ffn_swiglu(struct transformer_layer_forward_ctx *ctx);
+
+/* Sandwich-norm GEGLU FFN with residual (Gemma):
+ *   out = h_post_attn + post_norm(down(gelu(gate(x)) * up(x))),  x = rmsnorm(h_post_attn)
+ * with the plan-bound fusions (fused front, whole-FFN tile, gelu*mul). */
+[[nodiscard]] enum geist_status blk_ffn_geglu(struct transformer_layer_forward_ctx *ctx,
+                                              struct geist_buffer                  *out);

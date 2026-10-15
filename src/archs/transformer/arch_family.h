@@ -83,6 +83,7 @@ extern const struct transformer_family transformer_family_bitnet_b158;
 extern const struct transformer_family transformer_family_bitnet;
 extern const struct transformer_family transformer_family_llama;
 extern const struct transformer_family transformer_family_qwen3;
+extern const struct transformer_family transformer_family_gemma3;
 
 /* arch_family.c — the BitNet embedding variant's metadata (per-projection
  * input norms, pooling), read by the qwen3 and gemma3 populators. */

@@ -98,9 +98,7 @@ llama_attention_block(struct transformer_layer_forward_ctx *ctx) {
     struct transformer_arch_session  *sess = ctx->sess;
     struct transformer_layer_weights *L    = ctx->L;
     const size_t                      d    = st->d_model;
-    const size_t                      q    = ctx->q_out;
     struct geist_buffer              *x    = sess->scratch_normed;
-    struct geist_buffer              *attn = sess->scratch_attn;
 
     enum geist_status s = blk_rmsnorm(ctx, d, ctx->h_in_buf, &L->attn_norm, x);
     if (s == GEIST_OK)
@@ -112,11 +110,7 @@ llama_attention_block(struct transformer_layer_forward_ctx *ctx) {
     if (s == GEIST_OK)
         s = blk_attend(ctx);
     if (s == GEIST_OK)
-        blk_scale_cols(ctx, q, L->o_awq_inv_scale, attn);
-    if (s == GEIST_OK)
-        s = transformer_rotate_rows(st, ctx->seq, q, attn);
-    if (s == GEIST_OK)
-        s = blk_linear(ctx, attn, &L->o_proj, &L->o_proj_w, sess->scratch_o);
+        s = blk_o_proj(ctx);
     if (s == GEIST_OK)
         s = blk_add(ctx, d, ctx->h_in_buf, sess->scratch_o, sess->scratch_h_post_attn);
     return s;
