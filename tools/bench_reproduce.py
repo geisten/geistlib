@@ -359,7 +359,23 @@ def run_baseline(binary: Path, gguf: Path) -> dict | None:
         m = re.search(r"\b(pp|tg)(\d+)\b.*?([\d.]+)\s*±", line)
         if m:
             out["prefill_tps" if m.group(1) == "pp" else "decode_tps"] = float(m.group(3))
-    return out or None
+    if not out:
+        return None
+    out.update(baseline_version(binary, p.stdout + p.stderr))
+    return out
+
+
+def baseline_version(binary: Path, output: str) -> dict:
+    """The commits a baseline number belongs to (#29).
+
+    `version` is the checkout the binary sits in (bitnet.cpp, or llama.cpp
+    itself); `llama_cpp_commit` is the ggml/llama.cpp build llama-bench
+    reports, which for bitnet.cpp is its bundled fork. Either is None when it
+    cannot be read, and `--record` then refuses the run.
+    """
+    repo = sh(["git", "-C", str(binary.resolve().parent), "rev-parse", "--short=9", "HEAD"])
+    m = re.search(r"build: ([0-9a-f]{7,})", output)
+    return {"version": repo or None, "llama_cpp_commit": m.group(1) if m else None}
 
 
 # --- Derived figures --------------------------------------------------------
@@ -640,6 +656,13 @@ def main() -> int:
                   f"{COOL_C:.0f} °C cannot, no matter how long it waits.",
                   file=sys.stderr)
             return 0
+        unversioned = [b["engine"] for b in run.get("baselines", [])
+                       if not b.get("version") or not b.get("llama_cpp_commit")]
+        if unversioned:
+            print(f"NOT recorded: no commit for {', '.join(unversioned)}. A baseline "
+                  f"number without its version cannot be reproduced or dated (#29); "
+                  f"build the baseline from a git checkout.", file=sys.stderr)
+            return 0
         entry = {
             "date": run["date"], "system": run["system"]["cpu"],
             "cores": run["system"]["cores"], "ram_gb": run["system"]["ram_gb"],
@@ -656,6 +679,8 @@ def main() -> int:
             # A list: a box can carry more than one relevant opponent.
             entry["baselines"] = [
                 {"engine": b["engine"],
+                 "version": b["version"],
+                 "llama_cpp_commit": b["llama_cpp_commit"],
                  "decode_tps": b.get("decode_tps"),
                  "prefill_tps": b.get("prefill_tps"),
                  "decode_ratio_short_ctx": (rows[0]["decode_tps"] / b["decode_tps"]

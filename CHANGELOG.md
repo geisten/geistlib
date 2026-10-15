@@ -23,6 +23,14 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **bench: BitNet 2B-4T baselines re-measured against pinned bitnet.cpp
+  commits (#29).** Pi 5: decode (32p) 19.16 vs 9.44 tok/s (2.03x), prefill
+  (512p) 47.1 vs 47.5 (0.99x) against bitnet.cpp `01eb415`. 9950X: 132.9 vs
+  58.3 (2.28x) and 975 vs 720 (1.35x) against `0b341e582`. bitnet.cpp's
+  main is ~30x slower on the Pi's I2_S path, and upstream llama.cpp
+  `d81235049` cannot load I2_S. `bench_reproduce.py --record` now stores
+  each baseline's commit and its llama.cpp build, and refuses a run without
+  them.
 - **Apple CPU: Q4_K prefill about 30 % faster, a register-tiled SDOT kernel
   (#16).** The ntile4 Q4_K prefill kernel formed one 16-byte dot product
   per (row, token) and reduced it to a scalar. The new kernel accumulates 4

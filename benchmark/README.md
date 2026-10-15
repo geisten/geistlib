@@ -59,18 +59,21 @@ cells blank instead of combining them.
 | Gemma 4 E2B-it (Q4_K_M) | **Pi 5** | total t/s (32p+128d) | **8.8** | 8.2 *(llama.cpp)* |
 | Gemma 4 E2B-it (Q4_K_M) | **Pi 5** | decode t/s | **7.5** | 6.8 *(llama.cpp)* |
 | Gemma 4 E2B-it (Q4_K_M) | **M1 Max** | prefill t/s (pp1024) | **144** | 97 *(llama.cpp)* |
-| BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | decode t/s (32p) | **17.9** | 9.1 *(bitnet.cpp)* |
-| BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | decode t/s (512p) | **15.0** | — *(no like-for-like)* |
-| BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | prefill t/s (512p) | 45.5 | 45.8 *(bitnet.cpp)* |
-| BitNet b1.58 2B-4T (`i2_s`) | **AMD 9950X** | prefill t/s (pp128) | **1098** | 679.9 *(bitnet.cpp)* |
-| BitNet b1.58 2B-4T (`i2_s`) | **AMD 9950X** | decode t/s (tg128) | **103.1** | 54.3 *(bitnet.cpp)* |
+| BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | decode t/s (32p) | **19.2** | 9.4 *(bitnet.cpp)* |
+| BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | decode t/s (512p) | **15.9** | — *(no like-for-like)* |
+| BitNet b1.58 2B-4T (`i2_s`) | **Pi 5** | prefill t/s (512p) | 47.1 | 47.5 *(bitnet.cpp)* |
+| BitNet b1.58 2B-4T (`i2_s`) | **AMD 9950X** | prefill t/s (512p) | **975** | 720 *(bitnet.cpp)* |
+| BitNet b1.58 2B-4T (`i2_s`) | **AMD 9950X** | decode t/s (32p) | **132.9** | 58.3 *(bitnet.cpp)* |
 | Gemma 4 E2B-it (Q4_K_M) | **AMD 9950X** | prefill t/s | **512** | 495 *(llama.cpp)* |
 | Gemma 4 E2B-it (Q4_K_M) | **AMD 9950X** | decode t/s | **48.6** | 44.1 *(llama.cpp)* |
 | Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | prefill t/s | **351** | 346 *(llama.cpp)* |
 | Llama 3.2 3B (Q4_K_M) | **AMD 9950X** | decode t/s | 34.1 | 34.5 *(llama.cpp)* |
 
 <sub>**Baseline versions:** llama.cpp `d05fe1d` (Pi 5, M1 Max) · `b9827` (x86) ·
-bitnet.cpp = [microsoft/BitNet](https://github.com/microsoft/BitNet) `master`.
+bitnet.cpp = [microsoft/BitNet](https://github.com/microsoft/BitNet) `01eb415`
+(fork `1f86f058`, Pi 5) · `0b341e582` (fork `390c30775`, x86); its main
+`0b341e582` is ~30× slower on the Pi's I2_S path, `01eb415` does not build
+with clang on x86 (#29).
 GPU (Metal/Vulkan) numbers: [`../docs/BACKENDS.md`](../docs/BACKENDS.md).
 Sub-parity rows are kept on purpose — nothing cherry-picked.</sub>
 
