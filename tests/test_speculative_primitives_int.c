@@ -34,6 +34,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 #define GEIST_INTERNAL_ENGINE_LAYER
 
+#include "spec_tie.h"
 #include "../src/archs/transformer/arch_state.h"
 #include "../src/engine/model.h"
 #include "test_helpers.h"
@@ -43,6 +44,7 @@
 #include <geist_backend.h>
 
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -50,7 +52,11 @@ static struct geist_backend *be;
 static struct geist_model   *model;
 
 static int load_model(const char *model_path) {
-    enum geist_status s = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
+    enum geist_status s = geist_backend_create(
+            getenv("GEIST_BACKEND") != nullptr ? getenv("GEIST_BACKEND") : "cpu_neon",
+            nullptr,
+            nullptr,
+            &be);
     if (s != GEIST_OK)
         s = geist_backend_create("cpu_scalar", nullptr, nullptr, &be);
     if (s != GEIST_OK) {
@@ -298,6 +304,15 @@ int main(void) {
             teardown();
             return GEIST_TEST_FAIL;
         }
+        /* The re-prefill and the verify are both batched but chunked
+         * differently, so a near-tie may split: keep the logits to tell
+         * (spec_tie.h). */
+        size_t       n_logits = 0;
+        const float *pl       = geist_session_peek_logits(&n_logits, sess);
+        float       *logits   = pl != nullptr ? malloc(n_logits * sizeof *logits) : nullptr;
+        if (logits != nullptr) {
+            memcpy(logits, pl, n_logits * sizeof *logits);
+        }
         geist_token_t after_truncate_prefill_next;
         s = geist_session_decode_step(sess, &after_truncate_prefill_next);
         if (s != GEIST_OK) {
@@ -307,11 +322,23 @@ int main(void) {
         /* This is the prediction at position prompt+K (= what would be
          * the 5th token in the reference if we kept decoding). It should
          * equal verify_out[K-1]. */
-        if (after_truncate_prefill_next != verify_out[K - 1]) {
+        const geist_token_t a = after_truncate_prefill_next, b = verify_out[K - 1];
+        const float margin = logits != nullptr && a >= 0 && b >= 0 && (size_t) a < n_logits &&
+                                             (size_t) b < n_logits
+                                     ? fabsf(logits[a] - logits[b])
+                                     : NAN;
+        free(logits);
+        if (a != b && margin < SPEC_TIE_LOGITS) {
+            printf("post-truncate decode %d vs verify_out[K-1] %d: near-tie (margin %.3g logits)\n",
+                   a,
+                   b,
+                   (double) margin);
+        } else if (a != b) {
             fprintf(stderr,
-                    "FAIL: post-truncate decode=%d, verify_out[K-1]=%d\n",
-                    after_truncate_prefill_next,
-                    verify_out[K - 1]);
+                    "FAIL: post-truncate decode=%d, verify_out[K-1]=%d, margin %.3g logits\n",
+                    a,
+                    b,
+                    (double) margin);
             fails++;
         } else {
             printf("post-truncate decode produced %d (matches verify_out[%zu])\n",

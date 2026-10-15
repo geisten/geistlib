@@ -21,6 +21,7 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 
+#include "spec_tie.h"
 #include "test_helpers.h"
 
 #include <geist.h>
@@ -102,14 +103,7 @@ static int equiv_under(enum geist_kv_mode mode, const char *rot_env, const char 
     }
     geist_session_destroy(sspec);
 
-    int fails = 0;
-    for (size_t i = 0; i < N; i++) {
-        if (spec[i] != ref[i]) {
-            fprintf(stderr, "[%s] FAIL @ %zu: ref=%d spec=%d\n", label, i, ref[i], spec[i]);
-            if (++fails >= 5)
-                break;
-        }
-    }
+    const int fails = spec_compare(model, be, &opts, prompt_n, prompt_ids, N, ref, spec, label);
     printf("[%s] %s: speculative == sequential over %zu tokens\n",
            label,
            fails == 0 ? "PASS" : "FAIL",
@@ -119,7 +113,11 @@ static int equiv_under(enum geist_kv_mode mode, const char *rot_env, const char 
 
 int main(void) {
     GEIST_REQUIRE_GGUF(model_path);
-    enum geist_status s = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
+    enum geist_status s = geist_backend_create(
+            getenv("GEIST_BACKEND") != nullptr ? getenv("GEIST_BACKEND") : "cpu_neon",
+            nullptr,
+            nullptr,
+            &be);
     if (s != GEIST_OK)
         s = geist_backend_create("cpu_scalar", nullptr, nullptr, &be);
     if (s != GEIST_OK) {

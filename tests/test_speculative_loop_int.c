@@ -16,6 +16,7 @@
  */
 #define GEIST_INTERNAL_ENGINE_LAYER
 
+#include "spec_tie.h"
 #include "test_helpers.h"
 
 #include <geist.h>
@@ -30,7 +31,11 @@ static struct geist_backend *be;
 static struct geist_model   *model;
 
 static int load_model(const char *path) {
-    enum geist_status s = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
+    enum geist_status s = geist_backend_create(
+            getenv("GEIST_BACKEND") != nullptr ? getenv("GEIST_BACKEND") : "cpu_neon",
+            nullptr,
+            nullptr,
+            &be);
     if (s != GEIST_OK)
         s = geist_backend_create("cpu_scalar", nullptr, nullptr, &be);
     if (s != GEIST_OK) {
@@ -137,15 +142,8 @@ int main(void) {
     printf("\n");
 
     /* ---- Compare. */
-    int fails = 0;
-    for (size_t i = 0; i < N; i++) {
-        if (spec[i] != ref[i]) {
-            fprintf(stderr, "FAIL @ %zu: ref=%d spec=%d\n", i, ref[i], spec[i]);
-            fails++;
-            if (fails >= 5)
-                break;
-        }
-    }
+    const struct geist_session_opts ref_opts = {.max_seq_len = 1024, .temperature = 0.0f};
+    int fails = spec_compare(model, be, &ref_opts, prompt_n, prompt_ids, N, ref, spec, "greedy");
     printf("speculative tokens-per-call: %.2f  (sequential would be 1.00)\n",
            (double) total_emit / (double) n_calls);
 
