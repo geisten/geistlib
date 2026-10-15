@@ -6,6 +6,8 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "blocks.h"
+#include <math.h>
+#include <string.h>
 #include "../rotation.h"
 #include "gemma4_kernels.h" /* rope_table_width: shared RoPE geometry, lives here today */
 
@@ -66,7 +68,71 @@ void blk_scale_cols(struct transformer_layer_forward_ctx *ctx,
     return s;
 }
 
+/* Qwen3.5's attention output gate: q_proj emits [query(hd) | gate(hd)] per
+ * head. Split into scratch_q (head-major, what every later stage expects)
+ * and qgate_gate (applied in blk_o_proj); k and v are projected on their own. */
+[[nodiscard]] static enum geist_status qkv_gated(struct transformer_layer_forward_ctx *ctx,
+                                                 struct geist_buffer                  *x) {
+    struct transformer_arch_state    *st   = ctx->st;
+    struct transformer_arch_session  *sess = ctx->sess;
+    struct transformer_layer_weights *L    = ctx->L;
+    const struct geist_backend_vtbl  *v    = ctx->v;
+    const size_t                      hd   = ctx->hd;
+    const size_t                      q    = ctx->q_out;
+    struct geist_tensor               t_x  = view_2d(x, ctx->SEQ, st->d_model);
+    struct geist_tensor t_qg = view_2d(sess->qgate_joint, ctx->SEQ, (int64_t) (2 * q));
+    enum geist_status   s    = linear_w_or_legacy(
+            ctx->be, v, x, sess->qgate_joint, &L->q_proj_w, ctx->seq, &t_x, &L->q_proj, &t_qg);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    struct geist_tensor t_q    = view_2d(sess->scratch_q, ctx->SEQ, (int64_t) q);
+    struct geist_tensor t_gate = view_2d(sess->qgate_gate, ctx->SEQ, (int64_t) q);
+    bool                split  = false;
+    if (ctx->fused->attn_qgate_split != nullptr) {
+        s = ctx->fused->attn_qgate_split(ctx->be, &t_qg, st->n_q_heads, hd, &t_q, &t_gate);
+        if (s == GEIST_OK)
+            split = true;
+        else if (s != GEIST_E_UNSUPPORTED)
+            return s;
+    }
+    if (!split) {
+        const float *qg = (const float *) v->buffer_map(sess->qgate_joint);
+        float       *qp = (float *) v->buffer_map(sess->scratch_q);
+        float       *gp = (float *) v->buffer_map(sess->qgate_gate);
+        if (qg == nullptr || qp == nullptr || gp == nullptr) {
+            if (qg != nullptr)
+                v->buffer_unmap(sess->qgate_joint);
+            if (qp != nullptr)
+                v->buffer_unmap(sess->scratch_q);
+            if (gp != nullptr)
+                v->buffer_unmap(sess->qgate_gate);
+            return GEIST_E_BACKEND;
+        }
+        for (size_t t = 0; t < ctx->seq; t++) {
+            for (size_t h = 0; h < st->n_q_heads; h++) {
+                const float *src = qg + t * 2 * q + h * 2 * hd;
+                memcpy(qp + t * q + h * hd, src, hd * sizeof(float));
+                memcpy(gp + t * q + h * hd, src + hd, hd * sizeof(float));
+            }
+        }
+        v->buffer_unmap(sess->qgate_joint);
+        v->buffer_unmap(sess->scratch_q);
+        v->buffer_unmap(sess->qgate_gate);
+    }
+    if (!ctx->compute_kv) {
+        return GEIST_OK;
+    }
+    s = blk_linear(ctx, x, &L->k_proj, &L->k_proj_w, sess->scratch_k);
+    if (s == GEIST_OK)
+        s = blk_linear(ctx, x, &L->v_proj, &L->v_proj_w, sess->scratch_v);
+    return s;
+}
+
 enum geist_status blk_qkv(struct transformer_layer_forward_ctx *ctx, struct geist_buffer *x) {
+    if (ctx->st->config.has_attn_output_gate) {
+        return qkv_gated(ctx, x);
+    }
     if (ctx->apply_projection_input_norms) {
         struct transformer_arch_session  *ss = ctx->sess;
         struct transformer_layer_weights *Ln = ctx->L;
@@ -337,6 +403,35 @@ enum geist_status blk_o_proj(struct transformer_layer_forward_ctx *ctx) {
 
     blk_scale_cols(ctx, q, L->o_awq_inv_scale, attn);
     enum geist_status s = GEIST_OK;
+    if (st->config.has_attn_output_gate) { /* attn *= sigmoid(gate), Qwen3.5 */
+        struct geist_tensor t_gate = view_2d(ctx->sess->qgate_gate, ctx->SEQ, (int64_t) q);
+        struct geist_tensor t_attn = view_2d(attn, ctx->SEQ, (int64_t) q);
+        bool                gated  = false;
+        if (ctx->fused->sigmoid_mul != nullptr) {
+            s = ctx->fused->sigmoid_mul(ctx->be, &t_attn, &t_gate, &t_attn);
+            if (s == GEIST_OK)
+                gated = true;
+            else if (s != GEIST_E_UNSUPPORTED)
+                return s;
+            s = GEIST_OK;
+        }
+        if (!gated) {
+            float       *ap = (float *) ctx->v->buffer_map(attn);
+            const float *gp = (const float *) ctx->v->buffer_map(ctx->sess->qgate_gate);
+            if (ap == nullptr || gp == nullptr) {
+                if (ap != nullptr)
+                    ctx->v->buffer_unmap(attn);
+                if (gp != nullptr)
+                    ctx->v->buffer_unmap(ctx->sess->qgate_gate);
+                return GEIST_E_BACKEND;
+            }
+            const size_t n = ctx->seq * q;
+            for (size_t i = 0; i < n; i++)
+                ap[i] *= 1.0f / (1.0f + expf(-gp[i]));
+            ctx->v->buffer_unmap(attn);
+            ctx->v->buffer_unmap(ctx->sess->qgate_gate);
+        }
+    }
     if (L->attn_sub_norm.buffer != nullptr && st->runtime_flags.bitnet_sub_ln_enabled)
         s = blk_rmsnorm(ctx, q, attn, &L->attn_sub_norm, attn);
     if (s == GEIST_OK)

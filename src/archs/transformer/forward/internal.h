@@ -58,8 +58,6 @@ struct transformer_layer_forward_ctx {
     int  kv_src;
     bool compute_kv;
     bool apply_bitnet_input_quant;
-    bool apply_gemma_attn_norms;
-    bool apply_qk_norms;
     bool apply_ple;
     /* Whether the PLE stage will actually run this layer: apply_ple AND a
      * per-layer input to run it on. Two stages branch on this — the FFN
@@ -319,10 +317,6 @@ void attention_int4_via_buffers(size_t         n_q,
                                 const float   *v_scale,
                                 float         *out);
 
-/* forward/layer_attn.c */
-[[nodiscard]] enum geist_status
-transformer_layer_run_attention_block(struct transformer_layer_forward_ctx *ctx);
-
 /* forward/layer.c */
 [[nodiscard]] enum geist_status
 transformer_forward_mtp_layer(struct transformer_arch_session  *sess,
@@ -339,10 +333,6 @@ transformer_kv_store_append(struct transformer_layer_forward_ctx *ctx);
 transformer_kv_store_attention(struct transformer_layer_forward_ctx *ctx,
                                const struct geist_tensor            *t_q_3d,
                                struct geist_tensor                  *t_attn_3d);
-
-/* forward/layer_ffn.c */
-[[nodiscard]] enum geist_status
-transformer_layer_run_ffn_block(struct transformer_layer_forward_ctx *ctx);
 
 /* forward/layer_ple.c */
 [[nodiscard]] enum geist_status

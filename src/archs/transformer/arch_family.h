@@ -61,16 +61,16 @@ struct transformer_family {
      * the geometry instead of a downstream weight-wiring error (#258). */
     bool (*populate_layers)(struct transformer_arch_state *st);
 
-    /* ---- Optional family unit hooks (#37). nullptr = the generic code.
+    /* ---- Family unit hooks (#37).
      *
-     * wire_layer: load the family's own per-layer tensors after the
-     *   generic set (load_one_layer). The generic loader knows nothing
-     *   about them.
-     * attention_block / ffn_block: replace the generic layer stages
-     *   (forward/layer_attn.c, forward/layer_ffn.c) for every attention
-     *   layer of this family. They read no family flag; whatever the
-     *   family cannot run must be refused at load, not routed back to the
-     *   generic stages. */
+     * wire_layer (optional): load the family's own per-layer tensors after
+     *   the generic set (load_one_layer).
+     * attention_block, ffn_block (required): the layer, composed of the
+     *   shared blocks in forward/blocks.h. ffn_block owns the layer tail
+     *   (PLE, layer scale) where the family has one. They read no family
+     *   flag; whatever the family cannot run is refused at load. DeltaNet
+     *   layers are dispatched to the DeltaNet block instead of
+     *   attention_block. state_create refuses a family without them. */
     enum geist_status (*wire_layer)(struct transformer_arch_state    *st,
                                     struct gguf_ctx                  *gguf,
                                     struct transformer_layer_weights *L);
@@ -85,6 +85,7 @@ extern const struct transformer_family transformer_family_llama;
 extern const struct transformer_family transformer_family_qwen3;
 extern const struct transformer_family transformer_family_gemma3;
 extern const struct transformer_family transformer_family_gemma4;
+extern const struct transformer_family transformer_family_qwen35;
 
 /* arch_family.c — the BitNet embedding variant's metadata (per-projection
  * input norms, pooling), read by the qwen3 and gemma3 populators. */

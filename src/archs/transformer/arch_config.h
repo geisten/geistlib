@@ -21,7 +21,7 @@
 #include <string.h>
 
 /* FFN activation kind, consumed by the FFN forward branch
- * (forward/layer_ffn.c).
+ * (forward/blocks.c).
  *   GEGLU              — gelu_tanh(gate) * up; Gemma 3/4.
  *   SWIGLU             — silu(gate) * up; Llama 2/3, Qwen, BitNet 3B
  *                        (community). The neutral default.
