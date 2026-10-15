@@ -23,6 +23,11 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **cpu_neon: Q4_K/Q6_K decode GEMVs split their rows statically at every
+  size (#16).** Below 4096 output rows they handed out 4-row chunks through
+  one shared atomic counter, a leftover of OpenMP's `schedule(dynamic, 4)`.
+  M1 Max decode, 3 alternating rounds: Llama 3.2 3B Q4_K_M 36.1-36.7 ->
+  40.2-42.0 tok/s, Gemma 4 E2B Q4_K_M 40.6-40.8 -> 45.3-46.6 tok/s.
 - **INT8 attention no longer depends on reciprocal math (#4).** Its query
   quantization, lrintf(q / (amax / 127)), compiles with
   `-fno-reciprocal-math` in every kernel and reference TU. gcc at

@@ -407,11 +407,9 @@ void linear_q6k_decode_w6a8_pre(size_t       n_in,
             .x_scales         = x_scales,
             .y                = y,
     };
-    if (n_out >= 4096) {
-        geist_par_for(n_out, q6k_decode_rows, &ctx);
-    } else {
-        cpu_neon_par_for_dynamic(n_out, 4, q6k_decode_rows, &ctx);
-    }
+    /* Static row split at every size: the dynamic 4-row chunks below
+     * 4096 rows cost 12-15 % of an M1 Max Llama 3.2 3B decode (#16). */
+    geist_par_for(n_out, q6k_decode_rows, &ctx);
 #else
     (void) x_q8;
     (void) x_scales;
