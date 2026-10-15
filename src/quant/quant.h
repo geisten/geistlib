@@ -619,36 +619,32 @@ void   linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
                                                                const int32_t *sum32,
                                                                const void    *packed,
                                                                float         *y);
-/* The SDOT register-tiled kernel behind ..._mtile8_ntile4_packed (#16);
- * GEIST_Q4K_SDOT_PREFILL=0 keeps the scalar-reduction kernel. The gate/up
- * pair runs as two such calls while it is on. */
-bool linear_q4k_sdot_prefill_enabled(void);
-void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
-                                                             size_t         n_in,
-                                                             size_t         n_out,
-                                                             const int8_t  *x_q8,
-                                                             const float   *x_scales,
-                                                             const int32_t *sum32,
-                                                             const void    *packed,
-                                                             float         *y);
-void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t         m,
-                                                                  size_t         n_in,
-                                                                  size_t         n_out,
-                                                                  const int8_t  *x_q8,
-                                                                  const float   *x_scales,
-                                                                  const int32_t *sum32,
-                                                                  const void    *packed0,
-                                                                  const void    *packed1,
-                                                                  float         *y0,
-                                                                  float         *y1);
-void linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(size_t         m,
-                                                      size_t         n_in,
-                                                      size_t         n_out,
-                                                      const int8_t  *x_q8,
-                                                      const float   *x_scales,
-                                                      const int32_t *sum32,
-                                                      const void    *packed,
-                                                      float         *y);
+void   linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
+                                                               size_t         n_in,
+                                                               size_t         n_out,
+                                                               const int8_t  *x_q8,
+                                                               const float   *x_scales,
+                                                               const int32_t *sum32,
+                                                               const void    *packed,
+                                                               float         *y);
+void   linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t         m,
+                                                                    size_t         n_in,
+                                                                    size_t         n_out,
+                                                                    const int8_t  *x_q8,
+                                                                    const float   *x_scales,
+                                                                    const int32_t *sum32,
+                                                                    const void    *packed0,
+                                                                    const void    *packed1,
+                                                                    float         *y0,
+                                                                    float         *y1);
+void   linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(size_t         m,
+                                                        size_t         n_in,
+                                                        size_t         n_out,
+                                                        const int8_t  *x_q8,
+                                                        const float   *x_scales,
+                                                        const int32_t *sum32,
+                                                        const void    *packed,
+                                                        float         *y);
 
 /* W5A8 kernels for Q5_K. Same activation quantization as Q4_K
  * (quantize_x_q8_groups, 256-element groups, with sum32). Decode (M=1) and prefill (M>1) both use
