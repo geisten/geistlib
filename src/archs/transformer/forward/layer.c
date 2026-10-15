@@ -235,18 +235,21 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
     if (s != GEIST_OK) {
         return s;
     }
-    t0 = profile ? transformer_profile_now_ns() : 0;
-    s  = transformer_layer_run_ple_or_copy(&ctx);
-    transformer_profile_add(TRANSFORMER_PROFILE_PLE, t0);
-    if (s != GEIST_OK) {
-        return s;
-    }
+    /* A family unit's ffn_block owns the layer tail (PLE, layer scale). */
+    if (fam->ffn_block == nullptr) {
+        t0 = profile ? transformer_profile_now_ns() : 0;
+        s  = transformer_layer_run_ple_or_copy(&ctx);
+        transformer_profile_add(TRANSFORMER_PROFILE_PLE, t0);
+        if (s != GEIST_OK) {
+            return s;
+        }
 
-    t0 = profile ? transformer_profile_now_ns() : 0;
-    s  = transformer_layer_scale_output(&ctx);
-    transformer_profile_add(TRANSFORMER_PROFILE_SCALE, t0);
-    if (s != GEIST_OK) {
-        return s;
+        t0 = profile ? transformer_profile_now_ns() : 0;
+        s  = transformer_layer_scale_output(&ctx);
+        transformer_profile_add(TRANSFORMER_PROFILE_SCALE, t0);
+        if (s != GEIST_OK) {
+            return s;
+        }
     }
     if (ctx.advance_kv) {
         sess->kv_len = ctx.kv_len_now;

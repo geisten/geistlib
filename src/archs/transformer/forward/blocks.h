@@ -61,13 +61,30 @@ void blk_scale_cols(struct transformer_layer_forward_ctx *ctx,
                                             const struct geist_tensor            *q_w,
                                             const struct geist_tensor            *k_w);
 
+/* q: optional per-head RMSNorm (q_norm, nullptr for none), RoPE, then
+ * q *= q_scale unless q_scale is 1 (scratch_q). */
+[[nodiscard]] enum geist_status blk_q_prep(struct transformer_layer_forward_ctx *ctx,
+                                           const struct geist_tensor            *q_norm,
+                                           float                                 q_scale);
+
+/* k: optional per-head RMSNorm (k_norm), optional scale-free RMSNorm of v
+ * (v_norm), then RoPE on k (scratch_k, scratch_v). */
+[[nodiscard]] enum geist_status blk_k_prep(struct transformer_layer_forward_ctx *ctx,
+                                           const struct geist_tensor            *k_norm,
+                                           bool                                  v_norm);
+
 /* RoPE on q, q *= q_scale, RoPE on k, in that order (scratch_q, scratch_k). */
 [[nodiscard]] enum geist_status blk_rope_qk(struct transformer_layer_forward_ctx *ctx,
                                             float                                 q_scale);
 
-/* Append k/v to the session KV cache (any KV mode) and attend:
- * scratch_attn = attention(scratch_q, cache). */
-[[nodiscard]] enum geist_status blk_attend(struct transformer_layer_forward_ctx *ctx);
+/* The plan-bound fused q/k/v prep: per-head norms, V norm, RoPE and the KV
+ * append in one backend op; q only on a KV-shared layer. */
+[[nodiscard]] enum geist_status blk_qkv_prep_fused(struct transformer_layer_forward_ctx *ctx);
+
+/* Append k/v to the session KV cache (any KV mode) when `append`, then
+ * attend: scratch_attn = attention(scratch_q, cache). A KV-shared layer or
+ * a fused prep that already appended passes false. */
+[[nodiscard]] enum geist_status blk_attend(struct transformer_layer_forward_ctx *ctx, bool append);
 
 /* scratch_gate / scratch_up = x projected by the layer's gate/up. */
 [[nodiscard]] enum geist_status blk_gate_up(struct transformer_layer_forward_ctx *ctx,

@@ -108,7 +108,7 @@ llama_attention_block(struct transformer_layer_forward_ctx *ctx) {
     if (s == GEIST_OK)
         s = blk_rope_qk(ctx, 1.0f / sqrtf((float) ctx->hd));
     if (s == GEIST_OK)
-        s = blk_attend(ctx);
+        s = blk_attend(ctx, true);
     if (s == GEIST_OK)
         s = blk_o_proj(ctx);
     if (s == GEIST_OK)

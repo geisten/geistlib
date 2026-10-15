@@ -19,164 +19,6 @@
 #include <stdio.h>
 #include <string.h>
 
-/* ---- Gemma 4 ----------------------------------------------------------- */
-
-/* Fallback attention pattern for GGUFs without the
- * gemma4.attention.sliding_window_pattern key: the E2B layout — 4
- * sliding-window layers + 1 full-attention layer, repeated 7 times =
- * 35 layers. E4B (5+1 × 7 = 42 layers) and anything else MUST carry
- * the metadata key (#258). */
-static const bool GEMMA4_LAYER_IS_FULL[] = {
-        false, false, false, false, true,  false, false, false, false, true,  false, false,
-        false, false, true,  false, false, false, false, true,  false, false, false, false,
-        true,  false, false, false, false, true,  false, false, false, false, true,
-};
-
-static void populate_gemma4(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
-    /* Gemma-4 owns its defaults — state_create installs a NEUTRAL config
-     * and each family declares what it HAS. Structural values are the
-     * E2B geometry, kept as fallbacks for pre-key GGUFs; current unsloth
-     * GGUFs override every one of them from metadata below. PLE scales
-     * are architectural constants (not in GGUF metadata). */
-    st->n_layers         = 35;
-    st->d_model          = 1536;
-    st->vocab_size       = 262144; /* no gemma4.vocab_size key exists */
-    st->n_q_heads        = 8;
-    st->n_kv_heads       = 1;
-    st->hidden_per_layer = 256;
-
-    st->config.logit_softcap        = 30.0f;
-    st->config.has_embed_scale      = true;
-    st->config.has_ple              = true;
-    st->config.ple_input_scale      = 0.7071067811865476f;
-    st->config.ple_model_proj_scale = 0.02551551815399144f;
-    st->config.ple_table_scale      = 16.0f;
-    /* E2B KV-share sources; populate_layers_gemma4 re-derives them
-     * from the attention pattern (#258). */
-    st->config.kv_sliding_src       = 13;
-    st->config.kv_full_src          = 14;
-    st->config.has_gemma_attn_norms = true;
-    st->config.has_qk_norms         = true;
-    st->config.ffn_activation       = GEIST_FFN_GEGLU;
-
-    uint32_t u;
-    float    f;
-    if (gguf_get_meta_u32(gguf, "gemma4.block_count", &u))
-        st->n_layers = u;
-    if (gguf_get_meta_u32(gguf, "gemma4.embedding_length", &u))
-        st->d_model = u;
-    if (gguf_get_meta_u32(gguf, "gemma4.attention.head_count", &u))
-        st->n_q_heads = u;
-    if (gguf_get_meta_u32(gguf, "gemma4.attention.head_count_kv", &u))
-        st->n_kv_heads = u;
-    if (gguf_get_meta_u32(gguf, "gemma4.embedding_length_per_layer_input", &u))
-        st->hidden_per_layer = u;
-    st->ple_out = st->n_layers * st->hidden_per_layer;
-    if (gguf_get_meta_f32(gguf, "gemma4.attention.layer_norm_rms_epsilon", &f))
-        st->config.rms_eps = f;
-    if (gguf_get_meta_f32(gguf, "gemma4.final_logit_softcapping", &f))
-        st->config.logit_softcap = f;
-}
-
-static bool populate_layers_gemma4(struct transformer_arch_state *st) {
-    struct gguf_ctx *g = (struct gguf_ctx *) st->gguf;
-
-    /* Attention pattern: bool array, true = sliding-window layer. E2B
-     * is 4+1 × 7 (35 layers), E4B is 5+1 × 7 (42 layers) — variant
-     * geometry, so it must come from metadata. GGUFs without the key
-     * fall back to the static E2B table; any other layer count without
-     * the key is not derivable → fail (caller names the geometry). */
-    uint32_t       pat_vt = 0;
-    uint64_t       pat_n  = 0;
-    const uint8_t *pat    = nullptr;
-    if (g == nullptr ||
-        !gguf_get_meta_array_info(
-                g, "gemma4.attention.sliding_window_pattern", &pat_vt, &pat_n, &pat) ||
-        pat_vt != GGUF_META_VT_BOOL || pat_n != st->n_layers) {
-        pat = nullptr;
-        if (st->n_layers != sizeof GEMMA4_LAYER_IS_FULL / sizeof GEMMA4_LAYER_IS_FULL[0]) {
-            return false;
-        }
-    }
-
-    /* KV sharing: the LAST shared_kv_layers layers alias earlier
-     * caches. E2B: 35-20 → owners 0..14. E4B: 42-18 → owners 0..23. */
-    uint32_t shared_kv = 20;
-    if (g != nullptr)
-        gguf_get_meta_u32(g, "gemma4.attention.shared_kv_layers", &shared_kv);
-    if (shared_kv > st->n_layers) {
-        return false;
-    }
-    const size_t kv_share_threshold = st->n_layers - shared_kv;
-
-    /* Per-type head dims + sliding window + RoPE bases, E2B defaults. */
-    uint32_t full_hd = 512, swa_hd = 256, sliding_window = 512;
-    float    theta_full = 1000000.0f, theta_swa = 10000.0f;
-    /* FFN inner dim: scalar key (uniform, E4B) or per-layer u32/i32
-     * array (E2B: 6144 owners / 12288 shared). */
-    uint32_t       ffn_uniform = 0;
-    const uint8_t *ffn_arr     = nullptr;
-    if (g != nullptr) {
-        gguf_get_meta_u32(g, "gemma4.attention.key_length", &full_hd);
-        gguf_get_meta_u32(g, "gemma4.attention.key_length_swa", &swa_hd);
-        gguf_get_meta_u32(g, "gemma4.attention.sliding_window", &sliding_window);
-        gguf_get_meta_f32(g, "gemma4.rope.freq_base", &theta_full);
-        gguf_get_meta_f32(g, "gemma4.rope.freq_base_swa", &theta_swa);
-        uint32_t ffn_vt = 0;
-        uint64_t ffn_n  = 0;
-        if (!gguf_get_meta_u32(g, "gemma4.feed_forward_length", &ffn_uniform) &&
-            gguf_get_meta_array_info(g, "gemma4.feed_forward_length", &ffn_vt, &ffn_n, &ffn_arr)) {
-            if ((ffn_vt != GGUF_META_VT_U32 && ffn_vt != GGUF_META_VT_I32) ||
-                ffn_n != st->n_layers) {
-                ffn_arr = nullptr;
-            }
-        }
-    }
-
-    for (size_t i = 0; i < st->n_layers; i++) {
-        struct transformer_layer_weights *L = &st->layers[i];
-        L->layer_idx                        = (int) i;
-        L->is_full      = pat != nullptr ? pat[i] == 0 : GEMMA4_LAYER_IS_FULL[i];
-        L->is_kv_shared = i >= kv_share_threshold;
-        L->head_dim     = L->is_full ? full_hd : swa_hd;
-        L->q_out        = st->n_q_heads * L->head_dim;
-        L->kv_out       = st->n_kv_heads * L->head_dim;
-        if (ffn_arr != nullptr) {
-            uint32_t v;
-            memcpy(&v, ffn_arr + i * sizeof v, sizeof v);
-            L->intermediate = v;
-        } else if (ffn_uniform > 0) {
-            L->intermediate = ffn_uniform;
-        } else {
-            L->intermediate = L->is_kv_shared ? 12288 : 6144; /* pre-key E2B GGUFs */
-        }
-        L->sliding_window = L->is_full ? 0 : sliding_window;
-        L->rope_theta     = L->is_full ? theta_full : theta_swa;
-        /* Full-attn layers rotate 25% of head_dim (partial_rotary_factor
-         * 0.25 — family constant; the GGUF's rope.dimension_count key
-         * carries head_dim, not the rotated width, so it can't be used).
-         * Sliding layers rotate the full head_dim. */
-        L->n_rotated_dims = L->is_full ? (int) (full_hd / 4) : (int) L->head_dim;
-    }
-
-    /* KV-share sources: each shared layer reads the cache of the LAST
-     * owner layer of its own attention type. E2B: full←14, sliding←13.
-     * E4B: full←23, sliding←22. */
-    int last_full = -1, last_sliding = -1;
-    for (size_t i = 0; i < kv_share_threshold; i++) {
-        if (st->layers[i].is_full)
-            last_full = (int) i;
-        else
-            last_sliding = (int) i;
-    }
-    if (shared_kv > 0 && (last_full < 0 || last_sliding < 0)) {
-        return false; /* shared layers with no owner of one type */
-    }
-    st->config.kv_full_src    = last_full;
-    st->config.kv_sliding_src = last_sliding;
-    return true;
-}
-
 /* ---- BitNet embedding metadata ----------------------------------------- */
 /*
  * The two facts that turn a stock qwen3 / gemma3 GGUF into an embedding
@@ -363,12 +205,6 @@ static bool populate_layers_qwen35(struct transformer_arch_state *st) {
 
 /* ---- Registry --------------------------------------------------------- */
 
-static const struct transformer_family FAMILY_GEMMA4 = {
-        .name            = "gemma4",
-        .populate        = populate_gemma4,
-        .populate_layers = populate_layers_gemma4,
-};
-
 static const struct transformer_family FAMILY_QWEN35 = {
         .name            = "qwen35",
         .populate        = populate_qwen35,
@@ -376,7 +212,7 @@ static const struct transformer_family FAMILY_QWEN35 = {
 };
 
 static const struct transformer_family *const REGISTRY[] = {
-        &FAMILY_GEMMA4,
+        &transformer_family_gemma4, /* families/gemma4.c */
         &transformer_family_gemma3, /* families/gemma3.c */
         &transformer_family_llama,  /* families/llama.c */
         &transformer_family_qwen3,  /* families/qwen3.c */

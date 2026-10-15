@@ -117,48 +117,143 @@ enum geist_status blk_qk_norm(struct transformer_layer_forward_ctx *ctx,
     return s;
 }
 
-enum geist_status blk_rope_qk(struct transformer_layer_forward_ctx *ctx, float q_scale) {
-    struct transformer_arch_state    *st   = ctx->st;
-    struct transformer_arch_session  *sess = ctx->sess;
-    struct transformer_layer_weights *L    = ctx->L;
-
-    struct geist_buffer *cos_buf = L->is_full ? st->rope_cos_full : st->rope_cos_sliding;
-    struct geist_buffer *sin_buf = L->is_full ? st->rope_sin_full : st->rope_sin_sliding;
+/* The cos/sin rows for this layer's RoPE (full or sliding table) at the
+ * session's position. */
+static void rope_rows(struct transformer_layer_forward_ctx *ctx,
+                      struct geist_tensor                  *cos,
+                      struct geist_tensor                  *sin) {
+    struct transformer_arch_state    *st = ctx->st;
+    struct transformer_layer_weights *L  = ctx->L;
+    struct geist_buffer *cos_buf         = L->is_full ? st->rope_cos_full : st->rope_cos_sliding;
+    struct geist_buffer *sin_buf         = L->is_full ? st->rope_sin_full : st->rope_sin_sliding;
     const size_t         n_rot =
             rope_table_width(ctx->hd, (size_t) L->n_rotated_dims, st->config.rope_partial_block);
-    const size_t        row_bytes = n_rot * sizeof(float);
-    struct geist_tensor t_cos =
-            view_2d_at(cos_buf, ctx->q_position * row_bytes, ctx->SEQ, (int64_t) n_rot);
-    struct geist_tensor t_sin =
-            view_2d_at(sin_buf, ctx->q_position * row_bytes, ctx->SEQ, (int64_t) n_rot);
-    struct geist_tensor t_q = view_3d(sess->scratch_q, ctx->SEQ, st->n_q_heads, (int64_t) ctx->hd);
-    struct geist_tensor t_k = view_3d(sess->scratch_k, ctx->SEQ, st->n_kv_heads, (int64_t) ctx->hd);
+    const size_t row_bytes = n_rot * sizeof(float);
+    *cos = view_2d_at(cos_buf, ctx->q_position * row_bytes, ctx->SEQ, (int64_t) n_rot);
+    *sin = view_2d_at(sin_buf, ctx->q_position * row_bytes, ctx->SEQ, (int64_t) n_rot);
+}
 
-    enum geist_status s = ctx->prims->rope_apply(ctx->be, &t_q, &t_cos, &t_sin);
-    if (s != GEIST_OK) {
+enum geist_status blk_q_prep(struct transformer_layer_forward_ctx *ctx,
+                             const struct geist_tensor            *q_norm,
+                             float                                 q_scale) {
+    struct transformer_arch_state   *st   = ctx->st;
+    struct transformer_arch_session *sess = ctx->sess;
+    struct geist_tensor              t_cos, t_sin;
+    rope_rows(ctx, &t_cos, &t_sin);
+    struct geist_tensor t_q = view_3d(sess->scratch_q, ctx->SEQ, st->n_q_heads, (int64_t) ctx->hd);
+
+    enum geist_status s = GEIST_OK;
+    if (q_norm != nullptr) {
+        struct geist_tensor t_qh =
+                view_2d(sess->scratch_q, ctx->SEQ * st->n_q_heads, (int64_t) ctx->hd);
+        struct geist_tensor t_w = view_1d(q_norm->buffer, (int64_t) ctx->hd);
+        s                       = ctx->prims->rmsnorm(ctx->be, &t_qh, &t_w, ctx->eps, &t_qh);
+    }
+    if (s == GEIST_OK)
+        s = ctx->prims->rope_apply(ctx->be, &t_q, &t_cos, &t_sin);
+    if (s != GEIST_OK || q_scale == 1.0f) { /* 1: the norms carry the scale (Gemma 4) */
         return s;
     }
     if (st->model_fusions.prim_scale_f32) {
         struct geist_tensor t_q2 = view_2d(sess->scratch_q, ctx->SEQ, (int64_t) ctx->q_out);
-        s                        = ctx->prims->scale_f32(ctx->be, &t_q2, q_scale, &t_q2);
-        if (s != GEIST_OK) {
-            return s;
-        }
-    } else {
-        float *qp = (float *) ctx->v->buffer_map(sess->scratch_q);
-        if (qp == nullptr) {
-            return GEIST_E_BACKEND;
-        }
-        for (size_t i = 0; i < ctx->seq * ctx->q_out; i++) {
-            qp[i] *= q_scale;
-        }
-        ctx->v->buffer_unmap(sess->scratch_q);
+        return ctx->prims->scale_f32(ctx->be, &t_q2, q_scale, &t_q2);
     }
-    return ctx->prims->rope_apply(ctx->be, &t_k, &t_cos, &t_sin);
+    float *qp = (float *) ctx->v->buffer_map(sess->scratch_q);
+    if (qp == nullptr) {
+        return GEIST_E_BACKEND;
+    }
+    for (size_t i = 0; i < ctx->seq * ctx->q_out; i++) {
+        qp[i] *= q_scale;
+    }
+    ctx->v->buffer_unmap(sess->scratch_q);
+    return GEIST_OK;
 }
 
-enum geist_status blk_attend(struct transformer_layer_forward_ctx *ctx) {
-    enum geist_status s = transformer_kv_store_append(ctx);
+enum geist_status blk_k_prep(struct transformer_layer_forward_ctx *ctx,
+                             const struct geist_tensor            *k_norm,
+                             bool                                  v_norm) {
+    struct transformer_arch_state   *st   = ctx->st;
+    struct transformer_arch_session *sess = ctx->sess;
+    const int64_t                    hd   = (int64_t) ctx->hd;
+    const int64_t                    rows = ctx->SEQ * st->n_kv_heads;
+    struct geist_tensor              t_cos, t_sin;
+    rope_rows(ctx, &t_cos, &t_sin);
+    struct geist_tensor t_k = view_3d(sess->scratch_k, ctx->SEQ, st->n_kv_heads, hd);
+
+    enum geist_status s = GEIST_OK;
+    if (k_norm != nullptr) {
+        struct geist_tensor t_kh = view_2d(sess->scratch_k, rows, hd);
+        struct geist_tensor t_w  = view_1d(k_norm->buffer, hd);
+        s                        = ctx->prims->rmsnorm(ctx->be, &t_kh, &t_w, ctx->eps, &t_kh);
+    }
+    if (s == GEIST_OK && v_norm) { /* V RMS-normalised without a learned scale */
+        struct geist_tensor t_vh   = view_2d(sess->scratch_v, rows, hd);
+        struct geist_tensor t_ones = view_1d(sess->scratch_ones_headdim_max, hd);
+        s                          = ctx->prims->rmsnorm(ctx->be, &t_vh, &t_ones, ctx->eps, &t_vh);
+    }
+    if (s == GEIST_OK)
+        s = ctx->prims->rope_apply(ctx->be, &t_k, &t_cos, &t_sin);
+    return s;
+}
+
+enum geist_status blk_rope_qk(struct transformer_layer_forward_ctx *ctx, float q_scale) {
+    enum geist_status s = blk_q_prep(ctx, nullptr, q_scale);
+    if (s == GEIST_OK)
+        s = blk_k_prep(ctx, nullptr, false);
+    return s;
+}
+
+enum geist_status blk_qkv_prep_fused(struct transformer_layer_forward_ctx *ctx) {
+    struct transformer_arch_state    *st   = ctx->st;
+    struct transformer_arch_session  *sess = ctx->sess;
+    struct transformer_layer_weights *L    = ctx->L;
+    const int64_t                     hd   = (int64_t) ctx->hd;
+    struct geist_tensor               t_cos, t_sin;
+    rope_rows(ctx, &t_cos, &t_sin);
+    struct geist_tensor t_q  = view_3d(sess->scratch_q, ctx->SEQ, st->n_q_heads, hd);
+    struct geist_tensor t_qw = view_1d(L->q_norm.buffer, hd);
+    if (!ctx->compute_kv) {
+        return ctx->fused->attn_qkv_prep(ctx->be,
+                                         &t_q,
+                                         nullptr,
+                                         nullptr,
+                                         &t_qw,
+                                         nullptr,
+                                         nullptr,
+                                         &t_cos,
+                                         &t_sin,
+                                         ctx->eps,
+                                         ctx->q_position,
+                                         nullptr,
+                                         nullptr);
+    }
+    const int64_t       kvh  = (int64_t) st->n_kv_heads;
+    const int64_t       rows = (int64_t) (ctx->q_position + ctx->seq);
+    struct geist_tensor t_k  = view_3d(sess->scratch_k, ctx->SEQ, kvh, hd);
+    struct geist_tensor t_v  = view_3d(sess->scratch_v, ctx->SEQ, kvh, hd);
+    struct geist_tensor t_kw = view_1d(L->k_norm.buffer, hd);
+    struct geist_tensor t_on = view_1d(sess->scratch_ones_headdim_max, hd);
+    struct geist_tensor t_kc = ctx->kv_f16_enabled ? view_3d_f16(ctx->k_cache_buf, rows, kvh, hd)
+                                                   : view_3d(ctx->k_cache_buf, rows, kvh, hd);
+    struct geist_tensor t_vc = ctx->kv_f16_enabled ? view_3d_f16(ctx->v_cache_buf, rows, kvh, hd)
+                                                   : view_3d(ctx->v_cache_buf, rows, kvh, hd);
+    return ctx->fused->attn_qkv_prep(ctx->be,
+                                     &t_q,
+                                     &t_k,
+                                     &t_v,
+                                     &t_qw,
+                                     &t_kw,
+                                     &t_on,
+                                     &t_cos,
+                                     &t_sin,
+                                     ctx->eps,
+                                     ctx->q_position,
+                                     &t_kc,
+                                     &t_vc);
+}
+
+enum geist_status blk_attend(struct transformer_layer_forward_ctx *ctx, bool append) {
+    enum geist_status s = append ? transformer_kv_store_append(ctx) : GEIST_OK;
     if (s != GEIST_OK) {
         return s;
     }
