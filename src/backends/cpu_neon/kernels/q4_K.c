@@ -397,11 +397,9 @@ void linear_q4k_decode_w4a8_pre(size_t         n_in,
             .n_out            = n_out,
     };
 
-    if (n_out >= 4096) {
-        geist_par_for(n_out, q4k_decode_rows, &ctx);
-    } else {
-        cpu_neon_par_for_dynamic(n_out, 4, q4k_decode_rows, &ctx);
-    }
+    /* Static row split at every size: the dynamic 4-row chunks below
+     * 4096 rows cost 12-15 % of an M1 Max Llama 3.2 3B decode (#16). */
+    geist_par_for(n_out, q4k_decode_rows, &ctx);
 }
 
 struct q4k_pair_ctx {
@@ -545,11 +543,9 @@ void linear_q4k_decode_w4a8_pair(size_t       n_in,
     };
     const size_t n_out_max = n_out0 > n_out1 ? n_out0 : n_out1;
 
-    if (n_out_max >= 4096) {
-        geist_par_for(n_out_max, q4k_decode_pair_rows, &pc);
-    } else {
-        cpu_neon_par_for_dynamic(n_out_max, 4, q4k_decode_pair_rows, &pc);
-    }
+    /* Static row split at every size: the dynamic 4-row chunks below
+     * 4096 rows cost 12-15 % of an M1 Max Llama 3.2 3B decode (#16). */
+    geist_par_for(n_out_max, q4k_decode_pair_rows, &pc);
 }
 
 /* One Q4_K W4A8 prefill call, for the range bodies below: the operands of
