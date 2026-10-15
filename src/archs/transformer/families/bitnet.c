@@ -138,11 +138,14 @@ static bool bitnet_populate_layers(struct transformer_arch_state *st) {
 [[nodiscard]] static enum geist_status bitnet_wire_layer(struct transformer_arch_state    *st,
                                                          struct gguf_ctx                  *gguf,
                                                          struct transformer_layer_weights *L) {
-    /* The blocks below run relu^2 (gated or not) and SwiGLU. */
-    if (st->config.ffn_activation == GEIST_FFN_GEGLU) {
+    /* The forward runs relu^2 (gated or not) and SwiGLU; refuse the rest
+     * (today GEGLU) here rather than run something else at decode. */
+    const enum geist_ffn_activation_kind act = st->config.ffn_activation;
+    if (act != GEIST_FFN_SWIGLU && act != GEIST_FFN_SQUARED_RELU &&
+        act != GEIST_FFN_GATED_SQUARED_RELU) {
         geist_backend_set_error(st->backend,
                                 GEIST_E_UNSUPPORTED,
-                                "bitnet: feed_forward_activation 'geglu' is not supported");
+                                "bitnet: unsupported feed_forward_activation (e.g. 'geglu')");
         return GEIST_E_UNSUPPORTED;
     }
     /* SubLN gammas: before o_proj (q_out wide) and down_proj (intermediate). */
@@ -158,120 +161,91 @@ static bool bitnet_populate_layers(struct transformer_arch_state *st) {
 
 /* ---- Forward ---------------------------------------------------------- */
 
+/* Each step runs only while s is GEIST_OK, so the first failure is what
+ * the block returns and nothing after it touches a buffer. */
+
 [[nodiscard]] static enum geist_status
 bitnet_attention_block(struct transformer_layer_forward_ctx *ctx) {
     struct transformer_arch_state    *st   = ctx->st;
     struct transformer_arch_session  *sess = ctx->sess;
     struct transformer_layer_weights *L    = ctx->L;
     const size_t                      d    = st->d_model;
+    const size_t                      q    = ctx->q_out;
     struct geist_buffer              *x    = sess->scratch_normed;
     struct geist_buffer              *attn = sess->scratch_attn;
 
     enum geist_status s = blk_rmsnorm(ctx, d, ctx->h_in_buf, &L->attn_norm, x);
-    if (s != GEIST_OK) {
-        return s;
-    }
-    bitnet_input_quant(ctx, x, d);
-    s = transformer_rotate_rows(st, ctx->seq, d, x);
-    if (s != GEIST_OK) {
-        return s;
-    }
-    s = blk_qkv(ctx, x);
-    if (s != GEIST_OK) {
-        return s;
-    }
-    s = blk_rope_qk(ctx, 1.0f / sqrtf((float) ctx->hd));
-    if (s != GEIST_OK) {
-        return s;
-    }
-    s = blk_attend(ctx);
-    if (s != GEIST_OK) {
-        return s;
-    }
-    blk_scale_cols(ctx, ctx->q_out, L->o_awq_inv_scale, attn);
-    if (st->runtime_flags.bitnet_sub_ln_enabled) { /* GEIST_BITNET_NO_SUBLN ablates it */
-        s = blk_rmsnorm(ctx, ctx->q_out, attn, &L->attn_sub_norm, attn);
-        if (s != GEIST_OK) {
-            return s;
-        }
-    }
-    s = transformer_rotate_rows(st, ctx->seq, ctx->q_out, attn);
-    if (s != GEIST_OK) {
-        return s;
-    }
-    s = blk_linear(ctx, attn, &L->o_proj, &L->o_proj_w, sess->scratch_o);
-    if (s != GEIST_OK) {
-        return s;
-    }
-    return blk_add(ctx, d, ctx->h_in_buf, sess->scratch_o, sess->scratch_h_post_attn);
+    if (s == GEIST_OK)
+        bitnet_input_quant(ctx, x, d);
+    if (s == GEIST_OK)
+        s = transformer_rotate_rows(st, ctx->seq, d, x);
+    if (s == GEIST_OK)
+        s = blk_qkv(ctx, x);
+    if (s == GEIST_OK)
+        s = blk_rope_qk(ctx, 1.0f / sqrtf((float) ctx->hd));
+    if (s == GEIST_OK)
+        s = blk_attend(ctx);
+    if (s == GEIST_OK)
+        blk_scale_cols(ctx, q, L->o_awq_inv_scale, attn);
+    if (s == GEIST_OK && st->runtime_flags.bitnet_sub_ln_enabled) /* GEIST_BITNET_NO_SUBLN */
+        s = blk_rmsnorm(ctx, q, attn, &L->attn_sub_norm, attn);
+    if (s == GEIST_OK)
+        s = transformer_rotate_rows(st, ctx->seq, q, attn);
+    if (s == GEIST_OK)
+        s = blk_linear(ctx, attn, &L->o_proj, &L->o_proj_w, sess->scratch_o);
+    if (s == GEIST_OK)
+        s = blk_add(ctx, d, ctx->h_in_buf, sess->scratch_o, sess->scratch_h_post_attn);
+    return s;
 }
 
 [[nodiscard]] static enum geist_status bitnet_ffn_block(struct transformer_layer_forward_ctx *ctx) {
-    struct transformer_arch_state    *st   = ctx->st;
-    struct transformer_arch_session  *sess = ctx->sess;
-    struct transformer_layer_weights *L    = ctx->L;
-    const size_t                      d    = st->d_model;
-    const size_t                      n    = ctx->inter;
-    struct geist_buffer              *x    = sess->scratch_pre_ff;
+    struct transformer_arch_state       *st   = ctx->st;
+    struct transformer_arch_session     *sess = ctx->sess;
+    struct transformer_layer_weights    *L    = ctx->L;
+    const size_t                         d    = st->d_model;
+    const size_t                         n    = ctx->inter;
+    struct geist_buffer                 *x    = sess->scratch_pre_ff;
+    struct geist_buffer                 *up   = sess->scratch_up;
+    const enum geist_ffn_activation_kind act  = ctx->ffn_activation;
 
     enum geist_status s = blk_rmsnorm(ctx, d, sess->scratch_h_post_attn, &L->ffn_norm, x);
-    if (s != GEIST_OK) {
-        return s;
-    }
-    s = transformer_rotate_rows(st, ctx->seq, d, x);
-    if (s != GEIST_OK) {
-        return s;
-    }
+    if (s == GEIST_OK)
+        s = transformer_rotate_rows(st, ctx->seq, d, x);
 
     /* mid = relu(gate)^2 * up (bitnet-b1.58), silu(gate) * up (community
      * "bitnet") or relu(up)^2 without a gate (squared_relu key). */
-    struct geist_buffer *mid = sess->scratch_gate;
-    if (ctx->ffn_activation == GEIST_FFN_SQUARED_RELU) {
-        mid = sess->scratch_up;
-        s   = blk_linear(ctx, x, &L->up_proj, &L->up_proj_w, mid);
-        if (s == GEIST_OK) {
-            s = blk_relu_sq(ctx, n, mid);
-        }
-    } else {
+    struct geist_buffer *mid = act == GEIST_FFN_SQUARED_RELU ? up : sess->scratch_gate;
+    if (s == GEIST_OK && act == GEIST_FFN_SQUARED_RELU)
+        s = blk_linear(ctx, x, &L->up_proj, &L->up_proj_w, up);
+    if (s == GEIST_OK && act != GEIST_FFN_SQUARED_RELU)
         s = blk_gate_up(ctx, x);
-        if (s == GEIST_OK && ctx->ffn_activation == GEIST_FFN_GATED_SQUARED_RELU) {
-            s = blk_relu_sq(ctx, n, mid);
-            if (s == GEIST_OK) {
-                s = blk_mul(ctx, n, mid, sess->scratch_up);
-            }
-        } else if (s == GEIST_OK) {
-            s = blk_silu_mul(ctx, n, mid, sess->scratch_up);
-        }
-    }
-    if (s != GEIST_OK) {
-        return s;
-    }
+    if (s == GEIST_OK && (act == GEIST_FFN_SQUARED_RELU || act == GEIST_FFN_GATED_SQUARED_RELU))
+        s = blk_relu_sq(ctx, n, mid);
+    if (s == GEIST_OK && act == GEIST_FFN_GATED_SQUARED_RELU)
+        s = blk_mul(ctx, n, mid, up);
+    if (s == GEIST_OK && act == GEIST_FFN_SWIGLU)
+        s = blk_silu_mul(ctx, n, mid, up);
 
-    if (st->runtime_flags.bitnet_sub_ln_enabled) {
+    if (s == GEIST_OK && st->runtime_flags.bitnet_sub_ln_enabled)
         s = blk_rmsnorm(ctx, n, mid, &L->ffn_sub_norm, mid);
-        if (s != GEIST_OK) {
-            return s;
-        }
-    }
     /* GEIST_DUMP_ACT_SPARSITY counts zeros of the scaled activation before
      * the rotation mixes each block. */
     const float *down_scale = L->down_awq_inv_scale;
-    if (st->runtime_flags.dump_act_sparsity) {
+    if (s == GEIST_OK && st->runtime_flags.dump_act_sparsity) {
         blk_scale_cols(ctx, n, down_scale, mid);
         down_scale = nullptr;
         transformer_probe_ffn_sparsity(ctx->v, true, ctx->layer_idx, mid, ctx->seq * n);
     }
-    s = transformer_rotate_rows(st, ctx->seq, n, mid);
-    if (s != GEIST_OK) {
-        return s;
-    }
-    blk_scale_cols(ctx, n, down_scale, mid);
-    s = blk_linear(ctx, mid, &L->down_proj, &L->down_proj_w, sess->scratch_ffn_out);
-    if (s != GEIST_OK) {
-        return s;
-    }
+    if (s == GEIST_OK)
+        s = transformer_rotate_rows(st, ctx->seq, n, mid);
+    if (s == GEIST_OK)
+        blk_scale_cols(ctx, n, down_scale, mid);
+    if (s == GEIST_OK)
+        s = blk_linear(ctx, mid, &L->down_proj, &L->down_proj_w, sess->scratch_ffn_out);
     /* No PLE stage in this family: the residual goes straight to h_out. */
-    return blk_add(ctx, d, sess->scratch_h_post_attn, sess->scratch_ffn_out, ctx->h_out_buf);
+    if (s == GEIST_OK)
+        s = blk_add(ctx, d, sess->scratch_h_post_attn, sess->scratch_ffn_out, ctx->h_out_buf);
+    return s;
 }
 
 /* ---- Registry entries ------------------------------------------------- */
