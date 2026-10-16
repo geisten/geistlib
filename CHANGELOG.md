@@ -9,6 +9,12 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **research: expert usage of MoE models (#48, phase 0).**
+  `tools/moe_usage/` counts the router's choices per layer inside llama.cpp
+  and measures how much of them a profiled hot set serves on held-out text.
+  At 18.3 % of the experts (Strata's reference point, 50 %): Granite 3.1
+  3B-A800M 40 %, OLMoE-1B-7B 41 %, Qwen3-30B-A3B 54 %. Result:
+  `benchmark/results/MOE-EXPERT-USAGE.md`.
 - **`make fetch-gemma3-model` (#37).** google/gemma-3-270m-it Q4_K_M from
   lmstudio-community at a pinned revision, SHA-256 checked like the other
   fixtures, so the Pi 5 and geist-vulkan A/B runners can measure Gemma 3.

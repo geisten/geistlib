@@ -721,7 +721,7 @@ static void cpu_neon_w_q4k_pair_mN(size_t                     m,
     cpu_neon_qk_mN_quantize_x(ws, x, m, n_in);
 
     if (!use_block_scales && q4k_weight_ntile4(w0) && q4k_weight_ntile4(w1) &&
-        w0->n_out == w1->n_out && !(m >= 8 && linear_q4k_sdot_prefill_enabled())) {
+        w0->n_out == w1->n_out) {
         linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(m,
                                                                      n_in,
                                                                      (size_t) w0->n_out,
