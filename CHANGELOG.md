@@ -26,6 +26,14 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **Metal prefill no longer slows down off multiples of 32 / 8 rows
+  (#35).** The interior fast GEMM kernels (every quant template, Q4_K,
+  Q6_K, F32) and the flash attention handle a ragged last tile themselves:
+  they clamp the input row and write only the valid rows. Before, any
+  other row count took the bounds-checked GEMM and the scalar attention.
+  Qwen3 0.6B Q8_0, M1 Max, prefill ms main / now: 8 tokens 26 / 16,
+  16 tokens 27 / 17, 48 tokens 29 / 18, 63 tokens 34 / 19.5 (64 tokens
+  19), 65 tokens 37 / 23, 80 tokens 36 / 24. Full tiles are unchanged.
 - **Model families are units composed of shared blocks (#37).** Each family
   (BitNet, Llama, Qwen3, Gemma 3, Gemma 4, Qwen3.5) is one file,
   `src/archs/transformer/families/<name>.c`, holding its metadata, geometry

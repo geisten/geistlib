@@ -559,6 +559,16 @@ int main(void) {
 
     /* n_in must be a multiple of 256 for k-quants; n_out deliberately not a
      * multiple of the threadgroup width to catch tail bugs. */
+    /* A ragged last row tile on the interior fast kernels (#35): n_out fills
+     * whole 64-wide tiles, the rows do not. */
+    static const size_t ragged[] = {13, 33, 47, 100};
+    for (size_t r = 0; r < sizeof ragged / sizeof ragged[0]; r++) {
+        run_case(mt, ref, GEIST_DTYPE_Q4_0, "Q4_0", 512, 384, ragged[r]);
+        run_case(mt, ref, GEIST_DTYPE_Q5_K, "Q5_K", 512, 384, ragged[r]);
+        run_case(mt, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 384, ragged[r]);
+        run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 384, ragged[r]);
+        run_case(mt, ref, GEIST_DTYPE_F32, "F32", 512, 384, ragged[r]);
+    }
     run_case(mt, ref, GEIST_DTYPE_Q4_0, "Q4_0", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q4_0, "Q4_0", 512, 383, 8);
     /* m=33: two batch-row tiles of the simdgroup GEMM, both partial.
