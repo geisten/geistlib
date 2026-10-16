@@ -5,6 +5,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "rotation.h"
+#include "arch_family.h"
 
 #include "checked.h"
 #include "forward/internal.h"
@@ -352,8 +353,8 @@ enum geist_status transformer_rotation_load(struct transformer_arch_state *st) {
     if (version != 1) {
         return fail(st, GEIST_E_UNSUPPORTED, "unsupported version", nullptr);
     }
-    if (!meta_str_is(g, "general.architecture", "qwen35")) {
-        return fail(st, GEIST_E_UNSUPPORTED, "only wired for the qwen35 family", nullptr);
+    if (st->family == nullptr || !st->family->rotation) {
+        return fail(st, GEIST_E_UNSUPPORTED, "not wired for this model family", nullptr);
     }
     if (st->n_mtp_layers != 0) {
         return fail(st, GEIST_E_UNSUPPORTED, "MTP layers are not rotated", nullptr);

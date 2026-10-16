@@ -32,6 +32,17 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **The last family names leave shared code (#37).** Prism rotation support,
+  the large-model prefill chunk and the audio/vision towers are now family
+  capabilities (`rotation`, `prefill_delta`, `towers` in
+  `families/<name>.c`) instead of `"qwen35"` / `"gemma4"` string compares in
+  `rotation.c`, `prefill_tuning.c` and `engine/model.c`. The engine asks the
+  architecture through a new optional decoder hook,
+  `geist_arch_ops_decoder.supports_towers`, appended at the end of the
+  EXPERIMENTAL vtable (existing offsets unchanged). No behaviour change:
+  long-prompt logits of Qwen3.8-27B, Ternary-Bonsai-2-27B and Qwen3.5-0.8B
+  byte-identical to `main`; Gemma 4 still attaches the audio tower and
+  Qwen3 still refuses it, with identical output.
 - **Metal prefill no longer slows down off multiples of 32 / 8 rows
   (#35).** The interior fast GEMM kernels (every quant template, Q4_K,
   Q6_K, F32) and the flash attention handle a ragged last tile themselves:

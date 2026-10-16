@@ -369,13 +369,15 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
     const char *text_only_env = getenv("GEIST_TEXT_ONLY");
     const bool  text_only     = text_only_env != nullptr && text_only_env[0] == '1';
 
-    /* The only audio/vision towers that exist are Gemma 4's (1536-dim soft
-     * tokens). Never attach them to another family's residual stream — the
+    /* The architecture says whether the bundled towers fit its family
+     * (supports_towers; today only Gemma 4, 1536-dim soft tokens). Never
+     * attach them to another family's residual stream — the
      * encoder search heuristics would otherwise pick up a tower from the
      * cwd for e.g. a BitNet load, and prefill would read n × d_model floats
      * from an n × 1536 buffer (#240). Only Gemma 4 currently has compatible
      * vision/audio tower shapes. */
-    const bool towers_match = meta->arch != nullptr && strcmp(meta->arch, "gemma4") == 0;
+    const bool towers_match = desc->decoder_ops->supports_towers != nullptr &&
+                              desc->decoder_ops->supports_towers(arch_state);
 
     /* Best-effort load of the audio encoder. The Conformer needs a
      * safetensors file (not part of the GGUF) + mel constants. Failure is

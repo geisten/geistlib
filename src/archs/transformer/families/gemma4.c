@@ -246,6 +246,7 @@ gemma4_attention_block(struct transformer_layer_forward_ctx *ctx) {
 
 const struct transformer_family transformer_family_gemma4 = {
         .name            = "gemma4",
+        .towers          = true, /* the only towers that exist: 1536-dim soft tokens */
         .populate        = populate_gemma4,
         .populate_layers = populate_layers_gemma4,
         .attention_block = gemma4_attention_block,

@@ -1290,7 +1290,7 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         }
         const size_t cap = be->desc != nullptr ? be->desc->caps.max_m : 0;
         const struct transformer_prefill_resolved pt = transformer_prefill_resolve(
-                st->config.family, weight_bytes, st->m_max, cap, nullptr);
+                &fam->prefill_delta, weight_bytes, st->m_max, cap, nullptr);
         st->m_max          = pt.m_max;
         st->m_max_from_env = pt.m_max_from_env;
         transformer_prefill_apply_blocktime(&pt);

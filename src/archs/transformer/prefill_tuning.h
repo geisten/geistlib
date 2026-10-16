@@ -54,16 +54,23 @@ struct transformer_prefill_resolved {
  * default but never an explicit KMP_BLOCKTIME; the first model decides. */
 void transformer_prefill_apply_blocktime(const struct transformer_prefill_resolved *r);
 
-/* Resolves both knobs for (family, weight_bytes) from `base_m_max` and
+/* A family's prefill chunk delta: models of at least `from_bytes` of
+ * tensor data prefill `m_max_rows` more rows per chunk. Zero = none. */
+struct transformer_prefill_delta {
+    size_t from_bytes;
+    size_t m_max_rows;
+};
+
+/* Resolves both knobs for (delta, weight_bytes) from `base_m_max` and
  * the backend's row cap (0 = uncapped), reading GEIST_M_MAX,
  * GEIST_PREFILL_BLOCKTIME_MS and GEIST_IDLE_SPIN_MS from `getenv_fn`
  * (nullptr = getenv; tests inject). Never fails: an unknown model gets
  * the defaults. */
 struct transformer_prefill_resolved
-transformer_prefill_resolve(const char *family,
-                            size_t      weight_bytes,
-                            size_t      base_m_max,
-                            size_t      cap_m_max,
+transformer_prefill_resolve(const struct transformer_prefill_delta *delta,
+                            size_t                                  weight_bytes,
+                            size_t                                  base_m_max,
+                            size_t                                  cap_m_max,
                             const char *(*getenv_fn)(const char *) );
 
 #endif /* GEIST_INTERNAL_TRANSFORMER_PREFILL_TUNING_H */

@@ -261,7 +261,9 @@ struct geist_arch_ops_decoder {
      * opts enable DRY and at least one breaker resolved (n_words > 0). The
      * session copies what it keeps. nullptr = the architecture runs DRY
      * without breakers. */
-    enum geist_status (*set_dry_breakers)(void *session, size_t n_words, const geist_token_t *packed);
+    enum geist_status (*set_dry_breakers)(void                *session,
+                                          size_t               n_words,
+                                          const geist_token_t *packed);
 
     /* Optional: the session's resolved prefill geometry (geist_decision
      * prefix scoring, #5). *out_chunk is the number of tokens one prefill
@@ -271,7 +273,15 @@ struct geist_arch_ops_decoder {
      * INT4, F16 or KIVI storage and no rotation or simulated quantization.
      * Both outputs are written on GEIST_OK only. nullptr when the
      * architecture cannot report it. */
-    enum geist_status (*prefill_geometry)(size_t *out_chunk, bool *out_kv_fp32, const void *session);
+    enum geist_status (*prefill_geometry)(size_t     *out_chunk,
+                                          bool       *out_kv_fp32,
+                                          const void *session);
+
+    /* Optional: true when the bundled audio/vision encoder towers' soft
+     * tokens fit this model's residual stream (family-level; the engine
+     * still checks the token width against hidden_dim). nullptr or false:
+     * no tower is attached. */
+    bool (*supports_towers)(const void *arch_state);
 };
 
 /* ====================================================================== */
