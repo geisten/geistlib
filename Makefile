@@ -25,7 +25,7 @@
 TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
-.PHONY: all lib bin fuzz fuzz-libfuzzer fuzz-libfuzzer-run run agent-contract-smoke runtime-contract-smoke release-check release-state-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-qwen3-model fetch-qwen35-model fetch-e4b-model fetch-audio-tower bench bench-synth bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
+.PHONY: all lib bin fuzz fuzz-libfuzzer fuzz-libfuzzer-run run agent-contract-smoke runtime-contract-smoke release-check release-state-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-qwen3-model fetch-gemma3-model fetch-qwen35-model fetch-e4b-model fetch-audio-tower bench bench-synth bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
 
 # Default goal. `lib` is the deliverable; `bin` builds the in-tree test and
 # evaluation tools under bin/<target>/<mode>/. This repository ships no CLI.
@@ -413,6 +413,24 @@ fetch-qwen3-model: $(QWEN3_MODEL_PATH)
 	$(call verify_sha256,$(QWEN3_MODEL_PATH),$(QWEN3_MODEL_SHA256))
 	@echo "Qwen3 reference model ready (SHA-256 verified): $(QWEN3_MODEL_PATH)"
 
+# Gemma 3 reference model (#37). google/gemma-3-270m-it as Q4_K_M (~241 MB):
+# the gemma3 family unit (sandwich norms, query_pre_attn_scalar, 5:1 local/
+# global layers, GEGLU) on the A/B runners, which cannot see a local file.
+# Byte-identical to the file the #674 perplexity check used.
+GEMMA3_MODEL_DIR  ?= gguf_artifacts
+GEMMA3_MODEL_FILE ?= gemma-3-270m-it-Q4_K_M.gguf
+GEMMA3_MODEL_PATH := $(GEMMA3_MODEL_DIR)/$(GEMMA3_MODEL_FILE)
+GEMMA3_MODEL_URL  ?= https://huggingface.co/lmstudio-community/gemma-3-270m-it-GGUF/resolve/2a3f11cd1f383dc6fa7d34c34aef9e44d5bdedf2/gemma-3-270m-it-Q4_K_M.gguf
+# Upstream LFS oid at that revision, verified 2026-10-15.
+GEMMA3_MODEL_SHA256 := 9b06391b17444a1ea4d0747145b54722b57bd32df715cc436d6011b8c356622a
+
+$(GEMMA3_MODEL_PATH):
+	$(call fetch_gguf,~241 MB,$(GEMMA3_MODEL_URL))
+
+fetch-gemma3-model: $(GEMMA3_MODEL_PATH)
+	$(call verify_sha256,$(GEMMA3_MODEL_PATH),$(GEMMA3_MODEL_SHA256))
+	@echo "Gemma 3 reference model ready (SHA-256 verified): $(GEMMA3_MODEL_PATH)"
+
 # Qwen3.5 hybrid reference model (#281). 0.8B Q8_0 (~780 MB): proves the
 # per-layer token-mixer dispatch (gated DeltaNet + gated attention) and
 # the qwen35 pretokenizer. SHA-pinned; CI fetches it explicitly.
@@ -593,6 +611,7 @@ help:
 	"  make fetch-model [HF_TOKEN=..]              download reference GGUF (~3.1 GB, SHA-pinned)" \
 	"  make fetch-llama-model                      download SmolLM2 fixture (~369 MB, SHA-pinned)" \
 	"  make fetch-qwen3-model                      download Qwen3-0.6B fixture (~609 MB, SHA-pinned)" \
+	"  make fetch-gemma3-model                     download Gemma-3-270m-it fixture (~241 MB, SHA-pinned)" \
 	"  make fetch-qwen35-model                     download Qwen3.5-0.8B hybrid fixture (~780 MB, SHA-pinned)" \
 	"  make fetch-audio-tower                      extract Gemma 4 audio tower (~590 MB, SHA-pinned)" \
 	"  make fetch-e4b-model [HF_TOKEN=..]          download Gemma 4 E4B GGUF (~4.6 GB, SHA-pinned)" \

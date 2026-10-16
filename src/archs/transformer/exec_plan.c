@@ -323,8 +323,8 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         st->model_fusions.backend_buffer_copy        = be->desc->vtbl->buffer_copy != nullptr;
 
         /* relu_squared has no bound alternative: it cannot be composed from
-         * the other prims (there is no relu, and no max), and the two call
-         * sites in layer_ffn.c invoke it UNCONDITIONALLY. Metal declares it
+         * the other prims (there is no relu, and no max), and blk_relu_sq
+         * (families/bitnet.c) invokes it UNCONDITIONALLY. Metal declares it
          * nullptr. Refuse such a model here, where the message can name the
          * cause, instead of calling a null pointer per layer. */
         if (geist_ffn_needs_relu_squared(st->config.ffn_activation) &&

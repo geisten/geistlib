@@ -14,6 +14,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "../arch_family.h"
 #include "../arch_state.h"
 #include "../forward.h"
 
@@ -163,14 +164,10 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
                                                       : layer_idx);
     ctx->compute_kv = P != nullptr ? P->compute_kv : !L->is_kv_shared;
     ctx->apply_bitnet_input_quant = plan_apply_sub_ln;
-    ctx->apply_sub_ln             = plan_apply_sub_ln && st->runtime_flags.bitnet_sub_ln_enabled;
     /* Needs the scratch slice as well as the flag: a session built before
      * the family was known would have no proj_in buffer to normalise into. */
     ctx->apply_projection_input_norms =
             st->config.has_projection_input_norms && sess->scratch_proj_in != nullptr;
-    ctx->apply_gemma_attn_norms =
-            P != nullptr ? P->apply_gemma_attn_norms : st->config.has_gemma_attn_norms;
-    ctx->apply_qk_norms  = P != nullptr ? P->apply_qk_norms : st->config.has_qk_norms;
     ctx->apply_ple       = P != nullptr ? P->apply_ple : st->config.has_ple;
     ctx->run_ple         = ctx->apply_ple && per_layer_input_buf != nullptr;
     ctx->kv_int8_enabled = sess->kv_int8_enabled;
@@ -219,29 +216,19 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
     /* Per-layer token mixer: DeltaNet layers replace the whole
      * attention block (incl. its residual add); the FFN/PLE stages are
      * mixer-agnostic. */
-    enum geist_status s = st->layers[layer_idx].mixer == GEIST_MIXER_DELTANET
-                                  ? transformer_layer_run_deltanet_block(&ctx)
-                                  : transformer_layer_run_attention_block(&ctx);
+    /* Per-layer token mixer: DeltaNet layers (qwen35) replace the whole
+     * attention stage; everything else is the family unit's. */
+    const struct transformer_family *fam = st->family;
+    enum geist_status                s   = st->layers[layer_idx].mixer == GEIST_MIXER_DELTANET
+                                                   ? transformer_layer_run_deltanet_block(&ctx)
+                                                   : fam->attention_block(&ctx);
     transformer_profile_add(TRANSFORMER_PROFILE_ATTENTION, t0);
     if (s != GEIST_OK) {
         return s;
     }
     t0 = profile ? transformer_profile_now_ns() : 0;
-    s  = transformer_layer_run_ffn_block(&ctx);
+    s  = fam->ffn_block(&ctx); /* incl. the layer tail (PLE, scale) */
     transformer_profile_add(TRANSFORMER_PROFILE_FFN, t0);
-    if (s != GEIST_OK) {
-        return s;
-    }
-    t0 = profile ? transformer_profile_now_ns() : 0;
-    s  = transformer_layer_run_ple_or_copy(&ctx);
-    transformer_profile_add(TRANSFORMER_PROFILE_PLE, t0);
-    if (s != GEIST_OK) {
-        return s;
-    }
-
-    t0 = profile ? transformer_profile_now_ns() : 0;
-    s  = transformer_layer_scale_output(&ctx);
-    transformer_profile_add(TRANSFORMER_PROFILE_SCALE, t0);
     if (s != GEIST_OK) {
         return s;
     }
@@ -250,6 +237,9 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
     }
     return GEIST_OK;
 }
+
+/* The MTP block is planless: every fusion off, as a zeroed plan says. */
+static const struct transformer_layer_exec_plan mtp_no_plan;
 
 enum geist_status transformer_forward_mtp_layer(struct transformer_arch_session  *sess,
                                                 struct transformer_layer_weights *layer,
@@ -265,20 +255,17 @@ enum geist_status transformer_forward_mtp_layer(struct transformer_arch_session 
 
     /* Start from the family defaults established by the normal initializer,
      * then replace all layer- and cache-specific bindings.  The MTP block is
-     * intentionally planless: target-layer fusion decisions and KV aliases
-     * are invalid for the separately loaded trailing block. */
+     * intentionally planless (mtp_no_plan): target-layer fusion decisions and
+     * KV aliases are invalid for the separately loaded trailing block. */
     struct transformer_layer_forward_ctx ctx;
     transformer_layer_ctx_init(&ctx, sess, 0, q_position, seq, false, h_in_buf, nullptr, h_out_buf);
     ctx.L                            = layer;
-    ctx.P                            = nullptr;
+    ctx.P                            = &mtp_no_plan;
     ctx.layer_idx                    = layer->layer_idx;
     ctx.kv_src                       = -1;
     ctx.compute_kv                   = true;
     ctx.apply_bitnet_input_quant     = false;
-    ctx.apply_sub_ln                 = false;
     ctx.apply_projection_input_norms = false;
-    ctx.apply_gemma_attn_norms       = false;
-    ctx.apply_qk_norms               = true;
     ctx.apply_ple                    = false;
     ctx.run_ple                      = false;
     ctx.kv_int8_enabled              = false;
@@ -305,15 +292,9 @@ enum geist_status transformer_forward_mtp_layer(struct transformer_arch_session 
     ctx.v_residual_buf               = nullptr;
 
     frame_arena_reset(&sess->scratch_arena);
-    enum geist_status s = transformer_layer_run_attention_block(&ctx);
+    enum geist_status s = sess->model->family->attention_block(&ctx);
     if (s == GEIST_OK) {
-        s = transformer_layer_run_ffn_block(&ctx);
-    }
-    if (s == GEIST_OK) {
-        s = transformer_layer_run_ple_or_copy(&ctx);
-    }
-    if (s == GEIST_OK) {
-        s = transformer_layer_scale_output(&ctx);
+        s = sess->model->family->ffn_block(&ctx);
     }
     return s;
 }

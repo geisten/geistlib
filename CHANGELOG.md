@@ -9,6 +9,9 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **`make fetch-gemma3-model` (#37).** google/gemma-3-270m-it Q4_K_M from
+  lmstudio-community at a pinned revision, SHA-256 checked like the other
+  fixtures, so the Pi 5 and geist-vulkan A/B runners can measure Gemma 3.
 - **Decision prefix scoring (#5, EXPERIMENTAL, `DECISION=1 DECISION_CONTEXT=1`).**
   `geist_decision_prefix_prepare` prefills a shared context once and keeps
   the session's complete snapshot (KV rows, DeltaNet conv and recurrent
@@ -23,6 +26,20 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **Model families are units composed of shared blocks (#37).** Each family
+  (BitNet, Llama, Qwen3, Gemma 3, Gemma 4, Qwen3.5) is one file,
+  `src/archs/transformer/families/<name>.c`, holding its metadata, geometry
+  and layer order; `forward/blocks.{h,c}` holds the family-free blocks it
+  composes. The generic `layer_attn.c` / `layer_ffn.c` stages and their
+  per-family flags are removed. No public API change. Output byte-identical
+  to the previous engine on every family checked (cpu_neon, cpu_scalar,
+  Metal, all KV modes, the Qwen3.8-27B MTP block; Vulkan tests on an RTX
+  2080 Ti), and speed within the A/B resolution on a Pi 5, Ryzen 9 9950X,
+  RTX 2080 Ti and M1 Max. Removing a family now touches four places.
+  `GEIST_PROFILE_FORWARD` keeps per-layer attention / FFN / PLE times; the
+  old stages' per-op breakdowns are gone. A GGUF whose BitNet family carries
+  a `geglu` activation key is now refused at load instead of running
+  unfused.
 - **Linux: geistlib respects container CPU limits (#27).** The parallel team
   was one thread per host CPU even inside `docker run --cpus=4` or under
   `taskset`, so CFS throttled the cgroup every period. geist_par now caps

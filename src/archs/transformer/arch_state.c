@@ -1104,7 +1104,13 @@ geometry_from_metadata(struct geist_backend             *be,
                                 "general.architecture in GGUF");
         return GEIST_E_UNSUPPORTED;
     }
+    if (fam->attention_block == nullptr || fam->ffn_block == nullptr) {
+        geist_backend_set_error(
+                be, GEIST_E_INTERNAL, "transformer: family %s has no layer forward", fam->name);
+        return GEIST_E_INTERNAL;
+    }
     st->config.family = fam->name;
+    st->family        = fam;
     fam->populate(gguf, st);
     if (st->n_layers == 0) {
         geist_backend_set_error(be,
@@ -1763,7 +1769,7 @@ static bool backend_scratch_unmappable(struct geist_backend *be) {
  *   - per-layer embeddings without the on-device row lookup, an attention
  *     output gate without the backend's attn_qgate_split and sigmoid_mul,
  *     MTP heads, BitNet SubLN or per-projection norms, AWQ scales: each has
- *     a host loop over pool slots (layer.c, layer_attn.c, mtp.c,
+ *     a host loop over pool slots (layer.c, blocks.c, mtp.c,
  *     internal.h). A prism.hadamard rotation is fine: it only runs as the
  *     backend's hadamard_rotate (the model does not load otherwise). So is
  *     a DeltaNet mixer: its host oracle (layer_deltanet.c, taken when
@@ -1795,7 +1801,7 @@ static bool scratch_device_wanted(const struct transformer_arch_session *sess) {
      * no pool slot. */
     const bool ple_on_host = st->config.has_ple && !st->model_fusions.ple_lookup_scaled &&
                              !transformer_lookup_on_host(st->backend);
-    /* qwen35's attention output gate (layer_attn.c): the query/gate split
+    /* qwen35's attention output gate (blocks.c): the query/gate split
      * writes scratch_q and the sigmoid gate scratch_attn on the host unless
      * the backend has the op. Vulkan's ops decline only on a shape the forward
      * never passes or a buffer without a VkBuffer behind it. */

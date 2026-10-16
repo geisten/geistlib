@@ -30,6 +30,8 @@
 #include "arch_state.h"
 #include "gguf_reader.h"
 
+struct transformer_layer_forward_ctx;
+
 struct transformer_family {
     /* Lowercase identifier matching the `general.architecture` GGUF
      * value (e.g. "gemma4", "llama"). */
@@ -58,7 +60,38 @@ struct transformer_family {
      * length, ...) — state_create then fails with a message naming
      * the geometry instead of a downstream weight-wiring error (#258). */
     bool (*populate_layers)(struct transformer_arch_state *st);
+
+    /* ---- Family unit hooks (#37).
+     *
+     * wire_layer (optional): load the family's own per-layer tensors after
+     *   the generic set (load_one_layer).
+     * attention_block, ffn_block (required): the layer, composed of the
+     *   shared blocks in forward/blocks.h. ffn_block owns the layer tail
+     *   (PLE, layer scale) where the family has one. They read no family
+     *   flag; whatever the family cannot run is refused at load. DeltaNet
+     *   layers are dispatched to the DeltaNet block instead of
+     *   attention_block. state_create refuses a family without them. */
+    enum geist_status (*wire_layer)(struct transformer_arch_state    *st,
+                                    struct gguf_ctx                  *gguf,
+                                    struct transformer_layer_weights *L);
+    enum geist_status (*attention_block)(struct transformer_layer_forward_ctx *ctx);
+    enum geist_status (*ffn_block)(struct transformer_layer_forward_ctx *ctx);
 };
+
+/* Families that live in their own unit (families/<name>.c). */
+extern const struct transformer_family transformer_family_bitnet_b158;
+extern const struct transformer_family transformer_family_bitnet;
+extern const struct transformer_family transformer_family_llama;
+extern const struct transformer_family transformer_family_qwen3;
+extern const struct transformer_family transformer_family_gemma3;
+extern const struct transformer_family transformer_family_gemma4;
+extern const struct transformer_family transformer_family_qwen35;
+
+/* arch_family.c — the BitNet embedding variant's metadata (per-projection
+ * input norms, pooling), read by the qwen3 and gemma3 populators. */
+void populate_bitnet_embedding_meta(struct gguf_ctx               *gguf,
+                                    const char                    *arch,
+                                    struct transformer_arch_state *st);
 
 /* Select a family by `general.architecture` string. Returns the
  * matching family entry, or nullptr when the key is absent or no

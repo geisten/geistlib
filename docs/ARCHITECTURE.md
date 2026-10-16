@@ -13,7 +13,8 @@ include/geist*.h         public C ABI (geist.h + geist_util.h for consumers)
 src/engine/              orchestration: model load, sessions, sampler,
   │                      tokenizers, allocators, backend/arch registries
 src/archs/               architectures: how a model's forward pass is wired
-  │   transformer/         Gemma, Llama, Qwen and BitNet families
+  │   transformer/         decoder stack: families/ (one unit per model family),
+  │                        forward/ (shared blocks, layer loop), weight_load/
   │   audio_conformer/     Conformer audio tower (mel → encoder → soft tokens)
   │   vision_siglip/       SigLIP vision tower (image/video → soft tokens)
 src/backends/            compute: the kernels that actually run the ops
@@ -56,6 +57,62 @@ The include graph follows the layers strictly:
 
 A new backend or arch therefore touches its own directory, one `mk/backend-*.mk`
 fragment, and one registry entry — nothing else.
+
+## Model families: units composed of blocks
+
+Inside `src/archs/transformer/`, every model family is one **unit**,
+`families/<name>.c`: its GGUF metadata and layer geometry (`populate`,
+`populate_layers`), any per-layer tensors of its own (`wire_layer`), and its
+layer forward (`attention_block`, `ffn_block`). The unit composes **blocks**
+from `forward/blocks.h` — `blk_rmsnorm`, `blk_qkv`, `blk_q_prep`/`blk_k_prep`,
+`blk_attend`, `blk_o_proj`, `blk_ffn_swiglu`, `blk_ffn_geglu`, … — in the order
+the family defines:
+
+```c
+/* families/llama.c, the whole attention stage */
+enum geist_status s = blk_rmsnorm(ctx, d, ctx->h_in_buf, &L->attn_norm, x);
+if (s == GEIST_OK)
+    s = transformer_rotate_rows(st, ctx->seq, d, x);
+if (s == GEIST_OK)
+    s = blk_qkv(ctx, x);
+if (s == GEIST_OK)
+    s = blk_rope_qk(ctx, 1.0f / sqrtf((float) ctx->hd));
+if (s == GEIST_OK)
+    s = blk_attend(ctx, true);
+if (s == GEIST_OK)
+    s = blk_o_proj(ctx);
+if (s == GEIST_OK)
+    s = blk_add(ctx, d, ctx->h_in_buf, sess->scratch_o, sess->scratch_h_post_attn);
+return s;
+```
+
+The split is a separation of concerns, checked in review:
+
+- **A block knows how, never who.** It owns tensor views, backend dispatch,
+  plan-bound fusions and host fallbacks. It may read **model features** any
+  family can carry — AWQ scales, prism rotation, per-projection input norms,
+  the SubLN slot, the attention output gate, the KV mode — but never which
+  family is running.
+- **A unit knows the order, never the mechanics.** It reads no family flag
+  (there are none); what the family cannot run is refused at load, not routed
+  to some other code path.
+- **Errors:** each step runs only while `s` is `GEIST_OK`, so the first
+  failure is what the stage returns and nothing after it touches a buffer.
+
+`forward/layer.c` runs `attention_block` (or the DeltaNet block for a DeltaNet
+layer) and `ffn_block`, which also owns the layer tail (Gemma 4's PLE and
+layer scale). `state_create` refuses a family without both hooks.
+
+**Adding a family:** write `families/<name>.c` (copy the closest unit), add
+its `extern` to `arch_family.h`, its entry to `REGISTRY[]` and its
+`general.architecture` string to `geist_arch_transformer_gguf_names[]` in
+`arch_family.c`, and its file to `mk/common.mk`. New mechanics go into a block,
+not the unit. **Removing a family** is the reverse: those four places.
+
+Before #37 one generic attention stage and one FFN stage served every family
+through feature flags (`layer_attn.c`, `layer_ffn.c`); they are gone. The
+change was byte-identical on every family and backend checked and
+speed-neutral on the Pi 5, Ryzen 9950X, RTX 2080 Ti and M1 Max (#37).
 
 ## Processing pipeline
 
@@ -224,7 +281,9 @@ text bottleneck would discard.
 
 ## Where to start reading
 
-- The forward pass: `src/archs/transformer/forward/step.c`.
+- The forward pass: `src/archs/transformer/forward/step.c`; one layer of one
+  family: `src/archs/transformer/families/llama.c`; the blocks it composes:
+  `src/archs/transformer/forward/blocks.h`.
 - Kernel binding: `src/backends/cpu_neon/weight_resolve.c`.
 - A representative low-bit kernel: `src/backends/cpu_neon/kernels/q4_K.c`.
 - The public headers: `include/geist.h` and `include/geist_util.h`; what their
@@ -239,6 +298,8 @@ Per directory, the file to open first:
 | `src/base/` | `heap.h` | arenas/allocators, error codes, hw probe |
 | `src/engine/` | `session.c` | load → session → decode loop, tokenizers, registries |
 | `src/archs/transformer/` | `forward/step.c` | the per-token forward pass |
+| `src/archs/transformer/families/` | `llama.c` | one unit per model family: metadata, geometry, layer order |
+| `src/archs/transformer/forward/` | `blocks.h` | the shared blocks a unit composes |
 | `src/archs/audio_conformer/` | `audio_encoder.c` | mel → Conformer → soft tokens |
 | `src/archs/vision_siglip/` | `vision_encoder.c` | image/video → SigLIP → soft tokens |
 | `src/backends/common/` | `geist_gemm.c` | shared GEMM facade + gemma4 kernels |

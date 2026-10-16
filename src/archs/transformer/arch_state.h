@@ -462,6 +462,8 @@ struct transformer_runtime_flags {
 
 /* ---- Top-level state --------------------------------------------------- */
 
+struct transformer_family;
+
 struct transformer_arch_state {
     struct geist_backend *backend; /* not owned */
     /* Unique per loaded model in this process (never 0): binds a session
@@ -476,6 +478,10 @@ struct transformer_arch_state {
      * feature flags. */
     struct geist_arch_config         config;
     struct transformer_runtime_flags runtime_flags;
+    /* The family that populated `config`; its optional hooks replace the
+     * generic loader/forward stages (arch_family.h). Never nullptr after
+     * state_create. */
+    const struct transformer_family *family;
 
     /* ---- Geometry: structural dims as runtime fields, filled by the
      * family populator from GGUF metadata (family defaults live in the

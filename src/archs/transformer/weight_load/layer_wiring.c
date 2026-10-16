@@ -14,6 +14,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "../arch_family.h"
 #include "../weight_load.h"
 
 #include "gguf_dequant.h"
@@ -46,12 +47,12 @@ static int global_track_buf(struct transformer_arch_state *st, struct geist_buff
 
 /* Load a per-layer norm (F32, expected_elems shape). Stores into *out_view
  * and tracks owning buffer in L->bufs. */
-[[nodiscard]] static enum geist_status load_layer_norm(struct transformer_arch_state    *st,
-                                                       struct gguf_ctx                  *gguf,
-                                                       struct transformer_layer_weights *L,
-                                                       const char                       *name,
-                                                       size_t               expected_elems,
-                                                       struct geist_tensor *out_view) {
+[[nodiscard]] enum geist_status load_layer_norm(struct transformer_arch_state    *st,
+                                                struct gguf_ctx                  *gguf,
+                                                struct transformer_layer_weights *L,
+                                                const char                       *name,
+                                                size_t                            expected_elems,
+                                                struct geist_tensor              *out_view) {
 
     struct geist_backend *be  = st->backend;
     struct geist_buffer  *buf = nullptr;
@@ -444,14 +445,8 @@ load_layer_proj(struct transformer_arch_state    *st,
         if (s != GEIST_OK) {
             return s;
         }
-    } else if (st->config.has_sub_ln) {
-        LP("attn_sub_norm.weight");
-        s = load_layer_norm(st, gguf, L, path, L->q_out, &L->attn_sub_norm);
-        if (s != GEIST_OK) {
-            return s;
-        }
     } else {
-        L->attn_sub_norm = (struct geist_tensor) {0};
+        L->attn_sub_norm = (struct geist_tensor) {0}; /* a family's wire_layer may fill it */
     }
 
     /* The five per-projection input norms that have no existing home:
@@ -553,14 +548,8 @@ load_layer_proj(struct transformer_arch_state    *st,
         if (s != GEIST_OK) {
             return s;
         }
-    } else if (st->config.has_sub_ln) {
-        LP("ffn_sub_norm.weight");
-        s = load_layer_norm(st, gguf, L, path, L->intermediate, &L->ffn_sub_norm);
-        if (s != GEIST_OK) {
-            return s;
-        }
     } else {
-        L->ffn_sub_norm = (struct geist_tensor) {0};
+        L->ffn_sub_norm = (struct geist_tensor) {0}; /* a family's wire_layer may fill it */
     }
 
     LP("ffn_down.weight");
@@ -617,6 +606,10 @@ load_layer_proj(struct transformer_arch_state    *st,
         L->layer_scalar = 1.0f;
     }
 
+    /* The family's own per-layer tensors (arch_family.h). */
+    if (st->family != nullptr && st->family->wire_layer != nullptr) {
+        return st->family->wire_layer(st, gguf, L);
+    }
     return GEIST_OK;
 }
 
