@@ -176,7 +176,7 @@ LDLIBS  := $(LDLIBS_TARGET) $(GEMM_LDLIBS) $(EXTRA_LDLIBS)
 # vision encoder towers. The defaults build everything; the test suite
 # assumes them. A change of either variable rebuilds what depends on it
 # (select-config stamp below), no `make clean` needed.
-ALL_FAMILIES := bitnet gemma3 gemma4 llama qwen3 qwen35
+ALL_FAMILIES := bitnet gemma3 gemma4 llama qwen3 qwen35 qwen3moe
 FAMILIES     ?= $(ALL_FAMILIES)
 TOWERS       ?= 1
 ifneq ($(filter-out $(ALL_FAMILIES),$(FAMILIES)),)
@@ -239,6 +239,7 @@ LIB_SOURCES := \
     src/archs/transformer/rotation.c \
     src/archs/transformer/forward/attention.c \
     src/archs/transformer/forward/blocks.c \
+    src/archs/transformer/forward/moe.c \
     src/archs/transformer/forward/kv_store.c \
     src/archs/transformer/forward/layer.c \
     src/archs/transformer/forward/layer_deltanet.c \
@@ -319,7 +320,7 @@ STB_OBJ := $(BUILD_DIR)/third_party/stb/stb_impl.o
 # path under bin/ (tests/test_foo -> bin/.../tests/test_foo; tools/eval_geist ->
 # bin/.../tools/eval_geist).
 TEST_SOURCES := $(wildcard tests/test_*.c tests/bench_*.c)
-DEMO_SOURCES := tools/bench_decision.c tools/eval_geist.c tools/dump_geist_logits.c tools/dump_geist_embedding.c tools/zo_tune.c
+DEMO_SOURCES := tools/bench_decision.c tools/eval_geist.c tools/dump_geist_logits.c tools/dump_geist_greedy.c tools/dump_geist_embedding.c tools/zo_tune.c
 
 # These tests call cblas_* directly as an independent reference to validate
 # geist's own kernels. They can't link under GEMM_PROVIDER=native (no cblas to

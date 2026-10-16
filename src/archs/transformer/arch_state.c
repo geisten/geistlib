@@ -97,6 +97,23 @@ static void release_layer_weight_aux(struct transformer_layer_weights *L) {
     release_weight_aux(&L->dn_beta_w);
     release_weight_aux(&L->dn_alpha_w);
     release_weight_aux(&L->dn_out_w);
+    release_weight_aux(&L->moe_router_w);
+    /* The expert arrays: n_experts entries each, all set or all null. */
+    struct geist_weight **experts[] = {&L->moe_gate_w, &L->moe_up_w, &L->moe_down_w};
+    for (size_t p = 0; p < 3; p++) {
+        struct geist_weight *w = *experts[p];
+        for (size_t e = 0; w != nullptr && e < L->moe_n_experts; e++)
+            release_weight_aux(&w[e]);
+        void *pw = w;
+        safe_free(&pw);
+        *experts[p] = nullptr;
+    }
+    struct geist_tensor **views[] = {&L->moe_gate, &L->moe_up, &L->moe_down};
+    for (size_t p = 0; p < 3; p++) {
+        void *pv = *views[p];
+        safe_free(&pv);
+        *views[p] = nullptr;
+    }
 }
 
 /* ---- Runtime infrastructure: KV caches, RoPE tables, scratch ---------- */
@@ -1006,6 +1023,36 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
             memset(sess->mtp_pending_h, 0, stt->d_model * sizeof(float));
             memset(sess->mtp_txn_pending_h, 0, stt->d_model * sizeof(float));
             sess->mtp_kv_len = 0;
+        }
+    }
+
+    /* Mixture of experts: router logits, the gathered rows of one expert and
+     * the weighted sum, plus the host-side routing (blk_moe_ffn). */
+    if (st->config.moe_n_experts > 0) {
+        const size_t n_exp = st->config.moe_n_experts;
+        const size_t n_sel = sess->m_max * st->config.moe_n_used;
+        s = alloc_scratch(be, sess->m_max * n_exp * sizeof(float), &sess->moe_logits);
+        if (s != GEIST_OK)
+            return s;
+        s = alloc_scratch(be, sess->m_max * st->d_model * sizeof(float), &sess->moe_acc);
+        if (s != GEIST_OK)
+            return s;
+        sess->moe_ids       = heap_alloc_array_aligned(uint32_t, n_sel);
+        sess->moe_wts       = heap_alloc_array_aligned(float, n_sel);
+        sess->moe_rows      = heap_alloc_array_aligned(uint32_t, n_sel);
+        sess->moe_row_start = heap_alloc_array_aligned(size_t, n_exp + 1);
+        size_t inter        = 0;
+        for (size_t li = 0; li < st->n_layers; li++)
+            inter = st->layers[li].intermediate > inter ? st->layers[li].intermediate : inter;
+        sess->moe_xg = heap_alloc_array_aligned(float, n_sel * st->d_model);
+        sess->moe_y  = heap_alloc_array_aligned(float, n_sel * st->d_model);
+        sess->moe_g  = heap_alloc_array_aligned(float, n_sel *inter);
+        sess->moe_u  = heap_alloc_array_aligned(float, n_sel *inter);
+        if (sess->moe_ids == nullptr || sess->moe_wts == nullptr || sess->moe_rows == nullptr ||
+            sess->moe_row_start == nullptr || sess->moe_xg == nullptr || sess->moe_y == nullptr ||
+            sess->moe_g == nullptr || sess->moe_u == nullptr) {
+            geist_backend_set_error(be, GEIST_E_OOM, "transformer: MoE routing state alloc failed");
+            return GEIST_E_OOM;
         }
     }
 
@@ -2104,6 +2151,22 @@ void transformer_session_free(struct transformer_arch_state   *state,
     safe_free(&mtp_raw);
     safe_free(&mtp_shifted);
     safe_free(&mtp_txn_pending);
+    void *moe_ids = sess->moe_ids, *moe_wts = sess->moe_wts, *moe_rows = sess->moe_rows;
+    void *moe_row_start = sess->moe_row_start;
+    void *moe_xg = sess->moe_xg, *moe_y = sess->moe_y, *moe_g = sess->moe_g, *moe_u = sess->moe_u;
+    safe_free(&moe_xg);
+    safe_free(&moe_y);
+    safe_free(&moe_g);
+    safe_free(&moe_u);
+    sess->moe_xg = sess->moe_y = sess->moe_g = sess->moe_u = nullptr;
+    safe_free(&moe_ids);
+    safe_free(&moe_wts);
+    safe_free(&moe_rows);
+    safe_free(&moe_row_start);
+    sess->moe_ids       = nullptr;
+    sess->moe_wts       = nullptr;
+    sess->moe_rows      = nullptr;
+    sess->moe_row_start = nullptr;
     if (be != nullptr) {
         struct geist_buffer *extra[] = {
                 sess->qgate_joint,
@@ -2119,6 +2182,8 @@ void transformer_session_free(struct transformer_arch_state   *state,
                 sess->mtp_embed,
                 sess->mtp_hidden_norm,
                 sess->mtp_concat,
+                sess->moe_logits,
+                sess->moe_acc,
         };
         for (size_t i = 0; i < sizeof extra / sizeof extra[0]; i++)
             if (extra[i] != nullptr)
@@ -2141,6 +2206,8 @@ void transformer_session_free(struct transformer_arch_state   *state,
     sess->mtp_target_raw     = nullptr;
     sess->mtp_target_shifted = nullptr;
     sess->mtp_txn_pending_h  = nullptr;
+    sess->moe_logits         = nullptr;
+    sess->moe_acc            = nullptr;
 
     /* Per-layer KV cache buffers. Each slot may be NULL — exactly one
      * representation (FP32 / INT8 / KIVI) was allocated per non-shared

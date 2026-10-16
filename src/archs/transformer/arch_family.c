@@ -82,13 +82,15 @@ void populate_bitnet_embedding_meta(struct gguf_ctx               *gguf,
  * gets all of them. */
 #if !defined(GEIST_FAMILY_BITNET) && !defined(GEIST_FAMILY_GEMMA3) &&    \
         !defined(GEIST_FAMILY_GEMMA4) && !defined(GEIST_FAMILY_LLAMA) && \
-        !defined(GEIST_FAMILY_QWEN3) && !defined(GEIST_FAMILY_QWEN35)
+        !defined(GEIST_FAMILY_QWEN3) && !defined(GEIST_FAMILY_QWEN35) &&  \
+        !defined(GEIST_FAMILY_QWEN3MOE)
 #define GEIST_FAMILY_BITNET 1
 #define GEIST_FAMILY_GEMMA3 1
 #define GEIST_FAMILY_GEMMA4 1
 #define GEIST_FAMILY_LLAMA 1
 #define GEIST_FAMILY_QWEN3 1
 #define GEIST_FAMILY_QWEN35 1
+#define GEIST_FAMILY_QWEN3MOE 1
 #endif
 static const struct transformer_family *const REGISTRY[] = {
 #if defined(GEIST_FAMILY_GEMMA4)
@@ -109,6 +111,9 @@ static const struct transformer_family *const REGISTRY[] = {
 #if defined(GEIST_FAMILY_BITNET)
         &transformer_family_bitnet_b158, /* families/bitnet.c */
         &transformer_family_bitnet,
+#endif
+#if defined(GEIST_FAMILY_QWEN3MOE)
+        &transformer_family_qwen3moe, /* families/qwen3moe.c */
 #endif
 };
 static const size_t REGISTRY_N = sizeof REGISTRY / sizeof REGISTRY[0];
@@ -138,6 +143,9 @@ const char *const geist_arch_transformer_gguf_names[] = {
 #if defined(GEIST_FAMILY_BITNET)
         "bitnet-b1.58",
         "bitnet",
+#endif
+#if defined(GEIST_FAMILY_QWEN3MOE)
+        "qwen3moe",
 #endif
         nullptr,
 };

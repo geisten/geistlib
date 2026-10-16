@@ -6,7 +6,8 @@
  *                   llama, optionally with a GGUF tokenizer from
  *                   tokenizer_fixtures.h;
  *   mf_qwen35_gguf  a Qwen3.5-style hybrid: gated-DeltaNet blocks with a
- *                   softmax attention block every `interval` blocks.
+ *                   softmax attention block every `interval` blocks;
+ *   mf_qwen3moe_gguf a Qwen3-MoE: Qwen3 attention, a mixture-of-experts FFN.
  *
  * Load the buffer with geist_model_load_from_memory, or write it out for
  * geist_model_load. Header-only; each includer uses what it needs.
@@ -82,6 +83,7 @@ enum mf_fill { MF_RAND, MF_ONE, MF_NEG_ONE, MF_ZERO };
 struct mf_tensor {
     char         name[48];
     uint64_t     ne0, ne1; /* ne1 0: one dimension */
+    uint64_t     ne2;      /* 0: at most two dimensions */
     enum mf_fill fill;
     bool         f16; /* stored as F16; F32 otherwise */
 };
@@ -108,8 +110,13 @@ mf_add(struct mf_tensors *ts, uint64_t ne0, uint64_t ne1, enum mf_fill fill, con
     va_end(ap);
     t->ne0  = ne0;
     t->ne1  = ne1;
+    t->ne2  = 0;
     t->fill = fill;
     t->f16  = false;
+}
+
+static inline uint64_t mf_elems(const struct mf_tensor *t) {
+    return t->ne0 * (t->ne1 != 0 ? t->ne1 : 1) * (t->ne2 != 0 ? t->ne2 : 1);
 }
 
 /* The tensor infos, then the data, after the metadata: F32 (F16 where the
@@ -120,14 +127,17 @@ static inline void mf_write_tensors(struct tf_buf *o, struct mf_tensors *ts, uin
     for (size_t i = 0; i < ts->n; i++) {
         const struct mf_tensor *t = &ts->t[i];
         tf_gstr(o, t->name, strlen(t->name));
-        tf_u32(o, t->ne1 != 0 ? 2 : 1);
+        tf_u32(o, t->ne2 != 0 ? 3 : t->ne1 != 0 ? 2 : 1);
         tf_u64(o, t->ne0);
         if (t->ne1 != 0) {
             tf_u64(o, t->ne1);
         }
+        if (t->ne2 != 0) {
+            tf_u64(o, t->ne2);
+        }
         tf_u32(o, t->f16 ? 1 : 0); /* F16 : F32 */
         tf_u64(o, off);
-        off += (t->ne0 * (t->ne1 != 0 ? t->ne1 : 1) * (t->f16 ? 2 : 4) + 31) / 32 * 32;
+        off += (mf_elems(t) * (t->f16 ? 2 : 4) + 31) / 32 * 32;
     }
     uint64_t s = seed;
     for (size_t i = 0; i < ts->n; i++) {
@@ -136,7 +146,7 @@ static inline void mf_write_tensors(struct tf_buf *o, struct mf_tensors *ts, uin
             tf_put(o, "", 1);
         }
         const float c = t->fill == MF_ONE ? 1.0f : t->fill == MF_NEG_ONE ? -1.0f : 0.0f;
-        for (uint64_t e = 0; e < t->ne0 * (t->ne1 != 0 ? t->ne1 : 1); e++) {
+        for (uint64_t e = 0; e < mf_elems(t); e++) {
             const float v = t->fill == MF_RAND ? mf_weight(&s) : c;
             if (t->f16) {
                 const _Float16 h = (_Float16) v;
@@ -291,6 +301,92 @@ static inline struct tf_buf mf_qwen35_gguf(const struct mf_qwen35 *c) {
     mf_key(&o, "qwen35.attention.layer_norm_rms_epsilon", TF_GGUF_FLOAT32);
     tf_f32(&o, 1e-6f);
     tf_tokenizer_kv(&o, c->tok, "gpt2", true);
+    mf_write_tensors(&o, &ts, c->seed);
+    return o;
+}
+
+/* ---- qwen3moe ------------------------------------------------------------ */
+
+/* Qwen3-MoE geometry (qwen3moe.* keys): GQA with per-head QK norms and a
+ * head_dim of its own; each layer's FFN is a router over `experts` SwiGLU
+ * experts of width expert_ff, the `used` best per token. Weights as
+ * mf_llama. For the load-refusal tests: `drop` names a tensor to leave out,
+ * `gating` (when nonzero) writes qwen3moe.expert_gating_func, and
+ * `shared_expert` adds a shared-expert router the family does not run. */
+struct mf_qwen3moe {
+    uint32_t    layers, d_model, heads, kv_heads, head_dim, experts, used, expert_ff, vocab;
+    uint64_t    seed;
+    const char *drop;
+    uint32_t    gating;
+    bool        shared_expert;
+};
+
+static inline struct tf_buf mf_qwen3moe_gguf(const struct mf_qwen3moe *c) {
+    const uint32_t    d  = c->d_model;
+    struct mf_tensors ts = {0};
+    mf_add(&ts, d, c->vocab, MF_RAND, "token_embd.weight");
+    mf_add(&ts, d, 0, MF_ONE, "output_norm.weight");
+    for (uint32_t l = 0; l < c->layers; l++) {
+        mf_add(&ts, d, 0, MF_ONE, "blk.%u.attn_norm.weight", l);
+        mf_add(&ts, d, c->heads * c->head_dim, MF_RAND, "blk.%u.attn_q.weight", l);
+        mf_add(&ts, d, c->kv_heads * c->head_dim, MF_RAND, "blk.%u.attn_k.weight", l);
+        mf_add(&ts, d, c->kv_heads * c->head_dim, MF_RAND, "blk.%u.attn_v.weight", l);
+        mf_add(&ts, c->heads * c->head_dim, d, MF_RAND, "blk.%u.attn_output.weight", l);
+        mf_add(&ts, c->head_dim, 0, MF_ONE, "blk.%u.attn_q_norm.weight", l);
+        mf_add(&ts, c->head_dim, 0, MF_ONE, "blk.%u.attn_k_norm.weight", l);
+        mf_add(&ts, d, 0, MF_ONE, "blk.%u.ffn_norm.weight", l);
+        mf_add(&ts, d, c->experts, MF_RAND, "blk.%u.ffn_gate_inp.weight", l);
+        mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_gate_exps.weight", l);
+        ts.t[ts.n - 1].ne2 = c->experts;
+        mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_up_exps.weight", l);
+        ts.t[ts.n - 1].ne2 = c->experts;
+        mf_add(&ts, c->expert_ff, d, MF_RAND, "blk.%u.ffn_down_exps.weight", l);
+        ts.t[ts.n - 1].ne2 = c->experts;
+        if (c->shared_expert) {
+            mf_add(&ts, d, 0, MF_RAND, "blk.%u.ffn_gate_inp_shexp.weight", l);
+        }
+    }
+    if (c->drop != nullptr) {
+        for (size_t i = 0; i < ts.n; i++) {
+            if (strcmp(ts.t[i].name, c->drop) == 0) {
+                ts.t[i] = ts.t[--ts.n];
+                break;
+            }
+        }
+    }
+    const struct {
+        const char *key;
+        uint32_t    v;
+    } u32[] = {
+            {"qwen3moe.block_count", c->layers},
+            {"qwen3moe.embedding_length", d},
+            {"qwen3moe.attention.head_count", c->heads},
+            {"qwen3moe.attention.head_count_kv", c->kv_heads},
+            {"qwen3moe.attention.key_length", c->head_dim},
+            {"qwen3moe.expert_count", c->experts},
+            {"qwen3moe.expert_used_count", c->used},
+            {"qwen3moe.expert_feed_forward_length", c->expert_ff},
+            {"qwen3moe.context_length", 4096},
+            {"qwen3moe.vocab_size", c->vocab},
+            {"qwen3moe.expert_gating_func", c->gating},
+    };
+    const size_t n_u32 = sizeof u32 / sizeof u32[0] - (c->gating == 0 ? 1 : 0);
+
+    struct tf_buf o = {0};
+    tf_put(&o, "GGUF", 4);
+    tf_u32(&o, 3);
+    tf_u64(&o, ts.n);
+    tf_u64(&o, 1 + n_u32 + 2);
+    mf_key(&o, "general.architecture", TF_GGUF_STRING);
+    tf_gstr(&o, "qwen3moe", 8);
+    for (size_t i = 0; i < n_u32; i++) {
+        mf_key(&o, u32[i].key, TF_GGUF_UINT32);
+        tf_u32(&o, u32[i].v);
+    }
+    mf_key(&o, "qwen3moe.rope.freq_base", TF_GGUF_FLOAT32);
+    tf_f32(&o, 1000000.0f);
+    mf_key(&o, "qwen3moe.attention.layer_norm_rms_epsilon", TF_GGUF_FLOAT32);
+    tf_f32(&o, 1e-6f);
     mf_write_tensors(&o, &ts, c->seed);
     return o;
 }

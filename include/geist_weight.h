@@ -109,6 +109,12 @@ enum geist_weight_flags {
      * backend installed: raw is read only by a fallback, so the loader may
      * drop its mmap pages (#729). A read faults them back in. */
     GEIST_W_RAW_COLD = 1U << 4,
+    /* Set by the loader before resolve_weight: the weight must keep its own
+     * precision, no lossy repack and no quantized activations (an MoE
+     * router, whose top-k choice flips on small errors, #48). A backend
+     * that cannot honour it binds its exact path or leaves the kernels
+     * null. */
+    GEIST_W_EXACT = 1U << 5,
 };
 
 enum geist_weight_backend_layout {

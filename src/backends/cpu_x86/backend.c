@@ -528,8 +528,9 @@ static bool q4k_reads_raw(void) {
     case GEIST_DTYPE_F32:
         /* Quantize F32 dense (Gemma 4 PLE gate/proj) to W8A8 and run the
          * VPDPBUSD GEMM — far faster than skinny cblas. Falls back to cblas
-         * when not applicable (n_in % 16 != 0) or on OOM. */
-        if (cpu_x86_linear_f32q_resolve(w) != GEIST_OK) {
+         * when not applicable (n_in % 16 != 0) or on OOM, and stays on it
+         * for a weight the loader marked exact (an MoE router, #48). */
+        if ((w->flags & GEIST_W_EXACT) != 0 || cpu_x86_linear_f32q_resolve(w) != GEIST_OK) {
             w->linear_m1 = cpu_x86_linear_f32_m1;
             w->linear_mN = cpu_x86_linear_f32_mN;
         }
