@@ -190,7 +190,12 @@ qwen35_attention_block(struct transformer_layer_forward_ctx *ctx) {
 /* ---- Registry entry --------------------------------------------------- */
 
 const struct transformer_family transformer_family_qwen35 = {
-        .name            = "qwen35",
+        .name     = "qwen35",
+        .rotation = true,
+        /* 27B weights (Ternary-Bonsai-2-27B, Qwen3.5-27B) dequantized once
+         * per chunk are the prefill's cost: twice the chunk from 4 GiB on
+         * (256 is no better than 128). */
+        .prefill_delta   = {.from_bytes = (size_t) 4 << 30, .m_max_rows = 64},
         .populate        = populate_qwen35,
         .populate_layers = populate_layers_qwen35,
         .attention_block = qwen35_attention_block,

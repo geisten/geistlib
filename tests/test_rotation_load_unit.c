@@ -27,6 +27,7 @@
 
 #include "test_helpers.h"
 
+#include "../src/archs/transformer/arch_family.h"
 #include "../src/archs/transformer/rotation.h"
 #include "gguf_reader.h"
 
@@ -247,6 +248,9 @@ static void model_init(struct model *m, const struct spec *s) {
         fprintf(stderr, "test GGUF did not parse: %s\n", err != nullptr ? err : "?");
         exit(GEIST_TEST_ERROR);
     }
+    /* As state_create does: the family comes from general.architecture,
+     * and only a family that wires the rotation accepts it. */
+    m->st.family = transformer_family_select(m->st.gguf);
 }
 
 static void model_free(struct model *m) {

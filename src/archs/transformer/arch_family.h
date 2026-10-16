@@ -28,6 +28,7 @@
 #endif
 
 #include "arch_state.h"
+#include "prefill_tuning.h"
 #include "gguf_reader.h"
 
 struct transformer_layer_forward_ctx;
@@ -71,6 +72,18 @@ struct transformer_family {
      *   flag; whatever the family cannot run is refused at load. DeltaNet
      *   layers are dispatched to the DeltaNet block instead of
      *   attention_block. state_create refuses a family without them. */
+    /* ---- Family capabilities shared code asks about (#37). Zero = no.
+     *
+     * rotation: prism.hadamard rotated checkpoints are wired for this
+     *   family (rotation.c refuses them otherwise).
+     * prefill_delta: a larger prefill chunk from a model size on
+     *   (prefill_tuning.h).
+     * towers: the bundled audio/vision towers' soft tokens fit this family's
+     *   residual stream (geist_arch_ops_decoder.supports_towers). */
+    bool                             rotation;
+    struct transformer_prefill_delta prefill_delta;
+    bool                             towers;
+
     enum geist_status (*wire_layer)(struct transformer_arch_state    *st,
                                     struct gguf_ctx                  *gguf,
                                     struct transformer_layer_weights *L);

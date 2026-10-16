@@ -99,6 +99,12 @@ The split is a separation of concerns, checked in review:
 - **Errors:** each step runs only while `s` is `GEIST_OK`, so the first
   failure is what the stage returns and nothing after it touches a buffer.
 
+Where shared code needs to know something about a family outside the layer,
+it asks the family's capabilities instead of its name: `rotation` (prism
+rotated checkpoints are wired), `prefill_delta` (a larger prefill chunk from a
+model size on) and `towers` (the audio/vision towers fit; the engine reads it
+through the decoder hook `supports_towers`).
+
 `forward/layer.c` runs `attention_block` (or the DeltaNet block for a DeltaNet
 layer) and `ffn_block`, which also owns the layer tail (Gemma 4's PLE and
 layer scale). `state_create` refuses a family without both hooks.

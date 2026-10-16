@@ -13,6 +13,7 @@
 
 #include "arch.h"
 #include "arch_state.h"
+#include "arch_family.h"
 #include "forward.h"
 
 #include "heap.h"
@@ -273,6 +274,11 @@ static size_t op_hidden_dim(const void *arch_state) {
     return st != nullptr ? st->d_model : 0;
 }
 
+static bool op_supports_towers(const void *arch_state) {
+    const struct transformer_arch_state *st = arch_state;
+    return st != nullptr && st->family != nullptr && st->family->towers;
+}
+
 static geist_token_t op_peek_next_token(void *session) {
     struct transformer_arch_session *sess = session;
     if (sess == nullptr || settle(sess) != GEIST_OK || !sess->logits_valid)
@@ -487,4 +493,5 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .snapshot                 = op_snapshot,
         .restore                  = op_restore,
         .prefill_geometry         = op_prefill_geometry,
+        .supports_towers          = op_supports_towers,
 };

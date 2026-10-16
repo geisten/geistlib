@@ -34,35 +34,38 @@ int main(void) {
     int                                 fails = 0;
     const size_t                        GIB   = (size_t) 1 << 30;
     struct transformer_prefill_resolved r;
+    /* qwen35's delta (families/qwen35.c); other families have none. */
+    const struct transformer_prefill_delta q35  = {.from_bytes = 4 * GIB, .m_max_rows = 64};
+    const struct transformer_prefill_delta none = {0};
 
     /* Bonsai class: qwen35 at 7.2 GiB gets default + 64, the idle bound. */
-    r = transformer_prefill_resolve("qwen35", 7 * GIB, 64, 512, fake_env);
+    r = transformer_prefill_resolve(&q35, 7 * GIB, 64, 512, fake_env);
     fails += geist_expect(r.m_max == 128 && r.prefill_blocktime_ms == GEIST_IDLE_SPIN_MS &&
                                   !r.m_max_from_env,
                           "qwen35 27B: 64 + 64 = 128, idle bound");
     /* A small qwen35 is not in that row: default stays. */
-    r = transformer_prefill_resolve("qwen35", 800u << 20, 64, 512, fake_env);
+    r = transformer_prefill_resolve(&q35, 800u << 20, 64, 512, fake_env);
     fails += geist_expect(r.m_max == 64, "qwen35 0.8B: default 64");
     /* Unknown family: no delta, the idle bound. */
-    r = transformer_prefill_resolve("gemma4", 3 * GIB, 64, 512, fake_env);
+    r = transformer_prefill_resolve(&none, 3 * GIB, 64, 512, fake_env);
     fails += geist_expect(r.m_max == 64 && r.prefill_blocktime_ms == GEIST_IDLE_SPIN_MS,
                           "gemma4: default chunk, idle bound");
     g_idle = "50";
-    r      = transformer_prefill_resolve("gemma4", 3 * GIB, 64, 512, fake_env);
+    r      = transformer_prefill_resolve(&none, 3 * GIB, 64, 512, fake_env);
     fails += geist_expect(r.prefill_blocktime_ms == 50, "GEIST_IDLE_SPIN_MS sets the idle bound");
     g_idle = nullptr;
     /* The backend cap bounds the delta. */
-    r = transformer_prefill_resolve("qwen35", 7 * GIB, 64, 96, fake_env);
+    r = transformer_prefill_resolve(&q35, 7 * GIB, 64, 96, fake_env);
     fails += geist_expect(r.m_max == 96, "delta clamped to caps.max_m");
     /* Overrides win over the table, absolutely. */
     g_m_max = "48";
     g_bt    = "200";
-    r       = transformer_prefill_resolve("qwen35", 7 * GIB, 64, 512, fake_env);
+    r       = transformer_prefill_resolve(&q35, 7 * GIB, 64, 512, fake_env);
     fails += geist_expect(r.m_max == 48 && r.m_max_from_env && r.prefill_blocktime_ms == 200,
                           "GEIST_M_MAX / GEIST_PREFILL_BLOCKTIME_MS override");
     g_m_max = nullptr;
     g_bt    = "-1";
-    r       = transformer_prefill_resolve("llama", 1 * GIB, 64, 0, fake_env);
+    r       = transformer_prefill_resolve(&none, 1 * GIB, 64, 0, fake_env);
     fails += geist_expect(r.prefill_blocktime_ms == GEIST_IDLE_SPIN_MS,
                           "a negative override is ignored: the idle bound stays");
     g_bt = nullptr;
