@@ -178,6 +178,7 @@ LIB_SOURCES := \
     src/base/calibration.c \
     src/base/omp_idle.c \
     src/base/par.c \
+    src/base/cpu_limit.c \
     src/engine/allocator.c \
     src/engine/backend.c \
     src/engine/backend_registry.c \

@@ -6,6 +6,10 @@
  * Layer: ENGINE.
  */
 #include "par.h"
+#include "cpu_limit.h"
+
+#include <stdatomic.h>
+#include <stdlib.h>
 
 #include <stdint.h>
 
@@ -26,6 +30,20 @@
 #endif
 #endif
 
+/* n capped at the CPUs this process may use (cgroup quota, affinity;
+ * cpu_limit.h), unless OMP_NUM_THREADS sized the team explicitly (#27). */
+static size_t par_cap(size_t n) {
+    static _Atomic int env = -1;
+    int                e   = atomic_load_explicit(&env, memory_order_relaxed);
+    if (e < 0) {
+        const char *v = getenv("OMP_NUM_THREADS");
+        e             = v != nullptr && v[0] != '\0';
+        atomic_store_explicit(&env, e, memory_order_relaxed);
+    }
+    const size_t limit = e ? 0 : geist_cpu_limit();
+    return limit > 0 && limit < n ? limit : n;
+}
+
 /* Range t of T over [0, n): n / T items, one more for t < n % T. */
 static inline void par_range(size_t n, size_t t, size_t T, size_t *begin, size_t *end) {
     const size_t q = n / T;
@@ -40,11 +58,12 @@ void geist_par_for(size_t n, geist_par_fn fn, void *ctx) {
     if (n == 0) {
         return;
     }
-    if (n == 1 || omp_in_parallel() || omp_get_max_threads() <= 1) {
+    const size_t team = geist_par_max_threads();
+    if (n == 1 || omp_in_parallel() || team <= 1) {
         fn(ctx, 0, n);
         return;
     }
-#pragma omp parallel
+#pragma omp parallel num_threads((int) team)
     {
         const size_t T = (size_t) omp_get_num_threads();
         const size_t t = (size_t) omp_get_thread_num();
@@ -59,7 +78,7 @@ void geist_par_for(size_t n, geist_par_fn fn, void *ctx) {
 
 size_t geist_par_max_threads(void) {
     const int n = omp_get_max_threads();
-    return n > 0 ? (size_t) n : 1;
+    return par_cap(n > 0 ? (size_t) n : 1);
 }
 
 void geist_par_set_max_threads(size_t n) {
@@ -94,7 +113,7 @@ static size_t default_threads(void) {
 }
 
 size_t geist_par_max_threads(void) {
-    return tl_max_threads > 0 ? tl_max_threads : default_threads();
+    return par_cap(tl_max_threads > 0 ? tl_max_threads : default_threads());
 }
 
 void geist_par_set_max_threads(size_t n) {
