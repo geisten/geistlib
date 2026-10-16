@@ -8,6 +8,7 @@
 #   make test                  # unit + integration + python suites
 #   make bench                 # reproducible benchmark vs llama.cpp / bitnet.cpp
 #   make DECISION=1            # optional numeric decision API
+#   make FAMILIES="bitnet" TOWERS=0  # a library with only the BitNet family
 #   make OPENMP=0              # without OpenMP (geist_par_for's own threads)
 #   make help                  # show all options
 #
@@ -600,6 +601,8 @@ help:
 	"  make lib | bin             only the static lib | only the binaries" \
 	"  make DECISION=1            enable experimental numeric candidate scoring" \
 	"  make DECISION=1 DECISION_CONTEXT=1  add snapshot-backed prefix scoring (#5)" \
+	"  make FAMILIES=\"bitnet llama\"  build only these model families (default: all)" \
+	"  make TOWERS=0              leave out the Gemma 4 audio/vision encoder towers" \
 	"  make OPENMP=0              build without OpenMP, into <MODE>-noomp dirs" \
 	"  make MODE=debug|asan|tsan|cov|perf   gdb | ASan+UBSan | TSan races | coverage | -O3+g profiling" \
 	"  make clean | distclean     remove current TARGET/MODE | remove everything" \

@@ -20,6 +20,11 @@
 
 #include <string.h>
 
+/* Encoder towers built in unless the build says otherwise (make TOWERS=0). */
+#ifndef GEIST_TOWERS
+#define GEIST_TOWERS 1
+#endif
+
 #define GEIST_INTERNAL_ARCH_LAYER
 #include "../archs/audio_conformer/arch.h"
 #include "../archs/transformer/arch.h"
@@ -27,11 +32,13 @@
 #undef GEIST_INTERNAL_ARCH_LAYER
 
 static const struct geist_arch_descriptor desc_transformer = {
-        .name               = "transformer",
-        .gguf_names         = geist_arch_transformer_gguf_names,
-        .decoder_ops        = &geist_arch_transformer,
+        .name        = "transformer",
+        .gguf_names  = geist_arch_transformer_gguf_names,
+        .decoder_ops = &geist_arch_transformer,
+#if GEIST_TOWERS /* make TOWERS=0 leaves the encoder towers out (mk/common.mk) */
         .audio_encoder_ops  = &geist_arch_audio_conformer,
         .vision_encoder_ops = &geist_arch_vision_siglip,
+#endif
 };
 
 const struct geist_arch_descriptor *const geist_arch_registry[] = {

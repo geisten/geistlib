@@ -112,8 +112,17 @@ layer scale). `state_create` refuses a family without both hooks.
 **Adding a family:** write `families/<name>.c` (copy the closest unit), add
 its `extern` to `arch_family.h`, its entry to `REGISTRY[]` and its
 `general.architecture` string to `geist_arch_transformer_gguf_names[]` in
-`arch_family.c`, and its file to `mk/common.mk`. New mechanics go into a block,
-not the unit. **Removing a family** is the reverse: those four places.
+`arch_family.c` (each under `#if defined(GEIST_FAMILY_<NAME>)`), and its name
+to `ALL_FAMILIES` in `mk/common.mk`. New mechanics go into a block, not the
+unit. **Removing a family** is the reverse: those four places.
+
+**Building only some families:** `make FAMILIES="bitnet llama"` compiles and
+registers only those units; any other GGUF is refused at load like an unknown
+architecture. `make TOWERS=0` leaves out the Gemma 4 audio/vision encoder
+towers. A change of either rebuilds what depends on it. On macOS arm64,
+`FAMILIES=bitnet TOWERS=0` shrinks `libgeist.a` from 1.22 to 1.07 MB and the
+linked `examples/simple_generate` from 892 to 613 kB, with BitNet logits
+byte-identical to the full build. The test suite assumes the full default.
 
 Before #37 one generic attention stage and one FFN stage served every family
 through feature flags (`layer_attn.c`, `layer_ffn.c`); they are gone. The

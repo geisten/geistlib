@@ -77,14 +77,39 @@ void populate_bitnet_embedding_meta(struct gguf_ctx               *gguf,
 
 /* ---- Registry --------------------------------------------------------- */
 
+/* Only the families the build selected (make FAMILIES=..., mk/common.mk).
+ * A build that selects none (no -DGEIST_FAMILY_*, e.g. another build system)
+ * gets all of them. */
+#if !defined(GEIST_FAMILY_BITNET) && !defined(GEIST_FAMILY_GEMMA3) &&    \
+        !defined(GEIST_FAMILY_GEMMA4) && !defined(GEIST_FAMILY_LLAMA) && \
+        !defined(GEIST_FAMILY_QWEN3) && !defined(GEIST_FAMILY_QWEN35)
+#define GEIST_FAMILY_BITNET 1
+#define GEIST_FAMILY_GEMMA3 1
+#define GEIST_FAMILY_GEMMA4 1
+#define GEIST_FAMILY_LLAMA 1
+#define GEIST_FAMILY_QWEN3 1
+#define GEIST_FAMILY_QWEN35 1
+#endif
 static const struct transformer_family *const REGISTRY[] = {
-        &transformer_family_gemma4,      /* families/gemma4.c */
-        &transformer_family_gemma3,      /* families/gemma3.c */
-        &transformer_family_llama,       /* families/llama.c */
-        &transformer_family_qwen3,       /* families/qwen3.c */
-        &transformer_family_qwen35,      /* families/qwen35.c */
+#if defined(GEIST_FAMILY_GEMMA4)
+        &transformer_family_gemma4, /* families/gemma4.c */
+#endif
+#if defined(GEIST_FAMILY_GEMMA3)
+        &transformer_family_gemma3, /* families/gemma3.c */
+#endif
+#if defined(GEIST_FAMILY_LLAMA)
+        &transformer_family_llama, /* families/llama.c */
+#endif
+#if defined(GEIST_FAMILY_QWEN3)
+        &transformer_family_qwen3, /* families/qwen3.c */
+#endif
+#if defined(GEIST_FAMILY_QWEN35)
+        &transformer_family_qwen35, /* families/qwen35.c */
+#endif
+#if defined(GEIST_FAMILY_BITNET)
         &transformer_family_bitnet_b158, /* families/bitnet.c */
         &transformer_family_bitnet,
+#endif
 };
 static const size_t REGISTRY_N = sizeof REGISTRY / sizeof REGISTRY[0];
 
@@ -95,13 +120,25 @@ static const size_t REGISTRY_N = sizeof REGISTRY / sizeof REGISTRY[0];
  * REGISTRY above (count enforced below; a string mismatch fails closed at
  * transformer_family_select, never loads the wrong family). */
 const char *const geist_arch_transformer_gguf_names[] = {
+#if defined(GEIST_FAMILY_GEMMA4)
         "gemma4",
+#endif
+#if defined(GEIST_FAMILY_GEMMA3)
         "gemma3",
+#endif
+#if defined(GEIST_FAMILY_LLAMA)
         "llama",
+#endif
+#if defined(GEIST_FAMILY_QWEN3)
         "qwen3",
+#endif
+#if defined(GEIST_FAMILY_QWEN35)
         "qwen35",
+#endif
+#if defined(GEIST_FAMILY_BITNET)
         "bitnet-b1.58",
         "bitnet",
+#endif
         nullptr,
 };
 static_assert(sizeof geist_arch_transformer_gguf_names /
