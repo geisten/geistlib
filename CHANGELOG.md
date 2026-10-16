@@ -9,6 +9,17 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **`make FAMILIES="..."` and `make TOWERS=0`: build only the model families
+  you need (#37).** `FAMILIES` (default: all of bitnet gemma3 gemma4 llama
+  qwen3 qwen35) selects which `families/<name>.c` units are compiled and
+  registered; other GGUFs are refused at load ("unsupported architecture"
+  with the supported list). `TOWERS=0` drops the Gemma 4 audio/vision encoder
+  towers. A content stamp rebuilds the two dependent translation units on
+  every change, and the archive is recreated so no deselected object lingers.
+  macOS arm64, `FAMILIES=bitnet TOWERS=0`: `libgeist.a` 1.22 -> 1.07 MB,
+  `examples/simple_generate` 892 -> 613 kB; BitNet logits byte-identical to the
+  full build. Builds outside `make` that set no `GEIST_FAMILY_*` get every
+  family.
 - **research: expert usage of MoE models (#48, phase 0).**
   `tools/moe_usage/` counts the router's choices per layer inside llama.cpp
   and measures how much of them a profiled hot set serves on held-out text.

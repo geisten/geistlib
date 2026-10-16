@@ -168,6 +168,44 @@ CFLAGS_STRICT := -std=c23 $(WARNINGS_STRICT) -fno-strict-aliasing \
 LDFLAGS := $(LDFLAGS_MODE) $(LDFLAGS_TARGET) $(EXTRA_LDFLAGS)
 LDLIBS  := $(LDLIBS_TARGET) $(GEMM_LDLIBS) $(EXTRA_LDLIBS)
 
+# ---- Model families and encoder towers (build-time selection) -------------
+# `make FAMILIES="bitnet llama"` compiles only those family units
+# (src/archs/transformer/families/<name>.c) and registers only their
+# general.architecture names; any other GGUF is refused at load like an
+# unknown architecture. `make TOWERS=0` leaves out the Gemma 4 audio and
+# vision encoder towers. The defaults build everything; the test suite
+# assumes them. A change of either variable rebuilds what depends on it
+# (select-config stamp below), no `make clean` needed.
+ALL_FAMILIES := bitnet gemma3 gemma4 llama qwen3 qwen35
+FAMILIES     ?= $(ALL_FAMILIES)
+TOWERS       ?= 1
+ifneq ($(filter-out $(ALL_FAMILIES),$(FAMILIES)),)
+$(error FAMILIES: unknown family '$(filter-out $(ALL_FAMILIES),$(FAMILIES))' (known: $(ALL_FAMILIES)))
+endif
+ifeq ($(strip $(FAMILIES)),)
+$(error FAMILIES must name at least one of: $(ALL_FAMILIES))
+endif
+ifneq ($(TOWERS),0)
+ifneq ($(TOWERS),1)
+$(error TOWERS must be 0 or 1)
+endif
+endif
+FAMILY_SOURCES := $(patsubst %,src/archs/transformer/families/%.c,$(sort $(FAMILIES)))
+FAMILY_DEFINES := $(foreach f,$(sort $(FAMILIES)),-DGEIST_FAMILY_$(shell echo $(f) | tr '[:lower:]' '[:upper:]')=1)
+TOWER_SOURCES  := \
+    src/archs/audio_conformer/arch.c \
+    src/archs/audio_conformer/audio_encoder.c \
+    src/archs/audio_conformer/encoder_weights.c \
+    src/archs/audio_conformer/encoder_stream.c \
+    src/archs/audio_conformer/encoder_forward.c \
+    src/archs/audio_conformer/audio_kernels.c \
+    src/archs/audio_conformer/audio_linear.c \
+    src/archs/audio_conformer/mel_pipeline.c \
+    src/archs/vision_siglip/arch.c \
+    src/archs/vision_siglip/vision_encoder.c \
+    src/archs/vision_siglip/vision_kernels.c \
+    src/archs/vision_siglip/image_pipeline.c
+
 # ---- Sources -------------------------------------------------------------
 # Library sources: files without main().
 
@@ -196,12 +234,6 @@ LIB_SOURCES := \
     src/archs/transformer/arch_state.c \
     src/archs/transformer/prefill_tuning.c \
     src/archs/transformer/arch_family.c \
-    src/archs/transformer/families/bitnet.c \
-    src/archs/transformer/families/gemma3.c \
-    src/archs/transformer/families/gemma4.c \
-    src/archs/transformer/families/llama.c \
-    src/archs/transformer/families/qwen3.c \
-    src/archs/transformer/families/qwen35.c \
     src/archs/transformer/exec_plan.c \
     src/archs/transformer/scratch_plan.c \
     src/archs/transformer/rotation.c \
@@ -224,18 +256,6 @@ LIB_SOURCES := \
     src/archs/transformer/weight_load/layer_wiring.c \
     src/archs/transformer/arch_ops.c \
     src/archs/transformer/snapshot.c \
-    src/archs/audio_conformer/arch.c \
-    src/archs/audio_conformer/audio_encoder.c \
-    src/archs/audio_conformer/encoder_weights.c \
-    src/archs/audio_conformer/encoder_stream.c \
-    src/archs/audio_conformer/encoder_forward.c \
-    src/archs/audio_conformer/audio_kernels.c \
-    src/archs/audio_conformer/audio_linear.c \
-    src/archs/audio_conformer/mel_pipeline.c \
-    src/archs/vision_siglip/arch.c \
-    src/archs/vision_siglip/vision_encoder.c \
-    src/archs/vision_siglip/vision_kernels.c \
-    src/archs/vision_siglip/image_pipeline.c \
     src/formats/gguf/common.c \
     src/formats/gguf/iq4.c \
     src/formats/gguf/q8_0.c \
@@ -261,6 +281,10 @@ LIB_SOURCES := \
     src/formats/ptqtp/ptqtp_awq.c \
     src/io/gguf_reader.c \
     src/io/safetensors_reader.c
+LIB_SOURCES += $(FAMILY_SOURCES)
+ifeq ($(TOWERS),1)
+LIB_SOURCES += $(TOWER_SOURCES)
+endif
 
 # src/backends/common/ above is the shared compute library (GEMM, gemma4
 # kernels, KIVI) — used by every backend AND by the arch layer, so it is
@@ -365,6 +389,25 @@ BIN_TARGETS := $(patsubst %.c,$(BIN_DIR)/%,$(BIN_SOURCES))
 DEPS := $(LIB_OBJS:.o=.d) $(BIN_OBJS:.o=.d)
 
 # ---- Rules ---------------------------------------------------------------
+# FAMILIES / TOWERS: like DECISION, a content stamp rebuilds the two TUs
+# that read the selection (the family registry, the arch registry) and
+# relinks, so switching selections never mixes old objects in.
+SELECT_CONFIG   := $(sort $(FAMILIES)) towers=$(TOWERS)
+SELECT_PREVIOUS := $(shell cat $(BUILD_DIR)/select-config 2>/dev/null)
+ifneq ($(SELECT_CONFIG),$(SELECT_PREVIOUS))
+.PHONY: force-select-transition
+$(BUILD_DIR)/src/archs/transformer/arch_family.o $(BUILD_DIR)/src/engine/arch_registry.o $(LIB_FILE) $(BIN_TARGETS): force-select-transition
+endif
+.PHONY: force-select-config
+$(BUILD_DIR)/select-config: force-select-config
+	@mkdir -p $(@D)
+	@if [ "$(SELECT_CONFIG)" != "$$(cat $@ 2>/dev/null)" ]; then \
+	    printf '%s\n' '$(SELECT_CONFIG)' > $@; \
+	fi
+$(BUILD_DIR)/src/archs/transformer/arch_family.o $(BUILD_DIR)/src/engine/arch_registry.o: $(BUILD_DIR)/select-config
+$(BUILD_DIR)/src/archs/transformer/arch_family.o: CFLAGS_STRICT += $(FAMILY_DEFINES)
+$(BUILD_DIR)/src/engine/arch_registry.o: CFLAGS_STRICT += -DGEIST_TOWERS=$(TOWERS)
+
 
 # Optional decision API. Always link its symbols; disabled builds use stubs.
 # DECISION_CONTEXT=1 adds snapshot-backed prefix scoring on top (#5).
@@ -451,6 +494,7 @@ $(STB_OBJ): third_party/stb/stb_impl.c
 
 $(LIB_FILE): $(LIB_OBJS)
 	@mkdir -p $(@D)
+	@rm -f $@  # members of deselected families/towers must not linger (ar rcs only adds)
 	$(AR) rcs $@ $(LIB_OBJS)
 
 # Preprocessed-assembly rule (.S) for in-tree consumers; the engine ships no
