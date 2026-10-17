@@ -120,23 +120,21 @@ int main(int argc, char **argv) {
     fprintf(stderr, "Method D (Q4_K predecoded W4A8): %.2f ms/call\n", t_d / 1000.0);
     fprintf(stderr, "Speedup D/C: %.2fx\n", t_c / t_d);
 
-    const size_t m_test  = 8;
-    float       *xm      = (float *) malloc(m_test * n_in * sizeof(float));
-    int8_t      *xm_q8   = (int8_t *) malloc(m_test * n_in);
-    int32_t     *sum32   = (int32_t *) malloc(m_test * (n_in / 32) * sizeof(int32_t));
-    float       *scale_x = (float *) malloc(m_test * (n_in / Q4_K_BLOCK_ELEMS) * sizeof(float));
-    float *scale_blocks  = (float *) malloc(m_test * (n_in / Q4_K_BLOCK_ELEMS) * sizeof(float));
-    float *y_pd          = (float *) malloc(m_test * n_out * sizeof(float));
-    float *y_mt          = (float *) malloc(m_test * n_out * sizeof(float));
-    float *y_nt          = (float *) malloc(m_test * n_out * sizeof(float));
-    float *y_np          = (float *) malloc(m_test * n_out * sizeof(float));
-    float *y_pair0       = (float *) malloc(m_test * n_out * sizeof(float));
-    float *y_pair1       = (float *) malloc(m_test * n_out * sizeof(float));
-    float *y_up_single   = (float *) malloc(m_test * n_out * sizeof(float));
-    float *y_bq          = (float *) malloc(m_test * n_out * sizeof(float));
-    float *y_ref_m       = (float *) malloc(m_test * n_out * sizeof(float));
-    if (!xm || !xm_q8 || !sum32 || !scale_x || !scale_blocks || !y_pd || !y_mt || !y_nt || !y_np ||
-        !y_pair0 || !y_pair1 || !y_up_single || !y_bq || !y_ref_m) {
+    const size_t m_test      = 8;
+    float       *xm          = (float *) malloc(m_test * n_in * sizeof(float));
+    int8_t      *xm_q8       = (int8_t *) malloc(m_test * n_in);
+    int32_t     *sum32       = (int32_t *) malloc(m_test * (n_in / 32) * sizeof(int32_t));
+    float       *scale_x     = (float *) malloc(m_test * (n_in / Q4_K_BLOCK_ELEMS) * sizeof(float));
+    float       *y_pd        = (float *) malloc(m_test * n_out * sizeof(float));
+    float       *y_mt        = (float *) malloc(m_test * n_out * sizeof(float));
+    float       *y_nt        = (float *) malloc(m_test * n_out * sizeof(float));
+    float       *y_np        = (float *) malloc(m_test * n_out * sizeof(float));
+    float       *y_pair0     = (float *) malloc(m_test * n_out * sizeof(float));
+    float       *y_pair1     = (float *) malloc(m_test * n_out * sizeof(float));
+    float       *y_up_single = (float *) malloc(m_test * n_out * sizeof(float));
+    float       *y_ref_m     = (float *) malloc(m_test * n_out * sizeof(float));
+    if (!xm || !xm_q8 || !sum32 || !scale_x || !y_pd || !y_mt || !y_nt || !y_np || !y_pair0 ||
+        !y_pair1 || !y_up_single || !y_ref_m) {
         fprintf(stderr, "alloc failed for mtile check\n");
         return 1;
     }
@@ -344,36 +342,28 @@ int main(int argc, char **argv) {
     }
 
     for (size_t i = 0; i < m_test; i++) {
-        quantize_x_q8_groups(n_in,
-                             GEIST_ACT_Q8K_ELEMS,
-                             xm + i * n_in,
-                             xm_q8 + i * n_in,
-                             scale_blocks + i * (n_in / Q4_K_BLOCK_ELEMS),
-                             sum32 + i * (n_in / 32));
         linear_q4k_decode_fp32(n_in, n_out, xm + i * n_in, t->data, y_ref_m + i * n_out);
     }
-    linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(
-            m_test, n_in, n_out, xm_q8, scale_blocks, sum32, packed, y_bq);
-    double max_bq     = 0.0;
+    double max_mt     = 0.0;
     double sum_ref2   = 0.0;
-    double sum_bq2    = 0.0;
-    double sum_ref_bq = 0.0;
+    double sum_mt2    = 0.0;
+    double sum_ref_mt = 0.0;
     for (size_t i = 0; i < m_test * n_out; i++) {
-        const double d = (double) y_ref_m[i] - (double) y_bq[i];
-        if (fabs(d) > max_bq)
-            max_bq = fabs(d);
+        const double d = (double) y_ref_m[i] - (double) y_mt[i];
+        if (fabs(d) > max_mt)
+            max_mt = fabs(d);
         sum_ref2 += (double) y_ref_m[i] * (double) y_ref_m[i];
-        sum_bq2 += (double) y_bq[i] * (double) y_bq[i];
-        sum_ref_bq += (double) y_ref_m[i] * (double) y_bq[i];
+        sum_mt2 += (double) y_mt[i] * (double) y_mt[i];
+        sum_ref_mt += (double) y_ref_m[i] * (double) y_mt[i];
     }
-    const double cos_bq = sum_ref_bq / sqrt(sum_ref2 * sum_bq2);
+    const double cos_mt = sum_ref_mt / sqrt(sum_ref2 * sum_mt2);
     fprintf(stderr,
-            "Numeric FP32 vs block-Q8 mtile4 m=%zu: max|d|=%.4e cos=%.10f\n",
+            "Numeric FP32 vs mtile4 m=%zu: max|d|=%.4e cos=%.10f\n",
             m_test,
-            max_bq,
-            cos_bq);
-    if (max_bq > 3.0e-2 || cos_bq < 0.99998) {
-        fprintf(stderr, "FAIL: block-Q8 mtile4 Q4_K output diverges from FP32 reference\n");
+            max_mt,
+            cos_mt);
+    if (max_mt > 3.0e-2 || cos_mt < 0.99998) {
+        fprintf(stderr, "FAIL: mtile4 Q4_K output diverges from FP32 reference\n");
         return 1;
     }
 
@@ -432,7 +422,6 @@ int main(int argc, char **argv) {
     free(xm_q8);
     free(sum32);
     free(scale_x);
-    free(scale_blocks);
     free(y_pd);
     free(y_mt);
     free(y_nt);
@@ -440,7 +429,6 @@ int main(int argc, char **argv) {
     free(y_pair0);
     free(y_pair1);
     free(y_up_single);
-    free(y_bq);
     free(y_ref_m);
     free(packed);
     free(packed_nt);

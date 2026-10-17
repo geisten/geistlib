@@ -68,7 +68,6 @@ struct cpu_neon_kernel_policy {
     bool q4k_predecode;
     bool q4k_mtile_prefill;
     bool q4k_ntile_prefill;
-    bool q4k_block_q8_prefill;
     bool q6k_ntile_prefill;
     /* Interleaved-8-row Q6_K decode GEMV (packed heap copy of the
      * tensor; installed only for n_out >= 32768 = lm_head class).

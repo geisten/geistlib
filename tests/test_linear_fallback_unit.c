@@ -70,7 +70,7 @@ struct env_kv {
 static const struct env_kv PASS_TILED[] = {
         {"GEIST_Q4K_PREDECODE", "1"},
         {"GEIST_Q4K_MTILE_PREFILL", "1"},
-        {"GEIST_Q4K_BLOCK_Q8_PREFILL", "1"},
+        {"GEIST_Q4K_NTILE_PREFILL", "0"},
         {"GEIST_Q6K_X8_GEMV", "1"},
         {"GEIST_TL1", "1"},
         {"GEIST_Q5K_NATIVE_MN", "0"},

@@ -540,8 +540,7 @@ static void qk_mN_quantize_rows(void *ctx, size_t i0, size_t i1) {
 
 /* Q4_K M>1 activation quantization into the qk_mN workspace: one scale per
  * 256-element super-block (#698) and the per-32 sums of the min-offset term.
- * Every Q4_K prefill kernel reads that layout, so the block-scale policy
- * (q4k_block_q8_prefill) now only picks between two bit-identical kernels. */
+ * Every Q4_K prefill kernel reads that layout. */
 static void
 cpu_neon_qk_mN_quantize_x(struct cpu_neon_workspace *ws, const float *x, size_t m, size_t n_in) {
     struct qk_mN_quantize_job job = {
@@ -577,7 +576,6 @@ static bool q6k_weight_ntile4_stream(const struct geist_weight *w) {
 static void cpu_neon_q4k_run_prequantized(const struct cpu_neon_state     *st,
                                           const struct cpu_neon_workspace *ws,
                                           const struct geist_weight       *w,
-                                          bool                             use_block_scales,
                                           size_t                           m,
                                           float                           *y) {
     const size_t n_in  = (size_t) w->n_in;
@@ -588,9 +586,6 @@ static void cpu_neon_q4k_run_prequantized(const struct cpu_neon_state     *st,
              * per inner iter). Falls back to mtile4_ntile4_packed when
              * m<8 internally. */
             linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(
-                    m, n_in, n_out, ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, w->aux_fp32, y);
-        } else if (use_block_scales) {
-            linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(
                     m, n_in, n_out, ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, w->aux_fp32, y);
         } else if (st->policy.q4k_mtile_prefill) {
             if (st->policy.q4k_ntile_prefill) {
@@ -646,16 +641,14 @@ static void cpu_neon_w_q4k_mN(size_t                     m,
         return;
     }
 
-    const bool use_block_scales = st->policy.q4k_mtile_prefill && st->policy.q4k_block_q8_prefill &&
-                                  q4k_weight_predecoded(w) && !q4k_weight_ntile4(w);
-    const bool qp               = qprof_on();
-    uint64_t   t0               = qp ? qprof_now_ns() : 0;
+    const bool qp = qprof_on();
+    uint64_t   t0 = qp ? qprof_now_ns() : 0;
     cpu_neon_qk_mN_quantize_x(ws, x, m, n_in);
     if (qp) {
         atomic_fetch_add_explicit(&g_qprof_quant_ns, qprof_now_ns() - t0, memory_order_relaxed);
         t0 = qprof_now_ns();
     }
-    cpu_neon_q4k_run_prequantized(st, ws, w, use_block_scales, m, y);
+    cpu_neon_q4k_run_prequantized(st, ws, w, m, y);
     if (qp) {
         atomic_fetch_add_explicit(&g_qprof_mm_ns, qprof_now_ns() - t0, memory_order_relaxed);
     }
@@ -685,13 +678,9 @@ static void cpu_neon_w_q4k_pair_mN(size_t                     m,
         return;
     }
 
-    const bool use_block_scales = st->policy.q4k_mtile_prefill && st->policy.q4k_block_q8_prefill &&
-                                  q4k_weight_predecoded(w0) && q4k_weight_predecoded(w1) &&
-                                  !q4k_weight_ntile4(w0) && !q4k_weight_ntile4(w1);
     cpu_neon_qk_mN_quantize_x(ws, x, m, n_in);
 
-    if (!use_block_scales && q4k_weight_ntile4(w0) && q4k_weight_ntile4(w1) &&
-        w0->n_out == w1->n_out) {
+    if (q4k_weight_ntile4(w0) && q4k_weight_ntile4(w1) && w0->n_out == w1->n_out) {
         linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(m,
                                                                      n_in,
                                                                      (size_t) w0->n_out,
@@ -703,8 +692,8 @@ static void cpu_neon_w_q4k_pair_mN(size_t                     m,
                                                                      y0,
                                                                      y1);
     } else {
-        cpu_neon_q4k_run_prequantized(st, ws, w0, use_block_scales, m, y0);
-        cpu_neon_q4k_run_prequantized(st, ws, w1, use_block_scales, m, y1);
+        cpu_neon_q4k_run_prequantized(st, ws, w0, m, y0);
+        cpu_neon_q4k_run_prequantized(st, ws, w1, m, y1);
     }
 }
 

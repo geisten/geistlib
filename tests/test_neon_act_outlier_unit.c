@@ -162,7 +162,6 @@ static void p_plain(struct cpu_neon_kernel_policy *p) {
     p->q4k_predecode             = false;
     p->q4k_mtile_prefill         = false;
     p->q4k_ntile_prefill         = false;
-    p->q4k_block_q8_prefill      = false;
     p->q6k_ntile_prefill         = false;
     p->q6k_ntile4_stream_prefill = false;
     p->q6k_x8_gemv               = false;
@@ -179,10 +178,6 @@ static void p_q4k_predecode(struct cpu_neon_kernel_policy *p) {
 static void p_q4k_mtile8(struct cpu_neon_kernel_policy *p) {
     p_q4k_predecode(p);
     p->q4k_mtile_prefill = true;
-}
-static void p_q4k_bscale(struct cpu_neon_kernel_policy *p) {
-    p_q4k_mtile8(p);
-    p->q4k_block_q8_prefill = true;
 }
 static void p_q4k_ntile4(struct cpu_neon_kernel_policy *p) {
     p_q4k_mtile8(p);
@@ -209,7 +204,6 @@ static const struct variant VARIANTS[] = {
         {"q4k predecode", (uint16_t) GEIST_DTYPE_Q4_K, p_q4k_predecode, nullptr},
         {"q4k predecode mtile8", (uint16_t) GEIST_DTYPE_Q4_K, p_q4k_mtile8, nullptr},
         {"q4k predecode mtile4_ntile4", (uint16_t) GEIST_DTYPE_Q4_K, p_q4k_mtile8, p_q4k_ntile4},
-        {"q4k predecode bscale", (uint16_t) GEIST_DTYPE_Q4_K, p_q4k_bscale, nullptr},
         {"q4k ntile4 packed", (uint16_t) GEIST_DTYPE_Q4_K, p_q4k_ntile4, nullptr},
         {"q6k ntile4", (uint16_t) GEIST_DTYPE_Q6_K, p_q6k_ntile4, nullptr},
         {"q6k ntile4 stream", (uint16_t) GEIST_DTYPE_Q6_K, p_q6k_stream, nullptr},

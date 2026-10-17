@@ -71,7 +71,6 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geis
             .q4k_predecode             = amx,
             .q4k_mtile_prefill         = amx,
             .q4k_ntile_prefill         = amx,
-            .q4k_block_q8_prefill      = false,
             .q6k_ntile_prefill         = amx,
             .q6k_ntile4_stream_prefill = amx,
             .q6k_x8_gemv               = amx,
@@ -94,8 +93,6 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geis
     p.q4k_predecode     = cpu_neon_env_bool("GEIST_Q4K_PREDECODE", p.q4k_predecode);
     p.q4k_mtile_prefill = cpu_neon_env_bool("GEIST_Q4K_MTILE_PREFILL", p.q4k_mtile_prefill);
     p.q4k_ntile_prefill = cpu_neon_env_bool("GEIST_Q4K_NTILE_PREFILL", p.q4k_ntile_prefill);
-    p.q4k_block_q8_prefill =
-            cpu_neon_env_bool("GEIST_Q4K_BLOCK_Q8_PREFILL", p.q4k_block_q8_prefill);
     p.q6k_ntile_prefill = cpu_neon_env_bool("GEIST_Q6K_NTILE_PREFILL", p.q6k_ntile_prefill);
     p.q6k_ntile4_stream_prefill =
             cpu_neon_env_bool("GEIST_Q6K_NTILE4_STREAM_PREFILL", p.q6k_ntile4_stream_prefill);
