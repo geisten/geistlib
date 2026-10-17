@@ -82,7 +82,7 @@ void populate_bitnet_embedding_meta(struct gguf_ctx               *gguf,
  * gets all of them. */
 #if !defined(GEIST_FAMILY_BITNET) && !defined(GEIST_FAMILY_GEMMA3) &&    \
         !defined(GEIST_FAMILY_GEMMA4) && !defined(GEIST_FAMILY_LLAMA) && \
-        !defined(GEIST_FAMILY_QWEN3) && !defined(GEIST_FAMILY_QWEN35) &&  \
+        !defined(GEIST_FAMILY_QWEN3) && !defined(GEIST_FAMILY_QWEN35) && \
         !defined(GEIST_FAMILY_QWEN3MOE)
 #define GEIST_FAMILY_BITNET 1
 #define GEIST_FAMILY_GEMMA3 1
