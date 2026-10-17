@@ -2478,42 +2478,6 @@ metal_embedding_lookup(struct geist_backend      *be,
         return GEIST_E_INVALID_ARG;
     }
 
-    {
-        static _Atomic int dbg = -1;
-        if (dbg < 0) {
-            const char *e = getenv("GEIST_METAL_DEBUG_LINEAR");
-            dbg           = (e != nullptr && e[0] != '\0' && strcmp(e, "0") != 0) ? 1 : 0;
-        }
-        if (dbg && x->buffer != nullptr && x->buffer->mapped != nullptr && cos->buffer != nullptr &&
-            cos->buffer->mapped != nullptr) {
-            const float *xp = (const float *) ((const uint8_t *) x->buffer->mapped + x->offset);
-            const float *cp = (const float *) ((const uint8_t *) cos->buffer->mapped + cos->offset);
-            size_t       nx = 1, nc = 1;
-            for (int i = 0; i < x->ndim; i++)
-                nx *= (size_t) x->shape[i];
-            for (int i = 0; i < cos->ndim; i++)
-                nc *= (size_t) cos->shape[i];
-            size_t nanx = 0, nanc = 0;
-            for (size_t i = 0; i < nx; i++)
-                if (isnan(xp[i]))
-                    nanx++;
-            for (size_t i = 0; i < nc; i++)
-                if (isnan(cp[i]))
-                    nanc++;
-            fprintf(stderr,
-                    "rope_in x[%lld,%lld,%lld] nanx=%zu cos[%lld,%lld] nanc=%zu xoff=%zu "
-                    "coff=%zu\n",
-                    (long long) x->shape[0],
-                    (long long) x->shape[1],
-                    (long long) x->shape[2],
-                    nanx,
-                    (long long) cos->shape[0],
-                    (long long) cos->shape[1],
-                    nanc,
-                    x->offset,
-                    cos->offset);
-        }
-    }
     size_t rows = 0, heads = 0, head_dim = 0, x_offset = 0;
     size_t cos_rows = 0, cos_cols = 0, cos_offset = 0, cos_stride = 0;
     size_t sin_rows = 0, sin_cols = 0, sin_offset = 0, sin_stride = 0;
@@ -3571,61 +3535,6 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
         return GEIST_E_INVALID_ARG;
     }
 
-    {
-        static _Atomic int dbg = -1;
-        if (dbg < 0) {
-            const char *e = getenv("GEIST_METAL_DEBUG_LINEAR");
-            dbg           = (e != nullptr && e[0] != '\0' && strcmp(e, "0") != 0) ? 1 : 0;
-        }
-        if (dbg && q->buffer != nullptr && q->buffer->mapped != nullptr && k->buffer != nullptr &&
-            k->buffer->mapped != nullptr) {
-            const float *qp = (const float *) ((const uint8_t *) q->buffer->mapped + q->offset);
-            const float *kp = (const float *) ((const uint8_t *) k->buffer->mapped + k->offset);
-            size_t       nq = 1, nk = 1;
-            for (int i = 0; i < q->ndim; i++)
-                nq *= (size_t) q->shape[i];
-            for (int i = 0; i < k->ndim; i++)
-                nk *= (size_t) k->shape[i];
-            float  aq = 0, ak = 0;
-            size_t nanq = 0, nank = 0;
-            for (size_t i = 0; i < nq; i++) {
-                if (isnan(qp[i]))
-                    nanq++;
-                else if (fabsf(qp[i]) > aq)
-                    aq = fabsf(qp[i]);
-            }
-            for (size_t i = 0; i < nk; i++) {
-                if (isnan(kp[i]))
-                    nank++;
-                else if (fabsf(kp[i]) > ak)
-                    ak = fabsf(kp[i]);
-            }
-            size_t firstnan = (size_t) -1;
-            for (size_t i = 0; i < nq && firstnan == (size_t) -1; i++)
-                if (isnan(qp[i]))
-                    firstnan = i;
-            fprintf(stderr,
-                    "attn firstnan_q=%zd (row %zd) ",
-                    (ssize_t) firstnan,
-                    firstnan == (size_t) -1
-                            ? (ssize_t) -1
-                            : (ssize_t) (firstnan / ((size_t) q->shape[1] * (size_t) q->shape[2])));
-            fprintf(stderr,
-                    "attn q[%lld,%lld,%lld] |q|=%g nanq=%zu k[%lld,..] |k|=%g nank=%zu qoff=%zu "
-                    "sw=%zu kdt=%d\n",
-                    (long long) q->shape[0],
-                    (long long) q->shape[1],
-                    (long long) q->shape[2],
-                    (double) aq,
-                    nanq,
-                    (long long) k->shape[0],
-                    (double) ak,
-                    nank,
-                    q_offset,
-                    sliding_window,
-                    (int) k->dtype);
-        }
-    }
     size_t q_rows = 0, q_heads = 0, head_dim = 0, q_off = 0;
     size_t k_rows = 0, k_heads = 0, k_head_dim = 0, k_off = 0;
     size_t v_rows = 0, v_heads = 0, v_head_dim = 0, v_off = 0;
@@ -3813,7 +3722,6 @@ static void metal_linear_mN(size_t                     m,
             }
         }
         safe_free((void **) &row);
-        metal_linear_debug_stats(m * n_in, m * n_out, m, x, y, w);
         return;
     }
     struct geist_tensor tx = {
@@ -3893,7 +3801,6 @@ static void metal_linear_mN(size_t                     m,
                 geist_backend_errmsg(be));
         memset(y, 0, m * n_out * sizeof(float));
     }
-    metal_linear_debug_stats(m * n_in, m * n_out, m, x, y, w);
 }
 
 static void

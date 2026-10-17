@@ -758,14 +758,6 @@ void *metal_buffer_map(struct geist_buffer *buf) {
                                         buf->bytes);
                 return nullptr;
             }
-            static _Atomic int dbg = -1;
-            if (dbg < 0) {
-                const char *e = getenv("GEIST_SEQ_COUNT");
-                dbg           = (e && e[0]) ? 1 : 0;
-            }
-            if (dbg) {
-                fprintf(stderr, "[flushmap] bytes=%zu role=%d\n", buf->bytes, (int) buf->role);
-            }
             metal_batch_flush(st);
         }
     }
