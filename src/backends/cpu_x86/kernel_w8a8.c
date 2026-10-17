@@ -3,7 +3,7 @@
  *
  * Layer: BACKEND (cpu_x86).
  *
- * Reuses the W4A8 dispatcher's ISA selection: w8a8_dot picks the same
+ * Reuses the W4A8 dispatcher's ISA selection: the W8A8 dot picks the same
  * tier the W4A8 path picked (single dispatcher init for both). Compiled
  * at baseline -march=x86-64-v3; the AVX-512 + VNNI variant lives in
  * its own TU with -mavx512vnni.
@@ -63,19 +63,6 @@ static void w8a8_dispatch_init(void) {
         g_dot8 = w8a8_dot_scalar;
     }
     g_inited8 = 1;
-}
-
-[[nodiscard]] float w8a8_dot(size_t        n_blocks,
-                             const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
-                             const float   w_scales[static n_blocks],
-                             const float   w_offsets[static n_blocks],
-                             const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
-                             const int32_t sum_a_per_block[static n_blocks],
-                             const float   act_scales[static w8a8_act_groups(n_blocks)]) {
-    if (g_inited8 == 0) {
-        w8a8_dispatch_init();
-    }
-    return g_dot8(n_blocks, weights, w_scales, w_offsets, acts, sum_a_per_block, act_scales);
 }
 
 [[nodiscard]] int w8a8_isa_is_vnni(void) {

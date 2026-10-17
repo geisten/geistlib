@@ -57,10 +57,6 @@ struct q4k_tiled_ws {
     alignas(64) float acc[TILE * TILE];           /* [weight row][act row] */
 };
 
-size_t q4k_tiled_ws_bytes(void) {
-    return sizeof(struct q4k_tiled_ws);
-}
-
 /* Weight rows [r0, r0 + n) of K block kb from the Q4_Kx8 repack: row r of
  * octet o is lane r % 8 of W[o * n_super + kb]. The lane's 16 eight-byte
  * stripes are its 128 bytes of nibbles, and the 6-bit scales and mins are
