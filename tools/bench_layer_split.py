@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import os
 import shutil
 import statistics
@@ -120,7 +121,7 @@ def main() -> int:
     ap.add_argument("--cpu", default="cpu_x86")
     ap.add_argument("--gpu", default="vulkan")
     ap.add_argument("--gpu-only", action="store_true", help="also run every layer on --gpu")
-    ap.add_argument("--splits", default="", help="comma-separated N (layers on the GPU)")
+    ap.add_argument("--splits", default="", help="N (layers on the GPU), separated by , ; or space")
     ap.add_argument("--llama-bench", default="", help="llama-bench binary; runs -ngl 0 and each split")
     ap.add_argument("--llama-nopo", action="store_true",
                     help="also run llama-bench with -nopo 1: no op offload, so the GPU runs only "
@@ -133,7 +134,8 @@ def main() -> int:
     ap.add_argument("--out-dir", default="split-out")
     args = ap.parse_args()
 
-    splits = [int(x) for x in args.splits.split(",") if x.strip()]
+    # "," ";" or " ": tea's workflow inputs cannot carry a comma
+    splits = [int(x) for x in re.split(r"[,; ]+", args.splits) if x.strip()]
     cfgs = [geist_cfg(args, f"geistlib cpu ({args.cpu})", args.cpu, 0)]
     if args.gpu_only:
         cfgs.append(geist_cfg(args, f"geistlib gpu ({args.gpu})", args.gpu, 0))

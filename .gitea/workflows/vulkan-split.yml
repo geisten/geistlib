@@ -26,7 +26,7 @@ on:
         type: string
         default: a0dfe649137410b7d82f06a209240508e218f32f5b6fd81b69d6932160cfcd9d
       splits:
-        description: "layers on the GPU, comma-separated"
+        description: "layers on the GPU, separated by , or ; (tea: use ;)"
         type: string
         default: "8,16,20,24,26"
       llama_pin:
@@ -89,7 +89,7 @@ jobs:
         run: |
           set -eo pipefail
           . scripts/gpu-lock.sh
-          GEIST_SPLIT_BACKEND=vulkan GEIST_SPLIT_GGUF_PATH="$MODEL" GEIST_SPLIT_POINTS="$SPLITS" \
+          GEIST_SPLIT_BACKEND=vulkan GEIST_SPLIT_GGUF_PATH="$MODEL" GEIST_SPLIT_POINTS="$(echo "$SPLITS" | tr '; ' ',,')" \
             bin/linux/release/tests/test_layer_split_int 2>&1 | tee split-out/correctness.txt
       - name: Measure
         run: |
