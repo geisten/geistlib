@@ -1291,8 +1291,9 @@ vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_ten
         /* cos/sin rows are `rot` wide: the rotated prefix of each head. */
         const size_t rot =
                 cos != nullptr && cos->ndim >= 1 ? (size_t) cos->shape[cos->ndim - 1] : 0;
-        if (x != nullptr && x->ndim == 3 && vk_t_n(x) != 0 && vk_t_n(cos) != 0 &&
-            vk_t_n(sin) != 0 && rot != 0 && rot % 2 == 0 && rot <= (size_t) x->shape[2] &&
+        if (x != nullptr && x->ndim == 3 && vk_t_n(x) != 0 &&
+            rope_apply_shape_ok(
+                    (size_t) x->shape[0], (size_t) x->shape[2], rot, vk_t_n(cos), vk_t_n(sin)) &&
             vk_tensor_gpu(x, &bi[0], &off[0]) && vk_tensor_gpu(cos, &bi[1], &off[1]) &&
             vk_tensor_gpu(sin, &bi[2], &off[2])) {
             const size_t seq     = (size_t) x->shape[0];
@@ -1318,13 +1319,14 @@ vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_ten
         return GEIST_E_INVALID_ARG;
     }
     /* The cos/sin row width is the rotated width (see rope_apply). */
-    rope_apply((size_t) x->shape[0],
-               (size_t) x->shape[1],
-               (size_t) x->shape[2],
-               (size_t) cos->shape[cos->ndim - 1],
-               xp,
-               cosp,
-               sinp);
+    const size_t seq = (size_t) x->shape[0], head_dim = (size_t) x->shape[2];
+    const size_t n_rot = (size_t) cos->shape[cos->ndim - 1];
+    if (!rope_apply_shape_ok(seq, head_dim, n_rot, nc, ns)) {
+        geist_backend_set_error(
+                be, GEIST_E_INVALID_ARG, "vulkan rope_apply: cos/sin do not cover x");
+        return GEIST_E_INVALID_ARG;
+    }
+    rope_apply(seq, (size_t) x->shape[1], head_dim, n_rot, xp, cosp, sinp);
     return GEIST_OK;
 }
 

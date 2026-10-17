@@ -230,7 +230,7 @@ static void ffn_quant_rows(void *ctx, size_t i0, size_t i1) {
     if (be == nullptr || x == nullptr || cos == nullptr || sin == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    size_t       nx, nc, ns;
+    size_t       nx = 0, nc = 0, ns = 0;
     float       *xp   = geist_host_tensor_f32(x, &nx);
     const float *cosp = geist_host_tensor_f32(cos, &nc);
     const float *sinp = geist_host_tensor_f32(sin, &ns);
@@ -256,7 +256,13 @@ static void ffn_quant_rows(void *ctx, size_t i0, size_t i1) {
                 be, GEIST_E_INVALID_ARG, "cpu_neon rope_apply: cos/sin seq_len mismatch");
         return GEIST_E_INVALID_ARG;
     }
-    rope_apply(seq_len, n_heads, head_dim, (size_t) cos->shape[cos->ndim - 1], xp, cosp, sinp);
+    const size_t n_rot = (size_t) cos->shape[cos->ndim - 1];
+    if (!rope_apply_shape_ok(seq_len, head_dim, n_rot, nc, ns)) {
+        geist_backend_set_error(
+                be, GEIST_E_INVALID_ARG, "cpu_neon rope_apply: cos/sin do not cover x");
+        return GEIST_E_INVALID_ARG;
+    }
+    rope_apply(seq_len, n_heads, head_dim, n_rot, xp, cosp, sinp);
     return GEIST_OK;
 }
 
