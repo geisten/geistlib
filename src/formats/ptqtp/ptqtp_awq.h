@@ -7,7 +7,7 @@
  * runtime uses these to:
  *   1. Pre-divide RMSNorm gamma by s for foldable norms (zero runtime cost).
  *   2. Apply 1/s as extra runtime scaling before non-foldable linears (o, down).
- *   3. Quantize PTQTP weights as W ⊙ s (done in the Python quantizer, not here).
+ *   3. Quantize the weights as W ⊙ s (done offline by the quantizer, not here).
  *
  * File format ("AWQS"):
  *   magic[4] = "AWQS"

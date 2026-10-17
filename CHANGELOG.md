@@ -452,6 +452,18 @@ minor release.
   byte-identical SPIR-V for all nine `mm_legacy` users, so the `_spv.h`
   headers are unchanged.
 
+### Removed
+- **The PTQTP ternary format (legacy).** Its loader (`gguf_ptqtp.c`) and
+  2-/3-plane GEMV/GEMM kernels (`ptqtp_kernel.c`) had no caller in `src/`
+  since v0.1.0, and no model loads PTQTP weights; only their own tests and
+  benches used them. Gone with them: `bench_ptqtp`, `bench_5trit_probe`,
+  `test_ptqtp_int`, `test_ptqtp_kernel_correctness_unit`, `test_3plane_unit`,
+  `test_ptqtp_p0_paper_parity.py`, `tools/ptqtp_single_tensor.py`,
+  `tools/ptqtp_version.py` and ROADMAP item #376 (PTQTP parity gate).
+  Ternary and 2-bit weights stay supported through I2_S/TQ (BitNet) and
+  PQ2_0 (Bonsai). The AWQ scale loader (`src/formats/ptqtp/ptqtp_awq.c`,
+  `geist_session_opts.awq_scales_path`) is unchanged.
+
 ### Fixed
 
 - **Vulkan: lookup tables are no longer uploaded inside the forward pass
