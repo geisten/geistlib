@@ -161,6 +161,42 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
  * Internally ping-pongs between scratch_h_a and scratch_h_b. Each layer's
  * PLE input is gathered into scratch_ple_lookup as a contiguous
  * [seq, HIDDEN_PER_LAYER] slab before the forward call. */
+/* Layer split (#49): run layers [0, N) of seq rows on the split stage,
+ * from `in` (this session's backend) to `out` (same). The rows cross
+ * through host memory both ways; a forward on one backend finishes before
+ * the other reads its result, because the download waits for it. The
+ * stage's session follows this one's position (it caches the same
+ * positions for its own layers). */
+[[nodiscard]] static enum geist_status run_split_stage(struct transformer_arch_session *sess,
+                                                       size_t                           q_position,
+                                                       size_t                           seq,
+                                                       struct geist_buffer             *in,
+                                                       struct geist_buffer             *out) {
+    struct transformer_arch_session *sub   = sess->split_sess;
+    struct transformer_arch_state   *sst   = sub->model;
+    const size_t                     bytes = seq * sst->d_model * sizeof(float);
+    struct geist_buffer             *h_in  = sub->scratch_h_a;
+    struct geist_buffer             *h_out = sub->scratch_h_b;
+
+    sub->kv_len         = sess->kv_len;
+    enum geist_status s = transformer_buffer_xfer(
+            sess->model->backend, in, bytes, sess->split_rows, /* to_device = */ false);
+    if (s == GEIST_OK)
+        s = transformer_buffer_xfer(sst->backend, h_in, bytes, sess->split_rows, true);
+    for (size_t li = sst->layer_lo; s == GEIST_OK && li < sst->layer_hi; li++) {
+        s = transformer_forward_one_layer(
+                sub, (int) li, q_position, seq, /* advance_kv = */ false, h_in, nullptr, h_out);
+        struct geist_buffer *tmp = h_in;
+        h_in                     = h_out;
+        h_out                    = tmp;
+    }
+    if (s == GEIST_OK)
+        s = transformer_buffer_xfer(sst->backend, h_in, bytes, sess->split_rows, false);
+    if (s == GEIST_OK)
+        s = transformer_buffer_xfer(sess->model->backend, out, bytes, sess->split_rows, true);
+    return s;
+}
+
 [[nodiscard]] enum geist_status transformer_run_all_layers(struct transformer_arch_session *sess,
                                                            size_t               q_position,
                                                            size_t               seq,
@@ -176,8 +212,15 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
     const size_t                      row_bytes_ple         = st->hidden_per_layer * sizeof(float);
     const size_t                      row_bytes_per_tok_ple = st->ple_out * sizeof(float);
 
-    /* Seed scratch_h_a with seq rows of HIDDEN. */
-    {
+    /* Seed scratch_h_a with seq rows of HIDDEN: through the split stage's
+     * layers when the model is split (#49). */
+    if (sess->split_sess != nullptr) {
+        const enum geist_status ss =
+                run_split_stage(sess, q_position, seq, initial_h_buf, sess->scratch_h_a);
+        if (ss != GEIST_OK) {
+            return ss;
+        }
+    } else {
         /* Bound at plan build (#352): a device copy that FAILS is a device error, not
          * a missing capability, and must not become a quiet host memcpy. */
         if (st->model_fusions.backend_buffer_copy) {
@@ -201,7 +244,7 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
     struct geist_buffer *h_in  = sess->scratch_h_a;
     struct geist_buffer *h_out = sess->scratch_h_b;
 
-    for (size_t li = 0; li < st->n_layers; li++) {
+    for (size_t li = st->layer_lo; li < st->n_layers; li++) {
         /* Gather this layer's per_layer_input slices into
          * scratch_ple_lookup when the family has PLE. Non-PLE families
          * pass nullptr and forward_one_layer skips the PLE injection. */

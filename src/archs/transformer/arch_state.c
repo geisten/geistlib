@@ -503,10 +503,12 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
      * their source's). Exactly one branch fires per layer, by the
      * kv_*_enabled flags. */
     for (size_t li = 0; li < (size_t) st->n_layers; li++) {
-        if (st->layers[li].is_kv_shared || st->layers[li].mixer == GEIST_MIXER_DELTANET) {
+        if (st->layers[li].is_kv_shared || st->layers[li].mixer == GEIST_MIXER_DELTANET ||
+            !transformer_layer_owned(st, li)) {
             continue; /* all KV pointer slots stay nullptr — shared layers
                        * alias an owner; DeltaNet layers carry recurrent
-                       * state instead (dn_conv_state / dn_S) */
+                       * state instead (dn_conv_state / dn_S); the other
+                       * part of a layer split (#49) caches its own */
         }
         const size_t hd       = st->layers[li].head_dim;
         const size_t n_elems  = sess->max_seq_len * st->n_kv_heads * hd;
@@ -1256,13 +1258,56 @@ geometry_from_metadata(struct geist_backend             *be,
     return GEIST_OK;
 }
 
+/* A layer split (#49) holds one part of the model per state, which the
+ * forward of the other part never sees. Refuse what crosses that line:
+ * a table or KV cache layers on both sides read (PLE, shared KV), state
+ * the split stage does not carry (DeltaNet recurrence, MTP blocks), and
+ * load-time transforms over every layer (rotation, AWQ). */
+[[nodiscard]] static enum geist_status split_supported(struct geist_backend                *be,
+                                                       struct gguf_ctx                     *gguf,
+                                                       const struct transformer_arch_state *st,
+                                                       const struct geist_session_opts     *opts) {
+    const char *why = nullptr;
+    uint32_t    u   = 0;
+    if (st->config.has_ple) {
+        why = "per-layer embeddings";
+    } else if (st->n_mtp_layers > 0) {
+        why = "MTP blocks";
+    } else if (gguf_get_meta_u32(gguf, "prism.hadamard.version", &u)) {
+        why = "a rotated (prism.hadamard) basis";
+    } else if (opts != nullptr && opts->awq_scales_path != nullptr) {
+        why = "AWQ scales";
+    }
+    for (size_t li = 0; why == nullptr && li < st->n_layers; li++) {
+        if (st->layers[li].is_kv_shared) {
+            why = "shared KV caches";
+        } else if (st->layers[li].mixer == GEIST_MIXER_DELTANET) {
+            why = "DeltaNet layers";
+        }
+    }
+    if (why == nullptr) {
+        return GEIST_OK;
+    }
+    geist_backend_set_error(be,
+                            GEIST_E_UNSUPPORTED,
+                            "transformer: a layer split does not support %s (%s)",
+                            why,
+                            st->family != nullptr ? st->family->name : "?");
+    return GEIST_E_UNSUPPORTED;
+}
+
 /* Shared body: takes ownership of an already-open `gguf` (closes it on
  * error; on success keeps it open for zero-copy weight aliasing or closes
- * it after copying, by mmap_alias_mode). */
-enum geist_status transformer_state_create_from_gguf(struct geist_backend            *be,
-                                                     struct gguf_ctx                 *gguf,
-                                                     const struct geist_session_opts *opts,
-                                                     struct transformer_arch_state  **out) {
+ * it after copying, by mmap_alias_mode). The state holds and runs layers
+ * [lo, min(hi, n_layers)); split_stage: only those, no embedding or head
+ * (#49). The full model is lo = 0, hi = SIZE_MAX, !split_stage. */
+[[nodiscard]] static enum geist_status state_create_range(struct geist_backend            *be,
+                                                          struct gguf_ctx                 *gguf,
+                                                          const struct geist_session_opts *opts,
+                                                          size_t                           lo,
+                                                          size_t                           hi,
+                                                          bool split_stage,
+                                                          struct transformer_arch_state **out) {
     if (be == nullptr || gguf == nullptr || out == nullptr) {
         if (gguf != nullptr) {
             gguf_close(gguf);
@@ -1281,6 +1326,7 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     }
     memset(st, 0, sizeof(*st));
     st->backend       = be;
+    st->split_stage   = split_stage;
     st->snapshot_id   = atomic_fetch_add(&next_snapshot_id, 1) + 1;
     st->gguf          = (struct gguf_ctx *) gguf;
     st->runtime_flags = transformer_runtime_flags_from_env();
@@ -1349,6 +1395,25 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         return gs;
     }
 
+    if (lo > st->n_layers) {
+        geist_backend_set_error(be,
+                                GEIST_E_INVALID_ARG,
+                                "transformer: split_layers %zu exceeds the model's %zu layers",
+                                lo,
+                                st->n_layers);
+        transformer_state_destroy(st);
+        return GEIST_E_INVALID_ARG;
+    }
+    st->layer_lo = lo;
+    st->layer_hi = hi < st->n_layers ? hi : st->n_layers;
+    if (split_stage || lo > 0) {
+        gs = split_supported(be, gguf, st, opts);
+        if (gs != GEIST_OK) {
+            transformer_state_destroy(st);
+            return gs;
+        }
+    }
+
     /* Storage mode (mmap-alias default vs β-mode override). mmap-alias
      * keeps weight bytes aliased to the GGUF mmap and
      * demand-pages disk reads. This is the default because copying the
@@ -1382,7 +1447,7 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
          * backend (see scratch pool): GPU backends can then bind norm
          * weights / embed tables that live inside it. */
         size_t            cap = 0;
-        enum geist_status cs  = compute_weight_arena_capacity(be, gguf, &cap);
+        enum geist_status cs  = compute_weight_arena_capacity(be, gguf, st, &cap);
         if (cs == GEIST_OK) {
             cs = weight_arena_open(st, cap);
         }
@@ -1394,7 +1459,8 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     /* mmap-alias mode: leave weight_arena == nullptr. load_tensor_to_buffer
      * branches on this to pick its storage path. */
 
-    enum geist_status s = load_globals(be, gguf, st);
+    /* A split stage carries no embedding, output norm or head. */
+    enum geist_status s = st->split_stage ? GEIST_OK : load_globals(be, gguf, st);
     if (s != GEIST_OK) {
         transformer_state_destroy(st);
         return s;
@@ -1402,7 +1468,10 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
 
     for (size_t i = 0; i < (size_t) st->n_layers; i++) {
         st->layers[i].layer_idx = (int) i;
-        s                       = load_one_layer(st, gguf, &st->layers[i]);
+        if (!transformer_layer_owned(st, i)) {
+            continue; /* the other part of a split holds it */
+        }
+        s = load_one_layer(st, gguf, &st->layers[i]);
         if (s != GEIST_OK) {
             transformer_state_destroy(st);
             return s;
@@ -1446,8 +1515,11 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
     }
 
     /* Spec-head build at load: the model stays immutable afterwards, so
-     * concurrent sessions never race a first-use build. */
-    transformer_spec_head_init(st);
+     * concurrent sessions never race a first-use build. A split stage has
+     * no head to speed up. */
+    if (!st->split_stage) {
+        transformer_spec_head_init(st);
+    }
 
     /* AWQ (optional): fold attn_norm/ffn_norm gammas and stash per-layer
      * inv-scales for o/down inputs. Runs after weights are mapped but
@@ -1534,6 +1606,57 @@ enum geist_status transformer_plan(struct geist_backend            *be,
     return s;
 }
 
+enum geist_status transformer_state_create_from_gguf(struct geist_backend            *be,
+                                                     struct gguf_ctx                 *gguf,
+                                                     const struct geist_session_opts *opts,
+                                                     struct transformer_arch_state  **out) {
+    return state_create_range(be, gguf, opts, 0, SIZE_MAX, false, out);
+}
+
+static bool split_requested(const struct geist_session_opts *opts) {
+    return opts != nullptr && opts->split_backend != nullptr && opts->split_layers > 0;
+}
+
+/* Layer split (#49): `st` (loaded on its backend from `gguf`, holding
+ * layers [split_layers, n_layers)) gets the stage that holds [0,
+ * split_layers) on opts->split_backend, loaded from `gguf2`, a second
+ * handle on the same file. Both parts get the smaller prefill chunk:
+ * every chunk crosses the boundary whole. Takes ownership of gguf2; on
+ * failure destroys `st`. */
+[[nodiscard]] static enum geist_status attach_split(struct transformer_arch_state   *st,
+                                                    struct gguf_ctx                 *gguf2,
+                                                    const struct geist_session_opts *opts) {
+    struct transformer_arch_state *sub = nullptr;
+    enum geist_status              s =
+            state_create_range(opts->split_backend, gguf2, opts, 0, opts->split_layers, true, &sub);
+    if (s != GEIST_OK) {
+        geist_backend_set_error(st->backend,
+                                s,
+                                "transformer: split stage on '%s': %s",
+                                geist_backend_name(opts->split_backend),
+                                geist_backend_errmsg(opts->split_backend));
+        transformer_state_destroy(st);
+        return s;
+    }
+    st->split = sub;
+    if (sub->m_max < st->m_max) {
+        st->m_max = sub->m_max;
+    } else {
+        sub->m_max = st->m_max;
+    }
+    if (getenv("GEIST_VERBOSE") != nullptr) {
+        fprintf(stderr,
+                "geist: layer split: layers 0..%zu on %s, layers %zu..%zu, embedding and head "
+                "on %s\n",
+                sub->layer_hi - 1,
+                geist_backend_name(sub->backend),
+                st->layer_lo,
+                st->n_layers - 1,
+                geist_backend_name(st->backend));
+    }
+    return GEIST_OK;
+}
+
 enum geist_status transformer_state_create(struct geist_backend            *be,
                                            const char                      *gguf_path,
                                            const struct geist_session_opts *opts,
@@ -1552,7 +1675,29 @@ enum geist_status transformer_state_create(struct geist_backend            *be,
                                 err != nullptr ? err : "(no detail)");
         return GEIST_E_FILE_NOT_FOUND;
     }
-    return transformer_state_create_from_gguf(be, gguf, opts, out);
+    if (!split_requested(opts)) {
+        return transformer_state_create_from_gguf(be, gguf, opts, out);
+    }
+    enum geist_status s =
+            state_create_range(be, gguf, opts, opts->split_layers, SIZE_MAX, false, out);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    struct gguf_ctx *gguf2 = gguf_open(gguf_path, &err);
+    if (gguf2 == nullptr) {
+        geist_backend_set_error(be,
+                                GEIST_E_FILE_NOT_FOUND,
+                                "transformer: gguf_open(%s) for the split stage",
+                                gguf_path);
+        transformer_state_destroy(*out);
+        *out = nullptr;
+        return GEIST_E_FILE_NOT_FOUND;
+    }
+    s = attach_split(*out, gguf2, opts);
+    if (s != GEIST_OK) {
+        *out = nullptr;
+    }
+    return s;
 }
 
 enum geist_status transformer_state_create_from_memory(struct geist_backend            *be,
@@ -1573,7 +1718,27 @@ enum geist_status transformer_state_create_from_memory(struct geist_backend     
                                 err != nullptr ? err : "(no detail)");
         return GEIST_E_FORMAT;
     }
-    return transformer_state_create_from_gguf(be, gguf, opts, out);
+    if (!split_requested(opts)) {
+        return transformer_state_create_from_gguf(be, gguf, opts, out);
+    }
+    enum geist_status s =
+            state_create_range(be, gguf, opts, opts->split_layers, SIZE_MAX, false, out);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    struct gguf_ctx *gguf2 = gguf_open_memory(data, size, &err);
+    if (gguf2 == nullptr) {
+        geist_backend_set_error(
+                be, GEIST_E_FORMAT, "transformer: gguf_open_memory for the split stage");
+        transformer_state_destroy(*out);
+        *out = nullptr;
+        return GEIST_E_FORMAT;
+    }
+    s = attach_split(*out, gguf2, opts);
+    if (s != GEIST_OK) {
+        *out = nullptr;
+    }
+    return s;
 }
 
 void transformer_state_destroy(struct transformer_arch_state *st) {
@@ -1593,6 +1758,9 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
         transformer_session_free(st, st->default_sess);
         st->default_sess = nullptr;
     }
+    /* Its sessions are gone with ours (split_sess). */
+    transformer_state_destroy(st->split);
+    st->split = nullptr;
 
     if (be != nullptr) {
         /* The layer array may be missing: its allocation failed. */
@@ -1882,6 +2050,50 @@ static bool scratch_device_wanted(const struct transformer_arch_session *sess) {
     return backend_scratch_unmappable(st->backend);
 }
 
+/* Layer split (#49): the session on the split stage, with this session's
+ * chunk, window and KV mode, and the host rows that carry the hidden state
+ * across. KIVI drains every layer in lock-step from one counter, which two
+ * sessions cannot share: refused. */
+[[nodiscard]] static enum geist_status split_session_alloc(struct transformer_arch_session *sess,
+                                                           const struct geist_session_opts *opts) {
+    struct transformer_arch_state *st = sess->model;
+    if (sess->kv_kivi_enabled) {
+        geist_backend_set_error(st->backend,
+                                GEIST_E_UNSUPPORTED,
+                                "transformer_session_alloc: a layer split does not support KIVI");
+        return GEIST_E_UNSUPPORTED;
+    }
+    struct geist_session_opts so = {0};
+    so.max_seq_len               = sess->max_seq_len;
+    so.m_max                     = sess->m_max;
+    so.kv_mode                   = opts != nullptr ? opts->kv_mode : GEIST_KV_AUTO;
+    sess->split_sess             = transformer_session_alloc(st->split, &so);
+    if (sess->split_sess == nullptr) {
+        geist_backend_set_error(st->backend,
+                                GEIST_E_BACKEND,
+                                "transformer_session_alloc: split stage on '%s': %s",
+                                geist_backend_name(st->split->backend),
+                                geist_backend_errmsg(st->split->backend));
+        return GEIST_E_BACKEND;
+    }
+    if (sess->split_sess->kv_kivi_enabled) {
+        geist_backend_set_error(st->backend,
+                                GEIST_E_UNSUPPORTED,
+                                "transformer_session_alloc: a layer split does not support KIVI");
+        return GEIST_E_UNSUPPORTED;
+    }
+    size_t n = 0;
+    if (ckd_mul(&n, sess->m_max, st->d_model)) {
+        return GEIST_E_INVALID_ARG;
+    }
+    sess->split_rows = heap_alloc_array_aligned(float, n);
+    if (sess->split_rows == nullptr) {
+        geist_backend_set_error(st->backend, GEIST_E_OOM, "transformer_session_alloc: split rows");
+        return GEIST_E_OOM;
+    }
+    return GEIST_OK;
+}
+
 /* A session refused before its slot arrays exist: the handle and the
  * embedding accumulator are all it owns. */
 static void session_free_shell(struct transformer_arch_session *sess) {
@@ -2030,8 +2242,19 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     /* caps.max_m is the backend's per-call row limit (CPU quant kernels
      * size stack arrays from it; batched-submit GPUs allow larger
      * batches). 0 = uncapped. */
-    const size_t m_cap =
+    size_t m_cap =
             (be->desc != nullptr && be->desc->caps.max_m > 0) ? be->desc->caps.max_m : SIZE_MAX;
+    /* Layer split (#49): every chunk runs on both backends, so the split
+     * stage's row limit binds too, and the default chunk shrinks to fit. */
+    if (state->split != nullptr) {
+        const struct geist_backend *sbe = state->split->backend;
+        if (sbe->desc != nullptr && sbe->desc->caps.max_m > 0 && sbe->desc->caps.max_m < m_cap) {
+            m_cap = sbe->desc->caps.max_m;
+        }
+        if ((opts == nullptr || opts->m_max == 0) && sess->m_max > m_cap) {
+            sess->m_max = m_cap;
+        }
+    }
     /* Default chunk only (opts / GEIST_M_MAX win): a pool that does not fit the
      * backend's fast host-visible window lands in system memory and every
      * activation op then runs over PCIe (Bonsai 27B at m 128 without resizable
@@ -2100,6 +2323,9 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     if (s == GEIST_OK && !transformer_spec_session_scratch_alloc(sess)) {
         s = GEIST_E_OOM;
     }
+    if (s == GEIST_OK && state->split != nullptr) {
+        s = split_session_alloc(sess, opts);
+    }
     if (s == GEIST_OK && opts != nullptr) {
         s = transformer_session_apply_opts(sess, opts);
     }
@@ -2116,6 +2342,14 @@ void transformer_session_free(struct transformer_arch_state   *state,
         return;
     }
     struct geist_backend *be = (state != nullptr) ? state->backend : nullptr;
+
+    if (sess->split_sess != nullptr) {
+        transformer_session_free(state->split, sess->split_sess);
+        sess->split_sess = nullptr;
+    }
+    void *split_rows = sess->split_rows;
+    safe_free(&split_rows);
+    sess->split_rows = nullptr;
 
     void *acc = sess->embedding_acc;
     safe_free(&acc);

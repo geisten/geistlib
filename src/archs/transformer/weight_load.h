@@ -20,10 +20,14 @@
  * half-precision matrices and headroom: one chunk holds the model. With it,
  * only the tensors the loader marks WEIGHT_BIND do, a decision made per
  * call site that a scan of the file cannot repeat; the arena then starts
- * at one chunk and grows (arena_alloc). */
-[[nodiscard]] enum geist_status compute_weight_arena_capacity(const struct geist_backend *be,
-                                                              struct gguf_ctx            *gguf,
-                                                              size_t *out_bytes);
+ * at one chunk and grows (arena_alloc). Only the tensors `st` holds
+ * count: the layers in [layer_lo, layer_hi) and, but on a split stage, the
+ * globals (#49). */
+[[nodiscard]] enum geist_status
+compute_weight_arena_capacity(const struct geist_backend          *be,
+                              struct gguf_ctx                     *gguf,
+                              const struct transformer_arch_state *st,
+                              size_t                              *out_bytes);
 
 /* Open the β-mode weight arena with a first chunk of `bytes`. */
 [[nodiscard]] enum geist_status weight_arena_open(struct transformer_arch_state *st, size_t bytes);

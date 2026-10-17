@@ -228,8 +228,26 @@ int main(int argc, char **argv) {
     }
     fprintf(stderr, "[bench] backend: %s\n", geist_backend_name(be));
 
+    /* Layer split (#49): GEIST_BENCH_SPLIT_BACKEND runs the first
+     * GEIST_BENCH_SPLIT_LAYERS layers. Lives until the process ends. */
+    struct geist_session_opts load_opts  = {0};
+    const char               *split_name = getenv("GEIST_BENCH_SPLIT_BACKEND");
+    const char               *split_n    = getenv("GEIST_BENCH_SPLIT_LAYERS");
+    if (split_name != nullptr && split_name[0] != '\0' && split_n != nullptr) {
+        s = geist_backend_create(split_name, nullptr, nullptr, &load_opts.split_backend);
+        if (s != GEIST_OK) {
+            fprintf(stderr, "split backend create failed: %s\n", geist_last_create_error());
+            geist_backend_destroy(be);
+            return GEIST_TEST_ERROR;
+        }
+        load_opts.split_layers = (size_t) strtoull(split_n, nullptr, 10);
+        fprintf(stderr,
+                "[bench] split: layers 0..%zu on %s\n",
+                load_opts.split_layers - 1,
+                geist_backend_name(load_opts.split_backend));
+    }
     struct geist_model *model = nullptr;
-    s                         = geist_model_load(model_path, be, &model);
+    s                         = geist_model_load_with_opts(model_path, be, &load_opts, &model);
     if (s != GEIST_OK) {
         fprintf(stderr, "model_load failed: %s\n", geist_last_create_error());
         geist_backend_destroy(be);
@@ -475,6 +493,7 @@ int main(int argc, char **argv) {
     free(ids);
     geist_session_destroy(sess);
     geist_model_destroy(model);
+    geist_backend_destroy(load_opts.split_backend);
     geist_backend_destroy(be);
     return failed ? GEIST_TEST_ERROR : GEIST_TEST_PASS;
 }

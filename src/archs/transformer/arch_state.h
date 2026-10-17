@@ -480,6 +480,13 @@ struct transformer_arch_session {
     float  *spec_row_f32;    /* [HIDDEN] dequant scratch for the exact pass
                               * (quantized embeddings, e.g. Gemma's Q6_K) */
     void *spec_heap;         /* [spec_topk] (score,idx) top-K min-heap */
+
+    /* ---- Layer split (#49): the session on the model's split stage, which
+     * runs layers [0, model->split->layer_hi) on the split backend, and the
+     * host staging of the hidden rows that cross the boundary
+     * ([m_max, d_model]). nullptr without a split. */
+    struct transformer_arch_session *split_sess;
+    float                           *split_rows;
 };
 
 struct transformer_runtime_flags {
@@ -496,6 +503,16 @@ struct transformer_family;
 
 struct transformer_arch_state {
     struct geist_backend *backend; /* not owned */
+    /* Layer split (#49). The layers this state holds weights and KV caches
+     * for, and runs: [layer_lo, layer_hi); [0, n_layers) without a split.
+     * A split model is two states of the same GGUF: this one, on the load
+     * backend, holds the embedding, layers [N, n_layers) and the head;
+     * `split` (owned) holds layers [0, N) on the split backend and nothing
+     * else (split_stage). Every forward runs `split`'s layers first through
+     * the session's split_sess (forward/step.c). */
+    size_t                         layer_lo, layer_hi;
+    struct transformer_arch_state *split;
+    bool                           split_stage;
     /* Unique per loaded model in this process (never 0): binds a session
      * snapshot to the model it was taken on (snapshot.c). */
     uint64_t snapshot_id;
@@ -666,6 +683,11 @@ struct transformer_arch_state {
     struct geist_session_opts        default_opts;     /* shallow copy of the state_create opts */
     bool                             has_default_opts; /* false: state_create got nullptr */
 };
+
+/* Whether `st` holds and runs layer li (#49). */
+static inline bool transformer_layer_owned(const struct transformer_arch_state *st, size_t li) {
+    return li >= st->layer_lo && li < st->layer_hi;
+}
 
 /* ---- Forward-pass helpers (architecture-internal) --------------------- *
  * Per-session entry points take the session handle; weights and config
