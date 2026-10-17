@@ -1169,6 +1169,17 @@ geometry_from_metadata(struct geist_backend             *be,
                                 st->n_mtp_layers);
         return GEIST_E_FORMAT;
     }
+    /* The embedding table, the LM head and every token-id check are sized
+     * by it; family_vocab_size leaves 0 when the GGUF says nothing. */
+    if (st->vocab_size == 0) {
+        geist_backend_set_error(be,
+                                GEIST_E_FORMAT,
+                                "transformer: %s GGUF gives no vocabulary size (no %s.vocab_size "
+                                "key, no tokenizer.ggml.tokens)",
+                                fam->name,
+                                fam->name);
+        return GEIST_E_FORMAT;
+    }
     /* Head counts are metadata too. Every attention path maps query head h
      * to KV head h / (n_q_heads / n_kv_heads): more KV heads than query
      * heads divides by zero there, and a KV count that does not divide the
