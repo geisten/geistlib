@@ -286,6 +286,33 @@ safe because geist never re-bases cached positions (the sliding window masks,
 it does not re-RoPE the cache). A future KV context-shift feature would have to
 un-rotate/unpack before re-RoPE-ing — see the note atop `forward/kv_store.c`.
 
+## Layer split across two backends
+
+A model can run its first N layers on a second backend
+(`geist_session_opts.split_backend` / `split_layers`, EXPERIMENTAL, #49): a
+GPU for the layers that fit its memory, the CPU for the rest, the embedding
+and the head. The placement is fixed at load, like every other decision
+here, so the split adds no scheduling at run time.
+
+A split model is two transformer states of the same GGUF, each with one
+backend and a layer range `[layer_lo, layer_hi)`. Each loads, plans and
+caches only its own layers; the stage holding `[0, N)` (`split_stage`) has
+no embedding or head, and its weight arena is sized for its own tensors. A
+session on the model owns a session on the stage (`split_sess`).
+`transformer_run_all_layers` runs the stage's layers first and moves the
+hidden rows across through host memory, one transfer per step and
+direction. Family units and blocks do not know about the split: a layer
+runs exactly as it would on a single backend, which is why two CPU
+instances give byte-identical output at every split point
+(`test_layer_split_int`).
+
+Not covered: operations of one layer on two devices, automatic CPU
+fallback per operation, more than two backends. Those need a graph
+scheduler and contradict load-time binding. A split refuses models whose
+layers share state across the boundary or need a pass over every layer at
+load: per-layer embeddings, shared KV, DeltaNet layers, MTP blocks, a
+rotated basis, AWQ; and KIVI sessions and snapshots on a split model.
+
 ## Multimodal: soft-token prefixes
 
 Instead of a "Whisper → text → LLM" cascade, the audio/vision towers produce
