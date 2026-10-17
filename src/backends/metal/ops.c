@@ -32,8 +32,6 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
         return;
     }
     const bool m_tile16    = m_tile8 && params->rows >= METAL_Q4K_M16_TILE;
-    const bool m_tile16_n2 = m_tile16 && st->use_q4k_m16_n2 &&
-                             st->q4k_matmul_m16_n2_pipeline != nullptr && params->n_out >= 2u;
     /* The bounded kernel clamps its row and column indices and copies a
      * partial tile out through threadgroup memory, so any rows >= 8 shape
      * takes it, as the other formats' GEMMs do (#578). The partial-tile
@@ -58,7 +56,6 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
                                 enc,
                                 m_tile_sg_fast   ? st->q4k_mm_sg_fast_pipeline
                                 : m_tile_sg      ? st->q4k_mm_sg_pipeline
-                                : m_tile16_n2    ? st->q4k_matmul_m16_n2_pipeline
                                 : m_tile16       ? st->q4k_matmul_m16_pipeline
                                 : m_tile8_active ? st->q4k_matmul_m8_pipeline
                                 : n_tile4        ? st->q4k_n4_pipeline
@@ -73,10 +70,9 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
     }
 
     const struct metal_size groups = {
-            .width  = n_tile4       ? (params->n_out + 3u) / 4u
-                      : m_tile_sg   ? (params->rows + 31u) / 32u
-                      : m_tile16_n2 ? (params->n_out + 1u) / 2u
-                                    : params->n_out,
+            .width  = n_tile4     ? (params->n_out + 3u) / 4u
+                      : m_tile_sg ? (params->rows + 31u) / 32u
+                                  : params->n_out,
             .height = m_tile_sg  ? (params->n_out + 63u) / 64u
                       : m_tile16 ? (params->rows + METAL_Q4K_M16_TILE - 1u) / METAL_Q4K_M16_TILE
                       : m_tile8_active ? (params->rows + METAL_Q4K_M_TILE - 1u) / METAL_Q4K_M_TILE
@@ -178,14 +174,10 @@ static void metal_encode_q6k_linear(struct metal_state            *st,
     const bool m_tile_sg_fast = m_tile_sg && st->q6k_matmul_sg_fast_pipeline != nullptr &&
                                 (params->rows % 64u) == 0u && (params->n_out % 32u) == 0u &&
                                 (params->x_offset % 8u) == 0u && (params->x_row_stride % 8u) == 0u;
-    const bool m_tile16 = m_tile8 && !n_tile4 && !m_tile_sg && params->rows >= METAL_Q4K_M16_TILE;
-    const bool m_tile8_active = m_tile8 && !n_tile4 && !m_tile_sg && !m_tile16;
     metal_msg_send_set_pipeline(st,
                                 enc,
                                 m_tile_sg_fast   ? st->q6k_matmul_sg_fast_pipeline
                                 : m_tile_sg      ? st->q6k_matmul_sg_pipeline
-                                : m_tile16       ? st->q6k_matmul_m16_pipeline
-                                : m_tile8_active ? st->q6k_matmul_m8_pipeline
                                 : n_tile4        ? st->q6k_n4_pipeline
                                                  : st->q6k_pipeline);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
@@ -199,10 +191,7 @@ static void metal_encode_q6k_linear(struct metal_state            *st,
             .width  = m_tile_sg ? (params->n_out + 31u) / 32u
                       : n_tile4 ? (params->n_out + 3u) / 4u
                                 : params->n_out,
-            .height = m_tile_sg  ? (params->rows + 63u) / 64u
-                      : m_tile16 ? (params->rows + METAL_Q4K_M16_TILE - 1u) / METAL_Q4K_M16_TILE
-                      : m_tile8_active ? (params->rows + METAL_Q4K_M_TILE - 1u) / METAL_Q4K_M_TILE
-                                       : params->rows,
+            .height = m_tile_sg ? (params->rows + 63u) / 64u : params->rows,
             .depth  = 1,
     };
     const struct metal_size threads = {

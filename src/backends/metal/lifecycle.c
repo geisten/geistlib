@@ -110,9 +110,7 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_msg_send_void0(st, st->q4k_n4_library, "release");
         metal_msg_send_void0(st, st->q6k_mm_sg_library, "release");
         metal_msg_send_void0(st, st->q6k_mm_sg_fast_library, "release");
-        metal_msg_send_void0(st, st->q6k_m16_library, "release");
         metal_msg_send_void0(st, st->q4k_m16_library, "release");
-        metal_msg_send_void0(st, st->q4k_m16_n2_library, "release");
         metal_msg_send_void0(st, st->q4k_mm_sg_library, "release");
         metal_msg_send_void0(st, st->q4k_mm_sg_fast_library, "release");
         metal_msg_send_void0(st, st->q6k_mm32_library, "release");
@@ -229,8 +227,6 @@ void metal_destroy(struct geist_backend *be) {
     st->use_ple_block      = ple_block == nullptr || strcmp(ple_block, "0") != 0;
     const char *q4k_n4     = getenv("GEIST_METAL_Q4K_N4");
     st->use_q4k_n4         = q4k_n4 == nullptr || strcmp(q4k_n4, "0") != 0;
-    const char *q4k_m16_n2 = getenv("GEIST_METAL_Q4K_M16_N2");
-    st->use_q4k_m16_n2     = q4k_m16_n2 != nullptr && strcmp(q4k_m16_n2, "1") == 0;
     /* Simdgroup-matmul Q4_K GEMM (from llama.cpp mul_mm), on by default.
      * Whole tiles only; other shapes fall back to the m16 kernel.
      * GEIST_METAL_Q4K_MM_SG=0 disables. */

@@ -875,36 +875,6 @@ static const char metal_q4k_m16_source[] =
         "threadgroup);}if(lid==0u){for(uint m=0u;m<16u;m++){uint "
         "b=bb+m;if(b<p.rows)y[p.yo+b*p.ys+row]=part[m][0];}}}\n";
 
-static const char metal_q4k_m16_n2_source[] =
-        "#include <metal_stdlib>\n"
-        "using namespace metal;\n"
-        "struct P{uint ni,no,rows,bpr,xo,wo,yo,xs,ys;};\n"
-        "static inline float h(device const uchar*w,uint o){ushort "
-        "b=ushort(w[o])|(ushort(w[o+1])<<8);return float(as_type<half>(b));}\n"
-        "static inline void sm(uint j,device const uchar*q,thread uint&s,thread "
-        "uint&m){if(j<4){s=uint(q[j])&63u;m=uint(q[j+4])&63u;}else{uint "
-        "a=uint(q[j+4]),b=uint(q[j-4]),c=uint(q[j]);s=(a&15u)|((b>>6u)<<4u);m=(a>>4u)|((c>>6u)<<4u)"
-        ";}}\n"
-        "static inline float dq(device const uchar*w,constant P&p,uint r,uint k){uint "
-        "br=k>>8u,ib=k&255u,sub=ib>>5u,idx=ib&31u,bo=p.wo+(r*p.bpr+br)*144u;float "
-        "d=h(w,bo),dm=h(w,bo+2u);uint s,m;sm(sub,w+bo+4u,s,m);uint "
-        "qb=uint(w[bo+16u+(sub>>1u)*32u+idx]);uint q=(sub&1u)==0u?(qb&15u):(qb>>4u);return "
-        "d*float(s)*float(q)-dm*float(m);}\n"
-        "kernel void matmul_q4k_m16_n2(device const float*x[[buffer(0)]],device const "
-        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
-        "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){threadgroup "
-        "float p0[16][256];threadgroup float p1[16][256];uint "
-        "r0=tg.x*2u,bb=tg.y*16u;if(r0>=p.no||bb>=p.rows)return;bool hr=r0+1u<p.no;float "
-        "s0[16],s1[16];for(uint m=0u;m<16u;m++){s0[m]=0.0f;s1[m]=0.0f;}for(uint "
-        "k=lid;k<p.ni;k+=256u){float w0=dq(w,p,r0,k),w1=hr?dq(w,p,r0+1u,k):0.0f;for(uint "
-        "m=0u;m<16u;m++){uint b=bb+m;if(b<p.rows){float "
-        "xv=x[p.xo+b*p.xs+k];s0[m]+=xv*w0;s1[m]+=xv*w1;}}}for(uint "
-        "m=0u;m<16u;m++){p0[m][lid]=s0[m];p1[m][lid]=s1[m];}threadgroup_barrier(mem_flags::mem_"
-        "threadgroup);for(uint st=128u;st>0u;st>>=1u){if(lid<st){for(uint "
-        "m=0u;m<16u;m++){p0[m][lid]+=p0[m][lid+st];p1[m][lid]+=p1[m][lid+st];}}threadgroup_barrier("
-        "mem_flags::mem_threadgroup);}if(lid==0u){for(uint m=0u;m<16u;m++){uint "
-        "b=bb+m;if(b<p.rows){uint o=p.yo+b*p.ys+r0;y[o]=p0[m][0];if(hr)y[o+1u]=p1[m][0];}}}}\n";
-
 static const char metal_q4k_mm_sg_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
@@ -1127,22 +1097,7 @@ static const char metal_q6k_source[] =
         "partial[lid]=sum;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint "
         "stride=128u;stride>0u;stride>>=1u){if(lid<stride){partial[lid]+=partial[lid+stride];}"
         "threadgroup_barrier(mem_flags::mem_threadgroup);}if(lid==0u){y[p.y_offset+batch*p.y_row_"
-        "stride+row]=partial[0];}}\n"
-        "kernel void matmul_q6k_m8(device const float*x[[buffer(0)]],device const "
-        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant Params&p[[buffer(3)]],uint3 "
-        "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){threadgroup "
-        "float partial[8][256];uint "
-        "row=tg.x,batch_base=tg.y*8u;if(row>=p.n_out||batch_base>=p.rows){return;}float "
-        "sum[8];for(uint m=0u;m<8u;m++){sum[m]=0.0f;}for(uint k=lid;k<p.n_in;k+=256u){float "
-        "wv=deq6(w,p,row,k);for(uint m=0u;m<8u;m++){uint "
-        "batch=batch_base+m;if(batch<p.rows){sum[m]+=x[p.x_offset+batch*p.x_row_stride+k]*wv;}}}"
-        "for(uint "
-        "m=0u;m<8u;m++){partial[m][lid]=sum[m];}threadgroup_barrier(mem_flags::mem_threadgroup);"
-        "for(uint stride=128u;stride>0u;stride>>=1u){if(lid<stride){for(uint "
-        "m=0u;m<8u;m++){partial[m][lid]+=partial[m][lid+stride];}}threadgroup_barrier(mem_flags::"
-        "mem_threadgroup);}if(lid==0u){for(uint m=0u;m<8u;m++){uint "
-        "batch=batch_base+m;if(batch<p.rows){y[p.y_offset+batch*p.y_row_stride+row]=partial[m][0];}"
-        "}}}\n";
+        "stride+row]=partial[0];}}\n";
 
 /* 64x32 q6k GEMM (NK=8). Weight staging dequants one 8-elem k-run per
  * thread: d and the int8 scale load once per run instead of per element. */
@@ -1286,35 +1241,6 @@ static const char metal_q6k_n4_source[] =
         "if(rr==0u)sf0+=acc;else sf1+=acc;}}"
         "float a0=simd_sum(sf0),a1=simd_sum(sf1);"
         "if(ti==0){uint o=p.yo+b*p.ys+fr;y[o]=a0;if(fr+1u<p.no)y[o+1u]=a1;}}\n";
-
-static const char metal_q6k_m16_source[] =
-        "#include <metal_stdlib>\n"
-        "using namespace metal;\n"
-        "struct P{uint ni,no,rows,bpr,xo,wo,yo,xs,ys;};\n"
-        "static inline float h(device const uchar*w,uint o){ushort "
-        "b=ushort(w[o])|(ushort(w[o+1])<<8);return float(as_type<half>(b));}\n"
-        "static inline int i8(device const uchar*w,uint o){uint u=uint(w[o]);return "
-        "u<128u?int(u):int(u)-256;}\n"
-        "static inline float dq6(device const uchar*w,constant P&p,uint r,uint k){uint "
-        "br=k>>8u,ib=k&255u,hi=ib>>7u,ih=ib&127u,stream=ih>>5u,l=ih&31u,is=l>>4u,bo=p.wo+(r*p.bpr+"
-        "br)*210u;uint qlb=bo+hi*64u,qhb=bo+128u+hi*32u,scb=bo+192u+hi*8u;uint "
-        "ql0=uint(w[qlb+l]),ql1=uint(w[qlb+l+32u]),qh=uint(w[qhb+l]),qu,si;if(stream==0u){qu=(ql0&"
-        "15u)|(((qh>>0u)&3u)<<4u);si=is+0u;}else "
-        "if(stream==1u){qu=(ql1&15u)|(((qh>>2u)&3u)<<4u);si=is+2u;}else "
-        "if(stream==2u){qu=(ql0>>4u)|(((qh>>4u)&3u)<<4u);si=is+4u;}else{qu=(ql1>>4u)|(((qh>>6u)&3u)"
-        "<<4u);si=is+6u;}return h(w,bo+208u)*float(i8(w,scb+si))*float(int(qu)-32);}\n"
-        "kernel void matmul_q6k_m16(device const float*x[[buffer(0)]],device const "
-        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
-        "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){threadgroup "
-        "float part[16][256];uint row=tg.x,bb=tg.y*16u;if(row>=p.no||bb>=p.rows)return;float "
-        "s[16];for(uint m=0u;m<16u;m++)s[m]=0.0f;for(uint k=lid;k<p.ni;k+=256u){float "
-        "wv=dq6(w,p,row,k);for(uint m=0u;m<16u;m++){uint "
-        "b=bb+m;if(b<p.rows)s[m]+=x[p.xo+b*p.xs+k]*wv;}}for(uint "
-        "m=0u;m<16u;m++)part[m][lid]=s[m];threadgroup_barrier(mem_flags::mem_threadgroup);for(uint "
-        "st=128u;st>0u;st>>=1u){if(lid<st){for(uint "
-        "m=0u;m<16u;m++)part[m][lid]+=part[m][lid+st];}threadgroup_barrier(mem_flags::mem_"
-        "threadgroup);}if(lid==0u){for(uint m=0u;m<16u;m++){uint "
-        "b=bb+m;if(b<p.rows)y[p.yo+b*p.ys+row]=part[m][0];}}}\n";
 
 /* fused->hadamard_rotate (see struct geist_hadamard_args): one
  * threadgroup per (block, row) stages the block in threadgroup memory —

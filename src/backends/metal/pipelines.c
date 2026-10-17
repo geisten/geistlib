@@ -122,13 +122,10 @@ static const struct metal_pipeline_row metal_quant_rows[] = {
         METAL_PIPE(q4k_pair_n4, "pair_q4k_n4", q4k_pair_n4),
         METAL_PIPE(q4k, "matmul_q4k_m8", q4k_matmul_m8),
         METAL_PIPE(q4k_m16, "matmul_q4k_m16", q4k_matmul_m16),
-        METAL_PIPE(q4k_m16_n2, "matmul_q4k_m16_n2", q4k_matmul_m16_n2),
         METAL_PIPE(q6k, "matvec_q6k", q6k),
         METAL_PIPE(q6k_mm_sg, "matmul_q6k_sg", q6k_matmul_sg),
         METAL_PIPE(q6k_mm_sg_fast, "matmul_q6k_sg_fast", q6k_matmul_sg_fast),
         METAL_PIPE(q6k_n4, "matvec_q6k_n4", q6k_n4),
-        METAL_PIPE(q6k, "matmul_q6k_m8", q6k_matmul_m8),
-        METAL_PIPE(q6k_m16, "matmul_q6k_m16", q6k_matmul_m16),
         METAL_PIPE(elem, "rmsnorm_rows", rmsnorm_rows),
         METAL_PIPE(elem_simd, "rmsnorm_rows_simd", rmsnorm_rows_simd),
         METAL_PIPE(elem, "gelu_rows", gelu_rows),
@@ -280,10 +277,8 @@ void metal_release_pipeline_tables(struct metal_state *st) {
         st->i2s_n4_pipeline != nullptr && st->i2s_mm_pipeline != nullptr &&
         st->iq3s_mm_pipeline != nullptr && st->q4k_n4_pipeline != nullptr &&
         st->q4k_matmul_m8_pipeline != nullptr && st->q4k_matmul_m16_pipeline != nullptr &&
-        st->q4k_matmul_m16_n2_pipeline != nullptr &&
         (!st->use_q4k_mm_sg || st->q4k_mm_sg_pipeline != nullptr) && st->q6k_pipeline != nullptr &&
-        st->q6k_n4_pipeline != nullptr && st->q6k_matmul_m8_pipeline != nullptr &&
-        st->q6k_matmul_m16_pipeline != nullptr && st->rmsnorm_rows_pipeline != nullptr &&
+        st->q6k_n4_pipeline != nullptr && st->rmsnorm_rows_pipeline != nullptr &&
         st->rmsnorm_rows_simd_pipeline != nullptr && st->gelu_rows_pipeline != nullptr &&
         st->silu_rows_pipeline != nullptr && st->relu2_rows_pipeline != nullptr &&
         st->mul_rows_pipeline != nullptr && st->gelu_mul_rows_pipeline != nullptr &&
@@ -370,8 +365,6 @@ void metal_release_pipeline_tables(struct metal_state *st) {
             metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q4k_n4_source);
     void *q4k_m16_source =
             metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q4k_m16_source);
-    void *q4k_m16_n2_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q4k_m16_n2_source);
     void *q4k_mm_sg_ns_source =
             st->use_q4k_mm_sg
                     ? metal_msg_send_id_cstr(
@@ -399,8 +392,6 @@ void metal_release_pipeline_tables(struct metal_state *st) {
             st, ns_string, "stringWithUTF8String:", metal_q6k_mm_sg_fast_source);
     void *q6_n4_source =
             metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q6k_n4_source);
-    void *q6_m16_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q6k_m16_source);
     void *elem_source =
             metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_elem_source);
     void *silu_source =
@@ -447,10 +438,10 @@ void metal_release_pipeline_tables(struct metal_state *st) {
         free(f32_src);
     }
     if (source == nullptr || q40_q80_source == nullptr || quant_sg_source == nullptr ||
-        q4k_m16_source == nullptr || q4k_m16_n2_source == nullptr || q4k_n4_source == nullptr ||
+        q4k_m16_source == nullptr || q4k_n4_source == nullptr ||
         (st->use_q4k_mm_sg && q4k_mm_sg_ns_source == nullptr) || q4k_gate_up_n4_src == nullptr ||
         q4k_pair_n4_src == nullptr || q6_source == nullptr || q6_n4_source == nullptr ||
-        q6_m16_source == nullptr || elem_source == nullptr || silu_source == nullptr ||
+        elem_source == nullptr || silu_source == nullptr ||
         qgate_source == nullptr || elem_simd_source == nullptr || embed_source == nullptr ||
         f32_source == nullptr) {
         geist_backend_set_error(be, GEIST_E_BACKEND, "metal: failed to create shader source");
@@ -569,22 +560,6 @@ void metal_release_pipeline_tables(struct metal_state *st) {
                                 msg != nullptr ? msg : "");
         return GEIST_E_BACKEND;
     }
-    err                    = nullptr;
-    st->q4k_m16_n2_library = metal_msg_send_id_id_id_err(st,
-                                                         st->device,
-                                                         "newLibraryWithSource:options:error:",
-                                                         q4k_m16_n2_source,
-                                                         nullptr,
-                                                         &err);
-    if (st->q4k_m16_n2_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: Q4_K m16 n2 shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
     if (st->use_q4k_mm_sg) {
         err                   = nullptr;
         st->q4k_mm_sg_library = metal_msg_send_id_id_id_err(st,
@@ -672,18 +647,6 @@ void metal_release_pipeline_tables(struct metal_state *st) {
         geist_backend_set_error(be,
                                 GEIST_E_BACKEND,
                                 "metal: Q6_K mm_sg fast shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err                 = nullptr;
-    st->q6k_m16_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", q6_m16_source, nullptr, &err);
-    if (st->q6k_m16_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: Q6_K m16 shader compile failed%s%s",
                                 msg != nullptr ? ": " : "",
                                 msg != nullptr ? msg : "");
         return GEIST_E_BACKEND;

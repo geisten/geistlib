@@ -250,9 +250,6 @@ struct metal_state {
     void *q4k_m16_library;
     void *q4k_matmul_m16_function;
     void *q4k_matmul_m16_pipeline;
-    void *q4k_m16_n2_library;
-    void *q4k_matmul_m16_n2_function;
-    void *q4k_matmul_m16_n2_pipeline;
     void *q4k_mm_sg_library;
     void *q4k_mm_sg_function;
     void *q4k_mm_sg_pipeline;
@@ -283,17 +280,12 @@ struct metal_state {
     void *q6k_pipeline;
     void *q6k_n4_function;
     void *q6k_n4_pipeline;
-    void *q6k_matmul_m8_function;
-    void *q6k_matmul_m8_pipeline;
     void *q6k_mm_sg_library;
     void *q6k_matmul_sg_function;
     void *q6k_matmul_sg_pipeline;
     void *q6k_mm_sg_fast_library;
     void *q6k_matmul_sg_fast_function;
     void *q6k_matmul_sg_fast_pipeline;
-    void *q6k_m16_library;
-    void *q6k_matmul_m16_function;
-    void *q6k_matmul_m16_pipeline;
     void *rmsnorm_rows_function;
     void *rmsnorm_rows_pipeline;
     void *rmsnorm_rows_simd_function;
@@ -473,7 +465,6 @@ struct metal_state {
     bool                      sequence_has_work;
     bool                      use_ple_block;
     bool                      use_q4k_n4;
-    bool                      use_q4k_m16_n2;
     bool                      use_q4k_mm_sg;
     bool                      use_rmsnorm_simd;
     bool                      use_q6k_n4;
