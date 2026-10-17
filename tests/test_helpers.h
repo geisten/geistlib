@@ -224,7 +224,7 @@ static inline const char *geist_test_find_qwen35_gguf(void) {
  * skip otherwise. A plain skip, not GEIST_SKIP_FIXTURE: the fixture is
  * present, it is just the wrong family, and strict-fixture CI must not read
  * that as missing. `arch` is whatever names the family for the handle at
- * hand: geist_model_arch(model), st->config.family, or the GGUF's
+ * hand: geist_model_arch(model), st->family->name, or the GGUF's
  * general.architecture. */
 #define GEIST_REQUIRE_ARCH(arch, want)                              \
     GEIST_SKIP_IF((arch) == nullptr || strcmp((arch), (want)) != 0, \

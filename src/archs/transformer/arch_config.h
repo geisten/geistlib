@@ -106,19 +106,13 @@ static inline bool geist_pooling_is_embedding(enum geist_pooling_kind k) {
 }
 
 /* Pick the FFN activation. An explicit *.feed_forward_activation value (`act`,
- * `act_len`; pass act=nullptr when the GGUF has no such key) wins. Otherwise the
- * default is keyed on `general.architecture`: only "bitnet-b1.58" (Microsoft's
- * official 2B-4T — gated squared-ReLU, and its GGUF carries NO activation key)
- * defaults to GATED_SQUARED_RELU; everything else (community "bitnet", llama,
- * gemma) defaults to SwiGLU (2B-4T under SwiGLU scores chance on MMLU). Pure
- * (no GGUF) so it is unit-testable. Keep test_bitnet_arch_unit in sync. */
+ * `act_len`; pass act=nullptr when the GGUF has no such key) wins; otherwise,
+ * and for a value it does not know, the family's default `dflt` (BitNet:
+ * gated squared-ReLU for "bitnet-b1.58", SwiGLU for community "bitnet").
+ * Pure (no GGUF) so it is unit-testable. Keep test_bitnet_arch_unit in sync. */
 static inline enum geist_ffn_activation_kind
-geist_ffn_activation_select(size_t arch_len, size_t act_len, const char *arch, const char *act) {
-    enum geist_ffn_activation_kind out =
-            (arch != nullptr && arch_len == sizeof("bitnet-b1.58") - 1 &&
-             memcmp(arch, "bitnet-b1.58", arch_len) == 0)
-                    ? GEIST_FFN_GATED_SQUARED_RELU
-                    : GEIST_FFN_SWIGLU;
+geist_ffn_activation_select(size_t act_len, enum geist_ffn_activation_kind dflt, const char *act) {
+    enum geist_ffn_activation_kind out = dflt;
     if (act == nullptr) {
         return out;
     }
@@ -147,9 +141,6 @@ geist_ffn_activation_select(size_t arch_len, size_t act_len, const char *arch, c
 }
 
 struct geist_arch_config {
-    /* ---- Family identity: the transformer_family name. */
-    const char *family; /* "gemma4", "llama", "qwen35", … */
-
     /* ---- Numerics. */
     float rms_eps;       /* RMSNorm epsilon. Gemma 4: 1e-6f. */
     float logit_softcap; /* tanh(p/softcap)*softcap; 0 = disabled. */

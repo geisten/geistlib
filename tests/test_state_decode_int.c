@@ -17,6 +17,7 @@
 
 #include "test_helpers.h"
 
+#include "src/archs/transformer/arch_family.h"
 #include "src/archs/transformer/arch_state.h"
 
 #include <geist.h>
@@ -59,7 +60,7 @@ int main(void) {
         return GEIST_TEST_FAIL;
     }
     /* HELLO_TOKEN and the canonical [9259,9259,9259] are Gemma vocab ids. */
-    GEIST_REQUIRE_ARCH(st->config.family, "gemma4");
+    GEIST_REQUIRE_ARCH(st->family->name, "gemma4");
 
     /* Prefill: feed BOS then "Hello" as two decode_step calls. We don't
      * actually need the predicted tokens for prefill — only the final

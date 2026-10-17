@@ -1131,7 +1131,6 @@ geometry_from_metadata(struct geist_backend             *be,
      * family stripping Gemma defaults. rms_eps carries the one value
      * all families share as a fallback when the meta key is absent. */
     st->config = (struct geist_arch_config) {
-            .family         = "?",
             .rms_eps        = 1e-6f,
             .kv_sliding_src = -1,
             .kv_full_src    = -1,
@@ -1156,8 +1155,7 @@ geometry_from_metadata(struct geist_backend             *be,
                 be, GEIST_E_INTERNAL, "transformer: family %s has no layer forward", fam->name);
         return GEIST_E_INTERNAL;
     }
-    st->config.family = fam->name;
-    st->family        = fam;
+    st->family = fam;
     fam->populate(gguf, st);
     if (st->n_layers == 0) {
         geist_backend_set_error(be,
