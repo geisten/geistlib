@@ -453,6 +453,11 @@ minor release.
   headers are unchanged.
 
 ### Removed
+- **`geist_arch_ops_decoder.set_session_opts` (`geist_arch.h`,
+  EXPERIMENTAL).** Only a decoder arch without `session_alloc` used it, and
+  none exists: `session_alloc` / `session_free` are now required, and a
+  model whose arch registers neither is refused at load. The slots after
+  it move up by one pointer.
 
 - **Metal: undocumented kernel switches and debug traces.** The default-on
   kill switches `GEIST_METAL_FLASH`, `F32_MM`, `PLE_BLOCK`, `Q4K_N4`,

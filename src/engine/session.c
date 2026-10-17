@@ -68,9 +68,7 @@ struct geist_session_full {
     struct geist_model   *model;
     struct geist_backend *backend;
 
-    /* Per-session arch state. NULL when the architecture doesn't
-     * implement session_alloc — engine falls back to using the model's
-     * default session (single-session-per-model semantics). */
+    /* Per-session arch state, from the arch's session_alloc. */
     void *arch_session;
 
     /* Sampler defaults from geist_session_opts. */
@@ -118,12 +116,10 @@ static inline struct geist_session_full *as_full(struct geist_session *s) {
     return (struct geist_session_full *) s;
 }
 
-/* The session handle passed to per-session vtable ops. For architectures
- * with session_alloc this is the arch session this geist_session owns;
- * for single-session archs (no session_alloc) it is the arch_state
- * itself — such an arch's model IS its one session. */
+/* The session handle passed to per-session vtable ops: the arch session
+ * this geist_session owns. */
 static inline void *arch_sess(const struct geist_session_full *sf) {
-    return sf->arch_session != nullptr ? sf->arch_session : sf->model->text_decoder.arch_meta;
+    return sf->arch_session;
 }
 
 /* ---- struct token_strs ---------------------------------------------------- */
@@ -363,41 +359,22 @@ set_dry_breakers(struct geist_session_full                 *sf,
     };
     sf->err_msg[0] = '\0';
 
-    /* Allocate a per-session arch state if the architecture
-     * supports it. This gives the session its own KV cache + scratch
-     * pool + sampler RNG, separate from any other session on the same
-     * model. session_alloc already calls apply_opts inside, so the
-     * session-level temperature / top_p / top_k / seed are wired up.
-     *
-     * Architectures without session_alloc stay single-session-per-model
-     * — the engine passes the arch_state as the session handle on every
-     * dispatch (such an arch's model IS its one session), and
-     * set_session_opts is the only path for sampler config. */
+    /* Every decoder arch has session_alloc (model_arch_gate refuses one
+     * without): the session gets its own KV cache + scratch pool + sampler
+     * RNG, separate from any other session on the same model. session_alloc
+     * applies the opts, so the session-level temperature / top_p / top_k /
+     * seed are wired up. */
     const struct geist_arch_ops_decoder *ops = m->text_decoder.arch_ops;
-    if (ops != nullptr && ops->session_alloc != nullptr) {
-        sf->arch_session = ops->session_alloc(m->text_decoder.arch_meta, opts);
-        if (sf->arch_session == nullptr) {
-            geist_error_set_create_time(
-                    GEIST_E_OOM, "geist_session_create", "arch session_alloc returned null");
-            void *tmp = sf;
-            safe_free(&tmp);
-            return GEIST_E_OOM;
-        }
-        if (ops->bind_cancel != nullptr) {
-            ops->bind_cancel(sf->arch_session, cancel_requested, sf);
-        }
-    } else if (opts != nullptr && ops != nullptr && ops->set_session_opts != nullptr) {
-        /* Single-session path: push opts onto the arch's one
-         * session (= its arch_state). When multiple legacy sessions
-         * share one model, the last set_session_opts call wins. */
-        const enum geist_status os = ops->set_session_opts(m->text_decoder.arch_meta, opts);
-        if (os != GEIST_OK) {
-            geist_error_set_create_time(
-                    GEIST_E_OOM, "geist_session_create", "set_session_opts failed");
-            void *tmp = sf;
-            safe_free(&tmp);
-            return os;
-        }
+    sf->arch_session                         = ops->session_alloc(m->text_decoder.arch_meta, opts);
+    if (sf->arch_session == nullptr) {
+        geist_error_set_create_time(
+                GEIST_E_OOM, "geist_session_create", "arch session_alloc returned null");
+        void *tmp = sf;
+        safe_free(&tmp);
+        return GEIST_E_OOM;
+    }
+    if (ops->bind_cancel != nullptr) {
+        ops->bind_cancel(sf->arch_session, cancel_requested, sf);
     }
 
     if (opts != nullptr) {
@@ -449,7 +426,7 @@ void geist_session_destroy(struct geist_session *s) {
     /* A turn still open at destroy is aborted, not abandoned. */
     session_audio_stream_release(sf);
     /* Release this session's arch state if it owns one. */
-    if (sf->arch_session != nullptr && ops != nullptr && ops->session_free != nullptr) {
+    if (sf->arch_session != nullptr) {
         ops->session_free(sf->model->text_decoder.arch_meta, sf->arch_session);
         sf->arch_session = nullptr;
     }

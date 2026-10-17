@@ -159,6 +159,15 @@ static const struct geist_arch_descriptor *model_arch_gate(const char *fn, const
                                     names);
         return nullptr;
     }
+    /* Every engine-level session owns one arch session; an arch without
+     * the pair cannot serve one. */
+    if (desc->decoder_ops->session_alloc == nullptr || desc->decoder_ops->session_free == nullptr) {
+        geist_error_set_create_time(GEIST_E_INTERNAL,
+                                    fn,
+                                    "architecture '%s' registers no session_alloc/session_free",
+                                    desc->name);
+        return nullptr;
+    }
     return desc;
 }
 
