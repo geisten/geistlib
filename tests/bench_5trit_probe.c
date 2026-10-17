@@ -19,6 +19,7 @@
 #include "gguf_ptqtp.h"
 #include "quant.h"
 #include "ptqtp_kernel.h"
+#include "test_helpers.h"
 
 #include <alloca.h>
 #include <math.h>
@@ -26,17 +27,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
 
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
 #endif
-
-static double now_ms(void) {
-    struct timeval tv;
-    gettimeofday(&tv, nullptr);
-    return (double) tv.tv_sec * 1000.0 + (double) tv.tv_usec / 1000.0;
-}
 
 /* Decode 4 bits → trit. Mirror of PTQTP_2P_T1_LUT / _T2_LUT in
  * src/formats/ptqtp/ptqtp_kernel.c. */
@@ -281,17 +275,17 @@ int main(int argc, char **argv) {
 
     /* Bench current kernel. */
     {
-        const double tw = now_ms();
+        const double tw = geist_test_now_ms();
         ptqtp_gemv_2plane_fp16alpha(n_in, n_out, gs, x_q8, scale_x, t->trits, t->alpha, y_old);
-        const double single_ms = now_ms() - tw;
+        const double single_ms = geist_test_now_ms() - tw;
         int          n_iter    = (int) (3000.0 / (single_ms + 0.001)) + 5;
         if (n_iter > 100000)
             n_iter = 100000;
-        const double t0 = now_ms();
+        const double t0 = geist_test_now_ms();
         for (int it = 0; it < n_iter; it++) {
             ptqtp_gemv_2plane_fp16alpha(n_in, n_out, gs, x_q8, scale_x, t->trits, t->alpha, y_old);
         }
-        const double dt_ms = (now_ms() - t0) / n_iter;
+        const double dt_ms = (geist_test_now_ms() - t0) / n_iter;
         const size_t bytes = n_out * n_in / 2 + n_out * (n_in / gs) * 2 * sizeof(uint16_t);
         printf("\n  [4-bpw  ] %.3f ms/call  %.2f GB/s  (%d it)\n",
                dt_ms,
@@ -301,18 +295,18 @@ int main(int argc, char **argv) {
 
     /* Bench 5-trit kernel. */
     {
-        const double tw = now_ms();
+        const double tw = geist_test_now_ms();
         linear_5trit_decode(n_in, n_out, gs, x_q8, scale_x, T1_packed, T2_packed, t->alpha, y_new);
-        const double single_ms = now_ms() - tw;
+        const double single_ms = geist_test_now_ms() - tw;
         int          n_iter    = (int) (3000.0 / (single_ms + 0.001)) + 5;
         if (n_iter > 100000)
             n_iter = 100000;
-        const double t0 = now_ms();
+        const double t0 = geist_test_now_ms();
         for (int it = 0; it < n_iter; it++) {
             linear_5trit_decode(
                     n_in, n_out, gs, x_q8, scale_x, T1_packed, T2_packed, t->alpha, y_new);
         }
-        const double dt_ms = (now_ms() - t0) / n_iter;
+        const double dt_ms = (geist_test_now_ms() - t0) / n_iter;
         const size_t bytes = 2 * bytes_per_plane + n_out * (n_in / gs) * 2 * sizeof(uint16_t);
         printf("  [5-trit ] %.3f ms/call  %.2f GB/s  (%d it)\n",
                dt_ms,

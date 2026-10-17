@@ -43,12 +43,6 @@ extern void cblas_sgemm(CBLAS_ORDER,
                         float          *C,
                         int             ldc);
 
-static double monotonic_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec / 1e6;
-}
-
 static void fill_random_f32(float *p, size_t n, uint32_t seed) {
     /* Deterministic xorshift32 — same input across runs and backends. */
     uint32_t s = seed;
@@ -124,9 +118,9 @@ static void fill_random_f32(float *p, size_t n, uint32_t seed) {
     /* Timed runs: take min over 5 iterations. */
     double best = 1e30;
     for (int rep = 0; rep < 5; rep++) {
-        double t0 = monotonic_ms();
+        double t0 = geist_test_now_ms();
         wkr.linear_mN(M, (const float *) x_host, &wkr, be, (float *) y_host);
-        double dt = monotonic_ms() - t0;
+        double dt = geist_test_now_ms() - t0;
         if (dt < best)
             best = dt;
     }
@@ -194,7 +188,7 @@ int main(void) {
                 (int) N); /* warmup */
     double best_direct = 1e30;
     for (int rep = 0; rep < 5; rep++) {
-        double t0 = monotonic_ms();
+        double t0 = geist_test_now_ms();
         cblas_sgemm(CblasRowMajor,
                     CblasNoTrans,
                     CblasTrans,
@@ -209,7 +203,7 @@ int main(void) {
                     0.0f,
                     y_direct,
                     (int) N);
-        double dt = monotonic_ms() - t0;
+        double dt = geist_test_now_ms() - t0;
         if (dt < best_direct)
             best_direct = dt;
     }

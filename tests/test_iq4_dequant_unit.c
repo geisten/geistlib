@@ -13,6 +13,7 @@
 #include <geist_types.h>
 
 #include "quant.h"
+#include "neon_quant_wrappers.h"
 
 #include <math.h>
 #include <stdio.h>

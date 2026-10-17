@@ -34,14 +34,6 @@ int main(void) {
 
 static int g_fail = 0;
 
-#define CHECK(cond, msg)                          \
-    do {                                          \
-        if (!(cond)) {                            \
-            fprintf(stderr, "FAIL: %s\n", (msg)); \
-            g_fail = 1;                           \
-        }                                         \
-    } while (0)
-
 constexpr size_t N_IN  = 512;
 constexpr size_t N_OUT = 64;
 constexpr size_t M_MAX = 8;
@@ -120,7 +112,7 @@ static bool run_case(struct geist_backend *be, const struct dtype_case *c, float
     const size_t nbytes = c->nbytes();
     void        *w_raw  = make_blob(nbytes);
     if (w_raw == nullptr) {
-        CHECK(false, "blob allocation");
+        g_fail |= geist_expect(false, "blob allocation");
         return false;
     }
     struct geist_weight w = {

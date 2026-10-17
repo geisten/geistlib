@@ -1,6 +1,7 @@
 /* Validate linear_q4k_decode_fp32 vs sgemm-on-FP32-dequant. */
 #include "gguf_reader.h"
 #include "quant.h"
+#include "neon_quant_wrappers.h"
 #include "gguf_dequant.h"
 #include "gemma4_kernels.h"
 #include "test_helpers.h"

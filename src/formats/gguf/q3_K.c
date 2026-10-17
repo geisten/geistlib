@@ -2,9 +2,8 @@
  * src/formats/gguf/q3_K.c — Q3_K block dequantization.
  *
  * Pure file-format decoder. The W3A8 NEON kernels live in
- * src/backends/cpu_neon/kernels/q3_K.c; both share struct block_q3_K_t
- * from quant_blocks.h. The kernel file keeps its own copies of
- * unpack_q3k_scales and q3k_reconstruct_q32.
+ * src/backends/cpu_neon/kernels/q3_K.c; both take struct block_q3_K_t,
+ * unpack_q3k_scales and q3k_reconstruct_q32 from quant_blocks.h.
  */
 #include "quant_blocks.h"
 #include "quant.h"
@@ -16,35 +15,7 @@
 #include <arm_neon.h>
 #endif
 
-static inline void unpack_q3k_scales(const uint8_t *sc_packed, int8_t *sc_out) {
-    for (int j = 0; j < 16; j++) {
-        const uint8_t low4  = (uint8_t) ((sc_packed[j % 8] >> ((j / 8) * 4u)) & 0x0Fu);
-        const uint8_t high2 = (uint8_t) ((sc_packed[8 + (j % 4)] >> ((j / 4) * 2u)) & 0x03u);
-        sc_out[j]           = (int8_t) ((int) (low4 | (high2 << 4u)) - 32);
-    }
-}
-
 #if defined(__ARM_NEON)
-/* Reconstruct 32 signed-3-bit q values for a Q3_K quant-group. Caller passes
- * pre-shifted qs/hmask vectors (vshrq_n_u8 needs an immediate; shift=0 means
- * caller passes the source vector through unshifted). */
-static inline void q3k_reconstruct_q32(uint8x16_t qs_shifted_lo,
-                                       uint8x16_t qs_shifted_hi,
-                                       uint8x16_t hm_shifted_lo,
-                                       uint8x16_t hm_shifted_hi,
-                                       int8x16_t *out_lo,
-                                       int8x16_t *out_hi) {
-    const uint8x16_t mask3  = vdupq_n_u8(0x03);
-    const uint8x16_t mask1  = vdupq_n_u8(0x01);
-    const int8x16_t  bias4  = vdupq_n_s8(4);
-    uint8x16_t       low2_l = vandq_u8(qs_shifted_lo, mask3);
-    uint8x16_t       low2_h = vandq_u8(qs_shifted_hi, mask3);
-    uint8x16_t       hi1_l  = vandq_u8(hm_shifted_lo, mask1);
-    uint8x16_t       hi1_h  = vandq_u8(hm_shifted_hi, mask1);
-    *out_lo = vsubq_s8(vreinterpretq_s8_u8(vaddq_u8(low2_l, vshlq_n_u8(hi1_l, 2))), bias4);
-    *out_hi = vsubq_s8(vreinterpretq_s8_u8(vaddq_u8(low2_h, vshlq_n_u8(hi1_h, 2))), bias4);
-}
-
 /* Multiply 16 int8 q values by a single fp32 scalar, store to y[0..15]. */
 static inline void q3k_store16_scaled(int8x16_t q, float scale, float *y) {
     const float32x4_t v_scale = vdupq_n_f32(scale);

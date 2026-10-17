@@ -29,12 +29,6 @@
 #define CHUNK_PCM_SAMPLES 320 /* 20 ms @ 16 kHz */
 #define CHUNK_NS (20 * 1000 * 1000L)
 
-static double now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec / 1e6;
-}
-
 /* Chunk-walking WAV reader (audio_test_util.h); handles ffmpeg's LIST chunk. */
 static int16_t *read_wav_pcm(const char *path, size_t *n_samples_out, int *sample_rate_out) {
     return audio_test_read_wav(path, n_samples_out, sample_rate_out);
@@ -67,14 +61,14 @@ int main(int argc, char **argv) {
     /* Simulate live capture: push 320-sample chunks every 20 ms. The chunk
      * boundary is wall-anchored at start (not cumulative across pushes) so
      * mel work inside push_pcm doesn't compound jitter. */
-    const double t0_total = now_ms();
+    const double t0_total = geist_test_now_ms();
     for (size_t off = 0; off < n_samples; off += CHUNK_PCM_SAMPLES) {
         const size_t take =
                 (n_samples - off) < CHUNK_PCM_SAMPLES ? (n_samples - off) : CHUNK_PCM_SAMPLES;
         audio_encoder_push_pcm(enc, take, pcm + off);
 
         const double target_ms = t0_total + (double) (off + take) / 16.0;
-        const double now       = now_ms();
+        const double now       = geist_test_now_ms();
         const double remain_ms = target_ms - now;
         if (remain_ms > 0.0) {
             struct timespec ts = {
@@ -84,11 +78,11 @@ int main(int argc, char **argv) {
             nanosleep(&ts, nullptr);
         }
     }
-    const double t_after_capture = now_ms();
+    const double t_after_capture = geist_test_now_ms();
 
     /* End of utterance — measure residual encode tail. */
     audio_encoder_end_input(enc);
-    const double t0_residual = now_ms();
+    const double t0_residual = geist_test_now_ms();
 
     float *soft = malloc(256 * 1536 * sizeof(float));
     /* Drain until segment_done — the streaming worker emits tokens
@@ -100,7 +94,7 @@ int main(int argc, char **argv) {
             break;
         n_soft += take;
     }
-    const double t1 = now_ms();
+    const double t1 = geist_test_now_ms();
 
     printf("\n--- bench_audio_streaming results ---\n");
     printf("  audio length        : %.2f s\n", audio_seconds);

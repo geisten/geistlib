@@ -143,22 +143,12 @@ void             dequant_iq4_xs_row(size_t n_elems, const void *blocks, float ou
 
 /* W4A8 NEON decode GEMVs for the IQ4 LUT formats (one vqtbl1q per 16
  * nibbles). IQ4_NL prefill stays on the dequant+SGEMM trampoline. */
-void linear_iq4xs_decode_w4a8(size_t      n_in,
-                              size_t      n_out,
-                              const float x[static n_in],
-                              const void *w_iq4xs,
-                              float       y[static n_out]);
 void linear_iq4xs_decode_w4a8_pre(size_t       n_in,
                                   size_t       n_out,
                                   const float *x_scales,
                                   const int8_t x_q8[static n_in],
                                   const void  *w_iq4xs,
                                   float        y[static n_out]);
-void linear_iq4nl_decode_w4a8(size_t      n_in,
-                              size_t      n_out,
-                              const float x[static n_in],
-                              const void *w_iq4nl,
-                              float       y[static n_out]);
 void linear_iq4nl_decode_w4a8_pre(size_t       n_in,
                                   size_t       n_out,
                                   const float *x_scales,
@@ -174,8 +164,6 @@ void linear_iq4xs_w4a8_prefill_pre(size_t        m,
                                    const float  *x_scales,
                                    const void   *w_iq4xs,
                                    float        *y);
-void linear_iq4xs_w4a8_prefill(
-        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_iq4xs, float *y);
 
 /* TQ2_0 super-block: 256 elements, 66 bytes, 2.0625 bpw.
  *   qs[64]: 256 trits packed 4-per-byte (encoding: 0/1/2 mapped to -1/0/+1)
@@ -375,11 +363,6 @@ constexpr size_t GEIST_QUANT_M_CAP = 128;
  * x_q8 via vdotq_s32. Per-sub-half int scale (2*s+1) folds via
  * vmlaq_n_s32; the (d/8 * x_scale) float multiply happens once per
  * super-block (256 elems). */
-void linear_iq2s_decode_w2a8(size_t      n_in,
-                             size_t      n_out,
-                             const float x[static n_in],
-                             const void *w_iq2s,
-                             float       y[static n_out]);
 void linear_iq2s_decode_w2a8_pre(size_t       n_in,
                                  size_t       n_out,
                                  const float *x_scales,
@@ -391,11 +374,6 @@ void linear_iq2s_decode_w2a8_pre(size_t       n_in,
  * sub-block built from the 512-entry codebook + sign byte. Per-sub-block
  * int scale (2*s+1) folds via vmlaq_n_s32; d * x_scale float multiply
  * once per super-block. */
-void linear_iq3s_decode_w3a8(size_t      n_in,
-                             size_t      n_out,
-                             const float x[static n_in],
-                             const void *w_iq3s,
-                             float       y[static n_out]);
 void linear_iq3s_decode_w3a8_pre(size_t       n_in,
                                  size_t       n_out,
                                  const float *x_scales,
@@ -409,8 +387,6 @@ void linear_iq3s_decode_w3a8_pre(size_t       n_in,
  * sub-block int scale (2*s+1) via vmlaq_n_s32 into per-row int32
  * accumulators. One float multiply (d/8 * x_scale) per super-block per
  * row. x is row-major (m, n_in); y row-major (m, n_out). */
-void linear_iq2s_w2a8_prefill(
-        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_iq2s, float *y);
 void linear_iq2s_w2a8_prefill_pre(size_t        m,
                                   size_t        n_in,
                                   size_t        n_out,
@@ -422,8 +398,6 @@ void linear_iq2s_w2a8_prefill_pre(size_t        m,
 /* W3A8 prefill (m>1) for IQ3_S. Same shape as IQ2_S prefill
  * but uses iq3s codebook (512-entry, 4 elements per grid entry) and
  * the IQ3_S sub-block organisation (4 outer × 2 halves). */
-void linear_iq3s_w3a8_prefill(
-        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_iq3s, float *y);
 void linear_iq3s_w3a8_prefill_pre(size_t        m,
                                   size_t        n_in,
                                   size_t        n_out,
@@ -497,22 +471,12 @@ void quantize_x_q8_groups(size_t      n,
 
 /* Q4_0/Q4_1 int8-dot kernels for the 32-element legacy quants. Q4_1's
  * min-offset folds via per-block activation sums. */
-void   linear_q4_0_decode_w4a8(size_t      n_in,
-                               size_t      n_out,
-                               const float x[static n_in],
-                               const void *w_q4,
-                               float       y[static n_out]);
 void   linear_q4_0_decode_w4a8_pre(size_t       n_in,
                                    size_t       n_out,
                                    const float *x_scales,
                                    const int8_t x_q8[static n_in],
                                    const void  *w_q4,
                                    float        y[static n_out]);
-void   linear_q4_1_decode_w4a8(size_t      n_in,
-                               size_t      n_out,
-                               const float x[static n_in],
-                               const void *w_q4,
-                               float       y[static n_out]);
 void   linear_q4_1_decode_w4a8_pre(size_t         n_in,
                                    size_t         n_out,
                                    const float   *x_scales,
@@ -522,11 +486,6 @@ void   linear_q4_1_decode_w4a8_pre(size_t         n_in,
                                    float          y[static n_out]);
 size_t q4_0_x8_gemv_size_bytes(size_t n_in, size_t n_out);
 int    q4_0_x8_gemv_pack(const void *w_q4, size_t n_in, size_t n_out, void *dst);
-void   linear_q4_0_decode_w4a8_x8(size_t      n_in,
-                                  size_t      n_out,
-                                  const float x[static n_in],
-                                  const void *packed,
-                                  float       y[static n_out]);
 void   linear_q4_0_decode_w4a8_x8_pre(size_t         n_in,
                                       size_t         n_out,
                                       const float   *x_scales,
@@ -543,8 +502,6 @@ void linear_q4_0_w4a8_prefill_x8_pre(size_t         m,
                                      const int32_t *bsums,
                                      const void    *packed,
                                      float         *y);
-void linear_q4_0_w4a8_prefill_x8(
-        size_t m, size_t n_in, size_t n_out, const float *x, const void *packed, float *y);
 void linear_q4_0_w4a8_prefill_pre(size_t        m,
                                   size_t        n_in,
                                   size_t        n_out,
@@ -552,8 +509,6 @@ void linear_q4_0_w4a8_prefill_pre(size_t        m,
                                   const float  *x_scales,
                                   const void   *w_q4,
                                   float        *y);
-void linear_q4_0_w4a8_prefill(
-        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q4, float *y);
 void linear_q4_1_w4a8_prefill_pre(size_t         m,
                                   size_t         n_in,
                                   size_t         n_out,
@@ -562,8 +517,6 @@ void linear_q4_1_w4a8_prefill_pre(size_t         m,
                                   const int32_t *bsums,
                                   const void    *w_q4,
                                   float         *y);
-void linear_q4_1_w4a8_prefill(
-        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q4, float *y);
 
 void linear_q4k_decode_w4a8(size_t      n_in,
                             size_t      n_out,
@@ -581,8 +534,6 @@ void linear_q4k_decode_w4a8_pair(size_t       n_in,
 
 /* W4A8 prefill (m>1) for Q4_K, same design as the Q3_K prefill.
  * x is row-major (m, n_in); y row-major (m, n_out). */
-void linear_q4k_w4a8_prefill(
-        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q4k, float *y);
 void   linear_q4k_w4a8_prefill_pre(size_t         m,
                                    size_t         n_in,
                                    size_t         n_out,
@@ -595,11 +546,6 @@ size_t q4k_predecode_size_bytes(size_t n_in, size_t n_out);
 int    q4k_predecode_pack(const void *w_q4k, size_t n_in, size_t n_out, void *dst);
 size_t q4k_predecode_ntile4_size_bytes(size_t n_in, size_t n_out);
 int    q4k_predecode_ntile4_pack(const void *w_q4k, size_t n_in, size_t n_out, void *dst);
-void   linear_q4k_decode_w4a8_predecoded(size_t      n_in,
-                                         size_t      n_out,
-                                         const float x[static n_in],
-                                         const void *packed,
-                                         float       y[static n_out]);
 void   linear_q4k_w4a8_prefill_predecoded(size_t         m,
                                           size_t         n_in,
                                           size_t         n_out,
@@ -670,11 +616,6 @@ void   linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(size_t         m,
 /* W5A8 kernels for Q5_K. Same activation quantization as Q4_K
  * (quantize_x_q8_groups, 256-element groups, with sum32). Decode (M=1) and prefill (M>1) both use
  * vdotq_s32 on per-row reconstructed 5-bit values. */
-void linear_q5k_decode_w5a8(size_t      n_in,
-                            size_t      n_out,
-                            const float x[static n_in],
-                            const void *w_q5k,
-                            float       y[static n_out]);
 void linear_q5k_decode_w5a8_pre(size_t         n_in,
                                 size_t         n_out,
                                 const float   *x_scales,
@@ -682,8 +623,6 @@ void linear_q5k_decode_w5a8_pre(size_t         n_in,
                                 const int32_t *sum32,
                                 const void    *w_q5k,
                                 float          y[static n_out]);
-void linear_q5k_w5a8_prefill(
-        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q5k, float *y);
 void linear_q5k_w5a8_prefill_pre(size_t         m,
                                  size_t         n_in,
                                  size_t         n_out,
@@ -711,11 +650,6 @@ void linear_q4k_decode_w4a8_pre(size_t         n_in,
  * Per-sub-block scale s_j (int8) and per-super-block d (fp16) are folded
  * in scalar after the dot. x_q8 must be pre-quantized via
  * quantize_x_int8_sym; no per-block sum32 (Q6_K has no min-offset). */
-void   linear_q6k_decode_w6a8(size_t      n_in,
-                              size_t      n_out,
-                              const float x[static n_in],
-                              const void *w_q6k,
-                              float       y[static n_out]);
 void   linear_q6k_decode_w6a8_pre(size_t       n_in,
                                   size_t       n_out,
                                   const float *x_scales,
@@ -724,11 +658,6 @@ void   linear_q6k_decode_w6a8_pre(size_t       n_in,
                                   float        y[static n_out]);
 size_t q6k_x8_gemv_size_bytes(size_t n_in, size_t n_out);
 int    q6k_x8_gemv_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst);
-void   linear_q6k_decode_w6a8_x8(size_t      n_in,
-                                 size_t      n_out,
-                                 const float x[static n_in],
-                                 const void *packed,
-                                 float       y[static n_out]);
 void   linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
                                      size_t       n_out,
                                      const float *x_scales,
@@ -742,8 +671,6 @@ void   linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
  * 16-element chunk. Used by speculative-decode verify (M=K) and any other
  * M>1 path that targets a Q6_K weight (e.g. lm_head with K-wide verify).
  * x is row-major (m, n_in); y row-major (m, n_out). */
-void linear_q6k_w6a8_prefill(
-        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q6k, float *y);
 void linear_q6k_w6a8_prefill_pre(size_t        m,
                                  size_t        n_in,
                                  size_t        n_out,
@@ -786,11 +713,6 @@ void   linear_q6k_w6a8_prefill_predecoded_ntile4_stream(size_t        m,
  * qs + high bit from hmask → q ∈ [-4, 3]) and dots against pre-quantized
  * x_q8 via vdotq_s32. Per-sub-group int8 scale and per-super-block fp16 d
  * folded scalarly after each dot. No min-offset (unlike Q4_K/Q5_K). */
-void linear_q3k_decode_w3a8(size_t      n_in,
-                            size_t      n_out,
-                            const float x[static n_in],
-                            const void *w_q3k,
-                            float       y[static n_out]);
 void linear_q3k_decode_w3a8_pre(size_t       n_in,
                                 size_t       n_out,
                                 const float *x_scales,
@@ -801,8 +723,6 @@ void linear_q3k_decode_w3a8_pre(size_t       n_in,
 /* W3A8 prefill (m>1) for Q3_K. Reads weights once per output row and dots
  * against M activation rows. x is row-major (m, n_in); y is row-major
  * (m, n_out). */
-void linear_q3k_w3a8_prefill(
-        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q3k, float *y);
 void linear_q3k_w3a8_prefill_pre(size_t        m,
                                  size_t        n_in,
                                  size_t        n_out,
@@ -821,22 +741,19 @@ void linear_q3k_w3a8_prefill_pre(size_t        m,
  * Math: dequant(q[i]) = d · q[i], so
  *   sum_i x[i] · dequant(q[i]) = d · x_scale · sum_i (x_q8[i] · q[i])
  *
- * Caller-friendly variants:
- *   linear_q8_0_decode_w8a8        — single shot: quantize x → matmul → free.
- *   linear_q8_0_decode_w8a8_pre    — caller owns x_q8 + x_scales (lets multiple
- *                                    matmuls share one quantization of x).
+ * The caller owns x_q8 + x_scales (lets multiple matmuls share one
+ * quantization of x).
  *
  * NEON: uses vdotq_s32 (int8x16 · int8x16 → int32x4). */
-void linear_q8_0_decode_w8a8(size_t      n_in,
-                             size_t      n_out,
-                             const float x[static n_in],
-                             const void *w_q8,
-                             float       y[static n_out]);
+void linear_q8_0_decode_w8a8_pre(size_t       n_in,
+                                 size_t       n_out,
+                                 const float *x_scales,
+                                 const int8_t x_q8[static n_in],
+                                 const void  *w_q8,
+                                 float        y[static n_out]);
 
 /* W8A8 prefill (m>1) for Q8_0. Where SGEMM is faster (Apple AMX) the
  * resolver may still pick the dequant+SGEMM trampoline. */
-void linear_q8_0_w8a8_prefill(
-        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q8, float *y);
 void linear_q8_0_w8a8_prefill_pre(size_t        m,
                                   size_t        n_in,
                                   size_t        n_out,
@@ -844,12 +761,5 @@ void linear_q8_0_w8a8_prefill_pre(size_t        m,
                                   const float  *x_scales,
                                   const void   *w_q8,
                                   float        *y);
-
-void linear_q8_0_decode_w8a8_pre(size_t       n_in,
-                                 size_t       n_out,
-                                 const float *x_scales,
-                                 const int8_t x_q8[static n_in],
-                                 const void  *w_q8,
-                                 float        y[static n_out]);
 
 #endif

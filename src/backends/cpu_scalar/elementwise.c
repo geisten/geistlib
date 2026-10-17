@@ -11,7 +11,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "internal.h"
-#include "tensor_view.h"
+#include "host_buffer.h"
 #include "hadamard.h"
 
 #include <geist.h>
@@ -20,15 +20,6 @@
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
-
-/* Unpack a contiguous F32 DENSE tensor as a host float pointer + element
- * count. Returns nullptr on layout mismatch. */
-static float *get_f32_dense_ptr(const struct geist_tensor *t, size_t *out_n) {
-    if (t == nullptr || t->buffer == nullptr) {
-        return nullptr;
-    }
-    return geist_tensor_f32_dense(t, t->buffer->host, t->buffer->bytes, out_n);
-}
 
 /* ---- add: y = a + b ---- */
 
@@ -40,9 +31,9 @@ static float *get_f32_dense_ptr(const struct geist_tensor *t, size_t *out_n) {
         return GEIST_E_INVALID_ARG;
     }
     size_t       na = 0, nb = 0, ny = 0;
-    const float *ap = get_f32_dense_ptr(a, &na);
-    const float *bp = get_f32_dense_ptr(b, &nb);
-    float       *yp = get_f32_dense_ptr(y, &ny);
+    const float *ap = geist_host_tensor_f32(a, &na);
+    const float *bp = geist_host_tensor_f32(b, &nb);
+    float       *yp = geist_host_tensor_f32(y, &ny);
     if (ap == nullptr || bp == nullptr || yp == nullptr) {
         geist_backend_set_error(
                 be, GEIST_E_UNSUPPORTED, "cpu_scalar add: all tensors must be F32 DENSE");
@@ -73,9 +64,9 @@ static float *get_f32_dense_ptr(const struct geist_tensor *t, size_t *out_n) {
         return GEIST_E_INVALID_ARG;
     }
     size_t       na = 0, nb = 0, ny = 0;
-    const float *ap = get_f32_dense_ptr(a, &na);
-    const float *bp = get_f32_dense_ptr(b, &nb);
-    float       *yp = get_f32_dense_ptr(y, &ny);
+    const float *ap = geist_host_tensor_f32(a, &na);
+    const float *bp = geist_host_tensor_f32(b, &nb);
+    float       *yp = geist_host_tensor_f32(y, &ny);
     if (ap == nullptr || bp == nullptr || yp == nullptr || na != nb || na != ny) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_scalar mul: bad inputs");
         return GEIST_E_INVALID_ARG;
@@ -95,8 +86,8 @@ static float *get_f32_dense_ptr(const struct geist_tensor *t, size_t *out_n) {
         return GEIST_E_INVALID_ARG;
     }
     size_t       nx = 0, ny = 0;
-    const float *xp = get_f32_dense_ptr(x, &nx);
-    float       *yp = get_f32_dense_ptr(y, &ny);
+    const float *xp = geist_host_tensor_f32(x, &nx);
+    float       *yp = geist_host_tensor_f32(y, &ny);
     if (xp == nullptr || yp == nullptr || nx != ny) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_scalar gelu_tanh: bad inputs");
         return GEIST_E_INVALID_ARG;
@@ -120,9 +111,9 @@ static float *get_f32_dense_ptr(const struct geist_tensor *t, size_t *out_n) {
         return GEIST_E_INVALID_ARG;
     }
     size_t       nx = 0, nz = 0, ny = 0;
-    const float *xp = get_f32_dense_ptr(x, &nx);
-    const float *zp = get_f32_dense_ptr(z, &nz);
-    float       *yp = get_f32_dense_ptr(y, &ny);
+    const float *xp = geist_host_tensor_f32(x, &nx);
+    const float *zp = geist_host_tensor_f32(z, &nz);
+    float       *yp = geist_host_tensor_f32(y, &ny);
     if (xp == nullptr || zp == nullptr || yp == nullptr || nx != nz || nx != ny) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_scalar gelu_tanh_mul: bad inputs");
         return GEIST_E_INVALID_ARG;
@@ -146,9 +137,9 @@ static float *get_f32_dense_ptr(const struct geist_tensor *t, size_t *out_n) {
         return GEIST_E_INVALID_ARG;
     }
     size_t       nx = 0, nz = 0, ny = 0;
-    const float *xp = get_f32_dense_ptr(x, &nx);
-    const float *zp = get_f32_dense_ptr(z, &nz);
-    float       *yp = get_f32_dense_ptr(y, &ny);
+    const float *xp = geist_host_tensor_f32(x, &nx);
+    const float *zp = geist_host_tensor_f32(z, &nz);
+    float       *yp = geist_host_tensor_f32(y, &ny);
     if (xp == nullptr || zp == nullptr || yp == nullptr || nx != nz || nx != ny || y->ndim < 1) {
         geist_backend_set_error(
                 be, GEIST_E_INVALID_ARG, "cpu_scalar gelu_tanh_mul_scaled: bad inputs");
@@ -184,8 +175,8 @@ static float *get_f32_dense_ptr(const struct geist_tensor *t, size_t *out_n) {
         return GEIST_E_INVALID_ARG;
     }
     size_t       nx = 0, ny = 0;
-    const float *xp = get_f32_dense_ptr(x, &nx);
-    float       *yp = get_f32_dense_ptr(y, &ny);
+    const float *xp = geist_host_tensor_f32(x, &nx);
+    float       *yp = geist_host_tensor_f32(y, &ny);
     if (xp == nullptr || yp == nullptr || nx != ny) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_scalar relu_squared: bad inputs");
         return GEIST_E_INVALID_ARG;
@@ -203,8 +194,8 @@ cpu_scalar_silu(struct geist_backend *be, const struct geist_tensor *x, struct g
         return GEIST_E_INVALID_ARG;
     }
     size_t       nx = 0, ny = 0;
-    const float *xp = get_f32_dense_ptr(x, &nx);
-    float       *yp = get_f32_dense_ptr(y, &ny);
+    const float *xp = geist_host_tensor_f32(x, &nx);
+    float       *yp = geist_host_tensor_f32(y, &ny);
     if (xp == nullptr || yp == nullptr || nx != ny) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_scalar silu: bad inputs");
         return GEIST_E_INVALID_ARG;
@@ -237,9 +228,9 @@ cpu_scalar_silu(struct geist_backend *be, const struct geist_tensor *x, struct g
         return GEIST_E_INVALID_ARG;
     }
     size_t       nx = 0, nw = 0, ny = 0;
-    const float *xp = get_f32_dense_ptr(x, &nx);
-    const float *wp = get_f32_dense_ptr(w, &nw);
-    float       *yp = get_f32_dense_ptr(y, &ny);
+    const float *xp = geist_host_tensor_f32(x, &nx);
+    const float *wp = geist_host_tensor_f32(w, &nw);
+    float       *yp = geist_host_tensor_f32(y, &ny);
     if (xp == nullptr || wp == nullptr || yp == nullptr || nx != ny) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_scalar rmsnorm: bad inputs");
         return GEIST_E_INVALID_ARG;
@@ -275,13 +266,13 @@ cpu_scalar_silu(struct geist_backend *be, const struct geist_tensor *x, struct g
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_scalar hadamard_rotate: null args");
         return GEIST_E_INVALID_ARG;
     }
-    size_t            nx = 0, ns = 0, ny = 0;
-    const float      *xp = get_f32_dense_ptr(args->x, &nx);
-    const float      *sp = args->signs != nullptr ? get_f32_dense_ptr(args->signs, &ns) : nullptr;
-    float            *yp = get_f32_dense_ptr(args->y, &ny);
-    enum geist_status s  = (args->signs != nullptr && sp == nullptr)
-                                   ? GEIST_E_INVALID_ARG
-                                   : geist_hadamard_apply(args, nx, ns, ny, xp, sp, yp);
+    size_t       nx = 0, ns = 0, ny = 0;
+    const float *xp = geist_host_tensor_f32(args->x, &nx);
+    const float *sp = args->signs != nullptr ? geist_host_tensor_f32(args->signs, &ns) : nullptr;
+    float       *yp = geist_host_tensor_f32(args->y, &ny);
+    enum geist_status s = (args->signs != nullptr && sp == nullptr)
+                                  ? GEIST_E_INVALID_ARG
+                                  : geist_hadamard_apply(args, nx, ns, ny, xp, sp, yp);
     if (s != GEIST_OK) {
         geist_backend_set_error(be, s, "cpu_scalar hadamard_rotate: bad inputs");
     }

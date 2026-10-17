@@ -3,8 +3,9 @@
  * cpu_scalar backend translation units.
  *
  * Layer: BACKEND. Internal to cpu_scalar — other backends MUST NOT include
- * this. struct geist_buffer is intentionally backend-private; engine code
- * sees it only as an opaque forward declaration via <geist.h>.
+ * this. struct geist_buffer is the CPU backends' shared host buffer
+ * (common/host_buffer.h); engine code sees it only as an opaque forward
+ * declaration via <geist.h>.
  */
 #ifndef GEIST_INTERNAL_BACKEND_CPU_SCALAR_INTERNAL_H
 #define GEIST_INTERNAL_BACKEND_CPU_SCALAR_INTERNAL_H
@@ -16,13 +17,7 @@
 #include <geist.h>
 #include <geist_types.h>
 
-/* CPU buffer = host pointer + size + role. */
-struct geist_buffer {
-    void                  *host;
-    size_t                 bytes;
-    enum geist_buffer_role role;
-    unsigned int           memory_flags;
-};
+#include "host_buffer.h" /* struct geist_buffer */
 
 /* Per-instance backend state — kept opaque outside cpu_scalar. */
 struct cpu_scalar_state {

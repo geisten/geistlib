@@ -70,12 +70,6 @@ bool metal_env_enabled(const char *name) {
     return value != nullptr && value[0] != '\0' && strcmp(value, "0") != 0;
 }
 
-/* Default-on switches: true only when the env var is explicitly "0". */
-bool metal_env_disabled(const char *name) {
-    const char *value = getenv(name);
-    return value != nullptr && strcmp(value, "0") == 0;
-}
-
 uint64_t metal_now_ns(void) {
     struct timespec ts = {0};
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
@@ -334,57 +328,4 @@ void metal_capture_end(struct metal_state *st) {
     metal_msg_send_void0(st, st->capture_manager, "stopCapture");
     st->capture_manager = nullptr;
     fprintf(stderr, "geist metal: GPU capture written\n");
-}
-
-/* GEIST_METAL_DEBUG_LINEAR=1: per-linear x/y absmax trace. Every layer
- * stage flows through linear, so the first all-zero input pinpoints which
- * in-between op (rmsnorm/rope/attention/add/mul) lost the data. */
-void metal_linear_debug_stats(size_t                     nx,
-                              size_t                     ny,
-                              size_t                     m,
-                              const float               *x,
-                              const float               *y,
-                              const struct geist_weight *w) {
-    static _Atomic int enabled = -1;
-    if (enabled < 0) {
-        const char *e = getenv("GEIST_METAL_DEBUG_LINEAR");
-        enabled       = (e != nullptr && e[0] != '\0' && strcmp(e, "0") != 0) ? 1 : 0;
-    }
-    if (!enabled) {
-        return;
-    }
-    float  ax   = 0.0f;
-    float  ay   = 0.0f;
-    size_t nanx = 0;
-    size_t nany = 0;
-    for (size_t i = 0; i < nx; i++) {
-        if (isnan(x[i])) {
-            nanx++;
-            continue;
-        }
-        const float a = fabsf(x[i]);
-        if (a > ax) {
-            ax = a;
-        }
-    }
-    for (size_t i = 0; i < ny; i++) {
-        if (isnan(y[i])) {
-            nany++;
-            continue;
-        }
-        const float a = fabsf(y[i]);
-        if (a > ay) {
-            ay = a;
-        }
-    }
-    fprintf(stderr,
-            "linear dtype=%u m=%zu %dx%d |x|=%g |y|=%g nanx=%zu nany=%zu\n",
-            (unsigned) w->dtype,
-            m,
-            w->n_out,
-            w->n_in,
-            (double) ax,
-            (double) ay,
-            nanx,
-            nany);
 }

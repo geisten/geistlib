@@ -39,7 +39,7 @@
 #include "kernel_w4a8.h" /* w4a8_dispatcher_tier */
 
 #include "gemma4_kernels.h" /* ATTN_EXP_FLOOR */
-#include "tensor_view.h"
+#include "host_buffer.h"    /* struct geist_buffer, cpu_scalar's buffer ops */
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -50,15 +50,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-
-/* CPU buffer layout, owned by cpu_scalar's buffer_create (cpu_x86 inherits
- * its buffer vtable); attention.c mirrors it the same way. */
-struct geist_buffer {
-    void                  *host;
-    size_t                 bytes;
-    enum geist_buffer_role role;
-    unsigned int           memory_flags;
-};
 
 /* V rows per pass over the output dimensions. */
 constexpr size_t AI8_PV_ROWS = 64;
@@ -540,20 +531,6 @@ void cpu_x86_attention_kv_int8_run(size_t        n_q,
 
 /* ---- The fused op -------------------------------------------------------- */
 
-/* The first element of a contiguous DENSE view of `ndim` dimensions and
- * `dtype` (elements of `elem` bytes), or nullptr if the view is malformed or
- * runs past its buffer; *out_n gets its element count. */
-static const void *ai8_view(const struct geist_tensor *t,
-                            enum geist_dtype           dtype,
-                            size_t                     elem,
-                            int                        ndim,
-                            size_t                    *out_n) {
-    return t != nullptr && t->buffer != nullptr
-                   ? geist_tensor_dense(
-                             t, dtype, elem, ndim, t->buffer->host, t->buffer->bytes, out_n)
-                   : nullptr;
-}
-
 /* Whether the AVX-512 VNNI kernel may run: the dispatcher's tier, which
  * GEIST_FORCE_ISA clamps, and cpuid, as linear_q8_0.c decides its tiles. */
 static bool ai8_vnni_usable(void) {
@@ -573,12 +550,12 @@ enum geist_status cpu_x86_attention_kv_int8(struct geist_backend                
         return GEIST_E_INVALID_ARG;
     }
     size_t        nq = 0, nk = 0, nv = 0, nks = 0, nvs = 0, no = 0;
-    const float  *q   = ai8_view(args->q, GEIST_DTYPE_F32, sizeof(float), 3, &nq);
-    const int8_t *k   = ai8_view(args->k, GEIST_DTYPE_I8, 1, 3, &nk);
-    const int8_t *v   = ai8_view(args->v, GEIST_DTYPE_I8, 1, 3, &nv);
-    const float  *ks  = ai8_view(args->k_scale, GEIST_DTYPE_F32, sizeof(float), 2, &nks);
-    const float  *vs  = ai8_view(args->v_scale, GEIST_DTYPE_F32, sizeof(float), 2, &nvs);
-    float        *out = (float *) ai8_view(args->out, GEIST_DTYPE_F32, sizeof(float), 3, &no);
+    const float  *q  = geist_host_tensor(args->q, GEIST_DTYPE_F32, sizeof(float), 3, &nq);
+    const int8_t *k  = geist_host_tensor(args->k, GEIST_DTYPE_I8, 1, 3, &nk);
+    const int8_t *v  = geist_host_tensor(args->v, GEIST_DTYPE_I8, 1, 3, &nv);
+    const float  *ks = geist_host_tensor(args->k_scale, GEIST_DTYPE_F32, sizeof(float), 2, &nks);
+    const float  *vs = geist_host_tensor(args->v_scale, GEIST_DTYPE_F32, sizeof(float), 2, &nvs);
+    float *out = (float *) geist_host_tensor(args->out, GEIST_DTYPE_F32, sizeof(float), 3, &no);
     if (q == nullptr || k == nullptr || v == nullptr || ks == nullptr || vs == nullptr ||
         out == nullptr) {
         geist_backend_set_error(be,

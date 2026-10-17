@@ -24,12 +24,6 @@
 #include <string.h>
 #include <time.h>
 
-static double now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec / 1e6;
-}
-
 /* Chunk-walking WAV reader (audio_test_util.h); handles ffmpeg's LIST chunk. */
 static int16_t *read_wav_pcm(const char *path, size_t *n_samples_out, int *sample_rate_out) {
     return audio_test_read_wav(path, n_samples_out, sample_rate_out);
@@ -55,9 +49,9 @@ int main(int argc, char **argv) {
     const double audio_seconds = (double) n_samples / 16000.0;
     printf("loaded %zu PCM samples = %.2f s of audio\n", n_samples, audio_seconds);
 
-    const double         t_create_0 = now_ms();
+    const double         t_create_0 = geist_test_now_ms();
     struct AudioEncoder *enc        = audio_encoder_create(audio_tower_path);
-    const double         t_create   = now_ms() - t_create_0;
+    const double         t_create   = geist_test_now_ms() - t_create_0;
     if (enc == nullptr) {
         fprintf(stderr,
                 "audio_encoder_create failed (missing "
@@ -67,7 +61,7 @@ int main(int argc, char **argv) {
     }
     printf("encoder loaded: %.0f ms (cold)\n", t_create);
 
-    const double t_push_0 = now_ms();
+    const double t_push_0 = geist_test_now_ms();
     if (audio_encoder_push_pcm(enc, n_samples, pcm) != 0) {
         fprintf(stderr, "push_pcm failed\n");
         audio_encoder_destroy(enc);
@@ -75,7 +69,7 @@ int main(int argc, char **argv) {
         return GEIST_TEST_FAIL;
     }
     audio_encoder_end_input(enc);
-    const double t_push = now_ms() - t_push_0;
+    const double t_push = geist_test_now_ms() - t_push_0;
 
     /* Pull soft-tokens — triggers full mel→subsample→12-layer→proj pipeline
      * on the first call after end_input. */
@@ -88,9 +82,9 @@ int main(int argc, char **argv) {
         return GEIST_TEST_FAIL;
     }
 
-    const double t_encode_0 = now_ms();
+    const double t_encode_0 = geist_test_now_ms();
     const size_t n_soft     = audio_encoder_pull_softtokens(enc, max_soft, soft, -1);
-    const double t_encode   = now_ms() - t_encode_0;
+    const double t_encode   = geist_test_now_ms() - t_encode_0;
 
     printf("\n--- bench_audio_encode results ---\n");
     printf("  audio length      : %.2f s\n", audio_seconds);

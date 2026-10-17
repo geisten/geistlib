@@ -32,99 +32,6 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_release_pipeline_tables(st);
         metal_msg_send_void0(st, st->argmax_result_buffer, "release");
         metal_msg_send_void0(st, st->dn_scratch, "release");
-        metal_msg_send_void0(st, st->argmax_batch_pipeline, "release");
-        metal_msg_send_void0(st, st->argmax_batch_function, "release");
-        metal_msg_send_void0(st, st->hadamard_pipeline, "release");
-        metal_msg_send_void0(st, st->hadamard_function, "release");
-        metal_msg_send_void0(st, st->argmax_pipeline, "release");
-        metal_msg_send_void0(st, st->argmax_function, "release");
-        metal_msg_send_void0(st, st->deltanet_library, "release");
-        metal_msg_send_void0(st, st->qgate_library, "release");
-        /* Everything below exists from init or the first op on; a backend
-         * destroyed before its first op still owns the device and queue. */
-        metal_msg_send_void0(st, st->attention_rows_pipeline, "release");
-        metal_msg_send_void0(st, st->attention_rows_function, "release");
-        metal_msg_send_void0(st, st->attention_rows_f16_pipeline, "release");
-        metal_msg_send_void0(st, st->attention_rows_f16_function, "release");
-        metal_msg_send_void0(st, st->attention_qnorm_dec_f16_pipeline, "release");
-        metal_msg_send_void0(st, st->attention_qnorm_dec_f16_function, "release");
-        metal_msg_send_void0(st, st->attention_dec_f16_pipeline, "release");
-        metal_msg_send_void0(st, st->attention_dec_f16_function, "release");
-        metal_msg_send_void0(st, st->attention_dec_combine_pipeline, "release");
-        metal_msg_send_void0(st, st->attention_dec_combine_function, "release");
-        metal_msg_send_void0(st, st->attention_dec512_f16_pipeline, "release");
-        metal_msg_send_void0(st, st->attention_dec512_f16_function, "release");
-        metal_msg_send_void0(st, st->attn_dec512_f16_library, "release");
-        metal_msg_send_void0(st, st->attention_flash_sg8_f16_pipeline, "release");
-        metal_msg_send_void0(st, st->attention_flash_sg8_f16_function, "release");
-        metal_msg_send_void0(st, st->attn_flash_sg8_f16_library, "release");
-        metal_msg_send_void0(st, st->attention_qnorm_flash_sg_f16_pipeline, "release");
-        metal_msg_send_void0(st, st->attention_qnorm_flash_sg_f16_function, "release");
-        metal_msg_send_void0(st, st->attention_flash_sg_f16_pipeline, "release");
-        metal_msg_send_void0(st, st->attention_flash_sg_f16_function, "release");
-        metal_msg_send_void0(st, st->kv_append_rows_pipeline, "release");
-        metal_msg_send_void0(st, st->kv_append_rows_function, "release");
-        metal_msg_send_void0(st, st->copy_u32_pipeline, "release");
-        metal_msg_send_void0(st, st->copy_u32_function, "release");
-        metal_msg_send_void0(st, st->kv_append_rows_f16_pipeline, "release");
-        metal_msg_send_void0(st, st->kv_append_rows_f16_function, "release");
-        metal_msg_send_void0(st, st->rope_rows_pipeline, "release");
-        metal_msg_send_void0(st, st->rope_rows_function, "release");
-        metal_msg_send_void0(st, st->v_norm_append_rows_pipeline, "release");
-        metal_msg_send_void0(st, st->v_norm_append_rows_function, "release");
-        metal_msg_send_void0(st, st->v_norm_append_rows_f16_pipeline, "release");
-        metal_msg_send_void0(st, st->v_norm_append_rows_f16_function, "release");
-        metal_msg_send_void0(st, st->kv_norm_append_rows_pipeline, "release");
-        metal_msg_send_void0(st, st->kv_norm_append_rows_function, "release");
-        metal_msg_send_void0(st, st->kv_norm_append_rows_f16_pipeline, "release");
-        metal_msg_send_void0(st, st->kv_norm_append_rows_f16_function, "release");
-        metal_msg_send_void0(st, st->k_norm_rope_append_rows_pipeline, "release");
-        metal_msg_send_void0(st, st->k_norm_rope_append_rows_function, "release");
-        metal_msg_send_void0(st, st->k_norm_rope_append_rows_f16_pipeline, "release");
-        metal_msg_send_void0(st, st->k_norm_rope_append_rows_f16_function, "release");
-        metal_msg_send_void0(st, st->q_norm_rope_rows_pipeline, "release");
-        metal_msg_send_void0(st, st->q_norm_rope_rows_function, "release");
-        metal_msg_send_void0(st, st->q4k_qk_pipeline, "release");
-        metal_msg_send_void0(st, st->q4k_qk_function, "release");
-        metal_msg_send_void0(st, st->q4k_gate_up_pipeline, "release");
-        metal_msg_send_void0(st, st->q4k_gate_up_function, "release");
-        metal_msg_send_void0(st, st->attn_library, "release");
-        metal_msg_send_void0(st, st->attn_qnorm_dec_f16_library, "release");
-        metal_msg_send_void0(st, st->attn_dec_combine_library, "release");
-        metal_msg_send_void0(st, st->attn_flash_sg_f16_library, "release");
-        metal_msg_send_void0(st, st->kv_norm_append_library, "release");
-        metal_msg_send_void0(st, st->kv_norm_append_f16_library, "release");
-        metal_msg_send_void0(st, st->v_norm_append_library, "release");
-        metal_msg_send_void0(st, st->k_norm_rope_append_library, "release");
-        metal_msg_send_void0(st, st->q_norm_rope_library, "release");
-        metal_msg_send_void0(st, st->elem_simd_library, "release");
-        metal_msg_send_void0(st, st->elem_library, "release");
-        metal_msg_send_void0(st, st->embed_library, "release");
-        metal_msg_send_void0(st, st->hadamard_library, "release");
-        metal_msg_send_void0(st, st->argmax_library, "release");
-        metal_msg_send_void0(st, st->f32_library, "release");
-        metal_msg_send_void0(st, st->q4k_qk_library, "release");
-        metal_msg_send_void0(st, st->q4k_gate_up_n4_library, "release");
-        metal_msg_send_void0(st, st->q4k_pair_n4_library, "release");
-        metal_msg_send_void0(st, st->q4k_gate_up_library, "release");
-        metal_msg_send_void0(st, st->q4k_n4_library, "release");
-        metal_msg_send_void0(st, st->q6k_mm_sg_library, "release");
-        metal_msg_send_void0(st, st->q6k_mm_sg_fast_library, "release");
-        metal_msg_send_void0(st, st->q6k_m16_library, "release");
-        metal_msg_send_void0(st, st->q4k_m16_library, "release");
-        metal_msg_send_void0(st, st->q4k_m16_n2_library, "release");
-        metal_msg_send_void0(st, st->q4k_mm_sg_library, "release");
-        metal_msg_send_void0(st, st->q4k_mm_sg_fast_library, "release");
-        metal_msg_send_void0(st, st->q6k_mm32_library, "release");
-        metal_msg_send_void0(st, st->q6k_n4_library, "release");
-        metal_msg_send_void0(st, st->q6k_library, "release");
-        metal_msg_send_void0(st, st->q4k_library, "release");
-        metal_msg_send_void0(st, st->q40_q80_library, "release");
-        metal_msg_send_void0(st, st->q5k_library, "release");
-        metal_msg_send_void0(st, st->q41_library, "release");
-        metal_msg_send_void0(st, st->quant_sg_library, "release");
-        metal_msg_send_void0(st, st->silu_library, "release");
-        metal_msg_send_void0(st, st->attn_f16_library, "release");
         metal_msg_send_void0(st, st->command_queue, "release");
         metal_msg_send_void0(st, st->device, "release");
     }
@@ -225,21 +132,6 @@ void metal_destroy(struct geist_backend *be) {
     pthread_mutexattr_settype(&seq_lock_attr, PTHREAD_MUTEX_RECURSIVE);
     pthread_mutex_init(&st->seq_lock, &seq_lock_attr);
     pthread_mutexattr_destroy(&seq_lock_attr);
-    const char *ple_block  = getenv("GEIST_METAL_PLE_BLOCK");
-    st->use_ple_block      = ple_block == nullptr || strcmp(ple_block, "0") != 0;
-    const char *q4k_n4     = getenv("GEIST_METAL_Q4K_N4");
-    st->use_q4k_n4         = q4k_n4 == nullptr || strcmp(q4k_n4, "0") != 0;
-    const char *q4k_m16_n2 = getenv("GEIST_METAL_Q4K_M16_N2");
-    st->use_q4k_m16_n2     = q4k_m16_n2 != nullptr && strcmp(q4k_m16_n2, "1") == 0;
-    /* Simdgroup-matmul Q4_K GEMM (from llama.cpp mul_mm), on by default.
-     * Whole tiles only; other shapes fall back to the m16 kernel.
-     * GEIST_METAL_Q4K_MM_SG=0 disables. */
-    const char *q4k_mm_sg    = getenv("GEIST_METAL_Q4K_MM_SG");
-    st->use_q4k_mm_sg        = q4k_mm_sg == nullptr || strcmp(q4k_mm_sg, "0") != 0;
-    const char *rmsnorm_simd = getenv("GEIST_METAL_RMSNORM_SIMD");
-    st->use_rmsnorm_simd     = rmsnorm_simd == nullptr || strcmp(rmsnorm_simd, "0") != 0;
-    const char *q6k_n4       = getenv("GEIST_METAL_Q6K_N4");
-    st->use_q6k_n4           = q6k_n4 == nullptr || strcmp(q6k_n4, "0") != 0;
     metal_tuning_init(be, st);
     /* Command-buffer pipelining: rotate every N dispatches, default 192
      * (~3 buffers per decode token; llama.cpp's n_cb optimum is 2-3).
@@ -251,10 +143,6 @@ void metal_destroy(struct geist_backend *be) {
                     ? (uint32_t) rotate
                     : 192u;
     st->profile_enabled = metal_env_enabled("GEIST_METAL_PROFILE");
-    /* Chunked DeltaNet prefill for seq>1 (port of dn_run_prefill_chunked).
-     * GEIST_METAL_DN_CHUNK=0 uses the serial per-token mixer kernel. */
-    const char *dn_chunk = getenv("GEIST_METAL_DN_CHUNK");
-    st->use_dn_chunk     = dn_chunk == nullptr || strcmp(dn_chunk, "0") != 0;
 
     enum geist_status s = metal_load_runtime(be, st);
     if (s != GEIST_OK) {

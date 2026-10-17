@@ -43,7 +43,7 @@
 #include "backend_state.h"
 
 #include "gemma4_kernels.h" /* ATTN_EXP_FLOOR, attention_mqa_causal_kv */
-#include "tensor_view.h"
+#include "host_buffer.h"    /* struct geist_buffer, cpu_scalar's buffer ops */
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -54,23 +54,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-
-/* CPU buffer layout, owned by cpu_scalar's buffer_create (cpu_x86 inherits
- * its buffer vtable). Mirrored here as elementwise.c does — geist.h keeps
- * the struct opaque, but the host pointer is needed for the dense fast path. */
-struct geist_buffer {
-    void                  *host;
-    size_t                 bytes;
-    enum geist_buffer_role role;
-    unsigned int           memory_flags;
-};
-
-static float *get_f32_dense_ptr_full(const struct geist_tensor *t, size_t *out_n) {
-    if (t == nullptr || t->buffer == nullptr) {
-        return nullptr;
-    }
-    return geist_tensor_f32_dense(t, t->buffer->host, t->buffer->bytes, out_n);
-}
 
 /* The K/V element: float for the FP32 cache, or IEEE half when
  * attention_f16.c compiles this file with AF_F16 (#48), widened by F16C
@@ -496,13 +479,6 @@ static void ax_run_item(size_t                per_pass,
 
 #if defined(AF_F16)
 /* An F16 DENSE 3-D view's halves, or nullptr. */
-static const uint16_t *af_f16_dense_3d(const struct geist_tensor *t, size_t *out_n) {
-    if (t == nullptr || t->buffer == nullptr)
-        return nullptr;
-    return (const uint16_t *) geist_tensor_dense(
-            t, GEIST_DTYPE_F16, sizeof(uint16_t), 3, t->buffer->host, t->buffer->bytes, out_n);
-}
-
 /* cpu_x86_attention over the F16 KV cache: the same kernel with K and V
  * widened by F16C as they are loaded. */
 [[nodiscard]] enum geist_status cpu_x86_attention_f16(struct geist_backend      *be,
@@ -513,10 +489,10 @@ static const uint16_t *af_f16_dense_3d(const struct geist_tensor *t, size_t *out
                                                       size_t                     sliding_window,
                                                       struct geist_tensor       *out) {
     size_t          nq = 0, nk = 0, nv = 0, no = 0;
-    const float    *qp = get_f32_dense_ptr_full(q, &nq);
-    const uint16_t *kp = af_f16_dense_3d(k, &nk);
-    const uint16_t *vp = af_f16_dense_3d(v, &nv);
-    float          *op = get_f32_dense_ptr_full(out, &no);
+    const float    *qp = geist_host_tensor_f32(q, &nq);
+    const uint16_t *kp = geist_host_tensor_f16_3d(k, &nk);
+    const uint16_t *vp = geist_host_tensor_f16_3d(v, &nv);
+    float          *op = geist_host_tensor_f32(out, &no);
     if (qp == nullptr || kp == nullptr || vp == nullptr || op == nullptr || q->ndim != 3 ||
         out->ndim != 3) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 attention: bad F16 KV views");
@@ -588,10 +564,10 @@ static const uint16_t *af_f16_dense_3d(const struct geist_tensor *t, size_t *out
         return cpu_x86_attention_f16(be, q, k, v, q_offset, sliding_window, out);
     }
     size_t       nq, nk, nv, no;
-    const float *qp = get_f32_dense_ptr_full(q, &nq);
-    const float *kp = get_f32_dense_ptr_full(k, &nk);
-    const float *vp = get_f32_dense_ptr_full(v, &nv);
-    float       *op = get_f32_dense_ptr_full(out, &no);
+    const float *qp = geist_host_tensor_f32(q, &nq);
+    const float *kp = geist_host_tensor_f32(k, &nk);
+    const float *vp = geist_host_tensor_f32(v, &nv);
+    float       *op = geist_host_tensor_f32(out, &no);
     if (qp == nullptr || kp == nullptr || vp == nullptr || op == nullptr) {
         geist_backend_set_error(
                 be, GEIST_E_UNSUPPORTED, "cpu_x86 attention: tensors must be F32 DENSE");

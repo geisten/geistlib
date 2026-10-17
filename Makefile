@@ -118,7 +118,7 @@ TEST_BIN_DIR := $(BIN_DIR)/tests
 # with `make bench-small BENCH_OUT_DIR=...` to put them elsewhere.
 BENCH_OUT_DIR ?= $(HOME)/bench-geistlib/quality_perf
 # Overrides for the bench-* quality/perf suites; passed through via BENCH_PY
-# below (apple-perf.yml sets BENCH_GGUF in CI).
+# below.
 BENCH_GGUF ?=
 BENCH_THREADS ?=
 BENCH_REF_GGUF ?=
@@ -328,6 +328,18 @@ define verify_sha256
 	fi
 endef
 
+# One SHA-pinned GGUF fixture: the download rule for $($(1)_MODEL_PATH) and the
+# $(2) target that verifies the pin. $(1) = variable prefix (LLAMA for
+# LLAMA_MODEL_PATH/_URL/_SHA256), $(3) = human-readable size, $(4) = label.
+define gguf_fixture
+$$($(1)_MODEL_PATH):
+	$$(call fetch_gguf,$(3),$$($(1)_MODEL_URL))
+
+$(2): $$($(1)_MODEL_PATH)
+	$$(call verify_sha256,$$($(1)_MODEL_PATH),$$($(1)_MODEL_SHA256))
+	@echo "$(4) ready (SHA-256 verified): $$($(1)_MODEL_PATH)"
+endef
+
 # Verified here, not only in fetch-model: AUTO_FETCH_MODEL=1 makes `make test` depend on this
 # file directly, so the pin has to hold on that path as well.
 $(MODEL_PATH):
@@ -355,17 +367,12 @@ BENCH_MODEL_URL  ?= https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-gguf/res
 # Upstream LFS oid at that revision, verified 2026-09-15.
 BENCH_MODEL_SHA256 := 4221b252fdd5fd25e15847adfeb5ee88886506ba50b8a34548374492884c2162
 
-$(BENCH_MODEL_PATH):
-	$(call fetch_gguf,~1.1 GB,$(BENCH_MODEL_URL))
-
-fetch-bench-model: $(BENCH_MODEL_PATH)
-	$(call verify_sha256,$(BENCH_MODEL_PATH),$(BENCH_MODEL_SHA256))
-	@echo "Benchmark model ready (SHA-256 verified): $(BENCH_MODEL_PATH)"
+$(eval $(call gguf_fixture,BENCH,fetch-bench-model,~1.1 GB,Benchmark model))
 
 # Gemma 4 E4B variant (4.6 GB) — the second gemma4 geometry (42 layers,
 # d_model 2560, 5+1 sliding pattern). Exists so the metadata-driven family
-# populator (#258) has an executing check; the weekly e4b-smoke workflow
-# fetches it, not the default test flow.
+# populator (#258) has an executing check; fetched on demand, not by the
+# default test flow.
 E4B_MODEL_DIR  ?= gguf_artifacts
 E4B_MODEL_FILE ?= gemma4-e4b-Q4_K_M.gguf
 E4B_MODEL_PATH := $(E4B_MODEL_DIR)/$(E4B_MODEL_FILE)
@@ -373,12 +380,7 @@ E4B_MODEL_URL  ?= https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/bfc
 # Upstream LFS oid at that revision, verified 2026-09-19 (4977171584 bytes).
 E4B_MODEL_SHA256 := 85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87
 
-$(E4B_MODEL_PATH):
-	$(call fetch_gguf,~4.6 GB,$(E4B_MODEL_URL))
-
-fetch-e4b-model: $(E4B_MODEL_PATH)
-	$(call verify_sha256,$(E4B_MODEL_PATH),$(E4B_MODEL_SHA256))
-	@echo "E4B model ready (SHA-256 verified): $(E4B_MODEL_PATH)"
+$(eval $(call gguf_fixture,E4B,fetch-e4b-model,~4.6 GB,E4B model))
 
 # Llama-family reference model. Small on purpose (369 MB): it exists to prove
 # the engine reads a SECOND architecture family and tokenizer mode, not to
@@ -393,8 +395,7 @@ LLAMA_MODEL_URL  ?= https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-G
 # verify_sha256 on every fetch-llama-model run.
 LLAMA_MODEL_SHA256 := 48ab3034d0dd401fbc721eb1df3217902fee7dab9078992d66431f09b7750201
 
-$(LLAMA_MODEL_PATH):
-	$(call fetch_gguf,~369 MB,$(LLAMA_MODEL_URL))
+$(eval $(call gguf_fixture,LLAMA,fetch-llama-model,~369 MB,Llama reference model))
 
 # Qwen3 reference model (#275). Small third family (609 MB): proves the
 # qwen3 populator (metadata head_dim 128 ≠ d_model/n_heads, per-head
@@ -407,12 +408,7 @@ QWEN3_MODEL_URL  ?= https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/23749fef
 # Upstream LFS oid, verified 2026-08-19; revision-pinned 2026-09-15.
 QWEN3_MODEL_SHA256 := 9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031
 
-$(QWEN3_MODEL_PATH):
-	$(call fetch_gguf,~609 MB,$(QWEN3_MODEL_URL))
-
-fetch-qwen3-model: $(QWEN3_MODEL_PATH)
-	$(call verify_sha256,$(QWEN3_MODEL_PATH),$(QWEN3_MODEL_SHA256))
-	@echo "Qwen3 reference model ready (SHA-256 verified): $(QWEN3_MODEL_PATH)"
+$(eval $(call gguf_fixture,QWEN3,fetch-qwen3-model,~609 MB,Qwen3 reference model))
 
 # Gemma 3 reference model (#37). google/gemma-3-270m-it as Q4_K_M (~241 MB):
 # the gemma3 family unit (sandwich norms, query_pre_attn_scalar, 5:1 local/
@@ -425,12 +421,7 @@ GEMMA3_MODEL_URL  ?= https://huggingface.co/lmstudio-community/gemma-3-270m-it-G
 # Upstream LFS oid at that revision, verified 2026-10-15.
 GEMMA3_MODEL_SHA256 := 9b06391b17444a1ea4d0747145b54722b57bd32df715cc436d6011b8c356622a
 
-$(GEMMA3_MODEL_PATH):
-	$(call fetch_gguf,~241 MB,$(GEMMA3_MODEL_URL))
-
-fetch-gemma3-model: $(GEMMA3_MODEL_PATH)
-	$(call verify_sha256,$(GEMMA3_MODEL_PATH),$(GEMMA3_MODEL_SHA256))
-	@echo "Gemma 3 reference model ready (SHA-256 verified): $(GEMMA3_MODEL_PATH)"
+$(eval $(call gguf_fixture,GEMMA3,fetch-gemma3-model,~241 MB,Gemma 3 reference model))
 
 # Qwen3.5 hybrid reference model (#281). 0.8B Q8_0 (~780 MB): proves the
 # per-layer token-mixer dispatch (gated DeltaNet + gated attention) and
@@ -442,16 +433,7 @@ QWEN35_MODEL_URL  ?= https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/6a
 # Upstream LFS oid, verified 2026-08-23; revision-pinned 2026-09-15.
 QWEN35_MODEL_SHA256 := 0ad885ffd4bb022fc4f0d33a3308fa108ef8613159d3b3a67e23abca056b7a6c
 
-$(QWEN35_MODEL_PATH):
-	$(call fetch_gguf,~780 MB,$(QWEN35_MODEL_URL))
-
-fetch-qwen35-model: $(QWEN35_MODEL_PATH)
-	$(call verify_sha256,$(QWEN35_MODEL_PATH),$(QWEN35_MODEL_SHA256))
-	@echo "Qwen3.5 reference model ready (SHA-256 verified): $(QWEN35_MODEL_PATH)"
-
-fetch-llama-model: $(LLAMA_MODEL_PATH)
-	$(call verify_sha256,$(LLAMA_MODEL_PATH),$(LLAMA_MODEL_SHA256))
-	@echo "Llama reference model ready (SHA-256 verified): $(LLAMA_MODEL_PATH)"
+$(eval $(call gguf_fixture,QWEN35,fetch-qwen35-model,~780 MB,Qwen3.5 reference model))
 
 # Gemma 4 audio tower (~590 MB), extracted from the public checkpoint via
 # HTTP Range requests — tools/fetch_audio_tower.py pulls only the

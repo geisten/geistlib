@@ -83,12 +83,6 @@ static double process_rss_mb(void) {
 #endif
 }
 
-static double monotonic_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec / 1e6;
-}
-
 [[nodiscard]] static size_t
 parse_csv_ints(size_t out_cap, int out[static out_cap], const char *csv) {
     size_t      n = 0;
@@ -370,9 +364,9 @@ int main(int argc, char **argv) {
                 continue;
             }
 
-            const double t0        = monotonic_ms();
+            const double t0        = geist_test_now_ms();
             s                      = geist_session_prefill_tokens(sess, (size_t) n_p, ids);
-            const double t_prefill = monotonic_ms() - t0;
+            const double t_prefill = geist_test_now_ms() - t0;
             if (s != GEIST_OK) {
                 fprintf(stderr,
                         "prefill failed at seq_len=%d repeat=%d (status %d)\n",
@@ -382,7 +376,7 @@ int main(int argc, char **argv) {
                 continue;
             }
 
-            const double  t1      = monotonic_ms();
+            const double  t1      = geist_test_now_ms();
             double        t_first = 0.0;
             geist_token_t out     = 0;
             for (int j = 0; j < decode_n; j++) {
@@ -397,10 +391,10 @@ int main(int argc, char **argv) {
                     break;
                 }
                 if (j == 0) {
-                    t_first = monotonic_ms() - t1;
+                    t_first = geist_test_now_ms() - t1;
                 }
             }
-            const double t_decode = monotonic_ms() - t1;
+            const double t_decode = geist_test_now_ms() - t1;
             if (s != GEIST_OK)
                 continue;
 

@@ -1,5 +1,6 @@
 /* Sweep all Q3_K tensors and check linear_q3k_w3a8_prefill matches FP32 ref. */
 #include "quant.h"
+#include "neon_quant_wrappers.h"
 #include "gguf_dequant.h"
 #include "gguf_reader.h"
 #include "test_helpers.h"

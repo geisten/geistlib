@@ -17,6 +17,7 @@
 #include "heap.h"
 #include "sp_bpe_tokenizer.h"
 #include "tokenizer_fixtures.h"
+#include "test_helpers.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -24,12 +25,6 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-
-static double now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec * 1e-6;
-}
 
 static uint64_t fnv_ids(size_t n, const void *ids, size_t elem) {
     uint64_t       h = 0xcbf29ce484222325ULL;
@@ -61,12 +56,12 @@ static struct row time_gguf(const struct gguf_tokenizer *tok, const char *text, 
     int        runs = 0;
     for (; runs < 5; runs++) {
         size_t       n_ids = 0;
-        const double t0    = now_ms();
+        const double t0    = geist_test_now_ms();
         if (gguf_tokenizer_encode(tok, text, n + 16, ids, &n_ids) != GEIST_OK) {
             free(ids);
             return r;
         }
-        t[runs] = now_ms() - t0;
+        t[runs] = geist_test_now_ms() - t0;
         r.n_ids = n_ids;
         if (t[runs] > 1000.0) {
             runs++;
@@ -87,11 +82,11 @@ static struct row time_sp_bpe(const struct sp_bpe_tokenizer *tok, const char *te
     for (; runs < 5; runs++) {
         uint32_t    *ids   = nullptr;
         size_t       n_ids = 0;
-        const double t0    = now_ms();
+        const double t0    = geist_test_now_ms();
         if (!sp_bpe_tokenizer_encode(tok, text, &ids, &n_ids)) {
             return r;
         }
-        t[runs] = now_ms() - t0;
+        t[runs] = geist_test_now_ms() - t0;
         r.n_ids = n_ids;
         r.hash  = fnv_ids(n_ids, ids, sizeof *ids);
         safe_free((void **) &ids);

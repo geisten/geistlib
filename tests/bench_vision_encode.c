@@ -32,12 +32,6 @@
 #define V_SOFT 1536
 #define BENCH_RUNS 5
 
-static double now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec / 1e6;
-}
-
 static const char *find_weights(void) {
     static const char *candidates[] = {
             "./vision_bench/vision_tower.safetensors",
@@ -100,9 +94,9 @@ int main(int argc, char **argv) {
     double total = 0;
     double tmin = 1e30, tmax = 0;
     for (int r = 0; r < BENCH_RUNS; r++) {
-        double t0 = now_ms();
+        double t0 = geist_test_now_ms();
         (void) vision_encoder_run_image(enc, (size_t) h, (size_t) w, rgb, soft);
-        double dt = now_ms() - t0;
+        double dt = geist_test_now_ms() - t0;
         total += dt;
         if (dt < tmin)
             tmin = dt;

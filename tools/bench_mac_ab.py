@@ -24,7 +24,14 @@ PROTOCOL_PATH = ROOT / "benchmark" / "apple_cpu_protocol.json"
 ERROR = 99
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from bench_cross_engine import command_output, sha256_file  # noqa: E402
+from bench_host import (  # noqa: E402
+    build_schedule_rotating as build_schedule,
+    command_output,
+    machine_state,
+    median_absolute_deviation,
+    sha256_file,
+    wait_for_quiet,
+)
 
 
 def parse_variants(values: list[str]) -> list[dict]:
@@ -54,61 +61,6 @@ def parse_variants(values: list[str]) -> list[dict]:
     if len(variants) < 2:
         raise ValueError("at least two --variant arguments are required")
     return variants
-
-
-def load_per_core() -> tuple[float, float]:
-    load = os.getloadavg()[0]
-    return load, load / max(os.cpu_count() or 1, 1)
-
-
-def machine_state() -> dict:
-    load, per_core = load_per_core()
-    return {
-        "load_1m": load,
-        "load_per_core": per_core,
-        "temperature_c": None,
-        "temperature_note": "package temperature unavailable without privilege",
-        "thermal_status": command_output(["pmset", "-g", "therm"]).splitlines(),
-        "power_source": command_output(["pmset", "-g", "batt"]).splitlines(),
-    }
-
-
-def wait_for_quiet(max_per_core: float, settle_seconds: int,
-                   cooldown_seconds: int, timeout_seconds: int) -> dict:
-    """Require a continuously quiet interval, cool down, then re-check.
-
-    macOS exposes neither package temperature nor thermal pressure to an
-    unprivileged process on all releases. Load is therefore the enforceable
-    gate; the raw record explicitly marks temperature as unavailable.
-    """
-    deadline = time.monotonic() + timeout_seconds
-    quiet_since = None
-    last_report = float("-inf")
-    while True:
-        load, per_core = load_per_core()
-        now = time.monotonic()
-        if per_core <= max_per_core:
-            quiet_since = quiet_since or now
-            if now - quiet_since >= settle_seconds:
-                if cooldown_seconds > 0:
-                    print(f"  cooldown {cooldown_seconds}s", file=sys.stderr, flush=True)
-                    time.sleep(cooldown_seconds)
-                load, per_core = load_per_core()
-                if per_core <= max_per_core:
-                    return machine_state()
-                quiet_since = None
-        else:
-            quiet_since = None
-        if now >= deadline:
-            raise TimeoutError(
-                f"host did not become quiet: load={load:.2f}, per_core={per_core:.2f}, "
-                f"limit={max_per_core:.2f}"
-            )
-        if now - last_report >= 60:
-            print(f"  waiting for quiet host: load {load:.2f} ({per_core:.2f}/core)",
-                  file=sys.stderr, flush=True)
-            last_report = now
-        time.sleep(10)
 
 
 def run_variant(variant: dict, gguf: Path, protocol: dict, threads: int | None) -> dict:
@@ -159,11 +111,6 @@ def run_variant(variant: dict, gguf: Path, protocol: dict, threads: int | None) 
         "stderr": proc.stderr.splitlines(),
         "machine_after": machine_state(),
     }
-
-
-def median_absolute_deviation(values: list[float]) -> float:
-    center = statistics.median(values)
-    return statistics.median(abs(value - center) for value in values)
 
 
 def summarize(runs: list[dict], variants: list[dict], protocol: dict,
@@ -229,15 +176,6 @@ def render_report(metadata: dict, summary: dict, baseline: str) -> str:
                 f"{decode['vs_baseline_pct']:+.2f}% |"
             )
     return "\n".join(lines) + "\n"
-
-
-def build_schedule(variants: list[dict], cycles: int) -> list[tuple[int, int, dict]]:
-    schedule = []
-    for cycle in range(cycles):
-        offset = cycle % len(variants)
-        order = variants[offset:] + variants[:offset]
-        schedule.extend((cycle, position, variant) for position, variant in enumerate(order))
-    return schedule
 
 
 def load_partial(path: Path) -> tuple[dict, list[dict]]:
@@ -376,12 +314,12 @@ def main() -> int:
             print(f"cycle {cycle + 1}/{protocol['cycles']}: {variant['label']}",
                   file=sys.stderr, flush=True)
             try:
-                machine = wait_for_quiet(
-                    protocol["max_load_per_core"],
-                    protocol["settle_seconds"],
-                    protocol["cooldown_seconds"],
-                    args.quiet_timeout,
-                )
+                machine = wait_for_quiet({
+                    "max_load_per_core": protocol["max_load_per_core"],
+                    "settle_seconds": protocol["settle_seconds"],
+                    "cooldown_seconds": protocol["cooldown_seconds"],
+                    "timeout_seconds": args.quiet_timeout,
+                })
                 run = run_variant(variant, gguf, protocol, args.threads)
             except (RuntimeError, TimeoutError) as error:
                 print(f"ERROR: {error}", file=sys.stderr)

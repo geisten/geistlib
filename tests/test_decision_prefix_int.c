@@ -24,12 +24,6 @@ constexpr size_t NCAND = 4;
 constexpr size_t NQ    = 3;
 constexpr size_t QLEN  = 16;
 
-static double now_ms(void) {
-    struct timespec t;
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    return (double) t.tv_sec * 1e3 + (double) t.tv_nsec / 1e6;
-}
-
 int main(void) {
     if (!geist_decision_prefix_available()) {
         GEIST_SKIP("DECISION_CONTEXT=0");
@@ -83,13 +77,13 @@ int main(void) {
         fails += geist_expect(false, "second handle creates");
         goto done;
     }
-    double t0 = now_ms();
+    double t0 = geist_test_now_ms();
     if (geist_decision_prefix_prepare(a, SIZE_MAX, n_prefix, prompt, &p) != GEIST_OK) {
         fprintf(stderr, "prepare: %s\n", geist_decision_errmsg(a));
         fails++;
         goto done;
     }
-    const double                      t_prepare = now_ms() - t0;
+    const double                      t_prepare = geist_test_now_ms() - t0;
     struct geist_decision_prefix_info info      = {0};
     (void) geist_decision_prefix_get_info(p, &info);
     printf("%s, %s: chunk %zu, prefix %zu tokens, snapshot %.1f MiB, prepare %.0f ms\n",
@@ -115,10 +109,10 @@ int main(void) {
             geist_session_prefill_tokens(s, QLEN, q[k]) == GEIST_OK) {
             ref = geist_session_peek_logits(&nl, s);
         }
-        t0 = now_ms();
+        t0 = geist_test_now_ms();
         const bool scored =
                 geist_decision_score_from_prefix(a, p, QLEN, NCAND, q[k], cand, &r) == GEIST_OK;
-        t_prefix += now_ms() - t0;
+        t_prefix += geist_test_now_ms() - t0;
         bool exact = scored && ref != nullptr;
         for (size_t i = 0; exact && i < NCAND; i++) {
             exact       = r.logits[i] == ref[cand[i]];
@@ -128,10 +122,10 @@ int main(void) {
         geist_session_destroy(s);
 
         memcpy(prompt + n_prefix, q[k], sizeof q[k]);
-        t0 = now_ms();
+        t0 = geist_test_now_ms();
         const bool all =
                 geist_decision_score(b, n_prefix + QLEN, NCAND, prompt, cand, &r) == GEIST_OK;
-        t_full += now_ms() - t0;
+        t_full += geist_test_now_ms() - t0;
         bool joined = all;
         for (size_t i = 0; joined && i < NCAND; i++) {
             joined = r.logits[i] == first[k][i];
