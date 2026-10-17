@@ -1630,8 +1630,6 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
         safe_free((void **) &st->spec_sketch);
         safe_free((void **) &st->spec_row_scale);
         safe_free((void **) &st->spec_dims);
-        safe_free((void **) &st->spec_w_drop);
-        safe_free((void **) &st->spec_w_l1);
         for (size_t b = 0; b < st->n_global_bufs; b++) {
             if (st->global_bufs[b] != nullptr) {
                 be->desc->vtbl->buffer_destroy(be, st->global_bufs[b]);
