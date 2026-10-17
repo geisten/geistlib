@@ -18,7 +18,6 @@
 #include <geist_backend.h>
 
 #include <math.h>
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -175,44 +174,10 @@ static inline void add_scaled_f32_neon_256(float *dst, const float *src, float s
     }
 }
 
-/* The FP32 attention's chunk: items (query, head) are handed out `chunk`
- * at a time, or split statically for 0. GEIST_ATTENTION_OMP_SCHEDULE,
- * read once: "dynamic[,c]" (the default, c = 8), "guided[,c]" (taken as
- * dynamic: geist_par_for has no guided schedule), "static" (a chunk after
- * it is ignored: the split is static either way and the output the same). */
-static size_t attention_chunk(void) {
-    static _Atomic long cached = -1;
-    long                chunk  = atomic_load_explicit(&cached, memory_order_relaxed);
-    if (chunk >= 0) {
-        return (size_t) chunk;
-    }
-    chunk           = 8;
-    const char *env = getenv("GEIST_ATTENTION_OMP_SCHEDULE");
-    if (env != nullptr && env[0] != '\0') {
-        const bool  is_static = strncmp(env, "static", 6) == 0;
-        const char *comma     = strchr(env, ',');
-        if (comma != nullptr && comma[1] != '\0') {
-            const long parsed = strtol(comma + 1, nullptr, 10);
-            if (parsed > 0 && parsed < (1L << 20)) {
-                chunk = parsed;
-            }
-        }
-        if (is_static) {
-            chunk = 0;
-        }
-    }
-    atomic_store_explicit(&cached, chunk, memory_order_relaxed);
-    return (size_t) chunk;
-}
-
-/* Runs fn over the `total` attention items on attention_chunk()'s schedule. */
+/* Runs fn over the `total` attention items (query, head), handed out 8 at
+ * a time. */
 static void attention_par(size_t total, geist_par_fn fn, void *ctx) {
-    const size_t chunk = attention_chunk();
-    if (chunk == 0) {
-        geist_par_for(total, fn, ctx);
-    } else {
-        cpu_neon_par_for_dynamic(total, chunk, fn, ctx);
-    }
+    cpu_neon_par_for_dynamic(total, 8, fn, ctx);
 }
 
 static inline void scale_f32_neon(float *x, float scale, size_t n) {

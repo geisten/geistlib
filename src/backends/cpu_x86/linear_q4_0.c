@@ -58,7 +58,6 @@
 #include <geist_types.h>
 
 #include <immintrin.h>
-#include <stdatomic.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -457,19 +456,8 @@ static void rows_mN(void *ctx, size_t j0, size_t j1) {
 /* The tiled int8 GEMM (#18) on VNNI hosts from Q4_0_TILED_MIN_ROWS rows:
  * the same int32 block sums as the register tiles below, but each weight K
  * block is unpacked once per 256-row activation window instead of once per
- * 4 tokens. GEIST_Q4_0_TILED=0 keeps the register tiles. */
+ * 4 tokens. */
 enum { Q4_0_TILED_MIN_ROWS = 16 };
-
-static bool q4_0_tiled_on(void) {
-    static atomic_int on = -1;
-    int               v  = atomic_load_explicit(&on, memory_order_relaxed);
-    if (v < 0) {
-        const char *e = getenv("GEIST_Q4_0_TILED");
-        v             = e == nullptr || e[0] != '0';
-        atomic_store_explicit(&on, v, memory_order_relaxed);
-    }
-    return v != 0;
-}
 
 /* M>1: the m rows quantized, then the GEMM, one geist_par_for each. With
  * vnni, the GEMM is the register tiles of kernel_q4_0_avx512_vnni.c, one
@@ -500,7 +488,7 @@ static void linear_mN(bool                       vnni,
                         .sx    = ws->mN_sum_a,
                         .y     = y};
     geist_par_for(m, quant_rows, &c);
-    if (vnni && m >= Q4_0_TILED_MIN_ROWS && n_in % 256 == 0 && q4_0_tiled_on() &&
+    if (vnni && m >= Q4_0_TILED_MIN_ROWS && n_in % 256 == 0 &&
         q4_0_tiled_gemm_avx512_vnni(m,
                                     n_out,
                                     n_in,
