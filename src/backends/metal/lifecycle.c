@@ -223,19 +223,6 @@ void metal_destroy(struct geist_backend *be) {
     pthread_mutexattr_settype(&seq_lock_attr, PTHREAD_MUTEX_RECURSIVE);
     pthread_mutex_init(&st->seq_lock, &seq_lock_attr);
     pthread_mutexattr_destroy(&seq_lock_attr);
-    const char *ple_block  = getenv("GEIST_METAL_PLE_BLOCK");
-    st->use_ple_block      = ple_block == nullptr || strcmp(ple_block, "0") != 0;
-    const char *q4k_n4     = getenv("GEIST_METAL_Q4K_N4");
-    st->use_q4k_n4         = q4k_n4 == nullptr || strcmp(q4k_n4, "0") != 0;
-    /* Simdgroup-matmul Q4_K GEMM (from llama.cpp mul_mm), on by default.
-     * Whole tiles only; other shapes fall back to the m16 kernel.
-     * GEIST_METAL_Q4K_MM_SG=0 disables. */
-    const char *q4k_mm_sg    = getenv("GEIST_METAL_Q4K_MM_SG");
-    st->use_q4k_mm_sg        = q4k_mm_sg == nullptr || strcmp(q4k_mm_sg, "0") != 0;
-    const char *rmsnorm_simd = getenv("GEIST_METAL_RMSNORM_SIMD");
-    st->use_rmsnorm_simd     = rmsnorm_simd == nullptr || strcmp(rmsnorm_simd, "0") != 0;
-    const char *q6k_n4       = getenv("GEIST_METAL_Q6K_N4");
-    st->use_q6k_n4           = q6k_n4 == nullptr || strcmp(q6k_n4, "0") != 0;
     metal_tuning_init(be, st);
     /* Command-buffer pipelining: rotate every N dispatches, default 192
      * (~3 buffers per decode token; llama.cpp's n_cb optimum is 2-3).
@@ -247,10 +234,6 @@ void metal_destroy(struct geist_backend *be) {
                     ? (uint32_t) rotate
                     : 192u;
     st->profile_enabled = metal_env_enabled("GEIST_METAL_PROFILE");
-    /* Chunked DeltaNet prefill for seq>1 (port of dn_run_prefill_chunked).
-     * GEIST_METAL_DN_CHUNK=0 uses the serial per-token mixer kernel. */
-    const char *dn_chunk = getenv("GEIST_METAL_DN_CHUNK");
-    st->use_dn_chunk     = dn_chunk == nullptr || strcmp(dn_chunk, "0") != 0;
 
     enum geist_status s = metal_load_runtime(be, st);
     if (s != GEIST_OK) {

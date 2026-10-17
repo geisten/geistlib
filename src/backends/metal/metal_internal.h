@@ -332,7 +332,6 @@ struct metal_state {
      * prefill (raw handle, argmax_result_buffer pattern). */
     void    *dn_scratch;
     size_t   dn_scratch_bytes;
-    bool     use_dn_chunk;
     void    *qgate_split_function;
     void    *qgate_split_pipeline;
     void    *sigmoid_mul_function;
@@ -463,11 +462,6 @@ struct metal_state {
     pthread_mutex_t           seq_lock;
     _Atomic(uintptr_t)        seq_owner;
     bool                      sequence_has_work;
-    bool                      use_ple_block;
-    bool                      use_q4k_n4;
-    bool                      use_q4k_mm_sg;
-    bool                      use_rmsnorm_simd;
-    bool                      use_q6k_n4;
     bool                      profile_enabled;
     bool                      skip_next_dispatch; /* subtractive profiler: drop the next dispatch */
     struct metal_profile_stat profile[METAL_PROFILE_STAGE_COUNT];
@@ -1010,8 +1004,6 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit);
 #include "metal_objc.h"
 
 bool metal_env_enabled(const char *name);
-
-bool metal_env_disabled(const char *name);
 
 uint64_t metal_now_ns(void);
 

@@ -153,7 +153,6 @@ static const struct metal_pipeline_row metal_quant_rows[] = {
         METAL_PIPE(f32, "ple_proj_norm_f32", f32_ple_proj_norm),
 };
 
-/* Built only with GEIST_METAL_Q4K_MM_SG on (the default). */
 static const struct metal_pipeline_row metal_q4k_mm_sg_rows[] = {
         METAL_PIPE(q4k_mm_sg, "matmul_q4k_mm_sg", q4k_mm_sg),
         METAL_PIPE(q4k_mm_sg_fast, "matmul_q4k_mm_sg_fast", q4k_mm_sg_fast),
@@ -277,7 +276,7 @@ void metal_release_pipeline_tables(struct metal_state *st) {
         st->i2s_n4_pipeline != nullptr && st->i2s_mm_pipeline != nullptr &&
         st->iq3s_mm_pipeline != nullptr && st->q4k_n4_pipeline != nullptr &&
         st->q4k_matmul_m8_pipeline != nullptr && st->q4k_matmul_m16_pipeline != nullptr &&
-        (!st->use_q4k_mm_sg || st->q4k_mm_sg_pipeline != nullptr) && st->q6k_pipeline != nullptr &&
+        st->q4k_mm_sg_pipeline != nullptr && st->q6k_pipeline != nullptr &&
         st->q6k_n4_pipeline != nullptr && st->rmsnorm_rows_pipeline != nullptr &&
         st->rmsnorm_rows_simd_pipeline != nullptr && st->gelu_rows_pipeline != nullptr &&
         st->silu_rows_pipeline != nullptr && st->relu2_rows_pipeline != nullptr &&
@@ -366,20 +365,11 @@ void metal_release_pipeline_tables(struct metal_state *st) {
     void *q4k_m16_source =
             metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q4k_m16_source);
     void *q4k_mm_sg_ns_source =
-            st->use_q4k_mm_sg
-                    ? metal_msg_send_id_cstr(
-                              st, ns_string, "stringWithUTF8String:", metal_q4k_mm_sg_source)
-                    : nullptr;
+            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q4k_mm_sg_source);
     void *q4k_mm_sg_fast_ns_source =
-            st->use_q4k_mm_sg
-                    ? metal_msg_send_id_cstr(
-                              st, ns_string, "stringWithUTF8String:", metal_q4k_mm_sg_fast_source)
-                    : nullptr;
+            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q4k_mm_sg_fast_source);
     void *q6k_mm32_ns_source =
-            st->use_q4k_mm_sg
-                    ? metal_msg_send_id_cstr(
-                              st, ns_string, "stringWithUTF8String:", metal_q6k_mm32_source)
-                    : nullptr;
+            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q6k_mm32_source);
     void *q4k_gate_up_n4_src = metal_msg_send_id_cstr(
             st, ns_string, "stringWithUTF8String:", metal_q4k_gate_up_n4_source);
     void *q4k_pair_n4_src = metal_msg_send_id_cstr(
@@ -439,7 +429,8 @@ void metal_release_pipeline_tables(struct metal_state *st) {
     }
     if (source == nullptr || q40_q80_source == nullptr || quant_sg_source == nullptr ||
         q4k_m16_source == nullptr || q4k_n4_source == nullptr ||
-        (st->use_q4k_mm_sg && q4k_mm_sg_ns_source == nullptr) || q4k_gate_up_n4_src == nullptr ||
+        q4k_mm_sg_ns_source == nullptr || q4k_mm_sg_fast_ns_source == nullptr ||
+        q6k_mm32_ns_source == nullptr || q4k_gate_up_n4_src == nullptr ||
         q4k_pair_n4_src == nullptr || q6_source == nullptr || q6_n4_source == nullptr ||
         elem_source == nullptr || silu_source == nullptr ||
         qgate_source == nullptr || elem_simd_source == nullptr || embed_source == nullptr ||
@@ -560,7 +551,7 @@ void metal_release_pipeline_tables(struct metal_state *st) {
                                 msg != nullptr ? msg : "");
         return GEIST_E_BACKEND;
     }
-    if (st->use_q4k_mm_sg) {
+    {
         err                   = nullptr;
         st->q4k_mm_sg_library = metal_msg_send_id_id_id_err(st,
                                                             st->device,
@@ -737,7 +728,7 @@ void metal_release_pipeline_tables(struct metal_state *st) {
     }
     enum geist_status s =
             metal_create_pipelines(be, ns_string, METAL_N(metal_quant_rows), metal_quant_rows);
-    if (s == GEIST_OK && st->use_q4k_mm_sg) {
+    if (s == GEIST_OK) {
         s = metal_create_pipelines(
                 be, ns_string, METAL_N(metal_q4k_mm_sg_rows), metal_q4k_mm_sg_rows);
     }

@@ -70,12 +70,6 @@ bool metal_env_enabled(const char *name) {
     return value != nullptr && value[0] != '\0' && strcmp(value, "0") != 0;
 }
 
-/* Default-on switches: true only when the env var is explicitly "0". */
-bool metal_env_disabled(const char *name) {
-    const char *value = getenv(name);
-    return value != nullptr && strcmp(value, "0") == 0;
-}
-
 uint64_t metal_now_ns(void) {
     struct timespec ts = {0};
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {

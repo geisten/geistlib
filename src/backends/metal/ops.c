@@ -21,7 +21,7 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
     /* A few rows (a ragged tail, a short appended turn) go row by row
      * through the matvec kernel: the m8 tile kernel costs as much as a full
      * 64-row GEMM for any row count (#578). */
-    if (m_tile8 && params->rows <= METAL_MATVEC_MAX_ROWS && st->use_q4k_n4 && params->n_out >= 4u) {
+    if (m_tile8 && params->rows <= METAL_MATVEC_MAX_ROWS && params->n_out >= 4u) {
         for (uint32_t r = 0; r < params->rows; r++) {
             struct metal_q4k_params one = *params;
             one.rows                    = 1u;
@@ -31,7 +31,7 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
         }
         return;
     }
-    const bool m_tile16    = m_tile8 && params->rows >= METAL_Q4K_M16_TILE;
+    const bool m_tile16 = m_tile8 && params->rows >= METAL_Q4K_M16_TILE;
     /* The bounded kernel clamps its row and column indices and copies a
      * partial tile out through threadgroup memory, so any rows >= 8 shape
      * takes it, as the other formats' GEMMs do (#578). The partial-tile
@@ -42,8 +42,8 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
     const bool full_tiles = (params->rows % 32u) == 0u && (params->n_out % 64u) == 0u;
     const bool fast_tiles = (params->n_out % 64u) == 0u;
     const bool m_tile_sg =
-            m_tile8 && st->use_q4k_mm_sg && st->q4k_mm_sg_pipeline != nullptr &&
-            params->rows >= 8u && params->n_out >= 64u &&
+            m_tile8 && st->q4k_mm_sg_pipeline != nullptr && params->rows >= 8u &&
+            params->n_out >= 64u &&
             (full_tiles || ((params->y_offset % 4u) == 0u && (params->y_row_stride % 4u) == 0u));
     /* interior fast variant: no bounds checks, vectorized activation
      * staging (needs full tiles, n_in%32 and 8-float-aligned x rows). */
@@ -51,7 +51,7 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
                                 (params->n_in % 32u) == 0u && (params->x_offset % 8u) == 0u &&
                                 (params->x_row_stride % 8u) == 0u;
     const bool m_tile8_active = m_tile8 && !m_tile16;
-    const bool n_tile4        = st->use_q4k_n4 && !m_tile8 && params->rows == 1u;
+    const bool n_tile4        = !m_tile8 && params->rows == 1u;
     metal_msg_send_set_pipeline(st,
                                 enc,
                                 m_tile_sg_fast   ? st->q4k_mm_sg_fast_pipeline
@@ -152,7 +152,7 @@ static void metal_encode_q6k_linear(struct metal_state            *st,
         metal_encode_q6k_linear(st, enc, x, w, y, &tail, true);
         return;
     }
-    if (m_tile8 && params->rows > 1u && params->rows <= METAL_MATVEC_MAX_ROWS && st->use_q6k_n4 &&
+    if (m_tile8 && params->rows > 1u && params->rows <= METAL_MATVEC_MAX_ROWS &&
         params->n_out >= 4u) {
         for (uint32_t r = 0; r < params->rows; r++) {
             struct metal_q4k_params one = *params;
@@ -167,7 +167,7 @@ static void metal_encode_q6k_linear(struct metal_state            *st,
      * waste for a single row, and n4 (llama mul_mv structure) wins at any
      * n_out that fills at least one threadgroup. */
     const bool single_row = params->rows == 1u;
-    const bool n_tile4    = st->use_q6k_n4 && single_row && params->n_out >= 4u;
+    const bool n_tile4    = single_row && params->n_out >= 4u;
     const bool m_tile_sg  = m_tile8 && !n_tile4 && st->q6k_matmul_sg_pipeline != nullptr;
     /* interior fast variant: no bounds checks, vectorized activation
      * staging, direct simdgroup_store output. */
@@ -176,10 +176,10 @@ static void metal_encode_q6k_linear(struct metal_state            *st,
                                 (params->x_offset % 8u) == 0u && (params->x_row_stride % 8u) == 0u;
     metal_msg_send_set_pipeline(st,
                                 enc,
-                                m_tile_sg_fast   ? st->q6k_matmul_sg_fast_pipeline
-                                : m_tile_sg      ? st->q6k_matmul_sg_pipeline
-                                : n_tile4        ? st->q6k_n4_pipeline
-                                                 : st->q6k_pipeline);
+                                m_tile_sg_fast ? st->q6k_matmul_sg_fast_pipeline
+                                : m_tile_sg    ? st->q6k_matmul_sg_pipeline
+                                : n_tile4      ? st->q6k_n4_pipeline
+                                               : st->q6k_pipeline);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
@@ -307,18 +307,15 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
     const struct metal_quant_pipes p = metal_quant_pipes_for(st, dtype, params->n_out);
     /* rows==1 -> simdgroup GEMV (llama mul_mv structure); rows>=8 -> 64x32
      * simdgroup GEMM (bounds-checked, arbitrary rows/n_out); the naive
-     * kernels remain the fallback for tiny shapes and the two kill-switch
-     * envs (reused from the q4k levers). gemm_only formats have no naive
+     * kernels remain the fallback for tiny shapes. gemm_only formats have no naive
      * kernels, so their GEMM takes every rows>=2 shape. */
-    const bool n_tile4 = params->rows == 1u && params->n_out >= 4u &&
-                         (st->use_q4k_n4 || p.gemm_only) && p.n4 != nullptr;
+    const bool n_tile4 = params->rows == 1u && params->n_out >= 4u && p.n4 != nullptr;
     /* gemm_only: every shape the n4 GEMV does not take, including
      * rows == 1 with n_out < 4. The GEMM is bounds-checked, so a tiny
      * shape is slow, not wrong -- and there is no naive kernel below it
      * to fall back to. */
     const bool m_tile_sg =
-            (p.gemm_only ? !n_tile4
-                         : (params->rows >= 8u && params->n_out >= 64u && st->use_q4k_mm_sg)) &&
+            (p.gemm_only ? !n_tile4 : (params->rows >= 8u && params->n_out >= 64u)) &&
             p.mm != nullptr;
     /* interior fast variant: no bounds checks, vectorized activation
      * staging (needs full tiles, n_in%32 and 8-float-aligned x rows). */
@@ -384,10 +381,8 @@ static constexpr uint32_t METAL_WIDE_ROWS_MIN_COLS = 1024u;
  * get. Prefill already fills the machine with rows, so it keeps 256. The simd
  * kernels take their stride from threads_per_threadgroup; the plain ones
  * hardcode 256. */
-static uint32_t metal_rows_threads(const struct metal_state *st, uint32_t rows, uint32_t cols) {
-    return st->use_rmsnorm_simd && rows == 1u && cols >= METAL_WIDE_ROWS_MIN_COLS
-                   ? 1024u
-                   : METAL_ELEM_THREADS;
+static uint32_t metal_rows_threads(uint32_t rows, uint32_t cols) {
+    return rows == 1u && cols >= METAL_WIDE_ROWS_MIN_COLS ? 1024u : METAL_ELEM_THREADS;
 }
 
 static void metal_encode_rmsnorm_rows(struct metal_state             *st,
@@ -397,10 +392,7 @@ static void metal_encode_rmsnorm_rows(struct metal_state             *st,
                                       const struct geist_tensor      *y,
                                       const struct metal_rows_params *params) {
 
-    metal_msg_send_set_pipeline(st,
-                                enc,
-                                st->use_rmsnorm_simd ? st->rmsnorm_rows_simd_pipeline
-                                                     : st->rmsnorm_rows_pipeline);
+    metal_msg_send_set_pipeline(st, enc, st->rmsnorm_rows_simd_pipeline);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
@@ -411,7 +403,7 @@ static void metal_encode_rmsnorm_rows(struct metal_state             *st,
             .depth  = 1,
     };
     const struct metal_size threads = {
-            .width  = metal_rows_threads(st, params->rows, params->cols),
+            .width  = metal_rows_threads(params->rows, params->cols),
             .height = 1,
             .depth  = 1,
     };
@@ -427,10 +419,7 @@ static void metal_encode_rmsnorm_add_rows(struct metal_state                  *s
                                           const struct geist_tensor           *y,
                                           const struct metal_post_norm_params *params) {
 
-    metal_msg_send_set_pipeline(st,
-                                enc,
-                                st->use_rmsnorm_simd ? st->rmsnorm_add_rows_simd_pipeline
-                                                     : st->rmsnorm_add_rows_pipeline);
+    metal_msg_send_set_pipeline(st, enc, st->rmsnorm_add_rows_simd_pipeline);
     metal_msg_send_set_buffer(st, enc, res->buffer->buffer, res->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 1);
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 2);
@@ -442,7 +431,7 @@ static void metal_encode_rmsnorm_add_rows(struct metal_state                  *s
             .depth  = 1,
     };
     const struct metal_size threads = {
-            .width  = metal_rows_threads(st, params->rows, params->cols),
+            .width  = metal_rows_threads(params->rows, params->cols),
             .height = 1,
             .depth  = 1,
     };
@@ -764,8 +753,7 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
      * others the 8x8 simdgroup GEMM. Single-row keeps the reduction kernel. */
     const bool use_sg = params->rows > 1u && sg_pipe != nullptr;
     const bool use_mm = use_sg && w->dtype == GEIST_DTYPE_F32 &&
-                        st->f32_matmul_mm_pipeline != nullptr &&
-                        !metal_env_disabled("GEIST_METAL_F32_MM") && params->rows >= 8u &&
+                        st->f32_matmul_mm_pipeline != nullptr && params->rows >= 8u &&
                         (params->n_out % 64u) == 0u && (params->n_in % 32u) == 0u &&
                         (params->x_offset % 8u) == 0u && (params->x_row_stride % 8u) == 0u &&
                         (params->w_offset % 4u) == 0u;
@@ -3277,8 +3265,7 @@ metal_embedding_lookup(struct geist_backend      *be,
         return s;
     }
     struct metal_state *st = be->state;
-    if (!st->use_ple_block || st->f32_ple_gate_pipeline == nullptr ||
-        st->f32_ple_proj_norm_pipeline == nullptr) {
+    if (st->f32_ple_gate_pipeline == nullptr || st->f32_ple_proj_norm_pipeline == nullptr) {
         return GEIST_E_UNSUPPORTED;
     }
     struct {
@@ -3575,7 +3562,7 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
         (head_dim <= 256u || (head_dim <= 512u && st->attention_dec512_f16_pipeline != nullptr)) &&
         k_rows >= 32u && st->attention_dec_f16_pipeline != nullptr &&
         st->attention_dec_combine_pipeline != nullptr &&
-        st->kv_append_rows_f16_pipeline != nullptr && !metal_env_disabled("GEIST_METAL_FLASH")) {
+        st->kv_append_rows_f16_pipeline != nullptr) {
         s = metal_attention_dec_kv(be,
                                    st,
                                    q,
@@ -3605,7 +3592,7 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
          (head_dim <= 512u && (head_dim % 64u) == 0u &&
           st->attention_flash_sg8_f16_pipeline != nullptr)) &&
         k_rows >= 32u && st->attention_flash_sg_f16_pipeline != nullptr &&
-        st->kv_append_rows_f16_pipeline != nullptr && !metal_env_disabled("GEIST_METAL_FLASH")) {
+        st->kv_append_rows_f16_pipeline != nullptr) {
         s = metal_attention_flash_kv(be,
                                      st,
                                      q,
@@ -4085,13 +4072,13 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
             w->dtype == GEIST_DTYPE_BF16) {
             tile = 1;
         } else if (w->dtype == GEIST_DTYPE_Q4_K) {
-            tile = st->use_q4k_n4 ? 4 : 1;
+            tile = 4;
         } else if (w->dtype == GEIST_DTYPE_Q6_K) {
-            tile = st->use_q6k_n4 && w->n_out >= 4 ? 4 : 1;
+            tile = w->n_out >= 4 ? 4 : 1;
         } else {
             const struct metal_quant_pipes p =
                     metal_quant_pipes_for(st, (enum geist_dtype) w->dtype, (uint32_t) w->n_out);
-            if (w->n_out >= 4 && (st->use_q4k_n4 || p.gemm_only)) {
+            if (w->n_out >= 4) {
                 tile = w->dtype == GEIST_DTYPE_PQ2_0 &&
                                        (uint32_t) w->n_out >= st->tuning.pq2_n8_min_n_out
                                ? 16
@@ -4229,8 +4216,8 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
      * occupancy. State buffers thread through Metal's hazard tracking;
      * scratch is reused per sub-chunk. */
     enum { DN_SUBCHUNK = 64u };
-    bool chunked = args->seq > 1 && (args->head_v % 4u) == 0u && st->use_dn_chunk &&
-                   st->dn_chunk_gate_pipeline != nullptr;
+    bool chunked =
+            args->seq > 1 && (args->head_v % 4u) == 0u && st->dn_chunk_gate_pipeline != nullptr;
     if (chunked) {
         const size_t C    = DN_SUBCHUNK;
         const size_t hist = args->conv_kernel - 1u;
