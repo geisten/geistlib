@@ -1,9 +1,8 @@
 /*
  * src/backends/cpu_neon/kernels/q3_K.c — Q3_K W3A8 NEON kernels.
  *
- * Block layout from src/quant/quant_blocks.h. unpack_q3k_scales and
- * q3k_reconstruct_q32 duplicate the static helpers in
- * src/formats/gguf/q3_K.c; keep both copies in sync.
+ * Block layout, unpack_q3k_scales and q3k_reconstruct_q32 from
+ * src/quant/quant_blocks.h, shared with src/formats/gguf/q3_K.c.
  */
 #include "quant_blocks.h"
 #include "heap.h"
@@ -19,34 +18,7 @@
 #include <arm_neon.h>
 #endif
 
-/* Unpack the 12-byte packed scales into 16 signed 6-bit scales. */
-static inline void unpack_q3k_scales(const uint8_t *sc_packed, int8_t *sc_out) {
-    for (int j = 0; j < 16; j++) {
-        const uint8_t low4  = (uint8_t) ((sc_packed[j % 8] >> ((j / 8) * 4u)) & 0x0Fu);
-        const uint8_t high2 = (uint8_t) ((sc_packed[8 + (j % 4)] >> ((j / 4) * 2u)) & 0x03u);
-        sc_out[j]           = (int8_t) ((int) (low4 | (high2 << 4u)) - 32);
-    }
-}
-
 #if defined(__ARM_NEON)
-/* Rebuild 32 signed 3-bit weights from 2 low bits (qs) and 1 high bit (hmask). */
-static inline void q3k_reconstruct_q32(uint8x16_t qs_shifted_lo,
-                                       uint8x16_t qs_shifted_hi,
-                                       uint8x16_t hm_shifted_lo,
-                                       uint8x16_t hm_shifted_hi,
-                                       int8x16_t *out_lo,
-                                       int8x16_t *out_hi) {
-    const uint8x16_t mask3  = vdupq_n_u8(0x03);
-    const uint8x16_t mask1  = vdupq_n_u8(0x01);
-    const int8x16_t  bias4  = vdupq_n_s8(4);
-    uint8x16_t       low2_l = vandq_u8(qs_shifted_lo, mask3);
-    uint8x16_t       low2_h = vandq_u8(qs_shifted_hi, mask3);
-    uint8x16_t       hi1_l  = vandq_u8(hm_shifted_lo, mask1);
-    uint8x16_t       hi1_h  = vandq_u8(hm_shifted_hi, mask1);
-    *out_lo = vsubq_s8(vreinterpretq_s8_u8(vaddq_u8(low2_l, vshlq_n_u8(hi1_l, 2))), bias4);
-    *out_hi = vsubq_s8(vreinterpretq_s8_u8(vaddq_u8(low2_h, vshlq_n_u8(hi1_h, 2))), bias4);
-}
-
 /* Rebuild 32 weights, dot them with xb_g32 and add the scaled dots to acc. */
 static inline int32x4_t q3k_w3a8_acc32(int32x4_t     acc,
                                        uint8x16_t    qs_shifted_lo,

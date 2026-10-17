@@ -74,15 +74,8 @@ static void unpack_w(size_t                     n_super,
         ws->w_d[r]                      = fp16_to_fp32(b->d[lane]);
         ws->w_dmin[r]                   = fp16_to_fp32(b->dmin[lane]);
         for (int sb = 0; sb < 8; sb++) {
-            const uint8_t *g = b->scales + sb * 12;
-            int32_t        s, m;
-            if (lane < 4) {
-                s = g[lane] & 63;
-                m = g[4 + lane] & 63;
-            } else {
-                s = (g[4 + lane] & 15) | ((g[lane - 4] >> 6) << 4);
-                m = (g[4 + lane] >> 4) | ((g[lane] >> 6) << 4);
-            }
+            uint8_t s, m;
+            get_scale_min_k4(lane, b->scales + sb * 12, &s, &m);
             ws->w_scale[r * NSUB_MAX + sb] = s;
             ws->w_min[r * NSUB_MAX + sb]   = m;
         }
@@ -162,14 +155,8 @@ static void unpack_w_q5k(size_t                     n_super,
         ws->w_d[r]                   = fp16_to_fp32(b->d);
         ws->w_dmin[r]                = fp16_to_fp32(b->dmin);
         for (int j = 0; j < 8; j++) {
-            int32_t s, m;
-            if (j < 4) {
-                s = b->scales[j] & 63;
-                m = b->scales[j + 4] & 63;
-            } else {
-                s = (b->scales[j + 4] & 15) | ((b->scales[j - 4] >> 6) << 4);
-                m = (b->scales[j + 4] >> 4) | ((b->scales[j] >> 6) << 4);
-            }
+            uint8_t s, m;
+            get_scale_min_k4(j, b->scales, &s, &m);
             ws->w_scale[r * NSUB_MAX + j] = s;
             ws->w_min[r * NSUB_MAX + j]   = m;
         }

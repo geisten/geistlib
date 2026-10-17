@@ -100,7 +100,7 @@ static inline float blk_d(enum kfmt f, const uint8_t *b) {
 }
 
 /* The 16 sub-block scales as int8. Q3_K packs them in 6 bits with an offset
- * of 32 (unpack_q3k_scales in q3_K.c); this is llama.cpp's AVX2 unpack. */
+ * of 32 (unpack_q3k_scales in quant_blocks.h); this is llama.cpp's AVX2 unpack. */
 static inline __m128i blk_scales(enum kfmt f, const uint8_t *b) {
     if (f == KF_Q6K) {
         return _mm_loadu_si128((const __m128i *) ((const struct block_q6_K_t *) b)->scales);
