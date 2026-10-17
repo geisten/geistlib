@@ -69,21 +69,7 @@ struct cpu_neon_kernel_policy {
     bool q4k_mtile_prefill;
     bool q4k_ntile_prefill;
     bool q4k_block_q8_prefill;
-    /* Mac AMX/Accelerate dequant→cblas_sgemm prefill path. When set AND
-     * m ≥ qk_sgemm_threshold, the Q4_K/Q6_K W*A8 NEON kernels are bypassed
-     * in favor of dequant_q?_K_row + cblas_sgemm (tiled DEQ_TILE_ROWS=32).
-     * Default true when has_accelerate (Mac) outside a VM; false in a
-     * macOS guest (no AMX, #456) and on Pi 5/Linux. */
-    bool q4k_sgemm_prefill;
-    bool q6k_sgemm_prefill;
-    /* Smallest m that takes the SGEMM path (dequant overhead amortized).
-     * Default 64 with Accelerate, else 32. Env: GEIST_QK_SGEMM_THRESHOLD. */
-    size_t qk_sgemm_threshold;
-    /* Output rows per dequant→SGEMM tile. Default 64; larger tiles reduce
-     * cblas call overhead, smaller tiles reduce fp32 scratch/cache pressure.
-     * Env: GEIST_QK_SGEMM_TILE_ROWS. */
-    size_t qk_sgemm_tile_rows;
-    bool   q6k_ntile_prefill;
+    bool q6k_ntile_prefill;
     /* Interleaved-8-row Q6_K decode GEMV (packed heap copy of the
      * tensor; installed only for n_out >= 32768 = lm_head class).
      * Default on where Accelerate implies desktop-class RAM; opt-in

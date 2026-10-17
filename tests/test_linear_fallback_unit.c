@@ -27,10 +27,9 @@
  * every y starts as NaN.
  *
  * cpu_neon runs again with its opt-in paths switched on, which default
- * off on this host class: predecoded and tiled Q4_K prefill, dequant +
- * SGEMM prefill from m = 4 in tiles of 8 rows, the Q6_K x8 GEMV, TL1, the
- * dequant trampolines in place of the native mN kernels, and the row
- * kernels in place of the default-on x8 GEMVs.
+ * off on this host class: predecoded and tiled Q4_K prefill, the Q6_K x8
+ * GEMV, TL1, the dequant trampolines in place of the native mN kernels,
+ * and the row kernels in place of the default-on x8 GEMVs.
  */
 #define _POSIX_C_SOURCE 200809L /* setenv, unsetenv */
 
@@ -67,7 +66,7 @@ struct env_kv {
 };
 
 /* cpu_neon's opt-in kernels, a pass for each set that can run together:
- * at m >= the SGEMM threshold the tiled Q4_K kernels never run. */
+ * the n-tiled Q4_K layout replaces the m-tiled one. */
 static const struct env_kv PASS_TILED[] = {
         {"GEIST_Q4K_PREDECODE", "1"},
         {"GEIST_Q4K_MTILE_PREFILL", "1"},
@@ -87,12 +86,6 @@ static const struct env_kv PASS_NTILED[] = {
         {"GEIST_Q4K_MTILE_PREFILL", "1"},
         {"GEIST_Q4K_NTILE_PREFILL", "1"},
 };
-static const struct env_kv PASS_SGEMM[] = {
-        {"GEIST_Q4K_SGEMM_PREFILL", "1"},
-        {"GEIST_Q6K_SGEMM_PREFILL", "1"},
-        {"GEIST_QK_SGEMM_THRESHOLD", "4"},
-        {"GEIST_QK_SGEMM_TILE_ROWS", "8"},
-};
 
 static const struct {
     const char          *name;
@@ -102,7 +95,6 @@ static const struct {
         {"default", 0, nullptr},
         {"tiled", sizeof PASS_TILED / sizeof PASS_TILED[0], PASS_TILED},
         {"n-tiled", sizeof PASS_NTILED / sizeof PASS_NTILED[0], PASS_NTILED},
-        {"sgemm", sizeof PASS_SGEMM / sizeof PASS_SGEMM[0], PASS_SGEMM},
 };
 
 /* Two weights of one dtype and width, as a layer's gate and up are. */

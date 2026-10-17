@@ -624,19 +624,6 @@ static void cpu_neon_q4k_run_prequantized(const struct cpu_neon_state     *st,
     }
 }
 
-/* SGEMM-prefill path (m ≥ threshold): dequant W tile-by-tile into a
- * workspace-resident fp32 scratch, call cblas_sgemm per tile. Defined
- * below dequant_tile. Activation x is consumed as fp32. */
-static bool
-cpu_neon_dequant_w_workspace_prepare(struct cpu_neon_workspace *ws, size_t tile_rows, size_t n_in);
-static void   cpu_neon_qk_sgemm_run(const float               *x,
-                                    const struct geist_weight *w,
-                                    size_t                     m,
-                                    size_t                     tile_rows,
-                                    float                     *tile_fp32,
-                                    float                     *y);
-static size_t qk_sgemm_tile_rows_for(const struct cpu_neon_state *st);
-
 static void cpu_neon_w_q4k_mN(size_t                     m,
                               const float               *x,
                               const struct geist_weight *w,
@@ -651,12 +638,6 @@ static void cpu_neon_w_q4k_mN(size_t                     m,
      * more rows than the kernels' stack accumulators: the reference. */
     if (ws == nullptr || m > GEIST_QUANT_M_CAP) {
         geist_linear_ref(m, x, w, y);
-        return;
-    }
-
-    if (st->policy.q4k_sgemm_prefill && m >= st->policy.qk_sgemm_threshold &&
-        cpu_neon_dequant_w_workspace_prepare(ws, qk_sgemm_tile_rows_for(st), n_in)) {
-        cpu_neon_qk_sgemm_run(x, w, m, qk_sgemm_tile_rows_for(st), ws->dequant_w_fp32, y);
         return;
     }
 
@@ -695,17 +676,6 @@ static void cpu_neon_w_q4k_pair_mN(size_t                     m,
     if (ws == nullptr || m > GEIST_QUANT_M_CAP || w0->n_in != w1->n_in) {
         geist_linear_ref(m, x, w0, y0);
         geist_linear_ref(m, x, w1, y1);
-        return;
-    }
-
-    /* SGEMM-prefill pair: reuse the same dequant_w_fp32 scratch for both
-     * weights. Each gets its own dequant+sgemm tile-loop; the activation
-     * x is shared and stays in L2 across the two sgemm calls. */
-    if (st->policy.q4k_sgemm_prefill && m >= st->policy.qk_sgemm_threshold &&
-        cpu_neon_dequant_w_workspace_prepare(ws, qk_sgemm_tile_rows_for(st), n_in)) {
-        const size_t tile_rows = qk_sgemm_tile_rows_for(st);
-        cpu_neon_qk_sgemm_run(x, w0, m, tile_rows, ws->dequant_w_fp32, y0);
-        cpu_neon_qk_sgemm_run(x, w1, m, tile_rows, ws->dequant_w_fp32, y1);
         return;
     }
 
@@ -750,13 +720,6 @@ static void cpu_neon_w_q6k_mN(size_t                     m,
         return;
     if (ws == nullptr || m > GEIST_QUANT_M_CAP) {
         geist_linear_ref(m, x, w, y);
-        return;
-    }
-
-    /* SGEMM-prefill path (m ≥ threshold): dequant Q6_K + AMX SGEMM. */
-    if (st->policy.q6k_sgemm_prefill && m >= st->policy.qk_sgemm_threshold &&
-        cpu_neon_dequant_w_workspace_prepare(ws, qk_sgemm_tile_rows_for(st), n_in)) {
-        cpu_neon_qk_sgemm_run(x, w, m, qk_sgemm_tile_rows_for(st), ws->dequant_w_fp32, y);
         return;
     }
 
@@ -884,13 +847,8 @@ static void cpu_neon_w_q8_0_mN(size_t                     m,
  * weight plus a cblas call, tiled by output rows so the FP32 scratch stays
  * bounded (a 262144×1536 lm_head would otherwise need 1.5 GB). */
 #define DEQ_TILE_ROWS_DEFAULT 32
-
-static size_t qk_sgemm_tile_rows_for(const struct cpu_neon_state *st) {
-    if (st == nullptr || st->policy.qk_sgemm_tile_rows == 0) {
-        return DEQ_TILE_ROWS_DEFAULT;
-    }
-    return st->policy.qk_sgemm_tile_rows;
-}
+/* The M=1 trampoline's tile: 64 output rows per sgemv. */
+#define DEQ_GEMV_TILE_ROWS 64
 
 /* Exactly the dequant family's signature: a call through an incompatible
  * function pointer type is undefined (AGENT.md §6). */
@@ -1154,10 +1112,30 @@ static void deq_tiles_run(const float               *x,
     geist_par_for(dynamic && job.n_tiles > threads ? threads : job.n_tiles, deq_tiles, &job);
 }
 
+/* The dequant trampolines' tiles: tile_rows × n_in floats per thread. */
+static bool
+cpu_neon_dequant_w_workspace_prepare(struct cpu_neon_workspace *ws, size_t tile_rows, size_t n_in) {
+    /* One tile per thread of the call (deq_tiles claims them by slot). */
+    size_t need = 0;
+    if (ckd_mul(&need, tile_rows, n_in) || ckd_mul(&need, need, geist_par_max_threads())) {
+        return false;
+    }
+    if (ws->dequant_w_fp32_cap >= need)
+        return true;
+    safe_free((void **) &ws->dequant_w_fp32);
+    ws->dequant_w_fp32 = heap_alloc_array_aligned(float, need);
+    if (ws->dequant_w_fp32 == nullptr) {
+        ws->dequant_w_fp32_cap = 0;
+        return false;
+    }
+    ws->dequant_w_fp32_cap = need;
+    return true;
+}
+
 /* M=1: tile through output rows, dequant each tile + sgemv, the tiles
- * statically split. A tile (tile_rows × n_in floats) per thread, in the
- * calling thread's workspace and kept across calls: ~192 KB each for
- * Gemma 4 d_model=1536; ~1.5 MB for FFN n_in=12288. Without it, the
+ * statically split. A tile (DEQ_GEMV_TILE_ROWS × n_in floats) per thread,
+ * in the calling thread's workspace and kept across calls: ~384 KB each
+ * for Gemma 4 d_model=1536; ~3 MB for FFN n_in=12288. Without it, the
  * reference. */
 static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
                                              const struct geist_weight *w,
@@ -1165,12 +1143,12 @@ static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
                                              float                     *y) {
     struct cpu_neon_state     *st = (be != nullptr) ? (struct cpu_neon_state *) be->state : nullptr;
     struct cpu_neon_workspace *ws = st != nullptr ? cpu_neon_ws(st) : nullptr;
-    const size_t               tile_rows = qk_sgemm_tile_rows_for(st);
-    if (ws == nullptr || !cpu_neon_dequant_w_workspace_prepare(ws, tile_rows, (size_t) w->n_in)) {
+    if (ws == nullptr ||
+        !cpu_neon_dequant_w_workspace_prepare(ws, DEQ_GEMV_TILE_ROWS, (size_t) w->n_in)) {
         geist_linear_ref(1, x, w, y);
         return;
     }
-    deq_tiles_run(x, w, 1, tile_rows, true, false, ws->dequant_w_fp32, y);
+    deq_tiles_run(x, w, 1, DEQ_GEMV_TILE_ROWS, true, false, ws->dequant_w_fp32, y);
 }
 
 /* Fused F16 × A32 GEMV (M=1): one pass over the f16 weight, converted
@@ -1220,38 +1198,6 @@ void cpu_neon_w_f16_m1(const float               *x,
     geist_par_for((size_t) w->n_out, f16_m1_rows, &job);
 }
 #endif
-
-/* Definitions of the forward-declared SGEMM-prefill helpers. */
-static bool
-cpu_neon_dequant_w_workspace_prepare(struct cpu_neon_workspace *ws, size_t tile_rows, size_t n_in) {
-    /* One tile per thread of the call (deq_tiles claims them by slot). */
-    size_t need = 0;
-    if (ckd_mul(&need, tile_rows, n_in) || ckd_mul(&need, need, geist_par_max_threads())) {
-        return false;
-    }
-    if (ws->dequant_w_fp32_cap >= need)
-        return true;
-    safe_free((void **) &ws->dequant_w_fp32);
-    ws->dequant_w_fp32 = heap_alloc_array_aligned(float, need);
-    if (ws->dequant_w_fp32 == nullptr) {
-        ws->dequant_w_fp32_cap = 0;
-        return false;
-    }
-    ws->dequant_w_fp32_cap = need;
-    return true;
-}
-
-static void cpu_neon_qk_sgemm_run(const float               *x,
-                                  const struct geist_weight *w,
-                                  size_t                     m,
-                                  size_t                     tile_rows,
-                                  float                     *tile_fp32,
-                                  float                     *y) {
-    /* Each thread dequants its slice of weight rows into its tile, then
-     * SGEMMs. Accelerate runs these small tile shapes single-threaded,
-     * so the parallelism has to come from this level. */
-    deq_tiles_run(x, w, m, tile_rows, false, true, tile_fp32, y);
-}
 
 /* M>1: tile through output rows, dequant each tile + sgemm against
  * the full activation block. */

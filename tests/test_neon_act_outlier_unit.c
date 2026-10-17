@@ -163,8 +163,6 @@ static void p_plain(struct cpu_neon_kernel_policy *p) {
     p->q4k_mtile_prefill         = false;
     p->q4k_ntile_prefill         = false;
     p->q4k_block_q8_prefill      = false;
-    p->q4k_sgemm_prefill         = false;
-    p->q6k_sgemm_prefill         = false;
     p->q6k_ntile_prefill         = false;
     p->q6k_ntile4_stream_prefill = false;
     p->q6k_x8_gemv               = false;
