@@ -458,6 +458,12 @@ minor release.
   none exists: `session_alloc` / `session_free` are now required, and a
   model whose arch registers neither is refused at load. The slots after
   it move up by one pointer.
+- **`geist_backend_primitives.embedding_lookup` (`geist_backend.h`,
+  EXPERIMENTAL).** No arch called it; the transformer looks rows up through
+  `fused->embedding_lookup_scaled[_rows]` or dequantizes on the host. Gone
+  from cpu_neon, cpu_scalar, Metal and Vulkan; the Metal parity test checks
+  `embedding_lookup_scaled` at scale 1, which is what Metal's
+  `embedding_lookup` ran.
 
 - **Metal: undocumented kernel switches and debug traces.** The default-on
   kill switches `GEIST_METAL_FLASH`, `F32_MM`, `PLE_BLOCK`, `Q4K_N4`,

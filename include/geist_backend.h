@@ -250,15 +250,6 @@ struct geist_backend_primitives {
                                     const struct geist_tensor *cos,
                                     const struct geist_tensor *sin);
 
-    /* Embedding lookup: out = embed_table[token_id, :].
-     *   embed_table shape [vocab_size, d_model]
-     *   out         shape [d_model] (1D) or [1, d_model] (2D)
-     * Returns GEIST_E_INVALID_ARG if token_id is out of range. */
-    enum geist_status (*embedding_lookup)(struct geist_backend      *be,
-                                          const struct geist_tensor *embed_table,
-                                          geist_token_t              token_id,
-                                          struct geist_tensor       *out);
-
     /* Scaled dot-product attention with MQA broadcast and causal+window mask.
      *   q   shape [n_q,  n_q_heads,  head_dim]   (F32 DENSE)
      *   k   shape [n_kv, n_kv_heads, head_dim]   (F32 DENSE)
@@ -524,8 +515,10 @@ struct geist_backend_fused {
                                        struct geist_tensor       *y0,
                                        struct geist_tensor       *y1);
 
-    /* Fused out = embed_table[token_id, :] * scale. Same contract as
-     * primitives->embedding_lookup plus a scalar multiply; batched-submit
+    /* Fused out = embed_table[token_id, :] * scale.
+     *   embed_table shape [vocab_size, d_model]
+     *   out         shape [d_model] (1D) or [1, d_model] (2D)
+     * Returns GEIST_E_INVALID_ARG if token_id is out of range. Batched-submit
      * backends keep the per-token embed/PLE-table lookups (and their
      * scaling) on-device instead of dequantizing through a mapped host
      * pointer. nullptr = arch dequantizes on the host. */

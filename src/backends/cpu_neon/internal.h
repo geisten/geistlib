@@ -316,10 +316,6 @@ struct geist_hadamard_args;
                                                     struct geist_tensor       *x,
                                                     const struct geist_tensor *cos,
                                                     const struct geist_tensor *sin);
-[[nodiscard]] enum geist_status cpu_neon_embedding_lookup(struct geist_backend      *be,
-                                                          const struct geist_tensor *embed_table,
-                                                          geist_token_t              token_id,
-                                                          struct geist_tensor       *out);
 /* fused->kv_append_f16: k_src / v_src rows (F32) to IEEE half at row
  * q_position of the F16 caches (#48). */
 [[nodiscard]] enum geist_status cpu_neon_kv_append_f16(struct geist_backend      *be,

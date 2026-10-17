@@ -426,7 +426,8 @@ static void run_embedding_case(struct geist_backend *mt, int dtype, const char *
                               .ndim   = 1,
                               .shape  = {(int64_t) dim},
                               .stride = {1}};
-    check(mt->desc->prims->embedding_lookup(mt, &tt, (geist_token_t) token, &to) == GEIST_OK,
+    check(geist_backend_fused_tbl(mt)->embedding_lookup_scaled(
+                  mt, &tt, (geist_token_t) token, 1.0f, &to) == GEIST_OK,
           "Metal embedding dispatch");
     check(v->buffer_download(dim * sizeof(float), (uint8_t *) dl, bo) == GEIST_OK,
           "Metal embedding download");
