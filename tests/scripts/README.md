@@ -3,8 +3,7 @@
 Python companions to the C tests in `tests/`. Each runs a C binary that writes
 one tensor as raw FP32, then compares it against a reference in NumPy.
 
-**Only `validate_gguf_dequant.py` runs.** The others are the retired bring-up
-ladder of the Gemma-3 port; see below before assuming any of them works.
+`embedding_e2e_smoke.py` drives `dump_geist_embedding` on a synthetic GGUF.
 
 ## `validate_gguf_dequant.py`
 
@@ -31,29 +30,10 @@ so the BF16 reference is computed here.
 
 Covered dtypes: F32, Q4_K, Q5_K, Q6_K, BF16 and TQ2_0, all bit-exact.
 
-## The bring-up ladder — retired
+## The bring-up ladder — removed
 
-`validate_step1` … `validate_step12to14`, `validate_layers0to4`,
-`validate_layers0to14`, `validate_full_logits`, `validate_full_logits_gguf`,
-`validate_greedy`, `validate_vs_llamacpp`.
-
-They check the Gemma-3 forward pass one tensor at a time against a HuggingFace
-reference — embedding lookup, `input_layernorm`, `q_proj`, QKV + per-head
-RMSNorm, RoPE + sliding-window MQA + `o_proj`, MLP and its norms, PLE
-pre-compute and `layer_scalar` — then the same pieces chained (layers 0-4, 0-14),
-then full logits, then greedy decode, then a head-to-head against llama.cpp.
-
-**Why they do not run:**
-
-1. **13 of the 14 need `dumps/*.npz`** — pre-computed PyTorch activations that
-   nothing in this repository produces.
-2. **11 also need `gemma-4-E2B-it/model.safetensors`** (~5 GB). `make
-   fetch-model` fetches GGUF, not safetensors.
-3. **All 14 look for their C binary at the repository root** (e.g.
-   `ROOT_DIR / "test_step2_input_layernorm"`); binaries live under
-   `bin/<target>/<mode>/tests/` with a `_unit` suffix.
-
-They are kept because the C tests they drive still exist and name them in their
-comments. Reviving one needs a script that dumps HF reference activations to
-`dumps/*.npz`, then fixing the binary paths; for ongoing correctness the C tests
-and the bit-exact `cpu_scalar` reference gate cover the same ground.
+`validate_step1` … `validate_vs_llamacpp` checked the Gemma-3 forward pass one
+tensor at a time against HuggingFace reference activations (`dumps/*.npz`) that
+nothing in this repository produces, so they could not run and were deleted.
+The C tests they drove remain; for ongoing correctness those and the bit-exact
+`cpu_scalar` reference gate cover the same ground.

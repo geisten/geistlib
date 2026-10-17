@@ -9,7 +9,7 @@
  *   <out_prefix>.k.bin   shape (seq, 1, 256)
  *   <out_prefix>.v.bin   shape (seq, 1, 256)
  *
- * Compared in validate_step4.py against q_norm/k_norm/v_norm hooks.
+ * Compare against HF q_norm/k_norm/v_norm hook activations.
  */
 #include "safetensors_reader.h"
 #include "gemma4_kernels.h"

@@ -10,13 +10,12 @@
  *   - Multiplies by sqrt(hidden_size) = sqrt(1536)
  *   - Writes the resulting [seq_len, 1536] FP32 tensor to step1_token_embed.bin
  *
- * Companion validate_step1.py loads dumps/T1.npz["token_embed"] and the
- * binary, prints diff stats.
+ * Compare the binary against HF's token_embed activation (tests/scripts/README.md).
  *
  * Run:
  *   test_step1_embedding_unit ../gemma-4-E2B-it/model.safetensors \
  *      dumps/T1.npz_input_ids.bin step1_token_embed.bin
- * (input_ids file is produced by validate_step1.py prepass.)
+ * (input_ids: the token ids as raw int32.)
  */
 #include "safetensors_reader.h"
 #include "test_helpers.h"
