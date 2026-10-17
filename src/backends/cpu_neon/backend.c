@@ -373,6 +373,7 @@ static const struct geist_backend_fused cpu_neon_fused = {
         .gelu_tanh_mul_scaled = cpu_neon_gelu_tanh_mul_scaled,
         .ffn_geglu_q4q6_mN    = cpu_neon_ffn_geglu_q4q6_mN,
         .hadamard_rotate      = cpu_neon_hadamard_rotate,
+        .kv_append_f16        = cpu_neon_kv_append_f16,
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
         .attention_kv_int8 = cpu_neon_attention_kv_int8,
         .attention_kv_int4 = cpu_neon_attention_kv_int4,
@@ -393,7 +394,8 @@ const struct geist_backend_descriptor geist_backend_cpu_neon = {
                         .calibration_generation = 1,
                         .max_m                  = GEIST_QUANT_M_CAP,
                         /* host DeltaNet sub-chunks (layer_deltanet.c) */
-                        .dn_subchunk = true,
+                        .dn_subchunk      = true,
+                        .kv_f16_attention = true, /* on request (#48) */
 #if defined(__APPLE__)
                         /* Unified memory + Accelerate: FP32 KV wins. */
                         .preferred_kv_mode = GEIST_KV_FP32,

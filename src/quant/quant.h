@@ -50,6 +50,27 @@ static inline float fp16_to_fp32(uint16_t h) {
 float fp16_to_fp32(uint16_t h);
 #endif
 
+/* FP32 -> FP16, round to nearest even (the KV cache's F16 append, #48).
+ * Hardware conversion where fp16_to_fp32 has it; else bit-exact software in
+ * src/formats/gguf/common.c. Overflow saturates to infinity, NaN stays NaN. */
+#if defined(__ARM_FP) && (__ARM_FP & 2)
+static inline uint16_t fp32_to_fp16_rne(float f) {
+    const __fp16 h = (__fp16) f;
+    uint16_t u;
+    memcpy(&u, &h, sizeof u);
+    return u;
+}
+#elif defined(__F16C__) && defined(__FLT16_MAX__)
+static inline uint16_t fp32_to_fp16_rne(float f) {
+    const _Float16 h = (_Float16) f;
+    uint16_t       u;
+    memcpy(&u, &h, sizeof u);
+    return u;
+}
+#else
+uint16_t fp32_to_fp16_rne(float f);
+#endif
+
 /* Q8_0 block: 32 elements, 1 fp16 scale + 32 int8 quants = 34 bytes. */
 constexpr size_t Q8_0_BLOCK_ELEMS = 32;
 constexpr size_t Q8_0_BLOCK_BYTES = 34;

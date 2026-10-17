@@ -220,6 +220,7 @@ const struct geist_backend_fused cpu_scalar_fused = {
         .gelu_tanh_mul        = cpu_scalar_gelu_tanh_mul,
         .gelu_tanh_mul_scaled = cpu_scalar_gelu_tanh_mul_scaled,
         .hadamard_rotate      = cpu_scalar_hadamard_rotate,
+        .kv_append_f16        = cpu_scalar_kv_append_f16,
 };
 
 const struct geist_backend_descriptor geist_backend_cpu_scalar = {
@@ -232,6 +233,9 @@ const struct geist_backend_descriptor geist_backend_cpu_scalar = {
                         .max_m = GEIST_QUANT_M_CAP,
                         /* host DeltaNet sub-chunks (layer_deltanet.c) */
                         .dn_subchunk = true,
+                        /* F16 KV on request only (kv_f16_by_default unset):
+                         * a family or session asks for it (#48). */
+                        .kv_f16_attention = true,
 #if defined(__APPLE__)
                         .preferred_kv_mode = GEIST_KV_FP32,
 #else

@@ -72,6 +72,20 @@ static float *get_f32_dense_ptr_full(const struct geist_tensor *t, size_t *out_n
     return geist_tensor_f32_dense(t, t->buffer->host, t->buffer->bytes, out_n);
 }
 
+/* The K/V element: float for the FP32 cache, or IEEE half when
+ * attention_f16.c compiles this file with AF_F16 (#48), widened by F16C
+ * (in the x86-64-v3 floor) as it is loaded. Everything else is the same
+ * code. */
+#if defined(AF_F16)
+typedef uint16_t af_kv_t;
+#define AF_LD8(p) _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *) (p)))
+#define AF_LD1(p) _cvtsh_ss(*(p))
+#else
+typedef float af_kv_t;
+#define AF_LD8(p) _mm256_loadu_ps(p)
+#define AF_LD1(p) (*(p))
+#endif
+
 /* Bytes of V rows per pass over the output dimensions: they stay in L1
  * while every slice of the dimensions goes over them (64 rows at head_dim
  * 64, 8 at 512). 64 KB measured 5-9 % slower at head_dim 256 and 512. */
@@ -98,18 +112,18 @@ static inline float af_hsum(__m256 v) {
 /* q . k for the eight rows k0 + p * row (lane p): the first hd8 elements
  * eight at a time, then the scalar tail to head_dim. */
 [[gnu::always_inline]] static inline __m256
-af_dot8(size_t hd8, size_t head_dim, size_t row, const float *q, const float *k0) {
+af_dot8(size_t hd8, size_t head_dim, size_t row, const float *q, const af_kv_t *k0) {
     __m256 a0 = _mm256_setzero_ps(), a1 = a0, a2 = a0, a3 = a0, a4 = a0, a5 = a0, a6 = a0, a7 = a0;
     for (size_t i = 0; i < hd8; i += 8) {
         const __m256 qv = _mm256_loadu_ps(q + i);
-        a0              = _mm256_fmadd_ps(qv, _mm256_loadu_ps(k0 + i), a0);
-        a1              = _mm256_fmadd_ps(qv, _mm256_loadu_ps(k0 + row + i), a1);
-        a2              = _mm256_fmadd_ps(qv, _mm256_loadu_ps(k0 + 2 * row + i), a2);
-        a3              = _mm256_fmadd_ps(qv, _mm256_loadu_ps(k0 + 3 * row + i), a3);
-        a4              = _mm256_fmadd_ps(qv, _mm256_loadu_ps(k0 + 4 * row + i), a4);
-        a5              = _mm256_fmadd_ps(qv, _mm256_loadu_ps(k0 + 5 * row + i), a5);
-        a6              = _mm256_fmadd_ps(qv, _mm256_loadu_ps(k0 + 6 * row + i), a6);
-        a7              = _mm256_fmadd_ps(qv, _mm256_loadu_ps(k0 + 7 * row + i), a7);
+        a0              = _mm256_fmadd_ps(qv, AF_LD8(k0 + i), a0);
+        a1              = _mm256_fmadd_ps(qv, AF_LD8(k0 + row + i), a1);
+        a2              = _mm256_fmadd_ps(qv, AF_LD8(k0 + 2 * row + i), a2);
+        a3              = _mm256_fmadd_ps(qv, AF_LD8(k0 + 3 * row + i), a3);
+        a4              = _mm256_fmadd_ps(qv, AF_LD8(k0 + 4 * row + i), a4);
+        a5              = _mm256_fmadd_ps(qv, AF_LD8(k0 + 5 * row + i), a5);
+        a6              = _mm256_fmadd_ps(qv, AF_LD8(k0 + 6 * row + i), a6);
+        a7              = _mm256_fmadd_ps(qv, AF_LD8(k0 + 7 * row + i), a7);
     }
     __m256 d = af_reduce8(a0, a1, a2, a3, a4, a5, a6, a7);
     if (hd8 < head_dim) {
@@ -117,7 +131,7 @@ af_dot8(size_t hd8, size_t head_dim, size_t row, const float *q, const float *k0
         for (size_t p = 0; p < 8; p++) {
             float s = 0.0f;
             for (size_t i = hd8; i < head_dim; i++) {
-                s += q[i] * k0[p * row + i];
+                s += q[i] * AF_LD1(k0 + p * row + i);
             }
             tail[p] = s;
         }
@@ -127,19 +141,19 @@ af_dot8(size_t hd8, size_t head_dim, size_t row, const float *q, const float *k0
 }
 
 /* q . k for one row. */
-static inline float af_dot1(size_t hd8, size_t head_dim, const float *q, const float *k) {
+static inline float af_dot1(size_t hd8, size_t head_dim, const float *q, const af_kv_t *k) {
     __m256 a0 = _mm256_setzero_ps(), a1 = a0;
     size_t i = 0;
     for (; i + 16 <= hd8; i += 16) {
-        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(q + i), _mm256_loadu_ps(k + i), a0);
-        a1 = _mm256_fmadd_ps(_mm256_loadu_ps(q + i + 8), _mm256_loadu_ps(k + i + 8), a1);
+        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(q + i), AF_LD8(k + i), a0);
+        a1 = _mm256_fmadd_ps(_mm256_loadu_ps(q + i + 8), AF_LD8(k + i + 8), a1);
     }
     for (; i < hd8; i += 8) {
-        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(q + i), _mm256_loadu_ps(k + i), a0);
+        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(q + i), AF_LD8(k + i), a0);
     }
     float s = af_hsum(_mm256_add_ps(a0, a1));
     for (; i < head_dim; i++) {
-        s += q[i] * k[i];
+        s += q[i] * AF_LD1(k + i);
     }
     return s;
 }
@@ -150,11 +164,11 @@ static inline float af_dot1(size_t hd8, size_t head_dim, const float *q, const f
  * for the G heads, in registers across the rows: the accumulators are
  * loaded once and stored once, not through an array (stores to a __m256
  * array may alias, and gcc kept every update in memory). */
-[[gnu::always_inline]] static inline void af_pv16(size_t       G,
-                                                  size_t       n,
-                                                  size_t       row,
-                                                  size_t       c,
-                                                  const float *v,
+[[gnu::always_inline]] static inline void af_pv16(size_t         G,
+                                                  size_t         n,
+                                                  size_t         row,
+                                                  size_t         c,
+                                                  const af_kv_t *v,
                                                   const float (*w)[AX_BLOCK],
                                                   float (*acc)[AX_HEAD_DIM_MAX]) {
     __m256 l0 = _mm256_load_ps(acc[0] + c), h0 = _mm256_load_ps(acc[0] + c + 8);
@@ -171,9 +185,9 @@ static inline float af_dot1(size_t hd8, size_t head_dim, const float *q, const f
         l3 = _mm256_load_ps(acc[3] + c);
         h3 = _mm256_load_ps(acc[3] + c + 8);
     }
-    const float *vr = v + c;
+    const af_kv_t *vr = v + c;
     for (size_t j = 0; j < n; j++, vr += row) {
-        const __m256 v0 = _mm256_loadu_ps(vr), v1 = _mm256_loadu_ps(vr + 8);
+        const __m256 v0 = AF_LD8(vr), v1 = AF_LD8(vr + 8);
         __m256       s = _mm256_broadcast_ss(&w[0][j]);
         l0             = _mm256_fmadd_ps(s, v0, l0);
         h0             = _mm256_fmadd_ps(s, v1, h0);
@@ -212,36 +226,36 @@ static inline float af_dot1(size_t hd8, size_t head_dim, const float *q, const f
 /* As af_pv16 over 32 dimensions of 2 heads, or 64 of one (NH heads, NV
  * vectors of 8 each, NH * NV = 8): 16 dimensions per head would leave the
  * FMAs one chain per register and bound by their latency. */
-[[gnu::always_inline]] static inline void af_pv_wide(size_t       NH,
-                                                     size_t       n,
-                                                     size_t       row,
-                                                     size_t       c,
-                                                     const float *v,
+[[gnu::always_inline]] static inline void af_pv_wide(size_t         NH,
+                                                     size_t         n,
+                                                     size_t         row,
+                                                     size_t         c,
+                                                     const af_kv_t *v,
                                                      const float (*w)[AX_BLOCK],
                                                      float (*acc)[AX_HEAD_DIM_MAX]) {
-    const size_t NV = 8 / NH;
-    float       *a0 = acc[0] + c;
-    float       *a1 = NH > 1 ? acc[1] + c : a0 + 32;
-    __m256       x0 = _mm256_load_ps(a0), x1 = _mm256_load_ps(a0 + 8);
-    __m256       x2 = _mm256_load_ps(a0 + 16), x3 = _mm256_load_ps(a0 + 24);
-    __m256       x4 = _mm256_load_ps(a1), x5 = _mm256_load_ps(a1 + 8);
-    __m256       x6 = _mm256_load_ps(a1 + 16), x7 = _mm256_load_ps(a1 + 24);
-    const float *vr = v + c;
+    const size_t   NV = 8 / NH;
+    float         *a0 = acc[0] + c;
+    float         *a1 = NH > 1 ? acc[1] + c : a0 + 32;
+    __m256         x0 = _mm256_load_ps(a0), x1 = _mm256_load_ps(a0 + 8);
+    __m256         x2 = _mm256_load_ps(a0 + 16), x3 = _mm256_load_ps(a0 + 24);
+    __m256         x4 = _mm256_load_ps(a1), x5 = _mm256_load_ps(a1 + 8);
+    __m256         x6 = _mm256_load_ps(a1 + 16), x7 = _mm256_load_ps(a1 + 24);
+    const af_kv_t *vr = v + c;
     for (size_t j = 0; j < n; j++, vr += row) {
         const __m256 s0 = _mm256_broadcast_ss(&w[0][j]);
         const __m256 s1 = NH > 1 ? _mm256_broadcast_ss(&w[1][j]) : s0;
-        const __m256 v0 = _mm256_loadu_ps(vr), v1 = _mm256_loadu_ps(vr + 8);
-        const __m256 v2 = _mm256_loadu_ps(vr + 16), v3 = _mm256_loadu_ps(vr + 24);
+        const __m256 v0 = AF_LD8(vr), v1 = AF_LD8(vr + 8);
+        const __m256 v2 = AF_LD8(vr + 16), v3 = AF_LD8(vr + 24);
         x0 = _mm256_fmadd_ps(s0, v0, x0);
         x1 = _mm256_fmadd_ps(s0, v1, x1);
         x2 = _mm256_fmadd_ps(s0, v2, x2);
         x3 = _mm256_fmadd_ps(s0, v3, x3);
         if (NV == 8) {
             /* One head: dimensions 32..63 of it. */
-            x4 = _mm256_fmadd_ps(s0, _mm256_loadu_ps(vr + 32), x4);
-            x5 = _mm256_fmadd_ps(s0, _mm256_loadu_ps(vr + 40), x5);
-            x6 = _mm256_fmadd_ps(s0, _mm256_loadu_ps(vr + 48), x6);
-            x7 = _mm256_fmadd_ps(s0, _mm256_loadu_ps(vr + 56), x7);
+            x4 = _mm256_fmadd_ps(s0, AF_LD8(vr + 32), x4);
+            x5 = _mm256_fmadd_ps(s0, AF_LD8(vr + 40), x5);
+            x6 = _mm256_fmadd_ps(s0, AF_LD8(vr + 48), x6);
+            x7 = _mm256_fmadd_ps(s0, AF_LD8(vr + 56), x7);
         } else {
             /* Two heads: the same 32 dimensions of the second. */
             x4 = _mm256_fmadd_ps(s1, v0, x4);
@@ -284,15 +298,15 @@ static inline float af_dot1(size_t hd8, size_t head_dim, const float *q, const f
                                                   float                *part) {
     /* Locals, not a->field in the loops: after OpenMP outlining `a` points
      * into the caller's frame, and every float store could alias it. */
-    const size_t head_dim  = HD != 0 ? HD : a->head_dim;
-    const size_t n_q_heads = a->n_q_heads, n_kv_heads = a->n_kv_heads;
-    const size_t row     = n_kv_heads * head_dim; /* K/V floats per position */
-    const size_t hd8     = head_dim & ~(size_t) 7;
-    const size_t hd16    = head_dim & ~(size_t) 15;
-    const size_t pv_fit  = AF_PV_BYTES / (head_dim * sizeof(float));
-    const size_t pv_rows = pv_fit > 8 ? pv_fit : 8;
-    const float *kh      = (const float *) a->k + kv_h * head_dim;
-    const float *vh      = (const float *) a->v + kv_h * head_dim;
+    const size_t   head_dim  = HD != 0 ? HD : a->head_dim;
+    const size_t   n_q_heads = a->n_q_heads, n_kv_heads = a->n_kv_heads;
+    const size_t   row     = n_kv_heads * head_dim; /* K/V floats per position */
+    const size_t   hd8     = head_dim & ~(size_t) 7;
+    const size_t   hd16    = head_dim & ~(size_t) 15;
+    const size_t   pv_fit  = AF_PV_BYTES / (head_dim * sizeof(af_kv_t));
+    const size_t   pv_rows = pv_fit > 8 ? pv_fit : 8;
+    const af_kv_t *kh      = (const af_kv_t *) a->k + kv_h * head_dim;
+    const af_kv_t *vh      = (const af_kv_t *) a->v + kv_h * head_dim;
 
     /* sc: the block's scores, then exp(score - max) — the weight of each V
      * row. */
@@ -320,13 +334,13 @@ static inline float af_dot1(size_t hd8, size_t head_dim, const float *q, const f
             const size_t n                = hi[tq] - b0 < AX_BLOCK ? hi[tq] - b0 + 1 : AX_BLOCK;
             const float *qt               = a->q + ((t0 + tq) * n_q_heads + h0) * head_dim;
             float (*acc)[AX_HEAD_DIM_MAX] = acc_all[tq];
-            float       *max_score        = max_all[tq];
-            double      *sum_exp          = sum_all[tq];
-            const float *kb               = kh + b0 * row;
-            const float *vb               = vh + b0 * row;
-            size_t       j                = 0;
+            float         *max_score      = max_all[tq];
+            double        *sum_exp        = sum_all[tq];
+            const af_kv_t *kb             = kh + b0 * row;
+            const af_kv_t *vb             = vh + b0 * row;
+            size_t         j              = 0;
             for (; j + 8 <= n; j += 8) {
-                const float *k0 = kb + j * row;
+                const af_kv_t *k0 = kb + j * row;
                 for (size_t g = 0; g < G; g++) {
                     _mm256_store_ps(sc[g] + j, af_dot8(hd8, head_dim, row, qt + g * head_dim, k0));
                 }
@@ -368,8 +382,8 @@ static inline float af_dot1(size_t hd8, size_t head_dim, const float *q, const f
              * every slice of the output dimensions passes over them. The sums
              * keep their order. */
             for (size_t r0 = 0; r0 < n; r0 += pv_rows) {
-                const size_t nr            = n - r0 < pv_rows ? n - r0 : pv_rows;
-                const float *vr            = vb + r0 * row;
+                const size_t   nr          = n - r0 < pv_rows ? n - r0 : pv_rows;
+                const af_kv_t *vr          = vb + r0 * row;
                 const float (*w)[AX_BLOCK] = (const float (*)[AX_BLOCK]) & sc[0][r0];
                 size_t c                   = 0;
                 if (G <= 2) {
@@ -383,7 +397,7 @@ static inline float af_dot1(size_t hd8, size_t head_dim, const float *q, const f
                 }
                 for (; c < head_dim; c++) {
                     for (size_t i = 0; i < nr; i++) {
-                        const float vf = vr[i * row + c];
+                        const float vf = AF_LD1(vr + i * row + c);
                         for (size_t g = 0; g < G; g++) {
                             acc[g][c] += w[g][i] * vf;
                         }
@@ -480,6 +494,86 @@ static void ax_run_item(size_t                per_pass,
     }
 }
 
+#if defined(AF_F16)
+/* An F16 DENSE 3-D view's halves, or nullptr. */
+static const uint16_t *af_f16_dense_3d(const struct geist_tensor *t, size_t *out_n) {
+    if (t == nullptr || t->buffer == nullptr)
+        return nullptr;
+    return (const uint16_t *) geist_tensor_dense(
+            t, GEIST_DTYPE_F16, sizeof(uint16_t), 3, t->buffer->host, t->buffer->bytes, out_n);
+}
+
+/* cpu_x86_attention over the F16 KV cache: the same kernel with K and V
+ * widened by F16C as they are loaded. */
+[[nodiscard]] enum geist_status cpu_x86_attention_f16(struct geist_backend      *be,
+                                                      const struct geist_tensor *q,
+                                                      const struct geist_tensor *k,
+                                                      const struct geist_tensor *v,
+                                                      size_t                     q_offset,
+                                                      size_t                     sliding_window,
+                                                      struct geist_tensor       *out) {
+    size_t          nq = 0, nk = 0, nv = 0, no = 0;
+    const float    *qp = get_f32_dense_ptr_full(q, &nq);
+    const uint16_t *kp = af_f16_dense_3d(k, &nk);
+    const uint16_t *vp = af_f16_dense_3d(v, &nv);
+    float          *op = get_f32_dense_ptr_full(out, &no);
+    if (qp == nullptr || kp == nullptr || vp == nullptr || op == nullptr || q->ndim != 3 ||
+        out->ndim != 3) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 attention: bad F16 KV views");
+        return GEIST_E_INVALID_ARG;
+    }
+    const size_t n_q = (size_t) q->shape[0], n_q_heads = (size_t) q->shape[1];
+    const size_t head_dim = (size_t) q->shape[2], n_kv = (size_t) k->shape[0];
+    const size_t n_kv_heads = (size_t) k->shape[1];
+    if (k->shape[2] != (int64_t) head_dim || v->shape[2] != (int64_t) head_dim ||
+        v->shape[0] != (int64_t) n_kv || v->shape[1] != (int64_t) n_kv_heads ||
+        out->shape[0] != (int64_t) n_q || out->shape[1] != (int64_t) n_q_heads ||
+        out->shape[2] != (int64_t) head_dim) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 attention: shape mismatch");
+        return GEIST_E_INVALID_ARG;
+    }
+    if (n_q_heads % n_kv_heads != 0 || head_dim > AX_HEAD_DIM_MAX) {
+        if (!attention_mqa_causal_kv_f16(n_q,
+                                         n_kv,
+                                         q_offset,
+                                         n_q_heads,
+                                         n_kv_heads,
+                                         head_dim,
+                                         sliding_window,
+                                         qp,
+                                         kp,
+                                         vp,
+                                         op)) {
+            geist_backend_set_error(be, GEIST_E_UNSUPPORTED, "cpu_x86 attention: F16 head_dim");
+            return GEIST_E_UNSUPPORTED;
+        }
+        return GEIST_OK;
+    }
+    const size_t part_floats = ax_part_floats(n_q_heads, head_dim);
+    float *part = n_q == 1 && be->state != nullptr
+                          ? cpu_x86_ws_attn_part((struct cpu_x86_state *) be->state, part_floats)
+                          : nullptr;
+    /* The chunk span is the FP32 kernel's; not measured for F16 yet. */
+    ax_run(n_q,
+           n_q_heads,
+           head_dim,
+           n_kv,
+           n_kv_heads,
+           part_floats,
+           q_offset,
+           sliding_window,
+           sizeof(uint16_t),
+           AX_CHUNK_SPAN_F32,
+           qp,
+           kp,
+           nullptr,
+           vp,
+           nullptr,
+           op,
+           part);
+    return GEIST_OK;
+}
+#else
 [[nodiscard]] enum geist_status cpu_x86_attention(struct geist_backend      *be,
                                                   const struct geist_tensor *q,
                                                   const struct geist_tensor *k,
@@ -489,6 +583,9 @@ static void ax_run_item(size_t                per_pass,
                                                   struct geist_tensor       *out) {
     if (be == nullptr || q == nullptr || k == nullptr || v == nullptr || out == nullptr) {
         return GEIST_E_INVALID_ARG;
+    }
+    if (k->dtype == GEIST_DTYPE_F16) { /* the F16 cache: attention_f16.c */
+        return cpu_x86_attention_f16(be, q, k, v, q_offset, sliding_window, out);
     }
     size_t       nq, nk, nv, no;
     const float *qp = get_f32_dense_ptr_full(q, &nq);
@@ -557,3 +654,4 @@ static void ax_run_item(size_t                per_pass,
            part);
     return GEIST_OK;
 }
+#endif /* AF_F16 */

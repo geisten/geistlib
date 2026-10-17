@@ -10,6 +10,7 @@
 #include "parallel.h"
 
 #include "gemma4_kernels.h"
+#include "tensor_view.h"
 #include "quant.h"
 #include "heap.h"
 
@@ -671,6 +672,203 @@ static bool attention_mqa_causal_kv_neon(const float *q,
 }
 #endif
 
+#if defined(__ARM_NEON)
+/* ---- The same row kernel over an F16 KV cache (#48): K and V rows are
+ * IEEE half, widened eight at a time by vcvt as they are loaded; the
+ * arithmetic is attn_row_neon's. */
+static inline float dot_f16_neon(const float *a, const uint16_t *b, size_t n) {
+    size_t      i    = 0;
+    float32x4_t acc0 = vdupq_n_f32(0.0f);
+    float32x4_t acc1 = vdupq_n_f32(0.0f);
+    for (; i + 8 <= n; i += 8) {
+        const float16x8_t h = vreinterpretq_f16_u16(vld1q_u16(b + i));
+        acc0                = vfmaq_f32(acc0, vld1q_f32(a + i), vcvt_f32_f16(vget_low_f16(h)));
+        acc1                = vfmaq_f32(acc1, vld1q_f32(a + i + 4), vcvt_high_f32_f16(h));
+    }
+    float out = vaddvq_f32(acc0) + vaddvq_f32(acc1);
+    for (; i < n; i++) {
+        out += a[i] * fp16_to_fp32(b[i]);
+    }
+    return out;
+}
+
+static inline void add_scaled_f16_neon(float *dst, const uint16_t *src, float scale, size_t n) {
+    size_t            i = 0;
+    const float32x4_t s = vdupq_n_f32(scale);
+    for (; i + 8 <= n; i += 8) {
+        const float16x8_t h = vreinterpretq_f16_u16(vld1q_u16(src + i));
+        vst1q_f32(dst + i, vfmaq_f32(vld1q_f32(dst + i), vcvt_f32_f16(vget_low_f16(h)), s));
+        vst1q_f32(dst + i + 4, vfmaq_f32(vld1q_f32(dst + i + 4), vcvt_high_f32_f16(h), s));
+    }
+    for (; i < n; i++) {
+        dst[i] += scale * fp16_to_fp32(src[i]);
+    }
+}
+
+static inline void attn_row_neon_f16(const float    *qv,
+                                     const uint16_t *k,
+                                     const uint16_t *v,
+                                     size_t          row,
+                                     size_t          s_lo,
+                                     size_t          s_hi,
+                                     size_t          head_dim,
+                                     float          *outv) {
+    float  scores[ATTN_F32_BLOCK];
+    float  max_score = 0.0f;
+    double sum_exp   = 0.0;
+    zero_f32_neon(outv, head_dim);
+    for (size_t b0 = s_lo; b0 <= s_hi; b0 += ATTN_F32_BLOCK) {
+        const size_t n         = s_hi - b0 < ATTN_F32_BLOCK ? s_hi - b0 + 1 : ATTN_F32_BLOCK;
+        float        block_max = 0.0f;
+        for (size_t j = 0; j < n; j++) {
+            const float sc = dot_f16_neon(qv, k + (b0 + j) * row, head_dim);
+            scores[j]      = sc;
+            if (j == 0 || sc > block_max) {
+                block_max = sc;
+            }
+        }
+        if (b0 == s_lo) {
+            max_score = block_max;
+        } else if (block_max > max_score) {
+            const float d = max_score - block_max;
+            const float c = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
+            sum_exp *= c;
+            scale_f32_neon(outv, c, head_dim);
+            max_score = block_max;
+        }
+        for (size_t j = 0; j < n; j++) {
+            scores[j] = expf(fmaxf(scores[j] - max_score, ATTN_EXP_FLOOR));
+            sum_exp += scores[j];
+        }
+        for (size_t j = 0; j < n; j++) {
+            add_scaled_f16_neon(outv, v + (b0 + j) * row, scores[j], head_dim);
+        }
+    }
+    if (sum_exp > 0.0) {
+        scale_f32_neon(outv, (float) (1.0 / sum_exp), head_dim);
+    }
+}
+
+struct attn_job_f16 {
+    const float    *q;
+    const uint16_t *k, *v;
+    size_t          n_kv, q_offset, n_q_heads, n_kv_heads, head_dim, sliding_window;
+    float          *out;
+};
+
+static void attn_f16_items(void *ctx, size_t i0, size_t i1) {
+    const struct attn_job_f16 j     = *(const struct attn_job_f16 *) ctx;
+    const size_t              group = j.n_q_heads / j.n_kv_heads;
+    for (size_t idx = i0; idx < i1; idx++) {
+        const size_t t     = idx / j.n_q_heads;
+        const size_t h     = idx - t * j.n_q_heads;
+        const size_t q_pos = j.q_offset + t;
+        const size_t s_lo  = (j.sliding_window > 0 && q_pos + 1 > j.sliding_window)
+                                     ? q_pos + 1 - j.sliding_window
+                                     : 0;
+        const size_t s_hi  = q_pos < j.n_kv ? q_pos : j.n_kv - 1;
+        const size_t kv_h  = h / group;
+        attn_row_neon_f16(j.q + (t * j.n_q_heads + h) * j.head_dim,
+                          j.k + kv_h * j.head_dim,
+                          j.v + kv_h * j.head_dim,
+                          j.n_kv_heads * j.head_dim,
+                          s_lo,
+                          s_hi,
+                          j.head_dim,
+                          j.out + (t * j.n_q_heads + h) * j.head_dim);
+    }
+}
+#endif
+
+/* An F16 DENSE 3-D view's halves, or nullptr. */
+static uint16_t *f16_dense_3d(const struct geist_tensor *t, size_t *out_n) {
+    if (t == nullptr || t->buffer == nullptr)
+        return nullptr;
+    return (uint16_t *) geist_tensor_dense(
+            t, GEIST_DTYPE_F16, sizeof(uint16_t), 3, t->buffer->host, t->buffer->bytes, out_n);
+}
+
+/* Attention over an F16 KV cache (#48): the NEON rows from 16 (query,
+ * head) pairs, the shared reference below. */
+[[nodiscard]] static enum geist_status cpu_neon_attention_f16(struct geist_backend      *be,
+                                                              const struct geist_tensor *q,
+                                                              const struct geist_tensor *k,
+                                                              const struct geist_tensor *v,
+                                                              size_t                     q_offset,
+                                                              size_t               sliding_window,
+                                                              struct geist_tensor *out) {
+    size_t          nq = 0, nk = 0, nv = 0, no = 0;
+    const float    *qp = get_f32_dense_ptr_full(q, &nq);
+    const uint16_t *kp = f16_dense_3d(k, &nk);
+    const uint16_t *vp = f16_dense_3d(v, &nv);
+    float          *op = get_f32_dense_ptr_full(out, &no);
+    if (qp == nullptr || kp == nullptr || vp == nullptr || op == nullptr || q->ndim != 3 ||
+        out->ndim != 3 || k->shape[1] != v->shape[1] || k->shape[0] != v->shape[0] ||
+        k->shape[2] != q->shape[2] || v->shape[2] != q->shape[2] ||
+        q->shape[1] % k->shape[1] != 0) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon attention: bad F16 KV views");
+        return GEIST_E_INVALID_ARG;
+    }
+#if defined(__ARM_NEON)
+    /* 16+ (query, head) pairs: the NEON rows, as for the FP32 cache. */
+    if ((size_t) q->shape[0] * (size_t) q->shape[1] >= 16) {
+        struct attn_job_f16 job = {.q              = qp,
+                                   .k              = kp,
+                                   .v              = vp,
+                                   .n_kv           = (size_t) k->shape[0],
+                                   .q_offset       = q_offset,
+                                   .n_q_heads      = (size_t) q->shape[1],
+                                   .n_kv_heads     = (size_t) k->shape[1],
+                                   .head_dim       = (size_t) q->shape[2],
+                                   .sliding_window = sliding_window,
+                                   .out            = op};
+        attention_par((size_t) q->shape[0] * (size_t) q->shape[1], attn_f16_items, &job);
+        return GEIST_OK;
+    }
+#endif
+    if (!attention_mqa_causal_kv_f16((size_t) q->shape[0],
+                                     (size_t) k->shape[0],
+                                     q_offset,
+                                     (size_t) q->shape[1],
+                                     (size_t) k->shape[1],
+                                     (size_t) q->shape[2],
+                                     sliding_window,
+                                     qp,
+                                     kp,
+                                     vp,
+                                     op)) {
+        geist_backend_set_error(
+                be, GEIST_E_UNSUPPORTED, "cpu_neon attention: F16 head_dim too large");
+        return GEIST_E_UNSUPPORTED;
+    }
+    return GEIST_OK;
+}
+
+enum geist_status cpu_neon_kv_append_f16(struct geist_backend      *be,
+                                         const struct geist_tensor *k_src,
+                                         const struct geist_tensor *v_src,
+                                         size_t                     q_position,
+                                         struct geist_tensor       *k_cache,
+                                         struct geist_tensor       *v_cache) {
+    size_t       nks = 0, nvs = 0, nkc = 0, nvc = 0;
+    const float *ks = get_f32_dense_ptr_full(k_src, &nks);
+    const float *vs = get_f32_dense_ptr_full(v_src, &nvs);
+    uint16_t    *kc = f16_dense_3d(k_cache, &nkc);
+    uint16_t    *vc = f16_dense_3d(v_cache, &nvc);
+    /* The source rows land at row q_position of the caches, whose views
+     * end with them: the subtraction cannot wrap once both hold. */
+    if (ks == nullptr || vs == nullptr || kc == nullptr || vc == nullptr || nks != nvs ||
+        nkc != nvc || nks > nkc || k_src->shape[1] != k_cache->shape[1] ||
+        k_src->shape[2] != k_cache->shape[2] ||
+        q_position * (size_t) k_cache->shape[1] * (size_t) k_cache->shape[2] != nkc - nks) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon kv_append_f16: bad views");
+        return GEIST_E_INVALID_ARG;
+    }
+    kv_rows_to_f16(nks, ks, kc + (nkc - nks));
+    kv_rows_to_f16(nvs, vs, vc + (nvc - nvs));
+    return GEIST_OK;
+}
+
 [[nodiscard]] enum geist_status cpu_neon_attention(struct geist_backend      *be,
                                                    const struct geist_tensor *q,
                                                    const struct geist_tensor *k,
@@ -680,6 +878,9 @@ static bool attention_mqa_causal_kv_neon(const float *q,
                                                    struct geist_tensor       *out) {
     if (be == nullptr || q == nullptr || k == nullptr || v == nullptr || out == nullptr) {
         return GEIST_E_INVALID_ARG;
+    }
+    if (k->dtype == GEIST_DTYPE_F16) {
+        return cpu_neon_attention_f16(be, q, k, v, q_offset, sliding_window, out);
     }
     size_t       nq, nk, nv, no;
     const float *qp = get_f32_dense_ptr_full(q, &nq);

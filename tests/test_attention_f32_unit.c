@@ -1,6 +1,9 @@
 /*
- * test_attention_f32_unit — every CPU backend's F32 attention op, the path
- * of the FP32 KV cache, against a double-precision reference.
+ * test_attention_f32_unit — every CPU backend's attention op on the FP32 KV
+ * cache and, run a second time over every shape, on the F16 cache (#48):
+ * K and V rounded to IEEE half, uploaded as half, against the same double
+ * reference computed on the rounded values (so the tolerances are the F32
+ * ones: a kernel that widens a half wrongly fails).
  *
  * desc->prims->attention is what the transformer calls with an FP32 cache.
  * Each backend has its own: cpu_neon a NEON kernel that falls back to the
@@ -100,11 +103,12 @@ static void reference(const struct shape *sh,
     }
 }
 
-static struct geist_tensor tensor3(struct geist_buffer *b, size_t n, size_t heads, size_t hd) {
+static struct geist_tensor
+tensor3(struct geist_buffer *b, size_t n, size_t heads, size_t hd, enum geist_dtype dt) {
     return (struct geist_tensor) {
             .buffer = b,
             .offset = 0,
-            .dtype  = GEIST_DTYPE_F32,
+            .dtype  = dt,
             .layout = GEIST_LAYOUT_DENSE,
             .ndim   = 3,
             .shape  = {(int64_t) n, (int64_t) heads, (int64_t) hd},
@@ -112,20 +116,37 @@ static struct geist_tensor tensor3(struct geist_buffer *b, size_t n, size_t head
     };
 }
 
-static struct geist_buffer *upload(struct geist_backend *be, const float *x, size_t n) {
+static struct geist_buffer *upload_bytes(struct geist_backend *be, const void *x, size_t bytes) {
     struct geist_buffer *b = nullptr;
-    if (be->desc->vtbl->buffer_create(
-                be, n * sizeof(float), GEIST_BUFFER_ACTIVATION, GEIST_MEMORY_AUTO, &b) !=
+    if (be->desc->vtbl->buffer_create(be, bytes, GEIST_BUFFER_ACTIVATION, GEIST_MEMORY_AUTO, &b) !=
                 GEIST_OK ||
-        be->desc->vtbl->buffer_upload(b, n * sizeof(float), (const uint8_t *) x) != GEIST_OK) {
+        be->desc->vtbl->buffer_upload(b, bytes, (const uint8_t *) x) != GEIST_OK) {
         fprintf(stderr, "buffer create/upload failed\n");
         exit(GEIST_TEST_ERROR);
     }
     return b;
 }
 
+static struct geist_buffer *upload(struct geist_backend *be, const float *x, size_t n) {
+    return upload_bytes(be, x, n * sizeof(float));
+}
+
+/* x as IEEE half (the F16 cache), and x replaced by the value it rounds to. */
+static struct geist_buffer *upload_f16(struct geist_backend *be, float *x, size_t n) {
+    uint16_t *h = xmalloc(n * sizeof *h);
+    memset(h, 0, n * sizeof *h); /* gcc 14 cannot see the loop writes every element */
+    for (size_t i = 0; i < n; i++) {
+        const _Float16 v = (_Float16) x[i];
+        memcpy(&h[i], &v, sizeof h[i]);
+        x[i] = (float) v;
+    }
+    struct geist_buffer *b = upload_bytes(be, h, n * sizeof *h);
+    free(h);
+    return b;
+}
+
 /* Runs one shape on one backend; returns 1 on a mismatch. */
-static int run(struct geist_backend *be, const char *backend, const struct shape *sh) {
+static int run(struct geist_backend *be, const char *backend, const struct shape *sh, bool f16) {
     const size_t q_offset = sh->n_kv - sh->n_q; /* the new queries end the context */
     const size_t nq       = sh->n_q * sh->n_q_heads * sh->head_dim;
     const size_t nkv      = sh->n_kv * sh->n_kv_heads * sh->head_dim;
@@ -154,14 +175,16 @@ static int run(struct geist_backend *be, const char *backend, const struct shape
         k[i] = NAN;
         v[i] = NAN;
     }
-    reference(sh, q_offset, q, k, v, ref, scores);
+    struct geist_buffer *bk = f16 ? upload_f16(be, k, nkv) : upload(be, k, nkv);
+    struct geist_buffer *bv = f16 ? upload_f16(be, v, nkv) : upload(be, v, nkv);
+    reference(sh, q_offset, q, k, v, ref, scores); /* on what the kernel sees */
 
-    struct geist_buffer *bq = upload(be, q, nq), *bk = upload(be, k, nkv), *bv = upload(be, v, nkv);
-    struct geist_buffer *bo = upload(be, out, nq);
-    struct geist_tensor  tq = tensor3(bq, sh->n_q, sh->n_q_heads, sh->head_dim);
-    struct geist_tensor  tk = tensor3(bk, sh->n_kv, sh->n_kv_heads, sh->head_dim);
-    struct geist_tensor  tv = tensor3(bv, sh->n_kv, sh->n_kv_heads, sh->head_dim);
-    struct geist_tensor  to = tensor3(bo, sh->n_q, sh->n_q_heads, sh->head_dim);
+    const enum geist_dtype  kvt = f16 ? GEIST_DTYPE_F16 : GEIST_DTYPE_F32;
+    struct geist_buffer    *bq = upload(be, q, nq), *bo = upload(be, out, nq);
+    struct geist_tensor     tq = tensor3(bq, sh->n_q, sh->n_q_heads, sh->head_dim, GEIST_DTYPE_F32);
+    struct geist_tensor     tk = tensor3(bk, sh->n_kv, sh->n_kv_heads, sh->head_dim, kvt);
+    struct geist_tensor     tv = tensor3(bv, sh->n_kv, sh->n_kv_heads, sh->head_dim, kvt);
+    struct geist_tensor     to = tensor3(bo, sh->n_q, sh->n_q_heads, sh->head_dim, GEIST_DTYPE_F32);
     const enum geist_status st =
             be->desc->prims->attention(be, &tq, &tk, &tv, q_offset, sh->window, &to);
     if (st == GEIST_OK) {
@@ -188,9 +211,10 @@ static int run(struct geist_backend *be, const char *backend, const struct shape
     char what[200];
     snprintf(what,
              sizeof what,
-             "%s: n_q %zu, heads %zu/%zu, head_dim %zu, n_kv %zu, window %zu, peak %g: status "
+             "%s %s: n_q %zu, heads %zu/%zu, head_dim %zu, n_kv %zu, window %zu, peak %g: status "
              "%d, %zu non-finite, max error %.3g (limit %.0e) at %zu",
              backend,
+             f16 ? "F16" : "F32",
              sh->n_q,
              sh->n_q_heads,
              sh->n_kv_heads,
@@ -268,7 +292,8 @@ int main(void) {
         }
         ran++;
         for (size_t i = 0; i < sizeof SHAPES / sizeof SHAPES[0]; i++) {
-            fails += run(be, BACKENDS[b], &SHAPES[i]);
+            fails += run(be, BACKENDS[b], &SHAPES[i], false);
+            fails += run(be, BACKENDS[b], &SHAPES[i], true);
         }
         geist_backend_destroy(be);
     }
@@ -280,6 +305,6 @@ int main(void) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;
     }
-    printf("PASS: F32 attention matches the double reference on every CPU backend\n");
+    printf("PASS: F32 and F16-KV attention match the double reference on every CPU backend\n");
     return GEIST_TEST_PASS;
 }
