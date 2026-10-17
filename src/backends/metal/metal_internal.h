@@ -159,8 +159,6 @@ struct metal_state {
     void  *v_norm_append_library;
     void  *kv_norm_append_library;
     void  *kv_norm_append_f16_library;
-    void  *q4k_function;
-    void  *q4k_pipeline;
     void  *q40_function;
     void  *q40_pipeline;
     void  *q40_m8_function;
@@ -286,8 +284,6 @@ struct metal_state {
     void *q6k_mm_sg_fast_library;
     void *q6k_matmul_sg_fast_function;
     void *q6k_matmul_sg_fast_pipeline;
-    void *rmsnorm_rows_function;
-    void *rmsnorm_rows_pipeline;
     void *rmsnorm_rows_simd_function;
     void *rmsnorm_rows_simd_pipeline;
     void *gelu_rows_function;
@@ -344,8 +340,6 @@ struct metal_state {
     void    *add_rows_pipeline;
     void    *scale_rows_function;
     void    *scale_rows_pipeline;
-    void    *rmsnorm_add_rows_function;
-    void    *rmsnorm_add_rows_pipeline;
     void    *rmsnorm_add_rows_simd_function;
     void    *rmsnorm_add_rows_simd_pipeline;
     void    *embed_lookup_scaled_function;

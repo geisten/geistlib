@@ -58,8 +58,7 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
                                 : m_tile_sg      ? st->q4k_mm_sg_pipeline
                                 : m_tile16       ? st->q4k_matmul_m16_pipeline
                                 : m_tile8_active ? st->q4k_matmul_m8_pipeline
-                                : n_tile4        ? st->q4k_n4_pipeline
-                                                 : st->q4k_pipeline);
+                                                 : st->q4k_n4_pipeline);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
@@ -3881,9 +3880,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     if (dtype == GEIST_DTYPE_F32 || dtype == GEIST_DTYPE_F16 || dtype == GEIST_DTYPE_BF16)
         return GEIST_OK;
     if (dtype == GEIST_DTYPE_Q4_K)
-        return (w->linear_rows_tile > 1 ? st->q4k_n4_pipeline : st->q4k_pipeline) != nullptr
-                       ? GEIST_OK
-                       : GEIST_E_UNSUPPORTED;
+        return st->q4k_n4_pipeline != nullptr ? GEIST_OK : GEIST_E_UNSUPPORTED;
     if (dtype == GEIST_DTYPE_Q6_K)
         return (w->linear_rows_tile > 1 ? st->q6k_n4_pipeline : st->q6k_pipeline) != nullptr
                        ? GEIST_OK

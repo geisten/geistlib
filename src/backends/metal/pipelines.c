@@ -79,7 +79,6 @@ static const struct metal_pipeline_row metal_deltanet_rows[] = {
 };
 
 static const struct metal_pipeline_row metal_quant_rows[] = {
-        METAL_PIPE(q4k, "matvec_q4k", q4k),
         METAL_PIPE(q40_q80, "linear_q40", q40),
         METAL_PIPE(q40_q80, "linear_q40_m8", q40_m8),
         METAL_PIPE(q40_q80, "linear_q80", q80),
@@ -126,7 +125,6 @@ static const struct metal_pipeline_row metal_quant_rows[] = {
         METAL_PIPE(q6k_mm_sg, "matmul_q6k_sg", q6k_matmul_sg),
         METAL_PIPE(q6k_mm_sg_fast, "matmul_q6k_sg_fast", q6k_matmul_sg_fast),
         METAL_PIPE(q6k_n4, "matvec_q6k_n4", q6k_n4),
-        METAL_PIPE(elem, "rmsnorm_rows", rmsnorm_rows),
         METAL_PIPE(elem_simd, "rmsnorm_rows_simd", rmsnorm_rows_simd),
         METAL_PIPE(elem, "gelu_rows", gelu_rows),
         METAL_PIPE(silu, "silu_rows", silu_rows),
@@ -138,7 +136,6 @@ static const struct metal_pipeline_row metal_quant_rows[] = {
         METAL_PIPE(elem, "scale_rows", scale_rows),
         METAL_PIPE(qgate, "qgate_split", qgate_split),
         METAL_PIPE(qgate, "sigmoid_mul_rows", sigmoid_mul),
-        METAL_PIPE(elem, "rmsnorm_add_rows", rmsnorm_add_rows),
         METAL_PIPE(elem_simd, "rmsnorm_add_rows_simd", rmsnorm_add_rows_simd),
         METAL_PIPE(embed, "embed_lookup_scaled", embed_lookup_scaled),
         METAL_PIPE(embed, "embed_lookup_scaled_rows", embed_lookup_scaled_rows),
@@ -260,7 +257,7 @@ void metal_release_pipeline_tables(struct metal_state *st) {
         return GEIST_E_INVALID_ARG;
     }
     struct metal_state *st = be->state;
-    if (st->q4k_pipeline != nullptr && st->q40_pipeline != nullptr &&
+    if (st->q40_pipeline != nullptr &&
         st->q40_m8_pipeline != nullptr && st->q80_pipeline != nullptr &&
         st->q80_m8_pipeline != nullptr && st->q5k_pipeline != nullptr &&
         st->q5k_m8_pipeline != nullptr && st->q41_pipeline != nullptr &&
@@ -277,12 +274,11 @@ void metal_release_pipeline_tables(struct metal_state *st) {
         st->iq3s_mm_pipeline != nullptr && st->q4k_n4_pipeline != nullptr &&
         st->q4k_matmul_m8_pipeline != nullptr && st->q4k_matmul_m16_pipeline != nullptr &&
         st->q4k_mm_sg_pipeline != nullptr && st->q6k_pipeline != nullptr &&
-        st->q6k_n4_pipeline != nullptr && st->rmsnorm_rows_pipeline != nullptr &&
-        st->rmsnorm_rows_simd_pipeline != nullptr && st->gelu_rows_pipeline != nullptr &&
+        st->q6k_n4_pipeline != nullptr && st->rmsnorm_rows_simd_pipeline != nullptr && st->gelu_rows_pipeline != nullptr &&
         st->silu_rows_pipeline != nullptr && st->relu2_rows_pipeline != nullptr &&
         st->mul_rows_pipeline != nullptr && st->gelu_mul_rows_pipeline != nullptr &&
         st->add_rows_pipeline != nullptr && st->scale_rows_pipeline != nullptr &&
-        st->rmsnorm_add_rows_pipeline != nullptr && st->rmsnorm_add_rows_simd_pipeline != nullptr &&
+        st->rmsnorm_add_rows_simd_pipeline != nullptr &&
         st->qgate_split_pipeline != nullptr && st->sigmoid_mul_pipeline != nullptr &&
         st->embed_lookup_scaled_pipeline != nullptr && st->f32_matmul_pipeline != nullptr &&
         st->f16w_matmul_pipeline != nullptr && st->f16w_matmul_sg_pipeline != nullptr &&
