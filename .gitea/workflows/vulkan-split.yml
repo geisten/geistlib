@@ -33,6 +33,10 @@ on:
         description: "llama.cpp commit for llama-bench (empty: skip llama.cpp)"
         type: string
         default: d81235049384534c167caea52b85a694f6103d14
+      correctness:
+        description: "run test_layer_split_int on the device first"
+        type: boolean
+        default: true
       cycles:
         description: "interleaved cycles"
         type: string
@@ -78,6 +82,7 @@ jobs:
         if: env.LLAMA_PIN != ''
         run: echo "LLAMA_BENCH=$(scripts/ensure-llama-bench.sh vulkan ggml-org/llama.cpp "$LLAMA_PIN")" >> "$GITHUB_ENV"
       - name: Split correctness on the device (reported)
+        if: inputs.correctness
         # A split that does not fit the card fails here with GEIST_E_OOM;
         # that is a result to read, not a reason to skip the measurement.
         continue-on-error: true
@@ -93,7 +98,7 @@ jobs:
           python3 tools/bench_layer_split.py \
             --bench bin/linux/release/tests/bench_perf_sweep --gguf "$MODEL" \
             --cpu cpu_x86 --gpu vulkan --splits "$SPLITS" --cycles "$CYCLES" \
-            ${LLAMA_BENCH:+--llama-bench "$LLAMA_BENCH"} --out-dir split-out
+            ${LLAMA_BENCH:+--llama-bench "$LLAMA_BENCH" --llama-nopo} --out-dir split-out
       - name: Job summary
         if: always()
         run: |

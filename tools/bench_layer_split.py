@@ -11,7 +11,9 @@ hits every configuration alike:
   split N    layers 0..N-1 on the GPU, the rest, the embedding and the head on
              the CPU (GEIST_BENCH_SPLIT_*): llama.cpp's -ngl N with the head
              on the CPU, which it is for N <= the layer count
-  llama N    llama-bench -ngl N (--llama-bench), its layers N from the end
+  llama N    llama-bench -ngl N (--llama-bench), its layers N from the end;
+             with --llama-nopo also -nopo 1 (no op offload: prefill matmuls of
+             CPU layers stay on the CPU)
 
 Per configuration: prefill and decode tok/s (median over cycles, min-max),
 peak RSS (/usr/bin/time) and peak device
@@ -91,10 +93,13 @@ def geist_cfg(args: argparse.Namespace, name: str, primary: str, split: int) -> 
     return {"name": name, "cmd": cmd, "env": env, "kind": "geist"}
 
 
-def llama_cfg(args: argparse.Namespace, ngl: int) -> dict:
+def llama_cfg(args: argparse.Namespace, ngl: int, nopo: bool = False) -> dict:
     cmd = [args.llama_bench, "-m", args.gguf, "-ngl", str(ngl), "-p", str(args.prompt),
            "-n", str(args.decode), "-r", str(args.repeats), "-o", "jsonl"]
-    return {"name": f"llama.cpp -ngl {ngl}", "cmd": cmd, "env": dict(os.environ), "kind": "llama"}
+    if nopo:
+        cmd += ["-nopo", "1"]
+    name = f"llama.cpp -ngl {ngl}" + (" -nopo 1" if nopo else "")
+    return {"name": name, "cmd": cmd, "env": dict(os.environ), "kind": "llama"}
 
 
 def parse(cfg: dict, out: str) -> tuple[float, float]:
@@ -117,6 +122,9 @@ def main() -> int:
     ap.add_argument("--gpu-only", action="store_true", help="also run every layer on --gpu")
     ap.add_argument("--splits", default="", help="comma-separated N (layers on the GPU)")
     ap.add_argument("--llama-bench", default="", help="llama-bench binary; runs -ngl 0 and each split")
+    ap.add_argument("--llama-nopo", action="store_true",
+                    help="also run llama-bench with -nopo 1: no op offload, so the GPU runs only "
+                         "the offloaded layers, as a geistlib split does")
     ap.add_argument("--prompt", type=int, default=512)
     ap.add_argument("--decode", type=int, default=64)
     ap.add_argument("--repeats", type=int, default=3)
@@ -131,7 +139,10 @@ def main() -> int:
         cfgs.append(geist_cfg(args, f"geistlib gpu ({args.gpu})", args.gpu, 0))
     cfgs += [geist_cfg(args, f"geistlib split {n}", args.cpu, n) for n in splits if n > 0]
     if args.llama_bench:
-        cfgs += [llama_cfg(args, n) for n in [0] + [n for n in splits if n > 0]]
+        ngls = [0] + [n for n in splits if n > 0]
+        cfgs += [llama_cfg(args, n) for n in ngls]
+        if args.llama_nopo:
+            cfgs += [llama_cfg(args, n, nopo=True) for n in ngls]
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
