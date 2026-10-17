@@ -6,12 +6,11 @@
  * same token ids across more than one prefill chunk, decodes greedy
  * tokens, resets and prefills again, and compares:
  *
- *   - both backends of the same kind (default: two cpu_neon instances, or
- *     cpu_scalar): the logits after the prefill, the decoded tokens and
- *     the logits after the reset are BYTE-identical to the unsplit run, at
- *     every split point 1, L/2, L-1 and L, in the FP32, INT8 and INT4 KV
- *     modes. A split only moves where a layer runs; the kernels are the
- *     same, so any difference is a bug in the split.
+ *   - both backends of the same kind (default: two instances of the host's
+ *     CPU backend, cpu_neon / cpu_x86, else cpu_scalar): the logits after the prefill, the decoded
+ * tokens and the logits after the reset are BYTE-identical to the unsplit run, at every split point
+ * 1, L/2, L-1 and L, in the FP32, INT8 and INT4 KV modes. A split only moves where a layer runs;
+ * the kernels are the same, so any difference is a bug in the split.
  *   - GEIST_SPLIT_BACKEND names another backend kind (metal, vulkan) for
  *     the first N layers: the outputs are reported (max |d| of the logits,
  *     matching greedy tokens), not required to match — GPU kernels are not
@@ -189,10 +188,12 @@ int main(void) {
         return GEIST_TEST_ERROR;
     }
 
-    const char           *base_name = "cpu_neon";
-    struct geist_backend *be        = backend(base_name);
-    if (be == nullptr) {
-        base_name = "cpu_scalar";
+    /* The host's SIMD CPU backend, else the portable one. */
+    static const char *const cpus[]    = {"cpu_neon", "cpu_x86", "cpu_scalar"};
+    const char              *base_name = nullptr;
+    struct geist_backend    *be        = nullptr;
+    for (size_t i = 0; be == nullptr && i < sizeof cpus / sizeof cpus[0]; i++) {
+        base_name = cpus[i];
         be        = backend(base_name);
     }
     const char           *split_env = getenv("GEIST_SPLIT_BACKEND");
