@@ -81,8 +81,8 @@ temperatures recorded; stage shares from a `-DGEIST_AUDIO_PROFILE` build.
 ## Comparison vs llama.cpp
 
 **Speed** — pin the reference: build `llama.cpp` (`llama-bench`) from a known
-commit against the **same** GGUF, then run `benchmark/total_tps.py` with
-`LLAMA_CPU` / `LLAMA_BLAS` pointing at it (cross-engine total tok/s).
+commit against the **same** GGUF, then run `tools/bench_cross_engine.py` with
+`--llama` pointing at it (the frozen cross-engine protocol).
 
 **Quality** — `make bench-quality-small` / `-detailed` run the MMLU cloze on
 geist; `make bench-compare-ref` additionally scores a running `llama-server`
@@ -194,8 +194,8 @@ the chart is rendered from that JSON. This keeps chart bars from drifting away
 from the numbers:
 
 ```sh
-# cross-engine measurement (no deps, thermal-quiesced on a Pi)
-JSON_OUT=/tmp/total_tps.json python3 benchmark/total_tps.py
+# cross-engine measurement (stdlib only, quiet-host gated)
+python3 tools/bench_cross_engine.py --help
 
 # the README scoreboard — pure stdlib, numbers straight from headline_results.json
 python3 benchmark/chart_headline.py     # -> assets/headline_benchmarks.svg

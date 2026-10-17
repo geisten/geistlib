@@ -65,7 +65,7 @@ numbers, so the program was closed rather than left open.
 ## Reproducing
 
 The `compare_metal.sh` harness this program used depended on the retired
-`bench_session_throughput`; the current protocol (cool-state, page-cache
+`bench_session_throughput` and has been removed; the current protocol (cool-state, page-cache
 pre-touch, `bench_perf_sweep`) is documented in
 [QWEN35.md](QWEN35.md). Read [METHODOLOGY.md](../METHODOLOGY.md) first —
 a warm GPU reads differently, and the numbers above are cool-state.
