@@ -159,8 +159,6 @@ struct metal_state {
     void  *v_norm_append_library;
     void  *kv_norm_append_library;
     void  *kv_norm_append_f16_library;
-    void  *q4k_function;
-    void  *q4k_pipeline;
     void  *q40_function;
     void  *q40_pipeline;
     void  *q40_m8_function;
@@ -250,9 +248,6 @@ struct metal_state {
     void *q4k_m16_library;
     void *q4k_matmul_m16_function;
     void *q4k_matmul_m16_pipeline;
-    void *q4k_m16_n2_library;
-    void *q4k_matmul_m16_n2_function;
-    void *q4k_matmul_m16_n2_pipeline;
     void *q4k_mm_sg_library;
     void *q4k_mm_sg_function;
     void *q4k_mm_sg_pipeline;
@@ -262,10 +257,6 @@ struct metal_state {
     void *q6k_mm32_library; /* matmul_q6k_mm_sg_fast (#17) */
     void *q6k_mm32_function;
     void *q6k_mm32_pipeline;
-    void *q4k_qk_library;
-    void *q4k_qk_function;
-    void *q4k_qk_pipeline;
-    void *q4k_gate_up_library;
     void *q4k_gate_up_n4_library;
     void *q4k_pair_n4_library;
     void *q4k_pair_n4_function;
@@ -275,27 +266,18 @@ struct metal_state {
     void *hadamard_library;
     void *hadamard_function;
     void *hadamard_pipeline;
-    void *q4k_gate_up_function;
-    void *q4k_gate_up_pipeline;
     void *q4k_gate_up_n4_function;
     void *q4k_gate_up_n4_pipeline;
     void *q6k_function;
     void *q6k_pipeline;
     void *q6k_n4_function;
     void *q6k_n4_pipeline;
-    void *q6k_matmul_m8_function;
-    void *q6k_matmul_m8_pipeline;
     void *q6k_mm_sg_library;
     void *q6k_matmul_sg_function;
     void *q6k_matmul_sg_pipeline;
     void *q6k_mm_sg_fast_library;
     void *q6k_matmul_sg_fast_function;
     void *q6k_matmul_sg_fast_pipeline;
-    void *q6k_m16_library;
-    void *q6k_matmul_m16_function;
-    void *q6k_matmul_m16_pipeline;
-    void *rmsnorm_rows_function;
-    void *rmsnorm_rows_pipeline;
     void *rmsnorm_rows_simd_function;
     void *rmsnorm_rows_simd_pipeline;
     void *gelu_rows_function;
@@ -340,7 +322,6 @@ struct metal_state {
      * prefill (raw handle, argmax_result_buffer pattern). */
     void    *dn_scratch;
     size_t   dn_scratch_bytes;
-    bool     use_dn_chunk;
     void    *qgate_split_function;
     void    *qgate_split_pipeline;
     void    *sigmoid_mul_function;
@@ -353,8 +334,6 @@ struct metal_state {
     void    *add_rows_pipeline;
     void    *scale_rows_function;
     void    *scale_rows_pipeline;
-    void    *rmsnorm_add_rows_function;
-    void    *rmsnorm_add_rows_pipeline;
     void    *rmsnorm_add_rows_simd_function;
     void    *rmsnorm_add_rows_simd_pipeline;
     void    *embed_lookup_scaled_function;
@@ -471,12 +450,6 @@ struct metal_state {
     pthread_mutex_t           seq_lock;
     _Atomic(uintptr_t)        seq_owner;
     bool                      sequence_has_work;
-    bool                      use_ple_block;
-    bool                      use_q4k_n4;
-    bool                      use_q4k_m16_n2;
-    bool                      use_q4k_mm_sg;
-    bool                      use_rmsnorm_simd;
-    bool                      use_q6k_n4;
     bool                      profile_enabled;
     bool                      skip_next_dispatch; /* subtractive profiler: drop the next dispatch */
     struct metal_profile_stat profile[METAL_PROFILE_STAGE_COUNT];
@@ -988,8 +961,8 @@ bool metal_tensor_is_f16_3d(const struct geist_tensor *t,
 
 [[nodiscard]] enum geist_status metal_ensure_deltanet_pipeline(struct geist_backend *be);
 
-/* Releases every pipeline and function the ensure_* tables in pipelines.c
- * build; the libraries stay with the caller. */
+/* Releases every library, pipeline and function the ensure_* tables in
+ * pipelines.c build. */
 void metal_release_pipeline_tables(struct metal_state *st);
 
 bool metal_ranges_overlap(size_t a_offset, size_t b_offset, size_t n_bytes);
@@ -1020,8 +993,6 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit);
 
 bool metal_env_enabled(const char *name);
 
-bool metal_env_disabled(const char *name);
-
 uint64_t metal_now_ns(void);
 
 void metal_profile_add_wait(struct metal_state      *st,
@@ -1040,12 +1011,5 @@ void metal_profile_print_summary(const struct metal_state *st);
 void metal_capture_begin(struct metal_state *st, enum geist_command_sequence_kind kind);
 
 void metal_capture_end(struct metal_state *st);
-
-void metal_linear_debug_stats(size_t                     nx,
-                              size_t                     ny,
-                              size_t                     m,
-                              const float               *x,
-                              const float               *y,
-                              const struct geist_weight *w);
 
 #endif /* GEIST_INTERNAL_METAL_INTERNAL_H */

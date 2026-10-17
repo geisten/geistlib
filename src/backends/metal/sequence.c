@@ -158,14 +158,6 @@ void metal_batch_flush(struct metal_state *st) {
 
 void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf, size_t off, size_t n) {
     if (metal_seq_references(st, mtl_buf, off, n)) {
-        static _Atomic int dbg = -1;
-        if (dbg < 0) {
-            const char *e = getenv("GEIST_SEQ_COUNT");
-            dbg           = (e && e[0]) ? 1 : 0;
-        }
-        if (dbg) {
-            fprintf(stderr, "[flush] buf=%p\n", mtl_buf);
-        }
         metal_batch_flush(st);
     }
 }
@@ -204,10 +196,6 @@ void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf, size
     void *pool = metal_pool_push(st);
     metal_capture_begin(st, kind);
 
-    static int g_seq_created;
-    g_seq_created++;
-    if (getenv("GEIST_SEQ_COUNT") && (g_seq_created % 16) == 0)
-        fprintf(stderr, "[seqdbg] created=%d\n", g_seq_created);
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     if (cmd == nullptr) {
         metal_pool_pop(st, pool);

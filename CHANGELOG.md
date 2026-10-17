@@ -452,6 +452,18 @@ minor release.
   byte-identical SPIR-V for all nine `mm_legacy` users, so the `_spv.h`
   headers are unchanged.
 
+### Removed
+
+- **Metal: undocumented kernel switches and debug traces.** The default-on
+  kill switches `GEIST_METAL_FLASH`, `F32_MM`, `PLE_BLOCK`, `Q4K_N4`,
+  `Q4K_MM_SG`, `RMSNORM_SIMD`, `Q6K_N4` and `DN_CHUNK` are gone (their kernels
+  are always used, as by default), as are the opt-in `GEIST_METAL_Q4K_M16_N2`
+  kernel and the `GEIST_METAL_DEBUG_LINEAR` / `GEIST_SEQ_COUNT` traces.
+  Kernels no shape reaches any more (`matmul_q6k_m8`, `matmul_q6k_m16`,
+  `matvec_q4k`, the non-simd `rmsnorm_rows`/`rmsnorm_add_rows`) are deleted.
+  Library setup is table-driven and the ops share one submit helper; dispatch
+  is unchanged. `GEIST_METAL_Q6K_MM_FAST` and `GEIST_SKIP_*` stay.
+
 ### Fixed
 
 - **Vulkan: lookup tables are no longer uploaded inside the forward pass
