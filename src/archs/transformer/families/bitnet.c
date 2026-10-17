@@ -34,23 +34,11 @@
 /* Microsoft's converter prefixes keys with the full architecture string
  * ("bitnet-b1.58.*"), community converters with "bitnet.*". */
 static bool meta_u32(struct gguf_ctx *g, const char *key, uint32_t *out) {
-    char k[96];
-    snprintf(k, sizeof k, "bitnet-b1.58.%s", key);
-    if (gguf_get_meta_u32(g, k, out)) {
-        return true;
-    }
-    snprintf(k, sizeof k, "bitnet.%s", key);
-    return gguf_get_meta_u32(g, k, out);
+    return family_meta_u32(g, "bitnet-b1.58", "bitnet", key, out);
 }
 
 static bool meta_f32(struct gguf_ctx *g, const char *key, float *out) {
-    char k[96];
-    snprintf(k, sizeof k, "bitnet-b1.58.%s", key);
-    if (gguf_get_meta_f32(g, k, out)) {
-        return true;
-    }
-    snprintf(k, sizeof k, "bitnet.%s", key);
-    return gguf_get_meta_f32(g, k, out);
+    return family_meta_f32(g, "bitnet-b1.58", "bitnet", key, out);
 }
 
 /* The activation is not in the official GGUF: "bitnet-b1.58" (Microsoft
@@ -74,37 +62,8 @@ static void bitnet_populate(struct gguf_ctx *g, struct transformer_arch_state *s
     st->config.has_sub_ln     = true;
     st->config.ffn_activation = activation_from_meta(g);
 
-    uint32_t u;
-    float    f;
-    if (meta_u32(g, "block_count", &u)) {
-        st->n_layers = u;
-    }
-    if (meta_u32(g, "embedding_length", &u)) {
-        st->d_model = u;
-    }
-    if (meta_u32(g, "attention.head_count", &u)) {
-        st->n_q_heads = u;
-    }
-    if (meta_u32(g, "attention.head_count_kv", &u)) {
-        st->n_kv_heads = u;
-    }
-    if (meta_u32(g, "vocab_size", &u)) {
-        st->vocab_size = u;
-    } else {
-        /* Community GGUFs omit vocab_size; the tokenizer rides inside. */
-        uint32_t       elem_vt = 0;
-        uint64_t       count   = 0;
-        const uint8_t *payload = nullptr;
-        if (gguf_get_meta_array_info(g, "tokenizer.ggml.tokens", &elem_vt, &count, &payload)) {
-            st->vocab_size = (size_t) count;
-        }
-    }
-    if (meta_f32(g, "attention.layer_norm_rms_epsilon", &f)) {
-        st->config.rms_eps = f;
-    }
-    /* No PLE: zero dims make any accidental access trap on size 0. */
-    st->hidden_per_layer = 0;
-    st->ple_out          = 0;
+    family_populate_common(g, "bitnet-b1.58", "bitnet", st);
+    st->vocab_size = family_vocab_size(g, "bitnet-b1.58", "bitnet");
 }
 
 static bool bitnet_populate_layers(struct transformer_arch_state *st) {
@@ -117,19 +76,7 @@ static bool bitnet_populate_layers(struct transformer_arch_state *st) {
         (void) meta_u32(g, "feed_forward_length", &intermediate);
         (void) meta_f32(g, "rope.freq_base", &rope_theta);
     }
-    for (size_t i = 0; i < st->n_layers; i++) {
-        struct transformer_layer_weights *L = &st->layers[i];
-        L->layer_idx                        = (int) i;
-        L->is_full                          = true;
-        L->is_kv_shared                     = false;
-        L->head_dim                         = head_dim;
-        L->q_out                            = st->n_q_heads * head_dim;
-        L->kv_out                           = st->n_kv_heads * head_dim;
-        L->intermediate                     = intermediate;
-        L->sliding_window                   = 0;
-        L->rope_theta                       = rope_theta;
-        L->n_rotated_dims                   = (int) head_dim;
-    }
+    family_uniform_layers(st, head_dim, intermediate, rope_theta);
     return true;
 }
 
