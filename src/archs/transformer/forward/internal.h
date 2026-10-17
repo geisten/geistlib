@@ -38,13 +38,15 @@
  * and scratch, threaded in explicitly (no ambient active session).
  */
 struct transformer_layer_forward_ctx {
-    struct transformer_arch_state            *st;
-    struct transformer_arch_session          *sess;
-    struct geist_backend                     *be;
-    const struct geist_backend_vtbl          *v;
-    const struct geist_backend_primitives    *prims;
-    const struct geist_backend_fused         *fused;
-    struct transformer_layer_weights         *L;
+    struct transformer_arch_state         *st;
+    struct transformer_arch_session       *sess;
+    struct geist_backend                  *be;
+    const struct geist_backend_vtbl       *v;
+    const struct geist_backend_primitives *prims;
+    const struct geist_backend_fused      *fused;
+    struct transformer_layer_weights      *L;
+    /* Never null: the layer's plan (state_create builds it or fails), or
+     * the MTP block's zeroed one. */
     const struct transformer_layer_exec_plan *P;
 
     int                  layer_idx;
@@ -239,7 +241,7 @@ static inline void apply_bitnet_input_quant_inplace(const struct geist_backend_v
 static inline void bitnet_input_quant(const struct transformer_layer_forward_ctx *ctx,
                                       struct geist_buffer                        *buf,
                                       size_t                                      n) {
-    if (ctx->P != nullptr && ctx->P->fuse_bitnet_act_quant) {
+    if (ctx->P->fuse_bitnet_act_quant) {
         struct geist_tensor t = view_2d(buf, (int64_t) ctx->seq, (int64_t) n);
         if (ctx->fused->bitnet_act_quant(ctx->be, &t) == GEIST_OK) {
             return;

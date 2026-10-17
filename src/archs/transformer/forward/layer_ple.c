@@ -79,7 +79,7 @@ static enum geist_status run_ple(struct transformer_layer_forward_ctx *ctx) {
          * the backend doesn't support falls through to the decomposed
          * ops below. */
         const struct transformer_layer_exec_plan *P = ctx->P;
-        if (P != nullptr && (ctx->seq == 1 ? P->fuse_ple_block_m1 : P->fuse_ple_block_mN)) {
+        if (ctx->seq == 1 ? P->fuse_ple_block_m1 : P->fuse_ple_block_mN) {
             struct geist_tensor t_w_post_per_1d =
                     view_1d(L->post_per_layer_norm.buffer, st->d_model);
             struct geist_tensor t_proj_scratch_2d =
@@ -120,7 +120,7 @@ static enum geist_status run_ple(struct transformer_layer_forward_ctx *ctx) {
         t0 = prof ? transformer_profile_now_ns() : 0;
         /* Bound at plan build (#352): a failing fused op is an error, never
          * a host fallback that re-runs gelu over output it may have written. */
-        if (ctx->P != nullptr && ctx->P->fuse_ple_gelu_mul) {
+        if (ctx->P->fuse_ple_gelu_mul) {
             s = fused->gelu_tanh_mul(be, &t_gate_ple_2d, &t_ple_in_2d, &t_gate_ple_2d);
             transformer_profile_add(&g_ple_profile, PLE_GELU, t0);
             if (s != GEIST_OK) {
@@ -157,7 +157,7 @@ static enum geist_status run_ple(struct transformer_layer_forward_ctx *ctx) {
             return s;
         }
         t0 = prof ? transformer_profile_now_ns() : 0;
-        if (ctx->P != nullptr && ctx->P->fuse_rmsnorm_add) {
+        if (ctx->P->fuse_rmsnorm_add) {
             s = fused->rmsnorm_add(
                     be, &t_h_post_ff_2d, &t_proj_ple_2d, &t_w_post_per, ctx->eps, &t_h_out_2d);
             if (s != GEIST_OK) {
