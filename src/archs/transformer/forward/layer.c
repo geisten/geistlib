@@ -14,6 +14,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "profile.h"
 #include "../arch_family.h"
 #include "../arch_state.h"
 #include "../forward.h"
@@ -24,86 +25,30 @@
 #include <geist.h>
 #include <geist_backend.h>
 
-#include <stdio.h>
 #include <stdatomic.h>
-#include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
-enum transformer_profile_stage {
-    TRANSFORMER_PROFILE_ATTENTION = 0,
-    TRANSFORMER_PROFILE_FFN,
-    TRANSFORMER_PROFILE_PLE,
-    TRANSFORMER_PROFILE_SCALE,
-    TRANSFORMER_PROFILE_COUNT,
+/* GEIST_PROFILE_FORWARD=1: per-layer stages. The PLE and layer-scale tail
+ * records itself (layer_ple.c), and "ffn" is the family's ffn_block without
+ * it. */
+static _Atomic uint64_t  g_layer_ns[TRANSFORMER_LAYER_PROFILE_COUNT];
+static _Atomic uint64_t  g_layer_calls[TRANSFORMER_LAYER_PROFILE_COUNT];
+static const char *const g_layer_names[TRANSFORMER_LAYER_PROFILE_COUNT] = {
+        "attention",
+        "ffn",
+        "ple",
+        "scale",
+};
+static struct transformer_forward_profile g_layer_profile = {
+        .title       = "transformer",
+        .stage_names = g_layer_names,
+        .stage_count = TRANSFORMER_LAYER_PROFILE_COUNT,
+        .ns          = g_layer_ns,
+        .calls       = g_layer_calls,
 };
 
-/* Diagnostics only (env-gated); atomic so concurrent sessions with
- * profiling on accumulate instead of racing (TSan). */
-static _Atomic uint64_t g_transformer_profile_ns[TRANSFORMER_PROFILE_COUNT];
-static _Atomic uint64_t g_transformer_profile_calls[TRANSFORMER_PROFILE_COUNT];
-
-static uint64_t transformer_profile_now_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
-}
-
-static void transformer_profile_print(void) {
-    static const char *names[TRANSFORMER_PROFILE_COUNT] = {
-            "attention",
-            "ffn",
-            "ple",
-            "scale",
-    };
-    uint64_t total = 0;
-    for (size_t i = 0; i < TRANSFORMER_PROFILE_COUNT; i++) {
-        total += g_transformer_profile_ns[i];
-    }
-    if (total == 0) {
-        return;
-    }
-
-    fprintf(stderr, "transformer profile:\n");
-    for (size_t i = 0; i < TRANSFORMER_PROFILE_COUNT; i++) {
-        const double ms  = (double) g_transformer_profile_ns[i] / 1000000.0;
-        const double pct = 100.0 * (double) g_transformer_profile_ns[i] / (double) total;
-        fprintf(stderr,
-                "  %-10s %10.2f ms  %5.1f%%  (%llu calls)\n",
-                names[i],
-                ms,
-                pct,
-                (unsigned long long) g_transformer_profile_calls[i]);
-    }
-}
-
-static bool transformer_profile_enabled(void) {
-    static _Atomic int enabled = -1;
-    int                cur     = atomic_load(&enabled);
-    if (cur < 0) {
-        const char *env = getenv("GEIST_PROFILE_PREFILL");
-        if (env == nullptr || env[0] == '\0') {
-            env = getenv("GEIST_PROFILE_FORWARD");
-        }
-        const int on  = (env != nullptr && env[0] == '1') ? 1 : 0;
-        int       exp = -1;
-        /* First updater registers the atexit sink; losers just reload. */
-        if (atomic_compare_exchange_strong(&enabled, &exp, on)) {
-            if (on) {
-                atexit(transformer_profile_print);
-            }
-        }
-        cur = atomic_load(&enabled);
-    }
-    return cur != 0;
-}
-
-static void transformer_profile_add(enum transformer_profile_stage stage, uint64_t t0) {
-    if (t0 == 0) {
-        return;
-    }
-    atomic_fetch_add(&g_transformer_profile_ns[stage], transformer_profile_now_ns() - t0);
-    atomic_fetch_add(&g_transformer_profile_calls[stage], 1);
+uint64_t transformer_layer_profile_add(enum transformer_layer_profile_stage stage, uint64_t t0) {
+    return transformer_profile_add(&g_layer_profile, stage, t0);
 }
 
 static void transformer_layer_bind_kv_buffers(struct transformer_layer_forward_ctx *ctx) {
@@ -211,8 +156,8 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
 
     frame_arena_reset(&sess->scratch_arena);
 
-    const bool profile = transformer_profile_enabled();
-    uint64_t   t0      = profile ? transformer_profile_now_ns() : 0;
+    ctx.profile = transformer_profile_enabled(&g_layer_profile);
+    uint64_t t0 = ctx.profile ? transformer_profile_now_ns() : 0;
     /* Per-layer token mixer: DeltaNet layers replace the whole
      * attention block (incl. its residual add); the FFN/PLE stages are
      * mixer-agnostic. */
@@ -222,13 +167,16 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
     enum geist_status                s   = st->layers[layer_idx].mixer == GEIST_MIXER_DELTANET
                                                    ? transformer_layer_run_deltanet_block(&ctx)
                                                    : fam->attention_block(&ctx);
-    transformer_profile_add(TRANSFORMER_PROFILE_ATTENTION, t0);
+    transformer_profile_add(&g_layer_profile, TRANSFORMER_LAYER_PROFILE_ATTENTION, t0);
     if (s != GEIST_OK) {
         return s;
     }
-    t0 = profile ? transformer_profile_now_ns() : 0;
+    t0 = ctx.profile ? transformer_profile_now_ns() : 0;
     s  = fam->ffn_block(&ctx); /* incl. the layer tail (PLE, scale) */
-    transformer_profile_add(TRANSFORMER_PROFILE_FFN, t0);
+    /* Starting the clock later by the tail's time leaves it out of "ffn". */
+    transformer_profile_add(&g_layer_profile,
+                            TRANSFORMER_LAYER_PROFILE_FFN,
+                            t0 != 0 ? t0 + ctx.profile_tail_ns : 0);
     if (s != GEIST_OK) {
         return s;
     }
@@ -518,9 +466,9 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_se
  *   6. out_buf += ple_lookup then *= PLE_INPUT_SCALE.
  *
  * Caller is responsible for n <= st->m_max. */
-/* Once-per-chunk PLE precompute sub-stage profiler (GEIST_PROFILE_PREFILL=1).
- * Self-contained (the main layer.c profiler has fixed buckets); splits the
- * otherwise-hidden compute_per_layer_inputs_batch cost into its steps. */
+/* Once-per-chunk PLE precompute sub-stage profiler (GEIST_PROFILE_PREFILL=1):
+ * splits the otherwise-hidden compute_per_layer_inputs_batch cost into its
+ * steps. */
 enum plepre_stage {
     PLEPRE_GATHER = 0, /* Q5_K dequant of the per-layer-token-embd rows */
     PLEPRE_MODEL_PROJ, /* the BF16/F32 model_proj matmul */
@@ -538,50 +486,16 @@ static const char *const g_plepre_names[PLEPRE_COUNT] = {
         "rmsnorm",
         "combine",
 };
-
-static void plepre_print(void) {
-    uint64_t total = 0;
-    for (size_t i = 0; i < PLEPRE_COUNT; i++)
-        total += g_plepre_ns[i];
-    if (total == 0)
-        return;
-    fprintf(stderr, "transformer ple precompute (per-chunk):\n");
-    for (size_t i = 0; i < PLEPRE_COUNT; i++) {
-        fprintf(stderr,
-                "  %-12s %10.2f ms  %5.1f%%  (%llu calls)\n",
-                g_plepre_names[i],
-                (double) g_plepre_ns[i] / 1e6,
-                100.0 * (double) g_plepre_ns[i] / (double) total,
-                (unsigned long long) g_plepre_calls[i]);
-    }
-}
-
-static bool plepre_enabled(void) {
-    /* Same idiom as transformer_profile_enabled above (atomic, so concurrent
-     * sessions do not race). First updater registers the atexit sink;
-     * losers just reload. */
-    static _Atomic int en  = -1;
-    int                cur = atomic_load(&en);
-    if (cur < 0) {
-        const char *e = getenv("GEIST_PROFILE_PREFILL");
-        if (e == nullptr || e[0] == '\0')
-            e = getenv("GEIST_PROFILE_FORWARD");
-        const int on  = (e != nullptr && e[0] == '1') ? 1 : 0;
-        int       exp = -1;
-        if (atomic_compare_exchange_strong(&en, &exp, on)) {
-            if (on)
-                atexit(plepre_print);
-        }
-        cur = atomic_load(&en);
-    }
-    return cur != 0;
-}
+static struct transformer_forward_profile g_plepre_profile = {
+        .title       = "transformer ple precompute (per-chunk)",
+        .stage_names = g_plepre_names,
+        .stage_count = PLEPRE_COUNT,
+        .ns          = g_plepre_ns,
+        .calls       = g_plepre_calls,
+};
 
 static void plepre_add(enum plepre_stage stage, uint64_t t0) {
-    if (t0 == 0)
-        return;
-    g_plepre_ns[stage] += transformer_profile_now_ns() - t0;
-    g_plepre_calls[stage]++;
+    transformer_profile_add(&g_plepre_profile, stage, t0);
 }
 
 [[nodiscard]] enum geist_status
@@ -600,7 +514,7 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     const struct geist_backend_primitives *prims   = be->desc->prims;
     const struct geist_backend_fused      *fused   = geist_backend_fused_tbl(be);
     const size_t                           PLE_OUT = (size_t) st->ple_out;
-    const bool                             prof    = plepre_enabled();
+    const bool                             prof    = transformer_profile_enabled(&g_plepre_profile);
     uint64_t                               t0;
 
     /* 1+2. Dequant n PLE rows + scale by 16. Device path: per-row fused

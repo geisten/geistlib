@@ -81,6 +81,12 @@ struct transformer_layer_forward_ctx {
     int64_t SEQ;
     size_t  kv_len_now;
 
+    /* GEIST_PROFILE_FORWARD: set when the layer profile is on. The layer
+     * tail (PLE, layer scale) runs inside the family's ffn_block and adds
+     * its own time to profile_tail_ns, which the "ffn" stage leaves out. */
+    bool     profile;
+    uint64_t profile_tail_ns;
+
     struct geist_buffer *k_cache_buf;
     struct geist_buffer *v_cache_buf;
     struct geist_buffer *k_cache_q8_buf;
@@ -318,6 +324,16 @@ void attention_int4_via_buffers(size_t         n_q,
                                 float         *out);
 
 /* forward/layer.c */
+enum transformer_layer_profile_stage {
+    TRANSFORMER_LAYER_PROFILE_ATTENTION = 0,
+    TRANSFORMER_LAYER_PROFILE_FFN,
+    TRANSFORMER_LAYER_PROFILE_PLE,
+    TRANSFORMER_LAYER_PROFILE_SCALE,
+    TRANSFORMER_LAYER_PROFILE_COUNT,
+};
+/* Adds the time since t0 to a stage of the per-layer profile; returns it
+ * (0 when t0 is 0). */
+uint64_t transformer_layer_profile_add(enum transformer_layer_profile_stage stage, uint64_t t0);
 [[nodiscard]] enum geist_status
 transformer_forward_mtp_layer(struct transformer_arch_session  *sess,
                               struct transformer_layer_weights *layer,

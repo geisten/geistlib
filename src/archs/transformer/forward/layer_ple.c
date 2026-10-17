@@ -41,7 +41,7 @@ static struct transformer_forward_profile g_ple_profile = {
         .calls       = g_ple_calls,
 };
 
-enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_forward_ctx *ctx) {
+static enum geist_status run_ple(struct transformer_layer_forward_ctx *ctx) {
 
     struct transformer_arch_state         *st    = ctx->st;
     struct transformer_arch_session       *sess  = ctx->sess;
@@ -181,7 +181,7 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
     return GEIST_OK;
 }
 
-enum geist_status transformer_layer_scale_output(struct transformer_layer_forward_ctx *ctx) {
+static enum geist_status scale_output(struct transformer_layer_forward_ctx *ctx) {
     /* Only Gemma 4 (PLE) carries a layer scale; every other model loads 1,
      * and multiplying by 1 changes no bit, so skip the pass (a serial host
      * loop on CPU, a dispatch per layer on GPU). */
@@ -206,4 +206,20 @@ enum geist_status transformer_layer_scale_output(struct transformer_layer_forwar
     }
     ctx->v->buffer_unmap(ctx->h_out_buf);
     return GEIST_OK;
+}
+
+/* The layer tail, timed into the per-layer profile's "ple" and "scale"
+ * stages (and out of "ffn", see profile_tail_ns). */
+enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_forward_ctx *ctx) {
+    const uint64_t          t0 = ctx->profile ? transformer_profile_now_ns() : 0;
+    const enum geist_status s  = run_ple(ctx);
+    ctx->profile_tail_ns += transformer_layer_profile_add(TRANSFORMER_LAYER_PROFILE_PLE, t0);
+    return s;
+}
+
+enum geist_status transformer_layer_scale_output(struct transformer_layer_forward_ctx *ctx) {
+    const uint64_t          t0 = ctx->profile ? transformer_profile_now_ns() : 0;
+    const enum geist_status s  = scale_output(ctx);
+    ctx->profile_tail_ns += transformer_layer_profile_add(TRANSFORMER_LAYER_PROFILE_SCALE, t0);
+    return s;
 }

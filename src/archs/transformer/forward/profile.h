@@ -31,6 +31,7 @@ struct transformer_forward_profile {
 
 bool     transformer_profile_enabled(struct transformer_forward_profile *profile);
 uint64_t transformer_profile_now_ns(void);
-void     transformer_profile_add(struct transformer_forward_profile *profile,
-                                 size_t                              stage,
-                                 uint64_t                            t0);
+/* Adds the time since t0 to `stage` and returns it (0 when t0 is 0, i.e.
+ * profiling is off), so a caller can take a nested stage out of its own. */
+uint64_t
+transformer_profile_add(struct transformer_forward_profile *profile, size_t stage, uint64_t t0);
