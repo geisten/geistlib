@@ -194,4 +194,8 @@ const struct transformer_family transformer_family_qwen3moe = {
         .wire_layer      = wire_layer_qwen3moe,
         .attention_block = qwen3moe_attention_block,
         .ffn_block       = blk_moe_ffn,
+        /* An MoE amplifies KV quantization error about 16x over a dense
+         * model of the same quantization; F16 matches FP32 against the exact
+         * reference (benchmark/results/QWEN3MOE.md). */
+        .kv_auto = GEIST_KV_F16,
 };

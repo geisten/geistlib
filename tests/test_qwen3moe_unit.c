@@ -147,6 +147,33 @@ static int check_backend(const char *name, float ref[static VOCAB]) {
                           "a reset session reproduces its logits bit for bit");
     memcpy(ref, chunked, sizeof chunked);
 
+    /* KV cache: the family asks for F16 under AUTO; a session that asks
+     * for FP32 gets FP32, and the two agree to F16 rounding. */
+    {
+        struct transformer_arch_session *a = geist_session_internal_arch_session(s);
+        fails += geist_expect(a->kv_f16_enabled && !a->kv_int8_enabled,
+                              "qwen3moe gets an F16 KV cache under AUTO");
+        struct geist_session     *s32 = nullptr;
+        struct geist_session_opts o32 = OPTS;
+        o32.kv_mode                   = GEIST_KV_FP32;
+        float f32[VOCAB];
+        if (geist_session_create(m, be, &o32, &s32) == GEIST_OK &&
+            logits_after(s32, N_PROMPT, ids, N_PROMPT, f32)) {
+            struct transformer_arch_session *a32 = geist_session_internal_arch_session(s32);
+            const double                     d   = rel_l2(chunked, f32);
+            const double                     c   = cosine(chunked, f32);
+            printf("%s: F16 vs FP32 KV logits, relative L2 %.3g, cosine %.6f\n", name, d, c);
+            fails += geist_expect(!a32->kv_f16_enabled, "kv_mode FP32 is honoured");
+            /* The kernels are exact on F16 input (test_attention_f32_unit);
+             * this is the model end to end, where a routing near-tie can
+             * turn the rounding into a swapped expert: the cpu_x86 bar. */
+            fails += geist_expect(c >= 0.999, "F16 KV logits match FP32 KV");
+        } else {
+            fails += geist_expect(false, "an FP32-KV session runs");
+        }
+        geist_session_destroy(s32);
+    }
+
     struct geist_weight saved[16];
     break_layer0_down(s, saved, false);
     size_t                  nl = 0;
