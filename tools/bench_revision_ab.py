@@ -58,8 +58,8 @@ MIN_CYCLES = 6
 MIN_MS = 0.05
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from bench_cross_engine import command_output, sha256_file  # noqa: E402
-from bench_mac_ab import build_schedule  # noqa: E402
+from bench_host import build_schedule_rotating as build_schedule  # noqa: E402
+from bench_host import command_output, sha256_file  # noqa: E402
 
 
 def parse_revs(values: list[str]) -> list[tuple[str, str]]:

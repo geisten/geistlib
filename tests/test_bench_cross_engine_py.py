@@ -16,6 +16,7 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC is not None and SPEC.loader is not None
 BENCH = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BENCH)
+import bench_host as HOST  # noqa: E402  (tools/ is on sys.path now)
 
 
 class CrossEngineBenchmarkTest(unittest.TestCase):
@@ -117,10 +118,10 @@ class CrossEngineBenchmarkTest(unittest.TestCase):
         load_gate = {"max_load_per_core": 0.2}
         idle_gate = {"max_load_per_core": 0.2, "min_cpu_idle_pct": 80}
         busy_load_idle_cpu = {"load_per_core": 0.5, "cpu_idle_pct": 85.0}
-        self.assertFalse(BENCH.host_is_quiet(busy_load_idle_cpu, load_gate))
-        self.assertTrue(BENCH.host_is_quiet(busy_load_idle_cpu, idle_gate))
-        self.assertFalse(BENCH.host_is_quiet({"load_per_core": 0.0, "cpu_idle_pct": 70.0}, idle_gate))
-        self.assertFalse(BENCH.host_is_quiet({"load_per_core": 0.0, "cpu_idle_pct": None}, idle_gate),
+        self.assertFalse(HOST.host_is_quiet(busy_load_idle_cpu, load_gate))
+        self.assertTrue(HOST.host_is_quiet(busy_load_idle_cpu, idle_gate))
+        self.assertFalse(HOST.host_is_quiet({"load_per_core": 0.0, "cpu_idle_pct": 70.0}, idle_gate))
+        self.assertFalse(HOST.host_is_quiet({"load_per_core": 0.0, "cpu_idle_pct": None}, idle_gate),
                          "an unreadable idle share is not quiet")
 
     def test_repeat_spread_is_the_worst_row_and_metric(self) -> None:
@@ -131,7 +132,7 @@ class CrossEngineBenchmarkTest(unittest.TestCase):
         self.assertAlmostEqual(BENCH.repeat_spread_pct(result), 2.0 / 19.0 * 100.0)
 
     def test_cpu_idle_share_is_readable_here(self) -> None:
-        idle = BENCH.cpu_idle_pct(1.0)
+        idle = HOST.cpu_idle_pct(1.0)
         self.assertIsNotNone(idle)
         self.assertTrue(0.0 <= idle <= 100.0)
 

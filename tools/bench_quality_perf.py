@@ -48,8 +48,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from bench_cross_engine import command_output  # noqa: E402
-from bench_cross_engine import sha256_file as hash_file  # noqa: E402
+from bench_host import command_output  # noqa: E402
+from bench_host import sha256_file as hash_file  # noqa: E402
 APPLE_PROTOCOL_PATH = ROOT / "benchmark" / "apple_cpu_protocol.json"
 
 PERF_SUITES = {"small", "detailed"}
