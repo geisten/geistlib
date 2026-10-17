@@ -165,8 +165,12 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
  * from `in` (this session's backend) to `out` (same). The rows cross
  * through host memory both ways; a forward on one backend finishes before
  * the other reads its result, because the download waits for it. The
- * stage's session follows this one's position (it caches the same
- * positions for its own layers). */
+ * stage's layers run inside the stage backend's own region, as the
+ * caller's run inside its backend's: a batched-submit GPU then records
+ * them into one command buffer instead of submitting and waiting per op,
+ * a CPU backend takes its decode or prefill thread regime. The stage's
+ * session follows this one's position (it caches the same positions for
+ * its own layers). */
 [[nodiscard]] static enum geist_status run_split_stage(struct transformer_arch_session *sess,
                                                        size_t                           q_position,
                                                        size_t                           seq,
@@ -181,6 +185,13 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
     sub->kv_len         = sess->kv_len;
     enum geist_status s = transformer_buffer_xfer(
             sess->model->backend, in, bytes, sess->split_rows, /* to_device = */ false);
+
+    const struct geist_backend_vtbl *sv = sst->backend->desc->vtbl;
+    const enum geist_parallel_region region =
+            seq > 1 ? GEIST_REGION_PREFILL_BATCH : GEIST_REGION_DECODE_STEP;
+    const int region_tok = sv->parallel_region_begin != nullptr
+                                   ? sv->parallel_region_begin(sst->backend, region)
+                                   : 0;
     if (s == GEIST_OK)
         s = transformer_buffer_xfer(sst->backend, h_in, bytes, sess->split_rows, true);
     for (size_t li = sst->layer_lo; s == GEIST_OK && li < sst->layer_hi; li++) {
@@ -189,6 +200,9 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
         struct geist_buffer *tmp = h_in;
         h_in                     = h_out;
         h_out                    = tmp;
+    }
+    if (sv->parallel_region_end != nullptr) {
+        sv->parallel_region_end(sst->backend, region_tok);
     }
     if (s == GEIST_OK)
         s = transformer_buffer_xfer(sst->backend, h_in, bytes, sess->split_rows, false);
