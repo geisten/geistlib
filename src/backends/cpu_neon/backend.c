@@ -3,7 +3,8 @@
  *
  * Layer: BACKEND.
  *
- * Descriptor, lifecycle, buffers and the OpenMP region hooks. The linear
+ * Descriptor, lifecycle and the OpenMP region hooks; buffers are the
+ * shared host buffers (common/host_buffer.c). The linear
  * kernels are bound per weight at load time (weight_resolve.c).
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
@@ -60,111 +61,6 @@ static void cpu_neon_destroy(struct geist_backend *be) {
     cpu_neon_dump_kernel_hits();
     geist_backend_free(be, be->state);
     be->state = nullptr;
-}
-
-[[nodiscard]] static enum geist_status cpu_neon_buffer_create(struct geist_backend  *be,
-                                                              size_t                 bytes,
-                                                              enum geist_buffer_role role,
-                                                              unsigned int           memory_flags,
-                                                              struct geist_buffer  **out) {
-    if (out == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    *out = nullptr;
-    if (bytes == 0) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon: zero-byte buffer");
-        return GEIST_E_INVALID_ARG;
-    }
-
-    struct geist_buffer *buf = geist_backend_alloc(be, sizeof(*buf), alignof(struct geist_buffer));
-    if (buf == nullptr) {
-        geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: buffer handle alloc");
-        return GEIST_E_OOM;
-    }
-    void *host = heap_alloc_aligned(bytes, OPTIMAL_ALIGNMENT);
-    if (host == nullptr) {
-        geist_backend_free(be, buf);
-        geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: %zu-byte host alloc", bytes);
-        return GEIST_E_OOM;
-    }
-    *buf = (struct geist_buffer) {
-            .host         = host,
-            .bytes        = bytes,
-            .role         = role,
-            .memory_flags = memory_flags,
-    };
-    *out = buf;
-    return GEIST_OK;
-}
-
-[[nodiscard]] static enum geist_status cpu_neon_buffer_create_aliased(struct geist_backend *be,
-                                                                      void  *host_ptr,
-                                                                      size_t n_bytes,
-                                                                      enum geist_buffer_role role,
-                                                                      struct geist_buffer  **out) {
-
-    if (out == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    *out = nullptr;
-    if (host_ptr == nullptr || n_bytes == 0) {
-        geist_backend_set_error(
-                be, GEIST_E_INVALID_ARG, "cpu_neon: aliased buffer needs host_ptr + bytes");
-        return GEIST_E_INVALID_ARG;
-    }
-    struct geist_buffer *buf = geist_backend_alloc(be, sizeof(*buf), alignof(struct geist_buffer));
-    if (buf == nullptr) {
-        geist_backend_set_error(be, GEIST_E_OOM, "cpu_neon: buffer handle alloc");
-        return GEIST_E_OOM;
-    }
-    *buf = (struct geist_buffer) {
-            .host         = host_ptr,
-            .bytes        = n_bytes,
-            .role         = role,
-            .memory_flags = GEIST_MEMORY_ALIASED,
-    };
-    *out = buf;
-    return GEIST_OK;
-}
-
-static void cpu_neon_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf) {
-    if (buf == nullptr) {
-        return;
-    }
-    /* Aliased host memory is owned externally (typically the gguf_reader's
-     * mmap); free only the handle. */
-    if ((buf->memory_flags & GEIST_MEMORY_ALIASED) == 0 && buf->host != nullptr) {
-        safe_free(&buf->host);
-    }
-    geist_backend_free(be, buf);
-}
-
-[[nodiscard]] static enum geist_status cpu_neon_buffer_upload(struct geist_buffer *buf,
-                                                              size_t               n_bytes,
-                                                              const uint8_t src[static n_bytes]) {
-    if (buf == nullptr || n_bytes > buf->bytes) {
-        return GEIST_E_INVALID_ARG;
-    }
-    memcpy(buf->host, src, n_bytes);
-    return GEIST_OK;
-}
-
-[[nodiscard]] static enum geist_status cpu_neon_buffer_download(size_t  n_bytes,
-                                                                uint8_t dst[static n_bytes],
-                                                                const struct geist_buffer *buf) {
-    if (buf == nullptr || n_bytes > buf->bytes) {
-        return GEIST_E_INVALID_ARG;
-    }
-    memcpy(dst, buf->host, n_bytes);
-    return GEIST_OK;
-}
-
-static void *cpu_neon_buffer_map(struct geist_buffer *buf) {
-    return buf != nullptr ? buf->host : nullptr;
-}
-
-static void cpu_neon_buffer_unmap(struct geist_buffer *buf) {
-    (void) buf;
 }
 
 /* Parallel-region hooks. The kernels run on geist_par_for (par.h), and the
@@ -309,13 +205,13 @@ static void cpu_neon_parallel_region_end(struct geist_backend *be, int token) {
 static const struct geist_backend_vtbl cpu_neon_vtbl = {
         .create                = cpu_neon_create,
         .destroy               = cpu_neon_destroy,
-        .buffer_create         = cpu_neon_buffer_create,
-        .buffer_destroy        = cpu_neon_buffer_destroy,
-        .buffer_create_aliased = cpu_neon_buffer_create_aliased,
-        .buffer_upload         = cpu_neon_buffer_upload,
-        .buffer_download       = cpu_neon_buffer_download,
-        .buffer_map            = cpu_neon_buffer_map,
-        .buffer_unmap          = cpu_neon_buffer_unmap,
+        .buffer_create         = geist_host_buffer_create,
+        .buffer_destroy        = geist_host_buffer_destroy,
+        .buffer_create_aliased = geist_host_buffer_create_aliased,
+        .buffer_upload         = geist_host_buffer_upload,
+        .buffer_download       = geist_host_buffer_download,
+        .buffer_map            = geist_host_buffer_map,
+        .buffer_unmap          = geist_host_buffer_unmap,
         .resolve_weight        = cpu_neon_resolve_weight,
         .parallel_region_begin = cpu_neon_parallel_region_begin,
         .parallel_region_end   = cpu_neon_parallel_region_end,

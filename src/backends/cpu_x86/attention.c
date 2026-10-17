@@ -43,7 +43,7 @@
 #include "backend_state.h"
 
 #include "gemma4_kernels.h" /* ATTN_EXP_FLOOR, attention_mqa_causal_kv */
-#include "tensor_view.h"
+#include "host_buffer.h"    /* struct geist_buffer, cpu_scalar's buffer ops */
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -54,16 +54,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-
-/* CPU buffer layout, owned by cpu_scalar's buffer_create (cpu_x86 inherits
- * its buffer vtable). Mirrored here as elementwise.c does — geist.h keeps
- * the struct opaque, but the host pointer is needed for the dense fast path. */
-struct geist_buffer {
-    void                  *host;
-    size_t                 bytes;
-    enum geist_buffer_role role;
-    unsigned int           memory_flags;
-};
 
 static float *get_f32_dense_ptr_full(const struct geist_tensor *t, size_t *out_n) {
     if (t == nullptr || t->buffer == nullptr) {

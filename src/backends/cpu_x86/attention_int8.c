@@ -39,7 +39,7 @@
 #include "kernel_w4a8.h" /* w4a8_dispatcher_tier */
 
 #include "gemma4_kernels.h" /* ATTN_EXP_FLOOR */
-#include "tensor_view.h"
+#include "host_buffer.h"    /* struct geist_buffer, cpu_scalar's buffer ops */
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -50,15 +50,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-
-/* CPU buffer layout, owned by cpu_scalar's buffer_create (cpu_x86 inherits
- * its buffer vtable); attention.c mirrors it the same way. */
-struct geist_buffer {
-    void                  *host;
-    size_t                 bytes;
-    enum geist_buffer_role role;
-    unsigned int           memory_flags;
-};
 
 /* V rows per pass over the output dimensions. */
 constexpr size_t AI8_PV_ROWS = 64;
