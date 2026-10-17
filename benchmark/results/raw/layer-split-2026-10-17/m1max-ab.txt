@@ -1,0 +1,32 @@
+=== cpu_neon
+| row | variant | baseline ms | variant ms | change | 95 % interval | faster | verdict |
+| :-- | :-- | --: | --: | --: | --: | --: | :-- |
+| prefill_ms @ 128 | new | 1092.1 | 1089.7 | -0.1 % | [-1.6 %, +11.2 %] | 4/8 | within noise |
+| prefill_ms @ 128 | control | 1092.1 | 1090.6 | -0.1 % | [-1.3 %, +4.5 %] | 4/8 | within noise |
+| prefill_ms @ 512 | new | 4672.4 | 4749.4 | +2.0 % | [-0.2 %, +6.5 %] | 2/8 | within noise |
+| prefill_ms @ 512 | control | 4672.4 | 4697.1 | +0.4 % | [-0.4 %, +4.6 %] | 2/8 | within noise |
+| decode_ms @ 128 | new | 729.8 | 735.8 | +0.3 % | [-10.2 %, +6.1 %] | 3/8 | within noise |
+| decode_ms @ 128 | control | 729.8 | 727.8 | -0.2 % | [-12.5 %, +1.8 %] | 5/8 | within noise |
+| decode_ms @ 512 | new | 860.4 | 864.8 | +0.7 % | [-2.0 %, +2.7 %] | 3/8 | within noise |
+| decode_ms @ 512 | control | 860.4 | 871.9 | +0.6 % | [-1.1 %, +2.4 %] | 3/8 | within noise |
+| ttft_ms @ 128 | new | 1092.1 | 1089.7 | -0.1 % | [-1.6 %, +11.2 %] | 4/8 | within noise |
+| ttft_ms @ 128 | control | 1092.1 | 1090.6 | -0.1 % | [-1.3 %, +4.5 %] | 4/8 | within noise |
+| ttft_ms @ 512 | new | 4672.4 | 4749.4 | +2.0 % | [-0.2 %, +6.5 %] | 2/8 | within noise |
+| ttft_ms @ 512 | control | 4672.4 | 4697.1 | +0.4 % | [-0.4 %, +4.6 %] | 2/8 | within noise |
+Control: the baseline's own binary again; its intervals reach ±12.5 %, the resolution of this run.
+=== metal
+| row | variant | baseline ms | variant ms | change | 95 % interval | faster | verdict |
+| :-- | :-- | --: | --: | --: | --: | --: | :-- |
+| prefill_ms @ 128 | new | 131.4 | 131.3 | -0.1 % | [-1.2 %, +2.9 %] | 5/8 | within noise |
+| prefill_ms @ 128 | control | 131.4 | 131.3 | -0.4 % | [-1.4 %, +2.5 %] | 5/8 | within noise |
+| prefill_ms @ 512 | new | 673.2 | 676.2 | +1.1 % | [-22.4 %, +5.2 %] | 3/8 | within noise |
+| prefill_ms @ 512 | control | 673.2 | 663.4 | +1.6 % | [-24.4 %, +25.9 %] | 2/8 | within noise |
+| decode_ms @ 128 | new | 332.8 | 333.3 | -0.1 % | [-2.0 %, +3.7 %] | 4/8 | within noise |
+| decode_ms @ 128 | control | 332.8 | 333.2 | +0.1 % | [-2.7 %, +47.9 %] | 3/8 | within noise |
+| decode_ms @ 512 | new | 397.3 | 391.8 | -1.4 % | [-9.5 %, +3.8 %] | 5/8 | within noise |
+| decode_ms @ 512 | control | 397.3 | 401.9 | +0.5 % | [-2.7 %, +7.4 %] | 3/8 | within noise |
+| ttft_ms @ 128 | new | 131.4 | 131.3 | -0.1 % | [-1.2 %, +2.9 %] | 5/8 | within noise |
+| ttft_ms @ 128 | control | 131.4 | 131.3 | -0.4 % | [-1.4 %, +2.5 %] | 5/8 | within noise |
+| ttft_ms @ 512 | new | 673.2 | 676.2 | +1.1 % | [-22.4 %, +5.2 %] | 3/8 | within noise |
+| ttft_ms @ 512 | control | 673.2 | 663.4 | +1.6 % | [-24.4 %, +25.9 %] | 2/8 | within noise |
+Control: the baseline's own binary again; its intervals reach ±47.9 %, the resolution of this run.

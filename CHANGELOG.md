@@ -9,6 +9,26 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Layer split across two backends (#49, EXPERIMENTAL).**
+  `geist_session_opts.split_backend` / `split_layers`, read at model load:
+  the first N layers run on a second backend (a GPU for the layers that fit
+  it), the embedding, the rest and the head on the load backend. Placement
+  is fixed at load; a split model is two single-backend states of the same
+  GGUF, each holding only its own layers and KV cache, and
+  `transformer_run_all_layers` moves the hidden rows across once per step
+  and direction. Family units and blocks are unchanged. Two CPU backends:
+  byte-identical to the unsplit model (SmolLM2, Qwen3, BitNet 2B-4T,
+  Llama 3.2; FP32 / INT8 / INT4 KV). RTX 2080 Ti box, Qwen3-14B Q8_0 (does
+  not fit the card), 26 of 40 layers on the GPU: prefill 168 / decode 9.6
+  tok/s against 88 / 5.2 CPU-only; llama.cpp `-ngl 26` 485 / 9.2, with its
+  op offload off (`-nopo 1`) 145 / 9.5. Every layer on the GPU (weights past
+  VRAM in host memory) prefills 1.4x faster than the split but decodes 3.5x
+  slower: the split is for decode. On the M1 Max a split never beats Metal
+  alone. Refused: per-layer embeddings, shared KV, DeltaNet, MTP, a
+  rotated basis, AWQ, KIVI sessions, snapshots
+  (`benchmark/results/LAYER-SPLIT.md`). `bench_perf_sweep` reads
+  `GEIST_BENCH_SPLIT_BACKEND` / `_LAYERS`; `tools/bench_layer_split.py` and
+  `vulkan-split.yml` measure it.
 - **Qwen3-MoE (`qwen3moe`, Qwen3-30B-A3B) on the CPU backends (#48).** A
   family unit (`families/qwen3moe.c`) composed of Qwen3's attention and a
   new shared block, `blk_moe_ffn` (`forward/moe.c`): softmax router over
