@@ -257,10 +257,6 @@ struct metal_state {
     void *q6k_mm32_library; /* matmul_q6k_mm_sg_fast (#17) */
     void *q6k_mm32_function;
     void *q6k_mm32_pipeline;
-    void *q4k_qk_library;
-    void *q4k_qk_function;
-    void *q4k_qk_pipeline;
-    void *q4k_gate_up_library;
     void *q4k_gate_up_n4_library;
     void *q4k_pair_n4_library;
     void *q4k_pair_n4_function;
@@ -270,8 +266,6 @@ struct metal_state {
     void *hadamard_library;
     void *hadamard_function;
     void *hadamard_pipeline;
-    void *q4k_gate_up_function;
-    void *q4k_gate_up_pipeline;
     void *q4k_gate_up_n4_function;
     void *q4k_gate_up_n4_pipeline;
     void *q6k_function;
@@ -967,8 +961,8 @@ bool metal_tensor_is_f16_3d(const struct geist_tensor *t,
 
 [[nodiscard]] enum geist_status metal_ensure_deltanet_pipeline(struct geist_backend *be);
 
-/* Releases every pipeline and function the ensure_* tables in pipelines.c
- * build; the libraries stay with the caller. */
+/* Releases every library, pipeline and function the ensure_* tables in
+ * pipelines.c build. */
 void metal_release_pipeline_tables(struct metal_state *st);
 
 bool metal_ranges_overlap(size_t a_offset, size_t b_offset, size_t n_bytes);

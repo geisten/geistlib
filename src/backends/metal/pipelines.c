@@ -46,7 +46,9 @@
 
 /* A pipeline built from a library that is already in metal_state. The
  * fields are offsets into the state, so the same rows drive creation
- * here and the release in metal_release_pipeline_tables. */
+ * here and the release in metal_release_pipeline_tables. A table is
+ * built in order and stops at its first failure, so its last row's
+ * pipeline is set only once every row's is (metal_ensure_tables). */
 struct metal_pipeline_row {
     size_t      library;
     const char *name;
@@ -148,16 +150,263 @@ static const struct metal_pipeline_row metal_quant_rows[] = {
         METAL_PIPE(f32, "matmul_bf16w_sg", bf16w_matmul_sg),
         METAL_PIPE(f32, "ple_gate_f32", f32_ple_gate),
         METAL_PIPE(f32, "ple_proj_norm_f32", f32_ple_proj_norm),
-};
-
-static const struct metal_pipeline_row metal_q4k_mm_sg_rows[] = {
         METAL_PIPE(q4k_mm_sg, "matmul_q4k_mm_sg", q4k_mm_sg),
         METAL_PIPE(q4k_mm_sg_fast, "matmul_q4k_mm_sg_fast", q4k_mm_sg_fast),
         METAL_PIPE(q6k_mm32, "matmul_q6k_mm_sg_fast", q6k_mm32),
 };
 
+static const struct metal_pipeline_row metal_attention_rows[] = {
+        METAL_PIPE(q_norm_rope, "q_norm_rope_rows", q_norm_rope_rows),
+        METAL_PIPE(k_norm_rope_append, "k_norm_rope_append_rows", k_norm_rope_append_rows),
+        METAL_PIPE(k_norm_rope_append, "k_norm_rope_append_rows_f16", k_norm_rope_append_rows_f16),
+        METAL_PIPE(v_norm_append, "v_norm_append_rows", v_norm_append_rows),
+        METAL_PIPE(v_norm_append, "v_norm_append_rows_f16", v_norm_append_rows_f16),
+        METAL_PIPE(kv_norm_append, "kv_norm_append_rows", kv_norm_append_rows),
+        METAL_PIPE(kv_norm_append_f16, "kv_norm_append_rows_f16", kv_norm_append_rows_f16),
+        METAL_PIPE(attn, "rope_rows", rope_rows),
+        METAL_PIPE(attn, "kv_append_rows", kv_append_rows),
+        METAL_PIPE(attn, "copy_u32", copy_u32),
+        METAL_PIPE(attn_f16, "kv_append_rows_f16", kv_append_rows_f16),
+        METAL_PIPE(attn, "attention_rows", attention_rows),
+        METAL_PIPE(attn_f16, "attention_rows_f16", attention_rows_f16),
+        METAL_PIPE(attn_qnorm_dec_f16, "attention_qnorm_dec_f16", attention_qnorm_dec_f16),
+        METAL_PIPE(attn_qnorm_dec_f16, "attention_dec_f16", attention_dec_f16),
+        METAL_PIPE(attn_dec_combine, "attention_dec_combine", attention_dec_combine),
+        METAL_PIPE(attn_flash_sg_f16, "attention_qnorm_flash_sg_f16", attention_qnorm_flash_sg_f16),
+        METAL_PIPE(attn_flash_sg_f16, "attention_flash_sg_f16", attention_flash_sg_f16),
+        METAL_PIPE(attn_flash_sg8_f16, "attention_flash_sg8_f16", attention_flash_sg8_f16),
+        METAL_PIPE(attn_dec512_f16, "attention_dec512_f16", attention_dec512_f16),
+};
+
+static const struct metal_pipeline_row metal_hadamard_rows[] = {
+        METAL_PIPE(hadamard, "hadamard_rows", hadamard),
+};
+
+static const struct metal_pipeline_row metal_argmax_rows[] = {
+        METAL_PIPE(argmax, "argmax_f32", argmax),
+        METAL_PIPE(argmax, "argmax_f32_batch", argmax_batch),
+};
+
+/* A library compiled from one MSL unit: the shader literals concatenated
+ * in order. The sources are split into literals of at most 4095 chars
+ * (the -Wpedantic limit), so a unit is often several parts. A nullptr
+ * part stands for the IQ3_S grid, see metal_iq3s_grid_source. */
+struct metal_library_row {
+    size_t             library;
+    const char        *label; /* names the library in errors */
+    size_t             n_parts;
+    const char *const *parts;
+};
+#define METAL_LIB(LIB, LABEL, ...)                                                  \
+    {                                                                               \
+        offsetof(struct metal_state, LIB##_library), LABEL,                         \
+                sizeof((const char *const[]) {__VA_ARGS__}) / sizeof(const char *), \
+                (const char *const[]) {                                             \
+            __VA_ARGS__                                                             \
+        }                                                                           \
+    }
+
+static const struct metal_library_row metal_deltanet_libs[] = {
+        /* Serial mixer + chunked-prefill kernels compile as one unit (the
+         * chunk sources reuse struct P and silu1). */
+        METAL_LIB(deltanet,
+                  "DeltaNet",
+                  metal_deltanet_source,
+                  metal_dn_decode_source,
+                  metal_dn_chunk_prep_source,
+                  metal_dn_chunk_ws_source,
+                  metal_dn_chunk_wide_source,
+                  metal_dn_chunk_wide2_source),
+};
+
+static const struct metal_library_row metal_quant_libs[] = {
+        METAL_LIB(q4k, "Q4_K", metal_q4k_source),
+        METAL_LIB(q40_q80, "Q4_0/Q8_0", metal_q40_q80_source),
+        METAL_LIB(q5k, "Q5_K", metal_q5k_source),
+        METAL_LIB(q41, "Q4_1", metal_q41_source),
+        /* The simdgroup quant kernels compile as one unit. */
+        METAL_LIB(quant_sg,
+                  "simdgroup quant",
+                  metal_qsg_common_source,
+                  nullptr,
+                  metal_qsg_common2_source,
+                  metal_qsg_n4_q40_source,
+                  metal_qsg_n4_q80_source,
+                  metal_qsg_n4_q41_source,
+                  metal_qsg_n4_q5k_source,
+                  metal_qsg_mm_q40_source,
+                  metal_qsg_mm_q80_source,
+                  metal_qsg_mm_q41_source,
+                  metal_qsg_mm_q5k_source,
+                  metal_qsg_n4_iq4nl_source,
+                  metal_qsg_n4_iq4xs_source,
+                  metal_qsg_mm_iq4nl_source,
+                  metal_qsg_mm_iq4xs_source,
+                  metal_qsg_n4_q3k_source,
+                  metal_qsg_n4_iq3s_source,
+                  metal_qsg_mm_q3k_source,
+                  metal_qsg_mm_iq3s_source,
+                  metal_qsg_mm_q40_fast_source,
+                  metal_qsg_mm_q80_fast_source,
+                  metal_qsg_mm_q41_fast_source,
+                  metal_qsg_mm_q5k_fast_source,
+                  metal_qsg_mm_iq4xs_fast_source,
+                  metal_qsg_pq2_dq_source,
+                  metal_qsg_pq2_source,
+                  metal_qsg_pq2_n8_source,
+                  metal_qsg_mm_pq2_source,
+                  metal_qsg_mm_pq2_fast_source,
+                  metal_qsg_tq2_source,
+                  metal_qsg_tq2_n4_source,
+                  metal_qsg_mm_tq2_source,
+                  metal_qsg_i2s_source,
+                  metal_qsg_i2s_n4_source,
+                  metal_qsg_mm_i2s_source),
+        METAL_LIB(q4k_n4, "Q4_K n4", metal_q4k_n4_source),
+        METAL_LIB(q4k_gate_up_n4, "Q4_K gate/up n4", metal_q4k_gate_up_n4_source),
+        METAL_LIB(q4k_pair_n4, "Q4_K pair n4", metal_q4k_pair_n4_source),
+        METAL_LIB(q4k_m16, "Q4_K m16", metal_q4k_m16_source),
+        METAL_LIB(q4k_mm_sg, "Q4_K simdgroup mm", metal_q4k_mm_sg_source),
+        METAL_LIB(q4k_mm_sg_fast, "Q4_K simdgroup mm fast", metal_q4k_mm_sg_fast_source),
+        METAL_LIB(q6k_mm32, "Q6_K simdgroup mm fast", metal_q6k_mm32_source),
+        METAL_LIB(q6k, "Q6_K", metal_q6k_source),
+        METAL_LIB(q6k_mm_sg, "Q6_K mm_sg", metal_q6k_mm_sg_source),
+        METAL_LIB(q6k_mm_sg_fast, "Q6_K mm_sg fast", metal_q6k_mm_sg_fast_source),
+        METAL_LIB(q6k_n4, "Q6_K n4", metal_q6k_n4_source),
+        METAL_LIB(elem, "elementwise", metal_elem_source),
+        METAL_LIB(silu, "SiLU", metal_silu_source),
+        METAL_LIB(qgate, "Qwen gate", metal_qgate_source),
+        METAL_LIB(elem_simd, "SIMD elementwise", metal_elem_simd_source),
+        /* single + batched embed kernels share the dequant helpers */
+        METAL_LIB(embed, "embedding", metal_embed_source, metal_embed_rows_source),
+        METAL_LIB(f32,
+                  "F32",
+                  metal_f32_source,
+                  metal_f32_mm_source,
+                  metal_f16_w_source,
+                  metal_bf16_w_source),
+};
+
+static const struct metal_library_row metal_attention_libs[] = {
+        METAL_LIB(q_norm_rope, "Q norm/RoPE", metal_q_norm_rope_source),
+        METAL_LIB(k_norm_rope_append, "K norm/RoPE append", metal_k_norm_rope_append_source),
+        METAL_LIB(v_norm_append, "V norm append", metal_v_norm_append_source),
+        METAL_LIB(kv_norm_append, "K/V norm append", metal_kv_norm_append_source),
+        METAL_LIB(kv_norm_append_f16, "F16 K/V norm append", metal_kv_norm_append_f16_source),
+        METAL_LIB(attn, "attention", metal_attn_source),
+        METAL_LIB(attn_f16, "F16 attention", metal_attn_f16_source),
+        /* The q-norm and plain decode kernels share one body. */
+        METAL_LIB(attn_qnorm_dec_f16,
+                  "decode attention",
+                  metal_attn_qnorm_dec_f16_source,
+                  metal_attn_dec_f16_body,
+                  metal_attn_dec_f16_plain_head,
+                  metal_attn_dec_f16_body),
+        METAL_LIB(attn_dec_combine, "attention combine", metal_attn_dec_combine_source),
+        /* So do the q-norm and plain flash kernels. */
+        METAL_LIB(attn_flash_sg_f16,
+                  "flash attention",
+                  metal_attn_flash_sg_f16_source_a,
+                  metal_attn_flash_sg_f16_source_b,
+                  metal_attn_flash_sg_f16_plain_head,
+                  metal_attn_flash_sg_f16_source_b),
+        METAL_LIB(attn_flash_sg8_f16,
+                  "sg8 flash",
+                  metal_attn_flash_sg8_f16_source_a,
+                  metal_attn_flash_sg8_f16_source_b),
+        METAL_LIB(attn_dec512_f16,
+                  "dec512",
+                  metal_attn_dec512_f16_source_a,
+                  metal_attn_dec512_f16_source_b),
+};
+
+static const struct metal_library_row metal_hadamard_libs[] = {
+        METAL_LIB(hadamard, "hadamard", metal_hadamard_source),
+};
+
+static const struct metal_library_row metal_argmax_libs[] = {
+        METAL_LIB(argmax, "argmax", metal_argmax_source),
+};
+
 static void **metal_state_slot(struct metal_state *st, size_t offset) {
     return (void **) ((char *) st + offset);
+}
+
+/* The IQ3_S grid as an MSL constant array, emitted from quant/iq_grids.h
+ * so the 512 entries live in one place; nullptr on allocation failure. */
+static char *metal_iq3s_grid_source(void) {
+    enum { GRID_STR_CAP = 512 * 12 + 64 };
+    char *grid = malloc(GRID_STR_CAP);
+    if (grid == nullptr) {
+        return nullptr;
+    }
+    size_t off = (size_t) snprintf(grid, GRID_STR_CAP, "constant uint iq3sg[512]={");
+    for (size_t i = 0; i < 512; i++) {
+        off += (size_t) snprintf(
+                grid + off, GRID_STR_CAP - off, "%s0x%08xu", i == 0 ? "" : ",", iq3s_grid[i]);
+    }
+    (void) snprintf(grid + off, GRID_STR_CAP - off, "};\n");
+    return grid;
+}
+
+/* Concatenates the row's parts and compiles them into its library field. */
+[[nodiscard]] static enum geist_status metal_compile_library(struct geist_backend *be,
+                                                             void                 *ns_string,
+                                                             const struct metal_library_row *row) {
+    struct metal_state *st   = be->state;
+    char               *grid = nullptr;
+    for (size_t i = 0; i < row->n_parts && grid == nullptr; i++) {
+        if (row->parts[i] == nullptr) {
+            grid = metal_iq3s_grid_source();
+            if (grid == nullptr) {
+                geist_backend_set_error(
+                        be, GEIST_E_OOM, "metal: %s shader source alloc failed", row->label);
+                return GEIST_E_OOM;
+            }
+        }
+    }
+    size_t total = 1u;
+    for (size_t i = 0; i < row->n_parts; i++) {
+        total += strlen(row->parts[i] != nullptr ? row->parts[i] : grid);
+    }
+    char *buf = malloc(total);
+    if (buf == nullptr) {
+        free(grid);
+        geist_backend_set_error(
+                be, GEIST_E_OOM, "metal: %s shader source alloc failed", row->label);
+        return GEIST_E_OOM;
+    }
+    size_t off = 0;
+    for (size_t i = 0; i < row->n_parts; i++) {
+        const char  *part = row->parts[i] != nullptr ? row->parts[i] : grid;
+        const size_t len  = strlen(part);
+        memcpy(buf + off, part, len);
+        off += len;
+    }
+    buf[off]     = '\0';
+    void *source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", buf);
+    free(buf);
+    free(grid);
+    if (source == nullptr) {
+        geist_backend_set_error(
+                be, GEIST_E_BACKEND, "metal: failed to create %s shader source", row->label);
+        return GEIST_E_BACKEND;
+    }
+    void  *err     = nullptr;
+    void **library = metal_state_slot(st, row->library);
+    *library       = metal_msg_send_id_id_id_err(
+            st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
+    if (*library == nullptr) {
+        const char *msg = metal_nserror_message(st, err);
+        geist_backend_set_error(be,
+                                GEIST_E_BACKEND,
+                                "metal: %s shader compile failed%s%s",
+                                row->label,
+                                msg != nullptr ? ": " : "",
+                                msg != nullptr ? msg : "");
+        return GEIST_E_BACKEND;
+    }
+    return GEIST_OK;
 }
 
 [[nodiscard]] static enum geist_status
@@ -181,6 +430,32 @@ metal_create_pipelines(struct geist_backend           *be,
     return GEIST_OK;
 }
 
+/* Builds a table's libraries and pipelines unless its last row shows
+ * they are built (see struct metal_pipeline_row). */
+[[nodiscard]] static enum geist_status
+metal_ensure_tables(struct geist_backend           *be,
+                    size_t                          n_libs,
+                    const struct metal_library_row  libs[static n_libs],
+                    size_t                          n_rows,
+                    const struct metal_pipeline_row rows[static n_rows]) {
+    struct metal_state *st = be->state;
+    if (*metal_state_slot(st, rows[n_rows - 1].pipeline) != nullptr) {
+        return GEIST_OK;
+    }
+    void *ns_string = metal_objc_get_class(st, "NSString");
+    if (ns_string == nullptr) {
+        geist_backend_set_error(be, GEIST_E_BACKEND, "metal: NSString class unavailable");
+        return GEIST_E_BACKEND;
+    }
+    for (size_t i = 0; i < n_libs; i++) {
+        const enum geist_status s = metal_compile_library(be, ns_string, &libs[i]);
+        if (s != GEIST_OK) {
+            return s;
+        }
+    }
+    return metal_create_pipelines(be, ns_string, n_rows, rows);
+}
+
 static void metal_release_rows(struct metal_state             *st,
                                size_t                          n,
                                const struct metal_pipeline_row rows[static n]) {
@@ -190,1101 +465,66 @@ static void metal_release_rows(struct metal_state             *st,
     }
 }
 
+static void metal_release_libs(struct metal_state            *st,
+                               size_t                         n,
+                               const struct metal_library_row libs[static n]) {
+    for (size_t i = 0; i < n; i++) {
+        metal_msg_send_void0(st, *metal_state_slot(st, libs[i].library), "release");
+    }
+}
+
 void metal_release_pipeline_tables(struct metal_state *st) {
     metal_release_rows(st, METAL_N(metal_deltanet_rows), metal_deltanet_rows);
     metal_release_rows(st, METAL_N(metal_quant_rows), metal_quant_rows);
-    metal_release_rows(st, METAL_N(metal_q4k_mm_sg_rows), metal_q4k_mm_sg_rows);
+    metal_release_rows(st, METAL_N(metal_attention_rows), metal_attention_rows);
+    metal_release_rows(st, METAL_N(metal_hadamard_rows), metal_hadamard_rows);
+    metal_release_rows(st, METAL_N(metal_argmax_rows), metal_argmax_rows);
+    metal_release_libs(st, METAL_N(metal_deltanet_libs), metal_deltanet_libs);
+    metal_release_libs(st, METAL_N(metal_quant_libs), metal_quant_libs);
+    metal_release_libs(st, METAL_N(metal_attention_libs), metal_attention_libs);
+    metal_release_libs(st, METAL_N(metal_hadamard_libs), metal_hadamard_libs);
+    metal_release_libs(st, METAL_N(metal_argmax_libs), metal_argmax_libs);
 }
+
+#define METAL_TABLES(libs, rows) METAL_N(libs), libs, METAL_N(rows), rows
 
 [[nodiscard]] enum geist_status metal_ensure_deltanet_pipeline(struct geist_backend *be) {
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    struct metal_state *st = be->state;
-    if (st->deltanet_mix_pipeline != nullptr && st->dn_chunk_gate_pipeline != nullptr) {
-        return GEIST_OK;
-    }
-    void *ns_string = metal_objc_get_class(st, "NSString");
-    /* Serial mixer + chunked-prefill kernels compile as one MSL unit
-     * (the chunk sources reuse struct P and silu1). */
-    void *source = nullptr;
-    if (ns_string != nullptr) {
-        const char *const parts[] = {metal_deltanet_source,
-                                     metal_dn_decode_source,
-                                     metal_dn_chunk_prep_source,
-                                     metal_dn_chunk_ws_source,
-                                     metal_dn_chunk_wide_source,
-                                     metal_dn_chunk_wide2_source};
-        size_t            total   = 0;
-        for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
-            total += strlen(parts[i]);
-        }
-        char *buf = malloc(total + 1u);
-        if (buf != nullptr) {
-            size_t off = 0;
-            for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
-                const size_t len = strlen(parts[i]);
-                memcpy(buf + off, parts[i], len);
-                off += len;
-            }
-            buf[off] = '\0';
-            source   = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", buf);
-            free(buf);
-        }
-    }
-    if (source == nullptr) {
-        geist_backend_set_error(be, GEIST_E_BACKEND, "metal: DeltaNet shader source failed");
-        return GEIST_E_BACKEND;
-    }
-    void *err            = nullptr;
-    st->deltanet_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
-    if (st->deltanet_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: DeltaNet shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    return metal_create_pipelines(be, ns_string, METAL_N(metal_deltanet_rows), metal_deltanet_rows);
+    return metal_ensure_tables(be, METAL_TABLES(metal_deltanet_libs, metal_deltanet_rows));
 }
 
 [[nodiscard]] enum geist_status metal_ensure_q4k_pipeline(struct geist_backend *be) {
-
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    struct metal_state *st = be->state;
-    if (st->q40_pipeline != nullptr &&
-        st->q40_m8_pipeline != nullptr && st->q80_pipeline != nullptr &&
-        st->q80_m8_pipeline != nullptr && st->q5k_pipeline != nullptr &&
-        st->q5k_m8_pipeline != nullptr && st->q41_pipeline != nullptr &&
-        st->q41_m8_pipeline != nullptr && st->q40_n4_pipeline != nullptr &&
-        st->q40_mm_pipeline != nullptr && st->q80_n4_pipeline != nullptr &&
-        st->q80_mm_pipeline != nullptr && st->q41_n4_pipeline != nullptr &&
-        st->q41_mm_pipeline != nullptr && st->q5k_n4_pipeline != nullptr &&
-        st->q5k_mm_pipeline != nullptr && st->iq4nl_mm_pipeline != nullptr &&
-        st->pq2_n4_pipeline != nullptr && st->pq2_mm_pipeline != nullptr &&
-        st->pq2_mm_fast_pipeline != nullptr && st->pq2_n8_pipeline != nullptr &&
-        st->iq4xs_mm_pipeline != nullptr && st->q3k_mm_pipeline != nullptr &&
-        st->tq2_n4_pipeline != nullptr && st->tq2_mm_pipeline != nullptr &&
-        st->i2s_n4_pipeline != nullptr && st->i2s_mm_pipeline != nullptr &&
-        st->iq3s_mm_pipeline != nullptr && st->q4k_n4_pipeline != nullptr &&
-        st->q4k_matmul_m8_pipeline != nullptr && st->q4k_matmul_m16_pipeline != nullptr &&
-        st->q4k_mm_sg_pipeline != nullptr && st->q6k_pipeline != nullptr &&
-        st->q6k_n4_pipeline != nullptr && st->rmsnorm_rows_simd_pipeline != nullptr && st->gelu_rows_pipeline != nullptr &&
-        st->silu_rows_pipeline != nullptr && st->relu2_rows_pipeline != nullptr &&
-        st->mul_rows_pipeline != nullptr && st->gelu_mul_rows_pipeline != nullptr &&
-        st->add_rows_pipeline != nullptr && st->scale_rows_pipeline != nullptr &&
-        st->rmsnorm_add_rows_simd_pipeline != nullptr &&
-        st->qgate_split_pipeline != nullptr && st->sigmoid_mul_pipeline != nullptr &&
-        st->embed_lookup_scaled_pipeline != nullptr && st->f32_matmul_pipeline != nullptr &&
-        st->f16w_matmul_pipeline != nullptr && st->f16w_matmul_sg_pipeline != nullptr &&
-        st->bf16w_matmul_pipeline != nullptr && st->bf16w_matmul_sg_pipeline != nullptr &&
-        st->f32_ple_gate_pipeline != nullptr && st->f32_ple_proj_norm_pipeline != nullptr) {
-        return GEIST_OK;
-    }
-
-    void *ns_string = metal_objc_get_class(st, "NSString");
-    if (ns_string == nullptr) {
-        geist_backend_set_error(be, GEIST_E_BACKEND, "metal: NSString class unavailable");
-        return GEIST_E_BACKEND;
-    }
-    void *source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q4k_source);
-    void *q40_q80_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q40_q80_source);
-    void *q5k_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q5k_source);
-    void *q41_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q41_source);
-    /* The simdgroup quant kernels ship as several sub-4095-char C literals
-     * and compile as one MSL unit; concatenate them here. The IQ3_S grid is
-     * emitted from quant/iq_grids.h as an MSL constant array, so the 512
-     * entries live in one place. */
-    void *quant_sg_source = nullptr;
-    {
-        enum { GRID_STR_CAP = 512 * 12 + 64 };
-        char *grid_src = malloc(GRID_STR_CAP);
-        if (grid_src != nullptr) {
-            size_t off = (size_t) snprintf(grid_src, GRID_STR_CAP, "constant uint iq3sg[512]={");
-            for (size_t gi = 0; gi < 512; gi++) {
-                off += (size_t) snprintf(grid_src + off,
-                                         GRID_STR_CAP - off,
-                                         "%s0x%08xu",
-                                         gi == 0 ? "" : ",",
-                                         iq3s_grid[gi]);
-            }
-            off += (size_t) snprintf(grid_src + off, GRID_STR_CAP - off, "};\n");
-        }
-        const char *const parts[] = {
-                metal_qsg_common_source,      grid_src != nullptr ? grid_src : "",
-                metal_qsg_common2_source,     metal_qsg_n4_q40_source,
-                metal_qsg_n4_q80_source,      metal_qsg_n4_q41_source,
-                metal_qsg_n4_q5k_source,      metal_qsg_mm_q40_source,
-                metal_qsg_mm_q80_source,      metal_qsg_mm_q41_source,
-                metal_qsg_mm_q5k_source,      metal_qsg_n4_iq4nl_source,
-                metal_qsg_n4_iq4xs_source,    metal_qsg_mm_iq4nl_source,
-                metal_qsg_mm_iq4xs_source,    metal_qsg_n4_q3k_source,
-                metal_qsg_n4_iq3s_source,     metal_qsg_mm_q3k_source,
-                metal_qsg_mm_iq3s_source,     metal_qsg_mm_q40_fast_source,
-                metal_qsg_mm_q80_fast_source, metal_qsg_mm_q41_fast_source,
-                metal_qsg_mm_q5k_fast_source, metal_qsg_mm_iq4xs_fast_source,
-                metal_qsg_pq2_dq_source,      metal_qsg_pq2_source,
-                metal_qsg_pq2_n8_source,      metal_qsg_mm_pq2_source,
-                metal_qsg_mm_pq2_fast_source, metal_qsg_tq2_source,
-                metal_qsg_tq2_n4_source,      metal_qsg_mm_tq2_source,
-                metal_qsg_i2s_source,         metal_qsg_i2s_n4_source,
-                metal_qsg_mm_i2s_source};
-        const size_t n_parts = sizeof parts / sizeof parts[0];
-        size_t       total   = 0;
-        for (size_t i = 0; i < n_parts; i++) {
-            total += strlen(parts[i]);
-        }
-        char *buf = malloc(total + 1u);
-        if (buf != nullptr) {
-            size_t off = 0;
-            for (size_t i = 0; i < n_parts; i++) {
-                const size_t len = strlen(parts[i]);
-                memcpy(buf + off, parts[i], len);
-                off += len;
-            }
-            buf[off]        = '\0';
-            quant_sg_source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", buf);
-            free(buf);
-        }
-        free(grid_src);
-    }
-    void *q4k_n4_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q4k_n4_source);
-    void *q4k_m16_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q4k_m16_source);
-    void *q4k_mm_sg_ns_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q4k_mm_sg_source);
-    void *q4k_mm_sg_fast_ns_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q4k_mm_sg_fast_source);
-    void *q6k_mm32_ns_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q6k_mm32_source);
-    void *q4k_gate_up_n4_src = metal_msg_send_id_cstr(
-            st, ns_string, "stringWithUTF8String:", metal_q4k_gate_up_n4_source);
-    void *q4k_pair_n4_src = metal_msg_send_id_cstr(
-            st, ns_string, "stringWithUTF8String:", metal_q4k_pair_n4_source);
-    void *q6_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q6k_source);
-    void *q6_mm_sg_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q6k_mm_sg_source);
-    void *q6_mm_sg_fast_source = metal_msg_send_id_cstr(
-            st, ns_string, "stringWithUTF8String:", metal_q6k_mm_sg_fast_source);
-    void *q6_n4_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_q6k_n4_source);
-    void *elem_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_elem_source);
-    void *silu_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_silu_source);
-    void *qgate_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_qgate_source);
-    void *elem_simd_source =
-            metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_elem_simd_source);
-    void *embed_source = nullptr;
-    {
-        /* single + batched embed kernels share the dequant helpers —
-         * concatenated at init (4095-char literal limit). */
-        const size_t em_a   = strlen(metal_embed_source);
-        const size_t em_b   = strlen(metal_embed_rows_source);
-        char        *em_src = malloc(em_a + em_b + 1u);
-        if (em_src == nullptr) {
-            geist_backend_set_error(be, GEIST_E_OOM, "metal: embed shader source alloc failed");
-            return GEIST_E_OOM;
-        }
-        memcpy(em_src, metal_embed_source, em_a);
-        memcpy(em_src + em_a, metal_embed_rows_source, em_b + 1u);
-        embed_source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", em_src);
-        free(em_src);
-    }
-    void *f32_source = nullptr;
-    {
-        /* literals concatenated at init (C99 4095-char literal limit) */
-        const char *const f32_parts[] = {
-                metal_f32_source, metal_f32_mm_source, metal_f16_w_source, metal_bf16_w_source};
-        size_t f32_len = 1u;
-        for (size_t i = 0; i < sizeof f32_parts / sizeof f32_parts[0]; i++) {
-            f32_len += strlen(f32_parts[i]);
-        }
-        char *f32_src = malloc(f32_len);
-        if (f32_src == nullptr) {
-            geist_backend_set_error(be, GEIST_E_OOM, "metal: f32 shader source alloc failed");
-            return GEIST_E_OOM;
-        }
-        f32_src[0] = '\0';
-        for (size_t i = 0; i < sizeof f32_parts / sizeof f32_parts[0]; i++) {
-            strcat(f32_src, f32_parts[i]);
-        }
-        f32_source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", f32_src);
-        free(f32_src);
-    }
-    if (source == nullptr || q40_q80_source == nullptr || quant_sg_source == nullptr ||
-        q4k_m16_source == nullptr || q4k_n4_source == nullptr ||
-        q4k_mm_sg_ns_source == nullptr || q4k_mm_sg_fast_ns_source == nullptr ||
-        q6k_mm32_ns_source == nullptr || q4k_gate_up_n4_src == nullptr ||
-        q4k_pair_n4_src == nullptr || q6_source == nullptr || q6_n4_source == nullptr ||
-        elem_source == nullptr || silu_source == nullptr ||
-        qgate_source == nullptr || elem_simd_source == nullptr || embed_source == nullptr ||
-        f32_source == nullptr) {
-        geist_backend_set_error(be, GEIST_E_BACKEND, "metal: failed to create shader source");
-        return GEIST_E_BACKEND;
-    }
-
-    void *err       = nullptr;
-    st->q4k_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
-    if (st->q4k_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: Q4_K shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err                 = nullptr;
-    st->q40_q80_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", q40_q80_source, nullptr, &err);
-    if (st->q40_q80_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: Q4_0/Q8_0 shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err             = nullptr;
-    st->q5k_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", q5k_source, nullptr, &err);
-    if (st->q5k_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: Q5_K shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err             = nullptr;
-    st->q41_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", q41_source, nullptr, &err);
-    if (st->q41_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: Q4_1 shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err                  = nullptr;
-    st->quant_sg_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", quant_sg_source, nullptr, &err);
-    if (st->quant_sg_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: simdgroup quant shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err                = nullptr;
-    st->q4k_n4_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", q4k_n4_source, nullptr, &err);
-    if (st->q4k_n4_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: Q4_K n4 shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err                        = nullptr;
-    st->q4k_gate_up_n4_library = metal_msg_send_id_id_id_err(st,
-                                                             st->device,
-                                                             "newLibraryWithSource:options:error:",
-                                                             q4k_gate_up_n4_src,
-                                                             nullptr,
-                                                             &err);
-    if (st->q4k_gate_up_n4_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: Q4_K gate/up n4 shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err                     = nullptr;
-    st->q4k_pair_n4_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", q4k_pair_n4_src, nullptr, &err);
-    if (st->q4k_pair_n4_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: Q4_K pair n4 shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err                 = nullptr;
-    st->q4k_m16_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", q4k_m16_source, nullptr, &err);
-    if (st->q4k_m16_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: Q4_K m16 shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    {
-        err                   = nullptr;
-        st->q4k_mm_sg_library = metal_msg_send_id_id_id_err(st,
-                                                            st->device,
-                                                            "newLibraryWithSource:options:error:",
-                                                            q4k_mm_sg_ns_source,
-                                                            nullptr,
-                                                            &err);
-        if (st->q4k_mm_sg_library == nullptr) {
-            const char *msg = metal_nserror_message(st, err);
-            geist_backend_set_error(be,
-                                    GEIST_E_BACKEND,
-                                    "metal: Q4_K simdgroup mm shader compile failed%s%s",
-                                    msg != nullptr ? ": " : "",
-                                    msg != nullptr ? msg : "");
-            return GEIST_E_BACKEND;
-        }
-        err = nullptr;
-        st->q4k_mm_sg_fast_library =
-                metal_msg_send_id_id_id_err(st,
-                                            st->device,
-                                            "newLibraryWithSource:options:error:",
-                                            q4k_mm_sg_fast_ns_source,
-                                            nullptr,
-                                            &err);
-        if (st->q4k_mm_sg_fast_library == nullptr) {
-            const char *msg = metal_nserror_message(st, err);
-            geist_backend_set_error(be,
-                                    GEIST_E_BACKEND,
-                                    "metal: Q4_K simdgroup mm fast shader compile failed%s%s",
-                                    msg != nullptr ? ": " : "",
-                                    msg != nullptr ? msg : "");
-            return GEIST_E_BACKEND;
-        }
-        err                  = nullptr;
-        st->q6k_mm32_library = metal_msg_send_id_id_id_err(st,
-                                                           st->device,
-                                                           "newLibraryWithSource:options:error:",
-                                                           q6k_mm32_ns_source,
-                                                           nullptr,
-                                                           &err);
-        if (st->q6k_mm32_library == nullptr) {
-            const char *msg = metal_nserror_message(st, err);
-            geist_backend_set_error(be,
-                                    GEIST_E_BACKEND,
-                                    "metal: Q6_K simdgroup mm fast shader compile failed%s%s",
-                                    msg != nullptr ? ": " : "",
-                                    msg != nullptr ? msg : "");
-            return GEIST_E_BACKEND;
-        }
-    }
-    err             = nullptr;
-    st->q6k_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", q6_source, nullptr, &err);
-    if (st->q6k_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: Q6_K shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err                   = nullptr;
-    st->q6k_mm_sg_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", q6_mm_sg_source, nullptr, &err);
-    if (st->q6k_mm_sg_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: Q6_K mm_sg shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err                        = nullptr;
-    st->q6k_mm_sg_fast_library = metal_msg_send_id_id_id_err(st,
-                                                             st->device,
-                                                             "newLibraryWithSource:options:error:",
-                                                             q6_mm_sg_fast_source,
-                                                             nullptr,
-                                                             &err);
-    if (st->q6k_mm_sg_fast_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: Q6_K mm_sg fast shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err                = nullptr;
-    st->q6k_n4_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", q6_n4_source, nullptr, &err);
-    if (st->q6k_n4_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: Q6_K n4 shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err              = nullptr;
-    st->elem_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", elem_source, nullptr, &err);
-    if (st->elem_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: elementwise shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err              = nullptr;
-    st->silu_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", silu_source, nullptr, &err);
-    if (st->silu_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: SiLU shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err               = nullptr;
-    st->qgate_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", qgate_source, nullptr, &err);
-    if (st->qgate_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: Qwen gate shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err                   = nullptr;
-    st->elem_simd_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", elem_simd_source, nullptr, &err);
-    if (st->elem_simd_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: SIMD elementwise shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err               = nullptr;
-    st->embed_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", embed_source, nullptr, &err);
-    if (st->embed_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: embedding shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    err             = nullptr;
-    st->f32_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", f32_source, nullptr, &err);
-    if (st->f32_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: F32 shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    enum geist_status s =
-            metal_create_pipelines(be, ns_string, METAL_N(metal_quant_rows), metal_quant_rows);
-    if (s == GEIST_OK) {
-        s = metal_create_pipelines(
-                be, ns_string, METAL_N(metal_q4k_mm_sg_rows), metal_q4k_mm_sg_rows);
-    }
-    return s;
+    return metal_ensure_tables(be, METAL_TABLES(metal_quant_libs, metal_quant_rows));
 }
 
 [[nodiscard]] enum geist_status metal_ensure_attention_pipeline(struct geist_backend *be) {
-
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    struct metal_state *st = be->state;
-    if (st->q_norm_rope_rows_pipeline != nullptr &&
-        st->k_norm_rope_append_rows_pipeline != nullptr &&
-        st->k_norm_rope_append_rows_f16_pipeline != nullptr &&
-        st->v_norm_append_rows_pipeline != nullptr &&
-        st->v_norm_append_rows_f16_pipeline != nullptr &&
-        st->kv_norm_append_rows_pipeline != nullptr &&
-        st->kv_norm_append_rows_f16_pipeline != nullptr && st->rope_rows_pipeline != nullptr &&
-        st->kv_append_rows_pipeline != nullptr && st->kv_append_rows_f16_pipeline != nullptr &&
-        st->attention_rows_pipeline != nullptr && st->attention_rows_f16_pipeline != nullptr) {
-        return GEIST_OK;
-    }
-
-    void *ns_string = metal_objc_get_class(st, "NSString");
-    if (ns_string == nullptr) {
-        geist_backend_set_error(be, GEIST_E_BACKEND, "metal: NSString class unavailable");
-        return GEIST_E_BACKEND;
-    }
-    void *source = metal_msg_send_id_cstr(
-            st, ns_string, "stringWithUTF8String:", metal_q_norm_rope_source);
-    if (source == nullptr) {
-        geist_backend_set_error(
-                be, GEIST_E_BACKEND, "metal: failed to create Q norm/RoPE shader source");
-        return GEIST_E_BACKEND;
-    }
-    void *err               = nullptr;
-    st->q_norm_rope_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
-    if (st->q_norm_rope_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: Q norm/RoPE shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    enum geist_status s = metal_create_named_pipeline(be,
-                                                      st->q_norm_rope_library,
-                                                      ns_string,
-                                                      "q_norm_rope_rows",
-                                                      &st->q_norm_rope_rows_function,
-                                                      &st->q_norm_rope_rows_pipeline);
-
-    if (s == GEIST_OK) {
-        source = metal_msg_send_id_cstr(
-                st, ns_string, "stringWithUTF8String:", metal_k_norm_rope_append_source);
-        if (source == nullptr) {
-            geist_backend_set_error(be,
-                                    GEIST_E_BACKEND,
-                                    "metal: failed to create K norm/RoPE append shader source");
-            return GEIST_E_BACKEND;
-        }
-        err                            = nullptr;
-        st->k_norm_rope_append_library = metal_msg_send_id_id_id_err(
-                st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
-        if (st->k_norm_rope_append_library == nullptr) {
-            const char *msg = metal_nserror_message(st, err);
-            geist_backend_set_error(be,
-                                    GEIST_E_BACKEND,
-                                    "metal: K norm/RoPE append shader compile failed%s%s",
-                                    msg != nullptr ? ": " : "",
-                                    msg != nullptr ? msg : "");
-            return GEIST_E_BACKEND;
-        }
-        s = metal_create_named_pipeline(be,
-                                        st->k_norm_rope_append_library,
-                                        ns_string,
-                                        "k_norm_rope_append_rows",
-                                        &st->k_norm_rope_append_rows_function,
-                                        &st->k_norm_rope_append_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->k_norm_rope_append_library,
-                                        ns_string,
-                                        "k_norm_rope_append_rows_f16",
-                                        &st->k_norm_rope_append_rows_f16_function,
-                                        &st->k_norm_rope_append_rows_f16_pipeline);
-    }
-    if (s == GEIST_OK) {
-        source = metal_msg_send_id_cstr(
-                st, ns_string, "stringWithUTF8String:", metal_v_norm_append_source);
-        if (source == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_BACKEND, "metal: failed to create V norm append shader source");
-            return GEIST_E_BACKEND;
-        }
-        err                       = nullptr;
-        st->v_norm_append_library = metal_msg_send_id_id_id_err(
-                st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
-        if (st->v_norm_append_library == nullptr) {
-            const char *msg = metal_nserror_message(st, err);
-            geist_backend_set_error(be,
-                                    GEIST_E_BACKEND,
-                                    "metal: V norm append shader compile failed%s%s",
-                                    msg != nullptr ? ": " : "",
-                                    msg != nullptr ? msg : "");
-            return GEIST_E_BACKEND;
-        }
-        s = metal_create_named_pipeline(be,
-                                        st->v_norm_append_library,
-                                        ns_string,
-                                        "v_norm_append_rows",
-                                        &st->v_norm_append_rows_function,
-                                        &st->v_norm_append_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->v_norm_append_library,
-                                        ns_string,
-                                        "v_norm_append_rows_f16",
-                                        &st->v_norm_append_rows_f16_function,
-                                        &st->v_norm_append_rows_f16_pipeline);
-    }
-    if (s == GEIST_OK) {
-        source = metal_msg_send_id_cstr(
-                st, ns_string, "stringWithUTF8String:", metal_kv_norm_append_source);
-        if (source == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_BACKEND, "metal: failed to create K/V norm append shader source");
-            return GEIST_E_BACKEND;
-        }
-        err                        = nullptr;
-        st->kv_norm_append_library = metal_msg_send_id_id_id_err(
-                st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
-        if (st->kv_norm_append_library == nullptr) {
-            const char *msg = metal_nserror_message(st, err);
-            geist_backend_set_error(be,
-                                    GEIST_E_BACKEND,
-                                    "metal: K/V norm append shader compile failed%s%s",
-                                    msg != nullptr ? ": " : "",
-                                    msg != nullptr ? msg : "");
-            return GEIST_E_BACKEND;
-        }
-        s = metal_create_named_pipeline(be,
-                                        st->kv_norm_append_library,
-                                        ns_string,
-                                        "kv_norm_append_rows",
-                                        &st->kv_norm_append_rows_function,
-                                        &st->kv_norm_append_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        source = metal_msg_send_id_cstr(
-                st, ns_string, "stringWithUTF8String:", metal_kv_norm_append_f16_source);
-        if (source == nullptr) {
-            geist_backend_set_error(be,
-                                    GEIST_E_BACKEND,
-                                    "metal: failed to create F16 K/V norm append shader source");
-            return GEIST_E_BACKEND;
-        }
-        err                            = nullptr;
-        st->kv_norm_append_f16_library = metal_msg_send_id_id_id_err(
-                st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
-        if (st->kv_norm_append_f16_library == nullptr) {
-            const char *msg = metal_nserror_message(st, err);
-            geist_backend_set_error(be,
-                                    GEIST_E_BACKEND,
-                                    "metal: F16 K/V norm append shader compile failed%s%s",
-                                    msg != nullptr ? ": " : "",
-                                    msg != nullptr ? msg : "");
-            return GEIST_E_BACKEND;
-        }
-        s = metal_create_named_pipeline(be,
-                                        st->kv_norm_append_f16_library,
-                                        ns_string,
-                                        "kv_norm_append_rows_f16",
-                                        &st->kv_norm_append_rows_f16_function,
-                                        &st->kv_norm_append_rows_f16_pipeline);
-    }
-    if (s == GEIST_OK) {
-        source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_attn_source);
-        if (source == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_BACKEND, "metal: failed to create attention shader source");
-            return GEIST_E_BACKEND;
-        }
-        err              = nullptr;
-        st->attn_library = metal_msg_send_id_id_id_err(
-                st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
-        if (st->attn_library == nullptr) {
-            const char *msg = metal_nserror_message(st, err);
-            geist_backend_set_error(be,
-                                    GEIST_E_BACKEND,
-                                    "metal: attention shader compile failed%s%s",
-                                    msg != nullptr ? ": " : "",
-                                    msg != nullptr ? msg : "");
-            return GEIST_E_BACKEND;
-        }
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->attn_library,
-                                        ns_string,
-                                        "rope_rows",
-                                        &st->rope_rows_function,
-                                        &st->rope_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->attn_library,
-                                        ns_string,
-                                        "kv_append_rows",
-                                        &st->kv_append_rows_function,
-                                        &st->kv_append_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->attn_library,
-                                        ns_string,
-                                        "copy_u32",
-                                        &st->copy_u32_function,
-                                        &st->copy_u32_pipeline);
-    }
-    if (s == GEIST_OK) {
-        source = metal_msg_send_id_cstr(
-                st, ns_string, "stringWithUTF8String:", metal_attn_f16_source);
-        if (source == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_BACKEND, "metal: failed to create F16 attention shader source");
-            return GEIST_E_BACKEND;
-        }
-        err                  = nullptr;
-        st->attn_f16_library = metal_msg_send_id_id_id_err(
-                st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
-        if (st->attn_f16_library == nullptr) {
-            const char *msg = metal_nserror_message(st, err);
-            geist_backend_set_error(be,
-                                    GEIST_E_BACKEND,
-                                    "metal: F16 attention shader compile failed%s%s",
-                                    msg != nullptr ? ": " : "",
-                                    msg != nullptr ? msg : "");
-            return GEIST_E_BACKEND;
-        }
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->attn_f16_library,
-                                        ns_string,
-                                        "kv_append_rows_f16",
-                                        &st->kv_append_rows_f16_function,
-                                        &st->kv_append_rows_f16_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->attn_library,
-                                        ns_string,
-                                        "attention_rows",
-                                        &st->attention_rows_function,
-                                        &st->attention_rows_pipeline);
-    }
-    if (s == GEIST_OK) {
-        s = metal_create_named_pipeline(be,
-                                        st->attn_f16_library,
-                                        ns_string,
-                                        "attention_rows_f16",
-                                        &st->attention_rows_f16_function,
-                                        &st->attention_rows_f16_pipeline);
-    }
-    if (s == GEIST_OK) {
-        const size_t dl_h    = strlen(metal_attn_qnorm_dec_f16_source);
-        const size_t dl_b    = strlen(metal_attn_dec_f16_body);
-        const size_t dl_p    = strlen(metal_attn_dec_f16_plain_head);
-        char        *dec_src = malloc(dl_h + 2u * dl_b + dl_p + 1u);
-        if (dec_src == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_OOM, "metal: decode attention shader source alloc failed");
-            return GEIST_E_OOM;
-        }
-        memcpy(dec_src, metal_attn_qnorm_dec_f16_source, dl_h);
-        memcpy(dec_src + dl_h, metal_attn_dec_f16_body, dl_b);
-        memcpy(dec_src + dl_h + dl_b, metal_attn_dec_f16_plain_head, dl_p);
-        memcpy(dec_src + dl_h + dl_b + dl_p, metal_attn_dec_f16_body, dl_b + 1u);
-        source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", dec_src);
-        free(dec_src);
-        if (source == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_BACKEND, "metal: failed to create decode attention shader source");
-            return GEIST_E_BACKEND;
-        }
-        err                            = nullptr;
-        st->attn_qnorm_dec_f16_library = metal_msg_send_id_id_id_err(
-                st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
-        if (st->attn_qnorm_dec_f16_library == nullptr) {
-            const char *msg = metal_nserror_message(st, err);
-            geist_backend_set_error(be,
-                                    GEIST_E_BACKEND,
-                                    "metal: decode attention shader compile failed%s%s",
-                                    msg != nullptr ? ": " : "",
-                                    msg != nullptr ? msg : "");
-            return GEIST_E_BACKEND;
-        }
-        s = metal_create_named_pipeline(be,
-                                        st->attn_qnorm_dec_f16_library,
-                                        ns_string,
-                                        "attention_qnorm_dec_f16",
-                                        &st->attention_qnorm_dec_f16_function,
-                                        &st->attention_qnorm_dec_f16_pipeline);
-        if (s == GEIST_OK) {
-            s = metal_create_named_pipeline(be,
-                                            st->attn_qnorm_dec_f16_library,
-                                            ns_string,
-                                            "attention_dec_f16",
-                                            &st->attention_dec_f16_function,
-                                            &st->attention_dec_f16_pipeline);
-        }
-    }
-    if (s == GEIST_OK) {
-        source = metal_msg_send_id_cstr(
-                st, ns_string, "stringWithUTF8String:", metal_attn_dec_combine_source);
-        if (source == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_BACKEND, "metal: failed to create attention combine shader source");
-            return GEIST_E_BACKEND;
-        }
-        err                          = nullptr;
-        st->attn_dec_combine_library = metal_msg_send_id_id_id_err(
-                st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
-        if (st->attn_dec_combine_library == nullptr) {
-            const char *msg = metal_nserror_message(st, err);
-            geist_backend_set_error(be,
-                                    GEIST_E_BACKEND,
-                                    "metal: attention combine shader compile failed%s%s",
-                                    msg != nullptr ? ": " : "",
-                                    msg != nullptr ? msg : "");
-            return GEIST_E_BACKEND;
-        }
-        s = metal_create_named_pipeline(be,
-                                        st->attn_dec_combine_library,
-                                        ns_string,
-                                        "attention_dec_combine",
-                                        &st->attention_dec_combine_function,
-                                        &st->attention_dec_combine_pipeline);
-    }
-    if (s == GEIST_OK) {
-        const size_t len_a     = strlen(metal_attn_flash_sg_f16_source_a);
-        const size_t len_b     = strlen(metal_attn_flash_sg_f16_source_b);
-        const size_t len_c     = strlen(metal_attn_flash_sg_f16_plain_head);
-        char        *flash_src = malloc(len_a + 2u * len_b + len_c + 1u);
-        if (flash_src == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_OOM, "metal: flash attention shader source alloc failed");
-            return GEIST_E_OOM;
-        }
-        memcpy(flash_src, metal_attn_flash_sg_f16_source_a, len_a);
-        memcpy(flash_src + len_a, metal_attn_flash_sg_f16_source_b, len_b);
-        memcpy(flash_src + len_a + len_b, metal_attn_flash_sg_f16_plain_head, len_c);
-        memcpy(flash_src + len_a + len_b + len_c, metal_attn_flash_sg_f16_source_b, len_b + 1u);
-        source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", flash_src);
-        free(flash_src);
-        if (source == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_BACKEND, "metal: failed to create flash attention shader source");
-            return GEIST_E_BACKEND;
-        }
-        err                           = nullptr;
-        st->attn_flash_sg_f16_library = metal_msg_send_id_id_id_err(
-                st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
-        if (st->attn_flash_sg_f16_library == nullptr) {
-            const char *msg = metal_nserror_message(st, err);
-            geist_backend_set_error(be,
-                                    GEIST_E_BACKEND,
-                                    "metal: flash attention shader compile failed%s%s",
-                                    msg != nullptr ? ": " : "",
-                                    msg != nullptr ? msg : "");
-            return GEIST_E_BACKEND;
-        }
-        s = metal_create_named_pipeline(be,
-                                        st->attn_flash_sg_f16_library,
-                                        ns_string,
-                                        "attention_qnorm_flash_sg_f16",
-                                        &st->attention_qnorm_flash_sg_f16_function,
-                                        &st->attention_qnorm_flash_sg_f16_pipeline);
-        if (s == GEIST_OK) {
-            s = metal_create_named_pipeline(be,
-                                            st->attn_flash_sg_f16_library,
-                                            ns_string,
-                                            "attention_flash_sg_f16",
-                                            &st->attention_flash_sg_f16_function,
-                                            &st->attention_flash_sg_f16_pipeline);
-        }
-    }
-    if (s == GEIST_OK) {
-        const size_t l_a     = strlen(metal_attn_flash_sg8_f16_source_a);
-        const size_t l_b     = strlen(metal_attn_flash_sg8_f16_source_b);
-        char        *sg8_src = malloc(l_a + l_b + 1u);
-        if (sg8_src == nullptr) {
-            geist_backend_set_error(be, GEIST_E_OOM, "metal: sg8 flash shader source alloc failed");
-            return GEIST_E_OOM;
-        }
-        memcpy(sg8_src, metal_attn_flash_sg8_f16_source_a, l_a);
-        memcpy(sg8_src + l_a, metal_attn_flash_sg8_f16_source_b, l_b + 1u);
-        source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", sg8_src);
-        free(sg8_src);
-        if (source == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_BACKEND, "metal: failed to create sg8 flash shader source");
-            return GEIST_E_BACKEND;
-        }
-        err                            = nullptr;
-        st->attn_flash_sg8_f16_library = metal_msg_send_id_id_id_err(
-                st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
-        if (st->attn_flash_sg8_f16_library == nullptr) {
-            const char *msg = metal_nserror_message(st, err);
-            geist_backend_set_error(be,
-                                    GEIST_E_BACKEND,
-                                    "metal: sg8 flash shader compile failed%s%s",
-                                    msg != nullptr ? ": " : "",
-                                    msg != nullptr ? msg : "");
-            return GEIST_E_BACKEND;
-        }
-        s = metal_create_named_pipeline(be,
-                                        st->attn_flash_sg8_f16_library,
-                                        ns_string,
-                                        "attention_flash_sg8_f16",
-                                        &st->attention_flash_sg8_f16_function,
-                                        &st->attention_flash_sg8_f16_pipeline);
-    }
-    if (s == GEIST_OK) {
-        const size_t d_a        = strlen(metal_attn_dec512_f16_source_a);
-        const size_t d_b        = strlen(metal_attn_dec512_f16_source_b);
-        char        *dec512_src = malloc(d_a + d_b + 1u);
-        if (dec512_src == nullptr) {
-            geist_backend_set_error(be, GEIST_E_OOM, "metal: dec512 shader source alloc failed");
-            return GEIST_E_OOM;
-        }
-        memcpy(dec512_src, metal_attn_dec512_f16_source_a, d_a);
-        memcpy(dec512_src + d_a, metal_attn_dec512_f16_source_b, d_b + 1u);
-        source = metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", dec512_src);
-        free(dec512_src);
-        if (source == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_BACKEND, "metal: failed to create dec512 shader source");
-            return GEIST_E_BACKEND;
-        }
-        err                         = nullptr;
-        st->attn_dec512_f16_library = metal_msg_send_id_id_id_err(
-                st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
-        if (st->attn_dec512_f16_library == nullptr) {
-            const char *msg = metal_nserror_message(st, err);
-            geist_backend_set_error(be,
-                                    GEIST_E_BACKEND,
-                                    "metal: dec512 shader compile failed%s%s",
-                                    msg != nullptr ? ": " : "",
-                                    msg != nullptr ? msg : "");
-            return GEIST_E_BACKEND;
-        }
-        s = metal_create_named_pipeline(be,
-                                        st->attn_dec512_f16_library,
-                                        ns_string,
-                                        "attention_dec512_f16",
-                                        &st->attention_dec512_f16_function,
-                                        &st->attention_dec512_f16_pipeline);
-    }
-    return s;
+    return metal_ensure_tables(be, METAL_TABLES(metal_attention_libs, metal_attention_rows));
 }
 
 [[nodiscard]] enum geist_status metal_ensure_hadamard_pipeline(struct geist_backend *be) {
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    struct metal_state *st = be->state;
-    if (st->hadamard_pipeline != nullptr) {
-        return GEIST_OK;
-    }
-    void *ns_string = metal_objc_get_class(st, "NSString");
-    void *source    = ns_string != nullptr
-                              ? metal_msg_send_id_cstr(
-                                        st, ns_string, "stringWithUTF8String:", metal_hadamard_source)
-                              : nullptr;
-    if (source == nullptr) {
-        geist_backend_set_error(be, GEIST_E_BACKEND, "metal: hadamard shader source failed");
-        return GEIST_E_BACKEND;
-    }
-    void *err            = nullptr;
-    st->hadamard_library = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
-    if (st->hadamard_library == nullptr) {
-        const char *msg = metal_nserror_message(st, err);
-        geist_backend_set_error(be,
-                                GEIST_E_BACKEND,
-                                "metal: hadamard shader compile failed%s%s",
-                                msg != nullptr ? ": " : "",
-                                msg != nullptr ? msg : "");
-        return GEIST_E_BACKEND;
-    }
-    return metal_create_named_pipeline(be,
-                                       st->hadamard_library,
-                                       ns_string,
-                                       "hadamard_rows",
-                                       &st->hadamard_function,
-                                       &st->hadamard_pipeline);
+    return metal_ensure_tables(be, METAL_TABLES(metal_hadamard_libs, metal_hadamard_rows));
 }
 
 [[nodiscard]] enum geist_status metal_ensure_argmax_pipeline(struct geist_backend *be) {
-
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    struct metal_state *st = be->state;
-    if (st->argmax_pipeline != nullptr && st->argmax_batch_pipeline != nullptr &&
-        st->argmax_result_buffer != nullptr && st->argmax_result_mapped != nullptr &&
-        st->argmax_result_capacity >= 1u) {
-        return GEIST_OK;
-    }
-
-    void *ns_string = metal_objc_get_class(st, "NSString");
-    if (ns_string == nullptr) {
-        geist_backend_set_error(be, GEIST_E_BACKEND, "metal: NSString class unavailable");
-        return GEIST_E_BACKEND;
-    }
-    if (st->argmax_pipeline == nullptr || st->argmax_batch_pipeline == nullptr) {
-        void *source =
-                metal_msg_send_id_cstr(st, ns_string, "stringWithUTF8String:", metal_argmax_source);
-        if (source == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_BACKEND, "metal: failed to create argmax shader source");
-            return GEIST_E_BACKEND;
-        }
-        void *err          = nullptr;
-        st->argmax_library = metal_msg_send_id_id_id_err(
-                st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
-        if (st->argmax_library == nullptr) {
-            const char *msg = metal_nserror_message(st, err);
-            geist_backend_set_error(be,
-                                    GEIST_E_BACKEND,
-                                    "metal: argmax shader compile failed%s%s",
-                                    msg != nullptr ? ": " : "",
-                                    msg != nullptr ? msg : "");
-            return GEIST_E_BACKEND;
-        }
-        enum geist_status s = metal_create_named_pipeline(be,
-                                                          st->argmax_library,
-                                                          ns_string,
-                                                          "argmax_f32",
-                                                          &st->argmax_function,
-                                                          &st->argmax_pipeline);
-        if (s != GEIST_OK) {
-            return s;
-        }
-        s = metal_create_named_pipeline(be,
-                                        st->argmax_library,
-                                        ns_string,
-                                        "argmax_f32_batch",
-                                        &st->argmax_batch_function,
-                                        &st->argmax_batch_pipeline);
-        if (s != GEIST_OK) {
-            return s;
-        }
+    struct metal_state     *st = be->state;
+    const enum geist_status s =
+            metal_ensure_tables(be, METAL_TABLES(metal_argmax_libs, metal_argmax_rows));
+    if (s != GEIST_OK) {
+        return s;
     }
     if (st->argmax_result_buffer == nullptr) {
         st->argmax_result_buffer = metal_msg_send_id_size_uint(st,
