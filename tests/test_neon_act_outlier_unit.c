@@ -42,6 +42,7 @@ int main(void) {
 
 #include "linear_ref.h"
 #include "quant.h"
+#include "neon_quant_wrappers.h"
 
 constexpr size_t N_IN    = 4096; /* >= 4096: the Q6_K n-tile repacks need it */
 constexpr size_t N_OUT   = 16;

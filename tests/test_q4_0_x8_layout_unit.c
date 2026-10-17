@@ -5,6 +5,7 @@
 #if defined(GEIST_BACKEND_CPU_NEON)
 
 #include "quant.h"
+#include "neon_quant_wrappers.h"
 
 #include <stdint.h>
 #include <stdlib.h>

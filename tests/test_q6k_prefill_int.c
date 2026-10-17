@@ -15,6 +15,7 @@
  * SKIPs cleanly if no GGUF model is reachable.
  */
 #include "quant.h"
+#include "neon_quant_wrappers.h"
 #include "gguf_reader.h"
 #include "test_helpers.h"
 

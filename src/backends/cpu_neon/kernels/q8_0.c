@@ -74,24 +74,6 @@ void linear_q8_0_decode_w8a8_pre(size_t       n_in,
     geist_par_for(n_out, q8_0_decode_rows, &job);
 }
 
-void linear_q8_0_decode_w8a8(size_t      n_in,
-                             size_t      n_out,
-                             const float x[static n_in],
-                             const void *w_q8,
-                             float       y[static n_out]) {
-    int8_t *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
-    float *x_scales = heap_alloc_array_aligned(float, geist_act_groups(n_in, GEIST_ACT_Q8_0_ELEMS));
-    if (x_q8 == nullptr || x_scales == nullptr) {
-        safe_free((void **) &x_q8);
-        safe_free((void **) &x_scales);
-        return;
-    }
-    quantize_x_q8_groups(n_in, GEIST_ACT_Q8_0_ELEMS, x, x_q8, x_scales, nullptr);
-    linear_q8_0_decode_w8a8_pre(n_in, n_out, x_scales, x_q8, w_q8, y);
-    safe_free((void **) &x_q8);
-    safe_free((void **) &x_scales);
-}
-
 #if defined(__ARM_NEON)
 /* Output rows [n0, n1) of linear_q8_0_w8a8_prefill_pre. */
 static void q8_0_prefill_rows(void *ctx, size_t n0, size_t n1) {
@@ -285,27 +267,4 @@ void linear_q8_0_w8a8_prefill_pre(size_t        m,
     (void) y;
     fprintf(stderr, "linear_q8_0_w8a8_prefill_pre: NEON required\n");
 #endif
-}
-
-void linear_q8_0_w8a8_prefill(
-        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q8, float *y) {
-    const size_t n_groups = geist_act_groups(n_in, GEIST_ACT_Q8_0_ELEMS);
-    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, m *n_in);
-    float       *x_scales = heap_alloc_array_aligned(float, m *n_groups);
-    if (x_q8 == nullptr || x_scales == nullptr) {
-        safe_free((void **) &x_q8);
-        safe_free((void **) &x_scales);
-        return;
-    }
-    for (size_t i = 0; i < m; i++) {
-        quantize_x_q8_groups(n_in,
-                             GEIST_ACT_Q8_0_ELEMS,
-                             x + i * n_in,
-                             x_q8 + i * n_in,
-                             x_scales + i * n_groups,
-                             nullptr);
-    }
-    linear_q8_0_w8a8_prefill_pre(m, n_in, n_out, x_q8, x_scales, w_q8, y);
-    safe_free((void **) &x_q8);
-    safe_free((void **) &x_scales);
 }
