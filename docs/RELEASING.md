@@ -61,7 +61,8 @@ and only then publishes: the Gitea release (which creates the tag at that SHA)
 and `latest/`.
 
 Run `make release-state-check` to verify the public postconditions again; the
-scheduled `release-state` workflow runs it daily.
+scheduled `release-state` workflow (`.gitea/workflows/release-state.yml`)
+runs it daily.
 
 ## Failure and retry
 

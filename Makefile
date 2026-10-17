@@ -118,7 +118,7 @@ TEST_BIN_DIR := $(BIN_DIR)/tests
 # with `make bench-small BENCH_OUT_DIR=...` to put them elsewhere.
 BENCH_OUT_DIR ?= $(HOME)/bench-geistlib/quality_perf
 # Overrides for the bench-* quality/perf suites; passed through via BENCH_PY
-# below (apple-perf.yml sets BENCH_GGUF in CI).
+# below.
 BENCH_GGUF ?=
 BENCH_THREADS ?=
 BENCH_REF_GGUF ?=
@@ -364,8 +364,8 @@ fetch-bench-model: $(BENCH_MODEL_PATH)
 
 # Gemma 4 E4B variant (4.6 GB) — the second gemma4 geometry (42 layers,
 # d_model 2560, 5+1 sliding pattern). Exists so the metadata-driven family
-# populator (#258) has an executing check; the weekly e4b-smoke workflow
-# fetches it, not the default test flow.
+# populator (#258) has an executing check; fetched on demand, not by the
+# default test flow.
 E4B_MODEL_DIR  ?= gguf_artifacts
 E4B_MODEL_FILE ?= gemma4-e4b-Q4_K_M.gguf
 E4B_MODEL_PATH := $(E4B_MODEL_DIR)/$(E4B_MODEL_FILE)

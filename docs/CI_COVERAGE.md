@@ -118,9 +118,9 @@ built and both tests skip cleanly in the unit suite.
 
 Model e2e on Metal is a separate tier. Every PR builds the fixture-gated
 `test_qwen35_metal_e2e_int`, but the macOS PR leg does not run the real-model
-suite. The weekly `gemma4-metal-smoke` workflow generates end to end with the
-E2B reference on a hosted macOS runner (#305–#307); Qwen35 Metal e2e is a
-manual, fixture-provisioned gate.
+suite. Gemma 4 and Qwen35 Metal e2e are manual, fixture-provisioned gates;
+the nightly `bench-matrix` workflow runs the E2B reference on Metal for speed
+only.
 
 ## Vulkan: software tier on every PR, hardware tier nightly
 

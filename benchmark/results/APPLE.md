@@ -112,12 +112,12 @@ bin/mac-omp/perf/tests/bench_perf_sweep --gguf model.gguf \
 
 The once-per-process `[weight-paths]` JSON reports M=1 and M>1 calls for every
 dtype, including explicit zeroes. The scheduled
-[`apple-perf.yml`](../../.github/workflows/apple-perf.yml) job runs the detailed
-suite weekly on Apple hardware, uploads raw provenance and gates on the ratio to
-llama.cpp measured in the same job (prefill ≥ 0.25×, decode ≥ 0.3×): an absolute
-floor saw 14.4 to 38.0 tok/s prefill from identical code on a hosted runner.
-Those are cliff guards for scalar fallback, `-O0` or lost parallelism; the
-interleaved local run remains the arbiter for single-digit drift.
+[`bench-matrix`](../../.gitea/workflows/bench-matrix.yml) workflow measures the
+Apple columns against llama.cpp in the same job and goes red when geist slowed
+while llama.cpp did not (an absolute floor once saw 14.4 to 38.0 tok/s prefill
+from identical code on a hosted runner). Those are cliff guards for scalar
+fallback, `-O0` or lost parallelism; the interleaved local run remains the
+arbiter for single-digit drift.
 
 ### Q4_0 regression attribution
 
