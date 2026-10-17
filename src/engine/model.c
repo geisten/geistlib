@@ -11,6 +11,7 @@
 
 #include "model.h"
 #include "arch_registry.h"
+#include "aux_file.h"
 #include "error.h"
 
 #include <geist_arch.h> /* arch_ops vtables the engine dispatches through */
@@ -188,52 +189,31 @@ model_load_undo(struct sp_bpe_tokenizer *sp, struct gguf_tokenizer *gg, struct m
     }
 }
 
+/* The directory holding the GGUF at `path` (heap; safe_free), or nullptr
+ * for a bare file name or on OOM. The tokenizer and the encoder towers
+ * look for their files there. */
+static char *gguf_dir(const char *path) {
+    const char *slash = strrchr(path, '/');
+    if (slash == nullptr) {
+        return nullptr;
+    }
+    const size_t dir_len = (size_t) (slash - path);
+    char        *dir     = heap_alloc_aligned(dir_len + 1, alignof(char));
+    if (dir != nullptr) {
+        memcpy(dir, path, dir_len);
+        dir[dir_len] = '\0';
+    }
+    return dir;
+}
+
 /* Find tokenizer.bin: $GEIST_TOKENIZER_PATH, then <gguf dir>/tokenizer.bin,
- * then ./tokenizer.bin and the Gemma 4 dev-tree fallbacks. */
+ * then ./tokenizer.bin. */
 static char *find_tokenizer_path(const char *gguf_path) {
-    /* 1. Env override */
-    const char *env = getenv("GEIST_TOKENIZER_PATH");
-    if (env != nullptr && env[0] != '\0') {
-        FILE *f = fopen(env, "rb");
-        if (f != nullptr) {
-            fclose(f);
-            return strdup(env);
-        }
-    }
-
-    /* 2. Same directory as the GGUF */
-    const char *slash = strrchr(gguf_path, '/');
-    if (slash != nullptr) {
-        size_t dir_len       = (size_t) (slash - gguf_path);
-        size_t candidate_len = dir_len + strlen("/tokenizer.bin") + 1;
-        char  *candidate     = heap_alloc_aligned(candidate_len, alignof(char));
-        if (candidate != nullptr) {
-            memcpy(candidate, gguf_path, dir_len);
-            memcpy(candidate + dir_len, "/tokenizer.bin", strlen("/tokenizer.bin") + 1);
-            FILE *f = fopen(candidate, "rb");
-            if (f != nullptr) {
-                fclose(f);
-                return candidate;
-            }
-            safe_free((void **) &candidate);
-        }
-    }
-
-    /* 3. Project default for Gemma 4 development setup. */
-    static const char *fallbacks[] = {
-            "./tokenizer.bin",
-            "../gemma-4-E2B-it/tokenizer.bin",
-            "../../gemma-4-E2B-it/tokenizer.bin",
-            nullptr,
-    };
-    for (size_t i = 0; fallbacks[i] != nullptr; i++) {
-        FILE *f = fopen(fallbacks[i], "rb");
-        if (f != nullptr) {
-            fclose(f);
-            return strdup(fallbacks[i]);
-        }
-    }
-    return nullptr;
+    static const char *const fallbacks[] = {"./tokenizer.bin", nullptr};
+    char                    *dir         = gguf_dir(gguf_path);
+    char *found = geist_find_aux_file("GEIST_TOKENIZER_PATH", dir, "tokenizer.bin", fallbacks);
+    safe_free((void **) &dir);
+    return found;
 }
 
 [[nodiscard]] enum geist_status
@@ -362,18 +342,7 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
 
     /* aux_search_root: directory containing the GGUF, used by both audio
      * and vision encoders to locate their standalone safetensors files. */
-    char *aux_root = nullptr;
-    {
-        const char *slash = strrchr(path, '/');
-        if (slash != nullptr) {
-            size_t dir_len = (size_t) (slash - path);
-            aux_root       = heap_alloc_aligned(dir_len + 1, alignof(char));
-            if (aux_root != nullptr) {
-                memcpy(aux_root, path, dir_len);
-                aux_root[dir_len] = '\0';
-            }
-        }
-    }
+    char *aux_root = gguf_dir(path);
 
     const char *text_only_env = getenv("GEIST_TEXT_ONLY");
     const bool  text_only     = text_only_env != nullptr && text_only_env[0] == '1';

@@ -7,7 +7,6 @@
  *   - $GEIST_AUDIO_MODEL_PATH / $GEIST_MEL_CONSTANTS_PATH env overrides
  *   - <aux_search_root>/audio_tower.safetensors / mel_constants.bin
  *   - ./audio_bench/ and ./audio_test_data/ (project default locations)
- *   - ../gemma-4-E2B-it/audio_tower.safetensors
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -15,6 +14,7 @@
 
 #include "audio_encoder.h"
 #include "encoder_internal.h" /* MEL_HOP, AUDIO_MAX_MEL_FRAMES, mel-mask helper */
+#include "aux_file.h"
 #include "heap.h"
 #include "mel_pipeline.h"
 
@@ -25,70 +25,32 @@
 #include <string.h>
 
 struct audio_conformer_state {
-    struct AudioEncoder *enc; /* weights + Conformer layers */
-    struct MelState     *mel; /* per-frame mel computation */
+    /* Weights, Conformer layers, and the mel pipeline (enc->mel) that both
+     * encode_pcm and the streaming path use. */
+    struct AudioEncoder *enc;
 };
-
-static char *find_file(const char        *env_name,
-                       const char        *aux_root,
-                       const char        *basename,
-                       const char *const *fallbacks) {
-    const char *env = env_name != nullptr ? getenv(env_name) : nullptr;
-    if (env != nullptr && env[0] != '\0') {
-        FILE *f = fopen(env, "rb");
-        if (f != nullptr) {
-            fclose(f);
-            return strdup(env);
-        }
-    }
-    if (aux_root != nullptr) {
-        size_t need = strlen(aux_root) + 1 + strlen(basename) + 1;
-        char  *cand = heap_alloc_aligned(need, alignof(char));
-        if (cand != nullptr) {
-            snprintf(cand, need, "%s/%s", aux_root, basename);
-            FILE *f = fopen(cand, "rb");
-            if (f != nullptr) {
-                fclose(f);
-                return cand;
-            }
-            safe_free((void **) &cand);
-        }
-    }
-    if (fallbacks != nullptr) {
-        for (size_t i = 0; fallbacks[i] != nullptr; i++) {
-            FILE *f = fopen(fallbacks[i], "rb");
-            if (f != nullptr) {
-                fclose(f);
-                return strdup(fallbacks[i]);
-            }
-        }
-    }
-    return nullptr;
-}
 
 static void *audio_conformer_state_create(struct geist_backend *be, const char *aux_root) {
     (void) be; /* the audio encoder allocates on its own, not through the backend */
 
     static const char *audio_fallbacks[] = {
             "./audio_bench/audio_tower.safetensors",
-            "../gemma-4-E2B-it/audio_tower.safetensors",
             "audio_tower.safetensors",
             nullptr,
     };
     static const char *mel_fallbacks[] = {
             "./audio_test_data/mel_constants.bin",
             "./mel_constants.bin",
-            "../gemma-4-E2B-it/mel_constants.bin",
             nullptr,
     };
 
-    char *audio_path = find_file(
+    char *audio_path = geist_find_aux_file(
             "GEIST_AUDIO_MODEL_PATH", aux_root, "audio_tower.safetensors", audio_fallbacks);
     if (audio_path == nullptr) {
         return nullptr;
     }
-    char *mel_path =
-            find_file("GEIST_MEL_CONSTANTS_PATH", aux_root, "mel_constants.bin", mel_fallbacks);
+    char *mel_path = geist_find_aux_file(
+            "GEIST_MEL_CONSTANTS_PATH", aux_root, "mel_constants.bin", mel_fallbacks);
     if (mel_path == nullptr) {
         safe_free((void **) &audio_path);
         return nullptr;
@@ -100,9 +62,12 @@ static void *audio_conformer_state_create(struct geist_backend *be, const char *
         safe_free((void **) &mel_path);
         return nullptr;
     }
-    struct MelState *mel = mel_create(mel_path);
+    /* The encoder owns it from here: its streaming path would otherwise
+     * build a second one from GEIST_MEL_CONSTANTS_PATH or the working
+     * directory, without aux_root. */
+    enc->mel = mel_create(mel_path);
     safe_free((void **) &mel_path);
-    if (mel == nullptr) {
+    if (enc->mel == nullptr) {
         audio_encoder_destroy(enc);
         return nullptr;
     }
@@ -110,11 +75,10 @@ static void *audio_conformer_state_create(struct geist_backend *be, const char *
     struct audio_conformer_state *st =
             heap_alloc_aligned(sizeof(*st), alignof(struct audio_conformer_state));
     if (st == nullptr) {
-        mel_destroy(mel);
         audio_encoder_destroy(enc);
         return nullptr;
     }
-    *st = (struct audio_conformer_state) {.enc = enc, .mel = mel};
+    *st = (struct audio_conformer_state) {.enc = enc};
     return st;
 }
 
@@ -123,9 +87,6 @@ static void audio_conformer_state_destroy(void *encoder_state) {
         return;
     }
     struct audio_conformer_state *st = encoder_state;
-    if (st->mel != nullptr) {
-        mel_destroy(st->mel);
-    }
     if (st->enc != nullptr) {
         audio_encoder_destroy(st->enc);
     }
@@ -198,7 +159,7 @@ static size_t audio_conformer_encode_pcm(void          *encoder_state,
         return 0;
     }
 
-    size_t got = pcm_to_mel(st->mel, pcm, n_samples, mel, n_frames);
+    size_t got = pcm_to_mel(st->enc->mel, pcm, n_samples, mel, n_frames);
     if (got != n_frames) {
         safe_free((void **) &mel);
         safe_free((void **) &mask);
