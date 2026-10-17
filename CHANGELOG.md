@@ -452,6 +452,13 @@ minor release.
   byte-identical SPIR-V for all nine `mm_legacy` users, so the `_spv.h`
   headers are unchanged.
 
+### Removed
+- **`geist_arch_ops_decoder.set_session_opts` (`geist_arch.h`,
+  EXPERIMENTAL).** Only a decoder arch without `session_alloc` used it, and
+  none exists: `session_alloc` / `session_free` are now required, and a
+  model whose arch registers neither is refused at load. The slots after
+  it move up by one pointer.
+
 ### Fixed
 
 - **Vulkan: lookup tables are no longer uploaded inside the forward pass

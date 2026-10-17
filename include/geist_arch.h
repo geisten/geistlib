@@ -28,10 +28,8 @@ extern "C" {
  *   `void *arch_state` — the MODEL: weights, geometry, precomputed
  *       tables. Immutable after state_create; shared by all sessions.
  *   `void *session`    — ONE inference stream's mutable state (KV cache,
- *       recurrent state, scratch, sampler). Minted by session_alloc. For architectures
- *       WITHOUT session_alloc the engine passes the arch_state itself
- *       as the session handle — such an arch's model is its one
- *       session.
+ *       recurrent state, scratch, sampler). Minted by session_alloc,
+ *       which every decoder arch provides.
  *
  * THREAD-SAFETY CONTRACT. Setup and teardown are single-threaded:
  * state_create/destroy and session_alloc/free must not run concurrently
@@ -53,7 +51,7 @@ struct geist_arch_ops_decoder {
     /* state_create: load the GGUF at gguf_path into a new arch_state on
      * `be`; nullptr on failure. opts carries load-time options
      * (geist_model_load_with_opts) and may be nullptr; sampler options
-     * arrive later via set_session_opts. */
+     * arrive later via session_alloc. */
     void *(*state_create)(struct geist_backend            *be,
                           const char                      *gguf_path,
                           const struct geist_session_opts *opts);
@@ -78,12 +76,6 @@ struct geist_arch_ops_decoder {
      * GEIST_E_UNSUPPORTED, when this build or backend has no gain path,
      * which callers must treat as "tuning unavailable", not an error. */
     enum geist_status (*gains)(void *arch_state, float **out, size_t *n);
-
-    /* Optional: apply session opts (sampler config) to the session; called
-     * from geist_session_create. nullptr = the architecture ignores them
-     * (greedy-only). May fail (sampler workspace allocation); the caller
-     * propagates. */
-    enum geist_status (*set_session_opts)(void *session, const struct geist_session_opts *opts);
 
     /* state_reset: drop the session's conversational state (KV, recurrent
      * state), keep weights. Used by geist_session_reset. */
@@ -172,10 +164,9 @@ struct geist_arch_ops_decoder {
      *   (e.g. a max_seq_len beyond what the model was created with).
      * session_free: tear down a session handle.
      *
-     * Both nullptr → architecture is single-session-per-model; the
-     * engine passes session == nullptr and the arch uses its default
-     * session. There is no attach: per-session ops receive their
-     * session explicitly on every call. */
+     * Both required: a model whose arch registers no pair is refused at
+     * load. There is no attach: per-session ops receive their session
+     * explicitly on every call. */
     void *(*session_alloc)(void *arch_state, const struct geist_session_opts *opts);
     void (*session_free)(void *arch_state, void *session);
 
