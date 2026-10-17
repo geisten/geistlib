@@ -155,7 +155,11 @@ static void w4a8_repack_rows(void *ctx, size_t m0, size_t m1) {
      * model destroy via heap_free / safe_free (GEIST_W_AUX_HEAP_OWNED). */
     w->aux_fp32 = (const float *) blob;
     w->aux_n    = (int32_t) blob_bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
+    /* m1 and mN read only the blob; raw is left to the geist_linear_ref
+     * fallback, which faults it back in. RAW_COLD lets the loader drop the
+     * source pages (#729), so a Q4_K matrix is resident once, not twice:
+     * Qwen3-30B-A3B Q4_K_M held 30 GB for an 18.6 GB file (#48). */
+    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK | GEIST_W_RAW_COLD;
     w->linear_m1 = cpu_x86_linear_q4k_m1;
     w->linear_mN = cpu_x86_linear_q4k_mN;
     return GEIST_OK;

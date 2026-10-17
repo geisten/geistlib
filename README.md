@@ -83,8 +83,9 @@ chmod +x geist
 ./geist model.gguf "your prompt" [max_new_tokens]
 ```
 
-Model families: Gemma 4 (text, vision, audio), Llama, Qwen3, Qwen3.5/3.6/3.8
-dense hybrids (incl. Ternary-Bonsai-2-27B) and BitNet b1.58. Downloads, sizes
+Model families: Gemma 4 (text, vision, audio), Llama, Qwen3, Qwen3-MoE
+(Qwen3-30B-A3B, CPU), Qwen3.5/3.6/3.8 dense hybrids (incl.
+Ternary-Bonsai-2-27B) and BitNet b1.58. Downloads, sizes
 and RAM needs: [`docs/MODELS.md`](docs/MODELS.md).
 
 ## Build from source

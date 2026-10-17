@@ -1,0 +1,17 @@
+/* Return the index of the first element of a[0..n) that is >= key, or n
+ * when every element is smaller. a is sorted ascending. */
+static size_t lower_bound(size_t n, const int a[static n], int key) {
+    size_t lo = 0, hi = n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (a[mid] < key)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo;
+}
+
+/* Count the elements of a[0..n) in [lo, hi). a is sorted ascending. */
+static size_t count_in_range(size_t n, const int a[static n], int lo, int hi) {
+    return

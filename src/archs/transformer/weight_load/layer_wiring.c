@@ -19,6 +19,7 @@
 
 #include "gguf_dequant.h"
 #include "gguf_reader.h"
+#include "checked.h"
 #include "heap.h"
 
 #include <geist.h>
@@ -81,6 +82,7 @@ load_layer_proj_rope_il(struct transformer_arch_state    *st,
                         size_t                            n_out,
                         size_t                            n_in,
                         size_t                            rope_il_head_dim,
+                        uint16_t                          weight_flags,
                         struct geist_tensor              *out_view,
                         struct geist_weight              *out_weight /* nullable */) {
 
@@ -129,6 +131,7 @@ load_layer_proj_rope_il(struct transformer_arch_state    *st,
                 .n_in       = (int32_t) n_in,
                 .n_out      = (int32_t) n_out,
                 .dtype      = (uint16_t) dm.dtype,
+                .flags      = weight_flags,
         };
         v->buffer_unmap(buf);
         if (v->resolve_weight != nullptr) {
@@ -203,6 +206,7 @@ load_layer_proj_rope_il(struct transformer_arch_state    *st,
                         .n_in       = (int32_t) n_in,
                         .n_out      = (int32_t) n_out,
                         .dtype      = (uint16_t) GEIST_DTYPE_F32,
+                        .flags      = weight_flags,
                 };
                 v->buffer_unmap(buf32);
                 rs = v->resolve_weight(be, out_weight);
@@ -224,7 +228,118 @@ load_layer_proj(struct transformer_arch_state    *st,
                 size_t                            n_in,
                 struct geist_tensor              *out_view,
                 struct geist_weight              *out_weight /* nullable */) {
-    return load_layer_proj_rope_il(st, gguf, L, name, n_out, n_in, 0, out_view, out_weight);
+    return load_layer_proj_rope_il(st, gguf, L, name, n_out, n_in, 0, 0, out_view, out_weight);
+}
+
+enum geist_status load_layer_matrix(struct transformer_arch_state    *st,
+                                    struct gguf_ctx                  *gguf,
+                                    struct transformer_layer_weights *L,
+                                    const char                       *name,
+                                    size_t                            n_out,
+                                    size_t                            n_in,
+                                    bool                              exact,
+                                    struct geist_tensor              *out_view,
+                                    struct geist_weight              *out_weight) {
+    return load_layer_proj_rope_il(st,
+                                   gguf,
+                                   L,
+                                   name,
+                                   n_out,
+                                   n_in,
+                                   0,
+                                   exact ? (uint16_t) GEIST_W_EXACT : 0,
+                                   out_view,
+                                   out_weight);
+}
+
+enum geist_status load_layer_experts(struct transformer_arch_state    *st,
+                                     struct gguf_ctx                  *gguf,
+                                     struct transformer_layer_weights *L,
+                                     const char                       *name,
+                                     size_t                            n_experts,
+                                     size_t                            n_out,
+                                     size_t                            n_in,
+                                     struct geist_tensor             **out_views,
+                                     struct geist_weight             **out_weights) {
+    struct geist_backend            *be = st->backend;
+    const struct geist_backend_vtbl *v  = be->desc->vtbl;
+    *out_views                          = nullptr;
+    *out_weights                        = nullptr;
+
+    size_t per = 0, total = 0;
+    if (n_experts == 0 || ckd_mul(&per, n_out, n_in) || ckd_mul(&total, per, n_experts)) {
+        geist_backend_set_error(be, GEIST_E_FORMAT, "transformer: '%s' has no valid shape", name);
+        return GEIST_E_FORMAT;
+    }
+    const struct gguf_tensor_t *t   = nullptr;
+    struct geist_buffer        *buf = nullptr;
+    enum geist_status s = load_tensor_to_buffer(st, gguf, name, total, WEIGHT_LINEAR, &t, &buf);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    if (layer_track_buf(L, buf) != 0) {
+        v->buffer_destroy(be, buf);
+        geist_backend_set_error(
+                be, GEIST_E_INTERNAL, "transformer: layer buffer list overflow on '%s'", name);
+        return GEIST_E_INTERNAL;
+    }
+    const struct dtype_map_entry dm = map_gguf_dtype(t->dtype);
+    if (!dm.supported || t->nbytes % n_experts != 0) {
+        geist_backend_set_error(be,
+                                GEIST_E_UNSUPPORTED,
+                                "transformer: experts '%s' (%s) cannot be split into %zu",
+                                name,
+                                gguf_dtype_name(t->dtype),
+                                n_experts);
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* Every quantized format packs whole rows, so expert e's [n_out, n_in]
+     * matrix is the e-th equal slice of the tensor's bytes. */
+    const size_t         eb      = t->nbytes / n_experts;
+    struct geist_tensor *views   = heap_calloc_array_aligned(struct geist_tensor, n_experts);
+    struct geist_weight *weights = heap_calloc_array_aligned(struct geist_weight, n_experts);
+    *out_views                   = views;
+    *out_weights                 = weights;
+    L->moe_n_experts             = n_experts; /* what the layer teardown walks */
+    if (views == nullptr || weights == nullptr) {
+        geist_backend_set_error(be, GEIST_E_OOM, "transformer: no memory for experts '%s'", name);
+        return GEIST_E_OOM;
+    }
+    const uint8_t *host = (const uint8_t *) v->buffer_map(buf);
+    if (host == nullptr) {
+        geist_backend_set_error(
+                be, GEIST_E_BACKEND, "transformer: buffer_map(%s) returned null", name);
+        return GEIST_E_BACKEND;
+    }
+    for (size_t e = 0; e < n_experts && s == GEIST_OK; e++) {
+        views[e] = make_view_2d(buf, dm.dtype, dm.layout, (int64_t) n_out, (int64_t) n_in);
+        views[e].offset += (int64_t) (e * eb);
+        weights[e] = (struct geist_weight) {
+                .raw        = host + e * eb,
+                .raw_nbytes = eb,
+                .n_in       = (int32_t) n_in,
+                .n_out      = (int32_t) n_out,
+                .dtype      = (uint16_t) dm.dtype,
+        };
+        if (v->resolve_weight == nullptr) {
+            continue;
+        }
+        be->calibration.locked = true;
+        s                      = v->resolve_weight(be, &weights[e]);
+        if (s == GEIST_E_UNSUPPORTED) {
+            geist_backend_set_error(be,
+                                    GEIST_E_UNSUPPORTED,
+                                    "transformer: %s has no %s linear for experts '%s'",
+                                    be->desc->name,
+                                    gguf_dtype_name(t->dtype),
+                                    name);
+        } else if (s == GEIST_OK && (weights[e].flags & GEIST_W_RAW_COLD) != 0) {
+            /* A host repack the kernels read instead of the source (#729). */
+            gguf_release_range(gguf, weights[e].raw, eb);
+        }
+    }
+    v->buffer_unmap(buf);
+    return s;
 }
 
 /* Read the layer's per-layer output scalar (1-element F32 tensor). The
@@ -422,7 +537,7 @@ load_layer_proj(struct transformer_arch_state    *st,
      * every other family (#464). */
     const size_t rope_il_hd = st->config.rope_interleaved ? L->head_dim : 0;
     s                       = load_layer_proj_rope_il(
-            st, gguf, L, path, q_rows, st->d_model, rope_il_hd, &L->q_proj, &L->q_proj_w);
+            st, gguf, L, path, q_rows, st->d_model, rope_il_hd, 0, &L->q_proj, &L->q_proj_w);
     if (s != GEIST_OK) {
         return s;
     }
@@ -488,7 +603,7 @@ load_layer_proj(struct transformer_arch_state    *st,
     if (!L->is_kv_shared) {
         LP("attn_k.weight");
         s = load_layer_proj_rope_il(
-                st, gguf, L, path, L->kv_out, st->d_model, rope_il_hd, &L->k_proj, &L->k_proj_w);
+                st, gguf, L, path, L->kv_out, st->d_model, rope_il_hd, 0, &L->k_proj, &L->k_proj_w);
         if (s != GEIST_OK) {
             return s;
         }
@@ -516,47 +631,57 @@ load_layer_proj(struct transformer_arch_state    *st,
         L->v_proj_w = (struct geist_weight) {0};
     }
 
-    /* BitNet SQUARED_RELU FFN omits gate_proj entirely: the FFN is
-     *   y = down_proj( relu(up_proj(x))² ).
-     * GEGLU / SWIGLU families load gate_proj. */
-    if (st->config.ffn_activation != GEIST_FFN_SQUARED_RELU) {
-        LP("ffn_gate.weight");
+    /* A mixture-of-experts layer has no dense FFN: its family's wire_layer
+     * loads the router and the experts (load_layer_experts). */
+    if (st->config.moe_n_experts == 0) {
+        /* BitNet SQUARED_RELU FFN omits gate_proj entirely: the FFN is
+         *   y = down_proj( relu(up_proj(x))² ).
+         * GEGLU / SWIGLU families load gate_proj. */
+        if (st->config.ffn_activation != GEIST_FFN_SQUARED_RELU) {
+            LP("ffn_gate.weight");
+            s = load_layer_proj(st,
+                                gguf,
+                                L,
+                                path,
+                                L->intermediate,
+                                st->d_model,
+                                &L->gate_proj,
+                                &L->gate_proj_w);
+            if (s != GEIST_OK) {
+                return s;
+            }
+        } else {
+            L->gate_proj   = (struct geist_tensor) {0};
+            L->gate_proj_w = (struct geist_weight) {0};
+        }
+        LP("ffn_up.weight");
         s = load_layer_proj(
-                st, gguf, L, path, L->intermediate, st->d_model, &L->gate_proj, &L->gate_proj_w);
+                st, gguf, L, path, L->intermediate, st->d_model, &L->up_proj, &L->up_proj_w);
         if (s != GEIST_OK) {
             return s;
         }
-    } else {
-        L->gate_proj   = (struct geist_tensor) {0};
-        L->gate_proj_w = (struct geist_weight) {0};
-    }
-    LP("ffn_up.weight");
-    s = load_layer_proj(
-            st, gguf, L, path, L->intermediate, st->d_model, &L->up_proj, &L->up_proj_w);
-    if (s != GEIST_OK) {
-        return s;
-    }
 
-    /* BitNet SubLN: extra RMSNorm between the FFN activation output and
-     * down_proj. Vector length is intermediate (FFN inner dim).
-     *
-     * As with attn_sub_norm above, the BitNet embedding models' norm on
-     * down_proj's input has the same shape and position and loads here. */
-    if (st->config.has_projection_input_norms) {
-        LP("ffn_down_norm_in.weight");
-        s = load_layer_norm(st, gguf, L, path, L->intermediate, &L->ffn_sub_norm);
+        /* BitNet SubLN: extra RMSNorm between the FFN activation output and
+         * down_proj. Vector length is intermediate (FFN inner dim).
+         *
+         * As with attn_sub_norm above, the BitNet embedding models' norm on
+         * down_proj's input has the same shape and position and loads here. */
+        if (st->config.has_projection_input_norms) {
+            LP("ffn_down_norm_in.weight");
+            s = load_layer_norm(st, gguf, L, path, L->intermediate, &L->ffn_sub_norm);
+            if (s != GEIST_OK) {
+                return s;
+            }
+        } else {
+            L->ffn_sub_norm = (struct geist_tensor) {0}; /* a family's wire_layer may fill it */
+        }
+
+        LP("ffn_down.weight");
+        s = load_layer_proj(
+                st, gguf, L, path, st->d_model, L->intermediate, &L->down_proj, &L->down_proj_w);
         if (s != GEIST_OK) {
             return s;
         }
-    } else {
-        L->ffn_sub_norm = (struct geist_tensor) {0}; /* a family's wire_layer may fill it */
-    }
-
-    LP("ffn_down.weight");
-    s = load_layer_proj(
-            st, gguf, L, path, st->d_model, L->intermediate, &L->down_proj, &L->down_proj_w);
-    if (s != GEIST_OK) {
-        return s;
     }
 
     /* Per-layer PLE projections (inp_gate, proj) + layer

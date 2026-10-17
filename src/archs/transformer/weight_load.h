@@ -36,6 +36,34 @@
                                                struct gguf_ctx                  *gguf,
                                                struct transformer_layer_weights *L);
 
+/* Load a family's own per-layer projection `name` ([n_out, n_in], any
+ * supported dtype) and resolve its kernel, like load_one_layer's own. With
+ * `exact` the backend must keep the weight's precision (GEIST_W_EXACT). */
+[[nodiscard]] enum geist_status load_layer_matrix(struct transformer_arch_state    *st,
+                                                  struct gguf_ctx                  *gguf,
+                                                  struct transformer_layer_weights *L,
+                                                  const char                       *name,
+                                                  size_t                            n_out,
+                                                  size_t                            n_in,
+                                                  bool                              exact,
+                                                  struct geist_tensor              *out_view,
+                                                  struct geist_weight              *out_weight);
+
+/* Load the 3-D expert tensor `name`, [n_experts][n_out][n_in] in row-major
+ * order, as n_experts projections: one buffer (tracked by L), a heap array
+ * of n_experts views into it and one of resolved weights, both owned by L
+ * (freed with the layer). Fails when a backend has no kernel for the
+ * experts' dtype, naming the tensor. */
+[[nodiscard]] enum geist_status load_layer_experts(struct transformer_arch_state    *st,
+                                                   struct gguf_ctx                  *gguf,
+                                                   struct transformer_layer_weights *L,
+                                                   const char                       *name,
+                                                   size_t                            n_experts,
+                                                   size_t                            n_out,
+                                                   size_t                            n_in,
+                                                   struct geist_tensor             **out_views,
+                                                   struct geist_weight             **out_weights);
+
 /* Load one trailing Qwen3.5 MTP block. The regular attention/FFN block and
  * its nextn-specific fusion/norm tensors share one owning-buffer list. */
 [[nodiscard]] enum geist_status load_mtp_layer(struct transformer_arch_state        *st,

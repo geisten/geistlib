@@ -229,6 +229,19 @@ struct geist_arch_config {
      * set — see exec_plan.c. */
     bool has_projection_input_norms;
 
+    /* ---- Mixture of experts (#48). moe_n_experts == 0 is a dense FFN.
+     * Otherwise the layer has no ffn_gate/up/down: a router (ffn_gate_inp)
+     * scores moe_n_experts expert FFNs per token, softmax over all of them,
+     * keeps the moe_n_used best and, when moe_norm_topk, renormalises their
+     * weights to sum 1 (blk_moe_ffn). Each expert is a SwiGLU FFN of width
+     * transformer_layer_weights.intermediate. */
+    size_t moe_n_experts;
+    size_t moe_n_used;
+    bool   moe_norm_topk;
+    /* A family refuses more experts than this at load (blk_moe_ffn lists
+     * the active experts of a layer on the stack). */
+#define GEIST_MOE_MAX_EXPERTS 512
+
     /* ---- Pooling. A model with a pooling kind other than NONE is an
      * EMBEDDING model: it has no LM head, emits no tokens, and its forward
      * pass ends at output_norm + pooling + L2 normalisation instead of a

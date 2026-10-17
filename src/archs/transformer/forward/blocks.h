@@ -140,3 +140,20 @@ blk_relu_sq(struct transformer_layer_forward_ctx *ctx, size_t n, struct geist_bu
  * with the plan-bound fusions (fused front, whole-FFN tile, gelu*mul). */
 [[nodiscard]] enum geist_status blk_ffn_geglu(struct transformer_layer_forward_ctx *ctx,
                                               struct geist_buffer                  *out);
+
+/* ---- Mixture of experts (forward/moe.c, #48) ---------------------------- */
+
+/* Router top-k for one token: softmax over the n logits, the k largest
+ * probabilities ranked (probability descending, expert id ascending), into
+ * ids[0..k) and w[0..k) (plain pointers: k may be 0, which is refused);
+ * renormalised to sum 1 when `norm`. Returns false,
+ * leaving ids / w unspecified, when k is 0 or exceeds n or a logit is not
+ * finite. */
+[[nodiscard]] bool moe_route_topk(
+        size_t n, size_t k, bool norm, const float logits[static n], uint32_t *ids, float *w);
+
+/* Pre-norm mixture-of-experts SwiGLU FFN with residual:
+ *   h_out = h_post_attn + sum_{e in topk} w_e * down_e(silu(gate_e(x)) * up_e(x)),
+ *   x = rmsnorm(h_post_attn)
+ * on the layer's moe_router / moe_{gate,up,down}; routing on the host. */
+[[nodiscard]] enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx);

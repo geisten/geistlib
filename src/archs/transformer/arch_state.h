@@ -141,6 +141,17 @@ struct transformer_layer_weights {
     struct geist_tensor dn_out;     /* [d_model, value_dim] out_proj */
     struct geist_weight dn_qkv_w, dn_z_w, dn_beta_w, dn_alpha_w, dn_out_w;
 
+    /* ---- Mixture of experts (config.moe_n_experts > 0; zero otherwise).
+     * moe_router [moe_n_experts, HIDDEN]. The experts are heap arrays of
+     * moe_n_experts entries per projection, views into the GGUF's 3-D
+     * ffn_{gate,up,down}_exps tensors (one buffer each, in bufs[]):
+     * gate/up [intermediate, HIDDEN], down [HIDDEN, intermediate]. */
+    size_t               moe_n_experts; /* entries in each expert array */
+    struct geist_tensor  moe_router;
+    struct geist_weight  moe_router_w;
+    struct geist_tensor *moe_gate, *moe_up, *moe_down;
+    struct geist_weight *moe_gate_w, *moe_up_w, *moe_down_w;
+
     /* ---- Owning buffer handles, freed by destroy. NULL slots are "not
      * allocated". A BitNet-embedding block loads 20 tensors (7 projections,
      * 13 norms); overflowing this list is a hard load failure. */
@@ -388,6 +399,25 @@ struct transformer_arch_session {
     float               *mtp_target_shifted; /* [m_max, H], h shifted right */
     float               *mtp_txn_pending_h;  /* pre-verify pending h snapshot */
     size_t               mtp_txn_base_len;
+
+    /* ---- Mixture of experts (config.moe_n_experts > 0; null otherwise).
+     * Device scratch: router logits [m_max, n_experts] and the weighted
+     * expert sum [m_max, d_model]. Host: every selection's input row,
+     * gate, up and output, bucketed by expert; each row's chosen experts
+     * and weights
+     * [m_max * n_used], and per expert its selections (flat index
+     * row * n_used + slot into moe_ids / moe_wts), bucketed in moe_rows
+     * [m_max * n_used] by moe_row_start [n_experts + 1]. */
+    struct geist_buffer *moe_logits;
+    struct geist_buffer *moe_acc;
+    float               *moe_xg; /* [m_max * n_used, d_model], rows bucketed by expert */
+    float               *moe_g;  /* [m_max * n_used, intermediate] */
+    float               *moe_u;  /* [m_max * n_used, intermediate] */
+    float               *moe_y;  /* [m_max * n_used, d_model] */
+    uint32_t            *moe_ids;
+    float               *moe_wts;
+    uint32_t            *moe_rows;
+    size_t              *moe_row_start;
 
     /* ---- Last-decode prediction (consumed by next decode_step). */
     bool logits_valid;

@@ -9,6 +9,23 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Qwen3-MoE (`qwen3moe`, Qwen3-30B-A3B) on the CPU backends (#48).** A
+  family unit (`families/qwen3moe.c`) composed of Qwen3's attention and a
+  new shared block, `blk_moe_ffn` (`forward/moe.c`): softmax router over
+  all experts, top-k, renormalised weights, the rows routed to one expert
+  gathered so its projections run as one m-row linear. The loader slices
+  each 3-D expert tensor into per-expert views (`load_layer_experts`, no
+  copy). Against llama.cpp `d81235049` on the same GGUF, cpu_neon: same
+  top-1 on three prompts, JS 0.00005-0.0054 nats. With an FP32 KV cache,
+  per-position JS against the exact reference equals llama.cpp's; cpu_x86's
+  default INT8 KV cache triples it on this MoE
+  (`benchmark/results/QWEN3MOE.md`). GPU backends refuse the
+  model at load for now; an unsupported router (non-softmax gating, a
+  shared expert) is refused by name. Tools: `tools/dump_geist_greedy`,
+  `benchmark/dump_llamacpp_greedy.c`, `tools/compare_logits.py`.
+- **`GEIST_W_EXACT` (`geist_weight.h`, EXPERIMENTAL).** The loader marks a
+  weight whose precision must be kept (the MoE router); `cpu_x86` keeps such
+  an F32 weight on its exact path instead of W8A8.
 - **`make FAMILIES="..."` and `make TOWERS=0`: build only the model families
   you need (#37).** `FAMILIES` (default: all of bitnet gemma3 gemma4 llama
   qwen3 qwen35) selects which `families/<name>.c` units are compiled and
@@ -43,6 +60,10 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **cpu_x86: a repacked Q4_K matrix no longer stays resident twice.** The
+  Q4_K kernels read only the repack, so it is marked `GEIST_W_RAW_COLD` and
+  the loader drops the source pages (#729). 9950X peak RSS, logits byte-
+  identical: Llama 3.2 3B Q4_K_M 4.0 -> 2.9 GB, Qwen3-30B-A3B 31.1 -> 17.4 GB.
 - **The last family names leave shared code (#37).** Prism rotation support,
   the large-model prefill chunk and the audio/vision towers are now family
   capabilities (`rotation`, `prefill_delta`, `towers` in
