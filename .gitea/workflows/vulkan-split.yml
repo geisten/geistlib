@@ -33,6 +33,10 @@ on:
         description: "llama.cpp commit for llama-bench (empty: skip llama.cpp)"
         type: string
         default: d81235049384534c167caea52b85a694f6103d14
+      gpu_only:
+        description: "also every layer on the GPU (weights past VRAM spill to host memory, #466)"
+        type: boolean
+        default: true
       correctness:
         description: "run test_layer_split_int on the device first"
         type: boolean
@@ -56,6 +60,7 @@ jobs:
       SPLITS: ${{ inputs.splits }}
       LLAMA_PIN: ${{ inputs.llama_pin }}
       CYCLES: ${{ inputs.cycles }}
+      GPU_ONLY: ${{ inputs.gpu_only }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -98,6 +103,7 @@ jobs:
           python3 tools/bench_layer_split.py \
             --bench bin/linux/release/tests/bench_perf_sweep --gguf "$MODEL" \
             --cpu cpu_x86 --gpu vulkan --splits "$SPLITS" --cycles "$CYCLES" \
+            $([ "$GPU_ONLY" = true ] && echo --gpu-only) \
             ${LLAMA_BENCH:+--llama-bench "$LLAMA_BENCH" --llama-nopo} --out-dir split-out
       - name: Job summary
         if: always()
