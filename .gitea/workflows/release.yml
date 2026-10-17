@@ -125,24 +125,8 @@ jobs:
             set -e
             apk add --no-cache build-base linux-headers
             make TARGET=linux CC=gcc GEMM_PROVIDER=native lib
-            mkdir -p dist/libgeist-linux-arm64/include
-            cp lib/linux/release/libgeist.a dist/libgeist-linux-arm64/
-            cp include/*.h dist/libgeist-linux-arm64/include/
-            cp LICENSE dist/libgeist-linux-arm64/
+            sh scripts/package-sdk.sh libgeist-linux-arm64 lib/linux/release -fopenmp -lm
             d=dist/libgeist-linux-arm64
-            # --whole-archive: a static link only pulls referenced objects, so a
-            # plain smoke link can pass while an object the smoke never reaches
-            # still has unresolved deps (geistlib#144). Forcing every object in
-            # makes the link itself assert the full archive resolves with the
-            # documented consumer flags.
-            cc -std=c23 -I "$d/include" examples/embed_smoke.c \
-              -Wl,--whole-archive "$d/libgeist.a" -Wl,--no-whole-archive \
-              -fopenmp -lm -o /tmp/sdk_smoke
-            /tmp/sdk_smoke
-            cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/agent_smoke
-            /tmp/agent_smoke
-            cc -std=c23 -I "$d/include" examples/runtime_contract_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/runtime_smoke
-            /tmp/runtime_smoke
 
             # ---- CLI binaries ------------------------------------------------
             # geist-linux-arm64: the slim bring-your-own-GGUF CLI (<1 MB).
@@ -186,20 +170,8 @@ jobs:
             set -e
             apk add --no-cache build-base linux-headers
             make TARGET=linux CC=gcc BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native lib
-            mkdir -p dist/libgeist-linux-x86_64/include
-            cp lib/linux/release/libgeist.a dist/libgeist-linux-x86_64/
-            cp include/*.h dist/libgeist-linux-x86_64/include/
-            cp LICENSE dist/libgeist-linux-x86_64/
+            sh scripts/package-sdk.sh libgeist-linux-x86_64 lib/linux/release -fopenmp -lm
             d=dist/libgeist-linux-x86_64
-            # --whole-archive: see the arm64 job (geistlib#144).
-            cc -std=c23 -I "$d/include" examples/embed_smoke.c \
-              -Wl,--whole-archive "$d/libgeist.a" -Wl,--no-whole-archive \
-              -fopenmp -lm -o /tmp/sdk_smoke
-            /tmp/sdk_smoke
-            cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/agent_smoke
-            /tmp/agent_smoke
-            cc -std=c23 -I "$d/include" examples/runtime_contract_smoke.c "$d/libgeist.a" -fopenmp -lm -o /tmp/runtime_smoke
-            /tmp/runtime_smoke
 
             # ---- CLI binaries — mirror of the arm64 job (geistlib#217) ------
             # geist-linux-x86_64: the slim bring-your-own-GGUF CLI. Fully
@@ -240,29 +212,14 @@ jobs:
       - name: Build + smoke + package libgeist SDK
         run: |
           make TARGET=mac-omp CC=clang GEIST_STATIC_OMP=1 lib
-          mkdir -p dist/libgeist-macos-arm64/include
-          cp lib/mac-omp/release/libgeist.a dist/libgeist-macos-arm64/
-          cp include/*.h dist/libgeist-macos-arm64/include/
-          cp LICENSE dist/libgeist-macos-arm64/
-          d=dist/libgeist-macos-arm64
           # The archive holds geist's objects, not the OpenMP runtime: an .a is
           # not a link. GEIST_STATIC_OMP=1 governs how geistlib links its OWN
           # binaries, so a consumer of the packaged SDK still supplies libomp
           # and Accelerate itself — the same flags mk/target-mac-omp.mk uses.
           # Linking the smokes the way a real consumer must is the whole point
           # of a packaging gate (geistlib#144).
-          omp=$(brew --prefix libomp)
-          link="-framework Accelerate $omp/lib/libomp.a -lm"
-          # -force_load = ld64's --whole-archive: every object must resolve
-          # with the documented consumer flags, not just the ones the smoke
-          # happens to reference (geistlib#144).
-          cc -std=c23 -I "$d/include" examples/embed_smoke.c \
-            -Wl,-force_load,"$d/libgeist.a" $link -o /tmp/sdk_smoke
-          /tmp/sdk_smoke
-          cc -std=c23 -I "$d/include" examples/agent_contract_smoke.c "$d/libgeist.a" $link -o /tmp/agent_smoke
-          /tmp/agent_smoke
-          cc -std=c23 -I "$d/include" examples/runtime_contract_smoke.c "$d/libgeist.a" $link -o /tmp/runtime_smoke
-          /tmp/runtime_smoke
+          sh scripts/package-sdk.sh libgeist-macos-arm64 lib/mac-omp/release \
+            -framework Accelerate "$(brew --prefix libomp)/lib/libomp.a" -lm
           tar -C dist -czf libgeist-macos-arm64.tar.gz libgeist-macos-arm64
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
