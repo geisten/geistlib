@@ -2749,6 +2749,7 @@ const struct geist_backend_descriptor geist_backend_vulkan = {
         .prims       = &vk_prims,
         .fused       = &vk_fused,
         .caps        = {.kv_f16_attention           = true,
+                        .kv_f16_by_default          = true,
                         .batched_submit             = true,
                         .weights_need_backend_arena = true,
                         .weights_device_copy        = true,

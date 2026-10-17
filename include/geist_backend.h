@@ -731,6 +731,12 @@ struct geist_backend_caps {
      * FP32). Requires fused->kv_append_f16 to be usable. */
     bool kv_f16_attention;
 
+    /* GEIST_KV_AUTO turns an FP32 cache into F16 on its own (the GPUs).
+     * A backend that reads F16 K/V without this bit gives F16 only to a
+     * session or a model family that asks for it (#48). Consumer:
+     * KV-mode resolution. */
+    bool kv_f16_by_default;
+
     /* Batched-submit pipeline (GPU): host round-trips stall it.
      * Consumers: spec head disables itself; weight loading prefers the
      * backend-arena mode over mmap-alias; KV-mode resolution defaults to
