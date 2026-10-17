@@ -28,7 +28,7 @@ on:
       splits:
         description: "layers on the GPU, comma-separated"
         type: string
-        default: "10,20,24,28,32"
+        default: "8,16,20,24,26"
       llama_pin:
         description: "llama.cpp commit for llama-bench (empty: skip llama.cpp)"
         type: string
@@ -78,6 +78,9 @@ jobs:
         if: env.LLAMA_PIN != ''
         run: echo "LLAMA_BENCH=$(scripts/ensure-llama-bench.sh vulkan ggml-org/llama.cpp "$LLAMA_PIN")" >> "$GITHUB_ENV"
       - name: Split correctness on the device (reported)
+        # A split that does not fit the card fails here with GEIST_E_OOM;
+        # that is a result to read, not a reason to skip the measurement.
+        continue-on-error: true
         run: |
           set -eo pipefail
           . scripts/gpu-lock.sh
