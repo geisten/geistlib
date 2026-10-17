@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <geist_types.h>
 
@@ -59,6 +60,18 @@ static inline void *xmalloc(size_t n) {
         abort();
     }
     return p;
+}
+
+/* Monotonic clock for timing intervals in tests and benchmarks. */
+[[nodiscard]] static inline double geist_test_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec / 1e6;
+}
+[[nodiscard]] static inline double geist_test_now_s(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double) ts.tv_sec + (double) ts.tv_nsec * 1e-9;
 }
 
 /* ---- Exit codes (automake-compatible) ----------------------------------- */

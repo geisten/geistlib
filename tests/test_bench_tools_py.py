@@ -22,6 +22,7 @@ def load_module(name: str, relative: str):
 
 quality = load_module("bench_quality_perf", "tools/bench_quality_perf.py")
 apple_ab = load_module("bench_mac_ab", "tools/bench_mac_ab.py")
+bench_host = sys.modules["bench_host"]
 revision_ab = load_module("bench_revision_ab", "tools/bench_revision_ab.py")
 perf_gate = load_module("perf_gate", "benchmark/perf_gate.py")
 
@@ -106,13 +107,16 @@ class BenchmarkToolsTest(unittest.TestCase):
             self.assertIn(row, documentation)
 
     def test_quiet_timeout_is_not_reset_after_failed_cooldown(self):
-        loads = iter([(1.0, 0.1), (1.0, 0.1), (3.0, 0.3), (3.0, 0.3)])
+        states = iter([{"load_1m": 1.0, "load_per_core": 0.1}, {"load_1m": 1.0, "load_per_core": 0.1},
+                       {"load_1m": 3.0, "load_per_core": 0.3}, {"load_1m": 3.0, "load_per_core": 0.3}])
         clocks = iter([100.0, 100.0, 131.0, 151.0])
-        with mock.patch.object(apple_ab, "load_per_core", side_effect=loads), \
-             mock.patch.object(apple_ab.time, "monotonic", side_effect=clocks), \
-             mock.patch.object(apple_ab.time, "sleep"):
+        gate = {"max_load_per_core": 0.2, "settle_seconds": 30, "cooldown_seconds": 60,
+                "timeout_seconds": 50}
+        with mock.patch.object(bench_host, "machine_state", side_effect=states), \
+             mock.patch.object(bench_host.time, "monotonic", side_effect=clocks), \
+             mock.patch.object(bench_host.time, "sleep"):
             with self.assertRaises(TimeoutError):
-                apple_ab.wait_for_quiet(0.2, 30, 60, 50)
+                apple_ab.wait_for_quiet(gate)
 
     def test_provenance_hashes_model_and_binary(self):
         with tempfile.TemporaryDirectory() as directory:

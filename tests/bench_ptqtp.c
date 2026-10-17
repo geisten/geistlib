@@ -17,18 +17,12 @@
 #include "gguf_ptqtp.h"
 #include "quant.h"
 #include "ptqtp_kernel.h"
+#include "test_helpers.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
-
-static double now_ms(void) {
-    struct timeval tv;
-    gettimeofday(&tv, nullptr);
-    return (double) tv.tv_sec * 1000.0 + (double) tv.tv_usec / 1000.0;
-}
 
 /* Kernel variants for A/B comparison. */
 typedef enum { KERNEL_FP32_ALPHA, KERNEL_FP16_ALPHA } kernel_variant_t;
@@ -73,19 +67,19 @@ static void bench_one(const struct ptqtp_ctx *ctx,
                     n_in, n_out, gs, x_q8, scale_x, t->trits, t->alpha_fp32, y);                \
     } while (0)
 
-    const double tw = now_ms();
+    const double tw = geist_test_now_ms();
     CALL_KERNEL();
-    const double single_ms = now_ms() - tw;
+    const double single_ms = geist_test_now_ms() - tw;
     int          n_iter    = (int) ((target_sec * 1000.0) / (single_ms + 0.001)) + 5;
     if (n_iter < 3)
         n_iter = 3;
     if (n_iter > 100000)
         n_iter = 100000;
 
-    const double t0 = now_ms();
+    const double t0 = geist_test_now_ms();
     for (int it = 0; it < n_iter; it++)
         CALL_KERNEL();
-    const double dt_ms_total = now_ms() - t0;
+    const double dt_ms_total = geist_test_now_ms() - t0;
     const double dt_ms       = dt_ms_total / n_iter;
     const double gbps        = (double) bytes_per_call / (dt_ms * 1e6);
 

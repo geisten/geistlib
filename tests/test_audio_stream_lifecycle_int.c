@@ -27,14 +27,6 @@
 
 static int g_fail = 0;
 
-#define CHECK(cond, what)                          \
-    do {                                           \
-        if (!(cond)) {                             \
-            fprintf(stderr, "FAIL: %s\n", (what)); \
-            g_fail = 1;                            \
-        }                                          \
-    } while (0)
-
 /* A second of quiet 16 kHz PCM with a little signal in it, so the encoder
  * has something to buffer. */
 enum { N_SAMPLES = 16000 };
@@ -90,19 +82,20 @@ int main(void) {
         geist_backend_destroy(be);
         return GEIST_TEST_SKIP;
     }
-    CHECK(s == GEIST_OK, "audio_begin on a fresh session");
+    g_fail |= geist_expect(s == GEIST_OK, "audio_begin on a fresh session");
 
     /* Re-opening an already-open turn is a state error, not a second
      * stream_begin that silently resets the first. */
-    CHECK(geist_session_audio_begin(probe) == GEIST_E_INVALID_STATE,
-          "audio_begin twice must be refused");
+    g_fail |= geist_expect(geist_session_audio_begin(probe) == GEIST_E_INVALID_STATE,
+                           "audio_begin twice must be refused");
 
     /* ---- destroy mid-turn ----------------------------------------------
      * The main case: push audio, then destroy without ever
      * calling end. The scratch must be freed (LSan) and the encoder
      * stream must be closed — which the next section proves by opening a
      * new one. */
-    CHECK(geist_session_audio_push(probe, N_SAMPLES, pcm) == GEIST_OK, "audio_push mid-turn");
+    g_fail |= geist_expect(geist_session_audio_push(probe, N_SAMPLES, pcm) == GEIST_OK,
+                           "audio_push mid-turn");
     geist_session_destroy(probe);
 
     /* ---- the encoder is usable again ------------------------------------
@@ -111,23 +104,27 @@ int main(void) {
      * to a normal end, which is the observable form of "the stream was
      * actually closed". */
     struct geist_session *sess = new_session(model, be);
-    CHECK(sess != nullptr, "second session created");
+    g_fail |= geist_expect(sess != nullptr, "second session created");
     if (sess != nullptr) {
-        CHECK(geist_session_audio_begin(sess) == GEIST_OK, "audio_begin after a destroyed turn");
-        CHECK(geist_session_audio_push(sess, N_SAMPLES, pcm) == GEIST_OK, "audio_push");
+        g_fail |= geist_expect(geist_session_audio_begin(sess) == GEIST_OK,
+                               "audio_begin after a destroyed turn");
+        g_fail |= geist_expect(geist_session_audio_push(sess, N_SAMPLES, pcm) == GEIST_OK,
+                               "audio_push");
         /* poll is best-effort: it may legitimately have nothing ready. */
         const enum geist_status ps = geist_session_audio_poll(sess);
-        CHECK(ps == GEIST_OK, "audio_poll during a turn");
-        CHECK(geist_session_audio_end(sess) == GEIST_OK, "audio_end completes the turn");
+        g_fail |= geist_expect(ps == GEIST_OK, "audio_poll during a turn");
+        g_fail |= geist_expect(geist_session_audio_end(sess) == GEIST_OK,
+                               "audio_end completes the turn");
 
         /* After end the turn is closed: the streaming ops must say so
          * rather than touch a freed scratch. */
-        CHECK(geist_session_audio_push(sess, N_SAMPLES, pcm) == GEIST_E_INVALID_STATE,
-              "audio_push after end must be refused");
-        CHECK(geist_session_audio_poll(sess) == GEIST_E_INVALID_STATE,
-              "audio_poll after end must be refused");
-        CHECK(geist_session_audio_end(sess) == GEIST_E_INVALID_STATE,
-              "audio_end twice must be refused");
+        g_fail |= geist_expect(geist_session_audio_push(sess, N_SAMPLES, pcm) ==
+                                       GEIST_E_INVALID_STATE,
+                               "audio_push after end must be refused");
+        g_fail |= geist_expect(geist_session_audio_poll(sess) == GEIST_E_INVALID_STATE,
+                               "audio_poll after end must be refused");
+        g_fail |= geist_expect(geist_session_audio_end(sess) == GEIST_E_INVALID_STATE,
+                               "audio_end twice must be refused");
 
         /* Destroying a session whose turn already ended must not double
          * free the scratch that end() already released. */
@@ -137,19 +134,22 @@ int main(void) {
     /* ---- destroy with a turn open but nothing pushed --------------------
      * The degenerate unwind: begin, then straight to destroy. */
     struct geist_session *empty = new_session(model, be);
-    CHECK(empty != nullptr, "third session created");
+    g_fail |= geist_expect(empty != nullptr, "third session created");
     if (empty != nullptr) {
-        CHECK(geist_session_audio_begin(empty) == GEIST_OK, "audio_begin on the third session");
+        g_fail |= geist_expect(geist_session_audio_begin(empty) == GEIST_OK,
+                               "audio_begin on the third session");
         geist_session_destroy(empty);
     }
 
     /* And the encoder still works after that one too. */
     struct geist_session *last = new_session(model, be);
-    CHECK(last != nullptr, "fourth session created");
+    g_fail |= geist_expect(last != nullptr, "fourth session created");
     if (last != nullptr) {
-        CHECK(geist_session_audio_begin(last) == GEIST_OK, "audio_begin after an empty turn");
-        CHECK(geist_session_audio_push(last, N_SAMPLES, pcm) == GEIST_OK, "audio_push");
-        CHECK(geist_session_audio_end(last) == GEIST_OK, "audio_end");
+        g_fail |= geist_expect(geist_session_audio_begin(last) == GEIST_OK,
+                               "audio_begin after an empty turn");
+        g_fail |= geist_expect(geist_session_audio_push(last, N_SAMPLES, pcm) == GEIST_OK,
+                               "audio_push");
+        g_fail |= geist_expect(geist_session_audio_end(last) == GEIST_OK, "audio_end");
         geist_session_destroy(last);
     }
 

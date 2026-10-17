@@ -25,7 +25,7 @@
 #include "quant.h"
 #include "gguf_dequant.h"
 #include "gemma4_kernels.h"
-#include "test_utils.h"
+#include "test_helpers.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -92,9 +92,9 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
     } while (0)
 
     /* Calibrate iter count so the run takes ≥ 200ms. */
-    const double t_warm = now_ms();
+    const double t_warm = geist_test_now_ms();
     CALL_KERNEL();
-    const double single_ms = now_ms() - t_warm;
+    const double single_ms = geist_test_now_ms() - t_warm;
     int          n_iter    = (int) (200.0 / (single_ms + 0.001)) + 5;
     if (n_iter > 5000)
         n_iter = 5000;
@@ -120,10 +120,10 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
             }
             printf("  %-32s [x8 parity] max rel diff %.2e\n", name, md / sc);
             free(y_ref);
-            const double tx0 = now_ms();
+            const double tx0 = geist_test_now_ms();
             for (int it = 0; it < n_iter; it++)
                 linear_q4_0_decode_w4a8_x8(n_in, n_out, x, x8p, y);
-            const double xdt = (now_ms() - tx0) / n_iter;
+            const double xdt = (geist_test_now_ms() - tx0) / n_iter;
             /* mN parity: int8 GEMM on x8 vs the row-major prefill kernel */
             {
                 enum { MP = 8 };
@@ -159,10 +159,10 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
     }
 
     /* Hot loop. */
-    const double t0 = now_ms();
+    const double t0 = geist_test_now_ms();
     for (int it = 0; it < n_iter; it++)
         CALL_KERNEL();
-    const double dt_ms       = (now_ms() - t0) / n_iter;
+    const double dt_ms       = (geist_test_now_ms() - t0) / n_iter;
     const double gbps        = (double) bytes_per_call / (dt_ms * 1e6);
     const double mb_per_call = (double) bytes_per_call / (1024.0 * 1024.0);
 
@@ -232,35 +232,35 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
                                      xm_sx + r * (n_in / Q4_K_BLOCK_ELEMS),
                                      xm_sum + r * n_chunks);
             }
-            const double tw4 = now_ms();
+            const double tw4 = geist_test_now_ms();
             linear_q4k_w4a8_prefill_predecoded_mtile4(
                     M_BENCH, n_in, n_out, xm_q8, xm_sx, xm_sum, packed, ym4);
-            const double s4  = now_ms() - tw4;
+            const double s4  = geist_test_now_ms() - tw4;
             int          it4 = (int) (200.0 / (s4 + 0.001)) + 3;
             if (it4 > 2000)
                 it4 = 2000;
             if (it4 < 3)
                 it4 = 3;
-            const double t04 = now_ms();
+            const double t04 = geist_test_now_ms();
             for (int it = 0; it < it4; it++)
                 linear_q4k_w4a8_prefill_predecoded_mtile4(
                         M_BENCH, n_in, n_out, xm_q8, xm_sx, xm_sum, packed, ym4);
-            const double dt4 = (now_ms() - t04) / it4;
+            const double dt4 = (geist_test_now_ms() - t04) / it4;
 
-            const double tw8 = now_ms();
+            const double tw8 = geist_test_now_ms();
             linear_q4k_w4a8_prefill_predecoded_mtile8(
                     M_BENCH, n_in, n_out, xm_q8, xm_sx, xm_sum, packed, ym8);
-            const double s8  = now_ms() - tw8;
+            const double s8  = geist_test_now_ms() - tw8;
             int          it8 = (int) (200.0 / (s8 + 0.001)) + 3;
             if (it8 > 2000)
                 it8 = 2000;
             if (it8 < 3)
                 it8 = 3;
-            const double t08 = now_ms();
+            const double t08 = geist_test_now_ms();
             for (int it = 0; it < it8; it++)
                 linear_q4k_w4a8_prefill_predecoded_mtile8(
                         M_BENCH, n_in, n_out, xm_q8, xm_sx, xm_sum, packed, ym8);
-            const double dt8 = (now_ms() - t08) / it8;
+            const double dt8 = (geist_test_now_ms() - t08) / it8;
             (void) (dt4 / dt8); /* mt4 vs mt8 is reported in the columns below */
 
             /* SGEMM path: dequant Q4_K → fp32 + cblas_sgemm per tile. */
@@ -308,7 +308,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
                                 ym8 + r0,
                                 (int) n_out);
                 }
-                const double tw_sg = now_ms();
+                const double tw_sg = geist_test_now_ms();
                 for (size_t r0 = 0; r0 < n_out; r0 += DEQ_TILE) {
                     const size_t tr = (n_out - r0 < DEQ_TILE) ? (n_out - r0) : DEQ_TILE;
                     dequant_q4_K_row(tr * n_in, (const uint8_t *) t->data + r0 * blk_bytes, tile);
@@ -327,13 +327,13 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
                                 ym8 + r0,
                                 (int) n_out);
                 }
-                const double s_sg  = now_ms() - tw_sg;
+                const double s_sg  = geist_test_now_ms() - tw_sg;
                 int          it_sg = (int) (200.0 / (s_sg + 0.001)) + 3;
                 if (it_sg > 1000)
                     it_sg = 1000;
                 if (it_sg < 3)
                     it_sg = 3;
-                const double t0_sg = now_ms();
+                const double t0_sg = geist_test_now_ms();
                 for (int it = 0; it < it_sg; it++) {
                     for (size_t r0 = 0; r0 < n_out; r0 += DEQ_TILE) {
                         const size_t tr = (n_out - r0 < DEQ_TILE) ? (n_out - r0) : DEQ_TILE;
@@ -355,7 +355,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
                                     (int) n_out);
                     }
                 }
-                dt_sg = (now_ms() - t0_sg) / it_sg;
+                dt_sg = (geist_test_now_ms() - t0_sg) / it_sg;
             }
             free(tile);
             free(x_fp32);
@@ -371,38 +371,38 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
             /* mtile4_ntile4_packed on the ntile4 packed format. */
             double dt44n = 0.0;
             if (pack_nt_rc == 0) {
-                const double tw44n = now_ms();
+                const double tw44n = geist_test_now_ms();
                 linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(
                         M_BENCH, n_in, n_out, xm_q8, xm_sx, xm_sum, packed_nt, ymn84);
-                const double s44n  = now_ms() - tw44n;
+                const double s44n  = geist_test_now_ms() - tw44n;
                 int          it44n = (int) (200.0 / (s44n + 0.001)) + 3;
                 if (it44n > 2000)
                     it44n = 2000;
                 if (it44n < 3)
                     it44n = 3;
-                const double t044n = now_ms();
+                const double t044n = geist_test_now_ms();
                 for (int it = 0; it < it44n; it++)
                     linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(
                             M_BENCH, n_in, n_out, xm_q8, xm_sx, xm_sum, packed_nt, ymn84);
-                dt44n = (now_ms() - t044n) / it44n;
+                dt44n = (geist_test_now_ms() - t044n) / it44n;
             }
             /* mtile8_ntile4_packed on the ntile4 packed format. */
             double dt84 = 0.0;
             if (pack_nt_rc == 0) {
-                const double tw84 = now_ms();
+                const double tw84 = geist_test_now_ms();
                 linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(
                         M_BENCH, n_in, n_out, xm_q8, xm_sx, xm_sum, packed_nt, ymn84);
-                const double s84  = now_ms() - tw84;
+                const double s84  = geist_test_now_ms() - tw84;
                 int          it84 = (int) (200.0 / (s84 + 0.001)) + 3;
                 if (it84 > 2000)
                     it84 = 2000;
                 if (it84 < 3)
                     it84 = 3;
-                const double t084 = now_ms();
+                const double t084 = geist_test_now_ms();
                 for (int it = 0; it < it84; it++)
                     linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(
                             M_BENCH, n_in, n_out, xm_q8, xm_sx, xm_sum, packed_nt, ymn84);
-                dt84 = (now_ms() - t084) / it84;
+                dt84 = (geist_test_now_ms() - t084) / it84;
             }
             const double speedup84       = (dt84 > 0) ? dt44n / dt84 : 0.0;
             const double speedup8_vs_44n = (dt84 > 0) ? dt44n / dt8 : 0.0;
@@ -451,18 +451,18 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
         const double cos_sim = dot / sqrt(na * nb);
 
         /* Bench W6A8 hot loop. */
-        const double tw = now_ms();
+        const double tw = geist_test_now_ms();
         linear_q6k_decode_w6a8_pre(n_in, n_out, x_sc, x_q8, t->data, y);
-        const double single_ms3 = now_ms() - tw;
+        const double single_ms3 = geist_test_now_ms() - tw;
         int          n_iter3    = (int) (200.0 / (single_ms3 + 0.001)) + 5;
         if (n_iter3 > 5000)
             n_iter3 = 5000;
         if (n_iter3 < 3)
             n_iter3 = 3;
-        const double t03 = now_ms();
+        const double t03 = geist_test_now_ms();
         for (int it = 0; it < n_iter3; it++)
             linear_q6k_decode_w6a8_pre(n_in, n_out, x_sc, x_q8, t->data, y);
-        const double dt_ms3 = (now_ms() - t03) / n_iter3;
+        const double dt_ms3 = (geist_test_now_ms() - t03) / n_iter3;
         const double gbps3  = (double) bytes_per_call / (dt_ms3 * 1e6);
         printf("  %-32s [Q6_K W6A8] (same shape)         %7.1f MB  %7.2f ms  %5.2f GB/s  (%d it)  "
                "cos=%.6f\n",
@@ -480,18 +480,18 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
         if (n_out * n_in >= 1024 * 1024) {
             float *w_fp32 = gguf_dequant_to_fp32(t);
             if (w_fp32) {
-                const double t_warm2 = now_ms();
+                const double t_warm2 = geist_test_now_ms();
                 linear_fp32(1, n_in, n_out, x, w_fp32, nullptr, y);
-                const double single_ms2 = now_ms() - t_warm2;
+                const double single_ms2 = geist_test_now_ms() - t_warm2;
                 int          n_iter2    = (int) (200.0 / (single_ms2 + 0.001)) + 5;
                 if (n_iter2 > 5000)
                     n_iter2 = 5000;
                 if (n_iter2 < 3)
                     n_iter2 = 3;
-                const double t02 = now_ms();
+                const double t02 = geist_test_now_ms();
                 for (int it = 0; it < n_iter2; it++)
                     linear_fp32(1, n_in, n_out, x, w_fp32, nullptr, y);
-                const double dt_ms2 = (now_ms() - t02) / n_iter2;
+                const double dt_ms2 = (geist_test_now_ms() - t02) / n_iter2;
                 const size_t bytes2 = n_out * n_in * sizeof(float);
                 const double gbps2  = (double) bytes2 / (dt_ms2 * 1e6);
                 const double mb2    = (double) bytes2 / (1024.0 * 1024.0);

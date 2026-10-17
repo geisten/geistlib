@@ -23,7 +23,7 @@ test_vision_attach_int
 test_video_attach_int
 test_vision_e2e_unit
 
-# retired bring-up ladder (tests/scripts/README.md): needs HF safetensors dumps
+# Gemma-3 bring-up ladder (tests/scripts/README.md): needs HF safetensors dumps
 test_full_logits_gguf_int
 test_full_logits_int
 test_layers0to14_int

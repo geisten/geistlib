@@ -29,12 +29,6 @@
 #define V_SOFT 1536
 #define BENCH_RUNS 3
 
-static double now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec / 1e6;
-}
-
 static void synth_frame(int frame_idx, int n_frames, int h, int w, uint8_t *out) {
     const float phase = (float) frame_idx / (float) n_frames;
     for (int y = 0; y < h; y++) {
@@ -126,10 +120,10 @@ int main(int argc, char **argv) {
     double total = 0;
     double tmin = 1e30, tmax = 0;
     for (int r = 0; r < BENCH_RUNS; r++) {
-        double t0 = now_ms();
+        double t0 = geist_test_now_ms();
         (void) vision_encoder_run_video(
                 enc, (size_t) n_frames, (size_t) frame_h, (size_t) frame_w, frames, soft);
-        double dt = now_ms() - t0;
+        double dt = geist_test_now_ms() - t0;
         total += dt;
         if (dt < tmin)
             tmin = dt;

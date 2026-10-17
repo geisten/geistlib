@@ -34,7 +34,8 @@ microphone loop is in [`VOICE.md`](VOICE.md).
 
 Towers are per variant: their output width matches the text model's residual
 stream (1536 on E2B, 2560 on E4B), and the engine refuses a mismatched tower.
-E4B audio is tested weekly in CI (`e4b-smoke`); extract its tower with
+E4B audio has a manual check (`make fetch-e4b-model`, then
+`test_model_modalities_int`); extract its tower with
 `python3 tools/fetch_audio_tower.py --url .../gemma-4-E4B-it/resolve/4e22d7e59e078e63a14f351efdc5232ed366b621/model.safetensors`.
 E4B vision is untested; `tools/dump_vision_tower.py` extracts the tower.
 

@@ -60,12 +60,6 @@ static struct latency_case cases[] = {
         {"audio_test_data/en_long.wav", "Repeat what you heard in quotes.", "en_long (EN 5.37s)"},
 };
 
-static double now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec / 1e6;
-}
-
 /* Chunk-walking WAV reader (audio_test_util.h); handles ffmpeg's LIST chunk. */
 static int16_t *read_wav_pcm(const char *path, size_t *n_samples_out, int *sample_rate_out) {
     return audio_test_read_wav(path, n_samples_out, sample_rate_out);
@@ -108,7 +102,7 @@ static bool run_one_case(struct geist_model        *model,
                          struct stage_timings      *out) {
     memset(out, 0, sizeof(*out));
 
-    const double t0 = now_ms();
+    const double t0 = geist_test_now_ms();
     size_t       n_samples;
     int          sample_rate;
     int16_t     *pcm = read_wav_pcm(tc->wav_path, &n_samples, &sample_rate);
@@ -118,7 +112,7 @@ static bool run_one_case(struct geist_model        *model,
         return false;
     }
     out->audio_s = (double) n_samples / 16000.0;
-    out->t_wav   = now_ms() - t0;
+    out->t_wav   = geist_test_now_ms() - t0;
 
     struct geist_session_opts opts = {.max_seq_len = 2048};
     struct geist_session     *sess = nullptr;
@@ -139,16 +133,16 @@ static bool run_one_case(struct geist_model        *model,
         goto out_fail;
 
     /* attach_audio — this is where the audio encoder runs. */
-    const double t1 = now_ms();
+    const double t1 = geist_test_now_ms();
     s               = geist_session_attach_audio(sess, n_samples, pcm, 16000);
-    out->t_attach   = now_ms() - t1;
+    out->t_attach   = geist_test_now_ms() - t1;
     free(pcm);
     pcm = nullptr;
     if (s != GEIST_OK)
         goto out_fail;
 
     /* Suffix prefill — LM processes the chat template tail. */
-    const double t2 = now_ms();
+    const double t2 = geist_test_now_ms();
     char         suffix_text[PROMPT_CAP];
     snprintf(suffix_text, sizeof suffix_text, "<audio|>\n%s<turn|>\n<|turn>model\n", tc->prompt);
     geist_token_t suffix[PROMPT_CAP];
@@ -159,15 +153,15 @@ static bool run_one_case(struct geist_model        *model,
     s = geist_session_prefill_tokens(sess, suffix_n, suffix);
     if (s != GEIST_OK)
         goto out_fail;
-    out->t_pre = now_ms() - t2;
+    out->t_pre = geist_test_now_ms() - t2;
 
     /* First token + the rest. */
-    const double  t3 = now_ms();
+    const double  t3 = geist_test_now_ms();
     geist_token_t tok;
     s = geist_session_decode_step(sess, &tok);
     if (s != GEIST_OK)
         goto out_fail;
-    out->t_first = now_ms() - t3;
+    out->t_first = geist_test_now_ms() - t3;
 
     size_t reply_len = 0;
     if (tok != 1 && tok != 106) {
@@ -183,7 +177,7 @@ static bool run_one_case(struct geist_model        *model,
     }
     out->n_decoded = 1;
 
-    const double t4 = now_ms();
+    const double t4 = geist_test_now_ms();
     for (size_t i = 1; i < DECODE_CAP; i++) {
         s = geist_session_decode_step(sess, &tok);
         if (s != GEIST_OK)
@@ -201,7 +195,7 @@ static bool run_one_case(struct geist_model        *model,
         out->reply[reply_len] = '\0';
         out->n_decoded++;
     }
-    out->t_decode = now_ms() - t4;
+    out->t_decode = geist_test_now_ms() - t4;
 
     geist_session_destroy(sess);
     return true;

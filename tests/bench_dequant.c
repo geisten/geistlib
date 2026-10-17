@@ -3,16 +3,11 @@
  * Measures GB/s on synthetic tensor data sized like Gemma 4 E2B FFN weights.
  */
 #include "quant.h"
+#include "test_helpers.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
-static double now_s(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec + ts.tv_nsec * 1e-9;
-}
 
 int main(int argc, char **argv) {
     /* Two representative tensor sizes:
@@ -46,17 +41,17 @@ int main(int argc, char **argv) {
         dequant_q4_K_row(n_elems, q4_data, out);
         dequant_q3_K_row(n_elems, q3_data, out);
 
-        double t0 = now_s();
+        double t0 = geist_test_now_s();
         for (int i = 0; i < iters; i++)
             dequant_q4_K_row(n_elems, q4_data, out);
-        double t1    = now_s();
+        double t1    = geist_test_now_s();
         double q4_ms = (t1 - t0) / iters * 1000.0;
         double q4_gb = (q4_bytes / 1e9) / ((t1 - t0) / iters);
 
-        t0 = now_s();
+        t0 = geist_test_now_s();
         for (int i = 0; i < iters; i++)
             dequant_q3_K_row(n_elems, q3_data, out);
-        t1           = now_s();
+        t1           = geist_test_now_s();
         double q3_ms = (t1 - t0) / iters * 1000.0;
         double q3_gb = (q3_bytes / 1e9) / ((t1 - t0) / iters);
 
