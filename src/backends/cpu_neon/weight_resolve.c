@@ -588,27 +588,11 @@ static void cpu_neon_q4k_run_prequantized(const struct cpu_neon_state     *st,
             linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(
                     m, n_in, n_out, ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, w->aux_fp32, y);
         } else if (st->policy.q4k_mtile_prefill) {
-            if (st->policy.q4k_ntile_prefill) {
-                linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(m,
-                                                                 n_in,
-                                                                 n_out,
-                                                                 ws->qk_mN_xq,
-                                                                 ws->qk_mN_sc,
-                                                                 ws->qk_mN_sum32,
-                                                                 w->aux_fp32,
-                                                                 y);
-            } else {
-                /* mtile8 is bit-identical to mtile4 and falls back to
-                 * mtile4 for m<8. */
-                linear_q4k_w4a8_prefill_predecoded_mtile8(m,
-                                                          n_in,
-                                                          n_out,
-                                                          ws->qk_mN_xq,
-                                                          ws->qk_mN_sc,
-                                                          ws->qk_mN_sum32,
-                                                          w->aux_fp32,
-                                                          y);
-            }
+            /* The plain predecoded layout: ntile is off (both on packs
+             * NTILE4, install_q4k_predecode_if_eligible). mtile8 is
+             * bit-identical to mtile4 and falls back to mtile4 for m<8. */
+            linear_q4k_w4a8_prefill_predecoded_mtile8(
+                    m, n_in, n_out, ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, w->aux_fp32, y);
         } else {
             linear_q4k_w4a8_prefill_predecoded(
                     m, n_in, n_out, ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, w->aux_fp32, y);

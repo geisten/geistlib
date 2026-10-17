@@ -127,14 +127,13 @@ int main(int argc, char **argv) {
     float       *scale_x     = (float *) malloc(m_test * (n_in / Q4_K_BLOCK_ELEMS) * sizeof(float));
     float       *y_pd        = (float *) malloc(m_test * n_out * sizeof(float));
     float       *y_mt        = (float *) malloc(m_test * n_out * sizeof(float));
-    float       *y_nt        = (float *) malloc(m_test * n_out * sizeof(float));
     float       *y_np        = (float *) malloc(m_test * n_out * sizeof(float));
     float       *y_pair0     = (float *) malloc(m_test * n_out * sizeof(float));
     float       *y_pair1     = (float *) malloc(m_test * n_out * sizeof(float));
     float       *y_up_single = (float *) malloc(m_test * n_out * sizeof(float));
     float       *y_ref_m     = (float *) malloc(m_test * n_out * sizeof(float));
-    if (!xm || !xm_q8 || !sum32 || !scale_x || !y_pd || !y_mt || !y_nt || !y_np || !y_pair0 ||
-        !y_pair1 || !y_up_single || !y_ref_m) {
+    if (!xm || !xm_q8 || !sum32 || !scale_x || !y_pd || !y_mt || !y_np || !y_pair0 || !y_pair1 ||
+        !y_up_single || !y_ref_m) {
         fprintf(stderr, "alloc failed for mtile check\n");
         return 1;
     }
@@ -171,8 +170,6 @@ int main(int argc, char **argv) {
         return 1;
     }
     free(y_mt8);
-    linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(
-            m_test, n_in, n_out, xm_q8, scale_x, sum32, packed, y_nt);
     linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(
             m_test, n_in, n_out, xm_q8, scale_x, sum32, packed_nt, y_np);
     /* mtile8_ntile4: same packed format, wider M-tile */
@@ -196,32 +193,23 @@ int main(int argc, char **argv) {
     }
     free(y_np8);
     double max_mtile = 0.0;
-    double max_ntile = 0.0;
     double max_npack = 0.0;
     for (size_t i = 0; i < m_test * n_out; i++) {
         const double d = fabs((double) y_pd[i] - (double) y_mt[i]);
         if (d > max_mtile)
             max_mtile = d;
-        const double dn = fabs((double) y_mt[i] - (double) y_nt[i]);
-        if (dn > max_ntile)
-            max_ntile = dn;
-        const double dp = fabs((double) y_nt[i] - (double) y_np[i]);
+        const double dp = fabs((double) y_mt[i] - (double) y_np[i]);
         if (dp > max_npack)
             max_npack = dp;
     }
     fprintf(stderr, "Numeric predecoded vs mtile4 m=%zu: max|d|=%.4e\n", m_test, max_mtile);
-    fprintf(stderr, "Numeric mtile4 vs ntile4 m=%zu: max|d|=%.4e\n", m_test, max_ntile);
-    fprintf(stderr, "Numeric ntile4 vs ntile4-packed m=%zu: max|d|=%.4e\n", m_test, max_npack);
+    fprintf(stderr, "Numeric mtile4 vs ntile4-packed m=%zu: max|d|=%.4e\n", m_test, max_npack);
     if (max_mtile > 1e-5) {
         fprintf(stderr, "FAIL: mtile4 Q4_K output diverges from predecoded path\n");
         return 1;
     }
-    if (max_ntile > 1e-5) {
-        fprintf(stderr, "FAIL: ntile4 Q4_K output diverges from mtile4 path\n");
-        return 1;
-    }
     if (max_npack > 1e-5) {
-        fprintf(stderr, "FAIL: packed ntile4 Q4_K output diverges from ntile4 path\n");
+        fprintf(stderr, "FAIL: packed ntile4 Q4_K output diverges from mtile4 path\n");
         return 1;
     }
 
@@ -424,7 +412,6 @@ int main(int argc, char **argv) {
     free(scale_x);
     free(y_pd);
     free(y_mt);
-    free(y_nt);
     free(y_np);
     free(y_pair0);
     free(y_pair1);
