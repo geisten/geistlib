@@ -18,6 +18,7 @@
 #include "test_helpers.h"
 
 #define GEIST_INTERNAL_ARCH_LAYER
+#include "src/archs/transformer/arch_family.h"
 #include "src/archs/transformer/arch_state.h"
 
 #define GEIST_INTERNAL_ENGINE_LAYER
@@ -79,8 +80,8 @@ int main(void) {
     int fails = 0;
 
     /* Family + geometry assertions — Qwen3-0.6B values. */
-    if (strcmp(st->config.family, "qwen3") != 0) {
-        fprintf(stderr, "FAIL: family=%s, expected qwen3\n", st->config.family);
+    if (strcmp(st->family->name, "qwen3") != 0) {
+        fprintf(stderr, "FAIL: family=%s, expected qwen3\n", st->family->name);
         fails++;
     }
     if (st->n_layers != 28) {
@@ -160,7 +161,7 @@ int main(void) {
     }
 
     printf("loaded: %s  (%zu layers, d=%zu, vocab=%zu, GQA %zu:%zu, head_dim=%zu)\n",
-           st->config.family,
+           st->family->name,
            st->n_layers,
            st->d_model,
            st->vocab_size,

@@ -17,6 +17,7 @@
 #include "test_helpers.h"
 
 #define GEIST_INTERNAL_ARCH_LAYER
+#include "src/archs/transformer/arch_family.h"
 #include "src/archs/transformer/arch_state.h"
 
 #define GEIST_INTERNAL_ENGINE_LAYER
@@ -97,8 +98,8 @@ int main(void) {
         fprintf(stderr, "FAIL: lm_head tensor view does not match resolved output weight\n");
         fails++;
     }
-    if (strcmp(st->config.family, "qwen35") != 0) {
-        fprintf(stderr, "FAIL: family=%s\n", st->config.family);
+    if (strcmp(st->family->name, "qwen35") != 0) {
+        fprintf(stderr, "FAIL: family=%s\n", st->family->name);
         fails++;
     }
     if (total_layers <= n_mtp || st->n_layers != total_layers - n_mtp ||
@@ -245,7 +246,7 @@ int main(void) {
     }
 
     printf("loaded: %s  (%zu layers: %zu attn + %zu deltanet, %zu MTP, d=%zu, vocab=%zu)\n",
-           st->config.family,
+           st->family->name,
            st->n_layers,
            n_attn,
            n_dn,

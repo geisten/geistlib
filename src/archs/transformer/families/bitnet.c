@@ -41,29 +41,36 @@ static bool meta_f32(struct gguf_ctx *g, const char *key, float *out) {
     return family_meta_f32(g, "bitnet-b1.58", "bitnet", key, out);
 }
 
-/* The activation is not in the official GGUF: "bitnet-b1.58" (Microsoft
- * 2B-4T, HF hidden_act="relu2") defaults to gated squared-ReLU — under
- * SwiGLU it scores chance on MMLU — and community "bitnet" to SwiGLU. A
- * *.feed_forward_activation key overrides it (geist_ffn_activation_select). */
-static enum geist_ffn_activation_kind activation_from_meta(struct gguf_ctx *g) {
-    size_t      al = 0, len = 0;
-    const char *arch = gguf_get_meta_string(g, "general.architecture", &al);
-    const char *act  = gguf_get_meta_string(g, "bitnet-b1.58.feed_forward_activation", &len);
+/* The activation is not in the official GGUF: the family names the default
+ * (dflt) and a *.feed_forward_activation key overrides it
+ * (geist_ffn_activation_select). */
+static void bitnet_populate(struct gguf_ctx               *g,
+                            enum geist_ffn_activation_kind dflt,
+                            struct transformer_arch_state *st) {
+    size_t      len = 0;
+    const char *act = gguf_get_meta_string(g, "bitnet-b1.58.feed_forward_activation", &len);
     if (act == nullptr) {
         act = gguf_get_meta_string(g, "bitnet.feed_forward_activation", &len);
     }
     if (act == nullptr) {
         act = gguf_get_meta_string(g, "general.feed_forward_activation", &len);
     }
-    return geist_ffn_activation_select(al, act != nullptr ? len : 0, arch, act);
-}
-
-static void bitnet_populate(struct gguf_ctx *g, struct transformer_arch_state *st) {
     st->config.has_sub_ln     = true;
-    st->config.ffn_activation = activation_from_meta(g);
+    st->config.ffn_activation = geist_ffn_activation_select(act != nullptr ? len : 0, dflt, act);
 
     family_populate_common(g, "bitnet-b1.58", "bitnet", st);
     st->vocab_size = family_vocab_size(g, "bitnet-b1.58", "bitnet");
+}
+
+/* "bitnet-b1.58" (Microsoft 2B-4T, HF hidden_act="relu2"): gated
+ * squared-ReLU; under SwiGLU the 2B-4T scores chance on MMLU. */
+static void bitnet_b158_populate(struct gguf_ctx *g, struct transformer_arch_state *st) {
+    bitnet_populate(g, GEIST_FFN_GATED_SQUARED_RELU, st);
+}
+
+/* Community "bitnet" conversions: SwiGLU. */
+static void bitnet_community_populate(struct gguf_ctx *g, struct transformer_arch_state *st) {
+    bitnet_populate(g, GEIST_FFN_SWIGLU, st);
 }
 
 static bool bitnet_populate_layers(struct transformer_arch_state *st) {
@@ -177,7 +184,7 @@ bitnet_attention_block(struct transformer_layer_forward_ctx *ctx) {
 
 const struct transformer_family transformer_family_bitnet_b158 = {
         .name            = "bitnet-b1.58",
-        .populate        = bitnet_populate,
+        .populate        = bitnet_b158_populate,
         .populate_layers = bitnet_populate_layers,
         .wire_layer      = bitnet_wire_layer,
         .attention_block = bitnet_attention_block,
@@ -188,7 +195,7 @@ const struct transformer_family transformer_family_bitnet_b158 = {
  * "general.architecture" = "bitnet". Same unit; meta_* tries both prefixes. */
 const struct transformer_family transformer_family_bitnet = {
         .name            = "bitnet",
-        .populate        = bitnet_populate,
+        .populate        = bitnet_community_populate,
         .populate_layers = bitnet_populate_layers,
         .wire_layer      = bitnet_wire_layer,
         .attention_block = bitnet_attention_block,
