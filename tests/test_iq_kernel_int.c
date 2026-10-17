@@ -11,6 +11,7 @@
  * SKIPs cleanly if the IQ2_M model is not available.
  */
 #include "quant.h"
+#include "neon_quant_wrappers.h"
 #include "gguf_reader.h"
 #include "test_helpers.h"
 

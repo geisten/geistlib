@@ -12,28 +12,13 @@
 #include "internal.h"
 
 #include "gemma4_kernels.h"
-#include "tensor_view.h"
+#include "host_buffer.h"
 
 #include <geist.h>
 #include <geist_backend.h>
 
 #include <stdint.h>
 #include <string.h>
-
-static float *get_f32_dense_ptr_full(const struct geist_tensor *t, size_t *out_n) {
-    if (t == nullptr || t->dtype != GEIST_DTYPE_F32 || t->layout != GEIST_LAYOUT_DENSE ||
-        t->buffer == nullptr || t->ndim < 1) {
-        return nullptr;
-    }
-    size_t n = 1;
-    for (int d = 0; d < t->ndim; d++) {
-        if (t->shape[d] <= 0)
-            return nullptr;
-        n *= (size_t) t->shape[d];
-    }
-    *out_n = n;
-    return (float *) ((uint8_t *) t->buffer->host + t->offset);
-}
 
 [[nodiscard]] enum geist_status cpu_scalar_rope_apply(struct geist_backend      *be,
                                                       struct geist_tensor       *x,
@@ -43,9 +28,9 @@ static float *get_f32_dense_ptr_full(const struct geist_tensor *t, size_t *out_n
         return GEIST_E_INVALID_ARG;
     }
     size_t       nx, nc, ns;
-    float       *xp   = get_f32_dense_ptr_full(x, &nx);
-    const float *cosp = get_f32_dense_ptr_full(cos, &nc);
-    const float *sinp = get_f32_dense_ptr_full(sin, &ns);
+    float       *xp   = geist_host_tensor_f32(x, &nx);
+    const float *cosp = geist_host_tensor_f32(cos, &nc);
+    const float *sinp = geist_host_tensor_f32(sin, &ns);
     if (xp == nullptr || cosp == nullptr || sinp == nullptr || x->ndim != 3) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_scalar rope_apply: bad inputs");
         return GEIST_E_INVALID_ARG;
@@ -69,8 +54,8 @@ static float *get_f32_dense_ptr_full(const struct geist_tensor *t, size_t *out_n
         return GEIST_E_INVALID_ARG;
     }
     size_t       n_table, n_out;
-    const float *tablep = get_f32_dense_ptr_full(embed_table, &n_table);
-    float       *outp   = get_f32_dense_ptr_full(out, &n_out);
+    const float *tablep = geist_host_tensor_f32(embed_table, &n_table);
+    float       *outp   = geist_host_tensor_f32(out, &n_out);
     if (tablep == nullptr || outp == nullptr || embed_table->ndim != 2) {
         return GEIST_E_INVALID_ARG;
     }
@@ -90,14 +75,6 @@ static float *get_f32_dense_ptr_full(const struct geist_tensor *t, size_t *out_n
     return GEIST_OK;
 }
 
-/* An F16 DENSE 3-D view's halves, or nullptr. */
-static const uint16_t *get_f16_dense_3d(const struct geist_tensor *t, size_t *out_n) {
-    if (t == nullptr || t->buffer == nullptr)
-        return nullptr;
-    return (const uint16_t *) geist_tensor_dense(
-            t, GEIST_DTYPE_F16, sizeof(uint16_t), 3, t->buffer->host, t->buffer->bytes, out_n);
-}
-
 enum geist_status cpu_scalar_attention_f16(struct geist_backend      *be,
                                            const struct geist_tensor *q,
                                            const struct geist_tensor *k,
@@ -106,10 +83,10 @@ enum geist_status cpu_scalar_attention_f16(struct geist_backend      *be,
                                            size_t                     sliding_window,
                                            struct geist_tensor       *out) {
     size_t          nq = 0, nk = 0, nv = 0, no = 0;
-    const float    *qp = get_f32_dense_ptr_full(q, &nq);
-    const uint16_t *kp = get_f16_dense_3d(k, &nk);
-    const uint16_t *vp = get_f16_dense_3d(v, &nv);
-    float          *op = get_f32_dense_ptr_full(out, &no);
+    const float    *qp = geist_host_tensor_f32(q, &nq);
+    const uint16_t *kp = geist_host_tensor_f16_3d(k, &nk);
+    const uint16_t *vp = geist_host_tensor_f16_3d(v, &nv);
+    float          *op = geist_host_tensor_f32(out, &no);
     if (qp == nullptr || kp == nullptr || vp == nullptr || op == nullptr || q->ndim != 3 ||
         out->ndim != 3 || k->shape[1] != v->shape[1] || k->shape[0] != v->shape[0] ||
         k->shape[2] != q->shape[2] || v->shape[2] != q->shape[2] ||
@@ -141,10 +118,10 @@ enum geist_status cpu_scalar_kv_append_f16(struct geist_backend      *be,
                                            struct geist_tensor       *k_cache,
                                            struct geist_tensor       *v_cache) {
     size_t       nks = 0, nvs = 0, nkc = 0, nvc = 0;
-    const float *ks = get_f32_dense_ptr_full(k_src, &nks);
-    const float *vs = get_f32_dense_ptr_full(v_src, &nvs);
-    uint16_t    *kc = (uint16_t *) get_f16_dense_3d(k_cache, &nkc);
-    uint16_t    *vc = (uint16_t *) get_f16_dense_3d(v_cache, &nvc);
+    const float *ks = geist_host_tensor_f32(k_src, &nks);
+    const float *vs = geist_host_tensor_f32(v_src, &nvs);
+    uint16_t    *kc = geist_host_tensor_f16_3d(k_cache, &nkc);
+    uint16_t    *vc = geist_host_tensor_f16_3d(v_cache, &nvc);
     /* The source rows land at row q_position of the caches, whose views
      * end with them: the subtraction cannot wrap once both hold. */
     if (ks == nullptr || vs == nullptr || kc == nullptr || vc == nullptr || nks != nvs ||
@@ -173,10 +150,10 @@ enum geist_status cpu_scalar_kv_append_f16(struct geist_backend      *be,
         return cpu_scalar_attention_f16(be, q, k, v, q_offset, sliding_window, out);
     }
     size_t       nq, nk, nv, no;
-    const float *qp = get_f32_dense_ptr_full(q, &nq);
-    const float *kp = get_f32_dense_ptr_full(k, &nk);
-    const float *vp = get_f32_dense_ptr_full(v, &nv);
-    float       *op = get_f32_dense_ptr_full(out, &no);
+    const float *qp = geist_host_tensor_f32(q, &nq);
+    const float *kp = geist_host_tensor_f32(k, &nk);
+    const float *vp = geist_host_tensor_f32(v, &nv);
+    float       *op = geist_host_tensor_f32(out, &no);
     if (qp == nullptr || kp == nullptr || vp == nullptr || op == nullptr || q->ndim != 3 ||
         k->ndim != 3 || v->ndim != 3) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_scalar attention: bad inputs");

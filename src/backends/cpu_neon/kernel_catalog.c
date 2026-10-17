@@ -61,15 +61,6 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geis
      * Linux kernel set prefills Gemma 4 E2B Q4_K_M ~2x faster than the
      * Apple one (#456), so a guest takes the Linux defaults. */
     const bool amx = hw != nullptr && hw->has_accelerate && !hw->is_virtual_machine;
-#if defined(GEIST_TARGET_PI5)
-    /* The Pi5 OpenBLAS SGEMM-prefill path is currently not quality-safe for
-     * Gemma Q4_K/Q6_K end-to-end generation. Keep it opt-in via
-     * GEIST_Q{4,6}K_SGEMM_PREFILL=1 until the dequant+sgemm path has a
-     * full-logits parity gate on Pi. */
-    const bool pi5_sgemm_prefill = false;
-#else
-    const bool pi5_sgemm_prefill = false;
-#endif
 
     struct cpu_neon_kernel_policy p = {
             /* Runtime ISA facts — surfaced verbatim from the probe so the
@@ -88,10 +79,14 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geis
              * too: dequantizing each 64-row tile to FP32 for Accelerate's
              * sgemm was slower on the M1 Max (#16, 3 alternating rounds,
              * pp512: Gemma 4 E2B Q4_K_M 130 -> 159 tok/s, Llama 3.2 3B
-             * Q4_K_M 88 -> 105). GEIST_Q{4,6}K_SGEMM_PREFILL=1 restores it. */
-            .q4k_sgemm_prefill         = pi5_sgemm_prefill,
-            .q6k_sgemm_prefill         = pi5_sgemm_prefill,
-            .qk_sgemm_threshold        = amx ? 64 : (pi5_sgemm_prefill ? 16 : 32),
+             * Q4_K_M 88 -> 105). GEIST_Q{4,6}K_SGEMM_PREFILL=1 restores it.
+             * On the Pi 5 the OpenBLAS SGEMM-prefill path is not quality-safe
+             * for Gemma Q4_K/Q6_K end-to-end generation either; it stays
+             * opt-in until the dequant+sgemm path has a full-logits parity
+             * gate there. */
+            .q4k_sgemm_prefill         = false,
+            .q6k_sgemm_prefill         = false,
+            .qk_sgemm_threshold        = amx ? 64 : 32,
             .qk_sgemm_tile_rows        = 64,
             .q6k_ntile_prefill         = amx,
             .q6k_ntile4_stream_prefill = amx,

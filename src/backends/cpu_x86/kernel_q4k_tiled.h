@@ -24,10 +24,6 @@
 
 #include <stddef.h>
 
-/* One thread's tile workspace in bytes (weight tile, activation tile,
- * 256x256 float accumulator). */
-[[nodiscard]] size_t q4k_tiled_ws_bytes(void);
-
 /* Y[M, N] = X · Wᵀ. M is a multiple of 4 (whole Q8_Kx4 groups), N a
  * multiple of 8 (whole Q4_Kx8 octets), K a multiple of 256. Runs on
  * geist_par_for; each thread takes its tile workspace from st. Returns

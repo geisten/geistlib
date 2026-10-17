@@ -108,24 +108,6 @@ void linear_iq4xs_decode_w4a8_pre(size_t       n_in,
 #endif
 }
 
-void linear_iq4xs_decode_w4a8(size_t      n_in,
-                              size_t      n_out,
-                              const float x[static n_in],
-                              const void *w_iq4xs,
-                              float       y[static n_out]) {
-    int8_t *x_q8     = heap_alloc_array_aligned(int8_t, n_in);
-    float  *x_scales = heap_alloc_array_aligned(float, geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS));
-    if (x_q8 == nullptr || x_scales == nullptr) {
-        safe_free((void **) &x_q8);
-        safe_free((void **) &x_scales);
-        return;
-    }
-    quantize_x_q8_groups(n_in, GEIST_ACT_Q8K_ELEMS, x, x_q8, x_scales, nullptr);
-    linear_iq4xs_decode_w4a8_pre(n_in, n_out, x_scales, x_q8, w_iq4xs, y);
-    safe_free((void **) &x_q8);
-    safe_free((void **) &x_scales);
-}
-
 #if defined(__ARM_NEON)
 /* Output rows [n0, n1) of linear_iq4xs_w4a8_prefill_pre. */
 static void iq4xs_prefill_rows(void *ctx, size_t n0, size_t n1) {
@@ -219,29 +201,6 @@ void linear_iq4xs_w4a8_prefill_pre(size_t        m,
 #endif
 }
 
-void linear_iq4xs_w4a8_prefill(
-        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_iq4xs, float *y) {
-    const size_t n_groups = geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS);
-    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, m *n_in);
-    float       *x_scales = heap_alloc_array_aligned(float, m *n_groups);
-    if (x_q8 == nullptr || x_scales == nullptr) {
-        safe_free((void **) &x_q8);
-        safe_free((void **) &x_scales);
-        return;
-    }
-    for (size_t i = 0; i < m; i++) {
-        quantize_x_q8_groups(n_in,
-                             GEIST_ACT_Q8K_ELEMS,
-                             x + i * n_in,
-                             x_q8 + i * n_in,
-                             x_scales + i * n_groups,
-                             nullptr);
-    }
-    linear_iq4xs_w4a8_prefill_pre(m, n_in, n_out, x_q8, x_scales, w_iq4xs, y);
-    safe_free((void **) &x_q8);
-    safe_free((void **) &x_scales);
-}
-
 #if defined(__ARM_NEON)
 /* Output rows [n0, n1) of linear_iq4nl_decode_w4a8_pre. */
 static void iq4nl_decode_rows(void *ctx, size_t n0, size_t n1) {
@@ -296,22 +255,4 @@ void linear_iq4nl_decode_w4a8_pre(size_t       n_in,
     (void) y;
     fprintf(stderr, "linear_iq4nl_decode_w4a8_pre: NEON required\n");
 #endif
-}
-
-void linear_iq4nl_decode_w4a8(size_t      n_in,
-                              size_t      n_out,
-                              const float x[static n_in],
-                              const void *w_iq4nl,
-                              float       y[static n_out]) {
-    int8_t *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
-    float *x_scales = heap_alloc_array_aligned(float, geist_act_groups(n_in, GEIST_ACT_Q8_0_ELEMS));
-    if (x_q8 == nullptr || x_scales == nullptr) {
-        safe_free((void **) &x_q8);
-        safe_free((void **) &x_scales);
-        return;
-    }
-    quantize_x_q8_groups(n_in, GEIST_ACT_Q8_0_ELEMS, x, x_q8, x_scales, nullptr);
-    linear_iq4nl_decode_w4a8_pre(n_in, n_out, x_scales, x_q8, w_iq4nl, y);
-    safe_free((void **) &x_q8);
-    safe_free((void **) &x_scales);
 }

@@ -117,24 +117,6 @@ void linear_q4_0_decode_w4a8_pre(size_t       n_in,
     geist_par_for(n_out, q4_0_decode_rows, &job);
 }
 
-void linear_q4_0_decode_w4a8(size_t      n_in,
-                             size_t      n_out,
-                             const float x[static n_in],
-                             const void *w_q4,
-                             float       y[static n_out]) {
-    int8_t *x_q8    = heap_alloc_array_aligned(int8_t, n_in);
-    float *x_scales = heap_alloc_array_aligned(float, geist_act_groups(n_in, GEIST_ACT_Q8_0_ELEMS));
-    if (x_q8 == nullptr || x_scales == nullptr) {
-        safe_free((void **) &x_q8);
-        safe_free((void **) &x_scales);
-        return;
-    }
-    quantize_x_q8_groups(n_in, GEIST_ACT_Q8_0_ELEMS, x, x_q8, x_scales, nullptr);
-    linear_q4_0_decode_w4a8_pre(n_in, n_out, x_scales, x_q8, w_q4, y);
-    safe_free((void **) &x_q8);
-    safe_free((void **) &x_scales);
-}
-
 /* Output rows [n0, n1) of linear_q4_1_decode_w4a8_pre. */
 static void q4_1_decode_rows(void *ctx, size_t n0, size_t n1) {
     const struct q4_rows_job   *job        = ctx;
@@ -177,28 +159,6 @@ void linear_q4_1_decode_w4a8_pre(size_t         n_in,
                               .nb_per_row = nb_per_row,
                               .y          = y};
     geist_par_for(n_out, q4_1_decode_rows, &job);
-}
-
-void linear_q4_1_decode_w4a8(size_t      n_in,
-                             size_t      n_out,
-                             const float x[static n_in],
-                             const void *w_q4,
-                             float       y[static n_out]) {
-    const size_t nb       = n_in / Q4_1_BLOCK_ELEMS;
-    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, n_in);
-    int32_t     *bsum     = heap_alloc_array_aligned(int32_t, nb);
-    float       *x_scales = heap_alloc_array_aligned(float, nb);
-    if (x_q8 == nullptr || bsum == nullptr || x_scales == nullptr) {
-        safe_free((void **) &x_q8);
-        safe_free((void **) &bsum);
-        safe_free((void **) &x_scales);
-        return;
-    }
-    quantize_x_q8_groups(n_in, GEIST_ACT_Q8_0_ELEMS, x, x_q8, x_scales, bsum);
-    linear_q4_1_decode_w4a8_pre(n_in, n_out, x_scales, x_q8, bsum, w_q4, y);
-    safe_free((void **) &x_q8);
-    safe_free((void **) &bsum);
-    safe_free((void **) &x_scales);
 }
 
 /* Q4_0 x8 interleaved GEMV (see #281). Same idea as the Q6_K x8 layout: pack 8 consecutive output
@@ -367,28 +327,6 @@ void linear_q4_0_decode_w4a8_x8_pre(size_t         n_in,
     geist_par_for(n_out / 8, q4_0_x8_decode_tiles, &job);
 }
 
-void linear_q4_0_decode_w4a8_x8(size_t      n_in,
-                                size_t      n_out,
-                                const float x[static n_in],
-                                const void *packed,
-                                float       y[static n_out]) {
-    const size_t nb       = n_in / Q4_0_BLOCK_ELEMS;
-    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, n_in);
-    int32_t     *bsum     = heap_alloc_array_aligned(int32_t, nb);
-    float       *x_scales = heap_alloc_array_aligned(float, nb);
-    if (x_q8 == nullptr || bsum == nullptr || x_scales == nullptr) {
-        safe_free((void **) &x_q8);
-        safe_free((void **) &bsum);
-        safe_free((void **) &x_scales);
-        return;
-    }
-    quantize_x_q8_groups(n_in, GEIST_ACT_Q8_0_ELEMS, x, x_q8, x_scales, bsum);
-    linear_q4_0_decode_w4a8_x8_pre(n_in, n_out, x_scales, x_q8, bsum, packed, y);
-    safe_free((void **) &x_q8);
-    safe_free((void **) &bsum);
-    safe_free((void **) &x_scales);
-}
-
 /* Q4_0 x8 int8 mN GEMM (see #295). Int8 GEMM directly on the x8 layout
  * instead of dequant + SGEMM: each 144-byte block (8 rows x 32 elems) is
  * loaded once and dotted against up to 4 activation rows with SDOT. */
@@ -524,35 +462,7 @@ void linear_q4_0_w4a8_prefill_x8_pre(size_t         m,
     geist_par_for(n_out / 8, q4_0_x8_prefill_tiles, &job);
 }
 
-void linear_q4_0_w4a8_prefill_x8(
-        size_t m, size_t n_in, size_t n_out, const float *x, const void *packed, float *y) {
-    if (m == 0)
-        return;
-    const size_t nb       = n_in / Q4_0_BLOCK_ELEMS;
-    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, m *n_in);
-    float       *x_scales = heap_alloc_array_aligned(float, m *nb);
-    int32_t     *bsums    = heap_alloc_array_aligned(int32_t, m *nb);
-    if (x_q8 == nullptr || x_scales == nullptr || bsums == nullptr) {
-        safe_free((void **) &x_q8);
-        safe_free((void **) &x_scales);
-        safe_free((void **) &bsums);
-        return;
-    }
-    for (size_t i = 0; i < m; i++) {
-        quantize_x_q8_groups(n_in,
-                             GEIST_ACT_Q8_0_ELEMS,
-                             x + i * n_in,
-                             x_q8 + i * n_in,
-                             x_scales + i * nb,
-                             bsums + i * nb);
-    }
-    linear_q4_0_w4a8_prefill_x8_pre(m, n_in, n_out, x_q8, x_scales, bsums, packed, y);
-    safe_free((void **) &x_q8);
-    safe_free((void **) &x_scales);
-    safe_free((void **) &bsums);
-}
-
-/* M>1 prefill on the row-major layout: activations quantized once per call. */
+/* M>1 prefill on the row-major layout. */
 
 /* Output rows [n0, n1) of linear_q4_0_w4a8_prefill_pre. */
 static void q4_0_prefill_rows(void *ctx, size_t n0, size_t n1) {
@@ -599,29 +509,6 @@ void linear_q4_0_w4a8_prefill_pre(size_t        m,
                               .nb_per_row = nb_per_row,
                               .y          = y};
     geist_par_for(n_out, q4_0_prefill_rows, &job);
-}
-
-void linear_q4_0_w4a8_prefill(
-        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q4, float *y) {
-    const size_t nb       = n_in / Q4_0_BLOCK_ELEMS;
-    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, m *n_in);
-    float       *x_scales = heap_alloc_array_aligned(float, m *nb);
-    if (x_q8 == nullptr || x_scales == nullptr) {
-        safe_free((void **) &x_q8);
-        safe_free((void **) &x_scales);
-        return;
-    }
-    for (size_t i = 0; i < m; i++) {
-        quantize_x_q8_groups(n_in,
-                             GEIST_ACT_Q8_0_ELEMS,
-                             x + i * n_in,
-                             x_q8 + i * n_in,
-                             x_scales + i * nb,
-                             nullptr);
-    }
-    linear_q4_0_w4a8_prefill_pre(m, n_in, n_out, x_q8, x_scales, w_q4, y);
-    safe_free((void **) &x_q8);
-    safe_free((void **) &x_scales);
 }
 
 /* Output rows [n0, n1) of linear_q4_1_w4a8_prefill_pre. */
@@ -677,30 +564,4 @@ void linear_q4_1_w4a8_prefill_pre(size_t         m,
                               .nb         = nb,
                               .y          = y};
     geist_par_for(n_out, q4_1_prefill_rows, &job);
-}
-
-void linear_q4_1_w4a8_prefill(
-        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q4, float *y) {
-    const size_t nb       = n_in / Q4_1_BLOCK_ELEMS;
-    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, m *n_in);
-    float       *x_scales = heap_alloc_array_aligned(float, m *nb);
-    int32_t     *bsums    = heap_alloc_array_aligned(int32_t, m *nb);
-    if (x_q8 == nullptr || x_scales == nullptr || bsums == nullptr) {
-        safe_free((void **) &x_q8);
-        safe_free((void **) &x_scales);
-        safe_free((void **) &bsums);
-        return;
-    }
-    for (size_t i = 0; i < m; i++) {
-        quantize_x_q8_groups(n_in,
-                             GEIST_ACT_Q8_0_ELEMS,
-                             x + i * n_in,
-                             x_q8 + i * n_in,
-                             x_scales + i * nb,
-                             bsums + i * nb);
-    }
-    linear_q4_1_w4a8_prefill_pre(m, n_in, n_out, x_q8, x_scales, bsums, w_q4, y);
-    safe_free((void **) &x_q8);
-    safe_free((void **) &x_scales);
-    safe_free((void **) &bsums);
 }

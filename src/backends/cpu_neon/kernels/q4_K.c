@@ -2299,57 +2299,6 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(size_t         m,
 #endif
 }
 
-void linear_q4k_w4a8_prefill(
-        size_t m, size_t n_in, size_t n_out, const float *x, const void *w_q4k, float *y) {
-    if (m == 0 || m > GEIST_QUANT_M_CAP)
-        return;
-    const size_t n_groups = geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS);
-    int8_t      *x_q8     = heap_alloc_array_aligned(int8_t, m *n_in);
-    int32_t     *sum32    = heap_alloc_array_aligned(int32_t, m *(n_in / 32));
-    float       *x_scales = heap_alloc_array_aligned(float, m *n_groups);
-    if (x_q8 == nullptr || sum32 == nullptr || x_scales == nullptr) {
-        safe_free((void **) &x_q8);
-        safe_free((void **) &sum32);
-        safe_free((void **) &x_scales);
-        return;
-    }
-    for (size_t i = 0; i < m; i++) {
-        quantize_x_q8_groups(n_in,
-                             GEIST_ACT_Q8K_ELEMS,
-                             x + i * n_in,
-                             x_q8 + i * n_in,
-                             x_scales + i * n_groups,
-                             sum32 + i * (n_in / 32));
-    }
-    linear_q4k_w4a8_prefill_pre(m, n_in, n_out, x_q8, x_scales, sum32, w_q4k, y);
-    safe_free((void **) &x_q8);
-    safe_free((void **) &sum32);
-    safe_free((void **) &x_scales);
-}
-
-void linear_q4k_decode_w4a8_predecoded(size_t      n_in,
-                                       size_t      n_out,
-                                       const float x[static n_in],
-                                       const void *packed,
-                                       float       y[static n_out]) {
-    if (!q4k_predecode_valid(packed, n_in, n_out))
-        return;
-    int8_t  *x_q8   = heap_alloc_array_aligned(int8_t, n_in);
-    int32_t *sum32  = heap_alloc_array_aligned(int32_t, n_in / 32);
-    float *x_scales = heap_alloc_array_aligned(float, geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS));
-    if (x_q8 == nullptr || sum32 == nullptr || x_scales == nullptr) {
-        safe_free((void **) &x_q8);
-        safe_free((void **) &sum32);
-        safe_free((void **) &x_scales);
-        return;
-    }
-    quantize_x_q8_groups(n_in, GEIST_ACT_Q8K_ELEMS, x, x_q8, x_scales, sum32);
-    linear_q4k_w4a8_prefill_predecoded(1, n_in, n_out, x_q8, x_scales, sum32, packed, y);
-    safe_free((void **) &x_q8);
-    safe_free((void **) &sum32);
-    safe_free((void **) &x_scales);
-}
-
 void linear_q4k_decode_fp32(size_t      n_in,
                             size_t      n_out,
                             const float x[static n_in],

@@ -69,14 +69,6 @@ void w8a8_quantize_acts_row(size_t      n_in,
                                     const int32_t sum_a_per_block[static n_blocks],
                                     const float   act_scales[static w8a8_act_groups(n_blocks)]);
 
-[[nodiscard]] float w8a8_dot(size_t        n_blocks,
-                             const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
-                             const float   w_scales[static n_blocks],
-                             const float   w_offsets[static n_blocks],
-                             const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
-                             const int32_t sum_a_per_block[static n_blocks],
-                             const float   act_scales[static w8a8_act_groups(n_blocks)]);
-
 /* Multi-row GEMV: n_rows independent dots, OMP-parallel internally. */
 void w8a8_gemv(size_t        n_rows,
                size_t        n_blocks_per_row,

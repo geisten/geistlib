@@ -2,8 +2,8 @@
  * test_tensor_view_unit — malformed tensor views must be refused, on
  * every CPU backend (issue #330).
  *
- * The elementwise ops unpack a view by folding shape[0..ndim) and adding
- * `offset` to the host pointer. Each case below breaks one check that
+ * The elementwise and transformer ops unpack a view by folding
+ * shape[0..ndim) and adding `offset` to the host pointer. Each case below breaks one check that
  * unpacking needs — ndim within the eight slots shape[] has, a product
  * that does not wrap, a byte range inside the buffer, alignment — aimed at
  * whichever CPU backends this build contains; the point is that they agree.
@@ -144,6 +144,27 @@ static void run_backend(const char *backend) {
     t.ndim = 9;
     if (be->desc->prims->add(be, &good, &b, &t) == GEIST_OK) {
         fail(backend, "malformed OUTPUT view accepted");
+    }
+
+    /* The transformer ops unpack their views through the same check (they
+     * once folded the shape without comparing it to the buffer). An
+     * embedding table of 16 x 4 fits the 64 floats behind it; one of
+     * 1024 x 4 does not, and token 1000 would read 15 KiB past the end. */
+    if (be->desc->prims->embedding_lookup != nullptr) {
+        struct geist_tensor table = good, row = y;
+        table.ndim      = 2;
+        table.shape[0]  = 16;
+        table.shape[1]  = 4;
+        table.stride[0] = 4;
+        table.stride[1] = 1;
+        row.shape[0]    = 4;
+        if (be->desc->prims->embedding_lookup(be, &table, 3, &row) != GEIST_OK) {
+            fail(backend, "embedding_lookup rejected a table that fits its buffer");
+        }
+        table.shape[0] = 1024;
+        if (be->desc->prims->embedding_lookup(be, &table, 1000, &row) == GEIST_OK) {
+            fail(backend, "embedding_lookup accepted a table past its buffer");
+        }
     }
 
     /* Still healthy afterwards: rejecting a view must not have disturbed

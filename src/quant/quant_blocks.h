@@ -7,9 +7,10 @@
  * each is _Static_assert'd against its byte size. They carry no file-format
  * types, so formats/ and backends/ can both include this header.
  *
- * Per-format-only helpers (unpack_q3k_scales, q4k_subpair_dots,
- * iq2s/iq3s subblock decoders, q3k NEON inlines, etc.) live inside the
- * format-specific .c file as `static inline`.
+ * Helpers used by one TU only (q4k_subpair_dots, iq2s/iq3s subblock
+ * decoders, etc.) live inside that .c file as `static inline`; the ones a
+ * codec and a kernel both need (get_scale_min_k4, unpack_q3k_scales,
+ * q3k_reconstruct_q32) live here, once.
  */
 #pragma once
 
@@ -137,6 +138,15 @@ static inline void get_scale_min_k4(int j, const uint8_t *q, uint8_t *d_out, uin
     }
 }
 
+/* Q3_K: unpack the 12 packed scale bytes into 16 signed 6-bit scales. */
+static inline void unpack_q3k_scales(const uint8_t *sc_packed, int8_t *sc_out) {
+    for (int j = 0; j < 16; j++) {
+        const uint8_t low4  = (uint8_t) ((sc_packed[j % 8] >> ((j / 8) * 4u)) & 0x0Fu);
+        const uint8_t high2 = (uint8_t) ((sc_packed[8 + (j % 4)] >> ((j / 4) * 2u)) & 0x03u);
+        sc_out[j]           = (int8_t) ((int) (low4 | (high2 << 4u)) - 32);
+    }
+}
+
 /* dot(x_q8[0..15], q_signed_int8[0..15]) using vdotq_s32 when NEON
  * is available. Shared across Q3_K / Q4_K / Q5_K / Q6_K / Q8_0 W*A8
  * kernels — a 16-byte int8 SDOT is the universal inner accumulator.
@@ -152,5 +162,25 @@ static inline int32_t dot16_i8(const int8_t *x_q8, int8x16_t q) {
     int32x4_t acc = vdupq_n_s32(0);
     acc           = vdotq_s32(acc, xv, q);
     return vaddvq_s32(acc);
+}
+
+/* Q3_K: rebuild 32 signed 3-bit weights in [-4, 3] from 2 low bits (qs)
+ * and 1 high bit (hmask). The caller passes the qs/hmask vectors already
+ * shifted (vshrq_n_u8 needs an immediate; shift 0 passes them through). */
+static inline void q3k_reconstruct_q32(uint8x16_t qs_shifted_lo,
+                                       uint8x16_t qs_shifted_hi,
+                                       uint8x16_t hm_shifted_lo,
+                                       uint8x16_t hm_shifted_hi,
+                                       int8x16_t *out_lo,
+                                       int8x16_t *out_hi) {
+    const uint8x16_t mask3  = vdupq_n_u8(0x03);
+    const uint8x16_t mask1  = vdupq_n_u8(0x01);
+    const int8x16_t  bias4  = vdupq_n_s8(4);
+    uint8x16_t       low2_l = vandq_u8(qs_shifted_lo, mask3);
+    uint8x16_t       low2_h = vandq_u8(qs_shifted_hi, mask3);
+    uint8x16_t       hi1_l  = vandq_u8(hm_shifted_lo, mask1);
+    uint8x16_t       hi1_h  = vandq_u8(hm_shifted_hi, mask1);
+    *out_lo = vsubq_s8(vreinterpretq_s8_u8(vaddq_u8(low2_l, vshlq_n_u8(hi1_l, 2))), bias4);
+    *out_hi = vsubq_s8(vreinterpretq_s8_u8(vaddq_u8(low2_h, vshlq_n_u8(hi1_h, 2))), bias4);
 }
 #endif

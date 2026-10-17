@@ -2,7 +2,8 @@
  * src/backends/cpu_neon/internal.h — shared internal types for cpu_neon TUs.
  *
  * Layer: BACKEND. Internal to cpu_neon — other backends MUST NOT include
- * this. struct geist_buffer is backend-private.
+ * this. struct geist_buffer is the CPU backends' shared host buffer
+ * (common/host_buffer.h).
  */
 #ifndef GEIST_INTERNAL_BACKEND_CPU_NEON_INTERNAL_H
 #define GEIST_INTERNAL_BACKEND_CPU_NEON_INTERNAL_H
@@ -16,15 +17,9 @@
 #include <geist.h>
 #include <geist_types.h>
 #include "heap.h"
+#include "host_buffer.h" /* struct geist_buffer */
 #include "hw_probe.h"
 #include "kernel_catalog.h"
-
-struct geist_buffer {
-    void                  *host;
-    size_t                 bytes;
-    enum geist_buffer_role role;
-    unsigned int           memory_flags;
-};
 
 /* Kernel scratch for temporary int8 / fp32 / int32 buffers. One
  * workspace PER CALLING THREAD, owned by the backend: concurrent
