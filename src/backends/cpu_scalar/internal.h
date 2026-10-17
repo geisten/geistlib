@@ -75,10 +75,6 @@ struct geist_hadamard_args;
                                                       struct geist_tensor       *x,
                                                       const struct geist_tensor *cos,
                                                       const struct geist_tensor *sin);
-[[nodiscard]] enum geist_status cpu_scalar_embedding_lookup(struct geist_backend      *be,
-                                                            const struct geist_tensor *embed_table,
-                                                            geist_token_t              token_id,
-                                                            struct geist_tensor       *out);
 /* Causal attention over an F16 KV cache (F16 DENSE 3-D k / v views, F32 q
  * and out): the shared reference, attention_mqa_causal_kv_f16. The other
  * CPU backends route F16 here until they have their own kernels (#48). */

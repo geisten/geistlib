@@ -1426,29 +1426,6 @@ static_assert(sizeof(struct vk_hadamard_push) == 11 * 4, "hadamard_f32.comp push
     return s;
 }
 
-[[nodiscard]] static enum geist_status vk_embedding_lookup(struct geist_backend      *be,
-                                                           const struct geist_tensor *embed_table,
-                                                           geist_token_t              token_id,
-                                                           struct geist_tensor       *out) {
-    size_t       n_table = 0, n_out = 0;
-    const float *tablep = vk_tensor_host(embed_table, &n_table);
-    float       *outp   = vk_tensor_host(out, &n_out);
-    if (tablep == nullptr || outp == nullptr || embed_table->ndim != 2) {
-        return GEIST_E_INVALID_ARG;
-    }
-    const int64_t vocab_size = embed_table->shape[0];
-    const int64_t d_model    = embed_table->shape[1];
-    if (token_id < 0 || (int64_t) token_id >= vocab_size || n_out != (size_t) d_model) {
-        geist_backend_set_error(be,
-                                GEIST_E_INVALID_ARG,
-                                "vulkan embedding_lookup: token %d out of range",
-                                (int) token_id);
-        return GEIST_E_INVALID_ARG;
-    }
-    memcpy(outp, tablep + (size_t) token_id * (size_t) d_model, (size_t) d_model * sizeof(float));
-    return GEIST_OK;
-}
-
 /* attn_part_f16.comp's and attn_comb.comp's push blocks, field for field. */
 struct vk_attn_part_push {
     uint32_t n_q_heads, n_kv_heads, hd, s_lo, s_end, tile, n_tiles, gb;
@@ -2708,16 +2685,15 @@ vk_fb_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
 }
 
 static const struct geist_backend_primitives vk_prims = {
-        .rmsnorm          = vk_rmsnorm,
-        .add              = vk_add,
-        .mul              = vk_mul,
-        .gelu_tanh        = vk_gelu_tanh,
-        .silu             = vk_silu,
-        .relu_squared     = vk_relu_squared,
-        .rope_apply       = vk_rope_apply,
-        .embedding_lookup = vk_embedding_lookup,
-        .attention        = vk_attention,
-        .scale_f32        = vk_scale_f32,
+        .rmsnorm      = vk_rmsnorm,
+        .add          = vk_add,
+        .mul          = vk_mul,
+        .gelu_tanh    = vk_gelu_tanh,
+        .silu         = vk_silu,
+        .relu_squared = vk_relu_squared,
+        .rope_apply   = vk_rope_apply,
+        .attention    = vk_attention,
+        .scale_f32    = vk_scale_f32,
 };
 
 static const struct geist_backend_fused vk_fused = {

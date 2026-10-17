@@ -1,5 +1,5 @@
 /*
- * src/backends/cpu_neon/transformer_ops.c — rope_apply, embedding_lookup,
+ * src/backends/cpu_neon/transformer_ops.c — rope_apply,
  * FP32 attention (NEON dot products) and the fused Q4_K/Q6_K GEGLU FFN.
  *
  * Layer: BACKEND.
@@ -272,42 +272,6 @@ static void ffn_quant_rows(void *ctx, size_t i0, size_t i1) {
         return GEIST_E_INVALID_ARG;
     }
     rope_apply(seq_len, n_heads, head_dim, (size_t) cos->shape[cos->ndim - 1], xp, cosp, sinp);
-    return GEIST_OK;
-}
-
-[[nodiscard]] enum geist_status cpu_neon_embedding_lookup(struct geist_backend      *be,
-                                                          const struct geist_tensor *embed_table,
-                                                          geist_token_t              token_id,
-                                                          struct geist_tensor       *out) {
-    if (be == nullptr || embed_table == nullptr || out == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    size_t       n_table, n_out;
-    const float *tablep = get_f32_dense_ptr_full(embed_table, &n_table);
-    float       *outp   = get_f32_dense_ptr_full(out, &n_out);
-    if (tablep == nullptr || outp == nullptr || embed_table->ndim != 2) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon embedding_lookup: bad inputs");
-        return GEIST_E_INVALID_ARG;
-    }
-    int64_t vocab_size = embed_table->shape[0];
-    int64_t d_model    = embed_table->shape[1];
-    if (token_id < 0 || (int64_t) token_id >= vocab_size) {
-        geist_backend_set_error(be,
-                                GEIST_E_INVALID_ARG,
-                                "cpu_neon embedding_lookup: token_id %d out of range [0, %lld)",
-                                (int) token_id,
-                                (long long) vocab_size);
-        return GEIST_E_INVALID_ARG;
-    }
-    if (n_out != (size_t) d_model) {
-        geist_backend_set_error(be,
-                                GEIST_E_INVALID_ARG,
-                                "cpu_neon embedding_lookup: out size %zu != d_model %lld",
-                                n_out,
-                                (long long) d_model);
-        return GEIST_E_INVALID_ARG;
-    }
-    memcpy(outp, tablep + (size_t) token_id * (size_t) d_model, (size_t) d_model * sizeof(float));
     return GEIST_OK;
 }
 

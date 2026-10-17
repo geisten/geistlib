@@ -1,5 +1,5 @@
 /*
- * src/backends/cpu_scalar/transformer_ops.c — rope_apply, embedding_lookup,
+ * src/backends/cpu_scalar/transformer_ops.c — rope_apply,
  * attention via the gemma4_kernels.c reference kernels.
  *
  * Layer: BACKEND.
@@ -58,35 +58,6 @@ static float *get_f32_dense_ptr_full(const struct geist_tensor *t, size_t *out_n
                xp,
                cosp,
                sinp);
-    return GEIST_OK;
-}
-
-[[nodiscard]] enum geist_status cpu_scalar_embedding_lookup(struct geist_backend      *be,
-                                                            const struct geist_tensor *embed_table,
-                                                            geist_token_t              token_id,
-                                                            struct geist_tensor       *out) {
-    if (be == nullptr || embed_table == nullptr || out == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    size_t       n_table, n_out;
-    const float *tablep = get_f32_dense_ptr_full(embed_table, &n_table);
-    float       *outp   = get_f32_dense_ptr_full(out, &n_out);
-    if (tablep == nullptr || outp == nullptr || embed_table->ndim != 2) {
-        return GEIST_E_INVALID_ARG;
-    }
-    int64_t vocab_size = embed_table->shape[0];
-    int64_t d_model    = embed_table->shape[1];
-    if (token_id < 0 || (int64_t) token_id >= vocab_size || n_out != (size_t) d_model) {
-        geist_backend_set_error(be,
-                                GEIST_E_INVALID_ARG,
-                                "cpu_scalar embedding_lookup: token_id %d, d_model %lld, "
-                                "n_out %zu",
-                                (int) token_id,
-                                (long long) d_model,
-                                n_out);
-        return GEIST_E_INVALID_ARG;
-    }
-    memcpy(outp, tablep + (size_t) token_id * (size_t) d_model, (size_t) d_model * sizeof(float));
     return GEIST_OK;
 }
 
