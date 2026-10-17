@@ -79,3 +79,9 @@ void                            geist_host_buffer_unmap(struct geist_buffer *buf
     }
     return geist_tensor_f32_dense(t, t->buffer->host, t->buffer->bytes, out_n);
 }
+
+/* geist_host_tensor for an F16 3-D view (the F16 KV cache), as halves. */
+[[nodiscard]] static inline uint16_t *geist_host_tensor_f16_3d(const struct geist_tensor *t,
+                                                               size_t                    *out_n) {
+    return (uint16_t *) geist_host_tensor(t, GEIST_DTYPE_F16, sizeof(uint16_t), 3, out_n);
+}

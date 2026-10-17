@@ -28,13 +28,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-static float *gelu_f32_ptr(const struct geist_tensor *t, size_t *out_n) {
-    if (t == nullptr || t->buffer == nullptr) {
-        return nullptr;
-    }
-    return geist_tensor_f32_dense(t, t->buffer->host, t->buffer->bytes, out_n);
-}
-
 /* gelu_tanh(v) = 0.5 * v * (1 + tanh(K0 * (v + K1 * v^3))). */
 static inline float gelu1(float v) {
     static constexpr float K0 = 0.7978845608028654f; /* sqrt(2/pi) */
@@ -101,8 +94,8 @@ static void gelu_mul_scaled_rows(void *ctx, size_t r0, size_t r1) {
 [[nodiscard]] enum geist_status
 cpu_x86_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
     size_t       nx = 0, ny = 0;
-    const float *xp = gelu_f32_ptr(x, &nx);
-    float       *yp = gelu_f32_ptr(y, &ny);
+    const float *xp = geist_host_tensor_f32(x, &nx);
+    float       *yp = geist_host_tensor_f32(y, &ny);
     if (xp == nullptr || yp == nullptr || nx != ny) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 gelu_tanh: bad inputs");
         return GEIST_E_INVALID_ARG;
@@ -117,9 +110,9 @@ cpu_x86_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct
                                                       const struct geist_tensor *z,
                                                       struct geist_tensor       *y) {
     size_t       nx = 0, nz = 0, ny = 0;
-    const float *xp = gelu_f32_ptr(x, &nx);
-    const float *zp = gelu_f32_ptr(z, &nz);
-    float       *yp = gelu_f32_ptr(y, &ny);
+    const float *xp = geist_host_tensor_f32(x, &nx);
+    const float *zp = geist_host_tensor_f32(z, &nz);
+    float       *yp = geist_host_tensor_f32(y, &ny);
     if (xp == nullptr || zp == nullptr || yp == nullptr || nx != nz || nx != ny) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 gelu_tanh_mul: bad inputs");
         return GEIST_E_INVALID_ARG;
@@ -135,9 +128,9 @@ cpu_x86_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct
                                                              const float               *scale,
                                                              struct geist_tensor       *y) {
     size_t       nx = 0, nz = 0, ny = 0;
-    const float *xp = gelu_f32_ptr(x, &nx);
-    const float *zp = gelu_f32_ptr(z, &nz);
-    float       *yp = gelu_f32_ptr(y, &ny);
+    const float *xp = geist_host_tensor_f32(x, &nx);
+    const float *zp = geist_host_tensor_f32(z, &nz);
+    float       *yp = geist_host_tensor_f32(y, &ny);
     if (xp == nullptr || zp == nullptr || yp == nullptr || scale == nullptr || nx != nz ||
         nx != ny || y->ndim < 1) {
         geist_backend_set_error(
@@ -247,8 +240,8 @@ static void silu_all(size_t n, const float *x, const float *z, float *y) {
 [[nodiscard]] enum geist_status
 cpu_x86_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
     size_t       nx = 0, ny = 0;
-    const float *xp = gelu_f32_ptr(x, &nx);
-    float       *yp = gelu_f32_ptr(y, &ny);
+    const float *xp = geist_host_tensor_f32(x, &nx);
+    float       *yp = geist_host_tensor_f32(y, &ny);
     if (xp == nullptr || yp == nullptr || nx != ny) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 silu: bad inputs");
         return GEIST_E_INVALID_ARG;
@@ -262,9 +255,9 @@ cpu_x86_silu(struct geist_backend *be, const struct geist_tensor *x, struct geis
                                                  const struct geist_tensor *z,
                                                  struct geist_tensor       *y) {
     size_t       nx = 0, nz = 0, ny = 0;
-    const float *xp = gelu_f32_ptr(x, &nx);
-    const float *zp = gelu_f32_ptr(z, &nz);
-    float       *yp = gelu_f32_ptr(y, &ny);
+    const float *xp = geist_host_tensor_f32(x, &nx);
+    const float *zp = geist_host_tensor_f32(z, &nz);
+    float       *yp = geist_host_tensor_f32(y, &ny);
     if (xp == nullptr || zp == nullptr || yp == nullptr || nx != nz || nx != ny) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 silu_mul: bad inputs");
         return GEIST_E_INVALID_ARG;
@@ -343,9 +336,9 @@ static void rmsnorm_rows(void *ctx, size_t r0, size_t r1) {
         return GEIST_E_INVALID_ARG;
     }
     size_t       nx = 0, nw = 0, ny = 0;
-    const float *xp = gelu_f32_ptr(x, &nx);
-    const float *wp = gelu_f32_ptr(w, &nw);
-    float       *yp = gelu_f32_ptr(y, &ny);
+    const float *xp = geist_host_tensor_f32(x, &nx);
+    const float *wp = geist_host_tensor_f32(w, &nw);
+    float       *yp = geist_host_tensor_f32(y, &ny);
     if (xp == nullptr || wp == nullptr || yp == nullptr || nx != ny) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 rmsnorm: bad inputs");
         return GEIST_E_INVALID_ARG;
@@ -404,9 +397,9 @@ static void add_chunks(void *ctx, size_t c0, size_t c1) {
         return GEIST_E_INVALID_ARG;
     }
     size_t       na = 0, nb = 0, ny = 0;
-    const float *ap = gelu_f32_ptr(a, &na);
-    const float *bp = gelu_f32_ptr(b, &nb);
-    float       *yp = gelu_f32_ptr(y, &ny);
+    const float *ap = geist_host_tensor_f32(a, &na);
+    const float *bp = geist_host_tensor_f32(b, &nb);
+    float       *yp = geist_host_tensor_f32(y, &ny);
     if (ap == nullptr || bp == nullptr || yp == nullptr) {
         geist_backend_set_error(
                 be, GEIST_E_UNSUPPORTED, "cpu_x86 add: all tensors must be F32 DENSE");

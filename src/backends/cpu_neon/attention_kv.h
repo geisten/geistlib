@@ -25,7 +25,7 @@
 
 #include "gemma4_kernels.h" /* ATTN_EXP_FLOOR, ATTN_F32_BLOCK */
 #include "int4_kv.h"
-#include "tensor_view.h"
+#include "host_buffer.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -247,20 +247,6 @@ static void nkv_run(size_t       n_q,
 #pragma GCC diagnostic pop
 #endif
 
-/* The first element of a contiguous DENSE view of `ndim` dimensions and
- * `dtype` (elements of `elem` bytes), or nullptr if the view is malformed or
- * runs past its buffer; *out_n gets its element count. */
-static inline const void *nkv_view(const struct geist_tensor *t,
-                                   enum geist_dtype           dtype,
-                                   size_t                     elem,
-                                   int                        ndim,
-                                   size_t                    *out_n) {
-    return t != nullptr && t->buffer != nullptr
-                   ? geist_tensor_dense(
-                             t, dtype, elem, ndim, t->buffer->host, t->buffer->bytes, out_n)
-                   : nullptr;
-}
-
 /* fused->attention_kv_int8 or fused->attention_kv_int4, per NKV_INT4, its
  * argument struct unpacked: checks the views and the shapes, then runs. */
 static inline enum geist_status nkv_attention(struct geist_backend      *be,
@@ -275,12 +261,12 @@ static inline enum geist_status nkv_attention(struct geist_backend      *be,
     const char            *name  = NKV_INT4 ? "int4" : "int8";
     const enum geist_dtype kv_dt = NKV_INT4 ? GEIST_DTYPE_U8 : GEIST_DTYPE_I8;
     size_t                 nq = 0, nk = 0, nv = 0, nks = 0, nvs = 0, no = 0;
-    const float           *q   = nkv_view(q_t, GEIST_DTYPE_F32, sizeof(float), 3, &nq);
-    const void            *k   = nkv_view(k_t, kv_dt, 1, 3, &nk);
-    const void            *v   = nkv_view(v_t, kv_dt, 1, 3, &nv);
-    const float           *ks  = nkv_view(k_scale_t, GEIST_DTYPE_F32, sizeof(float), 2, &nks);
-    const float           *vs  = nkv_view(v_scale_t, GEIST_DTYPE_F32, sizeof(float), 2, &nvs);
-    float                 *out = (float *) nkv_view(out_t, GEIST_DTYPE_F32, sizeof(float), 3, &no);
+    const float           *q = geist_host_tensor(q_t, GEIST_DTYPE_F32, sizeof(float), 3, &nq);
+    const void            *k = geist_host_tensor(k_t, kv_dt, 1, 3, &nk);
+    const void            *v = geist_host_tensor(v_t, kv_dt, 1, 3, &nv);
+    const float *ks  = geist_host_tensor(k_scale_t, GEIST_DTYPE_F32, sizeof(float), 2, &nks);
+    const float *vs  = geist_host_tensor(v_scale_t, GEIST_DTYPE_F32, sizeof(float), 2, &nvs);
+    float       *out = (float *) geist_host_tensor(out_t, GEIST_DTYPE_F32, sizeof(float), 3, &no);
     if (q == nullptr || k == nullptr || v == nullptr || ks == nullptr || vs == nullptr ||
         out == nullptr) {
         geist_backend_set_error(be,

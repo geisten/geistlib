@@ -454,6 +454,15 @@ minor release.
 
 ### Fixed
 
+- **CPU backends: every tensor view is bounded by its buffer.** cpu_scalar's
+  and cpu_neon's rope_apply, embedding_lookup, attention and F16 KV append
+  unpacked their F32 views without checking the shape product for overflow
+  or offset + size against the buffer, so a view larger than its buffer
+  read or wrote past it (AGENT.md §4). They now use the same checked
+  accessor as the elementwise ops (`src/backends/common/host_buffer.h`);
+  `test_tensor_view_unit` covers embedding_lookup. Valid views are
+  unaffected.
+
 - **Vulkan: lookup tables are no longer uploaded inside the forward pass
   (#468).** The embedding lookup registered an untied `token_embd`, and
   Gemma 4's per-layer embedding table, with `resolve_weight` on the first
