@@ -14,7 +14,9 @@
  *   - GEIST_SPLIT_BACKEND names another backend kind (metal, vulkan) for
  *     the first N layers: the outputs are reported (max |d| of the logits,
  *     matching greedy tokens), not required to match — GPU kernels are not
- *     bit-exact with the CPU by design.
+ *     bit-exact with the CPU by design. The baseline is the same model
+ *     entirely on that backend ("gpu only"): a split should not stray
+ *     further from the CPU than that.
  *
  * GEIST_SPLIT_POINTS ("1,20,28") replaces the split points, e.g. for a
  * model whose every layer does not fit the device.
@@ -282,6 +284,26 @@ int main(void) {
                     geist_status_to_string(s));
             fails++;
             continue;
+        }
+        if (!exact) {
+            struct run g = {0};
+            s            = run_once(path, sbe, nullptr, 0, kvs[k], &g);
+            if (s == GEIST_OK) {
+                size_t same = 0;
+                while (same < N_DECODE && g.tokens[same] == ref.tokens[same]) {
+                    same++;
+                }
+                printf("  kv %-4s gpu only : max|d| logits %.3g, after reset %.3g, "
+                       "greedy tokens matching %zu/%d\n",
+                       kv_names[k],
+                       (double) max_abs_diff(g.logits, ref.logits, ref.n_logits),
+                       (double) max_abs_diff(g.logits_reset, ref.logits_reset, ref.n_logits),
+                       same,
+                       N_DECODE);
+            } else {
+                printf("  kv %-4s gpu only : %s\n", kv_names[k], geist_status_to_string(s));
+            }
+            run_free(&g);
         }
         for (size_t i = 0; i < n_splits; i++) {
             struct run r = {0};
