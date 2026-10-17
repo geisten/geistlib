@@ -25,6 +25,8 @@
 #include "blocks.h"
 
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <stdatomic.h>
 #include <string.h>
 
@@ -115,6 +117,51 @@ static void moe_bucket(size_t         n_exp,
         start[e] = start[e - 1];
     }
     start[0] = 0;
+}
+
+/* GEIST_MOE_TRACE=<path>: append one record per routed row — int32 layer,
+ * int32 position, the k chosen expert ids (uint32, ascending) and the
+ * router-logit margin between the k-th choice and the best one left out
+ * (float). A diagnostic for comparing routing across backends and engines
+ * (#48); without the variable it costs one getenv per layer. */
+static void moe_trace(int             layer,
+                      size_t          pos0,
+                      size_t          rows,
+                      size_t          n_exp,
+                      size_t          k,
+                      const float    *lg,
+                      const uint32_t *ids) {
+    const char *path = getenv("GEIST_MOE_TRACE");
+    if (path == nullptr || path[0] == '\0')
+        return;
+    FILE *f = fopen(path, "ab");
+    if (f == nullptr)
+        return;
+    for (size_t r = 0; r < rows; r++) {
+        const float    *l  = lg + r * n_exp;
+        const uint32_t *id = ids + r * k;
+        uint32_t        sorted[GEIST_MOE_MAX_EXPERTS];
+        float           kth = l[id[k - 1]], out = -INFINITY;
+        memcpy(sorted, id, k * sizeof sorted[0]);
+        for (size_t a = 1; a < k; a++)
+            for (size_t b = a; b > 0 && sorted[b - 1] > sorted[b]; b--) {
+                const uint32_t t = sorted[b];
+                sorted[b]        = sorted[b - 1];
+                sorted[b - 1]    = t;
+            }
+        for (size_t i = 0, j = 0; i < n_exp; i++) {
+            if (j < k && sorted[j] == i)
+                j++;
+            else if (l[i] > out)
+                out = l[i];
+        }
+        const int32_t hdr[2] = {layer, (int32_t) (pos0 + r)};
+        const float   margin = kth - out;
+        fwrite(hdr, sizeof hdr, 1, f);
+        fwrite(sorted, sizeof sorted[0], k, f);
+        fwrite(&margin, sizeof margin, 1, f);
+    }
+    fclose(f);
 }
 
 /* The experts of one layer, shared by the workers of one parallel region. */
@@ -268,6 +315,8 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
                                 sess->moe_ids + r * k,
                                 sess->moe_wts + r * k);
     }
+    if (routed)
+        moe_trace(ctx->layer_idx, ctx->q_position, seq, n_exp, k, lg, sess->moe_ids);
     v->buffer_unmap(sess->moe_logits);
     if (!routed) {
         geist_backend_set_error(ctx->be,

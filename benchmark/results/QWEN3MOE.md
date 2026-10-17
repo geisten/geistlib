@@ -2,14 +2,16 @@
 
 **Result.** The `qwen3moe` family runs Qwen3-30B-A3B on `cpu_neon`,
 `cpu_x86` and `cpu_scalar`.
-- **Accuracy.** Over 768 teacher-forced positions, geist's log-probabilities
-  are closer to the exact reference (`cpu_scalar`) than llama.cpp's.
-- **Single-position logits.** On cpu_neon they meet the tolerance declared in
-  #48 before the comparison, on all three prompts.
+- **Next-token logits** meet the tolerance declared in #48 on cpu_neon.
+- **Accuracy with an FP32 KV cache.** Against the exact reference, geist's
+  logits are as close as llama.cpp's: mean per-position JS 0.0020 vs 0.0020
+  on prose, 0.0010 vs 0.0010 on code.
+- **cpu_x86's default INT8 KV cache costs that accuracy.** Mean JS rises to
+  0.0060, and single positions reach 0.19 on prose and 0.69 on code. The
+  MoE amplifies this KV error about 16 times more than a dense model of the
+  same quantization does. See "Where the divergence comes from".
 - **Speed on the 9950X.** geist decodes faster than llama.cpp (36-37 vs 35
   tok/s) and prefills at 86-91 % of it.
-- **Speed on the M1 Max.** The CPU measurement was taken under heavy host load
-  and is not yet conclusive.
 
 ## Setup
 
@@ -45,37 +47,75 @@ Tolerance, fixed in #48 before the first comparison: same top-1, at least
 | cpu_x86 | code | same | 5/5 | 0.9966 | 0.00001 |
 
 **One position is a noisy measure for an MoE.**
-- A router picks 8 of 128 experts per layer. When the 8th and the 9th are
-  nearly tied, a rounding difference swaps an expert, and everything after
-  it moves.
-- On cpu_neon, decode and prefill of the same tokens route identically up
-  to layer 8. There one expert swaps at a router-logit margin of 0.007.
 - llama.cpp itself, ubatch 32 vs 880 on the same Mac, moves the long
   prompt's logits by **JS 0.017**.
 - On cpu_x86, three bit-different but equally exact forms of SiLU give JS
-  0.025-0.041 at the same position. The previous block, which launched one
-  parallel region per expert projection, gave 0.0084 there.
+  0.025-0.041 at the same position. That is measured against cpu_scalar
+  with its Linux default INT8 KV, so the reference carries the same KV
+  error; see below.
+- cpu_x86's 0.068 on the long prompt (against llama.cpp) comes from its
+  default INT8 KV cache. The next section measures it at 768 positions
+  against an exact reference.
 
-## Teacher-forced log-probabilities (cpu_x86, 2 x 384 positions)
+## Where the divergence comes from (cpu_x86, 2 x 384 positions)
 
-The measure that averages that noise out: the log-probability of each
-held-out token given its prefix, through the decode path. The error column
-is the mean |log p - log p(cpu_scalar)| per position. cpu_scalar is the
-reference because it computes the same quantized model in plain F32.
+**Method.**
+- Teacher-forced through the decode path (`tools/dump_geist_tf_logits`,
+  `benchmark/dump_llamacpp_tf.cpp`): every position's full next-token
+  logits, on two held-out texts (*Moby-Dick*, llama.cpp source), 128 prompt
+  tokens then 384 positions.
+- `tools/js_streams.c` gives the JS of each position against the reference.
+- **Reference:** `cpu_scalar` with an **FP32 KV cache**. On Linux,
+  cpu_scalar defaults to INT8 KV (`caps.preferred_kv_mode`), so an
+  unspecified cpu_scalar run is not exact. A first version of this study
+  fell into that trap, and its conclusion (geist closer than llama.cpp) did
+  not hold.
 
-| text | engine | perplexity | mean \|Δ log p\| vs cpu_scalar |
-| :-- | :-- | --: | --: |
-| *Moby-Dick* | geist (this block) | 11.13 | **0.106** |
-| | geist (previous block) | 11.21 | 0.109 |
-| | llama.cpp | 10.93 | 0.157 |
-| | cpu_scalar | 11.23 | 0 |
-| llama.cpp source | geist (this block) | 2.85 | **0.074** |
-| | geist (previous block) | 2.82 | 0.080 |
-| | llama.cpp | 2.73 | 0.105 |
-| | cpu_scalar | 2.88 | 0 |
+### JS per position against the reference
 
-geist's two blocks are within 0.003-0.006 of each other and both closer to
-the reference than llama.cpp.
+| text | engine | mean | median | p99 | max | > 0.02 | top-1 same |
+| :-- | :-- | --: | --: | --: | --: | --: | --: |
+| *Moby-Dick* | geist cpu_x86, FP32 KV | 0.0020 | 0.0010 | 0.017 | 0.076 | 0.8 % | 97.1 % |
+| | llama.cpp (F16 KV) | 0.0020 | 0.0011 | 0.018 | 0.087 | 0.5 % | 95.3 % |
+| | geist cpu_x86, INT8 KV (default) | 0.0060 | 0.0020 | 0.124 | 0.188 | 4.4 % | 95.1 % |
+| | cpu_scalar, INT8 KV | 0.0061 | 0.0011 | 0.139 | 0.195 | 4.9 % | 95.3 % |
+| llama.cpp source | geist cpu_x86, FP32 KV | 0.0010 | 0.0001 | 0.013 | 0.042 | 0.5 % | 98.2 % |
+| | llama.cpp (F16 KV) | 0.0010 | 0.0001 | 0.015 | 0.033 | 0.5 % | 98.4 % |
+| | geist cpu_x86, INT8 KV (default) | 0.0046 | 0.0002 | 0.037 | **0.692** | 1.8 % | 97.7 % |
+| | cpu_scalar, INT8 KV | 0.0034 | 0.0001 | 0.023 | 0.692 | 1.6 % | 97.7 % |
+
+Dense control, Llama 3.2 3B Q4_K_M (*Moby-Dick*, same method):
+
+| engine | mean | max |
+| :-- | --: | --: |
+| geist cpu_x86, FP32 KV | 0.00044 | 0.0039 |
+| geist cpu_x86, INT8 KV | 0.00068 | 0.0115 |
+| llama.cpp | 0.0030 | 0.248 |
+
+### Reading
+
+- **geist's arithmetic matches llama.cpp's** on the MoE once the KV cache
+  is FP32. On the dense model it is about 7 times closer to the reference.
+- **The INT8 KV cache is the source of cpu_x86's larger divergence.**
+  cpu_scalar with INT8 KV shows the same error as cpu_x86 with INT8 KV.
+- **The MoE amplifies KV error.** INT8 KV adds 0.0002 to the mean JS of the
+  dense model and 0.004 to the MoE's, about 16×. The single-position JS of
+  0.068 reported for the long prompt earlier is this tail.
+- **Routing differs often and mostly harmlessly.** Traced with
+  `GEIST_MOE_TRACE` and compared with `tools/moe_trace_compare.py`:
+  - With FP32 KV, geist and llama.cpp each choose a different expert set
+    than the reference for 16 % of the (layer, position) records; with INT8
+    KV, 23-27 %.
+  - Nearly always one expert is swapped, at a router margin of about 0.02
+    (median).
+  - The number of layers that route differently at a position does not
+    predict that position's JS (Pearson r -0.11 to +0.04, Spearman ρ
+    -0.25 to +0.03).
+  - The swaps sit at near-ties and cost little. The JS tail follows the KV
+    error, which every layer's expert outputs carry.
+- **Hypothesis, not tested here.** INT8 KV quantizes K and V per head and
+  token. With 4 KV heads of 128, an error in one head reaches all 8 query
+  heads of its group, and from there every routing decision downstream.
 
 ## Greedy decode, 256 tokens (cpu_neon, previous block)
 

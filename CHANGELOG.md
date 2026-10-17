@@ -16,7 +16,10 @@ minor release.
   gathered so its projections run as one m-row linear. The loader slices
   each 3-D expert tensor into per-expert views (`load_layer_experts`, no
   copy). Against llama.cpp `d81235049` on the same GGUF, cpu_neon: same
-  top-1 on three prompts, JS 0.00006-0.012 nats. GPU backends refuse the
+  top-1 on three prompts, JS 0.00005-0.0054 nats. With an FP32 KV cache,
+  per-position JS against the exact reference equals llama.cpp's; cpu_x86's
+  default INT8 KV cache triples it on this MoE
+  (`benchmark/results/QWEN3MOE.md`). GPU backends refuse the
   model at load for now; an unsupported router (non-softmax gating, a
   shared expert) is refused by name. Tools: `tools/dump_geist_greedy`,
   `benchmark/dump_llamacpp_greedy.c`, `tools/compare_logits.py`.
