@@ -25,6 +25,7 @@
 #include "blocks.h"
 
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdatomic.h>
@@ -123,7 +124,18 @@ static void moe_bucket(size_t         n_exp,
  * int32 position, the k chosen expert ids (uint32, ascending) and the
  * router-logit margin between the k-th choice and the best one left out
  * (float). A diagnostic for comparing routing across backends and engines
- * (#48); without the variable it costs one getenv per layer. */
+ * (#48). The variable is read once per process; without it a layer pays
+ * one branch. */
+static char           g_moe_trace_path[4096];
+static pthread_once_t g_moe_trace_once = PTHREAD_ONCE_INIT;
+
+static void moe_trace_init(void) {
+    const char *path = getenv("GEIST_MOE_TRACE");
+    /* A path that does not fit is not opened rather than truncated. */
+    if (path != nullptr && strlen(path) < sizeof g_moe_trace_path)
+        memcpy(g_moe_trace_path, path, strlen(path) + 1);
+}
+
 static void moe_trace(int             layer,
                       size_t          pos0,
                       size_t          rows,
@@ -131,10 +143,10 @@ static void moe_trace(int             layer,
                       size_t          k,
                       const float    *lg,
                       const uint32_t *ids) {
-    const char *path = getenv("GEIST_MOE_TRACE");
-    if (path == nullptr || path[0] == '\0')
+    (void) pthread_once(&g_moe_trace_once, moe_trace_init);
+    if (g_moe_trace_path[0] == '\0')
         return;
-    FILE *f = fopen(path, "ab");
+    FILE *f = fopen(g_moe_trace_path, "ab");
     if (f == nullptr)
         return;
     for (size_t r = 0; r < rows; r++) {
