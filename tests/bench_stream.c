@@ -13,21 +13,16 @@
  * Threading: respects OMP_NUM_THREADS. Match production (=4) to compare
  * against the multi-threaded PTQTP kernel.
  */
+#include "test_helpers.h"
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
 
 #if defined(_OPENMP)
 #include <omp.h>
 #endif
-
-static double now_s(void) {
-    struct timeval tv;
-    gettimeofday(&tv, nullptr);
-    return (double) tv.tv_sec + (double) tv.tv_usec * 1e-6;
-}
 
 int main(int argc, char **argv) {
     const size_t MB   = (argc >= 2) ? (size_t) atoi(argv[1]) : 64;
@@ -57,35 +52,35 @@ int main(int argc, char **argv) {
     for (int r = 0; r < reps; r++) {
         double t0, t1;
 
-        t0 = now_s();
+        t0 = geist_test_now_s();
 #pragma omp parallel for
         for (size_t i = 0; i < N; i++)
             c[i] = a[i];
-        t1 = now_s();
+        t1 = geist_test_now_s();
         if (t1 - t0 < best_copy)
             best_copy = t1 - t0;
 
-        t0 = now_s();
+        t0 = geist_test_now_s();
 #pragma omp parallel for
         for (size_t i = 0; i < N; i++)
             b[i] = scale * c[i];
-        t1 = now_s();
+        t1 = geist_test_now_s();
         if (t1 - t0 < best_scale)
             best_scale = t1 - t0;
 
-        t0 = now_s();
+        t0 = geist_test_now_s();
 #pragma omp parallel for
         for (size_t i = 0; i < N; i++)
             c[i] = a[i] + b[i];
-        t1 = now_s();
+        t1 = geist_test_now_s();
         if (t1 - t0 < best_add)
             best_add = t1 - t0;
 
-        t0 = now_s();
+        t0 = geist_test_now_s();
 #pragma omp parallel for
         for (size_t i = 0; i < N; i++)
             a[i] = b[i] + scale * c[i];
-        t1 = now_s();
+        t1 = geist_test_now_s();
         if (t1 - t0 < best_triad)
             best_triad = t1 - t0;
     }

@@ -53,12 +53,6 @@ static struct geist_buffer *scan(const struct vk_state *st, const void *p) {
     return nullptr;
 }
 
-static double now_s(void) {
-    struct timespec ts;
-    timespec_get(&ts, TIME_UTC);
-    return (double) ts.tv_sec + (double) ts.tv_nsec * 1e-9;
-}
-
 int main(void) {
     struct geist_backend *be = nullptr;
     enum geist_status     s  = geist_backend_create("vulkan", nullptr, nullptr, &be);
@@ -141,7 +135,7 @@ int main(void) {
         fails += geist_expect(vt->resolve_weight(be, &mw) == GEIST_OK, "model-sized registry");
     }
     size_t       sink = 0;
-    const double t0   = now_s();
+    const double t0   = geist_test_now_s();
     for (int r = 0; r < ROUNDS; r++) {
         for (size_t c = 0; c < CALLS; c++) {
             for (size_t i = 0; i < MODEL; i++) {
@@ -149,7 +143,7 @@ int main(void) {
             }
         }
     }
-    const double t1 = now_s();
+    const double t1 = geist_test_now_s();
     for (int r = 0; r < ROUNDS; r++) {
         for (size_t c = 0; c < CALLS; c++) {
             for (size_t i = 0; i < MODEL; i++) {
@@ -157,7 +151,7 @@ int main(void) {
             }
         }
     }
-    const double t2 = now_s();
+    const double t2 = geist_test_now_s();
     printf("  %d lookups over %d registered weights: index %.1f us, scan %.1f us (%zu)\n",
            MODEL * CALLS,
            MODEL,

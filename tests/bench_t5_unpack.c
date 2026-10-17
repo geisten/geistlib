@@ -27,6 +27,8 @@
  */
 #define _POSIX_C_SOURCE 200809L
 
+#include "test_helpers.h"
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,12 +51,6 @@
 #define SWEEPS 6
 
 #if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
-
-static double now_s(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double) ts.tv_sec + 1e-9 * (double) ts.tv_nsec;
-}
 
 static uint32_t prng(uint32_t *s) {
     uint32_t z = (*s += 0x9E3779B9u);
@@ -223,7 +219,7 @@ int main(void) {
     for (int pass = 0; pass < 2; pass++) { /* pass 0 = warmup, 1 = timed */
         double t_x4 = 0.0, t_t5 = 0.0;
         for (int sweep = 0; sweep < SWEEPS; sweep++) {
-            double t0 = now_s();
+            double t0 = geist_test_now_s();
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
@@ -234,9 +230,9 @@ int main(void) {
                     sink += o[0];
                 }
             }
-            t_x4 += now_s() - t0;
+            t_x4 += geist_test_now_s() - t0;
 
-            t0 = now_s();
+            t0 = geist_test_now_s();
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
@@ -251,7 +247,7 @@ int main(void) {
                     sink += o[0];
                 }
             }
-            t_t5 += now_s() - t0;
+            t_t5 += geist_test_now_s() - t0;
         }
         if (pass == 1) {
             const double wps_x4 = weights * SWEEPS / t_x4;

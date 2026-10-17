@@ -28,18 +28,13 @@
 #include <geist_backend.h>
 
 #include "heap.h"
+#include "test_helpers.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
-static double now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec * 1e-6;
-}
 
 static uint32_t g_rng = 0x9E3779B9u;
 static uint32_t next_u32(void) {
@@ -132,9 +127,9 @@ static double time_kernel(struct geist_backend *be,
                                                      .q_offset = n_kv - n_q};
         bool ok = fused->attention_kv_int8(be, &args) == GEIST_OK; /* warm */
         for (int it = 0; it < iters && ok; it++) {
-            const double t0 = now_ms();
+            const double t0 = geist_test_now_ms();
             ok              = fused->attention_kv_int8(be, &args) == GEIST_OK;
-            t[it]           = now_ms() - t0;
+            t[it]           = geist_test_now_ms() - t0;
         }
         if (ok) {
             qsort(t, (size_t) iters, sizeof *t, cmp_double);
@@ -209,7 +204,7 @@ time_one(struct geist_backend *be, const struct layout *l, size_t n_kv, size_t n
                                    out,
                                    scratch); /* warm */
         for (int it = 0; it < iters; it++) {
-            const double t0 = now_ms();
+            const double t0 = geist_test_now_ms();
             attention_int8_via_buffers(n_q,
                                        l->n_q_heads,
                                        l->head_dim,
@@ -225,7 +220,7 @@ time_one(struct geist_backend *be, const struct layout *l, size_t n_kv, size_t n
                                        vs,
                                        out,
                                        scratch);
-            t[it] = now_ms() - t0;
+            t[it] = geist_test_now_ms() - t0;
         }
         qsort(t, (size_t) iters, sizeof *t, cmp_double);
         med.host = t[iters / 2];

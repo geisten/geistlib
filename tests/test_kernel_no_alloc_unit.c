@@ -42,14 +42,6 @@ int main(void) {
 
 static int g_fail = 0;
 
-#define CHECK(cond, msg)                          \
-    do {                                          \
-        if (!(cond)) {                            \
-            fprintf(stderr, "FAIL: %s\n", (msg)); \
-            g_fail = 1;                           \
-        }                                         \
-    } while (0)
-
 /* Weight blob for [n_out, n_in], contents irrelevant — this test is about
  * allocation behaviour, not numerics (the parity suites cover that). */
 static void *make_blob(size_t n_in, size_t n_out, size_t blk_elems, size_t blk_bytes) {
@@ -105,7 +97,7 @@ constexpr size_t M_MAX = 8;
 static bool run_case(struct geist_backend *be, const struct dtype_case *c, float *x, float *y) {
     void *w_raw = make_blob(N_IN, N_OUT, c->blk_elems, c->blk_bytes);
     if (w_raw == nullptr) {
-        CHECK(false, "blob allocation");
+        g_fail |= geist_expect(false, "blob allocation");
         return false;
     }
     struct geist_weight w = {
@@ -125,7 +117,7 @@ static bool run_case(struct geist_backend *be, const struct dtype_case *c, float
     struct cpu_neon_state     *st = (struct cpu_neon_state *) be->state;
     struct cpu_neon_workspace *ws = cpu_neon_ws(st);
     if (ws == nullptr) {
-        CHECK(false, "workspace available");
+        g_fail |= geist_expect(false, "workspace available");
         safe_free(&freeme);
         return false;
     }
@@ -219,7 +211,7 @@ int main(void) {
             printf("  (%s not resolved on this host — skipped)\n", CASES[i].name);
         }
     }
-    CHECK(ran > 0, "no dtype was exercised at all");
+    g_fail |= geist_expect(ran > 0, "no dtype was exercised at all");
 
     safe_free((void **) &x);
     safe_free((void **) &y);

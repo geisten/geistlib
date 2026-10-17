@@ -12,17 +12,12 @@
 #include "src/engine/sampler.h"
 
 #include "heap.h"
+#include "test_helpers.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-
-static double now_s(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double) ts.tv_sec + (double) ts.tv_nsec * 1e-9;
-}
 
 /* Logit field with a realistic shape: a handful of dominant tokens over a
  * long low-probability tail. Deterministic — same array for every variant. */
@@ -67,11 +62,11 @@ int main(int argc, char **argv) {
                 continue;
             volatile geist_token_t sink = 0;
             const uint64_t         a0   = heap_alloc_count();
-            const double           t0   = now_s();
+            const double           t0   = geist_test_now_s();
             for (int i = 0; i < iters; i++) {
                 sink = geist_sampler_top_k_ws(&ws, logits, k, 0.8f, &rng);
             }
-            const double   dt     = now_s() - t0;
+            const double   dt     = geist_test_now_s() - t0;
             const uint64_t allocs = heap_alloc_count() - a0;
             (void) sink;
             char label[32];
@@ -90,12 +85,12 @@ int main(int argc, char **argv) {
         for (int variant = 0; variant < 2; variant++) {
             volatile geist_token_t sink = 0;
             const uint64_t         a0   = heap_alloc_count();
-            const double           t0   = now_s();
+            const double           t0   = geist_test_now_s();
             for (int i = 0; i < iters; i++) {
                 sink = variant == 0 ? geist_sampler_temperature(n, logits, 0.8f, &rng)
                                     : geist_sampler_temperature_ws(&ws, logits, 0.8f, &rng);
             }
-            const double   dt     = now_s() - t0;
+            const double   dt     = geist_test_now_s() - t0;
             const uint64_t allocs = heap_alloc_count() - a0;
             (void) sink;
             printf("%-10zu %-14s %12.1f %12.3f %8llu\n",
@@ -110,11 +105,11 @@ int main(int argc, char **argv) {
         for (size_t t = 0; t < sizeof tps / sizeof *tps; t++) {
             volatile geist_token_t sink = 0;
             const uint64_t         a0   = heap_alloc_count();
-            const double           t0   = now_s();
+            const double           t0   = geist_test_now_s();
             for (int i = 0; i < iters; i++) {
                 sink = geist_sampler_top_p_ws(&ws, logits, tps[t], 0.8f, &rng);
             }
-            const double   dt     = now_s() - t0;
+            const double   dt     = geist_test_now_s() - t0;
             const uint64_t allocs = heap_alloc_count() - a0;
             (void) sink;
             char label[32];

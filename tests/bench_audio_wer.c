@@ -30,12 +30,6 @@
 #define DECODE_CAP 200
 #define REPLY_CAP 4096
 
-static double now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec / 1e6;
-}
-
 /* Chunk-walking WAV reader (audio_test_util.h); handles ffmpeg's LIST chunk. */
 static int16_t *read_wav_pcm(const char *path, size_t *n_samples_out, int *sample_rate_out) {
     return audio_test_read_wav(path, n_samples_out, sample_rate_out);
@@ -109,9 +103,9 @@ static bool transcribe(struct geist_model *model, struct geist_backend *be, cons
         geist_session_prefill_tokens(sess, n_toks, toks) != GEIST_OK)
         goto out;
 
-    double            t0       = now_ms();
+    double            t0       = geist_test_now_ms();
     enum geist_status s        = geist_session_attach_audio(sess, n_samples, pcm, 16000);
-    double            t_attach = now_ms() - t0;
+    double            t_attach = geist_test_now_ms() - t0;
     free(pcm);
     pcm = nullptr;
     if (s != GEIST_OK) {
@@ -134,7 +128,7 @@ static bool transcribe(struct geist_model *model, struct geist_backend *be, cons
     char   reply[REPLY_CAP];
     size_t reply_len = 0;
     reply[0]         = '\0';
-    t0               = now_ms();
+    t0               = geist_test_now_ms();
     size_t n_dec     = 0;
     /* Anti-loop stop (GEIST_WER_ANTILOOP=0 disables): greedy decode can
      * fall into short repetition cycles ("big, big, big, ...") that burn
@@ -168,7 +162,7 @@ static bool transcribe(struct geist_model *model, struct geist_backend *be, cons
         reply_len += tn;
         reply[reply_len] = '\0';
     }
-    double t_decode = now_ms() - t0;
+    double t_decode = geist_test_now_ms() - t0;
 
     char norm[REPLY_CAP];
     normalize_sp(reply, norm, sizeof norm);

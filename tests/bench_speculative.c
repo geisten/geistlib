@@ -43,12 +43,6 @@ static const char *const PROMPTS[] = {
 };
 #define N_PROMPTS (sizeof PROMPTS / sizeof PROMPTS[0])
 
-static double monotonic_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec / 1e6;
-}
-
 static void format_chat(char *buf, size_t buf_size, const char *user_prompt) {
     snprintf(buf, buf_size, "<bos><|turn>user\n%s<turn|>\n<|turn>model\n", user_prompt);
 }
@@ -79,7 +73,7 @@ static int run_prompt(struct geist_model              *model,
         return 1;
     }
 
-    double t0 = monotonic_ms();
+    double t0 = geist_test_now_ms();
     for (size_t i = 0; i < DECODE_N; i++) {
         geist_token_t tok;
         if (geist_session_decode_step(sess, &tok) != GEIST_OK) {
@@ -87,7 +81,7 @@ static int run_prompt(struct geist_model              *model,
             return 1;
         }
     }
-    out->t_seq_ms = monotonic_ms() - t0;
+    out->t_seq_ms = geist_test_now_ms() - t0;
     geist_session_destroy(sess);
 
     /* ---- Speculative. */
@@ -114,7 +108,7 @@ static int run_prompt(struct geist_model              *model,
     size_t        spec_emits = 0;
     geist_token_t buf[16 + 1];
 
-    t0 = monotonic_ms();
+    t0 = geist_test_now_ms();
     while (spec_emits < DECODE_N) {
         size_t            n;
         enum geist_status s = geist_session_decode_speculative(
@@ -131,7 +125,7 @@ static int run_prompt(struct geist_model              *model,
                 history[history_n++] = buf[i];
         }
     }
-    out->t_spec_ms  = monotonic_ms() - t0;
+    out->t_spec_ms  = geist_test_now_ms() - t0;
     out->spec_calls = spec_calls;
     out->spec_emits = spec_emits;
     geist_session_destroy(sess);
