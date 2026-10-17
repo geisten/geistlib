@@ -464,6 +464,12 @@ minor release.
   from cpu_neon, cpu_scalar, Metal and Vulkan; the Metal parity test checks
   `embedding_lookup_scaled` at scale 1, which is what Metal's
   `embedding_lookup` ran.
+- **The `../gemma-4-E2B-it/` and `../../gemma-4-E2B-it/` search paths** for
+  `tokenizer.bin`, `audio_tower.safetensors`, `mel_constants.bin` and
+  `vision_tower.safetensors`: a development-tree layout no test or CI job
+  uses. The environment overrides, the GGUF's directory and the
+  working-directory defaults (`./tokenizer.bin`, `audio_bench/`,
+  `audio_test_data/`, `vision_bench/`) are unchanged.
 
 ### Fixed
 
