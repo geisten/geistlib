@@ -66,18 +66,6 @@ struct cpu_neon_workspace {
      * n_in_max). 64-byte aligned for AMX SGEMM. */
     float *dequant_w_fp32;
     size_t dequant_w_fp32_cap;
-    /* Fused FFN tile path: gate/up/mid float tiles plus
-     * quantized mid activations for Q6_K down accumulation. */
-    float  *ffn_gate;
-    size_t  ffn_gate_cap;
-    float  *ffn_up;
-    size_t  ffn_up_cap;
-    float  *ffn_mid;
-    size_t  ffn_mid_cap;
-    int8_t *ffn_mid_q8;
-    size_t  ffn_mid_q8_cap;
-    float  *ffn_mid_sc;
-    size_t  ffn_mid_sc_cap;
     /* F32 elementwise scratch (vForce tanh input). */
     float *elt_f32;
     size_t elt_f32_cap;
@@ -351,15 +339,5 @@ cpu_neon_attention_kv_int4(struct geist_backend *be, const struct geist_attentio
  * up to 512, query heads a multiple of the KV heads. */
 [[nodiscard]] bool cpu_neon_attention_kv_int4_supported(const struct geist_fusion_query *q);
 #endif
-[[nodiscard]] enum geist_status cpu_neon_ffn_geglu_q4q6_mN(struct geist_backend      *be,
-                                                           size_t                     m,
-                                                           size_t                     d_model,
-                                                           size_t                     inter,
-                                                           const float               *x,
-                                                           const struct geist_weight *gate,
-                                                           const struct geist_weight *up,
-                                                           const struct geist_weight *down,
-                                                           const float               *down_scale,
-                                                           float                     *y);
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_NEON_INTERNAL_H */

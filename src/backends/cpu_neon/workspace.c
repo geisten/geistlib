@@ -100,16 +100,6 @@ void cpu_neon_workspace_destroy(struct cpu_neon_workspace *ws) {
     ws->qk_mN_sum32_cap = 0;
     safe_free((void **) &ws->dequant_w_fp32);
     ws->dequant_w_fp32_cap = 0;
-    safe_free((void **) &ws->ffn_gate);
-    ws->ffn_gate_cap = 0;
-    safe_free((void **) &ws->ffn_up);
-    ws->ffn_up_cap = 0;
-    safe_free((void **) &ws->ffn_mid);
-    ws->ffn_mid_cap = 0;
-    safe_free((void **) &ws->ffn_mid_q8);
-    ws->ffn_mid_q8_cap = 0;
-    safe_free((void **) &ws->ffn_mid_sc);
-    ws->ffn_mid_sc_cap = 0;
     safe_free((void **) &ws->elt_f32);
     ws->elt_f32_cap = 0;
 }
