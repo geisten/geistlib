@@ -82,43 +82,39 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
                                        struct geist_buffer                  *h_out_buf) {
 
     memset(ctx, 0, sizeof(*ctx));
-    struct transformer_arch_state            *st = sess->model;
-    struct transformer_layer_weights         *L  = &st->layers[layer_idx];
-    const struct transformer_layer_exec_plan *P =
-            st->layer_plans != nullptr ? &st->layer_plans[layer_idx] : nullptr;
-    const bool plan_apply_sub_ln = P != nullptr ? P->apply_sub_ln : st->config.has_sub_ln;
+    struct transformer_arch_state    *st = sess->model;
+    struct transformer_layer_weights *L  = &st->layers[layer_idx];
+    /* state_create refuses a model whose plan it cannot build. */
+    const struct transformer_layer_exec_plan *P = &st->layer_plans[layer_idx];
 
-    ctx->st                  = st;
-    ctx->sess                = sess;
-    ctx->be                  = st->backend;
-    ctx->v                   = st->backend->desc->vtbl;
-    ctx->prims               = st->backend->desc->prims;
-    ctx->fused               = geist_backend_fused_tbl(st->backend);
-    ctx->L                   = L;
-    ctx->P                   = P;
-    ctx->layer_idx           = layer_idx;
-    ctx->q_position          = q_position;
-    ctx->seq                 = seq;
-    ctx->advance_kv          = advance_kv;
-    ctx->h_in_buf            = h_in_buf;
-    ctx->per_layer_input_buf = per_layer_input_buf;
-    ctx->h_out_buf           = h_out_buf;
-    ctx->kv_src     = P != nullptr ? P->kv_src
-                                   : (L->is_kv_shared ? (L->is_full ? st->config.kv_full_src
-                                                                    : st->config.kv_sliding_src)
-                                                      : layer_idx);
-    ctx->compute_kv = P != nullptr ? P->compute_kv : !L->is_kv_shared;
-    ctx->apply_bitnet_input_quant = plan_apply_sub_ln;
+    ctx->st                       = st;
+    ctx->sess                     = sess;
+    ctx->be                       = st->backend;
+    ctx->v                        = st->backend->desc->vtbl;
+    ctx->prims                    = st->backend->desc->prims;
+    ctx->fused                    = geist_backend_fused_tbl(st->backend);
+    ctx->L                        = L;
+    ctx->P                        = P;
+    ctx->layer_idx                = layer_idx;
+    ctx->q_position               = q_position;
+    ctx->seq                      = seq;
+    ctx->advance_kv               = advance_kv;
+    ctx->h_in_buf                 = h_in_buf;
+    ctx->per_layer_input_buf      = per_layer_input_buf;
+    ctx->h_out_buf                = h_out_buf;
+    ctx->kv_src                   = P->kv_src;
+    ctx->compute_kv               = P->compute_kv;
+    ctx->apply_bitnet_input_quant = P->apply_sub_ln;
     /* Needs the scratch slice as well as the flag: a session built before
      * the family was known would have no proj_in buffer to normalise into. */
     ctx->apply_projection_input_norms =
             st->config.has_projection_input_norms && sess->scratch_proj_in != nullptr;
-    ctx->apply_ple       = P != nullptr ? P->apply_ple : st->config.has_ple;
+    ctx->apply_ple       = P->apply_ple;
     ctx->run_ple         = ctx->apply_ple && per_layer_input_buf != nullptr;
     ctx->kv_int8_enabled = sess->kv_int8_enabled;
     ctx->kv_kivi_enabled = sess->kv_kivi_enabled;
     ctx->kv_f16_enabled  = sess->kv_f16_enabled;
-    ctx->ffn_activation  = P != nullptr ? P->ffn_activation : st->config.ffn_activation;
+    ctx->ffn_activation  = P->ffn_activation;
     ctx->eps             = st->config.rms_eps;
     ctx->hd              = L->head_dim;
     ctx->q_out           = L->q_out;

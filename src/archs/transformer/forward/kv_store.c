@@ -313,7 +313,7 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         v->buffer_unmap(ctx->k_residual_buf);
         v->buffer_unmap(ctx->v_residual_buf);
         v->buffer_unmap(sess->scratch_attn);
-    } else if (sess->kv_int4_packed_enabled && ctx->P != nullptr && ctx->P->fuse_attn_kv_int4) {
+    } else if (sess->kv_int4_packed_enabled && ctx->P->fuse_attn_kv_int4) {
         /* The backend's kernel (plan-bound) reads the packed cache through
          * views; the rotation of Q and of the output stays here. */
         const bool   rot    = sess->kv_rot_enabled && fwht_supported(ctx->hd) && ctx->hd <= 512;
@@ -388,7 +388,7 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         v->buffer_unmap(ctx->k_cache_scale_buf);
         v->buffer_unmap(ctx->v_cache_scale_buf);
         v->buffer_unmap(sess->scratch_attn);
-    } else if (ctx->kv_int8_enabled && ctx->P != nullptr && ctx->P->fuse_attn_kv_int8) {
+    } else if (ctx->kv_int8_enabled && ctx->P->fuse_attn_kv_int8) {
         /* The backend's kernel (plan-bound) reads the cache through views;
          * the rotation of Q and of the output stays here. */
         const bool   rot    = sess->kv_rot_enabled && fwht_supported(ctx->hd) && ctx->hd <= 512;
