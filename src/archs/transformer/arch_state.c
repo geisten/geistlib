@@ -1700,6 +1700,7 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
 /* ---- Multi-session API ------------------------------------------------- */
 
 [[nodiscard]] static enum geist_kv_mode resolve_kv_mode(const struct geist_backend      *be,
+                                                        enum geist_kv_mode               family,
                                                         const struct geist_session_opts *opts) {
     enum geist_kv_mode m = (opts != nullptr) ? opts->kv_mode : GEIST_KV_AUTO;
     if (m != GEIST_KV_AUTO) {
@@ -1716,6 +1717,12 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     }
     if (env_int8 != nullptr) {
         return (env_int8[0] == '1') ? GEIST_KV_INT8 : GEIST_KV_FP32;
+    }
+    /* The model family's preference, where it has one (transformer_family
+     * .kv_auto): a precision need of the model, so it outranks the
+     * backend's speed default. */
+    if (family != GEIST_KV_AUTO) {
+        return family;
     }
     /* Backend preference (caps.preferred_kv_mode): the backend owns its
      * platform/pipeline knowledge — GPUs keep dense KV on-device,
@@ -1735,9 +1742,12 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
                               const struct geist_session_opts     *opts) {
     struct transformer_kv_layout kl = {};
     /* KV-mode resolution: opts override > env > backend/platform default. */
-    const enum geist_kv_mode mode = resolve_kv_mode(state->backend, opts);
-    kl.kivi                       = (mode == GEIST_KV_KIVI);
-    kl.int8                       = (mode == GEIST_KV_INT8);
+    const enum geist_kv_mode mode =
+            resolve_kv_mode(state->backend,
+                            state->family != nullptr ? state->family->kv_auto : GEIST_KV_AUTO,
+                            opts);
+    kl.kivi = (mode == GEIST_KV_KIVI);
+    kl.int8 = (mode == GEIST_KV_INT8);
     /* Issue #61: packed 4-bit KV rides the INT8 storage path (buffer alloc +
      * ctx wiring), with half-size data buffers holding 2 values/byte. */
     kl.int4_packed = (mode == GEIST_KV_INT4);
@@ -1773,18 +1783,20 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
         const bool  rot_on      = (env_rot != nullptr) ? (env_rot[0] == '1') : rot_default;
         kl.rot                  = kl.int8 && rot_on;
     }
-    /* F16 cache: explicit request, or AUTO-resolved FP32 upgraded when the
-     * backend's attention reads F16 K/V (caps.kv_f16_attention) and the
-     * fused converting append exists (env GEIST_KV_F16=0 forces FP32,
-     * =1 requests it under AUTO). Otherwise F16 silently degrades to
-     * FP32 — no host-side half-float path exists. */
+    /* F16 cache: explicit request (session, family), or AUTO-resolved
+     * FP32 upgraded on a backend that does so by default
+     * (caps.kv_f16_by_default). It needs attention that reads F16 K/V
+     * (caps.kv_f16_attention) and the fused converting append (env
+     * GEIST_KV_F16=0 forces FP32, =1 requests it under AUTO). Without
+     * them F16 degrades to FP32. */
     {
         const bool  slot_ok = state->backend != nullptr &&
                               state->backend->desc->caps.kv_f16_attention &&
                               geist_backend_fused_tbl(state->backend)->kv_append_f16 != nullptr;
         const char *env_f16 = getenv("GEIST_KV_F16");
         bool        want    = mode == GEIST_KV_F16;
-        if (mode == GEIST_KV_FP32 && (opts == nullptr || opts->kv_mode == GEIST_KV_AUTO)) {
+        if (mode == GEIST_KV_FP32 && (opts == nullptr || opts->kv_mode == GEIST_KV_AUTO) &&
+            state->backend != nullptr && state->backend->desc->caps.kv_f16_by_default) {
             want = env_f16 == nullptr || env_f16[0] != '0';
         }
         kl.f16 = want && slot_ok && !(env_f16 != nullptr && env_f16[0] == '0');

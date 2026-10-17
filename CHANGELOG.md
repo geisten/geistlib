@@ -60,6 +60,17 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **Qwen3-MoE gets an F16 KV cache; the CPU backends have one (#48).**
+  A model family can now name the KV cache a session gets under AUTO
+  (`transformer_family.kv_auto`). It ranks after an explicit `kv_mode` and
+  the `GEIST_KV_*` variables and before the backend's default; F16 falls
+  back to FP32, never to a quantized cache. `qwen3moe` asks for F16. On
+  this MoE, INT8 KV tripled the per-position divergence from the exact
+  reference: on cpu_x86, mean JS 0.0060 with INT8 vs 0.0018 with F16, at
+  the same decode speed. cpu_scalar, cpu_neon (vcvt) and cpu_x86 (F16C) now
+  read an F16 cache. They switch to it only on request: the new
+  `caps.kv_f16_by_default` (Metal, Vulkan) marks the backends that turn
+  AUTO into F16 on their own, so dense models keep their defaults.
 - **cpu_x86: a repacked Q4_K matrix no longer stays resident twice.** The
   Q4_K kernels read only the repack, so it is marked `GEIST_W_RAW_COLD` and
   the loader drops the source pages (#729). 9950X peak RSS, logits byte-

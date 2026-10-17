@@ -128,6 +128,26 @@ void attention_mqa_causal_kv(size_t      n_q,
                              const float v[static n_kv * n_kv_heads * head_dim],
                              float       out[static n_q * n_q_heads * head_dim]);
 
+/* attention_mqa_causal_kv on an F16 KV cache (#48): k and v hold IEEE half
+ * values (uint16_t), widened to F32 one row at a time; the arithmetic is
+ * the F32 reference's. head_dim at most ATTN_F16_HEAD_DIM_MAX: returns
+ * false, out untouched, above it. Allocates nothing. */
+static constexpr size_t ATTN_F16_HEAD_DIM_MAX = 1024;
+[[nodiscard]] bool      attention_mqa_causal_kv_f16(size_t          n_q,
+                                                    size_t          n_kv,
+                                                    size_t          q_offset,
+                                                    size_t          n_q_heads,
+                                                    size_t          n_kv_heads,
+                                                    size_t          head_dim,
+                                                    size_t          sliding_window,
+                                                    const float    *q,
+                                                    const uint16_t *k,
+                                                    const uint16_t *v,
+                                                    float          *out);
+
+/* dst = src rounded to IEEE half, nearest even (an F16 KV append). */
+void kv_rows_to_f16(size_t n, const float src[static n], uint16_t dst[static n]);
+
 /* Rotary requires an even, non-zero head_dim: channels rotate in pairs,
  * and an odd width would leave an uninitialized table entry. head_dim is
  * model metadata, so this is checked once when the RoPE plan is built; the

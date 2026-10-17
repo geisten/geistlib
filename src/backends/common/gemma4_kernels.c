@@ -1,4 +1,5 @@
 #include "gemma4_kernels.h"
+#include "quant.h"
 #include <geist_types.h>
 #include "heap.h"
 
@@ -224,7 +225,22 @@ void rope_compute_at(size_t pos_offset,
     safe_free((void **) &inv_freq);
 }
 
-void attention_mqa_causal_kv(size_t       n_q,
+/* Row `at` of a K or V cache as floats: in place for F32, widened into
+ * `row` for F16. */
+static inline const float *
+kv_row(const void *base, bool f16, size_t at, size_t head_dim, float *row) {
+    if (!f16)
+        return (const float *) base + at;
+    const uint16_t *h = (const uint16_t *) base + at;
+    for (size_t i = 0; i < head_dim; i++)
+        row[i] = fp16_to_fp32(h[i]);
+    return row;
+}
+
+/* The reference above, on either cache: K/V rows are float, or with `f16`
+ * IEEE half widened to float row by row into `row` (head_dim floats). The
+ * arithmetic is the F32 reference's either way. */
+static void attention_kv_ref(size_t       n_q,
                              size_t       n_kv,
                              size_t       q_offset,
                              size_t       n_q_heads,
@@ -232,8 +248,10 @@ void attention_mqa_causal_kv(size_t       n_q,
                              size_t       head_dim,
                              size_t       sliding_window,
                              const float *q,
-                             const float *k,
-                             const float *v,
+                             const void  *k,
+                             const void  *v,
+                             bool         f16,
+                             float       *row,
                              float       *out) {
     const float  scale         = 1.0f; /* Gemma 4: scaling encoded via Q/K-norms. */
     const size_t kv_group_size = n_q_heads / n_kv_heads;
@@ -265,8 +283,9 @@ void attention_mqa_causal_kv(size_t       n_q,
                 const size_t n = s_hi - b0 < ATTN_F32_BLOCK ? s_hi - b0 + 1 : ATTN_F32_BLOCK;
                 float        block_max = 0.0f;
                 for (size_t j = 0; j < n; j++) {
-                    const float *kv_kh = k + ((b0 + j) * n_kv_heads + kv_h) * head_dim;
-                    float        dot   = 0.0f;
+                    const float *kv_kh = kv_row(
+                            k, f16, ((b0 + j) * n_kv_heads + kv_h) * head_dim, head_dim, row);
+                    float dot = 0.0f;
                     for (size_t i = 0; i < head_dim; i++)
                         dot += qv[i] * kv_kh[i];
                     scores[j] = dot * scale;
@@ -289,7 +308,8 @@ void attention_mqa_causal_kv(size_t       n_q,
                     sum_exp += scores[j];
                 }
                 for (size_t j = 0; j < n; j++) {
-                    const float *vv = v + ((b0 + j) * n_kv_heads + kv_h) * head_dim;
+                    const float *vv = kv_row(
+                            v, f16, ((b0 + j) * n_kv_heads + kv_h) * head_dim, head_dim, row);
                     for (size_t i = 0; i < head_dim; i++)
                         outv[i] += scores[j] * vv[i];
                 }
@@ -301,6 +321,67 @@ void attention_mqa_causal_kv(size_t       n_q,
             }
         }
     }
+}
+
+void attention_mqa_causal_kv(size_t       n_q,
+                             size_t       n_kv,
+                             size_t       q_offset,
+                             size_t       n_q_heads,
+                             size_t       n_kv_heads,
+                             size_t       head_dim,
+                             size_t       sliding_window,
+                             const float *q,
+                             const float *k,
+                             const float *v,
+                             float       *out) {
+    attention_kv_ref(n_q,
+                     n_kv,
+                     q_offset,
+                     n_q_heads,
+                     n_kv_heads,
+                     head_dim,
+                     sliding_window,
+                     q,
+                     k,
+                     v,
+                     false,
+                     nullptr,
+                     out);
+}
+
+bool attention_mqa_causal_kv_f16(size_t          n_q,
+                                 size_t          n_kv,
+                                 size_t          q_offset,
+                                 size_t          n_q_heads,
+                                 size_t          n_kv_heads,
+                                 size_t          head_dim,
+                                 size_t          sliding_window,
+                                 const float    *q,
+                                 const uint16_t *k,
+                                 const uint16_t *v,
+                                 float          *out) {
+    float row[ATTN_F16_HEAD_DIM_MAX];
+    if (head_dim > ATTN_F16_HEAD_DIM_MAX)
+        return false;
+    attention_kv_ref(n_q,
+                     n_kv,
+                     q_offset,
+                     n_q_heads,
+                     n_kv_heads,
+                     head_dim,
+                     sliding_window,
+                     q,
+                     k,
+                     v,
+                     true,
+                     row,
+                     out);
+    return true;
+}
+
+void kv_rows_to_f16(size_t n, const float src[static n], uint16_t dst[static n]) {
+    for (size_t i = 0; i < n; i++)
+        dst[i] = fp32_to_fp16_rne(src[i]);
 }
 
 void attention_mqa_causal(size_t       seq_len,

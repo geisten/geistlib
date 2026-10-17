@@ -54,6 +54,43 @@ float fp16_to_fp32(uint16_t h) {
 }
 #endif
 
+#if !defined(GEIST_FP16_TO_FP32_INLINE)
+/* IEEE-754 fp32 -> fp16, round to nearest even, subnormals, overflow to
+ * infinity, NaN kept quiet. Only built without hardware fp16. */
+uint16_t fp32_to_fp16_rne(float f) {
+    uint32_t x;
+    memcpy(&x, &f, 4);
+    const uint32_t sign = (x >> 16) & 0x8000u;
+    const uint32_t exp  = (x >> 23) & 0xFFu;
+    uint32_t       mant = x & 0x7FFFFFu;
+    if (exp == 0xFFu) {
+        return (uint16_t) (sign | 0x7C00u | (mant != 0 ? 0x200u | (mant >> 13) : 0u));
+    }
+    const int e = (int) exp - 127 + 15;
+    if (e >= 0x1F) {
+        return (uint16_t) (sign | 0x7C00u);
+    }
+    if (e <= 0) {
+        if (e < -10) {
+            return (uint16_t) sign;
+        }
+        mant |= 0x800000u;
+        const unsigned shift = (unsigned) (14 - e);
+        uint32_t       h     = mant >> shift;
+        const uint32_t rem   = mant & ((1u << shift) - 1u);
+        const uint32_t half  = 1u << (shift - 1);
+        if (rem > half || (rem == half && (h & 1u)))
+            h++;
+        return (uint16_t) (sign | h);
+    }
+    uint32_t       h   = ((uint32_t) e << 10) | (mant >> 13);
+    const uint32_t rem = mant & 0x1FFFu;
+    if (rem > 0x1000u || (rem == 0x1000u && (h & 1u)))
+        h++; /* a carry into the exponent is the right rounding, also to inf */
+    return (uint16_t) (sign | h);
+}
+#endif
+
 /* I2_S (BitNet b1.58, bitnet.cpp): 256-element / 64-byte ternary blocks,
  * four 2-bit fields per byte in REVERSE order (element 32*g + bb of each
  * 128-element half at shift 6 - 2g), one f32 per-TENSOR scale. */

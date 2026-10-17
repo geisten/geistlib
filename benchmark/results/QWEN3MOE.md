@@ -113,6 +113,26 @@ Dense control, Llama 3.2 3B Q4_K_M (*Moby-Dick*, same method):
     -0.25 to +0.03).
   - The swaps sit at near-ties and cost little. The JS tail follows the KV
     error, which every layer's expert outputs carry.
+- **The fix, measured.** `qwen3moe` asks for an F16 KV cache (#48:
+  `transformer_family.kv_auto`). The CPU backends gained F16 KV, and
+  cpu_x86 now takes F16 for this family instead of INT8. Same 384
+  positions, against the exact reference:
+
+  | KV on cpu_x86 | mean | p99 | max | > 0.02 | top-1 same |
+  | :-- | --: | --: | --: | --: | --: |
+  | F16 (the family's default now) | 0.0018 | 0.011 | 0.080 | 0.5 % | 98.2 % |
+  | FP32 | 0.0020 | 0.017 | 0.076 | 0.8 % | 97.1 % |
+  | INT8 (the backend's default) | 0.0060 | 0.124 | 0.188 | 4.4 % | 95.1 % |
+
+  Speed, 9950X, 2 rounds:
+
+  | KV | decode | prefill 512 |
+  | :-- | --: | --: |
+  | F16 | 35.6-37.5 tok/s | 214 tok/s |
+  | INT8 | 35.4-36.5 | 219 |
+  | FP32 | 34.2-37.6 | 214 |
+
+  F16 is as accurate as FP32 and costs nothing measurable over INT8.
 - **Hypothesis, not tested here.** INT8 KV quantizes K and V per head and
   token. With 4 KV heads of 128, an error in one head reaches all 8 query
   heads of its group, and from there every routing decision downstream.
