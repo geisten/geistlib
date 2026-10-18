@@ -97,8 +97,6 @@ struct vk_fns {
     PFN_vkCmdResetQueryPool          CmdResetQueryPool;
     PFN_vkCmdWriteTimestamp          CmdWriteTimestamp;
     PFN_vkGetQueryPoolResults        GetQueryPoolResults;
-    /* VK_EXT_external_memory_host; nullptr without it. */
-    PFN_vkGetMemoryHostPointerPropertiesEXT GetMemoryHostPointerPropertiesEXT;
 };
 
 /* One compute pipeline per (op, dtype) pair; each row of vk_pipes.def is one
@@ -247,14 +245,10 @@ struct vk_state {
     struct geist_buffer *wslot[2];
     uint32_t             wslot_next;
     uint64_t             stat_streamed;
-    size_t               imported_weight_bytes; /* GEIST_W_HOST weights imported in place */
     uint64_t             stat_streamed_bytes;
     /* VK_EXT_memory_budget is enabled: vk_heap_budget reports the driver's
      * budget and usage, which see every allocation on the device (#665). */
     bool has_mem_budget;
-    /* VK_EXT_external_memory_host: the alignment an imported host range
-     * needs (minImportedHostPointerAlignment); 0 without the extension. */
-    size_t host_import_align;
     /* An integrated GPU: its device-local heap is system RAM. */
     bool            unified_memory;
     VkCommandPool   cmd_pool;
@@ -445,7 +439,6 @@ struct geist_buffer {
     bool                   device_mem; /* memory type has DEVICE_LOCAL */
     bool                   borrowed;   /* buf/mem owned by a parent buffer */
     bool                   view;       /* buffer_create_view slice of a parent */
-    bool                   imported;   /* host memory imported in place (#78): never mapped */
     size_t bar_bytes;  /* counted in vk_state.bar_used (host-visible + device-local) */
     size_t vram_bytes; /* counted in vk_state.vram_used */
 };
@@ -461,16 +454,6 @@ void vk_destroy(struct geist_backend *be);
                                                  enum geist_buffer_role role,
                                                  unsigned int           memory_flags,
                                                  struct geist_buffer  **out);
-
-/* `bytes` of host memory at `host` as a buffer, imported in place
- * (VK_EXT_external_memory_host): the page range around it, the buffer's
- * base_off at `host`. Only a copy source and a storage binding at base_off;
- * never mapped. GEIST_E_UNSUPPORTED without the extension or where the
- * driver refuses the range (the caller copies instead). */
-[[nodiscard]] enum geist_status vk_buffer_import_host(struct geist_backend *be,
-                                                      const void           *host,
-                                                      size_t                bytes,
-                                                      struct geist_buffer **out);
 
 [[nodiscard]] enum geist_status vk_buffer_create_aliased(struct geist_backend  *be,
                                                          void                  *host_ptr,
