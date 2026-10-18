@@ -4,7 +4,7 @@ Status: **phase 0 measured; streaming of spilled weights implemented in the
 Vulkan backend (opt-in, `GEIST_VK_STREAM_M_MIN`); the CPU/GPU route is not
 built yet.** Research branch
 `research/offload-scheduler`. Builds on the layer split of #49
-(`feat/49-layer-split`, not merged) and the MoE family of #48.
+(merged in #68) and the MoE family of #48.
 
 ## The question
 
@@ -57,7 +57,7 @@ llama.cpp/ggml):
 ## What we already measured
 
 **Layer split, #49** (Qwen3-14B Q8_0, 15.7 GB, RTX 2080 Ti 11 GB + Ryzen 9
-9950X, `benchmark/results/LAYER-SPLIT.md` on the branch):
+9950X, `benchmark/results/LAYER-SPLIT.md`):
 
 | configuration | prefill tok/s | decode tok/s |
 | :-- | --: | --: |
@@ -109,7 +109,7 @@ RTX 2080 Ti on PCIe 3.0 x16, Ryzen 9 9950X, cpu_x86 with AVX-512 VNNI,
   BAR-window buffer (~90 MB/s, uncached PCIe reads) and 55 ms from a plain IO
   buffer (write-combined system memory, ~650 MB/s). Host-read buffers now
   take `HOST_CACHED` memory (run 1364): the DMA readback runs at ~5 GB/s.
-  The #49 split (`feat/49-layer-split`) reads its hidden rows back the same
+  The #49 split (`step.c` `run_split_stage`) reads its hidden rows back the same
   way: `transformer_buffer_xfer` maps the stage's `scratch_h_a/h_b`, which on
   Vulkan stay in the BAR window, and memcpys them. At the 24–90 MB/s measured
   that is 0.1–0.4 s per 512-row chunk of Qwen3-14B (10.5 MB), 3–13 % of a
