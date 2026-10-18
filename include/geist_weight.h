@@ -115,6 +115,10 @@ enum geist_weight_flags {
      * that cannot honour it binds its exact path or leaves the kernels
      * null. */
     GEIST_W_EXACT = 1U << 5,
+    /* A second copy of a weight the load backend also runs (offload, #78):
+     * a GPU backend keeps it in host memory and reads or streams it from
+     * there instead of spending device memory on it. */
+    GEIST_W_HOST = 1U << 6,
 };
 
 enum geist_weight_backend_layout {

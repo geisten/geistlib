@@ -1316,6 +1316,7 @@ geometry_from_metadata(struct geist_backend             *be,
                                                           size_t                           lo,
                                                           size_t                           hi,
                                                           bool split_stage,
+                                                          bool host_weights,
                                                           struct transformer_arch_state **out) {
     if (be == nullptr || gguf == nullptr || out == nullptr) {
         if (gguf != nullptr) {
@@ -1334,11 +1335,12 @@ geometry_from_metadata(struct geist_backend             *be,
         return GEIST_E_OOM;
     }
     memset(st, 0, sizeof(*st));
-    st->backend       = be;
-    st->split_stage   = split_stage;
-    st->snapshot_id   = atomic_fetch_add(&next_snapshot_id, 1) + 1;
-    st->gguf          = (struct gguf_ctx *) gguf;
-    st->runtime_flags = transformer_runtime_flags_from_env();
+    st->backend         = be;
+    st->split_stage     = split_stage;
+    st->weights_on_host = host_weights;
+    st->snapshot_id     = atomic_fetch_add(&next_snapshot_id, 1) + 1;
+    st->gguf            = (struct gguf_ctx *) gguf;
+    st->runtime_flags   = transformer_runtime_flags_from_env();
     /* Structural dims start at ZERO — every family populator fills them
      * from its GGUF metadata (or its own compiled-in defaults). A field
      * left at 0 fails loudly in populate_layers / weight wiring instead
@@ -1620,7 +1622,7 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
                                                      struct gguf_ctx                 *gguf,
                                                      const struct geist_session_opts *opts,
                                                      struct transformer_arch_state  **out) {
-    return state_create_range(be, gguf, opts, 0, SIZE_MAX, false, out);
+    return state_create_range(be, gguf, opts, 0, SIZE_MAX, false, false, out);
 }
 
 static bool split_requested(const struct geist_session_opts *opts) {
@@ -1637,8 +1639,8 @@ static bool split_requested(const struct geist_session_opts *opts) {
                                                     struct gguf_ctx                 *gguf2,
                                                     const struct geist_session_opts *opts) {
     struct transformer_arch_state *sub = nullptr;
-    enum geist_status              s =
-            state_create_range(opts->split_backend, gguf2, opts, 0, opts->split_layers, true, &sub);
+    enum geist_status              s   = state_create_range(
+            opts->split_backend, gguf2, opts, 0, opts->split_layers, true, false, &sub);
     if (s != GEIST_OK) {
         geist_backend_set_error(st->backend,
                                 s,
@@ -1685,10 +1687,10 @@ static void offload_destroy(struct transformer_offload *o) {
 
 /* Offload (#78): `st`, a split model's load-backend part, gets its layers
  * [layer_lo, n_layers) a second time on the split backend, weights only,
- * loaded from `gguf3` (a third handle on the same file; owned). They load
- * after the split stage, so they get whatever VRAM is left; the rest
- * spills to host memory, from where the backend streams it for large
- * batches (#79). On failure destroys `st`. */
+ * loaded from `gguf3` (a third handle on the same file; owned). Their
+ * matrices are GEIST_W_HOST: the backend keeps them in host memory and
+ * streams them for large batches (#79), so the VRAM the split stage left
+ * stays for the sessions' KV caches and scratch. On failure destroys `st`. */
 [[nodiscard]] static enum geist_status attach_offload(struct transformer_arch_state   *st,
                                                       struct gguf_ctx                 *gguf3,
                                                       const struct geist_session_opts *opts,
@@ -1701,7 +1703,7 @@ static void offload_destroy(struct transformer_offload *o) {
     } else {
         o->m_min = m_min;
         s        = state_create_range(
-                opts->split_backend, gguf3, opts, st->layer_lo, SIZE_MAX, true, &o->twins);
+                opts->split_backend, gguf3, opts, st->layer_lo, SIZE_MAX, true, true, &o->twins);
     }
     if (s != GEIST_OK) {
         geist_backend_set_error(st->backend,
@@ -1750,7 +1752,7 @@ enum geist_status transformer_state_create(struct geist_backend            *be,
         return transformer_state_create_from_gguf(be, gguf, opts, out);
     }
     enum geist_status s =
-            state_create_range(be, gguf, opts, opts->split_layers, SIZE_MAX, false, out);
+            state_create_range(be, gguf, opts, opts->split_layers, SIZE_MAX, false, false, out);
     if (s != GEIST_OK) {
         return s;
     }
@@ -1801,7 +1803,7 @@ enum geist_status transformer_state_create_from_memory(struct geist_backend     
         return transformer_state_create_from_gguf(be, gguf, opts, out);
     }
     enum geist_status s =
-            state_create_range(be, gguf, opts, opts->split_layers, SIZE_MAX, false, out);
+            state_create_range(be, gguf, opts, opts->split_layers, SIZE_MAX, false, false, out);
     if (s != GEIST_OK) {
         return s;
     }

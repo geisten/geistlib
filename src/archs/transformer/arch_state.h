@@ -533,7 +533,8 @@ struct transformer_arch_state {
     size_t                         layer_lo, layer_hi;
     struct transformer_arch_state *split;
     bool                           split_stage;
-    struct transformer_offload    *offload; /* owned; nullptr without the route (#78) */
+    struct transformer_offload    *offload;         /* owned; nullptr without offload (#78) */
+    bool                           weights_on_host; /* the twins (#78): matrices GEIST_W_HOST */
     /* Unique per loaded model in this process (never 0): binds a session
      * snapshot to the model it was taken on (snapshot.c). */
     uint64_t snapshot_id;
