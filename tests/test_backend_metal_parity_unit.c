@@ -569,6 +569,7 @@ int main(void) {
         run_case(mt, ref, GEIST_DTYPE_Q4_K, "Q4_K", 512, 384, ragged[r]);
         run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 384, ragged[r]);
         run_case(mt, ref, GEIST_DTYPE_F32, "F32", 512, 384, ragged[r]);
+        run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 384, ragged[r]);
     }
     run_case(mt, ref, GEIST_DTYPE_Q4_0, "Q4_0", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q4_0, "Q4_0", 512, 383, 8);
@@ -613,6 +614,9 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 4);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 33);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 384, 32);
+    /* Whole 64-row tiles of the PQ2_0 fast kernel, one and two of them. */
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 384, 64);
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1024, 384, 128);
     /* n_out >= 6144 at m = 1 takes matvec_pq2_n8 (8 rows per simdgroup):
      * 6150 leaves a partial 16-row tile, 6144 an exact one. */
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2n8", 512, 6150, 1);
