@@ -29,6 +29,7 @@
 #include "../weight_load.h"
 
 #include "gguf_reader.h"
+#include "heap.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -126,6 +127,62 @@ static bool populate_layers_qwen3moe(struct transformer_arch_state *st) {
     return s;
 }
 
+/* ---- Session state ---------------------------------------------------- */
+
+/* Router logits, the gathered rows of one expert and the weighted sum, plus
+ * the host-side routing (blk_moe_ffn). */
+[[nodiscard]] static enum geist_status
+qwen3moe_session_alloc(struct transformer_arch_session *sess) {
+    const struct transformer_arch_state *st    = sess->model;
+    struct geist_backend                *be    = st->backend;
+    const size_t                         n_exp = st->config.moe_n_experts;
+    const size_t                         n_sel = sess->m_max * st->config.moe_n_used;
+    enum geist_status                    s =
+            transformer_scratch_alloc(be, sess->m_max * n_exp * sizeof(float), &sess->moe_logits);
+    if (s == GEIST_OK)
+        s = transformer_scratch_alloc(
+                be, sess->m_max * st->d_model * sizeof(float), &sess->moe_acc);
+    if (s != GEIST_OK)
+        return s;
+    size_t inter = 0;
+    for (size_t li = 0; li < st->n_layers; li++)
+        inter = st->layers[li].intermediate > inter ? st->layers[li].intermediate : inter;
+    sess->moe_ids       = heap_alloc_array_aligned(uint32_t, n_sel);
+    sess->moe_wts       = heap_alloc_array_aligned(float, n_sel);
+    sess->moe_rows      = heap_alloc_array_aligned(uint32_t, n_sel);
+    sess->moe_row_start = heap_alloc_array_aligned(size_t, n_exp + 1);
+    sess->moe_xg        = heap_alloc_array_aligned(float, n_sel * st->d_model);
+    sess->moe_y         = heap_alloc_array_aligned(float, n_sel * st->d_model);
+    sess->moe_g         = heap_alloc_array_aligned(float, n_sel *inter);
+    sess->moe_u         = heap_alloc_array_aligned(float, n_sel *inter);
+    if (sess->moe_ids == nullptr || sess->moe_wts == nullptr || sess->moe_rows == nullptr ||
+        sess->moe_row_start == nullptr || sess->moe_xg == nullptr || sess->moe_y == nullptr ||
+        sess->moe_g == nullptr || sess->moe_u == nullptr) {
+        geist_backend_set_error(be, GEIST_E_OOM, "transformer: MoE routing state alloc failed");
+        return GEIST_E_OOM;
+    }
+    return GEIST_OK;
+}
+
+static void qwen3moe_session_free(struct transformer_arch_session *sess) {
+    void *host[] = {sess->moe_xg,
+                    sess->moe_y,
+                    sess->moe_g,
+                    sess->moe_u,
+                    sess->moe_ids,
+                    sess->moe_wts,
+                    sess->moe_rows,
+                    sess->moe_row_start};
+    for (size_t i = 0; i < sizeof host / sizeof host[0]; i++)
+        safe_free(&host[i]);
+    sess->moe_xg = sess->moe_y = sess->moe_g = sess->moe_u = nullptr;
+    sess->moe_wts                                          = nullptr;
+    sess->moe_ids = sess->moe_rows = nullptr;
+    sess->moe_row_start            = nullptr;
+    transformer_buffer_release(sess->model->backend, &sess->moe_logits);
+    transformer_buffer_release(sess->model->backend, &sess->moe_acc);
+}
+
 /* Qwen3's attention, unchanged. Each step runs only while s is GEIST_OK. */
 [[nodiscard]] static enum geist_status
 qwen3moe_attention_block(struct transformer_layer_forward_ctx *ctx) {
@@ -158,6 +215,8 @@ const struct transformer_family transformer_family_qwen3moe = {
         .populate        = populate_qwen3moe,
         .populate_layers = populate_layers_qwen3moe,
         .wire_layer      = wire_layer_qwen3moe,
+        .session_alloc   = qwen3moe_session_alloc,
+        .session_free    = qwen3moe_session_free,
         .attention_block = qwen3moe_attention_block,
         .ffn_block       = blk_moe_ffn,
         /* An MoE amplifies KV quantization error about 16x over a dense
