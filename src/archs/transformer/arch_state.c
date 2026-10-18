@@ -1711,6 +1711,13 @@ static void offload_destroy(struct transformer_offload *o) {
     if (o == nullptr) {
         return;
     }
+    if (getenv("GEIST_VERBOSE") != nullptr && o->twins != nullptr) {
+        fprintf(stderr,
+                "geist: offload: %llu prefill chunks ran on %s, %llu steps mirrored there\n",
+                (unsigned long long) atomic_load(&o->chunks),
+                geist_backend_name(o->twins->backend),
+                (unsigned long long) atomic_load(&o->mirrored));
+    }
     transformer_state_destroy(o->twins);
     void *p = o;
     safe_free(&p);

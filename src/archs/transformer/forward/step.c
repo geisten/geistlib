@@ -346,6 +346,26 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
     return s;
 }
 
+/* Offload (#78): layer li's K/V rows of this step, which the load backend
+ * just appended from its scratch_k/scratch_v, into the twins' cache too. */
+[[nodiscard]] static enum geist_status
+mirror_kv_rows(struct transformer_arch_session *sess, size_t li, size_t q_position, size_t seq) {
+    const struct geist_backend_vtbl *v  = sess->model->backend->desc->vtbl;
+    const float                     *k  = (const float *) v->buffer_map(sess->scratch_k);
+    const float                     *vr = (const float *) v->buffer_map(sess->scratch_v);
+    enum geist_status                s =
+            k != nullptr && vr != nullptr
+                    ? transformer_kv_store_rows(sess->twin_sess, (int) li, q_position, seq, k, vr)
+                    : GEIST_E_BACKEND;
+    if (k != nullptr) {
+        v->buffer_unmap(sess->scratch_k);
+    }
+    if (vr != nullptr) {
+        v->buffer_unmap(sess->scratch_v);
+    }
+    return s;
+}
+
 /* Rows the load backend's kernels take per call (caps.max_m; 0 = any). */
 static size_t load_m_cap(const struct transformer_arch_state *st) {
     const size_t c = st->backend->desc->caps.max_m;
@@ -384,6 +404,7 @@ size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
     const size_t                      row_bytes_ple         = st->hidden_per_layer * sizeof(float);
     const size_t                      row_bytes_per_tok_ple = st->ple_out * sizeof(float);
 
+    bool mirror = false;
     /* Offload (#78): a large enough chunk from a position the twins' cache
      * covers runs every layer on the split backend. Anything else runs the
      * load backend's layers here, and the twins' cache is good only up to
@@ -393,10 +414,18 @@ size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
             const enum geist_status os =
                     run_offload_chunk(sess, q_position, seq, initial_h_buf, out_h_buf);
             sess->twin_valid = os == GEIST_OK ? q_position + seq : 0;
+            if (os == GEIST_OK) {
+                atomic_fetch_add_explicit(&st->offload->chunks, 1, memory_order_relaxed);
+            }
             return os;
         }
-        if (q_position < sess->twin_valid) {
-            sess->twin_valid = q_position;
+        /* Steps on the load backend (decode, small chunks) from where the
+         * twins' cache is current keep it current: each layer's new K/V
+         * rows go there too (mirror_kv_rows), so the next prompt (a chat's
+         * next turn) can run on the twins again. */
+        mirror = q_position <= sess->twin_valid;
+        if (mirror) {
+            sess->twin_valid = q_position; /* raised again once every layer is mirrored */
         }
         /* An offloaded session's chunk may exceed what the load backend's
          * kernels take; transformer_prefill_chunk keeps its own chunks below
@@ -496,6 +525,9 @@ size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
                                                             h_in,
                                                             layer_ple_buf,
                                                             h_out);
+        if (s == GEIST_OK && mirror) {
+            s = mirror_kv_rows(sess, li, q_position, seq);
+        }
         if (s != GEIST_OK) {
             return s;
         }
@@ -505,6 +537,10 @@ size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
         h_out                    = tmp;
     }
 
+    if (mirror) {
+        sess->twin_valid = q_position + seq;
+        atomic_fetch_add_explicit(&st->offload->mirrored, 1, memory_order_relaxed);
+    }
     /* h_in is the last layer's output; copy seq rows to out_h_buf. */
     {
         if (st->model_fusions.backend_buffer_copy) {

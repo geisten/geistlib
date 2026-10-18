@@ -146,17 +146,13 @@ enum geist_status transformer_kv_store_rows(struct transformer_arch_session *ses
                                sess->scratch_h_a,
                                nullptr,
                                sess->scratch_h_b);
-    const size_t bytes = seq * ctx.kv_out * sizeof(float);
-    float       *kd    = (float *) ctx.v->buffer_map(sess->scratch_k);
-    float       *vd    = (float *) ctx.v->buffer_map(sess->scratch_v);
-    if (kd == nullptr || vd == nullptr) {
-        return GEIST_E_BACKEND;
+    /* buffer_upload, not a map: a GPU session's scratch may be device-local */
+    const size_t      bytes = seq * ctx.kv_out * sizeof(float);
+    enum geist_status s     = ctx.v->buffer_upload(sess->scratch_k, bytes, (const uint8_t *) k);
+    if (s == GEIST_OK) {
+        s = ctx.v->buffer_upload(sess->scratch_v, bytes, (const uint8_t *) v);
     }
-    memcpy(kd, k, bytes);
-    memcpy(vd, v, bytes);
-    ctx.v->buffer_unmap(sess->scratch_k);
-    ctx.v->buffer_unmap(sess->scratch_v);
-    return transformer_kv_store_append(&ctx);
+    return s == GEIST_OK ? transformer_kv_store_append(&ctx) : s;
 }
 
 enum geist_status transformer_forward_one_layer(struct transformer_arch_session *sess,

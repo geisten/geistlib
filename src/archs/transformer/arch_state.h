@@ -32,6 +32,7 @@
 #include "exec_plan.h"
 #include "sampler.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -519,6 +520,7 @@ struct transformer_family;
 struct transformer_offload {
     struct transformer_arch_state *twins;
     size_t                         m_min;
+    _Atomic uint64_t               chunks, mirrored; /* GEIST_VERBOSE at destroy */
 };
 
 struct transformer_arch_state {

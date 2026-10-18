@@ -4,7 +4,8 @@
  * Loads one GGUF unsplit and split at several points (the first N layers
  * on a second backend, the rest and the head on the first), prefills the
  * same token ids across more than one prefill chunk, decodes greedy
- * tokens, resets and prefills again, and compares:
+ * tokens, prefills a second prompt (a chat's next turn), resets and
+ * prefills again, and compares:
  *
  *   - both backends of the same kind (default: two instances of the host's
  *     CPU backend, cpu_neon / cpu_x86, else cpu_scalar): the logits after the prefill, the decoded
@@ -48,10 +49,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { N_PROMPT = 100, N_DECODE = 16, N_AFTER_RESET = 10 };
+enum { N_PROMPT = 100, N_DECODE = 16, N_TURN2 = 40, N_AFTER_RESET = 10 };
 
 struct run {
-    float        *logits; /* after the prefill */
+    float        *logits;       /* after the prefill */
+    float        *logits_turn2; /* after a second prompt that follows the decode */
     float        *logits_reset;
     size_t        n_logits;
     geist_token_t tokens[N_DECODE];
@@ -108,6 +110,7 @@ static struct geist_backend *backend(const char *name) {
 
 static void run_free(struct run *r) {
     free(r->logits);
+    free(r->logits_turn2);
     free(r->logits_reset);
     *r = (struct run) {0};
 }
@@ -124,7 +127,8 @@ static float *copy_logits(struct geist_session *s, size_t *n) {
     return c;
 }
 
-/* Load (split when split_be != nullptr), prefill, decode, reset, prefill. */
+/* Load (split when split_be != nullptr), prefill, decode, a second prompt
+ * (a chat's next turn), reset, prefill. */
 static enum geist_status run_once(const char           *path,
                                   struct geist_backend *be,
                                   struct geist_backend *split_be,
@@ -157,6 +161,13 @@ static enum geist_status run_once(const char           *path,
     }
     for (size_t i = 0; s == GEIST_OK && i < N_DECODE; i++) {
         s = geist_session_decode_step(sess, &out->tokens[i]);
+    }
+    if (s == GEIST_OK)
+        s = geist_session_prefill_tokens(sess, N_TURN2, ids + N_PROMPT - N_TURN2);
+    if (s == GEIST_OK) {
+        size_t n          = 0;
+        out->logits_turn2 = copy_logits(sess, &n);
+        s = out->logits_turn2 != nullptr && n == out->n_logits ? GEIST_OK : GEIST_E_INTERNAL;
     }
     if (s == GEIST_OK)
         s = geist_session_reset(sess);
@@ -346,6 +357,9 @@ int main(void) {
                          splits[i]);
                 fails += geist_expect(memcmp(r.logits, ref.logits, ref.n_logits * sizeof(float)) ==
                                                       0 &&
+                                              memcmp(r.logits_turn2,
+                                                     ref.logits_turn2,
+                                                     ref.n_logits * sizeof(float)) == 0 &&
                                               memcmp(r.logits_reset,
                                                      ref.logits_reset,
                                                      ref.n_logits * sizeof(float)) == 0 &&
@@ -389,11 +403,14 @@ int main(void) {
             fails += geist_expect(
                     s == GEIST_OK &&
                             memcmp(r.logits, ref.logits, ref.n_logits * sizeof(float)) == 0 &&
+                            memcmp(r.logits_turn2,
+                                   ref.logits_turn2,
+                                   ref.n_logits * sizeof(float)) == 0 &&
                             memcmp(r.logits_reset,
                                    ref.logits_reset,
                                    ref.n_logits * sizeof(float)) == 0 &&
                             same == N_DECODE,
-                    "kv fp32 offload byte-identical");
+                    "kv fp32 offload byte-identical, second turn included");
         } else {
             fails += geist_expect(s == GEIST_OK, "kv int8 offload runs");
         }

@@ -283,11 +283,13 @@ anything else (decode, verify, small chunks)       ->  the #49 split as before
   K/V rows are copied into the IO buffer; after the batch they go into the
   load backend's cache **through that layer's own append** (its INT8/INT4
   quantization and rotation), and the output rows go to the head.
-- **Sync:** `twin_valid` marks how far the twins' cache is current. A step on
-  the CPU path at position p lowers it to p; a GPU chunk needs
-  `q_position <= twin_valid`. So a prompt after CPU decode steps (the next
-  chat turn) takes the CPU path for now; mirroring the CPU steps' K/V rows
-  into the twins is the upgrade if multi-turn prefill matters.
+- **Sync:** `twin_valid` marks how far the twins' cache is current; a GPU
+  chunk needs `q_position <= twin_valid`. A step on the CPU path (decode, a
+  small chunk) from there mirrors each CPU layer's new K/V rows into the
+  twins' cache as well (`mirror_kv_rows`: the float rows the CPU just
+  appended, 2 × kv_out floats per layer and token), so the next prompt of a
+  chat runs on the twins again. A step past a gap the twins never saw
+  leaves them current only up to the gap.
 - **Numerics:** with an FP32 cache the route is byte-identical on two CPU
   instances (`test_layer_split_int`). With a quantized load-backend cache
   the GPU prefill attends over dense rows, more precise than the CPU path
