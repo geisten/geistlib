@@ -252,15 +252,14 @@ static bool cpu_neon_fused_supported(struct geist_backend *be, const struct geis
 }
 
 static const struct geist_backend_primitives cpu_neon_prims = {
-        .rmsnorm          = cpu_neon_rmsnorm,
-        .add              = cpu_neon_add,
-        .mul              = cpu_neon_mul,
-        .gelu_tanh        = cpu_neon_gelu_tanh,
-        .silu             = cpu_neon_silu,
-        .relu_squared     = cpu_neon_relu_squared,
-        .rope_apply       = cpu_neon_rope_apply,
-        .embedding_lookup = cpu_neon_embedding_lookup,
-        .attention        = cpu_neon_attention,
+        .rmsnorm      = cpu_neon_rmsnorm,
+        .add          = cpu_neon_add,
+        .mul          = cpu_neon_mul,
+        .gelu_tanh    = cpu_neon_gelu_tanh,
+        .silu         = cpu_neon_silu,
+        .relu_squared = cpu_neon_relu_squared,
+        .rope_apply   = cpu_neon_rope_apply,
+        .attention    = cpu_neon_attention,
 };
 
 static const struct geist_backend_fused cpu_neon_fused = {

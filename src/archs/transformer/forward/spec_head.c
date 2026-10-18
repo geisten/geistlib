@@ -123,20 +123,6 @@ static size_t spec_env_sz(const char *name, size_t dflt, size_t lo, size_t hi) {
     return (size_t) v;
 }
 
-static int spec_verify_env(void) {
-    /* GEIST_SPEC_VERIFY=1 turns on the certainty bound: every excluded row gets
-     * an upper bound on the exact logit it could have had, and the head
-     * declines whenever one of them could have beaten the winner, which makes
-     * the answer provably the dense head's.
-     *
-     * Off by default: with three quarters of the dimensions dropped the
-     * Cauchy-Schwarz bound almost never holds, so it declines on nearly every
-     * token (dense-head speed). Use it as an instrument: output under it is
-     * exactly the dense head's or the sketch is losing argmaxes. */
-    const char *e = getenv("GEIST_SPEC_VERIFY");
-    return (e != nullptr && e[0] == '1') ? 1 : 0;
-}
-
 static int spec_head_env(void) {
     /* Default ON; GEIST_SPEC_HEAD=0 forces it off. Read per call (once per
      * decoded token — noise next to the head itself) so tests can toggle it
@@ -330,14 +316,13 @@ struct spec_build_job {
     const uint8_t  *Wbase;
     size_t          row_bytes, H, SD;
     const uint32_t *dims;
-    const bool     *kept;
     float          *scratch; /* one H-float row per slot */
     int8_t         *sketch;
-    float          *rscale, *wdrop, *wl1;
+    float          *rscale;
     atomic_size_t   next_slot; /* the next range's scratch row, below nthr */
 };
 
-/* Rows [r0, r1): dequantize, sketch, row scale and the bound's row halves. */
+/* Rows [r0, r1): dequantize, sketch, row scale. */
 static void spec_build_rows(void *ctx, size_t r0, size_t r1) {
     struct spec_build_job *j         = ctx;
     const uint16_t         dt        = j->dt;
@@ -346,11 +331,8 @@ static void spec_build_rows(void *ctx, size_t r0, size_t r1) {
     const size_t           H         = j->H;
     const size_t           SD        = j->SD;
     const uint32_t        *dims      = j->dims;
-    const bool            *kept      = j->kept;
     int8_t                *sketch    = j->sketch;
     float                 *rscale    = j->rscale;
-    float                 *wdrop     = j->wdrop;
-    float                 *wl1       = j->wl1;
     float *tmp = j->scratch + atomic_fetch_add_explicit(&j->next_slot, 1, memory_order_relaxed) * H;
     for (size_t r = r0; r < r1; r++) {
         spec_row_to_f32(dt, Wbase + r * row_bytes, H, tmp);
@@ -375,18 +357,6 @@ static void spec_build_rows(void *ctx, size_t r0, size_t r1) {
             sk[s] = (int8_t) q;
         }
         rscale[r] = amax / 127.0f;
-        /* The sketch is blind to the dropped dimensions, so their combined
-         * contribution is what Cauchy-Schwarz has to cover. */
-        float sq = 0.0f, l1 = 0.0f;
-        for (size_t i = 0; i < H; i++) {
-            if (kept != nullptr && kept[i]) {
-                l1 += tmp[i] < 0.0f ? -tmp[i] : tmp[i];
-            } else {
-                sq += tmp[i] * tmp[i];
-            }
-        }
-        wdrop[r] = sqrtf(sq);
-        wl1[r]   = l1;
     }
 }
 
@@ -459,18 +429,11 @@ static bool spec_head_build(struct transformer_arch_state *st) {
         return false;
     }
 
-    int8_t *sketch = heap_alloc_array_aligned(int8_t, V *SD);
-    float  *rscale = heap_alloc_array_aligned(float, V);
-    /* Row halves of the safety bound: two floats a row -- 1 MB against an
-     * 82 MB sketch on the 2B-4T. */
-    float       *wdrop   = heap_alloc_array_aligned(float, V);
-    float       *wl1     = heap_alloc_array_aligned(float, V);
+    int8_t      *sketch  = heap_alloc_array_aligned(int8_t, V *SD);
+    float       *rscale  = heap_alloc_array_aligned(float, V);
     const size_t nthr    = geist_par_max_threads();
     float       *scratch = heap_alloc_array_aligned(float, nthr *H); /* per-thread */
-    if (sketch == nullptr || rscale == nullptr || scratch == nullptr || wdrop == nullptr ||
-        wl1 == nullptr) {
-        safe_free((void **) &wdrop);
-        safe_free((void **) &wl1);
+    if (sketch == nullptr || rscale == nullptr || scratch == nullptr) {
         safe_free((void **) &sketch);
         safe_free((void **) &rscale);
         safe_free((void **) &scratch);
@@ -496,8 +459,6 @@ static bool spec_head_build(struct transformer_arch_state *st) {
         safe_free((void **) &dims);
         safe_free((void **) &dvar);
         safe_free((void **) &dsum);
-        safe_free((void **) &wdrop);
-        safe_free((void **) &wl1);
         safe_free((void **) &sketch);
         safe_free((void **) &rscale);
         safe_free((void **) &scratch);
@@ -547,39 +508,23 @@ static bool spec_head_build(struct transformer_arch_state *st) {
             }
         }
     }
-    /* Mark kept dimensions so the bound terms can split on membership. */
-    bool *kept = heap_alloc_array_aligned(bool, H);
-    if (kept != nullptr) {
-        for (size_t i = 0; i < H; i++) {
-            kept[i] = false;
-        }
-        for (size_t s = 0; s < SD; s++) {
-            kept[dims[s]] = true;
-        }
-    }
     struct spec_build_job job = {.dt        = dt,
                                  .Wbase     = Wbase,
                                  .row_bytes = row_bytes,
                                  .H         = H,
                                  .SD        = SD,
                                  .dims      = dims,
-                                 .kept      = kept,
                                  .scratch   = scratch,
                                  .sketch    = sketch,
-                                 .rscale    = rscale,
-                                 .wdrop     = wdrop,
-                                 .wl1       = wl1};
+                                 .rscale    = rscale};
     atomic_init(&job.next_slot, 0);
     geist_par_for(V, spec_build_rows, &job);
     safe_free((void **) &scratch);
 
     st->spec_sketch     = sketch;
-    st->spec_w_drop     = wdrop;
-    st->spec_w_l1       = wl1;
     st->spec_row_scale  = rscale;
     st->spec_sketch_dim = SD;
     st->spec_dims       = dims;
-    st->spec_stride     = sub;
     st->spec_topk       = topk;
     return true;
 }
@@ -686,22 +631,6 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
             .a_sk = a_sk, .sketch = sketch, .rscale = rscale, .SD = SD, .rough = rough};
     geist_par_for(V, spec_rough_rows, (void *) &rj);
 
-    /* Activation halves of the bound: L1 over the dimensions the sketch keeps,
-     * L2 over those it drops. One O(H) pass. */
-    float h_l1_kept = 0.0f, h_sq_drop = 0.0f;
-    for (size_t i = 0; i < H; i++) {
-        h_sq_drop += h[i] * h[i];
-    }
-    for (size_t s = 0; s < SD; s++) {
-        const float hv = h[dims[s]];
-        h_l1_kept += hv < 0.0f ? -hv : hv;
-        h_sq_drop -= hv * hv; /* kept dimensions are not dropped */
-    }
-    if (h_sq_drop < 0.0f) {
-        h_sq_drop = 0.0f; /* rounding */
-    }
-    const float h_l2_drop = sqrtf(h_sq_drop);
-
     /* Phase 2: top-K by rough score, via a bounded min-heap of (score, idx).
      * heap[0] is the smallest score currently retained. */
     struct spec_cand *heap = (struct spec_cand *) sess->spec_heap;
@@ -804,45 +733,6 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
     }
 
     *out_token = geist_sampler_argmax(V, logits);
-
-    /* Certainty check. Everything above approximates, in order to choose which
-     * rows to score exactly; this decides whether that choice was safe.
-     *
-     * A rough score differs from the exact logit by three bounded amounts --
-     * the dropped dimensions, the weight quantization and the activation
-     * quantization -- so every excluded row has an upper bound on what its
-     * exact logit could have been. If none reaches the winner's exact logit,
-     * no excluded row could have won and the answer is provably the dense
-     * head's. If one does, the head declines and head.c recomputes densely. */
-    /* Cutoff from the min-heap: nothing below it made the candidate set. Read
-     * before the scan because phase 3 overwrites logits, never rough. */
-    const float  cutoff     = hn > 0 ? heap[0].s : -3.4e38f;
-    const float  best_exact = logits[*out_token];
-    const float  inv_xq     = 1.0f / x_q;
-    const float *wdrop      = st->spec_w_drop;
-    const float *wl1        = st->spec_w_l1;
-    bool         certain    = true;
-    if (spec_verify_env() && wdrop != nullptr && wl1 != nullptr) {
-        for (size_t r = 0; r < V; r++) {
-            /* Excluded rows are those phase 2 left below the heap's cutoff.
-             * Not `logits[r] != -INFINITY`: under plain -ffast-math (Pi) the
-             * compiler may fold that to always-true. */
-            if (rough[r] > cutoff) {
-                continue; /* a candidate: already scored exactly */
-            }
-            const float ub = rough[r] * inv_xq + 0.5f * rscale[r] * h_l1_kept +
-                             0.5f * wl1[r] * inv_xq + wdrop[r] * h_l2_drop;
-            if (ub > best_exact) {
-                certain = false;
-                break;
-            }
-        }
-    }
-    if (!certain) {
-        v->buffer_unmap(sess->scratch_logits);
-        v->buffer_unmap(sess->scratch_h_a);
-        return false; /* head.c recomputes the dense head */
-    }
 
     /* scratch_logits is now SPARSE (-inf off the candidate set) — right for
      * the greedy argmax above, wrong for value consumers. peek_logits checks

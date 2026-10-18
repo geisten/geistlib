@@ -95,15 +95,14 @@ static bool cpu_scalar_fused_supported(struct geist_backend            *be,
 
 /* Exported like the vtbl: cpu_x86 struct-copies these as its baseline. */
 const struct geist_backend_primitives cpu_scalar_prims = {
-        .rmsnorm          = cpu_scalar_rmsnorm,
-        .add              = cpu_scalar_add,
-        .mul              = cpu_scalar_mul,
-        .gelu_tanh        = cpu_scalar_gelu_tanh,
-        .silu             = cpu_scalar_silu,
-        .relu_squared     = cpu_scalar_relu_squared,
-        .rope_apply       = cpu_scalar_rope_apply,
-        .embedding_lookup = cpu_scalar_embedding_lookup,
-        .attention        = cpu_scalar_attention,
+        .rmsnorm      = cpu_scalar_rmsnorm,
+        .add          = cpu_scalar_add,
+        .mul          = cpu_scalar_mul,
+        .gelu_tanh    = cpu_scalar_gelu_tanh,
+        .silu         = cpu_scalar_silu,
+        .relu_squared = cpu_scalar_relu_squared,
+        .rope_apply   = cpu_scalar_rope_apply,
+        .attention    = cpu_scalar_attention,
 };
 
 const struct geist_backend_fused cpu_scalar_fused = {

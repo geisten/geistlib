@@ -52,33 +52,10 @@ static void populate_gemma3(struct gguf_ctx *gguf, struct transformer_arch_state
     st->config.has_embed_scale      = true;
     st->config.ffn_activation       = GEIST_FFN_GEGLU;
 
-    uint32_t u;
-    float    f;
-    if (gguf_get_meta_u32(gguf, "gemma3.block_count", &u))
-        st->n_layers = u;
-    if (gguf_get_meta_u32(gguf, "gemma3.embedding_length", &u))
-        st->d_model = u;
-    if (gguf_get_meta_u32(gguf, "gemma3.attention.head_count", &u))
-        st->n_q_heads = u;
-    if (gguf_get_meta_u32(gguf, "gemma3.attention.head_count_kv", &u))
-        st->n_kv_heads = u;
-    if (gguf_get_meta_u32(gguf, "gemma3.vocab_size", &u)) {
-        st->vocab_size = u;
-    } else {
-        uint32_t       elem_vt = 0;
-        uint64_t       count   = 0;
-        const uint8_t *payload = nullptr;
-        if (gguf_get_meta_array_info(gguf, "tokenizer.ggml.tokens", &elem_vt, &count, &payload)) {
-            st->vocab_size = (size_t) count;
-        }
-    }
-    if (gguf_get_meta_f32(gguf, "gemma3.attention.layer_norm_rms_epsilon", &f))
-        st->config.rms_eps = f;
+    family_populate_common(gguf, "gemma3", nullptr, st);
+    st->vocab_size = family_vocab_size(gguf, "gemma3", nullptr);
 
     populate_bitnet_embedding_meta(gguf, "gemma3", st);
-
-    st->hidden_per_layer = 0;
-    st->ple_out          = 0;
 }
 
 static bool populate_layers_gemma3(struct transformer_arch_state *st) {
@@ -126,21 +103,19 @@ static bool populate_layers_gemma3(struct transformer_arch_state *st) {
                                         : (float) head_dim;
     st->config.gemma3_q_scale = 1.0f / sqrtf(qpas);
     for (size_t i = 0; i < st->n_layers; i++) {
-        struct transformer_layer_weights *L = &st->layers[i];
-        L->layer_idx                        = (int) i;
         /* llama.cpp's set_swa_pattern: local unless il % period is the
          * period's last slot; period 0 means every layer local */
-        const bool local  = sliding > 0 && (swa_period == 0 || i % swa_period < swa_period - 1);
-        L->mixer          = GEIST_MIXER_ATTN;
+        const bool local = sliding > 0 && (swa_period == 0 || i % swa_period < swa_period - 1);
+        struct transformer_layer_weights *L = &st->layers[i];
+        family_uniform_layer(st,
+                             i,
+                             head_dim,
+                             intermediate,
+                             local ? freq_base_swa : freq_base,
+                             (int) head_dim,
+                             L);
         L->is_full        = !local;
-        L->is_kv_shared   = false;
-        L->head_dim       = head_dim;
-        L->q_out          = st->n_q_heads * head_dim;
-        L->kv_out         = st->n_kv_heads * head_dim;
-        L->intermediate   = intermediate;
         L->sliding_window = local ? sliding : 0;
-        L->rope_theta     = local ? freq_base_swa : freq_base;
-        L->n_rotated_dims = (int) head_dim;
     }
     return true;
 }

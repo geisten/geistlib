@@ -147,23 +147,30 @@ static void run_backend(const char *backend) {
     }
 
     /* The transformer ops unpack their views through the same check (they
-     * once folded the shape without comparing it to the buffer). An
-     * embedding table of 16 x 4 fits the 64 floats behind it; one of
-     * 1024 x 4 does not, and token 1000 would read 15 KiB past the end. */
-    if (be->desc->prims->embedding_lookup != nullptr) {
-        struct geist_tensor table = good, row = y;
-        table.ndim      = 2;
-        table.shape[0]  = 16;
-        table.shape[1]  = 4;
-        table.stride[0] = 4;
-        table.stride[1] = 1;
-        row.shape[0]    = 4;
-        if (be->desc->prims->embedding_lookup(be, &table, 3, &row) != GEIST_OK) {
-            fail(backend, "embedding_lookup rejected a table that fits its buffer");
+     * once folded the shape without comparing it to the buffer). Rows of
+     * 4 x 4 fit the 64 floats behind them; 1024 rows do not, and the op
+     * would read and write 16 KiB past the end. */
+    if (be->desc->prims->rope_apply != nullptr) {
+        struct geist_tensor x = good, cs = good;
+        x.ndim       = 3;
+        x.shape[0]   = 4;
+        x.shape[1]   = 1;
+        x.shape[2]   = 4;
+        x.stride[0]  = 4;
+        x.stride[1]  = 4;
+        x.stride[2]  = 1;
+        cs.ndim      = 2;
+        cs.shape[0]  = 4;
+        cs.shape[1]  = 4;
+        cs.stride[0] = 4;
+        cs.stride[1] = 1;
+        if (be->desc->prims->rope_apply(be, &x, &cs, &cs) != GEIST_OK) {
+            fail(backend, "rope_apply rejected views that fit their buffer");
         }
-        table.shape[0] = 1024;
-        if (be->desc->prims->embedding_lookup(be, &table, 1000, &row) == GEIST_OK) {
-            fail(backend, "embedding_lookup accepted a table past its buffer");
+        x.shape[0]  = 1024;
+        cs.shape[0] = 1024;
+        if (be->desc->prims->rope_apply(be, &x, &cs, &cs) == GEIST_OK) {
+            fail(backend, "rope_apply accepted views past their buffer");
         }
     }
 

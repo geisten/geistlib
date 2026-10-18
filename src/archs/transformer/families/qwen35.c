@@ -49,10 +49,8 @@ static void populate_qwen35(struct gguf_ctx *gguf, struct transformer_arch_state
     st->config.has_attn_output_gate = true;
     st->config.ffn_activation       = GEIST_FFN_SWIGLU;
 
-    uint32_t u;
-    float    f;
-    if (gguf_get_meta_u32(gguf, "qwen35.block_count", &u))
-        st->n_layers = u;
+    family_populate_common(gguf, "qwen35", nullptr, st);
+    st->vocab_size = family_vocab_size(gguf, "qwen35", nullptr); /* no qwen35.vocab_size key */
     uint32_t nextn = 0;
     gguf_get_meta_u32(gguf, "qwen35.nextn_predict_layers", &nextn);
     if (nextn < st->n_layers) {
@@ -64,24 +62,10 @@ static void populate_qwen35(struct gguf_ctx *gguf, struct transformer_arch_state
         st->n_layers     = 0;
         st->n_mtp_layers = nextn;
     }
-    if (gguf_get_meta_u32(gguf, "qwen35.embedding_length", &u))
-        st->d_model = u;
-    if (gguf_get_meta_u32(gguf, "qwen35.attention.head_count", &u))
-        st->n_q_heads = u;
-    if (gguf_get_meta_u32(gguf, "qwen35.attention.head_count_kv", &u))
-        st->n_kv_heads = u;
-    if (gguf_get_meta_f32(gguf, "qwen35.attention.layer_norm_rms_epsilon", &f))
-        st->config.rms_eps = f;
-    { /* vocab from the tokenizer table (no qwen35.vocab_size key) */
-        uint32_t       elem_vt = 0;
-        uint64_t       count   = 0;
-        const uint8_t *payload = nullptr;
-        if (gguf_get_meta_array_info(gguf, "tokenizer.ggml.tokens", &elem_vt, &count, &payload))
-            st->vocab_size = (size_t) count;
-    }
     /* DeltaNet geometry. GGUF key mapping (#281): state_size =
      * head_k (= head_v), group_count = n_k_heads, time_step_rank =
      * n_v_heads, inner_size = n_v_heads * head_v. */
+    uint32_t u;
     if (gguf_get_meta_u32(gguf, "qwen35.ssm.group_count", &u))
         st->config.dn_n_k_heads = u;
     if (gguf_get_meta_u32(gguf, "qwen35.ssm.time_step_rank", &u))
@@ -92,8 +76,6 @@ static void populate_qwen35(struct gguf_ctx *gguf, struct transformer_arch_state
         st->config.dn_head_v = u / st->config.dn_n_v_heads;
     if (gguf_get_meta_u32(gguf, "qwen35.ssm.conv_kernel", &u))
         st->config.dn_conv_kernel = u;
-    st->hidden_per_layer = 0;
-    st->ple_out          = 0;
 }
 
 static bool populate_layers_qwen35(struct transformer_arch_state *st) {
@@ -127,31 +109,17 @@ static bool populate_layers_qwen35(struct transformer_arch_state *st) {
         struct transformer_layer_weights *L = &st->layers[i];
         st->config.rope_partial_block       = true; /* ggml layout, see arch_config.h */
         const bool is_attn = rec != nullptr ? rec[i] == 0 : ((i + 1) % (size_t) interval == 0);
-        L->layer_idx       = (int) i;
-        L->mixer           = is_attn ? GEIST_MIXER_ATTN : GEIST_MIXER_DELTANET;
-        L->is_full         = true;
-        L->is_kv_shared    = false;
-        L->head_dim        = head_dim;
-        L->q_out           = st->n_q_heads * head_dim;
-        L->kv_out          = st->n_kv_heads * head_dim;
-        L->intermediate    = intermediate;
-        L->sliding_window  = 0;
-        L->rope_theta      = freq_base;
-        L->n_rotated_dims  = (int) rot;
+        family_uniform_layer(st, i, head_dim, intermediate, freq_base, (int) rot, L);
+        L->mixer = is_attn ? GEIST_MIXER_ATTN : GEIST_MIXER_DELTANET;
     }
     for (size_t i = 0; i < st->n_mtp_layers; i++) {
-        struct transformer_layer_weights *L = &st->mtp_layers[i].block;
-        L->layer_idx                        = (int) (st->n_layers + i);
-        L->mixer                            = GEIST_MIXER_ATTN;
-        L->is_full                          = true;
-        L->is_kv_shared                     = false;
-        L->head_dim                         = head_dim;
-        L->q_out                            = st->n_q_heads * head_dim;
-        L->kv_out                           = st->n_kv_heads * head_dim;
-        L->intermediate                     = intermediate;
-        L->sliding_window                   = 0;
-        L->rope_theta                       = freq_base;
-        L->n_rotated_dims                   = (int) rot;
+        family_uniform_layer(st,
+                             st->n_layers + i,
+                             head_dim,
+                             intermediate,
+                             freq_base,
+                             (int) rot,
+                             &st->mtp_layers[i].block);
     }
     return true;
 }

@@ -10,13 +10,13 @@
  *   - $GEIST_VISION_MODEL_PATH env override
  *   - <aux_search_root>/vision_tower.safetensors  (typ. dir of GGUF)
  *   - ./vision_bench/vision_tower.safetensors
- *   - ../gemma-4-E2B-it/vision_tower.safetensors
  *   - ./vision_tower.safetensors
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "arch.h"
 
+#include "aux_file.h"
 #include "heap.h"
 #include "vision_encoder.h"
 
@@ -30,54 +30,15 @@ struct vision_siglip_state {
     struct VisionEncoder *enc;
 };
 
-/* Mirrors audio_conformer's find_file. */
-static char *find_file(const char        *env_name,
-                       const char        *aux_root,
-                       const char        *basename,
-                       const char *const *fallbacks) {
-    const char *env = env_name != nullptr ? getenv(env_name) : nullptr;
-    if (env != nullptr && env[0] != '\0') {
-        FILE *f = fopen(env, "rb");
-        if (f != nullptr) {
-            fclose(f);
-            return strdup(env);
-        }
-    }
-    if (aux_root != nullptr) {
-        size_t need = strlen(aux_root) + 1 + strlen(basename) + 1;
-        char  *cand = heap_alloc_aligned(need, alignof(char));
-        if (cand != nullptr) {
-            snprintf(cand, need, "%s/%s", aux_root, basename);
-            FILE *f = fopen(cand, "rb");
-            if (f != nullptr) {
-                fclose(f);
-                return cand;
-            }
-            safe_free((void **) &cand);
-        }
-    }
-    if (fallbacks != nullptr) {
-        for (size_t i = 0; fallbacks[i] != nullptr; i++) {
-            FILE *f = fopen(fallbacks[i], "rb");
-            if (f != nullptr) {
-                fclose(f);
-                return strdup(fallbacks[i]);
-            }
-        }
-    }
-    return nullptr;
-}
-
 static void *vision_siglip_state_create(struct geist_backend *be, const char *aux_root) {
     (void) be; /* the tower runs on host memory, not backend buffers */
 
     static const char *vision_fallbacks[] = {
             "./vision_bench/vision_tower.safetensors",
-            "../gemma-4-E2B-it/vision_tower.safetensors",
             "vision_tower.safetensors",
             nullptr,
     };
-    char *path = find_file(
+    char *path = geist_find_aux_file(
             "GEIST_VISION_MODEL_PATH", aux_root, "vision_tower.safetensors", vision_fallbacks);
     if (path == nullptr) {
         return nullptr;

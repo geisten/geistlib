@@ -34,77 +34,43 @@
 /* Microsoft's converter prefixes keys with the full architecture string
  * ("bitnet-b1.58.*"), community converters with "bitnet.*". */
 static bool meta_u32(struct gguf_ctx *g, const char *key, uint32_t *out) {
-    char k[96];
-    snprintf(k, sizeof k, "bitnet-b1.58.%s", key);
-    if (gguf_get_meta_u32(g, k, out)) {
-        return true;
-    }
-    snprintf(k, sizeof k, "bitnet.%s", key);
-    return gguf_get_meta_u32(g, k, out);
+    return family_meta_u32(g, "bitnet-b1.58", "bitnet", key, out);
 }
 
 static bool meta_f32(struct gguf_ctx *g, const char *key, float *out) {
-    char k[96];
-    snprintf(k, sizeof k, "bitnet-b1.58.%s", key);
-    if (gguf_get_meta_f32(g, k, out)) {
-        return true;
-    }
-    snprintf(k, sizeof k, "bitnet.%s", key);
-    return gguf_get_meta_f32(g, k, out);
+    return family_meta_f32(g, "bitnet-b1.58", "bitnet", key, out);
 }
 
-/* The activation is not in the official GGUF: "bitnet-b1.58" (Microsoft
- * 2B-4T, HF hidden_act="relu2") defaults to gated squared-ReLU — under
- * SwiGLU it scores chance on MMLU — and community "bitnet" to SwiGLU. A
- * *.feed_forward_activation key overrides it (geist_ffn_activation_select). */
-static enum geist_ffn_activation_kind activation_from_meta(struct gguf_ctx *g) {
-    size_t      al = 0, len = 0;
-    const char *arch = gguf_get_meta_string(g, "general.architecture", &al);
-    const char *act  = gguf_get_meta_string(g, "bitnet-b1.58.feed_forward_activation", &len);
+/* The activation is not in the official GGUF: the family names the default
+ * (dflt) and a *.feed_forward_activation key overrides it
+ * (geist_ffn_activation_select). */
+static void bitnet_populate(struct gguf_ctx               *g,
+                            enum geist_ffn_activation_kind dflt,
+                            struct transformer_arch_state *st) {
+    size_t      len = 0;
+    const char *act = gguf_get_meta_string(g, "bitnet-b1.58.feed_forward_activation", &len);
     if (act == nullptr) {
         act = gguf_get_meta_string(g, "bitnet.feed_forward_activation", &len);
     }
     if (act == nullptr) {
         act = gguf_get_meta_string(g, "general.feed_forward_activation", &len);
     }
-    return geist_ffn_activation_select(al, act != nullptr ? len : 0, arch, act);
+    st->config.has_sub_ln     = true;
+    st->config.ffn_activation = geist_ffn_activation_select(act != nullptr ? len : 0, dflt, act);
+
+    family_populate_common(g, "bitnet-b1.58", "bitnet", st);
+    st->vocab_size = family_vocab_size(g, "bitnet-b1.58", "bitnet");
 }
 
-static void bitnet_populate(struct gguf_ctx *g, struct transformer_arch_state *st) {
-    st->config.has_sub_ln     = true;
-    st->config.ffn_activation = activation_from_meta(g);
+/* "bitnet-b1.58" (Microsoft 2B-4T, HF hidden_act="relu2"): gated
+ * squared-ReLU; under SwiGLU the 2B-4T scores chance on MMLU. */
+static void bitnet_b158_populate(struct gguf_ctx *g, struct transformer_arch_state *st) {
+    bitnet_populate(g, GEIST_FFN_GATED_SQUARED_RELU, st);
+}
 
-    uint32_t u;
-    float    f;
-    if (meta_u32(g, "block_count", &u)) {
-        st->n_layers = u;
-    }
-    if (meta_u32(g, "embedding_length", &u)) {
-        st->d_model = u;
-    }
-    if (meta_u32(g, "attention.head_count", &u)) {
-        st->n_q_heads = u;
-    }
-    if (meta_u32(g, "attention.head_count_kv", &u)) {
-        st->n_kv_heads = u;
-    }
-    if (meta_u32(g, "vocab_size", &u)) {
-        st->vocab_size = u;
-    } else {
-        /* Community GGUFs omit vocab_size; the tokenizer rides inside. */
-        uint32_t       elem_vt = 0;
-        uint64_t       count   = 0;
-        const uint8_t *payload = nullptr;
-        if (gguf_get_meta_array_info(g, "tokenizer.ggml.tokens", &elem_vt, &count, &payload)) {
-            st->vocab_size = (size_t) count;
-        }
-    }
-    if (meta_f32(g, "attention.layer_norm_rms_epsilon", &f)) {
-        st->config.rms_eps = f;
-    }
-    /* No PLE: zero dims make any accidental access trap on size 0. */
-    st->hidden_per_layer = 0;
-    st->ple_out          = 0;
+/* Community "bitnet" conversions: SwiGLU. */
+static void bitnet_community_populate(struct gguf_ctx *g, struct transformer_arch_state *st) {
+    bitnet_populate(g, GEIST_FFN_SWIGLU, st);
 }
 
 static bool bitnet_populate_layers(struct transformer_arch_state *st) {
@@ -117,19 +83,7 @@ static bool bitnet_populate_layers(struct transformer_arch_state *st) {
         (void) meta_u32(g, "feed_forward_length", &intermediate);
         (void) meta_f32(g, "rope.freq_base", &rope_theta);
     }
-    for (size_t i = 0; i < st->n_layers; i++) {
-        struct transformer_layer_weights *L = &st->layers[i];
-        L->layer_idx                        = (int) i;
-        L->is_full                          = true;
-        L->is_kv_shared                     = false;
-        L->head_dim                         = head_dim;
-        L->q_out                            = st->n_q_heads * head_dim;
-        L->kv_out                           = st->n_kv_heads * head_dim;
-        L->intermediate                     = intermediate;
-        L->sliding_window                   = 0;
-        L->rope_theta                       = rope_theta;
-        L->n_rotated_dims                   = (int) head_dim;
-    }
+    family_uniform_layers(st, head_dim, intermediate, rope_theta);
     return true;
 }
 
@@ -230,7 +184,7 @@ bitnet_attention_block(struct transformer_layer_forward_ctx *ctx) {
 
 const struct transformer_family transformer_family_bitnet_b158 = {
         .name            = "bitnet-b1.58",
-        .populate        = bitnet_populate,
+        .populate        = bitnet_b158_populate,
         .populate_layers = bitnet_populate_layers,
         .wire_layer      = bitnet_wire_layer,
         .attention_block = bitnet_attention_block,
@@ -241,7 +195,7 @@ const struct transformer_family transformer_family_bitnet_b158 = {
  * "general.architecture" = "bitnet". Same unit; meta_* tries both prefixes. */
 const struct transformer_family transformer_family_bitnet = {
         .name            = "bitnet",
-        .populate        = bitnet_populate,
+        .populate        = bitnet_community_populate,
         .populate_layers = bitnet_populate_layers,
         .wire_layer      = bitnet_wire_layer,
         .attention_block = bitnet_attention_block,

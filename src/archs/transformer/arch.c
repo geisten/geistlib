@@ -150,17 +150,6 @@ static void op_state_reset(void *session) {
     }
 }
 
-static enum geist_status op_set_session_opts(void *session, const struct geist_session_opts *opts) {
-    if (session == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    const enum geist_status s = settle(session); /* samples under the old opts */
-    if (s != GEIST_OK) {
-        return s;
-    }
-    return transformer_session_apply_opts(session, opts);
-}
-
 /* Append a sequence of tokens to the KV cache via the batched seq>1
  * path. After the call, the session holds logits for the next position;
  * ops->decode_step will return the argmax of those logits on its first
@@ -463,7 +452,6 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .state_destroy            = op_state_destroy,
         .gains                    = op_gains,
         .state_reset              = op_state_reset,
-        .set_session_opts         = op_set_session_opts,
         .prefill                  = op_prefill,
         .decode_step              = op_decode_step,
         .bind_cancel              = op_bind_cancel,

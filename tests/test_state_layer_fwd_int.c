@@ -31,6 +31,7 @@
 
 #include "test_helpers.h"
 
+#include "src/archs/transformer/arch_family.h"
 #include "src/archs/transformer/arch_state.h"
 
 #include "quant.h"
@@ -903,7 +904,7 @@ int main(void) {
         return GEIST_TEST_FAIL;
     }
     /* A Gemma 4 layer reference: HIDDEN 1536, 35 layers, PLE, KV sharing. */
-    GEIST_REQUIRE_ARCH(st->config.family, "gemma4");
+    GEIST_REQUIRE_ARCH(st->family->name, "gemma4");
 
     int fails = 0;
     /* Layer 0: sliding, non-shared (head_dim 256, theta 1e4, window 512). */

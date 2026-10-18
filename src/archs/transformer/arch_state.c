@@ -1133,7 +1133,6 @@ geometry_from_metadata(struct geist_backend             *be,
      * family stripping Gemma defaults. rms_eps carries the one value
      * all families share as a fallback when the meta key is absent. */
     st->config = (struct geist_arch_config) {
-            .family         = "?",
             .rms_eps        = 1e-6f,
             .kv_sliding_src = -1,
             .kv_full_src    = -1,
@@ -1158,8 +1157,7 @@ geometry_from_metadata(struct geist_backend             *be,
                 be, GEIST_E_INTERNAL, "transformer: family %s has no layer forward", fam->name);
         return GEIST_E_INTERNAL;
     }
-    st->config.family = fam->name;
-    st->family        = fam;
+    st->family = fam;
     fam->populate(gguf, st);
     if (st->n_layers == 0) {
         geist_backend_set_error(be,
@@ -1169,6 +1167,17 @@ geometry_from_metadata(struct geist_backend             *be,
                                 fam->name,
                                 st->n_layers,
                                 st->n_mtp_layers);
+        return GEIST_E_FORMAT;
+    }
+    /* The embedding table, the LM head and every token-id check are sized
+     * by it; family_vocab_size leaves 0 when the GGUF says nothing. */
+    if (st->vocab_size == 0) {
+        geist_backend_set_error(be,
+                                GEIST_E_FORMAT,
+                                "transformer: %s GGUF gives no vocabulary size (no %s.vocab_size "
+                                "key, no tokenizer.ggml.tokens)",
+                                fam->name,
+                                fam->name);
         return GEIST_E_FORMAT;
     }
     /* Head counts are metadata too. Every attention path maps query head h
@@ -1798,8 +1807,6 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
         safe_free((void **) &st->spec_sketch);
         safe_free((void **) &st->spec_row_scale);
         safe_free((void **) &st->spec_dims);
-        safe_free((void **) &st->spec_w_drop);
-        safe_free((void **) &st->spec_w_l1);
         for (size_t b = 0; b < st->n_global_bufs; b++) {
             if (st->global_bufs[b] != nullptr) {
                 be->desc->vtbl->buffer_destroy(be, st->global_bufs[b]);
