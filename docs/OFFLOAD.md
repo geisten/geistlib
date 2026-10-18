@@ -119,6 +119,14 @@ where both use the bytes as stored), and drivers that do import file pages.
   Vulkan INT8 split 26 within the split's own distance (max|d| 0.201, 16/16
   greedy, run 1393).
 - First attempt, a route per linear: no gain (run 1383, below).
+- **Default and multi-turn** (run 1417, `GEIST_OFFLOAD_M_MIN` unset → 64,
+  CPU steps mirrored into the twins): two cpu_x86 instances byte-identical
+  including a second prompt after the decode, 4 chunks on the twins and 16
+  mirrored steps per run as expected. Qwen3-14B Q8_0 split 26 offload at
+  chunk 512: 507 / 525 tok/s prefill, decode 8.5 / 9.9 against the split's
+  9.9 / 8.6 in the same, noisy run (the split's prefill varied 198 / 131
+  between its two cycles): the mirroring's decode cost is below this run's
+  resolution.
 
 ## Phase 0: measured (RTX 2080 Ti box, #78)
 

@@ -1,0 +1,44 @@
+geist: offload: prefill chunks of 8 rows or more run layers 16..31 on cpu_x86
+geist: offload: 4 prefill chunks ran on cpu_x86, 16 steps mirrored there
+geist: offload: prefill chunks of 8 rows or more run layers 16..31 on cpu_x86
+geist: offload: 4 prefill chunks ran on cpu_x86, 16 steps mirrored there
+model gguf_artifacts/smollm2-360m-instruct-q8_0.gguf (32 layers), cpu_x86 + cpu_x86, byte-identical
+  kv fp32 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  16 offload: GEIST_OK, max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  16 offload: GEIST_OK, max|d| logits 0.3, after reset 0.511, greedy tokens matching 8/16
+== cycle 1 offload m_max=128
+geist: offload: prefill chunks of 64 rows or more run layers 26..39 on vulkan
+geist: offload: 12 prefill chunks ran on vulkan, 97 steps mirrored there
+== cycle 1 offload m_max=512
+geist: offload: prefill chunks of 64 rows or more run layers 26..39 on vulkan
+geist: offload: 3 prefill chunks ran on vulkan, 97 steps mirrored there
+== cycle 2 offload m_max=128
+geist: offload: prefill chunks of 64 rows or more run layers 26..39 on vulkan
+geist: offload: 12 prefill chunks ran on vulkan, 97 steps mirrored there
+== cycle 2 offload m_max=512
+geist: offload: prefill chunks of 64 rows or more run layers 26..39 on vulkan
+geist: offload: 3 prefill chunks ran on vulkan, 97 steps mirrored there
+geist: offload: prefill chunks of 64 rows or more run layers 1..39 on vulkan
+geist: offload: 1 prefill chunks ran on vulkan, 19 steps mirrored there
+geist: offload: prefill chunks of 64 rows or more run layers 1..39 on vulkan
+geist: offload: 0 prefill chunks ran on vulkan, 0 steps mirrored there
+geist: offload: prefill chunks of 64 rows or more run layers 26..39 on vulkan
+geist: offload: 0 prefill chunks ran on vulkan, 0 steps mirrored there
+FAIL: split 26 (kv fp32): GEIST_E_OOM
+geist: offload: prefill chunks of 64 rows or more run layers 26..39 on vulkan
+geist: offload: 1 prefill chunks ran on vulkan, 19 steps mirrored there
+geist: offload: prefill chunks of 64 rows or more run layers 26..39 on vulkan
+geist: offload: 1 prefill chunks ran on vulkan, 19 steps mirrored there
+  kv int8 split  26: max|d| logits 0.268, after reset 0.225, greedy tokens matching 16/16
+  kv int4 split  26: max|d| logits 0.768, after reset 1.44, greedy tokens matching 0/16
