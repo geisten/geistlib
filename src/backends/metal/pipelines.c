@@ -60,6 +60,12 @@ struct metal_pipeline_row {
      NAME,                                           \
      offsetof(struct metal_state, FIELD##_function), \
      offsetof(struct metal_state, FIELD##_pipeline)}
+/* A prefill flash kernel's row: head_dim HD in slot HD/32 - 1. */
+#define METAL_FLASH_PIPE(HD)                                                \
+    {offsetof(struct metal_state, attn_flash_library),                      \
+     "attention_flash_d" #HD,                                               \
+     offsetof(struct metal_state, attention_flash_function[(HD) / 32 - 1]), \
+     offsetof(struct metal_state, attention_flash_pipeline[(HD) / 32 - 1])}
 #define METAL_N(rows) (sizeof(rows) / sizeof((rows)[0]))
 
 static const struct metal_pipeline_row metal_deltanet_rows[] = {
@@ -172,11 +178,20 @@ static const struct metal_pipeline_row metal_attention_rows[] = {
         METAL_PIPE(attn_qnorm_dec_f16, "attention_qnorm_dec_f16", attention_qnorm_dec_f16),
         METAL_PIPE(attn_qnorm_dec_f16, "attention_dec_f16", attention_dec_f16),
         METAL_PIPE(attn_dec_combine, "attention_dec_combine", attention_dec_combine),
-        METAL_PIPE(attn_flash_sg_f16, "attention_qnorm_flash_sg_f16", attention_qnorm_flash_sg_f16),
-        METAL_PIPE(attn_flash_sg_f16, "attention_flash_sg_f16", attention_flash_sg_f16),
-        METAL_PIPE(attn_flash_sg8_f16, "attention_flash_sg8_f16", attention_flash_sg8_f16),
         METAL_PIPE(attn_dec512_f16, "attention_dec512_f16", attention_dec512_f16),
         METAL_PIPE(attn_dec_f32kv, "attention_dec_f32kv", attention_dec_f32kv),
+        METAL_FLASH_PIPE(32),
+        METAL_FLASH_PIPE(64),
+        METAL_FLASH_PIPE(96),
+        METAL_FLASH_PIPE(128),
+        METAL_FLASH_PIPE(160),
+        METAL_FLASH_PIPE(192),
+        METAL_FLASH_PIPE(224),
+        METAL_FLASH_PIPE(256),
+        METAL_FLASH_PIPE(320),
+        METAL_FLASH_PIPE(384),
+        METAL_FLASH_PIPE(448),
+        METAL_FLASH_PIPE(512),
         METAL_PIPE(attn_dec_f32kv, "attention_dec512_f32kv", attention_dec512_f32kv),
 };
 
@@ -306,23 +321,15 @@ static const struct metal_library_row metal_attention_libs[] = {
                   metal_attn_dec_f16_plain_head,
                   metal_attn_dec_f16_body),
         METAL_LIB(attn_dec_combine, "attention combine", metal_attn_dec_combine_source),
-        /* So do the q-norm and plain flash kernels. */
-        METAL_LIB(attn_flash_sg_f16,
-                  "flash attention",
-                  metal_attn_flash_sg_f16_source_a,
-                  metal_attn_flash_sg_f16_source_b,
-                  metal_attn_flash_sg_f16_plain_head,
-                  metal_attn_flash_sg_f16_source_b),
-        METAL_LIB(attn_flash_sg8_f16,
-                  "sg8 flash",
-                  metal_attn_flash_sg8_f16_source_a,
-                  metal_attn_flash_sg8_f16_source_b),
         METAL_LIB(attn_dec512_f16,
                   "dec512",
                   metal_attn_kv_header,
                   metal_attn_kv_f16_defs,
                   metal_attn_dec512_f16_source_a,
                   metal_attn_dec512_f16_source_b),
+        /* The prefill flash kernels, one template instantiated per head_dim. */
+        METAL_LIB(
+                attn_flash, "prefill flash", metal_attn_flash_source_a, metal_attn_flash_source_b),
         /* The plain decode kernels again, reading an F32 cache (#64). */
         METAL_LIB(attn_dec_f32kv,
                   "F32-KV decode attention",
