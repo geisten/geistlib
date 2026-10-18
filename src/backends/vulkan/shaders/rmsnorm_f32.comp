@@ -37,7 +37,7 @@ void main() {
     float sum = 0.0;
     for (uint j = lid; j < pc.feat; j += 256) {
         float v = x[pc.x_offset + row * pc.feat + j];
-        sum += v * v;
+        sum = fma(v, v, sum);
     }
     sum = subgroupAdd(sum);
     if (subgroupElect()) {

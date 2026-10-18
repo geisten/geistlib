@@ -31,7 +31,6 @@ test_layers0to4_int
 test_step12to14_ple_int
 test_step5_attn_oproj_int
 test_step8to11_mlp_norms_int
-test_ptqtp_int
 
 # models / assets not in CI
 test_bonsai_e2e_int

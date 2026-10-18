@@ -107,6 +107,14 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **`make vulkan-shaders` is pinned to one glslc, and CI checks the
+  SPIR-V headers.** The committed `*_spv.h` are compiler output; another
+  glslc rewrites dozens of them. The target now refuses any glslc but
+  Debian 13's package 2025.2-1 (`GLSLC_VERSION` in `mk/backend-vulkan.mk`;
+  `GLSLC_VERSION_CHECK=0` overrides), and the Vulkan CI job regenerates
+  every header with it and fails on a diff. The rmsnorm shaders write out
+  the `fma()` their shipped SPIR-V already used (the pinned compiler no
+  longer contracts on its own); `add_f32`/`mul_f32` share `ew3.glsl`.
 - **Qwen3-MoE gets an F16 KV cache; the CPU backends have one (#48).**
   A model family can now name the KV cache a session gets under AUTO
   (`transformer_family.kv_auto`). It ranks after an explicit `kv_mode` and
@@ -500,6 +508,16 @@ minor release.
   headers are unchanged.
 
 ### Removed
+- **The PTQTP ternary format (legacy).** Its loader (`gguf_ptqtp.c`) and
+  2-/3-plane GEMV/GEMM kernels (`ptqtp_kernel.c`) had no caller in `src/`
+  since v0.1.0, and no model loads PTQTP weights; only their own tests and
+  benches used them. Gone with them: `bench_ptqtp`, `bench_5trit_probe`,
+  `test_ptqtp_int`, `test_ptqtp_kernel_correctness_unit`, `test_3plane_unit`,
+  `test_ptqtp_p0_paper_parity.py`, `tools/ptqtp_single_tensor.py`,
+  `tools/ptqtp_version.py` and ROADMAP item #376 (PTQTP parity gate).
+  Ternary and 2-bit weights stay supported through I2_S/TQ (BitNet) and
+  PQ2_0 (Bonsai). The AWQ scale loader (`src/formats/ptqtp/ptqtp_awq.c`,
+  `geist_session_opts.awq_scales_path`) is unchanged.
 - **`geist_arch_ops_decoder.set_session_opts` (`geist_arch.h`,
   EXPERIMENTAL).** Only a decoder arch without `session_alloc` used it, and
   none exists: `session_alloc` / `session_free` are now required, and a
