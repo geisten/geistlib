@@ -818,6 +818,22 @@ jobs:
           path: ${{ github.workspace }}/.ccache
           key: ccache-vulkan-${{ github.run_id }}
           restore-keys: ccache-vulkan-
+      # The checked-in *_spv.h must be exactly what the pinned glslc
+      # (mk/backend-vulkan.mk: GLSLC_DEB, Debian 13's package) emits for the
+      # checked-in .comp sources: a shader edited without `make
+      # vulkan-shaders`, or headers built by another glslc, fail here.
+      - name: SPIR-V headers match their sources (pinned glslc)
+        run: |
+          deb=$(sed -n 's/^GLSLC_DEB := //p' mk/backend-vulkan.mk)
+          docker run --rm -v "$PWD:/src" -w /src debian:13 sh -c "
+            set -e
+            apt-get update -qq
+            apt-get install -y -qq --no-install-recommends glslc=$deb make >/dev/null
+            make GEMM_PROVIDER=native BACKENDS=vulkan vulkan-shaders >/dev/null
+          "
+          git status --porcelain src/backends/vulkan/shaders
+          git diff --exit-code --stat src/backends/vulkan/shaders
+          test -z "$(git status --porcelain src/backends/vulkan/shaders)"
       - name: Install deps (loader, lavapipe ICD, headers)
         uses: ./.github/actions/apt-install
         timeout-minutes: 15
