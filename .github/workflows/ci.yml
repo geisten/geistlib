@@ -58,8 +58,29 @@ jobs:
       # a compile-time ISA branch returning to the forward pass fails here.
       - run: sh scripts/check-audio-dispatch.sh
 
+  # Pull requests that change only documentation, raw benchmark data or the
+  # version lines (a release PR) skip the build and test jobs: a skipped job
+  # reports success to main's required checks. Rule: scripts/ci-changes.sh.
+  changes:
+    name: changed paths (code, or documentation only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.paths.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - run: sh scripts/ci-changes.sh --test
+      - id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: sh scripts/ci-changes.sh | tee -a "$GITHUB_OUTPUT"
+
   build-test:
     name: build + unit tests (${{ matrix.name }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     # ccache turns the recompile of ~38k lines into a near-no-op on a cache hit,
@@ -368,6 +389,8 @@ jobs:
 
   build-test-musl:
     name: build + unit tests (Linux arm64, musl)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
@@ -391,6 +414,8 @@ jobs:
   # job of every PR run.
   build-test-x86_64:
     name: ${{ matrix.name }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -507,6 +532,8 @@ jobs:
   # correctness is unmoored.
   build-test-x86_64-scalar:
     name: build + unit tests (Linux x86_64, cpu_scalar portable reference)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -529,6 +556,8 @@ jobs:
   # -fsanitize=fuzzer needs (libclang-common-19-dev only recommends it).
   build-test-x86_64-clang:
     name: build + unit tests (Linux x86_64, clang)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -560,6 +589,8 @@ jobs:
   # the step; no timing is asserted.
   audio-smoke:
     name: audio harness smoke (Linux arm64, NEON)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     env:
@@ -627,6 +658,8 @@ jobs:
   # tower is needed: the encoder runs without an LLM.
   audio-parity-x86_64:
     name: audio W8A8 parity (Linux x86_64, AVX-512 VNNI)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -668,6 +701,8 @@ jobs:
   # anything measured.
   pi5-target-build:
     name: build (TARGET=pi5 flag set, Linux arm64)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     env:
@@ -694,6 +729,8 @@ jobs:
   # release recipe so a musl-specific x86 issue can't reach a release.
   build-test-musl-x86_64:
     name: build + unit tests (Linux x86_64, musl)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -728,6 +765,8 @@ jobs:
   # to this public mirror.
   avx512-sde:
     name: AVX-512/VNNI guaranteed (Linux x86_64, Intel SDE)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -805,6 +844,8 @@ jobs:
   # (.gitea/workflows/vulkan-gpu.yml).
   vulkan-lavapipe:
     name: Vulkan backend (Linux x86_64, lavapipe)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -894,6 +935,8 @@ jobs:
   # don't free at exit).
   asan:
     name: ASan + UBSan (Linux arm64)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     env:
@@ -934,6 +977,8 @@ jobs:
   # unit suite is leak-clean.
   asan-x86_64:
     name: ASan + UBSan (Linux x86_64)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -974,6 +1019,8 @@ jobs:
   # job budget for no extra cross-session coverage.
   tsan:
     name: TSan multi-session (Linux x86_64, cpu_x86)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     # TSan is 5-15x on top of -O1 and serialized OMP: the parallel test's
     # serial reference prefill dominates. 75 min fits it with headroom.

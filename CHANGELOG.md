@@ -87,6 +87,13 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **CI: documentation-only pull requests skip the build and test jobs.** A
+  new `changes` job (`scripts/ci-changes.sh`) sets `code=false` when a pull
+  request changes only `*.md`, `docs/`, `benchmark/results/`, `assets/`,
+  `CITATION.cff`, `LICENSE`, `NOTICE` or the `GEIST_VERSION_*` lines of
+  `include/geist.h`; the 14 build and test jobs then report skipped, which
+  main's required checks accept. A documentation file a test reads counts as
+  code. Pushes to main always run everything.
 - **`make vulkan-shaders` is pinned to one glslc, and CI checks the
   SPIR-V headers.** The committed `*_spv.h` are compiler output; another
   glslc rewrites dozens of them. The target now refuses any glslc but
