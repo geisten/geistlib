@@ -1,0 +1,89 @@
+name: bonsai-cross
+
+# Ternary-Bonsai-2-27B PQ2_0: geistlib against the PrismML llama.cpp fork
+# (the only other engine that reads PQ2_0) on the geist-vulkan box, CPU
+# (Ryzen 9 9950X: cpu_x86 vs the fork's CPU build) and GPU (RTX 2080 Ti:
+# vulkan vs the fork's Vulkan build). Prefill 512, decode 64 at a short and
+# a 512-token context on both sides (geistlib --seq-lens 32,512; llama-bench
+# -d 0,512), interleaved cycles. On demand:
+#   tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib \
+#     --ref research/bonsai-cross bonsai-cross.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      fork_pin:
+        description: "PrismML-Eng/llama.cpp commit"
+        type: string
+        default: 0082ac24a89ae62132041b40e2c0170e278a98f4
+      cycles:
+        description: "interleaved cycles"
+        type: string
+        default: "3"
+
+permissions:
+  contents: read
+
+jobs:
+  cross:
+    name: Bonsai 27B, geistlib vs PrismML fork, on geist-vulkan
+    runs-on: geist-vulkan
+    timeout-minutes: 240
+    env:
+      PIN: ${{ inputs.fork_pin }}
+      CYCLES: ${{ inputs.cycles }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Environment
+        run: |
+          mkdir -p out
+          { git rev-parse HEAD; nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv; nproc; free -g; } 2>&1 | tee out/env.txt
+      - name: Model
+        run: |
+          set -eo pipefail
+          echo "MODEL=$(python3 tools/fetch_bench_model.py --model bonsai2-27b-pq2 --protocol benchmark/cross_engine_gpu_protocol.json)" >> "$GITHUB_ENV"
+      - name: Build geistlib (vulkan + cpu_x86)
+        run: make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
+      - name: Build the fork (CPU and Vulkan) at the pin
+        run: |
+          set -eo pipefail
+          echo "LB_CPU=$(scripts/ensure-llama-bench.sh cpu PrismML-Eng/llama.cpp "$PIN")" >> "$GITHUB_ENV"
+          echo "LB_VK=$(scripts/ensure-llama-bench.sh vulkan PrismML-Eng/llama.cpp "$PIN")" >> "$GITHUB_ENV"
+      - name: Measure
+        run: |
+          set -eo pipefail
+          . scripts/gpu-lock.sh
+          for b in "$LB_CPU" "$LB_VK"; do echo "fork $b built from $(cat "$(dirname "$(dirname "$b")")/.geist-built-from")"; done | tee out/report.txt
+          B=bin/linux/release/tests/bench_perf_sweep
+          geist() {
+            GEIST_BENCH_BACKEND=$1 $B --gguf "$MODEL" --seq-lens 32,512 --decode-n 64 --warmup 1 --repeats 2 --emit-jsonl 2>/dev/null |
+            python3 -c "
+          import json,sys
+          r={x['seq_len']:x for x in (json.loads(l) for l in sys.stdin if l.startswith('{'))}
+          print('geist $1  pp512 %.2f  tg@32 %.2f  tg@512 %.2f' % (r[512]['prefill_tps'], r[32]['decode_tps'], r[512]['decode_tps']))"
+          }
+          fork() {
+            "$1" -m "$MODEL" -ngl $3 -p 512 -n 64 -d 0,512 -r 2 -o jsonl 2>/dev/null | python3 -c "
+          import json,sys
+          r=[json.loads(l) for l in sys.stdin if l.startswith('{')]
+          pp=[x['avg_ts'] for x in r if x['n_prompt']==512 and x['n_gen']==0 and x.get('n_depth',0)==0]
+          t0=[x['avg_ts'] for x in r if x['n_gen']==64 and x.get('n_depth',0)==0]
+          t5=[x['avg_ts'] for x in r if x['n_gen']==64 and x.get('n_depth',0)==512]
+          print('fork $2  pp512 %.2f  tg@0 %.2f  tg@512 %.2f' % (pp[0], t0[0], t5[0]))"
+          }
+          for c in $(seq 1 "$CYCLES"); do
+            echo "== cycle $c"
+            geist cpu_x86;  fork "$LB_CPU" cpu 0
+            geist vulkan;   fork "$LB_VK" vulkan 99
+          done 2>&1 | tee -a out/report.txt
+      - name: Job summary
+        if: always()
+        run: |
+          { echo '```'; cat out/env.txt out/report.txt 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 30
+          name: bonsai-cross
+          path: out/
+          if-no-files-found: warn
