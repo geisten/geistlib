@@ -471,6 +471,23 @@ enum vk_placement vk_buffer_placement(const struct geist_buffer *buf) {
     return GEIST_OK;
 }
 
+/* The first refused import, once per instance: which step, the driver's
+ * VkResult and how many imports had succeeded (the caller copies). */
+static enum geist_status
+vk_import_refused(struct vk_state *st, const char *step, VkResult r, size_t bytes) {
+    if (!st->import_refused_noted) {
+        st->import_refused_noted = true;
+        fprintf(stderr,
+                "geist vulkan: importing %zu bytes of host memory failed at %s (VkResult %d) "
+                "after %zu MiB imported; copying instead\n",
+                bytes,
+                step,
+                (int) r,
+                st->imported_weight_bytes >> 20);
+    }
+    return GEIST_E_UNSUPPORTED;
+}
+
 enum geist_status vk_buffer_import_host(struct geist_backend *be,
                                         const void           *host,
                                         size_t                bytes,
@@ -489,10 +506,10 @@ enum geist_status vk_buffer_import_host(struct geist_backend *be,
 
     VkMemoryHostPointerPropertiesEXT hpp = {
             .sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
-    if (st->fn.GetMemoryHostPointerPropertiesEXT(
-                st->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, ptr, &hpp) !=
-        VK_SUCCESS) {
-        return GEIST_E_UNSUPPORTED;
+    VkResult r = st->fn.GetMemoryHostPointerPropertiesEXT(
+            st->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, ptr, &hpp);
+    if (r != VK_SUCCESS) {
+        return vk_import_refused(st, "vkGetMemoryHostPointerPropertiesEXT", r, bytes);
     }
     const VkExternalMemoryBufferCreateInfo ext = {
             .sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
@@ -504,8 +521,9 @@ enum geist_status vk_buffer_import_host(struct geist_backend *be,
                                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                       .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VkBuffer                 vb    = VK_NULL_HANDLE;
-    if (st->fn.CreateBuffer(st->device, &binfo, nullptr, &vb) != VK_SUCCESS) {
-        return GEIST_E_UNSUPPORTED;
+    r                              = st->fn.CreateBuffer(st->device, &binfo, nullptr, &vb);
+    if (r != VK_SUCCESS) {
+        return vk_import_refused(st, "vkCreateBuffer", r, bytes);
     }
     VkMemoryRequirements req;
     st->fn.GetBufferMemoryRequirements(st->device, vb, &req);
@@ -519,10 +537,13 @@ enum geist_status vk_buffer_import_host(struct geist_backend *be,
                                         .allocationSize  = size,
                                         .memoryTypeIndex = type};
     VkDeviceMemory             mem   = VK_NULL_HANDLE;
-    if (type == UINT32_MAX || req.size > size ||
-        st->fn.AllocateMemory(st->device, &minfo, nullptr, &mem) != VK_SUCCESS) {
+    r = type == UINT32_MAX || req.size > size
+                ? VK_ERROR_FORMAT_NOT_SUPPORTED
+                : st->fn.AllocateMemory(st->device, &minfo, nullptr, &mem);
+    if (r != VK_SUCCESS) {
         st->fn.DestroyBuffer(st->device, vb, nullptr);
-        return GEIST_E_UNSUPPORTED;
+        return vk_import_refused(
+                st, type == UINT32_MAX ? "memory type" : "vkAllocateMemory", r, bytes);
     }
     struct geist_buffer *buf = geist_backend_alloc(be, sizeof(*buf), alignof(struct geist_buffer));
     if (buf == nullptr || st->fn.BindBufferMemory(st->device, vb, mem, 0) != VK_SUCCESS) {

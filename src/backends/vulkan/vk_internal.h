@@ -255,6 +255,7 @@ struct vk_state {
     /* VK_EXT_external_memory_host: the alignment an imported host range
      * needs (minImportedHostPointerAlignment); 0 without the extension. */
     size_t host_import_align;
+    bool   import_refused_noted;
     /* An integrated GPU: its device-local heap is system RAM. */
     bool            unified_memory;
     VkCommandPool   cmd_pool;
