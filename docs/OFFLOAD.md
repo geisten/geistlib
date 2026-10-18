@@ -82,19 +82,28 @@ a static GPU set pays only from about 128 experts per layer on.
 
 ## Phase 1: measured (RTX 2080 Ti box)
 
-Qwen3-14B Q8_0, split 26 (cpu_x86 + Vulkan), prompt 512, decode 32,
-3 interleaved cycles, median, run 1388:
+Qwen3-14B Q8_0 (15.7 GB on an 11 GB card), split 26 (cpu_x86 + Vulkan),
+prompt 512, decode 32, 3 interleaved cycles, median, peak RSS, run 1396:
 
-| prefill chunk | split | **split + offload** | decode split / offload |
-| --: | --: | --: | --: |
-| 64 | 134.2 | 138.2 | 10.0 / 10.0 |
-| 128 | 156.2 | **264.0** | 9.9 / 10.0 |
+| configuration | prefill tok/s | decode tok/s | peak RSS |
+| :-- | --: | --: | --: |
+| split alone (chunk 128, cpu_x86's limit) | 125.4 | 8.57 | 6.1 GB |
+| split + offload, chunk 128 | 233.0 | 9.06 | 10.8 GB |
+| split + offload, chunk 256 | 373.3 | 8.99 | 10.9 GB |
+| **split + offload, chunk 512** | **515.3** | **9.07** | 11.0 GB |
 
-Every layer on Vulkan with streaming reached 240 tok/s at chunk 128 and 550
-at chunk 512 (runs 1366, 1377), but decodes at 2.6 tok/s. The split's
-chunk is capped at 128 by the CPU quant kernels (`GEIST_QUANT_M_CAP`); an
-offloaded chunk runs no CPU linear, so lifting that cap for offloaded
-sessions is the next step toward the 550.
+- Prefill 4.1× the split's at the same decode. For orientation (other
+  runs, the box ran faster then: split 156 in run 1388): every layer on the
+  GPU with streaming reached 550 tok/s prefill but decodes at 2.6 (run
+  1366); llama.cpp `-ngl 26` with op offload 485 / 9.2 (run 1305).
+- **Cost: host memory.** The twins' matrices are a second copy of the CPU
+  layers' weights in host memory (GEIST_W_HOST, ≈ 5 GB here); the mmapped
+  originals stay for the CPU's decode. Importing the mapping into Vulkan
+  instead of copying it would remove the copy.
+- Correctness: two cpu_x86 instances byte-identical with an FP32 cache;
+  Vulkan INT8 split 26 within the split's own distance (max|d| 0.201, 16/16
+  greedy, run 1393).
+- First attempt, a route per linear: no gain (run 1383, below).
 
 ## Phase 0: measured (RTX 2080 Ti box, #78)
 
@@ -343,7 +352,7 @@ Decision rule: keep if split 26 + offload prefills faster than both the split
 alone and every layer on the GPU, by more than the run's resolution, with
 decode within noise of the split. At chunk 128 (run 1388): 264 against 156
 (split) and 240 (every layer on the GPU), decode 10.0 against 9.9: met.
-Next: chunks above 128 for offloaded sessions.
+With chunks up to 512 (run 1396): 515 tok/s prefill, decode unchanged.
 
 **Phase 2: overlap.** The copy on the transfer queue, one weight ahead.
 Decision rule: keep if it beats single-queue streaming by more than the

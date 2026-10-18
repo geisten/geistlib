@@ -1,0 +1,51 @@
+ref: feat/78-offload-route
+  ref: feat/78-offload-route
+[command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +refs/heads/feat/78-offload-route*:refs/remotes/origin/feat/78-offload-route* +refs/tags/feat/78-offload-route*:refs/tags/feat/78-offload-route*
+ * [neuer Branch]    feat/78-offload-route -> origin/feat/78-offload-route
+[command]/usr/bin/git branch --list --remote origin/feat/78-offload-route
+  origin/feat/78-offload-route
+[command]/usr/bin/git checkout --progress --force -B feat/78-offload-route refs/remotes/origin/feat/78-offload-route
+Zu neuem Branch 'feat/78-offload-route' gewechselt
+Branch 'feat/78-offload-route' folgt nun 'origin/feat/78-offload-route'.
+cc -std=c23 -Wall -Wextra -Wpedantic -Werror -fno-strict-aliasing -Iinclude -I. -Isrc/base -Isrc/quant -Isrc/backends/common -Isrc/formats/gguf -Isrc/formats/ptqtp -Isrc/io -Isrc/engine -Isrc/archs/audio_conformer -Isrc/archs/vision_siglip -Ithird_party/stb -DGEIST_BACKEND_VULKAN=1 -DGEIST_BACKEND_CPU_X86=1 -DGEIST_BACKEND_CPU_SCALAR=1 -DGEIST_GEMM_NATIVE -O3 -DNDEBUG -march=x86-64-v3 -mtune=generic -fopenmp -ffast-math -Wno-vla-parameter -D_GNU_SOURCE   -MMD -MP -c tests/bench_offload_cost.c -o build/linux/release/tests/bench_offload_cost.o
+cc  -fopenmp  -o bin/linux/release/tests/bench_offload_cost build/linux/release/tests/bench_offload_cost.o lib/linux/release/libgeist.a -lm   -ldl
+geist: offload: prefill chunks of 8 rows or more run layers 16..31 on cpu_x86
+geist: offload: prefill chunks of 8 rows or more run layers 16..31 on cpu_x86
+model gguf_artifacts/smollm2-360m-instruct-q8_0.gguf (32 layers), cpu_x86 + cpu_x86, byte-identical
+  kv fp32 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  16 offload: GEIST_OK, max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  16 offload: GEIST_OK, max|d| logits 0.3, after reset 0.511, greedy tokens matching 8/16
+geist: offload: prefill chunks of 32 rows or more run layers 1..39 on vulkan
+geist: offload: prefill chunks of 32 rows or more run layers 1..39 on vulkan
+geist: offload: prefill chunks of 32 rows or more run layers 26..39 on vulkan
+FAIL: split 26 (kv fp32): GEIST_E_OOM
+geist: offload: prefill chunks of 32 rows or more run layers 26..39 on vulkan
+FAIL: split 26 (kv int4): GEIST_E_OOM
+geist vulkan spill: 1305 weights (63815 MiB) in host memory; streamed into VRAM 1192 times (57332 MiB)
+model /home/germar/geist-models/Qwen3-14B-Q8_0.gguf (40 layers), cpu_x86 + vulkan, reported
+  kv fp32 gpu only : GEIST_E_OOM
+  kv int8 gpu only : max|d| logits 0.207, after reset 0.241, greedy tokens matching 16/16
+  kv int8 split  26: max|d| logits 0.201, after reset 0.225, greedy tokens matching 16/16
+  kv int4 gpu only : GEIST_E_OOM
+    for cfg in split offload; do
+      mm=$([ "$cfg" = offload ] && echo "$M_MIN" || echo 0)
+grep -E '^== |offload' route-out/bench.txt
+{"cfg":"split","m_max":128,"cycle":1,"seq_len":512,"decode_n":32,"prefill_ms":3571.35,"decode_ms":3377.31,"total_ms":6948.65,"ttft_ms":3571.35,"prefill_tps":143.363,"decode_tps":9.475,"total_tps":78.289,"prefill_ms_best":3484.92,"prefill_ms_worst":3618.13,"decode_ms_best":3334.95,"decode_ms_worst":3402.40,"total_ms_best":6887.32,"total_ms_worst":7005.57,"total_tps_best":78.986,"total_tps_worst":77.653,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":5913.99,"threads":0,"samples":{"prefill_ms":[3484.921,3618.126,3610.996],"decode_ms":[3402.397,3334.949,3394.573],"total_ms":[6887.319,6953.075,7005.569],"ttft_ms":[3484.922,3618.127,3610.997]}}
+{"cfg":"offload","m_max":128,"cycle":1,"seq_len":512,"decode_n":32,"prefill_ms":2192.95,"decode_ms":3331.75,"total_ms":5524.70,"ttft_ms":2192.95,"prefill_tps":233.476,"decode_tps":9.605,"total_tps":98.467,"prefill_ms_best":2183.59,"prefill_ms_worst":2200.48,"decode_ms_best":3324.49,"decode_ms_worst":3342.69,"total_ms_best":5508.08,"total_ms_worst":5543.17,"total_tps_best":98.764,"total_tps_worst":98.139,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":10710.18,"threads":0,"samples":{"prefill_ms":[2183.590,2194.770,2200.481],"decode_ms":[3324.493,3328.079,3342.688],"total_ms":[5508.083,5522.849,5543.169],"ttft_ms":[2183.591,2194.771,2200.481]}}
+::group::Run { echo '```'; grep -E 'PASS|FAIL|byte-identical|offload|split' route-out/exact.txt route-out/vulkan.txt 2>/dev/null | head -80; echo '```';
+{ echo '```'; grep -E 'PASS|FAIL|byte-identical|offload|split' route-out/exact.txt route-out/vulkan.txt 2>/dev/null | head -80; echo '```';
+  name: offload-route
+Uploading artifact: offload-route.zip
+Artifact offload-route successfully finalized. Artifact ID 2590
+Artifact offload-route has been successfully uploaded! Final size is 3845 bytes. Artifact ID is 2590
