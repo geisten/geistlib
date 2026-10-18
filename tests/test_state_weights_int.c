@@ -173,60 +173,49 @@ int main(void) {
         check_buf_eq_gguf(be, ctx, st->global_bufs[i], GLOBAL_NAMES[i], &stats);
     }
 
-    /* ---- Per-layer. Ordering inside load_one_layer:
-     *    [0] attn_norm
-     *    [1] attn_q_norm
-     *    [2] post_attention_norm
-     *    [3] ffn_norm
-     *    [4] post_ffw_norm
-     *    [5] post_norm
-     *    [6] attn_q
-     *    [7] attn_output
-     *    [8..10]  IF !kv_shared: attn_k, attn_v, attn_k_norm
-     *    [next 5] ffn_gate, ffn_up, ffn_down, inp_gate, proj
+    /* ---- Per-layer. Ordering inside load_one_layer: Gemma 4's own
+     * tensors first (gemma4_wire_layer), then the generic set.
+     *    [0] post_attention_norm
+     *    [1] post_ffw_norm
+     *    [2] post_norm
+     *    [3] inp_gate
+     *    [4] proj
+     *    [5] attn_norm
+     *    [6] attn_q_norm
+     *    [7] attn_q
+     *    [8] attn_output
+     *    [next 3] IF !kv_shared: attn_k, attn_v, attn_k_norm
+     *    [next 4] ffn_norm, ffn_gate, ffn_up, ffn_down
      *    layer_output_scale is loaded as a scalar (no buffer).
      */
+    static const char *const OWN[]  = {"post_attention_norm",
+                                       "post_ffw_norm",
+                                       "post_norm",
+                                       "inp_gate",
+                                       "proj",
+                                       "attn_norm",
+                                       "attn_q_norm",
+                                       "attn_q",
+                                       "attn_output"};
+    static const char *const KV[]   = {"attn_k", "attn_v", "attn_k_norm"};
+    static const char *const TAIL[] = {"ffn_norm", "ffn_gate", "ffn_up", "ffn_down"};
     for (int li = 0; li < GEIST_GEMMA4_NUM_LAYERS; li++) {
         const struct transformer_layer_weights *L = &st->layers[li];
         char                                    nb[64];
         size_t                                  i = 0;
 
-        snprintf(nb, sizeof nb, "blk.%d.attn_norm.weight", li);
-        check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
-        snprintf(nb, sizeof nb, "blk.%d.attn_q_norm.weight", li);
-        check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
-        snprintf(nb, sizeof nb, "blk.%d.post_attention_norm.weight", li);
-        check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
-        snprintf(nb, sizeof nb, "blk.%d.ffn_norm.weight", li);
-        check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
-        snprintf(nb, sizeof nb, "blk.%d.post_ffw_norm.weight", li);
-        check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
-        snprintf(nb, sizeof nb, "blk.%d.post_norm.weight", li);
-        check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
-        snprintf(nb, sizeof nb, "blk.%d.attn_q.weight", li);
-        check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
-        snprintf(nb, sizeof nb, "blk.%d.attn_output.weight", li);
-        check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
-
-        if (!L->is_kv_shared) {
-            snprintf(nb, sizeof nb, "blk.%d.attn_k.weight", li);
-            check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
-            snprintf(nb, sizeof nb, "blk.%d.attn_v.weight", li);
-            check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
-            snprintf(nb, sizeof nb, "blk.%d.attn_k_norm.weight", li);
+        for (size_t k = 0; k < sizeof OWN / sizeof OWN[0]; k++) {
+            snprintf(nb, sizeof nb, "blk.%d.%s.weight", li, OWN[k]);
             check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
         }
-
-        snprintf(nb, sizeof nb, "blk.%d.ffn_gate.weight", li);
-        check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
-        snprintf(nb, sizeof nb, "blk.%d.ffn_up.weight", li);
-        check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
-        snprintf(nb, sizeof nb, "blk.%d.ffn_down.weight", li);
-        check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
-        snprintf(nb, sizeof nb, "blk.%d.inp_gate.weight", li);
-        check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
-        snprintf(nb, sizeof nb, "blk.%d.proj.weight", li);
-        check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
+        for (size_t k = 0; !L->is_kv_shared && k < sizeof KV / sizeof KV[0]; k++) {
+            snprintf(nb, sizeof nb, "blk.%d.%s.weight", li, KV[k]);
+            check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
+        }
+        for (size_t k = 0; k < sizeof TAIL / sizeof TAIL[0]; k++) {
+            snprintf(nb, sizeof nb, "blk.%d.%s.weight", li, TAIL[k]);
+            check_buf_eq_gguf(be, ctx, L->bufs[i++], nb, &stats);
+        }
 
         if (i != L->n_bufs) {
             fprintf(stderr, "layer %d: walked %zu bufs, state lists %zu\n", li, i, L->n_bufs);

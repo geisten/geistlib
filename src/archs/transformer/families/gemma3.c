@@ -23,6 +23,7 @@
 #include "../arch_family.h"
 #include "../forward/blocks.h"
 #include "../rotation.h"
+#include "../weight_load/internal.h"
 
 #include "gguf_reader.h"
 
@@ -120,6 +121,20 @@ static bool populate_layers_gemma3(struct transformer_arch_state *st) {
     return true;
 }
 
+/* ---- Tensors ---------------------------------------------------------- */
+
+/* The sandwich norms, and the embedding variant's per-projection input
+ * norms where it has them. */
+[[nodiscard]] static enum geist_status gemma3_wire_layer(struct transformer_arch_state    *st,
+                                                         struct gguf_ctx                  *gguf,
+                                                         struct transformer_layer_weights *L) {
+    enum geist_status s = load_sandwich_norms(st, gguf, L);
+    if (s == GEIST_OK && st->config.has_projection_input_norms) {
+        s = load_projection_input_norms(st, gguf, L);
+    }
+    return s;
+}
+
 /* ---- Forward ---------------------------------------------------------- */
 
 /* Each step runs only while s is GEIST_OK, so the first failure is what
@@ -167,6 +182,7 @@ const struct transformer_family transformer_family_gemma3 = {
         .name            = "gemma3",
         .populate        = populate_gemma3,
         .populate_layers = populate_layers_gemma3,
+        .wire_layer      = gemma3_wire_layer,
         .attention_block = gemma3_attention_block,
         .ffn_block       = gemma3_ffn_block,
 };

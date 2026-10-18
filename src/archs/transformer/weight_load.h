@@ -32,10 +32,13 @@ compute_weight_arena_capacity(const struct geist_backend          *be,
 /* Open the β-mode weight arena with a first chunk of `bytes`. */
 [[nodiscard]] enum geist_status weight_arena_open(struct transformer_arch_state *st, size_t bytes);
 
-/* Load one transformer block (layer L) from the GGUF: attention or
- * DeltaNet, FFN, and per-layer norm + scalar tensors. L's geometry is
- * pre-filled by the family's populate_layers. Allocates layer buffers via
- * the backend (arena slice in arena mode, aliased in mmap-alias mode). */
+/* Load one transformer block (layer L) from the GGUF: the family's own
+ * tensors (its wire_layer hook), then the ones every family shares —
+ * attn_norm, the attention projections and Q/K norms of a softmax-attention
+ * layer, ffn_norm and the dense FFN — skipping a slot the family filled.
+ * L's geometry is pre-filled by the family's populate_layers. Allocates
+ * layer buffers via the backend (arena slice in arena mode, aliased in
+ * mmap-alias mode). */
 [[nodiscard]] enum geist_status load_one_layer(struct transformer_arch_state    *st,
                                                struct gguf_ctx                  *gguf,
                                                struct transformer_layer_weights *L);

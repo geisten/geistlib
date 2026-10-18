@@ -23,11 +23,14 @@
 #include "../arch_family.h"
 #include "../forward/blocks.h"
 #include "../rotation.h"
+#include "../weight_load.h"
+#include "../weight_load/internal.h"
 
 #include "gguf_reader.h"
 #include "heap.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 /* ---- qwen35 (Qwen3.5/3.6/3.8 hybrid) ----------------------------------- */
@@ -124,6 +127,78 @@ static bool populate_layers_qwen35(struct transformer_arch_state *st) {
                              &st->mtp_layers[i].block);
     }
     return true;
+}
+
+/* ---- Tensors ---------------------------------------------------------- */
+
+/* A gated-DeltaNet layer's own tensors (the dn_* group). attn_norm and the
+ * dense FFN are the generic set's. */
+[[nodiscard]] static enum geist_status wire_deltanet(struct transformer_arch_state    *st,
+                                                     struct gguf_ctx                  *gguf,
+                                                     struct transformer_layer_weights *L) {
+    const size_t d         = st->d_model;
+    const size_t n_v       = st->config.dn_n_v_heads;
+    const size_t key_dim   = st->config.dn_n_k_heads * st->config.dn_head_k;
+    const size_t value_dim = n_v * st->config.dn_head_v;
+    const size_t conv_dim  = 2 * key_dim + value_dim;
+    const struct {
+        const char          *suffix;
+        size_t               n_out, n_in; /* n_in 0: a norm-like vector of n_out */
+        struct geist_tensor *view;
+        struct geist_weight *w;
+    } tensors[] = {
+            {"attn_qkv.weight", conv_dim, d, &L->dn_qkv, &L->dn_qkv_w},
+            {"attn_gate.weight", value_dim, d, &L->dn_z, &L->dn_z_w},
+            {"ssm_conv1d.weight", conv_dim * st->config.dn_conv_kernel, 0, &L->dn_conv, nullptr},
+            {"ssm_beta.weight", n_v, d, &L->dn_beta, &L->dn_beta_w},
+            {"ssm_alpha.weight", n_v, d, &L->dn_alpha, &L->dn_alpha_w},
+            {"ssm_a", n_v, 0, &L->dn_a, nullptr},
+            {"ssm_dt.bias", n_v, 0, &L->dn_dt_bias, nullptr},
+            {"ssm_norm.weight", st->config.dn_head_v, 0, &L->dn_norm, nullptr},
+            {"ssm_out.weight", d, value_dim, &L->dn_out, &L->dn_out_w},
+    };
+    char name[64];
+    for (size_t i = 0; i < sizeof tensors / sizeof tensors[0]; i++) {
+        snprintf(name, sizeof name, "blk.%d.%s", L->layer_idx, tensors[i].suffix);
+        enum geist_status s =
+                tensors[i].n_in == 0
+                        ? load_layer_norm(st, gguf, L, name, tensors[i].n_out, tensors[i].view)
+                        : load_layer_matrix(st,
+                                            gguf,
+                                            L,
+                                            name,
+                                            tensors[i].n_out,
+                                            tensors[i].n_in,
+                                            false,
+                                            tensors[i].view,
+                                            tensors[i].w);
+        if (s != GEIST_OK)
+            return s;
+    }
+    return GEIST_OK;
+}
+
+/* The pre-FFN norm under its HF name, post_attention_norm (the qwen35
+ * converter writes no ffn_norm; an attention layer takes ffn_norm where a
+ * GGUF has one); then a DeltaNet layer's mixer, or an attention layer's
+ * q_proj, which jointly produces query and gate: 2x rows, per head
+ * [query(hd) | gate(hd)] (has_attn_output_gate). Also the MTP block's. */
+[[nodiscard]] static enum geist_status qwen35_wire_layer(struct transformer_arch_state    *st,
+                                                         struct gguf_ctx                  *gguf,
+                                                         struct transformer_layer_weights *L) {
+    const bool dn = L->mixer == GEIST_MIXER_DELTANET;
+    char       name[64];
+    snprintf(name, sizeof name, "blk.%d.ffn_norm.weight", L->layer_idx);
+    if (dn || gguf_get_tensor(gguf, name) == nullptr) {
+        snprintf(name, sizeof name, "blk.%d.post_attention_norm.weight", L->layer_idx);
+    }
+    enum geist_status s = load_layer_norm(st, gguf, L, name, st->d_model, &L->ffn_norm);
+    if (s != GEIST_OK || dn) {
+        return s == GEIST_OK ? wire_deltanet(st, gguf, L) : s;
+    }
+    snprintf(name, sizeof name, "blk.%d.attn_q.weight", L->layer_idx);
+    return load_layer_matrix(
+            st, gguf, L, name, 2 * L->q_out, st->d_model, false, &L->q_proj, &L->q_proj_w);
 }
 
 /* ---- Session state ---------------------------------------------------- */
@@ -392,6 +467,7 @@ const struct transformer_family transformer_family_qwen35 = {
         .prefill_delta   = {.from_bytes = (size_t) 4 << 30, .m_max_rows = 64},
         .populate        = populate_qwen35,
         .populate_layers = populate_layers_qwen35,
+        .wire_layer      = qwen35_wire_layer,
         .session_alloc   = qwen35_session_alloc,
         .session_free    = qwen35_session_free,
         .attention_block = qwen35_attention_block,

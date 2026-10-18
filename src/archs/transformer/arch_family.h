@@ -64,8 +64,10 @@ struct transformer_family {
 
     /* ---- Family unit hooks (#37).
      *
-     * wire_layer (optional): load the family's own per-layer tensors after
-     *   the generic set (load_one_layer).
+     * wire_layer (optional): load the family's own per-layer tensors, before
+     *   the generic set (load_one_layer). A tensor every family has but this
+     *   one names or shapes its own way (qwen35's q_proj and pre-FFN norm)
+     *   is loaded here too: the generic set skips a slot already filled.
      * session_alloc / session_free (optional): the session state only this
      *   family has, allocated after the generic state (KV caches, scratch
      *   pool, arena). session_alloc stops at its first failure and leaves
