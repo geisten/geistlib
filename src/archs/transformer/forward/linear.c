@@ -115,63 +115,6 @@ static inline void weight_path_record(const struct geist_weight *w, bool multi_r
     return GEIST_E_BACKEND;
 }
 
-/* Offload route (#78): whether `w` runs on its twin at seq rows. */
-static inline bool routed(const struct geist_weight *w, size_t seq) {
-    return w->twin != nullptr && seq >= ((const struct transformer_offload *) w->twin_ctx)->m_min;
-}
-
-/* x [seq, n_in] up to the twin's backend, the twin's GEMM there, y
- * [seq, n_out] back (out of a cached IO buffer, #79). A twin on a backend
- * without linear_t (a CPU backend, the byte-exact test split) runs its own
- * host kernels instead. GEIST_E_UNSUPPORTED: the caller runs the home
- * kernel (a batch beyond the staging, a dtype without a device kernel). */
-[[nodiscard]] static enum geist_status
-linear_twin(size_t seq, const float *x, const struct geist_weight *w, float *y) {
-    struct transformer_offload       *o  = w->twin_ctx;
-    const struct geist_weight        *t  = w->twin;
-    const struct geist_backend_vtbl  *v  = o->be->desc->vtbl;
-    const struct geist_backend_fused *f  = geist_backend_fused_tbl(o->be);
-    const size_t                      xb = seq * (size_t) t->n_in * sizeof(float);
-    const size_t                      yb = seq * (size_t) t->n_out * sizeof(float);
-    if (xb > o->x_bytes || yb > o->y_bytes) {
-        return GEIST_E_UNSUPPORTED;
-    }
-    enum geist_status s = GEIST_OK;
-    pthread_mutex_lock(&o->mu);
-    if (f->linear_t == nullptr) {
-        if (seq == 1) {
-            t->linear_m1(x, t, o->be, y);
-        } else {
-            t->linear_mN(seq, x, t, o->be, y);
-        }
-    } else {
-        struct geist_tensor tx = {.buffer = o->x,
-                                  .dtype  = GEIST_DTYPE_F32,
-                                  .layout = GEIST_LAYOUT_DENSE,
-                                  .ndim   = 2,
-                                  .shape  = {(int64_t) seq, t->n_in},
-                                  .stride = {t->n_in, 1}};
-        struct geist_tensor ty = tx;
-        ty.buffer              = o->y;
-        ty.shape[1]            = t->n_out;
-        ty.stride[0]           = t->n_out;
-        struct geist_tensor tw = {.dtype = t->dtype};
-        s                      = v->buffer_upload(o->x, xb, (const uint8_t *) x);
-        if (s == GEIST_OK) {
-            s = f->linear_t(o->be, &tx, t, &tw, seq, &ty);
-        }
-        if (s == GEIST_OK) {
-            s = v->buffer_download(yb, (uint8_t *) y, o->y);
-        }
-    }
-    if (s == GEIST_OK) {
-        o->calls++;
-        o->rows += seq;
-    }
-    pthread_mutex_unlock(&o->mu);
-    return s;
-}
-
 enum geist_status linear_w_or_legacy(struct geist_backend            *be,
                                      const struct geist_backend_vtbl *v,
                                      struct geist_buffer             *x_buf,
@@ -220,14 +163,6 @@ enum geist_status linear_w_or_legacy(struct geist_backend            *be,
      * (cpu_neon q8a scratch, etc.) without consulting file-scope TLS.
      * Engine guarantees `be->state` is valid for the lifetime of this
      * call — see the resolver fail-fast check at cpu_neon_resolve_weight. */
-    if (routed(w, seq)) {
-        const enum geist_status rs = linear_twin(seq, xp, w, yp);
-        if (rs != GEIST_E_UNSUPPORTED) {
-            v->buffer_unmap(x_buf);
-            v->buffer_unmap(y_buf);
-            return rs;
-        }
-    }
     if (seq == 1) {
         weight_path_record(w, false);
         w->linear_m1(xp, w, be, yp);
@@ -273,11 +208,6 @@ enum geist_status linear_w_pair_or_legacy(struct geist_backend            *be,
     if (w0 == nullptr || w1 == nullptr) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "linear_w_pair: null geist_weight");
         return GEIST_E_INVALID_ARG;
-    }
-    if (routed(w0, seq) || routed(w1, seq)) {
-        enum geist_status s = linear_w_or_legacy(be, v, x_buf, y0_buf, w0, seq, t_x, t_w0, t_y0);
-        return s == GEIST_OK ? linear_w_or_legacy(be, v, x_buf, y1_buf, w1, seq, t_x, t_w1, t_y1)
-                             : s;
     }
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
     /* Batched-submit backends: two tensor-path linears, no host pointers. */
@@ -369,14 +299,6 @@ enum geist_status linear_w_triple_or_legacy(struct geist_backend            *be,
     if (w0 == nullptr || w1 == nullptr || w2 == nullptr) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "linear_w_triple: null geist_weight");
         return GEIST_E_INVALID_ARG;
-    }
-    if (routed(w0, seq) || routed(w1, seq) || routed(w2, seq)) {
-        enum geist_status s = linear_w_or_legacy(be, v, x_buf, y0_buf, w0, seq, t_x, t_w0, t_y0);
-        if (s == GEIST_OK) {
-            s = linear_w_or_legacy(be, v, x_buf, y1_buf, w1, seq, t_x, t_w1, t_y1);
-        }
-        return s == GEIST_OK ? linear_w_or_legacy(be, v, x_buf, y2_buf, w2, seq, t_x, t_w2, t_y2)
-                             : s;
     }
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
     /* Batched-submit backends: three tensor-path linears, no host pointers.

@@ -180,14 +180,6 @@ struct geist_weight {
     /* Optional setup-only preparation (e.g. compile the chosen GPU pipeline).
      * Called once when creating a readout, serialized with model operations. */
     enum geist_status (*linear_rows_prepare)(const struct geist_weight *w, struct geist_backend *be);
-
-    /* Offload route (#78): the same tensor resolved on a second backend, and
-     * the architecture's context for running it there. The arch's linear
-     * dispatcher hands a call of at least the context's row threshold to the
-     * twin. nullptr = no twin. Set and read by the architecture only;
-     * backends ignore both. */
-    const struct geist_weight *twin;
-    void                      *twin_ctx;
 };
 
 #ifdef __cplusplus

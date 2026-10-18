@@ -125,6 +125,40 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
     transformer_layer_bind_kv_buffers(ctx);
 }
 
+enum geist_status transformer_kv_store_rows(struct transformer_arch_session *sess,
+                                            int                              layer_idx,
+                                            size_t                           q_position,
+                                            size_t                           seq,
+                                            const float                     *k,
+                                            const float                     *v) {
+    struct transformer_arch_state *st = sess->model;
+    if (layer_idx < 0 || (size_t) layer_idx >= st->n_layers || seq == 0 || seq > sess->m_max ||
+        q_position + seq > sess->max_seq_len) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct transformer_layer_forward_ctx ctx;
+    transformer_layer_ctx_init(&ctx,
+                               sess,
+                               layer_idx,
+                               q_position,
+                               seq,
+                               false,
+                               sess->scratch_h_a,
+                               nullptr,
+                               sess->scratch_h_b);
+    const size_t bytes = seq * ctx.kv_out * sizeof(float);
+    float       *kd    = (float *) ctx.v->buffer_map(sess->scratch_k);
+    float       *vd    = (float *) ctx.v->buffer_map(sess->scratch_v);
+    if (kd == nullptr || vd == nullptr) {
+        return GEIST_E_BACKEND;
+    }
+    memcpy(kd, k, bytes);
+    memcpy(vd, v, bytes);
+    ctx.v->buffer_unmap(sess->scratch_k);
+    ctx.v->buffer_unmap(sess->scratch_v);
+    return transformer_kv_store_append(&ctx);
+}
+
 enum geist_status transformer_forward_one_layer(struct transformer_arch_session *sess,
                                                 int                              layer_idx,
                                                 size_t                           q_position,

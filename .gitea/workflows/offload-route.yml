@@ -75,7 +75,6 @@ jobs:
           set -eo pipefail
           make fetch-llama-model
           GEIST_VERBOSE=1 bin/linux/release/tests/test_layer_split_int 2>&1 | tee route-out/exact.txt
-          grep -c 'offload: [1-9]' route-out/exact.txt
       - name: Model (cached outside the workspace, sha256-checked)
         run: |
           set -eo pipefail
@@ -102,8 +101,8 @@ jobs:
           . scripts/gpu-lock.sh
           for c in $(seq "$CYCLES"); do
             for m in $(echo "$M_MAX" | tr ';' ' '); do
-              for cfg in split route; do
-                mm=$([ "$cfg" = route ] && echo "$M_MIN" || echo 0)
+              for cfg in split offload; do
+                mm=$([ "$cfg" = offload ] && echo "$M_MIN" || echo 0)
                 echo "== cycle $c $cfg m_max=$m" >> route-out/bench.txt
                 GEIST_OFFLOAD_M_MIN=$mm GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 \
                   GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS="$SPLIT" \
