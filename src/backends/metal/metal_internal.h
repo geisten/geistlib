@@ -106,6 +106,16 @@ struct metal_profile_stat {
     uint64_t workgroups;
 };
 
+/* GPU time of the command buffers a profiled run committed, keyed by the
+ * set of dispatch stages each buffer carried (a bit per metal_profile_stage).
+ * With GEIST_METAL_PIPELINE=1 every op gets its own buffer, so the keys are
+ * single stages (or one op's sub-stages) and the times a per-stage split. */
+struct metal_profile_gpu_slot {
+    uint64_t mask;
+    uint64_t buffers;
+    double   seconds;
+};
+
 /* Registry entry mapping a live buffer's host contents range back to its
  * geist_buffer, so resolver-installed linear kernels can translate the raw
  * host pointers the engine passes (buffer_map aliases, w->raw) into
@@ -443,6 +453,8 @@ struct metal_state {
     uint32_t                         seq_disp_at_rotate;
     uint32_t                         seq_pending_count;
     void                            *seq_pending_cmds[16];
+    uint64_t                         seq_pending_mask[16]; /* profile: stages per buffer */
+    uint64_t                         seq_cur_mask;         /* profile: stages so far */
     uint64_t                         seq_begin_ns;
     int                              sequence_token;
     enum geist_command_sequence_kind sequence_kind;
@@ -460,7 +472,14 @@ struct metal_state {
     bool                      profile_enabled;
     bool                      skip_next_dispatch; /* subtractive profiler: drop the next dispatch */
     struct metal_profile_stat profile[METAL_PROFILE_STAGE_COUNT];
-    char                      device_name[128];
+    /* GPU time of committed command buffers (profile only): the sum of the
+     * buffers' own times, and their union on the GPU timeline (busy). */
+    double                        gpu_sum_s;
+    double                        gpu_busy_s;
+    double                        gpu_last_end_s;
+    uint64_t                      gpu_buffers;
+    struct metal_profile_gpu_slot gpu_slots[64];
+    char                          device_name[128];
 
     /* #530: an MTLResidencySet on the command queue (macOS 15+; null there
      * otherwise, or with GEIST_METAL_KEEP_ALIVE_S=0). macOS unwires what a
@@ -1014,6 +1033,9 @@ enum metal_profile_stage
 metal_profile_wait_stage_for_sequence(enum geist_command_sequence_kind kind);
 
 void metal_profile_print_summary(const struct metal_state *st);
+/* Profile: account a completed command buffer's GPU time to the stages it
+ * carried. No-op unless GEIST_METAL_PROFILE is set. */
+void metal_profile_add_cmd_buffer(struct metal_state *st, void *cmd, uint64_t stage_mask);
 
 void metal_capture_begin(struct metal_state *st, enum geist_command_sequence_kind kind);
 
