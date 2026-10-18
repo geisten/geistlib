@@ -316,6 +316,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
 
     bool coop_ext   = false;
     bool budget_ext = false;
+    bool import_ext = false;
     {
         uint32_t next = 0;
         (void) st->fn.EnumerateDeviceExtensionProperties(st->phys, nullptr, &next, nullptr);
@@ -331,6 +332,10 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
                 }
                 if (strcmp(exts[i].extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0) {
                     budget_ext = true;
+                }
+                if (strcmp(exts[i].extensionName, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME) ==
+                    0) {
+                    import_ext = true;
                 }
             }
             geist_backend_free(be, exts);
@@ -377,7 +382,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
                                        .pNext = &want11};
     want2.features.shaderInt16      = have2.features.shaderInt16;
 
-    const char *ext_names[2];
+    const char *ext_names[3];
     uint32_t    n_ext = 0;
     if (st->has_coopmat) {
         ext_names[n_ext++] = VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME;
@@ -386,6 +391,12 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
      * out-of-memory error: what other processes hold is invisible without it. */
     if (budget_ext) {
         ext_names[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+    }
+    /* Host memory as a device buffer without a copy: weights the load
+     * backend also runs (GEIST_W_HOST, #78) stream straight from the GGUF
+     * mapping. */
+    if (import_ext) {
+        ext_names[n_ext++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
     }
 
     const float             prio  = 1.0f;
@@ -405,6 +416,20 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         return GEIST_E_BACKEND;
     }
     st->has_mem_budget = budget_ext;
+    if (import_ext) {
+        st->fn.GetMemoryHostPointerPropertiesEXT =
+                (PFN_vkGetMemoryHostPointerPropertiesEXT) st->fn.GetDeviceProcAddr(
+                        st->device, "vkGetMemoryHostPointerPropertiesEXT");
+        VkPhysicalDeviceExternalMemoryHostPropertiesEXT hp = {
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                          .pNext = &hp};
+        st->fn.GetPhysicalDeviceProperties2(st->phys, &p2);
+        const size_t a = (size_t) hp.minImportedHostPointerAlignment;
+        if (st->fn.GetMemoryHostPointerPropertiesEXT != nullptr && a != 0 && (a & (a - 1)) == 0) {
+            st->host_import_align = a;
+        }
+    }
     st->fn.GetDeviceQueue(st->device, family, 0, &st->queue);
 
     VkCommandPoolCreateInfo pinfo = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -569,6 +594,12 @@ void vk_destroy(struct geist_backend *be) {
                     (unsigned long long) st->stat_dset_hits,
                     (unsigned long long) st->stat_dset_miss,
                     (double) st->stat_wait_ns / 1e6);
+            if (st->imported_weight_bytes != 0) {
+                fprintf(stderr,
+                        "geist vulkan: %zu MiB of weights streamed from host memory in place "
+                        "(imported, no copy)\n",
+                        st->imported_weight_bytes >> 20);
+            }
             if (st->spilled_weights != 0) {
                 fprintf(stderr,
                         "geist vulkan spill: %zu weights (%zu MiB) in host memory; streamed "

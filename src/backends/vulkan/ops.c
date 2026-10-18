@@ -460,6 +460,12 @@ static void vk_repack_soa(void *ctx, size_t i0, size_t i1) {
  * `bytes` is vk_weight_bytes(w). Returns a heap block of `bytes` bytes
  * (caller frees), or nullptr when the dtype uploads as-is; `*failed` is set
  * when a repack was needed but the allocation failed. */
+/* Whether the GPU layout of `w` differs from the bytes as stored. */
+static bool vk_repack_needed(const struct geist_weight *w) {
+    const struct vk_dtype *d = vk_dtype_of((enum geist_dtype) w->dtype);
+    return d != nullptr && (d->layout == VK_LAYOUT_PAD216 || d->layout == VK_LAYOUT_SOA);
+}
+
 [[nodiscard]] static uint8_t *
 vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
     const struct vk_dtype *d   = vk_dtype_of((enum geist_dtype) w->dtype);
@@ -606,11 +612,25 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
      * is read over the bus (#466): a 27B Q4_0 then runs on an 11 GiB card,
      * decode bound by PCIe for the spilled share. GEIST_MEMORY_HOST keeps it
      * out of the 256 MB BAR window the scratch pool needs. */
-    struct geist_buffer *gpu   = nullptr;
-    bool                 spill = (w->flags & GEIST_W_HOST) != 0 || !vk_weight_fits_vram(st, bytes);
-    enum geist_status    s     = vk_buffer_create(
-            be, bytes, GEIST_BUFFER_WEIGHT, spill ? GEIST_MEMORY_HOST : GEIST_MEMORY_DEVICE, &gpu);
-    if (s == GEIST_E_OOM && !spill) {
+    struct geist_buffer *gpu = nullptr;
+    enum geist_status    s   = GEIST_OK;
+    /* GEIST_W_HOST (#78): a second copy of a weight the load backend runs
+     * from the GGUF mapping. Where the GPU takes the bytes as stored, import
+     * the mapping instead of copying it; such a weight is only streamed
+     * (vk_weight_bind), never read in place. */
+    const bool imported = (w->flags & GEIST_W_HOST) != 0 && !vk_repack_needed(w) &&
+                          vk_buffer_import_host(be, w->raw, bytes, &gpu) == GEIST_OK;
+    bool spill = !imported && ((w->flags & GEIST_W_HOST) != 0 || !vk_weight_fits_vram(st, bytes));
+    if (imported) {
+        st->imported_weight_bytes += bytes;
+    } else {
+        s = vk_buffer_create(be,
+                             bytes,
+                             GEIST_BUFFER_WEIGHT,
+                             spill ? GEIST_MEMORY_HOST : GEIST_MEMORY_DEVICE,
+                             &gpu);
+    }
+    if (s == GEIST_E_OOM && !spill && !imported) {
         spill = true;
         s     = vk_buffer_create(be, bytes, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_HOST, &gpu);
     }
@@ -623,7 +643,7 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
         }
         st->spilled_weight_bytes += bytes;
     }
-    if (s == GEIST_OK) {
+    if (s == GEIST_OK && !imported) {
         bool     failed = false;
         uint8_t *packed = vk_repack_weight(w, bytes, &failed);
         if (failed) {
@@ -1795,7 +1815,7 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
                                                       struct geist_buffer **out) {
     struct vk_state *st = be->state;
     *out                = wbuf;
-    if (wbuf->device_mem || m < st->stream_m_min) {
+    if (wbuf->device_mem || (m < st->stream_m_min && !wbuf->imported)) {
         return GEIST_OK;
     }
     struct geist_buffer **slot = &st->wslot[st->wslot_next];
@@ -1808,6 +1828,15 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
         }
         if (vk_buffer_create(be, wbuf->bytes, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_DEVICE, slot) !=
             GEIST_OK) {
+            if (wbuf->imported) {
+                /* an imported weight has no in-place path */
+                geist_backend_set_error(be,
+                                        GEIST_E_OOM,
+                                        "vulkan: no VRAM for a %zu MiB slot to stream an "
+                                        "imported weight (#78)",
+                                        wbuf->bytes >> 20);
+                return GEIST_E_OOM;
+            }
             fprintf(stderr,
                     "geist vulkan: no VRAM for a %zu MiB weight slot; spilled weights are read "
                     "over the bus (#78)\n",
