@@ -1532,22 +1532,13 @@ geometry_from_metadata(struct geist_backend             *be,
 
     /* AWQ (optional): fold attn_norm/ffn_norm gammas and stash per-layer
      * inv-scales for o/down inputs. Runs after weights are mapped but
-     * before any forward pass. */
+     * before any forward pass. In mmap-alias mode the folded norms get
+     * buffers of their own (the GGUF pages are read-only, #72). */
     if (opts != nullptr) {
         if (st->rotation.active && opts->awq_scales_path != nullptr) {
             geist_backend_set_error(be,
                                     GEIST_E_UNSUPPORTED,
                                     "transformer: AWQ on a rotated (prism.hadamard) model");
-            transformer_state_destroy(st);
-            return GEIST_E_UNSUPPORTED;
-        }
-        /* AWQ divides the norm gammas in place; in mmap-alias mode they are
-         * the read-only GGUF pages, and the write was a SIGBUS (#66). */
-        if (mmap_alias_mode && opts->awq_scales_path != nullptr) {
-            geist_backend_set_error(be,
-                                    GEIST_E_UNSUPPORTED,
-                                    "transformer: AWQ folds into the norm weights, which "
-                                    "mmap-alias mode leaves read-only; set GEIST_WEIGHT_MMAP=0");
             transformer_state_destroy(st);
             return GEIST_E_UNSUPPORTED;
         }
