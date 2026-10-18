@@ -184,8 +184,9 @@ struct geist_session_opts;
  * geist_model_load with load-time options: `opts->max_seq_len` sizes the
  * buffers the model owns (RoPE tables, the default session's scratch) and
  * caps every session created on it. nullptr opts (what geist_model_load
- * passes) keeps the architecture's default. Only `max_seq_len` is read at
- * load time; pass the same value again to geist_session_create. */
+ * passes) keeps the architecture's default. Only `max_seq_len` and
+ * `awq_scales_path` are read at load time; pass the same max_seq_len again
+ * to geist_session_create. */
 enum geist_status geist_model_load_with_opts(const char                      *path,
                                              struct geist_backend            *be,
                                              const struct geist_session_opts *opts,
@@ -283,9 +284,12 @@ struct geist_session_opts {
     uint64_t random_seed;
 
     /* @stability EXPERIMENTAL — AWQ (Activation-aware Weight Quantization)
-     * scales file; nullptr = no AWQ. Folds into attn_norm/ffn_norm gamma at
-     * load and scales the o_proj/down_proj input at runtime. Independent of
-     * the weight quantization format. */
+     * scales file; nullptr = no AWQ. Read by geist_model_load_with_opts
+     * only (geist_session_create ignores it): folds into attn_norm/ffn_norm
+     * gamma at load and scales the o_proj/down_proj input at runtime, so
+     * it needs copied weights: in mmap-alias mode (the CPU default) the
+     * load fails with GEIST_E_UNSUPPORTED; set GEIST_WEIGHT_MMAP=0.
+     * Independent of the weight quantization format. */
     const char *awq_scales_path;
 
     /* @stability EXPERIMENTAL — per-session KV cache quantization mode.
