@@ -1,0 +1,56 @@
+name: git-cache
+
+# The CI git cache on the desktop runner host (scripts/git-cache.py,
+# docs/HARDWARE_CI.md "CI git cache"). deploy installs or updates it, wires
+# the docker runners and proves a job checkout went through it — or rolls
+# the runners back. Dispatch only.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "deploy | rollback | status"
+        default: deploy
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    runs-on: geist-vulkan
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: ${{ inputs.action }}
+        env:
+          GIT_CACHE_TOKEN: ${{ secrets.GIT_CACHE_TOKEN }}
+        run: sh scripts/git-cache-deploy.sh "${{ inputs.action }}"
+
+  # A job on the docker runners, checked out the normal way: with the cache
+  # wired its fetch shows up in the cache's log.
+  probe:
+    needs: host
+    if: inputs.action == 'deploy'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: |
+          git log --oneline -1
+          env | grep '^GIT_CONFIG_' || { echo "runner env not wired"; exit 1; }
+
+  verify:
+    needs: [host, probe]
+    if: always() && inputs.action == 'deploy' && needs.host.result == 'success'
+    runs-on: geist-vulkan
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: probe checkout came through the cache, else roll back
+        run: |
+          if [ "${{ needs.probe.result }}" = success ] && \
+             tail -n 50 ~/git-cache/git-cache.log | grep -q 'served 172\.'; then
+            echo "probe checkout served by the cache"; tail -n 8 ~/git-cache/git-cache.log
+          else
+            echo "probe failed or did not use the cache: rolling back"
+            sh scripts/git-cache-deploy.sh rollback; exit 1
+          fi
