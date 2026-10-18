@@ -2180,6 +2180,25 @@ static bool scratch_device_wanted(const struct transformer_arch_session *sess) {
     return GEIST_OK;
 }
 
+static void twin_session_free(struct transformer_arch_state   *state,
+                              struct transformer_arch_session *sess) {
+    if (state == nullptr || state->offload == nullptr) {
+        return;
+    }
+    struct geist_backend            *tbe = state->offload->twins->backend;
+    const struct geist_backend_vtbl *tv  = tbe->desc->vtbl;
+    if (sess->twin_kv_io != nullptr) {
+        tv->buffer_destroy(tbe, sess->twin_kv_io);
+        sess->twin_kv_io = nullptr;
+    }
+    if (sess->twin_h_io != nullptr) {
+        tv->buffer_destroy(tbe, sess->twin_h_io);
+        sess->twin_h_io = nullptr;
+    }
+    transformer_session_free(state->offload->twins, sess->twin_sess);
+    sess->twin_sess = nullptr;
+}
+
 /* Offload (#78): the session on the twins, with this session's chunk and
  * window and a dense KV cache, whose rows the load backend reads back: this
  * session's own mode when that is dense (FP32, F16), else F16 where the
@@ -2469,7 +2488,17 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
         s = split_session_alloc(sess, opts);
     }
     if (s == GEIST_OK && state->offload != nullptr) {
+        /* An optimisation: a session whose twins do not fit (their KV cache
+         * and scratch on a full card) runs as a plain split. */
         s = twin_session_alloc(sess);
+        if (s != GEIST_OK && s != GEIST_E_UNSUPPORTED) {
+            fprintf(stderr,
+                    "geist: offload off for this session (%s): %s\n",
+                    geist_status_to_string(s),
+                    geist_backend_errmsg(state->offload->twins->backend));
+            twin_session_free(state, sess);
+            s = GEIST_OK;
+        }
     }
     if (s == GEIST_OK && opts != nullptr) {
         s = transformer_session_apply_opts(sess, opts);
@@ -2495,17 +2524,7 @@ void transformer_session_free(struct transformer_arch_state   *state,
     void *split_rows = sess->split_rows;
     safe_free(&split_rows);
     sess->split_rows = nullptr;
-    if (sess->twin_sess != nullptr) {
-        const struct geist_backend_vtbl *tv = state->offload->twins->backend->desc->vtbl;
-        if (sess->twin_kv_io != nullptr) {
-            tv->buffer_destroy(state->offload->twins->backend, sess->twin_kv_io);
-        }
-        if (sess->twin_h_io != nullptr) {
-            tv->buffer_destroy(state->offload->twins->backend, sess->twin_h_io);
-        }
-        transformer_session_free(state->offload->twins, sess->twin_sess);
-        sess->twin_sess = nullptr;
-    }
+    twin_session_free(state, sess);
 
     void *acc = sess->embedding_acc;
     safe_free(&acc);

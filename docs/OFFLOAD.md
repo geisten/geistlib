@@ -1,9 +1,9 @@
 # Offload: a run-time choice between placements fixed at load (proposal)
 
-Status: **phase 0 measured; streaming of spilled weights implemented in the
-Vulkan backend (opt-in, `GEIST_VK_STREAM_M_MIN`); the CPU/GPU route is not
-built yet.** Research branch
-`research/offload-scheduler`. Builds on the layer split of #49
+Status: **phase 0 measured; streaming of spilled weights in the Vulkan
+backend (#79, default on); phase 1 built on `feat/78-offload-route`:
+prefill chunks of a split model run every layer on the GPU, decode stays
+split (`GEIST_OFFLOAD_M_MIN`, off by default).** Builds on the layer split of #49
 (merged in #68) and the MoE family of #48.
 
 ## The question
@@ -79,6 +79,22 @@ llama.cpp/ggml):
 cover of the hottest 18.3 % of experts (Strata's point) is 40 % (Granite 3B,
 OLMoE) and **54 %** (Qwen3-30B-A3B, 128 experts). Small MoEs have no hot set;
 a static GPU set pays only from about 128 experts per layer on.
+
+## Phase 1: measured (RTX 2080 Ti box)
+
+Qwen3-14B Q8_0, split 26 (cpu_x86 + Vulkan), prompt 512, decode 32,
+3 interleaved cycles, median, run 1388:
+
+| prefill chunk | split | **split + offload** | decode split / offload |
+| --: | --: | --: | --: |
+| 64 | 134.2 | 138.2 | 10.0 / 10.0 |
+| 128 | 156.2 | **264.0** | 9.9 / 10.0 |
+
+Every layer on Vulkan with streaming reached 240 tok/s at chunk 128 and 550
+at chunk 512 (runs 1366, 1377), but decodes at 2.6 tok/s. The split's
+chunk is capped at 128 by the CPU quant kernels (`GEIST_QUANT_M_CAP`); an
+offloaded chunk runs no CPU linear, so lifting that cap for offloaded
+sessions is the next step toward the 550.
 
 ## Phase 0: measured (RTX 2080 Ti box, #78)
 
@@ -222,31 +238,41 @@ has the streamed twin like any CPU-layer weight.
 
 ### Route (run time)
 
-The single choke point already exists: every block reaches a weight through
-`linear_w_or_legacy` and its pair/triple variants in `forward/linear.c`. The
-route is one branch there, before the existing paths:
+**Built: phase-dependent placement** (`forward/step.c` `run_offload_chunk`).
+The route decides per forward step, not per linear:
 
-```c
-/* forward/linear.c */
-if (w->twin != nullptr && seq >= w->twin->m_min)
-    return offload_linear(w->twin, x_buf, y_buf, seq);  /* upload x, GPU linear, download y */
-/* ... today's code, unchanged ... */
+```
+prefill chunk, seq >= m_min, twins' cache current  ->  every layer on the GPU
+anything else (decode, verify, small chunks)       ->  the #49 split as before
 ```
 
-- `offload_linear` uploads the `[seq, n_in]` activations, runs the twin's
-  `fused->linear_t` on the GPU backend, downloads `[seq, n_out]`. At m = 512
-  and d = 5120 that is ~10 MB each way against ~95 MB of weight, so roughly
-  10 % on top of the stream. If it shows in the profile, the upgrade is to
-  offload a whole FFN block (one upload, one download; the FFN has no state)
-  instead of each linear.
-- Attention and the KV cache **never move**: they stay on the layer's home
-  backend, so the KV layout, its modes and the snapshot code are untouched.
-  Only weight-bound linears are routed; they are stateless.
-- The MoE block (`forward/moe.c`) calls the expert kernels directly. It gets
-  the same route per active expert: hot experts are recorded on the GPU and
-  submitted first, the CPU workers take the cold ones, then the block waits
-  for the GPU and sums in expert order (the sum order is already fixed, so
-  the result does not depend on who ran what).
+- **Load:** with `GEIST_OFFLOAD_M_MIN=<rows>` a split model loads its
+  load-backend layers a second time on the split backend (`twins`, weights
+  only). They load after the split stage, get what VRAM is left and spill
+  the rest, which #79 streams.
+- **Session:** a twin session on the twins with a dense KV cache (the
+  session's own mode when it is FP32/F16, else F16 or FP32) and two IO
+  buffers (cached host memory) for the rows that come back. A session whose
+  twins do not fit the card runs as a plain split, with one line on stderr.
+- **Chunk:** the split stage's layers and the twins' run in one batch on the
+  GPU, the hidden rows passing on the device. After each twin layer its new
+  K/V rows are copied into the IO buffer; after the batch they go into the
+  load backend's cache **through that layer's own append** (its INT8/INT4
+  quantization and rotation), and the output rows go to the head.
+- **Sync:** `twin_valid` marks how far the twins' cache is current. A step on
+  the CPU path at position p lowers it to p; a GPU chunk needs
+  `q_position <= twin_valid`. So a prompt after CPU decode steps (the next
+  chat turn) takes the CPU path for now; mirroring the CPU steps' K/V rows
+  into the twins is the upgrade if multi-turn prefill matters.
+- **Numerics:** with an FP32 cache the route is byte-identical on two CPU
+  instances (`test_layer_split_int`). With a quantized load-backend cache
+  the GPU prefill attends over dense rows, more precise than the CPU path
+  would; decode then reads the quantized rows as always.
+
+The first design, a route per linear (`linear.c`, a twin per
+`geist_weight`), ran no faster than the split (run 1383: 152 vs 156 tok/s
+at chunk 128): every layer streamed its weights while the CPU waited, and
+attention stayed on the CPU. It was removed.
 
 ### What the backends need
 
@@ -312,12 +338,12 @@ split backend is given. Decision rule: on the 2080 Ti box its pick for
 Qwen3-14B Q8_0 is within the run's resolution of the best hand split in
 decode.
 
-**Phase 1: the route** (on top of #49). Twins as Vulkan weights (resident
-where VRAM is left, else spilled and streamed), the branch in `linear.c`,
-the threshold from the env.
+**Phase 1: the route — built** (phase-dependent placement, above).
 Decision rule: keep if split 26 + offload prefills faster than both the split
 alone and every layer on the GPU, by more than the run's resolution, with
-decode within noise of the split (decode must not take the route).
+decode within noise of the split. At chunk 128 (run 1388): 264 against 156
+(split) and 240 (every layer on the GPU), decode 10.0 against 9.9: met.
+Next: chunks above 128 for offloaded sessions.
 
 **Phase 2: overlap.** The copy on the transfer queue, one weight ahead.
 Decision rule: keep if it beats single-queue streaming by more than the
