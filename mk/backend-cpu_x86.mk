@@ -33,6 +33,7 @@ BACKEND_SOURCES += \
     src/backends/cpu_x86/kernel_q8_0_avx512_vnni.c \
     src/backends/cpu_x86/kernel_q4_0_avx512_vnni.c \
     src/backends/cpu_x86/kernel_tq2_0_avx512_vnni.c \
+    src/backends/cpu_x86/kernel_pq2_0_avx512_vnni.c \
     src/backends/cpu_x86/kernel_w8a8.c \
     src/backends/cpu_x86/kernel_w8a8_scalar.c \
     src/backends/cpu_x86/kernel_w8a8_avx512_vnni.c \

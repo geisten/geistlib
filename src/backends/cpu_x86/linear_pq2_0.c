@@ -48,7 +48,9 @@
  * compute-bound, not bandwidth-bound, and needs no prefetch.
  *
  * AVX2 is the backend's x86-64-v3 baseline, so this runs on every host
- * cpu_x86 does. Where the host has AMX-INT8 and Linux grants the tile data
+ * cpu_x86 does. On AVX-512 VNNI hosts (vnni_tiles_usable) the GEMM runs on
+ * kernel_pq2_0_avx512_vnni.c's 4-row x 4-token register tiles instead, on
+ * the same activations (#85). Where the host has AMX-INT8 and Linux grants the tile data
  * (cpu_x86_linear_pq2_0_amx_usable, decided at bind), the GEMM runs on the
  * tiles instead: the same int8 activations, repacked per block, against
  * 16-row tiles of code - 1 (kernel_pq2_0_amx.c).
@@ -59,6 +61,7 @@
 
 #include "backend_state.h"
 #include "kernel_pq2_0_amx.h"
+#include "kernel_pq2_0_avx512_vnni.h"
 #include "linear_util.h"
 #include "kernel_w4a8.h" /* w4a8_dispatcher_tier: the ISA gate, GEIST_FORCE_ISA-clamped */
 
@@ -440,6 +443,62 @@ static void cpu_x86_linear_pq2_0_mN(size_t                     m,
     geist_par_for((n_out + GEMM_ROWS - 1) / GEMM_ROWS, gemm_groups, &c);
 }
 
+/* M>1 with vnni: groups [g0, g1) of PQ2_0_VNNI_TILE_ROWS output rows. */
+static void groups_vnni(void *ctx, size_t g0, size_t g1) {
+    const struct pq2_call *pc = ctx;
+    for (size_t g = g0; g < g1; g++) {
+        const size_t j0 = g * PQ2_0_VNNI_TILE_ROWS;
+        const size_t rows =
+                pc->n_out - j0 < PQ2_0_VNNI_TILE_ROWS ? pc->n_out - j0 : PQ2_0_VNNI_TILE_ROWS;
+        pq2_0_gemm_rows_avx512_vnni(pc->m,
+                                    pc->nb,
+                                    pc->rb,
+                                    pc->n_out,
+                                    j0,
+                                    rows,
+                                    pc->raw,
+                                    pc->xq,
+                                    pc->bias,
+                                    pc->inv,
+                                    pc->y);
+    }
+}
+
+/* M>1 on AVX-512 VNNI: the AVX2 kernel's quantization, then the register
+ * tiles. No accumulator scratch: the tiles keep theirs in registers. */
+static void cpu_x86_linear_pq2_0_mN_vnni(size_t                     m,
+                                         const float               *x,
+                                         const struct geist_weight *w,
+                                         struct geist_backend      *be,
+                                         float                     *y) {
+    const size_t              n_in  = (size_t) w->n_in;
+    const size_t              n_out = (size_t) w->n_out;
+    const size_t              nb    = n_in / QK;
+    size_t                    acts = 0, sums = 0, scales = 0;
+    struct cpu_x86_workspace *ws = nullptr;
+    if (be != nullptr && be->state != nullptr && !ckd_mul(&acts, m, n_in) &&
+        !ckd_mul(&sums, m, nb * sizeof(int32_t)) && !ckd_mul(&scales, m, sizeof(float))) {
+        ws = cpu_x86_ws_acquire_mN((struct cpu_x86_state *) be->state, acts, sums, scales, 0);
+    }
+    if (ws == nullptr) {
+        geist_linear_ref(m, x, w, y);
+        return;
+    }
+    struct pq2_call c = {.m     = m,
+                         .n_in  = n_in,
+                         .n_out = n_out,
+                         .nb    = nb,
+                         .rb    = nb * BB,
+                         .raw   = (const uint8_t *) w->raw,
+                         .x     = x,
+                         .xq    = ws->mN_acts,
+                         .bias  = ws->mN_sum_a,
+                         .inv   = ws->mN_scale,
+                         .y     = y};
+    geist_par_for(m, quant_tokens, &c);
+    geist_par_for((n_out + PQ2_0_VNNI_TILE_ROWS - 1) / PQ2_0_VNNI_TILE_ROWS, groups_vnni, &c);
+}
+
 #ifndef GEIST_NO_AMX /* the assembler knows AMX; mk/backend-cpu_x86.mk */
 /* Token tiles per pass of the AMX GEMM. Each pass streams the weights once
  * and keeps the packed activations of its tokens (nb * tiles * 2 KB, 2.2 MB
@@ -555,10 +614,10 @@ bool cpu_x86_linear_pq2_0_amx_usable(void) {
 
 void cpu_x86_linear_pq2_0_bind(struct geist_weight *w) {
     w->linear_m1 = cpu_x86_linear_pq2_0_m1;
+    w->linear_mN = vnni_tiles_usable() ? cpu_x86_linear_pq2_0_mN_vnni : cpu_x86_linear_pq2_0_mN;
 #ifndef GEIST_NO_AMX
-    w->linear_mN = cpu_x86_linear_pq2_0_amx_usable() ? cpu_x86_linear_pq2_0_mN_amx
-                                                     : cpu_x86_linear_pq2_0_mN;
-#else
-    w->linear_mN = cpu_x86_linear_pq2_0_mN;
+    if (cpu_x86_linear_pq2_0_amx_usable()) {
+        w->linear_mN = cpu_x86_linear_pq2_0_mN_amx;
+    }
 #endif
 }
