@@ -46,7 +46,6 @@ than hidden inside a large rewrite.
 | **P1** | Complete the bounded C23 array-contract migration | [#328](https://github.com/geisten/geistlib/issues/328) | The remaining hot `linear_*` family is migrated independently with exact-output, optimized-assembly and parent/patch benchmark evidence |
 | **P1** | Metal throughput for 4B-class models | [#322](https://github.com/geisten/geistlib/issues/322) | The small-shape GEMM path closes the measured prefill gap without decode, quality or memory regressions |
 | **P1** | Metal model residency | [#357](https://github.com/geisten/geistlib/issues/357) | Device upload no longer keeps an unnecessary second model-sized mapping resident, with loader and inference parity retained |
-| **P1** | Optimization-independent PTQTP parity gate | [#376](https://github.com/geisten/geistlib/issues/376) | GEMM/GEMV parity has a proved invariant and passes release plus ASan/UBSan without weakening quality coverage |
 | **Cross-cutting** | Same-protocol performance matrix | [#364](https://github.com/geisten/geistlib/issues/364) | Current models and systems publish reproducible results with pinned revisions, model hashes, settings and raw samples |
 | **P2** | BitNet x86 decode follow-ups | [#212](https://github.com/geisten/geistlib/issues/212) | A measured threading, placement, LM-head or kernel change improves decode without harming prefill or correctness |
 

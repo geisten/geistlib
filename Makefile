@@ -253,7 +253,7 @@ test-int: bin $(MODEL_PREREQ)
 test-e2e: bin $(MODEL_PREREQ)
 	@$(GGUF_ENV) mk/run-tests.sh $(TEST_BIN_DIR) "_e2e" "$(FILTER)"
 
-# Python-side tests (algorithm reference impls — PTQTP, quantization tooling).
+# Python-side tests (tooling: benchmark, decision eval, converters, CI gates).
 # Hermetic: no GGUF, no network. Exit non-zero on any failure.
 test-py:
 	@status=0; \
