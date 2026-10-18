@@ -368,7 +368,15 @@ No new vtable slot for v0: upload, `linear_t` and download exist.
 
 **Phase 0b: the planner — built** (`plan_split_layers` in `arch_state.c`,
 `GEIST_SPLIT_AUTO`, `test_split_planner_unit`; dense layers only, the
-expert part is phase 3). Originally: (on top of #49, no offload yet). `offload_plan_build`
+expert part is phase 3). Qwen3-14B Q8_0 at 584 positions, runs 1424 and
+1426 (3 interleaved cycles each, median decode tok/s of the split alone):
+the planner picks 27 of 40 layers (10438 MiB free, 1216 MiB reserved);
+split 24: 7.78 / 7.96, 26: 9.19 / 9.27, **auto (27): 9.73 / 9.59**, 28: 9.49
+/ 9.40. The decision rule (within the resolution of the best hand split in
+decode) holds. 28 fits as well: the reserve errs on the safe side. With
+offload, prefill grows with every layer the GPU holds (fewer to stream):
+209–212 / 234 / 246 / 258–260 tok/s at 24 / 26 / 27 / 28, chunk 128.
+Originally: (on top of #49, no offload yet). `offload_plan_build`
 with its unit test; it sets `split_layers` when the caller leaves it 0 and a
 split backend is given. Decision rule: on the 2080 Ti box its pick for
 Qwen3-14B Q8_0 is within the run's resolution of the best hand split in
