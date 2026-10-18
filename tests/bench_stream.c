@@ -1,7 +1,7 @@
 /*
  * bench_stream — STREAM Triad (a[i] = b[i] + scale * c[i]) on Pi 5 to
  * establish the actual sustained DRAM bandwidth ceiling. Compare against
- * what bench_ptqtp achieves to decide if the kernel is bandwidth-bound.
+ * what a decode kernel achieves to decide if it is bandwidth-bound.
  *
  * Reports GB/s for COPY, SCALE, ADD, TRIAD. TRIAD is the canonical
  * comparison number (3 fp32 reads/writes per index = 12 bytes/elem).
@@ -11,7 +11,7 @@
  *   bench_stream <MB> <reps>           — custom
  *
  * Threading: respects OMP_NUM_THREADS. Match production (=4) to compare
- * against the multi-threaded PTQTP kernel.
+ * against a multi-threaded decode kernel.
  */
 #include "test_helpers.h"
 

@@ -278,8 +278,6 @@ LIB_SOURCES := \
     src/backends/common/hadamard.c \
     src/backends/common/linear_ref.c \
     src/backends/common/host_buffer.c \
-    src/formats/ptqtp/gguf_ptqtp.c \
-    src/formats/ptqtp/ptqtp_kernel.c \
     src/formats/ptqtp/ptqtp_awq.c \
     src/io/aux_file.c \
     src/io/gguf_reader.c \
@@ -349,7 +347,7 @@ NEON_KERNEL_TESTS := \
     tests/test_prefill_q3k_int.c tests/test_iq_kernel_int.c \
     tests/test_backend_vs_direct_int.c tests/bench_q4k_kernel.c \
     tests/test_i2_s_parity_unit.c tests/test_tl1_parity_unit.c \
-    tests/bench_5trit_probe.c tests/test_state_layer_fwd_int.c \
+    tests/test_state_layer_fwd_int.c \
     tests/test_multi_session_int.c tests/test_q8_0_prefill_unit.c
 ifeq ($(filter cpu_neon,$(BACKENDS)),)
     TEST_SOURCES := $(filter-out $(NEON_KERNEL_TESTS),$(TEST_SOURCES))
