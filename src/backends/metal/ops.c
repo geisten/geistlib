@@ -2284,11 +2284,14 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
     return metal_standalone_end(be, cmd, enc, "rope_apply");
 }
 
-/* The f32-KV fast paths below convert the live K/V rows into this f16
- * staging on every call. It is sized for every row of the cache k views
- * (the session's context), so a growing KV length never reallocates it
- * mid-session (AGENT.md §3). A larger cache on this
- * backend (another session or model) grows it once more. */
+/* The f32-KV flash (prefill) path below converts the live K/V rows into
+ * this f16 staging on every call. #64 kept it: per call it costs 1-5 % of
+ * the flash kernel at a 320-row chunk, while a flash kernel reading the
+ * F32 cache directly measured 11-14 % slower on Bonsai 2 27B (decode
+ * reads the F32 cache directly). It is sized for every row of the cache k
+ * views (the session's context), so a growing KV length never reallocates
+ * it mid-session (AGENT.md §3). A larger cache on this backend (another
+ * session or model) grows it once more. */
 [[nodiscard]] static enum geist_status metal_attn_kvf16_reserve(struct geist_backend      *be,
                                                                 struct metal_state        *st,
                                                                 const struct geist_tensor *k,
@@ -2407,9 +2410,12 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
     return metal_op_end(be, cmd, enc, "flash attention");
 }
 
-/* rows==1 (decode) f32-KV fast path: convert K/V to the f16 staging and run
- * the split-KV decode kernel — the scalar kernel uses one threadgroup per
- * head (8 tgs on a 32-core GPU) and its cost grows linearly with kv_len. */
+/* rows==1 (decode) fast path: the split-KV decode kernel — the scalar
+ * kernel uses one threadgroup per head (8 tgs on a 32-core GPU) and its
+ * cost grows linearly with kv_len. An F32 cache is read by the _f32kv
+ * variant, which rounds each element to half as it loads it: the same
+ * result as staging the cache to f16 first, without converting every live
+ * row on every token (#64). */
 [[nodiscard]] static enum geist_status metal_attention_dec_kv(struct geist_backend      *be,
                                                               struct metal_state        *st,
                                                               const struct geist_tensor *q,
@@ -2428,14 +2434,6 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
                                                               size_t out_off,
                                                               bool   kv_native_f16) {
 
-    const size_t kv_out = k_heads * head_dim;
-    const size_t elems  = k_rows * kv_out;
-    if (!kv_native_f16) {
-        const enum geist_status rs = metal_attn_kvf16_reserve(be, st, k, k_off);
-        if (rs != GEIST_OK) {
-            return rs;
-        }
-    }
     uint32_t window = (uint32_t) q_offset + 1u;
     if ((uint32_t) k_rows < window) {
         window = (uint32_t) k_rows;
@@ -2468,23 +2466,22 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
         st->attn_dec_partials_capacity = partial_bytes;
     }
     struct {
-        uint32_t elems, kv_out, k_offset, v_offset, k_cache_offset, v_cache_offset, q_position;
-    } ap = {(uint32_t) elems, (uint32_t) kv_out, (uint32_t) k_off, (uint32_t) v_off, 0u, 0u, 0u};
-    struct {
         uint32_t rows, kv_len, qh, kvh, hd, qpos, sw, qo, kco, vco, yo;
-    } fp       = {1u,
-                  (uint32_t) k_rows,
-                  (uint32_t) q_heads,
-                  (uint32_t) k_heads,
-                  (uint32_t) head_dim,
-                  (uint32_t) q_offset,
-                  (uint32_t) sliding_window,
-                  (uint32_t) q_off,
-                  kv_native_f16 ? (uint32_t) k_off : 0u,
-                  kv_native_f16 ? (uint32_t) v_off : 0u,
-                  (uint32_t) out_off};
-    void *kf16 = kv_native_f16 ? k->buffer->buffer : st->attn_kf16_buffer->buffer;
-    void *vf16 = kv_native_f16 ? value->buffer->buffer : st->attn_vf16_buffer->buffer;
+    } fp = {1u,
+            (uint32_t) k_rows,
+            (uint32_t) q_heads,
+            (uint32_t) k_heads,
+            (uint32_t) head_dim,
+            (uint32_t) q_offset,
+            (uint32_t) sliding_window,
+            (uint32_t) q_off,
+            (uint32_t) k_off,
+            (uint32_t) v_off,
+            (uint32_t) out_off};
+    /* The F16 cache binds at offset 0, as before; the F32 one at its
+     * base, as the staging kernel bound it. */
+    const size_t k_base = kv_native_f16 ? 0u : k->buffer->base_off;
+    const size_t v_base = kv_native_f16 ? 0u : value->buffer->base_off;
 
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
     void                                              *cmd  = nullptr;
@@ -2493,28 +2490,18 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
         return GEIST_E_BACKEND;
     }
     const struct metal_size threads256 = {256, 1, 1};
-    if (!kv_native_f16) {
-        metal_msg_send_set_pipeline(st, enc, st->kv_append_rows_f16_pipeline);
-        metal_msg_send_set_buffer(st, enc, k->buffer->buffer, k->buffer->base_off, 0);
-        metal_msg_send_set_buffer(st, enc, value->buffer->buffer, value->buffer->base_off, 1);
-        metal_msg_send_set_buffer(
-                st, enc, st->attn_kf16_buffer->buffer, st->attn_kf16_buffer->base_off, 2);
-        metal_msg_send_set_buffer(
-                st, enc, st->attn_vf16_buffer->buffer, st->attn_vf16_buffer->base_off, 3);
-        metal_msg_send_set_bytes(st, enc, &ap, sizeof(ap), 4);
-        const struct metal_size cgroups = {(elems + 255u) / 256u, 1, 1};
-        metal_msg_send_dispatch(st, enc, cgroups, threads256);
-    }
 
     /* head_dim <= 256: 8-chunk lane unroll; 256 < hd <= 512 (gemma-3n
      * full-attention layers): the 16-chunk dec512 variant. */
-    metal_msg_send_set_pipeline(st,
-                                enc,
-                                head_dim > 256u ? st->attention_dec512_f16_pipeline
-                                                : st->attention_dec_f16_pipeline);
+    const bool wide     = head_dim > 256u;
+    void      *pipeline = kv_native_f16 ? (wide ? st->attention_dec512_f16_pipeline
+                                                : st->attention_dec_f16_pipeline)
+                                        : (wide ? st->attention_dec512_f32kv_pipeline
+                                                : st->attention_dec_f32kv_pipeline);
+    metal_msg_send_set_pipeline(st, enc, pipeline);
     metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 0);
-    metal_msg_send_set_buffer(st, enc, kf16, 0, 1);
-    metal_msg_send_set_buffer(st, enc, vf16, 0, 2);
+    metal_msg_send_set_buffer(st, enc, k->buffer->buffer, k_base, 1);
+    metal_msg_send_set_buffer(st, enc, value->buffer->buffer, v_base, 2);
     metal_msg_send_set_buffer(st,
                               enc,
                               st->attn_dec_partials_buffer->buffer,
@@ -3175,8 +3162,7 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
     if (q_rows == 1u &&
         (head_dim <= 256u || (head_dim <= 512u && st->attention_dec512_f16_pipeline != nullptr)) &&
         k_rows >= 32u && st->attention_dec_f16_pipeline != nullptr &&
-        st->attention_dec_combine_pipeline != nullptr &&
-        st->kv_append_rows_f16_pipeline != nullptr) {
+        st->attention_dec_combine_pipeline != nullptr) {
         s = metal_attention_dec_kv(be,
                                    st,
                                    q,
