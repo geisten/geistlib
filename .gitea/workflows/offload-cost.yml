@@ -99,7 +99,7 @@ jobs:
           # linear_t from STREAM_M_MIN rows on (#78); decode (m = 1) never streams.
           for cfg in vulkan vulkan+stream cpu_x86; do
             b=${cfg%+stream}
-            st=$([ "$cfg" = vulkan+stream ] && echo "$STREAM_M_MIN" || echo "")
+            st=$([ "$cfg" = vulkan+stream ] && echo "$STREAM_M_MIN" || echo 0)
             for m in $(echo "$M_MAX" | tr ';' ' '); do
               # the CPU kernels take at most 128 rows per call (GEIST_QUANT_M_CAP)
               [ "$b" = cpu_x86 ] && [ "$m" -gt 128 ] && continue

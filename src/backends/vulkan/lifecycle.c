@@ -486,9 +486,14 @@ static size_t vk_parse_bytes(const char *v) {
     st->vram_budget     = vk_parse_bytes(getenv("GEIST_VK_VRAM_BUDGET"));
     const char *reserve = getenv("GEIST_VK_WEIGHT_RESERVE");
     st->weight_reserve  = reserve != nullptr ? vk_parse_bytes(reserve) : SIZE_MAX;
-    const char *stream  = getenv("GEIST_VK_STREAM_M_MIN");
-    st->stream_m_min =
-            stream != nullptr && vk_parse_bytes(stream) != 0 ? vk_parse_bytes(stream) : SIZE_MAX;
+    /* 32 rows: streaming beats the shaders' bus reads from there on (#78,
+     * Qwen3-14B Q8_0 prefill at chunk 32: 63.8 vs 32.4 tok/s); "0" turns it off. */
+    const char *stream = getenv("GEIST_VK_STREAM_M_MIN");
+    st->stream_m_min   = VK_STREAM_M_MIN;
+    if (stream != nullptr && *stream != '\0') {
+        const size_t n   = vk_parse_bytes(stream);
+        st->stream_m_min = n != 0 ? n : SIZE_MAX;
+    }
     /* Device-local scratch pool (#488), default on; GEIST_VK_SCRATCH_DEVICE=0
      * keeps it host-visible. The arch still asks only where no host path
      * maps a pool slot (scratch_device_wanted); see vk_buffer_create_api. */

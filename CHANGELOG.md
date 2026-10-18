@@ -9,6 +9,13 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Vulkan streams spilled weights for prefill (#78).** A weight that did
+  not fit VRAM (#466) is copied into one of two VRAM slots before a
+  `linear_t` of at least `GEIST_VK_STREAM_M_MIN` rows (default 32, `0` off)
+  instead of being read over the bus by the shaders. Qwen3-14B Q8_0 on an
+  RTX 2080 Ti (4.7 GB spilled), every layer on Vulkan, pp512: 177 -> 550
+  tok/s; decode unchanged. `tests/bench_offload_cost` and
+  `offload-cost.yml` measure the cost model (docs/OFFLOAD.md).
 - **Qwen3-MoE (`qwen3moe`, Qwen3-30B-A3B) on the CPU backends (#48).** A
   family unit (`families/qwen3moe.c`) composed of Qwen3's attention and a
   new shared block, `blk_moe_ffn` (`forward/moe.c`): softmax router over
@@ -482,6 +489,12 @@ minor release.
   is unchanged. `GEIST_METAL_Q6K_MM_FAST` and `GEIST_SKIP_*` stay.
 
 ### Fixed
+- **Vulkan: buffers the host reads take cached memory (#78).** STAGING/IO
+  buffers and the download staging used the first host-visible type, which
+  on NVIDIA is write-combined: reading 35.7 MB back ran at ~650 MB/s (~90
+  MB/s from the BAR window). They now prefer `HOST_CACHED`; the DMA readback
+  of that size runs at ~5 GB/s. Upload staging keeps the write-combined type.
+  vulkan-ab on the RTX 2080 Ti (runs 1372, 1373): every row within noise.
 
 - **CPU backends: every tensor view is bounded by its buffer.** cpu_scalar's
   and cpu_neon's rope_apply, embedding_lookup, attention and F16 KV append
