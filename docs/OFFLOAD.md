@@ -109,8 +109,12 @@ RTX 2080 Ti on PCIe 3.0 x16, Ryzen 9 9950X, cpu_x86 with AVX-512 VNNI,
   BAR-window buffer (~90 MB/s, uncached PCIe reads) and 55 ms from a plain IO
   buffer (write-combined system memory, ~650 MB/s). Host-read buffers now
   take `HOST_CACHED` memory (run 1364): the DMA readback runs at ~5 GB/s.
-  The #49 split moves its hidden rows through host memory too; how it reads
-  them is worth checking (≈ 0.4 s per 512-row chunk at BAR speed).
+  The #49 split (`feat/49-layer-split`) reads its hidden rows back the same
+  way: `transformer_buffer_xfer` maps the stage's `scratch_h_a/h_b`, which on
+  Vulkan stay in the BAR window, and memcpys them. At the 24–90 MB/s measured
+  that is 0.1–0.4 s per 512-row chunk of Qwen3-14B (10.5 MB), 3–13 % of a
+  split-26 prefill chunk; `HOST_CACHED` does not reach BAR memory. A DMA copy
+  into a cached IO buffer would fix it there.
 
 **End to end, Qwen3-14B Q8_0 (15.7 GB, 4.7 GB of it spilled to host memory),
 every layer on Vulkan, prompt 512, run 1366, tok/s:**
