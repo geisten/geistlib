@@ -95,13 +95,16 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geis
              * evicted, so the packed copy costs ~0.5 GB RSS, not 1x model
              * bytes (Pi 5 4B: prefill 9.1->16.5 t/s). GEIST_Q4_0_X8_GEMV=0
              * trades the speed back for RAM. */
-            .q4_0_x8_gemv    = amx || (hw != nullptr && hw->has_dotprod),
-            .pq2_0_x8_gemv   = hw != nullptr && hw->has_dotprod,
-            .q8_0_native_mn  = !amx,
-            .q4_01_native_mn = !amx,
-            .iq4xs_native_mn = !amx,
-            .tq2_0_native_mn = !amx,
-            .tq2_0_tl1_m1    = false,
+            .q4_0_x8_gemv  = amx || (hw != nullptr && hw->has_dotprod),
+            .pq2_0_x8_gemv = hw != nullptr && hw->has_dotprod,
+            /* The x8 prefill runs on int8 SDOT, as decode does (#82);
+             * GEIST_PQ2_0_SGEMM_PREFILL=1 restores dequant + SGEMM. */
+            .pq2_0_sgemm_prefill = false,
+            .q8_0_native_mn      = !amx,
+            .q4_01_native_mn     = !amx,
+            .iq4xs_native_mn     = !amx,
+            .tq2_0_native_mn     = !amx,
+            .tq2_0_tl1_m1        = false,
     };
 
     policy_overlay_calibration(&p, be);
@@ -115,12 +118,13 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geis
     p.q6k_ntile_prefill = cpu_neon_env_bool("GEIST_Q6K_NTILE_PREFILL", p.q6k_ntile_prefill);
     p.q6k_ntile4_stream_prefill =
             cpu_neon_env_bool("GEIST_Q6K_NTILE4_STREAM_PREFILL", p.q6k_ntile4_stream_prefill);
-    p.q4k_sgemm_prefill = cpu_neon_env_bool("GEIST_Q4K_SGEMM_PREFILL", p.q4k_sgemm_prefill);
-    p.q6k_sgemm_prefill = cpu_neon_env_bool("GEIST_Q6K_SGEMM_PREFILL", p.q6k_sgemm_prefill);
-    p.q6k_x8_gemv       = cpu_neon_env_bool("GEIST_Q6K_X8_GEMV", p.q6k_x8_gemv);
-    p.q4_0_x8_gemv      = cpu_neon_env_bool("GEIST_Q4_0_X8_GEMV", p.q4_0_x8_gemv);
-    p.pq2_0_x8_gemv     = cpu_neon_env_bool("GEIST_PQ2_0_X8_GEMV", p.pq2_0_x8_gemv);
-    const char *thresh  = getenv("GEIST_QK_SGEMM_THRESHOLD");
+    p.q4k_sgemm_prefill   = cpu_neon_env_bool("GEIST_Q4K_SGEMM_PREFILL", p.q4k_sgemm_prefill);
+    p.q6k_sgemm_prefill   = cpu_neon_env_bool("GEIST_Q6K_SGEMM_PREFILL", p.q6k_sgemm_prefill);
+    p.q6k_x8_gemv         = cpu_neon_env_bool("GEIST_Q6K_X8_GEMV", p.q6k_x8_gemv);
+    p.q4_0_x8_gemv        = cpu_neon_env_bool("GEIST_Q4_0_X8_GEMV", p.q4_0_x8_gemv);
+    p.pq2_0_x8_gemv       = cpu_neon_env_bool("GEIST_PQ2_0_X8_GEMV", p.pq2_0_x8_gemv);
+    p.pq2_0_sgemm_prefill = cpu_neon_env_bool("GEIST_PQ2_0_SGEMM_PREFILL", p.pq2_0_sgemm_prefill);
+    const char *thresh    = getenv("GEIST_QK_SGEMM_THRESHOLD");
     if (thresh != nullptr && *thresh != '\0') {
         char               *end = nullptr;
         const unsigned long v   = strtoul(thresh, &end, 10);

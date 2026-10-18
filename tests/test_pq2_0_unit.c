@@ -217,10 +217,11 @@ static double rel_err(size_t n, const float *a, const float *b) {
     return d / fmax(m, 1e-30);
 }
 
-/* m > 1 token by token: cpu_x86 runs an int8 GEMM, held to the W2A8
- * model; the other backends accumulate in fp32 (trampoline / scalar / x8
- * SGEMM). */
+/* m > 1 token by token: cpu_x86 and cpu_neon's x8 prefill (#82) run an
+ * int8 GEMM, held to the W2A8 model; the other paths accumulate in fp32
+ * (trampoline / scalar / x8 SGEMM with GEIST_PQ2_0_SGEMM_PREFILL=1). */
 static int check_mN(const char                *name,
+                    bool                       int8,
                     size_t                     n_out,
                     size_t                     n_in,
                     size_t                     m,
@@ -228,17 +229,16 @@ static int check_mN(const char                *name,
                     const float               *x,
                     const struct geist_weight *w,
                     struct geist_backend      *be) {
-    const bool x86   = strcmp(name, "cpu_x86") == 0;
-    int        fails = 0;
-    char       what[160];
-    float     *y  = xmalloc(m * n_out * sizeof(float));
+    int    fails = 0;
+    char   what[160];
+    float *y  = xmalloc(m * n_out * sizeof(float));
     float     *yf = xmalloc(n_out * sizeof(float));
     float     *yq = xmalloc(n_out * sizeof(float));
     w->linear_mN(m, x, w, be, y);
     for (size_t t = 0; t < m; t++) {
         ref_fp32(n_out, n_in, W, x + t * n_in, yf);
-#if defined(GEIST_BACKEND_CPU_X86)
-        if (x86) {
+#if defined(HAVE_W2A8_KERNEL)
+        if (int8) {
             ref_w2a8(n_out, n_in, W, x + t * n_in, yq);
             snprintf(what,
                      sizeof what,
@@ -262,7 +262,7 @@ static int check_mN(const char                *name,
             continue;
         }
 #endif
-        (void) x86;
+        (void) int8;
         snprintf(what, sizeof what, "%s n_in=%zu m=%zu: mN row %zu == fp32", name, n_in, m, t);
         fails += geist_expect(rel_err(n_out, y + t * n_out, yf) < 1e-4, what);
     }
@@ -359,9 +359,13 @@ static int check_backend(const char *name, bool x8_policy) {
             fails += geist_expect(rel_err(n_out, y, yf) < 1e-5, what);
         }
 
-        const size_t n_ms = x86 && n_in <= 5120 ? 2 : 1;
+        /* cpu_neon's x8 prefill is int8 unless GEIST_PQ2_0_SGEMM_PREFILL=1 */
+        const char *sgemm   = getenv("GEIST_PQ2_0_SGEMM_PREFILL");
+        const bool  neon_q8 = neon && w.backend_layout == GEIST_W_LAYOUT_PQ2_0_X8_GEMV &&
+                             !(sgemm != nullptr && sgemm[0] == '1');
+        const size_t n_ms = (x86 || neon_q8) && n_in <= 5120 ? 2 : 1;
         for (size_t i = 0; i < n_ms; i++) {
-            fails += check_mN(name, n_out, n_in, ms[i], W, x, &w, be);
+            fails += check_mN(name, x86 || neon_q8, n_out, n_in, ms[i], W, x, &w, be);
         }
         if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0) {
             void *aux = (void *) w.aux_fp32;
@@ -492,7 +496,7 @@ static int check_passes(void) {
             snprintf(what, sizeof what, "cpu_x86 passes n_in=%zu n_out=%zu: resolve", n_in, n_out);
             fails += geist_expect(be->desc->vtbl->resolve_weight(be, &w) == GEIST_OK, what);
             if (w.linear_mN != nullptr) {
-                fails += check_mN("cpu_x86", n_out, n_in, m, W, x, &w, be);
+                fails += check_mN("cpu_x86", true, n_out, n_in, m, W, x, &w, be);
             }
             free(W);
             free(x);
@@ -547,6 +551,10 @@ int main(void) {
     fails += check_layout();
     fails += check_backend("cpu_scalar", false);
     fails += check_backend("cpu_neon", true);
+    /* The x8 prefill's old dequant + SGEMM path, still reachable for A/B. */
+    setenv("GEIST_PQ2_0_SGEMM_PREFILL", "1", 1);
+    fails += check_backend("cpu_neon", true);
+    unsetenv("GEIST_PQ2_0_SGEMM_PREFILL");
     /* The policy is read at backend create: a fresh backend sees it. */
     fails += check_pair("cpu_scalar");
     fails += check_pair("cpu_neon");

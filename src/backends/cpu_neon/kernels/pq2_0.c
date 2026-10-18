@@ -1,5 +1,5 @@
 /*
- * src/backends/cpu_neon/kernels/pq2_0.c — PQ2_0 W2 x A8 decode GEMV.
+ * src/backends/cpu_neon/kernels/pq2_0.c — PQ2_0 W2 x A8 GEMV and GEMM.
  *
  * Layer: BACKEND (cpu_neon). PQ2_0 is PrismML's ternary format for
  * Ternary-Bonsai: 128-element blocks of [fp16 d][32 bytes of 2-bit
@@ -99,26 +99,16 @@ static void pq2_0_m1_rows(void *vctx, size_t r0, size_t r1) {
     }
 }
 
-/* Per-call activation prep shared by both kernels: absmax int8 quant in
- * the kernel element order (see file comment) plus the per-block sums
- * that fold the code bias out. Rounding matches tq2_0.c. Thread-local
- * workspace, grown on demand; false on OOM or a width that is not a whole
- * number of blocks, and the caller computes y with geist_linear_ref. */
-static bool
-pq2_0_prep(struct cpu_neon_workspace *ws, size_t n_in, const float *x, float *inv_act_scale) {
+/* One row of the int8 activation: absmax quant in the kernel element
+ * order (see file comment) plus the per-block sums that fold the code
+ * bias out. Rounding matches tq2_0.c. n_in is a whole number of blocks.
+ * Returns the row's inverse activation scale. */
+static float pq2_0_quant_row(size_t n_in, const float *x, int8_t *xq, int32_t *bsum) {
     const size_t nb = n_in / PQ2_0_BLOCK_ELEMS;
-    if (ws == nullptr || n_in % PQ2_0_BLOCK_ELEMS != 0) {
-        return false;
-    }
-    if (!cpu_neon_grow_i8(&ws->m1_xq, &ws->m1_xq_cap, n_in) ||
-        !cpu_neon_grow_i32(&ws->m1_bsum, &ws->m1_bsum_cap, nb)) {
-        return false;
-    }
-    /* n_in is a whole number of blocks (checked above), so both loops run
-     * whole vectors. The quant loop is pq2_0_permute_x plus an int8
-     * convert: vld4q's four lanes are the four l values, each stored as 4
-     * contiguous bytes at 16*l + 4*q. Rounding is +-0.5 then truncate
-     * (vcvtq), bit-identical to the scalar quantizer. */
+    /* The quant loop is pq2_0_permute_x plus an int8 convert: vld4q's four
+     * lanes are the four l values, each stored as 4 contiguous bytes at
+     * 16*l + 4*q. Rounding is +-0.5 then truncate (vcvtq), bit-identical
+     * to the scalar quantizer. */
     float32x4_t mx = vdupq_n_f32(1e-5f);
     for (size_t i = 0; i < n_in; i += 4) {
         mx = vmaxq_f32(mx, vabsq_f32(vld1q_f32(x + i)));
@@ -142,15 +132,32 @@ pq2_0_prep(struct cpu_neon_workspace *ws, size_t n_in, const float *x, float *in
                             vminq_s32(vmaxq_s32(vcvtq_s32_f32(vaddq_f32(qf, adj)), vmin), vmax);
                     acc                   = vaddq_s32(acc, qi);
                     const int8x8_t packed = vqmovn_s16(vcombine_s16(vqmovn_s32(qi), vdup_n_s16(0)));
-                    vst1_lane_s32((int32_t *) (void *) (ws->m1_xq + base + 16 * l + 4 * q),
+                    vst1_lane_s32((int32_t *) (void *) (xq + base + 16 * l + 4 * q),
                                   vreinterpret_s32_s8(packed),
                                   0);
                 }
             }
         }
-        ws->m1_bsum[b] = vaddvq_s32(acc);
+        bsum[b] = vaddvq_s32(acc);
     }
-    *inv_act_scale = max_abs / 127.0f;
+    return max_abs / 127.0f;
+}
+
+/* Per-call activation prep shared by the decode kernels: one row into the
+ * thread-local workspace, grown on demand; false on OOM or a width that is
+ * not a whole number of blocks, and the caller computes y with
+ * geist_linear_ref. */
+static bool
+pq2_0_prep(struct cpu_neon_workspace *ws, size_t n_in, const float *x, float *inv_act_scale) {
+    const size_t nb = n_in / PQ2_0_BLOCK_ELEMS;
+    if (ws == nullptr || n_in % PQ2_0_BLOCK_ELEMS != 0) {
+        return false;
+    }
+    if (!cpu_neon_grow_i8(&ws->m1_xq, &ws->m1_xq_cap, n_in) ||
+        !cpu_neon_grow_i32(&ws->m1_bsum, &ws->m1_bsum_cap, nb)) {
+        return false;
+    }
+    *inv_act_scale = pq2_0_quant_row(n_in, x, ws->m1_xq, ws->m1_bsum);
     return true;
 }
 
@@ -428,6 +435,149 @@ void cpu_neon_w_pq2_0_x8_pair_m1(const float               *x,
     geist_par_for(n0 / 8 + n1 / 8, pq2_0_pair_range, &pc);
 }
 
+/* x8 prefill on int8 (#82): the decode tile above, widened to PQ2_0_MT
+ * tokens. Each token's row is quantized once per call (its own absmax
+ * scale and block sums, as in decode), and every masked weight vector is
+ * dotted against all tokens of the group before the next one is formed,
+ * so the load and the shift/mask of the codes are paid once per group,
+ * not once per token -- the TQ2_0 mt4 idea on the x8 layout. A tile's
+ * weights (8 rows x n_in, ~11 KB at n_in 5120) stay in L1 across the
+ * token groups. */
+constexpr size_t PQ2_0_MT = 4;
+
+struct pq2_0_x8_q8_ctx {
+    const uint8_t *W;
+    const int8_t  *xq;   /* m x n_in, kernel element order */
+    const int32_t *bsum; /* m x nb */
+    const float   *sc;   /* m inverse activation scales */
+    float         *y;    /* m x n_out */
+    size_t         m, n_in, n_out, nb;
+};
+
+/* Tokens [t0, t0 + nt) of row tile `tile`; nt is PQ2_0_MT or 1, a
+ * constant after inlining, so the token loops unroll and the
+ * accumulators stay in registers. */
+static inline __attribute__((always_inline)) void
+pq2_0_x8_q8_tile(const struct pq2_0_x8_q8_ctx *c, size_t tile, size_t t0, const size_t nt) {
+    const uint8_t   *row  = c->W + tile * c->nb * PQ2_0_X8_BLOCK_BYTES;
+    const uint8x16_t mask = vdupq_n_u8(3);
+    float32x4_t      acc[PQ2_0_MT][2];
+    for (size_t t = 0; t < nt; t++) {
+        acc[t][0] = vdupq_n_f32(0.0f);
+        acc[t][1] = vdupq_n_f32(0.0f);
+    }
+    for (size_t b = 0; b < c->nb; b++) {
+        const uint8_t    *blk = row + b * PQ2_0_X8_BLOCK_BYTES;
+        const float16x8_t dh  = vreinterpretq_f16_u16(vld1q_u16((const uint16_t *) blk));
+        const float32x4_t d0  = vcvt_f32_f16(vget_low_f16(dh));
+        const float32x4_t d1  = vcvt_f32_f16(vget_high_f16(dh));
+        const uint8_t    *qs  = blk + 16;
+        int32x4_t         a[PQ2_0_MT][2];
+        for (size_t t = 0; t < nt; t++) {
+            a[t][0] = vdupq_n_s32(0);
+            a[t][1] = vdupq_n_s32(0);
+        }
+        for (size_t ch = 0; ch < 2; ch++) {
+            for (size_t l = 0; l < 4; l++) {
+                int8x16_t xv[PQ2_0_MT];
+                for (size_t t = 0; t < nt; t++) {
+                    xv[t] = vld1q_s8(c->xq + (t0 + t) * c->n_in + b * PQ2_0_BLOCK_ELEMS + ch * 64 +
+                                     16 * l);
+                }
+/* vdotq_laneq_s32 needs a literal lane index, hence the macro. */
+#define PQ2_X8_Q8_LANE(j)                                                              \
+    do {                                                                               \
+        const uint8x16_t w0_ = vld1q_u8(qs + ch * 128 + (j) * 16);                     \
+        const uint8x16_t w1_ = vld1q_u8(qs + ch * 128 + 64 + (j) * 16);                \
+        const int8x16_t  v0_ = vreinterpretq_s8_u8(vandq_u8(vshlq_u8(w0_, sh), mask)); \
+        const int8x16_t  v1_ = vreinterpretq_s8_u8(vandq_u8(vshlq_u8(w1_, sh), mask)); \
+        for (size_t t = 0; t < nt; t++) {                                              \
+            a[t][0] = vdotq_laneq_s32(a[t][0], v0_, xv[t], (j));                       \
+            a[t][1] = vdotq_laneq_s32(a[t][1], v1_, xv[t], (j));                       \
+        }                                                                              \
+    } while (0)
+                const int8x16_t sh = vdupq_n_s8((int8_t) (-2 * (int) l)); /* right shift 2l */
+                PQ2_X8_Q8_LANE(0);
+                PQ2_X8_Q8_LANE(1);
+                PQ2_X8_Q8_LANE(2);
+                PQ2_X8_Q8_LANE(3);
+#undef PQ2_X8_Q8_LANE
+            }
+        }
+        for (size_t t = 0; t < nt; t++) {
+            const float32x4_t bias = vdupq_n_f32((float) c->bsum[(t0 + t) * c->nb + b]);
+            acc[t][0] = vfmaq_f32(acc[t][0], d0, vsubq_f32(vcvtq_f32_s32(a[t][0]), bias));
+            acc[t][1] = vfmaq_f32(acc[t][1], d1, vsubq_f32(vcvtq_f32_s32(a[t][1]), bias));
+        }
+    }
+    for (size_t t = 0; t < nt; t++) {
+        float *yr = c->y + (t0 + t) * c->n_out + tile * 8;
+        vst1q_f32(yr + 0, vmulq_n_f32(acc[t][0], c->sc[t0 + t]));
+        vst1q_f32(yr + 4, vmulq_n_f32(acc[t][1], c->sc[t0 + t]));
+    }
+}
+
+/* Row tiles [r0, r1): every token of the call, PQ2_0_MT at a time. */
+static void pq2_0_x8_q8_tiles(void *vctx, size_t r0, size_t r1) {
+    const struct pq2_0_x8_q8_ctx c = *(const struct pq2_0_x8_q8_ctx *) vctx;
+    for (size_t tile = r0; tile < r1; tile++) {
+        size_t t = 0;
+        for (; t + PQ2_0_MT <= c.m; t += PQ2_0_MT) {
+            pq2_0_x8_q8_tile(&c, tile, t, PQ2_0_MT);
+        }
+        for (; t < c.m; t++) {
+            pq2_0_x8_q8_tile(&c, tile, t, 1);
+        }
+    }
+}
+
+/* One pq2_0_quant_rows call. */
+struct pq2_0_quant_job {
+    size_t       n_in, nb;
+    const float *x;
+    int8_t      *xq;
+    int32_t     *bsum;
+    float       *sc;
+};
+
+/* Rows [t0, t1) of pq2_0_quant_rows. */
+static void pq2_0_quant_rows_range(void *ctx, size_t t0, size_t t1) {
+    const struct pq2_0_quant_job *j = ctx;
+    for (size_t t = t0; t < t1; t++) {
+        j->sc[t] = pq2_0_quant_row(
+                j->n_in, j->x + t * j->n_in, j->xq + t * j->n_in, j->bsum + t * j->nb);
+    }
+}
+
+/* All m rows into the calling thread's mN workspace (shared with the
+ * TQ2_0 prefill: a thread runs one linear at a time), which the tile
+ * workers then read. False on OOM or a width that is not a whole number
+ * of blocks; the caller falls back. */
+static bool pq2_0_quant_rows(struct cpu_neon_workspace *ws,
+                             size_t                     m,
+                             size_t                     n_in,
+                             const float               *x,
+                             struct pq2_0_x8_q8_ctx    *out) {
+    const size_t nb = n_in / PQ2_0_BLOCK_ELEMS;
+    size_t       nx = 0, ns = 0;
+    if (ws == nullptr || m == 0 || n_in % PQ2_0_BLOCK_ELEMS != 0 || ckd_mul(&nx, m, n_in) ||
+        ckd_mul(&ns, m, nb) || !cpu_neon_grow_i8(&ws->mN_xq, &ws->mN_xq_cap, nx) ||
+        !cpu_neon_grow_i32(&ws->mN_bsum, &ws->mN_bsum_cap, ns) ||
+        !cpu_neon_grow_f32(&ws->mN_sc, &ws->mN_sc_cap, m)) {
+        return false;
+    }
+    struct pq2_0_quant_job job = {
+            .n_in = n_in, .nb = nb, .x = x, .xq = ws->mN_xq, .bsum = ws->mN_bsum, .sc = ws->mN_sc};
+    geist_par_for(m, pq2_0_quant_rows_range, &job);
+    out->xq   = ws->mN_xq;
+    out->bsum = ws->mN_bsum;
+    out->sc   = ws->mN_sc;
+    out->m    = m;
+    out->n_in = n_in;
+    out->nb   = nb;
+    return true;
+}
+
 /* x8 prefill: NEON dequant straight from the x8 copy + SGEMM, so the
  * row-major source mmap is not touched. Tiles come out in the codes'
  * element order (position 16l + m of a 64-element chunk is element
@@ -629,7 +779,14 @@ void cpu_neon_w_pq2_0_x8_mN(size_t                     m,
     const size_t               n_in  = (size_t) w->n_in;
     const size_t               n_out = (size_t) w->n_out;
     const uint8_t             *W     = (const uint8_t *) w->aux_fp32;
-    const float               *xp    = pq2_0_permuted_x(ws, m, n_in, x);
+    if (!st->policy.pq2_0_sgemm_prefill && W != nullptr) {
+        struct pq2_0_x8_q8_ctx c = {.W = W, .y = y, .n_out = n_out};
+        if (pq2_0_quant_rows(ws, m, n_in, x, &c)) {
+            geist_par_for(n_out / 8, pq2_0_x8_q8_tiles, &c);
+            return;
+        }
+    }
+    const float *xp = pq2_0_permuted_x(ws, m, n_in, x);
     if (W == nullptr || xp == nullptr) {
         geist_linear_ref(m, x, w, y);
         return;
@@ -654,6 +811,19 @@ void cpu_neon_w_pq2_0_x8_pair_mN(size_t                     m,
     const size_t               n0 = (size_t) w0->n_out, n1 = (size_t) w1->n_out;
     const uint8_t             *W0 = (const uint8_t *) w0->aux_fp32;
     const uint8_t             *W1 = (const uint8_t *) w1->aux_fp32;
+    if (!st->policy.pq2_0_sgemm_prefill && W0 != nullptr && W1 != nullptr &&
+        (size_t) w1->n_in == nin) {
+        struct pq2_0_x8_q8_ctx a = {.W = W0, .y = y0, .n_out = n0};
+        if (pq2_0_quant_rows(ws, m, nin, x, &a)) {
+            struct pq2_0_x8_q8_ctx b = a;
+            b.W                      = W1;
+            b.y                      = y1;
+            b.n_out                  = n1;
+            struct pq2_0_pair pc     = {.body = pq2_0_x8_q8_tiles, .a = &a, .b = &b, .a_n = n0 / 8};
+            geist_par_for(n0 / 8 + n1 / 8, pq2_0_pair_range, &pc);
+            return;
+        }
+    }
     const float *xp = (size_t) w1->n_in == nin ? pq2_0_permuted_x(ws, m, nin, x) : nullptr;
     if (W0 == nullptr || W1 == nullptr || xp == nullptr) {
         geist_linear_ref(m, x, w0, y0);

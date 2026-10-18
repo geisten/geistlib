@@ -99,6 +99,8 @@ struct cpu_neon_kernel_policy {
      * dequant trampoline, so RSS reads up to 2x the PQ2_0 bytes during
      * prefill. Default on with SDOT. Env: GEIST_PQ2_0_X8_GEMV. */
     bool pq2_0_x8_gemv;
+    /* PQ2_0 x8 prefill on dequant + SGEMM instead of int8 SDOT (#82). */
+    bool pq2_0_sgemm_prefill;
     bool q6k_ntile4_stream_prefill;
     bool q8_0_native_mn;
     bool q4_01_native_mn;
