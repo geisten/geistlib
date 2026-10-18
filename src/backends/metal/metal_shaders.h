@@ -1504,7 +1504,17 @@ static const char metal_embed_rows_source[] =
  * converted to float as they are loaded (#564). F16 and BF16 are exact in
  * float, so the result is bit-identical to running the F32 kernels on the
  * matrix widened to F32, without the doubled bytes. NAME is the suffix, WT the
- * stored element type, CV the conversion of `v`. */
+ * stored element type, CV the conversion of `v`.
+ *
+ * matmul_<NAME>_sg stages 64 k (eight 8x8 tiles of x and of w) per barrier
+ * pair, with float4 / WT4 loads where the tile is aligned and whole in k,
+ * and then runs the same eight simdgroup_multiply_accumulate steps in the
+ * same k order as one 8-k step per barrier pair did: bit-identical, but
+ * the per-tile chain of dependent global loads is 8x shorter. That chain
+ * is the kernel's time on the narrow prefill shapes (qwen35 alpha/beta:
+ * 5120 -> 48 at 320 rows, 240 tiles), 0.57 -> 0.21 ms on an M1 Max (#77).
+ * Tiles are stored 72 floats apart so the staging stores do not collide in
+ * threadgroup memory; w is staged transposed and loaded with transpose. */
 #define GEIST_METAL_HALF_W_KERNELS(NAME, WT, CV)                                               \
     "kernel void matmul_" NAME "(device const float*x[[buffer(0)]],device const " WT           \
     "*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "             \
@@ -1520,18 +1530,40 @@ static const char metal_embed_rows_source[] =
     "if(lid==0u){float t=0.0f;for(uint i=0u;i<nt/32u;i++)t+=part[i];y[p.yo+b*p.ys+row]=t;}}\n" \
     "kernel void matmul_" NAME "_sg(device const float*x[[buffer(0)]],device const " WT        \
     "*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "             \
-    "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){threadgroup " \
-    "float as[64];threadgroup float bs[64];threadgroup float cs[64];uint "                     \
-    "b0=tg.y*8u,o0=tg.x*8u;simdgroup_float8x8 "                                                \
-    "acc=make_filled_simdgroup_matrix<float,8>(0.0f);for(uint k0=0u;k0<p.ni;k0+=8u){for(uint " \
-    "i=lid;i<64u;i+=32u){uint "                                                                \
-    "r=i/8u,c=i%8u;as[i]=(b0+r<p.rows&&k0+c<p.ni)?x[p.xo+(b0+r)*p.xs+k0+c]:0.0f;}for(uint "    \
-    "i=lid;i<64u;i+=32u){uint kk=i/8u,c=i%8u;float wv=0.0f;if(o0+c<p.no&&k0+kk<p.ni){" WT      \
-    " v=w[p.wo+(o0+c)*p.ni+k0+kk];wv=" CV ";}bs[i]=wv;}threadgroup_"                           \
-    "barrier(mem_flags::mem_threadgroup);simdgroup_float8x8 "                                  \
-    "ma,mb;simdgroup_load(ma,as,8);simdgroup_load(mb,bs,8);simdgroup_multiply_accumulate(acc," \
-    "ma,mb,acc);threadgroup_barrier(mem_flags::mem_threadgroup);}simdgroup_store(acc,cs,8);"   \
-    "threadgroup_barrier(mem_flags::mem_threadgroup);for(uint i=lid;i<64u;i+=32u){uint "       \
+    "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){"             \
+    "threadgroup float as[576];threadgroup float bs[576];threadgroup float cs[64];"            \
+    "uint b0=tg.y*8u,o0=tg.x*8u;"                                                              \
+    "simdgroup_float8x8 acc=make_filled_simdgroup_matrix<float,8>(0.0f);"                      \
+    "bool va=((p.xo|p.xs|p.wo|p.ni)&3u)==0u;"                                                  \
+    "for(uint kb=0u;kb<p.ni;kb+=64u){"                                                         \
+    "if(va&&kb+64u<=p.ni&&b0+8u<=p.rows&&o0+8u<=p.no){"                                        \
+    "for(uint q=0u;q<4u;q++){uint i=q*32u+lid,r=i/16u,k=(i%16u)*4u;"                           \
+    "float4 xv=*(device const float4*)(x+p.xo+(b0+r)*p.xs+kb+k);"                              \
+    "*(threadgroup float4*)(as+(k/8u)*72u+r*8u+k%8u)=xv;"                                      \
+    "" WT "4 v4=*(device const " WT "4*)(w+p.wo+(o0+r)*p.ni+kb+k);"                            \
+    "threadgroup float*bp=bs+(k/8u)*72u+r*8u+k%8u;"                                            \
+    "for(uint j=0u;j<4u;j++){" WT " v=v4[j];bp[j]=" CV ";}}"                                   \
+    "}else if(va&&kb+64u<=p.ni){"                                                              \
+    "for(uint q=0u;q<4u;q++){uint i=q*32u+lid,r=i/16u,k=(i%16u)*4u;"                           \
+    "float4 xv=b0+r<p.rows?*(device const float4*)(x+p.xo+(b0+r)*p.xs+kb+k):float4(0.0f);"     \
+    "*(threadgroup float4*)(as+(k/8u)*72u+r*8u+k%8u)=xv;"                                      \
+    "" WT "4 v4=o0+r<p.no?*(device const " WT "4*)(w+p.wo+(o0+r)*p.ni+kb+k):" WT "4(0);"       \
+    "threadgroup float*bp=bs+(k/8u)*72u+r*8u+k%8u;"                                            \
+    "for(uint j=0u;j<4u;j++){" WT " v=v4[j];bp[j]=" CV ";}}"                                   \
+    "}else{"                                                                                   \
+    "for(uint i=lid;i<512u;i+=32u){uint r=i/64u,k=i%64u;uint d=(k/8u)*72u+r*8u+k%8u;"          \
+    "as[d]=(b0+r<p.rows&&kb+k<p.ni)?x[p.xo+(b0+r)*p.xs+kb+k]:0.0f;"                            \
+    "float wv=0.0f;if(o0+r<p.no&&kb+k<p.ni){" WT " v=w[p.wo+(o0+r)*p.ni+kb+k];wv=" CV          \
+    ";}bs[d]=wv;}"                                                                             \
+    "}"                                                                                        \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                         \
+    "uint ns=(min(64u,p.ni-kb)+7u)/8u;"                                                        \
+    "for(uint t=0u;t<ns;t++){simdgroup_float8x8 "                                              \
+    "ma,mb;simdgroup_load(ma,as+t*72u,8);simdgroup_load(mb,bs+t*72u,8,ulong2(0,0),true);"      \
+    "simdgroup_multiply_accumulate(acc,ma,mb,acc);}"                                           \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);}"                                        \
+    "simdgroup_store(acc,cs,8);threadgroup_barrier(mem_flags::mem_threadgroup);"               \
+    "for(uint i=lid;i<64u;i+=32u){uint "                                                       \
     "r=i/8u,c=i%8u;if(b0+r<p.rows&&o0+c<p.no)y[p.yo+(b0+r)*p.ys+o0+c]=cs[i];}}\n"
 
 static const char metal_f32_source[] =
@@ -1543,41 +1575,43 @@ static const char metal_f32_source[] =
         "struct PN{uint ni,no,rows,xo,wo,ro,nwo,yo,xs,rs,ys;float eps;};\n"
         "static inline float gelu(float x){return "
         "0.5f*x*(1.0f+tanh(clamp(0.7978845608028654f*(x+0.044715f*x*x*x),-10.0f,10.0f)));}"
-        "\n" GEIST_METAL_HALF_W_KERNELS(
-                "f32",
-                "float",
-                "v") "kernel void ple_gate_f32(device const float*x[[buffer(0)]],device const "
-                     "float*w[[buffer(1)]],device const float*ple[[buffer(2)]],device "
-                     "float*y[[buffer(3)]],constant GP&p[[buffer(4)]],uint3 "
-                     "tg[[threadgroup_position_in_grid]],uint "
-                     "lid[[thread_index_in_threadgroup]]){threadgroup "
-                     "float part[256];uint row=tg.x,b=tg.y;if(row>=p.no||b>=p.rows)return;float "
-                     "s=0.0f;for(uint "
-                     "k=lid;k<p.ni;k+=256u){s+=x[p.xo+b*p.xs+k]*w[p.wo+row*p.ni+k];}part[lid]=s;"
-                     "threadgroup_"
-                     "barrier(mem_flags::mem_threadgroup);for(uint "
-                     "st=128u;st>0u;st>>=1u){if(lid<st){part[lid]+=part[lid+st];}threadgroup_"
-                     "barrier(mem_flags::"
-                     "mem_threadgroup);}if(lid==0u){uint "
-                     "po=p.po+b*p.ps+row;y[p.yo+b*p.ys+row]=gelu(part[0])*ple[po];}}\n"
-                     "kernel void ple_proj_norm_f32(device const float*x[[buffer(0)]],device const "
-                     "float*w[[buffer(1)]],device const float*res[[buffer(2)]],device const "
-                     "float*nw[[buffer(3)]],device float*y[[buffer(4)]],constant "
-                     "PN&p[[buffer(5)]],uint "
-                     "b[[threadgroup_position_in_grid]],uint "
-                     "lid[[thread_index_in_threadgroup]]){threadgroup "
-                     "float part[256];if(b>=p.rows)return;float ss=0.0f;for(uint "
-                     "c=lid;c<p.no;c+=256u){float "
-                     "s=0.0f;for(uint "
-                     "k=0u;k<p.ni;k++){s+=x[p.xo+b*p.xs+k]*w[p.wo+c*p.ni+k];}y[p.yo+b*p.ys+c]=s;ss+"
-                     "=s*s;}part["
-                     "lid]=ss;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint "
-                     "st=128u;st>0u;st>>=1u){if(lid<st){part[lid]+=part[lid+st];}threadgroup_"
-                     "barrier(mem_flags::"
-                     "mem_threadgroup);}float inv=rsqrt(part[0]/float(p.no)+p.eps);for(uint "
-                     "c=lid;c<p.no;c+=256u){float "
-                     "v=y[p.yo+b*p.ys+c]*inv*nw[p.nwo+c];y[p.yo+b*p.ys+c]=res[p.ro+b*p.rs+c]+v;}}"
-                     "\n";
+        "\n" GEIST_METAL_HALF_W_KERNELS("f32", "float", "v");
+
+/* The PLE kernels of the F32 library: a separate literal, next to the one
+ * above, to stay within the 4095-char literal limit. */
+static const char metal_f32_ple_source[] =
+        "kernel void ple_gate_f32(device const float*x[[buffer(0)]],device const "
+        "float*w[[buffer(1)]],device const float*ple[[buffer(2)]],device "
+        "float*y[[buffer(3)]],constant GP&p[[buffer(4)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],uint "
+        "lid[[thread_index_in_threadgroup]]){threadgroup "
+        "float part[256];uint row=tg.x,b=tg.y;if(row>=p.no||b>=p.rows)return;float "
+        "s=0.0f;for(uint "
+        "k=lid;k<p.ni;k+=256u){s+=x[p.xo+b*p.xs+k]*w[p.wo+row*p.ni+k];}part[lid]=s;"
+        "threadgroup_"
+        "barrier(mem_flags::mem_threadgroup);for(uint "
+        "st=128u;st>0u;st>>=1u){if(lid<st){part[lid]+=part[lid+st];}threadgroup_"
+        "barrier(mem_flags::"
+        "mem_threadgroup);}if(lid==0u){uint "
+        "po=p.po+b*p.ps+row;y[p.yo+b*p.ys+row]=gelu(part[0])*ple[po];}}\n"
+        "kernel void ple_proj_norm_f32(device const float*x[[buffer(0)]],device const "
+        "float*w[[buffer(1)]],device const float*res[[buffer(2)]],device const "
+        "float*nw[[buffer(3)]],device float*y[[buffer(4)]],constant "
+        "PN&p[[buffer(5)]],uint "
+        "b[[threadgroup_position_in_grid]],uint "
+        "lid[[thread_index_in_threadgroup]]){threadgroup "
+        "float part[256];if(b>=p.rows)return;float ss=0.0f;for(uint "
+        "c=lid;c<p.no;c+=256u){float "
+        "s=0.0f;for(uint "
+        "k=0u;k<p.ni;k++){s+=x[p.xo+b*p.xs+k]*w[p.wo+c*p.ni+k];}y[p.yo+b*p.ys+c]=s;ss+"
+        "=s*s;}part["
+        "lid]=ss;threadgroup_barrier(mem_flags::mem_threadgroup);for(uint "
+        "st=128u;st>0u;st>>=1u){if(lid<st){part[lid]+=part[lid+st];}threadgroup_"
+        "barrier(mem_flags::"
+        "mem_threadgroup);}float inv=rsqrt(part[0]/float(p.no)+p.eps);for(uint "
+        "c=lid;c<p.no;c+=256u){float "
+        "v=y[p.yo+b*p.ys+c]*inv*nw[p.nwo+c];y[p.yo+b*p.ys+c]=res[p.ro+b*p.rs+c]+v;}}"
+        "\n";
 
 static const char metal_f16_w_source[] = GEIST_METAL_HALF_W_KERNELS("f16w", "half", "float(v)");
 static const char metal_bf16_w_source[] =

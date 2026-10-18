@@ -299,6 +299,7 @@ static const struct metal_library_row metal_quant_libs[] = {
         METAL_LIB(f32,
                   "F32",
                   metal_f32_source,
+                  metal_f32_ple_source,
                   metal_f32_mm_source,
                   metal_f16_w_source,
                   metal_bf16_w_source),
