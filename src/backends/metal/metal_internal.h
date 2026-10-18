@@ -448,8 +448,10 @@ struct metal_state {
      * committing the old one WITHOUT waiting — the GPU starts executing
      * (and its front-end starts parsing) buffer k while the CPU still
      * encodes buffer k+1. Buffers on one queue execute in commit order,
-     * so cross-buffer data deps hold. 0 = pipelining off. */
+     * so cross-buffer data deps hold. 0 = pipelining off. Prefill
+     * sequences rotate every seq_rotate_prefill dispatches instead. */
     uint32_t                         seq_rotate_every;
+    uint32_t                         seq_rotate_prefill;
     uint32_t                         seq_disp_at_rotate;
     uint32_t                         seq_pending_count;
     void                            *seq_pending_cmds[16];

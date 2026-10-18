@@ -33,8 +33,11 @@ void *metal_sequence_encoder(struct metal_state *st) {
     if (st == nullptr || !metal_seq_mine(st)) {
         return nullptr;
     }
-    if (st->seq_rotate_every == 0u || st->sequence_compute_encoder == nullptr ||
-        (uint32_t) st->seq_dispatch_count - st->seq_disp_at_rotate < st->seq_rotate_every) {
+    const uint32_t every = st->sequence_kind == GEIST_COMMAND_SEQUENCE_PREFILL_TEXT
+                                   ? st->seq_rotate_prefill
+                                   : st->seq_rotate_every;
+    if (every == 0u || st->sequence_compute_encoder == nullptr ||
+        (uint32_t) st->seq_dispatch_count - st->seq_disp_at_rotate < every) {
         return st->sequence_compute_encoder;
     }
     if (st->seq_pending_count >=
