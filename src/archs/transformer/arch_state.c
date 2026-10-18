@@ -32,6 +32,7 @@
 #include "kivi.h"
 #include "ptqtp_awq.h"
 #include "parse.h"
+#include "hw_probe.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -1669,11 +1670,41 @@ static bool split_requested(const struct geist_session_opts *opts) {
     return GEIST_OK;
 }
 
-/* Offload route (#78). GEIST_OFFLOAD_M_MIN=<rows> turns it on for a split
- * model; unset or 0 leaves it off. */
-static size_t offload_m_min(void) {
+/* Offload (#78): the row threshold for the split model `st` with its stage
+ * on `sbe`; 0 = off. GEIST_OFFLOAD_M_MIN=<rows> sets it, "0" turns it off.
+ * Unset: 64 rows (from there the GPU path at least ties the split and
+ * then wins, runs 1388/1396), where it can pay and fits: a discrete GPU
+ * (with unified memory the whole model fits the GPU itself), and host
+ * memory for the twins' copy of the load-backend layers' matrices with a
+ * fifth to spare. */
+static size_t offload_m_min(const struct transformer_arch_state *st, struct geist_backend *sbe) {
     const char *v = getenv("GEIST_OFFLOAD_M_MIN");
-    return v != nullptr && *v != '\0' ? (size_t) strtoull(v, nullptr, 10) : 0;
+    if (v != nullptr && *v != '\0') {
+        return (size_t) strtoull(v, nullptr, 10);
+    }
+    struct geist_backend_memory mem;
+    if (geist_backend_memory_info(sbe, &mem) != GEIST_OK || mem.unified_memory) {
+        return 0;
+    }
+    size_t copy = 0;
+    for (size_t li = st->layer_lo; li < st->n_layers; li++) {
+        const struct transformer_layer_weights *L = &st->layers[li];
+        copy += L->q_proj_w.raw_nbytes + L->k_proj_w.raw_nbytes + L->v_proj_w.raw_nbytes +
+                L->o_proj_w.raw_nbytes + L->gate_proj_w.raw_nbytes + L->up_proj_w.raw_nbytes +
+                L->down_proj_w.raw_nbytes;
+    }
+    const size_t avail = geist_mem_available();
+    if (avail == 0 || copy > avail / 5 * 4) {
+        if (getenv("GEIST_VERBOSE") != nullptr) {
+            fprintf(stderr,
+                    "geist: offload off: its copy of %zu MiB needs more host memory than the "
+                    "%zu MiB available (GEIST_OFFLOAD_M_MIN overrides)\n",
+                    copy >> 20,
+                    avail >> 20);
+        }
+        return 0;
+    }
+    return 64;
 }
 
 static void offload_destroy(struct transformer_offload *o) {
@@ -1766,11 +1797,11 @@ enum geist_status transformer_state_create(struct geist_backend            *be,
         *out = nullptr;
         return GEIST_E_FILE_NOT_FOUND;
     }
-    s = attach_split(*out, gguf2, opts);
-    if (s == GEIST_OK && offload_m_min() > 0) {
+    s                  = attach_split(*out, gguf2, opts);
+    const size_t m_min = s == GEIST_OK ? offload_m_min(*out, opts->split_backend) : 0;
+    if (m_min > 0) {
         struct gguf_ctx *gguf3 = gguf_open(gguf_path, &err);
-        s = gguf3 != nullptr ? attach_offload(*out, gguf3, opts, offload_m_min())
-                             : GEIST_E_FILE_NOT_FOUND;
+        s = gguf3 != nullptr ? attach_offload(*out, gguf3, opts, m_min) : GEIST_E_FILE_NOT_FOUND;
         if (gguf3 == nullptr) {
             transformer_state_destroy(*out);
         }
@@ -1815,10 +1846,11 @@ enum geist_status transformer_state_create_from_memory(struct geist_backend     
         *out = nullptr;
         return GEIST_E_FORMAT;
     }
-    s = attach_split(*out, gguf2, opts);
-    if (s == GEIST_OK && offload_m_min() > 0) {
+    s                  = attach_split(*out, gguf2, opts);
+    const size_t m_min = s == GEIST_OK ? offload_m_min(*out, opts->split_backend) : 0;
+    if (m_min > 0) {
         struct gguf_ctx *gguf3 = gguf_open_memory(data, size, &err);
-        s = gguf3 != nullptr ? attach_offload(*out, gguf3, opts, offload_m_min()) : GEIST_E_FORMAT;
+        s = gguf3 != nullptr ? attach_offload(*out, gguf3, opts, m_min) : GEIST_E_FORMAT;
         if (gguf3 == nullptr) {
             transformer_state_destroy(*out);
         }

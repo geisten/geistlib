@@ -9,6 +9,18 @@ minor release.
 ## [Unreleased]
 
 ### Added
+- **Offload: prefill of a split model on the GPU, decode split (#78).** A
+  model split across the CPU and a discrete GPU (#49) also loads its CPU
+  layers on the GPU, in host memory and streamed (`GEIST_W_HOST`,
+  EXPERIMENTAL). Prefill chunks of at least `GEIST_OFFLOAD_M_MIN` rows
+  (default 64 where the host has memory for that copy; `0` off) run every
+  layer on the GPU and write the CPU layers' new K/V rows into their
+  caches; decode stays split. Such chunks may exceed the CPU kernels' 128
+  rows. RTX 2080 Ti + Ryzen 9950X, Qwen3-14B Q8_0 split 26: prefill 125 ->
+  515 tok/s, decode 8.6 -> 9.1; Q4_K_M split 20: 200 -> 570, decode 12.4 ->
+  13.2. Costs a host copy of the CPU layers' weights (+4-5 GB here; the
+  driver refuses to import the read-only mapping). Byte-identical on two
+  CPU backends with an FP32 cache (`test_layer_split_int`).
 - **Vulkan streams spilled weights for prefill (#78).** A weight that did
   not fit VRAM (#466) is copied into one of two VRAM slots before a
   `linear_t` of at least `GEIST_VK_STREAM_M_MIN` rows (default 32, `0` off)

@@ -313,6 +313,18 @@ layers share state across the boundary or need a pass over every layer at
 load: per-layer embeddings, shared KV, DeltaNet layers, MTP blocks, a
 rotated basis, AWQ; and KIVI sessions and snapshots on a split model.
 
+**Offload (#78).** A split model on a discrete GPU also loads its
+load-backend layers on the split backend (`transformer_offload.twins`,
+weights only, `GEIST_W_HOST`: kept in host memory and streamed). A prefill
+chunk of at least `m_min` rows then runs every layer on the GPU, and the
+chunk's new K/V rows of those layers are written into the load backend's
+caches through each layer's own append; decode and small steps run the
+split. The choice is per step, from the chunk size and how far the twins'
+cache is current (`twin_valid`), with every path bound at load
+(`forward/step.c` `run_offload_chunk`). `GEIST_OFFLOAD_M_MIN` sets
+`m_min`, `0` turns it off; unset, it is 64 where the host has memory for the
+twins' copy. Measurements and limits: [OFFLOAD.md](OFFLOAD.md).
+
 ## Multimodal: soft-token prefixes
 
 Instead of a "Whisper → text → LLM" cascade, the audio/vision towers produce

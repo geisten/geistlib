@@ -33,9 +33,9 @@ on:
         type: string
         default: "26"
       m_min:
-        description: "GEIST_OFFLOAD_M_MIN for the routed rows"
+        description: "GEIST_OFFLOAD_M_MIN for the offload rows (auto: leave it unset, the default)"
         type: string
-        default: "32"
+        default: "auto"
       m_max:
         description: "prefill chunk sizes, separated by ;"
         type: string
@@ -93,7 +93,7 @@ jobs:
           set -eo pipefail
           . scripts/gpu-lock.sh
           GEIST_SPLIT_BACKEND=vulkan GEIST_SPLIT_GGUF_PATH="$MODEL" GEIST_SPLIT_POINTS="$SPLIT" \
-            GEIST_OFFLOAD_M_MIN="$M_MIN" GEIST_VERBOSE=1 GEIST_VK_VERBOSE=1 \
+            env $([ "$M_MIN" = auto ] || echo "GEIST_OFFLOAD_M_MIN=$M_MIN") GEIST_VERBOSE=1 GEIST_VK_VERBOSE=1 \
             bin/linux/release/tests/test_layer_split_int 2>&1 | grep -v '^geist vulkan: device memory' | tee route-out/vulkan.txt
       - name: Split against split + route
         run: |
@@ -103,10 +103,11 @@ jobs:
             for m in $(echo "$M_MAX" | tr ';' ' '); do
               for cfg in split offload; do
                 mm=$([ "$cfg" = offload ] && echo "$M_MIN" || echo 0)
+                [ "$mm" = auto ] && mm=
                 # the split alone runs every chunk on cpu_x86 too: at most 128 rows
                 [ "$cfg" = split ] && [ "$m" -gt 128 ] && continue
                 echo "== cycle $c $cfg m_max=$m" >> route-out/bench.txt
-                GEIST_OFFLOAD_M_MIN=$mm GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 \
+                env ${mm:+GEIST_OFFLOAD_M_MIN=$mm} GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 \
                   GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS="$SPLIT" \
                   bin/linux/release/tests/bench_perf_sweep --gguf "$MODEL" \
                   --seq-lens 512 --decode-n 32 --warmup 8 --repeats 3 --m-max "$m" \
