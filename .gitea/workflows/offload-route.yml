@@ -103,6 +103,8 @@ jobs:
             for m in $(echo "$M_MAX" | tr ';' ' '); do
               for cfg in split offload; do
                 mm=$([ "$cfg" = offload ] && echo "$M_MIN" || echo 0)
+                # the split alone runs every chunk on cpu_x86 too: at most 128 rows
+                [ "$cfg" = split ] && [ "$m" -gt 128 ] && continue
                 echo "== cycle $c $cfg m_max=$m" >> route-out/bench.txt
                 GEIST_OFFLOAD_M_MIN=$mm GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 \
                   GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS="$SPLIT" \
