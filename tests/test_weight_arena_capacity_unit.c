@@ -99,7 +99,9 @@ static size_t capacity(struct gguf_ctx *g, bool need_backend_arena, bool device_
     desc.caps.weights_device_copy        = device_copy;
     struct geist_backend be              = {.desc = &desc};
     size_t               cap             = 0;
-    if (compute_weight_arena_capacity(&be, g, &cap) != GEIST_OK) {
+    /* The whole model: every layer, the globals. */
+    const struct transformer_arch_state whole = {.layer_hi = SIZE_MAX};
+    if (compute_weight_arena_capacity(&be, g, &whole, &cap) != GEIST_OK) {
         return 0;
     }
     return cap;

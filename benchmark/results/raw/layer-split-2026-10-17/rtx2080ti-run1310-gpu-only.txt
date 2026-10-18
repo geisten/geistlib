@@ -1,0 +1,20 @@
+|                                         |                        |               MIG M. |
+[0] geistlib cpu (cpu_x86): pp 55.6 tg 4.74 tok/s
+[0] geistlib gpu (vulkan): pp 175.6 tg 2.49 tok/s
+[0] geistlib split 20: pp 92.0 tg 7.00 tok/s
+[0] geistlib split 26: pp 117.4 tg 8.51 tok/s
+[1] geistlib cpu (cpu_x86): pp 58.0 tg 4.95 tok/s
+[1] geistlib gpu (vulkan): pp 170.4 tg 2.49 tok/s
+[1] geistlib split 20: pp 95.7 tg 7.31 tok/s
+[1] geistlib split 26: pp 121.2 tg 8.76 tok/s
+[2] geistlib cpu (cpu_x86): pp 51.7 tg 4.05 tok/s
+[2] geistlib gpu (vulkan): pp 166.3 tg 2.49 tok/s
+[2] geistlib split 20: pp 92.9 tg 7.22 tok/s
+[2] geistlib split 26: pp 121.8 tg 8.84 tok/s
+model `Qwen3-14B-Q8_0.gguf`, prompt 512, decode 64, 3 cycles x 3 repeats; median (min-max) over cycles
+| configuration | prefill tok/s | decode tok/s | peak RSS MB | peak VRAM MB |
+| :-- | --: | --: | --: | --: |
+| geistlib cpu (cpu_x86) | 55.61 (51.72-57.99) | 4.74 (4.05-4.95) | 14402 | 365 |
+| geistlib gpu (vulkan) | 170.42 (166.28-175.57) | 2.49 (2.49-2.49) | 5880 | 10520 |
+| geistlib split 20 | 92.88 (91.97-95.69) | 7.22 (7.00-7.31) | 7897 | 7409 |
+| geistlib split 26 | 121.17 (117.44-121.85) | 8.76 (8.51-8.84) | 5889 | 9432 |

@@ -356,6 +356,23 @@ struct geist_session_opts {
     int32_t            dry_penalty_last_n;
     const char *const *dry_sequence_breakers;
     size_t             n_dry_sequence_breakers;
+
+    /* @stability EXPERIMENTAL — layer split (#49). Read only at model load
+     * (geist_model_load_with_opts and its in-memory twin), ignored by
+     * geist_session_create. The first split_layers layers run on
+     * split_backend; the embedding, the remaining layers and the LM head
+     * run on the backend the model is loaded on. Placement is fixed at
+     * load. Each layer's weights and KV cache live only on its backend,
+     * and one hidden-state transfer per step and direction crosses the
+     * boundary. split_layers == 0 or split_backend == nullptr: no split.
+     * split_layers == the layer count puts every layer on split_backend.
+     * The caller owns split_backend and keeps it alive while the model
+     * lives. Models with per-layer embeddings, shared KV, DeltaNet layers,
+     * MTP blocks, a rotated basis or AWQ scales are refused
+     * (GEIST_E_UNSUPPORTED), and so are KIVI sessions and session
+     * snapshots on a split model. */
+    struct geist_backend *split_backend;
+    size_t                split_layers;
 };
 
 /* @stability STABLE since 0.1.0

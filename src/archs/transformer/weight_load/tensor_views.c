@@ -27,6 +27,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Growth step of the weight arena: a tensor that does not fit the newest
@@ -35,9 +36,22 @@
  * models in tree), and a chunk is the most a model leaves unused. */
 constexpr size_t WEIGHT_ARENA_CHUNK = 32u << 20;
 
-[[nodiscard]] enum geist_status compute_weight_arena_capacity(const struct geist_backend *be,
-                                                              struct gguf_ctx            *gguf,
-                                                              size_t *out_bytes) {
+/* Whether `st` loads the tensor `name`: a "blk.<i>." tensor when it holds
+ * layer i, any other one unless it is a split stage (#49). */
+static bool tensor_held(const struct transformer_arch_state *st, const char *name) {
+    if (strncmp(name, "blk.", 4) != 0) {
+        return !st->split_stage;
+    }
+    char        *end = nullptr;
+    const size_t li  = (size_t) strtoull(name + 4, &end, 10);
+    return end != name + 4 && *end == '.' && transformer_layer_owned(st, li);
+}
+
+[[nodiscard]] enum geist_status
+compute_weight_arena_capacity(const struct geist_backend          *be,
+                              struct gguf_ctx                     *gguf,
+                              const struct transformer_arch_state *st,
+                              size_t                              *out_bytes) {
     if (be->desc->caps.weights_device_copy) {
         *out_bytes = WEIGHT_ARENA_CHUNK;
         return GEIST_OK;
@@ -46,7 +60,7 @@ constexpr size_t WEIGHT_ARENA_CHUNK = 32u << 20;
     const size_t n     = gguf_tensor_count(gguf);
     for (size_t i = 0; i < n; i++) {
         const struct gguf_tensor_t *t = gguf_tensor_at(gguf, i);
-        if (t == nullptr) {
+        if (t == nullptr || !tensor_held(st, t->name)) {
             continue;
         }
         total += (t->nbytes + 63u) & ~((size_t) 63u);

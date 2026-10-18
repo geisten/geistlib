@@ -167,6 +167,9 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
                                 ? (L->is_full ? st->config.kv_full_src : st->config.kv_sliding_src)
                                 : (int) i;
         P->compute_kv = !L->is_kv_shared;
+        if (!transformer_layer_owned(st, i)) {
+            continue; /* no weights here: the other part of a split runs it (#49) */
+        }
         P->apply_gemma_attn_norms = st->config.has_gemma_attn_norms;
         P->apply_qk_norms         = st->config.has_qk_norms;
         /* Per-projection input norms subsume SubLN: two of the seven are

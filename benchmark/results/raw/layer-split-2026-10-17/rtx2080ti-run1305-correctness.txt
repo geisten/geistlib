@@ -1,0 +1,11 @@
+FAIL: split 26 (kv fp32): GEIST_E_OOM
+model /home/germar/geist-models/Qwen3-14B-Q8_0.gguf (40 layers), cpu_x86 + vulkan, reported
+  kv fp32 gpu only : GEIST_E_OOM
+  kv fp32 split  20: max|d| logits 0.134, after reset 0.178, greedy tokens matching 16/16
+  kv int8 gpu only : max|d| logits 0.207, after reset 0.241, greedy tokens matching 16/16
+  kv int8 split  20: max|d| logits 0.165, after reset 0.251, greedy tokens matching 16/16
+  kv int8 split  26: max|d| logits 0.194, after reset 0.225, greedy tokens matching 16/16
+  kv int4 gpu only : max|d| logits 0.659, after reset 1.84, greedy tokens matching 0/16
+  kv int4 split  20: max|d| logits 0.515, after reset 1.13, greedy tokens matching 0/16
+  kv int4 split  26: max|d| logits 0.583, after reset 1.44, greedy tokens matching 0/16
+model `Qwen3-14B-Q8_0.gguf`, prompt 512, decode 64, 3 cycles x 3 repeats; median (min-max) over cycles

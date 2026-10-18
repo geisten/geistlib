@@ -1,0 +1,27 @@
+[0] geistlib cpu (cpu_x86): pp 81.9 tg 5.18 tok/s
+[0] geistlib split 20: pp 132.3 tg 7.80 tok/s
+[0] geistlib split 26: pp 163.8 tg 9.63 tok/s
+[0] llama.cpp -ngl 0: pp 245.7 tg 4.12 tok/s
+[0] llama.cpp -ngl 20: pp 392.1 tg 7.20 tok/s
+[0] llama.cpp -ngl 26: pp 486.3 tg 9.21 tok/s
+[0] llama.cpp -ngl 0 -nopo 1: pp 64.5 tg 5.13 tok/s
+[0] llama.cpp -ngl 20 -nopo 1: pp 107.8 tg 7.38 tok/s
+[0] llama.cpp -ngl 26 -nopo 1: pp 142.3 tg 9.51 tok/s
+[1] geistlib cpu (cpu_x86): pp 88.3 tg 5.18 tok/s
+[1] geistlib split 20: pp 133.5 tg 7.80 tok/s
+[1] geistlib split 26: pp 168.0 tg 9.62 tok/s
+[1] llama.cpp -ngl 0: pp 246.6 tg 4.12 tok/s
+[1] llama.cpp -ngl 20: pp 392.7 tg 7.18 tok/s
+[1] llama.cpp -ngl 26: pp 484.9 tg 9.18 tok/s
+[1] llama.cpp -ngl 0 -nopo 1: pp 64.2 tg 5.12 tok/s
+[1] llama.cpp -ngl 20 -nopo 1: pp 106.5 tg 7.38 tok/s
+[1] llama.cpp -ngl 26 -nopo 1: pp 144.8 tg 9.48 tok/s
+[2] geistlib cpu (cpu_x86): pp 88.1 tg 5.17 tok/s
+[2] geistlib split 20: pp 133.7 tg 7.82 tok/s
+[2] geistlib split 26: pp 168.0 tg 9.61 tok/s
+[2] llama.cpp -ngl 0: pp 245.8 tg 4.12 tok/s
+[2] llama.cpp -ngl 20: pp 392.0 tg 7.21 tok/s
+[2] llama.cpp -ngl 26: pp 485.2 tg 9.21 tok/s
+[2] llama.cpp -ngl 0 -nopo 1: pp 64.3 tg 5.12 tok/s
+[2] llama.cpp -ngl 20 -nopo 1: pp 106.3 tg 7.37 tok/s
+[2] llama.cpp -ngl 26 -nopo 1: pp 144.5 tg 9.53 tok/s
