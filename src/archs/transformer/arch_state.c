@@ -2181,8 +2181,9 @@ static bool scratch_device_wanted(const struct transformer_arch_session *sess) {
 }
 
 /* Offload (#78): the session on the twins, with this session's chunk and
- * window and a dense KV cache (F16 where the backend appends it, else
- * FP32), whose rows the load backend reads back; and the IO buffers the
+ * window and a dense KV cache, whose rows the load backend reads back: this
+ * session's own mode when that is dense (FP32, F16), else F16 where the
+ * backend appends it, else FP32; and the IO buffers the
  * chunk's K/V rows ([n_twin_layers, 2, m_max, kv_out], at most FP32) and
  * output rows come back through. */
 [[nodiscard]] static enum geist_status twin_session_alloc(struct transformer_arch_session *sess) {
@@ -2191,8 +2192,12 @@ static bool scratch_device_wanted(const struct transformer_arch_session *sess) {
     struct geist_session_opts      so = {0};
     so.max_seq_len                    = sess->max_seq_len;
     so.m_max                          = sess->m_max;
-    so.kv_mode = geist_backend_fused_tbl(tw->backend)->kv_append_f16 != nullptr ? GEIST_KV_F16
-                                                                                : GEIST_KV_FP32;
+    const bool dense =
+            !sess->kv_int8_enabled && !sess->kv_kivi_enabled && !sess->kv_int4_packed_enabled;
+    so.kv_mode = sess->kv_f16_enabled                                             ? GEIST_KV_F16
+                 : dense                                                          ? GEIST_KV_FP32
+                 : geist_backend_fused_tbl(tw->backend)->kv_append_f16 != nullptr ? GEIST_KV_F16
+                                                                                  : GEIST_KV_FP32;
     sess->twin_sess = transformer_session_alloc(tw, &so);
     if (sess->twin_sess == nullptr) {
         geist_backend_set_error(st->backend,
