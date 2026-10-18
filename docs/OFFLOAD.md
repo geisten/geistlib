@@ -103,6 +103,47 @@ weight at load, so the hot path compares two integers.
 
 ## Design
 
+### Who decides the placement: one planner at load (missing today)
+
+Today nothing computes a placement from the platform as a whole. The pieces
+that exist each decide one thing locally:
+
+| what | where | decides |
+| :-- | :-- | :-- |
+| ISA, cores, µarch | `src/base/hw_probe.c` | which kernels may be bound; the calibration key |
+| CPU quota | `src/base/cpu_limit.c` | the default thread team |
+| Measured tunables | `src/base/calibration.c`, `cpu_neon/calibrate.c`, `metal/tuning.c` | kernel knobs per machine, not placement |
+| VRAM fill | `vulkan/ops.c` (`vk_weight_fits_vram`, #466) | weights go to VRAM **in load order** until a 1/16 reserve is left, the rest to host memory: greedy, blind to which weight benefits most |
+| Prefill chunk | `arch_state.c` (`fast_host_bytes`, `geist_backend_memory_info`), `prefill_tuning.c` | `m_max` from the BAR window, free VRAM and the model size |
+| Layer split | #49 `split_layers` | **by hand**, no default |
+
+The planner closes that gap: one pure function at load, from what the probes
+already report, to the whole placement.
+
+```
+offload_plan_build(model sizes, per-weight decode benefit,
+                   backend memory_info (free VRAM, unified?),
+                   session KV + scratch bytes (scratch_plan),
+                   calibration: bw, t_cpu, t_gpu per dtype)
+  -> home[w] for every weight, hot experts, m_min[w]
+```
+
+The rule is the same for dense layers and experts: **fill the GPU's free
+memory, after the session's KV cache and scratch, with the weights that save
+the most decode bytes per byte of VRAM, highest first.** Decode reads each
+weight it uses once per token, so the saving of weight `w` is its size times
+the probability it is read in a token: 1 for a dense weight, the measured
+selection frequency for an expert (#48 profile). Dense layers then all have
+the same value per byte, and the rule degenerates to #49's split with
+`split_layers = ⌊(free − KV − scratch) / layer bytes⌋`. That replaces the hand
+setting and Vulkan's load-order fill. Experts are filled in profile order. On
+unified memory (`memory_info.unified_memory`) the planner returns "everything
+on the GPU backend" and no twins. Without a GPU it returns today's plan.
+
+Pure function, so it gets a unit test with fake inputs (a small card, a big
+card, unified memory, no profile), and `GEIST_VERBOSE` prints the plan it
+picked. Overrides (`split_layers`, `GEIST_OFFLOAD_M_MIN`) still win.
+
 ### Placement and twins (load time)
 
 The #49 split already gives each layer a home backend. Offload adds one thing
@@ -211,6 +252,12 @@ No new vtable slot for v0: upload, `linear_t` and download exist.
 host-memory reads by a shader), and `t_cpu` / `t_gpu` per row for Q4_0, Q4_K,
 Q8_0 linears on the 2080 Ti box; compute `m_min` and compare it with the knee
 in a `GEIST_M_MAX` sweep of "every layer on Vulkan, rest spilled".
+
+**Phase 0b: the planner** (on top of #49, no offload yet). `offload_plan_build`
+with its unit test; it sets `split_layers` when the caller leaves it 0 and a
+split backend is given. Decision rule: on the 2080 Ti box its pick for
+Qwen3-14B Q8_0 is within the run's resolution of the best hand split in
+decode.
 
 **Phase 1: v0 route** (on top of #49). Twins as host-memory Vulkan weights,
 the branch in `linear.c`, the threshold from the env.
