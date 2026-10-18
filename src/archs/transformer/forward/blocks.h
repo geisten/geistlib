@@ -137,7 +137,7 @@ blk_relu_sq(struct transformer_layer_forward_ctx *ctx, size_t n, struct geist_bu
 
 /* Sandwich-norm GEGLU FFN with residual (Gemma):
  *   out = h_post_attn + post_norm(down(gelu(gate(x)) * up(x))),  x = rmsnorm(h_post_attn)
- * with the plan-bound fusions (fused front, whole-FFN tile, gelu*mul). */
+ * with the plan-bound fusions (fused front, gelu*mul). */
 [[nodiscard]] enum geist_status blk_ffn_geglu(struct transformer_layer_forward_ctx *ctx,
                                               struct geist_buffer                  *out);
 

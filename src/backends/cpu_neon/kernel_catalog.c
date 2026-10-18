@@ -34,9 +34,6 @@ static void policy_overlay_calibration(struct cpu_neon_kernel_policy *p,
     if (geist_calibration_lookup(be, "q5k_native_mn", &v)) {
         p->q5k_native_mn = v != 0;
     }
-    if (geist_calibration_lookup(be, "qk_sgemm_threshold", &v)) {
-        p->qk_sgemm_threshold = (size_t) v;
-    }
     if (geist_calibration_lookup(be, "q8_0_native_mn", &v)) {
         p->q8_0_native_mn = v != 0;
     }
@@ -70,24 +67,10 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geis
 
             /* Apple AMX/Accelerate wins for high-M dequant+SGEMM; Pi/Linux
              * wins with native per-row NEON kernels for these tile sizes. */
-            .q5k_native_mn        = !amx,
-            .q4k_predecode        = amx,
-            .q4k_mtile_prefill    = amx,
-            .q4k_ntile_prefill    = amx,
-            .q4k_block_q8_prefill = false,
-            /* Full prefill chunks stay on the int8 SDOT kernels on Apple
-             * too: dequantizing each 64-row tile to FP32 for Accelerate's
-             * sgemm was slower on the M1 Max (#16, 3 alternating rounds,
-             * pp512: Gemma 4 E2B Q4_K_M 130 -> 159 tok/s, Llama 3.2 3B
-             * Q4_K_M 88 -> 105). GEIST_Q{4,6}K_SGEMM_PREFILL=1 restores it.
-             * On the Pi 5 the OpenBLAS SGEMM-prefill path is not quality-safe
-             * for Gemma Q4_K/Q6_K end-to-end generation either; it stays
-             * opt-in until the dequant+sgemm path has a full-logits parity
-             * gate there. */
-            .q4k_sgemm_prefill         = false,
-            .q6k_sgemm_prefill         = false,
-            .qk_sgemm_threshold        = amx ? 64 : 32,
-            .qk_sgemm_tile_rows        = 64,
+            .q5k_native_mn             = !amx,
+            .q4k_predecode             = amx,
+            .q4k_mtile_prefill         = amx,
+            .q4k_ntile_prefill         = amx,
             .q6k_ntile_prefill         = amx,
             .q6k_ntile4_stream_prefill = amx,
             .q6k_x8_gemv               = amx,
@@ -110,37 +93,15 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geis
     p.q4k_predecode     = cpu_neon_env_bool("GEIST_Q4K_PREDECODE", p.q4k_predecode);
     p.q4k_mtile_prefill = cpu_neon_env_bool("GEIST_Q4K_MTILE_PREFILL", p.q4k_mtile_prefill);
     p.q4k_ntile_prefill = cpu_neon_env_bool("GEIST_Q4K_NTILE_PREFILL", p.q4k_ntile_prefill);
-    p.q4k_block_q8_prefill =
-            cpu_neon_env_bool("GEIST_Q4K_BLOCK_Q8_PREFILL", p.q4k_block_q8_prefill);
     p.q6k_ntile_prefill = cpu_neon_env_bool("GEIST_Q6K_NTILE_PREFILL", p.q6k_ntile_prefill);
-    p.q6k_ntile4_stream_prefill =
-            cpu_neon_env_bool("GEIST_Q6K_NTILE4_STREAM_PREFILL", p.q6k_ntile4_stream_prefill);
-    p.q4k_sgemm_prefill = cpu_neon_env_bool("GEIST_Q4K_SGEMM_PREFILL", p.q4k_sgemm_prefill);
-    p.q6k_sgemm_prefill = cpu_neon_env_bool("GEIST_Q6K_SGEMM_PREFILL", p.q6k_sgemm_prefill);
     p.q6k_x8_gemv       = cpu_neon_env_bool("GEIST_Q6K_X8_GEMV", p.q6k_x8_gemv);
     p.q4_0_x8_gemv      = cpu_neon_env_bool("GEIST_Q4_0_X8_GEMV", p.q4_0_x8_gemv);
     p.pq2_0_x8_gemv     = cpu_neon_env_bool("GEIST_PQ2_0_X8_GEMV", p.pq2_0_x8_gemv);
-    const char *thresh  = getenv("GEIST_QK_SGEMM_THRESHOLD");
-    if (thresh != nullptr && *thresh != '\0') {
-        char               *end = nullptr;
-        const unsigned long v   = strtoul(thresh, &end, 10);
-        if (end != thresh && v > 0 && v < (1u << 20)) {
-            p.qk_sgemm_threshold = (size_t) v;
-        }
-    }
-    const char *tile_rows = getenv("GEIST_QK_SGEMM_TILE_ROWS");
-    if (tile_rows != nullptr && *tile_rows != '\0') {
-        char               *end = nullptr;
-        const unsigned long v   = strtoul(tile_rows, &end, 10);
-        if (end != tile_rows && v >= 4 && v <= 256) {
-            p.qk_sgemm_tile_rows = (size_t) v;
-        }
-    }
-    p.q8_0_native_mn  = cpu_neon_env_bool("GEIST_Q8_0_NATIVE_MN", p.q8_0_native_mn);
-    p.q4_01_native_mn = cpu_neon_env_bool("GEIST_Q4_01_NATIVE_MN", p.q4_01_native_mn);
-    p.iq4xs_native_mn = cpu_neon_env_bool("GEIST_IQ4XS_NATIVE_MN", p.iq4xs_native_mn);
-    p.tq2_0_native_mn = cpu_neon_env_bool("GEIST_TQ2_0_NATIVE_MN", p.tq2_0_native_mn);
-    p.tq2_0_tl1_m1    = cpu_neon_env_bool("GEIST_TL1", p.tq2_0_tl1_m1);
+    p.q8_0_native_mn    = cpu_neon_env_bool("GEIST_Q8_0_NATIVE_MN", p.q8_0_native_mn);
+    p.q4_01_native_mn   = cpu_neon_env_bool("GEIST_Q4_01_NATIVE_MN", p.q4_01_native_mn);
+    p.iq4xs_native_mn   = cpu_neon_env_bool("GEIST_IQ4XS_NATIVE_MN", p.iq4xs_native_mn);
+    p.tq2_0_native_mn   = cpu_neon_env_bool("GEIST_TQ2_0_NATIVE_MN", p.tq2_0_native_mn);
+    p.tq2_0_tl1_m1      = cpu_neon_env_bool("GEIST_TL1", p.tq2_0_tl1_m1);
 
     return p;
 }
