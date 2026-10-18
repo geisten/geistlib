@@ -279,6 +279,8 @@ struct metal_state {
     void *hadamard_library;
     void *hadamard_function;
     void *hadamard_pipeline;
+    void *hadamard4_function; /* hadamard_rows4: blocks of 128..4096 */
+    void *hadamard4_pipeline;
     void *q4k_gate_up_n4_function;
     void *q4k_gate_up_n4_pipeline;
     void *q6k_function;

@@ -1300,7 +1300,34 @@ static const char metal_hadamard_source[] =
         "threadgroup_barrier(mem_flags::mem_threadgroup);}"
         "float sc=rsqrt(float(p.block));"
         "for(uint j=ti;j<p.block;j+=nt){float v=sh[j]*sc;"
-        "if(p.sgn!=0u&&p.inv!=0u)v*=s[p.so+base+j];yr[base+j]=v;}}\n";
+        "if(p.sgn!=0u&&p.inv!=0u)v*=s[p.so+base+j];yr[base+j]=v;}}\n"
+        /* hadamard_rows4: the same transform for blocks of 128..4096 with
+         * four elements per thread (element e*nt+ti), nt = block/4. The
+         * butterflies run in the same stage order and pair the same values
+         * as hadamard_rows, so the result is bit-identical: strides below
+         * 32 through simd shuffles, up to nt through threadgroup memory,
+         * nt and 2*nt in registers. */
+        "kernel void hadamard_rows4(device const float*x[[buffer(0)]],device "
+        "float*y[[buffer(1)]],device const float*s[[buffer(2)]],constant "
+        "H&p[[buffer(3)]],threadgroup float*sh[[threadgroup(0)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],uint ti[[thread_index_in_threadgroup]],uint3 "
+        "ntg[[threads_per_threadgroup]]){"
+        "uint row=tg.y,base=tg.x*p.block,nt=ntg.x;"
+        "device const float*xr=x+p.xo+row*p.xs;device float*yr=y+p.yo+row*p.ys;float v[4];"
+        "for(uint e=0u;e<4u;e++){uint g=base+e*nt+ti,src=g;"
+        "if(p.rep>1u){uint d=g%p.hd,q=g/p.hd,r=q%p.rep,k=q/p.rep;src=d+p.hd*(k+p.nk*r);}"
+        "float a=xr[src];if(p.sgn!=0u&&p.inv==0u)a*=s[p.so+g];v[e]=a;}"
+        "for(uint len=1u;len<32u;len<<=1u){for(uint e=0u;e<4u;e++){float "
+        "o=simd_shuffle_xor(v[e],ushort(len));v[e]=(ti&len)==0u?v[e]+o:o-v[e];}}"
+        "for(uint len=32u;len<nt;len<<=1u){for(uint e=0u;e<4u;e++)sh[e*nt+ti]=v[e];"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(uint e=0u;e<4u;e++){float o=sh[e*nt+(ti^len)];v[e]=(ti&len)==0u?v[e]+o:o-v[e];}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);}"
+        "float a0=v[0]+v[1],a1=v[0]-v[1],a2=v[2]+v[3],a3=v[2]-v[3];"
+        "v[0]=a0+a2;v[2]=a0-a2;v[1]=a1+a3;v[3]=a1-a3;"
+        "float sc=rsqrt(float(p.block));"
+        "for(uint e=0u;e<4u;e++){uint j=base+e*nt+ti;float "
+        "o=v[e]*sc;if(p.sgn!=0u&&p.inv!=0u)o*=s[p.so+j];yr[j]=o;}}\n";
 
 static const char metal_elem_source[] =
         "#include <metal_stdlib>\n"

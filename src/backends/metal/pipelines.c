@@ -197,6 +197,7 @@ static const struct metal_pipeline_row metal_attention_rows[] = {
 
 static const struct metal_pipeline_row metal_hadamard_rows[] = {
         METAL_PIPE(hadamard, "hadamard_rows", hadamard),
+        METAL_PIPE(hadamard, "hadamard_rows4", hadamard4),
 };
 
 static const struct metal_pipeline_row metal_argmax_rows[] = {
