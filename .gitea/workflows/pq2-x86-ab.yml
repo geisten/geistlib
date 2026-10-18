@@ -1,0 +1,112 @@
+name: pq2-x86-ab
+
+# #85 on the geist-vulkan box (Ryzen 9 9950X): a geistlib ref with the
+# AVX-512 VNNI PQ2_0 prefill against main, on Ternary-Bonsai-2-27B, cpu_x86:
+# the PQ2_0 unit test (VNNI and GEIST_FORCE_ISA=avx2), greedy output and
+# last-step logits VNNI vs AVX2, an interleaved parent-vs-patch A/B with
+# control, and the PrismML fork's CPU build at a verified pin beside it.
+#   tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib \
+#     --ref research/bonsai-cross -i ref=perf/pq2_0-x86-vnni pq2-x86-ab.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "geistlib ref under test"
+        type: string
+        default: perf/pq2_0-x86-vnni
+      fork_pin:
+        description: "PrismML-Eng/llama.cpp commit"
+        type: string
+        default: 0082ac24a89ae62132041b40e2c0170e278a98f4
+      cycles:
+        description: "A/B cycles"
+        type: string
+        default: "6"
+
+permissions:
+  contents: read
+
+jobs:
+  ab:
+    name: PQ2_0 x86 prefill A/B on geist-vulkan
+    runs-on: geist-vulkan
+    timeout-minutes: 300
+    env:
+      REF: ${{ inputs.ref }}
+      PIN: ${{ inputs.fork_pin }}
+      CYCLES: ${{ inputs.cycles }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Model
+        run: |
+          set -eo pipefail
+          mkdir -p out
+          git rev-parse HEAD | tee out/env.txt
+          echo "MODEL=$(python3 tools/fetch_bench_model.py --model bonsai2-27b-pq2 --protocol benchmark/cross_engine_gpu_protocol.json)" >> "$GITHUB_ENV"
+      - name: Build (cpu_x86 + cpu_scalar)
+        run: make TARGET=linux BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
+      - name: Unit test (VNNI, then forced AVX2)
+        run: |
+          set -eo pipefail
+          bin/linux/release/tests/test_pq2_0_unit 2>&1 | tail -3 | tee out/unit.txt
+          GEIST_FORCE_ISA=avx2 bin/linux/release/tests/test_pq2_0_unit 2>&1 | tail -3 | tee -a out/unit.txt
+      - name: Greedy and logits, VNNI vs AVX2
+        run: |
+          set -eo pipefail
+          . scripts/gpu-lock.sh
+          python3 -c "
+          import struct; ids=[1000+(i*37)%20000 for i in range(500)]
+          open('out/ids.bin','wb').write(struct.pack('<%di'%len(ids),*ids))"
+          GEIST_DUMP_BACKEND=cpu_x86 GEIST_DUMP_LAST_LOGITS=out/vnni.logits bin/linux/release/tools/dump_geist_greedy "$MODEL" out/ids.bin 64 > out/vnni.txt
+          GEIST_FORCE_ISA=avx2 GEIST_DUMP_BACKEND=cpu_x86 GEIST_DUMP_LAST_LOGITS=out/avx2.logits bin/linux/release/tools/dump_geist_greedy "$MODEL" out/ids.bin 64 > out/avx2.txt
+          python3 - <<'PY' | tee out/greedy.txt
+          import struct, math
+          def toks(p): return [l.split() for l in open(p) if l.strip() and l.split()[0].isdigit()]
+          a, b = toks('out/vnni.txt'), toks('out/avx2.txt')
+          same = 0
+          for x, y in zip(a, b):
+              if x[1] != y[1]:
+                  print('first difference at step', x[0], 'vnni', x[1:], 'avx2', y[1:]); break
+              same += 1
+          print('greedy tokens identical:', same, 'of', min(len(a), len(b)))
+          def rd(p):
+              d = open(p, 'rb').read(); return struct.unpack('<%df' % (len(d) // 4), d)
+          u, v = rd('out/vnni.logits'), rd('out/avx2.logits')
+          def sm(z):
+              m = max(z); e = [math.exp(t - m) for t in z]; s = sum(e); return [t / s for t in e]
+          pu, pv = sm(u), sm(v)
+          kl = sum(p * math.log(p / q) for p, q in zip(pu, pv) if p > 0 and q > 0)
+          print('last-step max|d| %.4f KL %.2e' % (max(abs(x - y) for x, y in zip(u, v)), kl))
+          PY
+      - name: A/B parent vs patch (cpu_x86)
+        run: |
+          set -eo pipefail
+          . scripts/gpu-lock.sh
+          git fetch origin main
+          python3 tools/bench_revision_ab.py --rev base=origin/main --rev "new=$(git rev-parse HEAD)" \
+            --gguf "$MODEL" --seq-lens 128,512 --decode-n 16 --warmup 1 --cycles "$CYCLES" \
+            --env GEIST_BENCH_BACKEND=cpu_x86 \
+            --make-arg TARGET=linux --make-arg "BACKENDS=cpu_x86 cpu_scalar" --make-arg GEMM_PROVIDER=native \
+            --out-dir out/ab | grep -E "^\| |Control|Protocol|comparisons" | tee out/ab.txt
+      - name: PrismML fork CPU at the pin
+        run: |
+          set -eo pipefail
+          LB=$(scripts/ensure-llama-bench.sh cpu PrismML-Eng/llama.cpp "$PIN")
+          . scripts/gpu-lock.sh
+          echo "fork built from $(cat "$(dirname "$(dirname "$LB")")/.geist-built-from")" | tee out/fork.txt
+          for c in 1 2; do "$LB" -m "$MODEL" -p 128,512 -n 16 -d 0 -r 2 -o md 2>/dev/null | grep -E "pp|tg"; done | tee -a out/fork.txt
+      - name: Job summary
+        if: always()
+        run: |
+          { echo '```'; cat out/env.txt out/unit.txt out/greedy.txt out/ab.txt out/fork.txt 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 30
+          name: pq2-x86-ab
+          path: out/
+          if-no-files-found: warn
