@@ -1667,6 +1667,120 @@ static bool split_requested(const struct geist_session_opts *opts) {
     return GEIST_OK;
 }
 
+/* Offload route (#78). GEIST_OFFLOAD_M_MIN=<rows> turns it on for a split
+ * model; unset or 0 leaves it off. */
+static size_t offload_m_min(void) {
+    const char *v = getenv("GEIST_OFFLOAD_M_MIN");
+    return v != nullptr && *v != '\0' ? (size_t) strtoull(v, nullptr, 10) : 0;
+}
+
+/* The linears a load-backend layer hands to its twin. A split refuses the
+ * layer kinds with others (DeltaNet, PLE, MTP). */
+static const size_t OFFLOAD_WEIGHTS[] = {
+        offsetof(struct transformer_layer_weights, q_proj_w),
+        offsetof(struct transformer_layer_weights, k_proj_w),
+        offsetof(struct transformer_layer_weights, v_proj_w),
+        offsetof(struct transformer_layer_weights, o_proj_w),
+        offsetof(struct transformer_layer_weights, gate_proj_w),
+        offsetof(struct transformer_layer_weights, up_proj_w),
+        offsetof(struct transformer_layer_weights, down_proj_w),
+};
+
+static struct geist_weight *layer_weight(struct transformer_layer_weights *L, size_t off) {
+    return (struct geist_weight *) ((char *) L + off);
+}
+
+static void offload_destroy(struct transformer_offload *o) {
+    if (o == nullptr) {
+        return;
+    }
+    if (getenv("GEIST_VERBOSE") != nullptr) {
+        fprintf(stderr,
+                "geist: offload: %llu linears (%llu rows) ran on %s\n",
+                (unsigned long long) o->calls,
+                (unsigned long long) o->rows,
+                geist_backend_name(o->be));
+    }
+    const struct geist_backend_vtbl *v = o->be->desc->vtbl;
+    if (o->x != nullptr) {
+        v->buffer_destroy(o->be, o->x);
+    }
+    if (o->y != nullptr) {
+        v->buffer_destroy(o->be, o->y);
+    }
+    transformer_state_destroy(o->twins);
+    pthread_mutex_destroy(&o->mu);
+    void *p = o;
+    safe_free(&p);
+}
+
+/* Offload route (#78): `st`, a split model's load-backend part, gets its
+ * layers [layer_lo, n_layers) a second time on the split backend, weights
+ * only, loaded from `gguf3` (a third handle on the same file; owned). They
+ * load after the split stage, so they get whatever VRAM is left, and the
+ * rest spills to host memory, where the backend streams them for large
+ * batches (#79). Each of those layers' linears then points at its twin.
+ * On failure destroys `st`. */
+[[nodiscard]] static enum geist_status attach_offload(struct transformer_arch_state   *st,
+                                                      struct gguf_ctx                 *gguf3,
+                                                      const struct geist_session_opts *opts,
+                                                      size_t                           m_min) {
+    struct transformer_offload *o =
+            heap_calloc_aligned(1, sizeof *o, alignof(struct transformer_offload));
+    enum geist_status s = o != nullptr ? GEIST_OK : GEIST_E_OOM;
+    if (o == nullptr) {
+        gguf_close(gguf3);
+    } else {
+        o->be    = opts->split_backend;
+        o->m_min = m_min;
+        pthread_mutex_init(&o->mu, nullptr);
+        s = state_create_range(o->be, gguf3, opts, st->layer_lo, SIZE_MAX, true, &o->twins);
+    }
+    size_t max_in = 0, max_out = 0;
+    for (size_t li = st->layer_lo; s == GEIST_OK && li < st->n_layers; li++) {
+        for (size_t k = 0; k < sizeof OFFLOAD_WEIGHTS / sizeof OFFLOAD_WEIGHTS[0]; k++) {
+            struct geist_weight *w = layer_weight(&st->layers[li], OFFLOAD_WEIGHTS[k]);
+            struct geist_weight *t = layer_weight(&o->twins->layers[li], OFFLOAD_WEIGHTS[k]);
+            if (w->raw == nullptr || t->raw == nullptr || w->gain_slot != nullptr) {
+                continue;
+            }
+            w->twin     = t;
+            w->twin_ctx = o;
+            max_in      = (size_t) w->n_in > max_in ? (size_t) w->n_in : max_in;
+            max_out     = (size_t) w->n_out > max_out ? (size_t) w->n_out : max_out;
+        }
+    }
+    if (s == GEIST_OK && max_in > 0) {
+        const struct geist_backend_vtbl *v = o->be->desc->vtbl;
+        o->x_bytes                         = st->m_max * max_in * sizeof(float);
+        o->y_bytes                         = st->m_max * max_out * sizeof(float);
+        s = v->buffer_create(o->be, o->x_bytes, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_AUTO, &o->x);
+        if (s == GEIST_OK) {
+            s = v->buffer_create(o->be, o->y_bytes, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &o->y);
+        }
+    }
+    if (s != GEIST_OK) {
+        geist_backend_set_error(st->backend,
+                                s,
+                                "transformer: offload twins on '%s': %s",
+                                geist_backend_name(opts->split_backend),
+                                geist_backend_errmsg(opts->split_backend));
+        offload_destroy(o);
+        transformer_state_destroy(st);
+        return s;
+    }
+    st->offload = o;
+    if (getenv("GEIST_VERBOSE") != nullptr) {
+        fprintf(stderr,
+                "geist: offload: linears of layers %zu..%zu run on %s from %zu rows on\n",
+                st->layer_lo,
+                st->n_layers - 1,
+                geist_backend_name(o->be),
+                m_min);
+    }
+    return GEIST_OK;
+}
+
 enum geist_status transformer_state_create(struct geist_backend            *be,
                                            const char                      *gguf_path,
                                            const struct geist_session_opts *opts,
@@ -1704,6 +1818,14 @@ enum geist_status transformer_state_create(struct geist_backend            *be,
         return GEIST_E_FILE_NOT_FOUND;
     }
     s = attach_split(*out, gguf2, opts);
+    if (s == GEIST_OK && offload_m_min() > 0) {
+        struct gguf_ctx *gguf3 = gguf_open(gguf_path, &err);
+        s = gguf3 != nullptr ? attach_offload(*out, gguf3, opts, offload_m_min())
+                             : GEIST_E_FILE_NOT_FOUND;
+        if (gguf3 == nullptr) {
+            transformer_state_destroy(*out);
+        }
+    }
     if (s != GEIST_OK) {
         *out = nullptr;
     }
@@ -1745,6 +1867,13 @@ enum geist_status transformer_state_create_from_memory(struct geist_backend     
         return GEIST_E_FORMAT;
     }
     s = attach_split(*out, gguf2, opts);
+    if (s == GEIST_OK && offload_m_min() > 0) {
+        struct gguf_ctx *gguf3 = gguf_open_memory(data, size, &err);
+        s = gguf3 != nullptr ? attach_offload(*out, gguf3, opts, offload_m_min()) : GEIST_E_FORMAT;
+        if (gguf3 == nullptr) {
+            transformer_state_destroy(*out);
+        }
+    }
     if (s != GEIST_OK) {
         *out = nullptr;
     }
@@ -1771,6 +1900,8 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     /* Its sessions are gone with ours (split_sess). */
     transformer_state_destroy(st->split);
     st->split = nullptr;
+    offload_destroy(st->offload);
+    st->offload = nullptr;
 
     if (be != nullptr) {
         /* The layer array may be missing: its allocation failed. */

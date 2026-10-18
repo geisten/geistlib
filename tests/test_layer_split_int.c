@@ -21,6 +21,13 @@
  * GEIST_SPLIT_POINTS ("1,20,28") replaces the split points, e.g. for a
  * model whose every layer does not fit the device.
  *
+ * Offload route (#78): with both backends of the same kind, the split at
+ * L/2 runs again with GEIST_OFFLOAD_M_MIN 1 (every linear of the
+ * load-backend layers on its twin) and 8 (prefill only); both must be
+ * byte-identical to the unsplit run too. With another backend kind,
+ * GEIST_OFFLOAD_M_MIN set by the caller applies to every split above and the
+ * outputs are reported.
+ *
  * Refusals: split_layers past the layer count fails the load with
  * GEIST_E_INVALID_ARG; a KIVI session on a split model fails to create.
  *
@@ -346,6 +353,37 @@ int main(void) {
                                               same_tokens == N_DECODE,
                                       what);
             }
+            run_free(&r);
+        }
+        run_free(&ref);
+    }
+
+    /* The offload route on two CPU instances: the twin runs the same kernels. */
+    for (size_t k = 0; exact && k < 2; k++) {
+        struct run        ref = {0};
+        enum geist_status s   = run_once(path, be, nullptr, 0, kvs[k], &ref);
+        for (const char *const *mm = (const char *const[]) {"1", "8", nullptr};
+             s == GEIST_OK && *mm != nullptr;
+             mm++) {
+            struct run r = {0};
+            setenv("GEIST_OFFLOAD_M_MIN", *mm, 1);
+            s = run_once(path, be, sbe, n_layers / 2, kvs[k], &r);
+            unsetenv("GEIST_OFFLOAD_M_MIN");
+            char what[96];
+            snprintf(what,
+                     sizeof what,
+                     "kv %s split %zu offload m_min %s byte-identical",
+                     kv_names[k],
+                     n_layers / 2,
+                     *mm);
+            fails += geist_expect(
+                    s == GEIST_OK &&
+                            memcmp(r.logits, ref.logits, ref.n_logits * sizeof(float)) == 0 &&
+                            memcmp(r.logits_reset,
+                                   ref.logits_reset,
+                                   ref.n_logits * sizeof(float)) == 0 &&
+                            memcmp(r.tokens, ref.tokens, sizeof ref.tokens) == 0,
+                    what);
             run_free(&r);
         }
         run_free(&ref);

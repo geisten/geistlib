@@ -32,6 +32,7 @@
 #include "exec_plan.h"
 #include "sampler.h"
 
+#include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -501,6 +502,22 @@ struct transformer_runtime_flags {
 
 struct transformer_family;
 
+/* Offload route (#78): the linears of a split model's load-backend layers
+ * also resolved on the split backend (`twins`, owned, weights only), and
+ * the staging a routed call runs through. A linear with at least m_min
+ * rows runs on its twin (forward/linear.c); attention and the KV cache stay
+ * where they are. The GPU's single queue serializes the routed calls of all
+ * sessions (`mu`). */
+struct transformer_offload {
+    struct geist_backend          *be; /* the split backend, not owned */
+    struct transformer_arch_state *twins;
+    size_t                         m_min;
+    pthread_mutex_t                mu;
+    struct geist_buffer           *x, *y; /* on be: x host-visible, y an IO buffer (cached) */
+    size_t                         x_bytes, y_bytes;
+    uint64_t                       calls, rows; /* GEIST_VERBOSE at destroy */
+};
+
 struct transformer_arch_state {
     struct geist_backend *backend; /* not owned */
     /* Layer split (#49). The layers this state holds weights and KV caches
@@ -513,6 +530,7 @@ struct transformer_arch_state {
     size_t                         layer_lo, layer_hi;
     struct transformer_arch_state *split;
     bool                           split_stage;
+    struct transformer_offload    *offload; /* owned; nullptr without the route (#78) */
     /* Unique per loaded model in this process (never 0): binds a session
      * snapshot to the model it was taken on (snapshot.c). */
     uint64_t snapshot_id;
