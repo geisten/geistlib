@@ -1,0 +1,19 @@
+== unit
+cpu_scalar: done
+cpu_neon: done
+cpu_neon: done
+cpu_neon: done
+PASS test_pq2_0_unit
+== greedy int8 prefill
+rc=0
+== greedy sgemm prefill
+rc=0
+greedy tokens identical: 64 of 64
+== speed cycle 1 sgemm=0
+pp 29.21 tg 11.56
+== speed cycle 1 sgemm=1
+pp 14.67 tg 11.35
+== speed cycle 2 sgemm=0
+pp 31.48 tg 9.94
+== speed cycle 2 sgemm=1
+pp 14.59 tg 9.01
