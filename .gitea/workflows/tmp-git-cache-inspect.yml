@@ -1,0 +1,20 @@
+name: tmp-git-cache-inspect
+on:
+  workflow_dispatch:
+jobs:
+  inspect:
+    runs-on: geist-vulkan
+    steps:
+      - name: read-only inspection for the CI git cache
+        run: |
+          set +e
+          echo "== host"; hostname; uname -a; id; uptime
+          echo "== ip"; ip -4 -o addr show | awk '{print $2, $4}'
+          echo "== tools"; git --version; python3 --version; docker --version; command -v git-http-backend; ls /usr/lib/git-core/git-http-backend
+          echo "== runners"; ls -d ~/gitea-runner* ~/action-runner 2>/dev/null
+          for d in ~/gitea-runner-ci ~/gitea-runner; do echo "--- $d/config.yaml"; grep -v -i -E 'token|secret' $d/config.yaml 2>/dev/null; done
+          echo "== user units"; export XDG_RUNTIME_DIR=/run/user/$(id -u); systemctl --user list-units --type=service --no-pager | grep -i -E 'gitea|runner|cache'
+          echo "== docker networks"; docker network ls; docker network inspect bridge -f '{{range .IPAM.Config}}{{.Subnet}} {{.Gateway}}{{end}}'
+          echo "== firewall"; (ufw status 2>/dev/null || true); (nft list ruleset 2>/dev/null | head -20 || true); iptables -S 2>/dev/null | head -5
+          echo "== disk"; df -h ~ | tail -1
+          echo "== image git"; docker run --rm docker.gitea.com/runner-images:ubuntu-24.04 sh -c 'git --version; ls -la /etc/gitconfig 2>&1; cat /etc/gitconfig 2>/dev/null' 2>&1 | tail -5
