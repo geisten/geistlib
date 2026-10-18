@@ -17,7 +17,9 @@
  *   up       the activation upload
  *   dn_*     the output download from where y can live: the BAR window
  *            (GEIST_MEMORY_AUTO scratch, read by the CPU uncached over PCIe),
- *            an IO buffer in system memory, device-local via staging
+ *            an IO buffer in system memory (a host memcpy only, nothing
+ *            crosses the bus: a lower bound, not used below), device-local
+ *            via DMA into staging
  *   gpu>io   zero copy: linear_t writes y straight into the IO buffer, then
  *            the host reads all of it
  *
@@ -27,7 +29,7 @@
  *   m_min v0 = smallest m from which up + gpu_host + dn < cpu
  *   m_min v1 = smallest m from which B/bw + up + gpu + dn < cpu
  *
- * with dn the fastest of the three downloads.
+ * with dn the faster of dn_bar and dn_dev (v1 also takes gpu>io when faster).
  *
  * ("from which": for that m and every larger one measured). Medians over
  * repeats; one JSON line per point on stdout, the summary table on stderr.
@@ -349,9 +351,10 @@ int main(void) {
             const uint64_t t_str = measure(target, &o);
             if (i == 0)
                 t_host1 = t_host;
-            uint64_t dn = dn_bar;
-            dn          = dn_io != 0 && dn_io < dn ? dn_io : dn;
-            dn          = dn_dev != 0 && dn_dev < dn ? dn_dev : dn;
+            /* dn_io is a memcpy out of cached host memory no transfer wrote:
+             * not a download. The GPU's output crosses the bus by DMA
+             * (dn_dev) or by the shader's own writes (gpu>io). */
+            const uint64_t dn = dn_dev != 0 && dn_dev < dn_bar ? dn_dev : dn_bar;
             if (t_cpu[i] == 0 || t_gpu == 0 || t_host == 0 || t_str == 0 || t_up == 0 || dn == 0)
                 rc = 1;
             else {
