@@ -217,9 +217,7 @@ static const struct geist_backend_vtbl cpu_neon_vtbl = {
         .parallel_region_end   = cpu_neon_parallel_region_end,
 };
 
-/* Probe pairing for the fused table below. The GEGLU tile kernel's
- * conditions mirror cpu_neon_ffn_geglu_q4q6_mN's entry checks — keep
- * the two in lockstep (test_fused_probe_agreement_unit). */
+/* Probe pairing for the fused table below (test_fused_probe_agreement_unit). */
 static bool cpu_neon_fused_supported(struct geist_backend *be, const struct geist_fusion_query *q) {
     (void) be;
     if (q == nullptr) {
@@ -237,15 +235,6 @@ static bool cpu_neon_fused_supported(struct geist_backend *be, const struct geis
     case GEIST_FUSED_ATTN_KV_INT4:
         return cpu_neon_attention_kv_int4_supported(q);
 #endif
-    case GEIST_FUSED_FFN_GEGLU_Q4Q6_MN:
-        return q->m >= 1 && q->m <= GEIST_QUANT_M_CAP && q->d_model > 0 && q->inter > 0 &&
-               q->d_model % Q4_K_BLOCK_ELEMS == 0 && q->inter % Q6_K_BLOCK_ELEMS == 0 &&
-               q->gate_w != nullptr && q->up_w != nullptr && q->down_w != nullptr &&
-               q->gate_w->dtype == GEIST_DTYPE_Q4_K && q->up_w->dtype == GEIST_DTYPE_Q4_K &&
-               q->down_w->dtype == GEIST_DTYPE_Q6_K && (size_t) q->gate_w->n_in == q->d_model &&
-               (size_t) q->up_w->n_in == q->d_model && (size_t) q->down_w->n_in == q->inter &&
-               (size_t) q->gate_w->n_out == q->inter && (size_t) q->up_w->n_out == q->inter &&
-               (size_t) q->down_w->n_out == q->d_model;
     default:
         return false;
     }
@@ -266,7 +255,6 @@ static const struct geist_backend_fused cpu_neon_fused = {
         .supported            = cpu_neon_fused_supported,
         .gelu_tanh_mul        = cpu_neon_gelu_tanh_mul,
         .gelu_tanh_mul_scaled = cpu_neon_gelu_tanh_mul_scaled,
-        .ffn_geglu_q4q6_mN    = cpu_neon_ffn_geglu_q4q6_mN,
         .hadamard_rotate      = cpu_neon_hadamard_rotate,
         .kv_append_f16        = cpu_neon_kv_append_f16,
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)

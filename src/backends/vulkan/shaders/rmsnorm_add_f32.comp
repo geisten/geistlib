@@ -42,7 +42,7 @@ void main() {
     float sum = 0.0;
     for (uint j = lid; j < pc.feat; j += 256) {
         float v = x[pc.x_offset + row * pc.feat + j];
-        sum += v * v;
+        sum = fma(v, v, sum);
     }
     sum = subgroupAdd(sum);
     if (subgroupElect()) {
@@ -57,7 +57,7 @@ void main() {
     float inv = inversesqrt(total / float(pc.feat) + pc.eps);
     for (uint j = lid; j < pc.feat; j += 256) {
         uint idx = row * pc.feat + j;
-        float normed = x[pc.x_offset + idx] * inv * w[pc.w_offset + j];
-        y[pc.y_offset + idx] = r[pc.r_offset + idx] + normed;
+        y[pc.y_offset + idx] =
+            fma(x[pc.x_offset + idx] * inv, w[pc.w_offset + j], r[pc.r_offset + idx]);
     }
 }

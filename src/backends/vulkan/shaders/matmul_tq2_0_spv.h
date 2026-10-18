@@ -1,4 +1,4 @@
-/* generated from matmul_tq2_0.comp — make vulkan-shaders */
+/* generated from src/backends/vulkan/shaders/matmul_tq2_0.comp — make vulkan-shaders */
 static const uint32_t matmul_tq2_0_spv[] = {
 0x07230203,0x00010600,0x000d000b,0x00000195,
 0x00000000,0x00020011,0x00000001,0x00020011,

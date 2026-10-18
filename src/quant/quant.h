@@ -570,14 +570,6 @@ void   linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
                                                  const int32_t *sum32,
                                                  const void    *packed,
                                                  float         *y);
-void   linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(size_t         m,
-                                                        size_t         n_in,
-                                                        size_t         n_out,
-                                                        const int8_t  *x_q8,
-                                                        const float   *x_scales,
-                                                        const int32_t *sum32,
-                                                        const void    *packed,
-                                                        float         *y);
 void   linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
                                                                size_t         n_in,
                                                                size_t         n_out,
@@ -604,14 +596,6 @@ void   linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t      
                                                                     const void    *packed1,
                                                                     float         *y0,
                                                                     float         *y1);
-void   linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(size_t         m,
-                                                        size_t         n_in,
-                                                        size_t         n_out,
-                                                        const int8_t  *x_q8,
-                                                        const float   *x_scales,
-                                                        const int32_t *sum32,
-                                                        const void    *packed,
-                                                        float         *y);
 
 /* W5A8 kernels for Q5_K. Same activation quantization as Q4_K
  * (quantize_x_q8_groups, 256-element groups, with sum32). Decode (M=1) and prefill (M>1) both use
@@ -671,25 +655,13 @@ void   linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
  * 16-element chunk. Used by speculative-decode verify (M=K) and any other
  * M>1 path that targets a Q6_K weight (e.g. lm_head with K-wide verify).
  * x is row-major (m, n_in); y row-major (m, n_out). */
-void linear_q6k_w6a8_prefill_pre(size_t        m,
-                                 size_t        n_in,
-                                 size_t        n_out,
-                                 const int8_t *x_q8,
-                                 const float  *x_scales,
-                                 const void   *w_q6k,
-                                 float        *y);
-/* y += the product over super-blocks [block_start, block_start + n_blocks)
- * of W. x_q8 is that tile only, [m, n_blocks * 256], and x_scales its
- * [m, n_blocks] super-block scales. */
-void   linear_q6k_w6a8_prefill_pre_accum_blocks(size_t        m,
-                                                size_t        n_in_total,
-                                                size_t        n_out,
-                                                size_t        block_start,
-                                                size_t        n_blocks,
-                                                const int8_t *x_q8,
-                                                const float  *x_scales,
-                                                const void   *w_q6k,
-                                                float        *y);
+void   linear_q6k_w6a8_prefill_pre(size_t        m,
+                                   size_t        n_in,
+                                   size_t        n_out,
+                                   const int8_t *x_q8,
+                                   const float  *x_scales,
+                                   const void   *w_q6k,
+                                   float        *y);
 size_t q6k_predecode_ntile4_size_bytes(size_t n_in, size_t n_out);
 int    q6k_predecode_ntile4_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst);
 size_t q6k_predecode_ntile4_stream_size_bytes(size_t n_in, size_t n_out);
@@ -730,10 +702,6 @@ void linear_q3k_w3a8_prefill_pre(size_t        m,
                                  const float  *x_scales,
                                  const void   *w_q3k,
                                  float        *y);
-
-/* PTQTP kernels live in their own module — see ptqtp_kernel.h.
- * Public entry points: ptqtp_gemv_2plane_fp16alpha, ptqtp_gemv_3plane_fp32alpha,
- * ptqtp_gemm_2plane_fp32alpha. */
 
 /* W8A8 decode for Q8_0 (32 elements, 1 fp16 scale + 32 int8 quants, no
  * offset).

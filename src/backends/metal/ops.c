@@ -296,6 +296,7 @@ struct metal_quant_pipes {
     void    *m8;        /* naive 8-row kernel, nullable */
     uint32_t n4_tile;   /* output rows one n4 threadgroup covers */
     bool     gemm_only; /* no naive kernels: n4 for rows==1, GEMM above */
+    bool     mm_fast64; /* mm_fast tiles 64 activation rows, not 32 */
 };
 
 static struct metal_quant_pipes
@@ -312,7 +313,8 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
                                            .mm = st->pq2_mm_pipeline,
                                            .mm_fast   = st->pq2_mm_fast_pipeline,
                                            .n4_tile   = n8 ? 16u : 8u,
-                                           .gemm_only = true};
+                                           .gemm_only = true,
+                                           .mm_fast64 = true};
     }
     case GEIST_DTYPE_Q4_0:
         return (struct metal_quant_pipes) {.n4      = st->q40_n4_pipeline,
@@ -416,9 +418,17 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
+    /* A 64-row fast tile stages its ragged last tile's output in 16 KB. */
+    const bool     fast64    = m_tile_sg_fast && p.mm_fast64;
+    const uint32_t tile_rows = fast64 ? 64u : 32u;
     if (m_tile_sg) {
-        metal_msg_send_set_threadgroup_memory(
-                st, enc, m_tile_sg_fast && (params->rows % 32u) == 0u ? 6144u : 8192u, 0u);
+        metal_msg_send_set_threadgroup_memory(st,
+                                              enc,
+                                              fast64 ? ((params->rows % 64u) == 0u ? 8192u : 16384u)
+                                              : m_tile_sg_fast && (params->rows % 32u) == 0u
+                                                      ? 6144u
+                                                      : 8192u,
+                                              0u);
     }
     if (n_tile4 && dtype == GEIST_DTYPE_PQ2_0) {
         /* matvec_pq2_n{4,8}'s 256-entry half4 code table */
@@ -426,7 +436,7 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
     }
     const struct metal_size groups = {
             .width  = n_tile4     ? (params->n_out + p.n4_tile - 1u) / p.n4_tile
-                      : m_tile_sg ? (params->rows + 31u) / 32u
+                      : m_tile_sg ? (params->rows + tile_rows - 1u) / tile_rows
                                   : params->n_out,
             .height = n_tile4     ? params->rows
                       : m_tile_sg ? (params->n_out + 63u) / 64u

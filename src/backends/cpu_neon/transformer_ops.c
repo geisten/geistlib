@@ -1,6 +1,6 @@
 /*
- * src/backends/cpu_neon/transformer_ops.c — rope_apply,
- * FP32 attention (NEON dot products) and the fused Q4_K/Q6_K GEGLU FFN.
+ * src/backends/cpu_neon/transformer_ops.c — rope_apply and
+ * FP32 attention (NEON dot products).
  *
  * Layer: BACKEND.
  */
@@ -18,7 +18,6 @@
 #include <geist_backend.h>
 
 #include <math.h>
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -27,201 +26,6 @@
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
 #endif
-
-static bool grow_f32(float **p, size_t *cap, size_t need) {
-    if (*cap >= need)
-        return true;
-    safe_free((void **) p);
-    *p = heap_alloc_array_aligned(float, need);
-    if (*p == nullptr) {
-        *cap = 0;
-        return false;
-    }
-    *cap = need;
-    return true;
-}
-
-static bool grow_i8(int8_t **p, size_t *cap, size_t need) {
-    if (*cap >= need)
-        return true;
-    safe_free((void **) p);
-    *p = heap_alloc_array_aligned(int8_t, need);
-    if (*p == nullptr) {
-        *cap = 0;
-        return false;
-    }
-    *cap = need;
-    return true;
-}
-
-static bool grow_i32(int32_t **p, size_t *cap, size_t need) {
-    if (*cap >= need)
-        return true;
-    safe_free((void **) p);
-    *p = heap_alloc_array_aligned(int32_t, need);
-    if (*p == nullptr) {
-        *cap = 0;
-        return false;
-    }
-    *cap = need;
-    return true;
-}
-
-static size_t ffn_tile_blocks(void) {
-    const char *env = getenv("GEIST_FFN_TILE_BLOCKS");
-    if (env != nullptr && env[0] != '\0') {
-        char               *end = nullptr;
-        const unsigned long v   = strtoul(env, &end, 10);
-        if (end != env && v >= 1 && v <= 8)
-            return (size_t) v;
-    }
-    return 2;
-}
-
-/* One activation quantization of the fused FFN, for ffn_quant_rows. */
-struct ffn_quant_job {
-    const float *x;
-    size_t       d_model, n_groups;
-    int8_t      *xq;
-    float       *sc;
-    int32_t     *sum32;
-};
-
-/* Rows [i0, i1) of the fused FFN's activation quantization. */
-static void ffn_quant_rows(void *ctx, size_t i0, size_t i1) {
-    const struct ffn_quant_job *job      = ctx;
-    const float                *x        = job->x;
-    const size_t                d_model  = job->d_model;
-    const size_t                n_groups = job->n_groups;
-    int8_t                     *xq       = job->xq;
-    float                      *sc       = job->sc;
-    int32_t                    *sum32    = job->sum32;
-    for (size_t i = i0; i < i1; i++) {
-        quantize_x_q8_groups(d_model,
-                             GEIST_ACT_Q8K_ELEMS,
-                             x + i * d_model,
-                             xq + i * d_model,
-                             sc + i * n_groups,
-                             sum32 + i * (d_model / 32));
-    }
-}
-
-[[nodiscard]] enum geist_status cpu_neon_ffn_geglu_q4q6_mN(struct geist_backend      *be,
-                                                           size_t                     m,
-                                                           size_t                     d_model,
-                                                           size_t                     inter,
-                                                           const float               *x,
-                                                           const struct geist_weight *gate,
-                                                           const struct geist_weight *up,
-                                                           const struct geist_weight *down,
-                                                           const float               *down_scale,
-                                                           float                     *y) {
-    if (be == nullptr || be->state == nullptr || x == nullptr || y == nullptr || gate == nullptr ||
-        up == nullptr || down == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    if (m == 0 || m > GEIST_QUANT_M_CAP || d_model == 0 || inter == 0 ||
-        d_model % Q4_K_BLOCK_ELEMS != 0 || inter % Q6_K_BLOCK_ELEMS != 0 ||
-        gate->dtype != GEIST_DTYPE_Q4_K || up->dtype != GEIST_DTYPE_Q4_K ||
-        down->dtype != GEIST_DTYPE_Q6_K || (size_t) gate->n_in != d_model ||
-        (size_t) up->n_in != d_model || (size_t) down->n_in != inter ||
-        (size_t) gate->n_out != inter || (size_t) up->n_out != inter ||
-        (size_t) down->n_out != d_model) {
-        return GEIST_E_UNSUPPORTED;
-    }
-
-    struct cpu_neon_state     *st                  = (struct cpu_neon_state *) be->state;
-    struct cpu_neon_workspace *ws                  = cpu_neon_ws(st);
-    const size_t               xq_need             = m * d_model;
-    const size_t               sum_need            = m * (d_model / 32);
-    const size_t               xsc_need            = m * (d_model / Q4_K_BLOCK_ELEMS);
-    const size_t               blocks_per_gate_row = d_model / Q4_K_BLOCK_ELEMS;
-    const size_t               total_inter_blocks  = inter / Q6_K_BLOCK_ELEMS;
-    const size_t               tile_blocks_req     = ffn_tile_blocks();
-
-    if (!grow_i8(&ws->qk_mN_xq, &ws->qk_mN_xq_cap, xq_need) ||
-        !grow_i32(&ws->qk_mN_sum32, &ws->qk_mN_sum32_cap, sum_need) ||
-        !grow_f32(&ws->qk_mN_sc, &ws->qk_mN_sc_cap, xsc_need) ||
-        !grow_f32(&ws->ffn_mid_sc, &ws->ffn_mid_sc_cap, m * tile_blocks_req)) {
-        return GEIST_E_OOM;
-    }
-
-    struct ffn_quant_job qj = {.x        = x,
-                               .d_model  = d_model,
-                               .xq       = ws->qk_mN_xq,
-                               .sc       = ws->qk_mN_sc,
-                               .sum32    = ws->qk_mN_sum32,
-                               .n_groups = blocks_per_gate_row};
-    if (m >= 4) {
-        geist_par_for(m, ffn_quant_rows, &qj);
-    } else {
-        ffn_quant_rows(&qj, 0, m);
-    }
-
-    memset(y, 0, m * d_model * sizeof(float));
-    const float kAlpha = 0.7978845608028654f;
-    const float kBeta  = 0.044715f;
-
-    for (size_t b0 = 0; b0 < total_inter_blocks; b0 += tile_blocks_req) {
-        const size_t nb = (total_inter_blocks - b0 < tile_blocks_req) ? (total_inter_blocks - b0)
-                                                                      : tile_blocks_req;
-        const size_t tile_n     = nb * Q6_K_BLOCK_ELEMS;
-        const size_t tile_elems = m * tile_n;
-        if (!grow_f32(&ws->ffn_gate, &ws->ffn_gate_cap, tile_elems) ||
-            !grow_f32(&ws->ffn_up, &ws->ffn_up_cap, tile_elems) ||
-            !grow_f32(&ws->ffn_mid, &ws->ffn_mid_cap, tile_elems) ||
-            !grow_i8(&ws->ffn_mid_q8, &ws->ffn_mid_q8_cap, tile_elems)) {
-            return GEIST_E_OOM;
-        }
-
-        const uint8_t *gate_tile = (const uint8_t *) gate->raw +
-                                   b0 * Q6_K_BLOCK_ELEMS * blocks_per_gate_row * Q4_K_BLOCK_BYTES;
-        const uint8_t *up_tile   = (const uint8_t *) up->raw +
-                                   b0 * Q6_K_BLOCK_ELEMS * blocks_per_gate_row * Q4_K_BLOCK_BYTES;
-
-        linear_q4k_w4a8_prefill_pre(m,
-                                    d_model,
-                                    tile_n,
-                                    ws->qk_mN_xq,
-                                    ws->qk_mN_sc,
-                                    ws->qk_mN_sum32,
-                                    gate_tile,
-                                    ws->ffn_gate);
-        linear_q4k_w4a8_prefill_pre(m,
-                                    d_model,
-                                    tile_n,
-                                    ws->qk_mN_xq,
-                                    ws->qk_mN_sc,
-                                    ws->qk_mN_sum32,
-                                    up_tile,
-                                    ws->ffn_up);
-
-        for (size_t i = 0; i < tile_elems; i++) {
-            const size_t j     = i % tile_n;
-            const float  g     = ws->ffn_gate[i];
-            const float  inner = kAlpha * (g + kBeta * g * g * g);
-            float        v     = (0.5f * g * (1.0f + tanhf(inner))) * ws->ffn_up[i];
-            if (down_scale != nullptr) {
-                v *= down_scale[b0 * Q6_K_BLOCK_ELEMS + j];
-            }
-            ws->ffn_mid[i] = v;
-        }
-
-        /* One scale per 256-element Q6_K block of the tile row (#698). */
-        for (size_t i = 0; i < m; i++) {
-            quantize_x_q8_groups(tile_n,
-                                 GEIST_ACT_Q8K_ELEMS,
-                                 ws->ffn_mid + i * tile_n,
-                                 ws->ffn_mid_q8 + i * tile_n,
-                                 ws->ffn_mid_sc + i * nb,
-                                 nullptr);
-        }
-
-        linear_q6k_w6a8_prefill_pre_accum_blocks(
-                m, inter, d_model, b0, nb, ws->ffn_mid_q8, ws->ffn_mid_sc, down->raw, y);
-    }
-    return GEIST_OK;
-}
 
 [[nodiscard]] enum geist_status cpu_neon_rope_apply(struct geist_backend      *be,
                                                     struct geist_tensor       *x,
@@ -370,44 +174,10 @@ static inline void add_scaled_f32_neon_256(float *dst, const float *src, float s
     }
 }
 
-/* The FP32 attention's chunk: items (query, head) are handed out `chunk`
- * at a time, or split statically for 0. GEIST_ATTENTION_OMP_SCHEDULE,
- * read once: "dynamic[,c]" (the default, c = 8), "guided[,c]" (taken as
- * dynamic: geist_par_for has no guided schedule), "static" (a chunk after
- * it is ignored: the split is static either way and the output the same). */
-static size_t attention_chunk(void) {
-    static _Atomic long cached = -1;
-    long                chunk  = atomic_load_explicit(&cached, memory_order_relaxed);
-    if (chunk >= 0) {
-        return (size_t) chunk;
-    }
-    chunk           = 8;
-    const char *env = getenv("GEIST_ATTENTION_OMP_SCHEDULE");
-    if (env != nullptr && env[0] != '\0') {
-        const bool  is_static = strncmp(env, "static", 6) == 0;
-        const char *comma     = strchr(env, ',');
-        if (comma != nullptr && comma[1] != '\0') {
-            const long parsed = strtol(comma + 1, nullptr, 10);
-            if (parsed > 0 && parsed < (1L << 20)) {
-                chunk = parsed;
-            }
-        }
-        if (is_static) {
-            chunk = 0;
-        }
-    }
-    atomic_store_explicit(&cached, chunk, memory_order_relaxed);
-    return (size_t) chunk;
-}
-
-/* Runs fn over the `total` attention items on attention_chunk()'s schedule. */
+/* Runs fn over the `total` attention items (query, head), handed out 8 at
+ * a time. */
 static void attention_par(size_t total, geist_par_fn fn, void *ctx) {
-    const size_t chunk = attention_chunk();
-    if (chunk == 0) {
-        geist_par_for(total, fn, ctx);
-    } else {
-        cpu_neon_par_for_dynamic(total, chunk, fn, ctx);
-    }
+    cpu_neon_par_for_dynamic(total, 8, fn, ctx);
 }
 
 static inline void scale_f32_neon(float *x, float scale, size_t n) {

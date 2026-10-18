@@ -1,0 +1,137 @@
+offload cost: cpu=cpu_x86, weight 5120 x 17408, m up to 512, OMP_NUM_THREADS=(unset)
+dtype     m     cpu us     gpu us    host us  stream us    up us  dn_bar us   dn_io us  dn_dev us  gpu>io us
+q4_0      1      399.5      332.2     4218.3     4170.7      1.7      611.9        0.6      167.4      137.9
+q4_0      4      532.8      602.4     4201.2     4414.0      7.1     2446.2        3.0      195.6      855.7
+q4_0     16      996.8      872.9     5897.9     4781.3     28.7     9807.5       13.3      320.1      781.1
+q4_0     32     1738.3      817.7     7687.7     4624.4     57.4    20633.8       31.4      538.0      895.1
+q4_0     64     3001.9      885.4     7497.7     4703.2    114.9    39233.7       52.9      831.3     1240.9
+q4_0    128     5479.2     1078.1     8105.5     4927.8    230.2    95624.9      102.3     1413.6     2030.3
+q4_0    256    11995.6     1977.6    17172.4     5807.5    460.4   191319.2      330.9     3112.4     4248.0
+q4_0    512    24139.3     3865.9    37061.2     7682.9    922.4   402127.3     1209.3     7281.7    10007.6
+q4_0: 50.1 MB, bulk upload 8.61 GB/s (5.8 ms), shader host read at m=1 11.89 GB/s; m_min v0 (host-read) = 0, m_min v1 (stream + resident) = 256, resident only = 16, streamed (measured) = 128  (0 = never)
+q4_K      1      257.8      332.7     4542.6     4150.5      1.7      642.8        0.9      189.6      117.7
+q4_K      4     2443.5      653.2     4583.7     4497.3      7.1     2558.5        3.7      211.7      894.0
+q4_K     16     1536.6      905.6     6219.1     4720.0     28.7    10238.4       19.3      376.6      807.1
+q4_K     32     2259.8      765.1     6935.8     4607.3     57.4    20508.6       41.1      517.6      820.8
+q4_K     64     3863.4      895.6     7089.5     4753.6    114.9    41493.8       73.6      887.4     1215.1
+q4_K    128     7077.7     1064.9     7346.5     4876.2    230.0    99577.0      127.8     1750.5     2047.0
+q4_K    256    14794.1     1922.1    15008.2     5789.7    462.2   199633.4     1034.6     4424.6     4472.7
+q4_K    512    27575.4     3688.2    31236.8     7436.6    922.4   402610.6     1517.4    11834.8    10295.9
+q4_K: 50.1 MB, bulk upload 8.24 GB/s (6.1 ms), shader host read at m=1 11.04 GB/s; m_min v0 (host-read) = 0, m_min v1 (stream + resident) = 256, resident only = 1, streamed (measured) = 128  (0 = never)
+q8_0      1      850.0      468.9     7609.4     7827.0      1.7      647.6        0.6      187.2      263.4
+q8_0      4      910.9      783.0     7605.0     8011.5      7.1     2542.2        3.9      222.7     1251.5
+q8_0     16     2055.8      981.9    14490.9     8191.8     28.7    10332.7       17.8      380.5      851.2
+q8_0     32     4016.0      912.9    15576.4     8183.8     57.4    20443.8       40.2      565.5      944.2
+q8_0     64     7759.6     1028.6    15568.8     8278.1    114.9    40562.1       85.1      952.9     1337.4
+q8_0    128    15574.0     1208.3    15835.8     8558.5    230.1    99269.3      140.3     1737.6     2145.4
+q8_0    256    31404.5     2218.0    31210.3     9475.3    462.3   198355.0      365.8     3838.5     4619.3
+q8_0    512    62315.4     4429.9    63127.6    11758.8    922.4   405911.9     1215.9     8045.9    10574.3
+q8_0: 94.7 MB, bulk upload 7.85 GB/s (12.1 ms), shader host read at m=1 12.45 GB/s; m_min v0 (host-read) = 0, m_min v1 (stream + resident) = 128, resident only = 1, streamed (measured) = 128  (0 = never)
+offload cost: cpu=cpu_x86, weight 17408 x 5120, m up to 512, OMP_NUM_THREADS=(unset)
+dtype     m     cpu us     gpu us    host us  stream us    up us  dn_bar us   dn_io us  dn_dev us  gpu>io us
+q4_0      1      483.8      385.9     4238.6     4233.2      6.1      191.2        0.1      176.7      174.7
+q4_0      4      598.7      671.9     4370.3     4599.2     24.4      750.3        1.2      201.5      559.1
+q4_0     16     1105.6     1191.2     8984.7     5026.3     97.7     3034.8        2.9      242.6     1004.9
+q4_0     32     1828.0     1398.6     9086.3     5352.2    195.8     6134.2       10.1      285.7     1260.8
+q4_0     64     3186.2     1857.0     9284.5     5789.9    393.3    12109.4       20.2      401.5     1766.2
+q4_0    128     6175.8     2325.8     9502.0     6157.4    784.4    24484.7       38.3      683.1     2468.7
+q4_0    256    13003.6     3596.4    14426.2     7374.1   1585.7    48885.1       98.0     1003.8     4119.7
+q4_0    512    25977.7     6630.4    30891.6    10453.2   3136.0   112957.9      157.8     1718.7     7689.2
+q4_0: 50.1 MB, bulk upload 7.98 GB/s (6.3 ms), shader host read at m=1 11.83 GB/s; m_min v0 (host-read) = 0, m_min v1 (stream + resident) = 256, resident only = 1, streamed (measured) = 256  (0 = never)
+q4_K      1      263.7      343.7     4447.9     4162.7      6.1      188.9        0.1      171.6      131.4
+q4_K      4     3173.9      711.8     4670.7     4559.4     24.4      753.8        1.0      181.1      556.1
+q4_K     16     1207.0     1252.3     8585.1     5094.0     97.7     2980.5        3.1      234.6     1071.1
+q4_K     32     2002.5     1423.5     8752.1     5323.7    195.5     6037.7        8.8      258.3     1283.8
+q4_K     64     3552.9     1701.5     9065.5     5555.8    391.6    12309.3       24.1      420.8     1561.9
+q4_K    128     7155.3     2347.5     9570.4     6167.2    784.9    24242.0       57.7      750.0     2410.3
+q4_K    256    14328.7     3687.8    12883.0     7504.8   1571.2    48971.5      112.6     1201.4     4098.6
+q4_K    512    29249.8     6762.9    29855.0    10464.2   3139.2   118343.2      200.6     2111.1     7801.1
+q4_K: 50.1 MB, bulk upload 8.62 GB/s (5.8 ms), shader host read at m=1 11.27 GB/s; m_min v0 (host-read) = 0, m_min v1 (stream + resident) = 256, resident only = 1, streamed (measured) = 128  (0 = never)
+q8_0      1      649.9      501.1     7676.0     7759.6      6.0      193.6        0.2      208.1      299.0
+q8_0      4      683.7     1290.7    26723.6     8481.4     24.4      728.1        0.9      208.1     1005.7
+q8_0     16     1829.5     1267.9    17882.7     8510.1     97.7     3045.8        3.2      239.1     1083.6
+q8_0     32     3562.7     1459.1    17977.9     8687.4    195.4     5776.5        7.4      250.6     1312.7
+q8_0     64     7144.7     1900.4    18213.3     9197.8    391.3    12175.6       20.5      403.1     1812.9
+q8_0    128    14770.8     2312.9    18518.0     9532.8    784.0    24097.7       45.4      623.7     2417.5
+q8_0    256    28592.3     3650.8    27046.7    10900.1   1571.4    46719.8       72.8      888.4     4125.8
+q8_0    512    57488.9     7078.4    47910.4    14230.0   3134.5   114169.2      126.4     1711.3     8148.7
+q8_0: 94.7 MB, bulk upload 8.51 GB/s (11.1 ms), shader host read at m=1 12.34 GB/s; m_min v0 (host-read) = 512, m_min v1 (stream + resident) = 128, resident only = 16, streamed (measured) = 128  (0 = never)
+offload cost: cpu=cpu_x86, weight 5120 x 5120, m up to 512, OMP_NUM_THREADS=(unset)
+dtype     m     cpu us     gpu us    host us  stream us    up us  dn_bar us   dn_io us  dn_dev us  gpu>io us
+q4_0      1      110.4      239.9     1384.0     1381.0      1.7      179.4        0.1      154.1       57.4
+q4_0      4      151.5      352.9     1396.1     1471.3      7.2      722.4        0.6      167.0      300.9
+q4_0     16      295.8      492.3     1889.7     1627.3     28.7     2898.6        2.3      206.0      335.7
+q4_0     32      460.4      547.1     1906.1     1690.3     57.5     5778.6        7.2      245.4      433.6
+q4_0     64      802.5      659.5     1966.1     1800.1    114.9    11570.6       16.9      350.3      637.0
+q4_0    128     1673.1      804.0     2051.2     1947.5    230.0    23130.6       36.9      512.1      954.9
+q4_0    256     3504.4     1179.7     2374.8     2308.4    461.3    46508.6       60.4      873.8     1656.1
+q4_0    512     6688.2     2004.7     4600.2     3153.7    922.2   112901.2      123.1     1618.8     3196.2
+q4_0: 14.7 MB, bulk upload 8.95 GB/s (1.6 ms), shader host read at m=1 10.65 GB/s; m_min v0 (host-read) = 256, m_min v1 (stream + resident) = 256, resident only = 64, streamed (measured) = 256  (0 = never)
+q4_K      1       79.0      233.4     1464.9     1377.2      1.7      179.5        0.1      154.2       53.0
+q4_K      4      483.8      356.9     1504.0     1484.0      7.1      718.6        0.7      169.2      296.7
+q4_K     16      319.1      508.7     1967.3     1646.1     28.7     2899.1        2.3      204.2      346.1
+q4_K     32      529.6      567.7     2004.7     1708.8     57.5     5787.7        7.1      243.1      442.2
+q4_K     64     1001.2      629.3     2067.7     1767.0    115.0    11531.2       17.2      342.9      603.2
+q4_K    128     1885.6      814.4     2139.5     1952.3    230.1    23212.5       29.8      518.6      962.4
+q4_K    256     3738.5     1171.0     2421.6     2301.0    460.6    46332.5       59.3      862.3     1647.0
+q4_K    512     7562.7     2015.4     4326.2     3139.7    922.5   112853.8      122.3     1620.1     3219.5
+q4_K: 14.7 MB, bulk upload 8.95 GB/s (1.6 ms), shader host read at m=1 10.07 GB/s; m_min v0 (host-read) = 256, m_min v1 (stream + resident) = 256, resident only = 32, streamed (measured) = 256  (0 = never)
+q8_0      1       98.0      280.5     2386.1     2419.2      1.7      179.3        0.1      154.4       94.6
+q8_0      4      123.2      421.5     5951.0     2576.7      7.2      719.3        0.8      167.4      242.1
+q8_0     16      493.4      531.5     4322.2     2677.5     28.7     2899.9        2.5      195.3      361.4
+q8_0     32      989.7      573.3     4349.9     2741.6     57.4     5784.1        7.0      236.4      453.0
+q8_0     64     1945.0      696.9     4452.5     2831.1    114.9    11549.0       16.6      369.9      669.3
+q8_0    128     3881.1      822.5     4320.6     2977.9    229.9    23164.4       33.4      537.4      964.3
+q8_0    256     7773.8     1197.5     4879.1     3331.6    460.8    46188.6       71.6      906.3     1659.2
+q8_0    512    15639.7     2032.2     8553.5     4183.5    921.5   112893.2      121.0     1618.5     3198.4
+q8_0: 27.9 MB, bulk upload 9.03 GB/s (3.1 ms), shader host read at m=1 11.67 GB/s; m_min v0 (host-read) = 256, m_min v1 (stream + resident) = 256, resident only = 16, streamed (measured) = 128  (0 = never)
+grep -E '^== |spill:' cost-out/e2e.txt
+== vulkan m_max=32
+{"backend":"vulkan","m_max":32,"seq_len":512,"decode_n":16,"prefill_ms":15795.29,"decode_ms":6123.69,"total_ms":21918.98,"ttft_ms":15795.29,"prefill_tps":32.415,"decode_tps":2.613,"total_tps":24.089,"prefill_ms_best":15777.91,"prefill_ms_worst":15827.95,"decode_ms_best":6114.82,"decode_ms_worst":6128.17,"total_ms_best":21906.08,"total_ms_worst":21942.76,"total_tps_best":24.103,"total_tps_worst":24.063,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":16,"rss_mb":5962.71,"threads":0,"samples":{"prefill_ms":[15777.911,15780.013,15827.950],"decode_ms":[6128.170,6128.093,6114.815],"total_ms":[21906.080,21908.106,21942.765],"ttft_ms":[15777.912,15780.014,15827.950]}}
+== vulkan m_max=64
+{"backend":"vulkan","m_max":64,"seq_len":512,"decode_n":16,"prefill_ms":7280.54,"decode_ms":6117.86,"total_ms":13398.40,"ttft_ms":7280.54,"prefill_tps":70.324,"decode_tps":2.615,"total_tps":39.408,"prefill_ms_best":7266.14,"prefill_ms_worst":7293.43,"decode_ms_best":6105.61,"decode_ms_worst":6126.17,"total_ms_best":13387.66,"total_ms_worst":13415.22,"total_tps_best":39.439,"total_tps_worst":39.358,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":16,"rss_mb":5963.15,"threads":0,"samples":{"prefill_ms":[7282.057,7293.425,7266.136],"decode_ms":[6105.606,6121.795,6126.166],"total_ms":[13387.663,13415.220,13392.302],"ttft_ms":[7282.058,7293.426,7266.137]}}
+== vulkan m_max=128
+{"backend":"vulkan","m_max":128,"seq_len":512,"decode_n":16,"prefill_ms":3611.85,"decode_ms":6122.92,"total_ms":9734.78,"ttft_ms":3611.85,"prefill_tps":141.756,"decode_tps":2.613,"total_tps":54.239,"prefill_ms_best":3610.11,"prefill_ms_worst":3612.86,"decode_ms_best":6121.80,"decode_ms_worst":6125.03,"total_ms_best":9731.92,"total_ms_worst":9737.89,"total_tps_best":54.254,"total_tps_worst":54.221,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":16,"rss_mb":5962.95,"threads":0,"samples":{"prefill_ms":[3612.580,3610.114,3612.860],"decode_ms":[6121.944,6121.802,6125.027],"total_ms":[9734.524,9731.917,9737.888],"ttft_ms":[3612.581,3610.115,3612.861]}}
+== vulkan m_max=256
+{"backend":"vulkan","m_max":256,"seq_len":512,"decode_n":16,"prefill_ms":3149.41,"decode_ms":6120.97,"total_ms":9270.38,"ttft_ms":3149.41,"prefill_tps":162.570,"decode_tps":2.614,"total_tps":56.956,"prefill_ms_best":3136.05,"prefill_ms_worst":3176.13,"decode_ms_best":6117.37,"decode_ms_worst":6123.62,"total_ms_best":9257.96,"total_ms_worst":9293.50,"total_tps_best":57.032,"total_tps_worst":56.814,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":16,"rss_mb":5962.55,"threads":0,"samples":{"prefill_ms":[3136.049,3136.051,3176.129],"decode_ms":[6123.624,6121.907,6117.374],"total_ms":[9259.673,9257.958,9293.503],"ttft_ms":[3136.050,3136.052,3176.130]}}
+== vulkan m_max=512
+{"backend":"vulkan","m_max":512,"seq_len":512,"decode_n":16,"prefill_ms":2889.39,"decode_ms":6099.52,"total_ms":8988.91,"ttft_ms":2889.40,"prefill_tps":177.200,"decode_tps":2.623,"total_tps":58.739,"prefill_ms_best":2883.92,"prefill_ms_worst":2893.91,"decode_ms_best":6096.59,"decode_ms_worst":6103.61,"total_ms_best":8980.51,"total_ms_worst":8997.53,"total_tps_best":58.794,"total_tps_worst":58.683,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":16,"rss_mb":5962.57,"threads":0,"samples":{"prefill_ms":[2890.353,2893.912,2883.917],"decode_ms":[6098.349,6103.614,6096.589],"total_ms":[8988.703,8997.526,8980.506],"ttft_ms":[2890.354,2893.913,2883.918]}}
+== vulkan+stream m_max=32
+{"backend":"vulkan+stream","m_max":32,"seq_len":512,"decode_n":16,"prefill_ms":8023.94,"decode_ms":6122.22,"total_ms":14146.16,"ttft_ms":8023.95,"prefill_tps":63.809,"decode_tps":2.613,"total_tps":37.325,"prefill_ms_best":8022.15,"prefill_ms_worst":8025.60,"decode_ms_best":6119.27,"decode_ms_worst":6124.17,"total_ms_best":14141.42,"total_ms_worst":14149.77,"total_tps_best":37.337,"total_tps_worst":37.315,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":16,"rss_mb":5962.35,"threads":0,"samples":{"prefill_ms":[8022.149,8024.087,8025.598],"decode_ms":[6119.269,6123.215,6124.170],"total_ms":[14141.418,14147.302,14149.768],"ttft_ms":[8022.150,8024.088,8025.599]}}
+== vulkan+stream m_max=64
+{"backend":"vulkan+stream","m_max":64,"seq_len":512,"decode_n":16,"prefill_ms":4159.54,"decode_ms":6128.12,"total_ms":10287.66,"ttft_ms":4159.54,"prefill_tps":123.091,"decode_tps":2.611,"total_tps":51.324,"prefill_ms_best":4158.30,"prefill_ms_worst":4161.65,"decode_ms_best":6127.49,"decode_ms_worst":6128.66,"total_ms_best":10286.16,"total_ms_worst":10289.87,"total_tps_best":51.331,"total_tps_worst":51.313,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":16,"rss_mb":5962.80,"threads":0,"samples":{"prefill_ms":[4161.648,4158.300,4158.666],"decode_ms":[6128.222,6128.659,6127.491],"total_ms":[10289.871,10286.959,10286.157],"ttft_ms":[4161.649,4158.300,4158.666]}}
+== vulkan+stream m_max=128
+{"backend":"vulkan+stream","m_max":128,"seq_len":512,"decode_n":16,"prefill_ms":2133.17,"decode_ms":6127.10,"total_ms":8260.27,"ttft_ms":2133.17,"prefill_tps":240.018,"decode_tps":2.611,"total_tps":63.920,"prefill_ms_best":2131.97,"prefill_ms_worst":2135.23,"decode_ms_best":6126.21,"decode_ms_worst":6128.16,"total_ms_best":8258.53,"total_ms_worst":8263.38,"total_tps_best":63.934,"total_tps_worst":63.896,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":16,"rss_mb":5962.74,"threads":0,"samples":{"prefill_ms":[2135.226,2131.970,2132.320],"decode_ms":[6128.156,6126.935,6126.213],"total_ms":[8263.382,8258.905,8258.533],"ttft_ms":[2135.227,2131.971,2132.321]}}
+== vulkan+stream m_max=256
+{"backend":"vulkan+stream","m_max":256,"seq_len":512,"decode_n":16,"prefill_ms":1302.76,"decode_ms":6125.26,"total_ms":7428.01,"ttft_ms":1302.76,"prefill_tps":393.012,"decode_tps":2.612,"total_tps":71.082,"prefill_ms_best":1301.69,"prefill_ms_worst":1304.73,"decode_ms_best":6122.17,"decode_ms_worst":6127.21,"total_ms_best":7426.91,"total_ms_worst":7429.07,"total_tps_best":71.093,"total_tps_worst":71.072,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":16,"rss_mb":5962.02,"threads":0,"samples":{"prefill_ms":[1304.732,1301.856,1301.685],"decode_ms":[6122.174,6127.210,6126.383],"total_ms":[7426.906,7429.066,7428.068],"ttft_ms":[1304.733,1301.857,1301.686]}}
+== vulkan+stream m_max=512
+{"backend":"vulkan+stream","m_max":512,"seq_len":512,"decode_n":16,"prefill_ms":931.08,"decode_ms":6109.94,"total_ms":7041.02,"ttft_ms":931.09,"prefill_tps":549.897,"decode_tps":2.619,"total_tps":74.989,"prefill_ms_best":929.02,"prefill_ms_worst":934.98,"decode_ms_best":6095.61,"decode_ms_worst":6124.51,"total_ms_best":7030.59,"total_ms_worst":7053.76,"total_tps_best":75.100,"total_tps_worst":74.854,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":16,"rss_mb":5962.16,"threads":0,"samples":{"prefill_ms":[934.981,929.024,929.246],"decode_ms":[6095.606,6109.695,6124.510],"total_ms":[7030.587,7038.719,7053.756],"ttft_ms":[934.985,929.025,929.247]}}
+== cpu_x86 m_max=32
+{"backend":"cpu_x86","m_max":32,"seq_len":512,"decode_n":16,"prefill_ms":9662.67,"decode_ms":3413.49,"total_ms":13076.17,"ttft_ms":9662.68,"prefill_tps":52.987,"decode_tps":4.687,"total_tps":40.379,"prefill_ms_best":9147.60,"prefill_ms_worst":10141.01,"decode_ms_best":3089.73,"decode_ms_worst":3998.62,"total_ms_best":12851.55,"total_ms_worst":13230.74,"total_tps_best":41.085,"total_tps_worst":39.907,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":16,"rss_mb":14457.06,"threads":0,"samples":{"prefill_ms":[9699.415,9147.601,10141.009],"decode_ms":[3152.132,3998.620,3089.727],"total_ms":[12851.547,13146.221,13230.736],"ttft_ms":[9699.416,9147.602,10141.010]}}
+== cpu_x86 m_max=64
+{"backend":"cpu_x86","m_max":64,"seq_len":512,"decode_n":16,"prefill_ms":8997.88,"decode_ms":3111.34,"total_ms":12109.22,"ttft_ms":8997.88,"prefill_tps":56.902,"decode_tps":5.142,"total_tps":43.603,"prefill_ms_best":8746.29,"prefill_ms_worst":9286.32,"decode_ms_best":3071.91,"decode_ms_worst":3148.29,"total_ms_best":11894.58,"total_ms_worst":12358.22,"total_tps_best":44.390,"total_tps_worst":42.725,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":16,"rss_mb":14474.88,"threads":0,"samples":{"prefill_ms":[8746.289,9286.318,8961.031],"decode_ms":[3148.295,3071.905,3113.829],"total_ms":[11894.584,12358.224,12074.860],"ttft_ms":[8746.290,9286.319,8961.031]}}
+== cpu_x86 m_max=128
+{"backend":"cpu_x86","m_max":128,"seq_len":512,"decode_n":16,"prefill_ms":8988.99,"decode_ms":3147.47,"total_ms":12136.46,"ttft_ms":8988.99,"prefill_tps":56.959,"decode_tps":5.083,"total_tps":43.505,"prefill_ms_best":8967.61,"prefill_ms_worst":9030.76,"decode_ms_best":3078.86,"decode_ms_worst":3249.69,"total_ms_best":12047.47,"total_ms_worst":12280.44,"total_tps_best":43.827,"total_tps_worst":42.995,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":16,"rss_mb":14508.71,"threads":0,"samples":{"prefill_ms":[8968.615,8967.610,9030.757],"decode_ms":[3078.857,3113.863,3249.686],"total_ms":[12047.472,12081.473,12280.443],"ttft_ms":[8968.616,8967.611,9030.758]}}
+== vulkan m_max=32
+geist vulkan spill: 94 weights (4664 MiB) in host memory; streamed into VRAM 0 times (0 MiB)
+== vulkan m_max=64
+geist vulkan spill: 94 weights (4664 MiB) in host memory; streamed into VRAM 0 times (0 MiB)
+== vulkan m_max=128
+geist vulkan spill: 94 weights (4664 MiB) in host memory; streamed into VRAM 0 times (0 MiB)
+== vulkan m_max=256
+geist vulkan spill: 94 weights (4664 MiB) in host memory; streamed into VRAM 0 times (0 MiB)
+== vulkan m_max=512
+geist vulkan spill: 94 weights (4664 MiB) in host memory; streamed into VRAM 0 times (0 MiB)
+== vulkan+stream m_max=32
+geist vulkan spill: 94 weights (4664 MiB) in host memory; streamed into VRAM 4512 times (223890 MiB)
+== vulkan+stream m_max=64
+geist vulkan spill: 94 weights (4664 MiB) in host memory; streamed into VRAM 2256 times (111945 MiB)
+== vulkan+stream m_max=128
+geist vulkan spill: 94 weights (4664 MiB) in host memory; streamed into VRAM 1128 times (55972 MiB)
+== vulkan+stream m_max=256
+geist vulkan spill: 94 weights (4664 MiB) in host memory; streamed into VRAM 564 times (27986 MiB)
+== vulkan+stream m_max=512
+geist vulkan spill: 94 weights (4664 MiB) in host memory; streamed into VRAM 282 times (13993 MiB)
+== cpu_x86 m_max=32
+== cpu_x86 m_max=64
+== cpu_x86 m_max=128

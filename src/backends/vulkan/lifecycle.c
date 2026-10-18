@@ -147,6 +147,11 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         if (st->xring != nullptr) {
             vk_buffer_destroy(be, st->xring);
         }
+        for (int i = 0; i < 2; ++i) {
+            if (st->wslot[i] != nullptr) {
+                vk_buffer_destroy(be, st->wslot[i]);
+            }
+        }
         geist_backend_free(be, st->hostbufs);
         for (int i = 0; i < VK_PIPE_COUNT; ++i) {
             if (st->pipes[i] != VK_NULL_HANDLE) {
@@ -481,6 +486,14 @@ static size_t vk_parse_bytes(const char *v) {
     st->vram_budget     = vk_parse_bytes(getenv("GEIST_VK_VRAM_BUDGET"));
     const char *reserve = getenv("GEIST_VK_WEIGHT_RESERVE");
     st->weight_reserve  = reserve != nullptr ? vk_parse_bytes(reserve) : SIZE_MAX;
+    /* 32 rows: streaming beats the shaders' bus reads from there on (#78,
+     * Qwen3-14B Q8_0 prefill at chunk 32: 63.8 vs 32.4 tok/s); "0" turns it off. */
+    const char *stream = getenv("GEIST_VK_STREAM_M_MIN");
+    st->stream_m_min   = VK_STREAM_M_MIN;
+    if (stream != nullptr && *stream != '\0') {
+        const size_t n   = vk_parse_bytes(stream);
+        st->stream_m_min = n != 0 ? n : SIZE_MAX;
+    }
     /* Device-local scratch pool (#488), default on; GEIST_VK_SCRATCH_DEVICE=0
      * keeps it host-visible. The arch still asks only where no host path
      * maps a pool slot (scratch_device_wanted); see vk_buffer_create_api. */
@@ -556,6 +569,15 @@ void vk_destroy(struct geist_backend *be) {
                     (unsigned long long) st->stat_dset_hits,
                     (unsigned long long) st->stat_dset_miss,
                     (double) st->stat_wait_ns / 1e6);
+            if (st->spilled_weights != 0) {
+                fprintf(stderr,
+                        "geist vulkan spill: %zu weights (%zu MiB) in host memory; streamed "
+                        "into VRAM %llu times (%llu MiB)\n",
+                        st->spilled_weights,
+                        st->spilled_weight_bytes >> 20,
+                        (unsigned long long) st->stat_streamed,
+                        (unsigned long long) (st->stat_streamed_bytes >> 20));
+            }
             fprintf(stderr,
                     "geist vulkan scratch: device-local %llu (%llu MiB), BAR %llu (%llu MiB), "
                     "host %llu (%llu MiB); device-local host views refused %llu\n",

@@ -153,18 +153,13 @@ static void free_aux(struct geist_weight *w) {
     w->aux_fp32 = nullptr;
 }
 
-/* A kernel-policy variant: which fields to set before resolve_weight, and
- * (late) after it — for a kernel the resolver reaches only when the policy
- * changed after the repack was chosen. */
+/* A kernel-policy variant: the fields to set before resolve_weight. */
 typedef void (*policy_fn)(struct cpu_neon_kernel_policy *p);
 
 static void p_plain(struct cpu_neon_kernel_policy *p) {
     p->q4k_predecode             = false;
     p->q4k_mtile_prefill         = false;
     p->q4k_ntile_prefill         = false;
-    p->q4k_block_q8_prefill      = false;
-    p->q4k_sgemm_prefill         = false;
-    p->q6k_sgemm_prefill         = false;
     p->q6k_ntile_prefill         = false;
     p->q6k_ntile4_stream_prefill = false;
     p->q6k_x8_gemv               = false;
@@ -182,10 +177,6 @@ static void p_q4k_mtile8(struct cpu_neon_kernel_policy *p) {
     p_q4k_predecode(p);
     p->q4k_mtile_prefill = true;
 }
-static void p_q4k_bscale(struct cpu_neon_kernel_policy *p) {
-    p_q4k_mtile8(p);
-    p->q4k_block_q8_prefill = true;
-}
 static void p_q4k_ntile4(struct cpu_neon_kernel_policy *p) {
     p_q4k_mtile8(p);
     p->q4k_ntile_prefill = true;
@@ -202,19 +193,16 @@ static void p_q6k_stream(struct cpu_neon_kernel_policy *p) {
 struct variant {
     const char *name;
     uint16_t    dtype; /* 0: every dtype */
-    policy_fn   at_resolve;
-    policy_fn   at_call; /* nullptr: same as at_resolve */
+    policy_fn   policy;
 };
 
 static const struct variant VARIANTS[] = {
-        {"plain", 0, p_plain, nullptr},
-        {"q4k predecode", (uint16_t) GEIST_DTYPE_Q4_K, p_q4k_predecode, nullptr},
-        {"q4k predecode mtile8", (uint16_t) GEIST_DTYPE_Q4_K, p_q4k_mtile8, nullptr},
-        {"q4k predecode mtile4_ntile4", (uint16_t) GEIST_DTYPE_Q4_K, p_q4k_mtile8, p_q4k_ntile4},
-        {"q4k predecode bscale", (uint16_t) GEIST_DTYPE_Q4_K, p_q4k_bscale, nullptr},
-        {"q4k ntile4 packed", (uint16_t) GEIST_DTYPE_Q4_K, p_q4k_ntile4, nullptr},
-        {"q6k ntile4", (uint16_t) GEIST_DTYPE_Q6_K, p_q6k_ntile4, nullptr},
-        {"q6k ntile4 stream", (uint16_t) GEIST_DTYPE_Q6_K, p_q6k_stream, nullptr},
+        {"plain", 0, p_plain},
+        {"q4k predecode", (uint16_t) GEIST_DTYPE_Q4_K, p_q4k_predecode},
+        {"q4k predecode mtile8", (uint16_t) GEIST_DTYPE_Q4_K, p_q4k_mtile8},
+        {"q4k ntile4 packed", (uint16_t) GEIST_DTYPE_Q4_K, p_q4k_ntile4},
+        {"q6k ntile4", (uint16_t) GEIST_DTYPE_Q6_K, p_q6k_ntile4},
+        {"q6k ntile4 stream", (uint16_t) GEIST_DTYPE_Q6_K, p_q6k_stream},
 };
 
 static void run_resolved(struct geist_backend *be,
@@ -227,7 +215,7 @@ static void run_resolved(struct geist_backend *be,
                          float                *y1) {
     struct cpu_neon_state              *st    = (struct cpu_neon_state *) be->state;
     const struct cpu_neon_kernel_policy saved = st->policy;
-    v->at_resolve(&st->policy);
+    v->policy(&st->policy);
     struct geist_weight w = {
             .raw        = raw,
             .raw_nbytes = N_OUT * (N_IN / f->blk_elems) * f->blk_bytes,
@@ -241,9 +229,6 @@ static void run_resolved(struct geist_backend *be,
         st->policy = saved;
         free_aux(&w);
         return;
-    }
-    if (v->at_call != nullptr) {
-        v->at_call(&st->policy);
     }
 
     char path[64];

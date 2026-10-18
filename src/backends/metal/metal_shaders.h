@@ -629,8 +629,61 @@ static const char metal_qsg_pq2_source[]    = GEIST_METAL_PQ2_N_KERNEL("4");
 static const char metal_qsg_pq2_n8_source[] = GEIST_METAL_PQ2_N_KERNEL("8");
 
 static const char metal_qsg_mm_pq2_source[] = GEIST_METAL_MM_SG_KERNEL("pq2", "bpq2", "dqpq2", "8");
+/* PQ2_0 interior fast GEMM (#77): GEIST_METAL_MM_SG_FAST_KERNEL's
+ * structure on a 64-output x 64-row tile instead of 64 x 32. Each of the
+ * four simdgroups owns a 32 x 32 block (16 accumulators): per 8-wide k step
+ * it loads 4 weight and 4 activation 8x8 tiles for 16 MMAs, against 4 + 2
+ * for 8, and every dequantized weight tile serves twice the rows. The
+ * per-output accumulation order is the 64 x 32 kernel's (k steps in order,
+ * one MMA per 8 k), so the output is the same. Same dispatch conditions as
+ * the shared fast kernel; a ragged last row tile goes through 16 KB of
+ * threadgroup memory. On the M1 Max (Bonsai 2 27B shapes, interleaved
+ * against the 64 x 32 kernel): ffn_up -5 %, attn_qkv -6 %, ffn_down -1 %
+ * at 320 rows. (Tried and not kept: a shift-free byte-to-uchar4 decode, no
+ * gain; 64-wide k steps, mixed; transposed weight staging, slower.) */
 static const char metal_qsg_mm_pq2_fast_source[] =
-        GEIST_METAL_MM_SG_FAST_KERNEL("pq2", "bpq2", "dqpq2", "8");
+        "kernel void matmul_pq2_mm_sg_fast(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup "
+        "char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],ushort "
+        "ti[[thread_index_in_threadgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){\n"
+        "threadgroup half*sa=(threadgroup half*)shmem;threadgroup half*sb=(threadgroup "
+        "half*)(shmem+4096);"
+        "uint r0=tg.y*64u;uint r1=tg.x*64u;"
+        "short lr0=short(ti/2);short il0=short(ti%2);short il=il0;"
+        "device const bpq2*wp=(device const bpq2*)(w+p.wo)+(r0+uint(lr0))*p.bpr;"
+        "device const float*xp=x+p.xo+min(r1+uint(lr0),p.rows-1u)*p.xs+uint(16*il0);"
+        "threadgroup half*sbp=sb+64*(16*il0+lr0/8)+8*(lr0%8);"
+        "simdgroup_half8x8 ma[4];simdgroup_half8x8 mb[4];simdgroup_float8x8 mc[16];"
+        "FOR_UNROLL(short i=0;i<16;i++){mc[i]=make_filled_simdgroup_matrix<float,8>(0.0f);}"
+        "for(uint loop_k=0u;loop_k<p.ni;loop_k+=32u){"
+        "half4x4 ta;dqpq2(wp,il,ta);"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "FOR_UNROLL(short i=0;i<16;i++){short ib=short(8*(2*il0+i/8)+lr0/8);"
+        "*(sa+64*ib+8*(i%8)+lr0%8)=ta[i/4][i%4];}"
+        "*(threadgroup half2x4*)sbp=half2x4(*((device const float2x4*)xp));"
+        "*(threadgroup half2x4*)(sbp+512)=half2x4(*((device const float2x4*)(xp+8)));"
+        "il=(il+2<8)?il+2:il%2;wp=(il<2)?wp+1:wp;xp+=32;"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "threadgroup const half*lsma=sa+4*64*(sg%2);threadgroup const half*lsmb=sb+4*64*(sg/2);"
+        "FOR_UNROLL(short ik=0;ik<4;ik++){"
+        "simdgroup_barrier(mem_flags::mem_none);"
+        "FOR_UNROLL(short i=0;i<4;i++){simdgroup_load(ma[i],lsma+64*i,8,0,false);}"
+        "simdgroup_barrier(mem_flags::mem_none);"
+        "FOR_UNROLL(short i=0;i<4;i++){simdgroup_load(mb[i],lsmb+64*i,8,0,false);}"
+        "simdgroup_barrier(mem_flags::mem_none);"
+        "FOR_UNROLL(short i=0;i<16;i++){simdgroup_multiply_accumulate(mc[i],mb[i/4],ma[i%4],"
+        "mc[i]);}"
+        "lsma+=8*64;lsmb+=8*64;}}"
+        "if(r1+64u<=p.rows){device float*C=y+p.yo+(r1+32u*uint(sg>>1))*p.ys+r0+32u*uint(sg&1);"
+        "FOR_UNROLL(short i=0;i<16;i++){simdgroup_store(mc[i],C+8*(i%4)+8*p.ys*(i/4),p.ys,0,"
+        "false);}}"
+        "else{threadgroup_barrier(mem_flags::mem_threadgroup);threadgroup float*T=(threadgroup "
+        "float*)shmem;"
+        "FOR_UNROLL(short i=0;i<16;i++){simdgroup_store(mc[i],T+32*(sg&1)+2048*(sg>>1)+8*(i%4)+"
+        "512*(i/4),64,0,false);}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(uint j=uint(ti);j<(p.rows-r1)*64u;j+=128u){y[p.yo+(r1+j/64u)*p.ys+r0+j%64u]=T[j];}}"
+        "}\n";
 
 /* Decode GEMV for the two 2-bit ternary formats that share TQ2_0's
  * element layout (TQ2_0 and I2_S), after q3k_n4: 2 rows per simdgroup, a

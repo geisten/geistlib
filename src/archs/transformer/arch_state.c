@@ -2013,8 +2013,7 @@ static bool backend_scratch_unmappable(struct geist_backend *be) {
  *     around it on the pool (input norm, projections, residual add) is
  *     backend ops;
  *   - a backend without device buffer_copy or scale_f32, whose bound
- *     fallbacks are host memcpy / host loops (exec_plan.h);
- *   - the whole-FFN tile kernel, which takes host pointers.
+ *     fallbacks are host memcpy / host loops (exec_plan.h).
  * Then the backend decides (backend_scratch_unmappable). */
 /* The default chunk of a session whose scratch pool is device-local (see
  * transformer_session_alloc). */
@@ -2050,8 +2049,7 @@ static bool scratch_device_wanted(const struct transformer_arch_session *sess) {
     }
     for (size_t li = 0; li < st->n_layers; li++) {
         const struct transformer_layer_weights *L = &st->layers[li];
-        if (L->o_awq_inv_scale != nullptr || L->down_awq_inv_scale != nullptr ||
-            (st->layer_plans != nullptr && st->layer_plans[li].fuse_ffn_geglu_tile_mN)) {
+        if (L->o_awq_inv_scale != nullptr || L->down_awq_inv_scale != nullptr) {
             return false;
         }
     }

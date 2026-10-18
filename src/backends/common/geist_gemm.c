@@ -13,46 +13,6 @@
 
 #include <stddef.h>
 
-/* Optional profiling (GEIST_PROFILE_GEMM=1): accumulates wall time spent in
- * the dense-fp32 facade and prints it to stderr at exit. */
-#include <stdlib.h>
-#include <stdio.h>
-#include <time.h>
-#include <stdatomic.h>
-
-static _Atomic unsigned long long g_gemm_ns = 0, g_gemm_calls = 0;
-static _Atomic unsigned long long g_gemv_ns = 0, g_gemv_calls = 0;
-
-static void geist_gemm_report(void) {
-    fprintf(stderr,
-            "[geist_gemm] dense fp32: sgemm %llu calls / %.2f ms, "
-            "sgemv %llu calls / %.2f ms, total %.2f ms\n",
-            (unsigned long long) g_gemm_calls,
-            g_gemm_ns / 1e6,
-            (unsigned long long) g_gemv_calls,
-            g_gemv_ns / 1e6,
-            (g_gemm_ns + g_gemv_ns) / 1e6);
-}
-
-static int geist_gemm_prof(void) {
-    static _Atomic int enabled = -1;
-    int                e       = atomic_load(&enabled);
-    if (e < 0) {
-        const char *s = getenv("GEIST_PROFILE_GEMM");
-        e             = (s != nullptr && s[0] == '1') ? 1 : 0;
-        int expected  = -1;
-        if (atomic_compare_exchange_strong(&enabled, &expected, e) && e)
-            atexit(geist_gemm_report);
-    }
-    return e;
-}
-
-static unsigned long long geist_now_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (unsigned long long) ts.tv_sec * 1000000000ull + (unsigned long long) ts.tv_nsec;
-}
-
 /* CBLAS path: used unless the `native` GEMM provider defined GEIST_GEMM_NATIVE.
  * The cblas symbols come from whichever library the provider linked (Accelerate
  * on macOS, OpenBLAS on Linux/Pi). */
@@ -121,35 +81,35 @@ static void geist_blas_pin_single_thread(void) {
 }
 #endif
 
-static void geist_sgemm_impl(int          transA,
-                             int          transB,
-                             int          M,
-                             int          N,
-                             int          K,
-                             float        alpha,
-                             const float *A,
-                             int          lda,
-                             const float *B,
-                             int          ldb,
-                             float        beta,
-                             float       *C,
-                             int          ldc) {
+void geist_sgemm(int          transA,
+                 int          transB,
+                 int          M,
+                 int          N,
+                 int          K,
+                 float        alpha,
+                 const float *A,
+                 int          lda,
+                 const float *B,
+                 int          ldb,
+                 float        beta,
+                 float       *C,
+                 int          ldc) {
     geist_blas_pin_single_thread();
     cblas_sgemm(
             GEIST_CBLAS_ROW_MAJOR, transA, transB, M, N, K, alpha, A, lda, B, ldb, beta, C, ldc);
 }
 
-static void geist_sgemv_impl(int          transA,
-                             int          M,
-                             int          N,
-                             float        alpha,
-                             const float *A,
-                             int          lda,
-                             const float *x,
-                             int          incx,
-                             float        beta,
-                             float       *y,
-                             int          incy) {
+void geist_sgemv(int          transA,
+                 int          M,
+                 int          N,
+                 float        alpha,
+                 const float *A,
+                 int          lda,
+                 const float *x,
+                 int          incx,
+                 float        beta,
+                 float       *y,
+                 int          incy) {
     geist_blas_pin_single_thread();
     cblas_sgemv(GEIST_CBLAS_ROW_MAJOR, transA, M, N, alpha, A, lda, x, incx, beta, y, incy);
 }
@@ -400,19 +360,19 @@ static void avx2_sgemm_nt(int          M,
 }
 #endif
 
-static void geist_sgemm_impl(int          transA,
-                             int          transB,
-                             int          M,
-                             int          N,
-                             int          K,
-                             float        alpha,
-                             const float *A,
-                             int          lda,
-                             const float *B,
-                             int          ldb,
-                             float        beta,
-                             float       *C,
-                             int          ldc) {
+void geist_sgemm(int          transA,
+                 int          transB,
+                 int          M,
+                 int          N,
+                 int          K,
+                 float        alpha,
+                 const float *A,
+                 int          lda,
+                 const float *B,
+                 int          ldb,
+                 float        beta,
+                 float       *C,
+                 int          ldc) {
 #if defined(__ARM_NEON)
     if (transA == GEIST_OP_N && transB == GEIST_OP_T && beta == 0.0f) {
         /* C[M,N] = alpha * A[M,K] * B[N,K]^T (the y = x*W^T pattern). 4x4
@@ -541,17 +501,17 @@ static void geist_sgemm_impl(int          transA,
     }
 }
 
-static void geist_sgemv_impl(int          transA,
-                             int          M,
-                             int          N,
-                             float        alpha,
-                             const float *A,
-                             int          lda,
-                             const float *x,
-                             int          incx,
-                             float        beta,
-                             float       *y,
-                             int          incy) {
+void geist_sgemv(int          transA,
+                 int          M,
+                 int          N,
+                 float        alpha,
+                 const float *A,
+                 int          lda,
+                 const float *x,
+                 int          incx,
+                 float        beta,
+                 float       *y,
+                 int          incy) {
     if (transA == GEIST_OP_N) {
 #if defined(__ARM_NEON)
         if (incx == 1 && incy == 1 && beta == 0.0f) {
@@ -592,49 +552,3 @@ static void geist_sgemv_impl(int          transA,
 }
 
 #endif
-
-/* Public entry points: dispatch to the selected backend, optionally timing the
- * call when GEIST_PROFILE_GEMM=1. */
-void geist_sgemm(int          transA,
-                 int          transB,
-                 int          M,
-                 int          N,
-                 int          K,
-                 float        alpha,
-                 const float *A,
-                 int          lda,
-                 const float *B,
-                 int          ldb,
-                 float        beta,
-                 float       *C,
-                 int          ldc) {
-    if (!geist_gemm_prof()) {
-        geist_sgemm_impl(transA, transB, M, N, K, alpha, A, lda, B, ldb, beta, C, ldc);
-        return;
-    }
-    const unsigned long long t0 = geist_now_ns();
-    geist_sgemm_impl(transA, transB, M, N, K, alpha, A, lda, B, ldb, beta, C, ldc);
-    atomic_fetch_add(&g_gemm_ns, geist_now_ns() - t0);
-    atomic_fetch_add(&g_gemm_calls, 1);
-}
-
-void geist_sgemv(int          transA,
-                 int          M,
-                 int          N,
-                 float        alpha,
-                 const float *A,
-                 int          lda,
-                 const float *x,
-                 int          incx,
-                 float        beta,
-                 float       *y,
-                 int          incy) {
-    if (!geist_gemm_prof()) {
-        geist_sgemv_impl(transA, M, N, alpha, A, lda, x, incx, beta, y, incy);
-        return;
-    }
-    const unsigned long long t0 = geist_now_ns();
-    geist_sgemv_impl(transA, M, N, alpha, A, lda, x, incx, beta, y, incy);
-    atomic_fetch_add(&g_gemv_ns, geist_now_ns() - t0);
-    atomic_fetch_add(&g_gemv_calls, 1);
-}
