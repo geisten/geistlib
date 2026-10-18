@@ -113,7 +113,8 @@ jobs:
                   bin/linux/release/tests/bench_perf_sweep --gguf "$MODEL" \
                   --seq-lens 512 --decode-n 32 --warmup 8 --repeats 3 --m-max "$m" \
                   2>> route-out/bench.txt \
-                  | sed "s/^{/{\"cfg\":\"$cfg\",\"split\":\"$sp\",\"m_max\":$m,\"cycle\":$c,/" | tee -a route-out/bench.jsonl
+                  | sed "s/^{/{\"cfg\":\"$cfg\",\"split\":\"$sp\",\"m_max\":$m,\"cycle\":$c,/" | tee -a route-out/bench.jsonl \
+                  || echo "== FAILED: cycle $c $cfg split=$sp m_max=$m" | tee -a route-out/bench.txt
               done
             done
             done
