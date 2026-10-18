@@ -1,6 +1,8 @@
 # Offload: a run-time choice between placements fixed at load (proposal)
 
-Status: **proposal, nothing implemented.** Research branch
+Status: **phase 0 measured; streaming of spilled weights implemented in the
+Vulkan backend (opt-in, `GEIST_VK_STREAM_M_MIN`); the CPU/GPU route is not
+built yet.** Research branch
 `research/offload-scheduler`. Builds on the layer split of #49
 (`feat/49-layer-split`, not merged) and the MoE family of #48.
 
@@ -78,6 +80,54 @@ cover of the hottest 18.3 % of experts (Strata's point) is 40 % (Granite 3B,
 OLMoE) and **54 %** (Qwen3-30B-A3B, 128 experts). Small MoEs have no hot set;
 a static GPU set pays only from about 128 experts per layer on.
 
+## Phase 0: measured (RTX 2080 Ti box, #78)
+
+`tests/bench_offload_cost`, `.gitea/workflows/offload-cost.yml`, runs 1352,
+1362, 1364, 1366 (Gitea Actions, geist-vulkan, under `scripts/gpu-lock.sh`).
+RTX 2080 Ti on PCIe 3.0 x16, Ryzen 9 9950X, cpu_x86 with AVX-512 VNNI,
+`OMP_NUM_THREADS` unset. Medians of up to 50 repeats.
+
+**One linear, 5120 × 17408 (a Qwen3-14B FFN gate), m = 512, run 1366:**
+
+| step | Q4_0 | Q8_0 |
+| :-- | --: | --: |
+| CPU (cpu_x86) | 24.1 ms | 62.3 ms |
+| GPU compute, weight in VRAM | 3.9 ms | 4.4 ms |
+| GPU, weight in host memory, read by the shaders (#466, "v0") | 37.1 ms | 63.1 ms |
+| GPU, weight streamed into a VRAM slot, then computed ("v1", measured) | 7.7 ms | 11.8 ms |
+| activations up (10.5 MB) | 0.9 ms | 0.9 ms |
+| result down by DMA (35.7 MB) | 7.3 ms | 8.0 ms |
+| bulk weight upload | 8.6 GB/s | 7.9 GB/s |
+
+- **The GPU computes 6–14× faster than this CPU**; the 9950X is the strong
+  side only below ~16 rows.
+- **v0 is dead:** shaders reading the weight over the bus are as slow as the
+  CPU (37 vs 24 ms, 63 vs 62 ms). Phase 1 skips it.
+- **v1 pays from m ≈ 128 for Q8_0 and m ≈ 256–512 for Q4_0/Q4_K** on the
+  shapes measured; the streamed copy (≈ 8.6 GB/s) is the bound, not the GPU.
+- **Readback was the hidden cost.** Reading 35.7 MB back took 400 ms from a
+  BAR-window buffer (~90 MB/s, uncached PCIe reads) and 55 ms from a plain IO
+  buffer (write-combined system memory, ~650 MB/s). Host-read buffers now
+  take `HOST_CACHED` memory (run 1364): the DMA readback runs at ~5 GB/s.
+  The #49 split moves its hidden rows through host memory too; how it reads
+  them is worth checking (≈ 0.4 s per 512-row chunk at BAR speed).
+
+**End to end, Qwen3-14B Q8_0 (15.7 GB, 4.7 GB of it spilled to host memory),
+every layer on Vulkan, prompt 512, run 1366, tok/s:**
+
+| prefill chunk | spill, read over the bus | **spill, streamed** (`GEIST_VK_STREAM_M_MIN=32`) | cpu_x86 |
+| --: | --: | --: | --: |
+| 32 | 32.4 | 63.8 | 53.0 |
+| 64 | 70.3 | 123.1 | 56.9 |
+| 128 | 141.8 | 240.0 | 57.0 |
+| 256 | 162.6 | 393.0 | – |
+| 512 | 177.2 | **549.9** | – |
+
+Decode stays 2.61 tok/s in both (m = 1 never streams; it reads the spilled
+weights over the bus); the layer split of #49 is the decode answer (9.6
+tok/s at split 26). For comparison only (other run, 1305): llama.cpp
+`-ngl 26` with op offload prefilled at 485 tok/s.
+
 ## Where the threshold comes from
 
 Streaming a weight of `B` bytes costs `B / bw` once per chunk; running it on
@@ -150,16 +200,17 @@ The #49 split already gives each layer a home backend. Offload adds one thing
 per weight of a CPU layer: a **GPU twin**, the same `geist_weight` resolved on
 the GPU backend, whose bytes are *not* resident:
 
-- **v0, no new transfer code:** the twin is a Vulkan weight in host memory,
-  read by the shaders over the bus, exactly as Vulkan does today for weights
-  past VRAM (#466). Measured there: every layer on Vulkan with ~5 GiB in host
-  memory prefills at 170 tok/s against 121 for the split in the same run. It
-  proves the route and the threshold before any streaming code exists.
-- **v1, a staging ring:** two VRAM slots of the largest layer's size. The
-  twin's bytes are copied there by DMA (transfer queue) one layer ahead, so
-  layer `l+1` uploads while layer `l` computes. One bulk copy instead of
-  every workgroup reading tiles over the bus; this is what llama.cpp and
-  Strata do.
+- ~~v0, the shaders read the twin over the bus~~: as slow as the CPU
+  (phase 0), dropped.
+- **v1, streaming (built, `vk_weight_bind` in `vulkan/ops.c`):** a Vulkan
+  weight in host memory is copied by `vkCmdCopyBuffer` into the next of two
+  VRAM slots when `linear_t` runs it with `m >= GEIST_VK_STREAM_M_MIN`, and
+  the GEMM binds the slot. The sequence's hazard tracking orders copy and
+  GEMM. It lives entirely in the backend, so it also speeds up today's
+  "every layer on Vulkan, rest spilled" placement (3.1× prefill above). A
+  twin is then just a Vulkan weight that did not get VRAM. Open upgrades:
+  the copy on the transfer queue one weight ahead (copy and GEMM now share
+  the compute queue), and a calibrated `m_min` per dtype instead of the env.
 
 Experts (#48 phase 2) use the same twin: a **hot** expert's twin is
 resident in VRAM (from the versioned placement profile), a **cold** expert
@@ -248,10 +299,8 @@ No new vtable slot for v0: upload, `linear_t` and download exist.
 
 ## Plan
 
-**Phase 0: cost model, no engine code.** Measure `bw` (pinned host → VRAM,
-host-memory reads by a shader), and `t_cpu` / `t_gpu` per row for Q4_0, Q4_K,
-Q8_0 linears on the 2080 Ti box; compute `m_min` and compare it with the knee
-in a `GEIST_M_MAX` sweep of "every layer on Vulkan, rest spilled".
+**Phase 0: cost model — done** (results above). It also produced the
+`HOST_CACHED` readback fix and the in-backend streaming (former phase 2).
 
 **Phase 0b: the planner** (on top of #49, no offload yet). `offload_plan_build`
 with its unit test; it sets `split_layers` when the caller leaves it 0 and a
@@ -259,15 +308,16 @@ split backend is given. Decision rule: on the 2080 Ti box its pick for
 Qwen3-14B Q8_0 is within the run's resolution of the best hand split in
 decode.
 
-**Phase 1: v0 route** (on top of #49). Twins as host-memory Vulkan weights,
-the branch in `linear.c`, the threshold from the env.
+**Phase 1: the route** (on top of #49). Twins as Vulkan weights (resident
+where VRAM is left, else spilled and streamed), the branch in `linear.c`,
+the threshold from the env.
 Decision rule: keep if split 26 + offload prefills faster than both the split
 alone and every layer on the GPU, by more than the run's resolution, with
 decode within noise of the split (decode must not take the route).
 
-**Phase 2: v1 staging ring.** DMA prefetch one layer ahead.
-Target: ≥ 0.8× llama.cpp `-ngl 26` prefill (485 tok/s) on the same GGUF.
-Decision rule: keep if it beats v0 by more than the resolution.
+**Phase 2: overlap.** The copy on the transfer queue, one weight ahead.
+Decision rule: keep if it beats single-queue streaming by more than the
+resolution.
 
 **Phase 3: MoE.** Qwen3-30B-A3B Q4_K_M (18.6 GB, does not fit 11 GB):
 hot experts resident from the #48 profile, cold on the CPU in parallel with
@@ -284,10 +334,9 @@ patch for "single-backend runs pay nothing".
 
 ## Open questions
 
-- PCIe generation and link width on the 2080 Ti box; `bw` decides `m_min`
-  linearly.
-- Whether Vulkan's host-memory (v0) path reaches enough of `bw` with
-  m = 512 for phase 1 to show the effect, or whether phase 2 is needed first.
+- Streaming is off by default until a parent-vs-patch A/B (vulkan-ab.yml)
+  shows the readback change and the slot path cost nothing where they do
+  not apply, and the GPU parity suite passes on the real card.
 - Pinned host memory for DMA: the GGUF mapping is pageable. Staging needs
   either a pinned bounce buffer (one extra memcpy, CPU-bound) or importing
   the mapping (`VK_EXT_external_memory_host`, alignment limits).
