@@ -471,14 +471,10 @@ enum vk_placement vk_buffer_placement(const struct geist_buffer *buf) {
     return GEIST_OK;
 }
 
-/* A refused import turns importing off for the instance and says once
- * which step failed, the driver's VkResult and how much had been imported
- * (the caller copies). No second try: on NVIDIA 595 every import of the
- * read-only GGUF mapping fails, and after enough refused ones ordinary host
- * allocations fail too (#78, runs 1400, 1403). */
+/* The first refused import, once per instance: which step, the driver's
+ * VkResult and how many imports had succeeded (the caller copies). */
 static enum geist_status
 vk_import_refused(struct vk_state *st, const char *step, VkResult r, size_t bytes) {
-    st->host_import_align = 0;
     if (!st->import_refused_noted) {
         st->import_refused_noted = true;
         fprintf(stderr,
