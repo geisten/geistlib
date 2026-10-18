@@ -1,0 +1,65 @@
+grep -c 'offload: [1-9]' route-out/exact.txt
+geist: offload: linears of layers 16..31 run on cpu_x86 from 1 rows on
+geist: offload: 2016 linears (14000 rows) ran on cpu_x86
+geist: offload: linears of layers 16..31 run on cpu_x86 from 8 rows on
+geist: offload: 336 linears (12320 rows) ran on cpu_x86
+geist: offload: linears of layers 16..31 run on cpu_x86 from 1 rows on
+geist: offload: 2016 linears (14000 rows) ran on cpu_x86
+geist: offload: linears of layers 16..31 run on cpu_x86 from 8 rows on
+geist: offload: 336 linears (12320 rows) ran on cpu_x86
+model gguf_artifacts/smollm2-360m-instruct-q8_0.gguf (32 layers), cpu_x86 + cpu_x86, byte-identical
+  kv fp32 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+geist: offload: linears of layers 1..39 run on vulkan from 32 rows on
+geist: offload: 546 linears (27300 rows) ran on vulkan
+geist: offload: linears of layers 1..39 run on vulkan from 32 rows on
+geist: offload: 0 linears (0 rows) ran on vulkan
+geist: offload: linears of layers 26..39 run on vulkan from 32 rows on
+geist: offload: 0 linears (0 rows) ran on vulkan
+FAIL: split 26 (kv fp32): GEIST_E_OOM
+geist: offload: linears of layers 26..39 run on vulkan from 32 rows on
+geist: offload: 196 linears (9800 rows) ran on vulkan
+geist: offload: linears of layers 26..39 run on vulkan from 32 rows on
+geist: offload: 196 linears (9800 rows) ran on vulkan
+model /home/germar/geist-models/Qwen3-14B-Q8_0.gguf (40 layers), cpu_x86 + vulkan, reported
+  kv fp32 gpu only : GEIST_E_OOM
+  kv int8 gpu only : GEIST_E_OOM
+  kv int8 split  26: max|d| logits 0.168, after reset 0.225, greedy tokens matching 16/16
+  kv int4 gpu only : GEIST_E_OOM
+  kv int4 split  26: max|d| logits 0.492, after reset 1.44, greedy tokens matching 0/16
+{"cfg":"split","m_max":64,"cycle":1,"seq_len":512,"decode_n":32,"prefill_ms":3383.86,"decode_ms":3211.48,"total_ms":6595.34,"ttft_ms":3383.86,"prefill_tps":151.307,"decode_tps":9.964,"total_tps":82.482,"prefill_ms_best":3357.39,"prefill_ms_worst":3432.56,"decode_ms_best":3192.59,"decode_ms_worst":3228.36,"total_ms_best":6554.21,"total_ms_worst":6646.06,"total_tps_best":83.000,"total_tps_worst":81.853,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":5979.53,"threads":0,"samples":{"prefill_ms":[3432.556,3357.395,3361.620],"decode_ms":[3213.499,3228.360,3192.592],"total_ms":[6646.055,6585.755,6554.212],"ttft_ms":[3432.557,3357.395,3361.620]}}
+{"cfg":"route","m_max":64,"cycle":1,"seq_len":512,"decode_n":32,"prefill_ms":4304.87,"decode_ms":3453.58,"total_ms":7758.45,"ttft_ms":4304.87,"prefill_tps":118.935,"decode_tps":9.266,"total_tps":70.117,"prefill_ms_best":4278.79,"prefill_ms_worst":4328.06,"decode_ms_best":3354.17,"decode_ms_worst":3623.11,"total_ms_best":7632.96,"total_ms_worst":7930.88,"total_tps_best":71.270,"total_tps_worst":68.593,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":9863.32,"threads":0,"samples":{"prefill_ms":[4278.786,4328.062,4307.770],"decode_ms":[3354.170,3383.461,3623.112],"total_ms":[7632.956,7711.523,7930.883],"ttft_ms":[4278.786,4328.063,4307.771]}}
+{"cfg":"split","m_max":128,"cycle":1,"seq_len":512,"decode_n":32,"prefill_ms":3629.87,"decode_ms":3418.15,"total_ms":7048.01,"ttft_ms":3629.87,"prefill_tps":141.052,"decode_tps":9.362,"total_tps":77.185,"prefill_ms_best":3563.87,"prefill_ms_worst":3672.60,"decode_ms_best":3326.94,"decode_ms_worst":3486.31,"total_ms_best":6890.82,"total_ms_worst":7158.92,"total_tps_best":78.946,"total_tps_worst":75.989,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":5931.30,"threads":0,"samples":{"prefill_ms":[3672.604,3563.875,3653.117],"decode_ms":[3486.312,3326.944,3441.192],"total_ms":[7158.916,6890.819,7094.309],"ttft_ms":[3672.605,3563.876,3653.118]}}
+{"cfg":"route","m_max":128,"cycle":1,"seq_len":512,"decode_n":32,"prefill_ms":3425.14,"decode_ms":3538.16,"total_ms":6963.31,"ttft_ms":3425.15,"prefill_tps":149.483,"decode_tps":9.044,"total_tps":78.124,"prefill_ms_best":3336.52,"prefill_ms_worst":3495.62,"decode_ms_best":3500.78,"decode_ms_worst":3596.08,"total_ms_best":6854.14,"total_ms_worst":7091.70,"total_tps_best":79.368,"total_tps_worst":76.709,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":10004.79,"threads":0,"samples":{"prefill_ms":[3443.293,3336.521,3495.620],"decode_ms":[3500.778,3517.624,3596.084],"total_ms":[6944.071,6854.145,7091.704],"ttft_ms":[3443.294,3336.521,3495.621]}}
+{"cfg":"split","m_max":64,"cycle":2,"seq_len":512,"decode_n":32,"prefill_ms":3334.03,"decode_ms":3260.38,"total_ms":6594.41,"ttft_ms":3334.03,"prefill_tps":153.568,"decode_tps":9.815,"total_tps":82.494,"prefill_ms_best":2996.96,"prefill_ms_worst":3790.48,"decode_ms_best":3201.02,"decode_ms_worst":3358.16,"total_ms_best":6197.98,"total_ms_worst":7012.44,"total_tps_best":87.771,"total_tps_worst":77.576,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":6022.55,"threads":0,"samples":{"prefill_ms":[2996.961,3790.478,3214.656],"decode_ms":[3201.019,3221.965,3358.160],"total_ms":[6197.981,7012.443,6572.816],"ttft_ms":[2996.962,3790.479,3214.657]}}
+{"cfg":"route","m_max":64,"cycle":2,"seq_len":512,"decode_n":32,"prefill_ms":4299.30,"decode_ms":3186.86,"total_ms":7486.16,"ttft_ms":4299.30,"prefill_tps":119.089,"decode_tps":10.041,"total_tps":72.667,"prefill_ms_best":4282.93,"prefill_ms_worst":4309.74,"decode_ms_best":3170.32,"decode_ms_worst":3209.41,"total_ms_best":7475.55,"total_ms_worst":7492.33,"total_tps_best":72.771,"total_tps_worst":72.608,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":9975.32,"threads":0,"samples":{"prefill_ms":[4305.227,4309.744,4282.928],"decode_ms":[3170.320,3180.842,3209.405],"total_ms":[7475.547,7490.586,7492.333],"ttft_ms":[4305.228,4309.745,4282.928]}}
+{"cfg":"split","m_max":128,"cycle":2,"seq_len":512,"decode_n":32,"prefill_ms":3105.82,"decode_ms":3239.19,"total_ms":6345.01,"ttft_ms":3105.82,"prefill_tps":164.852,"decode_tps":9.879,"total_tps":85.737,"prefill_ms_best":2876.54,"prefill_ms_worst":3351.36,"decode_ms_best":3203.82,"decode_ms_worst":3282.70,"total_ms_best":6107.61,"total_ms_worst":6555.18,"total_tps_best":89.069,"total_tps_worst":82.988,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":6057.52,"threads":0,"samples":{"prefill_ms":[2876.544,3351.360,3089.543],"decode_ms":[3231.064,3203.821,3282.698],"total_ms":[6107.607,6555.181,6372.241],"ttft_ms":[2876.544,3351.361,3089.544]}}
+{"cfg":"route","m_max":128,"cycle":2,"seq_len":512,"decode_n":32,"prefill_ms":3360.20,"decode_ms":3206.25,"total_ms":6566.45,"ttft_ms":3360.20,"prefill_tps":152.372,"decode_tps":9.981,"total_tps":82.845,"prefill_ms_best":3306.92,"prefill_ms_worst":3418.73,"decode_ms_best":3192.81,"decode_ms_worst":3220.62,"total_ms_best":6499.73,"total_ms_worst":6639.35,"total_tps_best":83.696,"total_tps_worst":81.936,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":10010.97,"threads":0,"samples":{"prefill_ms":[3354.951,3418.733,3306.920],"decode_ms":[3205.322,3220.618,3192.807],"total_ms":[6560.273,6639.352,6499.727],"ttft_ms":[3354.952,3418.734,3306.921]}}
+{"cfg":"split","m_max":64,"cycle":3,"seq_len":512,"decode_n":32,"prefill_ms":3539.63,"decode_ms":3188.34,"total_ms":6727.97,"ttft_ms":3539.63,"prefill_tps":144.648,"decode_tps":10.037,"total_tps":80.856,"prefill_ms_best":3479.01,"prefill_ms_worst":3605.21,"decode_ms_best":3163.71,"decode_ms_worst":3200.87,"total_ms_best":6679.87,"total_ms_worst":6805.66,"total_tps_best":81.439,"total_tps_worst":79.933,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":6022.58,"threads":0,"samples":{"prefill_ms":[3605.212,3479.006,3534.664],"decode_ms":[3200.451,3200.865,3163.711],"total_ms":[6805.663,6679.871,6698.375],"ttft_ms":[3605.213,3479.006,3534.664]}}
+{"cfg":"route","m_max":64,"cycle":3,"seq_len":512,"decode_n":32,"prefill_ms":4275.45,"decode_ms":3170.12,"total_ms":7445.57,"ttft_ms":4275.45,"prefill_tps":119.754,"decode_tps":10.094,"total_tps":73.064,"prefill_ms_best":4266.36,"prefill_ms_worst":4284.23,"decode_ms_best":3159.69,"decode_ms_worst":3179.79,"total_ms_best":7426.05,"total_ms_worst":7455.54,"total_tps_best":73.256,"total_tps_worst":72.966,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":9975.29,"threads":0,"samples":{"prefill_ms":[4266.358,4284.234,4275.743],"decode_ms":[3159.687,3170.882,3179.793],"total_ms":[7426.045,7455.116,7455.536],"ttft_ms":[4266.359,4284.235,4275.744]}}
+{"cfg":"split","m_max":128,"cycle":3,"seq_len":512,"decode_n":32,"prefill_ms":3273.10,"decode_ms":3225.32,"total_ms":6498.41,"ttft_ms":3273.10,"prefill_tps":156.427,"decode_tps":9.922,"total_tps":83.713,"prefill_ms_best":3074.36,"prefill_ms_worst":3514.88,"decode_ms_best":3201.07,"decode_ms_worst":3271.19,"total_ms_best":6278.04,"total_ms_worst":6715.96,"total_tps_best":86.651,"total_tps_worst":81.001,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":6056.96,"threads":0,"samples":{"prefill_ms":[3074.360,3514.885,3230.046],"decode_ms":[3203.681,3201.072,3271.193],"total_ms":[6278.041,6715.957,6501.238],"ttft_ms":[3074.361,3514.885,3230.046]}}
+{"cfg":"route","m_max":128,"cycle":3,"seq_len":512,"decode_n":32,"prefill_ms":3259.14,"decode_ms":3203.42,"total_ms":6462.55,"ttft_ms":3259.14,"prefill_tps":157.097,"decode_tps":9.989,"total_tps":84.177,"prefill_ms_best":3153.52,"prefill_ms_worst":3367.81,"decode_ms_best":3186.70,"decode_ms_worst":3229.78,"total_ms_best":6383.30,"total_ms_worst":6561.57,"total_tps_best":85.222,"total_tps_worst":82.907,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":10010.45,"threads":0,"samples":{"prefill_ms":[3367.814,3153.522,3256.076],"decode_ms":[3193.759,3229.783,3186.704],"total_ms":[6561.573,6383.305,6442.781],"ttft_ms":[3367.815,3153.523,3256.077]}}
+geist: offload: linears of layers 26..39 run on vulkan from 32 rows on
+geist: offload: 2352 linears (150528 rows) ran on vulkan
+geist: offload: linears of layers 26..39 run on vulkan from 32 rows on
+geist: offload: 672 linears (86016 rows) ran on vulkan
+geist: offload: linears of layers 26..39 run on vulkan from 32 rows on
+geist: offload: 2352 linears (150528 rows) ran on vulkan
+geist: offload: linears of layers 26..39 run on vulkan from 32 rows on
+geist: offload: 672 linears (86016 rows) ran on vulkan
+geist: offload: linears of layers 26..39 run on vulkan from 32 rows on
+geist: offload: 2352 linears (150528 rows) ran on vulkan
+geist: offload: linears of layers 26..39 run on vulkan from 32 rows on
+geist: offload: 672 linears (86016 rows) ran on vulkan
+::group::Run { echo '```'; grep -E 'PASS|FAIL|byte-identical|offload|split' route-out/exact.txt route-out/vulkan.txt 2>/dev/null | head -80; echo '```';
+{ echo '```'; grep -E 'PASS|FAIL|byte-identical|offload|split' route-out/exact.txt route-out/vulkan.txt 2>/dev/null | head -80; echo '```';
