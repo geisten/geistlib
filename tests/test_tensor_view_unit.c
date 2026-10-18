@@ -24,7 +24,7 @@ static int g_fail = 0;
 
 static void fail(const char *backend, const char *what) {
     fprintf(stderr, "FAIL [%s]: %s\n", backend, what);
-    g_fail = 1;
+    g_fail++;
 }
 
 static struct geist_tensor dense_1d(struct geist_buffer *buf, int64_t n) {
@@ -171,6 +171,50 @@ static void run_backend(const char *backend) {
         cs.shape[0] = 1024;
         if (be->desc->prims->rope_apply(be, &x, &cs, &cs) == GEIST_OK) {
             fail(backend, "rope_apply accepted views past their buffer");
+        }
+    }
+
+    /* And views that fit their buffers but not x (#67): rope_apply reads
+     * seq * n_rot floats of cos and sin and rotates the first n_rot dims
+     * of each head. x [2,2,8] in ba; cos and sin [2,8] side by
+     * side in bb. */
+    if (be->desc->prims->rope_apply != nullptr) {
+        struct geist_tensor x = good, cs = b, sn = b;
+        x.ndim       = 3;
+        x.shape[0]   = 2;
+        x.shape[1]   = 2;
+        x.shape[2]   = 8;
+        x.stride[0]  = 16;
+        x.stride[1]  = 8;
+        x.stride[2]  = 1;
+        cs.ndim      = 2;
+        cs.shape[0]  = 2;
+        cs.shape[1]  = 8;
+        cs.stride[0] = 8;
+        cs.stride[1] = 1;
+        sn           = cs;
+        sn.offset    = 16 * sizeof(float);
+        if (be->desc->prims->rope_apply(be, &x, &cs, &sn) != GEIST_OK) {
+            fail(backend, "rope_apply rejected well-formed views");
+        }
+        static const struct {
+            int64_t     cos_rows, sin_rows, n_rot;
+            const char *what;
+        } ROPE_BAD[] = {
+                {1, 2, 8, "rope_apply accepted cos with fewer rows than x"},
+                {2, 1, 8, "rope_apply accepted sin with fewer rows than x"},
+                {2, 2, 10, "rope_apply accepted n_rot > head_dim"},
+                {2, 2, 7, "rope_apply accepted an odd n_rot"},
+        };
+        for (size_t i = 0; i < sizeof(ROPE_BAD) / sizeof(ROPE_BAD[0]); i++) {
+            struct geist_tensor c = cs, sb = sn;
+            c.shape[0]  = ROPE_BAD[i].cos_rows;
+            sb.shape[0] = ROPE_BAD[i].sin_rows;
+            c.shape[1] = sb.shape[1] = ROPE_BAD[i].n_rot;
+            c.stride[0] = sb.stride[0] = ROPE_BAD[i].n_rot;
+            if (be->desc->prims->rope_apply(be, &x, &c, &sb) == GEIST_OK) {
+                fail(backend, ROPE_BAD[i].what);
+            }
         }
     }
 

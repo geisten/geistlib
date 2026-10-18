@@ -7,6 +7,8 @@
 #ifndef GEMMA4_KERNELS_H
 #define GEMMA4_KERNELS_H
 
+#include "checked.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -73,6 +75,16 @@ void rope_apply(size_t      seq_len,
                 float       x[static seq_len * n_heads * head_dim],
                 const float cos[static seq_len * n_rot],
                 const float sin[static seq_len * n_rot]);
+
+/* The contract rope_apply's [static] bounds state, checked before the call
+ * by every backend that hands it views (AGENT.md §4): n_rot is even, in
+ * (0, head_dim], and cos/sin hold at least seq_len * n_rot elements. */
+[[nodiscard]] static inline bool
+rope_apply_shape_ok(size_t seq_len, size_t head_dim, size_t n_rot, size_t n_cos, size_t n_sin) {
+    size_t need = 0;
+    return n_rot != 0 && n_rot % 2 == 0 && n_rot <= head_dim && !ckd_mul(&need, seq_len, n_rot) &&
+           n_cos >= need && n_sin >= need;
+}
 
 /* Scaled dot-product attention with MQA broadcast and causal mask.
  *   q   shape [seq_len, n_q_heads,  head_dim]

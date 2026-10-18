@@ -483,6 +483,19 @@ minor release.
 
 ### Fixed
 
+- **AWQ in mmap-alias mode is refused instead of crashing (#66).** AWQ
+  divides the norm gammas in place; with the CPU backends' default
+  mmap-alias weights those are the read-only GGUF pages, and the load died
+  of SIGBUS. It now fails with `GEIST_E_UNSUPPORTED` and names
+  `GEIST_WEIGHT_MMAP=0`. `awq_scales_path` is documented as a load option:
+  only `geist_model_load_with_opts` reads it, `geist_session_create` never
+  did. `test_awq_int` passes the scales at load from a file it synthesises
+  for the model under test, so it runs on CI instead of always skipping.
+- **rope_apply refuses cos/sin views that do not cover x (#67).**
+  cpu_scalar, cpu_neon and the Vulkan host fallback check that cos and sin
+  hold `seq * n_rot` floats and that `n_rot` is even and at most
+  `head_dim` before rotating; the Vulkan device path applies the same
+  check. Metal already did.
 - **CPU backends: every tensor view is bounded by its buffer.** cpu_scalar's
   and cpu_neon's rope_apply, embedding_lookup, attention and F16 KV append
   unpacked their F32 views without checking the shape product for overflow
