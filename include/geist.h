@@ -286,10 +286,10 @@ struct geist_session_opts {
     /* @stability EXPERIMENTAL — AWQ (Activation-aware Weight Quantization)
      * scales file; nullptr = no AWQ. Read by geist_model_load_with_opts
      * only (geist_session_create ignores it): folds into attn_norm/ffn_norm
-     * gamma at load and scales the o_proj/down_proj input at runtime, so
-     * it needs copied weights: in mmap-alias mode (the CPU default) the
-     * load fails with GEIST_E_UNSUPPORTED; set GEIST_WEIGHT_MMAP=0.
-     * Independent of the weight quantization format. */
+     * gamma at load and scales the o_proj/down_proj input at runtime. In
+     * mmap-alias mode (the CPU and Metal default) the folded norms get
+     * buffers of their own, a few KB per layer; every other weight stays
+     * aliased. Independent of the weight quantization format. */
     const char *awq_scales_path;
 
     /* @stability EXPERIMENTAL — per-session KV cache quantization mode.

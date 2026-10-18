@@ -9,14 +9,16 @@
  * sized from the GGUF's norm tensors), so the test needs no AWQ fixture and
  * runs wherever the GGUF is present.
  *
- * The gammas are folded in place, so the weights must be copied: in
- * mmap-alias mode (the CPU default) they are the read-only GGUF pages and
- * the load refuses AWQ. The test checks that refusal, then sets
- * GEIST_WEIGHT_MMAP=0.
+ * AWQ folds into the norm gammas. In mmap-alias mode (the CPU default)
+ * those are the read-only GGUF pages, so the folded norms get buffers of
+ * their own (#72); with GEIST_WEIGHT_MMAP=0 they are folded in the copied
+ * weights. Both must give the same logits.
  *
  *   1. Load without AWQ: greedy decode N tokens, keep the first logits.
- *   2. Load with the synthesised scales: the first logits must differ.
- *   3. Bad magic, truncated, wrong channel count, missing file: the load
+ *   2. Load with the synthesised scales, mmap-alias mode: the first logits
+ *      must differ.
+ *   3. The same with GEIST_WEIGHT_MMAP=0: logits and tokens identical to 2.
+ *   4. Bad magic, truncated, wrong channel count, missing file: the load
  *      fails and leaves *out nullptr.
  */
 #include "test_helpers.h"
@@ -180,39 +182,40 @@ int main(void) {
     }
     printf("synthesised %u AWQ entries in %s\n", n_entries, good);
 
+    /* cpu_scalar unless GEIST_BACKEND names another (metal, cpu_neon, ...).
+     * The comparison of the two weight modes is exact, and cpu_neon cannot
+     * pass it: its F32 linear (Accelerate sgemv) gives different bits for a
+     * matrix at the GGUF's 32-byte alignment than for the arena's 64-byte
+     * copy, so its logits differ by ~4e-6 between the modes even without
+     * AWQ, which the uncompensated synthetic scales amplify (up to 1.3 in
+     * an ASan build). cpu_scalar and Metal give identical logits. */
+    const char *name = getenv("GEIST_BACKEND") != nullptr ? getenv("GEIST_BACKEND") : "cpu_scalar";
     struct geist_backend *be = nullptr;
-    enum geist_status     s  = GEIST_E_UNSUPPORTED;
-    for (const char *const *n =
-                 (const char *const[]) {"cpu_neon", "cpu_x86", "cpu_scalar", nullptr};
-         s != GEIST_OK && *n != nullptr;
-         n++) {
-        s = geist_backend_create(*n, nullptr, nullptr, &be);
-    }
+    enum geist_status     s  = geist_backend_create(name, nullptr, nullptr, &be);
     if (s != GEIST_OK) {
         fprintf(stderr, "backend create failed: %s\n", geist_last_create_error());
         return GEIST_TEST_ERROR;
     }
 
-    /* mmap-alias mode: refused, not a write into the read-only mmap. */
-    int fails = 0;
-    setenv("GEIST_WEIGHT_MMAP", "1", 1);
-    fails += expect_refused(model_path, be, good, "AWQ in mmap-alias mode");
-    setenv("GEIST_WEIGHT_MMAP", "0", 1);
-
-    constexpr size_t CAP    = (size_t) 1 << 20;
-    float           *base   = calloc(CAP, sizeof(float));
-    float           *awq    = calloc(CAP, sizeof(float));
-    size_t           n_base = 0;
-    size_t           n_awq  = 0;
-    geist_token_t    t_base[N_DECODE];
-    geist_token_t    t_awq[N_DECODE];
-    if (base == nullptr || awq == nullptr) {
-        fprintf(stderr, "out of memory\n");
-        fails++;
-        goto done;
+    /* Pass 0: no AWQ. Pass 1: AWQ, mmap-alias weights. Pass 2: AWQ, copied
+     * weights (GEIST_WEIGHT_MMAP=0). */
+    static const char *const PASS[]     = {"no AWQ", "AWQ, mmap-alias", "AWQ, GEIST_WEIGHT_MMAP=0"};
+    constexpr size_t         CAP        = (size_t) 1 << 20;
+    int                      fails      = 0;
+    float                   *logits[3]  = {nullptr, nullptr, nullptr};
+    size_t                   n_logit[3] = {0, 0, 0};
+    geist_token_t            tokens[3][N_DECODE];
+    for (int pass = 0; pass < 3; pass++) {
+        logits[pass] = calloc(CAP, sizeof(float));
+        if (logits[pass] == nullptr) {
+            fprintf(stderr, "out of memory\n");
+            fails++;
+            goto done;
+        }
     }
 
-    for (int pass = 0; pass < 2; pass++) {
+    for (int pass = 0; pass < 3; pass++) {
+        setenv("GEIST_WEIGHT_MMAP", pass == 2 ? "0" : "1", 1);
         const struct geist_session_opts opts = {
                 .max_seq_len     = 1024,
                 .awq_scales_path = pass == 0 ? nullptr : good,
@@ -221,43 +224,55 @@ int main(void) {
         s                         = geist_model_load_with_opts(model_path, be, &opts, &model);
         if (s != GEIST_OK) {
             fprintf(stderr,
-                    "FAIL: load %s AWQ: status %d (%s)\n",
-                    pass == 0 ? "without" : "with",
+                    "FAIL: load (%s): status %d (%s)\n",
+                    PASS[pass],
                     (int) s,
                     geist_last_create_error());
             fails++;
             goto done;
         }
-        const size_t n =
-                decode_tokens(model, be, CAP, pass == 0 ? base : awq, pass == 0 ? t_base : t_awq);
+        n_logit[pass] = decode_tokens(model, be, CAP, logits[pass], tokens[pass]);
         geist_model_destroy(model);
-        if (n == 0) {
-            fprintf(stderr, "FAIL: decode %s AWQ failed\n", pass == 0 ? "without" : "with");
+        if (n_logit[pass] == 0) {
+            fprintf(stderr, "FAIL: decode (%s) failed\n", PASS[pass]);
             fails++;
             goto done;
         }
-        *(pass == 0 ? &n_base : &n_awq) = n;
-        printf("%s AWQ tokens:", pass == 0 ? "without" : "with");
+        printf("%-26s tokens:", PASS[pass]);
         for (int i = 0; i < N_DECODE; i++) {
-            printf(" %d", (pass == 0 ? t_base : t_awq)[i]);
+            printf(" %d", tokens[pass][i]);
         }
         printf("\n");
     }
+    unsetenv("GEIST_WEIGHT_MMAP");
 
     /* Effect: the scales divide the attn/ffn norm gammas, so the first
      * logits move. Equal logits mean AWQ was silently ignored. */
-    if (n_base != n_awq) {
-        fprintf(stderr, "FAIL: vocab differs (%zu vs %zu)\n", n_base, n_awq);
+    if (n_logit[0] != n_logit[1] || n_logit[1] != n_logit[2]) {
+        fprintf(stderr,
+                "FAIL: vocab differs (%zu, %zu, %zu)\n",
+                n_logit[0],
+                n_logit[1],
+                n_logit[2]);
         fails++;
     } else {
         float max_diff = 0.0f;
-        for (size_t i = 0; i < n_base; i++) {
-            max_diff = fmaxf(max_diff, fabsf(base[i] - awq[i]));
+        for (size_t i = 0; i < n_logit[0]; i++) {
+            max_diff = fmaxf(max_diff, fabsf(logits[0][i] - logits[1][i]));
         }
         printf("max |logit(AWQ) - logit(no AWQ)| = %g\n", (double) max_diff);
         if (!(max_diff > 1e-3f)) {
             fprintf(stderr, "FAIL: AWQ had no effect on the logits\n");
             fails++;
+        }
+        /* The folded gammas are the same divisions in both modes. */
+        if (memcmp(logits[1], logits[2], n_logit[1] * sizeof(float)) != 0 ||
+            memcmp(tokens[1], tokens[2], sizeof tokens[1]) != 0) {
+            fprintf(stderr,
+                    "FAIL: AWQ logits or tokens differ between mmap-alias and copied weights\n");
+            fails++;
+        } else {
+            printf("AWQ logits and tokens identical with mmap-alias and copied weights\n");
         }
     }
 
@@ -267,8 +282,10 @@ int main(void) {
     fails += expect_refused(model_path, be, missing, "missing file");
 
 done:
-    free(base);
-    free(awq);
+    unsetenv("GEIST_WEIGHT_MMAP");
+    for (int pass = 0; pass < 3; pass++) {
+        free(logits[pass]);
+    }
     geist_backend_destroy(be);
     unlink(good);
     unlink(bad_n);
@@ -276,7 +293,8 @@ done:
     unlink(trunc);
     rmdir(dir);
     if (fails == 0) {
-        printf("PASS: AWQ scales applied at load change the logits; malformed files are refused\n");
+        printf("PASS: AWQ scales applied at load change the logits, alike with mmap-alias and "
+               "copied weights; malformed files are refused\n");
         return GEIST_TEST_PASS;
     }
     return GEIST_TEST_FAIL;

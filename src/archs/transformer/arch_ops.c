@@ -853,9 +853,69 @@ transformer_pin_prefix(struct transformer_arch_session *sess, size_t n, const ge
     return rc;
 }
 
-/* ---- AWQ scale application -------------------------------------------- *
- *
- * Folds attn_norm and ffn_norm gamma in-place against per-channel AWQ
+/* ---- AWQ scale application -------------------------------------------- */
+
+/* gamma /= s for one attn/ffn norm of layer L. In β mode the gamma lives in
+ * the weight arena and is divided in place. In mmap-alias mode it is the
+ * GGUF's read-only pages (#66), so the folded gamma goes into a buffer of its
+ * own: backend-owned like the rest of L->bufs, where it takes the aliased
+ * buffer's slot, and destroyed with them at model destroy. Only the folded
+ * norms are copied; every other tensor stays aliased (#72). */
+[[nodiscard]] static enum geist_status awq_fold_norm(struct transformer_arch_state    *st,
+                                                     struct transformer_layer_weights *L,
+                                                     size_t                            n,
+                                                     const float                       s[static n],
+                                                     struct geist_tensor              *norm) {
+    struct geist_backend            *be = st->backend;
+    const struct geist_backend_vtbl *v  = be->desc->vtbl;
+    float                           *g  = (float *) v->buffer_map(norm->buffer);
+    if (g == nullptr) {
+        return GEIST_E_BACKEND; /* the backend said why */
+    }
+    if (st->weight_arena != nullptr) {
+        for (size_t j = 0; j < n; j++)
+            g[j] /= s[j];
+        v->buffer_unmap(norm->buffer);
+        return GEIST_OK;
+    }
+    float *folded = heap_alloc_array_aligned(float, n);
+    if (folded == nullptr) {
+        v->buffer_unmap(norm->buffer);
+        geist_backend_set_error(be, GEIST_E_OOM, "AWQ: no memory for a %zu-float norm", n);
+        return GEIST_E_OOM;
+    }
+    for (size_t j = 0; j < n; j++)
+        folded[j] = g[j] / s[j];
+    v->buffer_unmap(norm->buffer);
+
+    size_t slot = 0;
+    while (slot < L->n_bufs && L->bufs[slot] != norm->buffer)
+        slot++;
+    struct geist_buffer *own = nullptr;
+    enum geist_status    rc  = GEIST_E_INTERNAL;
+    if (slot == L->n_bufs) {
+        geist_backend_set_error(be, rc, "AWQ: layer %d norm is not a layer buffer", L->layer_idx);
+    } else {
+        rc = v->buffer_create(be, n * sizeof(float), GEIST_BUFFER_WEIGHT, GEIST_MEMORY_AUTO, &own);
+    }
+    if (rc == GEIST_OK) {
+        rc = v->buffer_upload(own, n * sizeof(float), (const uint8_t *) folded);
+        if (rc != GEIST_OK)
+            v->buffer_destroy(be, own);
+    }
+    void *pf = folded;
+    safe_free(&pf);
+    if (rc != GEIST_OK) {
+        return rc;
+    }
+    v->buffer_destroy(be, L->bufs[slot]);
+    L->bufs[slot] = own;
+    norm->buffer  = own;
+    return GEIST_OK;
+}
+
+/*
+ * Folds attn_norm and ffn_norm gamma against per-channel AWQ
  * scales so the runtime sees a single gamma multiply (zero AWQ overhead
  * for the foldable norms). Stores 1/s for the non-foldable o_proj and
  * down_proj inputs as host arrays on the layer struct; the forward path
@@ -882,8 +942,6 @@ enum geist_status apply_awq_to_state(struct transformer_arch_state *st, const ch
         return GEIST_E_FILE_NOT_FOUND;
     }
 
-    const struct geist_backend_vtbl *v = st->backend->desc->vtbl;
-
     enum geist_status rc = GEIST_OK;
     char              key[64];
 
@@ -906,14 +964,9 @@ enum geist_status apply_awq_to_state(struct transformer_arch_state *st, const ch
                 rc = GEIST_E_INVALID_ARG;
                 goto cleanup;
             }
-            float *g = (float *) v->buffer_map(L->attn_norm.buffer);
-            if (g == nullptr) {
-                rc = GEIST_E_BACKEND; /* the backend said why */
+            rc = awq_fold_norm(st, L, n, s, &L->attn_norm);
+            if (rc != GEIST_OK)
                 goto cleanup;
-            }
-            for (size_t j = 0; j < st->d_model; j++)
-                g[j] /= s[j];
-            v->buffer_unmap(L->attn_norm.buffer);
         }
 
         /* ffn_norm gamma /= s_ffn_norm */
@@ -930,14 +983,9 @@ enum geist_status apply_awq_to_state(struct transformer_arch_state *st, const ch
                 rc = GEIST_E_INVALID_ARG;
                 goto cleanup;
             }
-            float *g = (float *) v->buffer_map(L->ffn_norm.buffer);
-            if (g == nullptr) {
-                rc = GEIST_E_BACKEND; /* the backend said why */
+            rc = awq_fold_norm(st, L, n, s, &L->ffn_norm);
+            if (rc != GEIST_OK)
                 goto cleanup;
-            }
-            for (size_t j = 0; j < st->d_model; j++)
-                g[j] /= s[j];
-            v->buffer_unmap(L->ffn_norm.buffer);
         }
 
         /* o_proj input: 1/s applied at runtime to attn_out [q_out]. */

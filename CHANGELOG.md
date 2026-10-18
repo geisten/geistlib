@@ -483,14 +483,21 @@ minor release.
 
 ### Fixed
 
-- **AWQ in mmap-alias mode is refused instead of crashing (#66).** AWQ
-  divides the norm gammas in place; with the CPU backends' default
-  mmap-alias weights those are the read-only GGUF pages, and the load died
-  of SIGBUS. It now fails with `GEIST_E_UNSUPPORTED` and names
-  `GEIST_WEIGHT_MMAP=0`. `awq_scales_path` is documented as a load option:
-  only `geist_model_load_with_opts` reads it, `geist_session_create` never
-  did. `test_awq_int` passes the scales at load from a file it synthesises
-  for the model under test, so it runs on CI instead of always skipping.
+- **AWQ works with mmap-alias weights, without copying the model (#66,
+  #72).** AWQ divides the attn/ffn norm gammas; with the default mmap-alias
+  weights (CPU and Metal) those were the read-only GGUF pages, and the load
+  died of SIGBUS. The folded norms now get buffers of their own, a few KB
+  per layer, and every other weight stays aliased: gemma4-e2b with AWQ peaks
+  at 3977 MB RSS on cpu_neon (3976 MB without; 8396 MB with
+  `GEIST_WEIGHT_MMAP=0`), and Metal is unchanged at 6032 MB. With
+  `GEIST_WEIGHT_MMAP=0` the gammas are still folded in the copied weights,
+  to the same logits on cpu_scalar and Metal (cpu_neon's F32 sgemv rounds
+  differently for the GGUF's 32-byte-aligned matrices than for the arena's
+  64-byte copies, with or without AWQ). `awq_scales_path` is documented as
+  a load option: only `geist_model_load_with_opts` reads it,
+  `geist_session_create` never did. `test_awq_int` passes the scales at
+  load from a file it synthesises for the model under test, so it runs on
+  CI instead of always skipping.
 - **rope_apply refuses cos/sin views that do not cover x (#67).**
   cpu_scalar, cpu_neon and the Vulkan host fallback check that cos and sin
   hold `seq * n_rot` floats and that `n_rot` is even and at most
