@@ -731,10 +731,6 @@ void linear_q3k_w3a8_prefill_pre(size_t        m,
                                  const void   *w_q3k,
                                  float        *y);
 
-/* PTQTP kernels live in their own module — see ptqtp_kernel.h.
- * Public entry points: ptqtp_gemv_2plane_fp16alpha, ptqtp_gemv_3plane_fp32alpha,
- * ptqtp_gemm_2plane_fp32alpha. */
-
 /* W8A8 decode for Q8_0 (32 elements, 1 fp16 scale + 32 int8 quants, no
  * offset).
  *
