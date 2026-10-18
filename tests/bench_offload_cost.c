@@ -16,6 +16,8 @@
  *   dn_*     the output download from where y can live: the BAR window
  *            (GEIST_MEMORY_AUTO scratch, read by the CPU uncached over PCIe),
  *            an IO buffer in system memory, device-local via staging
+ *   gpu>io   zero copy: linear_t writes y straight into the IO buffer, then
+ *            the host reads all of it
  *
  * and once per dtype the bulk upload of the weight into VRAM (bw), the cost
  * the v1 staging ring pays per chunk. From these:
@@ -260,7 +262,7 @@ int main(void) {
     }
 
     fprintf(stderr,
-            "%-5s %5s %10s %10s %10s %8s %10s %10s %10s\n",
+            "%-5s %5s %10s %10s %10s %8s %10s %10s %10s %10s\n",
             "dtype",
             "m",
             "cpu us",
@@ -269,7 +271,8 @@ int main(void) {
             "up us",
             "dn_bar us",
             "dn_io us",
-            "dn_dev us");
+            "dn_dev us",
+            "gpu>io us");
     /* Blobs live to the end: the Vulkan weight registry is keyed by the host
      * pointer, so a freed and reused address would find a stale entry. */
     uint8_t *blobs[sizeof QF / sizeof QF[0]] = {nullptr};
@@ -327,6 +330,10 @@ int main(void) {
             const uint64_t dn_io  = measure(target, &o);
             o.by                  = by_dev[0];
             const uint64_t dn_dev = measure(target, &o);
+            /* zero copy: the shader writes y into the host-read IO buffer */
+            o.kind = OP_GPU, o.by = by_io, o.dl_bytes = m * n_out * 4;
+            const uint64_t t_gpu_io = measure(target, &o);
+            o.dl_bytes              = 64;
             o.kind = OP_GPU, o.be = vk_host, o.w = &w_vh, o.bx = bx[1], o.by = by_dev[1];
             const uint64_t t_host = measure(target, &o);
             if (i == 0)
@@ -338,11 +345,11 @@ int main(void) {
                 rc = 1;
             else {
                 t_v0[i] = t_up + t_host + dn;
-                t_v1[i] = t_up + t_gpu + dn;
+                t_v1[i] = t_up + (t_gpu_io != 0 && t_gpu_io < t_gpu + dn ? t_gpu_io : t_gpu + dn);
             }
             printf("{\"dtype\":\"%s\",\"n_in\":%zu,\"n_out\":%zu,\"weight_bytes\":%zu,\"m\":%zu,"
                    "\"cpu_ns\":%llu,\"gpu_ns\":%llu,\"gpu_host_ns\":%llu,\"up_ns\":%llu,"
-                   "\"dn_bar_ns\":%llu,\"dn_io_ns\":%llu,\"dn_dev_ns\":%llu,"
+                   "\"dn_bar_ns\":%llu,\"dn_io_ns\":%llu,\"dn_dev_ns\":%llu,\"gpu_io_ns\":%llu,"
                    "\"bulk_upload_ns\":%llu}\n",
                    f->name,
                    n_in,
@@ -356,9 +363,10 @@ int main(void) {
                    (unsigned long long) dn_bar,
                    (unsigned long long) dn_io,
                    (unsigned long long) dn_dev,
+                   (unsigned long long) t_gpu_io,
                    (unsigned long long) t_bulk);
             fprintf(stderr,
-                    "%-5s %5zu %10.1f %10.1f %10.1f %8.1f %10.1f %10.1f %10.1f\n",
+                    "%-5s %5zu %10.1f %10.1f %10.1f %8.1f %10.1f %10.1f %10.1f %10.1f\n",
                     f->name,
                     m,
                     t_cpu[i] / 1e3,
@@ -367,7 +375,8 @@ int main(void) {
                     t_up / 1e3,
                     dn_bar / 1e3,
                     dn_io / 1e3,
-                    dn_dev / 1e3);
+                    dn_dev / 1e3,
+                    t_gpu_io / 1e3);
         }
         const double bw_gbs   = t_bulk ? (double) bytes / (double) t_bulk : 0.0;
         const double host_gbs = t_host1 ? (double) bytes / (double) t_host1 : 0.0;
