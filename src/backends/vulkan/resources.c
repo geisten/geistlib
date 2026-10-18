@@ -23,6 +23,19 @@ vk_find_mem_type(const struct vk_state *st, uint32_t type_bits, VkMemoryProperty
     return UINT32_MAX;
 }
 
+/* A host-visible type for memory the HOST READS: HOST_CACHED where the
+ * device has it. The first HOST_VISIBLE | HOST_COHERENT type is
+ * write-combined on NVIDIA, and CPU reads from it run at ~650 MB/s from
+ * system memory (~90 MB/s from the BAR window) instead of memcpy speed
+ * (#78 phase 0, run 1362). Upload staging keeps the write-combined type. */
+static uint32_t vk_find_readback_type(const struct vk_state *st, uint32_t type_bits) {
+    const VkMemoryPropertyFlags vis =
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    const uint32_t cached =
+            vk_find_mem_type(st, type_bits, vis | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    return cached != UINT32_MAX ? cached : vk_find_mem_type(st, type_bits, vis);
+}
+
 /* The device-memory limit for a device-local allocation from `mem_type`:
  * its heap, lowered by GEIST_VK_VRAM_BUDGET. */
 static size_t vk_vram_limit(const struct vk_state *st, uint32_t mem_type) {
@@ -224,6 +237,10 @@ enum geist_status vk_memory_info(const struct geist_backend *be, struct geist_ba
                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
                                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    }
+    if (mem_type == UINT32_MAX && !device_local &&
+        (role == GEIST_BUFFER_STAGING || role == GEIST_BUFFER_IO)) {
+        mem_type = vk_find_readback_type(st, req.memoryTypeBits);
     }
     if (mem_type == UINT32_MAX) {
         mem_type = vk_find_mem_type(st, req.memoryTypeBits, want);
@@ -551,6 +568,7 @@ size_t vk_fast_host_bytes(struct geist_backend *be) {
 /* A host-visible, mapped staging buffer of `size` bytes. */
 [[nodiscard]] static enum geist_status vk_staging_create(struct vk_state *st,
                                                          size_t           size,
+                                                         bool             readback,
                                                          VkBuffer        *out_buf,
                                                          VkDeviceMemory  *out_mem,
                                                          void           **out_map) {
@@ -568,13 +586,15 @@ size_t vk_fast_host_bytes(struct geist_backend *be) {
     }
     VkMemoryRequirements req;
     st->fn.GetBufferMemoryRequirements(st->device, *out_buf, &req);
-    const uint32_t       mem_type = vk_find_mem_type(st,
-                                                     req.memoryTypeBits,
-                                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VkMemoryAllocateInfo minfo    = {.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                                     .allocationSize  = req.size,
-                                     .memoryTypeIndex = mem_type};
+    const uint32_t mem_type =
+            readback ? vk_find_readback_type(st, req.memoryTypeBits)
+                     : vk_find_mem_type(st,
+                                        req.memoryTypeBits,
+                                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkMemoryAllocateInfo minfo = {.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                  .allocationSize  = req.size,
+                                  .memoryTypeIndex = mem_type};
     if (mem_type == UINT32_MAX ||
         st->fn.AllocateMemory(st->device, &minfo, nullptr, out_mem) != VK_SUCCESS ||
         st->fn.BindBufferMemory(st->device, *out_buf, *out_mem, 0) != VK_SUCCESS ||
@@ -604,7 +624,7 @@ vk_staged_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t *src) {
     if (st->up_buf == VK_NULL_HANDLE) {
         void                   *map = nullptr;
         const enum geist_status s =
-                vk_staging_create(st, VK_UP_STAGE_BYTES, &st->up_buf, &st->up_mem, &map);
+                vk_staging_create(st, VK_UP_STAGE_BYTES, false, &st->up_buf, &st->up_mem, &map);
         if (s != GEIST_OK) {
             return s;
         }
@@ -629,7 +649,7 @@ vk_staged_download(struct geist_buffer *buf, size_t n_bytes, uint8_t *dst) {
     VkBuffer          staging = VK_NULL_HANDLE;
     VkDeviceMemory    mem     = VK_NULL_HANDLE;
     void             *map     = nullptr;
-    enum geist_status s       = vk_staging_create(st, n_bytes, &staging, &mem, &map);
+    enum geist_status s       = vk_staging_create(st, n_bytes, true, &staging, &mem, &map);
     if (s != GEIST_OK) {
         return s;
     }

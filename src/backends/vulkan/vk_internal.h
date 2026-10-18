@@ -166,8 +166,12 @@ struct vk_dirty {
 };
 
 enum {
-    VK_XRING_CAP   = 192u << 20, /* a full prefill chunk stages ~124 MB */
-    VK_MAX_M       = 512,        /* caps.max_m; resolve_weight checks it x n_in fits the ring */
+    VK_XRING_CAP    = 192u << 20, /* a full prefill chunk stages ~124 MB */
+    VK_MAX_M        = 512,
+    VK_STREAM_M_MIN = 32,
+    /* default row threshold for streaming spilled weights (#78) */ /* caps.max_m; resolve_weight
+                                                                       checks it x n_in fits the
+                                                                       ring */
     VK_DIRTY_CAP   = 96,
     VK_DSET_CACHE  = 4096,
     VK_SEQ_CMDBUFS = 64, /* rolling submission ring */
@@ -231,6 +235,17 @@ struct vk_state {
     size_t weight_reserve;
     size_t spilled_weights;
     size_t spilled_weight_bytes;
+    /* A spilled weight is read over the bus on every use. From
+     * stream_m_min rows on, linear_t copies it into one of two VRAM slots
+     * first (one DMA per use instead of the shaders' scattered reads, #78)
+     * and binds the slot. Default VK_STREAM_M_MIN; GEIST_VK_STREAM_M_MIN
+     * sets it, "0" (SIZE_MAX here) never streams. A slot that cannot be allocated turns
+     * streaming off for the instance. */
+    size_t               stream_m_min;
+    struct geist_buffer *wslot[2];
+    uint32_t             wslot_next;
+    uint64_t             stat_streamed;
+    uint64_t             stat_streamed_bytes;
     /* VK_EXT_memory_budget is enabled: vk_heap_budget reports the driver's
      * budget and usage, which see every allocation on the device (#665). */
     bool has_mem_budget;
