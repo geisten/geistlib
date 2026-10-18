@@ -232,8 +232,8 @@ static int check_mN(const char                *name,
     int    fails = 0;
     char   what[160];
     float *y  = xmalloc(m * n_out * sizeof(float));
-    float     *yf = xmalloc(n_out * sizeof(float));
-    float     *yq = xmalloc(n_out * sizeof(float));
+    float *yf = xmalloc(n_out * sizeof(float));
+    float *yq = xmalloc(n_out * sizeof(float));
     w->linear_mN(m, x, w, be, y);
     for (size_t t = 0; t < m; t++) {
         ref_fp32(n_out, n_in, W, x + t * n_in, yf);
@@ -360,10 +360,10 @@ static int check_backend(const char *name, bool x8_policy) {
         }
 
         /* cpu_neon's x8 prefill is int8 unless GEIST_PQ2_0_SGEMM_PREFILL=1 */
-        const char *sgemm   = getenv("GEIST_PQ2_0_SGEMM_PREFILL");
-        const bool  neon_q8 = neon && w.backend_layout == GEIST_W_LAYOUT_PQ2_0_X8_GEMV &&
-                             !(sgemm != nullptr && sgemm[0] == '1');
-        const size_t n_ms = (x86 || neon_q8) && n_in <= 5120 ? 2 : 1;
+        const char  *sgemm   = getenv("GEIST_PQ2_0_SGEMM_PREFILL");
+        const bool   neon_q8 = neon && w.backend_layout == GEIST_W_LAYOUT_PQ2_0_X8_GEMV &&
+                               !(sgemm != nullptr && sgemm[0] == '1');
+        const size_t n_ms    = (x86 || neon_q8) && n_in <= 5120 ? 2 : 1;
         for (size_t i = 0; i < n_ms; i++) {
             fails += check_mN(name, x86 || neon_q8, n_out, n_in, ms[i], W, x, &w, be);
         }
