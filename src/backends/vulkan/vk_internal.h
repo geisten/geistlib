@@ -231,6 +231,17 @@ struct vk_state {
     size_t weight_reserve;
     size_t spilled_weights;
     size_t spilled_weight_bytes;
+    /* A spilled weight is read over the bus on every use. From
+     * stream_m_min rows on, linear_t copies it into one of two VRAM slots
+     * first (one DMA per use instead of the shaders' scattered reads, #78)
+     * and binds the slot. SIZE_MAX (the default) never streams;
+     * GEIST_VK_STREAM_M_MIN sets it. A slot that cannot be allocated turns
+     * streaming off for the instance. */
+    size_t               stream_m_min;
+    struct geist_buffer *wslot[2];
+    uint32_t             wslot_next;
+    uint64_t             stat_streamed;
+    uint64_t             stat_streamed_bytes;
     /* VK_EXT_memory_budget is enabled: vk_heap_budget reports the driver's
      * budget and usage, which see every allocation on the device (#665). */
     bool has_mem_budget;

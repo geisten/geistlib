@@ -1782,6 +1782,49 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
 /* Tensor-path linear: x staged into the VRAM ring, weight from the VRAM
  * registry, y written to its host-visible home — no host round-trip, no
  * flush. The hot path. */
+/* The buffer linear_t binds for weight `wbuf` at m rows: wbuf itself, or,
+ * for a weight spilled to host memory at m >= stream_m_min, the next of two
+ * VRAM slots after a recorded copy of it there (#78). The sequence's hazard
+ * tracking orders the copy before the GEMM and the next copy into a slot
+ * after the GEMM that read it. */
+[[nodiscard]] static enum geist_status vk_weight_bind(struct geist_backend *be,
+                                                      struct geist_buffer  *wbuf,
+                                                      size_t                m,
+                                                      struct geist_buffer **out) {
+    struct vk_state *st = be->state;
+    *out                = wbuf;
+    if (wbuf->device_mem || m < st->stream_m_min) {
+        return GEIST_OK;
+    }
+    struct geist_buffer **slot = &st->wslot[st->wslot_next];
+    if (*slot == nullptr || (*slot)->bytes < wbuf->bytes) {
+        /* the old slot may be bound by a recorded dispatch */
+        vk_seq_flush(st);
+        if (*slot != nullptr) {
+            vk_buffer_destroy(be, *slot);
+            *slot = nullptr;
+        }
+        if (vk_buffer_create(be, wbuf->bytes, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_DEVICE, slot) !=
+            GEIST_OK) {
+            fprintf(stderr,
+                    "geist vulkan: no VRAM for a %zu MiB weight slot; spilled weights are read "
+                    "over the bus (#78)\n",
+                    wbuf->bytes >> 20);
+            st->stream_m_min = SIZE_MAX;
+            return GEIST_OK;
+        }
+    }
+    const enum geist_status s = vk_buffer_copy(*slot, 0, wbuf, 0, wbuf->bytes);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    st->wslot_next ^= 1u;
+    st->stat_streamed++;
+    st->stat_streamed_bytes += wbuf->bytes;
+    *out = *slot;
+    return GEIST_OK;
+}
+
 [[nodiscard]] static enum geist_status vk_linear_t(struct geist_backend      *be,
                                                    const struct geist_tensor *t_x,
                                                    const struct geist_weight *w,
@@ -1822,6 +1865,10 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
         }
         bi[0]    = (VkDescriptorBufferInfo) {.buffer = st->xring->buf, .range = VK_WHOLE_SIZE};
         x_stride = n_in; /* ring copy is contiguous */
+    }
+    const enum geist_status bs = vk_weight_bind(be, wbuf, m, &wbuf);
+    if (bs != GEIST_OK) {
+        return bs;
     }
     bi[1] = (VkDescriptorBufferInfo) {.buffer = wbuf->buf, .range = VK_WHOLE_SIZE};
     const struct vk_push push = {.n_in           = n_in,

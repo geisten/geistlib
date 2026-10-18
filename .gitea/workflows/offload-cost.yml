@@ -38,6 +38,10 @@ on:
         description: "prefill chunk sizes for the end-to-end sweep, separated by ;"
         type: string
         default: "32;64;128;256;512"
+      stream_m_min:
+        description: "GEIST_VK_STREAM_M_MIN for the vulkan+stream rows"
+        type: string
+        default: "32"
 
 permissions:
   contents: read
@@ -52,6 +56,7 @@ jobs:
       MODEL_URL: ${{ inputs.model_url }}
       MODEL_SHA: ${{ inputs.model_sha256 }}
       M_MAX: ${{ inputs.m_max }}
+      STREAM_M_MIN: ${{ inputs.stream_m_min }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -90,21 +95,27 @@ jobs:
         run: |
           set -eo pipefail
           . scripts/gpu-lock.sh
-          for b in vulkan cpu_x86; do
+          # vulkan+stream: the spilled weights are copied into VRAM slots per
+          # linear_t from STREAM_M_MIN rows on (#78); decode (m = 1) never streams.
+          for cfg in vulkan vulkan+stream cpu_x86; do
+            b=${cfg%+stream}
+            st=$([ "$cfg" = vulkan+stream ] && echo "$STREAM_M_MIN" || echo "")
             for m in $(echo "$M_MAX" | tr ';' ' '); do
               # the CPU kernels take at most 128 rows per call (GEIST_QUANT_M_CAP)
               [ "$b" = cpu_x86 ] && [ "$m" -gt 128 ] && continue
-              echo "== $b m_max=$m" | tee -a cost-out/e2e.txt
-              GEIST_BENCH_BACKEND=$b bin/linux/release/tests/bench_perf_sweep --gguf "$MODEL" \
+              echo "== $cfg m_max=$m" | tee -a cost-out/e2e.txt
+              GEIST_VK_STREAM_M_MIN=$st GEIST_VK_VERBOSE=1 GEIST_BENCH_BACKEND=$b \
+                bin/linux/release/tests/bench_perf_sweep --gguf "$MODEL" \
                 --seq-lens 512 --decode-n 16 --warmup 16 --repeats 3 --m-max "$m" \
-                | sed "s/^{/{\"backend\":\"$b\",\"m_max\":$m,/" | tee -a cost-out/e2e.jsonl
+                2>> cost-out/e2e.txt | sed "s/^{/{\"backend\":\"$cfg\",\"m_max\":$m,/" | tee -a cost-out/e2e.jsonl
             done
           done
+          grep -E '^== |spill:' cost-out/e2e.txt
       - name: Job summary
         if: always()
         run: |
           { echo '```'; cat cost-out/cost.txt 2>/dev/null || echo "no cost table"; echo '```';
-            echo '```'; grep -o '"backend":"[a-z_0-9]*","m_max":[0-9]*\|"prefill_tps":[0-9.]*' cost-out/e2e.jsonl 2>/dev/null | paste - - ; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            echo '```'; grep -o '"backend":"[a-z_0-9+]*","m_max":[0-9]*\|"prefill_tps":[0-9.]*' cost-out/e2e.jsonl 2>/dev/null | paste - - ; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

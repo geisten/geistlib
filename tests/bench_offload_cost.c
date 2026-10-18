@@ -12,6 +12,8 @@
  *   gpu_host the same with the weight in host memory, read by the shaders
  *            over the bus (#466; GEIST_VK_WEIGHT_RESERVE forces the spill):
  *            the v0 route of the proposal
+ *   stream   the same weight spilled, copied into a VRAM slot by the backend
+ *            for each linear_t (GEIST_VK_STREAM_M_MIN=1): the v1 route
  *   up       the activation upload
  *   dn_*     the output download from where y can live: the BAR window
  *            (GEIST_MEMORY_AUTO scratch, read by the CPU uncached over PCIe),
@@ -199,14 +201,19 @@ int main(void) {
     const size_t   n_out    = env_size("BENCH_N_OUT", 17408);
     const uint64_t target   = env_size("BENCH_MS", 300) * 1000000ull;
 
-    struct geist_backend *cpu = nullptr, *vk = nullptr, *vk_host = nullptr;
+    struct geist_backend *cpu = nullptr, *vk = nullptr, *vk_host = nullptr, *vk_str = nullptr;
     if (geist_backend_create("vulkan", nullptr, nullptr, &vk) != GEIST_OK) {
         printf("SKIP: no Vulkan device\n");
         return 77;
     }
     /* Every weight of this instance spills to host memory (#466). */
     setenv("GEIST_VK_WEIGHT_RESERVE", "1024G", 1);
-    const enum geist_status hs = geist_backend_create("vulkan", nullptr, nullptr, &vk_host);
+    enum geist_status hs = geist_backend_create("vulkan", nullptr, nullptr, &vk_host);
+    /* ...and this one streams them into VRAM slots for every linear_t (#78). */
+    setenv("GEIST_VK_STREAM_M_MIN", "1", 1);
+    if (hs == GEIST_OK)
+        hs = geist_backend_create("vulkan", nullptr, nullptr, &vk_str);
+    unsetenv("GEIST_VK_STREAM_M_MIN");
     unsetenv("GEIST_VK_WEIGHT_RESERVE");
     if (hs != GEIST_OK || geist_backend_create(cpu_name, nullptr, nullptr, &cpu) != GEIST_OK) {
         fprintf(stderr, "backend create failed\n");
@@ -233,11 +240,11 @@ int main(void) {
         x[i] = ((float) rng_u8() - 127.5f) / 128.0f;
 
     const struct geist_backend_vtbl *vv      = vk->desc->vtbl;
-    struct geist_backend            *gpus[2] = {vk, vk_host};
-    struct geist_buffer             *bx[2] = {nullptr}, *by_dev[2] = {nullptr};
+    struct geist_backend            *gpus[3] = {vk, vk_host, vk_str};
+    struct geist_buffer             *bx[3] = {nullptr}, *by_dev[3] = {nullptr};
     struct geist_buffer             *by_bar = nullptr, *by_io = nullptr;
     bool                             buf_ok = true;
-    for (int g = 0; g < 2; g++) {
+    for (int g = 0; g < 3; g++) {
         buf_ok = buf_ok &&
                  vv->buffer_create(gpus[g],
                                    m_top * n_in * 4,
@@ -262,12 +269,13 @@ int main(void) {
     }
 
     fprintf(stderr,
-            "%-5s %5s %10s %10s %10s %8s %10s %10s %10s %10s\n",
+            "%-5s %5s %10s %10s %10s %10s %8s %10s %10s %10s %10s\n",
             "dtype",
             "m",
             "cpu us",
             "gpu us",
             "host us",
+            "stream us",
             "up us",
             "dn_bar us",
             "dn_io us",
@@ -290,10 +298,11 @@ int main(void) {
                                            .n_in       = (int32_t) n_in,
                                            .n_out      = (int32_t) n_out,
                                            .dtype      = (uint16_t) f->dtype};
-        struct geist_weight       w_cpu = base, w_vk = base, w_vh = base;
+        struct geist_weight       w_cpu = base, w_vk = base, w_vh = base, w_vs = base;
         if (cpu->desc->vtbl->resolve_weight(cpu, &w_cpu) != GEIST_OK ||
             vv->resolve_weight(vk, &w_vk) != GEIST_OK ||
-            vv->resolve_weight(vk_host, &w_vh) != GEIST_OK || w_cpu.linear_mN == nullptr) {
+            vv->resolve_weight(vk_host, &w_vh) != GEIST_OK ||
+            vv->resolve_weight(vk_str, &w_vs) != GEIST_OK || w_cpu.linear_mN == nullptr) {
             fprintf(stderr, "%s: resolve failed (%s)\n", f->name, geist_backend_errmsg(vk));
             rc = 1;
             continue;
@@ -313,7 +322,7 @@ int main(void) {
             vv->buffer_destroy(vk, bw);
         }
 
-        uint64_t t_cpu[N_M] = {0}, t_v0[N_M] = {0}, t_v1[N_M] = {0};
+        uint64_t t_cpu[N_M] = {0}, t_v0[N_M] = {0}, t_v1[N_M] = {0}, t_vs[N_M] = {0};
         uint64_t t_host1 = 0;
         for (size_t i = 0; i < N_M; i++) {
             const size_t m = M_GRID[i];
@@ -336,20 +345,24 @@ int main(void) {
             o.dl_bytes              = 64;
             o.kind = OP_GPU, o.be = vk_host, o.w = &w_vh, o.bx = bx[1], o.by = by_dev[1];
             const uint64_t t_host = measure(target, &o);
+            o.be = vk_str, o.w = &w_vs, o.bx = bx[2], o.by = by_dev[2];
+            const uint64_t t_str = measure(target, &o);
             if (i == 0)
                 t_host1 = t_host;
             uint64_t dn = dn_bar;
             dn          = dn_io != 0 && dn_io < dn ? dn_io : dn;
             dn          = dn_dev != 0 && dn_dev < dn ? dn_dev : dn;
-            if (t_cpu[i] == 0 || t_gpu == 0 || t_host == 0 || t_up == 0 || dn == 0)
+            if (t_cpu[i] == 0 || t_gpu == 0 || t_host == 0 || t_str == 0 || t_up == 0 || dn == 0)
                 rc = 1;
             else {
                 t_v0[i] = t_up + t_host + dn;
+                t_vs[i] = t_up + t_str + dn;
                 t_v1[i] = t_up + (t_gpu_io != 0 && t_gpu_io < t_gpu + dn ? t_gpu_io : t_gpu + dn);
             }
             printf("{\"dtype\":\"%s\",\"n_in\":%zu,\"n_out\":%zu,\"weight_bytes\":%zu,\"m\":%zu,"
                    "\"cpu_ns\":%llu,\"gpu_ns\":%llu,\"gpu_host_ns\":%llu,\"up_ns\":%llu,"
                    "\"dn_bar_ns\":%llu,\"dn_io_ns\":%llu,\"dn_dev_ns\":%llu,\"gpu_io_ns\":%llu,"
+                   "\"stream_ns\":%llu,"
                    "\"bulk_upload_ns\":%llu}\n",
                    f->name,
                    n_in,
@@ -364,14 +377,16 @@ int main(void) {
                    (unsigned long long) dn_io,
                    (unsigned long long) dn_dev,
                    (unsigned long long) t_gpu_io,
+                   (unsigned long long) t_str,
                    (unsigned long long) t_bulk);
             fprintf(stderr,
-                    "%-5s %5zu %10.1f %10.1f %10.1f %8.1f %10.1f %10.1f %10.1f %10.1f\n",
+                    "%-5s %5zu %10.1f %10.1f %10.1f %10.1f %8.1f %10.1f %10.1f %10.1f %10.1f\n",
                     f->name,
                     m,
                     t_cpu[i] / 1e3,
                     t_gpu / 1e3,
                     t_host / 1e3,
+                    t_str / 1e3,
                     t_up / 1e3,
                     dn_bar / 1e3,
                     dn_io / 1e3,
@@ -383,7 +398,7 @@ int main(void) {
         fprintf(stderr,
                 "%s: %.1f MB, bulk upload %.2f GB/s (%.1f ms), shader host read at m=1 %.2f GB/s; "
                 "m_min v0 (host-read) = %zu, m_min v1 (stream + resident) = %zu, "
-                "resident only = %zu  (0 = never)\n\n",
+                "resident only = %zu, streamed (measured) = %zu  (0 = never)\n\n",
                 f->name,
                 bytes / 1e6,
                 bw_gbs,
@@ -391,15 +406,17 @@ int main(void) {
                 host_gbs,
                 m_min_of(0, t_cpu, t_v0),
                 m_min_of(t_bulk, t_cpu, t_v1),
-                m_min_of(0, t_cpu, t_v1));
+                m_min_of(0, t_cpu, t_v1),
+                m_min_of(0, t_cpu, t_vs));
     }
 
-    for (int g = 0; g < 2; g++) {
+    for (int g = 0; g < 3; g++) {
         vv->buffer_destroy(gpus[g], bx[g]);
         vv->buffer_destroy(gpus[g], by_dev[g]);
     }
     vv->buffer_destroy(vk, by_bar);
     vv->buffer_destroy(vk, by_io);
+    geist_backend_destroy(vk_str);
     geist_backend_destroy(vk_host);
     geist_backend_destroy(vk);
     geist_backend_destroy(cpu);
