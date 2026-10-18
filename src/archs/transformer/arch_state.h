@@ -739,6 +739,13 @@ transformer_forward_one_layer(struct transformer_arch_session *sess,
                               struct geist_buffer             *per_layer_input_buf,
                               struct geist_buffer             *h_out_buf);
 
+/* Offload (#78): the rows of the next prefill chunk at q_position, n rows
+ * left: up to the session's m_max when the chunk runs on the twins, else
+ * at most what the load backend's kernels take per call. Without offload:
+ * min(n, m_max). */
+[[nodiscard]] size_t
+transformer_prefill_chunk(const struct transformer_arch_session *sess, size_t q_position, size_t n);
+
 /* Offload (#78): write seq rows of K and V ([seq, kv_out] floats each,
  * after RoPE, as the layer's attention produces them) for layer layer_idx
  * at q_position into sess's cache, through the layer's own append (its

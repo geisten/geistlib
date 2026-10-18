@@ -312,9 +312,10 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
     const float embed_scale = st->config.has_embed_scale ? sqrtf((float) st->d_model) : 1.0f;
 
     /* Chunk by the SESSION cap, not st->m_max: every scratch buffer is
-     * sized with sess->m_max (arch_state.c), which may be smaller. */
-    for (size_t off = 0; off < n; off += sess->m_max) {
-        const size_t chunk = (n - off > sess->m_max) ? sess->m_max : (n - off);
+     * sized with sess->m_max (arch_state.c), which may be smaller. With
+     * offload a chunk the load backend runs may be smaller still (#78). */
+    for (size_t off = 0, chunk = 0; off < n; off += chunk) {
+        chunk = transformer_prefill_chunk(sess, sess->kv_len, n - off);
         if (transformer_cancel_requested(sess)) {
             return GEIST_E_CANCELLED; /* kv_len counts the finished sub-batches */
         }

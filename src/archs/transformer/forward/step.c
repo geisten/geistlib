@@ -346,6 +346,29 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
     return s;
 }
 
+/* Rows the load backend's kernels take per call (caps.max_m; 0 = any). */
+static size_t load_m_cap(const struct transformer_arch_state *st) {
+    const size_t c = st->backend->desc->caps.max_m;
+    return c != 0 ? c : SIZE_MAX;
+}
+
+static bool
+offload_takes(const struct transformer_arch_session *sess, size_t q_position, size_t seq) {
+    return sess->twin_sess != nullptr && seq >= sess->model->offload->m_min &&
+           q_position <= sess->twin_valid;
+}
+
+size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
+                                 size_t                                 q_position,
+                                 size_t                                 n) {
+    const size_t m = n < sess->m_max ? n : sess->m_max;
+    if (offload_takes(sess, q_position, m)) {
+        return m;
+    }
+    const size_t cap = load_m_cap(sess->model);
+    return m < cap ? m : cap;
+}
+
 [[nodiscard]] enum geist_status transformer_run_all_layers(struct transformer_arch_session *sess,
                                                            size_t               q_position,
                                                            size_t               seq,
@@ -366,7 +389,7 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
      * load backend's layers here, and the twins' cache is good only up to
      * where that starts. */
     if (sess->twin_sess != nullptr) {
-        if (seq >= st->offload->m_min && q_position <= sess->twin_valid) {
+        if (offload_takes(sess, q_position, seq)) {
             const enum geist_status os =
                     run_offload_chunk(sess, q_position, seq, initial_h_buf, out_h_buf);
             sess->twin_valid = os == GEIST_OK ? q_position + seq : 0;
@@ -374,6 +397,19 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
         }
         if (q_position < sess->twin_valid) {
             sess->twin_valid = q_position;
+        }
+        /* An offloaded session's chunk may exceed what the load backend's
+         * kernels take; transformer_prefill_chunk keeps its own chunks below
+         * that, any other caller is refused here, not overrun. */
+        if (seq > load_m_cap(st)) {
+            geist_backend_set_error(st->backend,
+                                    GEIST_E_INVALID_ARG,
+                                    "transformer: %zu rows on '%s', whose kernels take %zu "
+                                    "(offload chunk off the twins)",
+                                    seq,
+                                    geist_backend_name(st->backend),
+                                    load_m_cap(st));
+            return GEIST_E_INVALID_ARG;
         }
     }
 

@@ -2405,6 +2405,12 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
      * batches). 0 = uncapped. */
     size_t m_cap =
             (be->desc != nullptr && be->desc->caps.max_m > 0) ? be->desc->caps.max_m : SIZE_MAX;
+    /* Offload (#78): the load backend runs only chunks within its own limit
+     * (transformer_prefill_chunk); the larger ones run on the split backend,
+     * whose limit binds below. */
+    if (state->offload != nullptr) {
+        m_cap = SIZE_MAX;
+    }
     /* Layer split (#49): every chunk runs on both backends, so the split
      * stage's row limit binds too, and the default chunk shrinks to fit. */
     if (state->split != nullptr) {
