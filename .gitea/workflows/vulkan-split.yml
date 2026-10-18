@@ -1,0 +1,119 @@
+name: vulkan-split
+
+# Layer split (#49) on the geist-vulkan box (RTX 2080 Ti, 11 GB, Ryzen 9
+# 9950X): one GGUF that does not fit the card, CPU-only against layers
+# 0..N-1 on the GPU (the rest and the head on the CPU) at several N, and
+# llama.cpp's llama-bench -ngl at the same N on the same file, with
+# tools/bench_layer_split.py. Peak RSS and VRAM per configuration. The
+# report goes to the job summary, the raw rows to an artifact.
+#
+# On demand only:  tea actions workflows dispatch --login git.geisten.net \
+#   --repo geisten/geistlib --ref <branch> vulkan-split.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "geistlib ref"
+        type: string
+        default: main
+      model_url:
+        description: "GGUF download URL (cached by file name)"
+        type: string
+        default: https://huggingface.co/Qwen/Qwen3-14B-GGUF/resolve/530227a7d994db8eca5ab5ced2fb692b614357fd/Qwen3-14B-Q8_0.gguf
+      model_sha256:
+        description: "sha256 of the GGUF"
+        type: string
+        default: a0dfe649137410b7d82f06a209240508e218f32f5b6fd81b69d6932160cfcd9d
+      splits:
+        description: "layers on the GPU, separated by , or ; (tea: use ;)"
+        type: string
+        default: "8,16,20,24,26"
+      llama_pin:
+        description: "llama.cpp commit for llama-bench (empty: skip llama.cpp)"
+        type: string
+        default: d81235049384534c167caea52b85a694f6103d14
+      gpu_only:
+        description: "also every layer on the GPU (weights past VRAM spill to host memory, #466)"
+        type: boolean
+        default: true
+      correctness:
+        description: "run test_layer_split_int on the device first"
+        type: boolean
+        default: true
+      cycles:
+        description: "interleaved cycles"
+        type: string
+        default: "3"
+
+permissions:
+  contents: read
+
+jobs:
+  split:
+    name: Layer split on geist-vulkan
+    runs-on: geist-vulkan
+    timeout-minutes: 240
+    env:
+      MODEL_URL: ${{ inputs.model_url }}
+      MODEL_SHA: ${{ inputs.model_sha256 }}
+      SPLITS: ${{ inputs.splits }}
+      LLAMA_PIN: ${{ inputs.llama_pin }}
+      CYCLES: ${{ inputs.cycles }}
+      GPU_ONLY: ${{ inputs.gpu_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Environment
+        run: |
+          mkdir -p split-out
+          { git rev-parse HEAD; nvidia-smi; free -g; nproc; } 2>&1 | tee split-out/env.txt
+      - name: Model (cached outside the workspace, sha256-checked)
+        run: |
+          set -eo pipefail
+          CACHE=${GEIST_MODEL_CACHE:-$HOME/geist-models}
+          mkdir -p "$CACHE"
+          F="$CACHE/$(basename "$MODEL_URL")"
+          if [ ! -f "$F" ]; then
+            curl -fL --retry 5 -C - -o "$F.part" "$MODEL_URL"
+            echo "$MODEL_SHA  $F.part" | sha256sum -c -
+            mv "$F.part" "$F"
+          fi
+          echo "MODEL=$F" >> "$GITHUB_ENV"
+      - name: Build geistlib (vulkan + cpu_x86)
+        run: make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
+      - name: Build llama-bench (vulkan)
+        if: env.LLAMA_PIN != ''
+        run: echo "LLAMA_BENCH=$(scripts/ensure-llama-bench.sh vulkan ggml-org/llama.cpp "$LLAMA_PIN")" >> "$GITHUB_ENV"
+      - name: Split correctness on the device (reported)
+        if: inputs.correctness
+        # A split that does not fit the card fails here with GEIST_E_OOM;
+        # that is a result to read, not a reason to skip the measurement.
+        continue-on-error: true
+        run: |
+          set -eo pipefail
+          . scripts/gpu-lock.sh
+          GEIST_SPLIT_BACKEND=vulkan GEIST_SPLIT_GGUF_PATH="$MODEL" GEIST_SPLIT_POINTS="$(echo "$SPLITS" | tr '; ' ',,')" \
+            bin/linux/release/tests/test_layer_split_int 2>&1 | tee split-out/correctness.txt
+      - name: Measure
+        run: |
+          set -eo pipefail
+          . scripts/gpu-lock.sh
+          python3 tools/bench_layer_split.py \
+            --bench bin/linux/release/tests/bench_perf_sweep --gguf "$MODEL" \
+            --cpu cpu_x86 --gpu vulkan --splits "$SPLITS" --cycles "$CYCLES" \
+            $([ "$GPU_ONLY" = true ] && echo --gpu-only) \
+            ${LLAMA_BENCH:+--llama-bench "$LLAMA_BENCH" --llama-nopo} --out-dir split-out
+      - name: Job summary
+        if: always()
+        run: |
+          { cat split-out/report.md 2>/dev/null || echo "no report"
+            echo; echo '```'; cat split-out/correctness.txt 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 30
+          name: vulkan-split
+          path: split-out/
+          if-no-files-found: warn

@@ -103,6 +103,7 @@ static void dn_state_floats(const struct transformer_arch_state *st, size_t *con
                               ? "an embedding model has no decoding state"
                       : sess->kv_kivi_enabled ? "the KIVI KV cache is not supported"
                       : sess->mtp_enabled     ? "the MTP drafter (GEIST_MTP=1) is not supported"
+                      : st->split != nullptr  ? "a layer split (#49) is not supported"
                                               : nullptr;
     if (why != nullptr) {
         geist_backend_set_error(st->backend, GEIST_E_UNSUPPORTED, "session snapshot: %s", why);

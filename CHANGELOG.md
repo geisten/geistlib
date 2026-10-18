@@ -16,6 +16,26 @@ minor release.
   RTX 2080 Ti (4.7 GB spilled), every layer on Vulkan, pp512: 177 -> 550
   tok/s; decode unchanged. `tests/bench_offload_cost` and
   `offload-cost.yml` measure the cost model (docs/OFFLOAD.md).
+- **Layer split across two backends (#49, EXPERIMENTAL).**
+  `geist_session_opts.split_backend` / `split_layers`, read at model load:
+  the first N layers run on a second backend (a GPU for the layers that fit
+  it), the embedding, the rest and the head on the load backend. Placement
+  is fixed at load; a split model is two single-backend states of the same
+  GGUF, each holding only its own layers and KV cache, and
+  `transformer_run_all_layers` moves the hidden rows across once per step
+  and direction. Family units and blocks are unchanged. Two CPU backends:
+  byte-identical to the unsplit model (SmolLM2, Qwen3, BitNet 2B-4T,
+  Llama 3.2; FP32 / INT8 / INT4 KV). RTX 2080 Ti box, Qwen3-14B Q8_0 (does
+  not fit the card), 26 of 40 layers on the GPU: prefill 168 / decode 9.6
+  tok/s against 88 / 5.2 CPU-only; llama.cpp `-ngl 26` 485 / 9.2, with its
+  op offload off (`-nopo 1`) 145 / 9.5. Every layer on the GPU (weights past
+  VRAM in host memory) prefills 1.4x faster than the split but decodes 3.5x
+  slower: the split is for decode. On the M1 Max a split never beats Metal
+  alone. Refused: per-layer embeddings, shared KV, DeltaNet, MTP, a
+  rotated basis, AWQ, KIVI sessions, snapshots
+  (`benchmark/results/LAYER-SPLIT.md`). `bench_perf_sweep` reads
+  `GEIST_BENCH_SPLIT_BACKEND` / `_LAYERS`; `tools/bench_layer_split.py` and
+  `vulkan-split.yml` measure it.
 - **Qwen3-MoE (`qwen3moe`, Qwen3-30B-A3B) on the CPU backends (#48).** A
   family unit (`families/qwen3moe.c`) composed of Qwen3's attention and a
   new shared block, `blk_moe_ffn` (`forward/moe.c`): softmax router over
@@ -496,6 +516,26 @@ minor release.
   of that size runs at ~5 GB/s. Upload staging keeps the write-combined type.
   vulkan-ab on the RTX 2080 Ti (runs 1372, 1373): every row within noise.
 
+- **AWQ works with mmap-alias weights, without copying the model (#66,
+  #72).** AWQ divides the attn/ffn norm gammas; with the default mmap-alias
+  weights (CPU and Metal) those were the read-only GGUF pages, and the load
+  died of SIGBUS. The folded norms now get buffers of their own, a few KB
+  per layer, and every other weight stays aliased: gemma4-e2b with AWQ peaks
+  at 3977 MB RSS on cpu_neon (3976 MB without; 8396 MB with
+  `GEIST_WEIGHT_MMAP=0`), and Metal is unchanged at 6032 MB. With
+  `GEIST_WEIGHT_MMAP=0` the gammas are still folded in the copied weights,
+  to the same logits on cpu_scalar and Metal (cpu_neon's F32 sgemv rounds
+  differently for the GGUF's 32-byte-aligned matrices than for the arena's
+  64-byte copies, with or without AWQ). `awq_scales_path` is documented as
+  a load option: only `geist_model_load_with_opts` reads it,
+  `geist_session_create` never did. `test_awq_int` passes the scales at
+  load from a file it synthesises for the model under test, so it runs on
+  CI instead of always skipping.
+- **rope_apply refuses cos/sin views that do not cover x (#67).**
+  cpu_scalar, cpu_neon and the Vulkan host fallback check that cos and sin
+  hold `seq * n_rot` floats and that `n_rot` is even and at most
+  `head_dim` before rotating; the Vulkan device path applies the same
+  check. Metal already did.
 - **CPU backends: every tensor view is bounded by its buffer.** cpu_scalar's
   and cpu_neon's rope_apply, embedding_lookup, attention and F16 KV append
   unpacked their F32 views without checking the shape product for overflow

@@ -1,0 +1,72 @@
+=== smollm2-360m-instruct-q8_0 metal
+model gguf_artifacts/smollm2-360m-instruct-q8_0.gguf (32 layers), cpu_neon + metal, reported
+  kv fp32 gpu only : max|d| logits 0.287, after reset 0.258, greedy tokens matching 4/16
+  kv fp32 split   1: max|d| logits 0.0928, after reset 0.0322, greedy tokens matching 4/16
+  kv fp32 split  16: max|d| logits 0.0485, after reset 0.091, greedy tokens matching 4/16
+  kv fp32 split  31: max|d| logits 0.0518, after reset 0.106, greedy tokens matching 4/16
+  kv fp32 split  32: max|d| logits 0.0568, after reset 0.104, greedy tokens matching 4/16
+  kv int8 gpu only : max|d| logits 0.378, after reset 0.329, greedy tokens matching 16/16
+  kv int8 split   1: max|d| logits 0.287, after reset 0.347, greedy tokens matching 4/16
+  kv int8 split  16: max|d| logits 0.385, after reset 0.286, greedy tokens matching 16/16
+  kv int8 split  31: max|d| logits 0.367, after reset 0.26, greedy tokens matching 7/16
+  kv int8 split  32: max|d| logits 0.371, after reset 0.257, greedy tokens matching 16/16
+  kv int4 gpu only : max|d| logits 1.08, after reset 1.73, greedy tokens matching 4/16
+  kv int4 split   1: max|d| logits 1.02, after reset 1.02, greedy tokens matching 7/16
+  kv int4 split  16: max|d| logits 1.34, after reset 1.48, greedy tokens matching 4/16
+  kv int4 split  31: max|d| logits 1.02, after reset 1.73, greedy tokens matching 4/16
+  kv int4 split  32: max|d| logits 1.04, after reset 1.72, greedy tokens matching 4/16
+rc=0
+=== qwen3-0.6b-q8_0 metal
+model gguf_artifacts/qwen3-0.6b-q8_0.gguf (28 layers), cpu_neon + metal, reported
+  kv fp32 gpu only : max|d| logits 0.0866, after reset 0.0902, greedy tokens matching 16/16
+  kv fp32 split   1: max|d| logits 0.018, after reset 0.0646, greedy tokens matching 16/16
+  kv fp32 split  14: max|d| logits 0.0236, after reset 0.0701, greedy tokens matching 16/16
+  kv fp32 split  27: max|d| logits 0.026, after reset 0.0744, greedy tokens matching 5/16
+  kv fp32 split  28: max|d| logits 0.0277, after reset 0.073, greedy tokens matching 16/16
+  kv int8 gpu only : max|d| logits 0.324, after reset 1.05, greedy tokens matching 3/16
+  kv int8 split   1: max|d| logits 0.441, after reset 0.847, greedy tokens matching 3/16
+  kv int8 split  14: max|d| logits 0.333, after reset 1.01, greedy tokens matching 3/16
+  kv int8 split  27: max|d| logits 0.345, after reset 1.08, greedy tokens matching 3/16
+  kv int8 split  28: max|d| logits 0.346, after reset 1.09, greedy tokens matching 3/16
+  kv int4 gpu only : max|d| logits 2.65, after reset 10.5, greedy tokens matching 1/16
+  kv int4 split   1: max|d| logits 2.63, after reset 5.67, greedy tokens matching 0/16
+  kv int4 split  14: max|d| logits 2.57, after reset 9.97, greedy tokens matching 1/16
+  kv int4 split  27: max|d| logits 2.64, after reset 10.5, greedy tokens matching 1/16
+  kv int4 split  28: max|d| logits 2.64, after reset 10.5, greedy tokens matching 1/16
+rc=0
+=== llama-3.2-3b-Q4_K_M metal
+model gguf_artifacts/llama-3.2-3b-Q4_K_M.gguf (28 layers), cpu_neon + metal, reported
+  kv fp32 gpu only : max|d| logits 0.196, after reset 0.486, greedy tokens matching 16/16
+  kv fp32 split   1: max|d| logits 0.221, after reset 0.288, greedy tokens matching 16/16
+  kv fp32 split  14: max|d| logits 0.248, after reset 0.531, greedy tokens matching 16/16
+  kv fp32 split  27: max|d| logits 0.219, after reset 0.502, greedy tokens matching 16/16
+  kv fp32 split  28: max|d| logits 0.254, after reset 0.481, greedy tokens matching 16/16
+  kv int8 gpu only : max|d| logits 0.265, after reset 0.327, greedy tokens matching 16/16
+  kv int8 split   1: max|d| logits 0.274, after reset 0.296, greedy tokens matching 16/16
+  kv int8 split  14: max|d| logits 0.214, after reset 0.333, greedy tokens matching 16/16
+  kv int8 split  27: max|d| logits 0.249, after reset 0.322, greedy tokens matching 16/16
+  kv int8 split  28: max|d| logits 0.292, after reset 0.303, greedy tokens matching 16/16
+  kv int4 gpu only : max|d| logits 0.459, after reset 1.19, greedy tokens matching 16/16
+  kv int4 split   1: max|d| logits 0.609, after reset 0.72, greedy tokens matching 16/16
+  kv int4 split  14: max|d| logits 0.489, after reset 1.15, greedy tokens matching 16/16
+  kv int4 split  27: max|d| logits 0.51, after reset 1.2, greedy tokens matching 16/16
+  kv int4 split  28: max|d| logits 0.484, after reset 1.18, greedy tokens matching 16/16
+rc=0
+=== bitnet-2b4t-i2_s metal
+model gguf_artifacts/bitnet-2b4t-i2_s.gguf (30 layers), cpu_neon + metal, reported
+  kv fp32 gpu only : max|d| logits 0.338, after reset 0.566, greedy tokens matching 16/16
+  kv fp32 split   1: max|d| logits 0.296, after reset 0.572, greedy tokens matching 16/16
+  kv fp32 split  15: max|d| logits 0.291, after reset 0.556, greedy tokens matching 16/16
+  kv fp32 split  29: max|d| logits 0.312, after reset 0.541, greedy tokens matching 16/16
+  kv fp32 split  30: max|d| logits 0.338, after reset 0.566, greedy tokens matching 16/16
+  kv int8 gpu only : max|d| logits 0.555, after reset 0.788, greedy tokens matching 16/16
+  kv int8 split   1: max|d| logits 0.301, after reset 0.696, greedy tokens matching 16/16
+  kv int8 split  15: max|d| logits 0.369, after reset 0.882, greedy tokens matching 16/16
+  kv int8 split  29: max|d| logits 0.494, after reset 0.766, greedy tokens matching 16/16
+  kv int8 split  30: max|d| logits 0.555, after reset 0.788, greedy tokens matching 16/16
+  kv int4 gpu only : max|d| logits 0.912, after reset 1.04, greedy tokens matching 16/16
+  kv int4 split   1: max|d| logits 1.01, after reset 1.13, greedy tokens matching 16/16
+  kv int4 split  15: max|d| logits 0.802, after reset 1.22, greedy tokens matching 1/16
+  kv int4 split  29: max|d| logits 0.885, after reset 1.03, greedy tokens matching 16/16
+  kv int4 split  30: max|d| logits 0.912, after reset 1.04, greedy tokens matching 16/16
+rc=0
