@@ -60,6 +60,14 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **`make vulkan-shaders` is pinned to one glslc, and CI checks the
+  SPIR-V headers.** The committed `*_spv.h` are compiler output; another
+  glslc rewrites dozens of them. The target now refuses any glslc but
+  Debian 13's package 2025.2-1 (`GLSLC_VERSION` in `mk/backend-vulkan.mk`;
+  `GLSLC_VERSION_CHECK=0` overrides), and the Vulkan CI job regenerates
+  every header with it and fails on a diff. The rmsnorm shaders write out
+  the `fma()` their shipped SPIR-V already used (the pinned compiler no
+  longer contracts on its own); `add_f32`/`mul_f32` share `ew3.glsl`.
 - **Qwen3-MoE gets an F16 KV cache; the CPU backends have one (#48).**
   A model family can now name the KV cache a session gets under AUTO
   (`transformer_family.kv_auto`). It ranks after an explicit `kv_mode` and
