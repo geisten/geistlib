@@ -1630,6 +1630,79 @@ static bool split_requested(const struct geist_session_opts *opts) {
     return opts != nullptr && opts->split_backend != nullptr && opts->split_layers > 0;
 }
 
+size_t transformer_split_layers_fit(size_t       n_layers,
+                                    const size_t layer_bytes[static n_layers],
+                                    size_t       kv_bytes_per_layer,
+                                    size_t       avail) {
+    size_t n = 0, used = 0;
+    while (n < n_layers && layer_bytes[n] <= SIZE_MAX - used - kv_bytes_per_layer &&
+           used + layer_bytes[n] + kv_bytes_per_layer <= avail) {
+        used += layer_bytes[n++] + kv_bytes_per_layer;
+    }
+    return n;
+}
+
+/* Planner (#78): split_layers for GEIST_SPLIT_AUTO. The GGUF's tensor table
+ * gives each layer's weight bytes ("blk.<i>."), transformer_plan the KV
+ * bytes per position on the split backend, opts->max_seq_len (else 4096)
+ * the positions; the split backend's free memory, less a reserve for its
+ * scratch, the x ring and the weight-reserve the backend keeps itself
+ * (a sixteenth of the device and 512 MiB), takes as many leading layers as
+ * fit. Unified memory takes them all. */
+[[nodiscard]] static enum geist_status
+plan_split_layers(struct gguf_ctx *gguf, const struct geist_session_opts *opts, size_t *out) {
+    struct geist_backend *sbe = opts->split_backend;
+    size_t                n   = 0;
+    for (size_t i = 0; i < gguf_tensor_count(gguf); i++) {
+        const char *name = gguf_tensor_at(gguf, i)->name;
+        if (strncmp(name, "blk.", 4) == 0) {
+            const size_t li = (size_t) strtoull(name + 4, nullptr, 10);
+            n               = li + 1 > n ? li + 1 : n;
+        }
+    }
+    size_t *bytes = n > 0 ? heap_calloc_aligned(n, sizeof(size_t), alignof(size_t)) : nullptr;
+    if (bytes == nullptr) {
+        return n > 0 ? GEIST_E_OOM : GEIST_E_FORMAT;
+    }
+    for (size_t i = 0; i < gguf_tensor_count(gguf); i++) {
+        const struct gguf_tensor_t *t = gguf_tensor_at(gguf, i);
+        if (strncmp(t->name, "blk.", 4) == 0) {
+            const size_t li = (size_t) strtoull(t->name + 4, nullptr, 10);
+            bytes[li] += t->nbytes;
+        }
+    }
+    size_t                      kv_tok = 0, model_tok = 0;
+    enum geist_status           s = transformer_plan(sbe, gguf, opts, &kv_tok, &model_tok);
+    struct geist_backend_memory mem;
+    if (s == GEIST_OK) {
+        s = geist_backend_memory_info(sbe, &mem);
+    }
+    if (s == GEIST_OK) {
+        const size_t ctx     = opts->max_seq_len > 0 ? opts->max_seq_len : 4096;
+        const size_t reserve = (size_t) mem.total_bytes / 16 + ((size_t) 512 << 20);
+        const size_t avail   = mem.free_bytes > reserve ? (size_t) mem.free_bytes - reserve : 0;
+        size_t       kv      = 0;
+        if (ckd_mul(&kv, kv_tok / n, ctx)) {
+            kv = SIZE_MAX;
+        }
+        *out = mem.unified_memory ? n : transformer_split_layers_fit(n, bytes, kv, avail);
+        if (getenv("GEIST_VERBOSE") != nullptr) {
+            fprintf(stderr,
+                    "geist: split planner: %zu of %zu layers on %s (%zu MiB free, %zu MiB "
+                    "reserved, %zu MiB KV per layer at %zu positions)\n",
+                    *out,
+                    n,
+                    geist_backend_name(sbe),
+                    (size_t) (mem.free_bytes >> 20),
+                    reserve >> 20,
+                    kv >> 20,
+                    ctx);
+        }
+    }
+    safe_free((void **) &bytes);
+    return s;
+}
+
 /* Layer split (#49): `st` (loaded on its backend from `gguf`, holding
  * layers [split_layers, n_layers)) gets the stage that holds [0,
  * split_layers) on opts->split_backend, loaded from `gguf2`, a second
@@ -1786,6 +1859,16 @@ enum geist_status transformer_state_create(struct geist_backend            *be,
                                 err != nullptr ? err : "(no detail)");
         return GEIST_E_FILE_NOT_FOUND;
     }
+    struct geist_session_opts planned;
+    if (split_requested(opts) && opts->split_layers == GEIST_SPLIT_AUTO) {
+        planned                    = *opts;
+        const enum geist_status ps = plan_split_layers(gguf, opts, &planned.split_layers);
+        if (ps != GEIST_OK) {
+            gguf_close(gguf);
+            return ps;
+        }
+        opts = &planned;
+    }
     if (!split_requested(opts)) {
         return transformer_state_create_from_gguf(be, gguf, opts, out);
     }
@@ -1836,6 +1919,16 @@ enum geist_status transformer_state_create_from_memory(struct geist_backend     
                                 "transformer: gguf_open_memory: %s",
                                 err != nullptr ? err : "(no detail)");
         return GEIST_E_FORMAT;
+    }
+    struct geist_session_opts planned;
+    if (split_requested(opts) && opts->split_layers == GEIST_SPLIT_AUTO) {
+        planned                    = *opts;
+        const enum geist_status ps = plan_split_layers(gguf, opts, &planned.split_layers);
+        if (ps != GEIST_OK) {
+            gguf_close(gguf);
+            return ps;
+        }
+        opts = &planned;
     }
     if (!split_requested(opts)) {
         return transformer_state_create_from_gguf(be, gguf, opts, out);

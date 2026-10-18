@@ -20,7 +20,15 @@ minor release.
   515 tok/s, decode 8.6 -> 9.1; Q4_K_M split 20: 200 -> 570, decode 12.4 ->
   13.2. Costs a host copy of the CPU layers' weights (+4-5 GB here; the
   driver refuses to import the read-only mapping). Byte-identical on two
-  CPU backends with an FP32 cache (`test_layer_split_int`).
+  CPU backends with an FP32 cache (`test_layer_split_int`). A chat's next
+  prompt runs on the GPU too: CPU decode steps mirror their K/V rows into
+  the GPU copy.
+- **`split_layers = GEIST_SPLIT_AUTO` (EXPERIMENTAL, #78): the loader picks
+  the split.** As many leading layers as fit the split backend's free
+  memory with their KV cache (for `max_seq_len`, else 4096 positions) and a
+  reserve for its scratch; all of them on unified memory, none (no split)
+  when not even one fits. `GEIST_VERBOSE` prints the plan;
+  `bench_perf_sweep` takes `GEIST_BENCH_SPLIT_LAYERS=auto`.
 - **Vulkan streams spilled weights for prefill (#78).** A weight that did
   not fit VRAM (#466) is copied into one of two VRAM slots before a
   `linear_t` of at least `GEIST_VK_STREAM_M_MIN` rows (default 32, `0` off)

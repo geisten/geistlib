@@ -366,7 +366,9 @@ No new vtable slot for v0: upload, `linear_t` and download exist.
 **Phase 0: cost model — done** (results above). It also produced the
 `HOST_CACHED` readback fix and the in-backend streaming (former phase 2).
 
-**Phase 0b: the planner** (on top of #49, no offload yet). `offload_plan_build`
+**Phase 0b: the planner — built** (`plan_split_layers` in `arch_state.c`,
+`GEIST_SPLIT_AUTO`, `test_split_planner_unit`; dense layers only, the
+expert part is phase 3). Originally: (on top of #49, no offload yet). `offload_plan_build`
 with its unit test; it sets `split_layers` when the caller leaves it 0 and a
 split backend is given. Decision rule: on the 2080 Ti box its pick for
 Qwen3-14B Q8_0 is within the run's resolution of the best hand split in

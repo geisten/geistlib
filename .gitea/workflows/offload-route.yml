@@ -29,7 +29,7 @@ on:
         type: string
         default: a0dfe649137410b7d82f06a209240508e218f32f5b6fd81b69d6932160cfcd9d
       split:
-        description: "layers on the GPU"
+        description: "layers on the GPU, separated by ; (auto: the planner, GEIST_SPLIT_AUTO)"
         type: string
         default: "26"
       m_min:
@@ -92,7 +92,7 @@ jobs:
         run: |
           set -eo pipefail
           . scripts/gpu-lock.sh
-          GEIST_SPLIT_BACKEND=vulkan GEIST_SPLIT_GGUF_PATH="$MODEL" GEIST_SPLIT_POINTS="$SPLIT" \
+          GEIST_SPLIT_BACKEND=vulkan GEIST_SPLIT_GGUF_PATH="$MODEL" GEIST_SPLIT_POINTS="$(echo "$SPLIT" | tr ';' '\n' | grep -m1 '^[0-9]')" \
             env $([ "$M_MIN" = auto ] || echo "GEIST_OFFLOAD_M_MIN=$M_MIN") GEIST_VERBOSE=1 GEIST_VK_VERBOSE=1 \
             bin/linux/release/tests/test_layer_split_int 2>&1 | grep -v '^geist vulkan: device memory' | tee route-out/vulkan.txt
       - name: Split against split + route
@@ -100,23 +100,25 @@ jobs:
           set -eo pipefail
           . scripts/gpu-lock.sh
           for c in $(seq "$CYCLES"); do
+            for sp in $(echo "$SPLIT" | tr ';' ' '); do
             for m in $(echo "$M_MAX" | tr ';' ' '); do
               for cfg in split offload; do
                 mm=$([ "$cfg" = offload ] && echo "$M_MIN" || echo 0)
                 [ "$mm" = auto ] && mm=
                 # the split alone runs every chunk on cpu_x86 too: at most 128 rows
                 [ "$cfg" = split ] && [ "$m" -gt 128 ] && continue
-                echo "== cycle $c $cfg m_max=$m" >> route-out/bench.txt
+                echo "== cycle $c $cfg split=$sp m_max=$m" >> route-out/bench.txt
                 env ${mm:+GEIST_OFFLOAD_M_MIN=$mm} GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 \
-                  GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS="$SPLIT" \
+                  GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS="$sp" \
                   bin/linux/release/tests/bench_perf_sweep --gguf "$MODEL" \
                   --seq-lens 512 --decode-n 32 --warmup 8 --repeats 3 --m-max "$m" \
                   2>> route-out/bench.txt \
-                  | sed "s/^{/{\"cfg\":\"$cfg\",\"m_max\":$m,\"cycle\":$c,/" | tee -a route-out/bench.jsonl
+                  | sed "s/^{/{\"cfg\":\"$cfg\",\"split\":\"$sp\",\"m_max\":$m,\"cycle\":$c,/" | tee -a route-out/bench.jsonl
               done
             done
+            done
           done
-          grep -E '^== |offload' route-out/bench.txt
+          grep -E '^== |offload|planner' route-out/bench.txt
       - name: Job summary
         if: always()
         run: |

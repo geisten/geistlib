@@ -366,6 +366,10 @@ struct geist_session_opts {
      * and one hidden-state transfer per step and direction crosses the
      * boundary. split_layers == 0 or split_backend == nullptr: no split.
      * split_layers == the layer count puts every layer on split_backend.
+     * split_layers == GEIST_SPLIT_AUTO lets the loader pick it (#78): the
+     * most leading layers whose weights and KV cache (for max_seq_len, else
+     * 4096 positions) fit split_backend's free memory with a reserve for its
+     * scratch; 0 of them runs the model on the load backend alone.
      * The caller owns split_backend and keeps it alive while the model
      * lives. Models with per-layer embeddings, shared KV, DeltaNet layers,
      * MTP blocks, a rotated basis or AWQ scales are refused
@@ -373,6 +377,7 @@ struct geist_session_opts {
      * snapshots on a split model. */
     struct geist_backend *split_backend;
     size_t                split_layers;
+#define GEIST_SPLIT_AUTO SIZE_MAX /* @stability EXPERIMENTAL, see split_layers */
 };
 
 /* @stability STABLE since 0.1.0

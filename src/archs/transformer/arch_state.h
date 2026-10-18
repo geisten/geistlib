@@ -742,6 +742,13 @@ transformer_forward_one_layer(struct transformer_arch_session *sess,
                               struct geist_buffer             *per_layer_input_buf,
                               struct geist_buffer             *h_out_buf);
 
+/* Planner (#78): how many of the leading layers fit `avail` bytes, each
+ * taking its weight bytes and kv_bytes_per_layer. */
+[[nodiscard]] size_t transformer_split_layers_fit(size_t       n_layers,
+                                                  const size_t layer_bytes[static n_layers],
+                                                  size_t       kv_bytes_per_layer,
+                                                  size_t       avail);
+
 /* Offload (#78): the rows of the next prefill chunk at q_position, n rows
  * left: up to the session's m_max when the chunk runs on the twins, else
  * at most what the load backend's kernels take per call. Without offload:
