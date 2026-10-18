@@ -98,8 +98,23 @@ prompt 512, decode 32, 3 interleaved cycles, median, peak RSS, run 1396:
   1366); llama.cpp `-ngl 26` with op offload 485 / 9.2 (run 1305).
 - **Cost: host memory.** The twins' matrices are a second copy of the CPU
   layers' weights in host memory (GEIST_W_HOST, ≈ 5 GB here); the mmapped
-  originals stay for the CPU's decode. Importing the mapping into Vulkan
-  instead of copying it would remove the copy.
+  originals stay for the CPU's decode.
+- **Qwen3-14B Q4_K_M, split 20** (run 1410, 2 cycles): split 199.6 / 205.7
+  tok/s prefill, offload at chunk 512 570.4 / 575.8; decode 12.4–12.9 vs
+  13.2; peak RSS 5.0 vs 9.1 GB.
+
+**The host copy stays (tried, refused by the driver).** Importing the GGUF
+mapping into Vulkan (`VK_EXT_external_memory_host`) instead of copying it
+would have removed the second copy for the dtypes the GPU reads as stored
+(Q4_K, Q5_K, Q4_1; Q8_0, Q4_0, Q6_K, PQ2_0, TQ2_0 are repacked at load and
+would also need a repack on the GPU after the stream). On NVIDIA 595.91
+the first import of the read-only, `MAP_PRIVATE` mapping already fails in
+`vkAllocateMemory` (`VK_ERROR_OUT_OF_DEVICE_MEMORY`), and after that refusal
+ordinary host allocations of the same process fail too, so the model does
+not load (runs 1400, 1403, 1408); without the import it loads and runs
+(run 1410). The code was removed. Left untried: sharing one host copy
+between the CPU and Vulkan (the CPU reading Vulkan's cached host buffer
+where both use the bytes as stored), and drivers that do import file pages.
 - Correctness: two cpu_x86 instances byte-identical with an FP32 cache;
   Vulkan INT8 split 26 within the split's own distance (max|d| 0.201, 16/16
   greedy, run 1393).

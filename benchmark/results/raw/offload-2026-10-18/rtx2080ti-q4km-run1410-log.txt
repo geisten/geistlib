@@ -1,0 +1,32 @@
+geist: offload: prefill chunks of 8 rows or more run layers 16..31 on cpu_x86
+geist: offload: prefill chunks of 8 rows or more run layers 16..31 on cpu_x86
+  kv fp32 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  16 offload: GEIST_OK, max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  16 offload: GEIST_OK, max|d| logits 0.3, after reset 0.511, greedy tokens matching 8/16
+== cycle 1 offload m_max=128
+geist: offload: prefill chunks of 32 rows or more run layers 20..39 on vulkan
+== cycle 1 offload m_max=512
+geist: offload: prefill chunks of 32 rows or more run layers 20..39 on vulkan
+== cycle 2 offload m_max=128
+geist: offload: prefill chunks of 32 rows or more run layers 20..39 on vulkan
+== cycle 2 offload m_max=512
+geist: offload: prefill chunks of 32 rows or more run layers 20..39 on vulkan
+geist: offload: prefill chunks of 32 rows or more run layers 1..39 on vulkan
+geist: offload: prefill chunks of 32 rows or more run layers 1..39 on vulkan
+geist: offload: prefill chunks of 32 rows or more run layers 20..39 on vulkan
+FAIL: split 20 (kv fp32): GEIST_E_OOM
+geist: offload: prefill chunks of 32 rows or more run layers 20..39 on vulkan
+geist: offload: prefill chunks of 32 rows or more run layers 20..39 on vulkan
+  kv int8 split  20: max|d| logits 0.372, after reset 0.469, greedy tokens matching 16/16
+  kv int4 split  20: max|d| logits 1.22, after reset 1.27, greedy tokens matching 0/16

@@ -1,0 +1,24 @@
+== cycle 1 offload m_max=128
+geist vulkan: importing 14745600 bytes of host memory failed at vkAllocateMemory (VkResult -2) after 0 MiB imported; copying instead
+model_load failed: transformer: offload twins on 'vulkan': vulkan: allocating 50135040 bytes failed (-2)
+geist: offload: prefill chunks of 8 rows or more run layers 16..31 on cpu_x86
+geist: offload: prefill chunks of 8 rows or more run layers 16..31 on cpu_x86
+  kv fp32 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  16 offload: GEIST_OK, max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  16 offload: GEIST_OK, max|d| logits 0.3, after reset 0.511, greedy tokens matching 8/16
+geist vulkan: importing 14745600 bytes of host memory failed at vkAllocateMemory (VkResult -2) after 0 MiB imported; copying instead
+FAIL: split load for the KIVI check
+FAIL: split 20 (kv fp32): GEIST_E_OOM
+FAIL: split 20 (kv int8): GEIST_E_OOM
+FAIL: split 20 (kv int4): GEIST_E_OOM
