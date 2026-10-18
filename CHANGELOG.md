@@ -170,7 +170,7 @@ minor release.
     Over 3 alternating rounds the int8 path ran +22 % on Gemma 4 E2B
     Q4_K_M (pp512) and +18 % on Llama 3.2 3B Q4_K_M. Its logits are as
     close to the cpu_scalar oracle or closer (Gemma KL 0.00014 against
-    0.0012). `GEIST_Q{4,6}K_SGEMM_PREFILL=1` restores the old path.
+    0.0012).
   - The GELU (Accelerate `vvtanhf`) runs on all threads in blocks instead
     of one thread: Gemma 4 E2B prefill -8 % on its own.
   Decode is unchanged.
@@ -203,21 +203,19 @@ minor release.
   are the register-tile kernel's. AMD 9950X, prefill 512: Qwen3.5 4B Q4_0
   2022 -> 986 ms, Qwen3.8 27B Q4_0 13094 -> 5074 ms (about 101 tok/s;
   llama.cpp 54); decode unchanged. Logits stay as close to the cpu_scalar
-  oracle as before. GEIST_Q4_0_TILED=0 / GEIST_Q5K_TILED=0 restore the
-  previous kernels.
+  oracle as before.
 - **x86: Q6_K prefill from the GGUF bytes, no W8A8 predecode on AVX-512
   VNNI (#18).** The tiled int8 GEMM now covers Q6_K too, at the speed of
   the predecode GEMM it replaces, so those hosts no longer keep the 1.5 B/wt
   W8A8 copy of every Q6_K weight. AMD 9950X resident memory: Gemma 4 E2B
   Q4_K_M 3308 -> 2922 MB, Llama 3.2 3B Q4_K_M 4839 -> 3685 MB; Llama 3.2 3B
-  prefill 512 -1.6 %. GEIST_Q6K_TILED=0 restores the predecode.
+  prefill 512 -1.6 %.
 - **x86 prefill on Q4_K models 24–31 % faster: a tiled int8 Q4_K GEMM
   (#18).** On AVX-512 VNNI hosts, Q4_K weights are unpacked once per K block
   into int8 tiles and multiplied by an 8x16 VPDPBUSD microkernel (port of
   llama.cpp's tiled k-quant matmul, d834d44e6). AMD 9950X, pp512: Gemma 4
   E2B Q4_K_M 527 -> 694 tok/s, Llama 3.2 3B Q4_K_M 379 -> 547 tok/s, ahead
-  of llama.cpp (633 / 509); decode unchanged. GEIST_Q4K_TILED=0 restores the
-  previous kernel.
+  of llama.cpp (633 / 509); decode unchanged.
 - **x86 release builds: Qwen3.5 prefill about twice as fast (#12).** The
   BLAS-free native GEMM of the release binaries had no SIMD path on x86, so
   the gated-DeltaNet prefill ran its sgemm calls scalar. AVX2/FMA kernels
@@ -480,6 +478,27 @@ minor release.
   `matvec_q4k`, the non-simd `rmsnorm_rows`/`rmsnorm_add_rows`) are deleted.
   Library setup is table-driven and the ops share one submit helper; dispatch
   is unchanged. `GEIST_METAL_Q6K_MM_FAST` and `GEIST_SKIP_*` stay.
+- **CPU: opt-in kernels that lost their A/B, and undocumented env knobs.**
+  Every removed path was off by default; default logits are byte-identical.
+  M1 Max, Gemma 4 E2B Q4_K_M, cpu_neon, 8 interleaved cycles against a
+  control copy of the base (control within ±1 %):
+  - the whole-FFN Q4_K/Q6_K tile fusion (`GEIST_FFN_TILE_FUSION=1`, with
+    its `GEIST_FFN_TILE_BLOCKS`): prefill 512 -21.7 %, 0 of 8 cycles faster.
+    The fused-op id `GEIST_FUSED_FFN_GEGLU_Q4Q6_MN` and the
+    `ffn_geglu_q4q6_mN` slot leave `geist_backend.h` (EXPERIMENTAL);
+  - cpu_neon's dequant + SGEMM prefill for Q4_K/Q6_K
+    (`GEIST_Q4K_SGEMM_PREFILL`, `GEIST_Q6K_SGEMM_PREFILL`,
+    `GEIST_QK_SGEMM_THRESHOLD`, `GEIST_QK_SGEMM_TILE_ROWS`): both on,
+    prefill 512 -7.4 %, 2 of 8 cycles faster; decode unaffected. The
+    `qk_sgemm_threshold` calibration tunable is no longer measured; it stays
+    in the table so calibration blobs written before still apply;
+  - cpu_neon's Q4_K block-scale prefill (`GEIST_Q4K_BLOCK_Q8_PREFILL`),
+    bit-identical to the m-tiled kernel since #698, and the mtile4_ntile4
+    kernel over the plain predecoded layout, which no policy reached;
+  - `GEIST_ATTENTION_OMP_SCHEDULE`, `GEIST_Q6K_NTILE4_STREAM_PREFILL`, the
+    x86 `GEIST_Q4K_TILED`, `GEIST_Q5K_TILED`, `GEIST_Q6K_TILED`,
+    `GEIST_Q4_0_TILED` and `GEIST_PROFILE_GEMM`: the defaults they overrode
+    stay.
 
 ### Fixed
 
@@ -818,8 +837,7 @@ minor release.
   thread-local in each OpenMP worker before, are one slot per thread in the
   calling thread's workspace: a call without them takes the reference
   whole instead of mixing reference and kernel rows when some worker's tile
-  cannot grow. `GEIST_ATTENTION_OMP_SCHEDULE` keeps
-  working (`guided` is now taken as `dynamic`). The kernels' "already inside
+  cannot grow. The kernels' "already inside
   an OpenMP team" work-sharing branches are gone (no caller is), and so is
   the opt-in `GEIST_PP=1` spin pool (`cpu_neon/parallel.c`): a build without
   OpenMP gets the same kind of spinning pool from `geist_par_for`. cpu_neon's
