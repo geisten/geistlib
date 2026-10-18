@@ -1,4 +1,4 @@
-/* generated from hadamard_f32.comp — make vulkan-shaders */
+/* generated from src/backends/vulkan/shaders/hadamard_f32.comp — make vulkan-shaders */
 static const uint32_t hadamard_f32_spv[] = {
 0x07230203,0x00010600,0x000d000b,0x00000126,
 0x00000000,0x00020011,0x00000001,0x0006000b,
