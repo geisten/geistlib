@@ -1,0 +1,86 @@
+name: strata-ref
+
+# Reference measurement for #48 on the geist-vulkan box (RTX 2080 Ti 11 GB,
+# Ryzen 9 9950X, 59 GB RAM): Strata (github.com/Niko1221/Strata, its
+# ready-made Linux engine) on Qwen3.8-Flash-Next GSQ-RCO Q2_0, a 62 GB MoE
+# that does not fit the card, against llama.cpp's llama-bench (Vulkan build)
+# with the dense weights on the GPU and the experts on the CPU
+# (-ngl 99 -ot exps=CPU). geistlib cannot load this model: this measures the
+# other engines only. On demand:
+#   tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib \
+#     --ref research/48-strata-ref strata-ref.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      strata_ref:
+        description: "Strata tag"
+        type: string
+        default: v0.1.44.1
+      llama_pin:
+        description: "llama.cpp commit for llama-bench (Vulkan)"
+        type: string
+        default: d81235049384534c167caea52b85a694f6103d14
+
+permissions:
+  contents: read
+
+jobs:
+  strata:
+    name: Strata reference on geist-vulkan
+    runs-on: geist-vulkan
+    timeout-minutes: 360
+    env:
+      STRATA_REF: ${{ inputs.strata_ref }}
+      LLAMA_PIN: ${{ inputs.llama_pin }}
+      REV: ed59f92082b1e93c0e96d60a8b11aab089b52f09
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Environment (refuse with less than 150 GB free)
+        run: |
+          mkdir -p strata-out
+          CACHE=${GEIST_MODEL_CACHE:-$HOME/geist-models}; mkdir -p "$CACHE"
+          { nvidia-smi; free -g; nproc; df -h "$CACHE" "$HOME"; } 2>&1 | tee strata-out/env.txt
+          need=150; have=$(df -BG --output=avail "$CACHE" | tail -1 | tr -dc 0-9)
+          [ "$have" -ge "$need" ] || [ -f "$CACHE/strata/Q2_0/.done" ] || { echo "only ${have} GB free under $CACHE"; exit 1; }
+          echo "CACHE=$CACHE" >> "$GITHUB_ENV"
+      - name: Model (Q2_0, cached outside the workspace)
+        run: |
+          set -e
+          D="$CACHE/strata/Q2_0"; mkdir -p "$D"; cd "$D"
+          B="https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/$REV/Q2_0"
+          for f in Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf; do
+            curl -fL --retry 5 -C - -o "$f" "$B/$f"
+          done
+          touch .done; ls -la
+      - name: Strata setup (ready-made engine, pack)
+        run: |
+          set -e
+          S="$HOME/strata-ref"; mkdir -p "$S"; cd "$S"
+          [ -d Strata/.git ] || git clone https://github.com/Niko1221/Strata
+          cd Strata; git fetch --tags -q; git checkout -q "$STRATA_REF"; git log -1 --format='%h %ci' | tee -a "$GITHUB_WORKSPACE/strata-out/env.txt"
+          ./setup.sh --model Q2_0 --yes --no-start --no-browser --vision no --port 8181 \
+            --gguf-dir "$CACHE/strata/Q2_0" --data-dir "$S/data" 2>&1 | tail -60 | tee "$GITHUB_WORKSPACE/strata-out/setup.txt"
+      - name: llama-bench (Vulkan)
+        run: echo "LLAMA_BENCH=$(scripts/ensure-llama-bench.sh vulkan ggml-org/llama.cpp "$LLAMA_PIN")" >> "$GITHUB_ENV"
+      - name: Measure
+        run: |
+          . scripts/gpu-lock.sh
+          G="$CACHE/strata/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf"
+          echo "== strata bench.sh" | tee strata-out/report.txt
+          (cd "$HOME/strata-ref/Strata" && ./bench.sh 2>&1) | tee strata-out/strata-bench.txt | sed -n '/^Results/,$p' | tee -a strata-out/report.txt
+          echo "== llama.cpp -ngl 99 -ot exps=CPU" | tee -a strata-out/report.txt
+          "$LLAMA_BENCH" -m "$G" -ngl 99 -ot "exps=CPU" -p 4096 -n 128 -r 3 -o md 2>&1 | tail -8 | tee -a strata-out/report.txt
+          echo "== llama.cpp -ngl 0" | tee -a strata-out/report.txt
+          "$LLAMA_BENCH" -m "$G" -ngl 0 -p 4096 -n 128 -r 3 -o md 2>&1 | tail -8 | tee -a strata-out/report.txt
+      - name: Job summary
+        if: always()
+        run: |
+          { echo '```'; cat strata-out/report.txt 2>/dev/null || echo "no report"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 30
+          name: strata-ref
+          path: strata-out/
+          if-no-files-found: warn
