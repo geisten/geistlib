@@ -1,0 +1,114 @@
+name: offload-cost
+
+# Phase 0 of the offload proposal (#78, docs/OFFLOAD.md) on the geist-vulkan
+# box (RTX 2080 Ti 11 GB, Ryzen 9 9950X): the cost model behind the row
+# threshold m_min. tests/bench_offload_cost times one weight shape per dtype
+# on cpu_x86, on Vulkan with the weight in VRAM and with it in host memory,
+# plus the bulk upload. Optionally the end-to-end check: Qwen3-14B Q8_0 with
+# every layer on Vulkan (the weights past VRAM in host memory, #466) at
+# several prefill chunk sizes, where the knee should sit near m_min.
+#
+# On demand only:  tea actions workflows dispatch --login git.geisten.net \
+#   --repo geisten/geistlib --ref <branch> -i ref=<branch> offload-cost.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "geistlib ref"
+        type: string
+        default: main
+      shapes:
+        description: "n_in x n_out pairs, separated by ; (e.g. 5120x17408;17408x5120)"
+        type: string
+        default: "5120x17408;17408x5120;5120x5120"
+      e2e:
+        description: "also the end-to-end GEIST_M_MAX sweep with every layer on Vulkan"
+        type: boolean
+        default: true
+      model_url:
+        description: "GGUF for the end-to-end sweep (cached by file name)"
+        type: string
+        default: https://huggingface.co/Qwen/Qwen3-14B-GGUF/resolve/530227a7d994db8eca5ab5ced2fb692b614357fd/Qwen3-14B-Q8_0.gguf
+      model_sha256:
+        description: "sha256 of the GGUF"
+        type: string
+        default: a0dfe649137410b7d82f06a209240508e218f32f5b6fd81b69d6932160cfcd9d
+      m_max:
+        description: "prefill chunk sizes for the end-to-end sweep, separated by ;"
+        type: string
+        default: "32;64;128;256;512"
+
+permissions:
+  contents: read
+
+jobs:
+  cost:
+    name: Offload cost model on geist-vulkan
+    runs-on: geist-vulkan
+    timeout-minutes: 120
+    env:
+      SHAPES: ${{ inputs.shapes }}
+      MODEL_URL: ${{ inputs.model_url }}
+      MODEL_SHA: ${{ inputs.model_sha256 }}
+      M_MAX: ${{ inputs.m_max }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Environment
+        run: |
+          mkdir -p cost-out
+          { git rev-parse HEAD; nvidia-smi; nvidia-smi -q | grep -A3 -i 'PCIe Generation\|Link Width';
+            lscpu | head -20; free -g; echo "OMP_NUM_THREADS=${OMP_NUM_THREADS:-unset}"; } 2>&1 | tee cost-out/env.txt
+      - name: Build geistlib (vulkan + cpu_x86)
+        run: make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
+      - name: Cost model (microbench)
+        run: |
+          set -eo pipefail
+          . scripts/gpu-lock.sh
+          for s in $(echo "$SHAPES" | tr ';' ' '); do
+            BENCH_CPU=cpu_x86 BENCH_N_IN=${s%x*} BENCH_N_OUT=${s#*x} \
+              bin/linux/release/tests/bench_offload_cost >> cost-out/cost.jsonl 2>> cost-out/cost.txt
+          done
+          cat cost-out/cost.txt
+      - name: Model (cached outside the workspace, sha256-checked)
+        if: inputs.e2e
+        run: |
+          set -eo pipefail
+          CACHE=${GEIST_MODEL_CACHE:-$HOME/geist-models}
+          mkdir -p "$CACHE"
+          F="$CACHE/$(basename "$MODEL_URL")"
+          if [ ! -f "$F" ]; then
+            curl -fL --retry 5 -C - -o "$F.part" "$MODEL_URL"
+            echo "$MODEL_SHA  $F.part" | sha256sum -c -
+            mv "$F.part" "$F"
+          fi
+          echo "MODEL=$F" >> "$GITHUB_ENV"
+      - name: End to end, every layer on Vulkan, by prefill chunk
+        if: inputs.e2e
+        run: |
+          set -eo pipefail
+          . scripts/gpu-lock.sh
+          for b in vulkan cpu_x86; do
+            for m in $(echo "$M_MAX" | tr ';' ' '); do
+              # the CPU kernels take at most 128 rows per call (GEIST_QUANT_M_CAP)
+              [ "$b" = cpu_x86 ] && [ "$m" -gt 128 ] && continue
+              echo "== $b m_max=$m" | tee -a cost-out/e2e.txt
+              GEIST_BENCH_BACKEND=$b bin/linux/release/tests/bench_perf_sweep --gguf "$MODEL" \
+                --seq-lens 512 --decode-n 16 --warmup 16 --repeats 3 --m-max "$m" \
+                | sed "s/^{/{\"backend\":\"$b\",\"m_max\":$m,/" | tee -a cost-out/e2e.jsonl
+            done
+          done
+      - name: Job summary
+        if: always()
+        run: |
+          { echo '```'; cat cost-out/cost.txt 2>/dev/null || echo "no cost table"; echo '```';
+            echo '```'; grep -o '"backend":"[a-z_0-9]*","m_max":[0-9]*\|"prefill_tps":[0-9.]*' cost-out/e2e.jsonl 2>/dev/null | paste - - ; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 30
+          name: offload-cost
+          path: cost-out/
+          if-no-files-found: warn
