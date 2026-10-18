@@ -41,7 +41,7 @@ static struct transformer_forward_profile g_ple_profile = {
         .calls       = g_ple_calls,
 };
 
-enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_forward_ctx *ctx) {
+static enum geist_status run_ple(struct transformer_layer_forward_ctx *ctx) {
 
     struct transformer_arch_state         *st    = ctx->st;
     struct transformer_arch_session       *sess  = ctx->sess;
@@ -79,7 +79,7 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
          * the backend doesn't support falls through to the decomposed
          * ops below. */
         const struct transformer_layer_exec_plan *P = ctx->P;
-        if (P != nullptr && (ctx->seq == 1 ? P->fuse_ple_block_m1 : P->fuse_ple_block_mN)) {
+        if (ctx->seq == 1 ? P->fuse_ple_block_m1 : P->fuse_ple_block_mN) {
             struct geist_tensor t_w_post_per_1d =
                     view_1d(L->post_per_layer_norm.buffer, st->d_model);
             struct geist_tensor t_proj_scratch_2d =
@@ -120,7 +120,7 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
         t0 = prof ? transformer_profile_now_ns() : 0;
         /* Bound at plan build (#352): a failing fused op is an error, never
          * a host fallback that re-runs gelu over output it may have written. */
-        if (ctx->P != nullptr && ctx->P->fuse_ple_gelu_mul) {
+        if (ctx->P->fuse_ple_gelu_mul) {
             s = fused->gelu_tanh_mul(be, &t_gate_ple_2d, &t_ple_in_2d, &t_gate_ple_2d);
             transformer_profile_add(&g_ple_profile, PLE_GELU, t0);
             if (s != GEIST_OK) {
@@ -157,7 +157,7 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
             return s;
         }
         t0 = prof ? transformer_profile_now_ns() : 0;
-        if (ctx->P != nullptr && ctx->P->fuse_rmsnorm_add) {
+        if (ctx->P->fuse_rmsnorm_add) {
             s = fused->rmsnorm_add(
                     be, &t_h_post_ff_2d, &t_proj_ple_2d, &t_w_post_per, ctx->eps, &t_h_out_2d);
             if (s != GEIST_OK) {
@@ -181,7 +181,7 @@ enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_for
     return GEIST_OK;
 }
 
-enum geist_status transformer_layer_scale_output(struct transformer_layer_forward_ctx *ctx) {
+static enum geist_status scale_output(struct transformer_layer_forward_ctx *ctx) {
     /* Only Gemma 4 (PLE) carries a layer scale; every other model loads 1,
      * and multiplying by 1 changes no bit, so skip the pass (a serial host
      * loop on CPU, a dispatch per layer on GPU). */
@@ -206,4 +206,20 @@ enum geist_status transformer_layer_scale_output(struct transformer_layer_forwar
     }
     ctx->v->buffer_unmap(ctx->h_out_buf);
     return GEIST_OK;
+}
+
+/* The layer tail, timed into the per-layer profile's "ple" and "scale"
+ * stages (and out of "ffn", see profile_tail_ns). */
+enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_forward_ctx *ctx) {
+    const uint64_t          t0 = ctx->profile ? transformer_profile_now_ns() : 0;
+    const enum geist_status s  = run_ple(ctx);
+    ctx->profile_tail_ns += transformer_layer_profile_add(TRANSFORMER_LAYER_PROFILE_PLE, t0);
+    return s;
+}
+
+enum geist_status transformer_layer_scale_output(struct transformer_layer_forward_ctx *ctx) {
+    const uint64_t          t0 = ctx->profile ? transformer_profile_now_ns() : 0;
+    const enum geist_status s  = scale_output(ctx);
+    ctx->profile_tail_ns += transformer_layer_profile_add(TRANSFORMER_LAYER_PROFILE_SCALE, t0);
+    return s;
 }

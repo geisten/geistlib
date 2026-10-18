@@ -50,35 +50,10 @@ static void populate_qwen3(struct gguf_ctx *gguf, struct transformer_arch_state 
     st->config.has_qk_norms   = true;
     st->config.ffn_activation = GEIST_FFN_SWIGLU;
 
-    uint32_t u;
-    float    f;
-    if (gguf_get_meta_u32(gguf, "qwen3.block_count", &u))
-        st->n_layers = u;
-    if (gguf_get_meta_u32(gguf, "qwen3.embedding_length", &u))
-        st->d_model = u;
-    if (gguf_get_meta_u32(gguf, "qwen3.attention.head_count", &u))
-        st->n_q_heads = u;
-    if (gguf_get_meta_u32(gguf, "qwen3.attention.head_count_kv", &u))
-        st->n_kv_heads = u;
-    if (gguf_get_meta_u32(gguf, "qwen3.vocab_size", &u)) {
-        st->vocab_size = u;
-    } else {
-        /* Qwen's GGUFs omit the vocab_size key — fall back to the
-         * tokenizer.ggml.tokens array length (same as BitNet). */
-        uint32_t       elem_vt = 0;
-        uint64_t       count   = 0;
-        const uint8_t *payload = nullptr;
-        if (gguf_get_meta_array_info(gguf, "tokenizer.ggml.tokens", &elem_vt, &count, &payload)) {
-            st->vocab_size = (size_t) count;
-        }
-    }
-    if (gguf_get_meta_f32(gguf, "qwen3.attention.layer_norm_rms_epsilon", &f))
-        st->config.rms_eps = f;
+    family_populate_common(gguf, "qwen3", nullptr, st);
+    st->vocab_size = family_vocab_size(gguf, "qwen3", nullptr); /* Qwen GGUFs: no key */
 
     populate_bitnet_embedding_meta(gguf, "qwen3", st);
-
-    st->hidden_per_layer = 0;
-    st->ple_out          = 0;
 }
 
 static bool populate_layers_qwen3(struct transformer_arch_state *st) {
@@ -108,19 +83,7 @@ static bool populate_layers_qwen3(struct transformer_arch_state *st) {
     if (head_dim == 0 || intermediate == 0) {
         return false;
     }
-    for (size_t i = 0; i < st->n_layers; i++) {
-        struct transformer_layer_weights *L = &st->layers[i];
-        L->layer_idx                        = (int) i;
-        L->is_full                          = true;
-        L->is_kv_shared                     = false;
-        L->head_dim                         = head_dim;
-        L->q_out                            = st->n_q_heads * head_dim;
-        L->kv_out                           = st->n_kv_heads * head_dim;
-        L->intermediate                     = intermediate;
-        L->sliding_window                   = 0;
-        L->rope_theta                       = freq_base;
-        L->n_rotated_dims                   = (int) head_dim;
-    }
+    family_uniform_layers(st, head_dim, intermediate, freq_base);
     return true;
 }
 

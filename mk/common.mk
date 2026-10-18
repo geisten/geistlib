@@ -281,6 +281,7 @@ LIB_SOURCES := \
     src/formats/ptqtp/gguf_ptqtp.c \
     src/formats/ptqtp/ptqtp_kernel.c \
     src/formats/ptqtp/ptqtp_awq.c \
+    src/io/aux_file.c \
     src/io/gguf_reader.c \
     src/io/safetensors_reader.c
 LIB_SOURCES += $(FAMILY_SOURCES)

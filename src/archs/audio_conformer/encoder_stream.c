@@ -8,9 +8,10 @@
 
 static void audio_stream_state_reset(struct audio_stream_state *ss);
 
-/* Lazily create the mel pipeline. GEIST_MEL_CONSTANTS_PATH wins (same
- * contract as the attach path in arch.c), so installed binaries work
- * outside a repo checkout; the in-tree path is the fallback. */
+/* The mel pipeline of an encoder used directly (tests, benchmarks): the
+ * model's encoder gets arch.c's at state_create. GEIST_MEL_CONSTANTS_PATH
+ * wins, so installed binaries work outside a repo checkout; the in-tree
+ * path is the fallback. */
 static int ensure_mel(struct AudioEncoder *a) {
     if (a->mel)
         return 0;

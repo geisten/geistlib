@@ -70,21 +70,12 @@ static void populate_gemma4(struct gguf_ctx *gguf, struct transformer_arch_state
     st->config.has_qk_norms         = true;
     st->config.ffn_activation       = GEIST_FFN_GEGLU;
 
+    family_populate_common(gguf, "gemma4", nullptr, st);
     uint32_t u;
     float    f;
-    if (gguf_get_meta_u32(gguf, "gemma4.block_count", &u))
-        st->n_layers = u;
-    if (gguf_get_meta_u32(gguf, "gemma4.embedding_length", &u))
-        st->d_model = u;
-    if (gguf_get_meta_u32(gguf, "gemma4.attention.head_count", &u))
-        st->n_q_heads = u;
-    if (gguf_get_meta_u32(gguf, "gemma4.attention.head_count_kv", &u))
-        st->n_kv_heads = u;
     if (gguf_get_meta_u32(gguf, "gemma4.embedding_length_per_layer_input", &u))
         st->hidden_per_layer = u;
     st->ple_out = st->n_layers * st->hidden_per_layer;
-    if (gguf_get_meta_f32(gguf, "gemma4.attention.layer_norm_rms_epsilon", &f))
-        st->config.rms_eps = f;
     if (gguf_get_meta_f32(gguf, "gemma4.final_logit_softcapping", &f))
         st->config.logit_softcap = f;
 }

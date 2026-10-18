@@ -453,6 +453,23 @@ minor release.
   headers are unchanged.
 
 ### Removed
+- **`geist_arch_ops_decoder.set_session_opts` (`geist_arch.h`,
+  EXPERIMENTAL).** Only a decoder arch without `session_alloc` used it, and
+  none exists: `session_alloc` / `session_free` are now required, and a
+  model whose arch registers neither is refused at load. The slots after
+  it move up by one pointer.
+- **`geist_backend_primitives.embedding_lookup` (`geist_backend.h`,
+  EXPERIMENTAL).** No arch called it; the transformer looks rows up through
+  `fused->embedding_lookup_scaled[_rows]` or dequantizes on the host. Gone
+  from cpu_neon, cpu_scalar, Metal and Vulkan; the Metal parity test checks
+  `embedding_lookup_scaled` at scale 1, which is what Metal's
+  `embedding_lookup` ran.
+- **The `../gemma-4-E2B-it/` and `../../gemma-4-E2B-it/` search paths** for
+  `tokenizer.bin`, `audio_tower.safetensors`, `mel_constants.bin` and
+  `vision_tower.safetensors`: a development-tree layout no test or CI job
+  uses. The environment overrides, the GGUF's directory and the
+  working-directory defaults (`./tokenizer.bin`, `audio_bench/`,
+  `audio_test_data/`, `vision_bench/`) are unchanged.
 
 - **Metal: undocumented kernel switches and debug traces.** The default-on
   kill switches `GEIST_METAL_FLASH`, `F32_MM`, `PLE_BLOCK`, `Q4K_N4`,

@@ -1783,15 +1783,6 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
     return GEIST_OK;
 }
 
-[[nodiscard]] static enum geist_status
-metal_embedding_lookup(struct geist_backend      *be,
-                       const struct geist_tensor *embed_table,
-                       geist_token_t              token_id,
-                       struct geist_tensor       *out) {
-
-    return metal_embedding_lookup_scaled(be, embed_table, token_id, 1.0f, out);
-}
-
 [[nodiscard]] static enum geist_status metal_q40_q80_linear(struct geist_backend      *be,
                                                             const struct geist_tensor *x,
                                                             const struct geist_tensor *w,
@@ -4002,16 +3993,15 @@ static bool metal_fused_supported(struct geist_backend *be, const struct geist_f
 }
 
 static const struct geist_backend_primitives metal_prims = {
-        .rmsnorm          = metal_rmsnorm,
-        .add              = metal_add,
-        .mul              = metal_mul,
-        .gelu_tanh        = metal_gelu_tanh,
-        .silu             = metal_silu,
-        .relu_squared     = metal_relu_squared,
-        .rope_apply       = metal_rope_apply,
-        .embedding_lookup = metal_embedding_lookup,
-        .attention        = metal_attention,
-        .scale_f32        = metal_scale_f32,
+        .rmsnorm      = metal_rmsnorm,
+        .add          = metal_add,
+        .mul          = metal_mul,
+        .gelu_tanh    = metal_gelu_tanh,
+        .silu         = metal_silu,
+        .relu_squared = metal_relu_squared,
+        .rope_apply   = metal_rope_apply,
+        .attention    = metal_attention,
+        .scale_f32    = metal_scale_f32,
 };
 
 static const struct geist_backend_fused metal_fused = {

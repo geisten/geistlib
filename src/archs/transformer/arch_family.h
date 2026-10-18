@@ -113,6 +113,41 @@ void populate_bitnet_embedding_meta(struct gguf_ctx               *gguf,
                                     const char                    *arch,
                                     struct transformer_arch_state *st);
 
+/* arch_family.c — metadata and geometry every family reads the same way.
+ *
+ * family_meta_u32 / _f32: "<arch>.<key>", else "<alt>.<key>" when alt is
+ *   set (BitNet's two key spellings). Return false and leave *out alone
+ *   when neither is present.
+ * family_populate_common: block_count, embedding_length,
+ *   attention.head_count, attention.head_count_kv and
+ *   attention.layer_norm_rms_epsilon, each left alone when absent.
+ * family_vocab_size: vocab_size, else the tokenizer.ggml.tokens count (many
+ *   converters write no vocab_size), else 0, which state_create refuses.
+ * family_uniform_layer: layer `i` of a uniform stack: full softmax
+ *   attention, no KV sharing, no window, RoPE over the first n_rotated
+ *   dims of head_dim at rope_theta. family_uniform_layers applies it to
+ *   every layer with n_rotated = head_dim. */
+bool family_meta_u32(
+        struct gguf_ctx *g, const char *arch, const char *alt, const char *key, uint32_t *out);
+bool family_meta_f32(
+        struct gguf_ctx *g, const char *arch, const char *alt, const char *key, float *out);
+void   family_populate_common(struct gguf_ctx               *g,
+                              const char                    *arch,
+                              const char                    *alt,
+                              struct transformer_arch_state *st);
+size_t family_vocab_size(struct gguf_ctx *g, const char *arch, const char *alt);
+void   family_uniform_layer(const struct transformer_arch_state *st,
+                            size_t                               i,
+                            size_t                               head_dim,
+                            size_t                               intermediate,
+                            float                                rope_theta,
+                            int                                  n_rotated,
+                            struct transformer_layer_weights    *L);
+void   family_uniform_layers(struct transformer_arch_state *st,
+                             size_t                         head_dim,
+                             size_t                         intermediate,
+                             float                          rope_theta);
+
 /* Select a family by `general.architecture` string. Returns the
  * matching family entry, or nullptr when the key is absent or no
  * entry matches (fail closed — caller aborts the load). */

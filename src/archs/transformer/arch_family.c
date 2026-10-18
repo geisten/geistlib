@@ -75,6 +75,100 @@ void populate_bitnet_embedding_meta(struct gguf_ctx               *gguf,
     }
 }
 
+/* ---- Shared metadata and geometry -------------------------------------- */
+
+bool family_meta_u32(
+        struct gguf_ctx *g, const char *arch, const char *alt, const char *key, uint32_t *out) {
+    char k[96];
+    snprintf(k, sizeof k, "%s.%s", arch, key);
+    if (gguf_get_meta_u32(g, k, out)) {
+        return true;
+    }
+    if (alt == nullptr) {
+        return false;
+    }
+    snprintf(k, sizeof k, "%s.%s", alt, key);
+    return gguf_get_meta_u32(g, k, out);
+}
+
+bool family_meta_f32(
+        struct gguf_ctx *g, const char *arch, const char *alt, const char *key, float *out) {
+    char k[96];
+    snprintf(k, sizeof k, "%s.%s", arch, key);
+    if (gguf_get_meta_f32(g, k, out)) {
+        return true;
+    }
+    if (alt == nullptr) {
+        return false;
+    }
+    snprintf(k, sizeof k, "%s.%s", alt, key);
+    return gguf_get_meta_f32(g, k, out);
+}
+
+void family_populate_common(struct gguf_ctx               *g,
+                            const char                    *arch,
+                            const char                    *alt,
+                            struct transformer_arch_state *st) {
+    uint32_t u;
+    if (family_meta_u32(g, arch, alt, "block_count", &u)) {
+        st->n_layers = u;
+    }
+    if (family_meta_u32(g, arch, alt, "embedding_length", &u)) {
+        st->d_model = u;
+    }
+    if (family_meta_u32(g, arch, alt, "attention.head_count", &u)) {
+        st->n_q_heads = u;
+    }
+    if (family_meta_u32(g, arch, alt, "attention.head_count_kv", &u)) {
+        st->n_kv_heads = u;
+    }
+    (void) family_meta_f32(g, arch, alt, "attention.layer_norm_rms_epsilon", &st->config.rms_eps);
+}
+
+size_t family_vocab_size(struct gguf_ctx *g, const char *arch, const char *alt) {
+    uint32_t u;
+    if (family_meta_u32(g, arch, alt, "vocab_size", &u)) {
+        return u;
+    }
+    uint32_t       elem_vt = 0;
+    uint64_t       count   = 0;
+    const uint8_t *payload = nullptr;
+    if (gguf_get_meta_array_info(g, "tokenizer.ggml.tokens", &elem_vt, &count, &payload)) {
+        return (size_t) count;
+    }
+    return 0;
+}
+
+void family_uniform_layer(const struct transformer_arch_state *st,
+                          size_t                               i,
+                          size_t                               head_dim,
+                          size_t                               intermediate,
+                          float                                rope_theta,
+                          int                                  n_rotated,
+                          struct transformer_layer_weights    *L) {
+    L->layer_idx      = (int) i;
+    L->mixer          = GEIST_MIXER_ATTN;
+    L->is_full        = true;
+    L->is_kv_shared   = false;
+    L->head_dim       = head_dim;
+    L->q_out          = st->n_q_heads * head_dim;
+    L->kv_out         = st->n_kv_heads * head_dim;
+    L->intermediate   = intermediate;
+    L->sliding_window = 0;
+    L->rope_theta     = rope_theta;
+    L->n_rotated_dims = n_rotated;
+}
+
+void family_uniform_layers(struct transformer_arch_state *st,
+                           size_t                         head_dim,
+                           size_t                         intermediate,
+                           float                          rope_theta) {
+    for (size_t i = 0; i < st->n_layers; i++) {
+        family_uniform_layer(
+                st, i, head_dim, intermediate, rope_theta, (int) head_dim, &st->layers[i]);
+    }
+}
+
 /* ---- Registry --------------------------------------------------------- */
 
 /* Only the families the build selected (make FAMILIES=..., mk/common.mk).
