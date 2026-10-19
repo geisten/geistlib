@@ -44,10 +44,17 @@ def log(msg):
     print(time.strftime("%Y-%m-%d %H:%M:%S"), msg, flush=True)
 
 
-def git(*args, cwd=None):
+def git(*args, cwd=None, timeout=45):
+    """Upstream git with the token. A hung Gitea must not hang the job: after
+    `timeout` the caller serves the mirror it has (a run's later jobs find
+    their commit there) instead of holding the checkout until Gitea stops
+    the job as a zombie (10 min)."""
     token = open(ARGS.token_file).read().strip()
     cmd = ["git", "-c", f"http.extraHeader=Authorization: token {token}", *args]
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=600)
+    try:
+        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", f"timed out after {timeout} s")
 
 
 def refresh(owner, repo, asked_at):
@@ -63,7 +70,7 @@ def refresh(owner, repo, asked_at):
         kind = "fetch" if os.path.isdir(d) else "clone"
         if kind == "clone":
             os.makedirs(os.path.dirname(d), exist_ok=True)
-            r = git("clone", "--mirror", "--quiet", f"{UPSTREAM}/{owner}/{repo}.git", d)
+            r = git("clone", "--mirror", "--quiet", f"{UPSTREAM}/{owner}/{repo}.git", d, timeout=600)
             if r.returncode == 0:
                 # actions/checkout fetches the PR head by object id
                 subprocess.run(["git", "config", "uploadpack.allowAnySHA1InWant", "true"], cwd=d)
