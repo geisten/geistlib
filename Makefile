@@ -26,7 +26,7 @@
 TARGET ?= $(shell mk/detect-target.sh)
 MODE   ?= release
 
-.PHONY: all lib bin fuzz fuzz-libfuzzer fuzz-libfuzzer-run run agent-contract-smoke runtime-contract-smoke release-check release-state-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-qwen3-model fetch-gemma3-model fetch-qwen35-model fetch-e4b-model fetch-audio-tower bench bench-synth bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
+.PHONY: all lib bin shared fuzz fuzz-libfuzzer fuzz-libfuzzer-run run agent-contract-smoke runtime-contract-smoke release-check release-state-check bench-smoke fetch-bench-model clean distclean help test test-unit test-int test-e2e test-all test-py test-dequant fetch-model fetch-llama-model fetch-qwen3-model fetch-gemma3-model fetch-qwen35-model fetch-e4b-model fetch-audio-tower bench bench-synth bench-small bench-detailed bench-quality-small bench-quality-detailed bench-compare-ref bench-mmlu bench-vision bench-video bench-audio bench-mm format format-check
 
 # Default goal. `lib` is the deliverable; `bin` builds the in-tree test and
 # evaluation tools under bin/<target>/<mode>/. This repository ships no CLI.
@@ -100,6 +100,19 @@ runtime-contract-smoke: $(RUNTIME_CONTRACT_SMOKE)
 $(RUNTIME_CONTRACT_SMOKE): examples/runtime_contract_smoke.c $(LIB_FILE) include/geist.h include/geist_util.h
 	@mkdir -p $(@D)
 	$(CC) -std=c23 -Wall -Wextra -Wpedantic -Werror -Iinclude $(LDFLAGS) -o $@ $< $(LIB_FILE) $(LDLIBS)
+
+# The shared library FFI callers load (examples/ffi): every object of the
+# archive, linked with the same libraries as the static programs (#80).
+ifneq ($(filter mac%,$(TARGET)),)
+SHARED_LIB := $(LIB_DIR)/libgeist.dylib
+SHARED_LINK = -dynamiclib -Wl,-force_load,$(LIB_FILE)
+else
+SHARED_LIB := $(LIB_DIR)/libgeist.so
+SHARED_LINK = -shared -Wl,--whole-archive $(LIB_FILE) -Wl,--no-whole-archive
+endif
+shared: $(SHARED_LIB)
+$(SHARED_LIB): $(LIB_FILE)
+	$(CC) $(SHARED_LINK) $(LDFLAGS) -o $@ $(LDLIBS)
 
 # `make run ARGS='model.gguf "your prompt"'` — build the smallest useful
 # program against the library and run it. The engine ships no CLI;
@@ -581,6 +594,7 @@ help:
 	"  make                       lib + dev binaries for this TARGET/MODE" \
 	"  make run ARGS='m.gguf \"hi\"'      build + run examples/simple_generate" \
 	"  make lib | bin             only the static lib | only the binaries" \
+	"  make shared                the shared library for FFI callers (examples/ffi)" \
 	"  make DECISION=1            enable experimental numeric candidate scoring" \
 	"  make DECISION=1 DECISION_CONTEXT=1  add snapshot-backed prefix scoring (#5)" \
 	"  make FAMILIES=\"bitnet llama\"  build only these model families (default: all)" \
