@@ -113,4 +113,96 @@ static inline void deltanet_mix_ref(size_t       seq,
     free(out);
 }
 
+/* The same mixer in double precision: conv state, recurrent state and every
+ * intermediate are double, so it serves as the "exact" side of a parity
+ * check that both the float oracle above and a backend are measured
+ * against. Inputs are the float tensors; qkv and the gate z are read, not
+ * written. z_out receives seq * n_v_heads * head_v outputs. Extents as
+ * above, with conv_state and delta_state double. */
+static inline void deltanet_mix_ref_f64(size_t       seq,
+                                        size_t       n_k_heads,
+                                        size_t       n_v_heads,
+                                        size_t       head_k,
+                                        size_t       head_v,
+                                        size_t       conv_kernel,
+                                        double       eps,
+                                        const float *qkv,
+                                        const float *z,
+                                        const float *beta,
+                                        const float *alpha,
+                                        const float *conv_w,
+                                        const float  ssm_a[static n_v_heads],
+                                        const float  dt_bias[static n_v_heads],
+                                        const float  norm_w[static head_v],
+                                        double      *conv_state,
+                                        double      *delta_state,
+                                        double      *z_out) {
+    const size_t keyd = n_k_heads * head_k, vd = n_v_heads * head_v, cd = 2 * keyd + vd;
+    const size_t K   = conv_kernel;
+    double      *y   = xmalloc(cd * sizeof(double));
+    double      *out = xmalloc(head_v * sizeof(double));
+    for (size_t t = 0; t < seq; t++) {
+        for (size_t c = 0; c < cd; c++) {
+            double acc = 0.0;
+            for (size_t r = 0; r < K; r++) {
+                const double x = r + 1 < K ? conv_state[r * cd + c] : (double) qkv[t * cd + c];
+                acc += (double) conv_w[c * K + r] * x;
+            }
+            y[c] = acc / (1.0 + exp(-acc));
+        }
+        memmove(conv_state, conv_state + cd, (K - 2) * cd * sizeof(double));
+        for (size_t c = 0; c < cd; c++) {
+            conv_state[(K - 2) * cd + c] = qkv[t * cd + c];
+        }
+        for (size_t h = 0; h < n_k_heads; h++) {
+            double qss = 0.0, kss = 0.0;
+            for (size_t i = 0; i < head_k; i++) {
+                qss += y[h * head_k + i] * y[h * head_k + i];
+                kss += y[keyd + h * head_k + i] * y[keyd + h * head_k + i];
+            }
+            const double qi = 1.0 / sqrt(qss + eps) / sqrt((double) head_k);
+            const double ki = 1.0 / sqrt(kss + eps);
+            for (size_t i = 0; i < head_k; i++) {
+                y[h * head_k + i] *= qi;
+                y[keyd + h * head_k + i] *= ki;
+            }
+        }
+        for (size_t h = 0; h < n_v_heads; h++) {
+            const size_t  hk    = h % n_k_heads;
+            const double  b     = 1.0 / (1.0 + exp(-(double) beta[t * n_v_heads + h]));
+            const double  sp    = log1p(exp((double) alpha[t * n_v_heads + h] + dt_bias[h]));
+            const double  decay = exp((double) ssm_a[h] * sp);
+            const double *kv    = y + keyd + hk * head_k;
+            const double *qv    = y + hk * head_k;
+            for (size_t j = 0; j < head_v; j++) {
+                double mem = 0.0;
+                for (size_t i = 0; i < head_k; i++) {
+                    double *s = delta_state + (h * head_k + i) * head_v + j;
+                    *s *= decay;
+                    mem += *s * kv[i];
+                }
+                const double d = (y[2 * keyd + h * head_v + j] - mem) * b;
+                double       o = 0.0;
+                for (size_t i = 0; i < head_k; i++) {
+                    double *s = delta_state + (h * head_k + i) * head_v + j;
+                    *s += kv[i] * d;
+                    o += *s * qv[i];
+                }
+                out[j] = o;
+            }
+            double ss = 0.0;
+            for (size_t j = 0; j < head_v; j++) {
+                ss += out[j] * out[j];
+            }
+            const double inv = 1.0 / sqrt(ss / (double) head_v + eps);
+            for (size_t j = 0; j < head_v; j++) {
+                const double g                 = z[t * vd + h * head_v + j];
+                z_out[t * vd + h * head_v + j] = out[j] * inv * norm_w[j] * (g / (1.0 + exp(-g)));
+            }
+        }
+    }
+    free(y);
+    free(out);
+}
+
 #endif /* GEIST_TESTS_DELTANET_REF_H */

@@ -17,9 +17,10 @@ enum {
     NKH = 1,
     NH  = 2,
     DK  = 7,
-    /* dv%4==0 keeps the chunked prefill path engaged (its wide kernels
-     * emit 4-wide j blocks and the host falls back to the serial mixer
-     * otherwise); 12 stays a non-power-of-two awkward size. */
+    /* DK 7 / DV 12 are outside the chunked prefill's tiling (multiples
+     * of 32), so this test covers the serial mixer's prefill and the
+     * decode kernels; test_backend_metal_deltanet_chunk_unit covers the
+     * chunked path at real head sizes. */
     DV   = 12,
     K    = 4,
     KEYD = NKH * DK,
