@@ -72,18 +72,13 @@ static const struct metal_pipeline_row metal_deltanet_rows[] = {
         METAL_PIPE(deltanet, "deltanet_mix", deltanet_mix),
         METAL_PIPE(deltanet, "dn_dec_qk", dn_dec_qk),
         METAL_PIPE(deltanet, "dn_dec_v", dn_dec_v),
-        METAL_PIPE(deltanet, "dn_cst_copy", dn_cst_copy),
-        METAL_PIPE(deltanet, "dn_conv_prep", dn_conv_prep),
-        METAL_PIPE(deltanet, "dn_qk_norm", dn_qk_norm),
-        METAL_PIPE(deltanet, "dn_state_roll", dn_state_roll),
-        METAL_PIPE(deltanet, "dn_chunk_stage", dn_chunk_stage),
-        METAL_PIPE(deltanet, "dn_chunk_subst", dn_chunk_subst),
-        METAL_PIPE(deltanet, "dn_chunk_amat", dn_chunk_amat),
-        METAL_PIPE(deltanet, "dn_chunk_vnew1", dn_chunk_vnew1),
-        METAL_PIPE(deltanet, "dn_chunk_vnew2", dn_chunk_vnew2),
-        METAL_PIPE(deltanet, "dn_chunk_out", dn_chunk_out),
-        METAL_PIPE(deltanet, "dn_chunk_supd", dn_chunk_supd),
-        METAL_PIPE(deltanet, "dn_chunk_gate", dn_chunk_gate),
+        METAL_PIPE(deltanet, "dnf_cst_copy", dnf_cst_copy),
+        METAL_PIPE(deltanet, "dnf_conv", dnf_conv),
+        METAL_PIPE(deltanet, "dnf_norm", dnf_norm),
+        METAL_PIPE(deltanet, "dnf_roll", dnf_roll),
+        METAL_PIPE(deltanet, "dnf_chunk", dnf_chunk),
+        METAL_PIPE(deltanet, "dnf_state", dnf_state),
+        METAL_PIPE(deltanet, "dnf_out", dnf_out),
 };
 
 static const struct metal_pipeline_row metal_quant_rows[] = {
@@ -225,16 +220,16 @@ struct metal_library_row {
     }
 
 static const struct metal_library_row metal_deltanet_libs[] = {
-        /* Serial mixer + chunked-prefill kernels compile as one unit (the
-         * chunk sources reuse struct P and silu1). */
+        /* Serial mixer, decode and chunked-prefill kernels compile as one
+         * unit (the later sources reuse struct P and silu1). */
         METAL_LIB(deltanet,
                   "DeltaNet",
                   metal_deltanet_source,
                   metal_dn_decode_source,
-                  metal_dn_chunk_prep_source,
-                  metal_dn_chunk_ws_source,
-                  metal_dn_chunk_wide_source,
-                  metal_dn_chunk_wide2_source),
+                  metal_dnf_prep_source,
+                  metal_dnf_chunk_source,
+                  metal_dnf_state_source,
+                  metal_dnf_out_source),
 };
 
 static const struct metal_library_row metal_quant_libs[] = {
