@@ -239,3 +239,72 @@ void safe_free(void **ptr) {
     }
     *ptr = nullptr;
 }
+
+/* heap_tl_grow's per-thread registry: the buffers each thread's
+ * _Thread_local scratch variables point to, freed by the key's destructor
+ * at thread exit. The destructor frees the recorded values and never reads
+ * the variables themselves: their storage may already be gone (macOS frees
+ * TLV blocks through a pthread key of its own, in unspecified order).
+ * ponytail: fixed HEAP_TL_MAX slots per thread; a site beyond them gets
+ * false (its kernel's fallback path), raise it when kernels add more. */
+#define HEAP_TL_MAX 32
+
+struct heap_tl {
+    size_t n;
+    struct {
+        void **key;
+        void  *buf;
+    } e[HEAP_TL_MAX];
+};
+
+static pthread_key_t  g_tl_key;
+static pthread_once_t g_tl_once = PTHREAD_ONCE_INIT;
+static bool           g_tl_key_ok;
+/* Also keeps the registry reachable from the live thread's TLS. */
+static _Thread_local struct heap_tl *t_tl;
+
+static void tl_destroy(void *arg) {
+    struct heap_tl *r = arg;
+    for (size_t i = 0; i < r->n; i++) {
+        free(r->e[i].buf);
+    }
+    free(r);
+}
+
+static void tl_key_init(void) {
+    g_tl_key_ok = pthread_key_create(&g_tl_key, tl_destroy) == 0;
+}
+
+bool heap_tl_grow(void **buf, size_t *cap, const size_t count, const size_t size) {
+    if (*cap >= count) {
+        return true;
+    }
+    (void) pthread_once(&g_tl_once, tl_key_init);
+    if (t_tl == nullptr && g_tl_key_ok) {
+        struct heap_tl *r = heap_calloc_aligned(1, sizeof *r, 0);
+        if (r != nullptr && pthread_setspecific(g_tl_key, r) != 0) {
+            free(r);
+            r = nullptr;
+        }
+        t_tl = r;
+    }
+    struct heap_tl *r = t_tl;
+    size_t          i = 0;
+    while (r != nullptr && i < r->n && r->e[i].key != buf) {
+        i++;
+    }
+    free(*buf);
+    *buf = nullptr;
+    *cap = 0;
+    if (r == nullptr || i == HEAP_TL_MAX) {
+        return false;
+    }
+    if (i == r->n) {
+        r->e[i].key = buf;
+        r->n++;
+    }
+    *buf        = heap_alloc_n_aligned(count, size, 0);
+    r->e[i].buf = *buf;
+    *cap        = (*buf != nullptr) ? count : 0;
+    return *buf != nullptr;
+}

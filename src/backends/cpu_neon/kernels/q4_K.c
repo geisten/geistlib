@@ -447,26 +447,22 @@ void linear_q4k_decode_w4a8(size_t      n_in,
      * buffer and a partial sample could falsely match
      * (test_neon_q4k_act_cache_unit). Comparing costs a fraction of
      * quantizing. Runs on the calling thread before the OMP team starts. */
-    static _Thread_local int8_t      *tl_x_q8      = nullptr;
-    static _Thread_local int32_t     *tl_sum32     = nullptr;
-    static _Thread_local float       *tl_x_scales  = nullptr;
-    static _Thread_local float       *tl_x_copy    = nullptr;
-    static _Thread_local size_t       tl_cap_n_in  = 0;
+    static _Thread_local int8_t      *tl_x_q8     = nullptr;
+    static _Thread_local int32_t     *tl_sum32    = nullptr;
+    static _Thread_local float       *tl_x_scales = nullptr;
+    static _Thread_local float       *tl_x_copy   = nullptr;
+    static _Thread_local size_t       tl_cap_n_in = 0;
+    static _Thread_local size_t       tl_cap_q8, tl_cap_sum32, tl_cap_scales, tl_cap_copy;
     static _Thread_local const float *tl_last_x    = nullptr;
     static _Thread_local size_t       tl_last_n_in = 0;
 
     if (n_in > tl_cap_n_in) {
-        safe_free((void **) &tl_x_q8);
-        safe_free((void **) &tl_sum32);
-        safe_free((void **) &tl_x_scales);
-        safe_free((void **) &tl_x_copy);
-        tl_x_q8     = heap_alloc_array_aligned(int8_t, n_in);
-        tl_sum32    = heap_alloc_array_aligned(int32_t, n_in / 32);
-        tl_x_scales = heap_alloc_array_aligned(float, geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS));
-        tl_x_copy   = heap_alloc_array_aligned(float, n_in);
-        tl_last_x   = nullptr;
-        if (tl_x_q8 == nullptr || tl_sum32 == nullptr || tl_x_scales == nullptr ||
-            tl_x_copy == nullptr) {
+        tl_last_x = nullptr;
+        if (!heap_tl_grow_array(tl_x_q8, tl_cap_q8, n_in) ||
+            !heap_tl_grow_array(tl_sum32, tl_cap_sum32, n_in / 32) ||
+            !heap_tl_grow_array(
+                    tl_x_scales, tl_cap_scales, geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS)) ||
+            !heap_tl_grow_array(tl_x_copy, tl_cap_copy, n_in)) {
             tl_cap_n_in = 0;
             q4k_decode_ref(n_in, n_out, x, w_q4k, y);
             return;
@@ -501,15 +497,13 @@ void linear_q4k_decode_w4a8_pair(size_t       n_in,
     static _Thread_local int32_t *tl_sum32    = nullptr;
     static _Thread_local float   *tl_x_scales = nullptr;
     static _Thread_local size_t   tl_cap_n_in = 0;
+    static _Thread_local size_t   tl_cap_q8, tl_cap_sum32, tl_cap_scales;
 
     if (n_in > tl_cap_n_in) {
-        safe_free((void **) &tl_x_q8);
-        safe_free((void **) &tl_sum32);
-        safe_free((void **) &tl_x_scales);
-        tl_x_q8     = heap_alloc_array_aligned(int8_t, n_in);
-        tl_sum32    = heap_alloc_array_aligned(int32_t, n_in / 32);
-        tl_x_scales = heap_alloc_array_aligned(float, geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS));
-        if (tl_x_q8 == nullptr || tl_sum32 == nullptr || tl_x_scales == nullptr) {
+        if (!heap_tl_grow_array(tl_x_q8, tl_cap_q8, n_in) ||
+            !heap_tl_grow_array(tl_sum32, tl_cap_sum32, n_in / 32) ||
+            !heap_tl_grow_array(
+                    tl_x_scales, tl_cap_scales, geist_act_groups(n_in, GEIST_ACT_Q8K_ELEMS))) {
             tl_cap_n_in = 0;
             q4k_decode_ref(n_in, n_out0, x, w0_q4k, y0);
             q4k_decode_ref(n_in, n_out1, x, w1_q4k, y1);
@@ -773,14 +767,9 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
         static _Thread_local int8_t *pack_tl  = nullptr;
         static _Thread_local size_t  pack_cap = 0;
         const size_t                 need     = m * n_in;
-        if (need > pack_cap) {
-            /* The packing loop fully repopulates the buffer before any read,
-             * so dropping the old contents on grow is safe. */
-            safe_free((void **) &pack_tl);
-            pack_tl  = heap_alloc_array_aligned(int8_t, need);
-            pack_cap = (pack_tl != nullptr) ? need : 0;
-        }
-        if (pack_cap >= need) {
+        /* The packing loop fully repopulates the buffer before any read,
+         * so dropping the old contents on grow is safe. */
+        if (heap_tl_grow_array(pack_tl, pack_cap, need)) {
             packed = pack_tl;
             for (size_t b = 0; b < n_blocks_per_row; b++) {
                 for (int k = 0; k < 4; k++) {
