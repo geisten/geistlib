@@ -4,7 +4,8 @@
  * Loads one GGUF unsplit and split at several points (the first N layers
  * on a second backend, the rest and the head on the first), prefills the
  * same token ids across more than one prefill chunk, decodes greedy
- * tokens, resets and prefills again, and compares:
+ * tokens, prefills a second prompt (a chat's next turn), resets and
+ * prefills again, and compares:
  *
  *   - both backends of the same kind (default: two instances of the host's
  *     CPU backend, cpu_neon / cpu_x86, else cpu_scalar): the logits after the prefill, the decoded
@@ -20,6 +21,12 @@
  *
  * GEIST_SPLIT_POINTS ("1,20,28") replaces the split points, e.g. for a
  * model whose every layer does not fit the device.
+ *
+ * Offload (#78): with both backends of the same kind, the split at L/2
+ * runs again with GEIST_OFFLOAD_M_MIN=8 (prompt chunks on the twins, decode
+ * on the load backend): byte-identical with an FP32 cache, reported with
+ * INT8. With another backend kind, GEIST_OFFLOAD_M_MIN set by the caller
+ * applies to every split above and the outputs are reported.
  *
  * Refusals: split_layers past the layer count fails the load with
  * GEIST_E_INVALID_ARG; a KIVI session on a split model fails to create.
@@ -42,10 +49,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { N_PROMPT = 100, N_DECODE = 16, N_AFTER_RESET = 10 };
+enum { N_PROMPT = 100, N_DECODE = 16, N_TURN2 = 40, N_AFTER_RESET = 10 };
 
 struct run {
-    float        *logits; /* after the prefill */
+    float        *logits;       /* after the prefill */
+    float        *logits_turn2; /* after a second prompt that follows the decode */
     float        *logits_reset;
     size_t        n_logits;
     geist_token_t tokens[N_DECODE];
@@ -102,6 +110,7 @@ static struct geist_backend *backend(const char *name) {
 
 static void run_free(struct run *r) {
     free(r->logits);
+    free(r->logits_turn2);
     free(r->logits_reset);
     *r = (struct run) {0};
 }
@@ -118,7 +127,8 @@ static float *copy_logits(struct geist_session *s, size_t *n) {
     return c;
 }
 
-/* Load (split when split_be != nullptr), prefill, decode, reset, prefill. */
+/* Load (split when split_be != nullptr), prefill, decode, a second prompt
+ * (a chat's next turn), reset, prefill. */
 static enum geist_status run_once(const char           *path,
                                   struct geist_backend *be,
                                   struct geist_backend *split_be,
@@ -151,6 +161,13 @@ static enum geist_status run_once(const char           *path,
     }
     for (size_t i = 0; s == GEIST_OK && i < N_DECODE; i++) {
         s = geist_session_decode_step(sess, &out->tokens[i]);
+    }
+    if (s == GEIST_OK)
+        s = geist_session_prefill_tokens(sess, N_TURN2, ids + N_PROMPT - N_TURN2);
+    if (s == GEIST_OK) {
+        size_t n          = 0;
+        out->logits_turn2 = copy_logits(sess, &n);
+        s = out->logits_turn2 != nullptr && n == out->n_logits ? GEIST_OK : GEIST_E_INTERNAL;
     }
     if (s == GEIST_OK)
         s = geist_session_reset(sess);
@@ -340,6 +357,9 @@ int main(void) {
                          splits[i]);
                 fails += geist_expect(memcmp(r.logits, ref.logits, ref.n_logits * sizeof(float)) ==
                                                       0 &&
+                                              memcmp(r.logits_turn2,
+                                                     ref.logits_turn2,
+                                                     ref.n_logits * sizeof(float)) == 0 &&
                                               memcmp(r.logits_reset,
                                                      ref.logits_reset,
                                                      ref.n_logits * sizeof(float)) == 0 &&
@@ -348,6 +368,53 @@ int main(void) {
             }
             run_free(&r);
         }
+        run_free(&ref);
+    }
+
+    /* Offload (#78) on two CPU instances: the twins run the same kernels.
+     * Their cache is dense, so with an FP32 cache the run is byte-identical
+     * to the unsplit one; with INT8 the prefill attends over FP32 rows the
+     * load backend's cache does not hold, and is reported. m_min 8: the
+     * prompt chunks run on the twins, decode on the load backend. */
+    for (size_t k = 0; exact && k < 2; k++) {
+        struct run        ref = {0};
+        enum geist_status s   = run_once(path, be, nullptr, 0, kvs[k], &ref);
+        struct run        r   = {0};
+        setenv("GEIST_OFFLOAD_M_MIN", "8", 1);
+        if (s == GEIST_OK) {
+            s = run_once(path, be, sbe, n_layers / 2, kvs[k], &r);
+        }
+        unsetenv("GEIST_OFFLOAD_M_MIN");
+        size_t same = 0;
+        while (s == GEIST_OK && same < N_DECODE && r.tokens[same] == ref.tokens[same]) {
+            same++;
+        }
+        printf("  kv %-4s split %3zu offload: %s, max|d| logits %.3g, after reset %.3g, "
+               "greedy tokens matching %zu/%d\n",
+               kv_names[k],
+               n_layers / 2,
+               geist_status_to_string(s),
+               s == GEIST_OK ? (double) max_abs_diff(r.logits, ref.logits, ref.n_logits) : 0.0,
+               s == GEIST_OK ? (double) max_abs_diff(r.logits_reset, ref.logits_reset, ref.n_logits)
+                             : 0.0,
+               same,
+               N_DECODE);
+        if (kvs[k] == GEIST_KV_FP32) {
+            fails += geist_expect(
+                    s == GEIST_OK &&
+                            memcmp(r.logits, ref.logits, ref.n_logits * sizeof(float)) == 0 &&
+                            memcmp(r.logits_turn2,
+                                   ref.logits_turn2,
+                                   ref.n_logits * sizeof(float)) == 0 &&
+                            memcmp(r.logits_reset,
+                                   ref.logits_reset,
+                                   ref.n_logits * sizeof(float)) == 0 &&
+                            same == N_DECODE,
+                    "kv fp32 offload byte-identical, second turn included");
+        } else {
+            fails += geist_expect(s == GEIST_OK, "kv int8 offload runs");
+        }
+        run_free(&r);
         run_free(&ref);
     }
 

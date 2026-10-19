@@ -416,3 +416,35 @@ const char *geist_hw_build_isa_missing(const struct geist_hw_probe *hw) {
 #endif
     return nullptr;
 }
+
+size_t geist_meminfo_available(const char *meminfo) {
+    const char *p = meminfo != nullptr ? strstr(meminfo, "MemAvailable:") : nullptr;
+    if (p == nullptr) {
+        return 0;
+    }
+    char                    *end = nullptr;
+    const unsigned long long kb  = strtoull(p + strlen("MemAvailable:"), &end, 10);
+    while (end != nullptr && *end == ' ') {
+        end++;
+    }
+    if (end == nullptr || strncmp(end, "kB", 2) != 0 || kb > SIZE_MAX / 1024) {
+        return 0;
+    }
+    return (size_t) kb * 1024;
+}
+
+size_t geist_mem_available(void) {
+#if defined(__linux__)
+    FILE *f = fopen("/proc/meminfo", "r");
+    if (f == nullptr) {
+        return 0;
+    }
+    char         buf[4096];
+    const size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    return geist_meminfo_available(buf);
+#else
+    return 0;
+#endif
+}

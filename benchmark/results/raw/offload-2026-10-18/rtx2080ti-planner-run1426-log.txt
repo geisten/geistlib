@@ -1,0 +1,6 @@
+  12 geist: offload: 12 prefill chunks ran on vulkan, 97 steps mirrored there
+   3 geist: offload: prefill chunks of 64 rows or more run layers 24..39 on vulkan
+   3 geist: offload: prefill chunks of 64 rows or more run layers 26..39 on vulkan
+   3 geist: offload: prefill chunks of 64 rows or more run layers 27..39 on vulkan
+   3 geist: offload: prefill chunks of 64 rows or more run layers 28..39 on vulkan
+   6 geist: split planner: 27 of 40 layers on vulkan (10438 MiB free, 1216 MiB reserved, 2 MiB KV per layer at 584 positions)

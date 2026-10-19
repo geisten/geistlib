@@ -89,6 +89,9 @@ load_layer_proj_rope_il(struct transformer_arch_state    *st,
                         struct geist_tensor              *out_view,
                         struct geist_weight              *out_weight /* nullable */) {
 
+    if (st->weights_on_host) {
+        weight_flags |= (uint16_t) GEIST_W_HOST;
+    }
     struct geist_backend       *be  = st->backend;
     const struct gguf_tensor_t *t   = nullptr;
     struct geist_buffer        *buf = nullptr;

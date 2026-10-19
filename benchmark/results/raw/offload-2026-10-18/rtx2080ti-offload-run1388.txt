@@ -1,0 +1,72 @@
+ref: feat/78-offload-route
+  ref: feat/78-offload-route
+[command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +refs/heads/feat/78-offload-route*:refs/remotes/origin/feat/78-offload-route* +refs/tags/feat/78-offload-route*:refs/tags/feat/78-offload-route*
+ * [neuer Branch]    feat/78-offload-route -> origin/feat/78-offload-route
+[command]/usr/bin/git branch --list --remote origin/feat/78-offload-route
+  origin/feat/78-offload-route
+[command]/usr/bin/git checkout --progress --force -B feat/78-offload-route refs/remotes/origin/feat/78-offload-route
+Zu neuem Branch 'feat/78-offload-route' gewechselt
+Branch 'feat/78-offload-route' folgt nun 'origin/feat/78-offload-route'.
+cc -std=c23 -Wall -Wextra -Wpedantic -Werror -fno-strict-aliasing -Iinclude -I. -Isrc/base -Isrc/quant -Isrc/backends/common -Isrc/formats/gguf -Isrc/formats/ptqtp -Isrc/io -Isrc/engine -Isrc/archs/audio_conformer -Isrc/archs/vision_siglip -Ithird_party/stb -DGEIST_BACKEND_VULKAN=1 -DGEIST_BACKEND_CPU_X86=1 -DGEIST_BACKEND_CPU_SCALAR=1 -DGEIST_GEMM_NATIVE -O3 -DNDEBUG -march=x86-64-v3 -mtune=generic -fopenmp -ffast-math -Wno-vla-parameter -D_GNU_SOURCE   -MMD -MP -c tests/bench_offload_cost.c -o build/linux/release/tests/bench_offload_cost.o
+cc  -fopenmp  -o bin/linux/release/tests/bench_offload_cost build/linux/release/tests/bench_offload_cost.o lib/linux/release/libgeist.a -lm   -ldl
+geist: offload: prefill chunks of 8 rows or more run layers 16..31 on cpu_x86
+geist: offload: prefill chunks of 8 rows or more run layers 16..31 on cpu_x86
+model gguf_artifacts/smollm2-360m-instruct-q8_0.gguf (32 layers), cpu_x86 + cpu_x86, byte-identical
+  kv fp32 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  16 offload: GEIST_OK, max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  16 offload: GEIST_OK, max|d| logits 0.3, after reset 0.511, greedy tokens matching 8/16
+geist: offload: prefill chunks of 32 rows or more run layers 1..39 on vulkan
+geist: offload: prefill chunks of 32 rows or more run layers 1..39 on vulkan
+geist: offload: prefill chunks of 32 rows or more run layers 26..39 on vulkan
+FAIL: split 26 (kv fp32): GEIST_E_OOM
+FAIL: split 26 (kv int8): GEIST_E_OOM
+FAIL: split 26 (kv int4): GEIST_E_OOM
+geist vulkan spill: 1205 weights (59732 MiB) in host memory; streamed into VRAM 280 times (13387 MiB)
+model /home/germar/geist-models/Qwen3-14B-Q8_0.gguf (40 layers), cpu_x86 + vulkan, reported
+  kv fp32 gpu only : GEIST_E_OOM
+  kv int8 gpu only : max|d| logits 0.207, after reset 0.241, greedy tokens matching 16/16
+  kv int4 gpu only : GEIST_E_OOM
+    for cfg in split offload; do
+      mm=$([ "$cfg" = offload ] && echo "$M_MIN" || echo 0)
+grep -E '^== |offload' route-out/bench.txt
+{"cfg":"split","m_max":64,"cycle":1,"seq_len":512,"decode_n":32,"prefill_ms":3929.87,"decode_ms":3354.28,"total_ms":7284.15,"ttft_ms":3929.87,"prefill_tps":130.284,"decode_tps":9.540,"total_tps":74.683,"prefill_ms_best":3850.75,"prefill_ms_worst":4002.06,"decode_ms_best":3314.98,"decode_ms_worst":3380.52,"total_ms_best":7231.28,"total_ms_worst":7317.04,"total_tps_best":75.229,"total_tps_worst":74.347,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":5996.06,"threads":0,"samples":{"prefill_ms":[3936.803,3850.751,4002.059],"decode_ms":[3367.350,3380.524,3314.977],"total_ms":[7304.154,7231.276,7317.035],"ttft_ms":[3936.804,3850.752,4002.059]}}
+{"cfg":"offload","m_max":64,"cycle":1,"seq_len":512,"decode_n":32,"prefill_ms":3702.31,"decode_ms":3306.95,"total_ms":7009.26,"ttft_ms":3702.31,"prefill_tps":138.292,"decode_tps":9.677,"total_tps":77.612,"prefill_ms_best":3666.69,"prefill_ms_worst":3722.58,"decode_ms_best":3297.75,"decode_ms_worst":3315.79,"total_ms_best":6973.99,"total_ms_worst":7033.45,"total_tps_best":78.004,"total_tps_worst":77.345,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":9938.39,"threads":0,"samples":{"prefill_ms":[3666.688,3717.669,3722.579],"decode_ms":[3307.307,3315.785,3297.748],"total_ms":[6973.995,7033.454,7020.327],"ttft_ms":[3666.688,3717.669,3722.580]}}
+{"cfg":"split","m_max":128,"cycle":1,"seq_len":512,"decode_n":32,"prefill_ms":3677.56,"decode_ms":3434.87,"total_ms":7112.43,"ttft_ms":3677.56,"prefill_tps":139.223,"decode_tps":9.316,"total_tps":76.486,"prefill_ms_best":3566.41,"prefill_ms_worst":3751.53,"decode_ms_best":3346.68,"decode_ms_worst":3610.77,"total_ms_best":6913.57,"total_ms_worst":7325.52,"total_tps_best":78.686,"total_tps_worst":74.261,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":6031.45,"threads":0,"samples":{"prefill_ms":[3566.410,3714.746,3751.532],"decode_ms":[3347.164,3610.775,3346.678],"total_ms":[6913.574,7325.520,7098.211],"ttft_ms":[3566.411,3714.747,3751.533]}}
+{"cfg":"offload","m_max":128,"cycle":1,"seq_len":512,"decode_n":32,"prefill_ms":1937.41,"decode_ms":3218.05,"total_ms":5155.46,"ttft_ms":1937.41,"prefill_tps":264.271,"decode_tps":9.944,"total_tps":105.519,"prefill_ms_best":1906.88,"prefill_ms_worst":1954.76,"decode_ms_best":3188.79,"decode_ms_worst":3265.30,"total_ms_best":5143.55,"total_ms_worst":5172.18,"total_tps_best":105.764,"total_tps_worst":105.178,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":9980.32,"threads":0,"samples":{"prefill_ms":[1906.879,1954.757,1950.587],"decode_ms":[3265.297,3188.793,3200.064],"total_ms":[5172.175,5143.550,5150.652],"ttft_ms":[1906.879,1954.758,1950.588]}}
+{"cfg":"split","m_max":64,"cycle":2,"seq_len":512,"decode_n":32,"prefill_ms":3754.87,"decode_ms":3192.26,"total_ms":6947.13,"ttft_ms":3754.87,"prefill_tps":136.356,"decode_tps":10.024,"total_tps":78.306,"prefill_ms_best":3671.76,"prefill_ms_worst":3885.12,"decode_ms_best":3171.48,"decode_ms_worst":3208.77,"total_ms_best":6843.25,"total_ms_worst":7081.65,"total_tps_best":79.494,"total_tps_worst":76.818,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":5997.68,"threads":0,"samples":{"prefill_ms":[3707.724,3671.763,3885.115],"decode_ms":[3208.766,3171.484,3196.533],"total_ms":[6916.490,6843.247,7081.648],"ttft_ms":[3707.725,3671.763,3885.116]}}
+{"cfg":"offload","m_max":64,"cycle":2,"seq_len":512,"decode_n":32,"prefill_ms":3705.41,"decode_ms":3197.50,"total_ms":6902.92,"ttft_ms":3705.41,"prefill_tps":138.176,"decode_tps":10.008,"total_tps":78.807,"prefill_ms_best":3674.88,"prefill_ms_worst":3729.58,"decode_ms_best":3187.95,"decode_ms_worst":3202.63,"total_ms_best":6877.51,"total_ms_worst":6931.52,"total_tps_best":79.098,"total_tps_worst":78.482,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":9938.54,"threads":0,"samples":{"prefill_ms":[3674.878,3711.772,3729.584],"decode_ms":[3202.631,3187.946,3201.937],"total_ms":[6877.509,6899.718,6931.521],"ttft_ms":[3674.879,3711.773,3729.585]}}
+{"cfg":"split","m_max":128,"cycle":2,"seq_len":512,"decode_n":32,"prefill_ms":3277.57,"decode_ms":3237.86,"total_ms":6515.43,"ttft_ms":3277.57,"prefill_tps":156.213,"decode_tps":9.883,"total_tps":83.494,"prefill_ms_best":3056.79,"prefill_ms_worst":3528.06,"decode_ms_best":3194.89,"decode_ms_worst":3259.75,"total_ms_best":6251.69,"total_ms_worst":6787.81,"total_tps_best":87.017,"total_tps_worst":80.144,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":6031.71,"threads":0,"samples":{"prefill_ms":[3247.857,3056.793,3528.059],"decode_ms":[3258.928,3194.894,3259.751],"total_ms":[6506.786,6251.687,6787.810],"ttft_ms":[3247.858,3056.794,3528.060]}}
+{"cfg":"offload","m_max":128,"cycle":2,"seq_len":512,"decode_n":32,"prefill_ms":1939.24,"decode_ms":3193.52,"total_ms":5132.76,"ttft_ms":1939.24,"prefill_tps":264.021,"decode_tps":10.020,"total_tps":105.986,"prefill_ms_best":1925.55,"prefill_ms_worst":1954.47,"decode_ms_best":3162.80,"decode_ms_worst":3225.95,"total_ms_best":5088.35,"total_ms_worst":5180.42,"total_tps_best":106.911,"total_tps_worst":105.011,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":9980.69,"threads":0,"samples":{"prefill_ms":[1925.547,1937.704,1954.471],"decode_ms":[3162.801,3191.816,3225.946],"total_ms":[5088.348,5129.520,5180.417],"ttft_ms":[1925.548,1937.705,1954.472]}}
+{"cfg":"split","m_max":64,"cycle":3,"seq_len":512,"decode_n":32,"prefill_ms":3815.91,"decode_ms":3203.97,"total_ms":7019.88,"ttft_ms":3815.91,"prefill_tps":134.175,"decode_tps":9.988,"total_tps":77.494,"prefill_ms_best":3757.23,"prefill_ms_worst":3881.47,"decode_ms_best":3195.63,"decode_ms_worst":3218.25,"total_ms_best":6952.85,"total_ms_worst":7099.72,"total_tps_best":78.241,"total_tps_worst":76.623,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":5997.70,"threads":0,"samples":{"prefill_ms":[3809.048,3881.466,3757.226],"decode_ms":[3198.027,3218.251,3195.627],"total_ms":[7007.075,7099.717,6952.853],"ttft_ms":[3809.049,3881.467,3757.227]}}
+{"cfg":"offload","m_max":64,"cycle":3,"seq_len":512,"decode_n":32,"prefill_ms":3715.32,"decode_ms":3167.78,"total_ms":6883.10,"ttft_ms":3715.32,"prefill_tps":137.808,"decode_tps":10.102,"total_tps":79.034,"prefill_ms_best":3695.69,"prefill_ms_worst":3725.41,"decode_ms_best":3161.56,"decode_ms_worst":3171.14,"total_ms_best":6857.25,"total_ms_worst":6896.55,"total_tps_best":79.332,"total_tps_worst":78.880,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":9938.52,"threads":0,"samples":{"prefill_ms":[3695.692,3724.856,3725.408],"decode_ms":[3161.560,3170.651,3171.141],"total_ms":[6857.252,6895.506,6896.549],"ttft_ms":[3695.693,3724.856,3725.409]}}
+{"cfg":"split","m_max":128,"cycle":3,"seq_len":512,"decode_n":32,"prefill_ms":3187.94,"decode_ms":3191.07,"total_ms":6379.00,"ttft_ms":3187.94,"prefill_tps":160.605,"decode_tps":10.028,"total_tps":85.280,"prefill_ms_best":2861.05,"prefill_ms_worst":3394.33,"decode_ms_best":3171.54,"decode_ms_worst":3214.98,"total_ms_best":6032.60,"total_ms_worst":6581.00,"total_tps_best":90.177,"total_tps_worst":82.662,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":6032.52,"threads":0,"samples":{"prefill_ms":[3394.328,3308.425,2861.054],"decode_ms":[3186.671,3214.985,3171.542],"total_ms":[6580.999,6523.410,6032.596],"ttft_ms":[3394.329,3308.426,2861.055]}}
+{"cfg":"offload","m_max":128,"cycle":3,"seq_len":512,"decode_n":32,"prefill_ms":1944.47,"decode_ms":3200.17,"total_ms":5144.63,"ttft_ms":1944.47,"prefill_tps":263.311,"decode_tps":9.999,"total_tps":105.741,"prefill_ms_best":1935.61,"prefill_ms_worst":1957.89,"decode_ms_best":3188.86,"decode_ms_worst":3206.54,"total_ms_best":5128.76,"total_ms_worst":5164.42,"total_tps_best":106.069,"total_tps_worst":105.336,"agg":"mean","repeats":3,"repeats_requested":3,"warmup":8,"rss_mb":9980.17,"threads":0,"samples":{"prefill_ms":[1935.614,1957.887,1939.895],"decode_ms":[3205.103,3206.536,3188.860],"total_ms":[5140.717,5164.424,5128.756],"ttft_ms":[1935.614,1957.888,1939.896]}}
+== cycle 1 offload m_max=64
+geist: offload: prefill chunks of 32 rows or more run layers 26..39 on vulkan
+== cycle 1 offload m_max=128
+geist: offload: prefill chunks of 32 rows or more run layers 26..39 on vulkan
+== cycle 2 offload m_max=64
+geist: offload: prefill chunks of 32 rows or more run layers 26..39 on vulkan
+== cycle 2 offload m_max=128
+geist: offload: prefill chunks of 32 rows or more run layers 26..39 on vulkan
+== cycle 3 offload m_max=64
+geist: offload: prefill chunks of 32 rows or more run layers 26..39 on vulkan
+== cycle 3 offload m_max=128
+geist: offload: prefill chunks of 32 rows or more run layers 26..39 on vulkan
+::group::Run { echo '```'; grep -E 'PASS|FAIL|byte-identical|offload|split' route-out/exact.txt route-out/vulkan.txt 2>/dev/null | head -80; echo '```';
+{ echo '```'; grep -E 'PASS|FAIL|byte-identical|offload|split' route-out/exact.txt route-out/vulkan.txt 2>/dev/null | head -80; echo '```';
+  name: offload-route
+Uploading artifact: offload-route.zip
+Artifact offload-route successfully finalized. Artifact ID 2584
+Artifact offload-route has been successfully uploaded! Final size is 5049 bytes. Artifact ID is 2584

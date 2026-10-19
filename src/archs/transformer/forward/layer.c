@@ -125,6 +125,36 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
     transformer_layer_bind_kv_buffers(ctx);
 }
 
+enum geist_status transformer_kv_store_rows(struct transformer_arch_session *sess,
+                                            int                              layer_idx,
+                                            size_t                           q_position,
+                                            size_t                           seq,
+                                            const float                     *k,
+                                            const float                     *v) {
+    struct transformer_arch_state *st = sess->model;
+    if (layer_idx < 0 || (size_t) layer_idx >= st->n_layers || seq == 0 || seq > sess->m_max ||
+        q_position + seq > sess->max_seq_len) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct transformer_layer_forward_ctx ctx;
+    transformer_layer_ctx_init(&ctx,
+                               sess,
+                               layer_idx,
+                               q_position,
+                               seq,
+                               false,
+                               sess->scratch_h_a,
+                               nullptr,
+                               sess->scratch_h_b);
+    /* buffer_upload, not a map: a GPU session's scratch may be device-local */
+    const size_t      bytes = seq * ctx.kv_out * sizeof(float);
+    enum geist_status s     = ctx.v->buffer_upload(sess->scratch_k, bytes, (const uint8_t *) k);
+    if (s == GEIST_OK) {
+        s = ctx.v->buffer_upload(sess->scratch_v, bytes, (const uint8_t *) v);
+    }
+    return s == GEIST_OK ? transformer_kv_store_append(&ctx) : s;
+}
+
 enum geist_status transformer_forward_one_layer(struct transformer_arch_session *sess,
                                                 int                              layer_idx,
                                                 size_t                           q_position,

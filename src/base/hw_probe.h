@@ -90,4 +90,13 @@ void geist_hw_probe_isa(struct geist_hw_probe *out);
  * refuses a host that lacks one, before any code that might use it runs. */
 const char *geist_hw_build_isa_missing(const struct geist_hw_probe *hw);
 
+/* MemAvailable from /proc/meminfo text, in bytes; 0 when the line is
+ * missing or malformed. */
+[[nodiscard]] size_t geist_meminfo_available(const char *meminfo);
+
+/* Memory the kernel can hand this process without swapping (Linux
+ * MemAvailable), in bytes; 0 when unknown (other hosts, an unreadable
+ * /proc/meminfo). Read on each call. */
+[[nodiscard]] size_t geist_mem_available(void);
+
 #endif /* GEIST_INTERNAL_HW_PROBE_H */

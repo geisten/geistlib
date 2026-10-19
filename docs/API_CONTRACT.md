@@ -94,7 +94,8 @@ not freeze a CPU-only design.
 `attach_video`, the `geist_session_audio_*` streaming family,
 `geist_session_decode_speculative`, the `geist_session_snapshot` / `restore`
 family, the `geist_session_stats` family and the layer split
-(`geist_session_opts.split_backend` / `split_layers`, #49) remain
+(`geist_session_opts.split_backend` / `split_layers`, #49, with
+`GEIST_SPLIT_AUTO` for the planner's choice, #78) remain
 `EXPERIMENTAL`. They are useful and supported, but an agent runtime must not
 build its core loop on them expecting release-boundary stability.
 

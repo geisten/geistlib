@@ -607,7 +607,7 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
      * decode bound by PCIe for the spilled share. GEIST_MEMORY_HOST keeps it
      * out of the 256 MB BAR window the scratch pool needs. */
     struct geist_buffer *gpu   = nullptr;
-    bool                 spill = !vk_weight_fits_vram(st, bytes);
+    bool                 spill = (w->flags & GEIST_W_HOST) != 0 || !vk_weight_fits_vram(st, bytes);
     enum geist_status    s     = vk_buffer_create(
             be, bytes, GEIST_BUFFER_WEIGHT, spill ? GEIST_MEMORY_HOST : GEIST_MEMORY_DEVICE, &gpu);
     if (s == GEIST_E_OOM && !spill) {

@@ -211,6 +211,184 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
     return s;
 }
 
+/* A copy between two buffers of one backend: recorded on the device where
+ * the backend can (a GPU keeps its batch), else through host maps (the CPU
+ * backends have no buffer_copy). */
+[[nodiscard]] static enum geist_status stage_copy(struct geist_backend *be,
+                                                  struct geist_buffer  *dst,
+                                                  size_t                dst_off,
+                                                  struct geist_buffer  *src,
+                                                  size_t                src_off,
+                                                  size_t                n) {
+    const struct geist_backend_vtbl *v = be->desc->vtbl;
+    if (v->buffer_copy != nullptr) {
+        return v->buffer_copy(dst, dst_off, src, src_off, n);
+    }
+    uint8_t       *d = (uint8_t *) v->buffer_map(dst);
+    const uint8_t *s = (const uint8_t *) v->buffer_map(src);
+    if (d != nullptr && s != nullptr) {
+        memcpy(d + dst_off, s + src_off, n);
+    }
+    if (d != nullptr) {
+        v->buffer_unmap(dst);
+    }
+    if (s != nullptr) {
+        v->buffer_unmap(src);
+    }
+    return d != nullptr && s != nullptr ? GEIST_OK : GEIST_E_BACKEND;
+}
+
+/* Offload (#78): a prefill chunk of the load-backend layers on their
+ * twins. The split stage's layers and then the twins' run on the split
+ * backend in one batch, the hidden rows passing on the device; after each
+ * twin layer the chunk's rows of its K/V cache are copied into
+ * twin_kv_io, the last layer's output into twin_h_io (IO buffers: cached
+ * host memory, #79), and once the batch has run, the K/V rows go into this
+ * session's caches through each layer's own append and the output rows to
+ * `out`. The twins' cache is dense; F16 rows are widened in place, each
+ * layer's K and V slot being sized for FP32. */
+[[nodiscard]] static enum geist_status run_offload_chunk(struct transformer_arch_session *sess,
+                                                         size_t               q_position,
+                                                         size_t               seq,
+                                                         struct geist_buffer *in,
+                                                         struct geist_buffer *out) {
+    struct transformer_arch_state   *st    = sess->model;
+    struct transformer_arch_session *sub   = sess->split_sess;
+    struct transformer_arch_session *tw    = sess->twin_sess;
+    struct transformer_arch_state   *tst   = tw->model;
+    struct geist_backend            *gbe   = tst->backend;
+    const struct geist_backend_vtbl *gv    = gbe->desc->vtbl;
+    const size_t                     bytes = seq * st->d_model * sizeof(float);
+    const size_t                     esz   = tw->kv_f16_enabled ? sizeof(uint16_t) : sizeof(float);
+
+    sub->kv_len         = sess->kv_len;
+    tw->kv_len          = sess->kv_len;
+    enum geist_status s = transformer_buffer_xfer(st->backend, in, bytes, sess->split_rows, false);
+    const enum geist_parallel_region region = GEIST_REGION_PREFILL_BATCH;
+    const int                        region_tok =
+            gv->parallel_region_begin != nullptr ? gv->parallel_region_begin(gbe, region) : 0;
+    if (s == GEIST_OK) {
+        s = transformer_buffer_xfer(gbe, sub->scratch_h_a, bytes, sess->split_rows, true);
+    }
+    struct geist_buffer *h_in = sub->scratch_h_a, *h_out = sub->scratch_h_b;
+    for (size_t li = sub->model->layer_lo; s == GEIST_OK && li < sub->model->layer_hi; li++) {
+        s = transformer_forward_one_layer(
+                sub, (int) li, q_position, seq, /* advance_kv = */ false, h_in, nullptr, h_out);
+        struct geist_buffer *tmp = h_in;
+        h_in                     = h_out;
+        h_out                    = tmp;
+    }
+    if (s == GEIST_OK) {
+        s = stage_copy(gbe, tw->scratch_h_a, 0, h_in, 0, bytes);
+    }
+    h_in        = tw->scratch_h_a;
+    h_out       = tw->scratch_h_b;
+    size_t slot = 0; /* byte offset of the layer's K slot in twin_kv_io */
+    for (size_t li = tst->layer_lo; s == GEIST_OK && li < st->n_layers; li++) {
+        s = transformer_forward_one_layer(
+                tw, (int) li, q_position, seq, /* advance_kv = */ false, h_in, nullptr, h_out);
+        struct geist_buffer *tmp = h_in;
+        h_in                     = h_out;
+        h_out                    = tmp;
+        const size_t kv_out      = st->layers[li].kv_out;
+        const size_t row         = kv_out * esz;
+        const size_t span        = seq * kv_out * sizeof(float);
+        if (s == GEIST_OK) {
+            s = stage_copy(
+                    gbe, sess->twin_kv_io, slot, tw->k_cache[li], q_position * row, seq * row);
+        }
+        if (s == GEIST_OK) {
+            s = stage_copy(gbe,
+                           sess->twin_kv_io,
+                           slot + span,
+                           tw->v_cache[li],
+                           q_position * row,
+                           seq * row);
+        }
+        slot += 2 * span;
+    }
+    if (s == GEIST_OK) {
+        s = stage_copy(gbe, sess->twin_h_io, 0, h_in, 0, bytes);
+    }
+    if (gv->parallel_region_end != nullptr) {
+        gv->parallel_region_end(gbe, region_tok);
+    }
+    uint8_t *kv = s == GEIST_OK ? (uint8_t *) gv->buffer_map(sess->twin_kv_io) : nullptr;
+    void    *h  = kv != nullptr ? gv->buffer_map(sess->twin_h_io) : nullptr;
+    if (s == GEIST_OK && (kv == nullptr || h == nullptr)) {
+        s = GEIST_E_BACKEND; /* the backend said why */
+    }
+    if (s == GEIST_OK) {
+        s = transformer_buffer_xfer(st->backend, out, bytes, h, true);
+    }
+    slot = 0;
+    for (size_t li = tst->layer_lo; s == GEIST_OK && li < st->n_layers; li++) {
+        const size_t n    = seq * st->layers[li].kv_out;
+        float       *k    = (float *) (kv + slot);
+        float       *vrow = (float *) (kv + slot + n * sizeof(float));
+        if (esz == sizeof(uint16_t)) {
+            /* back to front: element i's FP32 bytes start at or after its F16 bytes */
+            const uint16_t *k16 = (const uint16_t *) k, *v16 = (const uint16_t *) vrow;
+            for (size_t i = n; i-- > 0;) {
+                k[i]    = fp16_to_fp32(k16[i]);
+                vrow[i] = fp16_to_fp32(v16[i]);
+            }
+        }
+        s = transformer_kv_store_rows(sess, (int) li, q_position, seq, k, vrow);
+        slot += 2 * n * sizeof(float);
+    }
+    if (h != nullptr) {
+        gv->buffer_unmap(sess->twin_h_io);
+    }
+    if (kv != nullptr) {
+        gv->buffer_unmap(sess->twin_kv_io);
+    }
+    return s;
+}
+
+/* Offload (#78): layer li's K/V rows of this step, which the load backend
+ * just appended from its scratch_k/scratch_v, into the twins' cache too. */
+[[nodiscard]] static enum geist_status
+mirror_kv_rows(struct transformer_arch_session *sess, size_t li, size_t q_position, size_t seq) {
+    const struct geist_backend_vtbl *v  = sess->model->backend->desc->vtbl;
+    const float                     *k  = (const float *) v->buffer_map(sess->scratch_k);
+    const float                     *vr = (const float *) v->buffer_map(sess->scratch_v);
+    enum geist_status                s =
+            k != nullptr && vr != nullptr
+                    ? transformer_kv_store_rows(sess->twin_sess, (int) li, q_position, seq, k, vr)
+                    : GEIST_E_BACKEND;
+    if (k != nullptr) {
+        v->buffer_unmap(sess->scratch_k);
+    }
+    if (vr != nullptr) {
+        v->buffer_unmap(sess->scratch_v);
+    }
+    return s;
+}
+
+/* Rows the load backend's kernels take per call (caps.max_m; 0 = any). */
+static size_t load_m_cap(const struct transformer_arch_state *st) {
+    const size_t c = st->backend->desc->caps.max_m;
+    return c != 0 ? c : SIZE_MAX;
+}
+
+static bool
+offload_takes(const struct transformer_arch_session *sess, size_t q_position, size_t seq) {
+    return sess->twin_sess != nullptr && seq >= sess->model->offload->m_min &&
+           q_position <= sess->twin_valid;
+}
+
+size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
+                                 size_t                                 q_position,
+                                 size_t                                 n) {
+    const size_t m = n < sess->m_max ? n : sess->m_max;
+    if (offload_takes(sess, q_position, m)) {
+        return m;
+    }
+    const size_t cap = load_m_cap(sess->model);
+    return m < cap ? m : cap;
+}
+
 [[nodiscard]] enum geist_status transformer_run_all_layers(struct transformer_arch_session *sess,
                                                            size_t               q_position,
                                                            size_t               seq,
@@ -225,6 +403,44 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
     const size_t                      row_bytes_h           = st->d_model * sizeof(float);
     const size_t                      row_bytes_ple         = st->hidden_per_layer * sizeof(float);
     const size_t                      row_bytes_per_tok_ple = st->ple_out * sizeof(float);
+
+    bool mirror = false;
+    /* Offload (#78): a large enough chunk from a position the twins' cache
+     * covers runs every layer on the split backend. Anything else runs the
+     * load backend's layers here, and the twins' cache is good only up to
+     * where that starts. */
+    if (sess->twin_sess != nullptr) {
+        if (offload_takes(sess, q_position, seq)) {
+            const enum geist_status os =
+                    run_offload_chunk(sess, q_position, seq, initial_h_buf, out_h_buf);
+            sess->twin_valid = os == GEIST_OK ? q_position + seq : 0;
+            if (os == GEIST_OK) {
+                atomic_fetch_add_explicit(&st->offload->chunks, 1, memory_order_relaxed);
+            }
+            return os;
+        }
+        /* Steps on the load backend (decode, small chunks) from where the
+         * twins' cache is current keep it current: each layer's new K/V
+         * rows go there too (mirror_kv_rows), so the next prompt (a chat's
+         * next turn) can run on the twins again. */
+        mirror = q_position <= sess->twin_valid;
+        if (mirror) {
+            sess->twin_valid = q_position; /* raised again once every layer is mirrored */
+        }
+        /* An offloaded session's chunk may exceed what the load backend's
+         * kernels take; transformer_prefill_chunk keeps its own chunks below
+         * that, any other caller is refused here, not overrun. */
+        if (seq > load_m_cap(st)) {
+            geist_backend_set_error(st->backend,
+                                    GEIST_E_INVALID_ARG,
+                                    "transformer: %zu rows on '%s', whose kernels take %zu "
+                                    "(offload chunk off the twins)",
+                                    seq,
+                                    geist_backend_name(st->backend),
+                                    load_m_cap(st));
+            return GEIST_E_INVALID_ARG;
+        }
+    }
 
     /* Seed scratch_h_a with seq rows of HIDDEN: through the split stage's
      * layers when the model is split (#49). */
@@ -309,6 +525,9 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
                                                             h_in,
                                                             layer_ple_buf,
                                                             h_out);
+        if (s == GEIST_OK && mirror) {
+            s = mirror_kv_rows(sess, li, q_position, seq);
+        }
         if (s != GEIST_OK) {
             return s;
         }
@@ -318,6 +537,10 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
         h_out                    = tmp;
     }
 
+    if (mirror) {
+        sess->twin_valid = q_position + seq;
+        atomic_fetch_add_explicit(&st->offload->mirrored, 1, memory_order_relaxed);
+    }
     /* h_in is the last layer's output; copy seq rows to out_h_buf. */
     {
         if (st->model_fusions.backend_buffer_copy) {

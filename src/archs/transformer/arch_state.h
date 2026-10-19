@@ -32,6 +32,7 @@
 #include "exec_plan.h"
 #include "sampler.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -487,6 +488,15 @@ struct transformer_arch_session {
      * ([m_max, d_model]). nullptr without a split. */
     struct transformer_arch_session *split_sess;
     float                           *split_rows;
+
+    /* ---- Offload (#78): the session on the model's twins, and the IO
+     * buffers on the split backend the twins' K/V rows and output rows come
+     * back through. twin_valid: the positions [0, twin_valid) whose K/V the
+     * twins' cache holds; a chunk runs on the twins only from a position at
+     * or below it. nullptr without offload. */
+    struct transformer_arch_session *twin_sess;
+    struct geist_buffer             *twin_kv_io, *twin_h_io;
+    size_t                           twin_valid;
 };
 
 struct transformer_runtime_flags {
@@ -501,6 +511,18 @@ struct transformer_runtime_flags {
 
 struct transformer_family;
 
+/* Offload (#78): a split model's load-backend layers [layer_lo, n_layers)
+ * a second time on the split backend (`twins`, owned, weights only). A
+ * prefill chunk of at least m_min rows runs them there, attention
+ * included, with a KV cache of their own (the session's twin_sess), and
+ * copies the chunk's K/V rows into the load backend's cache; smaller
+ * steps (decode) run them on the load backend as before (forward/step.c). */
+struct transformer_offload {
+    struct transformer_arch_state *twins;
+    size_t                         m_min;
+    _Atomic uint64_t               chunks, mirrored; /* GEIST_VERBOSE at destroy */
+};
+
 struct transformer_arch_state {
     struct geist_backend *backend; /* not owned */
     /* Layer split (#49). The layers this state holds weights and KV caches
@@ -513,6 +535,8 @@ struct transformer_arch_state {
     size_t                         layer_lo, layer_hi;
     struct transformer_arch_state *split;
     bool                           split_stage;
+    struct transformer_offload    *offload;         /* owned; nullptr without offload (#78) */
+    bool                           weights_on_host; /* the twins (#78): matrices GEIST_W_HOST */
     /* Unique per loaded model in this process (never 0): binds a session
      * snapshot to the model it was taken on (snapshot.c). */
     uint64_t snapshot_id;
@@ -717,6 +741,31 @@ transformer_forward_one_layer(struct transformer_arch_session *sess,
                               struct geist_buffer             *h_in_buf,
                               struct geist_buffer             *per_layer_input_buf,
                               struct geist_buffer             *h_out_buf);
+
+/* Planner (#78): how many of the leading layers fit `avail` bytes, each
+ * taking its weight bytes and kv_bytes_per_layer. */
+[[nodiscard]] size_t transformer_split_layers_fit(size_t       n_layers,
+                                                  const size_t layer_bytes[static n_layers],
+                                                  size_t       kv_bytes_per_layer,
+                                                  size_t       avail);
+
+/* Offload (#78): the rows of the next prefill chunk at q_position, n rows
+ * left: up to the session's m_max when the chunk runs on the twins, else
+ * at most what the load backend's kernels take per call. Without offload:
+ * min(n, m_max). */
+[[nodiscard]] size_t
+transformer_prefill_chunk(const struct transformer_arch_session *sess, size_t q_position, size_t n);
+
+/* Offload (#78): write seq rows of K and V ([seq, kv_out] floats each,
+ * after RoPE, as the layer's attention produces them) for layer layer_idx
+ * at q_position into sess's cache, through the layer's own append (its
+ * KV mode's quantization and rotation). */
+[[nodiscard]] enum geist_status transformer_kv_store_rows(struct transformer_arch_session *sess,
+                                                          int          layer_idx,
+                                                          size_t       q_position,
+                                                          size_t       seq,
+                                                          const float *k,
+                                                          const float *v);
 
 /* Execute the separately loaded Qwen3.5 next-token-prediction block.
  * `target_hidden` is row-major [n, d_model] host F32 from the target trunk;

@@ -1,9 +1,9 @@
 # Offload: a run-time choice between placements fixed at load (proposal)
 
-Status: **phase 0 measured; streaming of spilled weights implemented in the
-Vulkan backend (opt-in, `GEIST_VK_STREAM_M_MIN`); the CPU/GPU route is not
-built yet.** Research branch
-`research/offload-scheduler`. Builds on the layer split of #49
+Status: **phase 0 measured; streaming of spilled weights in the Vulkan
+backend (#79, default on); phase 1 built on `feat/78-offload-route`:
+prefill chunks of a split model run every layer on the GPU, decode stays
+split (`GEIST_OFFLOAD_M_MIN`, off by default).** Builds on the layer split of #49
 (merged in #68) and the MoE family of #48.
 
 ## The question
@@ -79,6 +79,54 @@ llama.cpp/ggml):
 cover of the hottest 18.3 % of experts (Strata's point) is 40 % (Granite 3B,
 OLMoE) and **54 %** (Qwen3-30B-A3B, 128 experts). Small MoEs have no hot set;
 a static GPU set pays only from about 128 experts per layer on.
+
+## Phase 1: measured (RTX 2080 Ti box)
+
+Qwen3-14B Q8_0 (15.7 GB on an 11 GB card), split 26 (cpu_x86 + Vulkan),
+prompt 512, decode 32, 3 interleaved cycles, median, peak RSS, run 1396:
+
+| configuration | prefill tok/s | decode tok/s | peak RSS |
+| :-- | --: | --: | --: |
+| split alone (chunk 128, cpu_x86's limit) | 125.4 | 8.57 | 6.1 GB |
+| split + offload, chunk 128 | 233.0 | 9.06 | 10.8 GB |
+| split + offload, chunk 256 | 373.3 | 8.99 | 10.9 GB |
+| **split + offload, chunk 512** | **515.3** | **9.07** | 11.0 GB |
+
+- Prefill 4.1× the split's at the same decode. For orientation (other
+  runs, the box ran faster then: split 156 in run 1388): every layer on the
+  GPU with streaming reached 550 tok/s prefill but decodes at 2.6 (run
+  1366); llama.cpp `-ngl 26` with op offload 485 / 9.2 (run 1305).
+- **Cost: host memory.** The twins' matrices are a second copy of the CPU
+  layers' weights in host memory (GEIST_W_HOST, ≈ 5 GB here); the mmapped
+  originals stay for the CPU's decode.
+- **Qwen3-14B Q4_K_M, split 20** (run 1410, 2 cycles): split 199.6 / 205.7
+  tok/s prefill, offload at chunk 512 570.4 / 575.8; decode 12.4–12.9 vs
+  13.2; peak RSS 5.0 vs 9.1 GB.
+
+**The host copy stays (tried, refused by the driver).** Importing the GGUF
+mapping into Vulkan (`VK_EXT_external_memory_host`) instead of copying it
+would have removed the second copy for the dtypes the GPU reads as stored
+(Q4_K, Q5_K, Q4_1; Q8_0, Q4_0, Q6_K, PQ2_0, TQ2_0 are repacked at load and
+would also need a repack on the GPU after the stream). On NVIDIA 595.91
+the first import of the read-only, `MAP_PRIVATE` mapping already fails in
+`vkAllocateMemory` (`VK_ERROR_OUT_OF_DEVICE_MEMORY`), and after that refusal
+ordinary host allocations of the same process fail too, so the model does
+not load (runs 1400, 1403, 1408); without the import it loads and runs
+(run 1410). The code was removed. Left untried: sharing one host copy
+between the CPU and Vulkan (the CPU reading Vulkan's cached host buffer
+where both use the bytes as stored), and drivers that do import file pages.
+- Correctness: two cpu_x86 instances byte-identical with an FP32 cache;
+  Vulkan INT8 split 26 within the split's own distance (max|d| 0.201, 16/16
+  greedy, run 1393).
+- First attempt, a route per linear: no gain (run 1383, below).
+- **Default and multi-turn** (run 1417, `GEIST_OFFLOAD_M_MIN` unset → 64,
+  CPU steps mirrored into the twins): two cpu_x86 instances byte-identical
+  including a second prompt after the decode, 4 chunks on the twins and 16
+  mirrored steps per run as expected. Qwen3-14B Q8_0 split 26 offload at
+  chunk 512: 507 / 525 tok/s prefill, decode 8.5 / 9.9 against the split's
+  9.9 / 8.6 in the same, noisy run (the split's prefill varied 198 / 131
+  between its two cycles): the mirroring's decode cost is below this run's
+  resolution.
 
 ## Phase 0: measured (RTX 2080 Ti box, #78)
 
@@ -222,31 +270,43 @@ has the streamed twin like any CPU-layer weight.
 
 ### Route (run time)
 
-The single choke point already exists: every block reaches a weight through
-`linear_w_or_legacy` and its pair/triple variants in `forward/linear.c`. The
-route is one branch there, before the existing paths:
+**Built: phase-dependent placement** (`forward/step.c` `run_offload_chunk`).
+The route decides per forward step, not per linear:
 
-```c
-/* forward/linear.c */
-if (w->twin != nullptr && seq >= w->twin->m_min)
-    return offload_linear(w->twin, x_buf, y_buf, seq);  /* upload x, GPU linear, download y */
-/* ... today's code, unchanged ... */
+```
+prefill chunk, seq >= m_min, twins' cache current  ->  every layer on the GPU
+anything else (decode, verify, small chunks)       ->  the #49 split as before
 ```
 
-- `offload_linear` uploads the `[seq, n_in]` activations, runs the twin's
-  `fused->linear_t` on the GPU backend, downloads `[seq, n_out]`. At m = 512
-  and d = 5120 that is ~10 MB each way against ~95 MB of weight, so roughly
-  10 % on top of the stream. If it shows in the profile, the upgrade is to
-  offload a whole FFN block (one upload, one download; the FFN has no state)
-  instead of each linear.
-- Attention and the KV cache **never move**: they stay on the layer's home
-  backend, so the KV layout, its modes and the snapshot code are untouched.
-  Only weight-bound linears are routed; they are stateless.
-- The MoE block (`forward/moe.c`) calls the expert kernels directly. It gets
-  the same route per active expert: hot experts are recorded on the GPU and
-  submitted first, the CPU workers take the cold ones, then the block waits
-  for the GPU and sums in expert order (the sum order is already fixed, so
-  the result does not depend on who ran what).
+- **Load:** with `GEIST_OFFLOAD_M_MIN=<rows>` a split model loads its
+  load-backend layers a second time on the split backend (`twins`, weights
+  only). They load after the split stage, get what VRAM is left and spill
+  the rest, which #79 streams.
+- **Session:** a twin session on the twins with a dense KV cache (the
+  session's own mode when it is FP32/F16, else F16 or FP32) and two IO
+  buffers (cached host memory) for the rows that come back. A session whose
+  twins do not fit the card runs as a plain split, with one line on stderr.
+- **Chunk:** the split stage's layers and the twins' run in one batch on the
+  GPU, the hidden rows passing on the device. After each twin layer its new
+  K/V rows are copied into the IO buffer; after the batch they go into the
+  load backend's cache **through that layer's own append** (its INT8/INT4
+  quantization and rotation), and the output rows go to the head.
+- **Sync:** `twin_valid` marks how far the twins' cache is current; a GPU
+  chunk needs `q_position <= twin_valid`. A step on the CPU path (decode, a
+  small chunk) from there mirrors each CPU layer's new K/V rows into the
+  twins' cache as well (`mirror_kv_rows`: the float rows the CPU just
+  appended, 2 × kv_out floats per layer and token), so the next prompt of a
+  chat runs on the twins again. A step past a gap the twins never saw
+  leaves them current only up to the gap.
+- **Numerics:** with an FP32 cache the route is byte-identical on two CPU
+  instances (`test_layer_split_int`). With a quantized load-backend cache
+  the GPU prefill attends over dense rows, more precise than the CPU path
+  would; decode then reads the quantized rows as always.
+
+The first design, a route per linear (`linear.c`, a twin per
+`geist_weight`), ran no faster than the split (run 1383: 152 vs 156 tok/s
+at chunk 128): every layer streamed its weights while the CPU waited, and
+attention stayed on the CPU. It was removed.
 
 ### What the backends need
 
@@ -306,18 +366,28 @@ No new vtable slot for v0: upload, `linear_t` and download exist.
 **Phase 0: cost model — done** (results above). It also produced the
 `HOST_CACHED` readback fix and the in-backend streaming (former phase 2).
 
-**Phase 0b: the planner** (on top of #49, no offload yet). `offload_plan_build`
+**Phase 0b: the planner — built** (`plan_split_layers` in `arch_state.c`,
+`GEIST_SPLIT_AUTO`, `test_split_planner_unit`; dense layers only, the
+expert part is phase 3). Qwen3-14B Q8_0 at 584 positions, runs 1424 and
+1426 (3 interleaved cycles each, median decode tok/s of the split alone):
+the planner picks 27 of 40 layers (10438 MiB free, 1216 MiB reserved);
+split 24: 7.78 / 7.96, 26: 9.19 / 9.27, **auto (27): 9.73 / 9.59**, 28: 9.49
+/ 9.40. The decision rule (within the resolution of the best hand split in
+decode) holds. 28 fits as well: the reserve errs on the safe side. With
+offload, prefill grows with every layer the GPU holds (fewer to stream):
+209–212 / 234 / 246 / 258–260 tok/s at 24 / 26 / 27 / 28, chunk 128.
+Originally: (on top of #49, no offload yet). `offload_plan_build`
 with its unit test; it sets `split_layers` when the caller leaves it 0 and a
 split backend is given. Decision rule: on the 2080 Ti box its pick for
 Qwen3-14B Q8_0 is within the run's resolution of the best hand split in
 decode.
 
-**Phase 1: the route** (on top of #49). Twins as Vulkan weights (resident
-where VRAM is left, else spilled and streamed), the branch in `linear.c`,
-the threshold from the env.
+**Phase 1: the route — built** (phase-dependent placement, above).
 Decision rule: keep if split 26 + offload prefills faster than both the split
 alone and every layer on the GPU, by more than the run's resolution, with
-decode within noise of the split (decode must not take the route).
+decode within noise of the split. At chunk 128 (run 1388): 264 against 156
+(split) and 240 (every layer on the GPU), decode 10.0 against 9.9: met.
+With chunks up to 512 (run 1396): 515 tok/s prefill, decode unchanged.
 
 **Phase 2: overlap.** The copy on the transfer queue, one weight ahead.
 Decision rule: keep if it beats single-queue streaming by more than the

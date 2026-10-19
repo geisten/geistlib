@@ -42,6 +42,26 @@ minor release.
 ## [0.21.0] — 2026-10-19
 
 ### Added
+- **Offload: prefill of a split model on the GPU, decode split (#78).** A
+  model split across the CPU and a discrete GPU (#49) also loads its CPU
+  layers on the GPU, in host memory and streamed (`GEIST_W_HOST`,
+  EXPERIMENTAL). Prefill chunks of at least `GEIST_OFFLOAD_M_MIN` rows
+  (default 64 where the host has memory for that copy; `0` off) run every
+  layer on the GPU and write the CPU layers' new K/V rows into their
+  caches; decode stays split. Such chunks may exceed the CPU kernels' 128
+  rows. RTX 2080 Ti + Ryzen 9950X, Qwen3-14B Q8_0 split 26: prefill 125 ->
+  515 tok/s, decode 8.6 -> 9.1; Q4_K_M split 20: 200 -> 570, decode 12.4 ->
+  13.2. Costs a host copy of the CPU layers' weights (+4-5 GB here; the
+  driver refuses to import the read-only mapping). Byte-identical on two
+  CPU backends with an FP32 cache (`test_layer_split_int`). A chat's next
+  prompt runs on the GPU too: CPU decode steps mirror their K/V rows into
+  the GPU copy.
+- **`split_layers = GEIST_SPLIT_AUTO` (EXPERIMENTAL, #78): the loader picks
+  the split.** As many leading layers as fit the split backend's free
+  memory with their KV cache (for `max_seq_len`, else 4096 positions) and a
+  reserve for its scratch; all of them on unified memory, none (no split)
+  when not even one fits. `GEIST_VERBOSE` prints the plan;
+  `bench_perf_sweep` takes `GEIST_BENCH_SPLIT_LAYERS=auto`.
 - **benchmark/results/BONSAI-PRISM.md: Ternary Bonsai 2 27B against the
   PrismML llama.cpp fork** on the M1 Max (CPU, Metal), a Ryzen 9 9950X and an
   RTX 2080 Ti, with the int8-against-float prefill A/B runs and raw data.
