@@ -19,6 +19,7 @@ static void metal_sequence_drain_pending(struct metal_state *st, bool *out_faile
         if (out_failed != nullptr && metal_msg_send_id0(st, cmd, "error") != nullptr) {
             *out_failed = true;
         }
+        metal_profile_add_cmd_buffer(st, cmd, st->seq_pending_mask[i]);
         metal_msg_send_void0(st, cmd, "release");
         st->seq_pending_cmds[i] = nullptr;
     }
@@ -32,8 +33,11 @@ void *metal_sequence_encoder(struct metal_state *st) {
     if (st == nullptr || !metal_seq_mine(st)) {
         return nullptr;
     }
-    if (st->seq_rotate_every == 0u || st->sequence_compute_encoder == nullptr ||
-        (uint32_t) st->seq_dispatch_count - st->seq_disp_at_rotate < st->seq_rotate_every) {
+    const uint32_t every = st->sequence_kind == GEIST_COMMAND_SEQUENCE_PREFILL_TEXT
+                                   ? st->seq_rotate_prefill
+                                   : st->seq_rotate_every;
+    if (every == 0u || st->sequence_compute_encoder == nullptr ||
+        (uint32_t) st->seq_dispatch_count - st->seq_disp_at_rotate < every) {
         return st->sequence_compute_encoder;
     }
     if (st->seq_pending_count >=
@@ -41,11 +45,15 @@ void *metal_sequence_encoder(struct metal_state *st) {
         /* Backpressure: encode has outrun the GPU by 16 buffers — wait
          * for the oldest before opening another. */
         metal_msg_send_void0(st, st->seq_pending_cmds[0], "waitUntilCompleted");
+        metal_profile_add_cmd_buffer(st, st->seq_pending_cmds[0], st->seq_pending_mask[0]);
         metal_msg_send_void0(st, st->seq_pending_cmds[0], "release");
         st->seq_pending_count--;
         memmove(&st->seq_pending_cmds[0],
                 &st->seq_pending_cmds[1],
                 st->seq_pending_count * sizeof(st->seq_pending_cmds[0]));
+        memmove(&st->seq_pending_mask[0],
+                &st->seq_pending_mask[1],
+                st->seq_pending_count * sizeof(st->seq_pending_mask[0]));
     }
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
@@ -57,8 +65,10 @@ void *metal_sequence_encoder(struct metal_state *st) {
     metal_msg_send_void0(st, st->sequence_compute_encoder, "endEncoding");
     metal_msg_send_void0(st, st->sequence_command_buffer, "commit");
     metal_msg_send_void0(st, st->sequence_compute_encoder, "release");
+    st->seq_pending_mask[st->seq_pending_count] = st->seq_cur_mask;
     st->seq_pending_cmds[st->seq_pending_count++] =
             st->sequence_command_buffer; /* stays retained until drain */
+    st->seq_cur_mask             = 0;
     st->sequence_command_buffer  = cmd;
     st->sequence_compute_encoder = enc;
     st->seq_disp_at_rotate       = (uint32_t) st->seq_dispatch_count;
@@ -225,6 +235,7 @@ void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf, size
     atomic_store_explicit(&st->seq_owner, (uintptr_t) pthread_self(), memory_order_relaxed);
     st->seq_dispatch_count = 0;
     st->seq_disp_at_rotate = 0;
+    st->seq_cur_mask       = 0;
     st->seq_begin_ns       = metal_now_ns();
     *out_token             = st->sequence_token;
     return GEIST_OK;
@@ -275,6 +286,7 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit) {
          * (same queue, commit order); surface their errors and release. */
         bool pending_failed = false;
         metal_sequence_drain_pending(st, &pending_failed);
+        metal_profile_add_cmd_buffer(st, cmd, st->seq_cur_mask);
         if (pending_failed && out == GEIST_OK) {
             geist_backend_set_error(
                     be, GEIST_E_BACKEND, "metal command sequence: pipelined buffer failed");
