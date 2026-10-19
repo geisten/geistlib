@@ -33,12 +33,11 @@ minor release.
 
 ### Fixed
 
-- **`make shared` builds the FFI shared library (#80).** It links
-  `libgeist.so` / `libgeist.dylib` with the GEMM provider's libraries; the
-  hand-written line in `examples/ffi/README.md` and CI left `cblas_sgemm`
-  unresolved on Linux, and CI's FFI step piped the failure into `head`, so
-  it passed without running. The step now fails with the example and
-  checks for a non-empty continuation.
+- **Audio-tower tests fail on a configured but unreadable tower (#57).**
+  `GEIST_AUDIO_MODEL_PATH` pointing at a missing file, or the default path
+  being a dangling symlink, made the tower parity tests SKIP, so a parity
+  run reported "identical" without running. They now fail and say why; no
+  tower configured still skips.
 
 ## [0.21.0] — 2026-10-19
 
