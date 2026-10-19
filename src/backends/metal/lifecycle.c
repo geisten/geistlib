@@ -135,13 +135,29 @@ void metal_destroy(struct geist_backend *be) {
     metal_tuning_init(be, st);
     /* Command-buffer pipelining: rotate every N dispatches, default 192
      * (~3 buffers per decode token; llama.cpp's n_cb optimum is 2-3).
-     * GEIST_METAL_PIPELINE=0 disables, =N sets the rotation period. */
+     * GEIST_METAL_PIPELINE=0 disables, =N sets the rotation period.
+     *
+     * Prefill rotates every 16 dispatches (GEIST_METAL_PIPELINE_PREFILL=N
+     * overrides; it defaults to GEIST_METAL_PIPELINE when that is set). On
+     * an M1 Max the same kernels ran ~15 % faster in short buffers: Bonsai
+     * 2 27B prefill at 1245 tokens went from ~102 to ~119 tok/s with 8-32
+     * dispatches per buffer, 64 was in between, and splitting one buffer
+     * into more encoders changed nothing (#77). The sum of the buffers'
+     * GPU times fell by the same amount while the GPU stayed busy, so the
+     * work itself ran faster: the GPU's performance state follows short
+     * buffers better than long ones. */
     const char *pipeline_env = getenv("GEIST_METAL_PIPELINE");
     long        rotate       = 0;
-    st->seq_rotate_every =
-            geist_parse_long(pipeline_env, &rotate) && rotate >= 0 && rotate <= UINT32_MAX
-                    ? (uint32_t) rotate
-                    : 192u;
+    const bool  rotate_set =
+            geist_parse_long(pipeline_env, &rotate) && rotate >= 0 && rotate <= UINT32_MAX;
+    st->seq_rotate_every = rotate_set ? (uint32_t) rotate : 192u;
+    long rotate_prefill  = 0;
+    st->seq_rotate_prefill =
+            geist_parse_long(getenv("GEIST_METAL_PIPELINE_PREFILL"), &rotate_prefill) &&
+                            rotate_prefill >= 0 && rotate_prefill <= UINT32_MAX
+                    ? (uint32_t) rotate_prefill
+            : rotate_set ? (uint32_t) rotate
+                         : 16u;
     st->profile_enabled = metal_env_enabled("GEIST_METAL_PROFILE");
 
     enum geist_status s = metal_load_runtime(be, st);

@@ -209,6 +209,63 @@ void metal_profile_add_dispatch(struct metal_state      *st,
     struct metal_profile_stat *stat = &st->profile[stage];
     stat->calls                     = metal_saturating_add_u64(stat->calls, 1);
     stat->workgroups = metal_saturating_add_u64(stat->workgroups, metal_profile_workgroups(groups));
+    st->seq_cur_mask |= 1ull << stage;
+}
+
+static_assert(METAL_PROFILE_STAGE_COUNT <= 64, "stage mask is a uint64_t");
+
+static double metal_cmd_time(struct metal_state *st, void *cmd, const char *selector) {
+    union {
+        void *raw;
+        double (*fn)(void *, void *);
+    } getd = {.raw = st->objc_msgSend};
+    return getd.fn(cmd, metal_sel_register_name(st, selector));
+}
+
+/* Buffers complete in commit order and are accounted in that order, so the
+ * union of their GPU intervals needs only the latest end seen. A buffer
+ * that never ran (GPUEndTime 0: released unwaited) is skipped. */
+void metal_profile_add_cmd_buffer(struct metal_state *st, void *cmd, uint64_t stage_mask) {
+    if (st == nullptr || !st->profile_enabled || cmd == nullptr) {
+        return;
+    }
+    const double start = metal_cmd_time(st, cmd, "GPUStartTime");
+    const double end   = metal_cmd_time(st, cmd, "GPUEndTime");
+    if (!(end > start) || start <= 0.0) {
+        return;
+    }
+    st->gpu_sum_s += end - start;
+    const double from = start > st->gpu_last_end_s ? start : st->gpu_last_end_s;
+    if (end > from) {
+        st->gpu_busy_s += end - from;
+        st->gpu_last_end_s = end;
+    }
+    st->gpu_buffers++;
+    const size_t n = sizeof(st->gpu_slots) / sizeof(st->gpu_slots[0]);
+    for (size_t i = 0; i < n; i++) {
+        struct metal_profile_gpu_slot *slot = &st->gpu_slots[i];
+        if (slot->buffers == 0 || slot->mask == stage_mask || i == n - 1) {
+            slot->mask = slot->buffers == 0 ? stage_mask : slot->mask; /* last slot: overflow */
+            slot->buffers++;
+            slot->seconds += end - start;
+            return;
+        }
+    }
+}
+
+static void metal_profile_print_mask(uint64_t mask) {
+    if (mask == 0) {
+        fprintf(stderr, "(no dispatch)");
+        return;
+    }
+    const char *sep = "";
+    for (size_t i = 0; i < METAL_PROFILE_STAGE_COUNT; i++) {
+        if ((mask >> i) & 1u) {
+            const char *name = metal_profile_stage_names[i];
+            fprintf(stderr, "%s%s", sep, strncmp(name, "dispatch.", 9) == 0 ? name + 9 : name);
+            sep = "+";
+        }
+    }
 }
 
 enum metal_profile_stage
@@ -264,6 +321,36 @@ void metal_profile_print_summary(const struct metal_state *st) {
                     (unsigned long long) stat->calls,
                     (unsigned long long) stat->workgroups);
         }
+    }
+    if (st->gpu_buffers == 0) {
+        return;
+    }
+    fprintf(stderr,
+            "  gpu: %llu command buffers, busy %.2f ms (union), sum %.2f ms\n",
+            (unsigned long long) st->gpu_buffers,
+            st->gpu_busy_s * 1e3,
+            st->gpu_sum_s * 1e3);
+    /* Largest first; a selection over at most 64 slots, once at exit. */
+    bool done[64] = {false};
+    for (;;) {
+        size_t best = SIZE_MAX;
+        for (size_t i = 0; i < 64; i++) {
+            if (!done[i] && st->gpu_slots[i].buffers != 0 &&
+                (best == SIZE_MAX || st->gpu_slots[i].seconds > st->gpu_slots[best].seconds)) {
+                best = i;
+            }
+        }
+        if (best == SIZE_MAX) {
+            break;
+        }
+        done[best] = true;
+        fprintf(stderr,
+                "  gpu %9.2f ms %5.1f %%  %7llu buffers  ",
+                st->gpu_slots[best].seconds * 1e3,
+                100.0 * st->gpu_slots[best].seconds / st->gpu_sum_s,
+                (unsigned long long) st->gpu_slots[best].buffers);
+        metal_profile_print_mask(st->gpu_slots[best].mask);
+        fputc('\n', stderr);
     }
 }
 

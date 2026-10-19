@@ -1267,7 +1267,8 @@ static void metal_encode_hadamard(struct metal_state                 *st,
                                   const struct geist_hadamard_args   *a,
                                   const struct metal_hadamard_params *p,
                                   size_t                              rows) {
-    metal_msg_send_set_pipeline(st, enc, st->hadamard_pipeline);
+    const bool four = p->block >= 128u && p->block <= 4096u && st->hadamard4_pipeline != nullptr;
+    metal_msg_send_set_pipeline(st, enc, four ? st->hadamard4_pipeline : st->hadamard_pipeline);
     metal_msg_send_set_buffer(st, enc, a->x->buffer->buffer, a->x->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, a->y->buffer->buffer, a->y->buffer->base_off, 1);
     /* No signs: bind x again as a dummy; p->sgn == 0 keeps it unread. */
@@ -1276,11 +1277,14 @@ static void metal_encode_hadamard(struct metal_state                 *st,
     metal_msg_send_set_bytes(st, enc, p, sizeof(*p), 3);
     metal_msg_send_set_threadgroup_memory(st, enc, p->block * sizeof(float), 0u);
     const struct metal_size groups = {p->width / p->block, rows, 1};
-    /* One thread per element pair and stage, up to 1024: the butterflies
-     * are barrier-bound, and a wider threadgroup beats 256 per decode row.
-     * A barrier-free simdgroup variant (shuffles for the low strides) was
-     * several times slower. */
-    const struct metal_size threads = {p->block < 1024u ? p->block : 1024u, 1, 1};
+    /* Blocks of 128..4096 (Bonsai's 1024) take hadamard_rows4: block/4
+     * threads with four elements each, shuffles below stride 32 and
+     * registers for the top two strides, 3 shared-memory stages instead of
+     * 10 at 1024. Bit-identical to hadamard_rows and 3.3x faster on 320
+     * rows of 5120 (0.254 -> 0.077 ms, M1 Max, #77). hadamard_rows keeps
+     * one thread per element pair and stage, up to 1024, for the rest. */
+    const struct metal_size threads = {
+            four ? p->block / 4u : (p->block < 1024u ? p->block : 1024u), 1, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_HADAMARD, groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
@@ -2284,11 +2288,23 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
     return metal_standalone_end(be, cmd, enc, "rope_apply");
 }
 
+/* The prefill flash kernel for a head_dim, or nullptr when none is
+ * instantiated (head_dim not a multiple of 32, above 256 not of 64, or
+ * above 512) or the attention tables are not built. */
+static void *metal_flash_pipeline(const struct metal_state *st, size_t head_dim) {
+    if (head_dim == 0u || head_dim % 32u != 0u || head_dim / 32u > METAL_FLASH_SLOTS) {
+        return nullptr;
+    }
+    return st->attention_flash_pipeline[head_dim / 32u - 1u];
+}
+
 /* The f32-KV flash (prefill) path below converts the live K/V rows into
- * this f16 staging on every call. #64 kept it: per call it costs 1-5 % of
- * the flash kernel at a 320-row chunk, while a flash kernel reading the
+ * this f16 staging on every call. #64 kept it: per call it cost 1-5 % of
+ * the old flash kernel at a 320-row chunk, while a flash kernel reading the
  * F32 cache directly measured 11-14 % slower on Bonsai 2 27B (decode
- * reads the F32 cache directly). It is sized for every row of the cache k
+ * reads the F32 cache directly). Against the 4-5x faster kernel of #91 the
+ * F32-KV call is 0-12 % slower than the F16-KV one (Bonsai and Gemma 4 E2B
+ * shapes, 1k-8k rows), the staging's share. It is sized for every row of the cache k
  * views (the session's context), so a growing KV length never reallocates
  * it mid-session (AGENT.md §3). A larger cache on this backend (another
  * session or model) grows it once more. */
@@ -2319,9 +2335,9 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
     return GEIST_OK;
 }
 
-/* rows>1 f32-KV fast path: convert K/V to persistent f16 staging (one
- * kv_append_rows_f16 dispatch) and run the no-norm simdgroup flash kernel
- * instead of the scalar f32 kernel. Serial-encoder ordering makes the
+/* rows>1 fast path: on an F32 cache, convert K/V to persistent f16
+ * staging first (one kv_append_rows_f16 dispatch); then the prefill flash
+ * kernel for the head_dim instead of the scalar kernel. Serial-encoder ordering makes the
  * staging reuse across layers safe. */
 [[nodiscard]] static enum geist_status metal_attention_flash_kv(struct geist_backend      *be,
                                                                 struct metal_state        *st,
@@ -2389,21 +2405,16 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
         metal_msg_send_dispatch(st, enc, cgroups, cthreads);
     }
 
-    /* head_dim <= 256: 4-simdgroup kernel (128 threads). 256 < hd <= 512
-     * (gemma-3n full-attention layers): 8-simdgroup variant (256 threads),
-     * one query row + one 64-column output slice per simdgroup. */
-    const bool sg8 = head_dim > 256u;
-    metal_msg_send_set_pipeline(st,
-                                enc,
-                                sg8 ? st->attention_flash_sg8_f16_pipeline
-                                    : st->attention_flash_sg_f16_pipeline);
+    /* 16 query rows per threadgroup; 4 simdgroups up to head_dim 256, 8
+     * above (the Gemma global layers, head_dim 512). */
+    metal_msg_send_set_pipeline(st, enc, metal_flash_pipeline(st, head_dim));
     metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, kf16, 0, 1);
     metal_msg_send_set_buffer(st, enc, vf16, 0, 2);
     metal_msg_send_set_buffer(st, enc, out->buffer->buffer, out->buffer->base_off, 3);
     metal_msg_send_set_bytes(st, enc, &fp, sizeof(fp), 4);
-    const struct metal_size fgroups  = {(q_rows + 7u) / 8u, q_heads, 1};
-    const struct metal_size fthreads = {sg8 ? 256u : 128u, 1, 1};
+    const struct metal_size fgroups  = {(q_rows + 15u) / 16u, q_heads, 1};
+    const struct metal_size fthreads = {head_dim > 256u ? 256u : 128u, 1, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ATTENTION_ROWS, fgroups);
     metal_msg_send_dispatch(st, enc, fgroups, fthreads);
 
@@ -3186,12 +3197,9 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
         /* fall through to the scalar kernel on failure */
     }
     /* Any q_rows > 1: the flash kernels clamp the query rows of a ragged
-     * last 8-row tile and write only the valid ones (#35). */
-    if (q_rows > 1u &&
-        ((head_dim <= 256u && (head_dim % 32u) == 0u) ||
-         (head_dim <= 512u && (head_dim % 64u) == 0u &&
-          st->attention_flash_sg8_f16_pipeline != nullptr)) &&
-        k_rows >= 32u && st->attention_flash_sg_f16_pipeline != nullptr &&
+     * last tile and write only the valid ones (#35). They read whole
+     * 64-key blocks, so a cache of fewer rows takes the scalar kernel. */
+    if (q_rows > 1u && k_rows >= 64u && metal_flash_pipeline(st, head_dim) != nullptr &&
         st->kv_append_rows_f16_pipeline != nullptr) {
         s = metal_attention_flash_kv(be,
                                      st,
