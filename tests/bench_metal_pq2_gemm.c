@@ -2,8 +2,10 @@
  * bench_metal_pq2_gemm — time one PQ2_0 prefill GEMM on Metal (#77).
  *
  * Shapes are Bonsai 2 27B's (qwen35 hybrid): the FFN gate/up and down
- * projections and the DeltaNet qkv projection, at m = 256 (the Metal
- * prefill chunk, preferred_m_max), 512 and 2048 rows. Each sample encodes
+ * projections, the DeltaNet qkv, gate (z) and output projections, and the
+ * attention q and k/v projections, at m = 256, 512 and 2048 rows by
+ * default (Bonsai prefills in 320-row chunks: preferred_m_max 256 plus
+ * qwen35's 64-row delta). Each sample encodes
  * ITERS back-to-back GEMMs on backend buffers and drains the batch with a
  * 4-byte download; the median sample over REPS gives ms per GEMM and
  * TFLOP/s (2*m*n_in*n_out). Weights are random PQ2_0 blocks with d = 1:
@@ -136,6 +138,10 @@ int main(int argc, char **argv) {
             {"ffn_up", 5120, 17408},
             {"ffn_down", 17408, 5120},
             {"attn_qkv", 5120, 10240},
+            {"attn_gate", 5120, 6144},
+            {"ssm_out", 6144, 5120},
+            {"attn_q", 5120, 12288},
+            {"attn_k", 5120, 1024},
     };
     size_t ms[16] = {256, 512, 2048};
     size_t n_ms   = 3;
