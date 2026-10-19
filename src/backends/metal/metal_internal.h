@@ -89,11 +89,10 @@ enum metal_profile_stage {
     /* chunked-prefill sub-stages, individually skippable for the
      * subtractive profiler (all still count as DELTANET for the
      * category-level GEIST_SKIP_DELTANET). */
-    METAL_PROFILE_DISPATCH_DN_PREP,  /* cst_copy + conv_prep + state_roll */
-    METAL_PROFILE_DISPATCH_DN_NORM,  /* qk_norm */
-    METAL_PROFILE_DISPATCH_DN_STAGE, /* dn_chunk_stage */
-    METAL_PROFILE_DISPATCH_DN_SUBST, /* dn_chunk_subst */
-    METAL_PROFILE_DISPATCH_DN_WIDE,  /* amat/vnew/out/supd/gate */
+    METAL_PROFILE_DISPATCH_DN_PREP,  /* cst_copy + conv + norm + roll */
+    METAL_PROFILE_DISPATCH_DN_CHUNK, /* dnf_chunk */
+    METAL_PROFILE_DISPATCH_DN_STATE, /* dnf_state */
+    METAL_PROFILE_DISPATCH_DN_OUT,   /* dnf_out */
     METAL_PROFILE_DISPATCH_QGATE_SPLIT,
     METAL_PROFILE_DISPATCH_SIGMOID_MUL,
     METAL_PROFILE_DISPATCH_HADAMARD,
@@ -309,30 +308,20 @@ struct metal_state {
     void *dn_dec_qk_pipeline;
     void *dn_dec_v_function;
     void *dn_dec_v_pipeline;
-    void *dn_cst_copy_function;
-    void *dn_cst_copy_pipeline;
-    void *dn_conv_prep_function;
-    void *dn_conv_prep_pipeline;
-    void *dn_qk_norm_function;
-    void *dn_qk_norm_pipeline;
-    void *dn_state_roll_function;
-    void *dn_state_roll_pipeline;
-    void *dn_chunk_stage_function;
-    void *dn_chunk_stage_pipeline;
-    void *dn_chunk_subst_function;
-    void *dn_chunk_subst_pipeline;
-    void *dn_chunk_amat_function;
-    void *dn_chunk_amat_pipeline;
-    void *dn_chunk_vnew1_function;
-    void *dn_chunk_vnew1_pipeline;
-    void *dn_chunk_vnew2_function;
-    void *dn_chunk_vnew2_pipeline;
-    void *dn_chunk_out_function;
-    void *dn_chunk_out_pipeline;
-    void *dn_chunk_supd_function;
-    void *dn_chunk_supd_pipeline;
-    void *dn_chunk_gate_function;
-    void *dn_chunk_gate_pipeline;
+    void *dnf_cst_copy_function;
+    void *dnf_cst_copy_pipeline;
+    void *dnf_conv_function;
+    void *dnf_conv_pipeline;
+    void *dnf_norm_function;
+    void *dnf_norm_pipeline;
+    void *dnf_roll_function;
+    void *dnf_roll_pipeline;
+    void *dnf_chunk_function;
+    void *dnf_chunk_pipeline;
+    void *dnf_state_function;
+    void *dnf_state_pipeline;
+    void *dnf_out_function;
+    void *dnf_out_pipeline;
     /* Grow-only private MTLBuffer scratch for the chunked DeltaNet
      * prefill (raw handle, argmax_result_buffer pattern). */
     void    *dn_scratch;

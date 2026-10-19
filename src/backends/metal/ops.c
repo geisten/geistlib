@@ -3786,27 +3786,27 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
-    /* seq>1 runs the chunked-prefill kernel sequence (CPU
-     * dn_run_prefill_chunked port); the serial per-token mixer stays for
-     * decode and as the fallback when scratch allocation fails.
-     *
-     * The recipe is encoded in DN_SUBCHUNK-token sub-chunks regardless of
-     * the caller's m, so the O(C²) chunk cost stays at its optimum (64;
-     * #322) while the surrounding GEMMs run at the full batch for
-     * occupancy. State buffers thread through Metal's hazard tracking;
-     * scratch is reused per sub-chunk. */
-    enum { DN_SUBCHUNK = 64u };
-    bool chunked =
-            args->seq > 1 && (args->head_v % 4u) == 0u && st->dn_chunk_gate_pipeline != nullptr;
-    if (chunked) {
-        const size_t C    = DN_SUBCHUNK;
-        const size_t hist = args->conv_kernel - 1u;
-        const size_t wsf  = 3u * C + 4u * C * args->head_k + 3u * C * args->head_v + 2u * C * C;
-        const size_t scr_bytes = (C * conv_dim + 2u * C * args->n_v_heads + hist * conv_dim +
-                                  args->n_v_heads * wsf) *
-                                 sizeof(float);
-        if (scr_bytes > (size_t) 1u << 31) {
-            chunked = false;
+    /* seq>1 runs the chunked delta rule on simdgroup matrices (dnf_*, #99;
+     * the recipe of the CPU's dn_run_prefill_chunked): seven dispatches per
+     * piece of up to DNF_CALL tokens, the chunk length fixed at 64 inside
+     * (the O(C^2) chunk cost's optimum, #322) whatever m the surrounding
+     * GEMMs run at. The serial per-token mixer stays for shapes outside
+     * the tiling and as the fallback when scratch allocation fails; decode
+     * has its own two kernels. State buffers thread through Metal's
+     * hazard tracking; scratch is reused per piece. DNF_DVB is dnf_state's
+     * value-column block (the shader's DNF_DVB). */
+    enum { DNF_CALL = 512u, DNF_DVB = 16u };
+    bool fast = args->seq > 1 && args->conv_kernel == 4u && args->head_k % 32u == 0 &&
+                args->head_k <= 128u && args->head_v % 32u == 0 && args->head_v <= 256u &&
+                st->dnf_out_pipeline != nullptr;
+    if (fast) {
+        const size_t lp = ((args->seq < DNF_CALL ? args->seq : DNF_CALL) + 63u) & ~(size_t) 63u;
+        const size_t scr_bytes =
+                (lp * conv_dim + 2u * lp * args->n_v_heads + (args->conv_kernel - 1u) * conv_dim +
+                 args->n_v_heads * lp * (1u + args->head_k + 2u * args->head_v)) *
+                sizeof(float);
+        if (scr_bytes > (size_t) 1u << 31) { /* the kernels index it with uint */
+            fast = false;
         } else if (st->dn_scratch_bytes < scr_bytes) {
             metal_residency_forget(st, st->dn_scratch);
             metal_msg_send_void0(st, st->dn_scratch, "release");
@@ -3816,74 +3816,54 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
                                                                scr_bytes,
                                                                METAL_RESOURCE_STORAGE_MODE_PRIVATE);
             st->dn_scratch_bytes = st->dn_scratch != nullptr ? scr_bytes : 0;
-            chunked              = st->dn_scratch != nullptr;
+            fast                 = st->dn_scratch != nullptr;
         }
     }
     for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
         metal_msg_send_set_buffer(st, enc, all[i]->buffer->buffer, all[i]->buffer->base_off, i);
     }
-    if (chunked) {
+    if (fast) {
         const uint32_t          cd     = (uint32_t) conv_dim;
         const uint32_t          vd     = (uint32_t) value_dim;
-        const uint32_t          hist   = params.conv_kernel - 1u;
+        const uint32_t          nvh    = params.n_v_heads;
+        const struct metal_size t128   = {128, 1, 1};
         const struct metal_size t256   = {256, 1, 1};
-        const struct metal_size g_flat = {(hist * cd + 255u) / 256u, 1, 1};
+        const struct metal_size g_flat = {((params.conv_kernel - 1u) * cd + 255u) / 256u, 1, 1};
+        const struct metal_size g_st   = {params.head_v / DNF_DVB, nvh, 1};
         metal_msg_send_set_buffer(st, enc, st->dn_scratch, 0, 10);
-        for (uint32_t off = 0; off < params.seq; off += DN_SUBCHUNK) {
+        for (uint32_t off = 0; off < params.seq; off += DNF_CALL) {
             struct metal_deltanet_params sub = params;
-            sub.seq = (params.seq - off < DN_SUBCHUNK) ? params.seq - off : DN_SUBCHUNK;
+            sub.seq = (params.seq - off < DNF_CALL) ? params.seq - off : DNF_CALL;
             sub.qkv_offset += off * cd;
             sub.z_offset += off * vd;
-            sub.beta_offset += off * params.n_v_heads;
-            sub.alpha_offset += off * params.n_v_heads;
-            const uint32_t          C       = sub.seq;
-            const struct metal_size g_tok   = {C, 1, 1};
-            const struct metal_size g_norm  = {C, params.n_k_heads, 1};
-            const struct metal_size g_heads = {params.n_v_heads, 1, 1};
+            sub.beta_offset += off * nvh;
+            sub.alpha_offset += off * nvh;
+            const uint32_t          n_ch   = (sub.seq + 63u) / 64u;
+            const struct metal_size g_tok  = {n_ch * 64u, 1, 1};
+            const struct metal_size g_conv = {(cd + 255u) / 256u, n_ch * 4u, 1};
+            const struct metal_size g_ch   = {n_ch, nvh, 1};
             metal_msg_send_set_bytes(st, enc, &sub, sizeof sub, 11);
-            metal_msg_send_set_pipeline(st, enc, st->dn_cst_copy_pipeline);
+            metal_msg_send_set_pipeline(st, enc, st->dnf_cst_copy_pipeline);
             metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_PREP, g_flat);
             metal_msg_send_dispatch(st, enc, g_flat, t256);
-            metal_msg_send_set_pipeline(st, enc, st->dn_conv_prep_pipeline);
+            metal_msg_send_set_pipeline(st, enc, st->dnf_conv_pipeline);
+            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_PREP, g_conv);
+            metal_msg_send_dispatch(st, enc, g_conv, t256);
+            metal_msg_send_set_pipeline(st, enc, st->dnf_norm_pipeline);
             metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_PREP, g_tok);
             metal_msg_send_dispatch(st, enc, g_tok, t256);
-            metal_msg_send_set_pipeline(st, enc, st->dn_qk_norm_pipeline);
-            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_NORM, g_norm);
-            metal_msg_send_dispatch(st, enc, g_norm, t256);
-            metal_msg_send_set_pipeline(st, enc, st->dn_state_roll_pipeline);
+            metal_msg_send_set_pipeline(st, enc, st->dnf_roll_pipeline);
             metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_PREP, g_flat);
             metal_msg_send_dispatch(st, enc, g_flat, t256);
-            const struct metal_size g_cc = {
-                    (((C + 3u) / 4u) * C + 255u) / 256u, params.n_v_heads, 1};
-            const struct metal_size g_cdv = {
-                    (C * (params.head_v / 4u) + 255u) / 256u, params.n_v_heads, 1};
-            const struct metal_size g_kv = {
-                    (params.head_k * (params.head_v / 4u) + 255u) / 256u, params.n_v_heads, 1};
-            const struct metal_size g_tv = {C, params.n_v_heads, 1};
-            metal_msg_send_set_pipeline(st, enc, st->dn_chunk_stage_pipeline);
-            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_STAGE, g_heads);
-            metal_msg_send_dispatch(st, enc, g_heads, t256);
-            metal_msg_send_set_pipeline(st, enc, st->dn_chunk_amat_pipeline);
-            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_WIDE, g_cc);
-            metal_msg_send_dispatch(st, enc, g_cc, t256);
-            metal_msg_send_set_pipeline(st, enc, st->dn_chunk_subst_pipeline);
-            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_SUBST, g_heads);
-            metal_msg_send_dispatch(st, enc, g_heads, t256);
-            metal_msg_send_set_pipeline(st, enc, st->dn_chunk_vnew1_pipeline);
-            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_WIDE, g_cdv);
-            metal_msg_send_dispatch(st, enc, g_cdv, t256);
-            metal_msg_send_set_pipeline(st, enc, st->dn_chunk_vnew2_pipeline);
-            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_WIDE, g_cdv);
-            metal_msg_send_dispatch(st, enc, g_cdv, t256);
-            metal_msg_send_set_pipeline(st, enc, st->dn_chunk_out_pipeline);
-            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_WIDE, g_cdv);
-            metal_msg_send_dispatch(st, enc, g_cdv, t256);
-            metal_msg_send_set_pipeline(st, enc, st->dn_chunk_supd_pipeline);
-            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_WIDE, g_kv);
-            metal_msg_send_dispatch(st, enc, g_kv, t256);
-            metal_msg_send_set_pipeline(st, enc, st->dn_chunk_gate_pipeline);
-            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_WIDE, g_tv);
-            metal_msg_send_dispatch(st, enc, g_tv, t256);
+            metal_msg_send_set_pipeline(st, enc, st->dnf_chunk_pipeline);
+            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_CHUNK, g_ch);
+            metal_msg_send_dispatch(st, enc, g_ch, t128);
+            metal_msg_send_set_pipeline(st, enc, st->dnf_state_pipeline);
+            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_STATE, g_st);
+            metal_msg_send_dispatch(st, enc, g_st, t128);
+            metal_msg_send_set_pipeline(st, enc, st->dnf_out_pipeline);
+            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_OUT, g_ch);
+            metal_msg_send_dispatch(st, enc, g_ch, t128);
         }
     } else if (args->seq == 1 && st->dn_dec_v_pipeline != nullptr && 4u * args->head_v <= 1024u) {
         /* Decode: q/k prep per k-head, then the state update spread over
