@@ -59,6 +59,7 @@ const char *const metal_profile_stage_names[METAL_PROFILE_STAGE_COUNT] = {
         [METAL_PROFILE_DISPATCH_QGATE_SPLIT]          = "dispatch.qgate_split",
         [METAL_PROFILE_DISPATCH_SIGMOID_MUL]          = "dispatch.sigmoid_mul",
         [METAL_PROFILE_DISPATCH_HADAMARD]             = "dispatch.hadamard",
+        [METAL_PROFILE_DISPATCH_PQ2_X_F16]            = "dispatch.pq2_x_f16",
 };
 
 #include "metal_shaders.h"

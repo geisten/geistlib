@@ -378,6 +378,54 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
     }
 }
 
+/* The fast PQ2_0 GEMM reads x as f16 (metal_qsg_mm_pq2_fast_source, #103)
+ * from this grow-only private scratch of rows x n_in halves. It grows to the
+ * widest call it sees -- on Bonsai 2 27B 320 x 17408 halves (11 MB) once the
+ * first ffn_down has run -- so later chunks do not reallocate it (AGENT.md
+ * §3); the old buffer stays alive while a command buffer still holds it. If
+ * it cannot grow, the bounded GEMM takes the call (metal_pq2_xh_ready).
+ * Serial-encoder ordering makes the reuse across GEMMs safe. */
+static void metal_pq2_xh_reserve(struct geist_backend *be, size_t rows, size_t n_in) {
+    struct metal_state *st = be->state;
+    size_t              cap;
+    if (ckd_mul(&cap, rows, n_in) || ckd_mul(&cap, cap, sizeof(uint16_t)) ||
+        st->pq2_xh_capacity >= cap) {
+        return;
+    }
+    metal_buffer_destroy_internal(be, st->pq2_xh_buffer);
+    st->pq2_xh_buffer   = nullptr;
+    st->pq2_xh_capacity = 0;
+    if (metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, false, &st->pq2_xh_buffer) == GEIST_OK) {
+        st->pq2_xh_capacity = cap;
+    }
+}
+
+static bool metal_pq2_xh_ready(const struct metal_state      *st,
+                               const struct metal_q4k_params *params) {
+    return st->cvt_f16_pipeline != nullptr && st->pq2_xh_buffer != nullptr &&
+           (size_t) params->rows * params->n_in * sizeof(uint16_t) <= st->pq2_xh_capacity;
+}
+
+/* x (rows x n_in f32 at x_offset, x_row_stride) -> pq2_xh_buffer as a dense
+ * rows x n_in f16 copy. The fast path's alignment (n_in % 32, offset and
+ * stride % 8) makes every float4 whole. */
+static void metal_encode_pq2_x_f16(struct metal_state            *st,
+                                   void                          *enc,
+                                   const struct geist_tensor     *x,
+                                   const struct metal_q4k_params *params) {
+    const struct {
+        uint32_t n4, xo4, xs4;
+    } cp = {params->n_in / 4u, params->x_offset / 4u, params->x_row_stride / 4u};
+    metal_msg_send_set_pipeline(st, enc, st->cvt_f16_pipeline);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, st->pq2_xh_buffer->buffer, st->pq2_xh_buffer->base_off, 1);
+    metal_msg_send_set_bytes(st, enc, &cp, sizeof cp, 2);
+    const struct metal_size groups  = {(cp.n4 + 255u) / 256u, params->rows, 1};
+    const struct metal_size threads = {256u, 1u, 1u};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_PQ2_X_F16, groups);
+    metal_msg_send_dispatch(st, enc, groups, threads);
+}
+
 static void metal_encode_q40_q80_linear(struct metal_state            *st,
                                         void                          *enc,
                                         const struct geist_tensor     *x,
@@ -402,7 +450,9 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
      * staging (needs full tiles, n_in%32 and 8-float-aligned x rows). */
     const bool m_tile_sg_fast = m_tile_sg && p.mm_fast != nullptr && (params->rows >= 8u) &&
                                 (params->n_out % 64u) == 0u && (params->n_in % 32u) == 0u &&
-                                (params->x_offset % 8u) == 0u && (params->x_row_stride % 8u) == 0u;
+                                (params->x_offset % 8u) == 0u &&
+                                (params->x_row_stride % 8u) == 0u &&
+                                (!p.mm_fast64 || metal_pq2_xh_ready(st, params));
     const bool tiled          = !n_tile4 && !m_tile_sg && params->rows >= 8u;
     /* The naive kernels, for the formats that have them. A gemm_only
      * format has none, but m_tile_sg above takes every shape its GEMV
@@ -413,22 +463,34 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
     if (pipe == nullptr) {
         return;
     }
+    /* PQ2_0's fast GEMM reads x as f16: one conversion into pq2_xh_buffer
+     * first, then the GEMM's x is that dense copy. */
+    const bool              fast64 = m_tile_sg_fast && p.mm_fast64;
+    struct metal_q4k_params xh     = *params;
+    if (fast64) {
+        metal_encode_pq2_x_f16(st, enc, x, params);
+        xh.x_offset     = 0u;
+        xh.x_row_stride = params->n_in;
+    }
     metal_msg_send_set_pipeline(st, enc, pipe);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    if (fast64) {
+        metal_msg_send_set_buffer(
+                st, enc, st->pq2_xh_buffer->buffer, st->pq2_xh_buffer->base_off, 0);
+    } else {
+        metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    }
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
-    metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
-    /* A 64-row fast tile stages its ragged last tile's output in 16 KB. */
-    const bool     fast64    = m_tile_sg_fast && p.mm_fast64;
+    metal_msg_send_set_bytes(st, enc, fast64 ? &xh : params, sizeof(*params), 3);
     const uint32_t tile_rows = fast64 ? 64u : 32u;
     if (m_tile_sg) {
-        metal_msg_send_set_threadgroup_memory(st,
-                                              enc,
-                                              fast64 ? ((params->rows % 64u) == 0u ? 8192u : 16384u)
-                                              : m_tile_sg_fast && (params->rows % 32u) == 0u
-                                                      ? 6144u
-                                                      : 8192u,
-                                              0u);
+        metal_msg_send_set_threadgroup_memory(
+                st,
+                enc,
+                fast64 ? ((params->rows % 64u) == 0u ? 10240u : 16384u)
+                : m_tile_sg_fast && (params->rows % 32u) == 0u ? 6144u
+                                                               : 8192u,
+                0u);
     }
     if (n_tile4 && dtype == GEIST_DTYPE_PQ2_0) {
         /* matvec_pq2_n{4,8}'s 256-entry half4 code table */
@@ -1845,7 +1907,10 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
     if (s != GEIST_OK) {
         return s;
     }
-    struct metal_state           *st     = be->state;
+    struct metal_state *st = be->state;
+    if (dtype == GEIST_DTYPE_PQ2_0 && rows >= 8u && n_out % 64u == 0u && n_in % 32u == 0u) {
+        metal_pq2_xh_reserve(be, rows, n_in);
+    }
     const struct metal_q4k_params params = {
             .n_in           = (uint32_t) n_in,
             .n_out          = (uint32_t) n_out,
