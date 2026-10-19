@@ -7,7 +7,8 @@ safetensors through the in-tree converter — and returns the pooled,
 L2-normalized vector.
 
 **Status:** correctness is verified (geist reproduces the embedding the model
-cards print to RMSE 8.5e-4); **throughput is unmeasured**
+cards print to RMSE 1.01e-3 on cpu_neon, M1 Max; 8.5e-4 before the online
+FP32-KV softmax of f78ce0f1, see #56); **throughput is unmeasured**
 (`benchmark/embedding_protocol.json` says `UNMEASURED`). The 270M runs only as
 F16 (see [Open work](#open-work)).
 
@@ -22,7 +23,7 @@ per-token absmax activations), have no LM head, and pool by **mean** followed
 by L2 normalization. The model cards say "last-token pooling" in prose, but
 the GGUFs carry `{arch}.pooling_type = 1` (MEAN), the cards' own
 `llama-embedding` command takes that key, and only mean reproduces the printed
-vector (RMSE 8.5e-4, against 0.24 for last-token).
+vector (RMSE 1.01e-3, against 0.24 for last-token).
 
 | | `BitNet-embedding-0.6B` | `BitNet-embedding-270M` |
 | :-- | :-- | :-- |

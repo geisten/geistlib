@@ -21,7 +21,7 @@
  * tensors and emits all-NaN), so there is no binary to diff against.
  *
  * Seven components is few, but it is enough to separate the two poolings —
- * mean lands at RMSE 8.5e-4 and last-token at 0.24 — which is the question
+ * mean lands at RMSE 1.01e-3 and last-token at 0.24 — which is the question
  * the checkpoint's own documentation leaves open: the card says last-token
  * in prose, the GGUF says mean, and the card's reproducible invocation
  * passes no override, so what it printed is what the key says.
@@ -189,10 +189,14 @@ int main(void) {
             printf(" %.6f", (double) a[i]);
         }
         printf(")\n");
-        /* 5e-3 leaves room for upstream's kernels accumulating I2_S and F16
-         * in a different order than ours; it is two orders of magnitude
-         * below the gap to the wrong pooling. */
-        fails += geist_expect(rmse < 5e-3,
+        /* cpu_neon, M1 Max: 1.01e-3 since f78ce0f1 (online FP32-KV
+         * softmax), 8.5e-4 before it. That commit only reorders the softmax
+         * sum, yet moves single components by up to 1.1e-3: the int8
+         * activation quantization of every I2_S linear turns a last-bit
+         * change into a different rounding (#56). 1.5e-3 holds the current
+         * value with room for such reorders and catches a drift of the next
+         * order of magnitude, which is still far below the wrong pooling. */
+        fails += geist_expect(rmse < 1.5e-3,
                               "the pooled vector reproduces the vendor's published embedding");
     }
 
