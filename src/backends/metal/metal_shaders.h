@@ -2037,6 +2037,25 @@ static const char metal_attn_f16_source[] =
  * split across the 8 simdgroups with per-simdgroup online softmax kept in
  * registers (simd_sum reductions, no tree-reduce barriers, no serial PV
  * loop); one threadgroup-memory merge at the end. */
+/* The plain split-KV decode kernels compile twice: for an F16 KV cache
+ * and for an F32 one. A defs part ahead of the shared source picks the K/V
+ * element type KVT, KVF(x) (the float a K/V element is computed with) and
+ * the kernel name ATTN(n). F32 KV is rounded to half as it is read: the
+ * round-to-nearest the f32->f16 staging copy applied to the same element,
+ * so the result is bit-identical to staging first, without the pass over
+ * every live row per token (#64). */
+static const char metal_attn_kv_header[] =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct A{uint rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo;};\n"
+        "struct SP{uint ns;};\n";
+static const char metal_attn_kv_f16_defs[] = "\n#define KVT half\n"
+                                             "#define KVF(x) float(x)\n"
+                                             "#define ATTN(n) attention_##n##_f16\n";
+static const char metal_attn_kv_f32_defs[] = "\n#define KVT float\n"
+                                             "#define KVF(x) float(half(x))\n"
+                                             "#define ATTN(n) attention_##n##_f32kv\n";
+
 static const char metal_attn_qnorm_dec_f16_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
@@ -2078,26 +2097,26 @@ static const char metal_attn_dec_f16_body[] =
         "224u<hd;"
         "for(uint t=slo+ss*8u+sg;t<=shi;t+=sp.ns*8u){"
         "uint kb=p.kco+t*p.kvh*hd+kvh*hd;"
-        "float d=qv[ln]*float(kc[kb+ln]);"
-        "if(g1)d+=qv[ln+32u]*float(kc[kb+ln+32u]);"
-        "if(g2)d+=qv[ln+64u]*float(kc[kb+ln+64u]);"
-        "if(g3)d+=qv[ln+96u]*float(kc[kb+ln+96u]);"
-        "if(g4)d+=qv[ln+128u]*float(kc[kb+ln+128u]);"
-        "if(g5)d+=qv[ln+160u]*float(kc[kb+ln+160u]);"
-        "if(g6)d+=qv[ln+192u]*float(kc[kb+ln+192u]);"
-        "if(g7)d+=qv[ln+224u]*float(kc[kb+ln+224u]);"
+        "float d=qv[ln]*KVF(kc[kb+ln]);"
+        "if(g1)d+=qv[ln+32u]*KVF(kc[kb+ln+32u]);"
+        "if(g2)d+=qv[ln+64u]*KVF(kc[kb+ln+64u]);"
+        "if(g3)d+=qv[ln+96u]*KVF(kc[kb+ln+96u]);"
+        "if(g4)d+=qv[ln+128u]*KVF(kc[kb+ln+128u]);"
+        "if(g5)d+=qv[ln+160u]*KVF(kc[kb+ln+160u]);"
+        "if(g6)d+=qv[ln+192u]*KVF(kc[kb+ln+192u]);"
+        "if(g7)d+=qv[ln+224u]*KVF(kc[kb+ln+224u]);"
         "d=simd_sum(d);"
         "float mn=max(m,d),corr=exp(m-mn),e=exp(d-mn);"
         "l=l*corr+e;"
         "uint vb=p.vco+t*p.kvh*hd+kvh*hd;"
-        "a0=a0*corr+e*float(vc[vb+ln]);"
-        "if(g1)a1=a1*corr+e*float(vc[vb+ln+32u]);"
-        "if(g2)a2=a2*corr+e*float(vc[vb+ln+64u]);"
-        "if(g3)a3=a3*corr+e*float(vc[vb+ln+96u]);"
-        "if(g4)a4=a4*corr+e*float(vc[vb+ln+128u]);"
-        "if(g5)a5=a5*corr+e*float(vc[vb+ln+160u]);"
-        "if(g6)a6=a6*corr+e*float(vc[vb+ln+192u]);"
-        "if(g7)a7=a7*corr+e*float(vc[vb+ln+224u]);"
+        "a0=a0*corr+e*KVF(vc[vb+ln]);"
+        "if(g1)a1=a1*corr+e*KVF(vc[vb+ln+32u]);"
+        "if(g2)a2=a2*corr+e*KVF(vc[vb+ln+64u]);"
+        "if(g3)a3=a3*corr+e*KVF(vc[vb+ln+96u]);"
+        "if(g4)a4=a4*corr+e*KVF(vc[vb+ln+128u]);"
+        "if(g5)a5=a5*corr+e*KVF(vc[vb+ln+160u]);"
+        "if(g6)a6=a6*corr+e*KVF(vc[vb+ln+192u]);"
+        "if(g7)a7=a7*corr+e*KVF(vc[vb+ln+224u]);"
         "m=mn;}"
         "if(ln==0u){tm[sg]=m;tl[sg]=l;}"
         "uint tb=sg*hd+ln;"
@@ -2112,210 +2131,133 @@ static const char metal_attn_dec_f16_body[] =
         "for(uint i=lid;i<hd;i+=256u){float acc=0.0f;for(uint "
         "j=0u;j<8u;j++)acc+=ta[j*hd+i]*exp(tm[j]-M);pb[pbb+2u+i]=acc;}}\n";
 
-/* Prefill simdgroup flash attention (rows%8==0, hd%32==0, hd<=256, f16 KV,
- * kv_len>=32): one threadgroup per (8-query-row tile, head), 4 simdgroups
- * split head_dim. QK^T and P.V run as simdgroup_multiply_accumulate with K
- * loaded transposed straight from the cache; online softmax is scalar on
- * 8x32 score tiles; accumulator rescale/normalize via diagonal-matrix
- * multiply. The tail kv tile re-covers [thi-31, thi] with already-processed
- * positions masked out, so no out-of-bounds cache reads. Source exceeds the
- * ISO 4095-char literal limit -> two parts, concatenated at init. */
-static const char metal_attn_flash_sg_f16_source_a[] =
+/* Prefill flash attention (#91): one template over head_dim D (a
+ * multiple of 32 up to 256 on 4 simdgroups, of 64 up to 512 on 8) after
+ * the structure of llama.cpp's kernel_flash_attn_ext. A threadgroup owns
+ * R = 16 query rows of one head (two 8-row tiles) and walks their live
+ * keys in 64-key blocks:
+ *   - Q^T K: each simdgroup computes whole 8x8 score tiles over the full
+ *     head_dim, K loaded transposed straight from the cache and reused for
+ *     both row tiles; no cross-simdgroup reduction.
+ *   - online softmax on all lanes (two scores per lane and row, simd_max /
+ *     simd_sum), causal and window masks computed in place; the weights go
+ *     to threadgroup memory as half.
+ *   - P.V: each simdgroup keeps its 8-column slices of O for both row tiles
+ *     in registers, rescaled by a diagonal multiply.
+ * Two barriers per block. Operands f16; scores, softmax and O in f32.
+ * The tail block re-covers [thi-63, thi] with the keys already processed
+ * masked, so kv_len >= 64 keeps every cache read in bounds. Measured on
+ * the M1 Max (#91): 16 rows beat 8 (+25-30 % on Bonsai 2 27B shapes),
+ * 24/32 rows spill the O registers at head_dim 256, 32-key blocks and O
+ * in threadgroup memory were slower. Two literals for the ISO 4095-char
+ * limit. */
+static const char metal_attn_flash_source_a[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
-        "struct NR{uint rows,heads,hd,xo,wo,co,so,xs,rs,ro;float eps;};\n"
         "struct A{uint rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo;};\n"
-        "kernel void attention_qnorm_flash_sg_f16(device const float*q[[buffer(0)]],device const "
-        "float*qw[[buffer(1)]],device const float*c[[buffer(2)]],device const "
-        "float*s[[buffer(3)]],device const half*kc[[buffer(4)]],device const "
-        "half*vc[[buffer(5)]],device float*y[[buffer(6)]],constant NR&nr[[buffer(7)]],constant "
-        "A&p[[buffer(8)]],uint2 tg[[threadgroup_position_in_grid]],uint "
-        "lid[[thread_index_in_threadgroup]],uint sg[[simdgroup_index_in_threadgroup]],uint "
-        "ln[[thread_index_in_simdgroup]]){"
-        "threadgroup half Qt[2048];threadgroup float Sred[1024];threadgroup float "
-        "Sf[256];threadgroup half Pt[256];threadgroup float Mt[8];threadgroup float "
-        "Lt[8];threadgroup float Dg[64];threadgroup float Mn[8];"
-        "uint hd=p.hd,h=tg.y,q0=tg.x*8u;"
-        "uint kvh=h/(p.qh/p.kvh),kstr=p.kvh*hd;"
-        "for(uint rr=0u;rr<2u;rr++){"
-        "uint r=sg*2u+rr,row=q0+r,base=nr.xo+row*nr.xs+h*nr.hd;"
-        "float ss=0.0f;for(uint i=ln;i<hd;i+=32u){float v=q[base+i];ss+=v*v;}"
-        "ss=simd_sum(ss);float invn=rsqrt(ss/float(hd)+nr.eps);"
-        "uint hd2=hd/2u,ro=nr.ro+row;"
-        "for(uint i=ln;i<hd2;i+=32u){float "
-        "x0=q[base+i]*invn*qw[nr.wo+i],x1=q[base+i+hd2]*invn*qw[nr.wo+i+hd2];float "
-        "co=c[nr.co+ro*nr.rs+i],si=s[nr.so+ro*nr.rs+i];Qt[r*hd+i]=half(x0*co-x1*si);Qt[r*hd+i+hd2]="
-        "half(x0*si+x1*co);}}"
-        "if(lid<8u){Mt[lid]=-3.402823466e+38f;Lt[lid]=0.0f;}"
-        "if(lid<64u)Dg[lid]=0.0f;"
+        "template<short D,short NSG>\n"
+        "kernel void attention_flash(device const float*q[[buffer(0)]],device const "
+        "half*kc[[buffer(1)]],device const half*vc[[buffer(2)]],device float*y[[buffer(3)]],"
+        "constant A&p[[buffer(4)]],uint2 tg[[threadgroup_position_in_grid]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]],ushort ln[[thread_index_in_simdgroup]]){"
+        "constexpr short C=64,T=2,R=8*T,NQ=R/NSG,NO=D/8/NSG,NC=C/8/NSG;"
+        "threadgroup half sq[R*D];threadgroup float ss[R*C];threadgroup half sp[R*C];"
+        "threadgroup float sd[T*64];"
+        "const uint h=tg.y,q0=tg.x*R,kvh=h/(p.qh/p.kvh),kstr=p.kvh*D;"
+        "device const half*kp=kc+p.kco+kvh*D;device const half*vp=vc+p.vco+kvh*D;"
+        /* row j of the tile is jj*NSG+sg; a ragged last tile repeats the
+         * last row and stores only the valid ones (#35) */
+        "uint qp[NQ];"
+        "for(short jj=0;jj<NQ;jj++){const short j=jj*NSG+sg;"
+        "const uint row=min(q0+j,p.rows-1u);qp[jj]=p.qpos+row;"
+        "device const float*qr=q+p.qo+row*p.qh*D+h*D;"
+        "for(short i=ln;i<D;i+=32)sq[j*D+i]=half(qr[i]);}"
+        "for(short i=sg*32+ln;i<T*64;i+=NSG*32)sd[i]=0.0f;"
         "threadgroup_barrier(mem_flags::mem_threadgroup);"
-        "uint slc=hd/4u,c0=sg*slc,nO=slc/8u;"
-        "simdgroup_float8x8 O[8];for(uint "
-        "i=0u;i<8u;i++)O[i]=make_filled_simdgroup_matrix<float,8>(0.0f);"
-        "uint qmax=p.qpos+q0+7u;"
-        "uint thi=qmax<p.kv_len?qmax:p.kv_len-1u;"
-        "uint qp0=p.qpos+q0;"
-        "uint tlo=(p.sw>0u&&qp0+1u>p.sw)?qp0+1u-p.sw:0u;"
-        "uint span=thi+1u-tlo,nfull=span/32u,rem=span%32u;"
-        "uint nit=nfull+(rem>0u?1u:0u);";
-
-/* No-norm variant: the engine applies q-norm and rope
- * as separate ops, so this head loads Q as a plain half copy. The main
- * loop is byte-identical — metal_attn_flash_sg_f16_source_b is appended
- * after this head a second time at library init. */
-static const char metal_attn_flash_sg_f16_plain_head[] =
-        "kernel void attention_flash_sg_f16(device const float*q[[buffer(0)]],device const "
-        "half*kc[[buffer(1)]],device const half*vc[[buffer(2)]],device "
-        "float*y[[buffer(3)]],constant A&p[[buffer(4)]],uint2 "
-        "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]],uint "
-        "sg[[simdgroup_index_in_threadgroup]],uint ln[[thread_index_in_simdgroup]]){"
-        "threadgroup half Qt[2048];threadgroup float Sred[1024];threadgroup float "
-        "Sf[256];threadgroup half Pt[256];threadgroup float Mt[8];threadgroup float "
-        "Lt[8];threadgroup float Dg[64];threadgroup float Mn[8];"
-        "uint hd=p.hd,h=tg.y,q0=tg.x*8u;"
-        "uint kvh=h/(p.qh/p.kvh),kstr=p.kvh*hd;"
-        "for(uint rr=0u;rr<2u;rr++){"
-        "uint r=sg*2u+rr,row=min(q0+r,p.rows-1u),base=p.qo+row*p.qh*hd+h*hd;"
-        "for(uint i=ln;i<hd;i+=32u){Qt[r*hd+i]=half(q[base+i]);}}"
-        "if(lid<8u){Mt[lid]=-3.402823466e+38f;Lt[lid]=0.0f;}"
-        "if(lid<64u)Dg[lid]=0.0f;"
-        "threadgroup_barrier(mem_flags::mem_threadgroup);"
-        "uint slc=hd/4u,c0=sg*slc,nO=slc/8u;"
-        "simdgroup_float8x8 O[8];for(uint "
-        "i=0u;i<8u;i++)O[i]=make_filled_simdgroup_matrix<float,8>(0.0f);"
-        "uint qmax=p.qpos+q0+7u;"
-        "uint thi=qmax<p.kv_len?qmax:p.kv_len-1u;"
-        "uint qp0=p.qpos+q0;"
-        "uint tlo=(p.sw>0u&&qp0+1u>p.sw)?qp0+1u-p.sw:0u;"
-        "uint span=thi+1u-tlo,nfull=span/32u,rem=span%32u;"
-        "uint nit=nfull+(rem>0u?1u:0u);";
-
-static const char metal_attn_flash_sg_f16_source_b[] =
+        "simdgroup_float8x8 lo[T][NO];"
+        "for(short t=0;t<T;t++)for(short i=0;i<NO;i++)"
+        "lo[t][i]=make_filled_simdgroup_matrix<float,8>(0.0f);"
+        "float M[NQ],S[NQ];for(short jj=0;jj<NQ;jj++){M[jj]=-FLT_MAX/2;S[jj]=0.0f;}"
+        "const uint qf=p.qpos+q0,ql=p.qpos+min(q0+R-1u,p.rows-1u);"
+        "const uint thi=min(ql,p.kv_len-1u);"
+        "const uint tlo=(p.sw>0u&&qf+1u>p.sw)?qf+1u-p.sw:0u;"
+        "const uint span=thi+1u-tlo,nfull=span/C,nit=nfull+(span%C>0u?1u:0u);"
         "for(uint it=0u;it<nit;it++){"
-        "uint t0=(it<nfull)?tlo+it*32u:(thi+1u>=32u?thi+1u-32u:0u);"
-        "uint skipb=(it<nfull)?0u:tlo+nfull*32u;"
-        "simdgroup_float8x8 S4[4];for(uint "
-        "i=0u;i<4u;i++)S4[i]=make_filled_simdgroup_matrix<float,8>(0.0f);"
-        "simdgroup_half8x8 mq,mk;"
-        "for(uint kk=0u;kk<4u;kk++){for(uint cc=0u;cc<nO;cc++){"
-        "simdgroup_load(mq,Qt+c0+cc*8u,hd);"
-        "simdgroup_load(mk,kc+p.kco+(t0+kk*8u)*kstr+kvh*hd+c0+cc*8u,kstr,0,true);"
-        "simdgroup_multiply_accumulate(S4[kk],mq,mk,S4[kk]);}}"
-        "for(uint kk=0u;kk<4u;kk++)simdgroup_store(S4[kk],Sred+sg*256u+kk*64u,8);"
-        "threadgroup_barrier(mem_flags::mem_threadgroup);"
-        "for(uint e=lid;e<256u;e+=128u){"
-        "uint r=e/32u,j=e%32u,t=t0+j;"
-        "float "
-        "v=Sred[(j/8u)*64u+r*8u+(j%8u)]+Sred[256u+(j/8u)*64u+r*8u+(j%8u)]+Sred[512u+(j/"
-        "8u)*64u+r*8u+(j%8u)]+Sred[768u+(j/8u)*64u+r*8u+(j%8u)];"
-        "uint qp=p.qpos+q0+r;"
-        "uint slr=(p.sw>0u&&qp+1u>p.sw)?qp+1u-p.sw:0u;"
-        "bool ok=t>=slr&&t<=qp&&t>=skipb;"
-        "Sf[e]=ok?v:-3.402823466e+38f;}"
-        "threadgroup_barrier(mem_flags::mem_threadgroup);"
-        /* softmax split so the expensive parts run on all lanes: row max via
-         * simd_max (order-independent = exact) and the 256 exps in parallel
-         * (elementwise = exact); only the l-sum stays serial ascending per row
-         * to keep the summation order — results stay bit-identical. */
-        "for(uint rr=0u;rr<2u;rr++){uint r=sg*2u+rr;float tm=simd_max(Sf[r*32u+ln]);"
-        "if(ln==0u)Mn[r]=max(Mt[r],tm);}"
-        "threadgroup_barrier(mem_flags::mem_threadgroup);"
-        "for(uint e=lid;e<256u;e+=128u){uint r=e/32u;float "
-        "e2=exp(Sf[e]-Mn[r]);Sf[e]=e2;Pt[e]=half(e2);}"
-        "threadgroup_barrier(mem_flags::mem_threadgroup);"
-        "if(lid<8u){uint r=lid;float mn=Mn[r],corr=exp(Mt[r]-mn),ls=0.0f;"
-        "for(uint j=0u;j<32u;j++){ls+=Sf[r*32u+j];}"
-        "Mt[r]=mn;Lt[r]=Lt[r]*corr+ls;Dg[r*9u]=corr;}"
-        "threadgroup_barrier(mem_flags::mem_threadgroup);"
-        "simdgroup_float8x8 mco;simdgroup_load(mco,Dg,8);"
-        "for(uint cc=0u;cc<nO;cc++)simdgroup_multiply(O[cc],mco,O[cc]);"
-        "simdgroup_half8x8 mp,mv;"
-        "for(uint kk=0u;kk<4u;kk++){"
-        "simdgroup_load(mp,Pt+kk*8u,32);"
-        "for(uint cc=0u;cc<nO;cc++){"
-        "simdgroup_load(mv,vc+p.vco+(t0+kk*8u)*kstr+kvh*hd+c0+cc*8u,kstr);"
-        "simdgroup_multiply_accumulate(O[cc],mp,mv,O[cc]);}}"
-        "threadgroup_barrier(mem_flags::mem_threadgroup);}"
-        "if(lid<8u)Dg[lid*9u]=1.0f/Lt[lid];"
-        "threadgroup_barrier(mem_flags::mem_threadgroup);"
-        "simdgroup_float8x8 mfin;simdgroup_load(mfin,Dg,8);"
-        "for(uint cc=0u;cc<nO;cc++){simdgroup_float8x8 t;simdgroup_multiply(t,mfin,O[cc]);"
-        "if(q0+8u<=p.rows){simdgroup_store(t,y+p.yo+q0*p.qh*hd+h*hd+c0+cc*8u,p.qh*hd);}"
-        "else{simdgroup_store(t,Sred+sg*64u,8);simdgroup_barrier(mem_flags::mem_threadgroup);"
-        "for(uint e=ln;e<64u;e+=32u){if(q0+e/8u<p.rows)"
-        "y[p.yo+(q0+e/8u)*p.qh*hd+h*hd+c0+cc*8u+e%8u]=Sred[sg*64u+e];}"
-        "simdgroup_barrier(mem_flags::mem_threadgroup);}}"
-        "}\n";
+        "const uint t0=it<nfull?tlo+it*C:(thi+1u>=C?thi+1u-C:0u);"
+        "const uint skipb=it<nfull?0u:tlo+nfull*C;"
+        "for(short cc=0;cc<NC;cc++){const short kb=cc*NSG+sg;"
+        "simdgroup_float8x8 mqk[T];"
+        "for(short t=0;t<T;t++)mqk[t]=make_filled_simdgroup_matrix<float,8>(0.0f);"
+        "device const half*pk=kp+(t0+8u*kb)*kstr;"
+        "for(short i=0;i<D/8;i++){simdgroup_half8x8 mk;simdgroup_load(mk,pk+8*i,kstr,0,true);"
+        "for(short t=0;t<T;t++){simdgroup_half8x8 mq;simdgroup_load(mq,sq+t*8*D+8*i,D);"
+        "simdgroup_multiply_accumulate(mqk[t],mq,mk,mqk[t]);}}"
+        "for(short t=0;t<T;t++)simdgroup_store(mqk[t],ss+t*8*C+8*kb,C);}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);";
 
-/* 8-simdgroup / 256-thread variant of the prefill flash for head_dim
- * up to 512: each simdgroup owns one query row and a 64-column output
- * slice; scores reduce across 8 Sred banks (gemma-3n full-attention
- * layers, head_dim 512). */
-static const char metal_attn_flash_sg8_f16_source_a[] =
-        "#include <metal_stdlib>\nusing namespace metal;\nstruct A{uint "
-        "rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo;};\nkernel void "
-        "attention_flash_sg8_f16(device const float*q[[buffer(0)]],device const "
-        "half*kc[[buffer(1)]],device const half*vc[[buffer(2)]],device "
-        "float*y[[buffer(3)]],constant A&p[[buffer(4)]],uint2 "
-        "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]],uint "
-        "sg[[simdgroup_index_in_threadgroup]],uint ln[[thread_index_in_simdgroup]]){threadgroup "
-        "half Qt[4096];threadgroup float Sred[2048];threadgroup float Sf[256];threadgroup half "
-        "Pt[256];threadgroup float Mt[8];threadgroup float Lt[8];threadgroup float "
-        "Dg[64];threadgroup float Mn[8];uint hd=p.hd,h=tg.y,q0=tg.x*8u;uint "
-        "kvh=h/(p.qh/p.kvh),kstr=p.kvh*hd;{uint "
-        "r=sg,row=min(q0+r,p.rows-1u),base=p.qo+row*p.qh*hd+h*hd;for(uint "
-        "i=ln;i<hd;i+=32u){Qt[r*hd+i]=half(q[base+i]);}}if(lid<8u){Mt[lid]=-3.402823466e+38f;Lt["
-        "lid]=0.0f;}if(lid<64u)Dg[lid]=0.0f;threadgroup_barrier(mem_flags::mem_threadgroup);uint "
-        "slc=hd/8u,c0=sg*slc,nO=slc/8u;simdgroup_float8x8 O[8];for(uint "
-        "i=0u;i<8u;i++)O[i]=make_filled_simdgroup_matrix<float,8>(0.0f);uint "
-        "qmax=p.qpos+q0+7u;uint thi=qmax<p.kv_len?qmax:p.kv_len-1u;uint qp0=p.qpos+q0;uint "
-        "tlo=(p.sw>0u&&qp0+1u>p.sw)?qp0+1u-p.sw:0u;uint "
-        "span=thi+1u-tlo,nfull=span/32u,rem=span%32u;uint nit=nfull+(rem>0u?1u:0u);for(uint "
-        "it=0u;it<nit;it++){uint t0=(it<nfull)?tlo+it*32u:(thi+1u>=32u?thi+1u-32u:0u);uint "
-        "skipb=(it<nfull)?0u:tlo+nfull*32u;simdgroup_float8x8 S4[4];for(uint "
-        "i=0u;i<4u;i++)S4[i]=make_filled_simdgroup_matrix<float,8>(0.0f);simdgroup_half8x8 "
-        "mq,mk;for(uint kk=0u;kk<4u;kk++){for(uint "
-        "cc=0u;cc<nO;cc++){simdgroup_load(mq,Qt+c0+cc*8u,hd);simdgroup_load(mk,kc+p.kco+(t0+kk*8u)*"
-        "kstr+kvh*hd+c0+cc*8u,kstr,0,true);simdgroup_multiply_accumulate(S4[kk],mq,mk,S4[kk]);}}"
-        "for(uint kk=0u;";
-static const char metal_attn_flash_sg8_f16_source_b[] =
-        "kk<4u;kk++)simdgroup_store(S4[kk],Sred+sg*256u+kk*64u,8);threadgroup_barrier(mem_flags::"
-        "mem_threadgroup);for(uint e=lid;e<256u;e+=256u){uint r=e/32u,j=e%32u,t=t0+j;float "
-        "v=Sred[(j/8u)*64u+r*8u+(j%8u)]+Sred[256u+(j/8u)*64u+r*8u+(j%8u)]+Sred[512u+(j/"
-        "8u)*64u+r*8u+(j%8u)]+Sred[768u+(j/8u)*64u+r*8u+(j%8u)]+Sred[1024u+(j/"
-        "8u)*64u+r*8u+(j%8u)]+Sred[1280u+(j/8u)*64u+r*8u+(j%8u)]+Sred[1536u+(j/"
-        "8u)*64u+r*8u+(j%8u)]+Sred[1792u+(j/8u)*64u+r*8u+(j%8u)];uint qp=p.qpos+q0+r;uint "
-        "slr=(p.sw>0u&&qp+1u>p.sw)?qp+1u-p.sw:0u;bool "
-        "ok=t>=slr&&t<=qp&&t>=skipb;Sf[e]=ok?v:-3.402823466e+38f;}threadgroup_barrier(mem_flags::"
-        "mem_threadgroup);{uint r=sg;float "
-        "tm=simd_max(Sf[r*32u+ln]);if(ln==0u)Mn[r]=max(Mt[r],tm);}threadgroup_barrier(mem_flags::"
-        "mem_threadgroup);for(uint e=lid;e<256u;e+=256u){uint r=e/32u;float "
-        "e2=exp(Sf[e]-Mn[r]);Sf[e]=e2;Pt[e]=half(e2);}threadgroup_barrier(mem_flags::mem_"
-        "threadgroup);if(lid<8u){uint r=lid;float mn=Mn[r],corr=exp(Mt[r]-mn),ls=0.0f;for(uint "
-        "j=0u;j<32u;j++){ls+=Sf[r*32u+j];}Mt[r]=mn;Lt[r]=Lt[r]*corr+ls;Dg[r*9u]=corr;}threadgroup_"
-        "barrier(mem_flags::mem_threadgroup);simdgroup_float8x8 "
-        "mco;simdgroup_load(mco,Dg,8);for(uint "
-        "cc=0u;cc<nO;cc++)simdgroup_multiply(O[cc],mco,O[cc]);simdgroup_half8x8 mp,mv;for(uint "
-        "kk=0u;kk<4u;kk++){simdgroup_load(mp,Pt+kk*8u,32);for(uint "
-        "cc=0u;cc<nO;cc++){simdgroup_load(mv,vc+p.vco+(t0+kk*8u)*kstr+kvh*hd+c0+cc*8u,kstr);"
-        "simdgroup_multiply_accumulate(O[cc],mp,mv,O[cc]);}}threadgroup_barrier(mem_flags::mem_"
-        "threadgroup);}if(lid<8u)Dg[lid*9u]=1.0f/"
-        "Lt[lid];threadgroup_barrier(mem_flags::mem_threadgroup);simdgroup_float8x8 "
-        "mfin;simdgroup_load(mfin,Dg,8);for(uint cc=0u;cc<nO;cc++){simdgroup_float8x8 "
-        "t;simdgroup_multiply(t,mfin,O[cc]);if(q0+8u<=p.rows){simdgroup_store(t,y+p.yo+q0*p.qh*hd+"
-        "h*hd+c0+cc*8u,p.qh*hd);}else{simdgroup_store(t,Sred+sg*64u,8);simdgroup_barrier(mem_flags:"
-        ":"
-        "mem_threadgroup);for(uint e=ln;e<64u;e+=32u){if(q0+e/8u<p.rows)y[p.yo+(q0+e/8u)*p.qh*hd+"
-        "h*hd+c0+cc*8u+e%8u]=Sred[sg*64u+e];}simdgroup_barrier(mem_flags::mem_threadgroup);}}}\n";
+static const char metal_attn_flash_source_b[] =
+        "for(short jj=0;jj<NQ;jj++){const short j=jj*NSG+sg;"
+        "const uint slr=(p.sw>0u&&qp[jj]+1u>p.sw)?qp[jj]+1u-p.sw:0u;"
+        "float2 s=*(threadgroup float2*)(ss+j*C+2*ln);"
+        "const uint t=t0+2u*ln;"
+        "if(t<skipb||t>qp[jj]||t<slr)s.x=-FLT_MAX;"
+        "if(t+1u<skipb||t+1u>qp[jj]||t+1u<slr)s.y=-FLT_MAX;"
+        "const float m=M[jj];M[jj]=simd_max(max(m,max(s.x,s.y)));"
+        "const float ms=exp(m-M[jj]);const float2 vs=exp(s-M[jj]);"
+        "S[jj]=S[jj]*ms+simd_sum(vs.x+vs.y);"
+        "*(threadgroup half2*)(sp+j*C+2*ln)=half2(vs);"
+        "if(ln==0)sd[(j/8)*64+(j%8)*9]=ms;}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(short t=0;t<T;t++){simdgroup_float8x8 md;simdgroup_load(md,sd+t*64,8);"
+        "for(short ii=0;ii<NO;ii++)simdgroup_multiply(lo[t][ii],md,lo[t][ii]);}"
+        "for(short cc=0;cc<C/8;cc++){simdgroup_half8x8 mp[T];"
+        "for(short t=0;t<T;t++)simdgroup_load(mp[t],sp+t*8*C+8*cc,C);"
+        "device const half*pv=vp+(t0+8u*cc)*kstr+8*sg;"
+        "for(short ii=0;ii<NO;ii++){simdgroup_half8x8 mv;simdgroup_load(mv,pv+8*NSG*ii,kstr);"
+        "for(short t=0;t<T;t++)simdgroup_multiply_accumulate(lo[t][ii],mp[t],mv,lo[t][ii]);}}}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(short jj=0;jj<NQ;jj++){const short j=jj*NSG+sg;"
+        "if(ln==0)sd[(j/8)*64+(j%8)*9]=1.0f/S[jj];}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(short t=0;t<T;t++){simdgroup_float8x8 md;simdgroup_load(md,sd+t*64,8);"
+        "const uint r0=q0+8u*t;device float*yo=y+p.yo+r0*p.qh*D+h*D+8*sg;"
+        "for(short ii=0;ii<NO;ii++){simdgroup_float8x8 o;simdgroup_multiply(o,md,lo[t][ii]);"
+        "if(r0+8u<=p.rows){simdgroup_store(o,yo+8*NSG*ii,p.qh*D);}"
+        "else{simdgroup_store(o,ss+sg*64,8);simdgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(short e=ln;e<64;e+=32){if(r0+e/8<p.rows)yo[(e/8)*p.qh*D+8*NSG*ii+e%8]=ss[sg*64+e];}"
+        "simdgroup_barrier(mem_flags::mem_threadgroup);}}}}\n"
+        "typedef decltype(attention_flash<32,4>) attention_flash_t;\n"
+        "template [[host_name(\"attention_flash_d32\")]] kernel attention_flash_t "
+        "attention_flash<32,4>;\n"
+        "template [[host_name(\"attention_flash_d64\")]] kernel attention_flash_t "
+        "attention_flash<64,4>;\n"
+        "template [[host_name(\"attention_flash_d96\")]] kernel attention_flash_t "
+        "attention_flash<96,4>;\n"
+        "template [[host_name(\"attention_flash_d128\")]] kernel attention_flash_t "
+        "attention_flash<128,4>;\n"
+        "template [[host_name(\"attention_flash_d160\")]] kernel attention_flash_t "
+        "attention_flash<160,4>;\n"
+        "template [[host_name(\"attention_flash_d192\")]] kernel attention_flash_t "
+        "attention_flash<192,4>;\n"
+        "template [[host_name(\"attention_flash_d224\")]] kernel attention_flash_t "
+        "attention_flash<224,4>;\n"
+        "template [[host_name(\"attention_flash_d256\")]] kernel attention_flash_t "
+        "attention_flash<256,4>;\n"
+        "template [[host_name(\"attention_flash_d320\")]] kernel attention_flash_t "
+        "attention_flash<320,8>;\n"
+        "template [[host_name(\"attention_flash_d384\")]] kernel attention_flash_t "
+        "attention_flash<384,8>;\n"
+        "template [[host_name(\"attention_flash_d448\")]] kernel attention_flash_t "
+        "attention_flash<448,8>;\n"
+        "template [[host_name(\"attention_flash_d512\")]] kernel attention_flash_t "
+        "attention_flash<512,8>;\n";
 
 /* Split-KV decode flash for 256 < head_dim <= 512 (the gemma-3n
  * full-attention layers): 16-chunk QK/PV lane unroll (a0..a15),
  * qv[512]/ta[4096]; same split/combine contract as attention_dec_f16. */
 static const char metal_attn_dec512_f16_source_a[] =
-        "#include <metal_stdlib>\nusing namespace metal;\nstruct A{uint "
-        "rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo;};\nstruct SP{uint ns;};\nkernel void "
-        "attention_dec512_f16(device const float*q[[buffer(0)]],device const "
-        "half*kc[[buffer(1)]],device const half*vc[[buffer(2)]],device "
+        "kernel void ATTN(dec512)(device const float*q[[buffer(0)]],device const "
+        "KVT*kc[[buffer(1)]],device const KVT*vc[[buffer(2)]],device "
         "float*pb[[buffer(3)]],constant A&p[[buffer(4)]],constant SP&sp[[buffer(5)]],uint2 "
         "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]],uint "
         "sg[[simdgroup_index_in_threadgroup]],uint ln[[thread_index_in_simdgroup]]){threadgroup "
@@ -2331,25 +2273,25 @@ static const char metal_attn_dec512_f16_source_a[] =
         "224u<hd,g8=ln+256u<hd,g9=ln+288u<hd,g10=ln+320u<hd,g11=ln+352u<hd,g12=ln+384u<hd,g13=ln+"
         "416u<hd,g14=ln+448u<hd,g15=ln+480u<hd;for(uint t=slo+ss*8u+sg;t<=shi;t+=sp.ns*8u){uint "
         "kb=p.kco+t*p.kvh*hd+kvh*hd;float "
-        "d=qv[ln]*float(kc[kb+ln]);if(g1)d+=qv[ln+32u]*float(kc[kb+ln+32u]);if(g2)d+=qv[ln+64u]*"
-        "float(kc[kb+ln+64u]);if(g3)d+=qv[ln+96u]*float(kc[kb+ln+96u]);if(g4)d+=qv[ln+128u]*float("
-        "kc[kb+ln+128u]);if(g5)d+=qv[ln+160u]*float(kc[kb+ln+160u]);if(g6)d+=qv[ln+192u]*float(kc["
-        "kb+ln+192u]);if(g7)d+=qv[ln+224u]*float(kc[kb+ln+224u]);if(g8)d+=qv[ln+256u]*float(kc[kb+"
-        "ln+256u]);if(g9)d+=qv[ln+288u]*float(kc[kb+ln+288u]);if(g10)d+=qv[ln+320u]*float(kc[kb+ln+"
+        "d=qv[ln]*KVF(kc[kb+ln]);if(g1)d+=qv[ln+32u]*KVF(kc[kb+ln+32u]);if(g2)d+=qv[ln+64u]*"
+        "KVF(kc[kb+ln+64u]);if(g3)d+=qv[ln+96u]*KVF(kc[kb+ln+96u]);if(g4)d+=qv[ln+128u]*KVF("
+        "kc[kb+ln+128u]);if(g5)d+=qv[ln+160u]*KVF(kc[kb+ln+160u]);if(g6)d+=qv[ln+192u]*KVF(kc["
+        "kb+ln+192u]);if(g7)d+=qv[ln+224u]*KVF(kc[kb+ln+224u]);if(g8)d+=qv[ln+256u]*KVF(kc[kb+"
+        "ln+256u]);if(g9)d+=qv[ln+288u]*KVF(kc[kb+ln+288u]);if(g10)d+=qv[ln+320u]*KVF(kc[kb+ln+"
         "320u]);";
 static const char metal_attn_dec512_f16_source_b[] =
-        "if(g11)d+=qv[ln+352u]*float(kc[kb+ln+352u]);if(g12)d+=qv[ln+384u]*float(kc[kb+ln+384u]);"
-        "if(g13)d+=qv[ln+416u]*float(kc[kb+ln+416u]);if(g14)d+=qv[ln+448u]*float(kc[kb+ln+448u]);"
-        "if(g15)d+=qv[ln+480u]*float(kc[kb+ln+480u]);d=simd_sum(d);float "
+        "if(g11)d+=qv[ln+352u]*KVF(kc[kb+ln+352u]);if(g12)d+=qv[ln+384u]*KVF(kc[kb+ln+384u]);"
+        "if(g13)d+=qv[ln+416u]*KVF(kc[kb+ln+416u]);if(g14)d+=qv[ln+448u]*KVF(kc[kb+ln+448u]);"
+        "if(g15)d+=qv[ln+480u]*KVF(kc[kb+ln+480u]);d=simd_sum(d);float "
         "mn=max(m,d),corr=exp(m-mn),e=exp(d-mn);l=l*corr+e;uint "
-        "vb=p.vco+t*p.kvh*hd+kvh*hd;a0=a0*corr+e*float(vc[vb+ln]);if(g1)a1=a1*corr+e*float(vc[vb+"
-        "ln+32u]);if(g2)a2=a2*corr+e*float(vc[vb+ln+64u]);if(g3)a3=a3*corr+e*float(vc[vb+ln+96u]);"
-        "if(g4)a4=a4*corr+e*float(vc[vb+ln+128u]);if(g5)a5=a5*corr+e*float(vc[vb+ln+160u]);if(g6)"
-        "a6=a6*corr+e*float(vc[vb+ln+192u]);if(g7)a7=a7*corr+e*float(vc[vb+ln+224u]);if(g8)a8=a8*"
-        "corr+e*float(vc[vb+ln+256u]);if(g9)a9=a9*corr+e*float(vc[vb+ln+288u]);if(g10)a10=a10*corr+"
-        "e*float(vc[vb+ln+320u]);if(g11)a11=a11*corr+e*float(vc[vb+ln+352u]);if(g12)a12=a12*corr+e*"
-        "float(vc[vb+ln+384u]);if(g13)a13=a13*corr+e*float(vc[vb+ln+416u]);if(g14)a14=a14*corr+e*"
-        "float(vc[vb+ln+448u]);if(g15)a15=a15*corr+e*float(vc[vb+ln+480u]);m=mn;}if(ln==0u){tm[sg]="
+        "vb=p.vco+t*p.kvh*hd+kvh*hd;a0=a0*corr+e*KVF(vc[vb+ln]);if(g1)a1=a1*corr+e*KVF(vc[vb+"
+        "ln+32u]);if(g2)a2=a2*corr+e*KVF(vc[vb+ln+64u]);if(g3)a3=a3*corr+e*KVF(vc[vb+ln+96u]);"
+        "if(g4)a4=a4*corr+e*KVF(vc[vb+ln+128u]);if(g5)a5=a5*corr+e*KVF(vc[vb+ln+160u]);if(g6)"
+        "a6=a6*corr+e*KVF(vc[vb+ln+192u]);if(g7)a7=a7*corr+e*KVF(vc[vb+ln+224u]);if(g8)a8=a8*"
+        "corr+e*KVF(vc[vb+ln+256u]);if(g9)a9=a9*corr+e*KVF(vc[vb+ln+288u]);if(g10)a10=a10*corr+"
+        "e*KVF(vc[vb+ln+320u]);if(g11)a11=a11*corr+e*KVF(vc[vb+ln+352u]);if(g12)a12=a12*corr+e*"
+        "KVF(vc[vb+ln+384u]);if(g13)a13=a13*corr+e*KVF(vc[vb+ln+416u]);if(g14)a14=a14*corr+e*"
+        "KVF(vc[vb+ln+448u]);if(g15)a15=a15*corr+e*KVF(vc[vb+ln+480u]);m=mn;}if(ln==0u){tm[sg]="
         "m;tl[sg]=l;}uint "
         "tb=sg*hd+ln;ta[tb]=a0;if(g1)ta[tb+32u]=a1;if(g2)ta[tb+64u]=a2;if(g3)ta[tb+96u]=a3;if(g4)"
         "ta[tb+128u]=a4;if(g5)ta[tb+160u]=a5;if(g6)ta[tb+192u]=a6;if(g7)ta[tb+224u]=a7;if(g8)ta[tb+"
@@ -2365,8 +2307,8 @@ static const char metal_attn_dec512_f16_source_b[] =
 /* No-norm head (the engine applies q-norm and rope as
  * separate ops): plain Q load into qv, then the shared split-KV body. */
 static const char metal_attn_dec_f16_plain_head[] =
-        "kernel void attention_dec_f16(device const float*q[[buffer(0)]],device const "
-        "half*kc[[buffer(1)]],device const half*vc[[buffer(2)]],device "
+        "kernel void ATTN(dec)(device const float*q[[buffer(0)]],device const "
+        "KVT*kc[[buffer(1)]],device const KVT*vc[[buffer(2)]],device "
         "float*pb[[buffer(3)]],constant A&p[[buffer(4)]],constant SP&sp[[buffer(5)]],uint2 "
         "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]],uint "
         "sg[[simdgroup_index_in_threadgroup]],uint ln[[thread_index_in_simdgroup]]){"

@@ -116,6 +116,9 @@ struct metal_buf_reg_entry {
     struct geist_buffer *buf;
 };
 
+/* Head-dim slots of the prefill flash kernels: hd/32 - 1 for hd up to 512. */
+enum { METAL_FLASH_SLOTS = 16 };
+
 struct metal_state {
     struct geist_backend       *backend;
     void                       *metal_handle;
@@ -397,19 +400,23 @@ struct metal_state {
     void    *attention_qnorm_dec_f16_pipeline;
     void    *attention_dec_f16_function;
     void    *attention_dec_f16_pipeline;
-    void    *attn_flash_sg_f16_library;
-    void    *attention_qnorm_flash_sg_f16_function;
-    void    *attention_qnorm_flash_sg_f16_pipeline;
-    void    *attention_flash_sg_f16_function;
-    void    *attention_flash_sg_f16_pipeline;
     void    *attention_dec512_f16_function;
     void    *attention_dec512_f16_pipeline;
     void    *attn_dec512_f16_library;
-    void    *attention_flash_sg8_f16_function;
-    void    *attention_flash_sg8_f16_pipeline;
-    void    *attn_flash_sg8_f16_library;
-    /* persistent f32->f16 K/V staging for the plain flash path (the
-     * engine keeps the KV cache f32). */
+    /* The prefill flash kernels (#91), one per head_dim: slot hd/32 - 1
+     * holds head_dim hd (multiples of 32 up to 256, of 64 up to 512; the
+     * other slots stay nullptr). See metal_flash_pipeline. */
+    void *attn_flash_library;
+    void *attention_flash_function[METAL_FLASH_SLOTS];
+    void *attention_flash_pipeline[METAL_FLASH_SLOTS];
+    /* The split-KV decode kernels on an F32 KV cache (#64). */
+    void *attn_dec_f32kv_library;
+    void *attention_dec_f32kv_function;
+    void *attention_dec_f32kv_pipeline;
+    void *attention_dec512_f32kv_function;
+    void *attention_dec512_f32kv_pipeline;
+    /* persistent f32->f16 K/V staging for the plain flash (prefill)
+     * path on an F32 KV cache; decode reads the F32 cache directly. */
     struct geist_buffer *attn_kf16_buffer;
     struct geist_buffer *attn_vf16_buffer;
     size_t               attn_kvf16_capacity;

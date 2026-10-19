@@ -192,6 +192,38 @@ minor release.
   rows. M1 Max, Bonsai 2 27B shapes at 320 rows: ffn_up -4.8 %, attn_qkv
   -5.7 %, ffn_down -0.9 % per GEMM; output byte-identical.
   `tests/bench_metal_pq2_gemm` times the PQ2_0 GEMM per shape.
+- **Metal prefill flash attention is 4-5x faster per call (#91).** The
+  prefill kernels (`attention_flash_sg_f16`, `attention_flash_sg8_f16`)
+  ran at 0.8-0.95 TFLOP/s on the M1 Max, the part of a long prompt's
+  prefill that grew with its length. One MSL template over head_dim
+  (`attention_flash_d<hd>`, the head_dims the old pair covered) replaces
+  them, with llama.cpp's structure (whole 8x8 score tiles per simdgroup,
+  softmax on all lanes, 64-key blocks) plus 16 query rows per threadgroup
+  and O in registers. Per call, m = 320 rows, F16 KV: Bonsai 2 27B at 2k /
+  8k rows 16.2 / 71 -> 3.0 / 12.4 ms (llama.cpp 3.5 / 13.9), Gemma 4 E2B
+  sliding 1.64 -> 0.39 ms (0.40), global head_dim 512 at 8k 44.5 -> 7.9 ms
+  (39.9). End to end (`bench_revision_ab`, FP32 KV): Bonsai prefill at
+  664 / 1245 / 2406 tokens 99 / 99 / 97 -> 101 / 100 / 102 tok/s, flat in
+  length; Gemma 4 E2B at 2k / 4k / 8k 1035 / 718 / 558 -> 1426 / 1074 /
+  1011 tok/s. Decode unchanged. Same arithmetic contract (f16 operands,
+  f32 scores, softmax and accumulation), not bit-identical: greedy tokens
+  and decisions unchanged on both models, logits within 2.5e-3 (Bonsai) /
+  0.26 (Gemma, 1 % of the row's largest logit). The kernel needs 64 cache
+  rows; smaller caches take the scalar kernel (from 32 before).
+  `tests/bench_metal_flash_attn` times one call.
+- **Metal decode on an F32 KV cache no longer converts the cache to f16
+  every token (#64).** The split-KV decode kernels read the F32 cache and
+  round each element to half as they load it (`attention_dec_f32kv`,
+  `attention_dec512_f32kv`, the same source as the F16 kernels), instead
+  of a `kv_append_rows_f16` pass over every live row per layer and token.
+  Logits are byte-identical (Bonsai 2 27B, Gemma 4 E2B, SmolLM2; ragged
+  chunks, decode, snapshot restore, truncate). M1 Max: the decode
+  attention call at 8k rows 1.36-1.46 -> 1.11-1.20 ms on Bonsai shapes;
+  Gemma 4 E2B FP32-KV decode at 8k 8.4 % faster (A/B, 10/10 cycles),
+  Bonsai within noise. Prefill keeps the per-call staging: 1-5 % of the
+  flash call, where both direct-read flash kernels tried were slower.
+  `bench_perf_sweep` loads the model for its longest run, so sweeps past
+  ~4000 tokens work.
 - **`make vulkan-shaders` is pinned to one glslc, and CI checks the
   SPIR-V headers.** The committed `*_spv.h` are compiler output; another
   glslc rewrites dozens of them. The target now refuses any glslc but

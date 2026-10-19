@@ -8,10 +8,11 @@
  * buffer counts once, through its handle (geist_backend_alloc). The test
  * counts across 16 decode steps and one 32-token prefill after a warm-up
  * that pays for lazily sized workspaces, with greedy and with sampling
- * (temperature, top-k, top-p). The prompt is 32 tokens because Metal's
- * attention takes its fast paths from 32 KV rows on (metal_attention,
- * ops.c), so the measured decode steps run the kernels production runs
- * after 31 tokens, not the fallback. The models are built in
+ * (temperature, top-k, top-p). The prompt is 32 tokens and the warm-up
+ * prefills it twice because Metal's attention takes its fast paths only
+ * from enough KV rows on (decode from 32, the prefill flash kernel from 64;
+ * metal_attention, ops.c), so the warm-up and the measured calls run the
+ * kernels production runs, not the fallback. The models are built in
  * memory with F32 weights (model_fixtures.h): a two-layer GQA llama, and a
  * Qwen3.5-style hybrid of three gated-DeltaNet blocks and an attention
  * block. Quantized-weight kernels have their own tests
@@ -111,6 +112,7 @@ static int run_session(const struct model   *md,
     }
     geist_token_t tok = 0;
     bool          ok  = geist_session_prefill_tokens(s, PREFILL, prompt) == GEIST_OK;
+    ok                = ok && geist_session_prefill_tokens(s, PREFILL, prompt) == GEIST_OK;
     for (int i = 0; ok && i < 2; i++) { /* warm-up: lazily sized workspaces */
         ok = geist_session_decode_step(s, &tok) == GEIST_OK;
     }

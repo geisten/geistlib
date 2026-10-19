@@ -240,14 +240,6 @@ int main(int argc, char **argv) {
                 load_opts.split_layers - 1,
                 geist_backend_name(load_opts.split_backend));
     }
-    struct geist_model *model = nullptr;
-    s                         = geist_model_load_with_opts(model_path, be, &load_opts, &model);
-    if (s != GEIST_OK) {
-        fprintf(stderr, "model_load failed: %s\n", geist_last_create_error());
-        geist_backend_destroy(be);
-        return GEIST_TEST_FAIL;
-    }
-
     /* Find the maximum seq_len in the sweep so we size the session right. */
     int max_seq = 0;
     for (size_t i = 0; i < n_seq_lens; i++) {
@@ -257,24 +249,33 @@ int main(int argc, char **argv) {
     size_t session_seq = (size_t) max_seq;
     if ((size_t) decode_n > SIZE_MAX - session_seq) {
         fprintf(stderr, "requested session length overflows size_t\n");
-        geist_model_destroy(model);
         geist_backend_destroy(be);
         return GEIST_TEST_ERROR;
     }
     session_seq += (size_t) decode_n;
     if ((size_t) warmup > SIZE_MAX - session_seq || 32 > SIZE_MAX - session_seq - (size_t) warmup) {
         fprintf(stderr, "requested session length overflows size_t\n");
-        geist_model_destroy(model);
         geist_backend_destroy(be);
         return GEIST_TEST_ERROR;
     }
     session_seq += (size_t) warmup + 32;
     if (session_seq > INT_MAX) {
         fprintf(stderr, "requested session length is too large\n");
-        geist_model_destroy(model);
         geist_backend_destroy(be);
         return GEIST_TEST_ERROR;
     }
+    /* The model's sequence bound is fixed at load (default 4096): size
+     * it for the longest run, or a sweep past 4096 cannot create its
+     * session. */
+    load_opts.max_seq_len     = session_seq;
+    struct geist_model *model = nullptr;
+    s                         = geist_model_load_with_opts(model_path, be, &load_opts, &model);
+    if (s != GEIST_OK) {
+        fprintf(stderr, "model_load failed: %s\n", geist_last_create_error());
+        geist_backend_destroy(be);
+        return GEIST_TEST_FAIL;
+    }
+
     struct geist_session_opts opts = {
             .max_seq_len = session_seq,
             .temperature = temperature,
