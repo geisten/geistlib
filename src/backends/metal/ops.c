@@ -1267,7 +1267,8 @@ static void metal_encode_hadamard(struct metal_state                 *st,
                                   const struct geist_hadamard_args   *a,
                                   const struct metal_hadamard_params *p,
                                   size_t                              rows) {
-    metal_msg_send_set_pipeline(st, enc, st->hadamard_pipeline);
+    const bool four = p->block >= 128u && p->block <= 4096u && st->hadamard4_pipeline != nullptr;
+    metal_msg_send_set_pipeline(st, enc, four ? st->hadamard4_pipeline : st->hadamard_pipeline);
     metal_msg_send_set_buffer(st, enc, a->x->buffer->buffer, a->x->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, a->y->buffer->buffer, a->y->buffer->base_off, 1);
     /* No signs: bind x again as a dummy; p->sgn == 0 keeps it unread. */
@@ -1276,11 +1277,14 @@ static void metal_encode_hadamard(struct metal_state                 *st,
     metal_msg_send_set_bytes(st, enc, p, sizeof(*p), 3);
     metal_msg_send_set_threadgroup_memory(st, enc, p->block * sizeof(float), 0u);
     const struct metal_size groups = {p->width / p->block, rows, 1};
-    /* One thread per element pair and stage, up to 1024: the butterflies
-     * are barrier-bound, and a wider threadgroup beats 256 per decode row.
-     * A barrier-free simdgroup variant (shuffles for the low strides) was
-     * several times slower. */
-    const struct metal_size threads = {p->block < 1024u ? p->block : 1024u, 1, 1};
+    /* Blocks of 128..4096 (Bonsai's 1024) take hadamard_rows4: block/4
+     * threads with four elements each, shuffles below stride 32 and
+     * registers for the top two strides, 3 shared-memory stages instead of
+     * 10 at 1024. Bit-identical to hadamard_rows and 3.3x faster on 320
+     * rows of 5120 (0.254 -> 0.077 ms, M1 Max, #77). hadamard_rows keeps
+     * one thread per element pair and stage, up to 1024, for the rest. */
+    const struct metal_size threads = {
+            four ? p->block / 4u : (p->block < 1024u ? p->block : 1024u), 1, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_HADAMARD, groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
 }

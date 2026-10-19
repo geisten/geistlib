@@ -197,6 +197,7 @@ static const struct metal_pipeline_row metal_attention_rows[] = {
 
 static const struct metal_pipeline_row metal_hadamard_rows[] = {
         METAL_PIPE(hadamard, "hadamard_rows", hadamard),
+        METAL_PIPE(hadamard, "hadamard_rows4", hadamard4),
 };
 
 static const struct metal_pipeline_row metal_argmax_rows[] = {
@@ -299,6 +300,7 @@ static const struct metal_library_row metal_quant_libs[] = {
         METAL_LIB(f32,
                   "F32",
                   metal_f32_source,
+                  metal_f32_ple_source,
                   metal_f32_mm_source,
                   metal_f16_w_source,
                   metal_bf16_w_source),

@@ -192,6 +192,17 @@ minor release.
   rows. M1 Max, Bonsai 2 27B shapes at 320 rows: ffn_up -4.8 %, attn_qkv
   -5.7 %, ffn_down -0.9 % per GEMM; output byte-identical.
   `tests/bench_metal_pq2_gemm` times the PQ2_0 GEMM per shape.
+- **Metal prefill on Bonsai 2 27B 14-16 % faster, now ahead of Prism's
+  llama.cpp fork (#77).** Prefill command sequences commit a buffer every
+  16 dispatches instead of 192: the same kernels run ~15 % faster in short
+  buffers on the M1 Max (`GEIST_METAL_PIPELINE_PREFILL=N` overrides; decode
+  keeps 192). The dense F32/F16/BF16 prefill GEMM stages 64 k per barrier
+  (qwen35 alpha/beta 0.57 -> 0.21 ms per call) and the Hadamard rotation
+  runs in registers and simd shuffles (3.3x per call); both are
+  byte-identical to the old kernels, and Bonsai / Gemma 4 E2B logits are
+  byte-identical end to end. `bench_revision_ab`: prefill at 664 / 1245 /
+  2406 tokens -14.8 / -15.9 / -16.1 % (FP32 KV), decode -6 to -9 %.
+  `GEIST_METAL_PROFILE` now also reports per-command-buffer GPU time.
 - **Metal prefill flash attention is 4-5x faster per call (#91).** The
   prefill kernels (`attention_flash_sg_f16`, `attention_flash_sg8_f16`)
   ran at 0.8-0.95 TFLOP/s on the M1 Max, the part of a long prompt's
@@ -621,6 +632,14 @@ minor release.
   thread mapping, workgroup geometry and arithmetic order; glslc emits
   byte-identical SPIR-V for all nine `mm_legacy` users, so the `_spv.h`
   headers are unchanged.
+
+- **CI: documentation-only pull requests skip the build and test jobs.** A
+  new `changes` job (`scripts/ci-changes.sh`) sets `code=false` when a pull
+  request changes only `*.md`, `docs/`, `benchmark/results/`, `assets/`,
+  `CITATION.cff`, `LICENSE`, `NOTICE` or the `GEIST_VERSION_*` lines of
+  `include/geist.h`; the 14 build and test jobs then report skipped, which
+  main's required checks accept. A documentation file a test reads counts as
+  code. Pushes to main always run everything.
 - **cpu_x86: TQ2_0 prefill on AVX2 hosts 11 % faster (#662).** The M>1 kernel
   `dot_rows` (hosts without AVX-512 VNNI) uses named accumulators and one loop
   over the 32-byte halves instead of `acc[NR]` / `p16[NR]` arrays in a nested
