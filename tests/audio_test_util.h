@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define AUDIO_TEST_SR 16000
 #define AUDIO_TEST_SOFT_DIM 1536
@@ -33,18 +34,27 @@ static inline void audio_test_synth_sweep(int16_t *pcm, size_t n, double seconds
 }
 
 /* Tower discovery: env override, then the arch's default search location.
- * Returns nullptr when the file is absent — caller decides skip vs fail. */
+ * Returns nullptr when no tower is configured — caller decides skip vs
+ * fail. A tower that is configured but unreadable (GEIST_AUDIO_MODEL_PATH
+ * set, or the default path a dangling symlink) exits GEIST_TEST_FAIL: a
+ * skip there let parity and WER runs pass without running (#57). */
 static inline const char *audio_test_find_tower(void) {
-    const char *tower = getenv("GEIST_AUDIO_MODEL_PATH");
-    if (tower == nullptr) {
-        tower = "audio_bench/audio_tower.safetensors";
+    const char *env   = getenv("GEIST_AUDIO_MODEL_PATH");
+    const char *tower = env != nullptr ? env : "audio_bench/audio_tower.safetensors";
+    FILE       *f     = fopen(tower, "rb");
+    if (f != nullptr) {
+        fclose(f);
+        return tower;
     }
-    FILE *f = fopen(tower, "rb");
-    if (f == nullptr) {
-        return nullptr;
+    struct stat st;
+    if (env != nullptr || lstat(tower, &st) == 0) {
+        fprintf(stderr,
+                "FAIL: audio tower %s is configured but unreadable (a dead symlink? "
+                "re-fetch it, e.g. `make fetch-audio-tower` or `geist-diktat setup`)\n",
+                tower);
+        exit(1); /* GEIST_TEST_FAIL */
     }
-    fclose(f);
-    return tower;
+    return nullptr;
 }
 
 /* Max |a[i] - b[i]| over n elements; writes the argmax to *at (may be

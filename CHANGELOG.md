@@ -31,6 +31,14 @@ minor release.
   rows: 7.95 -> 8.4 TFLOP/s. `tests/bench_metal_pq2_gemm` covers every
   Bonsai GEMM shape.
 
+### Fixed
+
+- **Audio-tower tests fail on a configured but unreadable tower (#57).**
+  `GEIST_AUDIO_MODEL_PATH` pointing at a missing file, or the default path
+  being a dangling symlink, made the tower parity tests SKIP, so a parity
+  run reported "identical" without running. They now fail and say why; no
+  tower configured still skips.
+
 ## [0.21.0] — 2026-10-19
 
 ### Added
