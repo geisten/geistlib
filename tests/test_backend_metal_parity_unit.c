@@ -582,6 +582,114 @@ static void run_f32kv_attention_case(struct geist_backend *mt,
     v->buffer_destroy(mt, bo16);
 }
 
+/* #91: the prefill flash kernels against cpu_scalar's attention on the
+ * same half-rounded K/V. The Metal kernels round Q and the softmax weights
+ * to half for the f16 matrix products and accumulate in f32, so the bound
+ * is a tolerance, not bits: 1e-2 absolute on outputs of magnitude <= 2.7
+ * (the half-rounded Q alone costs ~4e-3 on these data, with either
+ * kernel); a masking or tiling bug is off by 0.1 or more.
+ * The cases cover head_dims on 4 simdgroups (32/64/96/128/256) and on 8
+ * (384/512), GQA, ragged last row tiles, sliding windows narrower than a
+ * 64-key block and wider than the chunk, caches that are not a multiple of
+ * 64 rows, two query rows, and caches under 64 rows (the scalar kernel). */
+static void run_flash_ref_case(struct geist_backend *mt,
+                               struct geist_backend *ref,
+                               size_t                q_rows,
+                               size_t                q_offset,
+                               size_t                q_heads,
+                               size_t                kv_heads,
+                               size_t                hd,
+                               size_t                window) {
+    const struct geist_backend_vtbl *v       = mt->desc->vtbl;
+    const struct geist_backend_vtbl *rv      = ref->desc->vtbl;
+    const size_t                     k_rows  = q_offset + q_rows;
+    const size_t                     q_elems = q_rows * q_heads * hd;
+    const size_t                     kv      = k_rows * kv_heads * hd;
+    struct geist_buffer             *bq = nullptr, *bk = nullptr, *bv = nullptr, *bo = nullptr;
+    struct geist_buffer             *rq = nullptr, *rk = nullptr, *rvb = nullptr, *ro = nullptr;
+    float                           *q   = dev_alloc(mt, q_elems * sizeof(float), &bq);
+    uint16_t                        *k16 = dev_alloc(mt, kv * sizeof(uint16_t), &bk);
+    uint16_t                        *v16 = dev_alloc(mt, kv * sizeof(uint16_t), &bv);
+    float                           *o   = dev_alloc(mt, q_elems * sizeof(float), &bo);
+    float                           *qr  = dev_alloc(ref, q_elems * sizeof(float), &rq);
+    float                           *kr  = dev_alloc(ref, kv * sizeof(float), &rk);
+    float                           *vr  = dev_alloc(ref, kv * sizeof(float), &rvb);
+    float                           *orf = dev_alloc(ref, q_elems * sizeof(float), &ro);
+    float                           *got = malloc(q_elems * sizeof(float));
+    const bool ok = q != nullptr && k16 != nullptr && v16 != nullptr && o != nullptr &&
+                    qr != nullptr && kr != nullptr && vr != nullptr && orf != nullptr &&
+                    got != nullptr;
+    check(ok, "flash reference buffers");
+    if (ok) {
+        /* scores of a few units: the softmax is neither flat nor one-hot */
+        const float qs = 1.0f / (24.0f * sqrtf((float) hd));
+        for (size_t i = 0; i < q_elems; i++) {
+            q[i] = qr[i] = ((float) rng_u8() - 127.5f) * qs;
+        }
+        for (size_t i = 0; i < kv; i++) {
+            k16[i] = fp32_to_fp16_rne(((float) rng_u8() - 127.5f) / 48.0f);
+            v16[i] = fp32_to_fp16_rne(((float) rng_u8() - 127.5f) / 48.0f);
+            kr[i]  = fp16_to_fp32(k16[i]);
+            vr[i]  = fp16_to_fp32(v16[i]);
+        }
+        const struct geist_tensor tq = {
+                .buffer = bq,
+                .dtype  = GEIST_DTYPE_F32,
+                .layout = GEIST_LAYOUT_DENSE,
+                .ndim   = 3,
+                .shape  = {(int64_t) q_rows, (int64_t) q_heads, (int64_t) hd},
+                .stride = {(int64_t) (q_heads * hd), (int64_t) hd, 1}};
+        struct geist_tensor tk  = {.buffer = bk,
+                                   .dtype  = GEIST_DTYPE_F16,
+                                   .layout = GEIST_LAYOUT_DENSE,
+                                   .ndim   = 3,
+                                   .shape  = {(int64_t) k_rows, (int64_t) kv_heads, (int64_t) hd},
+                                   .stride = {(int64_t) (kv_heads * hd), (int64_t) hd, 1}};
+        struct geist_tensor tv  = tk;
+        tv.buffer               = bv;
+        struct geist_tensor to  = tq;
+        to.buffer               = bo;
+        struct geist_tensor tqr = tq;
+        tqr.buffer              = rq;
+        struct geist_tensor tkr = tk;
+        tkr.buffer              = rk;
+        tkr.dtype               = GEIST_DTYPE_F32;
+        struct geist_tensor tvr = tkr;
+        tvr.buffer              = rvb;
+        struct geist_tensor tor = tq;
+        tor.buffer              = ro;
+        check(mt->desc->prims->attention(mt, &tq, &tk, &tv, q_offset, window, &to) == GEIST_OK &&
+                      ref->desc->prims->attention(ref, &tqr, &tkr, &tvr, q_offset, window, &tor) ==
+                              GEIST_OK,
+              "flash reference dispatch");
+        check(v->buffer_download(q_elems * sizeof(float), (uint8_t *) got, bo) == GEIST_OK,
+              "flash reference download");
+        (void) rv;
+        const double err  = geist_test_max_abs(q_elems, got, orf);
+        const bool   pass = err < 1e-2;
+        check(pass, "flash attention matches cpu_scalar");
+        printf("  flash vs cpu_scalar rows %zu at %zu heads %zu/%zu hd %zu window %zu max_abs "
+               "%.2e %s\n",
+               q_rows,
+               q_offset,
+               q_heads,
+               kv_heads,
+               hd,
+               window,
+               err,
+               pass ? "OK" : "FAIL");
+    }
+    free(got);
+    v->buffer_destroy(mt, bq);
+    v->buffer_destroy(mt, bk);
+    v->buffer_destroy(mt, bv);
+    v->buffer_destroy(mt, bo);
+    rv->buffer_destroy(ref, rq);
+    rv->buffer_destroy(ref, rk);
+    rv->buffer_destroy(ref, rvb);
+    rv->buffer_destroy(ref, ro);
+}
+
 static void run_qwen35_attention_ops(struct geist_backend *mt) {
     enum { ROWS = 3, HEADS = 2, HD = 5, QOUT = HEADS * HD };
     const struct geist_backend_vtbl  *v  = mt->desc->vtbl;
@@ -792,6 +900,18 @@ int main(void) {
     run_f32kv_attention_case(mt, 40, 100, 8, 2, 256, 64);
     run_f32kv_attention_case(mt, 24, 50, 2, 1, 512, 0);
     run_f32kv_attention_case(mt, 37, 600, 4, 1, 512, 256);
+    run_flash_ref_case(mt, ref, 320, 700, 24, 4, 256, 0);
+    run_flash_ref_case(mt, ref, 37, 600, 8, 1, 256, 512);
+    run_flash_ref_case(mt, ref, 100, 0, 8, 1, 256, 32);
+    run_flash_ref_case(mt, ref, 45, 300, 8, 1, 512, 0);
+    run_flash_ref_case(mt, ref, 64, 0, 8, 2, 128, 0);
+    run_flash_ref_case(mt, ref, 13, 51, 4, 2, 64, 0);
+    run_flash_ref_case(mt, ref, 9, 20, 4, 1, 256, 0);
+    run_flash_ref_case(mt, ref, 40, 100, 4, 2, 96, 0);
+    run_flash_ref_case(mt, ref, 17, 450, 2, 1, 512, 128);
+    run_flash_ref_case(mt, ref, 30, 70, 4, 1, 384, 0);
+    run_flash_ref_case(mt, ref, 2, 98, 4, 4, 32, 0);
+    run_flash_ref_case(mt, ref, 25, 15, 4, 2, 256, 0);
 #ifdef GEIST_BACKEND_METAL
     run_staged_upload(mt);
 #endif

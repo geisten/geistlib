@@ -87,6 +87,25 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **Metal prefill flash attention is 4-5x faster per call (#91).** The
+  prefill kernels (`attention_flash_sg_f16`, `attention_flash_sg8_f16`)
+  ran at 0.8-0.95 TFLOP/s on the M1 Max, the part of a long prompt's
+  prefill that grew with its length. One MSL template over head_dim
+  (`attention_flash_d<hd>`, the head_dims the old pair covered) replaces
+  them, with llama.cpp's structure (whole 8x8 score tiles per simdgroup,
+  softmax on all lanes, 64-key blocks) plus 16 query rows per threadgroup
+  and O in registers. Per call, m = 320 rows, F16 KV: Bonsai 2 27B at 2k /
+  8k rows 16.2 / 71 -> 3.0 / 12.4 ms (llama.cpp 3.5 / 13.9), Gemma 4 E2B
+  sliding 1.64 -> 0.39 ms (0.40), global head_dim 512 at 8k 44.5 -> 7.9 ms
+  (39.9). End to end (`bench_revision_ab`, FP32 KV): Bonsai prefill at
+  664 / 1245 / 2406 tokens 99 / 99 / 97 -> 101 / 100 / 102 tok/s, flat in
+  length; Gemma 4 E2B at 2k / 4k / 8k 1035 / 718 / 558 -> 1426 / 1074 /
+  1011 tok/s. Decode unchanged. Same arithmetic contract (f16 operands,
+  f32 scores, softmax and accumulation), not bit-identical: greedy tokens
+  and decisions unchanged on both models, logits within 2.5e-3 (Bonsai) /
+  0.26 (Gemma, 1 % of the row's largest logit). The kernel needs 64 cache
+  rows; smaller caches take the scalar kernel (from 32 before).
+  `tests/bench_metal_flash_attn` times one call.
 - **Metal decode on an F32 KV cache no longer converts the cache to f16
   every token (#64).** The split-KV decode kernels read the F32 cache and
   round each element to half as they load it (`attention_dec_f32kv`,
