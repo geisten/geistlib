@@ -21,6 +21,7 @@ CI / build + unit tests (Linux x86_64, cpu_scalar portable reference) (pull_requ
 CI / build + unit tests (Linux x86_64, musl) (pull_request)
 CI / build + unit tests (macOS arm64 GCD (no OpenMP)) (pull_request)
 CI / build + unit tests (macOS arm64) (pull_request)
+CI / changed paths (code, or documentation only) (pull_request)
 CI / clang-format (pull_request)
 CI / coverage ratchet (Linux x86_64, unit + int) (pull_request)
 CI / documented build (alpine:3.21) (pull_request)

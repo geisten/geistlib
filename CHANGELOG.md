@@ -528,6 +528,14 @@ minor release.
   byte-identical SPIR-V for all nine `mm_legacy` users, so the `_spv.h`
   headers are unchanged.
 
+- **CI: documentation-only pull requests skip the build and test jobs.** A
+  new `changes` job (`scripts/ci-changes.sh`) sets `code=false` when a pull
+  request changes only `*.md`, `docs/`, `benchmark/results/`, `assets/`,
+  `CITATION.cff`, `LICENSE`, `NOTICE` or the `GEIST_VERSION_*` lines of
+  `include/geist.h`; the 14 build and test jobs then report skipped, which
+  main's required checks accept. A documentation file a test reads counts as
+  code. Pushes to main always run everything.
+
 ### Removed
 - **The PTQTP ternary format (legacy).** Its loader (`gguf_ptqtp.c`) and
   2-/3-plane GEMV/GEMM kernels (`ptqtp_kernel.c`) had no caller in `src/`
