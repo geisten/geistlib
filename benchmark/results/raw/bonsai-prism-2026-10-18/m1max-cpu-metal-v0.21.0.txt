@@ -1,0 +1,20 @@
+fork /Users/germar/llama.cpp-cross-engine-PrismML-Eng_llama.cpp/build-cpu built from 0082ac24a89ae62132041b40e2c0170e278a98f4
+fork /Users/germar/llama.cpp-cross-engine-PrismML-Eng_llama.cpp/build-metal built from 0082ac24a89ae62132041b40e2c0170e278a98f4
+geist 6ebc04b8 BACKENDS=metal cpu_neon cpu_scalar
+== cycle 1
+geist cpu_neon   pp512 30.15  tg@32 11.41  tg@512 10.08
+fork cpu   pp512 22.36  tg@0 5.67  tg@512 6.31
+geist metal   pp512 113.20  tg@32 18.78  tg@512 18.55
+fork metal   pp512 102.95  tg@0 15.48  tg@512 16.42
+== cycle 2
+geist cpu_neon   pp512 26.43  tg@32 10.81  tg@512 9.75
+fork cpu   pp512 22.45  tg@0 6.67  tg@512 6.68
+geist metal   pp512 111.52  tg@32 19.52  tg@512 18.45
+fork metal   pp512 119.62  tg@0 17.36  tg@512 17.14
+== cycle 3
+geist cpu_neon   pp512 29.39  tg@32 11.22  tg@512 10.80
+fork cpu   pp512 22.92  tg@0 7.33  tg@512 6.58
+geist metal   pp512 118.90  tg@32 19.89  tg@512 18.98
+fork metal   pp512 117.11  tg@0 16.93  tg@512 16.89
+
+[exited with code 0]
