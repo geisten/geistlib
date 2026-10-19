@@ -629,40 +629,64 @@ static const char metal_qsg_pq2_source[]    = GEIST_METAL_PQ2_N_KERNEL("4");
 static const char metal_qsg_pq2_n8_source[] = GEIST_METAL_PQ2_N_KERNEL("8");
 
 static const char metal_qsg_mm_pq2_source[] = GEIST_METAL_MM_SG_KERNEL("pq2", "bpq2", "dqpq2", "8");
-/* PQ2_0 interior fast GEMM (#77): GEIST_METAL_MM_SG_FAST_KERNEL's
- * structure on a 64-output x 64-row tile instead of 64 x 32. Each of the
- * four simdgroups owns a 32 x 32 block (16 accumulators): per 8-wide k step
- * it loads 4 weight and 4 activation 8x8 tiles for 16 MMAs, against 4 + 2
- * for 8, and every dequantized weight tile serves twice the rows. The
- * per-output accumulation order is the 64 x 32 kernel's (k steps in order,
- * one MMA per 8 k), so the output is the same. Same dispatch conditions as
- * the shared fast kernel; a ragged last row tile goes through 16 KB of
- * threadgroup memory. On the M1 Max (Bonsai 2 27B shapes, interleaved
- * against the 64 x 32 kernel): ffn_up -5 %, attn_qkv -6 %, ffn_down -1 %
- * at 320 rows. (Tried and not kept: a shift-free byte-to-uchar4 decode, no
- * gain; 64-wide k steps, mixed; transposed weight staging, slower.) */
+/* PQ2_0 interior fast GEMM (#77, #103): a 64-output x 64-row tile, four
+ * simdgroups owning a 32 x 32 block each (16 accumulators): per 8-wide k
+ * step each loads 4 weight and 4 activation 8x8 tiles for 16 MMAs. The
+ * per-output accumulation order is the 64 x 32 template's (k steps in
+ * order, one MMA per 8 k).
+ *
+ * The MMAs alone run at ~10 TFLOP/s on the M1 Max (96 % of the fp16
+ * peak); what costs the rest is the staging between the two barriers of
+ * each 32-k step, which issues on the same ALUs. So the staging is cut down
+ * (#103), every step bit-identical to before:
+ *  - x arrives as f16 (cvt_f32_f16_rows, one dispatch per GEMM into a
+ *    backend scratch), the same round-to-nearest the staging did, so the
+ *    loop no longer loads f32 and converts 16 values per thread;
+ *  - a 256-entry half4 table maps a code byte to its four (code - 1)
+ *    values (the matvec_pq2 table), one multiply by d each: d * (code - 1)
+ *    as before, without the per-weight shift, mask and convert;
+ *  - the next step's code bytes, scale and x are loaded into registers
+ *    before this step's MMAs, so their latency hides behind them.
+ * Interleaved on Bonsai 2 27B shapes at 320 rows: -6 to -7 % against the
+ * f32 kernel, -12 % on the narrow (1024-output, 64-row) ones.
+ * Threadgroup memory: 8 KB tiles + 2 KB table; a ragged last row tile
+ * stages its output in 16 KB. (Tried and not kept, #103: larger tiles
+ * 64x128/128x64/128x128 and 8 or 16 simdgroups, +10-30 %; weights decoded
+ * straight into simdgroup_matrix thread elements, +14-30 %; activations
+ * read by simdgroup_load from device memory, +6 %; double-buffered
+ * staging, a 64-wide k step, transposed weight staging, 2x8 or 4x4 decode
+ * blocks with vector stores: all slower; a branch-free bit decode: no
+ * gain.) */
 static const char metal_qsg_mm_pq2_fast_source[] =
-        "kernel void matmul_pq2_mm_sg_fast(device const float*x[[buffer(0)]],device const "
+        "kernel void matmul_pq2_mm_sg_fast(device const half*x[[buffer(0)]],device const "
         "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup "
         "char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],ushort "
         "ti[[thread_index_in_threadgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){\n"
         "threadgroup half*sa=(threadgroup half*)shmem;threadgroup half*sb=(threadgroup "
-        "half*)(shmem+4096);"
+        "half*)(shmem+4096);threadgroup half4*lut=(threadgroup half4*)(shmem+8192);"
+        "for(ushort j=ti;j<256;j+=128){lut[j]=half4(half(short(j&3)-1),half(short((j>>2)&3)-1),"
+        "half(short((j>>4)&3)-1),half(short(j>>6)-1));}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
         "uint r0=tg.y*64u;uint r1=tg.x*64u;"
         "short lr0=short(ti/2);short il0=short(ti%2);short il=il0;"
         "device const bpq2*wp=(device const bpq2*)(w+p.wo)+(r0+uint(lr0))*p.bpr;"
-        "device const float*xp=x+p.xo+min(r1+uint(lr0),p.rows-1u)*p.xs+uint(16*il0);"
+        "device const half*xp=x+p.xo+min(r1+uint(lr0),p.rows-1u)*p.xs+uint(16*il0);"
         "threadgroup half*sbp=sb+64*(16*il0+lr0/8)+8*(lr0%8);"
         "simdgroup_half8x8 ma[4];simdgroup_half8x8 mb[4];simdgroup_float8x8 mc[16];"
         "FOR_UNROLL(short i=0;i<16;i++){mc[i]=make_filled_simdgroup_matrix<float,8>(0.0f);}"
+        "half wd=wp->d;device const ushort*wq=(device const ushort*)(wp->qs+4*il);"
+        "ushort q0=wq[0],q1=wq[1];"
+        "half2x4 xa=*((device const half2x4*)xp),xb=*((device const half2x4*)(xp+8));"
         "for(uint loop_k=0u;loop_k<p.ni;loop_k+=32u){"
-        "half4x4 ta;dqpq2(wp,il,ta);"
+        "half4x4 ta;ta[0]=wd*lut[q0&255];ta[1]=wd*lut[q0>>8];ta[2]=wd*lut[q1&255];"
+        "ta[3]=wd*lut[q1>>8];"
         "threadgroup_barrier(mem_flags::mem_threadgroup);"
         "FOR_UNROLL(short i=0;i<16;i++){short ib=short(8*(2*il0+i/8)+lr0/8);"
         "*(sa+64*ib+8*(i%8)+lr0%8)=ta[i/4][i%4];}"
-        "*(threadgroup half2x4*)sbp=half2x4(*((device const float2x4*)xp));"
-        "*(threadgroup half2x4*)(sbp+512)=half2x4(*((device const float2x4*)(xp+8)));"
+        "*(threadgroup half2x4*)sbp=xa;*(threadgroup half2x4*)(sbp+512)=xb;"
         "il=(il+2<8)?il+2:il%2;wp=(il<2)?wp+1:wp;xp+=32;"
+        "if(loop_k+32u<p.ni){wd=wp->d;wq=(device const ushort*)(wp->qs+4*il);q0=wq[0];q1=wq[1];"
+        "xa=*((device const half2x4*)xp);xb=*((device const half2x4*)(xp+8));}"
         "threadgroup_barrier(mem_flags::mem_threadgroup);"
         "threadgroup const half*lsma=sa+4*64*(sg%2);threadgroup const half*lsmb=sb+4*64*(sg/2);"
         "FOR_UNROLL(short ik=0;ik<4;ik++){"
@@ -684,6 +708,15 @@ static const char metal_qsg_mm_pq2_fast_source[] =
         "threadgroup_barrier(mem_flags::mem_threadgroup);"
         "for(uint j=uint(ti);j<(p.rows-r1)*64u;j+=128u){y[p.yo+(r1+j/64u)*p.ys+r0+j%64u]=T[j];}}"
         "}\n";
+
+/* The fast PQ2_0 GEMM's x as f16: rows of n4 float4 at xo4 + row * xs4
+ * (in float4 units) to a dense rows x n4 half4 copy. half4(float4) rounds to
+ * nearest even, as the GEMM's own staging did. */
+static const char metal_qsg_cvt_f16_source[] =
+        "struct PH{uint n4,xo4,xs4;};\n"
+        "kernel void cvt_f32_f16_rows(device const float4*x[[buffer(0)]],device "
+        "half4*y[[buffer(1)]],constant PH&p[[buffer(2)]],uint3 g[[thread_position_in_grid]]){"
+        "if(g.x>=p.n4)return;y[g.y*p.n4+g.x]=half4(x[p.xo4+g.y*p.xs4+g.x]);}\n";
 
 /* Decode GEMV for the two 2-bit ternary formats that share TQ2_0's
  * element layout (TQ2_0 and I2_S), after q3k_n4: 2 rows per simdgroup, a

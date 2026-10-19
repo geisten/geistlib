@@ -96,6 +96,7 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_QGATE_SPLIT,
     METAL_PROFILE_DISPATCH_SIGMOID_MUL,
     METAL_PROFILE_DISPATCH_HADAMARD,
+    METAL_PROFILE_DISPATCH_PQ2_X_F16,
     METAL_PROFILE_STAGE_COUNT,
 };
 
@@ -217,6 +218,12 @@ struct metal_state {
     void  *pq2_mm_pipeline;
     void  *pq2_mm_fast_function;
     void  *pq2_mm_fast_pipeline;
+    /* x -> f16 for pq2_mm_fast (cvt_f32_f16_rows), into pq2_xh_buffer:
+     * grow-only, rows x n_in halves of the widest call so far. */
+    void                *cvt_f16_function;
+    void                *cvt_f16_pipeline;
+    struct geist_buffer *pq2_xh_buffer;
+    size_t               pq2_xh_capacity;
     /* Device-dependent crossovers; see tuning.c. Seeded from M1 Max
      * measurements, then a calibration blob, then the env. */
     struct metal_tuning {
