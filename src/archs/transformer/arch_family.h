@@ -64,8 +64,16 @@ struct transformer_family {
 
     /* ---- Family unit hooks (#37).
      *
-     * wire_layer (optional): load the family's own per-layer tensors after
-     *   the generic set (load_one_layer).
+     * wire_layer (optional): load the family's own per-layer tensors, before
+     *   the generic set (load_one_layer). A tensor every family has but this
+     *   one names or shapes its own way (qwen35's q_proj and pre-FFN norm)
+     *   is loaded here too: the generic set skips a slot already filled.
+     * session_alloc / session_free (optional): the session state only this
+     *   family has, allocated after the generic state (KV caches, scratch
+     *   pool, arena). session_alloc stops at its first failure and leaves
+     *   what it got in the session; session_free then releases it, and takes
+     *   every slot as possibly null (it also runs for a session refused
+     *   before session_alloc).
      * attention_block, ffn_block (required): the layer, composed of the
      *   shared blocks in forward/blocks.h. ffn_block owns the layer tail
      *   (PLE, layer scale) where the family has one. They read no family
@@ -93,6 +101,8 @@ struct transformer_family {
     enum geist_status (*wire_layer)(struct transformer_arch_state    *st,
                                     struct gguf_ctx                  *gguf,
                                     struct transformer_layer_weights *L);
+    enum geist_status (*session_alloc)(struct transformer_arch_session *sess);
+    void (*session_free)(struct transformer_arch_session *sess);
     enum geist_status (*attention_block)(struct transformer_layer_forward_ctx *ctx);
     enum geist_status (*ffn_block)(struct transformer_layer_forward_ctx *ctx);
 };

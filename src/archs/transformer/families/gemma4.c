@@ -24,6 +24,8 @@
 #include "../arch_family.h"
 #include "../forward/blocks.h"
 #include "../rotation.h"
+#include "../weight_load.h"
+#include "../weight_load/internal.h"
 
 #include "gguf_reader.h"
 
@@ -179,6 +181,60 @@ static bool populate_layers_gemma4(struct transformer_arch_state *st) {
     return true;
 }
 
+/* ---- Tensors ---------------------------------------------------------- */
+
+/* The sandwich norms, the per-layer embedding's tensors (post_norm, the
+ * input gate and the projection back to d_model) and the per-layer output
+ * scalar: a 1-element F32 tensor folded into the layer's output multiply,
+ * so it is read into L->layer_scalar, not staged as a buffer. */
+[[nodiscard]] static enum geist_status gemma4_wire_layer(struct transformer_arch_state    *st,
+                                                         struct gguf_ctx                  *gguf,
+                                                         struct transformer_layer_weights *L) {
+    const size_t      d = st->d_model;
+    char              name[64];
+    enum geist_status s = load_sandwich_norms(st, gguf, L);
+    if (s == GEIST_OK) {
+        snprintf(name, sizeof name, "blk.%d.post_norm.weight", L->layer_idx);
+        s = load_layer_norm(st, gguf, L, name, d, &L->post_per_layer_norm);
+    }
+    if (s == GEIST_OK) {
+        snprintf(name, sizeof name, "blk.%d.inp_gate.weight", L->layer_idx);
+        s = load_layer_matrix(st,
+                              gguf,
+                              L,
+                              name,
+                              st->hidden_per_layer,
+                              d,
+                              false,
+                              &L->per_layer_gate,
+                              &L->per_layer_gate_w);
+    }
+    if (s == GEIST_OK) {
+        snprintf(name, sizeof name, "blk.%d.proj.weight", L->layer_idx);
+        s = load_layer_matrix(st,
+                              gguf,
+                              L,
+                              name,
+                              d,
+                              st->hidden_per_layer,
+                              false,
+                              &L->per_layer_proj,
+                              &L->per_layer_proj_w);
+    }
+    if (s != GEIST_OK) {
+        return s;
+    }
+    snprintf(name, sizeof name, "blk.%d.layer_output_scale.weight", L->layer_idx);
+    const struct gguf_tensor_t *t = gguf_get_tensor(gguf, name);
+    if (t == nullptr || t->dtype != GGUF_TYPE_F32 || gguf_tensor_elem_count(t) != 1) {
+        geist_backend_set_error(
+                st->backend, GEIST_E_FORMAT, "transformer: '%s' missing or malformed", name);
+        return GEIST_E_FORMAT;
+    }
+    L->layer_scalar = *(const float *) t->data;
+    return GEIST_OK;
+}
+
 /* ---- Forward ---------------------------------------------------------- */
 
 /* Each step runs only while s is GEIST_OK, so the first failure is what
@@ -240,6 +296,7 @@ const struct transformer_family transformer_family_gemma4 = {
         .towers          = true, /* the only towers that exist: 1536-dim soft tokens */
         .populate        = populate_gemma4,
         .populate_layers = populate_layers_gemma4,
+        .wire_layer      = gemma4_wire_layer,
         .attention_block = gemma4_attention_block,
         .ffn_block       = gemma4_ffn_block,
 };
