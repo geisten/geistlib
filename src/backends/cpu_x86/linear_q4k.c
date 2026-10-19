@@ -211,15 +211,14 @@ void cpu_x86_linear_q4k_m1(const float               *x,
 /* The tiled int8 GEMM (#18) from TILED_MIN_ROWS activation rows on hosts
  * with AVX-512 VNNI: it unpacks each weight K block once per 256-row
  * activation window, which pays off once a window holds enough rows.
- * GEIST_Q4K_TILED=0 keeps the Q4_Kx8 GEMM (A/B and fallback switch). */
+ * Elsewhere, and where it declines, the Q4_Kx8 GEMM. */
 enum { TILED_MIN_ROWS = 16 };
 
 static bool q4k_tiled_wanted(size_t m) {
     static atomic_int enabled = -1;
     int               e       = atomic_load_explicit(&enabled, memory_order_relaxed);
     if (e < 0) {
-        const char *v = getenv("GEIST_Q4K_TILED");
-        e             = (v == nullptr || v[0] != '0') && vnni_tiles_usable();
+        e = vnni_tiles_usable();
         atomic_store_explicit(&enabled, e, memory_order_relaxed);
     }
     return e != 0 && m >= TILED_MIN_ROWS;

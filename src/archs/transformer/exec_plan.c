@@ -16,17 +16,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Env gates for the FFN fusions, read once at plan build. GEGLU epilogue
- * fusion with the AWQ scale folded in is on unless GEIST_FFN_FUSED_SCALE=0;
- * the whole-FFN tile kernel is opt-in via GEIST_FFN_TILE_FUSION=1. */
+/* Env gate for the FFN fusion, read once at plan build: GEGLU epilogue
+ * fusion with the AWQ scale folded in is on unless GEIST_FFN_FUSED_SCALE=0. */
 static bool ffn_fused_scale_enabled(void) {
     const char *env = getenv("GEIST_FFN_FUSED_SCALE");
     return env == nullptr || env[0] != '0';
-}
-
-static bool ffn_tile_fusion_enabled(void) {
-    const char *env = getenv("GEIST_FFN_TILE_FUSION");
-    return env != nullptr && env[0] == '1';
 }
 
 /* The backend's attention over the INT8 cache, and over the packed INT4
@@ -52,9 +46,6 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
         break;
     case GEIST_FUSED_GELU_TANH_MUL_SCALED:
         have = fused->gelu_tanh_mul_scaled != nullptr;
-        break;
-    case GEIST_FUSED_FFN_GEGLU_Q4Q6_MN:
-        have = fused->ffn_geglu_q4q6_mN != nullptr;
         break;
     case GEIST_FUSED_FFN_GATE_UP:
         have = fused->ffn_gate_up != nullptr;
@@ -216,13 +207,6 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         q.m  = 1;
         P->fuse_ffn_gate_up_m1 =
                 geglu && shared_ffn_input && L->down_awq_inv_scale == nullptr && probe(be, q);
-
-        q                         = base;
-        q.op                      = GEIST_FUSED_FFN_GEGLU_Q4Q6_MN;
-        q.m                       = m_cap;
-        P->fuse_ffn_geglu_tile_mN = geglu && shared_ffn_input && !has_sub_norm &&
-                                    !st->runtime_flags.dump_act_sparsity &&
-                                    ffn_tile_fusion_enabled() && probe(be, q);
 
         q                       = base;
         q.op                    = GEIST_FUSED_GELU_TANH_MUL_SCALED;

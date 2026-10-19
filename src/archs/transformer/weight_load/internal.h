@@ -124,6 +124,30 @@ static inline bool weight_off_arena(const struct geist_backend *be, enum weight_
                                                 size_t                            expected_elems,
                                                 struct geist_tensor              *out_view);
 
+/* weight_load/layer_wiring.c — per-layer norm groups for the wire_layer
+ * hooks. load_layer_norm_set loads "blk.<layer>.<suffix>" for each spec,
+ * stopping at the first failure. load_sandwich_norms: Gemma's
+ * post_attention_norm and post_ffw_norm. load_projection_input_norms: the
+ * BitNet embedding models' RMSNorm on every projection's input
+ * (config.has_projection_input_norms); o_proj's and down_proj's land in the
+ * SubLN slots, which have their shape and position. */
+struct layer_norm_spec {
+    const char          *suffix;
+    size_t               n_elems;
+    struct geist_tensor *out;
+};
+[[nodiscard]] enum geist_status load_layer_norm_set(struct transformer_arch_state    *st,
+                                                    struct gguf_ctx                  *gguf,
+                                                    struct transformer_layer_weights *L,
+                                                    size_t                            n,
+                                                    const struct layer_norm_spec specs[static n]);
+[[nodiscard]] enum geist_status load_sandwich_norms(struct transformer_arch_state    *st,
+                                                    struct gguf_ctx                  *gguf,
+                                                    struct transformer_layer_weights *L);
+[[nodiscard]] enum geist_status load_projection_input_norms(struct transformer_arch_state    *st,
+                                                            struct gguf_ctx                  *gguf,
+                                                            struct transformer_layer_weights *L);
+
 /* ---- Cross-TU functions ----------------------------------------------- *
  *
  * weight_load/tensor_views.c — GGUF tensor → backend buffer staging.

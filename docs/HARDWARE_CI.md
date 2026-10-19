@@ -127,6 +127,38 @@ GEIST_GGUF_PATH=~/models/gemma/gemma-4-E2B-it-Q4_K_M.gguf \
 `GEIST_BACKEND` overrides the `auto` pick for every caller (`src/engine/backend.c`),
 which is how a GPU build gets exercised end to end without a code change.
 
+## CI git cache
+
+Every CI job checks this repository out from git.geisten.net, a 1-vCPU VM.
+A run of 19 jobs made it pack and send about 9 MB nineteen times; on busy
+days (17 GB in 22 h on 2026-10-18) its network dropped packets and
+checkouts hung until Gitea stopped them as zombie tasks. The desktop runner
+host therefore keeps a read-only mirror per repository and serves the job
+containers from it: `scripts/git-cache.py`, a user service `git-cache` on
+`192.168.178.43:8417`. Before it answers a fetch it updates the mirror with
+one incremental fetch from Gitea (token in `~/.config/git-cache/token`, from
+the org secret `GIT_CACHE_TOKEN`, read-only); concurrent jobs share that
+fetch. Only docker networks and localhost may connect, and it refuses
+pushes.
+
+The docker runners (`desktop-ci`, `desktop-tsan`) give their job containers
+
+```yaml
+envs:
+  GIT_CONFIG_COUNT: "2"
+  GIT_CONFIG_KEY_0: url.http://192.168.178.43:8417/.insteadOf
+  GIT_CONFIG_VALUE_0: https://git.geisten.net/
+  GIT_CONFIG_KEY_1: url.https://git.geisten.net/.pushInsteadOf
+  GIT_CONFIG_VALUE_1: https://git.geisten.net/
+```
+
+so git fetches through the cache and pushes still go to Gitea. Install,
+update, roll back or inspect it with the `git-cache` workflow
+(`-i action=deploy|rollback|status`); `deploy` proves a job checkout went
+through the cache or restores the runners' configs. If the cache is down,
+checkouts on those runners fail: roll back, or `systemctl --user restart
+git-cache` on the desktop.
+
 ## Operational notes
 
 - The machine must be powered on. Gitea cannot wake it; queued jobs wait, and

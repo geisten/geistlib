@@ -9,12 +9,6 @@
  *
  *   - positive agreement (elementwise): probe says yes for a small F32
  *     geometry → the kernel must return GEIST_OK on real buffers.
- *   - negative agreement (neon GEGLU tile): probe says no for a
- *     misaligned/wrong-dtype geometry → the kernel's own entry checks
- *     must reject with GEIST_E_UNSUPPORTED for the same shape (the
- *     entry checks run before any weight bytes are read, so calling
- *     with a hollow weight struct is safe).
- *
  *   - INT8- and INT4-KV attention: yes for a GQA prefill chunk → GEIST_OK
  *     on zeroed buffers; no for a head_dim past 512, for query heads that
  *     are not a multiple of the KV heads and (INT4) for an odd head_dim →
@@ -28,10 +22,6 @@
  *     GEIST_OK, no → an error (the kernel's geometry checks answer
  *     GEIST_E_INVALID_ARG, not GEIST_E_UNSUPPORTED). Blocks of 2 and 8192
  *     sit outside metal's 4..4096 kernel range but inside the CPU's.
- *
- * The positive GEGLU case (real Q4_K/Q6_K weights) is covered end-to-end
- * by running the decode suite with GEIST_FFN_TILE_FUSION=1 — the plan
- * binds the tile kernel and the canonical-token tests prove the output.
  */
 #include "test_helpers.h"
 
@@ -383,27 +373,6 @@ static int check_backend(const char *name) {
         if (fused->ple_block != nullptr && probe_yes) {
             fails += geist_expect(false, "PLE probe accepts m>1 but the backend has no mN kernel");
         }
-    }
-
-    /* ---- GEGLU tile negative agreement: wrong dtype + misaligned dims.
-     * Entry checks reject before touching weight bytes. */
-    if (fused->ffn_geglu_q4q6_mN != nullptr) {
-        struct geist_weight       gate = {.dtype = GEIST_DTYPE_Q8_0, .n_in = 100, .n_out = 300};
-        struct geist_weight       up = gate, down = gate;
-        struct geist_fusion_query gq = {.op      = GEIST_FUSED_FFN_GEGLU_Q4Q6_MN,
-                                        .m       = 4,
-                                        .d_model = 100,
-                                        .inter   = 300,
-                                        .gate_w  = &gate,
-                                        .up_w    = &up,
-                                        .down_w  = &down};
-        const bool probe_yes         = fused->supported != nullptr && fused->supported(be, &gq);
-        fails += geist_expect(!probe_yes, "probe rejects misaligned/wrong-dtype GEGLU");
-        float             x[4], y[4];
-        enum geist_status s =
-                fused->ffn_geglu_q4q6_mN(be, 4, 100, 300, x, &gate, &up, &down, nullptr, y);
-        fails += geist_expect(s == GEIST_E_UNSUPPORTED,
-                              "kernel entry checks agree: GEIST_E_UNSUPPORTED");
     }
 
     /* ---- Other bound stages: positive agreement on F32 buffers where

@@ -1,0 +1,13 @@
+fork /Users/germar/llama.cpp-cross-engine-PrismML-Eng_llama.cpp/build-metal built from 0082ac24a89ae62132041b40e2c0170e278a98f4
+geist 30c00b32 BACKENDS=metal cpu_neon cpu_scalar
+== cycle 1
+geist metal   pp512 88.54  tg@32 20.22  tg@512 17.85
+fork metal   pp512 108.96  tg@0 15.38  tg@512 16.14
+== cycle 2
+geist metal   pp512 95.60  tg@32 18.89  tg@512 18.10
+fork metal   pp512 114.27  tg@0 16.40  tg@512 17.03
+== cycle 3
+geist metal   pp512 87.35  tg@32 18.93  tg@512 17.28
+fork metal   pp512 96.14  tg@0 15.20  tg@512 14.93
+
+[exited with code 0]

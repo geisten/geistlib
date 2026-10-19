@@ -287,7 +287,6 @@ enum geist_fused_op {
     GEIST_FUSED_GELU_TANH_MUL,
     GEIST_FUSED_SILU_MUL,
     GEIST_FUSED_GELU_TANH_MUL_SCALED,
-    GEIST_FUSED_FFN_GEGLU_Q4Q6_MN,
     GEIST_FUSED_FFN_GATE_UP,
     GEIST_FUSED_FFN_NORM_GATE_UP,
     GEIST_FUSED_RMSNORM_ADD,
@@ -469,22 +468,6 @@ struct geist_backend_fused {
                                               const struct geist_tensor *z,
                                               const float               *scale,
                                               struct geist_tensor       *y);
-
-    /* Text-FFN fast path for Gemma-style GEGLU:
-     *   y = down(gelu_tanh(gate(x)) * up(x) * optional_down_scale)
-     * Backends may return GEIST_E_UNSUPPORTED when dtype/shape/layout do
-     * not match their fused kernel. The caller then falls back to
-     * decomposed ops. */
-    enum geist_status (*ffn_geglu_q4q6_mN)(struct geist_backend *be,
-                                           size_t                m,
-                                           size_t                d_model,
-                                           size_t                inter,
-                                           const float           x[GEIST_AT_LEAST(m * d_model)],
-                                           const struct geist_weight *gate,
-                                           const struct geist_weight *up,
-                                           const struct geist_weight *down,
-                                           const float               *down_scale, /* nullable */
-                                           float y[GEIST_AT_LEAST(m * d_model)]);
 
     /* Tensor-based linear for batched-submit (GPU) backends. The engine
      * passes the x/weight/y views it already builds alongside the

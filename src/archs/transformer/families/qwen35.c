@@ -23,10 +23,15 @@
 #include "../arch_family.h"
 #include "../forward/blocks.h"
 #include "../rotation.h"
+#include "../weight_load.h"
+#include "../weight_load/internal.h"
 
 #include "gguf_reader.h"
+#include "heap.h"
 
 #include <math.h>
+#include <stdio.h>
+#include <string.h>
 
 /* ---- qwen35 (Qwen3.5/3.6/3.8 hybrid) ----------------------------------- */
 /*
@@ -124,6 +129,302 @@ static bool populate_layers_qwen35(struct transformer_arch_state *st) {
     return true;
 }
 
+/* ---- Tensors ---------------------------------------------------------- */
+
+/* A gated-DeltaNet layer's own tensors (the dn_* group). attn_norm and the
+ * dense FFN are the generic set's. */
+[[nodiscard]] static enum geist_status wire_deltanet(struct transformer_arch_state    *st,
+                                                     struct gguf_ctx                  *gguf,
+                                                     struct transformer_layer_weights *L) {
+    const size_t d         = st->d_model;
+    const size_t n_v       = st->config.dn_n_v_heads;
+    const size_t key_dim   = st->config.dn_n_k_heads * st->config.dn_head_k;
+    const size_t value_dim = n_v * st->config.dn_head_v;
+    const size_t conv_dim  = 2 * key_dim + value_dim;
+    const struct {
+        const char          *suffix;
+        size_t               n_out, n_in; /* n_in 0: a norm-like vector of n_out */
+        struct geist_tensor *view;
+        struct geist_weight *w;
+    } tensors[] = {
+            {"attn_qkv.weight", conv_dim, d, &L->dn_qkv, &L->dn_qkv_w},
+            {"attn_gate.weight", value_dim, d, &L->dn_z, &L->dn_z_w},
+            {"ssm_conv1d.weight", conv_dim * st->config.dn_conv_kernel, 0, &L->dn_conv, nullptr},
+            {"ssm_beta.weight", n_v, d, &L->dn_beta, &L->dn_beta_w},
+            {"ssm_alpha.weight", n_v, d, &L->dn_alpha, &L->dn_alpha_w},
+            {"ssm_a", n_v, 0, &L->dn_a, nullptr},
+            {"ssm_dt.bias", n_v, 0, &L->dn_dt_bias, nullptr},
+            {"ssm_norm.weight", st->config.dn_head_v, 0, &L->dn_norm, nullptr},
+            {"ssm_out.weight", d, value_dim, &L->dn_out, &L->dn_out_w},
+    };
+    char name[64];
+    for (size_t i = 0; i < sizeof tensors / sizeof tensors[0]; i++) {
+        snprintf(name, sizeof name, "blk.%d.%s", L->layer_idx, tensors[i].suffix);
+        enum geist_status s =
+                tensors[i].n_in == 0
+                        ? load_layer_norm(st, gguf, L, name, tensors[i].n_out, tensors[i].view)
+                        : load_layer_matrix(st,
+                                            gguf,
+                                            L,
+                                            name,
+                                            tensors[i].n_out,
+                                            tensors[i].n_in,
+                                            false,
+                                            tensors[i].view,
+                                            tensors[i].w);
+        if (s != GEIST_OK)
+            return s;
+    }
+    return GEIST_OK;
+}
+
+/* The pre-FFN norm under its HF name, post_attention_norm (the qwen35
+ * converter writes no ffn_norm; an attention layer takes ffn_norm where a
+ * GGUF has one); then a DeltaNet layer's mixer, or an attention layer's
+ * q_proj, which jointly produces query and gate: 2x rows, per head
+ * [query(hd) | gate(hd)] (has_attn_output_gate). Also the MTP block's. */
+[[nodiscard]] static enum geist_status qwen35_wire_layer(struct transformer_arch_state    *st,
+                                                         struct gguf_ctx                  *gguf,
+                                                         struct transformer_layer_weights *L) {
+    const bool dn = L->mixer == GEIST_MIXER_DELTANET;
+    char       name[64];
+    snprintf(name, sizeof name, "blk.%d.ffn_norm.weight", L->layer_idx);
+    if (dn || gguf_get_tensor(gguf, name) == nullptr) {
+        snprintf(name, sizeof name, "blk.%d.post_attention_norm.weight", L->layer_idx);
+    }
+    enum geist_status s = load_layer_norm(st, gguf, L, name, st->d_model, &L->ffn_norm);
+    if (s != GEIST_OK || dn) {
+        return s == GEIST_OK ? wire_deltanet(st, gguf, L) : s;
+    }
+    snprintf(name, sizeof name, "blk.%d.attn_q.weight", L->layer_idx);
+    return load_layer_matrix(
+            st, gguf, L, name, 2 * L->q_out, st->d_model, false, &L->q_proj, &L->q_proj_w);
+}
+
+/* ---- Session state ---------------------------------------------------- */
+
+/* Gated-DeltaNet recurrent state: backend buffers per DELTANET layer —
+ * conv history (kernel-1 x conv_dim) + delta state S (n_v_heads x head_k x
+ * head_v). Zero-initialized = empty sequence. */
+[[nodiscard]] static enum geist_status alloc_deltanet_state(struct transformer_arch_session *sess,
+                                                            size_t                           n_dn) {
+    const struct transformer_arch_state *st        = sess->model;
+    struct geist_backend                *be        = st->backend;
+    const size_t                         key_dim   = st->config.dn_n_k_heads * st->config.dn_head_k;
+    const size_t                         value_dim = st->config.dn_n_v_heads * st->config.dn_head_v;
+    const size_t                         conv_dim  = 2 * key_dim + value_dim;
+    const size_t                         conv_n    = (st->config.dn_conv_kernel - 1) * conv_dim;
+    const size_t s_n    = st->config.dn_n_v_heads * st->config.dn_head_k * st->config.dn_head_v;
+    sess->dn_conv_state = heap_alloc_aligned(st->n_layers * sizeof(*sess->dn_conv_state), 64);
+    sess->dn_S          = heap_alloc_aligned(st->n_layers * sizeof(*sess->dn_S), 64);
+    if (sess->dn_conv_state == nullptr || sess->dn_S == nullptr) {
+        geist_backend_set_error(be, GEIST_E_OOM, "transformer: dn state alloc failed");
+        return GEIST_E_OOM;
+    }
+    memset(sess->dn_conv_state, 0, st->n_layers * sizeof(*sess->dn_conv_state));
+    memset(sess->dn_S, 0, st->n_layers * sizeof(*sess->dn_S));
+    enum geist_status s;
+    for (size_t li = 0; li < st->n_layers; li++) {
+        if (st->layers[li].mixer != GEIST_MIXER_DELTANET)
+            continue;
+        s = be->desc->vtbl->buffer_create(be,
+                                          conv_n * sizeof(float),
+                                          GEIST_BUFFER_KV_CACHE,
+                                          GEIST_MEMORY_AUTO,
+                                          &sess->dn_conv_state[li]);
+        if (s == GEIST_OK) {
+            s = be->desc->vtbl->buffer_create(be,
+                                              s_n * sizeof(float),
+                                              GEIST_BUFFER_KV_CACHE,
+                                              GEIST_MEMORY_AUTO,
+                                              &sess->dn_S[li]);
+        }
+        if (s != GEIST_OK || sess->dn_conv_state[li] == nullptr || sess->dn_S[li] == nullptr) {
+            geist_backend_set_error(be, GEIST_E_OOM, "transformer: dn state alloc failed");
+            return GEIST_E_OOM;
+        }
+        s = transformer_dn_state_zero(be, sess->dn_conv_state[li], conv_n * sizeof(float));
+        if (s == GEIST_OK) {
+            s = transformer_dn_state_zero(be, sess->dn_S[li], s_n * sizeof(float));
+        }
+        if (s != GEIST_OK) {
+            geist_backend_set_error(be, s, "transformer: dn state init failed");
+            return s;
+        }
+    }
+    /* Only the host mixer reads the state as dn_fresh says; a backend's
+     * deltanet_mix gets buffers that hold the zeros. */
+    if (geist_backend_fused_tbl(be)->deltanet_mix == nullptr) {
+        sess->dn_fresh = heap_alloc_array_aligned(bool, st->n_layers);
+        if (sess->dn_fresh == nullptr) {
+            geist_backend_set_error(be, GEIST_E_OOM, "transformer: dn state alloc failed");
+            return GEIST_E_OOM;
+        }
+        for (size_t li = 0; li < st->n_layers; li++)
+            sess->dn_fresh[li] = sess->dn_S[li] != nullptr;
+    }
+    /* Speculative-decode transaction snapshot (#463): one backend buffer per
+     * state kind, all n_dn layers concatenated, allocated once here rather
+     * than lazily on the first verify. On-device (vtbl->buffer_copy) so a
+     * snapshot/restore never visits host memory on batched-submit GPUs. */
+    s = transformer_scratch_alloc(be, n_dn * conv_n * sizeof(float), &sess->dn_txn_conv_buf);
+    if (s == GEIST_OK) {
+        s = transformer_scratch_alloc(be, n_dn * s_n * sizeof(float), &sess->dn_txn_S_buf);
+    }
+    if (s != GEIST_OK) {
+        geist_backend_set_error(be, s, "transformer: DeltaNet transaction alloc failed");
+    }
+    return s;
+}
+
+/* Scratch slabs of their own (not pool slots, see arch_state.h): the joint
+ * q+gate projection and the saved gate of the attention layers, and the
+ * DeltaNet projection outputs when the model has DeltaNet layers. */
+[[nodiscard]] static enum geist_status alloc_qwen35_scratch(struct transformer_arch_session *sess,
+                                                            size_t                           n_dn) {
+    const struct transformer_arch_state *st        = sess->model;
+    struct geist_backend                *be        = st->backend;
+    const size_t                         m         = sess->m_max;
+    const size_t                         key_dim   = st->config.dn_n_k_heads * st->config.dn_head_k;
+    const size_t                         value_dim = st->config.dn_n_v_heads * st->config.dn_head_v;
+    size_t                               q_out_max = 0;
+    for (size_t li = 0; li < st->n_layers; li++)
+        if (st->layers[li].q_out > q_out_max)
+            q_out_max = st->layers[li].q_out;
+    const struct {
+        bool                  want;
+        size_t                floats;
+        struct geist_buffer **out;
+    } bufs[] = {
+            {true, m * 2 * q_out_max, &sess->qgate_joint},
+            {true, m * q_out_max, &sess->qgate_gate},
+            {n_dn > 0, m * (2 * key_dim + value_dim), &sess->dn_scratch_qkv},
+            {n_dn > 0, m * value_dim, &sess->dn_scratch_z},
+            {n_dn > 0, m * st->config.dn_n_v_heads, &sess->dn_scratch_b},
+            {n_dn > 0, m * st->config.dn_n_v_heads, &sess->dn_scratch_a},
+    };
+    for (size_t i = 0; i < sizeof bufs / sizeof bufs[0]; i++) {
+        if (!bufs[i].want)
+            continue;
+        enum geist_status s =
+                transformer_scratch_alloc(be, bufs[i].floats * sizeof(float), bufs[i].out);
+        if (s != GEIST_OK)
+            return s;
+    }
+    return GEIST_OK;
+}
+
+/* The MTP attention block is not part of the target stack and must not
+ * alias its cache. One dense cache is modest compared with the 27B weights
+ * and gives the draft head an unambiguous correctness baseline before
+ * optional cache quantization is considered. */
+[[nodiscard]] static enum geist_status alloc_mtp_state(struct transformer_arch_session *sess) {
+    const struct transformer_arch_state *st = sess->model;
+    struct geist_backend                *be = st->backend;
+    const size_t kv_elems = sess->max_seq_len * st->n_kv_heads * st->mtp_layers[0].block.head_dim;
+    const size_t hidden_bytes = sess->m_max * st->d_model * sizeof(float);
+    enum geist_status s       = be->desc->vtbl->buffer_create(be,
+                                                              kv_elems * sizeof(float),
+                                                              GEIST_BUFFER_KV_CACHE,
+                                                              GEIST_MEMORY_AUTO,
+                                                              &sess->mtp_k_cache);
+    if (s == GEIST_OK)
+        s = be->desc->vtbl->buffer_create(be,
+                                          kv_elems * sizeof(float),
+                                          GEIST_BUFFER_KV_CACHE,
+                                          GEIST_MEMORY_AUTO,
+                                          &sess->mtp_v_cache);
+    if (s == GEIST_OK)
+        s = transformer_scratch_alloc(be, hidden_bytes, &sess->mtp_embed);
+    if (s == GEIST_OK)
+        s = transformer_scratch_alloc(be, hidden_bytes, &sess->mtp_hidden_norm);
+    if (s == GEIST_OK)
+        s = transformer_scratch_alloc(be, 2 * hidden_bytes, &sess->mtp_concat);
+    if (s != GEIST_OK)
+        return s;
+    sess->mtp_pending_h      = heap_alloc_aligned(st->d_model * sizeof(float), 64);
+    sess->mtp_target_raw     = heap_alloc_aligned(sess->m_max * st->d_model * sizeof(float), 64);
+    sess->mtp_target_shifted = heap_alloc_aligned(sess->m_max * st->d_model * sizeof(float), 64);
+    sess->mtp_txn_pending_h  = heap_alloc_aligned(st->d_model * sizeof(float), 64);
+    if (sess->mtp_pending_h == nullptr || sess->mtp_target_raw == nullptr ||
+        sess->mtp_target_shifted == nullptr || sess->mtp_txn_pending_h == nullptr) {
+        geist_backend_set_error(be, GEIST_E_OOM, "transformer: MTP host state alloc failed");
+        return GEIST_E_OOM;
+    }
+    memset(sess->mtp_pending_h, 0, st->d_model * sizeof(float));
+    memset(sess->mtp_txn_pending_h, 0, st->d_model * sizeof(float));
+    sess->mtp_kv_len = 0;
+    return GEIST_OK;
+}
+
+[[nodiscard]] static enum geist_status qwen35_session_alloc(struct transformer_arch_session *sess) {
+    const struct transformer_arch_state *st   = sess->model;
+    size_t                               n_dn = 0;
+    for (size_t li = 0; li < st->n_layers; li++)
+        if (st->layers[li].mixer == GEIST_MIXER_DELTANET)
+            n_dn++;
+    enum geist_status s = n_dn > 0 ? alloc_deltanet_state(sess, n_dn) : GEIST_OK;
+    if (s == GEIST_OK)
+        s = alloc_qwen35_scratch(sess, n_dn);
+    if (s == GEIST_OK && st->n_mtp_layers > 0)
+        s = alloc_mtp_state(sess);
+    return s;
+}
+
+/* Destroy every set buffer of a per-layer array and free the array. */
+static void
+free_layer_buffers(struct geist_backend *be, size_t n_layers, struct geist_buffer ***arr) {
+    if (*arr == nullptr)
+        return;
+    for (size_t li = 0; li < n_layers; li++)
+        transformer_buffer_release(be, &(*arr)[li]);
+    void *p = *arr;
+    safe_free(&p);
+    *arr = nullptr;
+}
+
+static void qwen35_session_free(struct transformer_arch_session *sess) {
+    struct geist_backend *be = sess->model->backend;
+    free_layer_buffers(be, sess->model->n_layers, &sess->dn_conv_state);
+    free_layer_buffers(be, sess->model->n_layers, &sess->dn_S);
+    sess->dn_prefill_ws_floats = 0;
+    void *host[]               = {
+            sess->dn_prefill_ws,
+            sess->dn_fresh,
+            sess->dn_txn_ids,
+            sess->mtp_pending_h,
+            sess->mtp_target_raw,
+            sess->mtp_target_shifted,
+            sess->mtp_txn_pending_h,
+    };
+    for (size_t i = 0; i < sizeof host / sizeof host[0]; i++)
+        safe_free(&host[i]);
+    sess->dn_prefill_ws          = nullptr;
+    sess->dn_fresh               = nullptr;
+    sess->dn_txn_ids             = nullptr;
+    sess->mtp_pending_h          = nullptr;
+    sess->mtp_target_raw         = nullptr;
+    sess->mtp_target_shifted     = nullptr;
+    sess->mtp_txn_pending_h      = nullptr;
+    struct geist_buffer **bufs[] = {
+            &sess->qgate_joint,
+            &sess->qgate_gate,
+            &sess->dn_scratch_qkv,
+            &sess->dn_scratch_z,
+            &sess->dn_scratch_b,
+            &sess->dn_scratch_a,
+            &sess->dn_txn_conv_buf,
+            &sess->dn_txn_S_buf,
+            &sess->mtp_k_cache,
+            &sess->mtp_v_cache,
+            &sess->mtp_embed,
+            &sess->mtp_hidden_norm,
+            &sess->mtp_concat,
+    };
+    for (size_t i = 0; i < sizeof bufs / sizeof bufs[0]; i++)
+        transformer_buffer_release(be, bufs[i]);
+}
+
 /* ---- Forward ---------------------------------------------------------- */
 
 /* Each step runs only while s is GEIST_OK, so the first failure is what
@@ -166,6 +467,9 @@ const struct transformer_family transformer_family_qwen35 = {
         .prefill_delta   = {.from_bytes = (size_t) 4 << 30, .m_max_rows = 64},
         .populate        = populate_qwen35,
         .populate_layers = populate_layers_qwen35,
+        .wire_layer      = qwen35_wire_layer,
+        .session_alloc   = qwen35_session_alloc,
+        .session_free    = qwen35_session_free,
         .attention_block = qwen35_attention_block,
         .ffn_block       = blk_ffn_swiglu,
 };

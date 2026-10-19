@@ -22,6 +22,7 @@
 #include "../arch_family.h"
 #include "../forward/blocks.h"
 #include "../rotation.h"
+#include "../weight_load/internal.h"
 
 #include "gguf_reader.h"
 
@@ -87,6 +88,18 @@ static bool populate_layers_qwen3(struct transformer_arch_state *st) {
     return true;
 }
 
+/* ---- Tensors ---------------------------------------------------------- */
+
+/* The embedding variant's per-projection input norms, where it has them. */
+[[nodiscard]] static enum geist_status qwen3_wire_layer(struct transformer_arch_state    *st,
+                                                        struct gguf_ctx                  *gguf,
+                                                        struct transformer_layer_weights *L) {
+    if (!st->config.has_projection_input_norms) {
+        return GEIST_OK;
+    }
+    return load_projection_input_norms(st, gguf, L);
+}
+
 /* ---- Forward ---------------------------------------------------------- */
 
 /* Each step runs only while s is GEIST_OK, so the first failure is what
@@ -123,6 +136,7 @@ const struct transformer_family transformer_family_qwen3 = {
         .name            = "qwen3",
         .populate        = populate_qwen3,
         .populate_layers = populate_layers_qwen3,
+        .wire_layer      = qwen3_wire_layer,
         .attention_block = qwen3_attention_block,
         .ffn_block       = blk_ffn_swiglu,
 };
