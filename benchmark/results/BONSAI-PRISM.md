@@ -1,22 +1,29 @@
 # Ternary Bonsai 2 27B: geistlib against the PrismML llama.cpp fork
 
 **Result:** on `PQ2_0`, geistlib decodes faster than PrismML's own
-llama.cpp fork on every machine measured: 1.53× on the M1 Max CPU, 1.14×
-on the Ryzen 9 9950X, 1.38× on an RTX 2080 Ti (Vulkan) and 1.23× on the
-M1 Max GPU (Metal). Prefill is ahead on both CPUs (1.18×, 1.28×) and on
-Vulkan (1.14×), and behind on Metal (0.81×).
+llama.cpp fork on every machine measured: 1.68× on the M1 Max CPU, 1.14×
+on the Ryzen 9 9950X, 1.38× on an RTX 2080 Ti (Vulkan) and 1.15× on the
+M1 Max GPU (Metal). Prefill is ahead on both CPUs (1.31×, 1.28×) and on
+Vulkan (1.14×), and level on Metal (0.97×). The M1 Max rows are release
+v0.21.0.
 
 | Machine, backend | geistlib revision | Decode, short context (tok/s) | Prefill, 512 tokens (tok/s) |
 | :-- | :-- | --: | --: |
-| M1 Max, CPU (`cpu_neon`) | `f8da3d1f` (#83) | 9.97 vs 6.52, **1.53×** | 25.6 vs 21.6, **1.18×** |
+| M1 Max, CPU (`cpu_neon`) | v0.21.0 (`6ebc04b8`) | 11.2 vs 6.7, **1.68×** | 29.4 vs 22.5, **1.31×** |
 | Ryzen 9 9950X, CPU (`cpu_x86`) | decode `ccd11418`, prefill `88b35a64` (#86) | 8.89 vs 7.83, **1.14×** | 58.1 vs 45.4, **1.28×** |
 | RTX 2080 Ti, Vulkan | `ccd11418` | 41.3 vs 30.0, **1.38×** | 648 vs 569, **1.14×** |
-| M1 Max, Metal | `30c00b32` (main, incl. #81) | 18.9 vs 15.4, **1.23×** | 88.5 vs 109.0, 0.81× |
+| M1 Max, Metal | v0.21.0 (`6ebc04b8`) | 19.5 vs 16.9, **1.15×** | 113.2 vs 117.1, 0.97× |
 
 geistlib first, the fork second; the ratio is geistlib divided by the fork.
-The Metal prefill of the fork spreads widely between cycles (96 to 114
-tokens/s, geistlib 87 to 96), so that ratio is the least precise in the
-table.
+The Metal prefill of the fork spreads widely between cycles (103 to 120
+tokens/s, geistlib 112 to 119), so that ratio is the least precise in the
+table; the fork's CPU decode spread from 5.7 to 7.3 tokens/s.
+
+Earlier M1 Max rows, kept for the record: `f8da3d1f` (#83) CPU 9.97 vs
+6.52 (1.53×) decode, 25.6 vs 21.6 (1.18×) prefill; `30c00b32` (main with
+#81) Metal 18.9 vs 15.4 (1.23×) decode, 88.5 vs 109.0 (0.81×) prefill.
+Between them and v0.21.0, Metal prefill gained #95 (flash attention, #91)
+and #97 (Bonsai prefill, #77).
 
 ## Setup
 
@@ -58,10 +65,11 @@ Decode is unchanged within noise in both runs.
 
 `raw/bonsai-prism-2026-10-18/`:
 
-- `m1max-cpu-metal-f8da3d1f.txt`: M1 Max, CPU rows (and the Metal rows of
-  that build, superseded by the next file).
-- `m1max-metal-main-30c00b32.txt` (and `-geist.jsonl`, `-fork.jsonl`): M1
-  Max, Metal rows on main with #81.
+- `m1max-cpu-metal-v0.21.0.txt` (and `m1max-v0.21.0-*.jsonl`): M1 Max, CPU
+  and Metal rows on release v0.21.0.
+- `m1max-cpu-metal-f8da3d1f.txt`: the earlier M1 Max CPU rows (#83).
+- `m1max-metal-main-30c00b32.txt` (and `-geist.jsonl`, `-fork.jsonl`): the
+  earlier M1 Max Metal rows (main with #81).
 - `geist-vulkan-run1381.log`: Ryzen decode and RTX 2080 Ti rows (full CI log).
 - `geist-vulkan-run1384-x86-ab.log`: Ryzen A/B, greedy check and fork prefill.
 - `m1max-cpu_neon-ab-f8da3d1f.md`, `.jsonl`: M1 Max A/B.
