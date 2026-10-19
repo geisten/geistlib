@@ -1,0 +1,22 @@
+9:make clean >/dev/null 2>&1; make -j8 BACKENDS="metal cpu_neon cpu_scalar" bin >/dev/null 2>&1 || { echo "geist build failed"; exit 1; }
+rc=0
+fork /Users/germar/llama.cpp-cross-engine-PrismML-Eng_llama.cpp/build-cpu built from 0082ac24a89ae62132041b40e2c0170e278a98f4
+fork /Users/germar/llama.cpp-cross-engine-PrismML-Eng_llama.cpp/build-metal built from 0082ac24a89ae62132041b40e2c0170e278a98f4
+geist f8da3d1f BACKENDS=metal cpu_neon cpu_scalar
+== cycle 1
+geist cpu_neon   pp512 25.58  tg@32 9.46  tg@512 9.38
+fork cpu   pp512 22.24  tg@0 6.52  tg@512 6.39
+geist metal   pp512 83.10  tg@32 19.66  tg@512 17.61
+fork metal   pp512 103.67  tg@0 14.87  tg@512 15.33
+== cycle 2
+geist cpu_neon   pp512 25.41  tg@32 9.97  tg@512 10.06
+fork cpu   pp512 21.64  tg@0 4.05  tg@512 6.63
+geist metal   pp512 96.18  tg@32 19.74  tg@512 18.16
+fork metal   pp512 95.45  tg@0 17.16  tg@512 16.87
+== cycle 3
+geist cpu_neon   pp512 26.97  tg@32 11.57  tg@512 10.98
+fork cpu   pp512 21.55  tg@0 7.35  tg@512 7.34
+geist metal   pp512 100.94  tg@32 19.93  tg@512 19.00
+fork metal   pp512 120.98  tg@0 17.19  tg@512 17.01
+
+[exited with code 0]

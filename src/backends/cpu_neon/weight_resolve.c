@@ -540,8 +540,7 @@ static void qk_mN_quantize_rows(void *ctx, size_t i0, size_t i1) {
 
 /* Q4_K M>1 activation quantization into the qk_mN workspace: one scale per
  * 256-element super-block (#698) and the per-32 sums of the min-offset term.
- * Every Q4_K prefill kernel reads that layout, so the block-scale policy
- * (q4k_block_q8_prefill) now only picks between two bit-identical kernels. */
+ * Every Q4_K prefill kernel reads that layout. */
 static void
 cpu_neon_qk_mN_quantize_x(struct cpu_neon_workspace *ws, const float *x, size_t m, size_t n_in) {
     struct qk_mN_quantize_job job = {
@@ -577,7 +576,6 @@ static bool q6k_weight_ntile4_stream(const struct geist_weight *w) {
 static void cpu_neon_q4k_run_prequantized(const struct cpu_neon_state     *st,
                                           const struct cpu_neon_workspace *ws,
                                           const struct geist_weight       *w,
-                                          bool                             use_block_scales,
                                           size_t                           m,
                                           float                           *y) {
     const size_t n_in  = (size_t) w->n_in;
@@ -589,31 +587,12 @@ static void cpu_neon_q4k_run_prequantized(const struct cpu_neon_state     *st,
              * m<8 internally. */
             linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(
                     m, n_in, n_out, ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, w->aux_fp32, y);
-        } else if (use_block_scales) {
-            linear_q4k_w4a8_prefill_predecoded_mtile4_bscale(
-                    m, n_in, n_out, ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, w->aux_fp32, y);
         } else if (st->policy.q4k_mtile_prefill) {
-            if (st->policy.q4k_ntile_prefill) {
-                linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4(m,
-                                                                 n_in,
-                                                                 n_out,
-                                                                 ws->qk_mN_xq,
-                                                                 ws->qk_mN_sc,
-                                                                 ws->qk_mN_sum32,
-                                                                 w->aux_fp32,
-                                                                 y);
-            } else {
-                /* mtile8 is bit-identical to mtile4 and falls back to
-                 * mtile4 for m<8. */
-                linear_q4k_w4a8_prefill_predecoded_mtile8(m,
-                                                          n_in,
-                                                          n_out,
-                                                          ws->qk_mN_xq,
-                                                          ws->qk_mN_sc,
-                                                          ws->qk_mN_sum32,
-                                                          w->aux_fp32,
-                                                          y);
-            }
+            /* The plain predecoded layout: ntile is off (both on packs
+             * NTILE4, install_q4k_predecode_if_eligible). mtile8 is
+             * bit-identical to mtile4 and falls back to mtile4 for m<8. */
+            linear_q4k_w4a8_prefill_predecoded_mtile8(
+                    m, n_in, n_out, ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, w->aux_fp32, y);
         } else {
             linear_q4k_w4a8_prefill_predecoded(
                     m, n_in, n_out, ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, w->aux_fp32, y);
@@ -623,19 +602,6 @@ static void cpu_neon_q4k_run_prequantized(const struct cpu_neon_state     *st,
                 m, n_in, n_out, ws->qk_mN_xq, ws->qk_mN_sc, ws->qk_mN_sum32, w->raw, y);
     }
 }
-
-/* SGEMM-prefill path (m ≥ threshold): dequant W tile-by-tile into a
- * workspace-resident fp32 scratch, call cblas_sgemm per tile. Defined
- * below dequant_tile. Activation x is consumed as fp32. */
-static bool
-cpu_neon_dequant_w_workspace_prepare(struct cpu_neon_workspace *ws, size_t tile_rows, size_t n_in);
-static void   cpu_neon_qk_sgemm_run(const float               *x,
-                                    const struct geist_weight *w,
-                                    size_t                     m,
-                                    size_t                     tile_rows,
-                                    float                     *tile_fp32,
-                                    float                     *y);
-static size_t qk_sgemm_tile_rows_for(const struct cpu_neon_state *st);
 
 static void cpu_neon_w_q4k_mN(size_t                     m,
                               const float               *x,
@@ -654,27 +620,19 @@ static void cpu_neon_w_q4k_mN(size_t                     m,
         return;
     }
 
-    if (st->policy.q4k_sgemm_prefill && m >= st->policy.qk_sgemm_threshold &&
-        cpu_neon_dequant_w_workspace_prepare(ws, qk_sgemm_tile_rows_for(st), n_in)) {
-        cpu_neon_qk_sgemm_run(x, w, m, qk_sgemm_tile_rows_for(st), ws->dequant_w_fp32, y);
-        return;
-    }
-
     if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in)) {
         geist_linear_ref(m, x, w, y);
         return;
     }
 
-    const bool use_block_scales = st->policy.q4k_mtile_prefill && st->policy.q4k_block_q8_prefill &&
-                                  q4k_weight_predecoded(w) && !q4k_weight_ntile4(w);
-    const bool qp               = qprof_on();
-    uint64_t   t0               = qp ? qprof_now_ns() : 0;
+    const bool qp = qprof_on();
+    uint64_t   t0 = qp ? qprof_now_ns() : 0;
     cpu_neon_qk_mN_quantize_x(ws, x, m, n_in);
     if (qp) {
         atomic_fetch_add_explicit(&g_qprof_quant_ns, qprof_now_ns() - t0, memory_order_relaxed);
         t0 = qprof_now_ns();
     }
-    cpu_neon_q4k_run_prequantized(st, ws, w, use_block_scales, m, y);
+    cpu_neon_q4k_run_prequantized(st, ws, w, m, y);
     if (qp) {
         atomic_fetch_add_explicit(&g_qprof_mm_ns, qprof_now_ns() - t0, memory_order_relaxed);
     }
@@ -698,30 +656,15 @@ static void cpu_neon_w_q4k_pair_mN(size_t                     m,
         return;
     }
 
-    /* SGEMM-prefill pair: reuse the same dequant_w_fp32 scratch for both
-     * weights. Each gets its own dequant+sgemm tile-loop; the activation
-     * x is shared and stays in L2 across the two sgemm calls. */
-    if (st->policy.q4k_sgemm_prefill && m >= st->policy.qk_sgemm_threshold &&
-        cpu_neon_dequant_w_workspace_prepare(ws, qk_sgemm_tile_rows_for(st), n_in)) {
-        const size_t tile_rows = qk_sgemm_tile_rows_for(st);
-        cpu_neon_qk_sgemm_run(x, w0, m, tile_rows, ws->dequant_w_fp32, y0);
-        cpu_neon_qk_sgemm_run(x, w1, m, tile_rows, ws->dequant_w_fp32, y1);
-        return;
-    }
-
     if (!cpu_neon_qk_mN_workspace_prepare(ws, m, n_in)) {
         geist_linear_ref(m, x, w0, y0);
         geist_linear_ref(m, x, w1, y1);
         return;
     }
 
-    const bool use_block_scales = st->policy.q4k_mtile_prefill && st->policy.q4k_block_q8_prefill &&
-                                  q4k_weight_predecoded(w0) && q4k_weight_predecoded(w1) &&
-                                  !q4k_weight_ntile4(w0) && !q4k_weight_ntile4(w1);
     cpu_neon_qk_mN_quantize_x(ws, x, m, n_in);
 
-    if (!use_block_scales && q4k_weight_ntile4(w0) && q4k_weight_ntile4(w1) &&
-        w0->n_out == w1->n_out) {
+    if (q4k_weight_ntile4(w0) && q4k_weight_ntile4(w1) && w0->n_out == w1->n_out) {
         linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(m,
                                                                      n_in,
                                                                      (size_t) w0->n_out,
@@ -733,8 +676,8 @@ static void cpu_neon_w_q4k_pair_mN(size_t                     m,
                                                                      y0,
                                                                      y1);
     } else {
-        cpu_neon_q4k_run_prequantized(st, ws, w0, use_block_scales, m, y0);
-        cpu_neon_q4k_run_prequantized(st, ws, w1, use_block_scales, m, y1);
+        cpu_neon_q4k_run_prequantized(st, ws, w0, m, y0);
+        cpu_neon_q4k_run_prequantized(st, ws, w1, m, y1);
     }
 }
 
@@ -750,13 +693,6 @@ static void cpu_neon_w_q6k_mN(size_t                     m,
         return;
     if (ws == nullptr || m > GEIST_QUANT_M_CAP) {
         geist_linear_ref(m, x, w, y);
-        return;
-    }
-
-    /* SGEMM-prefill path (m ≥ threshold): dequant Q6_K + AMX SGEMM. */
-    if (st->policy.q6k_sgemm_prefill && m >= st->policy.qk_sgemm_threshold &&
-        cpu_neon_dequant_w_workspace_prepare(ws, qk_sgemm_tile_rows_for(st), n_in)) {
-        cpu_neon_qk_sgemm_run(x, w, m, qk_sgemm_tile_rows_for(st), ws->dequant_w_fp32, y);
         return;
     }
 
@@ -884,13 +820,8 @@ static void cpu_neon_w_q8_0_mN(size_t                     m,
  * weight plus a cblas call, tiled by output rows so the FP32 scratch stays
  * bounded (a 262144×1536 lm_head would otherwise need 1.5 GB). */
 #define DEQ_TILE_ROWS_DEFAULT 32
-
-static size_t qk_sgemm_tile_rows_for(const struct cpu_neon_state *st) {
-    if (st == nullptr || st->policy.qk_sgemm_tile_rows == 0) {
-        return DEQ_TILE_ROWS_DEFAULT;
-    }
-    return st->policy.qk_sgemm_tile_rows;
-}
+/* The M=1 trampoline's tile: 64 output rows per sgemv. */
+#define DEQ_GEMV_TILE_ROWS 64
 
 /* Exactly the dequant family's signature: a call through an incompatible
  * function pointer type is undefined (AGENT.md §6). */
@@ -1154,10 +1085,30 @@ static void deq_tiles_run(const float               *x,
     geist_par_for(dynamic && job.n_tiles > threads ? threads : job.n_tiles, deq_tiles, &job);
 }
 
+/* The dequant trampolines' tiles: tile_rows × n_in floats per thread. */
+static bool
+cpu_neon_dequant_w_workspace_prepare(struct cpu_neon_workspace *ws, size_t tile_rows, size_t n_in) {
+    /* One tile per thread of the call (deq_tiles claims them by slot). */
+    size_t need = 0;
+    if (ckd_mul(&need, tile_rows, n_in) || ckd_mul(&need, need, geist_par_max_threads())) {
+        return false;
+    }
+    if (ws->dequant_w_fp32_cap >= need)
+        return true;
+    safe_free((void **) &ws->dequant_w_fp32);
+    ws->dequant_w_fp32 = heap_alloc_array_aligned(float, need);
+    if (ws->dequant_w_fp32 == nullptr) {
+        ws->dequant_w_fp32_cap = 0;
+        return false;
+    }
+    ws->dequant_w_fp32_cap = need;
+    return true;
+}
+
 /* M=1: tile through output rows, dequant each tile + sgemv, the tiles
- * statically split. A tile (tile_rows × n_in floats) per thread, in the
- * calling thread's workspace and kept across calls: ~192 KB each for
- * Gemma 4 d_model=1536; ~1.5 MB for FFN n_in=12288. Without it, the
+ * statically split. A tile (DEQ_GEMV_TILE_ROWS × n_in floats) per thread,
+ * in the calling thread's workspace and kept across calls: ~384 KB each
+ * for Gemma 4 d_model=1536; ~3 MB for FFN n_in=12288. Without it, the
  * reference. */
 static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
                                              const struct geist_weight *w,
@@ -1165,12 +1116,12 @@ static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
                                              float                     *y) {
     struct cpu_neon_state     *st = (be != nullptr) ? (struct cpu_neon_state *) be->state : nullptr;
     struct cpu_neon_workspace *ws = st != nullptr ? cpu_neon_ws(st) : nullptr;
-    const size_t               tile_rows = qk_sgemm_tile_rows_for(st);
-    if (ws == nullptr || !cpu_neon_dequant_w_workspace_prepare(ws, tile_rows, (size_t) w->n_in)) {
+    if (ws == nullptr ||
+        !cpu_neon_dequant_w_workspace_prepare(ws, DEQ_GEMV_TILE_ROWS, (size_t) w->n_in)) {
         geist_linear_ref(1, x, w, y);
         return;
     }
-    deq_tiles_run(x, w, 1, tile_rows, true, false, ws->dequant_w_fp32, y);
+    deq_tiles_run(x, w, 1, DEQ_GEMV_TILE_ROWS, true, false, ws->dequant_w_fp32, y);
 }
 
 /* Fused F16 × A32 GEMV (M=1): one pass over the f16 weight, converted
@@ -1220,38 +1171,6 @@ void cpu_neon_w_f16_m1(const float               *x,
     geist_par_for((size_t) w->n_out, f16_m1_rows, &job);
 }
 #endif
-
-/* Definitions of the forward-declared SGEMM-prefill helpers. */
-static bool
-cpu_neon_dequant_w_workspace_prepare(struct cpu_neon_workspace *ws, size_t tile_rows, size_t n_in) {
-    /* One tile per thread of the call (deq_tiles claims them by slot). */
-    size_t need = 0;
-    if (ckd_mul(&need, tile_rows, n_in) || ckd_mul(&need, need, geist_par_max_threads())) {
-        return false;
-    }
-    if (ws->dequant_w_fp32_cap >= need)
-        return true;
-    safe_free((void **) &ws->dequant_w_fp32);
-    ws->dequant_w_fp32 = heap_alloc_array_aligned(float, need);
-    if (ws->dequant_w_fp32 == nullptr) {
-        ws->dequant_w_fp32_cap = 0;
-        return false;
-    }
-    ws->dequant_w_fp32_cap = need;
-    return true;
-}
-
-static void cpu_neon_qk_sgemm_run(const float               *x,
-                                  const struct geist_weight *w,
-                                  size_t                     m,
-                                  size_t                     tile_rows,
-                                  float                     *tile_fp32,
-                                  float                     *y) {
-    /* Each thread dequants its slice of weight rows into its tile, then
-     * SGEMMs. Accelerate runs these small tile shapes single-threaded,
-     * so the parallelism has to come from this level. */
-    deq_tiles_run(x, w, m, tile_rows, false, true, tile_fp32, y);
-}
 
 /* M>1: tile through output rows, dequant each tile + sgemm against
  * the full activation block. */

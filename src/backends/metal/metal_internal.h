@@ -408,8 +408,14 @@ struct metal_state {
     void    *attention_flash_sg8_f16_function;
     void    *attention_flash_sg8_f16_pipeline;
     void    *attn_flash_sg8_f16_library;
-    /* persistent f32->f16 K/V staging for the plain flash path (the
-     * engine keeps the KV cache f32). */
+    /* The split-KV decode kernels on an F32 KV cache (#64). */
+    void *attn_dec_f32kv_library;
+    void *attention_dec_f32kv_function;
+    void *attention_dec_f32kv_pipeline;
+    void *attention_dec512_f32kv_function;
+    void *attention_dec512_f32kv_pipeline;
+    /* persistent f32->f16 K/V staging for the plain flash (prefill)
+     * path on an F32 KV cache; decode reads the F32 cache directly. */
     struct geist_buffer *attn_kf16_buffer;
     struct geist_buffer *attn_vf16_buffer;
     size_t               attn_kvf16_capacity;

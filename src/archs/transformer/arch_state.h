@@ -947,6 +947,15 @@ void transformer_recurrent_txn_commit(struct transformer_arch_session *sess);
 [[nodiscard]] enum geist_status
 transformer_dn_state_zero(struct geist_backend *be, struct geist_buffer *buf, size_t bytes);
 
+/* A SCRATCH-role buffer of `bytes`, zeroed where the host maps it: session
+ * state outside the scratch pool (arch_state.c; the family session hooks in
+ * arch_family.h allocate theirs with it). Setup only. */
+[[nodiscard]] enum geist_status
+transformer_scratch_alloc(struct geist_backend *be, size_t bytes, struct geist_buffer **out);
+
+/* Destroy *buf when it is set (and be is), and clear it. */
+void transformer_buffer_release(struct geist_backend *be, struct geist_buffer **buf);
+
 /* ---- Public functions (architecture-internal) -------------------------- */
 
 /* Build a transformer arch state from a GGUF file. All weight bytes land in
@@ -1015,7 +1024,7 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
                                                          const struct transformer_kv_layout  *kl);
 
 /* The KV-cache bytes per position of this session (#622), from the same
- * geometry and resolved KV mode allocate_runtime_session sizes the caches by. */
+ * geometry and resolved KV mode alloc_kv_caches sizes the caches by. */
 [[nodiscard]] enum geist_status
 transformer_kv_bytes_per_token(size_t *out_bytes, const struct transformer_arch_session *sess);
 

@@ -125,29 +125,6 @@ int main(void) {
     matrix_case("GEIST_Q8_0_NATIVE_MN", GEIST_DTYPE_Q8_0, 34, 32);
     matrix_case("GEIST_Q4_01_NATIVE_MN", GEIST_DTYPE_Q4_0, 18, 32);
     matrix_case("GEIST_IQ4XS_NATIVE_MN", GEIST_DTYPE_IQ4_XS, 136, 256);
-    /* qk_sgemm_threshold: both extremes of the Q4_K prefill route. */
-    {
-        const size_t wbytes = N_OUT * (N_IN / 256) * 144;
-        uint8_t     *wbuf   = malloc(wbytes);
-        float       *x      = malloc((size_t) M * N_IN * sizeof(float));
-        float       *y0     = malloc((size_t) M * N_OUT * sizeof(float));
-        float       *y1     = malloc((size_t) M * N_OUT * sizeof(float));
-        fill_blocks(wbuf, N_OUT, 144, N_IN / 256);
-        for (size_t i = 0; i < (size_t) M * N_IN; i++) {
-            x[i] = (float) ((int) (i % 23u) - 11) * 0.125f;
-        }
-        if (run_variant("GEIST_QK_SGEMM_THRESHOLD", "1", GEIST_DTYPE_Q4_K, wbuf, wbytes, x, y0) &&
-            run_variant(
-                    "GEIST_QK_SGEMM_THRESHOLD", "100000", GEIST_DTYPE_Q4_K, wbuf, wbytes, x, y1)) {
-            compare("GEIST_QK_SGEMM_THRESHOLD", y0, y1);
-        } else {
-            check(false, "GEIST_QK_SGEMM_THRESHOLD");
-        }
-        free(wbuf);
-        free(x);
-        free(y0);
-        free(y1);
-    }
 
     if (g_fail == 0) {
         printf("test_calibration_paths_unit: all checks passed\n");

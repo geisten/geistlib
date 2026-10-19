@@ -7,9 +7,7 @@
  * Fidelity contract: sondes time the RESOLVER-INSTALLED mN path on a
  * throwaway backend instance with the policy variant forced, never
  * hand-picked quant.h kernels. The resolver composes the real path (tile
- * variants, layout installs); timing raw kernels mis-calibrated
- * qk_sgemm_threshold to "never" while the real Q4_K SGEMM side was 25 %
- * ahead.
+ * variants, layout installs), which timing raw kernels misses.
 
  *
  * Panels are synthetic (pseudo-random payload, d = fp16 1.0, bytes 2-3
@@ -18,9 +16,8 @@
  * driver adds median-of-three + a disagreement note on top.
  *
  * Deliberately uncalibrated: x8 switches (RAM tradeoff = user policy),
- * q4k/q6k_sgemm_prefill as bools (their Pi seed is a QUALITY gate, not
- * a perf judgment — only the m-threshold is measured), tq2_0_native_mn
- * (native entry is resolver-internal; needs a refactor first).
+ * tq2_0_native_mn (native entry is resolver-internal; needs a refactor
+ * first).
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -197,14 +194,6 @@ static void mut_iq4xs_on(struct cpu_neon_kernel_policy *p) {
 static void mut_iq4xs_off(struct cpu_neon_kernel_policy *p) {
     p->iq4xs_native_mn = false;
 }
-/* threshold sweep: force the sgemm side wholesale on/off */
-static void mut_q4k_sgemm_always(struct cpu_neon_kernel_policy *p) {
-    p->q4k_sgemm_prefill  = true;
-    p->qk_sgemm_threshold = 1;
-}
-static void mut_q4k_sgemm_never(struct cpu_neon_kernel_policy *p) {
-    p->q4k_sgemm_prefill = false;
-}
 
 static enum geist_status
 cal_measure_q5k_native_mn(struct geist_backend *be, uint64_t budget_ns, int64_t *out_value) {
@@ -239,32 +228,15 @@ cal_measure_iq4xs_native_mn(struct geist_backend *be, uint64_t budget_ns, int64_
     return cal_measure_ab(&ab, budget_ns, CAL_M, out_value);
 }
 
+/* Retired: the Q4_K/Q6_K SGEMM prefill this threshold tuned is gone. The
+ * name stays in the table because the calibration key hashes the tunable
+ * names (base/calibration.c): dropping it would turn every blob written
+ * before into GEIST_E_STALE_CALIBRATION. Nothing reads the value. */
 static enum geist_status
 cal_measure_qk_sgemm_threshold(struct geist_backend *be, uint64_t budget_ns, int64_t *out_value) {
     (void) be;
-    static const size_t M_SWEEP[] = {8, 16, 32, 64, 128};
-    enum { N_SWEEP = 5 };
-    const struct cal_ab ab = {GEIST_DTYPE_Q4_K,
-                              Q4_K_BLOCK_BYTES,
-                              Q4_K_BLOCK_ELEMS,
-                              mut_q4k_sgemm_always,
-                              mut_q4k_sgemm_never};
-    /* Smallest m where the sgemm side wins; above the sweep = "never"
-     * on this machine (one past the largest point). */
-    int64_t threshold = (int64_t) (M_SWEEP[N_SWEEP - 1] * 2u);
-    for (size_t i = 0; i < N_SWEEP; i++) {
-        int64_t                 sgemm_wins = 0;
-        const enum geist_status s =
-                cal_measure_ab(&ab, budget_ns / N_SWEEP, M_SWEEP[i], &sgemm_wins);
-        if (s != GEIST_OK) {
-            return s;
-        }
-        if (sgemm_wins == 1) {
-            threshold = (int64_t) M_SWEEP[i];
-            break;
-        }
-    }
-    *out_value = threshold;
+    (void) budget_ns;
+    *out_value = 1;
     return GEIST_OK;
 }
 

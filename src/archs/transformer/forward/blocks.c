@@ -547,47 +547,23 @@ enum geist_status blk_ffn_geglu(struct transformer_layer_forward_ctx *ctx,
         return s;
     }
 
-    if (ctx->seq > 1 && P->fuse_ffn_geglu_tile_mN) { /* the whole FFN, prefill */
-        const float *xp = (const float *) ctx->v->buffer_map(x);
-        float       *yp = (float *) ctx->v->buffer_map(sess->scratch_ffn_out);
-        if (xp == nullptr || yp == nullptr) {
-            if (xp != nullptr)
-                ctx->v->buffer_unmap(x);
-            if (yp != nullptr)
-                ctx->v->buffer_unmap(sess->scratch_ffn_out);
-            return GEIST_E_BACKEND;
+    if (!front && ctx->seq == 1 && P->fuse_ffn_gate_up_m1) {
+        s = fused->ffn_gate_up(be, &t_x, &L->gate_proj, &L->up_proj, &t_gate);
+    } else if (!front) {
+        s = blk_gate_up(ctx, x);
+        if (s == GEIST_OK && P->fuse_gelu_mul_scaled) {
+            s          = fused->gelu_tanh_mul_scaled(be, &t_gate, &t_up, down_scale, &t_gate);
+            down_scale = nullptr; /* already applied */
+        } else if (s == GEIST_OK && P->fuse_gelu_mul) {
+            s = fused->gelu_tanh_mul(be, &t_gate, &t_up, &t_gate);
+        } else if (s == GEIST_OK) {
+            s = ctx->prims->gelu_tanh(be, &t_gate, &t_gate);
+            if (s == GEIST_OK)
+                s = blk_mul(ctx, n, mid, sess->scratch_up);
         }
-        s = fused->ffn_geglu_q4q6_mN(be,
-                                     ctx->seq,
-                                     d,
-                                     n,
-                                     xp,
-                                     &L->gate_proj_w,
-                                     &L->up_proj_w,
-                                     &L->down_proj_w,
-                                     down_scale,
-                                     yp);
-        ctx->v->buffer_unmap(x);
-        ctx->v->buffer_unmap(sess->scratch_ffn_out);
-    } else {
-        if (!front && ctx->seq == 1 && P->fuse_ffn_gate_up_m1) {
-            s = fused->ffn_gate_up(be, &t_x, &L->gate_proj, &L->up_proj, &t_gate);
-        } else if (!front) {
-            s = blk_gate_up(ctx, x);
-            if (s == GEIST_OK && P->fuse_gelu_mul_scaled) {
-                s          = fused->gelu_tanh_mul_scaled(be, &t_gate, &t_up, down_scale, &t_gate);
-                down_scale = nullptr; /* already applied */
-            } else if (s == GEIST_OK && P->fuse_gelu_mul) {
-                s = fused->gelu_tanh_mul(be, &t_gate, &t_up, &t_gate);
-            } else if (s == GEIST_OK) {
-                s = ctx->prims->gelu_tanh(be, &t_gate, &t_gate);
-                if (s == GEIST_OK)
-                    s = blk_mul(ctx, n, mid, sess->scratch_up);
-            }
-        }
-        if (s == GEIST_OK)
-            s = blk_down(ctx, mid, down_scale);
     }
+    if (s == GEIST_OK)
+        s = blk_down(ctx, mid, down_scale);
     if (s == GEIST_OK)
         s = blk_norm_add(ctx,
                          P->fuse_rmsnorm_add,

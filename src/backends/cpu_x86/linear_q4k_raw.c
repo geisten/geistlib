@@ -389,16 +389,14 @@ static void cpu_x86_linear_q5k_m1(const float               *x,
 }
 
 /* The tiled int8 GEMM (#18) on hosts with AVX-512 VNNI, from 16 rows:
- * Q5_K reads the GGUF bytes there as well. GEIST_Q5K_TILED=0 keeps the
- * row kernel. */
+ * Q5_K reads the GGUF bytes there as well. Elsewhere, the row kernel. */
 enum { Q5K_TILED_MIN_ROWS = 16 };
 
 static bool q5k_tiled_on(void) {
     static atomic_int on = -1;
     int               v  = atomic_load_explicit(&on, memory_order_relaxed);
     if (v < 0) {
-        const char *e = getenv("GEIST_Q5K_TILED");
-        v             = (e == nullptr || e[0] != '0') && vnni_tiles_usable();
+        v = vnni_tiles_usable();
         atomic_store_explicit(&on, v, memory_order_relaxed);
     }
     return v != 0;

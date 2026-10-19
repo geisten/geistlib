@@ -222,13 +222,6 @@ int main(int argc, char **argv) {
     }
     fprintf(stderr, "[bench] backend: %s\n", geist_backend_name(be));
 
-    /* Find the maximum seq_len in the sweep so we size the session right. */
-    int max_seq = 0;
-    for (size_t i = 0; i < n_seq_lens; i++) {
-        if (seq_lens[i] > max_seq)
-            max_seq = seq_lens[i];
-    }
-
     /* Layer split (#49): GEIST_BENCH_SPLIT_BACKEND runs the first
      * GEIST_BENCH_SPLIT_LAYERS layers ("auto": the planner's choice). Lives
      * until the process ends. */
@@ -242,12 +235,11 @@ int main(int argc, char **argv) {
             geist_backend_destroy(be);
             return GEIST_TEST_ERROR;
         }
-        /* "auto": the loader's planner picks (GEIST_SPLIT_AUTO, #78), for the
-         * positions this run's session will hold. */
+        /* "auto": the loader's planner picks (GEIST_SPLIT_AUTO, #78) for the
+         * positions this run's session holds (load_opts.max_seq_len below). */
         const bool plan        = strcmp(split_n, "auto") == 0;
         load_opts.split_layers = plan ? GEIST_SPLIT_AUTO : (size_t) strtoull(split_n, nullptr, 10);
         if (plan) {
-            load_opts.max_seq_len = (size_t) max_seq + (size_t) decode_n + (size_t) warmup + 32;
             fprintf(stderr,
                     "[bench] split: planned on %s\n",
                     geist_backend_name(load_opts.split_backend));
@@ -258,6 +250,34 @@ int main(int argc, char **argv) {
                     geist_backend_name(load_opts.split_backend));
         }
     }
+    /* Find the maximum seq_len in the sweep so we size the session right. */
+    int max_seq = 0;
+    for (size_t i = 0; i < n_seq_lens; i++) {
+        if (seq_lens[i] > max_seq)
+            max_seq = seq_lens[i];
+    }
+    size_t session_seq = (size_t) max_seq;
+    if ((size_t) decode_n > SIZE_MAX - session_seq) {
+        fprintf(stderr, "requested session length overflows size_t\n");
+        geist_backend_destroy(be);
+        return GEIST_TEST_ERROR;
+    }
+    session_seq += (size_t) decode_n;
+    if ((size_t) warmup > SIZE_MAX - session_seq || 32 > SIZE_MAX - session_seq - (size_t) warmup) {
+        fprintf(stderr, "requested session length overflows size_t\n");
+        geist_backend_destroy(be);
+        return GEIST_TEST_ERROR;
+    }
+    session_seq += (size_t) warmup + 32;
+    if (session_seq > INT_MAX) {
+        fprintf(stderr, "requested session length is too large\n");
+        geist_backend_destroy(be);
+        return GEIST_TEST_ERROR;
+    }
+    /* The model's sequence bound is fixed at load (default 4096): size
+     * it for the longest run, or a sweep past 4096 cannot create its
+     * session. */
+    load_opts.max_seq_len     = session_seq;
     struct geist_model *model = nullptr;
     s                         = geist_model_load_with_opts(model_path, be, &load_opts, &model);
     if (s != GEIST_OK) {
@@ -266,27 +286,6 @@ int main(int argc, char **argv) {
         return GEIST_TEST_FAIL;
     }
 
-    size_t session_seq = (size_t) max_seq;
-    if ((size_t) decode_n > SIZE_MAX - session_seq) {
-        fprintf(stderr, "requested session length overflows size_t\n");
-        geist_model_destroy(model);
-        geist_backend_destroy(be);
-        return GEIST_TEST_ERROR;
-    }
-    session_seq += (size_t) decode_n;
-    if ((size_t) warmup > SIZE_MAX - session_seq || 32 > SIZE_MAX - session_seq - (size_t) warmup) {
-        fprintf(stderr, "requested session length overflows size_t\n");
-        geist_model_destroy(model);
-        geist_backend_destroy(be);
-        return GEIST_TEST_ERROR;
-    }
-    session_seq += (size_t) warmup + 32;
-    if (session_seq > INT_MAX) {
-        fprintf(stderr, "requested session length is too large\n");
-        geist_model_destroy(model);
-        geist_backend_destroy(be);
-        return GEIST_TEST_ERROR;
-    }
     struct geist_session_opts opts = {
             .max_seq_len = session_seq,
             .temperature = temperature,
