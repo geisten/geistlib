@@ -176,6 +176,8 @@ static const struct metal_pipeline_row metal_attention_rows[] = {
         METAL_PIPE(attn_flash_sg_f16, "attention_flash_sg_f16", attention_flash_sg_f16),
         METAL_PIPE(attn_flash_sg8_f16, "attention_flash_sg8_f16", attention_flash_sg8_f16),
         METAL_PIPE(attn_dec512_f16, "attention_dec512_f16", attention_dec512_f16),
+        METAL_PIPE(attn_dec_f32kv, "attention_dec_f32kv", attention_dec_f32kv),
+        METAL_PIPE(attn_dec_f32kv, "attention_dec512_f32kv", attention_dec512_f32kv),
 };
 
 static const struct metal_pipeline_row metal_hadamard_rows[] = {
@@ -299,6 +301,7 @@ static const struct metal_library_row metal_attention_libs[] = {
         METAL_LIB(attn_qnorm_dec_f16,
                   "decode attention",
                   metal_attn_qnorm_dec_f16_source,
+                  metal_attn_kv_f16_defs,
                   metal_attn_dec_f16_body,
                   metal_attn_dec_f16_plain_head,
                   metal_attn_dec_f16_body),
@@ -316,6 +319,17 @@ static const struct metal_library_row metal_attention_libs[] = {
                   metal_attn_flash_sg8_f16_source_b),
         METAL_LIB(attn_dec512_f16,
                   "dec512",
+                  metal_attn_kv_header,
+                  metal_attn_kv_f16_defs,
+                  metal_attn_dec512_f16_source_a,
+                  metal_attn_dec512_f16_source_b),
+        /* The plain decode kernels again, reading an F32 cache (#64). */
+        METAL_LIB(attn_dec_f32kv,
+                  "F32-KV decode attention",
+                  metal_attn_kv_header,
+                  metal_attn_kv_f32_defs,
+                  metal_attn_dec_f16_plain_head,
+                  metal_attn_dec_f16_body,
                   metal_attn_dec512_f16_source_a,
                   metal_attn_dec512_f16_source_b),
 };

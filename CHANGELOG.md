@@ -87,6 +87,19 @@ minor release.
   `DECISION_CONTEXT=0` (default) keeps the symbols as stubs.
 
 ### Changed
+- **Metal decode on an F32 KV cache no longer converts the cache to f16
+  every token (#64).** The split-KV decode kernels read the F32 cache and
+  round each element to half as they load it (`attention_dec_f32kv`,
+  `attention_dec512_f32kv`, the same source as the F16 kernels), instead
+  of a `kv_append_rows_f16` pass over every live row per layer and token.
+  Logits are byte-identical (Bonsai 2 27B, Gemma 4 E2B, SmolLM2; ragged
+  chunks, decode, snapshot restore, truncate). M1 Max: the decode
+  attention call at 8k rows 1.36-1.46 -> 1.11-1.20 ms on Bonsai shapes;
+  Gemma 4 E2B FP32-KV decode at 8k 8.4 % faster (A/B, 10/10 cycles),
+  Bonsai within noise. Prefill keeps the per-call staging: 1-5 % of the
+  flash call, where both direct-read flash kernels tried were slower.
+  `bench_perf_sweep` loads the model for its longest run, so sweeps past
+  ~4000 tokens work.
 - **`make vulkan-shaders` is pinned to one glslc, and CI checks the
   SPIR-V headers.** The committed `*_spv.h` are compiler output; another
   glslc rewrites dozens of them. The target now refuses any glslc but

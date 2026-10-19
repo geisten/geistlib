@@ -2037,6 +2037,25 @@ static const char metal_attn_f16_source[] =
  * split across the 8 simdgroups with per-simdgroup online softmax kept in
  * registers (simd_sum reductions, no tree-reduce barriers, no serial PV
  * loop); one threadgroup-memory merge at the end. */
+/* The plain split-KV decode kernels compile twice: for an F16 KV cache
+ * and for an F32 one. A defs part ahead of the shared source picks the K/V
+ * element type KVT, KVF(x) (the float a K/V element is computed with) and
+ * the kernel name ATTN(n). F32 KV is rounded to half as it is read: the
+ * round-to-nearest the f32->f16 staging copy applied to the same element,
+ * so the result is bit-identical to staging first, without the pass over
+ * every live row per token (#64). */
+static const char metal_attn_kv_header[] =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct A{uint rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo;};\n"
+        "struct SP{uint ns;};\n";
+static const char metal_attn_kv_f16_defs[] = "\n#define KVT half\n"
+                                             "#define KVF(x) float(x)\n"
+                                             "#define ATTN(n) attention_##n##_f16\n";
+static const char metal_attn_kv_f32_defs[] = "\n#define KVT float\n"
+                                             "#define KVF(x) float(half(x))\n"
+                                             "#define ATTN(n) attention_##n##_f32kv\n";
+
 static const char metal_attn_qnorm_dec_f16_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
@@ -2078,26 +2097,26 @@ static const char metal_attn_dec_f16_body[] =
         "224u<hd;"
         "for(uint t=slo+ss*8u+sg;t<=shi;t+=sp.ns*8u){"
         "uint kb=p.kco+t*p.kvh*hd+kvh*hd;"
-        "float d=qv[ln]*float(kc[kb+ln]);"
-        "if(g1)d+=qv[ln+32u]*float(kc[kb+ln+32u]);"
-        "if(g2)d+=qv[ln+64u]*float(kc[kb+ln+64u]);"
-        "if(g3)d+=qv[ln+96u]*float(kc[kb+ln+96u]);"
-        "if(g4)d+=qv[ln+128u]*float(kc[kb+ln+128u]);"
-        "if(g5)d+=qv[ln+160u]*float(kc[kb+ln+160u]);"
-        "if(g6)d+=qv[ln+192u]*float(kc[kb+ln+192u]);"
-        "if(g7)d+=qv[ln+224u]*float(kc[kb+ln+224u]);"
+        "float d=qv[ln]*KVF(kc[kb+ln]);"
+        "if(g1)d+=qv[ln+32u]*KVF(kc[kb+ln+32u]);"
+        "if(g2)d+=qv[ln+64u]*KVF(kc[kb+ln+64u]);"
+        "if(g3)d+=qv[ln+96u]*KVF(kc[kb+ln+96u]);"
+        "if(g4)d+=qv[ln+128u]*KVF(kc[kb+ln+128u]);"
+        "if(g5)d+=qv[ln+160u]*KVF(kc[kb+ln+160u]);"
+        "if(g6)d+=qv[ln+192u]*KVF(kc[kb+ln+192u]);"
+        "if(g7)d+=qv[ln+224u]*KVF(kc[kb+ln+224u]);"
         "d=simd_sum(d);"
         "float mn=max(m,d),corr=exp(m-mn),e=exp(d-mn);"
         "l=l*corr+e;"
         "uint vb=p.vco+t*p.kvh*hd+kvh*hd;"
-        "a0=a0*corr+e*float(vc[vb+ln]);"
-        "if(g1)a1=a1*corr+e*float(vc[vb+ln+32u]);"
-        "if(g2)a2=a2*corr+e*float(vc[vb+ln+64u]);"
-        "if(g3)a3=a3*corr+e*float(vc[vb+ln+96u]);"
-        "if(g4)a4=a4*corr+e*float(vc[vb+ln+128u]);"
-        "if(g5)a5=a5*corr+e*float(vc[vb+ln+160u]);"
-        "if(g6)a6=a6*corr+e*float(vc[vb+ln+192u]);"
-        "if(g7)a7=a7*corr+e*float(vc[vb+ln+224u]);"
+        "a0=a0*corr+e*KVF(vc[vb+ln]);"
+        "if(g1)a1=a1*corr+e*KVF(vc[vb+ln+32u]);"
+        "if(g2)a2=a2*corr+e*KVF(vc[vb+ln+64u]);"
+        "if(g3)a3=a3*corr+e*KVF(vc[vb+ln+96u]);"
+        "if(g4)a4=a4*corr+e*KVF(vc[vb+ln+128u]);"
+        "if(g5)a5=a5*corr+e*KVF(vc[vb+ln+160u]);"
+        "if(g6)a6=a6*corr+e*KVF(vc[vb+ln+192u]);"
+        "if(g7)a7=a7*corr+e*KVF(vc[vb+ln+224u]);"
         "m=mn;}"
         "if(ln==0u){tm[sg]=m;tl[sg]=l;}"
         "uint tb=sg*hd+ln;"
@@ -2312,10 +2331,8 @@ static const char metal_attn_flash_sg8_f16_source_b[] =
  * full-attention layers): 16-chunk QK/PV lane unroll (a0..a15),
  * qv[512]/ta[4096]; same split/combine contract as attention_dec_f16. */
 static const char metal_attn_dec512_f16_source_a[] =
-        "#include <metal_stdlib>\nusing namespace metal;\nstruct A{uint "
-        "rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo;};\nstruct SP{uint ns;};\nkernel void "
-        "attention_dec512_f16(device const float*q[[buffer(0)]],device const "
-        "half*kc[[buffer(1)]],device const half*vc[[buffer(2)]],device "
+        "kernel void ATTN(dec512)(device const float*q[[buffer(0)]],device const "
+        "KVT*kc[[buffer(1)]],device const KVT*vc[[buffer(2)]],device "
         "float*pb[[buffer(3)]],constant A&p[[buffer(4)]],constant SP&sp[[buffer(5)]],uint2 "
         "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]],uint "
         "sg[[simdgroup_index_in_threadgroup]],uint ln[[thread_index_in_simdgroup]]){threadgroup "
@@ -2331,25 +2348,25 @@ static const char metal_attn_dec512_f16_source_a[] =
         "224u<hd,g8=ln+256u<hd,g9=ln+288u<hd,g10=ln+320u<hd,g11=ln+352u<hd,g12=ln+384u<hd,g13=ln+"
         "416u<hd,g14=ln+448u<hd,g15=ln+480u<hd;for(uint t=slo+ss*8u+sg;t<=shi;t+=sp.ns*8u){uint "
         "kb=p.kco+t*p.kvh*hd+kvh*hd;float "
-        "d=qv[ln]*float(kc[kb+ln]);if(g1)d+=qv[ln+32u]*float(kc[kb+ln+32u]);if(g2)d+=qv[ln+64u]*"
-        "float(kc[kb+ln+64u]);if(g3)d+=qv[ln+96u]*float(kc[kb+ln+96u]);if(g4)d+=qv[ln+128u]*float("
-        "kc[kb+ln+128u]);if(g5)d+=qv[ln+160u]*float(kc[kb+ln+160u]);if(g6)d+=qv[ln+192u]*float(kc["
-        "kb+ln+192u]);if(g7)d+=qv[ln+224u]*float(kc[kb+ln+224u]);if(g8)d+=qv[ln+256u]*float(kc[kb+"
-        "ln+256u]);if(g9)d+=qv[ln+288u]*float(kc[kb+ln+288u]);if(g10)d+=qv[ln+320u]*float(kc[kb+ln+"
+        "d=qv[ln]*KVF(kc[kb+ln]);if(g1)d+=qv[ln+32u]*KVF(kc[kb+ln+32u]);if(g2)d+=qv[ln+64u]*"
+        "KVF(kc[kb+ln+64u]);if(g3)d+=qv[ln+96u]*KVF(kc[kb+ln+96u]);if(g4)d+=qv[ln+128u]*KVF("
+        "kc[kb+ln+128u]);if(g5)d+=qv[ln+160u]*KVF(kc[kb+ln+160u]);if(g6)d+=qv[ln+192u]*KVF(kc["
+        "kb+ln+192u]);if(g7)d+=qv[ln+224u]*KVF(kc[kb+ln+224u]);if(g8)d+=qv[ln+256u]*KVF(kc[kb+"
+        "ln+256u]);if(g9)d+=qv[ln+288u]*KVF(kc[kb+ln+288u]);if(g10)d+=qv[ln+320u]*KVF(kc[kb+ln+"
         "320u]);";
 static const char metal_attn_dec512_f16_source_b[] =
-        "if(g11)d+=qv[ln+352u]*float(kc[kb+ln+352u]);if(g12)d+=qv[ln+384u]*float(kc[kb+ln+384u]);"
-        "if(g13)d+=qv[ln+416u]*float(kc[kb+ln+416u]);if(g14)d+=qv[ln+448u]*float(kc[kb+ln+448u]);"
-        "if(g15)d+=qv[ln+480u]*float(kc[kb+ln+480u]);d=simd_sum(d);float "
+        "if(g11)d+=qv[ln+352u]*KVF(kc[kb+ln+352u]);if(g12)d+=qv[ln+384u]*KVF(kc[kb+ln+384u]);"
+        "if(g13)d+=qv[ln+416u]*KVF(kc[kb+ln+416u]);if(g14)d+=qv[ln+448u]*KVF(kc[kb+ln+448u]);"
+        "if(g15)d+=qv[ln+480u]*KVF(kc[kb+ln+480u]);d=simd_sum(d);float "
         "mn=max(m,d),corr=exp(m-mn),e=exp(d-mn);l=l*corr+e;uint "
-        "vb=p.vco+t*p.kvh*hd+kvh*hd;a0=a0*corr+e*float(vc[vb+ln]);if(g1)a1=a1*corr+e*float(vc[vb+"
-        "ln+32u]);if(g2)a2=a2*corr+e*float(vc[vb+ln+64u]);if(g3)a3=a3*corr+e*float(vc[vb+ln+96u]);"
-        "if(g4)a4=a4*corr+e*float(vc[vb+ln+128u]);if(g5)a5=a5*corr+e*float(vc[vb+ln+160u]);if(g6)"
-        "a6=a6*corr+e*float(vc[vb+ln+192u]);if(g7)a7=a7*corr+e*float(vc[vb+ln+224u]);if(g8)a8=a8*"
-        "corr+e*float(vc[vb+ln+256u]);if(g9)a9=a9*corr+e*float(vc[vb+ln+288u]);if(g10)a10=a10*corr+"
-        "e*float(vc[vb+ln+320u]);if(g11)a11=a11*corr+e*float(vc[vb+ln+352u]);if(g12)a12=a12*corr+e*"
-        "float(vc[vb+ln+384u]);if(g13)a13=a13*corr+e*float(vc[vb+ln+416u]);if(g14)a14=a14*corr+e*"
-        "float(vc[vb+ln+448u]);if(g15)a15=a15*corr+e*float(vc[vb+ln+480u]);m=mn;}if(ln==0u){tm[sg]="
+        "vb=p.vco+t*p.kvh*hd+kvh*hd;a0=a0*corr+e*KVF(vc[vb+ln]);if(g1)a1=a1*corr+e*KVF(vc[vb+"
+        "ln+32u]);if(g2)a2=a2*corr+e*KVF(vc[vb+ln+64u]);if(g3)a3=a3*corr+e*KVF(vc[vb+ln+96u]);"
+        "if(g4)a4=a4*corr+e*KVF(vc[vb+ln+128u]);if(g5)a5=a5*corr+e*KVF(vc[vb+ln+160u]);if(g6)"
+        "a6=a6*corr+e*KVF(vc[vb+ln+192u]);if(g7)a7=a7*corr+e*KVF(vc[vb+ln+224u]);if(g8)a8=a8*"
+        "corr+e*KVF(vc[vb+ln+256u]);if(g9)a9=a9*corr+e*KVF(vc[vb+ln+288u]);if(g10)a10=a10*corr+"
+        "e*KVF(vc[vb+ln+320u]);if(g11)a11=a11*corr+e*KVF(vc[vb+ln+352u]);if(g12)a12=a12*corr+e*"
+        "KVF(vc[vb+ln+384u]);if(g13)a13=a13*corr+e*KVF(vc[vb+ln+416u]);if(g14)a14=a14*corr+e*"
+        "KVF(vc[vb+ln+448u]);if(g15)a15=a15*corr+e*KVF(vc[vb+ln+480u]);m=mn;}if(ln==0u){tm[sg]="
         "m;tl[sg]=l;}uint "
         "tb=sg*hd+ln;ta[tb]=a0;if(g1)ta[tb+32u]=a1;if(g2)ta[tb+64u]=a2;if(g3)ta[tb+96u]=a3;if(g4)"
         "ta[tb+128u]=a4;if(g5)ta[tb+160u]=a5;if(g6)ta[tb+192u]=a6;if(g7)ta[tb+224u]=a7;if(g8)ta[tb+"
@@ -2365,8 +2382,8 @@ static const char metal_attn_dec512_f16_source_b[] =
 /* No-norm head (the engine applies q-norm and rope as
  * separate ops): plain Q load into qv, then the shared split-KV body. */
 static const char metal_attn_dec_f16_plain_head[] =
-        "kernel void attention_dec_f16(device const float*q[[buffer(0)]],device const "
-        "half*kc[[buffer(1)]],device const half*vc[[buffer(2)]],device "
+        "kernel void ATTN(dec)(device const float*q[[buffer(0)]],device const "
+        "KVT*kc[[buffer(1)]],device const KVT*vc[[buffer(2)]],device "
         "float*pb[[buffer(3)]],constant A&p[[buffer(4)]],constant SP&sp[[buffer(5)]],uint2 "
         "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]],uint "
         "sg[[simdgroup_index_in_threadgroup]],uint ln[[thread_index_in_simdgroup]]){"
