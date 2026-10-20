@@ -2,8 +2,10 @@
 # when that file changes. Runners of the geisten org: ubuntu-24.04 = desktop
 # (docker, 4 parallel), ubuntu-24.04-tsan = desktop (docker, see the tsan
 # job), ubuntu-24.04-arm = Pi 5 (docker, one job at a time under the board
-# lock), macos-15 = the M1 Max (host). No Intel Mac leg; the hardware tier is
-# in its own workflows here (docs/HARDWARE_CI.md).
+# lock), macos-15 = the M1 Max's light runner (host, no lock: build + unit),
+# macos-15-heavy = the M1 Max under its benchmark lock (real models, timing).
+# No Intel Mac leg; the hardware tier is in its own workflows here
+# (docs/HARDWARE_CI.md).
 name: CI
 
 on:
@@ -102,7 +104,7 @@ jobs:
           # macos-15 runners expose a real Metal device, so the probe and parity gate
           # below execute on GPU.
           - name: macOS arm64
-            runner: macos-15
+            runner: macos-15-heavy
             target: mac-omp
             cc: clang
             bflags: BACKENDS="metal cpu_neon cpu_scalar"

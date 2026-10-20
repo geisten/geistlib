@@ -26,7 +26,7 @@ tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib \
 | `vulkan-gpu` | `geist-vulkan` | nightly + dispatch: Vulkan suite + model e2e on the discrete GPU |
 | `vulkan-ab` | `geist-vulkan` | dispatch: A/B on one Vulkan device or the Zen 5 CPU |
 | `cross-engine-campaign` | `geist-vulkan` | dispatch: one cell of the cross-engine matrix |
-| `bench-matrix` | per column (`geist-avx512`, `geist-vulkan`, `macos-15`, `pi5`) | nightly (Sundays: every model) + dispatch: the cross-engine matrix, published to [geisten.net/bench](https://geisten.net/bench/) |
+| `bench-matrix` | per column (`geist-avx512`, `geist-vulkan`, `macos-15-heavy`, `pi5`) | nightly (Sundays: every model) + dispatch: the cross-engine matrix, published to [geisten.net/bench](https://geisten.net/bench/) |
 
 ### Benchmark matrix
 
@@ -39,8 +39,8 @@ the pinned llama.cpp (`scripts/ensure-llama-bench.sh`) and runs
 `tools/bench_cross_engine.py` inside the host lock: `/tmp/geist-bench.lock`
 on the desktop (the docker CI runner's health check pauses it while held),
 `with-pi-lock` on the Pi, `~/bin/with-mac-lock` on the Mac (`/tmp/mac-heavy.lock`; the
-`mac-m1max` runner's hooks hold it for every job and its health check takes no
-job while an agent holds it). The Apple profiles gate on idle CPU (>= 80 %
+`mac-m1max` runner (`macos-15-heavy`) holds it for every job and takes no
+job while an agent holds it — see "Mac runners"). The Apple profiles gate on idle CPU (>= 80 %
 over the settle window) instead of the load average, which macOS on a shared
 desktop never brings near 0.2/core, and measure a run again when its repeats
 spread by more than 5 % (`host_gate` in the protocol's host profile).
@@ -54,7 +54,8 @@ rebuilds `index.html`/`history.json` and fails when geist slowed by more than
 One host-mode `gitea-runner` (v5, `capacity: 1`) per machine, registered on
 the `geisten` organisation (geistlib and geist-runtime share them), so jobs on
 one machine never overlap. The CI runners in docker mode are separate
-(`ubuntu-24.04`, `ubuntu-24.04-tsan`, `ubuntu-24.04-arm`, `macos-15`):
+(`ubuntu-24.04`, `ubuntu-24.04-tsan`, `ubuntu-24.04-arm`); the Mac's two
+runners are described below:
 
 | machine | name | labels | install |
 | :-- | :-- | :-- | :-- |
@@ -67,6 +68,39 @@ one machine never overlap. The CI runners in docker mode are separate
 `runner-job-completed.sh`: they hold `/tmp/pi-heavy.lock` for the whole job,
 so these jobs also wait for other runners on the board.
 Heavy steps still go through `~/bin/with-pi-lock`.
+
+### Mac runners (M1 Max, host mode)
+
+The Mac is shared with agents and the human, who take `~/bin/with-mac-lock`
+(`/tmp/mac-heavy.lock`) for every benchmark. It has two org runners, so a
+build never waits behind a benchmark and CI never holds the lock for a
+compile:
+
+| name | label | lock | install |
+| :-- | :-- | :-- | :-- |
+| `mac-light` | `macos-15:host` | none; daemon at `nice 10` | `~/gitea-runner-mac-light`, LaunchAgent `net.geisten.gitea-runner-mac-light` (`Nice` 10) |
+| `mac-m1max` | `macos-15-heavy:host` | held for the whole job | `~/gitea-runner-geisten`, LaunchAgent `net.geisten.gitea-runner-geisten` |
+
+`mac-m1max`'s hooks (`~/bin/mac-runner-job-started.sh` /
+`mac-runner-job-completed.sh`) hold the lock while a job runs, and its
+health check (`~/bin/mac-runner-free.sh`) takes no job while someone else
+holds it. `mac-light` has neither. Each has its own `cache.dir` and
+`host.workdir_parent` (host mode clones actions there), so the two never
+race on one action checkout. Both run with `capacity: 1` and
+`fetch_timeout: 30s`.
+
+Which label a job takes:
+
+- `macos-15-heavy` — the job loads a real model or its result is a timing:
+  the `macOS arm64` leg of CI (Metal parity, qwen3.5 integration, perf
+  gate; `scripts/gitea-ci.py` sets it, GitHub's copy keeps `macos-15`) and
+  the Mac columns of `bench-matrix` (`benchmark/bench_matrix.json`).
+- `macos-15` — build and model-free tests: CI's `macOS arm64 GCD (no
+  OpenMP)` leg and the release build (`release.yml` `macos-arm64`). These
+  may run while an agent measures; nice 10 keeps them behind it, not out.
+
+A step that must not overlap a measurement on a `macos-15` job wraps itself
+in `~/bin/with-mac-lock`; better, it moves to `macos-15-heavy`.
 
 Gitea's own job timeout (`[actions] ENDLESS_TASK_TIMEOUT`, 3 h by default)
 caps every job, whatever `timeout-minutes` says — `cross-engine-campaign`
