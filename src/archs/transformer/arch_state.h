@@ -485,9 +485,15 @@ struct transformer_arch_session {
     /* ---- Layer split (#49): the session on the model's split stage, which
      * runs layers [0, model->split->layer_hi) on the split backend, and the
      * host staging of the hidden rows that cross the boundary
-     * ([m_max, d_model]). nullptr without a split. */
+     * ([m_max, d_model]). nullptr without a split. split_h_io: an IO buffer
+     * of that size on the split backend, where it has buffer_copy: the
+     * stage's output rows come back through it by a device copy into cached
+     * host memory instead of a host read of the stage's own scratch, which on
+     * Vulkan is the uncached BAR window (#84). nullptr: the read-back maps
+     * the scratch. */
     struct transformer_arch_session *split_sess;
     float                           *split_rows;
+    struct geist_buffer             *split_h_io;
 
     /* ---- Offload (#78): the session on the model's twins, and the IO
      * buffers on the split backend the twins' K/V rows and output rows come
