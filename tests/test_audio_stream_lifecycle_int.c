@@ -16,6 +16,7 @@
  * Skips cleanly when the model has no audio tower, like every other audio
  * suite here.
  */
+#include "audio_test_util.h"
 #include "test_helpers.h"
 
 #include <geist.h>
@@ -75,12 +76,13 @@ int main(void) {
     }
     s = geist_session_audio_begin(probe);
     if (s == GEIST_E_NOT_FOUND || s == GEIST_E_UNSUPPORTED) {
-        printf("SKIP: no streaming audio encoder — %s\n", geist_session_errmsg(probe));
+        char why[256]; /* the message dies with the session */
+        snprintf(why, sizeof why, "%s", geist_session_errmsg(probe));
         geist_session_destroy(probe);
         free(pcm);
         geist_model_destroy(model);
         geist_backend_destroy(be);
-        return GEIST_TEST_SKIP;
+        audio_test_skip_no_tower(why);
     }
     g_fail |= geist_expect(s == GEIST_OK, "audio_begin on a fresh session");
 

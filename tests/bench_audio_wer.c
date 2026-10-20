@@ -179,6 +179,7 @@ out:
 int main(int argc, char **argv) {
     GEIST_REQUIRE_ARGS(argc, 2, "<wavlist.txt>");
     GEIST_REQUIRE_GGUF(model_path);
+    (void) audio_test_find_tower(); /* a dead link or bad env fails, not skips (#57) */
 
     FILE *list = fopen(argv[1], "r");
     GEIST_SKIP_IF(list == nullptr, "cannot open wav list");

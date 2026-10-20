@@ -136,13 +136,20 @@ static inline int geist_expect(int cond, const char *what) {
  * skip means coverage silently vanished — a rotated cache key or an HTTP 404
  * would leave the suite green while testing nothing.
  *
- * GEIST_STRICT_FIXTURES=gguf turns exactly that class of skip into a failure.
- * Deliberately scoped to GGUF: the vision/audio/safetensors suites gate on
- * assets nobody downloads, and asset-gated skips stay skips. Use
- * GEIST_SKIP_FIXTURE only where a fixture is expected to be present in CI. */
-static inline bool geist_test_fixtures_strict(void) {
+ * GEIST_STRICT_FIXTURES names the fixture classes the environment provides,
+ * comma-separated; a skip for a missing fixture of a named class fails.
+ *   gguf   the GGUF models (GEIST_SKIP_FIXTURE, GEIST_REQUIRE_GGUF)
+ *   audio  the Gemma 4 audio tower (audio_test_util.h; legs that run
+ *          `make fetch-audio-tower`)
+ * Vision and safetensors suites gate on assets nobody downloads; their
+ * skips stay skips. */
+static inline bool geist_test_fixtures_strict_for(const char *fixture_class) {
     const char *v = getenv("GEIST_STRICT_FIXTURES");
-    return v != nullptr && strstr(v, "gguf") != nullptr;
+    return v != nullptr && strstr(v, fixture_class) != nullptr;
+}
+
+static inline bool geist_test_fixtures_strict(void) {
+    return geist_test_fixtures_strict_for("gguf");
 }
 
 #define GEIST_SKIP_FIXTURE(reason)                                               \

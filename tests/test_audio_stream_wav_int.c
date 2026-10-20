@@ -43,9 +43,14 @@ static int16_t *read_wav_pcm(const char *path, size_t *n_samples_out, int *sampl
     return audio_test_read_wav(path, n_samples_out, sample_rate_out);
 }
 
+/* audio_test_find_tower (env, default path, dead-link check), then two
+ * paths relative to a build directory. */
 static const char *find_audio_tower(void) {
+    const char *tower = audio_test_find_tower();
+    if (tower != nullptr) {
+        return tower;
+    }
     static const char *cands[] = {
-            "audio_bench/audio_tower.safetensors",
             "../audio_bench/audio_tower.safetensors",
             "../gemma-4-E2B-it/audio_tower.safetensors",
             nullptr,
@@ -64,7 +69,7 @@ int main(int argc, char **argv) {
     const char *wav_path   = argc > 1 ? argv[1] : "audio_test_data/en_long.wav";
     const char *tower_path = find_audio_tower();
     if (tower_path == nullptr) {
-        GEIST_SKIP("audio_tower.safetensors not found in audio_bench/ or sibling dirs");
+        audio_test_skip_no_tower("not in audio_bench/ or ../");
     }
 
     size_t   n_samples;
