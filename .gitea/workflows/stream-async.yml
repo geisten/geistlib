@@ -30,6 +30,10 @@ on:
         description: "interleaved cycles"
         type: string
         default: "3"
+      bench:
+        description: "run the prefill measurement"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -75,10 +79,12 @@ jobs:
             echo "== split $SPLIT + offload, async=$a" | tee -a out/correct.txt
             GEIST_VK_STREAM_ASYNC=$a GEIST_SPLIT_BACKEND=vulkan GEIST_SPLIT_GGUF_PATH="$MODEL" \
               GEIST_SPLIT_POINTS="$SPLIT" GEIST_OFFLOAD_M_MIN=32 GEIST_VK_VERBOSE=1 \
-              bin/linux/release/tests/test_layer_split_int 2>&1 \
-              | grep -E 'kv .* split|FAIL|spill:|async' | tee -a out/correct.txt || true
+              bin/linux/release/tests/test_layer_split_int > out/split-async$a.txt 2>&1 || true
+            grep -E 'kv .* split|FAIL|spill:|async|out of device memory' out/split-async$a.txt \
+              | sort | uniq -c | tee -a out/correct.txt
           done
       - name: Prefill, async off/on interleaved
+        if: inputs.bench
         run: |
           set -eo pipefail
           . scripts/gpu-lock.sh
