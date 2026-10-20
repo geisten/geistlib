@@ -1,0 +1,10 @@
+[Unit]
+Description=CI hygiene every 10 min (geistlib scripts/ci-hygiene.sh)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
