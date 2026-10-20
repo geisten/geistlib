@@ -25,21 +25,13 @@
 
 /* Defined in src/engine/backend_registry.c. NULL-terminated. */
 extern const struct geist_backend_descriptor *const geist_backend_registry[];
+extern const struct geist_backend_descriptor *const geist_backend_auto_first;
 
-/* Auto-pick: first entry in the registry. Backends list themselves in the
- * registry in preference order (cpu_neon before cpu_scalar etc.). */
-static const struct geist_backend_descriptor *resolve_descriptor(const char *name) {
-    if (name == nullptr || name[0] == '\0' || strcmp(name, "auto") == 0) {
-        /* GEIST_BACKEND overrides auto (same convention as the bench
-         * harness's GEIST_BENCH_BACKEND) — without it every "auto"
-         * caller silently gets registry[0] and GPU builds cannot be
-         * exercised end-to-end from the CLI or eval tools. */
-        const char *env = getenv("GEIST_BACKEND");
-        if (env == nullptr || env[0] == '\0') {
-            return geist_backend_registry[0]; /* may be nullptr if no backends linked */
-        }
-        name = env;
-    }
+static bool is_auto_name(const char *name) {
+    return name == nullptr || name[0] == '\0' || strcmp(name, "auto") == 0;
+}
+
+static const struct geist_backend_descriptor *registry_find(const char *name) {
     for (size_t i = 0; geist_backend_registry[i] != nullptr; i++) {
         if (strcmp(geist_backend_registry[i]->name, name) == 0) {
             return geist_backend_registry[i];
@@ -48,25 +40,19 @@ static const struct geist_backend_descriptor *resolve_descriptor(const char *nam
     return nullptr;
 }
 
-enum geist_status geist_backend_create(const char                      *name,
-                                       const struct geist_backend_opts *opts,
-                                       const struct geist_allocator    *alloc,
-                                       struct geist_backend           **out) {
-    if (out == nullptr) {
-        geist_error_set_create_time(
-                GEIST_E_INVALID_ARG, "geist_backend_create", "out parameter is null");
-        return GEIST_E_INVALID_ARG;
-    }
-    *out = nullptr;
+/* The backend "auto" settles on when geist_backend_auto_first is absent or
+ * refuses: the first registry entry (backends list themselves in preference
+ * order, cpu_neon before cpu_scalar etc.), or nullptr if no backend is
+ * linked. */
+static const struct geist_backend_descriptor *auto_cpu_descriptor(void) {
+    const struct geist_backend_descriptor *d = geist_backend_registry[0];
+    return d != geist_backend_auto_first ? d : nullptr;
+}
 
-    const struct geist_backend_descriptor *desc = resolve_descriptor(name);
-    if (desc == nullptr) {
-        geist_error_set_create_time(GEIST_E_NOT_FOUND,
-                                    "geist_backend_create",
-                                    "no backend named '%s' is compiled in",
-                                    name == nullptr ? "(null)" : name);
-        return GEIST_E_NOT_FOUND;
-    }
+[[nodiscard]] static enum geist_status create_from(const struct geist_backend_descriptor *desc,
+                                                   const struct geist_backend_opts       *opts,
+                                                   const struct geist_allocator          *alloc,
+                                                   struct geist_backend                 **out) {
     if (desc->vtbl == nullptr || desc->vtbl->destroy == nullptr) {
         geist_error_set_create_time(GEIST_E_INTERNAL,
                                     "geist_backend_create",
@@ -106,6 +92,8 @@ enum geist_status geist_backend_create(const char                      *name,
             .alloc    = *a,
             .state    = nullptr,
             .err_code = GEIST_OK,
+            .has_opts = opts != nullptr,
+            .opts     = opts != nullptr ? *opts : (struct geist_backend_opts) {0},
     };
     be->err_msg[0] = '\0';
     pthread_mutex_init(&be->err_mu, nullptr);
@@ -120,6 +108,7 @@ enum geist_status geist_backend_create(const char                      *name,
                                         "backend '%s' init failed: %s",
                                         desc->name,
                                         be->err_msg[0] != '\0' ? be->err_msg : "(no detail)");
+            pthread_mutex_destroy(&be->err_mu);
             a->free(a->ctx, be);
             return s;
         }
@@ -127,6 +116,71 @@ enum geist_status geist_backend_create(const char                      *name,
 
     *out = be;
     return GEIST_OK;
+}
+
+enum geist_status geist_backend_create(const char                      *name,
+                                       const struct geist_backend_opts *opts,
+                                       const struct geist_allocator    *alloc,
+                                       struct geist_backend           **out) {
+    if (out == nullptr) {
+        geist_error_set_create_time(
+                GEIST_E_INVALID_ARG, "geist_backend_create", "out parameter is null");
+        return GEIST_E_INVALID_ARG;
+    }
+    *out = nullptr;
+
+    if (is_auto_name(name)) {
+        /* GEIST_BACKEND overrides auto (same convention as the bench
+         * harness's GEIST_BENCH_BACKEND) — without it every "auto"
+         * caller gets the default pick and GPU builds cannot be exercised
+         * end-to-end from the CLI or eval tools. A name given this way is
+         * explicit: it never falls back. */
+        const char *env = getenv("GEIST_BACKEND");
+        if (!is_auto_name(env)) {
+            name = env;
+        }
+    }
+    if (!is_auto_name(name)) {
+        const struct geist_backend_descriptor *desc = registry_find(name);
+        if (desc == nullptr) {
+            geist_error_set_create_time(GEIST_E_NOT_FOUND,
+                                        "geist_backend_create",
+                                        "no backend named '%s' is compiled in",
+                                        name);
+            return GEIST_E_NOT_FOUND;
+        }
+        return create_from(desc, opts, alloc, out);
+    }
+
+    /* "auto": the GPU that wins on this platform when it comes up (Metal on
+     * Apple silicon), else the CPU backend. A model load that the GPU
+     * refuses retries on the CPU backend (model.c), so `auto_cpu` records
+     * whether one exists to retry on. */
+    const struct geist_backend_descriptor *cpu = auto_cpu_descriptor();
+    if (geist_backend_auto_first != nullptr &&
+        create_from(geist_backend_auto_first, opts, alloc, out) == GEIST_OK) {
+        (*out)->auto_cpu = cpu != nullptr;
+        return GEIST_OK;
+    }
+    if (cpu == nullptr) {
+        if (geist_backend_auto_first == nullptr) {
+            geist_error_set_create_time(
+                    GEIST_E_NOT_FOUND, "geist_backend_create", "no backend is compiled in");
+            return GEIST_E_NOT_FOUND;
+        }
+        return geist_create_error_code(); /* the GPU's refusal, already recorded */
+    }
+    return create_from(cpu, opts, alloc, out);
+}
+
+enum geist_status geist_backend_create_auto_cpu(const struct geist_backend *gpu,
+                                                struct geist_backend      **out) {
+    *out                                        = nullptr;
+    const struct geist_backend_descriptor *desc = auto_cpu_descriptor();
+    if (gpu == nullptr || !gpu->auto_cpu || desc == nullptr) {
+        return GEIST_E_NOT_FOUND;
+    }
+    return create_from(desc, gpu->has_opts ? &gpu->opts : nullptr, &gpu->alloc, out);
 }
 
 void geist_backend_destroy(struct geist_backend *be) {

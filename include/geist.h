@@ -151,8 +151,14 @@ struct geist_backend_opts {
 
 /* @stability STABLE since 0.1.0
  * Create a backend by name (e.g. "cpu_neon", "cpu_scalar", "auto"). The
- * special name "auto" picks the best linked backend for the host. Pass
- * nullptr opts/alloc for defaults. */
+ * special name "auto" (also nullptr or "") picks the best linked backend for
+ * the host: Metal on Apple silicon when it is built in and finds a GPU, else
+ * the preferred CPU backend; GEIST_BACKEND=<name> in the environment
+ * replaces it with that explicit name. A model that the GPU picked by "auto"
+ * refuses (weight formats or memory budget) loads on the CPU backend
+ * instead; geist_model_backend_name says which one runs it
+ * (docs/API_CONTRACT.md). Explicit names never fall back. Pass nullptr
+ * opts/alloc for defaults. */
 enum geist_status geist_backend_create(const char                      *name,
                                        const struct geist_backend_opts *opts,
                                        const struct geist_allocator    *alloc,
@@ -222,6 +228,14 @@ enum geist_status geist_model_load_from_memory_with_opts(const void             
  * its model-specific template by this key. Owned by the model; valid until
  * geist_model_destroy. */
 const char *geist_model_arch(const struct geist_model *m);
+
+/* @stability EXPERIMENTAL
+ * The name of the backend the model runs on ("metal", "cpu_neon", ...). It
+ * is geist_backend_name of the backend passed to the load, except when that
+ * backend came from "auto" and refused the model: the model then runs on a
+ * CPU backend it created and owns, and the name is that backend's. nullptr
+ * for a null model. Valid until geist_model_destroy. */
+const char *geist_model_backend_name(const struct geist_model *m);
 
 /* @stability EXPERIMENTAL (#622)
  * A string entry of the model's GGUF metadata ("tokenizer.chat_template",

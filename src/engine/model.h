@@ -52,7 +52,26 @@ struct geist_model {
 
     /* Owning backend (weights live in its buffers). */
     struct geist_backend *backend;
+
+    /* Set when the caller's "auto" backend refused the load and `backend`
+     * is the CPU backend the model created and owns instead: the caller's
+     * handle, which geist_session_create / geist_decision_create still
+     * accept as the model's backend. nullptr otherwise. */
+    struct geist_backend *auto_backend;
 };
+
+/* True when `be` is the backend a caller may pass with model `m`: the one
+ * it was loaded on, or the "auto" handle it fell back from. */
+static inline bool geist_model_accepts_backend(const struct geist_model   *m,
+                                               const struct geist_backend *be) {
+    return be != nullptr && (be == m->backend || be == m->auto_backend);
+}
+
+/* For a backend that "auto" made a GPU backend (be->auto_cpu): create the
+ * CPU backend "auto" would have picked otherwise, with the same opts and
+ * allocator. GEIST_E_NOT_FOUND when `gpu` has none. Defined in backend.c. */
+[[nodiscard]] enum geist_status geist_backend_create_auto_cpu(const struct geist_backend *gpu,
+                                                              struct geist_backend      **out);
 
 /* Architecture registry — array of descriptors, gated by #if GEIST_ARCH_*.
  * Defined in src/engine/arch_registry.c. NULL-terminated. */

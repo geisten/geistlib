@@ -125,7 +125,8 @@ int main(int argc, char **argv) {
         prompt = "Hello, my name is";
     }
 
-    /* "auto" picks the best backend compiled into this build for the host. */
+    /* "auto" picks the best backend compiled into this build for the host
+     * (metal on Apple Silicon); a model metal cannot run loads on the CPU. */
     struct geist_backend *be = nullptr;
     if (geist_backend_create("auto", nullptr, nullptr, &be) != GEIST_OK) {
         fprintf(stderr, "backend_create failed: %s\n", geist_last_create_error());
@@ -141,14 +142,21 @@ int main(int argc, char **argv) {
         geist_backend_destroy(be);
         return 1;
     }
-    fprintf(stderr, "loaded embedded model (arch: %s)\n", geist_model_arch(model));
+    fprintf(stderr,
+            "loaded embedded model (arch: %s, backend: %s)\n",
+            geist_model_arch(model),
+            geist_model_backend_name(model));
 #else
     if (geist_model_load(model_path, be, &model) != GEIST_OK) {
         fprintf(stderr, "model_load failed: %s\n", geist_last_create_error());
         geist_backend_destroy(be);
         return 1;
     }
-    fprintf(stderr, "loaded %s (arch: %s)\n", model_path, geist_model_arch(model));
+    fprintf(stderr,
+            "loaded %s (arch: %s, backend: %s)\n",
+            model_path,
+            geist_model_arch(model),
+            geist_model_backend_name(model));
 #endif
 
     /* Zero-initialized opts == greedy decode (temperature 0). With sampling
