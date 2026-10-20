@@ -773,6 +773,9 @@ int main(void) {
         run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 384, ragged[r]);
         run_case(mt, ref, GEIST_DTYPE_F32, "F32", 512, 384, ragged[r]);
         run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 384, ragged[r]);
+        run_case(mt, ref, GEIST_DTYPE_Q4_1, "Q4_1", 512, 384, ragged[r]);
+        run_case(mt, ref, GEIST_DTYPE_Q8_0, "Q8_0", 512, 384, ragged[r]);
+        run_case(mt, ref, GEIST_DTYPE_IQ4_XS, "IQ4XS", 512, 384, ragged[r]);
     }
     run_case(mt, ref, GEIST_DTYPE_Q4_0, "Q4_0", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_Q4_0, "Q4_0", 512, 383, 8);
