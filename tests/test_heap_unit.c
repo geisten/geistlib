@@ -19,6 +19,7 @@
 
 #include "heap.h"
 
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -30,6 +31,24 @@
             return GEIST_TEST_FAIL;               \
         }                                         \
     } while (0)
+
+/* heap_tl_grow on a thread that then exits: under LSan (MODE=asan) a
+ * buffer not freed at thread exit is a leak (#100). */
+static void *tl_grow_thread(void *arg) {
+    static _Thread_local float *buf = nullptr;
+    static _Thread_local size_t cap = 0;
+    int                        *ok  = arg;
+    *ok                             = heap_tl_grow_array(buf, cap, 100) && cap == 100;
+    float *const   first            = buf;
+    const uint64_t n                = heap_alloc_count();
+    *ok = *ok && heap_tl_grow_array(buf, cap, 50) && buf == first && heap_alloc_count() == n;
+    *ok = *ok && heap_tl_grow_array(buf, cap, 1000) && cap == 1000;
+    heap_fail_allocations(true);
+    *ok = *ok && !heap_tl_grow_array(buf, cap, 2000) && buf == nullptr && cap == 0;
+    heap_fail_allocations(false);
+    *ok = *ok && heap_tl_grow_array(buf, cap, 10);
+    return nullptr;
+}
 
 int main(void) {
     /* ---- heap_alloc_aligned -------------------------------------------- */
@@ -111,6 +130,16 @@ int main(void) {
     void *nullp = nullptr;
     safe_free(&nullp);
     safe_free(nullptr);
+
+    /* ---- heap_tl_grow (#100) ------------------------------------------- */
+    for (int i = 0; i < 4; i++) {
+        int       ok = 0;
+        pthread_t th;
+        CHECK(pthread_create(&th, nullptr, tl_grow_thread, &ok) == 0 &&
+                      pthread_join(th, nullptr) == 0,
+              "thread");
+        CHECK(ok, "heap_tl_grow grows, keeps a big enough buffer, fails cleanly");
+    }
 
     printf("PASS: heap alloc/calloc/alloc_n — zero/overflow/alignment guards, "
            "including the array macros at the SIZE_MAX boundary\n");

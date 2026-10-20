@@ -362,14 +362,8 @@ void linear_q6k_decode_w6a8_pre(size_t       n_in,
     static _Thread_local size_t   bsums_cap = 0;
     /* 16 int16 sub-block bsums per super-block. */
     const size_t bsums_need = n_blocks_per_row * 16;
-    if (bsums_cap < bsums_need) {
-        safe_free((void **) &bsums_tl);
-        bsums_tl = heap_alloc_array_aligned(int16_t, bsums_need);
-        if (bsums_tl == nullptr) {
-            bsums_cap = 0;
-            return;
-        }
-        bsums_cap = bsums_need;
+    if (!heap_tl_grow_array(bsums_tl, bsums_cap, bsums_need)) {
+        return;
     }
     for (size_t b = 0; b < n_blocks_per_row; b++) {
         const int8_t *xb = x_q8 + b * Q6_K_BLOCK_ELEMS;
@@ -571,14 +565,8 @@ void linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
     const size_t                                      n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
     static _Thread_local struct q8k_activation_block *q8_tl            = nullptr;
     static _Thread_local size_t                       q8_cap           = 0;
-    if (q8_cap < n_blocks_per_row) {
-        safe_free((void **) &q8_tl);
-        q8_tl = heap_alloc_array_aligned(struct q8k_activation_block, n_blocks_per_row);
-        if (q8_tl == nullptr) {
-            q8_cap = 0;
-            return;
-        }
-        q8_cap = n_blocks_per_row;
+    if (!heap_tl_grow_array(q8_tl, q8_cap, n_blocks_per_row)) {
+        return;
     }
     for (size_t b = 0; b < n_blocks_per_row; b++) {
         struct q8k_activation_block *qb = q8_tl + b;
@@ -952,14 +940,9 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
         static _Thread_local int8_t *q6kpack_tl  = nullptr;
         static _Thread_local size_t  q6kpack_cap = 0;
         const size_t                 need        = m * n_in;
-        if (need > q6kpack_cap) {
-            /* The packing loop fully repopulates the buffer before any read,
-             * so dropping the old contents on grow is safe. */
-            safe_free((void **) &q6kpack_tl);
-            q6kpack_tl  = heap_alloc_array_aligned(int8_t, need);
-            q6kpack_cap = (q6kpack_tl != nullptr) ? need : 0;
-        }
-        if (q6kpack_cap >= need) {
+        /* The packing loop fully repopulates the buffer before any read,
+         * so dropping the old contents on grow is safe. */
+        if (heap_tl_grow_array(q6kpack_tl, q6kpack_cap, need)) {
             int8_t *pk = q6kpack_tl;
             for (size_t b = 0; b < n_blocks_per_row; b++)
                 for (size_t t = 0; t < m; t++)
@@ -979,12 +962,7 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
         static _Thread_local float *q6kxs_tl  = nullptr;
         static _Thread_local size_t q6kxs_cap = 0;
         const size_t                need      = m * n_blocks_per_row;
-        if (need > q6kxs_cap) {
-            safe_free((void **) &q6kxs_tl);
-            q6kxs_tl  = heap_alloc_array_aligned(float, need);
-            q6kxs_cap = (q6kxs_tl != nullptr) ? need : 0;
-        }
-        if (q6kxs_cap >= need) {
+        if (heap_tl_grow_array(q6kxs_tl, q6kxs_cap, need)) {
             for (size_t b = 0; b < n_blocks_per_row; b++)
                 for (size_t t = 0; t < m; t++)
                     q6kxs_tl[b * m + t] = x_scales[t * n_blocks_per_row + b];

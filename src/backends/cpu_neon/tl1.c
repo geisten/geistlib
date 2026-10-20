@@ -324,15 +324,9 @@ void cpu_neon_w_tl1_m1(const float               *x,
 
     static _Thread_local int8_t *xq_cache = nullptr;
     static _Thread_local size_t  xq_cap   = 0;
-    if (xq_cap < n_in) {
-        safe_free((void **) &xq_cache);
-        xq_cache = heap_alloc_array_aligned(int8_t, n_in);
-        if (xq_cache == nullptr) {
-            xq_cap = 0;
-            geist_linear_ref(1, x, w, y); /* raw still holds TQ2_0 */
-            return;
-        }
-        xq_cap = n_in;
+    if (!heap_tl_grow_array(xq_cache, xq_cap, n_in)) {
+        geist_linear_ref(1, x, w, y); /* raw still holds TQ2_0 */
+        return;
     }
     int8_t *xq      = xq_cache;
     float   max_abs = 1e-5f;
@@ -365,15 +359,9 @@ void cpu_neon_w_tl1_m1(const float               *x,
     const size_t                 lut_total        = n_k_tiles * lut_bytes_per_kt;
     static _Thread_local int8_t *lut_scratch_tl   = nullptr;
     static _Thread_local size_t  lut_cap          = 0;
-    if (lut_cap < lut_total) {
-        safe_free((void **) &lut_scratch_tl);
-        lut_scratch_tl = heap_alloc_array_aligned(int8_t, lut_total);
-        if (lut_scratch_tl == nullptr) {
-            lut_cap = 0;
-            geist_linear_ref(1, x, w, y); /* raw still holds TQ2_0 */
-            return;
-        }
-        lut_cap = lut_total;
+    if (!heap_tl_grow_array(lut_scratch_tl, lut_cap, lut_total)) {
+        geist_linear_ref(1, x, w, y); /* raw still holds TQ2_0 */
+        return;
     }
     /* Snapshot the thread-local pointer for the ranges below, which may
      * run on other threads (whose _Thread_local copies are their own). */

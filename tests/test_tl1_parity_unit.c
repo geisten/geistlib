@@ -170,5 +170,12 @@ int main(void) {
     }
     printf("mismatches: %d / %zu\n", n_mismatch, n_out);
     free(scales_tq2);
+    free(y_ref);
+    free(y_tl1);
+    free(tl1_buf);
+    free(tq2_buf);
+    free(x);
+    free(scales);
+    free(trits);
     return n_mismatch == 0 ? 0 : 1;
 }

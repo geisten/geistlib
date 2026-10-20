@@ -75,3 +75,14 @@ void *heap_alloc_large(size_t size, size_t alignment);
 /* Release *ptr (free(), or munmap for a heap_alloc_large mapping) and set
  * *ptr = nullptr; tolerates null ptr and null *ptr. */
 void safe_free(void **ptr);
+
+/* A thread's high-water scratch buffer: *buf holds *cap elements of `size`
+ * bytes. Grows it to at least `count` (contents dropped) and frees it when
+ * the thread exits, so a kernel's `static _Thread_local` scratch does not
+ * leak with every thread that ends (#100). `buf` must point to a
+ * _Thread_local variable. Returns false on overflow or OOM, with *buf ==
+ * nullptr and *cap == 0; true without allocating while *cap >= count. */
+[[nodiscard]] bool heap_tl_grow(void **buf, size_t *cap, size_t count, size_t size);
+/* The steady state (big enough) stays inline: no call on the hot path. */
+#define heap_tl_grow_array(_ptr, _cap, _num) \
+    ((_cap) >= (_num) || heap_tl_grow((void **) &(_ptr), &(_cap), (_num), sizeof *(_ptr)))
