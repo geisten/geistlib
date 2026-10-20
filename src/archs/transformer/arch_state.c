@@ -2062,8 +2062,9 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
         const char *env_f16 = getenv("GEIST_KV_F16");
         bool        want    = mode == GEIST_KV_F16;
         if (mode == GEIST_KV_FP32 && (opts == nullptr || opts->kv_mode == GEIST_KV_AUTO) &&
-            state->backend != nullptr && state->backend->desc->caps.kv_f16_by_default) {
-            want = env_f16 == nullptr || env_f16[0] != '0';
+            state->backend != nullptr) {
+            want = env_f16 != nullptr ? env_f16[0] == '1'
+                                      : state->backend->desc->caps.kv_f16_by_default;
         }
         kl.f16 = want && slot_ok && !(env_f16 != nullptr && env_f16[0] == '0');
     }
