@@ -1732,6 +1732,154 @@ static void q4k_prefill_predecoded_mtile8_ntile4_packed_tiles(void *ctx, size_t 
 
 #endif
 
+/* One full 4-row tile x 8 tokens of the SDOT kernel below (#16): 4 rows
+ * of a block are transposed once into 64 k-groups of [row0..3][4 bytes],
+ * so one vdotq_laneq_s32 adds a 4-byte k-group of one token to all four
+ * rows; eight tokens give eight independent accumulator chains. The
+ * activations stay row-major (the lane picks the k-group). Exact int32
+ * subblock sums as the scalar-reduction kernel above; float order per
+ * output element unchanged up to contraction. */
+static void q4k_sdot_tile4x8(const struct q4k_prefill_job     *job,
+                             const struct q4k_predecode_block *tile,
+                             size_t                            mt,
+                             size_t                            nt) {
+    const size_t n_in = job->n_in, n_out = job->n_out;
+    const size_t nb = n_in / Q4_K_BLOCK_ELEMS, n_chunks = n_in / 32;
+    float32x4_t  yacc[8];
+    for (int t = 0; t < 8; t++) {
+        yacc[t] = vdupq_n_f32(0.0f);
+    }
+    alignas(16) int8_t wbuf[64 * 16];
+    for (size_t b = 0; b < nb; b++) {
+        const struct q4k_predecode_block *bl = tile + b * 4;
+        for (int c = 0; c < 16; c++) {
+            const int32x4_t r0 = vreinterpretq_s32_s8(vld1q_s8(bl[0].qs + 16 * c));
+            const int32x4_t r1 = vreinterpretq_s32_s8(vld1q_s8(bl[1].qs + 16 * c));
+            const int32x4_t r2 = vreinterpretq_s32_s8(vld1q_s8(bl[2].qs + 16 * c));
+            const int32x4_t r3 = vreinterpretq_s32_s8(vld1q_s8(bl[3].qs + 16 * c));
+            const int64x2_t t0 = vreinterpretq_s64_s32(vtrn1q_s32(r0, r1));
+            const int64x2_t t1 = vreinterpretq_s64_s32(vtrn2q_s32(r0, r1));
+            const int64x2_t t2 = vreinterpretq_s64_s32(vtrn1q_s32(r2, r3));
+            const int64x2_t t3 = vreinterpretq_s64_s32(vtrn2q_s32(r2, r3));
+            vst1q_s8(wbuf + (4 * c + 0) * 16, vreinterpretq_s8_s64(vtrn1q_s64(t0, t2)));
+            vst1q_s8(wbuf + (4 * c + 1) * 16, vreinterpretq_s8_s64(vtrn1q_s64(t1, t3)));
+            vst1q_s8(wbuf + (4 * c + 2) * 16, vreinterpretq_s8_s64(vtrn2q_s64(t0, t2)));
+            vst1q_s8(wbuf + (4 * c + 3) * 16, vreinterpretq_s8_s64(vtrn2q_s64(t1, t3)));
+        }
+        int32x4_t s1[8];
+        for (int t = 0; t < 8; t++) {
+            s1[t] = vdupq_n_s32(0);
+        }
+        for (int is = 0; is < 8; is++) {
+            const int8_t *xb = job->x_q8 + mt * n_in + b * Q4_K_BLOCK_ELEMS + (size_t) is * 32;
+            int32x4_t     acc[8];
+            int8x16_t     a[8];
+            for (int t = 0; t < 8; t++) {
+                acc[t] = vdupq_n_s32(0);
+                a[t]   = vld1q_s8(xb + (size_t) t * n_in);
+            }
+            for (int j = 0; j < 4; j++) {
+                const int8x16_t w = vld1q_s8(wbuf + (is * 8 + j) * 16);
+                for (int t = 0; t < 8; t++) {
+                    switch (j) {
+                    case 0:
+                        acc[t] = vdotq_laneq_s32(acc[t], w, a[t], 0);
+                        break;
+                    case 1:
+                        acc[t] = vdotq_laneq_s32(acc[t], w, a[t], 1);
+                        break;
+                    case 2:
+                        acc[t] = vdotq_laneq_s32(acc[t], w, a[t], 2);
+                        break;
+                    default:
+                        acc[t] = vdotq_laneq_s32(acc[t], w, a[t], 3);
+                        break;
+                    }
+                }
+            }
+            for (int t = 0; t < 8; t++) {
+                a[t] = vld1q_s8(xb + (size_t) t * n_in + 16);
+            }
+            for (int j = 0; j < 4; j++) {
+                const int8x16_t w = vld1q_s8(wbuf + (is * 8 + 4 + j) * 16);
+                for (int t = 0; t < 8; t++) {
+                    switch (j) {
+                    case 0:
+                        acc[t] = vdotq_laneq_s32(acc[t], w, a[t], 0);
+                        break;
+                    case 1:
+                        acc[t] = vdotq_laneq_s32(acc[t], w, a[t], 1);
+                        break;
+                    case 2:
+                        acc[t] = vdotq_laneq_s32(acc[t], w, a[t], 2);
+                        break;
+                    default:
+                        acc[t] = vdotq_laneq_s32(acc[t], w, a[t], 3);
+                        break;
+                    }
+                }
+            }
+            const int32_t scv_a[4] = {
+                    bl[0].scales[is], bl[1].scales[is], bl[2].scales[is], bl[3].scales[is]};
+            const int32x4_t scv = vld1q_s32(scv_a);
+            for (int t = 0; t < 8; t++) {
+                s1[t] = vmlaq_s32(s1[t], acc[t], scv);
+            }
+        }
+        int32x4_t mnv[8];
+        for (int is = 0; is < 8; is++) {
+            const int32_t mn_a[4] = {
+                    bl[0].mins[is], bl[1].mins[is], bl[2].mins[is], bl[3].mins[is]};
+            mnv[is] = vld1q_s32(mn_a);
+        }
+        const float       d_a[4]  = {bl[0].d, bl[1].d, bl[2].d, bl[3].d};
+        const float       dm_a[4] = {bl[0].dmin, bl[1].dmin, bl[2].dmin, bl[3].dmin};
+        const float32x4_t dv = vld1q_f32(d_a), dmv = vld1q_f32(dm_a);
+        for (int t = 0; t < 8; t++) {
+            const int32_t *sm = job->sum32 + (mt + (size_t) t) * n_chunks + b * 8;
+            int32x4_t      s2 = vmulq_n_s32(mnv[0], sm[0]);
+            for (int is = 1; is < 8; is++) {
+                s2 = vmlaq_n_s32(s2, mnv[is], sm[is]);
+            }
+            const float32x4_t v = vsubq_f32(vmulq_f32(dv, vcvtq_f32_s32(s1[t])),
+                                            vmulq_f32(dmv, vcvtq_f32_s32(s2)));
+            yacc[t] = vmlaq_n_f32(yacc[t], v, job->x_scales[(mt + (size_t) t) * nb + b]);
+        }
+    }
+    for (int t = 0; t < 8; t++) {
+        vst1q_f32(job->y + (mt + (size_t) t) * n_out + nt * 4, yacc[t]);
+    }
+}
+
+/* Tiles [nt0, nt1) of the SDOT kernel: full 4-row tiles and full groups
+ * of 8 tokens; a ragged tile or token tail takes the kernel below. */
+static void q4k_prefill_sdot_tiles(void *ctx, size_t nt0, size_t nt1);
+
+static void q4k_prefill_sdot_tiles(void *ctx, size_t nt0, size_t nt1) {
+    const struct q4k_prefill_job     *job = ctx;
+    const struct q4k_predecode_block *w   = q4k_predecode_ntile4_blocks(job->w);
+    const size_t                      nb  = job->n_in / Q4_K_BLOCK_ELEMS;
+    const size_t                      m8  = job->m / 8 * 8;
+    for (size_t nt = nt0; nt < nt1; nt++) {
+        if (nt * 4 + 4 > job->n_out) {
+            q4k_prefill_predecoded_mtile8_ntile4_packed_tiles(ctx, nt, nt + 1);
+            continue;
+        }
+        for (size_t mt = 0; mt < m8; mt += 8) {
+            q4k_sdot_tile4x8(job, w + nt * nb * 4, mt, nt);
+        }
+        if (m8 < job->m) {
+            struct q4k_prefill_job tail = *job;
+            tail.m                      = job->m - m8;
+            tail.x_q8                   = job->x_q8 + m8 * job->n_in;
+            tail.x_scales               = job->x_scales + m8 * nb;
+            tail.sum32                  = job->sum32 + m8 * (job->n_in / 32);
+            tail.y                      = job->y + m8 * job->n_out;
+            q4k_prefill_predecoded_mtile8_ntile4_packed_tiles(&tail, nt, nt + 1);
+        }
+    }
+}
+
 /* mtile8_ntile4_packed = mtile4_ntile4_packed with the M-tile widened
  * to 8, on the same ntile4 packed format: each inner (is, b) iteration
  * amortizes 4 weight loads across 8 input rows (32 dots). Falls back to
@@ -1766,7 +1914,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
                                   .sum32    = sum32,
                                   .w        = packed,
                                   .y        = y};
-    cpu_neon_par_for_dynamic(n_tiles, 4, q4k_prefill_predecoded_mtile8_ntile4_packed_tiles, &job);
+    cpu_neon_par_for_dynamic(n_tiles, 4, q4k_prefill_sdot_tiles, &job);
 #else
     (void) x_q8;
     (void) x_scales;
