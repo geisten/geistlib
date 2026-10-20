@@ -138,12 +138,12 @@ int main(int argc, char **argv) {
     free(pcm);
     pcm = nullptr;
     if (s == GEIST_E_NOT_FOUND) {
-        printf("SKIP: audio_tower.safetensors or mel_constants.bin missing — %s\n",
-               geist_session_errmsg(sess));
+        char why[256]; /* the message dies with the session */
+        snprintf(why, sizeof why, "%s", geist_session_errmsg(sess));
         geist_session_destroy(sess);
         geist_model_destroy(model);
         geist_backend_destroy(be);
-        return GEIST_TEST_SKIP;
+        audio_test_skip_no_tower(why);
     }
     if (s != GEIST_OK) {
         fprintf(stderr, "attach_audio failed: %s\n", geist_session_errmsg(sess));

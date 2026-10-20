@@ -594,7 +594,8 @@ jobs:
   # audio tower is Range-extracted and SHA-pinned (tools/fetch_audio_tower.py,
   # cached), mel constants are checked in, the clip is synthesized
   # (tools/gen_test_wav.py). arm64 for the NEON / Pi 5 code path. A skip fails
-  # the step; no timing is asserted.
+  # the step, and GEIST_STRICT_FIXTURES=audio names the missing tower in the
+  # failure (#57); no timing is asserted.
   audio-smoke:
     name: audio harness smoke (Linux arm64, NEON)
     needs: changes
@@ -602,6 +603,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     env:
+      GEIST_STRICT_FIXTURES: audio
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
     steps:
@@ -681,6 +683,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
+      GEIST_STRICT_FIXTURES: audio
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
     steps:
@@ -1154,7 +1157,8 @@ jobs:
       # The audio engine paths (attach + the #256 streaming turn) only
       # execute with the tower present — without it their session.c lines
       # count as uncovered and the src/engine floor fires. Same pinned
-      # cache the audio-smoke job uses.
+      # cache the audio-smoke job uses; GEIST_STRICT_FIXTURES=audio below
+      # fails a tower-gated test that skips anyway (#57).
       - name: Cache audio tower
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -1185,7 +1189,7 @@ jobs:
         run: make fetch-qwen3-model
       - name: Build + run suites (MODE=cov, fixtures mandatory)
         env:
-          GEIST_STRICT_FIXTURES: gguf
+          GEIST_STRICT_FIXTURES: gguf,audio
           # Repetition-heavy int tests honor this by shrinking their loop
           # counts: line coverage is identical (same code paths), but the
           # instrumented build stops paying 24 min for 4x32x2 parallel

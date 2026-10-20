@@ -167,8 +167,8 @@ pushes to `main` are never cancelled by a later merge, so every main commit
 is measured. It builds `MODE=cov` (gcc-14, `-O2 --coverage`, Linux x86_64 on
 the desktop runner; the only arm64 runner is the Pi 5, where it took hours)
 and runs the model-free unit suite plus the real-model int suite with
-`GEIST_STRICT_FIXTURES=gguf` — a fixture skip would hollow out the
-measurement, so it fails instead. (e2e is not measured: it re-drives the same
+`GEIST_STRICT_FIXTURES=gguf,audio` — a fixture skip (model or audio tower)
+would hollow out the measurement, so it fails instead. (e2e is not measured: it re-drives the same
 engine paths for another ~30 min and moves the numbers by noise.) `gcovr`
 produces JSON + Cobertura XML + HTML (uploaded as the `coverage-report` artifact), and
 `scripts/coverage_gate.py` gates per-subsystem **line and branch** coverage

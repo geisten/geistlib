@@ -79,12 +79,12 @@ int main(int argc, char **argv) {
     s = geist_session_attach_audio(sess, n_samples, pcm, 16000);
     free(pcm);
     if (s == GEIST_E_NOT_FOUND) {
-        printf("SKIP: audio_tower.safetensors or mel_constants.bin not found\n");
-        printf("  errmsg: %s\n", geist_session_errmsg(sess));
+        char why[256]; /* the message dies with the session */
+        snprintf(why, sizeof why, "%s", geist_session_errmsg(sess));
         geist_session_destroy(sess);
         geist_model_destroy(model);
         geist_backend_destroy(be);
-        return GEIST_TEST_SKIP;
+        audio_test_skip_no_tower(why);
     }
     if (s != GEIST_OK) {
         fprintf(stderr,
