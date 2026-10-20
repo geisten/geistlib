@@ -269,12 +269,33 @@ the mutable per-conversation state: KV cache, pending logits, sampler config,
 stats. Multiple sessions can share one model. The KV cache supports quantized
 modes (`INT8`; `INT4` — K at INT8 and V packed at 4 bits, 3/4 of the INT8
 footprint; both with a default-on Hadamard rotation, `GEIST_KV_ROT=0` to opt
-out; and `KIVI` 2-bit). K stays at 8 bits because a 4-bit K breaks QK-norm models
-(Qwen3, Gemma): their K rows carry outlier channels that a 4-bit grid cannot
-hold even rotated, while V at 4 bits costs next to nothing (#53)
-and prefix pinning (`geist_session_pin_prefix`) to amortize a constant system
-prompt across chat turns. Speculative decode drafts
+out; and `KIVI` 2-bit) and prefix pinning (`geist_session_pin_prefix`) to
+amortize a constant system prompt across chat turns. Speculative decode drafts
 via an n-gram lookup over history and verifies in one batched forward.
+
+A lossy KV cache has to meet a quality bar against FP32 KV on the same
+backend: teacher-forced over the last 256 tokens of
+`benchmark/prompts/moe-long.txt`, mean Jensen-Shannon divergence of the
+next-token distributions at most 0.01 nats and top-1 agreement at least
+85 % (`test_kv_quality_int`, Qwen3-0.6B; #53). Qwen3-0.6B, cpu_neon:
+
+| KV cache | mean JS (nats) | top-1 |
+| :-- | --: | --: |
+| FP32 on another backend (noise floor) | 0.0004 | 95 % |
+| INT8, rotated (default) | 0.0013 | 96 % |
+| INT4 (K INT8, V 4-bit), rotated | 0.0054 | 91 % |
+| INT8 unrotated (`GEIST_KV_ROT=0`) | 0.016 | 82 % |
+| K and V both at 4 bits (INT4 before #53) | 0.31 | 35 % |
+| KIVI | 0.10 | 62 % |
+
+That is why K stays at 8 bits in INT4: QK-norm models (Qwen3, Gemma) carry
+outlier channels in their K rows that a 4-bit grid cannot hold even rotated,
+while V at 4 bits costs next to nothing; and why INT8 rotates by default (the
+outliers are in Q too, which the kernels quantize to int8). A family on which
+INT4 still misses the bar names the cache an INT4 request gets instead
+(`transformer_family.kv_int4_instead`): Gemma 4, where a 4-bit V hurts as
+well, gets INT8, and Qwen3-MoE, whose routing amplifies any KV error, its F16. KIVI misses the bar on every model measured (Qwen3, Llama
+3.2, SmolLM2) and stays an explicit experiment that nothing picks on its own.
 
 Where the backend asks for it (`caps.kv_q8_block` for INT8 and INT4,
 `caps.kv_dense_block` for FP32 and F16; set by `cpu_x86`), a layer's K and V
