@@ -26,6 +26,8 @@ jobs:
           fetch-depth: 0
       - run: sh -n scripts/check-version.sh scripts/check-release.sh scripts/check-published-release.sh
       - run: sh scripts/check-version.sh
+      # Changelog fragments (changes/*.md) parse, so the release can fold them in.
+      - run: python3 scripts/changelog.py check
       # main's branch protection requires each CI job by name; a job added or
       # renamed without .gitea/required-checks.txt would go unrequired.
       - name: Required status checks match the CI jobs
@@ -35,7 +37,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         # The trigger is the VERSION, not the header: any edit to include/geist.h
-        # needs a CHANGELOG note (AGENT.md §6), so compare the version strings.
+        # needs a changelog fragment (AGENT.md §6), so compare the version strings.
         run: |
           base_version=$(git show "$BASE_SHA":include/geist.h \
             | sed -n 's/^#define GEIST_VERSION_STRING "\(.*\)"/\1/p')
