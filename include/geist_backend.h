@@ -681,9 +681,11 @@ struct geist_backend_fused {
     enum geist_status (*attention_kv_int8)(struct geist_backend                      *be,
                                            const struct geist_attention_kv_args *args);
 
-    /* Attention over the packed INT4 KV cache (GEIST_KV_INT4), with
-     * geist_attention_kv_args as for attention_kv_int8 except K and V:
-     *   k, v    U8 DENSE [n_kv, n_kv_heads, head_dim / 2]   two signed 4-bit
+    /* Attention over the INT4 KV cache (GEIST_KV_INT4), with
+     * geist_attention_kv_args as for attention_kv_int8 except V (K stays
+     * I8 [n_kv, n_kv_heads, head_dim]: a 4-bit K breaks QK-norm models,
+     * #53):
+     *   v       U8 DENSE [n_kv, n_kv_heads, head_dim / 2]   two signed 4-bit
      *           values per byte, element 2i in the low nibble and 2i + 1 in
      *           the high one, two's complement (the cache holds [-7, 7])
      * head_dim is even. Everything else, the query quantization, the checks

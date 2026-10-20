@@ -257,7 +257,7 @@ optional backend hook and a portable architecture-layer implementation rather
 than placeholder SSM enum values. Attention over the INT8 KV cache is the same
 kind of hook (`fused->attention_kv_int8`: AVX2 or, where the ISA dispatch
 allows it, AVX-512 VNNI on `cpu_x86`, `vdotq_s32` on `cpu_neon`), and over the
-packed INT4 cache (`fused->attention_kv_int4`, `cpu_neon`): the decomposed
+INT4 cache (`fused->attention_kv_int4`, `cpu_neon`): the decomposed
 equivalent is the architecture's host loop over the same cache bytes, portable
 C, not `attention` on dequantized rows, because the scores are integer dots of
 an int8-quantized query. `GEIST_KV_INT8_FUSED=0` keeps the host loops.
@@ -267,8 +267,11 @@ an int8-quantized query. `GEIST_KV_INT8_FUSED=0` keeps the host loops.
 A `geist_model` is immutable, shared, read-only weights. A `geist_session` owns
 the mutable per-conversation state: KV cache, pending logits, sampler config,
 stats. Multiple sessions can share one model. The KV cache supports quantized
-modes (`INT8`, packed `INT4` — half the INT8 footprint, near-lossless via a
-default-on Hadamard rotation, `GEIST_KV_ROT=0` to opt out; and `KIVI` 2-bit)
+modes (`INT8`; `INT4` — K at INT8 and V packed at 4 bits, 3/4 of the INT8
+footprint, with a default-on Hadamard rotation, `GEIST_KV_ROT=0` to opt out;
+and `KIVI` 2-bit). K stays at 8 bits because a 4-bit K breaks QK-norm models
+(Qwen3, Gemma): their K rows carry outlier channels that a 4-bit grid cannot
+hold even rotated, while V at 4 bits costs next to nothing (#53)
 and prefix pinning (`geist_session_pin_prefix`) to amortize a constant system
 prompt across chat turns. Speculative decode drafts
 via an n-gram lookup over history and verifies in one batched forward.
@@ -281,7 +284,7 @@ with a single KV head). The rows of one KV head lie a cache row apart, so at
 the power-of-two row sizes of most models they map to a fraction of the cache
 sets; the offset keeps K and V from competing for the same sets.
 
-The rotation and packed-INT4 modes store K post-RoPE and rotated; this is only
+The rotation and INT4 modes store K post-RoPE and rotated; this is only
 safe because geist never re-bases cached positions (the sliding window masks,
 it does not re-RoPE the cache). A future KV context-shift feature would have to
 un-rotate/unpack before re-RoPE-ing — see the note atop `forward/kv_store.c`.

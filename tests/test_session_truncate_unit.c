@@ -226,7 +226,7 @@ static int bytes(const char           *backend,
             {GEIST_KV_FP32, "FP32", 2 * row * 4},
             {GEIST_KV_F16, "F16", 2 * row * 2},
             {GEIST_KV_INT8, "INT8", 2 * row + 2 * L_KV * 4},
-            {GEIST_KV_INT4, "INT4", 2 * (row / 2) + 2 * L_KV * 4},
+            {GEIST_KV_INT4, "INT4", row + row / 2 + 2 * L_KV * 4}, /* K INT8, V 4-bit */
             {GEIST_KV_KIVI, "KIVI", 2 * (row / 4) + 2 * L_KV * 4 + (2 * row * 4 + 127) / 128},
     };
     char what[160];

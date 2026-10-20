@@ -309,8 +309,8 @@ void attention_int8_via_buffers(size_t        n_q,
                                 float        *out,
                                 float        *scratch);
 
-/* Packed-INT4 variant: k_q4/v_q4 hold two 4-bit values per byte
- * (head_dim/2 bytes per row); otherwise identical to the INT8 kernel. */
+/* INT4 variant: K INT8 as in the INT8 kernel, v_q4 two 4-bit values per
+ * byte (head_dim/2 bytes per row); otherwise identical to it. */
 void attention_int4_via_buffers(size_t         n_q,
                                 size_t         n_q_heads,
                                 size_t         head_dim,
@@ -319,7 +319,7 @@ void attention_int4_via_buffers(size_t         n_q,
                                 size_t         q_offset,
                                 size_t         sliding_window,
                                 const float   *q,
-                                const uint8_t *k_q4,
+                                const int8_t  *k_q8,
                                 const float   *k_scale,
                                 const uint8_t *v_q4,
                                 const float   *v_scale,

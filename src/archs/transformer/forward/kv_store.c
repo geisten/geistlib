@@ -103,53 +103,12 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
         }
         v->buffer_unmap(ctx->k_residual_buf);
         v->buffer_unmap(ctx->v_residual_buf);
-    } else if (sess->kv_int4_packed_enabled) {
-        /* Packed 4-bit: 2 values/byte into the half-size int8 slots. Same
-         * per-token per-head scale + optional rotation as INT8. denom 7 →
-         * scale = amax/7, values in [-7,7]. */
-        uint8_t *k_dst = (uint8_t *) v->buffer_map(ctx->k_cache_q8_buf);
-        uint8_t *v_dst = (uint8_t *) v->buffer_map(ctx->v_cache_q8_buf);
-        float   *k_sca = (float *) v->buffer_map(ctx->k_cache_scale_buf);
-        float   *v_sca = (float *) v->buffer_map(ctx->v_cache_scale_buf);
-        if (k_dst == nullptr || v_dst == nullptr || k_sca == nullptr || v_sca == nullptr) {
-            return GEIST_E_BACKEND;
-        }
-        const size_t row_elems      = kv_out;
-        const size_t scales_per_row = st->n_kv_heads;
-        const bool   rot            = sess->kv_rot_enabled && fwht_supported(hd) && hd <= 512;
-        float        krot[512];
-        float        vrot[512];
-        for (size_t t = 0; t < seq; t++) {
-            const size_t slot = q_position + t;
-            for (size_t h = 0; h < st->n_kv_heads; h++) {
-                const float *k_row = k_src + t * row_elems + h * hd;
-                const float *v_row = v_src + t * row_elems + h * hd;
-                if (rot) {
-                    memcpy(krot, k_row, hd * sizeof(float));
-                    memcpy(vrot, v_row, hd * sizeof(float));
-                    fwht_orthonormal(hd, krot);
-                    fwht_orthonormal(hd, vrot);
-                    k_row = krot;
-                    v_row = vrot;
-                }
-                float k_scale = kv_row_absmax(hd, k_row) / 7.0f;
-                float v_scale = kv_row_absmax(hd, v_row) / 7.0f;
-                if (k_scale == 0.0f)
-                    k_scale = 1.0f;
-                if (v_scale == 0.0f)
-                    v_scale = 1.0f;
-                const size_t byte_off = (slot * row_elems + h * hd) / 2;
-                int4_pack_row(hd, k_row, 1.0f / k_scale, k_dst + byte_off);
-                int4_pack_row(hd, v_row, 1.0f / v_scale, v_dst + byte_off);
-                k_sca[slot * scales_per_row + h] = k_scale;
-                v_sca[slot * scales_per_row + h] = v_scale;
-            }
-        }
-        v->buffer_unmap(ctx->k_cache_q8_buf);
-        v->buffer_unmap(ctx->v_cache_q8_buf);
-        v->buffer_unmap(ctx->k_cache_scale_buf);
-        v->buffer_unmap(ctx->v_cache_scale_buf);
     } else if (ctx->kv_int8_enabled) {
+        /* INT8, and INT4: K at INT8 as well, V packed two values a byte at
+         * amax / 7 (int4_kv.h). K is what attention is sharp on: QK-norm
+         * families (Qwen3, Gemma) carry outlier channels that a 4-bit K
+         * grid cannot hold even rotated, while a 4-bit V costs next to
+         * nothing (#53). */
         int8_t *k_dst = (int8_t *) v->buffer_map(ctx->k_cache_q8_buf);
         int8_t *v_dst = (int8_t *) v->buffer_map(ctx->v_cache_q8_buf);
         float  *k_sca = (float *) v->buffer_map(ctx->k_cache_scale_buf);
@@ -168,8 +127,10 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
          * (amax / (2^(N-1)-1)); the int8 container then holds values in
          * [-(2^(N-1)-1), +...]. Rounding stays in range (|x| <= amax), so no
          * clamp is needed. qbits==0 is the native 8-bit path (denom 127). */
-        const int   qbits = sess->kv_sim_qbits;
-        const float denom = qbits != 0 ? (float) ((1 << (qbits - 1)) - 1) : 127.0f;
+        const int   qbits  = sess->kv_sim_qbits;
+        const float denom  = qbits != 0 ? (float) ((1 << (qbits - 1)) - 1) : 127.0f;
+        const bool  v_int4 = sess->kv_int4_packed_enabled;
+        const float v_den  = v_int4 ? 7.0f : denom;
         for (size_t t = 0; t < seq; t++) {
             const size_t slot = q_position + t;
             for (size_t h = 0; h < st->n_kv_heads; h++) {
@@ -189,17 +150,24 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
                 if (k_scale == 0.0f) {
                     k_scale = 1.0f;
                 }
-                float v_scale = v_amax / denom;
+                float v_scale = v_amax / v_den;
                 if (v_scale == 0.0f) {
                     v_scale = 1.0f;
                 }
                 const float k_inv  = 1.0f / k_scale;
                 const float v_inv  = 1.0f / v_scale;
                 int8_t     *k_drow = k_dst + slot * row_elems + h * hd;
-                int8_t     *v_drow = v_dst + slot * row_elems + h * hd;
                 for (size_t i = 0; i < hd; i++) {
                     k_drow[i] = (int8_t) lrintf(k_row[i] * k_inv);
-                    v_drow[i] = (int8_t) lrintf(v_row[i] * v_inv);
+                }
+                if (v_int4) {
+                    int4_pack_row(
+                            hd, v_row, v_inv, (uint8_t *) v_dst + (slot * row_elems + h * hd) / 2);
+                } else {
+                    int8_t *v_drow = v_dst + slot * row_elems + h * hd;
+                    for (size_t i = 0; i < hd; i++) {
+                        v_drow[i] = (int8_t) lrintf(v_row[i] * v_inv);
+                    }
                 }
                 k_sca[slot * scales_per_row + h] = k_scale;
                 v_sca[slot * scales_per_row + h] = v_scale;
@@ -327,7 +295,7 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         const int64_t       n_kv   = (int64_t) kv_len_now;
         const int64_t       n_kh   = st->n_kv_heads;
         const int64_t       packed = (int64_t) (ctx->hd / 2);
-        struct geist_tensor t_k    = view_3d_u8(ctx->k_cache_q8_buf, n_kv, n_kh, packed);
+        struct geist_tensor t_k    = view_3d_i8(ctx->k_cache_q8_buf, n_kv, n_kh, (int64_t) ctx->hd);
         struct geist_tensor t_v    = view_3d_u8(ctx->v_cache_q8_buf, n_kv, n_kh, packed);
         struct geist_tensor t_ks   = view_2d(ctx->k_cache_scale_buf, n_kv, n_kh);
         struct geist_tensor t_vs   = view_2d(ctx->v_cache_scale_buf, n_kv, n_kh);
@@ -348,12 +316,12 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         }
     } else if (sess->kv_int4_packed_enabled) {
         float         *qp       = (float *) v->buffer_map(sess->scratch_q);
-        const uint8_t *k_q4p    = (const uint8_t *) v->buffer_map(ctx->k_cache_q8_buf);
+        const int8_t  *k_q8p    = (const int8_t *) v->buffer_map(ctx->k_cache_q8_buf);
         const uint8_t *v_q4p    = (const uint8_t *) v->buffer_map(ctx->v_cache_q8_buf);
         const float   *k_scalep = (const float *) v->buffer_map(ctx->k_cache_scale_buf);
         const float   *v_scalep = (const float *) v->buffer_map(ctx->v_cache_scale_buf);
         float         *outp     = (float *) v->buffer_map(sess->scratch_attn);
-        if (qp == nullptr || k_q4p == nullptr || v_q4p == nullptr || k_scalep == nullptr ||
+        if (qp == nullptr || k_q8p == nullptr || v_q4p == nullptr || k_scalep == nullptr ||
             v_scalep == nullptr || outp == nullptr) {
             return GEIST_E_BACKEND; /* the backend said why */
         }
@@ -372,7 +340,7 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
                                    ctx->q_position,
                                    L->sliding_window,
                                    qp,
-                                   k_q4p,
+                                   k_q8p,
                                    k_scalep,
                                    v_q4p,
                                    v_scalep,

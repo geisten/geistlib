@@ -1,8 +1,8 @@
 /*
  * test_kv_int8_fused_unit — the architecture hands the attention over its
  * quantized KV caches to the backend's kernels (fused->attention_kv_int8,
- * and attention_kv_int4 for the packed INT4 cache that rides the INT8
- * storage) when the layer plan binds them, and gets the host loops' answer.
+ * and attention_kv_int4 for the INT4 cache, INT8 K and packed V, that
+ * rides the INT8 storage) when the layer plan binds them, and gets the host loops' answer.
  *
  * On every CPU backend whose probe binds a kernel (cpu_x86 must bind the
  * INT8 one; cpu_neon, where built with FEAT_DotProd, both), for each kernel
@@ -15,7 +15,7 @@
  *    after a prefix, sliding windows, the rotated cache (GEIST_KV_ROT: Q
  *    rotated before, the output after, both in the architecture), and a
  *    head_dim the rotation does not cover; the INT4 cases the same over
- *    packed rows. The cache holds more rows than are live. Every output
+ *    packed V rows. The cache holds more rows than are live. Every output
  *    must be written (poisoned first), the query left as the host loop
  *    leaves it (bit for bit), and the outputs must agree within 1e-5 of
  *    their scale: the kernels differ only in how -ffast-math groups the
@@ -214,11 +214,13 @@ static int
 wiring_case(const char *backend, struct geist_backend *be, const struct wcase *c, double *worst) {
     const struct geist_backend_vtbl *vt = be->desc->vtbl;
     /* The cache holds 5 rows past the live ones, filled with values that
-     * would show if a view reached them; INT4 rows are half as many bytes. */
+     * would show if a view reached them; INT4 V rows are half as many
+     * bytes. */
     const size_t n_kv = c->q_position + c->seq, cap = n_kv + 5;
     const size_t row      = c->int4 ? c->hd / 2 : c->hd;
     const size_t q_elems  = c->seq * c->n_q_heads * c->hd;
-    const size_t kv_elems = cap * c->n_kv_heads * row;
+    const size_t kv_elems = cap * c->n_kv_heads * c->hd;
+    const size_t v_elems  = cap * c->n_kv_heads * row;
     const size_t n_sc     = cap * c->n_kv_heads;
     const size_t arena_bytes =
             attention_int8_scratch_floats(c->n_q_heads, c->hd) * sizeof(float) + 64;
@@ -248,12 +250,14 @@ wiring_case(const char *backend, struct geist_backend *be, const struct wcase *c
         poison[i] = POISON;
     }
     for (size_t i = 0; i < kv_elems; i++) {
+        const bool live = i < n_kv * c->n_kv_heads * c->hd;
+        k[i]            = live ? (int8_t) ((int) (next_u32() % 255u) - 127) : 127;
+    }
+    for (size_t i = 0; i < v_elems; i++) {
         const bool live = i < n_kv * c->n_kv_heads * row;
         if (c->int4) { /* any two nibbles; 7 and 7 past the live rows */
-            k[i] = live ? (int8_t) (next_u32() & 0xFFu) : 0x77;
             v[i] = live ? (int8_t) (next_u32() & 0xFFu) : 0x77;
         } else {
-            k[i] = live ? (int8_t) ((int) (next_u32() % 255u) - 127) : 127;
             v[i] = live ? (int8_t) ((int) (next_u32() % 255u) - 127) : 127;
         }
     }
@@ -265,7 +269,7 @@ wiring_case(const char *backend, struct geist_backend *be, const struct wcase *c
     bufs[0] = buffer(be, q_elems * sizeof(float), nullptr);
     bufs[1] = buffer(be, q_elems * sizeof(float), nullptr);
     bufs[2] = buffer(be, kv_elems, k);
-    bufs[3] = buffer(be, kv_elems, v);
+    bufs[3] = buffer(be, v_elems, v);
     bufs[4] = buffer(be, n_sc * sizeof(float), ks);
     bufs[5] = buffer(be, n_sc * sizeof(float), vs);
     for (size_t i = 0; i < 6; i++) {

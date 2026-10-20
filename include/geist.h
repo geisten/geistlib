@@ -269,10 +269,11 @@ enum geist_kv_mode {
     GEIST_KV_INT8 = 2,
     GEIST_KV_KIVI = 3,
     GEIST_KV_F16  = 4,
-    /* Packed symmetric 4-bit KV cache (2 values/byte, per-token per-head
-     * scale): half the INT8 footprint, near-lossless. Enables the Hadamard
-     * rotation by default (#61); GEIST_KV_ROT=0 opts out. Env:
-     * GEIST_KV_INT4=1. */
+    /* K at INT8, V packed symmetric 4-bit (2 values/byte), each with a
+     * per-token per-head scale: 3/4 of the INT8 footprint. K stays at 8
+     * bits because a 4-bit K breaks QK-norm models (Qwen3, Gemma: #53);
+     * V at 4 bits costs next to nothing. Enables the Hadamard rotation by
+     * default (#61); GEIST_KV_ROT=0 opts out. Env: GEIST_KV_INT4=1. */
     GEIST_KV_INT4 = 5,
 };
 
