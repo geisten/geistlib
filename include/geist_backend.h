@@ -749,6 +749,14 @@ struct geist_backend_caps {
      * metal. */
     bool lookup_tables_on_host;
 
+    /* resolve_weight's GEIST_E_UNSUPPORTED is final: no other path
+     * (fused->linear_t, a host fallback) runs a matrix it refused.
+     * Consumer: weight loading refuses such a model at load with
+     * GEIST_E_UNSUPPORTED, naming the tensor, instead of at the first
+     * prefill — so "auto" can fall back to the CPU. Set by metal, whose
+     * linear_t covers exactly the resolver's dtypes. */
+    bool resolve_weight_complete;
+
     /* Bumped by the backend whenever kernel performance character
      * changes enough to invalidate measured calibrations without any
      * tunable being renamed (the "faster kernel, same knob" case).
@@ -897,6 +905,16 @@ struct geist_backend {
             int64_t value;
         } values[32];
     } calibration;
+
+    /* Engine-owned. Set when the name "auto" picked this GPU backend and a
+     * CPU backend is compiled in: a model load this backend refuses for
+     * its weight formats (GEIST_E_UNSUPPORTED) or its memory budget
+     * (GEIST_E_OOM) retries on that CPU backend (docs/API_CONTRACT.md).
+     * Explicit names never set it. */
+    bool auto_cpu;
+    /* The opts this backend was created with, for that CPU backend. */
+    bool                      has_opts;
+    struct geist_backend_opts opts;
 };
 
 /* ====================================================================== */

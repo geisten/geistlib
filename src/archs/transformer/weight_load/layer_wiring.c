@@ -74,6 +74,26 @@ static int global_track_buf(struct transformer_arch_state *st, struct geist_buff
     return GEIST_OK;
 }
 
+/* A matrix the resolver refused (GEIST_E_UNSUPPORTED) has no kernel, but on
+ * most backends something else may still run it (vulkan's linear_t, the
+ * half-precision widening below). A backend that sets
+ * caps.resolve_weight_complete has nothing else: refuse the model here,
+ * naming the tensor, rather than at the first prefill. Its "auto" caller
+ * then loads the model on the CPU (docs/API_CONTRACT.md). */
+[[nodiscard]] static enum geist_status
+refuse_unresolved(struct geist_backend *be, const char *name, const char *dtype) {
+    if (!be->desc->caps.resolve_weight_complete) {
+        return GEIST_OK;
+    }
+    geist_backend_set_error(be,
+                            GEIST_E_UNSUPPORTED,
+                            "transformer: %s has no kernel for '%s' (%s)",
+                            be->desc->name,
+                            name,
+                            dtype);
+    return GEIST_E_UNSUPPORTED;
+}
+
 /* Load a per-layer 2D projection. dtype may be quantized or F32.
  * rope_il_head_dim > 0 reorders the rows from interleaved to half-split
  * RoPE pairs (llama attn_q / attn_k, #464). */
@@ -219,6 +239,9 @@ load_layer_proj_rope_il(struct transformer_arch_state    *st,
                 if (rs != GEIST_OK && rs != GEIST_E_UNSUPPORTED) {
                     return rs;
                 }
+            }
+            if (rs == GEIST_E_UNSUPPORTED) {
+                return refuse_unresolved(be, name, gguf_dtype_name(t->dtype));
             }
         }
     }
@@ -660,6 +683,11 @@ global_keep(struct geist_backend *be, struct transformer_arch_state *st, struct 
         enum geist_status rs   = v->resolve_weight(be, out);
         if (rs != GEIST_OK && rs != GEIST_E_UNSUPPORTED) {
             return rs;
+        }
+        if (rs == GEIST_E_UNSUPPORTED) {
+            char dt[16];
+            snprintf(dt, sizeof dt, "dtype %u", (unsigned) dtype);
+            return refuse_unresolved(be, what, dt);
         }
     }
     return GEIST_OK;
