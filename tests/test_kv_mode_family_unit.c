@@ -9,7 +9,9 @@
  *   - an explicit kv_mode beats the family: FP32 is FP32, and F16 on Llama
  *     is F16;
  *   - the environment beats the family: GEIST_KV_INT8=1 gives Qwen3-MoE
- *     INT8, GEIST_KV_F16=0 gives it FP32.
+ *     INT8, GEIST_KV_F16=0 gives it FP32;
+ *   - GEIST_KV_F16=1 gives F16 to a dense model whose AUTO is FP32, though
+ *     the backend does not default to F16.
  */
 #define _POSIX_C_SOURCE 200809L /* setenv, unsetenv */
 #define GEIST_INTERNAL_ARCH_LAYER
@@ -95,6 +97,12 @@ int main(void) {
             setenv("GEIST_KV_F16", "0", 1);
             fails += geist_expect(kv_of(mm, be, GEIST_KV_AUTO) == 'P', "GEIST_KV_F16=0 gives FP32");
             unsetenv("GEIST_KV_F16");
+            if (dense_auto == 'P') {
+                setenv("GEIST_KV_F16", "1", 1);
+                fails += geist_expect(kv_of(md, be, GEIST_KV_AUTO) == 'F',
+                                      "GEIST_KV_F16=1 requests F16 under AUTO");
+                unsetenv("GEIST_KV_F16");
+            }
         }
         geist_model_destroy(md);
         geist_model_destroy(mm);
