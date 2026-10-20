@@ -2,6 +2,7 @@
 #include "quant.h"
 #include <geist_types.h>
 #include "heap.h"
+#include "checked.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -466,26 +467,50 @@ void linear_fp32(size_t       m,
                  const float *weight,
                  const float *bias,
                  float       *y) {
-    if (m == 1) {
-        /* gemv path: y = W * x, W is (n_out, n_in) row-major. Lower per-call
-         * overhead than sgemm for the M=1 decode case. */
+    /* A row's result must not depend on how many rows ride along: the
+     * streaming audio encoder emits its tail one sub-token at a time and
+     * must give the batch encode's bits (a 2e-6 shift in one soft token
+     * flipped a greedy prediction on Neoverse-N1). A BLAS routes a one-row
+     * product through its gemv kernel, which sums in another order than its
+     * gemm kernel (Accelerate forwards an M=1 sgemm there, OpenBLAS's sgemv
+     * differs on N1), so one row runs as a two-row gemm with a zero second
+     * row, staged in this thread's high-water scratch: [x | 0 | y y']. */
+    static _Thread_local float *one_row     = nullptr;
+    static _Thread_local size_t one_row_cap = 0;
+    const float                *xa          = x;
+    float                      *ya          = y;
+    size_t                      ma          = m;
+    size_t                      n_row       = 0; /* n_in + n_out, checked */
+    if (m == 1 && !ckd_add(&n_row, n_in, n_out) && !ckd_mul(&n_row, n_row, (size_t) 2) &&
+        heap_tl_grow_array(one_row, one_row_cap, n_row)) {
+        memcpy(one_row, x, n_in * sizeof(float));
+        memset(one_row + n_in, 0, n_in * sizeof(float));
+        xa = one_row;
+        ya = one_row + 2 * n_in;
+        ma = 2;
+    }
+    if (ma == 1) {
+        /* No scratch for the two-row copy: still the right result, just
+         * not the batch's bits. */
         geist_sgemv(
                 GEIST_OP_N, (int) n_out, (int) n_in, 1.0f, weight, (int) n_in, x, 1, 0.0f, y, 1);
     } else {
         /* y = x @ weight^T : C[m,n_out] = A[m,n_in] @ B[n_out,n_in]^T. */
         geist_sgemm(GEIST_OP_N,
                     GEIST_OP_T,
-                    (int) m,
+                    (int) ma,
                     (int) n_out,
                     (int) n_in,
                     1.0f,
-                    x,
+                    xa,
                     (int) n_in,
                     weight,
                     (int) n_in,
                     0.0f,
-                    y,
+                    ya,
                     (int) n_out);
+        if (ya != y)
+            memcpy(y, ya, n_out * sizeof(float));
     }
     if (bias) {
         for (size_t i = 0; i < m; i++) {

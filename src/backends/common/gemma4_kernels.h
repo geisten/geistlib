@@ -228,7 +228,8 @@ void mul_fp32(size_t n, const float a[static n], const float b[static n], float 
  * bias   shape [n_out]      row-major, may be nullptr
  * y      shape [m, n_out]   row-major
  *
- * Goes through the geist_gemm facade (sgemv for m == 1, else sgemm).
+ * Goes through geist_sgemm, a single row too (as two rows): row i of y has
+ * the same bits whatever m is, which the streaming encoders rely on.
  * Plain pointers for the same reason as rmsnorm_fp32.
  */
 void linear_fp32(size_t       m,

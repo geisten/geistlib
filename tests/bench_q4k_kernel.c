@@ -26,6 +26,7 @@
 #include "neon_quant_wrappers.h"
 #include "gguf_dequant.h"
 #include "gemma4_kernels.h"
+#include "geist_gemm.h"
 #include "test_helpers.h"
 
 #include <math.h>
@@ -482,7 +483,17 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
             float *w_fp32 = gguf_dequant_to_fp32(t);
             if (w_fp32) {
                 const double t_warm2 = geist_test_now_ms();
-                linear_fp32(1, n_in, n_out, x, w_fp32, nullptr, y);
+                geist_sgemv(GEIST_OP_N,
+                            (int) n_out,
+                            (int) n_in,
+                            1.0f,
+                            w_fp32,
+                            (int) n_in,
+                            x,
+                            1,
+                            0.0f,
+                            y,
+                            1);
                 const double single_ms2 = geist_test_now_ms() - t_warm2;
                 int          n_iter2    = (int) (200.0 / (single_ms2 + 0.001)) + 5;
                 if (n_iter2 > 5000)
@@ -491,7 +502,17 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
                     n_iter2 = 3;
                 const double t02 = geist_test_now_ms();
                 for (int it = 0; it < n_iter2; it++)
-                    linear_fp32(1, n_in, n_out, x, w_fp32, nullptr, y);
+                    geist_sgemv(GEIST_OP_N,
+                                (int) n_out,
+                                (int) n_in,
+                                1.0f,
+                                w_fp32,
+                                (int) n_in,
+                                x,
+                                1,
+                                0.0f,
+                                y,
+                                1);
                 const double dt_ms2 = (geist_test_now_ms() - t02) / n_iter2;
                 const size_t bytes2 = n_out * n_in * sizeof(float);
                 const double gbps2  = (double) bytes2 / (dt_ms2 * 1e6);
