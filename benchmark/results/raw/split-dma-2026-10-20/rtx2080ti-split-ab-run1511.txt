@@ -1,0 +1,48 @@
+building 1f61d75d1ddd
+building a37ea49557cb
+cycle 1/8: base
+cycle 1/8: new
+cycle 1/8: control
+cycle 2/8: new
+cycle 2/8: control
+cycle 2/8: base
+cycle 3/8: control
+cycle 3/8: base
+cycle 3/8: new
+cycle 4/8: base
+cycle 4/8: new
+cycle 4/8: control
+cycle 5/8: new
+cycle 5/8: control
+cycle 5/8: base
+cycle 6/8: control
+cycle 6/8: base
+cycle 6/8: new
+cycle 7/8: base
+cycle 7/8: new
+cycle 7/8: control
+cycle 8/8: new
+cycle 8/8: control
+cycle 8/8: base
+# Revision A/B, each revision built from scratch
+
+Model: `Qwen3-14B-Q8_0.gguf` (`a0dfe649137410b7`)
+Revisions: base = `1f61d75d1ddd` (1f61d75d), new = `a37ea49557cb` (a37ea495); baseline `base`; `control` is a copy of the baseline's binary
+Protocol: 8 cycles, order rotating; sequences 512, decode 32, repeats 1 (median), warmup 1; OMP_WAIT_POLICY=active GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=26 GEIST_OFFLOAD_M_MIN=0 GEIST_M_MAX=128
+Host: AMD Ryzen 9 9950X 16-Core Processor, 32 CPUs, Linux 7.0.0-38-generic, THP always [madvise] never
+
+| row | variant | baseline ms | variant ms | change | 95 % interval | faster | verdict |
+| :-- | :-- | --: | --: | --: | --: | --: | :-- |
+| prefill_ms @ 512 | new | 3979.8 | 3735.6 | -5.9 % | [-11.8 %, +0.7 %] | 7/8 | within noise |
+| prefill_ms @ 512 | control | 3979.8 | 4036.4 | +2.4 % | [-7.3 %, +14.0 %] | 3/8 | within noise |
+| decode_ms @ 512 | new | 3736.9 | 3692.3 | -2.3 % | [-20.8 %, +20.2 %] | 5/8 | within noise |
+| decode_ms @ 512 | control | 3736.9 | 3751.8 | +0.1 % | [-17.8 %, +17.8 %] | 4/8 | within noise |
+| ttft_ms @ 512 | new | 3979.8 | 3735.6 | -5.9 % | [-11.8 %, +0.7 %] | 7/8 | within noise |
+| ttft_ms @ 512 | control | 3979.8 | 4036.4 | +2.4 % | [-7.3 %, +14.0 %] | 3/8 | within noise |
+
+Control: the baseline's own binary again; its intervals reach ±17.8 %, the resolution of this run.
+
+3 comparisons: at 95 % about one interval in twenty excludes zero by chance.
+
+raw: /home/germar/gitea-runner-geisten/work/eca9aff4602d6a1f/hostexecutor/ab-out/2026-10-20T063013Z/revision_ab.jsonl
+report: /home/germar/gitea-runner-geisten/work/eca9aff4602d6a1f/hostexecutor/ab-out/2026-10-20T063013Z/revision_ab.md

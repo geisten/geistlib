@@ -204,6 +204,12 @@ void transformer_kivi_pin_restore(struct transformer_arch_session *sess) {
     if (sv->parallel_region_end != nullptr) {
         sv->parallel_region_end(sst->backend, region_tok);
     }
+    /* Through split_h_io where it exists: a device copy into cached host
+     * memory, not a host read of the scratch (#84). */
+    if (s == GEIST_OK && sess->split_h_io != nullptr) {
+        s    = sv->buffer_copy(sess->split_h_io, 0, h_in, 0, bytes);
+        h_in = sess->split_h_io;
+    }
     if (s == GEIST_OK)
         s = transformer_buffer_xfer(sst->backend, h_in, bytes, sess->split_rows, false);
     if (s == GEIST_OK)

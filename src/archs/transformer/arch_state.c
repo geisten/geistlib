@@ -2188,6 +2188,16 @@ static bool scratch_device_wanted(const struct transformer_arch_session *sess) {
         geist_backend_set_error(st->backend, GEIST_E_OOM, "transformer_session_alloc: split rows");
         return GEIST_E_OOM;
     }
+    /* An optimisation: without it (no buffer_copy, no memory for it) the
+     * read-back maps the stage's scratch as before. */
+    struct geist_backend            *sbe = st->split->backend;
+    const struct geist_backend_vtbl *sv  = sbe->desc->vtbl;
+    if (sv->buffer_copy != nullptr &&
+        sv->buffer_create(
+                sbe, n * sizeof(float), GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &sess->split_h_io) !=
+                GEIST_OK) {
+        sess->split_h_io = nullptr;
+    }
     return GEIST_OK;
 }
 
@@ -2556,6 +2566,10 @@ void transformer_session_free(struct transformer_arch_state   *state,
     }
     struct geist_backend *be = (state != nullptr) ? state->backend : nullptr;
 
+    if (state != nullptr && state->split != nullptr && sess->split_h_io != nullptr) {
+        state->split->backend->desc->vtbl->buffer_destroy(state->split->backend, sess->split_h_io);
+        sess->split_h_io = nullptr;
+    }
     if (sess->split_sess != nullptr) {
         transformer_session_free(state->split, sess->split_sess);
         sess->split_sess = nullptr;
