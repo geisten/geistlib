@@ -33,6 +33,34 @@ minor release.
 
 ### Fixed
 
+- **cpu_neon kernels no longer leak their scratch with every thread that
+  ends (#100).** The q4_K/q6_K/TL1 kernels' `_Thread_local` high-water
+  buffers grow through `heap_tl_grow`, which frees them at thread exit; a
+  host that runs each request on a new thread leaked up to the largest
+  prefill's packed activations per thread. LeakSanitizer reported them,
+  so the ASan jobs failed on `test_linear_fallback_unit`. Steady state
+  unchanged: the same capacity compare, no call, no allocation.
+- **`make shared` builds the FFI shared library (#80).** It links
+  `libgeist.so` / `libgeist.dylib` with the GEMM provider's libraries; the
+  hand-written line in `examples/ffi/README.md` and CI left `cblas_sgemm`
+  unresolved on Linux, and CI's FFI step piped the failure into `head`, so
+  it passed without running. The step now fails with the example and
+  checks for a non-empty continuation.
+- **cpu_neon: the same model gives the same logits however its weights
+  are mapped (#76).** The decode-time F32 linear (Gemma 4's per-layer
+  `inp_gate`/`proj`) ran Accelerate's `cblas_sgemv`, which rounds
+  differently with the matrix's address, so mmap-aliased and copied weights
+  (`GEIST_WEIGHT_MMAP=0`) diverged (Gemma 4 E2B: last-step logits 0.77 apart
+  after 24 greedy tokens). It is now a fixed-order NEON row dot: bit-identical
+  in both modes, `test_awq_int` passes on cpu_neon. Decode within noise
+  (bench_revision_ab, M1 Max, -7.9 % median, control +-22 %).
+- **The published-embedding test states and gates its current RMSE (#56).**
+  `test_published_embedding_e2e` reproduces Microsoft's BitNet-embedding
+  vector to RMSE 1.01e-3 on cpu_neon since the online FP32-KV softmax
+  (f78ce0f1), not the documented 8.5e-4: the reordered sum, amplified by the
+  int8 activation quantization of the I2_S linears, moves single components
+  by up to 1.1e-3. The test and `docs/BITNET_EMBEDDINGS_PLAN.md` say so, and
+  the bound tightens from 5e-3 to 1.5e-3.
 - **Audio-tower tests fail on a configured but unreadable tower (#57).**
   `GEIST_AUDIO_MODEL_PATH` pointing at a missing file, or the default path
   being a dangling symlink, made the tower parity tests SKIP, so a parity
