@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 """required_checks.py — keep main's required status checks in step with CI.
 
-main's branch protection on git.geisten.net requires every CI job by its
-exact status name (a glob such as "CI / *" matched no status while a new
-commit's CI had not started, and Gitea merged on it). An exact list must
-follow the workflow, so it lives in .gitea/required-checks.txt and:
+main's branch protection on git.geisten.net requires every job of CI's
+required tier by its exact status name (a glob such as "CI / *" matched no
+status while a new commit's CI had not started, and Gitea merged on it).
+The required tier is every job of .gitea/workflows/ci.yml whose job-level
+`if:` does not test needs.changes.outputs.full; the jobs that do are the
+post-merge tier (docs/CI_COVERAGE.md "Tiers"), which a pull request skips.
+An exact list must follow the workflow, so it lives in
+.gitea/required-checks.txt and:
 
-    check    derive the job names from .gitea/workflows/ci.yml (matrix
-             include entries expanded) and compare them with the file;
-             exit 1 on any difference. Runs in CI, needs no token.
+    check    derive the required job names from .gitea/workflows/ci.yml
+             (matrix include entries expanded) and compare them with the
+             file; also check that the ci-issues job waits for every other
+             job. Exit 1 on any difference. Runs in CI, needs no token.
     print    print the derived list (to regenerate the file).
+    post-merge  print the post-merge tier's names (for the docs).
     verify   compare the file with the live branch protection.
     sync     write the file's list into the live branch protection.
 
@@ -42,11 +48,21 @@ def scalar(value: str) -> str:
     return value
 
 
+POST_MERGE = "needs.changes.outputs.full"
+REPORT_JOB = "ci-issues"
+
+
 def jobs(text: str) -> list[tuple[str, list[dict]]]:
     """(name template, matrix include entries) per job, in file order."""
+    return [(j["name"], j["entries"]) for j in parse(text)]
+
+
+def parse(text: str) -> list[dict]:
+    """Per job, in file order: key, name (template), entries (matrix include),
+    post (its `if:` tests POST_MERGE), needs (job keys)."""
     lines = text.splitlines()
     start = lines.index("jobs:")
-    out: list[tuple[str, list[dict]]] = []
+    out: list[dict] = []
     i = start + 1
     while i < len(lines):
         if re.match(r"^\S", lines[i]):
@@ -55,13 +71,26 @@ def jobs(text: str) -> list[tuple[str, list[dict]]]:
         if not m:
             i += 1
             continue
-        key, name, entries = m.group(1), m.group(1), []
+        key, name, entries, post, needs = m.group(1), m.group(1), [], False, []
         i += 1
         while i < len(lines) and not re.match(r"^  \S", lines[i]) and not re.match(r"^\S", lines[i]):
             line = lines[i]
             nm = re.match(r"^    name:\s*(.+)$", line)
             if nm:
                 name = scalar(nm.group(1))
+            if re.match(r"^    if:", line):
+                post = POST_MERGE in line
+            nd = re.match(r"^    needs:\s*(.*)$", line)
+            if nd:
+                inline = nd.group(1).strip()
+                if inline.startswith("["):
+                    needs = [scalar(x) for x in inline.strip("[]").split(",") if x.strip()]
+                elif inline:
+                    needs = [scalar(inline)]
+                else:
+                    while i + 1 < len(lines) and re.match(r"^      - ", lines[i + 1]):
+                        i += 1
+                        needs.append(scalar(lines[i].strip()[2:]))
             inc = re.match(r"^( +)include:\s*$", line)
             if inc:
                 base = len(inc.group(1))
@@ -86,14 +115,17 @@ def jobs(text: str) -> list[tuple[str, list[dict]]]:
                     i += 1
                 continue
             i += 1
-        out.append((name, entries))
-        _ = key
+        out.append({"key": key, "name": name, "entries": entries, "post": post, "needs": needs})
     return out
 
 
-def expected(text: str, workflow_name: str = "CI") -> list[str]:
+def expected(text: str, workflow_name: str = "CI", post_merge: bool = False) -> list[str]:
+    """Status names of the required tier (or, post_merge=True, of the other)."""
     names = []
-    for template, entries in jobs(text):
+    for job in parse(text):
+        if job["post"] != post_merge:
+            continue
+        template, entries = job["name"], job["entries"]
         fields = re.findall(r"\$\{\{\s*matrix\.([A-Za-z0-9_-]+)\s*\}\}", template)
         if not fields:
             names.append(template)
@@ -108,6 +140,15 @@ def expected(text: str, workflow_name: str = "CI") -> list[str]:
                 name = re.sub(r"\$\{\{\s*matrix\." + field + r"\s*\}\}", entry[field], name)
             names.append(name)
     return sorted(f"{workflow_name} / {n} ({EVENT})" for n in names)
+
+
+def report_gaps(text: str) -> list[str]:
+    """Jobs the ci-issues job does not wait for (it would miss their failures)."""
+    js = parse(text)
+    report = [j for j in js if j["key"] == REPORT_JOB]
+    if not report:
+        return [f"(no {REPORT_JOB} job)"]
+    return [j["key"] for j in js if j["key"] != REPORT_JOB and j["key"] not in report[0]["needs"]]
 
 
 def listed() -> list[str]:
@@ -142,8 +183,15 @@ def main() -> int:
     if cmd == "print":
         print("\n".join(derived))
         return 0
+    if cmd == "post-merge":
+        print("\n".join(expected(WORKFLOW.read_text(), post_merge=True)))
+        return 0
     if cmd == "check":
         rc = diff(WORKFLOW.relative_to(ROOT).as_posix(), derived, LIST.relative_to(ROOT).as_posix(), listed())
+        missing = report_gaps(WORKFLOW.read_text())
+        if missing:
+            print(f"  {REPORT_JOB} does not wait for: {', '.join(missing)}")
+            rc = 1
         print(f"required checks: {len(derived)} CI jobs, "
               + ("list current" if rc == 0 else
                  "list out of date: regenerate with `scripts/required_checks.py print`, "

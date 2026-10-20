@@ -11,9 +11,35 @@
 # a test names (tests/test_bench_tools_py.py reads benchmark/results/APPLE.md)
 # counts as code. Anything else, a push, or a missing base: code.
 #
+# --tier prints which CI tier runs (docs/CI_COVERAGE.md "Tiers"):
+# "full=true" runs the post-merge tier as well — on anything but a pull
+# request, on GitHub (the mirror's pull requests run everything on GitHub's
+# runners) and for a pull request labelled ci:full; "label=true" when that
+# label is set (the coverage job runs on a pull request only then).
+#
 # Usage: sh scripts/ci-changes.sh [BASE_SHA]   (default: $BASE_SHA)
-#        sh scripts/ci-changes.sh --test       self-check of the path rule
+#        sh scripts/ci-changes.sh --tier       (GITHUB_EVENT_NAME, GITHUB_SERVER_URL, GITHUB_EVENT_PATH)
+#        sh scripts/ci-changes.sh --test       self-check of the path and tier rules
 set -eu
+
+# Labels of the pull request in $GITHUB_EVENT_PATH, one per line.
+pr_labels() {
+    [ -r "${GITHUB_EVENT_PATH:-}" ] || return 0
+    python3 -c 'import json, sys
+pr = json.load(open(sys.argv[1])).get("pull_request") or {}
+for label in pr.get("labels") or []:
+    print(label.get("name", ""))' "$GITHUB_EVENT_PATH"
+}
+
+tier() {
+    label=false
+    if pr_labels | grep -qx 'ci:full'; then label=true; fi
+    full=$label
+    [ "${GITHUB_EVENT_NAME:-}" = pull_request ] || full=true
+    [ "${GITHUB_SERVER_URL:-}" != https://github.com ] || full=true
+    echo "full=$full"
+    echo "label=$label"
+}
 
 # Reads paths on stdin; exit 0 if every one is documentation.
 docs_only() {
@@ -51,7 +77,27 @@ if [ "${1:-}" = "--test" ]; then
     no include/geist.h   # no BASE: cannot prove a version-only change
     unset NO_TEST_REFS
     printf 'benchmark/results/APPLE.md\n' | docs_only && { echo "FAIL: APPLE.md is read by a test"; exit 1; }
+    ev=$(mktemp)
+    t() {  # t <event> <server> <labels json> <expected tier output>
+        printf '{"pull_request": {"labels": %s}}' "$3" > "$ev"
+        got=$(GITHUB_EVENT_NAME=$1 GITHUB_SERVER_URL=$2 GITHUB_EVENT_PATH=$ev tier | tr '\n' ' ')
+        [ "$got" = "$4" ] || { echo "FAIL: tier $1 $2 $3: got '$got', want '$4'"; rm -f "$ev"; exit 1; }
+    }
+    G=https://git.geisten.net
+    t pull_request $G '[]' 'full=false label=false '
+    t pull_request $G '[{"name": "automerge"}]' 'full=false label=false '
+    t pull_request $G '[{"name": "ci:full"}]' 'full=true label=true '
+    t pull_request https://github.com '[]' 'full=true label=false '
+    t push $G '[]' 'full=true label=false '
+    t schedule $G '[]' 'full=true label=false '
+    t workflow_dispatch $G '[]' 'full=true label=false '
+    rm -f "$ev"
     echo "ci-changes: self-check OK"
+    exit 0
+fi
+
+if [ "${1:-}" = "--tier" ]; then
+    tier
     exit 0
 fi
 

@@ -6,23 +6,64 @@ per-PR) and [`release.yml`](../.gitea/workflows/release.yml) (per-tag build +
 smoke). Goal: **every environment we ship a release artifact for is exercised by
 the test suite**, not just built.
 
+## Tiers
+
+CI runs in two tiers on git.geisten.net. A pull request waits for the fast
+one only; everything heavy runs after the merge.
+
+**Required (every pull request, branch protection on `main`).** Seven
+checks, listed in [`.gitea/required-checks.txt`](../.gitea/required-checks.txt):
+`clang-format`, the API contract, the source version and changelog check,
+`changed paths`, and build + model-free unit tests on Linux x86_64 (musl in
+Alpine, `cpu_x86 cpu_scalar` — the release recipe), Linux arm64 (glibc,
+cloud runner) and macOS arm64 (`mac-light`). About 15 minutes; nothing in
+it loads a real model, needs a GPU or measures time.
+
+**Post-merge (every push to `main`, nightly at 03:47 UTC, dispatch).** Every
+job whose `if:` tests `needs.changes.outputs.full`: ASan/UBSan, TSan, the
+coverage ratchet, integration + e2e on real models, Vulkan on lavapipe,
+AVX-512 under SDE, the audio legs (they fetch the 614 MB tower and the 3 GB
+model), the Metal gate and the perf floors on dedicated hardware (macOS
+arm64 on `macos-15-heavy`, Linux arm64 on the Pi 5, `ubuntu-24.04-arm-pi`),
+the other build legs (clang, scalar, arm64 musl, `TARGET=pi5`, macOS GCD)
+and the documented builds. The documented builds take under a minute each,
+but they recompile what the required legs already compile with the same gcc
+14 (Alpine, ubuntu + gcc-14) and only catch a README recipe that drifts, so
+three more checkouts per pull request buy little.
+
+**Failures on `main` become issues.** The last job of a run on `main`,
+`file failing main jobs as issues` (`scripts/ci-issues.py`, the job's own
+token), opens one issue per failing job name, `CI on main: <job>`, labelled
+`ci-failure`; a later failure comments on it, the first green run closes it.
+Skipped and cancelled jobs change nothing.
+
+**Opting in on a pull request.** Label it `ci:full` before pushing (the label
+is read when the run starts: add it, then push), and the whole post-merge
+tier, coverage included, runs on the pull request; or dispatch CI on the
+branch (`tea actions workflows dispatch --ref <branch> ci.yml`). Either is
+worth it for a change to kernels, the Metal or Vulkan backends, sanitizer-
+sensitive memory handling, or the build system. Documentation-only pull
+requests skip both tiers' build jobs as before (`scripts/ci-changes.sh`). On
+the GitHub mirror, pull requests run both tiers on GitHub's runners.
+
 ## Matrix
 
 | Environment | Build | Unit | Int + e2e (real model) | musl-static | ASan/UBSan | CI job |
 | :-- | :--: | :--: | :--: | :--: | :--: | :-- |
-| **macOS arm64** (Accelerate/AMX) | ✅ | ✅ | ⚪ skip¹ | — | ✅⁴ | `build-test` |
-| **macOS x86_64** (cpu_x86 AVX2, Accelerate) | ✅ | ✅ | ⚪ skip¹ | — | ✅⁴ | `build-test` |
-| **Linux arm64** (cpu_neon, glibc) | ✅ | ✅ | ✅ | ✅ | ✅ | `build-test`, `build-test-musl`, `asan` |
+| **macOS arm64** (Accelerate/AMX) | ✅ | ✅ | ⚪ qwen3.5¹ | — | ✅⁴ | `build-test`, `build-test-full` |
+| **macOS x86_64** (cpu_x86 AVX2, Accelerate) | ✅ | ✅ | ⚪ qwen3.5¹ | — | ✅⁴ | `build-test`, `build-test-full` (GitHub only) |
+| **Linux arm64** (cpu_neon, glibc) | ✅ | ✅ | ✅ | ✅ | ✅ | `build-test`, `build-test-full`, `build-test-musl`, `asan` |
 | **Linux x86_64** (cpu_x86 AVX-512/VNNI, glibc) | ✅ | ✅ | ✅³ | ✅ | ✅² | `build-test-x86_64`, `build-test-musl-x86_64`, `asan-x86_64` |
 | **Linux x86_64** (cpu_scalar, no SIMD) | ✅ | ✅ | — | — | — | `build-test-x86_64-scalar` |
 | **Linux x86_64** (cpu_x86, clang) | ✅ | ✅ | — | — | — | `build-test-x86_64-clang`⁵ |
 
 Every environment in [`release.yml`](../.gitea/workflows/release.yml)
 (macos-arm64, linux-arm64, linux-x86_64) has build **and** test coverage. On
-top of the matrix, dedicated legs gate every PR: TSan multi-session (x86_64),
-the coverage ratchet (x86_64), AVX-512 under Intel SDE, Vulkan on lavapipe, the
-Metal GPU step inside the macOS arm64 leg, and `check-headers` (every public
-header compiled standalone as C23 and C++17, inside `build-test`).
+top of the matrix, dedicated post-merge legs run on every `main` push: TSan
+multi-session (x86_64), the coverage ratchet (x86_64), AVX-512 under Intel
+SDE, Vulkan on lavapipe and the Metal GPU step inside `build-test-full`;
+`check-headers` (every public header compiled standalone as C23 and C++17)
+runs inside the required `build-test`.
 
 No self-hosted runner is attached to the public GitHub mirror: there, any pull
 request can edit a workflow to target it. The hardware tier (Pi 5, native
@@ -33,15 +74,18 @@ private — nightly on `main`, and on demand for a branch or a reviewed PR
 
 ## Caveats and deliberate gaps
 
-1. **macOS int/e2e — skipped on purpose.** The real-model path (forward pass,
-   tokenizer, KV, chat loops) runs on both Linux arches; macOS runners are the
-   slowest and the model download dominates. macOS runs the full unit suite.
+1. **macOS int/e2e — the qwen3.5 fixture only.** The whole real-model path
+   (forward pass, tokenizer, KV, chat loops) runs on both Linux arches; the
+   macOS post-merge leg runs the qwen35 family suite plus the determinism and
+   known-answer checks on the cached qwen3.5 0.8B (#441, #452). macOS runs
+   the full unit suite in the required tier.
 2. **x86_64 ASan/UBSan (`asan-x86_64`).** Model-free unit suite with the
    release binary's backends and GEMM, UBSan halting, leak detection on.
-3. **x86_64 int/e2e — required.** Includes a `GEIST_FORCE_ISA=avx2` pass, so
+3. **x86_64 int/e2e — post-merge.** Includes a `GEIST_FORCE_ISA=avx2` pass, so
    the non-AVX-512 dispatch is exercised even on runners that have AVX-512 and
-   an unguarded AVX-512 kernel (SIGILL on x86-64-v3) fails the PR.
-4. **macOS ASan/UBSan (`build-test`, both arches).** Catches clang-only
+   an unguarded AVX-512 kernel (SIGILL on x86-64-v3) fails `main` and files
+   an issue; label a PR that adds an x86 kernel `ci:full`.
+4. **macOS ASan/UBSan (`build-test-full`, both arches).** Catches clang-only
    breakage at -O1 that the gcc sanitizer legs cannot see, e.g. an `omp simd`
    the instrumentation cannot satisfy (`-Wpass-failed=transform-warning` under
    `-Werror`). Model-free unit suite.
@@ -66,7 +110,7 @@ guarantee an AVX-512 CPU, so:
   builds and passes — the baseline every SIMD kernel is checked against, runner
   CPU notwithstanding.
 
-The `avx512-sde` job **guarantees** AVX-512/VNNI execution on every PR: the shipped x86_64 binaries run under Intel SDE's Sapphire Rapids
+The `avx512-sde` job **guarantees** AVX-512/VNNI execution on every `main` push: the shipped x86_64 binaries run under Intel SDE's Sapphire Rapids
 emulation, `test_x86_isa_dispatch_unit` hard-fails unless the dispatcher
 actually selects the VNNI tier (a silent downgrade cannot pass), and the
 targeted W4A8/W8A8/Q4Kx8/Q6K/i2s and INT8-KV attention kernel tests execute
@@ -96,10 +140,12 @@ run with `GEIST_STRICT_FIXTURES=gguf`, which turns a "model not found" skip
 into a failure. The CI cache key embeds the content pin, so re-pinning the
 model rotates the cache. Local `make test` without the model skips cleanly.
 
-### Metal is built and executed on a real GPU in every PR
+### Metal is built in every PR and executed on a real GPU after the merge
 
-Hosted `macos-15` runners expose a usable Metal device. The macOS arm64 leg
-builds the default backends (`cpu_neon cpu_scalar metal`) and runs a mandatory GPU step:
+The required macOS arm64 leg builds the default backends (`cpu_neon
+cpu_scalar metal`); its post-merge counterpart in `build-test-full`
+(`macos-15-heavy`, the M1 Max under its benchmark lock) runs a mandatory GPU
+step:
 
 - `test_backend_metal_probe` — registration, backend lifecycle, buffer
   round-trip (host↔device);
@@ -112,17 +158,17 @@ builds the default backends (`cpu_neon cpu_scalar metal`) and runs a mandatory G
   weights in **half**, whose integer lattice ends at 2048 (a staging-precision
   property, not a bug; unpinned scales produce √n·ulp noise).
 
-In this step a SKIP (exit 77) **fails**: on `macos-15` a device is expected,
+In this step a SKIP (exit 77) **fails**: on Apple silicon a device is expected,
 and a skipped gate must not read as a green one. On Linux legs metal is not
 built and both tests skip cleanly in the unit suite.
 
 Model e2e on Metal is a separate tier. Every PR builds the fixture-gated
-`test_qwen35_metal_e2e_int`, but the macOS PR leg does not run the real-model
-suite. Gemma 4 and Qwen35 Metal e2e are manual, fixture-provisioned gates;
+`test_qwen35_metal_e2e_int`; the post-merge leg runs the qwen3.5 fixture
+suite, not the Gemma 4 reference. Gemma 4 and Qwen35 Metal e2e are manual, fixture-provisioned gates;
 the nightly `bench-matrix` workflow runs the E2B reference on Metal for speed
 only.
 
-## Vulkan: software tier on every PR, hardware tier nightly
+## Vulkan: software tier after every merge, hardware tier nightly
 
 The `vulkan-lavapipe` job builds `BACKENDS="vulkan cpu_x86 cpu_scalar"` and
 executes `test_backend_vulkan_registry_unit`, the buffer round-trip test and
@@ -162,7 +208,8 @@ was; hence `if: always()`.
 
 ## Coverage ratchet
 
-The `coverage` job runs on every push to `main` (not on PRs: ~2 h), and
+The `coverage` job runs on every push to `main` and nightly (not on PRs
+unless labelled `ci:full`: ~2 h), and
 pushes to `main` are never cancelled by a later merge, so every main commit
 is measured. It builds `MODE=cov` (gcc-14, `-O2 --coverage`, Linux x86_64 on
 the desktop runner; the only arm64 runner is the Pi 5, where it took hours)
