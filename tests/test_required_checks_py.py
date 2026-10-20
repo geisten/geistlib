@@ -3,8 +3,9 @@
 
 The stdlib parser in scripts/required_checks.py must expand matrix include
 entries into status names, not mistake step names for matrix entries, fall
-back to the job key without a name, and agree with the repository's own
-.gitea/workflows/ci.yml and .gitea/required-checks.txt.
+back to the job key without a name, leave the post-merge tier out, and agree
+with the repository's own .gitea/workflows/ci.yml and
+.gitea/required-checks.txt.
 """
 from __future__ import annotations
 
@@ -68,9 +69,38 @@ expect(got == sorted([
     "CI / unnamed (pull_request)",
 ]), "matrix entries expand, steps and comments are ignored, a job without name uses its key")
 
-real = rc.expected(rc.WORKFLOW.read_text())
+TIERED = """name: CI
+jobs:
+  changes:
+    runs-on: x
+  fast:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+  slow:
+    name: slow (${{ matrix.name }})
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
+    strategy:
+      matrix:
+        include:
+          - name: a
+  ci-issues:
+    needs:
+      - changes
+      - fast
+    if: always() && needs.changes.outputs.full != 'false'
+"""
+expect(rc.expected(TIERED) == ["CI / changes (pull_request)", "CI / fast (pull_request)"],
+       "a job whose if: tests outputs.full is not required")
+expect(rc.expected(TIERED, post_merge=True) == ["CI / ci-issues (pull_request)", "CI / slow (a) (pull_request)"],
+       "post_merge=True lists the other tier")
+expect(rc.report_gaps(TIERED) == ["slow"], "ci-issues must wait for every job (block and inline needs parsed)")
+
+text = rc.WORKFLOW.read_text()
+real = rc.expected(text) + rc.expected(text, post_merge=True)
 expect(len(real) == len(set(real)) and len(real) >= 20, "the real workflow yields distinct names")
-expect(real == rc.listed(), ".gitea/required-checks.txt matches .gitea/workflows/ci.yml")
+expect(rc.expected(text) == rc.listed(), ".gitea/required-checks.txt matches .gitea/workflows/ci.yml")
+expect(rc.report_gaps(text) == [], "the real ci-issues job waits for every other job")
 
 print("PASS" if not fails else f"FAIL ({fails})")
 sys.exit(1 if fails else 0)

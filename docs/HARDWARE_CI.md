@@ -92,12 +92,14 @@ race on one action checkout. Both run with `capacity: 1` and
 Which label a job takes:
 
 - `macos-15-heavy` — the job loads a real model or its result is a timing:
-  the `macOS arm64` leg of CI (Metal parity, qwen3.5 integration, perf
-  gate; `scripts/gitea-ci.py` sets it, GitHub's copy keeps `macos-15`) and
-  the Mac columns of `bench-matrix` (`benchmark/bench_matrix.json`).
-- `macos-15` — build and model-free tests: CI's `macOS arm64 GCD (no
-  OpenMP)` leg and the release build (`release.yml` `macos-arm64`). These
-  may run while an agent measures; nice 10 keeps them behind it, not out.
+  CI's post-merge `models, Metal, ASan + perf (macOS arm64)` leg (Metal
+  parity, qwen3.5 integration, perf gate; `scripts/gitea-ci.py` sets it,
+  GitHub's copy keeps `macos-15`) and the Mac columns of `bench-matrix`
+  (`benchmark/bench_matrix.json`).
+- `macos-15` — build and model-free tests: CI's required `build + unit
+  tests (macOS arm64)` leg, the post-merge `macOS arm64 GCD (no OpenMP)` leg
+  and the release build (`release.yml` `macos-arm64`). These may run while
+  an agent measures; nice 10 keeps them behind it, not out.
 
 A step that must not overlap a measurement on a `macos-15` job wraps itself
 in `~/bin/with-mac-lock`; better, it moves to `macos-15-heavy`.
@@ -108,12 +110,14 @@ needs it raised in `app.ini`.
 
 ### Cloud arm64 runner
 
-`ubuntu-24.04-arm` has two docker-mode runners: `pi5-ci` on the Pi (capacity
-1, under the board lock) and, since 2026-10-20, `cloud-arm64-hel1`, a
-Hetzner CAX21 in Helsinki (Neoverse-N1, 4 vCPU, 7.5 GB + 4 GB swap for the
-ASan builds, 75 GB disk, Ubuntu 26.04, host name `ci-arm64-hel1`). Gitea
-hands a queued arm64 job to whichever is free. Nothing measured runs there:
-it is a shared cloud VM, and the Pi 5 stays the arbiter for timings.
+`ubuntu-24.04-arm` is `cloud-arm64-hel1` since 2026-10-20, a Hetzner CAX21
+in Helsinki (Neoverse-N1, 4 vCPU, 7.5 GB + 4 GB swap for the ASan builds,
+75 GB disk, Ubuntu 26.04, host name `ci-arm64-hel1`). Nothing measured runs
+there: it is a shared cloud VM (the Linux arm64 perf floor missed by noise
+there, 19.9 < 20 tok/s prefill in run 1586), and the Pi 5 stays the arbiter
+for timings. The Pi's docker runner `pi5-ci` (capacity 1, under the board
+lock) has its own label, `ubuntu-24.04-arm-pi`: CI's post-merge `models +
+perf (Linux arm64)` leg runs there.
 
 | item | value |
 | :-- | :-- |
@@ -231,8 +235,8 @@ The Pi takes the same workflow with `-i host=pi5`. Its deploy job runs on
 while the lock is held) restarts at once; `pi5-rspdevelop` itself restarts
 from a transient unit once the job has ended and the lock is free.
 `-i host=pi5 -i action=verify` then runs one checkout on each Pi
-runner and looks for both in the cache's log (`ubuntu-24.04-arm` is shared
-with the cloud runner: if the container probe lands there, dispatch again).
+runner and looks for both in the cache's log (the container probe asks for
+`ubuntu-24.04-arm-pi`, the label only `pi5-ci` carries).
 
 The Mac is installed by hand, `sh scripts/git-cache-mac.sh install`
 (`status` shows its state). Its token is not the org secret: the user
