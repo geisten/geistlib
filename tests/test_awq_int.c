@@ -182,14 +182,10 @@ int main(void) {
     }
     printf("synthesised %u AWQ entries in %s\n", n_entries, good);
 
-    /* cpu_scalar unless GEIST_BACKEND names another (metal, cpu_neon, ...).
-     * The comparison of the two weight modes is exact, and cpu_neon cannot
-     * pass it: its F32 linear (Accelerate sgemv) gives different bits for a
-     * matrix at the GGUF's 32-byte alignment than for the arena's 64-byte
-     * copy, so its logits differ by ~4e-6 between the modes even without
-     * AWQ, which the uncompensated synthetic scales amplify (up to 1.3 in
-     * an ASan build). cpu_scalar and Metal give identical logits. */
-    const char *name = getenv("GEIST_BACKEND") != nullptr ? getenv("GEIST_BACKEND") : "cpu_scalar";
+    /* GEIST_BACKEND names the backend (default "auto"). The comparison of
+     * the two weight modes is exact: every backend must give the same bits
+     * wherever the weights live (#76). */
+    const char *name = getenv("GEIST_BACKEND") != nullptr ? getenv("GEIST_BACKEND") : "auto";
     struct geist_backend *be = nullptr;
     enum geist_status     s  = geist_backend_create(name, nullptr, nullptr, &be);
     if (s != GEIST_OK) {

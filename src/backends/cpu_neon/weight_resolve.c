@@ -373,8 +373,31 @@ static void cpu_neon_w_iq4nl_m1(const float               *x,
     linear_iq4nl_decode_w4a8_pre(n_in, n_out, sc, xq, w->raw, y);
 }
 
-/* F32 dense: SGEMV / SGEMM through geist_gemm. The weight is row-major
- * [n_out, n_in], so y = W @ x is a sgemv with TransA=NoTrans. */
+/* F32 dense. M=1 is our own row dot, not Accelerate's sgemv: sgemv rounds
+ * differently with the matrix's address (alignment finer than 64 bytes), so
+ * the same model gave other logits mmap-aliased than copied (#76). A fixed
+ * summation order per row makes every output independent of where the
+ * weight lives and of how the rows are split. M>1 stays SGEMM through
+ * geist_gemm (row-major [n_out, n_in], y = x @ W^T). */
+static float f32_row_dot(size_t n, const float *w, const float *x) {
+    size_t i = 0;
+    float  s = 0.0f;
+#if defined(__ARM_NEON)
+    float32x4_t a0 = vdupq_n_f32(0.0f), a1 = a0, a2 = a0, a3 = a0;
+    for (; i + 16 <= n; i += 16) {
+        a0 = vfmaq_f32(a0, vld1q_f32(w + i), vld1q_f32(x + i));
+        a1 = vfmaq_f32(a1, vld1q_f32(w + i + 4), vld1q_f32(x + i + 4));
+        a2 = vfmaq_f32(a2, vld1q_f32(w + i + 8), vld1q_f32(x + i + 8));
+        a3 = vfmaq_f32(a3, vld1q_f32(w + i + 12), vld1q_f32(x + i + 12));
+    }
+    s = vaddvq_f32(vaddq_f32(vaddq_f32(a0, a1), vaddq_f32(a2, a3)));
+#endif
+    for (; i < n; i++) {
+        s += w[i] * x[i];
+    }
+    return s;
+}
+
 /* Output-row blocks of a parallel F32 GEMV (cpu_neon_w_f32_m1). */
 struct f32_m1_job {
     const float *x, *w;
@@ -385,21 +408,10 @@ struct f32_m1_job {
 enum { F32_M1_ROWS = 32 };
 
 static void f32_m1_rows(void *ctx, size_t c0, size_t c1) {
-    const struct f32_m1_job *j = ctx;
-    for (size_t c = c0; c < c1; c++) {
-        const size_t r0 = c * F32_M1_ROWS;
-        const size_t tr = j->n_out - r0 < F32_M1_ROWS ? j->n_out - r0 : F32_M1_ROWS;
-        geist_sgemv(GEIST_OP_N,
-                    (int) tr,
-                    (int) j->n_in,
-                    1.0f,
-                    j->w + r0 * j->n_in,
-                    (int) j->n_in,
-                    j->x,
-                    1,
-                    0.0f,
-                    j->y + r0,
-                    1);
+    const struct f32_m1_job *j  = ctx;
+    const size_t             r1 = c1 * F32_M1_ROWS < j->n_out ? c1 * F32_M1_ROWS : j->n_out;
+    for (size_t r = c0 * F32_M1_ROWS; r < r1; r++) {
+        j->y[r] = f32_row_dot(j->n_in, j->w + r * j->n_in, j->x);
     }
 }
 
@@ -409,30 +421,18 @@ static void cpu_neon_w_f32_m1(const float               *x,
                               float                     *y) {
     (void) be;
     /* A decode-time F32 GEMV reads its matrix once, so it is bandwidth
-     * bound, and one thread (Accelerate's sgemv runs M=1 on the caller)
-     * reaches a fraction of the memory bandwidth. Gemma 4's per-layer
-     * F32 gates (2 x 1536 x 256 a layer) took 16 % of a Gemma 4 E2B
-     * decode on the M1 Max that way (#16). Above 256K weights the rows
-     * go to all threads in blocks of F32_M1_ROWS; every output is the
-     * same row dot product. */
-    const size_t n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+     * bound: above 256K weights the rows go to all threads in blocks of
+     * F32_M1_ROWS (#16; Gemma 4's per-layer F32 gates, 2 x 1536 x 256 a
+     * layer, took 16 % of a Gemma 4 E2B decode on one thread). */
+    const size_t      n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    struct f32_m1_job j = {
+            .x = x, .w = (const float *) w->raw, .y = y, .n_in = n_in, .n_out = n_out};
+    const size_t n_c = (n_out + F32_M1_ROWS - 1) / F32_M1_ROWS;
     if (n_in * n_out >= (size_t) 1 << 18 && n_out >= 2 * F32_M1_ROWS) {
-        struct f32_m1_job j = {
-                .x = x, .w = (const float *) w->raw, .y = y, .n_in = n_in, .n_out = n_out};
-        geist_par_for((n_out + F32_M1_ROWS - 1) / F32_M1_ROWS, f32_m1_rows, &j);
-        return;
+        geist_par_for(n_c, f32_m1_rows, &j);
+    } else {
+        f32_m1_rows(&j, 0, n_c);
     }
-    geist_sgemv(GEIST_OP_N,
-                (int) w->n_out,
-                (int) w->n_in,
-                1.0f,
-                (const float *) w->raw,
-                (int) w->n_in,
-                x,
-                1,
-                0.0f,
-                y,
-                1);
 }
 
 static void cpu_neon_w_f32_mN(size_t                     m,
