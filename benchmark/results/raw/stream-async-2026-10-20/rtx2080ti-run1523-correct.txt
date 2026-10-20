@@ -1,0 +1,21 @@
+[test_backend_vulkan_linear_parity async]   PQ2_0-cm32 m=128  max_rel 0.00e+00  |ref| 840.1 OK
+[test_backend_vulkan_linear_parity async] test_backend_vulkan_linear_parity: all checks passed
+[test_backend_vulkan_buffer_unit async] test_backend_vulkan_buffer_unit: all checks passed
+[test_backend_vulkan_ops_unit async]   attention f16 decode 3072 GQA2 large   max_abs 2.77e-06
+[test_backend_vulkan_ops_unit async] PASS: Vulkan qwen35 ops (partial and interleaved rope, hadamard, PQ2_0 embed, relu2, act_quant, rmsnorm, rmsnorm_add, silu, silu_mul, sigmoid_mul, qgate_split)
+== split 26 + offload, async=0
+      1 FAIL: split 26 (kv fp32): GEIST_E_OOM (transformer_session_alloc: split stage on 'vulkan': vulkan: out of device memory: a KV-cache buffer needs 16 MiB, 10300 of 11264 MiB are in use by this backend; the device reports 11263 of 11264 MiB in use (other models or processes included) | vulkan: out of device memory: a KV-cache buffer needs 16 MiB, 10300 of 11264 MiB are in use by this backend; the device reports 11263 of 11264 MiB in use (other models or processes included))
+      1 FAIL: split 26 (kv int4): GEIST_E_OOM (transformer: split stage on 'vulkan': vulkan: allocating 94699520 bytes failed (-2) | vulkan: allocating 94699520 bytes failed (-2))
+      2 geist: offload: 0 prefill chunks ran on vulkan, 0 steps mirrored there
+      2 geist: offload: 3 prefill chunks ran on vulkan, 17 steps mirrored there
+      2 geist: offload: prefill chunks of 32 rows or more run layers 1..39 on vulkan
+      2 geist: offload: prefill chunks of 32 rows or more run layers 26..39 on vulkan
+      1   kv int8 split  26: max|d| logits 0.201, after reset 0.225, greedy tokens matching 16/16
+== split 26 + offload, async=1
+      1 FAIL: split 26 (kv fp32): GEIST_E_OOM (transformer_session_alloc: split stage on 'vulkan': vulkan: out of device memory: a KV-cache buffer needs 16 MiB, 10274 of 11264 MiB are in use by this backend; the device reports 11262 of 11264 MiB in use (other models or processes included) | vulkan: out of device memory: a KV-cache buffer needs 16 MiB, 10274 of 11264 MiB are in use by this backend; the device reports 11262 of 11264 MiB in use (other models or processes included))
+      1 FAIL: split 26 (kv int4): GEIST_E_OOM (transformer: split stage on 'vulkan': vulkan: allocating 94699520 bytes failed (-2) | vulkan: allocating 94699520 bytes failed (-2))
+      1 FAIL: split 26 (kv int8): GEIST_E_OOM (transformer: split stage on 'vulkan': vulkan: allocating 94699520 bytes failed (-2) | vulkan: allocating 94699520 bytes failed (-2))
+      2 geist: offload: 0 prefill chunks ran on vulkan, 0 steps mirrored there
+      1 geist: offload: 3 prefill chunks ran on vulkan, 17 steps mirrored there
+      2 geist: offload: prefill chunks of 32 rows or more run layers 1..39 on vulkan
+      1 geist: offload: prefill chunks of 32 rows or more run layers 26..39 on vulkan

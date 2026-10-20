@@ -70,6 +70,16 @@ minor release.
 ## [0.21.0] — 2026-10-19
 
 ### Added
+- **Vulkan: streamed weights are copied on the transfer queue, one weight
+  ahead (#78 phase 2).** Where the device has a transfer-only queue family
+  (the copy engines), the copies of spilled weights into their VRAM slots
+  run there and overlap the GEMMs: each streamed GEMM is a submission of its
+  own that waits on a timeline semaphore for its copy, and the weight a
+  chunk streamed next last time is copied into the other slot meanwhile.
+  RTX 2080 Ti, Qwen3-14B Q8_0, chunk 512: every layer on the GPU 551-553 ->
+  654-660 tok/s prefill, split 26 + offload 522-540 -> 616-638; decode and
+  peak VRAM unchanged. On by default; `GEIST_VK_STREAM_ASYNC=0` keeps the
+  copies in the batch. `stream-async.yml` measures it.
 - **Offload: prefill of a split model on the GPU, decode split (#78).** A
   model split across the CPU and a discrete GPU (#49) also loads its CPU
   layers on the GPU, in host memory and streamed (`GEIST_W_HOST`,
