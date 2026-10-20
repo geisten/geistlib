@@ -18,7 +18,10 @@
  * Reproducing a timing-dependent divergence (#506): GEIST_TEST_PUSH_CHUNK
  * (samples per push, default 320) and GEIST_TEST_PUSH_PACE_US (sleep after
  * each push) pin where the encoder worker snapshots the mel — 15040/600000
- * puts it at 94 frames, the cut #506 is about.
+ * puts it at 94 frames, the cut #506 is about; 32000/600000 puts it on the
+ * last real frame (200), so the tail leaves as a one-sub-token block — the
+ * case a one-row linear_fp32 broke on Neoverse-N1 (its gemv path summed in
+ * another order than the batch's gemm, and the 0.16 top-2 margin flipped).
  */
 #include "audio_test_util.h"
 #include "test_helpers.h"

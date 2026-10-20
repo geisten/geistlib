@@ -661,6 +661,16 @@ jobs:
         env:
           GEIST_GGUF_PATH: ${{ github.workspace }}/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
         run: ./bin/linux/release/tests/test_audio_stream_session_int
+      # The worker snapshot pinned to the last real frame: the tail then
+      # leaves as a one-sub-token block and must keep the batch's bits
+      # (a one-row linear_fp32 used to take the gemv path and flip the
+      # greedy prediction on Neoverse-N1).
+      - name: Session streaming turn, snapshot on the last frame (a skip is a failure)
+        env:
+          GEIST_GGUF_PATH: ${{ github.workspace }}/gguf_artifacts/gemma4-e2b-Q4_K_M.gguf
+          GEIST_TEST_PUSH_CHUNK: "32000"
+          GEIST_TEST_PUSH_PACE_US: "600000"
+        run: ./bin/linux/release/tests/test_audio_stream_session_int
 
   # x86_64 counterpart to audio-smoke: the AVX-512/VNNI audio path. Only the
   # tower is needed: the encoder runs without an LLM.
