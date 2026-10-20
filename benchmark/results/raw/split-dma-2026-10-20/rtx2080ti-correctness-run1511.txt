@@ -1,0 +1,21 @@
+model gguf_artifacts/smollm2-360m-instruct-q8_0.gguf (32 layers), cpu_x86 + cpu_x86, byte-identical
+  kv fp32 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split   1: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  16: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  31: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int4 split  32: max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv fp32 split  16 offload: GEIST_OK, max|d| logits 0, after reset 0, greedy tokens matching 16/16
+  kv int8 split  16 offload: GEIST_OK, max|d| logits 0.3, after reset 0.511, greedy tokens matching 8/16
+split stage: 25 faulted prefills returned an error status, 2 completed
+load backend: 26 faulted prefills returned an error status, 2 completed
+FAIL: split 26 (kv fp32): GEIST_E_OOM
+model /home/germar/geist-models/Qwen3-14B-Q8_0.gguf (40 layers), cpu_x86 + vulkan, reported
+  kv int8 split  26: max|d| logits 0.268, after reset 0.225, greedy tokens matching 16/16
+  kv int4 split  26: max|d| logits 0.768, after reset 1.44, greedy tokens matching 0/16
