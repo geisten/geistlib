@@ -72,6 +72,30 @@ Gitea's own job timeout (`[actions] ENDLESS_TASK_TIMEOUT`, 3 h by default)
 caps every job, whatever `timeout-minutes` says — `cross-engine-campaign`
 needs it raised in `app.ini`.
 
+### Cloud arm64 runner
+
+`ubuntu-24.04-arm` has two docker-mode runners: `pi5-ci` on the Pi (capacity
+1, under the board lock) and, since 2026-10-20, `cloud-arm64-hel1`, a
+Hetzner CAX21 in Helsinki (Neoverse-N1, 4 vCPU, 7.5 GB + 4 GB swap for the
+ASan builds, 75 GB disk, Ubuntu 26.04, host name `ci-arm64-hel1`). Gitea
+hands a queued arm64 job to whichever is free. Nothing measured runs there:
+it is a shared cloud VM, and the Pi 5 stays the arbiter for timings.
+
+| item | value |
+| :-- | :-- |
+| runner | `gitea-runner` v5.0.0, system unit `gitea-runner-ci`, user `runner` (docker group) |
+| config | `/home/runner/gitea-runner-ci/config.yaml` |
+| jobs | `capacity: 2`, `OMP_NUM_THREADS=2`, `timeout: 3h`, `fetch_timeout: 30s` |
+| workspace | `bind_workdir` under `/home/runner/gitea-runner-ci/work` (jobs `docker run -v "$PWD:/src"`); idle cleanup after 12 h |
+| hook | `job_completed` = `hooks/job-completed.sh`, mounted read-only into the job container, chowns the task dir back to `runner` (root-owned files otherwise pile up) |
+| health check | no job below 20 GB free disk |
+| actions cache | runner's own, `172.17.0.1:8088` (ufw admits only the docker subnets) |
+| CI hygiene | system timer `ci-hygiene` (as `runner`), the desktop's script; log `/home/runner/ci-hygiene/ci-hygiene.log` |
+| git cache | `git-cache.service` on `172.17.0.1:8417`, installed but off until a read-only token is in `/home/runner/.config/git-cache/token`; the runner's `envs` are not wired to it yet |
+
+Access is key-only SSH as `germar` (no root login, ufw: 22 rate-limited
+only); unattended-upgrades is on.
+
 ## Desktop host
 
 Host prerequisites, installed once by hand (the job has no apt step):
