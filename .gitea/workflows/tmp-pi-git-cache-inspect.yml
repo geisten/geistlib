@@ -1,0 +1,25 @@
+name: tmp-pi-git-cache-inspect
+on:
+  workflow_dispatch:
+jobs:
+  inspect:
+    runs-on: pi5
+    steps:
+      - name: read-only inspection for the CI git cache
+        run: |
+          set +e
+          echo "== host"; hostname; uname -a; id; uptime; echo "HOME=$HOME PWD=$PWD"; env | grep -E '^(GIT_|RUNNER_|PATH=)' | grep -v -i token
+          echo "== ip"; ip -4 -o addr show | awk '{print $2, $4}'
+          echo "== tools"; git --version; python3 --version; docker --version; ls /usr/lib/git-core/git-http-backend; sudo -n true && echo sudo-ok
+          echo "== runners"; ls -d ~/gitea-runner* 2>/dev/null
+          for d in ~/gitea-runner-ci ~/gitea-runner; do echo "--- $d"; ls $d; echo "--- $d/config.yaml"; grep -v -i -E 'token|secret' $d/config.yaml 2>/dev/null | grep -v '^\s*#' | grep -v '^\s*$'; done
+          echo "== units"; systemctl list-units --type=service --no-pager --all | grep -i -E 'gitea|runner|cache'
+          for u in $(systemctl list-units --type=service --no-pager --all --plain | awk '/gitea/{print $1}'); do echo "--- $u"; systemctl cat $u | grep -v -i token; done
+          echo "== hooks"; ls -la ~/bin | head -30
+          for f in ~/gitea-runner*/hooks/* ~/bin/*gitea* ~/bin/*health* ; do [ -f "$f" ] && { echo "--- $f"; cat "$f"; }; done
+          echo "== lock"; ~/bin/with-pi-lock status
+          echo "== docker networks"; docker network ls; docker network inspect bridge -f '{{range .IPAM.Config}}{{.Subnet}} {{.Gateway}}{{end}}'
+          echo "== firewall"; sudo -n nft list ruleset 2>/dev/null | head -40; sudo -n iptables -S INPUT 2>/dev/null | head; sudo -n ufw status 2>/dev/null
+          echo "== listening"; ss -ltnp 2>/dev/null | head -20
+          echo "== disk"; df -h ~ | tail -1
+          echo "== image git"; docker image ls | head; 
