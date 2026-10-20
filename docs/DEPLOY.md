@@ -34,7 +34,9 @@ Each release attaches `libgeist-<platform>.tar.gz` for `macos-arm64`,
 Digests are in `SHA256SUMS` (`sha256sum -c SHA256SUMS`).
 
 The archive holds geist's objects, not its dependencies. It is an OpenMP
-build, so the consumer supplies the OpenMP runtime:
+build, so the consumer supplies the OpenMP runtime. The `macos-arm64` archive
+also contains the Metal backend; it loads Metal.framework at run time through
+`dlopen`, so it adds no link flag:
 
 ```sh
 # Linux

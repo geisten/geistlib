@@ -140,7 +140,7 @@ complete integration in Python, Rust, Go and JavaScript (~30–40 lines each).
 | `cpu_neon` | ARM64 with dot product (Pi 5, Apple Silicon, armv8.2+) | arm64 |
 | `cpu_x86` | x86-64-v3 (AVX2) with runtime AVX-512/VNNI dispatch | x86-64 |
 | `cpu_scalar` | portable C, numerical reference | always built |
-| `metal` | Apple GPU, experimental | opt-in |
+| `metal` | Apple GPU, experimental | built on Apple Silicon, selected by name |
 | `vulkan` | Linux GPU, experimental | opt-in |
 
 Select at build time with `BACKENDS="..."` (`make clean` when you change it).

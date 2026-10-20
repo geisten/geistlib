@@ -6,7 +6,7 @@
 # Dependency: Homebrew libomp (`brew install libomp`). Default path
 # is /opt/homebrew/opt/libomp; override via LIBOMP_PREFIX.
 #
-# Build: `make TARGET=mac-omp BACKENDS="cpu_neon cpu_scalar"`
+# Build: `make TARGET=mac-omp` (default BACKENDS="cpu_neon cpu_scalar metal")
 # Run:   `bin/mac-omp/release/<binary>`
 #        - The cpu_neon backend sets OMP_WAIT_POLICY=active (decode runs one
 #          parallel region per matmul, and passive wait pays a thread-pool
@@ -18,13 +18,14 @@
 
 CC ?= clang
 
-# Apple silicon: NEON pair. Intel Mac: x86 pair, same baseline as
-# target-mac.mk / target-linux.mk.
+# Apple silicon: NEON pair plus the Metal GPU backend (dlopen'd, no link-time
+# framework; "auto" still picks cpu_neon, Metal is selected by name). Intel
+# Mac: x86 pair, same baseline as target-mac.mk / target-linux.mk.
 ifeq ($(shell uname -m),x86_64)
 BACKENDS ?= cpu_x86 cpu_scalar
 MAC_ARCH_CFLAGS := -march=x86-64-v3 -mtune=generic
 else
-BACKENDS ?= cpu_neon cpu_scalar
+BACKENDS ?= cpu_neon cpu_scalar metal
 MAC_ARCH_CFLAGS :=
 endif
 

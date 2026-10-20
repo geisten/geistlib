@@ -22,7 +22,7 @@ src/backends/            compute: the kernels that actually run the ops
       cpu_neon/            Apple Silicon + ARM64, OpenMP-parallel
       cpu_scalar/          portable reference (correctness oracle)
       cpu_x86/             x86-64-v3 + runtime AVX-512/VNNI dispatch (default on x86)
-      metal/               Apple GPU (opt-in, experimental; dlopen'd Metal.framework)
+      metal/               Apple GPU (experimental, built on Apple Silicon; dlopen'd Metal.framework)
       vulkan/              Linux/NVIDIA GPU (opt-in, experimental; dlopen'd libvulkan)
 src/formats/             GGUF quant (de)quantization; ptqtp/ holds only the AWQ scale loader
 src/io/                  GGUF reader, safetensors reader

@@ -13,14 +13,15 @@ $(warning building plain mac target without OpenMP — the kernels run on GCD, n
 
 CC ?= clang
 
-# Apple silicon builds the NEON pair. An Intel Mac builds the x86 pair with
+# Apple silicon builds the NEON pair plus the Metal GPU backend (dlopen'd, no
+# link-time framework; "auto" still picks cpu_neon). An Intel Mac builds the x86 pair with
 # the ISA baseline of target-linux.mk: the cpu_x86 intrinsics need AVX2/F16C
 # at compile time; AVX-512 kernels are dispatched at runtime.
 ifeq ($(shell uname -m),x86_64)
 BACKENDS ?= cpu_x86 cpu_scalar
 MAC_ARCH_CFLAGS := -march=x86-64-v3 -mtune=generic
 else
-BACKENDS ?= cpu_neon cpu_scalar
+BACKENDS ?= cpu_neon cpu_scalar metal
 MAC_ARCH_CFLAGS :=
 endif
 

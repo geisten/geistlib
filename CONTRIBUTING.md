@@ -35,7 +35,8 @@ Toolchain: gcc ≥ 14 or Apple clang ≥ 16 (`-std=c23`). On macOS,
 `brew install libomp` for the multi-threaded `mac-omp` target. Linux links
 OpenBLAS (`libopenblas-dev`) by default; `GEMM_PROVIDER=native` builds without
 it. The x86-64 default is `BACKENDS="cpu_x86 cpu_scalar"` (AVX-512/VNNI
-runtime-dispatched over an x86-64-v3 baseline). Run `make clean` after
+runtime-dispatched over an x86-64-v3 baseline); Apple Silicon builds
+`BACKENDS="cpu_neon cpu_scalar metal"`. Run `make clean` after
 changing `BACKENDS` or `EXTRA_CFLAGS`; make does not track them.
 
 ## Tests

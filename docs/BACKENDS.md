@@ -22,7 +22,12 @@ and TSan on concurrency: [CI_COVERAGE.md](CI_COVERAGE.md).
 
 ## Metal (Apple GPU, experimental)
 
-Build with `BACKENDS="metal cpu_neon cpu_scalar"`. Simdgroup GEMV/GEMM kernels
+Built by default on Apple Silicon (`BACKENDS="cpu_neon cpu_scalar metal"` in
+`mk/target-mac*.mk`; an Intel Mac builds the x86 pair only) and in the
+`macos-arm64` release archive. `"auto"` still picks `cpu_neon`; select Metal
+with `geist_backend_create("metal")` or `GEIST_BACKEND=metal`. The backend
+dlopens Metal.framework, so neither geistlib nor a consumer of `libgeist.a`
+links a framework for it. Simdgroup GEMV/GEMM kernels
 cover 13 GGUF dtypes (incl. the IQ4/Q3_K/IQ3_S mixed quants), and a chunked
 DeltaNet prefill runs the qwen35 hybrids. On an M1 Max the Qwen3.8-27B decodes
 at **1.41× llama.cpp Metal** and prefills at 1.12×; gemma4-e2b reaches 992 pp /
