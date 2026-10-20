@@ -175,9 +175,11 @@ static inline void add_scaled_f32_neon_256(float *dst, const float *src, float s
 }
 
 /* Runs fn over the `total` attention items (query, head), handed out 8 at
- * a time. */
+ * a time, or one at a time below 16 items: a decode step of a model with
+ * 8 heads (Gemma 4 E2B) then spreads its rows over 8 threads instead of
+ * one, where it used to fall back to the scalar reference (#16). */
 static void attention_par(size_t total, geist_par_fn fn, void *ctx) {
-    cpu_neon_par_for_dynamic(total, 8, fn, ctx);
+    cpu_neon_par_for_dynamic(total, total < 16 ? 1 : 8, fn, ctx);
 }
 
 static inline void scale_f32_neon(float *x, float scale, size_t n) {
@@ -344,10 +346,7 @@ static bool attention_mqa1_causal_kv_neon(const float *q,
         return false;
     }
     const size_t total = n_q * n_q_heads;
-    if (total < 16) {
-        return false;
-    }
-    const bool hd256 = head_dim == 256;
+    const bool   hd256 = head_dim == 256;
 
     struct attn_job job = {.q              = q,
                            .k              = k,
@@ -378,20 +377,17 @@ static bool attention_mqa_causal_kv_neon(const float *q,
         n_q_heads == 0 || n_kv_heads == 0 || head_dim == 0 || n_q_heads % n_kv_heads != 0) {
         return false;
     }
-    const size_t total = n_q * n_q_heads;
-    if (total < 16) {
-        return false;
-    }
-    struct attn_job job = {.q              = q,
-                           .k              = k,
-                           .v              = v,
-                           .n_kv           = n_kv,
-                           .q_offset       = q_offset,
-                           .n_q_heads      = n_q_heads,
-                           .n_kv_heads     = n_kv_heads,
-                           .head_dim       = head_dim,
-                           .sliding_window = sliding_window,
-                           .out            = out};
+    const size_t    total = n_q * n_q_heads;
+    struct attn_job job   = {.q              = q,
+                             .k              = k,
+                             .v              = v,
+                             .n_kv           = n_kv,
+                             .q_offset       = q_offset,
+                             .n_q_heads      = n_q_heads,
+                             .n_kv_heads     = n_kv_heads,
+                             .head_dim       = head_dim,
+                             .sliding_window = sliding_window,
+                             .out            = out};
     attention_par(total, attn_mqa_items, &job);
     return true;
 }
