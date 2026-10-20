@@ -17,7 +17,8 @@
  * armed paths still produce answers.
  *
  * The env values chosen are the defaults, so behaviour is unchanged and
- * only the initialization path is under test.
+ * only the initialization path is under test. The caches are the CPU
+ * backend's, so it names that backend ("auto" is metal on Apple Silicon).
  */
 #include "test_helpers.h"
 
@@ -88,7 +89,7 @@ int main(void) {
     arm_env_gated_paths();
 
     struct geist_backend *be = nullptr;
-    if (geist_backend_create("auto", nullptr, nullptr, &be) != GEIST_OK) {
+    if (geist_backend_create(GEIST_TEST_CPU_BACKEND, nullptr, nullptr, &be) != GEIST_OK) {
         fprintf(stderr, "backend create failed: %s\n", geist_last_create_error());
         return GEIST_TEST_ERROR;
     }

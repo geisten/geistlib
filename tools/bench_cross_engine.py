@@ -153,10 +153,10 @@ def run_geist(engine: dict, model: Path, workload: dict) -> dict:
         "GEIST_DECODE_THREADS": str(workload["decode_threads"]),
         "GEIST_TEXT_ONLY": "1",
     })
-    if workload.get("backend") == "gpu":
-        # "auto" prefers CPU backends; a GPU cell must name its backend and
-        # fail loudly (via the stderr check below) if it is not available.
-        env["GEIST_BENCH_BACKEND"] = workload["expect_backend"]
+    # Name the backend: "auto" is metal on Apple Silicon, so a CPU cell left
+    # to it would measure the GPU. The stderr check below fails loudly if the
+    # backend is not available.
+    env["GEIST_BENCH_BACKEND"] = workload["expect_backend"]
     rows, stderr, elapsed = run_command(command, env)
     expected = workload["expect_backend"]
     if not any(line.strip() == f"[bench] backend: {expected}" for line in stderr):
