@@ -488,6 +488,24 @@ void vk_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf) {
     }
     struct vk_state *st = buf->owner;
     vk_seq_flush(st); /* the open batch may reference this buffer */
+    /* Async streaming (#78): a copy on the transfer queue may still read it,
+     * and the learned order and the slots must not name a freed buffer. */
+    if (st->xq_on && buf->role == GEIST_BUFFER_WEIGHT) {
+        (void) st->fn.QueueWaitIdle(st->xq);
+        if (st->stream_prev == buf) {
+            st->stream_prev = nullptr;
+        }
+        for (int k = 0; k < 2; ++k) {
+            if (st->wslot_src[k] == buf) {
+                st->wslot_src[k] = nullptr;
+            }
+        }
+        for (size_t i = 0; i < st->n_weights; ++i) {
+            if (st->weights[i].gpu != nullptr && st->weights[i].gpu->stream_next == buf) {
+                st->weights[i].gpu->stream_next = nullptr;
+            }
+        }
+    }
     if (buf->buf != VK_NULL_HANDLE && !buf->borrowed) {
         /* drop cached descriptor sets that reference this buffer — the
          * driver may recycle the handle value for a future buffer */

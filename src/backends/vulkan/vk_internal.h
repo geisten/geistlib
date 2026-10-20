@@ -250,7 +250,7 @@ struct vk_state {
     uint32_t             wslot_next;
     uint64_t             stat_streamed;
     uint64_t             stat_streamed_bytes;
-    /* Async streaming (#78 phase 2, GEIST_VK_STREAM_ASYNC=1): the slot copies
+    /* Async streaming (#78 phase 2; on by default, GEIST_VK_STREAM_ASYNC=0 off): the slot copies
      * run on a transfer-only queue (the copy engines) and overlap the GEMMs.
      * Each streamed GEMM is a compute submission of its own that waits on
      * tl_copy for its slot's copy and signals tl_comp when it is done; the

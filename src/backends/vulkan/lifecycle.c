@@ -314,10 +314,11 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     }
     st->queue_family = family;
     /* Async streaming (#78 phase 2): a transfer-only family is the copy
-     * engines, which run beside the compute queue. Opt-in for now. */
+     * engines, which run beside the compute queue. On where the device has
+     * one; GEIST_VK_STREAM_ASYNC=0 keeps the copies in the compute batch. */
     const char *async = getenv("GEIST_VK_STREAM_ASYNC");
     st->xq_family     = UINT32_MAX;
-    for (uint32_t i = 0; async != nullptr && strcmp(async, "0") != 0 && i < nfam; ++i) {
+    for (uint32_t i = 0; (async == nullptr || strcmp(async, "0") != 0) && i < nfam; ++i) {
         const VkQueueFlags f = fams[i].queueFlags;
         if ((f & VK_QUEUE_TRANSFER_BIT) && !(f & (VK_QUEUE_COMPUTE_BIT | VK_QUEUE_GRAPHICS_BIT)) &&
             !(f & (VK_QUEUE_VIDEO_DECODE_BIT_KHR | VK_QUEUE_VIDEO_ENCODE_BIT_KHR)) &&
