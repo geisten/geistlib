@@ -78,9 +78,9 @@ jobs:
           for a in 0 1; do
             echo "== split $SPLIT + offload, async=$a" | tee -a out/correct.txt
             GEIST_VK_STREAM_ASYNC=$a GEIST_SPLIT_BACKEND=vulkan GEIST_SPLIT_GGUF_PATH="$MODEL" \
-              GEIST_SPLIT_POINTS="$SPLIT" GEIST_OFFLOAD_M_MIN=32 GEIST_VK_VERBOSE=1 \
+              GEIST_SPLIT_POINTS="$SPLIT" GEIST_OFFLOAD_M_MIN=32 GEIST_VERBOSE=1 \
               bin/linux/release/tests/test_layer_split_int > out/split-async$a.txt 2>&1 || true
-            grep -E 'kv .* split|FAIL|spill:|async|out of device memory' out/split-async$a.txt \
+            grep -E 'kv .* split|FAIL|spill:|async|out of|offload' out/split-async$a.txt \
               | sort | uniq -c | tee -a out/correct.txt
           done
       - name: Prefill, async off/on interleaved

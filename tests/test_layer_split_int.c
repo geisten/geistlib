@@ -327,10 +327,12 @@ int main(void) {
             s            = run_once(path, be, sbe, splits[i], kvs[k], &r);
             if (s != GEIST_OK) {
                 fprintf(stderr,
-                        "FAIL: split %zu (kv %s): %s\n",
+                        "FAIL: split %zu (kv %s): %s (%s | %s)\n",
                         splits[i],
                         kv_names[k],
-                        geist_status_to_string(s));
+                        geist_status_to_string(s),
+                        geist_backend_errmsg(be),
+                        geist_backend_errmsg(sbe));
                 fails++;
                 continue;
             }
