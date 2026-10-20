@@ -1,0 +1,17 @@
+name: tmp-mac-env-probe
+on:
+  workflow_dispatch:
+jobs:
+  light:
+    runs-on: macos-15
+    steps:
+      - run: |
+          echo "runner $RUNNER_NAME"; env | grep '^GIT_CONFIG_' || echo "no GIT_CONFIG env"
+          git config --show-origin --get-regexp '^(include|url)\.' || true
+          ls -l ~/git-cache/ci.gitconfig 2>&1 || true
+  heavy:
+    runs-on: macos-15-heavy
+    steps:
+      - run: |
+          echo "runner $RUNNER_NAME"; env | grep '^GIT_CONFIG_' || echo "no GIT_CONFIG env"
+          git config --show-origin --get-regexp '^(include|url)\.' || true
