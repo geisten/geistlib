@@ -125,7 +125,7 @@ it is a shared cloud VM, and the Pi 5 stays the arbiter for timings.
 | health check | no job below 20 GB free disk |
 | actions cache | runner's own, `172.17.0.1:8088` (ufw admits only the docker subnets) |
 | CI hygiene | system timer `ci-hygiene` (as `runner`), the desktop's script; log `/home/runner/ci-hygiene/ci-hygiene.log` |
-| git cache | `git-cache.service` on `172.17.0.1:8417`, installed but off until a read-only token is in `/home/runner/.config/git-cache/token`; the runner's `envs` are not wired to it yet |
+| git cache | `git-cache.service` on `172.17.0.1:8417`, installed but off until a read-only token is in `/home/runner/.config/git-cache/token`; the runner's `envs` are not wired to it yet ("CI git cache") |
 
 Access is key-only SSH as `germar` (no root login, ufw: 22 rate-limited
 only); unattended-upgrades is on.
@@ -216,6 +216,39 @@ update, roll back or inspect it with the `git-cache` workflow
 through the cache or restores the runners' configs. If the cache is down,
 checkouts on those runners fail: roll back, or `systemctl --user restart
 git-cache` on the desktop.
+
+Each runner host has its own cache, listening where its jobs connect:
+
+| host | service | listens on | runners wired |
+| :-- | :-- | :-- | :-- |
+| desktop | user unit `git-cache` | `192.168.178.43:8417` | `desktop-ci`, `desktop-tsan` |
+| Pi 5 | system unit `git-cache` (as `germar`) | `172.17.0.1:8417` (docker bridge), `127.0.0.1:8417` | `pi5-ci` → bridge, `pi5-rspdevelop` (host mode) → 127.0.0.1 |
+| Mac | LaunchAgent `net.geisten.git-cache` | `127.0.0.1:8417` | `mac-light`, `mac-m1max` (host mode) |
+| cloud-arm64-hel1 | system unit `git-cache` | `172.17.0.1:8417` | not yet (no token) |
+
+The Pi takes the same workflow with `-i host=pi5`. Its deploy job runs on
+`pi5-rspdevelop` and holds the board lock, so `pi5-ci` (which takes no job
+while the lock is held) restarts at once; `pi5-rspdevelop` itself restarts
+from a transient unit once the job has ended and the lock is free.
+`-i host=pi5 -i action=verify` then runs one checkout on each Pi
+runner and looks for both in the cache's log (`ubuntu-24.04-arm` is shared
+with the cloud runner: if the container probe lands there, dispatch again).
+
+The Mac is installed by hand, `sh scripts/git-cache-mac.sh install`
+(`status` shows its state). Its token is not the org secret: the user
+places a read-only token in `~/.config/git-cache/token` (mode 0600), and
+launchd starts the cache once that file exists. The host-mode runners do
+not point git at the cache directly; their `envs` include a file
+
+```yaml
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: include.path
+  GIT_CONFIG_VALUE_0: /Users/germar/git-cache/ci.gitconfig
+```
+
+that the cache writes once it serves geistlib and removes when it stops. A
+missing include file is ignored, so without the token, or with the cache
+down, Mac jobs fetch from Gitea as before.
 
 ## CI hygiene
 

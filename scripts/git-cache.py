@@ -18,9 +18,12 @@ refused; only container networks and localhost may connect.
 
 Usage: git-cache.py --listen 192.168.178.43:8417 --root ~/git-cache/repos \
            --token-file ~/.config/git-cache/token
+--listen may be given more than once (the Pi: its docker bridge for the
+container jobs and 127.0.0.1 for the host-mode jobs).
 """
 import argparse
 import ipaddress
+import json
 import os
 import re
 import subprocess
@@ -31,6 +34,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 UPSTREAM = "https://git.geisten.net"
 ALLOWED = [ipaddress.ip_network(n) for n in ("127.0.0.0/8", "172.16.0.0/12", "::1/128")]
+# Docker hands out per-job networks from 172.17-31.x and then 192.168.x/20s
+# (on the Pi a job got 192.168.x and its checkout was refused); those are
+# allowed while a local docker bridge (docker0, br-*) carries them, never
+# the LAN's 192.168 network.
+BRIDGE_CACHE = {"at": -1e9, "nets": []}
 # /owner/repo(.git)/info/refs | /owner/repo(.git)/git-upload-pack | .../HEAD
 PATH_RE = re.compile(r"^/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+?)(?:\.git)?(/info/refs|/git-upload-pack|/HEAD)$")
 
@@ -82,15 +90,34 @@ def refresh(owner, repo, asked_at):
         return ok or os.path.isdir(d)  # stale but present: serve what we have
 
 
+def bridge_nets():
+    """Subnets of the local docker bridges, re-read at most once a second."""
+    with LOCKS_GUARD:
+        if time.monotonic() - BRIDGE_CACHE["at"] > 1:
+            nets = []
+            try:
+                out = subprocess.run(["ip", "-j", "-4", "addr"], capture_output=True,
+                                     text=True, timeout=5).stdout
+                for itf in json.loads(out or "[]"):
+                    if itf.get("ifname", "").startswith(("docker", "br-")):
+                        for a in itf.get("addr_info", []):
+                            nets.append(ipaddress.ip_network(f"{a['local']}/{a['prefixlen']}", strict=False))
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                pass  # no iproute2 (the Mac): localhost only
+            BRIDGE_CACHE.update(at=time.monotonic(), nets=nets)
+        return BRIDGE_CACHE["nets"]
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
     def allowed(self):
         try:
-            return any(ipaddress.ip_address(self.client_address[0]) in n for n in ALLOWED)
+            ip = ipaddress.ip_address(self.client_address[0])
         except ValueError:
             return False
+        return any(ip in n for n in ALLOWED) or any(ip in n for n in bridge_nets())
 
     def fail(self, code, text):
         body = (text + "\n").encode()
@@ -161,15 +188,20 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     global ARGS
     ap = argparse.ArgumentParser()
-    ap.add_argument("--listen", default="127.0.0.1:8417")
+    ap.add_argument("--listen", action="append", help="host:port, repeatable (default 127.0.0.1:8417)")
     ap.add_argument("--root", default=os.path.expanduser("~/git-cache/repos"))
     ap.add_argument("--token-file", default=os.path.expanduser("~/.config/git-cache/token"))
     ARGS = ap.parse_args()
-    host, port = ARGS.listen.rsplit(":", 1)
+    listen = ARGS.listen or ["127.0.0.1:8417"]
     os.makedirs(ARGS.root, exist_ok=True)
-    srv = ThreadingHTTPServer((host, int(port)), Handler)
-    log(f"git cache on {ARGS.listen}, mirrors in {ARGS.root}")
-    srv.serve_forever()
+    servers = []
+    for addr in listen:
+        host, port = addr.rsplit(":", 1)
+        servers.append(ThreadingHTTPServer((host, int(port)), Handler))
+    log(f"git cache on {' '.join(listen)}, mirrors in {ARGS.root}")
+    for srv in servers[1:]:
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    servers[0].serve_forever()
 
 
 if __name__ == "__main__":
