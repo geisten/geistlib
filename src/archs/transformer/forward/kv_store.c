@@ -18,6 +18,7 @@
 #include "fwht.h"
 #include "int4_kv.h"
 #include "kivi.h"
+#include "par.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -39,6 +40,98 @@ static inline float kv_row_absmax(size_t n, const float x[static n]) {
     float out;
     memcpy(&out, &m, sizeof out);
     return out;
+}
+
+/* Rows from which a rotation or a quantizing append runs across threads.
+ * Fewer, as in decode (one token: n_q_heads rows to rotate, n_kv_heads to
+ * append), are a microsecond of work, less than starting the threads. */
+constexpr size_t KV_PAR_MIN_ROWS = 64;
+
+/* fwht_orthonormal on rows [r0, r1) of hd floats at `p`. */
+struct kv_rot_job {
+    size_t hd;
+    float *p;
+};
+
+static void kv_rot_items(void *ctx, size_t r0, size_t r1) {
+    const struct kv_rot_job *job = ctx;
+    for (size_t r = r0; r < r1; r++) {
+        fwht_orthonormal(job->hd, job->p + r * job->hd);
+    }
+}
+
+/* fwht_orthonormal on each of n_rows rows of hd floats at p; each row on
+ * its own, so the result is the same bytes on any number of threads. */
+static void kv_rotate_host(size_t n_rows, size_t hd, float *p) {
+    struct kv_rot_job job = {.hd = hd, .p = p};
+    if (n_rows < KV_PAR_MIN_ROWS) {
+        kv_rot_items(&job, 0, n_rows);
+    } else {
+        geist_par_for(n_rows, kv_rot_items, &job);
+    }
+}
+
+/* The INT8 (and INT4) append of rows (token t, KV head h), item
+ * t * n_kv_heads + h, into cache slot q_position + t. */
+struct kv_quant_job {
+    size_t       hd, n_kv_heads, row_elems, q_position;
+    bool         rot, v_int4;
+    float        k_den, v_den;
+    const float *k_src;
+    const float *v_src;
+    int8_t      *k_dst;
+    int8_t      *v_dst;
+    float       *k_sca;
+    float       *v_sca;
+};
+
+static void kv_quant_items(void *ctx, size_t i0, size_t i1) {
+    const struct kv_quant_job *job = ctx;
+    const size_t               hd  = job->hd;
+    float                      krot[512];
+    float                      vrot[512];
+    for (size_t it = i0; it < i1; it++) {
+        const size_t t     = it / job->n_kv_heads;
+        const size_t h     = it % job->n_kv_heads;
+        const size_t slot  = job->q_position + t;
+        const float *k_row = job->k_src + t * job->row_elems + h * hd;
+        const float *v_row = job->v_src + t * job->row_elems + h * hd;
+        if (job->rot) {
+            memcpy(krot, k_row, hd * sizeof(float));
+            memcpy(vrot, v_row, hd * sizeof(float));
+            fwht_orthonormal(hd, krot);
+            fwht_orthonormal(hd, vrot);
+            k_row = krot;
+            v_row = vrot;
+        }
+        float k_scale = kv_row_absmax(hd, k_row) / job->k_den;
+        if (k_scale == 0.0f) {
+            k_scale = 1.0f;
+        }
+        float v_scale = kv_row_absmax(hd, v_row) / job->v_den;
+        if (v_scale == 0.0f) {
+            v_scale = 1.0f;
+        }
+        const float k_inv  = 1.0f / k_scale;
+        const float v_inv  = 1.0f / v_scale;
+        int8_t     *k_drow = job->k_dst + slot * job->row_elems + h * hd;
+        for (size_t i = 0; i < hd; i++) {
+            k_drow[i] = (int8_t) lrintf(k_row[i] * k_inv);
+        }
+        if (job->v_int4) {
+            int4_pack_row(hd,
+                          v_row,
+                          v_inv,
+                          (uint8_t *) job->v_dst + (slot * job->row_elems + h * hd) / 2);
+        } else {
+            int8_t *v_drow = job->v_dst + slot * job->row_elems + h * hd;
+            for (size_t i = 0; i < hd; i++) {
+                v_drow[i] = (int8_t) lrintf(v_row[i] * v_inv);
+            }
+        }
+        job->k_sca[slot * job->n_kv_heads + h] = k_scale;
+        job->v_sca[slot * job->n_kv_heads + h] = v_scale;
+    }
 }
 
 enum geist_status transformer_kv_store_append(struct transformer_layer_forward_ctx *ctx) {
@@ -116,62 +209,37 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
         if (k_dst == nullptr || v_dst == nullptr || k_sca == nullptr || v_sca == nullptr) {
             return GEIST_E_BACKEND;
         }
-        const size_t row_elems      = kv_out;
-        const size_t scales_per_row = st->n_kv_heads;
         /* Rotate each K/V head row before quantizing (#61). Q is
-         * rotated symmetrically at attention time (kv_store_attention). */
-        const bool rot = sess->kv_rot_enabled && fwht_supported(hd) && hd <= 512;
-        float      krot[512];
-        float      vrot[512];
-        /* Low-bit quality-sim quantizes on an N-bit grid
+         * rotated symmetrically at attention time (kv_store_attention).
+         * Low-bit quality-sim quantizes on an N-bit grid
          * (amax / (2^(N-1)-1)); the int8 container then holds values in
          * [-(2^(N-1)-1), +...]. Rounding stays in range (|x| <= amax), so no
-         * clamp is needed. qbits==0 is the native 8-bit path (denom 127). */
-        const int   qbits  = sess->kv_sim_qbits;
-        const float denom  = qbits != 0 ? (float) ((1 << (qbits - 1)) - 1) : 127.0f;
-        const bool  v_int4 = sess->kv_int4_packed_enabled;
-        const float v_den  = v_int4 ? 7.0f : denom;
-        for (size_t t = 0; t < seq; t++) {
-            const size_t slot = q_position + t;
-            for (size_t h = 0; h < st->n_kv_heads; h++) {
-                const float *k_row = k_src + t * row_elems + h * hd;
-                const float *v_row = v_src + t * row_elems + h * hd;
-                if (rot) {
-                    memcpy(krot, k_row, hd * sizeof(float));
-                    memcpy(vrot, v_row, hd * sizeof(float));
-                    fwht_orthonormal(hd, krot);
-                    fwht_orthonormal(hd, vrot);
-                    k_row = krot;
-                    v_row = vrot;
-                }
-                const float k_amax  = kv_row_absmax(hd, k_row);
-                const float v_amax  = kv_row_absmax(hd, v_row);
-                float       k_scale = k_amax / denom;
-                if (k_scale == 0.0f) {
-                    k_scale = 1.0f;
-                }
-                float v_scale = v_amax / v_den;
-                if (v_scale == 0.0f) {
-                    v_scale = 1.0f;
-                }
-                const float k_inv  = 1.0f / k_scale;
-                const float v_inv  = 1.0f / v_scale;
-                int8_t     *k_drow = k_dst + slot * row_elems + h * hd;
-                for (size_t i = 0; i < hd; i++) {
-                    k_drow[i] = (int8_t) lrintf(k_row[i] * k_inv);
-                }
-                if (v_int4) {
-                    int4_pack_row(
-                            hd, v_row, v_inv, (uint8_t *) v_dst + (slot * row_elems + h * hd) / 2);
-                } else {
-                    int8_t *v_drow = v_dst + slot * row_elems + h * hd;
-                    for (size_t i = 0; i < hd; i++) {
-                        v_drow[i] = (int8_t) lrintf(v_row[i] * v_inv);
-                    }
-                }
-                k_sca[slot * scales_per_row + h] = k_scale;
-                v_sca[slot * scales_per_row + h] = v_scale;
-            }
+         * clamp is needed. qbits==0 is the native 8-bit path (denom 127).
+         * Every row is quantized on its own, so the threads change no
+         * byte. */
+        const int           qbits = sess->kv_sim_qbits;
+        const float         denom = qbits != 0 ? (float) ((1 << (qbits - 1)) - 1) : 127.0f;
+        struct kv_quant_job job   = {
+                .hd         = hd,
+                .n_kv_heads = st->n_kv_heads,
+                .row_elems  = kv_out,
+                .q_position = q_position,
+                .rot        = sess->kv_rot_enabled && fwht_supported(hd) && hd <= 512,
+                .v_int4     = sess->kv_int4_packed_enabled,
+                .k_den      = denom,
+                .v_den      = sess->kv_int4_packed_enabled ? 7.0f : denom,
+                .k_src      = k_src,
+                .v_src      = v_src,
+                .k_dst      = k_dst,
+                .v_dst      = v_dst,
+                .k_sca      = k_sca,
+                .v_sca      = v_sca,
+        };
+        const size_t n_items = seq * st->n_kv_heads;
+        if (n_items < KV_PAR_MIN_ROWS) {
+            kv_quant_items(&job, 0, n_items);
+        } else {
+            geist_par_for(n_items, kv_quant_items, &job);
         }
         v->buffer_unmap(ctx->k_cache_q8_buf);
         v->buffer_unmap(ctx->v_cache_q8_buf);
@@ -206,9 +274,7 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
     if (p == nullptr) {
         return GEIST_E_BACKEND; /* the backend said why */
     }
-    for (size_t r = 0; r < n_rows; r++) {
-        fwht_orthonormal(hd, p + r * hd);
-    }
+    kv_rotate_host(n_rows, hd, p);
     v->buffer_unmap(b);
     return GEIST_OK;
 }
@@ -328,9 +394,7 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         const bool   rot    = sess->kv_rot_enabled && fwht_supported(ctx->hd) && ctx->hd <= 512;
         const size_t n_rows = ctx->seq * st->n_q_heads;
         if (rot) {
-            for (size_t r = 0; r < n_rows; r++) {
-                fwht_orthonormal(ctx->hd, qp + r * ctx->hd);
-            }
+            kv_rotate_host(n_rows, ctx->hd, qp);
         }
         attention_int4_via_buffers(ctx->seq,
                                    st->n_q_heads,
@@ -346,9 +410,7 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
                                    v_scalep,
                                    outp);
         if (rot) {
-            for (size_t r = 0; r < n_rows; r++) {
-                fwht_orthonormal(ctx->hd, outp + r * ctx->hd);
-            }
+            kv_rotate_host(n_rows, ctx->hd, outp);
         }
         v->buffer_unmap(sess->scratch_q);
         v->buffer_unmap(ctx->k_cache_q8_buf);
@@ -405,9 +467,7 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
         const bool   rot    = sess->kv_rot_enabled && fwht_supported(ctx->hd) && ctx->hd <= 512;
         const size_t n_rows = ctx->seq * st->n_q_heads;
         if (rot) {
-            for (size_t r = 0; r < n_rows; r++) {
-                fwht_orthonormal(ctx->hd, qp + r * ctx->hd);
-            }
+            kv_rotate_host(n_rows, ctx->hd, qp);
         }
         /* The softmax scratch is private per work item inside the kernel;
          * the arena holds the partial results of a split decode (sized for
@@ -434,9 +494,7 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
                                    outp,
                                    scratch);
         if (rot) {
-            for (size_t r = 0; r < n_rows; r++) {
-                fwht_orthonormal(ctx->hd, outp + r * ctx->hd);
-            }
+            kv_rotate_host(n_rows, ctx->hd, outp);
         }
         v->buffer_unmap(sess->scratch_q);
         v->buffer_unmap(ctx->k_cache_q8_buf);
