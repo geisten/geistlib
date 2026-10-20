@@ -11,6 +11,7 @@ What this changes and **why**.
 - [ ] `make test` passes (or skips are explained)
 - [ ] `make MODE=asan test` passes for kernel/memory changes
 - [ ] `make format-check` clean
+- [ ] user-visible change: a fragment `changes/<slug>.md` (see `changes/README.md`), no `CHANGELOG.md` edit
 
 For perf/kernel changes, before/after numbers and host:
 

@@ -75,9 +75,9 @@ test-decision:
 
 # The gate a release passes before the tag: the four version sites agree, the
 # API contract holds, no `STABLE since` names a version newer than this one,
-# and nothing is stranded under CHANGELOG [Unreleased]. NOT a per-PR check —
-# promoting a symbol to a future version is legitimate in a PR and wrong only
-# at the moment of tagging. See scripts/check-release.sh.
+# and nothing is stranded under CHANGELOG [Unreleased] or in changes/. NOT a
+# per-PR check — promoting a symbol to a future version is legitimate in a PR
+# and wrong only at the moment of tagging. See scripts/check-release.sh.
 release-check:
 	@sh scripts/check-release.sh --pre-tag
 

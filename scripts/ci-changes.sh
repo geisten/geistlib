@@ -44,7 +44,7 @@ if [ "${1:-}" = "--test" ]; then
     ok() { printf '%s\n' "$@" | docs_only || { echo "FAIL: expected docs: $*"; exit 1; }; }
     no() { if printf '%s\n' "$@" | docs_only; then echo "FAIL: expected code: $*"; exit 1; fi; }
     ok README.md docs/OFFLOAD.md benchmark/results/raw/x/run.log CITATION.cff
-    ok assets/neuron.png CHANGELOG.md
+    ok assets/neuron.png CHANGELOG.md changes/123-fix.md
     no src/engine/session.c
     no docs/OFFLOAD.md Makefile
     no .gitea/workflows/ci.yml

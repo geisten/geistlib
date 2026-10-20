@@ -62,6 +62,13 @@ unreleased=$(awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md |
 if [ "$unreleased" -gt 0 ]; then
     note "CHANGELOG.md still has $unreleased line(s) under [Unreleased] — move them into [$version] or they ship undocumented"
 fi
+# Fragments under changes/ are [Unreleased] entries too: the release PR runs
+# `python3 scripts/changelog.py release $version`, which folds them in and
+# deletes them.
+fragments=$(find changes -name '*.md' ! -name README.md 2>/dev/null | wc -l | tr -d ' ')
+if [ "$fragments" -gt 0 ]; then
+    note "changes/ still has $fragments fragment(s) — run: python3 scripts/changelog.py release $version"
+fi
 
 # The first released-looking section must be the candidate. Older source-only
 # milestones deliberately have unlinked headings, because no tag/release exists
