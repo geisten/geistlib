@@ -268,8 +268,8 @@ A `geist_model` is immutable, shared, read-only weights. A `geist_session` owns
 the mutable per-conversation state: KV cache, pending logits, sampler config,
 stats. Multiple sessions can share one model. The KV cache supports quantized
 modes (`INT8`; `INT4` — K at INT8 and V packed at 4 bits, 3/4 of the INT8
-footprint, with a default-on Hadamard rotation, `GEIST_KV_ROT=0` to opt out;
-and `KIVI` 2-bit). K stays at 8 bits because a 4-bit K breaks QK-norm models
+footprint; both with a default-on Hadamard rotation, `GEIST_KV_ROT=0` to opt
+out; and `KIVI` 2-bit). K stays at 8 bits because a 4-bit K breaks QK-norm models
 (Qwen3, Gemma): their K rows carry outlier channels that a 4-bit grid cannot
 hold even rotated, while V at 4 bits costs next to nothing (#53)
 and prefix pinning (`geist_session_pin_prefix`) to amortize a constant system

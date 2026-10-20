@@ -210,9 +210,10 @@ struct transformer_arch_session {
      *        shared across layers (lock-step drain). */
     bool kv_int8_enabled;
     bool kv_kivi_enabled;
-    /* Experiment (issue #61): FWHT-rotate Q/K/V before INT8 quant to
-     * suppress activation outliers. Honored only in the INT8 path and
-     * only when head_dim is a power of two. Env: GEIST_KV_ROT=1. */
+    /* FWHT-rotate Q/K/V before the INT8 / INT4 quantization to spread
+     * activation outliers (#61; default-on since #53). Honored only on the
+     * INT8 storage path and only when head_dim is a power of two. Env:
+     * GEIST_KV_ROT=0 opts out. */
     bool kv_rot_enabled;
     /* Experiment (issue #61): quantize the INT8 K/V cache on an N-bit grid
      * (scale = amax / (2^(N-1)-1)) — quality-only simulation of a symmetric

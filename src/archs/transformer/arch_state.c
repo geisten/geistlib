@@ -2043,13 +2043,15 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
             kl.kivi = false;
         }
     }
-    /* Issue #61: Hadamard rotation, only meaningful on the INT8 storage path.
-     * Packed INT4 rotates by DEFAULT (INT4-without-rotation is a real quality
-     * cliff and the rotation is ~free / a net win at long context); plain
-     * INT8 stays opt-in. GEIST_KV_ROT=0 opts out, =1 forces on. */
+    /* Issue #61: Hadamard rotation, only meaningful on the INT8 storage path,
+     * where it is on by default: INT4 without it is a quality cliff, and
+     * INT8 without it misses the quality bar on QK-norm models, whose K and
+     * Q rows carry outlier channels (#53: Qwen3-0.6B, teacher-forced
+     * against FP32 KV, mean JS 0.016 nats and 82 % top-1 unrotated, 0.0013
+     * and 96 % rotated). GEIST_KV_ROT=0 opts out, =1 forces on. */
     {
         const char *env_rot     = getenv("GEIST_KV_ROT");
-        const bool  rot_default = kl.int4_packed;
+        const bool  rot_default = kl.int8;
         const bool  rot_on      = (env_rot != nullptr) ? (env_rot[0] == '1') : rot_default;
         kl.rot                  = kl.int8 && rot_on;
     }
