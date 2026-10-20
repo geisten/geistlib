@@ -1,0 +1,9 @@
+[Unit]
+Description=CI hygiene: stale action-cache locks, daily docker prune (geistlib scripts/ci-hygiene.sh)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh %h/ci-hygiene/ci-hygiene.sh run
+Nice=10
+StandardOutput=append:%h/ci-hygiene/ci-hygiene.log
+StandardError=append:%h/ci-hygiene/ci-hygiene.log

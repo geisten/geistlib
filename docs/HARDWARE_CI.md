@@ -159,6 +159,29 @@ through the cache or restores the runners' configs. If the cache is down,
 checkouts on those runners fail: roll back, or `systemctl --user restart
 git-cache` on the desktop.
 
+## CI hygiene
+
+A user timer `ci-hygiene` on the desktop (every 10 min,
+`scripts/ci-hygiene.sh run`, units `scripts/ci-hygiene.{service,timer}`,
+log `~/ci-hygiene/ci-hygiene.log`) keeps two recurring failures away:
+
+- **Stale action-cache lock.** A checkout of an action repository that died
+  mid-way leaves `~/.cache/act*/<hash>/.git/index.lock`, and every later job
+  needing that action fails within seconds at "Prepare all required
+  actions". The timer removes such a lock once it is older than 10 min and
+  no `git` process works in that repository (cwd or arguments), and logs
+  each removal.
+- **Docker disk.** Once a day `docker system prune -f --filter until=72h`
+  and `docker image prune -f --filter until=168h`. Without `-a` both remove
+  only stopped containers, unused networks, build cache and *dangling*
+  images, never a tagged image such as the runner images
+  (`docker.gitea.com/runner-images:*`); no `--volumes`. The script compares
+  the tagged image list before and after and logs any loss.
+
+Install or update it with the `ci-hygiene` workflow (`-i action=deploy`),
+inspect it with `-i action=status` (timer, last log lines, any lock left in
+the action caches).
+
 ## Operational notes
 
 - The machine must be powered on. Gitea cannot wake it; queued jobs wait, and
