@@ -1784,11 +1784,82 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
 /* Tensor-path linear: x staged into the VRAM ring, weight from the VRAM
  * registry, y written to its host-visible home — no host round-trip, no
  * flush. The hot path. */
+/* Async streaming (#78 phase 2): copy `src` into slot k on the transfer
+ * queue, after the slot's last reader is done (tl_comp >= wslot_free[k]);
+ * the copy signals tl_copy = wslot_ready[k] when it lands. */
+[[nodiscard]] static enum geist_status
+vk_xq_copy(struct vk_state *st, uint32_t k, const struct geist_buffer *src) {
+    /* The slot's command buffer may still be pending from its last copy. */
+    if (st->wslot_ready[k] != 0) {
+        const VkSemaphoreWaitInfo wi = {.sType          = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                                        .semaphoreCount = 1,
+                                        .pSemaphores    = &st->tl_copy,
+                                        .pValues        = &st->wslot_ready[k]};
+        if (st->fn.WaitSemaphores(st->device, &wi, UINT64_MAX) != VK_SUCCESS) {
+            return GEIST_E_BACKEND;
+        }
+    }
+    const VkCommandBuffer          cb     = st->xq_cmd[k];
+    const VkCommandBufferBeginInfo begin  = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    const VkBufferCopy             region = {
+            .srcOffset = src->base_off, .dstOffset = st->wslot[k]->base_off, .size = src->bytes};
+    if (st->fn.ResetCommandBuffer(cb, 0) != VK_SUCCESS ||
+        st->fn.BeginCommandBuffer(cb, &begin) != VK_SUCCESS) {
+        return GEIST_E_BACKEND;
+    }
+    st->fn.CmdCopyBuffer(cb, src->buf, st->wslot[k]->buf, 1, &region);
+    if (st->fn.EndCommandBuffer(cb) != VK_SUCCESS) {
+        return GEIST_E_BACKEND;
+    }
+    const uint64_t                      sig = st->tl_copy_val + 1;
+    const VkPipelineStageFlags          wst = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    const VkTimelineSemaphoreSubmitInfo tl  = {
+            .sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+            .waitSemaphoreValueCount   = 1,
+            .pWaitSemaphoreValues      = &st->wslot_free[k],
+            .signalSemaphoreValueCount = 1,
+            .pSignalSemaphoreValues    = &sig};
+    const VkSubmitInfo info = {.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                               .pNext                = &tl,
+                               .waitSemaphoreCount   = 1,
+                               .pWaitSemaphores      = &st->tl_comp,
+                               .pWaitDstStageMask    = &wst,
+                               .commandBufferCount   = 1,
+                               .pCommandBuffers      = &cb,
+                               .signalSemaphoreCount = 1,
+                               .pSignalSemaphores    = &st->tl_copy};
+    if (st->fn.QueueSubmit(st->xq, 1, &info, VK_NULL_HANDLE) != VK_SUCCESS) {
+        return GEIST_E_BACKEND;
+    }
+    st->tl_copy_val    = sig;
+    st->wslot_ready[k] = sig;
+    st->wslot_src[k]   = src;
+    st->stat_streamed++;
+    st->stat_streamed_bytes += src->bytes;
+    return GEIST_OK;
+}
+
+/* Async streaming (#78): the GEMM that reads slot wslot_reader is recorded;
+ * its submission signals tl_comp, which frees the slot for the next copy. */
+static void vk_weight_done(struct vk_state *st) {
+    if (st->wslot_reader < 0) {
+        return;
+    }
+    st->seq_signal_comp              = ++st->tl_comp_val;
+    st->wslot_free[st->wslot_reader] = st->tl_comp_val;
+    st->wslot_reader                 = -1;
+    vk_seq_cut(st);
+}
+
 /* The buffer linear_t binds for weight `wbuf` at m rows: wbuf itself, or,
  * for a weight spilled to host memory at m >= stream_m_min, the next of two
- * VRAM slots after a recorded copy of it there (#78). The sequence's hazard
- * tracking orders the copy before the GEMM and the next copy into a slot
- * after the GEMM that read it. */
+ * VRAM slots after a copy of it there (#78). In the batch, the sequence's
+ * hazard tracking orders the copy before the GEMM and the next copy into a
+ * slot after the GEMM that read it. With async streaming the copy runs on
+ * the transfer queue instead (vk_xq_copy), the GEMM gets a submission of its
+ * own that waits for it, and the weight streamed after this one last chunk
+ * is copied into the other slot while the GEMM runs. */
 [[nodiscard]] static enum geist_status vk_weight_bind(struct geist_backend *be,
                                                       struct geist_buffer  *wbuf,
                                                       size_t                m,
@@ -1798,10 +1869,23 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
     if (wbuf->device_mem || m < st->stream_m_min) {
         return GEIST_OK;
     }
+    /* A slot that already holds or receives this weight: the prefetch hit. */
+    const int held = !st->xq_on                 ? -1
+                     : st->wslot_src[0] == wbuf ? 0
+                     : st->wslot_src[1] == wbuf ? 1
+                                                : -1;
+    if (held >= 0) {
+        st->wslot_next = (uint32_t) held;
+    }
     struct geist_buffer **slot = &st->wslot[st->wslot_next];
     if (*slot == nullptr || (*slot)->bytes < wbuf->bytes) {
-        /* the old slot may be bound by a recorded dispatch */
+        /* the old slot may be bound by a recorded dispatch, or be the
+         * target of a copy on the transfer queue */
         vk_seq_flush(st);
+        if (st->xq_on) {
+            (void) st->fn.QueueWaitIdle(st->xq);
+            st->wslot_src[st->wslot_next] = nullptr;
+        }
         if (*slot != nullptr) {
             vk_buffer_destroy(be, *slot);
             *slot = nullptr;
@@ -1815,6 +1899,43 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
             st->stream_m_min = SIZE_MAX;
             return GEIST_OK;
         }
+    }
+    const uint32_t k = st->wslot_next;
+    if (st->xq_on) {
+        enum geist_status s = GEIST_OK;
+        if (held < 0) {
+            s = vk_xq_copy(st, k, wbuf);
+        } else {
+            st->stat_prefetch_hits++;
+        }
+        if (s == GEIST_OK) {
+            if (st->stream_prev != nullptr && st->stream_prev != wbuf) {
+                st->stream_prev->stream_next = wbuf;
+            }
+            st->stream_prev = wbuf;
+            /* The GEMM goes into a submission of its own that waits for the copy. */
+            vk_seq_cut(st);
+            if (st->wslot_ready[k] > st->seq_wait_copy) {
+                st->seq_wait_copy = st->wslot_ready[k];
+            }
+            st->wslot_reader = (int) k;
+            st->wslot_next   = k ^ 1u;
+            /* Prefetch what came after this weight last time into the other slot. */
+            const struct geist_buffer *p = wbuf->stream_next;
+            if (p != nullptr && p != wbuf && st->wslot_src[k ^ 1u] != p &&
+                st->wslot[k ^ 1u] != nullptr && st->wslot[k ^ 1u]->bytes >= p->bytes) {
+                s = vk_xq_copy(st, k ^ 1u, p);
+            }
+        }
+        if (s == GEIST_OK) {
+            *out = *slot;
+            return GEIST_OK;
+        }
+        /* The transfer queue failed: wait for it and stream in the batch from here. */
+        (void) st->fn.QueueWaitIdle(st->xq);
+        st->xq_on        = false;
+        st->wslot_reader = -1;
+        fprintf(stderr, "geist vulkan: async streaming off, copies stay in the batch (#78)\n");
     }
     const enum geist_status s = vk_buffer_copy(*slot, 0, wbuf, 0, wbuf->bytes);
     if (s != GEIST_OK) {
@@ -1906,6 +2027,7 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
                 return rs;
             }
         }
+        vk_weight_done(st);
         return GEIST_OK;
     }
     /* Tensor-core path for conforming GEMMs (shaders assume w_offset == 0,
@@ -1915,7 +2037,9 @@ vk_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32
                                     : vk_acc((uint64_t) xo * 4u, (uint64_t) m * n_in * 4u, false),
             vk_acc_all(false),
             vk_acc_tensor(t_y, true)};
-    return vk_gemm_dispatch(be, m == 1 ? mv : mm, bi, acc, &push);
+    const enum geist_status gs = vk_gemm_dispatch(be, m == 1 ? mv : mm, bi, acc, &push);
+    vk_weight_done(st);
+    return gs;
 }
 
 [[nodiscard]] static enum geist_status vk_linear_t_pair(struct geist_backend      *be,

@@ -66,6 +66,9 @@ struct vk_fns {
     PFN_vkCmdCopyBuffer               CmdCopyBuffer;
     PFN_vkQueueSubmit                 QueueSubmit;
     PFN_vkQueueWaitIdle               QueueWaitIdle;
+    PFN_vkCreateSemaphore             CreateSemaphore;
+    PFN_vkDestroySemaphore            DestroySemaphore;
+    PFN_vkWaitSemaphores              WaitSemaphores;
     PFN_vkCreateFence                 CreateFence;
     PFN_vkDestroyFence                DestroyFence;
     PFN_vkResetFences                 ResetFences;
@@ -174,8 +177,9 @@ enum {
                                                                        ring */
     VK_DIRTY_CAP   = 96,
     VK_DSET_CACHE  = 4096,
-    VK_SEQ_CMDBUFS = 64, /* rolling submission ring */
-    VK_SEQ_ROTATE  = 64, /* dispatches per submit — keeps the GPU fed */
+    VK_SEQ_CMDBUFS = 1024, /* rolling submission ring; async streaming cuts it per streamed GEMM */
+    VK_SEQ_ROLL_RING = 64, /* ring slots the VK_SEQ_ROTATE rolls may use */
+    VK_SEQ_ROTATE    = 64, /* dispatches per submit — keeps the GPU fed */
 };
 
 /* Cached descriptor set: decode re-binds the same (pipeline-layout,
@@ -246,6 +250,29 @@ struct vk_state {
     uint32_t             wslot_next;
     uint64_t             stat_streamed;
     uint64_t             stat_streamed_bytes;
+    /* Async streaming (#78 phase 2, GEIST_VK_STREAM_ASYNC=1): the slot copies
+     * run on a transfer-only queue (the copy engines) and overlap the GEMMs.
+     * Each streamed GEMM is a compute submission of its own that waits on
+     * tl_copy for its slot's copy and signals tl_comp when it is done; the
+     * next copy into that slot waits on that. The weights a chunk streams
+     * come in the same order every chunk: each one learns its successor
+     * (geist_buffer.stream_next) and is copied into the other slot while
+     * the GEMM before it runs. xq_on false: copies stay in the batch. */
+    bool                       xq_on;
+    uint32_t                   xq_family;
+    VkQueue                    xq;
+    VkCommandPool              xq_pool;
+    VkCommandBuffer            xq_cmd[2]; /* one per slot */
+    VkSemaphore                tl_copy, tl_comp;
+    uint64_t                   tl_copy_val, tl_comp_val; /* last values handed out */
+    uint64_t                   wslot_ready[2];  /* tl_copy value once the slot's copy landed */
+    uint64_t                   wslot_free[2];   /* tl_comp value once its last reader is done */
+    const struct geist_buffer *wslot_src[2];    /* the weight the slot holds or receives */
+    int                        wslot_reader;    /* slot the GEMM being recorded reads; -1 none */
+    struct geist_buffer       *stream_prev;     /* the last streamed weight */
+    uint64_t                   seq_wait_copy;   /* next compute submit waits tl_copy >= this */
+    uint64_t                   seq_signal_comp; /* next compute submit signals tl_comp = this */
+    uint64_t                   stat_prefetch_hits;
     /* VK_EXT_memory_budget is enabled: vk_heap_budget reports the driver's
      * budget and usage, which see every allocation on the device (#665). */
     bool has_mem_budget;
@@ -436,9 +463,10 @@ struct geist_buffer {
     enum geist_buffer_role role;
     unsigned int           memory_flags;
     bool                   host_visible;
-    bool                   device_mem; /* memory type has DEVICE_LOCAL */
-    bool                   borrowed;   /* buf/mem owned by a parent buffer */
-    bool                   view;       /* buffer_create_view slice of a parent */
+    bool                   device_mem;  /* memory type has DEVICE_LOCAL */
+    bool                   borrowed;    /* buf/mem owned by a parent buffer */
+    bool                   view;        /* buffer_create_view slice of a parent */
+    struct geist_buffer   *stream_next; /* async streaming: the weight streamed after this one */
     size_t bar_bytes;  /* counted in vk_state.bar_used (host-visible + device-local) */
     size_t vram_bytes; /* counted in vk_state.vram_used */
 };
@@ -554,7 +582,11 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
 
 [[nodiscard]] enum geist_status vk_create_pipelines(struct geist_backend *be, struct vk_state *st);
 
-void                            vk_seq_flush(struct vk_state *st);
+void vk_seq_flush(struct vk_state *st);
+/* End the open submission here without waiting (a roll, or a flush when the
+ * ring is full), so what is recorded next goes into a submission of its own
+ * (async streaming, #78). */
+void                            vk_seq_cut(struct vk_state *st);
 [[nodiscard]] enum geist_status vk_seq_take_failure(struct vk_state *st);
 
 /* Record that the work at `site` leaves the GPU. Returns the status the
