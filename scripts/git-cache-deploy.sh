@@ -51,10 +51,14 @@ restart_runners() {
     cat > "$C/restart-host-runner.sh" <<'EOF'
 #!/bin/sh
 # git-cache-deploy.sh: restart the host runner after the deploy job ended.
+# Idle = board lock free and no child of the runner, twice 15 s apart (a
+# job the runner just fetched has not taken the lock yet).
 pid=$(systemctl show -p MainPID --value gitea-runner)
+idle="[ -z \"\$(pgrep -P $pid)\" ]"
 i=0
-until flock -n /tmp/pi-heavy.lock sh -c "[ -z \"\$(pgrep -P $pid)\" ] && sudo -n systemctl restart gitea-runner"; do
-  i=$((i + 1)); [ $i -gt 4320 ] && { echo "$(date '+%F %T') host runner restart: gave up"; exit 1; }
+until flock -n /tmp/pi-heavy.lock sh -c "$idle" && sleep 15 &&
+      flock -n /tmp/pi-heavy.lock sh -c "$idle && sudo -n systemctl restart gitea-runner"; do
+  i=$((i + 1)); [ $i -gt 1440 ] && { echo "$(date '+%F %T') host runner restart: gave up"; exit 1; }
   sleep 5
 done
 echo "$(date '+%F %T') host runner gitea-runner restarted"
