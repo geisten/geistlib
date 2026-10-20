@@ -1969,9 +1969,10 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
 
 /* ---- Multi-session API ------------------------------------------------- */
 
-[[nodiscard]] static enum geist_kv_mode resolve_kv_mode(const struct geist_backend      *be,
-                                                        enum geist_kv_mode               family,
-                                                        const struct geist_session_opts *opts) {
+[[nodiscard]] static enum geist_kv_mode
+resolve_kv_mode_requested(const struct geist_backend      *be,
+                          enum geist_kv_mode               family,
+                          const struct geist_session_opts *opts) {
     enum geist_kv_mode m = (opts != nullptr) ? opts->kv_mode : GEIST_KV_AUTO;
     if (m != GEIST_KV_AUTO) {
         return m;
@@ -2004,6 +2005,30 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     return GEIST_KV_FP32;
 }
 
+/* The requested mode, but never INT4 on a family where it misses the
+ * quality bar (transformer_family.kv_int4_instead): that family gets its
+ * replacement, and stderr says so once per process. */
+[[nodiscard]] static enum geist_kv_mode resolve_kv_mode(const struct geist_backend      *be,
+                                                        const struct transformer_family *family,
+                                                        const struct geist_session_opts *opts) {
+    const enum geist_kv_mode m = resolve_kv_mode_requested(
+            be, family != nullptr ? family->kv_auto : GEIST_KV_AUTO, opts);
+    if (m != GEIST_KV_INT4 || family == nullptr || family->kv_int4_instead == GEIST_KV_AUTO) {
+        return m;
+    }
+    static atomic_bool told = false;
+    if (!atomic_exchange(&told, true)) {
+        fprintf(stderr,
+                "geist: the INT4 KV cache misses the quality bar on %s models (#53); using %s "
+                "instead\n",
+                family->name,
+                family->kv_int4_instead == GEIST_KV_INT8  ? "INT8"
+                : family->kv_int4_instead == GEIST_KV_F16 ? "F16"
+                                                          : "FP32");
+    }
+    return family->kv_int4_instead;
+}
+
 /* The KV cache layout a session gets: kv_mode, the GEIST_KV_* env and the
  * backend decide it. Shared by session_alloc and the plan, so the two
  * cannot disagree. */
@@ -2012,12 +2037,9 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
                               const struct geist_session_opts     *opts) {
     struct transformer_kv_layout kl = {};
     /* KV-mode resolution: opts override > env > backend/platform default. */
-    const enum geist_kv_mode mode =
-            resolve_kv_mode(state->backend,
-                            state->family != nullptr ? state->family->kv_auto : GEIST_KV_AUTO,
-                            opts);
-    kl.kivi = (mode == GEIST_KV_KIVI);
-    kl.int8 = (mode == GEIST_KV_INT8);
+    const enum geist_kv_mode mode = resolve_kv_mode(state->backend, state->family, opts);
+    kl.kivi                       = (mode == GEIST_KV_KIVI);
+    kl.int8                       = (mode == GEIST_KV_INT8);
     /* Issue #61: packed 4-bit KV rides the INT8 storage path (buffer alloc +
      * ctx wiring), with half-size data buffers holding 2 values/byte. */
     kl.int4_packed = (mode == GEIST_KV_INT4);

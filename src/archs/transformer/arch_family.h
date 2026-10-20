@@ -97,6 +97,10 @@ struct transformer_family {
      * never to a quantized one (#48: an MoE amplifies KV quantization
      * error ~16x over a dense model). */
     enum geist_kv_mode kv_auto;
+    /* The KV cache a GEIST_KV_INT4 request gets instead, where INT4 misses
+     * the quality bar on this family (#53; test_kv_quality_int states the
+     * bar); GEIST_KV_AUTO = INT4 is fine. */
+    enum geist_kv_mode kv_int4_instead;
 
     enum geist_status (*wire_layer)(struct transformer_arch_state    *st,
                                     struct gguf_ctx                  *gguf,
