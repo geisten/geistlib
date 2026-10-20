@@ -90,7 +90,7 @@ int main(void) {
     pack_i2_s(trits, n_in, n_out, scale, buf);
 
     struct geist_backend *be = NULL;
-    if (geist_backend_create("auto", NULL, NULL, &be) != GEIST_OK || be == NULL) {
+    if (geist_backend_create("cpu_neon", NULL, NULL, &be) != GEIST_OK || be == NULL) {
         printf("backend_create failed\n");
         return 2;
     }

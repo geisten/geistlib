@@ -95,7 +95,7 @@ bool geist_decision_mode_supported(const struct geist_model *m, enum geist_decis
         return GEIST_E_INVALID_ARG;
     }
     *out = nullptr;
-    if (m == nullptr || be == nullptr || be != m->backend) {
+    if (m == nullptr || !geist_model_accepts_backend(m, be)) {
         geist_error_set_create_time(GEIST_E_INVALID_ARG,
                                     "geist_decision_create",
                                     "model/backend is null or backend does not match model");

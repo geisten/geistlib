@@ -8,6 +8,12 @@ minor release.
 
 ## [Unreleased]
 
+### Added
+
+- `geist_model_backend_name()` (EXPERIMENTAL): the backend a model runs on,
+  which differs from the handle passed to the load when `"auto"` fell back to
+  the CPU.
+
 ### Changed
 - **Layer split: the GPU stage's output rows come back by DMA (#84).** The
   split read them on the host straight out of the stage's scratch, which on
@@ -24,9 +30,28 @@ minor release.
   metal"` on arm64 (an Intel Mac keeps the x86 pair), so a plain `make` and
   the `macos-arm64` release archive contain Metal; the release job fails if
   the archive lacks it. The backend dlopens Metal.framework: no new link flag
-  for geistlib's binaries or for SDK consumers. `"auto"` still picks
-  `cpu_neon`; select Metal by name or with `GEIST_BACKEND=metal`. The macOS
-  CI legs build the default backends instead of an explicit list.
+  for geistlib's binaries or for SDK consumers. The macOS CI legs build the
+  default backends instead of an explicit list.
+- **`"auto"` picks Metal on Apple Silicon**, falling back to `cpu_neon` for a
+  model Metal cannot run. Metal beats `cpu_neon` on every model measured from
+  SmolLM2 360M to Bonsai 2 27B on an M1 Max (prefill 5-14x, decode
+  1.9-2.5x). `geist_backend_create("auto")` now creates `metal` when it is
+  built in and finds a GPU, else the CPU backend as before; Linux and x86 are
+  unchanged (Vulkan stays opt-in). A load on such a backend that Metal
+  refuses with `GEIST_E_UNSUPPORTED` (weight formats) or `GEIST_E_OOM`
+  (working-set budget, also for a probe session of the load's
+  `max_seq_len`) is repeated on a `cpu_neon` backend the model owns; the
+  caller's `"auto"` handle stays valid for `geist_session_create` /
+  `geist_decision_create`. Explicit names never fall back;
+  `GEIST_BACKEND=cpu_neon` restores the old pick. Metal's logits are not
+  bit-identical to `cpu_neon`'s: tests that compare bits now name the CPU
+  backend, and the cross-engine harness always passes its expected backend.
+  docs/API_CONTRACT.md ("What `"auto"` picks"), docs/BACKENDS.md.
+- **Metal refuses a matrix it has no kernel for at load** (Q5_0, IQ2_S,
+  TQ1_0), naming the tensor, instead of failing the first prefill with
+  "resolver installed no kernel". New backend cap
+  `resolve_weight_complete` (geist_backend.h) marks a backend whose
+  resolver refusal is final; only Metal sets it.
 - **Metal DeltaNet prefill 4x faster per layer (#99).** The chunked
   delta rule (qwen35: Bonsai 2 27B, Qwen3.5) runs as seven dispatches per
   call on simdgroup MMAs, with only the state recurrence in chunk order,

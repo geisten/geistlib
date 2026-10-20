@@ -1,11 +1,38 @@
 # Backends
 
 Backends are compiled in with `BACKENDS="..."` at build time (run `make clean`
-when you change the list). `geist_backend_create("auto")` takes the first
-compiled backend in preference order — `cpu_neon`, `cpu_x86`, `cpu_scalar`,
-then `metal`, `vulkan` — so GPU backends are selected by name or with
-`GEIST_BACKEND=<name>`. The CPU backends are the product; the GPU backends are
-experimental and never required.
+when you change the list). `geist_backend_create("auto")` picks `metal` on
+Apple Silicon when it is compiled in and finds a GPU; otherwise, and on every
+other platform, the first compiled CPU backend in preference order —
+`cpu_neon`, `cpu_x86`, `cpu_scalar`. Vulkan is selected only by name.
+`GEIST_BACKEND=<name>` replaces `"auto"` with that name. A model that Metal
+picked by `"auto"` cannot run (a weight format it has no kernel for, or a GPU
+memory-budget refusal) loads on the CPU backend instead; see
+[Auto fallback](#auto-fallback). The CPU backends are the product; the GPU
+backends are experimental and never required.
+
+### Auto fallback
+
+When `"auto"` picked Metal, `geist_model_load*` retries on the CPU backend
+`"auto"` would otherwise have picked (`cpu_neon`) if Metal
+
+- refuses the model's weight formats: a matrix whose dtype Metal has no kernel
+  for (e.g. Q5_0, IQ2_S, TQ1_0) fails the load with `GEIST_E_UNSUPPORTED`,
+  naming the tensor, instead of the first prefill; or
+- refuses for memory: the load exceeds the GPU working-set budget
+  (`GEIST_E_OOM`, #531), or the model loads but a session of the load's
+  `max_seq_len` (default 4096) does not fit — the load allocates one such
+  session as a probe and frees it.
+
+The model then creates and owns the CPU backend, prints one line to stderr
+(`geist: auto: metal cannot run this model (...); it runs on cpu_neon`), and
+`geist_model_backend_name()` returns `"cpu_neon"`. Pass the same `"auto"`
+handle to `geist_session_create` / `geist_decision_create` as before. A
+session created later that does not fit (a second concurrent one, a larger
+`max_seq_len`) still fails at create; the fallback happens only at load.
+Explicit names (`"metal"`, `"cpu_neon"`, `GEIST_BACKEND=metal`) never fall
+back. Metal's logits are not bit-identical to `cpu_neon`'s; name the CPU
+backend where bits matter.
 
 ## CPU
 
@@ -24,8 +51,8 @@ and TSan on concurrency: [CI_COVERAGE.md](CI_COVERAGE.md).
 
 Built by default on Apple Silicon (`BACKENDS="cpu_neon cpu_scalar metal"` in
 `mk/target-mac*.mk`; an Intel Mac builds the x86 pair only) and in the
-`macos-arm64` release archive. `"auto"` still picks `cpu_neon`; select Metal
-with `geist_backend_create("metal")` or `GEIST_BACKEND=metal`. The backend
+`macos-arm64` release archive, and `"auto"` picks it (with the CPU fallback
+above); `GEIST_BACKEND=cpu_neon` or the name selects the CPU. The backend
 dlopens Metal.framework, so neither geistlib nor a consumer of `libgeist.a`
 links a framework for it. Simdgroup GEMV/GEMM kernels
 cover 13 GGUF dtypes (incl. the IQ4/Q3_K/IQ3_S mixed quants), and a chunked

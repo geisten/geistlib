@@ -313,7 +313,7 @@ set_dry_breakers(struct geist_session_full                 *sf,
     /* `be` is a STABLE-signature witness: it must be the backend the
      * model was loaded on. A session on a different backend instance
      * would mix buffer ownership and per-backend workspaces. */
-    if (be != m->backend) {
+    if (!geist_model_accepts_backend(m, be)) {
         geist_error_set_create_time(GEIST_E_INVALID_ARG,
                                     "geist_session_create",
                                     "backend does not match the one the model was loaded on "
@@ -345,7 +345,7 @@ set_dry_breakers(struct geist_session_full                 *sf,
     }
     *sf = (struct geist_session_full) {
             .model                 = m,
-            .backend               = be,
+            .backend               = m->backend,
             .arch_session          = nullptr,
             .temperature           = opts != nullptr ? opts->temperature : 0.0f,
             .top_p                 = opts != nullptr ? opts->top_p : 1.0f,

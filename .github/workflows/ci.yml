@@ -341,6 +341,9 @@ jobs:
       # for are multiples, not percentages. Raise them only with enough samples.
       - name: Perf regression gate (${{ matrix.perf_gguf }})
         if: matrix.perf_gguf
+        # The floors are CPU floors; "auto" is metal on Apple Silicon.
+        env:
+          GEIST_BENCH_BACKEND: ${{ matrix.apple_silicon && 'cpu_neon' || '' }}
         run: |
           bin/${{ matrix.target }}/release/tests/bench_perf_sweep \
             --gguf gguf_artifacts/${{ matrix.perf_gguf }} \

@@ -14,7 +14,8 @@
 #include "aux_file.h"
 #include "error.h"
 
-#include <geist_arch.h> /* arch_ops vtables the engine dispatches through */
+#include <geist_arch.h>    /* arch_ops vtables the engine dispatches through */
+#include <geist_backend.h> /* auto_cpu, the backend error slot */
 
 #include "checked.h"
 #include "heap.h"
@@ -216,18 +217,13 @@ static char *find_tokenizer_path(const char *gguf_path) {
     return found;
 }
 
-[[nodiscard]] enum geist_status
-geist_model_load(const char *path, struct geist_backend *be, struct geist_model **out) {
-    return geist_model_load_with_opts(path, be, nullptr, out);
-}
-
 /* The create-time error messages below keep naming geist_model_load: it is the
  * entry point every existing caller uses, and the failures they report are the
  * same ones. */
-[[nodiscard]] enum geist_status geist_model_load_with_opts(const char                      *path,
-                                                           struct geist_backend            *be,
-                                                           const struct geist_session_opts *opts,
-                                                           struct geist_model             **out) {
+[[nodiscard]] static enum geist_status model_load_file(const char                      *path,
+                                                       struct geist_backend            *be,
+                                                       const struct geist_session_opts *opts,
+                                                       struct geist_model             **out) {
     if (out == nullptr) {
         geist_error_set_create_time(GEIST_E_INVALID_ARG, "geist_model_load", "out is null");
         return GEIST_E_INVALID_ARG;
@@ -429,20 +425,12 @@ geist_model_load(const char *path, struct geist_backend *be, struct geist_model 
     return GEIST_OK;
 }
 
-[[nodiscard]] enum geist_status geist_model_load_from_memory(const void           *data,
-                                                             size_t                size,
-                                                             struct geist_backend *be,
-                                                             struct geist_model  **out) {
-    return geist_model_load_from_memory_with_opts(data, size, be, nullptr, out);
-}
-
 /* As with the file path, the create-time messages keep the name callers know. */
-[[nodiscard]] enum geist_status
-geist_model_load_from_memory_with_opts(const void                      *data,
-                                       size_t                           size,
-                                       struct geist_backend            *be,
-                                       const struct geist_session_opts *opts,
-                                       struct geist_model             **out) {
+[[nodiscard]] static enum geist_status model_load_memory(const void                      *data,
+                                                         size_t                           size,
+                                                         struct geist_backend            *be,
+                                                         const struct geist_session_opts *opts,
+                                                         struct geist_model             **out) {
     if (out == nullptr) {
         geist_error_set_create_time(
                 GEIST_E_INVALID_ARG, "geist_model_load_from_memory", "out is null");
@@ -553,6 +541,123 @@ geist_model_load_from_memory_with_opts(const void                      *data,
     return GEIST_OK;
 }
 
+/* "auto" fallback. A backend that "auto" made a GPU backend (be->auto_cpu)
+ * gives a model it cannot hold to the CPU backend "auto" would otherwise
+ * have picked: the load failed for the weight formats (GEIST_E_UNSUPPORTED)
+ * or the GPU memory budget (GEIST_E_OOM), or it loaded but a session of the
+ * load's size does not fit, which the budget refuses at session create
+ * (#531). Explicit backend names never get here. On true, `why` holds the
+ * GPU's reason. */
+[[nodiscard]] static bool auto_gpu_refused(size_t                           why_cap,
+                                           enum geist_status                s,
+                                           const struct geist_session_opts *opts,
+                                           const struct geist_model        *m,
+                                           char                             why[static why_cap],
+                                           struct geist_backend            *be) {
+    if (be == nullptr || !be->auto_cpu) {
+        return false;
+    }
+    if (s == GEIST_E_UNSUPPORTED || s == GEIST_E_OOM) {
+        snprintf(why, why_cap, "%s", geist_last_create_error());
+        return true;
+    }
+    if (s != GEIST_OK || m == nullptr) {
+        return false;
+    }
+    /* session_alloc reports no status; the budget names itself in the
+     * backend's error slot, so clear the slot and read why it failed. A
+     * session the opts make impossible fails the same way on the CPU and
+     * stays the caller's error. */
+    const struct geist_arch_ops_decoder *ops = m->text_decoder.arch_ops;
+    geist_backend_set_error(be, GEIST_OK, "%s", "");
+    void *trial = ops->session_alloc(m->text_decoder.arch_meta, opts);
+    if (trial != nullptr) {
+        ops->session_free(m->text_decoder.arch_meta, trial);
+        return false;
+    }
+    if (geist_backend_errcode(be) != GEIST_E_OOM) {
+        return false;
+    }
+    snprintf(why, why_cap, "%s", geist_backend_errmsg(be));
+    return true;
+}
+
+/* One load request, replayable on another backend. */
+struct load_args {
+    const char                      *path; /* nullptr: from memory */
+    const void                      *data;
+    size_t                           size;
+    const struct geist_session_opts *opts;
+};
+
+[[nodiscard]] static enum geist_status
+load_on(const struct load_args *a, struct geist_backend *be, struct geist_model **out) {
+    return a->path != nullptr ? model_load_file(a->path, be, a->opts, out)
+                              : model_load_memory(a->data, a->size, be, a->opts, out);
+}
+
+/* Load on `be`; when "auto" made it a GPU backend that refuses the model,
+ * load again on the CPU backend, which the model then owns. */
+[[nodiscard]] static enum geist_status
+load_auto(const struct load_args *a, struct geist_backend *be, struct geist_model **out) {
+    const enum geist_status s = load_on(a, be, out);
+    char                    why[512];
+    struct geist_backend   *cpu = nullptr;
+    if (out == nullptr || !auto_gpu_refused(sizeof why, s, a->opts, *out, why, be) ||
+        geist_backend_create_auto_cpu(be, &cpu) != GEIST_OK) {
+        return s;
+    }
+    geist_model_destroy(*out); /* frees the GPU memory before the CPU load */
+    *out                       = nullptr;
+    const enum geist_status cs = load_on(a, cpu, out);
+    if (cs != GEIST_OK) {
+        geist_backend_destroy(cpu);
+        return cs;
+    }
+    (*out)->auto_backend = be;
+    fprintf(stderr,
+            "geist: auto: %s cannot run this model (%s); it runs on %s\n",
+            geist_backend_name(be),
+            why,
+            geist_backend_name(cpu));
+    return GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status
+geist_model_load(const char *path, struct geist_backend *be, struct geist_model **out) {
+    return geist_model_load_with_opts(path, be, nullptr, out);
+}
+
+[[nodiscard]] enum geist_status geist_model_load_with_opts(const char                      *path,
+                                                           struct geist_backend            *be,
+                                                           const struct geist_session_opts *opts,
+                                                           struct geist_model             **out) {
+    if (path == nullptr) {
+        return model_load_file(path, be, opts, out); /* reports the null path */
+    }
+    return load_auto(&(struct load_args) {.path = path, .opts = opts}, be, out);
+}
+
+[[nodiscard]] enum geist_status geist_model_load_from_memory(const void           *data,
+                                                             size_t                size,
+                                                             struct geist_backend *be,
+                                                             struct geist_model  **out) {
+    return geist_model_load_from_memory_with_opts(data, size, be, nullptr, out);
+}
+
+[[nodiscard]] enum geist_status
+geist_model_load_from_memory_with_opts(const void                      *data,
+                                       size_t                           size,
+                                       struct geist_backend            *be,
+                                       const struct geist_session_opts *opts,
+                                       struct geist_model             **out) {
+    return load_auto(&(struct load_args) {.data = data, .size = size, .opts = opts}, be, out);
+}
+
+const char *geist_model_backend_name(const struct geist_model *m) {
+    return m != nullptr ? geist_backend_name(m->backend) : nullptr;
+}
+
 void geist_model_destroy(struct geist_model *m) {
     if (m == nullptr) {
         return;
@@ -590,7 +695,10 @@ void geist_model_destroy(struct geist_model *m) {
         }
         safe_free((void **) &eng);
     }
+    /* A model that fell back from "auto" owns its CPU backend. */
+    struct geist_backend *owned = m->auto_backend != nullptr ? m->backend : nullptr;
     safe_free((void **) &m);
+    geist_backend_destroy(owned);
 }
 
 const char *geist_model_errmsg(const struct geist_model *m) {

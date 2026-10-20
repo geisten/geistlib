@@ -117,6 +117,18 @@ static inline int geist_expect(int cond, const char *what) {
 #define GEIST_REQUIRE_ARGS(argc, required, usage_msg) \
     GEIST_SKIP_IF((argc) < (required), "Missing test data. Usage: " usage_msg)
 
+/* The CPU backend "auto" picks when no GPU is preferred: the first of the
+ * registry's CPU entries this build has. "auto" is metal on Apple silicon,
+ * so a test that compares bits with a CPU kernel or a golden names this
+ * instead. */
+#if defined(GEIST_BACKEND_CPU_NEON) && GEIST_BACKEND_CPU_NEON
+#define GEIST_TEST_CPU_BACKEND "cpu_neon"
+#elif defined(GEIST_BACKEND_CPU_X86) && GEIST_BACKEND_CPU_X86
+#define GEIST_TEST_CPU_BACKEND "cpu_x86"
+#else
+#define GEIST_TEST_CPU_BACKEND "cpu_scalar"
+#endif
+
 /* ---- Fixture strictness ------------------------------------------------- */
 
 /* A missing GGUF fixture is normally a skip: contributors run the suite

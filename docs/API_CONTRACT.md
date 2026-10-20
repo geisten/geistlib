@@ -88,6 +88,28 @@ consumer that cannot ask which family it loaded cannot avoid that.
 satisfy it by staging device memory into session storage, so the contract does
 not freeze a CPU-only design.
 
+### What `"auto"` picks
+
+`geist_backend_create("auto")` (also `nullptr` or `""`) promises the best
+backend compiled in for the host, not a particular one: `metal` on Apple
+Silicon when the build has it and a GPU is found (since the release after
+0.21.0; `cpu_neon` before), else the preferred CPU backend (`cpu_neon`, `cpu_x86`, `cpu_scalar`); Vulkan is never
+picked by `"auto"`. `GEIST_BACKEND=<name>` replaces `"auto"` with that name.
+
+A backend picked by `"auto"` must not fail a model its GPU cannot run. When
+`geist_model_load*` on it fails with `GEIST_E_UNSUPPORTED` (a weight format
+the GPU has no kernel for) or `GEIST_E_OOM` (the GPU memory budget), or the
+model loads but a session of the load's `max_seq_len` does not fit, the load
+is repeated on the CPU backend `"auto"` would otherwise pick. That backend is
+created with the same opts and allocator and owned by the model (destroyed by
+`geist_model_destroy`). The caller keeps passing its `"auto"` handle:
+`geist_session_create` and `geist_decision_create` accept it as the model's
+backend. `geist_model_backend_name` (EXPERIMENTAL) names the backend the model
+runs on; `geist_backend_name` keeps naming the handle's. Explicit names never
+fall back, and nothing falls back after load: a session created later that
+does not fit fails at create as before. Logits differ in the last bits
+between backends, so code that compares bits names its backend.
+
 ### Explicitly NOT in the contract
 
 `geist_model_modalities`, `geist_session_attach_audio` / `attach_image` /
