@@ -273,6 +273,61 @@ Install or update it with the `ci-hygiene` workflow (`-i action=deploy`),
 inspect it with `-i action=status` (timer, last log lines, any lock left in
 the action caches).
 
+## CI bot
+
+`scripts/ci-bot.py` runs as the user service `ci-bot` on the desktop runner
+host and polls Gitea every 90 s for the open pull requests of
+`geisten/geistlib` and `geisten/geist-runtime` (everyone's, not only
+Claude's). It replaces the ad-hoc watcher scripts and does three things,
+each within fixed rules; anything else stays with a human:
+
+1. **Infra reruns.** For a completed run of a PR's head commit it classifies
+   every failed job. Infra: the first step never ran (the job died in
+   "Set up job", e.g. a stale act-cache lock); every step marked failed (a
+   task the runner lost, ended by the zombie sweep); a setup step
+   (checkout, ccache) failing before anything else within 5 min or at a
+   sweep (hh:x0:25 / hh:x5:25); or the job's log is gone (404). Anything
+   else is real. Only a run whose failures are all infra gets
+   `POST /actions/runs/<id>/rerun-failed-jobs`, at most twice per run and
+   head SHA; a run with one real failure is left alone (a rerun would
+   repeat it).
+2. **CHANGELOG rebases.** A PR Gitea reports as not mergeable is rebased
+   onto its base in a scratch worktree of the bot's own clone. If every
+   conflict is in `CHANGELOG.md` it keeps both sides (main's lines first)
+   and pushes with `--force-with-lease` on the head SHA it saw — but only
+   to a branch in the same repository whose non-merge commits all carry
+   Claude's `Co-Authored-By` trailer (or a bot author), or that has the
+   label `ci-bot:rebase`. A human's branch is never rewritten without that
+   label; forks never. Conflicts beyond `CHANGELOG.md` (or a missing label)
+   get one comment, never a repeat (a hidden marker in the comment).
+3. **Dependent merges.** A PR whose body says `Depends on #N` (or that has
+   the label `depends-on-#N`) waits until every #N is merged; then it is
+   rebased under rule 2's terms and, if it asks for it (label `automerge`,
+   or "auto-merge" in the body and not "no/don't auto-merge"), auto-merge
+   (merge commit, when checks succeed) is enabled once. The bot never
+   cancels an auto-merge someone scheduled; a dependency closed unmerged
+   gets one comment.
+
+What it already did lives in `~/ci-bot/state.json` (restarts are
+idempotent; closed PRs are forgotten); every decision goes to
+`~/ci-bot/ci-bot.log`. API calls retry with backoff, and an error in one PR
+only skips that PR for one poll. `--dry-run` reads everything and runs the
+trial rebases, but reruns, pushes, comments and merges nothing:
+
+```sh
+python3 scripts/ci-bot.py --dry-run --once --home /tmp/cb --token-file <file>
+```
+
+The token (`~/.config/ci-bot/token`, 0600) comes from the org Actions secret
+`CI_BOT_TOKEN`, scope `write:repository`, ideally of a dedicated bot user
+with write access to both repositories; pushes, comments and reruns then
+show that user. Install, update, stop or inspect the bot with the `ci-bot`
+workflow (`-i action=deploy|rollback|status`, `-i dry_run=true` to watch
+its decisions first); deploy fails with a clear message when the secret is
+missing and does not start the service unless one dry-run poll with the
+new script and token works. Tests: `tests/test_ci_bot_py.py` (recorded API
+responses in `tests/data/ci_bot/`, part of `make test-py`).
+
 ## Operational notes
 
 - The machine must be powered on. Gitea cannot wake it; queued jobs wait, and
