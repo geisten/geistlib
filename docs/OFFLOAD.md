@@ -389,9 +389,21 @@ decode within noise of the split. At chunk 128 (run 1388): 264 against 156
 (split) and 240 (every layer on the GPU), decode 10.0 against 9.9: met.
 With chunks up to 512 (run 1396): 515 tok/s prefill, decode unchanged.
 
-**Phase 2: overlap.** The copy on the transfer queue, one weight ahead.
-Decision rule: keep if it beats single-queue streaming by more than the
-resolution.
+**Phase 2: overlap — built** (`vk_xq_copy`, `vk_weight_bind` in
+`vulkan/ops.c`; on by default, `GEIST_VK_STREAM_ASYNC=0` off). The copies
+run on the transfer-only queue family, one weight ahead: each streamed GEMM
+is a compute submission of its own that waits on a timeline semaphore for
+its slot's copy and signals another when done, and each weight learns which
+one the chunk streamed after it and has it copied into the other slot
+meanwhile. Before, every copy and its GEMM ran back to back on the compute
+queue (the full barrier between them), so a chunk took copy time plus
+compute time. Qwen3-14B Q8_0, chunk 512, runs 1517/1518/1523:
+every layer on the GPU 551–553 → 654–660 tok/s, split 26 + offload
+522–540 → 616–638, decode and peak VRAM unchanged (10684 / 10200 MiB both
+ways). The streamed part is now bound by the copy (≈ 8.6 GB/s); more would
+need the second copy engine or prefetching deeper than one weight.
+Decision rule (beats single-queue streaming by more than the resolution):
+met.
 
 **Phase 3: MoE.** Qwen3-30B-A3B Q4_K_M (18.6 GB, does not fit 11 GB):
 hot experts resident from the #48 profile, cold on the CPU in parallel with

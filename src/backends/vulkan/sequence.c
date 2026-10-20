@@ -6,6 +6,42 @@
  */
 #include "vk_internal.h"
 
+/* Async streaming (#78): a compute submission takes the pending timeline
+ * wait (its GEMM's slot copy) and signal (that GEMM done), then clears them.
+ * The structs live in the caller's frame until the submit. */
+struct vk_seq_sync {
+    VkTimelineSemaphoreSubmitInfo tl;
+    VkPipelineStageFlags          wait_stage;
+    uint64_t                      wait_val, signal_val;
+};
+
+static void vk_seq_attach(struct vk_state *st, VkSubmitInfo *submit, struct vk_seq_sync *sy) {
+    if (st->seq_wait_copy == 0 && st->seq_signal_comp == 0) {
+        return;
+    }
+    *sy    = (struct vk_seq_sync) {.wait_stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                   .wait_val   = st->seq_wait_copy,
+                                   .signal_val = st->seq_signal_comp};
+    sy->tl = (VkTimelineSemaphoreSubmitInfo) {
+            .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+    submit->pNext = &sy->tl;
+    if (sy->wait_val != 0) {
+        sy->tl.waitSemaphoreValueCount = 1;
+        sy->tl.pWaitSemaphoreValues    = &sy->wait_val;
+        submit->waitSemaphoreCount     = 1;
+        submit->pWaitSemaphores        = &st->tl_copy;
+        submit->pWaitDstStageMask      = &sy->wait_stage;
+    }
+    if (sy->signal_val != 0) {
+        sy->tl.signalSemaphoreValueCount = 1;
+        sy->tl.pSignalSemaphoreValues    = &sy->signal_val;
+        submit->signalSemaphoreCount     = 1;
+        submit->pSignalSemaphores        = &st->tl_comp;
+    }
+    st->seq_wait_copy   = 0;
+    st->seq_signal_comp = 0;
+}
+
 void vk_seq_flush(struct vk_state *st) {
     if (st == nullptr || !st->seq_open) {
         return;
@@ -16,9 +52,11 @@ void vk_seq_flush(struct vk_state *st) {
     st->n_dirty        = 0;
     bool ok            = st->fn.EndCommandBuffer(st->seq_cmd) == VK_SUCCESS;
     if (ok) {
-        VkSubmitInfo    submit = {.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                                  .commandBufferCount = 1,
-                                  .pCommandBuffers    = &st->seq_cmd};
+        VkSubmitInfo       submit = {.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                                     .commandBufferCount = 1,
+                                     .pCommandBuffers    = &st->seq_cmd};
+        struct vk_seq_sync sy;
+        vk_seq_attach(st, &submit, &sy);
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
         ok = st->fn.QueueSubmit(st->queue, 1, &submit, st->seq_fence) == VK_SUCCESS &&
@@ -129,16 +167,18 @@ const char *vk_fallback_name(enum vk_fb site) {
 /* Rolling submission: close the open command buffer, hand it to the GPU
  * WITHOUT waiting, and keep recording in the next ring slot. Keeps the
  * GPU fed (and boosted) while the CPU encodes the rest of the token. */
-static void vk_seq_roll(struct vk_state *st) {
-    if (!st->seq_open || st->seq_in_cmd == 0 || st->seq_cmd_idx + 1 >= VK_SEQ_CMDBUFS) {
-        return;
+static bool vk_seq_roll(struct vk_state *st, uint32_t ring) {
+    if (!st->seq_open || st->seq_in_cmd == 0 || st->seq_cmd_idx + 1 >= ring) {
+        return false;
     }
     if (st->fn.EndCommandBuffer(st->seq_cmd) != VK_SUCCESS) {
-        return; /* keep recording — flush will fail loudly if truly broken */
+        return false; /* keep recording — flush will fail loudly if truly broken */
     }
-    VkSubmitInfo submit = {.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                           .commandBufferCount = 1,
-                           .pCommandBuffers    = &st->seq_cmd};
+    VkSubmitInfo       submit = {.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                                 .commandBufferCount = 1,
+                                 .pCommandBuffers    = &st->seq_cmd};
+    struct vk_seq_sync sy;
+    vk_seq_attach(st, &submit, &sy);
     if (st->fn.QueueSubmit(st->queue, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS) {
         st->seq_failed = true; /* reported at the next readback */
     }
@@ -148,6 +188,16 @@ static void vk_seq_roll(struct vk_state *st) {
     VkCommandBufferBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                       .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     (void) st->fn.BeginCommandBuffer(st->seq_cmd, &begin);
+    return true;
+}
+
+void vk_seq_cut(struct vk_state *st) {
+    if (!st->seq_open || st->seq_in_cmd == 0) {
+        return; /* nothing recorded: the pending wait/signal go with what comes next */
+    }
+    if (!vk_seq_roll(st, VK_SEQ_CMDBUFS)) {
+        vk_seq_flush(st); /* ring full: submit and wait, which is just as correct */
+    }
 }
 
 /* Record a per-dispatch timestamp attributed to `slot` (pipe index, or
@@ -349,7 +399,7 @@ void vk_seq_hazard(struct vk_state              *st,
     st->stat_dispatches++;
     vk_prof_stamp(st, (uint32_t) pipe);
     if (st->seq_in_cmd >= VK_SEQ_ROTATE) {
-        vk_seq_roll(st);
+        (void) vk_seq_roll(st, VK_SEQ_ROLL_RING);
     }
     return GEIST_OK;
 }

@@ -1,0 +1,127 @@
+name: stream-async
+
+# #78 phase 2 on the geist-vulkan box (RTX 2080 Ti 11 GB, Ryzen 9 9950X):
+# streaming of spilled weights with the copies on the transfer queue
+# (GEIST_VK_STREAM_ASYNC=1) against the copies in the compute batch.
+#   1. correctness: the Vulkan parity tests with async on, and the split
+#      with offload (test_layer_split_int) both ways, reported;
+#   2. prefill, interleaved async off/on: (a) every layer on Vulkan with
+#      the weights past VRAM in host memory, (b) split + offload.
+#
+# On demand only:  tea actions workflows dispatch --login git.geisten.net \
+#   --repo geisten/geistlib --ref <branch> stream-async.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_url:
+        description: "GGUF that does not fit the card (cached by file name)"
+        type: string
+        default: https://huggingface.co/Qwen/Qwen3-14B-GGUF/resolve/530227a7d994db8eca5ab5ced2fb692b614357fd/Qwen3-14B-Q8_0.gguf
+      model_sha256:
+        description: "sha256 of the GGUF"
+        type: string
+        default: a0dfe649137410b7d82f06a209240508e218f32f5b6fd81b69d6932160cfcd9d
+      split:
+        description: "layers on the GPU for the offload rows"
+        type: string
+        default: "26"
+      cycles:
+        description: "interleaved cycles"
+        type: string
+        default: "3"
+      bench:
+        description: "run the prefill measurement"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  async:
+    name: Async streaming on geist-vulkan
+    runs-on: geist-vulkan
+    timeout-minutes: 180
+    env:
+      MODEL_URL: ${{ inputs.model_url }}
+      MODEL_SHA: ${{ inputs.model_sha256 }}
+      SPLIT: ${{ inputs.split }}
+      CYCLES: ${{ inputs.cycles }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Environment
+        run: |
+          mkdir -p out
+          { git rev-parse HEAD; nvidia-smi; free -g; } 2>&1 | tee out/env.txt
+      - name: Build
+        run: make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
+      - name: Model (cached outside the workspace, sha256-checked)
+        run: |
+          set -eo pipefail
+          CACHE=${GEIST_MODEL_CACHE:-$HOME/geist-models}
+          mkdir -p "$CACHE"
+          F="$CACHE/$(basename "$MODEL_URL")"
+          if [ ! -f "$F" ]; then
+            curl -fL --retry 5 -C - -o "$F.part" "$MODEL_URL"
+            echo "$MODEL_SHA  $F.part" | sha256sum -c -
+            mv "$F.part" "$F"
+          fi
+          echo "MODEL=$F" >> "$GITHUB_ENV"
+      - name: Correctness
+        run: |
+          set -eo pipefail
+          . scripts/gpu-lock.sh
+          for t in test_backend_vulkan_linear_parity test_backend_vulkan_buffer_unit test_backend_vulkan_ops_unit; do
+            GEIST_VK_STREAM_ASYNC=1 bin/linux/release/tests/$t 2>&1 | tail -2 | sed "s/^/[$t async] /" | tee -a out/correct.txt
+          done
+          for a in 0 1; do
+            echo "== split $SPLIT + offload, async=$a" | tee -a out/correct.txt
+            GEIST_VK_STREAM_ASYNC=$a GEIST_SPLIT_BACKEND=vulkan GEIST_SPLIT_GGUF_PATH="$MODEL" \
+              GEIST_SPLIT_POINTS="$SPLIT" GEIST_OFFLOAD_M_MIN=32 GEIST_VERBOSE=1 \
+              bin/linux/release/tests/test_layer_split_int > out/split-async$a.txt 2>&1 || true
+            grep -E 'kv .* split|FAIL|spill:|async|out of|offload' out/split-async$a.txt \
+              | sort | uniq -c | tee -a out/correct.txt
+          done
+      - name: Prefill, async off/on interleaved
+        if: inputs.bench
+        run: |
+          set -eo pipefail
+          . scripts/gpu-lock.sh
+          for c in $(seq "$CYCLES"); do
+            for cfg in gpu split; do
+              for a in 0 1; do
+                if [ "$cfg" = gpu ]; then
+                  e="GEIST_BENCH_BACKEND=vulkan"
+                else
+                  e="GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=$SPLIT"
+                fi
+                echo "== cycle $c $cfg async=$a" >> out/bench.txt
+                # peak VRAM of the run, polled every 0.2 s
+                ( peak=0; while :; do v=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1);
+                    [ "$v" -gt "$peak" ] && peak=$v && echo "$peak" > out/peak.tmp; sleep 0.2; done ) &
+                poll=$!
+                env $e GEIST_VK_STREAM_ASYNC=$a GEIST_VK_VERBOSE=1 \
+                  bin/linux/release/tests/bench_perf_sweep --gguf "$MODEL" \
+                  --seq-lens 512 --decode-n 16 --warmup 8 --repeats 3 --m-max 512 \
+                  2>> out/bench.txt \
+                  | sed "s/^{/{\"cfg\":\"$cfg\",\"async\":$a,\"cycle\":$c,/" | tee -a out/bench.jsonl \
+                  || echo "== FAILED: cycle $c $cfg async=$a" | tee -a out/bench.txt
+                kill $poll 2>/dev/null; wait $poll 2>/dev/null || true
+                echo "$cfg async=$a cycle=$c peak_vram_mib=$(cat out/peak.tmp 2>/dev/null)" | tee -a out/vram.txt; rm -f out/peak.tmp
+              done
+            done
+          done
+          grep -E '^== |spill:' out/bench.txt
+      - name: Job summary
+        if: always()
+        run: |
+          { echo '```'; cat out/correct.txt 2>/dev/null; echo '```'; echo '```';
+            grep -o '"cfg":"[a-z]*","async":[01],"cycle":[0-9]*\|"prefill_tps":[0-9.]*\|"decode_tps":[0-9.]*' out/bench.jsonl 2>/dev/null | paste - - -; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 30
+          name: stream-async
+          path: out/
+          if-no-files-found: warn

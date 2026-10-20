@@ -90,6 +90,9 @@ static PFN_vkVoidFunction vk_iproc(struct vk_state *st, const char *name) {
     VK_LOAD_I(st, CmdCopyBuffer);
     VK_LOAD_I(st, QueueSubmit);
     VK_LOAD_I(st, QueueWaitIdle);
+    VK_LOAD_I(st, CreateSemaphore);
+    VK_LOAD_I(st, DestroySemaphore);
+    VK_LOAD_I(st, WaitSemaphores);
     VK_LOAD_I(st, CreateFence);
     VK_LOAD_I(st, DestroyFence);
     VK_LOAD_I(st, ResetFences);
@@ -129,6 +132,9 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     }
     if (st->device != VK_NULL_HANDLE) {
         (void) st->fn.QueueWaitIdle(st->queue);
+        if (st->xq != VK_NULL_HANDLE) {
+            (void) st->fn.QueueWaitIdle(st->xq);
+        }
         for (size_t i = 0; i < st->n_weights; ++i) {
             vk_buffer_destroy(be, st->weights[i].gpu);
         }
@@ -193,6 +199,15 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         }
         if (st->cmd_pool != VK_NULL_HANDLE) {
             st->fn.DestroyCommandPool(st->device, st->cmd_pool, nullptr);
+        }
+        if (st->xq_pool != VK_NULL_HANDLE) {
+            st->fn.DestroyCommandPool(st->device, st->xq_pool, nullptr);
+        }
+        if (st->tl_copy != VK_NULL_HANDLE) {
+            st->fn.DestroySemaphore(st->device, st->tl_copy, nullptr);
+        }
+        if (st->tl_comp != VK_NULL_HANDLE) {
+            st->fn.DestroySemaphore(st->device, st->tl_comp, nullptr);
         }
         st->fn.DestroyDevice(st->device, nullptr);
     }
@@ -298,6 +313,20 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         return GEIST_E_UNSUPPORTED;
     }
     st->queue_family = family;
+    /* Async streaming (#78 phase 2): a transfer-only family is the copy
+     * engines, which run beside the compute queue. On where the device has
+     * one; GEIST_VK_STREAM_ASYNC=0 keeps the copies in the compute batch. */
+    const char *async = getenv("GEIST_VK_STREAM_ASYNC");
+    st->xq_family     = UINT32_MAX;
+    for (uint32_t i = 0; (async == nullptr || strcmp(async, "0") != 0) && i < nfam; ++i) {
+        const VkQueueFlags f = fams[i].queueFlags;
+        if ((f & VK_QUEUE_TRANSFER_BIT) && !(f & (VK_QUEUE_COMPUTE_BIT | VK_QUEUE_GRAPHICS_BIT)) &&
+            !(f & (VK_QUEUE_VIDEO_DECODE_BIT_KHR | VK_QUEUE_VIDEO_ENCODE_BIT_KHR)) &&
+            fams[i].queueCount > 0) {
+            st->xq_family = i;
+            break;
+        }
+    }
 
     /* Probe the optional features (fp16, int8 dot, coopmat), then request
      * exactly the supported subset. Base robustBufferAccess
@@ -367,7 +396,8 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
             .uniformAndStorageBuffer8BitAccess = have12.uniformAndStorageBuffer8BitAccess,
             .vulkanMemoryModel                 = have12.vulkanMemoryModel,
             .vulkanMemoryModelDeviceScope      = have12.vulkanMemoryModelDeviceScope,
-            .bufferDeviceAddress               = have12.bufferDeviceAddress};
+            .bufferDeviceAddress               = have12.bufferDeviceAddress,
+            .timelineSemaphore = st->xq_family != UINT32_MAX && have12.timelineSemaphore};
     VkPhysicalDeviceVulkan11Features want11 = {
             .sType                    = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
             .pNext                    = &want12,
@@ -388,18 +418,25 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         ext_names[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
     }
 
-    const float             prio  = 1.0f;
-    VkDeviceQueueCreateInfo qinfo = {.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                                     .queueFamilyIndex = family,
-                                     .queueCount       = 1,
-                                     .pQueuePriorities = &prio};
-    VkDeviceCreateInfo      dinfo = {.sType                 = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-                                     .pNext                 = &want2,
-                                     .queueCreateInfoCount  = 1,
-                                     .pQueueCreateInfos     = &qinfo,
-                                     .enabledExtensionCount = n_ext,
-                                     .ppEnabledExtensionNames = ext_names};
-    VkResult                r     = st->fn.CreateDevice(st->phys, &dinfo, nullptr, &st->device);
+    const float prio = 1.0f;
+    if (!want12.timelineSemaphore) {
+        st->xq_family = UINT32_MAX;
+    }
+    const VkDeviceQueueCreateInfo qinfo[2] = {{.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                                               .queueFamilyIndex = family,
+                                               .queueCount       = 1,
+                                               .pQueuePriorities = &prio},
+                                              {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                                               .queueFamilyIndex = st->xq_family,
+                                               .queueCount       = 1,
+                                               .pQueuePriorities = &prio}};
+    VkDeviceCreateInfo dinfo = {.sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+                                .pNext                   = &want2,
+                                .queueCreateInfoCount    = st->xq_family != UINT32_MAX ? 2u : 1u,
+                                .pQueueCreateInfos       = qinfo,
+                                .enabledExtensionCount   = n_ext,
+                                .ppEnabledExtensionNames = ext_names};
+    VkResult           r     = st->fn.CreateDevice(st->phys, &dinfo, nullptr, &st->device);
     if (r != VK_SUCCESS) {
         geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: vkCreateDevice failed (%d)", (int) r);
         return GEIST_E_BACKEND;
@@ -426,6 +463,32 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     if (st->fn.CreateFence(st->device, &finfo, nullptr, &st->xfer_fence) != VK_SUCCESS) {
         geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: fence creation failed");
         return GEIST_E_BACKEND;
+    }
+    st->wslot_reader = -1;
+    if (st->xq_family != UINT32_MAX) {
+        /* Any failure here leaves async streaming off; the copies stay in
+         * the compute batch. */
+        st->fn.GetDeviceQueue(st->device, st->xq_family, 0, &st->xq);
+        const VkCommandPoolCreateInfo xpinfo = {
+                .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                .flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                .queueFamilyIndex = st->xq_family};
+        const VkCommandBufferAllocateInfo xainfo = {
+                .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                .commandBufferCount = 2};
+        VkSemaphoreTypeCreateInfo   tinfo = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                             .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
+        VkSemaphoreCreateInfo       sinfo = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                                             .pNext = &tinfo};
+        VkCommandBufferAllocateInfo xa    = xainfo;
+        bool                        ok =
+                st->fn.CreateCommandPool(st->device, &xpinfo, nullptr, &st->xq_pool) == VK_SUCCESS;
+        xa.commandPool = st->xq_pool;
+        ok = ok && st->fn.AllocateCommandBuffers(st->device, &xa, st->xq_cmd) == VK_SUCCESS &&
+             st->fn.CreateSemaphore(st->device, &sinfo, nullptr, &st->tl_copy) == VK_SUCCESS &&
+             st->fn.CreateSemaphore(st->device, &sinfo, nullptr, &st->tl_comp) == VK_SUCCESS;
+        st->xq_on = ok;
     }
     return GEIST_OK;
 }
@@ -572,11 +635,13 @@ void vk_destroy(struct geist_backend *be) {
             if (st->spilled_weights != 0) {
                 fprintf(stderr,
                         "geist vulkan spill: %zu weights (%zu MiB) in host memory; streamed "
-                        "into VRAM %llu times (%llu MiB)\n",
+                        "into VRAM %llu times (%llu MiB); async %s, %llu prefetch hits\n",
                         st->spilled_weights,
                         st->spilled_weight_bytes >> 20,
                         (unsigned long long) st->stat_streamed,
-                        (unsigned long long) (st->stat_streamed_bytes >> 20));
+                        (unsigned long long) (st->stat_streamed_bytes >> 20),
+                        st->xq_on ? "on" : "off",
+                        (unsigned long long) st->stat_prefetch_hits);
             }
             fprintf(stderr,
                     "geist vulkan scratch: device-local %llu (%llu MiB), BAR %llu (%llu MiB), "

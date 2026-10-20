@@ -66,8 +66,11 @@ spilled: pp512 18.7 t/s, tg 2.2 t/s, slower than cpu_x86 on the 9950X (32.6 /
 on (prefill), a spilled weight is copied into one of two VRAM slots by DMA
 before its GEMM instead of being read over the bus by the shaders (#78):
 Qwen3-14B Q8_0 with 4.7 GB spilled prefills at 550 instead of 177 tok/s
-(chunk 512; cpu_x86: 57). Decode still reads the spilled weights over the
-bus. The KV cache and
+(chunk 512; cpu_x86: 57). Where the GPU has a transfer-only queue family
+(its copy engines; the RTX 2080 Ti has one), the copies run there, one
+weight ahead of the GEMM that needs them, and overlap the compute: 654-660
+instead of 551-553 tok/s, peak VRAM unchanged (#78). Decode still reads the
+spilled weights over the bus. The KV cache and
 the x ring do not spill: a session that does not fit fails with an
 out-of-memory error naming the allocation, the memory in use and the limit.
 
@@ -103,6 +106,7 @@ limit fails the load.
 | `GEIST_VK_VRAM_BUDGET` | lower the device memory limit (bytes, K/M/G suffix) to reproduce a smaller card |
 | `GEIST_VK_PIPELINE_CACHE` | compiled-pipeline cache file (default `$XDG_CACHE_HOME/geist` or `~/.cache/geist`, one file per driver build); `0` turns it off. The NVIDIA driver's own cache is per executable, so without it every new binary spends ~2 s compiling pipelines |
 | `GEIST_M_MAX` | prefill chunk rows (Vulkan default 128) |
+| `GEIST_VK_STREAM_ASYNC=0` | copy streamed weights in the compute batch instead of on the GPU's transfer-only queue (default: on where the device has one), see Memory |
 | `GEIST_VK_STREAM_M_MIN` | rows from which `linear_t` copies a weight that lives in host memory into a VRAM slot before the GEMM (default 32; `0` reads it over the bus as before), see Memory |
 | `GEIST_VK_PQ2_F32_ACC=1` | f32 instead of f16 accumulation in the PQ2_0 tensor-core GEMM (default folds into f32 every 64 k) |
 | `GEIST_VK_SCRATCH_DEVICE=0` | keep the scratch pool host-visible (default: device-local where the arch allows it), see above |
