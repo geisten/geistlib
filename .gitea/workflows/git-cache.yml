@@ -1,27 +1,34 @@
 name: git-cache
 
-# The CI git cache on the desktop runner host (scripts/git-cache.py,
-# docs/HARDWARE_CI.md "CI git cache"). deploy installs or updates it, wires
-# the docker runners and proves a job checkout went through it — or rolls
-# the runners back. Dispatch only.
+# The CI git cache on a runner host (scripts/git-cache.py,
+# docs/HARDWARE_CI.md "CI git cache"). deploy installs or updates it and
+# wires the host's runners; on the desktop it also proves a job checkout
+# went through it, or rolls the runners back. On the Pi the host runner
+# restarts only after the deploy job, so prove it with a later
+# action=verify. Dispatch only.
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: "deploy | rollback | status"
+        description: "deploy | rollback | status | verify (pi5)"
         default: deploy
+      host:
+        description: "desktop | pi5"
+        default: desktop
 
 permissions:
   contents: read
 
 jobs:
   host:
+    if: inputs.host != 'pi5' && inputs.action != 'verify'
     runs-on: geist-vulkan
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: ${{ inputs.action }}
         env:
+          GIT_CACHE_HOST: desktop
           GIT_CACHE_TOKEN: ${{ secrets.GIT_CACHE_TOKEN }}
         run: sh scripts/git-cache-deploy.sh "${{ inputs.action }}"
 
@@ -29,7 +36,7 @@ jobs:
   # wired its fetch shows up in the cache's log.
   probe:
     needs: host
-    if: inputs.action == 'deploy'
+    if: inputs.host != 'pi5' && inputs.action == 'deploy'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -40,7 +47,7 @@ jobs:
 
   verify:
     needs: [host, probe]
-    if: always() && inputs.action == 'deploy' && needs.host.result == 'success'
+    if: always() && inputs.host != 'pi5' && inputs.action == 'deploy' && needs.host.result == 'success'
     runs-on: geist-vulkan
     timeout-minutes: 60
     steps:
@@ -54,3 +61,64 @@ jobs:
             echo "probe failed or did not use the cache: rolling back"
             sh scripts/git-cache-deploy.sh rollback; exit 1
           fi
+
+  # The Pi: the job holds the board lock, like every job of its runners.
+  pi5:
+    if: inputs.host == 'pi5' && inputs.action != 'verify'
+    runs-on: pi5
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: ${{ inputs.action }}
+        env:
+          GIT_CACHE_HOST: pi5
+          GIT_CACHE_TOKEN: ${{ secrets.GIT_CACHE_TOKEN }}
+        run: sh scripts/git-cache-deploy.sh "${{ inputs.action }}"
+
+  # action=verify host=pi5: one checkout on each Pi runner. ubuntu-24.04-arm
+  # is shared with cloud-arm64-hel1, so the container probe may land there.
+  pi5-probe-host:
+    if: inputs.host == 'pi5' && inputs.action == 'verify'
+    runs-on: pi5
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: |
+          git log --oneline -1
+          env | grep '^GIT_CONFIG_' || { echo "runner env not wired"; exit 1; }
+
+  pi5-probe-ci:
+    needs: pi5-probe-host
+    if: always() && inputs.host == 'pi5' && inputs.action == 'verify'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    outputs:
+      runner: ${{ steps.who.outputs.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: who
+        run: |
+          echo "runner=$RUNNER_NAME" >> "$GITHUB_OUTPUT"
+          echo "runner $RUNNER_NAME"; git log --oneline -1
+          env | grep '^GIT_CONFIG_' || echo "runner env not wired"
+
+  pi5-check:
+    needs: [pi5-probe-host, pi5-probe-ci]
+    if: always() && inputs.host == 'pi5' && inputs.action == 'verify'
+    runs-on: pi5
+    timeout-minutes: 15
+    steps:
+      - name: both probe checkouts came through the Pi cache
+        run: |
+          log=~/git-cache/git-cache.log
+          tail -n 12 "$log"
+          ok=1
+          tail -n 40 "$log" | grep -q 'served 127\.0\.0\.1' && echo "host-mode checkout: served by the cache" \
+            || { echo "host-mode checkout: not in the cache log"; ok=0; }
+          if [ "${{ needs.pi5-probe-ci.outputs.runner }}" = pi5-ci ]; then
+            tail -n 40 "$log" | grep -q 'served 172\.' && echo "pi5-ci checkout: served by the cache" \
+              || { echo "pi5-ci checkout: not in the cache log"; ok=0; }
+          else
+            echo "container probe ran on '${{ needs.pi5-probe-ci.outputs.runner }}', not pi5-ci: dispatch verify again"
+          fi
+          [ $ok = 1 ]

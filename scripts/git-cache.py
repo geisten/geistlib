@@ -18,6 +18,8 @@ refused; only container networks and localhost may connect.
 
 Usage: git-cache.py --listen 192.168.178.43:8417 --root ~/git-cache/repos \
            --token-file ~/.config/git-cache/token
+--listen may be given more than once (the Pi: its docker bridge for the
+container jobs and 127.0.0.1 for the host-mode jobs).
 """
 import argparse
 import ipaddress
@@ -161,15 +163,20 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     global ARGS
     ap = argparse.ArgumentParser()
-    ap.add_argument("--listen", default="127.0.0.1:8417")
+    ap.add_argument("--listen", action="append", help="host:port, repeatable (default 127.0.0.1:8417)")
     ap.add_argument("--root", default=os.path.expanduser("~/git-cache/repos"))
     ap.add_argument("--token-file", default=os.path.expanduser("~/.config/git-cache/token"))
     ARGS = ap.parse_args()
-    host, port = ARGS.listen.rsplit(":", 1)
+    listen = ARGS.listen or ["127.0.0.1:8417"]
     os.makedirs(ARGS.root, exist_ok=True)
-    srv = ThreadingHTTPServer((host, int(port)), Handler)
-    log(f"git cache on {ARGS.listen}, mirrors in {ARGS.root}")
-    srv.serve_forever()
+    servers = []
+    for addr in listen:
+        host, port = addr.rsplit(":", 1)
+        servers.append(ThreadingHTTPServer((host, int(port)), Handler))
+    log(f"git cache on {' '.join(listen)}, mirrors in {ARGS.root}")
+    for srv in servers[1:]:
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    servers[0].serve_forever()
 
 
 if __name__ == "__main__":
