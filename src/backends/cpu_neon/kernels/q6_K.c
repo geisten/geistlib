@@ -1204,6 +1204,58 @@ struct q6k_stream4_job {
     float                              *y;
 };
 
+/* One full 4-row tile x 8 tokens of the stream layout on SDOT (#16), the
+ * scheme of q4k_sdot_tile4x8: each 16-element subblock's 4 rows are
+ * transposed into 4 k-groups of [row0..3][4 bytes], so one
+ * vdotq_laneq_s32 adds a token's 4-byte k-group to all four rows; eight
+ * tokens give eight independent chains. The int32 subblock sums are the
+ * scalar-reduction kernel's; the float epilogue keeps its order per output,
+ * (x_scale * ds) * dot accumulated over subblocks, up to contraction. */
+static void q6k_stream_sdot_tile4x8(const struct q6k_stream4_job       *job,
+                                    const struct q6k_predecode_stream4 *tile,
+                                    size_t                              mt,
+                                    size_t                              nt) {
+    const size_t n_in = job->n_in, n_out = job->n_out, nb = job->n_blocks_per_row;
+    float32x4_t  yacc[8];
+    for (int t = 0; t < 8; t++) {
+        yacc[t] = vdupq_n_f32(0.0f);
+    }
+    for (size_t b = 0; b < nb; b++) {
+        const struct q6k_predecode_stream4 *blk = tile + b;
+        float                               sx[8];
+        for (int t = 0; t < 8; t++) {
+            sx[t] = job->x_scales[(mt + (size_t) t) * nb + b];
+        }
+        for (int is = 0; is < 16; is++) {
+            const int32x4_t   r0  = vreinterpretq_s32_s8(vld1q_s8(blk->qs[is][0]));
+            const int32x4_t   r1  = vreinterpretq_s32_s8(vld1q_s8(blk->qs[is][1]));
+            const int32x4_t   r2  = vreinterpretq_s32_s8(vld1q_s8(blk->qs[is][2]));
+            const int32x4_t   r3  = vreinterpretq_s32_s8(vld1q_s8(blk->qs[is][3]));
+            const int64x2_t   t0  = vreinterpretq_s64_s32(vtrn1q_s32(r0, r1));
+            const int64x2_t   t1  = vreinterpretq_s64_s32(vtrn2q_s32(r0, r1));
+            const int64x2_t   t2  = vreinterpretq_s64_s32(vtrn1q_s32(r2, r3));
+            const int64x2_t   t3  = vreinterpretq_s64_s32(vtrn2q_s32(r2, r3));
+            const int8x16_t   w0  = vreinterpretq_s8_s64(vtrn1q_s64(t0, t2));
+            const int8x16_t   w1  = vreinterpretq_s8_s64(vtrn1q_s64(t1, t3));
+            const int8x16_t   w2  = vreinterpretq_s8_s64(vtrn2q_s64(t0, t2));
+            const int8x16_t   w3  = vreinterpretq_s8_s64(vtrn2q_s64(t1, t3));
+            const float32x4_t dsv = vld1q_f32(blk->ds[is]);
+            const int8_t     *xb  = job->x_q8 + mt * n_in + b * Q6_K_BLOCK_ELEMS + (size_t) is * 16;
+            for (int t = 0; t < 8; t++) {
+                const int8x16_t a   = vld1q_s8(xb + (size_t) t * n_in);
+                int32x4_t       acc = vdotq_laneq_s32(vdupq_n_s32(0), w0, a, 0);
+                acc                 = vdotq_laneq_s32(acc, w1, a, 1);
+                acc                 = vdotq_laneq_s32(acc, w2, a, 2);
+                acc                 = vdotq_laneq_s32(acc, w3, a, 3);
+                yacc[t] = vmlaq_f32(yacc[t], vmulq_n_f32(dsv, sx[t]), vcvtq_f32_s32(acc));
+            }
+        }
+    }
+    for (int t = 0; t < 8; t++) {
+        vst1q_f32(job->y + (mt + (size_t) t) * n_out + nt * 4, yacc[t]);
+    }
+}
+
 /* Tiles of 4 output rows [nt0, nt1) of linear_q6k_w6a8_prefill_predecoded_ntile4_stream. */
 static void q6k_stream4_tiles(void *ctx, size_t nt0, size_t nt1) {
     const struct q6k_stream4_job       *job              = ctx;
@@ -1220,6 +1272,11 @@ static void q6k_stream4_tiles(void *ctx, size_t nt0, size_t nt1) {
         const struct q6k_predecode_stream4 *tile     = w + nt * n_blocks_per_row;
 
         size_t mt = 0;
+        if (valid_nr == 4) {
+            for (; mt + 8 <= m; mt += 8) {
+                q6k_stream_sdot_tile4x8(job, tile, mt, nt);
+            }
+        }
         for (; mt + 4 <= m; mt += 4) {
             const float *sx0 = x_scales + (mt + 0) * n_blocks_per_row;
             const float *sx1 = x_scales + (mt + 1) * n_blocks_per_row;
