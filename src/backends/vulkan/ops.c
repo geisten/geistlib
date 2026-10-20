@@ -1890,8 +1890,11 @@ static void vk_weight_done(struct vk_state *st) {
             vk_buffer_destroy(be, *slot);
             *slot = nullptr;
         }
-        if (vk_buffer_create(be, wbuf->bytes, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_DEVICE, slot) !=
-            GEIST_OK) {
+        st->wslot_creating = true;
+        const enum geist_status cs =
+                vk_buffer_create(be, wbuf->bytes, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_DEVICE, slot);
+        st->wslot_creating = false;
+        if (cs != GEIST_OK) {
             fprintf(stderr,
                     "geist vulkan: no VRAM for a %zu MiB weight slot; spilled weights are read "
                     "over the bus (#78)\n",

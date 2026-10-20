@@ -269,6 +269,7 @@ struct vk_state {
     uint64_t                   wslot_free[2];   /* tl_comp value once its last reader is done */
     const struct geist_buffer *wslot_src[2];    /* the weight the slot holds or receives */
     int                        wslot_reader;    /* slot the GEMM being recorded reads; -1 none */
+    bool                       wslot_creating;  /* vk_buffer_create is making a slot (shared) */
     struct geist_buffer       *stream_prev;     /* the last streamed weight */
     uint64_t                   seq_wait_copy;   /* next compute submit waits tl_copy >= this */
     uint64_t                   seq_signal_comp; /* next compute submit signals tl_comp = this */

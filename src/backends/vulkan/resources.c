@@ -211,10 +211,13 @@ enum geist_status vk_memory_info(const struct geist_backend *be, struct geist_ba
                                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                                VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    /* Async streaming (#78): weights and their VRAM slots are copied on the
-     * transfer queue and read on the compute queue. */
+    /* Async streaming (#78): the weights in host memory and the VRAM slots
+     * are copied on the transfer queue and read on the compute queue. The
+     * weights resident in VRAM are not shared: the copy engine never sees
+     * them. */
     const uint32_t both[2] = {st->queue_family, st->xq_family};
-    if (st->xq_on && role == GEIST_BUFFER_WEIGHT) {
+    if (st->xq_on && role == GEIST_BUFFER_WEIGHT &&
+        ((memory_flags & GEIST_MEMORY_HOST) != 0 || st->wslot_creating)) {
         binfo.sharingMode           = VK_SHARING_MODE_CONCURRENT;
         binfo.queueFamilyIndexCount = 2;
         binfo.pQueueFamilyIndices   = both;
