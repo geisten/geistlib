@@ -311,12 +311,15 @@ jobs:
       # The Rust/Go/JS examples share the same symbols.
       - name: FFI example (Python ctypes)
         if: matrix.target == 'linux'
+        # make shared links the GEMM provider's libraries like the static
+        # programs (#80). No pipe: the step fails when the example does, and
+        # the continuation must not be empty.
         run: |
-          cc -shared -o libgeist.so \
-            -Wl,--whole-archive lib/linux/release/libgeist.a -Wl,--no-whole-archive \
-            -fopenmp -lm
-          python3 examples/ffi/generate.py ./libgeist.so \
-            gguf_artifacts/smollm2-360m-instruct-q8_0.gguf "The capital of France is" | head -c 400
+          make shared TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
+          python3 examples/ffi/generate.py lib/linux/release/libgeist.so \
+            gguf_artifacts/smollm2-360m-instruct-q8_0.gguf "The capital of France is" > ffi.out
+          head -c 400 ffi.out; echo
+          sed 's/^The capital of France is//' ffi.out | grep -q '[[:alnum:]]'
 
       # Coarse perf-regression gate on the (noisy) shared runner: generous floors
       # catch a cliff — scalar fallback, -O0, OpenMP off, an early-return kernel —

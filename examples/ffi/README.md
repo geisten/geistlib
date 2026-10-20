@@ -21,23 +21,17 @@ prompt, stream a greedy continuation, stop at EOS.
 
 Python and JS need a shared object (Rust and Go can also link the static
 archive, but using the same `.so`/`.dylib` keeps this page to one build
-step). From the repo root, after `make lib`:
+step). From the repo root:
 
 ```bash
-# Linux
-cc -shared -o libgeist.so \
-  -Wl,--whole-archive lib/linux/release/libgeist.a -Wl,--no-whole-archive \
-  -fopenmp -lm
-
-# macOS
-cc -dynamiclib -o libgeist.dylib \
-  -Wl,-force_load,lib/mac-omp/release/libgeist.a \
-  -framework Accelerate "$(brew --prefix libomp)/lib/libomp.a" -lm
+make shared   # lib/<target>/release/libgeist.so (Linux) or libgeist.dylib (macOS)
 ```
 
-(`--whole-archive`/`-force_load` for the same reason the SDK smoke uses
-them: a shared library must carry *every* object, not just the ones a
-particular caller happens to reference.)
+It links every object of `libgeist.a` (`--whole-archive` / `-force_load`:
+a shared library must carry all of them, not just the ones one caller
+references) with the same libraries as the static programs — OpenMP and
+the GEMM provider (OpenBLAS on Linux, Accelerate on macOS). The examples
+below assume you copied it to the repo root.
 
 ## Run
 
