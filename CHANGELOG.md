@@ -19,6 +19,14 @@ minor release.
   cpu_x86 instances still byte-identical. `split-ab.yml` runs the split's
   tests and a parent/patch A/B on the GPU box.
 
+- **Apple Silicon builds the Metal backend by default.** `mk/target-mac.mk`
+  and `mk/target-mac-omp.mk` default to `BACKENDS="cpu_neon cpu_scalar
+  metal"` on arm64 (an Intel Mac keeps the x86 pair), so a plain `make` and
+  the `macos-arm64` release archive contain Metal; the release job fails if
+  the archive lacks it. The backend dlopens Metal.framework: no new link flag
+  for geistlib's binaries or for SDK consumers. `"auto"` still picks
+  `cpu_neon`; select Metal by name or with `GEIST_BACKEND=metal`. The macOS
+  CI legs build the default backends instead of an explicit list.
 - **Metal DeltaNet prefill 4x faster per layer (#99).** The chunked
   delta rule (qwen35: Bonsai 2 27B, Qwen3.5) runs as seven dispatches per
   call on simdgroup MMAs, with only the state recurrence in chunk order,

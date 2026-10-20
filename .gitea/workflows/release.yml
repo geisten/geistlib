@@ -212,6 +212,10 @@ jobs:
       - name: Build + smoke + package libgeist SDK
         run: |
           make TARGET=mac-omp CC=clang GEIST_STATIC_OMP=1 lib
+          # Default Apple-silicon BACKENDS include metal; it dlopens
+          # Metal.framework, so the consumer link line below needs no framework
+          # for it. Fail if the archive lost the backend.
+          nm lib/mac-omp/release/libgeist.a | grep -Eq ' [DS] _geist_backend_metal$'
           # The archive holds geist's objects, not the OpenMP runtime: an .a is
           # not a link. GEIST_STATIC_OMP=1 governs how geistlib links its OWN
           # binaries, so a consumer of the packaged SDK still supplies libomp

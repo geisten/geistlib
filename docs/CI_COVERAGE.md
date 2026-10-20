@@ -99,7 +99,7 @@ model rotates the cache. Local `make test` without the model skips cleanly.
 ### Metal is built and executed on a real GPU in every PR
 
 Hosted `macos-15` runners expose a usable Metal device. The macOS arm64 leg
-builds `BACKENDS="metal cpu_neon cpu_scalar"` and runs a mandatory GPU step:
+builds the default backends (`cpu_neon cpu_scalar metal`) and runs a mandatory GPU step:
 
 - `test_backend_metal_probe` — registration, backend lifecycle, buffer
   round-trip (host↔device);

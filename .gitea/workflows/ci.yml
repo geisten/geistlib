@@ -98,26 +98,28 @@ jobs:
       matrix:
         include:
           # -std=c23 needs gcc >= 14 and Apple-clang >= 16 (Xcode 16 / macOS 15).
-          # macOS builds the metal backend alongside the CPU pair (#181): the hosted
-          # macos-15 runners expose a real Metal device, so the probe and parity gate
-          # below execute on GPU.
+          # The default Apple-silicon build includes the metal backend next to
+          # the CPU pair (mk/target-mac*.mk), so this leg builds exactly what a
+          # plain `make` and the release build: the hosted macos-15 runners expose
+          # a real Metal device, so the probe and parity gate below execute on GPU.
           - name: macOS arm64
             runner: macos-15
             target: mac-omp
             cc: clang
-            bflags: BACKENDS="metal cpu_neon cpu_scalar"
+            bflags: ""
             apple_silicon: true
             perf_gguf: qwen3.5-0.8b-q8_0.gguf
             perf_floors: --min-prefill 30 --min-decode 10
           # No OpenMP (TARGET=mac): cpu_neon's loops run on GCD through
-          # geist_par_for (#618). The only leg that executes that backend;
-          # CPU pair only, so the Metal gate and perf floors stay with the
-          # leg above.
+          # geist_par_for (#618). The only leg that executes that backend.
+          # Default backends (metal included, so the default no-OpenMP build is
+          # what gets compiled); the mandatory Metal gate and perf floors stay
+          # with the leg above.
           - name: macOS arm64 GCD (no OpenMP)
             runner: macos-15
             target: mac
             cc: clang
-            bflags: BACKENDS="cpu_neon cpu_scalar"
+            bflags: ""
           - name: Linux arm64
             runner: ubuntu-24.04-arm
             target: linux
