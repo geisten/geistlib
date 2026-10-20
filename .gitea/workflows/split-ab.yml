@@ -1,0 +1,115 @@
+name: split-ab
+
+# Parent against patch for a change to the layer split (#49) on the
+# geist-vulkan box (RTX 2080 Ti, Ryzen 9 9950X): the split's correctness
+# tests on the patch (two cpu_x86 instances byte-identical, fault
+# injection, Vulkan reported), then tools/bench_revision_ab.py with both
+# revisions built from scratch and interleaved, plus a control binary.
+# The split runs cpu_x86 + Vulkan on a GGUF that does not fit the card;
+# offload is off unless `env` turns it on, so the split alone is measured.
+#
+# On demand only:  tea actions workflows dispatch --login git.geisten.net \
+#   --repo geisten/geistlib --ref <branch> -i base=<ref> -i new=<ref> split-ab.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "baseline revision"
+        type: string
+        default: origin/main
+      new:
+        description: "revision to compare"
+        type: string
+        default: HEAD
+      model_url:
+        description: "GGUF that does not fit the card (cached by file name)"
+        type: string
+        default: https://huggingface.co/Qwen/Qwen3-14B-GGUF/resolve/530227a7d994db8eca5ab5ced2fb692b614357fd/Qwen3-14B-Q8_0.gguf
+      model_sha256:
+        description: "sha256 of the GGUF"
+        type: string
+        default: a0dfe649137410b7d82f06a209240508e218f32f5b6fd81b69d6932160cfcd9d
+      split:
+        description: "layers on the GPU"
+        type: string
+        default: "26"
+      env:
+        description: "extra VAR=VALUE for the bench, separated by ; (e.g. GEIST_OFFLOAD_M_MIN=64)"
+        type: string
+        default: "GEIST_OFFLOAD_M_MIN=0;GEIST_M_MAX=128"
+      cycles:
+        description: "A/B cycles (>= 6)"
+        type: string
+        default: "8"
+
+permissions:
+  contents: read
+
+jobs:
+  ab:
+    name: Split A/B on geist-vulkan
+    runs-on: geist-vulkan
+    timeout-minutes: 240
+    env:
+      BASE: ${{ inputs.base }}
+      NEW: ${{ inputs.new }}
+      MODEL_URL: ${{ inputs.model_url }}
+      MODEL_SHA: ${{ inputs.model_sha256 }}
+      SPLIT: ${{ inputs.split }}
+      EXTRA_ENV: ${{ inputs.env }}
+      CYCLES: ${{ inputs.cycles }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Environment
+        run: |
+          mkdir -p ab-out
+          { git rev-parse "$BASE" "$NEW"; nvidia-smi; free -g; nproc; } 2>&1 | tee ab-out/env.txt
+      - name: Model (cached outside the workspace, sha256-checked)
+        run: |
+          set -eo pipefail
+          CACHE=${GEIST_MODEL_CACHE:-$HOME/geist-models}
+          mkdir -p "$CACHE"
+          F="$CACHE/$(basename "$MODEL_URL")"
+          if [ ! -f "$F" ]; then
+            curl -fL --retry 5 -C - -o "$F.part" "$MODEL_URL"
+            echo "$MODEL_SHA  $F.part" | sha256sum -c -
+            mv "$F.part" "$F"
+          fi
+          echo "MODEL=$F" >> "$GITHUB_ENV"
+      - name: Split correctness on the patch
+        run: |
+          set -eo pipefail
+          git checkout -q "$NEW"
+          make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
+          make fetch-llama-model
+          bin/linux/release/tests/test_layer_split_int 2>&1 | tee ab-out/exact.txt
+          bin/linux/release/tests/test_layer_split_fault_int 2>&1 | tail -5 | tee ab-out/fault.txt
+          . scripts/gpu-lock.sh
+          GEIST_SPLIT_BACKEND=vulkan GEIST_SPLIT_GGUF_PATH="$MODEL" GEIST_SPLIT_POINTS="$SPLIT" \
+            bin/linux/release/tests/test_layer_split_int 2>&1 | grep -v '^geist vulkan: device memory' \
+            | tee ab-out/vulkan.txt || true
+      - name: A/B
+        run: |
+          set -eo pipefail
+          . scripts/gpu-lock.sh
+          envs="--env GEIST_BENCH_BACKEND=cpu_x86 --env GEIST_BENCH_SPLIT_BACKEND=vulkan --env GEIST_BENCH_SPLIT_LAYERS=$SPLIT"
+          for e in $(echo "$EXTRA_ENV" | tr ';' ' '); do envs="$envs --env $e"; done
+          python3 tools/bench_revision_ab.py --rev base="$BASE" --rev new="$NEW" --gguf "$MODEL" \
+            --seq-lens 512 --decode-n 32 --repeats 1 --warmup 1 --cycles "$CYCLES" $envs \
+            --make-arg TARGET=linux --make-arg "BACKENDS=vulkan cpu_x86 cpu_scalar" \
+            --make-arg GEMM_PROVIDER=native --out-dir ab-out 2>&1 | tee ab-out/report.txt
+      - name: Job summary
+        if: always()
+        run: |
+          { echo '```'; grep -E 'byte-identical|FAIL|PASS|kv .* split' ab-out/exact.txt ab-out/fault.txt ab-out/vulkan.txt 2>/dev/null | head -40; echo '```';
+            sed -n '/^# Revision A\/B/,/^report:/p' ab-out/report.txt 2>/dev/null; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 30
+          name: split-ab
+          path: ab-out/
+          if-no-files-found: warn
