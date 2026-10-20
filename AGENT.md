@@ -225,7 +225,9 @@ Signature migrations land in **bounded batches**, one family at a time:
 5. A pure signature change must be bit-identical in output. Never widen a
    tolerance to absorb one.
 
-Public headers under `include/` also need a `CHANGELOG.md` note. Check the
+Public headers under `include/` also need a changelog note: a fragment
+`changes/<slug>.md` ([changes/README.md](changes/README.md)), never an edit to
+`CHANGELOG.md`, which the release assembles from the fragments. Check the
 `@stability` tag first: `EXPERIMENTAL` may change; anything listed in
 `docs/API_CONTRACT.md` is a promise and needs a versioned migration.
 

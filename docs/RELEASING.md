@@ -32,8 +32,12 @@ Make one release-only pull request. It must:
 
 - bump `GEIST_VERSION_*` and `GEIST_VERSION_STRING` in `include/geist.h`;
 - set the same version in `CITATION.cff`;
-- move every entry out of `[Unreleased]` into a dated version section;
-- update the `[Unreleased]` and version comparison links;
+- fold the changelog fragments into a dated version section:
+  `python3 scripts/changelog.py release 0.22.0` moves every `changes/*.md`
+  (and anything still under `[Unreleased]`) into `## [0.22.0] — <today>` in
+  section order, updates the `[Unreleased]` and version comparison links and
+  deletes the fragments (`--dry-run` prints the diff first; `--date` sets
+  another day). Edit the assembled section for order and wording if needed;
 - pass `make release-check` from a clean checkout.
 
 Do not put a concrete release number in `README.md`: its links resolve

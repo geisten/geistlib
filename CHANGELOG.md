@@ -6,6 +6,9 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 once it reaches 1.0. While in 0.x, `EXPERIMENTAL`-tagged API may change in any
 minor release.
 
+Unreleased changes live as fragments in [changes/](changes/README.md); a
+release folds them in here (`scripts/changelog.py`).
+
 ## [Unreleased]
 
 ### Changed

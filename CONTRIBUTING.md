@@ -16,8 +16,12 @@ x86-64 quant coverage, GPU backends).
   third-party code is the `stb` image headers.
 - **Public API discipline:** headers in `include/` carry per-symbol
   `@stability` tags. Don't break a `STABLE` symbol; new surface starts
-  `EXPERIMENTAL`. Changes to `include/` need a `CHANGELOG.md` note; what
+  `EXPERIMENTAL`. Changes to `include/` need a changelog note; what
   `STABLE` promises is in [docs/API_CONTRACT.md](docs/API_CONTRACT.md).
+- **Changelog:** a user-visible change adds a fragment
+  `changes/<slug>.md` (format: [changes/README.md](changes/README.md)) and
+  does not touch `CHANGELOG.md`; the release folds the fragments in. Editing
+  `[Unreleased]` directly made every two open pull requests conflict.
 - **License:** by contributing you agree your work is licensed under
   [Apache-2.0](LICENSE).
 
