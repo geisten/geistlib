@@ -136,13 +136,16 @@ git-hel1 (git.geisten.net) and ci-arm64-hel1 are managed with Ansible in the
 private repo [`geisten/geisten-infra`](https://git.geisten.net/geisten/geisten-infra)
 (roles for sshd/ufw/fail2ban, Gitea, Caddy, backups, this runner, git cache,
 CI hygiene, monitoring). Change those hosts there, not by hand:
-`ansible-playbook site.yml --check --diff` must stay clean. Its README has the
-details; the desktop and the Pi are not managed yet (no SSH path while the
-Mac travels).
+`ansible-playbook site.yml --check --diff` must stay clean. The desktop and
+the Pi are in it too (runner configs and units, git cache, ci-bot,
+ci-hygiene), reached through reverse SSH tunnels; the playbook never restarts
+a runner. Its README has the details.
 
 Monitoring runs on git-hel1: Prometheus scrapes both hosts, Gitea's
 `/metrics` and blackbox probes of `/api/healthz` and geisten.net; Alertmanager
-sends to an ntfy.sh topic (name in the vault). A watchdog on ci-arm64-hel1
+sends to an ntfy.sh topic (name in the vault). The desktop and the Pi
+report through reverse tunnels onto git-hel1; a stale act-cache `index.lock`
+on the desktop raises ActCacheLockStale. A watchdog on ci-arm64-hel1
 reports git-hel1 itself going down. Status page:
 <https://git.geisten.net/status/> (basic auth; Prometheus and Alertmanager
 UIs under it).
