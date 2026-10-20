@@ -125,10 +125,27 @@ it is a shared cloud VM, and the Pi 5 stays the arbiter for timings.
 | health check | no job below 20 GB free disk |
 | actions cache | runner's own, `172.17.0.1:8088` (ufw admits only the docker subnets) |
 | CI hygiene | system timer `ci-hygiene` (as `runner`), the desktop's script; log `/home/runner/ci-hygiene/ci-hygiene.log` |
-| git cache | `git-cache.service` on `172.17.0.1:8417`, installed but off until a read-only token is in `/home/runner/.config/git-cache/token`; the runner's `envs` are not wired to it yet ("CI git cache") |
+| git cache | `git-cache.service` on `172.17.0.1:8417` with a read-only token in `/home/runner/.config/git-cache/token`; the runner's `envs` rewrite `https://git.geisten.net/` to it |
 
 Access is key-only SSH as `germar` (no root login, ufw: 22 rate-limited
 only); unattended-upgrades is on.
+
+### Infrastructure as code and monitoring
+
+git-hel1 (git.geisten.net) and ci-arm64-hel1 are managed with Ansible in the
+private repo [`geisten/geisten-infra`](https://git.geisten.net/geisten/geisten-infra)
+(roles for sshd/ufw/fail2ban, Gitea, Caddy, backups, this runner, git cache,
+CI hygiene, monitoring). Change those hosts there, not by hand:
+`ansible-playbook site.yml --check --diff` must stay clean. Its README has the
+details; the desktop and the Pi are not managed yet (no SSH path while the
+Mac travels).
+
+Monitoring runs on git-hel1: Prometheus scrapes both hosts, Gitea's
+`/metrics` and blackbox probes of `/api/healthz` and geisten.net; Alertmanager
+sends to an ntfy.sh topic (name in the vault). A watchdog on ci-arm64-hel1
+reports git-hel1 itself going down. Status page:
+<https://git.geisten.net/status/> (basic auth; Prometheus and Alertmanager
+UIs under it).
 
 ## Desktop host
 
