@@ -97,12 +97,18 @@ jobs:
                   e="GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=$SPLIT"
                 fi
                 echo "== cycle $c $cfg async=$a" >> out/bench.txt
+                # peak VRAM of the run, polled every 0.2 s
+                ( peak=0; while :; do v=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1);
+                    [ "$v" -gt "$peak" ] && peak=$v && echo "$peak" > out/peak.tmp; sleep 0.2; done ) &
+                poll=$!
                 env $e GEIST_VK_STREAM_ASYNC=$a GEIST_VK_VERBOSE=1 \
                   bin/linux/release/tests/bench_perf_sweep --gguf "$MODEL" \
                   --seq-lens 512 --decode-n 16 --warmup 8 --repeats 3 --m-max 512 \
                   2>> out/bench.txt \
                   | sed "s/^{/{\"cfg\":\"$cfg\",\"async\":$a,\"cycle\":$c,/" | tee -a out/bench.jsonl \
                   || echo "== FAILED: cycle $c $cfg async=$a" | tee -a out/bench.txt
+                kill $poll 2>/dev/null; wait $poll 2>/dev/null || true
+                echo "$cfg async=$a cycle=$c peak_vram_mib=$(cat out/peak.tmp 2>/dev/null)" | tee -a out/vram.txt; rm -f out/peak.tmp
               done
             done
           done
