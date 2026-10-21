@@ -335,30 +335,39 @@ enum geist_status moe_gpu_run(struct transformer_arch_session *sess,
             gv->buffer_copy(sess->moe_gpu_x, 0, sess->moe_gpu_x_io, 0, rows * d * sizeof(float));
 
     const uint64_t t1 = transformer_profile_now_ns();
-    rows              = 0;
-    for (size_t i = 0; i < n_hot && s == GEIST_OK; i++) {
-        const size_t               e = hot[i], m = rs[e + 1] - rs[e];
-        const struct geist_weight *tw = &mg->twins[(layer * n_exp + e) * 3];
-        struct geist_tensor x = view_2d_at(sess->moe_gpu_x, rows * d * 4, (int64_t) m, (int64_t) d);
-        struct geist_tensor g =
-                view_2d_at(sess->moe_gpu_g, rows * inter * 4, (int64_t) m, (int64_t) inter);
-        struct geist_tensor u =
-                view_2d_at(sess->moe_gpu_u, rows * inter * 4, (int64_t) m, (int64_t) inter);
-        struct geist_tensor y =
-                view_2d_at(sess->moe_gpu_y_io, rows * d * 4, (int64_t) m, (int64_t) d);
-        /* The weight views: the CPU's, on the aliased buffer over the same bytes. */
-        struct geist_tensor wg = L->moe_gate[e], wu = L->moe_up[e], wd = L->moe_down[e];
-        wg.buffer = mg->bufs[layer * 3 + 0];
-        wu.buffer = mg->bufs[layer * 3 + 1];
-        wd.buffer = mg->bufs[layer * 3 + 2];
-        s         = gf->linear_t(gbe, &x, &tw[0], &wg, m, &g);
-        if (s == GEIST_OK)
-            s = gf->linear_t(gbe, &x, &tw[1], &wu, m, &u);
-        if (s == GEIST_OK)
-            s = gf->silu_mul(gbe, &g, &u, &g);
-        if (s == GEIST_OK)
-            s = gf->linear_t(gbe, &g, &tw[2], &wd, m, &y);
-        rows += m;
+    /* Phase by phase over all hot experts, not expert by expert: the
+     * experts of a phase touch disjoint rows, so the backend's hazard
+     * tracking puts a barrier only between the phases (gate and up, then
+     * silu_mul, then down), and the small decode GEMVs run side by side. */
+    for (size_t phase = 0; phase < 3 && s == GEIST_OK; phase++) {
+        rows = 0;
+        for (size_t i = 0; i < n_hot && s == GEIST_OK; i++) {
+            const size_t               e = hot[i], m = rs[e + 1] - rs[e];
+            const struct geist_weight *tw = &mg->twins[(layer * n_exp + e) * 3];
+            struct geist_tensor        x =
+                    view_2d_at(sess->moe_gpu_x, rows * d * 4, (int64_t) m, (int64_t) d);
+            struct geist_tensor g =
+                    view_2d_at(sess->moe_gpu_g, rows * inter * 4, (int64_t) m, (int64_t) inter);
+            struct geist_tensor u =
+                    view_2d_at(sess->moe_gpu_u, rows * inter * 4, (int64_t) m, (int64_t) inter);
+            struct geist_tensor y =
+                    view_2d_at(sess->moe_gpu_y_io, rows * d * 4, (int64_t) m, (int64_t) d);
+            /* The weight views: the CPU's, on the aliased buffer over the same bytes. */
+            struct geist_tensor wg = L->moe_gate[e], wu = L->moe_up[e], wd = L->moe_down[e];
+            wg.buffer = mg->bufs[layer * 3 + 0];
+            wu.buffer = mg->bufs[layer * 3 + 1];
+            wd.buffer = mg->bufs[layer * 3 + 2];
+            if (phase == 0) {
+                s = gf->linear_t(gbe, &x, &tw[0], &wg, m, &g);
+                if (s == GEIST_OK)
+                    s = gf->linear_t(gbe, &x, &tw[1], &wu, m, &u);
+            } else if (phase == 1) {
+                s = gf->silu_mul(gbe, &g, &u, &g);
+            } else {
+                s = gf->linear_t(gbe, &g, &tw[2], &wd, m, &y);
+            }
+            rows += m;
+        }
     }
     const uint64_t t2  = transformer_profile_now_ns();
     const float   *yio = s == GEIST_OK ? gv->buffer_map(sess->moe_gpu_y_io) : nullptr; /* waits */
