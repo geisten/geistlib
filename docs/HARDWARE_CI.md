@@ -40,7 +40,7 @@ the pinned llama.cpp (`scripts/ensure-llama-bench.sh`) and runs
 on the desktop (the docker CI runner's health check pauses it while held),
 `with-pi-lock` on the Pi, `~/bin/with-mac-lock` on the Mac (`/tmp/mac-heavy.lock`; the
 `mac-m1max` runner (`macos-15-heavy`) holds it for every job and takes no
-job while an agent holds it — see "Mac runners"). The Apple profiles gate on idle CPU (>= 80 %
+job while an agent holds it — see "Mac runners" and "Host locks"). The Apple profiles gate on idle CPU (>= 80 %
 over the settle window) instead of the load average, which macOS on a shared
 desktop never brings near 0.2/core, and measure a run again when its repeats
 spread by more than 5 % (`host_gate` in the protocol's host profile).
@@ -65,9 +65,38 @@ runners are described below:
 `config.yaml` puts a node24 first on `PATH` (JavaScript actions such as
 `upload-artifact` need it) and, on the Pi, sets
 `hooks.job_started`/`job_completed` to `~/bin/runner-job-started.sh` /
-`runner-job-completed.sh`: they hold `/tmp/pi-heavy.lock` for the whole job,
-so these jobs also wait for other runners on the board.
+`runner-job-completed.sh`: they hold the board lock for the whole job, so
+these jobs also wait for other runners on the board.
 Heavy steps still go through `~/bin/with-pi-lock`.
+
+### Host locks: the lease broker
+
+Since 2026-10-20 `with-mac-lock` and `with-pi-lock` queue through a small
+broker per host (`hostlease.py`, geisten-infra role `host_lease`; Mac:
+LaunchAgent `net.geisten.hostlease`, status on `127.0.0.1:7381`; Pi: system
+unit `hostlease`, `127.0.0.1:7382`). Commands, `WAIT=<s>` (exit 1 on
+timeout), the `WAIT=0 … true` probe, `status` and the exit codes are the
+ones the plain `lockf`/`flock` wrappers had. What it adds:
+
+- one lease at a time, first come first served within a priority:
+  `LOCK_PRIO=ci` (runner hooks) > `interactive` (default) > `batch` (long
+  research, campaigns); a waiter rises one level per 30 min waited;
+- `LOCK_MAX=<minutes>` (default 60, batch 240, cap 240): past it `status`
+  marks the lease OVERTIME, 15 min later EXPIRED. Nothing is killed and the
+  lease stays exclusive; only `LOCK_KILL=1` lets the wrapper stop its own
+  command. `LOCK_NOTE=<text>` shows in `status -v`;
+- a lease ends with its client process, so a crash never leaves the host
+  locked; a broker restart hands the active lease to its client, waiters
+  re-queue.
+
+The broker holds `/tmp/mac-heavy.lock` / `/tmp/pi-heavy.lock` for the active
+lease and waits while anything else holds that file, so plain `flock` users
+still exclude — notably the `pi5-ci` docker jobs, which flock the
+bind-mounted file from inside their container, and its `flock -n` health
+check. Without the broker the wrappers fall back to the plain lock
+(`with-mac-lock.lockf`, `with-pi-lock.flock`). The broker knows nothing
+about temperature or load: the Pi's thermal pre-check (< 60 °C, load < 0.5)
+and the Mac's quiet gates stay with the callers.
 
 ### Mac runners (M1 Max, host mode)
 
@@ -81,13 +110,17 @@ holds the lock for a compile; a build waits only while a measurement runs:
 | `mac-m1max` | `macos-15-heavy:host` | held for the whole job | `~/gitea-runner-geisten`, LaunchAgent `net.geisten.gitea-runner-geisten` |
 
 `mac-m1max`'s hooks (`~/bin/mac-runner-job-started.sh` /
-`mac-runner-job-completed.sh`) hold the lock while a job runs, and its
-health check (`~/bin/mac-runner-free.sh`) takes no job while someone else
-holds it. `mac-light` holds nothing, but its health check
-(`~/bin/mac-light-free.sh`) also takes no job while anyone holds the lease:
-its ASan and unit builds load every core, and before 2026-10-21 they landed
-inside measurements (load 80–110 during a lock-held A/B). A job already
-running finishes, so a measurement can still meet the tail of one. Each has its own `cache.dir` and
+`mac-runner-job-completed.sh`) hold a `ci` lease while a job runs. Its
+health check (`~/bin/mac-runner-free.sh`) fetches a job only when a ci lease
+would be granted within 10 min (free, or the holder declared a `LOCK_MAX`
+that ends by then); while busy, it and the completed hook report waiting
+`macos-15-heavy` jobs, and the broker keeps the next hand-over free for CI
+(up to 180 s) instead of giving it to the next agent. `mac-light` holds
+nothing, but its health check (`~/bin/mac-light-free.sh`) also takes no job
+while anyone holds the lease: its ASan and unit builds load every core, and
+before 2026-10-21 they landed inside measurements (load 80–110 during a
+lock-held A/B). A job already running finishes, so a measurement can still
+meet the tail of one. Each has its own `cache.dir` and
 `host.workdir_parent` (host mode clones actions there), so the two never
 race on one action checkout. Both run with `capacity: 1` and
 `fetch_timeout: 30s`.
