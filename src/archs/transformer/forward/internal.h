@@ -89,6 +89,14 @@ struct transformer_layer_forward_ctx {
     bool     profile;
     uint64_t profile_tail_ns;
 
+    /* Fused residual norms (#17). x_prenormed: the previous layer's tail
+     * already wrote attn_norm(h_in) into scratch_normed. ffn_x_prenormed:
+     * the attention block's residual step wrote ffn_norm(h_post_attn) into
+     * scratch_pre_ff. out_scaled: the tail applied layer_scalar. */
+    bool x_prenormed;
+    bool ffn_x_prenormed;
+    bool out_scaled;
+
     struct geist_buffer *k_cache_buf;
     struct geist_buffer *v_cache_buf;
     struct geist_buffer *k_cache_q8_buf;

@@ -87,10 +87,15 @@ struct transformer_family {
      * prefill_delta: a larger prefill chunk from a model size on
      *   (prefill_tuning.h).
      * towers: the bundled audio/vision towers' soft tokens fit this family's
-     *   residual stream (geist_arch_ops_decoder.supports_towers). */
+     *   residual stream (geist_arch_ops_decoder.supports_towers).
+     * fused_residual_norms: the blocks take the plan's fuse_attn_add_norm
+     *   and fuse_tail_norm (#17): the attention block's residual step also
+     *   writes the FFN's pre-norm, the FFN (or PLE) tail the next layer's
+     *   attention pre-norm, and both blocks then skip that norm. */
     bool                             rotation;
     struct transformer_prefill_delta prefill_delta;
     bool                             towers;
+    bool                             fused_residual_norms;
     /* The KV cache a session gets when it leaves kv_mode on AUTO and sets
      * no GEIST_KV_* override; GEIST_KV_AUTO = the backend's preference.
      * An F16 request falls back to FP32 on a backend without an F16 cache,
