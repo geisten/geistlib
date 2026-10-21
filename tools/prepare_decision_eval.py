@@ -147,7 +147,7 @@ def prepare(args):
     (args.out_dir / "chat_template.jinja").write_text(meta["template"])
     (args.out_dir / "split_audit.json").write_text(json.dumps(audit, indent=2) + "\n")
     tokenizer = Tokenizer(args.tokenizer_binary.resolve(), args.model.resolve(), args.out_dir / "tokenizer.log")
-    counts = {}
+    counts, test_sample = {}, None
     try:
         if ((tokenizer.bos is not None) != bool(meta["add_bos_token"])
                 or (tokenizer.bos is not None and tokenizer.bos != meta["bos_token_id"])):
@@ -156,6 +156,12 @@ def prepare(args):
             if split not in splits or split in counts:
                 raise ValueError("split must be a unique development/calibration/test name")
             rows = data.select_per_subject(splits[split], args.per_subject, subject_limit=args.subject_limit)
+            if split == "test" and args.test_sample:
+                rows, allocation = data.select_stratified(rows, args.test_sample)
+                test_sample = {"questions": len(rows), "population": len(splits["test"]),
+                               "seed": "geist-decision-test-sample-v1", "allocation": allocation,
+                               "policy": "subject-proportional largest-remainder allocation; within a subject "
+                                         "the first questions by sha256([seed, question_id]); label-independent"}
             path = args.out_dir / f"{split}.jsonl"
             count = 0
             with path.open("w") as output:
@@ -198,7 +204,7 @@ def prepare(args):
                 "prompt_policy": "classic-mmlu-fixed-subject-exemplars-chat-final-letter-xhigh-v1",
                 "snapshot_path": str(args.snapshot.resolve()),
                 "shots": args.shots, "rotations": args.rotations, "per_subject": args.per_subject,
-                "subject_limit": args.subject_limit,
+                "subject_limit": args.subject_limit, "test_sample": test_sample,
                 "template_date": args.template_date, "counts": counts,
                 "label_policy": "Cloze uses spaced letters; chat uses bare letters. Every complete prompt+label tokenization must extend the actual prefix by exactly one distinct token.",
                 "preprocessing": "Render and TOK timings retained separately from boundary validation and dataset preparation. Tokenizer model startup/checksums are setup costs. No forced cache eviction.",
@@ -222,10 +228,14 @@ def main():
     p.add_argument("--per-subject", type=int, default=0, help="0 = all; positive count is an explicitly reported pilot")
     p.add_argument("--subject-limit", type=int, default=0, help="0 = all subjects; positive count is a deterministic bounded pilot")
     p.add_argument("--rotations", type=int, choices=(1, 4), default=1)
+    p.add_argument("--test-sample", type=int, default=0,
+                   help="0 = whole held-out test split; N = a label-independent subject-stratified sample of N")
     p.add_argument("--template-date", default=datetime.now(timezone.utc).date().isoformat())
     args = p.parse_args()
     if not 0 <= args.shots <= 5 or args.per_subject < 0 or args.subject_limit < 0:
         p.error("invalid shots/per-subject bounds")
+    if args.test_sample < 0 or (args.test_sample and (args.per_subject or args.subject_limit)):
+        p.error("--test-sample samples the whole test population; it excludes --per-subject/--subject-limit")
     prepare(args)
 
 

@@ -141,6 +141,36 @@ binary, tokenizer, device/backend/KV/environment, shots, template date and
 prompt policy, and disjoint calibration IDs. The runner rejects a pilot bundle
 masquerading as a complete test.
 
+### Long campaigns on a shared host (#171)
+
+`--test-sample N` in preparation replaces the whole held-out split by a
+label-independent sample of N questions, stratified across subjects:
+proportional quotas (largest remainder, ties by a subject hash), within a
+subject the first questions by `sha256([seed, question_id])`. The quotas, seed
+and population size are frozen in `metadata.json` before inference; a quality
+run accepts exactly that sample and reports it as such, not as the whole
+cleaned test population.
+
+`tools/eval_decision_campaign.py` takes the runner's options plus
+`--chunk-questions K --deadline-minutes M`. Each invocation runs at most K
+pending questions under one bounded host lease and stops the driver at M
+minutes. Every complete driver line is persisted on arrival; a
+(question, profile) pair counts only when all its modes and trials are
+present, so an interrupted question is re-run and a completed one never is.
+The first invocation freezes the manifest; later ones refuse to continue if
+anything but its start time differs. When nothing is pending, the samples are
+reassembled in prepared order and the report is built by the runner's own
+code. Each driver run starts on a cool chip (65 °C; GPU for Metal, CPU for
+cpu_neon), macmon is logged during the chunk, and the report adds warm
+latency over all samples and over the samples that started cool. `--status`
+prints progress without inference.
+
+```sh
+LOCK_PRIO=batch LOCK_MAX=30 LOCK_NOTE="#171 chunk" ~/bin/with-mac-lock \
+  python3 tools/eval_decision_campaign.py <runner options> \
+  --chunk-questions "$K" --deadline-minutes 26
+```
+
 ## Measurements and quality gates
 
 The driver accepts `--modes name,name` and `--text`; its existing default arms
