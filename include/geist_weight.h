@@ -25,6 +25,9 @@
  *   - linear_m1 / linear_mN must be allocation-free.
  *   - linear_pair_mN, when installed, must be allocation-free and may
  *     optimize two same-input projections together.
+ *   - linear_triple_m1, when installed, must be allocation-free; the
+ *     dispatcher calls it for three same-input M=1 projections (q, k, v)
+ *     when all three carry the same function.
  *   - Caller-provided x and y are host-resident raw float pointers.
  *   - Caller passes m = number of input rows for the multi-row path;
  *     m == 1 uses linear_m1.
@@ -92,6 +95,17 @@ typedef void (*geist_kernel_linear_pair_mN_fn)(size_t                     m,
                                                float                     *y0,
                                                float                     *y1);
 
+/* Optional fused path for three M=1 projections sharing the same X, such
+ * as attention's q, k and v: one parallel region for all three. */
+typedef void (*geist_kernel_linear_triple_m1_fn)(const float               *x,
+                                                 const struct geist_weight *w0,
+                                                 const struct geist_weight *w1,
+                                                 const struct geist_weight *w2,
+                                                 struct geist_backend      *be,
+                                                 float                     *y0,
+                                                 float                     *y1,
+                                                 float                     *y2);
+
 enum geist_weight_flags {
     /* aux_fp32 holds AWQ inverse-scales of length n_out. */
     GEIST_W_HAS_AWQ_INV = 1U << 0,
@@ -154,6 +168,7 @@ struct geist_weight {
     geist_kernel_linear_mN_fn      linear_mN;
     geist_kernel_linear_pair_m1_fn linear_pair_m1;
     geist_kernel_linear_pair_mN_fn linear_pair_mN;
+    geist_kernel_linear_triple_m1_fn linear_triple_m1;
 
     /* Optional pre-folded auxiliary FP32 data; semantics depend on
      * flags. nullptr if none. Length encoded in aux_n. */

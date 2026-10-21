@@ -353,7 +353,15 @@ enum geist_status linear_w_triple_or_legacy(struct geist_backend            *be,
         return host_kernel_unmapped(be, w0);
     }
 
-    if (seq == 1) {
+    if (seq == 1 && w0->linear_triple_m1 != nullptr &&
+        w0->linear_triple_m1 == w1->linear_triple_m1 &&
+        w0->linear_triple_m1 == w2->linear_triple_m1 && w0->n_in == w1->n_in &&
+        w0->n_in == w2->n_in) {
+        weight_path_record(w0, false);
+        weight_path_record(w1, false);
+        weight_path_record(w2, false);
+        w0->linear_triple_m1(xp, w0, w1, w2, be, y0p, y1p, y2p);
+    } else if (seq == 1) {
         if (w0->linear_pair_m1 != nullptr && w0->linear_pair_m1 == w1->linear_pair_m1 &&
             w0->n_in == w1->n_in) {
             weight_path_record(w0, false);
