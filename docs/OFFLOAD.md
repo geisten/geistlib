@@ -439,6 +439,16 @@ Run 1683 (prompt 512, 128 decoded tokens, 2 interleaved cycles):
 | **geist on Vulkan, hot experts** | **49.2 / 51.8** | 213 / 218 |
 | llama.cpp Vulkan `-ot exps=CPU` | 39.5 / 39.7 | 325 / 321 |
 
+**One wait per layer (#161).** Two waits left the card ~30 % busy, at the
+driver's threshold: 49-52 tok/s after 128 tokens, 3-5 after 32 (run 1691,
+P8/P5). Now the hot experts' batch starts without a wait (`fused->submit`),
+the CPU runs the cold ones meanwhile, and the GPU adds the hot outputs onto
+the host's cold sum (`fused->rows_weighted_sum`, the sum handed over in host
+memory). Runs 1704/1705 (3 cycles): 44.9-51.8 tok/s after 32 tokens,
+47.8-51.6 after 128; CPU 34.4-36.8, llama.cpp `-ot exps=CPU` 39.0-39.5;
+perplexity 29.99 (CPU 29.90). The card is still only ~35 % busy (P0 most of
+the time); routing on the GPU (#162) is the next margin.
+
 Decode beats both CPU only (+45 %) and llama.cpp `-ot exps=CPU` (+30 %):
 the decision rule holds. Quality: the perplexity of `docs/OFFLOAD.md`
 (1,023 tokens fed one at a time, `bench_nll`) is 29.90 on the CPU and 30.06
