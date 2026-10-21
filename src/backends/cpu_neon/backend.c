@@ -226,6 +226,7 @@ static bool cpu_neon_fused_supported(struct geist_backend *be, const struct geis
     switch (q->op) {
     case GEIST_FUSED_GELU_TANH_MUL:
     case GEIST_FUSED_GELU_TANH_MUL_SCALED:
+    case GEIST_FUSED_SILU_MUL:
         return true; /* F32 elementwise, any geometry, any m */
     case GEIST_FUSED_HADAMARD_ROTATE:
         return geist_hadamard_query_ok(q); /* the shared host transform */
@@ -255,6 +256,7 @@ static const struct geist_backend_fused cpu_neon_fused = {
         .supported            = cpu_neon_fused_supported,
         .gelu_tanh_mul        = cpu_neon_gelu_tanh_mul,
         .gelu_tanh_mul_scaled = cpu_neon_gelu_tanh_mul_scaled,
+        .silu_mul             = cpu_neon_silu_mul,
         .hadamard_rotate      = cpu_neon_hadamard_rotate,
         .kv_append_f16        = cpu_neon_kv_append_f16,
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
