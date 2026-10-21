@@ -545,6 +545,9 @@ struct transformer_moe_gpu {
      * destroying them frees the copies (vk_weight_forget, #121). */
     struct geist_buffer **bufs;
     _Atomic uint64_t      rows_gpu, rows_cpu; /* GEIST_VERBOSE at destroy */
+    /* GEIST_VERBOSE at destroy: batches, and their ns packing (to the
+     * copy), recording, waiting (buffer_map of the outputs), unpacking. */
+    _Atomic uint64_t batches, ns_pack, ns_record, ns_wait, ns_unpack;
 };
 
 struct transformer_arch_state {

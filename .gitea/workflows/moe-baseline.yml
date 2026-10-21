@@ -39,6 +39,14 @@ on:
         description: "interleaved cycles"
         type: string
         default: "2"
+      env:
+        description: "extra environment for the geist configurations, separated by ;"
+        type: string
+        default: ""
+      sweep:
+        description: "bench_perf_sweep arguments besides --gguf"
+        type: string
+        default: "--seq-lens 512 --decode-n 32 --warmup 8 --repeats 3 --m-max 128"
       cap:
         description: "timeout per configuration and cycle, seconds"
         type: string
@@ -58,6 +66,8 @@ jobs:
       CONFIGS: ${{ inputs.configs }}
       CYCLES: ${{ inputs.cycles }}
       CAP: ${{ inputs.cap }}
+      XENV: ${{ inputs.env }}
+      SWEEP_ARGS: ${{ inputs.sweep }}
       GGML_VK_VISIBLE_DEVICES: "0" # the discrete card, not the Raphael iGPU
       PROFILE: benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt # #48
     steps:
@@ -101,17 +111,18 @@ jobs:
           set -o pipefail
           . scripts/gpu-lock.sh
           GB=bin/linux/release/tests/bench_perf_sweep
-          SWEEP="--gguf $MODEL --seq-lens 512 --decode-n 32 --warmup 8 --repeats 3 --m-max 128"
+          SWEEP="--gguf $MODEL $SWEEP_ARGS"
+          X=$(echo "$XENV" | tr ';' ' ')
           LB="-m $MODEL -p 512 -n 32 -r 3 -o jsonl"
           for c in $(seq "$CYCLES"); do
             for cfg in $(echo "$CONFIGS" | tr ';' ' '); do
               echo "== cycle $c $cfg" | tee -a out/log.txt
               case $cfg in
-                geist-cpu)    cmd="env GEIST_BENCH_BACKEND=cpu_x86 $GB $SWEEP" ;;
+                geist-cpu)    cmd="env $X GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 $GB $SWEEP" ;;
                 geist-vulkan) cmd="env GEIST_BENCH_BACKEND=vulkan GEIST_VK_VERBOSE=1 $GB $SWEEP" ;;
                 geist-split|geist-hot-uniform)
-                              cmd="env GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto $GB $SWEEP" ;;
-                geist-hot)    cmd="env GEIST_VERBOSE=1 GEIST_MOE_PROFILE=$PROFILE GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto $GB $SWEEP" ;;
+                              cmd="env $X GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto $GB $SWEEP" ;;
+                geist-hot)    cmd="env $X GEIST_VERBOSE=1 GEIST_MOE_PROFILE=$PROFILE GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto $GB $SWEEP" ;;
                 llama-cpu)    cmd="$LLAMA_CPU $LB" ;;
                 llama-exps-cpu) cmd="$LLAMA_VK $LB -ngl 99 -ot exps=CPU" ;;
                 *) echo "unknown $cfg"; continue ;;
