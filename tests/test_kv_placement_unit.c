@@ -3,16 +3,16 @@
  *
  * On a backend with caps.kv_q8_block (cpu_x86), a layer's INT8/INT4 K and V
  * data are aliased slices of one buffer: K at its start, V after K's pages
- * and half a row into its page (half a page at most, a multiple of 64
+ * and half a K row into its page (half a page at most, a multiple of 64
  * bytes), so that a KV head's K and V rows do not take the same cache sets
- * (see alloc_kv_block in arch_state.c). With caps.kv_dense_block the dense
- * FP32 cache is placed the same way, V one KV head's slice on (rounded up
- * to 64 bytes), and not at all with one KV head. Checked on the fixture
- * llama with 1, 2 and 8 KV heads of 64, INT8, packed INT4 and FP32: the
- * slices lie where the rule puts them, do not overlap and start zeroed, and
- * a session prefills and decodes through them to finite logits. On
- * cpu_scalar, which leaves both bits unset, K and V stay buffers of their
- * own.
+ * (see alloc_kv_block in arch_state.c). INT4 keeps K at INT8 and packs only
+ * V, half K's bytes (#53). With caps.kv_dense_block the dense FP32 cache is
+ * placed the same way, V one KV head's slice on (rounded up to 64 bytes),
+ * and not at all with one KV head. Checked on the fixture llama with 1, 2
+ * and 8 KV heads of 64, INT8, INT4 and FP32: the slices lie where the rule
+ * puts them, do not overlap and start zeroed, and a session prefills and
+ * decodes through them to finite logits. On cpu_scalar, which leaves both
+ * bits unset, K and V stay buffers of their own.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 #define GEIST_INTERNAL_ENGINE_LAYER
@@ -72,9 +72,10 @@ static int check_placement(const char           *backend,
     const size_t elem  = sess->kv_f16_enabled ? 2 : sizeof(float); /* dense */
     for (size_t li = 0; li < st->n_layers; li++) {
         const size_t         hd    = st->layers[li].head_dim;
-        const size_t         slice = dense ? hd * elem : mode == GEIST_KV_INT4 ? hd / 2 : hd;
+        const size_t         slice = dense ? hd * elem : hd; /* INT4 keeps K at INT8 (#53) */
         const size_t         row   = st->n_kv_heads * slice;
         const size_t         data  = st->max_seq_len * row;
+        const size_t         vdata = mode == GEIST_KV_INT4 ? data / 2 : data; /* V packed */
         const size_t         span  = (data + PAGE - 1) / PAGE * PAGE;
         const size_t         skip  = dense ? (st->n_kv_heads > 1 ? (slice + 63) / 64 * 64 : 0)
                                            : (row < PAGE ? row : PAGE) / 2 / 64 * 64;
@@ -124,7 +125,7 @@ static int check_placement(const char           *backend,
             fails += geist_expect(sess->kv_data[li] == nullptr, msg);
         }
         snprintf(msg, sizeof msg, "%s %s layer %zu: zeroed", backend, name, li);
-        fails += geist_expect(zeroed(data, k) && zeroed(data, v), msg);
+        fails += geist_expect(zeroed(data, k) && zeroed(vdata, v), msg);
     }
     transformer_session_free(st, sess);
     return fails;
