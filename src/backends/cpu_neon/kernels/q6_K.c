@@ -13,6 +13,7 @@
 #include "quant.h"
 
 #include "../parallel.h"
+#include "decode_rows.h"
 
 #include <stddef.h>
 #include <stdatomic.h>
@@ -120,19 +121,6 @@ static inline bool q6k_x8_valid(const void *packed, size_t n_in, size_t n_out) {
            h->n_blocks_per_row == (uint32_t) (n_in / Q6_K_BLOCK_ELEMS) &&
            h->block_bytes == sizeof(struct q6k_x8_block);
 }
-
-struct q6k_decode_ctx {
-    const void    *w_q6k;
-    const int8_t  *x_q8;
-    const int16_t *bsums; /* 16 int16 per super-block */
-    size_t         n_blocks_per_row;
-    size_t         n_out;
-    const float   *x_scales; /* one per super-block */
-    float         *y;
-};
-#if defined(__ARM_NEON)
-static void q6k_decode_rows(void *ctx, size_t n0, size_t n1);
-#endif
 
 size_t q6k_predecode_ntile4_size_bytes(size_t n_in, size_t n_out) {
     if (n_in == 0 || n_out == 0 || n_in % Q6_K_BLOCK_ELEMS != 0)
@@ -340,6 +328,26 @@ int q6k_x8_gemv_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst) {
     return 0;
 }
 
+#if defined(__ARM_NEON)
+const int16_t *q6k_decode_bsums(size_t n_in, const int8_t x_q8[static n_in]) {
+    static _Thread_local int16_t *bsums_tl  = nullptr;
+    static _Thread_local size_t   bsums_cap = 0;
+    /* 16 int16 sub-block bsums per super-block. */
+    const size_t n_blocks = n_in / Q6_K_BLOCK_ELEMS;
+    if (!heap_tl_grow_array(bsums_tl, bsums_cap, n_blocks * 16)) {
+        return nullptr;
+    }
+    for (size_t b = 0; b < n_blocks; b++) {
+        const int8_t *xb = x_q8 + b * Q6_K_BLOCK_ELEMS;
+        for (int j = 0; j < 16; j++) {
+            const int8x16_t v    = vld1q_s8(xb + j * 16);
+            bsums_tl[b * 16 + j] = (int16_t) vaddlvq_s8(v);
+        }
+    }
+    return bsums_tl;
+}
+#endif
+
 void linear_q6k_decode_w6a8_pre(size_t       n_in,
                                 size_t       n_out,
                                 const float *x_scales,
@@ -358,21 +366,10 @@ void linear_q6k_decode_w6a8_pre(size_t       n_in,
      *
      * where bsums[j] sums the 16 int8 activations of sub-block j. Saves 16
      * vsubq_s8 per super-block (as ggml_vec_dot_q6_K_q8_K). */
-    static _Thread_local int16_t *bsums_tl  = nullptr;
-    static _Thread_local size_t   bsums_cap = 0;
-    /* 16 int16 sub-block bsums per super-block. */
-    const size_t bsums_need = n_blocks_per_row * 16;
-    if (!heap_tl_grow_array(bsums_tl, bsums_cap, bsums_need)) {
+    const int16_t *bsums = q6k_decode_bsums(n_in, x_q8); /* shared with workers */
+    if (bsums == nullptr) {
         return;
     }
-    for (size_t b = 0; b < n_blocks_per_row; b++) {
-        const int8_t *xb = x_q8 + b * Q6_K_BLOCK_ELEMS;
-        for (int j = 0; j < 16; j++) {
-            const int8x16_t v    = vld1q_s8(xb + j * 16);
-            bsums_tl[b * 16 + j] = (int16_t) vaddlvq_s8(v);
-        }
-    }
-    int16_t *const bsums = bsums_tl; /* shared with workers */
 
     struct q6k_decode_ctx ctx = {
             .w_q6k            = w_q6k,
@@ -714,7 +711,7 @@ static void q6k_decode_one_row(size_t n, const struct q6k_decode_ctx *c) {
 }
 
 /* Output rows [n0, n1) of linear_q6k_decode_w6a8_pre. */
-static void q6k_decode_rows(void *ctx, size_t n0, size_t n1) {
+void q6k_decode_rows(void *ctx, size_t n0, size_t n1) {
     const struct q6k_decode_ctx c = *(const struct q6k_decode_ctx *) ctx;
     for (size_t n = n0; n < n1; n++) {
         q6k_decode_one_row(n, &c);

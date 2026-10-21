@@ -27,6 +27,7 @@
 #endif
 
 #include "../parallel.h"
+#include "decode_rows.h"
 
 struct q4k_predecode_header {
     uint32_t magic;
@@ -302,16 +303,6 @@ void quantize_x_q8_groups(size_t      n,
     }
 }
 
-struct q4k_decode_ctx {
-    const struct block_q4_K_t *w;
-    const int8_t              *x_q8;
-    const int32_t             *sum32;
-    const float               *x_scales; /* one per super-block */
-    float                     *y;
-    size_t                     n_blocks_per_row;
-    size_t                     n_out;
-};
-
 static inline void q4k_decode_one_row(size_t n, const struct q4k_decode_ctx *c) {
     const struct block_q4_K_t *row = c->w + n * c->n_blocks_per_row;
     float                      acc = 0.0f;
@@ -374,7 +365,7 @@ static inline void q4k_decode_one_row(size_t n, const struct q4k_decode_ctx *c) 
 }
 
 /* Output rows [n0, n1) of one decode; the ctx copied into a local. */
-static void q4k_decode_rows(void *ctx, size_t n0, size_t n1) {
+void q4k_decode_rows(void *ctx, size_t n0, size_t n1) {
     const struct q4k_decode_ctx c = *(const struct q4k_decode_ctx *) ctx;
     for (size_t n = n0; n < n1; n++)
         q4k_decode_one_row(n, &c);
@@ -400,25 +391,6 @@ void linear_q4k_decode_w4a8_pre(size_t         n_in,
     /* Static row split at every size: the dynamic 4-row chunks below
      * 4096 rows cost 12-15 % of an M1 Max Llama 3.2 3B decode (#16). */
     geist_par_for(n_out, q4k_decode_rows, &ctx);
-}
-
-struct q4k_pair_ctx {
-    struct q4k_decode_ctx c0;
-    struct q4k_decode_ctx c1;
-};
-
-/* Rows [n0, n1) of both decodes of a pair, as far as each has them. */
-static void q4k_decode_pair_rows(void *ctx, size_t n0, size_t n1) {
-    const struct q4k_decode_ctx c0     = ((const struct q4k_pair_ctx *) ctx)->c0;
-    const struct q4k_decode_ctx c1     = ((const struct q4k_pair_ctx *) ctx)->c1;
-    const size_t                n_out0 = c0.n_out;
-    const size_t                n_out1 = c1.n_out;
-    for (size_t n = n0; n < n1; n++) {
-        if (n < n_out0)
-            q4k_decode_one_row(n, &c0);
-        if (n < n_out1)
-            q4k_decode_one_row(n, &c1);
-    }
 }
 
 /* y from geist_linear_ref, for when the wrappers below cannot have their
@@ -513,33 +485,28 @@ void linear_q4k_decode_w4a8_pair(size_t       n_in,
     }
 
     quantize_x_q8_groups(n_in, GEIST_ACT_Q8K_ELEMS, x, tl_x_q8, tl_x_scales, tl_sum32);
-    struct q4k_pair_ctx pc = {
-            .c0 =
-                    {
-                            .w                = (const struct block_q4_K_t *) w0_q4k,
-                            .x_q8             = tl_x_q8,
-                            .sum32            = tl_sum32,
-                            .x_scales         = tl_x_scales,
-                            .y                = y0,
-                            .n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS,
-                            .n_out            = n_out0,
-                    },
-            .c1 =
-                    {
-                            .w                = (const struct block_q4_K_t *) w1_q4k,
-                            .x_q8             = tl_x_q8,
-                            .sum32            = tl_sum32,
-                            .x_scales         = tl_x_scales,
-                            .y                = y1,
-                            .n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS,
-                            .n_out            = n_out1,
-                    },
+    const size_t          nb = n_in / Q4_K_BLOCK_ELEMS;
+    struct q4k_decode_ctx c0 = {.w                = (const struct block_q4_K_t *) w0_q4k,
+                                .x_q8             = tl_x_q8,
+                                .sum32            = tl_sum32,
+                                .x_scales         = tl_x_scales,
+                                .y                = y0,
+                                .n_blocks_per_row = nb,
+                                .n_out            = n_out0};
+    struct q4k_decode_ctx c1 = c0;
+    c1.w                     = (const struct block_q4_K_t *) w1_q4k;
+    c1.y                     = y1;
+    c1.n_out                 = n_out1;
+    /* One region over both weights' rows (the first's, then the second's),
+     * so a pair of unequal heights (Llama's q and k: 3072 and 1024 rows)
+     * still splits evenly. Static split at every size: the dynamic 4-row
+     * chunks below 4096 rows cost 12-15 % of an M1 Max Llama 3.2 3B decode
+     * (#16). */
+    const struct cpu_neon_decode_part parts[2] = {
+            {.rows = q4k_decode_rows, .ctx = &c0, .n_out = n_out0},
+            {.rows = q4k_decode_rows, .ctx = &c1, .n_out = n_out1},
     };
-    const size_t n_out_max = n_out0 > n_out1 ? n_out0 : n_out1;
-
-    /* Static row split at every size: the dynamic 4-row chunks below
-     * 4096 rows cost 12-15 % of an M1 Max Llama 3.2 3B decode (#16). */
-    geist_par_for(n_out_max, q4k_decode_pair_rows, &pc);
+    cpu_neon_decode_parts(2, parts);
 }
 
 /* One Q4_K W4A8 prefill call, for the range bodies below: the operands of

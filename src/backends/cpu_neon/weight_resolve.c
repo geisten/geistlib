@@ -20,6 +20,7 @@
 
 #include "internal.h"
 #include "parallel.h"
+#include "kernels/decode_rows.h"
 #include "tl1.h"
 
 #include <geist.h>
@@ -214,6 +215,85 @@ static void cpu_neon_w_q6k_m1(const float               *x,
     }
     linear_q6k_decode_w6a8_pre(n_in, n_out, sc, xq, w->raw, y);
 }
+
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+/* q, k and v of one decode step in one parallel region (#16): Q4_K and
+ * Q6_K weights in the source layout, any mix. The activation is quantized
+ * once, as quantize_x_q8_groups does for each kernel alone, and every row
+ * is the single kernel's dot, so the outputs keep their bytes. Installed
+ * on exactly the weights it takes; the dispatcher calls it only when all
+ * three carry it. */
+static void cpu_neon_w_kq_triple_m1(const float               *x,
+                                    const struct geist_weight *w0,
+                                    const struct geist_weight *w1,
+                                    const struct geist_weight *w2,
+                                    struct geist_backend      *be,
+                                    float                     *y0,
+                                    float                     *y1,
+                                    float                     *y2) {
+    const struct geist_weight *w[3] = {w0, w1, w2};
+    float                     *y[3] = {y0, y1, y2};
+    const size_t               n_in = (size_t) w0->n_in;
+    bool                       ok   = w1->n_in == w0->n_in && w2->n_in == w0->n_in;
+    for (int i = 0; i < 3 && ok; i++) {
+        ok = w[i]->backend_layout != GEIST_W_LAYOUT_Q6_K_X8_GEMV;
+    }
+    if (!ok) {
+        for (int i = 0; i < 3; i++) {
+            w[i]->linear_m1(x, w[i], be, y[i]);
+        }
+        return;
+    }
+    float         *sc  = nullptr;
+    int32_t       *s32 = nullptr;
+    const int8_t  *xq  = ws_quantize_act(be, 1, n_in, GEIST_ACT_Q8K_ELEMS, x, w0, y0, &sc, &s32);
+    const int16_t *bs  = nullptr;
+    for (int i = 0; i < 3 && xq != nullptr && bs == nullptr; i++) {
+        if (w[i]->dtype == GEIST_DTYPE_Q6_K) {
+            bs = q6k_decode_bsums(n_in, xq);
+            if (bs == nullptr) {
+                xq = nullptr;
+            }
+        }
+    }
+    if (xq == nullptr) { /* no scratch: each weight on its own path */
+        for (int i = 0; i < 3; i++) {
+            w[i]->linear_m1(x, w[i], be, y[i]);
+        }
+        return;
+    }
+    static_assert(Q4_K_BLOCK_ELEMS == Q6_K_BLOCK_ELEMS, "one block count for both");
+    const size_t                nb = n_in / Q4_K_BLOCK_ELEMS;
+    struct q4k_decode_ctx       c4[3];
+    struct q6k_decode_ctx       c6[3];
+    struct cpu_neon_decode_part parts[3];
+    for (int i = 0; i < 3; i++) {
+        const size_t n_out = (size_t) w[i]->n_out;
+        if (w[i]->dtype == GEIST_DTYPE_Q4_K) {
+            c4[i]    = (struct q4k_decode_ctx) {.w                = w[i]->raw,
+                                                .x_q8             = xq,
+                                                .sum32            = s32,
+                                                .x_scales         = sc,
+                                                .y                = y[i],
+                                                .n_blocks_per_row = nb,
+                                                .n_out            = n_out};
+            parts[i] = (struct cpu_neon_decode_part) {
+                    .rows = q4k_decode_rows, .ctx = &c4[i], .n_out = n_out};
+        } else {
+            c6[i]    = (struct q6k_decode_ctx) {.w_q6k            = w[i]->raw,
+                                                .x_q8             = xq,
+                                                .bsums            = bs,
+                                                .n_blocks_per_row = nb,
+                                                .n_out            = n_out,
+                                                .x_scales         = sc,
+                                                .y                = y[i]};
+            parts[i] = (struct cpu_neon_decode_part) {
+                    .rows = q6k_decode_rows, .ctx = &c6[i], .n_out = n_out};
+        }
+    }
+    cpu_neon_decode_parts(3, parts);
+}
+#endif
 
 static void cpu_neon_w_q8_0_m1(const float               *x,
                                const struct geist_weight *w,
@@ -1727,6 +1807,12 @@ enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_bac
             w->linear_pair_m1 = cpu_neon_w_q4k_pair_m1;
             w->linear_pair_mN = cpu_neon_w_q4k_pair_mN;
         }
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+        /* The triple takes the row kernels these two rows install. */
+        if (w->linear_m1 == cpu_neon_w_q4k_m1 || w->linear_m1 == cpu_neon_w_q6k_m1) {
+            w->linear_triple_m1 = cpu_neon_w_kq_triple_m1;
+        }
+#endif
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
         /* The row kernel's pair. mN stays the dequant trampoline here,
          * which has no pair form; install_pq2_0_x8_gemv_if_eligible
