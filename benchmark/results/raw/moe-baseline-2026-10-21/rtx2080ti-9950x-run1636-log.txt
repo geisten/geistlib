@@ -1,0 +1,33 @@
+   1 == cycle 1 geist-cpu
+   1 == cycle 1 geist-split
+   1 == cycle 1 geist-vulkan
+   1 == cycle 1 llama-cpu
+   1 == cycle 1 llama-exps-cpu
+   1 == cycle 2 geist-cpu
+   1 == cycle 2 geist-split
+   1 == cycle 2 geist-vulkan
+   1 == cycle 2 llama-cpu
+   1 == cycle 2 llama-exps-cpu
+   1 == cycle 3 geist-cpu
+   1 == cycle 3 geist-split
+   1 == cycle 3 geist-vulkan
+   1 == cycle 3 llama-cpu
+   1 == cycle 3 llama-exps-cpu
+   1 == geist-cpu cycle 1: exit 0 after 148 s
+   1 == geist-cpu cycle 2: exit 0 after 168 s
+   1 == geist-cpu cycle 3: exit 0 after 159 s
+   1 == geist-split cycle 1: exit 1 after 62 s
+   1 == geist-split cycle 2: exit 1 after 95 s
+   1 == geist-split cycle 3: exit 1 after 57 s
+   1 == geist-vulkan cycle 1: exit 1 after 1 s
+   1 == geist-vulkan cycle 2: exit 1 after 0 s
+   1 == geist-vulkan cycle 3: exit 1 after 0 s
+   1 == llama-cpu cycle 1: exit 0 after 21 s
+   1 == llama-cpu cycle 2: exit 0 after 22 s
+   1 == llama-cpu cycle 3: exit 0 after 23 s
+   1 == llama-exps-cpu cycle 1: exit 0 after 12 s
+   1 == llama-exps-cpu cycle 2: exit 0 after 11 s
+   1 == llama-exps-cpu cycle 3: exit 0 after 12 s
+   3 geist vulkan scratch: device-local 1 (192 MiB), BAR 0 (0 MiB), host 0 (0 MiB); device-local host views refused 0
+   3 model_load failed: qwen3moe: the experts run on CPU backends only, not vulkan (#48)
+   3 model_load failed: transformer: split stage on 'vulkan': qwen3moe: the experts run on CPU backends only, not vulkan (#48)
