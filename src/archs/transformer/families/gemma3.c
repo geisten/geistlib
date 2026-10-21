@@ -147,7 +147,7 @@ gemma3_attention_block(struct transformer_layer_forward_ctx *ctx) {
     const size_t                      d    = st->d_model;
     struct geist_buffer              *x    = sess->scratch_normed;
 
-    enum geist_status s = blk_rmsnorm(ctx, d, ctx->h_in_buf, &L->attn_norm, x);
+    enum geist_status s = blk_attn_norm(ctx, x);
     if (s == GEIST_OK)
         s = transformer_rotate_rows(st, ctx->seq, d, x);
     if (s == GEIST_OK)
@@ -161,13 +161,7 @@ gemma3_attention_block(struct transformer_layer_forward_ctx *ctx) {
     if (s == GEIST_OK)
         s = blk_o_proj(ctx);
     if (s == GEIST_OK)
-        s = blk_norm_add(ctx,
-                         ctx->P->fuse_attn_rmsnorm_add,
-                         &L->post_attn_norm,
-                         sess->scratch_o,
-                         ctx->h_in_buf,
-                         sess->scratch_post_attn,
-                         sess->scratch_h_post_attn);
+        s = blk_attn_residual(ctx, &L->post_attn_norm);
     return s;
 }
 
@@ -179,10 +173,11 @@ gemma3_attention_block(struct transformer_layer_forward_ctx *ctx) {
 /* ---- Registry entry --------------------------------------------------- */
 
 const struct transformer_family transformer_family_gemma3 = {
-        .name            = "gemma3",
-        .populate        = populate_gemma3,
-        .populate_layers = populate_layers_gemma3,
-        .wire_layer      = gemma3_wire_layer,
-        .attention_block = gemma3_attention_block,
-        .ffn_block       = gemma3_ffn_block,
+        .name                 = "gemma3",
+        .populate             = populate_gemma3,
+        .populate_layers      = populate_layers_gemma3,
+        .wire_layer           = gemma3_wire_layer,
+        .fused_residual_norms = true,
+        .attention_block      = gemma3_attention_block,
+        .ffn_block            = gemma3_ffn_block,
 };

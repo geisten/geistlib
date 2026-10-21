@@ -5,6 +5,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "blocks.h"
 #include <geist_types.h>
 #include "profile.h"
 
@@ -84,23 +85,32 @@ static enum geist_status run_ple(struct transformer_layer_forward_ctx *ctx) {
                     view_1d(L->post_per_layer_norm.buffer, st->d_model);
             struct geist_tensor t_proj_scratch_2d =
                     view_2d(sess->scratch_proj_ple, ctx->SEQ, st->d_model);
-            t0 = prof ? transformer_profile_now_ns() : 0;
-            s  = fused->ple_block(be,
-                                  &t_h_post_ff_2d,
-                                  &L->per_layer_gate,
-                                  &t_ple_in_2d,
-                                  &L->per_layer_proj,
-                                  &t_h_post_ff_2d,
-                                  &t_w_post_per_1d,
-                                  ctx->eps,
-                                  &t_gate_ple_2d,
-                                  &t_proj_scratch_2d,
-                                  &t_h_out_2d);
+            /* With the tail fusion the block stops at the projection and
+             * the residual step also scales and takes the next layer's
+             * norm (#17). */
+            const bool tail = P->fuse_tail_norm;
+            t0              = prof ? transformer_profile_now_ns() : 0;
+            s               = fused->ple_block(be,
+                                               &t_h_post_ff_2d,
+                                               &L->per_layer_gate,
+                                               &t_ple_in_2d,
+                                               &L->per_layer_proj,
+                                               &t_h_post_ff_2d,
+                                               tail ? nullptr : &t_w_post_per_1d,
+                                               ctx->eps,
+                                               &t_gate_ple_2d,
+                                               &t_proj_scratch_2d,
+                                               &t_h_out_2d);
+            if (s == GEIST_OK && tail)
+                s = blk_residual_out(ctx,
+                                     L->layer_scalar,
+                                     true,
+                                     &L->post_per_layer_norm,
+                                     sess->scratch_proj_ple,
+                                     sess->scratch_h_post_ff,
+                                     nullptr);
             transformer_profile_add(&g_ple_profile, PLE_GATE, t0);
-            if (s != GEIST_OK) {
-                return s;
-            }
-            return GEIST_OK;
+            return s;
         }
 
         t0 = prof ? transformer_profile_now_ns() : 0;
@@ -157,7 +167,19 @@ static enum geist_status run_ple(struct transformer_layer_forward_ctx *ctx) {
             return s;
         }
         t0 = prof ? transformer_profile_now_ns() : 0;
-        if (ctx->P->fuse_rmsnorm_add) {
+        if (ctx->P->fuse_tail_norm) {
+            s = blk_residual_out(ctx,
+                                 L->layer_scalar,
+                                 true,
+                                 &L->post_per_layer_norm,
+                                 sess->scratch_proj_ple,
+                                 sess->scratch_h_post_ff,
+                                 nullptr);
+            transformer_profile_add(&g_ple_profile, PLE_RMSNORM, t0);
+            if (s != GEIST_OK) {
+                return s;
+            }
+        } else if (ctx->P->fuse_rmsnorm_add) {
             s = fused->rmsnorm_add(
                     be, &t_h_post_ff_2d, &t_proj_ple_2d, &t_w_post_per, ctx->eps, &t_h_out_2d);
             if (s != GEIST_OK) {
@@ -185,7 +207,7 @@ static enum geist_status scale_output(struct transformer_layer_forward_ctx *ctx)
     /* Only Gemma 4 (PLE) carries a layer scale; every other model loads 1,
      * and multiplying by 1 changes no bit, so skip the pass (a serial host
      * loop on CPU, a dispatch per layer on GPU). */
-    if (ctx->L->layer_scalar == 1.0f) {
+    if (ctx->L->layer_scalar == 1.0f || ctx->out_scaled) { /* out_scaled: the tail did (#17) */
         return GEIST_OK;
     }
     /* Bound at plan build (#352): batched GPU backends keep the per-layer

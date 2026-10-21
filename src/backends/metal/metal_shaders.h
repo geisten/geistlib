@@ -1505,6 +1505,56 @@ static const char metal_elem_simd_source[] =
         "for(uint c=lid;c<p.cols;c+=nt){float n=x[xb+c]*inv*w[p.w_offset+c];"
         "y[yb+c]=res[rb+c]+n;}}\n";
 
+/* Compiled after metal_elem_simd_source, into the same library. */
+static const char metal_elem_simd_add_norm_source[] =
+        /* rmsnorm_add (add without w), scale and the next rmsnorm in one
+         * pass (#17): the same arithmetic as those kernels in the same
+         * order, at the same thread count and element-to-thread map, so the
+         * same bits; y is computed and stored once and normalised from
+         * registers (one row) or from the thread's own stores (several).
+         * The barrier before the second reduction keeps its partials from
+         * overwriting the first's while they are being read. */
+        "struct Post2{uint rows,cols,residual_offset,x_offset,w_offset,zw_offset,y_offset,"
+        "z_offset,residual_row_stride,x_row_stride,y_row_stride,z_row_stride,has_w;float "
+        "eps,scale;};\n"
+        "static inline float rn_inv(float ss,threadgroup float*partial,uint sg,uint sl,uint "
+        "nt,uint cols,float eps){float sum=simd_sum(ss);if(sl==0u)partial[sg]=sum;"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);float total=0.0f;"
+        "for(uint i=0u;i<nt/32u;i++)total+=partial[i];return rsqrt(total/float(cols)+eps);}\n"
+        "kernel void rmsnorm_add_norm_rows_simd(device const float*res[[buffer(0)]],device "
+        "const float*x[[buffer(1)]],device const float*w[[buffer(2)]],device const "
+        "float*zw[[buffer(3)]],device float*y[[buffer(4)]],device float*z[[buffer(5)]],"
+        "constant Post2&p[[buffer(6)]],uint row[[threadgroup_position_in_grid]],uint "
+        "lid[[thread_index_in_threadgroup]],uint nt[[threads_per_threadgroup]],uint "
+        "sg[[simdgroup_index_in_threadgroup]],uint sl[[thread_index_in_simdgroup]]){\n"
+        "threadgroup float partial[32];if(row>=p.rows)return;"
+        "const uint xb=p.x_offset+row*p.x_row_stride,rb=p.residual_offset+row*p.residual_"
+        "row_stride,yb=p.y_offset+row*p.y_row_stride,zb=p.z_offset+row*p.z_row_stride;"
+        "if(p.rows==1u&&p.cols<=4u*nt){float yv[4],zv[4];"
+        "if(p.has_w!=0u){float xv[4],wv[4],rv[4];for(uint k=0u;k<4u;k++){const uint "
+        "c=lid+k*nt;xv[k]=c<p.cols?x[xb+c]:0.0f;wv[k]=c<p.cols?w[p.w_offset+c]:0.0f;"
+        "rv[k]=c<p.cols?res[rb+c]:0.0f;}float ss=0.0f;"
+        "for(uint k=0u;k<4u;k++){if(lid+k*nt<p.cols)ss+=xv[k]*xv[k];}"
+        "const float inv=rn_inv(ss,partial,sg,sl,nt,p.cols,p.eps);"
+        "for(uint k=0u;k<4u;k++){float n=xv[k]*inv*wv[k];yv[k]=(rv[k]+n)*p.scale;}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);}"
+        "else{for(uint k=0u;k<4u;k++){const uint c=lid+k*nt;"
+        "yv[k]=c<p.cols?(res[rb+c]+x[xb+c])*p.scale:0.0f;}}"
+        "for(uint k=0u;k<4u;k++){const uint c=lid+k*nt;zv[k]=c<p.cols?zw[p.zw_offset+c]:0.0f;"
+        "if(c<p.cols)y[yb+c]=yv[k];}float s2=0.0f;"
+        "for(uint k=0u;k<4u;k++){if(lid+k*nt<p.cols)s2+=yv[k]*yv[k];}"
+        "const float inv2=rn_inv(s2,partial,sg,sl,nt,p.cols,p.eps);"
+        "for(uint k=0u;k<4u;k++){const uint c=lid+k*nt;if(c<p.cols)z[zb+c]=yv[k]*inv2*zv[k];}"
+        "return;}"
+        "float inv=1.0f;if(p.has_w!=0u){float ss=0.0f;for(uint c=lid;c<p.cols;c+=nt){float "
+        "v=x[xb+c];ss+=v*v;}inv=rn_inv(ss,partial,sg,sl,nt,p.cols,p.eps);"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);}"
+        "float s2=0.0f;for(uint c=lid;c<p.cols;c+=nt){float v;if(p.has_w!=0u){float "
+        "n=x[xb+c]*inv*w[p.w_offset+c];v=res[rb+c]+n;}else{v=res[rb+c]+x[xb+c];}v=v*p.scale;"
+        "y[yb+c]=v;s2+=v*v;}"
+        "const float inv2=rn_inv(s2,partial,sg,sl,nt,p.cols,p.eps);"
+        "for(uint c=lid;c<p.cols;c+=nt)z[zb+c]=y[yb+c]*inv2*zw[p.zw_offset+c];}\n";
+
 static const char metal_embed_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"

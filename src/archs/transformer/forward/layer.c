@@ -182,6 +182,10 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
 
     frame_arena_reset(&sess->scratch_arena);
 
+    ctx.x_prenormed = sess->prenorm_layer == (size_t) layer_idx && sess->prenorm_h == h_in_buf &&
+                      sess->prenorm_pos == q_position && sess->prenorm_seq == seq;
+    sess->prenorm_layer = 0;
+
     ctx.profile = transformer_profile_enabled(&g_layer_profile);
     uint64_t t0 = ctx.profile ? transformer_profile_now_ns() : 0;
     /* Per-layer token mixer: DeltaNet layers replace the whole
