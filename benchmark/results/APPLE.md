@@ -92,8 +92,10 @@ every run it requires 30 continuously quiet seconds below load 0.2/core, then a
 all nine samples; a repeatable regression beyond 5% fails the command. Raw
 JSONL and the Markdown report are written outside the checkout under
 `~/bench-geistlib/apple-ab/`. Every run records `pmset` thermal warnings and
-power source both immediately before and after measurement. Package temperature
-is recorded as unavailable when macOS does not expose it without privilege.
+power source both immediately before and after measurement. After the cooldown
+it waits until macmon reads the CPU below the protocol's `apple_temp_gate`
+limit and records the start temperatures (a fixed pause where macmon is
+missing; see [METHODOLOGY.md](../METHODOLOGY.md#cool-start-on-apple-silicon)).
 Interrupted runs retain a `.jsonl.partial` suffix and cannot be mistaken for a
 complete baseline. Resume a long campaign without discarding already accepted
 runs by repeating the identical model and `--variant` arguments and adding

@@ -56,6 +56,50 @@ tools/bench_revision_ab.py --rev base=main --rev new=HEAD \
     --gguf gguf_artifacts/synth/llama32-1b-q4_k.gguf --seq-lens 512,2048
 ```
 
+### Cool start on Apple Silicon
+
+**Every Mac measurement starts on a cool chip.** The M1 Max GPU holds its top
+clock, 1293 MHz, only up to about 81-83 °C; above that it steps down to
+1050-1110 MHz, and back-to-back runs reach 92-96 °C (#17). Prefill tracks the
+clock, so a run that starts warm measures how hot the previous run left the
+chip, not the engine. Back to back, geist and llama.cpp differed by 4-7 % in
+prefill that came from run order and load time alone: llama-bench's slower
+model load left the GPU idle 0.9 s instead of 0.3 s, enough to recover clock
+before its first repeat. Both engines do the same tokens per MHz; started
+cool (below ~65 °C, or after a 45 s pause) they measure equal.
+
+The gate reads the GPU and CPU temperature with
+[macmon](https://github.com/vladkens/macmon) (`macmon pipe`, no root;
+`brew install macmon`), polls every 5 s until both are below the limits, and
+records the start temperatures with every run (`gpu_temp_c`, `cpu_temp_c`,
+`cool_wait_seconds` in the run's machine state). Where macmon is not found
+(on `PATH`, `/opt/homebrew/bin` or `/usr/local/bin`) or its output cannot be
+read, the gate pauses `fallback_seconds` instead and records
+`"cool_gate": "time"`, so a reader can tell a temperature-gated run from a
+timed one. A chip that stays warm past the gate's timeout fails the run as
+busy, like a host that never gets quiet.
+
+- `bench_cross_engine.py`: the Apple host profiles carry `apple_temp_gate`
+  in their `host_gate` (`benchmark/cross_engine_gpu_protocol.json`: GPU
+  limit for Metal; `cross_engine_cpu_protocol.json`: CPU limit), checked
+  after the quiet-host gate and its cooldown, right before each run.
+- `bench_mac_ab.py`: `apple_temp_gate` in `apple_cpu_protocol.json`.
+- `bench_revision_ab.py`: on macOS before every variant run, limits
+  `COOL_GATE`; the report states the range of start temperatures, the JSONL
+  each run's `start`. `--no-cool` turns it off.
+
+The limits are 65 °C (GPU for Metal, CPU for the CPU profiles, both in
+`bench_revision_ab.py`), from macmon on the M1 Max on 2026-10-21. Idle
+under the lock the chip settles at GPU 49-55 °C, CPU 50-55 °C. Metal
+prefill (Gemma 4 E2B, pp512) takes the GPU from 49 to 76 °C in 7 s; the clock
+leaves 1293 MHz at 78-83 °C, and after 90 s the GPU sits at 96 °C and
+930-1050 MHz; its prefill repeats took 20-75 % longer than the first 18.
+From 95 °C the GPU is below 65 °C after about 40 s and below 60 °C after
+about 75 s, the CPU alike. 65 °C is therefore reachable within a minute from
+the hottest state and lies 10-15 °C above the idle floor, so a desktop
+shared with other agents' builds still reaches it; the 45 s fallback is the
+pause that cooled both engines to parity in #17.
+
 Raw timing probes for individual subsystems:
 
 ```sh

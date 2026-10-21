@@ -22,6 +22,13 @@ test's): at least 95 % coverage for any noise, where a bootstrap over this
 few cycles is too narrow and called the same binary 2.7 % faster. An
 interval that includes zero is noise.
 
+On macOS every run starts on a cool chip (#17): the tool waits until
+macmon reads the GPU and the CPU below COOL_GATE's limits, or pauses
+fallback_seconds where macmon is missing, and records the start
+temperatures of every run. A warm M1 Max GPU drops from 1293 MHz to
+1050-1110 MHz past ~82 C, so back to back the earlier variant of a cycle
+heats the chip for the later ones. --no-cool turns the gate off.
+
 Example, on the synthetic model of `make bench-synth`:
 
   make gguf_artifacts/synth/llama32-1b-q4_k.gguf
@@ -42,6 +49,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,10 +64,14 @@ MIN_CYCLES = 6
 # A phase the run did not time reads 0.00 ms (decode_n 0, or a one-token
 # decode whose forward is deferred); a ratio of such values means nothing.
 MIN_MS = 0.05
+# Start temperatures for every run on macOS; benchmark/METHODOLOGY.md has
+# the measurements behind the limits.
+COOL_GATE = {"max_gpu_c": 65, "max_cpu_c": 65, "fallback_seconds": 45}
+COOL_TIMEOUT_SECONDS = 1200
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bench_host import build_schedule_rotating as build_schedule  # noqa: E402
-from bench_host import command_output, sha256_file  # noqa: E402
+from bench_host import command_output, sha256_file, wait_for_apple_cool  # noqa: E402
 
 
 def parse_revs(values: list[str]) -> list[tuple[str, str]]:
@@ -240,11 +252,28 @@ def render_report(metadata: dict, rows: list[dict]) -> str:
             lines.append(f"**The control moved in {len(moved)} of {len(control)} rows: the host "
                          "changed during the run, so a difference of that size is not the "
                          "change. Rerun on a quiet host or with more cycles.**")
+    starts = metadata.get("start_temps")
+    if starts:
+        lines += ["", cool_line(metadata["cool_gate"], starts)]
     tested = sum(r["variant"] != CONTROL for r in rows)
     if tested > 1:
         lines += ["", f"{tested} comparisons: at 95 % about one interval in twenty excludes "
                       "zero by chance."]
     return "\n".join(lines) + "\n"
+
+
+def cool_line(gate: dict, starts: list[dict]) -> str:
+    """One report line on the start temperatures of the runs."""
+    timed = sum(start["cool_gate"] == "time" for start in starts)
+    if timed:
+        return (f"Cool start: macmon unavailable, {timed} of {len(starts)} runs started after "
+                f"a fixed {gate['fallback_seconds']} s pause instead of a temperature reading.")
+    gpu = [start["gpu_temp_c"] for start in starts]
+    cpu = [start["cpu_temp_c"] for start in starts]
+    wait = sum(start["cool_wait_seconds"] for start in starts)
+    return (f"Cool start: every run began at GPU {min(gpu):.1f}-{max(gpu):.1f} C "
+            f"(limit {gate.get('max_gpu_c', '-')}), CPU {min(cpu):.1f}-{max(cpu):.1f} C "
+            f"(limit {gate.get('max_cpu_c', '-')}); {wait:.0f} s spent cooling.")
 
 
 def system_info() -> dict:
@@ -279,6 +308,8 @@ def main() -> int:
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     parser.add_argument("--no-control", action="store_true",
                         help="skip the second run of the baseline's binary")
+    parser.add_argument("--no-cool", action="store_true",
+                        help="on macOS, start runs without waiting for a cool chip")
     parser.add_argument("--out-dir", type=Path,
                         default=Path.home() / "bench-geistlib" / "revision-ab")
     args = parser.parse_args()
@@ -341,6 +372,8 @@ def main() -> int:
                      "warmup": args.warmup, "make_args": args.make_arg},
         "environment": run_env,
         "system": system_info(),
+        "cool_gate": (COOL_GATE if platform.system() == "Darwin" and not args.no_cool
+                      else None),
     }
 
     raw_path = work / "revision_ab.jsonl"
@@ -351,18 +384,23 @@ def main() -> int:
             print(f"cycle {cycle + 1}/{args.cycles}: {variant['label']}",
                   file=sys.stderr, flush=True)
             try:
+                start = (wait_for_apple_cool(metadata["cool_gate"],
+                                             time.monotonic() + COOL_TIMEOUT_SECONDS)
+                         if metadata["cool_gate"] else None)
                 rows = run_variant(variant["binary"], args, env)
-            except RuntimeError as error:
+            except (RuntimeError, TimeoutError) as error:
                 print(f"ERROR: {error}", file=sys.stderr)
                 return 1
             run = {"kind": "run", "cycle": cycle, "position": position,
-                   "variant": variant["label"], "rows": rows}
+                   "variant": variant["label"], "rows": rows,
+                   **({"start": start} if start else {})}
             runs.append(run)
             raw.write(json.dumps(run, sort_keys=True) + "\n")
             raw.flush()
         rows = summarize(runs, [v["label"] for v in variants], baseline)
         raw.write(json.dumps({"kind": "summary", "rows": rows}, sort_keys=True) + "\n")
 
+    metadata["start_temps"] = [run["start"] for run in runs if "start" in run]
     report = render_report(metadata, rows)
     (work / "revision_ab.md").write_text(report)
     print(report)
