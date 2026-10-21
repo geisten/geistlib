@@ -62,8 +62,7 @@ static size_t encode(const char *tower, const int16_t *pcm, float *soft, bool li
 }
 
 int main(void) {
-    const char *tower = audio_test_find_tower();
-    GEIST_SKIP_IF(tower == nullptr, "audio_tower.safetensors not found (make fetch-audio-tower)");
+    const char *tower = audio_test_require_tower();
 
     static int16_t pcm[N_PCM];
     audio_test_synth_sweep(pcm, N_PCM, SECONDS);
