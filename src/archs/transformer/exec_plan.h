@@ -69,6 +69,12 @@ struct transformer_layer_exec_plan {
                                  * session's KV mode (INT8, not INT4) is
                                  * checked at the call site */
     bool fuse_attn_kv_int4;     /* ... and its packed INT4-KV attention */
+    /* rmsnorm_add_norm (#17), any m, families with fused_residual_norms:
+     * the post-attention residual also writes the FFN pre-norm; the
+     * layer's last residual (or PLE) step also writes the next layer's
+     * attention pre-norm, where that layer runs here and is attention. */
+    bool fuse_attn_add_norm;
+    bool fuse_tail_norm;
 };
 
 /* Model-level fusion decisions (not per-layer): lookup tables and the

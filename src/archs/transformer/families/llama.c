@@ -60,13 +60,12 @@ static bool populate_layers_llama(struct transformer_arch_state *st) {
  * the stage returns and nothing after it touches a buffer. */
 [[nodiscard]] static enum geist_status
 llama_attention_block(struct transformer_layer_forward_ctx *ctx) {
-    struct transformer_arch_state    *st   = ctx->st;
-    struct transformer_arch_session  *sess = ctx->sess;
-    struct transformer_layer_weights *L    = ctx->L;
-    const size_t                      d    = st->d_model;
-    struct geist_buffer              *x    = sess->scratch_normed;
+    struct transformer_arch_state   *st   = ctx->st;
+    struct transformer_arch_session *sess = ctx->sess;
+    const size_t                     d    = st->d_model;
+    struct geist_buffer             *x    = sess->scratch_normed;
 
-    enum geist_status s = blk_rmsnorm(ctx, d, ctx->h_in_buf, &L->attn_norm, x);
+    enum geist_status s = blk_attn_norm(ctx, x);
     if (s == GEIST_OK)
         s = transformer_rotate_rows(st, ctx->seq, d, x);
     if (s == GEIST_OK)
@@ -78,16 +77,17 @@ llama_attention_block(struct transformer_layer_forward_ctx *ctx) {
     if (s == GEIST_OK)
         s = blk_o_proj(ctx);
     if (s == GEIST_OK)
-        s = blk_add(ctx, d, ctx->h_in_buf, sess->scratch_o, sess->scratch_h_post_attn);
+        s = blk_attn_residual(ctx, nullptr);
     return s;
 }
 
 /* ---- Registry entry --------------------------------------------------- */
 
 const struct transformer_family transformer_family_llama = {
-        .name            = "llama",
-        .populate        = populate_llama,
-        .populate_layers = populate_layers_llama,
-        .attention_block = llama_attention_block,
-        .ffn_block       = blk_ffn_swiglu,
+        .name                 = "llama",
+        .populate             = populate_llama,
+        .populate_layers      = populate_layers_llama,
+        .fused_residual_norms = true,
+        .attention_block      = llama_attention_block,
+        .ffn_block            = blk_ffn_swiglu,
 };

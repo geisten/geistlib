@@ -40,7 +40,7 @@
 #include <string.h>
 
 constexpr uint32_t SNAP_MAGIC   = 0x504E5347u; /* "GSNP" */
-constexpr uint32_t SNAP_VERSION = 2;           /* 2: the token history (#695) */
+constexpr uint32_t SNAP_VERSION = 3; /* 2: the token history (#695); 3: INT4 K at INT8 (#53) */
 
 /* Flags in snap_header.flags. */
 constexpr uint32_t SNAP_LOGITS_VALID      = 1u << 0;
@@ -73,18 +73,22 @@ static bool owns_kv(const struct transformer_layer_weights *L) {
     return !L->is_kv_shared && L->mixer != GEIST_MIXER_DELTANET;
 }
 
-/* Bytes one position takes in layer `L`'s K (and, the same, V) data
- * buffer, and in each of its K/V scale buffers (0 without scales). */
+/* Bytes one position takes in layer `L`'s K and V data buffers (INT4
+ * packs only V, #53), and in each of its K/V scale buffers (0 without
+ * scales). */
 static void kv_row_bytes(const struct transformer_arch_session  *sess,
                          const struct transformer_layer_weights *L,
-                         size_t                                 *data,
+                         size_t                                 *k_data,
+                         size_t                                 *v_data,
                          size_t                                 *scales) {
     const size_t elems = sess->model->n_kv_heads * L->head_dim;
     if (sess->kv_int8_enabled) {
-        *data   = sess->kv_int4_packed_enabled ? elems / 2 : elems;
+        *k_data = elems;
+        *v_data = sess->kv_int4_packed_enabled ? elems / 2 : elems;
         *scales = sess->model->n_kv_heads * sizeof(float);
     } else {
-        *data   = elems * (sess->kv_f16_enabled ? 2u : sizeof(float));
+        *k_data = elems * (sess->kv_f16_enabled ? 2u : sizeof(float));
+        *v_data = *k_data;
         *scales = 0;
     }
 }
@@ -129,9 +133,9 @@ snap_bytes(const struct transformer_arch_session *sess, size_t kv_len, bool logi
                 return true;
             }
         } else if (owns_kv(L)) {
-            size_t data, scales;
-            kv_row_bytes(sess, L, &data, &scales);
-            if (ckd_add(&part, data, scales) || ckd_mul(&part, part, 2) ||
+            size_t k_data, v_data, scales;
+            kv_row_bytes(sess, L, &k_data, &v_data, &scales);
+            if (ckd_add(&part, k_data, v_data) || ckd_add(&part, part, 2 * scales) ||
                 ckd_mul(&part, part, kv_len) || ckd_add(&total, total, part)) {
                 return true;
             }
@@ -190,14 +194,14 @@ snap_bytes(const struct transformer_arch_session *sess, size_t kv_len, bool logi
         if (!owns_kv(L)) {
             continue;
         }
-        size_t data, scales;
-        kv_row_bytes(sess, L, &data, &scales);
+        size_t k_data, v_data, scales;
+        kv_row_bytes(sess, L, &k_data, &v_data, &scales);
         struct geist_buffer *bufs[4] = {
                 sess->kv_int8_enabled ? sess->k_cache_q8[li] : sess->k_cache[li],
                 sess->kv_int8_enabled ? sess->v_cache_q8[li] : sess->v_cache[li],
                 sess->kv_int8_enabled ? sess->k_cache_scale[li] : nullptr,
                 sess->kv_int8_enabled ? sess->v_cache_scale[li] : nullptr};
-        const size_t rows[4] = {data, data, scales, scales};
+        const size_t rows[4] = {k_data, v_data, scales, scales};
         for (size_t b = 0; b < 4 && s == GEIST_OK; b++) {
             if (rows[b] == 0) {
                 continue;

@@ -48,7 +48,7 @@ void rope_2d_split_fp32(size_t         n_tokens,
  *   q, k, v   (n_tokens, n_heads, head_dim) fp32 row-major
  *   out       (n_tokens, n_heads, head_dim) fp32 row-major
  *
- * scale = 1 / sqrt(head_dim) (no separate softcap).
+ * scale = 1: Gemma 4 RMS-normalizes q and k instead (no softcap).
  * No mask: every query attends to every key (vision tower has only
  * padding masking, and the HF planner sizes the patch grid exactly so
  * there is no padding for the active region in single-image batches).

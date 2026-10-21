@@ -40,7 +40,7 @@ the pinned llama.cpp (`scripts/ensure-llama-bench.sh`) and runs
 on the desktop (the docker CI runner's health check pauses it while held),
 `with-pi-lock` on the Pi, `~/bin/with-mac-lock` on the Mac (`/tmp/mac-heavy.lock`; the
 `mac-m1max` runner (`macos-15-heavy`) holds it for every job and takes no
-job while an agent holds it — see "Mac runners"). The Apple profiles gate on idle CPU (>= 80 %
+job while an agent holds it — see "Mac runners" and "Host locks"). The Apple profiles gate on idle CPU (>= 80 %
 over the settle window) instead of the load average, which macOS on a shared
 desktop never brings near 0.2/core, and measure a run again when its repeats
 spread by more than 5 % (`host_gate` in the protocol's host profile).
@@ -65,26 +65,63 @@ runners are described below:
 `config.yaml` puts a node24 first on `PATH` (JavaScript actions such as
 `upload-artifact` need it) and, on the Pi, sets
 `hooks.job_started`/`job_completed` to `~/bin/runner-job-started.sh` /
-`runner-job-completed.sh`: they hold `/tmp/pi-heavy.lock` for the whole job,
-so these jobs also wait for other runners on the board.
+`runner-job-completed.sh`: they hold the board lock for the whole job, so
+these jobs also wait for other runners on the board.
 Heavy steps still go through `~/bin/with-pi-lock`.
+
+### Host locks: the lease broker
+
+Since 2026-10-20 `with-mac-lock` and `with-pi-lock` queue through a small
+broker per host (`hostlease.py`, geisten-infra role `host_lease`; Mac:
+LaunchAgent `net.geisten.hostlease`, status on `127.0.0.1:7381`; Pi: system
+unit `hostlease`, `127.0.0.1:7382`). Commands, `WAIT=<s>` (exit 1 on
+timeout), the `WAIT=0 … true` probe, `status` and the exit codes are the
+ones the plain `lockf`/`flock` wrappers had. What it adds:
+
+- one lease at a time, first come first served within a priority:
+  `LOCK_PRIO=ci` (runner hooks) > `interactive` (default) > `batch` (long
+  research, campaigns); a waiter rises one level per 30 min waited;
+- `LOCK_MAX=<minutes>` (default 60, batch 240, cap 240): past it `status`
+  marks the lease OVERTIME, 15 min later EXPIRED. Nothing is killed and the
+  lease stays exclusive; only `LOCK_KILL=1` lets the wrapper stop its own
+  command. `LOCK_NOTE=<text>` shows in `status -v`;
+- a lease ends with its client process, so a crash never leaves the host
+  locked; a broker restart hands the active lease to its client, waiters
+  re-queue.
+
+The broker holds `/tmp/mac-heavy.lock` / `/tmp/pi-heavy.lock` for the active
+lease and waits while anything else holds that file, so plain `flock` users
+still exclude — notably the `pi5-ci` docker jobs, which flock the
+bind-mounted file from inside their container, and its `flock -n` health
+check. Without the broker the wrappers fall back to the plain lock
+(`with-mac-lock.lockf`, `with-pi-lock.flock`). The broker knows nothing
+about temperature or load: the Pi's thermal pre-check (< 60 °C, load < 0.5)
+and the Mac's quiet gates stay with the callers.
 
 ### Mac runners (M1 Max, host mode)
 
 The Mac is shared with agents and the human, who take `~/bin/with-mac-lock`
-(`/tmp/mac-heavy.lock`) for every benchmark. It has two org runners, so a
-build never waits behind a benchmark and CI never holds the lock for a
-compile:
+(`/tmp/mac-heavy.lock`) for every benchmark. It has two org runners, so CI never
+holds the lock for a compile; a build waits only while a measurement runs:
 
 | name | label | lock | install |
 | :-- | :-- | :-- | :-- |
-| `mac-light` | `macos-15:host` | none; daemon at `nice 10` | `~/gitea-runner-mac-light`, LaunchAgent `net.geisten.gitea-runner-mac-light` (`Nice` 10) |
+| `mac-light` | `macos-15:host` | ci lease while a job runs (45 min declared); takes no job while it is held; daemon at `nice 10` | `~/gitea-runner-mac-light`, LaunchAgent `net.geisten.gitea-runner-mac-light` (`Nice` 10) |
 | `mac-m1max` | `macos-15-heavy:host` | held for the whole job | `~/gitea-runner-geisten`, LaunchAgent `net.geisten.gitea-runner-geisten` |
 
 `mac-m1max`'s hooks (`~/bin/mac-runner-job-started.sh` /
-`mac-runner-job-completed.sh`) hold the lock while a job runs, and its
-health check (`~/bin/mac-runner-free.sh`) takes no job while someone else
-holds it. `mac-light` has neither. Each has its own `cache.dir` and
+`mac-runner-job-completed.sh`) hold a `ci` lease while a job runs. Its
+health check (`~/bin/mac-runner-free.sh`) fetches a job only when a ci lease
+would be granted within 10 min (free, or the holder declared a `LOCK_MAX`
+that ends by then); while busy, it and the completed hook report waiting
+`macos-15-heavy` jobs, and the broker keeps the next hand-over free for CI
+(up to 180 s) instead of giving it to the next agent. `mac-light` runs the same hooks (`MAC_RUNNER_TAG=light` keeps its PID file
+apart) and its health check (`~/bin/mac-light-free.sh`) takes no job while
+anyone holds the lease, reporting its waiting jobs so the broker hands the
+lease to CI next instead of the next agent (without that, two agents passing
+the lease back and forth starved the required macOS check): its ASan and unit builds load every core, and
+before 2026-10-21 they landed inside measurements (load 80–110 during a
+lock-held A/B). Each has its own `cache.dir` and
 `host.workdir_parent` (host mode clones actions there), so the two never
 race on one action checkout. Both run with `capacity: 1` and
 `fetch_timeout: 30s`.
@@ -129,10 +166,30 @@ perf (Linux arm64)` leg runs there.
 | health check | no job below 20 GB free disk |
 | actions cache | runner's own, `172.17.0.1:8088` (ufw admits only the docker subnets) |
 | CI hygiene | system timer `ci-hygiene` (as `runner`), the desktop's script; log `/home/runner/ci-hygiene/ci-hygiene.log` |
-| git cache | `git-cache.service` on `172.17.0.1:8417`, installed but off until a read-only token is in `/home/runner/.config/git-cache/token`; the runner's `envs` are not wired to it yet ("CI git cache") |
+| git cache | `git-cache.service` on `172.17.0.1:8417` with a read-only token in `/home/runner/.config/git-cache/token`; the runner's `envs` rewrite `https://git.geisten.net/` to it |
 
 Access is key-only SSH as `germar` (no root login, ufw: 22 rate-limited
 only); unattended-upgrades is on.
+
+### Infrastructure as code and monitoring
+
+git-hel1 (git.geisten.net) and ci-arm64-hel1 are managed with Ansible in the
+private repo [`geisten/geisten-infra`](https://git.geisten.net/geisten/geisten-infra)
+(roles for sshd/ufw/fail2ban, Gitea, Caddy, backups, this runner, git cache,
+CI hygiene, monitoring). Change those hosts there, not by hand:
+`ansible-playbook site.yml --check --diff` must stay clean. The desktop and
+the Pi are in it too (runner configs and units, git cache, ci-bot,
+ci-hygiene), reached through reverse SSH tunnels; the playbook never restarts
+a runner. Its README has the details.
+
+Monitoring runs on git-hel1: Prometheus scrapes both hosts, Gitea's
+`/metrics` and blackbox probes of `/api/healthz` and geisten.net; Alertmanager
+sends to an ntfy.sh topic (name in the vault). The desktop and the Pi
+report through reverse tunnels onto git-hel1; a stale act-cache `index.lock`
+on the desktop raises ActCacheLockStale. A watchdog on ci-arm64-hel1
+reports git-hel1 itself going down. Status page:
+<https://git.geisten.net/status/> (basic auth; Prometheus and Alertmanager
+UIs under it).
 
 ## Desktop host
 

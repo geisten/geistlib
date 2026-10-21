@@ -781,6 +781,94 @@ run_norm_case(struct geist_backend *mt, struct geist_backend *ref, size_t rows, 
     rv->buffer_destroy(ref, ry);
 }
 
+/* #17: rmsnorm_add_norm is rmsnorm_add (or add), scale_f32 and rmsnorm on
+ * the same backend in one dispatch, and must give their bits: the decode
+ * path swaps one for the other with greedy output unchanged. With w and a
+ * scale (Gemma 4's PLE tail), and without w at scale 1 (Llama's residual
+ * add). */
+static void run_add_norm_case(struct geist_backend *mt, size_t rows, size_t cols, bool with_w) {
+    const struct geist_backend_vtbl  *v     = mt->desc->vtbl;
+    const struct geist_backend_fused *f     = geist_backend_fused_tbl(mt);
+    const size_t                      n     = rows * cols;
+    const float                       scale = with_w ? 0.6875f : 1.0f;
+    struct geist_buffer              *bres = nullptr, *bx = nullptr, *bw = nullptr, *bzw = nullptr;
+    struct geist_buffer              *by1 = nullptr, *bz1 = nullptr, *by2 = nullptr, *bz2 = nullptr;
+    float                            *res = dev_alloc(mt, n * sizeof(float), &bres);
+    float                            *x   = dev_alloc(mt, n * sizeof(float), &bx);
+    float                            *w   = dev_alloc(mt, cols * sizeof(float), &bw);
+    float                            *zw  = dev_alloc(mt, cols * sizeof(float), &bzw);
+    const bool alloc = res != nullptr && x != nullptr && w != nullptr && zw != nullptr &&
+                       dev_alloc(mt, n * sizeof(float), &by1) != nullptr &&
+                       dev_alloc(mt, n * sizeof(float), &bz1) != nullptr &&
+                       dev_alloc(mt, n * sizeof(float), &by2) != nullptr &&
+                       dev_alloc(mt, n * sizeof(float), &bz2) != nullptr;
+    float     *got1  = malloc(2 * n * sizeof(float));
+    float     *got2  = malloc(2 * n * sizeof(float));
+    const bool ok = alloc && got1 != nullptr && got2 != nullptr && f->rmsnorm_add_norm != nullptr;
+    check(ok, "add_norm buffers");
+    if (ok) {
+        for (size_t i = 0; i < n; i++) {
+            x[i]   = ((float) rng_u8() - 127.5f) / 32.0f;
+            res[i] = ((float) rng_u8() - 127.5f) / 64.0f;
+        }
+        for (size_t i = 0; i < cols; i++) {
+            w[i]  = 0.5f + (float) rng_u8() / 256.0f;
+            zw[i] = 0.25f + (float) rng_u8() / 128.0f;
+        }
+        const struct geist_tensor trow = {.buffer = bx,
+                                          .dtype  = GEIST_DTYPE_F32,
+                                          .layout = GEIST_LAYOUT_DENSE,
+                                          .ndim   = 2,
+                                          .shape  = {(int64_t) rows, (int64_t) cols},
+                                          .stride = {(int64_t) cols, 1}};
+        const struct geist_tensor tvec = {.buffer = bw,
+                                          .dtype  = GEIST_DTYPE_F32,
+                                          .layout = GEIST_LAYOUT_DENSE,
+                                          .ndim   = 1,
+                                          .shape  = {(int64_t) cols},
+                                          .stride = {1}};
+        struct geist_tensor tx = trow, tres = trow, ty1 = trow, tz1 = trow, ty2 = trow, tz2 = trow,
+                            tw = tvec, tzw = tvec;
+        tres.buffer         = bres;
+        ty1.buffer          = by1;
+        tz1.buffer          = bz1;
+        ty2.buffer          = by2;
+        tz2.buffer          = bz2;
+        tzw.buffer          = bzw;
+        enum geist_status s = f->rmsnorm_add_norm(
+                mt, 1e-6f, scale, &tres, &tx, with_w ? &tw : nullptr, &tzw, &ty1, &tz1);
+        if (s == GEIST_OK)
+            s = with_w ? f->rmsnorm_add(mt, &tres, &tx, &tw, 1e-6f, &ty2)
+                       : mt->desc->prims->add(mt, &tres, &tx, &ty2);
+        if (s == GEIST_OK && scale != 1.0f)
+            s = mt->desc->prims->scale_f32(mt, &ty2, scale, &ty2);
+        if (s == GEIST_OK)
+            s = mt->desc->prims->rmsnorm(mt, &ty2, &tzw, 1e-6f, &tz2);
+        check(s == GEIST_OK, "add_norm dispatch");
+        check(v->buffer_download(n * sizeof(float), (uint8_t *) got1, by1) == GEIST_OK &&
+                      v->buffer_download(n * sizeof(float), (uint8_t *) (got1 + n), bz1) ==
+                              GEIST_OK &&
+                      v->buffer_download(n * sizeof(float), (uint8_t *) got2, by2) == GEIST_OK &&
+                      v->buffer_download(n * sizeof(float), (uint8_t *) (got2 + n), bz2) ==
+                              GEIST_OK,
+              "add_norm download");
+        const bool same = memcmp(got1, got2, 2 * n * sizeof(float)) == 0;
+        check(same, "rmsnorm_add_norm matches the separate ops bit for bit");
+        printf("  rmsnorm_add_norm rows %zu cols %zu %s: %s\n",
+               rows,
+               cols,
+               with_w ? "norm+scale" : "add",
+               same ? "bit-identical OK" : "FAIL");
+    }
+    free(got1);
+    free(got2);
+    struct geist_buffer *bufs[] = {bres, bx, bw, bzw, by1, bz1, by2, bz2};
+    for (size_t i = 0; i < sizeof bufs / sizeof bufs[0]; i++) {
+        if (bufs[i] != nullptr)
+            v->buffer_destroy(mt, bufs[i]);
+    }
+}
+
 static void run_qwen35_attention_ops(struct geist_backend *mt) {
     enum { ROWS = 3, HEADS = 2, HD = 5, QOUT = HEADS * HD };
     const struct geist_backend_vtbl  *v  = mt->desc->vtbl;
@@ -996,6 +1084,17 @@ int main(void) {
     run_norm_case(mt, ref, 35, 256);
     run_norm_case(mt, ref, 3, 1536);
     run_norm_case(mt, ref, 7, 896);
+    for (size_t i = 0; i < 2; i++) {
+        const bool with_w = i == 0;
+        run_add_norm_case(mt, 1, 1536, with_w);
+        run_add_norm_case(mt, 1, 3072, with_w);
+        run_add_norm_case(mt, 1, 1000, with_w);
+        run_add_norm_case(mt, 1, 5000, with_w);
+        run_add_norm_case(mt, 1, 256, with_w);
+        run_add_norm_case(mt, 35, 256, with_w);
+        run_add_norm_case(mt, 3, 1536, with_w);
+        run_add_norm_case(mt, 7, 896, with_w);
+    }
     run_f32kv_attention_case(mt, 1, 200, 8, 2, 256, 0);
     run_f32kv_attention_case(mt, 1, 500, 8, 2, 256, 128);
     run_f32kv_attention_case(mt, 1, 99, 4, 1, 512, 0);

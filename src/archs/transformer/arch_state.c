@@ -259,7 +259,7 @@ zero_unmapped(struct geist_backend *be, size_t bytes, struct geist_buffer *buf) 
     return GEIST_OK;
 }
 
-/* Layer li's K and V data, `bytes` each, in one zeroed buffer, kv_data[li],
+/* Layer li's K and V data, k_bytes and v_bytes, in one zeroed buffer, kv_data[li],
  * with *k and *v aliased slices of it (caps.kv_q8_block, caps.kv_dense_block):
  * K at the start, V after K's pages and `shift` bytes into its page, a
  * multiple of 64 (V as aligned as K). A KV head's rows lie a cache row
@@ -270,7 +270,8 @@ zero_unmapped(struct geist_backend *be, size_t bytes, struct geist_buffer *buf) 
  * another KV head's. */
 [[nodiscard]] static enum geist_status alloc_kv_block(struct transformer_arch_session *sess,
                                                       size_t                           li,
-                                                      size_t                           bytes,
+                                                      size_t                           k_bytes,
+                                                      size_t                           v_bytes,
                                                       size_t                           shift,
                                                       enum geist_buffer_role           role,
                                                       struct geist_buffer            **k,
@@ -278,10 +279,10 @@ zero_unmapped(struct geist_backend *be, size_t bytes, struct geist_buffer *buf) 
     struct geist_backend *be     = sess->model->backend;
     size_t                k_span = 0;
     size_t                total  = 0;
-    if (geist_ckd_round_up_pow2(bytes, 4096, &k_span) || ckd_add(&total, k_span, shift) ||
-        ckd_add(&total, total, bytes)) {
+    if (geist_ckd_round_up_pow2(k_bytes, 4096, &k_span) || ckd_add(&total, k_span, shift) ||
+        ckd_add(&total, total, v_bytes)) {
         geist_backend_set_error(
-                be, GEIST_E_OOM, "transformer: a %zu-byte KV cache overflows", bytes);
+                be, GEIST_E_OOM, "transformer: a %zu-byte KV cache overflows", k_bytes);
         return GEIST_E_OOM;
     }
     enum geist_status s =
@@ -296,11 +297,11 @@ zero_unmapped(struct geist_backend *be, size_t bytes, struct geist_buffer *buf) 
         return GEIST_E_BACKEND;
     }
     memset(base, 0, total);
-    s = be->desc->vtbl->buffer_create_aliased(be, base, bytes, role, k);
+    s = be->desc->vtbl->buffer_create_aliased(be, base, k_bytes, role, k);
     if (s != GEIST_OK) {
         return s;
     }
-    return be->desc->vtbl->buffer_create_aliased(be, base + k_span + shift, bytes, role, v);
+    return be->desc->vtbl->buffer_create_aliased(be, base + k_span + shift, v_bytes, role, v);
 }
 
 /* Upload a host-side cos or sin table into a backend buffer. */
@@ -467,8 +468,8 @@ enum geist_status transformer_kv_bytes_for(size_t                              *
             const size_t k_rows = (2 * row * sizeof(float) + R - 1) / R; /* K scales + zeros */
             per                 = 2 * (row / 4) + 2 * kv * sizeof(float) + k_rows;
         } else if (kl->int8) {
-            const size_t data = kl->int4_packed ? row / 2 : row * sizeof(int8_t);
-            per               = 2 * data + 2 * kv * sizeof(float); /* + K, V scales */
+            const size_t v_data = kl->int4_packed ? row / 2 : row * sizeof(int8_t);
+            per = row * sizeof(int8_t) + v_data + 2 * kv * sizeof(float); /* + K, V scales */
         } else {
             per = 2 * row * (kl->f16 ? 2u : sizeof(float));
         }
@@ -570,9 +571,10 @@ static void kv_slot_arrays(struct transformer_arch_session *sess,
     return GEIST_OK;
 }
 
-/* Layer li's INT8 (or packed INT4) cache and its per-(token, kv_head)
- * scales. Packed INT4 halves the data buffers (2 values/byte); scales are
- * unchanged. hd is a power of two (128/256/512) so n_elems is even. */
+/* Layer li's INT8 (or INT4) cache and its per-(token, kv_head) scales.
+ * INT4 keeps K at INT8 and packs V two values a byte (#53), so its V
+ * buffer is half the K buffer; scales are unchanged. hd is a power of two
+ * (128/256/512) so n_elems is even. */
 [[nodiscard]] static enum geist_status alloc_layer_kv_int8(struct transformer_arch_session *sess,
                                                            size_t                           li) {
     const struct transformer_arch_state *st       = sess->model;
@@ -580,26 +582,27 @@ static void kv_slot_arrays(struct transformer_arch_session *sess,
     const size_t                         hd       = st->layers[li].head_dim;
     const size_t                         n_elems  = sess->max_seq_len * st->n_kv_heads * hd;
     const size_t                         n_scales = sess->max_seq_len * st->n_kv_heads;
-    const size_t data_bytes = sess->kv_int4_packed_enabled ? n_elems / 2 : n_elems * sizeof(int8_t);
+    const size_t                         k_bytes  = n_elems * sizeof(int8_t);
+    const size_t      v_bytes = sess->kv_int4_packed_enabled ? n_elems / 2 : k_bytes;
     enum geist_status s;
     if (be->desc->caps.kv_q8_block) {
         /* V half a row on (half a page at most, a multiple of 64): the
          * cpu_x86 kernels gained 3-39 % over V at K's offset, more than
          * with V one KV head's slice on. */
-        const size_t row =
-                sess->kv_int4_packed_enabled ? st->n_kv_heads * hd / 2 : st->n_kv_heads * hd;
+        const size_t row   = st->n_kv_heads * hd;
         const size_t shift = ((row < 4096 ? row : 4096) / 2) & ~(size_t) 63;
         s                  = alloc_kv_block(sess,
                                             li,
-                                            data_bytes,
+                                            k_bytes,
+                                            v_bytes,
                                             shift,
                                             GEIST_BUFFER_SCRATCH,
                                             &sess->k_cache_q8[li],
                                             &sess->v_cache_q8[li]);
     } else {
-        s = transformer_scratch_alloc(be, data_bytes, &sess->k_cache_q8[li]);
+        s = transformer_scratch_alloc(be, k_bytes, &sess->k_cache_q8[li]);
         if (s == GEIST_OK) {
-            s = transformer_scratch_alloc(be, data_bytes, &sess->v_cache_q8[li]);
+            s = transformer_scratch_alloc(be, v_bytes, &sess->v_cache_q8[li]);
         }
     }
     if (s == GEIST_OK) {
@@ -648,6 +651,7 @@ alloc_kv_buffer(struct geist_backend *be, size_t bytes, struct geist_buffer **ou
         const size_t shift = st->n_kv_heads > 1 ? (hd * kv_elem_bytes + 63) & ~(size_t) 63 : 0;
         return alloc_kv_block(sess,
                               li,
+                              n_elems * kv_elem_bytes,
                               n_elems * kv_elem_bytes,
                               shift,
                               GEIST_BUFFER_KV_CACHE,
@@ -1638,8 +1642,12 @@ plan_split_layers(struct gguf_ctx *gguf, const struct geist_session_opts *opts, 
  * then wins, runs 1388/1396), where it can pay and fits: a discrete GPU
  * (with unified memory the whole model fits the GPU itself), and host
  * memory for the twins' copy of the load-backend layers' matrices with a
- * fifth to spare. */
+ * fifth to spare. Off when the split stage holds every layer: the twins
+ * would have none, and each session's twin IO buffer would be refused. */
 static size_t offload_m_min(const struct transformer_arch_state *st, struct geist_backend *sbe) {
+    if (st->layer_lo >= st->n_layers) {
+        return 0;
+    }
     const char *v = getenv("GEIST_OFFLOAD_M_MIN");
     if (v != nullptr && *v != '\0') {
         return (size_t) strtoull(v, nullptr, 10);
@@ -2013,9 +2021,10 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
 
 /* ---- Multi-session API ------------------------------------------------- */
 
-[[nodiscard]] static enum geist_kv_mode resolve_kv_mode(const struct geist_backend      *be,
-                                                        enum geist_kv_mode               family,
-                                                        const struct geist_session_opts *opts) {
+[[nodiscard]] static enum geist_kv_mode
+resolve_kv_mode_requested(const struct geist_backend      *be,
+                          enum geist_kv_mode               family,
+                          const struct geist_session_opts *opts) {
     enum geist_kv_mode m = (opts != nullptr) ? opts->kv_mode : GEIST_KV_AUTO;
     if (m != GEIST_KV_AUTO) {
         return m;
@@ -2048,6 +2057,30 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     return GEIST_KV_FP32;
 }
 
+/* The requested mode, but never INT4 on a family where it misses the
+ * quality bar (transformer_family.kv_int4_instead): that family gets its
+ * replacement, and stderr says so once per process. */
+[[nodiscard]] static enum geist_kv_mode resolve_kv_mode(const struct geist_backend      *be,
+                                                        const struct transformer_family *family,
+                                                        const struct geist_session_opts *opts) {
+    const enum geist_kv_mode m = resolve_kv_mode_requested(
+            be, family != nullptr ? family->kv_auto : GEIST_KV_AUTO, opts);
+    if (m != GEIST_KV_INT4 || family == nullptr || family->kv_int4_instead == GEIST_KV_AUTO) {
+        return m;
+    }
+    static atomic_bool told = false;
+    if (!atomic_exchange(&told, true)) {
+        fprintf(stderr,
+                "geist: the INT4 KV cache misses the quality bar on %s models (#53); using %s "
+                "instead\n",
+                family->name,
+                family->kv_int4_instead == GEIST_KV_INT8  ? "INT8"
+                : family->kv_int4_instead == GEIST_KV_F16 ? "F16"
+                                                          : "FP32");
+    }
+    return family->kv_int4_instead;
+}
+
 /* The KV cache layout a session gets: kv_mode, the GEIST_KV_* env and the
  * backend decide it. Shared by session_alloc and the plan, so the two
  * cannot disagree. */
@@ -2056,12 +2089,9 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
                               const struct geist_session_opts     *opts) {
     struct transformer_kv_layout kl = {};
     /* KV-mode resolution: opts override > env > backend/platform default. */
-    const enum geist_kv_mode mode =
-            resolve_kv_mode(state->backend,
-                            state->family != nullptr ? state->family->kv_auto : GEIST_KV_AUTO,
-                            opts);
-    kl.kivi = (mode == GEIST_KV_KIVI);
-    kl.int8 = (mode == GEIST_KV_INT8);
+    const enum geist_kv_mode mode = resolve_kv_mode(state->backend, state->family, opts);
+    kl.kivi                       = (mode == GEIST_KV_KIVI);
+    kl.int8                       = (mode == GEIST_KV_INT8);
     /* Issue #61: packed 4-bit KV rides the INT8 storage path (buffer alloc +
      * ctx wiring), with half-size data buffers holding 2 values/byte. */
     kl.int4_packed = (mode == GEIST_KV_INT4);
@@ -2087,13 +2117,15 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
             kl.kivi = false;
         }
     }
-    /* Issue #61: Hadamard rotation, only meaningful on the INT8 storage path.
-     * Packed INT4 rotates by DEFAULT (INT4-without-rotation is a real quality
-     * cliff and the rotation is ~free / a net win at long context); plain
-     * INT8 stays opt-in. GEIST_KV_ROT=0 opts out, =1 forces on. */
+    /* Issue #61: Hadamard rotation, only meaningful on the INT8 storage path,
+     * where it is on by default: INT4 without it is a quality cliff, and
+     * INT8 without it misses the quality bar on QK-norm models, whose K and
+     * Q rows carry outlier channels (#53: Qwen3-0.6B, teacher-forced
+     * against FP32 KV, mean JS 0.016 nats and 82 % top-1 unrotated, 0.0013
+     * and 96 % rotated). GEIST_KV_ROT=0 opts out, =1 forces on. */
     {
         const char *env_rot     = getenv("GEIST_KV_ROT");
-        const bool  rot_default = kl.int4_packed;
+        const bool  rot_default = kl.int8;
         const bool  rot_on      = (env_rot != nullptr) ? (env_rot[0] == '1') : rot_default;
         kl.rot                  = kl.int8 && rot_on;
     }

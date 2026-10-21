@@ -89,6 +89,14 @@ struct transformer_layer_forward_ctx {
     bool     profile;
     uint64_t profile_tail_ns;
 
+    /* Fused residual norms (#17). x_prenormed: the previous layer's tail
+     * already wrote attn_norm(h_in) into scratch_normed. ffn_x_prenormed:
+     * the attention block's residual step wrote ffn_norm(h_post_attn) into
+     * scratch_pre_ff. out_scaled: the tail applied layer_scalar. */
+    bool x_prenormed;
+    bool ffn_x_prenormed;
+    bool out_scaled;
+
     struct geist_buffer *k_cache_buf;
     struct geist_buffer *v_cache_buf;
     struct geist_buffer *k_cache_q8_buf;
@@ -309,8 +317,8 @@ void attention_int8_via_buffers(size_t        n_q,
                                 float        *out,
                                 float        *scratch);
 
-/* Packed-INT4 variant: k_q4/v_q4 hold two 4-bit values per byte
- * (head_dim/2 bytes per row); otherwise identical to the INT8 kernel. */
+/* INT4 variant: K INT8 as in the INT8 kernel, v_q4 two 4-bit values per
+ * byte (head_dim/2 bytes per row); otherwise identical to it. */
 void attention_int4_via_buffers(size_t         n_q,
                                 size_t         n_q_heads,
                                 size_t         head_dim,
@@ -319,7 +327,7 @@ void attention_int4_via_buffers(size_t         n_q,
                                 size_t         q_offset,
                                 size_t         sliding_window,
                                 const float   *q,
-                                const uint8_t *k_q4,
+                                const int8_t  *k_q8,
                                 const float   *k_scale,
                                 const uint8_t *v_q4,
                                 const float   *v_scale,

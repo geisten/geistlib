@@ -4,8 +4,8 @@
  * one-head loop and the GQA-grouped passes, split or not.
  *
  * The kernels quantize each query head to int8 (scale amax/127, lrintf),
- * dot it exactly against the int8 (or unpacked int4) K rows, and softmax
- * and accumulate V in fp32, online over blocks of the context (decode
+ * dot it exactly against the int8 K rows, and softmax and accumulate V
+ * (int8, or unpacked int4) in fp32, online over blocks of the context (decode
  * passes split into context chunks merged per head). The reference repeats
  * the same Q quantization and integer dots, then does the softmax and the
  * V sum in double: the only differences left are fp32 rounding, so the
@@ -24,8 +24,8 @@
  * the first for others. Steep trends put scores hundreds apart, so that
  * most exponents, rescales and chunk merges fall below ATTN_EXP_FLOOR
  * (gemma4_kernels.h), where the kernels clamp the exponent or drop the
- * term. INT4 shapes pack K/V values in [-7, 7], which the 4-bit cache holds
- * exactly, and run the INT4 kernel's one-head loop.
+ * term. INT4 shapes keep K at int8 and pack V values in [-7, 7], which the
+ * 4-bit cache holds exactly (#53), and run the INT4 kernel's one-head loop.
  * Every output must be written (poisoned first, compared by bit pattern —
  * -ffast-math build); a 1-thread run must give the same bits as the
  * default team; an INT8 run without scratch (decode unsplit) must match
@@ -76,7 +76,7 @@ static uint32_t next_u32(void) {
 struct shape {
     size_t n_q, n_q_heads, n_kv_heads, head_dim, n_kv, window;
     float  trend; /* 0, or one K row per KV head, K scales rising to ~0.1 * trend */
-    bool   int4;  /* packed 4-bit K/V through attention_int4_via_buffers */
+    bool   int4;  /* packed 4-bit V through attention_int4_via_buffers */
     bool   full;  /* K over the whole int8 range, -128 included */
 };
 
@@ -100,7 +100,6 @@ static void run(const struct shape *sh,
                 size_t              n_scr,
                 const float        *q,
                 const int8_t       *k,
-                const uint8_t      *k4,
                 const float        *ks,
                 const int8_t       *v,
                 const uint8_t      *v4,
@@ -117,7 +116,7 @@ static void run(const struct shape *sh,
                                    q_offset,
                                    sh->window,
                                    q,
-                                   k4,
+                                   k,
                                    ks,
                                    v4,
                                    vs,
@@ -246,7 +245,6 @@ static int check_backend(size_t              bi,
                          const struct shape *sh,
                          const float        *q,
                          const int8_t       *k,
-                         const uint8_t      *k4,
                          const float        *ks,
                          const int8_t       *v,
                          const uint8_t      *v4,
@@ -277,14 +275,16 @@ static int check_backend(size_t              bi,
         return 0;
     }
     const struct geist_backend_vtbl *vt = be->desc->vtbl;
-    /* K and V as the op takes them: one int8 per value, or two per byte. */
-    const size_t         row      = sh->int4 ? sh->head_dim / 2 : sh->head_dim;
-    const size_t         kv_elems = sh->n_kv * sh->n_kv_heads * row;
-    const size_t         q_elems  = sh->n_q * sh->n_q_heads * sh->head_dim;
-    const size_t         n_sc     = sh->n_kv * sh->n_kv_heads;
-    float               *poison   = heap_alloc_array_aligned(float, q_elems);
-    float               *out      = heap_alloc_array_aligned(float, q_elems);
-    float               *out1     = heap_alloc_array_aligned(float, q_elems);
+    /* K and V as the op takes them: one int8 per value, V of INT4 two per
+     * byte. */
+    const size_t         row     = sh->int4 ? sh->head_dim / 2 : sh->head_dim;
+    const size_t         k_elems = sh->n_kv * sh->n_kv_heads * sh->head_dim;
+    const size_t         v_elems = sh->n_kv * sh->n_kv_heads * row;
+    const size_t         q_elems = sh->n_q * sh->n_q_heads * sh->head_dim;
+    const size_t         n_sc    = sh->n_kv * sh->n_kv_heads;
+    float               *poison  = heap_alloc_array_aligned(float, q_elems);
+    float               *out     = heap_alloc_array_aligned(float, q_elems);
+    float               *out1    = heap_alloc_array_aligned(float, q_elems);
     struct geist_buffer *bq = nullptr, *bk = nullptr, *bks = nullptr, *bv = nullptr, *bvs = nullptr,
                         *bo = nullptr;
     int fails               = 0;
@@ -298,9 +298,9 @@ static int check_backend(size_t              bi,
         poison[i] = POISON;
     }
     bq  = upload(be, q_elems * sizeof *q, q);
-    bk  = upload(be, kv_elems, sh->int4 ? (const void *) k4 : (const void *) k);
+    bk  = upload(be, k_elems, k);
     bks = upload(be, n_sc * sizeof *ks, ks);
-    bv  = upload(be, kv_elems, sh->int4 ? (const void *) v4 : (const void *) v);
+    bv  = upload(be, v_elems, sh->int4 ? (const void *) v4 : (const void *) v);
     bvs = upload(be, n_sc * sizeof *vs, vs);
     bo  = upload(be, q_elems * sizeof *out, poison);
     if (bq == nullptr || bk == nullptr || bks == nullptr || bv == nullptr || bvs == nullptr ||
@@ -311,9 +311,10 @@ static int check_backend(size_t              bi,
     }
     const struct geist_tensor tq =
             tensor(bq, GEIST_DTYPE_F32, 3, sh->n_q, sh->n_q_heads, sh->head_dim);
-    const enum geist_dtype    kvt = sh->int4 ? GEIST_DTYPE_U8 : GEIST_DTYPE_I8;
-    const struct geist_tensor tk  = tensor(bk, kvt, 3, sh->n_kv, sh->n_kv_heads, row);
-    const struct geist_tensor tv  = tensor(bv, kvt, 3, sh->n_kv, sh->n_kv_heads, row);
+    const enum geist_dtype    vt_ = sh->int4 ? GEIST_DTYPE_U8 : GEIST_DTYPE_I8;
+    const struct geist_tensor tk =
+            tensor(bk, GEIST_DTYPE_I8, 3, sh->n_kv, sh->n_kv_heads, sh->head_dim);
+    const struct geist_tensor tv  = tensor(bv, vt_, 3, sh->n_kv, sh->n_kv_heads, row);
     const struct geist_tensor tks = tensor(bks, GEIST_DTYPE_F32, 2, sh->n_kv, sh->n_kv_heads, 0);
     const struct geist_tensor tvs = tensor(bvs, GEIST_DTYPE_F32, 2, sh->n_kv, sh->n_kv_heads, 0);
     struct geist_tensor to = tensor(bo, GEIST_DTYPE_F32, 3, sh->n_q, sh->n_q_heads, sh->head_dim);
@@ -428,21 +429,20 @@ static int check_shape(const struct shape *sh) {
     const size_t n_scr    = attention_int8_scratch_floats(sh->n_q_heads, sh->head_dim);
     float       *scratch  = heap_alloc_array_aligned(float, n_scr);
     float       *out2     = heap_alloc_array_aligned(float, q_elems);
-    uint8_t     *k4       = heap_alloc_array_aligned(uint8_t, kv_elems / 2 + 1);
     uint8_t     *v4       = heap_alloc_array_aligned(uint8_t, kv_elems / 2 + 1);
     int          fails    = 0;
     if (k == nullptr || v == nullptr || ks == nullptr || vs == nullptr || q == nullptr ||
         out == nullptr || out1 == nullptr || ref == nullptr || scores == nullptr ||
-        scratch == nullptr || out2 == nullptr || k4 == nullptr || v4 == nullptr) {
+        scratch == nullptr || out2 == nullptr || v4 == nullptr) {
         fprintf(stderr, "ERROR: allocation failed\n");
         fails = 1;
         goto done;
     }
-    /* INT4: values in [-7, 7], which the 4-bit cache holds exactly. */
-    const uint32_t span = sh->int4 ? 15u : 255u;
+    /* INT4: V values in [-7, 7], which the 4-bit cache holds exactly. */
+    const uint32_t v_span = sh->int4 ? 15u : 255u;
     for (size_t i = 0; i < kv_elems; i++) {
-        k[i] = (int8_t) ((int) (next_u32() % span) - (int) (span / 2));
-        v[i] = (int8_t) ((int) (next_u32() % span) - (int) (span / 2));
+        k[i] = (int8_t) ((int) (next_u32() % 255u) - 127);
+        v[i] = (int8_t) ((int) (next_u32() % v_span) - (int) (v_span / 2));
         if (sh->full) {
             k[i] = (int8_t) (next_u32() % 3u == 0u ? -128 : (int) (next_u32() % 256u) - 128);
         }
@@ -452,9 +452,9 @@ static int check_shape(const struct shape *sh) {
         vs[i] = 0.0005f + (float) (next_u32() % 1000u) * 2e-6f;
     }
     if (sh->trend > 0.0f) {
-        /* |score| grows from ~0.2 to ~35 times trend along the context (INT8;
-         * ~17 times less for INT4's smaller values): rising for the heads
-         * whose Q agrees with the pattern, falling for the others. */
+        /* |score| grows from ~0.2 to ~35 times trend along the context:
+         * rising for the heads whose Q agrees with the pattern, falling for
+         * the others. */
         const float  top = 0.1f * sh->trend;
         const size_t row = sh->n_kv_heads * sh->head_dim;
         for (size_t s = 1; s < sh->n_kv; s++) {
@@ -470,10 +470,6 @@ static int check_shape(const struct shape *sh) {
         float row[TRANSFORMER_HEAD_DIM_MAX];
         for (size_t r = 0; r < sh->n_kv * sh->n_kv_heads; r++) {
             for (size_t i = 0; i < sh->head_dim; i++) {
-                row[i] = (float) k[r * sh->head_dim + i];
-            }
-            int4_pack_row(sh->head_dim, row, 1.0f, k4 + r * sh->head_dim / 2);
-            for (size_t i = 0; i < sh->head_dim; i++) {
                 row[i] = (float) v[r * sh->head_dim + i];
             }
             int4_pack_row(sh->head_dim, row, 1.0f, v4 + r * sh->head_dim / 2);
@@ -488,7 +484,7 @@ static int check_shape(const struct shape *sh) {
     for (size_t i = 0; i < q_elems; i++) {
         out[i] = POISON;
     }
-    run(sh, n_scr, q, k, k4, ks, v, v4, vs, out, scratch);
+    run(sh, n_scr, q, k, ks, v, v4, vs, out, scratch);
     reference(sh, q, k, ks, v, vs, ref, scores);
 
     double scale = 0.0, max_d = 0.0;
@@ -527,7 +523,7 @@ static int check_shape(const struct shape *sh) {
         fails++;
     }
     /* Without scratch decode runs unsplit: the reference bound holds too. */
-    run(sh, 0, q, k, k4, ks, v, v4, vs, out2, nullptr);
+    run(sh, 0, q, k, ks, v, v4, vs, out2, nullptr);
     double max_d2 = 0.0;
     for (size_t i = 0; i < q_elems; i++) {
         const double d = fabs((double) out2[i] - ref[i]);
@@ -548,14 +544,14 @@ static int check_shape(const struct shape *sh) {
     }
     for (size_t bi = 0; bi < N_BACKENDS; bi++) {
         if (g_be[bi] != nullptr) {
-            fails += check_backend(bi, sh, q, k, k4, ks, v, v4, vs, ref, out, tol);
+            fails += check_backend(bi, sh, q, k, ks, v, v4, vs, ref, out, tol);
         }
     }
 #if defined(_OPENMP)
     /* Same bits whatever the team: each head is one thread's sequential work. */
     const int team = omp_get_max_threads();
     omp_set_num_threads(1);
-    run(sh, n_scr, q, k, k4, ks, v, v4, vs, out1, scratch);
+    run(sh, n_scr, q, k, ks, v, v4, vs, out1, scratch);
     omp_set_num_threads(team);
     if (memcmp(out, out1, q_elems * sizeof *out) != 0) {
         fprintf(stderr,
@@ -593,7 +589,6 @@ done:
     safe_free((void **) &scores);
     safe_free((void **) &scratch);
     safe_free((void **) &out2);
-    safe_free((void **) &k4);
     safe_free((void **) &v4);
     return fails;
 }
@@ -635,7 +630,7 @@ int main(void) {
             {8, 16, 8, 128, 2000, 0, 10.0f, false, false},  /* grouped prefill chunk */
             {1, 4, 4, 64, 2000, 0, 10.0f, false, false},    /* one-head loop */
             {4, 15, 5, 64, 1800, 700, 10.0f, false, false}, /* ... sliding window */
-            {1, 4, 4, 64, 2000, 0, 170.0f, true, false},    /* INT4 */
+            {1, 4, 4, 64, 2000, 0, 10.0f, true, false},     /* INT4 */
             /* K over the whole int8 range, -128 included */
             {1, 32, 8, 64, 700, 0, 0.0f, false, true},  /* grouped decode */
             {5, 16, 8, 80, 300, 0, 0.0f, false, true},  /* head_dim 80: the tails */

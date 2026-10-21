@@ -299,6 +299,7 @@ enum geist_fused_op {
     GEIST_FUSED_ATTN_KV_INT4,
     GEIST_FUSED_HADAMARD_ROTATE,
     GEIST_FUSED_DELTANET_MIX,
+    GEIST_FUSED_RMSNORM_ADD_NORM,
     GEIST_FUSED_LINEAR_GROUPED,
 };
 
@@ -628,7 +629,10 @@ struct geist_backend_fused {
      * gate_scratch [rows, hpl] and proj_scratch [rows, d_model] hold the
      * intermediates. Backends may support only a subset (e.g. rows==1,
      * F32 weights) — anything else returns GEIST_E_UNSUPPORTED and the
-     * arch runs the decomposed ops. nullptr = always decomposed. */
+     * arch runs the decomposed ops. nullptr = always decomposed.
+     * norm_w nullptr, on a backend that answers GEIST_FUSED_RMSNORM_ADD_NORM:
+     * the block stops at proj_scratch (gate · proj_w^T) and leaves y alone,
+     * for the arch to finish with rmsnorm_add_norm. */
     enum geist_status (*ple_block)(struct geist_backend      *be,
                                    const struct geist_tensor *x,
                                    const struct geist_tensor *gate_w,
@@ -696,9 +700,11 @@ struct geist_backend_fused {
     enum geist_status (*attention_kv_int8)(struct geist_backend                      *be,
                                            const struct geist_attention_kv_args *args);
 
-    /* Attention over the packed INT4 KV cache (GEIST_KV_INT4), with
-     * geist_attention_kv_args as for attention_kv_int8 except K and V:
-     *   k, v    U8 DENSE [n_kv, n_kv_heads, head_dim / 2]   two signed 4-bit
+    /* Attention over the INT4 KV cache (GEIST_KV_INT4), with
+     * geist_attention_kv_args as for attention_kv_int8 except V (K stays
+     * I8 [n_kv, n_kv_heads, head_dim]: a 4-bit K breaks QK-norm models,
+     * #53):
+     *   v       U8 DENSE [n_kv, n_kv_heads, head_dim / 2]   two signed 4-bit
      *           values per byte, element 2i in the low nibble and 2i + 1 in
      *           the high one, two's complement (the cache holds [-7, 7])
      * head_dim is even. Everything else, the query quantization, the checks
@@ -708,6 +714,24 @@ struct geist_backend_fused {
      * GEIST_FUSED_ATTN_KV_INT4. */
     enum geist_status (*attention_kv_int4)(struct geist_backend                      *be,
                                            const struct geist_attention_kv_args *args);
+
+    /* A residual step and the pre-norm that reads its result, one pass:
+     *   y = (res + rmsnorm(x) * w) * scale      (w nullptr: res + x)
+     *   z = rmsnorm(y) * z_w
+     * i.e. rmsnorm_add (or add), scale_f32 and rmsnorm in that order, and
+     * bit-identical to them on the same backend. All F32 DENSE rows of
+     * one shape, w and z_w [cols]; y may alias res or x, z aliases none of
+     * them. Plan-bound with GEIST_FUSED_RMSNORM_ADD_NORM (any m up to the
+     * probed one). nullptr = the arch issues the separate ops. */
+    enum geist_status (*rmsnorm_add_norm)(struct geist_backend      *be,
+                                          float                      eps,
+                                          float                      scale,
+                                          const struct geist_tensor *res,
+                                          const struct geist_tensor *x,
+                                          const struct geist_tensor *w,
+                                          const struct geist_tensor *z_w,
+                                          struct geist_tensor       *y,
+                                          struct geist_tensor       *z);
 };
 
 /* ====================================================================== */

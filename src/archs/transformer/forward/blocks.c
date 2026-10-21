@@ -490,6 +490,93 @@ enum geist_status blk_norm_add(struct transformer_layer_forward_ctx *ctx,
     return s;
 }
 
+enum geist_status blk_attn_norm(struct transformer_layer_forward_ctx *ctx, struct geist_buffer *x) {
+    if (ctx->x_prenormed) {
+        return GEIST_OK;
+    }
+    return blk_rmsnorm(ctx, ctx->st->d_model, ctx->h_in_buf, &ctx->L->attn_norm, x);
+}
+
+enum geist_status blk_attn_residual(struct transformer_layer_forward_ctx *ctx,
+                                    const struct geist_tensor            *post_w) {
+    struct transformer_arch_session *sess = ctx->sess;
+    const int64_t                    d    = ctx->st->d_model;
+    if (ctx->P->fuse_attn_add_norm) {
+        struct geist_tensor t_res = view_2d(ctx->h_in_buf, ctx->SEQ, d);
+        struct geist_tensor t_x   = view_2d(sess->scratch_o, ctx->SEQ, d);
+        struct geist_tensor t_y   = view_2d(sess->scratch_h_post_attn, ctx->SEQ, d);
+        struct geist_tensor t_z   = view_2d(sess->scratch_pre_ff, ctx->SEQ, d);
+        struct geist_tensor t_zw  = view_1d(ctx->L->ffn_norm.buffer, d);
+        struct geist_tensor t_w   = post_w != nullptr ? view_1d(post_w->buffer, d) : t_zw;
+        /* Bound at plan build: the op must succeed (#352). */
+        enum geist_status s  = ctx->fused->rmsnorm_add_norm(ctx->be,
+                                                            ctx->eps,
+                                                            1.0f,
+                                                            &t_res,
+                                                            &t_x,
+                                                            post_w != nullptr ? &t_w : nullptr,
+                                                            &t_zw,
+                                                            &t_y,
+                                                            &t_z);
+        ctx->ffn_x_prenormed = s == GEIST_OK;
+        return s;
+    }
+    if (post_w == nullptr) {
+        return blk_add(ctx, (size_t) d, ctx->h_in_buf, sess->scratch_o, sess->scratch_h_post_attn);
+    }
+    return blk_norm_add(ctx,
+                        ctx->P->fuse_attn_rmsnorm_add,
+                        post_w,
+                        sess->scratch_o,
+                        ctx->h_in_buf,
+                        sess->scratch_post_attn,
+                        sess->scratch_h_post_attn);
+}
+
+enum geist_status blk_residual_out(struct transformer_layer_forward_ctx *ctx,
+                                   float                                 scale,
+                                   bool                                  fused,
+                                   const struct geist_tensor            *w,
+                                   struct geist_buffer                  *x,
+                                   struct geist_buffer                  *res,
+                                   struct geist_buffer                  *tmp) {
+    struct transformer_arch_session *sess = ctx->sess;
+    const int64_t                    d    = ctx->st->d_model;
+    struct geist_buffer             *out  = ctx->h_out_buf;
+    if (ctx->P->fuse_tail_norm) {
+        /* The plan binds this only where layer_idx + 1 exists, runs here
+         * and is an attention layer of this family. */
+        const size_t        next  = (size_t) ctx->layer_idx + 1;
+        struct geist_tensor t_res = view_2d(res, ctx->SEQ, d);
+        struct geist_tensor t_x   = view_2d(x, ctx->SEQ, d);
+        struct geist_tensor t_y   = view_2d(out, ctx->SEQ, d);
+        struct geist_tensor t_z   = view_2d(sess->scratch_normed, ctx->SEQ, d);
+        struct geist_tensor t_zw  = view_1d(ctx->st->layers[next].attn_norm.buffer, d);
+        struct geist_tensor t_w   = w != nullptr ? view_1d(w->buffer, d) : t_zw;
+        enum geist_status   s     = ctx->fused->rmsnorm_add_norm(ctx->be,
+                                                                 ctx->eps,
+                                                                 scale,
+                                                                 &t_res,
+                                                                 &t_x,
+                                                                 w != nullptr ? &t_w : nullptr,
+                                                                 &t_zw,
+                                                                 &t_y,
+                                                                 &t_z);
+        if (s == GEIST_OK) {
+            ctx->out_scaled     = true;
+            sess->prenorm_layer = next;
+            sess->prenorm_h     = out;
+            sess->prenorm_pos   = ctx->q_position;
+            sess->prenorm_seq   = ctx->seq;
+        }
+        return s;
+    }
+    if (w == nullptr) {
+        return blk_add(ctx, (size_t) d, res, x, out);
+    }
+    return blk_norm_add(ctx, fused, w, x, res, tmp, out);
+}
+
 enum geist_status blk_ffn_swiglu(struct transformer_layer_forward_ctx *ctx) {
     struct transformer_arch_state    *st   = ctx->st;
     struct transformer_arch_session  *sess = ctx->sess;
@@ -498,7 +585,9 @@ enum geist_status blk_ffn_swiglu(struct transformer_layer_forward_ctx *ctx) {
     struct geist_buffer              *x    = sess->scratch_pre_ff;
 
     /* Each step runs only while s is GEIST_OK. */
-    enum geist_status s = blk_rmsnorm(ctx, d, sess->scratch_h_post_attn, &L->ffn_norm, x);
+    enum geist_status s = ctx->ffn_x_prenormed
+                                  ? GEIST_OK
+                                  : blk_rmsnorm(ctx, d, sess->scratch_h_post_attn, &L->ffn_norm, x);
     if (s == GEIST_OK)
         s = transformer_rotate_rows(st, ctx->seq, d, x);
     if (s == GEIST_OK)
@@ -508,7 +597,13 @@ enum geist_status blk_ffn_swiglu(struct transformer_layer_forward_ctx *ctx) {
     if (s == GEIST_OK)
         s = blk_down(ctx, sess->scratch_gate, L->down_awq_inv_scale);
     if (s == GEIST_OK)
-        s = blk_add(ctx, d, sess->scratch_h_post_attn, sess->scratch_ffn_out, ctx->h_out_buf);
+        s = blk_residual_out(ctx,
+                             1.0f,
+                             false,
+                             nullptr,
+                             sess->scratch_ffn_out,
+                             sess->scratch_h_post_attn,
+                             nullptr);
     return s;
 }
 
@@ -535,11 +630,11 @@ enum geist_status blk_ffn_geglu(struct transformer_layer_forward_ctx *ctx,
 
     /* The fusions are bound at plan build (exec_plan.c); bound means the
      * call must succeed. Front: rmsnorm + gate/up + gelu*up in one dispatch. */
-    const bool front = ctx->seq == 1 && P->fuse_ffn_norm_gate_up_m1;
+    const bool front = ctx->seq == 1 && P->fuse_ffn_norm_gate_up_m1 && !ctx->ffn_x_prenormed;
     if (front) {
         s = fused->ffn_norm_gate_up(be, &t_h, &t_wn, ctx->eps, &L->gate_proj, &L->up_proj, &t_gate);
     } else {
-        s = blk_rmsnorm(ctx, d, h, &L->ffn_norm, x);
+        s = ctx->ffn_x_prenormed ? GEIST_OK : blk_rmsnorm(ctx, d, h, &L->ffn_norm, x);
         if (s == GEIST_OK)
             s = transformer_rotate_rows(st, ctx->seq, d, x);
     }
@@ -564,7 +659,17 @@ enum geist_status blk_ffn_geglu(struct transformer_layer_forward_ctx *ctx,
     }
     if (s == GEIST_OK)
         s = blk_down(ctx, mid, down_scale);
-    if (s == GEIST_OK)
+    /* The layer's output, unless the PLE stage follows (Gemma 4), which
+     * takes the next layer's norm itself. */
+    if (s == GEIST_OK && out == ctx->h_out_buf && !ctx->apply_ple)
+        s = blk_residual_out(ctx,
+                             1.0f,
+                             P->fuse_rmsnorm_add,
+                             &L->post_ffw_norm,
+                             sess->scratch_ffn_out,
+                             h,
+                             sess->scratch_post_ff);
+    else if (s == GEIST_OK)
         s = blk_norm_add(ctx,
                          P->fuse_rmsnorm_add,
                          &L->post_ffw_norm,

@@ -4,8 +4,9 @@
  *
  * Layer: BACKEND (cpu_neon).
  *
- * The loop is in attention_kv.h, shared with the INT8 cache; each cache row
- * is unpacked from head_dim / 2 bytes (int4_kv.h) before the int8 dot. The
+ * The loop is in attention_kv.h, shared with the INT8 cache; K is INT8 as
+ * there, each V row is unpacked from head_dim / 2 bytes (int4_kv.h) before
+ * the int8 sums. The
  * architecture's portable loop is the decomposed twin. Without
  * FEAT_DotProd this file is empty and the slot stays null.
  */

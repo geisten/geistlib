@@ -798,8 +798,8 @@ static void cpu_neon_w_q5k_mN(size_t                     m,
     linear_q5k_w5a8_prefill_pre(m, n_in, n_out, xq, sc, s32, w->raw, y);
 }
 
-/* Native Q8_0 W8A8 prefill kernel (M>1); same q8_0_native_mn policy
- * cross-over as Q5_K. */
+/* Native Q8_0 W8A8 prefill kernel (M>1), the default on every host
+ * (q8_0_native_mn); GEIST_Q8_0_NATIVE_MN=0 takes dequant + SGEMM. */
 static void cpu_neon_w_q8_0_mN(size_t                     m,
                                const float               *x,
                                const struct geist_weight *w,
@@ -1557,9 +1557,9 @@ static void install_pq2_0_x8_gemv_if_eligible(struct geist_weight               
 }
 
 /* Apply per-dtype policy overrides after the table match: layout repacks,
- * and native NEON vs dequant+SGEMM trampoline for M>1. The trampoline wins
- * ~2-3× with AMX SGEMM on Mac; native NEON wins ~1.3× over OpenBLAS on
- * Pi 5. GEIST_*_NATIVE_MN env vars override the default per dtype. */
+ * and native NEON vs dequant+SGEMM trampoline for M>1 (the policy's
+ * defaults in kernel_catalog.c say which wins where). GEIST_*_NATIVE_MN
+ * env vars override the default per dtype. */
 static void apply_resolver_post_hooks(struct geist_weight                 *w,
                                       const struct cpu_neon_kernel_policy *policy) {
     switch ((enum geist_dtype) w->dtype) {

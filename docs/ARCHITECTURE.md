@@ -257,7 +257,7 @@ optional backend hook and a portable architecture-layer implementation rather
 than placeholder SSM enum values. Attention over the INT8 KV cache is the same
 kind of hook (`fused->attention_kv_int8`: AVX2 or, where the ISA dispatch
 allows it, AVX-512 VNNI on `cpu_x86`, `vdotq_s32` on `cpu_neon`), and over the
-packed INT4 cache (`fused->attention_kv_int4`, `cpu_neon`): the decomposed
+INT4 cache (`fused->attention_kv_int4`, `cpu_neon`): the decomposed
 equivalent is the architecture's host loop over the same cache bytes, portable
 C, not `attention` on dequantized rows, because the scores are integer dots of
 an int8-quantized query. `GEIST_KV_INT8_FUSED=0` keeps the host loops.
@@ -267,11 +267,35 @@ an int8-quantized query. `GEIST_KV_INT8_FUSED=0` keeps the host loops.
 A `geist_model` is immutable, shared, read-only weights. A `geist_session` owns
 the mutable per-conversation state: KV cache, pending logits, sampler config,
 stats. Multiple sessions can share one model. The KV cache supports quantized
-modes (`INT8`, packed `INT4` — half the INT8 footprint, near-lossless via a
-default-on Hadamard rotation, `GEIST_KV_ROT=0` to opt out; and `KIVI` 2-bit)
-and prefix pinning (`geist_session_pin_prefix`) to amortize a constant system
-prompt across chat turns. Speculative decode drafts
+modes (`INT8`; `INT4` — K at INT8 and V packed at 4 bits, 3/4 of the INT8
+footprint; both with a default-on Hadamard rotation, `GEIST_KV_ROT=0` to opt
+out; and `KIVI` 2-bit) and prefix pinning (`geist_session_pin_prefix`) to
+amortize a constant system prompt across chat turns. Speculative decode drafts
 via an n-gram lookup over history and verifies in one batched forward.
+
+A lossy KV cache has to meet a quality bar against FP32 KV on the same
+backend: teacher-forced over the last 256 tokens of
+`benchmark/prompts/moe-long.txt`, mean Jensen-Shannon divergence of the
+next-token distributions at most 0.01 nats and top-1 agreement at least
+85 % (`test_kv_quality_int`, Qwen3-0.6B; #53). Qwen3-0.6B, cpu_neon:
+
+| KV cache | mean JS (nats) | top-1 |
+| :-- | --: | --: |
+| FP32 on another backend (noise floor) | 0.0004 | 95 % |
+| INT8, rotated (default) | 0.0013 | 96 % |
+| INT4 (K INT8, V 4-bit), rotated | 0.0054 | 91 % |
+| INT8 unrotated (`GEIST_KV_ROT=0`) | 0.016 | 82 % |
+| K and V both at 4 bits (INT4 before #53) | 0.31 | 35 % |
+| KIVI | 0.10 | 62 % |
+
+That is why K stays at 8 bits in INT4: QK-norm models (Qwen3, Gemma) carry
+outlier channels in their K rows that a 4-bit grid cannot hold even rotated,
+while V at 4 bits costs next to nothing; and why INT8 rotates by default (the
+outliers are in Q too, which the kernels quantize to int8). A family on which
+INT4 still misses the bar names the cache an INT4 request gets instead
+(`transformer_family.kv_int4_instead`): Gemma 4, where a 4-bit V hurts as
+well, gets INT8, and Qwen3-MoE, whose routing amplifies any KV error, its F16. KIVI misses the bar on every model measured (Qwen3, Llama
+3.2, SmolLM2) and stays an explicit experiment that nothing picks on its own.
 
 Where the backend asks for it (`caps.kv_q8_block` for INT8 and INT4,
 `caps.kv_dense_block` for FP32 and F16; set by `cpu_x86`), a layer's K and V
@@ -281,7 +305,7 @@ with a single KV head). The rows of one KV head lie a cache row apart, so at
 the power-of-two row sizes of most models they map to a fraction of the cache
 sets; the offset keeps K and V from competing for the same sets.
 
-The rotation and packed-INT4 modes store K post-RoPE and rotated; this is only
+The rotation and INT4 modes store K post-RoPE and rotated; this is only
 safe because geist never re-bases cached positions (the sliding window masks,
 it does not re-RoPE the cache). A future KV context-shift feature would have to
 un-rotate/unpack before re-RoPE-ing — see the note atop `forward/kv_store.c`.
