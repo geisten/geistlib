@@ -117,8 +117,9 @@ jobs:
           for c in $(seq "$CYCLES"); do
             for cfg in $(echo "$CONFIGS" | tr ';' ' '); do
               # quiet host: the desktop's docker CI runners share these cores
-              for i in $(seq 120); do
-                awk '{exit !($1 < 2.0)}' /proc/loadavg && break; sleep 10
+              half=$(( $(nproc) / 2 ))
+              for i in $(seq 60); do
+                awk -v h="$half" '{exit !($1 < h)}' /proc/loadavg && break; sleep 10
               done
               echo "== cycle $c $cfg (load $(cut -d' ' -f1 /proc/loadavg))" | tee -a out/log.txt
               case $cfg in

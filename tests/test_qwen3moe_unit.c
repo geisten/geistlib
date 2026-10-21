@@ -17,7 +17,8 @@
  *     session gives the original logits again once they are back.
  * Hot experts on a GPU backend (#78 phase 3), for each GPU backend in the
  * build: the model on cpu_scalar with the GPU as split backend and
- * GEIST_MOE_HOT = half, then all of the 16 experts; the experts are placed,
+ * GEIST_MOE_HOT = half, then all of the 16 experts, the prompt fed one
+ * token at a time (hot experts run at decode only); the experts are placed,
  * rows run on the GPU, and the logits match cpu_scalar's (relative L2
  * <= 1e-3, F32 weights on both).
  * Load refusals: a missing expert tensor (named in the error), a router
@@ -242,7 +243,7 @@ static int check_hot(const char *gpu, size_t hot, const float ref[static VOCAB])
     float out[VOCAB];
     if (fails > 0 || geist_model_load_from_memory_with_opts(g.b, g.n, cpu, &lo, &m) != GEIST_OK ||
         geist_session_create(m, cpu, &OPTS, &s) != GEIST_OK ||
-        !logits_after(s, N_PROMPT, ids, N_PROMPT, out)) {
+        !logits_after(s, N_PROMPT, ids, 1, out)) {
         fprintf(stderr, "%s / %s\n", geist_backend_errmsg(cpu), geist_backend_errmsg(gbe));
         fails += geist_expect(false, "the fixture runs with hot experts");
     } else {

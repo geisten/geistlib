@@ -381,7 +381,11 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
         const size_t m = sess->moe_row_start[e + 1] - sess->moe_row_start[e];
         if (m == 0)
             continue;
-        if (moe_gpu_hot(sess, j->layer, e)) {
+        /* ponytail: hot experts at decode only. A prefill step's experts
+         * have many rows each; run one by one on the GPU they took longer
+         * than the CPU for all of them (run 1669: 139 vs 185 tok/s). A
+         * grouped GEMM would bring prefill in. */
+        if (seq == 1 && moe_gpu_hot(sess, j->layer, e)) {
             j->hot[j->n_hot++] = (uint32_t) e;
             rows_gpu += m;
         } else
