@@ -407,18 +407,19 @@ struct q4k_pair_ctx {
     struct q4k_decode_ctx c1;
 };
 
-/* Rows [n0, n1) of both decodes of a pair, as far as each has them. */
+/* Rows [n0, n1) of the pair's joint row space: the first decode's n_out0
+ * rows, then the second's. One range per thread over the sum, so a pair of
+ * unequal heights (Llama's q and k: 3072 and 1024 rows) splits evenly; a
+ * split over the taller one gave the threads holding the shared rows twice
+ * the work of the rest. */
 static void q4k_decode_pair_rows(void *ctx, size_t n0, size_t n1) {
     const struct q4k_decode_ctx c0     = ((const struct q4k_pair_ctx *) ctx)->c0;
     const struct q4k_decode_ctx c1     = ((const struct q4k_pair_ctx *) ctx)->c1;
     const size_t                n_out0 = c0.n_out;
-    const size_t                n_out1 = c1.n_out;
-    for (size_t n = n0; n < n1; n++) {
-        if (n < n_out0)
-            q4k_decode_one_row(n, &c0);
-        if (n < n_out1)
-            q4k_decode_one_row(n, &c1);
-    }
+    for (size_t n = n0; n < n1 && n < n_out0; n++)
+        q4k_decode_one_row(n, &c0);
+    for (size_t n = n0 > n_out0 ? n0 : n_out0; n < n1; n++)
+        q4k_decode_one_row(n - n_out0, &c1);
 }
 
 /* y from geist_linear_ref, for when the wrappers below cannot have their
@@ -535,11 +536,9 @@ void linear_q4k_decode_w4a8_pair(size_t       n_in,
                             .n_out            = n_out1,
                     },
     };
-    const size_t n_out_max = n_out0 > n_out1 ? n_out0 : n_out1;
-
     /* Static row split at every size: the dynamic 4-row chunks below
      * 4096 rows cost 12-15 % of an M1 Max Llama 3.2 3B decode (#16). */
-    geist_par_for(n_out_max, q4k_decode_pair_rows, &pc);
+    geist_par_for(n_out0 + n_out1, q4k_decode_pair_rows, &pc);
 }
 
 /* One Q4_K W4A8 prefill call, for the range bodies below: the operands of
