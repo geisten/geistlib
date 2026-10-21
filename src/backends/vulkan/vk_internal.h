@@ -401,6 +401,11 @@ struct vk_state {
      * ~130 MB and ~8 KB of bus traffic per FFN matvec. Bump-allocated,
      * reset at every flush (the copies belong to the in-flight batch). */
     struct geist_buffer *xring;
+    /* Host data for a dispatch that must not wait for the work in flight
+     * (rows_weighted_sum's partial sum, #161): host-visible, written in
+     * place at uring_used bytes; free again once a flush has waited. */
+    struct geist_buffer *uring;
+    size_t               uring_used;
     size_t               xring_used;
 
     /* Sequence: one open recording per token/chunk, rolled over the

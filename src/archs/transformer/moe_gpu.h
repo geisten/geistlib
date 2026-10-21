@@ -44,4 +44,23 @@ void moe_gpu_session_free(struct transformer_arch_session *sess);
                                             size_t                           n_hot,
                                             const uint32_t                   hot[static n_hot]);
 
+/* One wait per layer (#161), a decode step with the model on the GPU:
+ * launchable says whether experts hot[0, n_hot) can go this way; launch
+ * records their batch and starts it without waiting; finish writes
+ * out = cold + sum_i w[i] * (expert hot[i]'s output) on the GPU, cold being
+ * the host's partial sum of the other experts — no wait either. */
+[[nodiscard]] bool              moe_gpu_launchable(const struct transformer_arch_session *sess,
+                                                   size_t                                 layer,
+                                                   size_t                                 n_hot,
+                                                   const uint32_t                         hot[static n_hot]);
+[[nodiscard]] enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
+                                               size_t                           layer,
+                                               size_t                           n_hot,
+                                               const uint32_t                   hot[static n_hot]);
+[[nodiscard]] enum geist_status moe_gpu_finish(struct transformer_arch_session *sess,
+                                               size_t                           n_hot,
+                                               const float                      w[static n_hot],
+                                               const float cold[static sess->model->d_model],
+                                               struct geist_buffer *out);
+
 #endif

@@ -1,0 +1,34 @@
+#version 450
+#include "vk_limits.h"
+
+/* out[c] = a[c] + sum_{j < n} w[j] * y[j][c] (#161): a decode step's hot
+ * experts' outputs, weighted by the router, onto the partial sum of the
+ * cold ones the host made. Dispatch: gx = ceil(d / 256). */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer Y { float y[]; };
+layout(set = 0, binding = 1) readonly buffer A { float a[]; };
+layout(set = 0, binding = 2) writeonly buffer O { float o[]; };
+
+layout(push_constant) uniform Push {
+    uint d;
+    uint n;
+    uint y_offset;
+    uint y_stride;
+    uint a_offset;
+    uint o_offset;
+    float w[VK_GROUP_MAX];
+} pc;
+
+void main() {
+    uint c = gl_GlobalInvocationID.x;
+    if (c >= pc.d) {
+        return;
+    }
+    float s = a[pc.a_offset + c];
+    for (uint j = 0u; j < pc.n; ++j) {
+        s += pc.w[j] * y[pc.y_offset + j * pc.y_stride + c];
+    }
+    o[pc.o_offset + c] = s;
+}
