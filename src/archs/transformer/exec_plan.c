@@ -90,6 +90,9 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
     case GEIST_FUSED_LINEAR_GROUPED: /* probed by moe_gpu.c at load */
         have = fused->linear_t_grouped != nullptr;
         break;
+    case GEIST_FUSED_ROWS_WEIGHTED_SUM: /* probed by moe_gpu.c at load */
+        have = fused->rows_weighted_sum != nullptr;
+        break;
     }
     return have && fused->supported != nullptr && fused->supported(be, &q);
 }

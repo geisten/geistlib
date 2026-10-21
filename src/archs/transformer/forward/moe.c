@@ -415,11 +415,29 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     }
     if (st->moe_gpu != nullptr)
         atomic_fetch_add_explicit(&st->moe_gpu->rows_cpu, n_sel - rows_gpu, memory_order_relaxed);
+    /* One wait per layer (#161): a decode step with the model on the GPU
+     * starts its hot experts now and does not wait for them; the CPU runs
+     * the cold ones meanwhile and the GPU adds the hot outputs onto their
+     * sum. GEIST_E_UNSUPPORTED (a weight not resident): the batch below. */
+    bool launched = false;
+    if (j->n_hot > 0 && moe_gpu_launchable(sess, j->layer, j->n_hot, j->hot)) {
+        s = moe_gpu_launch(sess, j->layer, j->n_hot, j->hot);
+        if (s != GEIST_OK && s != GEIST_E_UNSUPPORTED) {
+            geist_backend_set_error(ctx->be,
+                                    s,
+                                    "moe: layer %d: the GPU experts failed: %s",
+                                    ctx->layer_idx,
+                                    geist_backend_errmsg(st->moe_gpu->be));
+            return s;
+        }
+        launched = s == GEIST_OK;
+        s        = GEIST_OK;
+    }
     j->caller = pthread_self();
-    atomic_store_explicit(&j->gpu_taken, false, memory_order_relaxed);
+    atomic_store_explicit(&j->gpu_taken, launched, memory_order_relaxed);
     atomic_store_explicit(&j->next, 0, memory_order_relaxed);
     atomic_store_explicit(&j->failed, false, memory_order_relaxed);
-    const size_t tasks   = (j->n_hot > 0) + j->n_active;
+    const size_t tasks   = (j->n_hot > 0 && !launched) + j->n_active;
     const size_t threads = geist_par_max_threads();
     geist_par_for(tasks < threads ? tasks : threads, moe_worker, j);
     moe_gpu_task(j); /* a thread library that gave the caller no range */
@@ -438,6 +456,34 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
                                 "moe: layer %d: an expert projection has no kernel",
                                 ctx->layer_idx);
         return GEIST_E_UNSUPPORTED;
+    }
+
+    if (launched) {
+        /* The cold experts' weighted sum on the host (one token: d floats,
+         * in expert order); the GPU adds the hot outputs, weighted, onto it
+         * without the host waiting for them. */
+        float *cold = sess->moe_x_host;
+        float  w_hot[GEIST_MOE_MAX_EXPERTS];
+        memset(cold, 0, d * sizeof(float));
+        for (size_t i = 0; i < n_sel; i++) {
+            const uint32_t sel = sess->moe_rows[i], e = sess->moe_ids[sel];
+            const float    wt = sess->moe_wts[sel];
+            size_t         h  = 0;
+            while (h < j->n_hot && j->hot[h] != e)
+                h++;
+            if (h < j->n_hot) {
+                w_hot[h] = wt;
+                continue;
+            }
+            const float *src = sess->moe_y + i * d;
+            for (size_t c = 0; c < d; c++)
+                cold[c] += wt * src[c];
+        }
+        s = moe_gpu_finish(sess, j->n_hot, w_hot, cold, sess->moe_acc);
+        if (s == GEIST_OK)
+            s = blk_add(ctx, d, sess->scratch_h_post_attn, sess->moe_acc, ctx->h_out_buf);
+        moe_profile_mark(MOE_PROFILE_SUM, &t0);
+        return s;
     }
 
     /* Weighted sum, in expert order so the result does not depend on which

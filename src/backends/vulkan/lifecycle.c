@@ -153,6 +153,9 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         if (st->argmax_out != nullptr) {
             vk_buffer_destroy(be, st->argmax_out);
         }
+        if (st->uring != nullptr) {
+            vk_buffer_destroy(be, st->uring);
+        }
         if (st->xring != nullptr) {
             vk_buffer_destroy(be, st->xring);
         }

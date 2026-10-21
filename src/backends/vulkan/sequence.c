@@ -94,6 +94,7 @@ void vk_seq_flush(struct vk_state *st) {
     st->ts_count = 0;
     (void) st->fn.ResetDescriptorPool(st->device, st->seq_pool, 0);
     st->xring_used = 0;
+    st->uring_used = 0;
 }
 
 /* Deliver a failed flush (or roll) to the caller of a readback: the batch was
