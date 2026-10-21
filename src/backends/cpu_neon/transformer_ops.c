@@ -394,6 +394,241 @@ static bool attention_mqa_causal_kv_neon(const float *q,
 #endif
 
 #if defined(__ARM_NEON)
+/* ---- Query heads that share a KV head, worked together (#16) ----------
+ * The rows above read every K and V row once per query head. A grouped-
+ * query model's heads of one KV head and one position share both the rows
+ * and the key range, so up to ATTN_HEADS_MAX of them now go together: each
+ * K row is loaded once for all of their dots, and each V row once for all
+ * of their output updates, which also stay in registers across a block of
+ * keys instead of going through outv per key.
+ *
+ * Per head the arithmetic is attn_row_neon's, in its order: the same dot
+ * (the hd256 shape where that row uses it), the same block max, rescale
+ * and exponentials, and every output element takes the same fused
+ * multiply-adds over the keys. The bytes do not change. */
+enum { ATTN_HEADS_MAX = 4 };
+
+/* qv[h] . kv for g heads, dot_f32_neon_256's or dot_f32_neon's shape per
+ * head (head_dim a multiple of 16). */
+static inline __attribute__((always_inline)) void attn_heads_dots(size_t             g,
+                                                                  const float *const qv[],
+                                                                  const float       *kv,
+                                                                  size_t             head_dim,
+                                                                  bool               hd256,
+                                                                  float              out[]) {
+    if (hd256) {
+        float32x4_t a0[ATTN_HEADS_MAX], a1[ATTN_HEADS_MAX], a2[ATTN_HEADS_MAX], a3[ATTN_HEADS_MAX];
+        for (size_t h = 0; h < g; h++) {
+            a0[h] = a1[h] = a2[h] = a3[h] = vdupq_n_f32(0.0f);
+        }
+        for (size_t i = 0; i < 256; i += 16) {
+            const float32x4_t k0 = vld1q_f32(kv + i);
+            const float32x4_t k1 = vld1q_f32(kv + i + 4);
+            const float32x4_t k2 = vld1q_f32(kv + i + 8);
+            const float32x4_t k3 = vld1q_f32(kv + i + 12);
+            for (size_t h = 0; h < g; h++) {
+                a0[h] = vfmaq_f32(a0[h], vld1q_f32(qv[h] + i), k0);
+                a1[h] = vfmaq_f32(a1[h], vld1q_f32(qv[h] + i + 4), k1);
+                a2[h] = vfmaq_f32(a2[h], vld1q_f32(qv[h] + i + 8), k2);
+                a3[h] = vfmaq_f32(a3[h], vld1q_f32(qv[h] + i + 12), k3);
+            }
+        }
+        for (size_t h = 0; h < g; h++) {
+            out[h] = vaddvq_f32(a0[h]) + vaddvq_f32(a1[h]) + vaddvq_f32(a2[h]) + vaddvq_f32(a3[h]);
+        }
+        return;
+    }
+    float32x4_t a0[ATTN_HEADS_MAX], a1[ATTN_HEADS_MAX];
+    for (size_t h = 0; h < g; h++) {
+        a0[h] = a1[h] = vdupq_n_f32(0.0f);
+    }
+    for (size_t i = 0; i < head_dim; i += 8) {
+        const float32x4_t k0 = vld1q_f32(kv + i);
+        const float32x4_t k1 = vld1q_f32(kv + i + 4);
+        for (size_t h = 0; h < g; h++) {
+            a0[h] = vfmaq_f32(a0[h], vld1q_f32(qv[h] + i), k0);
+            a1[h] = vfmaq_f32(a1[h], vld1q_f32(qv[h] + i + 4), k1);
+        }
+    }
+    for (size_t h = 0; h < g; h++) {
+        out[h] = vaddvq_f32(a0[h]) + vaddvq_f32(a1[h]);
+    }
+}
+
+/* attn_row_neon for g <= ATTN_HEADS_MAX heads over one K/V head and one
+ * key range [s_lo, s_hi]; inlined per g, so the head loops unroll. */
+static inline __attribute__((always_inline)) void attn_heads_neon(size_t             g,
+                                                                  const float *const qv[],
+                                                                  const float       *k,
+                                                                  const float       *v,
+                                                                  size_t             row,
+                                                                  size_t             s_lo,
+                                                                  size_t             s_hi,
+                                                                  size_t             head_dim,
+                                                                  bool               hd256,
+                                                                  float *const       outv[]) {
+    float  scores[ATTN_HEADS_MAX][ATTN_F32_BLOCK];
+    float  max_score[ATTN_HEADS_MAX] = {};
+    double sum_exp[ATTN_HEADS_MAX]   = {};
+    for (size_t h = 0; h < g; h++) {
+        zero_f32_neon(outv[h], head_dim);
+    }
+    for (size_t b0 = s_lo; b0 <= s_hi; b0 += ATTN_F32_BLOCK) {
+        const size_t n = s_hi - b0 < ATTN_F32_BLOCK ? s_hi - b0 + 1 : ATTN_F32_BLOCK;
+        float        block_max[ATTN_HEADS_MAX] = {};
+        for (size_t j = 0; j < n; j++) {
+            float sc[ATTN_HEADS_MAX];
+            attn_heads_dots(g, qv, k + (b0 + j) * row, head_dim, hd256, sc);
+            for (size_t h = 0; h < g; h++) {
+                scores[h][j] = sc[h];
+                if (j == 0 || sc[h] > block_max[h]) {
+                    block_max[h] = sc[h];
+                }
+            }
+        }
+        for (size_t h = 0; h < g; h++) {
+            if (b0 == s_lo) {
+                max_score[h] = block_max[h];
+            } else if (block_max[h] > max_score[h]) {
+                const float d = max_score[h] - block_max[h];
+                const float c = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
+                sum_exp[h] *= c;
+                scale_f32_neon(outv[h], c, head_dim);
+                max_score[h] = block_max[h];
+            }
+            for (size_t j = 0; j < n; j++) {
+                scores[h][j] = expf(fmaxf(scores[h][j] - max_score[h], ATTN_EXP_FLOOR));
+                sum_exp[h] += scores[h][j];
+            }
+        }
+        /* outv += scores[j] * v[j] over the block, 16 elements of every
+         * head at a time held in registers; per element the same FMAs in
+         * the same key order as add_scaled_f32_neon. */
+        for (size_t c = 0; c < head_dim; c += 16) {
+            float32x4_t d[ATTN_HEADS_MAX][4];
+            for (size_t h = 0; h < g; h++) {
+                for (size_t e = 0; e < 4; e++) {
+                    d[h][e] = vld1q_f32(outv[h] + c + 4 * e);
+                }
+            }
+            for (size_t j = 0; j < n; j++) {
+                const float      *vv = v + (b0 + j) * row + c;
+                const float32x4_t v0 = vld1q_f32(vv);
+                const float32x4_t v1 = vld1q_f32(vv + 4);
+                const float32x4_t v2 = vld1q_f32(vv + 8);
+                const float32x4_t v3 = vld1q_f32(vv + 12);
+                for (size_t h = 0; h < g; h++) {
+                    const float32x4_t s = vdupq_n_f32(scores[h][j]);
+                    d[h][0]             = vfmaq_f32(d[h][0], v0, s);
+                    d[h][1]             = vfmaq_f32(d[h][1], v1, s);
+                    d[h][2]             = vfmaq_f32(d[h][2], v2, s);
+                    d[h][3]             = vfmaq_f32(d[h][3], v3, s);
+                }
+            }
+            for (size_t h = 0; h < g; h++) {
+                for (size_t e = 0; e < 4; e++) {
+                    vst1q_f32(outv[h] + c + 4 * e, d[h][e]);
+                }
+            }
+        }
+    }
+    for (size_t h = 0; h < g; h++) {
+        if (sum_exp[h] > 0.0) { /* else an empty window: outv stays zero */
+            scale_f32_neon(outv[h], (float) (1.0 / sum_exp[h]), head_dim);
+        }
+    }
+}
+
+/* Items [i0, i1) of attention_heads_grouped_neon: item idx is query
+ * position t, KV head kv_h and the chunk of up to ATTN_HEADS_MAX of that
+ * KV head's query heads, t-major. */
+static void attn_group_items(void *ctx, size_t i0, size_t i1) {
+    const struct attn_job *job      = ctx;
+    const size_t           group    = job->n_q_heads / job->n_kv_heads;
+    const size_t           chunks   = (group + ATTN_HEADS_MAX - 1) / ATTN_HEADS_MAX;
+    const size_t           per_t    = job->n_kv_heads * chunks;
+    const size_t           head_dim = job->head_dim;
+    const size_t           row      = job->n_kv_heads * head_dim;
+    for (size_t idx = i0; idx < i1; idx++) {
+        const size_t t     = idx / per_t;
+        const size_t kv_h  = (idx - t * per_t) / chunks;
+        const size_t ch    = idx - t * per_t - kv_h * chunks;
+        const size_t h0    = kv_h * group + ch * ATTN_HEADS_MAX;
+        const size_t left  = group - ch * ATTN_HEADS_MAX;
+        const size_t g     = left < ATTN_HEADS_MAX ? left : ATTN_HEADS_MAX;
+        const size_t q_pos = job->q_offset + t;
+        const size_t s_lo  = (job->sliding_window > 0 && q_pos + 1 > job->sliding_window)
+                                     ? q_pos + 1 - job->sliding_window
+                                     : 0;
+        const size_t s_hi  = q_pos < job->n_kv ? q_pos : job->n_kv - 1;
+        const float *qv[ATTN_HEADS_MAX]   = {};
+        float       *outv[ATTN_HEADS_MAX] = {};
+        for (size_t h = 0; h < g; h++) {
+            qv[h]   = job->q + (t * job->n_q_heads + h0 + h) * head_dim;
+            outv[h] = job->out + (t * job->n_q_heads + h0 + h) * head_dim;
+        }
+        const float *k = job->k + kv_h * head_dim;
+        const float *v = job->v + kv_h * head_dim;
+        switch (g) {
+        case 1:
+            attn_heads_neon(1, qv, k, v, row, s_lo, s_hi, head_dim, job->hd256, outv);
+            break;
+        case 2:
+            attn_heads_neon(2, qv, k, v, row, s_lo, s_hi, head_dim, job->hd256, outv);
+            break;
+        case 3:
+            attn_heads_neon(3, qv, k, v, row, s_lo, s_hi, head_dim, job->hd256, outv);
+            break;
+        default:
+            attn_heads_neon(4, qv, k, v, row, s_lo, s_hi, head_dim, job->hd256, outv);
+            break;
+        }
+    }
+}
+
+/* The grouped rows where they apply: at least two query heads per KV head,
+ * head_dim a multiple of 16, and enough items to give every thread one (a
+ * Gemma 4 E2B decode step has one KV head for eight query heads, two items;
+ * its eight single-head rows spread wider). hd256 as the caller's row
+ * kernel decides it. False: the caller's per-head rows. */
+static bool attention_heads_grouped_neon(const float *q,
+                                         const float *k,
+                                         const float *v,
+                                         size_t       n_q,
+                                         size_t       n_kv,
+                                         size_t       q_offset,
+                                         size_t       n_q_heads,
+                                         size_t       n_kv_heads,
+                                         size_t       head_dim,
+                                         size_t       sliding_window,
+                                         bool         hd256,
+                                         float       *out) {
+    if (q == nullptr || k == nullptr || v == nullptr || out == nullptr || n_q == 0 || n_kv == 0 ||
+        n_kv_heads == 0 || n_q_heads % n_kv_heads != 0 || head_dim == 0 || head_dim % 16 != 0) {
+        return false;
+    }
+    const size_t group = n_q_heads / n_kv_heads;
+    const size_t items = n_q * n_kv_heads * ((group + ATTN_HEADS_MAX - 1) / ATTN_HEADS_MAX);
+    if (group < 2 || items < geist_par_max_threads()) {
+        return false;
+    }
+    struct attn_job job = {.q              = q,
+                           .k              = k,
+                           .v              = v,
+                           .n_kv           = n_kv,
+                           .q_offset       = q_offset,
+                           .n_q_heads      = n_q_heads,
+                           .n_kv_heads     = n_kv_heads,
+                           .head_dim       = head_dim,
+                           .sliding_window = sliding_window,
+                           .hd256          = hd256,
+                           .out            = out};
+    cpu_neon_par_for_dynamic(items, 1, attn_group_items, &job);
+    return true;
+}
+#endif
+
+#if defined(__ARM_NEON)
 /* ---- The same row kernel over an F16 KV cache (#48): K and V rows are
  * IEEE half, widened eight at a time by vcvt as they are loaded; the
  * arithmetic is attn_row_neon's. */
@@ -622,6 +857,21 @@ enum geist_status cpu_neon_kv_append_f16(struct geist_backend      *be,
         return GEIST_E_INVALID_ARG;
     }
 #if defined(__ARM_NEON)
+    /* hd256: the shape attention_mqa1_causal_kv_neon's rows use. */
+    if (attention_heads_grouped_neon(qp,
+                                     kp,
+                                     vp,
+                                     n_q,
+                                     n_kv,
+                                     q_offset,
+                                     n_q_heads,
+                                     n_kv_heads,
+                                     head_dim,
+                                     sliding_window,
+                                     n_kv_heads == 1 && head_dim == 256,
+                                     op)) {
+        return GEIST_OK;
+    }
     if (n_kv_heads == 1 &&
         attention_mqa1_causal_kv_neon(
                 qp, kp, vp, n_q, n_kv, q_offset, n_q_heads, head_dim, sliding_window, op)) {

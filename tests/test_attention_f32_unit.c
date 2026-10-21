@@ -6,9 +6,9 @@
  * ones: a kernel that widens a half wrongly fails).
  *
  * desc->prims->attention is what the transformer calls with an FP32 cache.
- * Each backend has its own: cpu_neon a NEON kernel that falls back to the
- * gemma4_kernels.c reference cpu_scalar runs when there are fewer than 16
- * (query, head) pairs, cpu_x86 an AVX2 kernel that takes every shape and
+ * Each backend has its own: cpu_neon NEON rows, up to four query heads of
+ * one KV head together where that gives every thread an item (#16) and one
+ * head a row otherwise, cpu_x86 an AVX2 kernel that takes every shape and
  * plans its work (attention.c: passes of up to four heads of a KV group,
  * prefill items of up to four queries, decode split into chunks). The
  * shapes cover every branch: MQA, GQA and MHA, one query (decode) and many

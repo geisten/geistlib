@@ -1627,8 +1627,12 @@ plan_split_layers(struct gguf_ctx *gguf, const struct geist_session_opts *opts, 
  * then wins, runs 1388/1396), where it can pay and fits: a discrete GPU
  * (with unified memory the whole model fits the GPU itself), and host
  * memory for the twins' copy of the load-backend layers' matrices with a
- * fifth to spare. */
+ * fifth to spare. Off when the split stage holds every layer: the twins
+ * would have none, and each session's twin IO buffer would be refused. */
 static size_t offload_m_min(const struct transformer_arch_state *st, struct geist_backend *sbe) {
+    if (st->layer_lo >= st->n_layers) {
+        return 0;
+    }
     const char *v = getenv("GEIST_OFFLOAD_M_MIN");
     if (v != nullptr && *v != '\0') {
         return (size_t) strtoull(v, nullptr, 10);
