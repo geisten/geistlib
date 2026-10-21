@@ -5,6 +5,7 @@
 
 #include "exec_plan.h"
 #include "arch_state.h"
+#include "arch_family.h"
 #include "forward.h"
 
 #include "error.h"
@@ -82,6 +83,9 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
         break;
     case GEIST_FUSED_DELTANET_MIX:
         have = fused->deltanet_mix != nullptr;
+        break;
+    case GEIST_FUSED_RMSNORM_ADD_NORM:
+        have = fused->rmsnorm_add_norm != nullptr;
         break;
     }
     return have && fused->supported != nullptr && fused->supported(be, &q);
@@ -239,6 +243,14 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         q = (struct geist_fusion_query) {
                 .op = GEIST_FUSED_RMSNORM_ADD, .m = m_cap, .d_model = st->d_model};
         P->fuse_attn_rmsnorm_add = probe(be, q);
+
+        q = (struct geist_fusion_query) {
+                .op = GEIST_FUSED_RMSNORM_ADD_NORM, .m = m_cap, .d_model = st->d_model};
+        P->fuse_attn_add_norm =
+                st->family != nullptr && st->family->fused_residual_norms && probe(be, q);
+        P->fuse_tail_norm = P->fuse_attn_add_norm && i + 1 < st->n_layers &&
+                            transformer_layer_owned(st, i + 1) &&
+                            st->layers[i + 1].mixer != GEIST_MIXER_DELTANET;
 
         /* The PLE gate epilogue runs on hidden_per_layer-wide rows. */
         q = (struct geist_fusion_query) {

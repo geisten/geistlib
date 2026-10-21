@@ -106,7 +106,7 @@ holds the lock for a compile; a build waits only while a measurement runs:
 
 | name | label | lock | install |
 | :-- | :-- | :-- | :-- |
-| `mac-light` | `macos-15:host` | never holds it; takes no job while it is held; daemon at `nice 10` | `~/gitea-runner-mac-light`, LaunchAgent `net.geisten.gitea-runner-mac-light` (`Nice` 10) |
+| `mac-light` | `macos-15:host` | ci lease while a job runs (45 min declared); takes no job while it is held; daemon at `nice 10` | `~/gitea-runner-mac-light`, LaunchAgent `net.geisten.gitea-runner-mac-light` (`Nice` 10) |
 | `mac-m1max` | `macos-15-heavy:host` | held for the whole job | `~/gitea-runner-geisten`, LaunchAgent `net.geisten.gitea-runner-geisten` |
 
 `mac-m1max`'s hooks (`~/bin/mac-runner-job-started.sh` /
@@ -115,12 +115,13 @@ health check (`~/bin/mac-runner-free.sh`) fetches a job only when a ci lease
 would be granted within 10 min (free, or the holder declared a `LOCK_MAX`
 that ends by then); while busy, it and the completed hook report waiting
 `macos-15-heavy` jobs, and the broker keeps the next hand-over free for CI
-(up to 180 s) instead of giving it to the next agent. `mac-light` holds
-nothing, but its health check (`~/bin/mac-light-free.sh`) also takes no job
-while anyone holds the lease: its ASan and unit builds load every core, and
+(up to 180 s) instead of giving it to the next agent. `mac-light` runs the same hooks (`MAC_RUNNER_TAG=light` keeps its PID file
+apart) and its health check (`~/bin/mac-light-free.sh`) takes no job while
+anyone holds the lease, reporting its waiting jobs so the broker hands the
+lease to CI next instead of the next agent (without that, two agents passing
+the lease back and forth starved the required macOS check): its ASan and unit builds load every core, and
 before 2026-10-21 they landed inside measurements (load 80–110 during a
-lock-held A/B). A job already running finishes, so a measurement can still
-meet the tail of one. Each has its own `cache.dir` and
+lock-held A/B). Each has its own `cache.dir` and
 `host.workdir_parent` (host mode clones actions there), so the two never
 race on one action checkout. Both run with `capacity: 1` and
 `fetch_timeout: 30s`.

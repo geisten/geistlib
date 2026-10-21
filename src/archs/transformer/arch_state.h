@@ -272,6 +272,16 @@ struct transformer_arch_session {
     float *kivi_pin_tail;
     size_t kivi_pin_rows;
 
+    /* The layer whose attention input the previous layer's tail already
+     * normalised into scratch_normed (#17), with the h buffer, position
+     * and row count it was computed for; 0 = none (layer 0 has no
+     * predecessor). transformer_forward_one_layer takes it and clears it,
+     * so only the very next layer call can use it. */
+    size_t               prenorm_layer;
+    size_t               prenorm_pos;
+    size_t               prenorm_seq;
+    struct geist_buffer *prenorm_h;
+
     /* ---- Scratch buffers (per-forward-pass workspace), slices of the
      * scratch pool. */
     struct geist_buffer *scratch_normed;

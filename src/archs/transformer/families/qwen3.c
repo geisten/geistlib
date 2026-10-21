@@ -112,7 +112,7 @@ qwen3_attention_block(struct transformer_layer_forward_ctx *ctx) {
     const size_t                      d    = st->d_model;
     struct geist_buffer              *x    = sess->scratch_normed;
 
-    enum geist_status s = blk_rmsnorm(ctx, d, ctx->h_in_buf, &L->attn_norm, x);
+    enum geist_status s = blk_attn_norm(ctx, x);
     if (s == GEIST_OK)
         s = transformer_rotate_rows(st, ctx->seq, d, x);
     if (s == GEIST_OK)
@@ -126,17 +126,18 @@ qwen3_attention_block(struct transformer_layer_forward_ctx *ctx) {
     if (s == GEIST_OK)
         s = blk_o_proj(ctx);
     if (s == GEIST_OK)
-        s = blk_add(ctx, d, ctx->h_in_buf, sess->scratch_o, sess->scratch_h_post_attn);
+        s = blk_attn_residual(ctx, nullptr);
     return s;
 }
 
 /* ---- Registry entry --------------------------------------------------- */
 
 const struct transformer_family transformer_family_qwen3 = {
-        .name            = "qwen3",
-        .populate        = populate_qwen3,
-        .populate_layers = populate_layers_qwen3,
-        .wire_layer      = qwen3_wire_layer,
-        .attention_block = qwen3_attention_block,
-        .ffn_block       = blk_ffn_swiglu,
+        .name                 = "qwen3",
+        .populate             = populate_qwen3,
+        .populate_layers      = populate_layers_qwen3,
+        .wire_layer           = qwen3_wire_layer,
+        .fused_residual_norms = true,
+        .attention_block      = qwen3_attention_block,
+        .ffn_block            = blk_ffn_swiglu,
 };

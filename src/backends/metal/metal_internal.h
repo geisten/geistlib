@@ -67,6 +67,7 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_Q4K_QK_NT4,
     METAL_PROFILE_DISPATCH_F32_PLE_PROJ_NORM,
     METAL_PROFILE_DISPATCH_RMSNORM_ADD_ROWS,
+    METAL_PROFILE_DISPATCH_ADD_NORM_ROWS,
     METAL_PROFILE_DISPATCH_Q_NORM_ROPE,
     METAL_PROFILE_DISPATCH_K_NORM_ROPE_APPEND,
     METAL_PROFILE_DISPATCH_V_NORM_APPEND,
@@ -347,6 +348,8 @@ struct metal_state {
     void    *scale_rows_pipeline;
     void    *rmsnorm_add_rows_simd_function;
     void    *rmsnorm_add_rows_simd_pipeline;
+    void    *rmsnorm_add_norm_rows_simd_function;
+    void    *rmsnorm_add_norm_rows_simd_pipeline;
     void    *embed_lookup_scaled_function;
     void    *embed_lookup_scaled_pipeline;
     void    *embed_lookup_scaled_rows_function;
@@ -680,6 +683,25 @@ struct metal_scale_rows_params {
     uint32_t y_offset;
     uint32_t x_row_stride;
     uint32_t y_row_stride;
+    float    scale;
+};
+
+/* Field order matches Post2 in metal_elem_simd_source. */
+struct metal_post_norm2_params {
+    uint32_t rows;
+    uint32_t cols;
+    uint32_t residual_offset;
+    uint32_t x_offset;
+    uint32_t w_offset;
+    uint32_t zw_offset;
+    uint32_t y_offset;
+    uint32_t z_offset;
+    uint32_t residual_row_stride;
+    uint32_t x_row_stride;
+    uint32_t y_row_stride;
+    uint32_t z_row_stride;
+    uint32_t has_w;
+    float    eps;
     float    scale;
 };
 
