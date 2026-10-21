@@ -24,7 +24,9 @@ job whose `if:` tests `needs.changes.outputs.full`: ASan/UBSan, TSan, the
 coverage ratchet, integration + e2e on real models, Vulkan on lavapipe,
 AVX-512 under SDE, the audio legs (they fetch the 614 MB tower and the 3 GB
 model), the Metal gate and the perf floors on dedicated hardware (macOS
-arm64 on `macos-15-heavy`, Linux arm64 on the Pi 5, `ubuntu-24.04-arm-pi`),
+arm64 on `macos-15-heavy`, Linux arm64 on the Pi 5, `ubuntu-24.04-arm-pi`;
+these two skip `main` pushes and run nightly, on dispatch and with `ci:full`,
+because each holds its host's benchmark lock for 40+ minutes),
 the other build legs (clang, scalar, arm64 musl, `TARGET=pi5`, macOS GCD)
 and the documented builds. The documented builds take under a minute each,
 but they recompile what the required legs already compile with the same gcc
@@ -209,9 +211,9 @@ was; hence `if: always()`.
 ## Coverage ratchet
 
 The `coverage` job runs on every push to `main` and nightly (not on PRs
-unless labelled `ci:full`: ~2 h), and
-pushes to `main` are never cancelled by a later merge, so every main commit
-is measured. It builds `MODE=cov` (gcc-14, `-O2 --coverage`, Linux x86_64 on
+unless labelled `ci:full`: ~2 h). A later merge cancels the running
+`main` run (concurrency in `ci.yml`), so after a burst of merges only the
+newest commit is measured; the nightly run is never cancelled. It builds `MODE=cov` (gcc-14, `-O2 --coverage`, Linux x86_64 on
 the desktop runner; the only arm64 runner is the Pi 5, where it took hours)
 and runs the model-free unit suite plus the real-model int suite with
 `GEIST_STRICT_FIXTURES=gguf,audio` — a fixture skip (model or audio tower)

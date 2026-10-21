@@ -141,22 +141,30 @@ def cell(column: str, model: str, runs: list[dict], prefix: str = "") -> str:
             f'<small>{last["date"][:10]} · <code>{last["commit"]}</code> · {last["gemm"]}</small></td>')
 
 
-# Page chrome copied from the webapp repository (partials/header.html and
-# footer.html, research link dropped); /css/site.css is the live site's.
+# Page chrome copied from the webapp repository (partials/header.html,
+# tabbar.html and footer.html, research markers removed); /css/site.css is the
+# live site's.
 HEADER = """<a class="skip-link" href="#main-content">Skip to content</a>
 <header class="top">
   <div class="wrap">
     <a class="brand" href="/" aria-label="geisten home"><svg viewBox="125 110 262 315" aria-hidden="true"><path class="mark-shell" d="M256 125C320 125 372 175 372 238V293C372 348 330 395 256 410C182 395 140 348 140 293V238C140 175 192 125 256 125Z"/><path class="mark-inset" d="M256 150C306 150 347 190 347 240V289C347 331 313 365 256 378C199 365 165 331 165 289V240C165 190 206 150 256 150Z"/><path class="mark-seed" d="M256 188C284 188 306 211 306 238C306 271 281 299 256 325C231 299 206 271 206 238C206 211 228 188 256 188Z"/><path class="mark-anchor" d="M204 300C220 320 236 331 256 336C276 331 292 320 308 300M226 346H286"/></svg>geisten</a>
     <nav class="nav" aria-label="Main">
-      <a href="/#services">Services</a>
-      <a href="/#platform">Platform</a>
-      <a href="/#evidence">Evidence</a>
+      <a href="/#geistr">geistr</a>
+      <a href="/#geistlib">geistlib</a>
+      <a href="/#evidence">Benchmarks</a>
+      <a href="/research/summary.html">Research</a>
       <a href="/about.html">About</a>
       <a class="cta" href="/#contact">Contact</a>
     </nav>
   </div>
 </header>"""
-FOOTER = """<footer class="site-footer">
+FOOTER = """<nav class="tabbar" aria-label="Main, mobile">
+  <a href="/#geistr"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="m3 13 9 5 9-5"/></svg>geistr</a>
+  <a href="/research/summary.html"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11l3 3v13H5z"/><path d="M9 10h6M9 14h6M9 18h3"/></svg>Research</a>
+  <a href="/about.html"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>About</a>
+  <a class="cta" href="/#contact"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>Contact</a>
+</nav>
+<footer class="site-footer">
   <div class="wrap">
     <span>© 2024–2026 geisten Holding UG (haftungsbeschränkt) · Kaarst, Germany</span>
     <span class="links"><a href="https://github.com/geisten" rel="noopener noreferrer">GitHub</a><a href="/impressum.html">Legal notice</a><a href="/datenschutz.html">Privacy</a></span>

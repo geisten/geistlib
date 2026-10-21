@@ -72,19 +72,22 @@ Heavy steps still go through `~/bin/with-pi-lock`.
 ### Mac runners (M1 Max, host mode)
 
 The Mac is shared with agents and the human, who take `~/bin/with-mac-lock`
-(`/tmp/mac-heavy.lock`) for every benchmark. It has two org runners, so a
-build never waits behind a benchmark and CI never holds the lock for a
-compile:
+(`/tmp/mac-heavy.lock`) for every benchmark. It has two org runners, so CI never
+holds the lock for a compile; a build waits only while a measurement runs:
 
 | name | label | lock | install |
 | :-- | :-- | :-- | :-- |
-| `mac-light` | `macos-15:host` | none; daemon at `nice 10` | `~/gitea-runner-mac-light`, LaunchAgent `net.geisten.gitea-runner-mac-light` (`Nice` 10) |
+| `mac-light` | `macos-15:host` | never holds it; takes no job while it is held; daemon at `nice 10` | `~/gitea-runner-mac-light`, LaunchAgent `net.geisten.gitea-runner-mac-light` (`Nice` 10) |
 | `mac-m1max` | `macos-15-heavy:host` | held for the whole job | `~/gitea-runner-geisten`, LaunchAgent `net.geisten.gitea-runner-geisten` |
 
 `mac-m1max`'s hooks (`~/bin/mac-runner-job-started.sh` /
 `mac-runner-job-completed.sh`) hold the lock while a job runs, and its
 health check (`~/bin/mac-runner-free.sh`) takes no job while someone else
-holds it. `mac-light` has neither. Each has its own `cache.dir` and
+holds it. `mac-light` holds nothing, but its health check
+(`~/bin/mac-light-free.sh`) also takes no job while anyone holds the lease:
+its ASan and unit builds load every core, and before 2026-10-21 they landed
+inside measurements (load 80–110 during a lock-held A/B). A job already
+running finishes, so a measurement can still meet the tail of one. Each has its own `cache.dir` and
 `host.workdir_parent` (host mode clones actions there), so the two never
 race on one action checkout. Both run with `capacity: 1` and
 `fetch_timeout: 30s`.
@@ -129,10 +132,30 @@ perf (Linux arm64)` leg runs there.
 | health check | no job below 20 GB free disk |
 | actions cache | runner's own, `172.17.0.1:8088` (ufw admits only the docker subnets) |
 | CI hygiene | system timer `ci-hygiene` (as `runner`), the desktop's script; log `/home/runner/ci-hygiene/ci-hygiene.log` |
-| git cache | `git-cache.service` on `172.17.0.1:8417`, installed but off until a read-only token is in `/home/runner/.config/git-cache/token`; the runner's `envs` are not wired to it yet ("CI git cache") |
+| git cache | `git-cache.service` on `172.17.0.1:8417` with a read-only token in `/home/runner/.config/git-cache/token`; the runner's `envs` rewrite `https://git.geisten.net/` to it |
 
 Access is key-only SSH as `germar` (no root login, ufw: 22 rate-limited
 only); unattended-upgrades is on.
+
+### Infrastructure as code and monitoring
+
+git-hel1 (git.geisten.net) and ci-arm64-hel1 are managed with Ansible in the
+private repo [`geisten/geisten-infra`](https://git.geisten.net/geisten/geisten-infra)
+(roles for sshd/ufw/fail2ban, Gitea, Caddy, backups, this runner, git cache,
+CI hygiene, monitoring). Change those hosts there, not by hand:
+`ansible-playbook site.yml --check --diff` must stay clean. The desktop and
+the Pi are in it too (runner configs and units, git cache, ci-bot,
+ci-hygiene), reached through reverse SSH tunnels; the playbook never restarts
+a runner. Its README has the details.
+
+Monitoring runs on git-hel1: Prometheus scrapes both hosts, Gitea's
+`/metrics` and blackbox probes of `/api/healthz` and geisten.net; Alertmanager
+sends to an ntfy.sh topic (name in the vault). The desktop and the Pi
+report through reverse tunnels onto git-hel1; a stale act-cache `index.lock`
+on the desktop raises ActCacheLockStale. A watchdog on ci-arm64-hel1
+reports git-hel1 itself going down. Status page:
+<https://git.geisten.net/status/> (basic auth; Prometheus and Alertmanager
+UIs under it).
 
 ## Desktop host
 
