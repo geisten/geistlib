@@ -299,4 +299,9 @@ const struct transformer_family transformer_family_gemma4 = {
         .wire_layer      = gemma4_wire_layer,
         .attention_block = gemma4_attention_block,
         .ffn_block       = gemma4_ffn_block,
+        /* V at 4 bits breaks Gemma 4 too, not only a 4-bit K (#53): E2B
+         * teacher-forced against FP32 KV, mean JS 0.146 nats and 69 % top-1
+         * for INT4, 0.035 and 88 % for INT8 (another backend's FP32: 0.024,
+         * 88 %). */
+        .kv_int4_instead = GEIST_KV_INT8,
 };

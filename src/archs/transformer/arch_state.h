@@ -210,9 +210,10 @@ struct transformer_arch_session {
      *        shared across layers (lock-step drain). */
     bool kv_int8_enabled;
     bool kv_kivi_enabled;
-    /* Experiment (issue #61): FWHT-rotate Q/K/V before INT8 quant to
-     * suppress activation outliers. Honored only in the INT8 path and
-     * only when head_dim is a power of two. Env: GEIST_KV_ROT=1. */
+    /* FWHT-rotate Q/K/V before the INT8 / INT4 quantization to spread
+     * activation outliers (#61; default-on since #53). Honored only on the
+     * INT8 storage path and only when head_dim is a power of two. Env:
+     * GEIST_KV_ROT=0 opts out. */
     bool kv_rot_enabled;
     /* Experiment (issue #61): quantize the INT8 K/V cache on an N-bit grid
      * (scale = amax / (2^(N-1)-1)) — quality-only simulation of a symmetric
@@ -221,11 +222,11 @@ struct transformer_arch_session {
      * 0 = native 8-bit; 2..7 forces the INT8 storage path on. Env:
      * GEIST_KV_QBITS=N. */
     int kv_sim_qbits;
-    /* Packed symmetric 4-bit KV cache (issue #61). Rides the INT8 storage
-     * path (kv_int8_enabled is also set for buffer alloc + ctx wiring) but
-     * the k/v data buffers are allocated half-size and hold two 4-bit values
-     * per byte; append packs, attention unpacks. Half the INT8 KV footprint.
-     * Env: GEIST_KV_INT4=1. */
+    /* INT4 KV cache (issues #61, #53). Rides the INT8 storage path
+     * (kv_int8_enabled is also set for buffer alloc + ctx wiring): K is
+     * INT8 as there, the V data buffers are allocated half-size and hold
+     * two 4-bit values per byte; append packs V, attention unpacks it. 3/4
+     * of the INT8 KV footprint. Env: GEIST_KV_INT4=1. */
     bool kv_int4_packed_enabled;
     /* F16 KV cache: k_cache[]/v_cache[] hold half floats (2 bytes/elem);
      * appends convert through the backend's kv_append_f16 slot and

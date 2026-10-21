@@ -178,7 +178,7 @@ the mapping instead (the Vulkan default); on the CPU that is a full heap copy.
 **Per session.** Each session holds its KV cache, sized from its own
 `max_seq_len` (S) and allocated in full at create: per attention layer with
 E = S × n_kv_heads × head_dim it is 8·E bytes in FP32, 4·E in F16, about
-2·E in INT8 (plus 8·S·n_kv_heads of scales), about E in INT4 and about E/2 in
+2·E in INT8 (plus 8·S·n_kv_heads of scales), about 1.5·E in INT4 and about E/2 in
 KIVI. Shared-KV and DeltaNet layers hold none. The CPU backends default to
 INT8 (FP32 on Apple), Metal and Vulkan to F16. The model's default session is
 sized from the model cap (`geist_model_load_with_opts`, 4096 without options).

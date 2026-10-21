@@ -13,8 +13,9 @@
  *               Sensitive — resolves quality differences top-1 cannot.
  *
  * Modes: FP32 / INT8 / INT8+ROT / INT4 / INT4+ROT / INT2 / INT2+ROT / KIVI.
- * INT4/INT2 are the issue-#61 low-bit quality-sims (GEIST_KV_INT4 /
- * GEIST_KV_QBITS) that reuse the INT8 storage path with an N-bit grid. The
+ * INT4 is the GEIST_KV_INT4 cache (K INT8, V packed 4-bit); INT2 the
+ * issue-#61 low-bit quality-sim (GEIST_KV_QBITS) that reuses the INT8
+ * storage path with an N-bit grid for K and V. The
  * KV mode is resolved per session from GEIST_KV_* env vars, so the model
  * loads once and each mode just creates a session with those vars set. An
  * FP32 reference session runs in lockstep to supply P_fp32 for the KL.
@@ -82,7 +83,7 @@ struct kv_mode_cfg {
     const char *int8;  /* GEIST_KV_INT8 */
     const char *kivi;  /* GEIST_KV_KIVI */
     const char *rot;   /* GEIST_KV_ROT  */
-    const char *int4;  /* GEIST_KV_INT4 (4-bit quality-sim on the INT8 path) */
+    const char *int4;  /* GEIST_KV_INT4 (K INT8, V packed 4-bit; #53) */
     const char *qbits; /* GEIST_KV_QBITS (N-bit quality-sim; overrides int4) */
 };
 

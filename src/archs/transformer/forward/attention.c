@@ -805,8 +805,8 @@ void attention_int8_via_buffers(size_t        n_q,
     attn_dynamic(&j, attn_int8_head_items);
 }
 
-/* Packed-INT4 attention: the INT8 one-head loop, with each K/V row unpacked
- * from head_dim/2 bytes into a stack int8 row first. Portable twin of
+/* INT4 attention: the INT8 one-head loop over INT8 K, with each V row
+ * unpacked from head_dim/2 bytes into a stack int8 row first. Portable twin of
  * fused->attention_kv_int4 (cpu_neon); runs where no backend kernel is bound.
  *
  * int4_unpack_row fully writes [0,head_dim); the loops read only that
@@ -820,7 +820,7 @@ void attention_int8_via_buffers(size_t        n_q,
 struct attn_int4_job {
     size_t         n_q_heads, head_dim, n_kv, n_kv_heads, q_offset, sliding_window, n_items;
     const float   *q;
-    const uint8_t *k_q4;
+    const int8_t  *k_q8;
     const float   *k_scale;
     const uint8_t *v_q4;
     const float   *v_scale;
@@ -840,7 +840,7 @@ static void attn_int4_head_items(void *ctx, size_t, size_t) {
     const size_t          kv_group_size  = n_q_heads / n_kv_heads;
     const size_t          packed         = head_dim / 2; /* bytes per cache row */
     const float          *q              = job->q;
-    const uint8_t        *k_q4           = job->k_q4;
+    const int8_t         *k_q8           = job->k_q8;
     const float          *k_scale        = job->k_scale;
     const uint8_t        *v_q4           = job->v_q4;
     const float          *v_scale        = job->v_scale;
@@ -884,11 +884,10 @@ static void attn_int4_head_items(void *ctx, size_t, size_t) {
         for (size_t b0 = s_lo; b0 <= s_hi; b0 += ATTN_BLOCK) {
             const size_t n = s_hi - b0 < ATTN_BLOCK ? s_hi - b0 + 1 : ATTN_BLOCK;
             for (size_t j = 0; j < n; j++) {
-                const size_t s = b0 + j;
-                int8_t       k[TRANSFORMER_HEAD_DIM_MAX];
-                int4_unpack_row(head_dim, k_q4 + (s * n_kv_heads + kv_h) * packed, k);
-                const float ks      = k_scale[s * n_kv_heads + kv_h];
-                int32_t     int_dot = 0;
+                const size_t  s       = b0 + j;
+                const int8_t *k       = k_q8 + (s * n_kv_heads + kv_h) * head_dim;
+                const float   ks      = k_scale[s * n_kv_heads + kv_h];
+                int32_t       int_dot = 0;
                 for (size_t i = 0; i < head_dim; i++) {
                     int_dot += (int32_t) q_q8[i] * (int32_t) k[i];
                 }
@@ -940,7 +939,7 @@ void attention_int4_via_buffers(size_t         n_q,
                                 size_t         q_offset,
                                 size_t         sliding_window,
                                 const float   *q,
-                                const uint8_t *k_q4,
+                                const int8_t  *k_q8,
                                 const float   *k_scale,
                                 const uint8_t *v_q4,
                                 const float   *v_scale,
@@ -956,7 +955,7 @@ void attention_int4_via_buffers(size_t         n_q,
                                     .sliding_window = sliding_window,
                                     .n_items        = n_q * n_q_heads,
                                     .q              = q,
-                                    .k_q4           = k_q4,
+                                    .k_q8           = k_q8,
                                     .k_scale        = k_scale,
                                     .v_q4           = v_q4,
                                     .v_scale        = v_scale,

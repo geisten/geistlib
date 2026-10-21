@@ -87,6 +87,39 @@ release folds them in here (`scripts/changelog.py`).
   RTX 2080 Ti) split 26 now runs with every KV mode; before, F32 and INT4
   ran out of device memory.
 
+- **The INT4 KV cache no longer breaks Qwen3 and Gemma 4 (#53, #69).** A
+  4-bit K cannot hold the outlier channels a QK norm leaves in the K rows,
+  rotated or not; V at 4 bits costs next to nothing. `GEIST_KV_INT4` now
+  keeps K at INT8 (the INT8 layout) and packs only V: 3/4 of the INT8
+  footprint instead of 1/2. `fused->attention_kv_int4` takes K as `I8
+  [n_kv, n_kv_heads, head_dim]` (EXPERIMENTAL table); session snapshots
+  move to version 3. A lossy cache now has a stated quality bar
+  (`test_kv_quality_int`, ARCHITECTURE.md): against FP32 KV on the same
+  backend, teacher-forced over 256 positions of
+  `benchmark/prompts/moe-long.txt`, mean JS <= 0.01 nats and top-1 >= 85 %.
+  Qwen3-0.6B, cpu_neon / Metal: INT4 0.31 / 35 % before, 0.0050 / 89.5 %
+  and 0.0051 / 92.2 % now (Llama 3.2 3B 0.034 -> 0.0076, SmolLM2 0.017 ->
+  0.0022). The Metal distance of #69 was two runs each far from FP32, not a
+  Metal defect.
+- **INT8 KV is Hadamard-rotated by default (#53).** Unrotated it misses the
+  bar on QK-norm models, whose Q and K carry the outliers: Qwen3-0.6B 0.016
+  nats / 82 % top-1, rotated 0.0011 / 95 % (the noise floor of another
+  backend's FP32 is 0.0004 / 95 %). INT8 is the default cache of the CPU
+  backends off Apple. The append now quantizes, and the attention rotates,
+  a prefill chunk's rows across threads, which keeps the default path's
+  speed: Pi 5, Qwen3-0.6B, 10 cycles, prefill 512 +0.3 % ([-0.2 %,
+  +0.5 %]), decode within noise; 9950X cpu_x86 prefill -0.8 %, decode
+  +2.0 % ([-3.5 %, +3.7 %]). `GEIST_KV_ROT=0` opts out. INT4 decode on the
+  Pi is 4.6-8.1 % slower than with its 4-bit K (it reads 1.5x the cache
+  bytes), the price of the bar, and still faster than INT8.
+- **A family can refuse INT4 where it misses the bar
+  (`transformer_family.kv_int4_instead`, #53).** Gemma 4 (a 4-bit V hurts
+  there too: E2B 0.146 / 69 % with INT4, 0.029 / 87 % with INT8 against a
+  0.024 / 88 % floor between two FP32 backends) gets INT8, Qwen3-MoE
+  (30B-A3B: INT4 0.020 / 89 %) its F16; stderr says so once. KIVI misses
+  the bar on every model measured (Qwen3 0.10, Llama 3.2 0.20, SmolLM2
+  0.12) and stays an explicit experiment.
+
 - **cpu_neon kernels no longer leak their scratch with every thread that
   ends (#100).** The q4_K/q6_K/TL1 kernels' `_Thread_local` high-water
   buffers grow through `heap_tl_grow`, which frees them at thread exit; a

@@ -5,9 +5,10 @@
  * Layer: BACKEND (cpu_neon). Included only by those two files, under
  * __ARM_NEON && __ARM_FEATURE_DOTPROD.
  *
- * The two caches differ only in how a K or V row reaches the int8 dot:
- * the INT8 cache is read in place, the INT4 one unpacked into a stack row
- * first (int4_kv.h). The including file says which with a
+ * The two caches differ only in how a V row reaches the int8 sums: the
+ * INT8 cache is read in place, the INT4 one unpacked into a stack row
+ * first (int4_kv.h). K is INT8 in both (#53). The including file says
+ * which with a
  *
  *     constexpr bool NKV_INT4 = ...;
  *
@@ -52,10 +53,10 @@ constexpr size_t NKV_HEAD_DIM_MAX = 512;
     return sum;
 }
 
-/* Row `row` of a cache as head_dim int8 values: in place for INT8,
+/* Row `row` of the V cache as head_dim int8 values: in place for INT8,
  * unpacked from head_dim / 2 bytes into `buf` for INT4. */
 static inline const int8_t *
-nkv_row(size_t head_dim, const void *cache, size_t row, int8_t buf[static head_dim]) {
+nkv_v_row(size_t head_dim, const void *cache, size_t row, int8_t buf[static head_dim]) {
     if (NKV_INT4) {
         int4_unpack_row(head_dim, (const uint8_t *) cache + row * (head_dim / 2), buf);
         return buf;
@@ -65,18 +66,18 @@ nkv_row(size_t head_dim, const void *cache, size_t row, int8_t buf[static head_d
 
 /* One nkv_run call, for nkv_items. */
 struct nkv_job {
-    size_t       n_q_heads, head_dim, n_kv, n_kv_heads, q_offset, sliding_window;
-    const float *q;
-    const void  *k_cache;
-    const float *k_scale;
-    const void  *v_cache;
-    const float *v_scale;
-    float       *out;
+    size_t        n_q_heads, head_dim, n_kv, n_kv_heads, q_offset, sliding_window;
+    const float  *q;
+    const int8_t *k_cache;
+    const float  *k_scale;
+    const void   *v_cache;
+    const float  *v_scale;
+    float        *out;
 };
 
 /* The kernel on host pointers, validated by nkv_attention: q and out
- * [n_q, n_q_heads, head_dim], k and v [n_kv, n_kv_heads, head_dim] int8
- * or [n_kv, n_kv_heads, head_dim / 2] packed INT4 bytes, the scales
+ * [n_q, n_q_heads, head_dim], k [n_kv, n_kv_heads, head_dim] int8, v the
+ * same or [n_kv, n_kv_heads, head_dim / 2] packed INT4 bytes, the scales
  * [n_kv, n_kv_heads].
  *
  * int4_unpack_row fully writes [0, head_dim), and nothing reads past it, so
@@ -97,7 +98,7 @@ static void nkv_items(void *ctx, size_t i0, size_t i1) {
     const size_t          q_offset       = job->q_offset;
     const size_t          sliding_window = job->sliding_window;
     const float          *q              = job->q;
-    const void           *k_cache        = job->k_cache;
+    const int8_t         *k_cache        = job->k_cache;
     const float          *k_scale        = job->k_scale;
     const void           *v_cache        = job->v_cache;
     const float          *v_scale        = job->v_scale;
@@ -145,10 +146,9 @@ static void nkv_items(void *ctx, size_t i0, size_t i1) {
         for (size_t b0 = s_lo; b0 <= s_hi; b0 += ATTN_F32_BLOCK) {
             const size_t n = s_hi - b0 < ATTN_F32_BLOCK ? s_hi - b0 + 1 : ATTN_F32_BLOCK;
             for (size_t j = 0; j < n; j++) {
-                const size_t  s = b0 + j;
-                const size_t  r = s * n_kv_heads + kv_h;
-                int8_t        k_buf[NKV_HEAD_DIM_MAX];
-                const int8_t *k       = nkv_row(head_dim, k_cache, r, k_buf);
+                const size_t  s       = b0 + j;
+                const size_t  r       = s * n_kv_heads + kv_h;
+                const int8_t *k       = k_cache + r * head_dim;
                 const float   ks      = k_scale[r];
                 int32_t       int_dot = 0;
                 int32x4_t     acc     = vdupq_n_s32(0);
@@ -189,7 +189,7 @@ static void nkv_items(void *ctx, size_t i0, size_t i1) {
                 const size_t  s = b0 + j;
                 const size_t  r = s * n_kv_heads + kv_h;
                 int8_t        v_buf[NKV_HEAD_DIM_MAX];
-                const int8_t *vv  = nkv_row(head_dim, v_cache, r, v_buf);
+                const int8_t *vv  = nkv_v_row(head_dim, v_cache, r, v_buf);
                 const float   vs  = v_scale[r];
                 const float   wvs = scores[j] * vs;
                 for (size_t i = 0; i < head_dim; i++) {
@@ -204,19 +204,19 @@ static void nkv_items(void *ctx, size_t i0, size_t i1) {
     }
 }
 
-static void nkv_run(size_t       n_q,
-                    size_t       n_q_heads,
-                    size_t       head_dim,
-                    size_t       n_kv,
-                    size_t       n_kv_heads,
-                    size_t       q_offset,
-                    size_t       sliding_window,
-                    const float *q,
-                    const void  *k_cache,
-                    const float *k_scale,
-                    const void  *v_cache,
-                    const float *v_scale,
-                    float       *out) {
+static void nkv_run(size_t        n_q,
+                    size_t        n_q_heads,
+                    size_t        head_dim,
+                    size_t        n_kv,
+                    size_t        n_kv_heads,
+                    size_t        q_offset,
+                    size_t        sliding_window,
+                    const float  *q,
+                    const int8_t *k_cache,
+                    const float  *k_scale,
+                    const void   *v_cache,
+                    const float  *v_scale,
+                    float        *out) {
     /* The O(n^2) attention core. Every (t,h) is independent: it reads the
      * shared Q/K/V and writes only its own out[(t*n_q_heads+h)*head_dim..]
      * slice plus a private `scores` scratch, so this parallelizes with no
@@ -258,12 +258,12 @@ static inline enum geist_status nkv_attention(struct geist_backend      *be,
                                               struct geist_tensor       *out_t,
                                               size_t                     q_offset,
                                               size_t                     sliding_window) {
-    const char            *name  = NKV_INT4 ? "int4" : "int8";
-    const enum geist_dtype kv_dt = NKV_INT4 ? GEIST_DTYPE_U8 : GEIST_DTYPE_I8;
+    const char            *name = NKV_INT4 ? "int4" : "int8";
+    const enum geist_dtype v_dt = NKV_INT4 ? GEIST_DTYPE_U8 : GEIST_DTYPE_I8;
     size_t                 nq = 0, nk = 0, nv = 0, nks = 0, nvs = 0, no = 0;
     const float           *q = geist_host_tensor(q_t, GEIST_DTYPE_F32, sizeof(float), 3, &nq);
-    const void            *k = geist_host_tensor(k_t, kv_dt, 1, 3, &nk);
-    const void            *v = geist_host_tensor(v_t, kv_dt, 1, 3, &nv);
+    const int8_t          *k = geist_host_tensor(k_t, GEIST_DTYPE_I8, 1, 3, &nk);
+    const void            *v = geist_host_tensor(v_t, v_dt, 1, 3, &nv);
     const float *ks  = geist_host_tensor(k_scale_t, GEIST_DTYPE_F32, sizeof(float), 2, &nks);
     const float *vs  = geist_host_tensor(v_scale_t, GEIST_DTYPE_F32, sizeof(float), 2, &nvs);
     float       *out = (float *) geist_host_tensor(out_t, GEIST_DTYPE_F32, sizeof(float), 3, &no);
@@ -272,7 +272,7 @@ static inline enum geist_status nkv_attention(struct geist_backend      *be,
         geist_backend_set_error(be,
                                 GEIST_E_INVALID_ARG,
                                 "cpu_neon attention_kv_%s: q, scales and out must be F32, k "
-                                "and v %s, DENSE views of the rank given within their buffers",
+                                "I8 and v %s, DENSE views of the rank given within their buffers",
                                 name,
                                 NKV_INT4 ? "U8" : "I8");
         return GEIST_E_INVALID_ARG;
@@ -299,15 +299,16 @@ static inline enum geist_status nkv_attention(struct geist_backend      *be,
                                 n_kv_heads);
         return GEIST_E_UNSUPPORTED;
     }
-    /* Matching shapes (half a byte per INT4 K and V value), and every
+    /* Matching shapes (half a byte per INT4 V value), and every
      * query's position in the cache: n_q and n_kv are >= 1 (nkv_view
      * refuses an empty dimension), so the subtraction cannot wrap. */
-    if ((size_t) k_t->shape[2] != (NKV_INT4 ? head_dim / 2 : head_dim) || nv != nk ||
-        (size_t) v_t->shape[0] != n_kv || (size_t) v_t->shape[1] != n_kv_heads || no != nq ||
-        (size_t) out_t->shape[0] != n_q || (size_t) out_t->shape[1] != n_q_heads ||
-        nks != n_kv * n_kv_heads || nvs != n_kv * n_kv_heads ||
-        (size_t) k_scale_t->shape[0] != n_kv || (size_t) v_scale_t->shape[0] != n_kv ||
-        n_q > n_kv || q_offset > n_kv - n_q) {
+    if ((size_t) k_t->shape[2] != head_dim ||
+        (size_t) v_t->shape[2] != (NKV_INT4 ? head_dim / 2 : head_dim) ||
+        nv != (NKV_INT4 ? nk / 2 : nk) || (size_t) v_t->shape[0] != n_kv ||
+        (size_t) v_t->shape[1] != n_kv_heads || no != nq || (size_t) out_t->shape[0] != n_q ||
+        (size_t) out_t->shape[1] != n_q_heads || nks != n_kv * n_kv_heads ||
+        nvs != n_kv * n_kv_heads || (size_t) k_scale_t->shape[0] != n_kv ||
+        (size_t) v_scale_t->shape[0] != n_kv || n_q > n_kv || q_offset > n_kv - n_q) {
         geist_backend_set_error(be,
                                 GEIST_E_INVALID_ARG,
                                 "cpu_neon attention_kv_%s: shapes do not match, or %zu "

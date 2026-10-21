@@ -223,4 +223,8 @@ const struct transformer_family transformer_family_qwen3moe = {
          * model of the same quantization; F16 matches FP32 against the exact
          * reference (benchmark/results/QWEN3MOE.md). */
         .kv_auto = GEIST_KV_F16,
+        /* INT4 misses the quality bar here (#53): Qwen3-30B-A3B Q4_K_M,
+         * teacher-forced against FP32 KV on cpu_neon, mean JS 0.020 nats
+         * and 89 % top-1 (INT8: 0.012, 91 %). */
+        .kv_int4_instead = GEIST_KV_F16,
 };

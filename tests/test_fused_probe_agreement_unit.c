@@ -55,7 +55,7 @@ static struct geist_tensor zeroed(struct geist_backend *be,
     return t;
 }
 
-/* INT8-KV attention (INT4 when int4, K and V packed two values a byte) at
+/* INT8-KV attention (INT4 when int4, V packed two values a byte) at
  * one geometry, n_q queries at the end of a cache of n_q + 1 positions: the
  * probe must answer `want`, and the kernel must return GEIST_OK when it
  * says yes and GEIST_E_UNSUPPORTED when it says no (its entry checks refuse
@@ -81,11 +81,11 @@ static int kv_quant_agreement(struct geist_backend *be,
     int           fails = geist_expect(yes == want, msg);
     const int64_t n_kv = (int64_t) n_q + 1, qh = (int64_t) n_q_heads, kh = (int64_t) n_kv_heads,
                   hd = (int64_t) head_dim, row = int4 ? hd / 2 : hd;
-    const enum geist_dtype kvt = int4 ? GEIST_DTYPE_U8 : GEIST_DTYPE_I8;
+    const enum geist_dtype vt = int4 ? GEIST_DTYPE_U8 : GEIST_DTYPE_I8;
     struct geist_tensor    tq =
             zeroed(be, GEIST_DTYPE_F32, sizeof(float), 3, (int64_t[]) {(int64_t) n_q, qh, hd});
-    struct geist_tensor tk  = zeroed(be, kvt, 1, 3, (int64_t[]) {n_kv, kh, row});
-    struct geist_tensor tv  = zeroed(be, kvt, 1, 3, (int64_t[]) {n_kv, kh, row});
+    struct geist_tensor tk  = zeroed(be, GEIST_DTYPE_I8, 1, 3, (int64_t[]) {n_kv, kh, hd});
+    struct geist_tensor tv  = zeroed(be, vt, 1, 3, (int64_t[]) {n_kv, kh, row});
     struct geist_tensor tks = zeroed(be, GEIST_DTYPE_F32, sizeof(float), 2, (int64_t[]) {n_kv, kh});
     struct geist_tensor tvs = zeroed(be, GEIST_DTYPE_F32, sizeof(float), 2, (int64_t[]) {n_kv, kh});
     struct geist_tensor to =
