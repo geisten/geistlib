@@ -1074,6 +1074,8 @@ jobs:
                    test_backend_vulkan_vram_budget_unit \
                    test_backend_vulkan_pipeline_cache_unit \
                    test_backend_vulkan_weight_index_unit \
+                   test_backend_vulkan_linear_grouped_unit \
+                   test_qwen3moe_unit \
                    test_gguf_release_range_unit; do
             echo "=== $t ==="
             bin/linux/release/tests/"$t" 2>&1 | tee -a ci-diagnostics/vulkan-tests.txt

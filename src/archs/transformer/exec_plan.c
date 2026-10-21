@@ -87,6 +87,9 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
     case GEIST_FUSED_RMSNORM_ADD_NORM:
         have = fused->rmsnorm_add_norm != nullptr;
         break;
+    case GEIST_FUSED_LINEAR_GROUPED: /* probed by moe_gpu.c at load */
+        have = fused->linear_t_grouped != nullptr;
+        break;
     }
     return have && fused->supported != nullptr && fused->supported(be, &q);
 }

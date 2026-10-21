@@ -31,6 +31,7 @@
 #include <stdatomic.h>
 #include <string.h>
 
+#include "../moe_gpu.h"
 #include "par.h"
 #include "profile.h"
 
@@ -182,10 +183,16 @@ struct moe_job {
     struct transformer_arch_session        *sess;
     struct geist_backend                   *be;
     size_t                                  d, inter, n_exp;
-    uint32_t                                active[GEIST_MOE_MAX_EXPERTS];
+    uint32_t                                active[GEIST_MOE_MAX_EXPERTS]; /* on the CPU */
     size_t                                  n_active;
+    uint32_t                                hot[GEIST_MOE_MAX_EXPERTS]; /* on the GPU (#78) */
+    size_t                                  n_hot;
+    size_t                                  layer;
+    pthread_t                               caller; /* the only thread that runs the GPU's batch */
+    _Atomic bool                            gpu_taken;
     _Atomic size_t                          next;
     _Atomic bool                            failed;
+    enum geist_status                       gpu_status;
 };
 
 static void moe_linear(size_t                     m,
@@ -238,12 +245,26 @@ static bool moe_expert(const struct moe_job *j, size_t e) {
     return ok;
 }
 
-/* A worker: takes the next active expert until none is left, so experts
- * with many rows and experts with one even out across the threads. */
+/* The GPU's batch, once, on the thread that called blk_moe_ffn: a backend
+ * may tie its open command sequence to that thread (Metal's seq_lock). */
+static void moe_gpu_task(struct moe_job *j) {
+    if (j->n_hot == 0 || atomic_exchange_explicit(&j->gpu_taken, true, memory_order_relaxed))
+        return;
+    j->gpu_status = moe_gpu_run(j->sess, j->layer, j->n_hot, j->hot);
+    if (j->gpu_status != GEIST_OK)
+        atomic_store_explicit(&j->failed, true, memory_order_relaxed);
+}
+
+/* A worker: takes the next CPU expert until none is left, so experts with
+ * many rows and experts with one even out across the threads. The calling
+ * thread first runs the GPU's batch and waits for it while the others run
+ * the CPU's experts. */
 static void moe_worker(void *ctx, size_t begin, size_t end) {
     struct moe_job *j = ctx;
     (void) begin;
     (void) end;
+    if (pthread_equal(pthread_self(), j->caller))
+        moe_gpu_task(j);
     for (size_t a;
          (a = atomic_fetch_add_explicit(&j->next, 1, memory_order_relaxed)) < j->n_active;) {
         if (!moe_expert(j, j->active[a]))
@@ -311,6 +332,12 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     if (s != GEIST_OK) {
         return s;
     }
+    /* On a GPU x rides along with the router's batch: one wait for both. */
+    if (sess->moe_x_io != nullptr) {
+        s = v->buffer_copy(sess->moe_x_io, 0, x, 0, seq * d * sizeof(float));
+        if (s != GEIST_OK)
+            return s;
+    }
     moe_profile_mark(MOE_PROFILE_ROUTER, &t0);
 
     /* Route on the host. */
@@ -340,15 +367,21 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     moe_bucket(n_exp, n_sel, sess->moe_ids, sess->moe_rows, sess->moe_row_start);
     moe_profile_mark(MOE_PROFILE_ROUTE, &t0);
 
-    /* Gather each expert's rows into its slice of the bucketed buffer. */
-    const float *xs = (const float *) v->buffer_map(x);
+    /* Gather each expert's rows into its slice of the bucketed buffer. A
+     * GPU's device-local x is copied down first. */
+    struct geist_buffer *xb = sess->moe_x_io != nullptr ? sess->moe_x_io : x;
+    const float         *xs = (const float *) v->buffer_map(xb);
     if (xs == nullptr) {
-        return GEIST_E_BACKEND;
+        if (v->buffer_download(seq * d * sizeof(float), (uint8_t *) sess->moe_x_host, x) !=
+            GEIST_OK)
+            return GEIST_E_BACKEND;
+        xs = sess->moe_x_host;
     }
     for (size_t i = 0; i < n_sel; i++) {
         memcpy(sess->moe_xg + i * d, xs + (sess->moe_rows[i] / k) * d, d * sizeof(float));
     }
-    v->buffer_unmap(x);
+    if (xs != sess->moe_x_host)
+        v->buffer_unmap(xb);
     moe_profile_mark(MOE_PROFILE_GATHER, &t0);
 
     /* Every active expert in one parallel region. */
@@ -356,20 +389,49 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     struct moe_job *j   = &job;
     j->L                = L;
     j->sess             = sess;
-    j->be               = ctx->be;
+    j->be               = st->moe_cpu != nullptr ? st->moe_cpu : ctx->be; /* the CPU experts' */
     j->d                = d;
     j->inter            = ctx->inter;
     j->n_exp            = n_exp;
     j->n_active         = 0;
+    j->n_hot            = 0;
+    j->layer            = (size_t) ctx->layer_idx;
+    j->gpu_status       = GEIST_OK;
+    size_t rows_gpu     = 0;
     for (size_t e = 0; e < n_exp; e++) {
-        if (sess->moe_row_start[e + 1] > sess->moe_row_start[e])
+        const size_t m = sess->moe_row_start[e + 1] - sess->moe_row_start[e];
+        if (m == 0)
+            continue;
+        /* ponytail: with the model on the CPU, hot experts at decode only.
+         * A prefill step's experts have many rows each; run one by one on
+         * the GPU they took longer than the CPU for all of them (run 1669:
+         * 139 vs 185 tok/s). A grouped GEMM would bring prefill in. With
+         * the model on the GPU (moe_cpu set) the GPU is busy anyway. */
+        if ((seq == 1 || st->moe_cpu != nullptr) && moe_gpu_hot(sess, j->layer, e)) {
+            j->hot[j->n_hot++] = (uint32_t) e;
+            rows_gpu += m;
+        } else
             j->active[j->n_active++] = (uint32_t) e;
     }
+    if (st->moe_gpu != nullptr)
+        atomic_fetch_add_explicit(&st->moe_gpu->rows_cpu, n_sel - rows_gpu, memory_order_relaxed);
+    j->caller = pthread_self();
+    atomic_store_explicit(&j->gpu_taken, false, memory_order_relaxed);
     atomic_store_explicit(&j->next, 0, memory_order_relaxed);
     atomic_store_explicit(&j->failed, false, memory_order_relaxed);
+    const size_t tasks   = (j->n_hot > 0) + j->n_active;
     const size_t threads = geist_par_max_threads();
-    geist_par_for(j->n_active < threads ? j->n_active : threads, moe_worker, j);
+    geist_par_for(tasks < threads ? tasks : threads, moe_worker, j);
+    moe_gpu_task(j); /* a thread library that gave the caller no range */
     moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);
+    if (j->gpu_status != GEIST_OK) {
+        geist_backend_set_error(ctx->be,
+                                j->gpu_status,
+                                "moe: layer %d: the GPU experts failed: %s",
+                                ctx->layer_idx,
+                                geist_backend_errmsg(st->moe_gpu->be));
+        return j->gpu_status;
+    }
     if (atomic_load_explicit(&j->failed, memory_order_relaxed)) {
         geist_backend_set_error(ctx->be,
                                 GEIST_E_UNSUPPORTED,

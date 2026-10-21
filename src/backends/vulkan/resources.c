@@ -211,6 +211,12 @@ enum geist_status vk_memory_info(const struct geist_backend *be, struct geist_ba
                                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                                VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    /* Weights carry their device address: the grouped linear (#78 phase 3)
+     * reads several experts' weights in one dispatch through it. */
+    const bool bda = st->bda && role == GEIST_BUFFER_WEIGHT;
+    if (bda) {
+        binfo.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    }
     /* Async streaming (#78): the weights in host memory and the VRAM slots
      * are copied on the transfer queue and read on the compute queue. The
      * weights resident in VRAM are not shared: the copy engine never sees
@@ -270,7 +276,11 @@ enum geist_status vk_memory_info(const struct geist_backend *be, struct geist_ba
         geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: no memory type for buffer");
         return GEIST_E_BACKEND;
     }
+    const VkMemoryAllocateFlagsInfo bda_flags = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+            .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
     VkMemoryAllocateInfo minfo = {.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                  .pNext           = bda ? &bda_flags : nullptr,
                                   .allocationSize  = req.size,
                                   .memoryTypeIndex = mem_type};
     const bool           vram = device_local && (st->mem_props.memoryTypes[mem_type].propertyFlags &
@@ -314,6 +324,11 @@ enum geist_status vk_memory_info(const struct geist_backend *be, struct geist_ba
                     be, GEIST_E_OOM, "vulkan: allocating %zu bytes failed (%d)", bytes, (int) r);
         }
         return GEIST_E_OOM;
+    }
+    if (bda) {
+        const VkBufferDeviceAddressInfo ai = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+                                              .buffer = buf->buf};
+        buf->addr                          = st->fn.GetBufferDeviceAddress(st->device, &ai);
     }
     if (vram) {
         buf->vram_bytes = (size_t) minfo.allocationSize;

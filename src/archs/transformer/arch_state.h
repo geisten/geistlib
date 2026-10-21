@@ -430,6 +430,15 @@ struct transformer_arch_session {
     float               *moe_wts;
     uint32_t            *moe_rows;
     size_t              *moe_row_start;
+    /* Hot experts (moe_gpu.c), on the state's moe_gpu backend: the hot
+     * rows packed [m_max * n_used, d_model] in cached host memory (in, out)
+     * and in VRAM (x), the gate and up outputs in VRAM. nullptr: every
+     * expert runs on the CPU. */
+    struct geist_buffer *moe_gpu_x_io, *moe_gpu_y_io, *moe_gpu_x, *moe_gpu_g, *moe_gpu_u;
+    float               *moe_x_host; /* [m_max, d_model]: x when the backend cannot map it */
+    /* On a GPU: x copied into cached host memory in the router's batch, so
+     * one wait brings the logits and x (#78 phase 3). nullptr on a CPU. */
+    struct geist_buffer *moe_x_io;
 
     /* ---- Last-decode prediction (consumed by next decode_step). */
     bool logits_valid;
@@ -542,6 +551,26 @@ struct transformer_offload {
     _Atomic uint64_t               chunks, mirrored; /* GEIST_VERBOSE at destroy */
 };
 
+/* Hot experts on a GPU backend (#78 phase 3, moe_gpu.c). */
+struct transformer_moe_gpu {
+    struct geist_backend *be;    /* not owned: the caller's split backend */
+    size_t                n_hot; /* experts with a copy on `be` */
+    /* [n_layers * n_experts * 3]: gate, up, down of each expert, resolved on
+     * `be`; raw == nullptr for an expert that stays on the CPU. */
+    struct geist_weight *twins;
+    /* [n_layers * 3]: aliased over each layer's expert tensors on `be`;
+     * destroying them frees the copies (vk_weight_forget, #121). */
+    struct geist_buffer **bufs;
+    /* [n_layers]: the backend runs the layer's hot experts at decode as one
+     * grouped linear per projection (supported(GEIST_FUSED_LINEAR_GROUPED)). */
+    bool            *grouped;
+    _Atomic uint64_t rows_gpu, rows_cpu; /* GEIST_VERBOSE at destroy */
+    /* GEIST_VERBOSE at destroy: batches, and their ns packing (to the
+     * copy), recording, waiting (buffer_map of the outputs), unpacking. */
+    _Atomic uint64_t batches, ns_pack, ns_record, ns_wait, ns_unpack;
+    _Atomic uint64_t n_grouped, ns_wait_grouped; /* the decode batches of them */
+};
+
 struct transformer_arch_state {
     struct geist_backend *backend; /* not owned */
     /* Layer split (#49). The layers this state holds weights and KV caches
@@ -554,8 +583,13 @@ struct transformer_arch_state {
     size_t                         layer_lo, layer_hi;
     struct transformer_arch_state *split;
     bool                           split_stage;
-    struct transformer_offload    *offload;         /* owned; nullptr without offload (#78) */
-    bool                           weights_on_host; /* the twins (#78): matrices GEIST_W_HOST */
+    struct transformer_offload    *offload; /* owned; nullptr without offload (#78) */
+    struct transformer_moe_gpu    *moe_gpu; /* owned; nullptr without hot experts */
+    /* Owned: the experts' home when `backend` is not a CPU backend (a GPU):
+     * every expert is resolved here and runs here unless moe_gpu holds a
+     * copy (#78 phase 3). nullptr on a CPU backend. */
+    struct geist_backend *moe_cpu;
+    bool                  weights_on_host; /* the twins (#78): matrices GEIST_W_HOST */
     /* Unique per loaded model in this process (never 0): binds a session
      * snapshot to the model it was taken on (snapshot.c). */
     uint64_t snapshot_id;

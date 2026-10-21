@@ -1,0 +1,28 @@
+69fdb5c43a1c989a0b1bc1b4dda4ce76c4a43174
+Wed Oct 21 06:53:16 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 595.91.07              Driver Version: 595.91.07      CUDA Version: 13.2     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 2080 Ti     Off |   00000000:01:00.0  On |                  N/A |
+| 41%   28C    P8              8W /  260W |     365MiB /  11264MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A            8399      G   /usr/bin/gnome-shell                    224MiB |
+|    0   N/A  N/A            8786      G   /usr/bin/Xwayland                         3MiB |
+|    0   N/A  N/A           13064      G   .../9036/usr/lib/firefox/firefox         67MiB |
+|    0   N/A  N/A          634956    C+G   /usr/bin/nautilus                        29MiB |
++-----------------------------------------------------------------------------------------+
+               gesamt       benutzt     frei      gemns.  Puffer/Cache verfügbar
+Speicher:         59           7          23           0          28          52
+Auslager:          7           5           2
+32

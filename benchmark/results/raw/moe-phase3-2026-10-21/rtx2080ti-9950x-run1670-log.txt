@@ -1,0 +1,54 @@
+== cycle 1 geist-cpu (load 14.74)
+== geist-cpu cycle 1: exit 0 after 106 s
+== cycle 1 geist-hot (load 14.25)
+geist: moe: 3158 of 6144 experts (9214 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 91.8 %
+geist: moe: 31777 expert rows ran on vulkan, 634847 on the CPU
+geist: moe: 8886 GPU batches, mean us: pack 2.2, record 6.5, wait 234.8, unpack 1.9
+geist: moe: 8886 of them grouped (decode), mean wait 234.8 us
+== geist-hot cycle 1: exit 0 after 120 s
+== cycle 1 geist-hot-uniform (load 15.38)
+geist: moe: 3158 of 6144 experts (9214 MiB) on vulkan; profile none, cover 51.4 %
+geist: moe: 38738 expert rows ran on vulkan, 627886 on the CPU
+geist: moe: 9207 GPU batches, mean us: pack 2.3, record 7.4, wait 269.6, unpack 2.1
+geist: moe: 9207 of them grouped (decode), mean wait 269.6 us
+== geist-hot-uniform cycle 1: exit 0 after 129 s
+== cycle 1 llama-cpu (load 14.92)
+== llama-cpu cycle 1: exit 0 after 15 s
+== cycle 1 llama-exps-cpu (load 15.38)
+== llama-exps-cpu cycle 1: exit 0 after 10 s
+== cycle 2 geist-cpu (load 14.53)
+== geist-cpu cycle 2: exit 0 after 103 s
+== cycle 2 geist-hot (load 14.29)
+geist: moe: 3158 of 6144 experts (9214 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 91.8 %
+geist: moe: 31777 expert rows ran on vulkan, 634847 on the CPU
+geist: moe: 8886 GPU batches, mean us: pack 2.3, record 8.3, wait 291.1, unpack 2.1
+geist: moe: 8886 of them grouped (decode), mean wait 291.1 us
+== geist-hot cycle 2: exit 0 after 126 s
+== cycle 2 geist-hot-uniform (load 13.99)
+geist: moe: 3158 of 6144 experts (9214 MiB) on vulkan; profile none, cover 51.4 %
+geist: moe: 38738 expert rows ran on vulkan, 627886 on the CPU
+geist: moe: 9207 GPU batches, mean us: pack 2.3, record 7.5, wait 232.5, unpack 2.3
+geist: moe: 9207 of them grouped (decode), mean wait 232.5 us
+== geist-hot-uniform cycle 2: exit 0 after 119 s
+== cycle 2 llama-cpu (load 14.99)
+== llama-cpu cycle 2: exit 0 after 16 s
+== cycle 2 llama-exps-cpu (load 14.02)
+== llama-exps-cpu cycle 2: exit 0 after 10 s
+== cycle 3 geist-cpu (load 14.13)
+== geist-cpu cycle 3: exit 0 after 126 s
+== cycle 3 geist-hot (load 15.84)
+geist: moe: 3158 of 6144 experts (9214 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 91.8 %
+geist: moe: 31777 expert rows ran on vulkan, 634847 on the CPU
+geist: moe: 8886 GPU batches, mean us: pack 2.8, record 8.6, wait 276.8, unpack 2.7
+geist: moe: 8886 of them grouped (decode), mean wait 276.8 us
+== geist-hot cycle 3: exit 0 after 146 s
+== cycle 3 geist-hot-uniform (load 15.44)
+geist: moe: 3158 of 6144 experts (9214 MiB) on vulkan; profile none, cover 51.4 %
+geist: moe: 38738 expert rows ran on vulkan, 627886 on the CPU
+geist: moe: 9207 GPU batches, mean us: pack 2.3, record 7.3, wait 225.6, unpack 2.2
+geist: moe: 9207 of them grouped (decode), mean wait 225.6 us
+== geist-hot-uniform cycle 3: exit 0 after 130 s
+== cycle 3 llama-cpu (load 15.59)
+== llama-cpu cycle 3: exit 0 after 18 s
+== cycle 3 llama-exps-cpu (load 14.80)
+== llama-exps-cpu cycle 3: exit 0 after 10 s

@@ -28,6 +28,10 @@
 /* Output rows per workgroup of the linear kernels (vk_linear_gx/gy).
  * Matvecs (matvec_q4k/q5k/q6k/tq2_0, mv_legacy.glsl, ffn_norm_gate_up_q4k): */
 #define VK_MV_ROWS_PER_WG 8u
+
+/* Weights per dispatch of the grouped matvecs (matvec_*_id.comp, #78 phase
+ * 3): the push block carries one device address per weight. */
+#define VK_GROUP_MAX 8u
 /* matvec_pq2_0: one row per lane of a 32-lane slice. */
 #define VK_MV_PQ2_0_ROWS_PER_WG 32u
 /* ffn_gate_up_gelu_q4k: NUM_ROWS rows in one 32-lane workgroup. */

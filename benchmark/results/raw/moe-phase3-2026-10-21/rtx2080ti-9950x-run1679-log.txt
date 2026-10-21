@@ -1,0 +1,32 @@
+== cycle 1 geist-cpu (load 14.47)
+== geist-cpu cycle 1: exit 0 after 103 s
+== cycle 1 geist-gpu (load 14.43)
+geist: moe: 2807 of 6144 experts (8190 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 88.5 %
+geist: moe: 292463 expert rows ran on vulkan, 202513 on the CPU
+geist: moe: 11712 GPU batches, mean us: pack 51.2, record 20.1, wait 1103.8, unpack 8.9
+geist: moe: 11280 of them grouped (decode), mean wait 877.0 us
+== geist-gpu cycle 1: exit 0 after 188 s
+== cycle 1 geist-hot (load 14.61)
+geist: moe: 3158 of 6144 experts (9214 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 91.8 %
+geist: moe: 41236 expert rows ran on vulkan, 453740 on the CPU
+geist: moe: 11816 GPU batches, mean us: pack 2.4, record 10.8, wait 208.9, unpack 2.5
+geist: moe: 11816 of them grouped (decode), mean wait 208.9 us
+== geist-hot cycle 1: exit 0 after 120 s
+== cycle 1 llama-exps-cpu (load 14.32)
+== llama-exps-cpu cycle 1: exit 0 after 10 s
+== cycle 2 geist-cpu (load 13.63)
+== geist-cpu cycle 2: exit 0 after 103 s
+== cycle 2 geist-gpu (load 15.77)
+geist: moe: 2807 of 6144 experts (8190 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 88.5 %
+geist: moe: 292463 expert rows ran on vulkan, 202513 on the CPU
+geist: moe: 11712 GPU batches, mean us: pack 51.3, record 18.2, wait 1091.8, unpack 9.0
+geist: moe: 11280 of them grouped (decode), mean wait 859.1 us
+== geist-gpu cycle 2: exit 0 after 187 s
+== cycle 2 geist-hot (load 14.48)
+geist: moe: 3158 of 6144 experts (9214 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 91.8 %
+geist: moe: 41236 expert rows ran on vulkan, 453740 on the CPU
+geist: moe: 11816 GPU batches, mean us: pack 2.6, record 8.8, wait 248.0, unpack 2.2
+geist: moe: 11816 of them grouped (decode), mean wait 248.0 us
+== geist-hot cycle 2: exit 0 after 120 s
+== cycle 2 llama-exps-cpu (load 13.78)
+== llama-exps-cpu cycle 2: exit 0 after 10 s

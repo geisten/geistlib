@@ -1,0 +1,24 @@
+== cycle 1 geist-gpu (load 14.41)
+geist: moe: 2808 of 6144 experts (8193 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 88.5 %
+geist: moe: 32210 expert rows ran on vulkan, 19246 on the CPU
+geist: moe: 3251 GPU batches, mean us: pack 16.2, record 12.0, wait 239.1, unpack 4.7
+geist: moe: 3157 of them grouped (decode), mean wait 132.6 us
+transformer profile:
+  attention       32.81 ms    1.1%  (3264 calls)
+  ffn           3002.38 ms   98.9%  (3264 calls)
+  ple              0.00 ms    0.0%  (0 calls)
+  scale            0.00 ms    0.0%  (0 calls)
+transformer moe ffn profile:
+  norm             2.27 ms    0.1%  (3264 calls)
+  router           3.55 ms    0.1%  (3264 calls)
+  route          561.99 ms   18.7%  (3264 calls)
+  gather         914.23 ms   30.5%  (3264 calls)
+  experts       1508.24 ms   50.2%  (3264 calls)
+  sum             11.25 ms    0.4%  (3264 calls)
+transformer head profile:
+  copy             0.03 ms    0.0%  (68 calls)
+  norm             0.06 ms    0.1%  (68 calls)
+  lm_head          0.09 ms    0.1%  (68 calls)
+  softcap          0.00 ms    0.0%  (0 calls)
+  sample          76.03 ms   99.8%  (68 calls)
+== geist-gpu cycle 1: exit 0 after 15 s

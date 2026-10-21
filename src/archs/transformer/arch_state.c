@@ -23,6 +23,7 @@
 #include "scratch_plan.h"
 #include "weight_load.h"
 #include "rotation.h"
+#include "moe_gpu.h"
 
 #include "gguf_reader.h"
 #include "gemma4_kernels.h"
@@ -1505,7 +1506,17 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
                                                      struct gguf_ctx                 *gguf,
                                                      const struct geist_session_opts *opts,
                                                      struct transformer_arch_state  **out) {
-    return state_create_range(be, gguf, opts, 0, SIZE_MAX, false, false, out);
+    enum geist_status s = state_create_range(be, gguf, opts, 0, SIZE_MAX, false, false, out);
+    /* A mixture of experts on a GPU: its experts live on moe_cpu; the GPU
+     * gets copies of the hottest, in the memory the rest left (#78). */
+    if (s == GEIST_OK && (*out)->moe_cpu != nullptr) {
+        s = moe_gpu_attach(*out, be);
+        if (s != GEIST_OK) {
+            transformer_state_destroy(*out);
+            *out = nullptr;
+        }
+    }
+    return s;
 }
 
 static bool split_requested(const struct geist_session_opts *opts) {
@@ -1727,6 +1738,34 @@ static void offload_destroy(struct transformer_offload *o) {
     return GEIST_OK;
 }
 
+/* A mixture-of-experts model is not split by layers: it stays on `be` and
+ * the split backend gets its hottest experts (#78 phase 3, moe_gpu.c). */
+[[nodiscard]] static enum geist_status create_moe_split(struct geist_backend            *be,
+                                                        struct gguf_ctx                 *gguf,
+                                                        const struct geist_session_opts *opts,
+                                                        struct transformer_arch_state  **out) {
+    enum geist_status s = transformer_state_create_from_gguf(be, gguf, opts, out);
+    if (s == GEIST_OK && opts->split_layers != GEIST_SPLIT_AUTO &&
+        opts->split_layers > (*out)->n_layers) {
+        geist_backend_set_error(be,
+                                GEIST_E_INVALID_ARG,
+                                "transformer: split_layers %zu past the %zu layers",
+                                opts->split_layers,
+                                (*out)->n_layers);
+        s = GEIST_E_INVALID_ARG;
+        transformer_state_destroy(*out);
+        *out = nullptr;
+    }
+    if (s == GEIST_OK) {
+        s = moe_gpu_attach(*out, opts->split_backend);
+        if (s != GEIST_OK) {
+            transformer_state_destroy(*out);
+            *out = nullptr;
+        }
+    }
+    return s;
+}
+
 enum geist_status transformer_state_create(struct geist_backend            *be,
                                            const char                      *gguf_path,
                                            const struct geist_session_opts *opts,
@@ -1744,6 +1783,9 @@ enum geist_status transformer_state_create(struct geist_backend            *be,
                                 gguf_path,
                                 err != nullptr ? err : "(no detail)");
         return GEIST_E_FILE_NOT_FOUND;
+    }
+    if (split_requested(opts) && moe_gpu_is_moe(gguf)) {
+        return create_moe_split(be, gguf, opts, out);
     }
     struct geist_session_opts planned;
     if (split_requested(opts) && opts->split_layers == GEIST_SPLIT_AUTO) {
@@ -1805,6 +1847,9 @@ enum geist_status transformer_state_create_from_memory(struct geist_backend     
                                 "transformer: gguf_open_memory: %s",
                                 err != nullptr ? err : "(no detail)");
         return GEIST_E_FORMAT;
+    }
+    if (split_requested(opts) && moe_gpu_is_moe(gguf)) {
+        return create_moe_split(be, gguf, opts, out);
     }
     struct geist_session_opts planned;
     if (split_requested(opts) && opts->split_layers == GEIST_SPLIT_AUTO) {
@@ -1869,6 +1914,8 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     st->split = nullptr;
     offload_destroy(st->offload);
     st->offload = nullptr;
+    moe_gpu_destroy(st->moe_gpu); /* its copies key on the expert bytes freed below */
+    st->moe_gpu = nullptr;
 
     if (be != nullptr) {
         /* The layer array may be missing: its allocation failed. */
@@ -1967,6 +2014,7 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
         safe_free(&p_mtp);
         st->mtp_layers = nullptr;
     }
+    geist_backend_destroy(st->moe_cpu); /* after the experts resolved on it */
     void *p = st;
     safe_free(&p);
 }

@@ -405,11 +405,48 @@ need the second copy engine or prefetching deeper than one weight.
 Decision rule (beats single-queue streaming by more than the resolution):
 met.
 
-**Phase 3: MoE.** Qwen3-30B-A3B Q4_K_M (18.6 GB, does not fit 11 GB):
-hot experts resident from the #48 profile, cold on the CPU in parallel with
-the GPU (split submit/wait), prefill experts streamed above `m_min`.
-Decision rule: decode beats both CPU only and llama.cpp `-ot exps=CPU`
-(the comparison `strata-ref.yml` sets up) on the same box.
+**Phase 3: MoE — decode built** (`moe_gpu.c`, `forward/moe.c`,
+`fused->linear_t_grouped`). Qwen3-30B-A3B Q4_K_M (18.6 GB, does not fit
+11 GB), RTX 2080 Ti + Ryzen 9 9950X, `moe-baseline.yml`.
+
+- **The model on the GPU.** A mixture-of-experts model loaded on a GPU
+  backend runs attention, router, embedding and head there. Its experts are
+  resolved on a CPU backend of the state's own (`moe_cpu`: cpu_x86,
+  cpu_neon or cpu_scalar), and after the load the GPU gets copies of the
+  hottest, in `GEIST_MOE_PROFILE` order (the #48 USAGE lines), until the
+  memory the rest left is used: 2,807 of 6,144 experts (8.2 GB), 88.5 % of
+  the profile's selections. `GEIST_MOE_HOT=<n>` sets the count.
+- **Per layer** the host routes (it has to: the CPU experts need the ids),
+  the hot experts run on the GPU as one batch on the calling thread while
+  the CPU workers run the cold ones, and the host forms the weighted sum.
+  Two waits per layer: the router's batch brings the logits and x (copied
+  into cached host memory in that batch), the expert batch its outputs. A
+  decode step's hot experts are four dispatches — gate, up and down as one
+  grouped matvec each (`matvec_{f32,q4k,q6k}_id`: the single kernels with
+  workgroup y picking the weight, read by device address), one silu_mul —
+  and take x by device copies. The batch waits 80 µs per layer.
+- **The clock was the trap.** With the model on the CPU and only the hot
+  experts on the GPU (runs 1665-1676), the card saw short bursts, ~7 %
+  busy, and stayed in P8 (300 MHz core, 405 MHz memory): no gain. On the
+  GPU with five waits per layer it idled between them, 17 % busy, P8 again:
+  3.4 tok/s (run 1679). With two waits it runs at 1.6-2.0 GHz, 36 % busy.
+
+Run 1683 (prompt 512, 128 decoded tokens, 2 interleaved cycles):
+
+| | decode tok/s | prefill tok/s |
+|:--|--:|--:|
+| geist cpu_x86 | 35.8 / 33.7 | 269 / 266 |
+| **geist on Vulkan, hot experts** | **49.2 / 51.8** | 213 / 218 |
+| llama.cpp Vulkan `-ot exps=CPU` | 39.5 / 39.7 | 325 / 321 |
+
+Decode beats both CPU only (+45 %) and llama.cpp `-ot exps=CPU` (+30 %):
+the decision rule holds. Quality: the perplexity of `docs/OFFLOAD.md`
+(1,023 tokens fed one at a time, `bench_nll`) is 29.90 on the CPU and 30.06
+on the GPU; greedy tokens are a poor bar for an MoE, whose routing turns
+tiny differences into other continuations. **Open: prefill** — a chunk's
+experts get ~8 rows each and run one by one (~450 dispatches per layer);
+a grouped GEMM is the next step. Raw data:
+`benchmark/results/raw/moe-phase3-2026-10-21/`.
 
 **Phase 4, only if phase 3 shows the static cover as the limit:** the
 adaptive tier, measured against Strata's +16.5 %.

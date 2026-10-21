@@ -1,0 +1,178 @@
+name: moe-baseline
+
+# Phase 3 of the offload proposal (#78, docs/OFFLOAD.md): the bar for an MoE
+# model that does not fit the card, on the geist-vulkan box (RTX 2080 Ti
+# 11 GB, Ryzen 9 9950X). Measures prefill and decode of Qwen3-30B-A3B
+# Q4_K_M (18.6 GB) for
+#   geist cpu_x86, geist vulkan (weights spill to host memory, #466),
+#   geist split (planner, GEIST_SPLIT_AUTO) + offload (today both Vulkan
+#   configurations refuse the model at load: qwen3moe experts are CPU-only),
+#   geist hot experts on the GPU (phase 3, moe_gpu.c): with the #48 profile
+#   and without (the same share of every layer), the model on the CPU,
+#   geist-gpu: the model on Vulkan, its experts on a CPU backend of its own
+#   and the hottest of them copied to the GPU,
+#   llama.cpp CPU, llama.cpp Vulkan with -ot exps=CPU (experts on the CPU,
+#   the rest on the GPU: the usual recipe phase 3 has to beat).
+# Each configuration is capped by a timeout; a timeout is a result.
+#
+# On demand only:  tea actions workflows dispatch --login git.geisten.net \
+#   --repo geisten/geistlib --ref <branch> -i ref=<branch> moe-baseline.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "geistlib ref"
+        type: string
+        default: main
+      model_url:
+        description: "MoE GGUF (cached by file name)"
+        type: string
+        default: https://huggingface.co/Qwen/Qwen3-30B-A3B-GGUF/resolve/e4d4bafdfb96a411a163846265362aceb0b9c63a/Qwen3-30B-A3B-Q4_K_M.gguf
+      model_sha256:
+        description: "sha256 of the GGUF"
+        type: string
+        default: 0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5
+      configs:
+        description: "configurations, separated by ;"
+        type: string
+        default: "geist-cpu;geist-hot;geist-hot-uniform;llama-cpu;llama-exps-cpu"
+      cycles:
+        description: "interleaved cycles"
+        type: string
+        default: "2"
+      env:
+        description: "extra environment for the geist configurations, separated by ;"
+        type: string
+        default: ""
+      sweep:
+        description: "bench_perf_sweep arguments besides --gguf"
+        type: string
+        default: "--seq-lens 512 --decode-n 32 --warmup 8 --repeats 3 --m-max 128"
+      cap:
+        description: "timeout per configuration and cycle, seconds"
+        type: string
+        default: "1200"
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    name: MoE baseline on geist-vulkan
+    runs-on: geist-vulkan
+    timeout-minutes: 300
+    env:
+      MODEL_URL: ${{ inputs.model_url }}
+      MODEL_SHA: ${{ inputs.model_sha256 }}
+      CONFIGS: ${{ inputs.configs }}
+      CYCLES: ${{ inputs.cycles }}
+      CAP: ${{ inputs.cap }}
+      XENV: ${{ inputs.env }}
+      SWEEP_ARGS: ${{ inputs.sweep }}
+      GGML_VK_VISIBLE_DEVICES: "0" # the discrete card, not the Raphael iGPU
+      PROFILE: benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt # #48
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Environment
+        run: |
+          mkdir -p out
+          { git rev-parse HEAD; nvidia-smi; free -g; nproc; } 2>&1 | tee out/env.txt
+      - name: Build geistlib (vulkan + cpu_x86)
+        run: make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
+      - name: llama.cpp (pinned, cpu and vulkan)
+        run: |
+          set -eo pipefail
+          echo "LLAMA_CPU=$(scripts/ensure-llama-bench.sh cpu)" >> "$GITHUB_ENV"
+          echo "LLAMA_VK=$(scripts/ensure-llama-bench.sh vulkan)" >> "$GITHUB_ENV"
+      - name: Model (cached outside the workspace, sha256-checked)
+        run: |
+          set -eo pipefail
+          CACHE=${GEIST_MODEL_CACHE:-$HOME/geist-models}
+          mkdir -p "$CACHE"
+          F="$CACHE/$(basename "$MODEL_URL")"
+          if [ ! -f "$F" ]; then
+            curl -fL --retry 5 -C - -o "$F.part" "$MODEL_URL"
+            echo "$MODEL_SHA  $F.part" | sha256sum -c -
+            mv "$F.part" "$F"
+          fi
+          echo "MODEL=$F" >> "$GITHUB_ENV"
+      - name: Hot experts against the CPU (logits, greedy tokens; reported)
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          . scripts/gpu-lock.sh
+          GEIST_SPLIT_BACKEND=vulkan GEIST_SPLIT_GGUF_PATH="$MODEL" GEIST_SPLIT_POINTS=1 \
+            GEIST_MOE_PROFILE="$PROFILE" GEIST_VERBOSE=1 \
+            bin/linux/release/tests/test_layer_split_int 2>&1 \
+            | grep -v '^geist vulkan: device memory' | tee out/hot-vs-cpu.txt
+      - name: Quality, perplexity of docs/OFFLOAD.md (CPU vs hot experts)
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          . scripts/gpu-lock.sh
+          NLL=bin/linux/release/tests/bench_nll
+          for cfg in cpu hot gpu; do
+            B=cpu_x86
+            case $cfg in
+              hot) X="GEIST_MOE_PROFILE=$PROFILE GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto" ;;
+              gpu) X="GEIST_MOE_PROFILE=$PROFILE"; B=vulkan ;;
+              *) X= ;;
+            esac
+            env $X GEIST_BENCH_BACKEND=$B "$NLL" "$MODEL" docs/OFFLOAD.md 1024 2>> out/log.txt \
+              | sed "s/^{/{\"cfg\":\"$cfg\",/" | tee -a out/nll.jsonl
+          done
+      - name: Measure, interleaved
+        run: |
+          set -o pipefail
+          . scripts/gpu-lock.sh
+          GB=bin/linux/release/tests/bench_perf_sweep
+          SWEEP="--gguf $MODEL $SWEEP_ARGS"
+          X=$(echo "$XENV" | tr ';' ' ')
+          LB="-m $MODEL -p 512 -n 32 -r 3 -o jsonl"
+          for c in $(seq "$CYCLES"); do
+            for cfg in $(echo "$CONFIGS" | tr ';' ' '); do
+              # quiet host: the desktop's docker CI runners share these cores
+              half=$(( $(nproc) / 2 ))
+              for i in $(seq 60); do
+                awk -v h="$half" '{exit !($1 < h)}' /proc/loadavg && break; sleep 10
+              done
+              echo "== cycle $c $cfg (load $(cut -d' ' -f1 /proc/loadavg))" | tee -a out/log.txt
+              case $cfg in
+                geist-cpu)    cmd="env $X GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 $GB $SWEEP" ;;
+                geist-vulkan) cmd="env GEIST_BENCH_BACKEND=vulkan GEIST_VK_VERBOSE=1 $GB $SWEEP" ;;
+                geist-gpu)    cmd="env $X GEIST_VERBOSE=1 GEIST_MOE_PROFILE=$PROFILE GEIST_BENCH_BACKEND=vulkan $GB $SWEEP" ;;
+                geist-split|geist-hot-uniform)
+                              cmd="env $X GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto $GB $SWEEP" ;;
+                geist-hot)    cmd="env $X GEIST_VERBOSE=1 GEIST_MOE_PROFILE=$PROFILE GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto $GB $SWEEP" ;;
+                llama-cpu)    cmd="$LLAMA_CPU $LB" ;;
+                llama-exps-cpu) cmd="$LLAMA_VK $LB -ngl 99 -ot exps=CPU" ;;
+                *) echo "unknown $cfg"; continue ;;
+              esac
+              s=$(date +%s)
+              # GPU clocks and power state while the configuration runs
+              ( while :; do nvidia-smi --query-gpu=pstate,clocks.sm,clocks.mem,utilization.gpu --format=csv,noheader \
+                  | sed "s/^/$cfg $c, /"; sleep 0.5; done >> out/clocks.txt ) &
+              clk=$!
+              rc=0 # the runner's shell is bash -e: a failed configuration must not end the loop
+              timeout "$CAP" $cmd 2>> out/log.txt \
+                | sed "s/^{/{\"cfg\":\"$cfg\",\"cycle\":$c,/" | tee -a out/results.jsonl || rc=$?
+              kill $clk 2>/dev/null || true
+              echo "== $cfg cycle $c: exit $rc after $(( $(date +%s) - s )) s" | tee -a out/log.txt
+            done
+          done
+          true
+      - name: Job summary
+        if: always()
+        run: |
+          { echo '```'; grep '^== ' out/log.txt; grep -E 'planner|spill|offload|moe:' out/log.txt | sort | uniq -c | head -20;
+            grep -E 'kv .*(split|gpu)|FAIL' out/hot-vs-cpu.txt 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 30
+          name: moe-baseline
+          path: out/
+          if-no-files-found: warn

@@ -237,6 +237,7 @@ LIB_SOURCES := \
     src/archs/transformer/exec_plan.c \
     src/archs/transformer/scratch_plan.c \
     src/archs/transformer/rotation.c \
+    src/archs/transformer/moe_gpu.c \
     src/archs/transformer/forward/attention.c \
     src/archs/transformer/forward/blocks.c \
     src/archs/transformer/forward/moe.c \

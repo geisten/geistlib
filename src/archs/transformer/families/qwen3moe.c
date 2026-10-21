@@ -25,6 +25,7 @@
 
 #include "../arch_family.h"
 #include "../forward/blocks.h"
+#include "../moe_gpu.h"
 #include "../rotation.h"
 #include "../weight_load.h"
 
@@ -79,12 +80,20 @@ static bool populate_layers_qwen3moe(struct transformer_arch_state *st) {
                                                            struct gguf_ctx                  *gguf,
                                                            struct transformer_layer_weights *L) {
     struct geist_backend *be = st->backend;
-    if (strncmp(be->desc->name, "cpu_", 4) != 0) {
-        geist_backend_set_error(be,
-                                GEIST_E_UNSUPPORTED,
-                                "qwen3moe: the experts run on CPU backends only, not %s (#48)",
-                                be->desc->name);
-        return GEIST_E_UNSUPPORTED;
+    /* On a GPU the experts live on a CPU backend of the state's own; the
+     * GPU gets copies of the hottest after the load (moe_gpu.c, #78). */
+    if (strncmp(be->desc->name, "cpu_", 4) != 0 && st->moe_cpu == nullptr) {
+        static const char *const cpus[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
+        for (size_t i = 0; i < sizeof cpus / sizeof cpus[0] && st->moe_cpu == nullptr; i++)
+            if (geist_backend_create(cpus[i], nullptr, nullptr, &st->moe_cpu) != GEIST_OK)
+                st->moe_cpu = nullptr;
+        if (st->moe_cpu == nullptr) {
+            geist_backend_set_error(be,
+                                    GEIST_E_UNSUPPORTED,
+                                    "qwen3moe: no CPU backend for the experts on %s",
+                                    be->desc->name);
+            return GEIST_E_UNSUPPORTED;
+        }
     }
     const size_t n_exp = st->config.moe_n_experts;
     const size_t d     = st->d_model;
@@ -137,11 +146,30 @@ qwen3moe_session_alloc(struct transformer_arch_session *sess) {
     struct geist_backend                *be    = st->backend;
     const size_t                         n_exp = st->config.moe_n_experts;
     const size_t                         n_sel = sess->m_max * st->config.moe_n_used;
-    enum geist_status                    s =
-            transformer_scratch_alloc(be, sess->m_max * n_exp * sizeof(float), &sess->moe_logits);
+    /* The host reads the logits and writes the sum: on a GPU they live in
+     * cached host memory the device writes and reads in place. */
+    const bool        io = be->desc->caps.batched_submit;
+    enum geist_status s  = io ? be->desc->vtbl->buffer_create(be,
+                                                              sess->m_max * n_exp * sizeof(float),
+                                                              GEIST_BUFFER_IO,
+                                                              GEIST_MEMORY_AUTO,
+                                                              &sess->moe_logits)
+                              : transformer_scratch_alloc(
+                                        be, sess->m_max * n_exp * sizeof(float), &sess->moe_logits);
     if (s == GEIST_OK)
-        s = transformer_scratch_alloc(
-                be, sess->m_max * st->d_model * sizeof(float), &sess->moe_acc);
+        s = io ? be->desc->vtbl->buffer_create(be,
+                                               sess->m_max * st->d_model * sizeof(float),
+                                               GEIST_BUFFER_IO,
+                                               GEIST_MEMORY_AUTO,
+                                               &sess->moe_acc)
+               : transformer_scratch_alloc(
+                         be, sess->m_max * st->d_model * sizeof(float), &sess->moe_acc);
+    if (s == GEIST_OK && io)
+        s = be->desc->vtbl->buffer_create(be,
+                                          sess->m_max * st->d_model * sizeof(float),
+                                          GEIST_BUFFER_IO,
+                                          GEIST_MEMORY_AUTO,
+                                          &sess->moe_x_io);
     if (s != GEIST_OK)
         return s;
     size_t inter = 0;
@@ -155,17 +183,21 @@ qwen3moe_session_alloc(struct transformer_arch_session *sess) {
     sess->moe_y         = heap_alloc_array_aligned(float, n_sel * st->d_model);
     sess->moe_g         = heap_alloc_array_aligned(float, n_sel *inter);
     sess->moe_u         = heap_alloc_array_aligned(float, n_sel *inter);
+    sess->moe_x_host    = heap_alloc_array_aligned(float, sess->m_max * st->d_model);
     if (sess->moe_ids == nullptr || sess->moe_wts == nullptr || sess->moe_rows == nullptr ||
         sess->moe_row_start == nullptr || sess->moe_xg == nullptr || sess->moe_y == nullptr ||
-        sess->moe_g == nullptr || sess->moe_u == nullptr) {
+        sess->moe_g == nullptr || sess->moe_u == nullptr || sess->moe_x_host == nullptr) {
         geist_backend_set_error(be, GEIST_E_OOM, "transformer: MoE routing state alloc failed");
         return GEIST_E_OOM;
     }
+    moe_gpu_session_alloc(sess);
     return GEIST_OK;
 }
 
 static void qwen3moe_session_free(struct transformer_arch_session *sess) {
-    void *host[] = {sess->moe_xg,
+    moe_gpu_session_free(sess);
+    void *host[] = {sess->moe_x_host,
+                    sess->moe_xg,
                     sess->moe_y,
                     sess->moe_g,
                     sess->moe_u,
@@ -175,12 +207,13 @@ static void qwen3moe_session_free(struct transformer_arch_session *sess) {
                     sess->moe_row_start};
     for (size_t i = 0; i < sizeof host / sizeof host[0]; i++)
         safe_free(&host[i]);
-    sess->moe_xg = sess->moe_y = sess->moe_g = sess->moe_u = nullptr;
-    sess->moe_wts                                          = nullptr;
+    sess->moe_xg = sess->moe_y = sess->moe_g = sess->moe_u = sess->moe_x_host = nullptr;
+    sess->moe_wts                                                             = nullptr;
     sess->moe_ids = sess->moe_rows = nullptr;
     sess->moe_row_start            = nullptr;
     transformer_buffer_release(sess->model->backend, &sess->moe_logits);
     transformer_buffer_release(sess->model->backend, &sess->moe_acc);
+    transformer_buffer_release(sess->model->backend, &sess->moe_x_io);
 }
 
 /* Qwen3's attention, unchanged. Each step runs only while s is GEIST_OK. */

@@ -76,6 +76,9 @@ static PFN_vkVoidFunction vk_iproc(struct vk_state *st, const char *name) {
     VK_LOAD_I(st, CreateBuffer);
     VK_LOAD_I(st, DestroyBuffer);
     VK_LOAD_I(st, GetBufferMemoryRequirements);
+    /* Vulkan 1.2; optional: without it there is no grouped linear. */
+    st->fn.GetBufferDeviceAddress =
+            (PFN_vkGetBufferDeviceAddress) vk_iproc(st, "vkGetBufferDeviceAddress");
     VK_LOAD_I(st, AllocateMemory);
     VK_LOAD_I(st, FreeMemory);
     VK_LOAD_I(st, BindBufferMemory);
@@ -383,6 +386,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     }
 
     st->has_fp16 = have12.shaderFloat16 && have11.storageBuffer16BitAccess;
+    st->bda      = have12.bufferDeviceAddress && st->fn.GetBufferDeviceAddress != nullptr;
     st->has_int8_dot =
             have13.shaderIntegerDotProduct && have12.shaderInt8 && have12.storageBuffer8BitAccess;
     st->has_coopmat = coop_ext && coop_have.cooperativeMatrix && st->has_fp16;
