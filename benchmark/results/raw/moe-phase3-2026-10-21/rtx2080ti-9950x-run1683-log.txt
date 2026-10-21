@@ -1,0 +1,92 @@
+== cycle 1 geist-cpu (load 14.59)
+transformer profile:
+  attention     3034.65 ms   29.5%  (12768 calls)
+  ffn           7260.88 ms   70.5%  (12768 calls)
+  ple              0.00 ms    0.0%  (0 calls)
+  scale            0.00 ms    0.0%  (0 calls)
+transformer moe ffn profile:
+  norm            15.83 ms    0.2%  (12768 calls)
+  router         498.26 ms    6.9%  (12768 calls)
+  route          201.73 ms    2.8%  (12768 calls)
+  gather         143.20 ms    2.0%  (12768 calls)
+  experts       6270.81 ms   86.4%  (12768 calls)
+  sum            124.22 ms    1.7%  (12768 calls)
+transformer head profile:
+  copy             0.03 ms    0.0%  (260 calls)
+  norm             0.14 ms    0.0%  (260 calls)
+  lm_head        862.86 ms   99.6%  (260 calls)
+  softcap          0.00 ms    0.0%  (0 calls)
+  sample           2.89 ms    0.3%  (260 calls)
+== geist-cpu cycle 1: exit 0 after 14 s
+== cycle 1 geist-gpu (load 13.70)
+geist: moe: 2808 of 6144 experts (8193 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 88.5 %
+geist: moe: 292575 expert rows ran on vulkan, 202401 on the CPU
+geist: moe: 11728 GPU batches, mean us: pack 50.4, record 14.6, wait 328.7, unpack 9.3
+geist: moe: 11296 of them grouped (decode), mean wait 79.3 us
+transformer profile:
+  attention      122.50 ms    1.2%  (12768 calls)
+  ffn          10105.70 ms   98.8%  (12768 calls)
+  ple              0.00 ms    0.0%  (0 calls)
+  scale            0.00 ms    0.0%  (0 calls)
+transformer moe ffn profile:
+  norm             9.45 ms    0.1%  (12768 calls)
+  router          13.18 ms    0.1%  (12768 calls)
+  route         2307.87 ms   22.8%  (12768 calls)
+  gather         158.94 ms    1.6%  (12768 calls)
+  experts       7493.77 ms   74.2%  (12768 calls)
+  sum            118.81 ms    1.2%  (12768 calls)
+transformer head profile:
+  copy             0.10 ms    0.0%  (260 calls)
+  norm             0.21 ms    0.1%  (260 calls)
+  lm_head          0.29 ms    0.1%  (260 calls)
+  softcap          0.00 ms    0.0%  (0 calls)
+  sample         229.08 ms   99.7%  (260 calls)
+== geist-gpu cycle 1: exit 0 after 21 s
+== cycle 1 llama-exps-cpu (load 14.25)
+== llama-exps-cpu cycle 1: exit 0 after 10 s
+== cycle 2 geist-cpu (load 13.41)
+transformer profile:
+  attention     3049.30 ms   28.3%  (12768 calls)
+  ffn           7717.43 ms   71.7%  (12768 calls)
+  ple              0.00 ms    0.0%  (0 calls)
+  scale            0.00 ms    0.0%  (0 calls)
+transformer moe ffn profile:
+  norm            16.42 ms    0.2%  (12768 calls)
+  router         527.35 ms    6.8%  (12768 calls)
+  route          214.13 ms    2.8%  (12768 calls)
+  gather         131.28 ms    1.7%  (12768 calls)
+  experts       6702.88 ms   86.9%  (12768 calls)
+  sum            120.54 ms    1.6%  (12768 calls)
+transformer head profile:
+  copy             0.04 ms    0.0%  (260 calls)
+  norm             0.16 ms    0.0%  (260 calls)
+  lm_head        860.44 ms   99.6%  (260 calls)
+  softcap          0.00 ms    0.0%  (0 calls)
+  sample           2.93 ms    0.3%  (260 calls)
+== geist-cpu cycle 2: exit 0 after 14 s
+== cycle 2 geist-gpu (load 13.99)
+geist: moe: 2808 of 6144 experts (8193 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 88.5 %
+geist: moe: 292575 expert rows ran on vulkan, 202401 on the CPU
+geist: moe: 11728 GPU batches, mean us: pack 49.5, record 15.0, wait 325.3, unpack 10.0
+geist: moe: 11296 of them grouped (decode), mean wait 80.7 us
+transformer profile:
+  attention      133.52 ms    1.4%  (12768 calls)
+  ffn           9629.65 ms   98.6%  (12768 calls)
+  ple              0.00 ms    0.0%  (0 calls)
+  scale            0.00 ms    0.0%  (0 calls)
+transformer moe ffn profile:
+  norm            10.40 ms    0.1%  (12768 calls)
+  router          15.19 ms    0.2%  (12768 calls)
+  route         2267.76 ms   23.6%  (12768 calls)
+  gather         147.82 ms    1.5%  (12768 calls)
+  experts       7064.89 ms   73.4%  (12768 calls)
+  sum            119.67 ms    1.2%  (12768 calls)
+transformer head profile:
+  copy             0.10 ms    0.0%  (260 calls)
+  norm             0.28 ms    0.1%  (260 calls)
+  lm_head          0.31 ms    0.1%  (260 calls)
+  softcap          0.00 ms    0.0%  (0 calls)
+  sample         229.39 ms   99.7%  (260 calls)
+== geist-gpu cycle 2: exit 0 after 22 s
+== cycle 2 llama-exps-cpu (load 14.35)
+== llama-exps-cpu cycle 2: exit 0 after 10 s

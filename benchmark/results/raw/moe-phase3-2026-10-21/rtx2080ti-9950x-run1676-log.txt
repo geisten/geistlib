@@ -1,0 +1,16 @@
+== cycle 1 geist-hot (load 15.98)
+geist: moe: 3158 of 6144 experts (9214 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 91.8 %
+geist: moe: 41236 expert rows ran on vulkan, 453740 on the CPU
+geist: moe: 11816 GPU batches, mean us: pack 2.8, record 9.3, wait 409.4, unpack 2.1
+geist: moe: 11816 of them grouped (decode), mean wait 409.4 us
+== geist-hot cycle 1: exit 0 after 130 s
+== cycle 1 geist-cpu (load 15.03)
+== geist-cpu cycle 1: exit 0 after 103 s
+== cycle 2 geist-hot (load 14.58)
+geist: moe: 3158 of 6144 experts (9214 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 91.8 %
+geist: moe: 41236 expert rows ran on vulkan, 453740 on the CPU
+geist: moe: 11816 GPU batches, mean us: pack 2.2, record 8.3, wait 251.5, unpack 2.2
+geist: moe: 11816 of them grouped (decode), mean wait 251.5 us
+== geist-hot cycle 2: exit 0 after 126 s
+== cycle 2 geist-cpu (load 14.57)
+== geist-cpu cycle 2: exit 0 after 104 s

@@ -138,6 +138,8 @@ limit fails the load.
 | `GEIST_VK_VRAM_BUDGET` | lower the device memory limit (bytes, K/M/G suffix) to reproduce a smaller card |
 | `GEIST_VK_PIPELINE_CACHE` | compiled-pipeline cache file (default `$XDG_CACHE_HOME/geist` or `~/.cache/geist`, one file per driver build); `0` turns it off. The NVIDIA driver's own cache is per executable, so without it every new binary spends ~2 s compiling pipelines |
 | `GEIST_M_MAX` | prefill chunk rows (Vulkan default 128) |
+| `GEIST_MOE_PROFILE=<file>` | the order a mixture-of-experts model's experts get a GPU copy in: the USAGE lines of `tools/moe_usage` ("profile" set), e.g. `benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt` for Qwen3-30B-A3B; without it the same share of every layer (docs/OFFLOAD.md, phase 3) |
+| `GEIST_MOE_HOT=<n>` | exactly n experts with a GPU copy, past the memory budget (tests, measurements; 0 = none) |
 | `GEIST_VK_STREAM_ASYNC=0` | copy streamed weights in the compute batch instead of on the GPU's transfer-only queue (default: on where the device has one), see Memory |
 | `GEIST_VK_STREAM_M_MIN` | rows from which `linear_t` copies a weight that lives in host memory into a VRAM slot before the GEMM (default 32; `0` reads it over the bus as before), see Memory |
 | `GEIST_VK_PQ2_F32_ACC=1` | f32 instead of f16 accumulation in the PQ2_0 tensor-core GEMM (default folds into f32 every 64 k) |
