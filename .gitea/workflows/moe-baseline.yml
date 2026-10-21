@@ -106,6 +106,19 @@ jobs:
             GEIST_MOE_PROFILE="$PROFILE" GEIST_VERBOSE=1 \
             bin/linux/release/tests/test_layer_split_int 2>&1 \
             | grep -v '^geist vulkan: device memory' | tee out/hot-vs-cpu.txt
+      - name: Quality, perplexity of docs/OFFLOAD.md (CPU vs hot experts)
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          . scripts/gpu-lock.sh
+          NLL=bin/linux/release/tests/bench_nll
+          for cfg in cpu hot; do
+            if [ "$cfg" = hot ]; then
+              X="GEIST_MOE_PROFILE=$PROFILE GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto"
+            else X=; fi
+            env $X GEIST_BENCH_BACKEND=cpu_x86 "$NLL" "$MODEL" docs/OFFLOAD.md 1024 2>> out/log.txt \
+              | sed "s/^{/{\"cfg\":\"$cfg\",/" | tee -a out/nll.jsonl
+          done
       - name: Measure, interleaved
         run: |
           set -o pipefail
