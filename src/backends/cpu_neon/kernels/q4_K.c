@@ -1732,24 +1732,22 @@ static void q4k_prefill_predecoded_mtile8_ntile4_packed_tiles(void *ctx, size_t 
 
 #endif
 
-/* One full 4-row tile x 8 tokens of the SDOT kernel below (#16): 4 rows
- * of a block are transposed once into 64 k-groups of [row0..3][4 bytes],
- * so one vdotq_laneq_s32 adds a 4-byte k-group of one token to all four
- * rows; eight tokens give eight independent accumulator chains. The
- * activations stay row-major (the lane picks the k-group). Exact int32
- * subblock sums as the scalar-reduction kernel above; float order per
- * output element unchanged up to contraction. */
-static void q4k_sdot_tile4x8(const struct q4k_prefill_job     *job,
-                             const struct q4k_predecode_block *tile,
-                             size_t                            mt,
-                             size_t                            nt) {
-    const size_t n_in = job->n_in, n_out = job->n_out;
-    const size_t nb = n_in / Q4_K_BLOCK_ELEMS, n_chunks = n_in / 32;
-    float32x4_t  yacc[8];
-    for (int t = 0; t < 8; t++) {
-        yacc[t] = vdupq_n_f32(0.0f);
-    }
-    alignas(16) int8_t wbuf[64 * 16];
+/* One block of a 4-row tile as q4k_sdot_tile4x8 consumes it: the four
+ * rows' 256 weights transposed into 64 k-groups of [row0..3][4 bytes], and
+ * the rows' subblock scales, mins, d and dmin as vectors. */
+struct q4k_sdot_wblk {
+    alignas(16) int8_t qs[64 * 16];
+    int32x4_t   sc[8];
+    int32x4_t   mn[8];
+    float32x4_t d, dmin;
+};
+
+/* nb blocks of one 4-row tile into q4k_sdot_wblk form, once per tile:
+ * every group of 8 tokens then reads them as they are (#16; they used to
+ * be rebuilt for each group). */
+static void q4k_sdot_prep(size_t                            nb,
+                          const struct q4k_predecode_block *tile,
+                          struct q4k_sdot_wblk              wb[static nb]) {
     for (size_t b = 0; b < nb; b++) {
         const struct q4k_predecode_block *bl = tile + b * 4;
         for (int c = 0; c < 16; c++) {
@@ -1761,12 +1759,47 @@ static void q4k_sdot_tile4x8(const struct q4k_prefill_job     *job,
             const int64x2_t t1 = vreinterpretq_s64_s32(vtrn2q_s32(r0, r1));
             const int64x2_t t2 = vreinterpretq_s64_s32(vtrn1q_s32(r2, r3));
             const int64x2_t t3 = vreinterpretq_s64_s32(vtrn2q_s32(r2, r3));
-            vst1q_s8(wbuf + (4 * c + 0) * 16, vreinterpretq_s8_s64(vtrn1q_s64(t0, t2)));
-            vst1q_s8(wbuf + (4 * c + 1) * 16, vreinterpretq_s8_s64(vtrn1q_s64(t1, t3)));
-            vst1q_s8(wbuf + (4 * c + 2) * 16, vreinterpretq_s8_s64(vtrn2q_s64(t0, t2)));
-            vst1q_s8(wbuf + (4 * c + 3) * 16, vreinterpretq_s8_s64(vtrn2q_s64(t1, t3)));
+            vst1q_s8(wb[b].qs + (4 * c + 0) * 16, vreinterpretq_s8_s64(vtrn1q_s64(t0, t2)));
+            vst1q_s8(wb[b].qs + (4 * c + 1) * 16, vreinterpretq_s8_s64(vtrn1q_s64(t1, t3)));
+            vst1q_s8(wb[b].qs + (4 * c + 2) * 16, vreinterpretq_s8_s64(vtrn2q_s64(t0, t2)));
+            vst1q_s8(wb[b].qs + (4 * c + 3) * 16, vreinterpretq_s8_s64(vtrn2q_s64(t1, t3)));
         }
-        int32x4_t s1[8];
+        for (int is = 0; is < 8; is++) {
+            const int32_t sc_a[4] = {
+                    bl[0].scales[is], bl[1].scales[is], bl[2].scales[is], bl[3].scales[is]};
+            const int32_t mn_a[4] = {
+                    bl[0].mins[is], bl[1].mins[is], bl[2].mins[is], bl[3].mins[is]};
+            wb[b].sc[is] = vld1q_s32(sc_a);
+            wb[b].mn[is] = vld1q_s32(mn_a);
+        }
+        const float d_a[4]  = {bl[0].d, bl[1].d, bl[2].d, bl[3].d};
+        const float dm_a[4] = {bl[0].dmin, bl[1].dmin, bl[2].dmin, bl[3].dmin};
+        wb[b].d             = vld1q_f32(d_a);
+        wb[b].dmin          = vld1q_f32(dm_a);
+    }
+}
+
+/* One full 4-row tile x 8 tokens of the SDOT kernel below (#16), on the
+ * tile's q4k_sdot_prep blocks: one vdotq_laneq_s32 adds a 4-byte k-group
+ * of one token to all four rows; eight tokens give eight independent
+ * accumulator chains. The activations stay row-major (the lane picks the
+ * k-group). Exact int32 subblock sums as the scalar-reduction kernel above;
+ * float order per output element unchanged up to contraction. */
+static void q4k_sdot_tile4x8(const struct q4k_prefill_job *job,
+                             size_t                        b0,
+                             size_t                        b1,
+                             const struct q4k_sdot_wblk   *wb,
+                             size_t                        mt,
+                             float32x4_t                   yio[static 8]) {
+    const size_t n_in = job->n_in;
+    const size_t nb = n_in / Q4_K_BLOCK_ELEMS, n_chunks = n_in / 32;
+    float32x4_t  yacc[8];
+    for (int t = 0; t < 8; t++) {
+        yacc[t] = yio[t];
+    }
+    for (size_t b = b0; b < b1; b++) {
+        const int8_t *wbuf = wb[b - b0].qs;
+        int32x4_t     s1[8];
         for (int t = 0; t < 8; t++) {
             s1[t] = vdupq_n_s32(0);
         }
@@ -1819,27 +1852,18 @@ static void q4k_sdot_tile4x8(const struct q4k_prefill_job     *job,
                     }
                 }
             }
-            const int32_t scv_a[4] = {
-                    bl[0].scales[is], bl[1].scales[is], bl[2].scales[is], bl[3].scales[is]};
-            const int32x4_t scv = vld1q_s32(scv_a);
+            const int32x4_t scv = wb[b - b0].sc[is];
             for (int t = 0; t < 8; t++) {
                 s1[t] = vmlaq_s32(s1[t], acc[t], scv);
             }
         }
-        int32x4_t mnv[8];
-        for (int is = 0; is < 8; is++) {
-            const int32_t mn_a[4] = {
-                    bl[0].mins[is], bl[1].mins[is], bl[2].mins[is], bl[3].mins[is]};
-            mnv[is] = vld1q_s32(mn_a);
-        }
-        const float       d_a[4]  = {bl[0].d, bl[1].d, bl[2].d, bl[3].d};
-        const float       dm_a[4] = {bl[0].dmin, bl[1].dmin, bl[2].dmin, bl[3].dmin};
-        const float32x4_t dv = vld1q_f32(d_a), dmv = vld1q_f32(dm_a);
+        const struct q4k_sdot_wblk *wbb = &wb[b - b0];
+        const float32x4_t           dv = wbb->d, dmv = wbb->dmin;
         for (int t = 0; t < 8; t++) {
             const int32_t *sm = job->sum32 + (mt + (size_t) t) * n_chunks + b * 8;
-            int32x4_t      s2 = vmulq_n_s32(mnv[0], sm[0]);
+            int32x4_t      s2 = vmulq_n_s32(wbb->mn[0], sm[0]);
             for (int is = 1; is < 8; is++) {
-                s2 = vmlaq_n_s32(s2, mnv[is], sm[is]);
+                s2 = vmlaq_n_s32(s2, wbb->mn[is], sm[is]);
             }
             const float32x4_t v = vsubq_f32(vmulq_f32(dv, vcvtq_f32_s32(s1[t])),
                                             vmulq_f32(dmv, vcvtq_f32_s32(s2)));
@@ -1847,12 +1871,18 @@ static void q4k_sdot_tile4x8(const struct q4k_prefill_job     *job,
         }
     }
     for (int t = 0; t < 8; t++) {
-        vst1q_f32(job->y + (mt + (size_t) t) * n_out + nt * 4, yacc[t]);
+        yio[t] = yacc[t];
     }
 }
 
+/* Blocks per q4k_sdot_prep pass: 21 KB of prepared weights on the stack. */
+enum { Q4K_SDOT_PREP_BLOCKS = 16 };
+
 /* Tiles [nt0, nt1) of the SDOT kernel: full 4-row tiles and full groups
- * of 8 tokens; a ragged tile or token tail takes the kernel below. */
+ * of 8 tokens; a ragged tile or token tail takes the kernel below. A tile's
+ * blocks are prepared Q4K_SDOT_PREP_BLOCKS at a time on the stack, and
+ * each group of 8 tokens carries its accumulators from one pass to the
+ * next, so every output still sums its blocks in order. */
 static void q4k_prefill_sdot_tiles(void *ctx, size_t nt0, size_t nt1);
 
 static void q4k_prefill_sdot_tiles(void *ctx, size_t nt0, size_t nt1) {
@@ -1860,13 +1890,30 @@ static void q4k_prefill_sdot_tiles(void *ctx, size_t nt0, size_t nt1) {
     const struct q4k_predecode_block *w   = q4k_predecode_ntile4_blocks(job->w);
     const size_t                      nb  = job->n_in / Q4_K_BLOCK_ELEMS;
     const size_t                      m8  = job->m / 8 * 8;
+    struct q4k_sdot_wblk              wb[Q4K_SDOT_PREP_BLOCKS];
+    float32x4_t                       yacc[GEIST_QUANT_M_CAP / 8][8];
     for (size_t nt = nt0; nt < nt1; nt++) {
         if (nt * 4 + 4 > job->n_out) {
             q4k_prefill_predecoded_mtile8_ntile4_packed_tiles(ctx, nt, nt + 1);
             continue;
         }
+        const struct q4k_predecode_block *tile = w + nt * nb * 4;
+        for (size_t g = 0; g < m8 / 8; g++) {
+            for (int t = 0; t < 8; t++) {
+                yacc[g][t] = vdupq_n_f32(0.0f);
+            }
+        }
+        for (size_t b0 = 0; b0 < nb; b0 += Q4K_SDOT_PREP_BLOCKS) {
+            const size_t b1 = nb - b0 < Q4K_SDOT_PREP_BLOCKS ? nb : b0 + Q4K_SDOT_PREP_BLOCKS;
+            q4k_sdot_prep(b1 - b0, tile + b0 * 4, wb);
+            for (size_t mt = 0; mt < m8; mt += 8) {
+                q4k_sdot_tile4x8(job, b0, b1, wb, mt, yacc[mt / 8]);
+            }
+        }
         for (size_t mt = 0; mt < m8; mt += 8) {
-            q4k_sdot_tile4x8(job, w + nt * nb * 4, mt, nt);
+            for (int t = 0; t < 8; t++) {
+                vst1q_f32(job->y + (mt + (size_t) t) * job->n_out + nt * 4, yacc[mt / 8][t]);
+            }
         }
         if (m8 < job->m) {
             struct q4k_prefill_job tail = *job;
