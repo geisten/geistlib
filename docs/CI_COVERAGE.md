@@ -211,9 +211,9 @@ was; hence `if: always()`.
 ## Coverage ratchet
 
 The `coverage` job runs on every push to `main` and nightly (not on PRs
-unless labelled `ci:full`: ~2 h), and
-pushes to `main` are never cancelled by a later merge, so every main commit
-is measured. It builds `MODE=cov` (gcc-14, `-O2 --coverage`, Linux x86_64 on
+unless labelled `ci:full`: ~2 h). A later merge cancels the running
+`main` run (concurrency in `ci.yml`), so after a burst of merges only the
+newest commit is measured; the nightly run is never cancelled. It builds `MODE=cov` (gcc-14, `-O2 --coverage`, Linux x86_64 on
 the desktop runner; the only arm64 runner is the Pi 5, where it took hours)
 and runs the model-free unit suite plus the real-model int suite with
 `GEIST_STRICT_FIXTURES=gguf,audio` — a fixture skip (model or audio tower)

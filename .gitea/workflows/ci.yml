@@ -18,12 +18,15 @@ on:
     - cron: "47 3 * * *"
   workflow_dispatch:
 
-# Cancel superseded runs on the same PR. A push to main runs to the end:
-# merges land faster than the 65 min coverage job, and with cancellation
-# most main commits were never fully measured (perf record, coverage).
+# A newer push to the same PR or to main cancels the older run: only the
+# newest main is fully tested. Uncancelled, main runs queued behind each
+# other's ~2 h coverage job and blocked every runner (2026-10-21: four main
+# runs in line, the newest waiting 1.5 h). The cost: a failure after a burst
+# of merges names the burst, not the merge. Nightly and dispatched runs have
+# their own group and are never cancelled by a merge.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.ref }}-${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && 'dispatch' || 'push' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
   version-consistency:
