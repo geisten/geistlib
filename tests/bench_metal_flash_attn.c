@@ -18,6 +18,9 @@
  * n_i is the number of keys query row i attends (causal, clipped to the
  * window). Without a mask this is the usual 4*m*kv*hd*heads.
  *
+ * GEIST_FA_M=<m> sets the query rows instead (1: the decode kernels, #17);
+ * a Llama 3.2 3B shape (24/8 heads, head_dim 128) runs last.
+ *
  * Usage: bench_metal_flash_attn [iters] [reps] [f16|f32] [kv ...].
  * SKIPs without a Metal device. Timing: run it under the host's benchmark
  * lock.
@@ -182,6 +185,8 @@ int main(int argc, char **argv) {
                 MAX_REPS);
         return GEIST_TEST_ERROR;
     }
+    const char  *m_env       = getenv("GEIST_FA_M");
+    const size_t m_rows      = m_env != nullptr && atol(m_env) > 0 ? (size_t) atol(m_env) : M_ROWS;
     struct geist_backend *be = nullptr;
     if (geist_backend_create("metal", nullptr, nullptr, &be) != GEIST_OK || be == nullptr) {
         GEIST_SKIP("metal backend unavailable (not built or no device)");
@@ -190,6 +195,7 @@ int main(int argc, char **argv) {
             {"bonsai", 24, 4, 256, 0},
             {"gemma.swa", 8, 1, 256, 512},
             {"gemma.glob", 8, 1, 512, 0},
+            {"llama3.3b", 24, 8, 128, 0},
     };
     size_t kvs[16] = {1024, 2048, 4096, 8192};
     size_t n_kv    = 4;
@@ -197,8 +203,8 @@ int main(int argc, char **argv) {
         n_kv = 0;
         for (int a = 4; a < argc && n_kv < sizeof kvs / sizeof kvs[0]; a++) {
             const long kv = atol(argv[a]);
-            if (kv < M_ROWS) {
-                fprintf(stderr, "bad kv length (< %d): %s\n", M_ROWS, argv[a]);
+            if (kv < (long) m_rows) {
+                fprintf(stderr, "bad kv length (< %zu): %s\n", m_rows, argv[a]);
                 geist_backend_destroy(be);
                 return GEIST_TEST_ERROR;
             }
@@ -208,7 +214,7 @@ int main(int argc, char **argv) {
     int rc = GEIST_TEST_PASS;
     for (size_t s = 0; s < sizeof shapes / sizeof shapes[0] && rc == GEIST_TEST_PASS; s++) {
         for (size_t j = 0; j < n_kv && rc == GEIST_TEST_PASS; j++) {
-            rc = bench_shape(be, &shapes[s], M_ROWS, kvs[j], f32kv, iters, reps);
+            rc = bench_shape(be, &shapes[s], m_rows, kvs[j], f32kv, iters, reps);
         }
     }
     geist_backend_destroy(be);

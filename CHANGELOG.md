@@ -77,6 +77,15 @@ release folds them in here (`scripts/changelog.py`).
   Bonsai GEMM shape.
 
 ### Fixed
+- **Vulkan: a destroyed model's weights leave the backend (#121).** The
+  registry of device copies (host pointer -> VRAM buffer) only ever grew:
+  each model loaded on one backend instance kept its weights' VRAM until
+  the instance went, and a later model with a tensor at an address an
+  earlier one used could find the old copy. Destroying a model's aliased
+  weight buffers now removes the copies made from them. In
+  `test_layer_split_int` (Qwen3-14B Q8_0, a dozen models on one instance,
+  RTX 2080 Ti) split 26 now runs with every KV mode; before, F32 and INT4
+  ran out of device memory.
 
 - **cpu_neon kernels no longer leak their scratch with every thread that
   ends (#100).** The q4_K/q6_K/TL1 kernels' `_Thread_local` high-water

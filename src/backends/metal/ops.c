@@ -521,19 +521,26 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
-/* From this row width a single-row dispatch goes 1024 wide; the F32 GEMV
- * widens the same way. Fixed, not calibrated: at rows == 1 both kernels are
- * dispatch-latency-bound and the 256- vs 1024-thread difference is within
- * run-to-run noise. */
+/* From this row width a single-row norm takes the width below instead of
+ * the 256 threads of a prefill row. */
 static constexpr uint32_t METAL_WIDE_ROWS_MIN_COLS = 1024u;
 
 /* One row per threadgroup: at decode (rows == 1) that leaves the whole GPU
- * running a single threadgroup, so a long row wants every thread it can
- * get. Prefill already fills the machine with rows, so it keeps 256. The simd
- * kernels take their stride from threads_per_threadgroup; the plain ones
- * hardcode 256. */
+ * running a single threadgroup, latency-bound. The norm kernels keep up to
+ * four elements per thread in registers, so a row of cols >= 1024 takes
+ * cols/4 threads (rounded up to a simdgroup, at most 1024): every load in
+ * flight at once, and as few simdgroups as that allows to meet at the
+ * barrier and in the partial sum. A chain of 1536-wide decode norms on the
+ * M1 Max: 8.0 us each at 1024 threads, 5.6 at 384; cols 1024/2048/3072 take
+ * 256/512/768 threads, each the fastest of 256..1024 measured (#17).
+ * Prefill already fills the machine with rows, so it keeps 256. The simd
+ * kernels take their stride from threads_per_threadgroup. */
 static uint32_t metal_rows_threads(uint32_t rows, uint32_t cols) {
-    return rows == 1u && cols >= METAL_WIDE_ROWS_MIN_COLS ? 1024u : METAL_ELEM_THREADS;
+    if (rows != 1u || cols < METAL_WIDE_ROWS_MIN_COLS) {
+        return METAL_ELEM_THREADS;
+    }
+    const uint32_t quarter = (cols / 4u + 31u) / 32u * 32u;
+    return quarter < 1024u ? quarter : 1024u;
 }
 
 static void metal_encode_rmsnorm_rows(struct metal_state             *st,
@@ -2486,6 +2493,14 @@ static void *metal_flash_pipeline(const struct metal_state *st, size_t head_dim)
     return metal_op_end(be, cmd, enc, "flash attention");
 }
 
+static void *metal_decv_pipeline(const struct metal_state *st, size_t head_dim, bool f16) {
+    if (head_dim == 0u || head_dim % 32u != 0u || head_dim / 32u > METAL_FLASH_SLOTS) {
+        return nullptr;
+    }
+    return f16 ? st->attention_decv_f16_pipeline[head_dim / 32u - 1u]
+               : st->attention_decv_f32kv_pipeline[head_dim / 32u - 1u];
+}
+
 /* rows==1 (decode) fast path: the split-KV decode kernel — the scalar
  * kernel uses one threadgroup per head (8 tgs on a 32-core GPU) and its
  * cost grows linearly with kv_len. An F32 cache is read by the _f32kv
@@ -2517,14 +2532,26 @@ static void *metal_flash_pipeline(const struct metal_state *st, size_t head_dim)
     if (sliding_window > 0u && (uint32_t) sliding_window < window) {
         window = (uint32_t) sliding_window;
     }
+    /* The 32-key-block kernel where one is built for this head_dim and the
+     * offsets keep its float4/half4 loads aligned: one split per block it
+     * touches, up to 32. The per-key kernels otherwise, 16 splits at most. */
+    void *block_pipeline = metal_decv_pipeline(st, head_dim, kv_native_f16);
+    if ((q_off | k_off | v_off) % 4u != 0u) {
+        block_pipeline = nullptr;
+    }
     uint32_t nsplit = window / 32u;
+    if (block_pipeline != nullptr) {
+        const uint32_t hi = (uint32_t) q_offset < (uint32_t) k_rows ? (uint32_t) q_offset
+                                                                    : (uint32_t) k_rows - 1u;
+        nsplit            = hi / 32u - (hi + 1u - window) / 32u + 1u;
+    }
     if (nsplit < 1u) {
         nsplit = 1u;
     }
-    if (nsplit > 16u) {
-        nsplit = 16u;
+    if (nsplit > (block_pipeline != nullptr ? 32u : 16u)) {
+        nsplit = block_pipeline != nullptr ? 32u : 16u;
     }
-    const size_t partial_bytes = q_heads * 16u * (head_dim + 2u) * sizeof(float);
+    const size_t partial_bytes = q_heads * 32u * (head_dim + 2u) * sizeof(float);
     if (st->attn_dec_partials_buffer != nullptr && st->attn_dec_partials_capacity < partial_bytes) {
         metal_buffer_destroy_internal(be, st->attn_dec_partials_buffer);
         st->attn_dec_partials_buffer   = nullptr;
@@ -2570,10 +2597,12 @@ static void *metal_flash_pipeline(const struct metal_state *st, size_t head_dim)
     /* head_dim <= 256: 8-chunk lane unroll; 256 < hd <= 512 (gemma-3n
      * full-attention layers): the 16-chunk dec512 variant. */
     const bool wide     = head_dim > 256u;
-    void      *pipeline = kv_native_f16 ? (wide ? st->attention_dec512_f16_pipeline
-                                                : st->attention_dec_f16_pipeline)
-                                        : (wide ? st->attention_dec512_f32kv_pipeline
-                                                : st->attention_dec_f32kv_pipeline);
+    void      *pipeline = block_pipeline != nullptr
+                                  ? block_pipeline
+                                  : (kv_native_f16 ? (wide ? st->attention_dec512_f16_pipeline
+                                                           : st->attention_dec_f16_pipeline)
+                                                   : (wide ? st->attention_dec512_f32kv_pipeline
+                                                           : st->attention_dec_f32kv_pipeline));
     metal_msg_send_set_pipeline(st, enc, pipeline);
     metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, k->buffer->buffer, k_base, 1);
@@ -2585,9 +2614,10 @@ static void *metal_flash_pipeline(const struct metal_state *st, size_t head_dim)
                               3);
     metal_msg_send_set_bytes(st, enc, &fp, sizeof(fp), 4);
     metal_msg_send_set_bytes(st, enc, &nsplit, sizeof(nsplit), 5);
-    const struct metal_size dgroups = {nsplit, q_heads, 1};
+    const struct metal_size dgroups   = {nsplit, q_heads, 1};
+    const struct metal_size threads32 = {32, 1, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ATTENTION_ROWS, dgroups);
-    metal_msg_send_dispatch(st, enc, dgroups, threads256);
+    metal_msg_send_dispatch(st, enc, dgroups, block_pipeline != nullptr ? threads32 : threads256);
 
     const uint32_t cb[4] = {(uint32_t) q_heads, (uint32_t) head_dim, nsplit, (uint32_t) out_off};
     metal_msg_send_set_pipeline(st, enc, st->attention_dec_combine_pipeline);
@@ -2598,9 +2628,10 @@ static void *metal_flash_pipeline(const struct metal_state *st, size_t head_dim)
                               0);
     metal_msg_send_set_buffer(st, enc, out->buffer->buffer, out->buffer->base_off, 1);
     metal_msg_send_set_bytes(st, enc, cb, sizeof(cb), 2);
-    const struct metal_size ggroups = {1, q_heads, 1};
+    const struct metal_size ggroups   = {(head_dim + 63u) / 64u, q_heads, 1};
+    const struct metal_size threads64 = {64, 1, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ATTENTION_ROWS, ggroups);
-    metal_msg_send_dispatch(st, enc, ggroups, threads256);
+    metal_msg_send_dispatch(st, enc, ggroups, threads64);
 
     return metal_op_end(be, cmd, enc, "decode attention");
 }

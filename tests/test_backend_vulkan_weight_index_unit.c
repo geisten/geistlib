@@ -14,6 +14,10 @@
  *   - the index stays a power of two at most half full;
  *   - resolving a host pointer again replaces its buffer in place (the
  *     registry does not grow) and the new bytes are what the device holds;
+ *   - destroying the aliased weight buffer the first half of the weights
+ *     lie in removes exactly those entries and their device memory (#121):
+ *     the second half is still found, the first is not, and a load and
+ *     destroy of the same weights 20 times leaves device memory flat;
  *   - the time of a model-sized lookup pattern (300 registered weights,
  *     each looked up 250 times) is printed for the hash index and for a
  *     scan, for the record (not asserted).
@@ -120,6 +124,59 @@ int main(void) {
     fails += geist_expect(vk_weight_lookup(st, &host[(k + 1) * STRIDE]) != nullptr &&
                                   vk_weight_lookup(st, &host[(k - 1) * STRIDE]) != nullptr,
                           "neighbours still found");
+
+    /* #121: the model's aliased buffer over the first half goes. */
+    {
+        const size_t         half  = N / 2;
+        struct geist_buffer *alias = nullptr;
+        fails += geist_expect(
+                vt->buffer_create_aliased(
+                        be, host, half * STRIDE * sizeof(float), GEIST_BUFFER_WEIGHT, &alias) ==
+                        GEIST_OK,
+                "aliased buffer over the first half");
+        const size_t vram_before = st->vram_used;
+        vt->buffer_destroy(be, alias);
+        size_t gone = 0, kept = 0;
+        for (size_t i = 0; i < N; i++) {
+            const struct geist_buffer *b = vk_weight_lookup(st, &host[i * STRIDE]);
+            gone += i < half && b == nullptr && scan(st, &host[i * STRIDE]) == nullptr;
+            kept += i >= half && b != nullptr && b == scan(st, &host[i * STRIDE]);
+        }
+        snprintf(msg,
+                 sizeof msg,
+                 "destroy drops the %zu weights inside it (%zu), keeps %zu",
+                 half,
+                 gone,
+                 kept);
+        fails += geist_expect(gone == half && kept == N - half && st->n_weights == N - half, msg);
+        snprintf(msg,
+                 sizeof msg,
+                 "their device memory is freed (%zu -> %zu bytes)",
+                 vram_before,
+                 st->vram_used);
+        fails += geist_expect(st->vram_used + half * STRIDE * sizeof(float) <= vram_before, msg);
+
+        /* Reload the first half 20 times, model-style: flat. */
+        size_t vram_first = 0;
+        bool   flat       = true;
+        for (int r = 0; r < 20; r++) {
+            fails +=
+                    vt->buffer_create_aliased(
+                            be, host, half * STRIDE * sizeof(float), GEIST_BUFFER_WEIGHT, &alias) !=
+                    GEIST_OK;
+            for (size_t i = 0; i < half; i++) {
+                struct geist_weight rw = weight_at(i);
+                fails += vt->resolve_weight(be, &rw) != GEIST_OK;
+            }
+            vt->buffer_destroy(be, alias);
+            if (r == 0) {
+                vram_first = st->vram_used;
+            }
+            flat = flat && st->vram_used == vram_first && st->n_weights == N - half;
+        }
+        fails += geist_expect(flat,
+                              "20 loads and destroys leave device memory and the registry flat");
+    }
 
     geist_backend_destroy(be);
 

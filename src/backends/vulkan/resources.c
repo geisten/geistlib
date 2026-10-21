@@ -482,11 +482,47 @@ enum vk_placement vk_buffer_placement(const struct geist_buffer *buf) {
     return GEIST_OK;
 }
 
+static void vk_weight_index_put(uint32_t *table, size_t cap, const void *host, size_t idx);
+
+/* The registry entries of the weights inside [lo, hi) and their device
+ * copies go (#121): a model's aliased weight buffers are destroyed with the
+ * model, and the copies made from them must not outlive it — they held VRAM
+ * until the backend went, and a later model with a tensor at the same
+ * address found the old copy. ponytail: a scan of the registry per
+ * destroyed weight buffer (a few hundred entries); an interval index if a
+ * model ever has tens of thousands. */
+static void vk_weight_forget(struct geist_backend *be, const uint8_t *lo, const uint8_t *hi) {
+    struct vk_state *st      = be->state;
+    size_t           dropped = 0;
+    for (size_t i = st->n_weights; i-- > 0;) {
+        const uint8_t *h = st->weights[i].host;
+        if (h < lo || h >= hi) {
+            continue;
+        }
+        struct geist_buffer *gpu = st->weights[i].gpu;
+        st->weights[i]           = st->weights[--st->n_weights];
+        vk_buffer_destroy(be, gpu); /* reads only st->weights[0, n_weights) */
+        dropped++;
+    }
+    if (dropped == 0) {
+        return;
+    }
+    memset(st->weight_index, 0, st->cap_weight_index * sizeof(uint32_t));
+    for (size_t i = 0; i < st->n_weights; ++i) {
+        vk_weight_index_put(st->weight_index, st->cap_weight_index, st->weights[i].host, i);
+    }
+}
+
 void vk_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf) {
     if (buf == nullptr) {
         return;
     }
     struct vk_state *st = buf->owner;
+    if ((buf->memory_flags & GEIST_MEMORY_ALIASED) != 0 && buf->role == GEIST_BUFFER_WEIGHT &&
+        buf->host_alias != nullptr) {
+        const uint8_t *lo = buf->host_alias;
+        vk_weight_forget(be, lo, lo + buf->bytes);
+    }
     vk_seq_flush(st); /* the open batch may reference this buffer */
     /* Async streaming (#78): a copy on the transfer queue may still read it,
      * and the learned order and the slots must not name a freed buffer. */

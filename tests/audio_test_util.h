@@ -15,6 +15,8 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "test_helpers.h"
+
 #define AUDIO_TEST_SR 16000
 #define AUDIO_TEST_SOFT_DIM 1536
 #define AUDIO_TEST_MAX_SOFT 256
@@ -33,14 +35,17 @@ static inline void audio_test_synth_sweep(int16_t *pcm, size_t n, double seconds
     }
 }
 
-/* Tower discovery: env override, then the arch's default search location.
+/* Default tower location, relative to the repo root (`make fetch-audio-tower`). */
+#define AUDIO_TEST_TOWER_DEFAULT "audio_bench/audio_tower.safetensors"
+
+/* Tower discovery: env override, then the default location.
  * Returns nullptr when no tower is configured — caller decides skip vs
  * fail. A tower that is configured but unreadable (GEIST_AUDIO_MODEL_PATH
  * set, or the default path a dangling symlink) exits GEIST_TEST_FAIL: a
  * skip there let parity and WER runs pass without running (#57). */
 static inline const char *audio_test_find_tower(void) {
     const char *env   = getenv("GEIST_AUDIO_MODEL_PATH");
-    const char *tower = env != nullptr ? env : "audio_bench/audio_tower.safetensors";
+    const char *tower = env != nullptr ? env : AUDIO_TEST_TOWER_DEFAULT;
     FILE       *f     = fopen(tower, "rb");
     if (f != nullptr) {
         fclose(f);
@@ -52,9 +57,43 @@ static inline const char *audio_test_find_tower(void) {
                 "FAIL: audio tower %s is configured but unreadable (a dead symlink? "
                 "re-fetch it, e.g. `make fetch-audio-tower` or `geist-diktat setup`)\n",
                 tower);
-        exit(1); /* GEIST_TEST_FAIL */
+        exit(GEIST_TEST_FAIL);
     }
     return nullptr;
+}
+
+/* The test needs a tower and got no encoder. Re-runs the discovery first,
+ * so a dead link or a bad GEIST_AUDIO_MODEL_PATH fails even when the tower
+ * was looked up elsewhere (the session's aux search). Then SKIP naming the
+ * path — or FAIL when GEIST_STRICT_FIXTURES names "audio": a CI leg that
+ * fetched the tower must not go green on a skip. */
+[[noreturn]] static inline void audio_test_skip_no_tower(const char *detail) {
+    const char *tower = audio_test_find_tower();
+    char        what[512];
+    if (tower != nullptr) {
+        snprintf(what, sizeof what, "%s is present but no encoder loaded: %s", tower, detail);
+    } else {
+        snprintf(what,
+                 sizeof what,
+                 "%s missing and GEIST_AUDIO_MODEL_PATH unset (make fetch-audio-tower): %s",
+                 AUDIO_TEST_TOWER_DEFAULT,
+                 detail);
+    }
+    if (geist_test_fixtures_strict_for("audio")) {
+        fprintf(stderr, "FAIL: no audio tower, GEIST_STRICT_FIXTURES=audio: %s\n", what);
+        exit(GEIST_TEST_FAIL);
+    }
+    printf("SKIP: no audio tower: %s\n", what);
+    exit(GEIST_TEST_SKIP);
+}
+
+/* audio_test_find_tower for a test that cannot run without one. */
+static inline const char *audio_test_require_tower(void) {
+    const char *tower = audio_test_find_tower();
+    if (tower == nullptr) {
+        audio_test_skip_no_tower("not configured");
+    }
+    return tower;
 }
 
 /* Max |a[i] - b[i]| over n elements; writes the argmax to *at (may be
