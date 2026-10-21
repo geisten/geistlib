@@ -521,19 +521,26 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
-/* From this row width a single-row dispatch goes 1024 wide; the F32 GEMV
- * widens the same way. Fixed, not calibrated: at rows == 1 both kernels are
- * dispatch-latency-bound and the 256- vs 1024-thread difference is within
- * run-to-run noise. */
+/* From this row width a single-row norm takes the width below instead of
+ * the 256 threads of a prefill row. */
 static constexpr uint32_t METAL_WIDE_ROWS_MIN_COLS = 1024u;
 
 /* One row per threadgroup: at decode (rows == 1) that leaves the whole GPU
- * running a single threadgroup, so a long row wants every thread it can
- * get. Prefill already fills the machine with rows, so it keeps 256. The simd
- * kernels take their stride from threads_per_threadgroup; the plain ones
- * hardcode 256. */
+ * running a single threadgroup, latency-bound. The norm kernels keep up to
+ * four elements per thread in registers, so a row of cols >= 1024 takes
+ * cols/4 threads (rounded up to a simdgroup, at most 1024): every load in
+ * flight at once, and as few simdgroups as that allows to meet at the
+ * barrier and in the partial sum. A chain of 1536-wide decode norms on the
+ * M1 Max: 8.0 us each at 1024 threads, 5.6 at 384; cols 1024/2048/3072 take
+ * 256/512/768 threads, each the fastest of 256..1024 measured (#17).
+ * Prefill already fills the machine with rows, so it keeps 256. The simd
+ * kernels take their stride from threads_per_threadgroup. */
 static uint32_t metal_rows_threads(uint32_t rows, uint32_t cols) {
-    return rows == 1u && cols >= METAL_WIDE_ROWS_MIN_COLS ? 1024u : METAL_ELEM_THREADS;
+    if (rows != 1u || cols < METAL_WIDE_ROWS_MIN_COLS) {
+        return METAL_ELEM_THREADS;
+    }
+    const uint32_t quarter = (cols / 4u + 31u) / 32u * 32u;
+    return quarter < 1024u ? quarter : 1024u;
 }
 
 static void metal_encode_rmsnorm_rows(struct metal_state             *st,
