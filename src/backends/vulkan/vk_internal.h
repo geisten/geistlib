@@ -379,7 +379,8 @@ struct vk_state {
      * addressed table of entry index + 1 (0 = empty), a power of two at
      * most half full, so the lookup on every linear_t / embedding call is
      * one or two probes instead of a scan of a few hundred entries (#469).
-     * Entries are never removed, only replaced in place. */
+     * A re-resolve replaces an entry in place; destroying the aliased
+     * weight buffer an entry's host pointer lies in removes it (#121). */
     struct vk_weight_entry *weights;
     size_t                  n_weights;
     size_t                  cap_weights;

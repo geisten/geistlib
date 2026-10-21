@@ -63,12 +63,25 @@ jobs:
   # Pull requests that change only documentation, raw benchmark data or the
   # version lines (a release PR) skip the build and test jobs: a skipped job
   # reports success to main's required checks. Rule: scripts/ci-changes.sh.
+  #
+  # Two tiers (docs/CI_COVERAGE.md "Tiers"). The required tier — this job,
+  # clang-format, the version and API-contract checks, and build + unit tests
+  # on Linux x86_64 (musl, the release recipe), Linux arm64 and macOS arm64 —
+  # runs on every pull request; main's branch protection names exactly these
+  # (.gitea/required-checks.txt). Every job whose `if:` tests
+  # needs.changes.outputs.full is the post-merge tier: sanitizers, real
+  # models, perf floors, Vulkan, the other build legs. It runs on pushes to
+  # main, nightly, on dispatch, on GitHub (the mirror's pull requests use
+  # GitHub's runners), and for a pull request labelled ci:full; on main, a
+  # failing job opens a Gitea issue (ci-issues below).
   changes:
     name: changed paths (code, or documentation only)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       code: ${{ steps.paths.outputs.code }}
+      full: ${{ steps.tier.outputs.full }}
+      label: ${{ steps.tier.outputs.label }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -78,7 +91,13 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: sh scripts/ci-changes.sh | tee -a "$GITHUB_OUTPUT"
+      # full=true|false (post-merge tier runs), label=true|false (ci:full set)
+      - id: tier
+        run: sh scripts/ci-changes.sh --tier | tee -a "$GITHUB_OUTPUT"
 
+  # Required tier: build + model-free unit tests per platform, every PR. The
+  # same platforms' real models, sanitizers, Metal and perf floors run in
+  # build-test-full below, after the merge.
   build-test:
     name: build + unit tests (${{ matrix.name }})
     needs: changes
@@ -98,24 +117,11 @@ jobs:
           # -std=c23 needs gcc >= 14 and Apple-clang >= 16 (Xcode 16 / macOS 15).
           # The default Apple-silicon build includes the metal backend next to
           # the CPU pair (mk/target-mac*.mk), so this leg builds exactly what a
-          # plain `make` and the release build: the hosted macos-15 runners expose
-          # a real Metal device, so the probe and parity gate below execute on GPU.
+          # plain `make` and the release build. Its Metal gate, models and perf
+          # floors run in build-test-full.
           - name: macOS arm64
             runner: macos-15
             target: mac-omp
-            cc: clang
-            bflags: ""
-            apple_silicon: true
-            perf_gguf: qwen3.5-0.8b-q8_0.gguf
-            perf_floors: --min-prefill 30 --min-decode 10
-          # No OpenMP (TARGET=mac): cpu_neon's loops run on GCD through
-          # geist_par_for (#618). The only leg that executes that backend.
-          # Default backends (metal included, so the default no-OpenMP build is
-          # what gets compiled); the mandatory Metal gate and perf floors stay
-          # with the leg above.
-          - name: macOS arm64 GCD (no OpenMP)
-            runner: macos-15
-            target: mac
             cc: clang
             bflags: ""
           # Intel Mac: target-mac*.mk picks the x86 pair from `uname -m`.
@@ -131,8 +137,6 @@ jobs:
             target: linux
             cc: gcc-14
             bflags: ""
-            perf_gguf: gemma4-e2b-Q4_K_M.gguf
-            perf_floors: --min-prefill 20 --min-decode 4
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -171,6 +175,140 @@ jobs:
       - name: Decision feature on/off (same build directory)
         run: make test-decision TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
+      # Hermetic Python suite (algorithm reference impls). Part of `make test` (#146).
+      - name: Python tests
+        if: matrix.target == 'linux'
+        run: make test-py
+
+      # The BitNet embedding chain, executed end to end. Called directly, not via
+      # `make test-embedding`, whose 77 is a benign skip without numpy: here numpy
+      # is installed and the tool is built, so a skip is a failure.
+      - name: Embedding chain end-to-end (synthetic model, a skip is a failure)
+        if: matrix.target == 'linux'
+        run: python3 tests/scripts/embedding_e2e_smoke.py bin/${{ matrix.target }}/release/tools/dump_geist_embedding
+
+      # Contract enforcement, include half: every public header compiles on its
+      # own as C23 and as C++17 (see GEIST_AT_LEAST in include/geist.h).
+      - name: Public headers compile as C and C++
+        run: make check-headers TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
+
+      # Contract enforcement, link half: an out-of-tree agent runtime links
+      # these symbols across a release boundary, so a changed signature or a
+      # removed symbol must fail here rather than in the consumer's build.
+      - name: Agent-runtime contract smoke
+        run: make agent-contract-smoke TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
+
+      # The same for the API geist-runtime builds on (#622).
+      - name: geist-runtime contract smoke
+        run: make runtime-contract-smoke TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
+
+      - name: Build example
+        run: make -C examples TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
+
+  # Post-merge tier of the platforms above (docs/CI_COVERAGE.md "Tiers"):
+  # the Metal GPU gate, the real-model suites, the sanitizers on macOS and the
+  # perf floors. Runs on main pushes, nightly, and for a pull request labelled
+  # ci:full. On git.geisten.net (scripts/gitea-ci.py) the timing legs run on
+  # dedicated hardware: macOS arm64 on macos-15-heavy (the M1 Max under its
+  # benchmark lock), Linux arm64 on ubuntu-24.04-arm-pi (the Pi 5 under its
+  # board lock) — the shared cloud VM missed the prefill floor by noise (19.9 <
+  # 20 tok/s, run 1586).
+  build-test-full:
+    name: ${{ matrix.title }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Apple silicon: a real Metal device is expected, so the probe and
+          # parity gate below execute on the GPU.
+          - name: macOS arm64
+            title: models, Metal, ASan + perf (macOS arm64)
+            runner: macos-15
+            target: mac-omp
+            cc: clang
+            bflags: ""
+            apple_silicon: true
+            perf_gguf: qwen3.5-0.8b-q8_0.gguf
+            perf_floors: --min-prefill 30 --min-decode 10
+          # No OpenMP (TARGET=mac): cpu_neon's loops run on GCD through
+          # geist_par_for (#618). The only leg that executes that backend.
+          # Default backends (metal included, so the default no-OpenMP build is
+          # what gets compiled); the mandatory Metal gate and perf floors stay
+          # with the leg above. unit: its build + unit tests run here, not in
+          # the required tier.
+          - name: macOS arm64 GCD (no OpenMP)
+            title: build + unit tests (macOS arm64 GCD (no OpenMP))
+            runner: macos-15
+            target: mac
+            cc: clang
+            bflags: ""
+            unit: true
+          # Intel Mac: target-mac*.mk picks the x86 pair from `uname -m`.
+          # The Metal probe/parity gate and the Apple perf floors are sized
+          # for Apple silicon, so neither runs here.
+          - name: macOS x86_64
+            title: models + ASan (macOS x86_64)
+            runner: macos-15-intel
+            target: mac-omp
+            cc: clang
+            bflags: ""
+          - name: Linux arm64
+            title: models + perf (Linux arm64)
+            runner: ubuntu-24.04-arm
+            target: linux
+            cc: gcc-14
+            bflags: ""
+            perf_gguf: gemma4-e2b-Q4_K_M.gguf
+            perf_floors: --min-prefill 20 --min-decode 4
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Unique key each run so the warmed cache is always saved; restore-keys
+      # falls back to the latest prior cache for this matrix leg.
+      - name: ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-full-${{ matrix.name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-full-${{ matrix.name }}-
+            ccache-${{ matrix.name }}-
+
+      - name: Install deps (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install libomp ccache
+          # libomp lives under /opt/homebrew on Apple silicon, /usr/local on Intel.
+          echo "LIBOMP_PREFIX=$(brew --prefix libomp)" >> "$GITHUB_ENV"
+
+      - name: Install deps (Linux)
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14 libopenblas-dev ccache python3-numpy
+
+      - name: Build
+        run: make TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
+
+      # Unit tests are hardware/kernel-level and do not need a GGUF model;
+      # AUTO_FETCH_MODEL=0 keeps the ~3 GB reference download out of CI.
+      - name: Unit tests
+        if: matrix.unit
+        run: make test-unit TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }} AUTO_FETCH_MODEL=0
+
+      - name: Decision feature on/off (same build directory)
+        if: matrix.unit
+        run: make test-decision TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
+
       # Sanitizers on macOS, both arches: the asan legs are Linux+gcc only, and
       # clang fails differently at -O1 (an `omp simd` the sanitizer instrumentation
       # cannot satisfy is a -Wpass-failed error under -Werror). Model-free suite,
@@ -198,31 +336,22 @@ jobs:
           GEIST_TEST_METAL_RESOURCES=1 ./bin/${{ matrix.target }}/asan/tests/test_metal_resources_unit
           GEIST_TEST_METAL_AUTORELEASE=1 ./bin/${{ matrix.target }}/release/tests/test_metal_autorelease_unit
 
-      # Hermetic Python suite (algorithm reference impls). Part of `make test` (#146).
-      - name: Python tests
-        if: matrix.target == 'linux'
-        run: make test-py
-
-      # The BitNet embedding chain, executed end to end. Called directly, not via
-      # `make test-embedding`, whose 77 is a benign skip without numpy: here numpy
-      # is installed and the tool is built, so a skip is a failure.
-      - name: Embedding chain end-to-end (synthetic model, a skip is a failure)
-        if: matrix.target == 'linux'
-        run: python3 tests/scripts/embedding_e2e_smoke.py bin/${{ matrix.target }}/release/tools/dump_geist_embedding
-
       # Contract enforcement, include half: every public header compiles on its
       # own as C23 and as C++17 (see GEIST_AT_LEAST in include/geist.h).
       - name: Public headers compile as C and C++
+        if: matrix.unit
         run: make check-headers TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
       # Contract enforcement, link half: an out-of-tree agent runtime links
       # these symbols across a release boundary, so a changed signature or a
       # removed symbol must fail here rather than in the consumer's build.
       - name: Agent-runtime contract smoke
+        if: matrix.unit
         run: make agent-contract-smoke TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
       # The same for the API geist-runtime builds on (#622).
       - name: geist-runtime contract smoke
+        if: matrix.unit
         run: make runtime-contract-smoke TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
       # The integration + e2e suites load the real GGUF, so they actually exercise
@@ -359,7 +488,10 @@ jobs:
           key: perf-${{ matrix.name }}-${{ github.run_id }}
 
       - name: Build example
+        if: matrix.unit
         run: make -C examples TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
+
+
 
   # Build the way the README tells a newcomer to, in images nobody develops
   # on. The point of this job is what it does NOT pass: no EXTRA_CFLAGS, no
@@ -368,6 +500,8 @@ jobs:
   # it is the README's first command and needs no BLAS.
   readme-build:
     name: documented build (${{ matrix.image }})
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
@@ -400,7 +534,7 @@ jobs:
   build-test-musl:
     name: build + unit tests (Linux arm64, musl)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
@@ -425,7 +559,7 @@ jobs:
   build-test-x86_64:
     name: ${{ matrix.name }}
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -543,7 +677,7 @@ jobs:
   build-test-x86_64-scalar:
     name: build + unit tests (Linux x86_64, cpu_scalar portable reference)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -567,7 +701,7 @@ jobs:
   build-test-x86_64-clang:
     name: build + unit tests (Linux x86_64, clang)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -596,14 +730,16 @@ jobs:
   # audio tower is Range-extracted and SHA-pinned (tools/fetch_audio_tower.py,
   # cached), mel constants are checked in, the clip is synthesized
   # (tools/gen_test_wav.py). arm64 for the NEON / Pi 5 code path. A skip fails
-  # the step; no timing is asserted.
+  # the step, and GEIST_STRICT_FIXTURES=audio names the missing tower in the
+  # failure (#57); no timing is asserted.
   audio-smoke:
     name: audio harness smoke (Linux arm64, NEON)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     env:
+      GEIST_STRICT_FIXTURES: audio
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
     steps:
@@ -679,10 +815,11 @@ jobs:
   audio-parity-x86_64:
     name: audio W8A8 parity (Linux x86_64, AVX-512 VNNI)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
+      GEIST_STRICT_FIXTURES: audio
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
     steps:
@@ -722,7 +859,7 @@ jobs:
   pi5-target-build:
     name: build (TARGET=pi5 flag set, Linux arm64)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     env:
@@ -786,7 +923,7 @@ jobs:
   avx512-sde:
     name: AVX-512/VNNI guaranteed (Linux x86_64, Intel SDE)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -852,7 +989,7 @@ jobs:
           path: ci-diagnostics/
           if-no-files-found: warn
 
-  # Vulkan on every PR (#182), software tier: Mesa's lavapipe is a real
+  # Vulkan after every merge (#182), software tier: Mesa's lavapipe is a real
   # Vulkan implementation (loader -> ICD -> SPIR-V pipeline), so the
   # registry, buffer and linear-parity tests execute the ACTUAL dispatch
   # chain on a hosted runner — no physical GPU required. The tests are
@@ -865,7 +1002,7 @@ jobs:
   vulkan-lavapipe:
     name: Vulkan backend (Linux x86_64, lavapipe)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -956,7 +1093,7 @@ jobs:
   asan:
     name: ASan + UBSan (Linux arm64)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     env:
@@ -998,7 +1135,7 @@ jobs:
   asan-x86_64:
     name: ASan + UBSan (Linux x86_64)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -1040,7 +1177,7 @@ jobs:
   tsan:
     name: TSan multi-session (Linux x86_64, cpu_x86)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
     # TSan is 5-15x on top of -O1 and serialized OMP: the parallel test's
     # serial reference prefill dominates. 75 min fits it with headroom.
@@ -1112,9 +1249,10 @@ jobs:
   coverage:
     name: coverage ratchet (Linux x86_64, unit + int)
     # Not on pull_request: the instrumented run takes 60-100 minutes. It runs
-    # on every push to main (and on dispatch), so a coverage drop is caught
-    # one merge later.
-    if: github.event_name != 'pull_request'
+    # on every push to main, nightly and on dispatch, so a coverage drop is
+    # caught one merge later; a pull request opts in with the ci:full label.
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true' && (github.event_name != 'pull_request' || needs.changes.outputs.label == 'true')
     runs-on: ubuntu-24.04
     # The instrumented build prefills the real model many times across
     # the int suite. e2e adds ~half an hour and moves the per-subsystem
@@ -1153,7 +1291,8 @@ jobs:
       # The audio engine paths (attach + the #256 streaming turn) only
       # execute with the tower present — without it their session.c lines
       # count as uncovered and the src/engine floor fires. Same pinned
-      # cache the audio-smoke job uses.
+      # cache the audio-smoke job uses; GEIST_STRICT_FIXTURES=audio below
+      # fails a tower-gated test that skips anyway (#57).
       - name: Cache audio tower
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -1184,7 +1323,7 @@ jobs:
         run: make fetch-qwen3-model
       - name: Build + run suites (MODE=cov, fixtures mandatory)
         env:
-          GEIST_STRICT_FIXTURES: gguf
+          GEIST_STRICT_FIXTURES: gguf,audio
           # Repetition-heavy int tests honor this by shrinking their loop
           # counts: line coverage is identical (same code paths), but the
           # instrumented build stops paying 24 min for 4x32x2 parallel
@@ -1229,3 +1368,47 @@ jobs:
         run: |
           clang-format --version
           make format-check
+
+  # Post-merge tier on main: one Gitea issue per failing job name, updated by
+  # every later run and closed by the first green one (scripts/ci-issues.py).
+  # needs: every other job (scripts/required_checks.py checks the list);
+  # always(), so it runs when they failed. full != 'false' also covers a
+  # failed `changes` job, whose outputs are then empty.
+  ci-issues:
+    name: file failing main jobs as issues
+    needs:
+      - version-consistency
+      - api-contract
+      - changes
+      - build-test
+      - build-test-full
+      - readme-build
+      - build-test-musl
+      - build-test-x86_64
+      - build-test-x86_64-scalar
+      - build-test-x86_64-clang
+      - audio-smoke
+      - audio-parity-x86_64
+      - pi5-target-build
+      - build-test-musl-x86_64
+      - avx512-sde
+      - vulkan-lavapipe
+      - asan
+      - asan-x86_64
+      - tsan
+      - coverage
+      - format
+    if: always() && github.server_url != 'https://github.com' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.changes.outputs.full != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Open, update or close one issue per job
+        env:
+          GITEA_TOKEN: ${{ github.token }}
+          SELF: file failing main jobs as issues
+        run: python3 scripts/ci-issues.py

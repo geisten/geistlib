@@ -75,8 +75,8 @@ jobs:
           GIT_CACHE_TOKEN: ${{ secrets.GIT_CACHE_TOKEN }}
         run: sh scripts/git-cache-deploy.sh "${{ inputs.action }}"
 
-  # action=verify host=pi5: one checkout on each Pi runner. ubuntu-24.04-arm
-  # is shared with cloud-arm64-hel1, so the container probe may land there.
+  # action=verify host=pi5: one checkout on each Pi runner (pi5-ci answers
+  # to ubuntu-24.04-arm-pi; ubuntu-24.04-arm is cloud-arm64-hel1).
   pi5-probe-host:
     if: inputs.host == 'pi5' && inputs.action == 'verify'
     runs-on: pi5
@@ -90,7 +90,7 @@ jobs:
   pi5-probe-ci:
     needs: pi5-probe-host
     if: always() && inputs.host == 'pi5' && inputs.action == 'verify'
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04-arm-pi
     timeout-minutes: 15
     outputs:
       runner: ${{ steps.who.outputs.runner }}

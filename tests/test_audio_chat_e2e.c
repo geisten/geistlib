@@ -272,6 +272,7 @@ out_fail:
 
 int main(void) {
     GEIST_REQUIRE_GGUF(model_path);
+    (void) audio_test_find_tower(); /* a dead link or bad env fails, not skips (#57) */
 
     struct geist_backend *be = nullptr;
     enum geist_status     s  = geist_backend_create("cpu_neon", nullptr, nullptr, &be);

@@ -1,0 +1,30 @@
+name: ci-bot
+
+# The CI bot on the desktop runner host (scripts/ci-bot.py,
+# docs/HARDWARE_CI.md "CI bot"): reruns infra-failed jobs, rebases PRs whose
+# only conflict is CHANGELOG.md, enables auto-merge once a PR's dependencies
+# are merged. deploy installs or updates it, rollback stops it. Dispatch only.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "deploy | rollback | status"
+        default: deploy
+      dry_run:
+        description: "deploy in dry-run mode (logs decisions, writes nothing)"
+        default: "false"
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    runs-on: geist-vulkan
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: ${{ inputs.action }}
+        env:
+          CI_BOT_TOKEN: ${{ secrets.CI_BOT_TOKEN }}
+          CI_BOT_DRY_RUN: ${{ inputs.dry_run }}
+        run: sh scripts/ci-bot-deploy.sh "${{ inputs.action }}"
