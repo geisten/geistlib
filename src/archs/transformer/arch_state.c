@@ -1727,6 +1727,17 @@ static void offload_destroy(struct transformer_offload *o) {
                                                         const struct geist_session_opts *opts,
                                                         struct transformer_arch_state  **out) {
     enum geist_status s = transformer_state_create_from_gguf(be, gguf, opts, out);
+    if (s == GEIST_OK && opts->split_layers != GEIST_SPLIT_AUTO &&
+        opts->split_layers > (*out)->n_layers) {
+        geist_backend_set_error(be,
+                                GEIST_E_INVALID_ARG,
+                                "transformer: split_layers %zu past the %zu layers",
+                                opts->split_layers,
+                                (*out)->n_layers);
+        s = GEIST_E_INVALID_ARG;
+        transformer_state_destroy(*out);
+        *out = nullptr;
+    }
     if (s == GEIST_OK) {
         s = moe_gpu_attach(*out, opts->split_backend);
         if (s != GEIST_OK) {

@@ -29,7 +29,9 @@
  * applies to every split above and the outputs are reported.
  *
  * Refusals: split_layers past the layer count fails the load with
- * GEIST_E_INVALID_ARG; a KIVI session on a split model fails to create.
+ * GEIST_E_INVALID_ARG; a KIVI session on a split model fails to create. A
+ * mixture-of-experts model is not split by layers: the split backend gets
+ * its hottest experts (#78 phase 3), so the KIVI refusal does not apply.
  *
  * Model: GEIST_SPLIT_GGUF_PATH, else SmolLM2-360M (make fetch-llama-model).
  * A model a split does not support (per-layer embeddings, shared KV,
@@ -195,6 +197,22 @@ static float max_abs_diff(const float *a, const float *b, size_t n) {
     return d;
 }
 
+/* "<arch>.expert_count" > 0: the split backend gets experts, not layers. */
+static bool gguf_is_moe(const char *path) {
+    const char      *err = nullptr;
+    struct gguf_ctx *g   = gguf_open(path, &err);
+    size_t           len = 0;
+    const char *a = g != nullptr ? gguf_get_meta_string(g, "general.architecture", &len) : nullptr;
+    char        key[96];
+    uint32_t    n   = 0;
+    const bool  moe = a != nullptr && len < 64 &&
+                      snprintf(key, sizeof key, "%.*s.expert_count", (int) len, a) > 0 &&
+                      gguf_get_meta_u32(g, key, &n) && n > 0;
+    if (g != nullptr)
+        gguf_close(g);
+    return moe;
+}
+
 int main(void) {
     const char *path = resolve_path();
     if (path == nullptr) {
@@ -256,7 +274,9 @@ int main(void) {
     }
 
     /* KIVI on a split model. */
-    {
+    if (gguf_is_moe(path)) {
+        printf("  KIVI refusal not checked: a mixture-of-experts model is not split by layers\n");
+    } else {
         struct geist_session_opts lo = {.split_backend = sbe, .split_layers = 1};
         struct geist_model       *m  = nullptr;
         enum geist_status         s  = geist_model_load_with_opts(path, be, &lo, &m);
