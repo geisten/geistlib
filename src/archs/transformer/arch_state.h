@@ -425,6 +425,9 @@ struct transformer_arch_session {
      * expert runs on the CPU. */
     struct geist_buffer *moe_gpu_x_io, *moe_gpu_y_io, *moe_gpu_x, *moe_gpu_g, *moe_gpu_u;
     float               *moe_x_host; /* [m_max, d_model]: x when the backend cannot map it */
+    /* On a GPU: x copied into cached host memory in the router's batch, so
+     * one wait brings the logits and x (#78 phase 3). nullptr on a CPU. */
+    struct geist_buffer *moe_x_io;
 
     /* ---- Last-decode prediction (consumed by next decode_step). */
     bool logits_valid;

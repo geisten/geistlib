@@ -334,29 +334,40 @@ enum geist_status moe_gpu_run(struct transformer_arch_session *sess,
     const size_t                            inter = L->intermediate;
     const size_t                           *rs    = sess->moe_row_start;
 
-    const uint64_t t0  = transformer_profile_now_ns();
-    float         *xio = gv->buffer_map(sess->moe_gpu_x_io);
-    if (xio == nullptr) {
-        return GEIST_E_BACKEND;
-    }
-    size_t rows = 0;
-    for (size_t i = 0; i < n_hot; i++) {
-        const size_t m = rs[hot[i] + 1] - rs[hot[i]];
-        memcpy(xio + rows * d, sess->moe_xg + rs[hot[i]] * d, m * d * sizeof(float));
-        rows += m;
-    }
-    gv->buffer_unmap(sess->moe_gpu_x_io);
-    enum geist_status s =
-            gv->buffer_copy(sess->moe_gpu_x, 0, sess->moe_gpu_x_io, 0, rows * d * sizeof(float));
-
-    const uint64_t t1 = transformer_profile_now_ns();
     /* Decode (one row per expert) on a backend with the grouped linear:
      * one dispatch per projection for all of them, one silu_mul. */
     bool one_row =
             mg->grouped[layer] && gf->linear_t_grouped != nullptr && n_hot <= GEIST_MOE_MAX_EXPERTS;
     for (size_t i = 0; i < n_hot && one_row; i++)
         one_row = rs[hot[i] + 1] - rs[hot[i]] == 1;
-    bool grouped_done = false;
+    const uint64_t    t0   = transformer_profile_now_ns();
+    size_t            rows = 0;
+    enum geist_status s    = GEIST_OK;
+    if (one_row && gbe == st->backend && sess->moe_x_io != nullptr) {
+        /* The model on this GPU, one token: its x is already in VRAM. The
+         * experts' rows are device copies of it, no host round trip. */
+        for (size_t i = 0; i < n_hot && s == GEIST_OK; i++)
+            s = gv->buffer_copy(sess->moe_gpu_x,
+                                i * d * sizeof(float),
+                                sess->scratch_pre_ff,
+                                0,
+                                d * sizeof(float));
+        rows = n_hot;
+    } else {
+        float *xio = gv->buffer_map(sess->moe_gpu_x_io);
+        if (xio == nullptr) {
+            return GEIST_E_BACKEND;
+        }
+        for (size_t i = 0; i < n_hot; i++) {
+            const size_t m = rs[hot[i] + 1] - rs[hot[i]];
+            memcpy(xio + rows * d, sess->moe_xg + rs[hot[i]] * d, m * d * sizeof(float));
+            rows += m;
+        }
+        gv->buffer_unmap(sess->moe_gpu_x_io);
+        s = gv->buffer_copy(sess->moe_gpu_x, 0, sess->moe_gpu_x_io, 0, rows * d * sizeof(float));
+    }
+    const uint64_t t1           = transformer_profile_now_ns();
+    bool           grouped_done = false;
     if (s == GEIST_OK && one_row) {
         const struct geist_weight *wg[GEIST_MOE_MAX_EXPERTS], *wu[GEIST_MOE_MAX_EXPERTS],
                 *wd[GEIST_MOE_MAX_EXPERTS];

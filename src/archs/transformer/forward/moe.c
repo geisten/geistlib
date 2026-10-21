@@ -332,6 +332,12 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     if (s != GEIST_OK) {
         return s;
     }
+    /* On a GPU x rides along with the router's batch: one wait for both. */
+    if (sess->moe_x_io != nullptr) {
+        s = v->buffer_copy(sess->moe_x_io, 0, x, 0, seq * d * sizeof(float));
+        if (s != GEIST_OK)
+            return s;
+    }
     moe_profile_mark(MOE_PROFILE_ROUTER, &t0);
 
     /* Route on the host. */
@@ -363,7 +369,8 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
 
     /* Gather each expert's rows into its slice of the bucketed buffer. A
      * GPU's device-local x is copied down first. */
-    const float *xs = (const float *) v->buffer_map(x);
+    struct geist_buffer *xb = sess->moe_x_io != nullptr ? sess->moe_x_io : x;
+    const float         *xs = (const float *) v->buffer_map(xb);
     if (xs == nullptr) {
         if (v->buffer_download(seq * d * sizeof(float), (uint8_t *) sess->moe_x_host, x) !=
             GEIST_OK)
@@ -374,7 +381,7 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
         memcpy(sess->moe_xg + i * d, xs + (sess->moe_rows[i] / k) * d, d * sizeof(float));
     }
     if (xs != sess->moe_x_host)
-        v->buffer_unmap(x);
+        v->buffer_unmap(xb);
     moe_profile_mark(MOE_PROFILE_GATHER, &t0);
 
     /* Every active expert in one parallel region. */

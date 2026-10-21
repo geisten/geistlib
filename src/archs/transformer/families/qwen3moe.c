@@ -164,6 +164,12 @@ qwen3moe_session_alloc(struct transformer_arch_session *sess) {
                                                &sess->moe_acc)
                : transformer_scratch_alloc(
                          be, sess->m_max * st->d_model * sizeof(float), &sess->moe_acc);
+    if (s == GEIST_OK && io)
+        s = be->desc->vtbl->buffer_create(be,
+                                          sess->m_max * st->d_model * sizeof(float),
+                                          GEIST_BUFFER_IO,
+                                          GEIST_MEMORY_AUTO,
+                                          &sess->moe_x_io);
     if (s != GEIST_OK)
         return s;
     size_t inter = 0;
@@ -207,6 +213,7 @@ static void qwen3moe_session_free(struct transformer_arch_session *sess) {
     sess->moe_row_start            = nullptr;
     transformer_buffer_release(sess->model->backend, &sess->moe_logits);
     transformer_buffer_release(sess->model->backend, &sess->moe_acc);
+    transformer_buffer_release(sess->model->backend, &sess->moe_x_io);
 }
 
 /* Qwen3's attention, unchanged. Each step runs only while s is GEIST_OK. */
