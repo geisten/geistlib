@@ -83,11 +83,15 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geis
             /* The x8 prefill runs on int8 SDOT, as decode does (#82);
              * GEIST_PQ2_0_SGEMM_PREFILL=1 restores dequant + SGEMM. */
             .pq2_0_sgemm_prefill = false,
-            .q8_0_native_mn      = !amx,
-            .q4_01_native_mn     = !amx,
-            .iq4xs_native_mn     = !amx,
-            .tq2_0_native_mn     = !amx,
-            .tq2_0_tl1_m1        = false,
+            /* Q8_0 prefill on the register-tiled SDOT kernel (#7) on
+             * Apple too: Qwen3.5 0.8B pp512 on the M1 Max 470 -> 870
+             * tok/s against Accelerate's dequant + sgemm, whose eight
+             * single-threaded calls share two AMX units (#16). */
+            .q8_0_native_mn  = true,
+            .q4_01_native_mn = !amx,
+            .iq4xs_native_mn = !amx,
+            .tq2_0_native_mn = !amx,
+            .tq2_0_tl1_m1    = false,
     };
 
     policy_overlay_calibration(&p, be);
