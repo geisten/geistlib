@@ -438,7 +438,15 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
      * simdgroup GEMM (bounds-checked, arbitrary rows/n_out); the naive
      * kernels remain the fallback for tiny shapes. gemm_only formats have no naive
      * kernels, so their GEMM takes every rows>=2 shape. */
-    const bool n_tile4 = params->rows == 1u && params->n_out >= 4u && p.n4 != nullptr;
+    static int gemv_rows = -1;
+    if (gemv_rows < 0) {
+        const char *e = getenv("GEIST_PQ2_GEMV_ROWS");
+        gemv_rows     = e ? atoi(e) : 1;
+    }
+    const bool n_tile4 = (params->rows == 1u ||
+                          (dtype == GEIST_DTYPE_PQ2_0 &&
+                           params->rows <= (uint32_t) (gemv_rows == 99 ? 8 : gemv_rows))) &&
+                         params->n_out >= 4u && p.n4 != nullptr;
     /* gemm_only: every shape the n4 GEMV does not take, including
      * rows == 1 with n_out < 4. The GEMM is bounds-checked, so a tiny
      * shape is slow, not wrong -- and there is no naive kernel below it
@@ -461,6 +469,20 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
     void *const base = tiled ? p.m8 : p.base;
     void *const pipe = n_tile4 ? p.n4 : m_tile_sg_fast ? p.mm_fast : m_tile_sg ? p.mm : base;
     if (pipe == nullptr) {
+        return;
+    }
+    if (dtype == GEIST_DTYPE_PQ2_0 && gemv_rows == 99 && params->rows >= 2u && params->rows <= 8u &&
+        st->pq2_mx4_pipeline != nullptr) {
+        metal_msg_send_set_pipeline(st, enc, st->pq2_mx4_pipeline);
+        metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+        metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+        metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
+        metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
+        metal_msg_send_set_threadgroup_memory(st, enc, 256u * 8u, 0u);
+        const struct metal_size g  = {.width = (params->n_out + 7u) / 8u, .height = 1, .depth = 1};
+        const struct metal_size th = {.width = METAL_Q4K_N4_THREADS, .height = 1, .depth = 1};
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_Q4K_LINEAR_N4, g);
+        metal_msg_send_dispatch(st, enc, g, th);
         return;
     }
     /* PQ2_0's fast GEMM reads x as f16: one conversion into pq2_xh_buffer

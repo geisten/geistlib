@@ -625,8 +625,49 @@ static const char metal_qsg_pq2_dq_source[] =
     "FOR_UNROLL(uint rr=0u;rr<" R "u;rr++){float a=simd_sum(sf[rr]);"                     \
     "if(ti==0&&fr+rr<p.no)y[p.yo+b*p.ys+fr+rr]=a;}}\n"
 
-static const char metal_qsg_pq2_source[]    = GEIST_METAL_PQ2_N_KERNEL("4");
-static const char metal_qsg_pq2_n8_source[] = GEIST_METAL_PQ2_N_KERNEL("8");
+/* #105 experiment: R output rows x up to 8 activation rows per simdgroup.
+ * The weights of a block are read once and applied to every activation
+ * row; each (row, output) accumulates in matvec_pq2_n4's order. */
+#define GEIST_METAL_PQ2_MX_KERNEL(R)                                                         \
+    "kernel void matvec_pq2_mx" R "(device const float*x[[buffer(0)]],device const "         \
+    "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],"            \
+    "threadgroup float*shm[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],"      \
+    "uint3 nt3[[threads_per_threadgroup]],"                                                  \
+    "ushort ti[[thread_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]],"    \
+    "ushort tid[[thread_index_in_threadgroup]]){"                                            \
+    "uint nsg=nt3.x>>5u;"                                                                    \
+    "threadgroup half4*lut=(threadgroup half4*)shm;"                                         \
+    "for(uint j=tid;j<256u;j+=nt3.x){lut[j]=half4(half(j&3u),half((j>>2u)&3u),"              \
+    "half((j>>4u)&3u),half(j>>6u));}"                                                        \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                       \
+    "uint fr=(tg.x*nsg+uint(sg))*" R "u;if(fr>=p.no)return;"                                 \
+    "uint nb=p.ni>>7u,ix=uint(ti)>>2u,il=uint(ti)&3u;"                                       \
+    "uint nr=min(p.no-fr," R "u),M=min(p.rows,8u);"                                          \
+    "float sf[8][" R "];FOR_UNROLL(uint b=0u;b<8u;b++)FOR_UNROLL(uint i=0u;i<" R             \
+    "u;i++)sf[b][i]=0.0f;"                                                                   \
+    "for(uint ib=ix;ib<nb;ib+=8u){"                                                          \
+    "ushort4 qv[" R "];float dv[" R "];"                                                     \
+    "FOR_UNROLL(uint rr=0u;rr<" R "u;rr++){"                                                 \
+    "uint bo=p.wo+((fr+min(rr,nr-1u))*p.bpr+ib)*34u;"                                        \
+    "device const ushort*qs=(device const ushort*)(w+bo+2u+il*8u);"                          \
+    "qv[rr]=ushort4(qs[0],qs[1],qs[2],qs[3]);dv[rr]=float(*((device const half*)(w+bo)));}"  \
+    "FOR_UNROLL(uint b=0u;b<8u;b++){if(b<M){"                                                \
+    "device const float4*yb=(device const float4*)(x+p.xo+b*p.xs)+ix*32u+il*8u+(ib-ix)*32u;" \
+    "float4 yl[8];float sumy=0.0f;"                                                          \
+    "FOR_UNROLL(uint i=0u;i<8u;i++){yl[i]=yb[i];sumy+=yl[i].x+yl[i].y+yl[i].z+yl[i].w;}"     \
+    "FOR_UNROLL(uint rr=0u;rr<" R "u;rr++){"                                                 \
+    "float a0=0.0f,a1=0.0f;"                                                                 \
+    "FOR_UNROLL(uint i=0u;i<4u;i++){uint q=uint(qv[rr][i]);"                                 \
+    "a0+=dot(yl[2u*i],float4(lut[q&255u]));a1+=dot(yl[2u*i+1u],float4(lut[q>>8u]));}"        \
+    "sf[b][rr]+=dv[rr]*(a0+a1-sumy);}}}"                                                     \
+    "}"                                                                                      \
+    "FOR_UNROLL(uint b=0u;b<8u;b++){if(b<M){FOR_UNROLL(uint rr=0u;rr<" R "u;rr++){"          \
+    "float a=simd_sum(sf[b][rr]);"                                                           \
+    "if(ti==0&&fr+rr<p.no)y[p.yo+b*p.ys+fr+rr]=a;}}}}\n"
+
+static const char metal_qsg_pq2_mx4_source[] = GEIST_METAL_PQ2_MX_KERNEL("4");
+static const char metal_qsg_pq2_source[]     = GEIST_METAL_PQ2_N_KERNEL("4");
+static const char metal_qsg_pq2_n8_source[]  = GEIST_METAL_PQ2_N_KERNEL("8");
 
 static const char metal_qsg_mm_pq2_source[] = GEIST_METAL_MM_SG_KERNEL("pq2", "bpq2", "dqpq2", "8");
 /* PQ2_0 interior fast GEMM (#77, #103): a 64-output x 64-row tile, four

@@ -234,6 +234,8 @@ struct metal_state {
     } tuning;
     void *pq2_n8_function;
     void *pq2_n8_pipeline;
+    void *pq2_mx4_function;
+    void *pq2_mx4_pipeline;
     void *iq4nl_n4_function;
     void *iq4nl_n4_pipeline;
     void *iq4nl_mm_function;
