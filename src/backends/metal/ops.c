@@ -1,3 +1,4 @@
+#include <stdlib.h>
 /*
  * src/backends/metal/ops.c — op implementations, encode helpers, probe, and the descriptor.
  */
@@ -406,6 +407,15 @@ static bool metal_pq2_xh_ready(const struct metal_state      *st,
            (size_t) params->rows * params->n_in * sizeof(uint16_t) <= st->pq2_xh_capacity;
 }
 
+static bool metal_pq2_m8_fits(const struct metal_state *st, const struct metal_q4k_params *params) {
+    return params->rows >= 2u && params->rows <= 8u && st->pq2_m8_pipeline != nullptr &&
+           getenv("GEIST_EXP_NO_PQ2_M8") == nullptr && /* EXP: A/B switch, remove before PR */
+           st->cvt_f16_pipeline != nullptr && st->pq2_xh_buffer != nullptr &&
+           (size_t) 8u * params->n_in * sizeof(uint16_t) <= st->pq2_xh_capacity &&
+           (params->n_in % 128u) == 0u && (params->x_offset % 4u) == 0u &&
+           (params->x_row_stride % 4u) == 0u;
+}
+
 /* x (rows x n_in f32 at x_offset, x_row_stride) -> pq2_xh_buffer as a dense
  * rows x n_in f16 copy. The fast path's alignment (n_in % 32, offset and
  * stride % 8) makes every float4 whole. */
@@ -433,6 +443,26 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
                                         const struct geist_tensor     *y,
                                         const struct metal_q4k_params *params,
                                         enum geist_dtype               dtype) {
+    /* PQ2_0 at 2..8 rows (speculative verify, #105): matmul_pq2_m8 reads
+     * 8 f16 rows of x, so the scratch holds 8 (metal_pq2_m8_fits). */
+    if (dtype == GEIST_DTYPE_PQ2_0 && metal_pq2_m8_fits(st, params)) {
+        struct metal_q4k_params xh = *params;
+        metal_encode_pq2_x_f16(st, enc, x, params);
+        xh.x_offset     = 0u;
+        xh.x_row_stride = params->n_in;
+        metal_msg_send_set_pipeline(st, enc, st->pq2_m8_pipeline);
+        metal_msg_send_set_buffer(
+                st, enc, st->pq2_xh_buffer->buffer, st->pq2_xh_buffer->base_off, 0);
+        metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+        metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
+        metal_msg_send_set_bytes(st, enc, &xh, sizeof xh, 3);
+        metal_msg_send_set_threadgroup_memory(st, enc, 64u + 4u * 128u * 4u, 0u);
+        const struct metal_size groups  = {(params->n_out + 15u) / 16u, 1u, 1u};
+        const struct metal_size threads = {32u, 4u, 1u};
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_PQ2_M8, groups);
+        metal_msg_send_dispatch(st, enc, groups, threads);
+        return;
+    }
     const struct metal_quant_pipes p = metal_quant_pipes_for(st, dtype, params->n_out);
     /* rows==1 -> simdgroup GEMV (llama mul_mv structure); rows>=8 -> 64x32
      * simdgroup GEMM (bounds-checked, arbitrary rows/n_out); the naive
@@ -2030,6 +2060,8 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
     struct metal_state *st = be->state;
     if (dtype == GEIST_DTYPE_PQ2_0 && rows >= 8u && n_out % 64u == 0u && n_in % 32u == 0u) {
         metal_pq2_xh_reserve(be, rows, n_in);
+    } else if (dtype == GEIST_DTYPE_PQ2_0 && rows >= 2u && rows <= 8u) {
+        metal_pq2_xh_reserve(be, 8u, n_in);
     }
     const struct metal_q4k_params params = {
             .n_in           = (uint32_t) n_in,

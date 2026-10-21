@@ -1348,6 +1348,11 @@ int main(void) {
      * the interior _fast GEMM for full 32x64 tiles. */
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 4);
+    /* 2..8 rows take matmul_pq2_m8 (#105): one and many K blocks per
+     * simdgroup, a ragged last output tile. */
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2m8", 512, 383, 2);
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2m8", 1536, 64, 7);
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2m8", 384, 1000, 8);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 33);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 384, 32);
     /* Whole 64-row tiles of the PQ2_0 fast kernel, one and two of them. */

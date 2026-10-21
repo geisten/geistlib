@@ -632,6 +632,50 @@ static const char metal_qsg_pq2_dq_source[] =
 static const char metal_qsg_pq2_source[]    = GEIST_METAL_PQ2_N_KERNEL("4");
 static const char metal_qsg_pq2_n8_source[] = GEIST_METAL_PQ2_N_KERNEL("8");
 
+/* PQ2_0 for 2..8 activation rows (#105: speculative verify). The 32-row
+ * GEMM pays its staging for 2 rows as for 32, and a multi-row GEMV pays the
+ * ALU-bound code decode once per row. Here every weight is decoded once,
+ * straight into a simdgroup_matrix's thread elements (lane l holds row fm,
+ * columns fn and fn+1: two codes of one byte, one 16-entry half2 table
+ * lookup), and the 8 rows go through the MMA. A threadgroup is 16 outputs;
+ * its four simdgroups split the 128-element blocks and add their 8x8 tiles
+ * at the end. x arrives as f16 (cvt_f32_f16_rows) with 8 rows readable;
+ * columns >= rows of the tile are never stored, so their contents do not
+ * matter. */
+static const char metal_qsg_mm_pq2_m8_source[] =
+        "kernel void matmul_pq2_m8(device const half*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup "
+        "char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],ushort "
+        "ti[[thread_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]],ushort "
+        "tid[[thread_index_in_threadgroup]]){\n"
+        "threadgroup half2*lut=(threadgroup half2*)shmem;threadgroup float*red=(threadgroup "
+        "float*)(shmem+64);"
+        "if(tid<16){lut[tid]=half2(half(short(tid&3)-1),half(short(tid>>2)-1));}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "uint qid=uint(ti)/4u;uint fm=(qid&4u)+(uint(ti)/2u)%4u;uint fn=(qid&2u)*2u+(uint(ti)%2u)*2u;"
+        "uint o0=tg.x*16u;uint sh=2u*fn;"
+        "uint ra=min(o0+fm,p.no-1u),rb=min(o0+8u+fm,p.no-1u);"
+        "device const uchar*wa=w+p.wo+ra*p.bpr*34u;device const uchar*wb=w+p.wo+rb*p.bpr*34u;"
+        "simdgroup_float8x8 ca=make_filled_simdgroup_matrix<float,8>(0.0f);"
+        "simdgroup_float8x8 cb=make_filled_simdgroup_matrix<float,8>(0.0f);"
+        "simdgroup_half8x8 ma,mb,mx;"
+        "for(uint ib=uint(sg);ib<p.bpr;ib+=4u){"
+        "device const half*xb=x+p.xo+ib*128u;"
+        "half da=*(device const half*)(wa+ib*34u);half db=*(device const half*)(wb+ib*34u);"
+        "device const ushort*qa=(device const ushort*)(wa+ib*34u+2u);"
+        "device const ushort*qb=(device const ushort*)(wb+ib*34u+2u);"
+        "FOR_UNROLL(short s=0;s<16;s++){"
+        "simdgroup_load(mx,xb+8*s,p.xs,ulong2(0,0),true);"
+        "half2 va=da*lut[(uint(qa[s])>>sh)&15u];half2 vb=db*lut[(uint(qb[s])>>sh)&15u];"
+        "ma.thread_elements()[0]=va.x;ma.thread_elements()[1]=va.y;"
+        "mb.thread_elements()[0]=vb.x;mb.thread_elements()[1]=vb.y;"
+        "simdgroup_multiply_accumulate(ca,ma,mx,ca);simdgroup_multiply_accumulate(cb,mb,mx,cb);}}"
+        "simdgroup_store(ca,red+128u*uint(sg),8);simdgroup_store(cb,red+128u*uint(sg)+64u,8);"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "uint e=uint(tid);float a=red[e]+red[128u+e]+red[256u+e]+red[384u+e];"
+        "uint o=o0+(e/64u)*8u+(e%64u)/8u;uint c=e%8u;"
+        "if(c<p.rows&&o<p.no){y[p.yo+c*p.ys+o]=a;}}\n";
+
 static const char metal_qsg_mm_pq2_source[] = GEIST_METAL_MM_SG_KERNEL("pq2", "bpq2", "dqpq2", "8");
 /* PQ2_0 interior fast GEMM (#77, #103): a 64-output x 64-row tile, four
  * simdgroups owning a 32 x 32 block each (16 accumulators): per 8-wide k
