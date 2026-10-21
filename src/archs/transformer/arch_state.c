@@ -1502,7 +1502,17 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
                                                      struct gguf_ctx                 *gguf,
                                                      const struct geist_session_opts *opts,
                                                      struct transformer_arch_state  **out) {
-    return state_create_range(be, gguf, opts, 0, SIZE_MAX, false, false, out);
+    enum geist_status s = state_create_range(be, gguf, opts, 0, SIZE_MAX, false, false, out);
+    /* A mixture of experts on a GPU: its experts live on moe_cpu; the GPU
+     * gets copies of the hottest, in the memory the rest left (#78). */
+    if (s == GEIST_OK && (*out)->moe_cpu != nullptr) {
+        s = moe_gpu_attach(*out, be);
+        if (s != GEIST_OK) {
+            transformer_state_destroy(*out);
+            *out = nullptr;
+        }
+    }
+    return s;
 }
 
 static bool split_requested(const struct geist_session_opts *opts) {
@@ -1996,6 +2006,7 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
         safe_free(&p_mtp);
         st->mtp_layers = nullptr;
     }
+    geist_backend_destroy(st->moe_cpu); /* after the experts resolved on it */
     void *p = st;
     safe_free(&p);
 }

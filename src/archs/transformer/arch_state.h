@@ -424,6 +424,7 @@ struct transformer_arch_session {
      * and in VRAM (x), the gate and up outputs in VRAM. nullptr: every
      * expert runs on the CPU. */
     struct geist_buffer *moe_gpu_x_io, *moe_gpu_y_io, *moe_gpu_x, *moe_gpu_g, *moe_gpu_u;
+    float               *moe_x_host; /* [m_max, d_model]: x when the backend cannot map it */
 
     /* ---- Last-decode prediction (consumed by next decode_step). */
     bool logits_valid;
@@ -566,9 +567,13 @@ struct transformer_arch_state {
     size_t                         layer_lo, layer_hi;
     struct transformer_arch_state *split;
     bool                           split_stage;
-    struct transformer_offload    *offload;         /* owned; nullptr without offload (#78) */
-    struct transformer_moe_gpu    *moe_gpu;         /* owned; nullptr without hot experts */
-    bool                           weights_on_host; /* the twins (#78): matrices GEIST_W_HOST */
+    struct transformer_offload    *offload; /* owned; nullptr without offload (#78) */
+    struct transformer_moe_gpu    *moe_gpu; /* owned; nullptr without hot experts */
+    /* Owned: the experts' home when `backend` is not a CPU backend (a GPU):
+     * every expert is resolved here and runs here unless moe_gpu holds a
+     * copy (#78 phase 3). nullptr on a CPU backend. */
+    struct geist_backend *moe_cpu;
+    bool                  weights_on_host; /* the twins (#78): matrices GEIST_W_HOST */
     /* Unique per loaded model in this process (never 0): binds a session
      * snapshot to the model it was taken on (snapshot.c). */
     uint64_t snapshot_id;
