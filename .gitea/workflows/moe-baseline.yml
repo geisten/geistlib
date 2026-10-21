@@ -144,6 +144,8 @@ jobs:
                 geist-cpu)    cmd="env $X GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 $GB $SWEEP" ;;
                 geist-vulkan) cmd="env GEIST_BENCH_BACKEND=vulkan GEIST_VK_VERBOSE=1 $GB $SWEEP" ;;
                 geist-gpu)    cmd="env $X GEIST_VERBOSE=1 GEIST_MOE_PROFILE=$PROFILE GEIST_BENCH_BACKEND=vulkan $GB $SWEEP" ;;
+                geist-gpu-s*) cmd="env $X GEIST_MOE_SERIAL_MAX=${cfg#geist-gpu-s} GEIST_VERBOSE=1 GEIST_MOE_PROFILE=$PROFILE GEIST_BENCH_BACKEND=vulkan $GB $SWEEP" ;;
+                geist-cpu-s*) cmd="env $X GEIST_MOE_SERIAL_MAX=${cfg#geist-cpu-s} GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 $GB $SWEEP" ;;
                 geist-split|geist-hot-uniform)
                               cmd="env $X GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto $GB $SWEEP" ;;
                 geist-hot)    cmd="env $X GEIST_VERBOSE=1 GEIST_MOE_PROFILE=$PROFILE GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto $GB $SWEEP" ;;

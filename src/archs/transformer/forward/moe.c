@@ -439,8 +439,21 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     atomic_store_explicit(&j->failed, false, memory_order_relaxed);
     const size_t tasks   = (j->n_hot > 0 && !launched) + j->n_active;
     const size_t threads = geist_par_max_threads();
-    geist_par_for(tasks < threads ? tasks : threads, moe_worker, j);
-    moe_gpu_task(j); /* a thread library that gave the caller no range */
+    /* Few CPU experts (a decode step's, or the cold ones next to a GPU
+     * batch already started): one expert per thread would leave most cores
+     * idle and read each matrix on one core. Run them one after another,
+     * each with its kernels' own threads instead. No GPU task may be
+     * pending: it runs concurrently with the region below. */
+    const char  *sm         = getenv("GEIST_MOE_SERIAL_MAX"); /* experiment, #161 */
+    const size_t serial_max = sm != nullptr ? (size_t) strtoull(sm, nullptr, 10) : 0;
+    if ((launched || j->n_hot == 0) && j->n_active <= serial_max) {
+        for (size_t a = 0; a < j->n_active; a++)
+            if (!moe_expert(j, j->active[a]))
+                atomic_store_explicit(&j->failed, true, memory_order_relaxed);
+    } else {
+        geist_par_for(tasks < threads ? tasks : threads, moe_worker, j);
+        moe_gpu_task(j); /* a thread library that gave the caller no range */
+    }
     moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);
     if (j->gpu_status != GEIST_OK) {
         geist_backend_set_error(ctx->be,
