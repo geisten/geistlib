@@ -72,19 +72,22 @@ Heavy steps still go through `~/bin/with-pi-lock`.
 ### Mac runners (M1 Max, host mode)
 
 The Mac is shared with agents and the human, who take `~/bin/with-mac-lock`
-(`/tmp/mac-heavy.lock`) for every benchmark. It has two org runners, so a
-build never waits behind a benchmark and CI never holds the lock for a
-compile:
+(`/tmp/mac-heavy.lock`) for every benchmark. It has two org runners, so CI never
+holds the lock for a compile; a build waits only while a measurement runs:
 
 | name | label | lock | install |
 | :-- | :-- | :-- | :-- |
-| `mac-light` | `macos-15:host` | none; daemon at `nice 10` | `~/gitea-runner-mac-light`, LaunchAgent `net.geisten.gitea-runner-mac-light` (`Nice` 10) |
+| `mac-light` | `macos-15:host` | never holds it; takes no job while it is held; daemon at `nice 10` | `~/gitea-runner-mac-light`, LaunchAgent `net.geisten.gitea-runner-mac-light` (`Nice` 10) |
 | `mac-m1max` | `macos-15-heavy:host` | held for the whole job | `~/gitea-runner-geisten`, LaunchAgent `net.geisten.gitea-runner-geisten` |
 
 `mac-m1max`'s hooks (`~/bin/mac-runner-job-started.sh` /
 `mac-runner-job-completed.sh`) hold the lock while a job runs, and its
 health check (`~/bin/mac-runner-free.sh`) takes no job while someone else
-holds it. `mac-light` has neither. Each has its own `cache.dir` and
+holds it. `mac-light` holds nothing, but its health check
+(`~/bin/mac-light-free.sh`) also takes no job while anyone holds the lease:
+its ASan and unit builds load every core, and before 2026-10-21 they landed
+inside measurements (load 80–110 during a lock-held A/B). A job already
+running finishes, so a measurement can still meet the tail of one. Each has its own `cache.dir` and
 `host.workdir_parent` (host mode clones actions there), so the two never
 race on one action checkout. Both run with `capacity: 1` and
 `fetch_timeout: 30s`.
