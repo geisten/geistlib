@@ -54,6 +54,7 @@
 
 #include "../../../engine/sampler.h"
 #include "quant.h"
+#include "checked.h"
 #include "heap.h"
 #include "par.h"
 
@@ -379,6 +380,38 @@ static void spec_rough_rows(void *ctx, size_t r0, size_t r1) {
     for (size_t r = r0; r < r1; r++) {
         const int32_t d = spec_i8dot(a_sk, sketch + r * SD, SD);
         rough[r]        = (float) d * rscale[r];
+    }
+}
+
+/* Phase 3's local dots, for geist_par_for: candidates [c0, c1) of the
+ * finalist heap. Each range dequantizes into a row of `rows` of its own. */
+struct spec_final_job {
+    const struct spec_cand *cand;
+    const uint8_t          *Wbase;
+    size_t                  stride, H;
+    const float            *h;
+    uint16_t                dt;
+    float                  *rows; /* one H-float row per range */
+    atomic_size_t           next_slot;
+    float                  *logits;
+};
+
+static void spec_final_rows(void *ctx, size_t c0, size_t c1) {
+    struct spec_final_job *j = ctx;
+    float                 *row_f32 =
+            j->rows + atomic_fetch_add_explicit(&j->next_slot, 1, memory_order_relaxed) * j->H;
+    for (size_t c = c0; c < c1; c++) {
+        const size_t   row = j->cand[c].idx;
+        const uint8_t *rb  = j->Wbase + row * j->stride;
+        if (j->dt == GEIST_DTYPE_F16) {
+            /* NEON, or an aux-repacked F16 head (x86 Q8 blob): exact f16
+             * dot. For the Q8 case the dense head is int8-approximate, so
+             * bit-identity to it is neither achievable nor desirable. */
+            j->logits[row] = spec_f16dot((const uint16_t *) rb, j->h, j->H);
+        } else {
+            spec_row_to_f32(j->dt, rb, j->H, row_f32);
+            j->logits[row] = spec_f32dot(row_f32, j->h, j->H);
+        }
     }
 }
 
@@ -708,27 +741,38 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
     for (size_t i = 0; i < V; i++) {
         logits[i] = -INFINITY;
     }
-    for (size_t c = 0; c < hn; c++) {
-        const size_t   row = heap[c].idx;
-        const uint8_t *rb  = Wbase + row * stride;
-        if (dt == GEIST_DTYPE_F16 && !exact_kernel) {
-            /* NEON, or an aux-repacked F16 head (x86 Q8 blob): exact f16
-             * dot. For the Q8 case the dense head is int8-approximate, so
-             * bit-identity to it is neither achievable nor desirable. */
-            logits[row] = spec_f16dot((const uint16_t *) rb, h, H);
-        } else if (exact_kernel) {
-            struct geist_weight rw = st->embed_table_w;
-            rw.n_out               = 1;
-            rw.raw                 = rb;
-            rw.raw_nbytes          = stride; /* this single row, not the table */
-            rw.aux_fp32            = nullptr;
-            rw.aux_n               = 0;
-            float out1             = 0.0f;
+    if (exact_kernel) {
+        for (size_t c = 0; c < hn; c++) {
+            const size_t        row = heap[c].idx;
+            struct geist_weight rw  = st->embed_table_w;
+            rw.n_out                = 1;
+            rw.raw                  = Wbase + row * stride;
+            rw.raw_nbytes           = stride; /* this single row, not the table */
+            rw.aux_fp32             = nullptr;
+            rw.aux_n                = 0;
+            float out1              = 0.0f;
             rw.linear_m1(h, &rw, be, &out1);
             logits[row] = out1;
+        }
+    } else {
+        /* The local dots write nothing shared but their own logit, so the
+         * finalists spread across the threads (512 on Llama 3.2, 4096 on
+         * Gemma 4, one dequantized row each), one scratch row per range:
+         * geist_par_for makes at most as many ranges as it has threads. A
+         * team larger than the session's rows runs them on this thread. */
+        struct spec_final_job fj = {.cand   = heap,
+                                    .Wbase  = Wbase,
+                                    .stride = stride,
+                                    .H      = H,
+                                    .h      = h,
+                                    .dt     = dt,
+                                    .rows   = sess->spec_row_f32,
+                                    .logits = logits};
+        atomic_init(&fj.next_slot, 0);
+        if (geist_par_max_threads() <= sess->spec_row_slots) {
+            geist_par_for(hn, spec_final_rows, &fj);
         } else {
-            spec_row_to_f32(dt, rb, H, sess->spec_row_f32);
-            logits[row] = spec_f32dot(sess->spec_row_f32, h, H);
+            spec_final_rows(&fj, 0, hn);
         }
     }
 
@@ -774,8 +818,15 @@ bool transformer_spec_session_scratch_alloc(struct transformer_arch_session *ses
     sess->spec_x_i8       = heap_alloc_array_aligned(int8_t, H);
     sess->spec_act_sketch = heap_alloc_array_aligned(int8_t, st->spec_sketch_dim);
     sess->spec_rough      = heap_alloc_array_aligned(float, V);
-    sess->spec_row_f32    = heap_alloc_array_aligned(float, H);
-    sess->spec_heap       = heap_alloc_array_aligned(struct spec_cand, st->spec_topk);
+    /* One row per thread of phase 3; the count can only shrink before a
+     * decode step (cpu_neon's decode regime caps it), else phase 3 runs on
+     * one thread. */
+    size_t rows_n        = 0;
+    sess->spec_row_slots = geist_par_max_threads();
+    sess->spec_row_f32   = ckd_mul(&rows_n, sess->spec_row_slots, H)
+                                   ? nullptr
+                                   : heap_alloc_array_aligned(float, rows_n);
+    sess->spec_heap      = heap_alloc_array_aligned(struct spec_cand, st->spec_topk);
     if (sess->spec_x_i8 == nullptr || sess->spec_act_sketch == nullptr ||
         sess->spec_rough == nullptr || sess->spec_row_f32 == nullptr ||
         sess->spec_heap == nullptr) {

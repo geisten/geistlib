@@ -479,9 +479,11 @@ struct transformer_arch_session {
     int8_t *spec_x_i8;       /* [HIDDEN] quantized activation scratch */
     int8_t *spec_act_sketch; /* [spec_sketch_dim] subsampled activation */
     float  *spec_rough;      /* [VOCAB] rough scores scratch */
-    float  *spec_row_f32;    /* [HIDDEN] dequant scratch for the exact pass
-                              * (quantized embeddings, e.g. Gemma's Q6_K) */
-    void *spec_heap;         /* [spec_topk] (score,idx) top-K min-heap */
+    float  *spec_row_f32;    /* [spec_row_slots, HIDDEN] dequant scratch of
+                              * the exact pass, a row per thread (quantized
+                              * embeddings, e.g. Gemma's Q6_K) */
+    size_t spec_row_slots;
+    void  *spec_heap; /* [spec_topk] (score,idx) top-K min-heap */
 
     /* ---- Layer split (#49): the session on the model's split stage, which
      * runs layers [0, model->split->layer_hi) on the split backend, and the
