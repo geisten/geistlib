@@ -116,7 +116,11 @@ jobs:
           LB="-m $MODEL -p 512 -n 32 -r 3 -o jsonl"
           for c in $(seq "$CYCLES"); do
             for cfg in $(echo "$CONFIGS" | tr ';' ' '); do
-              echo "== cycle $c $cfg" | tee -a out/log.txt
+              # quiet host: the desktop's docker CI runners share these cores
+              for i in $(seq 120); do
+                awk '{exit !($1 < 2.0)}' /proc/loadavg && break; sleep 10
+              done
+              echo "== cycle $c $cfg (load $(cut -d' ' -f1 /proc/loadavg))" | tee -a out/log.txt
               case $cfg in
                 geist-cpu)    cmd="env $X GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 $GB $SWEEP" ;;
                 geist-vulkan) cmd="env GEIST_BENCH_BACKEND=vulkan GEIST_VK_VERBOSE=1 $GB $SWEEP" ;;
