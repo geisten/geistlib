@@ -130,9 +130,9 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
                 (double) atomic_load(&mg->ns_unpack) / nb);
         fprintf(stderr,
                 "geist: moe: %llu of them grouped (decode), mean wait %.1f us\n",
-                (unsigned long long) atomic_load(&mg->grouped),
+                (unsigned long long) atomic_load(&mg->n_grouped),
                 (double) atomic_load(&mg->ns_wait_grouped) /
-                        ((double) (atomic_load(&mg->grouped) | 1u) * 1e3));
+                        ((double) (atomic_load(&mg->n_grouped) | 1u) * 1e3));
     }
     const struct geist_backend_vtbl *gv = mg->be->desc->vtbl;
     for (size_t i = 0; mg->bufs != nullptr && mg->bufs[i] != nullptr; i++) {
@@ -433,7 +433,7 @@ enum geist_status moe_gpu_run(struct transformer_arch_session *sess,
     atomic_fetch_add_explicit(&mg->rows_gpu, rows, memory_order_relaxed);
     atomic_fetch_add_explicit(&mg->batches, 1, memory_order_relaxed);
     if (grouped_done) {
-        atomic_fetch_add_explicit(&mg->grouped, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&mg->n_grouped, 1, memory_order_relaxed);
         atomic_fetch_add_explicit(&mg->ns_wait_grouped, t3 - t2, memory_order_relaxed);
     }
     atomic_fetch_add_explicit(&mg->ns_pack, t1 - t0, memory_order_relaxed);
