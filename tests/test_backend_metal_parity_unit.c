@@ -869,6 +869,167 @@ static void run_add_norm_case(struct geist_backend *mt, size_t rows, size_t cols
     }
 }
 
+/* A random quant weight of dtype in a fresh backend buffer, with its
+ * tensor view; the bytes as fill_blob makes them. */
+static uint8_t *quant_weight(struct geist_backend *mt,
+                             int                   dtype,
+                             size_t                n_in,
+                             size_t                n_out,
+                             struct geist_buffer **buf,
+                             struct geist_tensor  *t) {
+    size_t block = 0, bb = 0;
+    block_geom(dtype, &block, &bb);
+    uint8_t *blob = dev_alloc(mt, n_out * (n_in / block) * bb, buf);
+    if (blob != nullptr) {
+        fill_blob(blob, n_in, n_out, dtype);
+        /* fill_blob pins d (and dmin) to powers of two, which multiply
+         * exactly; random half scales in [0.5, 1) make those products
+         * round as well (#17). */
+        const size_t d_at = dtype == GEIST_DTYPE_Q6_K ? 208u : 0u;
+        for (size_t b = 0; b < n_out * (n_in / block); b++) {
+            uint8_t *blk  = blob + b * bb;
+            blk[d_at]     = rng_u8();
+            blk[d_at + 1] = (uint8_t) (0x38u | (rng_u8() & 3u));
+            if (dtype == GEIST_DTYPE_Q4_K) {
+                blk[2] = rng_u8();
+                blk[3] = (uint8_t) (0x34u | (rng_u8() & 3u));
+            }
+        }
+    }
+    *t = (struct geist_tensor) {.buffer = *buf,
+                                .dtype  = (uint16_t) dtype,
+                                .layout = GEIST_LAYOUT_BLOCK_QUANTIZED,
+                                .ndim   = 2,
+                                .shape  = {(int64_t) n_out, (int64_t) n_in}};
+    return blob;
+}
+
+static struct geist_tensor f32_row(struct geist_buffer *b, size_t n) {
+    return (struct geist_tensor) {.buffer = b,
+                                  .dtype  = GEIST_DTYPE_F32,
+                                  .layout = GEIST_LAYOUT_DENSE,
+                                  .ndim   = 2,
+                                  .shape  = {1, (int64_t) n},
+                                  .stride = {(int64_t) n, 1}};
+}
+
+/* The fused decode matvecs (#17) against the Metal ops they replace, bit
+ * for bit: linear_t_triple against three linear_t, ffn_gate_up(_silu)
+ * against two linear_t and gelu_tanh_mul / silu_mul. The separate ops are
+ * held to cpu_scalar by run_case. */
+static void run_fused_matvec_case(
+        struct geist_backend *mt, int dt0, int dt1, int dt2, size_t n_in, size_t n_kv) {
+    const struct geist_backend_vtbl  *v       = mt->desc->vtbl;
+    const struct geist_backend_fused *f       = geist_backend_fused_tbl(mt);
+    const int                         dts[3]  = {dt0, dt1, dt2};
+    const size_t                      outs[3] = {n_in, n_kv, n_kv};
+    struct geist_buffer              *bw[3] = {nullptr}, *by[3] = {nullptr}, *bz[3] = {nullptr};
+    struct geist_tensor               tw[3], ty[3], tz[3];
+    struct geist_weight               ww[3];
+    struct geist_buffer              *bx  = nullptr;
+    float                            *x   = dev_alloc(mt, n_in * sizeof(float), &bx);
+    bool                              ok  = x != nullptr && f->linear_t_triple != nullptr;
+    size_t                            tot = 0;
+    for (size_t i = 0; i < 3 && ok; i++) {
+        ok    = quant_weight(mt, dts[i], n_in, outs[i], &bw[i], &tw[i]) != nullptr &&
+                dev_alloc(mt, outs[i] * sizeof(float), &by[i]) != nullptr &&
+                dev_alloc(mt, outs[i] * sizeof(float), &bz[i]) != nullptr;
+        ww[i] = (struct geist_weight) {
+                .n_in = (int32_t) n_in, .n_out = (int32_t) outs[i], .dtype = (uint16_t) dts[i]};
+        ty[i] = f32_row(by[i], outs[i]);
+        tz[i] = f32_row(bz[i], outs[i]);
+        tot += outs[i];
+    }
+    float *got = malloc(2 * tot * sizeof(float));
+    check(ok && got != nullptr, "fused matvec buffers");
+    if (ok && got != nullptr) {
+        /* Not multiples of a power of two: the products and sums round,
+         * so a kernel that orders or contracts them differently from the
+         * matvec it replaces shows up here. */
+        for (size_t i = 0; i < n_in; i++) {
+            x[i] = ((float) rng_u8() - 127.5f) * 0.0372529f;
+        }
+        const struct geist_tensor tx = f32_row(bx, n_in);
+        enum geist_status         s  = f->linear_t_triple(
+                mt, &tx, &ww[0], &tw[0], &ww[1], &tw[1], &ww[2], &tw[2], 1, &ty[0], &ty[1], &ty[2]);
+        for (size_t i = 0; i < 3 && s == GEIST_OK; i++) {
+            s = f->linear_t(mt, &tx, &ww[i], &tw[i], 1, &tz[i]);
+        }
+        check(s == GEIST_OK, "linear_t_triple dispatch");
+        size_t off = 0;
+        for (size_t i = 0; i < 3; i++) {
+            check(v->buffer_download(outs[i] * sizeof(float), (uint8_t *) (got + off), by[i]) ==
+                                  GEIST_OK &&
+                          v->buffer_download(outs[i] * sizeof(float),
+                                             (uint8_t *) (got + tot + off),
+                                             bz[i]) == GEIST_OK,
+                  "linear_t_triple download");
+            off += outs[i];
+        }
+        const bool same = memcmp(got, got + tot, tot * sizeof(float)) == 0;
+        check(same, "linear_t_triple matches three linear_t bit for bit");
+        printf("  linear_t_triple %d/%d/%d %zu->%zu,%zu: %s\n",
+               dt0,
+               dt1,
+               dt2,
+               n_in,
+               n_in,
+               n_kv,
+               same ? "bit-identical OK" : "FAIL");
+
+        /* gate/up: w1 and w2 share dtype and shape when dt1 == dt2. */
+        for (int silu = 0; silu < 2 && dt1 == dt2; silu++) {
+            struct geist_tensor tg = f32_row(by[0], n_kv), tu = f32_row(bz[0], n_kv);
+            struct geist_tensor tf = f32_row(by[1], n_kv);
+            s                      = silu ? f->ffn_gate_up_silu(mt, &tx, &tw[1], &tw[2], &tf)
+                                          : f->ffn_gate_up(mt, &tx, &tw[1], &tw[2], &tf);
+            if (s == GEIST_OK)
+                s = f->linear_t(mt, &tx, &ww[1], &tw[1], 1, &tg);
+            if (s == GEIST_OK)
+                s = f->linear_t(mt, &tx, &ww[2], &tw[2], 1, &tu);
+            if (s == GEIST_OK)
+                s = silu ? f->silu_mul(mt, &tg, &tu, &tg) : f->gelu_tanh_mul(mt, &tg, &tu, &tg);
+            check(s == GEIST_OK, "gate/up dispatch");
+            check(v->buffer_download(n_kv * sizeof(float), (uint8_t *) got, by[1]) == GEIST_OK &&
+                          v->buffer_download(n_kv * sizeof(float),
+                                             (uint8_t *) (got + n_kv),
+                                             by[0]) == GEIST_OK,
+                  "gate/up download");
+            /* The Q4_K GeGLU kernel (Gemma 4) predates #17 and sums through
+             * dotb, which contracts the block scales differently from the
+             * matvec: equal to rounding, not bit for bit. */
+            const bool exact = silu || dt1 != GEIST_DTYPE_Q4_K;
+            double     rel   = 0.0;
+            for (size_t i = 0; i < n_kv; i++) {
+                const double a = got[i], b = got[n_kv + i];
+                const double r = fabs(a - b) / (fabs(b) > 1.0 ? fabs(b) : 1.0);
+                rel            = r > rel ? r : rel;
+            }
+            const bool eq = exact ? memcmp(got, got + n_kv, n_kv * sizeof(float)) == 0 : rel < 1e-5;
+            check(eq,
+                  silu ? "ffn_gate_up_silu matches the separate ops bit for bit"
+                       : "ffn_gate_up matches the separate ops");
+            printf("  ffn_gate_up%s %d %zu->%zu: %s (max_rel %.1e)\n",
+                   silu ? "_silu" : "",
+                   dt1,
+                   n_in,
+                   n_kv,
+                   eq ? (exact ? "bit-identical OK" : "OK") : "FAIL",
+                   rel);
+        }
+    }
+    free(got);
+    for (size_t i = 0; i < 3; i++) {
+        struct geist_buffer *bufs[] = {bw[i], by[i], bz[i]};
+        for (size_t j = 0; j < 3; j++) {
+            if (bufs[j] != nullptr)
+                v->buffer_destroy(mt, bufs[j]);
+        }
+    }
+    if (bx != nullptr)
+        v->buffer_destroy(mt, bx);
+}
+
 static void run_qwen35_attention_ops(struct geist_backend *mt) {
     enum { ROWS = 3, HEADS = 2, HD = 5, QOUT = HEADS * HD };
     const struct geist_backend_vtbl  *v  = mt->desc->vtbl;
@@ -1070,6 +1231,13 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 384, 80);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 384, 3);
     run_silu_case(mt);
+    /* Decode q/k/v and gate/up fusion (#17): Gemma 4 / Llama Q4_K_M
+     * (v Q6_K), all Q4_K, all Q8_0 (Qwen3, SmolLM2); n_kv off the
+     * threadgroup tiles of 4 and 8 rows. */
+    run_fused_matvec_case(mt, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q6_K, 512, 258);
+    run_fused_matvec_case(mt, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, 1024, 254);
+    run_fused_matvec_case(mt, GEIST_DTYPE_Q8_0, GEIST_DTYPE_Q8_0, GEIST_DTYPE_Q8_0, 1024, 260);
+    run_fused_matvec_case(mt, GEIST_DTYPE_Q8_0, GEIST_DTYPE_Q8_0, GEIST_DTYPE_Q8_0, 512, 131);
     run_embedding_case(mt, GEIST_DTYPE_Q4_0, "Q4_0");
     run_embedding_case(mt, GEIST_DTYPE_Q8_0, "Q8_0");
     run_embedding_case(mt, GEIST_DTYPE_PQ2_0, "PQ2_0");

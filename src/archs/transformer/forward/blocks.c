@@ -590,10 +590,17 @@ enum geist_status blk_ffn_swiglu(struct transformer_layer_forward_ctx *ctx) {
                                   : blk_rmsnorm(ctx, d, sess->scratch_h_post_attn, &L->ffn_norm, x);
     if (s == GEIST_OK)
         s = transformer_rotate_rows(st, ctx->seq, d, x);
-    if (s == GEIST_OK)
-        s = blk_gate_up(ctx, x);
-    if (s == GEIST_OK)
-        s = blk_silu_mul(ctx, ctx->inter, sess->scratch_gate, sess->scratch_up);
+    if (s == GEIST_OK && ctx->seq == 1 && ctx->P->fuse_ffn_gate_up_silu_m1) {
+        /* Bound at plan build: gate, up and silu(gate) * up in one call. */
+        struct geist_tensor t_x = view_2d(x, ctx->SEQ, (int64_t) d);
+        struct geist_tensor t_g = view_2d(sess->scratch_gate, ctx->SEQ, (int64_t) ctx->inter);
+        s = ctx->fused->ffn_gate_up_silu(ctx->be, &t_x, &L->gate_proj, &L->up_proj, &t_g);
+    } else {
+        if (s == GEIST_OK)
+            s = blk_gate_up(ctx, x);
+        if (s == GEIST_OK)
+            s = blk_silu_mul(ctx, ctx->inter, sess->scratch_gate, sess->scratch_up);
+    }
     if (s == GEIST_OK)
         s = blk_down(ctx, sess->scratch_gate, L->down_awq_inv_scale);
     if (s == GEIST_OK)

@@ -2832,55 +2832,103 @@ static void *metal_decv_pipeline(const struct metal_state *st, size_t head_dim, 
     return metal_op_end(be, cmd, enc, nullptr);
 }
 
-/* Fused FFN gate+up matvec with GeGLU epilogue (vtbl slot): the
- * gate_up_q4k_n4 kernel — llama mul_mv structure, 2 rows/simdgroup,
- * both weights against one activation pass, gelu(g)*u written directly.
- * rows==1 (decode) and Q4_K only; prefill keeps the mm_sg GEMMs. */
-[[nodiscard]] static enum geist_status metal_ffn_gate_up(struct geist_backend      *be,
-                                                         const struct geist_tensor *x,
-                                                         const struct geist_tensor *gate_w,
-                                                         const struct geist_tensor *up_w,
-                                                         struct geist_tensor       *y) {
+/* A weight the fused decode matvecs take (#17): Q4_K, Q6_K or Q8_0, with
+ * its shape, byte offset, blocks per row and the output rows one
+ * threadgroup of its matvec kernel covers. False for anything else. */
+struct metal_mv_weight {
+    enum geist_dtype dtype;
+    size_t           n_out;
+    size_t           n_in;
+    size_t           offset;
+    uint32_t         blocks_per_row;
+    uint32_t         tg_rows;
+};
+
+static bool metal_mv_weight_of(const struct geist_tensor *t, struct metal_mv_weight *out) {
+    if (t == nullptr) {
+        return false;
+    }
+    size_t block = 0;
+    bool   ok    = false;
+    switch ((enum geist_dtype) t->dtype) {
+    case GEIST_DTYPE_Q4_K:
+        ok           = metal_tensor_is_q4k_matrix(t, &out->n_out, &out->n_in, &out->offset);
+        block        = METAL_Q4K_BLOCK_ELEMS;
+        out->tg_rows = 4u;
+        break;
+    case GEIST_DTYPE_Q6_K:
+        ok           = metal_tensor_is_q6k_matrix(t, &out->n_out, &out->n_in, &out->offset);
+        block        = METAL_Q6K_BLOCK_ELEMS;
+        out->tg_rows = 4u;
+        break;
+    case GEIST_DTYPE_Q8_0:
+        ok = metal_tensor_is_q40_q80_matrix(
+                t, GEIST_DTYPE_Q8_0, &out->n_out, &out->n_in, &out->offset);
+        block        = 32u;
+        out->tg_rows = 8u;
+        break;
+    default:
+        return false;
+    }
+    if (!ok || out->n_in > UINT32_MAX || out->n_out > UINT32_MAX || out->offset > UINT32_MAX) {
+        return false;
+    }
+    out->dtype          = (enum geist_dtype) t->dtype;
+    out->blocks_per_row = (uint32_t) (out->n_in / block);
+    return true;
+}
+
+/* Fused FFN gate+up matvec (vtbl slots ffn_gate_up and ffn_gate_up_silu):
+ * llama mul_mv structure, both weights against one activation pass,
+ * act(g)*u written directly, act gelu or silu. rows==1 (decode), Q4_K or
+ * Q8_0; prefill keeps the GEMMs. */
+[[nodiscard]] static enum geist_status metal_gate_up(struct geist_backend      *be,
+                                                     const struct geist_tensor *x,
+                                                     const struct geist_tensor *gate_w,
+                                                     const struct geist_tensor *up_w,
+                                                     struct geist_tensor       *y,
+                                                     bool                       silu) {
 
     if (be == nullptr || be->state == nullptr || x == nullptr || gate_w == nullptr ||
         up_w == nullptr || y == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    size_t rows = 0, d_in = 0, x_off = 0, x_stride = 0;
-    size_t y_rows = 0, y_cols = 0, y_off = 0, y_stride = 0;
-    size_t g_out = 0, g_in = 0, g_woff = 0;
-    size_t u_out = 0, u_in = 0, u_woff = 0;
+    size_t                 rows = 0, d_in = 0, x_off = 0, x_stride = 0;
+    size_t                 y_rows = 0, y_cols = 0, y_off = 0, y_stride = 0;
+    struct metal_mv_weight g = {0}, u = {0};
     if (!metal_tensor_is_f32_rows(x, &rows, &d_in, &x_off, &x_stride) ||
-        !metal_tensor_is_q4k_matrix(gate_w, &g_out, &g_in, &g_woff) ||
-        !metal_tensor_is_q4k_matrix(up_w, &u_out, &u_in, &u_woff) ||
+        !metal_mv_weight_of(gate_w, &g) || !metal_mv_weight_of(up_w, &u) ||
         !metal_tensor_is_f32_rows(y, &y_rows, &y_cols, &y_off, &y_stride) ||
         rows != 1u || /* decode only: matvec-structured kernel */
-        g_in != d_in || u_in != d_in || u_out != g_out || (d_in % 256u) != 0u || y_rows != rows ||
-        y_cols != g_out) {
+        g.dtype != u.dtype || g.dtype == GEIST_DTYPE_Q6_K || g.n_in != d_in || u.n_in != d_in ||
+        u.n_out != g.n_out || y_rows != rows || y_cols != g.n_out) {
         return GEIST_E_UNSUPPORTED;
     }
-    if (d_in > UINT32_MAX || g_out > UINT32_MAX || x_off > UINT32_MAX || g_woff > UINT32_MAX ||
-        u_woff > UINT32_MAX || y_off > UINT32_MAX || x->buffer->owner != be->state ||
-        gate_w->buffer->owner != be->state || up_w->buffer->owner != be->state ||
-        y->buffer->owner != be->state) {
+    if (d_in > UINT32_MAX || x_off > UINT32_MAX || y_off > UINT32_MAX ||
+        x->buffer->owner != be->state || gate_w->buffer->owner != be->state ||
+        up_w->buffer->owner != be->state || y->buffer->owner != be->state) {
         return GEIST_E_INVALID_ARG;
     }
     enum geist_status s = metal_ensure_q4k_pipeline(be);
     if (s != GEIST_OK) {
         return s;
     }
-    struct metal_state *st = be->state;
-    if (st->q4k_gate_up_n4_pipeline == nullptr) {
+    struct metal_state *st  = be->state;
+    const bool          q4k = g.dtype == GEIST_DTYPE_Q4_K;
+    void *const         pipeline =
+            q4k ? (silu ? st->q4k_gate_up_silu_n4_pipeline : st->q4k_gate_up_n4_pipeline)
+                : (silu ? st->q80_gate_up_silu_n4_pipeline : st->q80_gate_up_n4_pipeline);
+    if (pipeline == nullptr) {
         return GEIST_E_UNSUPPORTED;
     }
     const struct metal_q4k_gate_up_params params = {
             .n_in               = (uint32_t) d_in,
-            .n_out              = (uint32_t) g_out,
+            .n_out              = (uint32_t) g.n_out,
             .rows               = (uint32_t) rows,
-            .blocks_per_row     = (uint32_t) (d_in / 256u),
+            .blocks_per_row     = g.blocks_per_row,
             .x_offset           = (uint32_t) x_off,
-            .gate_w_byte_offset = (uint32_t) g_woff,
-            .up_w_byte_offset   = (uint32_t) u_woff,
+            .gate_w_byte_offset = (uint32_t) g.offset,
+            .up_w_byte_offset   = (uint32_t) u.offset,
             .gate_y_offset      = (uint32_t) y_off,
             .up_y_offset        = (uint32_t) y_off, /* unused by the epilogue kernel */
             .x_row_stride       = (uint32_t) x_stride,
@@ -2892,17 +2940,146 @@ static void *metal_decv_pipeline(const struct metal_state *st, size_t head_dim, 
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
-    metal_msg_send_set_pipeline(st, enc, st->q4k_gate_up_n4_pipeline);
+    metal_msg_send_set_pipeline(st, enc, pipeline);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, gate_w->buffer->buffer, gate_w->buffer->base_off, 1);
     metal_msg_send_set_buffer(st, enc, up_w->buffer->buffer, up_w->buffer->base_off, 2);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 3);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 4);
     metal_msg_send_set_bytes(st, enc, &params, sizeof(params), 5);
-    const struct metal_size groups  = {(uint32_t) ((g_out + 3u) / 4u), (uint32_t) rows, 1};
+    const struct metal_size groups = {
+            (uint32_t) ((g.n_out + g.tg_rows - 1u) / g.tg_rows), (uint32_t) rows, 1};
     const struct metal_size threads = {METAL_Q4K_N4_THREADS, 1, 1};
-    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_Q4K_GATE_UP_N4, groups);
+    metal_profile_add_dispatch(st,
+                               q4k ? METAL_PROFILE_DISPATCH_Q4K_GATE_UP_N4
+                                   : METAL_PROFILE_DISPATCH_Q80_GATE_UP,
+                               groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
+    return metal_op_end(be, cmd, enc, nullptr);
+}
+
+[[nodiscard]] static enum geist_status metal_ffn_gate_up(struct geist_backend      *be,
+                                                         const struct geist_tensor *x,
+                                                         const struct geist_tensor *gate_w,
+                                                         const struct geist_tensor *up_w,
+                                                         struct geist_tensor       *y) {
+    return metal_gate_up(be, x, gate_w, up_w, y, false);
+}
+
+[[nodiscard]] static enum geist_status metal_ffn_gate_up_silu(struct geist_backend      *be,
+                                                              const struct geist_tensor *x,
+                                                              const struct geist_tensor *gate_w,
+                                                              const struct geist_tensor *up_w,
+                                                              struct geist_tensor       *y) {
+    return metal_gate_up(be, x, gate_w, up_w, y, true);
+}
+
+/* The mv3 kernel for a q/k/v dtype triple; nullptr where none is built. */
+static void *metal_mv3_pipeline(const struct metal_state *st,
+                                enum geist_dtype          a,
+                                enum geist_dtype          b,
+                                enum geist_dtype          c) {
+    if (a == GEIST_DTYPE_Q4_K && b == GEIST_DTYPE_Q4_K && c == GEIST_DTYPE_Q4_K) {
+        return st->mv3_q4k_q4k_q4k_pipeline;
+    }
+    if (a == GEIST_DTYPE_Q4_K && b == GEIST_DTYPE_Q4_K && c == GEIST_DTYPE_Q6_K) {
+        return st->mv3_q4k_q4k_q6k_pipeline;
+    }
+    if (a == GEIST_DTYPE_Q8_0 && b == GEIST_DTYPE_Q8_0 && c == GEIST_DTYPE_Q8_0) {
+        return st->mv3_q80_q80_q80_pipeline;
+    }
+    return nullptr;
+}
+
+/* Fused three-weight decode linear (vtbl slot linear_t_triple, #17): q, k
+ * and v of a decode step in one dispatch. The grid is the three matvecs'
+ * threadgroups side by side and each runs its own weight's matvec body, so
+ * the weights may differ in dtype and shape (Gemma 4 E2B: q, k Q4_K, v
+ * Q6_K) and every output keeps the matvec kernel's bits. m == 1 and the
+ * dtype triples metal_mv3_pipeline knows; GEIST_E_UNSUPPORTED otherwise,
+ * before anything is encoded. */
+[[nodiscard]] static enum geist_status metal_linear_t_triple(struct geist_backend      *be,
+                                                             const struct geist_tensor *x,
+                                                             const struct geist_weight *w0,
+                                                             const struct geist_tensor *t_w0,
+                                                             const struct geist_weight *w1,
+                                                             const struct geist_tensor *t_w1,
+                                                             const struct geist_weight *w2,
+                                                             const struct geist_tensor *t_w2,
+                                                             size_t                     m,
+                                                             struct geist_tensor       *y0,
+                                                             struct geist_tensor       *y1,
+                                                             struct geist_tensor       *y2) {
+    if (be == nullptr || be->state == nullptr || x == nullptr || w0 == nullptr || w1 == nullptr ||
+        w2 == nullptr || y0 == nullptr || y1 == nullptr || y2 == nullptr || m != 1u) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const struct geist_tensor *const tw[3] = {t_w0, t_w1, t_w2};
+    const struct geist_weight *const ww[3] = {w0, w1, w2};
+    struct geist_tensor *const       ty[3] = {y0, y1, y2};
+    size_t                           rows = 0, d_in = 0, x_off = 0, x_stride = 0;
+    if (!metal_tensor_is_f32_rows(x, &rows, &d_in, &x_off, &x_stride) || rows != 1u ||
+        x_off > UINT32_MAX || x->buffer->owner != be->state) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    struct metal_mv_weight  mw[3];
+    struct metal_q4k_params p[3];
+    uint32_t                groups[3];
+    for (size_t i = 0; i < 3; i++) {
+        size_t y_rows = 0, y_cols = 0, y_off = 0, y_stride = 0;
+        if (!metal_mv_weight_of(tw[i], &mw[i]) || (uint16_t) mw[i].dtype != ww[i]->dtype ||
+            mw[i].n_in != d_in || mw[i].n_out < 4u ||
+            !metal_tensor_is_f32_rows(ty[i], &y_rows, &y_cols, &y_off, &y_stride) || y_rows != 1u ||
+            y_cols != mw[i].n_out || y_off > UINT32_MAX || tw[i]->buffer->owner != be->state ||
+            ty[i]->buffer->owner != be->state) {
+            return GEIST_E_UNSUPPORTED;
+        }
+        p[i] = (struct metal_q4k_params) {
+                .n_in           = (uint32_t) d_in,
+                .n_out          = (uint32_t) mw[i].n_out,
+                .rows           = 1u,
+                .blocks_per_row = mw[i].blocks_per_row,
+                .x_offset       = (uint32_t) x_off,
+                .w_byte_offset  = (uint32_t) mw[i].offset,
+                .y_offset       = (uint32_t) y_off,
+                .x_row_stride   = (uint32_t) d_in,
+                .y_row_stride   = (uint32_t) mw[i].n_out,
+        };
+        groups[i] = (uint32_t) ((mw[i].n_out + mw[i].tg_rows - 1u) / mw[i].tg_rows);
+    }
+    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    struct metal_state *st       = be->state;
+    void *const         pipeline = metal_mv3_pipeline(st, mw[0].dtype, mw[1].dtype, mw[2].dtype);
+    if (pipeline == nullptr) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* struct T3 in metal_mv3_head */
+    const struct {
+        uint32_t                g1, g2;
+        struct metal_q4k_params p0, p1, p2;
+    } t3 = {groups[0], groups[0] + groups[1], p[0], p[1], p[2]};
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    void                                              *cmd  = nullptr;
+    void                                              *enc  = metal_op_begin(be, nullptr, &cmd);
+    if (enc == nullptr) {
+        return GEIST_E_BACKEND;
+    }
+    metal_msg_send_set_pipeline(st, enc, pipeline);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    for (size_t i = 0; i < 3; i++) {
+        metal_msg_send_set_buffer(
+                st, enc, tw[i]->buffer->buffer, tw[i]->buffer->base_off, 1u + (uint32_t) i);
+        metal_msg_send_set_buffer(
+                st, enc, ty[i]->buffer->buffer, ty[i]->buffer->base_off, 4u + (uint32_t) i);
+    }
+    metal_msg_send_set_bytes(st, enc, &t3, sizeof(t3), 7);
+    const struct metal_size grid    = {t3.g2 + groups[2], 1, 1};
+    const struct metal_size threads = {METAL_Q4K_N4_THREADS, 1, 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_QKV3, grid);
+    metal_msg_send_dispatch(st, enc, grid, threads);
     return metal_op_end(be, cmd, enc, nullptr);
 }
 
@@ -4121,8 +4298,8 @@ static const struct geist_backend_vtbl metal_vtbl = {
         .parallel_region_end   = metal_parallel_region_end,
 };
 
-/* Probe pairing for the fused table below. gate_up mirrors
- * metal_ffn_gate_up's entry checks (decode-only matvec kernel); the
+/* Probe pairing for the fused table below. gate_up (GeGLU and SwiGLU)
+ * mirrors metal_gate_up's entry checks (decode-only matvec kernel); the
  * elementwise GEGLU epilogue works for any F32 row block. */
 static bool metal_fused_supported(struct geist_backend *be, const struct geist_fusion_query *q) {
     if (q == nullptr) {
@@ -4133,16 +4310,26 @@ static bool metal_fused_supported(struct geist_backend *be, const struct geist_f
     case GEIST_FUSED_SILU_MUL:
         return true; /* F32 elementwise, any geometry, any m */
     case GEIST_FUSED_FFN_GATE_UP:
+    case GEIST_FUSED_FFN_GATE_UP_SILU: {
+        /* Q4_K or Q8_0, both weights the same: metal_gate_up's checks. */
         if (q->m != 1 || q->gate_w == nullptr || q->up_w == nullptr ||
-            q->gate_w->dtype != GEIST_DTYPE_Q4_K || q->up_w->dtype != GEIST_DTYPE_Q4_K ||
-            q->d_model % 256u != 0u || (size_t) q->gate_w->n_in != q->d_model ||
-            (size_t) q->up_w->n_in != q->d_model || q->gate_w->n_out != q->up_w->n_out) {
+            q->gate_w->dtype != q->up_w->dtype ||
+            (q->gate_w->dtype != GEIST_DTYPE_Q4_K && q->gate_w->dtype != GEIST_DTYPE_Q8_0) ||
+            q->d_model % (q->gate_w->dtype == GEIST_DTYPE_Q4_K ? 256u : 32u) != 0u ||
+            (size_t) q->gate_w->n_in != q->d_model || (size_t) q->up_w->n_in != q->d_model ||
+            q->gate_w->n_out != q->up_w->n_out) {
             return false;
         }
         if (metal_ensure_q4k_pipeline(be) != GEIST_OK) {
             return false;
         }
-        return ((struct metal_state *) be->state)->q4k_gate_up_n4_pipeline != nullptr;
+        const struct metal_state *st   = be->state;
+        const bool                silu = q->op == GEIST_FUSED_FFN_GATE_UP_SILU;
+        return (q->gate_w->dtype == GEIST_DTYPE_Q4_K
+                        ? (silu ? st->q4k_gate_up_silu_n4_pipeline : st->q4k_gate_up_n4_pipeline)
+                        : (silu ? st->q80_gate_up_silu_n4_pipeline
+                                : st->q80_gate_up_n4_pipeline)) != nullptr;
+    }
     case GEIST_FUSED_RMSNORM_ADD:
     case GEIST_FUSED_RMSNORM_ADD_NORM:
     case GEIST_FUSED_ARGMAX_F32:
@@ -4206,11 +4393,13 @@ static const struct geist_backend_fused metal_fused = {
         .silu_mul                     = metal_silu_mul,
         .linear_t                     = metal_linear_t,
         .linear_t_pair                = metal_linear_t_pair,
+        .linear_t_triple              = metal_linear_t_triple,
         .embedding_lookup_scaled      = metal_embedding_lookup_scaled,
         .embedding_lookup_scaled_rows = metal_embedding_lookup_scaled_rows,
         .kv_append_f16                = metal_kv_append_f16,
         .argmax_f32                   = metal_argmax_f32,
         .ffn_gate_up                  = metal_ffn_gate_up,
+        .ffn_gate_up_silu             = metal_ffn_gate_up_silu,
         .attn_qkv_prep                = metal_attn_qkv_prep,
         .ple_block                    = metal_ple_block,
         .rmsnorm_add                  = metal_rmsnorm_add,

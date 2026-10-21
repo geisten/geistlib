@@ -51,6 +51,9 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
     case GEIST_FUSED_FFN_GATE_UP:
         have = fused->ffn_gate_up != nullptr;
         break;
+    case GEIST_FUSED_FFN_GATE_UP_SILU:
+        have = fused->ffn_gate_up_silu != nullptr;
+        break;
     case GEIST_FUSED_FFN_NORM_GATE_UP:
         have = fused->ffn_norm_gate_up != nullptr;
         break;
@@ -214,6 +217,14 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         q.m  = 1;
         P->fuse_ffn_gate_up_m1 =
                 geglu && shared_ffn_input && L->down_awq_inv_scale == nullptr && probe(be, q);
+
+        /* The SwiGLU twin: blk_ffn_swiglu applies no AWQ scale before
+         * down, so the scale does not matter here. */
+        q    = base;
+        q.op = GEIST_FUSED_FFN_GATE_UP_SILU;
+        q.m  = 1;
+        P->fuse_ffn_gate_up_silu_m1 =
+                st->config.ffn_activation == GEIST_FFN_SWIGLU && shared_ffn_input && probe(be, q);
 
         q                       = base;
         q.op                    = GEIST_FUSED_GELU_TANH_MUL_SCALED;
