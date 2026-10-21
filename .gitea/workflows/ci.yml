@@ -214,11 +214,13 @@ jobs:
   # dedicated hardware: macOS arm64 on macos-15-heavy (the M1 Max under its
   # benchmark lock), Linux arm64 on ubuntu-24.04-arm-pi (the Pi 5 under its
   # board lock) — the shared cloud VM missed the prefill floor by noise (19.9 <
-  # 20 tok/s, run 1586).
+  # 20 tok/s, run 1586). Those two legs (heavy: true) skip main pushes: each
+  # held its host lock for 40+ minutes after every merge and queued every
+  # measurement behind it. They run nightly, on dispatch and with ci:full.
   build-test-full:
     name: ${{ matrix.title }}
     needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true' && (github.event_name != 'push' || matrix.heavy != true)
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     env:
@@ -233,6 +235,7 @@ jobs:
           - name: macOS arm64
             title: models, Metal, ASan + perf (macOS arm64)
             runner: macos-15-heavy
+            heavy: true
             target: mac-omp
             cc: clang
             bflags: ""
@@ -255,6 +258,7 @@ jobs:
           - name: Linux arm64
             title: models + perf (Linux arm64)
             runner: ubuntu-24.04-arm-pi
+            heavy: true
             target: linux
             cc: gcc-14
             bflags: ""
