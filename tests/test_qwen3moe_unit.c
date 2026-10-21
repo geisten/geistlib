@@ -15,6 +15,11 @@
  *   - fault injection: layer 0's expert down projections lose their kernels;
  *     the prefill returns GEIST_E_UNSUPPORTED and leaves no logits, and the
  *     session gives the original logits again once they are back.
+ * Hot experts on a GPU backend (#78 phase 3), for each GPU backend in the
+ * build: the model on cpu_scalar with the GPU as split backend and
+ * GEIST_MOE_HOT = half, then all of the 16 experts; the experts are placed,
+ * rows run on the GPU, and the logits match cpu_scalar's (relative L2
+ * <= 1e-3, F32 weights on both).
  * Load refusals: a missing expert tensor (named in the error), a router
  * gating other than softmax, a shared expert, more experts used than exist.
  */
@@ -214,6 +219,59 @@ static int check_refused(const char *what, const struct mf_qwen3moe *c, const ch
     return geist_expect(ok, what);
 }
 
+/* The fixture on cpu_scalar, `hot` experts on GPU backend `gpu`; its logits
+ * against `ref`. Returns failures, or -1 when `gpu` is not built. */
+static int check_hot(const char *gpu, size_t hot, const float ref[static VOCAB]) {
+    struct geist_backend *cpu = nullptr, *gbe = nullptr;
+    if (geist_backend_create(gpu, nullptr, nullptr, &gbe) != GEIST_OK) {
+        printf("skip hot experts on %s: not in this build\n", gpu);
+        return -1;
+    }
+    int fails = geist_expect(geist_backend_create("cpu_scalar", nullptr, nullptr, &cpu) == GEIST_OK,
+                             "cpu_scalar");
+    char n[16];
+    snprintf(n, sizeof n, "%zu", hot);
+    setenv("GEIST_MOE_HOT", n, 1);
+    struct tf_buf                   g  = mf_qwen3moe_gguf(&GEOM);
+    const struct geist_session_opts lo = {.split_backend = gbe, .split_layers = 1};
+    struct geist_model             *m  = nullptr;
+    struct geist_session           *s  = nullptr;
+    geist_token_t                   ids[N_PROMPT];
+    for (size_t i = 0; i < N_PROMPT; i++)
+        ids[i] = (geist_token_t) ((i * 37 + 5) % VOCAB);
+    float out[VOCAB];
+    if (fails > 0 || geist_model_load_from_memory_with_opts(g.b, g.n, cpu, &lo, &m) != GEIST_OK ||
+        geist_session_create(m, cpu, &OPTS, &s) != GEIST_OK ||
+        !logits_after(s, N_PROMPT, ids, N_PROMPT, out)) {
+        fprintf(stderr, "%s / %s\n", geist_backend_errmsg(cpu), geist_backend_errmsg(gbe));
+        fails += geist_expect(false, "the fixture runs with hot experts");
+    } else {
+        const struct transformer_arch_state *st = geist_model_internal_arch_meta(m);
+        const struct transformer_moe_gpu    *mg = st->moe_gpu;
+        const double                         d  = rel_l2(out, ref);
+        printf("%s, %zu hot experts: %zu placed, %llu rows on the GPU, %llu on the CPU, relative "
+               "L2 %.3g\n",
+               gpu,
+               hot,
+               mg != nullptr ? mg->n_hot : 0,
+               mg != nullptr ? (unsigned long long) mg->rows_gpu : 0ULL,
+               mg != nullptr ? (unsigned long long) mg->rows_cpu : 0ULL,
+               d);
+        fails += geist_expect(mg != nullptr && mg->n_hot == hot, "the experts are placed");
+        fails += geist_expect(mg != nullptr && mg->rows_gpu > 0, "rows run on the GPU");
+        fails += geist_expect(hot == 16 || (mg != nullptr && mg->rows_cpu > 0),
+                              "the cold experts' rows run on the CPU");
+        fails += geist_expect(d <= 1e-3, "the logits match cpu_scalar's");
+    }
+    unsetenv("GEIST_MOE_HOT");
+    geist_session_destroy(s);
+    geist_model_destroy(m);
+    free(g.b);
+    geist_backend_destroy(cpu);
+    geist_backend_destroy(gbe);
+    return fails;
+}
+
 int main(void) {
     int       fails = 0;
     float     scalar[VOCAB], other[VOCAB];
@@ -231,6 +289,18 @@ int main(void) {
             const bool exact_f32 = strcmp(fast[b], "cpu_neon") == 0;
             fails += geist_expect(exact_f32 ? d <= 1e-3 : c >= 0.999,
                                   "a fast backend matches cpu_scalar within its F32 tolerance");
+        }
+    }
+
+    if (sc == 0) {
+        const char *const gpus[] = {"vulkan", "metal"};
+        for (size_t b = 0; b < 2; b++) {
+            for (size_t hot = 8; hot <= 16; hot += 8) {
+                const int r = check_hot(gpus[b], hot, scalar);
+                fails += r > 0 ? r : 0;
+                if (r < 0)
+                    break;
+            }
         }
     }
 

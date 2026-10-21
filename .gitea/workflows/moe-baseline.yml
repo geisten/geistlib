@@ -7,6 +7,8 @@ name: moe-baseline
 #   geist cpu_x86, geist vulkan (weights spill to host memory, #466),
 #   geist split (planner, GEIST_SPLIT_AUTO) + offload (today both Vulkan
 #   configurations refuse the model at load: qwen3moe experts are CPU-only),
+#   geist hot experts on the GPU (phase 3, moe_gpu.c): with the #48 profile
+#   and without (the same share of every layer),
 #   llama.cpp CPU, llama.cpp Vulkan with -ot exps=CPU (experts on the CPU,
 #   the rest on the GPU: the usual recipe phase 3 has to beat).
 # Each configuration is capped by a timeout; a timeout is a result.
@@ -32,7 +34,7 @@ on:
       configs:
         description: "configurations, separated by ;"
         type: string
-        default: "geist-cpu;geist-vulkan;geist-split;llama-cpu;llama-exps-cpu"
+        default: "geist-cpu;geist-hot;geist-hot-uniform;llama-cpu;llama-exps-cpu"
       cycles:
         description: "interleaved cycles"
         type: string
@@ -57,6 +59,7 @@ jobs:
       CYCLES: ${{ inputs.cycles }}
       CAP: ${{ inputs.cap }}
       GGML_VK_VISIBLE_DEVICES: "0" # the discrete card, not the Raphael iGPU
+      PROFILE: benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt # #48
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -84,6 +87,15 @@ jobs:
             mv "$F.part" "$F"
           fi
           echo "MODEL=$F" >> "$GITHUB_ENV"
+      - name: Hot experts against the CPU (logits, greedy tokens; reported)
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          . scripts/gpu-lock.sh
+          GEIST_SPLIT_BACKEND=vulkan GEIST_SPLIT_GGUF_PATH="$MODEL" GEIST_SPLIT_POINTS=1 \
+            GEIST_MOE_PROFILE="$PROFILE" GEIST_VERBOSE=1 \
+            bin/linux/release/tests/test_layer_split_int 2>&1 \
+            | grep -v '^geist vulkan: device memory' | tee out/hot-vs-cpu.txt
       - name: Measure, interleaved
         run: |
           set -o pipefail
@@ -97,7 +109,9 @@ jobs:
               case $cfg in
                 geist-cpu)    cmd="env GEIST_BENCH_BACKEND=cpu_x86 $GB $SWEEP" ;;
                 geist-vulkan) cmd="env GEIST_BENCH_BACKEND=vulkan GEIST_VK_VERBOSE=1 $GB $SWEEP" ;;
-                geist-split)  cmd="env GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto $GB $SWEEP" ;;
+                geist-split|geist-hot-uniform)
+                              cmd="env GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto $GB $SWEEP" ;;
+                geist-hot)    cmd="env GEIST_VERBOSE=1 GEIST_MOE_PROFILE=$PROFILE GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto $GB $SWEEP" ;;
                 llama-cpu)    cmd="$LLAMA_CPU $LB" ;;
                 llama-exps-cpu) cmd="$LLAMA_VK $LB -ngl 99 -ot exps=CPU" ;;
                 *) echo "unknown $cfg"; continue ;;
@@ -113,7 +127,8 @@ jobs:
       - name: Job summary
         if: always()
         run: |
-          { echo '```'; grep '^== ' out/log.txt; grep -E 'planner|spill|offload' out/log.txt | sort | uniq -c | head -20; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo '```'; grep '^== ' out/log.txt; grep -E 'planner|spill|offload|moe:' out/log.txt | sort | uniq -c | head -20;
+            grep -E 'kv .*(split|gpu)|FAIL' out/hot-vs-cpu.txt 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

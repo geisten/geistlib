@@ -25,6 +25,7 @@
 
 #include "../arch_family.h"
 #include "../forward/blocks.h"
+#include "../moe_gpu.h"
 #include "../rotation.h"
 #include "../weight_load.h"
 
@@ -161,10 +162,12 @@ qwen3moe_session_alloc(struct transformer_arch_session *sess) {
         geist_backend_set_error(be, GEIST_E_OOM, "transformer: MoE routing state alloc failed");
         return GEIST_E_OOM;
     }
+    moe_gpu_session_alloc(sess);
     return GEIST_OK;
 }
 
 static void qwen3moe_session_free(struct transformer_arch_session *sess) {
+    moe_gpu_session_free(sess);
     void *host[] = {sess->moe_xg,
                     sess->moe_y,
                     sess->moe_g,

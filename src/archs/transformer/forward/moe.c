@@ -31,6 +31,7 @@
 #include <stdatomic.h>
 #include <string.h>
 
+#include "../moe_gpu.h"
 #include "par.h"
 #include "profile.h"
 
@@ -182,10 +183,14 @@ struct moe_job {
     struct transformer_arch_session        *sess;
     struct geist_backend                   *be;
     size_t                                  d, inter, n_exp;
-    uint32_t                                active[GEIST_MOE_MAX_EXPERTS];
+    uint32_t                                active[GEIST_MOE_MAX_EXPERTS]; /* on the CPU */
     size_t                                  n_active;
+    uint32_t                                hot[GEIST_MOE_MAX_EXPERTS]; /* on the GPU (#78) */
+    size_t                                  n_hot;
+    size_t                                  layer;
     _Atomic size_t                          next;
     _Atomic bool                            failed;
+    enum geist_status                       gpu_status;
 };
 
 static void moe_linear(size_t                     m,
@@ -238,15 +243,22 @@ static bool moe_expert(const struct moe_job *j, size_t e) {
     return ok;
 }
 
-/* A worker: takes the next active expert until none is left, so experts
- * with many rows and experts with one even out across the threads. */
+/* A worker: takes the next task until none is left, so experts with many
+ * rows and experts with one even out across the threads. With hot experts
+ * task 0 is the GPU's batch: the thread that takes it waits for the GPU
+ * while the others run the CPU's experts. */
 static void moe_worker(void *ctx, size_t begin, size_t end) {
-    struct moe_job *j = ctx;
+    struct moe_job *j   = ctx;
+    const size_t    gpu = j->n_hot > 0;
     (void) begin;
     (void) end;
     for (size_t a;
-         (a = atomic_fetch_add_explicit(&j->next, 1, memory_order_relaxed)) < j->n_active;) {
-        if (!moe_expert(j, j->active[a]))
+         (a = atomic_fetch_add_explicit(&j->next, 1, memory_order_relaxed)) < gpu + j->n_active;) {
+        if (gpu && a == 0) {
+            j->gpu_status = moe_gpu_run(j->sess, j->layer, j->n_hot, j->hot);
+            if (j->gpu_status != GEIST_OK)
+                atomic_store_explicit(&j->failed, true, memory_order_relaxed);
+        } else if (!moe_expert(j, j->active[a - gpu]))
             atomic_store_explicit(&j->failed, true, memory_order_relaxed);
     }
 }
@@ -361,15 +373,36 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     j->inter            = ctx->inter;
     j->n_exp            = n_exp;
     j->n_active         = 0;
+    j->n_hot            = 0;
+    j->layer            = (size_t) ctx->layer_idx;
+    j->gpu_status       = GEIST_OK;
+    size_t rows_gpu     = 0;
     for (size_t e = 0; e < n_exp; e++) {
-        if (sess->moe_row_start[e + 1] > sess->moe_row_start[e])
+        const size_t m = sess->moe_row_start[e + 1] - sess->moe_row_start[e];
+        if (m == 0)
+            continue;
+        if (moe_gpu_hot(sess, j->layer, e)) {
+            j->hot[j->n_hot++] = (uint32_t) e;
+            rows_gpu += m;
+        } else
             j->active[j->n_active++] = (uint32_t) e;
     }
+    if (st->moe_gpu != nullptr)
+        atomic_fetch_add_explicit(&st->moe_gpu->rows_cpu, n_sel - rows_gpu, memory_order_relaxed);
     atomic_store_explicit(&j->next, 0, memory_order_relaxed);
     atomic_store_explicit(&j->failed, false, memory_order_relaxed);
+    const size_t tasks   = (j->n_hot > 0) + j->n_active;
     const size_t threads = geist_par_max_threads();
-    geist_par_for(j->n_active < threads ? j->n_active : threads, moe_worker, j);
+    geist_par_for(tasks < threads ? tasks : threads, moe_worker, j);
     moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);
+    if (j->gpu_status != GEIST_OK) {
+        geist_backend_set_error(ctx->be,
+                                j->gpu_status,
+                                "moe: layer %d: the GPU experts failed: %s",
+                                ctx->layer_idx,
+                                geist_backend_errmsg(st->moe_gpu->be));
+        return j->gpu_status;
+    }
     if (atomic_load_explicit(&j->failed, memory_order_relaxed)) {
         geist_backend_set_error(ctx->be,
                                 GEIST_E_UNSUPPORTED,
