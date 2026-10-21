@@ -128,6 +128,14 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
                 (double) atomic_load(&mg->ns_record) / nb,
                 (double) atomic_load(&mg->ns_wait) / nb,
                 (double) atomic_load(&mg->ns_unpack) / nb);
+        const double nl = (double) (atomic_load(&mg->n_launched) | 1u);
+        fprintf(stderr,
+                "geist: moe: %llu one-wait layers, mean us: launch %.1f, cold region %.1f; "
+                "%.2f cold experts per layer\n",
+                (unsigned long long) atomic_load(&mg->n_launched),
+                (double) atomic_load(&mg->ns_launch) / nl / 1e3,
+                (double) atomic_load(&mg->ns_cold) / nl / 1e3,
+                (double) atomic_load(&mg->n_cold) / nl);
         fprintf(stderr,
                 "geist: moe: %llu of them grouped (decode), mean wait %.1f us\n",
                 (unsigned long long) atomic_load(&mg->n_grouped),

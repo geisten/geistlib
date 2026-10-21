@@ -419,7 +419,8 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
      * starts its hot experts now and does not wait for them; the CPU runs
      * the cold ones meanwhile and the GPU adds the hot outputs onto their
      * sum. GEIST_E_UNSUPPORTED (a weight not resident): the batch below. */
-    bool launched = false;
+    bool           launched = false;
+    const uint64_t tl0      = transformer_profile_now_ns();
     if (j->n_hot > 0 && moe_gpu_launchable(sess, j->layer, j->n_hot, j->hot)) {
         s = moe_gpu_launch(sess, j->layer, j->n_hot, j->hot);
         if (s != GEIST_OK && s != GEIST_E_UNSUPPORTED) {
@@ -444,8 +445,9 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
      * idle and read each matrix on one core. Run them one after another,
      * each with its kernels' own threads instead. No GPU task may be
      * pending: it runs concurrently with the region below. */
-    const char  *sm         = getenv("GEIST_MOE_SERIAL_MAX"); /* experiment, #161 */
-    const size_t serial_max = sm != nullptr ? (size_t) strtoull(sm, nullptr, 10) : 0;
+    const char    *sm         = getenv("GEIST_MOE_SERIAL_MAX"); /* experiment, #161 */
+    const size_t   serial_max = sm != nullptr ? (size_t) strtoull(sm, nullptr, 10) : 0;
+    const uint64_t tl1        = transformer_profile_now_ns();
     if ((launched || j->n_hot == 0) && j->n_active <= serial_max) {
         for (size_t a = 0; a < j->n_active; a++)
             if (!moe_expert(j, j->active[a]))
@@ -453,6 +455,14 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     } else {
         geist_par_for(tasks < threads ? tasks : threads, moe_worker, j);
         moe_gpu_task(j); /* a thread library that gave the caller no range */
+    }
+    if (launched) {
+        struct transformer_moe_gpu *mgs = st->moe_gpu;
+        atomic_fetch_add_explicit(&mgs->n_launched, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&mgs->ns_launch, tl1 - tl0, memory_order_relaxed);
+        atomic_fetch_add_explicit(
+                &mgs->ns_cold, transformer_profile_now_ns() - tl1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&mgs->n_cold, j->n_active, memory_order_relaxed);
     }
     moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);
     if (j->gpu_status != GEIST_OK) {

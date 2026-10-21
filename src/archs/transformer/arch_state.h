@@ -571,7 +571,8 @@ struct transformer_moe_gpu {
     /* GEIST_VERBOSE at destroy: batches, and their ns packing (to the
      * copy), recording, waiting (buffer_map of the outputs), unpacking. */
     _Atomic uint64_t batches, ns_pack, ns_record, ns_wait, ns_unpack;
-    _Atomic uint64_t n_grouped, ns_wait_grouped; /* the decode batches of them */
+    _Atomic uint64_t n_grouped, ns_wait_grouped;             /* the decode batches of them */
+    _Atomic uint64_t n_launched, ns_launch, ns_cold, n_cold; /* one-wait layers (#161) */
 };
 
 struct transformer_arch_state {
