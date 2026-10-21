@@ -510,7 +510,7 @@ struct geist_backend_fused {
      * nullptr = always separate. */
     enum geist_status (*linear_t_grouped)(struct geist_backend            *be,
                                           size_t                           n,
-                                          const struct geist_weight *const w[static n],
+                                          const struct geist_weight *const w[GEIST_AT_LEAST(n)],
                                           const struct geist_tensor       *x,
                                           struct geist_tensor             *y);
 
