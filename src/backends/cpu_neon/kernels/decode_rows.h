@@ -31,9 +31,6 @@ struct q4k_decode_ctx {
     size_t                     n_out;
 };
 
-/* Output rows [n0, n1) of a q4k_decode_ctx. */
-void q4k_decode_rows(void *ctx, size_t n0, size_t n1);
-
 /* One Q6_K W6A8 decode in the source layout. */
 struct q6k_decode_ctx {
     const void    *w_q6k;
@@ -44,9 +41,6 @@ struct q6k_decode_ctx {
     const float   *x_scales; /* one per super-block */
     float         *y;
 };
-
-/* Output rows [n0, n1) of a q6k_decode_ctx. */
-void q6k_decode_rows(void *ctx, size_t n0, size_t n1);
 
 /* The 16-element sums of x_q8 the Q6_K rows take, in the calling thread's
  * buffer (valid until its next call); nullptr when the buffer cannot
@@ -80,6 +74,12 @@ static inline void cpu_neon_decode_job_rows(void *ctx, size_t n0, size_t n1) {
         off = end;
     }
 }
+
+/* The job of one decode over `ctx`'s rows. The row loops stay static in
+ * their kernel files: an address taken of an exported function is a
+ * relocation the shared library cannot carry in non-PIC objects. */
+[[nodiscard]] struct cpu_neon_decode_part q4k_decode_part(struct q4k_decode_ctx *ctx);
+[[nodiscard]] struct cpu_neon_decode_part q6k_decode_part(struct q6k_decode_ctx *ctx);
 
 /* Runs every part's rows, in one geist_par_for over their joint row space
  * (a static split, as the single decodes); returns when all are done. */

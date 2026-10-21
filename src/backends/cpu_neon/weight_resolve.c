@@ -277,8 +277,7 @@ static void cpu_neon_w_kq_triple_m1(const float               *x,
                                                 .y                = y[i],
                                                 .n_blocks_per_row = nb,
                                                 .n_out            = n_out};
-            parts[i] = (struct cpu_neon_decode_part) {
-                    .rows = q4k_decode_rows, .ctx = &c4[i], .n_out = n_out};
+            parts[i] = q4k_decode_part(&c4[i]);
         } else {
             c6[i]    = (struct q6k_decode_ctx) {.w_q6k            = w[i]->raw,
                                                 .x_q8             = xq,
@@ -287,8 +286,7 @@ static void cpu_neon_w_kq_triple_m1(const float               *x,
                                                 .n_out            = n_out,
                                                 .x_scales         = sc,
                                                 .y                = y[i]};
-            parts[i] = (struct cpu_neon_decode_part) {
-                    .rows = q6k_decode_rows, .ctx = &c6[i], .n_out = n_out};
+            parts[i] = q6k_decode_part(&c6[i]);
         }
     }
     cpu_neon_decode_parts(3, parts);
