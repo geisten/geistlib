@@ -329,6 +329,10 @@ int q6k_x8_gemv_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst) {
 }
 
 #if defined(__ARM_NEON)
+static void q6k_decode_rows(void *ctx, size_t n0, size_t n1);
+#endif
+
+#if defined(__ARM_NEON)
 const int16_t *q6k_decode_bsums(size_t n_in, const int8_t x_q8[static n_in]) {
     static _Thread_local int16_t *bsums_tl  = nullptr;
     static _Thread_local size_t   bsums_cap = 0;
@@ -711,11 +715,15 @@ static void q6k_decode_one_row(size_t n, const struct q6k_decode_ctx *c) {
 }
 
 /* Output rows [n0, n1) of linear_q6k_decode_w6a8_pre. */
-void q6k_decode_rows(void *ctx, size_t n0, size_t n1) {
+static void q6k_decode_rows(void *ctx, size_t n0, size_t n1) {
     const struct q6k_decode_ctx c = *(const struct q6k_decode_ctx *) ctx;
     for (size_t n = n0; n < n1; n++) {
         q6k_decode_one_row(n, &c);
     }
+}
+
+struct cpu_neon_decode_part q6k_decode_part(struct q6k_decode_ctx *ctx) {
+    return (struct cpu_neon_decode_part) {.rows = q6k_decode_rows, .ctx = ctx, .n_out = ctx->n_out};
 }
 #endif
 

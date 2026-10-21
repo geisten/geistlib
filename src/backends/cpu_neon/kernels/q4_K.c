@@ -365,10 +365,14 @@ static inline void q4k_decode_one_row(size_t n, const struct q4k_decode_ctx *c) 
 }
 
 /* Output rows [n0, n1) of one decode; the ctx copied into a local. */
-void q4k_decode_rows(void *ctx, size_t n0, size_t n1) {
+static void q4k_decode_rows(void *ctx, size_t n0, size_t n1) {
     const struct q4k_decode_ctx c = *(const struct q4k_decode_ctx *) ctx;
     for (size_t n = n0; n < n1; n++)
         q4k_decode_one_row(n, &c);
+}
+
+struct cpu_neon_decode_part q4k_decode_part(struct q4k_decode_ctx *ctx) {
+    return (struct cpu_neon_decode_part) {.rows = q4k_decode_rows, .ctx = ctx, .n_out = ctx->n_out};
 }
 
 void linear_q4k_decode_w4a8_pre(size_t         n_in,
