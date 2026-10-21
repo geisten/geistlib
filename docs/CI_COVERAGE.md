@@ -24,7 +24,9 @@ job whose `if:` tests `needs.changes.outputs.full`: ASan/UBSan, TSan, the
 coverage ratchet, integration + e2e on real models, Vulkan on lavapipe,
 AVX-512 under SDE, the audio legs (they fetch the 614 MB tower and the 3 GB
 model), the Metal gate and the perf floors on dedicated hardware (macOS
-arm64 on `macos-15-heavy`, Linux arm64 on the Pi 5, `ubuntu-24.04-arm-pi`),
+arm64 on `macos-15-heavy`, Linux arm64 on the Pi 5, `ubuntu-24.04-arm-pi`;
+these two skip `main` pushes and run nightly, on dispatch and with `ci:full`,
+because each holds its host's benchmark lock for 40+ minutes),
 the other build legs (clang, scalar, arm64 musl, `TARGET=pi5`, macOS GCD)
 and the documented builds. The documented builds take under a minute each,
 but they recompile what the required legs already compile with the same gcc
