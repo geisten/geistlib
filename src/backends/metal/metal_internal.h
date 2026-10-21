@@ -72,6 +72,7 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_K_NORM_ROPE_APPEND,
     METAL_PROFILE_DISPATCH_V_NORM_APPEND,
     METAL_PROFILE_DISPATCH_KV_NORM_APPEND,
+    METAL_PROFILE_DISPATCH_ROPE_APPEND,
     METAL_PROFILE_DISPATCH_ROPE_ROWS,
     METAL_PROFILE_DISPATCH_KV_APPEND_ROWS,
     METAL_PROFILE_DISPATCH_ATTENTION_ROWS,
@@ -173,6 +174,7 @@ struct metal_state {
     void  *v_norm_append_library;
     void  *kv_norm_append_library;
     void  *kv_norm_append_f16_library;
+    void  *rope_append_library; /* Llama/Qwen3 q/k prep + KV append (#17) */
     void  *q40_function;
     void  *q40_pipeline;
     void  *q40_m8_function;
@@ -402,6 +404,10 @@ struct metal_state {
     void    *kv_norm_append_rows_pipeline;
     void    *kv_norm_append_rows_f16_function;
     void    *kv_norm_append_rows_f16_pipeline;
+    void    *rope_append_rows_function;
+    void    *rope_append_rows_pipeline;
+    void    *rope_append_rows_f16_function;
+    void    *rope_append_rows_f16_pipeline;
     void    *attention_rows_function;
     void    *attention_rows_pipeline;
     void    *attention_rows_f16_function;

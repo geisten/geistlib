@@ -3073,6 +3073,129 @@ static void *metal_decv_pipeline(const struct metal_state *st, size_t head_dim, 
     return metal_op_end(be, cmd, enc, nullptr);
 }
 
+/* Fused Llama / Qwen3 attention prep (vtbl slot attn_rope_append, #17):
+ * rope_append_rows{,_f16}, one dispatch for what were the q/k norms, the
+ * two RoPEs, the q scale and the KV append. */
+[[nodiscard]] static enum geist_status metal_attn_rope_append(struct geist_backend      *be,
+                                                              struct geist_tensor       *q,
+                                                              struct geist_tensor       *k,
+                                                              const struct geist_tensor *v,
+                                                              const struct geist_tensor *q_norm_w,
+                                                              const struct geist_tensor *k_norm_w,
+                                                              const struct geist_tensor *cos,
+                                                              const struct geist_tensor *sin,
+                                                              float                      eps,
+                                                              float                      q_scale,
+                                                              size_t                     q_position,
+                                                              struct geist_tensor       *k_cache,
+                                                              struct geist_tensor       *v_cache) {
+    if (be == nullptr || be->state == nullptr || q == nullptr || k == nullptr || v == nullptr ||
+        cos == nullptr || sin == nullptr || k_cache == nullptr || v_cache == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    size_t rows = 0, q_heads = 0, hd = 0, q_off = 0;
+    size_t k_rows = 0, kv_heads = 0, k_hd = 0, k_off = 0;
+    size_t v_rows = 0, v_heads = 0, v_hd = 0, v_off = 0;
+    size_t c_rows = 0, n_rot = 0, c_off = 0, c_stride = 0;
+    size_t s_rows = 0, s_cols = 0, s_off = 0, s_stride = 0;
+    size_t qw_n = 0, qw_off = 0, kw_n = 0, kw_off = 0;
+    size_t kc_rows = 0, kc_heads = 0, kc_hd = 0, kc_off = 0;
+    size_t vc_rows = 0, vc_heads = 0, vc_hd = 0, vc_off = 0;
+    if (!metal_tensor_is_f32_3d(q, &rows, &q_heads, &hd, &q_off) ||
+        !metal_tensor_is_f32_3d(k, &k_rows, &kv_heads, &k_hd, &k_off) ||
+        !metal_tensor_is_f32_3d(v, &v_rows, &v_heads, &v_hd, &v_off) ||
+        !metal_tensor_is_f32_matrix(cos, &c_rows, &n_rot, &c_off, &c_stride) ||
+        !metal_tensor_is_f32_matrix(sin, &s_rows, &s_cols, &s_off, &s_stride) ||
+        (q_norm_w != nullptr && !metal_tensor_is_f32_vector(q_norm_w, &qw_n, &qw_off)) ||
+        (k_norm_w != nullptr && !metal_tensor_is_f32_vector(k_norm_w, &kw_n, &kw_off)) || hd == 0 ||
+        hd > 512u || n_rot == 0 || (n_rot % 2u) != 0 || n_rot > hd || k_rows != rows ||
+        v_rows != rows || v_heads != kv_heads || k_hd != hd || v_hd != hd || c_rows != rows ||
+        s_rows != rows || s_cols != n_rot || c_stride != n_rot || s_stride != n_rot ||
+        (q_norm_w != nullptr && qw_n != hd) || (k_norm_w != nullptr && kw_n != hd)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const bool cache_f32 = metal_tensor_is_f32_3d(k_cache, &kc_rows, &kc_heads, &kc_hd, &kc_off) &&
+                           metal_tensor_is_f32_3d(v_cache, &vc_rows, &vc_heads, &vc_hd, &vc_off);
+    const bool cache_f16 = !cache_f32 &&
+                           metal_tensor_is_f16_3d(k_cache, &kc_rows, &kc_heads, &kc_hd, &kc_off) &&
+                           metal_tensor_is_f16_3d(v_cache, &vc_rows, &vc_heads, &vc_hd, &vc_off);
+    if ((!cache_f32 && !cache_f16) || kc_heads != kv_heads || vc_heads != kv_heads || kc_hd != hd ||
+        vc_hd != hd || kc_rows < q_position + rows || vc_rows < q_position + rows) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (rows > UINT32_MAX || q_heads + kv_heads > UINT32_MAX || q_off > UINT32_MAX ||
+        k_off > UINT32_MAX || v_off > UINT32_MAX || c_off > UINT32_MAX || s_off > UINT32_MAX ||
+        qw_off > UINT32_MAX || kw_off > UINT32_MAX || kc_off > UINT32_MAX || vc_off > UINT32_MAX ||
+        q_position > UINT32_MAX || q->buffer->owner != be->state || k->buffer->owner != be->state ||
+        v->buffer->owner != be->state || cos->buffer->owner != be->state ||
+        sin->buffer->owner != be->state || k_cache->buffer->owner != be->state ||
+        v_cache->buffer->owner != be->state ||
+        (q_norm_w != nullptr && q_norm_w->buffer->owner != be->state) ||
+        (k_norm_w != nullptr && k_norm_w->buffer->owner != be->state)) {
+        return GEIST_E_INVALID_ARG;
+    }
+    enum geist_status s = metal_ensure_attention_pipeline(be);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    struct metal_state *st = be->state;
+    void *const         pipeline =
+            cache_f16 ? st->rope_append_rows_f16_pipeline : st->rope_append_rows_pipeline;
+    if (pipeline == nullptr) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* struct RA in metal_rope_append_source */
+    const struct {
+        uint32_t rows, qh, kvh, hd, nrot, qo, ko, vo, qwo, kwo, co, so, kco, vco, qp, qn, kn, qsc;
+        float    eps, qs;
+    } ra = {(uint32_t) rows,
+            (uint32_t) q_heads,
+            (uint32_t) kv_heads,
+            (uint32_t) hd,
+            (uint32_t) n_rot,
+            (uint32_t) q_off,
+            (uint32_t) k_off,
+            (uint32_t) v_off,
+            (uint32_t) qw_off,
+            (uint32_t) kw_off,
+            (uint32_t) c_off,
+            (uint32_t) s_off,
+            (uint32_t) kc_off,
+            (uint32_t) vc_off,
+            (uint32_t) q_position,
+            q_norm_w != nullptr,
+            k_norm_w != nullptr,
+            q_scale != 1.0f,
+            eps,
+            q_scale};
+    /* Unused weight slots bind q: the kernel reads them only under qn/kn. */
+    const struct geist_tensor *qw = q_norm_w != nullptr ? q_norm_w : q;
+    const struct geist_tensor *kw = k_norm_w != nullptr ? k_norm_w : q;
+
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    void                                              *cmd  = nullptr;
+    void                                              *enc  = metal_op_begin(be, nullptr, &cmd);
+    if (enc == nullptr) {
+        return GEIST_E_BACKEND;
+    }
+    metal_msg_send_set_pipeline(st, enc, pipeline);
+    metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, k->buffer->buffer, k->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, v->buffer->buffer, v->buffer->base_off, 2);
+    metal_msg_send_set_buffer(st, enc, qw->buffer->buffer, qw->buffer->base_off, 3);
+    metal_msg_send_set_buffer(st, enc, kw->buffer->buffer, kw->buffer->base_off, 4);
+    metal_msg_send_set_buffer(st, enc, cos->buffer->buffer, cos->buffer->base_off, 5);
+    metal_msg_send_set_buffer(st, enc, sin->buffer->buffer, sin->buffer->base_off, 6);
+    metal_msg_send_set_buffer(st, enc, k_cache->buffer->buffer, k_cache->buffer->base_off, 7);
+    metal_msg_send_set_buffer(st, enc, v_cache->buffer->buffer, v_cache->buffer->base_off, 8);
+    metal_msg_send_set_bytes(st, enc, &ra, sizeof(ra), 9);
+    const struct metal_size groups  = {(uint32_t) rows, (uint32_t) (q_heads + kv_heads), 1};
+    const struct metal_size threads = {256, 1, 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ROPE_APPEND, groups);
+    metal_msg_send_dispatch(st, enc, groups, threads);
+    return metal_op_end(be, cmd, enc, nullptr);
+}
+
 /* Fused gemma-3n PLE block (vtbl slot), decode fast path: two dispatches
  * (ple_gate_f32: gate GEMV + gelu*ple; ple_proj_norm_f32: proj GEMV +
  * rmsnorm + residual add) replace four decomposed ops. rows==1 and F32
@@ -4160,6 +4283,10 @@ static bool metal_fused_supported(struct geist_backend *be, const struct geist_f
         /* Half-split RoPE per-head norm kernel: any row count, head_dim
          * must be even (mirrors metal_attn_qkv_prep's hd % 2 check). */
         return q->head_dim > 0 && (q->head_dim % 2u) == 0u;
+    case GEIST_FUSED_ATTN_ROPE_APPEND:
+        /* rope_append_rows stages a head in 512 floats of threadgroup
+         * memory (mirrors metal_attn_rope_append's checks). */
+        return q->head_dim > 0 && q->head_dim <= 512u && (q->head_dim % 2u) == 0u;
     case GEIST_FUSED_PLE_BLOCK:
         /* F32 gate/proj matrices AND m==1 (mirrors metal_ple_block's
          * checks — its kernels are naive decode GEMVs, rows==1 only).
@@ -4212,6 +4339,7 @@ static const struct geist_backend_fused metal_fused = {
         .argmax_f32                   = metal_argmax_f32,
         .ffn_gate_up                  = metal_ffn_gate_up,
         .attn_qkv_prep                = metal_attn_qkv_prep,
+        .attn_rope_append             = metal_attn_rope_append,
         .ple_block                    = metal_ple_block,
         .rmsnorm_add                  = metal_rmsnorm_add,
         .deltanet_mix                 = metal_deltanet_mix,

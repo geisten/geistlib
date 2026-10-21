@@ -301,6 +301,7 @@ enum geist_fused_op {
     GEIST_FUSED_DELTANET_MIX,
     GEIST_FUSED_RMSNORM_ADD_NORM,
     GEIST_FUSED_LINEAR_GROUPED,
+    GEIST_FUSED_ATTN_ROPE_APPEND,
 };
 
 /* Load-time capability probe for one fused op at one layer's geometry.
@@ -314,9 +315,9 @@ struct geist_fusion_query {
     size_t              m;
     size_t              d_model;
     size_t              inter;
-    size_t              head_dim;    /* attn_qkv_prep, attn_kv_int8/int4 */
-    size_t              n_q_heads;   /* attn_qkv_prep, attn_kv_int8/int4 */
-    size_t              n_kv_heads;  /* attn_qkv_prep, attn_kv_int8/int4 */
+    size_t              head_dim;    /* attn_qkv_prep, attn_rope_append, attn_kv_int8/int4 */
+    size_t              n_q_heads;   /* attn_qkv_prep, attn_rope_append, attn_kv_int8/int4 */
+    size_t              n_kv_heads;  /* attn_qkv_prep, attn_rope_append, attn_kv_int8/int4 */
     uint16_t            table_dtype; /* embedding_lookup_scaled: geist_dtype
                                       * of the (tensor-typed) lookup table */
     const struct geist_weight *gate_w;
@@ -619,6 +620,31 @@ struct geist_backend_fused {
                                        size_t                     q_position,
                                        struct geist_tensor       *k_cache,
                                        struct geist_tensor       *v_cache);
+
+    /* Fused Llama / Qwen3 attention prep, attn_qkv_prep's twin (#17):
+     *   q: per-head rmsnorm(q)*q_norm_w when q_norm_w is non-null, RoPE,
+     *      then * q_scale — in place.
+     *   k: per-head rmsnorm(k)*k_norm_w when k_norm_w is non-null, RoPE —
+     *      written back AND appended at row q_position of k_cache.
+     *   v: appended at row q_position of v_cache, unchanged.
+     * q [seq, n_q_heads, hd], k/v [seq, n_kv_heads, hd], norm weights
+     * [hd], cos/sin [seq, n_rot] (n_rot <= hd, even) positioned at
+     * q_position, caches F32 or F16 DENSE 3D views. Half-split RoPE over
+     * the first n_rot elements. Plan-bound through
+     * GEIST_FUSED_ATTN_ROPE_APPEND. nullptr = always decomposed. */
+    enum geist_status (*attn_rope_append)(struct geist_backend      *be,
+                                          struct geist_tensor       *q,
+                                          struct geist_tensor       *k,
+                                          const struct geist_tensor *v,
+                                          const struct geist_tensor *q_norm_w,
+                                          const struct geist_tensor *k_norm_w,
+                                          const struct geist_tensor *cos,
+                                          const struct geist_tensor *sin,
+                                          float                      eps,
+                                          float                      q_scale,
+                                          size_t                     q_position,
+                                          struct geist_tensor       *k_cache,
+                                          struct geist_tensor       *v_cache);
 
     /* Fused gemma-3n PLE block:
      *   gate = gelu_tanh(x · gate_w^T) * ple_in

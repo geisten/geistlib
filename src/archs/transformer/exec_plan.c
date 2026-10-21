@@ -60,6 +60,9 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
     case GEIST_FUSED_ATTN_QKV_PREP:
         have = fused->attn_qkv_prep != nullptr;
         break;
+    case GEIST_FUSED_ATTN_ROPE_APPEND:
+        have = fused->attn_rope_append != nullptr;
+        break;
     case GEIST_FUSED_PLE_BLOCK:
         have = fused->ple_block != nullptr;
         break;
@@ -272,6 +275,9 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         /* the fused prep is Gemma 4's (V norm, no Q scale): not for Gemma 3 */
         P->fuse_attn_qkv_prep =
                 P->apply_gemma_attn_norms && st->config.gemma3_q_scale == 0.0f && probe(be, q);
+        /* Its Llama / Qwen3 twin (#17); the families that call it decide. */
+        q.op                     = GEIST_FUSED_ATTN_ROPE_APPEND;
+        P->fuse_attn_rope_append = !P->apply_gemma_attn_norms && probe(be, q);
 
         /* Any m: decode and every prefill chunk take the same kernel. */
         q                    = (struct geist_fusion_query) {.op         = GEIST_FUSED_ATTN_KV_INT8,
