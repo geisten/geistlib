@@ -70,8 +70,7 @@ static void *pusher(void *p) {
 
 int main(void) {
     GEIST_REQUIRE_GGUF(model_path);
-    const char *tower = audio_test_find_tower();
-    GEIST_SKIP_IF(tower == nullptr, "audio_tower.safetensors not found (make fetch-audio-tower)");
+    (void) audio_test_require_tower(); /* gate only: the session runs its own aux search */
 
     audio_test_synth_sweep(g_pcm, N_PCM, SECONDS);
 
@@ -89,7 +88,7 @@ int main(void) {
     if ((geist_model_modalities(model) & GEIST_MOD_AUDIO) == 0) {
         geist_model_destroy(model);
         geist_backend_destroy(be);
-        GEIST_SKIP("model cannot hear (tower not loaded)");
+        audio_test_skip_no_tower("the model loaded no audio encoder");
     }
 
     struct geist_session_opts opts   = {.max_seq_len = 1024};

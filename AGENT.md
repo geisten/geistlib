@@ -239,6 +239,13 @@ make test-unit MODE=release
 make MODE=asan test-unit           # ASan + UBSan
 ```
 
+A pull request's CI runs only the required tier (format, contract, build +
+unit tests); ASan, TSan, the real-model suites, Metal and the perf floors run
+after the merge ([docs/CI_COVERAGE.md](docs/CI_COVERAGE.md#tiers)). Run the
+sanitizer suite above yourself, and for a change to a kernel, a GPU backend
+or memory handling label the PR `ci:full` before pushing, so the post-merge
+tier runs on it.
+
 CI builds every Linux target with **gcc**; local macOS builds use clang, and
 they disagree on parts of C23 (e.g. a `constexpr` with two declarators
 compiles under clang and fails every Linux job). Compile what you changed

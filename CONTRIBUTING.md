@@ -73,19 +73,28 @@ New tests follow the `*_unit` / `*_int` / `*_e2e` naming convention and exit
 > (or `_GNU_SOURCE` for raw sockets) as its **first line**. The musl CI leg
 > catches it if you forget.
 
-CI gates every PR on: build + unit on macOS, Linux glibc and Linux musl;
-integration + e2e against real models on Linux; a coarse perf floor; the API
-contract (`scripts/check-api-contract.sh`, `make agent-contract-smoke`);
-ASan + UBSan; TSan; and clang-format. Details:
-[docs/CI_COVERAGE.md](docs/CI_COVERAGE.md). Before pushing, run the checks in
+CI runs in two tiers ([docs/CI_COVERAGE.md](docs/CI_COVERAGE.md#tiers)).
+Every PR waits for the required tier: clang-format, the API contract and
+version checks, and build + unit tests on Linux x86_64 (musl), Linux arm64
+and macOS arm64. After the merge, on every push to `main` and nightly, the
+post-merge tier runs the rest: integration + e2e against real models, the
+Metal gate, the perf floors on the Pi 5 and the M1 Max, ASan + UBSan, TSan,
+coverage, Vulkan on lavapipe and the other build legs; a job failing there
+opens a Gitea issue (`CI on main: <job>`, label `ci-failure`) that the next
+green run closes. A PR that touches kernels, a GPU backend, memory handling
+or the build should run that tier before the merge: add the label `ci:full`
+and push. Before pushing, run the checks in
 [AGENT.md §7](AGENT.md#7-before-you-push).
 
-`main` merges only when every CI job is green; the branch protection names
-each job in `.gitea/required-checks.txt`. Adding, renaming or removing a CI job
-(edit `.github/workflows/ci.yml`, then `python3 scripts/gitea-ci.py`) means
-regenerating that list with `scripts/required_checks.py print` in the same PR
-(CI fails until it matches) and, after the merge, applying it with
-`GITEA_TOKEN=<admin token> scripts/required_checks.py sync`.
+`main` merges only when every required job is green; the branch protection
+names each one in `.gitea/required-checks.txt`. A job is post-merge exactly
+when its `if:` tests `needs.changes.outputs.full`. Adding, renaming or
+removing a CI job (edit `.github/workflows/ci.yml`, then `python3
+scripts/gitea-ci.py`) means regenerating that list with
+`scripts/required_checks.py print` in the same PR (CI fails until it
+matches; a new job must also go into the `ci-issues` job's `needs`) and,
+after the merge, applying it with `GITEA_TOKEN=<admin token>
+scripts/required_checks.py sync`.
 
 ## Benchmarks
 

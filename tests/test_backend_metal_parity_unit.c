@@ -582,7 +582,8 @@ static void run_f32kv_attention_case(struct geist_backend *mt,
     v->buffer_destroy(mt, bo16);
 }
 
-/* #91: the prefill flash kernels against cpu_scalar's attention on the
+/* #91: the prefill flash kernels (and, at one query row, the split-KV
+ * decode kernels, #17) against cpu_scalar's attention on the
  * same half-rounded K/V. The Metal kernels round Q and the softmax weights
  * to half for the f16 matrix products and accumulate in f32, so the bound
  * is a tolerance, not bits: 1e-2 absolute on outputs of magnitude <= 2.7
@@ -665,8 +666,10 @@ static void run_flash_ref_case(struct geist_backend *mt,
         check(v->buffer_download(q_elems * sizeof(float), (uint8_t *) got, bo) == GEIST_OK,
               "flash reference download");
         (void) rv;
+        /* Decode (one row) keeps Q and the weights in f32: only the
+         * summation order differs from cpu_scalar. */
         const double err  = geist_test_max_abs(q_elems, got, orf);
-        const bool   pass = err < 1e-2;
+        const bool   pass = err < (q_rows == 1 ? 2e-5 : 1e-2);
         check(pass, "flash attention matches cpu_scalar");
         printf("  flash vs cpu_scalar rows %zu at %zu heads %zu/%zu hd %zu window %zu max_abs "
                "%.2e %s\n",
@@ -688,6 +691,94 @@ static void run_flash_ref_case(struct geist_backend *mt,
     rv->buffer_destroy(ref, rk);
     rv->buffer_destroy(ref, rvb);
     rv->buffer_destroy(ref, ro);
+}
+
+/* #17: rmsnorm and the fused rmsnorm_add against cpu_scalar's rmsnorm
+ * (and a host add). One row of 1024..3072 is the register path at the
+ * decode thread counts (cols/4); 5000 is wider than four per thread at
+ * 1024 threads and 256-wide rows exercise the 256-thread path; several
+ * rows are prefill (256 threads: up to 1024 columns in registers, the
+ * loop beyond). The sums differ in order only: 1e-5 on outputs of a few
+ * units, where a lane or a partial left out is off by 1e-2 or more. */
+static void
+run_norm_case(struct geist_backend *mt, struct geist_backend *ref, size_t rows, size_t cols) {
+    const struct geist_backend_vtbl *v  = mt->desc->vtbl;
+    const struct geist_backend_vtbl *rv = ref->desc->vtbl;
+    const size_t                     n  = rows * cols;
+    struct geist_buffer *bx = nullptr, *bw = nullptr, *br = nullptr, *by = nullptr, *bz = nullptr;
+    struct geist_buffer *rx = nullptr, *rw = nullptr, *ry = nullptr;
+    float               *x   = dev_alloc(mt, n * sizeof(float), &bx);
+    float               *w   = dev_alloc(mt, cols * sizeof(float), &bw);
+    float               *res = dev_alloc(mt, n * sizeof(float), &br);
+    float               *y   = dev_alloc(mt, n * sizeof(float), &by);
+    float               *z   = dev_alloc(mt, n * sizeof(float), &bz);
+    float               *xr  = dev_alloc(ref, n * sizeof(float), &rx);
+    float               *wr  = dev_alloc(ref, cols * sizeof(float), &rw);
+    float               *yr  = dev_alloc(ref, n * sizeof(float), &ry);
+    float               *got = malloc(n * sizeof(float));
+    const bool           ok  = x != nullptr && w != nullptr && res != nullptr && y != nullptr &&
+                               z != nullptr && xr != nullptr && wr != nullptr && yr != nullptr &&
+                               got != nullptr;
+    check(ok, "norm buffers");
+    if (ok) {
+        for (size_t i = 0; i < n; i++) {
+            x[i] = xr[i] = ((float) rng_u8() - 127.5f) / 32.0f;
+            res[i]       = ((float) rng_u8() - 127.5f) / 64.0f;
+        }
+        for (size_t i = 0; i < cols; i++) {
+            w[i] = wr[i] = 0.5f + (float) rng_u8() / 256.0f;
+        }
+        const struct geist_tensor tx   = {.buffer = bx,
+                                          .dtype  = GEIST_DTYPE_F32,
+                                          .layout = GEIST_LAYOUT_DENSE,
+                                          .ndim   = 2,
+                                          .shape  = {(int64_t) rows, (int64_t) cols},
+                                          .stride = {(int64_t) cols, 1}};
+        const struct geist_tensor tw   = {.buffer = bw,
+                                          .dtype  = GEIST_DTYPE_F32,
+                                          .layout = GEIST_LAYOUT_DENSE,
+                                          .ndim   = 1,
+                                          .shape  = {(int64_t) cols},
+                                          .stride = {1}};
+        struct geist_tensor       tres = tx, ty = tx, tz = tx, txr = tx, twr = tw, tyr = tx;
+        tres.buffer = br;
+        ty.buffer   = by;
+        tz.buffer   = bz;
+        txr.buffer  = rx;
+        twr.buffer  = rw;
+        tyr.buffer  = ry;
+        check(mt->desc->prims->rmsnorm(mt, &tx, &tw, 1e-6f, &ty) == GEIST_OK &&
+                      mt->desc->fused->rmsnorm_add(mt, &tres, &tx, &tw, 1e-6f, &tz) == GEIST_OK &&
+                      ref->desc->prims->rmsnorm(ref, &txr, &twr, 1e-6f, &tyr) == GEIST_OK,
+              "norm dispatch");
+        check(v->buffer_download(n * sizeof(float), (uint8_t *) got, by) == GEIST_OK,
+              "norm download");
+        const double err = geist_test_max_abs(n, got, yr);
+        check(v->buffer_download(n * sizeof(float), (uint8_t *) got, bz) == GEIST_OK,
+              "norm_add download");
+        double err_add = 0.0;
+        for (size_t i = 0; i < n; i++) {
+            const double d = fabs((double) got[i] - ((double) res[i] + (double) yr[i]));
+            err_add        = d > err_add ? d : err_add;
+        }
+        const bool pass = err < 1e-5 && err_add < 1e-5;
+        check(pass, "rmsnorm / rmsnorm_add match cpu_scalar");
+        printf("  rmsnorm rows %zu cols %zu max_abs %.2e, rmsnorm_add %.2e %s\n",
+               rows,
+               cols,
+               err,
+               err_add,
+               pass ? "OK" : "FAIL");
+    }
+    free(got);
+    v->buffer_destroy(mt, bx);
+    v->buffer_destroy(mt, bw);
+    v->buffer_destroy(mt, br);
+    v->buffer_destroy(mt, by);
+    v->buffer_destroy(mt, bz);
+    rv->buffer_destroy(ref, rx);
+    rv->buffer_destroy(ref, rw);
+    rv->buffer_destroy(ref, ry);
 }
 
 static void run_qwen35_attention_ops(struct geist_backend *mt) {
@@ -895,6 +986,16 @@ int main(void) {
     run_embedding_case(mt, GEIST_DTYPE_Q8_0, "Q8_0");
     run_embedding_case(mt, GEIST_DTYPE_PQ2_0, "PQ2_0");
     run_qwen35_attention_ops(mt);
+    run_norm_case(mt, ref, 1, 1536);
+    run_norm_case(mt, ref, 1, 1024);
+    run_norm_case(mt, ref, 1, 2048);
+    run_norm_case(mt, ref, 1, 3072);
+    run_norm_case(mt, ref, 1, 1000);
+    run_norm_case(mt, ref, 1, 5000);
+    run_norm_case(mt, ref, 1, 256);
+    run_norm_case(mt, ref, 35, 256);
+    run_norm_case(mt, ref, 3, 1536);
+    run_norm_case(mt, ref, 7, 896);
     run_f32kv_attention_case(mt, 1, 200, 8, 2, 256, 0);
     run_f32kv_attention_case(mt, 1, 500, 8, 2, 256, 128);
     run_f32kv_attention_case(mt, 1, 99, 4, 1, 512, 0);
@@ -915,6 +1016,18 @@ int main(void) {
     run_flash_ref_case(mt, ref, 30, 70, 4, 1, 384, 0);
     run_flash_ref_case(mt, ref, 2, 98, 4, 4, 32, 0);
     run_flash_ref_case(mt, ref, 25, 15, 4, 2, 256, 0);
+    /* Decode (#17): 32-key blocks for head_dim 64/128/256/512, windows
+     * narrower than a block and wider than the cache, a window that starts
+     * mid-block, more blocks than splits, and head_dim 96 (per-key kernel). */
+    run_flash_ref_case(mt, ref, 1, 511, 8, 1, 256, 512);
+    run_flash_ref_case(mt, ref, 1, 700, 8, 1, 256, 512);
+    run_flash_ref_case(mt, ref, 1, 1000, 8, 1, 512, 0);
+    run_flash_ref_case(mt, ref, 1, 40, 8, 2, 128, 0);
+    run_flash_ref_case(mt, ref, 1, 63, 4, 4, 64, 0);
+    run_flash_ref_case(mt, ref, 1, 2100, 24, 4, 256, 0);
+    run_flash_ref_case(mt, ref, 1, 100, 4, 1, 96, 0);
+    run_flash_ref_case(mt, ref, 1, 77, 2, 1, 512, 16);
+    run_flash_ref_case(mt, ref, 1, 31, 8, 2, 128, 0);
 #ifdef GEIST_BACKEND_METAL
     run_staged_upload(mt);
 #endif
