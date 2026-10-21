@@ -131,6 +131,33 @@ blk_relu_sq(struct transformer_layer_forward_ctx *ctx, size_t n, struct geist_bu
                                              struct geist_buffer                  *tmp,
                                              struct geist_buffer                  *out);
 
+/* attn_norm(h_in) into x (scratch_normed), unless the previous layer's
+ * tail already wrote it there (ctx->x_prenormed, #17). */
+[[nodiscard]] enum geist_status blk_attn_norm(struct transformer_layer_forward_ctx *ctx,
+                                              struct geist_buffer                  *x);
+
+/* The post-attention residual step into scratch_h_post_attn:
+ * h_in + rmsnorm(scratch_o) * post_w (post_w nullptr: h_in + scratch_o).
+ * Where the plan binds fuse_attn_add_norm, the same op also writes the
+ * FFN's input ffn_norm(h_post_attn) into scratch_pre_ff and sets
+ * ctx->ffn_x_prenormed (#17). */
+[[nodiscard]] enum geist_status blk_attn_residual(struct transformer_layer_forward_ctx *ctx,
+                                                  const struct geist_tensor            *post_w);
+
+/* The layer's last residual step into ctx->h_out_buf: res + rmsnorm(x) * w
+ * (blk_norm_add, `fused` as there; w nullptr: res + x). Where the plan
+ * binds fuse_tail_norm, one op also scales the row by `scale` (setting
+ * ctx->out_scaled) and writes the next layer's attn_norm of it into
+ * scratch_normed, and the session notes that for the next layer call
+ * (#17); otherwise `scale` is the caller's to apply. */
+[[nodiscard]] enum geist_status blk_residual_out(struct transformer_layer_forward_ctx *ctx,
+                                                 float                                 scale,
+                                                 bool                                  fused,
+                                                 const struct geist_tensor            *w,
+                                                 struct geist_buffer                  *x,
+                                                 struct geist_buffer                  *res,
+                                                 struct geist_buffer                  *tmp);
+
 /* Pre-norm SwiGLU FFN with residual (Llama, Qwen3):
  *   h_out = h_post_attn + down(silu(gate(x)) * up(x)),  x = rmsnorm(h_post_attn) */
 [[nodiscard]] enum geist_status blk_ffn_swiglu(struct transformer_layer_forward_ctx *ctx);

@@ -249,7 +249,7 @@ gemma4_attention_block(struct transformer_layer_forward_ctx *ctx) {
     /* The fused prep covers the plain (f32/f16) cache only. */
     const bool fused = ctx->P->fuse_attn_qkv_prep && !ctx->kv_kivi_enabled && !ctx->kv_int8_enabled;
 
-    enum geist_status s = blk_rmsnorm(ctx, d, ctx->h_in_buf, &L->attn_norm, x);
+    enum geist_status s = blk_attn_norm(ctx, x);
     if (s == GEIST_OK)
         s = transformer_rotate_rows(st, ctx->seq, d, x);
     if (s == GEIST_OK && ctx->compute_kv)
@@ -267,13 +267,7 @@ gemma4_attention_block(struct transformer_layer_forward_ctx *ctx) {
     if (s == GEIST_OK)
         s = blk_o_proj(ctx);
     if (s == GEIST_OK)
-        s = blk_norm_add(ctx,
-                         ctx->P->fuse_attn_rmsnorm_add,
-                         &L->post_attn_norm,
-                         sess->scratch_o,
-                         ctx->h_in_buf,
-                         sess->scratch_post_attn,
-                         sess->scratch_h_post_attn);
+        s = blk_attn_residual(ctx, &L->post_attn_norm);
     return s;
 }
 
@@ -292,13 +286,14 @@ gemma4_attention_block(struct transformer_layer_forward_ctx *ctx) {
 /* ---- Registry entry --------------------------------------------------- */
 
 const struct transformer_family transformer_family_gemma4 = {
-        .name            = "gemma4",
-        .towers          = true, /* the only towers that exist: 1536-dim soft tokens */
-        .populate        = populate_gemma4,
-        .populate_layers = populate_layers_gemma4,
-        .wire_layer      = gemma4_wire_layer,
-        .attention_block = gemma4_attention_block,
-        .ffn_block       = gemma4_ffn_block,
+        .name                 = "gemma4",
+        .towers               = true, /* the only towers that exist: 1536-dim soft tokens */
+        .populate             = populate_gemma4,
+        .populate_layers      = populate_layers_gemma4,
+        .wire_layer           = gemma4_wire_layer,
+        .fused_residual_norms = true,
+        .attention_block      = gemma4_attention_block,
+        .ffn_block            = gemma4_ffn_block,
         /* V at 4 bits breaks Gemma 4 too, not only a 4-bit K (#53): E2B
          * teacher-forced against FP32 KV, mean JS 0.146 nats and 69 % top-1
          * for INT4, 0.035 and 88 % for INT8 (another backend's FP32: 0.024,

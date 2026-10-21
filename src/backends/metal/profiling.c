@@ -33,6 +33,7 @@ const char *const metal_profile_stage_names[METAL_PROFILE_STAGE_COUNT] = {
         [METAL_PROFILE_DISPATCH_Q4K_QK_NT4]           = "dispatch.q4k_qk.nt4",
         [METAL_PROFILE_DISPATCH_F32_PLE_PROJ_NORM]    = "dispatch.f32_ple_proj_norm",
         [METAL_PROFILE_DISPATCH_RMSNORM_ADD_ROWS]     = "dispatch.rmsnorm_add_rows",
+        [METAL_PROFILE_DISPATCH_ADD_NORM_ROWS]        = "dispatch.add_norm_rows",
         [METAL_PROFILE_DISPATCH_Q_NORM_ROPE]          = "dispatch.q_norm_rope",
         [METAL_PROFILE_DISPATCH_K_NORM_ROPE_APPEND]   = "dispatch.k_norm_rope_append",
         [METAL_PROFILE_DISPATCH_V_NORM_APPEND]        = "dispatch.v_norm_append",
@@ -152,6 +153,7 @@ static bool metal_skip_stage(enum metal_profile_stage s) {
         return metal_env_enabled("GEIST_SKIP_GEMM") || metal_env_enabled("GEIST_SKIP_Q6K");
     case METAL_PROFILE_DISPATCH_RMSNORM_ROWS:
     case METAL_PROFILE_DISPATCH_RMSNORM_ADD_ROWS:
+    case METAL_PROFILE_DISPATCH_ADD_NORM_ROWS:
         return metal_env_enabled("GEIST_SKIP_NORM");
     case METAL_PROFILE_DISPATCH_ATTENTION_ROWS:
     case METAL_PROFILE_DISPATCH_ATTENTION_QNORM_ROWS:
