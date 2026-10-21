@@ -357,5 +357,24 @@ class RevisionAbTest(unittest.TestCase):
         self.assertNotIn("The control moved", quiet)
 
 
+    def test_the_report_states_the_start_temperatures(self):
+        runs = _revision_runs({"base": self.BASE, "new": self.BASE, "control": self.BASE})
+        rows = revision_ab.summarize(runs, ["base", "new", "control"], "base")
+        gate = revision_ab.COOL_GATE
+        starts = [{"cool_gate": "temperature", "cool_wait_seconds": 12.0,
+                   "gpu_temp_c": 51.5, "cpu_temp_c": 58.0},
+                  {"cool_gate": "temperature", "cool_wait_seconds": 0.5,
+                   "gpu_temp_c": 63.0, "cpu_temp_c": 61.2}]
+        report = revision_ab.render_report(
+            {**REVISION_METADATA, "cool_gate": gate, "start_temps": starts}, rows)
+        self.assertIn(f"GPU 51.5-63.0 C (limit {gate['max_gpu_c']}), CPU 58.0-61.2 C", report)
+        self.assertIn("12 s spent cooling", report)
+        timed = [{"cool_gate": "time", "cool_wait_seconds": 45, "gpu_temp_c": None,
+                  "cpu_temp_c": None}] * 3
+        report = revision_ab.render_report(
+            {**REVISION_METADATA, "cool_gate": gate, "start_temps": timed}, rows)
+        self.assertIn("3 of 3 runs started after a fixed 45 s pause", report)
+        self.assertNotIn("Cool start", revision_ab.render_report(REVISION_METADATA, rows))
+
 if __name__ == "__main__":
     unittest.main()

@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import json
 import platform
+import shutil
 import statistics
 import subprocess
 import sys
@@ -109,6 +111,69 @@ def wait_for_temp(gate: dict) -> None:
         millic = read_millic(tg["sensor"])
 
 
+# Homebrew's prefixes: a CI runner's service PATH may not include them.
+MACMON_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
+APPLE_TEMP_POLL_SECONDS = 5
+
+
+def find_macmon() -> str | None:
+    path = os.pathsep.join([os.environ.get("PATH", ""), *MACMON_DIRS])
+    return shutil.which("macmon", path=path)
+
+
+def apple_temps() -> dict | None:
+    """The Apple SoC's GPU and CPU temperature in degrees C from one macmon
+    sample (its averages over the die sensors; no root needed), or None where
+    macmon is missing or its output cannot be read. The sensors refresh about
+    once a second: a 200 ms sample right after a short run repeated the
+    reading from before it, so the sample spans a full second."""
+    macmon = find_macmon()
+    if macmon is None:
+        return None
+    try:
+        proc = subprocess.run([macmon, "pipe", "-s", "1", "-i", "1000"],
+                              capture_output=True, text=True, timeout=15)
+        temp = json.loads(proc.stdout.strip().splitlines()[-1])["temp"]
+        return {"gpu_c": round(float(temp["gpu_temp_avg"]), 1),
+                "cpu_c": round(float(temp["cpu_temp_avg"]), 1)}
+    except (OSError, subprocess.SubprocessError, IndexError, KeyError, TypeError,
+            ValueError):
+        return None
+
+
+def apple_too_warm(temps: dict, limits: dict) -> bool:
+    return (temps["gpu_c"] > limits.get("max_gpu_c", float("inf"))
+            or temps["cpu_c"] > limits.get("max_cpu_c", float("inf")))
+
+
+def wait_for_apple_cool(limits: dict, deadline: float) -> dict:
+    """Block until the Apple SoC is below the gate's limits (#17): the M1 Max
+    GPU holds its top clock only up to ~81-83 C, so a run that starts warm
+    measures throttling and the order of the runs, not the engine. Without a
+    readable macmon the gate pauses fallback_seconds instead and says so.
+    Raises TimeoutError, the busy failure, when the deadline passes first."""
+    started = time.monotonic()
+    while True:
+        temps = apple_temps()
+        if temps is None:
+            pause = limits["fallback_seconds"]
+            print(f"  macmon unavailable: cool-down pause {pause}s", file=sys.stderr, flush=True)
+            time.sleep(pause)
+            return {"cool_gate": "time", "cool_wait_seconds": pause,
+                    "gpu_temp_c": None, "cpu_temp_c": None}
+        if not apple_too_warm(temps, limits):
+            break
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"thermal gate: GPU {temps['gpu_c']} C, CPU {temps['cpu_c']} C "
+                               f"still above {limits} at timeout")
+        print(f"  waiting for cool chip: GPU {temps['gpu_c']} C, CPU {temps['cpu_c']} C",
+              file=sys.stderr, flush=True)
+        time.sleep(APPLE_TEMP_POLL_SECONDS)
+    return {"cool_gate": "temperature",
+            "cool_wait_seconds": round(time.monotonic() - started, 1),
+            "gpu_temp_c": temps["gpu_c"], "cpu_temp_c": temps["cpu_c"]}
+
+
 def gate_state(gate: dict) -> dict:
     state = machine_state()
     if "min_cpu_idle_pct" in gate:
@@ -132,6 +197,8 @@ def wait_for_quiet(gate: dict) -> dict:
                     time.sleep(gate["cooldown_seconds"])
                 state = gate_state(gate)
                 if host_is_quiet(state, gate):
+                    if "apple_temp_gate" in gate:
+                        state.update(wait_for_apple_cool(gate["apple_temp_gate"], deadline))
                     return state
                 quiet_since = None
         else:
@@ -141,7 +208,7 @@ def wait_for_quiet(gate: dict) -> dict:
             raise TimeoutError(
                 f"host did not become quiet: load/core={state['load_per_core']:.3f}"
                 + (f", idle={idle:.1f} %" if idle is not None else "")
-                + f", gate={ {k: v for k, v in gate.items() if k != 'temp_gate'} }"
+                + f", gate={ {k: v for k, v in gate.items() if k not in ('temp_gate', 'apple_temp_gate')} }"
             )
         if now - last_report >= 60:
             print(

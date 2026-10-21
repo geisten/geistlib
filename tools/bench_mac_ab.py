@@ -319,6 +319,8 @@ def main() -> int:
                     "settle_seconds": protocol["settle_seconds"],
                     "cooldown_seconds": protocol["cooldown_seconds"],
                     "timeout_seconds": args.quiet_timeout,
+                    **({"apple_temp_gate": protocol["apple_temp_gate"]}
+                       if "apple_temp_gate" in protocol else {}),
                 })
                 run = run_variant(variant, gguf, protocol, args.threads)
             except (RuntimeError, TimeoutError) as error:
