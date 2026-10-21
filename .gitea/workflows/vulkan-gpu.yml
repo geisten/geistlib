@@ -76,6 +76,8 @@ jobs:
                    test_backend_vulkan_vram_budget_unit \
                    test_backend_vulkan_pipeline_cache_unit \
                    test_backend_vulkan_weight_index_unit \
+                   test_backend_vulkan_linear_grouped_unit \
+                   test_qwen3moe_unit \
                    test_session_snapshot_unit \
                    test_backend_memory_info_unit \
                    test_gguf_release_range_unit; do

@@ -133,9 +133,10 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
     for (size_t i = 0; mg->bufs != nullptr && mg->bufs[i] != nullptr; i++) {
         gv->buffer_destroy(mg->be, mg->bufs[i]);
     }
-    void *b = mg->bufs, *t = mg->twins, *m = mg;
+    void *b = mg->bufs, *t = mg->twins, *g = mg->grouped, *m = mg;
     safe_free(&b);
     safe_free(&t);
+    safe_free(&g);
     safe_free(&m);
 }
 
@@ -170,12 +171,13 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
     uint64_t         *count = heap_calloc_array_aligned(uint64_t, n_layers *n_exp);
     enum geist_status s     = GEIST_OK;
     if (mg != nullptr) {
-        mg->be    = gbe;
-        mg->twins = heap_calloc_array_aligned(struct geist_weight, n_layers * n_exp * 3);
-        mg->bufs  = heap_calloc_array_aligned(struct geist_buffer *, n_layers * 3 + 1);
+        mg->be      = gbe;
+        mg->twins   = heap_calloc_array_aligned(struct geist_weight, n_layers * n_exp * 3);
+        mg->bufs    = heap_calloc_array_aligned(struct geist_buffer *, n_layers * 3 + 1);
+        mg->grouped = heap_calloc_array_aligned(bool, n_layers);
     }
     if (mg == nullptr || rank == nullptr || count == nullptr || mg->twins == nullptr ||
-        mg->bufs == nullptr) {
+        mg->bufs == nullptr || mg->grouped == nullptr) {
         geist_backend_set_error(st->backend, GEIST_E_OOM, "moe: no memory for the expert plan");
         s = GEIST_E_OOM;
     }
@@ -228,6 +230,14 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
         }
         mg->n_hot++;
         covered += rank[k].count;
+        if (!mg->grouped[l] && gf->linear_t_grouped != nullptr && gf->supported != nullptr) {
+            const struct geist_fusion_query q = {.op     = GEIST_FUSED_LINEAR_GROUPED,
+                                                 .m      = 1,
+                                                 .gate_w = &tw[0],
+                                                 .up_w   = &tw[1],
+                                                 .down_w = &tw[2]};
+            mg->grouped[l]                    = gf->supported(gbe, &q);
+        }
     }
     void *r = rank, *c = count;
     safe_free(&r);
@@ -335,11 +345,44 @@ enum geist_status moe_gpu_run(struct transformer_arch_session *sess,
             gv->buffer_copy(sess->moe_gpu_x, 0, sess->moe_gpu_x_io, 0, rows * d * sizeof(float));
 
     const uint64_t t1 = transformer_profile_now_ns();
+    /* Decode (one row per expert) on a backend with the grouped linear:
+     * one dispatch per projection for all of them, one silu_mul. */
+    bool one_row =
+            mg->grouped[layer] && gf->linear_t_grouped != nullptr && n_hot <= GEIST_MOE_MAX_EXPERTS;
+    for (size_t i = 0; i < n_hot && one_row; i++)
+        one_row = rs[hot[i] + 1] - rs[hot[i]] == 1;
+    bool grouped_done = false;
+    if (s == GEIST_OK && one_row) {
+        const struct geist_weight *wg[GEIST_MOE_MAX_EXPERTS], *wu[GEIST_MOE_MAX_EXPERTS],
+                *wd[GEIST_MOE_MAX_EXPERTS];
+        for (size_t i = 0; i < n_hot; i++) {
+            const struct geist_weight *tw = &mg->twins[(layer * n_exp + hot[i]) * 3];
+            wg[i]                         = &tw[0];
+            wu[i]                         = &tw[1];
+            wd[i]                         = &tw[2];
+        }
+        struct geist_tensor x  = view_2d(sess->moe_gpu_x, (int64_t) n_hot, (int64_t) d);
+        struct geist_tensor g  = view_2d(sess->moe_gpu_g, (int64_t) n_hot, (int64_t) inter);
+        struct geist_tensor u  = view_2d(sess->moe_gpu_u, (int64_t) n_hot, (int64_t) inter);
+        struct geist_tensor y  = view_2d(sess->moe_gpu_y_io, (int64_t) n_hot, (int64_t) d);
+        enum geist_status   gs = gf->linear_t_grouped(gbe, n_hot, wg, &x, &g);
+        if (gs == GEIST_OK)
+            gs = gf->linear_t_grouped(gbe, n_hot, wu, &x, &u);
+        if (gs == GEIST_OK)
+            gs = gf->silu_mul(gbe, &g, &u, &g);
+        if (gs == GEIST_OK)
+            gs = gf->linear_t_grouped(gbe, n_hot, wd, &g, &y);
+        /* UNSUPPORTED is refused before anything is recorded (a weight not
+         * resident): the experts then run one by one below. */
+        grouped_done = gs == GEIST_OK;
+        if (gs != GEIST_OK && gs != GEIST_E_UNSUPPORTED)
+            s = gs;
+    }
     /* Phase by phase over all hot experts, not expert by expert: the
      * experts of a phase touch disjoint rows, so the backend's hazard
      * tracking puts a barrier only between the phases (gate and up, then
      * silu_mul, then down), and the small decode GEMVs run side by side. */
-    for (size_t phase = 0; phase < 3 && s == GEIST_OK; phase++) {
+    for (size_t phase = 0; phase < 3 && s == GEIST_OK && !grouped_done; phase++) {
         rows = 0;
         for (size_t i = 0; i < n_hot && s == GEIST_OK; i++) {
             const size_t               e = hot[i], m = rs[e + 1] - rs[e];

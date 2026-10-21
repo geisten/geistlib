@@ -52,6 +52,7 @@ struct vk_fns {
     PFN_vkCreateBuffer                CreateBuffer;
     PFN_vkDestroyBuffer               DestroyBuffer;
     PFN_vkGetBufferMemoryRequirements GetBufferMemoryRequirements;
+    PFN_vkGetBufferDeviceAddress      GetBufferDeviceAddress; /* nullptr: no bda */
     PFN_vkAllocateMemory              AllocateMemory;
     PFN_vkFreeMemory                  FreeMemory;
     PFN_vkBindBufferMemory            BindBufferMemory;
@@ -315,6 +316,7 @@ struct vk_state {
 
     /* Device feature probes. */
     bool has_fp16;     /* shaderFloat16 + 16-bit storage */
+    bool bda;          /* bufferDeviceAddress: weights carry their address (grouped linear) */
     bool has_int8_dot; /* shaderIntegerDotProduct + 8-bit storage */
     bool has_coopmat;  /* VK_KHR_cooperative_matrix */
     bool pq2_f32_acc;  /* GEIST_VK_PQ2_F32_ACC: exact f32-accumulate PQ2_0 tensor-core GEMM */
@@ -466,6 +468,7 @@ struct geist_buffer {
     unsigned int           memory_flags;
     bool                   host_visible;
     bool                   device_mem;  /* memory type has DEVICE_LOCAL */
+    uint64_t               addr;        /* device address of byte 0 (bda weights); 0 none */
     bool                   borrowed;    /* buf/mem owned by a parent buffer */
     bool                   view;        /* buffer_create_view slice of a parent */
     struct geist_buffer   *stream_next; /* async streaming: the weight streamed after this one */

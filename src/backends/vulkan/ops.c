@@ -2045,6 +2045,99 @@ static void vk_weight_done(struct vk_state *st) {
     return gs;
 }
 
+/* ---- Grouped linear (#78 phase 3) ----------------------------------- */
+
+struct vk_push_grouped {
+    uint32_t n_in, n_out, blocks_per_row, pad, x_offset, y_offset, x_stride, y_stride;
+    uint64_t addr[VK_GROUP_MAX];
+};
+static_assert(sizeof(struct vk_push_grouped) <= VK_PUSH_RANGE, "grouped push block");
+
+static enum vk_pipe vk_grouped_pipe(uint16_t dtype) {
+    switch ((enum geist_dtype) dtype) {
+    case GEIST_DTYPE_F32:
+        return VK_PIPE_MATVEC_F32_ID;
+    case GEIST_DTYPE_Q4_K:
+        return VK_PIPE_MATVEC_Q4K_ID;
+    case GEIST_DTYPE_Q6_K:
+        return VK_PIPE_MATVEC_Q6K_ID;
+    default:
+        return VK_PIPE_COUNT;
+    }
+}
+
+/* The weight's copy is resident in VRAM and has a device address. */
+static struct geist_buffer *vk_grouped_weight(struct vk_state *st, const struct geist_weight *w) {
+    struct geist_buffer *b = w != nullptr && st->bda && vk_grouped_pipe(w->dtype) != VK_PIPE_COUNT
+                                     ? vk_weight_lookup(st, w->raw)
+                                     : nullptr;
+    return b != nullptr && b->addr != 0 && b->device_mem ? b : nullptr;
+}
+
+[[nodiscard]] static enum geist_status
+vk_linear_t_grouped(struct geist_backend            *be,
+                    size_t                           n,
+                    const struct geist_weight *const w[static n],
+                    const struct geist_tensor       *t_x,
+                    struct geist_tensor             *t_y) {
+    struct vk_state *st = be->state;
+    if (n == 0) {
+        return GEIST_OK;
+    }
+    const enum vk_pipe     pipe = vk_grouped_pipe(w[0]->dtype);
+    const struct vk_dtype *ld   = vk_linear_dtype((enum geist_dtype) w[0]->dtype);
+    for (size_t j = 0; j < n; ++j) {
+        if (w[j]->dtype != w[0]->dtype || w[j]->n_in != w[0]->n_in || w[j]->n_out != w[0]->n_out ||
+            vk_grouped_weight(st, w[j]) == nullptr) {
+            return GEIST_E_UNSUPPORTED;
+        }
+    }
+    VkDescriptorBufferInfo bi[2];
+    uint32_t               xo, yo, n_in, n_out, xs, ys;
+    if (ld == nullptr || !t_x->buffer->device_mem || !vk_tensor_gpu(t_x, &bi[0], &xo) ||
+        !vk_tensor_gpu(t_y, &bi[1], &yo)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (vk_ckd_u32((size_t) w[0]->n_in, &n_in) || vk_ckd_u32((size_t) w[0]->n_out, &n_out) ||
+        vk_ckd_u32(t_x->ndim >= 2 ? (size_t) t_x->stride[t_x->ndim - 2] : n_in, &xs) ||
+        vk_ckd_u32(t_y->ndim >= 2 ? (size_t) t_y->stride[t_y->ndim - 2] : n_out, &ys)) {
+        return vk_too_wide(be, "linear_t_grouped");
+    }
+    /* The quantized kernels read x as vec4. */
+    if (pipe != VK_PIPE_MATVEC_F32_ID && (xo % 4u != 0 || xs % 4u != 0)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const uint32_t gx = pipe == VK_PIPE_MATVEC_F32_ID
+                                ? n_out
+                                : (n_out + VK_MV_ROWS_PER_WG - 1u) / VK_MV_ROWS_PER_WG;
+    for (size_t j0 = 0; j0 < n; j0 += VK_GROUP_MAX) {
+        const uint32_t         cnt  = (uint32_t) (n - j0 < VK_GROUP_MAX ? n - j0 : VK_GROUP_MAX);
+        struct vk_push_grouped push = {.n_in           = n_in,
+                                       .n_out          = n_out,
+                                       .blocks_per_row = n_in / ld->block_elems,
+                                       .x_offset       = xo + (uint32_t) j0 * xs,
+                                       .y_offset       = yo + (uint32_t) j0 * ys,
+                                       .x_stride       = xs,
+                                       .y_stride       = ys};
+        for (uint32_t k = 0; k < cnt; ++k) {
+            const struct geist_buffer *b = vk_grouped_weight(st, w[j0 + k]);
+            push.addr[k]                 = b->addr + b->base_off;
+        }
+        const struct vk_access  acc[2] = {vk_acc((uint64_t) push.x_offset * 4u,
+                                                 ((uint64_t) (cnt - 1u) * xs + n_in) * 4u,
+                                                 false),
+                                          vk_acc((uint64_t) push.y_offset * 4u,
+                                                 ((uint64_t) (cnt - 1u) * ys + n_out) * 4u,
+                                                 true)};
+        const enum geist_status s =
+                vk_seq_dispatch_acc(be, pipe, bi, acc, &push, sizeof push, gx, cnt, 1);
+        if (s != GEIST_OK) {
+            return s;
+        }
+    }
+    return GEIST_OK;
+}
+
 [[nodiscard]] static enum geist_status vk_linear_t_pair(struct geist_backend      *be,
                                                         const struct geist_tensor *t_x,
                                                         const struct geist_weight *w0,
@@ -2740,6 +2833,10 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
     }
     struct vk_state *st = be->state;
     switch (q->op) {
+    case GEIST_FUSED_LINEAR_GROUPED:
+        return q->m == 1 && vk_grouped_weight(st, q->gate_w) != nullptr &&
+               (q->up_w == nullptr || vk_grouped_weight(st, q->up_w) != nullptr) &&
+               (q->down_w == nullptr || vk_grouped_weight(st, q->down_w) != nullptr);
     case GEIST_FUSED_GELU_TANH_MUL:
         return true;
     case GEIST_FUSED_SILU_MUL:
@@ -2878,6 +2975,7 @@ static const struct geist_backend_fused vk_fused = {
         /* Batched-submit paths: one flush per token (argmax). */
         .linear_t                = vk_fb_linear_t,
         .linear_t_pair           = vk_fb_linear_t_pair,
+        .linear_t_grouped        = vk_linear_t_grouped,
         .rmsnorm_add             = vk_rmsnorm_add,
         .embedding_lookup_scaled = vk_fb_embedding_lookup_scaled,
         .argmax_f32              = vk_fb_argmax_f32,

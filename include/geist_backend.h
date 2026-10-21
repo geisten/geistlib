@@ -299,6 +299,7 @@ enum geist_fused_op {
     GEIST_FUSED_ATTN_KV_INT4,
     GEIST_FUSED_HADAMARD_ROTATE,
     GEIST_FUSED_DELTANET_MIX,
+    GEIST_FUSED_LINEAR_GROUPED,
 };
 
 /* Load-time capability probe for one fused op at one layer's geometry.
@@ -497,6 +498,20 @@ struct geist_backend_fused {
                                        size_t                     m,
                                        struct geist_tensor       *y0,
                                        struct geist_tensor       *y1);
+
+    /* Grouped linear (#78 phase 3): y[j] = x[j] · w[j]^T for j in [0, n),
+     * one row each — the decode step of n mixture-of-experts experts in one
+     * pass instead of n. The w[j] share dtype, n_in and n_out; x is
+     * [n, n_in] and y [n, n_out], F32 DENSE. Its decomposed twin is n
+     * linear_t calls, which GEIST_E_UNSUPPORTED (a dtype, a weight not
+     * resident) falls back to. Plan-bound: supported(GEIST_FUSED_LINEAR_
+     * GROUPED) with m = 1 and gate_w / up_w / down_w the weights to check.
+     * nullptr = always separate. */
+    enum geist_status (*linear_t_grouped)(struct geist_backend            *be,
+                                          size_t                           n,
+                                          const struct geist_weight *const w[static n],
+                                          const struct geist_tensor       *x,
+                                          struct geist_tensor             *y);
 
     /* Fused out = embed_table[token_id, :] * scale.
      *   embed_table shape [vocab_size, d_model]
