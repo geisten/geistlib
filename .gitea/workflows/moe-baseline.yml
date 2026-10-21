@@ -146,9 +146,14 @@ jobs:
                 *) echo "unknown $cfg"; continue ;;
               esac
               s=$(date +%s)
+              # GPU clocks and power state while the configuration runs
+              ( while :; do nvidia-smi --query-gpu=pstate,clocks.sm,clocks.mem,utilization.gpu --format=csv,noheader \
+                  | sed "s/^/$cfg $c, /"; sleep 0.5; done >> out/clocks.txt ) &
+              clk=$!
               rc=0 # the runner's shell is bash -e: a failed configuration must not end the loop
               timeout "$CAP" $cmd 2>> out/log.txt \
                 | sed "s/^{/{\"cfg\":\"$cfg\",\"cycle\":$c,/" | tee -a out/results.jsonl || rc=$?
+              kill $clk 2>/dev/null || true
               echo "== $cfg cycle $c: exit $rc after $(( $(date +%s) - s )) s" | tee -a out/log.txt
             done
           done
