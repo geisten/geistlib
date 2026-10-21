@@ -75,3 +75,22 @@ class DecisionDatasetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_stratified_sample_is_proportional_and_label_independent(self):
+        sizes = {"a": 50, "b": 30, "c": 15, "d": 5}
+        rows = [{**self.row(f"{s}{j}"), "subject": s, "question_id": f"{s}{j}"}
+                for s, n in sizes.items() for j in range(n)]
+        chosen, allocation = dataset.select_stratified(rows, 10)
+        self.assertEqual((allocation["a"], allocation["b"], allocation["c"] + allocation["d"]), (5, 3, 2))
+        self.assertEqual(sum(allocation.values()), 10)
+        self.assertEqual(len(chosen), 10)
+        for subject, quota in allocation.items():
+            self.assertEqual(sum(r["subject"] == subject for r in chosen), quota)
+            self.assertLessEqual(abs(quota - 10 * sizes[subject] / 100), 1)
+        changed = [{**r, "answer": (r["answer"] + 1) % 4} for r in reversed(rows)]
+        self.assertEqual([r["question_id"] for r in chosen],
+                         [r["question_id"] for r in dataset.select_stratified(changed, 10)[0]])
+        self.assertEqual(len(dataset.select_stratified(rows, 100)[0]), 100)
+        with self.assertRaises(ValueError):
+            dataset.select_stratified(rows, 101)
+
