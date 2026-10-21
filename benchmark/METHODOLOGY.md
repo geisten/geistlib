@@ -69,8 +69,10 @@ before its first repeat. Both engines do the same tokens per MHz; started
 cool (below ~65 °C, or after a 45 s pause) they measure equal.
 
 The gate reads the GPU and CPU temperature with
-[macmon](https://github.com/vladkens/macmon) (`macmon pipe`, no root;
-`brew install macmon`), polls every 5 s until both are below the limits, and
+[macmon](https://github.com/vladkens/macmon) (`brew install macmon`, no
+root) as one `macmon pipe` sample over a full second, since the sensors
+refresh about once a second and a shorter sample right after a short run
+repeated the reading from before it. It polls every 5 s until both are below the limits, and
 records the start temperatures with every run (`gpu_temp_c`, `cpu_temp_c`,
 `cool_wait_seconds` in the run's machine state). Where macmon is not found
 (on `PATH`, `/opt/homebrew/bin` or `/usr/local/bin`) or its output cannot be

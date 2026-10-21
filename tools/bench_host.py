@@ -124,12 +124,14 @@ def find_macmon() -> str | None:
 def apple_temps() -> dict | None:
     """The Apple SoC's GPU and CPU temperature in degrees C from one macmon
     sample (its averages over the die sensors; no root needed), or None where
-    macmon is missing or its output cannot be read."""
+    macmon is missing or its output cannot be read. The sensors refresh about
+    once a second: a 200 ms sample right after a short run repeated the
+    reading from before it, so the sample spans a full second."""
     macmon = find_macmon()
     if macmon is None:
         return None
     try:
-        proc = subprocess.run([macmon, "pipe", "-s", "1", "-i", "200"],
+        proc = subprocess.run([macmon, "pipe", "-s", "1", "-i", "1000"],
                               capture_output=True, text=True, timeout=15)
         temp = json.loads(proc.stdout.strip().splitlines()[-1])["temp"]
         return {"gpu_c": round(float(temp["gpu_temp_avg"]), 1),
