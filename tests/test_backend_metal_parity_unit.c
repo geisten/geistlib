@@ -582,7 +582,8 @@ static void run_f32kv_attention_case(struct geist_backend *mt,
     v->buffer_destroy(mt, bo16);
 }
 
-/* #91: the prefill flash kernels against cpu_scalar's attention on the
+/* #91: the prefill flash kernels (and, at one query row, the split-KV
+ * decode kernels, #17) against cpu_scalar's attention on the
  * same half-rounded K/V. The Metal kernels round Q and the softmax weights
  * to half for the f16 matrix products and accumulate in f32, so the bound
  * is a tolerance, not bits: 1e-2 absolute on outputs of magnitude <= 2.7
@@ -665,8 +666,10 @@ static void run_flash_ref_case(struct geist_backend *mt,
         check(v->buffer_download(q_elems * sizeof(float), (uint8_t *) got, bo) == GEIST_OK,
               "flash reference download");
         (void) rv;
+        /* Decode (one row) keeps Q and the weights in f32: only the
+         * summation order differs from cpu_scalar. */
         const double err  = geist_test_max_abs(q_elems, got, orf);
-        const bool   pass = err < 1e-2;
+        const bool   pass = err < (q_rows == 1 ? 2e-5 : 1e-2);
         check(pass, "flash attention matches cpu_scalar");
         printf("  flash vs cpu_scalar rows %zu at %zu heads %zu/%zu hd %zu window %zu max_abs "
                "%.2e %s\n",
@@ -915,6 +918,18 @@ int main(void) {
     run_flash_ref_case(mt, ref, 30, 70, 4, 1, 384, 0);
     run_flash_ref_case(mt, ref, 2, 98, 4, 4, 32, 0);
     run_flash_ref_case(mt, ref, 25, 15, 4, 2, 256, 0);
+    /* Decode (#17): 32-key blocks for head_dim 64/128/256/512, windows
+     * narrower than a block and wider than the cache, a window that starts
+     * mid-block, more blocks than splits, and head_dim 96 (per-key kernel). */
+    run_flash_ref_case(mt, ref, 1, 511, 8, 1, 256, 512);
+    run_flash_ref_case(mt, ref, 1, 700, 8, 1, 256, 512);
+    run_flash_ref_case(mt, ref, 1, 1000, 8, 1, 512, 0);
+    run_flash_ref_case(mt, ref, 1, 40, 8, 2, 128, 0);
+    run_flash_ref_case(mt, ref, 1, 63, 4, 4, 64, 0);
+    run_flash_ref_case(mt, ref, 1, 2100, 24, 4, 256, 0);
+    run_flash_ref_case(mt, ref, 1, 100, 4, 1, 96, 0);
+    run_flash_ref_case(mt, ref, 1, 77, 2, 1, 512, 16);
+    run_flash_ref_case(mt, ref, 1, 31, 8, 2, 128, 0);
 #ifdef GEIST_BACKEND_METAL
     run_staged_upload(mt);
 #endif

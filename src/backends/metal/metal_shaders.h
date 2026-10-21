@@ -2220,7 +2220,7 @@ static const char metal_attn_dec_f16_body[] =
         "threadgroup_barrier(mem_flags::mem_threadgroup);"
         "float M=tm[0];for(uint j=1u;j<8u;j++)M=max(M,tm[j]);"
         "float L=0.0f;for(uint j=0u;j<8u;j++)L+=tl[j]*exp(tm[j]-M);"
-        "uint pbb=(h*16u+ss)*(hd+2u);"
+        "uint pbb=(h*32u+ss)*(hd+2u);"
         "if(lid==0u){pb[pbb]=M;pb[pbb+1u]=L;}"
         "for(uint i=lid;i<hd;i+=256u){float acc=0.0f;for(uint "
         "j=0u;j<8u;j++)acc+=ta[j*hd+i]*exp(tm[j]-M);pb[pbb+2u+i]=acc;}}\n";
@@ -2394,7 +2394,7 @@ static const char metal_attn_dec512_f16_source_b[] =
         "threadgroup_barrier(mem_flags::mem_threadgroup);float M=tm[0];for(uint "
         "j=1u;j<8u;j++)M=max(M,tm[j]);float L=0.0f;for(uint "
         "j=0u;j<8u;j++)L+=tl[j]*exp(tm[j]-M);uint "
-        "pbb=(h*16u+ss)*(hd+2u);if(lid==0u){pb[pbb]=M;pb[pbb+1u]=L;}for(uint "
+        "pbb=(h*32u+ss)*(hd+2u);if(lid==0u){pb[pbb]=M;pb[pbb+1u]=L;}for(uint "
         "i=lid;i<hd;i+=256u){float acc=0.0f;for(uint "
         "j=0u;j<8u;j++)acc+=ta[j*hd+i]*exp(tm[j]-M);pb[pbb+2u+i]=acc;}}";
 
@@ -2412,22 +2412,102 @@ static const char metal_attn_dec_f16_plain_head[] =
         "for(uint i=lid;i<hd;i+=256u){qv[i]=q[p.qo+h*hd+i];}"
         "threadgroup_barrier(mem_flags::mem_threadgroup);";
 
-/* Pass 2: merge the per-split partials (m, l, unnormalized acc) into y. */
+/* Pass 2: merge the per-split partials (m, l, unnormalized acc) into y.
+ * A threadgroup of 64 threads owns 64 elements of one head; each
+ * simdgroup first turns the splits' (m, l) into their weights
+ * exp(m_s - M) / L, lane s for split s, then every thread sums its element
+ * over the splits, four independent loads per step. One thread looping
+ * over the splits per element (16-32 dependent load and exp steps) cost
+ * 18-37 us per call on the M1 Max, as much as the attention itself (#17). */
 static const char metal_attn_dec_combine_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
         "struct CB{uint qh,hd,ns,yo;};\n"
         "kernel void attention_dec_combine(device const float*pb[[buffer(0)]],device "
         "float*y[[buffer(1)]],constant CB&p[[buffer(2)]],uint2 "
-        "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){"
-        "uint h=tg.y,hd=p.hd;if(h>=p.qh)return;"
-        "uint b0=h*16u*(hd+2u);"
-        "float M=pb[b0];for(uint s=1u;s<p.ns;s++)M=max(M,pb[b0+s*(hd+2u)]);"
-        "float L=0.0f;for(uint s=0u;s<p.ns;s++)L+=pb[b0+s*(hd+2u)+1u]*exp(pb[b0+s*(hd+2u)]-M);"
-        "float inv=1.0f/L;"
-        "for(uint i=lid;i<hd;i+=256u){float acc=0.0f;for(uint "
-        "s=0u;s<p.ns;s++)acc+=pb[b0+s*(hd+2u)+2u+i]*exp(pb[b0+s*(hd+2u)]-M);y[p.yo+h*hd+i]=acc*inv;"
-        "}}\n";
+        "tg[[threadgroup_position_in_grid]],ushort lid[[thread_index_in_threadgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]],ushort ln[[thread_index_in_simdgroup]]){"
+        "threadgroup float sf[64];const uint h=tg.y,hd=p.hd,st=hd+2u;if(h>=p.qh)return;"
+        "device const float*b=pb+h*32u*st;"
+        "const float m=ln<p.ns?b[ln*st]:-FLT_MAX;const float M=simd_max(m);"
+        "const float e=ln<p.ns?exp(m-M):0.0f;"
+        "const float L=simd_sum(ln<p.ns?e*b[ln*st+1u]:0.0f);"
+        "sf[sg*32u+ln]=e/L;simdgroup_barrier(mem_flags::mem_threadgroup);"
+        "const uint i=tg.x*64u+lid;if(i>=hd)return;"
+        "threadgroup const float*f=sf+sg*32u;device const float*bi=b+2u+i;"
+        "float a0=0.0f,a1=0.0f,a2=0.0f,a3=0.0f;uint s=0u;"
+        "for(;s+4u<=p.ns;s+=4u){a0+=bi[s*st]*f[s];a1+=bi[(s+1u)*st]*f[s+1u];"
+        "a2+=bi[(s+2u)*st]*f[s+2u];a3+=bi[(s+3u)*st]*f[s+3u];}"
+        "for(;s<p.ns;s++)a0+=bi[s*st]*f[s];"
+        "y[p.yo+h*hd+i]=(a0+a1)+(a2+a3);}\n";
+
+/* Split-KV decode attention in 32-key blocks (#17), after the structure of
+ * llama.cpp's kernel_flash_attn_ext_vec. One simdgroup per threadgroup
+ * owns one query head and every ns-th block of its live keys:
+ *   - Q.K: the 32 lanes form NE groups of 32/NE; a group takes one key
+ *     at a time, each lane D*NE/128 float4 chunks of it, and the 32/NE
+ *     keys a group walks per block are independent loads in flight
+ *     together, not the one-key-per-iteration chain of the kernels above,
+ *     whose memory latency set their time (43/93 us per call at 512 keys,
+ *     head_dim 256/512, against 17/32 us for llama.cpp's). NE 4, and 2 at
+ *     head_dim 256, measured best on the M1 Max (24-38 us at 512 keys).
+ *   - one online-softmax step per block: lane j holds key j's score.
+ *   - P.V in the Q.K layout, O in registers, the 4 groups summed by two
+ *     shuffles at the end.
+ * Q and O in f32, K/V read as KT (F32 rounded to half, as the kernels
+ * above read it). Blocks touched are those overlapping the window, so
+ * every block holds a live key; keys outside it are masked and their
+ * loads clamped into it. Partials and their combine as above. */
+static const char metal_attn_decv_source[] =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct A{uint rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo;};\n"
+        "struct SP{uint ns;};\n"
+        "static inline float4 kv4(half4 x){return float4(x);}\n"
+        "static inline float4 kv4(float4 x){return float4(half4(x));}\n"
+        "template<short D,short NE,typename KT>\n"
+        "kernel void attention_decv(device const float*q[[buffer(0)]],device const "
+        "KT*kc[[buffer(1)]],device const KT*vc[[buffer(2)]],device float*pb[[buffer(3)]],"
+        "constant A&p[[buffer(4)]],constant SP&sp[[buffer(5)]],uint2 "
+        "tg[[threadgroup_position_in_grid]],ushort ln[[thread_index_in_simdgroup]]){"
+        "constexpr short NL=32/NE,C=32,D4=D/4,NI=D4/NL;typedef vec<KT,4> KT4;"
+        "threadgroup float4 sq[D4];threadgroup float ss[C];"
+        "const uint h=tg.y,w=tg.x;if(h>=p.qh)return;"
+        "const uint kvh=h/(p.qh/p.kvh),qp=p.qpos;"
+        "const uint slo=(p.sw>0u&&qp+1u>p.sw)?qp+1u-p.sw:0u,shi=qp<p.kv_len?qp:p.kv_len-1u;"
+        "device const float4*q4=(device const float4*)(q+p.qo+h*D);"
+        "for(short i=ln;i<D4;i+=32)sq[i]=q4[i];"
+        "simdgroup_barrier(mem_flags::mem_threadgroup);"
+        "const short tx=ln%NL,ty=ln/NL;const uint rs=p.kvh*D;"
+        "device const KT*kb=kc+p.kco+kvh*D;device const KT*vb=vc+p.vco+kvh*D;"
+        "float M=-FLT_MAX/2,S=0.0f;float4 lo[NI];for(short i=0;i<NI;i++)lo[i]=0.0f;"
+        "for(uint b=slo/C+w;b<=shi/C;b+=sp.ns){const uint t0=b*C;float mqk[C/NE];"
+        "for(short cc=0;cc<C/NE;cc++){const uint t=clamp(t0+uint(cc*NE+ty),slo,shi);"
+        "device const KT4*pk=(device const KT4*)(kb+t*rs)+tx;float a=0.0f;"
+        "for(short ii=0;ii<NI;ii++)a+=dot(kv4(pk[ii*NL]),sq[ii*NL+tx]);"
+        "for(short o=NL/2;o>0;o/=2)a+=simd_shuffle_down(a,ushort(o));"
+        "mqk[cc]=simd_shuffle(a,ushort(NL*ty));}"
+        "{const uint t=t0+uint(NE*tx+ty);ss[NE*tx+ty]=(t<slo||t>shi)?-FLT_MAX/2:mqk[tx];}"
+        "simdgroup_barrier(mem_flags::mem_threadgroup);"
+        "const float s=ss[ln],Mn=max(M,simd_max(s)),ms=exp(M-Mn),vs=exp(s-Mn);"
+        "S=S*ms+simd_sum(vs);M=Mn;ss[ln]=vs;"
+        "simdgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(short i=0;i<NI;i++)lo[i]*=ms;"
+        "for(short cc=0;cc<C/NE;cc++){const uint t=clamp(t0+uint(cc*NE+ty),slo,shi);"
+        "const float wv=ss[cc*NE+ty];device const KT4*pv=(device const KT4*)(vb+t*rs)+tx;"
+        "for(short ii=0;ii<NI;ii++)lo[ii]+=kv4(pv[ii*NL])*wv;}"
+        "simdgroup_barrier(mem_flags::mem_threadgroup);}"
+        "for(short o=16;o>=NL;o/=2)for(short "
+        "i=0;i<NI;i++)lo[i]+=simd_shuffle_down(lo[i],ushort(o));"
+        "const uint pbb=(h*32u+w)*(D+2u);if(ln==0){pb[pbb]=M;pb[pbb+1u]=S;}"
+        "if(ty==0){for(short i=0;i<NI;i++){const uint o=pbb+2u+4u*uint(i*NL+tx);"
+        "pb[o]=lo[i].x;pb[o+1u]=lo[i].y;pb[o+2u]=lo[i].z;pb[o+3u]=lo[i].w;}}}\n"
+        "typedef decltype(attention_decv<64,4,half>) attention_decv_t;\n"
+        "typedef decltype(attention_decv<64,4,float>) attention_decv32_t;\n"
+        "#define DV(D,NE) template [[host_name(\"attention_decv_d\" #D \"_f16\")]] kernel "
+        "attention_decv_t attention_decv<D,NE,half>;template [[host_name(\"attention_decv_d\" #D "
+        "\"_f32kv\")]] kernel attention_decv32_t attention_decv<D,NE,float>;\n"
+        "DV(64,4)\nDV(128,4)\nDV(256,2)\nDV(512,4)\n";
 
 /* Correctness-first Gated-DeltaNet mixer kernel. One workgroup owns one
  * head and advances its convolution channels and delta state serially over
