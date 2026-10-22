@@ -1,0 +1,40 @@
+# EXP (#105), not for merge: PQ2_0 2..15-token kernel on the RTX 2080 Ti.
+name: exp105-m16-vulkan
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  m16:
+    runs-on: geist-vulkan
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Refuse a software device
+        run: |
+          vulkaninfo --summary 2>&1 | tee vulkan-env.txt
+          grep -q PHYSICAL_DEVICE_TYPE_DISCRETE_GPU vulkan-env.txt
+      - name: Build
+        run: |
+          make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
+          for b in rows_cost spec_accept; do
+            cc -std=c2x -O2 -Iinclude tools/exp105/$b.c lib/linux/release/libgeist.a -fopenmp -lm -ldl -lpthread -o $b
+          done
+      - name: Fetch Bonsai 2 27B (host cache, SHA-gated)
+        env:
+          GEIST_MODEL_CACHE: ${{ vars.GEIST_MODEL_CACHE }}
+        run: |
+          MODEL=$(python3 tools/fetch_bench_model.py --model bonsai2-27b-pq2 --protocol benchmark/cross_engine_gpu_protocol.json)
+          echo "MODEL_PATH=$MODEL" >> "$GITHUB_ENV"
+      - name: Parity, then pass cost and speculative decode (A/B)
+        run: |
+          set -eo pipefail
+          . scripts/gpu-lock.sh
+          bin/linux/release/tests/test_backend_vulkan_linear_parity
+          ./rows_cost "$MODEL_PATH" tools/exp105/prompts.txt vulkan 7 > new.txt
+          GEIST_EXP_NO_PQ2_M16=1 ./rows_cost "$MODEL_PATH" tools/exp105/prompts.txt vulkan 7 > old.txt
+          echo "--- pass cost: before | m16"; paste old.txt new.txt
+          SEQ=1 ./spec_accept "$MODEL_PATH" tools/exp105/prompts.txt vulkan 192 4
+          ./spec_accept "$MODEL_PATH" tools/exp105/prompts.txt vulkan 192 4
+          GEIST_EXP_NO_PQ2_M16=1 ./spec_accept "$MODEL_PATH" tools/exp105/prompts.txt vulkan 192 4 | tail -1
+          nvidia-smi --query-gpu=name,driver_version --format=csv,noheader || true

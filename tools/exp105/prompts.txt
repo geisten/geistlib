@@ -1,0 +1,769 @@
+<|im_start|>system
+You are a decision component. Answer with exactly one of the allowed labels and nothing else.<|im_end|>
+<|im_start|>user
+Context:
+HARBORLINE MUTUAL INSURANCE COMPANY
+HOMEOWNERS POLICY FORM HM-3 (EDITION 04/2023) — EXCERPTS, ENDORSEMENTS AND CLAIM FILE HX-2026-118804
+Prepared for coverage review. Page numbers omitted. Bracketed notes are from the file clerk.
+
+======================================================================
+PART A — DECLARATIONS (CURRENT TERM)
+======================================================================
+Named insured: Dana Okafor
+Residence premises: 14 Linden Crest Road, Millbrook
+Policy number: HM3-7730-2291-04
+Original inception: March 15, 2019
+Current policy period: March 15, 2026 to March 15, 2027 (12:01 a.m. standard time at the residence premises). This term was issued as a renewal of the prior term March 15, 2025 to March 15, 2026.
+Coverage A — Dwelling: $418,000
+Coverage B — Other Structures: $41,800
+Coverage C — Personal Property: $209,000
+Coverage D — Loss of Use: $83,600
+Section II — Personal Liability: $300,000 each occurrence; Medical Payments: $5,000 each person
+All-peril deductible: $1,000
+Wind/hail deductible: 2% of Coverage A
+Forms and endorsements attached to this term: HM-3 (04/23); HE-0110 (Special Provisions — Millbrook County); HE-1840 (Limited Fungi, Wet or Dry Rot, or Bacteria Coverage — $5,000); HE-2291 (Concealed Water Sublimit Revision); HE-3007 (Scheduled Personal Property — jewelry, 2 items); HE-4412 (Water Backup of Sewers or Drains — $10,000).
+Mortgagee: Tri-County Savings, loan no. 00-448120
+Premium: $2,184.00 annual; paid in full.
+
+======================================================================
+PART B — POLICY FORM HM-3 (04/2023), SELECTED PROVISIONS
+======================================================================
+DEFINITIONS
+In this policy, "you" and "your" refer to the named insured shown in the Declarations and the spouse if a resident of the same household. "We", "us" and "our" refer to the company providing this insurance.
+
+1. "Bodily injury" means bodily harm, sickness or disease, including required care, loss of services and death that results.
+2. "Business" means a trade, profession or occupation engaged in on a full-time, part-time or occasional basis, or any other activity engaged in for money or other compensation, subject to the exceptions in Section II.
+3. "Concealed water" means water or steam that escapes from within a plumbing, heating, air conditioning or automatic fire protective sprinkler system, or from within a household appliance, and that remains hidden within the walls, floors or ceilings of the dwelling, where the presence of such water was not known to and could not reasonably have been known to an "insured" before the damage became visible.
+4. "Insured" means you and residents of your household who are your relatives, or other persons under the age of 21 and in the care of any person named above.
+5. "Occurrence" means an accident, including continuous or repeated exposure to substantially the same general harmful conditions, which results during the policy period in bodily injury or property damage.
+6. "Repeated seepage or leakage" means continuous or repeated seepage or leakage of water or steam over a period of 14 or more days.
+7. "Residence premises" means the one-family dwelling where you reside and which is shown as the residence premises in the Declarations.
+8. "Unoccupied" means the dwelling contains contents, including furnishings and personal property, sufficient to support customary occupancy, but no person is living in it.
+9. "Vacant" means the dwelling lacks contents, including furnishings and personal property, sufficient to support customary occupancy, whether or not a person is present. A dwelling under construction is not considered vacant.
+
+SECTION I — PROPERTY COVERAGES
+Coverage A — Dwelling. We cover the dwelling on the residence premises, including structures attached to the dwelling, and materials and supplies located on or next to the residence premises used to construct, alter or repair the dwelling.
+Coverage B — Other Structures. We cover other structures on the residence premises set apart from the dwelling by clear space. Structures connected to the dwelling by only a fence, utility line or similar connection are considered other structures.
+Coverage C — Personal Property. We cover personal property owned or used by an insured while it is anywhere in the world. Special limits apply to money ($200), securities ($1,500), watercraft ($1,500), trailers ($1,500), theft of jewelry ($1,500), theft of firearms ($2,500), and theft of silverware ($2,500).
+Coverage D — Loss of Use. If a loss covered under Section I makes the residence premises not fit to live in, we cover any necessary increase in living expenses incurred by you so that your household can maintain its normal standard of living.
+
+SECTION I — PERILS INSURED AGAINST
+We insure against direct physical loss to property described in Coverages A and B, except as limited or excluded in this policy.
+Accidental discharge or overflow of water or steam from within a plumbing, heating, air conditioning or automatic fire protective sprinkler system or from within a household appliance is covered, subject to the exclusions and limits below. We also pay the reasonable cost of tearing out and replacing any part of a building necessary to repair the system or appliance from which the water or steam escaped; we do not pay for the system or appliance itself.
+
+SECTION I — EXCLUSIONS
+4.1 Earth Movement. Earthquake, landslide, mudflow, subsidence or sinkhole, unless direct loss by fire or explosion ensues.
+4.2 Freezing. Freezing of a plumbing, heating, air conditioning or sprinkler system or a household appliance while the dwelling is vacant or unoccupied, unless you have used reasonable care to maintain heat in the building or to shut off the water supply and drain all systems and appliances.
+4.3 Repeated Seepage or Leakage. We do not cover loss caused by "repeated seepage or leakage" of water or steam.
+    4.3.1 Exception for concealed water. Exclusion 4.3 does not apply to loss caused by "concealed water". Our total payment for all loss caused by concealed water in any one occurrence will not exceed $10,000, including the cost of tearing out and replacing any part of the building. This limit does not increase the Coverage A limit.
+4.4 Wear and Tear. Wear and tear, marring, deterioration; mechanical breakdown, latent defect, inherent vice; smog, rust or other corrosion. However, if one of these causes the accidental discharge of water or steam, we cover the resulting water damage to the building, subject to 4.3 and 4.7; we do not cover the corroded pipe itself.
+4.5 Neglect. Neglect of an insured to use all reasonable means to save and preserve property at and after the time of a loss.
+4.6 Ordinance or Law. Enforcement of any ordinance or law regulating construction, repair or demolition, except as provided under Additional Coverages.
+4.7 Vacancy. We do not cover loss caused by vandalism, malicious mischief, glass breakage, or any accidental discharge or overflow of water or steam, if the dwelling has been vacant for more than 60 consecutive days immediately before the loss.
+4.8 Intentional Loss. Any loss arising out of any act an insured commits or conspires to commit with the intent to cause a loss.
+
+SECTION I — CONDITIONS
+Duties After Loss. In case of a loss to covered property, you must see that the following are done: give prompt notice to us or our agent; protect the property from further damage and make reasonable and necessary repairs to protect it; keep an accurate record of repair expenses; prepare an inventory of damaged personal property; as often as we reasonably require, show the damaged property and submit to examination under oath; send us within 60 days after our request your signed, sworn proof of loss.
+Loss Settlement. Buildings under Coverage A are settled at replacement cost without deduction for depreciation, subject to the limits and sublimits of this policy, provided you actually repair or replace the damaged building within 180 days after the loss.
+Deductible. Unless otherwise noted in this policy, the following deductible provision applies: subject to the policy limits that apply, we will pay only that part of the total of all loss payable under Section I that exceeds the deductible amount shown in the Declarations. Where a sublimit applies, the deductible is applied to the loss before the sublimit is applied.
+Mortgage Clause. If a mortgagee is named in this policy, any loss payable under Coverage A or B will be paid to the mortgagee and you, as interests appear.
+
+======================================================================
+PART C — ENDORSEMENTS
+======================================================================
+HE-0110 SPECIAL PROVISIONS — MILLBROOK COUNTY
+Cancellation notices for nonpayment of premium must be mailed at least 20 days before the cancellation date. Any claim settlement dispute may be submitted to the Millbrook County appraisal panel under the Appraisal condition. Nothing in this endorsement changes any coverage limit or exclusion.
+
+HE-1840 LIMITED FUNGI, WET OR DRY ROT, OR BACTERIA COVERAGE
+We will pay up to $5,000 in the aggregate during the policy period for direct physical loss caused by fungi, wet or dry rot or bacteria that result from a covered peril, including the cost of testing and remediation. This limit is separate from and in addition to any water-damage limit or sublimit.
+
+HE-2291 CONCEALED WATER SUBLIMIT REVISION (EDITION 11/2025)
+This endorsement modifies insurance provided under Form HM-3.
+A. Applicability. This endorsement applies only to policies issued, or renewed, on or after January 1, 2026. For policies whose current term was issued or renewed before that date, Exception 4.3.1 continues to apply as written in the form.
+B. In Exception 4.3.1, the amount "$10,000" is replaced by "$15,000".
+C. All other terms of Exclusion 4.3 and of the definition of "concealed water" remain unchanged. This endorsement does not modify Exclusion 4.7 (Vacancy).
+
+HE-3007 SCHEDULED PERSONAL PROPERTY
+Item 1: Ladies' platinum ring with 1.1 ct diamond — $6,400. Item 2: Men's gold wristwatch — $3,150. Coverage applies worldwide; no deductible applies to scheduled items.
+
+HE-4412 WATER BACKUP OF SEWERS OR DRAINS
+We cover direct physical loss caused by water which backs up through sewers or drains or overflows from a sump, up to $10,000 per occurrence. This coverage does not apply to water that escapes from a plumbing supply line.
+
+======================================================================
+PART D — CLAIM FILE HX-2026-118804
+======================================================================
+FNOL (first notice of loss), recorded by phone agent K. Mendes, August 5, 2026, 10:42:
+Insured reports water staining and soft drywall on the hallway side of the upstairs bathroom and a warped cabinet base under the vanity. Insured states she returned home on August 3, 2026 in the evening after an extended stay out of state and noticed the stain the next morning. Water supply shut off at the main by insured on August 4. No active dripping visible. Insured requests adjuster visit. No injuries. No prior water claims on this policy.
+
+Adjuster field notes — R. Bhattacharya, August 7, 2026:
+- Two-storey colonial, built 1987. Upstairs hall bath shares a wall with the hallway linen closet.
+- Drywall removed by plumber at my request on the vanity wall. Found a pinhole failure in the 1/2-inch copper cold supply line, approximately 30 inches above the floor inside the wall cavity. Heavy green-blue corrosion around the pinhole; mineral trail running down the stud bay; subfloor darkened and delaminated over an area roughly 3 ft x 4 ft; ceiling below (kitchen) shows a faint ring but no sag.
+- Moisture meter readings in the wall bay 38–46% (saturated) on day 1; kitchen ceiling 19%.
+- No visible signs of water on the finished surfaces were reported by anyone before August 4. Insured states she had no reason to suspect a leak; neighbour who collected mail weekly did not enter the upstairs bathroom.
+- House fully furnished; beds made; refrigerator stocked with condiments and frozen goods; clothing in closets; utilities on; thermostat set to 78°F cooling. No signs of forced entry.
+- Insured was away from May 20, 2026 to August 3, 2026 caring for her brother after surgery. No one stayed at the house during that period.
+
+Plumber's report — Millbrook Plumbing & Heating, invoice 55821, August 7, 2026:
+"Pinhole leak in type M copper supply. Corrosion and mineral build-up at the failure indicate the leak had been active for a considerable time — in our opinion at least four and most likely five to six weeks. Line cut out and replaced with PEX, 4 ft. Pressure tested OK. Charge $640.00 (repair of the supply line itself)."
+
+Contractor estimate — Ridgeway Restoration, estimate RR-2026-3310, August 12, 2026 (building repairs only; plumbing repair excluded):
+  Demolition and debris removal ........................ $1,850
+  Structural drying (6 days, 4 air movers, 1 dehumidifier)  $2,760
+  Subfloor replacement, 12 sq ft + joist sistering ...... $3,420
+  Drywall and finishing, bath and hall walls ............ $2,980
+  Vanity cabinet replacement (like kind and quality) .... $3,150
+  Tile repair, bathroom floor ........................... $4,190
+  Kitchen ceiling stain treatment and repaint ........... $1,120
+  Painting, bath and hall ............................... $1,630
+  Contractor overhead and profit ........................ $1,300
+  TOTAL ............................................... $22,400
+Mould testing performed August 8: no fungal growth above background; no remediation required.
+
+Internal note — trainee adjuster J. Pike, August 13, 2026:
+"Insured was gone 75 days, which is over the 60-day vacancy limit, so 4.7 should knock out the water damage. Recommend denial letter. Please confirm."
+
+Internal note — file clerk, August 14, 2026:
+Policy history shows renewal offer mailed January 30, 2026; renewal premium paid February 26, 2026; renewal term effective March 15, 2026. Prior term (2025–2026) was issued on the 2023 form without HE-2291. [HE-2291 appears on the current-term Declarations.]
+
+Internal note — coverage unit intake, August 14, 2026:
+Contents claim: none presented (vanity contents and towels discarded by insured, value under $100, insured declined to claim). Additional living expense: none (bathroom downstairs usable). Mortgagee to be named on any building payment.
+
+Neighbour statement (by phone, August 10, 2026): Resident at 12 Linden Crest Road confirms she collected mail and checked the front door weekly on Saturdays while the insured was away, and watered potted plants on the porch. She did not go upstairs. She noticed nothing unusual.
+
+Weather data (for completeness): no freezing temperatures at the premises between May and August 2026; no named storms; one thunderstorm on July 18, 2026 with no reported roof or window damage.
+
+
+Question:
+Acting as the coverage reviewer, decide how the building water-damage portion of claim HX-2026-118804 must be settled under the policy form and the endorsements attached to the current term.
+
+Allowed labels:
+- deny_vacancy_exclusion: The building water damage is excluded because the dwelling was vacant for more than 60 consecutive days before the loss (Exclusion 4.7).
+- deny_repeated_seepage: The building water damage is excluded as repeated seepage or leakage (Exclusion 4.3) with no exception applying.
+- pay_subject_to_10000_sublimit: The loss is covered but payment is capped by the concealed-water sublimit of $10,000.
+- pay_subject_to_15000_sublimit: The loss is covered but payment is capped by the concealed-water sublimit of $15,000.
+- pay_full_estimate_less_deductible: The loss is covered without any sublimit; the full estimate is paid after deducting the $1,000 deductible.
+
+Answer with exactly one label.<|im_end|>
+<|im_start|>assistant
+<think>
+<|im_start|>system
+You are a decision component. Answer with exactly one of the allowed labels and nothing else.<|im_end|>
+<|im_start|>user
+Context:
+BRACKWATER BUILDING SOCIETY — COLLECTIONS & RECOVERIES
+PAYMENT RELIEF POLICY PR-5 (EXTRACT), AMENDMENT PR-5/A1, AND APPLICATION FILE PRA-2026-02917
+
+=== PAYMENT RELIEF POLICY PR-5 (VERSION 3, 1 FEBRUARY 2025) ===
+
+1. Purpose
+PR-5 sets the conditions under which Brackwater offers a temporary Payment Relief Plan (reduced monthly payments for up to six months, with the shortfall added to the balance) to residential mortgage customers in financial difficulty. Customers who do not qualify are still offered the standard arrears support options in policy PR-2 (payment arrangements, term extensions, referral to free debt advice). PR-5 decisions must be consistent and evidence-based; case handlers may not waive any eligibility condition.
+
+2. Definitions
+2.1 "Household" — the borrowers named on the mortgage and their spouses or partners living at the mortgaged property.
+2.2 "Gross Monthly Income" — the total income of the Household before tax and deductions in a calendar month, including salary, wages, self-employed drawings, pensions and regular benefits. It excludes one-off payments: annual or discretionary bonuses, redundancy lump sums, gifts, inheritances, and tax refunds.
+2.3 "Hardship Event" — a change of circumstances that reduces Household income, such as job loss, reduction of hours, illness, bereavement or relationship breakdown. The "Hardship Month" is the calendar month in which the Hardship Event occurred.
+2.4 "Baseline Income" — the average Gross Monthly Income over the full calendar months immediately before the Hardship Month (the number of months is set in clause 3.1(a)).
+2.5 "Current Income" — the average Gross Monthly Income over the two most recent full calendar months before the application date.
+2.6 "Days Past Due" — the number of days since the oldest unpaid contractual monthly payment fell due, on the application date.
+2.7 "Application date" — the date on which a complete application (form PR-5A plus evidence) is received.
+
+3. Eligibility — all conditions must be met
+3.1 (a) Qualifying hardship: Current Income is at least 25% lower than Baseline Income. Baseline Income is calculated over the 12 full calendar months before the Hardship Month.
+    (b) Arrears: Days Past Due is 60 or fewer.
+    (c) Frequency: no Payment Relief Plan has started in the 24 months before the application date. The 24 months are measured from the start date of the previous plan, not its end date.
+    (d) Property: the mortgaged property is the Household's owner-occupied main residence. Buy-to-let and second homes are excluded.
+    (e) Affordability: the reduced payment proposed by the customer is at least 50% of the contractual payment.
+3.2 Where a condition is not met, the case handler records the condition and offers PR-2 options.
+
+4. Plan terms
+4.1 Maximum duration six months; review at month three.
+4.2 Interest continues to accrue. The shortfall is capitalised at the end of the plan unless the customer repays it earlier.
+4.3 Credit reporting: plans are reported as an "arrangement to pay" to credit reference agencies.
+
+5. Evidence
+5.1 Payslips or employer letters for each employed member of the Household covering the Baseline and Current periods; bank statements for the last three months; for self-employed customers, management accounts or bank statements.
+5.2 Handlers must use gross figures from payslips. Net pay figures from bank statements are used only to check that the payslips are consistent.
+
+6. Vulnerable customers
+6.1 Customers showing signs of vulnerability are referred to the Specialist Support team, which may offer additional forbearance under policy PR-9. Referral does not change PR-5 eligibility.
+
+7. Decisions and communication
+7.1 Decisions are made within 10 business days of the application date. The customer receives a written decision explaining which conditions were met or not met.
+7.2 Declined customers may ask for a review by a senior handler within 30 days; the review applies the same conditions.
+7.3 Collection activity (letters, calls) is paused while an application is being assessed, but arrears continue to be reported.
+
+8. Related policies (summary)
+PR-2 Arrears support: payment arrangements of up to 12 months to clear arrears; temporary interest-only switch for up to 6 months; term extension subject to affordability; referral to free debt advice charities.
+PR-9 Specialist support: additional flexibility for customers with serious illness, bereavement or domestic abuse, decided by the Specialist Support team.
+PR-12 Litigation: the conditions under which Brackwater issues possession proceedings (never within 6 months of the first missed payment and never while an application under PR-5 or PR-9 is being assessed).
+
+9. Record keeping
+All calculations must be recorded in the case management system with the monthly figures used, so that the decision can be audited. Quality assurance samples 10% of decisions each month.
+
+=== AMENDMENT PR-5/A1 (EFFECTIVE 1 JULY 2026, FOR APPLICATIONS RECEIVED FROM THAT DATE) ===
+(1) In clause 3.1(a), "12 full calendar months" is replaced by "6 full calendar months".
+(2) The 25% threshold and the definition of Gross Monthly Income (including the exclusion of one-off payments) are unchanged.
+(3) New clause 3.1(f): customers with an active County Court claim must be referred to Litigation before a plan is offered. [Not applicable in this file — no claim issued.]
+
+=== APPLICATION FILE PRA-2026-02917 ===
+Borrowers: Mr Callum Deverell and Ms Anya Deverell (joint mortgage).
+Property: 19 Heron Walk, Brackwater — owner-occupied main residence since 2018.
+Mortgage balance: GBP 213,400. Product: 5-year fixed rate 4.19% until 31 May 2028, early repayment charge 3%. Remaining term: 21 years 4 months. Loan-to-value: 61% (desktop valuation, January 2026). Contractual monthly payment: GBP 1,286.
+Application date: 10 September 2026 (form PR-5A and full evidence received).
+Proposed reduced payment: GBP 700 per month for six months.
+
+Hardship Event: Ms Deverell's employer reduced her contract from 37.5 to 22.5 hours per week with effect from 1 March 2026 (employer letter dated 12 February 2026). Hardship Month: March 2026.
+
+Household gross income (from payslips), by month:
+- September 2025: GBP 6,200
+- October 2025: GBP 6,200
+- November 2025: GBP 6,200
+- December 2025: GBP 9,200 (includes Mr Deverell's annual performance bonus of GBP 3,000, shown separately on the payslip as "Annual bonus")
+- January 2026: GBP 6,200
+- February 2026: GBP 6,200
+- March 2026: GBP 5,050
+- April 2026: GBP 4,960
+- May 2026: GBP 4,900
+- June 2026: GBP 4,850
+- July 2026: GBP 4,780
+- August 2026: GBP 4,760
+
+Household net pay received in bank account (for consistency check only): September 2025 – February 2026 average GBP 4,650 (excluding December bonus); July–August 2026 average GBP 3,390.
+
+Arrears: payments due 15 July 2026 and 15 August 2026 missed; the 15 July payment is the oldest unpaid payment. Days Past Due on 10 September 2026: 57.
+
+Other commitments (from credit file): car finance GBP 289 per month; two credit cards with total balance GBP 3,120, minimum payments up to date. No County Court judgments.
+Vulnerability screening: no indicators recorded; customer declined referral to debt advice for now.
+Previous forbearance: Payment Relief Plan PRP-2024-0551, started 1 June 2024, ended 30 November 2024; completed successfully.
+
+Customer's covering letter: "Our take-home pay has dropped by more than a quarter — from about £4,650 a month to about £3,390. We are behind by two payments and want to get back on track. We had a plan in 2024 but that ended almost two years ago."
+
+Handler's draft calculation (first line, 11 September 2026):
+"Baseline (Sep–Feb, 6 months): total 40,200 / 6 = 6,700. Current (Jul–Aug): 4,770. Drop = 28.8% — over 25%. Net drop 27.1% also over 25%. DPD 57 (OK). Previous plan started June 2024 — more than 24 months ago (OK). Owner-occupied (OK). Proposed 700 is 54% of 1,286 (OK). Recommend approve."
+Team leader note: "Please double-check the income definitions before approval."
+
+
+Question:
+Under PR-5 as amended by PR-5/A1, is application PRA-2026-02917 eligible for a Payment Relief Plan?
+
+Allowed labels:
+- no: At least one eligibility condition in clause 3.1 (as amended) is not met.
+- yes: All eligibility conditions in clause 3.1 (as amended) are met.
+
+Answer with exactly one label.<|im_end|>
+<|im_start|>assistant
+<think>
+<|im_start|>system
+You are a decision component. Answer with exactly one of the allowed labels and nothing else.<|im_end|>
+<|im_start|>user
+Context:
+REGIONAL AMBULANCE SERVICE — WORKING TIME RULE WT-2 AND ROSTER EXTRACT (PARAMEDIC T. VOLKOV)
+
+WT-2 Daily rest: between the end of one shift and the start of the next, a paramedic must have at least 11 consecutive hours of rest, measured in actual elapsed time. A rest period of exactly 11 hours complies. Each rest period shorter than 11 hours counts as one violation.
+Clock change: on Sunday 25 October 2026 at 03:00 local summer time (CEST, UTC+2), clocks go back to 02:00 local winter time (CET, UTC+1). The roster system shows local wall-clock times only.
+
+Roster (local times):
+S1 Wed 21 Oct 13:00 – 21:00
+S2 Thu 22 Oct 07:30 – 15:30
+S3 Fri 23 Oct 06:00 – 14:00
+S4 Sat 24 Oct 10:00 – 18:00
+S5 Sun 25 Oct 04:30 – 12:30
+S6 Sun 25 Oct 23:30 – Mon 26 Oct 07:30
+S7 Mon 26 Oct 18:30 – Tue 27 Oct 02:30
+S8 Tue 27 Oct 13:30 – 21:30
+Other WT-2 provisions (for information): maximum shift length 12 hours; at least one 24-hour rest in every 7 days; night-shift allowance for hours between 23:00 and 06:00 local time.
+Rest periods are measured from the rostered end of one shift to the rostered start of the next; overruns are recorded separately and are not part of this review.
+Union rep's note: "By the roster clock I see four problem rests: S1→S2, S4→S5, and S5→S6 and S6→S7, which are both only 11 hours — so four violations."
+
+
+Question:
+How many WT-2 daily-rest violations does this roster contain? (0 = none, 1 = one, 2 = two, 3 = three or more.)
+
+Allowed labels:
+- 0: No violations
+- 1: Exactly one violation
+- 2: Exactly two violations
+- 3: Three or more violations
+
+Answer with exactly one label.<|im_end|>
+<|im_start|>assistant
+<think>
+<|im_start|>system
+You are a decision component. Answer with exactly one of the allowed labels and nothing else.<|im_end|>
+<|im_start|>user
+Context:
+KESTREL VALLEY COMMUNITY COLLEGE — HARDSHIP BURSARY REGULATIONS 2026/27
+(Approved by the Student Finance Committee, 2026-05-12. Applies to awards for the academic year starting 2026-09-01.)
+
+PART A — AWARD LEVELS
+A.1 The bursary is paid at one of five levels:
+    Level 0 — no award
+    Level 1 — EUR 500
+    Level 2 — EUR 1,200
+    Level 3 — EUR 2,000
+    Level 4 — EUR 3,000
+A.2 The level is determined by the PER-CAPITA COUNTABLE INCOME of the assessed household (Part D), using the table in Part E, subject to the asset rule in Part F.
+
+PART B — DEPENDENCY STATUS
+B.1 A student is INDEPENDENT if on the reference date (1 September of the award year) at least one of the following is true:
+    (a) the student is 24 years old or older;
+    (b) the student is married;
+    (c) the student has at least one dependent child living with them;
+    (d) the student was in local-authority care after their 16th birthday.
+B.2 Otherwise the student is DEPENDENT.
+B.3 For all purposes of these regulations, a registered civil partnership is treated exactly like a marriage, and a registered civil partner exactly like a spouse.
+B.4 Dependency status is fixed on the reference date; later changes apply only from the next award year.
+
+PART C — ASSESSED HOUSEHOLD
+C.1 Dependent students: the assessed household is the parent(s) the student normally lives with, their spouse/partner if any, the student, and all other children living in that household.
+C.2 Independent students: the assessed household is the student, their spouse (if any), and their dependent children (if any). Parents' income and household are NOT assessed for independent students, even if parental data was supplied on the form.
+C.3 Household size = number of persons in the assessed household.
+
+PART D — COUNTABLE INCOME
+D.1 Countable income = sum over the assessed household (excluding children under 18) of: gross employment income for the previous calendar year (2025), net self-employment profit, pensions, and taxable benefits.
+D.2 Excluded from countable income: child benefit; disability-related allowances; student loans and grants; earnings from the college's WORK-STUDY programme (for any student); one-off gifts under EUR 1,000.
+D.3 Dependent students only: deduct EUR 2,000 from the household's countable income for each OTHER child of the household enrolled full-time in higher education.
+D.4 Per-capita countable income = countable income ÷ household size, rounded to the nearest euro.
+
+PART E — LEVEL TABLE (per-capita countable income, EUR)
+| Per-capita countable income | Level |
+|-----------------------------|-------|
+| up to 7,000                 | 4     |
+| 7,001 – 10,500              | 3     |
+| 10,501 – 14,000             | 2     |
+| 14,001 – 18,000             | 1     |
+| above 18,000                | 0     |
+
+PART F — ASSETS
+F.1 If the assessed household's savings and investments (excluding the main home and one car) exceed EUR 40,000, the level is capped at Level 1.
+F.2 Assets are declared on the form; the college may request statements.
+
+PART G — PROCEDURE (reference)
+G.1 Applications close 2026-10-15. Late applications are assessed only if funds remain.
+G.2 Evidence: P60/annual payslip or tax assessment for each income line; certificate for civil status; enrolment certificates for siblings.
+G.3 Payments are made in two instalments (November, February) to the student's own account.
+G.4 Students must be enrolled at least half-time on the census date (2026-10-01).
+G.5 Appeals go to the Student Finance Committee within 28 days of the decision letter.
+G.6 Assessors record the dependency decision, the household composition, each countable and excluded income line, and the per-capita figure on the assessment sheet, so that the decision can be checked by a second assessor.
+G.7 Amounts are taken in whole euros as declared and evidenced; the college does not index 2025 income to 2026 prices.
+
+PART H — FREQUENTLY ASKED QUESTIONS
+Q: I filled in my parents' details because the form asked for them. Does that matter? — A: The form collects parental data from everyone. Whether it is used depends only on Part B.
+Q: My partner and I are not married but have lived together for years. — A: Cohabitation without marriage or registered civil partnership does not make a student independent.
+Q: My work-study job is my main income. — A: Work-study earnings are still excluded (D.2).
+Q: My sibling is at university; can I deduct that? — A: Only dependent students' households get the D.3 deduction.
+
+PART I — WORKED EXAMPLES (illustrative, fictional students)
+I.1 Dependent student, age 19, lives with mother (employment 2025: EUR 31,000) and brother (17). Household 3. Countable 31,000. Per capita 10,333 → Level 3.
+I.2 Dependent student, age 21, lives with both parents (employment EUR 48,000 and EUR 12,000) and a sister (22) studying full-time at university. Household 4. Countable 60,000 − 2,000 (D.3) = 58,000. Per capita 14,500 → Level 1.
+I.3 Independent student, age 26, single, no children. Employment EUR 11,400; work-study EUR 2,900 (excluded). Household 1. Per capita 11,400 → Level 2.
+I.4 Independent student, age 22, married, one child aged 2. Spouse employment EUR 24,600; student no income; child benefit EUR 3,000 (excluded). Household 3. Per capita 8,200 → Level 3.
+I.5 Independent student, age 30, savings EUR 52,000, income EUR 6,000. Per capita 6,000 → Level 4 by table, capped to Level 1 by F.1.
+
+PART J — RELATED FUNDS (not assessed on this form)
+J.1 Childcare Support Fund: separate application; up to EUR 1,500 per year towards registered childcare.
+J.2 Travel Grant: students living more than 40 km from campus may claim 50 % of a public-transport season ticket.
+J.3 Emergency Loan: interest-free, up to EUR 800, repayable within the academic year.
+J.4 Receiving a hardship bursary does not affect eligibility for J.1–J.3.
+
+PART K — DATA PROTECTION
+K.1 Information supplied is used only to assess student-finance applications and is deleted 6 years after the last payment.
+K.2 Parental information supplied for independent students is deleted at the end of the assessment and is not used.
+K.3 Applicants may request a copy of their data at any time from the Student Finance Office.
+
+PART L — CHANGE LOG
+2026-05-12  Part E thresholds raised by approx. 5 % for inflation. D.2 extended: work-study earnings now excluded for ALL students (previously dependent students only).
+2025-05-20  B.3 added (registered civil partnerships).
+2024-06-01  F.1 asset cap raised from EUR 30,000 to EUR 40,000.
+
+=====================================================================
+APPLICATION HB-26-0417 — received 2026-09-10
+=====================================================================
+Section 1 — Student
+  Name: Mara Voigt       Student no. KV-2291807      Programme: AS Laboratory Technology, full-time
+  Date of birth: 2002-10-15
+  Civil status: registered civil partnership (certificate dated 2026-06-20, partner: Lea Brandt)
+  Dependent children: none
+  Local-authority care history: none
+  Address: Mühlweg 3, 34131 Kassel (shared with partner)
+
+Section 2 — Student's and partner's income, calendar year 2025
+  | Person      | Source                                        | Amount EUR |
+  |-------------|-----------------------------------------------|-----------:|
+  | Mara Voigt  | Part-time job, Apotheke am Markt (employment) |      7,200 |
+  | Mara Voigt  | KVCC work-study (library assistant)           |      3,600 |
+  | Mara Voigt  | Birthday gift from grandmother                |        500 |
+  | Lea Brandt  | Employment, Stadtwerke Kassel (gross)         |     20,600 |
+  Evidence attached and checked by the office: annual payslips for both employments, KVCC work-study statement, civil-partnership certificate.
+
+Section 3 — Parents' household (completed by applicant)
+  Father: Jens Voigt, employment income 2025: EUR 64,000
+  Mother: Sabine Voigt, employment income 2025: EUR 22,000; child benefit received: EUR 3,000
+  Other children in parents' household: Tim Voigt (20, full-time university student), Lena Voigt (15)
+  Parents' address: Am Hang 12, 34270 Schauenburg
+
+Section 4 — Assets
+  Mara and Lea joint savings account: EUR 9,400. No investments. Car: one (2014 hatchback).
+
+Assessor's first note (trainee): "Mara is 23 on 1 Sept → dependent. Use parents: 64,000 + 22,000 − 2,000 (Tim) = 84,000 over 5 persons = 16,800 → Level 1."
+
+
+Question:
+Apply the bursary regulations to application HB-26-0417. What award level (0–4) should Mara receive?
+
+Allowed labels:
+- 0: Level 0 — no award
+- 1: Level 1 — EUR 500
+- 2: Level 2 — EUR 1,200
+- 3: Level 3 — EUR 2,000
+- 4: Level 4 — EUR 3,000
+
+Answer with exactly one label.<|im_end|>
+<|im_start|>assistant
+<think>
+<|im_start|>system
+You are a decision component. Answer with exactly one of the allowed labels and nothing else.<|im_end|>
+<|im_start|>user
+Context:
+HELIO ANALYTICS — SUPPORT ROUTING POLICY SP-4 (rev. 7, effective 2026-07-01)
+
+Precedence. When more than one rule below applies to a ticket, the agent performs ONLY the action of the highest-ranked applicable rule now. Lower-ranked requests are noted on the ticket and handled after the higher-ranked item is closed.
+
+R1  Cross-organization data exposure — the customer can see data that belongs to a different organization. Action: escalate to Security (label: escalate_to_security). Target: within 1 hour.
+R2  Active outage — no user of an Enterprise organization can log in or load dashboards. Action: page the on-call SRE (page_oncall).
+R3  Functional defect with reproducible steps, reported by a Business or Enterprise organization. Action: escalate to Product Engineering (escalate_to_engineering). SLA: first engineering response within 8 business hours.
+R4  Billing dispute, credit or refund request. Action: billing queue (process_refund). Credits are issued only once any R1–R3 item on the same ticket is resolved.
+R5  Anything else: send the matching knowledge-base article (send_kb_article).
+
+Definitions (SP-4 §2).
+- "Organization" means the billing entity identified by an Org ID. An organization may own several workspaces; each workspace has its own tenant ID (tn_...). Workspaces that share an Org ID are the SAME organization for every rule in this policy, even when their tenant IDs differ.
+- "Reproducible steps" means the customer describes a click path or API call that produces the failure.
+
+---------------------------------------------------------------
+TICKET #88213   opened 2026-09-18 16:42 CEST   channel: email
+Requester: Marta Quell (Head of RevOps)
+Org ID: ORG-5512      Plan: Enterprise      CSM: D. Obi
+Workspaces on this Org ID (from account profile):
+  - tn_8841  "Main"             created 2023-02-14
+  - tn_9120  "EU Subsidiary"    created 2026-03-02
+Service health (status page, 2026-09-18 16:40): all systems operational. Account telemetry: 37 distinct users of ORG-5512 loaded dashboards in the last hour.
+
+Message:
+"Hi, our scheduled export of the 'Q3 Pipeline' report has failed twice now with error EXP-409 (Reports > Q3 Pipeline > Export > CSV — it dies at about 80%). The one time it did go through, the CSV had 212 rows tagged tenant tn_9120, which is NOT our main workspace tenant (ours is tn_8841) — so that's somebody else's data sitting in our file?! Frankly this is unacceptable for what we pay. We expect a service credit for September. Please treat this as a priority.
+— Marta"
+
+
+Question:
+Apply policy SP-4 to ticket #88213 and choose the single action the support agent must take now.
+
+Allowed labels:
+- escalate_to_security: R1 applies: data from a different organization is exposed to this customer.
+- page_oncall: R2 applies: an active outage for the Enterprise organization.
+- escalate_to_engineering: R3 is the highest-ranked applicable rule: a reproducible functional defect from a Business/Enterprise org.
+- process_refund: R4 is the highest-ranked applicable rule: route the credit/refund request to billing now.
+- send_kb_article: Only R5 applies.
+
+Answer with exactly one label.<|im_end|>
+<|im_start|>assistant
+<think>
+<|im_start|>system
+You are a decision component. Answer with exactly one of the allowed labels and nothing else.<|im_end|>
+<|im_start|>user
+Context:
+KESTREL MARINE SYSTEMS AS — IT ASSET MANAGEMENT
+Licence true-up worksheet: Tessellate CAD Enterprise, measurement date 31 August 2026
+Prepared for the licence compliance review before submission of the annual True-Up Report to Tessellate Software Ltd (due 30 September 2026).
+
+======================================================================
+A. ENTERPRISE LICENCE AGREEMENT TES-ELA-2023-118 (signed 1 March 2023) — EXTRACTS
+======================================================================
+1. Definitions
+1.1 "Software" — Tessellate CAD Enterprise, including the desktop client, the web viewer and the rendering server components.
+1.2 "Licence" — a named-user subscription licence to use the Software. One Licence permits one Named User to use the Software on any number of devices.
+1.3 "Licensee Affiliates" — entities controlling, controlled by or under common control with the Licensee; their use counts as the Licensee's use.
+1.4 "Named User" — an individual human being who is authorised by the Licensee to access the Software and has an active account on the Measurement Date. An individual is one Named User regardless of how many accounts the individual holds.
+1.5 Shared accounts. Where an account is used by more than one individual, each individual who used that account during the three months ending on the Measurement Date is a Named User. The Licensee shall keep login records sufficient to identify such individuals.
+1.6 Service accounts. An account used solely by software processes through the rendering-server API, without interactive login, is a "Service Account" and is not a Named User. If an individual logs in interactively through a Service Account at any time during the three months ending on the Measurement Date, that individual is a Named User.
+1.7 "Active account" — any account that exists on the Measurement Date, unless it was disabled or deleted at least 30 days before the Measurement Date.
+1.8 "Measurement Date" — 31 August of each year of the term.
+1.9 "Production Environment" — any installation of the Software other than a registered Non-Production Environment (see Amendment No. 2).
+
+2. Grant of licence and restrictions
+2.1 Tessellate grants the Licensee a non-exclusive, non-transferable right to use the Software during the term for its internal business purposes, up to the number of Licences held.
+2.2 The Licensee shall not (a) sublicense, rent or lease the Software; (b) use the Software to provide design services to third parties other than its own customers under contracts for vessels designed or built by the Licensee; (c) circumvent licence controls.
+2.3 The Software may be installed in any country in which the Licensee or its Licensee Affiliates operate, subject to export control laws.
+2.4 Plug-ins developed by the Licensee using the Tessellate SDK may be used without additional licences, but each individual using them requires a Licence as a Named User.
+
+3. Use by third parties
+3.1 The Licensee may permit its contractors and outsourcing providers to use the Software solely for the Licensee's internal business purposes.
+3.2 Contractors and outsourcing providers who use the Software under 3.1 are Named Users of the Licensee and require Licences, unless the contractor uses the contractor's own Tessellate licences under the contractor's own agreement and the Licensee has received written confirmation of this from Tessellate.
+3.3 The Licensee is responsible for the compliance of such third parties.
+
+4. Fees
+4.1 Subscription fees are invoiced annually in advance on 1 March for all Licences held.
+4.2 Licences added during a subscription year are invoiced pro rata from their licence start date to the next 1 March.
+4.3 List price for 2026: EUR 2,340 per Licence per year.
+
+5. True-up
+5.1 Each year the Licensee reports the number of Named Users as of the Measurement Date.
+5.2 The number of Licences held on the Measurement Date is the number of Licences under all Order Forms whose licence start date is on or before the Measurement Date.
+5.3 If the number of Named Users exceeds the number of Licences held, the Licensee purchases the shortfall at the then-current list price, with back-dated subscription fees for 12 months.
+5.4 A true-up shortfall of more than 15 Licences, or of more than 10 % of Licences held, entitles Tessellate to conduct an audit at the Licensee's expense.
+
+6. Audit
+6.1 Tessellate may audit the Licensee's use of the Software once per year on 30 days' notice, in addition to any audit under 5.4.
+6.2 The Licensee shall provide login records, identity management exports and Order Forms on request.
+6.3 If an audit reveals a shortfall that the Licensee did not report in its True-Up Report, the Licensee pays the shortfall at 125 % of list price.
+
+7. Term
+7.1 The ELA runs until 28 February 2028 and may be renewed for further five-year terms.
+
+8. Support and maintenance
+8.1 Support is included in the subscription fee. Support cases may be raised by up to five designated contacts of the Licensee.
+8.2 New releases are made available to all Licences held; the Licensee may continue to use the previous major release for 12 months after a new major release.
+
+9. Data protection
+9.1 Login records processed by Tessellate for licence management are processed as a processor on behalf of the Licensee; they are deleted 24 months after collection.
+
+======================================================================
+B. AMENDMENTS
+======================================================================
+Amendment No. 1 (signed 12 February 2024)
+B1.1 Named Users who, on the Measurement Date, have been on continuous leave of absence (parental, sick, sabbatical) for 90 days or more, and whose accounts were not used during that leave, are not counted as Named Users for that Measurement Date.
+B1.2 The Licensee may transfer a Licence from one individual to another no more than once per quarter per Licence.
+
+Amendment No. 2 (signed 20 January 2026, effective 1 March 2026)
+B2.1 The Licensee may register one or more Non-Production Environments (test, QA, training) with Tessellate by submitting form NPE-1. Registration takes effect on the date Tessellate confirms receipt of form NPE-1.
+B2.2 Accounts that exist only in a registered Non-Production Environment are not counted in the true-up for any Measurement Date on which the registration was in effect.
+B2.3 Accounts in an environment that is not registered on the Measurement Date are counted in the same way as Production Environment accounts, and each individual is counted once across all environments (1.4).
+B2.4 Non-Production Environments may not be used for production design work; misuse ends the registration retroactively.
+
+======================================================================
+C. ORDER FORMS
+======================================================================
+OF-1 (1 March 2023): 100 Licences, term 1 March 2023 – 28 February 2028.
+OF-2 draft v1 (circulated 10 January 2025, not signed): 20 additional Licences from 1 March 2025.
+OF-2 (signed 18 February 2025): 15 additional Licences, licence start date 1 March 2025, co-terminous with OF-1.
+OF-3 (signed 28 August 2026): 10 additional Licences, licence start date 1 September 2026, co-terminous with OF-1. Purchase order PO-26-4471 issued 27 August 2026.
+
+======================================================================
+D. ACCOUNT INVENTORY AS OF 31 AUGUST 2026 (identity management export + Tessellate admin console)
+======================================================================
+D1. Production tenant "kestrel-prod":
+  D1.1 Enabled named accounts (employees of Kestrel Marine Systems AS and its affiliate Kestrel Offshore Design AB): 96 accounts. Identity management shows that two engineers each hold two accounts (a standard account and an "-admin" account): j.moreau / jmoreau-admin; s.halvorsen / shalvorsen-admin. All other accounts belong to different individuals.
+  D1.2 One of the 96 accounts belongs to an engineer on parental leave since 15 June 2026 (account not used since 12 June 2026).
+  D1.3 Disabled accounts (still present in the tenant): 3 accounts disabled on 20 August 2026 (leavers: last working day 19 August 2026); 4 accounts disabled on 15 July 2026 (leavers). None of these seven individuals has any other account.
+  D1.4 Shared account "cad-kiosk-01" (workshop terminal, hull fabrication hall): login audit (badge-to-terminal records) for 1 June – 31 August 2026 shows use by 6 distinct individuals, all shop-floor technicians. None of them holds a named account.
+  D1.5 Contractor accounts: 8 accounts for staff of Pellam Engineering GmbH (piping design outsourcing, framework contract FC-2024-09). Pellam holds its own Tessellate subscription for its other customers; no written confirmation from Tessellate under 3.2 is on file. The 8 Pellam individuals hold no other Kestrel accounts.
+  D1.6 Service accounts svc-render-1, svc-render-2, svc-render-3 (rendering server). Admin console: svc-render-1 and svc-render-3: API sessions only. svc-render-2: API sessions, plus 14 interactive desktop-client logins between 3 and 21 August 2026 from workstation WS-HULL-117, assigned to a.lindqvist (summer intern, employed 1 June – 28 August 2026; no named Tessellate account; intern's Windows account disabled 28 August 2026).
+D2. QA tenant "kestrel-qa" (set up 1 April 2026 for plug-in testing):
+  D2.1 9 accounts. Four of them belong to engineers who also hold accounts in kestrel-prod (counted in D1.1). The other five belong to software testers who hold no other Tessellate account.
+  D2.2 Form NPE-1 for "kestrel-qa" submitted by IT on 2 September 2026; Tessellate confirmed receipt on 5 September 2026.
+D3. Training tenant "kestrel-train" (registered Non-Production Environment, Tessellate confirmation of NPE-1 dated 14 March 2026): 12 accounts, all belonging to individuals who also hold kestrel-prod accounts.
+D4. Web viewer guest links (read-only, no login): 41 links created in 2026. The web viewer's guest mode is licensed separately under the "Viewer Unlimited" add-on and does not require Named User Licences.
+
+D6. Sample rows from the identity management export (format illustration; full export attached to the worksheet):
+  j.moreau | kestrel-prod | enabled | employee | last login 2026-08-31
+  jmoreau-admin | kestrel-prod | enabled | employee (admin role) | last login 2026-08-12
+  k.ostby | kestrel-prod | disabled 2026-08-20 | leaver | last login 2026-08-19
+  r.vinter | kestrel-prod | disabled 2026-07-15 | leaver | last login 2026-07-14
+  cad-kiosk-01 | kestrel-prod | enabled | shared | last login 2026-08-31
+  p.gruber.pellam | kestrel-prod | enabled | contractor (Pellam) | last login 2026-08-28
+  svc-render-2 | kestrel-prod | enabled | service | last API call 2026-08-31, last interactive login 2026-08-21
+  t.nyberg | kestrel-qa | enabled | tester | last login 2026-08-30
+
+D5. Identity management notes:
+  D5.1 Leavers' accounts are disabled on the working day after the last working day and deleted after 90 days.
+  D5.2 Contractors' accounts are created on request of the Kestrel project manager and reviewed quarterly; last review 30 June 2026 (all 8 Pellam accounts confirmed as needed).
+  D5.3 Engineers returning from leave are re-enabled automatically; the account of the engineer on parental leave (D1.2) was never disabled.
+  D5.4 The kiosk terminal was replaced on 1 September 2026 by three named-login terminals; cad-kiosk-01 was disabled on 1 September 2026.
+
+======================================================================
+E. PREVIOUS TRUE-UP
+======================================================================
+True-Up Report 2025 (Measurement Date 31 August 2025): Named Users reported 109; Licences held 115; no shortfall. The 2025 report counted cad-kiosk-01 as one Named User and did not include contractor accounts (Pellam's framework contract started in October 2025 for piping design; the earlier Pellam engagement used Pellam's own premises and licences).
+IT Asset Management working assumption for 2026 (from the 2025 method sheet): "count enabled named accounts in kestrel-prod, plus shared accounts as one each; test tenants excluded".
+
+
+Question:
+Under the ELA as amended, what is Kestrel's licence position for the 31 August 2026 Measurement Date? Output the level index.
+
+Allowed labels:
+- 0: Compliant: Named Users do not exceed Licences held on the Measurement Date
+- 1: Shortfall of 1 to 5 Licences
+- 2: Shortfall of 6 to 15 Licences
+- 3: Shortfall of more than 15 Licences
+
+Answer with exactly one label.<|im_end|>
+<|im_start|>assistant
+<think>
+<|im_start|>system
+You are a decision component. Answer with exactly one of the allowed labels and nothing else.<|im_end|>
+<|im_start|>user
+Context:
+HARWICK & DOYLE CONSULTING — CORPORATE CARD DESK
+Query from cardholder Leonie Marsh (card ending 4471): "Which of my September purchases got declined? I got a decline text but deleted it."
+
+Card programme rules (Corporate Card Terms, schedule B)
+B1 Cycle limit: USD 6,000.00 per statement cycle. The September cycle runs 1–30 September 2026.
+B2 A purchase is approved only if the amount it would charge, including any fee charged with it, is not more than the available limit at that moment. A declined purchase has no effect on the limit.
+B3 Available limit = cycle limit − settled purchases and fees in the cycle − open authorisations + restored amounts.
+B4 Pre-authorisations (hotels, car rental): the authorised amount is held as an open authorisation. When the merchant settles, the settled amount replaces the authorised amount. An authorisation that has not settled is released at 00:00 on the 8th calendar day after the day of authorisation.
+B5 Foreign transaction fee: 3 % of the USD amount of any purchase from a merchant outside the United States, charged together with the purchase.
+B6 Refunds: a refund of the full amount of a purchase restores that amount to the available limit on its posting date. A partial refund is credited to the statement balance but does not restore available limit within the cycle.
+B7 Fees and refunds on pre-authorisations follow the settlement, not the authorisation.
+
+Card activity, September 2026 (card ending 4471), in order. Times omitted; no two purchases on the same day.
+02 Sep  Transatlantic Air (US)                  purchase  1,240.00 USD   settled
+03 Sep  Harbour Point Hotel, Boston (US)        pre-authorisation  900.00 USD
+06 Sep  Harbour Point Hotel, Boston (US)        settlement  612.40 USD
+08 Sep  EuroGrid Summit, Vienna (AT)            purchase  1,450.00 USD equivalent (charged in EUR)
+10 Sep  Transatlantic Air (US)                  refund  400.00 USD (ticket change; original fare 1,240.00, change fee retained)
+11 Sep  Sunbelt Car Rental, Austin (US)         pre-authorisation  700.00 USD  — vehicle returned 13 Sep; merchant has not settled as of 30 Sep
+14 Sep  Paxton Analytics (US)                   purchase  1,188.00 USD (annual software licence)
+15 Sep  Brightline Office Supply (US)           purchase  620.00 USD (office chair)
+16 Sep  CityCab London (GB)                     purchase  120.00 USD equivalent (charged in GBP)
+17 Sep  Metro Parking, Austin (US)              purchase  18.00 USD
+18 Sep  Folio & Quire Books (US)                purchase  240.00 USD (training book set)
+21 Sep  Marlowe Grill, Boston (US)              purchase  310.00 USD (client dinner)
+
+Other card on the same account: card ending 4417 (Leonie Marsh, travel lodge card, separate USD 2,500 limit) — no activity in September.
+
+
+Question:
+Under schedule B, which listed purchase on card 4471 was the first one declined?
+
+Allowed labels:
+- sep_15_office_chair: The 15 Sep office chair (USD 620.00) is the first declined purchase.
+- sep_16_taxi: The 16 Sep London taxi is the first declined purchase.
+- sep_17_parking: The 17 Sep parking (USD 18.00) is the first declined purchase.
+- sep_18_book_set: The 18 Sep book set (USD 240.00) is the first declined purchase.
+- sep_21_client_dinner: The 21 Sep client dinner (USD 310.00) is the first declined purchase.
+- none_declined: None of the listed purchases was declined.
+
+Answer with exactly one label.<|im_end|>
+<|im_start|>assistant
+<think>
+<|im_start|>system
+You are a decision component. Answer with exactly one of the allowed labels and nothing else.<|im_end|>
+<|im_start|>user
+Context:
+{"archive": [{"detail": "The active support handbook says live registries, signed amendments, and dated case evidence outrank summaries, posters, and drafts. This note explains source order but does not resolve the present request by itself.", "effective_scope": "historical/background only", "kind": "governance note", "record": "Support-12-01", "review_note": "Record 1 must be checked for scope and authority. It may resemble the live case, but only explicitly current material outside this archive governs. Similar names, matching keywords, and a retained status do not make historical facts operative; verify the effective date and exact case identifier.", "status": "reference"}, {"detail": "A retired channel table treated email possession as authenticated without a token check. The record is retained for audit comparison and bears both an effective-end date and a superseded watermark.", "effective_scope": "historical/background only", "kind": "superseded revision", "record": "Support-12-02", "review_note": "Record 2 must be checked for scope and authority. It may resemble the live case, but only explicitly current material outside this archive governs. Similar names, matching keywords, and a retained status do not make historical facts operative; verify the effective date and exact case identifier.", "status": "archived"}, {"detail": "A prior Willow Legacy echo case contacted through the portal and received the recurrence extension. Reviewers must match effective date, exact identifier, and case scope before importing a historical value.", "effective_scope": "historical/background only", "kind": "same-alias history", "record": "Support-12-03", "review_note": "Record 3 must be checked for scope and authority. It may resemble the live case, but only explicitly current material outside this archive governs. Similar names, matching keywords, and a retained status do not make historical facts operative; verify the effective date and exact case identifier.", "status": "archived"}, {"detail": "A quarterly reviewer sampled records mentioning Willow Legacy. The review found that free-text summaries often omit qualifiers attached to echo; it made no change to the live tables.", "effective_scope": "historical/background only", "kind": "quality review", "record": "Support-12-04", "review_note": "Record 4 must be checked for scope and authority. It may resemble the live case, but only explicitly current material outside this archive governs. Similar names, matching keywords, and a retained status do not make historical facts operative; verify the effective date and exact case identifier.", "status": "reference"}, {"detail": "A training exercise uses Willow Legacy but changes one material fact and reaches a different disposition. It is marked illustrative, not precedent, and is not incorporated into operational policy.", "effective_scope": "historical/background only", "kind": "training example", "record": "Support-12-05", "review_note": "Record 5 must be checked for scope and authority. It may resemble the live case, but only explicitly current material outside this archive governs. Similar names, matching keywords, and a retained status do not make historical facts operative; verify the effective date and exact case identifier.", "status": "reference"}, {"detail": "The migration ledger confirms that current entries for Willow Legacy were copied without truncation. Checksums matched, but the receipt neither interprets eligibility nor changes thresholds.", "effective_scope": "historical/background only", "kind": "migration receipt", "record": "Support-12-06", "review_note": "Record 6 must be checked for scope and authority. It may resemble the live case, but only explicitly current material outside this archive governs. Similar names, matching keywords, and a retained status do not make historical facts operative; verify the effective date and exact case identifier.", "status": "reference"}, {"detail": "A clerk reported inconsistent capitalization for echo. The data owner classified it as display-only because normalized identifiers already match; no substantive field was amended.", "effective_scope": "historical/background only", "kind": "open clerical ticket", "record": "Support-12-07", "review_note": "Record 7 must be checked for scope and authority. It may resemble the live case, but only explicitly current material outside this archive governs. Similar names, matching keywords, and a retained status do not make historical facts operative; verify the effective date and exact case identifier.", "status": "reference"}, {"detail": "An earlier one-time exception in the support program expired after its named case. The closure explicitly says it creates no standing waiver for later requests.", "effective_scope": "historical/background only", "kind": "closed exception", "record": "Support-12-08", "review_note": "Record 8 must be checked for scope and authority. It may resemble the live case, but only explicitly current material outside this archive governs. Similar names, matching keywords, and a retained status do not make historical facts operative; verify the effective date and exact case identifier.", "status": "archived"}, {"detail": "Meeting minutes discuss simplifying rules around Willow Legacy, but the proposal was deferred. Minutes are informative and do not supersede the signed material included in the case file.", "effective_scope": "historical/background only", "kind": "committee minutes", "record": "Support-12-09", "review_note": "Record 9 must be checked for scope and authority. It may resemble the live case, but only explicitly current material outside this archive governs. Similar names, matching keywords, and a retained status do not make historical facts operative; verify the effective date and exact case identifier.", "status": "reference"}, {"detail": "An audit sample passed after staff traced identifier, classification, qualifier, and timing in order. The sample values differ from this case and supply no reusable approval.", "effective_scope": "historical/background only", "kind": "audit sample", "record": "Support-12-10", "review_note": "Record 10 must be checked for scope and authority. It may resemble the live case, but only explicitly current material outside this archive governs. Similar names, matching keywords, and a retained status do not make historical facts operative; verify the effective date and exact case identifier.", "status": "reference"}, {"detail": "One dashboard cached an older description of echo. The alert directs operators to the underlying dated registry and was resolved without altering that registry.", "effective_scope": "historical/background only", "kind": "data-quality alert", "record": "Support-12-11", "review_note": "Record 11 must be checked for scope and authority. It may resemble the live case, but only explicitly current material outside this archive governs. Similar names, matching keywords, and a retained status do not make historical facts operative; verify the effective date and exact case identifier.", "status": "reference"}, {"detail": "A digest groups five support cases by keyword. It warns that keyword matches are not policy mappings and that each case still requires exact alias and effective-version lookup.", "effective_scope": "historical/background only", "kind": "related-case digest", "record": "Support-12-12", "review_note": "Record 12 must be checked for scope and authority. It may resemble the live case, but only explicitly current material outside this archive governs. Similar names, matching keywords, and a retained status do not make historical facts operative; verify the effective date and exact case identifier.", "status": "reference"}, {"detail": "An external bulletin recommends a more permissive treatment of Willow Legacy. The organization did not adopt it, and the bulletin is stored only as background material.", "effective_scope": "historical/background only", "kind": "vendor bulletin", "record": "Support-12-13", "review_note": "Record 13 must be checked for scope and authority. It may resemble the live case, but only explicitly current material outside this archive governs. Similar names, matching keywords, and a retained status do not make historical facts operative; verify the effective date and exact case identifier.", "status": "archived"}, {"detail": "Two reviewers acknowledged the current source hierarchy. Their acknowledgement validates publication controls but is not an approval of this individual request.", "effective_scope": "historical/background only", "kind": "approval trail", "record": "Support-12-14", "review_note": "Record 14 must be checked for scope and authority. It may resemble the live case, but only explicitly current material outside this archive governs. Similar names, matching keywords, and a retained status do not make historical facts operative; verify the effective date and exact case identifier.", "status": "reference"}, {"detail": "This archive segment is retained through 2030 for reproducibility. Retention status means the record remains readable, not that an obsolete value remains operative.", "effective_scope": "historical/background only", "kind": "retention marker", "record": "Support-12-15", "review_note": "Record 15 must be checked for scope and authority. It may resemble the live case, but only explicitly current material outside this archive governs. Similar names, matching keywords, and a retained status do not make historical facts operative; verify the effective date and exact case identifier.", "status": "reference"}], "channel_rules": {"email": "requires token check", "portal": "authenticated"}, "coverage": {"W1": "30-day support; recurrence extension x"}, "footnotes": {"x": "Grandfathered W1 receives 60 days for class R only if a remote patch for the same class was completed during the first 30 days and contact is authenticated."}, "issues": {"echo": "audio recurrence class R"}, "patch_log": {"day 20": "class R remote patch completed"}, "plans": {"Willow Legacy": "plan W1, cohort grandfathered"}, "service_case": {"activation": "day 0", "authentication": "no token check recorded", "contact_channel": "email", "issue_alias": "echo", "plan_name": "Willow Legacy", "prior_fix": "remote patch completed day 20", "reported": "day 41"}, "summary": "A call-center note saying support expired at day 30 did not inspect cohort or recurrence."}
+
+Question:
+Trace the applicable mappings and select the single operative result.
+
+Allowed labels:
+- wrong_issue_class: The extension is for another issue class.
+- expired: Only the 30-day period applies.
+- covered_recurrence: The 60-day recurrence extension applies.
+- needs_authentication: Coverage might apply but contact is unauthenticated.
+
+Answer with exactly one label.<|im_end|>
+<|im_start|>assistant
+<think>
+<|im_start|>system
+You are a decision component. Answer with exactly one of the allowed labels and nothing else.<|im_end|>
+<|im_start|>user
+Context:
+TRAVEL REIMBURSEMENT MANUAL — revision 7
+1. Purpose and order of authority. This manual governs employee travel reimbursements submitted from 1 April 2026. Defined terms in section 2 apply everywhere, including appendices. If a case-specific written pre-approval conflicts with the standard limits, the pre-approval controls only where section 6 permits it. Amendment A at the end was adopted later than all numbered sections and controls any inconsistency.
+
+2. Definitions. A "travel day" is a calendar day on which the employee is away from the home work location at midnight, except the departure day is also a travel day even when departure is after midnight local time due to a delayed carrier. A "provided meal" is food included without separately stated cost in lodging, conference registration, or carrier service; dietary unsuitability does not stop it being provided unless the accessibility office documented the restriction before travel. "Remote-site travel" means the destination is more than 80 road kilometers from both the employee's home and assigned office. "Timely" means received in the expense portal within 20 business days after the final travel day. Business days exclude weekends and the company closure dates listed in section 9.
+
+3. Meal allowance. The standard allowance is 68 credits per full travel day. Departure and return days receive 75 percent. Deduct 20 percent for a provided breakfast, 30 percent for lunch, and 50 percent for dinner; percentages are of the unadjusted 68-credit daily allowance. The daily result cannot be below zero. Receipts neither increase nor decrease this allowance.
+
+4. Lodging. Lodging is reimbursable up to 190 credits per night. Taxes stated separately are outside that cap. A conference hotel may be reimbursed up to 240 credits only when the booking was made before the conference block closed and the conference organizer named that hotel. Personal upgrades are never reimbursable.
+
+5. Ground transport. Rail is preferred. A taxi over 55 credits requires either a transit-disruption record or remote-site travel. A manager's convenience statement is not a disruption record.
+
+6. Pre-approval. A director may pre-approve lodging above the standard cap or taxi use without a disruption. The writing must identify the trip and a maximum amount. Pre-approval cannot waive timeliness, turn a personal upgrade into business expense, alter meal deductions, or override a later amendment.
+
+7. Late claims. Finance must reject an untimely claim unless the portal was unavailable for at least four continuous hours on the submission deadline and the employee submitted by noon on the next business day. Manager absence, missing receipts, workload, or an email sent outside the portal does not extend the period.
+
+8. Case file. Mira traveled to Quarry Point, 112 road kilometers from her home but 34 road kilometers from her assigned office. She departed Monday 6 April 2026, stayed away Monday and Tuesday at midnight, and returned Wednesday 8 April. Her director pre-approved "up to 230 credits nightly at the Summit Conference Hotel and taxis up to 90 credits for the Quarry Point trip." The organizer named Summit and the block was still open when she booked at 225 credits nightly. Tuesday conference registration included breakfast. The accessibility office had documented before travel that the provided breakfast could not meet her medically required diet. A Tuesday taxi cost 82 credits; transit operated normally. Mira entered the complete claim in the portal on Monday 11 May. The portal was available throughout. Company closures in this interval were Friday 10 April and Friday 1 May.
+
+9. Calendar note. The weekend days and the two stated closure Fridays are not business days. All other Mondays through Fridays in the interval are business days.
+
+AMENDMENT A — adopted 15 March 2026, effective for travel beginning on or after 1 April 2026. Despite section 6, director pre-approval cannot raise the lodging cap at a named conference hotel while its conference block remains open. Such lodging is capped at the ordinary 190 credits plus separately stated taxes. The amendment does not change taxi authority or the definition of remote-site travel.
+
+ADMINISTRATIVE AND REFERENCE MATERIAL (part of the document):
+
+Appendix 1. receipt imaging. The organization keeps a contemporaneous record for this topic. Routine records identify the owner, the date recorded, the system of record, and any later correction. A draft note is not an approval, silence is not consent, and a copied recipient is not treated as the decision maker unless a controlling section expressly says otherwise. Staff should preserve ordinary supporting material and use the defined business calendar. This appendix supplies administration only: it does not enlarge eligibility, erase a deadline, reverse a precedence rule, or create an exception to a requirement stated in the operative sections. Where examples use names or dates, they illustrate recordkeeping and do not amend the operative case. Historical versions remain searchable for audit purposes, but a superseded version has no prospective effect. Questions are logged with enough context for a reviewer to reproduce the decision without relying on memory. The records team checks completeness monthly and reports aggregate defects; it does not re-decide the underlying case. Reference code TRA-01 is an index locator, not a priority ranking or outcome code.
+
+Appendix 2. currency tables. The organization keeps a contemporaneous record for this topic. Routine records identify the owner, the date recorded, the system of record, and any later correction. A draft note is not an approval, silence is not consent, and a copied recipient is not treated as the decision maker unless a controlling section expressly says otherwise. Staff should preserve ordinary supporting material and use the defined business calendar. This appendix supplies administration only: it does not enlarge eligibility, erase a deadline, reverse a precedence rule, or create an exception to a requirement stated in the operative sections. Where examples use names or dates, they illustrate recordkeeping and do not amend the operative case. Historical versions remain searchable for audit purposes, but a superseded version has no prospective effect. Questions are logged with enough context for a reviewer to reproduce the decision without relying on memory. The records team checks completeness monthly and reports aggregate defects; it does not re-decide the underlying case. Reference code TRA-02 is an index locator, not a priority ranking or outcome code.
+
+Appendix 3. rail reservations. The organization keeps a contemporaneous record for this topic. Routine records identify the owner, the date recorded, the system of record, and any later correction. A draft note is not an approval, silence is not consent, and a copied recipient is not treated as the decision maker unless a controlling section expressly says otherwise. Staff should preserve ordinary supporting material and use the defined business calendar. This appendix supplies administration only: it does not enlarge eligibility, erase a deadline, reverse a precedence rule, or create an exception to a requirement stated in the operative sections. Where examples use names or dates, they illustrate recordkeeping and do not amend the operative case. Historical versions remain searchable for audit purposes, but a superseded version has no prospective effect. Questions are logged with enough context for a reviewer to reproduce the decision without relying on memory. The records team checks completeness monthly and reports aggregate defects; it does not re-decide the underlying case. Reference code TRA-03 is an index locator, not a priority ranking or outcome code.
+
+Appendix 4. conference rosters. The organization keeps a contemporaneous record for this topic. Routine records identify the owner, the date recorded, the system of record, and any later correction. A draft note is not an approval, silence is not consent, and a copied recipient is not treated as the decision maker unless a controlling section expressly says otherwise. Staff should preserve ordinary supporting material and use the defined business calendar. This appendix supplies administration only: it does not enlarge eligibility, erase a deadline, reverse a precedence rule, or create an exception to a requirement stated in the operative sections. Where examples use names or dates, they illustrate recordkeeping and do not amend the operative case. Historical versions remain searchable for audit purposes, but a superseded version has no prospective effect. Questions are logged with enough context for a reviewer to reproduce the decision without relying on memory. The records team checks completeness monthly and reports aggregate defects; it does not re-decide the underlying case. Reference code TRA-04 is an index locator, not a priority ranking or outcome code.
+
+Appendix 5. manager training. The organization keeps a contemporaneous record for this topic. Routine records identify the owner, the date recorded, the system of record, and any later correction. A draft note is not an approval, silence is not consent, and a copied recipient is not treated as the decision maker unless a controlling section expressly says otherwise. Staff should preserve ordinary supporting material and use the defined business calendar. This appendix supplies administration only: it does not enlarge eligibility, erase a deadline, reverse a precedence rule, or create an exception to a requirement stated in the operative sections. Where examples use names or dates, they illustrate recordkeeping and do not amend the operative case. Historical versions remain searchable for audit purposes, but a superseded version has no prospective effect. Questions are logged with enough context for a reviewer to reproduce the decision without relying on memory. The records team checks completeness monthly and reports aggregate defects; it does not re-decide the underlying case. Reference code TRA-05 is an index locator, not a priority ranking or outcome code.
+
+Appendix 6. tax documentation. The organization keeps a contemporaneous record for this topic. Routine records identify the owner, the date recorded, the system of record, and any later correction. A draft note is not an approval, silence is not consent, and a copied recipient is not treated as the decision maker unless a controlling section expressly says otherwise. Staff should preserve ordinary supporting material and use the defined business calendar. This appendix supplies administration only: it does not enlarge eligibility, erase a deadline, reverse a precedence rule, or create an exception to a requirement stated in the operative sections. Where examples use names or dates, they illustrate recordkeeping and do not amend the operative case. Historical versions remain searchable for audit purposes, but a superseded version has no prospective effect. Questions are logged with enough context for a reviewer to reproduce the decision without relying on memory. The records team checks completeness monthly and reports aggregate defects; it does not re-decide the underlying case. Reference code TRA-06 is an index locator, not a priority ranking or outcome code.
+
+Appendix 7. archive retention. The organization keeps a contemporaneous record for this topic. Routine records identify the owner, the date recorded, the system of record, and any later correction. A draft note is not an approval, silence is not consent, and a copied recipient is not treated as the decision maker unless a controlling section expressly says otherwise. Staff should preserve ordinary supporting material and use the defined business calendar. This appendix supplies administration only: it does not enlarge eligibility, erase a deadline, reverse a precedence rule, or create an exception to a requirement stated in the operative sections. Where examples use names or dates, they illustrate recordkeeping and do not amend the operative case. Historical versions remain searchable for audit purposes, but a superseded version has no prospective effect. Questions are logged with enough context for a reviewer to reproduce the decision without relying on memory. The records team checks completeness monthly and reports aggregate defects; it does not re-decide the underlying case. Reference code TRA-07 is an index locator, not a priority ranking or outcome code.
+
+Appendix 8. accessibility contacts. The organization keeps a contemporaneous record for this topic. Routine records identify the owner, the date recorded, the system of record, and any later correction. A draft note is not an approval, silence is not consent, and a copied recipient is not treated as the decision maker unless a controlling section expressly says otherwise. Staff should preserve ordinary supporting material and use the defined business calendar. This appendix supplies administration only: it does not enlarge eligibility, erase a deadline, reverse a precedence rule, or create an exception to a requirement stated in the operative sections. Where examples use names or dates, they illustrate recordkeeping and do not amend the operative case. Historical versions remain searchable for audit purposes, but a superseded version has no prospective effect. Questions are logged with enough context for a reviewer to reproduce the decision without relying on memory. The records team checks completeness monthly and reports aggregate defects; it does not re-decide the underlying case. Reference code TRA-08 is an index locator, not a priority ranking or outcome code.
+
+Question:
+Apply the controlling document and select the single authorized outcome for the case file.
+
+Allowed labels:
+- approve_all: The case results in approve all under all controlling provisions.
+- approve_meals_only: The case results in approve meals only under all controlling provisions.
+- approve_lodging_only: The case results in approve lodging only under all controlling provisions.
+- reject_entire_claim: The case results in reject entire claim under all controlling provisions.
+
+Answer with exactly one label.<|im_end|>
+<|im_start|>assistant
+<think>
+<|im_start|>system
+You are a decision component. Answer with exactly one of the allowed labels and nothing else.<|im_end|>
+<|im_start|>user
+Context:
+{"request": "A Berlin office schedules a call for 09:15 local time on 27 October 2024. Convert it to UTC. State whether daylight saving time is in effect at that instant and give the applicable UTC offset. Europe/Berlin follows the EU transition, with clocks moving from 03:00 CEST to 02:00 CET that morning.\n\nAdditional evaluation context: The meeting record is used by colleagues outside Europe, so an unexplained local timestamp is not acceptable. Use the transition fact supplied here rather than assuming that the entire date has one offset. There is no ambiguity from the repeated early-morning hour because the stated appointment occurs well after that interval. The answer will be reviewed as a complete handoff, so correctness of intermediate reasoning, units, boundary conventions, and every stated presentation constraint matters independently of whether the concluding value appears plausible.", "response": "The rollback has already occurred by 09:15 local time, so daylight saving time is no longer in effect. Europe/Berlin is then CET, UTC+01:00. Subtracting one hour, the call is at **08:15 UTC on 27 October 2024**."}
+
+Question:
+Does the response fully and correctly satisfy every explicit requirement in the request? Judge the derivation, code, result, and formatting, not merely whether the final number looks plausible.
+
+Allowed labels:
+- no: The response contains any substantive error or misses an explicit constraint.
+- yes: The response is fully correct and satisfies every explicit constraint.
+
+Answer with exactly one label.<|im_end|>
+<|im_start|>assistant
+<think>
+<|im_start|>system
+You are a decision component. Answer with exactly one of the allowed labels and nothing else.<|im_end|>
+<|im_start|>user
+Context:
+Task: Give just 17+25. Answer:42
+
+Question:
+Does the response fully satisfy the request, using the supplied reference when present?
+
+Allowed labels:
+- no: Wrong, incomplete, unsupported or violates a constraint
+- yes: Correct, complete, and follows all explicit constraints
+
+Answer with exactly one label.<|im_end|>
+<|im_start|>assistant
+<think>
+<|im_start|>system
+You are a decision component. Answer with exactly one of the allowed labels and nothing else.<|im_end|>
+<|im_start|>user
+Context:
+Despite a warning banner, checks find every function working and no missing data.
+
+Question:
+Rate incident impact using only reported facts. Use the highest fully supported level.
+
+Allowed labels:
+- 0: No function impaired; cosmetic only
+- 1: One user or a nonessential function impaired, with a workaround
+- 2: Many users blocked from a core function, no data loss
+- 3: Confirmed irreversible data loss or physical harm
+
+Answer with exactly one label.<|im_end|>
+<|im_start|>assistant
+<think>
