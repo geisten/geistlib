@@ -13,7 +13,9 @@
  * GEIST_BENCH_BACKEND picks the backend (default: the engine's choice);
  * GEIST_BENCH_SPLIT_BACKEND (+ GEIST_BENCH_SPLIT_LAYERS, "auto" or a count)
  * adds a split backend, which for a mixture-of-experts model holds its
- * hottest experts. Output: one JSON line on stdout.
+ * hottest experts. Output: one JSON line on stdout, with the tokens per
+ * second of the feed — a decode rate on real text, whose experts follow
+ * the text's routing (synthetic benchmark prompts route differently).
  */
 #include "test_helpers.h"
 
@@ -24,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static char *read_file(const char *path) {
     FILE *f = fopen(path, "rb");
@@ -92,8 +95,10 @@ int main(int argc, char **argv) {
     n = total < max_tokens ? total : max_tokens;
     memcpy(ids, all, n * sizeof *ids);
 
-    double sum = 0.0;
-    size_t cnt = 0, nl = 0;
+    double          sum = 0.0;
+    size_t          cnt = 0, nl = 0;
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
     for (size_t i = 0; i + 1 < n; i++) {
         if (geist_session_prefill_tokens(s, 1, &ids[i]) != GEIST_OK) {
             fprintf(stderr, "prefill failed at %zu: %s\n", i, geist_backend_errmsg(be));
@@ -113,10 +118,14 @@ int main(int argc, char **argv) {
         sum += mx + log(z) - (double) lg[ids[i + 1]];
         cnt++;
     }
-    printf("{\"tokens\":%zu,\"nll\":%.6f,\"ppl\":%.4f}\n",
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    const double secs =
+            (double) (t1.tv_sec - t0.tv_sec) + 1e-9 * (double) (t1.tv_nsec - t0.tv_nsec);
+    printf("{\"tokens\":%zu,\"nll\":%.6f,\"ppl\":%.4f,\"tps\":%.2f}\n",
            cnt,
            sum / (double) cnt,
-           exp(sum / (double) cnt));
+           exp(sum / (double) cnt),
+           secs > 0.0 ? (double) cnt / secs : 0.0);
     geist_session_destroy(s);
     geist_model_destroy(m);
     geist_backend_destroy(be);
