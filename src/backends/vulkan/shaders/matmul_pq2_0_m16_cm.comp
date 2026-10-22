@@ -46,12 +46,16 @@ shared uvec4 Ash[8][16 * STRIDE4];
 shared uvec4 Bsh[8][16 * STRIDE4];
 shared float red[8 * 256];
 
-/* 8 ternary codes (16 bits) -> 8 packed f16 values (code - 1) * d */
-uvec4 expand8(uint bits, float d) {
+/* 8 ternary codes (16 bits) -> 8 packed f16 values (code - 1) * d without
+ * an int -> float convert (quarter rate on Turing): code c goes into the f16
+ * mantissa as 1 + c/4 (0x3C00 | c << 8); (1 + c/4 - 1.25) = (c - 1)/4 and its
+ * product with 4d are exact in f16, so the values match the reference. */
+uvec4 expand8(uint bits, f16vec2 d4) {
     uvec4 r;
     for (uint p = 0u; p < 4u; p++) {
-        uvec2 c = uvec2(bits >> (4u * p), bits >> (4u * p + 2u)) & 3u;
-        r[p] = packHalf2x16((vec2(c) - 1.0) * d);
+        uint b = bits >> (4u * p);
+        uint h = 0x3C003C00u | ((b & 3u) << 8u) | ((b & 12u) << 22u);
+        r[p] = packFloat2x16((unpackFloat2x16(h) - f16vec2(1.25hf)) * d4);
     }
     return r;
 }
@@ -85,8 +89,9 @@ void main() {
             x3 = x4[xv + 3u];
         }
         uint base = (lane >> 1u) * STRIDE4 + hk * 2u;
-        Ash[sg][base] = expand8(qw & 0xffffu, d);
-        Ash[sg][base + 1u] = expand8(qw >> 16u, d);
+        f16vec2 d4 = f16vec2(float16_t(4.0 * d));
+        Ash[sg][base] = expand8(qw & 0xffffu, d4);
+        Ash[sg][base + 1u] = expand8(qw >> 16u, d4);
         Bsh[sg][base] = uvec4(packHalf2x16(x0.xy), packHalf2x16(x0.zw), packHalf2x16(x1.xy),
                               packHalf2x16(x1.zw));
         Bsh[sg][base + 1u] = uvec4(packHalf2x16(x2.xy), packHalf2x16(x2.zw),
