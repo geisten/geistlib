@@ -34,7 +34,5 @@ jobs:
           ./rows_cost "$MODEL_PATH" tools/exp105/prompts.txt vulkan 7 > new.txt
           GEIST_EXP_NO_PQ2_M16=1 ./rows_cost "$MODEL_PATH" tools/exp105/prompts.txt vulkan 7 > old.txt
           echo "--- pass cost: before | m16"; paste old.txt new.txt
-          SEQ=1 ./spec_accept "$MODEL_PATH" tools/exp105/prompts.txt vulkan 192 4
           ./spec_accept "$MODEL_PATH" tools/exp105/prompts.txt vulkan 192 4
-          GEIST_EXP_NO_PQ2_M16=1 ./spec_accept "$MODEL_PATH" tools/exp105/prompts.txt vulkan 192 4 | tail -1
           nvidia-smi --query-gpu=name,driver_version --format=csv,noheader || true
