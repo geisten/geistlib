@@ -42,6 +42,12 @@ backend where bits matter.
 | `cpu_x86` | x86-64-v3 (AVX2) baseline with runtime-dispatched AVX-512/VNNI: one binary, no SIGILL on older CPUs | default on x86-64 |
 | `cpu_scalar` | portable C, no SIMD | numerical reference; parity is per dtype (ternary W2A8 is intentionally not bit-exact to scalar W2A32, see [ARCHITECTURE.md](ARCHITECTURE.md#where-the-oracle-stops-ternary)) |
 
+`cpu_neon` has one opt-in for decode at depth:
+
+| Variable | Effect |
+| :-- | :-- |
+| `GEIST_ATTN_SPLIT_DECODE=1` | split a decode step's attention over long contexts across threads (flash-decoding, #16): with at most 16 grouped items (a decode step; Llama 3.2 3B has 8, Gemma 4 E2B 2) and 256+ keys, each item's keys are cut at multiples of 128 positions and the parts merged in double. M1 Max, decode time at depth 1024 (10 interleaved cycles): −8.6 % on Llama 3.2 3B Q4_K_M (9/10 faster), −8.5 % on Qwen3.5 0.8B Q8_0 (9/10), −7.2 % on Gemma 4 E2B Q4_K_M (7/10, within that run's noise; −8.8 % and −12.1 % in two earlier runs of the same split); depth 128 and prefill unchanged. Off by default because it changes float order: the attention output stays as close to a double reference as the default's, and NLL moves within the noise one ulp on the attention output causes, but cpu_neon's int8 decode activations turn such a difference into a quantization step, so greedy output departs from the default's at near-ties (Llama 3.2 3B at step 26 of 512, top-2 margin 0.09; Gemma 4 E2B at 391, 0.36; Qwen3.5 identical). Deterministic across thread counts. |
+
 A build for armv8.2 refuses a CPU without dot product (Cortex-A72, Pi 4) at
 `geist_backend_create`, naming the missing feature. CI runs NEON on arm64,
 AVX-512/VNNI under Intel SDE (a silent downgrade fails), scalar everywhere,

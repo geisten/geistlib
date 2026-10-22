@@ -19,6 +19,7 @@
 #include <geist_backend.h>
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -615,13 +616,31 @@ static void attn_group_items(void *ctx, size_t i0, size_t i1) {
  * kernel's; the merge adds the parts instead of carrying one running sum
  * through all keys, so the result differs from the unsplit one in rounding
  * only (in a model, by about as much as one ulp on the attention output
- * does). Short ranges and prefill keep the unsplit items, bit for bit. */
+ * does). Short ranges and prefill keep the unsplit items, bit for bit.
+ *
+ * Opt-in (GEIST_ATTN_SPLIT_DECODE=1), off by default: decode at depth 1024
+ * is ~9-11 % faster with it on the M1 Max, but cpu_neon's int8 decode
+ * activations turn its rounding-sized difference into a quantization-sized
+ * one, so greedy output departs from the default's at near-ties (#178). */
 enum {
     ATTN_SPLIT_CHUNK        = 128,
     ATTN_SPLIT_MAX_PARTS    = 16,
     ATTN_SPLIT_MAX_ITEMS    = 16,
     ATTN_SPLIT_MAX_HEAD_DIM = 512,
 };
+
+/* The split is opt-in: GEIST_ATTN_SPLIT_DECODE=1 (docs/BACKENDS.md). Read
+ * once. Off, decode attention is the unsplit kernel, bit for bit. */
+static bool attn_split_decode_on(void) {
+    static _Atomic int on = -1;
+    int                v  = atomic_load_explicit(&on, memory_order_relaxed);
+    if (v < 0) {
+        const char *e = getenv("GEIST_ATTN_SPLIT_DECODE");
+        v             = e != nullptr && e[0] == '1';
+        atomic_store_explicit(&on, v, memory_order_relaxed);
+    }
+    return v != 0;
+}
 
 /* One split call: the grouped job, the parts per item, where they start
  * (base, a multiple of len) and their scratch, one [head_dim] output and
@@ -784,7 +803,7 @@ static bool attention_heads_grouped_neon(const float               *q,
     const size_t hi0   = q_offset < n_kv ? q_offset : n_kv - 1;
     size_t       len = ATTN_SPLIT_CHUNK, base = 0, parts = 1;
     if (items <= ATTN_SPLIT_MAX_ITEMS && head_dim <= ATTN_SPLIT_MAX_HEAD_DIM && hi0 >= lo0 &&
-        hi0 - lo0 + 1 >= 2 * ATTN_SPLIT_CHUNK) {
+        attn_split_decode_on() && hi0 - lo0 + 1 >= 2 * ATTN_SPLIT_CHUNK) {
         for (;;) {
             base  = lo0 / len * len;
             parts = (hi1 - base) / len + 1;

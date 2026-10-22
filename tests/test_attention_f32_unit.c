@@ -8,13 +8,14 @@
  * desc->prims->attention is what the transformer calls with an FP32 cache.
  * Each backend has its own: cpu_neon NEON rows, up to four query heads of
  * one KV head together where that gives every thread an item (#16) and one
- * head a row otherwise, a decode step's long key range split into parts
- * merged at the end when it has few such items (cut at fixed key
- * positions: the same bytes on 1, 3 and 7 threads, checked here), cpu_x86 an AVX2 kernel that takes
- * every shape and plans its work (attention.c: passes of up to four heads of a KV group, prefill
- * items of up to four queries, decode split into chunks). The shapes cover every branch: MQA, GQA
- * and MHA, one query (decode) and many (prefill), head_dim 64, 128 and 256 (compiled for) and
- * others (20, 40 and 80 with their tails, 512), contexts on both sides of 512-position blocks,
+ * head a row otherwise, and with GEIST_ATTN_SPLIT_DECODE=1 (opt-in; the
+ * test re-runs itself with it set) a decode step's long key range split
+ * into parts merged at the end when it has few such items (cut at fixed
+ * key positions: the same bytes on 1, 3 and 7 threads, checked here), cpu_x86 an AVX2 kernel that
+ * takes every shape and plans its work (attention.c: passes of up to four heads of a KV group,
+ * prefill items of up to four queries, decode split into chunks). The shapes cover every branch:
+ * MQA, GQA and MHA, one query (decode) and many (prefill), head_dim 64, 128 and 256 (compiled for)
+ * and others (20, 40 and 80 with their tails, 512), contexts on both sides of 512-position blocks,
  * sliding windows, and each of cpu_x86's plans: passes of 1-4 heads, one, two or four queries an
  * item (the last one short), decode split into 2-4 chunks or not.
  *
@@ -28,6 +29,11 @@
  * the output in any float kernel (the reference, too), so those shapes get
  * 1e-4 rather than 2e-5.
  */
+/* setenv, execv on glibc; no-op on macOS. Must precede any system header. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "test_helpers.h"
 
 #include "par.h"
@@ -40,6 +46,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static uint64_t g_rng = 0x2545F4914F6CDD1Dull;
 static float    urand(void) { /* [-1, 1) */
@@ -266,7 +273,8 @@ static int run(struct geist_backend *be, const char *backend, const struct shape
     return thread_fails + geist_expect(st == GEIST_OK && nonfinite == 0 && worst <= tol, what);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    (void) argc;
     static const struct shape SHAPES[] = {
             /* decode, fewer than 16 (query, head) pairs: cpu_neon's reference path */
             {1, 4, 1, 64, 1, 0, 0.0f},
@@ -344,6 +352,17 @@ int main(void) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;
     }
-    printf("PASS: F32 and F16-KV attention match the double reference on every CPU backend\n");
+    const char *split = getenv("GEIST_ATTN_SPLIT_DECODE");
+    printf("PASS: F32 and F16-KV attention match the double reference on every CPU backend%s\n",
+           split != nullptr ? " (cpu_neon split decode on)" : "");
+    /* cpu_neon reads its opt-in split decode once per process: run again
+     * with it on, so both paths are checked. */
+    if (split == nullptr) {
+        setenv("GEIST_ATTN_SPLIT_DECODE", "1", 1);
+        fflush(stdout);
+        execv(argv[0], argv);
+        perror("execv");
+        return GEIST_TEST_FAIL;
+    }
     return GEIST_TEST_PASS;
 }
