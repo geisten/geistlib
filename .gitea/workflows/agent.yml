@@ -1,0 +1,279 @@
+name: agent
+
+# Issue -> pull request by Claude Code, checked against the issue.
+#
+#   work    an issue labelled `agent`: a headless Claude Code run works it on
+#           branch agent/issue-<n> and the job opens the PR at once ("Closes
+#           #<n>"). Where the issue is unclear the agent takes the obvious
+#           reading and lists it under "Assumptions" in the PR; it never stops
+#           to ask. To restart from scratch, remove and re-add the label.
+#   review  every push to an agent/issue-<n> PR: a second, independent run
+#           sees only the issue and the diff, comments criterion by criterion
+#           and fails on "VERDICT: FAIL". Read-only; CI checks the build.
+#   fix     a PR comment starting with `/agent`: the agent continues on the
+#           PR's branch with that comment as feedback; its push starts the
+#           review again.
+#
+# The PR still takes CI, the ci-bot (the commits carry Claude's trailer, so
+# ci-bot may rebase them; label `automerge` as usual) and a human merge; the
+# agent cannot merge. Nothing timed runs here: no benchmarks, no real models,
+# no ssh to the Mac or the Pi (their locks).
+#
+# Issue, comment and PR texts reach the agent through files, never through
+# ${{ }} in a script, so they cannot inject shell. Only `germar` triggers
+# work and fix; the bot's own comments never start with `/agent`.
+#
+# Secrets: CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token` (the Claude
+# subscription; runs count against its usage limits, no API billing);
+# AGENT_BOT_TOKEN = a bot user with write access to the
+# repository and no admin or merge rights past branch protection. No Claude
+# step sees the bot token; checkout keeps no credentials.
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+# One run per issue or PR at a time; a fix and the review of its push queue.
+concurrency:
+  group: agent-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+
+jobs:
+  work:
+    if: >-
+      github.event_name == 'issues' && github.event.sender.login == 'germar' &&
+      contains(github.event.issue.labels.*.name, 'agent')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      N: ${{ github.event.issue.number }}
+      BRANCH: agent/issue-${{ github.event.issue.number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install deps
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14 jq
+      # clang-format: the version the tree is formatted with (ci.yml's job).
+      - name: Install clang-format 22 and Claude Code
+        run: |
+          sudo python3 -m pip install --break-system-packages clang-format==22.1.5
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Work the issue
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The container is the sandbox: no token, no ssh keys, thrown away.
+          IS_SANDBOX: "1"
+        run: |
+          git config user.name "geist-agent"
+          git config user.email "agent@geisten.net"
+          git switch -c "$BRANCH"
+          jq -r '"# #\(.issue.number): \(.issue.title)\n\n\(.issue.body // "")"' \
+            "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/issue.md"
+          claude -p --dangerously-skip-permissions --max-turns 200 <<EOF
+          Work the Gitea issue in $RUNNER_TEMP/issue.md in this repository
+          (geistlib). Read AGENT.md, CONTRIBUTING.md and the files the issue
+          touches before changing anything.
+
+          - Where the issue is unclear, take the most obvious reading and
+            go on; do not stop to ask.
+          - Implement it in small commits on the current branch. Each commit
+            message says why and ends with
+            "Co-Authored-By: Claude <noreply@anthropic.com>".
+            A user-visible change gets a changes/<slug>.md fragment.
+          - Before you finish, all of these must pass:
+              make format-check
+              make test-unit MODE=release TARGET=linux CC=gcc-14 AUTO_FETCH_MODEL=0
+            If one cannot pass, say why in the PR description.
+          - Do not push, do not run benchmarks or real models, do not ssh
+            anywhere, do not edit CHANGELOG.md or .gitea/workflows/.
+          - Finally write the PR description to $RUNNER_TEMP/pr.md following
+            .github/pull_request_template.md, with "Closes #$N" on its own
+            line and a section "## Assumptions" listing every reading you
+            chose where the issue left a choice (or "none").
+            Kernel, GPU or memory changes: say that the PR needs the label
+            ci:full.
+          EOF
+
+      - name: Push and open the PR
+        env:
+          TOKEN: ${{ secrets.AGENT_BOT_TOKEN }}
+        run: |
+          if [ -z "$(git rev-list origin/main..HEAD)" ]; then
+            echo "::error::the agent made no commit"; exit 1
+          fi
+          # ponytail: force is safe only because agent/* branches are the agent's alone
+          git push --force "${GITHUB_SERVER_URL%%://*}://x-access-token:$TOKEN@${GITHUB_SERVER_URL#*://}/$GITHUB_REPOSITORY.git" \
+            "HEAD:refs/heads/$BRANCH"
+          [ -s "$RUNNER_TEMP/pr.md" ] || printf 'Closes #%s\n' "$N" > "$RUNNER_TEMP/pr.md"
+          code=$(jq -n --rawfile b "$RUNNER_TEMP/pr.md" --arg h "$BRANCH" \
+                   --arg t "$(jq -r '"agent: " + .issue.title' "$GITHUB_EVENT_PATH")" \
+                   '{head: $h, base: "main", title: $t, body: $b}' |
+                 curl -sS -o /dev/null -w '%{http_code}' -X POST "$API/pulls" \
+                   -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' -d @-)
+          # 409: the PR of an earlier run exists; the push above updated it.
+          case $code in 201|409) ;; *) echo "::error::creating the PR returned $code"; exit 1 ;; esac
+
+  review:
+    if: github.event_name == 'pull_request' && startsWith(github.event.pull_request.head.ref, 'agent/issue-')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PR: ${{ github.event.pull_request.number }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install deps
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: jq
+      - name: Issue and diff
+        env:
+          TOKEN: ${{ secrets.AGENT_BOT_TOKEN }}
+        run: |
+          n=${HEAD_REF#agent/issue-}
+          case $n in ''|*[!0-9]*) echo "::error::no issue number in $HEAD_REF"; exit 1 ;; esac
+          curl -sSf -H "Authorization: token $TOKEN" "$API/issues/$n" |
+            jq -r '"# #\(.number): \(.title)\n\n\(.body // "")"' > "$RUNNER_TEMP/issue.md"
+          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/pr.md"
+          git diff "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/diff.patch"
+      - name: Install Claude Code
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Read-only tools: the reviewer judges, it does not fix.
+      - name: Review against the issue
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          claude -p --max-turns 60 \
+            --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*)" \
+            > "$RUNNER_TEMP/review.md" <<EOF
+          You review a pull request of geistlib written by another agent. You
+          did not write it; do not trust its description.
+
+          The requirements: the issue in $RUNNER_TEMP/issue.md. The change:
+          $RUNNER_TEMP/diff.patch (the tree is checked out at its head). The
+          PR description, including the author's assumptions:
+          $RUNNER_TEMP/pr.md.
+
+          Write in Markdown:
+          1. Every requirement / acceptance criterion of the issue, one line
+             each: ✅ met, ❌ not met, ⚠️ unclear, with the evidence (file:line).
+          2. Every assumption the PR lists: acceptable or not, and why.
+          3. Violations of AGENT.md in the changed lines (parameter order,
+             [static], heap.h, checked.h, bounds by subtraction, errors).
+             Formatting and the build are CI's job; skip them.
+          4. Anything the change does that the issue did not ask for.
+          Be short. The very last line is exactly "VERDICT: PASS" (every
+          requirement met, nothing in 3) or "VERDICT: FAIL".
+          EOF
+      - name: Comment, and fail on FAIL
+        env:
+          TOKEN: ${{ secrets.AGENT_BOT_TOKEN }}
+        run: |
+          jq -n --rawfile b "$RUNNER_TEMP/review.md" --arg sha "$HEAD_SHA" \
+              '{body: ("**Agent review** of " + $sha[0:8] + "\n\n" + $b)}' |
+            curl -sSf -o /dev/null -X POST "$API/issues/$PR/comments" \
+              -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' -d @-
+          tail -n 1 "$RUNNER_TEMP/review.md" | grep -qx 'VERDICT: PASS'
+
+  fix:
+    if: >-
+      github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+      github.event.sender.login == 'germar' && startsWith(github.event.comment.body, '/agent')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PR: ${{ github.event.issue.number }}
+    steps:
+      - name: The PR's branch
+        id: pr
+        env:
+          TOKEN: ${{ secrets.AGENT_BOT_TOKEN }}
+        run: |
+          curl -sSf -H "Authorization: token $TOKEN" "$API/pulls/$PR" > "$RUNNER_TEMP/pull.json"
+          # python3, not jq: jq comes with the apt step, which needs the checkout.
+          python3 -c 'import json,sys; print("ref=" + json.load(sys.stdin)["head"]["ref"])' \
+            < "$RUNNER_TEMP/pull.json" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pr.outputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install deps
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 15
+        with:
+          packages: gcc-14 jq
+      - name: Install clang-format 22 and Claude Code
+        run: |
+          sudo python3 -m pip install --break-system-packages clang-format==22.1.5
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Work the feedback
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          IS_SANDBOX: "1"
+        run: |
+          git config user.name "geist-agent"
+          git config user.email "agent@geisten.net"
+          jq -r '.comment.body' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/feedback.md"
+          jq -r '"# \(.title)\n\n\(.body // "")"' "$RUNNER_TEMP/pull.json" > "$RUNNER_TEMP/pr.md"
+          git rev-parse HEAD > "$RUNNER_TEMP/before"
+          claude -p --dangerously-skip-permissions --max-turns 200 \
+            > "$RUNNER_TEMP/summary.md" <<EOF
+          You continue work on a geistlib pull request: its description is in
+          $RUNNER_TEMP/pr.md, the review feedback to act on (a comment
+          starting with /agent) in $RUNNER_TEMP/feedback.md. The branch is
+          checked out; git diff origin/main...HEAD shows the work so far.
+          Follow AGENT.md.
+
+          - Commit on the current branch; each message says why and ends with
+            "Co-Authored-By: Claude <noreply@anthropic.com>".
+          - Before you finish, these must pass:
+              make format-check
+              make test-unit MODE=release TARGET=linux CC=gcc-14 AUTO_FETCH_MODEL=0
+          - Do not push, rebase or amend; do not run benchmarks or real
+            models, do not ssh anywhere, do not edit CHANGELOG.md or
+            .gitea/workflows/.
+          - Your final answer, in a few lines: what you changed, or why you
+            changed nothing.
+          EOF
+
+      - name: Push and report
+        env:
+          TOKEN: ${{ secrets.AGENT_BOT_TOKEN }}
+          REF: ${{ steps.pr.outputs.ref }}
+        run: |
+          if [ "$(git rev-parse HEAD)" != "$(cat "$RUNNER_TEMP/before")" ]; then
+            git push "${GITHUB_SERVER_URL%%://*}://x-access-token:$TOKEN@${GITHUB_SERVER_URL#*://}/$GITHUB_REPOSITORY.git" \
+              "HEAD:refs/heads/$REF"
+          fi
+          jq -n --rawfile b "$RUNNER_TEMP/summary.md" '{body: ("**Agent:** " + $b)}' |
+            curl -sSf -o /dev/null -X POST "$API/issues/$PR/comments" \
+              -H "Authorization: token $TOKEN" -H 'Content-Type: application/json' -d @-
