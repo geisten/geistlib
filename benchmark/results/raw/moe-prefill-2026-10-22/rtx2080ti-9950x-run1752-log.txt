@@ -1,0 +1,42 @@
+== cycle 1 geist-gpu (load 13.82)
+geist: moe: 2807 of 6144 experts (8190 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 88.5 %
+geist: moe: 276610 expert rows ran on vulkan, 169214 on the CPU
+geist: moe: 6156 GPU batches, mean us: pack 0.0, record 0.0, wait 0.0, unpack 0.0
+geist: moe: 5724 of them grouped (decode), mean wait 0.0 us
+  attention       72.15 ms    1.2%  (6624 calls)
+  ffn           6110.89 ms   98.8%  (6624 calls)
+  ple              0.00 ms    0.0%  (0 calls)
+  scale            0.00 ms    0.0%  (0 calls)
+  norm             4.85 ms    0.1%  (6624 calls)
+  router           8.39 ms    0.1%  (6624 calls)
+  route         1675.56 ms   27.4%  (6624 calls)
+  gather         131.45 ms    2.2%  (6624 calls)
+  experts       4205.67 ms   68.8%  (6624 calls)
+  sum             82.65 ms    1.4%  (6624 calls)
+  copy             0.08 ms    0.1%  (132 calls)
+  norm             0.14 ms    0.1%  (132 calls)
+  lm_head          0.18 ms    0.1%  (132 calls)
+  softcap          0.00 ms    0.0%  (0 calls)
+  sample         126.66 ms   99.7%  (132 calls)
+== geist-gpu cycle 1: exit 0 after 17 s
+== cycle 2 geist-gpu (load 15.18)
+geist: moe: 2807 of 6144 experts (8190 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 88.5 %
+geist: moe: 276610 expert rows ran on vulkan, 169214 on the CPU
+geist: moe: 6156 GPU batches, mean us: pack 0.0, record 0.0, wait 0.0, unpack 0.0
+geist: moe: 5724 of them grouped (decode), mean wait 0.0 us
+  attention       69.81 ms    1.1%  (6624 calls)
+  ffn           6274.27 ms   98.9%  (6624 calls)
+  ple              0.00 ms    0.0%  (0 calls)
+  scale            0.00 ms    0.0%  (0 calls)
+  norm             4.70 ms    0.1%  (6624 calls)
+  router           8.19 ms    0.1%  (6624 calls)
+  route         1774.30 ms   28.3%  (6624 calls)
+  gather         135.77 ms    2.2%  (6624 calls)
+  experts       4264.11 ms   68.0%  (6624 calls)
+  sum             85.00 ms    1.4%  (6624 calls)
+  copy             0.08 ms    0.1%  (132 calls)
+  norm             0.14 ms    0.1%  (132 calls)
+  lm_head          0.17 ms    0.1%  (132 calls)
+  softcap          0.00 ms    0.0%  (0 calls)
+  sample         135.51 ms   99.7%  (132 calls)
+== geist-gpu cycle 2: exit 0 after 18 s
