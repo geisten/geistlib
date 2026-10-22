@@ -229,6 +229,11 @@ struct geist_arch_config {
     size_t moe_n_experts;
     size_t moe_n_used;
     bool   moe_norm_topk;
+    /* 0 or 1: a shared expert every token runs, weighted by
+     * sigmoid(x . moe_shexp_gate) (qwen35moe, #169). It is routed as one
+     * more expert, slot moe_n_experts, so every placement of the routed
+     * experts (CPU, hot on a GPU) takes it as it is. */
+    size_t moe_n_shared;
     /* A family refuses more experts than this at load (blk_moe_ffn lists
      * the active experts of a layer on the stack). */
 #define GEIST_MOE_MAX_EXPERTS 512
@@ -297,5 +302,13 @@ struct geist_arch_config {
     size_t dn_head_v;      /* linear_value_head_dim  (0.8B: 128) */
     size_t dn_conv_kernel; /* causal depthwise conv width (4) */
 };
+
+/* The MoE's expert slots (routed, then shared) and selections per token. */
+static inline size_t moe_slots(const struct geist_arch_config *c) {
+    return c->moe_n_experts + c->moe_n_shared;
+}
+static inline size_t moe_k(const struct geist_arch_config *c) {
+    return c->moe_n_used + c->moe_n_shared;
+}
 
 #endif /* GEIST_INTERNAL_ARCH_TRANSFORMER_CONFIG_H */
