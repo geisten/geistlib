@@ -1,0 +1,14 @@
+{"cfg": "llama-real-24", "cycle": 1, "prefill_tps": 491.16054906377315, "decode_tps": 52.65687083020813}
+{"cfg": "llama-real-24", "cycle": 2, "prefill_tps": 487.3215494160231, "decode_tps": 52.82510315453215}
+{"cfg": "llama-real-28", "cycle": 1, "prefill_tps": 442.4247294685114, "decode_tps": 49.87893557565987}
+{"cfg": "llama-real-28", "cycle": 2, "prefill_tps": 442.6350966405552, "decode_tps": 49.96254775947479}
+{"cfg": "llama-real-32", "cycle": 1, "prefill_tps": 407.4175456912412, "decode_tps": 47.246619541573864}
+{"cfg": "llama-real-32", "cycle": 2, "prefill_tps": 400.69213305170103, "decode_tps": 47.620833177097}
+{"cfg": "llama-real-36", "cycle": 1, "prefill_tps": 372.2751025756057, "decode_tps": 44.754160463046986}
+{"cfg": "llama-real-36", "cycle": 2, "prefill_tps": 363.7001661513064, "decode_tps": 44.8080363742466}
+{"cfg": "llama-real-40", "cycle": 1, "prefill_tps": 342.6121904361681, "decode_tps": 42.43444046013635}
+{"cfg": "llama-real-40", "cycle": 2, "prefill_tps": 336.5171005896936, "decode_tps": 42.60296751473409}
+{"cfg": "llama-real-48", "cycle": 1, "prefill_tps": 293.7240015535246, "decode_tps": 37.8975173545265}
+{"cfg": "llama-real-48", "cycle": 2, "prefill_tps": 300.94155914765355, "decode_tps": 37.94341889325321}
+{"cfg":"geist-cpu","cycle":1,"seq_len":512,"decode_n":128,"prefill_ms":2048.90,"decode_ms":3590.52,"total_ms":5639.42,"ttft_ms":2048.90,"prefill_tps":249.890,"decode_tps":35.649,"total_tps":113.487,"prefill_ms_best":2047.83,"prefill_ms_worst":2049.97,"decode_ms_best":3586.81,"decode_ms_worst":3594.24,"total_ms_best":5636.78,"total_ms_worst":5642.07,"total_tps_best":113.540,"total_tps_worst":113.434,"agg":"mean","repeats":2,"repeats_requested":2,"warmup":8,"rss_mb":17526.21,"threads":0,"samples":{"prefill_ms":[2047.828,2049.967],"decode_ms":[3594.241,3586.809],"total_ms":[5642.069,5636.776],"ttft_ms":[2047.829,2049.967]}}
+{"cfg":"geist-cpu","cycle":2,"seq_len":512,"decode_n":128,"prefill_ms":2031.94,"decode_ms":3591.49,"total_ms":5623.43,"ttft_ms":2031.94,"prefill_tps":251.975,"decode_tps":35.640,"total_tps":113.809,"prefill_ms_best":2026.29,"prefill_ms_worst":2037.59,"decode_ms_best":3581.27,"decode_ms_worst":3601.70,"total_ms_best":5618.87,"total_ms_worst":5628.00,"total_tps_best":113.902,"total_tps_worst":113.717,"agg":"mean","repeats":2,"repeats_requested":2,"warmup":8,"rss_mb":17525.63,"threads":0,"samples":{"prefill_ms":[2037.594,2026.293],"decode_ms":[3581.274,3601.703],"total_ms":[5618.869,5627.996],"ttft_ms":[2037.595,2026.294]}}

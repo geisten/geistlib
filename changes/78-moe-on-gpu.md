@@ -14,6 +14,5 @@
   experts on the CPU and gives the GPU the hottest for decode steps —
   decode 41-43 tok/s against 34 on the CPU alone, prefill unchanged,
   perplexity 29.96 against 29.90. **Loaded on the GPU** (experimental) it
-  reaches 49-52 tok/s only on a pseudo-random prompt; on real text its card
-  idles at low clocks and the CPU's OpenMP workers sleep between the waits
-  on it: 2.5-16 tok/s (`changes/78-moe-real-text.md`).
+  decodes a real prompt at 57-60 tok/s in some runs and 2.3-2.5 in others
+  (`changes/78-moe-real-text.md`).
