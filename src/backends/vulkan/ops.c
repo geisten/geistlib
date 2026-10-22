@@ -1,3 +1,4 @@
+#include <stdlib.h>
 /*
  * src/backends/vulkan/ops.c — op implementations, resolver, probe, and the descriptor.
  *
@@ -892,6 +893,23 @@ static bool vk_q8_0_narrow(const struct vk_state *st, enum vk_pipe pipe, const s
     enum vk_pipe     cm   = pipe;
     uint32_t         gx   = vk_linear_gx(pipe, push->n_out);
     uint32_t         gy   = vk_linear_gy(pipe, m);
+    /* PQ2_0 at 2..15 tokens (speculative verify, #105): one weight decode
+     * for all tokens on the tensor cores, every SM busy at 32 rows per
+     * workgroup. */
+    if (pipe == VK_PIPE_MATMUL_PQ2_0 && m >= 2u && m < 16u && st->subgroup_size == 32u &&
+        push->n_in % 128u == 0 && push->x_offset % 4u == 0 && push->x_stride % 4u == 0 &&
+        st->pipes[VK_PIPE_MM_PQ2_0_M16_CM] != VK_NULL_HANDLE &&
+        getenv("GEIST_EXP_NO_PQ2_M16") == nullptr /* EXP: A/B switch, remove before PR */) {
+        return vk_seq_dispatch_acc(be,
+                                   VK_PIPE_MM_PQ2_0_M16_CM,
+                                   infos,
+                                   acc,
+                                   push,
+                                   sizeof(*push),
+                                   (push->n_out + 31u) / 32u,
+                                   1,
+                                   1);
+    }
     if (vk_q8_0_narrow(st, pipe, push)) {
         return vk_seq_dispatch_acc(be,
                                    VK_PIPE_MATVEC_Q8_0_MT,

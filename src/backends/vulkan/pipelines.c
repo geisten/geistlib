@@ -43,6 +43,7 @@
 #include "shaders/matmul_f32_spv.h"
 #include "shaders/matmul_pq2_0_f32acc_cm_spv.h"
 #include "shaders/matmul_pq2_0_t64_cm_spv.h"
+#include "shaders/matmul_pq2_0_m16_cm_spv.h"
 #include "shaders/matmul_pq2_0_cm_spv.h"
 #include "shaders/matmul_pq2_0_spv.h"
 #include "shaders/matmul_q4_0_spv.h"
