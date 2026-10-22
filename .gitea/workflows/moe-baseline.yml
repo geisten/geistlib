@@ -49,6 +49,10 @@ on:
         description: "bench_perf_sweep arguments besides --gguf"
         type: string
         default: "--seq-lens 512 --decode-n 32 --warmup 8 --repeats 3 --m-max 128"
+      nll:
+        description: "bench_nll configurations, separated by ; (cpu, hot, gpu; scalar = cpu_scalar, the reference)"
+        type: string
+        default: "cpu;hot;gpu"
       build:
         description: "extra make variables for geistlib, e.g. OPENMP=0 (its own spinning thread pool)"
         type: string
@@ -123,14 +127,16 @@ jobs:
         continue-on-error: true
         env:
           XENV: ${{ inputs.env }}
+          NLLCFG: ${{ inputs.nll }}
         run: |
           set -o pipefail
           . scripts/gpu-lock.sh
           NLL="$GBIN"/bench_nll
           XNLL=$(echo "$XENV" | tr ';' ' ')
-          for cfg in cpu hot gpu; do
+          for cfg in $(echo "$NLLCFG" | tr ';' ' '); do
             B=cpu_x86
             case $cfg in
+              scalar) X=; B=cpu_scalar ;;
               hot) X="GEIST_MOE_PROFILE=$PROFILE GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto" ;;
               gpu) X="GEIST_MOE_PROFILE=$PROFILE"; B=vulkan ;;
               *) X= ;;
