@@ -38,7 +38,7 @@ for case, line in enumerate(sys.stdin):
     logits = [2., 1., 0., -1.]
     total = sum(math.exp(x - 2.) for x in logits)
     probabilities = [math.exp(x - 2.) / total for x in logits]
-    for trial in range(2):
+    for trial in range(1 + int(args[5]) + int(args[6])):
         for order, mode in enumerate(modes):
             s = {"kind": "sample", "case_index": case, "mode": mode, "trial": trial,
                  "phase": "first" if trial == 0 else "warm", "order": order, "elapsed_ms": 10.,
@@ -155,7 +155,8 @@ class CampaignTests(unittest.TestCase):
                                binary=binary, backend="metal", threads=1, decode_cap=4, warmup=0,
                                repeats=1, margin_pp=2., calibration=None, out_dir=root / "run",
                                chunk_questions=10, deadline_minutes=1., cool_max_c=65.,
-                               cool_timeout_minutes=1., status=False, calibration_modes=None, import_from=None)
+                               cool_timeout_minutes=1., status=False, calibration_modes=None, import_from=None,
+                               core_arms=False, spotcheck=0, spotcheck_seed="s")
 
     def test_import_reuses_complete_samples_without_driver_calls(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -205,6 +206,37 @@ class CampaignTests(unittest.TestCase):
             self.assertEqual(meta["development_sample"]["population"], 10)
             with self.assertRaises(FileExistsError):
                 module.derive(root, root / "sample", "development", 4, "seed")
+
+
+    def test_single_trial_core_arms_with_determinism_spotcheck(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = self.setup_run(root, 6)
+            args.repeats, args.core_arms, args.spotcheck = 0, True, 2
+            args.spotcheck_seed = "seed"
+            log = root / "calls.log"
+            gate = {"cool_gate": "temperature", "cool_wait_seconds": 0, "gpu_temp_c": 50., "cpu_temp_c": 50.}
+            with (
+                patch.object(campaign.bench_host, "wait_for_apple_cool", return_value=gate),
+                patch.object(campaign.bench_host, "find_macmon", return_value=None),
+                patch.object(ev.bench, "command_output", return_value="test"),
+                patch.dict(os.environ, {"FAKE_LOG": str(log), "FAKE_STALL_AFTER": "-1"}),
+            ):
+                value = campaign.run(args)  # all 6 questions, one trial each
+                self.assertEqual((value["complete"], value["spotcheck_pending"]), (6, 2))
+                self.assertFalse((args.out_dir / "report.json").exists())
+                value = campaign.run(args)  # the spot-check chunk, then the report
+                self.assertEqual(value["pending"], 0)
+            modes = {line.split()[0] for line in log.read_text().splitlines()}
+            self.assertEqual(modes, {"decision_dense", "generate_long"})  # no cloze, no reference arms
+            report = ev.read_json(args.out_dir / "report.json")
+            self.assertEqual(set(report["profiles"]), {"chat_direct", "chat_reasoning"})
+            self.assertEqual(set(report["profiles"]["chat_direct"]["modes"]), {"decision_dense", "decision_selected"})
+            spot = report["determinism_spotcheck"]
+            self.assertTrue(spot["deterministic"])
+            self.assertEqual(spot["by_arm"]["chat_reasoning/generate_long"], {"questions": 2, "identical": 2})
+            self.assertEqual(len(spot["declared"]["question_ids"]), 2)
+            self.assertEqual(report["model_query_count_including_reference_arms_and_repeats"], 18)
 
 
 if __name__ == "__main__":

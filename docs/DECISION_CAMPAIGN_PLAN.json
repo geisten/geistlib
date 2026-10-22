@@ -264,6 +264,23 @@
         "reason": "The full campaign (about 56 chunks, about 20 h of shared Mac time, more at the measured prompt lengths) was too large. Calibration only fits a single temperature; 250 questions bound it well.",
         "reuse": "Calibration questions already completed under the earlier three-arm calibration run (same binary, model, tokenizer and policy binding) are imported if they fall in the sample; only their decision_dense samples are used.",
         "earlier_calibration_run": "3 chunks + 1 interrupted chunk, 136+ questions with three arms; retained as raw evidence, not used beyond the import"
+      },
+      {
+        "date": "2026-10-22",
+        "decided_by": "user",
+        "declared_before_test_inference": true,
+        "test_questions_inferred_at_declaration": 11,
+        "superseded_inference": "11 test questions had run under the earlier design (all arms, two trials) when this was decided. They were stopped, not inspected and are not used; the raw files are kept apart (run-test-superseded-2trial). The reported test run starts from zero under this amendment.",
+        "change": [
+          "Keep all 500 held-out test questions.",
+          "One trial per arm (--repeats 0) instead of a first call plus one warm repeat.",
+          "Determinism spot-check: after the main run, a second independent trial (separate process) on 20 test questions chosen by select_stratified with seed geist-decision-determinism-spotcheck-v1 (label-independent; the question IDs are frozen in the run manifest); numeric arms must match bit-exactly, generation token-for-token.",
+          "Core arms only (--core-arms): chat_direct decision_dense and decision_selected, chat_reasoning generate_long (cap 512). Dropped: scorealt_dense, generate_1 and the whole cloze profile."
+        ],
+        "arms_reason": "decision_dense gives the direct accuracy, the paired comparison and the calibration metrics; decision_selected carries the selected-vs-reasoning speedup and is checked bit-exact against dense on every question; generate_long is the reasoning baseline. scorealt_dense (independent reference parity), generate_1 (one-token generation) and cloze (a different prompt style) are not needed for the gate; none is mandatory in the frozen plan.",
+        "binary": "--repeats 0 needed bench_decision to accept zero repeats (argument check only), which changes the binary hash. The calibration binding includes the binary, so calibration is re-run on the new binary (250 questions, decision_dense, one trial); the earlier fit (T=1.0546, binary e1dac74e) is superseded and kept as evidence only.",
+        "reason": "Test phase at ~21 h of shared Mac time was too large; this design is ~6-7 h.",
+        "statistical_scope": "500 questions give an estimate of the direct-minus-reasoning accuracy difference with its conservative paired 95 % interval, not proof of the 2 pp non-inferiority margin; establishing that margin needs roughly 1500 or more questions (depends on the observed discordance)."
       }
     ]
   }

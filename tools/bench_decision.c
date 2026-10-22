@@ -141,7 +141,7 @@ int main(int argc, char **argv) {
     if ((enabled[4] && (!include_selected || !enabled[0])) || !arguments_valid ||
         !number(&prompt_cap, argv[3]) || !number(&candidate_cap, argv[4]) ||
         !number(&decode_n, argv[5]) || !number(&warmup, argv[6]) || !number(&repeats, argv[7]) ||
-        prompt_cap == 0 || candidate_cap == 0 || decode_n < 2 || repeats == 0 ||
+        prompt_cap == 0 || candidate_cap == 0 || decode_n < 2 ||
         prompt_cap > 1048576 || candidate_cap > 1048576 || decode_n > 32768 || warmup > 1000 ||
         repeats > 10000) {
         fprintf(stderr,

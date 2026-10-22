@@ -175,6 +175,12 @@ complete samples of an earlier run that has the identical binding and policy,
 for the questions and modes the new run declares (#171 amendment, see
 `held_out_campaign_171` in the plan).
 
+`--repeats 0` runs a single trial per question and arm (it is both the
+quality representative and the latency sample). `--core-arms` keeps only
+chat_direct dense/selected and chat_reasoning. `--spotcheck N` adds, after the
+main run, a second independent trial on N declared, label-independent
+questions and reports whether every arm reproduced bit-exactly.
+
 ```sh
 LOCK_PRIO=batch LOCK_MAX=30 LOCK_NOTE="#171 chunk" ~/bin/with-mac-lock \
   python3 tools/eval_decision_campaign.py <runner options> \

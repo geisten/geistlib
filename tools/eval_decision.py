@@ -30,6 +30,9 @@ PROFILES = {
     "chat_reasoning": ("generate_long",),
 }
 NUMERIC = {"decision_dense", "decision_selected", "scorealt_dense"}
+# What the quality gate needs (#171 amendment 2): direct score, selected rows
+# (the speedup arm, checked bit-exact against dense), the reasoning baseline.
+CORE_PROFILES = {"chat_direct": ("decision_dense", "decision_selected"), "chat_reasoning": ("generate_long",)}
 
 
 read_json = data.read_json
@@ -159,8 +162,11 @@ def summarize_profile(samples, rows, profile, modes, runtime, decode_cap, warmup
         first_times, per_case, warm_times = [], [], []
         for i, row in enumerate(rows):
             trials = sorted(grouped[(i, mode)], key=lambda s: s["trial"])
-            warm = [s for s in trials if s["phase"] == "warm"]
-            s = next(s for s in trials if s["trial"] == warmup + 1)
+            # With --repeats 0 each question/arm has a single trial (#171): it is
+            # both the quality representative and the latency sample.
+            warm = [s for s in trials if s["phase"] == "warm"] or trials[-1:]
+            pick = min(warmup + 1, len(trials) - 1)
+            s = trials[pick]
             case = row["profiles"][profile]
             meta = {k: row[k] for k in ("question_id", "split", "variant", "target_index", "subject")}
             if mode in NUMERIC:
@@ -177,7 +183,7 @@ def summarize_profile(samples, rows, profile, modes, runtime, decode_cap, warmup
                 decoded = [generation_outcome(t, row, profile == "chat_reasoning", eos,
                                               1 if mode == "generate_1" else decode_cap, runtime["vocab"])
                            for t in trials]
-                result = decoded[warmup + 1]
+                result = decoded[pick]
                 if any(t["generated_utf8_hex"] != s["generated_utf8_hex"]
                        or t["generated_text_complete"] != s["generated_text_complete"] for t in trials):
                     raise ValueError("generated surface changed between deterministic repeats")
@@ -280,7 +286,7 @@ def prepare_run(args):
     else:
         if getattr(args, "calibration_modes", None):
             raise ValueError("--calibration-modes applies to the calibration split only")
-        profiles = PROFILES
+        profiles = CORE_PROFILES if getattr(args, "core_arms", False) else PROFILES
     flats, commands = {}, {}
     for profile, modes in profiles.items():
         flats[profile] = [{"id": r["id"], "target_index": r["target_index"], **r["profiles"][profile]} for r in rows]
@@ -406,13 +412,15 @@ def main():
     p.add_argument("--warmup", type=int, required=True)
     p.add_argument("--repeats", type=int, required=True)
     p.add_argument("--calibration", type=Path)
+    p.add_argument("--core-arms", action="store_true",
+                   help="test/development: only chat_direct dense+selected and chat_reasoning")
     p.add_argument("--calibration-modes", type=lambda v: v.split(","),
                    help="calibration split only: numeric arms to run (default: all three)")
     p.add_argument("--out-dir", type=Path, required=True)
     args = p.parse_args()
     if (not 2 <= args.decode_cap <= 32768 or not 0 <= args.warmup <= 1000
-            or not 1 <= args.repeats <= 10000 or args.threads < 1
-            or not math.isfinite(args.margin_pp) or not 0 <= args.margin_pp <= 100):
+            or not 0 <= args.repeats <= 10000 or args.threads < 1
+            or (args.repeats == 0 and args.warmup) or not math.isfinite(args.margin_pp) or not 0 <= args.margin_pp <= 100):
         p.error("invalid decode/warmup/repeat/thread/margin bounds")
     run(args)
 
