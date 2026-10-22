@@ -14,5 +14,5 @@
   experts on the CPU and gives the GPU the hottest for decode steps —
   decode 41-43 tok/s against 34 on the CPU alone, prefill unchanged,
   perplexity 29.96 against 29.90. **Loaded on the GPU** (experimental) it
-  decodes a real prompt at 57-60 tok/s in some runs and 2.3-2.5 in others
-  (`changes/78-moe-real-text.md`).
+  decodes a real prompt at 54.5-61.2 tok/s, 3-16 % above llama.cpp's best
+  split, with weaker prefill (`changes/78-moe-real-text.md`).
