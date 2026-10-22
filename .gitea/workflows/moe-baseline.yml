@@ -151,15 +151,21 @@ jobs:
             echo "== llama-real ncmoe=$k" | tee -a out/log.txt
             "$SERVER" -m "$MODEL" -ngl 99 --n-cpu-moe "$k" -c 4096 -np 1 --port 8099 >> out/llama-server.log 2>&1 &
             pid=$!
-            python3 - "$k" "$CYCLES" <<'PY' | tee -a out/results.jsonl || true
+            python3 - "$k" "$CYCLES" "$pid" <<'PY' | tee -a out/results.jsonl || true
           import json, sys, time, urllib.request
-          k, cycles = sys.argv[1], int(sys.argv[2])
+          import os
+          k, cycles, pid = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
           base = "http://127.0.0.1:8099"
           def post(path, body):
               r = urllib.request.Request(base + path, data=json.dumps(body).encode(),
                                          headers={"Content-Type": "application/json"})
               return json.load(urllib.request.urlopen(r, timeout=600))
-          for _ in range(600):  # model load
+          for _ in range(600):  # model load; a server that died (no room on the card) ends it
+              try:
+                  os.kill(pid, 0)
+              except OSError:
+                  print(json.dumps({"cfg": "llama-real-" + k, "error": "server exited"}))
+                  sys.exit(0)
               try:
                   if json.load(urllib.request.urlopen(base + "/health", timeout=5)).get("status") == "ok":
                       break
@@ -176,7 +182,8 @@ jobs:
                                     "prefill_tps": t["prompt_per_second"],
                                     "decode_tps": t["predicted_per_second"]}))
           PY
-            kill $pid; wait $pid 2>/dev/null || true
+            kill $pid 2>/dev/null || true
+            wait $pid 2>/dev/null || true
           done
       - name: Measure, interleaved
         run: |
