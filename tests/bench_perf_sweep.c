@@ -27,6 +27,9 @@
  *                              bypasses the sampler entirely)
  *   --top-k N                  top-k filter when --temperature > 0 (default 0)
  *   --vocab N                  pseudo-random token range upper bound
+ *   --prompt-file F            the prompt is F's tokens instead (repeated to
+ *                              the length), so a mixture of experts routes as
+ *                              on real text
  *                              (default 32000 — works for Llama2 SP and Llama3 BPE)
  *   --threads N                informational only; the active thread count is
  *                              controlled by OMP_NUM_THREADS. We echo it back
@@ -148,6 +151,7 @@ int main(int argc, char **argv) {
     int         repeats     = 10;
     int         m_max       = 0;
     int         vocab_cap   = 32000;
+    const char *prompt_file = nullptr;
     int         threads     = 0;    /* informational; the runtime reads OMP_NUM_THREADS. */
     float       temperature = 0.0f; /* 0 = greedy; >0 engages the sampler */
     int         top_k       = 0;
@@ -171,6 +175,8 @@ int main(int argc, char **argv) {
             temperature = (float) atof(argv[++i]);
         } else if (strcmp(argv[i], "--top-k") == 0 && i + 1 < argc) {
             top_k = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--prompt-file") == 0 && i + 1 < argc) {
+            prompt_file = argv[++i];
         } else if (strcmp(argv[i], "--vocab") == 0 && i + 1 < argc) {
             if (!parse_nonnegative_int(argv[++i], &vocab_cap) || vocab_cap < 2)
                 return GEIST_TEST_ERROR;
@@ -321,6 +327,39 @@ int main(int argc, char **argv) {
     }
     for (int i = 0; i < max_seq; i++) {
         ids[i] = 1 + (geist_token_t) ((i * 2654435761u) % (unsigned) (vocab_cap - 1));
+    }
+    if (prompt_file != nullptr) {
+        FILE  *f    = fopen(prompt_file, "rb");
+        char  *text = nullptr;
+        long   len  = -1;
+        size_t nt   = 0;
+        if (f != nullptr && fseek(f, 0, SEEK_END) == 0 && (len = ftell(f)) > 0 &&
+            fseek(f, 0, SEEK_SET) == 0 && (text = malloc((size_t) len + 1)) != nullptr &&
+            fread(text, 1, (size_t) len, f) == (size_t) len) {
+            text[len]          = '\0';
+            geist_token_t *tok = malloc(((size_t) len + 16) * sizeof *tok);
+            if (tok != nullptr &&
+                geist_session_tokenize(sess, text, (size_t) len + 16, tok, &nt) == GEIST_OK &&
+                nt > 0) {
+                for (int i = 0; i < max_seq; i++)
+                    ids[i] = tok[(size_t) i % nt];
+            } else {
+                nt = 0;
+            }
+            free(tok);
+        }
+        free(text);
+        if (f != nullptr)
+            fclose(f);
+        if (nt == 0) {
+            fprintf(stderr, "--prompt-file %s: no tokens\n", prompt_file);
+            free(ids);
+            geist_session_destroy(sess);
+            geist_model_destroy(model);
+            geist_backend_destroy(be);
+            return GEIST_TEST_ERROR;
+        }
+        fprintf(stderr, "[bench] prompt: %zu tokens of %s\n", nt, prompt_file);
     }
 
     /* WARMUP PHASE (discarded, not measured) — one prefill + a few decode
