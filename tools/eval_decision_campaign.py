@@ -50,12 +50,22 @@ def read_lines(path):
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
 
 
-def collect(out_dir, rows, profiles, warmup, repeats, backend):
-    """profile -> {row index: samples}; runtime records; seconds of driver wall time per profile."""
+def is_spotcheck(chunk):
+    return (chunk / "chunk.json").exists() and bool(ev.read_json(chunk / "chunk.json").get("spotcheck"))
+
+
+def collect(out_dir, rows, profiles, warmup, repeats, backend, spotcheck=False):
+    """profile -> {row index: samples}; runtime records; seconds of driver wall time per profile.
+
+    Determinism spot-check chunks (a second, independent trial on a declared
+    subset) are kept apart from the main samples: spotcheck=True collects them.
+    """
     trials = 1 + warmup + repeats
     done = {p: {} for p in profiles}
     runtimes, walls = [], {p: 0. for p in profiles}
     for chunk in chunk_dirs(out_dir):
+        if is_spotcheck(chunk) != spotcheck:
+            continue
         for profile, modes in profiles.items():
             index_path = chunk / f"{profile}.rows.json"
             if not index_path.exists():
@@ -96,19 +106,30 @@ def collect(out_dir, rows, profiles, warmup, repeats, backend):
     return done, runtimes, walls
 
 
+def spotcheck_rows(rows, args):
+    if not getattr(args, "spotcheck", 0):
+        return []
+    chosen, _ = ev.data.select_stratified(rows, args.spotcheck, seed=args.spotcheck_seed)
+    keep = {r["question_id"] for r in chosen}
+    return [i for i, r in enumerate(rows) if r["question_id"] in keep]
+
+
 def status(out_dir, rows, profiles, args):
     done, _, _ = collect(out_dir, rows, profiles, args.warmup, args.repeats, args.backend)
     pending = [i for i in range(len(rows)) if any(i not in done[p] for p in profiles)]
+    spot, _, _ = collect(out_dir, rows, profiles, args.warmup, args.repeats, args.backend, spotcheck=True)
+    spot_pending = [i for i in spotcheck_rows(rows, args) if any(i not in spot[p] for p in profiles)]
     seconds = 0.
     for chunk in chunk_dirs(out_dir):
         info = ev.read_json(chunk / "chunk.json")
         if info.get("ended_unix"):
             seconds += info["ended_unix"] - info["started_unix"]
-    value = {"questions": len(rows), "complete": len(rows) - len(pending), "pending": len(pending),
+    value = {"questions": len(rows), "complete": len(rows) - len(pending),
+             "pending": len(pending) + len(spot_pending), "spotcheck_pending": len(spot_pending),
              "complete_by_profile": {p: len(done[p]) for p in profiles},
              "chunks": len(chunk_dirs(out_dir)), "chunk_seconds_total": round(seconds, 1)}
     ev.write_json(out_dir / "status.json", value)
-    return value, done, pending
+    return value, done, (pending, spot_pending)
 
 
 class TempLog:
@@ -218,7 +239,8 @@ def thermal_latency(samples_by_profile, profiles, temps, backend, limit):
     result = {}
     for profile, modes in profiles.items():
         for mode in modes:
-            warm = [s for s in samples_by_profile[profile] if s["mode"] == mode and s["phase"] == "warm"]
+            mine = [s for s in samples_by_profile[profile] if s["mode"] == mode]
+            warm = [s for s in mine if s["phase"] == "warm"] or mine  # --repeats 0: the single trial
             annotated = []
             for s in warm:
                 temp = None
@@ -242,6 +264,29 @@ def thermal_latency(samples_by_profile, profiles, temps, backend, limit):
     return result
 
 
+def spotcheck_report(args, rows, profiles, done, manifest):
+    """Second independent trial (another process and chunk) vs the main trial: bit-exact or not."""
+    spot, _, _ = collect(args.out_dir, rows, profiles, args.warmup, args.repeats, args.backend, spotcheck=True)
+    result, mismatches = {}, []
+    for profile, modes in profiles.items():
+        for mode in modes:
+            same = n = 0
+            for i in spotcheck_rows(rows, args):
+                a = [s for s in done[profile][i] if s["mode"] == mode]
+                b = [s for s in spot[profile][i] if s["mode"] == mode]
+                keys = ("best_index", "logits") if mode in ev.NUMERIC else ("generated_ids", "generated_utf8_hex")
+                n += 1
+                if all(x.get(k) == y.get(k) for x, y in zip(a, b) for k in keys) and len(a) == len(b):
+                    same += 1
+                else:
+                    mismatches.append({"question_id": rows[i]["question_id"], "profile": profile, "mode": mode})
+            result[f"{profile}/{mode}"] = {"questions": n, "identical": same}
+    return {"declared": manifest["determinism_spotcheck"], "by_arm": result, "mismatches": mismatches,
+            "deterministic": not mismatches,
+            "scope": "Exact logits/argmax for numeric arms, exact greedy token IDs and surface bytes for generation; "
+                     "the second trial ran in a separate process after the main run."}
+
+
 def finalize(args, meta, rows, bound, calibration, profiles, manifest, done):
     cases = {p: bench.cases_from_jsonl(args.out_dir / f"{p}.cases.jsonl") for p in profiles}
     _, runtimes, walls = collect(args.out_dir, rows, profiles, args.warmup, args.repeats, args.backend)
@@ -262,6 +307,8 @@ def finalize(args, meta, rows, bound, calibration, profiles, manifest, done):
                                        for c in chunk_dirs(args.out_dir) for p in c.glob("*.run.json")),
         "scope": "Chunked under the host lock; each driver run started on a cool chip, model loaded per run. "
                  "Mode order inside a run rotates with the case index within that run, not the global index."}
+    if getattr(args, "spotcheck", 0):
+        report["determinism_spotcheck"] = spotcheck_report(args, rows, profiles, done, manifest)
     report["latency_by_start_temperature"] = thermal_latency(
         {p: o[1] for p, o in outputs.items()}, profiles, temperatures(args.out_dir), args.backend, args.cool_max_c)
     ev.write_json(args.out_dir / "report.json", report)
@@ -333,6 +380,12 @@ def import_samples(args, rows, profiles, cases, manifest):
 def run(args):
     deadline = time.time() + args.deadline_minutes * 60  # wall clock, see run_driver
     meta, rows, env, bound, calibration, profiles, flats, commands, manifest = ev.prepare_run(args)
+    if getattr(args, "spotcheck", 0):
+        manifest["determinism_spotcheck"] = {
+            "questions": args.spotcheck, "seed": args.spotcheck_seed,
+            "policy": "decision_dataset.select_stratified over the prepared rows: subject-proportional quotas, "
+                      "within a subject by sha256([seed, question_id]); label-independent",
+            "question_ids": [rows[i]["question_id"] for i in spotcheck_rows(rows, args)]}
     frozen = args.out_dir / "manifest.json"
     if frozen.exists():
         old = ev.read_json(frozen)
@@ -349,17 +402,20 @@ def run(args):
         ev.write_json(frozen, manifest)  # frozen before any labelled inference
     if getattr(args, "import_from", None) and not chunk_dirs(args.out_dir):
         print(json.dumps({"imported": import_samples(args, rows, profiles, cases, manifest)}))
-    value, done, pending = status(args.out_dir, rows, profiles, args)
-    if args.status or not pending:
-        if not pending and not (args.out_dir / "report.json").exists():
+    value, done, (pending, spot_pending) = status(args.out_dir, rows, profiles, args)
+    if args.status or not (pending or spot_pending):
+        if not (pending or spot_pending) and not (args.out_dir / "report.json").exists():
             print(finalize(args, meta, rows, bound, calibration, profiles, manifest, done))
         print(json.dumps(value))
         return value
-    batch = pending[:args.chunk_questions]
+    spotcheck = not pending  # the second trial runs after the main run is complete
+    batch = pending[:args.chunk_questions] if pending else spot_pending[:args.chunk_questions]
+    if spotcheck:
+        done, _, _ = collect(args.out_dir, rows, profiles, args.warmup, args.repeats, args.backend, spotcheck=True)
     chunk = args.out_dir / "chunks" / f"{len(chunk_dirs(args.out_dir)):04d}"
     chunk.mkdir(parents=True)
     info = {"started_unix": time.time(), "rows": batch, "lock_note": os.environ.get("LOCK_NOTE"),
-            "deadline_minutes": args.deadline_minutes, "runs": {}}
+            "deadline_minutes": args.deadline_minutes, "spotcheck": spotcheck, "runs": {}}
     ev.write_json(chunk / "chunk.json", info)
     temps = TempLog(chunk / "temps.jsonl")
     try:
@@ -380,8 +436,8 @@ def run(args):
         temps.close()
         info["ended_unix"] = time.time()
         ev.write_json(chunk / "chunk.json", info)
-    value, done, pending = status(args.out_dir, rows, profiles, args)
-    if not pending:
+    value, done, (pending, spot_pending) = status(args.out_dir, rows, profiles, args)
+    if not (pending or spot_pending):
         print(finalize(args, meta, rows, bound, calibration, profiles, manifest, done))
     print(json.dumps(value))
     return value
@@ -402,6 +458,11 @@ def main():
     p.add_argument("--calibration", type=Path)
     p.add_argument("--calibration-modes", type=lambda v: v.split(","),
                    help="calibration split only: numeric arms to run (default: all three)")
+    p.add_argument("--core-arms", action="store_true",
+                   help="test/development: only chat_direct dense+selected and chat_reasoning")
+    p.add_argument("--spotcheck", type=int, default=0,
+                   help="after the main run, a second independent trial on N declared questions")
+    p.add_argument("--spotcheck-seed", default="geist-decision-determinism-spotcheck-v1")
     p.add_argument("--import-from", type=Path,
                    help="an earlier run of the same binding: reuse its complete samples of these modes")
     p.add_argument("--chunk-questions", type=int, required=True, help="pending questions per invocation")
@@ -411,7 +472,8 @@ def main():
     p.add_argument("--status", action="store_true", help="report progress (and finalize if complete); no inference")
     args = p.parse_args()
     if (not 2 <= args.decode_cap <= 32768 or not 0 <= args.warmup <= 1000
-            or not 1 <= args.repeats <= 10000 or args.threads < 1 or args.chunk_questions < 1
+            or not 0 <= args.repeats <= 10000 or (args.repeats == 0 and args.warmup)
+            or args.threads < 1 or args.chunk_questions < 1 or args.spotcheck < 0
             or not args.deadline_minutes > 0 or not math.isfinite(args.margin_pp) or not 0 <= args.margin_pp <= 100):
         p.error("invalid decode/warmup/repeat/thread/chunk/deadline/margin bounds")
     run(args)
