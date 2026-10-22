@@ -1,0 +1,14 @@
+== nll cpu
+== nll hot
+geist: moe: 3158 of 6144 experts (9214 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 91.8 %
+geist: moe: 307209 expert rows ran on vulkan, 85623 on the CPU
+geist: moe: 49076 GPU batches, mean us: pack 1.7, record 5.1, wait 186.4, unpack 1.9
+geist: moe: 0 one-wait layers, mean us: launch 0.0, cold region 0.0; 0.00 cold experts per layer
+geist: moe: 49076 of them grouped (decode), mean wait 186.4 us
+== nll gpu
+geist: moe: 2804 of 6144 experts (8181 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 88.5 %
+geist: moe: cold region: 32 threads, 0 tasks, omp_in_parallel 0, cpu cpu_x86
+geist: moe: 281091 expert rows ran on vulkan, 111741 on the CPU
+geist: moe: 48998 GPU batches, mean us: pack 0.0, record 0.0, wait 0.0, unpack 0.0
+geist: moe: 48998 one-wait layers, mean us: launch 9.3, cold region 133.8; 2.26 cold experts per layer
+geist: moe: 48998 of them grouped (decode), mean wait 0.0 us

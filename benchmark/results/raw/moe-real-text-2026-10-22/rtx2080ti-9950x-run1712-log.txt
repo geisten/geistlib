@@ -1,0 +1,44 @@
+== cycle 1 geist-gpu (load 15.57)
+geist: moe: 2807 of 6144 experts (8190 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 88.5 %
+geist: moe: 91259 expert rows ran on vulkan, 59653 on the CPU
+geist: moe: 12436 GPU batches, mean us: pack 9.0, record 4.2, wait 49.5, unpack 0.8
+geist: moe: 12292 one-wait layers, mean us: launch 8.5, cold region 177.5; 3.26 cold experts per layer
+geist: moe: 12292 of them grouped (decode), mean wait 0.0 us
+  attention      111.84 ms    2.2%  (12480 calls)
+  ffn           5019.90 ms   97.8%  (12480 calls)
+  ple              0.00 ms    0.0%  (0 calls)
+  scale            0.00 ms    0.0%  (0 calls)
+  norm             8.47 ms    0.2%  (12480 calls)
+  router          12.42 ms    0.2%  (12480 calls)
+  route         1692.29 ms   33.7%  (12480 calls)
+  gather          35.78 ms    0.7%  (12480 calls)
+  experts       3226.79 ms   64.3%  (12480 calls)
+  sum             41.19 ms    0.8%  (12480 calls)
+  copy             0.08 ms    0.0%  (260 calls)
+  norm             0.20 ms    0.1%  (260 calls)
+  lm_head          0.28 ms    0.1%  (260 calls)
+  softcap          0.00 ms    0.0%  (0 calls)
+  sample         229.29 ms   99.8%  (260 calls)
+== geist-gpu cycle 1: exit 0 after 16 s
+== cycle 1 geist-gpu-s2 (load 13.96)
+geist: moe: 2807 of 6144 experts (8190 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 88.5 %
+geist: moe: 91259 expert rows ran on vulkan, 59653 on the CPU
+geist: moe: 12436 GPU batches, mean us: pack 8.5, record 3.8, wait 48.3, unpack 0.8
+geist: moe: 12292 one-wait layers, mean us: launch 8.7, cold region 184.1; 3.26 cold experts per layer
+geist: moe: 12292 of them grouped (decode), mean wait 0.0 us
+  attention      114.09 ms    2.2%  (12480 calls)
+  ffn           5085.33 ms   97.8%  (12480 calls)
+  ple              0.00 ms    0.0%  (0 calls)
+  scale            0.00 ms    0.0%  (0 calls)
+  norm             8.59 ms    0.2%  (12480 calls)
+  router          12.88 ms    0.3%  (12480 calls)
+  route         1721.45 ms   33.9%  (12480 calls)
+  gather          36.33 ms    0.7%  (12480 calls)
+  experts       3258.35 ms   64.1%  (12480 calls)
+  sum             44.76 ms    0.9%  (12480 calls)
+  copy             0.08 ms    0.0%  (260 calls)
+  norm             0.26 ms    0.1%  (260 calls)
+  lm_head          0.34 ms    0.1%  (260 calls)
+  softcap          0.00 ms    0.0%  (0 calls)
+  sample         226.49 ms   99.7%  (260 calls)
+== geist-gpu-s2 cycle 1: exit 0 after 16 s

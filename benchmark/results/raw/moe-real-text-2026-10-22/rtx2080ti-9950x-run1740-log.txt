@@ -1,0 +1,32 @@
+== nll cpu
+== nll hot
+geist: moe: 3159 of 6144 experts (9217 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 91.8 %
+geist: moe: 307279 expert rows ran on vulkan, 85553 on the CPU
+geist: moe: 49076 GPU batches, mean us: pack 2.0, record 6.2, wait 188.0, unpack 2.3
+geist: moe: 49076 of them grouped (decode), mean wait 188.0 us
+== nll gpu
+geist: moe: 2805 of 6144 experts (8184 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 88.5 %
+geist: moe: 281302 expert rows ran on vulkan, 111530 on the CPU
+geist: moe: 48998 GPU batches, mean us: pack 0.0, record 0.0, wait 0.0, unpack 0.0
+geist: moe: 48998 of them grouped (decode), mean wait 0.0 us
+== llama-real ncmoe=20
+== cycle 1 geist-cpu (load 0.01)
+[bench] prompt: 9090 tokens of docs/OFFLOAD.md
+== geist-cpu cycle 1: exit 0 after 15 s
+== cycle 1 geist-hot (load 1.75)
+geist: moe: 3086 of 6144 experts (9004 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 91.2 %
+[bench] prompt: 9090 tokens of docs/OFFLOAD.md
+geist: moe: 64240 expert rows ran on vulkan, 430736 on the CPU
+geist: moe: 12192 GPU batches, mean us: pack 1.7, record 6.3, wait 167.7, unpack 2.1
+geist: moe: 12192 of them grouped (decode), mean wait 167.7 us
+== geist-hot cycle 1: exit 0 after 22 s
+== cycle 2 geist-cpu (load 1.98)
+[bench] prompt: 9090 tokens of docs/OFFLOAD.md
+== geist-cpu cycle 2: exit 0 after 15 s
+== cycle 2 geist-hot (load 1.79)
+geist: moe: 3158 of 6144 experts (9214 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 91.8 %
+[bench] prompt: 9090 tokens of docs/OFFLOAD.md
+geist: moe: 71014 expert rows ran on vulkan, 423962 on the CPU
+geist: moe: 12228 GPU batches, mean us: pack 1.7, record 4.9, wait 186.3, unpack 1.9
+geist: moe: 12228 of them grouped (decode), mean wait 186.3 us
+== geist-hot cycle 2: exit 0 after 21 s

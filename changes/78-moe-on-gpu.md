@@ -9,9 +9,10 @@
   decode that batch is four dispatches through the new
   `fused->linear_t_grouped` (Vulkan: grouped matvecs reading the weights by
   device address). Qwen3-30B-A3B Q4_K_M on an RTX 2080 Ti + Ryzen 9 9950X
-  (11 GB card, 18.6 GB model, 2,807 experts on the GPU): decode 49-52
-  tok/s against 34-36 on the CPU alone and 39.5-39.7 for llama.cpp
-  `-ot exps=CPU`; perplexity 30.06 against 29.90 on the CPU. Prefill is
-  still slower than on the CPU (215 vs 267 tok/s). Loaded on the CPU with a
-  GPU as split backend, the model keeps its experts on the CPU and gives
-  the GPU the hottest for decode steps.
+  (11 GB card, 18.6 GB model, 2,807 experts on the GPU), on a real prompt:
+  **loaded on the CPU with the GPU as split backend** — the model keeps its
+  experts on the CPU and gives the GPU the hottest for decode steps —
+  decode 41-43 tok/s against 34 on the CPU alone, prefill unchanged,
+  perplexity 29.96 against 29.90. **Loaded on the GPU** (experimental) it
+  decodes a real prompt at 54.5-61.2 tok/s, 3-16 % above llama.cpp's best
+  split, with weaker prefill (`changes/78-moe-real-text.md`).
