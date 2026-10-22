@@ -2138,6 +2138,70 @@ vk_linear_t_grouped(struct geist_backend            *be,
     return GEIST_OK;
 }
 
+/* ---- One wait per MoE layer (#161) ---------------------------------- */
+
+static void vk_submit(struct geist_backend *be) {
+    vk_seq_cut(be->state); /* a roll; with the ring full a flush, just as correct */
+}
+
+enum { VK_URING_BYTES = 1u << 20 };
+
+struct vk_push_wsum {
+    uint32_t d, n, y_offset, y_stride, a_offset, o_offset;
+    float    w[VK_GROUP_MAX];
+};
+static_assert(sizeof(struct vk_push_wsum) <= VK_PUSH_RANGE, "rows_wsum push block");
+
+[[nodiscard]] static enum geist_status vk_rows_weighted_sum(struct geist_backend *be,
+                                                            size_t                n,
+                                                            size_t                d,
+                                                            const float           w[static n],
+                                                            const float           add[static d],
+                                                            const struct geist_tensor *t_y,
+                                                            struct geist_tensor       *t_out) {
+    struct vk_state *st    = be->state;
+    const size_t     bytes = d * sizeof(float);
+    if (n > VK_GROUP_MAX || bytes > VK_URING_BYTES) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (st->uring == nullptr &&
+        vk_buffer_create(be, VK_URING_BYTES, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_HOST, &st->uring) !=
+                GEIST_OK) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    VkDescriptorBufferInfo bi[3];
+    uint32_t               yo, oo, ys, d32;
+    if (!vk_tensor_gpu(t_y, &bi[0], &yo) || !vk_tensor_gpu(t_out, &bi[2], &oo) ||
+        vk_ckd_u32(d, &d32) ||
+        vk_ckd_u32(t_y->ndim >= 2 ? (size_t) t_y->stride[t_y->ndim - 2] : d, &ys)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* The ring is free again only after a flush has waited; a dispatch that
+     * would flush on recording must not find its bytes reused. */
+    if (st->uring_used + bytes > VK_URING_BYTES || st->seq_dispatches + 1u >= VK_SEQ_MAX_DISPATCH) {
+        vk_seq_flush(st);
+    }
+    const size_t at = st->uring_used;
+    memcpy((uint8_t *) st->uring->mapped + at, add, bytes);
+    st->uring_used += (bytes + 255u) & ~(size_t) 255u;
+    struct vk_push_wsum push = {.d        = d32,
+                                .n        = (uint32_t) n,
+                                .y_offset = yo,
+                                .y_stride = ys,
+                                .a_offset = (uint32_t) (at / sizeof(float)),
+                                .o_offset = oo};
+    for (size_t j = 0; j < n; ++j) {
+        push.w[j] = w[j];
+    }
+    bi[1] = (VkDescriptorBufferInfo) {.buffer = st->uring->buf, .range = VK_WHOLE_SIZE};
+    const struct vk_access acc[3] = {
+            vk_acc((uint64_t) yo * 4u, ((uint64_t) (n > 0 ? n - 1 : 0) * ys + d) * 4u, false),
+            vk_acc((uint64_t) at, bytes, false),
+            vk_acc((uint64_t) oo * 4u, (uint64_t) bytes, true)};
+    return vk_seq_dispatch_acc(
+            be, VK_PIPE_ROWS_WSUM_ADD, bi, acc, &push, sizeof push, (d32 + 255u) / 256u, 1, 1);
+}
+
 [[nodiscard]] static enum geist_status vk_linear_t_pair(struct geist_backend      *be,
                                                         const struct geist_tensor *t_x,
                                                         const struct geist_weight *w0,
@@ -2833,6 +2897,8 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
     }
     struct vk_state *st = be->state;
     switch (q->op) {
+    case GEIST_FUSED_ROWS_WEIGHTED_SUM:
+        return q->m <= VK_GROUP_MAX;
     case GEIST_FUSED_LINEAR_GROUPED:
         return q->m == 1 && vk_grouped_weight(st, q->gate_w) != nullptr &&
                (q->up_w == nullptr || vk_grouped_weight(st, q->up_w) != nullptr) &&
@@ -2976,6 +3042,8 @@ static const struct geist_backend_fused vk_fused = {
         .linear_t                = vk_fb_linear_t,
         .linear_t_pair           = vk_fb_linear_t_pair,
         .linear_t_grouped        = vk_linear_t_grouped,
+        .submit                  = vk_submit,
+        .rows_weighted_sum       = vk_rows_weighted_sum,
         .rmsnorm_add             = vk_rmsnorm_add,
         .embedding_lookup_scaled = vk_fb_embedding_lookup_scaled,
         .argmax_f32              = vk_fb_argmax_f32,

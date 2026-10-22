@@ -46,6 +46,7 @@ struct transformer_layer_exec_plan {
      * (seq==1); _mN = prefill (any seq ≤ the session m cap). */
     bool fuse_ffn_norm_gate_up_m1; /* fused rmsnorm + gate/up front */
     bool fuse_ffn_gate_up_m1;      /* fused gate/up front (norm separate) */
+    bool fuse_ffn_gate_up_silu_m1; /* its SwiGLU twin: gate/up + silu*up (#17) */
     bool fuse_gelu_mul_scaled;     /* GEGLU epilogue with AWQ scale, any m */
     bool fuse_gelu_mul;            /* GEGLU epilogue, any m */
     bool fuse_silu_mul;            /* SwiGLU epilogue, any m */

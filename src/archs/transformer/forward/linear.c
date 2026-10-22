@@ -306,6 +306,15 @@ enum geist_status linear_w_triple_or_legacy(struct geist_backend            *be,
      * reads the activations once for both when the backend offers it. */
     if (fused->linear_t != nullptr && t_x != nullptr && t_w0 != nullptr && t_w1 != nullptr &&
         t_w2 != nullptr && t_y0 != nullptr && t_y1 != nullptr && t_y2 != nullptr) {
+        /* All three in one dispatch where the backend takes this shape and
+         * these dtypes; it declines before doing any work otherwise. */
+        if (fused->linear_t_triple != nullptr) {
+            const enum geist_status s3 = fused->linear_t_triple(
+                    be, t_x, w0, t_w0, w1, t_w1, w2, t_w2, seq, t_y0, t_y1, t_y2);
+            if (s3 != GEIST_E_UNSUPPORTED) {
+                return s3;
+            }
+        }
         enum geist_status ts = fused->linear_t(be, t_x, w0, t_w0, seq, t_y0);
         if (ts == GEIST_OK && fused->linear_t_pair != nullptr &&
             fused->linear_t_pair(be, t_x, w1, t_w1, w2, t_w2, seq, t_y1, t_y2) == GEIST_OK) {

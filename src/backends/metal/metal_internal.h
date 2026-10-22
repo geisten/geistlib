@@ -65,6 +65,8 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_Q6K_LINEAR_NT8,
     METAL_PROFILE_DISPATCH_Q4K_QK_BASE,
     METAL_PROFILE_DISPATCH_Q4K_QK_NT4,
+    METAL_PROFILE_DISPATCH_QKV3,
+    METAL_PROFILE_DISPATCH_Q80_GATE_UP,
     METAL_PROFILE_DISPATCH_F32_PLE_PROJ_NORM,
     METAL_PROFILE_DISPATCH_RMSNORM_ADD_ROWS,
     METAL_PROFILE_DISPATCH_ADD_NORM_ROWS,
@@ -283,6 +285,22 @@ struct metal_state {
     void *q4k_pair_n4_library;
     void *q4k_pair_n4_function;
     void *q4k_pair_n4_pipeline;
+    /* gate_up_silu_q4k_n4 and the Q8_0 gate/up kernels live in
+     * q4k_gate_up_n4_library (#17). */
+    void *q4k_gate_up_silu_n4_function;
+    void *q4k_gate_up_silu_n4_pipeline;
+    void *q80_gate_up_n4_function;
+    void *q80_gate_up_n4_pipeline;
+    void *q80_gate_up_silu_n4_function;
+    void *q80_gate_up_silu_n4_pipeline;
+    /* q/k/v decode matvecs in one dispatch, one kernel per dtype triple (#17) */
+    void *mv3_library;
+    void *mv3_q4k_q4k_q4k_function;
+    void *mv3_q4k_q4k_q4k_pipeline;
+    void *mv3_q4k_q4k_q6k_function;
+    void *mv3_q4k_q4k_q6k_pipeline;
+    void *mv3_q80_q80_q80_function;
+    void *mv3_q80_q80_q80_pipeline;
     void *embed_library;
     void *argmax_library;
     void *hadamard_library;

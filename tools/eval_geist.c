@@ -259,15 +259,16 @@ static int cmd_score(struct geist_session *s, char *args) {
     return 0;
 }
 
-/* The REPL is line-oriented, but prompts are multi-line; decode \n / \t / \\
- * escapes so a whole prompt fits on one line. Returns the NUL-terminated
- * result length (clamped to cap-1). */
+/* The REPL is line-oriented, but prompts are multi-line; decode \n / \t / \r /
+ * \\ escapes so a whole prompt fits on one line (a raw CR at the end of a
+ * line would be stripped as part of the line ending). Returns the
+ * NUL-terminated result length (clamped to cap-1). */
 static size_t unescape(const char *src, char *dst, size_t cap) {
     size_t w = 0;
     for (const char *p = src; *p && w + 1 < cap; p++) {
         if (*p == '\\' && p[1]) {
             p++;
-            dst[w++] = (*p == 'n') ? '\n' : (*p == 't') ? '\t' : *p;
+            dst[w++] = (*p == 'n') ? '\n' : (*p == 't') ? '\t' : (*p == 'r') ? '\r' : *p;
         } else {
             dst[w++] = *p;
         }

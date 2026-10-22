@@ -12,6 +12,10 @@
  * the resolved weights at m = 1 and no at m = 2, and a weight the registry
  * does not know makes the call GEIST_E_UNSUPPORTED before anything runs.
  *
+ * rows_weighted_sum (#161): out = add + sum_j w[j] * y[j] for 8 rows of
+ * 136, the host's add passed after a submit() of the grouped call that
+ * wrote y (nothing waited for), against the host sum to 1e-5 of its scale.
+ *
  * SKIPs when the Vulkan backend is not built, has no device, or the device
  * has no bufferDeviceAddress (the op is then absent by design).
  */
@@ -139,6 +143,36 @@ static int run_case(struct geist_backend *be, const struct qfmt *q, const char *
            err,
            scale);
     fails += geist_expect(scale > 0.0 && err <= 1e-5 * scale, "grouped matches single");
+
+    /* rows_weighted_sum onto y's first 8 rows, started but not waited for. */
+    if (f->submit != nullptr && f->rows_weighted_sum != nullptr && fails == 0) {
+        float wts[8], add[N_OUT], out[N_OUT];
+        for (size_t j = 0; j < 8; j++)
+            wts[j] = 0.25f * (float) (j + 1) - 1.0f;
+        for (size_t c = 0; c < N_OUT; c++)
+            add[c] = (float) rng_u8() / 32.0f - 4.0f;
+        fails +=
+                geist_expect(f->linear_t_grouped(be, N, wp, &tx, &ty) == GEIST_OK, "grouped again");
+        f->submit(be);
+        struct geist_tensor y8 = mat(by, 0, 8, N_OUT), o1 = mat(b1, 0, 1, N_OUT);
+        fails += geist_expect(f->rows_weighted_sum(be, 8, N_OUT, wts, add, &y8, &o1) == GEIST_OK,
+                              "rows_weighted_sum");
+        fails += geist_expect(v->buffer_download(sizeof out, (uint8_t *) out, b1) == GEIST_OK,
+                              "download the sum");
+        double e3 = 0.0, sc3 = 0.0;
+        for (size_t c = 0; c < N_OUT; c++) {
+            double ref = add[c];
+            for (size_t j = 0; j < 8; j++)
+                ref += (double) wts[j] * (double) yg[j * N_OUT + c];
+            e3  = fmax(e3, fabs(ref - (double) out[c]));
+            sc3 = fmax(sc3, fabs(ref));
+        }
+        printf("  %-4s: rows_weighted_sum after submit, max |d| %.3g of scale %.3g\n",
+               name,
+               e3,
+               sc3);
+        fails += geist_expect(e3 <= 1e-5 * sc3, "rows_weighted_sum matches the host");
+    }
 
     /* A weight the registry does not know: refused before anything runs. */
     struct geist_weight stranger = w[0];

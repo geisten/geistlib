@@ -235,6 +235,12 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
         }
         mg->n_hot++;
         covered += rank[k].count;
+        if (k == 0 && gf->submit != nullptr && gf->rows_weighted_sum != nullptr &&
+            gf->supported != nullptr) {
+            const struct geist_fusion_query q = {.op = GEIST_FUSED_ROWS_WEIGHTED_SUM,
+                                                 .m  = st->config.moe_n_used};
+            mg->one_wait                      = gbe == st->backend && gf->supported(gbe, &q);
+        }
         if (!mg->grouped[l] && gf->linear_t_grouped != nullptr && gf->supported != nullptr) {
             const struct geist_fusion_query q = {.op     = GEIST_FUSED_LINEAR_GROUPED,
                                                  .m      = 1,
@@ -453,4 +459,75 @@ enum geist_status moe_gpu_run(struct transformer_arch_session *sess,
     atomic_fetch_add_explicit(
             &mg->ns_unpack, transformer_profile_now_ns() - t3, memory_order_relaxed);
     return GEIST_OK;
+}
+
+bool moe_gpu_launchable(const struct transformer_arch_session *sess,
+                        size_t                                 layer,
+                        size_t                                 n_hot,
+                        const uint32_t                         hot[static n_hot]) {
+    const struct transformer_moe_gpu *mg = sess->model->moe_gpu;
+    if (mg == nullptr || !mg->one_wait || !mg->grouped[layer] || sess->moe_x_io == nullptr ||
+        n_hot == 0 || n_hot > sess->model->config.moe_n_used)
+        return false;
+    for (size_t i = 0; i < n_hot; i++)
+        if (sess->moe_row_start[hot[i] + 1] - sess->moe_row_start[hot[i]] != 1)
+            return false;
+    return true;
+}
+
+enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
+                                 size_t                           layer,
+                                 size_t                           n_hot,
+                                 const uint32_t                   hot[static n_hot]) {
+    const struct transformer_arch_state *st  = sess->model;
+    struct transformer_moe_gpu          *mg  = st->moe_gpu;
+    struct geist_backend                *gbe = mg->be;
+    const struct geist_backend_vtbl     *gv  = gbe->desc->vtbl;
+    const struct geist_backend_fused    *gf  = gbe->desc->fused;
+    const size_t                         d = st->d_model, n_exp = st->config.moe_n_experts;
+    const size_t                         inter = st->layers[layer].intermediate;
+    const struct geist_weight           *wg[GEIST_MOE_MAX_EXPERTS], *wu[GEIST_MOE_MAX_EXPERTS],
+            *wd[GEIST_MOE_MAX_EXPERTS];
+    enum geist_status s = GEIST_OK;
+    /* One token: every hot expert's input is x, already in VRAM. */
+    for (size_t i = 0; i < n_hot && s == GEIST_OK; i++) {
+        const struct geist_weight *tw = &mg->twins[(layer * n_exp + hot[i]) * 3];
+        wg[i]                         = &tw[0];
+        wu[i]                         = &tw[1];
+        wd[i]                         = &tw[2];
+        s                             = gv->buffer_copy(
+                sess->moe_gpu_x, i * d * sizeof(float), sess->scratch_pre_ff, 0, d * sizeof(float));
+    }
+    struct geist_tensor x = view_2d(sess->moe_gpu_x, (int64_t) n_hot, (int64_t) d);
+    struct geist_tensor g = view_2d(sess->moe_gpu_g, (int64_t) n_hot, (int64_t) inter);
+    struct geist_tensor u = view_2d(sess->moe_gpu_u, (int64_t) n_hot, (int64_t) inter);
+    if (s == GEIST_OK)
+        s = gf->linear_t_grouped(gbe, n_hot, wg, &x, &g);
+    if (s == GEIST_OK)
+        s = gf->linear_t_grouped(gbe, n_hot, wu, &x, &u);
+    if (s == GEIST_OK)
+        s = gf->silu_mul(gbe, &g, &u, &g);
+    /* ponytail: the outputs reuse x's rows (read by gate and up, which the
+     * backend's hazard tracking orders before this write). */
+    if (s == GEIST_OK)
+        s = gf->linear_t_grouped(gbe, n_hot, wd, &g, &x);
+    if (s == GEIST_OK) {
+        gf->submit(gbe);
+        atomic_fetch_add_explicit(&mg->rows_gpu, n_hot, memory_order_relaxed);
+        atomic_fetch_add_explicit(&mg->batches, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&mg->n_grouped, 1, memory_order_relaxed);
+    }
+    return s;
+}
+
+enum geist_status moe_gpu_finish(struct transformer_arch_session *sess,
+                                 size_t                           n_hot,
+                                 const float                      w[static n_hot],
+                                 const float                      cold[static sess->model->d_model],
+                                 struct geist_buffer             *out) {
+    const struct transformer_moe_gpu *mg = sess->model->moe_gpu;
+    const size_t                      d  = sess->model->d_model;
+    struct geist_tensor               y  = view_2d(sess->moe_gpu_x, (int64_t) n_hot, (int64_t) d);
+    struct geist_tensor               o  = view_2d(out, 1, (int64_t) d);
+    return mg->be->desc->fused->rows_weighted_sum(mg->be, n_hot, d, w, cold, &y, &o);
 }
