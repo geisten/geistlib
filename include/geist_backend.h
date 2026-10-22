@@ -303,6 +303,7 @@ enum geist_fused_op {
     GEIST_FUSED_LINEAR_GROUPED,
     GEIST_FUSED_ROWS_WEIGHTED_SUM,
     GEIST_FUSED_FFN_GATE_UP_SILU,
+    GEIST_FUSED_ROWS_GATHER,
 };
 
 /* Load-time capability probe for one fused op at one layer's geometry.
@@ -543,20 +544,39 @@ struct geist_backend_fused {
      * at the next wait. nullptr = nothing to start. */
     void (*submit)(struct geist_backend *be);
 
-    /* out[c] = add[c] + sum_{j < n} w[j] * y[j][c] for c in [0, d): the
-     * weighted sum of n mixture-of-experts outputs onto a partial sum the
-     * host made (#161). add is HOST memory, read during the call — work
-     * already started (submit) is not waited for. y is [n, d] and out
-     * [1, d], F32 DENSE on this backend. Its decomposed twin is the host
-     * loop over a mapped y. Plan-bound: supported(GEIST_FUSED_ROWS_WEIGHTED_
-     * SUM) with m = n. nullptr = the host loop. */
+    /* out[t][c] = add[t][c] + sum_{k in [start[t], start[t+1])} w[k] *
+     * y[rows[k]][c] for t in [0, m), c in [0, d): mixture-of-experts outputs,
+     * weighted by the router, onto the partial sums the host made, one
+     * output row per token (#161, #163). start, rows, w and add are HOST
+     * memory, read during the call — work already started (submit) is not
+     * waited for. y is [*, d] and out [m, d], F32 DENSE on this backend.
+     * Its decomposed twin is the host loop over a mapped y. Plan-bound:
+     * supported(GEIST_FUSED_ROWS_WEIGHTED_SUM) with m the most tokens.
+     * nullptr = the host loop. */
     enum geist_status (*rows_weighted_sum)(struct geist_backend      *be,
-                                           size_t                     n,
+                                           size_t                     m,
                                            size_t                     d,
+                                           size_t                     n,
+                                           const uint32_t             start[GEIST_AT_LEAST(m + 1)],
+                                           const uint32_t             rows[GEIST_AT_LEAST(n)],
                                            const float                w[GEIST_AT_LEAST(n)],
-                                           const float                add[GEIST_AT_LEAST(d)],
+                                           const float                add[GEIST_AT_LEAST(m * d)],
                                            const struct geist_tensor *y,
                                            struct geist_tensor       *out);
+
+    /* out[i][c] = x[src[i]][c] for i in [0, n), c in [0, d): rows gathered
+     * on the device, e.g. a mixture-of-experts layer's rows in its experts'
+     * order (#163). src is HOST memory, read during the call, not waiting
+     * for work already started. x is [*, d] and out [n, d], F32 DENSE.
+     * Its decomposed twin is n buffer_copy calls. Plan-bound:
+     * supported(GEIST_FUSED_ROWS_GATHER) with m the most rows. nullptr =
+     * buffer_copy row by row. */
+    enum geist_status (*rows_gather)(struct geist_backend      *be,
+                                     size_t                     n,
+                                     size_t                     d,
+                                     const uint32_t             src[GEIST_AT_LEAST(n)],
+                                     const struct geist_tensor *x,
+                                     struct geist_tensor       *out);
 
     /* Fused out = embed_table[token_id, :] * scale.
      *   embed_table shape [vocab_size, d_model]

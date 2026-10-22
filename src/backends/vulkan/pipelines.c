@@ -85,6 +85,7 @@
 #include "shaders/matvec_q6k_id_spv.h"
 #include "shaders/matvec_q4k_id_spv.h"
 #include "shaders/rows_wsum_add_spv.h"
+#include "shaders/rows_gather_spv.h"
 #include "shaders/matvec_q8_0_mt_spv.h"
 #include "shaders/matvec_q8_0_spv.h"
 #include "shaders/matvec_tq2_0_spv.h"
