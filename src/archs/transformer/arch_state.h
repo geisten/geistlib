@@ -563,7 +563,10 @@ struct transformer_moe_gpu {
     struct geist_buffer **bufs;
     /* [n_layers]: the backend runs the layer's hot experts at decode as one
      * grouped linear per projection (supported(GEIST_FUSED_LINEAR_GROUPED)). */
-    bool            *grouped;
+    bool *grouped;
+    /* The backend has submit and rows_weighted_sum for a decode step's hot
+     * experts: one wait per layer (#161). */
+    bool             one_wait;
     _Atomic uint64_t rows_gpu, rows_cpu; /* GEIST_VERBOSE at destroy */
     /* GEIST_VERBOSE at destroy: batches, and their ns packing (to the
      * copy), recording, waiting (buffer_map of the outputs), unpacking. */

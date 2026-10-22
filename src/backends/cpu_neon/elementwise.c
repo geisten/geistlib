@@ -207,6 +207,45 @@ cpu_neon_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struc
     return GEIST_OK;
 }
 
+/* y = silu(x), or the SwiGLU product silu(x) * z when z is non-null, in
+ * blocks of SILU_BLOCK floats, split across threads from SILU_PAR_BLOCKS
+ * blocks on: a prefill chunk of Llama 3.2 3B is 64 tokens x 8192, and on
+ * one thread libm's expf took 11 % of the main thread's prefill on the M1
+ * Max while the team waited (#16). A decode token's few thousand floats
+ * stay on the calling thread, where a parallel region would cost more than
+ * it saves. Every element gets silu_fp32_ooo's operations, and the product
+ * multiplies the stored silu, as prims->silu then prims->mul do: the bits
+ * are the same whatever the split. y may alias x. */
+enum { SILU_BLOCK = 4096, SILU_PAR_BLOCKS = 4 };
+
+struct silu_job {
+    const float *x, *z;
+    float       *y;
+    size_t       n;
+};
+
+static void silu_blocks(void *ctx, size_t b0, size_t b1) {
+    const struct silu_job *j = ctx;
+    for (size_t b = b0; b < b1; b++) {
+        const size_t i0 = b * SILU_BLOCK;
+        const size_t n  = j->n - i0 < SILU_BLOCK ? j->n - i0 : SILU_BLOCK;
+        silu_fp32_ooo(n, j->x + i0, j->y + i0);
+        if (j->z != nullptr) {
+            mul_fp32(n, j->y + i0, j->z + i0, j->y + i0);
+        }
+    }
+}
+
+static void silu_all(size_t n, const float *x, const float *z, float *y) {
+    struct silu_job job = {.x = x, .z = z, .y = y, .n = n};
+    const size_t    nb  = (n + SILU_BLOCK - 1) / SILU_BLOCK;
+    if (nb < SILU_PAR_BLOCKS) {
+        silu_blocks(&job, 0, nb);
+    } else {
+        geist_par_for(nb, silu_blocks, &job);
+    }
+}
+
 [[nodiscard]] enum geist_status
 cpu_neon_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
     size_t       nx = 0, ny = 0;
@@ -216,7 +255,23 @@ cpu_neon_silu(struct geist_backend *be, const struct geist_tensor *x, struct gei
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon silu: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
-    silu_fp32_ooo(nx, xp, yp);
+    silu_all(nx, xp, nullptr, yp);
+    return GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status cpu_neon_silu_mul(struct geist_backend      *be,
+                                                  const struct geist_tensor *x,
+                                                  const struct geist_tensor *z,
+                                                  struct geist_tensor       *y) {
+    size_t       nx = 0, nz = 0, ny = 0;
+    const float *xp = geist_host_tensor_f32(x, &nx);
+    const float *zp = geist_host_tensor_f32(z, &nz);
+    float       *yp = geist_host_tensor_f32(y, &ny);
+    if (xp == nullptr || zp == nullptr || yp == nullptr || nx != nz || nx != ny) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon silu_mul: bad inputs");
+        return GEIST_E_INVALID_ARG;
+    }
+    silu_all(nx, xp, zp, yp);
     return GEIST_OK;
 }
 

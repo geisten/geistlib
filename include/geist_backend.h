@@ -301,6 +301,7 @@ enum geist_fused_op {
     GEIST_FUSED_DELTANET_MIX,
     GEIST_FUSED_RMSNORM_ADD_NORM,
     GEIST_FUSED_LINEAR_GROUPED,
+    GEIST_FUSED_ROWS_WEIGHTED_SUM,
     GEIST_FUSED_FFN_GATE_UP_SILU,
 };
 
@@ -534,6 +535,28 @@ struct geist_backend_fused {
                                           const struct geist_weight *const w[GEIST_AT_LEAST(n)],
                                           const struct geist_tensor       *x,
                                           struct geist_tensor             *y);
+
+    /* Start executing the work recorded so far without waiting for it, so
+     * the host computes while the device works (#161: a decode step's hot
+     * experts run while the CPU runs the cold ones). For batched-submit
+     * backends; its decomposed twin is doing nothing — the work then runs
+     * at the next wait. nullptr = nothing to start. */
+    void (*submit)(struct geist_backend *be);
+
+    /* out[c] = add[c] + sum_{j < n} w[j] * y[j][c] for c in [0, d): the
+     * weighted sum of n mixture-of-experts outputs onto a partial sum the
+     * host made (#161). add is HOST memory, read during the call — work
+     * already started (submit) is not waited for. y is [n, d] and out
+     * [1, d], F32 DENSE on this backend. Its decomposed twin is the host
+     * loop over a mapped y. Plan-bound: supported(GEIST_FUSED_ROWS_WEIGHTED_
+     * SUM) with m = n. nullptr = the host loop. */
+    enum geist_status (*rows_weighted_sum)(struct geist_backend      *be,
+                                           size_t                     n,
+                                           size_t                     d,
+                                           const float                w[GEIST_AT_LEAST(n)],
+                                           const float                add[GEIST_AT_LEAST(d)],
+                                           const struct geist_tensor *y,
+                                           struct geist_tensor       *out);
 
     /* Fused out = embed_table[token_id, :] * scale.
      *   embed_table shape [vocab_size, d_model]

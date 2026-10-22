@@ -120,6 +120,32 @@ def select_per_subject(rows, count, seed="geist-decision-pilot-v1", subject_limi
     return selected
 
 
+def select_stratified(rows, total, seed="geist-decision-test-sample-v1"):
+    """A fixed-size, label-independent sample, stratified across subjects (#171).
+
+    Each subject receives floor(total * n_subject / n) questions; the
+    remaining slots go to the largest fractional remainders, ties broken by
+    a subject hash. Within a subject, questions are ordered by
+    sha256([seed, question_id]) -- the question text and its sorted options,
+    never the gold label -- and the first quota are taken. The result is
+    reproducible from the cleaned population alone.
+    """
+    if type(total) is not int or not 0 < total <= len(rows):
+        raise ValueError("sample size must be within the population")
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[row["subject"]].append(row)
+    n = len(rows)
+    quota = {s: total * len(g) // n for s, g in grouped.items()}
+    order = sorted(grouped, key=lambda s: (-(total * len(grouped[s]) % n), digest([seed, "subject", s])))
+    for subject in order[:total - sum(quota.values())]:
+        quota[subject] += 1
+    selected = []
+    for subject, group in sorted(grouped.items()):
+        group = sorted(group, key=lambda r: digest([seed, r["question_id"]]))
+        selected.extend(group[:quota[subject]])
+    return selected, {s: q for s, q in sorted(quota.items())}
+
 def permute(row, shift):
     if type(shift) is not int or not 0 <= shift < 4:
         raise ValueError("rotation 0..3 required")

@@ -78,10 +78,21 @@ def load_cases(directory, split, purpose):
     if (not n or n != count["questions"] or len(rows) != count["records"]
             or len(rows) != n * meta["rotations"]):
         raise ValueError("incomplete canonical questions/rotations")
-    if purpose == "quality" and (split != "test" or meta["per_subject"] != 0
-                                  or meta.get("subject_limit", 0) != 0
-                                  or n != audit["prepared_counts"]["test"]):
-        raise ValueError("quality requires the complete declared held-out test population")
+    if purpose == "quality":
+        sample = meta.get("test_sample")
+        complete = (split == "test" and meta["per_subject"] == 0 and meta.get("subject_limit", 0) == 0)
+        if sample is None:
+            complete = complete and n == audit["prepared_counts"]["test"]
+        else:
+            # A declared, label-independent stratified sample (#171): frozen in
+            # the prepared metadata before inference, every subject at its quota.
+            subjects = Counter(r["subject"] for r in rows if r["variant"] == 0)
+            complete = (complete and sample["questions"] == n
+                        and sample["population"] == audit["prepared_counts"]["test"] > n
+                        and sum(sample["allocation"].values()) == n
+                        and dict(subjects) == {k: v for k, v in sample["allocation"].items() if v})
+        if not complete:
+            raise ValueError("quality requires the complete declared held-out test population or its declared stratified sample")
     if purpose == "pilot" and split != "development":
         raise ValueError("exploratory pilots use development, keeping calibration/test untouched")
     if purpose == "calibration" and split != "calibration":
@@ -244,8 +255,7 @@ def comparison(direct, baseline, direct_times, baseline_times, purpose, margin, 
             "scope": "Same questions, greedy FP32 geist policies. Additive preprocessing/surface/parse costs are estimates, not measured service latency. No claim of published Bonsai or Jev parity."}
 
 
-def run(args):
-    campaign_start = time.perf_counter()
+def prepare_run(args):
     meta, rows = load_cases(args.cases_dir, args.split, args.purpose)
     model_hash, binary_hash = bench.sha256(args.model), bench.sha256(args.binary)
     if model_hash != meta["model_sha256"]:
@@ -260,18 +270,12 @@ def run(args):
             raise ValueError("calibration policy binding mismatch")
         if {r["question_id"] for r in rows} & set(calibration["question_ids"]):
             raise ValueError("calibration and evaluation questions overlap")
-    args.out_dir.mkdir(parents=True, exist_ok=False)
-    write_json(args.out_dir / "prepared_metadata.json", meta)
-    write_json(args.out_dir / "split_audit.json", read_json(args.cases_dir / "split_audit.json"))
     profiles = {"chat_direct": PROFILES["chat_direct"][:3]} if args.purpose == "calibration" else PROFILES
-    commands, cases = {}, {}
+    flats, commands = {}, {}
     for profile, modes in profiles.items():
-        flat = [{"id": r["id"], "target_index": r["target_index"], **r["profiles"][profile]} for r in rows]
-        path = args.out_dir / f"{profile}.cases.jsonl"
-        path.write_text("".join(json.dumps(c, allow_nan=False) + "\n" for c in flat))
-        cases[profile] = bench.cases_from_jsonl(path)
+        flats[profile] = [{"id": r["id"], "target_index": r["target_index"], **r["profiles"][profile]} for r in rows]
         commands[profile] = [str(args.binary.resolve()), str(args.model.resolve()), args.backend,
-                             str(max(len(c["prompt_ids"]) for c in flat)), "4", str(args.decode_cap),
+                             str(max(len(c["prompt_ids"]) for c in flats[profile])), "4", str(args.decode_cap),
                              str(args.warmup), str(args.repeats), "--modes", ",".join(modes), "--text"]
         if "decision_selected" in modes:
             commands[profile].append("--selected")
@@ -284,6 +288,7 @@ def run(args):
                 "dataset": meta["dataset"], "dataset_revision": meta["dataset_revision"],
                 "dataset_subset": meta["dataset_subset"], "shots": meta["shots"], "rotations": meta["rotations"],
                 "subject_limit": meta.get("subject_limit", 0), "per_subject": meta["per_subject"],
+                "test_sample": meta.get("test_sample"),
                 "source_revision": bench.command_output(["git", "rev-parse", "HEAD"]),
                 "source_status": bench.command_output(["git", "status", "--porcelain"]),
                 "host": platform.node(), "os": platform.platform(), "machine": platform.machine(),
@@ -295,25 +300,41 @@ def run(args):
                 "cache": "Preparation loads/checksums the model. No cache eviction: first per-case calls are post-setup and not cold-cache measurements. Profiles run serially in separate processes.",
                 "memory": "Process peak RSS includes loaded model and all retained session/decision handles; it is not incremental arm memory.",
                 "timing": "Driver reset+prefill+score/generate. Preprocessing and text/answer conversion separate. Additive estimates exclude setup, validation tokenizations, dataset I/O and benchmark reference arms. No fallback/abstention route."}
-    # Freeze before any labelled inference; never overwrite or tune this run.
-    write_json(args.out_dir / "manifest.json", manifest)
+    return meta, rows, env, bound, calibration, profiles, flats, commands, manifest
+
+
+def write_inputs(args, meta, profiles, flats):
+    write_json(args.out_dir / "prepared_metadata.json", meta)
+    write_json(args.out_dir / "split_audit.json", read_json(args.cases_dir / "split_audit.json"))
+    cases = {}
+    for profile in profiles:
+        path = args.out_dir / f"{profile}.cases.jsonl"
+        path.write_text("".join(json.dumps(c, allow_nan=False) + "\n" for c in flats[profile]))
+        cases[profile] = bench.cases_from_jsonl(path)
+    return cases
+
+
+def check_runtime(records, args):
+    runtimes = [r for r in records if r.get("kind") == "runtime"]
+    samples = [r for r in records if r.get("kind") == "sample"]
+    if (len(runtimes) != 1 or len(samples) + 1 != len(records)
+            or runtimes[0]["backend"] != args.backend or runtimes[0]["kv_mode"] != "fp32"):
+        raise ValueError("invalid runtime/profile output")
+    return runtimes[0], samples
+
+
+def build_report(args, meta, rows, bound, calibration, profiles, cases, outputs, manifest):
+    """outputs: profile -> (runtime, samples, wall_ms). Shared by one-shot and chunked runs."""
     report = {"profiles": {}, "limitations": [manifest[k] for k in ("cache", "memory", "timing")]}
+    if manifest.get("test_sample"):
+        sample = manifest["test_sample"]
+        report["population"] = (f"Label-independent subject-stratified sample of {sample['questions']} questions "
+                                f"from the cleaned held-out test population of {sample['population']}; "
+                                "not a stock-MMLU score.")
     results = {}
     for profile, modes in profiles.items():
-        start = time.perf_counter()
-        with (args.out_dir / f"{profile}.driver.jsonl").open("w") as out, (args.out_dir / f"{profile}.stderr.log").open("w") as err:
-            proc = subprocess.run(commands[profile], input=bench.wire_input(cases[profile]),
-                                  env=env, stdout=out, stderr=err, text=True)
-        wall_ms = (time.perf_counter() - start) * 1000
-        if proc.returncode:
-            raise RuntimeError(f"driver failed ({proc.returncode}): {profile}; raw partial outputs retained")
-        records = [json.loads(line) for line in (args.out_dir / f"{profile}.driver.jsonl").read_text().splitlines()]
-        runtimes = [r for r in records if r.get("kind") == "runtime"]
-        samples = [r for r in records if r.get("kind") == "sample"]
-        if (len(runtimes) != 1 or len(samples) + 1 != len(records)
-                or runtimes[0]["backend"] != args.backend or runtimes[0]["kv_mode"] != "fp32"):
-            raise ValueError("invalid runtime/profile output")
-        runtime = {**runtimes[0], "eos_token_id": meta["gguf_metadata"]["eos_token_id"]}
+        runtime, samples, wall_ms = outputs[profile]
+        runtime = {**runtime, "eos_token_id": meta["gguf_metadata"]["eos_token_id"]}
         bench.enrich_and_check(samples, cases[profile], args.warmup, args.repeats, modes)
         value, numeric, outcomes, timing = summarize_profile(samples, rows, profile, modes, runtime, args.decode_cap, args.warmup)
         results[profile] = (numeric, outcomes, timing)
@@ -331,9 +352,32 @@ def run(args):
         report["comparison"] = comparison(direct["decision_selected"], baseline["generate_long"],
                                             dt["decision_selected"], bt["generate_long"], args.purpose, args.margin_pp,
                                             report["profiles"]["chat_reasoning"]["modes"]["generate_long"]["quality"])
-    report["campaign_wall_ms_including_setup_validation_and_reference_arms"] = (time.perf_counter() - campaign_start) * 1000
     report["model_query_count_including_reference_arms_and_repeats"] = sum(len(m) for m in profiles.values()) * len(rows) * (1 + args.warmup + args.repeats)
     report["acceptance_scope"] = "This harness does not establish external Prism same-token parity or Jev equivalence. Pilot reports remain exploratory even when observed accuracies agree. No production rollout decision is automatic."
+    return report
+
+
+def run(args):
+    campaign_start = time.perf_counter()
+    meta, rows, env, bound, calibration, profiles, flats, commands, manifest = prepare_run(args)
+    args.out_dir.mkdir(parents=True, exist_ok=False)
+    cases = write_inputs(args, meta, profiles, flats)
+    # Freeze before any labelled inference; never overwrite or tune this run.
+    write_json(args.out_dir / "manifest.json", manifest)
+    outputs = {}
+    for profile, modes in profiles.items():
+        start = time.perf_counter()
+        with (args.out_dir / f"{profile}.driver.jsonl").open("w") as out, (args.out_dir / f"{profile}.stderr.log").open("w") as err:
+            proc = subprocess.run(commands[profile], input=bench.wire_input(cases[profile]),
+                                  env=env, stdout=out, stderr=err, text=True)
+        wall_ms = (time.perf_counter() - start) * 1000
+        if proc.returncode:
+            raise RuntimeError(f"driver failed ({proc.returncode}): {profile}; raw partial outputs retained")
+        records = [json.loads(line) for line in (args.out_dir / f"{profile}.driver.jsonl").read_text().splitlines()]
+        runtime, samples = check_runtime(records, args)
+        outputs[profile] = (runtime, samples, wall_ms)
+    report = build_report(args, meta, rows, bound, calibration, profiles, cases, outputs, manifest)
+    report["campaign_wall_ms_including_setup_validation_and_reference_arms"] = (time.perf_counter() - campaign_start) * 1000
     write_json(args.out_dir / "report.json", report)
     print(args.out_dir / "report.json")
 
