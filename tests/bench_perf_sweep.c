@@ -302,7 +302,7 @@ int main(int argc, char **argv) {
     struct geist_session *sess = nullptr;
     s                          = geist_session_create(model, be, &opts, &sess);
     if (s != GEIST_OK) {
-        fprintf(stderr, "session_create failed\n");
+        fprintf(stderr, "session_create failed: %s\n", geist_backend_errmsg(be));
         geist_model_destroy(model);
         geist_backend_destroy(be);
         return GEIST_TEST_FAIL;
