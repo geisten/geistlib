@@ -49,6 +49,10 @@ on:
         description: "bench_perf_sweep arguments besides --gguf"
         type: string
         default: "--seq-lens 512 --decode-n 32 --warmup 8 --repeats 3 --m-max 128"
+      llama_real:
+        description: "llama.cpp on real text: --n-cpu-moe values for llama-server, separated by ; (empty: skip)"
+        type: string
+        default: ""
       cap:
         description: "timeout per configuration and cycle, seconds"
         type: string
@@ -131,6 +135,48 @@ jobs:
             env $X $XNLL GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=$B "$NLL" "$MODEL" docs/OFFLOAD.md 1024 2>> out/log.txt \
               | sed "s/^{/{\"cfg\":\"$cfg\",/" | tee -a out/nll.jsonl
             kill $clk 2>/dev/null || true
+          done
+      - name: llama.cpp on real text (llama-server, --n-cpu-moe sweep)
+        if: inputs.llama_real != ''
+        continue-on-error: true
+        env:
+          NCMOE: ${{ inputs.llama_real }}
+        run: |
+          set -eo pipefail
+          . scripts/gpu-lock.sh
+          BUILD=$(dirname "$(dirname "$LLAMA_VK")")
+          cmake --build "$BUILD" --target llama-server -j "$(nproc)" > /dev/null
+          SERVER="$BUILD/bin/llama-server"
+          for k in $(echo "$NCMOE" | tr ';' ' '); do
+            echo "== llama-real ncmoe=$k" | tee -a out/log.txt
+            "$SERVER" -m "$MODEL" -ngl 99 --n-cpu-moe "$k" -c 4096 -np 1 --port 8099 >> out/llama-server.log 2>&1 &
+            pid=$!
+            python3 - "$k" "$CYCLES" <<'PY' | tee -a out/results.jsonl || true
+          import json, sys, time, urllib.request
+          k, cycles = sys.argv[1], int(sys.argv[2])
+          base = "http://127.0.0.1:8099"
+          def post(path, body):
+              r = urllib.request.Request(base + path, data=json.dumps(body).encode(),
+                                         headers={"Content-Type": "application/json"})
+              return json.load(urllib.request.urlopen(r, timeout=600))
+          for _ in range(600):  # model load
+              try:
+                  if json.load(urllib.request.urlopen(base + "/health", timeout=5)).get("status") == "ok":
+                      break
+              except Exception:
+                  pass
+              time.sleep(1)
+          # the same prompt tokens bench_perf_sweep --prompt-file uses: the file's first 512
+          ids = post("/tokenize", {"content": open("docs/OFFLOAD.md").read()})["tokens"][:512]
+          for c in range(cycles + 1):  # the first is warmup
+              t = post("/completion", {"prompt": ids, "n_predict": 128, "temperature": 0,
+                                       "cache_prompt": False, "ignore_eos": True})["timings"]
+              if c > 0:
+                  print(json.dumps({"cfg": "llama-real-" + k, "cycle": c,
+                                    "prefill_tps": t["prompt_per_second"],
+                                    "decode_tps": t["predicted_per_second"]}))
+          PY
+            kill $pid; wait $pid 2>/dev/null || true
           done
       - name: Measure, interleaved
         run: |
