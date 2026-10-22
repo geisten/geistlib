@@ -165,6 +165,16 @@ cpu_neon), macmon is logged during the chunk, and the report adds warm
 latency over all samples and over the samples that started cool. `--status`
 prints progress without inference.
 
+The deadline is wall-clock time, checked every 5 s: macOS's monotonic clock
+stands still while the host sleeps, which once let a chunk overrun its lease.
+`--calibration-modes decision_dense` runs only the arm the temperature is
+fitted on. `tools/sample_decision_cases.py` derives a declared,
+label-independent stratified sample from a prepared development or calibration
+bundle without re-tokenizing. `--import-from RUN` seeds a new run with the
+complete samples of an earlier run that has the identical binding and policy,
+for the questions and modes the new run declares (#171 amendment, see
+`held_out_campaign_171` in the plan).
+
 ```sh
 LOCK_PRIO=batch LOCK_MAX=30 LOCK_NOTE="#171 chunk" ~/bin/with-mac-lock \
   python3 tools/eval_decision_campaign.py <runner options> \

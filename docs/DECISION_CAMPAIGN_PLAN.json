@@ -240,5 +240,31 @@
     "training_jobs": 0,
     "paid_compute_jobs": 0,
     "training_issue_588_still_gated": true
+  },
+  "held_out_campaign_171": {
+    "tracking_issue": "geistlib#171 (Gitea; GitHub #587)",
+    "user_confirmed_date": "2026-10-22",
+    "scope": "calibration split, then a 500-question held-out test sample; the full test split is decided afterwards",
+    "frozen_policy": "unchanged from 'confirmed': cais/mmlu c30699e8, 5 shots, exact-overlap exclusion, template date 2026-10-04, Bonsai 2 27B PQ2_0 3907dc16..., Metal on the M1 Max, greedy, FP32 KV, concurrency 1, 6 threads, OMP_WAIT_POLICY=passive, warmup 0 / repeats 1, cap 512 for chat_reasoning, 2 pp margin with the conservative paired 95 % interval",
+    "test_sample": {
+      "questions": 500,
+      "population": 13904,
+      "seed": "geist-decision-test-sample-v1",
+      "policy": "subject-proportional largest-remainder quotas (3-55 per subject, 57 subjects); within a subject the first by sha256([seed, question_id]); label-independent; frozen in the prepared metadata before inference",
+      "arms": "all runner arms: chat_direct {decision_dense, decision_selected, scorealt_dense, generate_1}, cloze {decision_dense, decision_selected, scorealt_dense}, chat_reasoning {generate_long}"
+    },
+    "amendments": [
+      {
+        "date": "2026-10-22",
+        "decided_by": "user",
+        "declared_before_test_inference": true,
+        "test_questions_inferred_at_declaration": 0,
+        "change": "Calibration reduced from the frozen 750 questions to a 250-question label-independent subject-stratified sample of them (tools/sample_decision_cases.py, seed geist-decision-calibration-sample-v1), and run with decision_dense only.",
+        "arms_reason": "Temperature is fitted on chat_direct decision_dense logits only. decision_selected is bit-identical to decision_dense (checked on every paired trial of the test run), and scorealt_dense is a parity reference. chat_reasoning has no option probabilities and was never run on calibration.",
+        "reason": "The full campaign (about 56 chunks, about 20 h of shared Mac time, more at the measured prompt lengths) was too large. Calibration only fits a single temperature; 250 questions bound it well.",
+        "reuse": "Calibration questions already completed under the earlier three-arm calibration run (same binary, model, tokenizer and policy binding) are imported if they fall in the sample; only their decision_dense samples are used.",
+        "earlier_calibration_run": "3 chunks + 1 interrupted chunk, 136+ questions with three arms; retained as raw evidence, not used beyond the import"
+      }
+    ]
   }
 }

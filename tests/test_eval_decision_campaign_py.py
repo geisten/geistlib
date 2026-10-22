@@ -66,7 +66,7 @@ class CampaignTests(unittest.TestCase):
                         "prompt_build_ms": 1., "tokenize_ms": 2., "boundary_check_ms": 3.}
         lines = []
         for i in range(n):
-            question = {"subject": "math", "question": f"q{i}", "choices": ["a", "b", "c", "d"], "answer": 0}
+            question = {"subject": "math" if i % 2 else "law", "question": f"q{i}", "choices": ["a", "b", "c", "d"], "answer": 0}
             profile = {**profile_base, "prompt_ids": [100 + i, 2]}
             lines.append(json.dumps({**question, "question_id": ev.data.question_key(question),
                                      "id": f"q{i}/rotation0", "target_index": 0, "split": "development",
@@ -138,6 +138,73 @@ class CampaignTests(unittest.TestCase):
             self.assertEqual(report["campaign"]["chunks"], 3)
             self.assertEqual(report["campaign"]["interrupted_driver_runs"], 1)
             self.assertIn("chat_direct/decision_selected", report["latency_by_start_temperature"])
+
+
+    def setup_run(self, root, n):
+        cases = root / "cases"
+        cases.mkdir()
+        self.bundle(cases, n)
+        model, binary = root / "model", root / "driver"
+        model.write_bytes(b"synthetic model")
+        binary.write_text(FAKE_DRIVER)
+        binary.chmod(binary.stat().st_mode | stat.S_IEXEC)
+        meta = ev.read_json(cases / "metadata.json")
+        meta["model_sha256"] = ev.bench.sha256(model)
+        ev.write_json(cases / "metadata.json", meta)
+        return SimpleNamespace(cases_dir=cases, split="development", purpose="pilot", model=model,
+                               binary=binary, backend="metal", threads=1, decode_cap=4, warmup=0,
+                               repeats=1, margin_pp=2., calibration=None, out_dir=root / "run",
+                               chunk_questions=10, deadline_minutes=1., cool_max_c=65.,
+                               cool_timeout_minutes=1., status=False, calibration_modes=None, import_from=None)
+
+    def test_import_reuses_complete_samples_without_driver_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = self.setup_run(root, 4)
+            log = root / "calls.log"
+            gate = {"cool_gate": "temperature", "cool_wait_seconds": 0, "gpu_temp_c": 50., "cpu_temp_c": 50.}
+            with (
+                patch.object(campaign.bench_host, "wait_for_apple_cool", return_value=gate),
+                patch.object(campaign.bench_host, "find_macmon", return_value=None),
+                patch.object(ev.bench, "command_output", return_value="test"),
+                patch.dict(os.environ, {"FAKE_LOG": str(log), "FAKE_STALL_AFTER": "-1"}),
+            ):
+                args.chunk_questions = 2
+                campaign.run(args)  # questions 0 and 1 complete in the first run
+                calls = len(log.read_text().splitlines())
+                first = args.out_dir
+                args.out_dir, args.import_from, args.chunk_questions = root / "second", first, 10
+                value = campaign.run(args)  # imports 0 and 1, runs only 2 and 3
+                self.assertEqual(value["pending"], 0)
+                new = [int(line.split()[1]) - 100 for line in log.read_text().splitlines()[calls:]]
+                self.assertEqual(sorted(set(new)), [2, 3])
+                self.assertNotIn(0, new)
+                self.assertNotIn(1, new)
+                report = ev.read_json(args.out_dir / "report.json")
+                self.assertEqual(report["profiles"]["chat_direct"]["modes"]["decision_dense"]["quality"]["n"], 4)
+                args.out_dir, args.decode_cap = root / "third", 5
+                with self.assertRaisesRegex(ValueError, "import: decode_cap"):
+                    campaign.run(args)
+            with self.assertRaisesRegex(ValueError, "calibration split only"):
+                args.calibration_modes = ["decision_dense"]
+                args.out_dir = root / "fourth"
+                ev.prepare_run(args)
+
+    def test_derived_sample_is_a_valid_declared_bundle(self):
+        sampler = importlib.util.spec_from_file_location("sample_decision_cases", TOOLS / "sample_decision_cases.py")
+        with patch.object(sys, "path", [str(TOOLS), *sys.path]):
+            module = importlib.util.module_from_spec(sampler)
+            sampler.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.bundle(root, 10)
+            module.derive(root, root / "sample", "development", 4, "seed")
+            meta, rows = ev.load_cases(root / "sample", "development", "pilot")
+            self.assertEqual(len(rows), 4)
+            self.assertEqual(meta["development_sample"]["allocation"], {"law": 2, "math": 2})
+            self.assertEqual(meta["development_sample"]["population"], 10)
+            with self.assertRaises(FileExistsError):
+                module.derive(root, root / "sample", "development", 4, "seed")
 
 
 if __name__ == "__main__":

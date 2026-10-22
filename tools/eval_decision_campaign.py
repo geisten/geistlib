@@ -146,7 +146,8 @@ class TempLog:
 def cool_gate(args, deadline):
     limits = {"fallback_seconds": 45}
     limits["max_gpu_c" if args.backend == "metal" else "max_cpu_c"] = args.cool_max_c
-    return bench_host.wait_for_apple_cool(limits, min(deadline, time.monotonic() + args.cool_timeout_minutes * 60))
+    left = max(0., deadline - time.time())
+    return bench_host.wait_for_apple_cool(limits, time.monotonic() + min(left, args.cool_timeout_minutes * 60))
 
 
 def run_driver(command, cases, env, chunk, profile, deadline):
@@ -157,12 +158,18 @@ def run_driver(command, cases, env, chunk, profile, deadline):
     start = time.time()
     proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err,
                             env=env, text=True)
-    stopped = threading.Event()
+    stopped, finished = threading.Event(), threading.Event()
 
-    def stop():
-        stopped.set()
-        proc.terminate()
-    timer = threading.Timer(max(0., deadline - time.monotonic()), stop)
+    def watchdog():
+        # Wall clock, not a monotonic timer: macOS's monotonic clock stands
+        # still while the host sleeps, and a lease is measured in wall time
+        # (a 2-hour sleep once let a chunk overrun its lease, #171).
+        while not finished.wait(5):
+            if time.time() >= deadline:
+                stopped.set()
+                proc.terminate()
+                return
+    timer = threading.Thread(target=watchdog, daemon=True)
     timer.start()
 
     def feed():
@@ -185,7 +192,7 @@ def run_driver(command, cases, env, chunk, profile, deadline):
         n += 1
     code = proc.wait()
     proc.stdout.close()
-    timer.cancel()
+    finished.set()
     for f in (out, recv, err):
         f.close()
     info = {"started_unix": start, "wall_seconds": time.time() - start, "returncode": code,
@@ -261,8 +268,70 @@ def finalize(args, meta, rows, bound, calibration, profiles, manifest, done):
     return args.out_dir / "report.json"
 
 
+def import_samples(args, rows, profiles, cases, manifest):
+    """Seed chunk 0000 with complete samples of an earlier run (#171 amendment).
+
+    Allowed only for an identical binding (model, binary, tokenizer, template,
+    backend, environment, threads) and decode/warmup/repeat policy, and only
+    for questions whose prompt and candidate IDs are identical. Only the modes
+    this run declares are taken; the rest of the earlier samples stay there.
+    """
+    old_dir = args.import_from
+    old = ev.read_json(old_dir / "manifest.json")
+    for key in ("binding", "decode_cap", "warmup", "repeats", "dataset_revision", "shots"):
+        if old[key] != manifest[key]:
+            raise ValueError(f"import: {key} differs from the earlier run")
+    old_profiles = {p: tuple(c[c.index("--modes") + 1].split(",")) for p, c in old["commands"].items()}
+    old_cases = {p: bench.cases_from_jsonl(old_dir / f"{p}.cases.jsonl") for p in old_profiles}
+    first = next(iter(old_cases.values()))
+    done, runtimes, _ = collect(old_dir, first, old_profiles, args.warmup, args.repeats, args.backend)
+    chunk = args.out_dir / "chunks" / "0000"
+    chunk.mkdir(parents=True)
+    imported = {}
+    for profile, modes in profiles.items():
+        if profile not in old_profiles or not set(modes) <= set(old_profiles[profile]):
+            continue
+        by_id = {c["id"]: i for i, c in enumerate(old_cases[profile])}
+        take = []
+        for i, case in enumerate(cases[profile]):
+            j = by_id.get(case["id"])
+            if j is None or j not in done[profile]:
+                continue
+            o = old_cases[profile][j]
+            if o["prompt_ids"] != case["prompt_ids"] or o["candidate_ids"] != case["candidate_ids"]:
+                raise ValueError(f"import: prompt differs for {case['id']}")
+            take.append((i, [s for s in done[profile][j] if s["mode"] in modes]))
+        if not take:
+            continue
+        ev.write_json(chunk / f"{profile}.rows.json", [i for i, _ in take])
+        with (chunk / f"{profile}.driver.jsonl").open("w") as out, (chunk / f"{profile}.recv.tsv").open("w") as recv:
+            out.write(json.dumps(runtimes[0]) + "\n")
+            n = 1
+            for local, (_, samples) in enumerate(take):
+                for sample in sorted(samples, key=lambda s: (s["trial"], s["order"])):
+                    t = sample["recv_unix"]
+                    sample = {k: v for k, v in sample.items() if k not in ("chunk", "recv_unix")}
+                    out.write(json.dumps({**sample, "case_index": local}) + "\n")
+                    if t is not None:
+                        recv.write(f"{n}\t{t:.6f}\n")
+                    n += 1
+        ev.write_json(chunk / f"{profile}.run.json", {"imported_from": str(old_dir.resolve()), "wall_seconds": 0.,
+                                                       "returncode": 0, "stopped_at_deadline": False, "lines": n})
+        imported[profile] = len(take)
+    temps = [v for c in chunk_dirs(old_dir) for v in read_lines(c / "temps.jsonl")]
+    (chunk / "temps.jsonl").write_text("".join(json.dumps(v) + "\n" for v in temps))
+    now = time.time()
+    ev.write_json(chunk / "chunk.json", {"started_unix": now, "ended_unix": now, "imported_from": str(old_dir.resolve()),
+                                         "imported_questions": imported,
+                                         "source_manifest_sha256": bench.sha256(old_dir / "manifest.json"),
+                                         "note": "Samples measured in the earlier run (its host time is accounted there); "
+                                                 "they were interleaved with that run's other arms.",
+                                         "runs": {}})
+    return imported
+
+
 def run(args):
-    deadline = time.monotonic() + args.deadline_minutes * 60
+    deadline = time.time() + args.deadline_minutes * 60  # wall clock, see run_driver
     meta, rows, env, bound, calibration, profiles, flats, commands, manifest = ev.prepare_run(args)
     frozen = args.out_dir / "manifest.json"
     if frozen.exists():
@@ -278,6 +347,8 @@ def run(args):
             raise FileExistsError(f"{args.out_dir} has content but no manifest")
         cases = ev.write_inputs(args, meta, profiles, flats)
         ev.write_json(frozen, manifest)  # frozen before any labelled inference
+    if getattr(args, "import_from", None) and not chunk_dirs(args.out_dir):
+        print(json.dumps({"imported": import_samples(args, rows, profiles, cases, manifest)}))
     value, done, pending = status(args.out_dir, rows, profiles, args)
     if args.status or not pending:
         if not pending and not (args.out_dir / "report.json").exists():
@@ -296,7 +367,7 @@ def run(args):
             todo = [i for i in batch if i not in done[profile]]
             if not todo:
                 continue
-            if time.monotonic() >= deadline:
+            if time.time() >= deadline:
                 break
             gate = cool_gate(args, deadline)
             ev.write_json(chunk / f"{profile}.rows.json", todo)
@@ -329,6 +400,10 @@ def main():
     p.add_argument("--warmup", type=int, required=True)
     p.add_argument("--repeats", type=int, required=True)
     p.add_argument("--calibration", type=Path)
+    p.add_argument("--calibration-modes", type=lambda v: v.split(","),
+                   help="calibration split only: numeric arms to run (default: all three)")
+    p.add_argument("--import-from", type=Path,
+                   help="an earlier run of the same binding: reuse its complete samples of these modes")
     p.add_argument("--chunk-questions", type=int, required=True, help="pending questions per invocation")
     p.add_argument("--deadline-minutes", type=float, required=True, help="the driver is stopped at this point")
     p.add_argument("--cool-max-c", type=float, default=65.)
