@@ -31,6 +31,8 @@ const char *const metal_profile_stage_names[METAL_PROFILE_STAGE_COUNT] = {
         [METAL_PROFILE_DISPATCH_Q6K_LINEAR_NT8]       = "dispatch.q6k_linear.nt8",
         [METAL_PROFILE_DISPATCH_Q4K_QK_BASE]          = "dispatch.q4k_qk.base",
         [METAL_PROFILE_DISPATCH_Q4K_QK_NT4]           = "dispatch.q4k_qk.nt4",
+        [METAL_PROFILE_DISPATCH_QKV3]                 = "dispatch.qkv3",
+        [METAL_PROFILE_DISPATCH_Q80_GATE_UP]          = "dispatch.q80_gate_up",
         [METAL_PROFILE_DISPATCH_F32_PLE_PROJ_NORM]    = "dispatch.f32_ple_proj_norm",
         [METAL_PROFILE_DISPATCH_RMSNORM_ADD_ROWS]     = "dispatch.rmsnorm_add_rows",
         [METAL_PROFILE_DISPATCH_ADD_NORM_ROWS]        = "dispatch.add_norm_rows",
@@ -132,6 +134,7 @@ static bool metal_skip_stage(enum metal_profile_stage s) {
     case METAL_PROFILE_DISPATCH_Q4K_GATE_UP_NT4:
     case METAL_PROFILE_DISPATCH_Q4K_GATE_UP_NT8:
     case METAL_PROFILE_DISPATCH_Q4K_GATE_UP_W4A8:
+    case METAL_PROFILE_DISPATCH_Q80_GATE_UP:
         return metal_env_enabled("GEIST_SKIP_GEMM") || metal_env_enabled("GEIST_SKIP_GATE_UP");
     case METAL_PROFILE_DISPATCH_Q4K_LINEAR_BASE:
     case METAL_PROFILE_DISPATCH_Q4K_LINEAR_MM_FAST:
@@ -141,6 +144,7 @@ static bool metal_skip_stage(enum metal_profile_stage s) {
     case METAL_PROFILE_DISPATCH_Q4K_LINEAR_W4A8:
     case METAL_PROFILE_DISPATCH_Q4K_QK_BASE:
     case METAL_PROFILE_DISPATCH_Q4K_QK_NT4:
+    case METAL_PROFILE_DISPATCH_QKV3:
         return metal_env_enabled("GEIST_SKIP_GEMM") || metal_env_enabled("GEIST_SKIP_Q4K_LINEAR");
     case METAL_PROFILE_DISPATCH_Q4K_PLE_GATE_NT8:
     case METAL_PROFILE_DISPATCH_F32_PLE_GATE:

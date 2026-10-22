@@ -302,6 +302,7 @@ enum geist_fused_op {
     GEIST_FUSED_RMSNORM_ADD_NORM,
     GEIST_FUSED_LINEAR_GROUPED,
     GEIST_FUSED_ROWS_WEIGHTED_SUM,
+    GEIST_FUSED_FFN_GATE_UP_SILU,
 };
 
 /* Load-time capability probe for one fused op at one layer's geometry.
@@ -501,6 +502,26 @@ struct geist_backend_fused {
                                        struct geist_tensor       *y0,
                                        struct geist_tensor       *y1);
 
+    /* Fused three-weight linear: y0 = x·w0^T, y1 = x·w1^T, y2 = x·w2^T in
+     * one dispatch (the q/k/v projections, #17). Unlike linear_t_pair the
+     * weights may differ in dtype and n_out; they share n_in. Not
+     * plan-bound: backends support a subset (e.g. m == 1 and some dtype
+     * triples) and return GEIST_E_UNSUPPORTED, before any work, for the
+     * rest, which falls back to linear_t / linear_t_pair. nullptr = never
+     * fused. */
+    enum geist_status (*linear_t_triple)(struct geist_backend      *be,
+                                         const struct geist_tensor *x,
+                                         const struct geist_weight *w0,
+                                         const struct geist_tensor *t_w0,
+                                         const struct geist_weight *w1,
+                                         const struct geist_tensor *t_w1,
+                                         const struct geist_weight *w2,
+                                         const struct geist_tensor *t_w2,
+                                         size_t                     m,
+                                         struct geist_tensor       *y0,
+                                         struct geist_tensor       *y1,
+                                         struct geist_tensor       *y2);
+
     /* Grouped linear (#78 phase 3): y[j] = x[j] · w[j]^T for j in [0, n),
      * one row each — the decode step of n mixture-of-experts experts in one
      * pass instead of n. The w[j] share dtype, n_in and n_out; x is
@@ -603,6 +624,16 @@ struct geist_backend_fused {
                                      const struct geist_tensor *gate_w,
                                      const struct geist_tensor *up_w,
                                      struct geist_tensor       *y);
+
+    /* ffn_gate_up with the SwiGLU epilogue (#17):
+     *   y = silu(x · gate_w^T) * (x · up_w^T)
+     * Same contract as ffn_gate_up otherwise; plan-bound through
+     * GEIST_FUSED_FFN_GATE_UP_SILU. nullptr = always decomposed. */
+    enum geist_status (*ffn_gate_up_silu)(struct geist_backend      *be,
+                                          const struct geist_tensor *x,
+                                          const struct geist_tensor *gate_w,
+                                          const struct geist_tensor *up_w,
+                                          struct geist_tensor       *y);
 
     /* ffn_gate_up with the pre-FFN rmsnorm folded in:
      *   xn = rmsnorm(x) * norm_w;  y = gelu_tanh(xn·gate_w^T) * (xn·up_w^T)
