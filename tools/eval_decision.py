@@ -270,7 +270,17 @@ def prepare_run(args):
             raise ValueError("calibration policy binding mismatch")
         if {r["question_id"] for r in rows} & set(calibration["question_ids"]):
             raise ValueError("calibration and evaluation questions overlap")
-    profiles = {"chat_direct": PROFILES["chat_direct"][:3]} if args.purpose == "calibration" else PROFILES
+    if args.purpose == "calibration":
+        # Temperature is fitted on decision_dense alone; selected rows are bit-identical
+        # to it and SCOREALT is a parity reference, so a campaign may drop them (#171).
+        modes = tuple(getattr(args, "calibration_modes", None) or PROFILES["chat_direct"][:3])
+        if "decision_dense" not in modes or not set(modes) <= set(PROFILES["chat_direct"][:3]):
+            raise ValueError("calibration needs decision_dense and numeric arms only")
+        profiles = {"chat_direct": tuple(m for m in PROFILES["chat_direct"] if m in modes)}
+    else:
+        if getattr(args, "calibration_modes", None):
+            raise ValueError("--calibration-modes applies to the calibration split only")
+        profiles = PROFILES
     flats, commands = {}, {}
     for profile, modes in profiles.items():
         flats[profile] = [{"id": r["id"], "target_index": r["target_index"], **r["profiles"][profile]} for r in rows]
@@ -396,6 +406,8 @@ def main():
     p.add_argument("--warmup", type=int, required=True)
     p.add_argument("--repeats", type=int, required=True)
     p.add_argument("--calibration", type=Path)
+    p.add_argument("--calibration-modes", type=lambda v: v.split(","),
+                   help="calibration split only: numeric arms to run (default: all three)")
     p.add_argument("--out-dir", type=Path, required=True)
     args = p.parse_args()
     if (not 2 <= args.decode_cap <= 32768 or not 0 <= args.warmup <= 1000
