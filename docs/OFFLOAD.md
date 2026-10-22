@@ -409,6 +409,32 @@ met.
 `fused->linear_t_grouped`). Qwen3-30B-A3B Q4_K_M (18.6 GB, does not fit
 11 GB), RTX 2080 Ti + Ryzen 9 9950X, `moe-baseline.yml`.
 
+> **Correction, 2026-10-22: measure on real text.** The decode numbers
+> below (runs 1665-1705) are `bench_perf_sweep`'s pseudo-random prompt, as
+> llama-bench's are. A mixture of experts routes such tokens unlike text:
+> 40 % of the expert rows went to cold experts (run 1712), where the #48
+> profile covers 88.5 % of real text's selections, and the few cold experts
+> it does pick repeat every token, so their weights sit in the 9950X's
+> 64 MB L3. On a real prompt (`--prompt-file docs/OFFLOAD.md`, the normal
+> decode path, run 1733) and fed token by token (`bench_nll`, runs
+> 1714-1727):
+>
+> | | decode tok/s, real prompt | `bench_nll` tok/s | prefill tok/s |
+> |:--|--:|--:|--:|
+> | geist cpu_x86 | 33.7 / 34.1 | 30.5-35.5 | 226-227 |
+> | **model on the CPU, hot experts on the GPU** | **41.4 / 42.3** | **41.1-43.3** | 225-229 |
+> | model on the GPU (below) | 2.5 / 2.5 | 10.6-16.3 | 155-156 |
+>
+> **The model on the CPU with a GPU split backend is the mode to use**:
+> +23 % decode on real text, prefill unchanged, perplexity 29.96 against
+> 29.90; the GPU only runs the hot experts of decode steps, so the driver's
+> clocks do not matter. **The model on the GPU is experimental**: on real
+> text its card idles in P3/P8 (435-570 MHz, 20-33 % busy), and between the
+> waits on it gcc's OpenMP workers fall asleep, so the ~2-3 cold experts per
+> layer take 555-6,000 µs on the CPU instead of ~130 µs
+> (`OMP_WAIT_POLICY=active`: 134-154 µs, 16 tok/s — still below the CPU
+> alone). Raw data: `benchmark/results/raw/moe-real-text-2026-10-22/`.
+
 - **The model on the GPU.** A mixture-of-experts model loaded on a GPU
   backend runs attention, router, embedding and head there. Its experts are
   resolved on a CPU backend of the state's own (`moe_cpu`: cpu_x86,
@@ -449,8 +475,9 @@ memory). Runs 1704/1705 (3 cycles): 44.9-51.8 tok/s after 32 tokens,
 perplexity 29.99 (CPU 29.90). The card is still only ~35 % busy (P0 most of
 the time); routing on the GPU (#162) is the next margin.
 
-Decode beats both CPU only (+45 %) and llama.cpp `-ot exps=CPU` (+30 %):
-the decision rule holds. Quality: the perplexity of `docs/OFFLOAD.md`
+On the pseudo-random prompt decode beats both CPU only (+45 %) and
+llama.cpp `-ot exps=CPU` (+30 %); on real text it does not (see the
+correction above; llama.cpp on real text is not measured yet). Quality: the perplexity of `docs/OFFLOAD.md`
 (1,023 tokens fed one at a time, `bench_nll`) is 29.90 on the CPU and 30.06
 on the GPU; greedy tokens are a poor bar for an MoE, whose routing turns
 tiny differences into other continuations. **Open: prefill** — a chunk's
