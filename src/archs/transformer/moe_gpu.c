@@ -235,9 +235,13 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
             gbe->calibration.locked      = true;
             rs                           = gv->resolve_weight(gbe, &tw[p]);
         }
-        if (rs != GEIST_OK) { /* the device is full after all: the rest stay */
+        if (rs != GEIST_OK) {
             memset(tw, 0, 3 * sizeof *tw);
-            break;
+            /* A shared expert (ranked first) the device cannot take, e.g.
+             * its dtype: it stays on the CPU, the routed ones still go. */
+            if (e >= n_exp)
+                continue;
+            break; /* the device is full after all: the rest stay */
         }
         mg->n_hot++;
         covered += e < n_exp ? rank[k].count : 0;

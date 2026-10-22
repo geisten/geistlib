@@ -11,6 +11,14 @@
  *     seed and KV cache (relative L2 <= 1e-5), as sigmoid(0) = 1/2. This
  *     checks the shared expert's slot, gate and weight against an
  *     independent model.
+ *   - The shared gate against a host reference: one layer, the twin with
+ *     the gate mf_ramp (mixed signs, not constant). Its layer 0 equals the
+ *     dense one's up to the FFN, so per token the MoE sum must be
+ *     2 sigmoid(x . g) times the dense FFN's output, x the normed input
+ *     (relative 1e-5 on cpu_scalar), and the weights must not be equal.
+ *   - Shared-expert tensors without the expert_shared_feed_forward_length
+ *     key: still run (the width is the experts'), the same logits bit for
+ *     bit on cpu_scalar.
  *   - The random model: a 21-token prompt prefilled in m_max = 8 chunks and
  *     token by token give the same logits on cpu_scalar (1e-4); cpu_neon
  *     matches it within 1e-3, cpu_x86 (W8A8) within cosine 0.998.
@@ -139,6 +147,71 @@ static bool run(const struct mf_qwen35 *c,
     return ok;
 }
 
+/* The shared gate's weight against the host's: see the header. */
+static int check_gate(void) {
+    struct geist_backend *be = nullptr;
+    if (geist_backend_create("cpu_scalar", nullptr, nullptr, &be) != GEIST_OK)
+        return geist_expect(false, "cpu_scalar");
+    enum { T = 8 };
+    struct mf_qwen35 cd = geom(false, false), cm = geom(true, true);
+    cd.layers = cm.layers   = 1;
+    cm.gate_ramp            = true;
+    const size_t          d = cd.d_model;
+    static float          x[T * 64], ffn[T * 64], acc[T * 64];
+    struct tf_buf         g[2] = {mf_qwen35_gguf(&cd), mf_qwen35_gguf(&cm)};
+    struct geist_model   *m[2] = {nullptr, nullptr};
+    struct geist_session *s[2] = {nullptr, nullptr};
+    geist_token_t         ids[T];
+    for (size_t i = 0; i < T; i++)
+        ids[i] = (geist_token_t) ((i * 37 + 5) % vocab());
+    int fails = 0;
+    for (size_t k = 0; k < 2; k++) {
+        if (geist_model_load_from_memory(g[k].b, g[k].n, be, &m[k]) != GEIST_OK ||
+            geist_session_create(m[k], be, &OPTS, &s[k]) != GEIST_OK ||
+            geist_session_prefill_tokens(s[k], T, ids) != GEIST_OK) {
+            fails += geist_expect(false, "the one-layer pair runs");
+            goto out;
+        }
+    }
+    const struct geist_backend_vtbl *v  = be->desc->vtbl;
+    struct transformer_arch_session *ad = geist_session_internal_arch_session(s[0]);
+    struct transformer_arch_session *am = geist_session_internal_arch_session(s[1]);
+    const float *pf = v->buffer_map(ad->scratch_ffn_out), *px = v->buffer_map(am->scratch_pre_ff),
+                *pa = v->buffer_map(am->moe_acc);
+    if (pf == nullptr || px == nullptr || pa == nullptr) {
+        fails += geist_expect(false, "the buffers map");
+        goto out;
+    }
+    memcpy(ffn, pf, T * d * sizeof(float));
+    memcpy(x, px, T * d * sizeof(float));
+    memcpy(acc, pa, T * d * sizeof(float));
+    double err = 0.0, scale = 0.0, wmin = 1.0, wmax = 0.0;
+    for (size_t t = 0; t < T; t++) {
+        double z = 0.0;
+        for (size_t c = 0; c < d; c++)
+            z += (double) x[t * d + c] * mf_ramp(c);
+        const double w = 1.0 / (1.0 + exp(-z));
+        wmin           = fmin(wmin, w);
+        wmax           = fmax(wmax, w);
+        for (size_t c = 0; c < d; c++) {
+            const double want = 2.0 * w * ffn[t * d + c];
+            err               = fmax(err, fabs(acc[t * d + c] - want));
+            scale             = fmax(scale, fabs(want));
+        }
+    }
+    printf("shared gate: weights %.3f .. %.3f, max error %.3g of %.3g\n", wmin, wmax, err, scale);
+    fails += geist_expect(wmax - wmin > 0.05, "the gate's weight varies by token");
+    fails += geist_expect(err <= 1e-5 * scale, "the MoE sum is 2 sigmoid(x . g) times the FFN");
+out:
+    for (size_t k = 0; k < 2; k++) {
+        geist_session_destroy(s[k]);
+        geist_model_destroy(m[k]);
+        free(g[k].b);
+    }
+    geist_backend_destroy(be);
+    return fails;
+}
+
 static void set_hot(size_t n) {
     char v[16];
     snprintf(v, sizeof v, "%zu", n);
@@ -153,6 +226,8 @@ int main(void) {
     static float dense[MAX_VOCAB], twin[MAX_VOCAB], ref[MAX_VOCAB], a[MAX_VOCAB], b[MAX_VOCAB];
     const struct mf_qwen35 c_dense = geom(false, false), c_twin = geom(true, true),
                            c_moe = geom(true, false);
+
+    fails += check_gate();
 
     const char *const cpus[]   = {"cpu_scalar", "cpu_neon", "cpu_x86"};
     bool              have_ref = false;
@@ -180,7 +255,13 @@ int main(void) {
             fails += geist_expect(rel_l2(a, b) <= 1e-4, "chunked and token by token agree");
             if (i == 0) {
                 memcpy(ref, a, sizeof ref);
-                have_ref = true;
+                have_ref                = true;
+                struct mf_qwen35 no_key = c_moe;
+                no_key.no_shared_key    = true;
+                const bool nk           = run(&no_key, be, nullptr, 8, b, nullptr);
+                printf("no shared width key: relative L2 %.3g\n", nk ? rel_l2(b, a) : -1.0);
+                fails += geist_expect(nk && memcmp(a, b, vocab() * sizeof(float)) == 0,
+                                      "a shared expert without its width key still runs");
             } else if (have_ref) {
                 const double d = rel_l2(a, ref), co = cosine(a, ref);
                 printf("%s vs cpu_scalar: relative L2 %.3g, cosine %.6f\n", cpus[i], d, co);

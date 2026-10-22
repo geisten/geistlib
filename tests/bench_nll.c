@@ -8,7 +8,12 @@
  * mixture-of-experts model, whose routing turns tiny numeric differences
  * into different continuations.
  *
- *   bench_nll <model.gguf> <text file> [max tokens, default 512]
+ *   bench_nll <model.gguf> <text file> [max tokens, default 512] [first]
+ *
+ * `first` (default 0): only the predictions from position `first` on
+ * count, i.e. of tokens first+1 .. max-1. llama-perplexity -c N scores
+ * those of the second half of its window: first = N / 2 compares the
+ * same tokens.
  *
  * GEIST_BENCH_BACKEND picks the backend (default: the engine's choice);
  * GEIST_BENCH_SPLIT_BACKEND (+ GEIST_BENCH_SPLIT_LAYERS, "auto" or a count)
@@ -48,10 +53,11 @@ static char *read_file(const char *path) {
 
 int main(int argc, char **argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: bench_nll <model.gguf> <text file> [max tokens]\n");
+        fprintf(stderr, "usage: bench_nll <model.gguf> <text file> [max tokens] [first]\n");
         return GEIST_TEST_ERROR;
     }
     const size_t max_tokens = argc > 3 ? (size_t) strtoull(argv[3], nullptr, 10) : 512;
+    const size_t first      = argc > 4 ? (size_t) strtoull(argv[4], nullptr, 10) : 0;
     char        *text       = read_file(argv[2]);
     if (text == nullptr) {
         fprintf(stderr, "cannot read %s\n", argv[2]);
@@ -115,6 +121,8 @@ int main(int argc, char **argv) {
         double z = 0.0;
         for (size_t v = 0; v < nl; v++)
             z += exp((double) lg[v] - mx);
+        if (i < first)
+            continue;
         sum += mx + log(z) - (double) lg[ids[i + 1]];
         cnt++;
     }

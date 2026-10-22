@@ -53,6 +53,14 @@ on:
         description: "bench_nll configurations, separated by ; (cpu, hot, gpu; scalar = cpu_scalar, the reference)"
         type: string
         default: "cpu;hot;gpu"
+      nll_first:
+        description: "bench_nll: score the predictions from this position on (512 = llama-perplexity -c 1024's tokens)"
+        type: string
+        default: "0"
+      llama_ppl:
+        description: "llama-perplexity -c 1024 on the same text, the independent reference: its --n-cpu-moe (empty: skip)"
+        type: string
+        default: ""
       build:
         description: "extra make variables for geistlib, e.g. OPENMP=0 (its own spinning thread pool)"
         type: string
@@ -132,6 +140,7 @@ jobs:
         env:
           XENV: ${{ inputs.env }}
           NLLCFG: ${{ inputs.nll }}
+          NLLFIRST: ${{ inputs.nll_first }}
         run: |
           set -o pipefail
           . scripts/gpu-lock.sh
@@ -149,10 +158,26 @@ jobs:
                 | sed "s/^/nll-$cfg 1, /"; sleep 0.5; done >> out/clocks.txt ) &
             clk=$!
             echo "== nll $cfg" >> out/log.txt
-            env $X $XNLL GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=$B "$NLL" "$MODEL" docs/OFFLOAD.md 1024 2>> out/log.txt \
+            env $X $XNLL GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=$B "$NLL" "$MODEL" docs/OFFLOAD.md 1024 "$NLLFIRST" 2>> out/log.txt \
               | sed "s/^{/{\"cfg\":\"$cfg\",/" | tee -a out/nll.jsonl
             kill $clk 2>/dev/null || true
           done
+      - name: llama.cpp perplexity on the same text (the independent reference)
+        if: inputs.llama_ppl != ''
+        continue-on-error: true
+        env:
+          NCMOE: ${{ inputs.llama_ppl }}
+        run: |
+          set -eo pipefail
+          . scripts/gpu-lock.sh
+          BUILD=$(dirname "$(dirname "$LLAMA_VK")")
+          cmake --build "$BUILD" --target llama-perplexity -j "$(nproc)" > /dev/null
+          # One window of 1024 tokens; llama-perplexity scores its second
+          # half: bench_nll with nll_first = 512 scores the same tokens.
+          "$BUILD/bin/llama-perplexity" -m "$MODEL" -f docs/OFFLOAD.md -c 1024 -b 1024 --chunks 1 \
+            --device Vulkan0 -ngl 99 --n-cpu-moe "$NCMOE" 2>&1 | tee out/llama-perplexity.txt
+          P=$(sed -n 's/.*Final estimate: PPL = \([0-9.]*\).*/\1/p' out/llama-perplexity.txt)
+          echo "{\"cfg\":\"llama-perplexity\",\"ppl\":$P}" | tee -a out/nll.jsonl
       - name: llama.cpp on real text (llama-server, --n-cpu-moe sweep)
         if: inputs.llama_real != ''
         continue-on-error: true
