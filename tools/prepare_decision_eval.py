@@ -55,9 +55,12 @@ class Tokenizer:
         return response[1:]
 
     def encode(self, text):
-        if "\0" in text or "\r" in text or len(text.encode("utf-8")) >= 65536:
+        if "\0" in text or len(text.encode("utf-8")) >= 65536:
             raise ValueError("prompt does not fit the lossless TOK protocol")
-        escaped = text.replace("\\", "\\\\").replace("\n", "\\n").replace("\t", "\\t")
+        # MMLU text keeps its CRs (college_mathematics exemplars, #171); a raw
+        # CR ending a line would be stripped by the REPL, so it travels escaped.
+        escaped = (text.replace("\\", "\\\\").replace("\n", "\\n")
+                   .replace("\t", "\\t").replace("\r", "\\r"))
         response = self.command("TOK " + escaped)
         if not response:
             raise ValueError("missing token count")
