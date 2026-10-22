@@ -11,10 +11,11 @@
  * tokens ride the MMA's N = 16.
  *
  * A workgroup is 32 weight rows; its 8 subgroups are 2 row tiles x 4 k-slices
- * (subgroup s takes k-steps s>>1, s>>1 + 4, ...). Per 32-wide k-step a
- * subgroup decodes its 16 x 32 weight tile and loads its 16 x 32 token tile
- * (tokens >= rows are zero) into its own shared slots, then runs two
- * 16 x 16 x 16 MMAs. No workgroup barrier inside the loop; the four k-slices
+ * (subgroup s takes 128-element blocks s>>1, s>>1 + 4, ...). A lane loads its
+ * row's whole block (two 16-byte loads, a full sector; the next block's are
+ * in flight while this one computes). Per 32-wide k-step a subgroup decodes
+ * its 16 x 32 weight tile and loads its 16 x 32 token tile (tokens >= rows
+ * are zero) into its own shared slots, then runs two 16 x 16 x 16 MMAs. No workgroup barrier inside the loop; the four k-slices
  * meet in shared memory at the end, and only tokens < rows are stored.
  *
  * GPU layout = struct-of-arrays (see matvec_pq2_0.comp). Requires a subgroup
@@ -24,7 +25,7 @@
 layout(local_size_x = 256) in;
 
 layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
-layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
+layout(set = 0, binding = 1) readonly buffer W { uvec4 w4[]; };
 layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
 
 layout(push_constant) uniform Push {
@@ -74,38 +75,60 @@ void main() {
     coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> acc =
             coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
 
-    uint ksteps = pc.n_in / BK;
-    for (uint ks = slice; ks < ksteps; ks += 4u) {
-        uint k0 = ks * BK;
-        uint bi = row * pc.blocks_per_row + (k0 >> 7u);
-        uint qw = w[bi * 8u + ((k0 & 127u) >> 4u) + hk];
-        float d = unpackHalf2x16(w[sc0 + (bi >> 1u)] >> ((bi & 1u) * 16u)).x;
-        vec4 x0 = vec4(0.0), x1 = vec4(0.0), x2 = vec4(0.0), x3 = vec4(0.0);
-        if (tvalid) {
-            uint xv = (pc.x_offset + t * pc.x_stride + k0 + hk * 16u) >> 2u;
-            x0 = x4[xv];
-            x1 = x4[xv + 1u];
-            x2 = x4[xv + 2u];
-            x3 = x4[xv + 3u];
-        }
-        uint base = (lane >> 1u) * STRIDE4 + hk * 2u;
+    uint nb = pc.blocks_per_row;
+    uint ib = slice;
+    uvec4 qa = uvec4(0u), qb = uvec4(0u);
+    float d = 0.0;
+    if (ib < nb) {
+        uint bi = row * nb + ib;
+        qa = w4[bi * 2u];
+        qb = w4[bi * 2u + 1u];
+        uint sw = sc0 + (bi >> 1u);
+        d = unpackHalf2x16(w4[sw >> 2u][sw & 3u] >> ((bi & 1u) * 16u)).x;
+    }
+    for (; ib < nb; ib += 4u) {
+        uvec4 ca = qa, cb = qb;
         f16vec2 d4 = f16vec2(float16_t(4.0 * d));
-        Ash[sg][base] = expand8(qw & 0xffffu, d4);
-        Ash[sg][base + 1u] = expand8(qw >> 16u, d4);
-        Bsh[sg][base] = uvec4(packHalf2x16(x0.xy), packHalf2x16(x0.zw), packHalf2x16(x1.xy),
-                              packHalf2x16(x1.zw));
-        Bsh[sg][base + 1u] = uvec4(packHalf2x16(x2.xy), packHalf2x16(x2.zw),
-                                   packHalf2x16(x3.xy), packHalf2x16(x3.zw));
-        subgroupMemoryBarrierShared();
-        subgroupBarrier();
-        for (uint kk = 0u; kk < BK; kk += 16u) {
-            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> matA;
-            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> matB;
-            coopMatLoad(matA, Ash[sg], kk / 8u, STRIDE4, gl_CooperativeMatrixLayoutRowMajor);
-            coopMatLoad(matB, Bsh[sg], kk / 8u, STRIDE4, gl_CooperativeMatrixLayoutColumnMajor);
-            acc = coopMatMulAdd(matA, matB, acc);
+        uint nx = ib + 4u;
+        if (nx < nb) { /* the next block's loads are in flight during this one */
+            uint bi = row * nb + nx;
+            qa = w4[bi * 2u];
+            qb = w4[bi * 2u + 1u];
+            uint sw = sc0 + (bi >> 1u);
+            d = unpackHalf2x16(w4[sw >> 2u][sw & 3u] >> ((bi & 1u) * 16u)).x;
         }
-        subgroupBarrier(); /* the tiles are rewritten next step */
+        for (uint j = 0u; j < 4u; j++) {
+            uint k0 = ib * 128u + j * BK;
+            /* words 2j + hk of the block's 8 */
+            uvec4 hv = j < 2u ? ca : cb;
+            uint qw = hk == 0u ? hv[(2u * j) & 3u] : hv[(2u * j + 1u) & 3u];
+            vec4 x0 = vec4(0.0), x1 = vec4(0.0), x2 = vec4(0.0), x3 = vec4(0.0);
+            if (tvalid) {
+                uint xv = (pc.x_offset + t * pc.x_stride + k0 + hk * 16u) >> 2u;
+                x0 = x4[xv];
+                x1 = x4[xv + 1u];
+                x2 = x4[xv + 2u];
+                x3 = x4[xv + 3u];
+            }
+            uint base = (lane >> 1u) * STRIDE4 + hk * 2u;
+            Ash[sg][base] = expand8(qw & 0xffffu, d4);
+            Ash[sg][base + 1u] = expand8(qw >> 16u, d4);
+            Bsh[sg][base] = uvec4(packHalf2x16(x0.xy), packHalf2x16(x0.zw), packHalf2x16(x1.xy),
+                                  packHalf2x16(x1.zw));
+            Bsh[sg][base + 1u] = uvec4(packHalf2x16(x2.xy), packHalf2x16(x2.zw),
+                                       packHalf2x16(x3.xy), packHalf2x16(x3.zw));
+            subgroupMemoryBarrierShared();
+            subgroupBarrier();
+            for (uint kk = 0u; kk < BK; kk += 16u) {
+                coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> matA;
+                coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> matB;
+                coopMatLoad(matA, Ash[sg], kk / 8u, STRIDE4, gl_CooperativeMatrixLayoutRowMajor);
+                coopMatLoad(matB, Bsh[sg], kk / 8u, STRIDE4,
+                            gl_CooperativeMatrixLayoutColumnMajor);
+                acc = coopMatMulAdd(matA, matB, acc);
+            }
+            subgroupBarrier(); /* the tiles are rewritten next step */
+        }
     }
 
     coopMatStore(acc, red, sg * 256u, 16u, gl_CooperativeMatrixLayoutRowMajor);
