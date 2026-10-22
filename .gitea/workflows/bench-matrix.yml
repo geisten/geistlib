@@ -8,7 +8,8 @@ name: bench-matrix
 # https://geisten.net/bench/; the publish job rebuilds the index there and
 # goes red when geist slowed against its previous run while llama.cpp did not.
 #
-# Nightly: a few models per column. Sundays: every model that fits.
+# Nightly: a few models per column. Sundays: every model that fits. Mac
+# cells start only 00:00-07:00 Berlin time on a schedule (see Select).
 # Org secret BENCH_SSH_KEY may only rsync inside /var/www/htdocs/
 # www.geisten.net/bench on the web server (rrsync in authorized_keys);
 # BENCH_RESULTS_KEY is the write deploy key of geisten/bench-results, the
@@ -111,6 +112,17 @@ jobs:
           run=1
           if [ "${{ matrix.weekly }}" = true ] && [ "$SET" != weekly ]; then run=0; fi
           case "$ONLY" in ""|"${{ matrix.column }}"|"${{ matrix.column }}/${{ matrix.model }}") ;; *) run=0 ;; esac
+          # The M1 Max is also the developers' machine and serves PR CI: a
+          # scheduled run starts its cells only between 00:00 and 07:00
+          # Berlin time. Run 1723 (2026-10-22) re-measured every Apple cell
+          # after a protocol change and held the Mac lease from 00:40 to past
+          # 11:30, with 13 PR jobs waiting. Cells left over are measured the
+          # next night; a dispatched run is not limited.
+          if [ "$run" = 1 ] && [ "${{ matrix.runner }}" = macos-15-heavy ] && [ "${{ github.event_name }}" = schedule ] &&
+             [ "$(TZ=Europe/Berlin date +%H)" -ge 7 ]; then
+            echo "::notice::outside the Mac night window (00-07 Berlin): not measured this run"
+            run=0
+          fi
           # A cell before this one on the same host timed out waiting for a
           # quiet host (see Measure): fail at once instead of waiting again.
           # Host runners (macOS) share /tmp across jobs; the marker is per run.
