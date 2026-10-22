@@ -870,17 +870,25 @@ spec_fallback_single(struct geist_session *s, geist_token_t out_tokens[static 1]
     }
 
     memcpy(out_tokens, drafts, accepted_tokens * sizeof(geist_token_t));
-    out_tokens[accepted_tokens] = correction;
-    const size_t emitted        = accepted_tokens + 1;
+    size_t emitted = accepted_tokens;
 
-    /* The last emit (bonus or correction) is not yet in the cache. The next
-     * spec_step / decode_step needs pending logits computed from it, so push
-     * it now via a single-token prefill. Deferring it to the next call saves
-     * this prefill but shifts the call boundaries the n-gram drafter sees and
-     * costs more than it saves (benchmark/results/QWEN35.md). */
-    const enum geist_status cs = ops->prefill(st, 1, &correction);
-    if (cs != GEIST_OK) {
-        return session_op_failed(sf, cs, "speculative correction prefill");
+    /* The bonus or correction token is usually not emitted here:
+     * verify_forward (all accepted) or the recurrent replay in kv_truncate
+     * (partial) leaves the prediction after the accepted prefix pending with
+     * its logits, the state a decode_step leaves, and the next call takes it
+     * as its seed. So a call costs one pass instead of a verify plus a
+     * single-token prefill (#105); under greedy decoding the stream is the
+     * same, under sampling the pending token is the replay's own sample.
+     * Where nothing stays pending (a cache-only truncate drops the logits),
+     * the correction is emitted and pushed through a single-token prefill. */
+    if (getenv("GEIST_EXP_SPEC_CORR_PREFILL") != nullptr || /* EXP: A/B, remove before PR */
+        ops->peek_next_token(st) < 0) {
+        out_tokens[accepted_tokens] = correction;
+        emitted++;
+        const enum geist_status cs = ops->prefill(st, 1, &correction);
+        if (cs != GEIST_OK) {
+            return session_op_failed(sf, cs, "speculative correction prefill");
+        }
     }
 
     *n_out = emitted;

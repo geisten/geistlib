@@ -393,7 +393,10 @@ geist_model_gains(struct geist_model *m, float **out_gains, size_t *out_n);
  * architecture-native head when available and enabled (Qwen3.5 MTP with
  * GEIST_MTP=1), otherwise via an internal n-gram lookup over `history`, then
  * verifies them in one batched forward pass. Writes the emitted tokens
- * (1..k_max+1) to `out_tokens` and the count to `*n_out`.
+ * (1..k_max+1) to `out_tokens` and the count to `*n_out`. Where the
+ * architecture keeps it, the model's prediction after the last accepted
+ * token is not emitted but stays pending and opens the next call (or
+ * decode_step), which saves a forward pass per call.
  *
  * The drafter's first guess is always the model's own argmax over the
  * already-pending logits (zero cost), so spec_step emits at least 1
