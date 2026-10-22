@@ -178,6 +178,8 @@ static const struct metal_pipeline_row metal_attention_rows[] = {
         METAL_PIPE(v_norm_append, "v_norm_append_rows_f16", v_norm_append_rows_f16),
         METAL_PIPE(kv_norm_append, "kv_norm_append_rows", kv_norm_append_rows),
         METAL_PIPE(kv_norm_append_f16, "kv_norm_append_rows_f16", kv_norm_append_rows_f16),
+        METAL_PIPE(rope_append, "rope_append_rows", rope_append_rows),
+        METAL_PIPE(rope_append, "rope_append_rows_f16", rope_append_rows_f16),
         METAL_PIPE(attn, "rope_rows", rope_rows),
         METAL_PIPE(attn, "kv_append_rows", kv_append_rows),
         METAL_PIPE(attn, "copy_u32", copy_u32),
@@ -348,6 +350,7 @@ static const struct metal_library_row metal_attention_libs[] = {
         METAL_LIB(v_norm_append, "V norm append", metal_v_norm_append_source),
         METAL_LIB(kv_norm_append, "K/V norm append", metal_kv_norm_append_source),
         METAL_LIB(kv_norm_append_f16, "F16 K/V norm append", metal_kv_norm_append_f16_source),
+        METAL_LIB(rope_append, "RoPE + KV append", metal_rope_append_source),
         METAL_LIB(attn, "attention", metal_attn_source),
         METAL_LIB(attn_f16, "F16 attention", metal_attn_f16_source),
         /* The q-norm and plain decode kernels share one body. */

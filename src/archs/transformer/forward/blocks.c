@@ -318,6 +318,43 @@ enum geist_status blk_qkv_prep_fused(struct transformer_layer_forward_ctx *ctx) 
                                      &t_vc);
 }
 
+enum geist_status blk_rope_append_fused(struct transformer_layer_forward_ctx *ctx,
+                                        const struct geist_tensor            *q_norm,
+                                        const struct geist_tensor            *k_norm,
+                                        float                                 q_scale) {
+    struct transformer_arch_state   *st   = ctx->st;
+    struct transformer_arch_session *sess = ctx->sess;
+    const int64_t                    hd   = (int64_t) ctx->hd;
+    const int64_t                    kvh  = (int64_t) st->n_kv_heads;
+    const int64_t                    rows = (int64_t) (ctx->q_position + ctx->seq);
+    struct geist_tensor              t_cos, t_sin;
+    rope_rows(ctx, &t_cos, &t_sin);
+    struct geist_tensor t_q = view_3d(sess->scratch_q, ctx->SEQ, st->n_q_heads, hd);
+    struct geist_tensor t_k = view_3d(sess->scratch_k, ctx->SEQ, kvh, hd);
+    struct geist_tensor t_v = view_3d(sess->scratch_v, ctx->SEQ, kvh, hd);
+    struct geist_tensor t_qw =
+            q_norm != nullptr ? view_1d(q_norm->buffer, hd) : (struct geist_tensor) {0};
+    struct geist_tensor t_kw =
+            k_norm != nullptr ? view_1d(k_norm->buffer, hd) : (struct geist_tensor) {0};
+    struct geist_tensor t_kc = ctx->kv_f16_enabled ? view_3d_f16(ctx->k_cache_buf, rows, kvh, hd)
+                                                   : view_3d(ctx->k_cache_buf, rows, kvh, hd);
+    struct geist_tensor t_vc = ctx->kv_f16_enabled ? view_3d_f16(ctx->v_cache_buf, rows, kvh, hd)
+                                                   : view_3d(ctx->v_cache_buf, rows, kvh, hd);
+    return ctx->fused->attn_rope_append(ctx->be,
+                                        &t_q,
+                                        &t_k,
+                                        &t_v,
+                                        q_norm != nullptr ? &t_qw : nullptr,
+                                        k_norm != nullptr ? &t_kw : nullptr,
+                                        &t_cos,
+                                        &t_sin,
+                                        ctx->eps,
+                                        q_scale,
+                                        ctx->q_position,
+                                        &t_kc,
+                                        &t_vc);
+}
+
 enum geist_status blk_attend(struct transformer_layer_forward_ctx *ctx, bool append) {
     enum geist_status s = append ? transformer_kv_store_append(ctx) : GEIST_OK;
     if (s != GEIST_OK) {
