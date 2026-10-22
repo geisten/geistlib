@@ -75,145 +75,21 @@ static bool populate_layers_qwen3moe(struct transformer_arch_state *st) {
     return true;
 }
 
-/* The router and the three expert tensors of one layer. */
+/* The router and the three expert tensors of one layer. A shared expert
+ * is qwen35moe's (#169), not this architecture's: refused. */
 [[nodiscard]] static enum geist_status wire_layer_qwen3moe(struct transformer_arch_state    *st,
                                                            struct gguf_ctx                  *gguf,
                                                            struct transformer_layer_weights *L) {
-    struct geist_backend *be = st->backend;
-    /* On a GPU the experts live on a CPU backend of the state's own; the
-     * GPU gets copies of the hottest after the load (moe_gpu.c, #78). */
-    if (strncmp(be->desc->name, "cpu_", 4) != 0 && st->moe_cpu == nullptr) {
-        static const char *const cpus[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
-        for (size_t i = 0; i < sizeof cpus / sizeof cpus[0] && st->moe_cpu == nullptr; i++)
-            if (geist_backend_create(cpus[i], nullptr, nullptr, &st->moe_cpu) != GEIST_OK)
-                st->moe_cpu = nullptr;
-        if (st->moe_cpu == nullptr) {
-            geist_backend_set_error(be,
-                                    GEIST_E_UNSUPPORTED,
-                                    "qwen3moe: no CPU backend for the experts on %s",
-                                    be->desc->name);
-            return GEIST_E_UNSUPPORTED;
-        }
-    }
-    const size_t n_exp = st->config.moe_n_experts;
-    const size_t d     = st->d_model;
-    const size_t ff    = L->intermediate;
-    char         name[64];
-
-    /* A router this unit does not implement is refused, never approximated:
-     * llama.cpp's gating enum (1 = softmax) and a shared expert. */
-    uint32_t gating = 1;
-    if (gguf_get_meta_u32(gguf, "qwen3moe.expert_gating_func", &gating) && gating != 1) {
-        geist_backend_set_error(be,
-                                GEIST_E_UNSUPPORTED,
-                                "qwen3moe: expert_gating_func %u is not softmax (1)",
-                                gating);
-        return GEIST_E_UNSUPPORTED;
-    }
+    char name[64];
     snprintf(name, sizeof name, "blk.%d.ffn_gate_inp_shexp.weight", L->layer_idx);
     if (gguf_get_tensor(gguf, name) != nullptr) {
-        geist_backend_set_error(
-                be, GEIST_E_UNSUPPORTED, "qwen3moe: shared expert '%s' is not supported", name);
+        geist_backend_set_error(st->backend,
+                                GEIST_E_UNSUPPORTED,
+                                "qwen3moe: shared expert '%s' is not supported",
+                                name);
         return GEIST_E_UNSUPPORTED;
     }
-
-    /* The router's top-k is a discrete choice: it keeps its own precision. */
-    snprintf(name, sizeof name, "blk.%d.ffn_gate_inp.weight", L->layer_idx);
-    enum geist_status s =
-            load_layer_matrix(st, gguf, L, name, n_exp, d, true, &L->moe_router, &L->moe_router_w);
-    if (s == GEIST_OK) {
-        snprintf(name, sizeof name, "blk.%d.ffn_gate_exps.weight", L->layer_idx);
-        s = load_layer_experts(st, gguf, L, name, n_exp, ff, d, &L->moe_gate, &L->moe_gate_w);
-    }
-    if (s == GEIST_OK) {
-        snprintf(name, sizeof name, "blk.%d.ffn_up_exps.weight", L->layer_idx);
-        s = load_layer_experts(st, gguf, L, name, n_exp, ff, d, &L->moe_up, &L->moe_up_w);
-    }
-    if (s == GEIST_OK) {
-        snprintf(name, sizeof name, "blk.%d.ffn_down_exps.weight", L->layer_idx);
-        s = load_layer_experts(st, gguf, L, name, n_exp, d, ff, &L->moe_down, &L->moe_down_w);
-    }
-    return s;
-}
-
-/* ---- Session state ---------------------------------------------------- */
-
-/* Router logits, the gathered rows of one expert and the weighted sum, plus
- * the host-side routing (blk_moe_ffn). */
-[[nodiscard]] static enum geist_status
-qwen3moe_session_alloc(struct transformer_arch_session *sess) {
-    const struct transformer_arch_state *st    = sess->model;
-    struct geist_backend                *be    = st->backend;
-    const size_t                         n_exp = st->config.moe_n_experts;
-    const size_t                         n_sel = sess->m_max * st->config.moe_n_used;
-    /* The host reads the logits and writes the sum: on a GPU they live in
-     * cached host memory the device writes and reads in place. */
-    const bool        io = be->desc->caps.batched_submit;
-    enum geist_status s  = io ? be->desc->vtbl->buffer_create(be,
-                                                              sess->m_max * n_exp * sizeof(float),
-                                                              GEIST_BUFFER_IO,
-                                                              GEIST_MEMORY_AUTO,
-                                                              &sess->moe_logits)
-                              : transformer_scratch_alloc(
-                                        be, sess->m_max * n_exp * sizeof(float), &sess->moe_logits);
-    if (s == GEIST_OK)
-        s = io ? be->desc->vtbl->buffer_create(be,
-                                               sess->m_max * st->d_model * sizeof(float),
-                                               GEIST_BUFFER_IO,
-                                               GEIST_MEMORY_AUTO,
-                                               &sess->moe_acc)
-               : transformer_scratch_alloc(
-                         be, sess->m_max * st->d_model * sizeof(float), &sess->moe_acc);
-    if (s == GEIST_OK && io)
-        s = be->desc->vtbl->buffer_create(be,
-                                          sess->m_max * st->d_model * sizeof(float),
-                                          GEIST_BUFFER_IO,
-                                          GEIST_MEMORY_AUTO,
-                                          &sess->moe_x_io);
-    if (s != GEIST_OK)
-        return s;
-    size_t inter = 0;
-    for (size_t li = 0; li < st->n_layers; li++)
-        inter = st->layers[li].intermediate > inter ? st->layers[li].intermediate : inter;
-    sess->moe_ids       = heap_alloc_array_aligned(uint32_t, n_sel);
-    sess->moe_wts       = heap_alloc_array_aligned(float, n_sel);
-    sess->moe_rows      = heap_alloc_array_aligned(uint32_t, n_sel);
-    sess->moe_row_start = heap_alloc_array_aligned(size_t, n_exp + 1);
-    sess->moe_xg        = heap_alloc_array_aligned(float, n_sel * st->d_model);
-    sess->moe_y         = heap_alloc_array_aligned(float, n_sel * st->d_model);
-    sess->moe_g         = heap_alloc_array_aligned(float, n_sel *inter);
-    sess->moe_u         = heap_alloc_array_aligned(float, n_sel *inter);
-    sess->moe_x_host    = heap_alloc_array_aligned(float, sess->m_max * st->d_model);
-    if (sess->moe_ids == nullptr || sess->moe_wts == nullptr || sess->moe_rows == nullptr ||
-        sess->moe_row_start == nullptr || sess->moe_xg == nullptr || sess->moe_y == nullptr ||
-        sess->moe_g == nullptr || sess->moe_u == nullptr || sess->moe_x_host == nullptr) {
-        geist_backend_set_error(be, GEIST_E_OOM, "transformer: MoE routing state alloc failed");
-        return GEIST_E_OOM;
-    }
-    moe_gpu_session_alloc(sess);
-    return GEIST_OK;
-}
-
-static void qwen3moe_session_free(struct transformer_arch_session *sess) {
-    moe_gpu_session_free(sess);
-    void *host[] = {sess->moe_x_host,
-                    sess->moe_xg,
-                    sess->moe_y,
-                    sess->moe_g,
-                    sess->moe_u,
-                    sess->moe_ids,
-                    sess->moe_wts,
-                    sess->moe_rows,
-                    sess->moe_row_start};
-    for (size_t i = 0; i < sizeof host / sizeof host[0]; i++)
-        safe_free(&host[i]);
-    sess->moe_xg = sess->moe_y = sess->moe_g = sess->moe_u = sess->moe_x_host = nullptr;
-    sess->moe_wts                                                             = nullptr;
-    sess->moe_ids = sess->moe_rows = nullptr;
-    sess->moe_row_start            = nullptr;
-    transformer_buffer_release(sess->model->backend, &sess->moe_logits);
-    transformer_buffer_release(sess->model->backend, &sess->moe_acc);
-    transformer_buffer_release(sess->model->backend, &sess->moe_x_io);
+    return moe_wire_layer(st, gguf, L, "qwen3moe");
 }
 
 /* Qwen3's attention, unchanged. Each step runs only while s is GEIST_OK. */
@@ -248,8 +124,8 @@ const struct transformer_family transformer_family_qwen3moe = {
         .populate        = populate_qwen3moe,
         .populate_layers = populate_layers_qwen3moe,
         .wire_layer      = wire_layer_qwen3moe,
-        .session_alloc   = qwen3moe_session_alloc,
-        .session_free    = qwen3moe_session_free,
+        .session_alloc   = moe_session_alloc,
+        .session_free    = moe_session_free,
         .attention_block = qwen3moe_attention_block,
         .ffn_block       = blk_moe_ffn,
         /* An MoE amplifies KV quantization error about 16x over a dense

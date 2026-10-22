@@ -62,6 +62,14 @@ struct mf_qwen35 {
     uint32_t               dn_k_heads, dn_v_heads, dn_head_k, dn_head_v, dn_conv;
     uint64_t               seed;
     const struct tf_vocab *tok;
+    /* qwen35moe (#169) when experts > 0: the FFN is a router over
+     * `experts` SwiGLU experts of width ffn, the `used` best per token, and
+     * a shared expert of width ffn. With `dense_twin` the router, the
+     * routed experts and the shared gate are zero and the shared expert
+     * draws the dense FFN's values (down doubled): the same logits as the
+     * dense qwen35 of the same seed, since sigmoid(0) = 1/2. */
+    uint32_t experts, used;
+    bool     dense_twin;
 };
 
 static inline void mf_key(struct tf_buf *o, const char *key, uint32_t type) {
@@ -88,8 +96,9 @@ struct mf_tensor {
     uint64_t     ne0, ne1; /* ne1 0: one dimension */
     uint64_t     ne2;      /* 0: at most two dimensions */
     enum mf_fill fill;
-    bool         f16;  /* stored as F16; F32 otherwise */
-    bool         q5_0; /* stored as zero Q5_0 blocks (ne0 a multiple of 32) */
+    float        scale; /* MF_RAND values times this (mf_add: 1) */
+    bool         f16;   /* stored as F16; F32 otherwise */
+    bool         q5_0;  /* stored as zero Q5_0 blocks (ne0 a multiple of 32) */
 };
 
 struct mf_tensors {
@@ -112,12 +121,13 @@ mf_add(struct mf_tensors *ts, uint64_t ne0, uint64_t ne1, enum mf_fill fill, con
     va_start(ap, fmt);
     vsnprintf(t->name, sizeof t->name, fmt, ap);
     va_end(ap);
-    t->ne0  = ne0;
-    t->ne1  = ne1;
-    t->ne2  = 0;
-    t->fill = fill;
-    t->f16  = false;
-    t->q5_0 = false;
+    t->ne0   = ne0;
+    t->ne1   = ne1;
+    t->ne2   = 0;
+    t->fill  = fill;
+    t->scale = 1.0f;
+    t->f16   = false;
+    t->q5_0  = false;
 }
 
 static inline uint64_t mf_elems(const struct mf_tensor *t) {
@@ -163,7 +173,7 @@ static inline void mf_write_tensors(struct tf_buf *o, struct mf_tensors *ts, uin
         }
         const float c = t->fill == MF_ONE ? 1.0f : t->fill == MF_NEG_ONE ? -1.0f : 0.0f;
         for (uint64_t e = 0; e < mf_elems(t); e++) {
-            const float v = t->fill == MF_RAND ? mf_weight(&s) : c;
+            const float v = t->fill == MF_RAND ? mf_weight(&s) * t->scale : c;
             if (t->f16) {
                 const _Float16 h = (_Float16) v;
                 tf_put(o, &h, 2);
@@ -278,29 +288,51 @@ static inline struct tf_buf mf_qwen35_gguf(const struct mf_qwen35 *c) {
             mf_add(&ts, c->dn_head_v, 0, MF_ONE, "blk.%u.ssm_norm.weight", l);
             mf_add(&ts, value_dim, c->d_model, MF_RAND, "blk.%u.ssm_out.weight", l);
         }
-        mf_add(&ts, c->d_model, c->ffn, MF_RAND, "blk.%u.ffn_gate.weight", l);
-        mf_add(&ts, c->d_model, c->ffn, MF_RAND, "blk.%u.ffn_up.weight", l);
-        mf_add(&ts, c->ffn, c->d_model, MF_RAND, "blk.%u.ffn_down.weight", l);
+        if (c->experts == 0) {
+            mf_add(&ts, c->d_model, c->ffn, MF_RAND, "blk.%u.ffn_gate.weight", l);
+            mf_add(&ts, c->d_model, c->ffn, MF_RAND, "blk.%u.ffn_up.weight", l);
+            mf_add(&ts, c->ffn, c->d_model, MF_RAND, "blk.%u.ffn_down.weight", l);
+            continue;
+        }
+        const enum mf_fill routed = c->dense_twin ? MF_ZERO : MF_RAND;
+        mf_add(&ts, c->d_model, c->experts, routed, "blk.%u.ffn_gate_inp.weight", l);
+        mf_add(&ts, c->d_model, c->ffn, routed, "blk.%u.ffn_gate_exps.weight", l);
+        ts.t[ts.n - 1].ne2 = c->experts;
+        mf_add(&ts, c->d_model, c->ffn, routed, "blk.%u.ffn_up_exps.weight", l);
+        ts.t[ts.n - 1].ne2 = c->experts;
+        mf_add(&ts, c->ffn, c->d_model, routed, "blk.%u.ffn_down_exps.weight", l);
+        ts.t[ts.n - 1].ne2 = c->experts;
+        mf_add(&ts, c->d_model, 0, routed, "blk.%u.ffn_gate_inp_shexp.weight", l);
+        mf_add(&ts, c->d_model, c->ffn, MF_RAND, "blk.%u.ffn_gate_shexp.weight", l);
+        mf_add(&ts, c->d_model, c->ffn, MF_RAND, "blk.%u.ffn_up_shexp.weight", l);
+        mf_add(&ts, c->ffn, c->d_model, MF_RAND, "blk.%u.ffn_down_shexp.weight", l);
+        ts.t[ts.n - 1].scale = c->dense_twin ? 2.0f : 1.0f;
     }
+    const char *const arch = c->experts > 0 ? "qwen35moe" : "qwen35";
     const struct {
         const char *key;
         uint32_t    v;
     } u32[] = {
-            {"qwen35.block_count", c->layers},
-            {"qwen35.embedding_length", c->d_model},
-            {"qwen35.feed_forward_length", c->ffn},
-            {"qwen35.attention.head_count", c->heads},
-            {"qwen35.attention.head_count_kv", c->kv_heads},
-            {"qwen35.attention.key_length", c->head_dim},
-            {"qwen35.rope.dimension_count", c->rope_dims},
-            {"qwen35.full_attention_interval", c->interval},
-            {"qwen35.ssm.group_count", c->dn_k_heads},
-            {"qwen35.ssm.time_step_rank", c->dn_v_heads},
-            {"qwen35.ssm.state_size", c->dn_head_k},
-            {"qwen35.ssm.inner_size", c->dn_v_heads * c->dn_head_v},
-            {"qwen35.ssm.conv_kernel", c->dn_conv},
+            {"block_count", c->layers},
+            {"embedding_length", c->d_model},
+            {"attention.head_count", c->heads},
+            {"attention.head_count_kv", c->kv_heads},
+            {"attention.key_length", c->head_dim},
+            {"rope.dimension_count", c->rope_dims},
+            {"full_attention_interval", c->interval},
+            {"ssm.group_count", c->dn_k_heads},
+            {"ssm.time_step_rank", c->dn_v_heads},
+            {"ssm.state_size", c->dn_head_k},
+            {"ssm.inner_size", c->dn_v_heads * c->dn_head_v},
+            {"ssm.conv_kernel", c->dn_conv},
+            {"feed_forward_length", c->ffn}, /* dense; the MoE's below */
+            {"expert_feed_forward_length", c->ffn},
+            {"expert_shared_feed_forward_length", c->ffn},
+            {"expert_count", c->experts},
+            {"expert_used_count", c->used},
     };
-    const size_t n_u32 = sizeof u32 / sizeof u32[0];
+    const size_t n_u32 = c->experts > 0 ? sizeof u32 / sizeof u32[0] - 1 : 13;
+    char         key[96];
 
     struct tf_buf o = {0};
     tf_put(&o, "GGUF", 4);
@@ -308,14 +340,20 @@ static inline struct tf_buf mf_qwen35_gguf(const struct mf_qwen35 *c) {
     tf_u64(&o, ts.n);
     tf_u64(&o, 1 + n_u32 + 2 + TF_TOKENIZER_KEYS);
     mf_key(&o, "general.architecture", TF_GGUF_STRING);
-    tf_gstr(&o, "qwen35", 6);
-    for (size_t i = 0; i < n_u32; i++) {
-        mf_key(&o, u32[i].key, TF_GGUF_UINT32);
+    tf_gstr(&o, arch, strlen(arch));
+    for (size_t i = 0, j = 0; j < n_u32; i++) {
+        if (c->experts > 0 && i == 12)
+            continue; /* no dense width */
+        snprintf(key, sizeof key, "%s.%s", arch, u32[i].key);
+        mf_key(&o, key, TF_GGUF_UINT32);
         tf_u32(&o, u32[i].v);
+        j++;
     }
-    mf_key(&o, "qwen35.rope.freq_base", TF_GGUF_FLOAT32);
+    snprintf(key, sizeof key, "%s.rope.freq_base", arch);
+    mf_key(&o, key, TF_GGUF_FLOAT32);
     tf_f32(&o, 10000000.0f);
-    mf_key(&o, "qwen35.attention.layer_norm_rms_epsilon", TF_GGUF_FLOAT32);
+    snprintf(key, sizeof key, "%s.attention.layer_norm_rms_epsilon", arch);
+    mf_key(&o, key, TF_GGUF_FLOAT32);
     tf_f32(&o, 1e-6f);
     tf_tokenizer_kv(&o, c->tok, "gpt2", true);
     mf_write_tensors(&o, &ts, c->seed);

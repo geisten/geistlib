@@ -116,6 +116,7 @@ static void release_layer_weight_aux(struct transformer_layer_weights *L) {
         safe_free(&pv);
         *views[p] = nullptr;
     }
+    safe_free((void **) &L->moe_shexp_gate);
 }
 
 /* ---- Runtime infrastructure: KV caches, RoPE tables, scratch ---------- */

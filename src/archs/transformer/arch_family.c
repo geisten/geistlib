@@ -201,6 +201,7 @@ static const struct transformer_family *const REGISTRY[] = {
 #endif
 #if defined(GEIST_FAMILY_QWEN35)
         &transformer_family_qwen35, /* families/qwen35.c */
+        &transformer_family_qwen35moe,
 #endif
 #if defined(GEIST_FAMILY_BITNET)
         &transformer_family_bitnet_b158, /* families/bitnet.c */
@@ -233,6 +234,7 @@ const char *const geist_arch_transformer_gguf_names[] = {
 #endif
 #if defined(GEIST_FAMILY_QWEN35)
         "qwen35",
+        "qwen35moe",
 #endif
 #if defined(GEIST_FAMILY_BITNET)
         "bitnet-b1.58",

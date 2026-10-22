@@ -192,3 +192,8 @@ blk_relu_sq(struct transformer_layer_forward_ctx *ctx, size_t n, struct geist_bu
  *   x = rmsnorm(h_post_attn)
  * on the layer's moe_router / moe_{gate,up,down}; routing on the host. */
 [[nodiscard]] enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx);
+
+/* The session state blk_moe_ffn needs (router logits, routing, gathered
+ * rows, the GPU's hot-expert buffers); a MoE family's session hooks. */
+[[nodiscard]] enum geist_status moe_session_alloc(struct transformer_arch_session *sess);
+void                            moe_session_free(struct transformer_arch_session *sess);

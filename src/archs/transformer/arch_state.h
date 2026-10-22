@@ -147,7 +147,8 @@ struct transformer_layer_weights {
      * moe_n_experts entries per projection, views into the GGUF's 3-D
      * ffn_{gate,up,down}_exps tensors (one buffer each, in bufs[]):
      * gate/up [intermediate, HIDDEN], down [HIDDEN, intermediate]. */
-    size_t               moe_n_experts; /* entries in each expert array */
+    size_t               moe_n_experts;  /* entries in each expert array (routed + shared) */
+    float               *moe_shexp_gate; /* [HIDDEN], host: the shared expert's gate */
     struct geist_tensor  moe_router;
     struct geist_weight  moe_router_w;
     struct geist_tensor *moe_gate, *moe_up, *moe_down;
@@ -560,12 +561,14 @@ struct transformer_offload {
 struct transformer_moe_gpu {
     struct geist_backend *be;    /* not owned: the caller's split backend */
     size_t                n_hot; /* experts with a copy on `be` */
-    /* [n_layers * n_experts * 3]: gate, up, down of each expert, resolved on
-     * `be`; raw == nullptr for an expert that stays on the CPU. */
+    /* [n_layers * moe_slots * 3]: gate, up, down of each expert, resolved
+     * on `be`; raw == nullptr for an expert that stays on the CPU. */
     struct geist_weight *twins;
-    /* [n_layers * 3]: aliased over each layer's expert tensors on `be`;
+    /* [n_layers * 6]: aliased over each layer's expert tensors on `be`
+     * (routed gate, up, down, then the shared expert's; null without one);
      * destroying them frees the copies (vk_weight_forget, #121). */
     struct geist_buffer **bufs;
+    size_t                n_bufs;
     /* [n_layers]: the backend runs the layer's hot experts at decode as one
      * grouped linear per projection (supported(GEIST_FUSED_LINEAR_GROUPED)). */
     bool *grouped;

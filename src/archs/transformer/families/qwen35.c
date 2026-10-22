@@ -49,15 +49,18 @@
  * GGUF norm weights arrive with the zero-centered (+1) already baked in
  * by the converter, so the standard rmsnorm path is correct as-is.
  */
-static void populate_qwen35(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
+static void
+populate_q35(struct gguf_ctx *gguf, const char *arch, struct transformer_arch_state *st) {
+    char key[96];
+#define Q35_KEY(k) (snprintf(key, sizeof key, "%s.%s", arch, k), key)
     st->config.has_qk_norms         = true;
     st->config.has_attn_output_gate = true;
     st->config.ffn_activation       = GEIST_FFN_SWIGLU;
 
-    family_populate_common(gguf, "qwen35", nullptr, st);
-    st->vocab_size = family_vocab_size(gguf, "qwen35", nullptr); /* no qwen35.vocab_size key */
+    family_populate_common(gguf, arch, nullptr, st);
+    st->vocab_size = family_vocab_size(gguf, arch, nullptr); /* no <arch>.vocab_size key */
     uint32_t nextn = 0;
-    gguf_get_meta_u32(gguf, "qwen35.nextn_predict_layers", &nextn);
+    gguf_get_meta_u32(gguf, Q35_KEY("nextn_predict_layers"), &nextn);
     if (nextn < st->n_layers) {
         st->n_mtp_layers = nextn;
         st->n_layers -= nextn;
@@ -71,29 +74,38 @@ static void populate_qwen35(struct gguf_ctx *gguf, struct transformer_arch_state
      * head_k (= head_v), group_count = n_k_heads, time_step_rank =
      * n_v_heads, inner_size = n_v_heads * head_v. */
     uint32_t u;
-    if (gguf_get_meta_u32(gguf, "qwen35.ssm.group_count", &u))
+    if (gguf_get_meta_u32(gguf, Q35_KEY("ssm.group_count"), &u))
         st->config.dn_n_k_heads = u;
-    if (gguf_get_meta_u32(gguf, "qwen35.ssm.time_step_rank", &u))
+    if (gguf_get_meta_u32(gguf, Q35_KEY("ssm.time_step_rank"), &u))
         st->config.dn_n_v_heads = u;
-    if (gguf_get_meta_u32(gguf, "qwen35.ssm.state_size", &u))
+    if (gguf_get_meta_u32(gguf, Q35_KEY("ssm.state_size"), &u))
         st->config.dn_head_k = u;
-    if (gguf_get_meta_u32(gguf, "qwen35.ssm.inner_size", &u) && st->config.dn_n_v_heads > 0)
+    if (gguf_get_meta_u32(gguf, Q35_KEY("ssm.inner_size"), &u) && st->config.dn_n_v_heads > 0)
         st->config.dn_head_v = u / st->config.dn_n_v_heads;
-    if (gguf_get_meta_u32(gguf, "qwen35.ssm.conv_kernel", &u))
+    if (gguf_get_meta_u32(gguf, Q35_KEY("ssm.conv_kernel"), &u))
         st->config.dn_conv_kernel = u;
+#undef Q35_KEY
 }
 
-static bool populate_layers_qwen35(struct transformer_arch_state *st) {
+static void populate_qwen35(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
+    populate_q35(gguf, "qwen35", st);
+}
+
+/* `ff_key`: the FFN width's key, the dense FFN's or one expert's. */
+static bool
+populate_layers_q35(struct transformer_arch_state *st, const char *arch, const char *ff_key) {
+    char key[96];
+#define Q35_KEY(k) (snprintf(key, sizeof key, "%s.%s", arch, k), key)
     struct gguf_ctx *g = (struct gguf_ctx *) st->gguf;
 
     uint32_t head_dim = 0, intermediate = 0, rot = 0, interval = 4;
     float    freq_base = 10000000.0f;
     if (g != nullptr) {
-        gguf_get_meta_u32(g, "qwen35.attention.key_length", &head_dim);
-        gguf_get_meta_u32(g, "qwen35.feed_forward_length", &intermediate);
-        gguf_get_meta_u32(g, "qwen35.rope.dimension_count", &rot);
-        gguf_get_meta_u32(g, "qwen35.full_attention_interval", &interval);
-        gguf_get_meta_f32(g, "qwen35.rope.freq_base", &freq_base);
+        gguf_get_meta_u32(g, Q35_KEY("attention.key_length"), &head_dim);
+        gguf_get_meta_u32(g, Q35_KEY(ff_key), &intermediate);
+        gguf_get_meta_u32(g, Q35_KEY("rope.dimension_count"), &rot);
+        gguf_get_meta_u32(g, Q35_KEY("full_attention_interval"), &interval);
+        gguf_get_meta_f32(g, Q35_KEY("rope.freq_base"), &freq_base);
     }
     if (head_dim == 0 || intermediate == 0 || interval == 0 || rot == 0 || rot > head_dim ||
         st->config.dn_n_k_heads == 0 || st->config.dn_n_v_heads == 0 || st->config.dn_head_k == 0 ||
@@ -105,7 +117,7 @@ static bool populate_layers_qwen35(struct transformer_arch_state *st) {
     uint64_t       rec_n  = 0;
     const uint8_t *rec    = nullptr;
     if (g != nullptr &&
-        gguf_get_meta_array_info(g, "qwen35.attention.recurrent_layers", &rec_vt, &rec_n, &rec)) {
+        gguf_get_meta_array_info(g, Q35_KEY("attention.recurrent_layers"), &rec_vt, &rec_n, &rec)) {
         if (rec_vt != GGUF_META_VT_BOOL || rec_n < st->n_layers)
             rec = nullptr;
     }
@@ -127,6 +139,11 @@ static bool populate_layers_qwen35(struct transformer_arch_state *st) {
                              &st->mtp_layers[i].block);
     }
     return true;
+#undef Q35_KEY
+}
+
+static bool populate_layers_qwen35(struct transformer_arch_state *st) {
+    return populate_layers_q35(st, "qwen35", "feed_forward_length");
 }
 
 /* ---- Tensors ---------------------------------------------------------- */
@@ -472,4 +489,76 @@ const struct transformer_family transformer_family_qwen35 = {
         .session_free    = qwen35_session_free,
         .attention_block = qwen35_attention_block,
         .ffn_block       = blk_ffn_swiglu,
+};
+
+/* ---- qwen35moe (Qwen3.5/3.6 MoE hybrid, #169) ------------------------- */
+/*
+ * The qwen35 stack with blk_moe_ffn in place of the dense FFN: a softmax
+ * router over expert_count experts of width expert_feed_forward_length,
+ * the expert_used_count best renormalised (expert_weights_norm, default
+ * true, as llama.cpp builds it), plus a shared expert every token runs,
+ * weighted sigmoid(x . ffn_gate_inp_shexp). The shared expert must have
+ * the routed experts' width: blk_moe_ffn runs it as one more expert.
+ */
+static void populate_qwen35moe(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
+    populate_q35(gguf, "qwen35moe", st);
+    st->config.moe_norm_topk = true;
+    uint32_t u;
+    bool     b;
+    if (gguf_get_meta_u32(gguf, "qwen35moe.expert_count", &u))
+        st->config.moe_n_experts = u;
+    if (gguf_get_meta_u32(gguf, "qwen35moe.expert_used_count", &u))
+        st->config.moe_n_used = u;
+    if (gguf_get_meta_bool(gguf, "qwen35moe.expert_weights_norm", &b))
+        st->config.moe_norm_topk = b;
+    st->config.moe_n_shared =
+            gguf_get_meta_u32(gguf, "qwen35moe.expert_shared_feed_forward_length", &u) && u > 0;
+}
+
+static bool populate_layers_qwen35moe(struct transformer_arch_state *st) {
+    struct gguf_ctx                *g  = (struct gguf_ctx *) st->gguf;
+    const struct geist_arch_config *c  = &st->config;
+    uint32_t                        ff = 0, shared_ff = 0;
+    if (g != nullptr) {
+        gguf_get_meta_u32(g, "qwen35moe.expert_feed_forward_length", &ff);
+        gguf_get_meta_u32(g, "qwen35moe.expert_shared_feed_forward_length", &shared_ff);
+    }
+    if (c->moe_n_experts == 0 || c->moe_n_used == 0 || c->moe_n_used > c->moe_n_experts ||
+        moe_slots(c) > GEIST_MOE_MAX_EXPERTS || (c->moe_n_shared > 0 && shared_ff != ff)) {
+        return false;
+    }
+    return populate_layers_q35(st, "qwen35moe", "expert_feed_forward_length");
+}
+
+[[nodiscard]] static enum geist_status qwen35moe_wire_layer(struct transformer_arch_state    *st,
+                                                            struct gguf_ctx                  *gguf,
+                                                            struct transformer_layer_weights *L) {
+    enum geist_status s = qwen35_wire_layer(st, gguf, L);
+    return s == GEIST_OK ? moe_wire_layer(st, gguf, L, "qwen35moe") : s;
+}
+
+[[nodiscard]] static enum geist_status
+qwen35moe_session_alloc(struct transformer_arch_session *sess) {
+    enum geist_status s = qwen35_session_alloc(sess);
+    return s == GEIST_OK ? moe_session_alloc(sess) : s;
+}
+
+static void qwen35moe_session_free(struct transformer_arch_session *sess) {
+    moe_session_free(sess);
+    qwen35_session_free(sess);
+}
+
+const struct transformer_family transformer_family_qwen35moe = {
+        .name            = "qwen35moe",
+        .rotation        = true,
+        .populate        = populate_qwen35moe,
+        .populate_layers = populate_layers_qwen35moe,
+        .wire_layer      = qwen35moe_wire_layer,
+        .session_alloc   = qwen35moe_session_alloc,
+        .session_free    = qwen35moe_session_free,
+        .attention_block = qwen35_attention_block,
+        .ffn_block       = blk_moe_ffn,
+        /* As qwen3moe: an MoE amplifies KV quantization error (#48, #53). */
+        .kv_auto         = GEIST_KV_F16,
+        .kv_int4_instead = GEIST_KV_F16,
 };

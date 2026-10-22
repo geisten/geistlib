@@ -65,6 +65,10 @@ on:
         description: "timeout per configuration and cycle, seconds"
         type: string
         default: "1200"
+      profile:
+        description: "expert usage profile (GEIST_MOE_PROFILE) of this model; empty: none"
+        type: string
+        default: benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt # #48, Qwen3-30B-A3B
 
 permissions:
   contents: read
@@ -83,7 +87,7 @@ jobs:
       XENV: ${{ inputs.env }}
       SWEEP_ARGS: ${{ inputs.sweep }}
       GGML_VK_VISIBLE_DEVICES: "0" # the discrete card, not the Raphael iGPU
-      PROFILE: benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt # #48
+      PROFILE: ${{ inputs.profile }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
