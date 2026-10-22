@@ -8,15 +8,15 @@
  * desc->prims->attention is what the transformer calls with an FP32 cache.
  * Each backend has its own: cpu_neon NEON rows, up to four query heads of
  * one KV head together where that gives every thread an item (#16) and one
- * head a row otherwise, cpu_x86 an AVX2 kernel that takes every shape and
- * plans its work (attention.c: passes of up to four heads of a KV group,
- * prefill items of up to four queries, decode split into chunks). The
- * shapes cover every branch: MQA, GQA and MHA, one query (decode) and many
- * (prefill), head_dim 64, 128 and 256 (compiled for) and others (20, 40
- * and 80 with their tails, 512), contexts on both sides of 512-position
- * blocks, sliding windows, and each of cpu_x86's plans: passes of 1-4
- * heads, one, two or four queries an item (the last one short), decode
- * split into 2-4 chunks or not.
+ * head a row otherwise, a decode step's long key range split into parts
+ * merged at the end when it has few such items (cut at fixed key
+ * positions: the same bytes on 1, 3 and 7 threads, checked here), cpu_x86 an AVX2 kernel that takes
+ * every shape and plans its work (attention.c: passes of up to four heads of a KV group, prefill
+ * items of up to four queries, decode split into chunks). The shapes cover every branch: MQA, GQA
+ * and MHA, one query (decode) and many (prefill), head_dim 64, 128 and 256 (compiled for) and
+ * others (20, 40 and 80 with their tails, 512), contexts on both sides of 512-position blocks,
+ * sliding windows, and each of cpu_x86's plans: passes of 1-4 heads, one, two or four queries an
+ * item (the last one short), decode split into 2-4 chunks or not.
  *
  * K and V rows that no query may see (before every window) hold NaN, and
  * the output starts as NaN: a kernel that reads past the mask, or leaves a
@@ -29,6 +29,8 @@
  * 1e-4 rather than 2e-5.
  */
 #include "test_helpers.h"
+
+#include "par.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -190,6 +192,34 @@ static int run(struct geist_backend *be, const char *backend, const struct shape
     if (st == GEIST_OK) {
         (void) be->desc->vtbl->buffer_download(nq * sizeof(float), (uint8_t *) out, bo);
     }
+    /* cpu_neon's decode results must not depend on the thread count (its
+     * split decode cuts the keys at fixed positions): the same call on 1, 3
+     * and 7 threads gives the same bytes. */
+    int thread_fails = 0;
+    if (st == GEIST_OK && !f16 && sh->n_q <= 2 && strcmp(backend, "cpu_neon") == 0) {
+        const size_t saved   = geist_par_max_threads();
+        float       *again   = xmalloc(nq * sizeof *again);
+        const size_t tries[] = {1, 3, 7};
+        for (size_t i = 0; i < sizeof tries / sizeof tries[0]; i++) {
+            geist_par_set_max_threads(tries[i]);
+            const enum geist_status st2 =
+                    be->desc->prims->attention(be, &tq, &tk, &tv, q_offset, sh->window, &to);
+            (void) be->desc->vtbl->buffer_download(nq * sizeof(float), (uint8_t *) again, bo);
+            char what2[160];
+            snprintf(what2,
+                     sizeof what2,
+                     "cpu_neon: n_q %zu, heads %zu/%zu, n_kv %zu: same bytes on %zu threads",
+                     sh->n_q,
+                     sh->n_q_heads,
+                     sh->n_kv_heads,
+                     sh->n_kv,
+                     tries[i]);
+            thread_fails += geist_expect(
+                    st2 == GEIST_OK && memcmp(again, out, nq * sizeof *again) == 0, what2);
+        }
+        geist_par_set_max_threads(saved);
+        free(again);
+    }
     double worst = 0.0;
     size_t at = 0, nonfinite = 0;
     for (size_t i = 0; st == GEIST_OK && i < nq; i++) {
@@ -233,7 +263,7 @@ static int run(struct geist_backend *be, const char *backend, const struct shape
     free(out);
     free(ref);
     free(scores);
-    return geist_expect(st == GEIST_OK && nonfinite == 0 && worst <= tol, what);
+    return thread_fails + geist_expect(st == GEIST_OK && nonfinite == 0 && worst <= tol, what);
 }
 
 int main(void) {
@@ -282,6 +312,15 @@ int main(void) {
             {17, 4, 1, 20, 600, 0, 0.0f},
             {1, 8, 1, 512, 1500, 0, 0.0f},
             {12, 8, 1, 512, 900, 0, 0.0f},
+            /* cpu_neon's split decode (#16): Llama 3.2 3B's 24/8 heads and
+             * Gemma 4 E2B's 8/1 at depth, a key range just long enough to
+             * split, one that splits into a ragged last part, a sliding
+             * window, and two queries (spec decode) whose ranges differ */
+            {1, 24, 8, 128, 1025, 0, 0.0f},
+            {1, 8, 1, 256, 1024, 512, 0.0f},
+            {1, 24, 8, 128, 256, 0, 0.0f},
+            {1, 24, 8, 128, 1999, 0, 300.0f},
+            {2, 24, 8, 128, 700, 0, 0.0f},
     };
     static const char *const BACKENDS[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
     int                      fails = 0, ran = 0;
