@@ -110,10 +110,13 @@ jobs:
             | grep -v '^geist vulkan: device memory' | tee out/hot-vs-cpu.txt
       - name: Quality, perplexity of docs/OFFLOAD.md (CPU vs hot experts)
         continue-on-error: true
+        env:
+          XENV: ${{ inputs.env }}
         run: |
           set -o pipefail
           . scripts/gpu-lock.sh
           NLL=bin/linux/release/tests/bench_nll
+          XNLL=$(echo "$XENV" | tr ';' ' ')
           for cfg in cpu hot gpu; do
             B=cpu_x86
             case $cfg in
@@ -121,8 +124,13 @@ jobs:
               gpu) X="GEIST_MOE_PROFILE=$PROFILE"; B=vulkan ;;
               *) X= ;;
             esac
-            env $X GEIST_BENCH_BACKEND=$B "$NLL" "$MODEL" docs/OFFLOAD.md 1024 2>> out/log.txt \
+            ( while :; do nvidia-smi --query-gpu=pstate,clocks.sm,clocks.mem,utilization.gpu --format=csv,noheader \
+                | sed "s/^/nll-$cfg 1, /"; sleep 0.5; done >> out/clocks.txt ) &
+            clk=$!
+            echo "== nll $cfg" >> out/log.txt
+            env $X $XNLL GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=$B "$NLL" "$MODEL" docs/OFFLOAD.md 1024 2>> out/log.txt \
               | sed "s/^{/{\"cfg\":\"$cfg\",/" | tee -a out/nll.jsonl
+            kill $clk 2>/dev/null || true
           done
       - name: Measure, interleaved
         run: |
