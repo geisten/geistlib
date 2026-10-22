@@ -154,9 +154,16 @@ jobs:
           BUILD=$(dirname "$(dirname "$LLAMA_VK")")
           cmake --build "$BUILD" --target llama-server -j "$(nproc)" > /dev/null
           SERVER="$BUILD/bin/llama-server"
+          # The comparison is Vulkan against Vulkan, on the discrete card:
+          # list what llama.cpp sees and name the device explicitly.
+          "$SERVER" --list-devices 2>&1 | tee out/llama-devices.txt
+          grep -q "Vulkan0" out/llama-devices.txt || { echo "llama.cpp sees no Vulkan0"; exit 1; }
           for k in $(echo "$NCMOE" | tr ';' ' '); do
             echo "== llama-real ncmoe=$k" | tee -a out/log.txt
-            "$SERVER" -m "$MODEL" -ngl 99 --n-cpu-moe "$k" -c 4096 -np 1 --port 8099 >> out/llama-server.log 2>&1 &
+            ( while :; do nvidia-smi --query-gpu=pstate,clocks.sm,clocks.mem,utilization.gpu --format=csv,noheader \
+                | sed "s/^/llama-real-$k 1, /"; sleep 0.5; done >> out/clocks.txt ) &
+            clk=$!
+            "$SERVER" -m "$MODEL" --device Vulkan0 -ngl 99 --n-cpu-moe "$k" -c 4096 -np 1 --port 8099 >> out/llama-server.log 2>&1 &
             pid=$!
             python3 - "$k" "$CYCLES" "$pid" <<'PY' | tee -a out/results.jsonl || true
           import json, sys, time, urllib.request
@@ -191,6 +198,7 @@ jobs:
           PY
             kill $pid 2>/dev/null || true
             wait $pid 2>/dev/null || true
+            kill $clk 2>/dev/null || true
           done
       - name: Measure, interleaved
         run: |
