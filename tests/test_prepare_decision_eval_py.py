@@ -41,9 +41,13 @@ class PreparationTests(unittest.TestCase):
 
     def test_protocol_rejects_text_that_would_be_truncated(self):
         tokenizer = prepare.Tokenizer.__new__(prepare.Tokenizer)
-        for text in ("x\0y", "x\ry", "é" * 32768):
+        for text in ("x\0y", "é" * 32768):
             with self.assertRaisesRegex(ValueError, "lossless"):
                 tokenizer.encode(text)
+        sent = []
+        tokenizer.command = lambda line: sent.append(line) or ["2", "7", "8"]
+        self.assertEqual(tokenizer.encode("a\\r\r\nb\r"), [7, 8])
+        self.assertEqual(sent, ["TOK a\\\\r\\r\\nb\\r"])
 
     def test_initialization_failure_closes_log_and_process_pipes(self):
         class Log:
