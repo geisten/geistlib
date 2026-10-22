@@ -86,6 +86,14 @@ struct cpu_neon_workspace {
     size_t pq2_xp_cap;
     float *pq2_tile;
     size_t pq2_tile_cap;
+    /* Split decode attention (transformer_ops.c): per (query, head, part)
+     * the part's unnormalized output, its max and its sum. */
+    float  *attn_part_out;
+    size_t  attn_part_out_cap;
+    float  *attn_part_max;
+    size_t  attn_part_max_cap;
+    double *attn_part_sum;
+    size_t  attn_part_sum_cap;
 };
 
 /* Grow-on-demand helpers for the workspace buffers. Return false on OOM,
@@ -125,6 +133,20 @@ struct cpu_neon_workspace {
     }
     safe_free((void **) p);
     *p = heap_alloc_array_aligned(float, need);
+    if (*p == nullptr) {
+        *cap = 0;
+        return false;
+    }
+    *cap = need;
+    return true;
+}
+
+[[nodiscard]] static inline bool cpu_neon_grow_f64(double **p, size_t *cap, size_t need) {
+    if (*cap >= need) {
+        return true;
+    }
+    safe_free((void **) p);
+    *p = heap_alloc_array_aligned(double, need);
     if (*p == nullptr) {
         *cap = 0;
         return false;
