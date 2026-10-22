@@ -6,4 +6,6 @@
   hands it in host memory (`fused->rows_weighted_sum`; Vulkan: a ring the
   work in flight does not read). With two waits the card idled between
   them, ~30 % busy, and NVIDIA's driver kept it at 300-700 MHz after a short
-  prompt: 3-5 tok/s with Qwen3-30B-A3B on an RTX 2080 Ti instead of 49-52.
+  prompt: 3-5 tok/s with Qwen3-30B-A3B on an RTX 2080 Ti instead of 49-52
+  — on a pseudo-random prompt; on real text the model on the GPU stays
+  experimental (`changes/78-moe-real-text.md`).
