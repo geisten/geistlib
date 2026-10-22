@@ -1,0 +1,100 @@
+== nll cpu
+  attention     9529.90 ms   35.4%  (49104 calls)
+  ffn          17405.76 ms   64.6%  (49104 calls)
+  ple              0.00 ms    0.0%  (0 calls)
+  scale            0.00 ms    0.0%  (0 calls)
+  norm            39.40 ms    0.2%  (49104 calls)
+  router         940.70 ms    5.4%  (49104 calls)
+  route          165.08 ms    0.9%  (49104 calls)
+  gather         129.80 ms    0.7%  (49104 calls)
+  experts      16024.29 ms   92.2%  (49104 calls)
+  sum             77.86 ms    0.4%  (49104 calls)
+  copy             0.18 ms    0.0%  (1023 calls)
+  norm             0.73 ms    0.0%  (1023 calls)
+  lm_head       3410.58 ms   99.6%  (1023 calls)
+  softcap          0.00 ms    0.0%  (0 calls)
+  sample          13.51 ms    0.4%  (1023 calls)
+== nll hot
+geist: moe: 3159 of 6144 experts (9217 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 91.8 %
+geist: moe: 307279 expert rows ran on vulkan, 85553 on the CPU
+geist: moe: 49076 GPU batches, mean us: pack 1.9, record 5.3, wait 187.2, unpack 1.9
+geist: moe: 49076 of them grouped (decode), mean wait 187.2 us
+  attention     9326.20 ms   45.2%  (49104 calls)
+  ffn          11329.66 ms   54.8%  (49104 calls)
+  ple              0.00 ms    0.0%  (0 calls)
+  scale            0.00 ms    0.0%  (0 calls)
+  norm            41.79 ms    0.4%  (49104 calls)
+  router         924.38 ms    8.2%  (49104 calls)
+  route          156.60 ms    1.4%  (49104 calls)
+  gather          70.53 ms    0.6%  (49104 calls)
+  experts      10064.90 ms   88.9%  (49104 calls)
+  sum             57.64 ms    0.5%  (49104 calls)
+  copy             0.18 ms    0.0%  (1023 calls)
+  norm             0.78 ms    0.0%  (1023 calls)
+  lm_head       3380.98 ms   99.6%  (1023 calls)
+  softcap          0.00 ms    0.0%  (0 calls)
+  sample          13.13 ms    0.4%  (1023 calls)
+== nll gpu
+geist: moe: 2805 of 6144 experts (8184 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 88.5 %
+geist: moe: 281302 expert rows ran on vulkan, 111530 on the CPU
+geist: moe: 48998 GPU batches, mean us: pack 0.0, record 0.0, wait 0.0, unpack 0.0
+geist: moe: 48998 of them grouped (decode), mean wait 0.0 us
+  attention      444.88 ms    1.0%  (49104 calls)
+  ffn          45502.18 ms   99.0%  (49104 calls)
+  ple              0.00 ms    0.0%  (0 calls)
+  scale            0.00 ms    0.0%  (0 calls)
+  norm            33.07 ms    0.1%  (49104 calls)
+  router          48.37 ms    0.1%  (49104 calls)
+  route        18812.63 ms   41.4%  (49104 calls)
+  gather          64.52 ms    0.1%  (49104 calls)
+  experts      26404.76 ms   58.0%  (49104 calls)
+  sum            126.92 ms    0.3%  (49104 calls)
+  copy             0.58 ms    0.0%  (1023 calls)
+  norm             0.75 ms    0.0%  (1023 calls)
+  lm_head          1.12 ms    0.0%  (1023 calls)
+  softcap          0.00 ms    0.0%  (0 calls)
+  sample        3010.88 ms   99.9%  (1023 calls)
+== cycle 1 geist-gpu (load 13.86)
+geist: moe: 2808 of 6144 experts (8193 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 88.5 %
+[bench] prompt: 9424 tokens of docs/OFFLOAD.md
+geist: moe: 315134 expert rows ran on vulkan, 130690 on the CPU
+geist: moe: 6126 GPU batches, mean us: pack 0.0, record 0.0, wait 0.0, unpack 0.0
+geist: moe: 5982 of them grouped (decode), mean wait 0.0 us
+  attention       62.37 ms    1.4%  (6336 calls)
+  ffn           4497.17 ms   98.6%  (6336 calls)
+  ple              0.00 ms    0.0%  (0 calls)
+  scale            0.00 ms    0.0%  (0 calls)
+  norm             4.35 ms    0.1%  (6336 calls)
+  router           6.96 ms    0.2%  (6336 calls)
+  route         1755.11 ms   39.0%  (6336 calls)
+  gather         122.79 ms    2.7%  (6336 calls)
+  experts       2530.53 ms   56.3%  (6336 calls)
+  sum             75.79 ms    1.7%  (6336 calls)
+  copy             0.07 ms    0.0%  (132 calls)
+  norm             0.11 ms    0.1%  (132 calls)
+  lm_head          0.15 ms    0.1%  (132 calls)
+  softcap          0.00 ms    0.0%  (0 calls)
+  sample         146.50 ms   99.8%  (132 calls)
+== geist-gpu cycle 1: exit 0 after 16 s
+== cycle 2 geist-gpu (load 15.13)
+geist: moe: 2808 of 6144 experts (8193 MiB) on vulkan; profile benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt, cover 88.5 %
+[bench] prompt: 9424 tokens of docs/OFFLOAD.md
+geist: moe: 315134 expert rows ran on vulkan, 130690 on the CPU
+geist: moe: 6126 GPU batches, mean us: pack 0.0, record 0.0, wait 0.0, unpack 0.0
+geist: moe: 5982 of them grouped (decode), mean wait 0.0 us
+  attention       62.73 ms    1.4%  (6336 calls)
+  ffn           4338.23 ms   98.6%  (6336 calls)
+  ple              0.00 ms    0.0%  (0 calls)
+  scale            0.00 ms    0.0%  (0 calls)
+  norm             4.39 ms    0.1%  (6336 calls)
+  router           6.87 ms    0.2%  (6336 calls)
+  route         1758.68 ms   40.6%  (6336 calls)
+  gather         125.98 ms    2.9%  (6336 calls)
+  experts       2363.51 ms   54.5%  (6336 calls)
+  sum             77.04 ms    1.8%  (6336 calls)
+  copy             0.07 ms    0.1%  (132 calls)
+  norm             0.14 ms    0.1%  (132 calls)
+  lm_head          0.14 ms    0.1%  (132 calls)
+  softcap          0.00 ms    0.0%  (0 calls)
+  sample         136.36 ms   99.7%  (132 calls)
+== geist-gpu cycle 2: exit 0 after 16 s

@@ -439,6 +439,11 @@ struct transformer_arch_session {
     /* On a GPU: x copied into cached host memory in the router's batch, so
      * one wait brings the logits and x (#78 phase 3). nullptr on a CPU. */
     struct geist_buffer *moe_x_io;
+    /* moe_gpu_launch / finish (#163), host: the hot rows' source tokens
+     * [m_max * n_used]; per token its hot rows and weights (CSR: start
+     * [m_max + 1], fill [m_max], rows and w [m_max * n_used]). */
+    uint32_t *moe_ids_hot, *moe_csr_start, *moe_csr_fill, *moe_csr_rows;
+    float    *moe_csr_w;
 
     /* ---- Last-decode prediction (consumed by next decode_step). */
     bool logits_valid;

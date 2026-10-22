@@ -49,6 +49,10 @@ on:
         description: "bench_perf_sweep arguments besides --gguf"
         type: string
         default: "--seq-lens 512 --decode-n 32 --warmup 8 --repeats 3 --m-max 128"
+      nll:
+        description: "bench_nll configurations, separated by ; (cpu, hot, gpu; scalar = cpu_scalar, the reference)"
+        type: string
+        default: "cpu;hot;gpu"
       build:
         description: "extra make variables for geistlib, e.g. OPENMP=0 (its own spinning thread pool)"
         type: string
@@ -123,14 +127,16 @@ jobs:
         continue-on-error: true
         env:
           XENV: ${{ inputs.env }}
+          NLLCFG: ${{ inputs.nll }}
         run: |
           set -o pipefail
           . scripts/gpu-lock.sh
           NLL="$GBIN"/bench_nll
           XNLL=$(echo "$XENV" | tr ';' ' ')
-          for cfg in cpu hot gpu; do
+          for cfg in $(echo "$NLLCFG" | tr ';' ' '); do
             B=cpu_x86
             case $cfg in
+              scalar) X=; B=cpu_scalar ;;
               hot) X="GEIST_MOE_PROFILE=$PROFILE GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto" ;;
               gpu) X="GEIST_MOE_PROFILE=$PROFILE"; B=vulkan ;;
               *) X= ;;
@@ -154,9 +160,16 @@ jobs:
           BUILD=$(dirname "$(dirname "$LLAMA_VK")")
           cmake --build "$BUILD" --target llama-server -j "$(nproc)" > /dev/null
           SERVER="$BUILD/bin/llama-server"
+          # The comparison is Vulkan against Vulkan, on the discrete card:
+          # list what llama.cpp sees and name the device explicitly.
+          "$SERVER" --list-devices 2>&1 | tee out/llama-devices.txt
+          grep -q "Vulkan0" out/llama-devices.txt || { echo "llama.cpp sees no Vulkan0"; exit 1; }
           for k in $(echo "$NCMOE" | tr ';' ' '); do
             echo "== llama-real ncmoe=$k" | tee -a out/log.txt
-            "$SERVER" -m "$MODEL" -ngl 99 --n-cpu-moe "$k" -c 4096 -np 1 --port 8099 >> out/llama-server.log 2>&1 &
+            ( while :; do nvidia-smi --query-gpu=pstate,clocks.sm,clocks.mem,utilization.gpu --format=csv,noheader \
+                | sed "s/^/llama-real-$k 1, /"; sleep 0.5; done >> out/clocks.txt ) &
+            clk=$!
+            "$SERVER" -m "$MODEL" --device Vulkan0 -ngl 99 --n-cpu-moe "$k" -c 4096 -np 1 --port 8099 >> out/llama-server.log 2>&1 &
             pid=$!
             python3 - "$k" "$CYCLES" "$pid" <<'PY' | tee -a out/results.jsonl || true
           import json, sys, time, urllib.request
@@ -191,6 +204,7 @@ jobs:
           PY
             kill $pid 2>/dev/null || true
             wait $pid 2>/dev/null || true
+            kill $clk 2>/dev/null || true
           done
       - name: Measure, interleaved
         run: |

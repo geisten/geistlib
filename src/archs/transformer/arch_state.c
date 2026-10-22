@@ -1265,6 +1265,20 @@ geometry_from_metadata(struct geist_backend             *be,
         st->m_max = 64;
     }
 
+    /* A mixture of experts on a discrete GPU (#163): a chunk's rows are
+     * spread over its experts, ~8 per expert at 128, ~32 at 512, and the
+     * hot experts' GEMMs need the larger batch (Qwen3-30B-A3B, RTX 2080 Ti:
+     * prefill 302-307 tok/s at 128, 490-498 at 512, runs 1754/1755).
+     * Before the weights load: the fused ops are planned for this m_max.
+     * caps.max_m and GEIST_M_MAX, applied below, still win. */
+    if (st->config.moe_n_experts > 0 && be->desc != nullptr &&
+        strncmp(be->desc->name, "cpu_", 4) != 0 && st->m_max < 512) {
+        struct geist_backend_memory mem;
+        if (geist_backend_memory_info(be, &mem) == GEIST_OK && !mem.unified_memory) {
+            st->m_max = 512;
+        }
+    }
+
     /* Per-model prefill knobs (prefill_tuning.h): the chunk gets the delta
      * for this family and weight size, and its OpenMP spin policy becomes
      * the process default — here, before weight packing

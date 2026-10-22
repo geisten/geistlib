@@ -442,7 +442,10 @@ met.
 > 57.4/59.7). **The model on the CPU with a GPU split backend** is the
 > steady alternative: +19-23 % over the CPU alone in every run and both
 > measures, prefill as the CPU's, perplexity 29.96 against 29.90. Prefill
-> trails llama.cpp's best split by half in every geist mode (#163). Raw data:
+> trails llama.cpp's best split by half in every geist mode — **since #163
+> the model on the GPU does not**: the hot rows are gathered and summed on
+> the device and a discrete GPU prefills a mixture of experts in chunks of
+> 512, 490-498 tok/s (runs 1754/1755). Raw data:
 > `benchmark/results/raw/moe-real-text-2026-10-22/`.
 
 - **The model on the GPU.** A mixture-of-experts model loaded on a GPU

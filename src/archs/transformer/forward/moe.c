@@ -421,7 +421,7 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
      * sum. GEIST_E_UNSUPPORTED (a weight not resident): the batch below. */
     bool launched = false;
     if (j->n_hot > 0 && moe_gpu_launchable(sess, j->layer, j->n_hot, j->hot)) {
-        s = moe_gpu_launch(sess, j->layer, j->n_hot, j->hot);
+        s = moe_gpu_launch(sess, j->layer, seq, j->n_hot, j->hot);
         if (s != GEIST_OK && s != GEIST_E_UNSUPPORTED) {
             geist_backend_set_error(ctx->be,
                                     s,
@@ -459,27 +459,25 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     }
 
     if (launched) {
-        /* The cold experts' weighted sum on the host (one token: d floats,
-         * in expert order); the GPU adds the hot outputs, weighted, onto it
-         * without the host waiting for them. */
-        float *cold = sess->moe_x_host;
-        float  w_hot[GEIST_MOE_MAX_EXPERTS];
-        memset(cold, 0, d * sizeof(float));
+        /* The cold experts' weighted sum per token on the host, in expert
+         * order; the GPU adds the hot outputs, weighted, onto it without
+         * the host waiting for them. */
+        float *cold                          = sess->moe_x_host;
+        bool   is_hot[GEIST_MOE_MAX_EXPERTS] = {false};
+        for (size_t h = 0; h < j->n_hot; h++)
+            is_hot[j->hot[h]] = true;
+        memset(cold, 0, seq * d * sizeof(float));
         for (size_t i = 0; i < n_sel; i++) {
-            const uint32_t sel = sess->moe_rows[i], e = sess->moe_ids[sel];
-            const float    wt = sess->moe_wts[sel];
-            size_t         h  = 0;
-            while (h < j->n_hot && j->hot[h] != e)
-                h++;
-            if (h < j->n_hot) {
-                w_hot[h] = wt;
+            const uint32_t sel = sess->moe_rows[i];
+            if (is_hot[sess->moe_ids[sel]])
                 continue;
-            }
+            const float  wt  = sess->moe_wts[sel];
+            float       *dst = cold + (sel / k) * d;
             const float *src = sess->moe_y + i * d;
             for (size_t c = 0; c < d; c++)
-                cold[c] += wt * src[c];
+                dst[c] += wt * src[c];
         }
-        s = moe_gpu_finish(sess, j->n_hot, w_hot, cold, sess->moe_acc);
+        s = moe_gpu_finish(sess, seq, j->n_hot, j->hot, cold, sess->moe_acc);
         if (s == GEIST_OK)
             s = blk_add(ctx, d, sess->scratch_h_post_attn, sess->moe_acc, ctx->h_out_buf);
         moe_profile_mark(MOE_PROFILE_SUM, &t0);
