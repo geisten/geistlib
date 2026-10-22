@@ -1,4 +1,3 @@
-#include <stdlib.h>
 /*
  * src/backends/metal/ops.c — op implementations, encode helpers, probe, and the descriptor.
  */
@@ -409,7 +408,6 @@ static bool metal_pq2_xh_ready(const struct metal_state      *st,
 
 static bool metal_pq2_m8_fits(const struct metal_state *st, const struct metal_q4k_params *params) {
     return params->rows >= 2u && params->rows <= 8u && st->pq2_m8_pipeline != nullptr &&
-           getenv("GEIST_EXP_NO_PQ2_M8") == nullptr && /* EXP: A/B switch, remove before PR */
            st->cvt_f16_pipeline != nullptr && st->pq2_xh_buffer != nullptr &&
            (size_t) 8u * params->n_in * sizeof(uint16_t) <= st->pq2_xh_capacity &&
            (params->n_in % 128u) == 0u && (params->x_offset % 4u) == 0u &&

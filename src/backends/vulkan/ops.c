@@ -1,4 +1,3 @@
-#include <stdlib.h>
 /*
  * src/backends/vulkan/ops.c — op implementations, resolver, probe, and the descriptor.
  *
@@ -898,8 +897,7 @@ static bool vk_q8_0_narrow(const struct vk_state *st, enum vk_pipe pipe, const s
      * workgroup. */
     if (pipe == VK_PIPE_MATMUL_PQ2_0 && m >= 2u && m < 16u && st->subgroup_size == 32u &&
         push->n_in % 128u == 0 && push->x_offset % 4u == 0 && push->x_stride % 4u == 0 &&
-        st->pipes[VK_PIPE_MM_PQ2_0_M16_CM] != VK_NULL_HANDLE &&
-        getenv("GEIST_EXP_NO_PQ2_M16") == nullptr /* EXP: A/B switch, remove before PR */) {
+        st->pipes[VK_PIPE_MM_PQ2_0_M16_CM] != VK_NULL_HANDLE) {
         return vk_seq_dispatch_acc(be,
                                    VK_PIPE_MM_PQ2_0_M16_CM,
                                    infos,
