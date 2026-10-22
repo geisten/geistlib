@@ -1974,6 +1974,53 @@ static const char metal_kv_norm_append_f16_source[] =
         "y=v[vb+i]*vinv*vw[vp.wo+i];v[vb+i]=y;vc[vdst+i]=half(y);}\n"
         "}\n";
 
+/* Llama / Qwen3 attention prep with the KV append (#17), the twin of
+ * q_norm_rope + kv_norm_append: one threadgroup per (row, head) over the
+ * q heads, then the k heads. A head is optionally RMS-normed (Qwen3's
+ * q/k norms), RoPE-rotated over its first nrot elements (half split), q
+ * scaled when qsc is set, written back in place; a k head and its v head
+ * are also stored at row qp of the caches. The norm is rmsnorm_rows_simd's
+ * multi-row loop at 256 threads, the rotation rope_rows', the scale
+ * scale_rows' and the stores kv_append_rows', each step reading the
+ * previous one's result back from memory as the separate kernels do, so the
+ * output is theirs bit for bit. */
+#define GEIST_METAL_ROPE_APPEND(NAME, T)                                                         \
+    "kernel void " NAME "(device float*q[[buffer(0)]],device float*k[[buffer(1)]],device const " \
+    "float*v[[buffer(2)]],device const float*qw[[buffer(3)]],device const "                      \
+    "float*kw[[buffer(4)]],device const float*c[[buffer(5)]],device const "                      \
+    "float*s[[buffer(6)]],device " T "*kc[[buffer(7)]],device " T "*vc[[buffer(8)]],constant "   \
+    "RA&p[[buffer(9)]],uint2 tg[[threadgroup_position_in_grid]],uint "                           \
+    "lid[[thread_index_in_threadgroup]],uint2 ntg[[threads_per_threadgroup]],uint "              \
+    "sg[[simdgroup_index_in_threadgroup]],uint sl[[thread_index_in_simdgroup]]){"                \
+    "threadgroup float partial[32];threadgroup float hv[512];uint nt=ntg.x;"                     \
+    "uint r=tg.x,h=tg.y;if(r>=p.rows||h>=p.qh+p.kvh)return;"                                     \
+    "bool isq=h<p.qh;uint hh=isq?h:h-p.qh;device float*x=isq?q:k;"                               \
+    "uint base=isq?p.qo+r*p.qh*p.hd+hh*p.hd:p.ko+r*p.kvh*p.hd+hh*p.hd;"                          \
+    "if(isq?p.qn!=0u:p.kn!=0u){device const float*w=isq?qw+p.qwo:kw+p.kwo;float ss=0.0f;"        \
+    "for(uint i=lid;i<p.hd;i+=nt){float a=x[base+i];ss+=a*a;}"                                   \
+    "float sum=simd_sum(ss);if(sl==0u)partial[sg]=sum;"                                          \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);float total=0.0f;"                          \
+    "for(uint i=0u;i<nt/32u;i++)total+=partial[i];float inv=rsqrt(total/float(p.hd)+p.eps);"     \
+    "for(uint i=lid;i<p.hd;i+=nt)hv[i]=x[base+i]*inv*w[i];}"                                     \
+    "else{for(uint i=lid;i<p.hd;i+=nt)hv[i]=x[base+i];}"                                         \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);uint hd2=p.nrot/2u;"                        \
+    "for(uint i=lid;i<hd2;i+=nt){float x0=hv[i],x1=hv[i+hd2];float "                             \
+    "co=c[p.co+r*p.nrot+i],si=s[p.so+r*p.nrot+i];"                                               \
+    "x[base+i]=x0*co-x1*si;x[base+i+hd2]=x0*si+x1*co;}"                                          \
+    "for(uint i=p.nrot+lid;i<p.hd;i+=nt)x[base+i]=hv[i];"                                        \
+    "threadgroup_barrier(mem_flags::mem_device);"                                                \
+    "if(isq){if(p.qsc!=0u){for(uint i=lid;i<p.hd;i+=nt)x[base+i]=x[base+i]*p.qs;}return;}"       \
+    "uint cb=(p.qp+r)*p.kvh*p.hd+hh*p.hd,vb=p.vo+r*p.kvh*p.hd+hh*p.hd;"                          \
+    "for(uint i=lid;i<p.hd;i+=nt){kc[p.kco+cb+i]=" T "(x[base+i]);vc[p.vco+cb+i]=" T             \
+    "(v[vb+i]);}}\n"
+
+static const char metal_rope_append_source[] =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct RA{uint rows,qh,kvh,hd,nrot,qo,ko,vo,qwo,kwo,co,so,kco,vco,qp,qn,kn,qsc;float "
+        "eps,qs;};\n" GEIST_METAL_ROPE_APPEND("rope_append_rows", "float")
+                GEIST_METAL_ROPE_APPEND("rope_append_rows_f16", "half");
+
 static const char metal_attn_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
