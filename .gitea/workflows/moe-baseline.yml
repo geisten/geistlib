@@ -49,6 +49,10 @@ on:
         description: "bench_perf_sweep arguments besides --gguf"
         type: string
         default: "--seq-lens 512 --decode-n 32 --warmup 8 --repeats 3 --m-max 128"
+      build:
+        description: "extra make variables for geistlib, e.g. OPENMP=0 (its own spinning thread pool)"
+        type: string
+        default: ""
       llama_real:
         description: "llama.cpp on real text: --n-cpu-moe values for llama-server, separated by ; (empty: skip)"
         type: string
@@ -85,7 +89,10 @@ jobs:
           mkdir -p out
           { git rev-parse HEAD; nvidia-smi; free -g; nproc; } 2>&1 | tee out/env.txt
       - name: Build geistlib (vulkan + cpu_x86)
-        run: make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
+        run: |
+          make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native ${{ inputs.build }} bin
+          # OPENMP=0 builds into bin/linux/release-noomp
+          echo "GBIN=$(dirname "$(find bin -path '*/release*/tests/bench_perf_sweep' | head -1)")" >> "$GITHUB_ENV"
       - name: llama.cpp (pinned, cpu and vulkan)
         run: |
           set -eo pipefail
@@ -110,7 +117,7 @@ jobs:
           . scripts/gpu-lock.sh
           GEIST_SPLIT_BACKEND=vulkan GEIST_SPLIT_GGUF_PATH="$MODEL" GEIST_SPLIT_POINTS=1 \
             GEIST_MOE_PROFILE="$PROFILE" GEIST_VERBOSE=1 \
-            bin/linux/release/tests/test_layer_split_int 2>&1 \
+            "$GBIN"/test_layer_split_int 2>&1 \
             | grep -v '^geist vulkan: device memory' | tee out/hot-vs-cpu.txt
       - name: Quality, perplexity of docs/OFFLOAD.md (CPU vs hot experts)
         continue-on-error: true
@@ -119,7 +126,7 @@ jobs:
         run: |
           set -o pipefail
           . scripts/gpu-lock.sh
-          NLL=bin/linux/release/tests/bench_nll
+          NLL="$GBIN"/bench_nll
           XNLL=$(echo "$XENV" | tr ';' ' ')
           for cfg in cpu hot gpu; do
             B=cpu_x86
@@ -189,7 +196,7 @@ jobs:
         run: |
           set -o pipefail
           . scripts/gpu-lock.sh
-          GB=bin/linux/release/tests/bench_perf_sweep
+          GB="$GBIN"/bench_perf_sweep
           SWEEP="--gguf $MODEL $SWEEP_ARGS"
           X=$(echo "$XENV" | tr ';' ' ')
           LB="-m $MODEL -p 512 -n 32 -r 3 -o jsonl"
