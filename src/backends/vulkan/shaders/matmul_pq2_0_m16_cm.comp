@@ -1,0 +1,121 @@
+#version 450
+#extension GL_KHR_cooperative_matrix : enable
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_memory_scope_semantics : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+
+/* PQ2_0 (Ternary-Bonsai) for 2..15 tokens on tensor cores (#105: the verify
+ * pass of speculative decoding). The register-tiled matmul_pq2_0 pays its
+ * dequantization per 32-token tile and the 128-row tensor-core tiles leave
+ * most SMs idle at a handful of tokens; here a weight is decoded once and the
+ * tokens ride the MMA's N = 16.
+ *
+ * A workgroup is 32 weight rows; its 8 subgroups are 2 row tiles x 4 k-slices
+ * (subgroup s takes k-steps s>>1, s>>1 + 4, ...). Per 32-wide k-step a
+ * subgroup decodes its 16 x 32 weight tile and loads its 16 x 32 token tile
+ * (tokens >= rows are zero) into its own shared slots, then runs two
+ * 16 x 16 x 16 MMAs. No workgroup barrier inside the loop; the four k-slices
+ * meet in shared memory at the end, and only tokens < rows are stored.
+ *
+ * GPU layout = struct-of-arrays (see matvec_pq2_0.comp). Requires a subgroup
+ * size of 32, n_in % 128 == 0, x offset and stride % 4 == 0.
+ * Dispatch: gx = ceil(n_out / 32), gy = 1. */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
+layout(set = 0, binding = 1) readonly buffer W { uint w[]; };
+layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint n_in;
+    uint n_out;
+    uint blocks_per_row;
+    uint rows;
+    uint x_offset;
+    uint w_offset;
+    uint y_offset;
+    uint x_stride;
+    uint y_stride;
+} pc;
+
+const uint BK = 32;
+const uint STRIDE4 = BK / 8u + 1u; /* 4 uvec4 of data + 1 of padding per row */
+
+shared uvec4 Ash[8][16 * STRIDE4];
+shared uvec4 Bsh[8][16 * STRIDE4];
+shared float red[8 * 256];
+
+/* 8 ternary codes (16 bits) -> 8 packed f16 values (code - 1) * d */
+uvec4 expand8(uint bits, float d) {
+    uvec4 r;
+    for (uint p = 0u; p < 4u; p++) {
+        uvec2 c = uvec2(bits >> (4u * p), bits >> (4u * p + 2u)) & 3u;
+        r[p] = packHalf2x16((vec2(c) - 1.0) * d);
+    }
+    return r;
+}
+
+void main() {
+    uint sg = gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+    uint rt = sg & 1u;
+    uint slice = sg >> 1u;
+    uint row = min(gl_WorkGroupID.x * 32u + rt * 16u + (lane >> 1u), pc.n_out - 1u);
+    uint hk = lane & 1u;
+    uint t = lane >> 1u;
+    bool tvalid = t < pc.rows;
+    uint sc0 = pc.n_out * pc.blocks_per_row * 8u;
+
+    coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> acc =
+            coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
+
+    uint ksteps = pc.n_in / BK;
+    for (uint ks = slice; ks < ksteps; ks += 4u) {
+        uint k0 = ks * BK;
+        uint bi = row * pc.blocks_per_row + (k0 >> 7u);
+        uint qw = w[bi * 8u + ((k0 & 127u) >> 4u) + hk];
+        float d = unpackHalf2x16(w[sc0 + (bi >> 1u)] >> ((bi & 1u) * 16u)).x;
+        vec4 x0 = vec4(0.0), x1 = vec4(0.0), x2 = vec4(0.0), x3 = vec4(0.0);
+        if (tvalid) {
+            uint xv = (pc.x_offset + t * pc.x_stride + k0 + hk * 16u) >> 2u;
+            x0 = x4[xv];
+            x1 = x4[xv + 1u];
+            x2 = x4[xv + 2u];
+            x3 = x4[xv + 3u];
+        }
+        uint base = (lane >> 1u) * STRIDE4 + hk * 2u;
+        Ash[sg][base] = expand8(qw & 0xffffu, d);
+        Ash[sg][base + 1u] = expand8(qw >> 16u, d);
+        Bsh[sg][base] = uvec4(packHalf2x16(x0.xy), packHalf2x16(x0.zw), packHalf2x16(x1.xy),
+                              packHalf2x16(x1.zw));
+        Bsh[sg][base + 1u] = uvec4(packHalf2x16(x2.xy), packHalf2x16(x2.zw),
+                                   packHalf2x16(x3.xy), packHalf2x16(x3.zw));
+        subgroupMemoryBarrierShared();
+        subgroupBarrier();
+        for (uint kk = 0u; kk < BK; kk += 16u) {
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> matA;
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> matB;
+            coopMatLoad(matA, Ash[sg], kk / 8u, STRIDE4, gl_CooperativeMatrixLayoutRowMajor);
+            coopMatLoad(matB, Bsh[sg], kk / 8u, STRIDE4, gl_CooperativeMatrixLayoutColumnMajor);
+            acc = coopMatMulAdd(matA, matB, acc);
+        }
+        subgroupBarrier(); /* the tiles are rewritten next step */
+    }
+
+    coopMatStore(acc, red, sg * 256u, 16u, gl_CooperativeMatrixLayoutRowMajor);
+    barrier();
+    for (uint e = gl_LocalInvocationID.x; e < 512u; e += 256u) {
+        uint et = e >> 8u;
+        uint r = (e >> 4u) & 15u;
+        uint tt = e & 15u;
+        uint o = gl_WorkGroupID.x * 32u + et * 16u + r;
+        float s = 0.0;
+        for (uint k = 0u; k < 4u; k++) {
+            s += red[(k * 2u + et) * 256u + r * 16u + tt];
+        }
+        if (tt < pc.rows && o < pc.n_out) {
+            y[pc.y_offset + tt * pc.y_stride + o] = s;
+        }
+    }
+}

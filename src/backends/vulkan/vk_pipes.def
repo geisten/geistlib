@@ -63,6 +63,8 @@ X(VK_PIPE_MM_PQ2_0_CM,            matmul_pq2_0_cm_spv,         "mm_pq2_0_cm",   
 X(VK_PIPE_MM_PQ2_0_CM_F32,        matmul_pq2_0_f32acc_cm_spv,  "mm_pq2_0_cm_f32",        3, COOPMAT)
 /* 128 x 64 tile (f32 acc) for batches under 128 tokens */
 X(VK_PIPE_MM_PQ2_0_CM64,          matmul_pq2_0_t64_cm_spv,     "mm_pq2_0_cm64",          3, COOPMAT)
+/* 2..15 tokens: one weight decode, the tokens on the MMA (#105) */
+X(VK_PIPE_MM_PQ2_0_M16_CM,        matmul_pq2_0_m16_cm_spv,     "mm_pq2_0_m16_cm",        3, COOPMAT)
 /* fused PLE gate: gelu(x.gate_w) * ple_in */
 X(VK_PIPE_PLE_GATE,               ple_gate_f32_spv,            "ple_gate",               4, PLAIN)
 /* ffn_gate_up with the pre-FFN rmsnorm folded in */
