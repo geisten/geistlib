@@ -9,4 +9,5 @@
   rows (from 128): its experts get ~32 rows each instead of ~8.
   Qwen3-30B-A3B Q4_K_M, RTX 2080 Ti + Ryzen 9 9950X, real prompt: prefill
   490-498 tok/s from 166 (llama.cpp Vulkan's best split: 490), decode
-  53-57 tok/s, perplexity unchanged.
+  53-57 tok/s; perplexity 30.10 against 30.06 for cpu_scalar's exact
+  arithmetic (cpu_x86, with int8 activations: 29.90).
