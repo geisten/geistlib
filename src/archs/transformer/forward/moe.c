@@ -33,6 +33,9 @@
 
 #include "../moe_gpu.h"
 #include "par.h"
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
 #include "profile.h"
 
 /* Finite by the bits: the build's -ffast-math lets the compiler assume no
@@ -448,6 +451,22 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     const char    *sm         = getenv("GEIST_MOE_SERIAL_MAX"); /* experiment, #161 */
     const size_t   serial_max = sm != nullptr ? (size_t) strtoull(sm, nullptr, 10) : 0;
     const uint64_t tl1        = transformer_profile_now_ns();
+    {
+        static _Atomic int said = 0; /* experiment: what the cold region gets */
+        if (launched && getenv("GEIST_VERBOSE") != nullptr && atomic_exchange(&said, 1) == 0) {
+#if defined(_OPENMP)
+            const int inpar = omp_in_parallel();
+#else
+            const int inpar = -1;
+#endif
+            fprintf(stderr,
+                    "geist: moe: cold region: %zu threads, %zu tasks, omp_in_parallel %d, cpu %s\n",
+                    threads,
+                    tasks,
+                    inpar,
+                    st->moe_cpu != nullptr ? st->moe_cpu->desc->name : "-");
+        }
+    }
     if ((launched || j->n_hot == 0) && j->n_active <= serial_max) {
         for (size_t a = 0; a < j->n_active; a++)
             if (!moe_expert(j, j->active[a]))
