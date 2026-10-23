@@ -95,12 +95,15 @@ static size_t moe_inter(const struct transformer_arch_state *st) {
 }
 
 /* Experts that fit `gbe` after a reserve: a sixteenth of the device and
- * 512 MiB (the planner's, plan_split_layers) plus one session's buffers. */
+ * 512 MiB (the planner's, plan_split_layers) plus one session's buffers.
+ * On unified memory only for the model on that GPU (#168): its experts'
+ * buffers alias the mapping, so every expert that fits runs there and none
+ * waits on the CPU. A CPU model with such a GPU beside it keeps them all. */
 static size_t
 moe_fit(const struct transformer_arch_state *st, struct geist_backend *gbe, size_t expert_bytes) {
     struct geist_backend_memory mem;
-    if (geist_backend_memory_info(gbe, &mem) != GEIST_OK || mem.unified_memory ||
-        expert_bytes == 0) {
+    if (geist_backend_memory_info(gbe, &mem) != GEIST_OK || expert_bytes == 0 ||
+        (mem.unified_memory && gbe != st->backend)) {
         return 0;
     }
     const size_t n_sel   = st->m_max * moe_k(&st->config);
@@ -164,8 +167,7 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
     const size_t eb = L0->moe_gate_w[0].raw_nbytes + L0->moe_up_w[0].raw_nbytes +
                       L0->moe_down_w[0].raw_nbytes;
     size_t       n  = moe_fit(st, gbe, eb);
-    /* GEIST_MOE_HOT=<n>: exactly n, past the budget (tests, measurements;
-     * on unified memory the budget is 0: those GPUs hold the whole model). */
+    /* GEIST_MOE_HOT=<n>: exactly n, past the budget (tests, measurements). */
     const char *force = getenv("GEIST_MOE_HOT");
     if (force != nullptr && *force != '\0') {
         n = (size_t) strtoull(force, nullptr, 10);
