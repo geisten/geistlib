@@ -77,6 +77,10 @@ on:
         description: "#165: the run-time profile of one session (one #48 profile file, then two) and of every profile file, held-out cover against the profile input's; 'yes' or empty"
         type: string
         default: ""
+      make_profile:
+        description: "measure this model's expert profile first (geist's router trace on the #48 corpus) and use it: '<n_experts> <experts per token>', e.g. '256 8'; empty: skip"
+        type: string
+        default: ""
       profile:
         description: "expert usage profile (GEIST_MOE_PROFILE) of this model; empty: none"
         type: string
@@ -133,6 +137,30 @@ jobs:
             mv "$F.part" "$F"
           fi
           echo "MODEL=$F" >> "$GITHUB_ENV"
+      - name: Expert usage profile of this model (router trace on the #48 corpus)
+        if: inputs.make_profile != ''
+        env:
+          SHAPE: ${{ inputs.make_profile }}
+        run: |
+          set -eo pipefail
+          # The #48 corpus: Gutenberg prose and code, a profile set and a
+          # held-out set; the measurement text (docs/OFFLOAD.md) is in neither.
+          L=$(dirname "$(dirname "$(dirname "$LLAMA_CPU")")")
+          python3 tools/moe_usage/corpus.py out/corpus . "$L"
+          DUMP=$(find bin -path '*/release*' -name dump_geist_logits | head -1)
+          N=$(basename "$MODEL" .gguf)
+          for s in profile heldout; do
+            mkdir -p out/trace/$s
+            for f in out/corpus/$s/*.txt; do
+              GEIST_MOE_TRACE=out/trace/$s/$(basename "$f" .txt).trace GEIST_DUMP_BACKEND=cpu_x86 \
+                "$DUMP" "$MODEL" "$f" /dev/null /dev/null 2>> out/log.txt
+            done
+            python3 tools/moe_usage/trace_usage.py "$N" $s $SHAPE out/trace/$s/*.trace >> out/usage.txt
+          done
+          python3 tools/moe_usage/analyze.py out/usage.txt | tee out/usage-analysis.txt
+          rm -rf out/trace # ~160 MB; usage.txt holds the counts
+          # A variable of its own: the job's PROFILE (the input) stays as it is.
+          echo "PROFILE_MADE=$PWD/out/usage.txt" >> "$GITHUB_ENV"
       - name: Run-time profile against the hand-made one (#165)
         if: inputs.runtime_profile != ''
         run: |
@@ -168,7 +196,7 @@ jobs:
           set -o pipefail
           . scripts/gpu-lock.sh
           GEIST_SPLIT_BACKEND=vulkan GEIST_SPLIT_GGUF_PATH="$MODEL" GEIST_SPLIT_POINTS=1 \
-            GEIST_MOE_PROFILE="$PROFILE" GEIST_VERBOSE=1 \
+            GEIST_MOE_PROFILE="${PROFILE_MADE:-$PROFILE}" GEIST_VERBOSE=1 \
             "$GBIN"/test_layer_split_int 2>&1 \
             | grep -v '^geist vulkan: device memory' | tee out/hot-vs-cpu.txt
       - name: Quality, perplexity of docs/OFFLOAD.md (CPU vs hot experts)
@@ -186,8 +214,8 @@ jobs:
             B=cpu_x86
             case $cfg in
               scalar) X=; B=cpu_scalar ;;
-              hot) X="GEIST_MOE_PROFILE=$PROFILE GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto" ;;
-              gpu) X="GEIST_MOE_PROFILE=$PROFILE"; B=vulkan ;;
+              hot) X="GEIST_MOE_PROFILE=${PROFILE_MADE:-$PROFILE} GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto" ;;
+              gpu) X="GEIST_MOE_PROFILE=${PROFILE_MADE:-$PROFILE}"; B=vulkan ;;
               *) X= ;;
             esac
             ( while :; do nvidia-smi --query-gpu=pstate,clocks.sm,clocks.mem,utilization.gpu --format=csv,noheader \
@@ -290,10 +318,10 @@ jobs:
               case $cfg in
                 geist-cpu)    cmd="env $X GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 $GB $SWEEP" ;;
                 geist-vulkan) cmd="env GEIST_BENCH_BACKEND=vulkan GEIST_VK_VERBOSE=1 $GB $SWEEP" ;;
-                geist-gpu)    cmd="env $X GEIST_VERBOSE=1 GEIST_MOE_PROFILE=$PROFILE GEIST_BENCH_BACKEND=vulkan $GB $SWEEP" ;;
+                geist-gpu)    cmd="env $X GEIST_VERBOSE=1 GEIST_MOE_PROFILE=${PROFILE_MADE:-$PROFILE} GEIST_BENCH_BACKEND=vulkan $GB $SWEEP" ;;
                 geist-split|geist-hot-uniform)
                               cmd="env $X GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto $GB $SWEEP" ;;
-                geist-hot)    cmd="env $X GEIST_VERBOSE=1 GEIST_MOE_PROFILE=$PROFILE GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto $GB $SWEEP" ;;
+                geist-hot)    cmd="env $X GEIST_VERBOSE=1 GEIST_MOE_PROFILE=${PROFILE_MADE:-$PROFILE} GEIST_BENCH_BACKEND=cpu_x86 GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto $GB $SWEEP" ;;
                 llama-cpu)    cmd="$LLAMA_CPU $LB" ;;
                 llama-exps-cpu) cmd="$LLAMA_VK $LB -ngl 99 -ot exps=CPU" ;;
                 *) echo "unknown $cfg"; continue ;;
