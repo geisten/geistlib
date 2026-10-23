@@ -3,7 +3,8 @@
  * profile, counted at run time and kept with the model (#165).
  *
  * The router's selections per (layer, expert) are counted while sessions
- * run (blk_moe_ffn routes on the host anyway). With the cache on, the
+ * run (blk_moe_ffn routes on the host anyway; a decode step routed on the
+ * device, #201, is not counted -- every expert is on that GPU already). With the cache on, the
  * counts are added to the ones read at load when the model is destroyed
  * and written to the profile cache, one file per model:
  *
