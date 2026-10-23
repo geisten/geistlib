@@ -436,6 +436,9 @@ struct transformer_arch_session {
      * and in VRAM (x), the gate and up outputs in VRAM. nullptr: every
      * expert runs on the CPU. */
     struct geist_buffer *moe_gpu_x_io, *moe_gpu_y_io, *moe_gpu_x, *moe_gpu_g, *moe_gpu_u;
+    /* #201, on the GPU: the routed ids [m_max * n_used] then the
+     * non-finite flag (uint32), and their weights [m_max * n_used]. */
+    struct geist_buffer *moe_dev_ids, *moe_dev_w;
     float               *moe_x_host; /* [m_max, d_model]: x when the backend cannot map it */
     /* On a GPU: x copied into cached host memory in the router's batch, so
      * one wait brings the logits and x (#78 phase 3). nullptr on a CPU. */
@@ -578,6 +581,13 @@ struct transformer_moe_gpu {
     /* Owned: helper threads for a decode step's cold experts when one_wait
      * (moe_pool.h, #161); nullptr: they run in a geist_par_for. */
     struct moe_pool *pool;
+    /* [n_layers]: a decode step of the layer routes and runs its experts
+     * on the device, the host out of the loop (#201): every routed expert
+     * has a copy, no shared expert, fused->moe_route & co. any_device: one
+     * layer does. */
+    bool            *device;
+    bool             any_device;
+    _Atomic uint64_t n_device;           /* layer steps that took that route */
     _Atomic uint64_t rows_gpu, rows_cpu; /* GEIST_VERBOSE at destroy */
     /* GEIST_VERBOSE at destroy: batches, and their ns packing (to the
      * copy), recording, waiting (buffer_map of the outputs), unpacking. */

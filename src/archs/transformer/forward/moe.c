@@ -347,6 +347,13 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     if (s != GEIST_OK) {
         return s;
     }
+    /* #201: a decode step routes and runs its experts on the device. */
+    if (moe_gpu_device(sess, (size_t) ctx->layer_idx, seq)) {
+        s = moe_gpu_device_ffn(
+                sess, (size_t) ctx->layer_idx, seq, x, sess->scratch_h_post_attn, ctx->h_out_buf);
+        moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);
+        return s;
+    }
     /* On a GPU x rides along with the router's batch: one wait for both. */
     if (sess->moe_x_io != nullptr) {
         s = v->buffer_copy(sess->moe_x_io, 0, x, 0, seq * d * sizeof(float));
