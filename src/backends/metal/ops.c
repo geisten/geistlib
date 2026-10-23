@@ -899,6 +899,21 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
     /* Multi-row (prefill): full-tile shapes take the 64x32 4-simdgroup GEMM
      * (mm_sg structure, f32 staging = bit-identical to the 8x8 kernel);
      * others the 8x8 simdgroup GEMM. Single-row keeps the reduction kernel. */
+    if (params->rows == 1u && w->dtype == GEIST_DTYPE_F32 &&
+        st->f32_matvec_rows_pipeline != nullptr &&
+        ((params->n_in | params->x_offset | params->w_offset) % 4u) == 0u) {
+        /* Decode: a simdgroup per output row (#196). */
+        metal_msg_send_set_pipeline(st, enc, st->f32_matvec_rows_pipeline);
+        metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+        metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+        metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
+        metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
+        const struct metal_size rgroups  = {(params->n_out + 3u) / 4u, 1, 1};
+        const struct metal_size rthreads = {128, 1, 1};
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_F32_MATMUL, rgroups);
+        metal_msg_send_dispatch(st, enc, rgroups, rthreads);
+        return;
+    }
     const bool use_sg = params->rows > 1u && sg_pipe != nullptr;
     const bool use_mm = use_sg && w->dtype == GEIST_DTYPE_F32 &&
                         st->f32_matmul_mm_pipeline != nullptr && params->rows >= 8u &&
@@ -3537,16 +3552,22 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
         return GEIST_E_BACKEND;
     }
     const struct metal_size threads256 = {256, 1, 1};
-    metal_msg_send_set_pipeline(st, enc, st->f32_ple_gate_pipeline);
+    /* A simdgroup per gate row (#196) where the rows are float4-aligned. */
+    const bool gate_sg =
+            st->f32_ple_gate_sg_pipeline != nullptr && ((d_in | x_off | gw_off) % 4u) == 0u;
+    metal_msg_send_set_pipeline(
+            st, enc, gate_sg ? st->f32_ple_gate_sg_pipeline : st->f32_ple_gate_pipeline);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, gate_w->buffer->buffer, gate_w->buffer->base_off, 1);
     metal_msg_send_set_buffer(st, enc, ple_in->buffer->buffer, ple_in->buffer->base_off, 2);
     metal_msg_send_set_buffer(
             st, enc, gate_scratch->buffer->buffer, gate_scratch->buffer->base_off, 3);
     metal_msg_send_set_bytes(st, enc, &gp, sizeof(gp), 4);
-    const struct metal_size ggroups = {(uint32_t) hpl, (uint32_t) rows, 1};
+    const struct metal_size ggroups = {
+            gate_sg ? ((uint32_t) hpl + 3u) / 4u : (uint32_t) hpl, (uint32_t) rows, 1};
+    const struct metal_size threads128 = {128, 1, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_F32_PLE_GATE, ggroups);
-    metal_msg_send_dispatch(st, enc, ggroups, threads256);
+    metal_msg_send_dispatch(st, enc, ggroups, gate_sg ? threads128 : threads256);
 
     s = metal_op_end(be, cmd, enc, nullptr);
     if (s != GEIST_OK) {

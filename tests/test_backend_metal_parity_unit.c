@@ -1442,6 +1442,95 @@ static void run_qkv_prep_case(struct geist_backend *mt,
             v->buffer_destroy(mt, bufs[i]);
     }
 }
+
+static struct geist_tensor dense2(struct geist_buffer *b, size_t d0, size_t d1) {
+    return (struct geist_tensor) {.buffer = b,
+                                  .dtype  = GEIST_DTYPE_F32,
+                                  .layout = GEIST_LAYOUT_DENSE,
+                                  .ndim   = 2,
+                                  .shape  = {(int64_t) d0, (int64_t) d1},
+                                  .stride = {(int64_t) d1, 1}};
+}
+
+/* #196: the decode PLE gate and the F32 matvec (here its projection) with
+ * a simdgroup per row, against ple_gate_f32 and matmul_f32, bit for bit.
+ * hpl >= 1024 takes the 1024-thread layout of the projection. */
+static void run_ple_rows_case(struct geist_backend *mt, size_t d_in, size_t hpl) {
+    const struct geist_backend_vtbl  *v  = mt->desc->vtbl;
+    const struct geist_backend_fused *f  = geist_backend_fused_tbl(mt);
+    struct metal_state               *st = mt->state;
+    struct geist_buffer              *bx = nullptr, *bgw = nullptr, *bple = nullptr, *bpw = nullptr,
+                        *bres = nullptr, *bg[2] = {nullptr}, *bp[2] = {nullptr}, *by = nullptr;
+    float *x   = dev_alloc(mt, d_in * sizeof(float), &bx);
+    float *gw  = dev_alloc(mt, hpl * d_in * sizeof(float), &bgw);
+    float *ple = dev_alloc(mt, hpl * sizeof(float), &bple);
+    float *pw  = dev_alloc(mt, d_in * hpl * sizeof(float), &bpw);
+    float *res = dev_alloc(mt, d_in * sizeof(float), &bres);
+    float *yy  = dev_alloc(mt, d_in * sizeof(float), &by);
+    bool ok = x != nullptr && gw != nullptr && ple != nullptr && pw != nullptr && res != nullptr &&
+              yy != nullptr && f->ple_block != nullptr;
+    for (size_t i = 0; i < 2 && ok; i++) {
+        ok = dev_alloc(mt, hpl * sizeof(float), &bg[i]) != nullptr &&
+             dev_alloc(mt, d_in * sizeof(float), &bp[i]) != nullptr;
+    }
+    float *g = malloc(2 * (hpl + d_in) * sizeof(float));
+    check(ok && g != nullptr, "ple rows buffers");
+    if (ok && g != nullptr) {
+        for (size_t i = 0; i < d_in; i++) {
+            x[i]   = ((float) rng_u8() - 127.5f) * 0.0213f;
+            res[i] = ((float) rng_u8() - 127.5f) * 0.01f;
+        }
+        for (size_t i = 0; i < hpl * d_in; i++) {
+            gw[i] = ((float) rng_u8() - 127.5f) * 0.00731f;
+            pw[i] = ((float) rng_u8() - 127.5f) * 0.00517f;
+        }
+        for (size_t i = 0; i < hpl; i++)
+            ple[i] = ((float) rng_u8() - 127.5f) * 0.0377f;
+        struct geist_tensor tx = dense2(bx, 1, d_in), tgw = dense2(bgw, hpl, d_in);
+        struct geist_tensor tpl = dense2(bple, 1, hpl), tpw = dense2(bpw, d_in, hpl);
+        struct geist_tensor tr = dense2(bres, 1, d_in), ty = dense2(by, 1, d_in);
+        void *const         pipes[2] = {st->f32_ple_gate_sg_pipeline, st->f32_matvec_rows_pipeline};
+        enum geist_status   s        = GEIST_OK;
+        for (size_t i = 0; i < 2 && s == GEIST_OK; i++) {
+            if (i == 1) { /* the threadgroup-per-row kernels */
+                st->f32_ple_gate_sg_pipeline = nullptr;
+                st->f32_matvec_rows_pipeline = nullptr;
+            }
+            struct geist_tensor tg = dense2(bg[i], 1, hpl), tp = dense2(bp[i], 1, d_in);
+            s = f->ple_block(mt, &tx, &tgw, &tpl, &tpw, &tr, nullptr, 1e-6f, &tg, &tp, &ty);
+        }
+        st->f32_ple_gate_sg_pipeline = pipes[0];
+        st->f32_matvec_rows_pipeline = pipes[1];
+        check(s == GEIST_OK && pipes[0] != nullptr && pipes[1] != nullptr &&
+                      v->buffer_download(hpl * sizeof(float), (uint8_t *) g, bg[0]) == GEIST_OK &&
+                      v->buffer_download(hpl * sizeof(float), (uint8_t *) (g + hpl), bg[1]) ==
+                              GEIST_OK &&
+                      v->buffer_download(d_in * sizeof(float), (uint8_t *) (g + 2 * hpl), bp[0]) ==
+                              GEIST_OK &&
+                      v->buffer_download(d_in * sizeof(float),
+                                         (uint8_t *) (g + 2 * hpl + d_in),
+                                         bp[1]) == GEIST_OK,
+              "ple rows dispatch");
+        /* Not the same bits: the old kernels' sums are not reproduced in
+         * order under fast math. Rounding only, relative to the row's size. */
+        const double gate_err = geist_test_max_abs(hpl, g, g + hpl);
+        const double proj_err = geist_test_max_abs(d_in, g + 2 * hpl, g + 2 * hpl + d_in);
+        const bool   pass     = gate_err < 2e-4 && proj_err < 2e-3;
+        check(pass, "PLE gate / F32 matvec rows match the threadgroup kernels");
+        printf("  ple_block rows d %zu hpl %zu: gate max_abs %.2e, proj max_abs %.2e %s\n",
+               d_in,
+               hpl,
+               gate_err,
+               proj_err,
+               pass ? "OK" : "FAIL");
+    }
+    free(g);
+    struct geist_buffer *bufs[] = {bx, bgw, bple, bpw, bres, by, bg[0], bg[1], bp[0], bp[1]};
+    for (size_t i = 0; i < sizeof bufs / sizeof bufs[0]; i++) {
+        if (bufs[i] != nullptr)
+            v->buffer_destroy(mt, bufs[i]);
+    }
+}
 #endif
 
 static void run_qwen35_attention_ops(struct geist_backend *mt) {
@@ -1730,6 +1819,9 @@ int main(void) {
     run_qkv_prep_case(mt, 1, 8, 1, 512, 77, false);
     run_qkv_prep_case(mt, 5, 8, 1, 256, 12, true);
     run_qkv_prep_case(mt, 3, 4, 2, 128, 0, false);
+    run_ple_rows_case(mt, 1536, 256);
+    run_ple_rows_case(mt, 384, 1024);
+    run_ple_rows_case(mt, 2048, 250);
 #endif
 
     /* 2..8 rows take matmul_pq2_m8 (#105): one and many K blocks per
