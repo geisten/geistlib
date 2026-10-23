@@ -445,7 +445,8 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
      * 8 f16 rows of x, so the scratch holds 8 (metal_pq2_m8_fits). */
     if (dtype == GEIST_DTYPE_PQ2_0 && metal_pq2_m8_fits(st, params)) {
         struct metal_q4k_params xh = *params;
-        metal_encode_pq2_x_f16(st, enc, x, params);
+        if (getenv("GEIST_EXP_SKIP_XF16") == nullptr) /* EXP (#192): timing ablation */
+            metal_encode_pq2_x_f16(st, enc, x, params);
         xh.x_offset     = 0u;
         xh.x_row_stride = params->n_in;
         metal_msg_send_set_pipeline(st, enc, st->pq2_m8_pipeline);
@@ -458,7 +459,8 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
         const struct metal_size groups  = {(params->n_out + 15u) / 16u, 1u, 1u};
         const struct metal_size threads = {32u, 4u, 1u};
         metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_PQ2_M8, groups);
-        metal_msg_send_dispatch(st, enc, groups, threads);
+        if (getenv("GEIST_EXP_SKIP_M8") == nullptr) /* EXP (#192): timing ablation, wrong output */
+            metal_msg_send_dispatch(st, enc, groups, threads);
         return;
     }
     const struct metal_quant_pipes p = metal_quant_pipes_for(st, dtype, params->n_out);
@@ -523,6 +525,9 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
     if (n_tile4 && dtype == GEIST_DTYPE_PQ2_0) {
         /* matvec_pq2_n{4,8}'s 256-entry half4 code table */
         metal_msg_send_set_threadgroup_memory(st, enc, 256u * 8u, 0u);
+    }
+    if (n_tile4 && dtype == GEIST_DTYPE_PQ2_0 && getenv("GEIST_EXP_SKIP_N4") != nullptr) {
+        return; /* EXP (#192): timing ablation, wrong output */
     }
     const struct metal_size groups = {
             .width  = n_tile4     ? (params->n_out + p.n4_tile - 1u) / p.n4_tile
@@ -899,7 +904,12 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
     /* Multi-row (prefill): full-tile shapes take the 64x32 4-simdgroup GEMM
      * (mm_sg structure, f32 staging = bit-identical to the 8x8 kernel);
      * others the 8x8 simdgroup GEMM. Single-row keeps the reduction kernel. */
-    const bool use_sg = params->rows > 1u && sg_pipe != nullptr;
+    /* EXP (#192): a few rows of a narrow matrix (DeltaNet beta/alpha: 48
+     * outputs) leave the 8x8 GEMM with n_out/8 threadgroups; the per-row
+     * reduction kernel spreads each output over a threadgroup instead. */
+    const bool narrow_few = params->rows <= 8u && params->n_out < 1024u &&
+                            getenv("GEIST_EXP_F32_SG_ALWAYS") == nullptr;
+    const bool use_sg     = params->rows > 1u && sg_pipe != nullptr && !narrow_few;
     const bool use_mm = use_sg && w->dtype == GEIST_DTYPE_F32 &&
                         st->f32_matmul_mm_pipeline != nullptr && params->rows >= 8u &&
                         (params->n_out % 64u) == 0u && (params->n_in % 32u) == 0u &&
@@ -932,7 +942,8 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
              * there is, so widen them; multi-row shapes take the sg/mm
              * kernels anyway. */
             .width  = use_sg ? 32u
-                      : (params->rows == 1u && params->n_in >= METAL_WIDE_ROWS_MIN_COLS)
+                      : ((params->rows == 1u || narrow_few) &&
+                         params->n_in >= METAL_WIDE_ROWS_MIN_COLS)
                               ? 1024u
                               : METAL_ELEM_THREADS,
             .height = use_mm ? 4u : 1,
@@ -2575,6 +2586,8 @@ static void *metal_flash_pipeline(const struct metal_state *st, size_t head_dim)
 
     const size_t kv_out = k_heads * head_dim;
     const size_t elems  = k_rows * kv_out;
+    if (getenv("GEIST_EXP_SKIP_ATT") != nullptr) /* EXP (#192): timing ablation, wrong output */
+        return GEIST_OK;
     if (!kv_native_f16) {
         const enum geist_status rs = metal_attn_kvf16_reserve(be, st, k, k_off);
         if (rs != GEIST_OK) {
@@ -4227,6 +4240,12 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     }
 }
 
+/* EXP (#192): rows up to which DeltaNet runs the decode kernels per row. */
+static uint32_t metal_dn_rows_max(void) {
+    const char *e = getenv("GEIST_EXP_DN_ROWS");
+    return e != nullptr ? (uint32_t) atoi(e) : 1u;
+}
+
 [[nodiscard]] static enum geist_status
 metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_args *args) {
     if (be == nullptr || be->state == nullptr || args == nullptr || args->qkv == nullptr ||
@@ -4337,7 +4356,7 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
      * hazard tracking; scratch is reused per piece. DNF_DVB is dnf_state's
      * value-column block (the shader's DNF_DVB). */
     enum { DNF_CALL = 512u, DNF_DVB = 16u };
-    bool fast = args->seq > 1 && args->conv_kernel == 4u && args->head_k % 32u == 0 &&
+    bool fast = args->seq > metal_dn_rows_max() && args->conv_kernel == 4u && args->head_k % 32u == 0 &&
                 args->head_k <= 128u && args->head_v % 32u == 0 && args->head_v <= 256u &&
                 st->dnf_out_pipeline != nullptr;
     if (fast) {
@@ -4406,20 +4425,30 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
             metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_OUT, g_ch);
             metal_msg_send_dispatch(st, enc, g_ch, t128);
         }
-    } else if (args->seq == 1 && st->dn_dec_v_pipeline != nullptr && 4u * args->head_v <= 1024u) {
+    } else if (args->seq <= metal_dn_rows_max() && st->dn_dec_v_pipeline != nullptr &&
+               4u * args->head_v <= 1024u) {
         /* Decode: q/k prep per k-head, then the state update spread over
-         * v-heads x 4 row groups (dn_dec_v). */
-        metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);
-        metal_msg_send_set_pipeline(st, enc, st->dn_dec_qk_pipeline);
-        const struct metal_size gk = {args->n_k_heads, 1, 1};
-        const struct metal_size tk = {256, 1, 1};
-        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gk);
-        metal_msg_send_dispatch(st, enc, gk, tk);
-        metal_msg_send_set_pipeline(st, enc, st->dn_dec_v_pipeline);
-        const struct metal_size gv = {args->n_v_heads, 1, 1};
-        const struct metal_size tv = {4u * (uint32_t) args->head_v, 1, 1};
-        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gv);
-        metal_msg_send_dispatch(st, enc, gv, tv);
+         * v-heads x 4 row groups (dn_dec_v); a few rows (speculative
+         * verify, #192) take it once per row instead of a 64-row chunk. */
+        for (uint32_t r = 0; r < params.seq; r++) {
+            struct metal_deltanet_params row = params;
+            row.seq = 1u;
+            row.qkv_offset += r * (uint32_t) conv_dim;
+            row.z_offset += r * (uint32_t) value_dim;
+            row.beta_offset += r * params.n_v_heads;
+            row.alpha_offset += r * params.n_v_heads;
+            metal_msg_send_set_bytes(st, enc, &row, sizeof row, 10);
+            metal_msg_send_set_pipeline(st, enc, st->dn_dec_qk_pipeline);
+            const struct metal_size gk = {args->n_k_heads, 1, 1};
+            const struct metal_size tk = {256, 1, 1};
+            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gk);
+            metal_msg_send_dispatch(st, enc, gk, tk);
+            metal_msg_send_set_pipeline(st, enc, st->dn_dec_v_pipeline);
+            const struct metal_size gv = {args->n_v_heads, 1, 1};
+            const struct metal_size tv = {4u * (uint32_t) args->head_v, 1, 1};
+            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gv);
+            metal_msg_send_dispatch(st, enc, gv, tv);
+        }
     } else {
         metal_msg_send_set_pipeline(st, enc, st->deltanet_mix_pipeline);
         metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);
