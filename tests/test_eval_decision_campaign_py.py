@@ -156,7 +156,8 @@ class CampaignTests(unittest.TestCase):
                                repeats=1, margin_pp=2., calibration=None, out_dir=root / "run",
                                chunk_questions=10, deadline_minutes=1., cool_max_c=65.,
                                cool_timeout_minutes=1., status=False, calibration_modes=None, import_from=None,
-                               core_arms=False, spotcheck=0, spotcheck_seed="s")
+                               core_arms=False, spotcheck=0, spotcheck_seed="s", question_ids=None,
+                               reasoning_only=False)
 
     def test_import_reuses_complete_samples_without_driver_calls(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -237,6 +238,36 @@ class CampaignTests(unittest.TestCase):
             self.assertEqual(spot["by_arm"]["chat_reasoning/generate_long"], {"questions": 2, "identical": 2})
             self.assertEqual(len(spot["declared"]["question_ids"]), 2)
             self.assertEqual(report["model_query_count_including_reference_arms_and_repeats"], 18)
+
+
+    def test_reasoning_only_rerun_on_frozen_question_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = self.setup_run(root, 5)
+            rows = [json.loads(l) for l in (args.cases_dir / "development.jsonl").read_text().splitlines()]
+            ids = root / "ids.json"
+            ids.write_text(json.dumps([rows[3]["question_id"], rows[1]["question_id"]]))
+            args.question_ids, args.reasoning_only, args.decode_cap = ids, True, 8
+            log = root / "calls.log"
+            gate = {"cool_gate": "temperature", "cool_wait_seconds": 0, "gpu_temp_c": 50., "cpu_temp_c": 50.}
+            with (
+                patch.object(campaign.bench_host, "wait_for_apple_cool", return_value=gate),
+                patch.object(campaign.bench_host, "find_macmon", return_value=None),
+                patch.object(ev.bench, "command_output", return_value="test"),
+                patch.dict(os.environ, {"FAKE_LOG": str(log), "FAKE_STALL_AFTER": "-1"}),
+            ):
+                value = campaign.run(args)
+            self.assertEqual(value["pending"], 0)
+            calls = [line.split() for line in log.read_text().splitlines()]
+            self.assertEqual(calls, [["generate_long", "103"], ["generate_long", "101"]])  # frozen order, one profile
+            report = ev.read_json(args.out_dir / "report.json")
+            self.assertEqual(set(report["profiles"]), {"chat_reasoning"})
+            self.assertNotIn("comparison", report)
+            self.assertIn("frozen list of 2 of 5", report["population"])
+            ids.write_text(json.dumps(["not-a-question"]))
+            args.out_dir = root / "bad"
+            with self.assertRaisesRegex(ValueError, "question-ids"):
+                ev.prepare_run(args)
 
 
 if __name__ == "__main__":
