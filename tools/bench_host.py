@@ -146,6 +146,12 @@ def apple_too_warm(temps: dict, limits: dict) -> bool:
             or temps["cpu_c"] > limits.get("max_cpu_c", float("inf")))
 
 
+# The gate's own waits, patchable apart from time.sleep: subprocess.run(timeout=)
+# polls with time.sleep on Linux, so patching that module-wide also records
+# the macmon call's internal waits (CI linux-arm64, run 1802).
+_sleep = time.sleep
+
+
 def wait_for_apple_cool(limits: dict, deadline: float) -> dict:
     """Block until the Apple SoC is below the gate's limits (#17): the M1 Max
     GPU holds its top clock only up to ~81-83 C, so a run that starts warm
@@ -158,7 +164,7 @@ def wait_for_apple_cool(limits: dict, deadline: float) -> dict:
         if temps is None:
             pause = limits["fallback_seconds"]
             print(f"  macmon unavailable: cool-down pause {pause}s", file=sys.stderr, flush=True)
-            time.sleep(pause)
+            _sleep(pause)
             return {"cool_gate": "time", "cool_wait_seconds": pause,
                     "gpu_temp_c": None, "cpu_temp_c": None}
         if not apple_too_warm(temps, limits):
@@ -168,7 +174,7 @@ def wait_for_apple_cool(limits: dict, deadline: float) -> dict:
                                f"still above {limits} at timeout")
         print(f"  waiting for cool chip: GPU {temps['gpu_c']} C, CPU {temps['cpu_c']} C",
               file=sys.stderr, flush=True)
-        time.sleep(APPLE_TEMP_POLL_SECONDS)
+        _sleep(APPLE_TEMP_POLL_SECONDS)
     return {"cool_gate": "temperature",
             "cool_wait_seconds": round(time.monotonic() - started, 1),
             "gpu_temp_c": temps["gpu_c"], "cpu_temp_c": temps["cpu_c"]}
