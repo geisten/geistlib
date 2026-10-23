@@ -1,5 +1,5 @@
 /* #192 step 1: one row through decode_step vs prefill_tokens(1), N times after a prompt.
- * usage: prof1 MODEL PROMPTS BACKEND MODE N   (MODE: none | decode | prefill1)
+ * usage: prof1 MODEL PROMPTS BACKEND MODE N   (MODE: none | decode | prefillK, K = rows per call)
  * Run with the backend's profiler on; the per-call cost is (MODE - none) / N. */
 #include <geist.h>
 #include <geist_util.h>
@@ -28,7 +28,10 @@ int main(int argc, char **argv) {
     for (int i = 0; i < N; i++) {
         enum geist_status st = GEIST_OK;
         if (strcmp(mode, "decode") == 0) st = geist_session_decode_step(s, &t);
-        else if (strcmp(mode, "prefill1") == 0) st = geist_session_prefill_tokens(s, 1, ids + (i % n));
+        else if (strncmp(mode, "prefill", 7) == 0) {
+            const size_t k = (size_t) atoi(mode + 7);
+            st = geist_session_prefill_tokens(s, k, ids + (i * k) % (n - k));
+        }
         if (st != GEIST_OK) { fprintf(stderr, "%s %d: %s\n", mode, i, geist_session_errmsg(s)); return 1; }
     }
     if (strcmp(mode, "decode") == 0) (void) geist_session_peek_logits(&len, s); /* settle the last deferred forward */
