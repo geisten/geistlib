@@ -33,15 +33,36 @@ struct moe_pool {
     long long       spin_ns;
     _Atomic bool    stop;
     _Atomic int     sleepers;
-    /* (generation << 32) | the next unclaimed task: a claim is a CAS on
-     * it, so a helper of an earlier generation can never take a task. */
+    /* The job's generation, its task count and the next unclaimed task in
+     * one word (CLAIM_*): a claim is a CAS on it, so a helper can take a
+     * task only of the job the word names, and only one below its count. A
+     * count of its own, read beside the word, could already be the next
+     * job's while the word still names this one: the helper took task n. */
     _Atomic uint64_t claim;
-    _Atomic size_t   n_tasks; /* of the current generation */
-    _Atomic size_t   done;    /* tasks of it finished */
-    uint64_t         gen;     /* the caller's, under run_mu */
-    moe_pool_fn      fn;      /* read only after a successful claim */
-    void            *ctx;
+    _Atomic size_t   done; /* tasks of the current job finished */
+    uint64_t         gen;  /* the caller's, under run_mu */
+    /* The job: read only after a successful claim, when it is the claimed
+     * generation's (that job is unfinished, so its caller has not moved
+     * on); atomics so the read pairs with the caller's store directly. */
+    _Atomic(moe_pool_fn) fn;
+    _Atomic(void *)      ctx;
 };
+
+/* claim: generation in bits 63..40, task count 39..20, next task 19..0. */
+constexpr uint64_t CLAIM_IDX_BITS = 20;
+constexpr uint64_t CLAIM_MAX      = (1u << CLAIM_IDX_BITS) - 1;
+
+static inline uint64_t claim_gen(uint64_t c) {
+    return c >> (2 * CLAIM_IDX_BITS);
+}
+
+static inline uint64_t claim_n(uint64_t c) {
+    return (c >> CLAIM_IDX_BITS) & CLAIM_MAX;
+}
+
+static inline uint64_t claim_idx(uint64_t c) {
+    return c & CLAIM_MAX;
+}
 
 static long long now_ns(void) {
     struct timespec ts;
@@ -55,13 +76,13 @@ static long long now_ns(void) {
 static void run_tasks(struct moe_pool *p, uint64_t gen) {
     for (;;) {
         uint64_t c = atomic_load_explicit(&p->claim, memory_order_acquire);
-        if ((c >> 32) != gen ||
-            (c & 0xffffffffu) >= atomic_load_explicit(&p->n_tasks, memory_order_relaxed))
+        if (claim_gen(c) != gen || claim_idx(c) >= claim_n(c))
             return;
         if (!atomic_compare_exchange_weak_explicit(
                     &p->claim, &c, c + 1, memory_order_acq_rel, memory_order_relaxed))
             continue;
-        p->fn(p->ctx, (size_t) (c & 0xffffffffu));
+        const moe_pool_fn fn = atomic_load_explicit(&p->fn, memory_order_acquire);
+        fn(atomic_load_explicit(&p->ctx, memory_order_acquire), (size_t) claim_idx(c));
         atomic_fetch_add_explicit(&p->done, 1, memory_order_release);
     }
 }
@@ -69,10 +90,10 @@ static void run_tasks(struct moe_pool *p, uint64_t gen) {
 static void *helper_main(void *arg) {
     struct moe_pool *p = arg;
     geist_par_set_inline(true); /* the kernels a task calls stay on this thread */
-    uint64_t  seen = atomic_load_explicit(&p->claim, memory_order_acquire) >> 32;
+    uint64_t  seen = claim_gen(atomic_load_explicit(&p->claim, memory_order_acquire));
     long long idle = now_ns();
     for (unsigned i = 1; !atomic_load_explicit(&p->stop, memory_order_relaxed); i++) {
-        const uint64_t g = atomic_load_explicit(&p->claim, memory_order_acquire) >> 32;
+        const uint64_t g = claim_gen(atomic_load_explicit(&p->claim, memory_order_acquire));
         if (g != seen) {
             run_tasks(p, g);
             seen = g;
@@ -87,7 +108,7 @@ static void *helper_main(void *arg) {
          * store of claim before it loads sleepers: one sees the other. */
         pthread_mutex_lock(&p->mu);
         atomic_fetch_add(&p->sleepers, 1);
-        while ((atomic_load(&p->claim) >> 32) == seen && !atomic_load(&p->stop))
+        while (claim_gen(atomic_load(&p->claim)) == seen && !atomic_load(&p->stop))
             pthread_cond_wait(&p->cv, &p->mu);
         atomic_fetch_sub(&p->sleepers, 1);
         pthread_mutex_unlock(&p->mu);
@@ -114,8 +135,9 @@ struct moe_pool *moe_pool_create(size_t n_helpers) {
     atomic_init(&p->stop, false);
     atomic_init(&p->sleepers, 0);
     atomic_init(&p->claim, 0);
-    atomic_init(&p->n_tasks, 0);
     atomic_init(&p->done, 0);
+    atomic_init(&p->fn, nullptr);
+    atomic_init(&p->ctx, nullptr);
     for (size_t i = 0; i < n_helpers; i++) {
         if (pthread_create(&p->threads[i], nullptr, helper_main, p) != 0)
             break;
@@ -146,18 +168,18 @@ void moe_pool_destroy(struct moe_pool *p) {
 }
 
 bool moe_pool_run(struct moe_pool *p, size_t n, moe_pool_fn fn, void *ctx) {
-    if (p == nullptr || n > 0xffffffffu || pthread_mutex_trylock(&p->run_mu) != 0)
+    if (p == nullptr || n > CLAIM_MAX || pthread_mutex_trylock(&p->run_mu) != 0)
         return false;
     if (n == 0) {
         pthread_mutex_unlock(&p->run_mu);
         return true;
     }
-    p->fn  = fn;
-    p->ctx = ctx;
-    atomic_store_explicit(&p->n_tasks, n, memory_order_relaxed);
+    atomic_store_explicit(&p->fn, fn, memory_order_release);
+    atomic_store_explicit(&p->ctx, ctx, memory_order_release);
     atomic_store_explicit(&p->done, 0, memory_order_relaxed);
-    p->gen = (p->gen + 1) & 0xffffffffu;
-    atomic_store(&p->claim, p->gen << 32); /* publishes the job (seq_cst) */
+    p->gen = (p->gen + 1) & ((UINT64_C(1) << (64 - 2 * CLAIM_IDX_BITS)) - 1);
+    /* publishes the job (seq_cst) */
+    atomic_store(&p->claim, p->gen << (2 * CLAIM_IDX_BITS) | (uint64_t) n << CLAIM_IDX_BITS);
     if (atomic_load(&p->sleepers) > 0) {
         pthread_mutex_lock(&p->mu);
         pthread_cond_broadcast(&p->cv);
