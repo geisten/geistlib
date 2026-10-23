@@ -298,6 +298,130 @@ cpu_neon_silu(struct geist_backend *be, const struct geist_tensor *x, struct gei
     return GEIST_OK;
 }
 
+/* The residual-norm fusions (#195): per row,
+ *   y = (res + rmsnorm(x) * w) * scale        (w nullptr: res + x)
+ *   z = rmsnorm(y) * z_w                      (rmsnorm_add_norm only)
+ * on the same rmsnorm_fp32 and add_fp32 the separate prims run, and the
+ * scale as scale_output's multiply, so every element gets the same
+ * operations in the same order: the bytes match rmsnorm, add, the layer
+ * scale and the next pre-norm run one after the other. Rows are split
+ * across threads from RES_NORM_PAR_ROWS rows on: these four passes ran on
+ * the main thread while the team waited, ~4 % of a Gemma 4 E2B prefill
+ * chunk on the M1 Max; a decode token's row stays on the calling thread.
+ * rmsnorm(x) * w goes through a row on the stack, so y may alias res or x;
+ * RES_NORM_MAX_COLS bounds it, and the probe refuses wider rows. */
+enum { RES_NORM_MAX_COLS = 8192, RES_NORM_PAR_ROWS = 8 };
+
+struct res_norm_job {
+    const float *res, *x, *w, *z_w;
+    float       *y, *z;
+    size_t       cols;
+    float        eps, scale;
+};
+
+static void res_norm_rows(void *ctx, size_t r0, size_t r1) {
+    const struct res_norm_job *j = ctx;
+    float                      tmp[RES_NORM_MAX_COLS];
+    for (size_t r = r0; r < r1; r++) {
+        const size_t off = r * j->cols;
+        const float *xr  = j->x + off;
+        float       *yr  = j->y + off;
+        if (j->w != nullptr) {
+            rmsnorm_fp32(1, j->cols, xr, j->w, j->eps, tmp);
+            xr = tmp;
+        }
+        add_fp32(j->cols, j->res + off, xr, yr);
+        if (j->scale != 1.0f) {
+            for (size_t i = 0; i < j->cols; i++) {
+                yr[i] *= j->scale;
+            }
+        }
+        if (j->z != nullptr) {
+            rmsnorm_fp32(1, j->cols, yr, j->z_w, j->eps, j->z + off);
+        }
+    }
+}
+
+/* Validates the views (all F32 rows of one shape, w and z_w [cols]) and
+ * runs the rows; z and z_w nullptr for rmsnorm_add. */
+static enum geist_status res_norm_run(struct geist_backend      *be,
+                                      const char                *op,
+                                      float                      eps,
+                                      float                      scale,
+                                      const struct geist_tensor *res,
+                                      const struct geist_tensor *x,
+                                      const struct geist_tensor *w,
+                                      const struct geist_tensor *z_w,
+                                      struct geist_tensor       *y,
+                                      struct geist_tensor       *z) {
+    size_t       nr = 0, nx = 0, nw = 0, nzw = 0, ny = 0, nz = 0;
+    const float *rp   = geist_host_tensor_f32(res, &nr);
+    const float *xp   = geist_host_tensor_f32(x, &nx);
+    const float *wp   = w != nullptr ? geist_host_tensor_f32(w, &nw) : nullptr;
+    const float *zwp  = z_w != nullptr ? geist_host_tensor_f32(z_w, &nzw) : nullptr;
+    float       *yp   = geist_host_tensor_f32(y, &ny);
+    float       *zp   = z != nullptr ? geist_host_tensor_f32(z, &nz) : nullptr;
+    const size_t cols = y != nullptr && y->ndim >= 1 && y->shape[y->ndim - 1] > 0
+                                ? (size_t) y->shape[y->ndim - 1]
+                                : 0;
+    if (rp == nullptr || xp == nullptr || yp == nullptr || (w != nullptr && wp == nullptr) ||
+        (z != nullptr && (zp == nullptr || zwp == nullptr)) || cols == 0 ||
+        cols > RES_NORM_MAX_COLS || nr != ny || nx != ny || ny % cols != 0 ||
+        (w != nullptr && nw != cols) || (z != nullptr && (nz != ny || nzw != cols))) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon %s: bad inputs", op);
+        return GEIST_E_INVALID_ARG;
+    }
+    struct res_norm_job job  = {.res   = rp,
+                                .x     = xp,
+                                .w     = wp,
+                                .z_w   = zwp,
+                                .y     = yp,
+                                .z     = zp,
+                                .cols  = cols,
+                                .eps   = eps,
+                                .scale = scale};
+    const size_t        rows = ny / cols;
+    if (rows < RES_NORM_PAR_ROWS) {
+        res_norm_rows(&job, 0, rows);
+    } else {
+        geist_par_for(rows, res_norm_rows, &job);
+    }
+    return GEIST_OK;
+}
+
+[[nodiscard]] bool cpu_neon_res_norm_supported(size_t cols) {
+    return cols > 0 && cols <= RES_NORM_MAX_COLS;
+}
+
+[[nodiscard]] enum geist_status cpu_neon_rmsnorm_add(struct geist_backend      *be,
+                                                     const struct geist_tensor *res,
+                                                     const struct geist_tensor *x,
+                                                     const struct geist_tensor *w,
+                                                     float                      eps,
+                                                     struct geist_tensor       *y) {
+    if (w == nullptr) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon rmsnorm_add: null weight");
+        return GEIST_E_INVALID_ARG;
+    }
+    return res_norm_run(be, "rmsnorm_add", eps, 1.0f, res, x, w, nullptr, y, nullptr);
+}
+
+[[nodiscard]] enum geist_status cpu_neon_rmsnorm_add_norm(struct geist_backend      *be,
+                                                          float                      eps,
+                                                          float                      scale,
+                                                          const struct geist_tensor *res,
+                                                          const struct geist_tensor *x,
+                                                          const struct geist_tensor *w,
+                                                          const struct geist_tensor *z_w,
+                                                          struct geist_tensor       *y,
+                                                          struct geist_tensor       *z) {
+    if (z_w == nullptr || z == nullptr) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon rmsnorm_add_norm: null z");
+        return GEIST_E_INVALID_ARG;
+    }
+    return res_norm_run(be, "rmsnorm_add_norm", eps, scale, res, x, w, z_w, y, z);
+}
+
 [[nodiscard]] enum geist_status cpu_neon_hadamard_rotate(struct geist_backend             *be,
                                                          const struct geist_hadamard_args *args) {
     if (args == nullptr) {
