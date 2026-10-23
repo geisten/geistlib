@@ -35,7 +35,7 @@ on:
       profile:
         description: "GEIST_MOE_PROFILE for geist-gpu (a path in this checkout; empty: none)"
         type: string
-        default: ""
+        default: benchmark/results/raw/2026-10-23_qwen36_expert_usage_run1830.txt
 
 permissions:
   contents: read
