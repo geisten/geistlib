@@ -295,3 +295,24 @@ Updating every open PR at once restarts CI on all of them. Five PRs × 24 jobs
 exceed the hosted-runner limit: jobs queue for up to 9 minutes, and the next
 merge makes the whole wave stale again. On 2026-10-08 one PR waited three
 hours this way.
+
+## 9. The agent pipeline
+
+Issues and pull requests move through status labels
+(`.gitea/workflows/agent.yml` has the details):
+
+| label | on | what happens |
+|---|---|---|
+| `agent` | issue | CI's Claude Code implements it and opens the PR |
+| `status:pr-open` | issue | a PR for it exists |
+| `status:validate` | PR | a stronger model (Opus) reviews it against the issue |
+| `status:accepted` | PR | review passed; merges itself once the required CI is green |
+| `status:fix` | PR | review failed; CI's Claude Code works the findings |
+| `status:stuck` | PR | three failed reviews, or a fix that changed nothing: a human's turn |
+
+Working on your own (Codex, Claude Code, by hand): write the issue with
+acceptance criteria first, then either label it `agent`, or implement it,
+open the PR with `Closes #<n>` in the body and label the PR
+`status:validate`. List every choice the issue left open under
+`## Assumptions` in the PR description; the reviewer checks them.
+`/agent <text>` as a PR comment hands the PR to the agent with that text.
