@@ -284,7 +284,29 @@
     "cost_accounting": "Per question: 1 direct call always, plus 1 reasoning call when routed. Tokens: direct prompt tokens, plus reasoning prompt tokens and generated tokens when routed (no prefix or KV reuse between the two calls is assumed). Time: the measured selected-row call time plus the measured reasoning time (cap 2048) when routed; report sum, mean, p50, p95 and the ratio to always-reasoning. Sustained-load Metal figures as in #171.",
     "exploratory": "An accuracy/cost curve over a range of routed fractions computed on the test set is descriptive only and must not be used to choose the policy.",
     "decision_grade_if": "The primary threshold is fixed from calibration data before any test-set evaluation, so the test estimate for it is unbiased. Calibration-split reasoning outputs would only be needed to pick a different threshold by a rule that depends on reasoning accuracy (e.g. the cheapest threshold whose estimated loss is under the margin).",
-    "status": "declared"
+    "status": "evaluated",
+    "result": {
+      "writeup": "benchmark/results/DECISION_TWO_STAGE_2026-10-23.md",
+      "json": "benchmark/results/DECISION_TWO_STAGE_2026-10-23.json",
+      "primary_accuracy": 0.788,
+      "reference_accuracy_cap2048": 0.79,
+      "routed_fraction": 0.686,
+      "difference_pp": -0.2,
+      "interval_pp": [
+        -2.36,
+        1.97
+      ],
+      "interval_pessimistic_pp": [
+        -3.1,
+        0.38
+      ],
+      "noninferiority_established": false,
+      "time_vs_always_reasoning": 0.968,
+      "tokens_vs_always_reasoning": 1.32,
+      "model_calls_per_question": 1.686,
+      "calibration_reasoning_needed": false,
+      "conclusion": "Reasoning-level accuracy (margin narrowly not established) at 97 % of reasoning's time; the confident questions are the ones reasoning answers cheaply. #26 should not build on this policy."
+    }
   },
   "held_out_campaign_171": {
     "tracking_issue": "geistlib#171 (Gitea; GitHub #587)",
