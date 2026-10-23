@@ -282,6 +282,30 @@
         "reason": "Test phase at ~21 h of shared Mac time was too large; this design is ~6-7 h.",
         "statistical_scope": "500 questions give an estimate of the direct-minus-reasoning accuracy difference with its conservative paired 95 % interval, not proof of the 2 pp non-inferiority margin; establishing that margin needs roughly 1500 or more questions (depends on the observed discordance)."
       }
-    ]
+    ],
+    "status": "completed_500_question_heldout_sample",
+    "result": {
+      "writeup": "benchmark/results/DECISION_MMLU_HELDOUT_2026-10-23.md",
+      "json": "benchmark/results/DECISION_MMLU_HELDOUT_2026-10-23.json",
+      "raw_bundle": "benchmark/results/raw/decision-mmlu-heldout-2026-10-23",
+      "measured_source_revision": "2a387442098c4f324989040a3d78330c425c1cac",
+      "binary_sha256_prefix": "bf8fa083d636",
+      "temperature": 1.05460455763381,
+      "direct_accuracy": 0.678,
+      "reasoning_cap512_accuracy": 0.654,
+      "reasoning_capped": 164,
+      "difference_pp": 2.4,
+      "interval_pp": [
+        -5.11,
+        9.87
+      ],
+      "noninferiority_established": false,
+      "n_needed_at_observed_rates": 1450,
+      "quality_matched_speedup_established": false,
+      "selected_equals_dense_bit_exact": "500/500",
+      "determinism_spotcheck": "20/20 per arm identical",
+      "reasoning_accuracy_where_finished": 0.973,
+      "direct_accuracy_where_reasoning_finished": 0.759
+    }
   }
 }
