@@ -398,6 +398,8 @@ struct metal_state {
     void    *f32_ple_gate_pipeline;
     void    *f32_ple_gate_sg_function; /* decode, a simdgroup per row (#196) */
     void    *f32_ple_gate_sg_pipeline;
+    void    *f32_ple_gate_prenorm_function; /* ple_block_prenorm (#196) */
+    void    *f32_ple_gate_prenorm_pipeline;
     void    *f32_matvec_rows_function;
     void    *f32_matvec_rows_pipeline;
     void    *f32_ple_proj_norm_function;
@@ -612,6 +614,7 @@ enum {
     METAL_ELEM_THREADS                  = 256u,
     METAL_QNORM_ATTENTION_MAX_HEAD_DIM  = 512u,
     METAL_ATTN_DEC_MAX_HEADS            = 1024u, /* fused-combine counters */
+    METAL_PLE_PRENORM_MAX_D             = 7168u, /* h in 28 KB of threadgroup memory */
 };
 
 /* Elements per raw block of `dtype` (quant_block_layout); 1 for a dtype

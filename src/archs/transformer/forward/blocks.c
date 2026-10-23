@@ -713,6 +713,8 @@ enum geist_status blk_ffn_geglu(struct transformer_layer_forward_ctx *ctx,
                              sess->scratch_ffn_out,
                              h,
                              sess->scratch_post_ff);
+    else if (s == GEIST_OK && ctx->seq == 1 && P->fuse_ple_block_prenorm_m1 && ctx->run_ple)
+        ctx->ple_prenorm = true; /* the PLE block takes the step (#196) */
     else if (s == GEIST_OK)
         s = blk_norm_add(ctx,
                          P->fuse_rmsnorm_add,

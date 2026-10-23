@@ -90,17 +90,37 @@ static enum geist_status run_ple(struct transformer_layer_forward_ctx *ctx) {
              * norm (#17). */
             const bool tail = P->fuse_tail_norm;
             t0              = prof ? transformer_profile_now_ns() : 0;
-            s               = fused->ple_block(be,
-                                               &t_h_post_ff_2d,
-                                               &L->per_layer_gate,
-                                               &t_ple_in_2d,
-                                               &L->per_layer_proj,
-                                               &t_h_post_ff_2d,
-                                               tail ? nullptr : &t_w_post_per_1d,
-                                               ctx->eps,
-                                               &t_gate_ple_2d,
-                                               &t_proj_scratch_2d,
-                                               &t_h_out_2d);
+            if (ctx->ple_prenorm) {
+                /* h_post_ff = h_post_attn + post_ffw_norm(ffn_out), then the
+                 * block (#196); the plan binds this only with the tail. */
+                struct geist_tensor t_res =
+                        view_2d(sess->scratch_h_post_attn, ctx->SEQ, st->d_model);
+                struct geist_tensor t_ffn = view_2d(sess->scratch_ffn_out, ctx->SEQ, st->d_model);
+                struct geist_tensor t_pw  = view_1d(L->post_ffw_norm.buffer, st->d_model);
+                s                         = fused->ple_block_prenorm(be,
+                                                                     &t_res,
+                                                                     &t_ffn,
+                                                                     &t_pw,
+                                                                     ctx->eps,
+                                                                     &L->per_layer_gate,
+                                                                     &t_ple_in_2d,
+                                                                     &L->per_layer_proj,
+                                                                     &t_h_post_ff_2d,
+                                                                     &t_gate_ple_2d,
+                                                                     &t_proj_scratch_2d);
+            } else {
+                s = fused->ple_block(be,
+                                     &t_h_post_ff_2d,
+                                     &L->per_layer_gate,
+                                     &t_ple_in_2d,
+                                     &L->per_layer_proj,
+                                     &t_h_post_ff_2d,
+                                     tail ? nullptr : &t_w_post_per_1d,
+                                     ctx->eps,
+                                     &t_gate_ple_2d,
+                                     &t_proj_scratch_2d,
+                                     &t_h_out_2d);
+            }
             if (s == GEIST_OK && tail)
                 s = blk_residual_out(ctx,
                                      L->layer_scalar,

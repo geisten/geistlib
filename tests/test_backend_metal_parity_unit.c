@@ -1531,6 +1531,80 @@ static void run_ple_rows_case(struct geist_backend *mt, size_t d_in, size_t hpl)
             v->buffer_destroy(mt, bufs[i]);
     }
 }
+
+/* #196: ple_block_prenorm against rmsnorm_add + ple_block. h is formed with
+ * another reduction order, so the values agree to rounding. */
+static void run_ple_prenorm_case(struct geist_backend *mt, size_t d, size_t hpl) {
+    const struct geist_backend_vtbl  *v     = mt->desc->vtbl;
+    const struct geist_backend_fused *f     = geist_backend_fused_tbl(mt);
+    struct geist_buffer              *b[13] = {nullptr};
+    const size_t n[13] = {d, d, d, hpl * d, hpl, d * hpl, d, hpl, d, d, hpl, d, d};
+    float       *p[13];
+    bool         ok =
+            f->ple_block_prenorm != nullptr && f->ple_block != nullptr && f->rmsnorm_add != nullptr;
+    for (size_t i = 0; i < 13; i++) {
+        p[i] = dev_alloc(mt, n[i] * sizeof(float), &b[i]);
+        ok   = ok && p[i] != nullptr;
+    }
+    /* 0 res, 1 x, 2 post_w, 3 gate_w, 4 ple, 5 proj_w, 6 h, 7 gate, 8 proj,
+     * 9 h (reference), 10 gate (ref), 11 proj (ref), 12 y (unused) */
+    float *g = malloc(2 * (d + hpl + d) * sizeof(float));
+    check(ok && g != nullptr, "ple prenorm buffers");
+    if (ok && g != nullptr) {
+        for (size_t i = 0; i < d; i++) {
+            p[0][i] = ((float) rng_u8() - 127.5f) * 0.0213f;
+            p[1][i] = ((float) rng_u8() - 127.5f) * 0.0371f;
+            p[2][i] = 0.5f + (float) rng_u8() * 0.00413f;
+        }
+        for (size_t i = 0; i < hpl * d; i++) {
+            p[3][i] = ((float) rng_u8() - 127.5f) * 0.00731f;
+            p[5][i] = ((float) rng_u8() - 127.5f) * 0.00517f;
+        }
+        for (size_t i = 0; i < hpl; i++)
+            p[4][i] = ((float) rng_u8() - 127.5f) * 0.0377f;
+        struct geist_tensor t[13];
+        for (size_t i = 0; i < 13; i++)
+            t[i] = dense2(b[i], 1, n[i]);
+        t[2]                = (struct geist_tensor) {.buffer = b[2],
+                                                     .dtype  = GEIST_DTYPE_F32,
+                                                     .layout = GEIST_LAYOUT_DENSE,
+                                                     .ndim   = 1,
+                                                     .shape  = {(int64_t) d},
+                                                     .stride = {1}};
+        t[3]                = dense2(b[3], hpl, d);
+        t[5]                = dense2(b[5], d, hpl);
+        enum geist_status s = f->ple_block_prenorm(
+                mt, &t[0], &t[1], &t[2], 1e-6f, &t[3], &t[4], &t[5], &t[6], &t[7], &t[8]);
+        if (s == GEIST_OK)
+            s = f->rmsnorm_add(mt, &t[0], &t[1], &t[2], 1e-6f, &t[9]);
+        if (s == GEIST_OK)
+            s = f->ple_block(
+                    mt, &t[9], &t[3], &t[4], &t[5], &t[9], nullptr, 1e-6f, &t[10], &t[11], &t[12]);
+        const size_t idx[6] = {6, 9, 7, 10, 8, 11};
+        float       *at[6]  = {
+                g, g + d, g + 2 * d, g + 2 * d + hpl, g + 2 * d + 2 * hpl, g + 3 * d + 2 * hpl};
+        for (size_t i = 0; i < 6 && s == GEIST_OK; i++)
+            s = v->buffer_download(n[idx[i]] * sizeof(float), (uint8_t *) at[i], b[idx[i]]);
+        check(s == GEIST_OK, "ple prenorm dispatch");
+        const double eh   = geist_test_max_abs(d, at[0], at[1]);
+        const double eg   = geist_test_max_abs(hpl, at[2], at[3]);
+        const double ep   = geist_test_max_abs(d, at[4], at[5]);
+        const bool   pass = eh < 1e-5 && eg < 2e-4 && ep < 2e-3;
+        check(pass, "ple_block_prenorm matches rmsnorm_add + ple_block");
+        printf("  ple_block_prenorm d %zu hpl %zu: h %.2e gate %.2e proj %.2e %s\n",
+               d,
+               hpl,
+               eh,
+               eg,
+               ep,
+               pass ? "OK" : "FAIL");
+    }
+    free(g);
+    for (size_t i = 0; i < 13; i++) {
+        if (b[i] != nullptr)
+            v->buffer_destroy(mt, b[i]);
+    }
+}
 #endif
 
 static void run_qwen35_attention_ops(struct geist_backend *mt) {
@@ -1822,6 +1896,9 @@ int main(void) {
     run_ple_rows_case(mt, 1536, 256);
     run_ple_rows_case(mt, 384, 1024);
     run_ple_rows_case(mt, 2048, 250);
+    run_ple_prenorm_case(mt, 1536, 256);
+    run_ple_prenorm_case(mt, 2560, 256);
+    run_ple_prenorm_case(mt, 1000, 77);
 #endif
 
     /* 2..8 rows take matmul_pq2_m8 (#105): one and many K blocks per

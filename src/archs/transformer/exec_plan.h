@@ -44,23 +44,25 @@ struct transformer_layer_exec_plan {
      * (geist_backend.h contract), so there is no per-call
      * GEIST_E_UNSUPPORTED negotiation on bound stages. _m1 = decode
      * (seq==1); _mN = prefill (any seq ≤ the session m cap). */
-    bool fuse_ffn_norm_gate_up_m1; /* fused rmsnorm + gate/up front */
-    bool fuse_ffn_gate_up_m1;      /* fused gate/up front (norm separate) */
-    bool fuse_ffn_gate_up_silu_m1; /* its SwiGLU twin: gate/up + silu*up (#17) */
-    bool fuse_gelu_mul_scaled;     /* GEGLU epilogue with AWQ scale, any m */
-    bool fuse_gelu_mul;            /* GEGLU epilogue, any m */
-    bool fuse_silu_mul;            /* SwiGLU epilogue, any m */
-    bool fuse_rmsnorm_add;         /* post-norm residual, any m */
-    bool fuse_attn_qkv_prep;       /* per-head norms + RoPE + KV append; the
-                                    * session KV-mode conditions stay inline
-                                    * (sess->kv_*_enabled is the session
-                                    * overlay) */
-    bool fuse_attn_rope_append;    /* Llama/Qwen3: optional q/k norms + RoPE + q
-                                    * scale + KV append (#17); the session KV
-                                    * mode is checked at the call site */
-    bool fuse_bitnet_act_quant;    /* BitNet activation fake-quant on the device */
-    bool fuse_ple_block_m1;        /* fused PLE block, decode */
-    bool fuse_ple_block_mN;        /* fused PLE block, prefill */
+    bool fuse_ffn_norm_gate_up_m1;  /* fused rmsnorm + gate/up front */
+    bool fuse_ffn_gate_up_m1;       /* fused gate/up front (norm separate) */
+    bool fuse_ffn_gate_up_silu_m1;  /* its SwiGLU twin: gate/up + silu*up (#17) */
+    bool fuse_gelu_mul_scaled;      /* GEGLU epilogue with AWQ scale, any m */
+    bool fuse_gelu_mul;             /* GEGLU epilogue, any m */
+    bool fuse_silu_mul;             /* SwiGLU epilogue, any m */
+    bool fuse_rmsnorm_add;          /* post-norm residual, any m */
+    bool fuse_attn_qkv_prep;        /* per-head norms + RoPE + KV append; the
+                                     * session KV-mode conditions stay inline
+                                     * (sess->kv_*_enabled is the session
+                                     * overlay) */
+    bool fuse_attn_rope_append;     /* Llama/Qwen3: optional q/k norms + RoPE + q
+                                     * scale + KV append (#17); the session KV
+                                     * mode is checked at the call site */
+    bool fuse_bitnet_act_quant;     /* BitNet activation fake-quant on the device */
+    bool fuse_ple_block_m1;         /* fused PLE block, decode */
+    bool fuse_ple_block_mN;         /* fused PLE block, prefill */
+    bool fuse_ple_block_prenorm_m1; /* ... decode, with the FFN's residual
+                                     * step folded in (#196) */
 
     /* Each of these needs its OWN probe:
      * geist_fusion_query carries shapes and the layer's weight pointers, so

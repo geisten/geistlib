@@ -1820,6 +1820,32 @@ static const char metal_f32_sg_mv_source[] =
         "nsg[[simdgroups_per_threadgroup]],ushort ln[[thread_index_in_simdgroup]]){"
         "const uint row=tg*uint(nsg)+uint(sg);if(row>=p.no)return;"
         "const float t=mv_row4(x+p.xo,w+p.wo+row*p.ni,p.ni,ln);"
+        "if(ln==0)y[p.yo+row]=gelu(t)*ple[p.po+row];}\n"
+        /* ple_block_prenorm's gate (#196): each threadgroup first forms
+         * h = res + rmsnorm(x) * pw in threadgroup memory (rmsnorm_add's
+         * formula; the first threadgroup also stores h), then its rows read
+         * h from there. */
+        "struct GPN{uint ni,no,ro,xo,pwo,wo,po,yo,ho;float eps;};\n"
+        "kernel void ple_gate_prenorm(device const float*res[[buffer(0)]],device const "
+        "float*xi[[buffer(1)]],device const float*pw[[buffer(2)]],device const "
+        "float*w[[buffer(3)]],device const float*ple[[buffer(4)]],device float*y[[buffer(5)]],"
+        "device float*h[[buffer(6)]],constant GPN&p[[buffer(7)]],threadgroup "
+        "float*hs[[threadgroup(0)]],uint tg[[threadgroup_position_in_grid]],ushort "
+        "lid[[thread_index_in_threadgroup]],ushort sg[[simdgroup_index_in_threadgroup]],ushort "
+        "nsg[[simdgroups_per_threadgroup]],ushort ln[[thread_index_in_simdgroup]]){"
+        "threadgroup float part[32];const uint nt=uint(nsg)*32u;float ss=0.0f;"
+        "for(uint c=lid;c<p.ni;c+=nt){const float v=xi[p.xo+c];ss+=v*v;}"
+        "const float r=simd_sum(ss);if(ln==0)part[sg]=r;"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);float tot=0.0f;"
+        "for(ushort i=0;i<nsg;i++)tot+=part[i];const float inv=rsqrt(tot/float(p.ni)+p.eps);"
+        "for(uint c=lid;c<p.ni;c+=nt){const float n=xi[p.xo+c]*inv*pw[p.pwo+c];"
+        "const float v=res[p.ro+c]+n;hs[c]=v;if(tg==0u)h[p.ho+c]=v;}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "const uint row=tg*uint(nsg)+uint(sg);if(row>=p.no)return;"
+        "threadgroup const float4*h4=(threadgroup const float4*)hs;device const float4*w4="
+        "(device const float4*)(w+p.wo+row*p.ni);float4 a=0.0f,b=0.0f;uint n4=p.ni/4u,k=uint(ln);"
+        "for(;k+32u<n4;k+=64u){a+=h4[k]*w4[k];b+=h4[k+32u]*w4[k+32u];}"
+        "if(k<n4)a+=h4[k]*w4[k];a+=b;const float t=simd_sum((a.x+a.y)+(a.z+a.w));"
         "if(ln==0)y[p.yo+row]=gelu(t)*ple[p.po+row];}\n";
 
 static const char metal_f16_w_source[] = GEIST_METAL_HALF_W_KERNELS("f16w", "half", "float(v)");

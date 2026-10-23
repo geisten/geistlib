@@ -69,6 +69,9 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
     case GEIST_FUSED_PLE_BLOCK:
         have = fused->ple_block != nullptr;
         break;
+    case GEIST_FUSED_PLE_BLOCK_PRENORM:
+        have = fused->ple_block_prenorm != nullptr;
+        break;
     case GEIST_FUSED_EMBEDDING_LOOKUP_SCALED:
         have = fused->embedding_lookup_scaled != nullptr;
         break;
@@ -317,6 +320,10 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         P->fuse_ple_block_m1 = P->apply_ple && probe(be, pq);
         pq.m                 = m_cap;
         P->fuse_ple_block_mN = P->apply_ple && probe(be, pq);
+        /* Decode, where the tail takes the next layer's norm (#196). */
+        pq.m                         = 1;
+        pq.op                        = GEIST_FUSED_PLE_BLOCK_PRENORM;
+        P->fuse_ple_block_prenorm_m1 = P->fuse_ple_block_m1 && P->fuse_tail_norm && probe(be, pq);
     }
 
     /* ---- Model-level fusion decisions (lookup tables + greedy head). */

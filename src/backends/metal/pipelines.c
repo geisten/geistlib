@@ -166,6 +166,7 @@ static const struct metal_pipeline_row metal_quant_rows[] = {
         METAL_PIPE(f32, "matmul_bf16w_sg", bf16w_matmul_sg),
         METAL_PIPE(f32, "ple_gate_f32", f32_ple_gate),
         METAL_PIPE(f32, "ple_gate_f32_sg", f32_ple_gate_sg),
+        METAL_PIPE(f32, "ple_gate_prenorm", f32_ple_gate_prenorm),
         METAL_PIPE(f32, "matvec_f32_rows", f32_matvec_rows),
         METAL_PIPE(f32, "ple_proj_norm_f32", f32_ple_proj_norm),
         METAL_PIPE(q4k_mm_sg, "matmul_q4k_mm_sg", q4k_mm_sg),

@@ -95,6 +95,7 @@ struct transformer_layer_forward_ctx {
      * scratch_pre_ff. out_scaled: the tail applied layer_scalar. */
     bool x_prenormed;
     bool ffn_x_prenormed;
+    bool ple_prenorm; /* the FFN left its residual step to the PLE block (#196) */
     bool out_scaled;
 
     struct geist_buffer *k_cache_buf;
