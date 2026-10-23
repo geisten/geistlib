@@ -1,0 +1,35 @@
+# EXP (#192), not for merge: where prefill_tokens(1) loses against decode_step on the 2080 Ti.
+name: exp192-prof
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prof:
+    runs-on: geist-vulkan
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Refuse a software device
+        run: |
+          vulkaninfo --summary 2>&1 | tee vulkan-env.txt
+          grep -q PHYSICAL_DEVICE_TYPE_DISCRETE_GPU vulkan-env.txt
+      - name: Build
+        run: |
+          make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native lib
+          cc -std=c2x -O2 -Iinclude tools/exp192/prof1.c lib/linux/release/libgeist.a -fopenmp -lm -ldl -lpthread -o prof1
+      - name: Fetch Bonsai 2 27B (host cache, SHA-gated)
+        env:
+          GEIST_MODEL_CACHE: ${{ vars.GEIST_MODEL_CACHE }}
+        run: |
+          MODEL=$(python3 tools/fetch_bench_model.py --model bonsai2-27b-pq2 --protocol benchmark/cross_engine_gpu_protocol.json)
+          echo "MODEL_PATH=$MODEL" >> "$GITHUB_ENV"
+      - name: Profile none / decode / prefill1
+        run: |
+          set -eo pipefail
+          . scripts/gpu-lock.sh
+          for md in none decode prefill1; do
+            echo "===== $md"
+            GEIST_VK_PROFILE=1 GEIST_PROFILE_PREFILL=1 GEIST_PROFILE_FORWARD=1 \
+              ./prof1 "$MODEL_PATH" tools/exp192/p1.txt vulkan $md 48 2>&1
+          done
