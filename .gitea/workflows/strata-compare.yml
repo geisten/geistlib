@@ -112,7 +112,8 @@ jobs:
           command -v uv
           ./setup.sh --family qwen36 --model UD-Q4_K_XL --gguf-dir "$GGUF_DIR" --build --yes --no-start --no-browser \
             --vision no --data-dir "$HOME/strata-data" 2>&1 | tee "$GITHUB_WORKSPACE/out/strata-setup.log"
-          CFG=$(ls -t "$S"/strata-*.json "$HOME"/strata-*.json 2>/dev/null | head -1)
+          # pipefail: ls fails on the glob that matches nothing (run 1837)
+          CFG=$(ls -t "$S"/strata-*.json "$HOME"/strata-*.json 2>/dev/null | head -1) || true
           test -n "$CFG" || { echo "setup wrote no strata-*.json"; exit 1; }
           cp "$CFG" "$GITHUB_WORKSPACE/out/strata-cfg.json"
           echo "STRATA_DIR=$S" >> "$GITHUB_ENV"
