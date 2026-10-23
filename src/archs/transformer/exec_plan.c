@@ -75,6 +75,10 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
     case GEIST_FUSED_ARGMAX_F32:
         have = fused->argmax_f32 != nullptr;
         break;
+    case GEIST_FUSED_MOE_DEVICE:
+        have = fused->moe_route != nullptr && fused->linear_t_ids != nullptr &&
+               fused->moe_weighted_sum != nullptr;
+        break;
     case GEIST_FUSED_BITNET_ACT_QUANT:
         have = fused->bitnet_act_quant != nullptr;
         break;

@@ -305,6 +305,7 @@ enum geist_fused_op {
     GEIST_FUSED_FFN_GATE_UP_SILU,
     GEIST_FUSED_ATTN_ROPE_APPEND,
     GEIST_FUSED_ROWS_GATHER,
+    GEIST_FUSED_MOE_DEVICE,
 };
 
 /* Load-time capability probe for one fused op at one layer's geometry.
@@ -832,6 +833,62 @@ struct geist_backend_fused {
                                           const struct geist_tensor *z_w,
                                           struct geist_tensor       *y,
                                           struct geist_tensor       *z);
+
+    /* Mixture-of-experts decode on the device (#201): with every routed
+     * expert of a layer resolved here, the layer's routing, experts and
+     * weighted sum run without the host. EXPERIMENTAL.
+     *
+     * moe_route: for t in [0, m), the k largest of logits[t][0, n) --
+     * ranked by (logit descending, id ascending), the host's
+     * moe_route_topk -- as uint32 ids[t * k + j] in `ids` from byte
+     * ids_offset, and their softmax probabilities over all n as
+     * w[t * k + j] (F32 DENSE [m * k]), renormalised over the k when norm.
+     * A row with a non-finite logit sets the uint32 at byte flag_offset of
+     * `ids` to 1 (never cleared here) and still writes k ids < n. logits is
+     * F32 [m, n] (row stride >= n).
+     *
+     * linear_t_ids: y[s] = W_e x[r] for s in [0, m * k), e = ids[s], r = s
+     * (x_per_slot) or s / k. `experts` holds the n experts' weights back to
+     * back -- expert e's [n_out, n_in] from byte e * w0->raw_nbytes of it,
+     * each laid out as w0 (expert 0's weight, resolved here) -- x is F32
+     * [m or m * k, n_in], y F32 [m * k, n_out].
+     *
+     * moe_weighted_sum: out[t][c] = add[t][c] + sum_{j < k} w[t * k + j] *
+     * y[t * k + j][c] for t in [0, m), c in [0, d), the sum in j order. w F32
+     * [m * k], y F32 [m * k, d], add and out F32 [m, d]; out may alias add.
+     *
+     * Plan-bound: supported(GEIST_FUSED_MOE_DEVICE) with m the most tokens
+     * and gate_w / up_w / down_w expert 0's weights answers for all three.
+     * nullptr = the host routes. */
+    enum geist_status (*moe_route)(struct geist_backend      *be,
+                                   size_t                     m,
+                                   size_t                     n,
+                                   size_t                     k,
+                                   bool                       norm,
+                                   const struct geist_tensor *logits,
+                                   struct geist_buffer       *ids,
+                                   size_t                     ids_offset,
+                                   size_t                     flag_offset,
+                                   struct geist_tensor       *w);
+    enum geist_status (*linear_t_ids)(struct geist_backend      *be,
+                                      size_t                     n,
+                                      size_t                     m,
+                                      size_t                     k,
+                                      bool                       x_per_slot,
+                                      const struct geist_weight *w0,
+                                      const struct geist_tensor *experts,
+                                      const struct geist_buffer *ids,
+                                      size_t                     ids_offset,
+                                      const struct geist_tensor *x,
+                                      struct geist_tensor       *y);
+    enum geist_status (*moe_weighted_sum)(struct geist_backend      *be,
+                                          size_t                     m,
+                                          size_t                     k,
+                                          size_t                     d,
+                                          const struct geist_tensor *w,
+                                          const struct geist_tensor *y,
+                                          const struct geist_tensor *add,
+                                          struct geist_tensor       *out);
 };
 
 /* ====================================================================== */
