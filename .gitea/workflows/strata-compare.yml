@@ -107,7 +107,7 @@ jobs:
           # cache on the change and loses the venv's Ninja (run 1834).
           grep -qs 'CMAKE_CXX_COMPILER:.*g++-13' build/CMakeCache.txt || rm -rf build
           command -v uv
-          ./setup.sh --family qwen36 --gguf-dir "$GGUF_DIR" --build --yes --no-start --no-browser \
+          ./setup.sh --family qwen36 --model UD-Q4_K_XL --gguf-dir "$GGUF_DIR" --build --yes --no-start --no-browser \
             --vision no --data-dir "$HOME/strata-data" 2>&1 | tee "$GITHUB_WORKSPACE/out/strata-setup.log"
           CFG=$(ls -t "$S"/strata-*.json "$HOME"/strata-*.json 2>/dev/null | head -1)
           test -n "$CFG" || { echo "setup wrote no strata-*.json"; exit 1; }
