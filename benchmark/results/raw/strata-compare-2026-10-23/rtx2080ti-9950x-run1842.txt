@@ -1,0 +1,14 @@
+# strata-compare run 1842 (geist-vulkan: RTX 2080 Ti 11 GB + Ryzen 9 9950X): Qwen3.6-35B-A3B-UD-Q4_K_XL (sha256 55983c5a75a1ab969824077b3bb3de4146e82a9234072b48ad4e8f92ad3fe9f1), Strata 5c8dd322 built from source (CUDA 12.4, gcc 13), llama.cpp pinned by scripts/ensure-llama-bench.sh (CUDA and Vulkan llama-server), geistlib dbe8c8aa4beeb6e05577061a443783e3dddfaee6; chat request of 2,726 prompt tokens of docs/OFFLOAD.md, 128 tokens, greedy; rounds alternate the engine order
+{"engine": "strata-mtp2", "round": 1, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 589.3, "decode_tps": 62.1, "load_s": 21.5}
+{"engine": "strata", "round": 1, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 604.9, "decode_tps": 61.0, "load_s": 21.3}
+{"engine": "geist-gpu", "round": 1, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 517.679, "decode_tps": 67.976}
+{"engine": "strata", "round": 2, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 604.7, "decode_tps": 62.2, "load_s": 21.2}
+{"engine": "strata-mtp2", "round": 2, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 588.9, "decode_tps": 62.2, "load_s": 21.4}
+{"engine": "geist-gpu", "round": 2, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 518.058, "decode_tps": 68.998}
+{"engine": "strata-mtp2", "round": 3, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 589.2, "decode_tps": 62.2, "load_s": 21.4}
+{"engine": "strata", "round": 3, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 604.9, "decode_tps": 62.2, "load_s": 21.2}
+{"engine": "geist-gpu", "round": 3, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 523.405, "decode_tps": 67.178}
+| engine | prompt tokens | prefill tok/s (median) | decode tok/s (median) | rounds |
+| strata-mtp2 | 2726 | 589 | 62.2 | 3 |
+| strata | 2726 | 605 | 62.2 | 3 |
+| geist-gpu | 2726 | 518 | 68.0 | 3 |
