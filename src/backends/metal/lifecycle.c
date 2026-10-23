@@ -18,6 +18,8 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->buf_reg_cap   = 0;
     metal_buffer_destroy_internal(be, st->attn_dec_partials_buffer);
     st->attn_dec_partials_buffer = nullptr;
+    metal_buffer_destroy_internal(be, st->attn_dec_count_buffer);
+    st->attn_dec_count_buffer = nullptr;
     metal_buffer_destroy_internal(be, st->pq2_xh_buffer);
     st->pq2_xh_buffer   = nullptr;
     st->pq2_xh_capacity = 0;

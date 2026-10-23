@@ -2711,6 +2711,22 @@ static void *metal_decv_pipeline(const struct metal_state *st, size_t head_dim, 
         }
         st->attn_dec_partials_capacity = partial_bytes;
     }
+    /* The block kernel merges the splits itself (#196): one dispatch per
+     * decode attention instead of two. */
+    const bool fused_combine = block_pipeline != nullptr && q_heads <= METAL_ATTN_DEC_MAX_HEADS &&
+                               !st->attn_dec_two_pass;
+    if (fused_combine && st->attn_dec_count_buffer == nullptr) {
+        const size_t count_bytes = METAL_ATTN_DEC_MAX_HEADS * sizeof(uint32_t);
+        if (metal_new_buffer(be,
+                             count_bytes,
+                             GEIST_BUFFER_SCRATCH,
+                             GEIST_MEMORY_DEVICE,
+                             true,
+                             &st->attn_dec_count_buffer) != GEIST_OK) {
+            return GEIST_E_BACKEND;
+        }
+        memset(st->attn_dec_count_buffer->mapped, 0, count_bytes);
+    }
     struct {
         uint32_t rows, kv_len, qh, kvh, hd, qpos, sw, qo, kco, vco, yo;
     } fp = {1u,
@@ -2756,11 +2772,21 @@ static void *metal_decv_pipeline(const struct metal_state *st, size_t head_dim, 
                               st->attn_dec_partials_buffer->base_off,
                               3);
     metal_msg_send_set_bytes(st, enc, &fp, sizeof(fp), 4);
-    metal_msg_send_set_bytes(st, enc, &nsplit, sizeof(nsplit), 5);
+    /* struct SP: the per-key kernels read only ns. */
+    const uint32_t sp[3] = {nsplit, fused_combine ? 1u : 0u, (uint32_t) out_off};
+    metal_msg_send_set_bytes(st, enc, sp, sizeof(sp), 5);
+    if (fused_combine) {
+        metal_msg_send_set_buffer(
+                st, enc, st->attn_dec_count_buffer->buffer, st->attn_dec_count_buffer->base_off, 6);
+        metal_msg_send_set_buffer(st, enc, out->buffer->buffer, out->buffer->base_off, 7);
+    }
     const struct metal_size dgroups   = {nsplit, q_heads, 1};
     const struct metal_size threads32 = {32, 1, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ATTENTION_ROWS, dgroups);
     metal_msg_send_dispatch(st, enc, dgroups, block_pipeline != nullptr ? threads32 : threads256);
+    if (fused_combine) {
+        return metal_op_end(be, cmd, enc, "decode attention");
+    }
 
     const uint32_t cb[4] = {(uint32_t) q_heads, (uint32_t) head_dim, nsplit, (uint32_t) out_off};
     metal_msg_send_set_pipeline(st, enc, st->attention_dec_combine_pipeline);
@@ -2773,7 +2799,7 @@ static void *metal_decv_pipeline(const struct metal_state *st, size_t head_dim, 
     metal_msg_send_set_bytes(st, enc, cb, sizeof(cb), 2);
     const struct metal_size ggroups   = {(head_dim + 63u) / 64u, q_heads, 1};
     const struct metal_size threads64 = {64, 1, 1};
-    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ATTENTION_ROWS, ggroups);
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ATTENTION_COMBINE, ggroups);
     metal_msg_send_dispatch(st, enc, ggroups, threads64);
 
     return metal_op_end(be, cmd, enc, "decode attention");
@@ -3250,6 +3276,29 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
         return GEIST_E_BACKEND;
     }
     const struct metal_size threads256 = {256, 1, 1};
+    void *const             qkv_pipeline =
+            cache_f16 ? st->qkv_norm_append_rows_f16_pipeline : st->qkv_norm_append_rows_pipeline;
+    if (has_kv && qkv_pipeline != nullptr) {
+        /* q and k/v in one dispatch (#196): the q heads, then the k/v heads */
+        metal_msg_send_set_pipeline(st, enc, qkv_pipeline);
+        metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 0);
+        metal_msg_send_set_buffer(st, enc, q_norm_w->buffer->buffer, q_norm_w->buffer->base_off, 1);
+        metal_msg_send_set_buffer(st, enc, cos->buffer->buffer, cos->buffer->base_off, 2);
+        metal_msg_send_set_buffer(st, enc, sin->buffer->buffer, sin->buffer->base_off, 3);
+        metal_msg_send_set_bytes(st, enc, &nr, sizeof(nr), 4);
+        metal_msg_send_set_buffer(st, enc, k->buffer->buffer, k->buffer->base_off, 5);
+        metal_msg_send_set_buffer(st, enc, v->buffer->buffer, v->buffer->base_off, 6);
+        metal_msg_send_set_buffer(st, enc, k_norm_w->buffer->buffer, k_norm_w->buffer->base_off, 7);
+        metal_msg_send_set_buffer(st, enc, v_norm_w->buffer->buffer, v_norm_w->buffer->base_off, 8);
+        metal_msg_send_set_buffer(st, enc, k_cache->buffer->buffer, k_cache->buffer->base_off, 9);
+        metal_msg_send_set_buffer(st, enc, v_cache->buffer->buffer, v_cache->buffer->base_off, 10);
+        metal_msg_send_set_bytes(st, enc, &kp, sizeof(kp), 11);
+        metal_msg_send_set_bytes(st, enc, &vp, sizeof(vp), 12);
+        const struct metal_size groups = {(uint32_t) rows, (uint32_t) (q_heads + kv_heads), 1};
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_QKV_NORM_APPEND, groups);
+        metal_msg_send_dispatch(st, enc, groups, threads256);
+        return metal_op_end(be, cmd, enc, nullptr);
+    }
     metal_msg_send_set_pipeline(st, enc, st->q_norm_rope_rows_pipeline);
     metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, q_norm_w->buffer->buffer, q_norm_w->buffer->base_off, 1);

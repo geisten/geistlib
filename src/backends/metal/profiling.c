@@ -65,6 +65,8 @@ const char *const metal_profile_stage_names[METAL_PROFILE_STAGE_COUNT] = {
         [METAL_PROFILE_DISPATCH_HADAMARD]             = "dispatch.hadamard",
         [METAL_PROFILE_DISPATCH_PQ2_X_F16]            = "dispatch.pq2_x_f16",
         [METAL_PROFILE_DISPATCH_PQ2_M8]               = "dispatch.pq2_m8",
+        [METAL_PROFILE_DISPATCH_ATTENTION_COMBINE]    = "dispatch.attention_combine",
+        [METAL_PROFILE_DISPATCH_QKV_NORM_APPEND]      = "dispatch.qkv_norm_append",
 };
 
 #include "metal_shaders.h"
@@ -164,10 +166,13 @@ static bool metal_skip_stage(enum metal_profile_stage s) {
     case METAL_PROFILE_DISPATCH_ATTENTION_ROWS:
     case METAL_PROFILE_DISPATCH_ATTENTION_QNORM_ROWS:
         return metal_env_enabled("GEIST_SKIP_ATTN");
+    case METAL_PROFILE_DISPATCH_ATTENTION_COMBINE:
+        return metal_env_enabled("GEIST_SKIP_ATTN") || metal_env_enabled("GEIST_SKIP_COMBINE");
     case METAL_PROFILE_DISPATCH_Q_NORM_ROPE:
     case METAL_PROFILE_DISPATCH_K_NORM_ROPE_APPEND:
     case METAL_PROFILE_DISPATCH_V_NORM_APPEND:
     case METAL_PROFILE_DISPATCH_KV_NORM_APPEND:
+    case METAL_PROFILE_DISPATCH_QKV_NORM_APPEND:
     case METAL_PROFILE_DISPATCH_ROPE_APPEND:
     case METAL_PROFILE_DISPATCH_ROPE_ROWS:
         return metal_env_enabled("GEIST_SKIP_ROPE");

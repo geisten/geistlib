@@ -2019,6 +2019,57 @@ static const char metal_kv_norm_append_f16_source[] =
         "y=v[vb+i]*vinv*vw[vp.wo+i];v[vb+i]=y;vc[vdst+i]=half(y);}\n"
         "}\n";
 
+/* Gemma attention prep in one dispatch (#196): q_norm_rope_rows over the
+ * q heads, then kv_norm_append_rows over the k/v heads, one threadgroup
+ * per (row, head) as the two kernels have, each branch their code
+ * unchanged, so the same bits. Appended to the F32- and F16-cache K/V
+ * libraries after a CT define (the cache element type). */
+static const char metal_qkv_norm_append_source[] =
+        "struct NR{uint "
+        "rows,heads,head_dim,x_offset,w_offset,cos_offset,sin_offset,x_row_stride,rope_row_stride,"
+        "rope_row_offset;float eps;};\n"
+        "kernel void qkv_norm_append_rows(device float*x[[buffer(0)]],device const "
+        "float*w[[buffer(1)]],device const float*c[[buffer(2)]],device const "
+        "float*s[[buffer(3)]],constant NR&p[[buffer(4)]],device float*k[[buffer(5)]],device "
+        "float*v[[buffer(6)]],device const float*kw[[buffer(7)]],device const "
+        "float*vw[[buffer(8)]],device CT*kc[[buffer(9)]],device CT*vc[[buffer(10)]],constant "
+        "K&kp[[buffer(11)]],constant V&vp[[buffer(12)]],uint2 "
+        "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){\n"
+        " threadgroup float part[256];threadgroup float kr[256];threadgroup float vr[256];"
+        "if(tg.y<p.heads){uint r=tg.x,h=tg.y;if(r>=p.rows){return;}uint "
+        "base=p.x_offset+r*p.x_row_stride+h*p.head_dim;float ss=0.0f;for(uint "
+        "i=lid;i<p.head_dim;i+=256u){float "
+        "v=x[base+i];ss+=v*v;}part[lid]=ss;threadgroup_barrier(mem_flags::mem_threadgroup);for("
+        "uint "
+        "st=128u;st>0u;st>>=1u){if(lid<st){part[lid]+=part[lid+st];}threadgroup_barrier(mem_flags::"
+        "mem_threadgroup);}float inv=rsqrt(part[0]/float(p.head_dim)+p.eps);"
+        "for(uint i=lid;i<p.head_dim;i+=256u){x[base+i]=x[base+i]*inv*w[p.w_offset+i];}"
+        "threadgroup_barrier(mem_flags::mem_device);uint "
+        "hd2=p.rope_row_stride/2u,ro=p.rope_row_offset+r;for(uint i=lid;i<hd2;i+=256u){float "
+        "x0=x[base+i],x1=x[base+i+hd2];float "
+        "co=c[p.cos_offset+ro*p.rope_row_stride+i],si=s[p.sin_offset+ro*p.rope_row_stride+i];x["
+        "base+i]=x0*co-x1*si;x[base+i+hd2]=x0*si+x1*co;}return;}\n"
+        "uint r=tg.x,h=tg.y-p.heads;if(r>=kp.rows||h>=kp.heads){return;}uint "
+        "kb=kp.xo+r*kp.xs+h*kp.hd,vb=vp.xo+r*vp.xs+h*vp.hd;float ks=0.0f,vs=0.0f;for(uint "
+        "i=lid;i<kp.hd;i+=256u){float x=k[kb+i];ks+=x*x;}for(uint i=lid;i<vp.hd;i+=256u){float "
+        "x=v[vb+i];vs+=x*x;}kr[lid]=ks;vr[lid]=vs;threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(uint "
+        "st=128u;st>0u;st>>=1u){if(lid<st){kr[lid]+=kr[lid+st];vr[lid]+=vr[lid+st];}threadgroup_"
+        "barrier(mem_flags::mem_threadgroup);}float "
+        "kinv=rsqrt(kr[0]/float(kp.hd)+kp.eps),vinv=rsqrt(vr[0]/float(vp.hd)+vp.eps);uint "
+        "hd2=kp.hd/"
+        "2u,ro=kp.ro+r,kdst=kp.cao+(kp.qp+r)*kp.heads*kp.hd+h*kp.hd,vdst=vp.cao+(vp.qp+r)*vp.heads*"
+        "vp.hd+h*vp.hd;for(uint i=lid;i<hd2;i+=256u){float "
+        "x0=k[kb+i]*kinv*kw[kp.wo+i],x1=k[kb+i+hd2]*kinv*kw[kp.wo+i+hd2];float "
+        "co=c[kp.co+ro*kp.rs+i],si=s[kp.so+ro*kp.rs+i];float "
+        "y0=x0*co-x1*si,y1=x0*si+x1*co;k[kb+i]=y0;k[kb+i+hd2]=y1;kc[kdst+i]=CT(y0);kc[kdst+i+hd2]"
+        "=CT(y1);}"
+        "for(uint i=lid;i<vp.hd;i+=256u){float "
+        "y=v[vb+i]*vinv*vw[vp.wo+i];v[vb+i]=y;vc[vdst+i]=CT(y);}\n"
+        "}\n";
+static const char metal_cache_f32_define[] = "#define CT float\n";
+static const char metal_cache_f16_define[] = "#define CT half\n";
+
 /* Llama / Qwen3 attention prep with the KV append (#17), the twin of
  * q_norm_rope + kv_norm_append: one threadgroup per (row, head) over the
  * q heads, then the k heads. A head is optionally RMS-normed (Qwen3's
@@ -2722,17 +2773,19 @@ static const char metal_attn_dec_combine_source[] =
  * above read it). Blocks touched are those overlapping the window, so
  * every block holds a live key; keys outside it are masked and their
  * loads clamped into it. Partials and their combine as above. */
-static const char metal_attn_decv_source[] =
+static const char metal_attn_decv_source_a[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
         "struct A{uint rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo;};\n"
-        "struct SP{uint ns;};\n"
+        "struct SP{uint ns,fc,yo;};\n"
         "static inline float4 kv4(half4 x){return float4(x);}\n"
         "static inline float4 kv4(float4 x){return float4(half4(x));}\n"
         "template<short D,short NE,typename KT>\n"
         "kernel void attention_decv(device const float*q[[buffer(0)]],device const "
-        "KT*kc[[buffer(1)]],device const KT*vc[[buffer(2)]],device float*pb[[buffer(3)]],"
-        "constant A&p[[buffer(4)]],constant SP&sp[[buffer(5)]],uint2 "
+        "KT*kc[[buffer(1)]],device const KT*vc[[buffer(2)]],coherent(device) device "
+        "float*pb[[buffer(3)]],"
+        "constant A&p[[buffer(4)]],constant SP&sp[[buffer(5)]],device atomic_uint*cnt[[buffer(6)]],"
+        "device float*y[[buffer(7)]],uint2 "
         "tg[[threadgroup_position_in_grid]],ushort ln[[thread_index_in_simdgroup]]){"
         "constexpr short NL=32/NE,C=32,D4=D/4,NI=D4/NL;typedef vec<KT,4> KT4;"
         "threadgroup float4 sq[D4];threadgroup float ss[C];"
@@ -2765,7 +2818,42 @@ static const char metal_attn_decv_source[] =
         "i=0;i<NI;i++)lo[i]+=simd_shuffle_down(lo[i],ushort(o));"
         "const uint pbb=(h*32u+w)*(D+2u);if(ln==0){pb[pbb]=M;pb[pbb+1u]=S;}"
         "if(ty==0){for(short i=0;i<NI;i++){const uint o=pbb+2u+4u*uint(i*NL+tx);"
-        "pb[o]=lo[i].x;pb[o+1u]=lo[i].y;pb[o+2u]=lo[i].z;pb[o+3u]=lo[i].w;}}}\n"
+        "pb[o]=lo[i].x;pb[o+1u]=lo[i].y;pb[o+2u]=lo[i].z;pb[o+3u]=lo[i].w;}}";
+/* Continued: one literal stays within the 4095-char limit. */
+static const char metal_attn_decv_combine_source[] =
+        /* Fused combine (#196): the head's last split to finish merges the
+         * partials as attention_dec_combine does, the same arithmetic in
+         * the same order. pb is coherent(device): without it the stores of
+         * other threadgroups need not be visible however fenced. Each
+         * split's partial stores are ordered before its count by the
+         * device-scope fence; the split that brings the
+         * count to ns fences again before reading the others' partials and
+         * resets the count for the next dispatch, which the serial encoder
+         * starts only after this one has finished. */
+        "if(sp.fc==0u)return;"
+        "atomic_thread_fence(mem_flags::mem_device,memory_order_seq_cst,thread_scope_device);"
+        "uint done=0u;if(ln==0)done=atomic_fetch_add_explicit(cnt+h,1u,memory_order_relaxed);"
+        "done=simd_broadcast(done,ushort(0));if(done+1u!=sp.ns)return;"
+        "atomic_thread_fence(mem_flags::mem_device,memory_order_seq_cst,thread_scope_device);"
+        "if(ln==0)atomic_store_explicit(cnt+h,0u,memory_order_relaxed);"
+        "const uint st=D+2u;coherent(device) device const float*b=pb+h*32u*st;"
+        "const float m=ln<sp.ns?b[ln*st]:-FLT_MAX;const float Mx=simd_max(m);"
+        "const float e=ln<sp.ns?exp(m-Mx):0.0f;"
+        "const float L=simd_sum(ln<sp.ns?e*b[ln*st+1u]:0.0f);"
+        "ss[ln]=e/L;simdgroup_barrier(mem_flags::mem_threadgroup);"
+        /* Lane ln owns elements ln + 32 j. Each element sums its splits in
+         * attention_dec_combine's order; the elements are independent, so
+         * a step over four splits issues all of the lane's loads at once
+         * rather than one element's chain after another's. */
+        "constexpr short E=D/32;float a0[E],a1[E],a2[E],a3[E];"
+        "for(short j=0;j<E;j++){a0[j]=0.0f;a1[j]=0.0f;a2[j]=0.0f;a3[j]=0.0f;}"
+        "coherent(device) device const float*bl=b+2u+ln;uint s=0u;"
+        "for(;s+4u<=sp.ns;s+=4u){const float f0=ss[s],f1=ss[s+1u],f2=ss[s+2u],f3=ss[s+3u];"
+        "for(short j=0;j<E;j++){const uint i=uint(32*j);a0[j]+=bl[s*st+i]*f0;"
+        "a1[j]+=bl[(s+1u)*st+i]*f1;a2[j]+=bl[(s+2u)*st+i]*f2;a3[j]+=bl[(s+3u)*st+i]*f3;}}"
+        "for(;s<sp.ns;s++){const float f0=ss[s];"
+        "for(short j=0;j<E;j++)a0[j]+=bl[s*st+uint(32*j)]*f0;}"
+        "for(short j=0;j<E;j++)y[sp.yo+h*D+ln+uint(32*j)]=(a0[j]+a1[j])+(a2[j]+a3[j]);}\n"
         "typedef decltype(attention_decv<64,4,half>) attention_decv_t;\n"
         "typedef decltype(attention_decv<64,4,float>) attention_decv32_t;\n"
         "#define DV(D,NE) template [[host_name(\"attention_decv_d\" #D \"_f16\")]] kernel "

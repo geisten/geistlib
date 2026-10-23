@@ -1220,6 +1220,230 @@ static void run_rope_append_case(struct geist_backend *mt,
     }
 }
 
+#ifdef GEIST_BACKEND_METAL
+/* #196: the block decode kernel merges its splits itself. Against the
+ * separate combine pass (the test hook), bit for bit. */
+static void run_dec_combine_case(struct geist_backend *mt,
+                                 size_t                q_offset,
+                                 size_t                qh,
+                                 size_t                kvh,
+                                 size_t                hd,
+                                 size_t                window,
+                                 bool                  f16) {
+    const struct geist_backend_vtbl *v      = mt->desc->vtbl;
+    struct metal_state              *st     = mt->state;
+    const size_t                     k_rows = q_offset + 1, nq = qh * hd, kv = k_rows * kvh * hd;
+    const size_t                     esz = f16 ? sizeof(uint16_t) : sizeof(float);
+    struct geist_buffer             *bq = nullptr, *bk = nullptr, *bv = nullptr, *bo[2] = {nullptr};
+    float                           *q  = dev_alloc(mt, nq * sizeof(float), &bq);
+    uint8_t                         *k  = dev_alloc(mt, kv * esz, &bk);
+    uint8_t                         *vv = dev_alloc(mt, kv * esz, &bv);
+    float                           *o0 = dev_alloc(mt, nq * sizeof(float), &bo[0]);
+    float                           *o1 = dev_alloc(mt, nq * sizeof(float), &bo[1]);
+    float                           *g  = malloc(2 * nq * sizeof(float));
+    const bool ok = q != nullptr && k != nullptr && vv != nullptr && o0 != nullptr &&
+                    o1 != nullptr && g != nullptr;
+    check(ok, "decode combine buffers");
+    if (ok) {
+        const float qs = 1.0f / (24.0f * sqrtf((float) hd));
+        for (size_t i = 0; i < nq; i++)
+            q[i] = ((float) rng_u8() - 127.5f) * qs;
+        for (size_t i = 0; i < kv; i++) {
+            const float a = ((float) rng_u8() - 127.5f) / 48.0f;
+            const float b = ((float) rng_u8() - 127.5f) / 48.0f;
+            if (f16) {
+                ((uint16_t *) k)[i]  = fp32_to_fp16_rne(a);
+                ((uint16_t *) vv)[i] = fp32_to_fp16_rne(b);
+            } else {
+                ((float *) k)[i]  = a;
+                ((float *) vv)[i] = b;
+            }
+        }
+        const int           cdt = f16 ? GEIST_DTYPE_F16 : GEIST_DTYPE_F32;
+        struct geist_tensor tq  = dense3(bq, GEIST_DTYPE_F32, 1, qh, hd);
+        struct geist_tensor tk  = dense3(bk, cdt, k_rows, kvh, hd);
+        struct geist_tensor tv  = dense3(bv, cdt, k_rows, kvh, hd);
+        struct geist_tensor t0  = dense3(bo[0], GEIST_DTYPE_F32, 1, qh, hd);
+        struct geist_tensor t1  = dense3(bo[1], GEIST_DTYPE_F32, 1, qh, hd);
+        /* twice fused: the second call starts from the counts the first left */
+        enum geist_status s = mt->desc->prims->attention(mt, &tq, &tk, &tv, q_offset, window, &t0);
+        if (s == GEIST_OK)
+            s = mt->desc->prims->attention(mt, &tq, &tk, &tv, q_offset, window, &t0);
+        st->attn_dec_two_pass = true;
+        if (s == GEIST_OK)
+            s = mt->desc->prims->attention(mt, &tq, &tk, &tv, q_offset, window, &t1);
+        st->attn_dec_two_pass = false;
+        check(s == GEIST_OK &&
+                      v->buffer_download(nq * sizeof(float), (uint8_t *) g, bo[0]) == GEIST_OK &&
+                      v->buffer_download(nq * sizeof(float), (uint8_t *) (g + nq), bo[1]) ==
+                              GEIST_OK,
+              "decode combine dispatch");
+        const bool same = memcmp(g, g + nq, nq * sizeof(float)) == 0;
+        check(same, "fused decode combine matches the combine pass bit for bit");
+        printf("  decode combine fused vs pass at %zu heads %zu/%zu hd %zu window %zu %s: %s\n",
+               q_offset,
+               qh,
+               kvh,
+               hd,
+               window,
+               f16 ? "f16" : "f32",
+               same ? "bit-identical OK" : "FAIL");
+    }
+    free(g);
+    struct geist_buffer *bufs[] = {bq, bk, bv, bo[0], bo[1]};
+    for (size_t i = 0; i < sizeof bufs / sizeof bufs[0]; i++) {
+        if (bufs[i] != nullptr)
+            v->buffer_destroy(mt, bufs[i]);
+    }
+}
+
+/* #196: Gemma's attention prep (attn_qkv_prep) as one dispatch against the
+ * q_norm_rope + kv_norm_append pair it replaces, bit for bit: q, k, v and
+ * both caches. */
+static void run_qkv_prep_case(struct geist_backend *mt,
+                              size_t                rows,
+                              size_t                qh,
+                              size_t                kvh,
+                              size_t                hd,
+                              size_t                qp,
+                              bool                  f16) {
+    const struct geist_backend_vtbl  *v  = mt->desc->vtbl;
+    const struct geist_backend_fused *f  = geist_backend_fused_tbl(mt);
+    struct metal_state               *st = mt->state;
+    const size_t                      nq = rows * qh * hd, nk = rows * kvh * hd;
+    const size_t                      crow  = qp + rows;
+    const size_t                      ncach = crow * kvh * hd;
+    const size_t                      esz   = f16 ? sizeof(uint16_t) : sizeof(float);
+    struct geist_buffer              *bq[2] = {nullptr}, *bk[2] = {nullptr}, *bv[2] = {nullptr},
+                        *bw[3] = {nullptr}, *bc = nullptr, *bs = nullptr, *bkc[2] = {nullptr},
+                        *bvc[2] = {nullptr};
+    float *w[3];
+    for (size_t i = 0; i < 3; i++)
+        w[i] = dev_alloc(mt, hd * sizeof(float), &bw[i]);
+    float *co      = dev_alloc(mt, rows * hd * sizeof(float), &bc);
+    float *si      = dev_alloc(mt, rows * hd * sizeof(float), &bs);
+    float *x[3][2] = {{nullptr}};
+    bool   ok      = w[0] != nullptr && w[1] != nullptr && w[2] != nullptr && co != nullptr &&
+                     si != nullptr && f->attn_qkv_prep != nullptr;
+    for (size_t i = 0; i < 2 && ok; i++) {
+        x[0][i]    = dev_alloc(mt, nq * sizeof(float), &bq[i]);
+        x[1][i]    = dev_alloc(mt, nk * sizeof(float), &bk[i]);
+        x[2][i]    = dev_alloc(mt, nk * sizeof(float), &bv[i]);
+        uint8_t *a = dev_alloc(mt, ncach * esz, &bkc[i]);
+        uint8_t *b = dev_alloc(mt, ncach * esz, &bvc[i]);
+        ok = x[0][i] != nullptr && x[1][i] != nullptr && x[2][i] != nullptr && a != nullptr &&
+             b != nullptr;
+        if (ok) {
+            memset(a, 0, ncach * esz);
+            memset(b, 0, ncach * esz);
+        }
+    }
+    uint8_t *c1 = malloc(ncach * esz + nq * sizeof(float));
+    uint8_t *c2 = malloc(ncach * esz + nq * sizeof(float));
+    check(ok && c1 != nullptr && c2 != nullptr, "qkv_prep buffers");
+    if (ok && c1 != nullptr && c2 != nullptr) {
+        for (size_t i = 0; i < nq; i++)
+            x[0][0][i] = x[0][1][i] = ((float) rng_u8() - 127.5f) * 0.0372529f;
+        for (size_t i = 0; i < nk; i++) {
+            x[1][0][i] = x[1][1][i] = ((float) rng_u8() - 127.5f) * 0.0291f;
+            x[2][0][i] = x[2][1][i] = ((float) rng_u8() - 127.5f) * 0.0173f;
+        }
+        for (size_t i = 0; i < hd; i++) {
+            w[0][i] = 0.5f + (float) rng_u8() * 0.00731f;
+            w[1][i] = 0.25f + (float) rng_u8() * 0.00517f;
+            w[2][i] = 1.0f;
+        }
+        for (size_t i = 0; i < rows * hd; i++) {
+            const float a = (float) (qp + i / hd) * 0.37f / (float) (1u + i % hd);
+            co[i]         = cosf(a);
+            si[i]         = sinf(a);
+        }
+        const int           cdt = f16 ? GEIST_DTYPE_F16 : GEIST_DTYPE_F32;
+        struct geist_tensor tw  = {.buffer = bw[0],
+                                   .dtype  = GEIST_DTYPE_F32,
+                                   .layout = GEIST_LAYOUT_DENSE,
+                                   .ndim   = 1,
+                                   .shape  = {(int64_t) hd},
+                                   .stride = {1}};
+        struct geist_tensor tkw = tw, tvw = tw;
+        tkw.buffer                 = bw[1];
+        tvw.buffer                 = bw[2];
+        struct geist_tensor tc     = {.buffer = bc,
+                                      .dtype  = GEIST_DTYPE_F32,
+                                      .layout = GEIST_LAYOUT_DENSE,
+                                      .ndim   = 2,
+                                      .shape  = {(int64_t) rows, (int64_t) hd},
+                                      .stride = {(int64_t) hd, 1}};
+        struct geist_tensor ts     = tc;
+        ts.buffer                  = bs;
+        enum geist_status s        = GEIST_OK;
+        void *const       fused[2] = {st->qkv_norm_append_rows_pipeline,
+                                      st->qkv_norm_append_rows_f16_pipeline};
+        for (size_t i = 0; i < 2 && s == GEIST_OK; i++) {
+            if (i == 1) { /* the separate kernels */
+                st->qkv_norm_append_rows_pipeline     = nullptr;
+                st->qkv_norm_append_rows_f16_pipeline = nullptr;
+            }
+            struct geist_tensor tq  = dense3(bq[i], GEIST_DTYPE_F32, rows, qh, hd);
+            struct geist_tensor tk  = dense3(bk[i], GEIST_DTYPE_F32, rows, kvh, hd);
+            struct geist_tensor tv  = dense3(bv[i], GEIST_DTYPE_F32, rows, kvh, hd);
+            struct geist_tensor tkc = dense3(bkc[i], cdt, crow, kvh, hd);
+            struct geist_tensor tvc = dense3(bvc[i], cdt, crow, kvh, hd);
+            s                       = f->attn_qkv_prep(
+                    mt, &tq, &tk, &tv, &tw, &tkw, &tvw, &tc, &ts, 1e-6f, qp, &tkc, &tvc);
+        }
+        st->qkv_norm_append_rows_pipeline     = fused[0];
+        st->qkv_norm_append_rows_f16_pipeline = fused[1];
+        check(s == GEIST_OK && fused[f16 ? 1 : 0] != nullptr, "qkv_prep dispatch");
+        size_t                     bad         = 0;
+        struct geist_buffer *const pairs[5][2] = {
+                {bq[0], bq[1]}, {bk[0], bk[1]}, {bv[0], bv[1]}, {bkc[0], bkc[1]}, {bvc[0], bvc[1]}};
+        const size_t bytes[5] = {nq * sizeof(float),
+                                 nk * sizeof(float),
+                                 nk * sizeof(float),
+                                 ncach * esz,
+                                 ncach * esz};
+        for (size_t i = 0; i < 5; i++) {
+            check(v->buffer_download(bytes[i], c1, pairs[i][0]) == GEIST_OK &&
+                          v->buffer_download(bytes[i], c2, pairs[i][1]) == GEIST_OK,
+                  "qkv_prep download");
+            bad += (1u << i) * (memcmp(c1, c2, bytes[i]) != 0);
+        }
+        check(bad == 0, "attn_qkv_prep in one dispatch matches the two kernels bit for bit");
+        printf("  attn_qkv_prep rows %zu q %zu kv %zu hd %zu qp %zu %s: %s (%zu)\n",
+               rows,
+               qh,
+               kvh,
+               hd,
+               qp,
+               f16 ? "f16" : "f32",
+               bad == 0 ? "bit-identical OK" : "FAIL",
+               bad);
+    }
+    free(c1);
+    free(c2);
+    struct geist_buffer *bufs[] = {bq[0],
+                                   bq[1],
+                                   bk[0],
+                                   bk[1],
+                                   bv[0],
+                                   bv[1],
+                                   bw[0],
+                                   bw[1],
+                                   bw[2],
+                                   bc,
+                                   bs,
+                                   bkc[0],
+                                   bkc[1],
+                                   bvc[0],
+                                   bvc[1]};
+    for (size_t i = 0; i < sizeof bufs / sizeof bufs[0]; i++) {
+        if (bufs[i] != nullptr)
+            v->buffer_destroy(mt, bufs[i]);
+    }
+}
+#endif
+
 static void run_qwen35_attention_ops(struct geist_backend *mt) {
     enum { ROWS = 3, HEADS = 2, HD = 5, QOUT = HEADS * HD };
     const struct geist_backend_vtbl  *v  = mt->desc->vtbl;
@@ -1495,6 +1719,17 @@ int main(void) {
     run_flash_ref_case(mt, ref, 1, 31, 8, 2, 128, 0);
 #ifdef GEIST_BACKEND_METAL
     run_staged_upload(mt);
+    /* #196 */
+    run_dec_combine_case(mt, 511, 8, 1, 256, 512, true);
+    run_dec_combine_case(mt, 1000, 8, 1, 512, 0, true);
+    run_dec_combine_case(mt, 127, 8, 1, 256, 0, false);
+    run_dec_combine_case(mt, 2100, 24, 4, 256, 0, true);
+    run_dec_combine_case(mt, 40, 8, 2, 128, 0, false);
+    run_dec_combine_case(mt, 31, 4, 4, 64, 0, true);
+    run_qkv_prep_case(mt, 1, 8, 1, 256, 130, true);
+    run_qkv_prep_case(mt, 1, 8, 1, 512, 77, false);
+    run_qkv_prep_case(mt, 5, 8, 1, 256, 12, true);
+    run_qkv_prep_case(mt, 3, 4, 2, 128, 0, false);
 #endif
 
     /* 2..8 rows take matmul_pq2_m8 (#105): one and many K blocks per

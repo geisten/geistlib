@@ -102,6 +102,8 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_HADAMARD,
     METAL_PROFILE_DISPATCH_PQ2_X_F16,
     METAL_PROFILE_DISPATCH_PQ2_M8,
+    METAL_PROFILE_DISPATCH_ATTENTION_COMBINE, /* split decode: the merge pass */
+    METAL_PROFILE_DISPATCH_QKV_NORM_APPEND,   /* Gemma q + k/v prep (#196) */
     METAL_PROFILE_STAGE_COUNT,
 };
 
@@ -425,6 +427,10 @@ struct metal_state {
     void    *kv_norm_append_rows_pipeline;
     void    *kv_norm_append_rows_f16_function;
     void    *kv_norm_append_rows_f16_pipeline;
+    void    *qkv_norm_append_rows_function; /* Gemma q + k/v prep, one dispatch (#196) */
+    void    *qkv_norm_append_rows_pipeline;
+    void    *qkv_norm_append_rows_f16_function;
+    void    *qkv_norm_append_rows_f16_pipeline;
     void    *rope_append_rows_function;
     void    *rope_append_rows_pipeline;
     void    *rope_append_rows_f16_function;
@@ -471,6 +477,10 @@ struct metal_state {
     void                *attention_dec_combine_pipeline;
     struct geist_buffer *attn_dec_partials_buffer;
     size_t               attn_dec_partials_capacity;
+    /* Per-head split counters of the fused combine (#196), host-visible and
+     * zeroed once; each dispatch leaves them at zero. */
+    struct geist_buffer *attn_dec_count_buffer;
+    bool                 attn_dec_two_pass; /* test hook: the separate combine pass */
     void                *sequence_command_buffer;
     void                *sequence_compute_encoder;
     void                *sequence_pool; /* autorelease pool, sequence begin..end */
@@ -597,6 +607,7 @@ enum {
     METAL_Q4K_M16_TILE                  = 16u,
     METAL_ELEM_THREADS                  = 256u,
     METAL_QNORM_ATTENTION_MAX_HEAD_DIM  = 512u,
+    METAL_ATTN_DEC_MAX_HEADS            = 1024u, /* fused-combine counters */
 };
 
 /* Elements per raw block of `dtype` (quant_block_layout); 1 for a dtype
