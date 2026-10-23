@@ -305,7 +305,7 @@ enum geist_fused_op {
     GEIST_FUSED_FFN_GATE_UP_SILU,
     GEIST_FUSED_ATTN_ROPE_APPEND,
     GEIST_FUSED_ROWS_GATHER,
-    GEIST_FUSED_PLE_BLOCK_PRENORM,
+    GEIST_FUSED_PLE_STAGE,
 };
 
 /* Load-time capability probe for one fused op at one layer's geometry.
@@ -746,24 +746,33 @@ struct geist_backend_fused {
                                    struct geist_tensor       *proj_scratch,
                                    struct geist_tensor       *y);
 
-    /* ple_block with its input's residual step folded in (#196):
-     *   h = res + rmsnorm(x) * post_w            (written to h)
-     * then ple_block(h, ...) with norm_w nullptr: the block stops at
-     * proj_scratch for the arch to finish with rmsnorm_add_norm. res, x and
-     * h [rows, d_model], post_w [d_model]; the rest as ple_block. Plan-bound
-     * through GEIST_FUSED_PLE_BLOCK_PRENORM (shape and weights as
-     * GEIST_FUSED_PLE_BLOCK's query). nullptr = rmsnorm_add + ple_block. */
-    enum geist_status (*ple_block_prenorm)(struct geist_backend      *be,
-                                           const struct geist_tensor *res,
-                                           const struct geist_tensor *x,
-                                           const struct geist_tensor *post_w,
-                                           float                      eps,
-                                           const struct geist_tensor *gate_w,
-                                           const struct geist_tensor *ple_in,
-                                           const struct geist_tensor *proj_w,
-                                           struct geist_tensor       *h,
-                                           struct geist_tensor       *gate_scratch,
-                                           struct geist_tensor       *proj_scratch);
+    /* Gemma 4's decode PLE stage with the residual steps around it
+     * (#196):
+     *   h = res + rmsnorm(x) * post_w                     (written to h)
+     *   gate = gelu_tanh(h · gate_w^T) * ple_in            (gate_scratch)
+     *   p = gate · proj_w^T                                (proj_scratch)
+     *   y = (h + rmsnorm(p) * tail_w) * scale, z = rmsnorm(y) * next_w
+     * the FFN's post-norm residual, ple_block, and rmsnorm_add_norm's
+     * layer tail. res, x, h, y, z [rows, d_model]; post_w, tail_w, next_w
+     * [d_model]; the rest as ple_block. Plan-bound through
+     * GEIST_FUSED_PLE_STAGE (the query as GEIST_FUSED_PLE_BLOCK's).
+     * nullptr = rmsnorm_add, ple_block and rmsnorm_add_norm. */
+    enum geist_status (*ple_stage)(struct geist_backend      *be,
+                                   float                      eps,
+                                   float                      scale,
+                                   const struct geist_tensor *res,
+                                   const struct geist_tensor *x,
+                                   const struct geist_tensor *post_w,
+                                   const struct geist_tensor *gate_w,
+                                   const struct geist_tensor *ple_in,
+                                   const struct geist_tensor *proj_w,
+                                   const struct geist_tensor *tail_w,
+                                   const struct geist_tensor *next_w,
+                                   struct geist_tensor       *h,
+                                   struct geist_tensor       *gate_scratch,
+                                   struct geist_tensor       *proj_scratch,
+                                   struct geist_tensor       *y,
+                                   struct geist_tensor       *z);
 
     /* Fused y = res + rmsnorm(x) * w — the post-norm residual step. Same
      * contract as rmsnorm followed by add; all F32 DENSE with matching

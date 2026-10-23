@@ -158,6 +158,9 @@ blk_relu_sq(struct transformer_layer_forward_ctx *ctx, size_t n, struct geist_bu
  * ctx->out_scaled) and writes the next layer's attn_norm of it into
  * scratch_normed, and the session notes that for the next layer call
  * (#17); otherwise `scale` is the caller's to apply. */
+/* The layer tail wrote h_out scaled and the next layer's attention norm
+ * (fuse_tail_norm): record both for the next layer. */
+void                            blk_tail_done(struct transformer_layer_forward_ctx *ctx);
 [[nodiscard]] enum geist_status blk_residual_out(struct transformer_layer_forward_ctx *ctx,
                                                  float                                 scale,
                                                  bool                                  fused,

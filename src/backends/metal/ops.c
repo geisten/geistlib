@@ -2665,6 +2665,23 @@ static void *metal_decv_pipeline(const struct metal_state *st, size_t head_dim, 
  * variant, which rounds each element to half as it loads it: the same
  * result as staging the cache to f16 first, without converting every live
  * row on every token (#64). */
+/* The counters of the kernels whose last threadgroup finishes the op
+ * (#196): one per decode-attention head, then METAL_COUNT_PLE_TAIL.
+ * Host-visible, zeroed once; every dispatch leaves its counter at zero. */
+[[nodiscard]] static enum geist_status metal_ensure_counts(struct geist_backend *be) {
+    struct metal_state *st = be->state;
+    if (st->attn_dec_count_buffer != nullptr) {
+        return GEIST_OK;
+    }
+    const size_t      bytes = METAL_COUNT_SLOTS * sizeof(uint32_t);
+    enum geist_status s     = metal_new_buffer(
+            be, bytes, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, true, &st->attn_dec_count_buffer);
+    if (s == GEIST_OK) {
+        memset(st->attn_dec_count_buffer->mapped, 0, bytes);
+    }
+    return s;
+}
+
 [[nodiscard]] static enum geist_status metal_attention_dec_kv(struct geist_backend      *be,
                                                               struct metal_state        *st,
                                                               const struct geist_tensor *q,
@@ -2730,17 +2747,8 @@ static void *metal_decv_pipeline(const struct metal_state *st, size_t head_dim, 
      * decode attention instead of two. */
     const bool fused_combine = block_pipeline != nullptr && q_heads <= METAL_ATTN_DEC_MAX_HEADS &&
                                !st->attn_dec_two_pass;
-    if (fused_combine && st->attn_dec_count_buffer == nullptr) {
-        const size_t count_bytes = METAL_ATTN_DEC_MAX_HEADS * sizeof(uint32_t);
-        if (metal_new_buffer(be,
-                             count_bytes,
-                             GEIST_BUFFER_SCRATCH,
-                             GEIST_MEMORY_DEVICE,
-                             true,
-                             &st->attn_dec_count_buffer) != GEIST_OK) {
-            return GEIST_E_BACKEND;
-        }
-        memset(st->attn_dec_count_buffer->mapped, 0, count_bytes);
+    if (fused_combine && metal_ensure_counts(be) != GEIST_OK) {
+        return GEIST_E_BACKEND;
     }
     struct {
         uint32_t rows, kv_len, qh, kvh, hd, qpos, sw, qo, kco, vco, yo;
@@ -3600,57 +3608,70 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
     return metal_rmsnorm_add(be, res, proj_scratch, norm_w, eps, y);
 }
 
-/* ple_block_prenorm (#196), decode: ple_gate_prenorm forms h = res +
- * rmsnorm(x) * post_w per threadgroup and runs the gate on it, then the
- * projection as ple_block's; the arch finishes with rmsnorm_add_norm. */
-[[nodiscard]] static enum geist_status metal_ple_block_prenorm(struct geist_backend      *be,
-                                                               const struct geist_tensor *res,
-                                                               const struct geist_tensor *x,
-                                                               const struct geist_tensor *post_w,
-                                                               float                      eps,
-                                                               const struct geist_tensor *gate_w,
-                                                               const struct geist_tensor *ple_in,
-                                                               const struct geist_tensor *proj_w,
-                                                               struct geist_tensor       *h,
-                                                               struct geist_tensor *gate_scratch,
-                                                               struct geist_tensor *proj_scratch) {
+/* ple_stage (#196), decode, two dispatches: ple_gate_prenorm forms h = res
+ * + rmsnorm(x) * post_w per threadgroup and runs the gate on it;
+ * ple_proj_tail projects and its last threadgroup runs the layer tail. */
+[[nodiscard]] static enum geist_status metal_ple_stage(struct geist_backend      *be,
+                                                       float                      eps,
+                                                       float                      scale,
+                                                       const struct geist_tensor *res,
+                                                       const struct geist_tensor *x,
+                                                       const struct geist_tensor *post_w,
+                                                       const struct geist_tensor *gate_w,
+                                                       const struct geist_tensor *ple_in,
+                                                       const struct geist_tensor *proj_w,
+                                                       const struct geist_tensor *tail_w,
+                                                       const struct geist_tensor *next_w,
+                                                       struct geist_tensor       *h,
+                                                       struct geist_tensor       *gate_scratch,
+                                                       struct geist_tensor       *proj_scratch,
+                                                       struct geist_tensor       *y,
+                                                       struct geist_tensor       *z) {
     if (be == nullptr || be->state == nullptr || res == nullptr || x == nullptr ||
         post_w == nullptr || gate_w == nullptr || ple_in == nullptr || proj_w == nullptr ||
-        h == nullptr || gate_scratch == nullptr || proj_scratch == nullptr) {
+        tail_w == nullptr || next_w == nullptr || h == nullptr || gate_scratch == nullptr ||
+        proj_scratch == nullptr || y == nullptr || z == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    size_t rows = 0, d = 0, x_off = 0, x_stride = 0;
-    size_t r_rows = 0, r_cols = 0, r_off = 0, r_stride = 0;
-    size_t h_rows = 0, h_cols = 0, h_off = 0, h_stride = 0;
+    /* rows (1), d_model and offsets of the row tensors: x res h proj y z */
+    const struct geist_tensor *rt[6] = {x, res, h, proj_scratch, y, z};
+    size_t                     ro[6] = {0};
+    size_t                     d     = 0;
+    for (size_t i = 0; i < 6; i++) {
+        size_t r = 0, c = 0, stride = 0;
+        if (!metal_tensor_is_f32_rows(rt[i], &r, &c, &ro[i], &stride) || r != 1u ||
+            (i > 0 && c != d) || ro[i] > UINT32_MAX || rt[i]->buffer->owner != be->state) {
+            return GEIST_E_UNSUPPORTED;
+        }
+        d = c;
+    }
+    const struct geist_tensor *vt[3] = {post_w, tail_w, next_w};
+    size_t                     vo[3] = {0};
+    for (size_t i = 0; i < 3; i++) {
+        size_t n = 0;
+        if (!metal_tensor_is_f32_vector(vt[i], &n, &vo[i]) || n != d || vo[i] > UINT32_MAX ||
+            vt[i]->buffer->owner != be->state) {
+            return GEIST_E_UNSUPPORTED;
+        }
+    }
     size_t g_rows = 0, g_cols = 0, g_off = 0, g_stride = 0;
     size_t p_rows = 0, p_cols = 0, p_off = 0, p_stride = 0;
-    size_t ps_rows = 0, ps_cols = 0, ps_off = 0, ps_stride = 0;
     size_t hpl = 0, gw_in = 0, gw_off = 0, gw_stride = 0;
     size_t pw_out = 0, pw_in = 0, pw_off = 0, pw_stride = 0;
-    size_t nw_n = 0, nw_off = 0;
-    if (!metal_tensor_is_f32_rows(x, &rows, &d, &x_off, &x_stride) ||
-        !metal_tensor_is_f32_rows(res, &r_rows, &r_cols, &r_off, &r_stride) ||
-        !metal_tensor_is_f32_rows(h, &h_rows, &h_cols, &h_off, &h_stride) ||
-        !metal_tensor_is_f32_vector(post_w, &nw_n, &nw_off) ||
-        !metal_tensor_is_f32_matrix(gate_w, &hpl, &gw_in, &gw_off, &gw_stride) ||
+    if (!metal_tensor_is_f32_matrix(gate_w, &hpl, &gw_in, &gw_off, &gw_stride) ||
         !metal_tensor_is_f32_rows(ple_in, &p_rows, &p_cols, &p_off, &p_stride) ||
         !metal_tensor_is_f32_matrix(proj_w, &pw_out, &pw_in, &pw_off, &pw_stride) ||
         !metal_tensor_is_f32_rows(gate_scratch, &g_rows, &g_cols, &g_off, &g_stride) ||
-        !metal_tensor_is_f32_rows(proj_scratch, &ps_rows, &ps_cols, &ps_off, &ps_stride) ||
-        rows != 1u || r_rows != 1u || h_rows != 1u || p_rows != 1u || g_rows != 1u ||
-        ps_rows != 1u || r_cols != d || h_cols != d || nw_n != d || gw_in != d ||
-        gw_stride != gw_in || pw_stride != pw_in || pw_out != d || pw_in != hpl || p_cols != hpl ||
-        g_cols != hpl || ps_cols != d || d == 0 || hpl == 0 || d > METAL_PLE_PRENORM_MAX_D ||
-        (d % 4u) != 0u || (gw_off % 4u) != 0u) {
+        p_rows != 1u || g_rows != 1u || gw_in != d || gw_stride != gw_in || pw_stride != pw_in ||
+        pw_out != d || pw_in != hpl || p_cols != hpl || g_cols != hpl || d == 0 || hpl == 0 ||
+        d > METAL_PLE_PRENORM_MAX_D || (d % 4u) != 0u || (hpl % 4u) != 0u || (gw_off % 4u) != 0u ||
+        (pw_off % 4u) != 0u || (g_off % 4u) != 0u) {
         return GEIST_E_UNSUPPORTED;
     }
-    if (hpl > UINT32_MAX || x_off > UINT32_MAX || r_off > UINT32_MAX || h_off > UINT32_MAX ||
-        nw_off > UINT32_MAX || gw_off > UINT32_MAX || p_off > UINT32_MAX || g_off > UINT32_MAX ||
-        x->buffer->owner != be->state || res->buffer->owner != be->state ||
-        h->buffer->owner != be->state || post_w->buffer->owner != be->state ||
-        gate_w->buffer->owner != be->state || ple_in->buffer->owner != be->state ||
-        proj_w->buffer->owner != be->state || gate_scratch->buffer->owner != be->state ||
-        proj_scratch->buffer->owner != be->state) {
+    if (hpl > UINT32_MAX || gw_off > UINT32_MAX || pw_off > UINT32_MAX || p_off > UINT32_MAX ||
+        g_off > UINT32_MAX || gate_w->buffer->owner != be->state ||
+        ple_in->buffer->owner != be->state || proj_w->buffer->owner != be->state ||
+        gate_scratch->buffer->owner != be->state) {
         return GEIST_E_INVALID_ARG;
     }
     enum geist_status s = metal_ensure_q4k_pipeline(be);
@@ -3658,28 +3679,48 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
         return s;
     }
     struct metal_state *st = be->state;
-    if (st->f32_ple_gate_prenorm_pipeline == nullptr) {
+    if (st->f32_ple_gate_prenorm_pipeline == nullptr || st->f32_ple_proj_tail_pipeline == nullptr) {
         return GEIST_E_UNSUPPORTED;
+    }
+    s = metal_ensure_counts(be);
+    if (s != GEIST_OK) {
+        return s;
     }
     const struct {
         uint32_t ni, no, ro, xo, pwo, wo, po, yo, ho;
         float    eps;
-    } gp                                                    = {(uint32_t) d,
-                                                               (uint32_t) hpl,
-                                                               (uint32_t) r_off,
-                                                               (uint32_t) x_off,
-                                                               (uint32_t) nw_off,
-                                                               (uint32_t) gw_off,
-                                                               (uint32_t) p_off,
+    } gp = {(uint32_t) d,
+            (uint32_t) hpl,
+            (uint32_t) ro[1],
+            (uint32_t) ro[0],
+            (uint32_t) vo[0],
+            (uint32_t) gw_off,
+            (uint32_t) p_off,
+            (uint32_t) g_off,
+            (uint32_t) ro[2],
+            eps};
+    const struct {
+        uint32_t ni, no, xo, wo, po, ho, two, nwo, yo, zo;
+        float    eps, scale;
+    } tp                                                    = {(uint32_t) hpl,
+                                                               (uint32_t) d,
                                                                (uint32_t) g_off,
-                                                               (uint32_t) h_off,
-                                                               eps};
+                                                               (uint32_t) pw_off,
+                                                               (uint32_t) ro[3],
+                                                               (uint32_t) ro[2],
+                                                               (uint32_t) vo[1],
+                                                               (uint32_t) vo[2],
+                                                               (uint32_t) ro[4],
+                                                               (uint32_t) ro[5],
+                                                               eps,
+                                                               scale};
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
     void                                              *cmd  = nullptr;
     void                                              *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
+    const struct metal_size threads = {256, 1, 1};
     metal_msg_send_set_pipeline(st, enc, st->f32_ple_gate_prenorm_pipeline);
     metal_msg_send_set_buffer(st, enc, res->buffer->buffer, res->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 1);
@@ -3691,27 +3732,32 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
     metal_msg_send_set_buffer(st, enc, h->buffer->buffer, h->buffer->base_off, 6);
     metal_msg_send_set_bytes(st, enc, &gp, sizeof(gp), 7);
     metal_msg_send_set_threadgroup_memory(st, enc, (uint32_t) (d * sizeof(float)), 0u);
-    const struct metal_size groups  = {((uint32_t) hpl + 7u) / 8u, 1, 1};
-    const struct metal_size threads = {256, 1, 1};
-    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_F32_PLE_GATE, groups);
-    metal_msg_send_dispatch(st, enc, groups, threads);
-    s = metal_op_end(be, cmd, enc, nullptr);
-    if (s != GEIST_OK) {
-        return s;
-    }
-    struct geist_tensor gate_1d = *gate_scratch;
-    gate_1d.ndim                = 1;
-    gate_1d.shape[0]            = (int64_t) hpl;
-    gate_1d.stride[0]           = 1;
-    gate_1d.shape[1]            = 0;
-    gate_1d.stride[1]           = 0;
-    struct geist_tensor proj_1d = *proj_scratch;
-    proj_1d.ndim                = 1;
-    proj_1d.shape[0]            = (int64_t) d;
-    proj_1d.stride[0]           = 1;
-    proj_1d.shape[1]            = 0;
-    proj_1d.stride[1]           = 0;
-    return metal_matvec_f32_dense(be, &gate_1d, proj_w, &proj_1d);
+    const struct metal_size ggroups = {((uint32_t) hpl + 7u) / 8u, 1, 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_F32_PLE_GATE, ggroups);
+    metal_msg_send_dispatch(st, enc, ggroups, threads);
+
+    metal_msg_send_set_pipeline(st, enc, st->f32_ple_proj_tail_pipeline);
+    metal_msg_send_set_buffer(
+            st, enc, gate_scratch->buffer->buffer, gate_scratch->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, proj_w->buffer->buffer, proj_w->buffer->base_off, 1);
+    metal_msg_send_set_buffer(
+            st, enc, proj_scratch->buffer->buffer, proj_scratch->buffer->base_off, 2);
+    metal_msg_send_set_buffer(st, enc, h->buffer->buffer, h->buffer->base_off, 3);
+    metal_msg_send_set_buffer(st, enc, tail_w->buffer->buffer, tail_w->buffer->base_off, 4);
+    metal_msg_send_set_buffer(st, enc, next_w->buffer->buffer, next_w->buffer->base_off, 5);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 6);
+    metal_msg_send_set_buffer(st, enc, z->buffer->buffer, z->buffer->base_off, 7);
+    metal_msg_send_set_buffer(st,
+                              enc,
+                              st->attn_dec_count_buffer->buffer,
+                              st->attn_dec_count_buffer->base_off +
+                                      METAL_COUNT_PLE_TAIL * sizeof(uint32_t),
+                              8);
+    metal_msg_send_set_bytes(st, enc, &tp, sizeof(tp), 9);
+    const struct metal_size pgroups = {((uint32_t) d + 7u) / 8u, 1, 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_F32_MATMUL, pgroups);
+    metal_msg_send_dispatch(st, enc, pgroups, threads);
+    return metal_op_end(be, cmd, enc, nullptr);
 }
 
 /* Device greedy argmax (vtbl slot): one 256-thread threadgroup scans the
@@ -4695,11 +4741,12 @@ static bool metal_fused_supported(struct geist_backend *be, const struct geist_f
          * gemma4 prefill fails at layer 0. */
         return q->m == 1 && q->gate_w != nullptr && q->up_w != nullptr &&
                q->gate_w->dtype == GEIST_DTYPE_F32 && q->up_w->dtype == GEIST_DTYPE_F32;
-    case GEIST_FUSED_PLE_BLOCK_PRENORM:
+    case GEIST_FUSED_PLE_STAGE:
         /* ple_block's decode case, h in threadgroup memory (#196). */
         return q->m == 1 && q->gate_w != nullptr && q->up_w != nullptr &&
                q->gate_w->dtype == GEIST_DTYPE_F32 && q->up_w->dtype == GEIST_DTYPE_F32 &&
-               q->d_model > 0 && q->d_model <= METAL_PLE_PRENORM_MAX_D && (q->d_model % 4u) == 0u;
+               q->d_model > 0 && q->d_model <= METAL_PLE_PRENORM_MAX_D && (q->d_model % 4u) == 0u &&
+               q->inter > 0 && (q->inter % 4u) == 0u;
     case GEIST_FUSED_EMBEDDING_LOOKUP_SCALED:
         /* Dtype set of metal_embedding_lookup_scaled's row decoders. */
         switch ((enum geist_dtype) q->table_dtype) {
@@ -4749,7 +4796,7 @@ static const struct geist_backend_fused metal_fused = {
         .attn_qkv_prep                = metal_attn_qkv_prep,
         .attn_rope_append             = metal_attn_rope_append,
         .ple_block                    = metal_ple_block,
-        .ple_block_prenorm            = metal_ple_block_prenorm,
+        .ple_stage                    = metal_ple_stage,
         .rmsnorm_add                  = metal_rmsnorm_add,
         .deltanet_mix                 = metal_deltanet_mix,
         .attn_qgate_split             = metal_attn_qgate_split,

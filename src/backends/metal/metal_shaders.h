@@ -1848,6 +1848,43 @@ static const char metal_f32_sg_mv_source[] =
         "if(k<n4)a+=h4[k]*w4[k];a+=b;const float t=simd_sum((a.x+a.y)+(a.z+a.w));"
         "if(ln==0)y[p.yo+row]=gelu(t)*ple[p.po+row];}\n";
 
+/* ple_stage's projection and layer tail (#196): matvec_f32_rows' rows into
+ * pr, then the threadgroup that finishes last computes y = (h + rmsnorm(pr)
+ * * tw) * scale and z = rmsnorm(y) * nw over the whole row, as
+ * rmsnorm_add_norm does. pr is coherent(device) and every threadgroup fences
+ * its stores before it counts itself, so the last one reads them all; it
+ * resets the count for the next dispatch. */
+static const char metal_f32_ple_tail_source[] =
+        "struct PT{uint ni,no,xo,wo,po,ho,two,nwo,yo,zo;float eps,scale;};\n"
+        "static inline float tg_sum(float v,threadgroup float*part,ushort sg,ushort ln,ushort "
+        "nsg){const float r=simd_sum(v);threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "if(ln==0)part[sg]=r;threadgroup_barrier(mem_flags::mem_threadgroup);float t=0.0f;"
+        "for(ushort i=0;i<nsg;i++)t+=part[i];return t;}\n"
+        "kernel void ple_proj_tail(device const float*g[[buffer(0)]],device const "
+        "float*w[[buffer(1)]],coherent(device) device float*pr[[buffer(2)]],device const "
+        "float*h[[buffer(3)]],device const float*tw[[buffer(4)]],device const "
+        "float*nw[[buffer(5)]],device float*y[[buffer(6)]],device float*z[[buffer(7)]],device "
+        "atomic_uint*cnt[[buffer(8)]],constant PT&p[[buffer(9)]],uint "
+        "tg[[threadgroup_position_in_grid]],uint ntg[[threadgroups_per_grid]],ushort "
+        "lid[[thread_index_in_threadgroup]],ushort sg[[simdgroup_index_in_threadgroup]],ushort "
+        "nsg[[simdgroups_per_threadgroup]],ushort ln[[thread_index_in_simdgroup]]){"
+        "threadgroup float part[32];threadgroup uint last;"
+        "const uint row=tg*uint(nsg)+uint(sg);"
+        "if(row<p.no){const float t=mv_row4(g+p.xo,w+p.wo+row*p.ni,p.ni,ln);"
+        "if(ln==0)pr[p.po+row]=t;}threadgroup_barrier(mem_flags::mem_device);"
+        "atomic_thread_fence(mem_flags::mem_device,memory_order_seq_cst,thread_scope_device);"
+        "if(lid==0)last=atomic_fetch_add_explicit(cnt,1u,memory_order_relaxed)+1u==ntg?1u:0u;"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);if(last==0u)return;"
+        "atomic_thread_fence(mem_flags::mem_device,memory_order_seq_cst,thread_scope_device);"
+        "if(lid==0)atomic_store_explicit(cnt,0u,memory_order_relaxed);"
+        "const uint nt=uint(nsg)*32u;float ss=0.0f;"
+        "for(uint c=lid;c<p.no;c+=nt){const float v=pr[p.po+c];ss+=v*v;}"
+        "const float inv=rsqrt(tg_sum(ss,part,sg,ln,nsg)/float(p.no)+p.eps);float s2=0.0f;"
+        "for(uint c=lid;c<p.no;c+=nt){const float n=pr[p.po+c]*inv*tw[p.two+c];"
+        "const float v=(h[p.ho+c]+n)*p.scale;y[p.yo+c]=v;s2+=v*v;}"
+        "const float inv2=rsqrt(tg_sum(s2,part,sg,ln,nsg)/float(p.no)+p.eps);"
+        "for(uint c=lid;c<p.no;c+=nt)z[p.zo+c]=y[p.yo+c]*inv2*nw[p.nwo+c];}\n";
+
 static const char metal_f16_w_source[] = GEIST_METAL_HALF_W_KERNELS("f16w", "half", "float(v)");
 static const char metal_bf16_w_source[] =
         GEIST_METAL_HALF_W_KERNELS("bf16w", "ushort", "as_type<float>(uint(v)<<16u)");
@@ -2885,7 +2922,7 @@ static const char metal_attn_decv_combine_source[] =
          * count to ns fences again before reading the others' partials and
          * resets the count for the next dispatch, which the serial encoder
          * starts only after this one has finished. */
-        "if(sp.fc==0u)return;"
+        "if(sp.fc==0u)return;simdgroup_barrier(mem_flags::mem_device);"
         "atomic_thread_fence(mem_flags::mem_device,memory_order_seq_cst,thread_scope_device);"
         "uint done=0u;if(ln==0)done=atomic_fetch_add_explicit(cnt+h,1u,memory_order_relaxed);"
         "done=simd_broadcast(done,ushort(0));if(done+1u!=sp.ns)return;"

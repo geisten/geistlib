@@ -570,6 +570,15 @@ enum geist_status blk_attn_residual(struct transformer_layer_forward_ctx *ctx,
                         sess->scratch_h_post_attn);
 }
 
+void blk_tail_done(struct transformer_layer_forward_ctx *ctx) {
+    struct transformer_arch_session *sess = ctx->sess;
+    ctx->out_scaled                       = true;
+    sess->prenorm_layer                   = (size_t) ctx->layer_idx + 1;
+    sess->prenorm_h                       = ctx->h_out_buf;
+    sess->prenorm_pos                     = ctx->q_position;
+    sess->prenorm_seq                     = ctx->seq;
+}
+
 enum geist_status blk_residual_out(struct transformer_layer_forward_ctx *ctx,
                                    float                                 scale,
                                    bool                                  fused,
@@ -599,13 +608,8 @@ enum geist_status blk_residual_out(struct transformer_layer_forward_ctx *ctx,
                                                                  &t_zw,
                                                                  &t_y,
                                                                  &t_z);
-        if (s == GEIST_OK) {
-            ctx->out_scaled     = true;
-            sess->prenorm_layer = next;
-            sess->prenorm_h     = out;
-            sess->prenorm_pos   = ctx->q_position;
-            sess->prenorm_seq   = ctx->seq;
-        }
+        if (s == GEIST_OK)
+            blk_tail_done(ctx);
         return s;
     }
     if (w == nullptr) {
@@ -713,8 +717,8 @@ enum geist_status blk_ffn_geglu(struct transformer_layer_forward_ctx *ctx,
                              sess->scratch_ffn_out,
                              h,
                              sess->scratch_post_ff);
-    else if (s == GEIST_OK && ctx->seq == 1 && P->fuse_ple_block_prenorm_m1 && ctx->run_ple)
-        ctx->ple_prenorm = true; /* the PLE block takes the step (#196) */
+    else if (s == GEIST_OK && ctx->seq == 1 && P->fuse_ple_stage_m1 && ctx->run_ple)
+        ctx->ple_prenorm = true; /* the PLE stage takes the step (#196) */
     else if (s == GEIST_OK)
         s = blk_norm_add(ctx,
                          P->fuse_rmsnorm_add,
