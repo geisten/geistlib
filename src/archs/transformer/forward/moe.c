@@ -575,8 +575,7 @@ enum geist_status moe_session_alloc(struct transformer_arch_session *sess) {
         geist_backend_set_error(be, GEIST_E_OOM, "transformer: MoE routing state alloc failed");
         return GEIST_E_OOM;
     }
-    moe_gpu_session_alloc(sess);
-    return GEIST_OK;
+    return moe_gpu_session_alloc(sess);
 }
 
 void moe_session_free(struct transformer_arch_session *sess) {
