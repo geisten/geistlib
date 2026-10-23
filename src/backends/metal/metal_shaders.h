@@ -3283,4 +3283,80 @@ static const char metal_dnf_out_source[] = GEIST_DN_SIG(
                    "for(uint cg=0u;cg<dv;cg+=32u)for(uint u=0u;u<8u;u++){uint col=cg+lc+u;"
                    "zr[col]=orow[col]*inv*nw[p.no+col]*silu1(zr[col]);}}}}\n";
 
+/* Mixture-of-experts decode on the device (#201): routing and the experts'
+ * matvecs chosen by the routed ids, so a layer never waits on the host.
+ * Compiled after metal_mv_hdr_source and the q4k/q6k/q80 matvec bodies
+ * (struct P, mv_q4k, mv_q6k, mv_q80).
+ *
+ * moe_topk: one simdgroup per token row t of logits [m, ls]: the k largest
+ *   of row t's first n -- ranked by (logit descending, id ascending), as
+ *   moe_route_topk -- into ids[t*k + j], their softmax probabilities over
+ *   all n into w[t*k + j], renormalised over the k when q.z. A non-finite
+ *   logit sets ids[q.w] (the flag word after the m*k ids) to 1.
+ * moe_mv_<dtype>: grid y = slot s of m*k; slot s multiplies expert ids[s]
+ *   (q.x bytes after expert 0, which p.wo locates in w) by x row s
+ *   (q.y != 0) or s / q.z (one x row per token), into y row s (p.ys).
+ * moe_wsum: out[t][c] = add[t][c] + sum_j w[t*k + j] * y[t*k + j][c]. */
+static const char metal_moe_source[] =
+        "struct MR{uint n,k,norm,flag,ls,lo,io,wo;};\n"
+        "static inline bool moe_fin(float v){return(as_type<uint>(v)&0x7f800000u)!=0x7f800000u;}\n"
+        "kernel void moe_topk(device const float*lg[[buffer(0)]],device uint*ids[[buffer(1)]],"
+        "device float*w[[buffer(2)]],constant MR&q[[buffer(3)]],"
+        "uint t[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]]){"
+        "device const float*l=lg+q.lo+t*q.ls;float mx=-INFINITY;bool fin=true;"
+        "for(uint i=ti;i<q.n;i+=32u){float v=l[i];fin=fin&&moe_fin(v);mx=fin?max(mx,v):mx;}"
+        "fin=simd_all(fin);mx=simd_max(mx);"
+        "if(!fin){if(ti==0)ids[q.flag]=1u;mx=0.0f;}"
+        "float z=0.0f;for(uint i=ti;i<q.n;i+=32u){float v=l[i];z+=moe_fin(v)?exp(v-mx):0.0f;}"
+        "z=simd_sum(z);float last=INFINITY,sel=0.0f;uint lid=0u;"
+        "for(uint j=0u;j<q.k;j++){float bv=-INFINITY;uint bi=0xffffffffu;"
+        "for(uint i=ti;i<q.n;i+=32u){float v=moe_fin(l[i])?l[i]:-INFINITY;"
+        "bool after=j==0u||v<last||(v==last&&i>lid);"
+        "if(after&&(bi==0xffffffffu||v>bv)){bv=v;bi=i;}}"
+        "float m=simd_max(bi==0xffffffffu?-INFINITY:bv);"
+        "uint best=simd_min((bi!=0xffffffffu&&bv==m)?bi:0xffffffffu);"
+        "best=best==0xffffffffu?0u:best;last=m;lid=best;"
+        "float p=z>0.0f?exp(m-mx)/z:0.0f;sel+=p;"
+        "if(ti==0){ids[q.io+t*q.k+j]=best;w[q.wo+t*q.k+j]=p;}}"
+        "if(q.norm!=0u&&ti==0&&sel>0.0f)for(uint j=0u;j<q.k;j++)w[q.wo+t*q.k+j]/=sel;}\n"
+        "struct MI{uint estride,per_slot,k,io;};\n"
+        "kernel void moe_mv_q4k(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],"
+        "device float*y[[buffer(2)]],constant P&p[[buffer(3)]],device const uint*ids[[buffer(4)]],"
+        "constant MI&q[[buffer(5)]],uint3 tg[[threadgroup_position_in_grid]],"
+        "ushort ti[[thread_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){"
+        "uint s=tg.y,xr=q.per_slot!=0u?s:s/q.k;"
+        "mv_q4k(x+xr*p.xs,w+ulong(ids[q.io+s])*ulong(q.estride),y+s*p.ys,p,tg.x,0u,ti,sg);}\n"
+        "kernel void moe_mv_q6k(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],"
+        "device float*y[[buffer(2)]],constant P&p[[buffer(3)]],device const uint*ids[[buffer(4)]],"
+        "constant MI&q[[buffer(5)]],uint3 tg[[threadgroup_position_in_grid]],"
+        "ushort ti[[thread_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){"
+        "uint s=tg.y,xr=q.per_slot!=0u?s:s/q.k;"
+        "mv_q6k(x+xr*p.xs,w+ulong(ids[q.io+s])*ulong(q.estride),y+s*p.ys,p,tg.x,0u,ti,sg);}\n"
+        "kernel void moe_mv_q80(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],"
+        "device float*y[[buffer(2)]],constant P&p[[buffer(3)]],device const uint*ids[[buffer(4)]],"
+        "constant MI&q[[buffer(5)]],uint3 tg[[threadgroup_position_in_grid]],"
+        "ushort ti[[thread_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){"
+        "uint s=tg.y,xr=q.per_slot!=0u?s:s/q.k;"
+        "mv_q80(x+xr*p.xs,w+ulong(ids[q.io+s])*ulong(q.estride),y+s*p.ys,p,tg.x,0u,ti,sg);}\n"
+        "kernel void moe_mv_f32(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],"
+        "device float*y[[buffer(2)]],constant P&p[[buffer(3)]],device const uint*ids[[buffer(4)]],"
+        "constant MI&q[[buffer(5)]],uint3 tg[[threadgroup_position_in_grid]],"
+        "ushort ti[[thread_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){"
+        "uint s=tg.y,r=tg.x*2u+uint(sg);if(r>=p.no)return;uint xr=q.per_slot!=0u?s:s/q.k;"
+        "device const float*xv=x+p.xo+xr*p.xs;device const float*wv=(device const float*)(w+p.wo+"
+        "ulong(ids[q.io+s])*ulong(q.estride))+ulong(r)*ulong(p.ni);float a=0.0f;"
+        "for(uint i=ti;i<p.ni;i+=32u)a+=wv[i]*xv[i];a=simd_sum(a);if(ti==0)y[p.yo+s*p.ys+r]=a;}\n"
+        "struct MS{uint d,k,yo,wo,ao,oo;};\n"
+        "kernel void moe_wsum(device const float*y[[buffer(0)]],device const float*w[[buffer(1)]],"
+        "device const float*add[[buffer(2)]],device float*out[[buffer(3)]],constant "
+        "MS&q[[buffer(4)]],"
+        "uint2 gid[[thread_position_in_grid]]){uint c=gid.x,t=gid.y;if(c>=q.d)return;"
+        "float a=add[q.ao+t*q.d+c];for(uint "
+        "j=0u;j<q.k;j++)a+=w[q.wo+t*q.k+j]*y[q.yo+(t*q.k+j)*q.d+c];"
+        "out[q.oo+t*q.d+c]=a;}\n";
+
 #endif /* GEIST_METAL_SHADERS_H */

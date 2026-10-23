@@ -74,4 +74,23 @@ void                            moe_gpu_session_free(struct transformer_arch_ses
                                                const float cold[static seq * sess->model->d_model],
                                                struct geist_buffer *out);
 
+/* #201: a decode step (seq == 1) of layer `layer` routes and runs its
+ * experts on the device: mg->device[layer] and the session's buffers. */
+[[nodiscard]] bool
+moe_gpu_device(const struct transformer_arch_session *sess, size_t layer, size_t seq);
+
+/* That step: routing of sess->moe_logits, gate, up, silu_mul, down by the
+ * routed ids, and out = add + their weighted sum, recorded on the device
+ * without a wait. x is the normed input [seq, d_model]. */
+[[nodiscard]] enum geist_status moe_gpu_device_ffn(struct transformer_arch_session *sess,
+                                                   size_t                           layer,
+                                                   size_t                           seq,
+                                                   struct geist_buffer             *x,
+                                                   struct geist_buffer             *add,
+                                                   struct geist_buffer             *out);
+
+/* After a step's logits are read (the device idle): the device route's
+ * non-finite flag as an error, cleared. GEIST_OK without device routing. */
+[[nodiscard]] enum geist_status moe_gpu_device_check(struct transformer_arch_session *sess);
+
 #endif

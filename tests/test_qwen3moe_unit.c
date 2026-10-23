@@ -354,6 +354,10 @@ static int check_on_gpu(const char *gpu, size_t hot, const float ref[static VOCA
                                           cosine(again, ref) >= 0.999,
                                   "with its buffers back the session runs again");
         }
+        /* #201: with every expert on a GPU that routes, decode never leaves it. */
+        if (mg != nullptr && mg->any_device)
+            fails += geist_expect(hot == 16 && mg->n_device > 0,
+                                  "the token-by-token run routed on the device");
     }
     unsetenv("GEIST_MOE_HOT");
     geist_session_destroy(s);

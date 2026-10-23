@@ -132,6 +132,9 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
                 (double) atomic_load(&mg->ns_wait) / nb,
                 (double) atomic_load(&mg->ns_unpack) / nb);
         fprintf(stderr,
+                "geist: moe: %llu layer steps routed on the device\n",
+                (unsigned long long) atomic_load(&mg->n_device));
+        fprintf(stderr,
                 "geist: moe: %llu of them grouped (decode), mean wait %.1f us\n",
                 (unsigned long long) atomic_load(&mg->n_grouped),
                 (double) atomic_load(&mg->ns_wait_grouped) /
@@ -142,10 +145,11 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
         if (mg->bufs[i] != nullptr)
             gv->buffer_destroy(mg->be, mg->bufs[i]);
     }
-    void *b = mg->bufs, *t = mg->twins, *g = mg->grouped, *m = mg;
+    void *b = mg->bufs, *t = mg->twins, *g = mg->grouped, *dv = mg->device, *m = mg;
     safe_free(&b);
     safe_free(&t);
     safe_free(&g);
+    safe_free(&dv);
     safe_free(&m);
 }
 
@@ -283,6 +287,29 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
                 total > 0 ? 100.0 * (double) covered / (double) total
                           : 100.0 * (double) mg->n_hot / (double) (n_layers * slots));
     }
+    /* #201: a layer whose every routed expert is here routes and runs
+     * them on the device at decode (GEIST_MOE_DEVICE=0: never). */
+    const char *dev_env = getenv("GEIST_MOE_DEVICE");
+    if (gbe == st->backend && slots == n_exp && gf->moe_route != nullptr &&
+        gf->linear_t_ids != nullptr && gf->moe_weighted_sum != nullptr &&
+        gf->supported != nullptr && !(dev_env != nullptr && strcmp(dev_env, "0") == 0)) {
+        mg->device = heap_calloc_array_aligned(bool, n_layers);
+        for (size_t l = 0; mg->device != nullptr && l < n_layers; l++) {
+            bool all = true;
+            for (size_t e = 0; e < n_exp && all; e++)
+                all = mg->twins[(l * slots + e) * 3].raw != nullptr;
+            const struct geist_weight      *tw = &mg->twins[l * slots * 3];
+            const struct geist_fusion_query q  = {.op     = GEIST_FUSED_MOE_DEVICE,
+                                                  .m      = 1,
+                                                  .gate_w = &tw[0],
+                                                  .up_w   = &tw[1],
+                                                  .down_w = &tw[2]};
+            mg->device[l]                      = all && gf->supported(gbe, &q);
+            mg->any_device                     = mg->any_device || mg->device[l];
+        }
+        if (verbose && mg->any_device)
+            fprintf(stderr, "geist: moe: decode routes on %s (#201)\n", gbe->desc->name);
+    }
     st->moe_gpu = mg;
     return GEIST_OK;
 }
@@ -302,7 +329,9 @@ void moe_gpu_session_free(struct transformer_arch_session *sess) {
                                  &sess->moe_gpu_y_io,
                                  &sess->moe_gpu_x,
                                  &sess->moe_gpu_g,
-                                 &sess->moe_gpu_u};
+                                 &sess->moe_gpu_u,
+                                 &sess->moe_dev_ids,
+                                 &sess->moe_dev_w};
     for (size_t i = 0; i < sizeof b / sizeof b[0]; i++) {
         if (*b[i] != nullptr) {
             mg->be->desc->vtbl->buffer_destroy(mg->be, *b[i]);
@@ -334,6 +363,26 @@ enum geist_status moe_gpu_session_alloc(struct transformer_arch_session *sess) {
     if (s == GEIST_OK)
         s = gv->buffer_create(
                 mg->be, gb, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, &sess->moe_gpu_u);
+    if (s == GEIST_OK && mg->any_device) {
+        s = gv->buffer_create(mg->be,
+                              (n_sel + 1) * sizeof(uint32_t),
+                              GEIST_BUFFER_IO,
+                              GEIST_MEMORY_AUTO,
+                              &sess->moe_dev_ids);
+        if (s == GEIST_OK)
+            s = gv->buffer_create(mg->be,
+                                  n_sel * sizeof(float),
+                                  GEIST_BUFFER_SCRATCH,
+                                  GEIST_MEMORY_DEVICE,
+                                  &sess->moe_dev_w);
+        uint32_t *idp = s == GEIST_OK ? gv->buffer_map(sess->moe_dev_ids) : nullptr;
+        if (idp != nullptr) {
+            memset(idp, 0, (n_sel + 1) * sizeof(uint32_t)); /* the flag word too */
+            gv->buffer_unmap(sess->moe_dev_ids);
+        } else if (s == GEIST_OK) {
+            s = GEIST_E_BACKEND;
+        }
+    }
     if (s == GEIST_OK) {
         sess->moe_ids_hot   = heap_alloc_array_aligned(uint32_t, n_sel);
         sess->moe_csr_start = heap_alloc_array_aligned(uint32_t, sess->m_max + 1);
@@ -729,4 +778,97 @@ enum geist_status moe_gpu_finish(struct transformer_arch_session *sess,
     struct geist_tensor y = view_2d(sess->moe_gpu_x, (int64_t) p, (int64_t) d);
     struct geist_tensor o = view_2d(out, (int64_t) seq, (int64_t) d);
     return mg->be->desc->fused->rows_weighted_sum(mg->be, seq, d, p, start, rows, w, cold, &y, &o);
+}
+
+bool moe_gpu_device(const struct transformer_arch_session *sess, size_t layer, size_t seq) {
+    const struct transformer_moe_gpu *mg = sess->model->moe_gpu;
+    return seq == 1 && mg != nullptr && mg->device != nullptr && sess->moe_dev_ids != nullptr &&
+           layer < sess->model->n_layers && mg->device[layer];
+}
+
+enum geist_status moe_gpu_device_ffn(struct transformer_arch_session *sess,
+                                     size_t                           layer,
+                                     size_t                           seq,
+                                     struct geist_buffer             *x,
+                                     struct geist_buffer             *add,
+                                     struct geist_buffer             *out) {
+    const struct transformer_arch_state    *st    = sess->model;
+    const struct transformer_moe_gpu       *mg    = st->moe_gpu;
+    struct geist_backend                   *gbe   = mg->be;
+    const struct geist_backend_fused       *gf    = gbe->desc->fused;
+    const struct transformer_layer_weights *L     = &st->layers[layer];
+    const size_t                            n     = st->config.moe_n_experts;
+    const size_t                            k     = st->config.moe_n_used;
+    const size_t                            d     = st->d_model;
+    const size_t                            inter = L->intermediate;
+    const size_t                            nk    = seq * k;
+    const struct geist_weight              *tw    = &mg->twins[layer * n * 3];
+    struct geist_tensor t_lg = view_2d(sess->moe_logits, (int64_t) seq, (int64_t) n);
+    struct geist_tensor t_w  = view_1d(sess->moe_dev_w, (int64_t) nk);
+    struct geist_tensor t_x  = view_2d(x, (int64_t) seq, (int64_t) d);
+    struct geist_tensor t_g  = view_2d(sess->moe_gpu_g, (int64_t) nk, (int64_t) inter);
+    struct geist_tensor t_u  = view_2d(sess->moe_gpu_u, (int64_t) nk, (int64_t) inter);
+    struct geist_tensor t_y  = view_2d(sess->moe_gpu_x, (int64_t) nk, (int64_t) d);
+    struct geist_tensor t_a  = view_2d(add, (int64_t) seq, (int64_t) d);
+    struct geist_tensor t_o  = view_2d(out, (int64_t) seq, (int64_t) d);
+    /* The experts of a projection back to back: expert 0's view, all rows,
+     * on the buffer aliased over the layer's expert tensor. */
+    struct geist_tensor ex[3] = {L->moe_gate[0], L->moe_up[0], L->moe_down[0]};
+    for (size_t p = 0; p < 3; p++) {
+        ex[p].shape[0] *= (int64_t) n;
+        ex[p].buffer = mg->bufs[layer * 6 + p];
+    }
+    /* The flag word follows the session's m_max * k ids. */
+    enum geist_status s = gf->moe_route(gbe,
+                                        seq,
+                                        n,
+                                        k,
+                                        st->config.moe_norm_topk,
+                                        &t_lg,
+                                        sess->moe_dev_ids,
+                                        0,
+                                        sess->m_max * k * sizeof(uint32_t),
+                                        &t_w);
+    if (s == GEIST_OK)
+        s = gf->linear_t_ids(
+                gbe, n, seq, k, false, &tw[0], &ex[0], sess->moe_dev_ids, 0, &t_x, &t_g);
+    if (s == GEIST_OK)
+        s = gf->linear_t_ids(
+                gbe, n, seq, k, false, &tw[1], &ex[1], sess->moe_dev_ids, 0, &t_x, &t_u);
+    if (s == GEIST_OK)
+        s = gf->silu_mul(gbe, &t_g, &t_u, &t_g);
+    if (s == GEIST_OK)
+        s = gf->linear_t_ids(
+                gbe, n, seq, k, true, &tw[2], &ex[2], sess->moe_dev_ids, 0, &t_g, &t_y);
+    if (s == GEIST_OK)
+        s = gf->moe_weighted_sum(gbe, seq, k, d, &t_w, &t_y, &t_a, &t_o);
+    if (s == GEIST_OK)
+        atomic_fetch_add_explicit(&st->moe_gpu->n_device, 1, memory_order_relaxed);
+    if (s != GEIST_OK)
+        geist_backend_set_error(st->backend,
+                                s,
+                                "moe: layer %zu: the device route failed: %s",
+                                layer,
+                                geist_backend_errmsg(gbe));
+    return s;
+}
+
+enum geist_status moe_gpu_device_check(struct transformer_arch_session *sess) {
+    if (sess->moe_dev_ids == nullptr)
+        return GEIST_OK;
+    const struct geist_backend_vtbl *gv = sess->model->moe_gpu->be->desc->vtbl;
+    const size_t                     at = sess->m_max * sess->model->config.moe_n_used;
+    uint32_t                        *p  = gv->buffer_map(sess->moe_dev_ids);
+    if (p == nullptr)
+        return GEIST_E_BACKEND;
+    const bool bad = p[at] != 0;
+    p[at]          = 0;
+    gv->buffer_unmap(sess->moe_dev_ids);
+    if (bad) {
+        geist_backend_set_error(sess->model->backend,
+                                GEIST_E_BACKEND,
+                                "moe: router logits are not finite (routed on the device)");
+        return GEIST_E_BACKEND;
+    }
+    return GEIST_OK;
 }
