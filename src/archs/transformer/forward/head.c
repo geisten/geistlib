@@ -5,6 +5,7 @@
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
+#include "../moe_gpu.h"
 #include "internal.h"
 #include "profile.h"
 #include "../arch_state.h"
@@ -133,10 +134,10 @@ sample_row(struct transformer_arch_session *sess, size_t n_ctx, const float *log
     return geist_sampler_temperature_ws(&sess->sampler_ws, logits, sess->temperature, &sess->rng);
 }
 
-[[nodiscard]] enum geist_status finalize_logits_one_row(struct transformer_arch_session *sess,
-                                                        size_t                           row_idx,
-                                                        size_t                           n_ctx,
-                                                        geist_token_t *out_token) {
+[[nodiscard]] static enum geist_status finalize_logits_row(struct transformer_arch_session *sess,
+                                                           size_t                           row_idx,
+                                                           size_t                           n_ctx,
+                                                           geist_token_t *out_token) {
     struct transformer_arch_state    *st    = sess->model;
     struct geist_backend             *be    = st->backend;
     const struct geist_backend_vtbl  *v     = be->desc->vtbl;
@@ -224,6 +225,16 @@ sample_row(struct transformer_arch_session *sess, size_t n_ctx, const float *log
     }
     *out_token = best_id;
     return GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status finalize_logits_one_row(struct transformer_arch_session *sess,
+                                                        size_t                           row_idx,
+                                                        size_t                           n_ctx,
+                                                        geist_token_t *out_token) {
+    const enum geist_status s = finalize_logits_row(sess, row_idx, n_ctx, out_token);
+    /* The step's work is done: a device-routed MoE layer's non-finite
+     * router logits surface here (#201). */
+    return s == GEIST_OK ? moe_gpu_device_check(sess) : s;
 }
 
 /* Recompute the DENSE lm_head from the normalized hidden still in scratch_h_a
