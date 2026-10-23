@@ -34,7 +34,3 @@ jobs:
             GEIST_VK_PROFILE=1 GEIST_PROFILE_PREFILL=1 GEIST_PROFILE_FORWARD=1 \
               ./prof1 "$MODEL_PATH" tools/exp192/p1.txt vulkan $md 48 2>&1
           done
-          for md in prefill2 prefill4 prefill8; do
-            echo "===== m16 $md"
-            GEIST_EXP_NO_PQ2_MR=1 GEIST_VK_PROFILE=1 ./prof1 "$MODEL_PATH" tools/exp192/p1.txt vulkan $md 48 2>&1
-          done
