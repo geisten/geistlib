@@ -3,7 +3,7 @@
  * decode step of several mixture-of-experts experts in one pass (#78 phase
  * 3), against its decomposed twin: one fused->linear_t per weight.
  *
- * For F32, Q4_K and Q6_K: 10 weights of one shape (two dispatches: the
+ * For F32, Q4_K, Q5_K and Q6_K: 10 weights of one shape (two dispatches: the
  * kernels take VK_GROUP_MAX = 8 per dispatch), random but finite, resolved
  * on Vulkan; x [10, n_in] in VRAM. The grouped call and the 10 single calls
  * write [10, n_out] each; the grouped kernels are the single ones with the
@@ -242,10 +242,11 @@ int main(void) {
     }
     const struct qfmt fm[]    = {{GEIST_DTYPE_F32, 1, 4, false},
                                  {GEIST_DTYPE_Q4_K, 256, 144, false},
+                                 {GEIST_DTYPE_Q5_K, 256, 176, false},
                                  {GEIST_DTYPE_Q6_K, 256, 210, true}};
-    const char *const names[] = {"F32", "Q4_K", "Q6_K"};
+    const char *const names[] = {"F32", "Q4_K", "Q5_K", "Q6_K"};
     int               fails   = 0;
-    for (size_t i = 0; i < 3; i++)
+    for (size_t i = 0; i < 4; i++)
         fails += run_case(be, &fm[i], names[i]);
     geist_backend_destroy(be);
     if (fails > 0) {

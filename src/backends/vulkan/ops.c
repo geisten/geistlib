@@ -2075,6 +2075,8 @@ static enum vk_pipe vk_grouped_pipe(uint16_t dtype) {
         return VK_PIPE_MATVEC_F32_ID;
     case GEIST_DTYPE_Q4_K:
         return VK_PIPE_MATVEC_Q4K_ID;
+    case GEIST_DTYPE_Q5_K:
+        return VK_PIPE_MATVEC_Q5K_ID;
     case GEIST_DTYPE_Q6_K:
         return VK_PIPE_MATVEC_Q6K_ID;
     default:
