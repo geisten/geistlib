@@ -35,6 +35,7 @@
 #include <string.h>
 
 #include "../moe_gpu.h"
+#include "../moe_profile.h"
 #include "heap.h"
 #include "par.h"
 #include "profile.h"
@@ -363,8 +364,10 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     }
     for (size_t r = 0; r < seq && k > n_rt; r++)
         sess->moe_ids[r * k + n_rt] = (uint32_t) n_exp; /* the shared expert */
-    if (routed)
+    if (routed) {
         moe_trace(ctx->layer_idx, ctx->q_position, seq, n_exp, n_rt, k, lg, sess->moe_ids);
+        moe_profile_count(st->moe_prof, (size_t) ctx->layer_idx, seq, k, n_rt, sess->moe_ids);
+    }
     v->buffer_unmap(sess->moe_logits);
     if (!routed) {
         geist_backend_set_error(ctx->be,

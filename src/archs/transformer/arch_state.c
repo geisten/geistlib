@@ -24,6 +24,7 @@
 #include "weight_load.h"
 #include "rotation.h"
 #include "moe_gpu.h"
+#include "moe_profile.h"
 
 #include "gguf_reader.h"
 #include "gemma4_kernels.h"
@@ -1522,6 +1523,15 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
                                                      const struct geist_session_opts *opts,
                                                      struct transformer_arch_state  **out) {
     enum geist_status s = state_create_range(be, gguf, opts, 0, SIZE_MAX, false, false, out);
+    /* A mixture of experts counts its router's selections (#165); the
+     * counts of earlier runs place its experts below. */
+    if (s == GEIST_OK && (*out)->config.moe_n_experts > 0) {
+        char dir[1024];
+        (*out)->moe_prof = moe_profile_open((*out)->n_layers,
+                                            (*out)->config.moe_n_experts,
+                                            moe_profile_key(gguf),
+                                            moe_profile_dir(sizeof dir, dir) ? dir : nullptr);
+    }
     /* A mixture of experts on a GPU: its experts live on moe_cpu; the GPU
      * gets copies of the hottest, in the memory the rest left (#78). */
     if (s == GEIST_OK && (*out)->moe_cpu != nullptr) {
@@ -1931,6 +1941,8 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     st->offload = nullptr;
     moe_gpu_destroy(st->moe_gpu); /* its copies key on the expert bytes freed below */
     st->moe_gpu = nullptr;
+    moe_profile_close(st->moe_prof); /* writes the profile cache */
+    st->moe_prof = nullptr;
 
     if (be != nullptr) {
         /* The layer array may be missing: its allocation failed. */

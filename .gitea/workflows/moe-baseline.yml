@@ -95,6 +95,9 @@ jobs:
       XENV: ${{ inputs.env }}
       SWEEP_ARGS: ${{ inputs.sweep }}
       GGML_VK_VISIBLE_DEVICES: "0" # the discrete card, not the Raphael iGPU
+      # No run-time profile from earlier runs (#165): each configuration's
+      # placement is the one its inputs name.
+      GEIST_MOE_PROFILE_CACHE: "0"
       PROFILE: ${{ inputs.profile }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

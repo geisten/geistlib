@@ -50,6 +50,8 @@ static char kv_of(struct geist_model *m, struct geist_backend *be, enum geist_kv
 }
 
 int main(void) {
+    /* No profile cache in the user's home: placement stays the tests' (#165). */
+    setenv("GEIST_MOE_PROFILE_CACHE", "0", 1);
     const char *const backends[] = {"cpu_scalar", "cpu_neon", "cpu_x86"};
     int               fails      = 0;
     unsetenv("GEIST_KV_INT8");

@@ -331,6 +331,8 @@ static int check_on_gpu(const char *gpu, size_t hot, const float ref[static VOCA
 }
 
 int main(void) {
+    /* No profile cache in the user's home: placement stays the tests' (#165). */
+    setenv("GEIST_MOE_PROFILE_CACHE", "0", 1);
     int       fails = 0;
     float     scalar[VOCAB], other[VOCAB];
     const int sc = check_backend("cpu_scalar", scalar);

@@ -596,6 +596,9 @@ struct transformer_arch_state {
     bool                           split_stage;
     struct transformer_offload    *offload; /* owned; nullptr without offload (#78) */
     struct transformer_moe_gpu    *moe_gpu; /* owned; nullptr without hot experts */
+    /* Owned: the router's selections counted at run time and kept with
+     * the model (#165, moe_profile.h); nullptr for a dense model. */
+    struct transformer_moe_profile *moe_prof;
     /* Owned: the experts' home when `backend` is not a CPU backend (a GPU):
      * every expert is resolved here and runs here unless moe_gpu holds a
      * copy (#78 phase 3). nullptr on a CPU backend. */

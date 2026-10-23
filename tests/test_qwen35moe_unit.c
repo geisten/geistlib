@@ -219,6 +219,8 @@ static void set_hot(size_t n) {
 }
 
 int main(void) {
+    /* No profile cache in the user's home: placement stays the tests' (#165). */
+    setenv("GEIST_MOE_PROFILE_CACHE", "0", 1);
     g_vocab   = tf_make_vocab("\xc4\xa0", false);
     int fails = geist_expect(vocab() <= MAX_VOCAB, "the vocabulary fits");
     if (fails > 0)
