@@ -1,0 +1,137 @@
+# strata-compare: Strata, llama.cpp and geistlib on one MoE model and one
+# card (#169), the geist-vulkan box (RTX 2080 Ti 11 GB + Ryzen 9 9950X,
+# 59 GB). Strata runs on CUDA only; llama.cpp runs on CUDA (the reference
+# Strata publishes against) and on Vulkan; geistlib on Vulkan.
+#
+# Strata is built from source at a pinned commit (its setup.py --build,
+# with the model file this job already has: Strata pins the same Unsloth
+# revision and SHA-256). The servers get the same chat request (a ~2,000
+# token prompt from docs/OFFLOAD.md, 128 tokens, greedy) and report
+# llama.cpp's timings; geistlib's bench_perf_sweep runs the same number of
+# prompt tokens. Rounds alternate the engine order; medians over rounds.
+name: strata-compare
+
+on:
+  workflow_dispatch:
+    inputs:
+      strata_ref:
+        description: "Strata commit (github.com/Niko1221/Strata)"
+        type: string
+        default: 5c8dd322528cc84f68f461ad54a506b9da8fa8d4
+      model_url:
+        description: "GGUF (Strata's qwen36 file)"
+        type: string
+        default: https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/resolve/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+      model_sha256:
+        type: string
+        default: 55983c5a75a1ab969824077b3bb3de4146e82a9234072b48ad4e8f92ad3fe9f1
+      rounds:
+        type: string
+        default: "3"
+      engines:
+        description: "engines, separated by ; (strata, strata-mtp2, llama-cuda-<ncmoe>, llama-vk-<ncmoe>, geist-gpu, geist-cpu)"
+        type: string
+        default: "strata;llama-cuda-26;llama-cuda-28;llama-vk-24;geist-gpu" # llama-cuda-24 does not fit the 2080 Ti (run 1838)
+      profile:
+        description: "GEIST_MOE_PROFILE for geist-gpu (a path in this checkout; empty: none)"
+        type: string
+        default: benchmark/results/raw/2026-10-23_qwen36_expert_usage_run1830.txt
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: Strata vs llama.cpp vs geistlib on geist-vulkan
+    runs-on: geist-vulkan
+    timeout-minutes: 360
+    env:
+      GGML_VK_VISIBLE_DEVICES: "0"
+      CUDA_ARCH: "75"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Environment
+        run: |
+          mkdir -p out
+          { git rev-parse HEAD; nvidia-smi; free -g; nproc; cmake --version | head -1; python3 -V;
+            command -v nvcc && nvcc --version | tail -2 || ls -d /usr/local/cuda*/bin/nvcc 2>&1; } 2>&1 | tee out/env.txt
+      - name: Model (cached outside the workspace, sha256-checked)
+        env:
+          MODEL_URL: ${{ inputs.model_url }}
+          MODEL_SHA: ${{ inputs.model_sha256 }}
+        run: |
+          set -eo pipefail
+          CACHE=${GEIST_MODEL_CACHE:-$HOME/geist-models}
+          F="$CACHE/$(basename "$MODEL_URL")"
+          if [ ! -f "$F" ]; then
+            mkdir -p "$CACHE"
+            curl -fL --retry 5 -C - -o "$F.part" "$MODEL_URL"
+            echo "$MODEL_SHA  $F.part" | sha256sum -c -
+            mv "$F.part" "$F"
+          fi
+          # Strata's --gguf-dir takes a folder: one with only this file.
+          D="$CACHE/strata-gguf-$(basename "$F" .gguf)"
+          mkdir -p "$D" && ln -sf "$F" "$D/"
+          # Strata's setup takes a --gguf-dir file only with its finish mark;
+          # it checks the size and SHA-256 itself.
+          touch "$D/$(basename "$F").done"
+          echo "MODEL=$F" >> "$GITHUB_ENV"
+          echo "GGUF_DIR=$D" >> "$GITHUB_ENV"
+      - name: Build geistlib (vulkan + cpu_x86)
+        run: |
+          make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
+          echo "GBIN=$(dirname "$(find bin -path '*/release*/tests/bench_perf_sweep' | head -1)")" >> "$GITHUB_ENV"
+      - name: llama.cpp (pinned, CUDA and Vulkan; llama-server)
+        run: |
+          set -eo pipefail
+          for v in cuda vulkan; do
+            B=$(dirname "$(dirname "$(scripts/ensure-llama-bench.sh $v)")")
+            cmake --build "$B" --target llama-server -j "$(nproc)" > /dev/null
+            echo "LLAMA_$(echo $v | tr a-z A-Z)=$B/bin/llama-server" >> "$GITHUB_ENV"
+          done
+      - name: Strata (pinned, built from source with its setup)
+        env:
+          STRATA_REF: ${{ inputs.strata_ref }}
+        run: |
+          set -eo pipefail
+          S="$HOME/strata-src"
+          [ -d "$S/.git" ] || git clone https://github.com/Niko1221/Strata "$S"
+          git -C "$S" fetch origin "$STRATA_REF" 2>/dev/null || git -C "$S" fetch origin
+          git -C "$S" checkout -q "$STRATA_REF"
+          cd "$S"
+          # Strata's setup makes its venv with the system Python, which on this
+          # box has no venv/ensurepip (python3-venv needs sudo); STRATA_UV=1 has
+          # uv (~/.local/bin) make it with a managed Python 3.12 instead.
+          export STRATA_UV=1 PATH="$HOME/.local/bin:$PATH"
+          # nvcc 12.4 links against gcc 13's libstdc++; c++ is gcc 15 here,
+          # whose objects need __cxa_call_terminate (gcc >= 14): run 1833.
+          export CC=gcc-13 CXX=g++-13
+          # A build folder configured with other compilers: CMake drops its
+          # cache on the change and loses the venv's Ninja (run 1834).
+          grep -qs 'CMAKE_CXX_COMPILER:.*g++-13' build/CMakeCache.txt || rm -rf build
+          command -v uv
+          ./setup.sh --family qwen36 --model UD-Q4_K_XL --gguf-dir "$GGUF_DIR" --build --yes --no-start --no-browser \
+            --vision no --data-dir "$HOME/strata-data" 2>&1 | tee "$GITHUB_WORKSPACE/out/strata-setup.log"
+          # pipefail: ls fails on the glob that matches nothing (run 1837)
+          CFG=$(ls -t "$S"/strata-*.json "$HOME"/strata-*.json 2>/dev/null | head -1) || true
+          test -n "$CFG" || { echo "setup wrote no strata-*.json"; exit 1; }
+          cp "$CFG" "$GITHUB_WORKSPACE/out/strata-cfg.json"
+          echo "STRATA_DIR=$S" >> "$GITHUB_ENV"
+          echo "STRATA_CFG=$CFG" >> "$GITHUB_ENV"
+          echo "STRATA_PY=$(ls "$S"/.venv/bin/python 2>/dev/null || command -v python3)" >> "$GITHUB_ENV"
+      - name: Compare, interleaved rounds
+        env:
+          ROUNDS: ${{ inputs.rounds }}
+          ENGINES: ${{ inputs.engines }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -o pipefail
+          . scripts/gpu-lock.sh
+          python3 scripts/strata_compare.py 2>&1 | tee out/compare.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 30
+          name: strata-compare
+          path: out/
+          if-no-files-found: warn
