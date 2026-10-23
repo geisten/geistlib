@@ -221,6 +221,45 @@ into a trained classifier or guarantee Jev quality/speed. A reasoning model's
 immediate next-token answer can have different quality from its answer after
 reasoning. Measure that on held-out task data (#587) before deploying.
 
+## Direct scoring first, reasoning when unsure (#204, #210)
+
+A common consumer policy answers from the decision probabilities when the
+top option is confident enough, and otherwise falls back to generated
+reasoning with a token cap. This is application policy, so it is not part of
+this API. The policy needs a reasoning prompt, generation, answer parsing, a
+calibration and a threshold, and none of these exist here. The API supplies
+what the policy reads: the candidate logits, from which a consumer computes
+temperature-scaled probabilities, and an ordinary session for the fallback.
+geist-runtime offers the policy as a selectable command:
+`geistr decide … --threshold P --escalate chat --max-tokens N --temperature T`.
+Its diagnostics report which stage answered and what each stage cost.
+
+The trade-off is specific to the task and the model. Measured on Bonsai 2 27B
+PQ2_0 (Metal, five-shot classic MMLU, 500 held-out questions), against
+always-reasoning at a cap of 2048 tokens (79.0 %), with conservative paired
+95 % intervals:
+
+| Routed to reasoning | Cap | Accuracy | Difference, pp | Time |
+| --- | --- | --- | --- | --- |
+| 0 % (direct only) | — | 67.8 % | −11.2 [−18.2, −4.0] | 0.11× |
+| 49 % | 2048 | 76.4 % | −2.6 [−6.7, +1.6] | 0.75× |
+| 67 % | 1536 | 77.8 % | −1.2 [−3.9, +1.5] | 0.82× |
+| 69 % (declared, precision 0.95) | 2048 | 78.8 % | −0.2 [−2.4, +2.0] | 0.97× |
+| 100 % | 512 | 65.4 % | −13.6 [−17.4, −9.5] | 0.46× |
+
+There is no large saving at reasoning-level accuracy: the confident questions
+are the ones reasoning answers cheaply. A moderate cap together with routing
+beats either one alone, while a short cap is worse than no reasoning. On
+JevBench, direct scoring alone reaches 85.3 % (#171), so the curve sits
+elsewhere for other tasks. Fit the threshold, temperature and cap on the
+consumer's own calibration data.
+
+Sources:
+[DECISION_TWO_STAGE_2026-10-23.md](../benchmark/results/DECISION_TWO_STAGE_2026-10-23.md)
+(the declared policy) and
+[DECISION_CAP_CURVE_2026-10-23.md](../benchmark/results/DECISION_CAP_CURVE_2026-10-23.md)
+(the curve over caps; exploratory).
+
 ## Reproducible reference protocol
 
 Build `make DECISION=1 bin`. Prepare JSONL with one case per line:

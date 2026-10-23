@@ -1793,6 +1793,35 @@ static const char metal_f32_ple_source[] =
         "v=y[p.yo+b*p.ys+c]*inv*nw[p.nwo+c];y[p.yo+b*p.ys+c]=res[p.ro+b*p.rs+c]+v;}}"
         "\n";
 
+/* Decode (one row) F32 matvecs with a simdgroup per output row (#196):
+ * matvec_f32_rows for matmul_f32, ple_gate_f32_sg for ple_gate_f32. Those
+ * give each row a threadgroup of 256-1024 threads and a barrier reduction
+ * (8-15 us per call on the M1 Max for Gemma 4 E2B's 1536x256 PLE
+ * matrices); here four rows share 128 threads, each lane reads float4
+ * chunks of the row, and one simd_sum finishes it. The sums are in another
+ * order: rounding differs, the values agree. The host takes these only
+ * when n_in and the offsets are multiples of 4. */
+static const char metal_f32_sg_mv_source[] =
+        "static inline float mv_row4(device const float*xr,device const float*wr,uint ni,"
+        "ushort ln){device const float4*x4=(device const float4*)xr;device const float4*w4="
+        "(device const float4*)wr;float4 a=0.0f,b=0.0f;uint n4=ni/4u,k=uint(ln);"
+        "for(;k+32u<n4;k+=64u){a+=x4[k]*w4[k];b+=x4[k+32u]*w4[k+32u];}"
+        "if(k<n4)a+=x4[k]*w4[k];a+=b;return simd_sum((a.x+a.y)+(a.z+a.w));}\n"
+        "kernel void matvec_f32_rows(device const float*x[[buffer(0)]],device const "
+        "float*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint "
+        "tg[[threadgroup_position_in_grid]],ushort sg[[simdgroup_index_in_threadgroup]],ushort "
+        "nsg[[simdgroups_per_threadgroup]],ushort ln[[thread_index_in_simdgroup]]){"
+        "const uint row=tg*uint(nsg)+uint(sg);if(row>=p.no)return;"
+        "const float t=mv_row4(x+p.xo,w+p.wo+row*p.ni,p.ni,ln);if(ln==0)y[p.yo+row]=t;}\n"
+        "kernel void ple_gate_f32_sg(device const float*x[[buffer(0)]],device const "
+        "float*w[[buffer(1)]],device const float*ple[[buffer(2)]],device "
+        "float*y[[buffer(3)]],constant GP&p[[buffer(4)]],uint "
+        "tg[[threadgroup_position_in_grid]],ushort sg[[simdgroup_index_in_threadgroup]],ushort "
+        "nsg[[simdgroups_per_threadgroup]],ushort ln[[thread_index_in_simdgroup]]){"
+        "const uint row=tg*uint(nsg)+uint(sg);if(row>=p.no)return;"
+        "const float t=mv_row4(x+p.xo,w+p.wo+row*p.ni,p.ni,ln);"
+        "if(ln==0)y[p.yo+row]=gelu(t)*ple[p.po+row];}\n";
+
 static const char metal_f16_w_source[] = GEIST_METAL_HALF_W_KERNELS("f16w", "half", "float(v)");
 static const char metal_bf16_w_source[] =
         GEIST_METAL_HALF_W_KERNELS("bf16w", "ushort", "as_type<float>(uint(v)<<16u)");
