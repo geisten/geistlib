@@ -2,7 +2,7 @@
 # ensure-llama-bench.sh VARIANT [REPO] [PIN] — print the path of a pinned
 # llama-bench build for the cross-engine benchmarks, building it if needed.
 #
-# VARIANT: cpu | vulkan | metal. The cpu build must not link a GPU backend,
+# VARIANT: cpu | vulkan | metal | cuda (CUDA_ARCH: the card's sm, default native). The cpu build must not link a GPU backend,
 # or bench_cross_engine.py's CPU-only validation rejects it. Checkouts live
 # outside the workspace (one per repository, so a fork build never shadows
 # the upstream pin's) and are rebuilt only when the pin moves. Build output
@@ -44,6 +44,8 @@ if [ ! -x "$BUILD/bin/llama-bench" ] || [ -z "$WANT" ] ||
             SPIRV_INC="$DIR/spirv-headers/include"
         fi
         set -- -DGGML_VULKAN=ON -DCMAKE_PREFIX_PATH="$HOME/.local" -DCMAKE_CXX_FLAGS="-I$SPIRV_INC" ;;
+    cuda)
+        set -- -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH:-native}" ;;
     metal)
         set -- -DGGML_METAL=ON -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple ;;
     cpu)
