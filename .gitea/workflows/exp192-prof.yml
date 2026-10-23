@@ -16,7 +16,7 @@ jobs:
           grep -q PHYSICAL_DEVICE_TYPE_DISCRETE_GPU vulkan-env.txt
       - name: Build
         run: |
-          make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native lib
+          make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
           cc -std=c2x -O2 -Iinclude tools/exp192/prof1.c lib/linux/release/libgeist.a -fopenmp -lm -ldl -lpthread -o prof1
       - name: Fetch Bonsai 2 27B (host cache, SHA-gated)
         env:
@@ -28,7 +28,8 @@ jobs:
         run: |
           set -eo pipefail
           . scripts/gpu-lock.sh
-          for md in none decode prefill1 prefill2 prefill4; do
+          bin/linux/release/tests/test_backend_vulkan_linear_parity | grep -E "PQ2_0 |FAIL|PASS"
+          for md in none prefill1 prefill2 prefill4 prefill8; do
             echo "===== $md"
             GEIST_VK_PROFILE=1 GEIST_PROFILE_PREFILL=1 GEIST_PROFILE_FORWARD=1 \
               ./prof1 "$MODEL_PATH" tools/exp192/p1.txt vulkan $md 48 2>&1
