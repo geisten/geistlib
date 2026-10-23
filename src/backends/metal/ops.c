@@ -4264,10 +4264,10 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     }
 }
 
-/* Rows up to which DeltaNet runs the decode kernels once per row rather
- * than the 64-row chunked kernels: on Bonsai 2 27B (M1 Max) a row costs
- * ~2.7 ms of decode kernels against ~15.5 ms for a padded chunk (#192). */
-enum { METAL_DN_DECODE_ROWS = 4 };
+/* Rows up to which DeltaNet runs the decode kernels (dn_dec_v_rows for
+ * more than one) rather than the 64-row chunked kernels, which pad every
+ * call to 64 rows (#192). */
+enum { METAL_DN_DECODE_ROWS = 8 };
 
 [[nodiscard]] static enum geist_status
 metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_args *args) {
@@ -4449,29 +4449,30 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
             metal_msg_send_dispatch(st, enc, g_ch, t128);
         }
     } else if (args->seq <= METAL_DN_DECODE_ROWS && st->dn_dec_v_pipeline != nullptr &&
-               4u * args->head_v <= 1024u) {
-        /* Decode: q/k prep per k-head, then the state update spread over
-         * v-heads x 4 row groups (dn_dec_v); a few rows (speculative verify)
-         * take it once per row instead of a padded 64-row chunk (#192). */
+               (args->seq == 1 || st->dn_dec_v_rows_pipeline != nullptr) &&
+               4u * args->head_v <= 1024u && args->head_k <= 128u) {
+        /* Decode: q/k prep per k-head (once per row), then the state update
+         * spread over v-heads x 4 row groups; a few rows (speculative
+         * verify, #192) run their state updates in one dn_dec_v_rows, S
+         * read and written once, instead of a padded 64-row chunk. */
+        const struct metal_size gk = {args->n_k_heads, 1, 1};
+        const struct metal_size tk = {256, 1, 1};
+        metal_msg_send_set_pipeline(st, enc, st->dn_dec_qk_pipeline);
         for (uint32_t r = 0; r < params.seq; r++) {
             struct metal_deltanet_params row = params;
             row.seq = 1u;
             row.qkv_offset += r * (uint32_t) conv_dim;
-            row.z_offset += r * (uint32_t) value_dim;
-            row.beta_offset += r * params.n_v_heads;
-            row.alpha_offset += r * params.n_v_heads;
             metal_msg_send_set_bytes(st, enc, &row, sizeof row, 10);
-            metal_msg_send_set_pipeline(st, enc, st->dn_dec_qk_pipeline);
-            const struct metal_size gk = {args->n_k_heads, 1, 1};
-            const struct metal_size tk = {256, 1, 1};
             metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gk);
             metal_msg_send_dispatch(st, enc, gk, tk);
-            metal_msg_send_set_pipeline(st, enc, st->dn_dec_v_pipeline);
-            const struct metal_size gv = {args->n_v_heads, 1, 1};
-            const struct metal_size tv = {4u * (uint32_t) args->head_v, 1, 1};
-            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gv);
-            metal_msg_send_dispatch(st, enc, gv, tv);
         }
+        metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);
+        metal_msg_send_set_pipeline(
+                st, enc, params.seq == 1u ? st->dn_dec_v_pipeline : st->dn_dec_v_rows_pipeline);
+        const struct metal_size gv = {args->n_v_heads, 1, 1};
+        const struct metal_size tv = {4u * (uint32_t) args->head_v, 1, 1};
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gv);
+        metal_msg_send_dispatch(st, enc, gv, tv);
     } else {
         metal_msg_send_set_pipeline(st, enc, st->deltanet_mix_pipeline);
         metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);
