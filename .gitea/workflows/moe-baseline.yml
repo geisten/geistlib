@@ -74,7 +74,7 @@ on:
         type: string
         default: "1200"
       runtime_profile:
-        description: "#165: the run-time profile of one session (one #48 profile file, then two) and of every profile file, held-out cover against the profile input's; 'yes' or empty"
+        description: "#165: the run-time profile of one session (one #48 profile file; half of two) and of every profile file, held-out cover against the profile input's; 'yes' or empty"
         type: string
         default: ""
       make_profile:
@@ -179,7 +179,8 @@ jobs:
             b=$(basename "$f"); sess out/pc-held/$b "$f"; lines out/pc-held/$b heldout $b >> $held
           done
           sess out/pc-one $P/en0.txt
-          cat $P/c0.txt $P/de0.txt > out/two.txt && sess out/pc-two out/two.txt
+          # two domains in one session, inside dump_geist_logits' 4,096-token context
+          { head -c 7000 $P/c0.txt; head -c 7000 $P/de0.txt; } > out/two.txt && sess out/pc-two out/two.txt
           for f in $P/*.txt; do sess out/pc-all "$f"; done
           for v in one two all; do
             { lines out/pc-$v profile run0.txt; cat $held; } > out/rt-$v.txt
