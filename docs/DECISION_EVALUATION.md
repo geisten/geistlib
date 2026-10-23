@@ -42,7 +42,10 @@ paired difference +2.4 pp in [−5.1, +9.9] pp, so the 2 pp margin is not
 established (about 1,450 questions would be needed at these rates). Where
 reasoning finished it was 97.3 % accurate against 75.9 % for direct scoring,
 so the cap, not parity, produces the near-tie. Temperature 1.055 from 250
-calibration questions; ECE 0.046 → 0.037.
+calibration questions; ECE 0.046 → 0.037. Re-running the 164 capped answers at cap 2048
+(amendment 3) lifts reasoning to 79.0 % (87 still capped): direct minus
+reasoning is −11.2 pp in [−18.2, −4.0] pp, so direct scoring is inferior
+beyond the 2 pp margin.
 
 ## Data and prompt construction
 
