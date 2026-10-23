@@ -298,7 +298,7 @@
         "reason": "A third of the cap-512 reasoning answers hit the cap; where reasoning finished it was 97.3 % accurate, so the cap-512 baseline is not a fair quality reference."
       }
     ],
-    "status": "completed_500_question_heldout_sample",
+    "status": "completed_500_question_heldout_sample_with_cap2048_reasoning",
     "result": {
       "writeup": "benchmark/results/DECISION_MMLU_HELDOUT_2026-10-23.md",
       "json": "benchmark/results/DECISION_MMLU_HELDOUT_2026-10-23.json",
@@ -320,7 +320,25 @@
       "selected_equals_dense_bit_exact": "500/500",
       "determinism_spotcheck": "20/20 per arm identical",
       "reasoning_accuracy_where_finished": 0.973,
-      "direct_accuracy_where_reasoning_finished": 0.759
+      "direct_accuracy_where_reasoning_finished": 0.759,
+      "cap2048": {
+        "reasoning_accuracy": 0.79,
+        "rerun_164_accuracy": 0.4146341463414634,
+        "still_capped_at_2048": 87,
+        "difference_pp": -11.2,
+        "interval_pp": [
+          -18.24,
+          -3.98
+        ],
+        "noninferiority_established": false,
+        "direct_inferior_beyond_margin": true,
+        "determinism_check": "3/3 finished questions byte-identical at cap 2048",
+        "reasoning_latency_p50_p95_s": [
+          18.43,
+          146.41
+        ],
+        "time_ratio_reasoning_over_selected": 8.77
+      }
     }
   }
 }

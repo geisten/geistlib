@@ -10,5 +10,5 @@ cases=${CASES:-$C/cases-$name}; [ -d "$cases" ] || cases=$C/cases-$split
 cd $W && caffeinate -i env OMP_NUM_THREADS=6 OMP_WAIT_POLICY=passive /opt/homebrew/bin/python3.14 tools/eval_decision_campaign.py \
   --cases-dir "$cases" --split $split --purpose $purpose \
   --model "$MODEL" --binary $W/bin/mac-omp/release/tools/bench_decision \
-  --backend metal --threads 6 --decode-cap 512 --margin-pp 2 --warmup 0 --repeats ${REPEATS:-1} \
+  --backend metal --threads 6 --decode-cap ${DECODE_CAP:-512} --margin-pp 2 --warmup 0 --repeats ${REPEATS:-1} \
   --out-dir "$C/run-$name" --chunk-questions $k --deadline-minutes ${DEADLINE:-25} "$@"
