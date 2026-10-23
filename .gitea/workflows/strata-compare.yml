@@ -100,6 +100,9 @@ jobs:
           # box has no venv/ensurepip (python3-venv needs sudo); STRATA_UV=1 has
           # uv (~/.local/bin) make it with a managed Python 3.12 instead.
           export STRATA_UV=1 PATH="$HOME/.local/bin:$PATH"
+          # nvcc 12.4 links against gcc 13's libstdc++; c++ is gcc 15 here,
+          # whose objects need __cxa_call_terminate (gcc >= 14): run 1833.
+          export CC=gcc-13 CXX=g++-13
           command -v uv
           ./setup.sh --family qwen36 --gguf-dir "$GGUF_DIR" --build --yes --no-start --no-browser \
             --vision no --data-dir "$HOME/strata-data" 2>&1 | tee "$GITHUB_WORKSPACE/out/strata-setup.log"
