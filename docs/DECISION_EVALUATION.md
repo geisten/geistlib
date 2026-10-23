@@ -179,7 +179,10 @@ for the questions and modes the new run declares (#171 amendment, see
 quality representative and the latency sample). `--core-arms` keeps only
 chat_direct dense/selected and chat_reasoning. `--spotcheck N` adds, after the
 main run, a second independent trial on N declared, label-independent
-questions and reports whether every arm reproduced bit-exactly.
+questions and reports whether every arm reproduced bit-exactly. `--question-ids FILE`
+runs only a frozen JSON list of question IDs of the validated bundle (in that
+order) and `--reasoning-only` only the chat_reasoning profile; #171 uses both
+to re-run the capped reasoning answers at a higher cap (amendment 3).
 
 ```sh
 LOCK_PRIO=batch LOCK_MAX=30 LOCK_NOTE="#171 chunk" ~/bin/with-mac-lock \

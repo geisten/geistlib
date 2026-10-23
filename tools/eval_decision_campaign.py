@@ -458,6 +458,8 @@ def main():
     p.add_argument("--calibration", type=Path)
     p.add_argument("--calibration-modes", type=lambda v: v.split(","),
                    help="calibration split only: numeric arms to run (default: all three)")
+    p.add_argument("--question-ids", type=Path, help="JSON list: run only these question IDs, in this order")
+    p.add_argument("--reasoning-only", action="store_true", help="only the chat_reasoning profile")
     p.add_argument("--core-arms", action="store_true",
                    help="test/development: only chat_direct dense+selected and chat_reasoning")
     p.add_argument("--spotcheck", type=int, default=0,

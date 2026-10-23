@@ -281,6 +281,21 @@
         "binary": "--repeats 0 needed bench_decision to accept zero repeats (argument check only), which changes the binary hash. The calibration binding includes the binary, so calibration is re-run on the new binary (250 questions, decision_dense, one trial); the earlier fit (T=1.0546, binary e1dac74e) is superseded and kept as evidence only.",
         "reason": "Test phase at ~21 h of shared Mac time was too large; this design is ~6-7 h.",
         "statistical_scope": "500 questions give an estimate of the direct-minus-reasoning accuracy difference with its conservative paired 95 % interval, not proof of the 2 pp non-inferiority margin; establishing that margin needs roughly 1500 or more questions (depends on the observed discordance)."
+      },
+      {
+        "date": "2026-10-23",
+        "decided_by": "user",
+        "declared_before_cap2048_inference": true,
+        "change": "Re-run the chat_reasoning arm with decode cap 2048 on the 164 test questions whose cap-512 answer hit the cap; direct arms unchanged. Same binary (bf8fa083...), model, prompt policy, Metal/FP32/greedy/one trial.",
+        "scope": {
+          "question_ids": "benchmark/results/raw/decision-mmlu-heldout-2026-10-23/cap2048_question_ids.json",
+          "question_ids_sha256": "0d218e336f23e58476e94c8b00f9947ab2b23ca6df5297da44443bf7973acad7",
+          "order": "3 capped questions first (dry run for the time estimate), then 3 finished questions (determinism check), then the other 161 capped; both triples are the first by sha256([seed, question_id]) with seed geist-decision-cap2048-v1",
+          "selection": "benchmark/results/raw/decision-mmlu-heldout-2026-10-23/cap2048_selection.json"
+        },
+        "equivalence": "Generation is greedy and deterministic (the 20-question spot-check reproduced every arm bit-exactly), and the cap only truncates: a question that reached EOS before 512 tokens yields the identical output at cap 2048. Re-running only the 164 capped questions is therefore equivalent to a full cap-2048 run. Checked directly on 3 finished questions, whose cap-2048 generations must be byte-identical to their cap-512 ones.",
+        "combined_baseline": "reasoning at cap 2048 = the cap-512 output for the 336 finished questions, the cap-2048 output for the 164 re-run ones; paired against the unchanged direct arm with the same conservative interval and 2 pp margin.",
+        "reason": "A third of the cap-512 reasoning answers hit the cap; where reasoning finished it was 97.3 % accurate, so the cap-512 baseline is not a fair quality reference."
       }
     ]
   }
