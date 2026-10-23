@@ -2,6 +2,8 @@
  * test_moe_profile_unit - the expert profile counted at run time and kept
  * with the model (#165, moe_profile.h).
  *
+ * The cache is opt-in: no variable or "0" means none, "1" the XDG cache
+ * directory, anything else that directory.
  * The module on its own, in a temporary cache directory:
  *   - counts are written when the profile closes and read back by the next
  *     open with the same key, which adds its own on top; tokens likewise;
@@ -284,6 +286,25 @@ static int check_model(void) {
     return fails;
 }
 
+static int check_dir(void) {
+    int  fails = 0;
+    char dir[512];
+    unsetenv("GEIST_MOE_PROFILE_CACHE");
+    fails += geist_expect(!moe_profile_dir(sizeof dir, dir), "no variable: no cache (opt-in)");
+    setenv("GEIST_MOE_PROFILE_CACHE", "0", 1);
+    fails += geist_expect(!moe_profile_dir(sizeof dir, dir), "0: no cache");
+    setenv("GEIST_MOE_PROFILE_CACHE", "1", 1);
+    setenv("XDG_CACHE_HOME", "/x", 1);
+    fails += geist_expect(moe_profile_dir(sizeof dir, dir) &&
+                                  strcmp(dir, "/x/geist/moe-profile") == 0,
+                          "1: the XDG cache directory");
+    unsetenv("XDG_CACHE_HOME");
+    setenv("GEIST_MOE_PROFILE_CACHE", "/some/dir", 1);
+    fails += geist_expect(moe_profile_dir(sizeof dir, dir) && strcmp(dir, "/some/dir") == 0,
+                          "a path: that directory");
+    return fails;
+}
+
 int main(void) {
     const char *tmp = getenv("TMPDIR");
     snprintf(g_dir, sizeof g_dir, "%s/geist_moe_profile_XXXXXX", tmp != nullptr ? tmp : "/tmp");
@@ -291,9 +312,10 @@ int main(void) {
         perror("mkdtemp");
         return 1;
     }
+    int fails = check_dir();
     setenv("GEIST_MOE_PROFILE_CACHE", g_dir, 1);
     unsetenv("GEIST_MOE_PROFILE");
-    int fails = check_module();
+    fails += check_module();
     fails += check_model();
     rmdir(g_dir);
     if (fails == 0)

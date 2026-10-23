@@ -58,18 +58,18 @@ uint64_t moe_profile_key(const struct gguf_ctx *gguf) {
 
 bool moe_profile_dir(size_t n, char dir[static n]) {
     const char *env = getenv("GEIST_MOE_PROFILE_CACHE");
-    int         w   = -1;
-    if (env != nullptr) {
-        if (env[0] == '\0' || strcmp(env, "0") == 0)
-            return false;
-        w = snprintf(dir, n, "%s", env);
-    } else {
+    if (env == nullptr || env[0] == '\0' || strcmp(env, "0") == 0)
+        return false; /* opt-in */
+    int w = -1;
+    if (strcmp(env, "1") == 0) {
         const char *xdg  = getenv("XDG_CACHE_HOME");
         const char *home = getenv("HOME");
         w = xdg != nullptr && xdg[0] != '\0' ? snprintf(dir, n, "%s/geist/moe-profile", xdg)
             : home != nullptr && home[0] != '\0'
                     ? snprintf(dir, n, "%s/.cache/geist/moe-profile", home)
                     : -1;
+    } else {
+        w = snprintf(dir, n, "%s", env);
     }
     return w > 0 && (size_t) w < n;
 }

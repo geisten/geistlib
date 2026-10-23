@@ -3,17 +3,25 @@
  * profile, counted at run time and kept with the model (#165).
  *
  * The router's selections per (layer, expert) are counted while sessions
- * run (blk_moe_ffn routes on the host anyway). When the model is
- * destroyed, the counts are added to the ones read at load and written to
- * the profile cache, one file per model:
+ * run (blk_moe_ffn routes on the host anyway). With the cache on, the
+ * counts are added to the ones read at load when the model is destroyed
+ * and written to the profile cache, one file per model:
  *
- *   GEIST_MOE_PROFILE_CACHE=<dir>  the directory; "0" or "": no cache
- *   else $XDG_CACHE_HOME/geist/moe-profile or ~/.cache/geist/moe-profile
+ *   GEIST_MOE_PROFILE_CACHE unset, "" or "0"  no cache (the default)
+ *   GEIST_MOE_PROFILE_CACHE=1     $XDG_CACHE_HOME/geist/moe-profile or
+ *                                 ~/.cache/geist/moe-profile
+ *   GEIST_MOE_PROFILE_CACHE=<dir> that directory
  *   file <dir>/<key>.txt, key = 16 hex digits (moe_profile_key)
  *
  * The next load places the GPU's expert copies by them (moe_gpu.c), unless
- * GEIST_MOE_PROFILE names a file, which wins. The format is the USAGE
- * lines of tools/moe_usage, so analyze.py reads it too:
+ * GEIST_MOE_PROFILE names a file, which wins. Opt-in because a profile
+ * trades prefill for decode with the model on a discrete GPU: Qwen3.6-35B-A3B
+ * on an RTX 2080 Ti decoded ~16 % faster and prefilled ~10 % slower with
+ * one (runs 1826/1830), the GPU then holding 79 % of the rows a prefill
+ * chunk routes. With the 2,000 hottest experts instead of all 3,862 that
+ * fit, prefill was at 568-579 tok/s (run 1845; 507 with all of them, 561
+ * without a profile, runs 1840/1841). The format is the USAGE lines of
+ * tools/moe_usage, so analyze.py reads it too:
  *
  *   # geist moe profile v1 key <key> layers <L> experts <E>
  *   USAGE <key> profile run-time <tokens> <layer> <c0>,<c1>,...,<c(E-1)>
