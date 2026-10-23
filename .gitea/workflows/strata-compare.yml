@@ -72,6 +72,9 @@ jobs:
           # Strata's --gguf-dir takes a folder: one with only this file.
           D="$CACHE/strata-gguf-$(basename "$F" .gguf)"
           mkdir -p "$D" && ln -sf "$F" "$D/"
+          # Strata's setup takes a --gguf-dir file only with its finish mark;
+          # it checks the size and SHA-256 itself.
+          touch "$D/$(basename "$F").done"
           echo "MODEL=$F" >> "$GITHUB_ENV"
           echo "GGUF_DIR=$D" >> "$GITHUB_ENV"
       - name: Build geistlib (vulkan + cpu_x86)
