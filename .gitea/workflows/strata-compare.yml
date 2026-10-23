@@ -29,7 +29,7 @@ on:
         type: string
         default: "3"
       engines:
-        description: "engines, separated by ; (strata, strata-mtp2, llama-cuda-<ncmoe>, llama-vk-<ncmoe>, geist-gpu)"
+        description: "engines, separated by ; (strata, strata-mtp2, llama-cuda-<ncmoe>, llama-vk-<ncmoe>, geist-gpu, geist-cpu)"
         type: string
         default: "strata;llama-cuda-26;llama-cuda-28;llama-vk-24;geist-gpu" # llama-cuda-24 does not fit the 2080 Ti (run 1838)
       profile:

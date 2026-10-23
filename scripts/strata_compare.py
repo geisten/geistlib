@@ -11,6 +11,7 @@ ENGINES and PROFILE. Engines:
   llama-vk-<k>          llama-server, Vulkan, the same
   geist-gpu             bench_perf_sweep on Vulkan (experts on the CPU, the
                         hottest copied to the card), GEIST_MOE_PROFILE
+  geist-cpu             bench_perf_sweep on cpu_x86, the model's default chunk
 
 The servers get one chat request: the first PROMPT_CHARS characters of
 docs/OFFLOAD.md, 128 tokens, greedy; prefill and decode tok/s are their
@@ -97,13 +98,15 @@ def run_server(engine):
             p.wait()
 
 
-def run_geist(prompt_n):
-    env = dict(os.environ, GEIST_BENCH_BACKEND="vulkan", GEIST_VERBOSE="1")
-    if os.environ.get("PROFILE"):
+def run_geist(engine, prompt_n):
+    gpu = engine == "geist-gpu"
+    env = dict(os.environ, GEIST_BENCH_BACKEND="vulkan" if gpu else "cpu_x86", GEIST_VERBOSE="1")
+    if gpu and os.environ.get("PROFILE"):
         env["GEIST_MOE_PROFILE"] = os.environ["PROFILE"]
     cmd = [f"{os.environ['GBIN']}/bench_perf_sweep", "--gguf", os.environ["MODEL"], "--seq-lens", str(prompt_n),
-           "--decode-n", str(GEN), "--warmup", "8", "--repeats", "1", "--m-max", "512",
-           "--prompt-file", "docs/OFFLOAD.md"]
+           "--decode-n", str(GEN), "--warmup", "8", "--repeats", "1", "--prompt-file", "docs/OFFLOAD.md"]
+    if gpu:
+        cmd += ["--m-max", "512"]
     with open(f"{OUT}/geist.log", "a") as log:
         r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=log, text=True, env=env)
     for line in r.stdout.splitlines():
@@ -117,7 +120,8 @@ def run_geist(prompt_n):
 def main():
     engines = [e for e in os.environ["ENGINES"].split(";") if e]
     rounds = int(os.environ.get("ROUNDS", "3"))
-    servers = [e for e in engines if e != "geist-gpu"]
+    geists = [e for e in engines if e.startswith("geist-")]
+    servers = [e for e in engines if e not in geists]
     prompt_n = None
     res = {e: [] for e in engines}
     for r in range(rounds):
@@ -127,10 +131,10 @@ def main():
             prompt_n = prompt_n or m.get("prompt_n")
             print(json.dumps({"engine": e, "round": r + 1, **m}), flush=True)
             res[e].append(m)
-        if "geist-gpu" in engines:  # needs the prompt length the servers reported
-            m = run_geist(prompt_n or 2000)
-            print(json.dumps({"engine": "geist-gpu", "round": r + 1, **m}), flush=True)
-            res["geist-gpu"].append(m)
+        for e in geists:  # needs the prompt length the servers reported
+            m = run_geist(e, prompt_n or 2000)
+            print(json.dumps({"engine": e, "round": r + 1, **m}), flush=True)
+            res[e].append(m)
     print(f"\n| engine | prompt tokens | prefill tok/s (median) | decode tok/s (median) | rounds |")
     print("|:--|--:|--:|--:|--:|")
     for e in engines:
