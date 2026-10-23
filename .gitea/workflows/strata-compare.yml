@@ -96,6 +96,11 @@ jobs:
           git -C "$S" fetch origin "$STRATA_REF" 2>/dev/null || git -C "$S" fetch origin
           git -C "$S" checkout -q "$STRATA_REF"
           cd "$S"
+          # Strata's setup makes its venv with the system Python, which on this
+          # box has no venv/ensurepip (python3-venv needs sudo); STRATA_UV=1 has
+          # uv (~/.local/bin) make it with a managed Python 3.12 instead.
+          export STRATA_UV=1 PATH="$HOME/.local/bin:$PATH"
+          command -v uv
           ./setup.sh --family qwen36 --gguf-dir "$GGUF_DIR" --build --yes --no-start --no-browser \
             --vision no --data-dir "$HOME/strata-data" 2>&1 | tee "$GITHUB_WORKSPACE/out/strata-setup.log"
           CFG=$(ls -t "$S"/strata-*.json "$HOME"/strata-*.json 2>/dev/null | head -1)
