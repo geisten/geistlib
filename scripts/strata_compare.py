@@ -79,7 +79,10 @@ def run_server(engine):
                 pass
             time.sleep(2)
         body = {"messages": [{"role": "user", "content": "Summarise this document:\n\n" + TEXT}],
-                "max_tokens": GEN, "temperature": 0, "stream": False}
+                "max_tokens": GEN, "temperature": 0, "stream": False,
+                # llama-server would keep the warm-up's prompt and prefill only
+                # the last tokens of the measured request (run 1838: 4 of 2,726)
+                "cache_prompt": False}
         http("/v1/chat/completions", body)  # warm-up
         t = http("/v1/chat/completions", body)["timings"]
         return {"prompt_n": t.get("prompt_n"), "predicted_n": t.get("predicted_n"),
