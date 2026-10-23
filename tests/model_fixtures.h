@@ -67,9 +67,12 @@ struct mf_qwen35 {
      * a shared expert of width ffn. With `dense_twin` the router, the
      * routed experts and the shared gate are zero and the shared expert
      * draws the dense FFN's values (down doubled): the same logits as the
-     * dense qwen35 of the same seed, since sigmoid(0) = 1/2. */
+     * dense qwen35 of the same seed, since sigmoid(0) = 1/2. `gate_ramp`
+     * fills the shared gate with mf_ramp instead (a non-constant weight
+     * sigmoid(x . g) a test computes itself). */
     uint32_t experts, used;
-    bool     dense_twin;
+    bool     dense_twin, gate_ramp;
+    bool     no_shared_key; /* no expert_shared_feed_forward_length */
 };
 
 static inline void mf_key(struct tf_buf *o, const char *key, uint32_t type) {
@@ -89,7 +92,12 @@ static inline float mf_weight(uint64_t *s) {
 
 /* ---- F32 tensors ---------------------------------------------------------- */
 
-enum mf_fill { MF_RAND, MF_ONE, MF_NEG_ONE, MF_ZERO };
+/* MF_RAMP: element i is mf_ramp(i), mixed signs, no draw from the seed. */
+enum mf_fill { MF_RAND, MF_ONE, MF_NEG_ONE, MF_ZERO, MF_RAMP };
+
+static inline float mf_ramp(uint64_t i) {
+    return ((float) (i % 7) - 3.0f) * 0.25f;
+}
 
 struct mf_tensor {
     char         name[48];
@@ -173,7 +181,9 @@ static inline void mf_write_tensors(struct tf_buf *o, struct mf_tensors *ts, uin
         }
         const float c = t->fill == MF_ONE ? 1.0f : t->fill == MF_NEG_ONE ? -1.0f : 0.0f;
         for (uint64_t e = 0; e < mf_elems(t); e++) {
-            const float v = t->fill == MF_RAND ? mf_weight(&s) * t->scale : c;
+            const float v = t->fill == MF_RAND   ? mf_weight(&s) * t->scale
+                            : t->fill == MF_RAMP ? mf_ramp(e)
+                                                 : c;
             if (t->f16) {
                 const _Float16 h = (_Float16) v;
                 tf_put(o, &h, 2);
@@ -302,7 +312,12 @@ static inline struct tf_buf mf_qwen35_gguf(const struct mf_qwen35 *c) {
         ts.t[ts.n - 1].ne2 = c->experts;
         mf_add(&ts, c->ffn, c->d_model, routed, "blk.%u.ffn_down_exps.weight", l);
         ts.t[ts.n - 1].ne2 = c->experts;
-        mf_add(&ts, c->d_model, 0, routed, "blk.%u.ffn_gate_inp_shexp.weight", l);
+        mf_add(&ts,
+               c->d_model,
+               0,
+               c->gate_ramp ? MF_RAMP : routed,
+               "blk.%u.ffn_gate_inp_shexp.weight",
+               l);
         mf_add(&ts, c->d_model, c->ffn, MF_RAND, "blk.%u.ffn_gate_shexp.weight", l);
         mf_add(&ts, c->d_model, c->ffn, MF_RAND, "blk.%u.ffn_up_shexp.weight", l);
         mf_add(&ts, c->ffn, c->d_model, MF_RAND, "blk.%u.ffn_down_shexp.weight", l);
@@ -331,7 +346,7 @@ static inline struct tf_buf mf_qwen35_gguf(const struct mf_qwen35 *c) {
             {"expert_count", c->experts},
             {"expert_used_count", c->used},
     };
-    const size_t n_u32 = c->experts > 0 ? sizeof u32 / sizeof u32[0] - 1 : 13;
+    const size_t n_u32 = c->experts > 0 ? sizeof u32 / sizeof u32[0] - 1 - c->no_shared_key : 13;
     char         key[96];
 
     struct tf_buf o = {0};
@@ -342,8 +357,8 @@ static inline struct tf_buf mf_qwen35_gguf(const struct mf_qwen35 *c) {
     mf_key(&o, "general.architecture", TF_GGUF_STRING);
     tf_gstr(&o, arch, strlen(arch));
     for (size_t i = 0, j = 0; j < n_u32; i++) {
-        if (c->experts > 0 && i == 12)
-            continue; /* no dense width */
+        if (c->experts > 0 && (i == 12 || (i == 14 && c->no_shared_key)))
+            continue; /* no dense width; the shared width left out */
         snprintf(key, sizeof key, "%s.%s", arch, u32[i].key);
         mf_key(&o, key, TF_GGUF_UINT32);
         tf_u32(&o, u32[i].v);
