@@ -930,11 +930,11 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
      * every output over a threadgroup instead (#192). */
     const bool narrow_few = params->rows <= 8u && params->n_out < 1024u;
     const bool use_sg     = params->rows > 1u && sg_pipe != nullptr && !narrow_few;
-    const bool use_mm = use_sg && w->dtype == GEIST_DTYPE_F32 &&
-                        st->f32_matmul_mm_pipeline != nullptr && params->rows >= 8u &&
-                        (params->n_out % 64u) == 0u && (params->n_in % 32u) == 0u &&
-                        (params->x_offset % 8u) == 0u && (params->x_row_stride % 8u) == 0u &&
-                        (params->w_offset % 4u) == 0u;
+    const bool use_mm     = use_sg && w->dtype == GEIST_DTYPE_F32 &&
+                            st->f32_matmul_mm_pipeline != nullptr && params->rows >= 8u &&
+                            (params->n_out % 64u) == 0u && (params->n_in % 32u) == 0u &&
+                            (params->x_offset % 8u) == 0u && (params->x_row_stride % 8u) == 0u &&
+                            (params->w_offset % 4u) == 0u;
     metal_msg_send_set_pipeline(st,
                                 enc,
                                 use_mm   ? st->f32_matmul_mm_pipeline
@@ -4379,9 +4379,9 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
      * hazard tracking; scratch is reused per piece. DNF_DVB is dnf_state's
      * value-column block (the shader's DNF_DVB). */
     enum { DNF_CALL = 512u, DNF_DVB = 16u };
-    bool fast = args->seq > METAL_DN_DECODE_ROWS && args->conv_kernel == 4u && args->head_k % 32u == 0 &&
-                args->head_k <= 128u && args->head_v % 32u == 0 && args->head_v <= 256u &&
-                st->dnf_out_pipeline != nullptr;
+    bool fast = args->seq > METAL_DN_DECODE_ROWS && args->conv_kernel == 4u &&
+                args->head_k % 32u == 0 && args->head_k <= 128u && args->head_v % 32u == 0 &&
+                args->head_v <= 256u && st->dnf_out_pipeline != nullptr;
     if (fast) {
         const size_t lp = ((args->seq < DNF_CALL ? args->seq : DNF_CALL) + 63u) & ~(size_t) 63u;
         const size_t scr_bytes =
@@ -4460,7 +4460,7 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
         metal_msg_send_set_pipeline(st, enc, st->dn_dec_qk_pipeline);
         for (uint32_t r = 0; r < params.seq; r++) {
             struct metal_deltanet_params row = params;
-            row.seq = 1u;
+            row.seq                          = 1u;
             row.qkv_offset += r * (uint32_t) conv_dim;
             metal_msg_send_set_bytes(st, enc, &row, sizeof row, 10);
             metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gk);

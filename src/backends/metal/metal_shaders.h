@@ -2954,7 +2954,8 @@ static const char metal_dn_decode_rows_source[] =
          * x 1 slice of S in registers across the rows, so S is read and
          * written once instead of once per row; per row the same math, in
          * the same order, as dn_dec_v (dn_dec_qk has run for every row). */
-        "#ifndef FOR_UNROLL\n#define FOR_UNROLL(x) _Pragma(\"clang loop unroll(full)\") for(x)\n#endif\n"
+        "#ifndef FOR_UNROLL\n#define FOR_UNROLL(x) _Pragma(\"clang loop unroll(full)\") "
+        "for(x)\n#endif\n"
         "kernel void dn_dec_v_rows(device float*qkv[[buffer(0)]],device float*z[[buffer(1)]],"
         "device const float*beta[[buffer(2)]],device const float*alpha[[buffer(3)]],"
         "device const float*cw[[buffer(4)]],device const float*aw[[buffer(5)]],"
