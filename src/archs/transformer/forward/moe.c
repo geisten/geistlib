@@ -35,6 +35,7 @@
 #include <string.h>
 
 #include "../moe_gpu.h"
+#include "../moe_pool.h"
 #include "heap.h"
 #include "par.h"
 #include "profile.h"
@@ -277,6 +278,13 @@ static void moe_worker(void *ctx, size_t begin, size_t end) {
     }
 }
 
+/* A moe_pool task: the i-th cold expert (#161). */
+static void moe_pool_task(void *ctx, size_t i) {
+    struct moe_job *j = ctx;
+    if (!moe_expert(j, j->active[i]))
+        atomic_store_explicit(&j->failed, true, memory_order_relaxed);
+}
+
 enum moe_profile_stage {
     MOE_PROFILE_NORM = 0,
     MOE_PROFILE_ROUTER,
@@ -455,7 +463,10 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     atomic_store_explicit(&j->failed, false, memory_order_relaxed);
     const size_t tasks   = (j->n_hot > 0 && !launched) + j->n_active;
     const size_t threads = geist_par_max_threads();
-    geist_par_for(tasks < threads ? tasks : threads, moe_worker, j);
+    /* A decode step whose hot experts run on the GPU meanwhile: the cold
+     * ones on the pool's helpers, no wait on one that took none (#161). */
+    if (!(launched && seq == 1 && moe_pool_run(st->moe_gpu->pool, j->n_active, moe_pool_task, j)))
+        geist_par_for(tasks < threads ? tasks : threads, moe_worker, j);
     moe_gpu_task(j); /* a thread library that gave the caller no range */
     moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);
     if (j->gpu_status != GEIST_OK) {

@@ -574,7 +574,10 @@ struct transformer_moe_gpu {
     bool *grouped;
     /* The backend has submit and rows_weighted_sum for a decode step's hot
      * experts: one wait per layer (#161). */
-    bool             one_wait;
+    bool one_wait;
+    /* Owned: helper threads for a decode step's cold experts when one_wait
+     * (moe_pool.h, #161); nullptr: they run in a geist_par_for. */
+    struct moe_pool *pool;
     _Atomic uint64_t rows_gpu, rows_cpu; /* GEIST_VERBOSE at destroy */
     /* GEIST_VERBOSE at destroy: batches, and their ns packing (to the
      * copy), recording, waiting (buffer_map of the outputs), unpacking. */

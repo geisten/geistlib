@@ -45,4 +45,9 @@ void geist_par_for(size_t n, geist_par_fn fn, void *ctx);
  * n == 0 is ignored. */
 void geist_par_set_max_threads(size_t n);
 
+/* While `on`, every geist_par_for of the calling thread runs fn(ctx, 0, n)
+ * on that thread: for a thread of a pool of its own whose bodies call the
+ * kernels (the MoE cold experts, #161), so they never open a team. */
+void geist_par_set_inline(bool on);
+
 #endif /* GEIST_INTERNAL_PAR_H */
