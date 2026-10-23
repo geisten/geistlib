@@ -110,6 +110,8 @@ int main(int argc, char **argv) {
             fprintf(stderr, "prefill failed at %zu: %s\n", i, geist_backend_errmsg(be));
             return GEIST_TEST_ERROR;
         }
+        if (i < first)
+            continue; /* context only */
         const float *lg = geist_session_peek_logits(&nl, s);
         if (lg == nullptr || (size_t) ids[i + 1] >= nl) {
             fprintf(stderr, "no logits at %zu\n", i);
@@ -121,12 +123,14 @@ int main(int argc, char **argv) {
         double z = 0.0;
         for (size_t v = 0; v < nl; v++)
             z += exp((double) lg[v] - mx);
-        if (i < first)
-            continue;
         sum += mx + log(z) - (double) lg[ids[i + 1]];
         cnt++;
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
+    if (cnt == 0) {
+        fprintf(stderr, "no token scored: first %zu, %zu tokens\n", first, n);
+        return GEIST_TEST_ERROR;
+    }
     const double secs =
             (double) (t1.tv_sec - t0.tv_sec) + 1e-9 * (double) (t1.tv_nsec - t0.tv_nsec);
     printf("{\"tokens\":%zu,\"nll\":%.6f,\"ppl\":%.4f,\"tps\":%.2f}\n",
