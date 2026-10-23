@@ -18,6 +18,6 @@ for path in sys.argv[5:]:
         for e in rest[:k]:
             counts[layer][e] += 1
         tokens[layer] += 1
-    name = os.path.basename(path).removesuffix(".trace")
+    name = os.path.basename(path).removesuffix(".trace") + ".txt"  # analyze.py: <domain><n>.txt
     for layer in sorted(counts):
         print(f"USAGE {model} {sset} {name} {tokens[0]} {layer} {','.join(map(str, counts[layer]))}")
