@@ -28,7 +28,7 @@ jobs:
         run: |
           set -eo pipefail
           . scripts/gpu-lock.sh
-          for md in none decode prefill1; do
+          for md in none decode prefill1 prefill2 prefill4; do
             echo "===== $md"
             GEIST_VK_PROFILE=1 GEIST_PROFILE_PREFILL=1 GEIST_PROFILE_FORWARD=1 \
               ./prof1 "$MODEL_PATH" tools/exp192/p1.txt vulkan $md 48 2>&1
