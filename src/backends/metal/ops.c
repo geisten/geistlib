@@ -899,6 +899,21 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
     /* Multi-row (prefill): full-tile shapes take the 64x32 4-simdgroup GEMM
      * (mm_sg structure, f32 staging = bit-identical to the 8x8 kernel);
      * others the 8x8 simdgroup GEMM. Single-row keeps the reduction kernel. */
+    if (params->rows == 1u && w->dtype == GEIST_DTYPE_F32 &&
+        st->f32_matvec_rows_pipeline != nullptr &&
+        ((params->n_in | params->x_offset | params->w_offset) % 4u) == 0u) {
+        /* Decode: a simdgroup per output row (#196). */
+        metal_msg_send_set_pipeline(st, enc, st->f32_matvec_rows_pipeline);
+        metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+        metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+        metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
+        metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
+        const struct metal_size rgroups  = {(params->n_out + 3u) / 4u, 1, 1};
+        const struct metal_size rthreads = {128, 1, 1};
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_F32_MATMUL, rgroups);
+        metal_msg_send_dispatch(st, enc, rgroups, rthreads);
+        return;
+    }
     const bool use_sg = params->rows > 1u && sg_pipe != nullptr;
     const bool use_mm = use_sg && w->dtype == GEIST_DTYPE_F32 &&
                         st->f32_matmul_mm_pipeline != nullptr && params->rows >= 8u &&
@@ -3488,16 +3503,22 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
         return GEIST_E_BACKEND;
     }
     const struct metal_size threads256 = {256, 1, 1};
-    metal_msg_send_set_pipeline(st, enc, st->f32_ple_gate_pipeline);
+    /* A simdgroup per gate row (#196) where the rows are float4-aligned. */
+    const bool gate_sg =
+            st->f32_ple_gate_sg_pipeline != nullptr && ((d_in | x_off | gw_off) % 4u) == 0u;
+    metal_msg_send_set_pipeline(
+            st, enc, gate_sg ? st->f32_ple_gate_sg_pipeline : st->f32_ple_gate_pipeline);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, gate_w->buffer->buffer, gate_w->buffer->base_off, 1);
     metal_msg_send_set_buffer(st, enc, ple_in->buffer->buffer, ple_in->buffer->base_off, 2);
     metal_msg_send_set_buffer(
             st, enc, gate_scratch->buffer->buffer, gate_scratch->buffer->base_off, 3);
     metal_msg_send_set_bytes(st, enc, &gp, sizeof(gp), 4);
-    const struct metal_size ggroups = {(uint32_t) hpl, (uint32_t) rows, 1};
+    const struct metal_size ggroups = {
+            gate_sg ? ((uint32_t) hpl + 3u) / 4u : (uint32_t) hpl, (uint32_t) rows, 1};
+    const struct metal_size threads128 = {128, 1, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_F32_PLE_GATE, ggroups);
-    metal_msg_send_dispatch(st, enc, ggroups, threads256);
+    metal_msg_send_dispatch(st, enc, ggroups, gate_sg ? threads128 : threads256);
 
     s = metal_op_end(be, cmd, enc, nullptr);
     if (s != GEIST_OK) {
@@ -4451,6 +4472,285 @@ static const struct geist_backend_vtbl metal_vtbl = {
         .parallel_region_end   = metal_parallel_region_end,
 };
 
+/* ---- Mixture-of-experts decode on the device (#201) -------------------- */
+
+/* The shaders' parameter blocks (metal_moe_source). */
+struct metal_moe_route_params {
+    uint32_t n, k, norm, flag, ls, lo, io, wo;
+};
+struct metal_moe_ids_params {
+    uint32_t estride, per_slot, k, io;
+};
+struct metal_moe_sum_params {
+    uint32_t d, k, yo, wo, ao, oo;
+};
+
+/* An encoder for one op: the open sequence's, or a standalone command
+ * buffer the caller ends with metal_moe_end. */
+static void *metal_moe_begin(struct geist_backend *be, const char *what, void **cmd) {
+    struct metal_state *st = be->state;
+    *cmd                   = nullptr;
+    if (metal_seq_mine(st)) {
+        if (st->sequence_compute_encoder == nullptr) {
+            geist_backend_set_error(be, GEIST_E_BACKEND, "metal %s: sequence has no encoder", what);
+            return nullptr;
+        }
+        return metal_sequence_encoder(st);
+    }
+    return metal_standalone_begin(be, what, cmd);
+}
+
+[[nodiscard]] static enum geist_status
+metal_moe_end(struct geist_backend *be, void *cmd, void *enc, const char *what) {
+    struct metal_state *st = be->state;
+    if (cmd == nullptr) {
+        st->sequence_has_work = true;
+        return GEIST_OK;
+    }
+    return metal_standalone_end(be, cmd, enc, what);
+}
+
+[[nodiscard]] static enum geist_status metal_moe_route(struct geist_backend      *be,
+                                                       size_t                     m,
+                                                       size_t                     n,
+                                                       size_t                     k,
+                                                       bool                       norm,
+                                                       const struct geist_tensor *logits,
+                                                       struct geist_buffer       *ids,
+                                                       size_t                     ids_offset,
+                                                       size_t                     flag_offset,
+                                                       struct geist_tensor       *w) {
+    if (be == nullptr || be->state == nullptr || logits == nullptr || ids == nullptr ||
+        w == nullptr)
+        return GEIST_E_INVALID_ARG;
+    size_t lr = 0, lc = 0, lo = 0, ls = 0, wn = 0, wo = 0, nk = 0, need = 0;
+    if (!metal_tensor_is_f32_matrix(logits, &lr, &lc, &lo, &ls) ||
+        !metal_tensor_is_f32_vector(w, &wn, &wo) || m == 0 || k == 0 || k > n || lr < m || lc < n ||
+        ckd_mul(&nk, m, k) || wn < nk || ids->owner != be->state || ids_offset % 4u != 0u ||
+        flag_offset % 4u != 0u || ckd_mul(&need, nk, sizeof(uint32_t)) ||
+        ckd_add(&need, need, ids_offset) || need > ids->bytes ||
+        flag_offset > ids->bytes - sizeof(uint32_t) || ls > UINT32_MAX || lo > UINT32_MAX ||
+        wo > UINT32_MAX || n > UINT32_MAX || k > UINT32_MAX || m > UINT32_MAX)
+        return GEIST_E_INVALID_ARG;
+    enum geist_status s = metal_ensure_moe_pipeline(be);
+    if (s != GEIST_OK)
+        return s;
+    struct metal_state                                *st = be->state;
+    const struct metal_moe_route_params                q  = {.n    = (uint32_t) n,
+                                                             .k    = (uint32_t) k,
+                                                             .norm = norm ? 1u : 0u,
+                                                             .flag = (uint32_t) (flag_offset / 4u),
+                                                             .ls   = (uint32_t) ls,
+                                                             .lo   = (uint32_t) lo,
+                                                             .io   = (uint32_t) (ids_offset / 4u),
+                                                             .wo   = (uint32_t) wo};
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    void *cmd = nullptr, *enc = metal_moe_begin(be, "MoE route", &cmd);
+    if (enc == nullptr)
+        return GEIST_E_BACKEND;
+    metal_msg_send_set_pipeline(st, enc, st->moe_topk_pipeline);
+    metal_msg_send_set_buffer(st, enc, logits->buffer->buffer, logits->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, ids->buffer, ids->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 2);
+    metal_msg_send_set_bytes(st, enc, &q, sizeof q, 3);
+    metal_msg_send_dispatch(st,
+                            enc,
+                            (struct metal_size) {.width = m, .height = 1, .depth = 1},
+                            (struct metal_size) {.width = 32, .height = 1, .depth = 1});
+    return metal_moe_end(be, cmd, enc, "MoE route");
+}
+
+/* The id-indexed matvec for a dtype: its pipeline and the rows one
+ * threadgroup of 64 threads covers. */
+static bool metal_moe_ids_pipe(const struct metal_state *st,
+                               enum geist_dtype          dtype,
+                               void                    **pipe,
+                               uint32_t                 *rows_per_group,
+                               uint32_t                 *block) {
+    switch (dtype) {
+    case GEIST_DTYPE_Q4_K:
+        *pipe = st->moe_mv_q4k_pipeline, *rows_per_group = 4u, *block = 256u;
+        return true;
+    case GEIST_DTYPE_Q6_K:
+        *pipe = st->moe_mv_q6k_pipeline, *rows_per_group = 4u, *block = 256u;
+        return true;
+    case GEIST_DTYPE_Q8_0:
+        *pipe = st->moe_mv_q80_pipeline, *rows_per_group = 8u, *block = 32u;
+        return true;
+    case GEIST_DTYPE_F32:
+        *pipe = st->moe_mv_f32_pipeline, *rows_per_group = 2u, *block = 1u;
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* The experts tensor's byte offset, checked against its dtype's layout. */
+static bool metal_moe_experts_offset(const struct geist_tensor *t,
+                                     enum geist_dtype           dtype,
+                                     size_t                     rows,
+                                     size_t                     cols,
+                                     size_t                    *off_bytes) {
+    size_t r = 0, c = 0, o = 0, st = 0;
+    bool   ok = false;
+    switch (dtype) {
+    case GEIST_DTYPE_Q4_K:
+        ok = metal_tensor_is_q4k_matrix(t, &r, &c, &o);
+        break;
+    case GEIST_DTYPE_Q6_K:
+        ok = metal_tensor_is_q6k_matrix(t, &r, &c, &o);
+        break;
+    case GEIST_DTYPE_Q8_0:
+        ok = metal_tensor_is_q40_q80_matrix(t, dtype, &r, &c, &o);
+        break;
+    case GEIST_DTYPE_F32:
+        ok = metal_tensor_is_f32_matrix(t, &r, &c, &o, &st) && st == c;
+        o *= sizeof(float);
+        break;
+    default:
+        return false;
+    }
+    *off_bytes = o;
+    return ok && r == rows && c == cols;
+}
+
+[[nodiscard]] static enum geist_status metal_linear_t_ids(struct geist_backend      *be,
+                                                          size_t                     n,
+                                                          size_t                     m,
+                                                          size_t                     k,
+                                                          bool                       x_per_slot,
+                                                          const struct geist_weight *w0,
+                                                          const struct geist_tensor *experts,
+                                                          const struct geist_buffer *ids,
+                                                          size_t                     ids_offset,
+                                                          const struct geist_tensor *x,
+                                                          struct geist_tensor       *y) {
+    if (be == nullptr || be->state == nullptr || w0 == nullptr || experts == nullptr ||
+        ids == nullptr || x == nullptr || y == nullptr)
+        return GEIST_E_INVALID_ARG;
+    struct metal_state    *st    = be->state;
+    const enum geist_dtype dtype = (enum geist_dtype) w0->dtype;
+    enum geist_status      s     = metal_ensure_moe_pipeline(be);
+    if (s != GEIST_OK)
+        return s;
+    void    *pipe = nullptr;
+    uint32_t rpg = 0, block = 0;
+    if (!metal_moe_ids_pipe(st, dtype, &pipe, &rpg, &block) || pipe == nullptr)
+        return GEIST_E_UNSUPPORTED;
+    const size_t ni = (size_t) w0->n_in, no = (size_t) w0->n_out;
+    size_t xr = 0, xc = 0, xo = 0, xs = 0, yr = 0, yc = 0, yo = 0, ys = 0, nk = 0, rows = 0, wo = 0,
+           need = 0;
+    if (ckd_mul(&nk, m, k) || ckd_mul(&rows, n, no) ||
+        !metal_tensor_is_f32_matrix(x, &xr, &xc, &xo, &xs) ||
+        !metal_tensor_is_f32_matrix(y, &yr, &yc, &yo, &ys) || xr < (x_per_slot ? nk : m) ||
+        xc != ni || yr < nk || yc != no || ni % block != 0u ||
+        !metal_moe_experts_offset(experts, dtype, rows, ni, &wo) || ids->owner != be->state ||
+        ids_offset % 4u != 0u || ckd_mul(&need, nk, sizeof(uint32_t)) ||
+        ckd_add(&need, need, ids_offset) || need > ids->bytes || w0->raw_nbytes > UINT32_MAX ||
+        ni > UINT32_MAX || no > UINT32_MAX || xo > UINT32_MAX || yo > UINT32_MAX ||
+        wo > UINT32_MAX || xs > UINT32_MAX || ys > UINT32_MAX || nk > UINT32_MAX || k == 0)
+        return GEIST_E_INVALID_ARG;
+    const struct metal_q4k_params p = {
+            .n_in           = (uint32_t) ni,
+            .n_out          = (uint32_t) no,
+            .rows           = 1,
+            .blocks_per_row = (uint32_t) (ni / block),
+            .x_offset       = (uint32_t) xo,
+            .w_byte_offset  = (uint32_t) wo,
+            .y_offset       = (uint32_t) yo,
+            .x_row_stride   = (uint32_t) xs,
+            .y_row_stride   = (uint32_t) ys,
+    };
+    const struct metal_moe_ids_params                  q    = {.estride  = (uint32_t) w0->raw_nbytes,
+                                                               .per_slot = x_per_slot ? 1u : 0u,
+                                                               .k        = (uint32_t) k,
+                                                               .io = (uint32_t) (ids_offset / 4u)};
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    void *cmd = nullptr, *enc = metal_moe_begin(be, "MoE expert matvec", &cmd);
+    if (enc == nullptr)
+        return GEIST_E_BACKEND;
+    metal_msg_send_set_pipeline(st, enc, pipe);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, experts->buffer->buffer, experts->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
+    metal_msg_send_set_bytes(st, enc, &p, sizeof p, 3);
+    metal_msg_send_set_buffer(st, enc, ids->buffer, ids->base_off, 4);
+    metal_msg_send_set_bytes(st, enc, &q, sizeof q, 5);
+    metal_msg_send_dispatch(
+            st,
+            enc,
+            (struct metal_size) {.width = (no + rpg - 1u) / rpg, .height = nk, .depth = 1},
+            (struct metal_size) {.width = METAL_Q4K_N4_THREADS, .height = 1, .depth = 1});
+    return metal_moe_end(be, cmd, enc, "MoE expert matvec");
+}
+
+[[nodiscard]] static enum geist_status metal_moe_weighted_sum(struct geist_backend      *be,
+                                                              size_t                     m,
+                                                              size_t                     k,
+                                                              size_t                     d,
+                                                              const struct geist_tensor *w,
+                                                              const struct geist_tensor *y,
+                                                              const struct geist_tensor *add,
+                                                              struct geist_tensor       *out) {
+    if (be == nullptr || be->state == nullptr || w == nullptr || y == nullptr || add == nullptr ||
+        out == nullptr)
+        return GEIST_E_INVALID_ARG;
+    size_t wn = 0, wo = 0, yr = 0, yc = 0, yo = 0, ys = 0, ar = 0, ac = 0, ao = 0, as = 0, orr = 0,
+           oc = 0, oo = 0, os = 0, nk = 0;
+    if (ckd_mul(&nk, m, k) || !metal_tensor_is_f32_vector(w, &wn, &wo) ||
+        !metal_tensor_is_f32_matrix(y, &yr, &yc, &yo, &ys) ||
+        !metal_tensor_is_f32_matrix(add, &ar, &ac, &ao, &as) ||
+        !metal_tensor_is_f32_matrix(out, &orr, &oc, &oo, &os) || wn < nk || yr < nk || yc != d ||
+        ys != d || ar < m || ac != d || as != d || orr < m || oc != d || os != d || m == 0 ||
+        d > UINT32_MAX || k > UINT32_MAX || yo > UINT32_MAX || wo > UINT32_MAX || ao > UINT32_MAX ||
+        oo > UINT32_MAX)
+        return GEIST_E_INVALID_ARG;
+    enum geist_status s = metal_ensure_moe_pipeline(be);
+    if (s != GEIST_OK)
+        return s;
+    struct metal_state                                *st   = be->state;
+    const struct metal_moe_sum_params                  q    = {.d  = (uint32_t) d,
+                                                               .k  = (uint32_t) k,
+                                                               .yo = (uint32_t) yo,
+                                                               .wo = (uint32_t) wo,
+                                                               .ao = (uint32_t) ao,
+                                                               .oo = (uint32_t) oo};
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    void *cmd = nullptr, *enc = metal_moe_begin(be, "MoE weighted sum", &cmd);
+    if (enc == nullptr)
+        return GEIST_E_BACKEND;
+    metal_msg_send_set_pipeline(st, enc, st->moe_wsum_pipeline);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, add->buffer->buffer, add->buffer->base_off, 2);
+    metal_msg_send_set_buffer(st, enc, out->buffer->buffer, out->buffer->base_off, 3);
+    metal_msg_send_set_bytes(st, enc, &q, sizeof q, 4);
+    metal_msg_send_dispatch(
+            st,
+            enc,
+            (struct metal_size) {.width = (d + 255u) / 256u, .height = m, .depth = 1},
+            (struct metal_size) {.width = 256, .height = 1, .depth = 1});
+    return metal_moe_end(be, cmd, enc, "MoE weighted sum");
+}
+
+/* GEIST_FUSED_MOE_DEVICE: the three experts' dtypes have an id-indexed
+ * matvec and their widths its block. */
+static bool metal_moe_device_supported(struct geist_backend            *be,
+                                       const struct geist_fusion_query *q) {
+    if (q->m != 1 || q->gate_w == nullptr || q->up_w == nullptr || q->down_w == nullptr ||
+        metal_ensure_moe_pipeline(be) != GEIST_OK)
+        return false;
+    const struct geist_weight *ws[] = {q->gate_w, q->up_w, q->down_w};
+    for (size_t i = 0; i < 3; i++) {
+        void    *pipe = nullptr;
+        uint32_t rpg = 0, block = 0;
+        if (!metal_moe_ids_pipe(be->state, (enum geist_dtype) ws[i]->dtype, &pipe, &rpg, &block) ||
+            pipe == nullptr || (size_t) ws[i]->n_in % block != 0u)
+            return false;
+    }
+    return true;
+}
+
 /* Probe pairing for the fused table below. gate_up (GeGLU and SwiGLU)
  * mirrors metal_gate_up's entry checks (decode-only matvec kernel); the
  * elementwise GEGLU epilogue works for any F32 row block. */
@@ -4483,6 +4783,8 @@ static bool metal_fused_supported(struct geist_backend *be, const struct geist_f
                         : (silu ? st->q80_gate_up_silu_n4_pipeline
                                 : st->q80_gate_up_n4_pipeline)) != nullptr;
     }
+    case GEIST_FUSED_MOE_DEVICE:
+        return metal_moe_device_supported(be, q);
     case GEIST_FUSED_RMSNORM_ADD:
     case GEIST_FUSED_RMSNORM_ADD_NORM:
     case GEIST_FUSED_ARGMAX_F32:
@@ -4566,6 +4868,9 @@ static const struct geist_backend_fused metal_fused = {
         .sigmoid_mul                  = metal_sigmoid_mul,
         .hadamard_rotate              = metal_hadamard_rotate,
         .rmsnorm_add_norm             = metal_rmsnorm_add_norm,
+        .moe_route                    = metal_moe_route,
+        .linear_t_ids                 = metal_linear_t_ids,
+        .moe_weighted_sum             = metal_moe_weighted_sum,
 };
 
 /* The immutable device belongs to this live backend. This getter intentionally

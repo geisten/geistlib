@@ -321,6 +321,10 @@ static int check_on_gpu(const char *gpu, size_t hot, const float ref[static VOCA
         fails += geist_expect(hot == 0 || (mg != nullptr && mg->n_hot == hot && mg->rows_gpu > 0),
                               "the hot experts are placed and run");
         fails += geist_expect(c1 >= 0.999 && c2 >= 0.999, "the logits match cpu_scalar's");
+        /* #201: with every expert on a GPU that routes, decode never leaves it. */
+        if (mg != nullptr && mg->any_device)
+            fails += geist_expect(hot == 16 && mg->n_device > 0,
+                                  "the token-by-token run routed on the device");
     }
     unsetenv("GEIST_MOE_HOT");
     geist_session_destroy(s);

@@ -1,0 +1,72 @@
+{
+ "determinism_check_finished_at_cap2048": [
+  {
+   "question_id": "d7494581ed37c2283b05238849cec6056635c55f76fde0ef9e5eb6305777f207",
+   "identical_ids": true,
+   "identical_bytes": true,
+   "tokens": 109
+  },
+  {
+   "question_id": "8ad211249f93a55442b20c35aa64d3ed5f911fb7e2aa75acb4bedd3172b3e13c",
+   "identical_ids": true,
+   "identical_bytes": true,
+   "tokens": 62
+  },
+  {
+   "question_id": "5b2d7289218f66e3e35427f6146774144b37fdd4510e7132749f50674dbf1683",
+   "identical_ids": true,
+   "identical_bytes": true,
+   "tokens": 89
+  }
+ ],
+ "rerun_questions": 164,
+ "rerun_reasoning_accuracy": 0.4146341463414634,
+ "rerun_direct_accuracy": 0.5121951219512195,
+ "rerun_still_capped_at_2048": 87,
+ "rerun_invalid": 87,
+ "rerun_tokens": {
+  "min": 514,
+  "mean": 1540.9146341463415,
+  "max": 2048
+ },
+ "reasoning_accuracy_cap512": 0.654,
+ "reasoning_accuracy_cap2048": 0.79,
+ "direct_accuracy": 0.678,
+ "paired_cap512": {
+  "gains": 85,
+  "losses": 73,
+  "difference_pp": 2.4,
+  "interval_pp": [
+   -5.11019025792383,
+   9.872592293143267
+  ],
+  "noninferior": false
+ },
+ "paired_cap2048": {
+  "gains": 46,
+  "losses": 102,
+  "difference_pp": -11.2,
+  "interval_pp": [
+   -18.23786011676924,
+   -3.9848850026150684
+  ],
+  "noninferior": false
+ },
+ "latency_reasoning_cap2048_all500_s": {
+  "p50": 18.425487,
+  "p95": 146.40728484999985,
+  "mean": 47.787568156000006
+ },
+ "latency_reasoning_cap2048_rerun_s": {
+  "p50": 121.52426500000001,
+  "p95": 225.94764279999993
+ },
+ "latency_reasoning_cap512_all500_s": {
+  "p50": 18.425487,
+  "p95": 43.78968054999999
+ },
+ "selected_dense_sum_s": 2725.274278,
+ "time_ratio_reasoning2048_over_selected": 8.767478661096439,
+ "time_ratio_reasoning512_over_selected": 4.056782266742548,
+ "note_direction": "difference = direct - reasoning; negative means reasoning is better"
+}

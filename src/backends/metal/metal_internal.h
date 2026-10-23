@@ -306,6 +306,7 @@ struct metal_state {
     void *mv3_q80_q80_q80_pipeline;
     void *embed_library;
     void *argmax_library;
+    void *moe_library; /* #201: routing and id-indexed expert matvecs */
     void *hadamard_library;
     void *hadamard_function;
     void *hadamard_pipeline;
@@ -394,12 +395,28 @@ struct metal_state {
     void    *f32_matmul_mm_pipeline;
     void    *f32_ple_gate_function;
     void    *f32_ple_gate_pipeline;
+    void    *f32_ple_gate_sg_function; /* decode, a simdgroup per row (#196) */
+    void    *f32_ple_gate_sg_pipeline;
+    void    *f32_matvec_rows_function;
+    void    *f32_matvec_rows_pipeline;
     void    *f32_ple_proj_norm_function;
     void    *f32_ple_proj_norm_pipeline;
     void    *argmax_function;
     void    *argmax_pipeline;
     void    *argmax_batch_function;
     void    *argmax_batch_pipeline;
+    void    *moe_topk_function;
+    void    *moe_topk_pipeline;
+    void    *moe_mv_q4k_function;
+    void    *moe_mv_q4k_pipeline;
+    void    *moe_mv_q6k_function;
+    void    *moe_mv_q6k_pipeline;
+    void    *moe_mv_q80_function;
+    void    *moe_mv_q80_pipeline;
+    void    *moe_mv_f32_function;
+    void    *moe_mv_f32_pipeline;
+    void    *moe_wsum_function;
+    void    *moe_wsum_pipeline;
     void    *argmax_result_buffer;
     void    *argmax_result_mapped;
     uint32_t argmax_result_capacity;
@@ -1040,6 +1057,7 @@ bool metal_tensor_is_f16_3d(const struct geist_tensor *t,
 [[nodiscard]] enum geist_status metal_ensure_attention_pipeline(struct geist_backend *be);
 
 [[nodiscard]] enum geist_status metal_ensure_argmax_pipeline(struct geist_backend *be);
+[[nodiscard]] enum geist_status metal_ensure_moe_pipeline(struct geist_backend *be);
 [[nodiscard]] enum geist_status metal_ensure_hadamard_pipeline(struct geist_backend *be);
 
 [[nodiscard]] enum geist_status metal_ensure_deltanet_pipeline(struct geist_backend *be);

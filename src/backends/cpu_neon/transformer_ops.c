@@ -1049,6 +1049,222 @@ enum geist_status cpu_neon_kv_append_f16(struct geist_backend      *be,
     return GEIST_OK;
 }
 
+/* fused->attn_qkv_prep (Gemma 4) and attn_rope_append (Llama, Qwen3), the
+ * attention prep after the q/k/v projections (#195): per token, the q
+ * heads' rmsnorm (when a weight is given), RoPE and q_scale, and with k the
+ * k heads' rmsnorm, the v heads' rmsnorm (Gemma 4's v_norm_w, ones), the k
+ * heads' RoPE and both rows appended to the caches. Every row goes through
+ * the rmsnorm_fp32, rope_apply, scale multiply and kv_rows_to_f16 the
+ * separate prims and the arch run (an F32 cache takes a memcpy, as the
+ * arch's mapped append does), so the bytes match the decomposed ops; the
+ * tokens are split across threads from QKV_PREP_PAR_ROWS on, where these
+ * passes ran on the main thread (Gemma 4 E2B: 64 tokens x 8 q heads x 256
+ * per prefill chunk). */
+enum { QKV_PREP_PAR_ROWS = 8 };
+
+struct qkv_prep_job {
+    float       *q, *k, *v;
+    const float *qw, *kw, *vw, *cos, *sin;
+    float       *kc32, *vc32;
+    uint16_t    *kc16, *vc16;
+    size_t       n_q_heads, n_kv_heads, hd, n_rot, q_position;
+    float        eps, q_scale;
+};
+
+static void qkv_prep_rows(void *ctx, size_t t0, size_t t1) {
+    const struct qkv_prep_job *j  = ctx;
+    const size_t               qr = j->n_q_heads * j->hd;
+    const size_t               kr = j->n_kv_heads * j->hd;
+    for (size_t t = t0; t < t1; t++) {
+        const float *cos_t = j->cos + t * j->n_rot;
+        const float *sin_t = j->sin + t * j->n_rot;
+        float       *qt    = j->q + t * qr;
+        if (j->qw != nullptr) {
+            rmsnorm_fp32(j->n_q_heads, j->hd, qt, j->qw, j->eps, qt);
+        }
+        rope_apply(1, j->n_q_heads, j->hd, j->n_rot, qt, cos_t, sin_t);
+        if (j->q_scale != 1.0f) {
+            for (size_t i = 0; i < qr; i++) {
+                qt[i] *= j->q_scale;
+            }
+        }
+        if (j->k == nullptr) {
+            continue;
+        }
+        float       *kt  = j->k + t * kr;
+        const float *vt  = j->v + t * kr;
+        const size_t row = (j->q_position + t) * kr;
+        if (j->kw != nullptr) {
+            rmsnorm_fp32(j->n_kv_heads, j->hd, kt, j->kw, j->eps, kt);
+        }
+        if (j->vw != nullptr) {
+            rmsnorm_fp32(j->n_kv_heads, j->hd, vt, j->vw, j->eps, j->v + t * kr);
+        }
+        rope_apply(1, j->n_kv_heads, j->hd, j->n_rot, kt, cos_t, sin_t);
+        if (j->kc16 != nullptr) {
+            kv_rows_to_f16(kr, kt, j->kc16 + row);
+            kv_rows_to_f16(kr, vt, j->vc16 + row);
+        } else {
+            memcpy(j->kc32 + row, kt, kr * sizeof(float));
+            memcpy(j->vc32 + row, vt, kr * sizeof(float));
+        }
+    }
+}
+
+/* Validates the views into *job and runs it. k, v and the caches are all
+ * nullptr (q only: a KV-shared layer) or all present; the norm weights are
+ * nullptr or [hd]. */
+static enum geist_status qkv_prep_run(struct geist_backend      *be,
+                                      const char                *op,
+                                      struct geist_tensor       *q,
+                                      struct geist_tensor       *k,
+                                      const struct geist_tensor *v,
+                                      const struct geist_tensor *q_norm_w,
+                                      const struct geist_tensor *k_norm_w,
+                                      const struct geist_tensor *v_norm_w,
+                                      const struct geist_tensor *cos,
+                                      const struct geist_tensor *sin,
+                                      float                      eps,
+                                      float                      q_scale,
+                                      size_t                     q_position,
+                                      struct geist_tensor       *k_cache,
+                                      struct geist_tensor       *v_cache) {
+    size_t       nq = 0, nqw = 0, nkw = 0, nvw = 0, nc = 0, ns = 0;
+    float       *qp   = geist_host_tensor_f32(q, &nq);
+    const float *qwp  = q_norm_w != nullptr ? geist_host_tensor_f32(q_norm_w, &nqw) : nullptr;
+    const float *kwp  = k_norm_w != nullptr ? geist_host_tensor_f32(k_norm_w, &nkw) : nullptr;
+    const float *vwp  = v_norm_w != nullptr ? geist_host_tensor_f32(v_norm_w, &nvw) : nullptr;
+    const float *cosp = geist_host_tensor_f32(cos, &nc);
+    const float *sinp = geist_host_tensor_f32(sin, &ns);
+    if (qp == nullptr || cosp == nullptr || sinp == nullptr || q->ndim != 3 || cos->ndim != 2 ||
+        sin->ndim != 2 || (q_norm_w != nullptr && qwp == nullptr) ||
+        (k_norm_w != nullptr && kwp == nullptr) || (v_norm_w != nullptr && vwp == nullptr)) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon %s: bad q views", op);
+        return GEIST_E_INVALID_ARG;
+    }
+    const size_t seq = (size_t) q->shape[0], n_q_heads = (size_t) q->shape[1];
+    const size_t hd = (size_t) q->shape[2], n_rot = (size_t) cos->shape[1];
+    if ((qwp != nullptr && nqw != hd) || (kwp != nullptr && nkw != hd) ||
+        (vwp != nullptr && nvw != hd) || cos->shape[0] != (int64_t) seq ||
+        sin->shape[0] != (int64_t) seq || sin->shape[1] != (int64_t) n_rot ||
+        !rope_apply_shape_ok(seq, hd, n_rot, nc, ns)) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon %s: bad shapes", op);
+        return GEIST_E_INVALID_ARG;
+    }
+    struct qkv_prep_job job = {.q          = qp,
+                               .qw         = qwp,
+                               .kw         = kwp,
+                               .vw         = vwp,
+                               .cos        = cosp,
+                               .sin        = sinp,
+                               .n_q_heads  = n_q_heads,
+                               .hd         = hd,
+                               .n_rot      = n_rot,
+                               .q_position = q_position,
+                               .eps        = eps,
+                               .q_scale    = q_scale};
+    if (k != nullptr || v != nullptr || k_cache != nullptr || v_cache != nullptr) {
+        size_t nk = 0, nv = 0, nkc = 0, nvc = 0;
+        job.k = k != nullptr ? geist_host_tensor_f32(k, &nk) : nullptr;
+        job.v = v != nullptr ? geist_host_tensor_f32(v, &nv) : nullptr;
+        if (k_cache != nullptr && k_cache->dtype == GEIST_DTYPE_F16) {
+            job.kc16 = geist_host_tensor_f16_3d(k_cache, &nkc);
+            job.vc16 = v_cache != nullptr ? geist_host_tensor_f16_3d(v_cache, &nvc) : nullptr;
+        } else {
+            job.kc32 = k_cache != nullptr ? geist_host_tensor_f32(k_cache, &nkc) : nullptr;
+            job.vc32 = v_cache != nullptr ? geist_host_tensor_f32(v_cache, &nvc) : nullptr;
+        }
+        const bool caches = (job.kc16 != nullptr && job.vc16 != nullptr) ||
+                            (job.kc32 != nullptr && job.vc32 != nullptr);
+        /* The new rows land at row q_position of the caches, whose views
+         * end with them (kv_append_f16's check). */
+        if (job.k == nullptr || job.v == nullptr || !caches || k->ndim != 3 || v->ndim != 3 ||
+            k_cache->ndim != 3 || v_cache->ndim != 3 || k->shape[0] != (int64_t) seq ||
+            k->shape[2] != (int64_t) hd || nv != nk || nkc != nvc || nk > nkc ||
+            k_cache->shape[1] != k->shape[1] || k_cache->shape[2] != (int64_t) hd ||
+            q_position * (size_t) k_cache->shape[1] * hd != nkc - nk) {
+            geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon %s: bad k/v views", op);
+            return GEIST_E_INVALID_ARG;
+        }
+        job.n_kv_heads = (size_t) k->shape[1];
+    }
+    if (seq < QKV_PREP_PAR_ROWS) {
+        qkv_prep_rows(&job, 0, seq);
+    } else {
+        geist_par_for(seq, qkv_prep_rows, &job);
+    }
+    return GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status cpu_neon_attn_qkv_prep(struct geist_backend      *be,
+                                                       struct geist_tensor       *q,
+                                                       struct geist_tensor       *k,
+                                                       struct geist_tensor       *v,
+                                                       const struct geist_tensor *q_norm_w,
+                                                       const struct geist_tensor *k_norm_w,
+                                                       const struct geist_tensor *v_norm_w,
+                                                       const struct geist_tensor *cos,
+                                                       const struct geist_tensor *sin,
+                                                       float                      eps,
+                                                       size_t                     q_position,
+                                                       struct geist_tensor       *k_cache,
+                                                       struct geist_tensor       *v_cache) {
+    /* Gemma 4: every norm present (k's and v's with k). */
+    if (q_norm_w == nullptr || (k != nullptr && (k_norm_w == nullptr || v_norm_w == nullptr))) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon attn_qkv_prep: null norm");
+        return GEIST_E_INVALID_ARG;
+    }
+    return qkv_prep_run(be,
+                        "attn_qkv_prep",
+                        q,
+                        k,
+                        v,
+                        q_norm_w,
+                        k != nullptr ? k_norm_w : nullptr,
+                        k != nullptr ? v_norm_w : nullptr,
+                        cos,
+                        sin,
+                        eps,
+                        1.0f,
+                        q_position,
+                        k_cache,
+                        v_cache);
+}
+
+[[nodiscard]] enum geist_status cpu_neon_attn_rope_append(struct geist_backend      *be,
+                                                          struct geist_tensor       *q,
+                                                          struct geist_tensor       *k,
+                                                          const struct geist_tensor *v,
+                                                          const struct geist_tensor *q_norm_w,
+                                                          const struct geist_tensor *k_norm_w,
+                                                          const struct geist_tensor *cos,
+                                                          const struct geist_tensor *sin,
+                                                          float                      eps,
+                                                          float                      q_scale,
+                                                          size_t                     q_position,
+                                                          struct geist_tensor       *k_cache,
+                                                          struct geist_tensor       *v_cache) {
+    if (k == nullptr || v == nullptr || k_cache == nullptr || v_cache == nullptr) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon attn_rope_append: null k/v");
+        return GEIST_E_INVALID_ARG;
+    }
+    return qkv_prep_run(be,
+                        "attn_rope_append",
+                        q,
+                        k,
+                        v,
+                        q_norm_w,
+                        k_norm_w,
+                        nullptr,
+                        cos,
+                        sin,
+                        eps,
+                        q_scale,
+                        q_position,
+                        k_cache,
+                        v_cache);
+}
+
 [[nodiscard]] enum geist_status cpu_neon_attention(struct geist_backend      *be,
                                                    const struct geist_tensor *q,
                                                    const struct geist_tensor *k,

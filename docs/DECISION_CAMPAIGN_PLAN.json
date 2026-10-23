@@ -241,6 +241,73 @@
     "paid_compute_jobs": 0,
     "training_issue_588_still_gated": true
   },
+  "two_stage_policy_204": {
+    "tracking_issue": "geistlib#204 (Gitea); follow-up of #171, prerequisite for #26",
+    "declared_date": "2026-10-23",
+    "declared_before_test_policy_evaluation": true,
+    "new_inference": "none; reuses the #171 data (calibration run-calibration250b decision_dense; test run-test2 core arms; run-cap2048 reasoning re-run)",
+    "known_at_declaration": "Only the aggregate #171 results published in #171 and PRs #193/#203: direct 67.8 %, reasoning 65.4 % (cap 512) / 79.0 % (cap 2048, 87 still capped), reasoning 97.3 % where it finished under 512 tokens, direct 75.9 % on those and 51.2 % on the capped 164, test ECE 0.037 after T. The joint distribution of test-set direct confidence and either arm's correctness had not been computed or inspected. The thresholds below use calibration data only.",
+    "policy": "Two-stage: always run chat_direct decision_selected (bit-identical to decision_dense). Let c = max option probability after temperature scaling with the #171 calibration fit (T = 1.05460455763381, binding of binary bf8fa083...). If c >= threshold, answer with the direct argmax; otherwise run chat_reasoning generate_long at cap 2048 and answer with its parsed letter (capped or unparseable counts as wrong, as in #171). Ties (c exactly at the threshold) answer directly.",
+    "primary": {
+      "rule": "Target direct-answer precision 0.95 on the calibration split: threshold = the smallest calibration confidence t such that, for every calibration confidence t' >= t whose accepted set {c >= t'} holds at least 25 questions (10 % of calibration), the calibration precision of that accepted set is >= 0.95.",
+      "why_0_95": "Reasoning that finishes is about 97 % accurate (#171), so direct answers at about 95 % precision should cost well under 2 pp in total when they cover a minority of questions. Chosen from the published #171 aggregates, not from test-set confidences.",
+      "threshold": 0.7809245027423954,
+      "calibration_accepted": 68,
+      "calibration_coverage_direct": 0.272,
+      "calibration_precision": 0.9558823529411765
+    },
+    "secondary_fixed_coverage": {
+      "rule": "Route the least-confident fraction q of the calibration split to reasoning: threshold = sorted calibration confidences [round(q * 250)] (0-based, ascending); questions with c >= threshold answer directly. Reported with the same statistics as the primary but secondary: the decision rests on the primary only.",
+      "route_30": {
+        "threshold": 0.5323887764429013,
+        "calibration_accepted": 175,
+        "calibration_precision": 0.7942857142857143
+      },
+      "route_50": {
+        "threshold": 0.6513619268452298,
+        "calibration_accepted": 125,
+        "calibration_precision": 0.88
+      },
+      "route_70": {
+        "threshold": 0.7648094423984428,
+        "calibration_accepted": 75,
+        "calibration_precision": 0.92
+      }
+    },
+    "threshold_script": "benchmark/results/raw/decision-two-stage-2026-10-23/thresholds_204.py (calibration data only)",
+    "reference": "always-reasoning at cap 2048 on the same 500 test questions (cap-512 outputs for the 336 finished, re-run outputs for the 164 capped; equivalent by #171 amendment 3)",
+    "comparison": "paired policy-minus-reasoning accuracy with metrics.paired_quality (exact Clopper-Pearson for gains and losses, Bonferroni, conservative joint 95 % interval), margin 2 pp. Routed questions are concordant by construction.",
+    "capped_handling": {
+      "as_measured": "the 87 answers still capped at 2048 count as wrong in both the policy (when routed) and the reference; this is the reported primary figure.",
+      "pessimistic_bound": "additionally recompute with every still-capped reasoning answer counted as correct in both arms (a completed reasoning answer that is always right). This can only help the reference where the policy answered directly; non-inferiority is called established only if the lower bound is >= -2 pp in both the as-measured and the pessimistic computation."
+    },
+    "cost_accounting": "Per question: 1 direct call always, plus 1 reasoning call when routed. Tokens: direct prompt tokens, plus reasoning prompt tokens and generated tokens when routed (no prefix or KV reuse between the two calls is assumed). Time: the measured selected-row call time plus the measured reasoning time (cap 2048) when routed; report sum, mean, p50, p95 and the ratio to always-reasoning. Sustained-load Metal figures as in #171.",
+    "exploratory": "An accuracy/cost curve over a range of routed fractions computed on the test set is descriptive only and must not be used to choose the policy.",
+    "decision_grade_if": "The primary threshold is fixed from calibration data before any test-set evaluation, so the test estimate for it is unbiased. Calibration-split reasoning outputs would only be needed to pick a different threshold by a rule that depends on reasoning accuracy (e.g. the cheapest threshold whose estimated loss is under the margin).",
+    "status": "evaluated",
+    "result": {
+      "writeup": "benchmark/results/DECISION_TWO_STAGE_2026-10-23.md",
+      "json": "benchmark/results/DECISION_TWO_STAGE_2026-10-23.json",
+      "primary_accuracy": 0.788,
+      "reference_accuracy_cap2048": 0.79,
+      "routed_fraction": 0.686,
+      "difference_pp": -0.2,
+      "interval_pp": [
+        -2.36,
+        1.97
+      ],
+      "interval_pessimistic_pp": [
+        -3.1,
+        0.38
+      ],
+      "noninferiority_established": false,
+      "time_vs_always_reasoning": 0.968,
+      "tokens_vs_always_reasoning": 1.32,
+      "model_calls_per_question": 1.686,
+      "calibration_reasoning_needed": false,
+      "conclusion": "Reasoning-level accuracy (margin narrowly not established) at 97 % of reasoning's time; the confident questions are the ones reasoning answers cheaply. #26 should not build on this policy."
+    }
+  },
   "held_out_campaign_171": {
     "tracking_issue": "geistlib#171 (Gitea; GitHub #587)",
     "user_confirmed_date": "2026-10-22",
@@ -298,7 +365,7 @@
         "reason": "A third of the cap-512 reasoning answers hit the cap; where reasoning finished it was 97.3 % accurate, so the cap-512 baseline is not a fair quality reference."
       }
     ],
-    "status": "completed_500_question_heldout_sample",
+    "status": "completed_500_question_heldout_sample_with_cap2048_reasoning",
     "result": {
       "writeup": "benchmark/results/DECISION_MMLU_HELDOUT_2026-10-23.md",
       "json": "benchmark/results/DECISION_MMLU_HELDOUT_2026-10-23.json",
@@ -320,7 +387,25 @@
       "selected_equals_dense_bit_exact": "500/500",
       "determinism_spotcheck": "20/20 per arm identical",
       "reasoning_accuracy_where_finished": 0.973,
-      "direct_accuracy_where_reasoning_finished": 0.759
+      "direct_accuracy_where_reasoning_finished": 0.759,
+      "cap2048": {
+        "reasoning_accuracy": 0.79,
+        "rerun_164_accuracy": 0.4146341463414634,
+        "still_capped_at_2048": 87,
+        "difference_pp": -11.2,
+        "interval_pp": [
+          -18.24,
+          -3.98
+        ],
+        "noninferiority_established": false,
+        "direct_inferior_beyond_margin": true,
+        "determinism_check": "3/3 finished questions byte-identical at cap 2048",
+        "reasoning_latency_p50_p95_s": [
+          18.43,
+          146.41
+        ],
+        "time_ratio_reasoning_over_selected": 8.77
+      }
     }
   }
 }
