@@ -497,6 +497,39 @@ experts get ~8 rows each and run one by one (~450 dispatches per layer);
 a grouped GEMM is the next step. Raw data:
 `benchmark/results/raw/moe-phase3-2026-10-21/`.
 
+**Strata itself on the same box (#167).** `strata-compare.yml`: Strata
+built from source (`5c8dd322`, CUDA, its own setup), llama.cpp's
+llama-server (CUDA and Vulkan) and geistlib on one model Strata runs,
+Qwen3.6-35B-A3B UD-Q4_K_XL (the file Strata pins), the same chat request
+of 2,726 prompt tokens of this file, 128 greedy tokens, rounds alternating
+the engine order, the servers' own timings. geistlib in GPU mode with the
+expert profile from its own router trace (run 1830, 79.2 % cover of the
+profile corpus, `tools/moe_usage/trace_usage.py`). Medians of 3 rounds per
+run:
+
+| | prefill tok/s | decode tok/s | runs |
+|:--|--:|--:|:--|
+| Strata, MTP off (`--mtp 0`) | 605 | 62.0 / 62.2 | 1839, 1842 |
+| Strata, its MTP draft (`--mtp 2`) | 589 | 62.2 | 1842 |
+| llama.cpp CUDA `--n-cpu-moe 26` (24 does not fit) | 470 | 67.8 | 1839 |
+| llama.cpp CUDA `--n-cpu-moe 28` | 444 | 66.1 | 1839 |
+| llama.cpp CUDA `--n-cpu-moe 40` (every expert on the CPU) | 332 | 56.2 | 1843 |
+| llama.cpp Vulkan `--n-cpu-moe 24` | 364 | 52.2 | 1839 |
+| llama.cpp Vulkan `--n-cpu-moe 40` | 245 | 44.1 | 1843 |
+| **geist Vulkan, GPU mode, profile** | **513 / 518** | **65.9 / 68.0** | 1839, 1842 |
+| geist cpu_x86 | 174 | 22.8 | 1843 |
+
+- **Decode:** geistlib is 1.06-1.09× Strata and level with llama.cpp CUDA's
+  best split (0.97-1.00×), on Vulkan against their CUDA.
+- **Prefill:** 0.85× Strata, 1.1× llama.cpp CUDA, 1.4× llama.cpp Vulkan.
+- Strata's MTP draft brought nothing on this request (62.2 either way).
+- geistlib's decode scatters more than the others' (57.4-69.0 over six
+  rounds; #161).
+- The earlier estimate (Strata ~1.4× ahead in decode, from its own docs
+  on other cards) is superseded.
+
+Raw data: `benchmark/results/raw/strata-compare-2026-10-23/`.
+
 **Phase 4, only if phase 3 shows the static cover as the limit:** the
 adaptive tier, measured against Strata's +16.5 %.
 

@@ -1,0 +1,12 @@
+
+## Qwen3.6-35B-A3B-UD-Q4_K_XL: 40 layers x 256 experts, held-out 45012 tokens
+normalised entropy of held-out usage per layer: min 0.857 mean 0.896 (1.0 = uniform)
+selections per token and layer: [8.0] (must be one value, the model's top-k)
+experts never selected on the profile corpus: 1 of 10240
+| hot K % | profile (in-sample) | held-out all | held-out en | held-out de | held-out c | held-out py | worst layer, held-out |
+| --: | --: | --: | --: | --: | --: | --: | --: |
+| 10 % (26) | 45.1 % | 38.7 % | 35.2 % | 55.6 % | 36.5 % | 22.9 % | 19.3 % |
+| 18.3 % (47) | 59.4 % | 52.5 % | 50.3 % | 68.8 % | 50.0 % | 35.4 % | 31.2 % |
+| 25 % (64) | 67.7 % | 60.7 % | 59.8 % | 76.4 % | 57.7 % | 43.2 % | 39.6 % |
+| 50 % (128) | 86.8 % | 81.3 % | 81.7 % | 90.8 % | 79.2 % | 69.6 % | 65.2 % |
+| 75 % (192) | 96.2 % | 93.3 % | 93.2 % | 97.0 % | 92.7 % | 88.5 % | 85.2 % |

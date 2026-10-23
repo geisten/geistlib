@@ -1,0 +1,14 @@
+# strata-compare run 1843 (geist-vulkan: RTX 2080 Ti 11 GB + Ryzen 9 9950X): Qwen3.6-35B-A3B-UD-Q4_K_XL (sha256 55983c5a75a1ab969824077b3bb3de4146e82a9234072b48ad4e8f92ad3fe9f1), Strata 5c8dd322 built from source (CUDA 12.4, gcc 13), llama.cpp pinned by scripts/ensure-llama-bench.sh (CUDA and Vulkan llama-server), geistlib c4074038a122948eb4a6b3ef177533201ffd1187; chat request of 2,726 prompt tokens of docs/OFFLOAD.md, 128 tokens, greedy; rounds alternate the engine order
+{"engine": "llama-cuda-40", "round": 1, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 332.041829474961, "decode_tps": 56.28477080353824, "load_s": 23.0}
+{"engine": "llama-vk-40", "round": 1, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 246.55846976732786, "decode_tps": 44.23977260060194, "load_s": 29.8}
+{"engine": "geist-cpu", "round": 1, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 173.232, "decode_tps": 22.727}
+{"engine": "llama-vk-40", "round": 2, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 244.29857228723955, "decode_tps": 44.068531771849926, "load_s": 30.3}
+{"engine": "llama-cuda-40", "round": 2, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 331.56135721710314, "decode_tps": 55.94043356919347, "load_s": 23.0}
+{"engine": "geist-cpu", "round": 2, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 173.535, "decode_tps": 23.021}
+{"engine": "llama-cuda-40", "round": 3, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 331.90643598966443, "decode_tps": 56.24772739251037, "load_s": 23.0}
+{"engine": "llama-vk-40", "round": 3, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 245.02018495338774, "decode_tps": 43.72374853680369, "load_s": 30.0}
+{"engine": "geist-cpu", "round": 3, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 174.128, "decode_tps": 22.836}
+| engine | prompt tokens | prefill tok/s (median) | decode tok/s (median) | rounds |
+| llama-cuda-40 | 2726 | 332 | 56.2 | 3 |
+| llama-vk-40 | 2726 | 245 | 44.1 | 3 |
+| geist-cpu | 2726 | 174 | 22.8 | 3 |
