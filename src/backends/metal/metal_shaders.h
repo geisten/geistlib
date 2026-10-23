@@ -639,9 +639,10 @@ static const char metal_qsg_pq2_n8_source[] = GEIST_METAL_PQ2_N_KERNEL("8");
  * columns fn and fn+1: two codes of one byte, one 16-entry half2 table
  * lookup), and the 8 rows go through the MMA. A threadgroup is 16 outputs;
  * its four simdgroups split the 128-element blocks and add their 8x8 tiles
- * at the end. x arrives as f16 (cvt_f32_f16_rows) with 8 rows readable;
- * columns >= rows of the tile are never stored, so their contents do not
- * matter. */
+ * at the end. x arrives as f16 k-major (cvt_f32_f16_kmaj8: the 8 rows of a
+ * k side by side, rows >= `rows` zero), so an activation tile is one
+ * contiguous 128-byte load; a block's 16 code words are loaded before its
+ * 16 MMAs (#192). */
 static const char metal_qsg_mm_pq2_m8_source[] =
         "kernel void matmul_pq2_m8(device const half*x[[buffer(0)]],device const "
         "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup "
@@ -661,13 +662,14 @@ static const char metal_qsg_mm_pq2_m8_source[] =
         "simdgroup_float8x8 cb=make_filled_simdgroup_matrix<float,8>(0.0f);"
         "simdgroup_half8x8 ma,mb,mx;"
         "for(uint ib=uint(sg);ib<p.bpr;ib+=4u){"
-        "device const half*xb=x+p.xo+ib*128u;"
+        "device const half*xb=x+ib*1024u;"
         "half da=*(device const half*)(wa+ib*34u);half db=*(device const half*)(wb+ib*34u);"
         "device const ushort*qa=(device const ushort*)(wa+ib*34u+2u);"
         "device const ushort*qb=(device const ushort*)(wb+ib*34u+2u);"
+        "ushort ua[16],ub[16];FOR_UNROLL(short s=0;s<16;s++){ua[s]=qa[s];ub[s]=qb[s];}"
         "FOR_UNROLL(short s=0;s<16;s++){"
-        "simdgroup_load(mx,xb+8*s,p.xs,ulong2(0,0),true);"
-        "half2 va=da*lut[(uint(qa[s])>>sh)&15u];half2 vb=db*lut[(uint(qb[s])>>sh)&15u];"
+        "simdgroup_load(mx,xb+64*s,8);"
+        "half2 va=da*lut[(uint(ua[s])>>sh)&15u];half2 vb=db*lut[(uint(ub[s])>>sh)&15u];"
         "ma.thread_elements()[0]=va.x;ma.thread_elements()[1]=va.y;"
         "mb.thread_elements()[0]=vb.x;mb.thread_elements()[1]=vb.y;"
         "simdgroup_multiply_accumulate(ca,ma,mx,ca);simdgroup_multiply_accumulate(cb,mb,mx,cb);}}"
@@ -766,6 +768,15 @@ static const char metal_qsg_cvt_f16_source[] =
         "kernel void cvt_f32_f16_rows(device const float4*x[[buffer(0)]],device "
         "half4*y[[buffer(1)]],constant PH&p[[buffer(2)]],uint3 g[[thread_position_in_grid]]){"
         "if(g.x>=p.n4)return;y[g.y*p.n4+g.x]=half4(x[p.xo4+g.y*p.xs4+g.x]);}\n";
+/* x (rows <= 8 of n f32 at xo, row stride xs) -> f16 k-major [n][8]: the
+ * 8 rows of one k side by side, rows >= `rows` zero, so matmul_pq2_m8 reads
+ * an 8 x 8 activation tile as 128 contiguous bytes (#192). */
+static const char metal_qsg_cvt_kmaj_source[] =
+        "struct PK{uint n,xo,xs,rows;};\n"
+        "kernel void cvt_f32_f16_kmaj8(device const float*x[[buffer(0)]],device "
+        "half*y[[buffer(1)]],constant PK&p[[buffer(2)]],uint g[[thread_position_in_grid]]){"
+        "if(g>=p.n)return;"
+        "FOR_UNROLL(uint t=0u;t<8u;t++){y[g*8u+t]=t<p.rows?half(x[p.xo+t*p.xs+g]):half(0.0h);}}\n";
 
 /* Decode GEMV for the two 2-bit ternary formats that share TQ2_0's
  * element layout (TQ2_0 and I2_S), after q3k_n4: 2 rows per simdgroup, a

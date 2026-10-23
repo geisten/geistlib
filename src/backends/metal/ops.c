@@ -408,7 +408,7 @@ static bool metal_pq2_xh_ready(const struct metal_state      *st,
 
 static bool metal_pq2_m8_fits(const struct metal_state *st, const struct metal_q4k_params *params) {
     return params->rows >= 2u && params->rows <= 8u && st->pq2_m8_pipeline != nullptr &&
-           st->cvt_f16_pipeline != nullptr && st->pq2_xh_buffer != nullptr &&
+           st->cvt_kmaj_pipeline != nullptr && st->pq2_xh_buffer != nullptr &&
            (size_t) 8u * params->n_in * sizeof(uint16_t) <= st->pq2_xh_capacity &&
            (params->n_in % 128u) == 0u && (params->x_offset % 4u) == 0u &&
            (params->x_row_stride % 4u) == 0u;
@@ -445,7 +445,18 @@ static void metal_encode_q40_q80_linear(struct metal_state            *st,
      * 8 f16 rows of x, so the scratch holds 8 (metal_pq2_m8_fits). */
     if (dtype == GEIST_DTYPE_PQ2_0 && metal_pq2_m8_fits(st, params)) {
         struct metal_q4k_params xh = *params;
-        metal_encode_pq2_x_f16(st, enc, x, params);
+        const struct {
+            uint32_t n, xo, xs, rows;
+        } kp = {params->n_in, params->x_offset, params->x_row_stride, params->rows};
+        metal_msg_send_set_pipeline(st, enc, st->cvt_kmaj_pipeline);
+        metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+        metal_msg_send_set_buffer(
+                st, enc, st->pq2_xh_buffer->buffer, st->pq2_xh_buffer->base_off, 1);
+        metal_msg_send_set_bytes(st, enc, &kp, sizeof kp, 2);
+        const struct metal_size cg = {(params->n_in + 255u) / 256u, 1u, 1u};
+        const struct metal_size ct = {256u, 1u, 1u};
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_PQ2_X_F16, cg);
+        metal_msg_send_dispatch(st, enc, cg, ct);
         xh.x_offset     = 0u;
         xh.x_row_stride = params->n_in;
         metal_msg_send_set_pipeline(st, enc, st->pq2_m8_pipeline);
