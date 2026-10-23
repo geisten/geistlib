@@ -394,6 +394,10 @@ struct metal_state {
     void    *f32_matmul_mm_pipeline;
     void    *f32_ple_gate_function;
     void    *f32_ple_gate_pipeline;
+    void    *f32_ple_gate_sg_function; /* decode, a simdgroup per row (#196) */
+    void    *f32_ple_gate_sg_pipeline;
+    void    *f32_matvec_rows_function;
+    void    *f32_matvec_rows_pipeline;
     void    *f32_ple_proj_norm_function;
     void    *f32_ple_proj_norm_pipeline;
     void    *argmax_function;

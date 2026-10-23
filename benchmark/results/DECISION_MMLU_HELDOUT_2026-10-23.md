@@ -1,14 +1,20 @@
-# Bonsai 2 classic-MMLU held-out sample: direct scoring vs capped reasoning (M1 Max, Metal, 2026-10-23)
+# Bonsai 2 classic-MMLU held-out sample: direct scoring vs reasoning (M1 Max, Metal, 2026-10-23)
 
 Tracking: geistlib#171 (GitHub #587).
 
-**Direct option scoring without generated reasoning is 67.8 %** on 500 held-out questions. The reasoning baseline, capped at 512 generated tokens, reaches 65.4 %. The paired difference is **+2.4 pp, with a conservative 95 % interval of [−5.1, +9.9] pp**. The 2 pp non-inferiority margin is **not established**. At the observed gain/loss rates the interval would clear −2 pp at about **1,450 questions**.
+**With reasoning allowed up to 2,048 tokens, direct option scoring is clearly worse.** On 500 held-out questions:
 
-The comparison also does not show what it seems to. A third of the reasoning answers (164/500) hit the 512-token cap and count as wrong. Where reasoning finished, it was right **97.3 %** of the time, against 75.9 % for direct scoring on the same questions. The near-tie is therefore an artifact of the cap, not evidence that token scoring matches reasoning.
+| | Direct scoring | Reasoning, cap 2,048 |
+| --- | --- | --- |
+| Accuracy | **67.8 %** | **79.0 %** |
 
-Selected-row scoring is 4.06× faster than the capped reasoning call (sum of per-question times). It is bit-identical to dense scoring on all 500 questions.
+The paired difference is **−11.2 pp, with a conservative 95 % interval of [−18.2, −4.0] pp**. The interval lies wholly below −2 pp, so direct scoring is not just unproven but shown to be inferior beyond the 2 pp margin. The reasoning figure is still a lower bound: 87 answers hit 2,048 tokens as well and count as wrong.
 
-This is a 500-question estimate with its interval. It is not proof of the margin, and it is not a stock-MMLU score.
+The first comparison, at a 512-token cap, gave a near-tie: 65.4 % for reasoning, +2.4 pp in [−5.1, +9.9] for direct. That was an artifact of the cap. Amendment 3 re-ran only the 164 capped answers at cap 2,048; with greedy, deterministic decoding this is equivalent to a full cap-2,048 run, and 3 finished questions re-ran byte-identically.
+
+Selected-row scoring is bit-identical to dense scoring on all 500 questions. It is 8.8× faster than reasoning at cap 2,048 and 4.1× faster than reasoning at cap 512 (sums of per-question times). It is not quality-matched in either case.
+
+This is a 500-question estimate with its interval, not a stock-MMLU score.
 
 ## Frozen scope and provenance
 
@@ -27,6 +33,7 @@ This is a 500-question estimate with its interval. It is not proof of the margin
   - Calibration was reduced from 750 to a 250-question stratified sample, run with decision_dense only.
   - The test phase uses core arms and one trial.
   - Eleven test questions had run under the earlier two-trial, all-arm design when amendment 2 was decided. They were stopped, not inspected and not used.
+  - Amendment 3 re-runs the 164 capped reasoning answers at cap 2,048 (see below).
 
 ## Quality
 
@@ -53,6 +60,33 @@ The 512-token cap is far too small for this model in thinking mode. The capped q
 **Calibration.** Temperature was fitted only on the 250 calibration questions (calibration split: 68.0 %, log-loss 0.8443 → 0.8435, ECE 0.039), giving T = 1.0546, not at the search bound. The fit is bound to the checkpoint, binary, Metal/FP32 policy and prompt construction.
 
 On the test sample it lowers ECE from 0.046 to 0.037 and log-loss by 0.0004; Brier rises by 0.0002. The uncalibrated four-option probabilities are already close to calibrated. The temperature fit on the earlier binary `e1dac74e`, from the same 250 questions, was identical to the last digit; that run is kept as evidence only.
+
+## Amendment 3: reasoning at cap 2,048 (2026-10-23)
+
+**Scope.** chat_reasoning was re-run at decode cap 2,048 on the frozen list of the 164 questions that hit cap 512 ([`cap2048_question_ids.json`](raw/decision-mmlu-heldout-2026-10-23/cap2048_question_ids.json), sha256 `0d218e33…`). Everything else was unchanged: binary `bf8fa083…`, model, prompt policy, Metal/FP32/greedy, one trial. The run came from source revision `d159d350`, which adds the tools on top of the measured engine revision.
+
+**Why only the capped questions.** Greedy decoding is deterministic, and the cap only truncates. So for the 336 questions that finished under 512 tokens, the cap-512 output *is* the cap-2,048 output. To check this directly, three of them were re-run at cap 2,048. Their token IDs and surface bytes were byte-identical: 62, 89 and 109 tokens.
+
+| | n | Accuracy | Still capped | Generated tokens |
+| --- | --- | --- | --- | --- |
+| Re-run questions at cap 2,048 | 164 | 41.5 % (68) | 87 at 2,048 | min 514, mean 1,541, max 2,048 |
+| Of those, finished (EOS) | 77 | 88.3 % (68) | — | |
+| Direct scoring on the same 164 | 164 | 51.2 % | — | |
+| **All 500, reasoning at cap 2,048** | 500 | **79.0 %** (395) | 87 | |
+| All 500, direct scoring | 500 | 67.8 % (339) | — | |
+
+**Paired comparison**, direct minus reasoning at cap 2,048: gains 46, losses 102, difference **−11.2 pp**. The conservative joint 95 % interval is **[−18.24, −3.98] pp**. The upper bound lies below −2 pp, so non-inferiority is rejected: direct scoring is worse than reasoning by at least about 4 pp at this confidence. Because 87 reasoning answers still hit the 2,048 cap, the true gap to completed reasoning is likely larger.
+
+**Reasoning latency at cap 2,048** (sustained load):
+
+| Questions | p50 | p95 | Mean |
+| --- | --- | --- | --- |
+| All 500 (cap-512 times for the 336 finished, re-run times for the 164) | 18.4 s | 146.4 s | 47.8 s |
+| The 164 re-run questions | 121.5 s | 225.9 s | — |
+
+Decode slows to about 9–11 tok/s at these context lengths on a hot GPU. Reasoning at cap 2,048 takes **8.77×** the summed time of the selected-row direct score. That is the cost of the 11 pp quality gap, not a quality-matched speedup.
+
+The re-run took 19 chunks and 5.4 h of lease time (`LOCK_PRIO=batch`, `LOCK_MAX=30`, 25-min wall-clock deadline, `caffeinate`).
 
 ## Latency
 
@@ -82,21 +116,23 @@ The run used 15 test chunks and 3 calibration chunks, each under `with-mac-lock`
 | Reported test (500 core arms + 20-question spot-check) | 291 min |
 | Dry run (5 development questions, all arms) | 9 min |
 | Superseded: three-arm calibration on 750, its 250-question re-cut, 11 two-trial test questions | 197 + 41 + 18 min, including about 115 min of host sleep inside one lease |
-| **Total** | **10.2 h of lease time, about 7.9 h awake** |
+| Amendment 3: reasoning re-run at cap 2,048 (164 + 3 questions) | 323 min |
+| **Total** | **15.6 h of lease time, about 13.3 h awake** |
 
 Two host sleeps stalled chunks. macOS's monotonic clock stands still during sleep, so the first sleep let a chunk overrun its lease; the deadline is now wall-clock time (PR #182). The chunk runner also holds a `caffeinate -i` assertion.
 
 ## What this means for #171
 
-- **The 2 pp margin is not established.** At the observed gain/loss rates (17 % / 14.6 %), about 1,450 questions would make the conservative interval clear −2 pp. That would only matter against this capped baseline.
-- **The capped reasoning baseline is the wrong reference.** It loses a third of its answers to the cap and is 97 % accurate where it finishes. A fair quality target needs a generation budget at which reasoning completes: a development-only budget study, then a re-frozen cap.
-- **Direct token scoring (67.8 %) is therefore not adequate** as a drop-in replacement for completed reasoning on this kind of five-shot knowledge question. This is the negative finding. Whether a trained head (#588) or backbone adaptation is justified should be judged against an uncapped or adequately capped baseline.
-- **The direct probabilities are well calibrated** (ECE 0.04–0.05), which is useful for any abstention or fallback design built on direct scoring.
+- **Direct token scoring is not adequate** as a replacement for generated reasoning on five-shot classic-MMLU knowledge questions with this checkpoint. Against reasoning at cap 2,048 it loses 11.2 pp, with an interval of [−18.2, −4.0]. This is a negative finding beyond the 2 pp margin; it does not need a larger N.
+- **The cap-512 near-tie was a budget artifact.** Even 2,048 tokens leave 87 of 500 answers unfinished. Where reasoning finished it was very accurate: 97.3 % within 512 tokens, 88.3 % between 513 and 2,048.
+- **Speed is real but buys a large quality loss.** Selected/dense scoring answers in 4.4 s p50 against 18.4 s (p95 146 s) for reasoning at cap 2,048, about 8.8× less time in total.
+- **The direct probabilities are well calibrated** (ECE 0.04–0.05, T = 1.055). That makes direct scoring a candidate first stage with confidence-based fallback to reasoning, but such a policy has to be evaluated end to end with its fallback cost.
+- **Whether a trained head (#588) or backbone adaptation could close the gap** is the next question. The reference is now completed reasoning, not the capped baseline.
 
 ## Raw evidence
 
 - [Compact JSON](DECISION_MMLU_HELDOUT_2026-10-23.json): summary, calibration and one row per question (prediction, probabilities, reasoning stop and length, per-arm latency).
-- [Raw bundle](raw/decision-mmlu-heldout-2026-10-23/README.md):
+- [Raw bundle](raw/decision-mmlu-heldout-2026-10-23/README.md), including `runs-cap2048.tar.gz`, `summarize_cap2048.py` and `cap2048_summary.json` for amendment 3:
   - `runs.tar.gz`: every run directory (manifests, driver JSONL, chunk metadata, macmon temperatures, reports). Prompt case files are left out; they are rebuilt from the pinned dataset with the recorded tools and checksums.
   - Prepared-bundle metadata.
   - The campaign scripts.

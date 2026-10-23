@@ -12,3 +12,10 @@
 - `campaign.sh`, `run.sh`, `prepare.sh`: the exact chunk driver used, with `with-mac-lock`, `LOCK_PRIO=batch` and `LOCK_MAX=30`. `summarize.py` produces the numbers in the writeup from `run-test2/report.json`.
 
 Model weights and binaries are not copied; their hashes are in the manifests. See the [writeup](../../DECISION_MMLU_HELDOUT_2026-10-23.md).
+
+Amendment 3 (2026-10-23) adds:
+- `runs-cap2048.tar.gz`: `run-cap2048`, chat_reasoning at decode cap 2048 on the frozen 167-question list. That is 3 capped dry-run questions, 3 finished determinism checks and the other 161 capped questions; the list and the selection are in `cap2048_question_ids.json` and `cap2048_selection.json`.
+- `campaign-cap2048.sh`: the chunk loop. `run.sh` now takes `DECODE_CAP`.
+- `summarize_cap2048.py`: combines the cap-512 outputs of the 336 finished questions with the cap-2048 re-run.
+- `cap2048_summary.json`: its output.
+
