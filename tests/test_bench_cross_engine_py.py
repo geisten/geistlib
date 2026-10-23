@@ -170,7 +170,7 @@ class AppleCoolGateTest(unittest.TestCase):
         self.readings.write_text("\n".join(readings))
         found = str(self.macmon) if macmon else None
         with mock.patch.object(HOST, "find_macmon", return_value=found), \
-             mock.patch.object(HOST.time, "sleep") as sleep:
+             mock.patch.object(HOST, "_sleep") as sleep:
             state = HOST.wait_for_apple_cool(self.LIMITS, deadline)
         return state, [call.args[0] for call in sleep.call_args_list]
 

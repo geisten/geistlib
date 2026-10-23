@@ -892,6 +892,22 @@ static bool vk_q8_0_narrow(const struct vk_state *st, enum vk_pipe pipe, const s
     enum vk_pipe     cm   = pipe;
     uint32_t         gx   = vk_linear_gx(pipe, push->n_out);
     uint32_t         gy   = vk_linear_gy(pipe, m);
+    /* PQ2_0 at 2..15 tokens (speculative verify, #105): one weight decode
+     * for all tokens on the tensor cores, every SM busy at 32 rows per
+     * workgroup. */
+    if (pipe == VK_PIPE_MATMUL_PQ2_0 && m >= 2u && m < 16u && st->subgroup_size == 32u &&
+        push->n_in % 128u == 0 && push->x_offset % 4u == 0 && push->x_stride % 4u == 0 &&
+        st->pipes[VK_PIPE_MM_PQ2_0_M16_CM] != VK_NULL_HANDLE) {
+        return vk_seq_dispatch_acc(be,
+                                   VK_PIPE_MM_PQ2_0_M16_CM,
+                                   infos,
+                                   acc,
+                                   push,
+                                   sizeof(*push),
+                                   (push->n_out + 31u) / 32u,
+                                   1,
+                                   1);
+    }
     if (vk_q8_0_narrow(st, pipe, push)) {
         return vk_seq_dispatch_acc(be,
                                    VK_PIPE_MATVEC_Q8_0_MT,
@@ -2059,6 +2075,8 @@ static enum vk_pipe vk_grouped_pipe(uint16_t dtype) {
         return VK_PIPE_MATVEC_F32_ID;
     case GEIST_DTYPE_Q4_K:
         return VK_PIPE_MATVEC_Q4K_ID;
+    case GEIST_DTYPE_Q5_K:
+        return VK_PIPE_MATVEC_Q5K_ID;
     case GEIST_DTYPE_Q6_K:
         return VK_PIPE_MATVEC_Q6K_ID;
     default:
@@ -2144,62 +2162,131 @@ static void vk_submit(struct geist_backend *be) {
     vk_seq_cut(be->state); /* a roll; with the ring full a flush, just as correct */
 }
 
-enum { VK_URING_BYTES = 1u << 20 };
+enum { VK_URING_BYTES = 16u << 20 }; /* a 512-token chunk's partial sums: 4 MiB */
 
-struct vk_push_wsum {
-    uint32_t d, n, y_offset, y_stride, a_offset, o_offset;
-    float    w[VK_GROUP_MAX];
-};
-static_assert(sizeof(struct vk_push_wsum) <= VK_PUSH_RANGE, "rows_wsum push block");
-
-[[nodiscard]] static enum geist_status vk_rows_weighted_sum(struct geist_backend *be,
-                                                            size_t                n,
-                                                            size_t                d,
-                                                            const float           w[static n],
-                                                            const float           add[static d],
-                                                            const struct geist_tensor *t_y,
-                                                            struct geist_tensor       *t_out) {
-    struct vk_state *st    = be->state;
-    const size_t     bytes = d * sizeof(float);
-    if (n > VK_GROUP_MAX || bytes > VK_URING_BYTES) {
-        return GEIST_E_UNSUPPORTED;
+/* Copies `bytes` of host data into the upload ring, which the work in
+ * flight does not read; returns its byte offset, or SIZE_MAX (no ring, too
+ * big). The ring is free again only after a flush has waited, so a full
+ * ring, or a dispatch that would flush on recording, flushes first. */
+static size_t vk_uring_put(struct geist_backend *be, size_t bytes, const void *data) {
+    struct vk_state *st = be->state;
+    if (bytes > VK_URING_BYTES) {
+        return SIZE_MAX;
     }
     if (st->uring == nullptr &&
         vk_buffer_create(be, VK_URING_BYTES, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_HOST, &st->uring) !=
                 GEIST_OK) {
-        return GEIST_E_UNSUPPORTED;
+        return SIZE_MAX;
     }
-    VkDescriptorBufferInfo bi[3];
-    uint32_t               yo, oo, ys, d32;
-    if (!vk_tensor_gpu(t_y, &bi[0], &yo) || !vk_tensor_gpu(t_out, &bi[2], &oo) ||
-        vk_ckd_u32(d, &d32) ||
-        vk_ckd_u32(t_y->ndim >= 2 ? (size_t) t_y->stride[t_y->ndim - 2] : d, &ys)) {
-        return GEIST_E_UNSUPPORTED;
-    }
-    /* The ring is free again only after a flush has waited; a dispatch that
-     * would flush on recording must not find its bytes reused. */
     if (st->uring_used + bytes > VK_URING_BYTES || st->seq_dispatches + 1u >= VK_SEQ_MAX_DISPATCH) {
         vk_seq_flush(st);
     }
     const size_t at = st->uring_used;
-    memcpy((uint8_t *) st->uring->mapped + at, add, bytes);
+    memcpy((uint8_t *) st->uring->mapped + at, data, bytes);
     st->uring_used += (bytes + 255u) & ~(size_t) 255u;
-    struct vk_push_wsum push = {.d        = d32,
-                                .n        = (uint32_t) n,
-                                .y_offset = yo,
-                                .y_stride = ys,
-                                .a_offset = (uint32_t) (at / sizeof(float)),
-                                .o_offset = oo};
-    for (size_t j = 0; j < n; ++j) {
-        push.w[j] = w[j];
+    return at;
+}
+
+struct vk_push_wsum {
+    uint32_t d, y_offset, y_stride, o_offset, o_stride, start_off, rows_off, w_off, add_off;
+};
+static_assert(sizeof(struct vk_push_wsum) <= VK_PUSH_RANGE, "rows_wsum push block");
+
+[[nodiscard]] static enum geist_status vk_rows_weighted_sum(struct geist_backend *be,
+                                                            size_t                m,
+                                                            size_t                d,
+                                                            size_t                n,
+                                                            const uint32_t start[static m + 1],
+                                                            const uint32_t rows[static n],
+                                                            const float    w[static n],
+                                                            const float    add[static m * d],
+                                                            const struct geist_tensor *t_y,
+                                                            struct geist_tensor       *t_out) {
+    struct vk_state       *st = be->state;
+    VkDescriptorBufferInfo bi[3];
+    uint32_t               yo, oo, ys, os, d32, m32;
+    if (m == 0) {
+        return GEIST_OK;
     }
+    if (!vk_tensor_gpu(t_y, &bi[0], &yo) || !vk_tensor_gpu(t_out, &bi[2], &oo) ||
+        vk_ckd_u32(d, &d32) || vk_ckd_u32(m, &m32) ||
+        vk_ckd_u32(t_y->ndim >= 2 ? (size_t) t_y->stride[t_y->ndim - 2] : d, &ys) ||
+        vk_ckd_u32(t_out->ndim >= 2 ? (size_t) t_out->stride[t_out->ndim - 2] : d, &os)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* One ring region: start, rows, w, add — 32-bit words each. */
+    const size_t words = (m + 1) + 2 * n + m * d;
+    uint32_t    *pack  = malloc(words * sizeof *pack);
+    if (pack == nullptr) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    memcpy(pack, start, (m + 1) * sizeof *pack);
+    memcpy(pack + m + 1, rows, n * sizeof *pack);
+    memcpy(pack + m + 1 + n, w, n * sizeof *pack);
+    memcpy(pack + m + 1 + 2 * n, add, m * d * sizeof *pack);
+    const size_t at = vk_uring_put(be, words * sizeof *pack, pack);
+    free(pack);
+    if (at == SIZE_MAX) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const uint32_t            w0   = (uint32_t) (at / 4u);
+    const struct vk_push_wsum push = {.d         = d32,
+                                      .y_offset  = yo,
+                                      .y_stride  = ys,
+                                      .o_offset  = oo,
+                                      .o_stride  = os,
+                                      .start_off = w0,
+                                      .rows_off  = w0 + m32 + 1u,
+                                      .w_off     = w0 + m32 + 1u + (uint32_t) n,
+                                      .add_off   = w0 + m32 + 1u + 2u * (uint32_t) n};
     bi[1] = (VkDescriptorBufferInfo) {.buffer = st->uring->buf, .range = VK_WHOLE_SIZE};
     const struct vk_access acc[3] = {
-            vk_acc((uint64_t) yo * 4u, ((uint64_t) (n > 0 ? n - 1 : 0) * ys + d) * 4u, false),
-            vk_acc((uint64_t) at, bytes, false),
-            vk_acc((uint64_t) oo * 4u, (uint64_t) bytes, true)};
+            vk_acc_tensor(t_y, false),
+            vk_acc((uint64_t) at, (uint64_t) words * 4u, false),
+            vk_acc((uint64_t) oo * 4u, ((uint64_t) (m - 1) * os + d) * 4u, true)};
     return vk_seq_dispatch_acc(
-            be, VK_PIPE_ROWS_WSUM_ADD, bi, acc, &push, sizeof push, (d32 + 255u) / 256u, 1, 1);
+            be, VK_PIPE_ROWS_WSUM_ADD, bi, acc, &push, sizeof push, (d32 + 255u) / 256u, m32, 1);
+}
+
+struct vk_push_gather {
+    uint32_t d, x_offset, x_stride, o_offset, o_stride, idx_off;
+};
+
+[[nodiscard]] static enum geist_status vk_rows_gather(struct geist_backend      *be,
+                                                      size_t                     n,
+                                                      size_t                     d,
+                                                      const uint32_t             src[static n],
+                                                      const struct geist_tensor *t_x,
+                                                      struct geist_tensor       *t_out) {
+    struct vk_state       *st = be->state;
+    VkDescriptorBufferInfo bi[3];
+    uint32_t               xo, oo, xs, os, d32, n32;
+    if (n == 0) {
+        return GEIST_OK;
+    }
+    if (!vk_tensor_gpu(t_x, &bi[0], &xo) || !vk_tensor_gpu(t_out, &bi[2], &oo) ||
+        vk_ckd_u32(d, &d32) || vk_ckd_u32(n, &n32) ||
+        vk_ckd_u32(t_x->ndim >= 2 ? (size_t) t_x->stride[t_x->ndim - 2] : d, &xs) ||
+        vk_ckd_u32(t_out->ndim >= 2 ? (size_t) t_out->stride[t_out->ndim - 2] : d, &os)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const size_t at = vk_uring_put(be, n * sizeof *src, src);
+    if (at == SIZE_MAX) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const struct vk_push_gather push = {.d        = d32,
+                                        .x_offset = xo,
+                                        .x_stride = xs,
+                                        .o_offset = oo,
+                                        .o_stride = os,
+                                        .idx_off  = (uint32_t) (at / 4u)};
+    bi[1] = (VkDescriptorBufferInfo) {.buffer = st->uring->buf, .range = VK_WHOLE_SIZE};
+    const struct vk_access acc[3] = {
+            vk_acc_tensor(t_x, false),
+            vk_acc((uint64_t) at, (uint64_t) n * 4u, false),
+            vk_acc((uint64_t) oo * 4u, ((uint64_t) (n - 1) * os + d) * 4u, true)};
+    return vk_seq_dispatch_acc(
+            be, VK_PIPE_ROWS_GATHER, bi, acc, &push, sizeof push, (d32 + 255u) / 256u, n32, 1);
 }
 
 [[nodiscard]] static enum geist_status vk_linear_t_pair(struct geist_backend      *be,
@@ -2898,7 +2985,8 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
     struct vk_state *st = be->state;
     switch (q->op) {
     case GEIST_FUSED_ROWS_WEIGHTED_SUM:
-        return q->m <= VK_GROUP_MAX;
+    case GEIST_FUSED_ROWS_GATHER:
+        return true; /* any m: the ring takes what fits, flushing when full */
     case GEIST_FUSED_LINEAR_GROUPED:
         return q->m == 1 && vk_grouped_weight(st, q->gate_w) != nullptr &&
                (q->up_w == nullptr || vk_grouped_weight(st, q->up_w) != nullptr) &&
@@ -3044,6 +3132,7 @@ static const struct geist_backend_fused vk_fused = {
         .linear_t_grouped        = vk_linear_t_grouped,
         .submit                  = vk_submit,
         .rows_weighted_sum       = vk_rows_weighted_sum,
+        .rows_gather             = vk_rows_gather,
         .rmsnorm_add             = vk_rmsnorm_add,
         .embedding_lookup_scaled = vk_fb_embedding_lookup_scaled,
         .argmax_f32              = vk_fb_argmax_f32,

@@ -81,6 +81,14 @@ void blk_scale_cols(struct transformer_layer_forward_ctx *ctx,
  * append in one backend op; q only on a KV-shared layer. */
 [[nodiscard]] enum geist_status blk_qkv_prep_fused(struct transformer_layer_forward_ctx *ctx);
 
+/* Llama / Qwen3: q/k norms (where q_norm / k_norm are non-null), RoPE, the
+ * q scale and the KV append in one fused->attn_rope_append call (#17);
+ * blk_attend(ctx, false) follows. */
+[[nodiscard]] enum geist_status blk_rope_append_fused(struct transformer_layer_forward_ctx *ctx,
+                                                      const struct geist_tensor            *q_norm,
+                                                      const struct geist_tensor            *k_norm,
+                                                      float q_scale);
+
 /* Append k/v to the session KV cache (any KV mode) when `append`, then
  * attend: scratch_attn = attention(scratch_q, cache). A KV-shared layer or
  * a fused prep that already appended passes false. */
@@ -184,3 +192,8 @@ blk_relu_sq(struct transformer_layer_forward_ctx *ctx, size_t n, struct geist_bu
  *   x = rmsnorm(h_post_attn)
  * on the layer's moe_router / moe_{gate,up,down}; routing on the host. */
 [[nodiscard]] enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx);
+
+/* The session state blk_moe_ffn needs (router logits, routing, gathered
+ * rows, the GPU's hot-expert buffers); a MoE family's session hooks. */
+[[nodiscard]] enum geist_status moe_session_alloc(struct transformer_arch_session *sess);
+void                            moe_session_free(struct transformer_arch_session *sess);

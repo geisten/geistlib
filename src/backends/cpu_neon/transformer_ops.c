@@ -13,11 +13,13 @@
 #include "host_buffer.h"
 #include "quant.h"
 #include "heap.h"
+#include "checked.h"
 
 #include <geist.h>
 #include <geist_backend.h>
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -466,7 +468,9 @@ static inline __attribute__((always_inline)) void attn_heads_neon(size_t        
                                                                   size_t             s_hi,
                                                                   size_t             head_dim,
                                                                   bool               hd256,
-                                                                  float *const       outv[]) {
+                                                                  float *const       outv[],
+                                                                  float             *part_max,
+                                                                  double            *part_sum) {
     float  scores[ATTN_HEADS_MAX][ATTN_F32_BLOCK];
     float  max_score[ATTN_HEADS_MAX] = {};
     double sum_exp[ATTN_HEADS_MAX]   = {};
@@ -532,6 +536,13 @@ static inline __attribute__((always_inline)) void attn_heads_neon(size_t        
             }
         }
     }
+    if (part_sum != nullptr) { /* a split range's part: left unnormalized */
+        for (size_t h = 0; h < g; h++) {
+            part_max[h] = max_score[h];
+            part_sum[h] = sum_exp[h];
+        }
+        return;
+    }
     for (size_t h = 0; h < g; h++) {
         if (sum_exp[h] > 0.0) { /* else an empty window: outv stays zero */
             scale_f32_neon(outv[h], (float) (1.0 / sum_exp[h]), head_dim);
@@ -571,17 +582,185 @@ static void attn_group_items(void *ctx, size_t i0, size_t i1) {
         const float *v = job->v + kv_h * head_dim;
         switch (g) {
         case 1:
-            attn_heads_neon(1, qv, k, v, row, s_lo, s_hi, head_dim, job->hd256, outv);
+            attn_heads_neon(
+                    1, qv, k, v, row, s_lo, s_hi, head_dim, job->hd256, outv, nullptr, nullptr);
             break;
         case 2:
-            attn_heads_neon(2, qv, k, v, row, s_lo, s_hi, head_dim, job->hd256, outv);
+            attn_heads_neon(
+                    2, qv, k, v, row, s_lo, s_hi, head_dim, job->hd256, outv, nullptr, nullptr);
             break;
         case 3:
-            attn_heads_neon(3, qv, k, v, row, s_lo, s_hi, head_dim, job->hd256, outv);
+            attn_heads_neon(
+                    3, qv, k, v, row, s_lo, s_hi, head_dim, job->hd256, outv, nullptr, nullptr);
             break;
         default:
-            attn_heads_neon(4, qv, k, v, row, s_lo, s_hi, head_dim, job->hd256, outv);
+            attn_heads_neon(
+                    4, qv, k, v, row, s_lo, s_hi, head_dim, job->hd256, outv, nullptr, nullptr);
             break;
+        }
+    }
+}
+
+/* ---- A decode step's key range split across threads (#16) -------------
+ * A decode step has one grouped item per KV head (and head chunk): Llama
+ * 3.2 3B has 8 of them for 7 decode threads, so at depth one thread runs
+ * two while six wait, and the region is ~0.57 busy; Gemma 4 E2B has 2.
+ * With at most ATTN_SPLIT_MAX_ITEMS items and a key range of at least
+ * 2 * ATTN_SPLIT_CHUNK keys, each item's range is cut at the multiples of
+ * the part length (flash-decoding): every part runs attn_heads_neon on its
+ * keys and leaves its output unnormalized with its max and sum, and
+ * attn_split_merge rescales the parts to their common max, adds them and
+ * divides by the total in double, rounding once. The cut points depend on
+ * the key positions only, not on the thread count, so a step computes the
+ * same bits on any number of threads. Each part's arithmetic is the row
+ * kernel's; the merge adds the parts instead of carrying one running sum
+ * through all keys, so the result differs from the unsplit one in rounding
+ * only (in a model, by about as much as one ulp on the attention output
+ * does). Short ranges and prefill keep the unsplit items, bit for bit.
+ *
+ * Opt-in (GEIST_ATTN_SPLIT_DECODE=1), off by default: decode at depth 1024
+ * is ~9-11 % faster with it on the M1 Max, but cpu_neon's int8 decode
+ * activations turn its rounding-sized difference into a quantization-sized
+ * one, so greedy output departs from the default's at near-ties (#178). */
+enum {
+    ATTN_SPLIT_CHUNK        = 128,
+    ATTN_SPLIT_MAX_PARTS    = 16,
+    ATTN_SPLIT_MAX_ITEMS    = 16,
+    ATTN_SPLIT_MAX_HEAD_DIM = 512,
+};
+
+/* The split is opt-in: GEIST_ATTN_SPLIT_DECODE=1 (docs/BACKENDS.md). Read
+ * once. Off, decode attention is the unsplit kernel, bit for bit. */
+static bool attn_split_decode_on(void) {
+    static _Atomic int on = -1;
+    int                v  = atomic_load_explicit(&on, memory_order_relaxed);
+    if (v < 0) {
+        const char *e = getenv("GEIST_ATTN_SPLIT_DECODE");
+        v             = e != nullptr && e[0] == '1';
+        atomic_store_explicit(&on, v, memory_order_relaxed);
+    }
+    return v != 0;
+}
+
+/* One split call: the grouped job, the parts per item, where they start
+ * (base, a multiple of len) and their scratch, one [head_dim] output and
+ * one max and sum per (query, head, part). Part p of every item covers
+ * keys [base + p * len, base + (p + 1) * len) within the item's range. */
+struct attn_split_job {
+    struct attn_job job;
+    size_t          parts, base, len;
+    float          *part_out;
+    float          *part_max;
+    double         *part_sum;
+};
+
+/* Items [i0, i1) of the split: item idx is attn_group_items' item
+ * idx / parts and part idx % parts of its key range. */
+static void attn_split_items(void *ctx, size_t i0, size_t i1) {
+    const struct attn_split_job *sj       = ctx;
+    const struct attn_job       *job      = &sj->job;
+    const size_t                 parts    = sj->parts;
+    const size_t                 group    = job->n_q_heads / job->n_kv_heads;
+    const size_t                 chunks   = (group + ATTN_HEADS_MAX - 1) / ATTN_HEADS_MAX;
+    const size_t                 per_t    = job->n_kv_heads * chunks;
+    const size_t                 head_dim = job->head_dim;
+    const size_t                 row      = job->n_kv_heads * head_dim;
+    for (size_t idx = i0; idx < i1; idx++) {
+        const size_t it    = idx / parts;
+        const size_t p     = idx - it * parts;
+        const size_t t     = it / per_t;
+        const size_t kv_h  = (it - t * per_t) / chunks;
+        const size_t ch    = it - t * per_t - kv_h * chunks;
+        const size_t h0    = kv_h * group + ch * ATTN_HEADS_MAX;
+        const size_t left  = group - ch * ATTN_HEADS_MAX;
+        const size_t g     = left < ATTN_HEADS_MAX ? left : ATTN_HEADS_MAX;
+        const size_t q_pos = job->q_offset + t;
+        const size_t s_lo  = (job->sliding_window > 0 && q_pos + 1 > job->sliding_window)
+                                     ? q_pos + 1 - job->sliding_window
+                                     : 0;
+        const size_t s_hi  = q_pos < job->n_kv ? q_pos : job->n_kv - 1;
+        const size_t c0 = sj->base + p * sj->len, c1 = c0 + sj->len;
+        const size_t a     = c0 > s_lo ? c0 : s_lo; /* this part: keys [a, b) */
+        const size_t b     = c1 < s_hi + 1 ? c1 : s_hi + 1;
+        const size_t slot0 = (t * job->n_q_heads + h0) * parts + p; /* head h: + h * parts */
+        if (a >= b) { /* the part lies outside this query's range */
+            for (size_t h = 0; h < g; h++) {
+                sj->part_sum[slot0 + h * parts] = 0.0;
+                sj->part_max[slot0 + h * parts] = 0.0f;
+            }
+            continue;
+        }
+        const float *qv[ATTN_HEADS_MAX]   = {};
+        float       *outv[ATTN_HEADS_MAX] = {};
+        float        pm[ATTN_HEADS_MAX]   = {};
+        double       ps[ATTN_HEADS_MAX]   = {};
+        for (size_t h = 0; h < g; h++) {
+            qv[h]   = job->q + (t * job->n_q_heads + h0 + h) * head_dim;
+            outv[h] = sj->part_out + (slot0 + h * parts) * head_dim;
+        }
+        const float *k = job->k + kv_h * head_dim;
+        const float *v = job->v + kv_h * head_dim;
+        switch (g) {
+        case 1:
+            attn_heads_neon(1, qv, k, v, row, a, b - 1, head_dim, job->hd256, outv, pm, ps);
+            break;
+        case 2:
+            attn_heads_neon(2, qv, k, v, row, a, b - 1, head_dim, job->hd256, outv, pm, ps);
+            break;
+        case 3:
+            attn_heads_neon(3, qv, k, v, row, a, b - 1, head_dim, job->hd256, outv, pm, ps);
+            break;
+        default:
+            attn_heads_neon(4, qv, k, v, row, a, b - 1, head_dim, job->hd256, outv, pm, ps);
+            break;
+        }
+        for (size_t h = 0; h < g; h++) {
+            sj->part_max[slot0 + h * parts] = pm[h];
+            sj->part_sum[slot0 + h * parts] = ps[h];
+        }
+    }
+}
+
+/* out[r] = sum_p c_p * part_out[r][p] / sum_p c_p * part_sum[r][p] for
+ * every (query, head) r, c_p = exp(part_max - the parts' max), floored as
+ * the row kernel's rescale is; accumulated in double and rounded once.
+ * Parts without keys (sum 0) drop out. */
+static void attn_split_merge(const struct attn_split_job *sj, size_t n_rows) {
+    const size_t parts    = sj->parts;
+    const size_t head_dim = sj->job.head_dim;
+    for (size_t r = 0; r < n_rows; r++) {
+        const float  *pm   = sj->part_max + r * parts;
+        const double *ps   = sj->part_sum + r * parts;
+        const float  *po   = sj->part_out + r * parts * head_dim;
+        float        *outv = sj->job.out + r * head_dim;
+        bool          any  = false;
+        float         m    = 0.0f;
+        for (size_t p = 0; p < parts; p++) {
+            if (ps[p] > 0.0 && (!any || pm[p] > m)) {
+                m   = pm[p];
+                any = true;
+            }
+        }
+        double acc[ATTN_SPLIT_MAX_HEAD_DIM];
+        for (size_t i = 0; i < head_dim; i++) {
+            acc[i] = 0.0;
+        }
+        double sum = 0.0;
+        for (size_t p = 0; p < parts; p++) {
+            if (!(ps[p] > 0.0)) {
+                continue;
+            }
+            const double d = (double) pm[p] - (double) m;
+            const double c = d < (double) ATTN_EXP_FLOOR ? 0.0 : exp(d);
+            sum += c * ps[p];
+            const float *o = po + p * head_dim;
+            for (size_t i = 0; i < head_dim; i++) {
+                acc[i] += c * (double) o[i];
+            }
+        }
+        const double inv = sum > 0.0 ? 1.0 / sum : 0.0; /* 0: an empty window, out zero */
+        for (size_t i = 0; i < head_dim; i++) {
+            outv[i] = (float) (acc[i] * inv);
         }
     }
 }
@@ -591,25 +770,78 @@ static void attn_group_items(void *ctx, size_t i0, size_t i1) {
  * Gemma 4 E2B decode step has one KV head for eight query heads, two items;
  * its eight single-head rows spread wider). hd256 as the caller's row
  * kernel decides it. False: the caller's per-head rows. */
-static bool attention_heads_grouped_neon(const float *q,
-                                         const float *k,
-                                         const float *v,
-                                         size_t       n_q,
-                                         size_t       n_kv,
-                                         size_t       q_offset,
-                                         size_t       n_q_heads,
-                                         size_t       n_kv_heads,
-                                         size_t       head_dim,
-                                         size_t       sliding_window,
-                                         bool         hd256,
-                                         float       *out) {
+static bool attention_heads_grouped_neon(const float               *q,
+                                         const float               *k,
+                                         const float               *v,
+                                         size_t                     n_q,
+                                         size_t                     n_kv,
+                                         size_t                     q_offset,
+                                         size_t                     n_q_heads,
+                                         size_t                     n_kv_heads,
+                                         size_t                     head_dim,
+                                         size_t                     sliding_window,
+                                         bool                       hd256,
+                                         float                     *out,
+                                         struct cpu_neon_workspace *ws) {
     if (q == nullptr || k == nullptr || v == nullptr || out == nullptr || n_q == 0 || n_kv == 0 ||
         n_kv_heads == 0 || n_q_heads % n_kv_heads != 0 || head_dim == 0 || head_dim % 16 != 0) {
         return false;
     }
     const size_t group = n_q_heads / n_kv_heads;
     const size_t items = n_q * n_kv_heads * ((group + ATTN_HEADS_MAX - 1) / ATTN_HEADS_MAX);
-    if (group < 2 || items < geist_par_max_threads()) {
+    if (group < 2) {
+        return false;
+    }
+    /* Parts cut at multiples of len from base: base is the chunk holding
+     * the first query's first key, the parts reach the last query's last
+     * key; len doubles until at most ATTN_SPLIT_MAX_PARTS parts do. */
+    const size_t lo0   = (sliding_window > 0 && q_offset + 1 > sliding_window)
+                                 ? q_offset + 1 - sliding_window
+                                 : 0;
+    const size_t q_end = q_offset + n_q - 1;
+    const size_t hi1   = q_end < n_kv ? q_end : n_kv - 1;
+    const size_t hi0   = q_offset < n_kv ? q_offset : n_kv - 1;
+    size_t       len = ATTN_SPLIT_CHUNK, base = 0, parts = 1;
+    if (items <= ATTN_SPLIT_MAX_ITEMS && head_dim <= ATTN_SPLIT_MAX_HEAD_DIM && hi0 >= lo0 &&
+        attn_split_decode_on() && hi0 - lo0 + 1 >= 2 * ATTN_SPLIT_CHUNK) {
+        for (;;) {
+            base  = lo0 / len * len;
+            parts = (hi1 - base) / len + 1;
+            if (parts <= ATTN_SPLIT_MAX_PARTS) {
+                break;
+            }
+            len *= 2;
+        }
+    }
+    size_t n_rows = 0, n_slots = 0, n_out = 0;
+    if (parts > 1 && ws != nullptr && !ckd_mul(&n_rows, n_q, n_q_heads) &&
+        !ckd_mul(&n_slots, n_rows, parts) && !ckd_mul(&n_out, n_slots, head_dim)) {
+        if (cpu_neon_grow_f32(&ws->attn_part_out, &ws->attn_part_out_cap, n_out) &&
+            cpu_neon_grow_f32(&ws->attn_part_max, &ws->attn_part_max_cap, n_slots) &&
+            cpu_neon_grow_f64(&ws->attn_part_sum, &ws->attn_part_sum_cap, n_slots)) {
+            struct attn_split_job sj = {.job      = {.q              = q,
+                                                     .k              = k,
+                                                     .v              = v,
+                                                     .n_kv           = n_kv,
+                                                     .q_offset       = q_offset,
+                                                     .n_q_heads      = n_q_heads,
+                                                     .n_kv_heads     = n_kv_heads,
+                                                     .head_dim       = head_dim,
+                                                     .sliding_window = sliding_window,
+                                                     .hd256          = hd256,
+                                                     .out            = out},
+                                        .parts    = parts,
+                                        .base     = base,
+                                        .len      = len,
+                                        .part_out = ws->attn_part_out,
+                                        .part_max = ws->attn_part_max,
+                                        .part_sum = ws->attn_part_sum};
+            cpu_neon_par_for_dynamic(items * parts, 1, attn_split_items, &sj);
+            attn_split_merge(&sj, n_rows);
+            return true;
+        }
+    }
+    if (items < geist_par_max_threads()) {
         return false;
     }
     struct attn_job job = {.q              = q,
@@ -869,7 +1101,10 @@ enum geist_status cpu_neon_kv_append_f16(struct geist_backend      *be,
                                      head_dim,
                                      sliding_window,
                                      n_kv_heads == 1 && head_dim == 256,
-                                     op)) {
+                                     op,
+                                     be->state != nullptr
+                                             ? cpu_neon_ws((struct cpu_neon_state *) be->state)
+                                             : nullptr)) {
         return GEIST_OK;
     }
     if (n_kv_heads == 1 &&

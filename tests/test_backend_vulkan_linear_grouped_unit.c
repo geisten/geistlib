@@ -3,7 +3,7 @@
  * decode step of several mixture-of-experts experts in one pass (#78 phase
  * 3), against its decomposed twin: one fused->linear_t per weight.
  *
- * For F32, Q4_K and Q6_K: 10 weights of one shape (two dispatches: the
+ * For F32, Q4_K, Q5_K and Q6_K: 10 weights of one shape (two dispatches: the
  * kernels take VK_GROUP_MAX = 8 per dispatch), random but finite, resolved
  * on Vulkan; x [10, n_in] in VRAM. The grouped call and the 10 single calls
  * write [10, n_out] each; the grouped kernels are the single ones with the
@@ -12,9 +12,11 @@
  * the resolved weights at m = 1 and no at m = 2, and a weight the registry
  * does not know makes the call GEIST_E_UNSUPPORTED before anything runs.
  *
- * rows_weighted_sum (#161): out = add + sum_j w[j] * y[j] for 8 rows of
- * 136, the host's add passed after a submit() of the grouped call that
- * wrote y (nothing waited for), against the host sum to 1e-5 of its scale.
+ * rows_weighted_sum (#161, #163): per token, out[t] = add[t] + its rows of
+ * y weighted, for two tokens of four shuffled rows each, the host's add
+ * passed after a submit() of the grouped call that wrote y (nothing waited
+ * for), against the host sum to 1e-5 of its scale. rows_gather: six rows
+ * of x by index (one twice), bit for bit.
  *
  * SKIPs when the Vulkan backend is not built, has no device, or the device
  * has no bufferDeviceAddress (the op is then absent by design).
@@ -144,34 +146,61 @@ static int run_case(struct geist_backend *be, const struct qfmt *q, const char *
            scale);
     fails += geist_expect(scale > 0.0 && err <= 1e-5 * scale, "grouped matches single");
 
-    /* rows_weighted_sum onto y's first 8 rows, started but not waited for. */
+    /* rows_weighted_sum onto two tokens from y's first 8 rows, in a shuffled
+     * order (token 0: rows 5 2 7 0, token 1: 1 6 3 4), started but not
+     * waited for. */
     if (f->submit != nullptr && f->rows_weighted_sum != nullptr && fails == 0) {
-        float wts[8], add[N_OUT], out[N_OUT];
+        static const uint32_t start[3] = {0, 4, 8}, rows[8] = {5, 2, 7, 0, 1, 6, 3, 4};
+        float                 wts[8], add[2 * N_OUT], out[2 * N_OUT];
         for (size_t j = 0; j < 8; j++)
             wts[j] = 0.25f * (float) (j + 1) - 1.0f;
-        for (size_t c = 0; c < N_OUT; c++)
+        for (size_t c = 0; c < 2 * N_OUT; c++)
             add[c] = (float) rng_u8() / 32.0f - 4.0f;
         fails +=
                 geist_expect(f->linear_t_grouped(be, N, wp, &tx, &ty) == GEIST_OK, "grouped again");
         f->submit(be);
-        struct geist_tensor y8 = mat(by, 0, 8, N_OUT), o1 = mat(b1, 0, 1, N_OUT);
-        fails += geist_expect(f->rows_weighted_sum(be, 8, N_OUT, wts, add, &y8, &o1) == GEIST_OK,
-                              "rows_weighted_sum");
+        struct geist_tensor y8 = mat(by, 0, 8, N_OUT), o2 = mat(b1, 0, 2, N_OUT);
+        fails += geist_expect(
+                f->rows_weighted_sum(be, 2, N_OUT, 8, start, rows, wts, add, &y8, &o2) == GEIST_OK,
+                "rows_weighted_sum");
         fails += geist_expect(v->buffer_download(sizeof out, (uint8_t *) out, b1) == GEIST_OK,
                               "download the sum");
         double e3 = 0.0, sc3 = 0.0;
-        for (size_t c = 0; c < N_OUT; c++) {
-            double ref = add[c];
-            for (size_t j = 0; j < 8; j++)
-                ref += (double) wts[j] * (double) yg[j * N_OUT + c];
-            e3  = fmax(e3, fabs(ref - (double) out[c]));
-            sc3 = fmax(sc3, fabs(ref));
-        }
-        printf("  %-4s: rows_weighted_sum after submit, max |d| %.3g of scale %.3g\n",
+        for (size_t t = 0; t < 2; t++)
+            for (size_t c = 0; c < N_OUT; c++) {
+                double ref = add[t * N_OUT + c];
+                for (size_t q = start[t]; q < start[t + 1]; q++)
+                    ref += (double) wts[q] * (double) yg[rows[q] * N_OUT + c];
+                e3  = fmax(e3, fabs(ref - (double) out[t * N_OUT + c]));
+                sc3 = fmax(sc3, fabs(ref));
+            }
+        printf("  %-4s: rows_weighted_sum (2 tokens) after submit, max |d| %.3g of scale %.3g\n",
                name,
                e3,
                sc3);
         fails += geist_expect(e3 <= 1e-5 * sc3, "rows_weighted_sum matches the host");
+    }
+
+    /* rows_gather: x's rows 3 1 0 7 7 2 (one twice), bit for bit. */
+    if (f->rows_gather != nullptr && fails == 0) {
+        static const uint32_t src[6] = {3, 1, 0, 7, 7, 2};
+        float                 got[6 * N_IN];
+        struct geist_buffer  *bg = nullptr;
+        fails += geist_expect(
+                v->buffer_create(be, sizeof got, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bg) ==
+                        GEIST_OK,
+                "gather buffer");
+        struct geist_tensor xg = mat(bx, 0, N, N_IN), og = mat(bg, 0, 6, N_IN);
+        fails +=
+                geist_expect(f->rows_gather(be, 6, N_IN, src, &xg, &og) == GEIST_OK, "rows_gather");
+        fails += geist_expect(v->buffer_download(sizeof got, (uint8_t *) got, bg) == GEIST_OK,
+                              "download the gathered rows");
+        size_t same = 0;
+        for (size_t i = 0; i < 6; i++)
+            same += memcmp(got + i * N_IN, xs + src[i] * N_IN, N_IN * sizeof(float)) == 0;
+        printf("  %-4s: rows_gather, %zu of 6 rows bit for bit\n", name, same);
+        fails += geist_expect(same == 6, "rows_gather copies the rows exactly");
+        v->buffer_destroy(be, bg);
     }
 
     /* A weight the registry does not know: refused before anything runs. */
@@ -213,10 +242,11 @@ int main(void) {
     }
     const struct qfmt fm[]    = {{GEIST_DTYPE_F32, 1, 4, false},
                                  {GEIST_DTYPE_Q4_K, 256, 144, false},
+                                 {GEIST_DTYPE_Q5_K, 256, 176, false},
                                  {GEIST_DTYPE_Q6_K, 256, 210, true}};
-    const char *const names[] = {"F32", "Q4_K", "Q6_K"};
+    const char *const names[] = {"F32", "Q4_K", "Q5_K", "Q6_K"};
     int               fails   = 0;
-    for (size_t i = 0; i < 3; i++)
+    for (size_t i = 0; i < 4; i++)
         fails += run_case(be, &fm[i], names[i]);
     geist_backend_destroy(be);
     if (fails > 0) {

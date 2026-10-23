@@ -49,10 +49,34 @@ on:
         description: "bench_perf_sweep arguments besides --gguf"
         type: string
         default: "--seq-lens 512 --decode-n 32 --warmup 8 --repeats 3 --m-max 128"
+      nll:
+        description: "bench_nll configurations, separated by ; (cpu, hot, gpu; scalar = cpu_scalar, the reference)"
+        type: string
+        default: "cpu;hot;gpu"
+      nll_first:
+        description: "bench_nll: score the predictions from this position on (512 = llama-perplexity -c 1024's tokens)"
+        type: string
+        default: "0"
+      llama_ppl:
+        description: "llama-perplexity -c 1024 on the same text, the independent reference: its --n-cpu-moe (empty: skip)"
+        type: string
+        default: ""
+      build:
+        description: "extra make variables for geistlib, e.g. OPENMP=0 (its own spinning thread pool)"
+        type: string
+        default: ""
+      llama_real:
+        description: "llama.cpp on real text: --n-cpu-moe values for llama-server, separated by ; (empty: skip)"
+        type: string
+        default: ""
       cap:
         description: "timeout per configuration and cycle, seconds"
         type: string
         default: "1200"
+      profile:
+        description: "expert usage profile (GEIST_MOE_PROFILE) of this model; empty: none"
+        type: string
+        default: benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt # #48, Qwen3-30B-A3B
 
 permissions:
   contents: read
@@ -71,7 +95,7 @@ jobs:
       XENV: ${{ inputs.env }}
       SWEEP_ARGS: ${{ inputs.sweep }}
       GGML_VK_VISIBLE_DEVICES: "0" # the discrete card, not the Raphael iGPU
-      PROFILE: benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt # #48
+      PROFILE: ${{ inputs.profile }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -81,7 +105,10 @@ jobs:
           mkdir -p out
           { git rev-parse HEAD; nvidia-smi; free -g; nproc; } 2>&1 | tee out/env.txt
       - name: Build geistlib (vulkan + cpu_x86)
-        run: make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
+        run: |
+          make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native ${{ inputs.build }} bin
+          # OPENMP=0 builds into bin/linux/release-noomp
+          echo "GBIN=$(dirname "$(find bin -path '*/release*/tests/bench_perf_sweep' | head -1)")" >> "$GITHUB_ENV"
       - name: llama.cpp (pinned, cpu and vulkan)
         run: |
           set -eo pipefail
@@ -106,29 +133,113 @@ jobs:
           . scripts/gpu-lock.sh
           GEIST_SPLIT_BACKEND=vulkan GEIST_SPLIT_GGUF_PATH="$MODEL" GEIST_SPLIT_POINTS=1 \
             GEIST_MOE_PROFILE="$PROFILE" GEIST_VERBOSE=1 \
-            bin/linux/release/tests/test_layer_split_int 2>&1 \
+            "$GBIN"/test_layer_split_int 2>&1 \
             | grep -v '^geist vulkan: device memory' | tee out/hot-vs-cpu.txt
       - name: Quality, perplexity of docs/OFFLOAD.md (CPU vs hot experts)
         continue-on-error: true
+        env:
+          XENV: ${{ inputs.env }}
+          NLLCFG: ${{ inputs.nll }}
+          NLLFIRST: ${{ inputs.nll_first }}
         run: |
           set -o pipefail
           . scripts/gpu-lock.sh
-          NLL=bin/linux/release/tests/bench_nll
-          for cfg in cpu hot gpu; do
+          NLL="$GBIN"/bench_nll
+          XNLL=$(echo "$XENV" | tr ';' ' ')
+          for cfg in $(echo "$NLLCFG" | tr ';' ' '); do
             B=cpu_x86
             case $cfg in
+              scalar) X=; B=cpu_scalar ;;
               hot) X="GEIST_MOE_PROFILE=$PROFILE GEIST_BENCH_SPLIT_BACKEND=vulkan GEIST_BENCH_SPLIT_LAYERS=auto" ;;
               gpu) X="GEIST_MOE_PROFILE=$PROFILE"; B=vulkan ;;
               *) X= ;;
             esac
-            env $X GEIST_BENCH_BACKEND=$B "$NLL" "$MODEL" docs/OFFLOAD.md 1024 2>> out/log.txt \
+            ( while :; do nvidia-smi --query-gpu=pstate,clocks.sm,clocks.mem,utilization.gpu --format=csv,noheader \
+                | sed "s/^/nll-$cfg 1, /"; sleep 0.5; done >> out/clocks.txt ) &
+            clk=$!
+            echo "== nll $cfg" >> out/log.txt
+            env $X $XNLL GEIST_VERBOSE=1 GEIST_BENCH_BACKEND=$B "$NLL" "$MODEL" docs/OFFLOAD.md 1024 "$NLLFIRST" 2>> out/log.txt \
               | sed "s/^{/{\"cfg\":\"$cfg\",/" | tee -a out/nll.jsonl
+            kill $clk 2>/dev/null || true
+          done
+      - name: llama.cpp perplexity on the same text (the independent reference)
+        if: inputs.llama_ppl != ''
+        continue-on-error: true
+        env:
+          NCMOE: ${{ inputs.llama_ppl }}
+        run: |
+          set -eo pipefail
+          . scripts/gpu-lock.sh
+          BUILD=$(dirname "$(dirname "$LLAMA_VK")")
+          cmake --build "$BUILD" --target llama-perplexity -j "$(nproc)" > /dev/null
+          # One window of 1024 tokens; llama-perplexity scores its second
+          # half: bench_nll with nll_first = 512 scores the same tokens.
+          "$BUILD/bin/llama-perplexity" -m "$MODEL" -f docs/OFFLOAD.md -c 1024 -b 1024 --chunks 1 \
+            --device Vulkan0 -ngl 99 --n-cpu-moe "$NCMOE" 2>&1 | tee out/llama-perplexity.txt
+          P=$(sed -n 's/.*Final estimate: PPL = \([0-9.]*\).*/\1/p' out/llama-perplexity.txt)
+          echo "{\"cfg\":\"llama-perplexity\",\"ppl\":$P}" | tee -a out/nll.jsonl
+      - name: llama.cpp on real text (llama-server, --n-cpu-moe sweep)
+        if: inputs.llama_real != ''
+        continue-on-error: true
+        env:
+          NCMOE: ${{ inputs.llama_real }}
+        run: |
+          set -eo pipefail
+          . scripts/gpu-lock.sh
+          BUILD=$(dirname "$(dirname "$LLAMA_VK")")
+          cmake --build "$BUILD" --target llama-server -j "$(nproc)" > /dev/null
+          SERVER="$BUILD/bin/llama-server"
+          # The comparison is Vulkan against Vulkan, on the discrete card:
+          # list what llama.cpp sees and name the device explicitly.
+          "$SERVER" --list-devices 2>&1 | tee out/llama-devices.txt
+          grep -q "Vulkan0" out/llama-devices.txt || { echo "llama.cpp sees no Vulkan0"; exit 1; }
+          for k in $(echo "$NCMOE" | tr ';' ' '); do
+            echo "== llama-real ncmoe=$k" | tee -a out/log.txt
+            ( while :; do nvidia-smi --query-gpu=pstate,clocks.sm,clocks.mem,utilization.gpu --format=csv,noheader \
+                | sed "s/^/llama-real-$k 1, /"; sleep 0.5; done >> out/clocks.txt ) &
+            clk=$!
+            "$SERVER" -m "$MODEL" --device Vulkan0 -ngl 99 --n-cpu-moe "$k" -c 4096 -np 1 --port 8099 >> out/llama-server.log 2>&1 &
+            pid=$!
+            python3 - "$k" "$CYCLES" "$pid" <<'PY' | tee -a out/results.jsonl || true
+          import json, sys, time, urllib.request
+          import os
+          k, cycles, pid = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+          base = "http://127.0.0.1:8099"
+          def post(path, body):
+              r = urllib.request.Request(base + path, data=json.dumps(body).encode(),
+                                         headers={"Content-Type": "application/json"})
+              return json.load(urllib.request.urlopen(r, timeout=600))
+          for _ in range(600):  # model load; a server that died (no room on the card) ends it
+              try:
+                  os.kill(pid, 0)
+              except OSError:
+                  print(json.dumps({"cfg": "llama-real-" + k, "error": "server exited"}))
+                  sys.exit(0)
+              try:
+                  if json.load(urllib.request.urlopen(base + "/health", timeout=5)).get("status") == "ok":
+                      break
+              except Exception:
+                  pass
+              time.sleep(1)
+          # the same prompt tokens bench_perf_sweep --prompt-file uses: the file's first 512
+          ids = post("/tokenize", {"content": open("docs/OFFLOAD.md").read()})["tokens"][:512]
+          for c in range(cycles + 1):  # the first is warmup
+              t = post("/completion", {"prompt": ids, "n_predict": 128, "temperature": 0,
+                                       "cache_prompt": False, "ignore_eos": True})["timings"]
+              if c > 0:
+                  print(json.dumps({"cfg": "llama-real-" + k, "cycle": c,
+                                    "prefill_tps": t["prompt_per_second"],
+                                    "decode_tps": t["predicted_per_second"]}))
+          PY
+            kill $pid 2>/dev/null || true
+            wait $pid 2>/dev/null || true
+            kill $clk 2>/dev/null || true
           done
       - name: Measure, interleaved
         run: |
           set -o pipefail
           . scripts/gpu-lock.sh
-          GB=bin/linux/release/tests/bench_perf_sweep
+          GB="$GBIN"/bench_perf_sweep
           SWEEP="--gguf $MODEL $SWEEP_ARGS"
           X=$(echo "$XENV" | tr ';' ' ')
           LB="-m $MODEL -p 512 -n 32 -r 3 -o jsonl"

@@ -1,34 +1,40 @@
 #version 450
 #include "vk_limits.h"
 
-/* out[c] = a[c] + sum_{j < n} w[j] * y[j][c] (#161): a decode step's hot
- * experts' outputs, weighted by the router, onto the partial sum of the
- * cold ones the host made. Dispatch: gx = ceil(d / 256). */
+/* out[t][c] = add[t][c] + sum_{k in [start[t], start[t+1])} w[k] * y[rows[k]][c]
+ * (#161, #163): mixture-of-experts outputs, weighted by the router, onto the
+ * partial sums the host made, one output row per token. start, rows, w and
+ * add come in the host-written ring (binding 1, 32-bit words; w and add as
+ * float bits). Dispatch: gx = ceil(d / 256), gy = tokens. */
 
 layout(local_size_x = 256) in;
 
 layout(set = 0, binding = 0) readonly buffer Y { float y[]; };
-layout(set = 0, binding = 1) readonly buffer A { float a[]; };
+layout(set = 0, binding = 1) readonly buffer R { uint r[]; };
 layout(set = 0, binding = 2) writeonly buffer O { float o[]; };
 
 layout(push_constant) uniform Push {
     uint d;
-    uint n;
     uint y_offset;
     uint y_stride;
-    uint a_offset;
     uint o_offset;
-    float w[VK_GROUP_MAX];
+    uint o_stride;
+    uint start_off; /* words into r */
+    uint rows_off;
+    uint w_off;
+    uint add_off;
 } pc;
 
 void main() {
     uint c = gl_GlobalInvocationID.x;
+    uint t = gl_WorkGroupID.y;
     if (c >= pc.d) {
         return;
     }
-    float s = a[pc.a_offset + c];
-    for (uint j = 0u; j < pc.n; ++j) {
-        s += pc.w[j] * y[pc.y_offset + j * pc.y_stride + c];
+    float s = uintBitsToFloat(r[pc.add_off + t * pc.d + c]);
+    uint  e = r[pc.start_off + t + 1u];
+    for (uint k = r[pc.start_off + t]; k < e; ++k) {
+        s += uintBitsToFloat(r[pc.w_off + k]) * y[pc.y_offset + r[pc.rows_off + k] * pc.y_stride + c];
     }
-    o[pc.o_offset + c] = s;
+    o[pc.o_offset + t * pc.o_stride + c] = s;
 }

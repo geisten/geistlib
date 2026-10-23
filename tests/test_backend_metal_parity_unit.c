@@ -1030,6 +1030,196 @@ static void run_fused_matvec_case(
         v->buffer_destroy(mt, bx);
 }
 
+static struct geist_tensor dense3(struct geist_buffer *b, int dt, size_t d0, size_t d1, size_t d2) {
+    return (struct geist_tensor) {.buffer = b,
+                                  .dtype  = (uint16_t) dt,
+                                  .layout = GEIST_LAYOUT_DENSE,
+                                  .ndim   = 3,
+                                  .shape  = {(int64_t) d0, (int64_t) d1, (int64_t) d2},
+                                  .stride = {(int64_t) (d1 * d2), (int64_t) d2, 1}};
+}
+
+/* attn_rope_append (#17) against the Metal ops it replaces, bit for bit:
+ * per-head rmsnorm (with_norm), rope_apply over n_rot, scale_f32 and the
+ * F16 or F32 KV append at row qp. */
+static void run_rope_append_case(struct geist_backend *mt,
+                                 size_t                rows,
+                                 size_t                qh,
+                                 size_t                kvh,
+                                 size_t                hd,
+                                 size_t                n_rot,
+                                 size_t                qp,
+                                 bool                  with_norm,
+                                 bool                  f16) {
+    const struct geist_backend_vtbl  *v  = mt->desc->vtbl;
+    const struct geist_backend_fused *f  = geist_backend_fused_tbl(mt);
+    const size_t                      nq = rows * qh * hd, nk = rows * kvh * hd;
+    const size_t                      crow  = qp + rows;
+    const size_t                      ncach = crow * kvh * hd;
+    const size_t                      esz   = f16 ? sizeof(uint16_t) : sizeof(float);
+    const float                       scale = 0.08838835f;
+    struct geist_buffer *bq[2] = {nullptr}, *bk[2] = {nullptr}, *bv = nullptr, *bqw = nullptr,
+                        *bkw = nullptr, *bc = nullptr, *bs = nullptr, *bkc[2] = {nullptr},
+                        *bvc[2] = {nullptr};
+    float *q                    = dev_alloc(mt, nq * sizeof(float), &bq[0]);
+    float *k                    = dev_alloc(mt, nk * sizeof(float), &bk[0]);
+    float *q2                   = dev_alloc(mt, nq * sizeof(float), &bq[1]);
+    float *k2                   = dev_alloc(mt, nk * sizeof(float), &bk[1]);
+    float *vv                   = dev_alloc(mt, nk * sizeof(float), &bv);
+    float *qw                   = dev_alloc(mt, hd * sizeof(float), &bqw);
+    float *kw                   = dev_alloc(mt, hd * sizeof(float), &bkw);
+    float *co                   = dev_alloc(mt, rows * n_rot * sizeof(float), &bc);
+    float *si                   = dev_alloc(mt, rows * n_rot * sizeof(float), &bs);
+    bool   ok = q != nullptr && k != nullptr && q2 != nullptr && k2 != nullptr && vv != nullptr &&
+                qw != nullptr && kw != nullptr && co != nullptr && si != nullptr &&
+                f->attn_rope_append != nullptr;
+    for (size_t i = 0; i < 2 && ok; i++) {
+        uint8_t *a = dev_alloc(mt, ncach * esz, &bkc[i]);
+        uint8_t *b = dev_alloc(mt, ncach * esz, &bvc[i]);
+        ok         = a != nullptr && b != nullptr;
+        if (ok) {
+            memset(a, 0, ncach * esz);
+            memset(b, 0, ncach * esz);
+        }
+    }
+    const size_t tot = 2 * nq + 2 * nk + 4 * ncach * esz / sizeof(float) + 4;
+    float       *got = malloc(tot * sizeof(float));
+    check(ok && got != nullptr, "rope_append buffers");
+    if (ok && got != nullptr) {
+        for (size_t i = 0; i < nq; i++)
+            q[i] = q2[i] = ((float) rng_u8() - 127.5f) * 0.0372529f;
+        for (size_t i = 0; i < nk; i++) {
+            k[i] = k2[i] = ((float) rng_u8() - 127.5f) * 0.0291f;
+            vv[i]        = ((float) rng_u8() - 127.5f) * 0.0173f;
+        }
+        for (size_t i = 0; i < hd; i++) {
+            qw[i] = 0.5f + (float) rng_u8() * 0.00731f;
+            kw[i] = 0.25f + (float) rng_u8() * 0.00517f;
+        }
+        for (size_t i = 0; i < rows * n_rot; i++) {
+            const float a = (float) (qp + i / n_rot) * 0.37f / (float) (1u + i % n_rot);
+            co[i]         = cosf(a);
+            si[i]         = sinf(a);
+        }
+        const int           cdt = f16 ? GEIST_DTYPE_F16 : GEIST_DTYPE_F32;
+        struct geist_tensor tq  = dense3(bq[0], GEIST_DTYPE_F32, rows, qh, hd);
+        struct geist_tensor tk  = dense3(bk[0], GEIST_DTYPE_F32, rows, kvh, hd);
+        struct geist_tensor tv  = dense3(bv, GEIST_DTYPE_F32, rows, kvh, hd);
+        struct geist_tensor tkc = dense3(bkc[0], cdt, crow, kvh, hd);
+        struct geist_tensor tvc = dense3(bvc[0], cdt, crow, kvh, hd);
+        struct geist_tensor tqw = {.buffer = bqw,
+                                   .dtype  = GEIST_DTYPE_F32,
+                                   .layout = GEIST_LAYOUT_DENSE,
+                                   .ndim   = 1,
+                                   .shape  = {(int64_t) hd},
+                                   .stride = {1}};
+        struct geist_tensor tkw = tqw;
+        tkw.buffer              = bkw;
+        struct geist_tensor tc  = {.buffer = bc,
+                                   .dtype  = GEIST_DTYPE_F32,
+                                   .layout = GEIST_LAYOUT_DENSE,
+                                   .ndim   = 2,
+                                   .shape  = {(int64_t) rows, (int64_t) n_rot},
+                                   .stride = {(int64_t) n_rot, 1}};
+        struct geist_tensor ts  = tc;
+        ts.buffer               = bs;
+        enum geist_status st    = f->attn_rope_append(mt,
+                                                      &tq,
+                                                      &tk,
+                                                      &tv,
+                                                      with_norm ? &tqw : nullptr,
+                                                      with_norm ? &tkw : nullptr,
+                                                      &tc,
+                                                      &ts,
+                                                      1e-6f,
+                                                      scale,
+                                                      qp,
+                                                      &tkc,
+                                                      &tvc);
+        /* the separate ops on the copies */
+        struct geist_tensor tq2 = dense3(bq[1], GEIST_DTYPE_F32, rows, qh, hd);
+        struct geist_tensor tk2 = dense3(bk[1], GEIST_DTYPE_F32, rows, kvh, hd);
+        struct geist_tensor qh2 = {.buffer = bq[1],
+                                   .dtype  = GEIST_DTYPE_F32,
+                                   .layout = GEIST_LAYOUT_DENSE,
+                                   .ndim   = 2,
+                                   .shape  = {(int64_t) (rows * qh), (int64_t) hd},
+                                   .stride = {(int64_t) hd, 1}};
+        struct geist_tensor kh2 = qh2;
+        kh2.buffer              = bk[1];
+        kh2.shape[0]            = (int64_t) (rows * kvh);
+        if (st == GEIST_OK && with_norm)
+            st = mt->desc->prims->rmsnorm(mt, &qh2, &tqw, 1e-6f, &qh2);
+        if (st == GEIST_OK)
+            st = mt->desc->prims->rope_apply(mt, &tq2, &tc, &ts);
+        struct geist_tensor qrow = {.buffer = bq[1],
+                                    .dtype  = GEIST_DTYPE_F32,
+                                    .layout = GEIST_LAYOUT_DENSE,
+                                    .ndim   = 2,
+                                    .shape  = {(int64_t) rows, (int64_t) (qh * hd)},
+                                    .stride = {(int64_t) (qh * hd), 1}};
+        if (st == GEIST_OK)
+            st = mt->desc->prims->scale_f32(mt, &qrow, scale, &qrow);
+        if (st == GEIST_OK && with_norm)
+            st = mt->desc->prims->rmsnorm(mt, &kh2, &tkw, 1e-6f, &kh2);
+        if (st == GEIST_OK)
+            st = mt->desc->prims->rope_apply(mt, &tk2, &tc, &ts);
+        struct geist_tensor tkc2 = dense3(bkc[1], cdt, crow, kvh, hd);
+        struct geist_tensor tvc2 = dense3(bvc[1], cdt, crow, kvh, hd);
+        if (st == GEIST_OK && f16) {
+            st = f->kv_append_f16(mt, &tk2, &tv, qp, &tkc2, &tvc2);
+        } else if (st == GEIST_OK) {
+            const size_t row_bytes = kvh * hd * sizeof(float);
+            st = v->buffer_copy(bkc[1], qp * row_bytes, bk[1], 0, rows * row_bytes);
+            if (st == GEIST_OK)
+                st = v->buffer_copy(bvc[1], qp * row_bytes, bv, 0, rows * row_bytes);
+        }
+        check(st == GEIST_OK, "rope_append dispatch");
+        float   *g   = got;
+        size_t   bad = 0;
+        uint8_t *c1 = malloc(ncach * esz), *c2 = malloc(ncach * esz);
+        check(c1 != nullptr && c2 != nullptr &&
+                      v->buffer_download(nq * sizeof(float), (uint8_t *) g, bq[0]) == GEIST_OK &&
+                      v->buffer_download(nq * sizeof(float), (uint8_t *) (g + nq), bq[1]) ==
+                              GEIST_OK,
+              "rope_append q download");
+        bad += memcmp(g, g + nq, nq * sizeof(float)) != 0;
+        check(v->buffer_download(nk * sizeof(float), (uint8_t *) g, bk[0]) == GEIST_OK &&
+                      v->buffer_download(nk * sizeof(float), (uint8_t *) (g + nk), bk[1]) ==
+                              GEIST_OK,
+              "rope_append k download");
+        bad += 2 * (memcmp(g, g + nk, nk * sizeof(float)) != 0);
+        for (size_t i = 0; i < 2 && c1 != nullptr && c2 != nullptr; i++) {
+            struct geist_buffer *b1 = i == 0 ? bkc[0] : bvc[0], *b2 = i == 0 ? bkc[1] : bvc[1];
+            check(v->buffer_download(ncach * esz, c1, b1) == GEIST_OK &&
+                          v->buffer_download(ncach * esz, c2, b2) == GEIST_OK,
+                  "rope_append cache download");
+            bad += (4u << i) * (memcmp(c1, c2, ncach * esz) != 0);
+        }
+        free(c1);
+        free(c2);
+        check(bad == 0, "attn_rope_append matches the separate ops bit for bit");
+        printf("  attn_rope_append rows %zu q %zu kv %zu hd %zu rot %zu qp %zu %s %s: %s (%zu)\n",
+               rows,
+               qh,
+               kvh,
+               hd,
+               n_rot,
+               qp,
+               with_norm ? "norm" : "plain",
+               f16 ? "f16" : "f32",
+               bad == 0 ? "bit-identical OK" : "FAIL",
+               bad);
+    }
+    free(got);
+    struct geist_buffer *bufs[] = {
+            bq[0], bq[1], bk[0], bk[1], bv, bqw, bkw, bc, bs, bkc[0], bkc[1], bvc[0], bvc[1]};
+    for (size_t i = 0; i < sizeof bufs / sizeof bufs[0]; i++) {
+        if (bufs[i] != nullptr)
+            v->buffer_destroy(mt, bufs[i]);
+    }
+}
+
 static void run_qwen35_attention_ops(struct geist_backend *mt) {
     enum { ROWS = 3, HEADS = 2, HD = 5, QOUT = HEADS * HD };
     const struct geist_backend_vtbl  *v  = mt->desc->vtbl;
@@ -1231,6 +1421,14 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 384, 80);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 384, 3);
     run_silu_case(mt);
+    /* Llama / Qwen3 attention prep (#17): Qwen3 0.6B decode (16/8 heads
+     * of 128, q/k norms), Llama 3.2 3B (24/8 of 128, none), a prefill
+     * chunk, a partial rotation and the F32 cache. */
+    run_rope_append_case(mt, 1, 16, 8, 128, 128, 37, true, true);
+    run_rope_append_case(mt, 1, 24, 8, 128, 128, 200, false, true);
+    run_rope_append_case(mt, 7, 4, 2, 64, 64, 0, true, true);
+    run_rope_append_case(mt, 3, 4, 1, 256, 64, 11, true, false);
+    run_rope_append_case(mt, 1, 2, 2, 512, 512, 5, false, false);
     /* Decode q/k/v and gate/up fusion (#17): Gemma 4 / Llama Q4_K_M
      * (v Q6_K), all Q4_K, all Q8_0 (Qwen3, SmolLM2); n_kv off the
      * threadgroup tiles of 4 and 8 rows. */
@@ -1298,6 +1496,13 @@ int main(void) {
 #ifdef GEIST_BACKEND_METAL
     run_staged_upload(mt);
 #endif
+
+    /* 2..8 rows take matmul_pq2_m8 (#105): one and many K blocks per
+     * simdgroup, a ragged last output tile. Last, so the shared random
+     * stream of the cases above stays as it was. */
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2m8", 512, 383, 2);
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2m8", 1536, 64, 7);
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2m8", 384, 1000, 8);
 
     geist_backend_destroy(mt);
     geist_backend_destroy(ref);

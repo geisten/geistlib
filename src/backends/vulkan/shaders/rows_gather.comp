@@ -1,0 +1,31 @@
+#version 450
+#include "vk_limits.h"
+
+/* out[i][c] = x[idx[i]][c] (#163): the rows a mixture-of-experts layer's
+ * GPU experts read, gathered from x on the device in their packed order;
+ * idx comes in the host-written ring (binding 1). Dispatch:
+ * gx = ceil(d / 256), gy = rows. */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X { float x[]; };
+layout(set = 0, binding = 1) readonly buffer R { uint r[]; };
+layout(set = 0, binding = 2) writeonly buffer O { float o[]; };
+
+layout(push_constant) uniform Push {
+    uint d;
+    uint x_offset;
+    uint x_stride;
+    uint o_offset;
+    uint o_stride;
+    uint idx_off; /* words into r */
+} pc;
+
+void main() {
+    uint c = gl_GlobalInvocationID.x;
+    uint i = gl_WorkGroupID.y;
+    if (c >= pc.d) {
+        return;
+    }
+    o[pc.o_offset + i * pc.o_stride + c] = x[pc.x_offset + r[pc.idx_off + i] * pc.x_stride + c];
+}

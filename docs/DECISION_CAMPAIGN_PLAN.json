@@ -297,6 +297,30 @@
         "combined_baseline": "reasoning at cap 2048 = the cap-512 output for the 336 finished questions, the cap-2048 output for the 164 re-run ones; paired against the unchanged direct arm with the same conservative interval and 2 pp margin.",
         "reason": "A third of the cap-512 reasoning answers hit the cap; where reasoning finished it was 97.3 % accurate, so the cap-512 baseline is not a fair quality reference."
       }
-    ]
+    ],
+    "status": "completed_500_question_heldout_sample",
+    "result": {
+      "writeup": "benchmark/results/DECISION_MMLU_HELDOUT_2026-10-23.md",
+      "json": "benchmark/results/DECISION_MMLU_HELDOUT_2026-10-23.json",
+      "raw_bundle": "benchmark/results/raw/decision-mmlu-heldout-2026-10-23",
+      "measured_source_revision": "2a387442098c4f324989040a3d78330c425c1cac",
+      "binary_sha256_prefix": "bf8fa083d636",
+      "temperature": 1.05460455763381,
+      "direct_accuracy": 0.678,
+      "reasoning_cap512_accuracy": 0.654,
+      "reasoning_capped": 164,
+      "difference_pp": 2.4,
+      "interval_pp": [
+        -5.11,
+        9.87
+      ],
+      "noninferiority_established": false,
+      "n_needed_at_observed_rates": 1450,
+      "quality_matched_speedup_established": false,
+      "selected_equals_dense_bit_exact": "500/500",
+      "determinism_spotcheck": "20/20 per arm identical",
+      "reasoning_accuracy_where_finished": 0.973,
+      "direct_accuracy_where_reasoning_finished": 0.759
+    }
   }
 }

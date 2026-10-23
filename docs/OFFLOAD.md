@@ -409,6 +409,45 @@ met.
 `fused->linear_t_grouped`). Qwen3-30B-A3B Q4_K_M (18.6 GB, does not fit
 11 GB), RTX 2080 Ti + Ryzen 9 9950X, `moe-baseline.yml`.
 
+> **Correction, 2026-10-22: measure on real text.** The decode numbers
+> below (runs 1665-1705) are `bench_perf_sweep`'s pseudo-random prompt, as
+> llama-bench's are. A mixture of experts routes such tokens unlike text:
+> 40 % of the expert rows went to cold experts (run 1712), where the #48
+> profile covers 88.5 % of real text's selections, and the few cold experts
+> it does pick repeat every token, so their weights sit in the 9950X's
+> 64 MB L3. Measured instead on a real prompt — the first 512 tokens of
+> `docs/OFFLOAD.md` (`bench_perf_sweep --prompt-file`, llama-server's
+> `/completion` with the same token ids), 128 decoded tokens:
+>
+> | | decode tok/s | prefill tok/s | runs |
+> |:--|--:|--:|:--|
+> | llama.cpp `--n-cpu-moe 24` (its best split that fits) | 52.7 / 52.8 | 491 / 487 | 1741 |
+> | llama.cpp `--n-cpu-moe 32` | 47.3 / 47.6 | 407 / 401 | 1741 |
+> | llama.cpp `--n-cpu-moe 48` (all experts on the CPU) | 37.9 / 37.9 | 294 / 301 | 1741 |
+> | geist cpu_x86 | 34.8-36.0 | 236-252 | 1740-1743 |
+> | geist, model on the CPU, hot experts on the GPU | 42.0-43.0 | 234-251 | 1740-1743 |
+> | geist, model on the GPU | **54.5-61.2** | 164-180 | 1742, 1743, 1745, 1746 |
+> | geist, model on the GPU, host busy | 2.3-2.5 | 155-171 | 1733, 1734 |
+>
+> **The model on the GPU decodes fastest**: 12 cycles in four runs at
+> 54.5-61.2 tok/s, 3-16 % above llama.cpp's best split, the card at
+> 1,980 MHz and ~41 % busy. Run 1746 is the very commit that ran at
+> 2.3-2.5 in run 1733: that collapse — its ~3 cold experts per layer took
+> 6-7 ms on the CPU instead of 170-200 µs, the card idled at 435 MHz — came
+> from the shared host, not the code, and shows the mode's weakness: it
+> needs the CPU's cores when the GPU waits for them. Its prefill (164-180
+> tok/s) is below the CPU alone. `bench_nll` (11-16 tok/s) understates it:
+> its own softmax over the vocabulary after every token idles the card,
+> which then drops its clocks. `OPENMP=0` changes little (59.3/60.3 vs
+> 57.4/59.7). **The model on the CPU with a GPU split backend** is the
+> steady alternative: +19-23 % over the CPU alone in every run and both
+> measures, prefill as the CPU's, perplexity 29.96 against 29.90. Prefill
+> trails llama.cpp's best split by half in every geist mode — **since #163
+> the model on the GPU does not**: the hot rows are gathered and summed on
+> the device and a discrete GPU prefills a mixture of experts in chunks of
+> 512, 490-498 tok/s (runs 1754/1755). Raw data:
+> `benchmark/results/raw/moe-real-text-2026-10-22/`.
+
 - **The model on the GPU.** A mixture-of-experts model loaded on a GPU
   backend runs attention, router, embedding and head there. Its experts are
   resolved on a CPU backend of the state's own (`moe_cpu`: cpu_x86,
@@ -449,8 +488,8 @@ memory). Runs 1704/1705 (3 cycles): 44.9-51.8 tok/s after 32 tokens,
 perplexity 29.99 (CPU 29.90). The card is still only ~35 % busy (P0 most of
 the time); routing on the GPU (#162) is the next margin.
 
-Decode beats both CPU only (+45 %) and llama.cpp `-ot exps=CPU` (+30 %):
-the decision rule holds. Quality: the perplexity of `docs/OFFLOAD.md`
+On the pseudo-random prompt decode beats both CPU only (+45 %) and
+llama.cpp `-ot exps=CPU` (+30 %); on real text see the correction above. Quality: the perplexity of `docs/OFFLOAD.md`
 (1,023 tokens fed one at a time, `bench_nll`) is 29.90 on the CPU and 30.06
 on the GPU; greedy tokens are a poor bar for an MoE, whose routing turns
 tiny differences into other continuations. **Open: prefill** — a chunk's

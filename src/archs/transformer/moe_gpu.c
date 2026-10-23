@@ -103,7 +103,7 @@ moe_fit(const struct transformer_arch_state *st, struct geist_backend *gbe, size
         expert_bytes == 0) {
         return 0;
     }
-    const size_t n_sel   = st->m_max * st->config.moe_n_used;
+    const size_t n_sel   = st->m_max * moe_k(&st->config);
     const size_t session = n_sel * (st->d_model + 2 * moe_inter(st)) * sizeof(float);
     const size_t reserve = (size_t) (mem.total_bytes / 16) + ((size_t) 512 << 20) + session;
     return mem.free_bytes > reserve ? ((size_t) mem.free_bytes - reserve) / expert_bytes : 0;
@@ -135,8 +135,9 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
                         ((double) (atomic_load(&mg->n_grouped) | 1u) * 1e3));
     }
     const struct geist_backend_vtbl *gv = mg->be->desc->vtbl;
-    for (size_t i = 0; mg->bufs != nullptr && mg->bufs[i] != nullptr; i++) {
-        gv->buffer_destroy(mg->be, mg->bufs[i]);
+    for (size_t i = 0; mg->bufs != nullptr && i < mg->n_bufs; i++) {
+        if (mg->bufs[i] != nullptr)
+            gv->buffer_destroy(mg->be, mg->bufs[i]);
     }
     void *b = mg->bufs, *t = mg->twins, *g = mg->grouped, *m = mg;
     safe_free(&b);
@@ -147,6 +148,7 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
 
 enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist_backend *gbe) {
     const size_t                      n_layers = st->n_layers, n_exp = st->config.moe_n_experts;
+    const size_t                      slots   = moe_slots(&st->config);
     const struct geist_backend_vtbl  *gv      = gbe->desc->vtbl;
     const struct geist_backend_fused *gf      = gbe->desc->fused;
     const bool                        verbose = getenv("GEIST_VERBOSE") != nullptr;
@@ -168,17 +170,18 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
     if (force != nullptr && *force != '\0') {
         n = (size_t) strtoull(force, nullptr, 10);
     }
-    n = n < n_layers * n_exp ? n : n_layers * n_exp;
+    n = n < n_layers * slots ? n : n_layers * slots;
 
     struct transformer_moe_gpu *mg =
             heap_calloc_aligned(1, sizeof *mg, alignof(struct transformer_moe_gpu));
-    struct moe_rank  *rank  = heap_calloc_array_aligned(struct moe_rank, n_layers * n_exp);
+    struct moe_rank  *rank  = heap_calloc_array_aligned(struct moe_rank, n_layers * slots);
     uint64_t         *count = heap_calloc_array_aligned(uint64_t, n_layers *n_exp);
     enum geist_status s     = GEIST_OK;
     if (mg != nullptr) {
         mg->be      = gbe;
-        mg->twins   = heap_calloc_array_aligned(struct geist_weight, n_layers * n_exp * 3);
-        mg->bufs    = heap_calloc_array_aligned(struct geist_buffer *, n_layers * 3 + 1);
+        mg->twins   = heap_calloc_array_aligned(struct geist_weight, n_layers * slots * 3);
+        mg->bufs    = heap_calloc_array_aligned(struct geist_buffer *, n_layers * 6);
+        mg->n_bufs  = mg->bufs != nullptr ? n_layers * 6 : 0;
         mg->grouped = heap_calloc_array_aligned(bool, n_layers);
     }
     if (mg == nullptr || rank == nullptr || count == nullptr || mg->twins == nullptr ||
@@ -190,25 +193,28 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
     if (s == GEIST_OK && prof != nullptr && *prof != '\0') {
         profile_read(prof, n_layers, n_exp, count);
     }
-    for (size_t i = 0; s == GEIST_OK && i < n_layers * n_exp; i++) {
-        const size_t l = i / n_exp, e = i % n_exp;
-        rank[i] = (struct moe_rank) {count[i], (uint32_t) (e * n_layers + l)};
+    /* The shared expert runs for every token: first on the device. */
+    for (size_t i = 0; s == GEIST_OK && i < n_layers * slots; i++) {
+        const size_t l = i / slots, e = i % slots;
+        rank[i] = (struct moe_rank) {e < n_exp ? count[l * n_exp + e] : UINT64_MAX,
+                                     (uint32_t) (e * n_layers + l)};
     }
     if (s == GEIST_OK) {
-        qsort(rank, n_layers * n_exp, sizeof *rank, rank_cmp);
+        qsort(rank, n_layers * slots, sizeof *rank, rank_cmp);
     }
     /* The device sees each layer's expert tensors through one aliased
-     * buffer: the copies are keyed by addresses inside it. */
-    size_t nb = 0;
+     * buffer: the copies are keyed by addresses inside it. A shared
+     * expert is a tensor of its own: bufs[l * 6 + 3 + p]. */
     for (size_t l = 0; s == GEIST_OK && l < n_layers; l++) {
-        for (size_t p = 0; p < 3 && s == GEIST_OK; p++) {
-            const struct geist_weight *w = expert_proj(&st->layers[l], p);
-            s                            = gv->buffer_create_aliased(gbe,
-                                                                     (void *) w[0].raw,
-                                                                     n_exp * w[0].raw_nbytes,
-                                                                     GEIST_BUFFER_WEIGHT,
-                                                                     &mg->bufs[nb]);
-            nb += s == GEIST_OK;
+        for (size_t p = 0; p < 6 && s == GEIST_OK; p++) {
+            const struct geist_weight *w = expert_proj(&st->layers[l], p % 3);
+            if (p >= 3 && slots == n_exp)
+                break;
+            s = gv->buffer_create_aliased(gbe,
+                                          (void *) w[p < 3 ? 0 : n_exp].raw,
+                                          p < 3 ? n_exp * w[0].raw_nbytes : w[n_exp].raw_nbytes,
+                                          GEIST_BUFFER_WEIGHT,
+                                          &mg->bufs[l * 6 + p]);
         }
     }
     uint64_t covered = 0, total = 0;
@@ -217,7 +223,7 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
     }
     for (size_t k = 0; s == GEIST_OK && k < n; k++) {
         const size_t         l = rank[k].idx % n_layers, e = rank[k].idx / n_layers;
-        struct geist_weight *tw = &mg->twins[(l * n_exp + e) * 3];
+        struct geist_weight *tw = &mg->twins[(l * slots + e) * 3];
         enum geist_status    rs = GEIST_OK;
         for (size_t p = 0; p < 3 && rs == GEIST_OK; p++) {
             const struct geist_weight *w = &expert_proj(&st->layers[l], p)[e];
@@ -229,19 +235,26 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
             gbe->calibration.locked      = true;
             rs                           = gv->resolve_weight(gbe, &tw[p]);
         }
-        if (rs != GEIST_OK) { /* the device is full after all: the rest stay */
+        if (rs != GEIST_OK) {
             memset(tw, 0, 3 * sizeof *tw);
-            break;
+            /* A shared expert (ranked first) the device cannot take, e.g.
+             * its dtype: it stays on the CPU, the routed ones still go. */
+            if (e >= n_exp)
+                continue;
+            break; /* the device is full after all: the rest stay */
         }
         mg->n_hot++;
-        covered += rank[k].count;
+        covered += e < n_exp ? rank[k].count : 0;
         if (k == 0 && gf->submit != nullptr && gf->rows_weighted_sum != nullptr &&
-            gf->supported != nullptr) {
-            const struct geist_fusion_query q = {.op = GEIST_FUSED_ROWS_WEIGHTED_SUM,
-                                                 .m  = st->config.moe_n_used};
-            mg->one_wait                      = gbe == st->backend && gf->supported(gbe, &q);
+            gf->rows_gather != nullptr && gf->supported != nullptr) {
+            const struct geist_fusion_query q1 = {.op = GEIST_FUSED_ROWS_WEIGHTED_SUM,
+                                                  .m  = st->m_max};
+            const struct geist_fusion_query q2 = {.op = GEIST_FUSED_ROWS_GATHER,
+                                                  .m  = st->m_max * moe_k(&st->config)};
+            mg->one_wait = gbe == st->backend && gf->supported(gbe, &q1) && gf->supported(gbe, &q2);
         }
-        if (!mg->grouped[l] && gf->linear_t_grouped != nullptr && gf->supported != nullptr) {
+        if (!mg->grouped[l] && e < n_exp && gf->linear_t_grouped != nullptr &&
+            gf->supported != nullptr) {
             const struct geist_fusion_query q = {.op     = GEIST_FUSED_LINEAR_GROUPED,
                                                  .m      = 1,
                                                  .gate_w = &tw[0],
@@ -261,12 +274,12 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
         fprintf(stderr,
                 "geist: moe: %zu of %zu experts (%zu MiB) on %s; profile %s, cover %.1f %%\n",
                 mg->n_hot,
-                n_layers * n_exp,
+                n_layers * slots,
                 (mg->n_hot * eb) >> 20,
                 gbe->desc->name,
                 prof != nullptr ? prof : "none",
                 total > 0 ? 100.0 * (double) covered / (double) total
-                          : 100.0 * (double) mg->n_hot / (double) (n_layers * n_exp));
+                          : 100.0 * (double) mg->n_hot / (double) (n_layers * slots));
     }
     st->moe_gpu = mg;
     return GEIST_OK;
@@ -274,11 +287,20 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
 
 void moe_gpu_session_free(struct transformer_arch_session *sess) {
     const struct transformer_moe_gpu *mg  = sess->model->moe_gpu;
-    struct geist_buffer             **b[] = {&sess->moe_gpu_x_io,
-                                             &sess->moe_gpu_y_io,
-                                             &sess->moe_gpu_x,
-                                             &sess->moe_gpu_g,
-                                             &sess->moe_gpu_u};
+    void                             *h[] = {sess->moe_ids_hot,
+                                             sess->moe_csr_start,
+                                             sess->moe_csr_fill,
+                                             sess->moe_csr_rows,
+                                             sess->moe_csr_w};
+    for (size_t i = 0; i < sizeof h / sizeof h[0]; i++)
+        safe_free(&h[i]);
+    sess->moe_ids_hot = sess->moe_csr_start = sess->moe_csr_fill = sess->moe_csr_rows = nullptr;
+    sess->moe_csr_w                                                                   = nullptr;
+    struct geist_buffer **b[] = {&sess->moe_gpu_x_io,
+                                 &sess->moe_gpu_y_io,
+                                 &sess->moe_gpu_x,
+                                 &sess->moe_gpu_g,
+                                 &sess->moe_gpu_u};
     for (size_t i = 0; i < sizeof b / sizeof b[0]; i++) {
         if (*b[i] != nullptr) {
             mg->be->desc->vtbl->buffer_destroy(mg->be, *b[i]);
@@ -294,7 +316,7 @@ void moe_gpu_session_alloc(struct transformer_arch_session *sess) {
         return;
     }
     const struct geist_backend_vtbl *gv    = mg->be->desc->vtbl;
-    const size_t                     n_sel = sess->m_max * st->config.moe_n_used;
+    const size_t                     n_sel = sess->m_max * moe_k(&st->config);
     const size_t                     xb    = n_sel * st->d_model * sizeof(float);
     const size_t                     gb    = n_sel * moe_inter(st) * sizeof(float);
     enum geist_status                s =
@@ -310,6 +332,17 @@ void moe_gpu_session_alloc(struct transformer_arch_session *sess) {
     if (s == GEIST_OK)
         s = gv->buffer_create(
                 mg->be, gb, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, &sess->moe_gpu_u);
+    if (s == GEIST_OK) {
+        sess->moe_ids_hot   = heap_alloc_array_aligned(uint32_t, n_sel);
+        sess->moe_csr_start = heap_alloc_array_aligned(uint32_t, sess->m_max + 1);
+        sess->moe_csr_fill  = heap_alloc_array_aligned(uint32_t, sess->m_max);
+        sess->moe_csr_rows  = heap_alloc_array_aligned(uint32_t, n_sel);
+        sess->moe_csr_w     = heap_alloc_array_aligned(float, n_sel);
+        if (sess->moe_ids_hot == nullptr || sess->moe_csr_start == nullptr ||
+            sess->moe_csr_fill == nullptr || sess->moe_csr_rows == nullptr ||
+            sess->moe_csr_w == nullptr)
+            s = GEIST_E_OOM;
+    }
     if (s != GEIST_OK) {
         fprintf(stderr,
                 "geist: moe: no room for this session's buffers on %s (%s); its experts run on "
@@ -322,8 +355,9 @@ void moe_gpu_session_alloc(struct transformer_arch_session *sess) {
 
 bool moe_gpu_hot(const struct transformer_arch_session *sess, size_t layer, size_t e) {
     const struct transformer_moe_gpu *mg = sess->model->moe_gpu;
-    return mg != nullptr && sess->moe_gpu_x != nullptr &&
-           mg->twins[(layer * sess->model->config.moe_n_experts + e) * 3].raw != nullptr;
+    /* An MTP block's layer index lies past the stack the copies cover. */
+    return mg != nullptr && sess->moe_gpu_x != nullptr && layer < sess->model->n_layers &&
+           mg->twins[(layer * moe_slots(&sess->model->config) + e) * 3].raw != nullptr;
 }
 
 enum geist_status moe_gpu_run(struct transformer_arch_session *sess,
@@ -336,7 +370,7 @@ enum geist_status moe_gpu_run(struct transformer_arch_session *sess,
     const struct geist_backend_vtbl        *gv  = gbe->desc->vtbl;
     const struct geist_backend_fused       *gf  = gbe->desc->fused;
     const struct transformer_layer_weights *L   = &st->layers[layer];
-    const size_t                            d = st->d_model, n_exp = st->config.moe_n_experts;
+    const size_t                            d = st->d_model, n_exp = moe_slots(&st->config);
     const size_t                            inter = L->intermediate;
     const size_t                           *rs    = sess->moe_row_start;
 
@@ -419,9 +453,10 @@ enum geist_status moe_gpu_run(struct transformer_arch_session *sess,
                     view_2d_at(sess->moe_gpu_y_io, rows * d * 4, (int64_t) m, (int64_t) d);
             /* The weight views: the CPU's, on the aliased buffer over the same bytes. */
             struct geist_tensor wg = L->moe_gate[e], wu = L->moe_up[e], wd = L->moe_down[e];
-            wg.buffer = mg->bufs[layer * 3 + 0];
-            wu.buffer = mg->bufs[layer * 3 + 1];
-            wd.buffer = mg->bufs[layer * 3 + 2];
+            const size_t        bi = layer * 6 + (e >= st->config.moe_n_experts ? 3 : 0);
+            wg.buffer              = mg->bufs[bi + 0];
+            wu.buffer              = mg->bufs[bi + 1];
+            wd.buffer              = mg->bufs[bi + 2];
             if (phase == 0) {
                 s = gf->linear_t(gbe, &x, &tw[0], &wg, m, &g);
                 if (s == GEIST_OK)
@@ -466,68 +501,157 @@ bool moe_gpu_launchable(const struct transformer_arch_session *sess,
                         size_t                                 n_hot,
                         const uint32_t                         hot[static n_hot]) {
     const struct transformer_moe_gpu *mg = sess->model->moe_gpu;
-    if (mg == nullptr || !mg->one_wait || !mg->grouped[layer] || sess->moe_x_io == nullptr ||
-        n_hot == 0 || n_hot > sess->model->config.moe_n_used)
-        return false;
-    for (size_t i = 0; i < n_hot; i++)
-        if (sess->moe_row_start[hot[i] + 1] - sess->moe_row_start[hot[i]] != 1)
-            return false;
-    return true;
+    (void) layer;
+    (void) hot;
+    return mg != nullptr && mg->one_wait && sess->moe_x_io != nullptr && n_hot > 0 &&
+           n_hot <= GEIST_MOE_MAX_EXPERTS;
 }
 
 enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
                                  size_t                           layer,
+                                 size_t                           seq,
                                  size_t                           n_hot,
                                  const uint32_t                   hot[static n_hot]) {
     const struct transformer_arch_state *st  = sess->model;
     struct transformer_moe_gpu          *mg  = st->moe_gpu;
     struct geist_backend                *gbe = mg->be;
-    const struct geist_backend_vtbl     *gv  = gbe->desc->vtbl;
     const struct geist_backend_fused    *gf  = gbe->desc->fused;
-    const size_t                         d = st->d_model, n_exp = st->config.moe_n_experts;
+    const size_t                         d = st->d_model, n_exp = moe_slots(&st->config);
+    const size_t                         k     = moe_k(&st->config);
     const size_t                         inter = st->layers[layer].intermediate;
+    const size_t                        *rs    = sess->moe_row_start;
     const struct geist_weight           *wg[GEIST_MOE_MAX_EXPERTS], *wu[GEIST_MOE_MAX_EXPERTS],
             *wd[GEIST_MOE_MAX_EXPERTS];
-    enum geist_status s = GEIST_OK;
-    /* One token: every hot expert's input is x, already in VRAM. */
-    for (size_t i = 0; i < n_hot && s == GEIST_OK; i++) {
+    /* The hot experts' rows, in their order, gathered from x on the device:
+     * packed row p reads token src[p]. sess->moe_rows is bucketed by expert;
+     * its entries are row * k + slot. */
+    uint32_t *src  = (uint32_t *) sess->moe_ids_hot;
+    size_t    rows = 0;
+    bool      one  = mg->grouped[layer];
+    for (size_t i = 0; i < n_hot; i++) {
         const struct geist_weight *tw = &mg->twins[(layer * n_exp + hot[i]) * 3];
         wg[i]                         = &tw[0];
         wu[i]                         = &tw[1];
         wd[i]                         = &tw[2];
-        s                             = gv->buffer_copy(
-                sess->moe_gpu_x, i * d * sizeof(float), sess->scratch_pre_ff, 0, d * sizeof(float));
+        one                           = one && rs[hot[i] + 1] - rs[hot[i]] == 1;
+        for (size_t r = rs[hot[i]]; r < rs[hot[i] + 1]; r++)
+            src[rows++] = sess->moe_rows[r] / (uint32_t) k;
     }
-    struct geist_tensor x = view_2d(sess->moe_gpu_x, (int64_t) n_hot, (int64_t) d);
-    struct geist_tensor g = view_2d(sess->moe_gpu_g, (int64_t) n_hot, (int64_t) inter);
-    struct geist_tensor u = view_2d(sess->moe_gpu_u, (int64_t) n_hot, (int64_t) inter);
-    if (s == GEIST_OK)
-        s = gf->linear_t_grouped(gbe, n_hot, wg, &x, &g);
-    if (s == GEIST_OK)
-        s = gf->linear_t_grouped(gbe, n_hot, wu, &x, &u);
-    if (s == GEIST_OK)
-        s = gf->silu_mul(gbe, &g, &u, &g);
-    /* ponytail: the outputs reuse x's rows (read by gate and up, which the
-     * backend's hazard tracking orders before this write). */
-    if (s == GEIST_OK)
-        s = gf->linear_t_grouped(gbe, n_hot, wd, &g, &x);
+    struct geist_tensor xin = view_2d(sess->scratch_pre_ff, (int64_t) seq, (int64_t) d);
+    struct geist_tensor x   = view_2d(sess->moe_gpu_x, (int64_t) rows, (int64_t) d);
+    enum geist_status   s   = gf->rows_gather(gbe, rows, d, src, &xin, &x);
+    if (one) {
+        /* A decode step: one row per expert, one grouped matvec each over
+         * the routed ones; a shared expert (last in hot[], its own dtype)
+         * after them as plain matvecs. */
+        const size_t        n_rt = n_hot - (hot[n_hot - 1] >= st->config.moe_n_experts);
+        struct geist_tensor g    = view_2d(sess->moe_gpu_g, (int64_t) rows, (int64_t) inter);
+        struct geist_tensor u    = view_2d(sess->moe_gpu_u, (int64_t) rows, (int64_t) inter);
+        struct geist_tensor xr   = view_2d(sess->moe_gpu_x, (int64_t) n_rt, (int64_t) d);
+        struct geist_tensor gr   = view_2d(sess->moe_gpu_g, (int64_t) n_rt, (int64_t) inter);
+        struct geist_tensor ur   = view_2d(sess->moe_gpu_u, (int64_t) n_rt, (int64_t) inter);
+        if (s == GEIST_OK && n_rt > 0)
+            s = gf->linear_t_grouped(gbe, n_rt, wg, &xr, &gr);
+        if (s == GEIST_OK && n_rt > 0)
+            s = gf->linear_t_grouped(gbe, n_rt, wu, &xr, &ur);
+        struct geist_tensor xs, gs, us, t[3];
+        if (n_rt < n_hot) {
+            xs = view_2d_at(sess->moe_gpu_x, n_rt * d * 4, 1, (int64_t) d);
+            gs = view_2d_at(sess->moe_gpu_g, n_rt * inter * 4, 1, (int64_t) inter);
+            us = view_2d_at(sess->moe_gpu_u, n_rt * inter * 4, 1, (int64_t) inter);
+            const struct geist_tensor *v[3] = {&st->layers[layer].moe_gate[hot[n_rt]],
+                                               &st->layers[layer].moe_up[hot[n_rt]],
+                                               &st->layers[layer].moe_down[hot[n_rt]]};
+            for (size_t p = 0; p < 3; p++) {
+                t[p]        = *v[p];
+                t[p].buffer = mg->bufs[layer * 6 + 3 + p];
+            }
+            if (s == GEIST_OK)
+                s = gf->linear_t(gbe, &xs, wg[n_rt], &t[0], 1, &gs);
+            if (s == GEIST_OK)
+                s = gf->linear_t(gbe, &xs, wu[n_rt], &t[1], 1, &us);
+        }
+        if (s == GEIST_OK)
+            s = gf->silu_mul(gbe, &g, &u, &g);
+        /* ponytail: the outputs reuse x's rows (read by gate and up, which
+         * the backend's hazard tracking orders before this write). */
+        if (s == GEIST_OK && n_rt > 0)
+            s = gf->linear_t_grouped(gbe, n_rt, wd, &gr, &xr);
+        if (s == GEIST_OK && n_rt < n_hot)
+            s = gf->linear_t(gbe, &gs, wd[n_rt], &t[2], 1, &xs);
+    } else {
+        /* A prefill chunk: each expert's rows as one GEMM, phase by phase
+         * so only the phases need barriers. */
+        for (size_t phase = 0; phase < 3 && s == GEIST_OK; phase++) {
+            size_t at = 0;
+            for (size_t i = 0; i < n_hot && s == GEIST_OK; i++) {
+                const size_t        m = rs[hot[i] + 1] - rs[hot[i]];
+                struct geist_tensor xe =
+                        view_2d_at(sess->moe_gpu_x, at * d * 4, (int64_t) m, (int64_t) d);
+                struct geist_tensor ge =
+                        view_2d_at(sess->moe_gpu_g, at * inter * 4, (int64_t) m, (int64_t) inter);
+                struct geist_tensor ue =
+                        view_2d_at(sess->moe_gpu_u, at * inter * 4, (int64_t) m, (int64_t) inter);
+                struct geist_tensor tw0 = st->layers[layer].moe_gate[hot[i]];
+                struct geist_tensor tw1 = st->layers[layer].moe_up[hot[i]];
+                struct geist_tensor tw2 = st->layers[layer].moe_down[hot[i]];
+                const size_t        bi  = layer * 6 + (hot[i] >= st->config.moe_n_experts ? 3 : 0);
+                tw0.buffer              = mg->bufs[bi + 0];
+                tw1.buffer              = mg->bufs[bi + 1];
+                tw2.buffer              = mg->bufs[bi + 2];
+                if (phase == 0) {
+                    s = gf->linear_t(gbe, &xe, wg[i], &tw0, m, &ge);
+                    if (s == GEIST_OK)
+                        s = gf->linear_t(gbe, &xe, wu[i], &tw1, m, &ue);
+                } else if (phase == 1) {
+                    s = gf->silu_mul(gbe, &ge, &ue, &ge);
+                } else {
+                    s = gf->linear_t(gbe, &ge, wd[i], &tw2, m, &xe); /* outputs over x */
+                }
+                at += m;
+            }
+        }
+    }
     if (s == GEIST_OK) {
         gf->submit(gbe);
-        atomic_fetch_add_explicit(&mg->rows_gpu, n_hot, memory_order_relaxed);
+        atomic_fetch_add_explicit(&mg->rows_gpu, rows, memory_order_relaxed);
         atomic_fetch_add_explicit(&mg->batches, 1, memory_order_relaxed);
-        atomic_fetch_add_explicit(&mg->n_grouped, 1, memory_order_relaxed);
+        if (one)
+            atomic_fetch_add_explicit(&mg->n_grouped, 1, memory_order_relaxed);
     }
     return s;
 }
 
 enum geist_status moe_gpu_finish(struct transformer_arch_session *sess,
+                                 size_t                           seq,
                                  size_t                           n_hot,
-                                 const float                      w[static n_hot],
-                                 const float                      cold[static sess->model->d_model],
-                                 struct geist_buffer             *out) {
-    const struct transformer_moe_gpu *mg = sess->model->moe_gpu;
-    const size_t                      d  = sess->model->d_model;
-    struct geist_tensor               y  = view_2d(sess->moe_gpu_x, (int64_t) n_hot, (int64_t) d);
-    struct geist_tensor               o  = view_2d(out, 1, (int64_t) d);
-    return mg->be->desc->fused->rows_weighted_sum(mg->be, n_hot, d, w, cold, &y, &o);
+                                 const uint32_t                   hot[static n_hot],
+                                 const float          cold[static seq * sess->model->d_model],
+                                 struct geist_buffer *out) {
+    const struct transformer_arch_state *st = sess->model;
+    const struct transformer_moe_gpu    *mg = st->moe_gpu;
+    const size_t                         d = st->d_model, k = moe_k(&st->config);
+    const size_t                        *rs = sess->moe_row_start;
+    /* Per token, its hot rows (packed index) and weights: counted, then
+     * placed (CSR). Packed rows follow hot[]'s order, as moe_gpu_launch. */
+    uint32_t *start = sess->moe_csr_start, *rows = sess->moe_csr_rows;
+    float    *w = sess->moe_csr_w;
+    memset(start, 0, (seq + 1) * sizeof *start);
+    for (size_t i = 0; i < n_hot; i++)
+        for (size_t r = rs[hot[i]]; r < rs[hot[i] + 1]; r++)
+            start[sess->moe_rows[r] / k + 1]++;
+    for (size_t t = 0; t < seq; t++)
+        start[t + 1] += start[t];
+    uint32_t *fill = sess->moe_csr_fill;
+    memcpy(fill, start, seq * sizeof *fill);
+    size_t p = 0;
+    for (size_t i = 0; i < n_hot; i++)
+        for (size_t r = rs[hot[i]]; r < rs[hot[i] + 1]; r++, p++) {
+            const uint32_t sel = sess->moe_rows[r], t = sel / (uint32_t) k;
+            rows[fill[t]] = (uint32_t) p;
+            w[fill[t]++]  = sess->moe_wts[sel];
+        }
+    struct geist_tensor y = view_2d(sess->moe_gpu_x, (int64_t) p, (int64_t) d);
+    struct geist_tensor o = view_2d(out, (int64_t) seq, (int64_t) d);
+    return mg->be->desc->fused->rows_weighted_sum(mg->be, seq, d, p, start, rows, w, cold, &y, &o);
 }

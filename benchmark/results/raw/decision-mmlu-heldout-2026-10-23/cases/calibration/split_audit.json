@@ -1,0 +1,726 @@
+{
+  "policy": "exclude",
+  "seed": "geist-decision-v1",
+  "source_counts": {
+    "dev": 285,
+    "validation": 1531,
+    "test": 14042
+  },
+  "prepared_counts": {
+    "development": 778,
+    "calibration": 750,
+    "test": 13904
+  },
+  "excluded_counts": {
+    "within_split_duplicate": 108,
+    "earlier_split_overlap": 33
+  },
+  "excluded": [
+    {
+      "id": "validation/college_medicine/134",
+      "question_id": "2cd882f5a9efb680b98e4ad9b8e7249d884b52d1027d3d05b96b777559281eab",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "validation/college_medicine/142",
+      "question_id": "5e86989267fc83dfe81121535c82ec24576d3a1404cb09d84d1d1d531513a103",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "validation/college_physics/154",
+      "question_id": "4d195624f68e9ea14f15cea789c906437e64f1956a7308a1b26fa78762b58497",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/clinical_knowledge/501",
+      "question_id": "6506bb2edc7bd57b7e499ce1d53ab7c229ca0789d91652b7def3574e5bc066a9",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/clinical_knowledge/532",
+      "question_id": "8c0419ac48225531f24785c4fd6dff03768ac511471824d5b27379ccde70252f",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/clinical_knowledge/543",
+      "question_id": "47e5281456e052f5a5bedca3abce3c684e0040a7f0ddd251a77e5a3e7bece03b",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/clinical_knowledge/559",
+      "question_id": "6c453ec7ac812b452e6578f12697104801fdb736085075465031d2d39ae35d4d",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/clinical_knowledge/580",
+      "question_id": "17ee9af771e3ffd4861fd0831e3c764c723518462ac9a99fa22471852a693822",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/clinical_knowledge/601",
+      "question_id": "ad7a7068027cf4a2eeb912a31866089f96c20e77de755bb1f0e91fe90dbdc33b",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/clinical_knowledge/610",
+      "question_id": "3b2c74e3f2f5e36d4b34443cba97f6e00afdd24116503f818e3dbc9c76af70e3",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/clinical_knowledge/641",
+      "question_id": "4e5f351dde6af83b548e5b299eda2c3ad850235ffa77c03264748973b69052c3",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/clinical_knowledge/672",
+      "question_id": "437b4c426eea5ddb7ede6dd99cbd3f02be1e6aa6ac67808517fd6ecf4257427c",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/clinical_knowledge/718",
+      "question_id": "777e8b2226e1e294cf3bd24b0161a410066d2e3ac1b0ba2cdc481915dbcefde0",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/clinical_knowledge/739",
+      "question_id": "7859fa8c5caf2e298c0e21f24b28187ddcbe7a3a48da60915b4ade6a33998344",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/clinical_knowledge/748",
+      "question_id": "14f415edfd85cae754934a5584884ac525c7c4e815c1b0d9b51eadcaa04957e9",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/college_medicine/1197",
+      "question_id": "ac9ea6e833970d2e882e91785139d6077129dced1ab212bc3c8e7f0ad32f90ae",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/college_medicine/1199",
+      "question_id": "b608ef1214a11900bd329ad9c3a2c4249f67e7bd03897e99b7e424c0cd3438f6",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1201",
+      "question_id": "bad934bf9978ac31085045ed44c71fab4a3e66be67b0dcff57ce3ad0b8a2617e",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1204",
+      "question_id": "a774c9995f45874b6dd76886238ab6ce3f536009014c90eaf81764cfc5298f56",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1205",
+      "question_id": "19605cb5e47f3797ede7b8ed5c1970f711109ac94350f1745c0c2a847b0d9183",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1209",
+      "question_id": "ba57f0d6e2ae43887eb7dac61f065c679747f44b060421bb4c8503a1c58b9e65",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1212",
+      "question_id": "dfffa376baa1ffe200e1bf28bee46fed943f42212742c01961ef7bb09d7c1f6b",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1215",
+      "question_id": "c5f84a5e45aaa580114706b21a725bb01b251c24f02277d6476bfda7ebbf1679",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1217",
+      "question_id": "8aee0bc72e8eef9e44e61ff89c6ce65106cb950b50df25dca8c78ea07a9dd9f6",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1218",
+      "question_id": "2836153942cccf60add88d84af9db536ebfade4f6017ffcfb9c5f6bd45273aea",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1220",
+      "question_id": "98ab1786d7dc9178a765b360d1774f0c85173ae27b994bff364f7fb5f3dafdb2",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1229",
+      "question_id": "7aca73b7db482ca77cf30560d8afad8f0d982f748173d5491c762f378e814b4e",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1231",
+      "question_id": "87371f420982763bcd5072c277e68844d94765c9968cf14a6db3f7e92d77ac08",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1233",
+      "question_id": "54780619631afdbc47c6426ae07afeee8423887dc1570819daa5c0da83a604c2",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1235",
+      "question_id": "07b233469ba5bde51ece0152459f81756f48fdc06578e2a5d772d57e1a8fe6c4",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1237",
+      "question_id": "75e1ab9d47bf1b485c25c4e519ffdea4437ea7b02cce013a316717ec8f6753ea",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1241",
+      "question_id": "f90a97ede6a77c82587eab1d1eaa03112f94a3bb688cd71f00848fd9af23c82d",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1247",
+      "question_id": "466ada9d2608134fd91059c8a51185427f2cea9c56336561cd3b9a03b937ff2e",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1248",
+      "question_id": "533a69a565c85254642a5b5261f01dade3b3bec0ff004910ab01c7e750785a96",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1249",
+      "question_id": "c490fd1e9c624a059fa9acca3207d185384e46504162866a99f5e69f0442681b",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1250",
+      "question_id": "29a971f1cb11c3d84c1bc32b4f067d6e57e67da7a39946ac7d76d33f14012eee",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1251",
+      "question_id": "5f9e92928aa52754b5581aaa48892877cd5e42fb5f69fec2771d9f402f66caf3",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1252",
+      "question_id": "9353db1664b5bbb1068bf436095fb5141a5502dd8865912ec0b990d980835f48",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/college_medicine/1255",
+      "question_id": "f60f6f96d5d2c09d9af404d56ff36266cfa27b81ae4bd6d80ac65a31c199a64e",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1256",
+      "question_id": "d700c891bae68fa6498f92ddec755a069039954269410cff203cae95dd2b9d36",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1258",
+      "question_id": "da71d9a914c99db8da3d03565636d10011b7e5007bdf7e37ff38046639cdd7ab",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1260",
+      "question_id": "756af0fa308dc44020145774d8904f13106e3cf4442f879fee5661ed52bf1cdb",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1261",
+      "question_id": "3466ab57507809d949e1019c4c9e2625bad1527b752fddd84e1d0b2c12c090d7",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1264",
+      "question_id": "3405459497250ddf19b05ff21815ad32b866b734f3cd1b9ab747aaae6d0e6c5a",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1266",
+      "question_id": "5f0d53ef1cd49ec4db3b19e776b3647517a28ffaeee257df40b7f4d3e55fd547",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1267",
+      "question_id": "64895444e859a22db7fde51232da648827df23268a2cbff3371d7459f3988d49",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1271",
+      "question_id": "bf661d2217eaaf12ad2174d293d8a7359302612897d45ee22768f984324d4430",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1272",
+      "question_id": "54ad1a4062abf6fa6fb468c92cbc97c0ba753d2dec52569c64fae06b50137dcd",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1275",
+      "question_id": "5546580e4d84bd2bff4482218512a1bd0d2f3f39ccac12b401d0a876658920e4",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1277",
+      "question_id": "1492d3cad5c5d935742dfaa2b54f2c42ab7f50a8ebe58cf7c9039a949693df27",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/college_medicine/1279",
+      "question_id": "be2a2fe881becfd1b9f0983e0cb7d2f2db4ac058ca0076ca471c16af8249b136",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1280",
+      "question_id": "78aff958672a9178cb55d94a697371e52e02c33565a4e749367a4fdc5c3c6765",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1281",
+      "question_id": "a0ce1f7e20f5c65f5c38e728f51fa548806e5ee791d67376c1890244c2a3b7e7",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1282",
+      "question_id": "96913e561fb9cebb91dd7525a17e517ecccc11621fbf6f8299b4f0dfc3f4fc25",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1283",
+      "question_id": "483393da43d96cde3848bc6e82c9d3fd8ce37180c7fbfda0c55e74ec7d5502d4",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1287",
+      "question_id": "c231423f83e000e03e2b6463fa4483c8560275b03b85374d2393782269e48563",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1290",
+      "question_id": "57bbb42be3c5c218e3446607d10c54b533a89624525581e0ef2d7d9f9a1a7005",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1295",
+      "question_id": "4620f31059ac9bbfc3098baded2a1795f1461f23102daa653ec3d7ac2ede22df",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1296",
+      "question_id": "8867a7de84bb0d9b0a4820855e0aa7960842095d4777613eb2e64c707d35f3b2",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1297",
+      "question_id": "9c081f66b7bc45acca5f04d016343ea6463f9271ae3801bee3aa97f4e669d187",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1298",
+      "question_id": "7449cbff8a2be1bb01419363fb07bff639226a2ce2e6d0466057c26b687cc726",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1299",
+      "question_id": "69db2c46e4db13c0e87bae6182693de84170cb3b4087a33038ea6030370c5fc8",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1300",
+      "question_id": "9ea0673fcf12ac69fc9ea60f735e24bba4a630dcff794469ab25cd3b8c104b12",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1302",
+      "question_id": "b3bcf132db42360c9a47ee2cac42518ab1d7cdd9b1c11a7d2bc00b96b8e6c305",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1303",
+      "question_id": "d31154a58071e91d27bfdca3411ffefaf2ee46f82f213263705adcb02f905d51",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1304",
+      "question_id": "d21908b2ad59cc8b46cd6440b0a92ef3ecaeba22684c0aa02ec9513d15e88336",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1305",
+      "question_id": "16d0799c72cbb72cc254b5e7ea885ee5dbff1e3d142a6a568cd827aaee040575",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1306",
+      "question_id": "38ab44efb65699be8e68ec88cbaf9f647d1466bc5bc53572bd18ad75f05a2581",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/college_medicine/1309",
+      "question_id": "3f8e7e9a95e4da7eb681cc19a50847be7627ddacea8318d4239a32ef7e13869c",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1311",
+      "question_id": "0b96bb8e78f035b996b85628f7858e762d214121a481bc0ee6031f29d1a04c58",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1314",
+      "question_id": "117a36485d69e073962051906f5246688f92e30acb07423352d5cc234fbcc344",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1315",
+      "question_id": "a066b5b792f77530008ca6c16ccae3e9a4cdcab123df1d4d14a55f3b1bbc1ac6",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1316",
+      "question_id": "9c307d2be8343dd9b0235ae4414350606e18afc4783e7a238bea1976def96ae3",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1318",
+      "question_id": "d1f2fe3d180d5790987119bb932b692585fb5e12dd2de7852d4d9a4e3156278e",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1319",
+      "question_id": "fff821221a72e7fe43e3defebe233b73d5dc14756b28aa9444a2f6e94249c418",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1320",
+      "question_id": "057dbdd13dbe6e5e98c7866398ee4d2405a2f8e66c3f1f2c1f2286ffbdae519f",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1324",
+      "question_id": "b2e0128dad9021934457bbc2eb89aab9b6ae9da8210a7f429508244952ce6a7b",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1327",
+      "question_id": "22e8ef05bd1f10325dd22fa524f28a5e20cf3b7afea1f1a4c49b17f28a0c824d",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1328",
+      "question_id": "441dc9c409ba4789343b3009269b6172100ab0b715e201ce9c96265fa40aaad9",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1331",
+      "question_id": "caf414504b97602b5d7bc020a372e778d5d22e68bf83599055d446a6492ef4fc",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1332",
+      "question_id": "b326ce5e179f4b2631f710451a646aa1c8d351ab95a1ea5f4b17846fb4e23272",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1333",
+      "question_id": "205e13d89dc6842b004b599fe9298d497f2b1e5bd2bd4b6c8196a1b5b740d627",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1335",
+      "question_id": "c8999d31237dc46ac997e2a0325c45d764617c807dd4e7fc40047f9403333719",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1340",
+      "question_id": "377767a22f423c5c53ce3c25c7c3fdc60adb45fc3dc08516ffdb41fcadc6ae70",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1341",
+      "question_id": "1a8d85b74e2ee4c21ccfcd940f6c435bbabfb867db09a98fc3e9b786a5e9b5de",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1342",
+      "question_id": "e6872ae9bc7547aae4af484dc946b8391be4a4c9b489c04577837a84a2497cb9",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1343",
+      "question_id": "85271f27704669cf7cf43ae4df41dba6bea447552845537f0bf39abeccd91ac7",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1345",
+      "question_id": "127ae64f2cebe9da837ce04ddaaba9a13d68d576ecfed1e3ae5246d9949b7946",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1348",
+      "question_id": "95fab113cfb9d783c02d6bc155f0bd942e02085c479877f347f46c5314ee834a",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/college_medicine/1349",
+      "question_id": "994e21b089d6184e806e915f5f5d7e1113578322014930c830f46460cdd132a6",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/college_medicine/1350",
+      "question_id": "6df3d196fe9100000ceb82dfbd7d52785053d850eb9bef0cda2ac96ff8915e3c",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1352",
+      "question_id": "afa852df63e9a9c3862ee860a1d128762331b707dfa628375b1b8a89b6c9bb0d",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/college_medicine/1355",
+      "question_id": "ba9e8481a30db0fe1d61e0e95efaac3654ddad68d42264c4ea7055654cf89937",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1356",
+      "question_id": "d32e66ed1a1bee848734932d89622777327cf626edd8cc7cecdc4023b71359c7",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1359",
+      "question_id": "06a1682a2c7cb0b87a49cf8553f6be41ac126c3ee3be3c8c6bb856111f59de20",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1361",
+      "question_id": "04b3ccefcb27c6881ca527cba3db4ca19657e49b3bf9c584279c666059298047",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1362",
+      "question_id": "3345af7b42b07c4e20a8387028a5b4e88dd7ef168272ce352e7b201fd9ef3d6c",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1363",
+      "question_id": "582b4eed7f54088cad46af3334b9fdb7f5c262cf08473130c6cfbe2c71cb9d67",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1364",
+      "question_id": "6b7564a2b24afe1642eea12a0ad0cffd59c1d6a70713be8c75e0f3d7fab40943",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_medicine/1366",
+      "question_id": "2785f5fa5512081a4aa57d0f1d52abd6cdecd53d0a823b2def776d87c0f4528f",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_physics/1385",
+      "question_id": "332b8a253178c36cf1f7a1c600d7f0f4be9c043cab1017c4ee95b91a4b119abe",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_physics/1389",
+      "question_id": "4411930a3c4a58e9f586e931662fe89d53812389ed08f06a45367822888dd00c",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/college_physics/1418",
+      "question_id": "476eccd25ee6c906e843ed3a3a5dbe55e4a0ecf0810ac0f8d8c03e8e0ae8bf36",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/college_physics/1419",
+      "question_id": "6a6af7c3b812741d1bf23caed0676419fd971591c4dcd0b30edc0fb92baf69c8",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/college_physics/1420",
+      "question_id": "58d6c01c1b5003a585a2fc67f3e06e9310b52c437fcc628d6cbc7f33bca52d0a",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_physics/1424",
+      "question_id": "c55ee2df8e948854f7cfeaa2a9057ded6beee5bbed939942b24686e8c19085c6",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/college_physics/1427",
+      "question_id": "1cb9d0d10ff7dfad2bcdd4b126cc75f3ab8e48730cc0ec70282b370291949c8d",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_physics/1428",
+      "question_id": "d54d353bec51d07dfb8dfd09b7b2e66810e35abbd7b79b21fad4e87acd9adfdc",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_physics/1430",
+      "question_id": "5fdc605c7bc5030d728efd84d258142b79a354527100dc205430cbbf92a3eeff",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/college_physics/1435",
+      "question_id": "b87b10f23d0f58514004b938a91154a9b3ff219f840e5dfaa2c6d39cfeec4b57",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_physics/1440",
+      "question_id": "7bd76365bf4c5553febd56faa4e3038fd0b4f3091d6f643124efca2a273c1618",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/college_physics/1445",
+      "question_id": "1802d8dfa62149f15273f09cf27acab1f5d4ba934223ddece26468e180b3da18",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_physics/1446",
+      "question_id": "22c7f313cf4781aa59482d1d82a4de740388849d87113640282d17a8b24676f1",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_physics/1458",
+      "question_id": "bf7c78a35ccae95a40f3b15a203ab6c4f8cc2ec43efc565f7b6b3e8110e91c94",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_physics/1459",
+      "question_id": "ea6f0813e471ebed2cc9928f17e8bb1c40c1ac1da730666ac26f17306ea144f2",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_physics/1462",
+      "question_id": "d2b710fcbd8cc40287fe93f5b5e4b6f9115bc85a7f1e5d2afd3492d3a4a157a0",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/college_physics/1466",
+      "question_id": "3d6e049a5779fa06580a29e38885813cf79515c7ec626954ce384162c1130d36",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/elementary_mathematics/2354",
+      "question_id": "cd417babd95d38fb55da084065aed61f774b69a75e65889156451a802020d386",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/high_school_psychology/4955",
+      "question_id": "778155be48d8222a919e53bd5fbb94bf4548f5fd77a93139a5d85f06e497dbdc",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/high_school_psychology/5040",
+      "question_id": "24d89996e6b6b918b1605797850bd8b8043796b143698c554ec3d30a0e3896a2",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/high_school_psychology/5109",
+      "question_id": "e88376ff2060971c95b0721c1305d5fd8caaa2a0332c80a30aae88a2cb29a11c",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/high_school_psychology/5146",
+      "question_id": "02643d964c2a65e60586267bc30df4f8518869d8a82ec668a30a445a1720ceeb",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/high_school_psychology/5185",
+      "question_id": "6d73402b68a89a34eb4e317769549fee38c7a87873e342b2bc72bf8ea5f7e3c9",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/high_school_psychology/5210",
+      "question_id": "a86e2903e093b4495eb94a68a07addd875a5f2c7bb7fc666d42b146501f74125",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/high_school_psychology/5283",
+      "question_id": "79ea3b3c18c6764ebf100adec3541eb4922e5e61aedd94ff1d84c97214d30fdd",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/high_school_psychology/5310",
+      "question_id": "05e54663e6166d683a902dc3411d8d769294df065e1eaed5b2c9062ca87e7325",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/high_school_psychology/5312",
+      "question_id": "4fd793d18a26b0ece012becbdcf8db87f92ca1508483986dbb48e3922e9bfc67",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/high_school_psychology/5353",
+      "question_id": "5c168e2c57d1f46323fa4ae5b346d9149548eee781ea7be76b23178c7f8c38c2",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/high_school_psychology/5392",
+      "question_id": "031e09acbef72389a32a75fd2f9bed240224169edcac7bc89aed7c8acc77f437",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/high_school_psychology/5426",
+      "question_id": "b50756d1d0997c72e3ed084b5eaad2d5c9e9030a6ec9c029d071e255293416fb",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/miscellaneous/7785",
+      "question_id": "499746eb08ee65d38a4fab153ce3469ce0e4df812bd9d97cac23ec1106c9ba74",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/prehistory/10325",
+      "question_id": "f5986cb24a14805f3d79d5c3f77c8a6bed37307d9c6c0cfc8e66a7d47f87523a",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/professional_psychology/12712",
+      "question_id": "e6214e34da7f489e41f49212f1a377245db1d42d4dd7276fce091223d901ae12",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/professional_psychology/12966",
+      "question_id": "c3de4097ec6e011756915332d88ca0fa3ef4fb32baf324eac46b365c11c80339",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/professional_psychology/12982",
+      "question_id": "f4686775a36c1ff8282dfc2b1342ea0384f6f0e29116efb8563abae7efa15a72",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/professional_psychology/13023",
+      "question_id": "7f51c78b0d85af78f183aa0d52e552e712c776e9082d49933a2e33b6e34a87bc",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/public_relations/13061",
+      "question_id": "ac047bbd74cf883eb6d4bc7cb22e8d3c7a3987d630d89b71712d439f70b6fd92",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/public_relations/13099",
+      "question_id": "5024cf56f9c5a4961db90b79e44aa6b5fbc3b6120adff08445a0a7a40dd45a38",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/public_relations/13104",
+      "question_id": "afe19eeca6654e4fcc80aaf8fa176ea86c0b38760870322d4c3a4bf9aeeae2de",
+      "reason": "earlier_split_overlap"
+    },
+    {
+      "id": "test/public_relations/13155",
+      "question_id": "5e83e8a7bc804e98ad1e19ed314b9bc6fcdc4826798596ef85d2b683ff38a3ec",
+      "reason": "within_split_duplicate"
+    },
+    {
+      "id": "test/us_foreign_policy/13648",
+      "question_id": "809ce0dbb637dc0b4b1017c943742e29091dbdcc390f00dee15e8d035fb3fe00",
+      "reason": "within_split_duplicate"
+    }
+  ],
+  "scope": "Exact question/option matches, including option permutations; not semantic near-duplicate detection"
+}

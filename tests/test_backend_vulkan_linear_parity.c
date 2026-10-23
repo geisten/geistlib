@@ -318,6 +318,12 @@ int main(void) {
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 5120, 200, 1);
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 17408, 96, 1);
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 384, 45, 8);
+    /* 2..15 tokens take mm_pq2_0_m16_cm (#105): a ragged 32-row tail, 15
+     * tokens, Bonsai widths */
+    run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 2);
+    run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 15);
+    run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 5120, 200, 5);
+    run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 17408, 96, 4, PARITY_ELEM, 1e-3);
     run_case(vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 37);
     run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1408, 131, 1, PARITY_ELEM, 1e-3);
     run_parity(VIA_LINEAR_T, vk, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 383, 37, PARITY_ELEM, 1e-3);

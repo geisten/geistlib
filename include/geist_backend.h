@@ -303,6 +303,8 @@ enum geist_fused_op {
     GEIST_FUSED_LINEAR_GROUPED,
     GEIST_FUSED_ROWS_WEIGHTED_SUM,
     GEIST_FUSED_FFN_GATE_UP_SILU,
+    GEIST_FUSED_ATTN_ROPE_APPEND,
+    GEIST_FUSED_ROWS_GATHER,
 };
 
 /* Load-time capability probe for one fused op at one layer's geometry.
@@ -316,9 +318,9 @@ struct geist_fusion_query {
     size_t              m;
     size_t              d_model;
     size_t              inter;
-    size_t              head_dim;    /* attn_qkv_prep, attn_kv_int8/int4 */
-    size_t              n_q_heads;   /* attn_qkv_prep, attn_kv_int8/int4 */
-    size_t              n_kv_heads;  /* attn_qkv_prep, attn_kv_int8/int4 */
+    size_t              head_dim;    /* attn_qkv_prep, attn_rope_append, attn_kv_int8/int4 */
+    size_t              n_q_heads;   /* attn_qkv_prep, attn_rope_append, attn_kv_int8/int4 */
+    size_t              n_kv_heads;  /* attn_qkv_prep, attn_rope_append, attn_kv_int8/int4 */
     uint16_t            table_dtype; /* embedding_lookup_scaled: geist_dtype
                                       * of the (tensor-typed) lookup table */
     const struct geist_weight *gate_w;
@@ -543,20 +545,39 @@ struct geist_backend_fused {
      * at the next wait. nullptr = nothing to start. */
     void (*submit)(struct geist_backend *be);
 
-    /* out[c] = add[c] + sum_{j < n} w[j] * y[j][c] for c in [0, d): the
-     * weighted sum of n mixture-of-experts outputs onto a partial sum the
-     * host made (#161). add is HOST memory, read during the call — work
-     * already started (submit) is not waited for. y is [n, d] and out
-     * [1, d], F32 DENSE on this backend. Its decomposed twin is the host
-     * loop over a mapped y. Plan-bound: supported(GEIST_FUSED_ROWS_WEIGHTED_
-     * SUM) with m = n. nullptr = the host loop. */
+    /* out[t][c] = add[t][c] + sum_{k in [start[t], start[t+1])} w[k] *
+     * y[rows[k]][c] for t in [0, m), c in [0, d): mixture-of-experts outputs,
+     * weighted by the router, onto the partial sums the host made, one
+     * output row per token (#161, #163). start, rows, w and add are HOST
+     * memory, read during the call — work already started (submit) is not
+     * waited for. y is [*, d] and out [m, d], F32 DENSE on this backend.
+     * Its decomposed twin is the host loop over a mapped y. Plan-bound:
+     * supported(GEIST_FUSED_ROWS_WEIGHTED_SUM) with m the most tokens.
+     * nullptr = the host loop. */
     enum geist_status (*rows_weighted_sum)(struct geist_backend      *be,
-                                           size_t                     n,
+                                           size_t                     m,
                                            size_t                     d,
+                                           size_t                     n,
+                                           const uint32_t             start[GEIST_AT_LEAST(m + 1)],
+                                           const uint32_t             rows[GEIST_AT_LEAST(n)],
                                            const float                w[GEIST_AT_LEAST(n)],
-                                           const float                add[GEIST_AT_LEAST(d)],
+                                           const float                add[GEIST_AT_LEAST(m * d)],
                                            const struct geist_tensor *y,
                                            struct geist_tensor       *out);
+
+    /* out[i][c] = x[src[i]][c] for i in [0, n), c in [0, d): rows gathered
+     * on the device, e.g. a mixture-of-experts layer's rows in its experts'
+     * order (#163). src is HOST memory, read during the call, not waiting
+     * for work already started. x is [*, d] and out [n, d], F32 DENSE.
+     * Its decomposed twin is n buffer_copy calls. Plan-bound:
+     * supported(GEIST_FUSED_ROWS_GATHER) with m the most rows. nullptr =
+     * buffer_copy row by row. */
+    enum geist_status (*rows_gather)(struct geist_backend      *be,
+                                     size_t                     n,
+                                     size_t                     d,
+                                     const uint32_t             src[GEIST_AT_LEAST(n)],
+                                     const struct geist_tensor *x,
+                                     struct geist_tensor       *out);
 
     /* Fused out = embed_table[token_id, :] * scale.
      *   embed_table shape [vocab_size, d_model]
@@ -673,6 +694,31 @@ struct geist_backend_fused {
                                        size_t                     q_position,
                                        struct geist_tensor       *k_cache,
                                        struct geist_tensor       *v_cache);
+
+    /* Fused Llama / Qwen3 attention prep, attn_qkv_prep's twin (#17):
+     *   q: per-head rmsnorm(q)*q_norm_w when q_norm_w is non-null, RoPE,
+     *      then * q_scale — in place.
+     *   k: per-head rmsnorm(k)*k_norm_w when k_norm_w is non-null, RoPE —
+     *      written back AND appended at row q_position of k_cache.
+     *   v: appended at row q_position of v_cache, unchanged.
+     * q [seq, n_q_heads, hd], k/v [seq, n_kv_heads, hd], norm weights
+     * [hd], cos/sin [seq, n_rot] (n_rot <= hd, even) positioned at
+     * q_position, caches F32 or F16 DENSE 3D views. Half-split RoPE over
+     * the first n_rot elements. Plan-bound through
+     * GEIST_FUSED_ATTN_ROPE_APPEND. nullptr = always decomposed. */
+    enum geist_status (*attn_rope_append)(struct geist_backend      *be,
+                                          struct geist_tensor       *q,
+                                          struct geist_tensor       *k,
+                                          const struct geist_tensor *v,
+                                          const struct geist_tensor *q_norm_w,
+                                          const struct geist_tensor *k_norm_w,
+                                          const struct geist_tensor *cos,
+                                          const struct geist_tensor *sin,
+                                          float                      eps,
+                                          float                      q_scale,
+                                          size_t                     q_position,
+                                          struct geist_tensor       *k_cache,
+                                          struct geist_tensor       *v_cache);
 
     /* Fused gemma-3n PLE block:
      *   gate = gelu_tanh(x · gate_w^T) * ple_in

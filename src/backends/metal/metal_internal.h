@@ -74,6 +74,7 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_K_NORM_ROPE_APPEND,
     METAL_PROFILE_DISPATCH_V_NORM_APPEND,
     METAL_PROFILE_DISPATCH_KV_NORM_APPEND,
+    METAL_PROFILE_DISPATCH_ROPE_APPEND,
     METAL_PROFILE_DISPATCH_ROPE_ROWS,
     METAL_PROFILE_DISPATCH_KV_APPEND_ROWS,
     METAL_PROFILE_DISPATCH_ATTENTION_ROWS,
@@ -100,6 +101,7 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_SIGMOID_MUL,
     METAL_PROFILE_DISPATCH_HADAMARD,
     METAL_PROFILE_DISPATCH_PQ2_X_F16,
+    METAL_PROFILE_DISPATCH_PQ2_M8,
     METAL_PROFILE_STAGE_COUNT,
 };
 
@@ -175,6 +177,7 @@ struct metal_state {
     void  *v_norm_append_library;
     void  *kv_norm_append_library;
     void  *kv_norm_append_f16_library;
+    void  *rope_append_library; /* Llama/Qwen3 q/k prep + KV append (#17) */
     void  *q40_function;
     void  *q40_pipeline;
     void  *q40_m8_function;
@@ -221,6 +224,8 @@ struct metal_state {
     void  *pq2_mm_pipeline;
     void  *pq2_mm_fast_function;
     void  *pq2_mm_fast_pipeline;
+    void  *pq2_m8_function;
+    void  *pq2_m8_pipeline;
     /* x -> f16 for pq2_mm_fast (cvt_f32_f16_rows), into pq2_xh_buffer:
      * grow-only, rows x n_in halves of the widest call so far. */
     void                *cvt_f16_function;
@@ -420,6 +425,10 @@ struct metal_state {
     void    *kv_norm_append_rows_pipeline;
     void    *kv_norm_append_rows_f16_function;
     void    *kv_norm_append_rows_f16_pipeline;
+    void    *rope_append_rows_function;
+    void    *rope_append_rows_pipeline;
+    void    *rope_append_rows_f16_function;
+    void    *rope_append_rows_f16_pipeline;
     void    *attention_rows_function;
     void    *attention_rows_pipeline;
     void    *attention_rows_f16_function;
