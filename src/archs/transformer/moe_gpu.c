@@ -106,7 +106,8 @@ moe_fit(const struct transformer_arch_state *st, struct geist_backend *gbe, size
         (mem.unified_memory && gbe != st->backend)) {
         return 0;
     }
-    const size_t n_sel   = st->m_max * moe_k(&st->config);
+    /* one session's moe_gpu_x, _g, _u, with the padding rows (moe_pad) */
+    const size_t n_sel   = st->m_max * moe_k(&st->config) + 15 * moe_slots(&st->config);
     const size_t session = n_sel * (st->d_model + 2 * moe_inter(st)) * sizeof(float);
     const size_t reserve = (size_t) (mem.total_bytes / 16) + ((size_t) 512 << 20) + session;
     return mem.free_bytes > reserve ? ((size_t) mem.free_bytes - reserve) / expert_bytes : 0;
