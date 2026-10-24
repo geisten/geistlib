@@ -369,6 +369,18 @@ struct transformer_arch_session {
     size_t               dn_txn_kivi_residual_count;
     size_t               dn_txn_kivi_drained_count;
     bool                 dn_txn_active;
+    /* Per-row DeltaNet state of the current verify (#192): slots x conv_n /
+     * slots x s_n floats per DeltaNet layer, written by the backend
+     * (geist_deltanet_mix_args.row_*) so a rejected suffix rolls back by one
+     * copy instead of a replay. Allocated on the first verify that can use
+     * them; dn_rows_req: this verify asks for them; dn_rows_ok: every
+     * DeltaNet layer wrote them; dn_rows_off: the backend never does. */
+#define TRANSFORMER_DN_ROW_SLOTS 7u /* verify rows - 1: a k_max of 7 */
+    struct geist_buffer *dn_row_conv_buf;
+    struct geist_buffer *dn_row_S_buf;
+    bool                 dn_rows_req;
+    bool                 dn_rows_ok;
+    bool                 dn_rows_off;
     /* qwen35 scratch: joint q+gate projection result
      * [m_max, 2*q_out] + saved per-head gate [m_max, q_out], and the
      * DeltaNet projection outputs (qkv [m_max, conv_dim], z
