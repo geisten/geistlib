@@ -109,10 +109,19 @@ moe_fit(const struct transformer_arch_state *st, struct geist_backend *gbe, size
         (mem.unified_memory && gbe != st->backend)) {
         return 0;
     }
-    const size_t n_sel   = st->m_max * moe_k(&st->config);
+    /* one session's moe_gpu_x, _g, _u, with the padding rows (moe_pad) */
+    const size_t n_sel   = st->m_max * moe_k(&st->config) + 15 * moe_slots(&st->config);
     const size_t session = n_sel * (st->d_model + 2 * moe_inter(st)) * sizeof(float);
     const size_t reserve = (size_t) (mem.total_bytes / 16) + ((size_t) 512 << 20) + session;
     return mem.free_bytes > reserve ? ((size_t) mem.free_bytes - reserve) / expert_bytes : 0;
+}
+
+/* An expert's packed rows on the device: m, or m rounded up to 16 when it
+ * has more than one, so its GEMMs take the tensor-core tiles (those need
+ * rows % 16 == 0; one row is a matvec). The padding rows repeat a real
+ * token and are never summed. */
+static size_t moe_pad(size_t m) {
+    return m > 1 ? (m + 15) & ~(size_t) 15 : m;
 }
 
 void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
@@ -369,15 +378,17 @@ enum geist_status moe_gpu_session_alloc(struct transformer_arch_session *sess) {
     }
     const struct geist_backend_vtbl *gv    = mg->be->desc->vtbl;
     const size_t                     n_sel = sess->m_max * moe_k(&st->config);
+    const size_t                     n_pad = n_sel + 15 * moe_slots(&st->config); /* moe_pad */
     const size_t                     xb    = n_sel * st->d_model * sizeof(float);
-    const size_t                     gb    = n_sel * moe_inter(st) * sizeof(float);
+    const size_t                     gb    = n_pad * moe_inter(st) * sizeof(float);
+    const size_t                     xpb   = n_pad * st->d_model * sizeof(float);
     enum geist_status                s =
             gv->buffer_create(mg->be, xb, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &sess->moe_gpu_x_io);
     if (s == GEIST_OK)
         s = gv->buffer_create(mg->be, xb, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &sess->moe_gpu_y_io);
     if (s == GEIST_OK)
         s = gv->buffer_create(
-                mg->be, xb, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, &sess->moe_gpu_x);
+                mg->be, xpb, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, &sess->moe_gpu_x);
     if (s == GEIST_OK)
         s = gv->buffer_create(
                 mg->be, gb, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, &sess->moe_gpu_g);
@@ -405,7 +416,7 @@ enum geist_status moe_gpu_session_alloc(struct transformer_arch_session *sess) {
         }
     }
     if (s == GEIST_OK) {
-        sess->moe_ids_hot   = heap_alloc_array_aligned(uint32_t, n_sel);
+        sess->moe_ids_hot   = heap_alloc_array_aligned(uint32_t, n_pad);
         sess->moe_csr_start = heap_alloc_array_aligned(uint32_t, sess->m_max + 1);
         sess->moe_csr_fill  = heap_alloc_array_aligned(uint32_t, sess->m_max);
         sess->moe_csr_rows  = heap_alloc_array_aligned(uint32_t, n_sel);
@@ -671,16 +682,20 @@ enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
      * packed row p reads token src[p]. sess->moe_rows is bucketed by expert;
      * its entries are row * k + slot. */
     uint32_t *src  = (uint32_t *) sess->moe_ids_hot;
-    size_t    rows = 0;
-    bool      one  = mg->grouped[layer];
+    size_t    rows = 0, real = 0;
+    bool      one = mg->grouped[layer];
     for (size_t i = 0; i < n_hot; i++) {
         const struct geist_weight *tw = &mg->twins[(layer * n_exp + hot[i]) * 3];
         wg[i]                         = &tw[0];
         wu[i]                         = &tw[1];
         wd[i]                         = &tw[2];
-        one                           = one && rs[hot[i] + 1] - rs[hot[i]] == 1;
+        const size_t m                = rs[hot[i] + 1] - rs[hot[i]];
+        one                           = one && m == 1;
+        real += m;
         for (size_t r = rs[hot[i]]; r < rs[hot[i] + 1]; r++)
             src[rows++] = sess->moe_rows[r] / (uint32_t) k;
+        for (size_t r = m; r < moe_pad(m); r++, rows++)
+            src[rows] = src[rows - 1];
     }
     struct geist_tensor xin = view_2d(sess->scratch_pre_ff, (int64_t) seq, (int64_t) d);
     struct geist_tensor x   = view_2d(sess->moe_gpu_x, (int64_t) rows, (int64_t) d);
@@ -730,7 +745,7 @@ enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
         for (size_t phase = 0; phase < 3 && s == GEIST_OK; phase++) {
             size_t at = 0;
             for (size_t i = 0; i < n_hot && s == GEIST_OK; i++) {
-                const size_t        m = rs[hot[i] + 1] - rs[hot[i]];
+                const size_t        m = moe_pad(rs[hot[i] + 1] - rs[hot[i]]);
                 struct geist_tensor xe =
                         view_2d_at(sess->moe_gpu_x, at * d * 4, (int64_t) m, (int64_t) d);
                 struct geist_tensor ge =
@@ -759,7 +774,7 @@ enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
     }
     if (s == GEIST_OK) {
         gf->submit(gbe);
-        atomic_fetch_add_explicit(&mg->rows_gpu, rows, memory_order_relaxed);
+        atomic_fetch_add_explicit(&mg->rows_gpu, real, memory_order_relaxed);
         atomic_fetch_add_explicit(&mg->batches, 1, memory_order_relaxed);
         if (one)
             atomic_fetch_add_explicit(&mg->n_grouped, 1, memory_order_relaxed);
@@ -790,12 +805,15 @@ enum geist_status moe_gpu_finish(struct transformer_arch_session *sess,
     uint32_t *fill = sess->moe_csr_fill;
     memcpy(fill, start, seq * sizeof *fill);
     size_t p = 0;
-    for (size_t i = 0; i < n_hot; i++)
+    for (size_t i = 0; i < n_hot; i++) {
+        const size_t m = rs[hot[i] + 1] - rs[hot[i]];
         for (size_t r = rs[hot[i]]; r < rs[hot[i] + 1]; r++, p++) {
             const uint32_t sel = sess->moe_rows[r], t = sel / (uint32_t) k;
             rows[fill[t]] = (uint32_t) p;
             w[fill[t]++]  = sess->moe_wts[sel];
         }
+        p += moe_pad(m) - m; /* the padding rows, as moe_gpu_launch packs them */
+    }
     struct geist_tensor y = view_2d(sess->moe_gpu_x, (int64_t) p, (int64_t) d);
     struct geist_tensor o = view_2d(out, (int64_t) seq, (int64_t) d);
     return mg->be->desc->fused->rows_weighted_sum(mg->be, seq, d, p, start, rows, w, cold, &y, &o);

@@ -530,6 +530,20 @@ run:
 
 Raw data: `benchmark/results/raw/strata-compare-2026-10-23/`.
 
+**Prefill rows padded to 16 (#167, run 1930).** The tensor-core GEMM tiles
+need a multiple of 16 rows; a hot expert's share of a chunk rarely is, so
+its GEMMs ran on the scalar kernel. Padded (a repeated token, never summed),
+with main's cold-expert pool (#161), 4 interleaved rounds, the same request:
+
+| | prefill tok/s | decode tok/s |
+|:--|--:|--:|
+| Strata, MTP off | 605 | 62.2 |
+| **geist GPU mode, profile, padded** | **655** | **71.3** |
+| geist GPU mode, profile, not padded | 522 | 71.6 |
+
+The decode collapses of runs 1921-1925 (3.3 tok/s) came on a branch
+without #161's fix, at desktop loads up to 30; with it, no round fell.
+
 **Phase 4, only if phase 3 shows the static cover as the limit:** the
 adaptive tier, measured against Strata's +16.5 %.
 

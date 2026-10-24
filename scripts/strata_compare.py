@@ -101,13 +101,16 @@ def run_server(engine):
 def run_geist(engine, prompt_n):
     gpu = engine == "geist-gpu"
     env = dict(os.environ, GEIST_BENCH_BACKEND="vulkan" if gpu else "cpu_x86", GEIST_VERBOSE="1")
+    if os.environ.get("GEIST_DIAG"):  # per-stage times and the Vulkan memory plan, per run
+        env.update(GEIST_PROFILE_FORWARD="1", GEIST_VK_VERBOSE="1")
     if gpu and os.environ.get("PROFILE"):
         env["GEIST_MOE_PROFILE"] = os.environ["PROFILE"]
     cmd = [f"{os.environ['GBIN']}/bench_perf_sweep", "--gguf", os.environ["MODEL"], "--seq-lens", str(prompt_n),
            "--decode-n", str(GEN), "--warmup", "8", "--repeats", "1", "--prompt-file", "docs/OFFLOAD.md"]
     if gpu:
         cmd += ["--m-max", "512"]
-    with open(f"{OUT}/geist.log", "a") as log:
+    run_geist.n = getattr(run_geist, "n", 0) + 1
+    with open(f"{OUT}/geist-{run_geist.n:02d}-{engine}.log", "w") as log:
         r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=log, text=True, env=env)
     for line in r.stdout.splitlines():
         if line.startswith("{"):
