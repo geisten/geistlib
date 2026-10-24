@@ -501,11 +501,16 @@ struct metal_state {
     /* The 32-key-block split-KV decode kernels (#17), F16 and F32 KV, in
      * the prefill flash kernels' head_dim slots (64, 128, 256 and 512
      * built; see metal_decv_pipeline). */
-    void                *attn_decv_library;
-    void                *attention_decv_f16_function[METAL_FLASH_SLOTS];
-    void                *attention_decv_f16_pipeline[METAL_FLASH_SLOTS];
-    void                *attention_decv_f32kv_function[METAL_FLASH_SLOTS];
-    void                *attention_decv_f32kv_pipeline[METAL_FLASH_SLOTS];
+    void *attn_decv_library;
+    void *attention_decv_f16_function[METAL_FLASH_SLOTS];
+    void *attention_decv_f16_pipeline[METAL_FLASH_SLOTS];
+    void *attention_decv_f32kv_function[METAL_FLASH_SLOTS];
+    void *attention_decv_f32kv_pipeline[METAL_FLASH_SLOTS];
+    /* attention_decq (#196): 128-thread blocks, head_dim 128/256/512. */
+    void                *attention_decq_f16_function[METAL_FLASH_SLOTS];
+    void                *attention_decq_f16_pipeline[METAL_FLASH_SLOTS];
+    void                *attention_decq_f32kv_function[METAL_FLASH_SLOTS];
+    void                *attention_decq_f32kv_pipeline[METAL_FLASH_SLOTS];
     void                *attn_dec_combine_library;
     void                *attention_dec_combine_function;
     void                *attention_dec_combine_pipeline;
