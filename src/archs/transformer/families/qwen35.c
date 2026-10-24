@@ -284,9 +284,19 @@ static bool populate_layers_qwen35(struct transformer_arch_state *st) {
      * state kind, all n_dn layers concatenated, allocated once here rather
      * than lazily on the first verify. On-device (vtbl->buffer_copy) so a
      * snapshot/restore never visits host memory on batched-submit GPUs. */
-    s = transformer_scratch_alloc(be, n_dn * conv_n * sizeof(float), &sess->dn_txn_conv_buf);
+    /* Device-local (#192): only device copies touch them, and on a discrete
+     * GPU a host-visible snapshot crossed the bus on every verify. */
+    s = be->desc->vtbl->buffer_create(be,
+                                      n_dn * conv_n * sizeof(float),
+                                      GEIST_BUFFER_SCRATCH,
+                                      GEIST_MEMORY_DEVICE,
+                                      &sess->dn_txn_conv_buf);
     if (s == GEIST_OK) {
-        s = transformer_scratch_alloc(be, n_dn * s_n * sizeof(float), &sess->dn_txn_S_buf);
+        s = be->desc->vtbl->buffer_create(be,
+                                          n_dn * s_n * sizeof(float),
+                                          GEIST_BUFFER_SCRATCH,
+                                          GEIST_MEMORY_DEVICE,
+                                          &sess->dn_txn_S_buf);
     }
     if (s != GEIST_OK) {
         geist_backend_set_error(be, s, "transformer: DeltaNet transaction alloc failed");

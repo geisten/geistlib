@@ -159,6 +159,14 @@ void transformer_recurrent_txn_commit(struct transformer_arch_session *sess) {
     }
 }
 
+/* Device-local state copies (#192: row slots, checkpoints): only device
+ * copies touch them, so they need no host mapping; on a discrete GPU a
+ * host-visible gigabyte would be written over the bus on every verify. */
+[[nodiscard]] static enum geist_status
+device_state_alloc(struct geist_backend *be, size_t bytes, struct geist_buffer **out) {
+    return be->desc->vtbl->buffer_create(be, bytes, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, out);
+}
+
 static enum geist_status
 deltanet_txn_begin(struct transformer_arch_session *sess, size_t k, const geist_token_t *ids) {
     size_t n_dn, conv_n, s_n;
@@ -226,14 +234,14 @@ deltanet_txn_begin(struct transformer_arch_session *sess, size_t k, const geist_
     if (!sess->dn_rows_off && k >= 2 && k - 1 <= TRANSFORMER_DN_ROW_SLOTS &&
         sess->model->n_mtp_layers == 0) {
         if (sess->dn_row_S_buf == nullptr) {
-            enum geist_status as = transformer_scratch_alloc(be,
-                                                             dn * TRANSFORMER_DN_ROW_SLOTS *
-                                                                     conv_n * sizeof(float),
-                                                             &sess->dn_row_conv_buf);
+            enum geist_status as =
+                    device_state_alloc(be,
+                                       dn * TRANSFORMER_DN_ROW_SLOTS * conv_n * sizeof(float),
+                                       &sess->dn_row_conv_buf);
             if (as == GEIST_OK)
-                as = transformer_scratch_alloc(be,
-                                               dn * TRANSFORMER_DN_ROW_SLOTS * s_n * sizeof(float),
-                                               &sess->dn_row_S_buf);
+                as = device_state_alloc(be,
+                                        dn * TRANSFORMER_DN_ROW_SLOTS * s_n * sizeof(float),
+                                        &sess->dn_row_S_buf);
             if (as != GEIST_OK)
                 sess->dn_rows_off = true; /* replay instead */
         }
@@ -370,10 +378,10 @@ enum geist_status transformer_session_checkpoint(struct transformer_arch_session
     }
     size_t n_dn, conv_n, s_n;
     if (deltanet_state_geometry(sess, &n_dn, &conv_n, &s_n) && sess->ckpt_S_buf == nullptr) {
-        enum geist_status as = transformer_scratch_alloc(
+        enum geist_status as = device_state_alloc(
                 be, TRANSFORMER_CKPT_SLOTS * n_dn * conv_n * sizeof(float), &sess->ckpt_conv_buf);
         if (as == GEIST_OK)
-            as = transformer_scratch_alloc(
+            as = device_state_alloc(
                     be, TRANSFORMER_CKPT_SLOTS * n_dn * s_n * sizeof(float), &sess->ckpt_S_buf);
         if (as != GEIST_OK)
             return as;
