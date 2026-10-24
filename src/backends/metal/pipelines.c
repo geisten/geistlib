@@ -66,6 +66,11 @@ struct metal_pipeline_row {
      "attention_flash_d" #HD,                                               \
      offsetof(struct metal_state, attention_flash_function[(HD) / 32 - 1]), \
      offsetof(struct metal_state, attention_flash_pipeline[(HD) / 32 - 1])}
+#define METAL_DECQ_PIPE(HD, KV)                                                   \
+    {offsetof(struct metal_state, attn_decv_library),                             \
+     "attention_decq_d" #HD "_" #KV,                                              \
+     offsetof(struct metal_state, attention_decq_##KV##_function[(HD) / 32 - 1]), \
+     offsetof(struct metal_state, attention_decq_##KV##_pipeline[(HD) / 32 - 1])}
 /* A decode kernel's row (#17): head_dim HD, KV type KV, in slot HD/32 - 1. */
 #define METAL_DECV_PIPE(HD, KV)                                                   \
     {offsetof(struct metal_state, attn_decv_library),                             \
@@ -218,6 +223,12 @@ static const struct metal_pipeline_row metal_attention_rows[] = {
         METAL_DECV_PIPE(128, f32kv),
         METAL_DECV_PIPE(256, f32kv),
         METAL_DECV_PIPE(512, f32kv),
+        METAL_DECQ_PIPE(128, f16),
+        METAL_DECQ_PIPE(256, f16),
+        METAL_DECQ_PIPE(512, f16),
+        METAL_DECQ_PIPE(128, f32kv),
+        METAL_DECQ_PIPE(256, f32kv),
+        METAL_DECQ_PIPE(512, f32kv),
         METAL_PIPE(attn_dec_f32kv, "attention_dec512_f32kv", attention_dec512_f32kv),
 };
 
@@ -390,7 +401,10 @@ static const struct metal_library_row metal_attention_libs[] = {
                   metal_attn_dec_f16_plain_head,
                   metal_attn_dec_f16_body),
         METAL_LIB(attn_dec_combine, "attention combine", metal_attn_dec_combine_source),
-        METAL_LIB(attn_decv, "block decode attention", metal_attn_decv_source),
+        METAL_LIB(attn_decv,
+                  "block decode attention",
+                  metal_attn_decv_source,
+                  metal_attn_decq_source),
         METAL_LIB(attn_dec512_f16,
                   "dec512",
                   metal_attn_kv_header,

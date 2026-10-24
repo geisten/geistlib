@@ -2689,6 +2689,16 @@ static void *metal_decv_pipeline(const struct metal_state *st, size_t head_dim, 
                : st->attention_decv_f32kv_pipeline[head_dim / 32u - 1u];
 }
 
+enum { METAL_DECQ_MAX_GROUPS = 256 };
+
+static void *metal_decq_pipeline(const struct metal_state *st, size_t head_dim, bool f16) {
+    if (head_dim == 0u || head_dim % 128u != 0u || head_dim > 512u) {
+        return nullptr;
+    }
+    return f16 ? st->attention_decq_f16_pipeline[head_dim / 32u - 1u]
+               : st->attention_decq_f32kv_pipeline[head_dim / 32u - 1u];
+}
+
 /* rows==1 (decode) fast path: the split-KV decode kernel — the scalar
  * kernel uses one threadgroup per head (8 tgs on a 32-core GPU) and its
  * cost grows linearly with kv_len. An F32 cache is read by the _f32kv
@@ -2724,8 +2734,13 @@ static void *metal_decv_pipeline(const struct metal_state *st, size_t head_dim, 
      * offsets keep its float4/half4 loads aligned: one split per block it
      * touches, up to 32. The per-key kernels otherwise, 16 splits at most. */
     void *block_pipeline = metal_decv_pipeline(st, head_dim, kv_native_f16);
+    void *quad_pipeline  = metal_decq_pipeline(st, head_dim, kv_native_f16);
+
     if ((q_off | k_off | v_off) % 4u != 0u) {
         block_pipeline = nullptr;
+    }
+    if (block_pipeline == nullptr) {
+        quad_pipeline = nullptr;
     }
     uint32_t nsplit = window / 32u;
     if (block_pipeline != nullptr) {
@@ -2738,6 +2753,14 @@ static void *metal_decv_pipeline(const struct metal_state *st, size_t head_dim, 
     }
     if (nsplit > (block_pipeline != nullptr ? 32u : 16u)) {
         nsplit = block_pipeline != nullptr ? 32u : 16u;
+    }
+    /* attention_decq's four simdgroups per block pay off while the grid is
+     * small and each block's latency is the time (Gemma 4: 8 heads, 4-32
+     * splits). From about 384 threadgroups on (Llama 3.2 3B or Bonsai at
+     * 512 keys) its 4x the simdgroups queue up and attention_decv's
+     * single-simdgroup blocks are faster (M1 Max, #196). */
+    if ((size_t) nsplit * q_heads > METAL_DECQ_MAX_GROUPS) {
+        quad_pipeline = nullptr;
     }
     const size_t partial_bytes = q_heads * 32u * (head_dim + 2u) * sizeof(float);
     if (st->attn_dec_partials_buffer != nullptr && st->attn_dec_partials_capacity < partial_bytes) {
@@ -2785,7 +2808,8 @@ static void *metal_decv_pipeline(const struct metal_state *st, size_t head_dim, 
     /* head_dim <= 256: 8-chunk lane unroll; 256 < hd <= 512 (gemma-3n
      * full-attention layers): the 16-chunk dec512 variant. */
     const bool wide     = head_dim > 256u;
-    void      *pipeline = block_pipeline != nullptr
+    void      *pipeline = quad_pipeline != nullptr ? quad_pipeline
+                          : block_pipeline != nullptr
                                   ? block_pipeline
                                   : (kv_native_f16 ? (wide ? st->attention_dec512_f16_pipeline
                                                            : st->attention_dec_f16_pipeline)
@@ -2805,7 +2829,13 @@ static void *metal_decv_pipeline(const struct metal_state *st, size_t head_dim, 
     const struct metal_size dgroups   = {nsplit, q_heads, 1};
     const struct metal_size threads32 = {32, 1, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ATTENTION_ROWS, dgroups);
-    metal_msg_send_dispatch(st, enc, dgroups, block_pipeline != nullptr ? threads32 : threads256);
+    const struct metal_size threads128 = {128, 1, 1};
+    metal_msg_send_dispatch(st,
+                            enc,
+                            dgroups,
+                            quad_pipeline != nullptr    ? threads128
+                            : block_pipeline != nullptr ? threads32
+                                                        : threads256);
 
     const uint32_t cb[4] = {(uint32_t) q_heads, (uint32_t) head_dim, nsplit, (uint32_t) out_off};
     metal_msg_send_set_pipeline(st, enc, st->attention_dec_combine_pipeline);
