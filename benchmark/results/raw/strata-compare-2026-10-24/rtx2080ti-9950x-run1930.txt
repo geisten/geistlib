@@ -1,0 +1,18 @@
+# strata-compare run 1930 (geist-vulkan: RTX 2080 Ti + 9950X, load 1.7 at start): Qwen3.6-35B-A3B-UD-Q4_K_XL, Strata 5c8dd322 CUDA, geistlib perf/167-moe-prefill-pad (merged with main incl. #214), geist-gpu-nopad = GEIST_MOE_PAD=0 (removed afterwards)
+{"engine": "strata", "round": 1, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 605.0, "decode_tps": 62.2, "load_s": 21.2}
+{"engine": "geist-gpu", "round": 1, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 630.406, "decode_tps": 71.741}
+{"engine": "geist-gpu-nopad", "round": 1, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 525.261, "decode_tps": 71.412}
+{"engine": "strata", "round": 2, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 605.1, "decode_tps": 62.0, "load_s": 21.2}
+{"engine": "geist-gpu", "round": 2, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 652.814, "decode_tps": 71.397}
+{"engine": "geist-gpu-nopad", "round": 2, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 521.649, "decode_tps": 71.525}
+{"engine": "strata", "round": 3, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 604.9, "decode_tps": 62.2, "load_s": 21.2}
+{"engine": "geist-gpu", "round": 3, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 658.044, "decode_tps": 71.04}
+{"engine": "geist-gpu-nopad", "round": 3, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 522.597, "decode_tps": 71.634}
+{"engine": "strata", "round": 4, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 604.9, "decode_tps": 62.1, "load_s": 21.2}
+{"engine": "geist-gpu", "round": 4, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 670.329, "decode_tps": 71.177}
+{"engine": "geist-gpu-nopad", "round": 4, "prompt_n": 2726, "predicted_n": 128, "prefill_tps": 519.873, "decode_tps": 71.909}
+| engine | prompt tokens | prefill tok/s (median) | decode tok/s (median) | rounds |
+|:--|--:|--:|--:|--:|
+| strata | 2726 | 605 | 62.2 | 4 |
+| geist-gpu | 2726 | 655 | 71.3 | 4 |
+| geist-gpu-nopad | 2726 | 522 | 71.6 | 4 |

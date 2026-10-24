@@ -121,13 +121,7 @@ moe_fit(const struct transformer_arch_state *st, struct geist_backend *gbe, size
  * rows % 16 == 0; one row is a matvec). The padding rows repeat a real
  * token and are never summed. */
 static size_t moe_pad(size_t m) {
-    /* ponytail: GEIST_MOE_PAD=0 turns it off, for an A/B in one build (#167) */
-    static int off = -1;
-    if (off < 0) {
-        const char *e = getenv("GEIST_MOE_PAD");
-        off           = e != nullptr && e[0] == '0';
-    }
-    return m > 1 && !off ? (m + 15) & ~(size_t) 15 : m;
+    return m > 1 ? (m + 15) & ~(size_t) 15 : m;
 }
 
 void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
