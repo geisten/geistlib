@@ -490,20 +490,21 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
     return packed;
 }
 
-/* linear_t stages up to VK_MAX_M rows of x into the device x ring. Check that
- * against this weight's n_in at load, so a batch that cannot fit fails the load
- * instead of turning into a per-call UNSUPPORTED and a silent host linear, and
- * create the ring and the argmax word here, off the hot path (#474). */
+/* linear_t stages host x into the device x ring, VK_XRING_M rows at a time
+ * (a bigger batch is sliced). Check that against this weight's n_in at load,
+ * so a batch that cannot fit fails the load instead of turning into a
+ * per-call UNSUPPORTED and a silent host linear, and create the ring and the
+ * argmax word here, off the hot path (#474). */
 [[nodiscard]] static enum geist_status vk_ring_reserve(struct geist_backend *be, size_t n_in) {
     struct vk_state *st = be->state;
     size_t           need;
-    if (ckd_mul(&need, (size_t) VK_MAX_M, n_in) || ckd_mul(&need, need, sizeof(float)) ||
+    if (ckd_mul(&need, (size_t) VK_XRING_M, n_in) || ckd_mul(&need, need, sizeof(float)) ||
         need > VK_XRING_CAP) {
         geist_backend_set_error(be,
                                 GEIST_E_INVALID_ARG,
-                                "vulkan: n_in=%zu at max_m=%d does not fit the %u MB x ring",
+                                "vulkan: n_in=%zu at %d rows does not fit the %u MB x ring",
                                 n_in,
-                                (int) VK_MAX_M,
+                                (int) VK_XRING_M,
                                 (unsigned) (VK_XRING_CAP >> 20));
         return GEIST_E_INVALID_ARG;
     }
@@ -1967,12 +1968,30 @@ static void vk_weight_done(struct vk_state *st) {
     return GEIST_OK;
 }
 
+/* Rows [r0, r0 + m) of a row-major 2-D tensor. */
+static struct geist_tensor vk_rows(const struct geist_tensor *t, size_t r0, size_t m) {
+    struct geist_tensor v = *t;
+    v.offset += (int64_t) (r0 * (size_t) t->stride[0] * sizeof(float));
+    v.shape[0] = (int64_t) m;
+    return v;
+}
+
 [[nodiscard]] static enum geist_status vk_linear_t(struct geist_backend      *be,
                                                    const struct geist_tensor *t_x,
                                                    const struct geist_weight *w,
                                                    const struct geist_tensor *t_w,
                                                    size_t                     m,
                                                    struct geist_tensor       *t_y) {
+    /* Host x goes through the x ring, VK_XRING_M rows per stage. */
+    if (m > VK_XRING_M && !t_x->buffer->device_mem && t_x->ndim == 2 && t_y->ndim == 2) {
+        enum geist_status s = GEIST_OK;
+        for (size_t r0 = 0; r0 < m && s == GEIST_OK; r0 += VK_XRING_M) {
+            const size_t        n  = m - r0 < VK_XRING_M ? m - r0 : VK_XRING_M;
+            struct geist_tensor xs = vk_rows(t_x, r0, n), ys = vk_rows(t_y, r0, n);
+            s = vk_linear_t(be, &xs, w, t_w, n, &ys);
+        }
+        return s;
+    }
     (void) t_w;
     struct vk_state       *st = be->state;
     const struct vk_dtype *ld = vk_linear_dtype((enum geist_dtype) w->dtype);
@@ -2162,7 +2181,7 @@ static void vk_submit(struct geist_backend *be) {
     vk_seq_cut(be->state); /* a roll; with the ring full a flush, just as correct */
 }
 
-enum { VK_URING_BYTES = 16u << 20 }; /* a 512-token chunk's partial sums: 4 MiB */
+enum { VK_URING_BYTES = 32u << 20 }; /* a 2048-token chunk's partial sums: 16 MiB */
 
 /* Copies `bytes` of host data into the upload ring, which the work in
  * flight does not read; returns its byte offset, or SIZE_MAX (no ring, too

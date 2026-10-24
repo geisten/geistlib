@@ -171,7 +171,8 @@ struct vk_dirty {
 
 enum {
     VK_XRING_CAP    = 192u << 20, /* a full prefill chunk stages ~124 MB */
-    VK_MAX_M        = 512,
+    VK_MAX_M        = 2048,       /* caps.max_m: rows per call */
+    VK_XRING_M      = 512,        /* rows of host x one ring stage takes; linear_t slices */
     VK_STREAM_M_MIN = 32,
     /* default row threshold for streaming spilled weights (#78) */ /* caps.max_m; resolve_weight
                                                                        checks it x n_in fits the
