@@ -7,6 +7,14 @@
 # memory failures, distorted timings). The lock is fd 9 of the sourcing
 # shell: it is held until that step's shell exits. Builds stay outside it.
 if command -v flock >/dev/null; then
+    # GEIST_QUIET=1: also the desktop's bench lock, which pauses its docker
+    # CI runners, for a measurement on a quiet host. Taken before the GPU
+    # lock, as the sessions that measure by hand take them (no deadlock).
+    if [ -n "${GEIST_QUIET:-}" ]; then
+        exec 8>/tmp/geist-bench.lock
+        echo "gpu: waiting for /tmp/geist-bench.lock (quiet host)"
+        flock -w 3600 8 || { echo "gpu: /tmp/geist-bench.lock still held after an hour" >&2; exit 1; }
+    fi
     lock=${GEIST_GPU_LOCK:-/tmp/geist-gpu.lock}
     exec 9>"$lock"
     echo "gpu: waiting for $lock"
