@@ -207,4 +207,22 @@ static inline bool transformer_lookup_on_host(const struct geist_backend *be) {
                                                         float                scale,
                                                         struct geist_buffer *dst);
 
+/* A pass's thread regime (geist_backend_vtbl.parallel_region_begin): the
+ * model backend's, and with a mixture of experts on a GPU also that of the
+ * CPU backend running its cold experts (#218). Without the latter, the
+ * cold experts' OpenMP region ran on the ambient team of one thread per
+ * logical CPU: 31 spinning threads beside the GPU driver, and a decode
+ * step stalled for 20-380 ms whenever one of them lost its CPU. */
+struct transformer_region {
+    int be;      /* parallel_region_begin's token for the model backend */
+    int moe_cpu; /* and for the cold experts' backend */
+};
+
+[[nodiscard]] struct transformer_region
+transformer_region_begin(const struct transformer_arch_state *st,
+                         enum geist_parallel_region           region);
+
+/* Restores what transformer_region_begin(st, ...) changed. */
+void transformer_region_end(const struct transformer_arch_state *st, struct transformer_region tok);
+
 #endif /* GEIST_INTERNAL_ARCH_TRANSFORMER_FORWARD_H */
