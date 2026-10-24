@@ -409,6 +409,35 @@ static int check_verify_drafts(const struct run *r, const struct ref *ref) {
     return fails;
 }
 
+/* geist_session_checkpoint (#192): checkpoints at the prompt and one step
+ * later; truncating to either, recurrent layers included, continues the
+ * stream as if the steps after it never ran, and both stay usable. */
+static int check_checkpoint(const struct run *r, const struct ref *ref) {
+    if (r->sampling) {
+        return 0;
+    }
+    geist_token_t         junk[3], a = -1, b = -1, c = -1;
+    struct geist_session *s = open_session(r, 0);
+    bool ok = s != nullptr && geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK;
+    const enum geist_status cs = ok ? geist_session_checkpoint(s) : GEIST_E_INVALID_ARG;
+    if (cs == GEIST_E_UNSUPPORTED) { /* the KIVI cache: a documented refusal */
+        geist_session_destroy(s);
+        return 0;
+    }
+    ok = ok && cs == GEIST_OK && geist_session_decode_step(s, &a) == GEIST_OK && a == ref->tok[0] &&
+         geist_session_checkpoint(s) == GEIST_OK && decode(s, 3, junk) &&
+         /* back one step past the prompt: tok[0] is in, tok[1] comes next */
+         geist_session_truncate(s, PROMPT + 1) == GEIST_OK &&
+         geist_session_prefill_tokens(s, 1, &ref->tok[1]) == GEIST_OK &&
+         geist_session_decode_step(s, &b) == GEIST_OK && b == ref->tok[2] &&
+         /* and further back, to the prompt */
+         geist_session_truncate(s, PROMPT) == GEIST_OK &&
+         geist_session_prefill_tokens(s, 1, &ref->tok[0]) == GEIST_OK &&
+         geist_session_decode_step(s, &c) == GEIST_OK && c == ref->tok[1];
+    geist_session_destroy(s);
+    return expect(r, ok, "truncate to either of two checkpoints drops the steps after it");
+}
+
 static int run_all(const struct run *r) {
     struct ref            ref;
     struct geist_session *s = open_session(r, 0);
@@ -425,6 +454,7 @@ static int run_all(const struct run *r) {
     fails += check_full(r, &ref);
     fails += check_speculative(r, &ref);
     fails += check_verify_drafts(r, &ref);
+    fails += check_checkpoint(r, &ref);
     return fails;
 }
 

@@ -233,6 +233,17 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
  * the longest max_seq_len that fits into memory. */
 size_t                          geist_session_length(const struct geist_session *s);
 [[nodiscard]] enum geist_status geist_session_truncate(struct geist_session *s, size_t n);
+
+/* @stability EXPERIMENTAL (#192) — a cheap way back for short look-aheads
+ * (a draft model's speculative tokens). geist_session_checkpoint records the
+ * session's state now, where the backend keeps it; afterwards
+ * geist_session_truncate to the checkpoint's length succeeds on recurrent
+ * (DeltaNet) layers too and restores that state. Nothing is copied to the
+ * host. The 8 newest checkpoints are kept (a ninth drops the oldest), at
+ * rising lengths, e.g. one per draft step; a truncate keeps those at or
+ * below its length, a reset drops all. GEIST_E_UNSUPPORTED where the
+ * architecture cannot, with MTP drafting or the KIVI KV cache. */
+[[nodiscard]] enum geist_status geist_session_checkpoint(struct geist_session *s);
 [[nodiscard]] enum geist_status geist_session_kv_bytes_per_token(const struct geist_session *s,
                                                                  size_t *out_bytes);
 

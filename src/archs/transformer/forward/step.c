@@ -781,6 +781,8 @@ void transformer_session_reset(struct transformer_arch_session *sess) {
     sess->logits_valid       = false;
     sess->next_token_pending = 0;
     sess->advance_deferred   = false; /* the returned token is dropped, not appended */
+    sess->n_ckpt             = 0;
+    sess->ckpt_base          = 0;
     transformer_mtp_reset(sess);
     /* Gated-DeltaNet layers carry recurrent state with no rewind — a
      * reset clears it to the empty sequence (#281). pin_prefix refuses a
@@ -831,7 +833,18 @@ enum geist_status transformer_session_truncate(struct transformer_arch_session *
         return GEIST_OK;
     }
     /* Gated-DeltaNet state has no way back to a position (#281): only to
-     * empty, or through a snapshot. */
+     * empty, through a snapshot, or to a checkpoint (#192). */
+    for (size_t j = 0; j < sess->n_ckpt; j++) {
+        if (sess->ckpt_lens[j] == n && !sess->mtp_enabled) {
+            const enum geist_status cs = transformer_checkpoint_restore(sess, j);
+            if (cs != GEIST_OK)
+                return cs;
+            sess->logits_valid       = false;
+            sess->next_token_pending = 0;
+            sess->advance_deferred   = false;
+            return GEIST_OK;
+        }
+    }
     if (sess->dn_conv_state != nullptr || sess->dn_S != nullptr) {
         geist_backend_set_error(be,
                                 GEIST_E_UNSUPPORTED,
@@ -854,6 +867,8 @@ enum geist_status transformer_session_truncate(struct transformer_arch_session *
         return GEIST_E_UNSUPPORTED;
     }
     transformer_recurrent_txn_commit(sess);
+    while (sess->n_ckpt > 0 && sess->ckpt_lens[sess->n_ckpt - 1] > n)
+        sess->n_ckpt--; /* checkpoints past the new end are gone */
     sess->kv_len = n;
     if (sess->kv_kivi_enabled) {
         sess->kivi_residual_count = n - sess->kivi_drained_count;

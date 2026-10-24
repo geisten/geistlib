@@ -381,6 +381,17 @@ struct transformer_arch_session {
     bool                 dn_rows_req;
     bool                 dn_rows_ok;
     bool                 dn_rows_off;
+    /* geist_session_checkpoint (#192): up to TRANSFORMER_CKPT_SLOTS lengths
+     * to which truncate can return, DeltaNet state included (ckpt_conv_buf /
+     * ckpt_S_buf: slots x n_dn x conv_n / s_n floats, allocated on the first
+     * checkpoint). ckpt_lens rise; a reset, or a truncate below one, drops
+     * the checkpoints above. */
+#define TRANSFORMER_CKPT_SLOTS 8u
+    struct geist_buffer *ckpt_conv_buf;
+    struct geist_buffer *ckpt_S_buf;
+    size_t               ckpt_lens[TRANSFORMER_CKPT_SLOTS]; /* oldest first */
+    size_t               n_ckpt;
+    size_t               ckpt_base; /* buffer slot of the oldest: a ring */
     /* qwen35 scratch: joint q+gate projection result
      * [m_max, 2*q_out] + saved per-head gate [m_max, q_out], and the
      * DeltaNet projection outputs (qkv [m_max, conv_dim], z
@@ -1108,6 +1119,15 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
  * truncate op in geist_arch.h. The caller has settled a deferred advance. */
 [[nodiscard]] enum geist_status transformer_session_truncate(struct transformer_arch_session *sess,
                                                              size_t                           n);
+
+/* geist_session_checkpoint (#192): record the state now so that
+ * transformer_session_truncate can return to this length, DeltaNet layers
+ * included (the transaction buffers, on the device). The caller has settled
+ * a deferred advance. transformer_checkpoint_restore puts it back. */
+[[nodiscard]] enum geist_status
+transformer_session_checkpoint(struct transformer_arch_session *sess);
+[[nodiscard]] enum geist_status
+transformer_checkpoint_restore(struct transformer_arch_session *sess, size_t slot);
 
 /* The KV-cache bytes per position of a layout on this model (#625): what
  * transformer_kv_bytes_per_token and transformer_plan both report. */

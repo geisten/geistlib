@@ -1442,6 +1442,23 @@ size_t geist_session_length(const struct geist_session *s) {
     return ts == GEIST_OK ? GEIST_OK : session_op_failed(sf, ts, "truncate");
 }
 
+[[nodiscard]] enum geist_status geist_session_checkpoint(struct geist_session *s) {
+    if (s == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_session_full           *sf  = as_full(s);
+    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
+    if (ops == nullptr || ops->checkpoint == nullptr) {
+        snprintf(sf->err_msg,
+                 sizeof(sf->err_msg),
+                 "checkpoint: the active architecture cannot checkpoint");
+        sf->err_code = GEIST_E_UNSUPPORTED;
+        return GEIST_E_UNSUPPORTED;
+    }
+    const enum geist_status cs = ops->checkpoint(arch_sess(sf));
+    return cs == GEIST_OK ? GEIST_OK : session_op_failed(sf, cs, "checkpoint");
+}
+
 [[nodiscard]] enum geist_status geist_session_kv_bytes_per_token(const struct geist_session *s,
                                                                  size_t *out_bytes) {
     if (out_bytes != nullptr) {

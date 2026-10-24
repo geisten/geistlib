@@ -434,6 +434,8 @@ static void qwen35_session_free(struct transformer_arch_session *sess) {
             &sess->dn_txn_S_buf,
             &sess->dn_row_conv_buf,
             &sess->dn_row_S_buf,
+            &sess->ckpt_conv_buf,
+            &sess->ckpt_S_buf,
             &sess->mtp_k_cache,
             &sess->mtp_v_cache,
             &sess->mtp_embed,

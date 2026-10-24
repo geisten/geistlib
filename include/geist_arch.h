@@ -223,6 +223,10 @@ struct geist_arch_ops_decoder {
      * state, which do not grow with the length, are not included.
      * nullptr when the architecture cannot. */
     enum geist_status (*truncate)(void *session, size_t n);
+    /* Optional: geist_session_checkpoint (#192). Record the state now so that
+     * truncate can return to this length even where it otherwise could not
+     * (recurrent layers). nullptr when the architecture cannot. */
+    enum geist_status (*checkpoint)(void *session);
     enum geist_status (*kv_bytes_per_token)(size_t *out_bytes, const void *session);
 
     /* Optional: geist_model_plan. From an open GGUF (metadata and

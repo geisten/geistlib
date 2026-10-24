@@ -294,6 +294,113 @@ static enum geist_status deltanet_txn_restore(struct transformer_arch_session *s
     return GEIST_OK;
 }
 
+/* Live DeltaNet state <-> checkpoint slot `slot` (#192), all copies in one
+ * command batch. */
+static enum geist_status ckpt_copy(struct transformer_arch_session *sess, size_t slot, bool save) {
+    size_t n_dn, conv_n, s_n;
+    if (!deltanet_state_geometry(sess, &n_dn, &conv_n, &s_n))
+        return GEIST_OK;
+    struct geist_backend            *be = sess->model->backend;
+    const struct geist_backend_vtbl *v  = be->desc->vtbl;
+    const int                        region_tok =
+            v->parallel_region_begin ? v->parallel_region_begin(be, GEIST_REGION_PREFILL_BATCH) : 0;
+    enum geist_status s  = GEIST_OK;
+    size_t            dn = 0;
+    for (size_t li = 0; s == GEIST_OK && li < sess->model->n_layers; li++) {
+        if (sess->model->layers[li].mixer != GEIST_MIXER_DELTANET)
+            continue;
+        if (save && sess->dn_fresh != nullptr && sess->dn_fresh[li]) {
+            s = transformer_dn_state_zero(be, sess->dn_conv_state[li], conv_n * sizeof(float));
+            if (s == GEIST_OK)
+                s = transformer_dn_state_zero(be, sess->dn_S[li], s_n * sizeof(float));
+            if (s == GEIST_OK)
+                sess->dn_fresh[li] = false;
+        }
+        const size_t at = slot * n_dn + dn;
+        if (s == GEIST_OK)
+            s = save ? dn_txn_copy(be,
+                                   sess->ckpt_conv_buf,
+                                   at * conv_n * sizeof(float),
+                                   sess->dn_conv_state[li],
+                                   0,
+                                   conv_n * sizeof(float))
+                     : dn_txn_copy(be,
+                                   sess->dn_conv_state[li],
+                                   0,
+                                   sess->ckpt_conv_buf,
+                                   at * conv_n * sizeof(float),
+                                   conv_n * sizeof(float));
+        if (s == GEIST_OK)
+            s = save ? dn_txn_copy(be,
+                                   sess->ckpt_S_buf,
+                                   at * s_n * sizeof(float),
+                                   sess->dn_S[li],
+                                   0,
+                                   s_n * sizeof(float))
+                     : dn_txn_copy(be,
+                                   sess->dn_S[li],
+                                   0,
+                                   sess->ckpt_S_buf,
+                                   at * s_n * sizeof(float),
+                                   s_n * sizeof(float));
+        dn++;
+    }
+    if (v->parallel_region_end)
+        v->parallel_region_end(be, region_tok);
+    if (s != GEIST_OK)
+        geist_backend_set_error(be, s, "checkpoint: DeltaNet state copy failed");
+    return s;
+}
+
+enum geist_status transformer_session_checkpoint(struct transformer_arch_session *sess) {
+    if (sess == nullptr)
+        return GEIST_E_INVALID_ARG;
+    struct geist_backend *be = sess->model->backend;
+    if (sess->mtp_enabled || sess->kv_kivi_enabled) {
+        geist_backend_set_error(
+                be, GEIST_E_UNSUPPORTED, "checkpoint: not with MTP drafting or the KIVI KV cache");
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (sess->n_ckpt == TRANSFORMER_CKPT_SLOTS) { /* full: the oldest goes */
+        memmove(sess->ckpt_lens,
+                sess->ckpt_lens + 1,
+                (TRANSFORMER_CKPT_SLOTS - 1) * sizeof(sess->ckpt_lens[0]));
+        sess->ckpt_base = (sess->ckpt_base + 1) % TRANSFORMER_CKPT_SLOTS;
+        sess->n_ckpt--;
+    }
+    size_t n_dn, conv_n, s_n;
+    if (deltanet_state_geometry(sess, &n_dn, &conv_n, &s_n) && sess->ckpt_S_buf == nullptr) {
+        enum geist_status as = transformer_scratch_alloc(
+                be, TRANSFORMER_CKPT_SLOTS * n_dn * conv_n * sizeof(float), &sess->ckpt_conv_buf);
+        if (as == GEIST_OK)
+            as = transformer_scratch_alloc(
+                    be, TRANSFORMER_CKPT_SLOTS * n_dn * s_n * sizeof(float), &sess->ckpt_S_buf);
+        if (as != GEIST_OK)
+            return as;
+    }
+    transformer_recurrent_txn_commit(sess);
+    const enum geist_status s =
+            ckpt_copy(sess, (sess->ckpt_base + sess->n_ckpt) % TRANSFORMER_CKPT_SLOTS, true);
+    if (s != GEIST_OK)
+        return s;
+    sess->ckpt_lens[sess->n_ckpt++] = sess->kv_len;
+    return GEIST_OK;
+}
+
+enum geist_status transformer_checkpoint_restore(struct transformer_arch_session *sess,
+                                                 size_t                           slot) {
+    if (sess == nullptr || slot >= sess->n_ckpt)
+        return GEIST_E_INVALID_STATE;
+    transformer_recurrent_txn_commit(sess);
+    const enum geist_status s =
+            ckpt_copy(sess, (sess->ckpt_base + slot) % TRANSFORMER_CKPT_SLOTS, false);
+    if (s != GEIST_OK)
+        return s;
+    sess->kv_len = sess->ckpt_lens[slot];
+    sess->n_ckpt = slot + 1;
+    return GEIST_OK;
+}
+
 /* State after verified row `slot` into the live DeltaNet buffers (#192). */
 static enum geist_status deltanet_rows_restore(struct transformer_arch_session *sess, size_t slot) {
     size_t n_dn, conv_n, s_n;
