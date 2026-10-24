@@ -498,7 +498,9 @@ enum geist_status moe_resolve_cold(struct transformer_arch_state *st) {
             continue;
         for (size_t e = 0; e < slots && s == GEIST_OK; e++) {
             /* An MTP block's experts lie past the table the copies cover. */
-            const bool           hot = mg != nullptr && i < st->n_layers &&
+            /* With the adaptive cache (#166) every expert keeps its CPU
+             * copy: a swap then only moves a device copy. */
+            const bool           hot = mg != nullptr && mg->adapt == nullptr && i < st->n_layers &&
                                        mg->twins[(i * slots + e) * 3].raw != nullptr;
             struct geist_weight *w[] = {&L->moe_gate_w[e], &L->moe_up_w[e], &L->moe_down_w[e]};
             for (size_t p = 0; p < 3 && s == GEIST_OK; p++)
@@ -506,7 +508,7 @@ enum geist_status moe_resolve_cold(struct transformer_arch_state *st) {
         }
     }
     if (s == GEIST_OK && mg != nullptr)
-        mg->no_cpu_copy = mg->n_hot > 0;
+        mg->no_cpu_copy = mg->n_hot > 0 && mg->adapt == nullptr;
     return s;
 }
 
@@ -949,6 +951,8 @@ moe_gpu_swap(struct transformer_arch_state *st, size_t layer, size_t promote, si
      * destroyed, drops the copies inside it (geist_backend.h). */
     for (size_t p = 0; p < 3 && s == GEIST_OK; p++) {
         struct geist_weight *w = &cw[p][demote];
+        if (w->linear_m1 != nullptr)
+            continue; /* it kept its CPU copy (the adaptive cache) */
         weight_bare(w);
         if (cpu->desc->vtbl->resolve_weight != nullptr) {
             cpu->calibration.locked = true;
@@ -987,7 +991,8 @@ moe_gpu_swap(struct transformer_arch_state *st, size_t layer, size_t promote, si
         memset(tp, 0, 3 * sizeof *tp);
         return s; /* promote stays cold on the CPU */
     }
-    for (size_t p = 0; p < 3; p++)
-        weight_bare(&cw[p][promote]);
+    if (mg->no_cpu_copy) /* hot experts keep no CPU copy (#164) */
+        for (size_t p = 0; p < 3; p++)
+            weight_bare(&cw[p][promote]);
     return GEIST_OK;
 }

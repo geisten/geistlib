@@ -9,6 +9,7 @@
 #include "arch_state.h"
 #include "heap.h"
 #include "moe_gpu.h"
+#include "forward/profile.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +25,7 @@ struct moe_adapt {
     size_t           window, max_swaps;
     double           margin;  /* the CPU branch must exceed the GPU's by this share */
     uint32_t        *count;   /* [n_layers * n_exp] this window's selections */
+    uint64_t        *moved;   /* [n_layers * n_exp] the window an expert last moved in, + 1 */
     double          *cpu_ns;  /* [n_layers] CPU branch, summed over the window */
     double          *gpu_ns;  /* [n_layers] GPU branch, summed over probe steps */
     uint32_t        *steps;   /* [n_layers] decode steps recorded */
@@ -34,7 +36,7 @@ struct moe_adapt {
     bool             probing; /* the current step probes */
     struct moe_swap *plan;    /* [max_swaps] */
     size_t           n_plan, next;
-    uint64_t         windows, swaps, swap_fail;
+    uint64_t         windows, swaps, swap_fail, swap_ns;
 };
 
 static size_t env_size(const char *name, size_t fallback) {
@@ -58,6 +60,7 @@ struct moe_adapt *moe_adapt_create(const struct transformer_arch_state *st) {
     a->window      = a->window < 4 ? 4 : a->window;
     const size_t n = a->n_layers;
     a->count       = heap_calloc_array_aligned(uint32_t, n * a->n_exp);
+    a->moved       = heap_calloc_array_aligned(uint64_t, n * a->n_exp);
     a->cpu_ns      = heap_calloc_array_aligned(double, n);
     a->gpu_ns      = heap_calloc_array_aligned(double, n);
     a->steps       = heap_calloc_array_aligned(uint32_t, n);
@@ -65,9 +68,9 @@ struct moe_adapt *moe_adapt_create(const struct transformer_arch_state *st) {
     a->sel_cpu     = heap_calloc_array_aligned(uint64_t, n);
     a->sel_gpu     = heap_calloc_array_aligned(uint64_t, n);
     a->plan        = heap_calloc_array_aligned(struct moe_swap, a->max_swaps + 1);
-    if (a->count == nullptr || a->cpu_ns == nullptr || a->gpu_ns == nullptr ||
-        a->steps == nullptr || a->probes == nullptr || a->sel_cpu == nullptr ||
-        a->sel_gpu == nullptr || a->plan == nullptr) {
+    if (a->count == nullptr || a->moved == nullptr || a->cpu_ns == nullptr ||
+        a->gpu_ns == nullptr || a->steps == nullptr || a->probes == nullptr ||
+        a->sel_cpu == nullptr || a->sel_gpu == nullptr || a->plan == nullptr) {
         moe_adapt_destroy(a);
         return nullptr;
     }
@@ -79,11 +82,14 @@ void moe_adapt_destroy(struct moe_adapt *a) {
         return;
     if (getenv("GEIST_VERBOSE") != nullptr)
         fprintf(stderr,
-                "geist: moe: adaptive cache: %llu windows, %llu swaps, %llu failed\n",
+                "geist: moe: adaptive cache: %llu windows, %llu swaps (%.2f ms each), %llu "
+                "failed\n",
                 (unsigned long long) a->windows,
                 (unsigned long long) a->swaps,
+                a->swaps > 0 ? (double) a->swap_ns / 1e6 / (double) a->swaps : 0.0,
                 (unsigned long long) a->swap_fail);
     void *p[] = {a->count,
+                 a->moved,
                  a->cpu_ns,
                  a->gpu_ns,
                  a->steps,
@@ -146,12 +152,31 @@ static void plan(struct moe_adapt *a, const struct transformer_moe_gpu *mg) {
         const double steps = a->steps[l];
         double       cpu   = a->cpu_ns[l] / steps;
         double       gpu   = a->gpu_ns[l] / a->probes[l];
+        static int   dbg   = -1;
+        if (dbg < 0)
+            dbg = getenv("GEIST_MOE_ADAPT_DEBUG") != nullptr;
+        if (dbg && a->windows < 2)
+            fprintf(stderr,
+                    "adapt w%llu l%zu steps %u cpu %.1f us gpu %.1f us (probes %u) sel cpu %llu "
+                    "gpu %llu\n",
+                    (unsigned long long) a->windows,
+                    l,
+                    a->steps[l],
+                    cpu / 1e3,
+                    gpu / 1e3,
+                    a->probes[l],
+                    (unsigned long long) a->sel_cpu[l],
+                    (unsigned long long) a->sel_gpu[l]);
         if (cpu <= gpu * (1.0 + a->margin))
             continue; /* the GPU branch is (about) the longer one: no change */
         const double ce = a->cpu_ns[l] / (double) a->sel_cpu[l]; /* per selection */
         const double ge = a->gpu_ns[l] / (double) a->sel_gpu[l];
         size_t       nc = 0, nh = 0;
         for (size_t e = 0; e < a->n_exp; e++) {
+            /* An expert moved in the last two windows stays where it is. */
+            const uint64_t mv = a->moved[l * a->n_exp + e];
+            if (mv != 0 && a->windows + 1 - mv < 2)
+                continue;
             const struct ranked r = {(uint32_t) e, a->count[l * a->n_exp + e]};
             if (mg->twins[(l * a->slots + e) * 3].raw != nullptr)
                 hot[nh++] = r;
@@ -162,8 +187,8 @@ static void plan(struct moe_adapt *a, const struct transformer_moe_gpu *mg) {
         qsort(hot, nh, sizeof hot[0], by_n_desc); /* the least selected at the end */
         for (size_t i = 0; i < PER_LAYER && i < nc && i < nh; i++) {
             const struct ranked c = cold[i], v = hot[nh - 1 - i];
-            if (c.n <= v.n)
-                break;
+            if (c.n < 2 * v.n + 2)
+                break;                                       /* hysteresis: a clear winner only */
             const double dr  = (double) (c.n - v.n) / steps; /* selections per step moved */
             const double nc_ = cpu - ce * dr, ng_ = gpu + ge * dr;
             const double old = cpu > gpu ? cpu : gpu, now = nc_ > ng_ ? nc_ : ng_;
@@ -192,10 +217,14 @@ enum geist_status moe_adapt_step(struct transformer_arch_state *st, bool *probe)
         const struct moe_swap w = a->plan[a->next++];
         if (mg->twins[(w.layer * a->slots + w.promote) * 3].raw == nullptr &&
             mg->twins[(w.layer * a->slots + w.demote) * 3].raw != nullptr) {
-            s = moe_gpu_swap(st, w.layer, w.promote, w.demote);
-            if (s == GEIST_OK)
+            const uint64_t t0 = transformer_profile_now_ns();
+            s                 = moe_gpu_swap(st, w.layer, w.promote, w.demote);
+            a->swap_ns += transformer_profile_now_ns() - t0;
+            if (s == GEIST_OK) {
                 a->swaps++;
-            else
+                a->moved[w.layer * a->n_exp + w.promote] = a->windows + 1;
+                a->moved[w.layer * a->n_exp + w.demote]  = a->windows + 1;
+            } else
                 a->swap_fail++;
         }
     }

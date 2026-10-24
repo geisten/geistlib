@@ -19,8 +19,11 @@
  *
  * GEIST_MOE_ADAPT=1 turns it on (off by default); GEIST_MOE_ADAPT_WINDOW
  * (default 64 tokens), GEIST_MOE_ADAPT_SWAPS (most swaps per window,
- * default 16). Placement then follows the text, so which expert runs on
- * which backend, and the low bits of the result, depend on timing.
+ * default 16). A cold expert replaces a hot one only with at least twice its
+ * selections (+2), and an expert that moved stays for two windows. With
+ * the cache on, every expert keeps its CPU copy (#164 does not apply), so a
+ * swap moves one device copy and nothing is repacked. Placement then follows the text, so which
+ * expert runs on which backend, and the low bits of the result, depend on timing.
  */
 #ifndef GEIST_TRANSFORMER_MOE_ADAPT_H
 #define GEIST_TRANSFORMER_MOE_ADAPT_H
