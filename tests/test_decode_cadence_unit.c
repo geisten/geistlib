@@ -373,6 +373,42 @@ static int check_speculative(const struct run *r, const struct ref *ref) {
     return fails;
 }
 
+/* geist_session_verify_drafts (#192): greedy, the reference steps as
+ * drafts are all accepted and followed by the next step's token; a wrong
+ * first guess yields the pending token and the model's correction. Either
+ * way the stream is the decode steps'. */
+static int check_verify_drafts(const struct run *r, const struct ref *ref) {
+    if (r->sampling) {
+        return 0;
+    }
+    int fails = 0;
+    for (int wrong = 0; wrong < 2; wrong++) {
+        geist_token_t         drafts[3] = {ref->tok[1], ref->tok[2], ref->tok[3]};
+        geist_token_t         out[5]    = {0};
+        size_t                n_out     = 0;
+        struct geist_session *s         = open_session(r, 0);
+        if (wrong) {
+            drafts[0] = (geist_token_t) ((ref->tok[1] + 1) % (geist_token_t) r->vocab);
+        }
+        bool   ok   = s != nullptr && geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK &&
+                      geist_session_verify_drafts(s, 3, drafts, 5, out, &n_out) == GEIST_OK;
+        size_t want = wrong ? 2u : 5u;
+        ok          = ok && n_out == want;
+        for (size_t i = 0; ok && i < want; i++) {
+            ok = out[i] == ref->tok[i];
+        }
+        /* the next step continues the stream */
+        geist_token_t next = -1;
+        ok = ok && geist_session_decode_step(s, &next) == GEIST_OK && next == ref->tok[want];
+        geist_session_destroy(s);
+        fails += expect(r,
+                        ok,
+                        wrong ? "verify_drafts with a wrong guess emits the steps' tokens"
+                              : "verify_drafts with the steps as drafts accepts them all");
+    }
+    return fails;
+}
+
 static int run_all(const struct run *r) {
     struct ref            ref;
     struct geist_session *s = open_session(r, 0);
@@ -388,6 +424,7 @@ static int run_all(const struct run *r) {
     fails += check_reset(r, &ref);
     fails += check_full(r, &ref);
     fails += check_speculative(r, &ref);
+    fails += check_verify_drafts(r, &ref);
     return fails;
 }
 

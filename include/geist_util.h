@@ -425,6 +425,25 @@ geist_model_gains(struct geist_model *m, float **out_gains, size_t *out_n);
                                                                  geist_token_t        *out_tokens,
                                                                  size_t               *n_out);
 
+/* @stability EXPERIMENTAL — verify caller-supplied drafts (#192).
+ *
+ * geist_session_decode_speculative with the drafts coming from the caller
+ * (e.g. a small draft model in a session of its own) instead of the
+ * internal drafter. drafts[0..n_drafts) are guesses for the tokens after
+ * the pending token (the one geist_session_decode_step would return next);
+ * the pending token and the guesses are verified in one forward pass, the
+ * longest prefix the model agrees with is accepted and the model's own
+ * next token follows it. Writes 1..n_drafts+2 tokens to `out_tokens` and
+ * their count to `*n_out`; under greedy decoding the stream equals as many
+ * decode_step calls. n_drafts = 0 is one decode step. n_drafts + 1 must not
+ * exceed 16 and out_capacity must be at least n_drafts + 2. */
+[[nodiscard]] enum geist_status geist_session_verify_drafts(struct geist_session *s,
+                                                            size_t                n_drafts,
+                                                            const geist_token_t  *drafts,
+                                                            size_t                out_capacity,
+                                                            geist_token_t        *out_tokens,
+                                                            size_t               *n_out);
+
 /* ====================================================================== */
 /* Stats / Telemetry                                                       */
 /* ====================================================================== */

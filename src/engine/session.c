@@ -763,6 +763,71 @@ spec_fallback_single(struct geist_session *s, geist_token_t out_tokens[static 1]
     return GEIST_OK;
 }
 
+/* Verify k candidate tokens (drafts[0] the pending seed, drafts[1..] the
+ * guesses after it) in one forward, accept the longest matching prefix, roll
+ * back the rest and push the bonus or correction token (shared by
+ * decode_speculative and verify_drafts). */
+[[nodiscard]] static enum geist_status spec_verify(struct geist_session_full           *sf,
+                                                   const struct geist_arch_ops_decoder *ops,
+                                                   void                                *st,
+                                                   size_t                               k,
+                                                   const geist_token_t                 *drafts,
+                                                   geist_token_t                       *out_tokens,
+                                                   size_t                              *n_out,
+                                                   uint64_t                             t_start) {
+    const size_t            kv_before = ops->kv_len(st);
+    geist_token_t           verify_out[GEIST_SPEC_KMAX_HARDCAP];
+    const enum geist_status vs = ops->verify_forward(st, k, drafts, verify_out);
+    if (vs != GEIST_OK)
+        return vs;
+
+    /* Accept the longest prefix where the model's per-position prediction
+     * matched the drafter's next-token guess. */
+    size_t accepted_extras = 0;
+    for (size_t i = 0; i + 1 < k; i++) {
+        if (verify_out[i] != drafts[i + 1])
+            break;
+        accepted_extras++;
+    }
+
+    geist_token_t correction;
+    size_t        accepted_tokens;
+    if (accepted_extras == k - 1) {
+        /* All drafts verified: emit them + the model's bonus prediction. */
+        correction      = verify_out[k - 1];
+        accepted_tokens = k;
+    } else {
+        /* Partial accept. Keep KV[..kv_before + accepted_extras + 1) (= the
+         * accepted draft positions) and discard the rest; recurrent state
+         * replays that prefix. */
+        const enum geist_status ts = ops->kv_truncate(st, kv_before + accepted_extras + 1);
+        if (ts != GEIST_OK) {
+            return session_op_failed(sf, ts, "speculative state rollback");
+        }
+        correction      = verify_out[accepted_extras];
+        accepted_tokens = accepted_extras + 1;
+    }
+
+    memcpy(out_tokens, drafts, accepted_tokens * sizeof(geist_token_t));
+    out_tokens[accepted_tokens] = correction;
+    const size_t emitted        = accepted_tokens + 1;
+
+    /* The last emit (bonus or correction) is not yet in the cache. The next
+     * spec_step / decode_step needs pending logits computed from it, so push
+     * it now via a single-token prefill. Deferring it to the next call saves
+     * this prefill but shifts the call boundaries the n-gram drafter sees and
+     * costs more than it saves (benchmark/results/QWEN35.md). */
+    const enum geist_status cs = ops->prefill(st, 1, &correction);
+    if (cs != GEIST_OK) {
+        return session_op_failed(sf, cs, "speculative correction prefill");
+    }
+
+    *n_out = emitted;
+    sf->n_tokens_decoded += emitted;
+    sf->total_decode_ns += monotonic_ns() - t_start;
+    return GEIST_OK;
+}
+
 [[nodiscard]] enum geist_status geist_session_decode_speculative(struct geist_session *s,
                                                                  size_t                k_max,
                                                                  size_t                history_n,
@@ -836,57 +901,38 @@ spec_fallback_single(struct geist_session *s, geist_token_t out_tokens[static 1]
         return spec_fallback_single(s, out_tokens, n_out);
     }
 
-    const size_t            kv_before = ops->kv_len(st);
-    geist_token_t           verify_out[GEIST_SPEC_KMAX_HARDCAP];
-    const enum geist_status vs = ops->verify_forward(st, k, drafts, verify_out);
-    if (vs != GEIST_OK)
-        return vs;
+    return spec_verify(sf, ops, st, k, drafts, out_tokens, n_out, t_start);
+}
 
-    /* Accept the longest prefix where the model's per-position prediction
-     * matched the drafter's next-token guess. */
-    size_t accepted_extras = 0;
-    for (size_t i = 0; i + 1 < k; i++) {
-        if (verify_out[i] != drafts[i + 1])
-            break;
-        accepted_extras++;
+[[nodiscard]] enum geist_status geist_session_verify_drafts(struct geist_session *s,
+                                                            size_t                n_drafts,
+                                                            const geist_token_t  *drafts,
+                                                            size_t                out_capacity,
+                                                            geist_token_t        *out_tokens,
+                                                            size_t               *n_out) {
+    if (s == nullptr || n_out == nullptr || (n_drafts > 0 && drafts == nullptr) ||
+        out_tokens == nullptr || n_drafts + 1 > GEIST_SPEC_KMAX_HARDCAP ||
+        out_capacity < n_drafts + 2) {
+        return GEIST_E_INVALID_ARG;
     }
-
-    geist_token_t correction;
-    size_t        accepted_tokens;
-    if (accepted_extras == k - 1) {
-        /* All drafts verified: emit them + the model's bonus prediction. */
-        correction      = verify_out[k - 1];
-        accepted_tokens = k;
-    } else {
-        /* Partial accept. Keep KV[..kv_before + accepted_extras + 1) (= the
-         * accepted draft positions) and discard the rest; recurrent state
-         * replays that prefix. */
-        const enum geist_status ts = ops->kv_truncate(st, kv_before + accepted_extras + 1);
-        if (ts != GEIST_OK) {
-            return session_op_failed(sf, ts, "speculative state rollback");
-        }
-        correction      = verify_out[accepted_extras];
-        accepted_tokens = accepted_extras + 1;
-    }
-
-    memcpy(out_tokens, drafts, accepted_tokens * sizeof(geist_token_t));
-    out_tokens[accepted_tokens] = correction;
-    const size_t emitted        = accepted_tokens + 1;
-
-    /* The last emit (bonus or correction) is not yet in the cache. The next
-     * spec_step / decode_step needs pending logits computed from it, so push
-     * it now via a single-token prefill. Deferring it to the next call saves
-     * this prefill but shifts the call boundaries the n-gram drafter sees and
-     * costs more than it saves (benchmark/results/QWEN35.md). */
-    const enum geist_status cs = ops->prefill(st, 1, &correction);
-    if (cs != GEIST_OK) {
-        return session_op_failed(sf, cs, "speculative correction prefill");
-    }
-
-    *n_out = emitted;
-    sf->n_tokens_decoded += emitted;
-    sf->total_decode_ns += monotonic_ns() - t_start;
-    return GEIST_OK;
+    *n_out                                   = 0;
+    struct geist_session_full           *sf  = as_full(s);
+    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
+    void                                *st  = sf->arch_session;
+    if (ops == nullptr)
+        return GEIST_E_INVALID_STATE;
+    const bool can_spec = ops->peek_next_token != nullptr && ops->verify_forward != nullptr &&
+                          ops->kv_truncate != nullptr && ops->kv_len != nullptr;
+    if (!can_spec || n_drafts == 0)
+        return spec_fallback_single(s, out_tokens, n_out);
+    const uint64_t      t_start = monotonic_ns();
+    const geist_token_t seed    = ops->peek_next_token(st);
+    if (seed < 0)
+        return spec_fallback_single(s, out_tokens, n_out);
+    geist_token_t rows[GEIST_SPEC_KMAX_HARDCAP];
+    rows[0] = seed;
+    memcpy(rows + 1, drafts, n_drafts * sizeof(geist_token_t));
+    return spec_verify(sf, ops, st, n_drafts + 1, rows, out_tokens, n_out, t_start);
 }
 
 /* The surface form comes from the model's tokenizer: the GGUF-embedded one
