@@ -485,10 +485,10 @@ enum geist_status transformer_prefill_rows(struct transformer_arch_session     *
  * accept/reject the draft and then optionally truncates kv_len to
  * undo verify-pass KV writes past the accept point. */
 
-enum geist_status transformer_verify_forward(struct transformer_arch_session *sess,
-                                             size_t                           k,
-                                             const geist_token_t             *ids,
-                                             geist_token_t                   *out_tokens) {
+static enum geist_status verify_forward_inner(struct transformer_arch_session *sess,
+                                              size_t                           k,
+                                              const geist_token_t             *ids,
+                                              geist_token_t                   *out_tokens) {
     struct transformer_arch_state *st = sess->model;
     if (st == nullptr || k == 0 || ids == nullptr || out_tokens == nullptr) {
         return GEIST_E_INVALID_ARG;
@@ -617,6 +617,26 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
     sess->next_token_pending = out_tokens[k - 1];
     sess->logits_valid       = true;
     return GEIST_OK;
+}
+
+/* One command batch for the whole verify pass, as prefill and decode have:
+ * without it a Metal verify submitted and waited on every op (#105, #192). */
+enum geist_status transformer_verify_forward(struct transformer_arch_session *sess,
+                                             size_t                           k,
+                                             const geist_token_t             *ids,
+                                             geist_token_t                   *out_tokens) {
+    if (sess == nullptr || sess->model == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_backend            *be = sess->model->backend;
+    const struct geist_backend_vtbl *v  = be->desc->vtbl;
+    const int                        region_tok =
+            v->parallel_region_begin ? v->parallel_region_begin(be, GEIST_REGION_PREFILL_BATCH) : 0;
+    const enum geist_status s = verify_forward_inner(sess, k, ids, out_tokens);
+    if (v->parallel_region_end) {
+        v->parallel_region_end(be, region_tok);
+    }
+    return s;
 }
 
 enum geist_status transformer_kv_truncate(struct transformer_arch_session *sess, size_t new_len) {
