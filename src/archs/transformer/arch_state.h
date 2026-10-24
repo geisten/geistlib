@@ -578,9 +578,6 @@ struct transformer_moe_gpu {
     /* The backend has submit and rows_weighted_sum for a decode step's hot
      * experts: one wait per layer (#161). */
     bool one_wait;
-    /* Owned: helper threads for a decode step's cold experts when one_wait
-     * (moe_pool.h, #161); nullptr: they run in a geist_par_for. */
-    struct moe_pool *pool;
     /* The hot experts have no CPU copy (moe_resolve_cold, #164): every
      * session must run them here. */
     bool no_cpu_copy;
