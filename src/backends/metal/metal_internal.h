@@ -230,6 +230,8 @@ struct metal_state {
      * grow-only, rows x n_in halves of the widest call so far. */
     void                *cvt_f16_function;
     void                *cvt_f16_pipeline;
+    void                *cvt_kmaj_function;
+    void                *cvt_kmaj_pipeline;
     struct geist_buffer *pq2_xh_buffer;
     size_t               pq2_xh_capacity;
     /* Device-dependent crossovers; see tuning.c. Seeded from M1 Max
@@ -340,6 +342,8 @@ struct metal_state {
     void *dn_dec_qk_pipeline;
     void *dn_dec_v_function;
     void *dn_dec_v_pipeline;
+    void *dn_dec_v_rows_function;
+    void *dn_dec_v_rows_pipeline;
     void *dnf_cst_copy_function;
     void *dnf_cst_copy_pipeline;
     void *dnf_conv_function;
