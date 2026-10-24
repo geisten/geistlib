@@ -284,6 +284,8 @@ struct metal_state {
     void *iq4xs_mm_fast_pipeline;
     void *q4k_n4_function;
     void *q4k_n4_pipeline;
+    void *q4k_h_function;
+    void *q4k_h_pipeline;
     void *q4k_matmul_m8_function;
     void *q4k_matmul_m8_pipeline;
     void *q4k_m16_library;
@@ -328,6 +330,8 @@ struct metal_state {
     void *hadamard4_pipeline;
     void *q4k_gate_up_n4_function;
     void *q4k_gate_up_n4_pipeline;
+    void *q4k_gate_up_h_function;
+    void *q4k_gate_up_h_pipeline;
     void *q6k_function;
     void *q6k_pipeline;
     void *q6k_n4_function;

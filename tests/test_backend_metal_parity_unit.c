@@ -1030,6 +1030,87 @@ static void run_fused_matvec_case(
         v->buffer_destroy(mt, bx);
 }
 
+#ifdef GEIST_BACKEND_METAL
+/* #196: matvec_q4k_h and gate_up_q4k_h (K = 512 mod 1024, n_out >= 1024)
+ * against the n4 kernels they replace there. Rounding only: the half
+ * simdgroups reduce by shuffles in another order than simd_sum. */
+static void run_q4k_half_case(struct geist_backend *mt, size_t n_in, size_t n_out) {
+    const struct geist_backend_vtbl  *v  = mt->desc->vtbl;
+    const struct geist_backend_fused *f  = geist_backend_fused_tbl(mt);
+    struct metal_state               *st = mt->state;
+    struct geist_buffer              *bx = nullptr, *bw[2] = {nullptr}, *by[2] = {nullptr};
+    struct geist_tensor               tw[2];
+    float                            *x = dev_alloc(mt, n_in * sizeof(float), &bx);
+    bool                              ok =
+            x != nullptr && st->q4k_h_pipeline != nullptr && st->q4k_gate_up_h_pipeline != nullptr;
+    for (size_t i = 0; i < 2 && ok; i++) {
+        ok = quant_weight(mt, GEIST_DTYPE_Q4_K, n_in, n_out, &bw[i], &tw[i]) != nullptr &&
+             dev_alloc(mt, n_out * sizeof(float), &by[i]) != nullptr;
+    }
+    float *got = malloc(4 * n_out * sizeof(float));
+    check(ok && got != nullptr, "q4k half-simdgroup buffers");
+    if (ok && got != nullptr) {
+        for (size_t i = 0; i < n_in; i++) {
+            x[i] = ((float) rng_u8() - 127.5f) * 0.0372529f;
+        }
+        const struct geist_tensor tx = f32_row(bx, n_in);
+        const struct geist_weight ww = {
+                .n_in = (int32_t) n_in, .n_out = (int32_t) n_out, .dtype = GEIST_DTYPE_Q4_K};
+        void *const       pipes[2] = {st->q4k_h_pipeline, st->q4k_gate_up_h_pipeline};
+        enum geist_status s        = GEIST_OK;
+        /* i = 0: the half-simdgroup kernels; i = 1: the n4 ones. */
+        for (size_t i = 0; i < 2 && s == GEIST_OK; i++) {
+            if (i == 1) {
+                st->q4k_h_pipeline         = nullptr;
+                st->q4k_gate_up_h_pipeline = nullptr;
+            }
+            struct geist_tensor ty = f32_row(by[0], n_out), tf = f32_row(by[1], n_out);
+            s = f->linear_t(mt, &tx, &ww, &tw[0], 1, &ty);
+            if (s == GEIST_OK)
+                s = f->ffn_gate_up(mt, &tx, &tw[0], &tw[1], &tf);
+            if (s == GEIST_OK &&
+                (v->buffer_download(n_out * sizeof(float), (uint8_t *) (got + i * n_out), by[0]) !=
+                         GEIST_OK ||
+                 v->buffer_download(n_out * sizeof(float),
+                                    (uint8_t *) (got + (2 + i) * n_out),
+                                    by[1]) != GEIST_OK)) {
+                s = GEIST_E_BACKEND;
+            }
+        }
+        st->q4k_h_pipeline         = pipes[0];
+        st->q4k_gate_up_h_pipeline = pipes[1];
+        check(s == GEIST_OK, "q4k half-simdgroup dispatch");
+        /* Error over the largest output: a single output's relative error
+         * says nothing where its sum cancels to near zero. */
+        double rel[2] = {0.0, 0.0};
+        for (size_t k = 0; k < 2; k++) {
+            const float *a = got + 2 * k * n_out, *b = a + n_out;
+            double       err = 0.0, big = 1.0;
+            for (size_t i = 0; i < n_out; i++) {
+                const double e = fabs((double) a[i] - b[i]);
+                err            = e > err ? e : err;
+                big            = fabs(b[i]) > big ? fabs(b[i]) : big;
+            }
+            rel[k] = err / big;
+        }
+        const bool pass = rel[0] < 2e-6 && rel[1] < 2e-6;
+        check(pass, "matvec_q4k_h / gate_up_q4k_h match the n4 kernels");
+        printf("  q4k half-simdgroup %zu->%zu: matvec max_rel %.1e, gate/up max_rel %.1e %s\n",
+               n_in,
+               n_out,
+               rel[0],
+               rel[1],
+               pass ? "OK" : "FAIL");
+    }
+    free(got);
+    struct geist_buffer *bufs[] = {bx, bw[0], bw[1], by[0], by[1]};
+    for (size_t i = 0; i < sizeof bufs / sizeof bufs[0]; i++) {
+        if (bufs[i] != nullptr)
+            v->buffer_destroy(mt, bufs[i]);
+    }
+}
+#endif
+
 static struct geist_tensor dense3(struct geist_buffer *b, int dt, size_t d0, size_t d1, size_t d2) {
     return (struct geist_tensor) {.buffer = b,
                                   .dtype  = (uint16_t) dt,
@@ -1657,6 +1738,15 @@ int main(void) {
         run_argmax_case(mt, argmax_n[i] + 20u, false, true);
     }
     run_argmax_case(mt, 4099, true, false);
+#endif
+
+    /* #196: one row at Gemma 4's K, through matvec_q4k_h, against
+     * cpu_scalar; then both half-simdgroup kernels against the n4 ones
+     * (1100 and 1030 rows: ragged last threadgroup and half). */
+    run_case(mt, ref, GEIST_DTYPE_Q4_K, "Q4_K", 1536, 1100, 1);
+#ifdef GEIST_BACKEND_METAL
+    run_q4k_half_case(mt, 1536, 1100);
+    run_q4k_half_case(mt, 512, 1030);
 #endif
 
     geist_backend_destroy(mt);

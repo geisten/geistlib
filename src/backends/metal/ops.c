@@ -91,6 +91,16 @@ metal_op_end(struct geist_backend *be, void *cmd, void *enc, const char *what) {
  * through the matvec kernel instead of one pass of a tiled GEMM: a bounded
  * GEMM tile costs about as much as ten matvec rows (#578). */
 #define METAL_MATVEC_MAX_ROWS 9u
+
+/* Whether a one-row Q4_K matvec takes matvec_q4k_h (#196): K a multiple
+ * of 512 but not of 1024, where the n4 kernel leaves half its block groups
+ * idle on the last stride, and enough rows to fill the GPU at 8 rows per
+ * threadgroup (at 256 rows the n4 kernel's 64 threadgroups won). */
+static bool metal_q4k_half_rows(const void *pipeline, uint32_t n_in, uint32_t n_out) {
+    const uint32_t nb = n_in / METAL_Q4K_BLOCK_ELEMS;
+    return pipeline != nullptr && nb % 4u == 2u && n_out >= 1024u;
+}
+
 static void metal_encode_q4k_linear(struct metal_state            *st,
                                     void                          *enc,
                                     const struct geist_tensor     *x,
@@ -132,12 +142,15 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
                                 (params->x_row_stride % 8u) == 0u;
     const bool m_tile8_active = m_tile8 && !m_tile16;
     const bool n_tile4        = !m_tile8 && params->rows == 1u;
+    const bool n_half =
+            n_tile4 && metal_q4k_half_rows(st->q4k_h_pipeline, params->n_in, params->n_out);
     metal_msg_send_set_pipeline(st,
                                 enc,
                                 m_tile_sg_fast   ? st->q4k_mm_sg_fast_pipeline
                                 : m_tile_sg      ? st->q4k_mm_sg_pipeline
                                 : m_tile16       ? st->q4k_matmul_m16_pipeline
                                 : m_tile8_active ? st->q4k_matmul_m8_pipeline
+                                : n_half         ? st->q4k_h_pipeline
                                                  : st->q4k_n4_pipeline);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
@@ -149,7 +162,8 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
     }
 
     const struct metal_size groups = {
-            .width  = n_tile4     ? (params->n_out + 3u) / 4u
+            .width  = n_half      ? (params->n_out + 7u) / 8u
+                      : n_tile4   ? (params->n_out + 3u) / 4u
                       : m_tile_sg ? (params->rows + 31u) / 32u
                                   : params->n_out,
             .height = m_tile_sg  ? (params->n_out + 63u) / 64u
@@ -2976,9 +2990,14 @@ static bool metal_mv_weight_of(const struct geist_tensor *t, struct metal_mv_wei
     }
     struct metal_state *st  = be->state;
     const bool          q4k = g.dtype == GEIST_DTYPE_Q4_K;
-    void *const         pipeline =
-            q4k ? (silu ? st->q4k_gate_up_silu_n4_pipeline : st->q4k_gate_up_n4_pipeline)
-                : (silu ? st->q80_gate_up_silu_n4_pipeline : st->q80_gate_up_n4_pipeline);
+    const bool          half_rows =
+            q4k && !silu &&
+            metal_q4k_half_rows(st->q4k_gate_up_h_pipeline, (uint32_t) d_in, (uint32_t) g.n_out);
+    void *const pipeline =
+            half_rows ? st->q4k_gate_up_h_pipeline
+            : q4k     ? (silu ? st->q4k_gate_up_silu_n4_pipeline : st->q4k_gate_up_n4_pipeline)
+                      : (silu ? st->q80_gate_up_silu_n4_pipeline : st->q80_gate_up_n4_pipeline);
+    const uint32_t tg_rows = half_rows ? 8u : g.tg_rows;
     if (pipeline == nullptr) {
         return GEIST_E_UNSUPPORTED;
     }
@@ -3009,7 +3028,7 @@ static bool metal_mv_weight_of(const struct geist_tensor *t, struct metal_mv_wei
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 4);
     metal_msg_send_set_bytes(st, enc, &params, sizeof(params), 5);
     const struct metal_size groups = {
-            (uint32_t) ((g.n_out + g.tg_rows - 1u) / g.tg_rows), (uint32_t) rows, 1};
+            (uint32_t) ((g.n_out + tg_rows - 1u) / tg_rows), (uint32_t) rows, 1};
     const struct metal_size threads = {METAL_Q4K_N4_THREADS, 1, 1};
     metal_profile_add_dispatch(st,
                                q4k ? METAL_PROFILE_DISPATCH_Q4K_GATE_UP_N4
