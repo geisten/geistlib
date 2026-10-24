@@ -114,7 +114,8 @@ between backends, so code that compares bits names its backend.
 
 `geist_model_modalities`, `geist_session_attach_audio` / `attach_image` /
 `attach_video`, the `geist_session_audio_*` streaming family,
-`geist_session_decode_speculative`, the `geist_session_snapshot` / `restore`
+`geist_session_decode_speculative`, `geist_session_verify_drafts`, the
+`geist_session_snapshot` / `restore`
 family, the `geist_session_stats` family and the layer split
 (`geist_session_opts.split_backend` / `split_layers`, #49, with
 `GEIST_SPLIT_AUTO` for the planner's choice, #78) remain
