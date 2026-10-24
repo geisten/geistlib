@@ -380,8 +380,13 @@ enum geist_status load_layer_experts(struct transformer_arch_state    *st,
                 .n_out      = (int32_t) n_out,
                 .dtype      = (uint16_t) dme.dtype,
         };
-        /* On a GPU the experts' home is the state's CPU backend (#78). */
-        struct geist_backend *rb = st->moe_cpu != nullptr ? st->moe_cpu : be;
+        /* On a GPU the experts' home is the state's CPU backend (#78), and
+         * moe_resolve_cold resolves there only the experts that got no GPU
+         * copy (#164): the placement comes first. */
+        if (st->moe_cpu != nullptr) {
+            continue;
+        }
+        struct geist_backend *rb = be;
         if (rb->desc->vtbl->resolve_weight == nullptr) {
             continue;
         }

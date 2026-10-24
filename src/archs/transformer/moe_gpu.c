@@ -354,11 +354,11 @@ void moe_gpu_session_free(struct transformer_arch_session *sess) {
     }
 }
 
-void moe_gpu_session_alloc(struct transformer_arch_session *sess) {
+enum geist_status moe_gpu_session_alloc(struct transformer_arch_session *sess) {
     const struct transformer_arch_state *st = sess->model;
     const struct transformer_moe_gpu    *mg = st->moe_gpu;
     if (mg == nullptr || mg->n_hot == 0) {
-        return;
+        return GEIST_OK;
     }
     const struct geist_backend_vtbl *gv    = mg->be->desc->vtbl;
     const size_t                     n_sel = sess->m_max * moe_k(&st->config);
@@ -408,6 +408,18 @@ void moe_gpu_session_alloc(struct transformer_arch_session *sess) {
             sess->moe_csr_w == nullptr)
             s = GEIST_E_OOM;
     }
+    if (s != GEIST_OK && mg->no_cpu_copy) {
+        /* Its hot experts exist only on the GPU (#164). */
+        geist_backend_set_error(st->backend,
+                                s,
+                                "moe: no room for this session's buffers on %s (%s); its %zu "
+                                "experts there have no CPU copy",
+                                mg->be->desc->name,
+                                geist_backend_errmsg(mg->be),
+                                mg->n_hot);
+        moe_gpu_session_free(sess);
+        return s;
+    }
     if (s != GEIST_OK) {
         fprintf(stderr,
                 "geist: moe: no room for this session's buffers on %s (%s); its experts run on "
@@ -416,6 +428,67 @@ void moe_gpu_session_alloc(struct transformer_arch_session *sess) {
                 geist_backend_errmsg(mg->be));
         moe_gpu_session_free(sess);
     }
+    return GEIST_OK;
+}
+
+/* Resolves expert e of one projection array on `cpu`, or, when the GPU
+ * holds a copy, only drops its file pages from this process (#164). */
+static enum geist_status resolve_one(const struct transformer_arch_state *st,
+                                     struct geist_backend                *cpu,
+                                     struct geist_weight                 *w,
+                                     bool                                 hot,
+                                     bool                                 release,
+                                     int                                  layer) {
+    if (hot) {
+        if (release)
+            gguf_release_range(st->gguf, w->raw, w->raw_nbytes);
+        return GEIST_OK;
+    }
+    if (cpu->desc->vtbl->resolve_weight == nullptr)
+        return GEIST_OK;
+    cpu->calibration.locked   = true;
+    const enum geist_status s = cpu->desc->vtbl->resolve_weight(cpu, w);
+    if (s == GEIST_E_UNSUPPORTED) {
+        geist_backend_set_error(st->backend,
+                                s,
+                                "transformer: %s has no linear for layer %d's experts (dtype %u)",
+                                cpu->desc->name,
+                                layer,
+                                (unsigned) w->dtype);
+    } else if (s == GEIST_OK && (w->flags & GEIST_W_RAW_COLD) != 0) {
+        /* A host repack the kernels read instead of the source (#729). */
+        gguf_release_range(st->gguf, w->raw, w->raw_nbytes);
+    }
+    return s;
+}
+
+enum geist_status moe_resolve_cold(struct transformer_arch_state *st) {
+    struct transformer_moe_gpu *mg    = st->moe_gpu;
+    const size_t                slots = moe_slots(&st->config);
+    enum geist_status           s     = GEIST_OK;
+    const size_t                n     = st->n_layers + st->n_mtp_layers;
+    /* A discrete GPU has copied its experts; on unified memory its buffers
+     * alias the mapping itself, whose pages must stay. */
+    struct geist_backend_memory mem;
+    const bool release = mg != nullptr && geist_backend_memory_info(mg->be, &mem) == GEIST_OK &&
+                         !mem.unified_memory;
+    for (size_t i = 0; i < n && s == GEIST_OK; i++) {
+        struct transformer_layer_weights *L =
+                i < st->n_layers ? &st->layers[i] : &st->mtp_layers[i - st->n_layers].block;
+        if (L->moe_gate_w == nullptr)
+            continue;
+        for (size_t e = 0; e < slots && s == GEIST_OK; e++) {
+            /* An MTP block's experts lie past the table the copies cover. */
+            const bool           hot = mg != nullptr && i < st->n_layers &&
+                                       mg->twins[(i * slots + e) * 3].raw != nullptr;
+            struct geist_weight *w[] = {&L->moe_gate_w[e], &L->moe_up_w[e], &L->moe_down_w[e]};
+            for (size_t p = 0; p < 3 && s == GEIST_OK; p++)
+                s = resolve_one(st, st->moe_cpu, w[p], hot, release, L->layer_idx);
+        }
+    }
+    if (s == GEIST_OK && mg != nullptr)
+        mg->no_cpu_copy = mg->n_hot > 0;
+    return s;
 }
 
 bool moe_gpu_hot(const struct transformer_arch_session *sess, size_t layer, size_t e) {
