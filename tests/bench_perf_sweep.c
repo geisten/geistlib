@@ -406,8 +406,8 @@ int main(int argc, char **argv) {
             break;
         }
 
-        const bool step_ms = getenv("GEIST_BENCH_STEP_MS") != nullptr;
-        size_t measured = 0;
+        const bool step_ms  = getenv("GEIST_BENCH_STEP_MS") != nullptr;
+        size_t     measured = 0;
         for (int r = 0; r < repeats; r++) {
             s = geist_session_reset(sess);
             if (s != GEIST_OK) {
@@ -429,7 +429,7 @@ int main(int argc, char **argv) {
 
             const double  t1      = geist_test_now_ms();
             double        t_first = 0.0, t_step = t1;
-            geist_token_t out     = 0;
+            geist_token_t out = 0;
             for (int j = 0; j < decode_n; j++) {
                 s = geist_session_decode_step(sess, &out);
                 if (step_ms) { /* GEIST_BENCH_STEP_MS: each step's wall time, stderr */
