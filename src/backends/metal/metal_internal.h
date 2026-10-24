@@ -320,6 +320,10 @@ struct metal_state {
     void *mv3_q4k_q4k_q6k_pipeline;
     void *mv3_q80_q80_q80_function;
     void *mv3_q80_q80_q80_pipeline;
+    void *mv3_q4k_h_q4k_q4k_function;
+    void *mv3_q4k_h_q4k_q4k_pipeline;
+    void *mv3_q4k_h_q4k_q6k_function;
+    void *mv3_q4k_h_q4k_q6k_pipeline;
     void *embed_library;
     void *argmax_library;
     void *moe_library; /* #201: routing and id-indexed expert matvecs */

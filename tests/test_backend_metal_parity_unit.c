@@ -1657,6 +1657,8 @@ int main(void) {
      * threadgroup tiles of 4 and 8 rows. */
     run_fused_matvec_case(mt, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q6_K, 512, 258);
     run_fused_matvec_case(mt, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, 1024, 254);
+    /* #196: Gemma 4's K = 1536, q through the half-simdgroup layout. */
+    run_fused_matvec_case(mt, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q6_K, 1536, 256);
     run_fused_matvec_case(mt, GEIST_DTYPE_Q8_0, GEIST_DTYPE_Q8_0, GEIST_DTYPE_Q8_0, 1024, 260);
     run_fused_matvec_case(mt, GEIST_DTYPE_Q8_0, GEIST_DTYPE_Q8_0, GEIST_DTYPE_Q8_0, 512, 131);
     run_embedding_case(mt, GEIST_DTYPE_Q4_0, "Q4_0");
