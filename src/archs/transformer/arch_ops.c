@@ -300,7 +300,13 @@ static enum geist_status deltanet_rows_restore(struct transformer_arch_session *
     if (!deltanet_state_geometry(sess, &n_dn, &conv_n, &s_n))
         return GEIST_OK;
     struct geist_backend *be = sess->model->backend;
-    size_t                dn = 0;
+    /* One command batch for all the copies: outside one, Metal submits and
+     * waits on every copy. */
+    const struct geist_backend_vtbl *v = be->desc->vtbl;
+    const int                        region_tok =
+            v->parallel_region_begin ? v->parallel_region_begin(be, GEIST_REGION_PREFILL_BATCH) : 0;
+    enum geist_status ret = GEIST_OK;
+    size_t            dn  = 0;
     for (size_t li = 0; li < sess->model->n_layers; li++) {
         if (sess->model->layers[li].mixer != GEIST_MIXER_DELTANET)
             continue;
@@ -320,11 +326,15 @@ static enum geist_status deltanet_rows_restore(struct transformer_arch_session *
                              s_n * sizeof(float));
         if (ws != GEIST_OK) {
             geist_backend_set_error(be, ws, "transformer: DeltaNet row-state restore failed");
-            return ws;
+            ret = ws;
+            break;
         }
         dn++;
     }
-    return GEIST_OK;
+    if (v->parallel_region_end) {
+        v->parallel_region_end(be, region_tok);
+    }
+    return ret;
 }
 
 /* ---- Batched text prefill -------------------------------------------- */
