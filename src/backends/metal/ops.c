@@ -3088,12 +3088,13 @@ static bool metal_mv_weight_of(const struct geist_tensor *t, struct metal_mv_wei
 static void *metal_mv3_pipeline(const struct metal_state *st,
                                 enum geist_dtype          a,
                                 enum geist_dtype          b,
-                                enum geist_dtype          c) {
+                                enum geist_dtype          c,
+                                bool                      a_half) {
     if (a == GEIST_DTYPE_Q4_K && b == GEIST_DTYPE_Q4_K && c == GEIST_DTYPE_Q4_K) {
-        return st->mv3_q4k_q4k_q4k_pipeline;
+        return a_half ? st->mv3_q4k_h_q4k_q4k_pipeline : st->mv3_q4k_q4k_q4k_pipeline;
     }
     if (a == GEIST_DTYPE_Q4_K && b == GEIST_DTYPE_Q4_K && c == GEIST_DTYPE_Q6_K) {
-        return st->mv3_q4k_q4k_q6k_pipeline;
+        return a_half ? st->mv3_q4k_h_q4k_q6k_pipeline : st->mv3_q4k_q4k_q6k_pipeline;
     }
     if (a == GEIST_DTYPE_Q8_0 && b == GEIST_DTYPE_Q8_0 && c == GEIST_DTYPE_Q8_0) {
         return st->mv3_q80_q80_q80_pipeline;
@@ -3155,14 +3156,21 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
                 .x_row_stride   = (uint32_t) d_in,
                 .y_row_stride   = (uint32_t) mw[i].n_out,
         };
-        groups[i] = (uint32_t) ((mw[i].n_out + mw[i].tg_rows - 1u) / mw[i].tg_rows);
     }
     enum geist_status s = metal_ensure_q4k_pipeline(be);
     if (s != GEIST_OK) {
         return s;
     }
-    struct metal_state *st       = be->state;
-    void *const         pipeline = metal_mv3_pipeline(st, mw[0].dtype, mw[1].dtype, mw[2].dtype);
+    struct metal_state *st = be->state;
+    /* The first weight (q) in matvec_q4k_h's layout where linear_t would
+     * take that kernel, 8 rows per threadgroup (#196). */
+    const bool a_half = mw[0].dtype == GEIST_DTYPE_Q4_K &&
+                        metal_q4k_half_rows(st->q4k_h_pipeline, (uint32_t) d_in, p[0].n_out);
+    for (size_t i = 0; i < 3; i++) {
+        const uint32_t tg_rows = i == 0 && a_half ? 8u : mw[i].tg_rows;
+        groups[i]              = (uint32_t) ((mw[i].n_out + tg_rows - 1u) / tg_rows);
+    }
+    void *const pipeline = metal_mv3_pipeline(st, mw[0].dtype, mw[1].dtype, mw[2].dtype, a_half);
     if (pipeline == nullptr) {
         return GEIST_E_UNSUPPORTED;
     }

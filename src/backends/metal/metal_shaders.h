@@ -2372,7 +2372,10 @@ static const char metal_mv3_head[] = "struct T3{uint g1,g2;P p0,p1,p2;};\n";
     "else if(tg.x<t.g2){mv_" B "(x,w1,y1,t.p1,tg.x-t.g1,tg.y,ti,sg);}"                             \
     "else{mv_" C "(x,w2,y2,t.p2,tg.x-t.g2,tg.y,ti,sg);}}\n"
 static const char metal_mv3_kernels[] = GEIST_METAL_MV3("q4k", "q4k", "q4k")
-        GEIST_METAL_MV3("q4k", "q4k", "q6k") GEIST_METAL_MV3("q80", "q80", "q80");
+        GEIST_METAL_MV3("q4k", "q4k", "q6k") GEIST_METAL_MV3("q80", "q80", "q80")
+        /* #196: q in matvec_q4k_h's layout where linear_t takes it (K = 512
+         * mod 1024, >= 1024 rows), so the triple stays linear_t's bits. */
+        GEIST_METAL_MV3("q4k_h", "q4k", "q4k") GEIST_METAL_MV3("q4k_h", "q4k", "q6k");
 
 static const char metal_q4k_pair_n4_source[] =
         "#include <metal_stdlib>\n"
