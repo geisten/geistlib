@@ -18,13 +18,11 @@
 
 #include "moe_gpu.h"
 #include "moe_profile.h"
-#include "moe_pool.h"
 
 #include "forward/internal.h"
 #include "forward/profile.h"
 #include "gguf_reader.h"
 #include "heap.h"
-#include "par.h"
 
 #include <geist_backend.h>
 #include <geist_util.h>
@@ -152,7 +150,6 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
                 (double) atomic_load(&mg->ns_wait_grouped) /
                         ((double) (atomic_load(&mg->n_grouped) | 1u) * 1e3));
     }
-    moe_pool_destroy(mg->pool);
     const struct geist_backend_vtbl *gv = mg->be->desc->vtbl;
     for (size_t i = 0; mg->bufs != nullptr && i < mg->n_bufs; i++) {
         if (mg->bufs[i] != nullptr)
@@ -294,17 +291,6 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
     if (s != GEIST_OK) {
         moe_gpu_destroy(mg);
         return s;
-    }
-    /* A decode step's cold experts on helpers of their own (#161):
-     * GEIST_MOE_POOL=<n> helpers, 0 none; default min(7, threads - 1). */
-    if (mg->one_wait && mg->n_hot > 0) {
-        const size_t threads = geist_par_max_threads();
-        size_t       helpers = threads > 1 ? threads - 1 : 0;
-        helpers              = helpers < 7 ? helpers : 7;
-        const char *e        = getenv("GEIST_MOE_POOL");
-        if (e != nullptr && *e != '\0')
-            helpers = (size_t) strtoull(e, nullptr, 10);
-        mg->pool = moe_pool_create(helpers);
     }
     if (verbose) {
         fprintf(stderr,
