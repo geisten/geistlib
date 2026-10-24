@@ -75,6 +75,24 @@ void                            moe_gpu_session_free(struct transformer_arch_ses
                                                const float cold[static seq * sess->model->d_model],
                                                struct geist_buffer *out);
 
+/* #162: a decode step (seq == 1) of layer `layer` routes on the device
+ * with the experts split. route_launch starts the work so far (the router)
+ * and returns its mark (fused->map_marked: the host reads the logits and
+ * moe_x_io and routes too), then records the device's routing -- the same
+ * ranking -- into sess->moe_dev_ids and the hot experts' slots by it, and
+ * starts them. route_finish, with the host's ids and weights in
+ * sess->moe_ids/moe_wts: out = cold + the hot slots' outputs, weighted, on
+ * the GPU. */
+[[nodiscard]] bool
+moe_gpu_routed(const struct transformer_arch_session *sess, size_t layer, size_t seq);
+[[nodiscard]] uint64_t          moe_gpu_route_launch(struct transformer_arch_session *sess,
+                                                     size_t                           layer,
+                                                     enum geist_status               *status);
+[[nodiscard]] enum geist_status moe_gpu_route_finish(struct transformer_arch_session *sess,
+                                                     size_t                           layer,
+                                                     const float cold[static sess->model->d_model],
+                                                     struct geist_buffer *out);
+
 /* #201: a decode step (seq == 1) of layer `layer` routes and runs its
  * experts on the device: mg->device[layer] and the session's buffers. */
 [[nodiscard]] bool

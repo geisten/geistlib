@@ -488,6 +488,30 @@ memory). Runs 1704/1705 (3 cycles): 44.9-51.8 tok/s after 32 tokens,
 perplexity 29.99 (CPU 29.90). The card is still only ~35 % busy (P0 most of
 the time); routing on the GPU (#162) is the next margin.
 
+**Routing on the GPU (#162).** GPU timestamps showed the card idle for
+37-42 us per decode layer between the router and the hot experts (median,
+5,400-6,500 boundaries per run): the host's wake-up, routing, recording and
+submit. Now the GPU ranks the router's experts itself (`fused->moe_route`,
+the host's order: logit descending, id ascending) and runs the experts it
+holds by those ids (`fused->linear_t_sel`, a per-layer table of their
+device addresses, a cold expert's slot skipped) right after the router, in
+the same command buffer; the host waits for an event after the router
+(`submit_mark` / `map_marked`), routes too, runs the cold experts and hands
+their sum to the GPU as before. A separate submission for the GPU's part
+cost ~15 us per layer at the boundary, which the event avoids. 512 decoded
+tokens after a 512-token prompt, 3 interleaved cycles, `GEIST_MOE_GPU_ROUTE`
+0 / 1:
+
+| decode tok/s | host routes | GPU routes |
+|:--|:--|:--|
+| Qwen3-30B-A3B Q4_K_M, quiet | 67.8 / 69.2 / 70.7 | **74.0 / 73.6 / 74.4** |
+| Qwen3.6-35B-A3B UD-Q4_K_XL, quiet | 81.6 / 76.3 / 82.2 | **86.8 / 87.1 / 87.8** |
+| Qwen3-30B-A3B, 16 CPU hogs | 53.8 / 53.3 | 53.6 / 57.9 |
+| Qwen3.6-35B-A3B, 16 CPU hogs | 61.7 / 61.2 | **70.7 / 69.4** |
+
+Perplexity of this file (`bench_nll`, 1,023 tokens one at a time): 30.168 /
+30.178 and 17.126 / 17.124.
+
 On the pseudo-random prompt decode beats both CPU only (+45 %) and
 llama.cpp `-ot exps=CPU` (+30 %); on real text see the correction above. Quality: the perplexity of `docs/OFFLOAD.md`
 (1,023 tokens fed one at a time, `bench_nll`) is 29.90 on the CPU and 30.06

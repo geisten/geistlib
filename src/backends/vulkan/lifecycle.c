@@ -100,6 +100,11 @@ static PFN_vkVoidFunction vk_iproc(struct vk_state *st, const char *name) {
     VK_LOAD_I(st, DestroyFence);
     VK_LOAD_I(st, ResetFences);
     VK_LOAD_I(st, WaitForFences);
+    VK_LOAD_I(st, CreateEvent);
+    VK_LOAD_I(st, DestroyEvent);
+    VK_LOAD_I(st, GetEventStatus);
+    VK_LOAD_I(st, ResetEvent);
+    VK_LOAD_I(st, CmdSetEvent);
     VK_LOAD_I(st, CreateShaderModule);
     VK_LOAD_I(st, DestroyShaderModule);
     VK_LOAD_I(st, CreateDescriptorSetLayout);
@@ -156,6 +161,9 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         if (st->uring != nullptr) {
             vk_buffer_destroy(be, st->uring);
         }
+        if (st->seltab != nullptr) {
+            vk_buffer_destroy(be, st->seltab);
+        }
         if (st->xring != nullptr) {
             vk_buffer_destroy(be, st->xring);
         }
@@ -195,6 +203,9 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         }
         if (st->xfer_fence != VK_NULL_HANDLE) {
             st->fn.DestroyFence(st->device, st->xfer_fence, nullptr);
+        }
+        if (st->mark_event != VK_NULL_HANDLE) {
+            st->fn.DestroyEvent(st->device, st->mark_event, nullptr);
         }
         if (st->up_mem != VK_NULL_HANDLE) {
             st->fn.UnmapMemory(st->device, st->up_mem);
@@ -483,7 +494,11 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         return GEIST_E_BACKEND;
     }
     VkFenceCreateInfo finfo = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    if (st->fn.CreateFence(st->device, &finfo, nullptr, &st->xfer_fence) != VK_SUCCESS) {
+    if (st->fn.CreateFence(st->device, &finfo, nullptr, &st->xfer_fence) != VK_SUCCESS ||
+        st->fn.CreateEvent(st->device,
+                           &(VkEventCreateInfo) {.sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO},
+                           nullptr,
+                           &st->mark_event) != VK_SUCCESS) {
         geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: fence creation failed");
         return GEIST_E_BACKEND;
     }

@@ -353,30 +353,48 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
         if (s != GEIST_OK)
             return s;
     }
+    /* #162: the device routes and starts the hot experts; the host waits
+     * for the router alone (the mark) and reads what it wrote. */
+    const bool                        routed = moe_gpu_routed(sess, (size_t) ctx->layer_idx, seq);
+    struct geist_backend             *rbe    = routed ? st->moe_gpu->be : nullptr;
+    const struct geist_backend_fused *rgf    = routed ? rbe->desc->fused : nullptr;
+    uint64_t                          mark   = 0;
+    if (routed) {
+        mark = moe_gpu_route_launch(sess, (size_t) ctx->layer_idx, &s);
+        if (s != GEIST_OK) {
+            geist_backend_set_error(ctx->be,
+                                    s,
+                                    "moe: layer %d: routing on the GPU failed: %s",
+                                    ctx->layer_idx,
+                                    geist_backend_errmsg(rbe));
+            return s;
+        }
+    }
     moe_profile_mark(MOE_PROFILE_ROUTER, &t0);
 
     /* Route on the host. */
-    const float *lg = (const float *) v->buffer_map(sess->moe_logits);
+    const float *lg = (const float *) (routed ? rgf->map_marked(rbe, mark, sess->moe_logits)
+                                              : v->buffer_map(sess->moe_logits));
     if (lg == nullptr) {
         return GEIST_E_BACKEND;
     }
-    bool routed = true;
-    for (size_t r = 0; r < seq && routed; r++) {
-        routed = moe_route_topk(n_exp,
-                                n_rt,
-                                st->config.moe_norm_topk,
-                                lg + r * n_exp,
-                                sess->moe_ids + r * k,
-                                sess->moe_wts + r * k);
+    bool routed_ok = true;
+    for (size_t r = 0; r < seq && routed_ok; r++) {
+        routed_ok = moe_route_topk(n_exp,
+                                   n_rt,
+                                   st->config.moe_norm_topk,
+                                   lg + r * n_exp,
+                                   sess->moe_ids + r * k,
+                                   sess->moe_wts + r * k);
     }
     for (size_t r = 0; r < seq && k > n_rt; r++)
         sess->moe_ids[r * k + n_rt] = (uint32_t) n_exp; /* the shared expert */
-    if (routed) {
+    if (routed_ok) {
         moe_trace(ctx->layer_idx, ctx->q_position, seq, n_exp, n_rt, k, lg, sess->moe_ids);
         moe_profile_count(st->moe_prof, (size_t) ctx->layer_idx, seq, k, n_rt, sess->moe_ids);
     }
     v->buffer_unmap(sess->moe_logits);
-    if (!routed) {
+    if (!routed_ok) {
         geist_backend_set_error(ctx->be,
                                 GEIST_E_BACKEND,
                                 "moe: layer %d router logits are not finite",
@@ -389,7 +407,7 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     /* Gather each expert's rows into its slice of the bucketed buffer. A
      * GPU's device-local x is copied down first. */
     struct geist_buffer *xb = sess->moe_x_io != nullptr ? sess->moe_x_io : x;
-    const float         *xs = (const float *) v->buffer_map(xb);
+    const float *xs = (const float *) (routed ? rgf->map_marked(rbe, mark, xb) : v->buffer_map(xb));
     if (xs == nullptr) {
         if (v->buffer_download(seq * d * sizeof(float), (uint8_t *) sess->moe_x_host, x) !=
             GEIST_OK)
@@ -445,8 +463,8 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
      * starts its hot experts now and does not wait for them; the CPU runs
      * the cold ones meanwhile and the GPU adds the hot outputs onto their
      * sum. GEIST_E_UNSUPPORTED (a weight not resident): the batch below. */
-    bool launched = false;
-    if (j->n_hot > 0 && moe_gpu_launchable(sess, j->layer, j->n_hot, j->hot)) {
+    bool launched = routed; /* its hot experts run already */
+    if (!routed && j->n_hot > 0 && moe_gpu_launchable(sess, j->layer, j->n_hot, j->hot)) {
         s = moe_gpu_launch(sess, j->layer, seq, j->n_hot, j->hot);
         if (s != GEIST_OK && s != GEIST_E_UNSUPPORTED) {
             geist_backend_set_error(ctx->be,
@@ -503,7 +521,8 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
             for (size_t c = 0; c < d; c++)
                 dst[c] += wt * src[c];
         }
-        s = moe_gpu_finish(sess, seq, j->n_hot, j->hot, cold, sess->moe_acc);
+        s = routed ? moe_gpu_route_finish(sess, j->layer, cold, sess->moe_acc)
+                   : moe_gpu_finish(sess, seq, j->n_hot, j->hot, cold, sess->moe_acc);
         if (s == GEIST_OK)
             s = blk_add(ctx, d, sess->scratch_h_post_attn, sess->moe_acc, ctx->h_out_buf);
         moe_profile_mark(MOE_PROFILE_SUM, &t0);
