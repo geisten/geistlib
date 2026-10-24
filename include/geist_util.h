@@ -233,6 +233,17 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
  * the longest max_seq_len that fits into memory. */
 size_t                          geist_session_length(const struct geist_session *s);
 [[nodiscard]] enum geist_status geist_session_truncate(struct geist_session *s, size_t n);
+
+/* @stability EXPERIMENTAL (#192) — a cheap way back for short look-aheads
+ * (a draft model's speculative tokens). geist_session_checkpoint records the
+ * session's state now, where the backend keeps it; afterwards
+ * geist_session_truncate to the checkpoint's length succeeds on recurrent
+ * (DeltaNet) layers too and restores that state. Nothing is copied to the
+ * host. The 8 newest checkpoints are kept (a ninth drops the oldest), at
+ * rising lengths, e.g. one per draft step; a truncate keeps those at or
+ * below its length, a reset drops all. GEIST_E_UNSUPPORTED where the
+ * architecture cannot, with MTP drafting or the KIVI KV cache. */
+[[nodiscard]] enum geist_status geist_session_checkpoint(struct geist_session *s);
 [[nodiscard]] enum geist_status geist_session_kv_bytes_per_token(const struct geist_session *s,
                                                                  size_t *out_bytes);
 
@@ -424,6 +435,41 @@ geist_model_gains(struct geist_model *m, float **out_gains, size_t *out_n);
                                                                  size_t                out_capacity,
                                                                  geist_token_t        *out_tokens,
                                                                  size_t               *n_out);
+
+/* @stability EXPERIMENTAL — a draft model for decode_speculative (#192).
+ *
+ * After geist_session_set_draft(s, draft), geist_session_decode_speculative
+ * on s takes its guesses from `draft`, a session of a small model with the
+ * same vocabulary (e.g. Qwen3.5 0.8B for Bonsai 2 27B), instead of the
+ * internal n-gram drafter: k_max - 1 greedy draft steps per call. The engine
+ * keeps the draft session in step with s from the `history` that
+ * decode_speculative receives (prompt + emitted tokens), so the caller only
+ * creates it; it may start empty, and the first call prefills the prompt.
+ * The caller owns `draft`, keeps it alive while attached and does not use
+ * it otherwise; set_draft(s, nullptr) detaches. GEIST_E_INVALID_ARG when
+ * the vocabularies differ. Under greedy decoding the stream is unchanged.
+ * On Metal k_max <= 8 keeps the verify on the small-row kernels. */
+[[nodiscard]] enum geist_status geist_session_set_draft(struct geist_session *s,
+                                                        struct geist_session *draft);
+
+/* @stability EXPERIMENTAL — verify caller-supplied drafts (#192).
+ *
+ * geist_session_decode_speculative with the drafts coming from the caller
+ * (e.g. a small draft model in a session of its own) instead of the
+ * internal drafter. drafts[0..n_drafts) are guesses for the tokens after
+ * the pending token (the one geist_session_decode_step would return next);
+ * the pending token and the guesses are verified in one forward pass, the
+ * longest prefix the model agrees with is accepted and the model's own
+ * next token follows it. Writes 1..n_drafts+2 tokens to `out_tokens` and
+ * their count to `*n_out`; under greedy decoding the stream equals as many
+ * decode_step calls. n_drafts = 0 is one decode step. n_drafts + 1 must not
+ * exceed 16 and out_capacity must be at least n_drafts + 2. */
+[[nodiscard]] enum geist_status geist_session_verify_drafts(struct geist_session *s,
+                                                            size_t                n_drafts,
+                                                            const geist_token_t  *drafts,
+                                                            size_t                out_capacity,
+                                                            geist_token_t        *out_tokens,
+                                                            size_t               *n_out);
 
 /* ====================================================================== */
 /* Stats / Telemetry                                                       */

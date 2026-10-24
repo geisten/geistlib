@@ -320,6 +320,37 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
         return s;
     }
 
+    /* Greedy without penalties (#192): one device argmax per row and the
+     * last row moved to row zero on the device, as the single-row path does.
+     * Mapping k x vocab floats instead reads them over the bus where the
+     * logits live in device memory (BAR on a discrete GPU): ~32 ms a row on
+     * an RTX 2080 Ti. */
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
+    if (sess->temperature == 0.0f && !geist_sampler_penalties_active(&sess->pen) &&
+        st->model_fusions.argmax && fused != nullptr && fused->argmax_f32 != nullptr &&
+        v->buffer_copy != nullptr) {
+        const size_t vb = (size_t) st->vocab_size * sizeof(float);
+        for (size_t row = 0; row < k; row++) {
+            struct geist_tensor t_row =
+                    view_2d_at(sess->scratch_logits, row * vb, 1, st->vocab_size);
+            int32_t idx = -1;
+            s           = fused->argmax_f32(be, &t_row, &idx);
+            if (s != GEIST_OK || idx < 0 || (size_t) idx >= (size_t) st->vocab_size) {
+                return s != GEIST_OK ? s : GEIST_E_BACKEND;
+            }
+            out_tokens[row] = (geist_token_t) idx;
+        }
+        if (k > 1) {
+            s = v->buffer_copy(sess->scratch_logits, 0, sess->scratch_logits, (k - 1) * vb, vb);
+            if (s != GEIST_OK) {
+                return s;
+            }
+        }
+        sess->logits_softcapped = false;
+        sess->logits_sparse     = false;
+        return GEIST_OK;
+    }
+
     /* Per-row softcap + sampler. Softcap is monotonic, so for greedy
      * (temperature=0) argmax is identical with or without it — skip
      * the ~262k tanhf calls per row. Stochastic modes still need it.

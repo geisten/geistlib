@@ -71,6 +71,10 @@ struct geist_session_full {
     /* Per-session arch state, from the arch's session_alloc. */
     void *arch_session;
 
+    /* geist_session_set_draft (#192): a small model's session that drafts
+     * for decode_speculative; the caller owns it. */
+    struct geist_session *draft;
+
     /* Sampler defaults from geist_session_opts. */
     float    temperature;
     float    top_p;
@@ -763,79 +767,18 @@ spec_fallback_single(struct geist_session *s, geist_token_t out_tokens[static 1]
     return GEIST_OK;
 }
 
-[[nodiscard]] enum geist_status geist_session_decode_speculative(struct geist_session *s,
-                                                                 size_t                k_max,
-                                                                 size_t                history_n,
-                                                                 const geist_token_t  *history,
-                                                                 size_t                out_capacity,
-                                                                 geist_token_t        *out_tokens,
-                                                                 size_t               *n_out) {
-    if (s == nullptr || n_out == nullptr || (history_n > 0 && history == nullptr) ||
-        (out_capacity > 0 && out_tokens == nullptr)) {
-        return GEIST_E_INVALID_ARG;
-    }
-    if (k_max == 0 || k_max > GEIST_SPEC_KMAX_HARDCAP) {
-        return GEIST_E_INVALID_ARG;
-    }
-    if (out_capacity < k_max + 1) {
-        return GEIST_E_INVALID_ARG;
-    }
-    *n_out = 0;
-
-    struct geist_session_full           *sf  = as_full(s);
-    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
-    void                                *st  = sf->arch_session;
-    if (ops == nullptr)
-        return GEIST_E_INVALID_STATE;
-
-    const bool can_spec = ops->peek_next_token != nullptr && ops->verify_forward != nullptr &&
-                          ops->kv_truncate != nullptr && ops->kv_len != nullptr;
-    if (!can_spec)
-        return spec_fallback_single(s, out_tokens, n_out);
-
-    const uint64_t      t_start = monotonic_ns();
-    const geist_token_t seed    = ops->peek_next_token(st);
-    if (seed < 0)
-        return spec_fallback_single(s, out_tokens, n_out);
-
-    geist_token_t drafts[GEIST_SPEC_KMAX_HARDCAP];
-    size_t        match_L      = 0;
-    size_t        k            = 0;
-    bool          native_draft = false;
-    if (ops->draft_tokens != nullptr) {
-        const enum geist_status ds = ops->draft_tokens(st, k_max, seed, drafts, &k);
-        if (ds == GEIST_OK) {
-            native_draft = k > 0;
-        } else if (ds != GEIST_E_UNSUPPORTED) {
-            return session_op_failed(sf, ds, "architecture-native draft");
-        }
-    }
-    if (!native_draft) {
-        k = propose_drafts_ngram(
-                history, history_n, seed, k_max, /*max_suffix=*/4, drafts, &match_L);
-    }
-    if (k <= 1)
-        return spec_fallback_single(s, out_tokens, n_out);
-
-    /* Lazy-draft gate: skip verify-forward (~1.6-2.3x a single decode) when
-     * the n-gram match is shorter than GEIST_SPEC_MIN_L (default 2). A
-     * seed-only match (L=1) is accepted too rarely to pay for it. */
-    /* Relaxed-atomic first-use cache: concurrent sessions reach this on
-     * their own threads. */
-    static _Atomic int min_L_cached = -1;
-    int                min_L        = atomic_load_explicit(&min_L_cached, memory_order_relaxed);
-    if (min_L < 0) {
-        const char *env = getenv("GEIST_SPEC_MIN_L");
-        long        v;
-        if (!geist_parse_long(env, &v))
-            v = 2;
-        min_L = (v <= 0) ? 1 : (v > 8 ? 8 : (int) v);
-        atomic_store_explicit(&min_L_cached, min_L, memory_order_relaxed);
-    }
-    if (!native_draft && (int) match_L < min_L) {
-        return spec_fallback_single(s, out_tokens, n_out);
-    }
-
+/* Verify k candidate tokens (drafts[0] the pending seed, drafts[1..] the
+ * guesses after it) in one forward, accept the longest matching prefix, roll
+ * back the rest and push the bonus or correction token (shared by
+ * decode_speculative and verify_drafts). */
+[[nodiscard]] static enum geist_status spec_verify(struct geist_session_full           *sf,
+                                                   const struct geist_arch_ops_decoder *ops,
+                                                   void                                *st,
+                                                   size_t                               k,
+                                                   const geist_token_t                 *drafts,
+                                                   geist_token_t                       *out_tokens,
+                                                   size_t                              *n_out,
+                                                   uint64_t                             t_start) {
     const size_t            kv_before = ops->kv_len(st);
     geist_token_t           verify_out[GEIST_SPEC_KMAX_HARDCAP];
     const enum geist_status vs = ops->verify_forward(st, k, drafts, verify_out);
@@ -887,6 +830,214 @@ spec_fallback_single(struct geist_session *s, geist_token_t out_tokens[static 1]
     sf->n_tokens_decoded += emitted;
     sf->total_decode_ns += monotonic_ns() - t_start;
     return GEIST_OK;
+}
+
+/* A draft model's session drafts (#192). It is brought to the target's
+ * committed tokens (history; usually the previous call's correction is all
+ * that is missing), then the seed and k_max - 1 greedy steps follow, with a
+ * checkpoint after the seed and after every step but the last, so that
+ * draft_model_rollback can return to seed + accepted drafts. */
+[[nodiscard]] static enum geist_status draft_model_propose(struct geist_session *d,
+                                                           size_t                history_n,
+                                                           const geist_token_t  *history,
+                                                           geist_token_t         seed,
+                                                           size_t                k_max,
+                                                           geist_token_t        *drafts,
+                                                           size_t               *k) {
+    size_t have = geist_session_length(d);
+    if (have > history_n) {
+        /* ahead of the target (an unexpected path): back to it, or start over */
+        if (geist_session_truncate(d, history_n) == GEIST_OK) {
+            have = history_n;
+        } else {
+            if (geist_session_reset(d) != GEIST_OK)
+                return GEIST_E_INVALID_STATE;
+            have = 0;
+        }
+    }
+    enum geist_status s = GEIST_OK;
+    if (have < history_n)
+        s = geist_session_prefill_tokens(d, history_n - have, history + have);
+    if (s == GEIST_OK)
+        s = geist_session_prefill_tokens(d, 1, &seed);
+    /* Without checkpoints (e.g. the KIVI KV cache) a rejected guess makes
+     * the next call start the draft over: slower, still exact. */
+    bool ckpt = true;
+    if (s == GEIST_OK) {
+        s = geist_session_checkpoint(d);
+        if (s == GEIST_E_UNSUPPORTED) {
+            ckpt = false;
+            s    = GEIST_OK;
+        }
+    }
+    drafts[0] = seed;
+    *k        = 1;
+    for (size_t i = 0; s == GEIST_OK && i + 1 < k_max; i++) {
+        s = geist_session_decode_step(d, &drafts[*k]);
+        if (s == GEIST_OK)
+            ++*k;
+        if (s == GEIST_OK && ckpt && i + 2 < k_max)
+            s = geist_session_checkpoint(d);
+    }
+    return s;
+}
+
+/* After the verify: the draft keeps seed + the accepted guesses. n_out is
+ * spec_verify's count, accepted guesses + seed + correction. A failed
+ * rollback leaves the draft ahead; draft_model_propose then starts over. */
+static void
+draft_model_rollback(struct geist_session *d, size_t history_n, size_t guesses, size_t n_out) {
+    const size_t accepted = n_out >= 2 ? n_out - 2 : 0;
+    if (accepted < guesses)
+        (void) geist_session_truncate(d, history_n + 1 + accepted);
+}
+
+[[nodiscard]] enum geist_status geist_session_set_draft(struct geist_session *s,
+                                                        struct geist_session *draft) {
+    if (s == nullptr || draft == s) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_session_full *sf = as_full(s);
+    if (draft == nullptr) {
+        sf->draft = nullptr;
+        return GEIST_OK;
+    }
+    struct geist_session_full   *df = as_full(draft);
+    const struct gguf_tokenizer *a  = geist_model_internal_gguf_tokenizer(sf->model);
+    const struct gguf_tokenizer *b  = geist_model_internal_gguf_tokenizer(df->model);
+    bool same = sf->model == df->model ||
+                (a != nullptr && b != nullptr && a->vocab_size == b->vocab_size);
+    for (size_t t = 0; same && sf->model != df->model && t < a->vocab_size; t++) {
+        same = a->token_len[t] == b->token_len[t] &&
+               memcmp(a->token_str[t], b->token_str[t], a->token_len[t]) == 0;
+    }
+    if (!same) {
+        snprintf(sf->err_msg,
+                 sizeof(sf->err_msg),
+                 "set_draft: the draft model's vocabulary differs");
+        sf->err_code = GEIST_E_INVALID_ARG;
+        return GEIST_E_INVALID_ARG;
+    }
+    sf->draft = draft;
+    return GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status geist_session_decode_speculative(struct geist_session *s,
+                                                                 size_t                k_max,
+                                                                 size_t                history_n,
+                                                                 const geist_token_t  *history,
+                                                                 size_t                out_capacity,
+                                                                 geist_token_t        *out_tokens,
+                                                                 size_t               *n_out) {
+    if (s == nullptr || n_out == nullptr || (history_n > 0 && history == nullptr) ||
+        (out_capacity > 0 && out_tokens == nullptr)) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (k_max == 0 || k_max > GEIST_SPEC_KMAX_HARDCAP) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (out_capacity < k_max + 1) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *n_out = 0;
+
+    struct geist_session_full           *sf  = as_full(s);
+    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
+    void                                *st  = sf->arch_session;
+    if (ops == nullptr)
+        return GEIST_E_INVALID_STATE;
+
+    const bool can_spec = ops->peek_next_token != nullptr && ops->verify_forward != nullptr &&
+                          ops->kv_truncate != nullptr && ops->kv_len != nullptr;
+    if (!can_spec)
+        return spec_fallback_single(s, out_tokens, n_out);
+
+    const uint64_t      t_start = monotonic_ns();
+    const geist_token_t seed    = ops->peek_next_token(st);
+    if (seed < 0)
+        return spec_fallback_single(s, out_tokens, n_out);
+
+    geist_token_t drafts[GEIST_SPEC_KMAX_HARDCAP];
+    size_t        match_L      = 0;
+    size_t        k            = 0;
+    bool          native_draft = false;
+    if (sf->draft != nullptr) {
+        const enum geist_status ds =
+                draft_model_propose(sf->draft, history_n, history, seed, k_max, drafts, &k);
+        if (ds != GEIST_OK)
+            return session_op_failed(sf, ds, "draft model");
+        const enum geist_status vs =
+                spec_verify(sf, ops, st, k, drafts, out_tokens, n_out, t_start);
+        if (vs == GEIST_OK)
+            draft_model_rollback(sf->draft, history_n, k - 1, *n_out);
+        return vs;
+    }
+    if (ops->draft_tokens != nullptr) {
+        const enum geist_status ds = ops->draft_tokens(st, k_max, seed, drafts, &k);
+        if (ds == GEIST_OK) {
+            native_draft = k > 0;
+        } else if (ds != GEIST_E_UNSUPPORTED) {
+            return session_op_failed(sf, ds, "architecture-native draft");
+        }
+    }
+    if (!native_draft) {
+        k = propose_drafts_ngram(
+                history, history_n, seed, k_max, /*max_suffix=*/4, drafts, &match_L);
+    }
+    if (k <= 1)
+        return spec_fallback_single(s, out_tokens, n_out);
+
+    /* Lazy-draft gate: skip verify-forward (~1.6-2.3x a single decode) when
+     * the n-gram match is shorter than GEIST_SPEC_MIN_L (default 2). A
+     * seed-only match (L=1) is accepted too rarely to pay for it. */
+    /* Relaxed-atomic first-use cache: concurrent sessions reach this on
+     * their own threads. */
+    static _Atomic int min_L_cached = -1;
+    int                min_L        = atomic_load_explicit(&min_L_cached, memory_order_relaxed);
+    if (min_L < 0) {
+        const char *env = getenv("GEIST_SPEC_MIN_L");
+        long        v;
+        if (!geist_parse_long(env, &v))
+            v = 2;
+        min_L = (v <= 0) ? 1 : (v > 8 ? 8 : (int) v);
+        atomic_store_explicit(&min_L_cached, min_L, memory_order_relaxed);
+    }
+    if (!native_draft && (int) match_L < min_L) {
+        return spec_fallback_single(s, out_tokens, n_out);
+    }
+
+    return spec_verify(sf, ops, st, k, drafts, out_tokens, n_out, t_start);
+}
+
+[[nodiscard]] enum geist_status geist_session_verify_drafts(struct geist_session *s,
+                                                            size_t                n_drafts,
+                                                            const geist_token_t  *drafts,
+                                                            size_t                out_capacity,
+                                                            geist_token_t        *out_tokens,
+                                                            size_t               *n_out) {
+    if (s == nullptr || n_out == nullptr || (n_drafts > 0 && drafts == nullptr) ||
+        out_tokens == nullptr || n_drafts + 1 > GEIST_SPEC_KMAX_HARDCAP ||
+        out_capacity < n_drafts + 2) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *n_out                                   = 0;
+    struct geist_session_full           *sf  = as_full(s);
+    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
+    void                                *st  = sf->arch_session;
+    if (ops == nullptr)
+        return GEIST_E_INVALID_STATE;
+    const bool can_spec = ops->peek_next_token != nullptr && ops->verify_forward != nullptr &&
+                          ops->kv_truncate != nullptr && ops->kv_len != nullptr;
+    if (!can_spec || n_drafts == 0)
+        return spec_fallback_single(s, out_tokens, n_out);
+    const uint64_t      t_start = monotonic_ns();
+    const geist_token_t seed    = ops->peek_next_token(st);
+    if (seed < 0)
+        return spec_fallback_single(s, out_tokens, n_out);
+    geist_token_t rows[GEIST_SPEC_KMAX_HARDCAP];
+    rows[0] = seed;
+    memcpy(rows + 1, drafts, n_drafts * sizeof(geist_token_t));
+    return spec_verify(sf, ops, st, n_drafts + 1, rows, out_tokens, n_out, t_start);
 }
 
 /* The surface form comes from the model's tokenizer: the GGUF-embedded one
@@ -1394,6 +1545,23 @@ size_t geist_session_length(const struct geist_session *s) {
     }
     const enum geist_status ts = ops->truncate(arch_sess(sf), n);
     return ts == GEIST_OK ? GEIST_OK : session_op_failed(sf, ts, "truncate");
+}
+
+[[nodiscard]] enum geist_status geist_session_checkpoint(struct geist_session *s) {
+    if (s == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_session_full           *sf  = as_full(s);
+    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
+    if (ops == nullptr || ops->checkpoint == nullptr) {
+        snprintf(sf->err_msg,
+                 sizeof(sf->err_msg),
+                 "checkpoint: the active architecture cannot checkpoint");
+        sf->err_code = GEIST_E_UNSUPPORTED;
+        return GEIST_E_UNSUPPORTED;
+    }
+    const enum geist_status cs = ops->checkpoint(arch_sess(sf));
+    return cs == GEIST_OK ? GEIST_OK : session_op_failed(sf, cs, "checkpoint");
 }
 
 [[nodiscard]] enum geist_status geist_session_kv_bytes_per_token(const struct geist_session *s,

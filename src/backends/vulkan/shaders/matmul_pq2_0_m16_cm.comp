@@ -10,13 +10,16 @@
  * most SMs idle at a handful of tokens; here a weight is decoded once and the
  * tokens ride the MMA's N = 16.
  *
- * A workgroup is 32 weight rows; its 8 subgroups are 2 row tiles x 4 k-slices
- * (subgroup s takes 128-element blocks s>>1, s>>1 + 4, ...). A lane loads its
- * row's whole block (two 16-byte loads, a full sector; the next block's are
- * in flight while this one computes). Per 32-wide k-step a subgroup decodes
- * its 16 x 32 weight tile and loads its 16 x 32 token tile (tokens >= rows
- * are zero) into its own shared slots, then runs two 16 x 16 x 16 MMAs. No workgroup barrier inside the loop; the four k-slices
- * meet in shared memory at the end, and only tokens < rows are stored.
+ * A workgroup is 32 weight rows; its 8 subgroups are 8 k-slices (subgroup s
+ * takes 128-element blocks s, s + 8, ...). Each subgroup owns both 16-row
+ * tiles, so one token tile serves two weight tiles: the activations are the
+ * traffic that grows with the token count (every workgroup reads them), the
+ * weights are read once. A lane loads its two rows' whole blocks (16-byte
+ * loads, the next block's in flight). Per 32-wide k-step a subgroup decodes
+ * its two 16 x 32 weight tiles and loads its 16 x 32 token tile (tokens >=
+ * rows are zero) into its own shared slots, then runs four 16 x 16 x 16
+ * MMAs. The eight k-slices meet in shared memory at the end; only tokens <
+ * rows are stored.
  *
  * GPU layout = struct-of-arrays (see matvec_pq2_0.comp). Requires a subgroup
  * size of 32, n_in % 128 == 0, x offset and stride % 4 == 0.
@@ -43,9 +46,9 @@ layout(push_constant) uniform Push {
 const uint BK = 32;
 const uint STRIDE4 = BK / 8u + 1u; /* 4 uvec4 of data + 1 of padding per row */
 
-shared uvec4 Ash[8][16 * STRIDE4];
+shared uvec4 Ash[8][32 * STRIDE4];
 shared uvec4 Bsh[8][16 * STRIDE4];
-shared float red[8 * 256];
+shared float red[8 * 512];
 
 /* 8 ternary codes (16 bits) -> 8 packed f16 values (code - 1) * d without
  * an int -> float convert (quarter rate on Turing): code c goes into the f16
@@ -61,89 +64,101 @@ uvec4 expand8(uint bits, f16vec2 d4) {
     return r;
 }
 
+/* a row's block: its 8 quant words and scale */
+struct Blk {
+    uvec4 a, b;
+    float d;
+};
+
+Blk load_blk(uint row, uint ib, uint nb, uint sc0) {
+    uint bi = row * nb + ib;
+    uint sw = sc0 + (bi >> 1u);
+    Blk k;
+    k.a = w4[bi * 2u];
+    k.b = w4[bi * 2u + 1u];
+    k.d = unpackHalf2x16(w4[sw >> 2u][sw & 3u] >> ((bi & 1u) * 16u)).x;
+    return k;
+}
+
 void main() {
     uint sg = gl_SubgroupID;
     uint lane = gl_SubgroupInvocationID;
-    uint rt = sg & 1u;
-    uint slice = sg >> 1u;
-    uint row = min(gl_WorkGroupID.x * 32u + rt * 16u + (lane >> 1u), pc.n_out - 1u);
+    uint r0 = gl_WorkGroupID.x * 32u + (lane >> 1u);
+    uint row0 = min(r0, pc.n_out - 1u), row1 = min(r0 + 16u, pc.n_out - 1u);
     uint hk = lane & 1u;
     uint t = lane >> 1u;
     bool tvalid = t < pc.rows;
     uint sc0 = pc.n_out * pc.blocks_per_row * 8u;
+    uint base = (lane >> 1u) * STRIDE4 + hk * 2u;
 
-    coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> acc =
+    coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> acc0 =
             coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
+    coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> acc1 = acc0;
 
     uint nb = pc.blocks_per_row;
-    uint ib = slice;
-    uvec4 qa = uvec4(0u), qb = uvec4(0u);
-    float d = 0.0;
+    uint ib = sg;
+    Blk n0, n1;
     if (ib < nb) {
-        uint bi = row * nb + ib;
-        qa = w4[bi * 2u];
-        qb = w4[bi * 2u + 1u];
-        uint sw = sc0 + (bi >> 1u);
-        d = unpackHalf2x16(w4[sw >> 2u][sw & 3u] >> ((bi & 1u) * 16u)).x;
+        n0 = load_blk(row0, ib, nb, sc0);
+        n1 = load_blk(row1, ib, nb, sc0);
     }
-    for (; ib < nb; ib += 4u) {
-        uvec4 ca = qa, cb = qb;
-        f16vec2 d4 = f16vec2(float16_t(4.0 * d));
-        uint nx = ib + 4u;
-        if (nx < nb) { /* the next block's loads are in flight during this one */
-            uint bi = row * nb + nx;
-            qa = w4[bi * 2u];
-            qb = w4[bi * 2u + 1u];
-            uint sw = sc0 + (bi >> 1u);
-            d = unpackHalf2x16(w4[sw >> 2u][sw & 3u] >> ((bi & 1u) * 16u)).x;
+    for (; ib < nb; ib += 8u) {
+        Blk c0 = n0, c1 = n1;
+        f16vec2 e0 = f16vec2(float16_t(4.0 * c0.d)), e1 = f16vec2(float16_t(4.0 * c1.d));
+        if (ib + 8u < nb) { /* the next blocks' loads are in flight during this one */
+            n0 = load_blk(row0, ib + 8u, nb, sc0);
+            n1 = load_blk(row1, ib + 8u, nb, sc0);
         }
         for (uint j = 0u; j < 4u; j++) {
             uint k0 = ib * 128u + j * BK;
-            /* words 2j + hk of the block's 8 */
-            uvec4 hv = j < 2u ? ca : cb;
-            uint qw = hk == 0u ? hv[(2u * j) & 3u] : hv[(2u * j + 1u) & 3u];
-            vec4 x0 = vec4(0.0), x1 = vec4(0.0), x2 = vec4(0.0), x3 = vec4(0.0);
+            /* word 2j + hk of the block's 8: k0 + 16hk .. + 15 */
+            uvec4 h0 = j < 2u ? c0.a : c0.b, h1 = j < 2u ? c1.a : c1.b;
+            uint q0 = hk == 0u ? h0[(2u * j) & 3u] : h0[(2u * j + 1u) & 3u];
+            uint q1 = hk == 0u ? h1[(2u * j) & 3u] : h1[(2u * j + 1u) & 3u];
+            Ash[sg][base] = expand8(q0 & 0xffffu, e0);
+            Ash[sg][base + 1u] = expand8(q0 >> 16u, e0);
+            Ash[sg][16u * STRIDE4 + base] = expand8(q1 & 0xffffu, e1);
+            Ash[sg][16u * STRIDE4 + base + 1u] = expand8(q1 >> 16u, e1);
+            uvec4 b0 = uvec4(0u), b1 = uvec4(0u);
             if (tvalid) {
                 uint xv = (pc.x_offset + t * pc.x_stride + k0 + hk * 16u) >> 2u;
-                x0 = x4[xv];
-                x1 = x4[xv + 1u];
-                x2 = x4[xv + 2u];
-                x3 = x4[xv + 3u];
+                vec4 x0 = x4[xv], x1 = x4[xv + 1u], x2 = x4[xv + 2u], x3 = x4[xv + 3u];
+                b0 = uvec4(packHalf2x16(x0.xy), packHalf2x16(x0.zw), packHalf2x16(x1.xy),
+                           packHalf2x16(x1.zw));
+                b1 = uvec4(packHalf2x16(x2.xy), packHalf2x16(x2.zw), packHalf2x16(x3.xy),
+                           packHalf2x16(x3.zw));
             }
-            uint base = (lane >> 1u) * STRIDE4 + hk * 2u;
-            Ash[sg][base] = expand8(qw & 0xffffu, d4);
-            Ash[sg][base + 1u] = expand8(qw >> 16u, d4);
-            Bsh[sg][base] = uvec4(packHalf2x16(x0.xy), packHalf2x16(x0.zw), packHalf2x16(x1.xy),
-                                  packHalf2x16(x1.zw));
-            Bsh[sg][base + 1u] = uvec4(packHalf2x16(x2.xy), packHalf2x16(x2.zw),
-                                       packHalf2x16(x3.xy), packHalf2x16(x3.zw));
+            Bsh[sg][base] = b0;
+            Bsh[sg][base + 1u] = b1;
             subgroupMemoryBarrierShared();
             subgroupBarrier();
             for (uint kk = 0u; kk < BK; kk += 16u) {
-                coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> matA;
                 coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> matB;
+                coopMatLoad(matB, Bsh[sg], kk / 8u, STRIDE4, gl_CooperativeMatrixLayoutColumnMajor);
+                coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> matA;
                 coopMatLoad(matA, Ash[sg], kk / 8u, STRIDE4, gl_CooperativeMatrixLayoutRowMajor);
-                coopMatLoad(matB, Bsh[sg], kk / 8u, STRIDE4,
-                            gl_CooperativeMatrixLayoutColumnMajor);
-                acc = coopMatMulAdd(matA, matB, acc);
+                acc0 = coopMatMulAdd(matA, matB, acc0);
+                coopMatLoad(matA, Ash[sg], 16u * STRIDE4 + kk / 8u, STRIDE4,
+                            gl_CooperativeMatrixLayoutRowMajor);
+                acc1 = coopMatMulAdd(matA, matB, acc1);
             }
             subgroupBarrier(); /* the tiles are rewritten next step */
         }
     }
 
-    coopMatStore(acc, red, sg * 256u, 16u, gl_CooperativeMatrixLayoutRowMajor);
+    coopMatStore(acc0, red, sg * 512u, 16u, gl_CooperativeMatrixLayoutRowMajor);
+    coopMatStore(acc1, red, sg * 512u + 256u, 16u, gl_CooperativeMatrixLayoutRowMajor);
     barrier();
     for (uint e = gl_LocalInvocationID.x; e < 512u; e += 256u) {
-        uint et = e >> 8u;
-        uint r = (e >> 4u) & 15u;
+        uint r = e >> 4u; /* 0..31: tile e >> 8, row (e >> 4) & 15 */
         uint tt = e & 15u;
-        uint o = gl_WorkGroupID.x * 32u + et * 16u + r;
-        float s = 0.0;
-        for (uint k = 0u; k < 4u; k++) {
-            s += red[(k * 2u + et) * 256u + r * 16u + tt];
+        uint o = gl_WorkGroupID.x * 32u + r;
+        float sum = 0.0;
+        for (uint k = 0u; k < 8u; k++) {
+            sum += red[k * 512u + e];
         }
         if (tt < pc.rows && o < pc.n_out) {
-            y[pc.y_offset + tt * pc.y_stride + o] = s;
+            y[pc.y_offset + tt * pc.y_stride + o] = sum;
         }
     }
 }

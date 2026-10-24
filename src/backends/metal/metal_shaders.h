@@ -2949,7 +2949,8 @@ static const char metal_attn_decq_source[] =
 static const char metal_deltanet_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
-        "struct P{uint seq,nkh,nvh,dk,dv,K,qo,zo,bo,ao,cwo,awo,dto,no,cso,so;float eps;};\n"
+        "struct P{uint seq,nkh,nvh,dk,dv,K,qo,zo,bo,ao,cwo,awo,dto,no,cso,so;float eps;uint "
+        "rcso,rso,rslots,rt;};\n"
         "inline float silu1(float x){float e=exp(-fabs(x));return "
         "x>=0.0f?x/(1.0f+e):x*e/(1.0f+e);}\n"
         "kernel void deltanet_mix(device float*qkv[[buffer(0)]],device float*z[[buffer(1)]],"
@@ -3024,6 +3025,7 @@ static const char metal_dn_decode_source[] =
         "device const float*cw[[buffer(4)]],device const float*aw[[buffer(5)]],"
         "device const float*dt[[buffer(6)]],device const float*nw[[buffer(7)]],"
         "device float*cs[[buffer(8)]],device float*S[[buffer(9)]],constant P&p[[buffer(10)]],"
+        "device float*rcs[[buffer(12)]],"
         "uint hk[[threadgroup_position_in_grid]],uint j[[thread_index_in_threadgroup]]){"
         "threadgroup float red[256];uint keyd=p.nkh*p.dk,vd=p.nvh*p.dv,cd=2u*keyd+vd;"
         "if(hk>=p.nkh)return;float qs=rsqrt(float(p.dk));uint qb=p.qo,kb=qb+keyd;"
@@ -3034,6 +3036,8 @@ static const char metal_dn_decode_source[] =
         "kc+=cw[p.cwo+ck*p.K+r]*kx;}for(uint r=0;r+2u<p.K;r++){"
         "cs[p.cso+r*cd+cq]=cs[p.cso+(r+1u)*cd+cq];cs[p.cso+r*cd+ck]=cs[p.cso+(r+1u)*cd+ck];}"
         "if(p.K>=2u){cs[p.cso+(p.K-2u)*cd+cq]=qr;cs[p.cso+(p.K-2u)*cd+ck]=kr;}"
+        "if(p.rt<p.rslots){for(uint r=0;r+1u<p.K;r++){uint o=p.rcso+(p.rt*(p.K-1u)+r)*cd;"
+        "rcs[o+cq]=cs[p.cso+r*cd+cq];rcs[o+ck]=cs[p.cso+r*cd+ck];}}"
         "qc=silu1(qc);kc=silu1(kc);}"
         "red[j]=j<p.dk?qc*qc:0.0f;threadgroup_barrier(mem_flags::mem_threadgroup);"
         "for(uint s=128u;s>0u;s>>=1u){if(j<s)red[j]+=red[j+s];"
@@ -3091,6 +3095,7 @@ static const char metal_dn_decode_rows_source[] =
         "device const float*cw[[buffer(4)]],device const float*aw[[buffer(5)]],"
         "device const float*dt[[buffer(6)]],device const float*nw[[buffer(7)]],"
         "device float*cs[[buffer(8)]],device float*S[[buffer(9)]],constant P&p[[buffer(10)]],"
+        "device float*rS[[buffer(11)]],device float*rcs[[buffer(12)]],"
         "uint h[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){"
         "threadgroup float tq[256];threadgroup float tk[256];threadgroup float vv[256];"
         "threadgroup float part[1024];"
@@ -3123,7 +3128,11 @@ static const char metal_dn_decode_rows_source[] =
         "if(g==0u)part[j]=out*out;threadgroup_barrier(mem_flags::mem_threadgroup);"
         "if(g==0u){float ss=0.0f;for(uint c=0u;c<p.dv;c++)ss+=part[c];"
         "float inv=rsqrt(ss/float(p.dv)+p.eps);float gate=z[p.zo+t*vd+h*p.dv+j];"
-        "z[p.zo+t*vd+h*p.dv+j]=out*inv*nw[p.no+j]*silu1(gate);}}"
+        "z[p.zo+t*vd+h*p.dv+j]=out*inv*nw[p.no+j]*silu1(gate);}"
+        "if(t<p.rslots){uint rb=p.rso+t*p.nvh*p.dk*p.dv+h*p.dk*p.dv;"
+        "FOR_UNROLL(uint i=0u;i<32u;i++){if(i0+i<i1)rS[rb+(i0+i)*p.dv+j]=sr[i];}"
+        "if(g==0u){uint cv=2u*keyd+h*p.dv+j;for(uint r=0;r+1u<p.K;r++){"
+        "rcs[p.rcso+(t*(p.K-1u)+r)*cd+cv]=cs[p.cso+r*cd+cv];}}}}"
         "FOR_UNROLL(uint i=0u;i<32u;i++){if(i0+i<i1)S[sb+(i0+i)*p.dv+j]=sr[i];}}\n";
 
 /* Chunked DeltaNet prefill on simdgroup matrices (#99): the chunk recipe of

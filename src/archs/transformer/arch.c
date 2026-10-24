@@ -386,6 +386,14 @@ static enum geist_status op_truncate(void *session, size_t n) {
     return transformer_session_truncate((struct transformer_arch_session *) session, n);
 }
 
+static enum geist_status op_checkpoint(void *session) {
+    const enum geist_status s = settle(session);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    return transformer_session_checkpoint((struct transformer_arch_session *) session);
+}
+
 static enum geist_status op_kv_bytes_per_token(size_t *out_bytes, const void *session) {
     return transformer_kv_bytes_per_token(out_bytes, session);
 }
@@ -468,6 +476,7 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .kv_truncate              = op_kv_truncate,
         .kv_len                   = op_kv_len,
         .truncate                 = op_truncate,
+        .checkpoint               = op_checkpoint,
         .plan                     = transformer_plan,
         .kv_bytes_per_token       = op_kv_bytes_per_token,
         .session_alloc            = op_session_alloc,

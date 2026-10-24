@@ -2833,6 +2833,23 @@ static_assert(sizeof(struct vk_dn_norm_push) == 12 * 4, "deltanet_norm_f32.comp 
         !vk_tensor_gpu(a->conv_state, &bcs, &ocs) || !vk_tensor_gpu(a->delta_state, &bs, &os)) {
         return GEIST_E_UNSUPPORTED;
     }
+    /* Per-row state slots (#192), on the scan path only: rows_written is
+     * set below once both shaders have taken them. */
+    const struct vk_state *vs        = be->state;
+    const bool             scan_path = vs->pipes[VK_PIPE_DN_SCAN] != VK_NULL_HANDLE &&
+                                       dk <= VK_DN_SCAN_LANES * VK_DN_SCAN_ROWS && dk % 4u == 0u &&
+                                       convd % 4u == 0u && oqkv % 4u == 0u;
+    VkDescriptorBufferInfo brc = bcs, brs = bs;
+    uint32_t               orc = 0, ors = 0, rslots = 0;
+    if (scan_path && seq > 1 && a->rows_written != nullptr && a->row_conv_state != nullptr &&
+        a->row_delta_state != nullptr && vk_t_n(a->row_conv_state) >= (seq - 1) * (K - 1) * convd &&
+        vk_t_n(a->row_delta_state) >= (seq - 1) * n_vh * dk * dv &&
+        vk_tensor_gpu(a->row_conv_state, &brc, &orc) &&
+        vk_tensor_gpu(a->row_delta_state, &brs, &ors)) {
+        rslots = (uint32_t) (seq - 1);
+    } else {
+        brc = bcs, brs = bs, orc = 0, ors = 0;
+    }
     /* In range per vk_deltanet_geometry_ok; checked all the same. */
     uint32_t seq32, n_kh32, n_vh32, dk32, dv32, keyd32, convd32, K32;
     if (vk_ckd_u32(seq, &seq32) || vk_ckd_u32(n_kh, &n_kh32) || vk_ckd_u32(n_vh, &n_vh32) ||
@@ -2841,12 +2858,14 @@ static_assert(sizeof(struct vk_dn_norm_push) == 12 * 4, "deltanet_norm_f32.comp 
         return vk_too_wide(be, "deltanet_mix");
     }
     {
-        const VkDescriptorBufferInfo bi[3]   = {bqkv, bw, bcs};
-        const uint32_t               push[6] = {seq32, convd32, K32, oqkv, ow, ocs};
-        const struct vk_access       acc[3]  = {vk_acc_tensor(a->qkv, true),
-                                                vk_acc_tensor(a->conv_w, false),
-                                                vk_acc_tensor(a->conv_state, true)};
-        const enum geist_status      s       = vk_seq_dispatch_acc(
+        const VkDescriptorBufferInfo bi[4]   = {bqkv, bw, bcs, brc};
+        const uint32_t               push[8] = {seq32, convd32, K32, oqkv, ow, ocs, orc, rslots};
+        const struct vk_access       acc[4]  = {
+                vk_acc_tensor(a->qkv, true),
+                vk_acc_tensor(a->conv_w, false),
+                vk_acc_tensor(a->conv_state, true),
+                vk_acc_tensor(rslots ? a->row_conv_state : a->conv_state, true)};
+        const enum geist_status s = vk_seq_dispatch_acc(
                 be,
                 VK_PIPE_DN_CONV,
                 bi,
@@ -2860,9 +2879,7 @@ static_assert(sizeof(struct vk_dn_norm_push) == 12 * 4, "deltanet_norm_f32.comp 
             return s;
         }
     }
-    const struct vk_state *st = be->state;
-    if (st->pipes[VK_PIPE_DN_SCAN] != VK_NULL_HANDLE && dk <= VK_DN_SCAN_LANES * VK_DN_SCAN_ROWS &&
-        dk % 4u == 0u && convd % 4u == 0u && oqkv % 4u == 0u) {
+    if (scan_path) {
         /* Fast path (#467): q/k l2norm, the column-split scan, then the
          * gated RMSNorm. The scan leaves o in qkv's v slots, which the conv
          * has already overwritten in place — qkv is scratch to the caller. */
@@ -2891,26 +2908,42 @@ static_assert(sizeof(struct vk_dn_norm_push) == 12 * 4, "deltanet_norm_f32.comp 
         }
         const struct {
             uint32_t seq, n_kh, n_vh, dk, dv, keyd, convd;
-            uint32_t qkv_off, beta_off, alpha_off, a_off, dtb_off, s_off;
-        } sp = {seq32, n_kh32, n_vh32, dk32, dv32, keyd32, convd32, oqkv, ob, oa, oA, odt, os};
-        const VkDescriptorBufferInfo sbi[7]  = {bqkv, bb, ba, bA, bdt, bs, bqkv};
-        const struct vk_access       sacc[7] = {vk_acc_tensor(a->qkv, true),
-                                                vk_acc_tensor(a->beta, false),
-                                                vk_acc_tensor(a->alpha, false),
-                                                vk_acc_tensor(a->ssm_a, false),
-                                                vk_acc_tensor(a->dt_bias, false),
-                                                vk_acc_tensor(a->delta_state, true),
-                                                vk_acc_tensor(a->qkv, true)};
-        const uint32_t               cols    = VK_DN_SCAN_WG / VK_DN_SCAN_LANES;
-        s = vk_seq_dispatch_acc(be,
-                                VK_PIPE_DN_SCAN,
-                                sbi,
-                                sacc,
-                                &sp,
-                                sizeof(sp),
-                                n_vh32,
-                                dv32 / cols + (dv32 % cols != 0u ? 1u : 0u),
-                                1);
+            uint32_t qkv_off, beta_off, alpha_off, a_off, dtb_off, s_off, rs_off, rslots;
+        } sp                                 = {seq32,
+                                                n_kh32,
+                                                n_vh32,
+                                                dk32,
+                                                dv32,
+                                                keyd32,
+                                                convd32,
+                                                oqkv,
+                                                ob,
+                                                oa,
+                                                oA,
+                                                odt,
+                                                os,
+                                                ors,
+                                                rslots};
+        const VkDescriptorBufferInfo sbi[8]  = {bqkv, bb, ba, bA, bdt, bs, bqkv, brs};
+        const struct vk_access       sacc[8] = {
+                vk_acc_tensor(a->qkv, true),
+                vk_acc_tensor(a->beta, false),
+                vk_acc_tensor(a->alpha, false),
+                vk_acc_tensor(a->ssm_a, false),
+                vk_acc_tensor(a->dt_bias, false),
+                vk_acc_tensor(a->delta_state, true),
+                vk_acc_tensor(a->qkv, true),
+                vk_acc_tensor(rslots ? a->row_delta_state : a->delta_state, true)};
+        const uint32_t cols = VK_DN_SCAN_WG / VK_DN_SCAN_LANES;
+        s                   = vk_seq_dispatch_acc(be,
+                                                  VK_PIPE_DN_SCAN,
+                                                  sbi,
+                                                  sacc,
+                                                  &sp,
+                                                  sizeof(sp),
+                                                  n_vh32,
+                                                  dv32 / cols + (dv32 % cols != 0u ? 1u : 0u),
+                                                  1);
         if (s != GEIST_OK) {
             return s;
         }
@@ -2919,7 +2952,11 @@ static_assert(sizeof(struct vk_dn_norm_push) == 12 * 4, "deltanet_norm_f32.comp 
         const struct vk_access nacc1[3] = {vk_acc_tensor(a->qkv, false),
                                            vk_acc_tensor(a->z, true),
                                            vk_acc_tensor(a->norm_w, false)};
-        return vk_seq_dispatch_acc(be, VK_PIPE_DN_NORM, nbi, nacc1, &np, sizeof(np), n_vh32, gy, 1);
+        s = vk_seq_dispatch_acc(be, VK_PIPE_DN_NORM, nbi, nacc1, &np, sizeof(np), n_vh32, gy, 1);
+        if (s == GEIST_OK && rslots > 0) {
+            *a->rows_written = true;
+        }
+        return s;
     }
     const VkDescriptorBufferInfo bi[8] = {bqkv, bz, bb, ba, bA, bdt, bnw, bs};
     const struct {

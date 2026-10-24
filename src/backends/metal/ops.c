@@ -4413,23 +4413,23 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
     if (status != GEIST_OK) {
         return status;
     }
-    const struct metal_deltanet_params params = {.seq                = (uint32_t) args->seq,
-                                                 .n_k_heads          = (uint32_t) args->n_k_heads,
-                                                 .n_v_heads          = (uint32_t) args->n_v_heads,
-                                                 .head_k             = (uint32_t) args->head_k,
-                                                 .head_v             = (uint32_t) args->head_v,
-                                                 .conv_kernel        = (uint32_t) args->conv_kernel,
-                                                 .qkv_offset         = (uint32_t) q_off,
-                                                 .z_offset           = (uint32_t) z_off,
-                                                 .beta_offset        = (uint32_t) b_off,
-                                                 .alpha_offset       = (uint32_t) a_off,
-                                                 .conv_w_offset      = (uint32_t) cw_off,
-                                                 .ssm_a_offset       = (uint32_t) aw_off,
-                                                 .dt_bias_offset     = (uint32_t) dt_off,
-                                                 .norm_w_offset      = (uint32_t) nw_off,
-                                                 .conv_state_offset  = (uint32_t) cs_off,
-                                                 .delta_state_offset = (uint32_t) s_off,
-                                                 .eps                = args->eps};
+    struct metal_deltanet_params params = {.seq                = (uint32_t) args->seq,
+                                           .n_k_heads          = (uint32_t) args->n_k_heads,
+                                           .n_v_heads          = (uint32_t) args->n_v_heads,
+                                           .head_k             = (uint32_t) args->head_k,
+                                           .head_v             = (uint32_t) args->head_v,
+                                           .conv_kernel        = (uint32_t) args->conv_kernel,
+                                           .qkv_offset         = (uint32_t) q_off,
+                                           .z_offset           = (uint32_t) z_off,
+                                           .beta_offset        = (uint32_t) b_off,
+                                           .alpha_offset       = (uint32_t) a_off,
+                                           .conv_w_offset      = (uint32_t) cw_off,
+                                           .ssm_a_offset       = (uint32_t) aw_off,
+                                           .dt_bias_offset     = (uint32_t) dt_off,
+                                           .norm_w_offset      = (uint32_t) nw_off,
+                                           .conv_state_offset  = (uint32_t) cs_off,
+                                           .delta_state_offset = (uint32_t) s_off,
+                                           .eps                = args->eps};
 
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
     void                                              *cmd  = nullptr;
@@ -4523,12 +4523,35 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
          * spread over v-heads x 4 row groups; a few rows (speculative
          * verify, #192) run their state updates in one dn_dec_v_rows, S
          * read and written once, instead of a padded 64-row chunk. */
+        /* Per-row state slots for a speculative rollback (#192). */
+        size_t     rcs_n = 0, rcs_off = 0, rs_n = 0, rs_off = 0;
+        const bool rows =
+                params.seq > 1u && args->rows_written != nullptr &&
+                args->row_conv_state != nullptr && args->row_delta_state != nullptr &&
+                metal_tensor_is_f32_vector(args->row_conv_state, &rcs_n, &rcs_off) &&
+                metal_tensor_is_f32_vector(args->row_delta_state, &rs_n, &rs_off) &&
+                args->row_conv_state->buffer->owner == st &&
+                args->row_delta_state->buffer->owner == st &&
+                rcs_n >= (params.seq - 1u) * (args->conv_kernel - 1u) * conv_dim &&
+                rs_n >= (params.seq - 1u) * args->n_v_heads * args->head_k * args->head_v &&
+                rcs_off <= UINT32_MAX && rs_off <= UINT32_MAX;
+        if (rows) {
+            params.row_cs_offset = (uint32_t) rcs_off;
+            params.row_s_offset  = (uint32_t) rs_off;
+            params.row_slots     = params.seq - 1u;
+        }
+        /* every declared buffer is bound; unused without slots */
+        const struct geist_tensor *rs_t = rows ? args->row_delta_state : args->delta_state;
+        const struct geist_tensor *rc_t = rows ? args->row_conv_state : args->conv_state;
+        metal_msg_send_set_buffer(st, enc, rs_t->buffer->buffer, rs_t->buffer->base_off, 11);
+        metal_msg_send_set_buffer(st, enc, rc_t->buffer->buffer, rc_t->buffer->base_off, 12);
         const struct metal_size gk = {args->n_k_heads, 1, 1};
         const struct metal_size tk = {256, 1, 1};
         metal_msg_send_set_pipeline(st, enc, st->dn_dec_qk_pipeline);
         for (uint32_t r = 0; r < params.seq; r++) {
             struct metal_deltanet_params row = params;
             row.seq                          = 1u;
+            row.row                          = r;
             row.qkv_offset += r * (uint32_t) conv_dim;
             metal_msg_send_set_bytes(st, enc, &row, sizeof row, 10);
             metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gk);
@@ -4541,6 +4564,9 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
         const struct metal_size tv = {4u * (uint32_t) args->head_v, 1, 1};
         metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gv);
         metal_msg_send_dispatch(st, enc, gv, tv);
+        if (rows) {
+            *args->rows_written = true;
+        }
     } else {
         metal_msg_send_set_pipeline(st, enc, st->deltanet_mix_pipeline);
         metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);
