@@ -459,14 +459,10 @@ enum geist_status transformer_prefill_text_batch(struct transformer_arch_session
     transformer_recurrent_txn_commit(sess);
     /* Prefill is compute-bound; let the backend enter its prefill thread
      * regime (cpu_neon bumps OMP to all cores). Restored after the pass. */
-    struct geist_backend            *be = st->backend;
-    const struct geist_backend_vtbl *v  = be->desc->vtbl;
-    const int                        region_tok =
-            v->parallel_region_begin ? v->parallel_region_begin(be, GEIST_REGION_PREFILL_BATCH) : 0;
+    const struct transformer_region region_tok =
+            transformer_region_begin(st, GEIST_REGION_PREFILL_BATCH);
     const enum geist_status s = prefill_text_batch_inner(sess, n, ids, nullptr);
-    if (v->parallel_region_end) {
-        v->parallel_region_end(be, region_tok);
-    }
+    transformer_region_end(st, region_tok);
     return s;
 }
 
@@ -475,13 +471,10 @@ enum geist_status transformer_prefill_rows(struct transformer_arch_session     *
                                            const geist_token_t                 *ids,
                                            struct transformer_decision_readout *r) {
     transformer_recurrent_txn_commit(sess);
-    struct geist_backend            *be = sess->model->backend;
-    const struct geist_backend_vtbl *v  = be->desc->vtbl;
-    const int                        region =
-            v->parallel_region_begin ? v->parallel_region_begin(be, GEIST_REGION_PREFILL_BATCH) : 0;
+    const struct transformer_region region =
+            transformer_region_begin(sess->model, GEIST_REGION_PREFILL_BATCH);
     const enum geist_status s = prefill_text_batch_inner(sess, n, ids, r);
-    if (v->parallel_region_end)
-        v->parallel_region_end(be, region);
+    transformer_region_end(sess->model, region);
     return s;
 }
 

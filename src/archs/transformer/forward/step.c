@@ -682,6 +682,28 @@ transformer_run_one_step(struct transformer_arch_session *sess,
     return GEIST_OK;
 }
 
+struct transformer_region transformer_region_begin(const struct transformer_arch_state *st,
+                                                   enum geist_parallel_region           region) {
+    struct transformer_region tok = {0};
+    struct geist_backend     *be  = st->backend;
+    struct geist_backend     *cpu = st->moe_cpu;
+    if (be->desc->vtbl->parallel_region_begin != nullptr)
+        tok.be = be->desc->vtbl->parallel_region_begin(be, region);
+    if (cpu != nullptr && cpu != be && cpu->desc->vtbl->parallel_region_begin != nullptr)
+        tok.moe_cpu = cpu->desc->vtbl->parallel_region_begin(cpu, region);
+    return tok;
+}
+
+void transformer_region_end(const struct transformer_arch_state *st,
+                            struct transformer_region            tok) {
+    struct geist_backend *be  = st->backend;
+    struct geist_backend *cpu = st->moe_cpu;
+    if (cpu != nullptr && cpu != be && cpu->desc->vtbl->parallel_region_end != nullptr)
+        cpu->desc->vtbl->parallel_region_end(cpu, tok.moe_cpu);
+    if (be->desc->vtbl->parallel_region_end != nullptr)
+        be->desc->vtbl->parallel_region_end(be, tok.be);
+}
+
 enum geist_status transformer_decode_step(struct transformer_arch_session *sess,
                                           geist_token_t                    input_token,
                                           geist_token_t                   *out_token) {
@@ -692,10 +714,8 @@ enum geist_status transformer_decode_step(struct transformer_arch_session *sess,
     transformer_recurrent_txn_commit(sess);
     /* Decode is memory-bound; let the backend enter its decode thread regime
      * (cpu_neon caps OMP threads). Restored after the step. */
-    struct geist_backend            *be = st->backend;
-    const struct geist_backend_vtbl *v  = be->desc->vtbl;
-    const int                        region_tok =
-            v->parallel_region_begin ? v->parallel_region_begin(be, GEIST_REGION_DECODE_STEP) : 0;
+    const struct transformer_region region_tok =
+            transformer_region_begin(st, GEIST_REGION_DECODE_STEP);
     transformer_hist_put(sess, sess->kv_len, 1, &input_token);
     /* Embed the input token into scratch_h_a, scale by sqrt(HIDDEN). */
     enum geist_status s = embed_lookup_and_scale(sess, input_token, sess->scratch_h_a);
@@ -703,9 +723,7 @@ enum geist_status transformer_decode_step(struct transformer_arch_session *sess,
         /* PLE uses the token's actual id (text path). */
         s = transformer_run_one_step(sess, input_token, out_token);
     }
-    if (v->parallel_region_end) {
-        v->parallel_region_end(be, region_tok);
-    }
+    transformer_region_end(st, region_tok);
     return s;
 }
 
