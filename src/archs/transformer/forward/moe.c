@@ -35,6 +35,7 @@
 #include <string.h>
 
 #include "../moe_gpu.h"
+#include "../moe_adapt.h"
 #include "../moe_profile.h"
 #include "heap.h"
 #include "par.h"
@@ -328,6 +329,15 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     const size_t                      n_sel = seq * k;
     struct geist_buffer              *x     = sess->scratch_pre_ff;
 
+    /* #166: the adaptive cache's step (a planned swap; probe or not). */
+    struct moe_adapt *adapt = seq == 1 && st->moe_gpu != nullptr ? st->moe_gpu->adapt : nullptr;
+    if (adapt != nullptr && ctx->layer_idx == 0) {
+        const enum geist_status as = moe_adapt_step(st, &sess->moe_adapt_probe);
+        if (as != GEIST_OK)
+            fprintf(stderr,
+                    "geist: moe: adaptive swap failed: %s\n",
+                    geist_backend_errmsg(ctx->be));
+    }
     uint64_t t0 = transformer_profile_enabled(&g_moe_profile) ? transformer_profile_now_ns() : 0;
     enum geist_status s = blk_rmsnorm(ctx, d, sess->scratch_h_post_attn, &L->ffn_norm, x);
     moe_profile_mark(MOE_PROFILE_NORM, &t0);
@@ -459,6 +469,19 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
         launched = s == GEIST_OK;
         s        = GEIST_OK;
     }
+    /* #166: on a probe step the host waits for the hot batch now: the GPU
+     * branch's time. */
+    uint64_t gpu_ns = 0, cpu_t0 = 0;
+    if (adapt != nullptr && launched) {
+        if (sess->moe_adapt_probe && sess->moe_gpu_y_io != nullptr) {
+            const struct geist_backend_vtbl *gv = st->moe_gpu->be->desc->vtbl;
+            const uint64_t                   g0 = transformer_profile_now_ns();
+            if (gv->buffer_map(sess->moe_gpu_y_io) != nullptr)
+                gv->buffer_unmap(sess->moe_gpu_y_io);
+            gpu_ns = transformer_profile_now_ns() - g0;
+        }
+        cpu_t0 = transformer_profile_now_ns();
+    }
     j->caller = pthread_self();
     atomic_store_explicit(&j->gpu_taken, launched, memory_order_relaxed);
     atomic_store_explicit(&j->next, 0, memory_order_relaxed);
@@ -467,6 +490,14 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     const size_t threads = geist_par_max_threads();
     geist_par_for(tasks < threads ? tasks : threads, moe_worker, j);
     moe_gpu_task(j); /* a thread library that gave the caller no range */
+    if (adapt != nullptr && launched)
+        moe_adapt_record(adapt,
+                         j->layer,
+                         n_rt,
+                         sess->moe_ids,
+                         n_sel - rows_gpu,
+                         transformer_profile_now_ns() - cpu_t0,
+                         gpu_ns);
     moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);
     if (j->gpu_status != GEIST_OK) {
         geist_backend_set_error(ctx->be,

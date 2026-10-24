@@ -354,6 +354,34 @@ static int check_on_gpu(const char *gpu, size_t hot, const float ref[static VOCA
                                           cosine(again, ref) >= 0.999,
                                   "with its buffers back the session runs again");
         }
+        /* #166: a swap (one cold expert of each layer in, one hot out)
+         * keeps the hot count, flips the two, and the logits. Discrete GPUs
+         * only (the adaptive cache's path, one_wait). */
+        if (hot > 0 && hot < GEOM.experts && mg != nullptr && mg->one_wait) {
+            bool flipped = true;
+            for (size_t l = 0; l < GEOM.layers; l++) {
+                size_t c = GEOM.experts, h = GEOM.experts;
+                for (size_t e = 0; e < GEOM.experts; e++) {
+                    if (moe_gpu_hot(a, l, e))
+                        h = h == GEOM.experts ? e : h;
+                    else
+                        c = c == GEOM.experts ? e : c;
+                }
+                fails += geist_expect(moe_gpu_swap((struct transformer_arch_state *) st, l, c, h) ==
+                                              GEIST_OK,
+                                      "moe_gpu_swap");
+                flipped = flipped && moe_gpu_hot(a, l, c) && !moe_gpu_hot(a, l, h) &&
+                          st->layers[l].moe_gate_w[h].linear_m1 != nullptr &&
+                          st->layers[l].moe_gate_w[c].linear_m1 == nullptr;
+            }
+            fails += geist_expect(flipped && mg->n_hot == hot, "a swap flips one hot and one cold");
+            float swapped[VOCAB], swapped1[VOCAB];
+            fails += geist_expect(logits_after(s, N_PROMPT, ids, N_PROMPT, swapped) &&
+                                          logits_after(s, N_PROMPT, ids, 1, swapped1) &&
+                                          cosine(swapped, ref) >= 0.999 &&
+                                          cosine(swapped1, ref) >= 0.999,
+                                  "after the swaps the logits still match cpu_scalar's");
+        }
         /* #201: with every expert on a GPU that routes, decode never leaves it. */
         if (mg != nullptr && mg->any_device)
             fails += geist_expect(hot == 16 && mg->n_device > 0,

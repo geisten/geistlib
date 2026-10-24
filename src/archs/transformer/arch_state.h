@@ -439,7 +439,9 @@ struct transformer_arch_session {
     /* #201, on the GPU: the routed ids [m_max * n_used] then the
      * non-finite flag (uint32), and their weights [m_max * n_used]. */
     struct geist_buffer *moe_dev_ids, *moe_dev_w;
-    float               *moe_x_host; /* [m_max, d_model]: x when the backend cannot map it */
+    bool                 moe_adapt_probe; /* #166: this decode step times the GPU branch */
+    bool                 moe_gpu_counted; /* counted in moe_gpu->n_sessions */
+    float               *moe_x_host;      /* [m_max, d_model]: x when the backend cannot map it */
     /* On a GPU: x copied into cached host memory in the router's batch, so
      * one wait brings the logits and x (#78 phase 3). nullptr on a CPU. */
     struct geist_buffer *moe_x_io;
@@ -587,8 +589,11 @@ struct transformer_moe_gpu {
      * layer does. */
     bool            *device;
     bool             any_device;
-    _Atomic uint64_t n_device;           /* layer steps that took that route */
-    _Atomic uint64_t rows_gpu, rows_cpu; /* GEIST_VERBOSE at destroy */
+    _Atomic uint64_t n_device; /* layer steps that took that route */
+    /* Owned: the adaptive expert cache (moe_adapt.h, #166); nullptr off. */
+    struct moe_adapt *adapt;
+    _Atomic int       n_sessions;         /* with GPU buffers: the cache swaps only for one */
+    _Atomic uint64_t  rows_gpu, rows_cpu; /* GEIST_VERBOSE at destroy */
     /* GEIST_VERBOSE at destroy: batches, and their ns packing (to the
      * copy), recording, waiting (buffer_map of the outputs), unpacking. */
     _Atomic uint64_t batches, ns_pack, ns_record, ns_wait, ns_unpack;

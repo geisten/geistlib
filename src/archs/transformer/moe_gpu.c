@@ -17,6 +17,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "moe_gpu.h"
+#include "moe_adapt.h"
 #include "moe_profile.h"
 
 #include "forward/internal.h"
@@ -126,6 +127,7 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
     if (mg == nullptr) {
         return;
     }
+    moe_adapt_destroy(mg->adapt);
     if (getenv("GEIST_VERBOSE") != nullptr && mg->n_hot > 0) {
         fprintf(stderr,
                 "geist: moe: %llu expert rows ran on %s, %llu on the CPU\n",
@@ -327,16 +329,24 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
             fprintf(stderr, "geist: moe: decode routes on %s (#201)\n", gbe->desc->name);
     }
     st->moe_gpu = mg;
+    /* #166: swaps between decode windows, where the launch path runs. */
+    if (mg->one_wait)
+        mg->adapt = moe_adapt_create(st);
     return GEIST_OK;
 }
 
 void moe_gpu_session_free(struct transformer_arch_session *sess) {
-    const struct transformer_moe_gpu *mg  = sess->model->moe_gpu;
-    void                             *h[] = {sess->moe_ids_hot,
-                                             sess->moe_csr_start,
-                                             sess->moe_csr_fill,
-                                             sess->moe_csr_rows,
-                                             sess->moe_csr_w};
+    const struct transformer_moe_gpu *mg = sess->model->moe_gpu;
+    if (sess->moe_gpu_counted && mg != nullptr) {
+        atomic_fetch_sub_explicit(
+                &((struct transformer_moe_gpu *) mg)->n_sessions, 1, memory_order_relaxed);
+        sess->moe_gpu_counted = false;
+    }
+    void *h[] = {sess->moe_ids_hot,
+                 sess->moe_csr_start,
+                 sess->moe_csr_fill,
+                 sess->moe_csr_rows,
+                 sess->moe_csr_w};
     for (size_t i = 0; i < sizeof h / sizeof h[0]; i++)
         safe_free(&h[i]);
     sess->moe_ids_hot = sess->moe_csr_start = sess->moe_csr_fill = sess->moe_csr_rows = nullptr;
@@ -431,6 +441,11 @@ enum geist_status moe_gpu_session_alloc(struct transformer_arch_session *sess) {
                 mg->be->desc->name,
                 geist_backend_errmsg(mg->be));
         moe_gpu_session_free(sess);
+    }
+    if (s == GEIST_OK) {
+        atomic_fetch_add_explicit(
+                &((struct transformer_moe_gpu *) mg)->n_sessions, 1, memory_order_relaxed);
+        sess->moe_gpu_counted = true;
     }
     return GEIST_OK;
 }
@@ -895,5 +910,84 @@ enum geist_status moe_gpu_device_check(struct transformer_arch_session *sess) {
                                 "moe: router logits are not finite (routed on the device)");
         return GEIST_E_BACKEND;
     }
+    return GEIST_OK;
+}
+
+/* A weight back to its bare descriptor, its heap repack freed: what
+ * load_layer_experts left before any resolve. */
+static void weight_bare(struct geist_weight *w) {
+    if ((w->flags & GEIST_W_AUX_HEAP_OWNED) != 0 && w->aux_fp32 != nullptr) {
+        void *p = (void *) w->aux_fp32;
+        safe_free(&p);
+    }
+    *w = (struct geist_weight) {.raw        = w->raw,
+                                .raw_nbytes = w->raw_nbytes,
+                                .n_in       = w->n_in,
+                                .n_out      = w->n_out,
+                                .dtype      = w->dtype};
+}
+
+enum geist_status
+moe_gpu_swap(struct transformer_arch_state *st, size_t layer, size_t promote, size_t demote) {
+    struct transformer_moe_gpu       *mg    = st->moe_gpu;
+    struct geist_backend             *gbe   = mg->be;
+    const struct geist_backend_vtbl  *gv    = gbe->desc->vtbl;
+    struct geist_backend             *cpu   = st->moe_cpu != nullptr ? st->moe_cpu : st->backend;
+    const size_t                      slots = moe_slots(&st->config);
+    const size_t                      n_exp = st->config.moe_n_experts;
+    struct transformer_layer_weights *L     = &st->layers[layer];
+    if (layer >= st->n_layers || promote >= n_exp || demote >= n_exp || promote == demote)
+        return GEIST_E_INVALID_ARG;
+    struct geist_weight *tp = &mg->twins[(layer * slots + promote) * 3];
+    struct geist_weight *td = &mg->twins[(layer * slots + demote) * 3];
+    if (tp->raw != nullptr || td->raw == nullptr)
+        return GEIST_E_INVALID_ARG; /* promote must be cold, demote hot */
+    struct geist_weight *cw[3] = {&L->moe_gate_w[0], &L->moe_up_w[0], &L->moe_down_w[0]};
+    enum geist_status    s     = GEIST_OK;
+    /* Demote: the CPU resolves it first (a failure leaves it hot), then its
+     * device copy goes: an aliased weight buffer over exactly its bytes,
+     * destroyed, drops the copies inside it (geist_backend.h). */
+    for (size_t p = 0; p < 3 && s == GEIST_OK; p++) {
+        struct geist_weight *w = &cw[p][demote];
+        weight_bare(w);
+        if (cpu->desc->vtbl->resolve_weight != nullptr) {
+            cpu->calibration.locked = true;
+            s                       = cpu->desc->vtbl->resolve_weight(cpu, w);
+        }
+    }
+    if (s != GEIST_OK)
+        return s;
+    for (size_t p = 0; p < 3; p++) {
+        struct geist_buffer *b = nullptr;
+        if (gv->buffer_create_aliased(
+                    gbe, (void *) td[p].raw, td[p].raw_nbytes, GEIST_BUFFER_WEIGHT, &b) == GEIST_OK)
+            gv->buffer_destroy(gbe, b);
+    }
+    memset(td, 0, 3 * sizeof *td);
+    /* Promote: its GPU copy, then its CPU repack goes. */
+    for (size_t p = 0; p < 3 && s == GEIST_OK; p++) {
+        const struct geist_weight *w = &cw[p][promote];
+        tp[p]                        = (struct geist_weight) {.raw        = w->raw,
+                                                              .raw_nbytes = w->raw_nbytes,
+                                                              .n_in       = w->n_in,
+                                                              .n_out      = w->n_out,
+                                                              .dtype      = w->dtype};
+        gbe->calibration.locked      = true;
+        s                            = gv->resolve_weight(gbe, &tp[p]);
+    }
+    if (s != GEIST_OK) {
+        for (size_t p = 0; p < 3; p++) {
+            struct geist_buffer *b = nullptr;
+            if (tp[p].raw != nullptr &&
+                gv->buffer_create_aliased(
+                        gbe, (void *) tp[p].raw, tp[p].raw_nbytes, GEIST_BUFFER_WEIGHT, &b) ==
+                        GEIST_OK)
+                gv->buffer_destroy(gbe, b);
+        }
+        memset(tp, 0, 3 * sizeof *tp);
+        return s; /* promote stays cold on the CPU */
+    }
+    for (size_t p = 0; p < 3; p++)
+        weight_bare(&cw[p][promote]);
     return GEIST_OK;
 }

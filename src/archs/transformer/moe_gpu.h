@@ -94,4 +94,12 @@ moe_gpu_device(const struct transformer_arch_session *sess, size_t layer, size_t
  * non-finite flag as an error, cleared. GEIST_OK without device routing. */
 [[nodiscard]] enum geist_status moe_gpu_device_check(struct transformer_arch_session *sess);
 
+/* #166: expert `promote` of layer `layer` (cold) gets the GPU copy expert
+ * `demote` (hot) gives up: demote's device copy is dropped and its weights
+ * resolved on the CPU, promote's resolved on the GPU and its CPU repack
+ * freed. Routed experts only. Call between steps (it flushes the device);
+ * on failure the layer has one hot expert less and the error is returned. */
+[[nodiscard]] enum geist_status
+moe_gpu_swap(struct transformer_arch_state *st, size_t layer, size_t promote, size_t demote);
+
 #endif
