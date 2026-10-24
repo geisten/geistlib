@@ -71,6 +71,10 @@ struct geist_session_full {
     /* Per-session arch state, from the arch's session_alloc. */
     void *arch_session;
 
+    /* geist_session_set_draft (#192): a small model's session that drafts
+     * for decode_speculative; the caller owns it. */
+    struct geist_session *draft;
+
     /* Sampler defaults from geist_session_opts. */
     float    temperature;
     float    top_p;
@@ -828,6 +832,96 @@ spec_fallback_single(struct geist_session *s, geist_token_t out_tokens[static 1]
     return GEIST_OK;
 }
 
+/* A draft model's session drafts (#192). It is brought to the target's
+ * committed tokens (history; usually the previous call's correction is all
+ * that is missing), then the seed and k_max - 1 greedy steps follow, with a
+ * checkpoint after the seed and after every step but the last, so that
+ * draft_model_rollback can return to seed + accepted drafts. */
+[[nodiscard]] static enum geist_status draft_model_propose(struct geist_session *d,
+                                                           size_t                history_n,
+                                                           const geist_token_t  *history,
+                                                           geist_token_t         seed,
+                                                           size_t                k_max,
+                                                           geist_token_t        *drafts,
+                                                           size_t               *k) {
+    size_t have = geist_session_length(d);
+    if (have > history_n) {
+        /* ahead of the target (an unexpected path): back to it, or start over */
+        if (geist_session_truncate(d, history_n) == GEIST_OK) {
+            have = history_n;
+        } else {
+            if (geist_session_reset(d) != GEIST_OK)
+                return GEIST_E_INVALID_STATE;
+            have = 0;
+        }
+    }
+    enum geist_status s = GEIST_OK;
+    if (have < history_n)
+        s = geist_session_prefill_tokens(d, history_n - have, history + have);
+    if (s == GEIST_OK)
+        s = geist_session_prefill_tokens(d, 1, &seed);
+    /* Without checkpoints (e.g. the KIVI KV cache) a rejected guess makes
+     * the next call start the draft over: slower, still exact. */
+    bool ckpt = true;
+    if (s == GEIST_OK) {
+        s = geist_session_checkpoint(d);
+        if (s == GEIST_E_UNSUPPORTED) {
+            ckpt = false;
+            s    = GEIST_OK;
+        }
+    }
+    drafts[0] = seed;
+    *k        = 1;
+    for (size_t i = 0; s == GEIST_OK && i + 1 < k_max; i++) {
+        s = geist_session_decode_step(d, &drafts[*k]);
+        if (s == GEIST_OK)
+            ++*k;
+        if (s == GEIST_OK && ckpt && i + 2 < k_max)
+            s = geist_session_checkpoint(d);
+    }
+    return s;
+}
+
+/* After the verify: the draft keeps seed + the accepted guesses. n_out is
+ * spec_verify's count, accepted guesses + seed + correction. A failed
+ * rollback leaves the draft ahead; draft_model_propose then starts over. */
+static void
+draft_model_rollback(struct geist_session *d, size_t history_n, size_t guesses, size_t n_out) {
+    const size_t accepted = n_out >= 2 ? n_out - 2 : 0;
+    if (accepted < guesses)
+        (void) geist_session_truncate(d, history_n + 1 + accepted);
+}
+
+[[nodiscard]] enum geist_status geist_session_set_draft(struct geist_session *s,
+                                                        struct geist_session *draft) {
+    if (s == nullptr || draft == s) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_session_full *sf = as_full(s);
+    if (draft == nullptr) {
+        sf->draft = nullptr;
+        return GEIST_OK;
+    }
+    struct geist_session_full   *df = as_full(draft);
+    const struct gguf_tokenizer *a  = geist_model_internal_gguf_tokenizer(sf->model);
+    const struct gguf_tokenizer *b  = geist_model_internal_gguf_tokenizer(df->model);
+    bool same = sf->model == df->model ||
+                (a != nullptr && b != nullptr && a->vocab_size == b->vocab_size);
+    for (size_t t = 0; same && sf->model != df->model && t < a->vocab_size; t++) {
+        same = a->token_len[t] == b->token_len[t] &&
+               memcmp(a->token_str[t], b->token_str[t], a->token_len[t]) == 0;
+    }
+    if (!same) {
+        snprintf(sf->err_msg,
+                 sizeof(sf->err_msg),
+                 "set_draft: the draft model's vocabulary differs");
+        sf->err_code = GEIST_E_INVALID_ARG;
+        return GEIST_E_INVALID_ARG;
+    }
+    sf->draft = draft;
+    return GEIST_OK;
+}
+
 [[nodiscard]] enum geist_status geist_session_decode_speculative(struct geist_session *s,
                                                                  size_t                k_max,
                                                                  size_t                history_n,
@@ -867,6 +961,17 @@ spec_fallback_single(struct geist_session *s, geist_token_t out_tokens[static 1]
     size_t        match_L      = 0;
     size_t        k            = 0;
     bool          native_draft = false;
+    if (sf->draft != nullptr) {
+        const enum geist_status ds =
+                draft_model_propose(sf->draft, history_n, history, seed, k_max, drafts, &k);
+        if (ds != GEIST_OK)
+            return session_op_failed(sf, ds, "draft model");
+        const enum geist_status vs =
+                spec_verify(sf, ops, st, k, drafts, out_tokens, n_out, t_start);
+        if (vs == GEIST_OK)
+            draft_model_rollback(sf->draft, history_n, k - 1, *n_out);
+        return vs;
+    }
     if (ops->draft_tokens != nullptr) {
         const enum geist_status ds = ops->draft_tokens(st, k_max, seed, drafts, &k);
         if (ds == GEIST_OK) {

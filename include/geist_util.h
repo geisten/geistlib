@@ -436,6 +436,22 @@ geist_model_gains(struct geist_model *m, float **out_gains, size_t *out_n);
                                                                  geist_token_t        *out_tokens,
                                                                  size_t               *n_out);
 
+/* @stability EXPERIMENTAL — a draft model for decode_speculative (#192).
+ *
+ * After geist_session_set_draft(s, draft), geist_session_decode_speculative
+ * on s takes its guesses from `draft`, a session of a small model with the
+ * same vocabulary (e.g. Qwen3.5 0.8B for Bonsai 2 27B), instead of the
+ * internal n-gram drafter: k_max - 1 greedy draft steps per call. The engine
+ * keeps the draft session in step with s from the `history` that
+ * decode_speculative receives (prompt + emitted tokens), so the caller only
+ * creates it; it may start empty, and the first call prefills the prompt.
+ * The caller owns `draft`, keeps it alive while attached and does not use
+ * it otherwise; set_draft(s, nullptr) detaches. GEIST_E_INVALID_ARG when
+ * the vocabularies differ. Under greedy decoding the stream is unchanged.
+ * On Metal k_max <= 8 keeps the verify on the small-row kernels. */
+[[nodiscard]] enum geist_status geist_session_set_draft(struct geist_session *s,
+                                                        struct geist_session *draft);
+
 /* @stability EXPERIMENTAL — verify caller-supplied drafts (#192).
  *
  * geist_session_decode_speculative with the drafts coming from the caller

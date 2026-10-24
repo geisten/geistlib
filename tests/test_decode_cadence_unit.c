@@ -438,6 +438,50 @@ static int check_checkpoint(const struct run *r, const struct ref *ref) {
     return expect(r, ok, "truncate to either of two checkpoints drops the steps after it");
 }
 
+/* geist_session_set_draft (#192): a draft session of the same model drafts
+ * for decode_speculative. Starting empty it is synced to the prompt and
+ * every guess is accepted; holding wrong tokens of the prompt's length its
+ * guesses are mostly rejected. Either way the stream is the decode steps'. */
+static int check_set_draft(const struct run *r, const struct ref *ref) {
+    if (r->sampling) {
+        return 0;
+    }
+    int fails = 0;
+    for (int wrong = 0; wrong < 2; wrong++) {
+        geist_token_t         hist[PROMPT + STEPS + 8], got[STEPS + 8], out[8];
+        geist_token_t         junk[PROMPT];
+        size_t                n_got = 0, n_out = 0;
+        struct geist_session *s = open_session(r, 0), *d = open_session(r, 0);
+        for (size_t i = 0; i < PROMPT; i++)
+            junk[i] = P1[PROMPT - 1 - i];
+        memcpy(hist, P1, sizeof P1);
+        bool ok = s != nullptr && d != nullptr &&
+                  (!wrong || geist_session_prefill_tokens(d, PROMPT, junk) == GEIST_OK) &&
+                  geist_session_set_draft(s, d) == GEIST_OK &&
+                  geist_session_prefill_tokens(s, PROMPT, P1) == GEIST_OK;
+        while (ok && n_got < STEPS) {
+            ok = geist_session_decode_speculative(s, 4, PROMPT + n_got, hist, 8, out, &n_out) ==
+                         GEIST_OK &&
+                 n_out >= 1;
+            for (size_t i = 0; ok && i < n_out && n_got < STEPS + 8; i++) {
+                got[n_got]           = out[i];
+                hist[PROMPT + n_got] = out[i];
+                n_got++;
+            }
+        }
+        for (size_t i = 0; ok && i < STEPS; i++) {
+            ok = got[i] == ref->tok[i];
+        }
+        geist_session_destroy(s);
+        geist_session_destroy(d);
+        fails += expect(r,
+                        ok,
+                        wrong ? "a draft session holding wrong tokens keeps the stream"
+                              : "a draft session of the same model keeps the stream");
+    }
+    return fails;
+}
+
 static int run_all(const struct run *r) {
     struct ref            ref;
     struct geist_session *s = open_session(r, 0);
@@ -455,6 +499,7 @@ static int run_all(const struct run *r) {
     fails += check_speculative(r, &ref);
     fails += check_verify_drafts(r, &ref);
     fails += check_checkpoint(r, &ref);
+    fails += check_set_draft(r, &ref);
     return fails;
 }
 
