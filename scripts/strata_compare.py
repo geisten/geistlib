@@ -99,8 +99,10 @@ def run_server(engine):
 
 
 def run_geist(engine, prompt_n):
-    gpu = engine == "geist-gpu"
+    gpu = engine.startswith("geist-gpu")
     env = dict(os.environ, GEIST_BENCH_BACKEND="vulkan" if gpu else "cpu_x86", GEIST_VERBOSE="1")
+    if engine == "geist-gpu-nopad":
+        env["GEIST_MOE_PAD"] = "0"  # an A/B of #167's padding in one build
     if gpu and os.environ.get("PROFILE"):
         env["GEIST_MOE_PROFILE"] = os.environ["PROFILE"]
     cmd = [f"{os.environ['GBIN']}/bench_perf_sweep", "--gguf", os.environ["MODEL"], "--seq-lens", str(prompt_n),
