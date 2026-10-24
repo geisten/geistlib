@@ -11,7 +11,7 @@
  * 3. An op handed a position past UINT32_MAX (attention's q_offset and
  *    sliding_window: plain scalars, no large allocation needed) returns
  *    GEIST_E_INVALID_ARG instead of dispatching with the value wrapped.
- * 4. resolve_weight refuses a weight whose max_m batch would not fit the
+ * 4. resolve_weight refuses a weight whose ring stage (VK_XRING_M rows) would not fit the
  *    x ring (rather than a per-call UNSUPPORTED and a silent host linear),
  *    and creates the ring at load for one that fits.
  *
@@ -175,12 +175,13 @@ static int check_attention_refuses(struct geist_backend *be) {
     return fails;
 }
 
-/* Part 4: the x ring is sized against max_m x n_in at resolve. */
+/* Part 4: the x ring is sized against VK_XRING_M x n_in at resolve (a bigger
+ * host batch is staged in slices of VK_XRING_M rows). */
 static int check_ring_at_resolve(struct geist_backend *be) {
     const struct geist_backend_vtbl *vt = be->desc->vtbl;
     struct vk_state                 *st = be->state;
     /* One F32 row: 512 x n_in x 4 B passes the 192 MB ring at 98304. */
-    const size_t big_in = (size_t) VK_XRING_CAP / ((size_t) VK_MAX_M * sizeof(float)) + 256u;
+    const size_t big_in = (size_t) VK_XRING_CAP / ((size_t) VK_XRING_M * sizeof(float)) + 256u;
     float       *raw    = xmalloc(big_in * sizeof(float));
     memset(raw, 0, big_in * sizeof(float));
     struct geist_weight w     = {.raw        = raw,
@@ -191,7 +192,7 @@ static int check_ring_at_resolve(struct geist_backend *be) {
     int                 fails = 0;
     fails += geist_expect(vt->resolve_weight(be, &w) == GEIST_E_INVALID_ARG &&
                                   w.linear_m1 == nullptr,
-                          "resolve refuses an n_in whose max_m batch overflows the x ring");
+                          "resolve refuses an n_in whose ring stage overflows the x ring");
     struct geist_weight ok = {.raw        = raw,
                               .raw_nbytes = 256 * sizeof(float),
                               .n_in       = 256,
