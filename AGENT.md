@@ -307,8 +307,8 @@ Issues and pull requests move through status labels
 | `status:pr-open` | issue | a PR for it exists |
 | `status:validate` | PR | a stronger model (Opus) reviews it against the issue |
 | `status:accepted` | PR | review passed; merges itself once the required CI is green |
-| `status:fix` | PR | review failed; CI's Claude Code works the findings |
-| `status:stuck` | PR | three failed reviews, or a fix that changed nothing: a human's turn |
+| `status:fix` | PR | review failed, or CI failed after it passed (ci-bot); CI's Claude Code works the findings |
+| `status:stuck` | PR | three fix rounds without success, or a fix that changed nothing: a human's turn |
 
 Working on your own (Codex, Claude Code, by hand): write the issue with
 acceptance criteria first, then either label it `agent`, or implement it,

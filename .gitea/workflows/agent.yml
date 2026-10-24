@@ -11,19 +11,22 @@ name: agent
 #   PR status:validate   review: Opus, read-only, sees the issue and the
 #                        diff only. PASS -> status:accepted and auto-merge
 #                        once the required CI is green. FAIL -> the findings
-#                        on the PR, a note on the issue, status:fix.
-#   PR status:fix        fix: Claude Code works the last review on the PR's
-#                        branch, pushes, -> status:validate. After the 3rd
-#                        FAIL, or a fix that changes nothing: status:stuck,
-#                        for a human. A PR comment `/agent <text>` runs a
-#                        fix with that text as feedback.
+#                        on the PR, a note on the issue, status:fix. A real
+#                        CI failure after the PASS: ci-bot cancels the merge,
+#                        posts the log tails, status:fix (scripts/ci-bot.py).
+#   PR status:fix        fix: Claude Code works the newest review or CI
+#                        failure on the PR's branch, pushes, -> status:validate.
+#                        A 4th round, or a fix that changes nothing:
+#                        status:stuck, for a human. A PR comment
+#                        `/agent <text>` runs a fix with that text as feedback.
 #   push to a PR in status:accepted cancels its auto-merge -> status:validate,
 #                        so nothing unreviewed is merged.
 #
 # Nothing timed runs here: no benchmarks, no real models, no ssh to the Mac
 # or the Pi (their locks). Issue, comment and PR texts reach the agents
-# through files, never through ${{ }} in a script. Only germar and the bot
-# drive the labels.
+# through files, never through ${{ }} in a script. Only germar starts work
+# and `/agent` (they spend the subscription); status labels need write
+# access, which can merge anyway.
 #
 # Secrets: CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token` (the Claude
 # subscription; runs count against its usage limits, no API billing);
@@ -142,8 +145,7 @@ jobs:
   review:
     if: >-
       github.event_name == 'pull_request' && github.event.action != 'synchronize' &&
-      contains(github.event.pull_request.labels.*.name, 'status:validate') &&
-      contains(fromJSON('["germar", "geist-agent"]'), github.event.sender.login)
+      contains(github.event.pull_request.labels.*.name, 'status:validate')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -230,53 +232,25 @@ jobs:
             case $code in 200|201|409) ;; *) echo "::error::scheduling the merge returned $code"; exit 1 ;; esac
             exit 0
           fi
-          # ponytail: the first 50 comments only; an agent PR never gets near that
-          fails=$(curl -sSf -H "$auth" "$API/issues/$PR/comments?limit=50" |
-                  jq '[.[].body | select(startswith("**Agent review**") and test("VERDICT: FAIL\\s*$"))] | length')
-          if [ "$fails" -ge 3 ]; then next=stuck; else next=fix; fi
-          [ -z "$ISSUE" ] || printf 'PR #%s: review %.8s failed (round %s), status:%s. Findings on the PR.\n' \
-                               "$PR" "$HEAD_SHA" "$fails" "$next" | comment "$ISSUE"
-          sh scripts/agent-status.sh "$PR" "$next"
+          [ -z "$ISSUE" ] || printf 'PR #%s: review of %.8s failed, back to the agent (status:fix). Findings on the PR.\n' \
+                               "$PR" "$HEAD_SHA" | comment "$ISSUE"
+          sh scripts/agent-status.sh "$PR" fix
 
   fix:
     if: >-
       (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
        github.event.sender.login == 'germar' && startsWith(github.event.comment.body, '/agent')) ||
       (github.event_name == 'pull_request' && github.event.action != 'synchronize' &&
-       contains(github.event.pull_request.labels.*.name, 'status:fix') &&
-       contains(fromJSON('["germar", "geist-agent"]'), github.event.sender.login))
+       contains(github.event.pull_request.labels.*.name, 'status:fix'))
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+      ROUNDS: 3
     steps:
-      # python3, not jq: jq comes with the apt step, which needs the checkout.
-      - name: The PR's branch and the feedback
-        id: pr
-        env:
-          TOKEN: ${{ secrets.AGENT_BOT_TOKEN }}
-        run: |
-          curl -sSf -H "Authorization: token $TOKEN" "$API/pulls/$PR" > "$RUNNER_TEMP/pull.json"
-          curl -sSf -H "Authorization: token $TOKEN" "$API/issues/$PR/comments?limit=50" > "$RUNNER_TEMP/comments.json"
-          python3 - <<'EOF'
-          import json, os
-          t = os.environ["RUNNER_TEMP"]
-          ev = json.load(open(os.environ["GITHUB_EVENT_PATH"]))
-          pull = json.load(open(f"{t}/pull.json"))
-          if "comment" in ev:
-              feedback = ev["comment"]["body"]
-          else:  # status:fix: the newest review is the work order
-              reviews = [c["body"] for c in json.load(open(f"{t}/comments.json"))
-                         if c["body"].startswith("**Agent review**")]
-              feedback = reviews[-1] if reviews else ""
-          open(f"{t}/feedback.md", "w").write(feedback)
-          open(f"{t}/pr.md", "w").write(f"# {pull['title']}\n\n{pull.get('body') or ''}")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"ref={pull['head']['ref']}\n")
-          EOF
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.pr.outputs.ref }}
+          ref: refs/pull/${{ github.event.pull_request.number || github.event.issue.number }}/head
           fetch-depth: 0
           persist-credentials: false
       - name: Install deps
@@ -284,13 +258,44 @@ jobs:
         timeout-minutes: 15
         with:
           packages: gcc-14 jq
+      - name: The feedback, and the round limit
+        id: fb
+        env:
+          TOKEN: ${{ secrets.AGENT_BOT_TOKEN }}
+        run: |
+          auth="Authorization: token $TOKEN"
+          curl -sSf -H "$auth" "$API/pulls/$PR" > "$RUNNER_TEMP/pull.json"
+          # ponytail: the first 50 comments only; an agent PR never gets near that
+          curl -sSf -H "$auth" "$API/issues/$PR/comments?limit=50" > "$RUNNER_TEMP/comments.json"
+          echo "ref=$(jq -r .head.ref "$RUNNER_TEMP/pull.json")" >> "$GITHUB_OUTPUT"
+          jq -r '"# \(.title)\n\n\(.body // "")"' "$RUNNER_TEMP/pull.json" > "$RUNNER_TEMP/pr.md"
+          if [ "$GITHUB_EVENT_NAME" = issue_comment ]; then
+            jq -r .comment.body "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/feedback.md"
+          else
+            # The work order: the newest review or CI failure. A round is one
+            # earlier fix ("**Agent:**" summary); /agent runs are not limited.
+            rounds=$(jq '[.[].body | select(startswith("**Agent:**"))] | length' "$RUNNER_TEMP/comments.json")
+            if [ "$rounds" -ge "$ROUNDS" ]; then
+              printf '**Agent:** %s fix rounds without a PASS and a green CI; status:stuck, a human'"'"'s turn.\n' \
+                "$rounds" | jq -Rs '{body: .}' |
+                curl -sSf -o /dev/null -X POST "$API/issues/$PR/comments" \
+                  -H "$auth" -H 'Content-Type: application/json' -d @-
+              sh scripts/agent-status.sh "$PR" stuck
+              echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            jq -r '[.[].body | select(startswith("**Agent review**") or startswith("**CI failed**"))] | last // ""' \
+              "$RUNNER_TEMP/comments.json" > "$RUNNER_TEMP/feedback.md"
+          fi
+          echo "go=true" >> "$GITHUB_OUTPUT"
       - name: Install clang-format 22 and Claude Code
+        if: steps.fb.outputs.go == 'true'
         run: |
           sudo python3 -m pip install --break-system-packages clang-format==22.1.5
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Work the feedback
+        if: steps.fb.outputs.go == 'true'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           IS_SANDBOX: "1"
@@ -301,9 +306,10 @@ jobs:
           claude -p --dangerously-skip-permissions --max-turns 200 \
             > "$RUNNER_TEMP/summary.md" <<EOF
           You continue work on a geistlib pull request: its description is in
-          $RUNNER_TEMP/pr.md, the feedback to act on (a review, or a comment
-          starting with /agent) in $RUNNER_TEMP/feedback.md. The branch is
-          checked out; git diff origin/main...HEAD shows the work so far.
+          $RUNNER_TEMP/pr.md, the feedback to act on (a review, the log tails
+          of a failed CI run, or a comment starting with /agent) in
+          $RUNNER_TEMP/feedback.md. The PR's head is checked out;
+          git diff origin/main...HEAD shows the work so far.
           Follow AGENT.md.
 
           - Fix what the feedback finds; where it is wrong, say why instead.
@@ -320,9 +326,10 @@ jobs:
           EOF
 
       - name: Push, report, -> status:validate (or stuck)
+        if: steps.fb.outputs.go == 'true'
         env:
           TOKEN: ${{ secrets.AGENT_BOT_TOKEN }}
-          REF: ${{ steps.pr.outputs.ref }}
+          REF: ${{ steps.fb.outputs.ref }}
         run: |
           next=stuck
           if [ "$(git rev-parse HEAD)" != "$(cat "$RUNNER_TEMP/before")" ]; then

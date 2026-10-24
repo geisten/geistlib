@@ -134,6 +134,15 @@ expect(len(b.api.writes) == bot.RERUN_MAX, f"failing again and again -> at most 
 b = ci_bot(1516, JOBS["1516"])
 b.ci("geisten/geistlib", "geisten/geistlib#122", PR["pr"])
 expect(b.api.writes == [], "run 1516 with a real coverage failure -> no rerun")
+accepted = dict(PR["pr"], labels=[{"name": "ci:full"}, {"name": bot.LABEL_ACCEPTED}])
+b = ci_bot(1516, JOBS["1516"], logs=b"line\n" * 100 + b"error: the real one")
+b.ci("geisten/geistlib", "geisten/geistlib#122", accepted)
+expect([(m, p.rsplit("/", 1)[-1]) for m, p, _ in b.api.writes] == [("DELETE", "merge"), ("POST", "comments"), ("PUT", "labels")],
+       "... on a PR in status:accepted -> cancel the merge, comment, relabel (label last)")
+body = b.api.writes[1][2]["body"]
+expect(body.startswith("**CI failed**") and body.rstrip("`\n").endswith("error: the real one")
+       and body.count("line") <= bot.LOG_TAIL, "comment: the failed jobs' log tails")
+expect(b.api.writes[2][2] == {"labels": ["ci:full", bot.LABEL_FIX]}, "status:accepted -> status:fix, ci:full kept")
 b = ci_bot(1516, [j for j in JOBS["1516"] if j["id"] == 12880], logs=bot.ApiError(404, "logs not found"))
 b.ci("geisten/geistlib", "geisten/geistlib#122", PR["pr"])
 expect(len(b.api.writes) == 1, "a long job whose logs are gone -> rerun")
