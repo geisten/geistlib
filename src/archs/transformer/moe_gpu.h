@@ -20,7 +20,8 @@ struct gguf_ctx;
 
 /* Places the hottest experts of `st` (loaded on its CPU backend) on `gbe`.
  * The order is GEIST_MOE_PROFILE's (USAGE lines of tools/moe_usage, the
- * "profile" set), else the same share of every layer; GEIST_MOE_HOT=<n>
+ * "profile" set), else the counts of earlier runs from the profile cache
+ * (moe_profile.h, #165), else the same share of every layer; GEIST_MOE_HOT=<n>
  * sets the count past that budget (0: none). Experts that do not fit stay on the CPU, so
  * GEIST_OK does not mean any expert moved. */
 [[nodiscard]] enum geist_status moe_gpu_attach(struct transformer_arch_state *st,

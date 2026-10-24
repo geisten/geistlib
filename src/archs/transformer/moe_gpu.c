@@ -17,6 +17,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "moe_gpu.h"
+#include "moe_profile.h"
 #include "moe_pool.h"
 
 #include "forward/internal.h"
@@ -198,9 +199,15 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
         geist_backend_set_error(st->backend, GEIST_E_OOM, "moe: no memory for the expert plan");
         s = GEIST_E_OOM;
     }
+    /* GEIST_MOE_PROFILE wins; else the counts of earlier runs (#165). */
     const char *prof = getenv("GEIST_MOE_PROFILE");
     if (s == GEIST_OK && prof != nullptr && *prof != '\0') {
         profile_read(prof, n_layers, n_exp, count);
+    } else if (s == GEIST_OK && moe_profile_loaded(st->moe_prof)) {
+        moe_profile_counts(st->moe_prof, n_layers * n_exp, count, nullptr);
+        prof = moe_profile_path(st->moe_prof);
+    } else {
+        prof = nullptr;
     }
     /* The shared expert runs for every token: first on the device. */
     for (size_t i = 0; s == GEIST_OK && i < n_layers * slots; i++) {

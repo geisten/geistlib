@@ -77,6 +77,10 @@ on:
         description: "timeout per configuration and cycle, seconds"
         type: string
         default: "1200"
+      runtime_profile:
+        description: "#165: the run-time profile of one session (one #48 profile file; half of two) and of every profile file, held-out cover against the profile input's; 'yes' or empty"
+        type: string
+        default: ""
       make_profile:
         description: "measure this model's expert profile first (geist's router trace on the #48 corpus) and use it: '<n_experts> <experts per token>', e.g. '256 8'; empty: skip"
         type: string
@@ -103,6 +107,9 @@ jobs:
       XENV: ${{ inputs.env }}
       SWEEP_ARGS: ${{ inputs.sweep }}
       GGML_VK_VISIBLE_DEVICES: "0" # the discrete card, not the Raphael iGPU
+      # No run-time profile from earlier runs (#165): each configuration's
+      # placement is the one its inputs name.
+      GEIST_MOE_PROFILE_CACHE: "0"
       PROFILE: ${{ inputs.profile }}
       HOG: ${{ inputs.hog }}
     steps:
@@ -159,6 +166,36 @@ jobs:
           rm -rf out/trace # ~160 MB; usage.txt holds the counts
           # A variable of its own: the job's PROFILE (the input) stays as it is.
           echo "PROFILE_MADE=$PWD/out/usage.txt" >> "$GITHUB_ENV"
+      - name: Run-time profile against the hand-made one (#165)
+        if: inputs.runtime_profile != ''
+        run: |
+          set -eo pipefail
+          L=$(dirname "$(dirname "$(dirname "$LLAMA_CPU")")")
+          python3 tools/moe_usage/corpus.py out/corpus . "$L"
+          DUMP=$(find bin -path '*/release*' -name dump_geist_logits | head -1)
+          sess() { # sess <cache dir> <file>: one session over the file, counted into the cache
+            GEIST_MOE_PROFILE_CACHE="$1" GEIST_DUMP_BACKEND=cpu_x86 "$DUMP" "$MODEL" "$2" /dev/null /dev/null 2>> out/log.txt
+          }
+          # lines <cache dir> <set> <file>: its USAGE lines as model "m", that set and file
+          lines() { sed -n "s/^USAGE [0-9a-f]* profile run-time /USAGE m $2 $3 /p" "$1"/*.txt; }
+          P=out/corpus/profile H=out/corpus/heldout
+          held=out/held.txt; : > $held
+          for f in $H/*.txt; do # one cache each: analyze.py reads the domain from the file name
+            b=$(basename "$f"); sess out/pc-held/$b "$f"; lines out/pc-held/$b heldout $b >> $held
+          done
+          sess out/pc-one $P/en0.txt
+          # two domains in one session, inside dump_geist_logits' 4,096-token context
+          { head -c 7000 $P/c0.txt; head -c 7000 $P/de0.txt; } > out/two.txt && sess out/pc-two out/two.txt
+          for f in $P/*.txt; do sess out/pc-all "$f"; done
+          for v in one two all; do
+            { lines out/pc-$v profile run0.txt; cat $held; } > out/rt-$v.txt
+            echo "== run-time profile: $v ($(sed -n 's/^USAGE [0-9a-f]* profile run-time \([0-9]*\) 0 .*/\1/p' out/pc-$v/*.txt) tokens)"
+            python3 tools/moe_usage/analyze.py out/rt-$v.txt | grep -E '^\| [0-9]'
+          done | tee out/runtime-profile.txt
+          if [ -n "$PROFILE" ]; then
+            { sed -n 's/^USAGE [^ ]* profile \([^ ]*\) /USAGE m profile \1 /p' "$PROFILE"; cat $held; } > out/rt-hand.txt
+            { echo "== the hand-made profile ($PROFILE)"; python3 tools/moe_usage/analyze.py out/rt-hand.txt | grep -E '^\| [0-9]'; } | tee -a out/runtime-profile.txt
+          fi
       - name: Hot experts against the CPU (logits, greedy tokens; reported)
         continue-on-error: true
         run: |
