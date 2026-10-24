@@ -1311,6 +1311,7 @@ static void run_ple_rows_case(struct geist_backend *mt, size_t d_in, size_t hpl)
 }
 #endif
 
+#ifdef GEIST_BACKEND_METAL
 /* #196: the two-pass decode argmax against a scalar scan. Values from 64
  * levels, so the maximum repeats across slices and threadgroups and the
  * lowest index has to win; NaN and -inf never win. All-NaN gives 0.
@@ -1359,6 +1360,7 @@ static void run_argmax_case(struct geist_backend *mt, size_t n, bool all_nan, bo
            ok ? "OK" : "FAIL");
     v->buffer_destroy(mt, bx);
 }
+#endif
 
 static void run_qwen35_attention_ops(struct geist_backend *mt) {
     enum { ROWS = 3, HEADS = 2, HD = 5, QOUT = HEADS * HD };
@@ -1648,12 +1650,14 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2m8", 1536, 64, 7);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2m8", 384, 1000, 8);
 
+#ifdef GEIST_BACKEND_METAL
     static const size_t argmax_n[] = {1, 255, 2049, 151936, 262144, 262144 * 2 + 77};
     for (size_t i = 0; i < sizeof argmax_n / sizeof argmax_n[0]; i++) {
         run_argmax_case(mt, argmax_n[i], false, false);
         run_argmax_case(mt, argmax_n[i] + 20u, false, true);
     }
     run_argmax_case(mt, 4099, true, false);
+#endif
 
     geist_backend_destroy(mt);
     geist_backend_destroy(ref);
