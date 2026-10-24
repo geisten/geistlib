@@ -2358,17 +2358,33 @@ static const char metal_q4k_pair_n4_source[] =
 static const char metal_argmax_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
-        "struct P{uint n,xo;};\n"
         "struct PB{uint rows,n,xo,xs,oo;};\n"
-        "kernel void argmax_f32(device const float*x[[buffer(0)]],device "
-        "uint*out[[buffer(1)]],constant P&p[[buffer(2)]],uint "
+        /* #196: the decode argmax over a 128-256k vocabulary in two passes.
+         * One threadgroup walking 1 MB of logits was latency-bound (about
+         * 420 us per token on the M1 Max). argmax_f32_part: ng threadgroups,
+         * each thread a strided slice, a (value, index) pair per group;
+         * argmax_f32_merge: one group reduces those. The pair order (larger
+         * value, then lower index; NaN never wins, (-FLT_MAX, 0) seeds every
+         * slice) is a total order, so any split gives the single-pass scan's index. */
+        "struct PP{uint n,xo,ng;};\n"
+        "struct AV{float v;uint i;};\n"
+        "static inline void am_reduce(threadgroup float*bv,threadgroup uint*bi,uint lid){"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);for(uint st=128u;st>0u;st>>=1u){"
+        "if(lid<st){float ov=bv[lid+st];uint oi=bi[lid+st];"
+        "if(ov>bv[lid]||(ov==bv[lid]&&oi<bi[lid])){bv[lid]=ov;bi[lid]=oi;}}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);}}\n"
+        "kernel void argmax_f32_part(device const float*x[[buffer(0)]],device "
+        "AV*part[[buffer(1)]],constant PP&p[[buffer(2)]],uint "
+        "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){"
+        "threadgroup float bv[256];threadgroup uint bi[256];float best=-3.402823466e+38f;"
+        "uint idx=0u;for(uint i=tg*256u+lid;i<p.n;i+=p.ng*256u){float v=x[p.xo+i];"
+        "if(v>best||(v==best&&i<idx)){best=v;idx=i;}}bv[lid]=best;bi[lid]=idx;"
+        "am_reduce(bv,bi,lid);if(lid==0u){part[tg].v=bv[0];part[tg].i=bi[0];}}\n"
+        "kernel void argmax_f32_merge(device const AV*part[[buffer(0)]],device "
+        "uint*out[[buffer(1)]],constant PP&p[[buffer(2)]],uint "
         "lid[[thread_index_in_threadgroup]]){threadgroup float bv[256];threadgroup uint "
-        "bi[256];float best=-3.402823466e+38f;uint idx=0u;for(uint i=lid;i<p.n;i+=256u){float "
-        "v=x[p.xo+i];if(v>best||(v==best&&i<idx)){best=v;idx=i;}}bv[lid]=best;bi[lid]=idx;"
-        "threadgroup_barrier(mem_flags::mem_threadgroup);for(uint "
-        "st=128u;st>0u;st>>=1u){if(lid<st){float ov=bv[lid+st];uint "
-        "oi=bi[lid+st];if(ov>bv[lid]||(ov==bv[lid]&&oi<bi[lid])){bv[lid]=ov;bi[lid]=oi;}}"
-        "threadgroup_barrier(mem_flags::mem_threadgroup);}if(lid==0u){out[0]=bi[0];}}\n"
+        "bi[256];bv[lid]=lid<p.ng?part[lid].v:-3.402823466e+38f;bi[lid]=lid<p.ng?part[lid].i:0u;"
+        "am_reduce(bv,bi,lid);if(lid==0u){out[0]=bi[0];}}\n"
         "kernel void argmax_f32_batch(device const float*x[[buffer(0)]],device "
         "uint*out[[buffer(1)]],constant PB&p[[buffer(2)]],uint "
         "row[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){threadgroup "

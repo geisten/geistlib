@@ -3567,10 +3567,11 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
     return metal_rmsnorm_add(be, res, proj_scratch, norm_w, eps, y);
 }
 
-/* Device greedy argmax (vtbl slot): one 256-thread threadgroup scans the
- * [1, n] logits row on the GPU; the host flush then reads a 4-byte token
- * instead of mapping the whole 1 MB logits row. Tie-break
- * = lowest index, matching geist_sampler_argmax. */
+/* Device greedy argmax (vtbl slot) over the [1, n] logits row on the GPU;
+ * the host flush then reads a 4-byte token instead of mapping the whole
+ * 1 MB logits row. Tie-break = lowest index, matching geist_sampler_argmax.
+ * Two passes (#196): up to METAL_ARGMAX_PARTS threadgroups of 256 threads,
+ * at least 8 logits per thread, then one threadgroup merges their pairs. */
 [[nodiscard]] static enum geist_status
 metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32_t *out_index) {
 
@@ -3588,23 +3589,33 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
     }
     struct metal_state *st = be->state;
 
+    const size_t per_group = 256u * 8u;
+    const size_t ng        = n / per_group >= METAL_ARGMAX_PARTS ? METAL_ARGMAX_PARTS
+                             : n / per_group == 0                ? 1u
+                                                                 : n / per_group;
     struct {
-        uint32_t n, xo;
-    } ap                                                    = {(uint32_t) n, (uint32_t) x_off};
+        uint32_t n, xo, ng;
+    } ap = {(uint32_t) n, (uint32_t) x_off, (uint32_t) ng};
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
     void                                              *cmd  = nullptr;
     void                                              *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
-    metal_msg_send_set_pipeline(st, enc, st->argmax_pipeline);
+    metal_msg_send_set_pipeline(st, enc, st->argmax_part_pipeline);
     metal_msg_send_set_buffer(st, enc, logits->buffer->buffer, logits->buffer->base_off, 0);
-    metal_msg_send_set_buffer(st, enc, st->argmax_result_buffer, 0, 1);
+    metal_msg_send_set_buffer(st, enc, st->argmax_part_buffer, 0, 1);
     metal_msg_send_set_bytes(st, enc, &ap, sizeof(ap), 2);
-    const struct metal_size groups  = {1, 1, 1};
+    const struct metal_size groups  = {ng, 1, 1};
+    const struct metal_size one     = {1, 1, 1};
     const struct metal_size threads = {256, 1, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ARGMAX, groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
+    metal_msg_send_set_pipeline(st, enc, st->argmax_merge_pipeline);
+    metal_msg_send_set_buffer(st, enc, st->argmax_part_buffer, 0, 0);
+    metal_msg_send_set_buffer(st, enc, st->argmax_result_buffer, 0, 1);
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ARGMAX, one);
+    metal_msg_send_dispatch(st, enc, one, threads);
     if (cmd == nullptr) {
         st->sequence_has_work = true;
         /* The 4-byte result read is the token's only host sync point. */

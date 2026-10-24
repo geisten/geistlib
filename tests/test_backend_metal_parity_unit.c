@@ -1311,6 +1311,55 @@ static void run_ple_rows_case(struct geist_backend *mt, size_t d_in, size_t hpl)
 }
 #endif
 
+/* #196: the two-pass decode argmax against a scalar scan. Values from 64
+ * levels, so the maximum repeats across slices and threadgroups and the
+ * lowest index has to win; NaN and -inf never win. All-NaN gives 0.
+ * late_max plants the maximum twice in the second half, so the winner
+ * comes from another threadgroup than the first. */
+static void run_argmax_case(struct geist_backend *mt, size_t n, bool all_nan, bool late_max) {
+    const struct geist_backend_vtbl  *v  = mt->desc->vtbl;
+    const struct geist_backend_fused *f  = geist_backend_fused_tbl(mt);
+    struct geist_buffer              *bx = nullptr;
+    float                            *x  = dev_alloc(mt, n * sizeof(float), &bx);
+    check(x != nullptr && f->argmax_f32 != nullptr, "argmax buffer");
+    if (x == nullptr || f->argmax_f32 == nullptr) {
+        return;
+    }
+    uint32_t r = 0x9e3779b9u ^ (uint32_t) n;
+    for (size_t i = 0; i < n; i++) {
+        r    = r * 1664525u + 1013904223u;
+        x[i] = all_nan ? NAN : (float) ((r >> 26) & 63u) - 40.0f;
+        if (!all_nan && i % 977u == 5u) {
+            x[i] = (i & 1u) != 0 ? NAN : -INFINITY;
+        }
+    }
+    if (late_max) {
+        x[n - 3]       = 100.0f;
+        x[n / 2u + 7u] = 100.0f;
+    }
+    float  best = -3.402823466e+38f;
+    size_t want = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (x[i] > best) {
+            best = x[i];
+            want = i;
+        }
+    }
+    struct geist_tensor tx  = dense2(bx, 1, n);
+    int32_t             got = -1;
+    const bool          ok  = f->argmax_f32(mt, &tx, &got) == GEIST_OK && got == (int32_t) want;
+    check(ok, "argmax_f32 matches the scalar scan");
+    printf("  argmax n %zu%s: want %zu got %d %s\n",
+           n,
+           all_nan    ? " (all NaN)"
+           : late_max ? " (late max)"
+                      : "",
+           want,
+           (int) got,
+           ok ? "OK" : "FAIL");
+    v->buffer_destroy(mt, bx);
+}
+
 static void run_qwen35_attention_ops(struct geist_backend *mt) {
     enum { ROWS = 3, HEADS = 2, HD = 5, QOUT = HEADS * HD };
     const struct geist_backend_vtbl  *v  = mt->desc->vtbl;
@@ -1598,6 +1647,13 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2m8", 512, 383, 2);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2m8", 1536, 64, 7);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2m8", 384, 1000, 8);
+
+    static const size_t argmax_n[] = {1, 255, 2049, 151936, 262144, 262144 * 2 + 77};
+    for (size_t i = 0; i < sizeof argmax_n / sizeof argmax_n[0]; i++) {
+        run_argmax_case(mt, argmax_n[i], false, false);
+        run_argmax_case(mt, argmax_n[i] + 20u, false, true);
+    }
+    run_argmax_case(mt, 4099, true, false);
 
     geist_backend_destroy(mt);
     geist_backend_destroy(ref);
