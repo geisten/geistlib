@@ -35,6 +35,8 @@
 #include <string.h>
 
 #include "../moe_gpu.h"
+#include "../moe_profile.h"
+#include "../moe_pool.h"
 #include "heap.h"
 #include "par.h"
 #include "profile.h"
@@ -277,6 +279,13 @@ static void moe_worker(void *ctx, size_t begin, size_t end) {
     }
 }
 
+/* A moe_pool task: the i-th cold expert (#161). */
+static void moe_pool_task(void *ctx, size_t i) {
+    struct moe_job *j = ctx;
+    if (!moe_expert(j, j->active[i]))
+        atomic_store_explicit(&j->failed, true, memory_order_relaxed);
+}
+
 enum moe_profile_stage {
     MOE_PROFILE_NORM = 0,
     MOE_PROFILE_ROUTER,
@@ -339,6 +348,13 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     if (s != GEIST_OK) {
         return s;
     }
+    /* #201: a decode step routes and runs its experts on the device. */
+    if (moe_gpu_device(sess, (size_t) ctx->layer_idx, seq)) {
+        s = moe_gpu_device_ffn(
+                sess, (size_t) ctx->layer_idx, seq, x, sess->scratch_h_post_attn, ctx->h_out_buf);
+        moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);
+        return s;
+    }
     /* On a GPU x rides along with the router's batch: one wait for both. */
     if (sess->moe_x_io != nullptr) {
         s = v->buffer_copy(sess->moe_x_io, 0, x, 0, seq * d * sizeof(float));
@@ -363,8 +379,10 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     }
     for (size_t r = 0; r < seq && k > n_rt; r++)
         sess->moe_ids[r * k + n_rt] = (uint32_t) n_exp; /* the shared expert */
-    if (routed)
+    if (routed) {
         moe_trace(ctx->layer_idx, ctx->q_position, seq, n_exp, n_rt, k, lg, sess->moe_ids);
+        moe_profile_count(st->moe_prof, (size_t) ctx->layer_idx, seq, k, n_rt, sess->moe_ids);
+    }
     v->buffer_unmap(sess->moe_logits);
     if (!routed) {
         geist_backend_set_error(ctx->be,
@@ -455,7 +473,10 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     atomic_store_explicit(&j->failed, false, memory_order_relaxed);
     const size_t tasks   = (j->n_hot > 0 && !launched) + j->n_active;
     const size_t threads = geist_par_max_threads();
-    geist_par_for(tasks < threads ? tasks : threads, moe_worker, j);
+    /* A decode step whose hot experts run on the GPU meanwhile: the cold
+     * ones on the pool's helpers, no wait on one that took none (#161). */
+    if (!(launched && seq == 1 && moe_pool_run(st->moe_gpu->pool, j->n_active, moe_pool_task, j)))
+        geist_par_for(tasks < threads ? tasks : threads, moe_worker, j);
     moe_gpu_task(j); /* a thread library that gave the caller no range */
     moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);
     if (j->gpu_status != GEIST_OK) {
@@ -575,8 +596,7 @@ enum geist_status moe_session_alloc(struct transformer_arch_session *sess) {
         geist_backend_set_error(be, GEIST_E_OOM, "transformer: MoE routing state alloc failed");
         return GEIST_E_OOM;
     }
-    moe_gpu_session_alloc(sess);
-    return GEIST_OK;
+    return moe_gpu_session_alloc(sess);
 }
 
 void moe_session_free(struct transformer_arch_session *sess) {
