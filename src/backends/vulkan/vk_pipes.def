@@ -71,13 +71,13 @@ X(VK_PIPE_PLE_GATE,               ple_gate_f32_spv,            "ple_gate",      
 /* ffn_gate_up with the pre-FFN rmsnorm folded in */
 X(VK_PIPE_FFN_NORM_GU,            ffn_norm_gate_up_q4k_spv,    "ffn_norm_gu",            5, PLAIN)
 /* gated-DeltaNet causal conv + silu (deltanet_mix stage 1) */
-X(VK_PIPE_DN_CONV,                deltanet_conv_f32_spv,       "dn_conv",                3, PLAIN)
+X(VK_PIPE_DN_CONV,                deltanet_conv_f32_spv,       "dn_conv",                4, PLAIN)
 /* gated-DeltaNet recurrence + gated rmsnorm (stage 2) */
 X(VK_PIPE_DN_DELTA,               deltanet_delta_f32_spv,      "dn_delta",               8, PLAIN)
 /* DeltaNet q/k l2norm and gated output rmsnorm (fast path) */
 X(VK_PIPE_DN_NORM,                deltanet_norm_f32_spv,       "dn_norm",                3, PLAIN)
 /* column-split DeltaNet recurrence; needs clustered subgroups (st->dn_scan) */
-X(VK_PIPE_DN_SCAN,                deltanet_scan_f32_spv,       "dn_scan",                7, PLAIN)
+X(VK_PIPE_DN_SCAN,                deltanet_scan_f32_spv,       "dn_scan",                8, PLAIN)
 X(VK_PIPE_MATVEC_Q4_0,            matvec_q4_0_spv,             "matvec_q4_0",            3, PLAIN)
 X(VK_PIPE_MATMUL_Q4_0,            matmul_q4_0_spv,             "matmul_q4_0",            3, TILED)
 X(VK_PIPE_MATVEC_Q4_1,            matvec_q4_1_spv,             "matvec_q4_1",            3, PLAIN)

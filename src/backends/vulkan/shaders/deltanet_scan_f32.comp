@@ -53,6 +53,8 @@ layout(set = 0, binding = 3) readonly buffer A { float ssm_a[]; };
 layout(set = 0, binding = 4) readonly buffer DT { float dt_bias[]; };
 layout(set = 0, binding = 5) buffer S { float state[]; };
 layout(set = 0, binding = 6) restrict writeonly buffer OUT { float qkv_out[]; };
+/* per-row delta-state slots (#192): row t < rslots leaves its state in slot t */
+layout(set = 0, binding = 7) restrict writeonly buffer RS { float rstate[]; };
 
 layout(push_constant) uniform Push {
     uint seq;
@@ -68,6 +70,8 @@ layout(push_constant) uniform Push {
     uint a_off;
     uint dtb_off;
     uint s_off;
+    uint rs_off;
+    uint rslots;
 } pc;
 
 void load_tok(uint t, uint qo4, uint ko4, uint row4, uint ng, uint lane, uint vo, uint hv,
@@ -140,6 +144,19 @@ void main() {
         float o = subgroupClusteredAdd((o4.x + o4.y) + (o4.z + o4.w), LANES);
         if (col_ok && lane == 0u) {
             qkv_out[vat] = o;
+        }
+        if (t < pc.rslots) {
+            for (uint c = 0u; c < G; ++c) {
+                uint g = c * LANES + lane;
+                if (col_ok && g < ng) {
+                    uint at = pc.rs_off + t * pc.n_vh * pc.dk * pc.dv + hv * pc.dk * pc.dv +
+                              4u * g * pc.dv + j;
+                    rstate[at] = s[c].x;
+                    rstate[at + pc.dv] = s[c].y;
+                    rstate[at + 2u * pc.dv] = s[c].z;
+                    rstate[at + 3u * pc.dv] = s[c].w;
+                }
+            }
         }
         kc = kn;
         qc = qn;

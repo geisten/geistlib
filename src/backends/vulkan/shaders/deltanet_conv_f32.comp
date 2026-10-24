@@ -23,6 +23,8 @@ layout(local_size_x = VK_DN_CONV_WG) in;
 layout(set = 0, binding = 0) buffer QKV { float qkv[]; };
 layout(set = 0, binding = 1) readonly buffer W { float cw[]; };
 layout(set = 0, binding = 2) buffer ST { float cst[]; };
+/* per-row conv-state slots (#192): row t < rslots leaves its window in slot t */
+layout(set = 0, binding = 3) writeonly buffer RC { float rcs[]; };
 
 layout(push_constant) uniform Push {
     uint seq;
@@ -31,6 +33,8 @@ layout(push_constant) uniform Push {
     uint qkv_off;
     uint w_off;
     uint st_off;
+    uint rc_off;
+    uint rslots;
 } pc;
 
 #include "silu.glsl"
@@ -76,6 +80,13 @@ void main() {
                     win[j] = win[j + 1u];
                 } else if (j + 1u == hist) {
                     win[j] = xt;
+                }
+            }
+            if (t0 + b < pc.rslots) {
+                for (uint j = 0u; j < KMAX - 1u; ++j) {
+                    if (j < hist) {
+                        rcs[pc.rc_off + ((t0 + b) * hist + j) * pc.convd + c] = win[j];
+                    }
                 }
             }
         }
