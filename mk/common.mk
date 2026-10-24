@@ -239,6 +239,7 @@ LIB_SOURCES := \
     src/archs/transformer/rotation.c \
     src/archs/transformer/moe_gpu.c \
     src/archs/transformer/moe_profile.c \
+    src/archs/transformer/moe_pool.c \
     src/archs/transformer/forward/attention.c \
     src/archs/transformer/forward/blocks.c \
     src/archs/transformer/forward/moe.c \

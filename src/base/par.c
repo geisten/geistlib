@@ -32,6 +32,12 @@
 
 /* n capped at the CPUs this process may use (cgroup quota, affinity;
  * cpu_limit.h), unless OMP_NUM_THREADS sized the team explicitly (#27). */
+static _Thread_local bool tl_inline = false;
+
+void geist_par_set_inline(bool on) {
+    tl_inline = on;
+}
+
 static size_t par_cap(size_t n) {
     static _Atomic int env = -1;
     int                e   = atomic_load_explicit(&env, memory_order_relaxed);
@@ -56,6 +62,10 @@ static inline void par_range(size_t n, size_t t, size_t T, size_t *begin, size_t
 
 void geist_par_for(size_t n, geist_par_fn fn, void *ctx) {
     if (n == 0) {
+        return;
+    }
+    if (tl_inline) {
+        fn(ctx, 0, n);
         return;
     }
     const size_t team = geist_par_max_threads();
@@ -145,6 +155,10 @@ static void gcd_range(void *p, size_t t) {
 
 void geist_par_for(size_t n, geist_par_fn fn, void *ctx) {
     if (n == 0) {
+        return;
+    }
+    if (tl_inline) {
+        fn(ctx, 0, n);
         return;
     }
     const size_t max = geist_par_max_threads();
@@ -285,6 +299,10 @@ static size_t ensure_workers(size_t T) {
 
 void geist_par_for(size_t n, geist_par_fn fn, void *ctx) {
     if (n == 0) {
+        return;
+    }
+    if (tl_inline) {
+        fn(ctx, 0, n);
         return;
     }
     size_t T = geist_par_max_threads();

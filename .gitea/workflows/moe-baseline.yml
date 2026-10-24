@@ -69,6 +69,10 @@ on:
         description: "llama.cpp on real text: --n-cpu-moe values for llama-server, separated by ; (empty: skip)"
         type: string
         default: ""
+      hog:
+        description: "busy loops started beside each configuration, after the quiet-host gate (a host shared with CI, #161); 0: none"
+        type: string
+        default: "0"
       cap:
         description: "timeout per configuration and cycle, seconds"
         type: string
@@ -107,6 +111,7 @@ jobs:
       # placement is the one its inputs name.
       GEIST_MOE_PROFILE_CACHE: "0"
       PROFILE: ${{ inputs.profile }}
+      HOG: ${{ inputs.hog }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -327,6 +332,8 @@ jobs:
                 llama-exps-cpu) cmd="$LLAMA_VK $LB -ngl 99 -ot exps=CPU" ;;
                 *) echo "unknown $cfg"; continue ;;
               esac
+              hogs=""
+              for i in $(seq "$HOG"); do sh -c 'while :; do :; done' & hogs="$hogs $!"; done
               s=$(date +%s)
               # GPU clocks and power state while the configuration runs
               ( while :; do nvidia-smi --query-gpu=pstate,clocks.sm,clocks.mem,utilization.gpu --format=csv,noheader \
@@ -336,7 +343,8 @@ jobs:
               timeout "$CAP" $cmd 2>> out/log.txt \
                 | sed "s/^{/{\"cfg\":\"$cfg\",\"cycle\":$c,/" | tee -a out/results.jsonl || rc=$?
               kill $clk 2>/dev/null || true
-              echo "== $cfg cycle $c: exit $rc after $(( $(date +%s) - s )) s" | tee -a out/log.txt
+              [ -n "$hogs" ] && kill $hogs 2>/dev/null || true
+              echo "== $cfg cycle $c: exit $rc after $(( $(date +%s) - s )) s (hogs: $HOG)" | tee -a out/log.txt
             done
           done
           true

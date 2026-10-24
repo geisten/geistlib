@@ -29,10 +29,17 @@ struct gguf_ctx;
 
 void moe_gpu_destroy(struct transformer_moe_gpu *mg);
 
-/* The session's buffers on the GPU backend; on failure the session runs its
- * experts on the CPU (one line on stderr) and this still returns. */
-void moe_gpu_session_alloc(struct transformer_arch_session *sess);
-void moe_gpu_session_free(struct transformer_arch_session *sess);
+/* The model on a GPU (#164): resolves on st->moe_cpu every expert that got
+ * no copy on the GPU (moe_gpu_attach ran first) and releases the file pages
+ * of those that did. A hot expert then has no CPU copy, so a session that
+ * cannot get its GPU buffers is refused (moe_gpu_session_alloc). */
+[[nodiscard]] enum geist_status moe_resolve_cold(struct transformer_arch_state *st);
+
+/* The session's buffers on the GPU backend. On failure the session runs its
+ * experts on the CPU (one line on stderr) and this returns GEIST_OK, unless
+ * the hot experts have no CPU copy (moe_resolve_cold): then the error. */
+[[nodiscard]] enum geist_status moe_gpu_session_alloc(struct transformer_arch_session *sess);
+void                            moe_gpu_session_free(struct transformer_arch_session *sess);
 
 /* Expert e of layer `layer` has a GPU copy and the session can run it. */
 [[nodiscard]] bool moe_gpu_hot(const struct transformer_arch_session *sess, size_t layer, size_t e);

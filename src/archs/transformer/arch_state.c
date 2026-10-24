@@ -1536,6 +1536,8 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
      * gets copies of the hottest, in the memory the rest left (#78). */
     if (s == GEIST_OK && (*out)->moe_cpu != nullptr) {
         s = moe_gpu_attach(*out, be);
+        if (s == GEIST_OK)
+            s = moe_resolve_cold(*out);
         if (s != GEIST_OK) {
             transformer_state_destroy(*out);
             *out = nullptr;
