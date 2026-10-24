@@ -34,6 +34,7 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
         metal_release_sequence_objects(st);
         metal_release_pipeline_tables(st);
         metal_msg_send_void0(st, st->argmax_result_buffer, "release");
+        metal_msg_send_void0(st, st->argmax_part_buffer, "release");
         metal_msg_send_void0(st, st->dn_scratch, "release");
         metal_msg_send_void0(st, st->command_queue, "release");
         metal_msg_send_void0(st, st->device, "release");
@@ -162,6 +163,7 @@ void metal_destroy(struct geist_backend *be) {
             : rotate_set ? (uint32_t) rotate
                          : 16u;
     st->profile_enabled = metal_env_enabled("GEIST_METAL_PROFILE");
+    st->profile_shapes  = st->profile_enabled && metal_env_enabled("GEIST_METAL_PROFILE_SHAPES");
 
     enum geist_status s = metal_load_runtime(be, st);
     if (s != GEIST_OK) {

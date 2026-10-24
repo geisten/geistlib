@@ -204,6 +204,8 @@ static bool metal_skip_stage(enum metal_profile_stage s) {
     }
 }
 
+static double metal_cmd_time(struct metal_state *st, void *cmd, const char *selector);
+
 void metal_profile_add_dispatch(struct metal_state      *st,
                                 enum metal_profile_stage stage,
                                 struct metal_size        groups) {
@@ -217,6 +219,45 @@ void metal_profile_add_dispatch(struct metal_state      *st,
     stat->calls                     = metal_saturating_add_u64(stat->calls, 1);
     stat->workgroups = metal_saturating_add_u64(stat->workgroups, metal_profile_workgroups(groups));
     st->seq_cur_mask |= 1ull << stage;
+    if (st->profile_shapes && metal_seq_mine(st)) {
+        if (st->seq_cur_ndisp == 0) {
+            const uint64_t prefill = st->sequence_kind == GEIST_COMMAND_SEQUENCE_PREFILL_TEXT;
+            st->seq_cur_shape      = (uint64_t) stage << 58 | prefill << 57 |
+                                     (uint64_t) (groups.width & 0xffffffu) << 33 |
+                                     (uint64_t) (groups.height & 0xfffffu) << 13 |
+                                     (uint64_t) (groups.depth & 0x1fffu);
+        }
+        st->seq_cur_ndisp++;
+    }
+}
+
+void metal_profile_add_cmd_shape(struct metal_state *st,
+                                 void               *cmd,
+                                 uint64_t            shape,
+                                 uint32_t            ndisp) {
+    if (st == nullptr || !st->profile_shapes || cmd == nullptr || ndisp == 0) {
+        return;
+    }
+    const double start = metal_cmd_time(st, cmd, "GPUStartTime");
+    const double end   = metal_cmd_time(st, cmd, "GPUEndTime");
+    if (!(end > start) || start <= 0.0) {
+        return;
+    }
+    const size_t n = sizeof(st->shape_slots) / sizeof(st->shape_slots[0]);
+    for (size_t i = 0; i < n; i++) {
+        struct metal_profile_shape_slot *slot = &st->shape_slots[i];
+        if (slot->buffers == 0 || slot->key == shape || i == n - 1) {
+            if (slot->buffers == 0) {
+                slot->key   = shape;
+                slot->min_s = end - start;
+            }
+            slot->buffers++;
+            slot->dispatches += ndisp;
+            slot->seconds += end - start;
+            slot->min_s = end - start < slot->min_s ? end - start : slot->min_s;
+            return;
+        }
+    }
 }
 
 static_assert(METAL_PROFILE_STAGE_COUNT <= 64, "stage mask is a uint64_t");
@@ -358,6 +399,39 @@ void metal_profile_print_summary(const struct metal_state *st) {
                 (unsigned long long) st->gpu_slots[best].buffers);
         metal_profile_print_mask(st->gpu_slots[best].mask);
         fputc('\n', stderr);
+    }
+    if (!st->profile_shapes) {
+        return;
+    }
+    /* stage, prefill flag, grid; µs per buffer (mean and min). */
+    bool sdone[256] = {false};
+    for (;;) {
+        size_t best = SIZE_MAX;
+        for (size_t i = 0; i < 256; i++) {
+            if (!sdone[i] && st->shape_slots[i].buffers != 0 &&
+                (best == SIZE_MAX || st->shape_slots[i].seconds > st->shape_slots[best].seconds)) {
+                best = i;
+            }
+        }
+        if (best == SIZE_MAX) {
+            break;
+        }
+        sdone[best]                                  = true;
+        const struct metal_profile_shape_slot *sl    = &st->shape_slots[best];
+        const unsigned                         stage = (unsigned) (sl->key >> 58);
+        fprintf(stderr,
+                "  shape %-28s %s grid %6u x %5u x %3u  %7llu buffers %7llu disp  "
+                "%9.2f ms  mean %7.2f us  min %7.2f us\n",
+                stage < METAL_PROFILE_STAGE_COUNT ? metal_profile_stage_names[stage] + 9 : "?",
+                (sl->key >> 57) & 1u ? "prefill" : "decode ",
+                (unsigned) ((sl->key >> 33) & 0xffffffu),
+                (unsigned) ((sl->key >> 13) & 0xfffffu),
+                (unsigned) (sl->key & 0x1fffu),
+                (unsigned long long) sl->buffers,
+                (unsigned long long) sl->dispatches,
+                sl->seconds * 1e3,
+                sl->seconds * 1e6 / (double) sl->buffers,
+                sl->min_s * 1e6);
     }
 }
 

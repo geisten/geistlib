@@ -20,6 +20,7 @@ static void metal_sequence_drain_pending(struct metal_state *st, bool *out_faile
             *out_failed = true;
         }
         metal_profile_add_cmd_buffer(st, cmd, st->seq_pending_mask[i]);
+        metal_profile_add_cmd_shape(st, cmd, st->seq_pending_shape[i], st->seq_pending_ndisp[i]);
         metal_msg_send_void0(st, cmd, "release");
         st->seq_pending_cmds[i] = nullptr;
     }
@@ -46,6 +47,8 @@ void *metal_sequence_encoder(struct metal_state *st) {
          * for the oldest before opening another. */
         metal_msg_send_void0(st, st->seq_pending_cmds[0], "waitUntilCompleted");
         metal_profile_add_cmd_buffer(st, st->seq_pending_cmds[0], st->seq_pending_mask[0]);
+        metal_profile_add_cmd_shape(
+                st, st->seq_pending_cmds[0], st->seq_pending_shape[0], st->seq_pending_ndisp[0]);
         metal_msg_send_void0(st, st->seq_pending_cmds[0], "release");
         st->seq_pending_count--;
         memmove(&st->seq_pending_cmds[0],
@@ -54,6 +57,12 @@ void *metal_sequence_encoder(struct metal_state *st) {
         memmove(&st->seq_pending_mask[0],
                 &st->seq_pending_mask[1],
                 st->seq_pending_count * sizeof(st->seq_pending_mask[0]));
+        memmove(&st->seq_pending_shape[0],
+                &st->seq_pending_shape[1],
+                st->seq_pending_count * sizeof(st->seq_pending_shape[0]));
+        memmove(&st->seq_pending_ndisp[0],
+                &st->seq_pending_ndisp[1],
+                st->seq_pending_count * sizeof(st->seq_pending_ndisp[0]));
     }
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
@@ -65,10 +74,14 @@ void *metal_sequence_encoder(struct metal_state *st) {
     metal_msg_send_void0(st, st->sequence_compute_encoder, "endEncoding");
     metal_msg_send_void0(st, st->sequence_command_buffer, "commit");
     metal_msg_send_void0(st, st->sequence_compute_encoder, "release");
-    st->seq_pending_mask[st->seq_pending_count] = st->seq_cur_mask;
+    st->seq_pending_mask[st->seq_pending_count]  = st->seq_cur_mask;
+    st->seq_pending_shape[st->seq_pending_count] = st->seq_cur_shape;
+    st->seq_pending_ndisp[st->seq_pending_count] = st->seq_cur_ndisp;
     st->seq_pending_cmds[st->seq_pending_count++] =
             st->sequence_command_buffer; /* stays retained until drain */
     st->seq_cur_mask             = 0;
+    st->seq_cur_shape            = 0;
+    st->seq_cur_ndisp            = 0;
     st->sequence_command_buffer  = cmd;
     st->sequence_compute_encoder = enc;
     st->seq_disp_at_rotate       = (uint32_t) st->seq_dispatch_count;
@@ -236,6 +249,8 @@ void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf, size
     st->seq_dispatch_count = 0;
     st->seq_disp_at_rotate = 0;
     st->seq_cur_mask       = 0;
+    st->seq_cur_shape      = 0;
+    st->seq_cur_ndisp      = 0;
     st->seq_begin_ns       = metal_now_ns();
     *out_token             = st->sequence_token;
     return GEIST_OK;
@@ -287,6 +302,7 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit) {
         bool pending_failed = false;
         metal_sequence_drain_pending(st, &pending_failed);
         metal_profile_add_cmd_buffer(st, cmd, st->seq_cur_mask);
+        metal_profile_add_cmd_shape(st, cmd, st->seq_cur_shape, st->seq_cur_ndisp);
         if (pending_failed && out == GEIST_OK) {
             geist_backend_set_error(
                     be, GEIST_E_BACKEND, "metal command sequence: pipelined buffer failed");

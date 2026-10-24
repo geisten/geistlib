@@ -121,6 +121,18 @@ struct metal_profile_gpu_slot {
     double   seconds;
 };
 
+/* GEIST_METAL_PROFILE_SHAPES=1 (with GEIST_METAL_PROFILE=1 and
+ * GEIST_METAL_PIPELINE=1): GPU time per command buffer keyed by the first
+ * dispatch's stage and threadgroup grid, so one kernel at two matrix
+ * shapes gets two rows. */
+struct metal_profile_shape_slot {
+    uint64_t key; /* metal_profile_shape_key */
+    uint64_t buffers;
+    uint64_t dispatches;
+    double   seconds;
+    double   min_s;
+};
+
 /* Registry entry mapping a live buffer's host contents range back to its
  * geist_buffer, so resolver-installed linear kernels can translate the raw
  * host pointers the engine passes (buffer_map aliases, w->raw) into
@@ -405,10 +417,12 @@ struct metal_state {
     void    *f32_matvec_rows_pipeline;
     void    *f32_ple_proj_norm_function;
     void    *f32_ple_proj_norm_pipeline;
-    void    *argmax_function;
-    void    *argmax_pipeline;
     void    *argmax_batch_function;
     void    *argmax_batch_pipeline;
+    void    *argmax_part_function;
+    void    *argmax_part_pipeline;
+    void    *argmax_merge_function;
+    void    *argmax_merge_pipeline;
     void    *moe_topk_function;
     void    *moe_topk_pipeline;
     void    *moe_mv_q4k_function;
@@ -424,6 +438,7 @@ struct metal_state {
     void    *argmax_result_buffer;
     void    *argmax_result_mapped;
     uint32_t argmax_result_capacity;
+    void    *argmax_part_buffer; /* METAL_ARGMAX_PARTS (value, index) pairs, GPU only */
     void    *rope_rows_function;
     void    *rope_rows_pipeline;
     void    *kv_append_rows_function;
@@ -512,8 +527,12 @@ struct metal_state {
     uint32_t                         seq_disp_at_rotate;
     uint32_t                         seq_pending_count;
     void                            *seq_pending_cmds[16];
-    uint64_t                         seq_pending_mask[16]; /* profile: stages per buffer */
-    uint64_t                         seq_cur_mask;         /* profile: stages so far */
+    uint64_t                         seq_pending_mask[16];  /* profile: stages per buffer */
+    uint64_t                         seq_cur_mask;          /* profile: stages so far */
+    uint64_t                         seq_pending_shape[16]; /* profile: first dispatch's key */
+    uint32_t                         seq_pending_ndisp[16];
+    uint64_t                         seq_cur_shape;
+    uint32_t                         seq_cur_ndisp;
     uint64_t                         seq_begin_ns;
     int                              sequence_token;
     enum geist_command_sequence_kind sequence_kind;
@@ -533,12 +552,14 @@ struct metal_state {
     struct metal_profile_stat profile[METAL_PROFILE_STAGE_COUNT];
     /* GPU time of committed command buffers (profile only): the sum of the
      * buffers' own times, and their union on the GPU timeline (busy). */
-    double                        gpu_sum_s;
-    double                        gpu_busy_s;
-    double                        gpu_last_end_s;
-    uint64_t                      gpu_buffers;
-    struct metal_profile_gpu_slot gpu_slots[64];
-    char                          device_name[128];
+    double                          gpu_sum_s;
+    double                          gpu_busy_s;
+    double                          gpu_last_end_s;
+    uint64_t                        gpu_buffers;
+    struct metal_profile_gpu_slot   gpu_slots[64];
+    bool                            profile_shapes;
+    struct metal_profile_shape_slot shape_slots[256];
+    char                            device_name[128];
 
     /* #530: an MTLResidencySet on the command queue (macOS 15+; null there
      * otherwise, or with GEIST_METAL_KEEP_ALIVE_S=0). macOS unwires what a
@@ -893,6 +914,9 @@ struct metal_f32_ple_proj_norm_params {
     float    eps;
 };
 
+/* Threadgroups of the decode argmax's first pass (argmax_f32_part). */
+enum { METAL_ARGMAX_PARTS = 128 };
+
 struct metal_argmax_params {
     uint32_t n;
     uint32_t x_offset;
@@ -1115,6 +1139,7 @@ void metal_profile_print_summary(const struct metal_state *st);
 /* Profile: account a completed command buffer's GPU time to the stages it
  * carried. No-op unless GEIST_METAL_PROFILE is set. */
 void metal_profile_add_cmd_buffer(struct metal_state *st, void *cmd, uint64_t stage_mask);
+void metal_profile_add_cmd_shape(struct metal_state *st, void *cmd, uint64_t shape, uint32_t ndisp);
 
 void metal_capture_begin(struct metal_state *st, enum geist_command_sequence_kind kind);
 

@@ -234,8 +234,9 @@ static const struct metal_pipeline_row metal_moe_rows[] = {
 };
 
 static const struct metal_pipeline_row metal_argmax_rows[] = {
-        METAL_PIPE(argmax, "argmax_f32", argmax),
         METAL_PIPE(argmax, "argmax_f32_batch", argmax_batch),
+        METAL_PIPE(argmax, "argmax_f32_part", argmax_part),
+        METAL_PIPE(argmax, "argmax_f32_merge", argmax_merge),
 };
 
 /* A library compiled from one MSL unit: the shader literals concatenated
@@ -644,6 +645,19 @@ void metal_release_pipeline_tables(struct metal_state *st) {
             return GEIST_E_BACKEND;
         }
         st->argmax_result_capacity = 1u;
+    }
+    if (st->argmax_part_buffer == nullptr) {
+        st->argmax_part_buffer =
+                metal_msg_send_id_size_uint(st,
+                                            st->device,
+                                            "newBufferWithLength:options:",
+                                            METAL_ARGMAX_PARTS * 2u * sizeof(uint32_t),
+                                            METAL_RESOURCE_STORAGE_MODE_PRIVATE);
+        if (st->argmax_part_buffer == nullptr) {
+            geist_backend_set_error(
+                    be, GEIST_E_BACKEND, "metal argmax: partials buffer allocation failed");
+            return GEIST_E_BACKEND;
+        }
     }
     return GEIST_OK;
 }
