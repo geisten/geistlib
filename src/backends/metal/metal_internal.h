@@ -924,6 +924,10 @@ struct metal_deltanet_params {
     uint32_t conv_state_offset;
     uint32_t delta_state_offset;
     float    eps;
+    uint32_t row_cs_offset; /* per-row state slots (#192), row_slots 0 = none */
+    uint32_t row_s_offset;
+    uint32_t row_slots;
+    uint32_t row; /* dn_dec_qk: the row this dispatch runs */
 };
 
 struct metal_qgate_params {

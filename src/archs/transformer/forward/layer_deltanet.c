@@ -961,6 +961,11 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
      * on-device. Unsupported is side-effect free by contract, so the host
      * oracle below remains the universal fallback. */
     bool mixed_on_backend = false;
+    /* Per-row state slots of a speculative verify (#192): only a backend
+     * mixer that reports writing them keeps the verify's rows_ok. */
+    bool       rows_written = false;
+    const bool rows_req     = sess->dn_txn_active && sess->dn_rows_req && seq == sess->dn_txn_k &&
+                              sess->dn_row_S_buf != nullptr;
     if (fused != nullptr && fused->deltanet_mix != nullptr) {
         struct geist_tensor t_conv_w = view_2d(L->dn_conv.buffer, (int64_t) convd, (int64_t) K);
         struct geist_tensor t_aw     = view_1d(L->dn_a.buffer, (int64_t) n_vh);
@@ -974,29 +979,47 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
                                    .ndim   = 3,
                                    .shape  = {(int64_t) n_vh, (int64_t) d_k, (int64_t) d_v},
                                    .stride = {(int64_t) (d_k * d_v), (int64_t) d_v, 1}};
-        const struct geist_deltanet_mix_args args = {.qkv         = &t_qkv,
-                                                     .z           = &t_z,
-                                                     .beta        = &t_b,
-                                                     .alpha       = &t_a,
-                                                     .conv_w      = &t_conv_w,
-                                                     .ssm_a       = &t_aw,
-                                                     .dt_bias     = &t_dtb,
-                                                     .norm_w      = &t_nrm,
-                                                     .conv_state  = &t_cstate,
-                                                     .delta_state = &t_S,
-                                                     .seq         = seq,
-                                                     .n_k_heads   = n_kh,
-                                                     .n_v_heads   = n_vh,
-                                                     .head_k      = d_k,
-                                                     .head_v      = d_v,
-                                                     .conv_kernel = K,
-                                                     .eps         = eps};
-        s                                         = fused->deltanet_mix(be, &args);
+        struct geist_deltanet_mix_args args = {.qkv         = &t_qkv,
+                                               .z           = &t_z,
+                                               .beta        = &t_b,
+                                               .alpha       = &t_a,
+                                               .conv_w      = &t_conv_w,
+                                               .ssm_a       = &t_aw,
+                                               .dt_bias     = &t_dtb,
+                                               .norm_w      = &t_nrm,
+                                               .conv_state  = &t_cstate,
+                                               .delta_state = &t_S,
+                                               .seq         = seq,
+                                               .n_k_heads   = n_kh,
+                                               .n_v_heads   = n_vh,
+                                               .head_k      = d_k,
+                                               .head_v      = d_v,
+                                               .conv_kernel = K,
+                                               .eps         = eps};
+        /* Per-row state slots of a speculative verify (#192). */
+        struct geist_tensor t_rc, t_rs;
+        if (rows_req) {
+            size_t dn = 0;
+            for (size_t li = 0; li < (size_t) ctx->layer_idx; li++)
+                dn += st->layers[li].mixer == GEIST_MIXER_DELTANET;
+            const size_t conv_n = (K - 1) * convd, s_n = n_vh * d_k * d_v;
+            t_rc = view_1d(sess->dn_row_conv_buf, (int64_t) (TRANSFORMER_DN_ROW_SLOTS * conv_n));
+            t_rc.offset = dn * TRANSFORMER_DN_ROW_SLOTS * conv_n * sizeof(float);
+            t_rs        = view_1d(sess->dn_row_S_buf, (int64_t) (TRANSFORMER_DN_ROW_SLOTS * s_n));
+            t_rs.offset = dn * TRANSFORMER_DN_ROW_SLOTS * s_n * sizeof(float);
+            args.row_conv_state  = &t_rc;
+            args.row_delta_state = &t_rs;
+            args.rows_written    = &rows_written;
+        }
+        s = fused->deltanet_mix(be, &args);
+
         if (s == GEIST_OK)
             mixed_on_backend = true;
         else if (s != GEIST_E_UNSUPPORTED)
             return s;
     }
+    if (rows_req && !(mixed_on_backend && rows_written))
+        sess->dn_rows_ok = false;
 
     if (!mixed_on_backend) {
         /* Host oracle: conv + gating + recurrence + gated norm. */

@@ -370,6 +370,16 @@ struct geist_deltanet_mix_args {
     size_t                     head_v;
     size_t                     conv_kernel;
     float                      eps;
+    /* Optional (#192, speculative verify): per-row state slots. When both
+     * are set and the backend fills them, it sets *rows_written: row t <
+     * seq - 1 leaves its conv state in slot t of row_conv_state
+     * (slots x (conv_kernel - 1) x conv_dim) and its delta state in slot t of
+     * row_delta_state (slots x n_v_heads x head_k x head_v), so a rejected
+     * speculative suffix rolls back by one copy. A backend that cannot
+     * leaves *rows_written alone. */
+    struct geist_tensor *row_conv_state;
+    struct geist_tensor *row_delta_state;
+    bool                *rows_written;
 };
 
 /* Arguments for fused->attention_kv_int8 and attention_kv_int4 (the int4
@@ -638,9 +648,9 @@ struct geist_backend_fused {
      *   y = gelu_tanh(x · gate_w^T) * (x · up_w^T)
      * One kernel reads x once for both weights and applies the activation
      * in the epilogue. x [rows, d_in], gate_w/up_w resolved weight
-     * tensors [inter, d_in] (same dtype and shape), y [rows, inter]. Backends may support only a subset (e.g.
-     * rows==1, Q4_K) — GEIST_E_UNSUPPORTED falls back to the decomposed
-     * ops. nullptr = always decomposed. */
+     * tensors [inter, d_in] (same dtype and shape), y [rows, inter]. Backends may support only a
+     * subset (e.g. rows==1, Q4_K) — GEIST_E_UNSUPPORTED falls back to the decomposed ops. nullptr =
+     * always decomposed. */
     enum geist_status (*ffn_gate_up)(struct geist_backend      *be,
                                      const struct geist_tensor *x,
                                      const struct geist_tensor *gate_w,
@@ -798,7 +808,7 @@ struct geist_backend_fused {
      * Plan-bound per layer: GEIST_FUSED_ATTN_KV_INT8 with head_dim and the
      * head counts; nullptr (or a probe that says no) leaves the
      * architecture's host loop. */
-    enum geist_status (*attention_kv_int8)(struct geist_backend                      *be,
+    enum geist_status (*attention_kv_int8)(struct geist_backend                 *be,
                                            const struct geist_attention_kv_args *args);
 
     /* Attention over the INT4 KV cache (GEIST_KV_INT4), with
@@ -813,7 +823,7 @@ struct geist_backend_fused {
      * decomposed twin is the architecture's attention_int4_via_buffers.
      * Plan-bound per layer like attention_kv_int8, with
      * GEIST_FUSED_ATTN_KV_INT4. */
-    enum geist_status (*attention_kv_int4)(struct geist_backend                      *be,
+    enum geist_status (*attention_kv_int4)(struct geist_backend                 *be,
                                            const struct geist_attention_kv_args *args);
 
     /* A residual step and the pre-norm that reads its result, one pass:

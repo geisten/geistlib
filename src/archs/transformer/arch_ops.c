@@ -152,8 +152,11 @@ static bool deltanet_state_geometry(const struct transformer_arch_session *sess,
 }
 
 void transformer_recurrent_txn_commit(struct transformer_arch_session *sess) {
-    if (sess != nullptr)
+    if (sess != nullptr) {
         sess->dn_txn_active = false;
+        sess->dn_rows_req   = false;
+        sess->dn_rows_ok    = false;
+    }
 }
 
 static enum geist_status
@@ -218,6 +221,25 @@ deltanet_txn_begin(struct transformer_arch_session *sess, size_t k, const geist_
         }
         dn++;
     }
+    /* Per-row state slots (#192) for verifies of 2..TRANSFORMER_DN_ROW_SLOTS+1
+     * rows, unless the backend has shown it does not write them. */
+    if (!sess->dn_rows_off && k >= 2 && k - 1 <= TRANSFORMER_DN_ROW_SLOTS &&
+        sess->model->n_mtp_layers == 0) {
+        if (sess->dn_row_S_buf == nullptr) {
+            enum geist_status as = transformer_scratch_alloc(be,
+                                                             dn * TRANSFORMER_DN_ROW_SLOTS *
+                                                                     conv_n * sizeof(float),
+                                                             &sess->dn_row_conv_buf);
+            if (as == GEIST_OK)
+                as = transformer_scratch_alloc(be,
+                                               dn * TRANSFORMER_DN_ROW_SLOTS * s_n * sizeof(float),
+                                               &sess->dn_row_S_buf);
+            if (as != GEIST_OK)
+                sess->dn_rows_off = true; /* replay instead */
+        }
+        sess->dn_rows_req = !sess->dn_rows_off && sess->dn_row_S_buf != nullptr;
+        sess->dn_rows_ok  = sess->dn_rows_req;
+    }
     memcpy(sess->dn_txn_ids, ids, k * sizeof(*ids));
     sess->dn_txn_base_kv_len         = sess->kv_len;
     sess->dn_txn_k                   = k;
@@ -268,6 +290,39 @@ static enum geist_status deltanet_txn_restore(struct transformer_arch_session *s
         sess->mtp_txn_pending_h != nullptr) {
         sess->mtp_kv_len = sess->mtp_txn_base_len;
         memcpy(sess->mtp_pending_h, sess->mtp_txn_pending_h, sess->model->d_model * sizeof(float));
+    }
+    return GEIST_OK;
+}
+
+/* State after verified row `slot` into the live DeltaNet buffers (#192). */
+static enum geist_status deltanet_rows_restore(struct transformer_arch_session *sess, size_t slot) {
+    size_t n_dn, conv_n, s_n;
+    if (!deltanet_state_geometry(sess, &n_dn, &conv_n, &s_n))
+        return GEIST_OK;
+    struct geist_backend *be = sess->model->backend;
+    size_t                dn = 0;
+    for (size_t li = 0; li < sess->model->n_layers; li++) {
+        if (sess->model->layers[li].mixer != GEIST_MIXER_DELTANET)
+            continue;
+        const size_t      base = dn * TRANSFORMER_DN_ROW_SLOTS + slot;
+        enum geist_status ws   = dn_txn_copy(be,
+                                             sess->dn_conv_state[li],
+                                             0,
+                                             sess->dn_row_conv_buf,
+                                             base * conv_n * sizeof(float),
+                                             conv_n * sizeof(float));
+        if (ws == GEIST_OK)
+            ws = dn_txn_copy(be,
+                             sess->dn_S[li],
+                             0,
+                             sess->dn_row_S_buf,
+                             base * s_n * sizeof(float),
+                             s_n * sizeof(float));
+        if (ws != GEIST_OK) {
+            geist_backend_set_error(be, ws, "transformer: DeltaNet row-state restore failed");
+            return ws;
+        }
+        dn++;
     }
     return GEIST_OK;
 }
@@ -643,6 +698,9 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
     if (v->parallel_region_end) {
         v->parallel_region_end(be, region_tok);
     }
+    if (sess->dn_rows_req && !sess->dn_rows_ok) {
+        sess->dn_rows_off = true; /* the backend does not keep row states (#192) */
+    }
     return s;
 }
 
@@ -662,6 +720,14 @@ enum geist_status transformer_kv_truncate(struct transformer_arch_session *sess,
         if (accepted == k) {
             transformer_recurrent_txn_commit(sess);
             keep_pending = sess->logits_valid;
+        } else if (accepted > 0 && sess->dn_rows_ok) {
+            /* The backend kept the state after every verified row (#192):
+             * the accepted prefix's state is slot accepted - 1, one copy per
+             * DeltaNet layer instead of a replay. No logits stay pending. */
+            const enum geist_status rs = deltanet_rows_restore(sess, accepted - 1);
+            if (rs != GEIST_OK)
+                return rs;
+            transformer_recurrent_txn_commit(sess);
         } else {
             deltanet_txn_restore(sess);
             transformer_recurrent_txn_commit(sess);
