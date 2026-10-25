@@ -149,6 +149,8 @@ jobs:
         run: eval "$CELL_BUILD"
       - name: Ensure pinned llama.cpp build
         if: steps.sel.outputs.run == '1'
+        env:
+          LOCK_NOTE: "bench-matrix ${{ matrix.column }}/${{ matrix.model }}: llama.cpp build (run ${{ github.run_id }})"
         run: |
           set -eo pipefail
           echo "LLAMA_BENCH=$(eval "$CELL_PREFIX" scripts/ensure-llama-bench.sh "$CELL_LLAMA" "'$CELL_LLAMA_REPO'" "'$CELL_LLAMA_PIN'")" >> "$GITHUB_ENV"
@@ -165,6 +167,8 @@ jobs:
           # The desktop also enumerates a Raphael iGPU; pin llama.cpp to the
           # discrete card. Ignored elsewhere.
           GGML_VK_VISIBLE_DEVICES: "0"
+          # who holds the host lock, in with-*-lock status and on /status/ci/
+          LOCK_NOTE: "bench-matrix ${{ matrix.column }}/${{ matrix.model }} (run ${{ github.run_id }})"
         run: |
           set -eo pipefail
           if [ "$CELL_LLAMA" = vulkan ]; then . scripts/gpu-lock.sh; fi

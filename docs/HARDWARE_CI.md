@@ -36,8 +36,10 @@ cell. Each job fetches its model into the host cache (`GEIST_MODEL_CACHE`,
 default `~/geist-models`) with `tools/fetch_bench_model.py` — the URL comes
 from `benchmark/model_sources.json`, the SHA-256 from the protocol — builds
 the pinned llama.cpp (`scripts/ensure-llama-bench.sh`) and runs
-`tools/bench_cross_engine.py` inside the host lock: `/tmp/geist-bench.lock`
-on the desktop (the docker CI runner's health check pauses it while held),
+`tools/bench_cross_engine.py` inside the host lock: `~/bin/with-desktop-lock`
+on the desktop (`/tmp/geist-bench.lock` through a lease broker that names the
+holder; the docker CI runner `desktop-ci` pauses while it is held and
+git.geisten.net/status/ci/ lists it as "paused" with that holder),
 `with-pi-lock` on the Pi, `~/bin/with-mac-lock` on the Mac (`/tmp/mac-heavy.lock`; the
 `mac-m1max` runner (`macos-15-heavy`) holds it for every job and takes no
 job while an agent holds it — see "Mac runners" and "Host locks"). The Apple profiles gate on idle CPU (>= 80 %
