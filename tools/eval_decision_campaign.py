@@ -54,6 +54,40 @@ def is_spotcheck(chunk):
     return (chunk / "chunk.json").exists() and bool(ev.read_json(chunk / "chunk.json").get("spotcheck"))
 
 
+def read_chunk(chunk, name, backend, kinds=("sample",)):
+    """(records, runtimes) of driver run `name` in one chunk; None before its row index exists.
+
+    records: every record of a kind in `kinds`, its case_index mapped to the
+    campaign row, stamped with the chunk and the arrival time of its line.
+    runtimes: the runtime records, checked against `backend`.
+    """
+    index_path = chunk / f"{name}.rows.json"
+    if not index_path.exists():
+        return None
+    indices = ev.read_json(index_path)
+    recv = {}
+    if (chunk / f"{name}.recv.tsv").exists():
+        for line in (chunk / f"{name}.recv.tsv").read_text().splitlines():
+            n, t = line.split("\t")
+            recv[int(n)] = float(t)
+    records, runtimes = [], []
+    for line_no, record in enumerate(read_lines(chunk / f"{name}.driver.jsonl")):
+        kind = record.get("kind")
+        if kind == "runtime":
+            if record["backend"] != backend or record["kv_mode"] != "fp32":
+                raise ValueError("invalid runtime record")
+            runtimes.append(record)
+            continue
+        if kind not in kinds:
+            raise ValueError("unexpected driver record")
+        local = record["case_index"]
+        if not 0 <= local < len(indices):
+            raise ValueError("driver case index outside its chunk")
+        records.append({**record, "case_index": indices[local], "chunk": chunk.name,
+                        "recv_unix": recv.get(line_no)})
+    return records, runtimes
+
+
 def collect(out_dir, rows, profiles, warmup, repeats, backend, spotcheck=False):
     """profile -> {row index: samples}; runtime records; seconds of driver wall time per profile.
 
@@ -67,33 +101,16 @@ def collect(out_dir, rows, profiles, warmup, repeats, backend, spotcheck=False):
         if is_spotcheck(chunk) != spotcheck:
             continue
         for profile, modes in profiles.items():
-            index_path = chunk / f"{profile}.rows.json"
-            if not index_path.exists():
+            read = read_chunk(chunk, profile, backend)
+            if read is None:
                 continue
-            indices = ev.read_json(index_path)
-            records = read_lines(chunk / f"{profile}.driver.jsonl")
-            recv = {}
-            if (chunk / f"{profile}.recv.tsv").exists():
-                for line in (chunk / f"{profile}.recv.tsv").read_text().splitlines():
-                    n, t = line.split("\t")
-                    recv[int(n)] = float(t)
+            records, chunk_runtimes = read
+            runtimes += chunk_runtimes
             info = ev.read_json(chunk / f"{profile}.run.json") if (chunk / f"{profile}.run.json").exists() else {}
             walls[profile] += info.get("wall_seconds", 0.)
             groups = {}
-            for line_no, record in enumerate(records):
-                if record.get("kind") == "runtime":
-                    if record["backend"] != backend or record["kv_mode"] != "fp32":
-                        raise ValueError("invalid runtime record")
-                    runtimes.append(record)
-                    continue
-                if record.get("kind") != "sample":
-                    raise ValueError("unexpected driver record")
-                local = record["case_index"]
-                if not 0 <= local < len(indices):
-                    raise ValueError("driver case index outside its chunk")
-                record = {**record, "case_index": indices[local], "chunk": chunk.name,
-                          "recv_unix": recv.get(line_no)}
-                groups.setdefault(indices[local], []).append(record)
+            for record in records:
+                groups.setdefault(record["case_index"], []).append(record)
             for row, samples in groups.items():
                 keys = {(s["mode"], s["trial"]) for s in samples}
                 if len(keys) != len(samples):
