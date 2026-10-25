@@ -911,8 +911,9 @@ geist_token_t geist_model_bos_token(const struct geist_model *m) {
 
 bool geist_model_add_bos(const struct geist_model *m) {
     const struct model_engine_state *eng = model_engine(m);
-    /* The SentencePiece path has no such metadata; it prepends BOS
-     * unconditionally, which is what reporting true says. */
+    /* The SentencePiece path has no such metadata. True says the model
+     * expects BOS; set_prompt's sp branch does not prepend it, so callers
+     * add it themselves (#263). */
     if (eng == nullptr) {
         return false;
     }
