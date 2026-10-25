@@ -142,8 +142,9 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
                 (double) atomic_load(&mg->ns_wait) / nb,
                 (double) atomic_load(&mg->ns_unpack) / nb);
         fprintf(stderr,
-                "geist: moe: %llu layer steps routed on the device\n",
-                (unsigned long long) atomic_load(&mg->n_device));
+                "geist: moe: %llu layer steps routed on the device, %llu with the experts split\n",
+                (unsigned long long) atomic_load(&mg->n_device),
+                (unsigned long long) atomic_load(&mg->n_routed));
         fprintf(stderr,
                 "geist: moe: %llu of them grouped (decode), mean wait %.1f us\n",
                 (unsigned long long) atomic_load(&mg->n_grouped),
@@ -156,6 +157,8 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
             gv->buffer_destroy(mg->be, mg->bufs[i]);
     }
     void *b = mg->bufs, *t = mg->twins, *g = mg->grouped, *dv = mg->device, *m = mg;
+    void *sw = (void *) mg->sel_w;
+    safe_free(&sw);
     safe_free(&b);
     safe_free(&t);
     safe_free(&g);
@@ -326,6 +329,28 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
         if (verbose && mg->any_device)
             fprintf(stderr, "geist: moe: decode routes on %s (#201)\n", gbe->desc->name);
     }
+    /* #162: with the experts split, a decode step routes on the device and
+     * starts its hot experts without the host (GEIST_MOE_GPU_ROUTE=0: the
+     * host routes). */
+    const char *rt_env = getenv("GEIST_MOE_GPU_ROUTE");
+    mg->routed         = mg->one_wait && !mg->any_device && gf->moe_route != nullptr &&
+                         gf->linear_t_sel != nullptr && gf->submit_mark != nullptr &&
+                         gf->map_marked != nullptr && slots - n_exp <= 1 &&
+                         !(rt_env != nullptr && strcmp(rt_env, "0") == 0);
+    if (mg->routed) {
+        mg->sel_w = heap_calloc_array_aligned(const struct geist_weight *, n_layers * 3 * n_exp);
+        for (size_t l = 0; mg->sel_w != nullptr && l < n_layers; l++)
+            for (size_t e = 0; e < n_exp; e++)
+                for (size_t p = 0; p < 3; p++) {
+                    const struct geist_weight *tw      = &mg->twins[(l * slots + e) * 3 + p];
+                    mg->sel_w[(l * 3 + p) * n_exp + e] = tw->raw != nullptr ? tw : nullptr;
+                }
+        mg->routed = mg->sel_w != nullptr;
+    }
+    if (verbose && mg->routed)
+        fprintf(stderr,
+                "geist: moe: decode routes on %s, cold experts on the CPU (#162)\n",
+                gbe->desc->name);
     st->moe_gpu = mg;
     return GEIST_OK;
 }
@@ -381,7 +406,7 @@ enum geist_status moe_gpu_session_alloc(struct transformer_arch_session *sess) {
     if (s == GEIST_OK)
         s = gv->buffer_create(
                 mg->be, gb, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, &sess->moe_gpu_u);
-    if (s == GEIST_OK && mg->any_device) {
+    if (s == GEIST_OK && (mg->any_device || mg->routed)) {
         s = gv->buffer_create(mg->be,
                               (n_sel + 1) * sizeof(uint32_t),
                               GEIST_BUFFER_IO,
@@ -803,6 +828,118 @@ enum geist_status moe_gpu_finish(struct transformer_arch_session *sess,
     struct geist_tensor y = view_2d(sess->moe_gpu_x, (int64_t) p, (int64_t) d);
     struct geist_tensor o = view_2d(out, (int64_t) seq, (int64_t) d);
     return mg->be->desc->fused->rows_weighted_sum(mg->be, seq, d, p, start, rows, w, cold, &y, &o);
+}
+
+bool moe_gpu_routed(const struct transformer_arch_session *sess, size_t layer, size_t seq) {
+    const struct transformer_moe_gpu *mg = sess->model->moe_gpu;
+    return seq == 1 && mg != nullptr && mg->routed && sess->moe_dev_ids != nullptr &&
+           sess->moe_x_io != nullptr && layer < sess->model->n_layers && mg->grouped[layer];
+}
+
+uint64_t moe_gpu_route_launch(struct transformer_arch_session *sess,
+                              size_t                           layer,
+                              enum geist_status               *status) {
+    const struct transformer_arch_state *st    = sess->model;
+    struct transformer_moe_gpu          *mg    = st->moe_gpu;
+    struct geist_backend                *gbe   = mg->be;
+    const struct geist_backend_fused    *gf    = gbe->desc->fused;
+    const size_t                         n_exp = st->config.moe_n_experts;
+    const size_t                         n_rt  = st->config.moe_n_used;
+    const size_t                         k     = moe_k(&st->config);
+    const size_t                         slots = moe_slots(&st->config);
+    const size_t                         d     = st->d_model;
+    const size_t                         inter = st->layers[layer].intermediate;
+    /* The work so far (the router) starts: the host waits for it alone
+     * (map_marked) and routes too, while the device routes -- the same
+     * ranking, moe_route_topk's -- into ids[0, n_rt) (the flag word after
+     * the session's m_max * k) and runs the hot experts below. */
+    const uint64_t      mark = gf->submit_mark(gbe);
+    struct geist_tensor t_lg = view_2d(sess->moe_logits, 1, (int64_t) n_exp);
+    struct geist_tensor t_w  = view_1d(sess->moe_dev_w, (int64_t) n_rt);
+    enum geist_status   s    = gf->moe_route(gbe,
+                                             1,
+                                             n_exp,
+                                             n_rt,
+                                             st->config.moe_norm_topk,
+                                             &t_lg,
+                                             sess->moe_dev_ids,
+                                             0,
+                                             sess->m_max * k * sizeof(uint32_t),
+                                             &t_w);
+    /* Slot j of the routed ones multiplies expert ids[j] where it has a copy
+     * here; the shared expert, when it has one, is slot n_rt. */
+    const struct geist_weight *const *w[3] = {mg->sel_w + (layer * 3 + 0) * n_exp,
+                                              mg->sel_w + (layer * 3 + 1) * n_exp,
+                                              mg->sel_w + (layer * 3 + 2) * n_exp};
+    const struct geist_weight        *sh =
+            slots > n_exp ? &mg->twins[(layer * slots + n_exp) * 3] : nullptr;
+    const bool          shared = sh != nullptr && sh->raw != nullptr;
+    struct geist_tensor t_x    = view_2d(sess->scratch_pre_ff, 1, (int64_t) d);
+    struct geist_tensor g      = view_2d(sess->moe_gpu_g, (int64_t) k, (int64_t) inter);
+    struct geist_tensor u      = view_2d(sess->moe_gpu_u, (int64_t) k, (int64_t) inter);
+    struct geist_tensor gr     = view_2d(sess->moe_gpu_g, (int64_t) n_rt, (int64_t) inter);
+    struct geist_tensor ur     = view_2d(sess->moe_gpu_u, (int64_t) n_rt, (int64_t) inter);
+    struct geist_tensor yr     = view_2d(sess->moe_gpu_x, (int64_t) n_rt, (int64_t) d);
+    if (s == GEIST_OK)
+        s = gf->linear_t_sel(gbe, n_exp, w[0], n_rt, false, sess->moe_dev_ids, 0, &t_x, &gr);
+    if (s == GEIST_OK)
+        s = gf->linear_t_sel(gbe, n_exp, w[1], n_rt, false, sess->moe_dev_ids, 0, &t_x, &ur);
+    struct geist_tensor gs, us, ys, t[3];
+    if (shared) {
+        gs = view_2d_at(sess->moe_gpu_g, n_rt * inter * 4, 1, (int64_t) inter);
+        us = view_2d_at(sess->moe_gpu_u, n_rt * inter * 4, 1, (int64_t) inter);
+        ys = view_2d_at(sess->moe_gpu_x, n_rt * d * 4, 1, (int64_t) d);
+        const struct geist_tensor *v[3] = {&st->layers[layer].moe_gate[n_exp],
+                                           &st->layers[layer].moe_up[n_exp],
+                                           &st->layers[layer].moe_down[n_exp]};
+        for (size_t p = 0; p < 3; p++) {
+            t[p]        = *v[p];
+            t[p].buffer = mg->bufs[layer * 6 + 3 + p];
+        }
+        if (s == GEIST_OK)
+            s = gf->linear_t(gbe, &t_x, &sh[0], &t[0], 1, &gs);
+        if (s == GEIST_OK)
+            s = gf->linear_t(gbe, &t_x, &sh[1], &t[1], 1, &us);
+    }
+    if (s == GEIST_OK)
+        s = gf->silu_mul(gbe, &g, &u, &g);
+    if (s == GEIST_OK)
+        s = gf->linear_t_sel(gbe, n_exp, w[2], n_rt, true, sess->moe_dev_ids, 0, &gr, &yr);
+    if (s == GEIST_OK && shared)
+        s = gf->linear_t(gbe, &gs, &sh[2], &t[2], 1, &ys);
+    if (s == GEIST_OK) {
+        gf->submit(gbe);
+        atomic_fetch_add_explicit(&mg->n_routed, 1, memory_order_relaxed);
+    }
+    *status = s;
+    return mark;
+}
+
+enum geist_status moe_gpu_route_finish(struct transformer_arch_session *sess,
+                                       size_t                           layer,
+                                       const float          cold[static sess->model->d_model],
+                                       struct geist_buffer *out) {
+    const struct transformer_arch_state *st    = sess->model;
+    struct transformer_moe_gpu          *mg    = st->moe_gpu;
+    const size_t                         d     = st->d_model;
+    const size_t                         k     = moe_k(&st->config);
+    const size_t                         slots = moe_slots(&st->config);
+    /* The one token's hot slots: their y rows (the slot) and weights. */
+    uint32_t *start = sess->moe_csr_start, *rows = sess->moe_csr_rows;
+    float    *w = sess->moe_csr_w;
+    uint32_t  n = 0;
+    for (size_t j = 0; j < k; j++) {
+        if (mg->twins[(layer * slots + sess->moe_ids[j]) * 3].raw == nullptr)
+            continue;
+        rows[n] = (uint32_t) j;
+        w[n++]  = sess->moe_wts[j];
+    }
+    start[0] = 0;
+    start[1] = n;
+    atomic_fetch_add_explicit(&mg->rows_gpu, n, memory_order_relaxed);
+    struct geist_tensor y = view_2d(sess->moe_gpu_x, (int64_t) k, (int64_t) d);
+    struct geist_tensor o = view_2d(out, 1, (int64_t) d);
+    return mg->be->desc->fused->rows_weighted_sum(mg->be, 1, d, n, start, rows, w, cold, &y, &o);
 }
 
 bool moe_gpu_device(const struct transformer_arch_session *sess, size_t layer, size_t seq) {

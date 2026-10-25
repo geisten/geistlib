@@ -2289,6 +2289,181 @@ struct vk_push_gather {
             be, VK_PIPE_ROWS_GATHER, bi, acc, &push, sizeof push, (d32 + 255u) / 256u, n32, 1);
 }
 
+/* ---- Routing on the device with the experts split (#162) ------------- */
+
+struct vk_push_topk {
+    uint32_t n, k, norm, flag, ls, lo, io, wo;
+};
+
+[[nodiscard]] static enum geist_status vk_moe_route(struct geist_backend      *be,
+                                                    size_t                     m,
+                                                    size_t                     n,
+                                                    size_t                     k,
+                                                    bool                       norm,
+                                                    const struct geist_tensor *t_lg,
+                                                    struct geist_buffer       *ids,
+                                                    size_t                     ids_offset,
+                                                    size_t                     flag_offset,
+                                                    struct geist_tensor       *t_w) {
+    VkDescriptorBufferInfo bi[3];
+    uint32_t               lo, wo, ls, n32, k32, m32, io, fo;
+    if (m == 0) {
+        return GEIST_OK;
+    }
+    if (k == 0 || k > n || n > VK_MOE_TOPK_MAX_N || ids == nullptr || ids->buf == VK_NULL_HANDLE ||
+        (ids->base_off + ids_offset) % 4 != 0 || (ids->base_off + flag_offset) % 4 != 0 ||
+        !vk_tensor_gpu(t_lg, &bi[0], &lo) || !vk_tensor_gpu(t_w, &bi[2], &wo) ||
+        vk_ckd_u32(n, &n32) || vk_ckd_u32(k, &k32) || vk_ckd_u32(m, &m32) ||
+        vk_ckd_u32(t_lg->ndim >= 2 ? (size_t) t_lg->stride[t_lg->ndim - 2] : n, &ls) ||
+        vk_ckd_u32((ids->base_off + ids_offset) / 4, &io) ||
+        vk_ckd_u32((ids->base_off + flag_offset) / 4, &fo)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    bi[1] = (VkDescriptorBufferInfo) {.buffer = ids->buf, .range = VK_WHOLE_SIZE};
+    const struct vk_push_topk push   = {n32, k32, norm ? 1u : 0u, fo, ls, lo, io, wo};
+    const struct vk_access    acc[3] = {
+            vk_acc_tensor(t_lg, false),
+            vk_acc((uint64_t) ids->base_off, (uint64_t) ids->bytes, true), /* ids and flag */
+            vk_acc((uint64_t) wo * 4u, (uint64_t) m32 * k32 * 4u, true)};
+    return vk_seq_dispatch_acc(be, VK_PIPE_MOE_TOPK, bi, acc, &push, sizeof push, m32, 1, 1);
+}
+
+enum { VK_SEL_TAB_MAX = 512 }; /* experts per layer linear_t_sel takes */
+
+struct vk_push_sel {
+    uint32_t n_in, n_out, blocks_per_row, pad, x_offset, y_offset, x_stride, y_stride, ids_off,
+            tab_off;
+};
+static_assert(sizeof(struct vk_push_sel) <= VK_PUSH_RANGE, "sel push block");
+
+static enum vk_pipe vk_sel_pipe(enum vk_pipe grouped) {
+    switch (grouped) {
+    case VK_PIPE_MATVEC_F32_ID:
+        return VK_PIPE_MATVEC_F32_SEL;
+    case VK_PIPE_MATVEC_Q4K_ID:
+        return VK_PIPE_MATVEC_Q4K_SEL;
+    case VK_PIPE_MATVEC_Q5K_ID:
+        return VK_PIPE_MATVEC_Q5K_SEL;
+    case VK_PIPE_MATVEC_Q6K_ID:
+        return VK_PIPE_MATVEC_Q6K_SEL;
+    default:
+        return VK_PIPE_COUNT;
+    }
+}
+
+[[nodiscard]] static enum geist_status vk_linear_t_sel(struct geist_backend            *be,
+                                                       size_t                           n,
+                                                       const struct geist_weight *const w[static n],
+                                                       size_t                           k,
+                                                       bool                             x_per_slot,
+                                                       const struct geist_buffer       *ids,
+                                                       size_t                           ids_offset,
+                                                       const struct geist_tensor       *t_x,
+                                                       struct geist_tensor             *t_y) {
+    struct vk_state           *st = be->state;
+    const struct geist_weight *w0 = nullptr;
+    for (size_t e = 0; e < n && w0 == nullptr; e++)
+        w0 = w[e];
+    if (k == 0 || w0 == nullptr) {
+        return GEIST_OK; /* no expert here */
+    }
+    const enum vk_pipe     pipe = vk_sel_pipe(vk_grouped_pipe(w0->dtype));
+    const struct vk_dtype *ld   = vk_linear_dtype((enum geist_dtype) w0->dtype);
+    if (pipe == VK_PIPE_COUNT || ld == nullptr || n > VK_SEL_TAB_MAX || ids == nullptr ||
+        ids->buf == VK_NULL_HANDLE || (ids->base_off + ids_offset) % 4 != 0) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* The array's address table: built and checked on its first call, then
+     * reused (the contract: w and its weights stay as they are while their
+     * copies here do). ponytail: a scan of the cached keys, a few hundred. */
+    uint32_t tab_at = UINT32_MAX;
+    for (uint32_t i = 0; i < st->n_sel_tabs; i++)
+        if (st->sel_key[i] == (const void *) w && st->sel_n[i] == n)
+            tab_at = st->sel_off[i];
+    if (tab_at == UINT32_MAX) {
+        uint64_t tab[VK_SEL_TAB_MAX];
+        for (size_t e = 0; e < n; e++) {
+            tab[e] = 0;
+            if (w[e] == nullptr)
+                continue;
+            const struct geist_buffer *b = vk_grouped_weight(st, w[e]);
+            if (b == nullptr || w[e]->dtype != w0->dtype || w[e]->n_in != w0->n_in ||
+                w[e]->n_out != w0->n_out) {
+                return GEIST_E_UNSUPPORTED;
+            }
+            tab[e] = b->addr + b->base_off;
+        }
+        if (st->seltab == nullptr &&
+            vk_buffer_create(
+                    be, VK_SEL_TAB_BYTES, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_HOST, &st->seltab) !=
+                    GEIST_OK) {
+            return GEIST_E_UNSUPPORTED;
+        }
+        if (st->n_sel_tabs == VK_SEL_TABS || st->seltab_used + n * 8u > VK_SEL_TAB_BYTES) {
+            st->n_sel_tabs  = 0; /* full: start over, after the work reading it */
+            st->seltab_used = 0;
+            vk_seq_flush(st);
+        }
+        tab_at = st->seltab_used;
+        memcpy((uint8_t *) st->seltab->mapped + tab_at, tab, n * sizeof tab[0]);
+        st->seltab_used += (uint32_t) (n * sizeof tab[0]);
+        st->sel_key[st->n_sel_tabs] = w;
+        st->sel_n[st->n_sel_tabs]   = (uint32_t) n;
+        st->sel_off[st->n_sel_tabs] = tab_at;
+        st->n_sel_tabs++;
+    }
+    VkDescriptorBufferInfo bi[4];
+    uint32_t               xo, yo, n_in, n_out, xs, ys, k32, io;
+    if (!t_x->buffer->device_mem || !vk_tensor_gpu(t_x, &bi[0], &xo) ||
+        !vk_tensor_gpu(t_y, &bi[1], &yo)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (vk_ckd_u32((size_t) w0->n_in, &n_in) || vk_ckd_u32((size_t) w0->n_out, &n_out) ||
+        vk_ckd_u32(t_x->ndim >= 2 ? (size_t) t_x->stride[t_x->ndim - 2] : n_in, &xs) ||
+        vk_ckd_u32(t_y->ndim >= 2 ? (size_t) t_y->stride[t_y->ndim - 2] : n_out, &ys) ||
+        vk_ckd_u32(k, &k32) || vk_ckd_u32((ids->base_off + ids_offset) / 4, &io)) {
+        return vk_too_wide(be, "linear_t_sel");
+    }
+    if (!x_per_slot)
+        xs = 0; /* every slot reads the one row */
+    if (pipe != VK_PIPE_MATVEC_F32_SEL && (xo % 4u != 0 || xs % 4u != 0)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    bi[2] = (VkDescriptorBufferInfo) {.buffer = st->seltab->buf, .range = VK_WHOLE_SIZE};
+    bi[3] = (VkDescriptorBufferInfo) {.buffer = ids->buf, .range = VK_WHOLE_SIZE};
+    const struct vk_push_sel push = {.n_in           = n_in,
+                                     .n_out          = n_out,
+                                     .blocks_per_row = n_in / ld->block_elems,
+                                     .x_offset       = xo,
+                                     .y_offset       = yo,
+                                     .x_stride       = xs,
+                                     .y_stride       = ys,
+                                     .ids_off        = io,
+                                     .tab_off        = tab_at / 8u};
+    const uint32_t           gx   = pipe == VK_PIPE_MATVEC_F32_SEL
+                                            ? n_out
+                                            : (n_out + VK_MV_ROWS_PER_WG - 1u) / VK_MV_ROWS_PER_WG;
+    const struct vk_access   acc[4] = {
+            vk_acc((uint64_t) xo * 4u, ((uint64_t) (k32 - 1u) * xs + n_in) * 4u, false),
+            vk_acc((uint64_t) yo * 4u, ((uint64_t) (k32 - 1u) * ys + n_out) * 4u, true),
+            vk_acc((uint64_t) tab_at, (uint64_t) n * 8u, false),
+            vk_acc((uint64_t) io * 4u, (uint64_t) k32 * 4u, false)};
+    return vk_seq_dispatch_acc(be, pipe, bi, acc, &push, sizeof push, gx, k32, 1);
+}
+
+static uint64_t vk_submit_mark(struct geist_backend *be) {
+    return vk_seq_mark(be->state);
+}
+
+static void *vk_map_marked(struct geist_backend *be, uint64_t mark, struct geist_buffer *buf) {
+    struct vk_state *st = be->state;
+    vk_seq_wait_mark(st, mark);
+    if (vk_seq_take_failure(st) != GEIST_OK) {
+        return nullptr;
+    }
+    return buf->host_alias != nullptr ? buf->host_alias : buf->mapped;
+}
+
 [[nodiscard]] static enum geist_status vk_linear_t_pair(struct geist_backend      *be,
                                                         const struct geist_tensor *t_x,
                                                         const struct geist_weight *w0,
@@ -3170,6 +3345,10 @@ static const struct geist_backend_fused vk_fused = {
         .submit                  = vk_submit,
         .rows_weighted_sum       = vk_rows_weighted_sum,
         .rows_gather             = vk_rows_gather,
+        .moe_route               = vk_moe_route,
+        .linear_t_sel            = vk_linear_t_sel,
+        .submit_mark             = vk_submit_mark,
+        .map_marked              = vk_map_marked,
         .rmsnorm_add             = vk_rmsnorm_add,
         .embedding_lookup_scaled = vk_fb_embedding_lookup_scaled,
         .argmax_f32              = vk_fb_argmax_f32,

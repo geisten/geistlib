@@ -1,0 +1,6 @@
+#version 450
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+#include "vk_limits.h"
+#define MV_SEL
+#include "matvec_f32_id_body.glsl"

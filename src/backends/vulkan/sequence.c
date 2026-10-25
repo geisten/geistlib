@@ -6,6 +6,8 @@
  */
 #include "vk_internal.h"
 
+#include <sched.h>
+
 /* Async streaming (#78): a compute submission takes the pending timeline
  * wait (its GEMM's slot copy) and signal (that GEMM done), then clears them.
  * The structs live in the caller's frame until the submit. */
@@ -66,6 +68,7 @@ void vk_seq_flush(struct vk_state *st) {
                             (uint64_t) (t1.tv_nsec - t0.tv_nsec);
         (void) st->fn.ResetFences(st->device, 1, &st->seq_fence);
     }
+    st->mark_in_open = false;
     if (!ok) {
         /* The dropped batch's outputs are undefined; the next readback
          * reports it (vk_seq_take_failure). */
@@ -73,6 +76,7 @@ void vk_seq_flush(struct vk_state *st) {
         geist_backend_set_error(st->backend, GEIST_E_BACKEND, "vulkan: sequence flush failed");
         st->seq_failed = true;
     }
+    vk_seq_wait_mark(st, st->mark_n); /* done with everything before it */
     if (ok && st->profile_enabled && st->ts_count > 1) {
         uint64_t ts[VK_SEQ_MAX_DISPATCH + 8];
         if (st->fn.GetQueryPoolResults(st->device,
@@ -183,6 +187,7 @@ static bool vk_seq_roll(struct vk_state *st, uint32_t ring) {
     if (st->fn.QueueSubmit(st->queue, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS) {
         st->seq_failed = true; /* reported at the next readback */
     }
+    st->mark_in_open = false;
     st->seq_cmd_idx++;
     st->seq_cmd                    = st->seq_cmds[st->seq_cmd_idx];
     st->seq_in_cmd                 = 0;
@@ -199,6 +204,67 @@ void vk_seq_cut(struct vk_state *st) {
     if (!vk_seq_roll(st, VK_SEQ_CMDBUFS)) {
         vk_seq_flush(st); /* ring full: submit and wait, which is just as correct */
     }
+}
+
+uint64_t vk_seq_mark(struct vk_state *st) {
+    if (!st->seq_open) {
+        return 0; /* nothing recorded since the last flush waited */
+    }
+    vk_seq_wait_mark(st, st->mark_n); /* one mark in flight */
+    /* The work so far made visible to the host, then the event. What is
+     * recorded next goes into the same submission: no split for the GPU
+     * to cross (a separate submission cost it ~15 us per MoE layer). */
+    const VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                                .srcAccessMask =
+                                        VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+                                .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
+    st->fn.CmdPipelineBarrier(st->seq_cmd,
+                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                              VK_PIPELINE_STAGE_HOST_BIT,
+                              0,
+                              1,
+                              &mb,
+                              0,
+                              nullptr,
+                              0,
+                              nullptr);
+    st->fn.CmdSetEvent(st->seq_cmd,
+                       st->mark_event,
+                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT);
+    st->mark_pending = true;
+    st->mark_in_open = true;
+    return ++st->mark_n;
+}
+
+void vk_seq_wait_mark(struct vk_state *st, uint64_t mark) {
+    if (!st->mark_pending || mark != st->mark_n) {
+        return; /* waited for already (or by a flush) */
+    }
+    if (st->mark_in_open)
+        vk_seq_cut(st); /* the event's submission had not started */
+    if (st->mark_in_open)
+        vk_seq_flush(st); /* waits for the mark itself */
+    if (!st->mark_pending)
+        return;
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (uint32_t spin = 0; !st->seq_failed; spin++) {
+        const VkResult r = st->fn.GetEventStatus(st->device, st->mark_event);
+        if (r == VK_EVENT_SET)
+            break;
+        if (r != VK_EVENT_RESET) {
+            geist_backend_set_error(st->backend, GEIST_E_BACKEND, "vulkan: mark wait failed");
+            st->seq_failed = true;
+            break;
+        }
+        if ((spin & 63u) == 63u)
+            sched_yield();
+    }
+    (void) st->fn.ResetEvent(st->device, st->mark_event);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    st->stat_wait_ns += (uint64_t) (t1.tv_sec - t0.tv_sec) * 1000000000ull +
+                        (uint64_t) (t1.tv_nsec - t0.tv_nsec);
+    st->mark_pending = false;
 }
 
 /* Record a per-dispatch timestamp attributed to `slot` (pipe index, or

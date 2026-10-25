@@ -522,6 +522,8 @@ static void vk_weight_forget(struct geist_backend *be, const uint8_t *lo, const 
     if (dropped == 0) {
         return;
     }
+    st->n_sel_tabs  = 0; /* their addresses may name a dropped copy */
+    st->seltab_used = 0;
     memset(st->weight_index, 0, st->cap_weight_index * sizeof(uint32_t));
     for (size_t i = 0; i < st->n_weights; ++i) {
         vk_weight_index_put(st->weight_index, st->cap_weight_index, st->weights[i].host, i);

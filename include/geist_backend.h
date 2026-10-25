@@ -899,6 +899,40 @@ struct geist_backend_fused {
                                           const struct geist_tensor *y,
                                           const struct geist_tensor *add,
                                           struct geist_tensor       *out);
+
+    /* Mixture-of-experts decode with the experts split between a GPU and
+     * the CPU (#162): the device routes (moe_route) and starts the experts
+     * it holds before the host has seen the router. EXPERIMENTAL.
+     *
+     * linear_t_sel: y[s] = W_e x[s * x_per_slot] for s in [0, k) with
+     * e = ids[s] (uint32 in `ids` from byte ids_offset, written by the
+     * device earlier in the batch) and w[e] != nullptr; a slot whose expert
+     * has no weight here (w[e] == nullptr) is skipped, its y row left as it
+     * was. w[0, n) are resolved here and share dtype, n_in and n_out; the
+     * array and its weights stay unchanged while their copies here live (the
+     * backend may keep what it derived from the array, keyed by its
+     * address). x is F32 [1 or k, n_in], y F32 [k, n_out].
+     *
+     * submit_mark: starts the work recorded so far, as submit, and returns
+     * a mark for it (0: none, the work already waited for).
+     * map_marked: waits until the work up to `mark` is done -- not for work
+     * started after it -- and returns the host pointer of `buf` (a
+     * GEIST_BUFFER_IO buffer), or nullptr (a failed batch: the backend
+     * error). One mark is outstanding at a time.
+     *
+     * Plan-bound: supported(GEIST_FUSED_LINEAR_GROUPED) for the experts'
+     * weights answers for linear_t_sel. nullptr = the host routes. */
+    enum geist_status (*linear_t_sel)(struct geist_backend            *be,
+                                      size_t                           n,
+                                      const struct geist_weight *const w[GEIST_AT_LEAST(n)],
+                                      size_t                           k,
+                                      bool                             x_per_slot,
+                                      const struct geist_buffer       *ids,
+                                      size_t                           ids_offset,
+                                      const struct geist_tensor       *x,
+                                      struct geist_tensor             *y);
+    uint64_t (*submit_mark)(struct geist_backend *be);
+    void *(*map_marked)(struct geist_backend *be, uint64_t mark, struct geist_buffer *buf);
 };
 
 /* ====================================================================== */

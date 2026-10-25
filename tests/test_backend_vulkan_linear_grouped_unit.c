@@ -18,6 +18,10 @@
  * for), against the host sum to 1e-5 of its scale. rows_gather: six rows
  * of x by index (one twice), bit for bit.
  *
+ * linear_t_sel (#162): moe_route's top-3 of 10 logits (one tie) on the
+ * device, submit_mark, the slots by those ids with two experts cold; the hot
+ * slots against linear_t, the cold one untouched, map_marked's ids exact.
+ *
  * SKIPs when the Vulkan backend is not built, has no device, or the device
  * has no bufferDeviceAddress (the op is then absent by design).
  */
@@ -145,6 +149,95 @@ static int run_case(struct geist_backend *be, const struct qfmt *q, const char *
            err,
            scale);
     fails += geist_expect(scale > 0.0 && err <= 1e-5 * scale, "grouped matches single");
+
+    /* #162: moe_route's top-3 of 10 logits (7, 4, 1) on the device, a mark,
+     * then linear_t_sel by those ids with experts 4 and 8 cold (no weight):
+     * the hot slots match linear_t of their expert, the cold slot keeps its
+     * sentinel; map_marked hands back the ids. x: one row for every slot,
+     * then a row per slot. */
+    if (f->linear_t_sel != nullptr && f->moe_route != nullptr && f->submit_mark != nullptr &&
+        f->map_marked != nullptr && fails == 0) {
+        float lg[N]                   = {0};
+        lg[7]                         = 3.0f;
+        lg[4]                         = 2.5f;
+        lg[1]                         = 2.5f; /* a tie: the lower id ranks first */
+        lg[3]                         = -1.0f;
+        static const uint32_t want[3] = {7, 1, 4};
+        /* One array per case: the backend may key what it derives from the
+         * array by its address (linear_t_sel's contract). */
+        static const struct geist_weight *ws_case[8][N];
+        static size_t                     n_case = 0;
+        const struct geist_weight       **ws     = ws_case[n_case++ % 8];
+        for (size_t e = 0; e < N; e++)
+            ws[e] = e == 4 || e == 8 ? nullptr : &w[e];
+        struct geist_buffer *bl = nullptr, *bi = nullptr, *bw = nullptr, *bs = nullptr;
+        fails += geist_expect(
+                v->buffer_create(be, sizeof lg, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bl) ==
+                                GEIST_OK &&
+                        v->buffer_create(be, 4 * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bi) ==
+                                GEIST_OK &&
+                        v->buffer_create(be, 3 * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bw) ==
+                                GEIST_OK &&
+                        v->buffer_create(
+                                be, 3 * N_OUT * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bs) ==
+                                GEIST_OK,
+                "sel buffers");
+        for (int per_slot = 0; per_slot < 2 && fails == 0; per_slot++) {
+            const uint32_t zero[4] = {0};
+            float          sent[3 * N_OUT], got[3 * N_OUT], ref[N_OUT];
+            for (size_t i = 0; i < 3 * N_OUT; i++)
+                sent[i] = 1234.0f;
+            fails += geist_expect(
+                    v->buffer_upload(bl, sizeof lg, (const uint8_t *) lg) == GEIST_OK &&
+                            v->buffer_upload(bi, sizeof zero, (const uint8_t *) zero) == GEIST_OK &&
+                            v->buffer_upload(bs, sizeof sent, (const uint8_t *) sent) == GEIST_OK,
+                    "sel upload");
+            struct geist_tensor tl = mat(bl, 0, 1, N), tw = mat(bw, 0, 1, 3);
+            struct geist_tensor tx1 = mat(bx, 0, per_slot ? 3 : 1, N_IN), ts = mat(bs, 0, 3, N_OUT);
+            fails += geist_expect(f->moe_route(be, 1, N, 3, true, &tl, bi, 0, 12, &tw) == GEIST_OK,
+                                  "moe_route");
+            const uint64_t mark = f->submit_mark(be);
+            fails += geist_expect(f->linear_t_sel(be, N, ws, 3, per_slot != 0, bi, 0, &tx1, &ts) ==
+                                          GEIST_OK,
+                                  "linear_t_sel");
+            f->submit(be);
+            const uint32_t *ids = f->map_marked(be, mark, bi);
+            fails += geist_expect(ids != nullptr && memcmp(ids, want, sizeof want) == 0 &&
+                                          ids[3] == 0,
+                                  "map_marked: the routed ids, no flag");
+            fails += geist_expect(v->buffer_download(sizeof got, (uint8_t *) got, bs) == GEIST_OK,
+                                  "sel download");
+            double err = 0.0, scale = 0.0;
+            for (size_t sl = 0; sl < 3 && fails == 0; sl++) {
+                if (ws[want[sl]] == nullptr) {
+                    for (size_t c = 0; c < N_OUT; c++)
+                        err = fmax(err, got[sl * N_OUT + c] == 1234.0f ? 0.0 : INFINITY);
+                    continue;
+                }
+                struct geist_tensor x1 = mat(bx, (per_slot ? sl : 0) * N_IN * 4, 1, N_IN);
+                struct geist_tensor o1 = mat(b1, 0, 1, N_OUT);
+                fails += geist_expect(
+                        f->linear_t(be, &x1, &w[want[sl]], nullptr, 1, &o1) == GEIST_OK &&
+                                v->buffer_download(sizeof ref, (uint8_t *) ref, b1) == GEIST_OK,
+                        "sel reference");
+                for (size_t c = 0; c < N_OUT; c++) {
+                    err   = fmax(err, fabs((double) got[sl * N_OUT + c] - (double) ref[c]));
+                    scale = fmax(scale, fabs((double) ref[c]));
+                }
+            }
+            printf("  %-4s: linear_t_sel (x per %s), max |d| %.3g of scale %.3g\n",
+                   name,
+                   per_slot ? "slot" : "token",
+                   err,
+                   scale);
+            fails += geist_expect(scale > 0.0 && err <= 1e-5 * scale,
+                                  "linear_t_sel matches linear_t, the cold slot untouched");
+        }
+        struct geist_buffer *bb[] = {bl, bi, bw, bs};
+        for (size_t i = 0; i < 4; i++)
+            if (bb[i] != nullptr)
+                v->buffer_destroy(be, bb[i]);
+    }
 
     /* rows_weighted_sum onto two tokens from y's first 8 rows, in a shuffled
      * order (token 0: rows 5 2 7 0, token 1: 1 6 3 4), started but not

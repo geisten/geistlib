@@ -608,10 +608,18 @@ struct transformer_moe_gpu {
      * on the device, the host out of the loop (#201): every routed expert
      * has a copy, no shared expert, fused->moe_route & co. any_device: one
      * layer does. */
-    bool            *device;
-    bool             any_device;
-    _Atomic uint64_t n_device;           /* layer steps that took that route */
-    _Atomic uint64_t rows_gpu, rows_cpu; /* GEIST_VERBOSE at destroy */
+    bool *device;
+    bool  any_device;
+    /* #162: a decode step routes on the device and starts the hot experts
+     * there before the host has seen the router; the host runs the cold
+     * ones (fused->linear_t_sel & co., layers with grouped[]). */
+    bool routed;
+    /* [n_layers * 3 * moe_n_experts]: per layer and projection, each routed
+     * expert's twin or nullptr (no copy): linear_t_sel's w. */
+    const struct geist_weight **sel_w;
+    _Atomic uint64_t            n_routed;           /* layer steps that took that route */
+    _Atomic uint64_t            n_device;           /* layer steps that took that route */
+    _Atomic uint64_t            rows_gpu, rows_cpu; /* GEIST_VERBOSE at destroy */
     /* GEIST_VERBOSE at destroy: batches, and their ns packing (to the
      * copy), recording, waiting (buffer_map of the outputs), unpacking. */
     _Atomic uint64_t batches, ns_pack, ns_record, ns_wait, ns_unpack;
