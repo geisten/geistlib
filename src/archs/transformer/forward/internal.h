@@ -380,6 +380,14 @@ void transformer_probe_ffn_sparsity(const struct geist_backend_vtbl *v,
 [[nodiscard]] enum geist_status
 transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx);
 
+/* Batched decode (#26, layer_deltanet.c): the DeltaNet block for n
+ * independent sessions in one pass; row b of the carrier ctx's buffers
+ * belongs to seqs[b]. */
+[[nodiscard]] enum geist_status
+transformer_layer_run_deltanet_multi(struct transformer_layer_forward_ctx  *ctx,
+                                     size_t                                 n,
+                                     struct transformer_arch_session *const seqs[static n]);
+
 /* DeltaNet recurrence kernels (layer_deltanet.c) — exported for
  * test_deltanet_chunk_unit, which pins chunked == sequential at f32
  * precision; the end-to-end logit test is too coarse to catch subtle
@@ -429,6 +437,12 @@ void transformer_dn_conv_silu_row(size_t       t,
                                   float        y_t[static convd]);
 
 /* forward/linear.c */
+/* Batched decode (#26, head.c): sample a session's token from the logits
+ * in its scratch_logits row 0 with its own sampler and penalties. */
+[[nodiscard]] enum geist_status transformer_head_sample_row0(struct transformer_arch_session *sess,
+                                                             size_t                           n_ctx,
+                                                             geist_token_t *out_token);
+
 [[nodiscard]] enum geist_status linear_w_or_legacy(struct geist_backend            *be,
                                                    const struct geist_backend_vtbl *v,
                                                    struct geist_buffer             *x_buf,
