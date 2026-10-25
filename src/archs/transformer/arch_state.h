@@ -493,6 +493,12 @@ struct transformer_arch_session {
      * invariant), so peek_logits applies it lazily for value consumers
      * (scoring/perplexity). Reset per forward in finalize_logits_one_row. */
     bool logits_softcapped;
+    /* A discrete GPU keeps scratch_logits in the BAR window or VRAM, which the
+     * host reads at ~90 MB/s: a host-read row is copied on the device into
+     * this readback buffer (cached system memory) first (#219,
+     * transformer_logits_host). Null where the host reads the row in place
+     * (CPU backends, unified memory). */
+    struct geist_buffer *logits_host;
     /* Whether scratch_logits is SPARSE — the spec-head fast path computed
      * exact logits only for its top-K candidates and set every other entry to
      * -inf (fine for the greedy argmax it serves). Value consumers must not

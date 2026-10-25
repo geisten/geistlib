@@ -148,6 +148,15 @@ void transformer_spec_session_scratch_free(struct transformer_arch_session *sess
 [[nodiscard]] enum geist_status
 transformer_head_dense_recompute(struct transformer_arch_session *sess);
 
+/* The pending logits row (scratch_logits row 0) where the host reads it at
+ * memory speed (#219): on a discrete GPU a device copy into the session's
+ * readback buffer, else the row itself. With `softcap` the family's final
+ * softcap is applied -- to the copy, or once in place (logits_softcapped).
+ * *mapped is the buffer to unmap; nullptr on failure (the backend says why). */
+[[nodiscard]] float *transformer_logits_host(struct transformer_arch_session *sess,
+                                             bool                             softcap,
+                                             struct geist_buffer            **mapped);
+
 /* Batched variant for verify_forward — runs lm_head on k rows in one
  * batched call, writes k per-position argmaxes into out_tokens. */
 [[nodiscard]] enum geist_status

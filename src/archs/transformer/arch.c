@@ -296,23 +296,18 @@ static const float *op_peek_logits(size_t *n_logits, void *session) {
         *n_logits = 0;
         return nullptr;
     }
-    float *p = (float *) st->backend->desc->vtbl->buffer_map(sess->scratch_logits);
+    /* The greedy argmax path skips the Gemma final-logit softcap (monotonic,
+     * so the argmax is invariant and it saves ~262k tanhf/token on decode).
+     * peek_logits exposes the VALUES to scoring/perplexity consumers, which
+     * need the model-conformant softcapped logits. On a discrete GPU the row
+     * comes as a host copy (#219: reading it in place ran at ~90 MB/s). */
+    struct geist_buffer *mb = nullptr;
+    float               *p  = transformer_logits_host(sess, true, &mb);
     if (p == nullptr) {
         *n_logits = 0; /* no mapping, or a failed batch: the backend error says which */
         return nullptr;
     }
     *n_logits = (size_t) st->vocab_size;
-    /* The greedy argmax path skips the Gemma final-logit softcap (monotonic,
-     * so the argmax is invariant and it saves ~262k tanhf/token on decode).
-     * peek_logits exposes the VALUES to scoring/perplexity consumers, which
-     * need the model-conformant softcapped logits — apply it lazily, once. */
-    if (st->config.logit_softcap > 0.0f && !sess->logits_softcapped) {
-        const float c = st->config.logit_softcap;
-        for (size_t i = 0; i < (size_t) st->vocab_size; i++) {
-            p[i] = tanhf(p[i] / c) * c;
-        }
-        sess->logits_softcapped = true;
-    }
     return (const float *) p;
 }
 

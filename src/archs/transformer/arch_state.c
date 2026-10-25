@@ -900,6 +900,7 @@ static void free_scratch(struct geist_backend *be, struct transformer_arch_sessi
         for (size_t i = 0; i < sizeof slots / sizeof slots[0]; i++) {
             transformer_buffer_release(be, slots[i]);
         }
+        transformer_buffer_release(be, &sess->logits_host);
     }
     if (sess->scratch_arena_base != nullptr) {
         safe_free(&sess->scratch_arena_base);
@@ -927,6 +928,24 @@ static void free_scratch(struct geist_backend *be, struct transformer_arch_sessi
 
 /* Session-owned runtime allocations: KV caches, scratch pool and slots,
  * per-forward arena, ones row, then the family's own state. */
+/* The readback copy of one logits row (#219), on a discrete GPU only: there
+ * scratch_logits is device memory the host reads uncached. */
+[[nodiscard]] static enum geist_status alloc_logits_host(struct transformer_arch_session *sess) {
+    const struct transformer_arch_state *st = sess->model;
+    struct geist_backend                *be = st->backend;
+    struct geist_backend_memory          mem;
+    if (sess->scratch_logits == nullptr || !be->desc->caps.batched_submit ||
+        be->desc->vtbl->buffer_copy == nullptr || geist_backend_memory_info(be, &mem) != GEIST_OK ||
+        mem.unified_memory) {
+        return GEIST_OK;
+    }
+    return be->desc->vtbl->buffer_create(be,
+                                         (size_t) st->vocab_size * sizeof(float),
+                                         GEIST_BUFFER_IO,
+                                         GEIST_MEMORY_AUTO,
+                                         &sess->logits_host);
+}
+
 [[nodiscard]] static enum geist_status
 allocate_runtime_session(struct transformer_arch_session *sess) {
     const struct transformer_arch_state *st = sess->model;
@@ -942,6 +961,8 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
         s = alloc_scratch_arena(sess);
     if (s == GEIST_OK)
         s = alloc_ones_row(sess, &plan);
+    if (s == GEIST_OK)
+        s = alloc_logits_host(sess);
     if (s == GEIST_OK && st->family != nullptr && st->family->session_alloc != nullptr)
         s = st->family->session_alloc(sess);
     return s;

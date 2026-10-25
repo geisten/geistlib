@@ -81,6 +81,10 @@ on:
         description: "#165: the run-time profile of one session (one #48 profile file; half of two) and of every profile file, held-out cover against the profile input's; 'yes' or empty"
         type: string
         default: ""
+      quiet:
+        description: "1: the measuring steps also hold the desktop's bench lock (pauses its docker CI)"
+        type: string
+        default: ""
       make_profile:
         description: "measure this model's expert profile first (geist's router trace on the #48 corpus) and use it: '<n_experts> <experts per token>', e.g. '256 8'; empty: skip"
         type: string
@@ -111,6 +115,7 @@ jobs:
       # placement is the one its inputs name.
       GEIST_MOE_PROFILE_CACHE: "0"
       PROFILE: ${{ inputs.profile }}
+      GEIST_QUIET: ${{ inputs.quiet }}
       HOG: ${{ inputs.hog }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
