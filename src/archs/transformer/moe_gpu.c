@@ -816,7 +816,6 @@ uint64_t moe_gpu_route_launch(struct transformer_arch_session *sess,
                                              st->config.moe_norm_topk,
                                              &t_lg,
                                              sess->moe_dev_ids,
-                                             0,
                                              sess->m_max * k * sizeof(uint32_t),
                                              &t_w);
     /* Slot j of the routed ones multiplies expert ids[j] where it has a copy
@@ -834,9 +833,9 @@ uint64_t moe_gpu_route_launch(struct transformer_arch_session *sess,
     struct geist_tensor ur     = view_2d(sess->moe_gpu_u, (int64_t) n_rt, (int64_t) inter);
     struct geist_tensor yr     = view_2d(sess->moe_gpu_x, (int64_t) n_rt, (int64_t) d);
     if (s == GEIST_OK)
-        s = gf->linear_t_sel(gbe, n_exp, w[0], n_rt, false, sess->moe_dev_ids, 0, &t_x, &gr);
+        s = gf->linear_t_sel(gbe, n_exp, w[0], n_rt, false, sess->moe_dev_ids, &t_x, &gr);
     if (s == GEIST_OK)
-        s = gf->linear_t_sel(gbe, n_exp, w[1], n_rt, false, sess->moe_dev_ids, 0, &t_x, &ur);
+        s = gf->linear_t_sel(gbe, n_exp, w[1], n_rt, false, sess->moe_dev_ids, &t_x, &ur);
     struct geist_tensor gs, us, ys, t[3];
     if (shared) {
         gs = view_2d_at(sess->moe_gpu_g, n_rt * inter * 4, 1, (int64_t) inter);
@@ -852,7 +851,7 @@ uint64_t moe_gpu_route_launch(struct transformer_arch_session *sess,
     if (s == GEIST_OK)
         s = gf->silu_mul(gbe, &g, &u, &g);
     if (s == GEIST_OK)
-        s = gf->linear_t_sel(gbe, n_exp, w[2], n_rt, true, sess->moe_dev_ids, 0, &gr, &yr);
+        s = gf->linear_t_sel(gbe, n_exp, w[2], n_rt, true, sess->moe_dev_ids, &gr, &yr);
     if (s == GEIST_OK && shared)
         s = gf->linear_t(gbe, &gs, &sh[2], &t[2], 1, &ys);
     if (s == GEIST_OK) {
@@ -936,20 +935,16 @@ enum geist_status moe_gpu_device_ffn(struct transformer_arch_session *sess,
                                         st->config.moe_norm_topk,
                                         &t_lg,
                                         sess->moe_dev_ids,
-                                        0,
                                         sess->m_max * k * sizeof(uint32_t),
                                         &t_w);
     if (s == GEIST_OK)
-        s = gf->linear_t_ids(
-                gbe, n, seq, k, false, &tw[0], &ex[0], sess->moe_dev_ids, 0, &t_x, &t_g);
+        s = gf->linear_t_ids(gbe, n, seq, k, false, &tw[0], &ex[0], sess->moe_dev_ids, &t_x, &t_g);
     if (s == GEIST_OK)
-        s = gf->linear_t_ids(
-                gbe, n, seq, k, false, &tw[1], &ex[1], sess->moe_dev_ids, 0, &t_x, &t_u);
+        s = gf->linear_t_ids(gbe, n, seq, k, false, &tw[1], &ex[1], sess->moe_dev_ids, &t_x, &t_u);
     if (s == GEIST_OK)
         s = gf->silu_mul(gbe, &t_g, &t_u, &t_g);
     if (s == GEIST_OK)
-        s = gf->linear_t_ids(
-                gbe, n, seq, k, true, &tw[2], &ex[2], sess->moe_dev_ids, 0, &t_g, &t_y);
+        s = gf->linear_t_ids(gbe, n, seq, k, true, &tw[2], &ex[2], sess->moe_dev_ids, &t_g, &t_y);
     if (s == GEIST_OK)
         s = gf->moe_weighted_sum(gbe, seq, k, d, &t_w, &t_y, &t_a, &t_o);
     if (s == GEIST_OK)

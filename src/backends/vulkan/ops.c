@@ -2302,7 +2302,6 @@ struct vk_push_topk {
                                                     bool                       norm,
                                                     const struct geist_tensor *t_lg,
                                                     struct geist_buffer       *ids,
-                                                    size_t                     ids_offset,
                                                     size_t                     flag_offset,
                                                     struct geist_tensor       *t_w) {
     VkDescriptorBufferInfo bi[3];
@@ -2311,12 +2310,11 @@ struct vk_push_topk {
         return GEIST_OK;
     }
     if (k == 0 || k > n || n > VK_MOE_TOPK_MAX_N || ids == nullptr || ids->buf == VK_NULL_HANDLE ||
-        (ids->base_off + ids_offset) % 4 != 0 || (ids->base_off + flag_offset) % 4 != 0 ||
+        ids->base_off % 4 != 0 || (ids->base_off + flag_offset) % 4 != 0 ||
         !vk_tensor_gpu(t_lg, &bi[0], &lo) || !vk_tensor_gpu(t_w, &bi[2], &wo) ||
         vk_ckd_u32(n, &n32) || vk_ckd_u32(k, &k32) || vk_ckd_u32(m, &m32) ||
         vk_ckd_u32(t_lg->ndim >= 2 ? (size_t) t_lg->stride[t_lg->ndim - 2] : n, &ls) ||
-        vk_ckd_u32((ids->base_off + ids_offset) / 4, &io) ||
-        vk_ckd_u32((ids->base_off + flag_offset) / 4, &fo)) {
+        vk_ckd_u32(ids->base_off / 4, &io) || vk_ckd_u32((ids->base_off + flag_offset) / 4, &fo)) {
         return GEIST_E_UNSUPPORTED;
     }
     bi[1] = (VkDescriptorBufferInfo) {.buffer = ids->buf, .range = VK_WHOLE_SIZE};
@@ -2357,7 +2355,6 @@ static enum vk_pipe vk_sel_pipe(enum vk_pipe grouped) {
                                                        size_t                           k,
                                                        bool                             x_per_slot,
                                                        const struct geist_buffer       *ids,
-                                                       size_t                           ids_offset,
                                                        const struct geist_tensor       *t_x,
                                                        struct geist_tensor             *t_y) {
     struct vk_state           *st = be->state;
@@ -2370,7 +2367,7 @@ static enum vk_pipe vk_sel_pipe(enum vk_pipe grouped) {
     const enum vk_pipe     pipe = vk_sel_pipe(vk_grouped_pipe(w0->dtype));
     const struct vk_dtype *ld   = vk_linear_dtype((enum geist_dtype) w0->dtype);
     if (pipe == VK_PIPE_COUNT || ld == nullptr || n > VK_SEL_TAB_MAX || ids == nullptr ||
-        ids->buf == VK_NULL_HANDLE || (ids->base_off + ids_offset) % 4 != 0) {
+        ids->buf == VK_NULL_HANDLE || ids->base_off % 4 != 0) {
         return GEIST_E_UNSUPPORTED;
     }
     /* The array's address table: built and checked on its first call, then
@@ -2421,7 +2418,7 @@ static enum vk_pipe vk_sel_pipe(enum vk_pipe grouped) {
     if (vk_ckd_u32((size_t) w0->n_in, &n_in) || vk_ckd_u32((size_t) w0->n_out, &n_out) ||
         vk_ckd_u32(t_x->ndim >= 2 ? (size_t) t_x->stride[t_x->ndim - 2] : n_in, &xs) ||
         vk_ckd_u32(t_y->ndim >= 2 ? (size_t) t_y->stride[t_y->ndim - 2] : n_out, &ys) ||
-        vk_ckd_u32(k, &k32) || vk_ckd_u32((ids->base_off + ids_offset) / 4, &io)) {
+        vk_ckd_u32(k, &k32) || vk_ckd_u32(ids->base_off / 4, &io)) {
         return vk_too_wide(be, "linear_t_sel");
     }
     if (!x_per_slot)

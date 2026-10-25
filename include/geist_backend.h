@@ -850,9 +850,9 @@ struct geist_backend_fused {
      *
      * moe_route: for t in [0, m), the k largest of logits[t][0, n) --
      * ranked by (logit descending, id ascending), the host's
-     * moe_route_topk -- as uint32 ids[t * k + j] in `ids` from byte
-     * ids_offset, and their softmax probabilities over all n as
-     * w[t * k + j] (F32 DENSE [m * k]), renormalised over the k when norm.
+     * moe_route_topk -- as uint32 ids[t * k + j] at the start of `ids`,
+     * and their softmax probabilities over all n as w[t * k + j] (F32
+     * DENSE [m * k]), renormalised over the k when norm.
      * A row with a non-finite logit sets the uint32 at byte flag_offset of
      * `ids` to 1 (never cleared here) and still writes k ids < n. logits is
      * F32 [m, n] (row stride >= n).
@@ -877,7 +877,6 @@ struct geist_backend_fused {
                                    bool                       norm,
                                    const struct geist_tensor *logits,
                                    struct geist_buffer       *ids,
-                                   size_t                     ids_offset,
                                    size_t                     flag_offset,
                                    struct geist_tensor       *w);
     enum geist_status (*linear_t_ids)(struct geist_backend      *be,
@@ -888,7 +887,6 @@ struct geist_backend_fused {
                                       const struct geist_weight *w0,
                                       const struct geist_tensor *experts,
                                       const struct geist_buffer *ids,
-                                      size_t                     ids_offset,
                                       const struct geist_tensor *x,
                                       struct geist_tensor       *y);
     enum geist_status (*moe_weighted_sum)(struct geist_backend      *be,
@@ -905,7 +903,7 @@ struct geist_backend_fused {
      * it holds before the host has seen the router. EXPERIMENTAL.
      *
      * linear_t_sel: y[s] = W_e x[s * x_per_slot] for s in [0, k) with
-     * e = ids[s] (uint32 in `ids` from byte ids_offset, written by the
+     * e = ids[s] (uint32 at the start of `ids`, written by the
      * device earlier in the batch) and w[e] != nullptr; a slot whose expert
      * has no weight here (w[e] == nullptr) is skipped, its y row left as it
      * was. w[0, n) are resolved here and share dtype, n_in and n_out; the
@@ -928,7 +926,6 @@ struct geist_backend_fused {
                                       size_t                           k,
                                       bool                             x_per_slot,
                                       const struct geist_buffer       *ids,
-                                      size_t                           ids_offset,
                                       const struct geist_tensor       *x,
                                       struct geist_tensor             *y);
     uint64_t (*submit_mark)(struct geist_backend *be);

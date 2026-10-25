@@ -4654,7 +4654,6 @@ metal_moe_end(struct geist_backend *be, void *cmd, void *enc, const char *what) 
                                                        bool                       norm,
                                                        const struct geist_tensor *logits,
                                                        struct geist_buffer       *ids,
-                                                       size_t                     ids_offset,
                                                        size_t                     flag_offset,
                                                        struct geist_tensor       *w) {
     if (be == nullptr || be->state == nullptr || logits == nullptr || ids == nullptr ||
@@ -4663,9 +4662,8 @@ metal_moe_end(struct geist_backend *be, void *cmd, void *enc, const char *what) 
     size_t lr = 0, lc = 0, lo = 0, ls = 0, wn = 0, wo = 0, nk = 0, need = 0;
     if (!metal_tensor_is_f32_matrix(logits, &lr, &lc, &lo, &ls) ||
         !metal_tensor_is_f32_vector(w, &wn, &wo) || m == 0 || k == 0 || k > n || lr < m || lc < n ||
-        ckd_mul(&nk, m, k) || wn < nk || ids->owner != be->state || ids_offset % 4u != 0u ||
-        flag_offset % 4u != 0u || ckd_mul(&need, nk, sizeof(uint32_t)) ||
-        ckd_add(&need, need, ids_offset) || need > ids->bytes ||
+        ckd_mul(&nk, m, k) || wn < nk || ids->owner != be->state || flag_offset % 4u != 0u ||
+        ckd_mul(&need, nk, sizeof(uint32_t)) || need > ids->bytes ||
         flag_offset > ids->bytes - sizeof(uint32_t) || ls > UINT32_MAX || lo > UINT32_MAX ||
         wo > UINT32_MAX || n > UINT32_MAX || k > UINT32_MAX || m > UINT32_MAX)
         return GEIST_E_INVALID_ARG;
@@ -4679,7 +4677,6 @@ metal_moe_end(struct geist_backend *be, void *cmd, void *enc, const char *what) 
                                                              .flag = (uint32_t) (flag_offset / 4u),
                                                              .ls   = (uint32_t) ls,
                                                              .lo   = (uint32_t) lo,
-                                                             .io   = (uint32_t) (ids_offset / 4u),
                                                              .wo   = (uint32_t) wo};
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
     void *cmd = nullptr, *enc = metal_moe_begin(be, "MoE route", &cmd);
@@ -4759,7 +4756,6 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
                                                           const struct geist_weight *w0,
                                                           const struct geist_tensor *experts,
                                                           const struct geist_buffer *ids,
-                                                          size_t                     ids_offset,
                                                           const struct geist_tensor *x,
                                                           struct geist_tensor       *y) {
     if (be == nullptr || be->state == nullptr || w0 == nullptr || experts == nullptr ||
@@ -4782,8 +4778,7 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
         !metal_tensor_is_f32_matrix(y, &yr, &yc, &yo, &ys) || xr < (x_per_slot ? nk : m) ||
         xc != ni || yr < nk || yc != no || ni % block != 0u ||
         !metal_moe_experts_offset(experts, dtype, rows, ni, &wo) || ids->owner != be->state ||
-        ids_offset % 4u != 0u || ckd_mul(&need, nk, sizeof(uint32_t)) ||
-        ckd_add(&need, need, ids_offset) || need > ids->bytes || w0->raw_nbytes > UINT32_MAX ||
+        ckd_mul(&need, nk, sizeof(uint32_t)) || need > ids->bytes || w0->raw_nbytes > UINT32_MAX ||
         ni > UINT32_MAX || no > UINT32_MAX || xo > UINT32_MAX || yo > UINT32_MAX ||
         wo > UINT32_MAX || xs > UINT32_MAX || ys > UINT32_MAX || nk > UINT32_MAX || k == 0)
         return GEIST_E_INVALID_ARG;
@@ -4800,8 +4795,7 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
     };
     const struct metal_moe_ids_params                  q    = {.estride  = (uint32_t) w0->raw_nbytes,
                                                                .per_slot = x_per_slot ? 1u : 0u,
-                                                               .k        = (uint32_t) k,
-                                                               .io = (uint32_t) (ids_offset / 4u)};
+                                                               .k        = (uint32_t) k};
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
     void *cmd = nullptr, *enc = metal_moe_begin(be, "MoE expert matvec", &cmd);
     if (enc == nullptr)
