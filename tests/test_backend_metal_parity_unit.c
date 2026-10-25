@@ -952,6 +952,14 @@ static void run_fused_matvec_case(
         const struct geist_tensor tx = f32_row(bx, n_in);
         enum geist_status         s  = f->linear_t_triple(
                 mt, &tx, &ww[0], &tw[0], &ww[1], &tw[1], &ww[2], &tw[2], 1, &ty[0], &ty[1], &ty[2]);
+        /* Where linear_t takes matvec_q4k_h for k and v (K = 512 mod
+         * 1024, n_kv >= 1024), the triple declines and the arch runs the
+         * separate ops. */
+        const bool declined = s == GEIST_E_UNSUPPORTED && dt1 == GEIST_DTYPE_Q4_K &&
+                              (n_in / 256u) % 4u == 2u && n_kv >= 1024u;
+        if (declined) {
+            s = GEIST_OK;
+        }
         for (size_t i = 0; i < 3 && s == GEIST_OK; i++) {
             s = f->linear_t(mt, &tx, &ww[i], &tw[i], 1, &tz[i]);
         }
@@ -966,7 +974,7 @@ static void run_fused_matvec_case(
                   "linear_t_triple download");
             off += outs[i];
         }
-        const bool same = memcmp(got, got + tot, tot * sizeof(float)) == 0;
+        const bool same = declined || memcmp(got, got + tot, tot * sizeof(float)) == 0;
         check(same, "linear_t_triple matches three linear_t bit for bit");
         printf("  linear_t_triple %d/%d/%d %zu->%zu,%zu: %s\n",
                dt0,
@@ -975,7 +983,9 @@ static void run_fused_matvec_case(
                n_in,
                n_in,
                n_kv,
-               same ? "bit-identical OK" : "FAIL");
+               declined ? "declined OK"
+               : same   ? "bit-identical OK"
+                        : "FAIL");
 
         /* gate/up: w1 and w2 share dtype and shape when dt1 == dt2. */
         for (int silu = 0; silu < 2 && dt1 == dt2; silu++) {
@@ -995,26 +1005,24 @@ static void run_fused_matvec_case(
                                              (uint8_t *) (got + n_kv),
                                              by[0]) == GEIST_OK,
                   "gate/up download");
-            /* The Q4_K GeGLU kernel (Gemma 4) predates #17 and sums through
-             * dotb, which contracts the block scales differently from the
-             * matvec: equal to rounding, not bit for bit. */
-            const bool exact = silu || dt1 != GEIST_DTYPE_Q4_K;
-            double     rel   = 0.0;
+            double rel = 0.0;
             for (size_t i = 0; i < n_kv; i++) {
                 const double a = got[i], b = got[n_kv + i];
                 const double r = fabs(a - b) / (fabs(b) > 1.0 ? fabs(b) : 1.0);
-                rel            = r > rel ? r : rel;
+                if (r > rel && silu)
+                    printf("DBG i=%zu fused=%.9g sep=%.9g\n", i, a, b);
+                rel = r > rel ? r : rel;
             }
-            const bool eq = exact ? memcmp(got, got + n_kv, n_kv * sizeof(float)) == 0 : rel < 1e-5;
+            const bool eq = memcmp(got, got + n_kv, n_kv * sizeof(float)) == 0;
             check(eq,
                   silu ? "ffn_gate_up_silu matches the separate ops bit for bit"
-                       : "ffn_gate_up matches the separate ops");
+                       : "ffn_gate_up matches the separate ops bit for bit");
             printf("  ffn_gate_up%s %d %zu->%zu: %s (max_rel %.1e)\n",
                    silu ? "_silu" : "",
                    dt1,
                    n_in,
                    n_kv,
-                   eq ? (exact ? "bit-identical OK" : "OK") : "FAIL",
+                   eq ? "bit-identical OK" : "FAIL",
                    rel);
         }
     }
@@ -1659,6 +1667,16 @@ int main(void) {
     run_fused_matvec_case(mt, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, 1024, 254);
     /* #196: Gemma 4's K = 1536, q through the half-simdgroup layout. */
     run_fused_matvec_case(mt, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q6_K, 1536, 256);
+    /* K = 1536 gate/up: n_kv 1030 takes the half-simdgroup kernels
+     * (linear_t's matvec_q4k_h, gate_up(_silu)_q4k_h), 254 the n4 ones. */
+    run_fused_matvec_case(mt, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, 1536, 1030);
+    run_fused_matvec_case(mt, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, 1536, 254);
+    /* More than one block per lane group, where a kernel's running sums
+     * can contract differently from the matvec's: Llama 3.2 3B's 3072,
+     * 2048, and 2560 (ten blocks) in the half layout. */
+    run_fused_matvec_case(mt, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, 3072, 1030);
+    run_fused_matvec_case(mt, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, 2048, 254);
+    run_fused_matvec_case(mt, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, GEIST_DTYPE_Q4_K, 2560, 1030);
     run_fused_matvec_case(mt, GEIST_DTYPE_Q8_0, GEIST_DTYPE_Q8_0, GEIST_DTYPE_Q8_0, 1024, 260);
     run_fused_matvec_case(mt, GEIST_DTYPE_Q8_0, GEIST_DTYPE_Q8_0, GEIST_DTYPE_Q8_0, 512, 131);
     run_embedding_case(mt, GEIST_DTYPE_Q4_0, "Q4_0");

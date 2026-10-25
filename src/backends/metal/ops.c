@@ -3020,11 +3020,13 @@ static bool metal_mv_weight_of(const struct geist_tensor *t, struct metal_mv_wei
     }
     struct metal_state *st  = be->state;
     const bool          q4k = g.dtype == GEIST_DTYPE_Q4_K;
-    const bool          half_rows =
-            q4k && !silu &&
-            metal_q4k_half_rows(st->q4k_gate_up_h_pipeline, (uint32_t) d_in, (uint32_t) g.n_out);
+    /* The half-simdgroup layout wherever linear_t takes matvec_q4k_h, so
+     * the SwiGLU kernel stays bit-identical to two linear_t and silu_mul. */
+    void *const h_pipeline = silu ? st->q4k_gate_up_silu_h_pipeline : st->q4k_gate_up_h_pipeline;
+    const bool  half_rows  = q4k && (!silu || st->q4k_h_pipeline != nullptr) &&
+                             metal_q4k_half_rows(h_pipeline, (uint32_t) d_in, (uint32_t) g.n_out);
     void *const pipeline =
-            half_rows ? st->q4k_gate_up_h_pipeline
+            half_rows ? h_pipeline
             : q4k     ? (silu ? st->q4k_gate_up_silu_n4_pipeline : st->q4k_gate_up_n4_pipeline)
                       : (silu ? st->q80_gate_up_silu_n4_pipeline : st->q80_gate_up_n4_pipeline);
     const uint32_t tg_rows = half_rows ? 8u : g.tg_rows;
@@ -3166,6 +3168,15 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
      * take that kernel, 8 rows per threadgroup (#196). */
     const bool a_half = mw[0].dtype == GEIST_DTYPE_Q4_K &&
                         metal_q4k_half_rows(st->q4k_h_pipeline, (uint32_t) d_in, p[0].n_out);
+    /* k and v run the n4 layout only: where linear_t would take
+     * matvec_q4k_h for them, decline, so the triple never differs from
+     * three linear_t. */
+    for (size_t i = 1; i < 3; i++) {
+        if (mw[i].dtype == GEIST_DTYPE_Q4_K &&
+            metal_q4k_half_rows(st->q4k_h_pipeline, (uint32_t) d_in, p[i].n_out)) {
+            return GEIST_E_UNSUPPORTED;
+        }
+    }
     for (size_t i = 0; i < 3; i++) {
         const uint32_t tg_rows = i == 0 && a_half ? 8u : mw[i].tg_rows;
         groups[i]              = (uint32_t) ((mw[i].n_out + tg_rows - 1u) / tg_rows);

@@ -336,6 +336,8 @@ struct metal_state {
     void *q4k_gate_up_n4_pipeline;
     void *q4k_gate_up_h_function;
     void *q4k_gate_up_h_pipeline;
+    void *q4k_gate_up_silu_h_function;
+    void *q4k_gate_up_silu_h_pipeline;
     void *q6k_function;
     void *q6k_pipeline;
     void *q6k_n4_function;
