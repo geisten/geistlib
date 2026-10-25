@@ -192,39 +192,47 @@ sample_row(struct transformer_arch_session *sess, size_t n_ctx, const float *log
     /* Softcap, family-conditional. Skipped in greedy mode: tanh is
      * monotonic, so argmax is unchanged (~5% of Gemma 4 decode). The
      * penalties are not monotonic, so they see the softcapped logits, as
-     * llama.cpp's sampler does. */
-    const bool sampler_needs_softcap = sess->temperature > 0.0f || penalties;
-    if (st->config.logit_softcap > 0.0f && sampler_needs_softcap) {
-        t0       = profile ? transformer_profile_now_ns() : 0;
-        float *p = (float *) v->buffer_map(sess->scratch_logits);
-        if (p == nullptr) {
-            return GEIST_E_BACKEND; /* the backend said why */
-        }
-        const float c = st->config.logit_softcap;
-        for (size_t i = 0; i < (size_t) st->vocab_size; i++) {
-            p[i] = tanhf(p[i] / c) * c;
-        }
-        v->buffer_unmap(sess->scratch_logits);
-        sess->logits_softcapped = true;
-        transformer_profile_add(&g_head_profile, HEAD_PROFILE_SOFTCAP, t0);
-    }
-
-    /* Sampler dispatch. scratch_logits already holds the softcapped
-     * row; on CPU backends buffer_map returns the host pointer directly,
-     * so the sampler reads it without a copy. */
+     * llama.cpp's sampler does. The sampler reads the row where the host
+     * reads fast (transformer_logits_host). */
+    const bool    sampler_needs_softcap = sess->temperature > 0.0f || penalties;
     geist_token_t best_id;
     {
-        t0                  = profile ? transformer_profile_now_ns() : 0;
-        const float *logits = (const float *) v->buffer_map(sess->scratch_logits);
+        t0                          = profile ? transformer_profile_now_ns() : 0;
+        struct geist_buffer *mb     = nullptr;
+        const float         *logits = transformer_logits_host(sess, sampler_needs_softcap, &mb);
         if (logits == nullptr) {
-            return GEIST_E_BACKEND;
+            return GEIST_E_BACKEND; /* the backend said why */
         }
         best_id = sample_row(sess, n_ctx, logits);
-        v->buffer_unmap(sess->scratch_logits);
+        v->buffer_unmap(mb);
         transformer_profile_add(&g_head_profile, HEAD_PROFILE_SAMPLE, t0);
     }
     *out_token = best_id;
     return GEIST_OK;
+}
+
+float *transformer_logits_host(struct transformer_arch_session *sess,
+                               bool                             softcap,
+                               struct geist_buffer            **mapped) {
+    const struct transformer_arch_state *st    = sess->model;
+    const struct geist_backend_vtbl     *v     = st->backend->desc->vtbl;
+    const size_t                         vocab = (size_t) st->vocab_size;
+    const float                          c     = st->config.logit_softcap;
+    struct geist_buffer                 *b     = sess->scratch_logits;
+    const bool copy = sess->logits_host != nullptr &&
+                      v->buffer_copy(sess->logits_host, 0, b, 0, vocab * sizeof(float)) == GEIST_OK;
+    if (copy)
+        b = sess->logits_host;
+    float *p = (float *) v->buffer_map(b);
+    *mapped  = b;
+    /* Already softcapped in place: so is a copy of it. */
+    if (p == nullptr || !softcap || c <= 0.0f || sess->logits_softcapped)
+        return p;
+    for (size_t i = 0; i < vocab; i++)
+        p[i] = tanhf(p[i] / c) * c;
+    if (!copy)
+        sess->logits_softcapped = true;
+    return p;
 }
 
 [[nodiscard]] enum geist_status finalize_logits_one_row(struct transformer_arch_session *sess,
