@@ -164,13 +164,10 @@ class TempLog:
 
     def pump(self):
         for line in self.proc.stdout:
-            try:
-                temp = json.loads(line)["temp"]
-                value = {"t": time.time(), "gpu_c": round(float(temp["gpu_temp_avg"]), 1),
-                         "cpu_c": round(float(temp["cpu_temp_avg"]), 1)}
-            except (ValueError, KeyError, TypeError):
+            temps = bench_host.parse_macmon(line)
+            if temps is None:
                 continue
-            self.out.write(json.dumps(value) + "\n")
+            self.out.write(json.dumps({"t": time.time(), **temps}) + "\n")
             self.out.flush()
 
     def close(self):
