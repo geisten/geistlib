@@ -464,15 +464,12 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
      * the cold ones meanwhile and the GPU adds the hot outputs onto their
      * sum. GEIST_E_UNSUPPORTED (a weight not resident): the batch below. */
     bool launched = routed; /* its hot experts run already */
-    if (!routed && j->n_hot > 0 && moe_gpu_launchable(sess, j->layer, j->n_hot, j->hot)) {
+    if (!routed && j->n_hot > 0 && j->n_hot <= GEIST_MOE_MAX_EXPERTS && st->moe_gpu->one_wait &&
+        sess->moe_x_io != nullptr) {
         s = moe_gpu_launch(sess, j->layer, seq, j->n_hot, j->hot);
         if (s != GEIST_OK && s != GEIST_E_UNSUPPORTED) {
-            geist_backend_set_error(ctx->be,
-                                    s,
-                                    "moe: layer %d: the GPU experts failed: %s",
-                                    ctx->layer_idx,
-                                    geist_backend_errmsg(st->moe_gpu->be));
-            return s;
+            j->gpu_status = s;
+            goto gpu_fail;
         }
         launched = s == GEIST_OK;
         s        = GEIST_OK;
@@ -487,6 +484,7 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     moe_gpu_task(j); /* a thread library that gave the caller no range */
     moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);
     if (j->gpu_status != GEIST_OK) {
+    gpu_fail:
         geist_backend_set_error(ctx->be,
                                 j->gpu_status,
                                 "moe: layer %d: the GPU experts failed: %s",
@@ -586,9 +584,7 @@ enum geist_status moe_session_alloc(struct transformer_arch_session *sess) {
                                           &sess->moe_x_io);
     if (s != GEIST_OK)
         return s;
-    size_t inter = 0;
-    for (size_t li = 0; li < st->n_layers; li++)
-        inter = st->layers[li].intermediate > inter ? st->layers[li].intermediate : inter;
+    const size_t inter  = moe_inter(st);
     sess->moe_ids       = heap_alloc_array_aligned(uint32_t, n_sel);
     sess->moe_wts       = heap_alloc_array_aligned(float, n_sel);
     sess->moe_rows      = heap_alloc_array_aligned(uint32_t, n_sel);

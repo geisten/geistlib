@@ -623,8 +623,8 @@ struct transformer_moe_gpu {
     /* [n_layers * 3 * moe_n_experts]: per layer and projection, each routed
      * expert's twin or nullptr (no copy): linear_t_sel's w. */
     const struct geist_weight **sel_w;
-    _Atomic uint64_t            n_routed;           /* layer steps that took that route */
-    _Atomic uint64_t            n_device;           /* layer steps that took that route */
+    _Atomic uint64_t            n_routed;                    /* layer steps that took that route */
+    _Atomic uint64_t            n_device;                    /* layer steps that took that route */
     _Atomic uint64_t            rows_gpu, rows_cpu, batches; /* GEIST_VERBOSE at destroy */
 };
 
@@ -812,6 +812,15 @@ struct transformer_arch_state {
     struct geist_session_opts        default_opts;     /* shallow copy of the state_create opts */
     bool                             has_default_opts; /* false: state_create got nullptr */
 };
+
+/* The widest expert FFN of the stack: the per-row size of the MoE
+ * session buffers. */
+static inline size_t moe_inter(const struct transformer_arch_state *st) {
+    size_t inter = 0;
+    for (size_t li = 0; li < st->n_layers; li++)
+        inter = st->layers[li].intermediate > inter ? st->layers[li].intermediate : inter;
+    return inter;
+}
 
 /* Whether `st` holds and runs layer li (#49). */
 static inline bool transformer_layer_owned(const struct transformer_arch_state *st, size_t li) {
