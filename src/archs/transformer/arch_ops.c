@@ -302,16 +302,23 @@ static enum geist_status deltanet_txn_restore(struct transformer_arch_session *s
     return GEIST_OK;
 }
 
-/* Live DeltaNet state <-> checkpoint slot `slot` (#192), all copies in one
- * command batch. */
-static enum geist_status ckpt_copy(struct transformer_arch_session *sess, size_t slot, bool save) {
+/* Live DeltaNet state <-> a device-side copy (#192): the dn-th DeltaNet
+ * layer's conv and S state at element index `first + dn * step` of
+ * conv_buf / S_buf, all copies in one command batch (outside one, Metal
+ * submits and waits on every copy). `save` copies live -> buffer, zeroing a
+ * fresh state first, else buffer -> live. */
+static enum geist_status dn_state_copy(struct transformer_arch_session *sess,
+                                       struct geist_buffer             *conv_buf,
+                                       struct geist_buffer             *S_buf,
+                                       size_t                           first,
+                                       size_t                           step,
+                                       bool                             save) {
     size_t n_dn, conv_n, s_n;
     if (!deltanet_state_geometry(sess, &n_dn, &conv_n, &s_n))
         return GEIST_OK;
-    struct geist_backend            *be = sess->model->backend;
-    const struct geist_backend_vtbl *v  = be->desc->vtbl;
-    const int                        region_tok =
-            v->parallel_region_begin ? v->parallel_region_begin(be, GEIST_REGION_PREFILL_BATCH) : 0;
+    struct geist_backend           *be = sess->model->backend;
+    const struct transformer_region tok =
+            transformer_region_begin(sess->model, GEIST_REGION_PREFILL_BATCH);
     enum geist_status s  = GEIST_OK;
     size_t            dn = 0;
     for (size_t li = 0; s == GEIST_OK && li < sess->model->n_layers; li++) {
@@ -324,39 +331,29 @@ static enum geist_status ckpt_copy(struct transformer_arch_session *sess, size_t
             if (s == GEIST_OK)
                 sess->dn_fresh[li] = false;
         }
-        const size_t at = slot * n_dn + dn;
-        if (s == GEIST_OK)
-            s = save ? dn_txn_copy(be,
-                                   sess->ckpt_conv_buf,
-                                   at * conv_n * sizeof(float),
-                                   sess->dn_conv_state[li],
-                                   0,
-                                   conv_n * sizeof(float))
-                     : dn_txn_copy(be,
-                                   sess->dn_conv_state[li],
-                                   0,
-                                   sess->ckpt_conv_buf,
-                                   at * conv_n * sizeof(float),
-                                   conv_n * sizeof(float));
-        if (s == GEIST_OK)
-            s = save ? dn_txn_copy(be,
-                                   sess->ckpt_S_buf,
-                                   at * s_n * sizeof(float),
-                                   sess->dn_S[li],
-                                   0,
-                                   s_n * sizeof(float))
-                     : dn_txn_copy(be,
-                                   sess->dn_S[li],
-                                   0,
-                                   sess->ckpt_S_buf,
-                                   at * s_n * sizeof(float),
-                                   s_n * sizeof(float));
+        const size_t         at      = first + dn * step;
+        struct geist_buffer *live[2] = {sess->dn_conv_state[li], sess->dn_S[li]};
+        struct geist_buffer *copy[2] = {conv_buf, S_buf};
+        const size_t         n[2]    = {conv_n * sizeof(float), s_n * sizeof(float)};
+        for (size_t i = 0; s == GEIST_OK && i < 2; i++) {
+            s = save ? dn_txn_copy(be, copy[i], at * n[i], live[i], 0, n[i])
+                     : dn_txn_copy(be, live[i], 0, copy[i], at * n[i], n[i]);
+        }
         dn++;
     }
-    if (v->parallel_region_end)
-        v->parallel_region_end(be, region_tok);
+    transformer_region_end(sess->model, tok);
+    return s;
+}
+
+/* Live DeltaNet state <-> checkpoint slot `slot` (#192). */
+static enum geist_status ckpt_copy(struct transformer_arch_session *sess, size_t slot, bool save) {
+    size_t n_dn, conv_n, s_n;
+    if (!deltanet_state_geometry(sess, &n_dn, &conv_n, &s_n))
+        return GEIST_OK;
+    const enum geist_status s =
+            dn_state_copy(sess, sess->ckpt_conv_buf, sess->ckpt_S_buf, slot * n_dn, 1, save);
     if (s != GEIST_OK)
-        geist_backend_set_error(be, s, "checkpoint: DeltaNet state copy failed");
+        geist_backend_set_error(sess->model->backend, s, "checkpoint: DeltaNet state copy failed");
     return s;
 }
 
@@ -411,45 +408,12 @@ enum geist_status transformer_checkpoint_restore(struct transformer_arch_session
 
 /* State after verified row `slot` into the live DeltaNet buffers (#192). */
 static enum geist_status deltanet_rows_restore(struct transformer_arch_session *sess, size_t slot) {
-    size_t n_dn, conv_n, s_n;
-    if (!deltanet_state_geometry(sess, &n_dn, &conv_n, &s_n))
-        return GEIST_OK;
-    struct geist_backend *be = sess->model->backend;
-    /* One command batch for all the copies: outside one, Metal submits and
-     * waits on every copy. */
-    const struct geist_backend_vtbl *v = be->desc->vtbl;
-    const int                        region_tok =
-            v->parallel_region_begin ? v->parallel_region_begin(be, GEIST_REGION_PREFILL_BATCH) : 0;
-    enum geist_status ret = GEIST_OK;
-    size_t            dn  = 0;
-    for (size_t li = 0; li < sess->model->n_layers; li++) {
-        if (sess->model->layers[li].mixer != GEIST_MIXER_DELTANET)
-            continue;
-        const size_t      base = dn * TRANSFORMER_DN_ROW_SLOTS + slot;
-        enum geist_status ws   = dn_txn_copy(be,
-                                             sess->dn_conv_state[li],
-                                             0,
-                                             sess->dn_row_conv_buf,
-                                             base * conv_n * sizeof(float),
-                                             conv_n * sizeof(float));
-        if (ws == GEIST_OK)
-            ws = dn_txn_copy(be,
-                             sess->dn_S[li],
-                             0,
-                             sess->dn_row_S_buf,
-                             base * s_n * sizeof(float),
-                             s_n * sizeof(float));
-        if (ws != GEIST_OK) {
-            geist_backend_set_error(be, ws, "transformer: DeltaNet row-state restore failed");
-            ret = ws;
-            break;
-        }
-        dn++;
-    }
-    if (v->parallel_region_end) {
-        v->parallel_region_end(be, region_tok);
-    }
-    return ret;
+    const enum geist_status s = dn_state_copy(
+            sess, sess->dn_row_conv_buf, sess->dn_row_S_buf, slot, TRANSFORMER_DN_ROW_SLOTS, false);
+    if (s != GEIST_OK)
+        geist_backend_set_error(
+                sess->model->backend, s, "transformer: DeltaNet row-state restore failed");
+    return s;
 }
 
 /* ---- Batched text prefill -------------------------------------------- */
