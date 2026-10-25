@@ -1,7 +1,8 @@
 #!/bin/sh
 # Installs scripts/ci-bot.py (with scripts/gitea_api.py) as the user service `ci-bot` on the desktop
 # runner host (docs/HARDWARE_CI.md, "CI bot"). Runs from
-# .gitea/workflows/ci-bot.yml on the geist-vulkan host runner.
+# .gitea/workflows/host-service.yml (service=ci-bot) on the geist-vulkan
+# host runner.
 #   deploy   install/update the bot (token from $CI_BOT_TOKEN), prove one
 #            dry-run poll works, start it (CI_BOT_DRY_RUN=true: in dry-run)
 #   rollback stop and disable the service (the previous scripts stay as

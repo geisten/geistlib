@@ -332,9 +332,9 @@ log `~/ci-hygiene/ci-hygiene.log`) keeps two recurring failures away:
   (`docker.gitea.com/runner-images:*`); no `--volumes`. The script compares
   the tagged image list before and after and logs any loss.
 
-Install or update it with the `ci-hygiene` workflow (`-i action=deploy`),
-inspect it with `-i action=status` (timer, last log lines, any lock left in
-the action caches).
+Install or update it with the `host-service` workflow (`-i
+service=ci-hygiene -i action=deploy`), inspect it with `-i action=status`
+(timer, last log lines, any lock left in the action caches).
 
 ## CI bot
 
@@ -385,9 +385,9 @@ python3 scripts/ci-bot.py --dry-run --once --home /tmp/cb --token-file <file>
 The token (`~/.config/ci-bot/token`, 0600) comes from the org Actions secret
 `CI_BOT_TOKEN`, scope `write:repository`, ideally of a dedicated bot user
 with write access to both repositories; pushes, comments and reruns then
-show that user. Install, update, stop or inspect the bot with the `ci-bot`
-workflow (`-i action=deploy|rollback|status`, `-i dry_run=true` to watch
-its decisions first); deploy fails with a clear message when the secret is
+show that user. Install, update, stop or inspect the bot with the
+`host-service` workflow (`-i service=ci-bot -i action=deploy|rollback|status`,
+`-i dry_run=true` to watch its decisions first); deploy fails with a clear message when the secret is
 missing and does not start the service unless one dry-run poll with the
 new script and token works. Tests: `tests/test_ci_bot_py.py` (recorded API
 responses in `tests/data/ci_bot/`, part of `make test-py`).
