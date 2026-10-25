@@ -1,0 +1,48 @@
+name: host-service
+
+# The services on the desktop runner host, installed and inspected from the
+# geist-vulkan host runner (docs/HARDWARE_CI.md):
+#   ci-bot      scripts/ci-bot-deploy.sh, "CI bot": reruns infra-failed jobs,
+#               rebases PRs whose only conflict is CHANGELOG.md, enables
+#               auto-merge once a PR's dependencies are merged.
+#               deploy | rollback | status; dry_run=true deploys it in
+#               dry-run mode (logs decisions, writes nothing).
+#   ci-hygiene  scripts/ci-hygiene.sh, "CI hygiene": a user timer that
+#               removes stale action-cache index.lock files and prunes
+#               docker once a day. deploy | status.
+# Dispatch only:  tea actions workflows dispatch --login git.geisten.net \
+#   --repo geisten/geistlib --ref main -i service=ci-bot -i action=deploy host-service.yml
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "ci-bot | ci-hygiene"
+        required: true
+      action:
+        description: "deploy | rollback (ci-bot) | status"
+        default: status
+      dry_run:
+        description: "ci-bot: deploy in dry-run mode (logs decisions, writes nothing)"
+        default: "false"
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    runs-on: geist-vulkan
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: ${{ inputs.service }} ${{ inputs.action }}
+        env:
+          SERVICE: ${{ inputs.service }}
+          ACTION: ${{ inputs.action }}
+          CI_BOT_TOKEN: ${{ inputs.service == 'ci-bot' && secrets.CI_BOT_TOKEN || '' }}
+          CI_BOT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          case "$SERVICE" in
+          ci-bot) sh scripts/ci-bot-deploy.sh "$ACTION" ;;
+          ci-hygiene) sh scripts/ci-hygiene.sh "$ACTION" ;;
+          *) echo "unknown service '$SERVICE': ci-bot | ci-hygiene"; exit 2 ;;
+          esac

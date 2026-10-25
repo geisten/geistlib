@@ -15,29 +15,29 @@ An exact list must follow the workflow, so it lives in
              file; also check that the ci-issues job waits for every other
              job. Exit 1 on any difference. Runs in CI, needs no token.
     print    print the derived list (to regenerate the file).
-    post-merge  print the post-merge tier's names (for the docs).
     verify   compare the file with the live branch protection.
     sync     write the file's list into the live branch protection.
 
 verify/sync read GITEA_TOKEN (repository admin) and talk to
-https://git.geisten.net/api/v1/repos/geisten/geistlib/branch_protections/main.
+https://git.geisten.net/api/v1/repos/geisten/geistlib/branch_protections/main
+(through scripts/gitea_api.py).
 
 Stdlib only: the CI image has no PyYAML, and the parser needs just the job
 names and the scalar fields of matrix include entries.
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import sys
-import urllib.request
 from pathlib import Path
+
+from gitea_api import SERVER, Client
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".gitea" / "workflows" / "ci.yml"
 LIST = ROOT / ".gitea" / "required-checks.txt"
-API = "https://git.geisten.net/api/v1/repos/geisten/geistlib/branch_protections/main"
+PROTECTION = "/repos/geisten/geistlib/branch_protections/main"
 EVENT = "pull_request"
 
 
@@ -50,11 +50,6 @@ def scalar(value: str) -> str:
 
 POST_MERGE = "needs.changes.outputs.full"
 REPORT_JOB = "ci-issues"
-
-
-def jobs(text: str) -> list[tuple[str, list[dict]]]:
-    """(name template, matrix include entries) per job, in file order."""
-    return [(j["name"], j["entries"]) for j in parse(text)]
 
 
 def parse(text: str) -> list[dict]:
@@ -160,12 +155,7 @@ def api(method: str, body: dict | None = None) -> dict:
     token = os.environ.get("GITEA_TOKEN")
     if not token:
         raise SystemExit("GITEA_TOKEN (repository admin) is not set")
-    req = urllib.request.Request(API, method=method,
-                                 data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Authorization": f"token {token}",
-                                          "Content-Type": "application/json"})
-    with urllib.request.urlopen(req) as resp:
-        return json.load(resp)
+    return Client(token, SERVER + "/api/v1").call(method, PROTECTION, body)
 
 
 def diff(label_a: str, a: list[str], label_b: str, b: list[str]) -> int:
@@ -182,9 +172,6 @@ def main() -> int:
     derived = expected(WORKFLOW.read_text())
     if cmd == "print":
         print("\n".join(derived))
-        return 0
-    if cmd == "post-merge":
-        print("\n".join(expected(WORKFLOW.read_text(), post_merge=True)))
         return 0
     if cmd == "check":
         rc = diff(WORKFLOW.relative_to(ROOT).as_posix(), derived, LIST.relative_to(ROOT).as_posix(), listed())
