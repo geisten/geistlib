@@ -482,12 +482,17 @@ struct geist_session_stats {
     uint64_t n_tokens_decoded;
     uint64_t total_decode_ns;
     uint64_t total_prefill_ns;
-    uint64_t total_audio_encode_ns;
+    uint64_t total_audio_encode_ns; /* attach_audio and the audio_* stream */
 
     /* Always zero: backend-side counters are not implemented. */
     uint64_t buffer_alloc_count;
     uint64_t buffer_alloc_bytes_peak;
     uint64_t buffer_alloc_bytes_current;
+
+    /* Wired: attach_image / attach_video encoder time (the decoder prefill
+     * of their soft tokens counts as prefill). Last, so a caller built
+     * against the previous layout still reads the fields above right. */
+    uint64_t total_vision_encode_ns;
 };
 
 /* @stability EXPERIMENTAL */
