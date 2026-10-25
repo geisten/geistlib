@@ -580,7 +580,8 @@ static size_t vk_parse_bytes(const char *v) {
     }
     *st                 = (struct vk_state) {0};
     st->backend         = be;
-    st->profile_enabled = getenv("GEIST_VK_PROFILE") != nullptr;
+    const char *profile = getenv("GEIST_VK_PROFILE"); /* unset, "" or "0": off */
+    st->profile_enabled = profile != nullptr && profile[0] != '\0' && strcmp(profile, "0") != 0;
     st->pq2_f32_acc     = getenv("GEIST_VK_PQ2_F32_ACC") != nullptr;
     const char *strict  = getenv("GEIST_VK_STRICT");
     st->strict          = strict != nullptr && strcmp(strict, "0") != 0;
