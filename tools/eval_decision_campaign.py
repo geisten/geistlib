@@ -171,8 +171,10 @@ def cool_gate(args, deadline):
     return bench_host.wait_for_apple_cool(limits, time.monotonic() + min(left, args.cool_timeout_minutes * 60))
 
 
-def run_driver(command, cases, env, chunk, profile, deadline):
-    """Stream the driver's lines to disk as they arrive; stop it at the deadline."""
+def run_driver(command, cases, env, chunk, profile, deadline, wire=None):
+    """Stream the driver's lines to disk as they arrive; stop it at the deadline.
+
+    wire: the driver's stdin; default bench.wire_input(cases)."""
     out = (chunk / f"{profile}.driver.jsonl").open("w")
     recv = (chunk / f"{profile}.recv.tsv").open("w")
     err = (chunk / f"{profile}.stderr.log").open("w")
@@ -195,7 +197,7 @@ def run_driver(command, cases, env, chunk, profile, deadline):
 
     def feed():
         try:
-            proc.stdin.write(bench.wire_input(cases))
+            proc.stdin.write(bench.wire_input(cases) if wire is None else wire)
             proc.stdin.close()
         except (BrokenPipeError, ValueError):
             pass
