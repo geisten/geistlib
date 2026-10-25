@@ -442,6 +442,25 @@
       "isolation": "per sequence, outputs must be bit-identical whatever the other batch members are (reordered or replaced); agreement with independent single-sequence decode is reported (token agreement, max logit difference), not required bit for bit, because the m-row kernels round differently from m = 1",
       "gate": "pass: >= 2.0x aggregate tokens/s at B = 8; then an API proposal under AGENT.md section 6, and stop for the user",
       "budget": "~30 min, one lease"
+    },
+    "amendments": [
+      {
+        "date": "2026-10-25",
+        "declared_after": "the step-1 run with 256-aligned cuts (run-step1) completed. Its results were inspected before this amendment, so this is a corrective re-measurement of the declared gate, not a fresh test.",
+        "finding": "The declaration's alignment was wrong for this model. Bonsai 2 27B resolves a prefill chunk of 320 on Metal, not 256: the qwen35 family adds 64 rows for weights of 4 GiB and more (families/qwen35.c prefill_delta). Qwen3.5 0.8B, which phase 1 measured, resolves 256. The runner's check of the engine chunk against the declaration refused to finalize, as designed.",
+        "observed_with_256_cuts": "472/500 bit-identical option logits. All 28 mismatches (max |difference| <= 0.003) are questions whose prefix-plus-suffix split and joined single prefill differ in a final pass of <= 8 rows: the small-row PQ2_0 kernels of #186/#221 round differently from the large GEMM. The other 407 non-aligned questions and all 65 questions whose cut happened to be a multiple of 320 are bit-identical. Argmax 500/500 identical, accuracy 67.8 % in both arms, end-to-end time 0.385x of independent calls.",
+        "change": "Re-run the decision_prefix arm only, with each subject's cut aligned down to 320 (tools/eval_decision_prefix.py --align 320 --reference-from run-step1). The reference is run-step1's decision_dense samples: same binary, model, cases, profile, backend, threads and environment, which the runner checks. Greedy scoring is deterministic across processes (#171 spot-check, 20/20 bit-identical).",
+        "gate": "unchanged: option logits bit-identical on 500/500; accuracy identical; latency, end-to-end time, snapshot bytes and RSS reported",
+        "step_2": "the fork check uses the engine's chunk too: cuts aligned to 320",
+        "budget": "one lease: ~500 x 2.1 s + 57 prepares (~3 min) + model load, about 25 min"
+      }
+    ],
+    "status": "steps 1-3 complete (2026-10-25); API proposal for batched decode awaits the user's decision",
+    "result": {
+      "writeup": "benchmark/results/DECISION_SHARED_STATE_2026-10-25.md",
+      "step_1": "500/500 bit-identical option logits at cuts aligned to the engine's 320-token chunk (amendment); accuracy 67.8 % both arms; end-to-end 0.40x of independent calls; p50 4.40 -> 2.22 s, p95 18.8 -> 3.6 s",
+      "step_2": "16/16 questions, 3 orders: 256 greedy tokens and final logits identical to an independent session",
+      "step_3": "gate passed: 3.47x aggregate tokens/s at B = 8 (66.6 vs 19.2 tok/s); bit-exact companion invariance; token-identical to independent decode over 32 steps, logits within 0.009"
     }
   }
 }
