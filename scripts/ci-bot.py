@@ -2,7 +2,7 @@
 """ci-bot — keeps the open pull requests of geisten/geistlib and
 geisten/geist-runtime moving (docs/HARDWARE_CI.md, "CI bot").
 
-Polls Gitea every --interval seconds and, within fixed rules, does three
+Polls Gitea every INTERVAL seconds and, within fixed rules, does three
 things; everything else it leaves to a human:
 
 1. Reruns infrastructure failures. A completed run of the PR's head whose
@@ -29,7 +29,8 @@ idempotent. Every decision is logged. --dry-run reads everything and runs
 the trial rebases locally, but performs no write: no rerun, push, comment
 or merge.
 
-Python stdlib only. git must be on PATH.
+Python stdlib only, plus scripts/gitea_api.py next to this file. git must
+be on PATH.
 """
 from __future__ import annotations
 
@@ -43,11 +44,11 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
-import urllib.request
 
-SERVER = "https://git.geisten.net"
+from gitea_api import SERVER, ApiError, Client
+
 REPOS = ("geisten/geistlib", "geisten/geist-runtime")
+INTERVAL = 90  # seconds between polls
 RERUN_MAX = 2
 INFRA_MAX_SECONDS = 300
 LABEL_REBASE = "ci-bot:rebase"
@@ -192,36 +193,15 @@ def resolve_union(text: str) -> str | None:
 
 # ---- Gitea API --------------------------------------------------------------
 
-class ApiError(Exception):
-    def __init__(self, code: int, msg: str):
-        super().__init__(f"HTTP {code}: {msg}")
-        self.code = code
+class Gitea(Client):
+    """Reads retry; writes are skipped (logged) in dry-run."""
 
-
-class Gitea:
     def __init__(self, token: str, dry_run: bool, server: str = SERVER):
-        self.token, self.dry, self.base = token, dry_run, server + "/api/v1"
+        super().__init__(token, server + "/api/v1")
+        self.dry = dry_run
 
-    def call(self, method: str, path: str, body=None, raw: bool = False, tries: int = 4):
-        data = json.dumps(body).encode() if body is not None else None
-        for i in range(tries):
-            req = urllib.request.Request(self.base + path, data=data, method=method, headers={
-                "Authorization": f"token {self.token}", "Content-Type": "application/json"})
-            try:
-                with urllib.request.urlopen(req, timeout=60) as r:
-                    b = r.read()
-                    return b if raw else (json.loads(b) if b.strip() else None)
-            except urllib.error.HTTPError as e:
-                msg = e.read()[:200].decode(errors="replace").strip()
-                if e.code < 500 or i == tries - 1:
-                    raise ApiError(e.code, msg) from None
-            except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
-                if i == tries - 1:
-                    raise ApiError(0, str(e)) from None
-            time.sleep(5 * (i + 1))
-
-    def get(self, path: str, **kw):
-        return self.call("GET", path, **kw)
+    def get(self, path: str, raw: bool = False, tries: int = 4):
+        return self.call("GET", path, raw=raw, tries=tries)
 
     def write(self, method: str, path: str, body=None, what: str = ""):
         if self.dry:
@@ -520,11 +500,8 @@ def main() -> int:
     ap.add_argument("--home", default=os.path.expanduser("~/ci-bot"))
     ap.add_argument("--token-file", default=os.path.expanduser("~/.config/ci-bot/token"))
     ap.add_argument("--state", help="default: <home>/state.json (dry-run: state-dry.json)")
-    ap.add_argument("--interval", type=int, default=90)
-    ap.add_argument("--duration", type=int, default=0, help="stop after N seconds (0: never)")
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="no rerun, push, comment or merge")
-    ap.add_argument("--repos", default=",".join(REPOS))
     a = ap.parse_args()
     with open(a.token_file) as f:
         token = f.read().strip()
@@ -533,17 +510,16 @@ def main() -> int:
         return 1
     os.makedirs(a.home, exist_ok=True)
     state = a.state or os.path.join(a.home, "state-dry.json" if a.dry_run else "state.json")
-    bot = Bot(Gitea(token, a.dry_run), a.home, state, token, tuple(a.repos.split(",")))
-    log(f"ci-bot start ({'dry-run' if a.dry_run else 'live'}; repos {a.repos}; every {a.interval} s)")
-    end = time.time() + a.duration if a.duration else None
+    bot = Bot(Gitea(token, a.dry_run), a.home, state, token)
+    log(f"ci-bot start ({'dry-run' if a.dry_run else 'live'}; repos {','.join(REPOS)}; every {INTERVAL} s)")
     while True:
         try:
             bot.tick()
         except Exception as e:  # noqa: BLE001 — the service must outlive any single bad poll
             log(f"tick failed: {type(e).__name__}: {e}")
-        if a.once or (end and time.time() + a.interval > end):
+        if a.once:
             return 0
-        time.sleep(a.interval)
+        time.sleep(INTERVAL)
 
 
 if __name__ == "__main__":

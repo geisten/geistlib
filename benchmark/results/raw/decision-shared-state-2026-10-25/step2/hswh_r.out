@@ -1,0 +1,21 @@
+with-mac-lock: waiting (#2 in queue, batch) behind reserved for a waiting CI job (30s); queue 2: batch/21495 11m05s, batch/40880 0s
+gate gpu 64
+So. 25 Okt. 2026 17:23:10 CET
+questions 8, prompt tokens 1425 1338 1527 1613 1499 1611 1732 1448
+shared prefix 1173 tokens, cut at 960 (align 320)
+prefix prefill 6769.4 ms; snapshot 270.6 MiB in 34.92 ms
+forward     suffix logits bit-equal to independent split 8/8, to joined 8/8; 256 generated tokens + final logits equal 8/8
+reverse     suffix logits bit-equal to independent split 8/8, to joined 8/8; 256 generated tokens + final logits equal 8/8
+interleaved suffix logits bit-equal to independent split 8/8, to joined 8/8; 256 generated tokens + final logits equal 8/8
+per question: full prefill median 10942.5 ms; restore median 9.24 ms; suffix median 4184.7 ms
+all 8 questions: independent 87791 ms, shared prefix 41534 ms (0.47x)
+decode step after 1425 tokens: 55.23 ms
+prefill_tokens(m=1) pass: 56.20 ms
+prefill_tokens(m=2) pass: 99.13 ms
+prefill_tokens(m=3) pass: 100.05 ms
+prefill_tokens(m=4) pass: 100.58 ms
+prefill_tokens(m=6) pass: 102.17 ms
+prefill_tokens(m=8) pass: 105.43 ms
+prefill_tokens(m=16) pass: 491.22 ms
+RESULT PASS
+So. 25 Okt. 2026 17:35:56 CET
