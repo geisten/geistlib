@@ -339,7 +339,8 @@ the action caches).
 ## CI bot
 
 `scripts/ci-bot.py` runs as the user service `ci-bot` on the desktop runner
-host and polls Gitea every 90 s for the open pull requests of
+host, with its API client `scripts/gitea_api.py` installed next to it in
+`~/ci-bot/` (geisten-infra's desktop role copies both), and polls Gitea every 90 s for the open pull requests of
 `geisten/geistlib` and `geisten/geist-runtime` (everyone's, not only
 Claude's). It replaces the ad-hoc watcher scripts and does three things,
 each within fixed rules; anything else stays with a human:
