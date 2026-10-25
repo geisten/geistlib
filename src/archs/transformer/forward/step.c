@@ -8,6 +8,7 @@
 #include "../arch_state.h"
 #include "../rotation.h"
 #include "../forward.h"
+#include "../scratch_plan.h"
 
 #include "checked.h"
 #include "heap.h"
@@ -915,4 +916,115 @@ enum geist_status transformer_session_apply_opts(struct transformer_arch_session
     }
     return geist_sampler_penalties_init(
             &sess->pen, &pp, (size_t) sess->model->vocab_size, sess->max_seq_len);
+}
+
+/* #26 research prototype (declared in arch_state.h): n sequences, one pass. */
+enum geist_status
+transformer_multi_decode_step(struct transformer_arch_session       *carrier,
+                              size_t                                 n,
+                              struct transformer_arch_session *const seqs[static n],
+                              const geist_token_t                    in[static n],
+                              geist_token_t                          out[static n],
+                              float                                 *logits) {
+    struct transformer_arch_state   *st = carrier->model;
+    struct geist_backend            *be = st->backend;
+    const struct geist_backend_vtbl *v  = be->desc->vtbl;
+    const size_t                     d  = st->d_model;
+    if (n == 0 || n > carrier->m_max || n > TRANSFORMER_LOGITS_ROWS || v->buffer_copy == nullptr ||
+        st->config.has_ple || carrier->twin_sess != nullptr || carrier->split_sess != nullptr) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    for (size_t b = 0; b < n; b++) {
+        if (seqs[b] == nullptr || seqs[b] == carrier || seqs[b]->model != st) {
+            return GEIST_E_INVALID_ARG;
+        }
+        for (size_t c = 0; c < b; c++) {
+            if (seqs[c] == seqs[b]) {
+                return GEIST_E_INVALID_ARG;
+            }
+        }
+        enum geist_status s = transformer_check_kv_room(seqs[b], 1);
+        if (s != GEIST_OK) {
+            return s;
+        }
+        transformer_recurrent_txn_commit(seqs[b]);
+    }
+    const struct transformer_region region_tok =
+            transformer_region_begin(st, GEIST_REGION_DECODE_STEP);
+    enum geist_status s = GEIST_OK;
+    /* Embed each token in its own session, then gather the rows. */
+    for (size_t b = 0; s == GEIST_OK && b < n; b++) {
+        s = embed_lookup_and_scale(seqs[b], in[b], seqs[b]->scratch_h_a);
+        if (s == GEIST_OK)
+            s = v->buffer_copy(carrier->scratch_h_a,
+                               b * d * sizeof(float),
+                               seqs[b]->scratch_h_a,
+                               0,
+                               d * sizeof(float));
+    }
+    struct geist_buffer *h_in = carrier->scratch_h_a, *h_out = carrier->scratch_h_b;
+    for (size_t li = 0; s == GEIST_OK && li < st->n_layers; li++) {
+        s                      = transformer_multi_layer(carrier, n, seqs, (int) li, h_in, h_out);
+        struct geist_buffer *t = h_in;
+        h_in                   = h_out;
+        h_out                  = t;
+    }
+    /* Head: output norm, rotation and the lm_head once over the n rows. */
+    if (s == GEIST_OK && h_in != carrier->scratch_h_a)
+        s = v->buffer_copy(carrier->scratch_h_a, 0, h_in, 0, n * d * sizeof(float));
+    struct geist_tensor t_h = view_2d(carrier->scratch_h_a, (int64_t) n, (int64_t) d);
+    struct geist_tensor t_w = view_1d(st->output_norm.buffer, (int64_t) d);
+    if (s == GEIST_OK)
+        s = be->desc->prims->rmsnorm(be, &t_h, &t_w, st->config.rms_eps, &t_h);
+    if (s == GEIST_OK)
+        s = transformer_rotate_rows(st, n, d, carrier->scratch_h_a);
+    struct geist_tensor t_logits = view_2d(carrier->scratch_logits, (int64_t) n, st->vocab_size);
+    if (s == GEIST_OK)
+        s = linear_w_or_legacy(be,
+                               v,
+                               carrier->scratch_h_a,
+                               carrier->scratch_logits,
+                               &st->embed_table_w,
+                               n,
+                               &t_h,
+                               &st->output_table,
+                               &t_logits);
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
+    const size_t                      vb    = (size_t) st->vocab_size * sizeof(float);
+    if (s == GEIST_OK && logits == nullptr && fused != nullptr && fused->argmax_f32 != nullptr) {
+        for (size_t b = 0; s == GEIST_OK && b < n; b++) {
+            struct geist_tensor t_row =
+                    view_2d_at(carrier->scratch_logits, b * vb, 1, st->vocab_size);
+            int32_t idx = -1;
+            s           = fused->argmax_f32(be, &t_row, &idx);
+            if (s == GEIST_OK && (idx < 0 || (size_t) idx >= (size_t) st->vocab_size))
+                s = GEIST_E_BACKEND;
+            out[b] = (geist_token_t) idx;
+        }
+    } else if (s == GEIST_OK) {
+        const float *all = (const float *) v->buffer_map(carrier->scratch_logits);
+        if (all == nullptr) {
+            s = GEIST_E_BACKEND;
+        } else {
+            for (size_t b = 0; b < n; b++) {
+                const float *row  = all + b * (size_t) st->vocab_size;
+                size_t       best = 0;
+                for (size_t i = 1; i < (size_t) st->vocab_size; i++)
+                    best = row[i] > row[best] ? i : best;
+                out[b] = (geist_token_t) best;
+                if (logits != nullptr)
+                    memcpy(logits + b * (size_t) st->vocab_size, row, vb);
+            }
+            v->buffer_unmap(carrier->scratch_logits);
+        }
+    }
+    if (s == GEIST_OK) {
+        for (size_t b = 0; b < n; b++) {
+            seqs[b]->kv_len += 1;
+            seqs[b]->next_token_pending = out[b];
+            seqs[b]->logits_valid       = false; /* the logits stay in the carrier */
+        }
+    }
+    transformer_region_end(st, region_tok);
+    return s;
 }

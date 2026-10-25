@@ -941,6 +941,32 @@ transformer_compute_per_layer_input(struct transformer_arch_session *sess,
                                                         geist_token_t  input_token,
                                                         geist_token_t *out_token);
 
+/* #26 research prototype, not an API: one decode step for n independent
+ * sequences of the same model in one pass. carrier is a session of that
+ * model whose own state is never read or written (only its m_max-row
+ * scratch); seqs[b] consumes in[b] at its own position kv_len, advances by
+ * one and gets out[b], the greedy argmax of its logits. Every linear runs
+ * once over the n rows; attention and the DeltaNet mixer run per sequence
+ * on its own KV cache and recurrent state. logits, when non-null, receives
+ * n x vocab floats (row b for seqs[b]). Qwen3.5-family models on a backend
+ * with the fused DeltaNet mixer only; GEIST_E_UNSUPPORTED otherwise. */
+[[nodiscard]] enum geist_status
+transformer_multi_decode_step(struct transformer_arch_session       *carrier,
+                              size_t                                 n,
+                              struct transformer_arch_session *const seqs[static n],
+                              const geist_token_t                    in[static n],
+                              geist_token_t                          out[static n],
+                              float                                 *logits);
+
+/* One layer of transformer_multi_decode_step (forward/layer.c). */
+[[nodiscard]] enum geist_status
+transformer_multi_layer(struct transformer_arch_session       *carrier,
+                        size_t                                 n,
+                        struct transformer_arch_session *const seqs[static n],
+                        int                                    layer_idx,
+                        struct geist_buffer                   *h_in_buf,
+                        struct geist_buffer                   *h_out_buf);
+
 /* Append one audio soft-token (HIDDEN floats, already produced by the
  * audio encoder) to the KV cache.
  *

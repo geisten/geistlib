@@ -380,6 +380,14 @@ void transformer_probe_ffn_sparsity(const struct geist_backend_vtbl *v,
 [[nodiscard]] enum geist_status
 transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx);
 
+/* #26 research prototype (layer_deltanet.c): the DeltaNet block for n
+ * independent sequences in one pass; row b of the carrier ctx's buffers
+ * belongs to seqs[b]. */
+[[nodiscard]] enum geist_status
+transformer_layer_run_deltanet_multi(struct transformer_layer_forward_ctx  *ctx,
+                                     size_t                                 n,
+                                     struct transformer_arch_session *const seqs[static n]);
+
 /* DeltaNet recurrence kernels (layer_deltanet.c) — exported for
  * test_deltanet_chunk_unit, which pins chunked == sequential at f32
  * precision; the end-to-end logit test is too coarse to catch subtle
