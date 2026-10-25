@@ -2246,25 +2246,55 @@ static const char metal_q4k_gate_up_n4_source[] =
  * silu is silu_mul_rows' formula, so the fused SwiGLU front is
  * bit-identical to two matvecs and silu_mul. The Q4_K kernel takes 2 rows
  * per simdgroup like matvec_q4k_n4, the Q8_0 one 4 like matvec_q80_n4,
- * each output accumulated in the order of its matvec kernel (#17). */
-#define GEIST_METAL_GATE_UP_Q4K(NAME, ACT)                                                       \
-    "kernel void " NAME "(device const float*x[[buffer(0)]],device const "                       \
-    "uchar*wg[[buffer(1)]],device const uchar*wu[[buffer(2)]],device "                           \
-    "float*gy[[buffer(3)]],device float*uy[[buffer(4)]],constant P&p[[buffer(5)]],uint3 "        \
-    "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "          \
-    "sg[[simdgroup_index_in_threadgroup]]){(void)uy;uint "                                       \
-    "ix=uint(ti)/"                                                                               \
-    "8u,it=uint(ti)&7u,iq=it>>2u,ir=it&3u,b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.n_out||b>=p." \
-    "rows)return;uint nb=p.n_in>>8u;float g0=0.0f,g1=0.0f,u0=0.0f,u1=0.0f;device const "         \
-    "float*y4=x+p.xo+b*p.xs+ix*256u+64u*iq+8u*ir;for(uint ib=ix;ib<nb;ib+=4u){float "            \
-    "yl[16],yh[16];float4 sumy=float4(0.0f);for(uint "                                           \
-    "i=0u;i<8u;i++){yl[i]=y4[i];sumy[0]+=yl[i];yl[i+8u]=y4[i+32u];sumy[1]+=yl[i+8u];yh[i]=y4[i+" \
-    "128u];sumy[2]+=yh[i];yh[i+8u]=y4[i+160u];sumy[3]+=yh[i+8u];}if(fr<p.n_out){g0+=dotb(wg,p."  \
-    "gw,p.bpr,fr,ib,iq,ir,yl,yh,sumy);u0+=dotb(wu,p.uw,p.bpr,fr,ib,iq,ir,yl,yh,sumy);}if(fr+1u<" \
-    "p.n_out){g1+=dotb(wg,p.gw,p.bpr,fr+1u,ib,iq,ir,yl,yh,sumy);u1+=dotb(wu,p.uw,p.bpr,fr+1u,"   \
-    "ib,iq,ir,yl,yh,sumy);}y4+=1024u;}float "                                                    \
-    "ag0=simd_sum(g0),au0=simd_sum(u0),ag1=simd_sum(g1),au1=simd_sum(u1);if(ti==0){uint "        \
-    "go=p.gy+b*p.ys+fr;gy[go]=" ACT "(ag0)*au0;if(fr+1u<p.n_out)gy[go+1u]=" ACT "(ag1)*au1;}}\n"
+ * each output accumulated in the order of its matvec kernel (#17).
+ *
+ * The Q4_K kernel runs matvec_q4k_n4's row loop twice per block, once over
+ * the two gate rows and once over the two up rows, statement for statement.
+ * One loop over all four rows, or the rows through dotb, came out equal at
+ * K <= 1024 (one block per lane group) but not above: there the compiler
+ * contracts the running sums differently from the matvec's, 1e-5 relative
+ * at K = 2048 and 3072 (#196). */
+#define GEIST_METAL_GATE_UP_Q4K(NAME, ACT)                                                     \
+    "kernel void " NAME "(device const float*x[[buffer(0)]],device const uchar*wg[[buffer(1)]" \
+    "],device const uchar*wu[[buffer(2)]],device float*gy[[buffer(3)]],device float*uy[[buffe" \
+    "r(4)]],constant P&p[[buffer(5)]],uint3 tg[[threadgroup_position_in_grid]],ushort ti[[thr" \
+    "ead_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){(void)uy;constexpr" \
+    " ushort km1=0x3f3f,km2=0x0f0f,km3=0xc0c0;uint ix=uint(ti)/8u,it=uint(ti)&7u,iq=it>>2u,ir" \
+    "=it&3u,b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.n_out||b>=p.rows)return;uint nb=p.n_in>>" \
+    "8u;float sum0=0.0f,sum1=0.0f,sum2=0.0f,sum3=0.0f;device const float*y4=x+p.xo+b*p.xs+ix*" \
+    "256u+64u*iq+8u*ir;ushort sc16[4];thread const uchar*sc8=(thread const uchar*)sc16;for(ui" \
+    "nt ib=ix;ib<nb;ib+=4u){float yl[16],yh[16];float4 sumy=float4(0.0f);for(uint i=0u;i<8u;i" \
+    "++){yl[i]=y4[i];sumy[0]+=yl[i];yl[i+8u]=y4[i+32u];sumy[1]+=yl[i+8u];yh[i]=y4[i+128u];sum" \
+    "y[2]+=yh[i];yh[i+8u]=y4[i+160u];sumy[3]+=yh[i+8u];}for(uint rr=0u;rr<2u;rr++){uint row=f" \
+    "r+rr;if(row>=p.n_out)continue;device const uchar*wb=wg+p.gw+(row*p.bpr+ib)*144u;device c" \
+    "onst ushort*sc=(device const ushort*)(wb+4u)+iq;device const ushort*q1=(device const ush" \
+    "ort*)(wb+16u)+16u*iq+4u*ir;device const half*dh=(device const half*)wb;sc16[0]=sc[0]&km1" \
+    ";sc16[1]=sc[2]&km1;sc16[2]=((sc[4]>>0)&km2)|((sc[0]&km3)>>2);sc16[3]=((sc[4]>>4)&km2)|((" \
+    "sc[2]&km3)>>2);device const ushort*q2=q1+32u;float4 a1=float4(0.0f),a2=float4(0.0f);for(" \
+    "uint i=0u;i<4u;i++){ushort q=q1[i];a1[0]+=yl[2u*i+0u]*float(q&0x000f);a1[1]+=yl[2u*i+1u]" \
+    "*float(q&0x0f00);a1[2]+=yl[2u*i+8u]*float(q&0x00f0);a1[3]+=yl[2u*i+9u]*float(q&0xf000);q" \
+    "=q2[i];a2[0]+=yh[2u*i+0u]*float(q&0x000f);a2[1]+=yh[2u*i+1u]*float(q&0x0f00);a2[2]+=yh[2" \
+    "u*i+8u]*float(q&0x00f0);a2[3]+=yh[2u*i+9u]*float(q&0xf000);}float acc=float(dh[0])*((a1[" \
+    "0]+(1.0f/256.0f)*a1[1])*float(sc8[0])+(a1[2]+(1.0f/256.0f)*a1[3])*float(sc8[1])*(1.0f/16" \
+    ".0f)+(a2[0]+(1.0f/256.0f)*a2[1])*float(sc8[4])+(a2[2]+(1.0f/256.0f)*a2[3])*float(sc8[5])" \
+    "*(1.0f/16.0f))-float(dh[1])*(sumy[0]*float(sc8[2])+sumy[1]*float(sc8[3])+sumy[2]*float(s" \
+    "c8[6])+sumy[3]*float(sc8[7]));if(rr==0u)sum0+=acc;else sum1+=acc;}for(uint rr=0u;rr<2u;r" \
+    "r++){uint row=fr+rr;if(row>=p.n_out)continue;device const uchar*wb=wu+p.uw+(row*p.bpr+ib" \
+    ")*144u;device const ushort*sc=(device const ushort*)(wb+4u)+iq;device const ushort*q1=(d" \
+    "evice const ushort*)(wb+16u)+16u*iq+4u*ir;device const half*dh=(device const half*)wb;sc" \
+    "16[0]=sc[0]&km1;sc16[1]=sc[2]&km1;sc16[2]=((sc[4]>>0)&km2)|((sc[0]&km3)>>2);sc16[3]=((sc" \
+    "[4]>>4)&km2)|((sc[2]&km3)>>2);device const ushort*q2=q1+32u;float4 a1=float4(0.0f),a2=fl" \
+    "oat4(0.0f);for(uint i=0u;i<4u;i++){ushort q=q1[i];a1[0]+=yl[2u*i+0u]*float(q&0x000f);a1[" \
+    "1]+=yl[2u*i+1u]*float(q&0x0f00);a1[2]+=yl[2u*i+8u]*float(q&0x00f0);a1[3]+=yl[2u*i+9u]*fl" \
+    "oat(q&0xf000);q=q2[i];a2[0]+=yh[2u*i+0u]*float(q&0x000f);a2[1]+=yh[2u*i+1u]*float(q&0x0f" \
+    "00);a2[2]+=yh[2u*i+8u]*float(q&0x00f0);a2[3]+=yh[2u*i+9u]*float(q&0xf000);}float acc=flo" \
+    "at(dh[0])*((a1[0]+(1.0f/256.0f)*a1[1])*float(sc8[0])+(a1[2]+(1.0f/256.0f)*a1[3])*float(s" \
+    "c8[1])*(1.0f/16.0f)+(a2[0]+(1.0f/256.0f)*a2[1])*float(sc8[4])+(a2[2]+(1.0f/256.0f)*a2[3]" \
+    ")*float(sc8[5])*(1.0f/16.0f))-float(dh[1])*(sumy[0]*float(sc8[2])+sumy[1]*float(sc8[3])+" \
+    "sumy[2]*float(sc8[6])+sumy[3]*float(sc8[7]));if(rr==0u)sum2+=acc;else sum3+=acc;}y4+=102" \
+    "4u;}float g0=simd_sum(sum0),g1=simd_sum(sum1),u0=simd_sum(sum2),u1=simd_sum(sum3);if(ti=" \
+    "=0){uint o=p.gy+b*p.ys+fr;gy[o]=" ACT "(g0)*u0;if(fr+1u<p.n_out)gy[o+1u]=" ACT "(g1)*u1;" \
+    "}}\n"
 
 #define GEIST_METAL_GATE_UP_Q80(NAME, ACT)                                                     \
     "kernel void " NAME "(device const float*x[[buffer(0)]],device const "                     \
@@ -2294,63 +2324,36 @@ static const char metal_q4k_gate_up_n4_source[] =
 /* The GeGLU gate/up kernel in matvec_q4k_h's layout (#196): two gate and
  * two up rows per half simdgroup, blocks strided by two. 12288 x 1536 pairs
  * 88 -> 66 us on the M1 Max, 6144 x 1536 48 -> 39 us. */
+#define GEIST_METAL_GATE_UP_Q4K_H(NAME, ACT)                                                   \
+    "kernel void " NAME "(device const float*x[[buffer(0)]],device const uchar*wg[[buffer(1)]" \
+    "],device const uchar*wu[[buffer(2)]],device float*gy[[buffer(3)]],device float*uy[[buffe" \
+    "r(4)]],constant P&p[[buffer(5)]],uint3 tg[[threadgroup_position_in_grid]],ushort ti[[thr" \
+    "ead_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){(void)uy;uint hf=u" \
+    "int(ti)>>4u,ix=(uint(ti)>>3u)&1u,it=uint(ti)&7u,iq=it>>2u,ir=it&3u,b=tg.y,fr=((tg.x*2u+u" \
+    "int(sg))*2u+hf)*2u;if(b>=p.rows)return;uint nb=p.n_in>>8u;float g0=0.0f,g1=0.0f,u0=0.0f," \
+    "u1=0.0f;device const float*y4=x+p.xo+b*p.xs+ix*256u+64u*iq+8u*ir;for(uint ib=ix;ib<nb;ib" \
+    "+=2u){float yl[16],yh[16];float4 sumy=float4(0.0f);for(uint i=0u;i<8u;i++){yl[i]=y4[i];s" \
+    "umy[0]+=yl[i];yl[i+8u]=y4[i+32u];sumy[1]+=yl[i+8u];yh[i]=y4[i+128u];sumy[2]+=yh[i];yh[i+" \
+    "8u]=y4[i+160u];sumy[3]+=yh[i+8u];}if(fr<p.n_out){g0+=dotb(wg,p.gw,p.bpr,fr,ib,iq,ir,yl,y" \
+    "h,sumy);u0+=dotb(wu,p.uw,p.bpr,fr,ib,iq,ir,yl,yh,sumy);}if(fr+1u<p.n_out){g1+=dotb(wg,p." \
+    "gw,p.bpr,fr+1u,ib,iq,ir,yl,yh,sumy);u1+=dotb(wu,p.uw,p.bpr,fr+1u,ib,iq,ir,yl,yh,sumy);}y" \
+    "4+=512u;}for(ushort o=8;o>0;o>>=1){g0+=simd_shuffle_xor(g0,o);u0+=simd_shuffle_xor(u0,o)" \
+    ";g1+=simd_shuffle_xor(g1,o);u1+=simd_shuffle_xor(u1,o);}if((ti&15)==0&&fr<p.n_out){uint " \
+    "go=p.gy+b*p.ys+fr;gy[go]=" ACT "(g0)*u0;if(fr+1u<p.n_out)gy[go+1u]=" ACT "(g1)*u1;}}\n"
+
 static const char metal_gate_up_q4k_h_gelu_kernel[] =
-        "kernel void gate_up_q4k_h(device const float*x[[buffer(0)]],device const uchar*wg[[buffe"
-        "r(1)]],device const uchar*wu[[buffer(2)]],device float*gy[[buffer(3)]],device float*uy[["
-        "buffer(4)]],constant P&p[[buffer(5)]],uint3 tg[[threadgroup_position_in_grid]],ushort ti"
-        "[[thread_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]]){(void)uy;uint"
-        " hf=uint(ti)>>4u,ix=(uint(ti)>>3u)&1u,it=uint(ti)&7u,iq=it>>2u,ir=it&3u,b=tg.y,fr=((tg.x"
-        "*2u+uint(sg))*2u+hf)*2u;if(b>=p.rows)return;uint nb=p.n_in>>8u;float g0=0.0f,g1=0.0f,u0="
-        "0.0f,u1=0.0f;device const float*y4=x+p.xo+b*p.xs+ix*256u+64u*iq+8u*ir;for(uint ib=ix;ib<"
-        "nb;ib+=2u){float yl[16],yh[16];float4 sumy=float4(0.0f);for(uint i=0u;i<8u;i++){yl[i]=y4"
-        "[i];sumy[0]+=yl[i];yl[i+8u]=y4[i+32u];sumy[1]+=yl[i+8u];yh[i]=y4[i+128u];sumy[2]+=yh[i];"
-        "yh[i+8u]=y4[i+160u];sumy[3]+=yh[i+8u];}if(fr<p.n_out){g0+=dotb(wg,p.gw,p.bpr,fr,ib,iq,ir"
-        ",yl,yh,sumy);u0+=dotb(wu,p.uw,p.bpr,fr,ib,iq,ir,yl,yh,sumy);}if(fr+1u<p.n_out){g1+=dotb("
-        "wg,p.gw,p.bpr,fr+1u,ib,iq,ir,yl,yh,sumy);u1+=dotb(wu,p.uw,p.bpr,fr+1u,ib,iq,ir,yl,yh,sum"
-        "y);}y4+=512u;}for(ushort o=8;o>0;o>>=1){g0+=simd_shuffle_xor(g0,o);u0+=simd_shuffle_xor("
-        "u0,o);g1+=simd_shuffle_xor(g1,o);u1+=simd_shuffle_xor(u1,o);}if((ti&15)==0&&fr<p.n_out){"
-        "uint go=p.gy+b*p.ys+fr;gy[go]=gelu(g0)*u0;if(fr+1u<p.n_out)gy[go+1u]=gelu(g1)*u1;}}\n";
+        GEIST_METAL_GATE_UP_Q4K_H("gate_up_q4k_h", "gelu");
+/* SwiGLU in the same layout. Each output's sums come out as matvec_q4k_h's
+ * bit for bit at K = 1536 (the parity test holds it there), so the fused
+ * front stays equal to two linear_t and silu_mul where linear_t takes
+ * matvec_q4k_h. */
+static const char metal_gate_up_q4k_h_silu_kernel[] =
+        GEIST_METAL_GATE_UP_Q4K_H("gate_up_silu_q4k_h", "silu");
 
 static const char metal_gate_up_q4k_gelu_kernel[] =
         GEIST_METAL_GATE_UP_Q4K("gate_up_q4k_n4", "gelu");
-/* The SwiGLU Q4_K kernel runs matvec_q4k_n4's loop over four rows, two
- * of gate and two of up, each accumulated by the same statement as in the
- * matvec, so the result is that of two matvecs and silu_mul bit for bit.
- * (dotb above contracts differently; the GeGLU kernel keeps it and its
- * bits.) */
 static const char metal_gate_up_q4k_silu_kernel[] =
-        "kernel void gate_up_silu_q4k_n4(device const float*x[[buffer(0)]],device const "
-        "uchar*wg[[buffer(1)]],device const uchar*wu[[buffer(2)]],device "
-        "float*gy[[buffer(3)]],device float*uy[[buffer(4)]],constant P&p[[buffer(5)]],uint3 "
-        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
-        "sg[[simdgroup_index_in_threadgroup]]){(void)uy;constexpr ushort "
-        "km1=0x3f3f,km2=0x0f0f,km3=0xc0c0;uint ix=uint(ti)/8u,it=uint(ti)&7u,iq=it>>2u,ir=it&3u,"
-        "b=tg.y,fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.n_out||b>=p.rows)return;uint "
-        "nb=p.n_in>>8u;float sum0=0.0f,sum1=0.0f,sum2=0.0f,sum3=0.0f;device const "
-        "float*y4=x+p.xo+b*p.xs+ix*256u+64u*iq+8u*ir;ushort sc16[4];thread const uchar*sc8=(thread "
-        "const uchar*)sc16;for(uint ib=ix;ib<nb;ib+=4u){float yl[16],yh[16];float4 "
-        "sumy=float4(0.0f);for(uint "
-        "i=0u;i<8u;i++){yl[i]=y4[i];sumy[0]+=yl[i];yl[i+8u]=y4[i+32u];sumy[1]+=yl[i+8u];yh[i]=y4[i+"
-        "128u];sumy[2]+=yh[i];yh[i+8u]=y4[i+160u];sumy[3]+=yh[i+8u];}for(uint "
-        "rr=0u;rr<4u;rr++){uint row=fr+(rr&1u);if(row>=p.n_out)continue;device const "
-        "uchar*wb=(rr<2u?wg+p.gw:wu+p.uw)+(row*p.bpr+ib)*144u;device const ushort*sc=(device const "
-        "ushort*)(wb+4u)+iq;device const ushort*q1=(device const "
-        "ushort*)(wb+16u)+16u*iq+4u*ir;device const half*dh=(device const "
-        "half*)wb;sc16[0]=sc[0]&km1;sc16[1]=sc[2]&km1;sc16[2]=((sc[4]>>0)&km2)|((sc[0]&km3)>>2);"
-        "sc16[3]=((sc[4]>>4)&km2)|((sc[2]&km3)>>2);device const ushort*q2=q1+32u;float4 "
-        "a1=float4(0.0f),a2=float4(0.0f);for(uint i=0u;i<4u;i++){ushort "
-        "q=q1[i];a1[0]+=yl[2u*i+0u]*float(q&0x000f);a1[1]+=yl[2u*i+1u]*float(q&0x0f00);a1[2]+=yl["
-        "2u*i+8u]*float(q&0x00f0);a1[3]+=yl[2u*i+9u]*float(q&0xf000);q=q2[i];a2[0]+=yh[2u*i+0u]*"
-        "float(q&0x000f);a2[1]+=yh[2u*i+1u]*float(q&0x0f00);a2[2]+=yh[2u*i+8u]*float(q&0x00f0);a2["
-        "3]+=yh[2u*i+9u]*float(q&0xf000);}float "
-        "acc=float(dh[0])*((a1[0]+(1.0f/256.0f)*a1[1])*float(sc8[0])+(a1[2]+(1.0f/"
-        "256.0f)*a1[3])*float(sc8[1])*(1.0f/16.0f)+(a2[0]+(1.0f/"
-        "256.0f)*a2[1])*float(sc8[4])+(a2[2]+(1.0f/256.0f)*a2[3])*float(sc8[5])*(1.0f/"
-        "16.0f))-float(dh[1])*(sumy[0]*float(sc8[2])+sumy[1]*float(sc8[3])+sumy[2]*float(sc8[6])+"
-        "sumy[3]*float(sc8[7]));if(rr==0u)sum0+=acc;else if(rr==1u)sum1+=acc;else "
-        "if(rr==2u)sum2+=acc;else sum3+=acc;}y4+=1024u;}float "
-        "g0=simd_sum(sum0),g1=simd_sum(sum1),u0=simd_sum(sum2),u1=simd_sum(sum3);if(ti==0){uint "
-        "o=p.gy+b*p.ys+fr;gy[o]=silu(g0)*u0;if(fr+1u<p.n_out)gy[o+1u]=silu(g1)*u1;}}\n";
+        GEIST_METAL_GATE_UP_Q4K("gate_up_silu_q4k_n4", "silu");
 static const char metal_gate_up_q80_gelu_kernel[] =
         GEIST_METAL_GATE_UP_Q80("gate_up_q80_n4", "gelu");
 static const char metal_gate_up_q80_silu_kernel[] =
