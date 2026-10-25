@@ -293,9 +293,9 @@ The Pi takes the same workflow with `-i host=pi5`. Its deploy job runs on
 `pi5-rspdevelop` and holds the board lock, so `pi5-ci` (which takes no job
 while the lock is held) restarts at once; `pi5-rspdevelop` itself restarts
 from a transient unit once the job has ended and the lock is free.
-`-i host=pi5 -i action=verify` then runs one checkout on each Pi
-runner and looks for both in the cache's log (the container probe asks for
-`ubuntu-24.04-arm-pi`, the label only `pi5-ci` carries).
+`-i host=pi5 -i action=status` then shows the service, the runners' wiring
+and the cache's log, where every checkout of a Pi job appears as `served
+127.0.0.1` (host mode) or `served 172.…` (`pi5-ci`).
 
 The Mac is installed by hand, `sh scripts/git-cache-mac.sh install`
 (`status` shows its state). Its token is not the org secret: the user
