@@ -625,11 +625,7 @@ struct transformer_moe_gpu {
     const struct geist_weight **sel_w;
     _Atomic uint64_t            n_routed;           /* layer steps that took that route */
     _Atomic uint64_t            n_device;           /* layer steps that took that route */
-    _Atomic uint64_t            rows_gpu, rows_cpu; /* GEIST_VERBOSE at destroy */
-    /* GEIST_VERBOSE at destroy: batches, and their ns packing (to the
-     * copy), recording, waiting (buffer_map of the outputs), unpacking. */
-    _Atomic uint64_t batches, ns_pack, ns_record, ns_wait, ns_unpack;
-    _Atomic uint64_t n_grouped, ns_wait_grouped; /* the decode batches of them */
+    _Atomic uint64_t            rows_gpu, rows_cpu, batches; /* GEIST_VERBOSE at destroy */
 };
 
 struct transformer_arch_state {

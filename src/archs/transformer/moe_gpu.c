@@ -20,7 +20,6 @@
 #include "moe_profile.h"
 
 #include "forward/internal.h"
-#include "forward/profile.h"
 #include "gguf_reader.h"
 #include "heap.h"
 
@@ -132,24 +131,13 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
                 (unsigned long long) atomic_load(&mg->rows_gpu),
                 geist_backend_name(mg->be),
                 (unsigned long long) atomic_load(&mg->rows_cpu));
-        const double nb = (double) (atomic_load(&mg->batches) | 1u) * 1e3;
         fprintf(stderr,
-                "geist: moe: %llu GPU batches, mean us: pack %.1f, record %.1f, wait %.1f, "
-                "unpack %.1f\n",
-                (unsigned long long) atomic_load(&mg->batches),
-                (double) atomic_load(&mg->ns_pack) / nb,
-                (double) atomic_load(&mg->ns_record) / nb,
-                (double) atomic_load(&mg->ns_wait) / nb,
-                (double) atomic_load(&mg->ns_unpack) / nb);
+                "geist: moe: %llu GPU batches\n",
+                (unsigned long long) atomic_load(&mg->batches));
         fprintf(stderr,
                 "geist: moe: %llu layer steps routed on the device, %llu with the experts split\n",
                 (unsigned long long) atomic_load(&mg->n_device),
                 (unsigned long long) atomic_load(&mg->n_routed));
-        fprintf(stderr,
-                "geist: moe: %llu of them grouped (decode), mean wait %.1f us\n",
-                (unsigned long long) atomic_load(&mg->n_grouped),
-                (double) atomic_load(&mg->ns_wait_grouped) /
-                        ((double) (atomic_load(&mg->n_grouped) | 1u) * 1e3));
     }
     const struct geist_backend_vtbl *gv = mg->be->desc->vtbl;
     for (size_t i = 0; mg->bufs != nullptr && i < mg->n_bufs; i++) {
@@ -547,7 +535,6 @@ enum geist_status moe_gpu_run(struct transformer_arch_session *sess,
             mg->grouped[layer] && gf->linear_t_grouped != nullptr && n_hot <= GEIST_MOE_MAX_EXPERTS;
     for (size_t i = 0; i < n_hot && one_row; i++)
         one_row = rs[hot[i] + 1] - rs[hot[i]] == 1;
-    const uint64_t    t0   = transformer_profile_now_ns();
     size_t            rows = 0;
     enum geist_status s    = GEIST_OK;
     if (one_row && gbe == st->backend && sess->moe_x_io != nullptr) {
@@ -573,8 +560,7 @@ enum geist_status moe_gpu_run(struct transformer_arch_session *sess,
         gv->buffer_unmap(sess->moe_gpu_x_io);
         s = gv->buffer_copy(sess->moe_gpu_x, 0, sess->moe_gpu_x_io, 0, rows * d * sizeof(float));
     }
-    const uint64_t t1           = transformer_profile_now_ns();
-    bool           grouped_done = false;
+    bool grouped_done = false;
     if (s == GEIST_OK && one_row) {
         const struct geist_weight *wg[GEIST_MOE_MAX_EXPERTS], *wu[GEIST_MOE_MAX_EXPERTS],
                 *wd[GEIST_MOE_MAX_EXPERTS];
@@ -636,9 +622,7 @@ enum geist_status moe_gpu_run(struct transformer_arch_session *sess,
             rows += m;
         }
     }
-    const uint64_t t2  = transformer_profile_now_ns();
-    const float   *yio = s == GEIST_OK ? gv->buffer_map(sess->moe_gpu_y_io) : nullptr; /* waits */
-    const uint64_t t3  = transformer_profile_now_ns();
+    const float *yio = s == GEIST_OK ? gv->buffer_map(sess->moe_gpu_y_io) : nullptr; /* waits */
     if (yio == nullptr) {
         return s != GEIST_OK ? s : GEIST_E_BACKEND;
     }
@@ -651,15 +635,6 @@ enum geist_status moe_gpu_run(struct transformer_arch_session *sess,
     gv->buffer_unmap(sess->moe_gpu_y_io);
     atomic_fetch_add_explicit(&mg->rows_gpu, rows, memory_order_relaxed);
     atomic_fetch_add_explicit(&mg->batches, 1, memory_order_relaxed);
-    if (grouped_done) {
-        atomic_fetch_add_explicit(&mg->n_grouped, 1, memory_order_relaxed);
-        atomic_fetch_add_explicit(&mg->ns_wait_grouped, t3 - t2, memory_order_relaxed);
-    }
-    atomic_fetch_add_explicit(&mg->ns_pack, t1 - t0, memory_order_relaxed);
-    atomic_fetch_add_explicit(&mg->ns_record, t2 - t1, memory_order_relaxed);
-    atomic_fetch_add_explicit(&mg->ns_wait, t3 - t2, memory_order_relaxed);
-    atomic_fetch_add_explicit(
-            &mg->ns_unpack, transformer_profile_now_ns() - t3, memory_order_relaxed);
     return GEIST_OK;
 }
 
@@ -787,8 +762,6 @@ enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
         gf->submit(gbe);
         atomic_fetch_add_explicit(&mg->rows_gpu, real, memory_order_relaxed);
         atomic_fetch_add_explicit(&mg->batches, 1, memory_order_relaxed);
-        if (one)
-            atomic_fetch_add_explicit(&mg->n_grouped, 1, memory_order_relaxed);
     }
     return s;
 }
