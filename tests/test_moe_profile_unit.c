@@ -18,6 +18,11 @@
  * written when the model goes, and the next load reads them. With a GPU
  * backend in the build and GEIST_MOE_HOT = 4, the four experts the cache
  * counts most often are the ones that get a copy.
+ * Placement determinism (#48), with a GPU backend in the build: three loads
+ * of the fixture with the same GEIST_MOE_PROFILE (counts with ties) and
+ * GEIST_MOE_HOT, and three with no profile, place the same experts, the
+ * ones the ranking defines, and give the same logits bit for bit; the
+ * model on the GPU and the model on cpu_scalar with a GPU split backend.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 #define GEIST_INTERNAL_ENGINE_LAYER
@@ -286,6 +291,133 @@ static int check_model(void) {
     return fails;
 }
 
+/* One load of the fixture for check_determinism: on `gbe` itself (on_gpu)
+ * or on `cpu` with `gbe` as split backend. Writes the hot set (layer-major,
+ * 2 x 8) and the next-token logits, chunked and token by token. */
+static bool placed_load(size_t                n,
+                        const geist_token_t   ids[static n],
+                        const struct tf_buf  *g,
+                        bool                  on_gpu,
+                        bool                  hot[static 2 * 8],
+                        float                 chunked[static VOCAB],
+                        float                 single[static VOCAB],
+                        struct geist_backend *cpu,
+                        struct geist_backend *gbe) {
+    const struct geist_session_opts lo = {.split_backend = gbe, .split_layers = 1};
+    struct geist_backend           *be = on_gpu ? gbe : cpu;
+    struct geist_model             *m  = nullptr;
+    struct geist_session           *s  = nullptr;
+    bool ok = (on_gpu ? geist_model_load_from_memory(g->b, g->n, gbe, &m)
+                      : geist_model_load_from_memory_with_opts(g->b, g->n, cpu, &lo, &m)) ==
+                      GEIST_OK &&
+              geist_session_create(m, be, &OPTS, &s) == GEIST_OK;
+    for (size_t step = 0; ok && step < 2; step++) {
+        float *out = step == 0 ? chunked : single;
+        size_t nl  = 0;
+        ok         = geist_session_reset(s) == GEIST_OK;
+        for (size_t i = 0, k = step == 0 ? n : 1; ok && i < n; i += k)
+            ok = geist_session_prefill_tokens(s, n - i < k ? n - i : k, ids + i) == GEIST_OK;
+        const float *lg = ok ? geist_session_peek_logits(&nl, s) : nullptr;
+        ok              = lg != nullptr && nl == VOCAB;
+        if (ok)
+            memcpy(out, lg, VOCAB * sizeof(float));
+    }
+    if (ok) {
+        const struct transformer_arch_session *a = geist_session_internal_arch_session(s);
+        for (size_t i = 0; i < 2 * 8; i++)
+            hot[i] = moe_gpu_hot(a, i / 8, i % 8);
+    } else {
+        fprintf(stderr, "%s\n", geist_backend_errmsg(be));
+    }
+    geist_session_destroy(s);
+    geist_model_destroy(m);
+    return ok;
+}
+
+/* #48: placement is decided once at load and is deterministic. The same
+ * model with the same profile (GEIST_MOE_PROFILE, counts with ties) and the
+ * same GEIST_MOE_HOT gives the same hot set on every load, the one the
+ * ranking defines (count descending, ties to the lower e * n_layers + l),
+ * and the same logits bit for bit; likewise with no profile (the same share
+ * of every layer). Both GPU modes: the model on the GPU, and the model on
+ * the CPU with the GPU as split backend. */
+static int check_determinism(void) {
+    struct geist_backend *gbe    = nullptr;
+    const char *const     gpus[] = {"vulkan", "metal"};
+    for (size_t b = 0; b < 2 && gbe == nullptr; b++) {
+        if (geist_backend_create(gpus[b], nullptr, nullptr, &gbe) != GEIST_OK)
+            gbe = nullptr;
+    }
+    if (gbe == nullptr) {
+        printf("skip placement determinism: no GPU backend in this build\n");
+        return 0;
+    }
+    struct geist_backend *cpu = nullptr;
+    int fails = geist_expect(geist_backend_create("cpu_scalar", nullptr, nullptr, &cpu) == GEIST_OK,
+                             "cpu_scalar");
+    struct tf_buf g = mf_qwen3moe_gguf(&GEOM);
+    geist_token_t ids[N_PROMPT];
+    for (size_t i = 0; i < N_PROMPT; i++)
+        ids[i] = (geist_token_t) ((i * 37 + 5) % VOCAB);
+
+    /* Ties on purpose: four experts at 9, then nine at 5; five go hot. By
+     * the ranking: 9s (l1,e0) (l0,e3) (l0,e5) (l1,e7), then the 5 with the
+     * lowest e * 2 + l, (l0,e0). */
+    char path[512];
+    snprintf(path, sizeof path, "%s/determinism.txt", g_dir);
+    write_text(path,
+               "USAGE fixture profile corpus 9 0 5,5,5,9,5,9,1,1\n"
+               "USAGE fixture profile corpus 9 1 9,5,5,5,5,1,1,9\n");
+    const bool want[2 * 8] = {[0] = true, [3] = true, [5] = true, [8 + 0] = true, [8 + 7] = true};
+
+    /* No profile cache: each load would add its counts for the next (#165). */
+    setenv("GEIST_MOE_PROFILE_CACHE", "0", 1);
+    setenv("GEIST_MOE_HOT", "5", 1);
+    for (size_t mode = 0; fails == 0 && mode < 4; mode++) {
+        const bool on_gpu = mode % 2 == 0, with_prof = mode < 2;
+        if (with_prof)
+            setenv("GEIST_MOE_PROFILE", path, 1);
+        else
+            unsetenv("GEIST_MOE_PROFILE");
+        bool  hot[3][2 * 8];
+        float ch[3][VOCAB], sg[3][VOCAB];
+        bool  ok = true;
+        for (size_t r = 0; r < 3 && ok; r++)
+            ok = placed_load(N_PROMPT, ids, &g, on_gpu, hot[r], ch[r], sg[r], cpu, gbe);
+        size_t n_hot = 0;
+        for (size_t i = 0; ok && i < 2 * 8; i++)
+            n_hot += hot[0][i];
+        const bool same_set    = ok && memcmp(hot[0], hot[1], sizeof hot[0]) == 0 &&
+                                 memcmp(hot[0], hot[2], sizeof hot[0]) == 0;
+        const bool same_logits = ok && memcmp(ch[0], ch[1], sizeof ch[0]) == 0 &&
+                                 memcmp(ch[0], ch[2], sizeof ch[0]) == 0 &&
+                                 memcmp(sg[0], sg[1], sizeof sg[0]) == 0 &&
+                                 memcmp(sg[0], sg[2], sizeof sg[0]) == 0;
+        printf("%s, %s, %s: 3 loads, %zu hot, same set %d, same logits %d\n",
+               geist_backend_name(gbe),
+               on_gpu ? "model on the GPU" : "model on cpu_scalar, GPU split",
+               with_prof ? "profile with ties" : "no profile",
+               n_hot,
+               same_set,
+               same_logits);
+        fails += geist_expect(ok, "the fixture loads and runs with a placement");
+        fails += geist_expect(n_hot == 5, "GEIST_MOE_HOT experts are placed");
+        fails += geist_expect(same_set, "every load places the same experts");
+        fails += geist_expect(same_logits, "every load gives the same logits bit for bit");
+        if (with_prof)
+            fails += geist_expect(ok && memcmp(hot[0], want, sizeof want) == 0,
+                                  "the profile's ranking decides, ties to the lower index");
+    }
+    unsetenv("GEIST_MOE_HOT");
+    unsetenv("GEIST_MOE_PROFILE");
+    setenv("GEIST_MOE_PROFILE_CACHE", g_dir, 1);
+    remove(path);
+    free(g.b);
+    geist_backend_destroy(cpu);
+    geist_backend_destroy(gbe);
+    return fails;
+}
+
 static int check_dir(void) {
     int  fails = 0;
     char dir[512];
@@ -317,6 +449,7 @@ int main(void) {
     unsetenv("GEIST_MOE_PROFILE");
     fails += check_module();
     fails += check_model();
+    fails += check_determinism();
     rmdir(g_dir);
     if (fails == 0)
         printf("PASS: moe profile counted, kept, read back, foreign and corrupt files ignored\n");
