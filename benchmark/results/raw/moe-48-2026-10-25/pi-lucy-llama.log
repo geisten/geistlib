@@ -1,0 +1,16 @@
+== gate 50150 0.47
+== llama-server under the cap
+{"status":"ok"}
+== gate 50150 0.47
+== llama-bench under the cap
+{"n_prompt": 512, "n_gen": 0, "avg_ts": 10.053825, "stddev_ts": 0.14346, "samples_ts": [10.1553, 9.95238]}
+{"n_prompt": 0, "n_gen": 128, "avg_ts": 6.062446, "stddev_ts": 0.047929, "samples_ts": [6.02856, 6.09634]}
+Maximum resident set size (kbytes): 3312224
+Major (requiring I/O) page faults: 120858
+Exit status: 0
+== gate 51250 0.48
+== geist under the cap, same synthetic shape (no --prompt-file)
+{"seq_len": 512, "decode_n": 128, "prefill_tps": 16.262, "decode_tps": 4.894, "rss_mb": 3018.58}
+Maximum resident set size (kbytes): 3091024
+Major (requiring I/O) page faults: 12687
+Exit status: 0

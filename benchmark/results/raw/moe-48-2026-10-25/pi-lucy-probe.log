@@ -1,0 +1,12 @@
+== gate 49050 0.47; free: 3200 MB available
+== geist cpu_neon
+{"seq_len":32,"decode_n":16,"prefill_ms":2436.32,"decode_ms":2991.05,"total_ms":5427.37,"ttft_ms":2436.32,"prefill_tps":13.135,"decode_tps":5.349,"total_tps":8.844,"prefill_ms_best":2436.32,"prefill_ms_worst":2436.32,"decode_ms_best":2991.05,"decode_ms_worst":2991.05,"total_ms_best":5427.37,"total_ms_worst":5427.37,"total_tps_best":8.844,"total_tps_worst":8.844,"agg":"mean","repeats":1,"repeats_re
+	Maximum resident set size (kbytes): 2937984
+	Major (requiring I/O) page faults: 16129
+	Exit status: 0
+== llama.cpp CPU
+{"build_commit": "d81235049", "build_number": 11429, "cpu_info": "CPU", "gpu_info": "", "backends": "CPU", "model_filename": "/home/germar/geist-models/moe/Qwen3-MOE-4x1.7B-6.8B-Lucys-Song-Uncensored.Q4_K_M.gguf", "model_type": "qwen3moe ?B Q4_K - Medium", "model_size": 3022252032, "model_n_params": 4891698176, "n_batch": 2048, "n_ubatch": 512, "n_threads": 4, "cpu_mask": "0x0", "cpu_strict": fals
+{"build_commit": "d81235049", "build_number": 11429, "cpu_info": "CPU", "gpu_info": "", "backends": "CPU", "model_filename": "/home/germar/geist-models/moe/Qwen3-MOE-4x1.7B-6.8B-Lucys-Song-Uncensored.Q4_K_M.gguf", "model_type": "qwen3moe ?B Q4_K - Medium", "model_size": 3022252032, "model_n_params": 4891698176, "n_batch": 2048, "n_ubatch": 512, "n_threads": 4, "cpu_mask": "0x0", "cpu_strict": fals
+	Maximum resident set size (kbytes): 3347120
+	Major (requiring I/O) page faults: 64088
+	Exit status: 0
