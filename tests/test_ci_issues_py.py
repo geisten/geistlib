@@ -12,6 +12,7 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))  # gitea_api
 spec = importlib.util.spec_from_file_location("ci_issues", ROOT / "scripts" / "ci-issues.py")
 ci = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ci)

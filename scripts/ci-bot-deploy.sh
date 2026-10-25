@@ -1,11 +1,12 @@
 #!/bin/sh
-# Installs scripts/ci-bot.py as the user service `ci-bot` on the desktop
+# Installs scripts/ci-bot.py (with scripts/gitea_api.py) as the user service `ci-bot` on the desktop
 # runner host (docs/HARDWARE_CI.md, "CI bot"). Runs from
-# .gitea/workflows/ci-bot.yml on the geist-vulkan host runner.
+# .gitea/workflows/host-service.yml (service=ci-bot) on the geist-vulkan
+# host runner.
 #   deploy   install/update the bot (token from $CI_BOT_TOKEN), prove one
 #            dry-run poll works, start it (CI_BOT_DRY_RUN=true: in dry-run)
-#   rollback stop and disable the service (the previous script stays as
-#            ci-bot.py.prev; deploy an older commit to go back a version)
+#   rollback stop and disable the service (the previous scripts stay as
+#            *.py.prev; deploy an older commit to go back a version)
 #   status   service state and the last log lines
 set -eu
 C=$HOME/ci-bot
@@ -35,8 +36,11 @@ deploy)
   mkdir -p "$C" "$(dirname "$TOKEN_FILE")" "$(dirname "$UNIT")"
   (umask 077; printf '%s\n' "$CI_BOT_TOKEN" > "$TOKEN_FILE")
   chmod 600 "$TOKEN_FILE"
-  [ -f "$C/ci-bot.py" ] && cp -p "$C/ci-bot.py" "$C/ci-bot.py.prev"
+  for f in ci-bot.py gitea_api.py; do
+    if [ -f "$C/$f" ]; then cp -p "$C/$f" "$C/$f.prev"; fi
+  done
   install -m 755 scripts/ci-bot.py "$C/ci-bot.py"
+  install -m 644 scripts/gitea_api.py "$C/gitea_api.py"
   # One dry-run poll with the new token and script: API reachable, token
   # valid, git clones work. Its own state file, so the live state is untouched.
   say "smoke: one dry-run poll"
