@@ -407,5 +407,41 @@
         "time_ratio_reasoning_over_selected": 8.77
       }
     }
+  },
+  "shared_prefix_campaign_26": {
+    "tracking_issue": "geistlib#26 (Gitea); phase-1 analysis https://git.geisten.net/geisten/geistlib/issues/26#issuecomment-4923",
+    "declared_date": "2026-10-25",
+    "decided_by": "user (go for steps 1-3, 2026-10-25)",
+    "declared_before_inference": true,
+    "step_1_direct_scoring": {
+      "question": "Does per-subject shared-prefix scoring (geist_decision_prefix_prepare / score_from_prefix, #5) give the independent call's option logits bit for bit on Bonsai 2 27B, and what does it save end to end?",
+      "questions": "the 500 held-out #171 test questions, unchanged (cases-test/test.jsonl sha256 108f815e3c21f6fe17adc4fa25d5a14f3051473349e156c06f59f46f86aa3977, chat_direct profile)",
+      "model": "Bonsai 2 27B PQ2_0 (sha256 3907dc16...), Metal on the M1 Max, FP32 KV, 6 threads, OMP_WAIT_POLICY=passive",
+      "binary": "tools/bench_decision from the PR that adds --prefix, built DECISION=1 DECISION_CONTEXT=1; its hash is frozen in the run manifest. Not the #171 binary bf8fa083: later kernels (#221) changed short prefill tails, so the reference is re-measured with the same binary.",
+      "arms": "decision_dense (every prompt scored independently, the reference) and decision_prefix (restore the subject's prefix snapshot, prefill the suffix); one trial each in the same process per chunk, order rotating per case",
+      "cut_rule": "per subject: longest common token prefix of all its questions in the sample, minus one token, aligned down to the engine's prefill chunk (256 on Metal, checked against every prefix_prepare record). With an aligned cut, prefix + suffix runs the same prefill passes as the joined prompt.",
+      "runner": "tools/eval_decision_prefix.py: subject order, chunked (<= 25 min of driver time per chunk, LOCK_MAX=30, LOCK_PRIO=batch, wall-clock deadline, caffeinate), cool start (GPU < 65 C), resumable, manifest frozen before the first chunk",
+      "gates": [
+        "option logits bit-identical, prefix vs independent, on 500/500 questions (logits printed with 9 significant digits, which round-trips float32)",
+        "accuracy identical (follows from the first gate; reported for both arms)",
+        "reported, not gated: p50/p95 per question for both arms, end-to-end time (one prepare per subject + all prefix scores vs all independent scores), prepare times, snapshot bytes, process peak RSS, per-subject rows (3-55 questions, 300-2,600 prompt tokens)"
+      ],
+      "on_mismatch": "report every mismatching question with its maximum logit difference; no accuracy or speed claim is made for the prefix arm until the cause is found",
+      "not_changed": "no calibration refit, no threshold, no policy evaluation; the #171 accuracy (67.8 %) is the earlier binary's and is compared descriptively only",
+      "budget": "about 500 x (4.4 s + ~1.7 s) plus 57 prepares and one model load per chunk: ~1-1.2 h in 3-4 chunks"
+    },
+    "step_2_reasoning_fork": {
+      "question": "Does generation from a restored prefix snapshot reproduce an independent session token for token on Bonsai 2 27B?",
+      "design": "2 subjects x 8 questions of the test sample (high_school_statistics, high_school_world_history; chat_reasoning prompts), aligned cut, 256 greedy tokens per question; reference: independent session prefill(prefix) + prefill(suffix) and the joined single prefill; worker: restore + suffix in forward, reverse and interleaved order",
+      "gate": "identical tokens and bit-identical final logits for every question and order",
+      "budget": "~15 min, one lease"
+    },
+    "step_3_batched_decode_gate": {
+      "question": "Do B independent sequences stepped as one m-row pass (the #186/#221 small-row kernels) give >= 2x aggregate decode tokens/s over single-sequence decode at B = 8 on Bonsai 2 27B Metal?",
+      "design": "test-only prototype, no public API change: B = 1/2/4/8 sequences forked from different questions, greedy, per-step wall time over >= 64 steps after a cool start",
+      "isolation": "per sequence, outputs must be bit-identical whatever the other batch members are (reordered or replaced); agreement with independent single-sequence decode is reported (token agreement, max logit difference), not required bit for bit, because the m-row kernels round differently from m = 1",
+      "gate": "pass: >= 2.0x aggregate tokens/s at B = 8; then an API proposal under AGENT.md section 6, and stop for the user",
+      "budget": "~30 min, one lease"
+    }
   }
 }
