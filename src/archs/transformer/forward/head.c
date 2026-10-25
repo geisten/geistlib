@@ -83,6 +83,12 @@ static struct transformer_forward_profile g_head_profile = {
             const uint8_t *src = (const uint8_t *) v->buffer_map(sess->scratch_h_b);
             uint8_t       *dst = (uint8_t *) v->buffer_map(sess->scratch_h_a);
             if (src == nullptr || dst == nullptr) {
+                if (src != nullptr) {
+                    v->buffer_unmap(sess->scratch_h_b);
+                }
+                if (dst != nullptr) {
+                    v->buffer_unmap(sess->scratch_h_a);
+                }
                 return GEIST_E_BACKEND; /* the backend said why */
             }
             memcpy(dst, src + row_idx * bytes, bytes);
@@ -296,6 +302,12 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
         const uint8_t *src   = (const uint8_t *) v->buffer_map(sess->scratch_h_b);
         uint8_t       *dst   = (uint8_t *) v->buffer_map(sess->scratch_h_a);
         if (src == nullptr || dst == nullptr) {
+            if (src != nullptr) {
+                v->buffer_unmap(sess->scratch_h_b);
+            }
+            if (dst != nullptr) {
+                v->buffer_unmap(sess->scratch_h_a);
+            }
             return GEIST_E_BACKEND; /* the backend said why */
         }
         memcpy(dst, src, bytes);
