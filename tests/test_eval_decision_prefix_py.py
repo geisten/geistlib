@@ -152,6 +152,15 @@ class PrefixRunnerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.run_all(threads=2, reference_from=first)
 
+    def test_subjects_sharing_an_empty_cut_reuse_one_prepare(self):
+        # align 16 empties both cuts: one prepare serves both subjects.
+        with patch.dict(os.environ, {"FAKE_CHUNK": "16"}):
+            self.run_all(align=16, chunk_questions=5)
+        s = json.loads((self.out / "report.json").read_text())["summary"]
+        self.assertEqual(s["prepare_ms"]["measured_prepares"], 1)
+        self.assertTrue(s["by_subject"]["math"]["prefix_reused_from_previous_subject"])
+        self.assertEqual(s["by_subject"]["math"]["prepare_ms"], 0.)
+
     def test_resume_refuses_a_changed_manifest(self):
         with patch.object(runner.campaign, "TempLog", NoTemps), \
                 patch.object(runner.campaign, "cool_gate", lambda a, d: {"waited": 0}):

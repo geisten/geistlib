@@ -171,7 +171,14 @@ def summarize(rows, order, cuts, done, prepares, runtimes, profile, align):
     for p in sorted(prepares, key=lambda p: (p["chunk"], p["case_index"])):
         first_prepare.setdefault(rows[p["case_index"]]["subject"], p)
     for subject, b in by_subject.items():
+        # A subject whose cut equals the previous one's cached tokens (in
+        # practice an empty cut after another empty cut) reuses that
+        # snapshot: the driver prepares nothing for it.
+        reused = subject not in first_prepare
+        if reused:
+            first_prepare[subject] = {"elapsed_ms": 0., "snapshot_bytes": None}
         prep = first_prepare[subject]["elapsed_ms"]
+        b["prefix_reused_from_previous_subject"] = reused
         b.update(cached_tokens=cuts[subject]["cut"], shared_tokens=cuts[subject]["shared_tokens"],
                  mean_prompt_tokens=sum(b["prompt_tokens"]) / len(b["prompt_tokens"]),
                  prepare_ms=prep, snapshot_bytes=first_prepare[subject]["snapshot_bytes"],
