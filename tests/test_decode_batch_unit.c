@@ -1,11 +1,8 @@
 /*
- * test_decode_batch_unit — the decoder arch op decode_batch (#26) on models
- * built in memory (model_fixtures.h), for every backend in the build. The
- * public geist_session_decode_batch / geist_model_decode_batch_max follow in
- * the next batch; until then decode_batch() and batch_max() below call the
- * op directly.
+ * test_decode_batch_unit — geist_session_decode_batch (#26) on models built in
+ * memory (model_fixtures.h), for every backend in the build:
  *
- *   - decode_batch_max: positive for the Qwen3.5-style hybrid
+ *   - geist_model_decode_batch_max: positive for the Qwen3.5-style hybrid
  *     where the backend has the fused DeltaNet mixer, 0 for a llama and on
  *     backends without it; n = 2 is then refused and nothing advances.
  *   - n = 1 is decode_step: tokens and logits bit for bit.
@@ -22,11 +19,7 @@
 #include "test_helpers.h"
 #include "model_fixtures.h"
 
-#define GEIST_INTERNAL_ENGINE_LAYER
-#include "../src/engine/model.h"
-
 #include <geist.h>
-#include <geist_arch.h>
 #include <geist_util.h>
 
 #include <math.h>
@@ -48,32 +41,6 @@ static size_t prompt(size_t p, geist_token_t ids[static 16]) {
     for (size_t i = 0; i < n; i++)
         ids[i] = (geist_token_t) (1 + (p * 37 + i * 11) % 200);
     return n;
-}
-
-static size_t batch_max(const struct geist_model *m) {
-    const struct geist_arch_ops_decoder *ops = m->text_decoder.arch_ops;
-    return ops->decode_batch_max != nullptr ? ops->decode_batch_max(m->text_decoder.arch_meta) : 0;
-}
-
-/* What the engine entry point will do: n = 1 is decode_step, n > 1 needs
- * the model to batch n. The model is the one under test (the arch op itself
- * refuses members of another model). */
-static struct geist_model *g_model;
-
-static enum geist_status
-decode_batch(size_t n, struct geist_session *const ss[], geist_token_t out[]) {
-    for (size_t b = 0; b < n; b++)
-        out[b] = -1;
-    if (n == 0)
-        return GEIST_E_INVALID_ARG;
-    if (n == 1)
-        return geist_session_decode_step(ss[0], &out[0]);
-    void *arch[16];
-    if (n > batch_max(g_model) || n > 16)
-        return GEIST_E_UNSUPPORTED;
-    for (size_t b = 0; b < n; b++)
-        arch[b] = geist_session_internal_arch_session(ss[b]);
-    return g_model->text_decoder.arch_ops->decode_batch(n, arch, out);
 }
 
 struct trace {
@@ -148,7 +115,7 @@ batched(const struct run *r, size_t n, const size_t ps[static n], struct trace t
         for (size_t b = 0; ok && b < n; b++)
             ok = peek(r, ss[b], t[b].logits[i]);
         geist_token_t out[8];
-        ok = ok && decode_batch(n, ss, out) == GEIST_OK;
+        ok = ok && geist_session_decode_batch(n, ss, out) == GEIST_OK;
         for (size_t b = 0; ok && b < n; b++)
             t[b].tok[i] = out[b];
     }
@@ -192,24 +159,24 @@ static int check_refusals(const struct run *r, size_t max) {
     geist_token_t         out[9];
     struct geist_session *nothing[2] = {a, fresh}, *twice[2] = {a, a}, *mixed[2] = {a, alien};
     fails += expect(r,
-                    decode_batch(2, nothing, out) == GEIST_E_INVALID_STATE && out[0] == -1 &&
-                            out[1] == -1,
+                    geist_session_decode_batch(2, nothing, out) == GEIST_E_INVALID_STATE &&
+                            out[0] == -1 && out[1] == -1,
                     "a member with nothing pending is GEIST_E_INVALID_STATE, out -1");
     fails += expect(r,
-                    decode_batch(2, twice, out) == GEIST_E_INVALID_ARG,
+                    geist_session_decode_batch(2, twice, out) == GEIST_E_INVALID_ARG,
                     "a repeated member is GEIST_E_INVALID_ARG");
     if (alien != nullptr)
         fails += expect(r,
-                        decode_batch(2, mixed, out) == GEIST_E_INVALID_ARG,
+                        geist_session_decode_batch(2, mixed, out) == GEIST_E_INVALID_ARG,
                         "a member of another model is GEIST_E_INVALID_ARG");
     struct geist_session *many[9];
     for (size_t i = 0; i < 9; i++)
         many[i] = i % 2 ? b : a;
     fails += expect(r,
-                    decode_batch(max + 1, many, out) == GEIST_E_UNSUPPORTED,
+                    geist_session_decode_batch(max + 1, many, out) == GEIST_E_UNSUPPORTED,
                     "n above decode_batch_max is GEIST_E_UNSUPPORTED");
     fails += expect(r,
-                    decode_batch(0, nothing, out) == GEIST_E_INVALID_ARG,
+                    geist_session_decode_batch(0, nothing, out) == GEIST_E_INVALID_ARG,
                     "n = 0 is GEIST_E_INVALID_ARG");
     fails += expect(r,
                     geist_session_length(a) == len_a && geist_session_length(b) == len_b &&
@@ -224,7 +191,7 @@ static int check_refusals(const struct run *r, size_t max) {
         if (full != nullptr && geist_session_prefill_tokens(full, n, ids) == GEIST_OK) {
             struct geist_session *pair[2] = {a, full};
             fails += expect(r,
-                            decode_batch(2, pair, out) == GEIST_E_TOO_MANY_TOKENS,
+                            geist_session_decode_batch(2, pair, out) == GEIST_E_TOO_MANY_TOKENS,
                             "a full context is GEIST_E_TOO_MANY_TOKENS");
             fails += expect(r, geist_session_length(a) == len_a, "the full context left a alone");
         }
@@ -248,7 +215,7 @@ static int check_owed(const struct run *r) {
     } else {
         const size_t          la = geist_session_length(a), lb = geist_session_length(b);
         struct geist_session *pair[2] = {a, b};
-        fails += expect(r, decode_batch(2, pair, out) == GEIST_OK, "owed + fresh");
+        fails += expect(r, geist_session_decode_batch(2, pair, out) == GEIST_OK, "owed + fresh");
         fails += expect(r,
                         geist_session_length(a) == la + 1 && geist_session_length(b) == lb + 1,
                         "every member advances by one");
@@ -345,14 +312,14 @@ int main(void) {
             fprintf(stderr, "FAIL: %s: model load: %s\n", BACKENDS[bi], geist_last_create_error());
             fails++;
         } else {
-            const size_t max = batch_max(mh);
+            const size_t max = geist_model_decode_batch_max(mh);
             printf("%s: decode_batch_max hybrid %zu, llama %zu\n",
                    BACKENDS[bi],
                    max,
-                   batch_max(ml));
+                   geist_model_decode_batch_max(ml));
             const struct run rl = {ml, mh, be, BACKENDS[bi], VOCAB, false};
-            g_model             = ml;
-            fails += expect(&rl, batch_max(ml) == 0, "a llama has no batched decode");
+            fails += expect(
+                    &rl, geist_model_decode_batch_max(ml) == 0, "a llama has no batched decode");
             {
                 struct geist_session *a = open_session(&rl, ml, CTX),
                                      *b = open_session(&rl, ml, CTX);
@@ -363,18 +330,18 @@ int main(void) {
                     geist_session_prefill_tokens(a, n, ids) == GEIST_OK &&
                     geist_session_prefill_tokens(b, n, ids) == GEIST_OK) {
                     fails += expect(&rl,
-                                    decode_batch(2, pair, out) == GEIST_E_UNSUPPORTED &&
+                                    geist_session_decode_batch(2, pair, out) ==
+                                                    GEIST_E_UNSUPPORTED &&
                                             geist_session_length(a) == n,
                                     "n = 2 without batched decode is refused, nothing advances");
                     fails += expect(&rl,
-                                    decode_batch(1, pair, out) == GEIST_OK,
+                                    geist_session_decode_batch(1, pair, out) == GEIST_OK,
                                     "n = 1 works without batched decode");
                 }
                 geist_session_destroy(a);
                 geist_session_destroy(b);
             }
             batching += max >= 2;
-            g_model = mh;
             for (int sampling = 0; sampling < 2; sampling++) {
                 const struct run r = {mh, ml, be, BACKENDS[bi], v.n_tok, sampling != 0};
                 fails += check_batching(&r, max);
