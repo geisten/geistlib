@@ -95,36 +95,20 @@ def collect(out_dir, backend, modes=MODES):
     """row index -> {mode: sample}; prepare records; runtime records."""
     done, prepares, runtimes = {}, [], []
     for chunk in campaign.chunk_dirs(out_dir):
-        index_path = chunk / "prefix.rows.json"
-        if not index_path.exists():
+        read = campaign.read_chunk(chunk, "prefix", backend, ("sample", "prefix_prepare"))
+        if read is None:
             continue
-        indices = ev.read_json(index_path)
-        recv = {}
-        if (chunk / "prefix.recv.tsv").exists():
-            for line in (chunk / "prefix.recv.tsv").read_text().splitlines():
-                n, t = line.split("\t")
-                recv[int(n)] = float(t)
+        records, chunk_runtimes = read
+        runtimes += chunk_runtimes
         groups = {}
-        for line_no, record in enumerate(campaign.read_lines(chunk / "prefix.driver.jsonl")):
-            kind = record.get("kind")
-            if kind == "runtime":
-                if record["backend"] != backend or record["kv_mode"] != "fp32":
-                    raise ValueError("invalid runtime record")
-                runtimes.append(record)
-                continue
-            if kind not in ("sample", "prefix_prepare"):
-                raise ValueError("unexpected driver record")
-            local = record["case_index"]
-            if not 0 <= local < len(indices):
-                raise ValueError("driver case index outside its chunk")
-            record = {**record, "case_index": indices[local], "chunk": chunk.name, "recv_unix": recv.get(line_no)}
-            if kind == "prefix_prepare":
+        for record in records:
+            if record["kind"] == "prefix_prepare":
                 prepares.append(record)
-            else:
-                groups.setdefault(indices[local], {})
-                if record["mode"] in groups[indices[local]]:
-                    raise ValueError("duplicate sample in a chunk")
-                groups[indices[local]][record["mode"]] = record
+                continue
+            samples = groups.setdefault(record["case_index"], {})
+            if record["mode"] in samples:
+                raise ValueError("duplicate sample in a chunk")
+            samples[record["mode"]] = record
         for row, samples in groups.items():
             if set(samples) != set(modes):
                 continue  # interrupted: re-run, never merged

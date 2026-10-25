@@ -11,6 +11,16 @@ name: vulkan-ab
 # for. The report goes to the job summary and, with the raw runs, to an
 # artifact.
 #
+# A layer-split change (#49) runs on a real GGUF that does not fit the card:
+# `model_url` + `model_sha256` replace the synthetic model, `split` puts
+# those layers on the GPU (Vulkan) next to `backend` and first runs the
+# split's correctness tests on `new` (two cpu_x86 instances byte-identical,
+# fault injection, Vulkan reported), and `env` adds variables for the bench:
+#   -i base=origin/main -i new=origin/<branch> -i seq_lens=512 -i cycles=8 \
+#   -i model_url=https://huggingface.co/Qwen/Qwen3-14B-GGUF/resolve/530227a7d994db8eca5ab5ced2fb692b614357fd/Qwen3-14B-Q8_0.gguf \
+#   -i model_sha256=a0dfe649137410b7d82f06a209240508e218f32f5b6fd81b69d6932160cfcd9d \
+#   -i split=26 -i 'env=GEIST_OFFLOAD_M_MIN=0;GEIST_M_MAX=128'
+#
 # On demand only. The defaults are #504's case (the Zen 5 CPU on a Q8_0
 # model, main before the native Q8_0 kernels of #512 against main now).
 
@@ -45,6 +55,22 @@ on:
         description: "A/B cycles (>= 6)"
         type: string
         default: "6"
+      model_url:
+        description: "real GGUF instead of the synthetic preset (cached by file name; empty: preset)"
+        type: string
+        default: ""
+      model_sha256:
+        description: "sha256 of model_url"
+        type: string
+        default: ""
+      split:
+        description: "layers on the GPU (layer split, Vulkan next to backend; empty: no split)"
+        type: string
+        default: ""
+      env:
+        description: "extra VAR=VALUE for the bench, separated by ; (e.g. GEIST_OFFLOAD_M_MIN=64)"
+        type: string
+        default: ""
 
 jobs:
   ab:
@@ -59,6 +85,10 @@ jobs:
       PRESET: ${{ inputs.preset }}
       SEQ_LENS: ${{ inputs.seq_lens }}
       CYCLES: ${{ inputs.cycles }}
+      MODEL_URL: ${{ inputs.model_url }}
+      MODEL_SHA: ${{ inputs.model_sha256 }}
+      SPLIT: ${{ inputs.split }}
+      EXTRA_ENV: ${{ inputs.env }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -76,7 +106,38 @@ jobs:
           echo "measuring GPU$IDX ($DRIVER)"
           echo "GEIST_VK_DEVICE=$IDX" >> "$GITHUB_ENV"
       - name: Synthetic model
-        run: python3 tools/gen_synth_gguf.py "$RUNNER_TEMP/synth.gguf" --preset "$PRESET"
+        if: env.MODEL_URL == ''
+        run: |
+          python3 tools/gen_synth_gguf.py "$RUNNER_TEMP/synth.gguf" --preset "$PRESET"
+          echo "MODEL=$RUNNER_TEMP/synth.gguf" >> "$GITHUB_ENV"
+      - name: Model (cached outside the workspace, sha256-checked)
+        if: env.MODEL_URL != ''
+        run: |
+          set -eo pipefail
+          CACHE=${GEIST_MODEL_CACHE:-$HOME/geist-models}
+          mkdir -p "$CACHE"
+          F="$CACHE/$(basename "$MODEL_URL")"
+          if [ ! -f "$F" ]; then
+            curl -fL --retry 5 -C - -o "$F.part" "$MODEL_URL"
+            echo "$MODEL_SHA  $F.part" | sha256sum -c -
+            mv "$F.part" "$F"
+          fi
+          echo "MODEL=$F" >> "$GITHUB_ENV"
+      - name: Split correctness on the new revision
+        if: env.SPLIT != ''
+        run: |
+          set -eo pipefail
+          mkdir -p ab-out
+          git checkout -q "$NEW"
+          make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
+          make fetch-llama-model
+          bin/linux/release/tests/test_layer_split_int 2>&1 | tee ab-out/exact.txt
+          bin/linux/release/tests/test_layer_split_fault_int 2>&1 | tail -5 | tee ab-out/fault.txt
+          . scripts/gpu-lock.sh
+          GEIST_SPLIT_BACKEND=vulkan GEIST_SPLIT_GGUF_PATH="$MODEL" GEIST_SPLIT_POINTS="$SPLIT" \
+            bin/linux/release/tests/test_layer_split_int 2>&1 | grep -v '^geist vulkan: device memory' \
+            | tee ab-out/vulkan.txt || true
+          git checkout -q -
       - name: A/B
         run: |
           set -eo pipefail
@@ -85,11 +146,20 @@ jobs:
           . scripts/gpu-lock.sh
           mkdir -p ab-out
           git fetch origin main
+          envs="--env GEIST_BENCH_BACKEND=$BACKEND"
+          if [ -n "$SPLIT" ]; then
+            # the split's GPU stage takes the default (discrete) device
+            envs="$envs --env GEIST_BENCH_SPLIT_BACKEND=vulkan --env GEIST_BENCH_SPLIT_LAYERS=$SPLIT"
+            decode_n=32
+          else
+            envs="$envs --env GEIST_VK_DEVICE=${GEIST_VK_DEVICE:-0}"
+            decode_n=16
+          fi
+          for e in $(echo "$EXTRA_ENV" | tr ';' ' '); do envs="$envs --env $e"; done
           python3 tools/bench_revision_ab.py \
             --rev "base=$BASE" --rev "new=$NEW" \
-            --gguf "$RUNNER_TEMP/synth.gguf" --seq-lens "$SEQ_LENS" \
-            --decode-n 16 --repeats 1 --warmup 1 --cycles "$CYCLES" \
-            --env "GEIST_BENCH_BACKEND=$BACKEND" --env "GEIST_VK_DEVICE=${GEIST_VK_DEVICE:-0}" \
+            --gguf "$MODEL" --seq-lens "$SEQ_LENS" \
+            --decode-n "$decode_n" --repeats 1 --warmup 1 --cycles "$CYCLES" $envs \
             --make-arg TARGET=linux --make-arg "BACKENDS=vulkan cpu_x86 cpu_scalar" \
             --make-arg GEMM_PROVIDER=native \
             --out-dir ab-out | tee ab-out/report.txt
@@ -100,13 +170,14 @@ jobs:
         run: |
           for b in ab-out/*/bench_perf_sweep_*; do
             echo "== $(basename "$b")"
-            GEIST_BENCH_BACKEND=vulkan GEIST_VK_VERBOSE=1 "$b" --gguf "$RUNNER_TEMP/synth.gguf" \
+            GEIST_BENCH_BACKEND=vulkan GEIST_VK_VERBOSE=1 "$b" --gguf "$MODEL" \
               --seq-lens 16 --decode-n 1 --repeats 1 --warmup 0 2>&1 | grep -m1 "geist vulkan" || true
           done | tee -a ab-out/report.txt
       - name: Job summary
         if: always()
         run: |
-          { echo '```'; cat ab-out/report.txt 2>/dev/null || echo "no report"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo '```'; grep -E 'byte-identical|FAIL|PASS|kv .* split' ab-out/exact.txt ab-out/fault.txt ab-out/vulkan.txt 2>/dev/null | head -40
+            cat ab-out/report.txt 2>/dev/null || echo "no report"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

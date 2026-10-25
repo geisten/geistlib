@@ -1,8 +1,8 @@
 #!/bin/sh
 # CI hygiene on the desktop runner host (docs/HARDWARE_CI.md, "CI hygiene").
 # The user timer ci-hygiene (scripts/ci-hygiene.timer, every 10 min) calls
-# `run`; .gitea/workflows/ci-hygiene.yml calls `deploy` and `status` on the
-# geist-vulkan host runner.
+# `run`; .gitea/workflows/host-service.yml (service=ci-hygiene) calls
+# `deploy` and `status` on the geist-vulkan host runner.
 #   run     remove stale action-cache index.lock files; once a day prune docker
 #   deploy  install this script and the user units, enable the timer, run once
 #   status  timer state and the last log lines
