@@ -2,7 +2,7 @@
 """ci-bot — keeps the open pull requests of geisten/geistlib and
 geisten/geist-runtime moving (docs/HARDWARE_CI.md, "CI bot").
 
-Polls Gitea every --interval seconds and, within fixed rules, does three
+Polls Gitea every INTERVAL seconds and, within fixed rules, does three
 things; everything else it leaves to a human:
 
 1. Reruns infrastructure failures. A completed run of the PR's head whose
@@ -48,6 +48,7 @@ import urllib.request
 
 SERVER = "https://git.geisten.net"
 REPOS = ("geisten/geistlib", "geisten/geist-runtime")
+INTERVAL = 90  # seconds between polls
 RERUN_MAX = 2
 INFRA_MAX_SECONDS = 300
 LABEL_REBASE = "ci-bot:rebase"
@@ -520,11 +521,8 @@ def main() -> int:
     ap.add_argument("--home", default=os.path.expanduser("~/ci-bot"))
     ap.add_argument("--token-file", default=os.path.expanduser("~/.config/ci-bot/token"))
     ap.add_argument("--state", help="default: <home>/state.json (dry-run: state-dry.json)")
-    ap.add_argument("--interval", type=int, default=90)
-    ap.add_argument("--duration", type=int, default=0, help="stop after N seconds (0: never)")
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="no rerun, push, comment or merge")
-    ap.add_argument("--repos", default=",".join(REPOS))
     a = ap.parse_args()
     with open(a.token_file) as f:
         token = f.read().strip()
@@ -533,17 +531,16 @@ def main() -> int:
         return 1
     os.makedirs(a.home, exist_ok=True)
     state = a.state or os.path.join(a.home, "state-dry.json" if a.dry_run else "state.json")
-    bot = Bot(Gitea(token, a.dry_run), a.home, state, token, tuple(a.repos.split(",")))
-    log(f"ci-bot start ({'dry-run' if a.dry_run else 'live'}; repos {a.repos}; every {a.interval} s)")
-    end = time.time() + a.duration if a.duration else None
+    bot = Bot(Gitea(token, a.dry_run), a.home, state, token)
+    log(f"ci-bot start ({'dry-run' if a.dry_run else 'live'}; repos {','.join(REPOS)}; every {INTERVAL} s)")
     while True:
         try:
             bot.tick()
         except Exception as e:  # noqa: BLE001 — the service must outlive any single bad poll
             log(f"tick failed: {type(e).__name__}: {e}")
-        if a.once or (end and time.time() + a.interval > end):
+        if a.once:
             return 0
-        time.sleep(a.interval)
+        time.sleep(INTERVAL)
 
 
 if __name__ == "__main__":
