@@ -816,9 +816,9 @@ static bool attention_heads_grouped_neon(const float               *q,
     size_t n_rows = 0, n_slots = 0, n_out = 0;
     if (parts > 1 && ws != nullptr && !ckd_mul(&n_rows, n_q, n_q_heads) &&
         !ckd_mul(&n_slots, n_rows, parts) && !ckd_mul(&n_out, n_slots, head_dim)) {
-        if (cpu_neon_grow_f32(&ws->attn_part_out, &ws->attn_part_out_cap, n_out) &&
-            cpu_neon_grow_f32(&ws->attn_part_max, &ws->attn_part_max_cap, n_slots) &&
-            cpu_neon_grow_f64(&ws->attn_part_sum, &ws->attn_part_sum_cap, n_slots)) {
+        if (cpu_neon_grow_array(ws->attn_part_out, ws->attn_part_out_cap, n_out) &&
+            cpu_neon_grow_array(ws->attn_part_max, ws->attn_part_max_cap, n_slots) &&
+            cpu_neon_grow_array(ws->attn_part_sum, ws->attn_part_sum_cap, n_slots)) {
             struct attn_split_job sj = {.job      = {.q              = q,
                                                      .k              = k,
                                                      .v              = v,
