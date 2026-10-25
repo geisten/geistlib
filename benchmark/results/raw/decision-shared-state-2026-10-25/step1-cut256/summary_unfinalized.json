@@ -1,0 +1,797 @@
+{
+ "questions": 500,
+ "subjects": 57,
+ "prefill_chunk": 256,
+ "bit_identical_option_logits": 472,
+ "argmax_identical": 500,
+ "mismatches": [
+  {
+   "id": "test/business_ethics/461/rotation0",
+   "max_abs_diff": 0.0009470000000000312
+  },
+  {
+   "id": "test/college_medicine/1285/rotation0",
+   "max_abs_diff": 0.0023202999999991647
+  },
+  {
+   "id": "test/conceptual_physics/1796/rotation0",
+   "max_abs_diff": 0.0010118999999999545
+  },
+  {
+   "id": "test/conceptual_physics/1644/rotation0",
+   "max_abs_diff": 0.002468099999999751
+  },
+  {
+   "id": "test/formal_logic/2454/rotation0",
+   "max_abs_diff": 0.0028276999999992114
+  },
+  {
+   "id": "test/high_school_biology/2816/rotation0",
+   "max_abs_diff": 0.0027522999999991526
+  },
+  {
+   "id": "test/high_school_computer_science/3232/rotation0",
+   "max_abs_diff": 0.0011444000000011556
+  },
+  {
+   "id": "test/high_school_mathematics/4411/rotation0",
+   "max_abs_diff": 0.00204759999999915
+  },
+  {
+   "id": "test/high_school_mathematics/4483/rotation0",
+   "max_abs_diff": 0.003531500000001131
+  },
+  {
+   "id": "test/high_school_mathematics/4241/rotation0",
+   "max_abs_diff": 0.0014668000000011006
+  },
+  {
+   "id": "test/high_school_physics/4783/rotation0",
+   "max_abs_diff": 0.005230000000000956
+  },
+  {
+   "id": "test/high_school_physics/4847/rotation0",
+   "max_abs_diff": 0.0022297000000008893
+  },
+  {
+   "id": "test/high_school_psychology/4920/rotation0",
+   "max_abs_diff": 0.0002440999999997473
+  },
+  {
+   "id": "test/high_school_statistics/5597/rotation0",
+   "max_abs_diff": 0.0025748999999990474
+  },
+  {
+   "id": "test/human_aging/6158/rotation0",
+   "max_abs_diff": 0.0015812000000003934
+  },
+  {
+   "id": "test/miscellaneous/7858/rotation0",
+   "max_abs_diff": 0.0046357999999990795
+  },
+  {
+   "id": "test/miscellaneous/7499/rotation0",
+   "max_abs_diff": 0.0014447999999998018
+  },
+  {
+   "id": "test/miscellaneous/7674/rotation0",
+   "max_abs_diff": 0.0008964999999996337
+  },
+  {
+   "id": "test/miscellaneous/7708/rotation0",
+   "max_abs_diff": 0.0014009000000001492
+  },
+  {
+   "id": "test/miscellaneous/7806/rotation0",
+   "max_abs_diff": 0.000576000000000576
+  },
+  {
+   "id": "test/miscellaneous/8120/rotation0",
+   "max_abs_diff": 0.0019874999999984766
+  },
+  {
+   "id": "test/nutrition/9586/rotation0",
+   "max_abs_diff": 0.001388500000000903
+  },
+  {
+   "id": "test/nutrition/9512/rotation0",
+   "max_abs_diff": 0.002931600000000145
+  },
+  {
+   "id": "test/prehistory/10265/rotation0",
+   "max_abs_diff": 0.0014563000000009652
+  },
+  {
+   "id": "test/prehistory/10121/rotation0",
+   "max_abs_diff": 0.001474400000001097
+  },
+  {
+   "id": "test/prehistory/10224/rotation0",
+   "max_abs_diff": 0.0009498000000007778
+  },
+  {
+   "id": "test/professional_psychology/12746/rotation0",
+   "max_abs_diff": 0.0011310000000008813
+  },
+  {
+   "id": "test/professional_psychology/12757/rotation0",
+   "max_abs_diff": 0.001451499999999939
+  }
+ ],
+ "accuracy": {
+  "decision_dense": 0.678,
+  "decision_prefix": 0.678
+ },
+ "correct": {
+  "decision_dense": 339,
+  "decision_prefix": 339
+ },
+ "latency_ms": {
+  "decision_dense": {
+   "p50": 4398.7245,
+   "p95": 18760.821600000003,
+   "mean": 6300.5443940000005,
+   "sum": 3150272.197
+  },
+  "decision_prefix": {
+   "p50": 1762.629,
+   "p95": 4545.550249999999,
+   "mean": 2059.313182,
+   "sum": 1029656.591
+  }
+ },
+ "prepare_ms": {
+  "one_per_subject_sum": 182625.955,
+  "measured_sum_including_chunk_restarts": 187480.864,
+  "measured_prepares": 59,
+  "p50": 1919.439,
+  "max": 16325.412
+ },
+ "end_to_end": {
+  "independent_ms": 3150272.197,
+  "shared_prefix_ms": 1212282.546,
+  "ratio": 0.3848183490793129,
+  "scope": "Shared = one prefix prepare per subject + every question's restore + suffix score. Model load excluded for both. Prepares repeated only because a chunk started inside a subject are reported separately and not counted."
+ },
+ "snapshot_bytes": {
+  "max": 459885632,
+  "min": 156893248
+ },
+ "process_peak_rss_bytes_max": 3613097984,
+ "by_subject": {
+  "abstract_algebra": {
+   "questions": 4,
+   "dense_ms": 12332.249000000002,
+   "prefix_ms": 5349.549999999999,
+   "cached_tokens": 256,
+   "shared_tokens": 329,
+   "mean_prompt_tokens": 406.0,
+   "prepare_ms": 3128.104,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.6874377901386841
+  },
+  "anatomy": {
+   "questions": 5,
+   "dense_ms": 15251.149999999998,
+   "prefix_ms": 5328.320000000001,
+   "cached_tokens": 256,
+   "shared_tokens": 314,
+   "mean_prompt_tokens": 383.8,
+   "prepare_ms": 1883.033,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.47283994977427946
+  },
+  "astronomy": {
+   "questions": 5,
+   "dense_ms": 28251.808,
+   "prefix_ms": 7041.9980000000005,
+   "cached_tokens": 512,
+   "shared_tokens": 549,
+   "mean_prompt_tokens": 658.8,
+   "prepare_ms": 3896.52,
+   "snapshot_bytes": 224997440,
+   "shared_over_independent": 0.3871793975097098
+  },
+  "business_ethics": {
+   "questions": 4,
+   "dense_ms": 19218.554,
+   "prefix_ms": 10569.77,
+   "cached_tokens": 256,
+   "shared_tokens": 508,
+   "mean_prompt_tokens": 574.75,
+   "prepare_ms": 1919.439,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.6498516485683574
+  },
+  "clinical_knowledge": {
+   "questions": 9,
+   "dense_ms": 31498.219,
+   "prefix_ms": 14165.825,
+   "cached_tokens": 256,
+   "shared_tokens": 370,
+   "mean_prompt_tokens": 436.6666666666667,
+   "prepare_ms": 1995.258,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.513079263306919
+  },
+  "college_biology": {
+   "questions": 5,
+   "dense_ms": 19268.657,
+   "prefix_ms": 9596.19,
+   "cached_tokens": 256,
+   "shared_tokens": 427,
+   "mean_prompt_tokens": 488.6,
+   "prepare_ms": 1889.389,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.5960757410337421
+  },
+  "college_chemistry": {
+   "questions": 4,
+   "dense_ms": 19093.002999999997,
+   "prefix_ms": 11252.718,
+   "cached_tokens": 256,
+   "shared_tokens": 503,
+   "mean_prompt_tokens": 576.75,
+   "prepare_ms": 1887.474,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.6882202867720705
+  },
+  "college_computer_science": {
+   "questions": 4,
+   "dense_ms": 29816.926,
+   "prefix_ms": 14837.32,
+   "cached_tokens": 512,
+   "shared_tokens": 752,
+   "mean_prompt_tokens": 917.25,
+   "prepare_ms": 3819.27,
+   "snapshot_bytes": 224997440,
+   "shared_over_independent": 0.6257046752572684
+  },
+  "college_mathematics": {
+   "questions": 4,
+   "dense_ms": 22093.561,
+   "prefix_ms": 5229.04,
+   "cached_tokens": 512,
+   "shared_tokens": 546,
+   "mean_prompt_tokens": 645.5,
+   "prepare_ms": 3840.068,
+   "snapshot_bytes": 224997440,
+   "shared_over_independent": 0.4104864761275921
+  },
+  "college_medicine": {
+   "questions": 3,
+   "dense_ms": 13416.716,
+   "prefix_ms": 7278.037,
+   "cached_tokens": 256,
+   "shared_tokens": 426,
+   "mean_prompt_tokens": 552.3333333333334,
+   "prepare_ms": 1895.95,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.6837729143256815
+  },
+  "college_physics": {
+   "questions": 3,
+   "dense_ms": 14937.589,
+   "prefix_ms": 8098.307000000001,
+   "cached_tokens": 256,
+   "shared_tokens": 442,
+   "mean_prompt_tokens": 537.6666666666666,
+   "prepare_ms": 1907.039,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.6698099673247137
+  },
+  "computer_security": {
+   "questions": 4,
+   "dense_ms": 14688.025000000001,
+   "prefix_ms": 5176.196,
+   "cached_tokens": 256,
+   "shared_tokens": 335,
+   "mean_prompt_tokens": 412.25,
+   "prepare_ms": 2365.964,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.5134904114065709
+  },
+  "conceptual_physics": {
+   "questions": 8,
+   "dense_ms": 21203.057999999997,
+   "prefix_ms": 6328.068,
+   "cached_tokens": 256,
+   "shared_tokens": 277,
+   "mean_prompt_tokens": 325.0,
+   "prepare_ms": 1999.538,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.3927549507245606
+  },
+  "econometrics": {
+   "questions": 4,
+   "dense_ms": 20620.143,
+   "prefix_ms": 5699.41,
+   "cached_tokens": 512,
+   "shared_tokens": 546,
+   "mean_prompt_tokens": 668.25,
+   "prepare_ms": 3933.898,
+   "snapshot_bytes": 224997440,
+   "shared_over_independent": 0.4671794953119385
+  },
+  "electrical_engineering": {
+   "questions": 5,
+   "dense_ms": 18021.35,
+   "prefix_ms": 8972.959,
+   "cached_tokens": 256,
+   "shared_tokens": 439,
+   "mean_prompt_tokens": 494.4,
+   "prepare_ms": 1800.544,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.5978188648464183
+  },
+  "elementary_mathematics": {
+   "questions": 13,
+   "dense_ms": 58307.007999999994,
+   "prefix_ms": 12217.215,
+   "cached_tokens": 512,
+   "shared_tokens": 535,
+   "mean_prompt_tokens": 619.6153846153846,
+   "prepare_ms": 3634.429,
+   "snapshot_bytes": 224997440,
+   "shared_over_independent": 0.2718651589874068
+  },
+  "formal_logic": {
+   "questions": 4,
+   "dense_ms": 18742.432999999997,
+   "prefix_ms": 4881.626,
+   "cached_tokens": 512,
+   "shared_tokens": 521,
+   "mean_prompt_tokens": 646.5,
+   "prepare_ms": 3528.463,
+   "snapshot_bytes": 224997440,
+   "shared_over_independent": 0.4487191710916081
+  },
+  "global_facts": {
+   "questions": 4,
+   "dense_ms": 14308.997,
+   "prefix_ms": 7238.118,
+   "cached_tokens": 256,
+   "shared_tokens": 403,
+   "mean_prompt_tokens": 484.75,
+   "prepare_ms": 1735.143,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.6271062185560595
+  },
+  "high_school_biology": {
+   "questions": 11,
+   "dense_ms": 42445.816,
+   "prefix_ms": 23509.123,
+   "cached_tokens": 256,
+   "shared_tokens": 447,
+   "mean_prompt_tokens": 537.1818181818181,
+   "prepare_ms": 1734.496,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.5947257322135119
+  },
+  "high_school_chemistry": {
+   "questions": 7,
+   "dense_ms": 26993.594,
+   "prefix_ms": 14666.758,
+   "cached_tokens": 256,
+   "shared_tokens": 448,
+   "mean_prompt_tokens": 534.8571428571429,
+   "prepare_ms": 1728.904,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.6073908498438555
+  },
+  "high_school_computer_science": {
+   "questions": 4,
+   "dense_ms": 26231.64,
+   "prefix_ms": 5377.374,
+   "cached_tokens": 768,
+   "shared_tokens": 827,
+   "mean_prompt_tokens": 916.0,
+   "prepare_ms": 5296.064,
+   "snapshot_bytes": 258552896,
+   "shared_over_independent": 0.40689175362272434
+  },
+  "high_school_european_history": {
+   "questions": 6,
+   "dense_ms": 120785.273,
+   "prefix_ms": 23771.028000000002,
+   "cached_tokens": 2304,
+   "shared_tokens": 2524,
+   "mean_prompt_tokens": 2843.3333333333335,
+   "prepare_ms": 16325.412,
+   "snapshot_bytes": 459885632,
+   "shared_over_independent": 0.33196464274249726
+  },
+  "high_school_geography": {
+   "questions": 7,
+   "dense_ms": 22892.948999999997,
+   "prefix_ms": 9757.211,
+   "cached_tokens": 256,
+   "shared_tokens": 355,
+   "mean_prompt_tokens": 423.0,
+   "prepare_ms": 1733.739,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.5019427597554165
+  },
+  "high_school_government_and_politics": {
+   "questions": 7,
+   "dense_ms": 26880.292,
+   "prefix_ms": 13818.775,
+   "cached_tokens": 256,
+   "shared_tokens": 417,
+   "mean_prompt_tokens": 497.0,
+   "prepare_ms": 1849.855,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.582904010120128
+  },
+  "high_school_macroeconomics": {
+   "questions": 14,
+   "dense_ms": 46558.91000000001,
+   "prefix_ms": 20388.337999999996,
+   "cached_tokens": 256,
+   "shared_tokens": 332,
+   "mean_prompt_tokens": 414.2142857142857,
+   "prepare_ms": 1818.138,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.47695437887184194
+  },
+  "high_school_mathematics": {
+   "questions": 10,
+   "dense_ms": 46590.98100000001,
+   "prefix_ms": 27132.214999999997,
+   "cached_tokens": 256,
+   "shared_tokens": 510,
+   "mean_prompt_tokens": 596.5,
+   "prepare_ms": 1865.577,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.6223906725638594
+  },
+  "high_school_microeconomics": {
+   "questions": 9,
+   "dense_ms": 29012.289,
+   "prefix_ms": 12610.488000000001,
+   "cached_tokens": 256,
+   "shared_tokens": 355,
+   "mean_prompt_tokens": 423.77777777777777,
+   "prepare_ms": 1847.348,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.49833489525766134
+  },
+  "high_school_physics": {
+   "questions": 5,
+   "dense_ms": 22690.773,
+   "prefix_ms": 14145.635,
+   "cached_tokens": 256,
+   "shared_tokens": 500,
+   "mean_prompt_tokens": 617.8,
+   "prepare_ms": 1847.614,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.7048349124113136
+  },
+  "high_school_psychology": {
+   "questions": 19,
+   "dense_ms": 78853.94,
+   "prefix_ms": 42265.445999999996,
+   "cached_tokens": 256,
+   "shared_tokens": 454,
+   "mean_prompt_tokens": 536.1052631578947,
+   "prepare_ms": 1849.914,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.5594566359017696
+  },
+  "high_school_statistics": {
+   "questions": 8,
+   "dense_ms": 53878.246,
+   "prefix_ms": 22697.282,
+   "cached_tokens": 512,
+   "shared_tokens": 736,
+   "mean_prompt_tokens": 885.5,
+   "prepare_ms": 3598.373,
+   "snapshot_bytes": 224997440,
+   "shared_over_independent": 0.4880569979950721
+  },
+  "high_school_us_history": {
+   "questions": 7,
+   "dense_ms": 119823.574,
+   "prefix_ms": 28110.661,
+   "cached_tokens": 1792,
+   "shared_tokens": 1972,
+   "mean_prompt_tokens": 2306.285714285714,
+   "prepare_ms": 14247.862,
+   "snapshot_bytes": 392774720,
+   "shared_over_independent": 0.35350742417347697
+  },
+  "high_school_world_history": {
+   "questions": 8,
+   "dense_ms": 91356.43000000001,
+   "prefix_ms": 29029.75,
+   "cached_tokens": 1024,
+   "shared_tokens": 1131,
+   "mean_prompt_tokens": 1484.125,
+   "prepare_ms": 7477.449,
+   "snapshot_bytes": 292108352,
+   "shared_over_independent": 0.3996128022953611
+  },
+  "human_aging": {
+   "questions": 8,
+   "dense_ms": 24120.94,
+   "prefix_ms": 8182.044999999999,
+   "cached_tokens": 256,
+   "shared_tokens": 288,
+   "mean_prompt_tokens": 345.625,
+   "prepare_ms": 2160.585,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.4287822116385182
+  },
+  "human_sexuality": {
+   "questions": 5,
+   "dense_ms": 16424.855,
+   "prefix_ms": 6457.136000000001,
+   "cached_tokens": 256,
+   "shared_tokens": 304,
+   "mean_prompt_tokens": 397.8,
+   "prepare_ms": 2233.767,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.5291311856329936
+  },
+  "international_law": {
+   "questions": 4,
+   "dense_ms": 19827.417999999998,
+   "prefix_ms": 5699.545999999999,
+   "cached_tokens": 512,
+   "shared_tokens": 566,
+   "mean_prompt_tokens": 659.75,
+   "prepare_ms": 3596.668,
+   "snapshot_bytes": 224997440,
+   "shared_over_independent": 0.46885650970792064
+  },
+  "jurisprudence": {
+   "questions": 4,
+   "dense_ms": 13939.672,
+   "prefix_ms": 5989.978999999999,
+   "cached_tokens": 256,
+   "shared_tokens": 354,
+   "mean_prompt_tokens": 434.75,
+   "prepare_ms": 2165.839,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.5850796202378362
+  },
+  "logical_fallacies": {
+   "questions": 6,
+   "dense_ms": 23076.784,
+   "prefix_ms": 12031.006,
+   "cached_tokens": 256,
+   "shared_tokens": 397,
+   "mean_prompt_tokens": 509.1666666666667,
+   "prepare_ms": 1738.807,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.596695492751503
+  },
+  "machine_learning": {
+   "questions": 4,
+   "dense_ms": 22652.26,
+   "prefix_ms": 6910.782999999999,
+   "cached_tokens": 512,
+   "shared_tokens": 627,
+   "mean_prompt_tokens": 716.75,
+   "prepare_ms": 3740.742,
+   "snapshot_bytes": 224997440,
+   "shared_over_independent": 0.4702190863075031
+  },
+  "management": {
+   "questions": 4,
+   "dense_ms": 9615.351999999999,
+   "prefix_ms": 9632.752,
+   "cached_tokens": 0,
+   "shared_tokens": 255,
+   "mean_prompt_tokens": 312.0,
+   "prepare_ms": 5.222,
+   "snapshot_bytes": 156893248,
+   "shared_over_independent": 1.0023526959803448
+  },
+  "marketing": {
+   "questions": 8,
+   "dense_ms": 32612.449999999997,
+   "prefix_ms": 16089.609,
+   "cached_tokens": 256,
+   "shared_tokens": 379,
+   "mean_prompt_tokens": 444.5,
+   "prepare_ms": 1808.18,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.5488023438901402
+  },
+  "medical_genetics": {
+   "questions": 4,
+   "dense_ms": 14567.115,
+   "prefix_ms": 4609.076,
+   "cached_tokens": 256,
+   "shared_tokens": 305,
+   "mean_prompt_tokens": 368.75,
+   "prepare_ms": 1897.16,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.44663861032194774
+  },
+  "miscellaneous": {
+   "questions": 28,
+   "dense_ms": 76808.24600000001,
+   "prefix_ms": 22621.861999999997,
+   "cached_tokens": 256,
+   "shared_tokens": 275,
+   "mean_prompt_tokens": 329.57142857142856,
+   "prepare_ms": 1882.492,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.3190328548838362
+  },
+  "moral_disputes": {
+   "questions": 12,
+   "dense_ms": 47498.234000000004,
+   "prefix_ms": 24820.326999999997,
+   "cached_tokens": 256,
+   "shared_tokens": 437,
+   "mean_prompt_tokens": 514.1666666666666,
+   "prepare_ms": 2332.585,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.571661506404638
+  },
+  "moral_scenarios": {
+   "questions": 32,
+   "dense_ms": 172985.062,
+   "prefix_ms": 46649.32,
+   "cached_tokens": 512,
+   "shared_tokens": 621,
+   "mean_prompt_tokens": 694.0625,
+   "prepare_ms": 3778.04,
+   "snapshot_bytes": 224997440,
+   "shared_over_independent": 0.2915128012614176
+  },
+  "nutrition": {
+   "questions": 11,
+   "dense_ms": 53175.738999999994,
+   "prefix_ms": 12933.225,
+   "cached_tokens": 512,
+   "shared_tokens": 550,
+   "mean_prompt_tokens": 646.0,
+   "prepare_ms": 4182.07,
+   "snapshot_bytes": 224997440,
+   "shared_over_independent": 0.3218628517790792
+  },
+  "philosophy": {
+   "questions": 11,
+   "dense_ms": 30903.614,
+   "prefix_ms": 10170.001,
+   "cached_tokens": 256,
+   "shared_tokens": 296,
+   "mean_prompt_tokens": 363.72727272727275,
+   "prepare_ms": 1847.512,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.38887079679418723
+  },
+  "prehistory": {
+   "questions": 12,
+   "dense_ms": 58737.414,
+   "prefix_ms": 32525.139000000006,
+   "cached_tokens": 256,
+   "shared_tokens": 493,
+   "mean_prompt_tokens": 574.4166666666666,
+   "prepare_ms": 1819.814,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.5847202091668525
+  },
+  "professional_accounting": {
+   "questions": 10,
+   "dense_ms": 86324.195,
+   "prefix_ms": 23024.176,
+   "cached_tokens": 512,
+   "shared_tokens": 650,
+   "mean_prompt_tokens": 774.3,
+   "prepare_ms": 4048.929,
+   "snapshot_bytes": 224997440,
+   "shared_over_independent": 0.31362128543451806
+  },
+  "professional_law": {
+   "questions": 55,
+   "dense_ms": 964523.5459999996,
+   "prefix_ms": 237857.47600000005,
+   "cached_tokens": 1280,
+   "shared_tokens": 1434,
+   "mean_prompt_tokens": 1682.5454545454545,
+   "prepare_ms": 10736.727,
+   "snapshot_bytes": 325663808,
+   "shared_over_independent": 0.257737827169644
+  },
+  "professional_medicine": {
+   "questions": 10,
+   "dense_ms": 82176.419,
+   "prefix_ms": 29665.737000000005,
+   "cached_tokens": 768,
+   "shared_tokens": 948,
+   "mean_prompt_tokens": 1161.9,
+   "prepare_ms": 4748.914,
+   "snapshot_bytes": 258552896,
+   "shared_over_independent": 0.41878985989885986
+  },
+  "professional_psychology": {
+   "questions": 22,
+   "dense_ms": 96638.487,
+   "prefix_ms": 20453.647,
+   "cached_tokens": 512,
+   "shared_tokens": 526,
+   "mean_prompt_tokens": 608.1363636363636,
+   "prepare_ms": 3525.886,
+   "snapshot_bytes": 224997440,
+   "shared_over_independent": 0.24813646968624417
+  },
+  "public_relations": {
+   "questions": 4,
+   "dense_ms": 13092.929,
+   "prefix_ms": 6142.621,
+   "cached_tokens": 256,
+   "shared_tokens": 379,
+   "mean_prompt_tokens": 455.75,
+   "prepare_ms": 1720.926,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.6005949470893793
+  },
+  "security_studies": {
+   "questions": 9,
+   "dense_ms": 75895.141,
+   "prefix_ms": 12985.044,
+   "cached_tokens": 1024,
+   "shared_tokens": 1047,
+   "mean_prompt_tokens": 1192.0,
+   "prepare_ms": 7098.379,
+   "snapshot_bytes": 292108352,
+   "shared_over_independent": 0.2646206691940924
+  },
+  "sociology": {
+   "questions": 7,
+   "dense_ms": 25381.428,
+   "prefix_ms": 12225.313999999998,
+   "cached_tokens": 256,
+   "shared_tokens": 397,
+   "mean_prompt_tokens": 472.42857142857144,
+   "prepare_ms": 1713.188,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.5491614577398876
+  },
+  "us_foreign_policy": {
+   "questions": 4,
+   "dense_ms": 13509.519,
+   "prefix_ms": 6495.695000000001,
+   "cached_tokens": 256,
+   "shared_tokens": 390,
+   "mean_prompt_tokens": 457.75,
+   "prepare_ms": 1849.069,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.6176951229721799
+  },
+  "virology": {
+   "questions": 6,
+   "dense_ms": 16575.782,
+   "prefix_ms": 5772.802,
+   "cached_tokens": 256,
+   "shared_tokens": 302,
+   "mean_prompt_tokens": 378.1666666666667,
+   "prepare_ms": 1708.563,
+   "snapshot_bytes": 191441984,
+   "shared_over_independent": 0.4513431100867519
+  },
+  "world_religions": {
+   "questions": 6,
+   "dense_ms": 13145.443,
+   "prefix_ms": 13171.522,
+   "cached_tokens": 0,
+   "shared_tokens": 244,
+   "mean_prompt_tokens": 300.5,
+   "prepare_ms": 5.623,
+   "snapshot_bytes": 156893248,
+   "shared_over_independent": 1.002411634206622
+  }
+ },
+ "runtime": {
+  "kind": "runtime",
+  "version": "0.21.0",
+  "backend": "metal",
+  "vocab": 248320,
+  "kv_mode": "fp32"
+ }
+}
