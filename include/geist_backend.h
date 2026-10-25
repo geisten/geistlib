@@ -1149,8 +1149,8 @@ struct geist_backend {
      * (GEIST_E_OOM) retries on that CPU backend (docs/API_CONTRACT.md).
      * Explicit names never set it. */
     bool auto_cpu;
-    /* The opts this backend was created with, for that CPU backend. */
-    bool                      has_opts;
+    /* The opts this backend was created with (zeroed for nullptr, which
+     * every backend reads the same), for that CPU backend. */
     struct geist_backend_opts opts;
 };
 
