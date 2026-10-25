@@ -482,7 +482,15 @@
     "attribution": "The binary differs from #171's (bf8fa083): later kernels (#221 and others) can change unbatched greedy output too. Reported: (1) token agreement with the #171 generations (first divergent position per question); (2) every question whose correctness changed is re-run unbatched (--batch 1) on the same binary, at most 30 questions (if more change: 30 chosen by sha256([geist-batched-attribution-v1, question_id]) order), to tell batching from engine drift.",
     "also_reported": "capped and invalid answers, generated tokens, tokens per batch size, aggregate decode tokens/s, per-question latency p50/p95, Mac lease time",
     "runner": "tools/eval_decision_batched_reasoning.py, 100 questions per chunk, 25-min wall-clock deadline, LOCK_MAX=30, LOCK_PRIO=batch, cool start, caffeinate; manifest frozen before the first chunk",
-    "budget": "~2 h of Mac time (311,800 tokens at ~45-66 tok/s aggregate plus ~20 min prefill), 5-7 chunks; attribution re-runs up to ~1 h more"
+    "budget": "~2 h of Mac time (311,800 tokens at ~45-66 tok/s aggregate plus ~20 min prefill), 5-7 chunks; attribution re-runs up to ~1 h more",
+    "status": "complete (2026-10-26)",
+    "result": {
+      "writeup": "benchmark/results/DECISION_BATCHED_REASONING_2026-10-26.md",
+      "accuracy": "78.8 % (394/500) batched vs 79.0 % (395/500) #171 at cap 2048; gains 0, losses 1; -0.2 pp, conservative 95 % interval [-1.27, +0.87] pp; non-inferior at the 2 pp margin",
+      "token_agreement": "471/500 generations token-identical to #171; 29 diverge (first divergence median token 879, min 18)",
+      "attribution": "the one changed question: the unbatched same-binary re-run reproduces #171 token for token, so the change comes from batching (divergence at token 1201, then capped)",
+      "throughput": "58.4 tokens/s aggregate decode in complete driver runs (94 % of tokens at batch 8), against ~15 tokens/s single-sequence in #171; 6,901 s of lease time for the whole run against 23,894 s summed in #171"
+    }
   },
   "early_exit_pilot_236": {
     "tracking_issue": "geistlib#236 (Gitea)",
