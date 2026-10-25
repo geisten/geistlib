@@ -17,6 +17,7 @@
 #include "pair_merge.h"
 
 #include "checked.h"
+#include "fnv1a.h"
 #include "heap.h"
 
 #include <stdint.h>
@@ -634,25 +635,13 @@ size_t gguf_tokenizer_decode(
 /* FNV-1a 64-bit. Stable across builds; we just need a good
  * distribution over short byte strings. */
 static uint64_t fnv1a64(const char *p, size_t n) {
-    uint64_t h = 0xcbf29ce484222325ULL;
-    for (size_t i = 0; i < n; i++) {
-        h ^= (uint8_t) p[i];
-        h *= 0x100000001b3ULL;
-    }
-    return h;
+    return geist_fnv1a(GEIST_FNV1A_INIT, n, p);
 }
 
 /* Hash a (left, right) pair. The separator byte ensures
  * ("ab", "") and ("a", "b") hash distinctly. */
 static uint64_t fnv1a64_pair(const char *a, size_t alen, const char *b, size_t blen) {
-    uint64_t h = fnv1a64(a, alen);
-    h ^= 0xFFu;
-    h *= 0x100000001b3ULL;
-    for (size_t i = 0; i < blen; i++) {
-        h ^= (uint8_t) b[i];
-        h *= 0x100000001b3ULL;
-    }
-    return h;
+    return geist_fnv1a(geist_fnv1a(fnv1a64(a, alen), 1, "\xff"), blen, b);
 }
 
 static size_t next_pow2(size_t n) {
