@@ -273,6 +273,63 @@ static int run(struct geist_backend *be, const char *backend, const struct shape
     return thread_fails + geist_expect(st == GEIST_OK && nonfinite == 0 && worst <= tol, what);
 }
 
+/* Views whose shapes disagree with q must be refused, not run: the kernels
+ * size their loops from q and k, so a short out (or v) view would be
+ * written (read) past its end — ASan reports it where a backend skips the
+ * check. Returns the number of failed checks. */
+static int shape_checks(struct geist_backend *be, const char *backend, bool f16) {
+    const size_t           n_q = 2, heads = 4, kv_heads = 2, hd = 64, n_kv = 8;
+    const enum geist_dtype kvt = f16 ? GEIST_DTYPE_F16 : GEIST_DTYPE_F32;
+    float                 *q   = xmalloc(n_q * heads * hd * sizeof *q);
+    float                 *kv  = xmalloc(n_kv * kv_heads * hd * sizeof *kv);
+    for (size_t i = 0; i < n_q * heads * hd; i++) {
+        q[i] = urand();
+    }
+    for (size_t i = 0; i < n_kv * kv_heads * hd; i++) {
+        kv[i] = urand();
+    }
+    struct geist_buffer *bq = upload(be, q, n_q * heads * hd);
+    struct geist_buffer *bk =
+            f16 ? upload_f16(be, kv, n_kv * kv_heads * hd) : upload(be, kv, n_kv * kv_heads * hd);
+    struct geist_buffer *bv = f16 ? upload_f16(be, kv, (n_kv - 1) * kv_heads * hd)
+                                  : upload(be, kv, (n_kv - 1) * kv_heads * hd);
+    struct geist_buffer *bvf =
+            f16 ? upload_f16(be, kv, n_kv * kv_heads * hd) : upload(be, kv, n_kv * kv_heads * hd);
+    struct geist_buffer    *bo  = upload(be, q, (n_q - 1) * heads * hd);
+    struct geist_tensor     tq  = tensor3(bq, n_q, heads, hd, GEIST_DTYPE_F32);
+    struct geist_tensor     tk  = tensor3(bk, n_kv, kv_heads, hd, kvt);
+    struct geist_tensor     tvs = tensor3(bv, n_kv - 1, kv_heads, hd, kvt); /* one row short */
+    struct geist_tensor     tv  = tensor3(bvf, n_kv, kv_heads, hd, kvt);
+    struct geist_tensor     tos = tensor3(bo, n_q - 1, heads, hd, GEIST_DTYPE_F32); /* one short */
+    const enum geist_status s_out =
+            be->desc->prims->attention(be, &tq, &tk, &tv, n_kv - n_q, 0, &tos);
+    struct geist_buffer    *bo2 = upload(be, q, n_q * heads * hd);
+    struct geist_tensor     to  = tensor3(bo2, n_q, heads, hd, GEIST_DTYPE_F32);
+    const enum geist_status s_v =
+            be->desc->prims->attention(be, &tq, &tk, &tvs, n_kv - n_q, 0, &to);
+    be->desc->vtbl->buffer_destroy(be, bq);
+    be->desc->vtbl->buffer_destroy(be, bk);
+    be->desc->vtbl->buffer_destroy(be, bv);
+    be->desc->vtbl->buffer_destroy(be, bvf);
+    be->desc->vtbl->buffer_destroy(be, bo);
+    be->desc->vtbl->buffer_destroy(be, bo2);
+    free(q);
+    free(kv);
+    char what[120];
+    snprintf(what,
+             sizeof what,
+             "%s %s: an out view shorter than q is refused",
+             backend,
+             f16 ? "F16" : "F32");
+    int fails = geist_expect(s_out != GEIST_OK, what);
+    snprintf(what,
+             sizeof what,
+             "%s %s: a v view shorter than k is refused",
+             backend,
+             f16 ? "F16" : "F32");
+    return fails + geist_expect(s_v != GEIST_OK, what);
+}
+
 int main(int argc, char **argv) {
     (void) argc;
     static const struct shape SHAPES[] = {
@@ -342,6 +399,8 @@ int main(int argc, char **argv) {
             fails += run(be, BACKENDS[b], &SHAPES[i], false);
             fails += run(be, BACKENDS[b], &SHAPES[i], true);
         }
+        fails += shape_checks(be, BACKENDS[b], false);
+        fails += shape_checks(be, BACKENDS[b], true);
         geist_backend_destroy(be);
     }
     if (ran == 0) {
