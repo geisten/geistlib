@@ -462,5 +462,26 @@
       "step_2": "16/16 questions, 3 orders: 256 greedy tokens and final logits identical to an independent session",
       "step_3": "gate passed: 3.47x aggregate tokens/s at B = 8 (66.6 vs 19.2 tok/s); bit-exact companion invariance; token-identical to independent decode over 32 steps, logits within 0.009"
     }
+  },
+  "batched_reasoning_26": {
+    "tracking_issue": "geistlib#26 (Gitea), batch-1/2 follow-up",
+    "declared_date": "2026-10-25",
+    "decided_by": "user (go 2026-10-25: batches 1 and 2, then the batched accuracy re-run)",
+    "declared_before_inference": true,
+    "question": "Does reasoning at cap 2048 decoded through geist_session_decode_batch (8 sessions, refilled as questions finish) keep #171's accuracy on the 500 held-out questions?",
+    "frozen": {
+      "questions": "the 500 #171 test questions, unchanged (cases-test/test.jsonl sha256 108f815e3c21f6fe17adc4fa25d5a14f3051473349e156c06f59f46f86aa3977), chat_reasoning prompts, subject order",
+      "model": "Bonsai 2 27B PQ2_0 (sha256 3907dc16...), Metal on the M1 Max, FP32 KV, 6 threads, OMP_WAIT_POLICY=passive",
+      "generation": "greedy, cap 2048 generated tokens, stop at EOS (as #171's generate_long)",
+      "batching": "tools/bench_reasoning_batch --batch 8: up to 8 sessions per geist_session_decode_batch call; a finished question's slot takes the next question at once, so the batch size varies (reported per token)",
+      "prefill": "per-subject prefix snapshot, cut = common prefix minus one token aligned down to 320 (the engine's chunk), restored per question; bit-identical to a single prefill at that cut (#26 steps 1-2)",
+      "binary": "main with the decode_batch PRs merged; hash frozen in the run manifest",
+      "scoring": "eval_decision.generation_outcome with thinking on, exactly as #171; capped or unparseable answers are wrong"
+    },
+    "primary": "paired comparison, batched minus #171 always-reasoning at cap 2048 (per-question correctness from benchmark/results/DECISION_CAP_CURVE_2026-10-23.json, reasoning_correct['2048']; 79.0 %), decision_metrics.paired_quality, conservative paired 95 % interval, the 2 pp margin of #171",
+    "attribution": "The binary differs from #171's (bf8fa083): later kernels (#221 and others) can change unbatched greedy output too. Reported: (1) token agreement with the #171 generations (first divergent position per question); (2) every question whose correctness changed is re-run unbatched (--batch 1) on the same binary, at most 30 questions (if more change: 30 chosen by sha256([geist-batched-attribution-v1, question_id]) order), to tell batching from engine drift.",
+    "also_reported": "capped and invalid answers, generated tokens, tokens per batch size, aggregate decode tokens/s, per-question latency p50/p95, Mac lease time",
+    "runner": "tools/eval_decision_batched_reasoning.py, 100 questions per chunk, 25-min wall-clock deadline, LOCK_MAX=30, LOCK_PRIO=batch, cool start, caffeinate; manifest frozen before the first chunk",
+    "budget": "~2 h of Mac time (311,800 tokens at ~45-66 tok/s aggregate plus ~20 min prefill), 5-7 chunks; attribution re-runs up to ~1 h more"
   }
 }
