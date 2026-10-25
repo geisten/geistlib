@@ -86,7 +86,8 @@ class PrefixRunnerTests(unittest.TestCase):
     def args(self, **kw):
         values = dict(cases_dir=self.cases, model=self.model, binary=self.binary, out_dir=self.out, split="test",
                       profile="chat_direct", backend="metal", threads=1, align=4, chunk_questions=2,
-                      deadline_minutes=5., cool_max_c=65., cool_timeout_minutes=1., status=False)
+                      deadline_minutes=5., cool_max_c=65., cool_timeout_minutes=1., status=False,
+                      reference_from=None)
         values.update(kw)
         return SimpleNamespace(**values)
 
@@ -130,6 +131,26 @@ class PrefixRunnerTests(unittest.TestCase):
     def test_engine_chunk_must_match_the_declaration(self):
         with patch.dict(os.environ, {"FAKE_CHUNK": "8"}), self.assertRaises(ValueError):
             self.run_all()
+
+    def test_prefix_only_run_takes_the_reference_run(self):
+        self.run_all()
+        first = self.out
+        self.out = first.parent / "run2"
+        with patch.dict(os.environ, {"FAKE_CHUNK": "2"}):
+            self.run_all(align=2, reference_from=first)
+        s = json.loads((self.out / "report.json").read_text())["summary"]
+        self.assertEqual(s["bit_identical_option_logits"], 5)
+        self.assertEqual(s["by_subject"]["law"]["cached_tokens"], 8)  # 9 aligned down to 2
+        self.assertEqual(s["by_subject"]["math"]["cached_tokens"], 4)
+        driver = (self.out / "chunks" / "0000" / "prefix.driver.jsonl").read_text()
+        self.assertNotIn("decision_dense", driver)
+
+    def test_reference_run_must_share_the_binding(self):
+        self.run_all()
+        first = self.out
+        self.out = first.parent / "run2"
+        with self.assertRaises(ValueError):
+            self.run_all(threads=2, reference_from=first)
 
     def test_resume_refuses_a_changed_manifest(self):
         with patch.object(runner.campaign, "TempLog", NoTemps), \
