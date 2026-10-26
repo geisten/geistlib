@@ -614,9 +614,8 @@ static void dn_prefill_heads(void *ctx, size_t h0, size_t h1) {
     const size_t           vald  = j->vald;
     const size_t           ws_f  = j->ws_f;
     const float            eps   = j->eps;
-    float                 *ws =
-            j->ws_all + atomic_fetch_add_explicit(&j->next_slot, 1, memory_order_relaxed) * ws_f;
-    float *o = ws + ws_f - seq * d_v;
+    float                 *ws    = j->ws_all + geist_par_slot(&j->next_slot) * ws_f;
+    float                 *o     = ws + ws_f - seq * d_v;
     for (size_t hv = h0; hv < h1; hv++) {
         const size_t hk = hv % n_kh; /* tiled v-head order, see decode path */
         for (size_t off = 0; off < seq; off += DN_SUBCHUNK) {

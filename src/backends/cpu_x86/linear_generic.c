@@ -107,7 +107,7 @@ static inline float dot_f32(size_t n, const float *restrict x, const float *rest
 }
 
 /* Everything a call needs, or false with nothing acquired. One dequantized
- * row per possible range (par_slot), each padded to a 64-byte multiple so
+ * row per possible range (geist_par_slot), each padded to a 64-byte multiple so
  * no two ranges' rows share a cache line. */
 struct generic_plan {
     row_dequant_fn deq;
@@ -132,7 +132,8 @@ plan_call(const struct geist_weight *w, struct geist_backend *be, struct generic
     }
     p->stride    = (n_in + 15u) & ~(size_t) 15u;
     size_t bytes = 0;
-    if (ckd_mul(&bytes, team_max(), p->stride) || ckd_mul(&bytes, bytes, sizeof(float))) {
+    if (ckd_mul(&bytes, geist_par_max_threads(), p->stride) ||
+        ckd_mul(&bytes, bytes, sizeof(float))) {
         return false;
     }
     struct cpu_x86_workspace *ws =
@@ -148,7 +149,7 @@ plan_call(const struct geist_weight *w, struct geist_backend *be, struct generic
  * dotted against every activation row. */
 static void generic_rows(void *ctx, size_t j0, size_t j1) {
     struct generic_plan *p         = ctx;
-    float               *row       = p->rows + par_slot(&p->slot) * p->stride;
+    float               *row       = p->rows + geist_par_slot(&p->slot) * p->stride;
     const row_dequant_fn deq       = p->deq;
     const size_t         row_bytes = p->row_bytes;
     const size_t         m         = p->m;

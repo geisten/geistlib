@@ -15,8 +15,8 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "../internal.h"
-#include "../parallel.h"
 #include "heap.h"
+#include "par.h"
 #include "linear_ref.h"
 
 #include "quant.h"
@@ -725,7 +725,7 @@ void cpu_neon_w_tq2_0_q8a_mN(size_t                     m,
     };
 
 #if defined(__ARM_NEON)
-    cpu_neon_par_for_dynamic(
+    geist_par_for_dynamic(
             (n_out + (size_t) TQ2_NC - 1) / (size_t) TQ2_NC, 1, q8a_mN_panels, (void *) &ctx);
 #else
     geist_par_for(n_out, q8a_mN_rows, (void *) &ctx);

@@ -12,8 +12,7 @@
  *   tl1.c              — W1.58 × A8 LUT-GEMV decode kernel
  *   elementwise.c, transformer_ops.c — elementwise ops and norms; RoPE,
  *                        embedding, attention
- *   parallel.h, workspace.c — schedule(dynamic) on geist_par_for, per-thread
- *                        scratch
+ *   workspace.c        — per-thread scratch
  *   kernel_catalog.c, calibrate.c — kernel policy and its calibration
  */
 #ifndef GEIST_INTERNAL_BACKEND_CPU_NEON_H

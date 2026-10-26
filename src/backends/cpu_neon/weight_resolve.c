@@ -19,7 +19,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "internal.h"
-#include "parallel.h"
+#include "par.h"
 #include "kernels/decode_rows.h"
 #include "tl1.h"
 

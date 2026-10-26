@@ -13,7 +13,6 @@
 #include "par.h"
 #include "quant.h"
 
-#include "../parallel.h"
 #include "decode_rows.h"
 
 #include <stddef.h>
@@ -985,7 +984,7 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
                                   .n_out            = n_out,
                                   .n_blocks_per_row = n_blocks_per_row,
                                   .y                = y};
-    cpu_neon_par_for_dynamic(n_pairs, 2, q6k_prefill_pre_pairs, &job);
+    geist_par_for_dynamic(n_pairs, 2, q6k_prefill_pre_pairs, &job);
 
     /* NR=1 tail for odd n_out. */
     for (size_t n = n_pairs * 2; n < n_out; n++) {
@@ -1181,7 +1180,7 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4(size_t        m,
                                  .n_out            = n_out,
                                  .n_blocks_per_row = n_blocks_per_row,
                                  .y                = y};
-    cpu_neon_par_for_dynamic(n_tiles, 4, q6k_ntile4_tiles, &job);
+    geist_par_for_dynamic(n_tiles, 4, q6k_ntile4_tiles, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1393,7 +1392,7 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4_stream(size_t        m,
                                   .n_out            = n_out,
                                   .n_blocks_per_row = n_blocks_per_row,
                                   .y                = y};
-    cpu_neon_par_for_dynamic(n_tiles, 4, q6k_stream4_tiles, &job);
+    geist_par_for_dynamic(n_tiles, 4, q6k_stream4_tiles, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1465,5 +1464,5 @@ void linear_q6k_decode_fp32(size_t      n_in,
     const size_t               n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
 
     struct q6k_fp32_job job = {.w = w, .x = x, .n_blocks_per_row = n_blocks_per_row, .y = y};
-    cpu_neon_par_for_dynamic(n_out, 4, q6k_fp32_rows, &job);
+    geist_par_for_dynamic(n_out, 4, q6k_fp32_rows, &job);
 }

@@ -7,7 +7,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "internal.h"
-#include "parallel.h"
+#include "par.h"
 
 #include "gemma4_kernels.h"
 #include "host_buffer.h"
@@ -182,7 +182,7 @@ static inline void add_scaled_f32_neon_256(float *dst, const float *src, float s
  * 8 heads (Gemma 4 E2B) then spreads its rows over 8 threads instead of
  * one, where it used to fall back to the scalar reference (#16). */
 static void attention_par(size_t total, geist_par_fn fn, void *ctx) {
-    cpu_neon_par_for_dynamic(total, total < 16 ? 1 : 8, fn, ctx);
+    geist_par_for_dynamic(total, total < 16 ? 1 : 8, fn, ctx);
 }
 
 static inline void scale_f32_neon(float *x, float scale, size_t n) {
@@ -836,7 +836,7 @@ static bool attention_heads_grouped_neon(const float               *q,
                                         .part_out = ws->attn_part_out,
                                         .part_max = ws->attn_part_max,
                                         .part_sum = ws->attn_part_sum};
-            cpu_neon_par_for_dynamic(items * parts, 1, attn_split_items, &sj);
+            geist_par_for_dynamic(items * parts, 1, attn_split_items, &sj);
             attn_split_merge(&sj, n_rows);
             return true;
         }
@@ -855,7 +855,7 @@ static bool attention_heads_grouped_neon(const float               *q,
                            .sliding_window = sliding_window,
                            .hd256          = hd256,
                            .out            = out};
-    cpu_neon_par_for_dynamic(items, 1, attn_group_items, &job);
+    geist_par_for_dynamic(items, 1, attn_group_items, &job);
     return true;
 }
 #endif

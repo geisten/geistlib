@@ -190,9 +190,7 @@ static void vision_attn_heads(void *ctx, size_t h0, size_t h1) {
     const int                  hd_stride = job->hd_stride;
     [[maybe_unused]] const int fe        = job->fe; /* read on Apple only */
     const float                scale     = job->scale;
-    float                     *scores =
-            job->scores_pool + atomic_fetch_add_explicit(&job->next_slot, 1, memory_order_relaxed) *
-                                       job->per_thread_scores;
+    float *scores = job->scores_pool + geist_par_slot(&job->next_slot) * job->per_thread_scores;
     for (size_t h = h0; h < h1; h++) {
         const float *qh = job->q + h * head_dim;
         const float *kh = job->k + h * head_dim;

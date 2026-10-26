@@ -22,7 +22,7 @@
 #define GEIST_CPU_NEON_ATTENTION_KV_H
 
 #include "internal.h"
-#include "parallel.h"
+#include "par.h"
 
 #include "gemma4_kernels.h" /* ATTN_EXP_FLOOR, ATTN_F32_BLOCK */
 #include "int4_kv.h"
@@ -241,7 +241,7 @@ static void nkv_run(size_t        n_q,
                           .v_cache        = v_cache,
                           .v_scale        = v_scale,
                           .out            = out};
-    cpu_neon_par_for_dynamic(n_q * n_q_heads, 1, nkv_items, &job);
+    geist_par_for_dynamic(n_q * n_q_heads, 1, nkv_items, &job);
 }
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop

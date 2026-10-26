@@ -26,10 +26,10 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "../internal.h"
-#include "../parallel.h"
 #include "checked.h"
 #include "geist_gemm.h"
 #include "heap.h"
+#include "par.h"
 #include "linear_ref.h"
 
 #include "quant.h"
@@ -754,7 +754,7 @@ static void pq2_0_x8_gemm_permuted(struct cpu_neon_state     *st,
                                     .x     = x,
                                     .w     = w,
                                     .y     = y};
-    cpu_neon_par_for_dynamic((n_out + T - 1) / T, 1, pq2_0_x8_gemm_tiles, &job);
+    geist_par_for_dynamic((n_out + T - 1) / T, 1, pq2_0_x8_gemm_tiles, &job);
 }
 
 /* Grows the shared permute buffer and fills it. Returns nullptr on
