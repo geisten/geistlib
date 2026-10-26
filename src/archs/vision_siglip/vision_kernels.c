@@ -11,6 +11,7 @@
 #include "vision_kernels.h"
 #include <geist_types.h>
 
+#include "env.h"
 #include "heap.h"
 #include "par.h"
 
@@ -304,18 +305,7 @@ void vision_attention_bidir_fp32(size_t       n_tokens,
     /* GEIST_FAST_TANH=1 enables vForce vvexpf for softmax — ~10x faster
      * than scalar expf loop, but introduces 1-2 ULP per element drift.
      * Reuses the GEIST_FAST_TANH env flag (same precision/perf trade). */
-    /* Racy-benign first-use cache: several sessions can reach it at once.
-     * Both would compute the same answer, but a plain int read/written
-     * concurrently is still a data race (and TSan says so). Relaxed
-     * atomics make it defined at no cost — the load is a plain load on
-     * every target. */
-    static _Atomic int fast_expf = -1;
-    int                fe        = atomic_load_explicit(&fast_expf, memory_order_relaxed);
-    if (fe < 0) {
-        const char *s = getenv("GEIST_FAST_TANH");
-        fe            = (s != nullptr && s[0] == '1') ? 1 : 0;
-        atomic_store_explicit(&fast_expf, fe, memory_order_relaxed);
-    }
+    const int fe = geist_fast_tanh_enabled();
 
     struct vision_attn_job job = {.n_tokens          = n_tokens,
                                   .head_dim          = head_dim,

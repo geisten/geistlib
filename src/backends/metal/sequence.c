@@ -278,7 +278,7 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit) {
         const enum metal_profile_stage wait_stage =
                 metal_profile_wait_stage_for_sequence(st->sequence_kind);
         const uint64_t wait_start_ns = st->profile_enabled ? metal_now_ns() : 0;
-        const bool     seq_trace     = metal_env_enabled("GEIST_METAL_SEQ_TRACE");
+        const bool     seq_trace     = geist_env_flag("GEIST_METAL_SEQ_TRACE", false);
         const uint64_t commit_ns     = seq_trace ? metal_now_ns() : 0;
         metal_msg_send_void0(st, cmd, "commit");
         metal_msg_send_void0(st, cmd, "waitUntilCompleted");

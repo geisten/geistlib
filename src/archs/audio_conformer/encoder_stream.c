@@ -4,6 +4,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "encoder_internal.h"
+#include "env.h"
 #include "par.h"
 
 static void audio_stream_state_reset(struct audio_stream_state *ss);
@@ -664,9 +665,8 @@ size_t audio_encoder_stream_push(struct AudioEncoder       *a,
      *    kick, where re-running from frame 0 is O(T²) over the clip — it
      *    defaults to the incremental path. GEIST_AUDIO_SUBSAMPLE_INC=0/1
      *    overrides either way. */
-    const char *inc_env  = getenv("GEIST_AUDIO_SUBSAMPLE_INC");
-    const bool  subs_inc = inc_env != nullptr ? inc_env[0] == '1' : a->stream_enabled;
-    size_t      n_sub_full =
+    const bool subs_inc = geist_env_flag("GEIST_AUDIO_SUBSAMPLE_INC", a->stream_enabled);
+    size_t     n_sub_full =
             subs_inc ? audio_encoder_subsample_run_inc(
                                a, &state->subs, mel_full, mel_mask, n_mel_total, state->sub_buf)
                      : audio_encoder_subsample_run(

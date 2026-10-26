@@ -8,6 +8,7 @@
  * their kernels, M>1 prefill, and an FP32 GEMV (linear_q6k_decode_fp32).
  */
 #include "quant_blocks.h"
+#include "env.h"
 #include "heap.h"
 #include "par.h"
 #include "quant.h"
@@ -934,8 +935,7 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
     static _Atomic int q6k_pack_act = -1;
     int                pack_on      = atomic_load_explicit(&q6k_pack_act, memory_order_relaxed);
     if (pack_on < 0) {
-        const char *e = getenv("GEIST_Q6K_PACK_ACT");
-        pack_on       = (e != nullptr && e[0] == '0') ? 0 : 1;
+        pack_on = geist_env_flag("GEIST_Q6K_PACK_ACT", true);
         atomic_store_explicit(&q6k_pack_act, pack_on, memory_order_relaxed);
     }
     const int8_t *packed = nullptr;

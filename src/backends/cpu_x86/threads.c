@@ -37,7 +37,7 @@
 
 #include "hw_probe.h"
 #include "par.h"
-#include "parse.h"
+#include "env.h"
 
 #include <limits.h>
 #include <stdatomic.h>
@@ -51,16 +51,6 @@ int cpu_x86_phase_threads(int env, bool omp_threads_set, size_t logical, size_t 
         return 0;
     }
     return (int) physical;
-}
-
-/* -1 when unset or empty; 0 when not a positive count; else the count. */
-static int env_count(const char *name) {
-    const char *e = getenv(name);
-    if (e == nullptr || e[0] == '\0') {
-        return -1;
-    }
-    long v;
-    return geist_parse_long(e, &v) && v > 0 && v <= INT_MAX ? (int) v : 0;
 }
 
 /* Team size for each phase, 0 = ambient. Computed once, on the first
@@ -77,13 +67,13 @@ static int region_threads(enum geist_parallel_region region) {
         const char *omp     = getenv("OMP_NUM_THREADS");
         const bool  omp_set = omp != nullptr && omp[0] != '\0';
         atomic_store_explicit(&prefill,
-                              cpu_x86_phase_threads(env_count("GEIST_PREFILL_THREADS"),
+                              cpu_x86_phase_threads(geist_env_count("GEIST_PREFILL_THREADS"),
                                                     omp_set,
                                                     hw.logical_cores,
                                                     hw.physical_cores),
                               memory_order_relaxed);
         atomic_store_explicit(&decode,
-                              cpu_x86_phase_threads(env_count("GEIST_DECODE_THREADS"),
+                              cpu_x86_phase_threads(geist_env_count("GEIST_DECODE_THREADS"),
                                                     omp_set,
                                                     hw.logical_cores,
                                                     hw.physical_cores),

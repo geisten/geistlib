@@ -1,5 +1,6 @@
 #include "gguf_reader.h"
 #include "checked.h"
+#include "env.h"
 #include "heap.h"
 #include "quant.h"
 
@@ -557,12 +558,12 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
  *    runs, and a cold multi-GB prefault just front-loads the same I/O). */
 static void apply_mmap_advice(void *map, size_t size) {
 #if defined(__linux__) && defined(MADV_HUGEPAGE)
-    if (getenv("GEIST_NO_HUGEPAGE") == nullptr) {
+    if (!geist_env_flag("GEIST_NO_HUGEPAGE", false)) {
         (void) madvise(map, size, MADV_HUGEPAGE);
     }
 #endif
 #if defined(MADV_WILLNEED)
-    if (getenv("GEIST_MMAP_PREFETCH") != nullptr) {
+    if (geist_env_flag("GEIST_MMAP_PREFETCH", false)) {
         (void) madvise(map, size, MADV_WILLNEED);
     }
 #endif

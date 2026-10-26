@@ -12,6 +12,7 @@
 #include <geist.h>
 #include <geist_backend.h>
 #include "quant.h"
+#include "env.h"
 #include "heap.h"
 #include <math.h>
 
@@ -1120,8 +1121,6 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit);
 
 #include "metal_shaders.h"
 #include "metal_objc.h"
-
-bool metal_env_enabled(const char *name);
 
 uint64_t metal_now_ns(void);
 

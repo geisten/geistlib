@@ -34,6 +34,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include "checked.h"
+#include "env.h"
 #include "heap.h"
 
 #include <stddef.h>
@@ -66,8 +67,7 @@ static void             qprof_print(void) {
 /* pthread_once, not a racy first-use check: two threads both seeing the
  * uninitialized state would each register atexit(qprof_print). */
 static void qprof_init_once(void) {
-    const char *e  = getenv("GEIST_PROFILE_QUANT");
-    const int   on = (e != nullptr && e[0] == '1') ? 1 : 0;
+    const int on = geist_env_flag("GEIST_PROFILE_QUANT", false);
     atomic_store_explicit(&g_qprof_state, on, memory_order_relaxed);
     if (on) {
         atexit(qprof_print);
@@ -1394,8 +1394,7 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
 static _Atomic uint32_t g_kernel_hits[sizeof(CPU_NEON_KERNELS) / sizeof(CPU_NEON_KERNELS[0])];
 
 static bool kernel_log_enabled(void) {
-    const char *e = getenv("GEIST_LOG_KERNELS");
-    return e != nullptr && e[0] == '1';
+    return geist_env_flag("GEIST_LOG_KERNELS", false);
 }
 
 void cpu_neon_dump_kernel_hits(void) {

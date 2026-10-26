@@ -9,6 +9,7 @@
  * (`dequant_q4_K_row`) and the block struct live in src/formats/gguf/.
  */
 #include "quant_blocks.h"
+#include "env.h"
 #include "heap.h"
 #include "linear_ref.h"
 #include "par.h"
@@ -729,8 +730,7 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
     static _Atomic int pack_act = -1;
     int                pack_on  = atomic_load_explicit(&pack_act, memory_order_relaxed);
     if (pack_on < 0) {
-        const char *e = getenv("GEIST_Q4K_PACK_ACT");
-        pack_on       = (e != nullptr && e[0] == '0') ? 0 : 1;
+        pack_on = geist_env_flag("GEIST_Q4K_PACK_ACT", true);
         atomic_store_explicit(&pack_act, pack_on, memory_order_relaxed);
     }
     int8_t *packed = nullptr;

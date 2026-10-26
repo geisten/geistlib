@@ -5,6 +5,8 @@
 
 #include "profile.h"
 
+#include "env.h"
+
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -58,11 +60,9 @@ static bool transformer_profile_env_enabled(void) {
     if (atomic_load(&g_profile_enabled) < 0) {
         pthread_mutex_lock(&g_profile_mu);
         if (atomic_load(&g_profile_enabled) < 0) {
-            const char *env = getenv("GEIST_PROFILE_PREFILL");
-            if (env == nullptr || env[0] == '\0') {
-                env = getenv("GEIST_PROFILE_FORWARD");
-            }
-            const int on = (env != nullptr && env[0] == '1') ? 1 : 0;
+            /* GEIST_PROFILE_PREFILL, else GEIST_PROFILE_FORWARD. */
+            const int on = geist_env_flag("GEIST_PROFILE_PREFILL",
+                                          geist_env_flag("GEIST_PROFILE_FORWARD", false));
             if (on && !g_profile_atexit_registered) {
                 atexit(transformer_profile_print_all);
                 g_profile_atexit_registered = true;

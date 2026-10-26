@@ -340,7 +340,7 @@ enum geist_status vk_memory_info(const struct geist_backend *be, struct geist_ba
         buf->bar_bytes = (size_t) minfo.allocationSize;
         st->bar_used += buf->bar_bytes;
     }
-    const bool verbose = getenv("GEIST_VK_VERBOSE") != nullptr;
+    const bool verbose = geist_env_flag("GEIST_VK_VERBOSE", false);
     if (verbose && buf->host_visible) {
         fprintf(stderr,
                 "  buffer %zu KiB role=%d bar=%d\n",
@@ -1014,7 +1014,7 @@ void *vk_tensor_host(const struct geist_tensor *t, size_t *out_n) {
          * can tell this refusal from any other bad input. */
         if (t->buffer->buf != VK_NULL_HANDLE) {
             t->buffer->owner->stat_host_denied++;
-            if (getenv("GEIST_VK_VERBOSE") != nullptr) {
+            if (geist_env_flag("GEIST_VK_VERBOSE", false)) {
                 fprintf(stderr,
                         "geist vulkan: a CPU fallback needs a device-local buffer (%zu KiB, "
                         "role %d); failing the op\n",

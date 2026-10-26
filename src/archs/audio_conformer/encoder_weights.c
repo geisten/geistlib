@@ -4,7 +4,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "encoder_internal.h"
-#include "parse.h"
+#include "env.h"
 
 static void quantize_clippable_w8(struct ClippableLinear *cl, size_t out_dim, size_t in_dim);
 
@@ -75,13 +75,6 @@ static bool load_clippable(struct st_ctx          *sf,
     return true;
 }
 
-static bool env_flag(const char *name, bool fallback) {
-    const char *s = getenv(name);
-    if (s == nullptr || s[0] == '\0')
-        return fallback;
-    return s[0] == '1';
-}
-
 /* The precision decision, resolved once per encoder create (#251): env
  * changed afterwards has no effect, so tests set env between creates.
  *
@@ -92,13 +85,13 @@ static bool env_flag(const char *name, bool fallback) {
  * '0' opts out. layer_limit: quantization restricted to layers [0, N). */
 struct audio_prec_policy audio_prec_policy_resolve(void) {
     struct audio_prec_policy p = {
-            .attn_w8a8   = env_flag("GEIST_AUDIO_ATTN_W8A8", true),
-            .lconv_w8a8  = env_flag("GEIST_AUDIO_LCONV_W8A8", true),
+            .attn_w8a8   = geist_env_flag("GEIST_AUDIO_ATTN_W8A8", true),
+            .lconv_w8a8  = geist_env_flag("GEIST_AUDIO_LCONV_W8A8", true),
             .force_fp32  = false,
             .layer_limit = N_LAYERS,
     };
 #if defined(__APPLE__) && defined(HAVE_ACCELERATE)
-    p.force_fp32 = getenv("GEIST_AUDIO_FORCE_QUANT") == nullptr;
+    p.force_fp32 = !geist_env_flag("GEIST_AUDIO_FORCE_QUANT", false);
 #endif
     long limit;
     if (geist_parse_long(getenv("GEIST_AUDIO_W8A8_LAYER_LIMIT"), &limit)) {

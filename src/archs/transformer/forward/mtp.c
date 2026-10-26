@@ -6,6 +6,7 @@
 #include "../arch_state.h"
 #include "../forward.h"
 #include "../scratch_plan.h"
+#include "env.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -44,8 +45,7 @@ static struct transformer_forward_profile g_mtp_profile = {
 };
 
 static bool mtp_spec_head_enabled(void) {
-    const char *env = getenv("GEIST_MTP_SPEC_HEAD");
-    return env != nullptr && env[0] == '1';
+    return geist_env_flag("GEIST_MTP_SPEC_HEAD", false);
 }
 
 static enum geist_status

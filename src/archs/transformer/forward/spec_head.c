@@ -55,6 +55,7 @@
 #include "../../../engine/sampler.h"
 #include "quant.h"
 #include "checked.h"
+#include "env.h"
 #include "heap.h"
 #include "par.h"
 
@@ -128,8 +129,7 @@ static int spec_head_env(void) {
     /* Default ON; GEIST_SPEC_HEAD=0 forces it off. Read per call (once per
      * decoded token — noise next to the head itself) so tests can toggle it
      * within one process. */
-    const char *e = getenv("GEIST_SPEC_HEAD");
-    return (e != nullptr && e[0] == '0') ? 0 : 1;
+    return geist_env_flag("GEIST_SPEC_HEAD", true);
 }
 
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)

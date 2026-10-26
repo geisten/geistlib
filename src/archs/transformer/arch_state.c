@@ -33,7 +33,7 @@
 #include "fwht.h"
 #include "kivi.h"
 #include "ptqtp_awq.h"
-#include "parse.h"
+#include "env.h"
 #include "hw_probe.h"
 
 #include <geist.h>
@@ -50,19 +50,11 @@
 #include <arm_neon.h>
 #endif
 
-static bool env_flag_enabled(const char *name, bool fallback) {
-    const char *env = getenv(name);
-    if (env == nullptr || env[0] == '\0') {
-        return fallback;
-    }
-    return env[0] == '1' || env[0] == 'y' || env[0] == 'Y' || env[0] == 't' || env[0] == 'T';
-}
-
 static struct transformer_runtime_flags transformer_runtime_flags_from_env(void) {
     return (struct transformer_runtime_flags) {
-            .bitnet_sub_ln_enabled = !env_flag_enabled("GEIST_BITNET_NO_SUBLN", false),
-            .dump_act_sparsity     = env_flag_enabled("GEIST_DUMP_ACT_SPARSITY", false),
-            .dn_seq_prefill        = env_flag_enabled("GEIST_DN_SEQ_PREFILL", false),
+            .bitnet_sub_ln_enabled = !geist_env_flag("GEIST_BITNET_NO_SUBLN", false),
+            .dump_act_sparsity     = geist_env_flag("GEIST_DUMP_ACT_SPARSITY", false),
+            .dn_seq_prefill        = geist_env_flag("GEIST_DN_SEQ_PREFILL", false),
     };
 }
 
@@ -1364,13 +1356,8 @@ geometry_from_metadata(struct geist_backend             *be,
     /* GPU backends default to the backend-arena mode: norm weights and
      * embed tables must live inside a backend buffer to be GPU-bindable;
      * mmap pages are not (every touching op would flush + run on CPU). */
-    bool mmap_alias_mode = !be->desc->caps.weights_need_backend_arena;
-    {
-        const char *env = getenv("GEIST_WEIGHT_MMAP");
-        if (env != nullptr && env[0] != '\0') {
-            mmap_alias_mode = (env[0] != '0');
-        }
-    }
+    const bool mmap_alias_mode =
+            geist_env_flag("GEIST_WEIGHT_MMAP", !be->desc->caps.weights_need_backend_arena);
 
     if (!mmap_alias_mode) {
         /* First arena chunk from the GGUF's tensor table (the whole model
@@ -1627,7 +1614,7 @@ plan_split_layers(struct gguf_ctx *gguf, const struct geist_session_opts *opts, 
             kv = SIZE_MAX;
         }
         *out = mem.unified_memory ? n : transformer_split_layers_fit(n, bytes, kv, avail);
-        if (getenv("GEIST_VERBOSE") != nullptr) {
+        if (geist_env_flag("GEIST_VERBOSE", false)) {
             fprintf(stderr,
                     "geist: split planner: %zu of %zu layers on %s (%zu MiB free, %zu MiB "
                     "reserved, %zu MiB KV per layer at %zu positions)\n",
@@ -1671,7 +1658,7 @@ plan_split_layers(struct gguf_ctx *gguf, const struct geist_session_opts *opts, 
     } else {
         sub->m_max = st->m_max;
     }
-    if (getenv("GEIST_VERBOSE") != nullptr) {
+    if (geist_env_flag("GEIST_VERBOSE", false)) {
         fprintf(stderr,
                 "geist: layer split: layers 0..%zu on %s, layers %zu..%zu, embedding and head "
                 "on %s\n",
@@ -1696,9 +1683,9 @@ static size_t offload_m_min(const struct transformer_arch_state *st, struct geis
     if (st->layer_lo >= st->n_layers) {
         return 0;
     }
-    const char *v = getenv("GEIST_OFFLOAD_M_MIN");
-    if (v != nullptr && *v != '\0') {
-        return (size_t) strtoull(v, nullptr, 10);
+    long v;
+    if (geist_parse_long(getenv("GEIST_OFFLOAD_M_MIN"), &v) && v >= 0) {
+        return (size_t) v;
     }
     struct geist_backend_memory mem;
     if (geist_backend_memory_info(sbe, &mem) != GEIST_OK || mem.unified_memory) {
@@ -1713,7 +1700,7 @@ static size_t offload_m_min(const struct transformer_arch_state *st, struct geis
     }
     const size_t avail = geist_mem_available();
     if (avail == 0 || copy > avail / 5 * 4) {
-        if (getenv("GEIST_VERBOSE") != nullptr) {
+        if (geist_env_flag("GEIST_VERBOSE", false)) {
             fprintf(stderr,
                     "geist: offload off: its copy of %zu MiB needs more host memory than the "
                     "%zu MiB available (GEIST_OFFLOAD_M_MIN overrides)\n",
@@ -1729,7 +1716,7 @@ static void offload_destroy(struct transformer_offload *o) {
     if (o == nullptr) {
         return;
     }
-    if (getenv("GEIST_VERBOSE") != nullptr && o->twins != nullptr) {
+    if (geist_env_flag("GEIST_VERBOSE", false) && o->twins != nullptr) {
         fprintf(stderr,
                 "geist: offload: %llu prefill chunks ran on %s, %llu steps mirrored there\n",
                 (unsigned long long) atomic_load(&o->chunks),
@@ -1775,7 +1762,7 @@ static void offload_destroy(struct transformer_offload *o) {
     if (o->twins->m_max < st->m_max) {
         st->m_max = o->twins->m_max;
     }
-    if (getenv("GEIST_VERBOSE") != nullptr) {
+    if (geist_env_flag("GEIST_VERBOSE", false)) {
         fprintf(stderr,
                 "geist: offload: prefill chunks of %zu rows or more run layers %zu..%zu on %s\n",
                 m_min,
@@ -2069,17 +2056,14 @@ resolve_kv_mode_requested(const struct geist_backend      *be,
     if (m != GEIST_KV_AUTO) {
         return m;
     }
-    const char *env_kivi = getenv("GEIST_KV_KIVI");
-    const char *env_int8 = getenv("GEIST_KV_INT8");
-    const char *env_int4 = getenv("GEIST_KV_INT4");
-    if (env_int4 != nullptr && env_int4[0] == '1') {
+    if (geist_env_flag("GEIST_KV_INT4", false)) {
         return GEIST_KV_INT4;
     }
-    if (env_kivi != nullptr && env_kivi[0] == '1') {
+    if (geist_env_flag("GEIST_KV_KIVI", false)) {
         return GEIST_KV_KIVI;
     }
-    if (env_int8 != nullptr) {
-        return (env_int8[0] == '1') ? GEIST_KV_INT8 : GEIST_KV_FP32;
+    if (getenv("GEIST_KV_INT8") != nullptr) { /* set at all: INT8 or, when off, FP32 */
+        return geist_env_flag("GEIST_KV_INT8", false) ? GEIST_KV_INT8 : GEIST_KV_FP32;
     }
     /* The model family's preference, where it has one (transformer_family
      * .kv_auto): a precision need of the model, so it outranks the
@@ -2164,10 +2148,7 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
      * against FP32 KV, mean JS 0.016 nats and 82 % top-1 unrotated, 0.0013
      * and 96 % rotated). GEIST_KV_ROT=0 opts out, =1 forces on. */
     {
-        const char *env_rot     = getenv("GEIST_KV_ROT");
-        const bool  rot_default = kl.int8;
-        const bool  rot_on      = (env_rot != nullptr) ? (env_rot[0] == '1') : rot_default;
-        kl.rot                  = kl.int8 && rot_on;
+        kl.rot = kl.int8 && geist_env_flag("GEIST_KV_ROT", kl.int8);
     }
     /* F16 cache: explicit request (session, family), or AUTO-resolved
      * FP32 upgraded on a backend that does so by default
@@ -2176,17 +2157,15 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
      * GEIST_KV_F16=0 forces FP32, =1 requests it under AUTO). Without
      * them F16 degrades to FP32. */
     {
-        const bool  slot_ok = state->backend != nullptr &&
-                              state->backend->desc->caps.kv_f16_attention &&
-                              geist_backend_fused_tbl(state->backend)->kv_append_f16 != nullptr;
-        const char *env_f16 = getenv("GEIST_KV_F16");
-        bool        want    = mode == GEIST_KV_F16;
+        const bool slot_ok = state->backend != nullptr &&
+                             state->backend->desc->caps.kv_f16_attention &&
+                             geist_backend_fused_tbl(state->backend)->kv_append_f16 != nullptr;
+        bool       want    = mode == GEIST_KV_F16;
         if (mode == GEIST_KV_FP32 && (opts == nullptr || opts->kv_mode == GEIST_KV_AUTO) &&
             state->backend != nullptr) {
-            want = env_f16 != nullptr ? env_f16[0] == '1'
-                                      : state->backend->desc->caps.kv_f16_by_default;
+            want = geist_env_flag("GEIST_KV_F16", state->backend->desc->caps.kv_f16_by_default);
         }
-        kl.f16 = want && slot_ok && !(env_f16 != nullptr && env_f16[0] == '0');
+        kl.f16 = want && slot_ok && geist_env_flag("GEIST_KV_F16", true); /* =0 forces FP32 */
     }
     return kl;
 }
@@ -2433,7 +2412,7 @@ static struct transformer_arch_session *session_shell(struct transformer_arch_st
         return nullptr;
     }
     sess->model       = state;
-    sess->mtp_enabled = state->n_mtp_layers > 0 && env_flag_enabled("GEIST_MTP", false);
+    sess->mtp_enabled = state->n_mtp_layers > 0 && geist_env_flag("GEIST_MTP", false);
     sess->m_max       = (opts != nullptr && opts->m_max > 0) ? opts->m_max : state->m_max;
     /* Honor opts->max_seq_len up to the model's frozen bound. Sessions
      * may run SMALLER windows (their KV caches are sized to req_seq);

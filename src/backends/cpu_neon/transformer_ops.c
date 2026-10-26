@@ -14,6 +14,7 @@
 #include "quant.h"
 #include "heap.h"
 #include "checked.h"
+#include "env.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -635,8 +636,7 @@ static bool attn_split_decode_on(void) {
     static _Atomic int on = -1;
     int                v  = atomic_load_explicit(&on, memory_order_relaxed);
     if (v < 0) {
-        const char *e = getenv("GEIST_ATTN_SPLIT_DECODE");
-        v             = e != nullptr && e[0] == '1';
+        v = geist_env_flag("GEIST_ATTN_SPLIT_DECODE", false);
         atomic_store_explicit(&on, v, memory_order_relaxed);
     }
     return v != 0;

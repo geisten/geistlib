@@ -756,7 +756,7 @@ void *metal_buffer_map(struct geist_buffer *buf) {
     {
         struct metal_state *st = buf->owner;
         if (metal_seq_references(st, buf->buffer, buf->base_off, buf->bytes)) {
-            if (metal_env_enabled("GEIST_METAL_STRICT_BATCH")) {
+            if (geist_env_flag("GEIST_METAL_STRICT_BATCH", false)) {
                 geist_backend_set_error(st->backend,
                                         GEIST_E_BACKEND,
                                         "metal: host map of active sequence buffer (%zu bytes)",

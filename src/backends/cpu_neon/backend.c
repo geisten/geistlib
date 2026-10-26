@@ -18,7 +18,7 @@
 #include "heap.h"
 #include "omp_idle.h"
 #include "par.h"
-#include "parse.h"
+#include "env.h"
 #include "quant.h"
 
 #include <limits.h>
@@ -138,10 +138,9 @@ static int cpu_neon_region_thread_count(enum geist_parallel_region region) {
          * quiesced box; a background process eating a core inverts it. */
         static _Atomic int n = -1;
         if (n < 0) {
-            const char *env = getenv("GEIST_PREFILL_THREADS");
-            if (env != nullptr && env[0] != '\0') {
-                long v;
-                n = geist_parse_long(env, &v) && v > 0 && v <= INT_MAX ? (int) v : 0;
+            const int env = geist_env_count("GEIST_PREFILL_THREADS");
+            if (env >= 0) {
+                n = env;
             } else {
                 const int pc = apple_perf_cores();
                 n            = (pc > 0) ? pc : online_cpus();
@@ -154,10 +153,9 @@ static int cpu_neon_region_thread_count(enum geist_parallel_region region) {
      * ambient count. */
     static _Atomic int n = -1;
     if (n < 0) {
-        const char *env = getenv("GEIST_DECODE_THREADS");
-        if (env != nullptr && env[0] != '\0') {
-            long v;
-            n = geist_parse_long(env, &v) && v > 0 && v <= INT_MAX ? (int) v : 0;
+        const int env = geist_env_count("GEIST_DECODE_THREADS");
+        if (env >= 0) {
+            n = env;
         } else {
 #if defined(GEIST_TARGET_PI5)
             n = 3;

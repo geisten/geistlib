@@ -32,13 +32,8 @@ static constexpr double SONDE_MARGIN      = 0.03;
 static const size_t     SONDE_OUT[]       = {1024, 2048, 4096, 6144, 8192, 12288};
 
 static uint32_t tuning_env_u32(const char *name, uint32_t fallback) {
-    const char *v = getenv(name);
-    if (v == nullptr || *v == '\0') {
-        return fallback;
-    }
-    char               *end = nullptr;
-    const unsigned long n   = strtoul(v, &end, 10);
-    return end != v && n > 0u && n <= UINT32_MAX ? (uint32_t) n : fallback;
+    long n;
+    return geist_parse_long(getenv(name), &n) && n > 0 && n <= UINT32_MAX ? (uint32_t) n : fallback;
 }
 
 static uint32_t
