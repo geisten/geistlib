@@ -76,6 +76,10 @@ struct geist_hw_probe {
 
 void geist_hw_probe_fill(struct geist_hw_probe *out);
 
+/* Performance-core count on Apple silicon (hw.perflevel0.physicalcpu), 0
+ * elsewhere or when the sysctl is missing. One sysctl, no other probing. */
+[[nodiscard]] int geist_hw_perf_cores(void);
+
 /* The instruction-set bits only (has_neon ... has_amx_int8), everything
  * else zero: no /sys reads, so cheap enough to run on every backend
  * create. geist_hw_probe_fill starts from it. */
