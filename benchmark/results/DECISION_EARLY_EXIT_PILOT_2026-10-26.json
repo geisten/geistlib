@@ -1,0 +1,227 @@
+{
+ "tracking_issue": "geistlib#236",
+ "date": "2026-10-26",
+ "plan": "docs/DECISION_CAMPAIGN_PLAN.json early_exit_pilot_236",
+ "binary_commit": "b8980d3c",
+ "transparency": {
+  "questions": 2,
+  "identical": 2,
+  "by_question": {
+   "validation/astronomy/25/rotation0": true,
+   "validation/clinical_knowledge/61/rotation0": true
+  }
+ },
+ "probe_cost": {
+  "n": 233,
+  "median_ms": 178.848,
+  "p95_ms": 200.3708,
+  "decode_ms_per_token": 56.00161883226706,
+  "median_in_decode_steps": 3.193621965387744
+ },
+ "full_reasoning": {
+  "accuracy": 0.78,
+  "capped": 7,
+  "generated_tokens": 27198
+ },
+ "analysis": {
+  "questions": 50,
+  "full_accuracy": 0.78,
+  "full_generated_tokens": 27198,
+  "decode_ms_per_token": 56.00161883226706,
+  "probe_ms_median": 178.848,
+  "policies": [
+   {
+    "tau": 0.7,
+    "stable": false,
+    "accuracy": 0.76,
+    "difference_pp": -2.0,
+    "generated_tokens": 7157,
+    "token_ratio": 0.2631443488491801,
+    "time_ratio_incl_probes": 0.2742993634352465,
+    "early_exits": 33,
+    "early_answer_agrees_with_full": 23,
+    "paired_vs_full": {
+     "gains": 2,
+     "losses": 3,
+     "interval_pp": [
+      -17.86896406044599,
+      14.317959285272769
+     ]
+    }
+   },
+   {
+    "tau": 0.7,
+    "stable": true,
+    "accuracy": 0.76,
+    "difference_pp": -2.0,
+    "generated_tokens": 7806,
+    "token_ratio": 0.2870063975292301,
+    "time_ratio_incl_probes": 0.29851367573380394,
+    "early_exits": 28,
+    "early_answer_agrees_with_full": 18,
+    "paired_vs_full": {
+     "gains": 2,
+     "losses": 3,
+     "interval_pp": [
+      -17.86896406044599,
+      14.317959285272769
+     ]
+    }
+   },
+   {
+    "tau": 0.8,
+    "stable": false,
+    "accuracy": 0.78,
+    "difference_pp": 0.0,
+    "generated_tokens": 10811,
+    "token_ratio": 0.3974924626810795,
+    "time_ratio_incl_probes": 0.4118178498337122,
+    "early_exits": 31,
+    "early_answer_agrees_with_full": 22,
+    "paired_vs_full": {
+     "gains": 2,
+     "losses": 2,
+     "interval_pp": [
+      -14.943954714016803,
+      14.943954714016803
+     ]
+    }
+   },
+   {
+    "tau": 0.8,
+    "stable": true,
+    "accuracy": 0.78,
+    "difference_pp": 0.0,
+    "generated_tokens": 11473,
+    "token_ratio": 0.42183248768291787,
+    "time_ratio_incl_probes": 0.43662755966022704,
+    "early_exits": 27,
+    "early_answer_agrees_with_full": 18,
+    "paired_vs_full": {
+     "gains": 2,
+     "losses": 2,
+     "interval_pp": [
+      -14.943954714016803,
+      14.943954714016803
+     ]
+    }
+   },
+   {
+    "tau": 0.9,
+    "stable": false,
+    "accuracy": 0.8,
+    "difference_pp": 2.0,
+    "generated_tokens": 17100,
+    "token_ratio": 0.628722700198544,
+    "time_ratio_incl_probes": 0.6485668840411254,
+    "early_exits": 28,
+    "early_answer_agrees_with_full": 21,
+    "paired_vs_full": {
+     "gains": 2,
+     "losses": 1,
+     "interval_pp": [
+      -11.759251987629797,
+      15.255836600760095
+     ]
+    }
+   },
+   {
+    "tau": 0.9,
+    "stable": true,
+    "accuracy": 0.8,
+    "difference_pp": 2.0,
+    "generated_tokens": 17521,
+    "token_ratio": 0.6442017795426134,
+    "time_ratio_incl_probes": 0.664280805797533,
+    "early_exits": 23,
+    "early_answer_agrees_with_full": 16,
+    "paired_vs_full": {
+     "gains": 2,
+     "losses": 1,
+     "interval_pp": [
+      -11.759251987629797,
+      15.255836600760095
+     ]
+    }
+   },
+   {
+    "tau": 0.95,
+    "stable": false,
+    "accuracy": 0.8,
+    "difference_pp": 2.0,
+    "generated_tokens": 18813,
+    "token_ratio": 0.6917052724465034,
+    "time_ratio_incl_probes": 0.7128410895569451,
+    "early_exits": 25,
+    "early_answer_agrees_with_full": 21,
+    "paired_vs_full": {
+     "gains": 1,
+     "losses": 0,
+     "interval_pp": [
+      -8.365833400635205,
+      12.096288274536926
+     ]
+    }
+   },
+   {
+    "tau": 0.95,
+    "stable": true,
+    "accuracy": 0.8,
+    "difference_pp": 2.0,
+    "generated_tokens": 19234,
+    "token_ratio": 0.7071843517905728,
+    "time_ratio_incl_probes": 0.7285550113133527,
+    "early_exits": 20,
+    "early_answer_agrees_with_full": 16,
+    "paired_vs_full": {
+     "gains": 1,
+     "losses": 0,
+     "interval_pp": [
+      -8.365833400635205,
+      12.096288274536926
+     ]
+    }
+   },
+   {
+    "tau": 0.99,
+    "stable": false,
+    "accuracy": 0.78,
+    "difference_pp": 0.0,
+    "generated_tokens": 23681,
+    "token_ratio": 0.8706890212515627,
+    "time_ratio_incl_probes": 0.8958171593717544,
+    "early_exits": 19,
+    "early_answer_agrees_with_full": 17,
+    "paired_vs_full": {
+     "gains": 0,
+     "losses": 0,
+     "interval_pp": [
+      -8.390987800799044,
+      8.390987800799044
+     ]
+    }
+   },
+   {
+    "tau": 0.99,
+    "stable": true,
+    "accuracy": 0.78,
+    "difference_pp": 0.0,
+    "generated_tokens": 23730,
+    "token_ratio": 0.8724906243106111,
+    "time_ratio_incl_probes": 0.897618762430803,
+    "early_exits": 16,
+    "early_answer_agrees_with_full": 14,
+    "paired_vs_full": {
+     "gains": 0,
+     "losses": 0,
+     "interval_pp": [
+      -8.390987800799044,
+      8.390987800799044
+     ]
+    }
+   }
+  ],
+  "gate": "#236: >= 25 % fewer generated tokens at <= 1 pp accuracy loss; exploratory (the grid is evaluated on the same sample)"
+ },
+ "probe_at_prompt_accuracy": 0.64
+}

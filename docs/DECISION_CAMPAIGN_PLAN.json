@@ -462,5 +462,58 @@
       "step_2": "16/16 questions, 3 orders: 256 greedy tokens and final logits identical to an independent session",
       "step_3": "gate passed: 3.47x aggregate tokens/s at B = 8 (66.6 vs 19.2 tok/s); bit-exact companion invariance; token-identical to independent decode over 32 steps, logits within 0.009"
     }
+  },
+  "batched_reasoning_26": {
+    "tracking_issue": "geistlib#26 (Gitea), batch-1/2 follow-up",
+    "declared_date": "2026-10-25",
+    "decided_by": "user (go 2026-10-25: batches 1 and 2, then the batched accuracy re-run)",
+    "declared_before_inference": true,
+    "question": "Does reasoning at cap 2048 decoded through geist_session_decode_batch (8 sessions, refilled as questions finish) keep #171's accuracy on the 500 held-out questions?",
+    "frozen": {
+      "questions": "the 500 #171 test questions, unchanged (cases-test/test.jsonl sha256 108f815e3c21f6fe17adc4fa25d5a14f3051473349e156c06f59f46f86aa3977), chat_reasoning prompts, subject order",
+      "model": "Bonsai 2 27B PQ2_0 (sha256 3907dc16...), Metal on the M1 Max, FP32 KV, 6 threads, OMP_WAIT_POLICY=passive",
+      "generation": "greedy, cap 2048 generated tokens, stop at EOS (as #171's generate_long)",
+      "batching": "tools/bench_reasoning_batch --batch 8: up to 8 sessions per geist_session_decode_batch call; a finished question's slot takes the next question at once, so the batch size varies (reported per token)",
+      "prefill": "per-subject prefix snapshot, cut = common prefix minus one token aligned down to 320 (the engine's chunk), restored per question; bit-identical to a single prefill at that cut (#26 steps 1-2)",
+      "binary": "main with the decode_batch PRs merged; hash frozen in the run manifest",
+      "scoring": "eval_decision.generation_outcome with thinking on, exactly as #171; capped or unparseable answers are wrong"
+    },
+    "primary": "paired comparison, batched minus #171 always-reasoning at cap 2048 (per-question correctness from benchmark/results/DECISION_CAP_CURVE_2026-10-23.json, reasoning_correct['2048']; 79.0 %), decision_metrics.paired_quality, conservative paired 95 % interval, the 2 pp margin of #171",
+    "attribution": "The binary differs from #171's (bf8fa083): later kernels (#221 and others) can change unbatched greedy output too. Reported: (1) token agreement with the #171 generations (first divergent position per question); (2) every question whose correctness changed is re-run unbatched (--batch 1) on the same binary, at most 30 questions (if more change: 30 chosen by sha256([geist-batched-attribution-v1, question_id]) order), to tell batching from engine drift.",
+    "also_reported": "capped and invalid answers, generated tokens, tokens per batch size, aggregate decode tokens/s, per-question latency p50/p95, Mac lease time",
+    "runner": "tools/eval_decision_batched_reasoning.py, 100 questions per chunk, 25-min wall-clock deadline, LOCK_MAX=30, LOCK_PRIO=batch, cool start, caffeinate; manifest frozen before the first chunk",
+    "budget": "~2 h of Mac time (311,800 tokens at ~45-66 tok/s aggregate plus ~20 min prefill), 5-7 chunks; attribution re-runs up to ~1 h more",
+    "status": "complete (2026-10-26)",
+    "result": {
+      "writeup": "benchmark/results/DECISION_BATCHED_REASONING_2026-10-26.md",
+      "accuracy": "78.8 % (394/500) batched vs 79.0 % (395/500) #171 at cap 2048; gains 0, losses 1; -0.2 pp, conservative 95 % interval [-1.27, +0.87] pp; non-inferior at the 2 pp margin",
+      "token_agreement": "471/500 generations token-identical to #171; 29 diverge (first divergence median token 879, min 18)",
+      "attribution": "the one changed question: the unbatched same-binary re-run reproduces #171 token for token, so the change comes from batching (divergence at token 1201, then capped)",
+      "throughput": "58.4 tokens/s aggregate decode in complete driver runs (94 % of tokens at batch 8), against ~15 tokens/s single-sequence in #171; 6,901 s of lease time for the whole run against 23,894 s summed in #171"
+    }
+  },
+  "early_exit_pilot_236": {
+    "tracking_issue": "geistlib#236 (Gitea)",
+    "declared_date": "2026-10-25",
+    "decided_by": "user (go 2026-10-25: start the pilot, unbatched, after the #26 batched accuracy re-run)",
+    "declared_before_inference": true,
+    "question": "Can probing the option distribution during reasoning stop generation early with little accuracy loss on Bonsai 2 27B?",
+    "sample": "50 questions of the frozen #171 calibration bundle (cases-calibration250, 250 questions), decision_dataset.select_stratified with seed geist-decision-early-exit-pilot-v1 (label-independent, subject-stratified). Calibration only: nothing on the held-out test until a policy is frozen.",
+    "generation": "chat_reasoning prompts, greedy, cap 2048, unbatched (tools/bench_reasoning_probe), Bonsai 2 27B PQ2_0, Metal, FP32 KV, 6 threads, OMP_WAIT_POLICY=passive",
+    "probe": "every 128 generated tokens and right after the prompt: geist_session_snapshot, prefill [198, 248069, 271] ('\\n</think>\\n\\n', the model's own thinking close), read the four option logits (the profile's candidate_ids), geist_session_restore",
+    "transparency_check": "the first 2 sampled questions are generated again without probes; token-identical generations are required",
+    "probe_cost": "median probe time against the measured decode time per token; #236 target: under 3 decode steps",
+    "analysis": "offline, exploratory (the grid is evaluated on the same 50): policies tau in {0.7, 0.8, 0.9, 0.95, 0.99} x {plain, stable (same argmax as the previous probe)}, exits from position 128 on; accuracy vs full reasoning, generated tokens, time including probes, agreement of the early answer with the full one",
+    "gate": ">= 25 % fewer generated tokens at <= 1 pp accuracy loss on calibration; if met, a policy is frozen here before any held-out run",
+    "runner": "tools/eval_decision_probe_pilot.py, chunks under a 25-min wall-clock deadline, LOCK_MAX=30, LOCK_PRIO=batch, cool start, frozen manifest",
+    "budget": "~1-1.5 h of Mac time (50 x ~48 s mean reasoning + probes), 2-4 chunks",
+    "status": "pilot complete (2026-10-26); gate met on point estimates, intervals at n = 50 do not establish it; no policy frozen, awaiting the user's decision",
+    "result": {
+      "writeup": "benchmark/results/DECISION_EARLY_EXIT_PILOT_2026-10-26.md",
+      "transparency": "2/2 generations identical with and without probes",
+      "probe_cost": "median 179 ms = 3.2 decode steps (56 ms per token)",
+      "full_reasoning": "78 % (39/50), 7 capped, 27,198 generated tokens",
+      "best_points": "tau 0.8: 0.0 pp at 0.40x tokens (0.41x time incl. probes), paired [-14.9, +14.9]; tau 0.95: +2.0 pp at 0.69x tokens; tau 0.99: 0.0 pp at 0.87x tokens (exploratory, same 50)"
+    }
   }
 }
