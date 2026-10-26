@@ -2681,23 +2681,22 @@ static void *metal_flash_pipeline(const struct metal_state *st, size_t head_dim)
     return metal_op_end(be, cmd, enc, "flash attention");
 }
 
-static void *metal_decv_pipeline(const struct metal_state *st, size_t head_dim, bool f16) {
-    if (head_dim == 0u || head_dim % 32u != 0u || head_dim / 32u > METAL_FLASH_SLOTS) {
+/* A split-KV decode kernel for head_dim, in slot head_dim/32 - 1: the
+ * block kernels (decv) take any multiple of 32, the quad kernels (decq)
+ * multiples of 128; nullptr where none is built. */
+static void *
+metal_dec_pipeline(const struct metal_state *st, size_t head_dim, bool f16, bool quad) {
+    if (head_dim == 0u || head_dim % (quad ? 128u : 32u) != 0u ||
+        head_dim / 32u > METAL_FLASH_SLOTS) {
         return nullptr;
     }
-    return f16 ? st->attention_decv_f16_pipeline[head_dim / 32u - 1u]
-               : st->attention_decv_f32kv_pipeline[head_dim / 32u - 1u];
+    void *const *slots =
+            quad ? (f16 ? st->attention_decq_f16_pipeline : st->attention_decq_f32kv_pipeline)
+                 : (f16 ? st->attention_decv_f16_pipeline : st->attention_decv_f32kv_pipeline);
+    return slots[head_dim / 32u - 1u];
 }
 
 enum { METAL_DECQ_MAX_GROUPS = 256 };
-
-static void *metal_decq_pipeline(const struct metal_state *st, size_t head_dim, bool f16) {
-    if (head_dim == 0u || head_dim % 128u != 0u || head_dim > 512u) {
-        return nullptr;
-    }
-    return f16 ? st->attention_decq_f16_pipeline[head_dim / 32u - 1u]
-               : st->attention_decq_f32kv_pipeline[head_dim / 32u - 1u];
-}
 
 /* rows==1 (decode) fast path: the split-KV decode kernel — the scalar
  * kernel uses one threadgroup per head (8 tgs on a 32-core GPU) and its
@@ -2733,8 +2732,8 @@ static void *metal_decq_pipeline(const struct metal_state *st, size_t head_dim, 
     /* The 32-key-block kernel where one is built for this head_dim and the
      * offsets keep its float4/half4 loads aligned: one split per block it
      * touches, up to 32. The per-key kernels otherwise, 16 splits at most. */
-    void *block_pipeline = metal_decv_pipeline(st, head_dim, kv_native_f16);
-    void *quad_pipeline  = metal_decq_pipeline(st, head_dim, kv_native_f16);
+    void *block_pipeline = metal_dec_pipeline(st, head_dim, kv_native_f16, false);
+    void *quad_pipeline  = metal_dec_pipeline(st, head_dim, kv_native_f16, true);
 
     if ((q_off | k_off | v_off) % 4u != 0u) {
         block_pipeline = nullptr;
@@ -4622,31 +4621,6 @@ struct metal_moe_sum_params {
     uint32_t d, k, yo, wo, ao, oo;
 };
 
-/* An encoder for one op: the open sequence's, or a standalone command
- * buffer the caller ends with metal_moe_end. */
-static void *metal_moe_begin(struct geist_backend *be, const char *what, void **cmd) {
-    struct metal_state *st = be->state;
-    *cmd                   = nullptr;
-    if (metal_seq_mine(st)) {
-        if (st->sequence_compute_encoder == nullptr) {
-            geist_backend_set_error(be, GEIST_E_BACKEND, "metal %s: sequence has no encoder", what);
-            return nullptr;
-        }
-        return metal_sequence_encoder(st);
-    }
-    return metal_standalone_begin(be, what, cmd);
-}
-
-[[nodiscard]] static enum geist_status
-metal_moe_end(struct geist_backend *be, void *cmd, void *enc, const char *what) {
-    struct metal_state *st = be->state;
-    if (cmd == nullptr) {
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
-    return metal_standalone_end(be, cmd, enc, what);
-}
-
 [[nodiscard]] static enum geist_status metal_moe_route(struct geist_backend      *be,
                                                        size_t                     m,
                                                        size_t                     n,
@@ -4682,7 +4656,7 @@ metal_moe_end(struct geist_backend *be, void *cmd, void *enc, const char *what) 
                                                              .io   = (uint32_t) (ids_offset / 4u),
                                                              .wo   = (uint32_t) wo};
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-    void *cmd = nullptr, *enc = metal_moe_begin(be, "MoE route", &cmd);
+    void *cmd = nullptr, *enc = metal_op_begin(be, "MoE route", &cmd);
     if (enc == nullptr)
         return GEIST_E_BACKEND;
     metal_msg_send_set_pipeline(st, enc, st->moe_topk_pipeline);
@@ -4694,7 +4668,7 @@ metal_moe_end(struct geist_backend *be, void *cmd, void *enc, const char *what) 
                             enc,
                             (struct metal_size) {.width = m, .height = 1, .depth = 1},
                             (struct metal_size) {.width = 32, .height = 1, .depth = 1});
-    return metal_moe_end(be, cmd, enc, "MoE route");
+    return metal_op_end(be, cmd, enc, "MoE route");
 }
 
 /* The id-indexed matvec for a dtype: its pipeline and the rows one
@@ -4728,27 +4702,18 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
                                      size_t                     rows,
                                      size_t                     cols,
                                      size_t                    *off_bytes) {
-    size_t r = 0, c = 0, o = 0, st = 0;
-    bool   ok = false;
-    switch (dtype) {
-    case GEIST_DTYPE_Q4_K:
-        ok = metal_tensor_is_q4k_matrix(t, &r, &c, &o);
-        break;
-    case GEIST_DTYPE_Q6_K:
-        ok = metal_tensor_is_q6k_matrix(t, &r, &c, &o);
-        break;
-    case GEIST_DTYPE_Q8_0:
-        ok = metal_tensor_is_q40_q80_matrix(t, dtype, &r, &c, &o);
-        break;
-    case GEIST_DTYPE_F32:
-        ok = metal_tensor_is_f32_matrix(t, &r, &c, &o, &st) && st == c;
-        o *= sizeof(float);
-        break;
-    default:
+    if (dtype == GEIST_DTYPE_F32) {
+        size_t     r = 0, c = 0, o = 0, st = 0;
+        const bool ok = metal_tensor_is_f32_matrix(t, &r, &c, &o, &st) && st == c;
+        *off_bytes    = o * sizeof(float);
+        return ok && r == rows && c == cols;
+    }
+    struct metal_mv_weight mw;
+    if (!metal_mv_weight_of(t, &mw) || mw.dtype != dtype) {
         return false;
     }
-    *off_bytes = o;
-    return ok && r == rows && c == cols;
+    *off_bytes = mw.offset;
+    return mw.n_out == rows && mw.n_in == cols;
 }
 
 [[nodiscard]] static enum geist_status metal_linear_t_ids(struct geist_backend      *be,
@@ -4803,7 +4768,7 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
                                                                .k        = (uint32_t) k,
                                                                .io = (uint32_t) (ids_offset / 4u)};
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-    void *cmd = nullptr, *enc = metal_moe_begin(be, "MoE expert matvec", &cmd);
+    void *cmd = nullptr, *enc = metal_op_begin(be, "MoE expert matvec", &cmd);
     if (enc == nullptr)
         return GEIST_E_BACKEND;
     metal_msg_send_set_pipeline(st, enc, pipe);
@@ -4818,7 +4783,7 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
             enc,
             (struct metal_size) {.width = (no + rpg - 1u) / rpg, .height = nk, .depth = 1},
             (struct metal_size) {.width = METAL_Q4K_N4_THREADS, .height = 1, .depth = 1});
-    return metal_moe_end(be, cmd, enc, "MoE expert matvec");
+    return metal_op_end(be, cmd, enc, "MoE expert matvec");
 }
 
 [[nodiscard]] static enum geist_status metal_moe_weighted_sum(struct geist_backend      *be,
@@ -4853,7 +4818,7 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
                                                                .ao = (uint32_t) ao,
                                                                .oo = (uint32_t) oo};
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-    void *cmd = nullptr, *enc = metal_moe_begin(be, "MoE weighted sum", &cmd);
+    void *cmd = nullptr, *enc = metal_op_begin(be, "MoE weighted sum", &cmd);
     if (enc == nullptr)
         return GEIST_E_BACKEND;
     metal_msg_send_set_pipeline(st, enc, st->moe_wsum_pipeline);
@@ -4867,7 +4832,7 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
             enc,
             (struct metal_size) {.width = (d + 255u) / 256u, .height = m, .depth = 1},
             (struct metal_size) {.width = 256, .height = 1, .depth = 1});
-    return metal_moe_end(be, cmd, enc, "MoE weighted sum");
+    return metal_op_end(be, cmd, enc, "MoE weighted sum");
 }
 
 /* GEIST_FUSED_MOE_DEVICE: the three experts' dtypes have an id-indexed
