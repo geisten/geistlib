@@ -22,6 +22,7 @@ FAKE_DRIVER = r'''#!/usr/bin/env python3
 import json, sys
 model, backend, prompt_cap, cap, batch = sys.argv[1:6]
 interval, tau = (int(sys.argv[6]), float(sys.argv[7])) if len(sys.argv) > 6 else (0, 0.)
+assert len(sys.argv) < 9 or sys.argv[8] == "pad"
 cap = int(cap)
 print(json.dumps({"kind": "runtime", "version": "t", "backend": backend, "kv_mode": "fp32",
                   "decode_batch_max": 8, "batch": int(batch), "eos": 7}), flush=True)
@@ -100,7 +101,7 @@ class BatchedReasoningRunnerTests(unittest.TestCase):
                       split="test", backend="metal", threads=1, align=4, cap=4, batch=8,
                       chunk_questions=2, deadline_minutes=5., cool_max_c=65., cool_timeout_minutes=1.,
                       status=False, probe="198,248069,271", probe_interval=0, exit_tau=0.0,
-                      question_ids=None)
+                      question_ids=None, pad=False)
         values.update(kw)
         return SimpleNamespace(**values)
 
@@ -148,6 +149,12 @@ class BatchedReasoningRunnerTests(unittest.TestCase):
         s = json.loads((self.out / "report.json").read_text())["summary"]
         self.assertEqual(s["questions"], 2)
         self.assertEqual(s["correct"], 2)
+
+    def test_pad_passes_through(self):
+        self.run_all(pad=True)
+        m = json.loads((self.out / "manifest.json").read_text())
+        self.assertEqual(m["command"][-3:], ["0", "0.0", "pad"])
+        self.assertTrue(m["pad"])
 
     def test_resume_refuses_a_changed_manifest(self):
         with patch.object(runner.campaign, "TempLog", NoTemps), \

@@ -2,7 +2,15 @@
  * up to `batch` sessions decoding together through geist_session_decode_batch,
  * refilled as questions finish (continuous batching).
  *
- *   bench_reasoning_batch model.gguf backend prompt_cap cap batch [interval tau]
+ *   bench_reasoning_batch model.gguf backend prompt_cap cap batch [interval tau [pad]]
+ *
+ * With "pad" (#236) every batched step has exactly `batch` sessions: a slot
+ * whose question has finished keeps decoding (its tokens are discarded)
+ * until the next question takes it, and when there are fewer questions than
+ * slots the spare slots decode the first question's prompt as padding. A
+ * session's tokens then come from batch-size-`batch` steps only, which
+ * geist_session_decode_batch makes independent of the other members.
+ * interval 0 with tau 0 (and "pad") means no probes.
  *
  * With interval > 0 (#236) every session's answer is probed right after its
  * prompt and every `interval` generated tokens, between batched steps: its
@@ -86,7 +94,8 @@ struct probe {
 
 struct slot {
     struct geist_session *s;
-    bool                  active;
+    bool                  active; /* holds a question */
+    bool                  live;   /* steps in the batch (pad mode: also as padding) */
     size_t                item;
     size_t                n_gen;
     geist_token_t        *gen;
@@ -204,17 +213,18 @@ static double top_probability(size_t n, const float logits[static n], int *arg) 
 }
 
 int main(int argc, char **argv) {
-    size_t prompt_cap = 0, cap = 0, batch = 0, interval = 0;
-    double tau = 0;
-    char  *end = nullptr;
-    if ((argc != 6 && argc != 8) || !number(&prompt_cap, argv[3]) || !number(&cap, argv[4]) ||
-        !number(&batch, argv[5]) || prompt_cap == 0 || prompt_cap > 1048576 || cap == 0 ||
-        cap > 32768 || batch == 0 || batch > MAX_BATCH ||
-        (argc == 8 && (!number(&interval, argv[6]) || interval == 0 ||
-                       (tau = strtod(argv[7], &end), *end != '\0') || !(tau >= 0 && tau < 1)))) {
+    size_t     prompt_cap = 0, cap = 0, batch = 0, interval = 0;
+    double     tau = 0;
+    char      *end = nullptr;
+    const bool pad = argc == 9 && strcmp(argv[8], "pad") == 0;
+    if ((argc != 6 && argc != 8 && !pad) || !number(&prompt_cap, argv[3]) ||
+        !number(&cap, argv[4]) || !number(&batch, argv[5]) || prompt_cap == 0 ||
+        prompt_cap > 1048576 || cap == 0 || cap > 32768 || batch == 0 || batch > MAX_BATCH ||
+        (argc >= 8 && (!number(&interval, argv[6]) || (tau = strtod(argv[7], &end), *end != '\0') ||
+                       !(tau >= 0 && tau < 1) || (interval == 0 && tau > 0)))) {
         fprintf(stderr,
                 "usage: bench_reasoning_batch model.gguf backend prompt_cap cap batch(1..8) "
-                "[interval tau]\n");
+                "[interval tau [pad]]\n");
         return 2;
     }
     /* Read every case first: the driver is fed one chunk at a time. */
@@ -372,7 +382,8 @@ int main(int argc, char **argv) {
                         geist_session_errmsg(slots[b].s));
                 goto done;
             }
-            slots[b] = (struct slot) {.s           = slots[b].s,
+            slots[b] = (struct slot) {.live        = true,
+                                      .s           = slots[b].s,
                                       .gen         = slots[b].gen,
                                       .probes      = slots[b].probes,
                                       .active      = true,
@@ -391,12 +402,27 @@ int main(int argc, char **argv) {
             }
             next++;
         }
+        /* Pad mode: spare slots decode the first question's prompt. */
+        for (size_t b = 0; pad && next == n_items && b < batch; b++) {
+            if (slots[b].live)
+                continue;
+            enum geist_status s = geist_session_reset(slots[b].s);
+            if (s == GEIST_OK)
+                s = geist_session_prefill_tokens(slots[b].s, items[0].n_prompt, items[0].ids);
+            if (s != GEIST_OK) {
+                fprintf(stderr, "pad prefill: %s\n", geist_status_to_string(s));
+                goto done;
+            }
+            slots[b].live = true, slots[b].active = false, slots[b].item = 0;
+        }
         struct geist_session *act[MAX_BATCH];
-        size_t                idx[MAX_BATCH], n = 0;
-        for (size_t b = 0; b < batch; b++)
-            if (slots[b].active)
+        size_t                idx[MAX_BATCH], n = 0, n_real = 0;
+        for (size_t b = 0; b < batch; b++) {
+            n_real += slots[b].active;
+            if (pad ? slots[b].live : slots[b].active)
                 act[n] = slots[b].s, idx[n++] = b;
-        if (n == 0)
+        }
+        if (n_real == 0 && next == n_items)
             break;
         geist_token_t     out[MAX_BATCH];
         const double      ts = now_ms();
@@ -406,14 +432,25 @@ int main(int argc, char **argv) {
             fprintf(stderr, "decode_batch(%zu): %s\n", n, geist_status_to_string(s));
             goto done;
         }
-        steps++, steps_by_size[n]++, tokens += n;
+        steps++, steps_by_size[n]++, tokens += n_real;
         for (size_t k = 0; k < n; k++) {
-            struct slot *sl      = &slots[idx[k]];
+            struct slot *sl = &slots[idx[k]];
+            if (!sl->active) { /* padding: keep it inside its window */
+                if (geist_session_length(sl->s) + 2 >= so.max_seq_len &&
+                    (geist_session_reset(sl->s) != GEIST_OK ||
+                     geist_session_prefill_tokens(
+                             sl->s, items[sl->item].n_prompt, items[sl->item].ids) != GEIST_OK)) {
+                    fprintf(stderr, "pad restart failed\n");
+                    goto done;
+                }
+                continue;
+            }
             sl->gen[sl->n_gen++] = out[k];
             sl->by_size[n]++;
             if (out[k] == eos || sl->n_gen == cap) {
                 emit_sample(sl, &items[sl->item], cap, eos, t0);
                 sl->active = false;
+                sl->live   = pad;
                 continue;
             }
             if (interval == 0 || sl->n_gen % interval != 0)
@@ -431,6 +468,7 @@ int main(int argc, char **argv) {
                 sl->exit_answer = arg;
                 emit_sample(sl, &items[sl->item], cap, eos, t0);
                 sl->active = false;
+                sl->live   = pad;
             }
         }
     }
