@@ -1,15 +1,14 @@
 #include "gguf_reader.h"
 #include "checked.h"
 #include "env.h"
+#include "file_map.h"
 #include "heap.h"
 #include "quant.h"
 
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 /* GGUF metadata value types */
@@ -326,12 +325,6 @@ static bool record_meta_kv(struct gguf_ctx *ctx,
 
 /* ---- open / close --------------------------------------------------------- */
 
-static const char *set_err(const char **out, const char *msg) {
-    if (out)
-        *out = msg;
-    return msg;
-}
-
 /* Shared parser: `map`/`fsize` already point at the GGUF bytes — an mmap we
  * own (file path) or a caller-provided buffer (from-memory path, owns_map=0).
  * On failure the bytes are released only if we own them. */
@@ -339,15 +332,15 @@ static struct gguf_ctx *
 gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) {
     struct cur_t c = {.p = (const uint8_t *) map, .end = (const uint8_t *) map + fsize, .ok = true};
 
-#define GGUF_FAIL(msg)          \
-    do {                        \
-        if (owns_map) {         \
-            munmap(map, fsize); \
-            if (fd >= 0)        \
-                close(fd);      \
-        }                       \
-        set_err(errmsg, (msg)); \
-        return nullptr;         \
+#define GGUF_FAIL(msg)             \
+    do {                           \
+        if (owns_map) {            \
+            munmap(map, fsize);    \
+            if (fd >= 0)           \
+                close(fd);         \
+        }                          \
+        io_set_err(errmsg, (msg)); \
+        return nullptr;            \
     } while (0)
 
     uint32_t magic = read_u32(&c);
@@ -400,13 +393,13 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
         ctx->meta_kvs = heap_calloc_array_aligned(struct gguf_meta_kv_t, mcount);
         if (!ctx->meta_kvs) {
             gguf_close(ctx);
-            set_err(errmsg, "calloc meta_kvs");
+            io_set_err(errmsg, "calloc meta_kvs");
             return nullptr;
         }
         ctx->meta_key_arena = heap_alloc_array_aligned(char, (size_t) (c.end - c.p) + 1);
         if (!ctx->meta_key_arena) {
             gguf_close(ctx);
-            set_err(errmsg, "malloc meta_key_arena");
+            io_set_err(errmsg, "malloc meta_key_arena");
             return nullptr;
         }
     }
@@ -416,12 +409,12 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
         uint32_t    vt  = read_u32(&c);
         if (!c.ok) {
             gguf_close(ctx);
-            set_err(errmsg, "metadata KV truncated");
+            io_set_err(errmsg, "metadata KV truncated");
             return nullptr;
         }
         if (!record_meta_kv(ctx, (size_t) i, key, klen, &c, vt) || !c.ok) {
             gguf_close(ctx);
-            set_err(errmsg, "metadata value walk failed");
+            io_set_err(errmsg, "metadata value walk failed");
             return nullptr;
         }
     }
@@ -430,14 +423,14 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
     ctx->tensors = heap_calloc_array_aligned(struct gguf_tensor_t, tcount);
     if (!ctx->tensors) {
         gguf_close(ctx);
-        set_err(errmsg, "calloc tensors");
+        io_set_err(errmsg, "calloc tensors");
         return nullptr;
     }
     /* Upper-bound name arena by remaining bytes in mmap. */
     ctx->name_arena = heap_alloc_array_aligned(char, (size_t) (c.end - c.p) + 1);
     if (!ctx->name_arena) {
         gguf_close(ctx);
-        set_err(errmsg, "malloc name_arena");
+        io_set_err(errmsg, "malloc name_arena");
         return nullptr;
     }
 
@@ -446,7 +439,7 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
         const char *nptr = read_str(&c, &nlen);
         if (!c.ok) {
             gguf_close(ctx);
-            set_err(errmsg, "tensor name truncated");
+            io_set_err(errmsg, "tensor name truncated");
             return nullptr;
         }
         char *name_dst = ctx->name_arena + ctx->name_arena_used;
@@ -458,7 +451,7 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
         uint32_t n_dims = read_u32(&c);
         if (n_dims > GGUF_MAX_DIMS) {
             gguf_close(ctx);
-            set_err(errmsg, "tensor n_dims > 4");
+            io_set_err(errmsg, "tensor n_dims > 4");
             return nullptr;
         }
         ctx->tensors[i].n_dims = (int) n_dims;
@@ -472,7 +465,7 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
         ctx->tensors[i].offset = off;
         if (!c.ok) {
             gguf_close(ctx);
-            set_err(errmsg, "tensor info truncated");
+            io_set_err(errmsg, "tensor info truncated");
             return nullptr;
         }
     }
@@ -485,12 +478,12 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
     const size_t info_end = (size_t) (c.p - (const uint8_t *) map);
     if (geist_ckd_round_up_pow2(info_end, (size_t) ctx->alignment, &ctx->data_offset)) {
         gguf_close(ctx);
-        set_err(errmsg, "tensor-info end overflows alignment padding");
+        io_set_err(errmsg, "tensor-info end overflows alignment padding");
         return nullptr;
     }
     if (ctx->data_offset > fsize) {
         gguf_close(ctx);
-        set_err(errmsg, "data section past EOF");
+        io_set_err(errmsg, "data section past EOF");
         return nullptr;
     }
 
@@ -510,19 +503,19 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
          * the byte count below would be meaningless. */
         if (elems == 0u) {
             gguf_close(ctx);
-            set_err(errmsg, "tensor dimensions overflow or are empty");
+            io_set_err(errmsg, "tensor dimensions overflow or are empty");
             return nullptr;
         }
         if (elems % dt->block_elems != 0) {
             gguf_close(ctx);
-            set_err(errmsg, "tensor elem count not divisible by block size");
+            io_set_err(errmsg, "tensor elem count not divisible by block size");
             return nullptr;
         }
         size_t nbytes = 0;
         if (ckd_mul(&nbytes, elems / dt->block_elems, dt->block_bytes) ||
             ckd_add(&nbytes, nbytes, dt->tail_bytes)) {
             gguf_close(ctx);
-            set_err(errmsg, "tensor byte count overflows");
+            io_set_err(errmsg, "tensor byte count overflows");
             return nullptr;
         }
         t->nbytes = nbytes;
@@ -535,7 +528,7 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
             ckd_add(&abs_off, ctx->data_offset, (size_t) t->offset) ||
             ckd_add(&abs_end, abs_off, nbytes) || abs_end > fsize) {
             gguf_close(ctx);
-            set_err(errmsg, "tensor data past EOF");
+            io_set_err(errmsg, "tensor data past EOF");
             return nullptr;
         }
         t->data = (const uint8_t *) map + abs_off;
@@ -584,29 +577,12 @@ static constexpr int gguf_map_flags = MAP_PRIVATE;
 #endif
 
 struct gguf_ctx *gguf_open(const char *path, const char **errmsg) {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        set_err(errmsg, "open() failed");
+    struct io_map m;
+    if (!io_map_ro(path, gguf_map_flags, &m, errmsg)) {
         return nullptr;
     }
-
-    struct stat sb;
-    if (fstat(fd, &sb) != 0) {
-        close(fd);
-        set_err(errmsg, "fstat() failed");
-        return nullptr;
-    }
-    size_t fsize = (size_t) sb.st_size;
-
-    void *map = mmap(nullptr, fsize, PROT_READ, gguf_map_flags, fd, 0);
-    if (map == MAP_FAILED) {
-        close(fd);
-        set_err(errmsg, "mmap() failed");
-        return nullptr;
-    }
-    apply_mmap_advice(map, fsize);
-
-    return gguf_parse(map, fsize, fd, /*owns_map=*/true, errmsg);
+    apply_mmap_advice(m.map, m.size);
+    return gguf_parse(m.map, m.size, m.fd, /*owns_map=*/true, errmsg);
 }
 
 void gguf_release_range(const struct gguf_ctx *ctx, const void *p, size_t n) {
@@ -653,7 +629,7 @@ void gguf_release_range(const struct gguf_ctx *ctx, const void *p, size_t n) {
 
 struct gguf_ctx *gguf_open_memory(const void *data, size_t size, const char **errmsg) {
     if (data == nullptr || size < 8) {
-        set_err(errmsg, "gguf_open_memory: null or too-small buffer");
+        io_set_err(errmsg, "gguf_open_memory: null or too-small buffer");
         return nullptr;
     }
     /* The caller owns `data`; we alias it read-only and never munmap/free it.

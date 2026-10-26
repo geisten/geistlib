@@ -1,12 +1,11 @@
 #include "safetensors_reader.h"
+#include "file_map.h"
 #include "heap.h"
 
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 struct st_ctx {
@@ -309,36 +308,18 @@ static int parse_tensor_entry(struct cursor_t *c, struct st_tensor_t *t) {
 
 // ---- Open / close -----------------------------------------------------------
 
-static const char *set_err(const char **out, const char *msg) {
-    if (out)
-        *out = msg;
-    return msg;
-}
-
 struct st_ctx *st_open(const char *path, const char **errmsg) {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        set_err(errmsg, "open() failed");
+    struct io_map m;
+    if (!io_map_ro(path, MAP_PRIVATE, &m, errmsg)) {
         return nullptr;
     }
-
-    struct stat sb;
-    if (fstat(fd, &sb) != 0) {
-        close(fd);
-        set_err(errmsg, "fstat() failed");
-        return nullptr;
-    }
-    size_t fsize = (size_t) sb.st_size;
+    const int    fd    = m.fd;
+    void        *map   = m.map;
+    const size_t fsize = m.size;
     if (fsize < 8) {
+        munmap(map, fsize);
         close(fd);
-        set_err(errmsg, "file too small for header");
-        return nullptr;
-    }
-
-    void *map = mmap(nullptr, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
-    if (map == MAP_FAILED) {
-        close(fd);
-        set_err(errmsg, "mmap() failed");
+        io_set_err(errmsg, "file too small for header");
         return nullptr;
     }
 
@@ -347,7 +328,7 @@ struct st_ctx *st_open(const char *path, const char **errmsg) {
     if (header_size > fsize - 8) {
         munmap(map, fsize);
         close(fd);
-        set_err(errmsg, "header_size exceeds file");
+        io_set_err(errmsg, "header_size exceeds file");
         return nullptr;
     }
 
@@ -355,7 +336,7 @@ struct st_ctx *st_open(const char *path, const char **errmsg) {
     if (!ctx) {
         munmap(map, fsize);
         close(fd);
-        set_err(errmsg, "calloc ctx");
+        io_set_err(errmsg, "calloc ctx");
         return nullptr;
     }
     ctx->fd          = fd;
@@ -370,7 +351,7 @@ struct st_ctx *st_open(const char *path, const char **errmsg) {
         safe_free((void **) &ctx);
         munmap(map, fsize);
         close(fd);
-        set_err(errmsg, "malloc name_arena");
+        io_set_err(errmsg, "malloc name_arena");
         return nullptr;
     }
 
@@ -382,7 +363,7 @@ struct st_ctx *st_open(const char *path, const char **errmsg) {
 
     if (!expect(&c, '{')) {
         st_close(ctx);
-        set_err(errmsg, "header is not a JSON object");
+        io_set_err(errmsg, "header is not a JSON object");
         return nullptr;
     }
 
@@ -390,7 +371,7 @@ struct st_ctx *st_open(const char *path, const char **errmsg) {
         skip_ws(&c);
         if (at_end(&c)) {
             st_close(ctx);
-            set_err(errmsg, "EOF in header");
+            io_set_err(errmsg, "EOF in header");
             return nullptr;
         }
         if (*c.p == '}') {
@@ -402,12 +383,12 @@ struct st_ctx *st_open(const char *path, const char **errmsg) {
         size_t      key_len;
         if (!parse_string(&c, &key, &key_len)) {
             st_close(ctx);
-            set_err(errmsg, c.err ? c.err : "parse_string failed");
+            io_set_err(errmsg, c.err ? c.err : "parse_string failed");
             return nullptr;
         }
         if (!expect(&c, ':')) {
             st_close(ctx);
-            set_err(errmsg, "expected ':' after key");
+            io_set_err(errmsg, "expected ':' after key");
             return nullptr;
         }
 
@@ -415,14 +396,14 @@ struct st_ctx *st_open(const char *path, const char **errmsg) {
         if (key_len == 12 && strncmp(key, "__metadata__", 12) == 0) {
             if (!skip_value(&c)) {
                 st_close(ctx);
-                set_err(errmsg, c.err ? c.err : "skip __metadata__");
+                io_set_err(errmsg, c.err ? c.err : "skip __metadata__");
                 return nullptr;
             }
         } else {
             if (ctx->count == ctx->cap &&
                 !heap_grow_array(ctx->tensors, ctx->cap, ctx->cap ? ctx->cap * 2 : 64)) {
                 st_close(ctx);
-                set_err(errmsg, "alloc tensors");
+                io_set_err(errmsg, "alloc tensors");
                 return nullptr;
             }
             // Copy name into arena.
@@ -436,14 +417,14 @@ struct st_ctx *st_open(const char *path, const char **errmsg) {
             t->name = name_dst;
             if (!parse_tensor_entry(&c, t)) {
                 st_close(ctx);
-                set_err(errmsg, c.err ? c.err : "parse_tensor_entry");
+                io_set_err(errmsg, c.err ? c.err : "parse_tensor_entry");
                 return nullptr;
             }
             // Fix up data pointer: parse_tensor_entry stored offset_start.
             uintptr_t offset = (uintptr_t) t->data;
             if (offset + t->nbytes > fsize - ctx->data_region) {
                 st_close(ctx);
-                set_err(errmsg, "tensor offset out of file");
+                io_set_err(errmsg, "tensor offset out of file");
                 return nullptr;
             }
             t->data = (const char *) map + ctx->data_region + offset;
@@ -453,7 +434,7 @@ struct st_ctx *st_open(const char *path, const char **errmsg) {
         skip_ws(&c);
         if (at_end(&c)) {
             st_close(ctx);
-            set_err(errmsg, "EOF in header");
+            io_set_err(errmsg, "EOF in header");
             return nullptr;
         }
         if (*c.p == ',') {
@@ -465,7 +446,7 @@ struct st_ctx *st_open(const char *path, const char **errmsg) {
             break;
         }
         st_close(ctx);
-        set_err(errmsg, "expected , or } at header level");
+        io_set_err(errmsg, "expected , or } at header level");
         return nullptr;
     }
 

@@ -1,15 +1,14 @@
 #include "sp_bpe_tokenizer.h"
+#include "file_map.h"
 #include "fnv1a.h"
 #include "heap.h"
 #include "pair_merge.h"
 
-#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 /* SentencePiece space marker U+2581 in UTF-8. */
@@ -172,24 +171,15 @@ bool sp_bpe_tokenizer_load(struct sp_bpe_tokenizer **out, const char *path) {
         return false;
     *out = nullptr;
 
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        perror("open");
+    struct io_map m;
+    const char   *err = nullptr;
+    if (!io_map_ro(path, MAP_PRIVATE, &m, &err)) {
+        perror(err); /* "open() failed: No such file or directory" */
         return false;
     }
-
-    struct stat sb;
-    if (fstat(fd, &sb) != 0) {
-        close(fd);
-        return false;
-    }
-    size_t fsize = (size_t) sb.st_size;
-
-    void *map = mmap(nullptr, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
-    if (map == MAP_FAILED) {
-        close(fd);
-        return false;
-    }
+    const int    fd    = m.fd;
+    void        *map   = m.map;
+    const size_t fsize = m.size;
 
     const uint8_t *p   = (const uint8_t *) map;
     const uint8_t *end = p + fsize;

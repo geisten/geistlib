@@ -283,6 +283,7 @@ LIB_SOURCES := \
     src/backends/common/host_buffer.c \
     src/formats/ptqtp/ptqtp_awq.c \
     src/io/aux_file.c \
+    src/io/file_map.c \
     src/io/gguf_reader.c \
     src/io/safetensors_reader.c
 LIB_SOURCES += $(FAMILY_SOURCES)
