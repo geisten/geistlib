@@ -515,5 +515,29 @@
       "full_reasoning": "78 % (39/50), 7 capped, 27,198 generated tokens",
       "best_points": "tau 0.8: 0.0 pp at 0.40x tokens (0.41x time incl. probes), paired [-14.9, +14.9]; tau 0.95: +2.0 pp at 0.69x tokens; tau 0.99: 0.0 pp at 0.87x tokens (exploratory, same 50)"
     }
+  },
+  "early_exit_batched_236": {
+    "tracking_issue": "geistlib#236 (Gitea)",
+    "declared_date": "2026-10-26",
+    "decided_by": "user (2026-10-26: option a with a batched driver; freeze from calibration only; then the held-out 500 batched)",
+    "declared_before_inference": true,
+    "driver": "tools/bench_reasoning_batch with probes: 8 sessions per geist_session_decode_batch pass; each session's answer is probed right after its prompt and every 128 generated tokens between batched steps (snapshot, prefill [198, 248069, 271], read the four option logits, restore); with tau > 0 a question stops at the first probe from token 128 whose top softmax probability over the options is >= tau and is answered with that option",
+    "common": "Bonsai 2 27B PQ2_0, Metal, FP32 KV, 6 threads, OMP_WAIT_POLICY=passive, greedy, cap 2048, chat_reasoning prompts, per-subject prefix snapshot aligned to 320, chunks under 25-min wall-clock deadlines, LOCK_MAX=30, LOCK_PRIO=batch, cool start, frozen manifests",
+    "step_1_verify": {
+      "questions": "the first 8 question IDs of the pilot sample (early_exit_pilot_236 manifest order)",
+      "runs": "batched with probes recorded (tau 0) and batched without probes",
+      "checks": "(a) transparency: generations with and without probes token-identical (required); (b) against the unbatched pilot: per probe the same argmax, max |logit difference| and generation token agreement (reported; batched rows round differently, so not bit-identical)"
+    },
+    "step_2_confirm": {
+      "questions": "the 200 calibration questions not in the pilot sample (the frozen 250 minus the pilot's 50)",
+      "run": "batched, probes every 128 recorded (tau 0), full generation to EOS or cap"
+    },
+    "freeze_rule": "From step 2 only (the 200; the pilot's 50 are not used): for tau in {0.7, 0.8, 0.9, 0.95, 0.99}, policy = stop at the first probe from token 128 with top option probability >= tau, else the full reasoning answer. tau* = the smallest tau whose accuracy difference vs full reasoning on the 200 is >= -1.0 pp (point estimate) and whose generated tokens are <= 0.75x of full reasoning. Paired 95 % intervals are reported with it. If no tau qualifies, no test-set run. tau* is declared here by PR before any test-set inference.",
+    "step_3_test": {
+      "questions": "the 500 #171 held-out questions",
+      "run": "batched, probes every 128, early exit at tau*",
+      "comparisons": "paired (decision_metrics.paired_quality, 2 pp margin) vs #171 always-reasoning at cap 2048 (79.0 %) and vs the #26 batched full-reasoning run (PR #264, 78.8 %); generated tokens and lease time vs #264 (312,466 tokens, 6,901 s) and vs #171 unbatched (23,894 s summed)"
+    },
+    "budget": "verify ~10 min; confirm ~1 h (2-3 chunks); test ~1-1.5 h"
   }
 }
