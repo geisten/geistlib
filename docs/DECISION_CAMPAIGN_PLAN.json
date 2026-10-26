@@ -538,6 +538,94 @@
       "run": "batched, probes every 128, early exit at tau*",
       "comparisons": "paired (decision_metrics.paired_quality, 2 pp margin) vs #171 always-reasoning at cap 2048 (79.0 %) and vs the #26 batched full-reasoning run (PR #264, 78.8 %); generated tokens and lease time vs #264 (312,466 tokens, 6,901 s) and vs #171 unbatched (23,894 s summed)"
     },
-    "budget": "verify ~10 min; confirm ~1 h (2-3 chunks); test ~1-1.5 h"
+    "budget": "verify ~10 min; confirm ~1 h (2-3 chunks); test ~1-1.5 h",
+    "verify_result": "8/8 batched generations identical with and without probes; 8/8 identical to the unbatched pilot's generations; 20 probes compared, same argmax 20/20, max |logit difference| 0.0022; full answers 8/8 as the pilot",
+    "confirm_result": {
+      "questions": 200,
+      "full_reasoning_accuracy": 0.775,
+      "capped": 33,
+      "full_generated_tokens": 121706,
+      "probe_ms_median": 118.283,
+      "grid": [
+        {
+          "tau": 0.7,
+          "accuracy": 0.83,
+          "difference_pp": 5.5,
+          "interval_pp": [
+            -1.9890003321226342,
+            12.694530183316061
+          ],
+          "gains": 16,
+          "losses": 5,
+          "token_ratio": 0.32207943733258837,
+          "early_exits": 125,
+          "qualifies": true
+        },
+        {
+          "tau": 0.8,
+          "accuracy": 0.84,
+          "difference_pp": 6.5,
+          "interval_pp": [
+            -0.5176240784534671,
+            13.137900243947096
+          ],
+          "gains": 16,
+          "losses": 3,
+          "token_ratio": 0.39278260726669184,
+          "early_exits": 120,
+          "qualifies": true
+        },
+        {
+          "tau": 0.9,
+          "accuracy": 0.845,
+          "difference_pp": 7.0,
+          "interval_pp": [
+            1.375796341685334,
+            12.149321613220836
+          ],
+          "gains": 14,
+          "losses": 0,
+          "token_ratio": 0.5347969697467668,
+          "early_exits": 109,
+          "qualifies": true
+        },
+        {
+          "tau": 0.95,
+          "accuracy": 0.825,
+          "difference_pp": 5.0,
+          "interval_pp": [
+            -0.0023225174652669045,
+            9.6255799449085
+          ],
+          "gains": 10,
+          "losses": 0,
+          "token_ratio": 0.6180385519202012,
+          "early_exits": 100,
+          "qualifies": true
+        },
+        {
+          "tau": 0.99,
+          "accuracy": 0.825,
+          "difference_pp": 5.0,
+          "interval_pp": [
+            -0.0023225174652669045,
+            9.6255799449085
+          ],
+          "gains": 10,
+          "losses": 0,
+          "token_ratio": 0.8237473912543342,
+          "early_exits": 69,
+          "qualifies": false
+        }
+      ]
+    },
+    "frozen_policy": {
+      "declared_date": "2026-10-26",
+      "declared_before_test_inference": true,
+      "tau_star": 0.7,
+      "rule_applied": "the declared freeze_rule on the 200 confirm questions: the smallest tau with difference >= -1.0 pp and generated tokens <= 0.75x of full reasoning",
+      "policy": "batch 8, probes every 128 tokens from the prompt on, stop at the first probe from token 128 whose top option probability is >= 0.7 and answer with that option; otherwise full reasoning to EOS or cap 2048",
+      "note": "On calibration every tau from 0.7 to 0.95 is above full reasoning (+5.0 to +7.0 pp): early exits answer many questions that full reasoning loses at the 2048 cap (33 of 200 capped). tau 0.7 is chosen by the declared rule, not by accuracy."
+    }
   }
 }
