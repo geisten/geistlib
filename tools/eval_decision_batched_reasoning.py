@@ -25,7 +25,9 @@ generation (tools/bench_reasoning_batch: snapshot, prefill --probe, read the
 options, restore); every probe is kept in the report. With --exit-tau a
 question stops at the first probe from --probe-interval on whose top option
 probability reaches tau and is answered with that option ("early_exit").
---question-ids restricts the run to a JSON list of question IDs.
+--question-ids restricts the run to a JSON list of question IDs. --pad keeps
+every batched step at exactly --batch sessions (finished or spare slots decode
+as padding), so each question's tokens come from same-size steps only.
 """
 from __future__ import annotations
 
@@ -172,8 +174,10 @@ def run(args):
     prompt_cap = max(len(r["profiles"][PROFILE]["prompt_ids"]) for r in rows)
     command = [str(args.binary.resolve()), str(args.model.resolve()), args.backend, str(prompt_cap),
                str(args.cap), str(args.batch)]
-    if args.probe_interval:
+    if args.probe_interval or args.pad:
         command += [str(args.probe_interval), repr(args.exit_tau)]
+    if args.pad:
+        command.append("pad")
     env = dict(os.environ, OMP_NUM_THREADS=str(args.threads))
     env.setdefault("OMP_WAIT_POLICY", "passive")
     manifest = {
@@ -182,7 +186,7 @@ def run(args):
         "model_sha256": bench.sha256(args.model), "binary_sha256": bench.sha256(args.binary),
         "cases_sha256": bench.sha256(args.cases_dir / f"{args.split}.jsonl"),
         "profile": PROFILE, "split": args.split, "align": args.align, "cap": args.cap, "batch": args.batch,
-        "probe": probe, "probe_interval": args.probe_interval, "exit_tau": args.exit_tau,
+        "probe": probe, "probe_interval": args.probe_interval, "exit_tau": args.exit_tau, "pad": args.pad,
         "question_ids": sorted(rows[i]["question_id"] for i in order) if args.question_ids else None,
         "backend": args.backend, "threads": args.threads, "command": command,
         "order": [rows[i]["id"] for i in order], "cuts": cuts,
@@ -237,6 +241,8 @@ def main():
     p.add_argument("--probe-interval", type=int, default=0)
     p.add_argument("--exit-tau", type=float, default=0.0, help="0: record probes only")
     p.add_argument("--question-ids", type=Path, help="JSON list: run only these question IDs")
+    p.add_argument("--pad", action="store_true",
+                   help="every batched step has exactly --batch sessions (finished slots keep decoding as padding)")
     p.add_argument("--chunk-questions", type=int, required=True)
     p.add_argument("--deadline-minutes", type=float, required=True)
     p.add_argument("--cool-max-c", type=float, default=65.)
