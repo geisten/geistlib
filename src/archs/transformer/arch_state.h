@@ -623,13 +623,9 @@ struct transformer_moe_gpu {
     /* [n_layers * 3 * moe_n_experts]: per layer and projection, each routed
      * expert's twin or nullptr (no copy): linear_t_sel's w. */
     const struct geist_weight **sel_w;
-    _Atomic uint64_t            n_routed;           /* layer steps that took that route */
-    _Atomic uint64_t            n_device;           /* layer steps that took that route */
-    _Atomic uint64_t            rows_gpu, rows_cpu; /* GEIST_VERBOSE at destroy */
-    /* GEIST_VERBOSE at destroy: batches, and their ns packing (to the
-     * copy), recording, waiting (buffer_map of the outputs), unpacking. */
-    _Atomic uint64_t batches, ns_pack, ns_record, ns_wait, ns_unpack;
-    _Atomic uint64_t n_grouped, ns_wait_grouped; /* the decode batches of them */
+    _Atomic uint64_t            n_routed;                    /* layer steps that took that route */
+    _Atomic uint64_t            n_device;                    /* layer steps that took that route */
+    _Atomic uint64_t            rows_gpu, rows_cpu, batches; /* GEIST_VERBOSE at destroy */
 };
 
 struct transformer_arch_state {
@@ -817,6 +813,15 @@ struct transformer_arch_state {
     bool                             has_default_opts; /* false: state_create got nullptr */
 };
 
+/* The widest expert FFN of the stack: the per-row size of the MoE
+ * session buffers. */
+static inline size_t moe_inter(const struct transformer_arch_state *st) {
+    size_t inter = 0;
+    for (size_t li = 0; li < st->n_layers; li++)
+        inter = st->layers[li].intermediate > inter ? st->layers[li].intermediate : inter;
+    return inter;
+}
+
 /* Whether `st` holds and runs layer li (#49). */
 static inline bool transformer_layer_owned(const struct transformer_arch_state *st, size_t li) {
     return li >= st->layer_lo && li < st->layer_hi;
@@ -940,6 +945,35 @@ transformer_compute_per_layer_input(struct transformer_arch_session *sess,
 [[nodiscard]] enum geist_status transformer_decode_step(struct transformer_arch_session *sess,
                                                         geist_token_t  input_token,
                                                         geist_token_t *out_token);
+
+/* Batched decode (#26): the forwards that n independent sessions of one
+ * model owe, run as one pass. Every linear (projections, FFN, lm_head) runs
+ * once over n rows; RoPE, the KV append, attention and the DeltaNet mixer
+ * run per session on its own cache, recurrent state and position. Row b
+ * belongs to seqs[b] alone, so for a given n a session's result does not
+ * depend on the other members or its row (bit for bit); n selects the row
+ * kernels, so it is not bit-identical to the single-row decode or to
+ * another n. seqs[0]'s scratch
+ * carries the n rows. Each session consumes its next_token_pending at
+ * kv_len, appends it, advances by one and samples its next token with its
+ * own sampler (next_token_pending, logits_valid, its own scratch_logits).
+ * Callers check transformer_decode_batch_max(st) >= n and every member
+ * first (forward/step.c). On failure the members' states are partly
+ * advanced; the caller resets them. */
+enum { TRANSFORMER_DECODE_BATCH_CAP = 8 }; /* rows the small-row kernels cover */
+[[nodiscard]] size_t transformer_decode_batch_max(const struct transformer_arch_state *st);
+[[nodiscard]] enum geist_status
+transformer_decode_batch_forward(size_t n, struct transformer_arch_session *const seqs[static n]);
+
+/* One layer of transformer_decode_batch_forward (forward/layer.c); row b of
+ * carrier's buffers belongs to seqs[b]. */
+[[nodiscard]] enum geist_status
+transformer_multi_layer(struct transformer_arch_session       *carrier,
+                        size_t                                 n,
+                        struct transformer_arch_session *const seqs[static n],
+                        int                                    layer_idx,
+                        struct geist_buffer                   *h_in_buf,
+                        struct geist_buffer                   *h_out_buf);
 
 /* Append one audio soft-token (HIDDEN floats, already produced by the
  * audio encoder) to the KV cache.

@@ -25,12 +25,10 @@
 
 #include "../arch_family.h"
 #include "../forward/blocks.h"
-#include "../moe_gpu.h"
 #include "../rotation.h"
 #include "../weight_load.h"
 
 #include "gguf_reader.h"
-#include "heap.h"
 
 #include <math.h>
 #include <stdio.h>

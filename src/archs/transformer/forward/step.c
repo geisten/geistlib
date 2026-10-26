@@ -5,9 +5,11 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "../arch_family.h"
 #include "../arch_state.h"
 #include "../rotation.h"
 #include "../forward.h"
+#include "../scratch_plan.h"
 
 #include "checked.h"
 #include "heap.h"
@@ -572,9 +574,12 @@ size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
  * buffer. Gemma 3/4 multiply the embedding by sqrt(d_model); Llama /
  * BitNet do not. Gated on has_embed_scale, as in prefill: Gemma 3 has the
  * scale and no PLE. */
-[[nodiscard]] static enum geist_status embed_lookup_and_scale(struct transformer_arch_session *sess,
-                                                              geist_token_t        token_id,
-                                                              struct geist_buffer *out_h_buf) {
+/* Inlined into transformer_decode_step as before batched decode (#26) called
+ * it too: the single-token path keeps its code. */
+[[nodiscard, gnu::always_inline]] static inline enum geist_status
+embed_lookup_and_scale(struct transformer_arch_session *sess,
+                       geist_token_t                    token_id,
+                       struct geist_buffer             *out_h_buf) {
     struct transformer_arch_state *st = sess->model;
 
     if (token_id < 0 || (size_t) token_id >= (size_t) st->vocab_size) {
@@ -915,4 +920,116 @@ enum geist_status transformer_session_apply_opts(struct transformer_arch_session
     }
     return geist_sampler_penalties_init(
             &sess->pen, &pp, (size_t) sess->model->vocab_size, sess->max_seq_len);
+}
+
+/* Batched decode (#26, declared in arch_state.h). Qwen3.5 family (dense
+ * FFN, gated attention) on a backend with the fused DeltaNet mixer, a device
+ * buffer copy and a device argmax; 8 rows at most, the range the small-row
+ * kernels cover (#186, #221). */
+size_t transformer_decode_batch_max(const struct transformer_arch_state *st) {
+    if (st == nullptr || st->family != &transformer_family_qwen35 || st->config.has_ple ||
+        !st->config.has_attn_output_gate || geist_pooling_is_embedding(st->config.pooling) ||
+        st->offload != nullptr) {
+        return 0;
+    }
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(st->backend);
+    if (fused == nullptr || fused->deltanet_mix == nullptr || fused->argmax_f32 == nullptr ||
+        st->backend->desc->vtbl->buffer_copy == nullptr || !st->model_fusions.backend_buffer_copy) {
+        return 0;
+    }
+    return st->m_max < TRANSFORMER_DECODE_BATCH_CAP ? st->m_max : TRANSFORMER_DECODE_BATCH_CAP;
+}
+
+/* Sample a session's token from logits already in its scratch_logits row 0:
+ * the tail of finalize_logits_row (head.c) without the lm_head. */
+[[nodiscard]] static enum geist_status batch_sample(struct transformer_arch_session *sess,
+                                                    geist_token_t                   *out) {
+    struct transformer_arch_state    *st    = sess->model;
+    struct geist_backend             *be    = st->backend;
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
+    sess->logits_softcapped                 = false;
+    sess->logits_sparse                     = false;
+    const bool penalties                    = geist_sampler_penalties_active(&sess->pen);
+    if (sess->temperature == 0.0f && !penalties) {
+        struct geist_tensor t_row = view_2d(sess->scratch_logits, 1, st->vocab_size);
+        int32_t             idx   = -1;
+        enum geist_status   s     = fused->argmax_f32(be, &t_row, &idx);
+        if (s == GEIST_OK && (idx < 0 || (size_t) idx >= (size_t) st->vocab_size))
+            s = GEIST_E_BACKEND;
+        *out = (geist_token_t) idx;
+        return s;
+    }
+    return transformer_head_sample_row0(sess, sess->kv_len + 1, out);
+}
+
+enum geist_status
+transformer_decode_batch_forward(size_t n, struct transformer_arch_session *const seqs[static n]) {
+    struct transformer_arch_session *carrier = seqs[0];
+    struct transformer_arch_state   *st      = carrier->model;
+    struct geist_backend            *be      = st->backend;
+    const struct geist_backend_vtbl *v       = be->desc->vtbl;
+    const size_t                     d       = st->d_model;
+    const size_t                     row_h   = d * sizeof(float);
+    const size_t                     row_v   = (size_t) st->vocab_size * sizeof(float);
+    if (n < 2 || n > transformer_decode_batch_max(st) || n > carrier->m_max) {
+        return GEIST_E_INVALID_ARG;
+    }
+    const struct transformer_region region_tok =
+            transformer_region_begin(st, GEIST_REGION_DECODE_STEP);
+    enum geist_status s = GEIST_OK;
+    /* Embed each session's token; seqs[0]'s lands in its row 0 directly. */
+    for (size_t b = 0; s == GEIST_OK && b < n; b++) {
+        struct transformer_arch_session *q = seqs[b];
+        transformer_recurrent_txn_commit(q);
+        transformer_hist_put(q, q->kv_len, 1, &q->next_token_pending);
+        s = embed_lookup_and_scale(q, q->next_token_pending, q->scratch_h_a);
+        if (s == GEIST_OK && b > 0)
+            s = v->buffer_copy(carrier->scratch_h_a, b * row_h, q->scratch_h_a, 0, row_h);
+    }
+    struct geist_buffer *h_in = carrier->scratch_h_a, *h_out = carrier->scratch_h_b;
+    for (size_t li = 0; s == GEIST_OK && li < st->n_layers; li++) {
+        s                      = transformer_multi_layer(carrier, n, seqs, (int) li, h_in, h_out);
+        struct geist_buffer *t = h_in;
+        h_in                   = h_out;
+        h_out                  = t;
+    }
+    /* Head: output norm, rotation and the lm_head once over the n rows. */
+    if (s == GEIST_OK && h_in != carrier->scratch_h_a)
+        s = v->buffer_copy(carrier->scratch_h_a, 0, h_in, 0, n * row_h);
+    struct geist_tensor t_h = view_2d(carrier->scratch_h_a, (int64_t) n, (int64_t) d);
+    struct geist_tensor t_w = view_1d(st->output_norm.buffer, (int64_t) d);
+    if (s == GEIST_OK)
+        s = be->desc->prims->rmsnorm(be, &t_h, &t_w, st->config.rms_eps, &t_h);
+    if (s == GEIST_OK)
+        s = transformer_rotate_rows(st, n, d, carrier->scratch_h_a);
+    struct geist_tensor t_logits = view_2d(carrier->scratch_logits, (int64_t) n, st->vocab_size);
+    if (s == GEIST_OK)
+        s = linear_w_or_legacy(be,
+                               v,
+                               carrier->scratch_h_a,
+                               carrier->scratch_logits,
+                               &st->embed_table_w,
+                               n,
+                               &t_h,
+                               &st->output_table,
+                               &t_logits);
+    /* Each row to its session (row 0 already is seqs[0]'s): the logits for
+     * sampling and peek, the normed hidden for a dense recompute. */
+    for (size_t b = 1; s == GEIST_OK && b < n; b++) {
+        s = v->buffer_copy(seqs[b]->scratch_logits, 0, carrier->scratch_logits, b * row_v, row_v);
+        if (s == GEIST_OK)
+            s = v->buffer_copy(seqs[b]->scratch_h_a, 0, carrier->scratch_h_a, b * row_h, row_h);
+    }
+    for (size_t b = 0; s == GEIST_OK && b < n; b++) {
+        struct transformer_arch_session *q    = seqs[b];
+        geist_token_t                    next = -1;
+        s                                     = batch_sample(q, &next);
+        if (s == GEIST_OK) {
+            q->kv_len += 1;
+            q->next_token_pending = next;
+            q->logits_valid       = true;
+        }
+    }
+    transformer_region_end(st, region_tok);
+    return s;
 }

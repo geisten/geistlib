@@ -386,17 +386,16 @@ enum geist_status load_layer_experts(struct transformer_arch_state    *st,
         if (st->moe_cpu != nullptr) {
             continue;
         }
-        struct geist_backend *rb = be;
-        if (rb->desc->vtbl->resolve_weight == nullptr) {
+        if (be->desc->vtbl->resolve_weight == nullptr) {
             continue;
         }
-        rb->calibration.locked = true;
-        s                      = rb->desc->vtbl->resolve_weight(rb, &weights[e]);
+        be->calibration.locked = true;
+        s                      = be->desc->vtbl->resolve_weight(be, &weights[e]);
         if (s == GEIST_E_UNSUPPORTED) {
             geist_backend_set_error(be,
                                     GEIST_E_UNSUPPORTED,
                                     "transformer: %s has no %s linear for experts '%s'",
-                                    rb->desc->name,
+                                    be->desc->name,
                                     gguf_dtype_name(t->dtype),
                                     name);
         } else if (s == GEIST_OK && (weights[e].flags & GEIST_W_RAW_COLD) != 0) {

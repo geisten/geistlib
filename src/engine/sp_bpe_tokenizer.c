@@ -1,4 +1,5 @@
 #include "sp_bpe_tokenizer.h"
+#include "fnv1a.h"
 #include "heap.h"
 #include "pair_merge.h"
 
@@ -75,28 +76,11 @@ struct sp_bpe_tokenizer {
 /* ---- helpers -------------------------------------------------------------- */
 
 static uint64_t fnv1a(const void *data, size_t n) {
-    const uint8_t *p = (const uint8_t *) data;
-    uint64_t       h = 14695981039346656037ULL;
-    for (size_t i = 0; i < n; i++) {
-        h ^= p[i];
-        h *= 1099511628211ULL;
-    }
-    return h;
+    return geist_fnv1a(GEIST_FNV1A_INIT, n, data);
 }
 
 static uint64_t fnv1a_two(const void *a, size_t na, const void *b, size_t nb) {
-    uint64_t       h = 14695981039346656037ULL;
-    const uint8_t *p = (const uint8_t *) a;
-    for (size_t i = 0; i < na; i++) {
-        h ^= p[i];
-        h *= 1099511628211ULL;
-    }
-    p = (const uint8_t *) b;
-    for (size_t i = 0; i < nb; i++) {
-        h ^= p[i];
-        h *= 1099511628211ULL;
-    }
-    return h;
+    return geist_fnv1a(geist_fnv1a(GEIST_FNV1A_INIT, na, a), nb, b);
 }
 
 static size_t next_pow2(size_t n) {

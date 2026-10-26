@@ -52,17 +52,14 @@ void                            moe_gpu_session_free(struct transformer_arch_ses
                                             size_t                           n_hot,
                                             const uint32_t                   hot[static n_hot]);
 
-/* One wait per layer (#161, #163), the model on the GPU: launchable says
- * whether experts hot[0, n_hot) can go this way; launch gathers their rows
- * from x on the device, records their batch (grouped matvecs at one row
- * each, else a GEMM per expert) and starts it without waiting; finish
+/* One wait per layer (#161, #163), the model on the GPU (mg->one_wait, the
+ * session's moe_x_io, 1 <= n_hot <= GEIST_MOE_MAX_EXPERTS): launch gathers
+ * the rows of experts hot[0, n_hot) from x on the device, records their
+ * batch (grouped matvecs at one row each, else a GEMM per expert) and
+ * starts it without waiting; finish
  * writes out[t] = cold[t] + the hot outputs of token t weighted by the
  * router, on the GPU, cold being the host's sum of the other experts —
  * no wait either. */
-[[nodiscard]] bool              moe_gpu_launchable(const struct transformer_arch_session *sess,
-                                                   size_t                                 layer,
-                                                   size_t                                 n_hot,
-                                                   const uint32_t                         hot[static n_hot]);
 [[nodiscard]] enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
                                                size_t                           layer,
                                                size_t                           seq,

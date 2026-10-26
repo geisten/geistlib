@@ -641,6 +641,67 @@ geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_toke
     return GEIST_OK;
 }
 
+size_t geist_model_decode_batch_max(const struct geist_model *m) {
+    if (m == nullptr) {
+        return 0;
+    }
+    const struct geist_arch_ops_decoder *ops = m->text_decoder.arch_ops;
+    if (ops == nullptr || ops->decode_batch == nullptr || ops->decode_batch_max == nullptr) {
+        return 0;
+    }
+    return ops->decode_batch_max(m->text_decoder.arch_meta);
+}
+
+[[nodiscard]] enum geist_status geist_session_decode_batch(size_t                      n,
+                                                           struct geist_session *const sessions[],
+                                                           geist_token_t out_tokens[]) {
+    if (out_tokens != nullptr) {
+        for (size_t b = 0; b < n; b++) {
+            out_tokens[b] = -1;
+        }
+    }
+    if (n == 0 || sessions == nullptr || out_tokens == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (n == 1) {
+        return geist_session_decode_step(sessions[0], &out_tokens[0]);
+    }
+    if (sessions[0] == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_model *model = as_full(sessions[0])->model;
+    if (n > geist_model_decode_batch_max(model)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* Bounded by decode_batch_max: no allocation on the decode path. */
+    void *arch[64];
+    if (n > sizeof arch / sizeof arch[0]) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    for (size_t b = 0; b < n; b++) {
+        if (sessions[b] == nullptr || as_full(sessions[b])->model != model) {
+            return GEIST_E_INVALID_ARG;
+        }
+        if (cancel_requested(as_full(sessions[b]))) {
+            return GEIST_E_CANCELLED;
+        }
+        arch[b] = arch_sess(as_full(sessions[b]));
+    }
+    const uint64_t          t0 = monotonic_ns();
+    const enum geist_status ds = model->text_decoder.arch_ops->decode_batch(n, arch, out_tokens);
+    const uint64_t          dt = monotonic_ns() - t0;
+    for (size_t b = 0; b < n; b++) {
+        struct geist_session_full *sf = as_full(sessions[b]);
+        sf->total_decode_ns += dt / n;
+        if (ds == GEIST_OK) {
+            sf->n_tokens_decoded++;
+        } else {
+            (void) session_op_failed(sf, ds, "decode_batch");
+        }
+    }
+    return ds;
+}
+
 const float *geist_session_peek_logits(size_t *n_logits, struct geist_session *s) {
     if (n_logits == nullptr)
         return nullptr;

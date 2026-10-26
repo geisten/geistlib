@@ -234,6 +234,46 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
 size_t                          geist_session_length(const struct geist_session *s);
 [[nodiscard]] enum geist_status geist_session_truncate(struct geist_session *s, size_t n);
 
+/* @stability EXPERIMENTAL (#26) — one decode step for several independent
+ * sessions of the same model in one pass.
+ *
+ * geist_session_decode_batch does what geist_session_decode_step does for
+ * each of sessions[0..n-1] and writes each one's token to out_tokens[b]. The
+ * forwards the sessions owe run as one batched pass: every linear layer reads
+ * its weights once for all n rows, while attention and recurrent state stay
+ * per session. Several questions decoded together (each forked from a
+ * prefix with geist_session_restore, say) then cost about one step's weight
+ * traffic instead of n.
+ *
+ *   - Isolation: for a given n, a session's tokens and logits depend only
+ *     on that session: which other sessions share the call and the
+ *     session's place in sessions[] do not change them, bit for bit. Another
+ *     n may select other row kernels and round differently.
+ *   - Numerics: n = 1 is geist_session_decode_step itself. For n > 1, the
+ *     batched rows round differently from a single-row step, so logits can
+ *     differ in the last digits from decoding the session alone (greedy
+ *     tokens usually match, not always).
+ *   - Each session samples with its own settings, penalties and RNG.
+ *   - Sessions must be distinct, created on the same model, each with
+ *     something to decode (after a prefill or a decode step), and none used
+ *     from another thread during the call.
+ *   - Refusals change nothing: GEIST_E_INVALID_ARG (nullptr, a repeated
+ *     session, another model), GEIST_E_UNSUPPORTED (n above
+ *     geist_model_decode_batch_max, a session with the KIVI cache, MTP
+ *     drafting or a split/offloaded model), GEIST_E_INVALID_STATE (nothing
+ *     pending), GEIST_E_TOO_MANY_TOKENS (a full context), GEIST_E_CANCELLED.
+ *     A failure during the pass resets every member. out_tokens is -1 on
+ *     every failure.
+ *
+ * geist_model_decode_batch_max: the largest n the model takes on the
+ * backend it was loaded on; 0 when it cannot batch (n = 1 still works).
+ * Today: Qwen3.5-family hybrids (Qwen3.5, Bonsai 2) on Metal and Vulkan, up
+ * to 8 sessions. */
+[[nodiscard]] enum geist_status geist_session_decode_batch(size_t                      n,
+                                                           struct geist_session *const sessions[],
+                                                           geist_token_t               out_tokens[]);
+[[nodiscard]] size_t geist_model_decode_batch_max(const struct geist_model *m);
+
 /* @stability EXPERIMENTAL (#192) — a cheap way back for short look-aheads
  * (a draft model's speculative tokens). geist_session_checkpoint records the
  * session's state now, where the backend keeps it; afterwards

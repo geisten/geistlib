@@ -258,6 +258,97 @@ static enum geist_status op_decode_step(void *session, geist_token_t *out) {
     return GEIST_OK;
 }
 
+static size_t op_decode_batch_max(const void *arch_state) {
+    return transformer_decode_batch_max(arch_state);
+}
+
+/* Can decode_step run on this member, and can its forwards run in a batch?
+ * Read-only: the refusal of any member must leave all untouched. */
+[[nodiscard]] static enum geist_status batch_member_ok(const struct transformer_arch_session *sess,
+                                                       const struct transformer_arch_state   *st) {
+    if (sess->model != st) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (sess->kv_kivi_enabled || sess->mtp_enabled || sess->twin_sess != nullptr ||
+        sess->split_sess != nullptr) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (!sess->logits_valid) {
+        return GEIST_E_INVALID_STATE; /* nothing pending: prefill first */
+    }
+    /* The owed forward appends one row, the returned token owes the next. */
+    const size_t need = sess->advance_deferred ? 2 : 1;
+    return sess->kv_len + need <= sess->max_seq_len ? GEIST_OK : GEIST_E_TOO_MANY_TOKENS;
+}
+
+static enum geist_status
+op_decode_batch(size_t n, void *const sessions[static n], geist_token_t out[static n]) {
+    for (size_t b = 0; b < n; b++) {
+        out[b] = -1;
+    }
+    if (n == 0 || sessions[0] == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (n == 1) {
+        return op_decode_step(sessions[0], out); /* exactly decode_step */
+    }
+    struct transformer_arch_session *first = sessions[0];
+    struct transformer_arch_state   *st    = first->model;
+    if (n > transformer_decode_batch_max(st)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    struct transformer_arch_session *owe[TRANSFORMER_DECODE_BATCH_CAP];
+    size_t                           n_owe = 0;
+    for (size_t b = 0; b < n; b++) {
+        struct transformer_arch_session *sess = sessions[b];
+        if (sess == nullptr) {
+            return GEIST_E_INVALID_ARG;
+        }
+        for (size_t c = 0; c < b; c++) {
+            if (sessions[c] == sess) {
+                return GEIST_E_INVALID_ARG;
+            }
+        }
+        const enum geist_status ms = batch_member_ok(sess, st);
+        if (ms != GEIST_OK) {
+            return ms;
+        }
+        if (sess->advance_deferred) {
+            owe[n_owe++] = sess;
+        }
+    }
+    /* Forwards owed by an earlier decode_step run first: batched from two
+     * on, a lone one as settle runs it. */
+    enum geist_status s = GEIST_OK;
+    if (n_owe == 1) {
+        s = settle(owe[0]);
+    } else if (n_owe > 1) {
+        s = transformer_decode_batch_forward(n_owe, owe);
+        for (size_t b = 0; s == GEIST_OK && b < n_owe; b++) {
+            owe[b]->advance_deferred = false;
+        }
+    }
+    /* Then each member's token, and its forward run now, batched, rather
+     * than owed as decode_step leaves it: the observable state (token,
+     * length, the logits peek returns) is the same either way. */
+    struct transformer_arch_session *all[TRANSFORMER_DECODE_BATCH_CAP];
+    for (size_t b = 0; s == GEIST_OK && b < n; b++) {
+        all[b] = sessions[b];
+        transformer_recurrent_txn_commit(all[b]);
+        out[b] = all[b]->next_token_pending;
+    }
+    if (s == GEIST_OK) {
+        s = transformer_decode_batch_forward(n, all);
+    }
+    if (s != GEIST_OK) {
+        for (size_t b = 0; b < n; b++) {
+            out[b] = -1;
+            transformer_session_reset(sessions[b]);
+        }
+    }
+    return s;
+}
+
 static size_t op_hidden_dim(const void *arch_state) {
     const struct transformer_arch_state *st = arch_state;
     return st != nullptr ? st->d_model : 0;
@@ -486,4 +577,6 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .restore                  = op_restore,
         .prefill_geometry         = op_prefill_geometry,
         .supports_towers          = op_supports_towers,
+        .decode_batch             = op_decode_batch,
+        .decode_batch_max         = op_decode_batch_max,
 };

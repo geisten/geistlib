@@ -217,6 +217,7 @@ LIB_SOURCES := \
     src/base/omp_idle.c \
     src/base/par.c \
     src/base/cpu_limit.c \
+    src/base/cache_dir.c \
     src/engine/allocator.c \
     src/engine/backend.c \
     src/engine/backend_registry.c \
@@ -324,7 +325,7 @@ STB_OBJ := $(BUILD_DIR)/third_party/stb/stb_impl.o
 # path under bin/ (tests/test_foo -> bin/.../tests/test_foo; tools/eval_geist ->
 # bin/.../tools/eval_geist).
 TEST_SOURCES := $(wildcard tests/test_*.c tests/bench_*.c)
-DEMO_SOURCES := tools/bench_decision.c tools/eval_geist.c tools/dump_geist_logits.c tools/dump_geist_greedy.c tools/dump_geist_tf_logits.c tools/dump_geist_embedding.c tools/zo_tune.c
+DEMO_SOURCES := tools/bench_decision.c tools/bench_reasoning_batch.c tools/bench_reasoning_probe.c tools/eval_geist.c tools/dump_geist_logits.c tools/dump_geist_greedy.c tools/dump_geist_tf_logits.c tools/dump_geist_embedding.c tools/zo_tune.c
 
 # These tests call cblas_* directly as an independent reference to validate
 # geist's own kernels. They can't link under GEMM_PROVIDER=native (no cblas to

@@ -87,7 +87,7 @@ static int check_route(struct geist_backend *be,
                     v->buffer_upload(bi, (nk + 1) * 4, (const uint8_t *) zero) == GEIST_OK,
             "route upload");
     struct geist_tensor tl = mat(bl, 0, rows, n), tw = vec(bw, 0, nk);
-    fails += geist_expect(f->moe_route(be, rows, n, k, norm, &tl, bi, 0, nk * 4, &tw) == GEIST_OK,
+    fails += geist_expect(f->moe_route(be, rows, n, k, norm, &tl, bi, nk * 4, &tw) == GEIST_OK,
                           what);
     uint32_t ids[64 + 1];
     float    w[64];
@@ -238,7 +238,7 @@ static int test_ids(struct geist_backend *be, const struct qfmt *q) {
         struct geist_tensor tx = mat(bx, 0, per_slot ? M * K : M, N_IN);
         struct geist_tensor ty = mat(by, 0, M * K, N_OUT);
         fails += geist_expect(
-                f->linear_t_ids(be, N_EXP, M, K, per_slot != 0, &w[0], &ex, bi, 0, &tx, &ty) ==
+                f->linear_t_ids(be, N_EXP, M, K, per_slot != 0, &w[0], &ex, bi, &tx, &ty) ==
                         GEIST_OK,
                 "linear_t_ids");
         for (size_t s = 0; s < M * K; s++) {
