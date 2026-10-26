@@ -194,10 +194,10 @@ static int run_case(struct geist_backend *be, const struct qfmt *q, const char *
                     "sel upload");
             struct geist_tensor tl = mat(bl, 0, 1, N), tw = mat(bw, 0, 1, 3);
             struct geist_tensor tx1 = mat(bx, 0, per_slot ? 3 : 1, N_IN), ts = mat(bs, 0, 3, N_OUT);
-            fails += geist_expect(f->moe_route(be, 1, N, 3, true, &tl, bi, 0, 12, &tw) == GEIST_OK,
+            fails += geist_expect(f->moe_route(be, 1, N, 3, true, &tl, bi, 12, &tw) == GEIST_OK,
                                   "moe_route");
             const uint64_t mark = f->submit_mark(be);
-            fails += geist_expect(f->linear_t_sel(be, N, ws, 3, per_slot != 0, bi, 0, &tx1, &ts) ==
+            fails += geist_expect(f->linear_t_sel(be, N, ws, 3, per_slot != 0, bi, &tx1, &ts) ==
                                           GEIST_OK,
                                   "linear_t_sel");
             f->submit(be);

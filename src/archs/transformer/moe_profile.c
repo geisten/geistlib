@@ -5,7 +5,9 @@
  */
 #include "moe_profile.h"
 
+#include "cache_dir.h"
 #include "checked.h"
+#include "fnv1a.h"
 #include "gguf_reader.h"
 #include "heap.h"
 
@@ -29,30 +31,21 @@ struct transformer_moe_profile {
     _Atomic uint64_t  tokens;
 };
 
-static uint64_t fnv1a(uint64_t h, size_t n, const void *p) {
-    const unsigned char *b = p;
-    for (size_t i = 0; i < n; i++) {
-        h ^= b[i];
-        h *= 0x100000001b3ull;
-    }
-    return h;
-}
-
 uint64_t moe_profile_key(const struct gguf_ctx *gguf) {
-    uint64_t     h = 0xcbf29ce484222325ull;
+    uint64_t     h = GEIST_FNV1A_INIT;
     const size_t n = gguf_tensor_count(gguf);
     for (size_t i = 0; i < n; i++) {
         const struct gguf_tensor_t *t = gguf_tensor_at(gguf, i);
         if (t == nullptr)
             continue;
         const uint64_t fields[] = {(uint64_t) t->dtype, (uint64_t) t->n_dims, t->offset};
-        h                       = fnv1a(h, strlen(t->name), t->name);
-        h                       = fnv1a(h, sizeof fields, fields);
-        h                       = fnv1a(h, sizeof t->dims, t->dims);
+        h                       = geist_fnv1a(h, strlen(t->name), t->name);
+        h                       = geist_fnv1a(h, sizeof fields, fields);
+        h                       = geist_fnv1a(h, sizeof t->dims, t->dims);
     }
     const struct gguf_tensor_t *r = gguf_get_tensor(gguf, "blk.0.ffn_gate_inp.weight");
     if (r != nullptr && r->data != nullptr)
-        h = fnv1a(h, r->nbytes, r->data);
+        h = geist_fnv1a(h, r->nbytes, r->data);
     return h;
 }
 
@@ -60,17 +53,9 @@ bool moe_profile_dir(size_t n, char dir[static n]) {
     const char *env = getenv("GEIST_MOE_PROFILE_CACHE");
     if (env == nullptr || env[0] == '\0' || strcmp(env, "0") == 0)
         return false; /* opt-in */
-    int w = -1;
-    if (strcmp(env, "1") == 0) {
-        const char *xdg  = getenv("XDG_CACHE_HOME");
-        const char *home = getenv("HOME");
-        w = xdg != nullptr && xdg[0] != '\0' ? snprintf(dir, n, "%s/geist/moe-profile", xdg)
-            : home != nullptr && home[0] != '\0'
-                    ? snprintf(dir, n, "%s/.cache/geist/moe-profile", home)
-                    : -1;
-    } else {
-        w = snprintf(dir, n, "%s", env);
-    }
+    if (strcmp(env, "1") == 0)
+        return geist_cache_dir(n, "moe-profile", dir);
+    const int w = snprintf(dir, n, "%s", env);
     return w > 0 && (size_t) w < n;
 }
 

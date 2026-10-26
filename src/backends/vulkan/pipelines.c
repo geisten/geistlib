@@ -5,6 +5,8 @@
  */
 #include "vk_internal.h"
 
+#include "cache_dir.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -176,14 +178,8 @@ static bool vk_pcache_path(const struct vk_state *st, size_t n, char path[static
     if (env != nullptr) {
         return strcmp(env, "0") != 0 && env[0] != '\0' && (size_t) snprintf(path, n, "%s", env) < n;
     }
-    char        dir[1024];
-    const char *xdg  = getenv("XDG_CACHE_HOME");
-    const char *home = getenv("HOME");
-    int         w    = xdg != nullptr && xdg[0] != '\0' ? snprintf(dir, sizeof dir, "%s/geist", xdg)
-                       : home != nullptr && home[0] != '\0'
-                               ? snprintf(dir, sizeof dir, "%s/.cache/geist", home)
-                               : -1;
-    if (w < 0 || (size_t) w >= sizeof dir) {
+    char dir[1024];
+    if (!geist_cache_dir(sizeof dir, nullptr, dir)) {
         return false;
     }
     /* ponytail: one level of mkdir; a missing ~/.cache just means no cache */
@@ -192,7 +188,7 @@ static bool vk_pcache_path(const struct vk_state *st, size_t n, char path[static
     for (size_t i = 0; i < VK_UUID_SIZE; ++i) {
         snprintf(uuid + 2 * i, 3, "%02x", st->pcache_uuid[i]);
     }
-    w = snprintf(path, n, "%s/vulkan-pipelines-%s.bin", dir, uuid);
+    const int w = snprintf(path, n, "%s/vulkan-pipelines-%s.bin", dir, uuid);
     return w > 0 && (size_t) w < n;
 }
 
