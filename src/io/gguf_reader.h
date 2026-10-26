@@ -21,6 +21,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 typedef enum {
     GGUF_TYPE_F32    = 0,
@@ -158,5 +159,28 @@ bool gguf_get_meta_array_info(const struct gguf_ctx *ctx,
                               uint32_t              *out_elem_vt,
                               uint64_t              *out_count,
                               const uint8_t        **out_payload);
+
+/* Walks a STRING array from gguf_get_meta_array_info:
+ * `struct gguf_str_iter it = {.p = payload, .left = count};` then
+ * `while (gguf_str_next(&it, &s, &len))`. The reader validated every
+ * element's extent when it opened the file, so the (u64 length, bytes)
+ * pairs are read back without re-checking against the payload end. */
+struct gguf_str_iter {
+    const uint8_t *p;
+    uint64_t       left;
+};
+
+static inline bool gguf_str_next(struct gguf_str_iter *it, const char **s, size_t *len) {
+    if (it->left == 0) {
+        return false;
+    }
+    uint64_t n = 0;
+    memcpy(&n, it->p, sizeof n);
+    *s   = (const char *) (it->p + sizeof n);
+    *len = (size_t) n;
+    it->p += sizeof n + (size_t) n;
+    it->left--;
+    return true;
+}
 
 #endif
