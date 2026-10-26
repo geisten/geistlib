@@ -227,10 +227,10 @@ static bool metal_responds(struct metal_state *st, void *obj, const char *select
 static void *metal_residency_keep_alive(void *arg) {
     struct metal_state *st = arg;
     pthread_setname_np("geist-metal-residency");
-    uint64_t last = metal_now_ns();
+    uint64_t last = geist_now_ns();
     pthread_mutex_lock(&st->res_lock);
     while (!st->res_stop) {
-        const uint64_t now = metal_now_ns();
+        const uint64_t now = geist_now_ns();
         if (atomic_exchange(&st->res_used, false)) {
             last = now;
         }

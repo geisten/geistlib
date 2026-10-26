@@ -133,11 +133,11 @@ static bool sonde_time_pq2_gemv(struct geist_backend *be, size_t n_out, double *
                 w[i % copies].linear_m1(x, &w[i % copies], be, y);
             }
             for (int rep = 0; rep < 3; rep++) {
-                const uint64_t t0 = metal_now_ns();
+                const uint64_t t0 = geist_now_ns();
                 for (size_t i = 0; i < SONDE_REPS; i++) {
                     w[i % copies].linear_m1(x, &w[i % copies], be, y);
                 }
-                const double dt = (double) (metal_now_ns() - t0) / (double) SONDE_REPS;
+                const double dt = (double) (geist_now_ns() - t0) / (double) SONDE_REPS;
                 if (best == 0.0 || dt < best) {
                     best = dt;
                 }
@@ -164,10 +164,10 @@ metal_measure_pq2_n8_min_n_out(struct geist_backend *be, uint64_t budget_ns, int
     }
     metal_tuning_resolve(be, st);
     const uint32_t live     = st->tuning.pq2_n8_min_n_out;
-    const uint64_t deadline = metal_now_ns() + budget_ns;
+    const uint64_t deadline = geist_now_ns() + budget_ns;
     uint32_t       cross    = SEED_PQ2_N8_MIN_N_OUT;
     for (size_t i = 0; i < sizeof SONDE_OUT / sizeof SONDE_OUT[0]; i++) {
-        if (metal_now_ns() >= deadline) {
+        if (geist_now_ns() >= deadline) {
             break;
         }
         double n4 = 0.0, n8 = 0.0;

@@ -7,7 +7,10 @@
 #error "forward/profile.h is a private architecture-layer header"
 #endif
 
+#include "clock.h" /* geist_now_ns: the profiler's clock */
+
 #include <stdatomic.h>
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -29,8 +32,8 @@ struct transformer_forward_profile {
     _Atomic bool       registered;
 };
 
-bool     transformer_profile_enabled(struct transformer_forward_profile *profile);
-uint64_t transformer_profile_now_ns(void);
+bool transformer_profile_enabled(struct transformer_forward_profile *profile);
+
 /* Adds the time since t0 to `stage` and returns it (0 when t0 is 0, i.e.
  * profiling is off), so a caller can take a nested stage out of its own. */
 uint64_t

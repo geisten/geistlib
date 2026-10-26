@@ -849,7 +849,7 @@ static struct transformer_forward_profile g_dn_profile = {
 static inline void dn_profile_mark(size_t stage, uint64_t *t0) {
     if (*t0 != 0) {
         transformer_profile_add(&g_dn_profile, stage, *t0);
-        *t0 = transformer_profile_now_ns();
+        *t0 = geist_now_ns();
     }
 }
 
@@ -889,8 +889,8 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
     struct geist_tensor t_h_2d  = view_2d(ctx->h_in_buf, ctx->SEQ, st->d_model);
     struct geist_tensor t_x_2d  = view_2d(sess->scratch_normed, ctx->SEQ, st->d_model);
     struct geist_tensor t_gamma = view_1d(L->attn_norm.buffer, st->d_model);
-    uint64_t t0 = transformer_profile_enabled(&g_dn_profile) ? transformer_profile_now_ns() : 0;
-    enum geist_status s = prims->rmsnorm(be, &t_h_2d, &t_gamma, eps, &t_x_2d);
+    uint64_t            t0      = transformer_profile_enabled(&g_dn_profile) ? geist_now_ns() : 0;
+    enum geist_status   s       = prims->rmsnorm(be, &t_h_2d, &t_gamma, eps, &t_x_2d);
     if (s != GEIST_OK)
         return s;
     dn_profile_mark(DN_PROFILE_NORM, &t0);

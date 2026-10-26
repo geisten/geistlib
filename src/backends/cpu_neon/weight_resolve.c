@@ -34,6 +34,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include "checked.h"
+#include "clock.h"
 #include "env.h"
 #include "heap.h"
 
@@ -41,7 +42,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <time.h>
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
 #endif
@@ -77,11 +77,6 @@ static void qprof_init_once(void) {
 static inline bool qprof_on(void) {
     (void) pthread_once(&g_qprof_once, qprof_init_once);
     return atomic_load_explicit(&g_qprof_state, memory_order_relaxed) != 0;
-}
-static inline uint64_t qprof_now_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
 }
 
 /* Dense F32 projections (e.g. the PLE model_proj path) route through the
@@ -704,15 +699,15 @@ static void cpu_neon_w_q4k_mN(size_t                     m,
     }
 
     const bool qp = qprof_on();
-    uint64_t   t0 = qp ? qprof_now_ns() : 0;
+    uint64_t   t0 = qp ? geist_now_ns() : 0;
     cpu_neon_qk_mN_quantize_x(ws, x, m, n_in);
     if (qp) {
-        atomic_fetch_add_explicit(&g_qprof_quant_ns, qprof_now_ns() - t0, memory_order_relaxed);
-        t0 = qprof_now_ns();
+        atomic_fetch_add_explicit(&g_qprof_quant_ns, geist_now_ns() - t0, memory_order_relaxed);
+        t0 = geist_now_ns();
     }
     cpu_neon_q4k_run_prequantized(st, ws, w, m, y);
     if (qp) {
-        atomic_fetch_add_explicit(&g_qprof_mm_ns, qprof_now_ns() - t0, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_qprof_mm_ns, geist_now_ns() - t0, memory_order_relaxed);
     }
 }
 
@@ -781,7 +776,7 @@ static void cpu_neon_w_q6k_mN(size_t                     m,
         return;
     }
     const bool qp6 = qprof_on();
-    uint64_t   t6  = qp6 ? qprof_now_ns() : 0;
+    uint64_t   t6  = qp6 ? geist_now_ns() : 0;
     for (size_t i = 0; i < m; i++) {
         quantize_x_q8_groups(n_in,
                              GEIST_ACT_Q8K_ELEMS,
@@ -791,8 +786,8 @@ static void cpu_neon_w_q6k_mN(size_t                     m,
                              nullptr);
     }
     if (qp6) {
-        atomic_fetch_add_explicit(&g_qprof_quant_ns, qprof_now_ns() - t6, memory_order_relaxed);
-        t6 = qprof_now_ns();
+        atomic_fetch_add_explicit(&g_qprof_quant_ns, geist_now_ns() - t6, memory_order_relaxed);
+        t6 = geist_now_ns();
     }
     if (q6k_weight_ntile4_stream(w)) {
         linear_q6k_w6a8_prefill_predecoded_ntile4_stream(
@@ -805,7 +800,7 @@ static void cpu_neon_w_q6k_mN(size_t                     m,
                 m, n_in, (size_t) w->n_out, ws->qk_mN_xq, ws->qk_mN_sc, w->raw, y);
     }
     if (qp6) {
-        atomic_fetch_add_explicit(&g_qprof_mm_ns, qprof_now_ns() - t6, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_qprof_mm_ns, geist_now_ns() - t6, memory_order_relaxed);
     }
 }
 

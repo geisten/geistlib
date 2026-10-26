@@ -18,6 +18,7 @@
 #include <stdatomic.h>
 
 #include "checked.h"
+#include "clock.h"
 #include "heap.h"
 #include "parse.h"
 #include "image_pipeline.h"
@@ -110,9 +111,7 @@ struct geist_session_full {
 };
 
 static inline uint64_t monotonic_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
+    return geist_now_ns();
 }
 
 /* Engine-internal: cast the public opaque handle to the full struct. */

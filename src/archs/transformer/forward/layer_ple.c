@@ -89,7 +89,7 @@ static enum geist_status run_ple(struct transformer_layer_forward_ctx *ctx) {
              * the residual step also scales and takes the next layer's
              * norm (#17). */
             const bool tail = P->fuse_tail_norm;
-            t0              = prof ? transformer_profile_now_ns() : 0;
+            t0              = prof ? geist_now_ns() : 0;
             s               = fused->ple_block(be,
                                                &t_h_post_ff_2d,
                                                &L->per_layer_gate,
@@ -113,7 +113,7 @@ static enum geist_status run_ple(struct transformer_layer_forward_ctx *ctx) {
             return s;
         }
 
-        t0 = prof ? transformer_profile_now_ns() : 0;
+        t0 = prof ? geist_now_ns() : 0;
         s  = linear_w_or_legacy(be,
                                 v,
                                 sess->scratch_h_post_ff,
@@ -127,7 +127,7 @@ static enum geist_status run_ple(struct transformer_layer_forward_ctx *ctx) {
         if (s != GEIST_OK) {
             return s;
         }
-        t0 = prof ? transformer_profile_now_ns() : 0;
+        t0 = prof ? geist_now_ns() : 0;
         /* Bound at plan build (#352): a failing fused op is an error, never
          * a host fallback that re-runs gelu over output it may have written. */
         if (ctx->P->fuse_ple_gelu_mul) {
@@ -142,7 +142,7 @@ static enum geist_status run_ple(struct transformer_layer_forward_ctx *ctx) {
             if (s != GEIST_OK) {
                 return s;
             }
-            t0 = prof ? transformer_profile_now_ns() : 0;
+            t0 = prof ? geist_now_ns() : 0;
             s  = prims->mul(be, &t_gate_ple_2d, &t_ple_in_2d, &t_gate_ple_2d);
             transformer_profile_add(&g_ple_profile, PLE_MUL, t0);
             if (s != GEIST_OK) {
@@ -152,7 +152,7 @@ static enum geist_status run_ple(struct transformer_layer_forward_ctx *ctx) {
 
         struct geist_tensor t_proj_ple_2d = view_2d(sess->scratch_proj_ple, ctx->SEQ, st->d_model);
         struct geist_tensor t_w_post_per  = view_1d(L->post_per_layer_norm.buffer, st->d_model);
-        t0                                = prof ? transformer_profile_now_ns() : 0;
+        t0                                = prof ? geist_now_ns() : 0;
         s                                 = linear_w_or_legacy(be,
                                                                v,
                                                                sess->scratch_gate_ple,
@@ -166,7 +166,7 @@ static enum geist_status run_ple(struct transformer_layer_forward_ctx *ctx) {
         if (s != GEIST_OK) {
             return s;
         }
-        t0 = prof ? transformer_profile_now_ns() : 0;
+        t0 = prof ? geist_now_ns() : 0;
         if (ctx->P->fuse_tail_norm) {
             s = blk_residual_out(ctx,
                                  L->layer_scalar,
@@ -192,7 +192,7 @@ static enum geist_status run_ple(struct transformer_layer_forward_ctx *ctx) {
             if (s != GEIST_OK) {
                 return s;
             }
-            t0 = prof ? transformer_profile_now_ns() : 0;
+            t0 = prof ? geist_now_ns() : 0;
             s  = prims->add(be, &t_h_post_ff_2d, &t_proj_ple_2d, &t_h_out_2d);
             transformer_profile_add(&g_ple_profile, PLE_ADD, t0);
             if (s != GEIST_OK) {
@@ -233,14 +233,14 @@ static enum geist_status scale_output(struct transformer_layer_forward_ctx *ctx)
 /* The layer tail, timed into the per-layer profile's "ple" and "scale"
  * stages (and out of "ffn", see profile_tail_ns). */
 enum geist_status transformer_layer_run_ple_or_copy(struct transformer_layer_forward_ctx *ctx) {
-    const uint64_t          t0 = ctx->profile ? transformer_profile_now_ns() : 0;
+    const uint64_t          t0 = ctx->profile ? geist_now_ns() : 0;
     const enum geist_status s  = run_ple(ctx);
     ctx->profile_tail_ns += transformer_layer_profile_add(TRANSFORMER_LAYER_PROFILE_PLE, t0);
     return s;
 }
 
 enum geist_status transformer_layer_scale_output(struct transformer_layer_forward_ctx *ctx) {
-    const uint64_t          t0 = ctx->profile ? transformer_profile_now_ns() : 0;
+    const uint64_t          t0 = ctx->profile ? geist_now_ns() : 0;
     const enum geist_status s  = scale_output(ctx);
     ctx->profile_tail_ns += transformer_layer_profile_add(TRANSFORMER_LAYER_PROFILE_SCALE, t0);
     return s;

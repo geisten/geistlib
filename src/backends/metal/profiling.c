@@ -70,14 +70,6 @@ const char *const metal_profile_stage_names[METAL_PROFILE_STAGE_COUNT] = {
 #include "metal_shaders.h"
 #include "metal_objc.h"
 
-uint64_t metal_now_ns(void) {
-    struct timespec ts = {0};
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
-        return 0;
-    }
-    return (uint64_t) ts.tv_sec * 1000000000ull + (uint64_t) ts.tv_nsec;
-}
-
 static uint64_t metal_saturating_add_u64(uint64_t a, uint64_t b) {
     return UINT64_MAX - a < b ? UINT64_MAX : a + b;
 }
@@ -103,7 +95,7 @@ void metal_profile_add_wait(struct metal_state      *st,
         start_ns == 0) {
         return;
     }
-    const uint64_t end_ns = metal_now_ns();
+    const uint64_t end_ns = geist_now_ns();
     if (end_ns < start_ns) {
         return;
     }

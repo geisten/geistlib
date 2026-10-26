@@ -236,7 +236,7 @@ void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf, size
     st->seq_dispatch_count = 0;
     st->seq_disp_at_rotate = 0;
     st->seq_cur_mask       = 0;
-    st->seq_begin_ns       = metal_now_ns();
+    st->seq_begin_ns       = geist_now_ns();
     *out_token             = st->sequence_token;
     return GEIST_OK;
 }
@@ -277,9 +277,9 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit) {
     } else if (submit) {
         const enum metal_profile_stage wait_stage =
                 metal_profile_wait_stage_for_sequence(st->sequence_kind);
-        const uint64_t wait_start_ns = st->profile_enabled ? metal_now_ns() : 0;
+        const uint64_t wait_start_ns = st->profile_enabled ? geist_now_ns() : 0;
         const bool     seq_trace     = geist_env_flag("GEIST_METAL_SEQ_TRACE", false);
-        const uint64_t commit_ns     = seq_trace ? metal_now_ns() : 0;
+        const uint64_t commit_ns     = seq_trace ? geist_now_ns() : 0;
         metal_msg_send_void0(st, cmd, "commit");
         metal_msg_send_void0(st, cmd, "waitUntilCompleted");
         /* Pipelined buffers committed before this one are complete now
@@ -294,7 +294,7 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit) {
         }
         metal_profile_add_wait(st, wait_stage, wait_start_ns);
         if (seq_trace) {
-            const uint64_t done_ns = metal_now_ns();
+            const uint64_t done_ns = geist_now_ns();
             union {
                 void *raw;
                 double (*fn)(void *, void *);

@@ -104,7 +104,7 @@ enum geist_status transformer_decision_finish(struct transformer_decision_readou
     struct transformer_arch_state   *st   = sess->model;
     struct geist_backend            *be   = st->backend;
     const struct geist_backend_vtbl *v    = be->desc->vtbl;
-    const uint64_t                   t0   = transformer_profile_now_ns();
+    const uint64_t                   t0   = geist_now_ns();
     enum geist_status                s    = transformer_head_prepare(sess, row_idx);
     if (s != GEIST_OK)
         return s;
@@ -136,7 +136,7 @@ enum geist_status transformer_decision_finish(struct transformer_decision_readou
             logits[i] = tanhf(logits[i] / c) * c;
     }
     v->buffer_unmap(r->results);
-    r->head_ns = transformer_profile_now_ns() - t0;
+    r->head_ns = geist_now_ns() - t0;
     /* This session has no vocabulary logits or pending generation token.
      * In particular peek_logits must never interpret old scratch as fresh. */
     sess->logits_valid       = false;

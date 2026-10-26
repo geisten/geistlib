@@ -24,6 +24,7 @@
 #include "internal.h"
 #include "kernel_catalog.h"
 
+#include "clock.h"
 #include "heap.h"
 #include "quant.h"
 
@@ -32,17 +33,10 @@
 
 #include <stdint.h>
 #include <string.h>
-#include <time.h>
 
 static constexpr size_t CAL_N_OUT = 2048; /* FFN-class panel width */
 static constexpr size_t CAL_N_IN  = 4096;
 static constexpr size_t CAL_M     = 64; /* chunk-class m for the bool A/Bs */
-
-static uint64_t cal_now_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t) ts.tv_sec * 1000000000ull + (uint64_t) ts.tv_nsec;
-}
 
 static void cal_fill_blocks(uint8_t *dst, size_t rows, size_t block_bytes, size_t blocks_per_row) {
     uint32_t lcg = 0x12345u;
@@ -105,15 +99,15 @@ static enum geist_status cal_time_resolved(const uint8_t   *panel,
     }
     w.linear_mN(m, x, &w, tb, y); /* warmup: page-in + pool spin-up */
     uint64_t       best  = UINT64_MAX;
-    const uint64_t start = cal_now_ns();
+    const uint64_t start = geist_now_ns();
     for (int i = 0; i < 5; i++) {
-        const uint64_t t0 = cal_now_ns();
+        const uint64_t t0 = geist_now_ns();
         w.linear_mN(m, x, &w, tb, y);
-        const uint64_t dt = cal_now_ns() - t0;
+        const uint64_t dt = geist_now_ns() - t0;
         if (dt < best) {
             best = dt;
         }
-        if (cal_now_ns() - start > budget_ns) {
+        if (geist_now_ns() - start > budget_ns) {
             break;
         }
     }
