@@ -21,6 +21,7 @@ with patch.object(sys, "path", [str(TOOLS), *sys.path]):
 FAKE_DRIVER = r'''#!/usr/bin/env python3
 import json, sys
 model, backend, prompt_cap, cap, batch = sys.argv[1:6]
+interval, tau = (int(sys.argv[6]), float(sys.argv[7])) if len(sys.argv) > 6 else (0, 0.)
 cap = int(cap)
 print(json.dumps({"kind": "runtime", "version": "t", "backend": backend, "kv_mode": "fp32",
                   "decode_batch_max": 8, "batch": int(batch), "eos": 7}), flush=True)
@@ -29,22 +30,35 @@ tokens = 0
 for case, line in enumerate(sys.stdin):
     ids = [int(x) for x in line.split()]
     cut, np = ids[:2]
-    prompt = ids[2:2 + np]
+    if interval:
+        nc, nq = ids[2:4]
+        prompt = ids[4:4 + np]
+    else:
+        prompt = ids[2:2 + np]
     if cut and prompt[:cut] != last:
         last = prompt[:cut]
         print(json.dumps({"kind": "prefix_prepare", "case_index": case, "elapsed_ms": 5.,
                           "cached_tokens": cut, "snapshot_bytes": 100}), flush=True)
+    exit_answer, probes = -1, []
     if np % 2 == 0:
         gen, stop, text = [3, 4, 7], "eos", "x</think>A"
     else:
         gen, stop, text = [3] * cap, "limit", "x" * cap
+    if interval:
+        probes = [{"pos": 0, "ms": 1., "logits": [0., 0., 0., 0.]}]
+        confident = stop == "limit"  # the capped ones: a confident probe at `interval`
+        probes.append({"pos": interval, "ms": 1., "logits": [0., 5. if confident else 0., 0., 0.]})
+        if confident:
+            if tau:
+                gen, stop, text, exit_answer = gen[:interval], "early_exit", "x" * interval, 1
     tokens += len(gen)
     print(json.dumps({"kind": "sample", "case_index": case, "mode": "generate_long_batched",
                       "prompt_tokens": np, "generated_ids": gen, "generation_stop": stop, "cap": cap,
                       "vocab": 20, "generated_utf8_hex": text.encode().hex(),
                       "generated_text_complete": True, "surface_decode_ms": 0.01, "prefill_ms": 1.,
                       "started_ms": 1. * case, "finished_ms": 1. * case + 10.,
-                      "tokens_by_batch_size": [0, 0, len(gen), 0, 0, 0, 0, 0, 0]}), flush=True)
+                      "tokens_by_batch_size": [0, 0, len(gen), 0, 0, 0, 0, 0, 0],
+                      "exit_answer": exit_answer, "probes": probes}), flush=True)
 print(json.dumps({"kind": "summary", "steps": 3, "decode_ms": 100., "tokens": tokens, "wall_ms": 150.,
                   "steps_by_batch_size": [0, 0, 3, 0, 0, 0, 0, 0, 0]}), flush=True)
 '''
@@ -85,7 +99,8 @@ class BatchedReasoningRunnerTests(unittest.TestCase):
         values = dict(cases_dir=self.cases, model=self.model, binary=self.binary, out_dir=self.out,
                       split="test", backend="metal", threads=1, align=4, cap=4, batch=8,
                       chunk_questions=2, deadline_minutes=5., cool_max_c=65., cool_timeout_minutes=1.,
-                      status=False)
+                      status=False, probe="198,248069,271", probe_interval=0, exit_tau=0.0,
+                      question_ids=None)
         values.update(kw)
         return SimpleNamespace(**values)
 
@@ -110,6 +125,29 @@ class BatchedReasoningRunnerTests(unittest.TestCase):
         self.assertEqual(s["per_question"]["h0"]["stop"], "limit")
         self.assertTrue(s["per_question"]["h1"]["correct"])
         self.assertEqual(s["prefix_prepares"], 4)  # both subjects span two chunks
+
+    def test_probes_and_early_exit(self):
+        self.run_all(probe_interval=2)
+        s = json.loads((self.out / "report.json").read_text())["summary"]
+        self.assertEqual(s["early_exits"], 0)
+        self.assertEqual(s["probes"], 10)  # every question at 0 and 2
+        self.assertEqual(len(s["per_question"]["h0"]["probes"]), 2)
+        # With tau 0.9 the capped questions stop at token 2 with option B (wrong: target A).
+        self.out = self.out.parent / "run-exit"
+        self.run_all(probe_interval=2, exit_tau=0.9)
+        s = json.loads((self.out / "report.json").read_text())["summary"]
+        self.assertEqual(s["early_exits"], 3)
+        self.assertEqual(s["capped"], 0)
+        self.assertEqual(s["correct"], 2)
+        self.assertEqual(s["per_question"]["h0"]["generated_tokens"], 2)
+
+    def test_question_ids_restrict_the_run(self):
+        ids = self.out.parent / "ids.json"
+        ids.write_text(json.dumps(["h1", "h3"]))
+        self.run_all(question_ids=ids)
+        s = json.loads((self.out / "report.json").read_text())["summary"]
+        self.assertEqual(s["questions"], 2)
+        self.assertEqual(s["correct"], 2)
 
     def test_resume_refuses_a_changed_manifest(self):
         with patch.object(runner.campaign, "TempLog", NoTemps), \
