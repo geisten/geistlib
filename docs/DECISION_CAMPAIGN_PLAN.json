@@ -506,6 +506,14 @@
     "analysis": "offline, exploratory (the grid is evaluated on the same 50): policies tau in {0.7, 0.8, 0.9, 0.95, 0.99} x {plain, stable (same argmax as the previous probe)}, exits from position 128 on; accuracy vs full reasoning, generated tokens, time including probes, agreement of the early answer with the full one",
     "gate": ">= 25 % fewer generated tokens at <= 1 pp accuracy loss on calibration; if met, a policy is frozen here before any held-out run",
     "runner": "tools/eval_decision_probe_pilot.py, chunks under a 25-min wall-clock deadline, LOCK_MAX=30, LOCK_PRIO=batch, cool start, frozen manifest",
-    "budget": "~1-1.5 h of Mac time (50 x ~48 s mean reasoning + probes), 2-4 chunks"
+    "budget": "~1-1.5 h of Mac time (50 x ~48 s mean reasoning + probes), 2-4 chunks",
+    "status": "pilot complete (2026-10-26); gate met on point estimates, intervals at n = 50 do not establish it; no policy frozen, awaiting the user's decision",
+    "result": {
+      "writeup": "benchmark/results/DECISION_EARLY_EXIT_PILOT_2026-10-26.md",
+      "transparency": "2/2 generations identical with and without probes",
+      "probe_cost": "median 179 ms = 3.2 decode steps (56 ms per token)",
+      "full_reasoning": "78 % (39/50), 7 capped, 27,198 generated tokens",
+      "best_points": "tau 0.8: 0.0 pp at 0.40x tokens (0.41x time incl. probes), paired [-14.9, +14.9]; tau 0.95: +2.0 pp at 0.69x tokens; tau 0.99: 0.0 pp at 0.87x tokens (exploratory, same 50)"
+    }
   }
 }
