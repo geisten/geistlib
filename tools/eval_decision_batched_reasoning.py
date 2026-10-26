@@ -19,6 +19,13 @@ The report scores every generation exactly as the #171 campaign did
 (eval_decision.generation_outcome, thinking on) and gives accuracy, capped
 answers, generated tokens and throughput. The paired comparison against an
 earlier unbatched run is a separate analysis.
+
+With --probe-interval (#236) every question's answer is probed during
+generation (tools/bench_reasoning_batch: snapshot, prefill --probe, read the
+options, restore); every probe is kept in the report. With --exit-tau a
+question stops at the first probe from --probe-interval on whose top option
+probability reaches tau and is answered with that option ("early_exit").
+--question-ids restricts the run to a JSON list of question IDs.
 """
 from __future__ import annotations
 
@@ -38,12 +45,28 @@ VOLATILE = ("started_utc",)
 PROFILE = "chat_reasoning"
 
 
-def wire(rows, indices, cuts):
+def wire(rows, indices, cuts, probe=None):
     lines = []
     for i in indices:
         p = rows[i]["profiles"][PROFILE]
-        lines.append(" ".join(map(str, [cuts[rows[i]["subject"]]["cut"], len(p["prompt_ids"]), *p["prompt_ids"]])))
+        head = [cuts[rows[i]["subject"]]["cut"], len(p["prompt_ids"])]
+        if probe:
+            head += [len(p["candidate_ids"]), len(probe)]
+            lines.append(" ".join(map(str, [*head, *p["prompt_ids"], *p["candidate_ids"], *probe])))
+        else:
+            lines.append(" ".join(map(str, [*head, *p["prompt_ids"]])))
     return "".join(line + "\n" for line in lines)
+
+
+def outcome(sample, row, eos, cap):
+    """#171 scoring; an early exit answers with its probe's option."""
+    if sample["generation_stop"] == "early_exit":
+        a = sample["exit_answer"]
+        if type(a) is not int or not 0 <= a < len(row["profiles"][PROFILE]["candidate_ids"]):
+            raise ValueError("invalid early-exit answer")
+        return {"predicted_index": a, "correct": a == row["target_index"], "valid": True, "stop": "early_exit",
+                "generated_tokens": len(sample["generated_ids"])}
+    return ev.generation_outcome(sample, {"target_index": row["target_index"]}, True, eos, cap, sample["vocab"])
 
 
 def collect(out_dir, backend):
@@ -85,13 +108,14 @@ def summarize(rows, order, done, prepares, runtimes, summaries, cap):
     outcomes = {}
     for i in order:
         s = done[i]
-        case = {"target_index": rows[i]["target_index"]}
-        o = ev.generation_outcome(s, case, True, eos, cap, s["vocab"])
+        o = outcome(s, rows[i], eos, cap)
         outcomes[rows[i]["question_id"]] = {
             "id": rows[i]["id"], "subject": rows[i]["subject"], "correct": o["correct"], "valid": o["valid"],
             "stop": o["stop"], "generated_tokens": o["generated_tokens"], "predicted_index": o["predicted_index"],
             "latency_ms": s["finished_ms"] - s["started_ms"], "prefill_ms": s["prefill_ms"],
-            "tokens_by_batch_size": s["tokens_by_batch_size"]}
+            "tokens_by_batch_size": s["tokens_by_batch_size"],
+            "probes": [{"pos": p["pos"], "logits": p["logits"]} for p in s.get("probes", [])],
+            "probe_ms": [p["ms"] for p in s.get("probes", [])]}
     n = len(order)
     correct = sum(o["correct"] for o in outcomes.values())
     tokens = sum(o["generated_tokens"] for o in outcomes.values())
@@ -101,6 +125,9 @@ def summarize(rows, order, done, prepares, runtimes, summaries, cap):
     return {
         "questions": n, "correct": correct, "accuracy": correct / n,
         "capped": sum(o["stop"] == "limit" for o in outcomes.values()),
+        "early_exits": sum(o["stop"] == "early_exit" for o in outcomes.values()),
+        "probes": sum(len(o["probes"]) for o in outcomes.values()),
+        "probe_ms_total": sum(sum(o["probe_ms"]) for o in outcomes.values()),
         "invalid": sum(not o["valid"] for o in outcomes.values()),
         "generated_tokens": tokens, "tokens_by_batch_size": by_size,
         "latency_ms": {"p50": bench.percentile(lat, .5), "p95": bench.percentile(lat, .95)},
@@ -135,9 +162,18 @@ def run(args):
     deadline = time.time() + args.deadline_minutes * 60  # wall clock (see campaign.run_driver)
     rows = prefix.load_rows(args.cases_dir, args.split, PROFILE)
     order, cuts = prefix.plan_cuts(rows, PROFILE, args.align)
+    if args.question_ids:
+        keep = json.loads(args.question_ids.read_text())
+        if len(set(keep)) != len(keep) or not set(keep) <= {r["question_id"] for r in rows}:
+            raise ValueError("--question-ids must be unique IDs of this split")
+        keep = set(keep)
+        order = [i for i in order if rows[i]["question_id"] in keep]
+    probe = [int(x) for x in args.probe.split(",")] if args.probe_interval else None
     prompt_cap = max(len(r["profiles"][PROFILE]["prompt_ids"]) for r in rows)
     command = [str(args.binary.resolve()), str(args.model.resolve()), args.backend, str(prompt_cap),
                str(args.cap), str(args.batch)]
+    if args.probe_interval:
+        command += [str(args.probe_interval), repr(args.exit_tau)]
     env = dict(os.environ, OMP_NUM_THREADS=str(args.threads))
     env.setdefault("OMP_WAIT_POLICY", "passive")
     manifest = {
@@ -146,6 +182,8 @@ def run(args):
         "model_sha256": bench.sha256(args.model), "binary_sha256": bench.sha256(args.binary),
         "cases_sha256": bench.sha256(args.cases_dir / f"{args.split}.jsonl"),
         "profile": PROFILE, "split": args.split, "align": args.align, "cap": args.cap, "batch": args.batch,
+        "probe": probe, "probe_interval": args.probe_interval, "exit_tau": args.exit_tau,
+        "question_ids": sorted(rows[i]["question_id"] for i in order) if args.question_ids else None,
         "backend": args.backend, "threads": args.threads, "command": command,
         "order": [rows[i]["id"] for i in order], "cuts": cuts,
         "environment": {k: v for k, v in env.items() if k.startswith(("GEIST_", "OMP_", "KMP_"))},
@@ -177,7 +215,7 @@ def run(args):
         info["cool_gate"] = campaign.cool_gate(args, deadline)
         ev.write_json(chunk / "batched.rows.json", batch)
         info["run"] = campaign.run_driver(command, [], env, chunk, "batched", deadline,
-                                          wire=wire(rows, batch, cuts))
+                                          wire=wire(rows, batch, cuts, probe))
     finally:
         temps.close()
         info["ended_unix"] = time.time()
@@ -195,6 +233,10 @@ def main():
     p.add_argument("--align", type=int, required=True, help="the engine's prefill chunk")
     p.add_argument("--cap", type=int, required=True)
     p.add_argument("--batch", type=int, required=True)
+    p.add_argument("--probe", default="198,248069,271", help="probe token IDs (with --probe-interval)")
+    p.add_argument("--probe-interval", type=int, default=0)
+    p.add_argument("--exit-tau", type=float, default=0.0, help="0: record probes only")
+    p.add_argument("--question-ids", type=Path, help="JSON list: run only these question IDs")
     p.add_argument("--chunk-questions", type=int, required=True)
     p.add_argument("--deadline-minutes", type=float, required=True)
     p.add_argument("--cool-max-c", type=float, default=65.)
@@ -202,7 +244,8 @@ def main():
     p.add_argument("--status", action="store_true", help="report progress (and finalize if complete); no inference")
     args = p.parse_args()
     if (args.threads < 1 or args.chunk_questions < 1 or args.align < 1 or not args.deadline_minutes > 0
-            or not 1 <= args.cap <= 32768 or not 1 <= args.batch <= 8):
+            or not 1 <= args.cap <= 32768 or not 1 <= args.batch <= 8 or args.probe_interval < 0
+            or not 0 <= args.exit_tau < 1 or (args.exit_tau and not args.probe_interval)):
         p.error("invalid thread/chunk/align/deadline/cap/batch bounds")
     run(args)
 

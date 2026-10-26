@@ -2,7 +2,18 @@
  * up to `batch` sessions decoding together through geist_session_decode_batch,
  * refilled as questions finish (continuous batching).
  *
- *   bench_reasoning_batch model.gguf backend prompt_cap cap batch
+ *   bench_reasoning_batch model.gguf backend prompt_cap cap batch [interval tau]
+ *
+ * With interval > 0 (#236) every session's answer is probed right after its
+ * prompt and every `interval` generated tokens, between batched steps: its
+ * state is saved (geist_session_snapshot), the probe tokens are prefilled,
+ * the candidates' logits are read, and the state is restored, so the
+ * generation continues exactly as without the probe. Then each case on the
+ * wire reads n_cached n_prompt n_candidates n_probe prompt_ids...
+ * candidate_ids... probe_ids... With tau > 0 a session stops at the first
+ * probe from position `interval` on whose top softmax probability over the
+ * candidates is at least tau (generation_stop "early_exit", exit_answer its
+ * argmax); tau 0 only records the probes.
  *
  * Wire input per case: n_cached n_prompt prompt_ids... Consecutive cases with
  * the same first n_cached tokens share one prefix snapshot
@@ -25,6 +36,7 @@
 #include <geist_util.h>
 
 #include <errno.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,8 +73,15 @@ enum { MAX_BATCH = 8 };
 }
 
 struct item {
-    size_t         n_cut, n_prompt;
+    size_t         n_cut, n_prompt, n_cand, n_probe;
     geist_token_t *ids;
+    geist_token_t  cand[32], probe[64];
+};
+
+struct probe {
+    size_t pos;
+    double ms;
+    float  logits[32];
 };
 
 struct slot {
@@ -73,23 +92,39 @@ struct slot {
     geist_token_t        *gen;
     double                started, prefill_ms;
     size_t                by_size[MAX_BATCH + 1];
+    struct probe         *probes;
+    size_t                n_probes;
+    int                   exit_answer; /* -1: no early exit */
 };
 
 static size_t vocab; /* logits width, read after the first prefill */
 
 static void emit_sample(
         const struct slot *sl, const struct item *it, size_t cap, geist_token_t eos, double t0) {
-    const bool stop_eos = sl->n_gen > 0 && sl->gen[sl->n_gen - 1] == eos;
+    const bool  stop_eos = sl->n_gen > 0 && sl->gen[sl->n_gen - 1] == eos;
+    const char *stop     = sl->exit_answer >= 0 ? "early_exit" : stop_eos ? "eos" : "limit";
     printf("{\"kind\":\"sample\",\"case_index\":%zu,\"mode\":\"generate_long_batched\","
            "\"prompt_tokens\":%zu,\"generated_ids\":[",
            sl->item,
            it->n_prompt);
     for (size_t i = 0; i < sl->n_gen; i++)
         printf("%s%d", i ? "," : "", sl->gen[i]);
-    printf("],\"generation_stop\":\"%s\",\"cap\":%zu,\"vocab\":%zu",
-           stop_eos ? "eos" : "limit",
+    printf("],\"generation_stop\":\"%s\",\"cap\":%zu,\"vocab\":%zu,\"exit_answer\":%d",
+           stop,
            cap,
-           vocab);
+           vocab,
+           sl->exit_answer);
+    printf(",\"probes\":[");
+    for (size_t p = 0; p < sl->n_probes; p++) {
+        printf("%s{\"pos\":%zu,\"ms\":%.3f,\"logits\":[",
+               p ? "," : "",
+               sl->probes[p].pos,
+               sl->probes[p].ms);
+        for (size_t i = 0; i < it->n_cand; i++)
+            printf("%s%.9g", i ? "," : "", (double) sl->probes[p].logits[i]);
+        printf("]}");
+    }
+    printf("]");
     const double surface  = now_ms();
     bool         complete = true;
     printf(",\"generated_utf8_hex\":\"");
@@ -117,13 +152,69 @@ static void emit_sample(
     fflush(stdout);
 }
 
+/* Save the state, prefill the probe, read the candidates, restore (#236).
+ * The image buffer is the probe's own: the prefix image stays intact. */
+[[nodiscard]] static enum geist_status probe_once(struct geist_session *s,
+                                                  const struct item    *it,
+                                                  size_t                pos,
+                                                  void                **img,
+                                                  size_t               *img_cap,
+                                                  struct probe         *out) {
+    const double      t0   = now_ms();
+    size_t            need = 0, got = 0;
+    enum geist_status st = geist_session_snapshot_size(&need, s);
+    if (st == GEIST_OK && need > *img_cap) {
+        void *grown = realloc(*img, need);
+        if (grown == nullptr)
+            return GEIST_E_OOM;
+        *img = grown, *img_cap = need;
+    }
+    if (st == GEIST_OK)
+        st = geist_session_snapshot(&got, *img_cap, *img, s);
+    if (st == GEIST_OK)
+        st = geist_session_prefill_tokens(s, it->n_probe, it->probe);
+    size_t       nv     = 0;
+    const float *logits = st == GEIST_OK ? geist_session_peek_logits(&nv, s) : nullptr;
+    if (st == GEIST_OK && logits == nullptr)
+        st = GEIST_E_BACKEND;
+    for (size_t i = 0; st == GEIST_OK && i < it->n_cand; i++) {
+        if ((size_t) it->cand[i] >= nv) {
+            st = GEIST_E_INVALID_ARG;
+            break;
+        }
+        out->logits[i] = logits[it->cand[i]];
+    }
+    const enum geist_status rs =
+            got > 0 ? geist_session_restore(got, *img, s) : GEIST_E_INVALID_STATE;
+    out->pos = pos;
+    out->ms  = now_ms() - t0;
+    return st != GEIST_OK ? st : rs;
+}
+
+/* The candidates' top softmax probability and its index. */
+static double top_probability(size_t n, const float logits[static n], int *arg) {
+    size_t best = 0;
+    for (size_t i = 1; i < n; i++)
+        best = logits[i] > logits[best] ? i : best;
+    double total = 0;
+    for (size_t i = 0; i < n; i++)
+        total += exp((double) logits[i] - (double) logits[best]);
+    *arg = (int) best;
+    return 1.0 / total;
+}
+
 int main(int argc, char **argv) {
-    size_t prompt_cap = 0, cap = 0, batch = 0;
-    if (argc != 6 || !number(&prompt_cap, argv[3]) || !number(&cap, argv[4]) ||
+    size_t prompt_cap = 0, cap = 0, batch = 0, interval = 0;
+    double tau = 0;
+    char  *end = nullptr;
+    if ((argc != 6 && argc != 8) || !number(&prompt_cap, argv[3]) || !number(&cap, argv[4]) ||
         !number(&batch, argv[5]) || prompt_cap == 0 || prompt_cap > 1048576 || cap == 0 ||
-        cap > 32768 || batch == 0 || batch > MAX_BATCH) {
+        cap > 32768 || batch == 0 || batch > MAX_BATCH ||
+        (argc == 8 && (!number(&interval, argv[6]) || interval == 0 ||
+                       (tau = strtod(argv[7], &end), *end != '\0') || !(tau >= 0 && tau < 1)))) {
         fprintf(stderr,
-                "usage: bench_reasoning_batch model.gguf backend prompt_cap cap batch(1..8)\n");
+                "usage: bench_reasoning_batch model.gguf backend prompt_cap cap batch(1..8) "
+                "[interval tau]\n");
         return 2;
     }
     /* Read every case first: the driver is fed one chunk at a time. */
@@ -144,7 +235,13 @@ int main(int argc, char **argv) {
             items = grown;
         }
         struct item *it = &items[n_items++];
-        it->n_cut = ncut, it->n_prompt = np;
+        *it             = (struct item) {.n_cut = ncut, .n_prompt = np};
+        if (interval > 0 &&
+            (scan_number(&it->n_cand) != 1 || scan_number(&it->n_probe) != 1 || it->n_cand == 0 ||
+             it->n_cand > 32 || it->n_probe == 0 || it->n_probe > 64)) {
+            fprintf(stderr, "invalid probe header at case %zu\n", n_items - 1);
+            return 2;
+        }
         it->ids = calloc(np, sizeof *it->ids);
         if (it->ids == nullptr)
             return 2;
@@ -155,6 +252,17 @@ int main(int argc, char **argv) {
                 return 2;
             }
             it->ids[i] = (geist_token_t) id;
+        }
+        for (size_t i = 0; i < it->n_cand + it->n_probe; i++) {
+            size_t id;
+            if (scan_number(&id) != 1 || id > INT32_MAX) {
+                fprintf(stderr, "invalid candidate/probe token at case %zu\n", n_items - 1);
+                return 2;
+            }
+            if (i < it->n_cand)
+                it->cand[i] = (geist_token_t) id;
+            else
+                it->probe[i - it->n_cand] = (geist_token_t) id;
         }
     }
     if (read != EOF || n_items == 0) {
@@ -169,8 +277,10 @@ int main(int argc, char **argv) {
     struct geist_session *prep             = nullptr;
     struct slot           slots[MAX_BATCH] = {};
     int                   exit_code        = 1;
-    void                 *img              = nullptr;
-    size_t                img_cap = 0, img_n = 0, cached_case = SIZE_MAX;
+    void                 *img = nullptr, *pimg = nullptr;
+    size_t                img_cap = 0, img_n = 0, pimg_cap = 0, cached_case = SIZE_MAX;
+    double                probe_ms       = 0;
+    size_t                n_probes_total = 0;
     if (geist_backend_create(argv[2], &bo, nullptr, &be) != GEIST_OK ||
         geist_model_load_with_opts(argv[1], be, &so, &m) != GEIST_OK ||
         geist_session_create(m, be, &so, &prep) != GEIST_OK) {
@@ -183,20 +293,24 @@ int main(int argc, char **argv) {
         goto done;
     }
     for (size_t b = 0; b < batch; b++) {
-        slots[b].gen = calloc(cap, sizeof *slots[b].gen);
-        if (slots[b].gen == nullptr || geist_session_create(m, be, &so, &slots[b].s) != GEIST_OK) {
+        slots[b].gen    = calloc(cap, sizeof *slots[b].gen);
+        slots[b].probes = calloc(interval ? cap / interval + 2 : 1, sizeof *slots[b].probes);
+        if (slots[b].gen == nullptr || slots[b].probes == nullptr ||
+            geist_session_create(m, be, &so, &slots[b].s) != GEIST_OK) {
             fprintf(stderr, "session: %s\n", geist_last_create_error());
             goto done;
         }
     }
     const geist_token_t eos = geist_model_eos_token(m);
     printf("{\"kind\":\"runtime\",\"version\":\"%s\",\"backend\":\"%s\",\"kv_mode\":\"fp32\","
-           "\"decode_batch_max\":%zu,\"batch\":%zu,\"eos\":%d}\n",
+           "\"decode_batch_max\":%zu,\"batch\":%zu,\"eos\":%d,\"interval\":%zu,\"tau\":%.6g}\n",
            geist_version_string(),
            geist_backend_name(be),
            max,
            batch,
-           eos);
+           eos,
+           interval,
+           tau);
     fflush(stdout);
     const double t0   = now_ms();
     size_t       next = 0, steps = 0, tokens = 0, steps_by_size[MAX_BATCH + 1] = {};
@@ -258,12 +372,23 @@ int main(int argc, char **argv) {
                         geist_session_errmsg(slots[b].s));
                 goto done;
             }
-            slots[b] = (struct slot) {.s          = slots[b].s,
-                                      .gen        = slots[b].gen,
-                                      .active     = true,
-                                      .item       = next,
-                                      .started    = tp,
-                                      .prefill_ms = now_ms() - tp};
+            slots[b] = (struct slot) {.s           = slots[b].s,
+                                      .gen         = slots[b].gen,
+                                      .probes      = slots[b].probes,
+                                      .active      = true,
+                                      .item        = next,
+                                      .started     = tp,
+                                      .prefill_ms  = now_ms() - tp,
+                                      .exit_answer = -1};
+            if (interval > 0) {
+                s = probe_once(slots[b].s, it, 0, &pimg, &pimg_cap, &slots[b].probes[0]);
+                if (s != GEIST_OK) {
+                    fprintf(stderr, "case %zu probe: %s\n", next, geist_status_to_string(s));
+                    goto done;
+                }
+                slots[b].n_probes = 1;
+                probe_ms += slots[b].probes[0].ms, n_probes_total++;
+            }
             next++;
         }
         struct geist_session *act[MAX_BATCH];
@@ -289,15 +414,34 @@ int main(int argc, char **argv) {
             if (out[k] == eos || sl->n_gen == cap) {
                 emit_sample(sl, &items[sl->item], cap, eos, t0);
                 sl->active = false;
+                continue;
+            }
+            if (interval == 0 || sl->n_gen % interval != 0)
+                continue;
+            struct probe *pr = &sl->probes[sl->n_probes];
+            s                = probe_once(sl->s, &items[sl->item], sl->n_gen, &pimg, &pimg_cap, pr);
+            if (s != GEIST_OK) {
+                fprintf(stderr, "case %zu probe: %s\n", sl->item, geist_status_to_string(s));
+                goto done;
+            }
+            sl->n_probes++;
+            probe_ms += pr->ms, n_probes_total++;
+            int arg = -1;
+            if (tau > 0 && top_probability(items[sl->item].n_cand, pr->logits, &arg) >= tau) {
+                sl->exit_answer = arg;
+                emit_sample(sl, &items[sl->item], cap, eos, t0);
+                sl->active = false;
             }
         }
     }
     printf("{\"kind\":\"summary\",\"steps\":%zu,\"decode_ms\":%.3f,\"tokens\":%zu,\"wall_ms\":%.3f,"
-           "\"steps_by_batch_size\":[",
+           "\"probes\":%zu,\"probe_ms\":%.3f,\"steps_by_batch_size\":[",
            steps,
            decode_ms,
            tokens,
-           now_ms() - t0);
+           now_ms() - t0,
+           n_probes_total,
+           probe_ms);
     for (size_t k = 0; k <= MAX_BATCH; k++)
         printf("%s%zu", k ? "," : "", steps_by_size[k]);
     printf("]}\n");
@@ -306,11 +450,13 @@ done:
     for (size_t b = 0; b < MAX_BATCH; b++) {
         geist_session_destroy(slots[b].s);
         free(slots[b].gen);
+        free(slots[b].probes);
     }
     for (size_t i = 0; i < n_items; i++)
         free(items[i].ids);
     free(items);
     free(img);
+    free(pimg);
     geist_session_destroy(prep);
     geist_model_destroy(m);
     geist_backend_destroy(be);
