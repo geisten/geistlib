@@ -419,22 +419,11 @@ struct st_ctx *st_open(const char *path, const char **errmsg) {
                 return nullptr;
             }
         } else {
-            // Grow tensors array if needed (heap.h has no realloc — manual
-            // alloc + memcpy + safe_free of the old buffer).
-            if (ctx->count == ctx->cap) {
-                size_t              new_cap = ctx->cap ? ctx->cap * 2 : 64;
-                struct st_tensor_t *nt      = heap_alloc_array_aligned(struct st_tensor_t, new_cap);
-                if (!nt) {
-                    st_close(ctx);
-                    set_err(errmsg, "alloc tensors");
-                    return nullptr;
-                }
-                if (ctx->tensors) {
-                    memcpy(nt, ctx->tensors, ctx->count * sizeof(*nt));
-                    safe_free((void **) &ctx->tensors);
-                }
-                ctx->tensors = nt;
-                ctx->cap     = new_cap;
+            if (ctx->count == ctx->cap &&
+                !heap_grow_array(ctx->tensors, ctx->cap, ctx->cap ? ctx->cap * 2 : 64)) {
+                st_close(ctx);
+                set_err(errmsg, "alloc tensors");
+                return nullptr;
             }
             // Copy name into arena.
             char *name_dst = ctx->name_arena + ctx->name_arena_used;

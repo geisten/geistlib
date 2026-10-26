@@ -96,26 +96,6 @@ struct cpu_neon_workspace {
     size_t  attn_part_sum_cap;
 };
 
-/* Grow-on-demand helpers for the workspace buffers. Return false on OOM,
- * leaving the capacity at 0 so the next call retries. The kernels are
- * void — see each call site for how it degrades. */
-[[nodiscard]] static inline bool
-cpu_neon_grow(void **p, size_t *cap, size_t need, size_t elem, size_t align) {
-    if (*cap >= need) {
-        return true;
-    }
-    safe_free(p);
-    *p = heap_alloc_n_aligned(need, elem, align);
-    if (*p == nullptr) {
-        *cap = 0;
-        return false;
-    }
-    *cap = need;
-    return true;
-}
-#define cpu_neon_grow_array(_ptr, _cap, _need) \
-    cpu_neon_grow((void **) &(_ptr), &(_cap), (_need), sizeof *(_ptr), alignof(typeof(*(_ptr))))
-
 void cpu_neon_workspace_destroy(struct cpu_neon_workspace *ws);
 
 /* One node per (backend, thread) pair; ws_head is a lock-free push-only

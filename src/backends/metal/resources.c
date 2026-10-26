@@ -31,14 +31,10 @@ static void metal_buf_reg_add(struct metal_state *st, struct geist_buffer *buf) 
     if (st == nullptr || buf == nullptr || buf->mapped == nullptr) {
         return;
     }
-    if (st->buf_reg_count == st->buf_reg_cap) {
-        const size_t ncap  = st->buf_reg_cap != 0 ? st->buf_reg_cap * 2 : 64;
-        void        *grown = realloc(st->buf_reg, ncap * sizeof(*st->buf_reg));
-        if (grown == nullptr) {
-            return; /* lookup will miss and report loudly */
-        }
-        st->buf_reg     = grown;
-        st->buf_reg_cap = ncap;
+    if (st->buf_reg_count == st->buf_reg_cap &&
+        !heap_grow_array(
+                st->buf_reg, st->buf_reg_cap, st->buf_reg_cap != 0 ? st->buf_reg_cap * 2 : 64)) {
+        return; /* lookup will miss and report loudly */
     }
     st->buf_reg[st->buf_reg_count++] = (struct metal_buf_reg_entry) {
             .base  = buf->mapped,

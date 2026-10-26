@@ -142,10 +142,10 @@ and as C++17 with `-pedantic-errors`. It runs in `make test` and in CI's
   the array macros. Not raw `malloc` / `aligned_alloc`. heap.h holds the
   alignment guarantee, the overflow check and the huge-page hint, so anything
   a kernel will read from belongs there.
-  The only exceptions: one-time setup that builds C strings (`strdup` for a
-  path, shader-source concatenation in `metal/pipelines.c`), and `realloc`,
-  which heap.h does not provide yet — a gap, not a licence. Do not add new
-  exceptions; extend heap.h instead.
+  Growing an array goes through `heap_grow_array` (keeps the contents), not
+  `realloc`. The only exception: one-time setup that builds C strings
+  (`strdup` for a path, shader-source concatenation in `metal/pipelines.c`).
+  Do not add new exceptions; extend heap.h instead.
 - **No runtime heap allocation in hot paths** (per-token, per-layer, per
   block). Use caller-provided workspace or a thread-local high-water buffer.
 - Free through `safe_free(&p)`; it tolerates null and nulls your pointer.

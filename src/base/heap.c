@@ -242,6 +242,32 @@ void safe_free(void **ptr) {
     *ptr = nullptr;
 }
 
+bool heap_grow_slow(void       **buf,
+                    size_t      *cap,
+                    const size_t need,
+                    const size_t size,
+                    size_t       align,
+                    const bool   keep) {
+    if (*cap >= need) {
+        return true;
+    }
+    if (!keep) {
+        safe_free(buf);
+        *cap = 0;
+    }
+    void *fresh = heap_alloc_n_aligned(need, size, align);
+    if (fresh == nullptr) {
+        return false;
+    }
+    if (*buf != nullptr && *cap != 0u) {
+        memcpy(fresh, *buf, *cap * size); /* *cap * size bytes were allocated */
+    }
+    safe_free(buf);
+    *buf = fresh;
+    *cap = need;
+    return true;
+}
+
 /* heap_tl_grow's per-thread registry: the buffers each thread's
  * _Thread_local scratch variables point to, freed by the key's destructor
  * at thread exit. The destructor frees the recorded values and never reads

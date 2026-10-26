@@ -86,23 +86,7 @@ struct cpu_x86_workspace *cpu_x86_ws_acquire(struct cpu_x86_state *st, size_t n_
     return ws;
 }
 
-/* Grow one high-water buffer to `need` bytes. Keeps the existing pointer
- * when it already covers the request — the steady state after the first
- * prefill chunk is "no allocation at all". */
-static bool ws_grow_bytes(void **p, size_t *cap, size_t need) {
-    if (need == 0 || *cap >= need) {
-        return true;
-    }
-    void *fresh = heap_alloc_aligned(need, OPTIMAL_ALIGNMENT);
-    if (fresh == nullptr) {
-        return false;
-    }
-    safe_free(p);
-    *p   = fresh;
-    *cap = need;
-    return true;
-}
-
+/* High-water byte buffers: after the first prefill chunk, no allocation. */
 struct cpu_x86_workspace *cpu_x86_ws_acquire_mN(struct cpu_x86_state *st,
                                                 size_t                acts_bytes,
                                                 size_t                sum_a_bytes,
@@ -112,10 +96,14 @@ struct cpu_x86_workspace *cpu_x86_ws_acquire_mN(struct cpu_x86_state *st,
     if (ws == nullptr) {
         return nullptr;
     }
-    if (!ws_grow_bytes((void **) &ws->mN_acts, &ws->mN_acts_cap, acts_bytes) ||
-        !ws_grow_bytes((void **) &ws->mN_sum_a, &ws->mN_sum_a_cap, sum_a_bytes) ||
-        !ws_grow_bytes((void **) &ws->mN_scale, &ws->mN_scale_cap, scale_bytes) ||
-        !ws_grow_bytes((void **) &ws->mN_aux, &ws->mN_aux_cap, aux_bytes)) {
+    if (!heap_scratch_grow(
+                (void **) &ws->mN_acts, &ws->mN_acts_cap, acts_bytes, 1, OPTIMAL_ALIGNMENT) ||
+        !heap_scratch_grow(
+                (void **) &ws->mN_sum_a, &ws->mN_sum_a_cap, sum_a_bytes, 1, OPTIMAL_ALIGNMENT) ||
+        !heap_scratch_grow(
+                (void **) &ws->mN_scale, &ws->mN_scale_cap, scale_bytes, 1, OPTIMAL_ALIGNMENT) ||
+        !heap_scratch_grow(
+                (void **) &ws->mN_aux, &ws->mN_aux_cap, aux_bytes, 1, OPTIMAL_ALIGNMENT)) {
         return nullptr;
     }
     return ws;
@@ -159,7 +147,8 @@ float *cpu_x86_ws_attn_part(struct cpu_x86_state *st, size_t floats) {
     struct cpu_x86_workspace *ws    = ws_find_or_mint(st);
     size_t                    bytes = 0;
     if (ws == nullptr || ckd_mul(&bytes, floats, sizeof(float)) ||
-        !ws_grow_bytes((void **) &ws->attn_part, &ws->attn_part_cap, bytes)) {
+        !heap_scratch_grow(
+                (void **) &ws->attn_part, &ws->attn_part_cap, bytes, 1, OPTIMAL_ALIGNMENT)) {
         return nullptr;
     }
     return ws->attn_part;

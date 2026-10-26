@@ -12,8 +12,7 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     /* First: the set keeps its members alive, the raw buffers below among
      * them. */
     metal_residency_destroy(st);
-    free(st->buf_reg);
-    st->buf_reg       = nullptr;
+    safe_free((void **) &st->buf_reg);
     st->buf_reg_count = 0;
     st->buf_reg_cap   = 0;
     metal_buffer_destroy_internal(be, st->attn_dec_partials_buffer);

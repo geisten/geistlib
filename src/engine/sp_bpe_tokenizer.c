@@ -423,21 +423,10 @@ static inline size_t utf8_cp_len(uint8_t b) {
 }
 
 /* Append a token ID to dynamic array; returns false on alloc failure.
- * heap.h has no realloc-equivalent, so this grows via explicit
- * alloc-new + memcpy + safe_free-old. The grow happens at most
- * log2(N) times during encode, so the extra cost is negligible. */
+ * Doubling: the grow happens at most log2(N) times during encode. */
 static bool append_id(uint32_t **arr, size_t *count, size_t *cap, uint32_t id) {
-    if (*count == *cap) {
-        size_t    new_cap = *cap ? *cap * 2 : 16;
-        uint32_t *na      = heap_alloc_array_aligned(uint32_t, new_cap);
-        if (!na)
-            return false;
-        if (*arr) {
-            memcpy(na, *arr, *count * sizeof(uint32_t));
-            safe_free((void **) arr);
-        }
-        *arr = na;
-        *cap = new_cap;
+    if (*count == *cap && !heap_grow_array(*arr, *cap, *cap ? *cap * 2 : 16)) {
+        return false;
     }
     (*arr)[(*count)++] = id;
     return true;
