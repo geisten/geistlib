@@ -946,6 +946,35 @@ transformer_compute_per_layer_input(struct transformer_arch_session *sess,
                                                         geist_token_t  input_token,
                                                         geist_token_t *out_token);
 
+/* Batched decode (#26): the forwards that n independent sessions of one
+ * model owe, run as one pass. Every linear (projections, FFN, lm_head) runs
+ * once over n rows; RoPE, the KV append, attention and the DeltaNet mixer
+ * run per session on its own cache, recurrent state and position. Row b
+ * belongs to seqs[b] alone, so for a given n a session's result does not
+ * depend on the other members or its row (bit for bit); n selects the row
+ * kernels, so it is not bit-identical to the single-row decode or to
+ * another n. seqs[0]'s scratch
+ * carries the n rows. Each session consumes its next_token_pending at
+ * kv_len, appends it, advances by one and samples its next token with its
+ * own sampler (next_token_pending, logits_valid, its own scratch_logits).
+ * Callers check transformer_decode_batch_max(st) >= n and every member
+ * first (forward/step.c). On failure the members' states are partly
+ * advanced; the caller resets them. */
+enum { TRANSFORMER_DECODE_BATCH_CAP = 8 }; /* rows the small-row kernels cover */
+[[nodiscard]] size_t transformer_decode_batch_max(const struct transformer_arch_state *st);
+[[nodiscard]] enum geist_status
+transformer_decode_batch_forward(size_t n, struct transformer_arch_session *const seqs[static n]);
+
+/* One layer of transformer_decode_batch_forward (forward/layer.c); row b of
+ * carrier's buffers belongs to seqs[b]. */
+[[nodiscard]] enum geist_status
+transformer_multi_layer(struct transformer_arch_session       *carrier,
+                        size_t                                 n,
+                        struct transformer_arch_session *const seqs[static n],
+                        int                                    layer_idx,
+                        struct geist_buffer                   *h_in_buf,
+                        struct geist_buffer                   *h_out_buf);
+
 /* Append one audio soft-token (HIDDEN floats, already produced by the
  * audio encoder) to the KV cache.
  *

@@ -277,6 +277,21 @@ struct geist_arch_ops_decoder {
      * still checks the token width against hidden_dim). nullptr or false:
      * no tower is attached. */
     bool (*supports_towers)(const void *arch_state);
+
+    /* Optional (#26): one decode_step for each of n distinct sessions of
+     * this model, the forwards they owe run as one batched pass. Each
+     * session ends as decode_step would leave it and out[b] is what
+     * decode_step would have returned for sessions[b], except that rows of a
+     * batched pass round differently from a single-row step. For a given n,
+     * a session's result is independent of the other members and of its
+     * position in sessions[]. Every member is checked before any state changes (nothing
+     * advances on refusal); a failure during the pass resets every member.
+     * decode_batch_max: the largest n decode_batch takes for this model, 0
+     * when it cannot batch. nullptr: no batched decode. */
+    enum geist_status (*decode_batch)(size_t     n,
+                                      void *const sessions[GEIST_AT_LEAST(n)],
+                                      geist_token_t out[GEIST_AT_LEAST(n)]);
+    size_t (*decode_batch_max)(const void *arch_state);
 };
 
 /* ====================================================================== */

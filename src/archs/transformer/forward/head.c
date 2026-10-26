@@ -211,6 +211,24 @@ sample_row(struct transformer_arch_session *sess, size_t n_ctx, const float *log
     return GEIST_OK;
 }
 
+/* Batched decode (#26): sample from the logits already in scratch_logits row
+ * 0, as finalize_logits_row does after its lm_head when the greedy device
+ * argmax does not apply (temperature > 0 or penalties). */
+enum geist_status transformer_head_sample_row0(struct transformer_arch_session *sess,
+                                               size_t                           n_ctx,
+                                               geist_token_t                   *out_token) {
+    const bool sampler_needs_softcap =
+            sess->temperature > 0.0f || geist_sampler_penalties_active(&sess->pen);
+    struct geist_buffer *mb     = nullptr;
+    const float         *logits = transformer_logits_host(sess, sampler_needs_softcap, &mb);
+    if (logits == nullptr) {
+        return GEIST_E_BACKEND; /* the backend said why */
+    }
+    *out_token = sample_row(sess, n_ctx, logits);
+    sess->model->backend->desc->vtbl->buffer_unmap(mb);
+    return GEIST_OK;
+}
+
 float *transformer_logits_host(struct transformer_arch_session *sess,
                                bool                             softcap,
                                struct geist_buffer            **mapped) {

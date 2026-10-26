@@ -123,10 +123,10 @@ static const int8_t *ws_quantize_act(struct geist_backend      *be,
     size_t                     sum_need = 0;
     if (ws == nullptr || ckd_mul(&xq_need, m, n_in) || ckd_mul(&sc_need, m, n_groups) ||
         ckd_mul(&sum_need, m, n_in / 32u) ||
-        !cpu_neon_grow_i8(&ws->act_xq, &ws->act_xq_cap, xq_need) ||
-        !cpu_neon_grow_f32(&ws->act_scale, &ws->act_scale_cap, sc_need) ||
+        !cpu_neon_grow_array(ws->act_xq, ws->act_xq_cap, xq_need) ||
+        !cpu_neon_grow_array(ws->act_scale, ws->act_scale_cap, sc_need) ||
         (out_sum32 != nullptr &&
-         !cpu_neon_grow_i32(&ws->act_sum32, &ws->act_sum32_cap, sum_need))) {
+         !cpu_neon_grow_array(ws->act_sum32, ws->act_sum32_cap, sum_need))) {
         geist_linear_ref(m, x, w, y);
         return nullptr;
     }

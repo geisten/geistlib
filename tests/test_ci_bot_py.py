@@ -23,6 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "tests" / "data" / "ci_bot"
+sys.path.insert(0, str(ROOT / "scripts"))  # gitea_api
 spec = importlib.util.spec_from_file_location("ci_bot", ROOT / "scripts" / "ci-bot.py")
 bot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bot)

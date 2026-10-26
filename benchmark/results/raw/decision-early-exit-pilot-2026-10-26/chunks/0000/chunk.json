@@ -1,0 +1,53 @@
+{
+  "started_unix": 1792969524.769892,
+  "mode": "probed",
+  "rows": [
+    6,
+    13,
+    21,
+    31,
+    34,
+    43,
+    51,
+    56,
+    60,
+    62,
+    67,
+    70,
+    74,
+    76,
+    79,
+    83,
+    89,
+    91,
+    99,
+    100,
+    104,
+    107,
+    111,
+    119,
+    125,
+    132,
+    133,
+    140,
+    144,
+    153
+  ],
+  "lock_note": "#236 early-exit pilot chunk 1",
+  "deadline_minutes": 25.0,
+  "cool_gate": {
+    "cool_gate": "temperature",
+    "cool_wait_seconds": 7.3,
+    "gpu_temp_c": 63.1,
+    "cpu_temp_c": 65.2
+  },
+  "run": {
+    "started_unix": 1792969532.0952792,
+    "wall_seconds": 777.8960447311401,
+    "returncode": 0,
+    "lines": 31,
+    "stopped_at_deadline": false,
+    "discarded_partial_line_bytes": 0
+  },
+  "ended_unix": 1792970309.9926882
+}

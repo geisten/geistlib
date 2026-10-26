@@ -121,6 +121,18 @@ def find_macmon() -> str | None:
     return shutil.which("macmon", path=path)
 
 
+def parse_macmon(line: str) -> dict | None:
+    """The GPU and CPU temperature in degrees C from one `macmon pipe` line
+    (its averages over the die sensors), or None where the line cannot be
+    read."""
+    try:
+        temp = json.loads(line)["temp"]
+        return {"gpu_c": round(float(temp["gpu_temp_avg"]), 1),
+                "cpu_c": round(float(temp["cpu_temp_avg"]), 1)}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def apple_temps() -> dict | None:
     """The Apple SoC's GPU and CPU temperature in degrees C from one macmon
     sample (its averages over the die sensors; no root needed), or None where
@@ -133,12 +145,10 @@ def apple_temps() -> dict | None:
     try:
         proc = subprocess.run([macmon, "pipe", "-s", "1", "-i", "1000"],
                               capture_output=True, text=True, timeout=15)
-        temp = json.loads(proc.stdout.strip().splitlines()[-1])["temp"]
-        return {"gpu_c": round(float(temp["gpu_temp_avg"]), 1),
-                "cpu_c": round(float(temp["cpu_temp_avg"]), 1)}
-    except (OSError, subprocess.SubprocessError, IndexError, KeyError, TypeError,
-            ValueError):
+    except (OSError, subprocess.SubprocessError):
         return None
+    lines = proc.stdout.strip().splitlines()
+    return parse_macmon(lines[-1]) if lines else None
 
 
 def apple_too_warm(temps: dict, limits: dict) -> bool:

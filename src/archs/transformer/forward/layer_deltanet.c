@@ -1231,3 +1231,150 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
      * layers; ctx->kv_len_now is applied by the caller as usual. */
     return GEIST_OK;
 }
+
+/* Batched decode (#26): the DeltaNet block for n independent sessions
+ * stepped as one pass. The norm and the four input projections run
+ * once over the carrier's n rows, the stateful mixer once per sequence on its
+ * row (seq = 1, that sequence's own conv and recurrent state), and the out
+ * projection and residual once over the n rows again. Row b of every carrier
+ * buffer belongs to seqs[b]; no state is shared between sequences. Needs the
+ * backend's fused mixer (Metal, Vulkan). */
+enum geist_status
+transformer_layer_run_deltanet_multi(struct transformer_layer_forward_ctx  *ctx,
+                                     size_t                                 n,
+                                     struct transformer_arch_session *const seqs[static n]) {
+    struct transformer_arch_session       *sess  = ctx->sess; /* the carrier */
+    struct transformer_arch_state         *st    = ctx->st;
+    struct transformer_layer_weights      *L     = ctx->L;
+    struct geist_backend                  *be    = ctx->be;
+    const struct geist_backend_vtbl       *v     = ctx->v;
+    const struct geist_backend_primitives *prims = ctx->prims;
+    const struct geist_backend_fused      *fused = ctx->fused;
+    const size_t                           seq   = ctx->seq;
+    const size_t                           n_kh  = st->config.dn_n_k_heads;
+    const size_t                           n_vh  = st->config.dn_n_v_heads;
+    const size_t                           d_k   = st->config.dn_head_k;
+    const size_t                           d_v   = st->config.dn_head_v;
+    const size_t                           K     = st->config.dn_conv_kernel;
+    const size_t                           keyd  = n_kh * d_k;
+    const size_t                           vald  = n_vh * d_v;
+    const size_t                           convd = 2 * keyd + vald;
+    if (seq != n || fused == nullptr || fused->deltanet_mix == nullptr) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    struct geist_tensor t_h_2d  = view_2d(ctx->h_in_buf, ctx->SEQ, st->d_model);
+    struct geist_tensor t_x_2d  = view_2d(sess->scratch_normed, ctx->SEQ, st->d_model);
+    struct geist_tensor t_gamma = view_1d(L->attn_norm.buffer, st->d_model);
+    enum geist_status   s       = prims->rmsnorm(be, &t_h_2d, &t_gamma, ctx->eps, &t_x_2d);
+    struct geist_tensor t_b     = view_2d(sess->dn_scratch_b, ctx->SEQ, (int64_t) n_vh);
+    struct geist_tensor t_a     = view_2d(sess->dn_scratch_a, ctx->SEQ, (int64_t) n_vh);
+    struct geist_tensor t_qkv   = view_2d(sess->dn_scratch_qkv, ctx->SEQ, (int64_t) convd);
+    struct geist_tensor t_z     = view_2d(sess->dn_scratch_z, ctx->SEQ, (int64_t) vald);
+    if (s == GEIST_OK)
+        s = linear_w_or_legacy(be,
+                               v,
+                               sess->scratch_normed,
+                               sess->dn_scratch_b,
+                               &L->dn_beta_w,
+                               seq,
+                               &t_x_2d,
+                               &L->dn_beta,
+                               &t_b);
+    if (s == GEIST_OK)
+        s = linear_w_or_legacy(be,
+                               v,
+                               sess->scratch_normed,
+                               sess->dn_scratch_a,
+                               &L->dn_alpha_w,
+                               seq,
+                               &t_x_2d,
+                               &L->dn_alpha,
+                               &t_a);
+    if (s == GEIST_OK)
+        s = transformer_rotate_rows(st, seq, st->d_model, sess->scratch_normed);
+    if (s == GEIST_OK)
+        s = linear_w_or_legacy(be,
+                               v,
+                               sess->scratch_normed,
+                               sess->dn_scratch_qkv,
+                               &L->dn_qkv_w,
+                               seq,
+                               &t_x_2d,
+                               &L->dn_qkv,
+                               &t_qkv);
+    if (s == GEIST_OK)
+        s = linear_w_or_legacy(be,
+                               v,
+                               sess->scratch_normed,
+                               sess->dn_scratch_z,
+                               &L->dn_z_w,
+                               seq,
+                               &t_x_2d,
+                               &L->dn_z,
+                               &t_z);
+    struct geist_tensor t_conv_w = view_2d(L->dn_conv.buffer, (int64_t) convd, (int64_t) K);
+    struct geist_tensor t_aw     = view_1d(L->dn_a.buffer, (int64_t) n_vh);
+    struct geist_tensor t_dtb    = view_1d(L->dn_dt_bias.buffer, (int64_t) n_vh);
+    struct geist_tensor t_nrm    = view_1d(L->dn_norm.buffer, (int64_t) d_v);
+    for (size_t b = 0; s == GEIST_OK && b < n; b++) {
+        struct transformer_arch_session *q = seqs[b];
+        if (q->dn_conv_state == nullptr || q->dn_S == nullptr ||
+            q->dn_conv_state[ctx->layer_idx] == nullptr || q->dn_S[ctx->layer_idx] == nullptr) {
+            return GEIST_E_INVALID_STATE;
+        }
+        struct geist_tensor r_qkv =
+                view_2d_at(sess->dn_scratch_qkv, b * convd * sizeof(float), 1, (int64_t) convd);
+        struct geist_tensor r_z =
+                view_2d_at(sess->dn_scratch_z, b * vald * sizeof(float), 1, (int64_t) vald);
+        struct geist_tensor r_b =
+                view_2d_at(sess->dn_scratch_b, b * n_vh * sizeof(float), 1, (int64_t) n_vh);
+        struct geist_tensor r_a =
+                view_2d_at(sess->dn_scratch_a, b * n_vh * sizeof(float), 1, (int64_t) n_vh);
+        struct geist_tensor t_cstate =
+                view_2d(q->dn_conv_state[ctx->layer_idx], (int64_t) (K - 1), (int64_t) convd);
+        struct geist_tensor t_S = {.buffer = q->dn_S[ctx->layer_idx],
+                                   .dtype  = GEIST_DTYPE_F32,
+                                   .layout = GEIST_LAYOUT_DENSE,
+                                   .ndim   = 3,
+                                   .shape  = {(int64_t) n_vh, (int64_t) d_k, (int64_t) d_v},
+                                   .stride = {(int64_t) (d_k * d_v), (int64_t) d_v, 1}};
+        struct geist_deltanet_mix_args args = {.qkv         = &r_qkv,
+                                               .z           = &r_z,
+                                               .beta        = &r_b,
+                                               .alpha       = &r_a,
+                                               .conv_w      = &t_conv_w,
+                                               .ssm_a       = &t_aw,
+                                               .dt_bias     = &t_dtb,
+                                               .norm_w      = &t_nrm,
+                                               .conv_state  = &t_cstate,
+                                               .delta_state = &t_S,
+                                               .seq         = 1,
+                                               .n_k_heads   = n_kh,
+                                               .n_v_heads   = n_vh,
+                                               .head_k      = d_k,
+                                               .head_v      = d_v,
+                                               .conv_kernel = K,
+                                               .eps         = ctx->eps};
+        s                                   = fused->deltanet_mix(be, &args);
+        if (s == GEIST_OK && q->dn_fresh != nullptr)
+            q->dn_fresh[ctx->layer_idx] = false;
+    }
+    if (s != GEIST_OK)
+        return s;
+    struct geist_buffer *mix_buf = sess->dn_scratch_z;
+    if (st->rotation.active) {
+        s = transformer_rotate(
+                st, seq, vald, true, false, sess->dn_scratch_z, sess->dn_scratch_qkv);
+        if (s != GEIST_OK)
+            return s;
+        mix_buf = sess->dn_scratch_qkv;
+    }
+    struct geist_tensor t_mix  = view_2d(mix_buf, ctx->SEQ, (int64_t) vald);
+    struct geist_tensor t_o_2d = view_2d(sess->scratch_o, ctx->SEQ, st->d_model);
+    s                          = linear_w_or_legacy(
+            be, v, mix_buf, sess->scratch_o, &L->dn_out_w, seq, &t_mix, &L->dn_out, &t_o_2d);
+    if (s != GEIST_OK)
+        return s;
+    struct geist_tensor t_h_post = view_2d(sess->scratch_h_post_attn, ctx->SEQ, st->d_model);
+    return prims->add(be, &t_h_2d, &t_o_2d, &t_h_post);
+}

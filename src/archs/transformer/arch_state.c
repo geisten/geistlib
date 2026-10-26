@@ -1814,24 +1814,28 @@ static void offload_destroy(struct transformer_offload *o) {
     return s;
 }
 
-enum geist_status transformer_state_create(struct geist_backend            *be,
-                                           const char                      *gguf_path,
-                                           const struct geist_session_opts *opts,
-                                           struct transformer_arch_state  **out) {
-    if (be == nullptr || gguf_path == nullptr || out == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    *out                  = nullptr;
-    const char      *err  = nullptr;
-    struct gguf_ctx *gguf = gguf_open(gguf_path, &err);
-    if (gguf == nullptr) {
-        geist_backend_set_error(be,
-                                GEIST_E_FILE_NOT_FOUND,
-                                "transformer: gguf_open(%s): %s",
-                                gguf_path,
-                                err != nullptr ? err : "(no detail)");
-        return GEIST_E_FILE_NOT_FOUND;
-    }
+/* Where a model's GGUF comes from, so the split stage and the offload twins
+ * can open their own copy of it (as model.c's load_args). */
+struct gguf_src {
+    const char *path; /* else data / size */
+    const void *data;
+    size_t      size;
+};
+
+static struct gguf_ctx *gguf_src_open(const struct gguf_src *src) {
+    const char *err = nullptr;
+    return src->path != nullptr ? gguf_open(src->path, &err)
+                                : gguf_open_memory(src->data, src->size, &err);
+}
+
+/* The state for an opened `gguf` (consumed): whole on `be`, or with the
+ * split stage (MoE split, planned or given layer split) and its offload
+ * twins, which open `src` again. */
+static enum geist_status state_create_opened(struct geist_backend            *be,
+                                             struct gguf_ctx                 *gguf,
+                                             const struct gguf_src           *src,
+                                             const struct geist_session_opts *opts,
+                                             struct transformer_arch_state  **out) {
     if (split_requested(opts) && moe_gpu_is_moe(gguf)) {
         return create_moe_split(be, gguf, opts, out);
     }
@@ -1853,21 +1857,26 @@ enum geist_status transformer_state_create(struct geist_backend            *be,
     if (s != GEIST_OK) {
         return s;
     }
-    struct gguf_ctx *gguf2 = gguf_open(gguf_path, &err);
+    const enum geist_status open_err =
+            src->path != nullptr ? GEIST_E_FILE_NOT_FOUND : GEIST_E_FORMAT;
+    struct gguf_ctx *gguf2 = gguf_src_open(src);
     if (gguf2 == nullptr) {
-        geist_backend_set_error(be,
-                                GEIST_E_FILE_NOT_FOUND,
-                                "transformer: gguf_open(%s) for the split stage",
-                                gguf_path);
+        if (src->path != nullptr) {
+            geist_backend_set_error(
+                    be, open_err, "transformer: gguf_open(%s) for the split stage", src->path);
+        } else {
+            geist_backend_set_error(
+                    be, open_err, "transformer: gguf_open_memory for the split stage");
+        }
         transformer_state_destroy(*out);
         *out = nullptr;
-        return GEIST_E_FILE_NOT_FOUND;
+        return open_err;
     }
     s                  = attach_split(*out, gguf2, opts);
     const size_t m_min = s == GEIST_OK ? offload_m_min(*out, opts->split_backend) : 0;
     if (m_min > 0) {
-        struct gguf_ctx *gguf3 = gguf_open(gguf_path, &err);
-        s = gguf3 != nullptr ? attach_offload(*out, gguf3, opts, m_min) : GEIST_E_FILE_NOT_FOUND;
+        struct gguf_ctx *gguf3 = gguf_src_open(src);
+        s = gguf3 != nullptr ? attach_offload(*out, gguf3, opts, m_min) : open_err;
         if (gguf3 == nullptr) {
             transformer_state_destroy(*out);
         }
@@ -1876,6 +1885,27 @@ enum geist_status transformer_state_create(struct geist_backend            *be,
         *out = nullptr;
     }
     return s;
+}
+
+enum geist_status transformer_state_create(struct geist_backend            *be,
+                                           const char                      *gguf_path,
+                                           const struct geist_session_opts *opts,
+                                           struct transformer_arch_state  **out) {
+    if (be == nullptr || gguf_path == nullptr || out == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *out                  = nullptr;
+    const char      *err  = nullptr;
+    struct gguf_ctx *gguf = gguf_open(gguf_path, &err);
+    if (gguf == nullptr) {
+        geist_backend_set_error(be,
+                                GEIST_E_FILE_NOT_FOUND,
+                                "transformer: gguf_open(%s): %s",
+                                gguf_path,
+                                err != nullptr ? err : "(no detail)");
+        return GEIST_E_FILE_NOT_FOUND;
+    }
+    return state_create_opened(be, gguf, &(struct gguf_src) {.path = gguf_path}, opts, out);
 }
 
 enum geist_status transformer_state_create_from_memory(struct geist_backend            *be,
@@ -1896,48 +1926,8 @@ enum geist_status transformer_state_create_from_memory(struct geist_backend     
                                 err != nullptr ? err : "(no detail)");
         return GEIST_E_FORMAT;
     }
-    if (split_requested(opts) && moe_gpu_is_moe(gguf)) {
-        return create_moe_split(be, gguf, opts, out);
-    }
-    struct geist_session_opts planned;
-    if (split_requested(opts) && opts->split_layers == GEIST_SPLIT_AUTO) {
-        planned                    = *opts;
-        const enum geist_status ps = plan_split_layers(gguf, opts, &planned.split_layers);
-        if (ps != GEIST_OK) {
-            gguf_close(gguf);
-            return ps;
-        }
-        opts = &planned;
-    }
-    if (!split_requested(opts)) {
-        return transformer_state_create_from_gguf(be, gguf, opts, out);
-    }
-    enum geist_status s =
-            state_create_range(be, gguf, opts, opts->split_layers, SIZE_MAX, false, false, out);
-    if (s != GEIST_OK) {
-        return s;
-    }
-    struct gguf_ctx *gguf2 = gguf_open_memory(data, size, &err);
-    if (gguf2 == nullptr) {
-        geist_backend_set_error(
-                be, GEIST_E_FORMAT, "transformer: gguf_open_memory for the split stage");
-        transformer_state_destroy(*out);
-        *out = nullptr;
-        return GEIST_E_FORMAT;
-    }
-    s                  = attach_split(*out, gguf2, opts);
-    const size_t m_min = s == GEIST_OK ? offload_m_min(*out, opts->split_backend) : 0;
-    if (m_min > 0) {
-        struct gguf_ctx *gguf3 = gguf_open_memory(data, size, &err);
-        s = gguf3 != nullptr ? attach_offload(*out, gguf3, opts, m_min) : GEIST_E_FORMAT;
-        if (gguf3 == nullptr) {
-            transformer_state_destroy(*out);
-        }
-    }
-    if (s != GEIST_OK) {
-        *out = nullptr;
-    }
-    return s;
+    return state_create_opened(
+            be, gguf, &(struct gguf_src) {.data = data, .size = size}, opts, out);
 }
 
 void transformer_state_destroy(struct transformer_arch_state *st) {
