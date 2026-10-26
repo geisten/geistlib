@@ -1,0 +1,90 @@
+{
+ "tracking_issue": "geistlib#26",
+ "date": "2026-10-26",
+ "plan": "docs/DECISION_CAMPAIGN_PLAN.json batched_reasoning_26",
+ "binary_commit": "cd62fc60",
+ "batch": 8,
+ "cap": 2048,
+ "batched": {
+  "questions": 500,
+  "correct": 394,
+  "accuracy": 0.788,
+  "capped": 89,
+  "invalid": 89,
+  "generated_tokens": 312466,
+  "tokens_by_batch_size": [
+   0,
+   875,
+   3030,
+   4959,
+   600,
+   1310,
+   2574,
+   4823,
+   294295
+  ],
+  "latency_ms": {
+   "p50": 42204.073500000006,
+   "p95": 327107.71020000003
+  },
+  "complete_driver_runs": {
+   "runs": 4,
+   "tokens": 170115,
+   "decode_ms": 2910555.511,
+   "wall_ms": 3895697.147,
+   "tokens_per_s_decode": 58.44760539940789
+  },
+  "prefix_prepares": 59
+ },
+ "paired_vs_171_cap2048": {
+  "n": 500,
+  "gains": 0,
+  "losses": 1,
+  "direct_accuracy": 0.788,
+  "baseline_accuracy": 0.79,
+  "difference_pp": -0.2,
+  "confidence": 0.95,
+  "interval_pp": [
+   -1.26933965917094,
+   0.8700603653630986
+  ],
+  "margin_pp": 2,
+  "noninferior": true,
+  "interval_method": "paired gain/loss exact binomial intervals with Bonferroni joint coverage; conservative",
+  "assumptions": "Independent questions from the target population. A small subject-stratified pilot is exploratory; repeated timings and label rotations are not additional quality samples."
+ },
+ "reference_accuracy": 0.79,
+ "token_agreement": {
+  "identical_generations": 471,
+  "diverged": 29,
+  "first_divergence_p50": 879,
+  "first_divergence_min": 18
+ },
+ "flips": [
+  {
+   "question_id": "a8caf2f530c57d87e4f34fe586fb8bc005091c99c90b52fe53a0f92f775a30a3",
+   "id": "test/high_school_microeconomics/4701/rotation0",
+   "batched_correct": false,
+   "ref_correct": true,
+   "first_divergence": 1201
+  }
+ ],
+ "attribution": [
+  {
+   "question_id": "a8caf2f530c57d87e4f34fe586fb8bc005091c99c90b52fe53a0f92f775a30a3",
+   "id": "test/high_school_microeconomics/4701/rotation0",
+   "batched_correct": false,
+   "ref_correct": true,
+   "first_divergence": 1201,
+   "unbatched_same_binary_equals_171": true,
+   "unbatched_equals_batched": false,
+   "unbatched_correct": true,
+   "cause": "batching"
+  }
+ ],
+ "time": {
+  "lease_seconds_6_chunks": 6901,
+  "reference_171_sum_seconds": 23894,
+  "note": "Lease time includes 6 model loads, cool gates and the questions in flight at two deadline stops, which were re-run; #171 is the sum of its per-question times."
+ }
+}

@@ -44,6 +44,14 @@ static void vk_seq_attach(struct vk_state *st, VkSubmitInfo *submit, struct vk_s
     st->seq_signal_comp = 0;
 }
 
+/* Counts the host's wait since t0 into stat_wait_ns. */
+static void vk_wait_ns_since(struct vk_state *st, const struct timespec *t0) {
+    struct timespec t1;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    st->stat_wait_ns += (uint64_t) (t1.tv_sec - t0->tv_sec) * 1000000000ull +
+                        (uint64_t) (t1.tv_nsec - t0->tv_nsec);
+}
+
 void vk_seq_flush(struct vk_state *st) {
     if (st == nullptr || !st->seq_open) {
         return;
@@ -59,13 +67,11 @@ void vk_seq_flush(struct vk_state *st) {
                                      .pCommandBuffers    = &st->seq_cmd};
         struct vk_seq_sync sy;
         vk_seq_attach(st, &submit, &sy);
-        struct timespec t0, t1;
+        struct timespec t0;
         clock_gettime(CLOCK_MONOTONIC, &t0);
         ok = st->fn.QueueSubmit(st->queue, 1, &submit, st->seq_fence) == VK_SUCCESS &&
              st->fn.WaitForFences(st->device, 1, &st->seq_fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
-        clock_gettime(CLOCK_MONOTONIC, &t1);
-        st->stat_wait_ns += (uint64_t) (t1.tv_sec - t0.tv_sec) * 1000000000ull +
-                            (uint64_t) (t1.tv_nsec - t0.tv_nsec);
+        vk_wait_ns_since(st, &t0);
         (void) st->fn.ResetFences(st->device, 1, &st->seq_fence);
     }
     st->mark_in_open = false;
@@ -246,7 +252,7 @@ void vk_seq_wait_mark(struct vk_state *st, uint64_t mark) {
         vk_seq_flush(st); /* waits for the mark itself */
     if (!st->mark_pending)
         return;
-    struct timespec t0, t1;
+    struct timespec t0;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     for (uint32_t spin = 0; !st->seq_failed; spin++) {
         const VkResult r = st->fn.GetEventStatus(st->device, st->mark_event);
@@ -261,9 +267,7 @@ void vk_seq_wait_mark(struct vk_state *st, uint64_t mark) {
             sched_yield();
     }
     (void) st->fn.ResetEvent(st->device, st->mark_event);
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    st->stat_wait_ns += (uint64_t) (t1.tv_sec - t0.tv_sec) * 1000000000ull +
-                        (uint64_t) (t1.tv_nsec - t0.tv_nsec);
+    vk_wait_ns_since(st, &t0);
     st->mark_pending = false;
 }
 

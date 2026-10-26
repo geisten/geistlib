@@ -99,12 +99,13 @@ struct cpu_neon_workspace {
 /* Grow-on-demand helpers for the workspace buffers. Return false on OOM,
  * leaving the capacity at 0 so the next call retries. The kernels are
  * void — see each call site for how it degrades. */
-[[nodiscard]] static inline bool cpu_neon_grow_i8(int8_t **p, size_t *cap, size_t need) {
+[[nodiscard]] static inline bool
+cpu_neon_grow(void **p, size_t *cap, size_t need, size_t elem, size_t align) {
     if (*cap >= need) {
         return true;
     }
-    safe_free((void **) p);
-    *p = heap_alloc_array_aligned(int8_t, need);
+    safe_free(p);
+    *p = heap_alloc_n_aligned(need, elem, align);
     if (*p == nullptr) {
         *cap = 0;
         return false;
@@ -112,48 +113,8 @@ struct cpu_neon_workspace {
     *cap = need;
     return true;
 }
-
-[[nodiscard]] static inline bool cpu_neon_grow_i32(int32_t **p, size_t *cap, size_t need) {
-    if (*cap >= need) {
-        return true;
-    }
-    safe_free((void **) p);
-    *p = heap_alloc_array_aligned(int32_t, need);
-    if (*p == nullptr) {
-        *cap = 0;
-        return false;
-    }
-    *cap = need;
-    return true;
-}
-
-[[nodiscard]] static inline bool cpu_neon_grow_f32(float **p, size_t *cap, size_t need) {
-    if (*cap >= need) {
-        return true;
-    }
-    safe_free((void **) p);
-    *p = heap_alloc_array_aligned(float, need);
-    if (*p == nullptr) {
-        *cap = 0;
-        return false;
-    }
-    *cap = need;
-    return true;
-}
-
-[[nodiscard]] static inline bool cpu_neon_grow_f64(double **p, size_t *cap, size_t need) {
-    if (*cap >= need) {
-        return true;
-    }
-    safe_free((void **) p);
-    *p = heap_alloc_array_aligned(double, need);
-    if (*p == nullptr) {
-        *cap = 0;
-        return false;
-    }
-    *cap = need;
-    return true;
-}
+#define cpu_neon_grow_array(_ptr, _cap, _need) \
+    cpu_neon_grow((void **) &(_ptr), &(_cap), (_need), sizeof *(_ptr), alignof(typeof(*(_ptr))))
 
 void cpu_neon_workspace_destroy(struct cpu_neon_workspace *ws);
 

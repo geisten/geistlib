@@ -1,0 +1,21 @@
+with-mac-lock: waiting (#2 in queue, batch) behind pid 13021 'geisten/geistlib run 2023 build-test' [ci] runner job hold, 1m30s of 45 min; queue 2: interactive/98942 14m46s, batch/19351 0s
+gate gpu 59
+So. 25 Okt. 2026 16:40:52 CET
+questions 8, prompt tokens 875 1024 927 908 910 1021 899 840
+shared prefix 778 tokens, cut at 640 (align 320)
+prefix prefill 4522.6 ms; snapshot 230.6 MiB in 24.41 ms
+forward     suffix logits bit-equal to independent split 8/8, to joined 8/8; 256 generated tokens + final logits equal 8/8
+reverse     suffix logits bit-equal to independent split 8/8, to joined 8/8; 256 generated tokens + final logits equal 8/8
+interleaved suffix logits bit-equal to independent split 8/8, to joined 8/8; 256 generated tokens + final logits equal 8/8
+per question: full prefill median 6813.9 ms; restore median 8.32 ms; suffix median 2432.2 ms
+all 8 questions: independent 53913 ms, shared prefix 23226 ms (0.43x)
+decode step after 875 tokens: 61.97 ms
+prefill_tokens(m=1) pass: 68.27 ms
+prefill_tokens(m=2) pass: 106.57 ms
+prefill_tokens(m=3) pass: 109.27 ms
+prefill_tokens(m=4) pass: 104.63 ms
+prefill_tokens(m=6) pass: 111.16 ms
+prefill_tokens(m=8) pass: 115.57 ms
+prefill_tokens(m=16) pass: 556.62 ms
+RESULT PASS
+So. 25 Okt. 2026 16:51:55 CET

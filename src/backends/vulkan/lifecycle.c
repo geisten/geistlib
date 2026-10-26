@@ -511,18 +511,17 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
                 .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                 .flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
                 .queueFamilyIndex = st->xq_family};
-        const VkCommandBufferAllocateInfo xainfo = {
+        VkSemaphoreTypeCreateInfo tinfo = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                           .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
+        VkSemaphoreCreateInfo     sinfo = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                                           .pNext = &tinfo};
+        bool                      ok =
+                st->fn.CreateCommandPool(st->device, &xpinfo, nullptr, &st->xq_pool) == VK_SUCCESS;
+        const VkCommandBufferAllocateInfo xa = {
                 .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .commandPool        = st->xq_pool,
                 .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
                 .commandBufferCount = 2};
-        VkSemaphoreTypeCreateInfo   tinfo = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
-                                             .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
-        VkSemaphoreCreateInfo       sinfo = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-                                             .pNext = &tinfo};
-        VkCommandBufferAllocateInfo xa    = xainfo;
-        bool                        ok =
-                st->fn.CreateCommandPool(st->device, &xpinfo, nullptr, &st->xq_pool) == VK_SUCCESS;
-        xa.commandPool = st->xq_pool;
         ok = ok && st->fn.AllocateCommandBuffers(st->device, &xa, st->xq_cmd) == VK_SUCCESS &&
              st->fn.CreateSemaphore(st->device, &sinfo, nullptr, &st->tl_copy) == VK_SUCCESS &&
              st->fn.CreateSemaphore(st->device, &sinfo, nullptr, &st->tl_comp) == VK_SUCCESS;

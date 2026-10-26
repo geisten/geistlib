@@ -20,6 +20,12 @@ lease of the host lock. The manifest (model, binary, cases, per-subject
 cuts, command, environment) is frozen on the first invocation and must be
 identical on every resume. Each driver run starts on a cool chip; macmon is
 logged during the run. When all questions are complete, report.json is built.
+
+--reference-from DIR runs the prefix arm only and takes the independent
+decision_dense samples from an earlier complete run in DIR. That run must have
+the same model, binary, cases, profile, split, backend, threads and
+environment (greedy scoring is deterministic across processes, #171), so a
+second cut alignment can be measured without re-running the reference.
 """
 from __future__ import annotations
 
@@ -85,42 +91,26 @@ def wire(rows, indices, profile, cuts):
     return "".join(line + "\n" for line in lines)
 
 
-def collect(out_dir, backend):
+def collect(out_dir, backend, modes=MODES):
     """row index -> {mode: sample}; prepare records; runtime records."""
     done, prepares, runtimes = {}, [], []
     for chunk in campaign.chunk_dirs(out_dir):
-        index_path = chunk / "prefix.rows.json"
-        if not index_path.exists():
+        read = campaign.read_chunk(chunk, "prefix", backend, ("sample", "prefix_prepare"))
+        if read is None:
             continue
-        indices = ev.read_json(index_path)
-        recv = {}
-        if (chunk / "prefix.recv.tsv").exists():
-            for line in (chunk / "prefix.recv.tsv").read_text().splitlines():
-                n, t = line.split("\t")
-                recv[int(n)] = float(t)
+        records, chunk_runtimes = read
+        runtimes += chunk_runtimes
         groups = {}
-        for line_no, record in enumerate(campaign.read_lines(chunk / "prefix.driver.jsonl")):
-            kind = record.get("kind")
-            if kind == "runtime":
-                if record["backend"] != backend or record["kv_mode"] != "fp32":
-                    raise ValueError("invalid runtime record")
-                runtimes.append(record)
-                continue
-            if kind not in ("sample", "prefix_prepare"):
-                raise ValueError("unexpected driver record")
-            local = record["case_index"]
-            if not 0 <= local < len(indices):
-                raise ValueError("driver case index outside its chunk")
-            record = {**record, "case_index": indices[local], "chunk": chunk.name, "recv_unix": recv.get(line_no)}
-            if kind == "prefix_prepare":
+        for record in records:
+            if record["kind"] == "prefix_prepare":
                 prepares.append(record)
-            else:
-                groups.setdefault(indices[local], {})
-                if record["mode"] in groups[indices[local]]:
-                    raise ValueError("duplicate sample in a chunk")
-                groups[indices[local]][record["mode"]] = record
+                continue
+            samples = groups.setdefault(record["case_index"], {})
+            if record["mode"] in samples:
+                raise ValueError("duplicate sample in a chunk")
+            samples[record["mode"]] = record
         for row, samples in groups.items():
-            if set(samples) != set(MODES):
+            if set(samples) != set(modes):
                 continue  # interrupted: re-run, never merged
             if row in done:
                 raise ValueError("a question was completed twice")
@@ -165,7 +155,14 @@ def summarize(rows, order, cuts, done, prepares, runtimes, profile, align):
     for p in sorted(prepares, key=lambda p: (p["chunk"], p["case_index"])):
         first_prepare.setdefault(rows[p["case_index"]]["subject"], p)
     for subject, b in by_subject.items():
+        # A subject whose cut equals the previous one's cached tokens (in
+        # practice an empty cut after another empty cut) reuses that
+        # snapshot: the driver prepares nothing for it.
+        reused = subject not in first_prepare
+        if reused:
+            first_prepare[subject] = {"elapsed_ms": 0., "snapshot_bytes": None}
         prep = first_prepare[subject]["elapsed_ms"]
+        b["prefix_reused_from_previous_subject"] = reused
         b.update(cached_tokens=cuts[subject]["cut"], shared_tokens=cuts[subject]["shared_tokens"],
                  mean_prompt_tokens=sum(b["prompt_tokens"]) / len(b["prompt_tokens"]),
                  prepare_ms=prep, snapshot_bytes=first_prepare[subject]["snapshot_bytes"],
@@ -205,10 +202,24 @@ def summarize(rows, order, cuts, done, prepares, runtimes, profile, align):
     }
 
 
+def reference_samples(args, order):
+    """The decision_dense samples of the --reference-from run, by row index."""
+    done, _, runtimes = collect(args.reference_from, args.backend)
+    missing = [i for i in order if i not in done]
+    if missing:
+        raise ValueError(f"reference run lacks {len(missing)} questions")
+    return {i: done[i]["decision_dense"] for i in order}, runtimes
+
+
 def progress(args, rows, order, cuts, manifest):
     """Write status.json; build report.json once every question is complete."""
-    done, prepares, runtimes = collect(args.out_dir, args.backend)
+    modes = ("decision_prefix",) if args.reference_from else MODES
+    done, prepares, runtimes = collect(args.out_dir, args.backend, modes)
     pending = [i for i in order if i not in done]
+    if not pending and args.reference_from:
+        dense, ref_runtimes = reference_samples(args, order)
+        done = {i: {**done[i], "decision_dense": dense[i]} for i in order}
+        runtimes = runtimes + ref_runtimes
     status = {"questions": len(order), "complete": len(done), "pending": len(pending),
               "chunks": len(campaign.chunk_dirs(args.out_dir))}
     ev.write_json(args.out_dir / "status.json", status)
@@ -229,7 +240,8 @@ def run(args):
     prompt_cap = max(len(r["profiles"][args.profile]["prompt_ids"]) for r in rows)
     candidate_cap = max(len(r["profiles"][args.profile]["candidate_ids"]) for r in rows)
     command = [str(args.binary.resolve()), str(args.model.resolve()), args.backend, str(prompt_cap),
-               str(candidate_cap), "2", "0", "0", "--prefix", "--modes", ",".join(MODES)]
+               str(candidate_cap), "2", "0", "0", "--prefix", "--modes",
+               "decision_prefix" if args.reference_from else ",".join(MODES)]
     env = dict(os.environ, OMP_NUM_THREADS=str(args.threads))
     env.setdefault("OMP_WAIT_POLICY", "passive")
     manifest = {
@@ -242,6 +254,15 @@ def run(args):
         "environment": {k: v for k, v in env.items() if k.startswith(("GEIST_", "OMP_", "KMP_"))},
         "source_revision": bench.command_output(["git", "rev-parse", "HEAD"]),
     }
+    if args.reference_from:
+        ref = ev.read_json(args.reference_from / "manifest.json")
+        same = ("model_sha256", "binary_sha256", "cases_sha256", "profile", "split", "backend", "threads",
+                "environment")
+        diff = [k for k in same if ref.get(k) != manifest[k]]
+        if diff:
+            raise ValueError(f"reference run differs: {diff}")
+        manifest["reference_from"] = {"dir": str(args.reference_from.resolve()),
+                                      "manifest_sha256": bench.sha256(args.reference_from / "manifest.json")}
     frozen = args.out_dir / "manifest.json"
     if frozen.exists():
         old = ev.read_json(frozen)
@@ -289,6 +310,8 @@ def main():
     p.add_argument("--deadline-minutes", type=float, required=True)
     p.add_argument("--cool-max-c", type=float, default=65.)
     p.add_argument("--cool-timeout-minutes", type=float, default=5.)
+    p.add_argument("--reference-from", type=Path,
+                   help="earlier complete run of the same binding: prefix arm only, its decision_dense as reference")
     p.add_argument("--status", action="store_true", help="report progress (and finalize if complete); no inference")
     args = p.parse_args()
     if args.threads < 1 or args.chunk_questions < 1 or args.align < 1 or not args.deadline_minutes > 0:

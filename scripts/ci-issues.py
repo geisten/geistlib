@@ -20,15 +20,15 @@ GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SHA, GITHUB_EVENT_NAME, and SELF
     ci-issues.py            act
     ci-issues.py --dry-run  print what it would do, write nothing
 
-Stdlib only, like scripts/required_checks.py.
+Stdlib only (with scripts/gitea_api.py), like scripts/required_checks.py.
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import urllib.parse
-import urllib.request
+
+from gitea_api import Client
 
 LABEL = "ci-failure"
 PREFIX = "CI on main: "
@@ -50,40 +50,11 @@ def plan(jobs: list[dict], open_issues: dict[str, int], self_name: str) -> list[
     return out
 
 
-class Gitea:
-    def __init__(self, server: str, repo: str, token: str) -> None:
-        self.base = f"{server.rstrip('/')}/api/v1/repos/{repo}"
-        self.token = token
-
-    def call(self, method: str, path: str, body: dict | None = None):
-        req = urllib.request.Request(
-            self.base + path, method=method,
-            data=json.dumps(body).encode() if body is not None else None,
-            headers={"Authorization": f"token {self.token}", "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = resp.read()
-        return json.loads(data) if data else None
-
-    def pages(self, path: str, key: str | None = None) -> list:
-        out, page = [], 1
-        sep = "&" if "?" in path else "?"
-        while True:
-            got = self.call("GET", f"{path}{sep}limit=50&page={page}")
-            items = got.get(key, []) if key else got
-            out += items
-            if len(items) < 50:
-                return out
-            page += 1
-
-
 def main() -> int:
     dry = "--dry-run" in sys.argv[1:]
     env = os.environ
-    server = env.get("GITHUB_SERVER_URL", "")
-    if "github.com" in server:
-        print("ci-issues: GitHub mirror, nothing to do")
-        return 0
-    api = Gitea(server, env["GITHUB_REPOSITORY"], env["GITEA_TOKEN"])
+    server = env.get("GITHUB_SERVER_URL", "").rstrip("/")
+    api = Client(env["GITEA_TOKEN"], f"{server}/api/v1/repos/{env['GITHUB_REPOSITORY']}")
     run_id, sha = env["GITHUB_RUN_ID"], env.get("GITHUB_SHA", "")[:12]
     event = env.get("GITHUB_EVENT_NAME", "")
 
