@@ -399,6 +399,17 @@ jobs:
       - name: Fetch Qwen3 reference model
         if: matrix.target == 'linux'
         run: make fetch-qwen3-model
+      # Gemma 3 fixture (#37, ~241 MB): test_gemma3_decode_parity_int runs on
+      # this strict leg instead of skipping. Own cache key from the SHA pin.
+      - name: Cache Gemma3 reference model
+        if: matrix.target == 'linux'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: gguf_artifacts/gemma-3-270m-it-Q4_K_M.gguf
+          key: geist-model-gemma3-270m-q4km-9b06391b1744
+      - name: Fetch Gemma3 reference model
+        if: matrix.target == 'linux'
+        run: make fetch-gemma3-model
 
       # Integration on macOS (#441): the Accelerate/AMX and Metal product paths
       # on the cached qwen3.5 fixture — its family suite plus the model-agnostic
@@ -628,6 +639,13 @@ jobs:
         run: make fetch-qwen35-model
       - name: Fetch Qwen3 reference model
         run: make fetch-qwen3-model
+      - name: Cache Gemma3 reference model
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: gguf_artifacts/gemma-3-270m-it-Q4_K_M.gguf
+          key: geist-model-gemma3-270m-q4km-9b06391b1744
+      - name: Fetch Gemma3 reference model
+        run: make fetch-gemma3-model
       - name: Integration + e2e tests (real models, fixtures mandatory)
         if: matrix.leg == 'full'
         env:
