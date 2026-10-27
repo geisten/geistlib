@@ -985,7 +985,8 @@ static void attn_f16_items(void *ctx, size_t i0, size_t i1) {
     if (qp == nullptr || kp == nullptr || vp == nullptr || op == nullptr || q->ndim != 3 ||
         out->ndim != 3 || k->shape[1] != v->shape[1] || k->shape[0] != v->shape[0] ||
         k->shape[2] != q->shape[2] || v->shape[2] != q->shape[2] ||
-        q->shape[1] % k->shape[1] != 0) {
+        q->shape[1] % k->shape[1] != 0 || out->shape[0] != q->shape[0] ||
+        out->shape[1] != q->shape[1] || out->shape[2] != q->shape[2]) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon attention: bad F16 KV views");
         return GEIST_E_INVALID_ARG;
     }

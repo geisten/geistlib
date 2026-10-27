@@ -92,6 +92,7 @@ struct geist_session_full {
     uint64_t total_decode_ns;
     uint64_t total_prefill_ns;
     uint64_t total_audio_encode_ns;
+    uint64_t total_vision_encode_ns; /* attach_image, attach_video */
 
     /* Streaming audio turn (#256). samples is _Atomic because push may
      * run on a capture thread while end reads it on the session thread.
@@ -348,18 +349,19 @@ set_dry_breakers(struct geist_session_full                 *sf,
         return GEIST_E_OOM;
     }
     *sf = (struct geist_session_full) {
-            .model                 = m,
-            .backend               = m->backend,
-            .arch_session          = nullptr,
-            .temperature           = opts != nullptr ? opts->temperature : 0.0f,
-            .top_p                 = opts != nullptr ? opts->top_p : 1.0f,
-            .top_k                 = opts != nullptr ? opts->top_k : 0,
-            .random_seed           = opts != nullptr ? opts->random_seed : 0,
-            .err_code              = GEIST_OK,
-            .n_tokens_decoded      = 0,
-            .total_decode_ns       = 0,
-            .total_prefill_ns      = 0,
-            .total_audio_encode_ns = 0,
+            .model                  = m,
+            .backend                = m->backend,
+            .arch_session           = nullptr,
+            .temperature            = opts != nullptr ? opts->temperature : 0.0f,
+            .top_p                  = opts != nullptr ? opts->top_p : 1.0f,
+            .top_k                  = opts != nullptr ? opts->top_k : 0,
+            .random_seed            = opts != nullptr ? opts->random_seed : 0,
+            .err_code               = GEIST_OK,
+            .n_tokens_decoded       = 0,
+            .total_decode_ns        = 0,
+            .total_prefill_ns       = 0,
+            .total_audio_encode_ns  = 0,
+            .total_vision_encode_ns = 0,
     };
     sf->err_msg[0] = '\0';
 
@@ -1468,7 +1470,7 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
     }
     const uint64_t t_enc0 = monotonic_ns();
     size_t         n_soft = enc_ops->encode_image(enc_st, height, width, max_soft, rgb, soft);
-    sf->total_audio_encode_ns += monotonic_ns() - t_enc0;
+    sf->total_vision_encode_ns += monotonic_ns() - t_enc0;
     if (n_soft == 0) {
         safe_free((void **) &soft);
         snprintf(sf->err_msg,
@@ -1546,7 +1548,7 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
     }
     const uint64_t t_enc0 = monotonic_ns();
     size_t n_soft = enc_ops->encode_video(enc_st, n_frames, height, width, max_soft, frames, soft);
-    sf->total_audio_encode_ns += monotonic_ns() - t_enc0;
+    sf->total_vision_encode_ns += monotonic_ns() - t_enc0;
     if (n_soft == 0) {
         safe_free((void **) &soft);
         snprintf(sf->err_msg,
@@ -1721,10 +1723,11 @@ geist_session_restore(size_t n_bytes, const void *buf, struct geist_session *s) 
     }
     const struct geist_session_full *sf = (const struct geist_session_full *) s;
     *out                                = (struct geist_session_stats) {
-            .n_tokens_decoded      = sf->n_tokens_decoded,
-            .total_decode_ns       = sf->total_decode_ns,
-            .total_prefill_ns      = sf->total_prefill_ns,
-            .total_audio_encode_ns = sf->total_audio_encode_ns,
+            .n_tokens_decoded       = sf->n_tokens_decoded,
+            .total_decode_ns        = sf->total_decode_ns,
+            .total_prefill_ns       = sf->total_prefill_ns,
+            .total_audio_encode_ns  = sf->total_audio_encode_ns,
+            .total_vision_encode_ns = sf->total_vision_encode_ns,
             /* buffer_alloc_* and per_op_* stay zero: they need backend-side
              * counters / opt-in op profiling. */
     };
@@ -1740,5 +1743,6 @@ geist_session_restore(size_t n_bytes, const void *buf, struct geist_session *s) 
     sf->total_decode_ns           = 0;
     sf->total_prefill_ns          = 0;
     sf->total_audio_encode_ns     = 0;
+    sf->total_vision_encode_ns    = 0;
     return GEIST_OK;
 }
