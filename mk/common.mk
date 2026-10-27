@@ -280,6 +280,7 @@ LIB_SOURCES := \
     src/backends/common/hadamard.c \
     src/backends/common/linear_ref.c \
     src/backends/common/host_buffer.c \
+    src/backends/common/host_ops.c \
     src/formats/ptqtp/ptqtp_awq.c \
     src/io/aux_file.c \
     src/io/file_map.c \
@@ -292,10 +293,10 @@ endif
 
 # src/backends/common/ above is the shared compute library (GEMM, gemma4
 # kernels, KIVI) — used by every backend AND by the arch layer, so it is
-# always compiled. host_buffer.c, the CPU backends' shared buffer ops, is
-# listed here once rather than in each CPU backend fragment. The per-backend
-# implementation TUs are NOT listed here; they come from BACKEND_SOURCES
-# below, gated by BACKENDS.
+# always compiled. host_buffer.c and host_ops.c, the CPU backends' shared
+# buffer ops and view checks, are listed here once rather than in each CPU
+# backend fragment. The per-backend implementation TUs are NOT listed here;
+# they come from BACKEND_SOURCES below, gated by BACKENDS.
 
 # ---- Backend sources (selected by BACKENDS) ------------------------------
 # Each enabled backend contributes its implementation TUs via a per-backend

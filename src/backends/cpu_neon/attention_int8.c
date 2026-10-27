@@ -30,15 +30,7 @@ enum geist_status cpu_neon_attention_kv_int8(struct geist_backend               
     if (be == nullptr || args == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    return nkv_attention(be,
-                         args->q,
-                         args->k,
-                         args->k_scale,
-                         args->v,
-                         args->v_scale,
-                         args->out,
-                         args->q_offset,
-                         args->sliding_window);
+    return nkv_attention(be, args);
 }
 
 #endif /* __ARM_NEON && __ARM_FEATURE_DOTPROD */

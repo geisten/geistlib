@@ -26,7 +26,7 @@
 
 #include "gemma4_kernels.h" /* ATTN_EXP_FLOOR, ATTN_F32_BLOCK */
 #include "int4_kv.h"
-#include "host_buffer.h"
+#include "host_ops.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -247,91 +247,35 @@ static void nkv_run(size_t        n_q,
 #pragma GCC diagnostic pop
 #endif
 
-/* fused->attention_kv_int8 or fused->attention_kv_int4, per NKV_INT4, its
- * argument struct unpacked: checks the views and the shapes, then runs. */
-static inline enum geist_status nkv_attention(struct geist_backend      *be,
-                                              const struct geist_tensor *q_t,
-                                              const struct geist_tensor *k_t,
-                                              const struct geist_tensor *k_scale_t,
-                                              const struct geist_tensor *v_t,
-                                              const struct geist_tensor *v_scale_t,
-                                              struct geist_tensor       *out_t,
-                                              size_t                     q_offset,
-                                              size_t                     sliding_window) {
-    const char            *name = NKV_INT4 ? "int4" : "int8";
-    const enum geist_dtype v_dt = NKV_INT4 ? GEIST_DTYPE_U8 : GEIST_DTYPE_I8;
-    size_t                 nq = 0, nk = 0, nv = 0, nks = 0, nvs = 0, no = 0;
-    const float           *q = geist_host_tensor(q_t, GEIST_DTYPE_F32, sizeof(float), 3, &nq);
-    const int8_t          *k = geist_host_tensor(k_t, GEIST_DTYPE_I8, 1, 3, &nk);
-    const void            *v = geist_host_tensor(v_t, v_dt, 1, 3, &nv);
-    const float *ks  = geist_host_tensor(k_scale_t, GEIST_DTYPE_F32, sizeof(float), 2, &nks);
-    const float *vs  = geist_host_tensor(v_scale_t, GEIST_DTYPE_F32, sizeof(float), 2, &nvs);
-    float       *out = (float *) geist_host_tensor(out_t, GEIST_DTYPE_F32, sizeof(float), 3, &no);
-    if (q == nullptr || k == nullptr || v == nullptr || ks == nullptr || vs == nullptr ||
-        out == nullptr) {
-        geist_backend_set_error(be,
-                                GEIST_E_INVALID_ARG,
-                                "cpu_neon attention_kv_%s: q, scales and out must be F32, k "
-                                "I8 and v %s, DENSE views of the rank given within their buffers",
-                                name,
-                                NKV_INT4 ? "U8" : "I8");
-        return GEIST_E_INVALID_ARG;
+/* fused->attention_kv_int8 or fused->attention_kv_int4, per NKV_INT4:
+ * checks the views and the shapes, then runs. */
+static inline enum geist_status nkv_attention(struct geist_backend                 *be,
+                                              const struct geist_attention_kv_args *args) {
+    struct geist_host_attn_kvq a;
+    const enum geist_status    s = geist_host_attn_kvq_views(
+            be,
+            NKV_INT4 ? "attention_kv_int4" : "attention_kv_int8",
+            args,
+            NKV_INT4,
+            NKV_INT4 ? GEIST_FUSED_ATTN_KV_INT4 : GEIST_FUSED_ATTN_KV_INT8,
+            NKV_INT4 ? cpu_neon_attention_kv_int4_supported : cpu_neon_attention_kv_int8_supported,
+            &a);
+    if (s != GEIST_OK) {
+        return s;
     }
-    const size_t                    n_q        = (size_t) q_t->shape[0];
-    const size_t                    n_q_heads  = (size_t) q_t->shape[1];
-    const size_t                    head_dim   = (size_t) q_t->shape[2];
-    const size_t                    n_kv       = (size_t) k_t->shape[0];
-    const size_t                    n_kv_heads = (size_t) k_t->shape[1];
-    const struct geist_fusion_query shape      = {.op         = NKV_INT4 ? GEIST_FUSED_ATTN_KV_INT4
-                                                                         : GEIST_FUSED_ATTN_KV_INT8,
-                                                  .head_dim   = head_dim,
-                                                  .n_q_heads  = n_q_heads,
-                                                  .n_kv_heads = n_kv_heads};
-    if (!(NKV_INT4 ? cpu_neon_attention_kv_int4_supported(&shape)
-                   : cpu_neon_attention_kv_int8_supported(&shape))) {
-        geist_backend_set_error(be,
-                                GEIST_E_UNSUPPORTED,
-                                "cpu_neon attention_kv_%s: head_dim %zu, %zu query heads on %zu "
-                                "KV heads",
-                                name,
-                                head_dim,
-                                n_q_heads,
-                                n_kv_heads);
-        return GEIST_E_UNSUPPORTED;
-    }
-    /* Matching shapes (half a byte per INT4 V value), and every
-     * query's position in the cache: n_q and n_kv are >= 1 (nkv_view
-     * refuses an empty dimension), so the subtraction cannot wrap. */
-    if ((size_t) k_t->shape[2] != head_dim ||
-        (size_t) v_t->shape[2] != (NKV_INT4 ? head_dim / 2 : head_dim) ||
-        nv != (NKV_INT4 ? nk / 2 : nk) || (size_t) v_t->shape[0] != n_kv ||
-        (size_t) v_t->shape[1] != n_kv_heads || no != nq || (size_t) out_t->shape[0] != n_q ||
-        (size_t) out_t->shape[1] != n_q_heads || nks != n_kv * n_kv_heads ||
-        nvs != n_kv * n_kv_heads || (size_t) k_scale_t->shape[0] != n_kv ||
-        (size_t) v_scale_t->shape[0] != n_kv || n_q > n_kv || q_offset > n_kv - n_q) {
-        geist_backend_set_error(be,
-                                GEIST_E_INVALID_ARG,
-                                "cpu_neon attention_kv_%s: shapes do not match, or %zu "
-                                "queries at %zu run past %zu cached positions",
-                                name,
-                                n_q,
-                                q_offset,
-                                n_kv);
-        return GEIST_E_INVALID_ARG;
-    }
-    nkv_run(n_q,
-            n_q_heads,
-            head_dim,
-            n_kv,
-            n_kv_heads,
-            q_offset,
-            sliding_window,
-            q,
-            k,
-            ks,
-            v,
-            vs,
-            out);
+    nkv_run(a.n_q,
+            a.n_q_heads,
+            a.head_dim,
+            a.n_kv,
+            a.n_kv_heads,
+            args->q_offset,
+            args->sliding_window,
+            a.q,
+            a.k,
+            a.k_scale,
+            a.v,
+            a.v_scale,
+            a.out);
     return GEIST_OK;
 }
 

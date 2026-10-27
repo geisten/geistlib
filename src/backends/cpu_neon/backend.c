@@ -16,6 +16,7 @@
 
 #include "hadamard.h"
 #include "heap.h"
+#include "host_ops.h"
 #include "hw_probe.h"
 #include "omp_idle.h"
 #include "par.h"
@@ -245,12 +246,12 @@ static const struct geist_backend_fused cpu_neon_fused = {
         .gelu_tanh_mul        = cpu_neon_gelu_tanh_mul,
         .gelu_tanh_mul_scaled = cpu_neon_gelu_tanh_mul_scaled,
         .silu_mul             = cpu_neon_silu_mul,
-        .hadamard_rotate      = cpu_neon_hadamard_rotate,
+        .hadamard_rotate      = geist_host_hadamard_rotate,
         .rmsnorm_add          = cpu_neon_rmsnorm_add,
         .rmsnorm_add_norm     = cpu_neon_rmsnorm_add_norm,
         .attn_qkv_prep        = cpu_neon_attn_qkv_prep,
         .attn_rope_append     = cpu_neon_attn_rope_append,
-        .kv_append_f16        = cpu_neon_kv_append_f16,
+        .kv_append_f16        = geist_host_kv_append_f16,
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
         .attention_kv_int8 = cpu_neon_attention_kv_int8,
         .attention_kv_int4 = cpu_neon_attention_kv_int4,
