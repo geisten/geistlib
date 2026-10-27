@@ -288,3 +288,30 @@ def run_jsonl(command: list[str], env: dict[str, str] | None = None, label: str 
         raise RuntimeError(f"{label} exited {proc.returncode}: {diagnostic}")
     rows = [json.loads(line) for line in proc.stdout.splitlines() if line.startswith("{")]
     return rows, proc.stderr.splitlines(), elapsed
+
+
+def load_partial(path: Path) -> tuple[dict, list[dict]]:
+    """The metadata and run records of an unfinished JSONL artifact, for --resume."""
+    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    if not records or records[0].get("kind") != "metadata":
+        raise ValueError("resume artifact does not start with metadata")
+    if any(record.get("kind") == "summary" for record in records):
+        raise ValueError("resume artifact already contains a completed summary")
+    unexpected = [record.get("kind") for record in records[1:]
+                  if record.get("kind") not in {"run", "resume"}]
+    if unexpected:
+        raise ValueError(f"resume artifact contains unexpected records: {unexpected}")
+    metadata = {key: value for key, value in records[0].items() if key != "kind"}
+    return metadata, [record for record in records[1:] if record.get("kind") == "run"]
+
+
+def check_schedule_prefix(runs: list[dict], schedule: list[tuple[int, int, dict]],
+                          key: str) -> None:
+    """Saved runs must be the first len(runs) slots of schedule; run[key]
+    names the slot's entry by its label."""
+    if len(runs) > len(schedule):
+        raise ValueError("resume artifact contains too many runs")
+    for run, (cycle, position, entry) in zip(runs, schedule):
+        if (run.get("cycle"), run.get("position"), run.get(key)) != (
+                cycle, position, entry["label"]):
+            raise ValueError("resume runs are not an exact schedule prefix")

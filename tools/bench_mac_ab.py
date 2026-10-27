@@ -24,7 +24,9 @@ ERROR = 99
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bench_host import (  # noqa: E402
     build_schedule_rotating as build_schedule,
+    check_schedule_prefix,
     command_output,
+    load_partial,
     machine_state,
     median_absolute_deviation,
     perf_sweep_command,
@@ -158,21 +160,6 @@ def render_report(metadata: dict, summary: dict, baseline: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def load_partial(path: Path) -> tuple[dict, list[dict]]:
-    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    if not records or records[0].get("kind") != "metadata":
-        raise ValueError("resume artifact does not start with metadata")
-    if any(record.get("kind") == "summary" for record in records):
-        raise ValueError("resume artifact already contains a completed summary")
-    unexpected = [record.get("kind") for record in records[1:]
-                  if record.get("kind") not in {"run", "resume"}]
-    if unexpected:
-        raise ValueError(f"resume artifact contains unexpected records: {unexpected}")
-    metadata = {key: value for key, value in records[0].items() if key != "kind"}
-    runs = [record for record in records[1:] if record.get("kind") == "run"]
-    return metadata, runs
-
-
 def validate_resume(metadata: dict, runs: list[dict], current: dict,
                     variants: list[dict], baseline: str) -> list[tuple[int, int, dict]]:
     if metadata.get("schema") != "geist.benchmark.apple-ab.v1":
@@ -192,12 +179,7 @@ def validate_resume(metadata: dict, runs: list[dict], current: dict,
             raise ValueError("resume variant binaries do not match this invocation")
 
     schedule = build_schedule(variants, metadata["protocol"]["cycles"])
-    if len(runs) > len(schedule):
-        raise ValueError("resume artifact contains too many runs")
-    for run, (cycle, position, variant) in zip(runs, schedule):
-        if (run.get("cycle"), run.get("position"), run.get("variant")) != (
-                cycle, position, variant["label"]):
-            raise ValueError("resume runs are not an exact schedule prefix")
+    check_schedule_prefix(runs, schedule, "variant")
     return schedule
 
 

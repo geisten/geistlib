@@ -27,6 +27,8 @@ ERROR = 99
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bench_host import (  # noqa: E402,F401  (re-exported for bench_thread_sweep.py)
     build_schedule_alternating as build_schedule,
+    check_schedule_prefix,
+    load_partial,
     command_output,
     machine_state,
     median_absolute_deviation,
@@ -320,26 +322,13 @@ def render_report(metadata: dict, summary: dict, gpu_device: str | None = None) 
 
 
 def load_resume(path: Path, current: dict, engines: list[dict]) -> tuple[dict, list[dict]]:
-    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    if not records or records[0].get("kind") != "metadata":
-        raise ValueError("resume artifact does not start with metadata")
-    if any(record.get("kind") == "summary" for record in records):
-        raise ValueError("resume artifact is already complete")
-    if any(record.get("kind") not in {"metadata", "run", "resume"} for record in records):
-        raise ValueError("resume artifact contains an unknown record kind")
-    saved = {key: value for key, value in records[0].items() if key != "kind"}
+    saved, runs = load_partial(path)
     for field in ("schema", "protocol", "protocol_sha256", "runner", "model", "engines",
                   "system", "host_profile"):
         if saved.get(field) != current.get(field):
             raise ValueError(f"resume {field} does not match this invocation")
-    runs = [record for record in records[1:] if record.get("kind") == "run"]
-    schedule = build_schedule(engines, current["protocol"]["workload"]["cycles"])
-    if len(runs) > len(schedule):
-        raise ValueError("resume artifact has more runs than the protocol")
-    for run, (cycle, position, engine) in zip(runs, schedule):
-        if (run.get("cycle"), run.get("position"), run.get("engine")) != (
-                cycle, position, engine["label"]):
-            raise ValueError("resume runs are not an exact schedule prefix")
+    check_schedule_prefix(runs, build_schedule(engines, current["protocol"]["workload"]["cycles"]),
+                          "engine")
     return saved, runs
 
 
