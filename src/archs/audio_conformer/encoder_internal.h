@@ -373,6 +373,23 @@ float                      dot_head_fp32(const float *a, const float *b);
 void                       axpy_head_fp32(float *out, float w, const float *v);
 void                       zero_head_fp32(float *out);
 
+/* One (block, head) of the chunked attention with relative position bias:
+ * q (CHUNK_SIZE rows), k and v (CONTEXT_SIZE rows), all hd_per_t apart,
+ * and rel_k (POS_LEN rows, AUDIO_HIDDEN apart), each already at the head's
+ * columns; mask: the block's (CHUNK_SIZE, CONTEXT_SIZE) visibility, nullptr
+ * for all visible; out: the block's first row at the head's columns,
+ * CHUNK_SIZE rows AUDIO_HIDDEN apart. */
+void attn_head_core(size_t       hd_per_t,
+                    const float *q,
+                    const float *k,
+                    const float *v,
+                    const float *rel_k,
+                    const bool  *mask,
+                    float       *out);
+/* q, k, v = the clipped projections of h's n rows, q scaled by
+ * softplus(per_dim_scale) / (sqrt(HEAD_DIM) log 2), k by log(1+e) / log 2. */
+void attn_qkv_scaled(
+        const struct Attn *attn, size_t n, const float *h, float *q, float *k, float *v);
 void   attn_run(const struct Attn *attn,
                 const float       *h,
                 size_t             n,
