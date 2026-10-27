@@ -32,22 +32,14 @@ enum head_profile_stage {
     HEAD_PROFILE_COUNT,
 };
 
-static _Atomic uint64_t  g_head_profile_ns[HEAD_PROFILE_COUNT];
-static _Atomic uint64_t  g_head_profile_calls[HEAD_PROFILE_COUNT];
-static const char *const g_head_profile_names[HEAD_PROFILE_COUNT] = {
-        "copy",
-        "norm",
-        "lm_head",
-        "softcap",
-        "sample",
-};
-static struct transformer_forward_profile g_head_profile = {
-        .title       = "transformer head",
-        .stage_names = g_head_profile_names,
-        .stage_count = HEAD_PROFILE_COUNT,
-        .ns          = g_head_profile_ns,
-        .calls       = g_head_profile_calls,
-};
+TRANSFORMER_PROFILE_DEFINE(g_head_profile,
+                           "transformer head",
+                           HEAD_PROFILE_COUNT,
+                           "copy",
+                           "norm",
+                           "lm_head",
+                           "softcap",
+                           "sample");
 
 [[nodiscard]] enum geist_status transformer_head_prepare(struct transformer_arch_session *sess,
                                                          size_t                           row_idx) {

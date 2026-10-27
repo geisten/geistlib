@@ -25,24 +25,16 @@ enum mtp_profile_stage {
     MTP_PROFILE_COUNT,
 };
 
-static _Atomic uint64_t  g_mtp_profile_ns[MTP_PROFILE_COUNT];
-static _Atomic uint64_t  g_mtp_profile_calls[MTP_PROFILE_COUNT];
-static const char *const g_mtp_profile_names[MTP_PROFILE_COUNT] = {
-        "input",
-        "norms",
-        "concat",
-        "eh_proj",
-        "block",
-        "hidden_copy",
-        "head",
-};
-static struct transformer_forward_profile g_mtp_profile = {
-        .title       = "transformer MTP",
-        .stage_names = g_mtp_profile_names,
-        .stage_count = MTP_PROFILE_COUNT,
-        .ns          = g_mtp_profile_ns,
-        .calls       = g_mtp_profile_calls,
-};
+TRANSFORMER_PROFILE_DEFINE(g_mtp_profile,
+                           "transformer MTP",
+                           MTP_PROFILE_COUNT,
+                           "input",
+                           "norms",
+                           "concat",
+                           "eh_proj",
+                           "block",
+                           "hidden_copy",
+                           "head");
 
 static bool mtp_spec_head_enabled(void) {
     return geist_env_flag("GEIST_MTP_SPEC_HEAD", false);

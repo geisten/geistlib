@@ -38,3 +38,17 @@ bool transformer_profile_enabled(struct transformer_forward_profile *profile);
  * profiling is off), so a caller can take a nested stage out of its own. */
 uint64_t
 transformer_profile_add(struct transformer_forward_profile *profile, size_t stage, uint64_t t0);
+
+/* A file-scope profile `var` with its counters and the names of its `n`
+ * stages: TRANSFORMER_PROFILE_DEFINE(g_x, "title", X_COUNT, "a", "b"); */
+#define TRANSFORMER_PROFILE_DEFINE(var, title_, n, ...)                       \
+    static _Atomic uint64_t                   var##_ns[n];                    \
+    static _Atomic uint64_t                   var##_calls[n];                 \
+    static const char *const                  var##_names[n] = {__VA_ARGS__}; \
+    static struct transformer_forward_profile var            = {              \
+            .title       = title_,                                            \
+            .stage_names = var##_names,                                       \
+            .stage_count = n,                                                 \
+            .ns          = var##_ns,                                          \
+            .calls       = var##_calls,                                       \
+    }

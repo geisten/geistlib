@@ -34,21 +34,13 @@
 /* GEIST_PROFILE_FORWARD=1: per-layer stages. The PLE and layer-scale tail
  * records itself (layer_ple.c), and "ffn" is the family's ffn_block without
  * it. */
-static _Atomic uint64_t  g_layer_ns[TRANSFORMER_LAYER_PROFILE_COUNT];
-static _Atomic uint64_t  g_layer_calls[TRANSFORMER_LAYER_PROFILE_COUNT];
-static const char *const g_layer_names[TRANSFORMER_LAYER_PROFILE_COUNT] = {
-        "attention",
-        "ffn",
-        "ple",
-        "scale",
-};
-static struct transformer_forward_profile g_layer_profile = {
-        .title       = "transformer",
-        .stage_names = g_layer_names,
-        .stage_count = TRANSFORMER_LAYER_PROFILE_COUNT,
-        .ns          = g_layer_ns,
-        .calls       = g_layer_calls,
-};
+TRANSFORMER_PROFILE_DEFINE(g_layer_profile,
+                           "transformer",
+                           TRANSFORMER_LAYER_PROFILE_COUNT,
+                           "attention",
+                           "ffn",
+                           "ple",
+                           "scale");
 
 uint64_t transformer_layer_profile_add(enum transformer_layer_profile_stage stage, uint64_t t0) {
     return transformer_profile_add(&g_layer_profile, stage, t0);
@@ -510,22 +502,14 @@ enum plepre_stage {
     PLEPRE_COMBINE,
     PLEPRE_COUNT,
 };
-static _Atomic uint64_t  g_plepre_ns[PLEPRE_COUNT];
-static _Atomic uint64_t  g_plepre_calls[PLEPRE_COUNT];
-static const char *const g_plepre_names[PLEPRE_COUNT] = {
-        "gather_q5k",
-        "model_proj",
-        "scale",
-        "rmsnorm",
-        "combine",
-};
-static struct transformer_forward_profile g_plepre_profile = {
-        .title       = "transformer ple precompute (per-chunk)",
-        .stage_names = g_plepre_names,
-        .stage_count = PLEPRE_COUNT,
-        .ns          = g_plepre_ns,
-        .calls       = g_plepre_calls,
-};
+TRANSFORMER_PROFILE_DEFINE(g_plepre_profile,
+                           "transformer ple precompute (per-chunk)",
+                           PLEPRE_COUNT,
+                           "gather_q5k",
+                           "model_proj",
+                           "scale",
+                           "rmsnorm",
+                           "combine");
 
 static void plepre_add(enum plepre_stage stage, uint64_t t0) {
     transformer_profile_add(&g_plepre_profile, stage, t0);

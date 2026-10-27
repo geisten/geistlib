@@ -826,23 +826,15 @@ enum dn_profile_stage {
     DN_PROFILE_COUNT,
 };
 
-static _Atomic uint64_t  g_dn_profile_ns[DN_PROFILE_COUNT];
-static _Atomic uint64_t  g_dn_profile_calls[DN_PROFILE_COUNT];
-static const char *const g_dn_profile_names[DN_PROFILE_COUNT] = {
-        "norm",
-        "beta_alpha",
-        "qkv",
-        "z",
-        "mix",
-        "out",
-};
-static struct transformer_forward_profile g_dn_profile = {
-        .title       = "transformer deltanet",
-        .stage_names = g_dn_profile_names,
-        .stage_count = DN_PROFILE_COUNT,
-        .ns          = g_dn_profile_ns,
-        .calls       = g_dn_profile_calls,
-};
+TRANSFORMER_PROFILE_DEFINE(g_dn_profile,
+                           "transformer deltanet",
+                           DN_PROFILE_COUNT,
+                           "norm",
+                           "beta_alpha",
+                           "qkv",
+                           "z",
+                           "mix",
+                           "out");
 
 /* Close stage `stage` and start the next one at now. */
 static inline void dn_profile_mark(size_t stage, uint64_t *t0) {
