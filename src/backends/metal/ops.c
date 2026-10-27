@@ -11,10 +11,11 @@
  * encodes into the sequence's encoder and leaves the submit to the
  * sequence; otherwise it runs on its own command buffer, committed and
  * waited for before the op returns. The caller holds
- * metal_standalone_pool for the standalone buffer's autoreleased objects.
+ * metal_standalone_pool for the standalone buffer's autoreleased objects;
+ * inside the sequence that takes neither a pool nor a lock.
  * `what` names the op in the backend error; nullptr sets none.
- * metal_op_begin/_end are always inlined, so the sequenced path costs what
- * the open-coded checks did; the standalone path waits for the GPU anyway. */
+ * metal_op_begin/_end are always inlined, so the sequenced path is one
+ * owner check and the encode; the standalone path waits for the GPU anyway. */
 
 /* A standalone command buffer (*out_cmd) and its compute encoder; nullptr
  * when either fails. */
@@ -1095,26 +1096,15 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
             .y_row_stride = (uint32_t) y_row_stride,
     };
 
-    if (metal_seq_mine(st)) {
-        if (st->sequence_compute_encoder == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_BACKEND, "metal F32 linear: command sequence has no encoder");
-            return GEIST_E_BACKEND;
-        }
-        metal_encode_f32_matmul(st, metal_sequence_encoder(st), x, w, y, &params);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
-
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, "F32 linear", &cmd);
+    void *enc = metal_op_begin(be, "F32 linear", &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_f32_matmul(st, enc, x, w, y, &params);
-    return metal_standalone_end(be, cmd, enc, "F32 linear");
+    return metal_op_end(be, cmd, enc, "F32 linear");
 }
 
 [[nodiscard]] static enum geist_status metal_matvec_f32_dense(struct geist_backend      *be,
@@ -1172,20 +1162,15 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
             .y_row_stride = (uint32_t) y_stride,
             .eps          = eps,
     };
-    if (metal_seq_mine(st)) {
-        metal_encode_rmsnorm_rows(st, metal_sequence_encoder(st), x, w, y, &params);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, nullptr, &cmd);
+    void *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_rmsnorm_rows(st, enc, x, w, y, &params);
-    return metal_standalone_end(be, cmd, enc, nullptr);
+    return metal_op_end(be, cmd, enc, nullptr);
 }
 
 [[nodiscard]] static enum geist_status metal_rmsnorm_add(struct geist_backend      *be,
@@ -1233,20 +1218,15 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
             .y_row_stride        = (uint32_t) y_stride,
             .eps                 = eps,
     };
-    if (metal_seq_mine(st)) {
-        metal_encode_rmsnorm_add_rows(st, metal_sequence_encoder(st), res, x, w, y, &params);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, nullptr, &cmd);
+    void *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_rmsnorm_add_rows(st, enc, res, x, w, y, &params);
-    return metal_standalone_end(be, cmd, enc, nullptr);
+    return metal_op_end(be, cmd, enc, nullptr);
 }
 
 /* Fused-table rmsnorm_add_norm (geist_backend.h): rmsnorm_add (or add),
@@ -1310,21 +1290,15 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
             .eps                 = eps,
             .scale               = scale,
     };
-    if (metal_seq_mine(st)) {
-        metal_encode_rmsnorm_add_norm_rows(
-                st, metal_sequence_encoder(st), res, x, w, z_w, y, z, &params);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, nullptr, &cmd);
+    void *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_rmsnorm_add_norm_rows(st, enc, res, x, w, z_w, y, z, &params);
-    return metal_standalone_end(be, cmd, enc, nullptr);
+    return metal_op_end(be, cmd, enc, nullptr);
 }
 
 /* The pipeline is passed as the address of its state field: it is read
@@ -1370,21 +1344,15 @@ metal_binary_rows(struct geist_backend      *be,
             .b_row_stride = (uint32_t) b_stride,
             .y_row_stride = (uint32_t) y_stride,
     };
-    if (metal_seq_mine(st)) {
-        metal_encode_binary_rows(
-                st, metal_sequence_encoder(st), *pipeline, stage, a, b, y, &params);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, nullptr, &cmd);
+    void *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_binary_rows(st, enc, *pipeline, stage, a, b, y, &params);
-    return metal_standalone_end(be, cmd, enc, nullptr);
+    return metal_op_end(be, cmd, enc, nullptr);
 }
 
 [[nodiscard]] static enum geist_status metal_add(struct geist_backend      *be,
@@ -1443,20 +1411,15 @@ metal_binary_rows(struct geist_backend      *be,
             .y_row_stride = (uint32_t) y_stride,
             .scale        = scale,
     };
-    if (metal_seq_mine(st)) {
-        metal_encode_scale_rows(st, metal_sequence_encoder(st), x, y, &params);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, nullptr, &cmd);
+    void *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_scale_rows(st, enc, x, y, &params);
-    return metal_standalone_end(be, cmd, enc, nullptr);
+    return metal_op_end(be, cmd, enc, nullptr);
 }
 
 [[nodiscard]] static enum geist_status metal_attn_qgate_split(struct geist_backend      *be,
@@ -1486,30 +1449,25 @@ metal_binary_rows(struct geist_backend      *be,
     enum geist_status s = metal_ensure_q4k_pipeline(be);
     if (s != GEIST_OK)
         return s;
-    struct metal_state             *st     = be->state;
-    const struct metal_qgate_params params = {.rows             = (uint32_t) rows,
-                                              .heads            = (uint32_t) heads,
-                                              .head_dim         = (uint32_t) head_dim,
-                                              .joint_offset     = (uint32_t) jo,
-                                              .q_offset         = (uint32_t) qo,
-                                              .gate_offset      = (uint32_t) go,
-                                              .joint_row_stride = (uint32_t) js,
-                                              .q_row_stride     = (uint32_t) qs,
-                                              .gate_row_stride  = (uint32_t) gs};
-    if (metal_seq_mine(st)) {
-        metal_encode_qgate_split(st, metal_sequence_encoder(st), joint, q, gate, &params);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    struct metal_state                                *st     = be->state;
+    const struct metal_qgate_params                    params = {.rows     = (uint32_t) rows,
+                                                                 .heads    = (uint32_t) heads,
+                                                                 .head_dim = (uint32_t) head_dim,
+                                                                 .joint_offset     = (uint32_t) jo,
+                                                                 .q_offset         = (uint32_t) qo,
+                                                                 .gate_offset      = (uint32_t) go,
+                                                                 .joint_row_stride = (uint32_t) js,
+                                                                 .q_row_stride     = (uint32_t) qs,
+                                                                 .gate_row_stride  = (uint32_t) gs};
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool   = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, nullptr, &cmd);
+    void *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_qgate_split(st, enc, joint, q, gate, &params);
-    return metal_standalone_end(be, cmd, enc, nullptr);
+    return metal_op_end(be, cmd, enc, nullptr);
 }
 
 struct metal_hadamard_params {
@@ -1616,20 +1574,15 @@ static bool metal_hadamard_geometry_ok(
             .ys    = (uint32_t) ys,
             .so    = (uint32_t) so,
     };
-    if (metal_seq_mine(st)) {
-        metal_encode_hadamard(st, metal_sequence_encoder(st), a, &p, rows);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, nullptr, &cmd);
+    void *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_hadamard(st, enc, a, &p, rows);
-    return metal_standalone_end(be, cmd, enc, nullptr);
+    return metal_op_end(be, cmd, enc, nullptr);
 }
 
 [[nodiscard]] static enum geist_status metal_sigmoid_mul(struct geist_backend      *be,
@@ -1657,29 +1610,24 @@ static bool metal_hadamard_geometry_ok(
     enum geist_status s = metal_ensure_q4k_pipeline(be);
     if (s != GEIST_OK)
         return s;
-    struct metal_state                   *st     = be->state;
-    const struct metal_binary_rows_params params = {.rows         = (uint32_t) rows,
-                                                    .cols         = (uint32_t) cols,
-                                                    .a_offset     = (uint32_t) xo,
-                                                    .b_offset     = (uint32_t) go,
-                                                    .y_offset     = (uint32_t) yo,
-                                                    .a_row_stride = (uint32_t) xs,
-                                                    .b_row_stride = (uint32_t) gs,
-                                                    .y_row_stride = (uint32_t) ys};
-    if (metal_seq_mine(st)) {
-        metal_encode_sigmoid_mul(st, metal_sequence_encoder(st), x, gate, y, &params);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    struct metal_state                                *st     = be->state;
+    const struct metal_binary_rows_params              params = {.rows         = (uint32_t) rows,
+                                                                 .cols         = (uint32_t) cols,
+                                                                 .a_offset     = (uint32_t) xo,
+                                                                 .b_offset     = (uint32_t) go,
+                                                                 .y_offset     = (uint32_t) yo,
+                                                                 .a_row_stride = (uint32_t) xs,
+                                                                 .b_row_stride = (uint32_t) gs,
+                                                                 .y_row_stride = (uint32_t) ys};
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool   = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, nullptr, &cmd);
+    void *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_sigmoid_mul(st, enc, x, gate, y, &params);
-    return metal_standalone_end(be, cmd, enc, nullptr);
+    return metal_op_end(be, cmd, enc, nullptr);
 }
 
 [[nodiscard]] static enum geist_status
@@ -1714,20 +1662,15 @@ metal_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct g
             .y_row_stride = (uint32_t) y_stride,
             .scale        = 0.0f,
     };
-    if (metal_seq_mine(st)) {
-        metal_encode_gelu_rows(st, metal_sequence_encoder(st), x, y, &params);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, nullptr, &cmd);
+    void *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_gelu_rows(st, enc, x, y, &params);
-    return metal_standalone_end(be, cmd, enc, nullptr);
+    return metal_op_end(be, cmd, enc, nullptr);
 }
 
 [[nodiscard]] static enum geist_status metal_unary_rows(struct geist_backend      *be,
@@ -1764,20 +1707,15 @@ metal_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct g
             .scale        = 0.0f,
     };
     void *pipeline = relu2 ? st->relu2_rows_pipeline : st->silu_rows_pipeline;
-    if (metal_seq_mine(st)) {
-        metal_encode_unary_rows(st, metal_sequence_encoder(st), pipeline, x, y, &params);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, nullptr, &cmd);
+    void *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_unary_rows(st, enc, pipeline, x, y, &params);
-    return metal_standalone_end(be, cmd, enc, nullptr);
+    return metal_op_end(be, cmd, enc, nullptr);
 }
 
 [[nodiscard]] static enum geist_status
@@ -1929,28 +1867,15 @@ metal_embedding_lookup_scaled(struct geist_backend      *be,
             .scale          = scale,
     };
 
-    if (metal_seq_mine(st)) {
-        if (st->sequence_compute_encoder == nullptr) {
-            geist_backend_set_error(
-                    be,
-                    GEIST_E_BACKEND,
-                    "metal embedding_lookup_scaled: command sequence has no encoder");
-            return GEIST_E_BACKEND;
-        }
-        metal_encode_embed_lookup_scaled(st, metal_sequence_encoder(st), embed_table, out, &params);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
-
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, "embedding_lookup_scaled", &cmd);
+    void *enc = metal_op_begin(be, "embedding_lookup_scaled", &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_embed_lookup_scaled(st, enc, embed_table, out, &params);
-    return metal_standalone_end(be, cmd, enc, "embedding_lookup_scaled");
+    return metal_op_end(be, cmd, enc, "embedding_lookup_scaled");
 }
 
 /* Batched twin: one dispatch embeds a whole prefill chunk.
@@ -2116,20 +2041,15 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
             .x_row_stride   = (uint32_t) x_row_stride,
             .y_row_stride   = (uint32_t) y_row_stride,
     };
-    if (metal_seq_mine(st)) {
-        metal_encode_q40_q80_linear(st, metal_sequence_encoder(st), x, w, y, &params, dtype);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, nullptr, &cmd);
+    void *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_q40_q80_linear(st, enc, x, w, y, &params, dtype);
-    return metal_standalone_end(be, cmd, enc, nullptr);
+    return metal_op_end(be, cmd, enc, nullptr);
 }
 
 [[nodiscard]] static enum geist_status metal_matvec_q4k(struct geist_backend      *be,
@@ -2185,26 +2105,15 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
             .y_row_stride   = (uint32_t) n_out,
     };
 
-    if (metal_seq_mine(st)) {
-        if (st->sequence_compute_encoder == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_BACKEND, "metal Q4_K matvec: command sequence has no encoder");
-            return GEIST_E_BACKEND;
-        }
-        metal_encode_q4k_linear(st, metal_sequence_encoder(st), x, w, y, &params, false);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
-
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, "Q4_K matvec", &cmd);
+    void *enc = metal_op_begin(be, "Q4_K matvec", &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_q4k_linear(st, enc, x, w, y, &params, false);
-    return metal_standalone_end(be, cmd, enc, "Q4_K matvec");
+    return metal_op_end(be, cmd, enc, "Q4_K matvec");
 }
 
 [[nodiscard]] static enum geist_status metal_matmul_q4k(struct geist_backend      *be,
@@ -2265,26 +2174,15 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
             .y_row_stride   = (uint32_t) y_row_stride,
     };
 
-    if (metal_seq_mine(st)) {
-        if (st->sequence_compute_encoder == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_BACKEND, "metal Q4_K matmul: command sequence has no encoder");
-            return GEIST_E_BACKEND;
-        }
-        metal_encode_q4k_linear(st, metal_sequence_encoder(st), x, w, y, &params, true);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
-
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, "Q4_K matmul", &cmd);
+    void *enc = metal_op_begin(be, "Q4_K matmul", &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_q4k_linear(st, enc, x, w, y, &params, true);
-    return metal_standalone_end(be, cmd, enc, "Q4_K matmul");
+    return metal_op_end(be, cmd, enc, "Q4_K matmul");
 }
 
 [[nodiscard]] static enum geist_status metal_q5k_linear(struct geist_backend      *be,
@@ -2338,21 +2236,15 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
             .x_row_stride   = (uint32_t) x_row_stride,
             .y_row_stride   = (uint32_t) y_row_stride,
     };
-    if (metal_seq_mine(st)) {
-        metal_encode_q40_q80_linear(
-                st, metal_sequence_encoder(st), x, w, y, &params, GEIST_DTYPE_Q5_K);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, nullptr, &cmd);
+    void *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_q40_q80_linear(st, enc, x, w, y, &params, GEIST_DTYPE_Q5_K);
-    return metal_standalone_end(be, cmd, enc, nullptr);
+    return metal_op_end(be, cmd, enc, nullptr);
 }
 
 [[nodiscard]] static enum geist_status metal_matvec_q5k(struct geist_backend      *be,
@@ -2439,26 +2331,15 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
             .y_row_stride   = (uint32_t) y_row_stride,
     };
 
-    if (metal_seq_mine(st)) {
-        if (st->sequence_compute_encoder == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_BACKEND, "metal Q6_K linear: command sequence has no encoder");
-            return GEIST_E_BACKEND;
-        }
-        metal_encode_q6k_linear(st, metal_sequence_encoder(st), x, w, y, &params, matrix);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
-
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, "Q6_K linear", &cmd);
+    void *enc = metal_op_begin(be, "Q6_K linear", &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_q6k_linear(st, enc, x, w, y, &params, matrix);
-    return metal_standalone_end(be, cmd, enc, "Q6_K linear");
+    return metal_op_end(be, cmd, enc, "Q6_K linear");
 }
 
 [[nodiscard]] static enum geist_status metal_matvec_q6k(struct geist_backend      *be,
@@ -2526,25 +2407,15 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
             .rope_row_stride = (uint32_t) cos_stride,
             .rope_row_offset = 0,
     };
-    if (metal_seq_mine(st)) {
-        if (st->sequence_compute_encoder == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_BACKEND, "metal rope_apply: sequence has no encoder");
-            return GEIST_E_BACKEND;
-        }
-        metal_encode_rope_rows(st, metal_sequence_encoder(st), x, cos, sin, &params);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, "rope_apply", &cmd);
+    void *enc = metal_op_begin(be, "rope_apply", &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_rope_rows(st, enc, x, cos, sin, &params);
-    return metal_standalone_end(be, cmd, enc, "rope_apply");
+    return metal_op_end(be, cmd, enc, "rope_apply");
 }
 
 /* The prefill flash kernel for a head_dim, or nullptr when none is
@@ -3892,25 +3763,15 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
             .v_cache_offset = (uint32_t) v_off,
             .y_offset       = (uint32_t) out_off,
     };
-    if (metal_seq_mine(st)) {
-        if (st->sequence_compute_encoder == nullptr) {
-            geist_backend_set_error(
-                    be, GEIST_E_BACKEND, "metal attention: sequence has no encoder");
-            return GEIST_E_BACKEND;
-        }
-        metal_encode_attention_rows(st, metal_sequence_encoder(st), q, k, value, out, &params);
-        st->sequence_has_work = true;
-        return GEIST_OK;
-    }
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
-    void *enc = metal_standalone_begin(be, "attention", &cmd);
+    void *enc = metal_op_begin(be, "attention", &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
     metal_encode_attention_rows(st, enc, q, k, value, out, &params);
-    return metal_standalone_end(be, cmd, enc, "attention");
+    return metal_op_end(be, cmd, enc, "attention");
 }
 
 static void metal_linear_mN(size_t                     m,
