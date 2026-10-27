@@ -349,7 +349,10 @@ struct AudioEncoder {
     size_t    worker_last_mel; /* mel-frame count at last fire */
 };
 
-float                     *load_bf16(struct st_ctx *sf, const char *name, size_t expect_elems);
+/* name's BF16 tensor of n elements, widened to F32 (st_load_bf16_f32). */
+static inline float *load_bf16(struct st_ctx *sf, const char *name, size_t n) {
+    return st_load_bf16_f32(sf, 1, n, &name, "audio_encoder");
+}
 bool                       load_layer(struct st_ctx                  *sf,
                                       int                             layer_idx,
                                       struct ConformerLayer          *L,
