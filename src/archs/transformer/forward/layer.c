@@ -541,15 +541,8 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     bool gather_on_device = st->model_fusions.ple_lookup_scaled;
     if (gather_on_device) {
         for (size_t t = 0; t < n; t++) {
-            struct geist_tensor t_row = {
-                    .buffer = sess->scratch_ple_lookup,
-                    .offset = t * PLE_OUT * sizeof(float),
-                    .dtype  = GEIST_DTYPE_F32,
-                    .layout = GEIST_LAYOUT_DENSE,
-                    .ndim   = 1,
-                    .shape  = {(int64_t) PLE_OUT, 0, 0, 0, 0, 0, 0, 0},
-                    .stride = {1, 0, 0, 0, 0, 0, 0, 0},
-            };
+            struct geist_tensor t_row =
+                    view_1d_at(sess->scratch_ple_lookup, t * PLE_OUT * sizeof(float), PLE_OUT);
             const enum geist_status es = fused->embedding_lookup_scaled(
                     be, &st->ple_table, ple_ids[t], st->config.ple_table_scale, &t_row);
             if (es != GEIST_OK) {

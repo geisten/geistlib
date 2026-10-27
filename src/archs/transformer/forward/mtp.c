@@ -49,8 +49,8 @@ mtp_embed_tokens(struct transformer_arch_session *sess, size_t n, const geist_to
 
     if (st->model_fusions.embed_lookup_scaled) {
         for (size_t row = 0; row < n; row++) {
-            struct geist_tensor out = view_1d(sess->mtp_embed, st->d_model);
-            out.offset              = row * st->d_model * sizeof(float);
+            struct geist_tensor out =
+                    view_1d_at(sess->mtp_embed, row * st->d_model * sizeof(float), st->d_model);
             enum geist_status s =
                     fused->embedding_lookup_scaled(be, &st->embed_table, ids[row], 1.0f, &out);
             if (s != GEIST_OK)

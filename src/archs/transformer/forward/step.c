@@ -595,8 +595,8 @@ enum geist_status transformer_embed_rows(struct transformer_arch_session *sess,
                                                  be, n, &st->embed_table, ids, scale, &t_rows) == GEIST_OK;
         }
         for (size_t t = 0; !done && s == GEIST_OK && t < n; t++) {
-            struct geist_tensor t_row = view_1d(out, st->d_model);
-            t_row.offset              = t * st->d_model * sizeof(float);
+            struct geist_tensor t_row =
+                    view_1d_at(out, t * st->d_model * sizeof(float), st->d_model);
             s = fused->embedding_lookup_scaled(be, &st->embed_table, ids[t], scale, &t_row);
         }
     }
