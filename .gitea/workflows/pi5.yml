@@ -49,14 +49,7 @@ jobs:
       - name: integration suite
         run: ~/bin/with-pi-lock make TARGET=pi5 test-int AUTO_FETCH_MODEL=0
       - name: board must be cool and idle before measuring
-        run: |
-          for i in $(seq 1 30); do
-            t=$(cat /sys/class/thermal/thermal_zone0/temp); l=$(cut -d' ' -f1 /proc/loadavg)
-            echo "temp=$t load=$l"
-            [ "$t" -lt 60000 ] && [ "${l%.*}" -lt 1 ] && exit 0
-            sleep 10
-          done
-          echo "board not cool/idle after 5 min; skipping the measurement" && exit 1
+        run: sh scripts/pi-cool-gate.sh
       # The frozen protocol behind benchmark/results/PI5.md (tools/
       # bench_reproduce.py): ~14 min on the board, decode and prefill against
       # the recorded bitnet.cpp baselines, report printed and kept as an
@@ -94,4 +87,4 @@ jobs:
           if-no-files-found: ignore
       - name: thermal state after the run
         if: always()
-        run: echo "temp=$(cat /sys/class/thermal/thermal_zone0/temp) throttled=$(vcgencmd get_throttled 2>/dev/null || echo n/a)"
+        run: sh scripts/pi-cool-gate.sh --report
