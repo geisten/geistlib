@@ -39,6 +39,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bench_host import perf_sweep_command, run_jsonl  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 SKIP, ERROR = 77, 99
 
@@ -244,17 +247,10 @@ def run_geist(binary: Path, gguf: Path, seq_lens: str | None = None,
     # Measurement condition: active wait for every run, also on libgomp, where
     # it is unbounded; harmless here because each run exits when it is done.
     env = dict(os.environ, OMP_WAIT_POLICY=os.environ.get("OMP_WAIT_POLICY", "active"))
-    cmd = [str(binary), "--gguf", str(gguf),
-           "--seq-lens", seq_lens or PROTOCOL["seq_lens"],
-           "--decode-n", str(PROTOCOL["decode_n"] if decode_n is None else decode_n),
-           "--warmup", str(PROTOCOL["warmup"]),
-           "--repeats", str(repeats or PROTOCOL["repeats"]),
-           "--emit-jsonl"]
-    p = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=ROOT)
-    if p.returncode != 0:
-        tail = (p.stderr.strip().splitlines() or ["no output"])[-1]
-        raise RuntimeError(f"bench_perf_sweep failed: {tail}")
-    rows = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
+    cmd = perf_sweep_command(binary, gguf, seq_lens or PROTOCOL["seq_lens"],
+                             PROTOCOL["decode_n"] if decode_n is None else decode_n,
+                             PROTOCOL["warmup"], repeats or PROTOCOL["repeats"])
+    rows, _, _ = run_jsonl(cmd, env, "bench_perf_sweep", cwd=ROOT)
     if not rows:
         raise RuntimeError("bench_perf_sweep produced no JSON rows")
     return rows

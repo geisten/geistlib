@@ -34,9 +34,13 @@ import os
 import shutil
 import statistics
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bench_host import perf_sweep_command  # noqa: E402
 
 
 class VramPeak:
@@ -89,8 +93,7 @@ def geist_cfg(args: argparse.Namespace, name: str, primary: str, split: int) -> 
     env.pop("GEIST_BENCH_SPLIT_LAYERS", None)
     if split > 0:
         env.update(GEIST_BENCH_SPLIT_BACKEND=args.gpu, GEIST_BENCH_SPLIT_LAYERS=str(split))
-    cmd = [args.bench, "--gguf", args.gguf, "--seq-lens", str(args.prompt), "--decode-n",
-           str(args.decode), "--warmup", "1", "--repeats", str(args.repeats), "--emit-jsonl"]
+    cmd = perf_sweep_command(args.bench, args.gguf, str(args.prompt), args.decode, 1, args.repeats)
     return {"name": name, "cmd": cmd, "env": env, "kind": "geist"}
 
 

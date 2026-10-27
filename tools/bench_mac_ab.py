@@ -13,9 +13,7 @@ import json
 import os
 import platform
 import statistics
-import subprocess
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,6 +27,8 @@ from bench_host import (  # noqa: E402
     command_output,
     machine_state,
     median_absolute_deviation,
+    perf_sweep_command,
+    run_jsonl,
     sha256_file,
     wait_for_quiet,
 )
@@ -64,36 +64,16 @@ def parse_variants(values: list[str]) -> list[dict]:
 
 
 def run_variant(variant: dict, gguf: Path, protocol: dict, threads: int | None) -> dict:
-    seq_lens = ",".join(str(value) for value in protocol["seq_lens"])
-    command = [
-        variant["binary"],
-        "--gguf", str(gguf),
-        "--seq-lens", seq_lens,
-        "--decode-n", str(protocol["decode_n"]),
-        "--warmup", str(protocol["warmup"]),
-        "--repeats", str(protocol["repeats"]),
-        "--emit-jsonl",
-    ]
+    command = perf_sweep_command(variant["binary"], gguf, protocol["seq_lens"],
+                                 protocol["decode_n"], protocol["warmup"], protocol["repeats"],
+                                 threads)
     env = dict(os.environ)
     # Measurement condition: active wait for every run, also on libgomp, where
     # it is unbounded; harmless here because each run exits when it is done.
     env.setdefault("OMP_WAIT_POLICY", "active")
     if threads is not None:
         env["OMP_NUM_THREADS"] = str(threads)
-        command += ["--threads", str(threads)]
-
-    before = time.monotonic()
-    proc = subprocess.run(command, capture_output=True, text=True, env=env)
-    elapsed = time.monotonic() - before
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"{variant['label']} exited {proc.returncode}: "
-            f"{(proc.stderr.splitlines() or ['no diagnostics'])[-1]}"
-        )
-    rows = []
-    for line in proc.stdout.splitlines():
-        if line.startswith("{"):
-            rows.append(json.loads(line))
+    rows, stderr, elapsed = run_jsonl(command, env, variant["label"])
     expected = protocol["seq_lens"]
     if [row.get("seq_len") for row in rows] != expected:
         raise RuntimeError(f"{variant['label']} emitted unexpected sequence rows")
@@ -108,7 +88,7 @@ def run_variant(variant: dict, gguf: Path, protocol: dict, threads: int | None) 
         "variant": variant["label"],
         "elapsed_seconds": elapsed,
         "rows": rows,
-        "stderr": proc.stderr.splitlines(),
+        "stderr": stderr,
         "machine_after": machine_state(),
     }
 

@@ -261,3 +261,30 @@ def build_schedule_rotating(variants: list[dict], cycles: int) -> list[tuple[int
         order = variants[offset:] + variants[:offset]
         schedule.extend((cycle, position, variant) for position, variant in enumerate(order))
     return schedule
+
+
+def perf_sweep_command(binary, gguf, seq_lens, decode_n: int, warmup: int, repeats: int,
+                       threads: int | str | None = None) -> list[str]:
+    """argv for one bench_perf_sweep run emitting JSONL; seq_lens is a
+    comma-separated string or a sequence of ints."""
+    if not isinstance(seq_lens, str):
+        seq_lens = ",".join(map(str, seq_lens))
+    command = [str(binary), "--gguf", str(gguf), "--seq-lens", seq_lens,
+               "--decode-n", str(decode_n), "--warmup", str(warmup), "--repeats", str(repeats)]
+    if threads is not None:
+        command += ["--threads", str(threads)]
+    return command + ["--emit-jsonl"]
+
+
+def run_jsonl(command: list[str], env: dict[str, str] | None = None, label: str = "command",
+              cwd: Path | None = None) -> tuple[list[dict], list[str], float]:
+    """Run command; return (its stdout JSON rows, stderr lines, wall seconds).
+    A nonzero exit raises RuntimeError naming label and the last diagnostic line."""
+    started = time.monotonic()
+    proc = subprocess.run(command, capture_output=True, text=True, env=env, cwd=cwd)
+    elapsed = time.monotonic() - started
+    if proc.returncode != 0:
+        diagnostic = (proc.stderr.splitlines() or proc.stdout.splitlines() or ["no diagnostics"])[-1]
+        raise RuntimeError(f"{label} exited {proc.returncode}: {diagnostic}")
+    rows = [json.loads(line) for line in proc.stdout.splitlines() if line.startswith("{")]
+    return rows, proc.stderr.splitlines(), elapsed

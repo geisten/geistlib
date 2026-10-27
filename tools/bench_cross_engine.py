@@ -16,9 +16,7 @@ import json
 import os
 import platform
 import statistics
-import subprocess
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,6 +30,8 @@ from bench_host import (  # noqa: E402,F401  (re-exported for bench_thread_sweep
     command_output,
     machine_state,
     median_absolute_deviation,
+    perf_sweep_command,
+    run_jsonl as run_command,
     sha256_file,
     wait_for_quiet,
 )
@@ -124,25 +124,10 @@ def repeat_spread_pct(result: dict) -> float:
     return worst
 
 
-def run_command(command: list[str], env: dict[str, str] | None = None) -> tuple[list[dict], list[str], float]:
-    started = time.monotonic()
-    proc = subprocess.run(command, capture_output=True, text=True, env=env)
-    elapsed = time.monotonic() - started
-    if proc.returncode != 0:
-        diagnostic = (proc.stderr.splitlines() or proc.stdout.splitlines() or ["no diagnostics"])[-1]
-        raise RuntimeError(f"command exited {proc.returncode}: {diagnostic}")
-    rows = [json.loads(line) for line in proc.stdout.splitlines() if line.startswith("{")]
-    return rows, proc.stderr.splitlines(), elapsed
-
-
 def run_geist(engine: dict, model: Path, workload: dict) -> dict:
-    seq_lens = ",".join(map(str, workload["seq_lens"]))
-    command = [
-        engine["binary"], "--gguf", str(model), "--seq-lens", seq_lens,
-        "--decode-n", str(workload["decode_n"]), "--warmup", "64",
-        "--repeats", str(workload["repeats"]), "--threads",
-        str(workload["prefill_threads"]), "--emit-jsonl",
-    ]
+    command = perf_sweep_command(engine["binary"], model, workload["seq_lens"],
+                                 workload["decode_n"], 64, workload["repeats"],
+                                 workload["prefill_threads"])
     env = dict(os.environ)
     env.update({
         # Measurement condition: active wait for every run, also on libgomp, where
