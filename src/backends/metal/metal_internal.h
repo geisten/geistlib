@@ -1097,17 +1097,21 @@ bool metal_tensor_is_f16_3d(const struct geist_tensor *t,
                             size_t                    *out_d2,
                             size_t                    *out_offset_halfs);
 
-[[nodiscard]] enum geist_status metal_ensure_q4k_pipeline(struct geist_backend *be);
+/* The pipeline tables of pipelines.c; metal_ensure builds one on first
+ * use (ARGMAX also allocates its result buffers). */
+enum metal_table {
+    METAL_TAB_DELTANET,
+    METAL_TAB_QUANT, /* quantized/F32 linears and the elementwise kernels */
+    METAL_TAB_ATTENTION,
+    METAL_TAB_HADAMARD,
+    METAL_TAB_ARGMAX,
+    METAL_TAB_MOE,
+    METAL_TAB_COUNT,
+};
 
-[[nodiscard]] enum geist_status metal_ensure_attention_pipeline(struct geist_backend *be);
+[[nodiscard]] enum geist_status metal_ensure(struct geist_backend *be, enum metal_table table);
 
-[[nodiscard]] enum geist_status metal_ensure_argmax_pipeline(struct geist_backend *be);
-[[nodiscard]] enum geist_status metal_ensure_moe_pipeline(struct geist_backend *be);
-[[nodiscard]] enum geist_status metal_ensure_hadamard_pipeline(struct geist_backend *be);
-
-[[nodiscard]] enum geist_status metal_ensure_deltanet_pipeline(struct geist_backend *be);
-
-/* Releases every library, pipeline and function the ensure_* tables in
+/* Releases every library, pipeline and function the tables in
  * pipelines.c build. */
 void metal_release_pipeline_tables(struct metal_state *st);
 

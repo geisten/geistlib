@@ -1049,7 +1049,7 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
         return GEIST_E_INVALID_ARG;
     }
 
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK) {
         return s;
     }
@@ -1101,7 +1101,7 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
         y->buffer->owner != be->state) {
         return GEIST_E_INVALID_ARG;
     }
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK) {
         return s;
     }
@@ -1155,7 +1155,7 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
         y->buffer->owner != be->state) {
         return GEIST_E_INVALID_ARG;
     }
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK) {
         return s;
     }
@@ -1222,7 +1222,7 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
         y->buffer->owner != be->state || z->buffer->owner != be->state) {
         return GEIST_E_INVALID_ARG;
     }
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK) {
         return s;
     }
@@ -1256,7 +1256,7 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
 }
 
 /* The pipeline is passed as the address of its state field: it is read
- * only after metal_ensure_q4k_pipeline built it. */
+ * only after metal_ensure(be, METAL_TAB_QUANT) built it. */
 [[nodiscard, gnu::always_inline]] static inline enum geist_status
 metal_binary_rows(struct geist_backend      *be,
                   void *const               *pipeline,
@@ -1283,7 +1283,7 @@ metal_binary_rows(struct geist_backend      *be,
         y->buffer->owner != be->state) {
         return GEIST_E_INVALID_ARG;
     }
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK) {
         return s;
     }
@@ -1355,7 +1355,7 @@ metal_binary_rows(struct geist_backend      *be,
         gate->buffer->owner != be->state) {
         return GEIST_E_INVALID_ARG;
     }
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK)
         return s;
     struct metal_state                                *st     = be->state;
@@ -1464,7 +1464,7 @@ static bool metal_hadamard_geometry_ok(
             return GEIST_E_INVALID_ARG;
         }
     }
-    enum geist_status s = metal_ensure_hadamard_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_HADAMARD);
     if (s != GEIST_OK) {
         return s;
     }
@@ -1516,7 +1516,7 @@ static bool metal_hadamard_geometry_ok(
         y->buffer->owner != be->state) {
         return GEIST_E_INVALID_ARG;
     }
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK)
         return s;
     struct metal_state                                *st     = be->state;
@@ -1563,7 +1563,7 @@ metal_unary_rows(struct geist_backend      *be,
         y->buffer->owner != be->state) {
         return GEIST_E_INVALID_ARG;
     }
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK) {
         return s;
     }
@@ -1753,7 +1753,7 @@ metal_embedding_lookup_scaled(struct geist_backend      *be,
         return GEIST_E_INVALID_ARG;
     }
 
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK) {
         return s;
     }
@@ -1837,7 +1837,7 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
         }
         ids_u32[i] = (uint32_t) ids[i];
     }
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK) {
         return s;
     }
@@ -1922,7 +1922,7 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
         w->buffer->owner != be->state || y->buffer->owner != be->state) {
         return GEIST_E_INVALID_ARG;
     }
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK) {
         return s;
     }
@@ -1989,7 +1989,7 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
         return GEIST_E_INVALID_ARG;
     }
 
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK) {
         return s;
     }
@@ -2058,7 +2058,7 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
         return GEIST_E_INVALID_ARG;
     }
 
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK) {
         return s;
     }
@@ -2139,7 +2139,7 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
         return GEIST_E_INVALID_ARG;
     }
 
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK) {
         return s;
     }
@@ -2203,7 +2203,7 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
         return GEIST_E_INVALID_ARG;
     }
 
-    enum geist_status s = metal_ensure_attention_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_ATTENTION);
     if (s != GEIST_OK) {
         return s;
     }
@@ -2557,7 +2557,7 @@ enum { METAL_DECQ_MAX_GROUPS = 256 };
         y1->buffer->owner != be->state) {
         return GEIST_E_INVALID_ARG;
     }
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK) {
         return s;
     }
@@ -2675,7 +2675,7 @@ static bool metal_mv_weight_of(const struct geist_tensor *t, struct metal_mv_wei
         up_w->buffer->owner != be->state || y->buffer->owner != be->state) {
         return GEIST_E_INVALID_ARG;
     }
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK) {
         return s;
     }
@@ -2820,7 +2820,7 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
                 .y_row_stride   = (uint32_t) mw[i].n_out,
         };
     }
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK) {
         return s;
     }
@@ -2950,7 +2950,7 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
                     k_cache->buffer->owner != be->state || v_cache->buffer->owner != be->state))) {
         return GEIST_E_INVALID_ARG;
     }
-    enum geist_status s = metal_ensure_attention_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_ATTENTION);
     if (s != GEIST_OK) {
         return s;
     }
@@ -3101,7 +3101,7 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
         (k_norm_w != nullptr && k_norm_w->buffer->owner != be->state)) {
         return GEIST_E_INVALID_ARG;
     }
-    enum geist_status s = metal_ensure_attention_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_ATTENTION);
     if (s != GEIST_OK) {
         return s;
     }
@@ -3221,7 +3221,7 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
         gate_scratch->buffer->owner != be->state || y->buffer->owner != be->state) {
         return GEIST_E_INVALID_ARG;
     }
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK) {
         return s;
     }
@@ -3312,7 +3312,7 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
         n > UINT32_MAX || x_off > UINT32_MAX || logits->buffer->owner != be->state) {
         return GEIST_E_UNSUPPORTED;
     }
-    enum geist_status s = metal_ensure_argmax_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_ARGMAX);
     if (s != GEIST_OK) {
         return s;
     }
@@ -3391,7 +3391,7 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
         k_cache->buffer->owner != be->state || v_cache->buffer->owner != be->state) {
         return GEIST_E_INVALID_ARG;
     }
-    enum geist_status s = metal_ensure_attention_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_ATTENTION);
     if (s != GEIST_OK) {
         return s;
     }
@@ -3483,7 +3483,7 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
         return GEIST_E_INVALID_ARG;
     }
 
-    enum geist_status s = metal_ensure_attention_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_ATTENTION);
     if (s != GEIST_OK) {
         return s;
     }
@@ -3726,7 +3726,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
 
 [[nodiscard]] static enum geist_status metal_selected_prepare(const struct geist_weight *w,
                                                               struct geist_backend      *be) {
-    const enum geist_status s = metal_ensure_q4k_pipeline(be);
+    const enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK)
         return s;
     const struct metal_state *st    = be->state;
@@ -4016,7 +4016,7 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
         args->head_k > UINT32_MAX || args->head_v > UINT32_MAX || args->conv_kernel > UINT32_MAX) {
         return GEIST_E_INVALID_ARG;
     }
-    enum geist_status status = metal_ensure_deltanet_pipeline(be);
+    enum geist_status status = metal_ensure(be, METAL_TAB_DELTANET);
     if (status != GEIST_OK) {
         return status;
     }
@@ -4238,7 +4238,7 @@ struct metal_moe_sum_params {
         flag_offset > ids->bytes - sizeof(uint32_t) || ls > UINT32_MAX || lo > UINT32_MAX ||
         wo > UINT32_MAX || n > UINT32_MAX || k > UINT32_MAX || m > UINT32_MAX)
         return GEIST_E_INVALID_ARG;
-    enum geist_status s = metal_ensure_moe_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_MOE);
     if (s != GEIST_OK)
         return s;
     struct metal_state                                *st = be->state;
@@ -4325,7 +4325,7 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
         return GEIST_E_INVALID_ARG;
     struct metal_state    *st    = be->state;
     const enum geist_dtype dtype = (enum geist_dtype) w0->dtype;
-    enum geist_status      s     = metal_ensure_moe_pipeline(be);
+    enum geist_status      s     = metal_ensure(be, METAL_TAB_MOE);
     if (s != GEIST_OK)
         return s;
     void    *pipe = nullptr;
@@ -4398,7 +4398,7 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
         d > UINT32_MAX || k > UINT32_MAX || yo > UINT32_MAX || wo > UINT32_MAX || ao > UINT32_MAX ||
         oo > UINT32_MAX)
         return GEIST_E_INVALID_ARG;
-    enum geist_status s = metal_ensure_moe_pipeline(be);
+    enum geist_status s = metal_ensure(be, METAL_TAB_MOE);
     if (s != GEIST_OK)
         return s;
     struct metal_state                                *st   = be->state;
@@ -4431,7 +4431,7 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
 static bool metal_moe_device_supported(struct geist_backend            *be,
                                        const struct geist_fusion_query *q) {
     if (q->m != 1 || q->gate_w == nullptr || q->up_w == nullptr || q->down_w == nullptr ||
-        metal_ensure_moe_pipeline(be) != GEIST_OK)
+        metal_ensure(be, METAL_TAB_MOE) != GEIST_OK)
         return false;
     const struct geist_weight *ws[] = {q->gate_w, q->up_w, q->down_w};
     for (size_t i = 0; i < 3; i++) {
@@ -4466,7 +4466,7 @@ static bool metal_fused_supported(struct geist_backend *be, const struct geist_f
             q->gate_w->n_out != q->up_w->n_out) {
             return false;
         }
-        if (metal_ensure_q4k_pipeline(be) != GEIST_OK) {
+        if (metal_ensure(be, METAL_TAB_QUANT) != GEIST_OK) {
             return false;
         }
         const struct metal_state *st   = be->state;

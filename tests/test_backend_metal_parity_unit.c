@@ -462,7 +462,7 @@ static void run_staged_upload(struct geist_backend *mt) {
     const bool           ok = dev_alloc(mt, sizeof old, &x) != nullptr &&
                               dev_alloc(mt, sizeof old, &y) != nullptr &&
                               dev_alloc(mt, sizeof old, &z) != nullptr &&
-                              metal_ensure_attention_pipeline(mt) == GEIST_OK &&
+                              metal_ensure(mt, METAL_TAB_ATTENTION) == GEIST_OK &&
                               v->buffer_upload(x, sizeof old, (const uint8_t *) old) == GEIST_OK;
     check(ok, "staged upload: buffers");
     if (ok) {

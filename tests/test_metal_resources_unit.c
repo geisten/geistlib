@@ -158,7 +158,7 @@ static bool views(struct geist_backend *be) {
     memmove(want + 256, want, 512);
     ok            = ok && v->buffer_copy(b, 0, a, 0, 512) == GEIST_OK &&
                     memcmp(pm + off, want, sizeof want) == 0;
-    ok            = ok && metal_ensure_attention_pipeline(be) == GEIST_OK;
+    ok            = ok && metal_ensure(be, METAL_TAB_ATTENTION) == GEIST_OK;
     const int tok = ok ? v->parallel_region_begin(be, GEIST_REGION_DECODE_STEP) : 0;
     ok            = ok && tok != 0 && v->buffer_copy(a, 0, src, 0, 64) == GEIST_OK &&
                     metal_seq_references(st, a->buffer, a->base_off, a->bytes) &&
@@ -249,7 +249,7 @@ static bool residency(struct geist_backend *be) {
     if (v->buffer_create(be, 64, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_MAPPED, &a) != GEIST_OK ||
         v->buffer_create(be, 64, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_MAPPED, &b) != GEIST_OK ||
         v->buffer_create(be, 64, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_MAPPED, &c) != GEIST_OK ||
-        metal_ensure_attention_pipeline(be) != GEIST_OK)
+        metal_ensure(be, METAL_TAB_ATTENTION) != GEIST_OK)
         return false;
     const unsigned long n0  = metal_msg_send_ulong0(st, st->residency_set, "allocationCount");
     const int           tok = v->parallel_region_begin(be, GEIST_REGION_DECODE_STEP);
