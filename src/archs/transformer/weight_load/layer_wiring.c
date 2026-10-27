@@ -5,7 +5,7 @@
  * Layer: ARCHITECTURE.
  * Contains:
  *
- *   layer_track_buf  / global_track_buf — owning-buf list helpers
+ *   layer_keep       / global_track_buf — owning-buf list helpers
  *   load_layer_norm  / load_layer_proj / load_layer_matrix /
  *   load_layer_experts — per-tensor load wrappers.
  *   load_layer_norm_set, load_sandwich_norms, load_projection_input_norms —
@@ -33,12 +33,20 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int layer_track_buf(struct transformer_layer_weights *L, struct geist_buffer *buf) {
-    if (L->n_bufs >= sizeof L->bufs / sizeof L->bufs[0]) {
-        return -1;
+/* Track buf in L->bufs. On overflow it is destroyed and the load fails,
+ * naming the tensor. */
+[[nodiscard]] static enum geist_status layer_keep(struct transformer_arch_state    *st,
+                                                  struct transformer_layer_weights *L,
+                                                  struct geist_buffer              *buf,
+                                                  const char                       *name) {
+    if (L->n_bufs < sizeof L->bufs / sizeof L->bufs[0]) {
+        L->bufs[L->n_bufs++] = buf;
+        return GEIST_OK;
     }
-    L->bufs[L->n_bufs++] = buf;
-    return 0;
+    st->backend->desc->vtbl->buffer_destroy(st->backend, buf);
+    geist_backend_set_error(
+            st->backend, GEIST_E_INTERNAL, "transformer: layer buffer list overflow on '%s'", name);
+    return GEIST_E_INTERNAL;
 }
 
 static int global_track_buf(struct transformer_arch_state *st, struct geist_buffer *buf) {
@@ -58,20 +66,13 @@ static int global_track_buf(struct transformer_arch_state *st, struct geist_buff
                                                 size_t                            expected_elems,
                                                 struct geist_tensor              *out_view) {
 
-    struct geist_backend *be  = st->backend;
-    struct geist_buffer  *buf = nullptr;
-    enum geist_status     s   = load_norm_to_f32_buffer(st, gguf, name, expected_elems, &buf);
+    struct geist_buffer *buf = nullptr;
+    enum geist_status    s   = load_norm_to_f32_buffer(st, gguf, name, expected_elems, &buf);
     if (s != GEIST_OK) {
         return s;
     }
     *out_view = make_view_1d(buf, GEIST_DTYPE_F32, GEIST_LAYOUT_DENSE, (int64_t) expected_elems);
-    if (layer_track_buf(L, buf) != 0) {
-        be->desc->vtbl->buffer_destroy(be, buf);
-        geist_backend_set_error(
-                be, GEIST_E_INTERNAL, "transformer: layer buffer list overflow on '%s'", name);
-        return GEIST_E_INTERNAL;
-    }
-    return GEIST_OK;
+    return layer_keep(st, L, buf, name);
 }
 
 /* A matrix the resolver refused (GEIST_E_UNSUPPORTED) has no kernel, but on
@@ -134,11 +135,9 @@ load_layer_proj_rope_il(struct transformer_arch_state    *st,
         return GEIST_E_UNSUPPORTED;
     }
     *out_view = make_view_2d(buf, dm.dtype, dm.layout, (int64_t) n_out, (int64_t) n_in);
-    if (layer_track_buf(L, buf) != 0) {
-        be->desc->vtbl->buffer_destroy(be, buf);
-        geist_backend_set_error(
-                be, GEIST_E_INTERNAL, "transformer: layer buffer list overflow on '%s'", name);
-        return GEIST_E_INTERNAL;
+    s         = layer_keep(st, L, buf, name);
+    if (s != GEIST_OK) {
+        return s;
     }
     /* Also populate the pre-resolved kernel pointers when the caller asks
      * for them. struct geist_buffer is opaque to the arch layer, so the
@@ -207,13 +206,9 @@ load_layer_proj_rope_il(struct transformer_arch_state    *st,
                 if (s != GEIST_OK) {
                     return s;
                 }
-                if (layer_track_buf(L, buf32) != 0) {
-                    be->desc->vtbl->buffer_destroy(be, buf32);
-                    geist_backend_set_error(be,
-                                            GEIST_E_INTERNAL,
-                                            "transformer: layer buffer list overflow on '%s'",
-                                            name);
-                    return GEIST_E_INTERNAL;
+                s = layer_keep(st, L, buf32, name);
+                if (s != GEIST_OK) {
+                    return s;
                 }
                 *out_view    = make_view_2d(buf32,
                                             GEIST_DTYPE_F32,
@@ -307,11 +302,9 @@ enum geist_status load_layer_experts(struct transformer_arch_state    *st,
     if (s != GEIST_OK) {
         return s;
     }
-    if (layer_track_buf(L, buf) != 0) {
-        v->buffer_destroy(be, buf);
-        geist_backend_set_error(
-                be, GEIST_E_INTERNAL, "transformer: layer buffer list overflow on '%s'", name);
-        return GEIST_E_INTERNAL;
+    s = layer_keep(st, L, buf, name);
+    if (s != GEIST_OK) {
+        return s;
     }
     const struct dtype_map_entry dm = map_gguf_dtype(t->dtype);
     if (!dm.supported || t->nbytes % n_experts != 0) {
@@ -343,13 +336,9 @@ enum geist_status load_layer_experts(struct transformer_arch_state    *st,
         s = load_tensor_to_buffer(st, gguf, shared, per, WEIGHT_LINEAR, &ts, &bufs);
         if (s != GEIST_OK)
             return s;
-        if (layer_track_buf(L, bufs) != 0) {
-            v->buffer_destroy(be, bufs);
-            geist_backend_set_error(be,
-                                    GEIST_E_INTERNAL,
-                                    "transformer: layer buffer list overflow on '%s'",
-                                    shared);
-            return GEIST_E_INTERNAL;
+        s = layer_keep(st, L, bufs, shared);
+        if (s != GEIST_OK) {
+            return s;
         }
         if (!map_gguf_dtype(ts->dtype).supported) {
             geist_backend_set_error(be,
