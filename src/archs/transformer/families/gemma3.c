@@ -66,8 +66,8 @@ static bool populate_layers_gemma3(struct transformer_arch_state *st) {
         return false;
     }
 
-    uint32_t head_dim = 0, intermediate = 0;
-    float    freq_base = 10000.0f;
+    uint32_t intermediate = 0;
+    float    freq_base    = 10000.0f;
     /* Stock Gemma 3 (#674): with attention.sliding_window set, five of every
      * six layers are local — that window and the local RoPE base
      * rope.freq_base_swa (10000) — and every sixth is global with
@@ -79,7 +79,6 @@ static bool populate_layers_gemma3(struct transformer_arch_state *st) {
     uint32_t sliding = 0, swa_period = 6;
     float    freq_base_swa = 10000.0f;
     if (g != nullptr) {
-        gguf_get_meta_u32(g, "gemma3.attention.key_length", &head_dim);
         gguf_get_meta_u32(g, "gemma3.feed_forward_length", &intermediate);
         gguf_get_meta_f32(g, "gemma3.rope.freq_base", &freq_base);
         if (st->config.pooling == GEIST_POOLING_NONE) {
@@ -88,11 +87,10 @@ static bool populate_layers_gemma3(struct transformer_arch_state *st) {
             gguf_get_meta_f32(g, "gemma3.rope.freq_base_swa", &freq_base_swa);
         }
     }
-    /* Only as a last resort: for the 270M the quotient is 160 and the real
-     * head_dim is 256, so a GGUF without the key is the #258 failure mode. */
-    if (head_dim == 0 && st->n_q_heads > 0) {
-        head_dim = (uint32_t) (st->d_model / st->n_q_heads);
-    }
+    /* The quotient only as a last resort: for the 270M it is 160 and the
+     * real head_dim is 256, so a GGUF without the key is the #258 failure
+     * mode. */
+    const uint32_t head_dim = family_head_dim(st, "gemma3");
     if (head_dim == 0 || intermediate == 0) {
         return false;
     }

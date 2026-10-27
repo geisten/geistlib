@@ -516,15 +516,8 @@ const struct transformer_family transformer_family_qwen35 = {
  */
 static void populate_qwen35moe(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
     populate_q35(gguf, "qwen35moe", st);
-    st->config.moe_norm_topk = true;
+    family_populate_moe(gguf, "qwen35moe", st);
     uint32_t u;
-    bool     b;
-    if (gguf_get_meta_u32(gguf, "qwen35moe.expert_count", &u))
-        st->config.moe_n_experts = u;
-    if (gguf_get_meta_u32(gguf, "qwen35moe.expert_used_count", &u))
-        st->config.moe_n_used = u;
-    if (gguf_get_meta_bool(gguf, "qwen35moe.expert_weights_norm", &b))
-        st->config.moe_norm_topk = b;
     /* A shared expert by its key or, without one, by its tensors: never
      * dropped silently (its width then is the experts', which the load's
      * shape check holds it to). */
@@ -542,8 +535,7 @@ static bool populate_layers_qwen35moe(struct transformer_arch_state *st) {
         if (!gguf_get_meta_u32(g, "qwen35moe.expert_shared_feed_forward_length", &shared_ff))
             shared_ff = ff;
     }
-    if (c->moe_n_experts == 0 || c->moe_n_used == 0 || c->moe_n_used > c->moe_n_experts ||
-        moe_slots(c) > GEIST_MOE_MAX_EXPERTS || (c->moe_n_shared > 0 && shared_ff != ff)) {
+    if (!family_moe_ok(c) || (c->moe_n_shared > 0 && shared_ff != ff)) {
         return false;
     }
     return populate_layers_q35(st, "qwen35moe", "expert_feed_forward_length");

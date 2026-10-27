@@ -71,15 +71,12 @@ static bool populate_layers_qwen3(struct transformer_arch_state *st) {
      * 128 vs quotient 64). Missing key on a geometry where the quotient
      * would be wrong is exactly the #258 failure mode, so fall back to
      * the quotient only as a last resort and fail on zero. */
-    uint32_t head_dim = 0, intermediate = 0;
-    float    freq_base = 1000000.0f;
+    const uint32_t head_dim     = family_head_dim(st, "qwen3");
+    uint32_t       intermediate = 0;
+    float          freq_base    = 1000000.0f;
     if (g != nullptr) {
-        gguf_get_meta_u32(g, "qwen3.attention.key_length", &head_dim);
         gguf_get_meta_u32(g, "qwen3.feed_forward_length", &intermediate);
         gguf_get_meta_f32(g, "qwen3.rope.freq_base", &freq_base);
-    }
-    if (head_dim == 0 && st->n_q_heads > 0) {
-        head_dim = (uint32_t) (st->d_model / st->n_q_heads);
     }
     if (head_dim == 0 || intermediate == 0) {
         return false;
