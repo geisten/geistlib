@@ -1346,6 +1346,13 @@ jobs:
         run: make fetch-qwen35-model
       - name: Fetch Qwen3 reference model
         run: make fetch-qwen3-model
+      - name: Cache Gemma3 reference model
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: gguf_artifacts/gemma-3-270m-it-Q4_K_M.gguf
+          key: geist-model-gemma3-270m-q4km-9b06391b1744
+      - name: Fetch Gemma3 reference model
+        run: make fetch-gemma3-model
       - name: Build + run suites (MODE=cov, fixtures mandatory)
         env:
           GEIST_STRICT_FIXTURES: gguf,audio
