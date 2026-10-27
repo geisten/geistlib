@@ -833,7 +833,88 @@
           "report": "questions still at cap 8192; full reasoning vs early exit, paired (decision_metrics.paired_quality, 2 pp margin), on calibration and test; tokens and lease time"
         },
         "chunking": "wall-clock deadline 28 min, LOCK_MAX=30, LOCK_PRIO=batch, cool start, caffeinate; started around 21:00 Berlin; interleaves with the bench-matrix's 00:00-07:00 ci cells",
-        "order_if_the_night_is_short": "calibration re-run first (the freeze needs it), then the test baseline re-run, then the policy run"
+        "order_if_the_night_is_short": "calibration re-run first (the freeze needs it), then the test baseline re-run, then the policy run",
+        "freeze_result": {
+          "declared_before_test_policy_inference": true,
+          "tau_star": 0.8,
+          "questions": 200,
+          "spotcheck_identical": "8/8",
+          "full_reasoning_accuracy_cap8192": 0.845,
+          "still_capped_at_8192": 13,
+          "full_generated_tokens": 242165,
+          "grid": [
+            {
+              "tau": 0.7,
+              "accuracy": 0.83,
+              "difference_pp": -1.5,
+              "interval_pp": [
+                -8.396258209912538,
+                5.480252835318934
+              ],
+              "gains": 7,
+              "losses": 10,
+              "token_ratio": 0.16451179980591746,
+              "early_exits": 126,
+              "qualifies": false
+            },
+            {
+              "tau": 0.8,
+              "accuracy": 0.85,
+              "difference_pp": 0.5,
+              "interval_pp": [
+                -5.731287500984613,
+                6.699574196582036
+              ],
+              "gains": 7,
+              "losses": 6,
+              "token_ratio": 0.2058596411537588,
+              "early_exits": 124,
+              "qualifies": true
+            },
+            {
+              "tau": 0.9,
+              "accuracy": 0.87,
+              "difference_pp": 2.5,
+              "interval_pp": [
+                -3.259383668446103,
+                8.078134796678235
+              ],
+              "gains": 8,
+              "losses": 3,
+              "token_ratio": 0.29890364008011067,
+              "early_exits": 118,
+              "qualifies": true
+            },
+            {
+              "tau": 0.95,
+              "accuracy": 0.865,
+              "difference_pp": 2.0,
+              "interval_pp": [
+                -3.5588896133442636,
+                7.407156012095586
+              ],
+              "gains": 7,
+              "losses": 3,
+              "token_ratio": 0.4290091466562055,
+              "early_exits": 112,
+              "qualifies": true
+            },
+            {
+              "tau": 0.99,
+              "accuracy": 0.86,
+              "difference_pp": 1.5,
+              "interval_pp": [
+                -1.9292256942419186,
+                4.7882113483402255
+              ],
+              "gains": 3,
+              "losses": 0,
+              "token_ratio": 0.7102347572935809,
+              "early_exits": 80,
+              "qualifies": true
+            }
+          ]
+        }
       }
     ]
   }
