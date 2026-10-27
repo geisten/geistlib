@@ -572,8 +572,8 @@ size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
 
 /* Dequantize one row of the embed_table into a HIDDEN-sized scratch
  * buffer. Gemma 3/4 multiply the embedding by sqrt(d_model); Llama /
- * BitNet do not. The scale is gated on has_ple because PLE is
- * Gemma-family-exclusive. */
+ * BitNet do not. Gated on has_embed_scale, as in prefill: Gemma 3 has the
+ * scale and no PLE. */
 /* Inlined into transformer_decode_step as before batched decode (#26) called
  * it too: the single-token path keeps its code. */
 [[nodiscard, gnu::always_inline]] static inline enum geist_status
@@ -586,7 +586,7 @@ embed_lookup_and_scale(struct transformer_arch_session *sess,
         return GEIST_E_INVALID_ARG;
     }
     struct geist_backend *be    = st->backend;
-    const float           scale = st->config.has_ple ? sqrtf((float) st->d_model) : 1.0f;
+    const float           scale = st->config.has_embed_scale ? sqrtf((float) st->d_model) : 1.0f;
 
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
     /* Device path: fused lookup+scale keeps batched GPU backends from

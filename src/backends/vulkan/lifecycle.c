@@ -579,7 +579,7 @@ static size_t vk_parse_bytes(const char *v) {
     }
     *st                 = (struct vk_state) {0};
     st->backend         = be;
-    st->profile_enabled = getenv("GEIST_VK_PROFILE") != nullptr;
+    st->profile_enabled = geist_env_flag("GEIST_VK_PROFILE", false);
     st->pq2_f32_acc     = geist_env_flag("GEIST_VK_PQ2_F32_ACC", false);
     st->strict          = geist_env_flag("GEIST_VK_STRICT", false);
     st->vram_budget     = vk_parse_bytes(getenv("GEIST_VK_VRAM_BUDGET"));
