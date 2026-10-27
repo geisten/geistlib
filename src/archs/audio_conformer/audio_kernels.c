@@ -150,13 +150,6 @@ void silu_fp32(size_t n, float x[static n]) {
     }
 }
 
-void clamp_fp32(size_t n, float x[static n], float lo, float hi) {
-    for (size_t i = 0; i < n; i++) {
-        float v = x[i];
-        x[i]    = v < lo ? lo : (v > hi ? hi : v);
-    }
-}
-
 void glu_fp32(size_t batch, size_t d, const float *x, float *y) {
     /* x is (batch, 2*d), y is (batch, d).
      * y[b, i] = x[b, i] * sigmoid(x[b, d + i]). */

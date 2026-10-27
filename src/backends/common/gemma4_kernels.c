@@ -595,3 +595,33 @@ void rmsnorm_fp32(
 #endif
     }
 }
+
+/* NEON 16-wide on ARM, as min(max(x, lo), hi): bit-exact with the scalar
+ * tail for finite inputs and lo <= hi. */
+void clamp_fp32(size_t n, float x[static n], float lo, float hi) {
+    size_t i = 0;
+#if defined(__ARM_NEON)
+    const float32x4_t vlo = vdupq_n_f32(lo);
+    const float32x4_t vhi = vdupq_n_f32(hi);
+    for (; i + 16 <= n; i += 16) {
+        float32x4_t v0 = vld1q_f32(x + i + 0);
+        float32x4_t v1 = vld1q_f32(x + i + 4);
+        float32x4_t v2 = vld1q_f32(x + i + 8);
+        float32x4_t v3 = vld1q_f32(x + i + 12);
+        v0             = vminq_f32(vmaxq_f32(v0, vlo), vhi);
+        v1             = vminq_f32(vmaxq_f32(v1, vlo), vhi);
+        v2             = vminq_f32(vmaxq_f32(v2, vlo), vhi);
+        v3             = vminq_f32(vmaxq_f32(v3, vlo), vhi);
+        vst1q_f32(x + i + 0, v0);
+        vst1q_f32(x + i + 4, v1);
+        vst1q_f32(x + i + 8, v2);
+        vst1q_f32(x + i + 12, v3);
+    }
+#endif
+    for (; i < n; i++) {
+        if (x[i] < lo)
+            x[i] = lo;
+        else if (x[i] > hi)
+            x[i] = hi;
+    }
+}

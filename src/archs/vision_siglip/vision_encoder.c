@@ -316,49 +316,6 @@ static void dbg_dump(const char *name, const float *buf, size_t n) {
     fclose(f);
 }
 
-/* In-place per-head RMSNorm: applies rmsnorm_fp32 to each (head_dim,)
- * slice within (n_tokens, n_heads, head_dim). */
-static void rmsnorm_per_head(float       *x,
-                             const float *weight,
-                             size_t       n_tokens,
-                             size_t       n_heads,
-                             size_t       head_dim,
-                             float        eps) {
-    rmsnorm_fp32(n_tokens * n_heads, head_dim, x, weight, eps, x);
-}
-
-/* In-place clamp x to [lo, hi] (Gemma4ClippableLinear input/output gates).
- * NEON-vectorized 16-wide on ARM; bit-exact vs scalar for finite inputs
- * (NaN behavior is irrelevant since activations are guaranteed finite
- * by the upstream clamp chain). */
-static void clamp_fp32(size_t n, float *x, float lo, float hi) {
-    size_t i = 0;
-#if defined(__ARM_NEON)
-    const float32x4_t vlo = vdupq_n_f32(lo);
-    const float32x4_t vhi = vdupq_n_f32(hi);
-    for (; i + 16 <= n; i += 16) {
-        float32x4_t v0 = vld1q_f32(x + i + 0);
-        float32x4_t v1 = vld1q_f32(x + i + 4);
-        float32x4_t v2 = vld1q_f32(x + i + 8);
-        float32x4_t v3 = vld1q_f32(x + i + 12);
-        v0             = vminq_f32(vmaxq_f32(v0, vlo), vhi);
-        v1             = vminq_f32(vmaxq_f32(v1, vlo), vhi);
-        v2             = vminq_f32(vmaxq_f32(v2, vlo), vhi);
-        v3             = vminq_f32(vmaxq_f32(v3, vlo), vhi);
-        vst1q_f32(x + i + 0, v0);
-        vst1q_f32(x + i + 4, v1);
-        vst1q_f32(x + i + 8, v2);
-        vst1q_f32(x + i + 12, v3);
-    }
-#endif
-    for (; i < n; i++) {
-        if (x[i] < lo)
-            x[i] = lo;
-        else if (x[i] > hi)
-            x[i] = hi;
-    }
-}
-
 bool vision_encoder_run_tower(const struct VisionEncoder *v,
                               size_t                      n_patches,
                               const float                *patches_in,
@@ -500,9 +457,10 @@ bool vision_encoder_run_tower(const struct VisionEncoder *v,
             }
         }
 
-        rmsnorm_per_head(q, L->q_norm, n_patches, V_HEADS, V_HEAD_D, V_EPS);
-        rmsnorm_per_head(k, L->k_norm, n_patches, V_HEADS, V_HEAD_D, V_EPS);
-        rmsnorm_per_head(vbuf, nullptr, n_patches, V_HEADS, V_HEAD_D, V_EPS);
+        /* per-head RMSNorm over each (head_dim,) slice; v without a scale */
+        rmsnorm_fp32(n_patches * V_HEADS, V_HEAD_D, q, L->q_norm, V_EPS, q);
+        rmsnorm_fp32(n_patches * V_HEADS, V_HEAD_D, k, L->k_norm, V_EPS, k);
+        rmsnorm_fp32(n_patches * V_HEADS, V_HEAD_D, vbuf, nullptr, V_EPS, vbuf);
 
         rope_2d_split_fp32(n_patches, V_HEADS, V_HEAD_D, V_THETA, q, positions);
         rope_2d_split_fp32(n_patches, V_HEADS, V_HEAD_D, V_THETA, k, positions);
