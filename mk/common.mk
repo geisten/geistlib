@@ -255,7 +255,6 @@ LIB_SOURCES := \
     src/archs/transformer/forward/decision_rows.c \
     src/archs/transformer/forward/mtp.c \
     src/archs/transformer/forward/spec_head.c \
-    src/archs/transformer/weight_load/dtype_map.c \
     src/archs/transformer/weight_load/tensor_views.c \
     src/archs/transformer/weight_load/layer_wiring.c \
     src/archs/transformer/arch_ops.c \

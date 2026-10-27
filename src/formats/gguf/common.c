@@ -201,51 +201,6 @@ bool quant_dequant_row(enum geist_dtype dt,
     }
 }
 
-/* The geist dtype a GGUF tensor's rows decode as; GEIST_DTYPE_CUSTOM (no
- * decoder) for a GGUF type quant_dequant_row does not cover. */
-static enum geist_dtype gguf_row_dtype(gguf_dtype_t gd) {
-    switch (gd) {
-    case GGUF_TYPE_F32:
-        return GEIST_DTYPE_F32;
-    case GGUF_TYPE_F16:
-        return GEIST_DTYPE_F16;
-    case GGUF_TYPE_BF16:
-        return GEIST_DTYPE_BF16;
-    case GGUF_TYPE_Q4_0:
-        return GEIST_DTYPE_Q4_0;
-    case GGUF_TYPE_Q4_1:
-        return GEIST_DTYPE_Q4_1;
-    case GGUF_TYPE_Q5_0:
-        return GEIST_DTYPE_Q5_0;
-    case GGUF_TYPE_Q8_0:
-        return GEIST_DTYPE_Q8_0;
-    case GGUF_TYPE_Q3_K:
-        return GEIST_DTYPE_Q3_K;
-    case GGUF_TYPE_Q4_K:
-        return GEIST_DTYPE_Q4_K;
-    case GGUF_TYPE_Q5_K:
-        return GEIST_DTYPE_Q5_K;
-    case GGUF_TYPE_Q6_K:
-        return GEIST_DTYPE_Q6_K;
-    case GGUF_TYPE_IQ2_S:
-        return GEIST_DTYPE_IQ2_S;
-    case GGUF_TYPE_IQ3_S:
-        return GEIST_DTYPE_IQ3_S;
-    case GGUF_TYPE_IQ4_NL:
-        return GEIST_DTYPE_IQ4_NL;
-    case GGUF_TYPE_IQ4_XS:
-        return GEIST_DTYPE_IQ4_XS;
-    case GGUF_TYPE_TQ2_0:
-        return GEIST_DTYPE_TQ2_0;
-    case GGUF_TYPE_PQ2_0:
-        return GEIST_DTYPE_PQ2_0;
-    case GGUF_TYPE_I2_S:
-        return GEIST_DTYPE_I2_S;
-    default:
-        return GEIST_DTYPE_CUSTOM;
-    }
-}
-
 bool gguf_dequant_row_to_fp32(const struct gguf_tensor_t *t,
                               size_t                      row_idx,
                               size_t                      row_elems,
@@ -256,7 +211,7 @@ bool gguf_dequant_row_to_fp32(const struct gguf_tensor_t *t,
         return false;
     }
     return quant_dequant_row(
-            gguf_row_dtype(t->dtype), gguf_tensor_elem_count(t), e0, row_elems, t->data, out);
+            gguf_dtype_geist(t->dtype), gguf_tensor_elem_count(t), e0, row_elems, t->data, out);
 }
 
 float *gguf_dequant_to_fp32(const struct gguf_tensor_t *t) {
@@ -266,7 +221,7 @@ float *gguf_dequant_to_fp32(const struct gguf_tensor_t *t) {
     float *out   = heap_alloc_array_aligned(float, elems);
     if (!out)
         return nullptr;
-    if (!quant_dequant_row(gguf_row_dtype(t->dtype), elems, 0, elems, t->data, out)) {
+    if (!quant_dequant_row(gguf_dtype_geist(t->dtype), elems, 0, elems, t->data, out)) {
         safe_free((void **) &out);
         return nullptr;
     }
