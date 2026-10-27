@@ -286,7 +286,7 @@ Each runner host has its own cache, listening where its jobs connect:
 | :-- | :-- | :-- | :-- |
 | desktop | user unit `git-cache` | `192.168.178.43:8417` | `desktop-ci`, `desktop-tsan` |
 | Pi 5 | system unit `git-cache` (as `germar`) | `172.17.0.1:8417` (docker bridge), `127.0.0.1:8417` | `pi5-ci` → bridge, `pi5-rspdevelop` (host mode) → 127.0.0.1 |
-| Mac | LaunchAgent `net.geisten.git-cache` | `127.0.0.1:8417` | `mac-light`, `mac-m1max` (host mode) |
+| Mac | none (removed 2026-10-27, see below) | | `mac-light`, `mac-m1max` fetch from Gitea |
 | cloud-arm64-hel1 | system unit `git-cache` | `172.17.0.1:8417` | not yet (no token) |
 
 The Pi takes the same workflow with `-i host=pi5`. Its deploy job runs on
@@ -297,21 +297,15 @@ from a transient unit once the job has ended and the lock is free.
 and the cache's log, where every checkout of a Pi job appears as `served
 127.0.0.1` (host mode) or `served 172.…` (`pi5-ci`).
 
-The Mac is installed by hand, `sh scripts/git-cache-mac.sh install`
-(`status` shows its state). Its token is not the org secret: the user
-places a read-only token in `~/.config/git-cache/token` (mode 0600), and
-launchd starts the cache once that file exists. The host-mode runners do
-not point git at the cache directly; their `envs` include a file
-
-```yaml
-  GIT_CONFIG_COUNT: "1"
-  GIT_CONFIG_KEY_0: include.path
-  GIT_CONFIG_VALUE_0: /Users/germar/git-cache/ci.gitconfig
-```
-
-that the cache writes once it serves geistlib and removes when it stops. A
-missing include file is ignored, so without the token, or with the cache
-down, Mac jobs fetch from Gitea as before.
+The Mac has no git cache any more (2026-10-27). It never got its read-only
+token, so it never served, and its include file in the runners' `envs`
+(`GIT_CONFIG_COUNT`/`KEY_0` = `include.path`) overrode the workflows' own
+`GIT_CONFIG_KEY_0` token rule: Mac jobs then fetched geistlib with a personal
+credential from the login keychain, and failed once that was unavailable.
+The workflows now pass the geistlib token in `GIT_CONFIG_PARAMETERS`, which
+the runners' numbered keys cannot override, and the Mac runners set no git
+configuration. `scripts/git-cache-mac.sh install` would set the cache up
+again; it needs a read-only token in `~/.config/git-cache/token`.
 
 ## CI hygiene
 
