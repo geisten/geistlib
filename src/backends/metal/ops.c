@@ -1062,22 +1062,6 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
     return metal_op_end(be, cmd, enc, "F32 linear");
 }
 
-[[nodiscard]] static enum geist_status metal_matvec_f32_dense(struct geist_backend      *be,
-                                                              const struct geist_tensor *x,
-                                                              const struct geist_tensor *w,
-                                                              struct geist_tensor       *y) {
-
-    return metal_f32_linear(be, x, w, y, false);
-}
-
-[[nodiscard]] static enum geist_status metal_matmul_f32_dense(struct geist_backend      *be,
-                                                              const struct geist_tensor *x,
-                                                              const struct geist_tensor *w,
-                                                              struct geist_tensor       *y) {
-
-    return metal_f32_linear(be, x, w, y, true);
-}
-
 [[nodiscard]] static enum geist_status metal_rmsnorm(struct geist_backend      *be,
                                                      const struct geist_tensor *x,
                                                      const struct geist_tensor *w,
@@ -2088,82 +2072,6 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
     return metal_op_end(be, cmd, enc, "Q4_K matmul");
 }
 
-[[nodiscard]] static enum geist_status metal_q5k_linear(struct geist_backend      *be,
-                                                        const struct geist_tensor *x,
-                                                        const struct geist_tensor *w,
-                                                        struct geist_tensor       *y,
-                                                        bool                       matrix) {
-    if (be == nullptr || be->state == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    size_t rows = 1, n_in = 0, x_offset = 0, x_row_stride = 0;
-    size_t y_rows = 1, y_cols = 0, y_offset = 0, y_row_stride = 0;
-    size_t n_out = 0, w_cols = 0, w_offset = 0;
-    bool   ok;
-    if (matrix) {
-        ok = metal_tensor_is_f32_matrix(x, &rows, &n_in, &x_offset, &x_row_stride) &&
-             metal_tensor_is_f32_matrix(y, &y_rows, &y_cols, &y_offset, &y_row_stride) &&
-             y_rows == rows;
-    } else {
-        ok           = metal_tensor_is_f32_vector(x, &n_in, &x_offset) &&
-                       metal_tensor_is_f32_vector(y, &y_cols, &y_offset);
-        x_row_stride = n_in;
-        y_row_stride = y_cols;
-    }
-    if (!ok || !metal_tensor_is_q5k_matrix(w, &n_out, &w_cols, &w_offset) || w_cols != n_in ||
-        y_cols != n_out) {
-        return GEIST_E_UNSUPPORTED;
-    }
-    if (rows > UINT32_MAX || n_in > UINT32_MAX || n_out > UINT32_MAX || x_offset > UINT32_MAX ||
-        y_offset > UINT32_MAX || w_offset > UINT32_MAX || x_row_stride > UINT32_MAX ||
-        y_row_stride > UINT32_MAX) {
-        return GEIST_E_INVALID_ARG;
-    }
-    if (x->buffer->owner != be->state || w->buffer->owner != be->state ||
-        y->buffer->owner != be->state) {
-        return GEIST_E_INVALID_ARG;
-    }
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
-    if (s != GEIST_OK) {
-        return s;
-    }
-    struct metal_state           *st     = be->state;
-    const struct metal_q4k_params params = {
-            .n_in           = (uint32_t) n_in,
-            .n_out          = (uint32_t) n_out,
-            .rows           = (uint32_t) rows,
-            .blocks_per_row = (uint32_t) (n_in / METAL_Q5K_BLOCK_ELEMS),
-            .x_offset       = (uint32_t) x_offset,
-            .w_byte_offset  = (uint32_t) w_offset,
-            .y_offset       = (uint32_t) y_offset,
-            .x_row_stride   = (uint32_t) x_row_stride,
-            .y_row_stride   = (uint32_t) y_row_stride,
-    };
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-
-    void *cmd = nullptr;
-    void *enc = metal_op_begin(be, nullptr, &cmd);
-    if (enc == nullptr) {
-        return GEIST_E_BACKEND;
-    }
-    metal_encode_q40_q80_linear(st, enc, x, w, y, &params, GEIST_DTYPE_Q5_K);
-    return metal_op_end(be, cmd, enc, nullptr);
-}
-
-[[nodiscard]] static enum geist_status metal_matvec_q5k(struct geist_backend      *be,
-                                                        const struct geist_tensor *x,
-                                                        const struct geist_tensor *w,
-                                                        struct geist_tensor       *y) {
-    return metal_q5k_linear(be, x, w, y, false);
-}
-
-[[nodiscard]] static enum geist_status metal_matmul_q5k(struct geist_backend      *be,
-                                                        const struct geist_tensor *x,
-                                                        const struct geist_tensor *w,
-                                                        struct geist_tensor       *y) {
-    return metal_q5k_linear(be, x, w, y, true);
-}
-
 [[nodiscard]] static enum geist_status metal_q6k_linear(struct geist_backend      *be,
                                                         const struct geist_tensor *x,
                                                         const struct geist_tensor *w,
@@ -2243,20 +2151,6 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
     }
     metal_encode_q6k_linear(st, enc, x, w, y, &params, matrix);
     return metal_op_end(be, cmd, enc, "Q6_K linear");
-}
-
-[[nodiscard]] static enum geist_status metal_matvec_q6k(struct geist_backend      *be,
-                                                        const struct geist_tensor *x,
-                                                        const struct geist_tensor *w,
-                                                        struct geist_tensor       *y) {
-    return metal_q6k_linear(be, x, w, y, false);
-}
-
-[[nodiscard]] static enum geist_status metal_matmul_q6k(struct geist_backend      *be,
-                                                        const struct geist_tensor *x,
-                                                        const struct geist_tensor *w,
-                                                        struct geist_tensor       *y) {
-    return metal_q6k_linear(be, x, w, y, true);
 }
 
 [[nodiscard]] static enum geist_status metal_rope_apply(struct geist_backend      *be,
@@ -3400,7 +3294,7 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
         proj_1d.shape[1]  = 0;
         proj_1d.stride[1] = 0;
     }
-    s = metal_matvec_f32_dense(be, &gate_1d, proj_w, &proj_1d);
+    s = metal_f32_linear(be, &gate_1d, proj_w, &proj_1d, false);
     if (s != GEIST_OK || norm_w == nullptr) { /* without norm_w the arch finishes */
         return s;
     }
@@ -3677,6 +3571,29 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
     return metal_op_end(be, cmd, enc, "attention");
 }
 
+/* The one dtype -> linear op switch: matrix runs the m-row GEMM, else the
+ * one-row matvec on 1D views. */
+[[nodiscard]] static enum geist_status metal_linear_dtype(struct geist_backend      *be,
+                                                          const struct geist_tensor *x,
+                                                          const struct geist_tensor *w,
+                                                          struct geist_tensor       *y,
+                                                          enum geist_dtype           dtype,
+                                                          bool                       matrix) {
+    if (metal_dtype_is_generic_quant(dtype)) {
+        return metal_q40_q80_linear(be, x, w, y, dtype, matrix);
+    }
+    if (metal_dtype_is_float(dtype)) {
+        return metal_f32_linear(be, x, w, y, matrix);
+    }
+    if (dtype == GEIST_DTYPE_Q4_K) {
+        return matrix ? metal_matmul_q4k(be, x, w, y) : metal_matvec_q4k(be, x, w, y);
+    }
+    if (dtype == GEIST_DTYPE_Q6_K) {
+        return metal_q6k_linear(be, x, w, y, matrix);
+    }
+    return GEIST_E_UNSUPPORTED;
+}
+
 static void metal_linear_mN(size_t                     m,
                             const float               *x,
                             const struct geist_weight *w,
@@ -3745,41 +3662,12 @@ static void metal_linear_mN(size_t                     m,
             .shape  = {(int64_t) n_out, (int64_t) n_in},
             .stride = {0, 0},
     };
-    enum geist_status s;
-    switch ((enum geist_dtype) w->dtype) {
-    case GEIST_DTYPE_Q4_0:
-    case GEIST_DTYPE_Q4_1:
-    case GEIST_DTYPE_Q8_0:
-    case GEIST_DTYPE_IQ4_NL:
-    case GEIST_DTYPE_IQ4_XS:
-    case GEIST_DTYPE_Q3_K:
-    case GEIST_DTYPE_IQ3_S:
-    case GEIST_DTYPE_PQ2_0:
-    case GEIST_DTYPE_TQ2_0:
-    case GEIST_DTYPE_I2_S:
-        s = metal_q40_q80_linear(be, &tx, &tw, &ty, (enum geist_dtype) w->dtype, true);
-        break;
-    case GEIST_DTYPE_Q4_K:
-        s = metal_matmul_q4k(be, &tx, &tw, &ty);
-        break;
-    case GEIST_DTYPE_Q5_K:
-        s = metal_matmul_q5k(be, &tx, &tw, &ty);
-        break;
-    case GEIST_DTYPE_Q6_K:
-        s = metal_matmul_q6k(be, &tx, &tw, &ty);
-        break;
-    case GEIST_DTYPE_F16:
-    case GEIST_DTYPE_BF16:
-    case GEIST_DTYPE_F32:
+    if (metal_dtype_is_float(tw.dtype)) {
         tw.layout    = GEIST_LAYOUT_DENSE;
         tw.stride[0] = (int64_t) n_in;
         tw.stride[1] = 1;
-        s            = metal_matmul_f32_dense(be, &tx, &tw, &ty);
-        break;
-    default:
-        s = GEIST_E_UNSUPPORTED;
-        break;
     }
+    const enum geist_status s = metal_linear_dtype(be, &tx, &tw, &ty, tw.dtype, true);
     if (s != GEIST_OK) {
         fprintf(stderr,
                 "geist metal: linear dispatch failed "
@@ -3836,57 +3724,9 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
             y1.shape[1]  = 0;
             y1.stride[1] = 0;
         }
-        switch ((enum geist_dtype) w->dtype) {
-        case GEIST_DTYPE_Q4_0:
-        case GEIST_DTYPE_Q4_1:
-        case GEIST_DTYPE_Q8_0:
-        case GEIST_DTYPE_IQ4_NL:
-        case GEIST_DTYPE_IQ4_XS:
-        case GEIST_DTYPE_Q3_K:
-        case GEIST_DTYPE_IQ3_S:
-        case GEIST_DTYPE_PQ2_0:
-        case GEIST_DTYPE_TQ2_0:
-        case GEIST_DTYPE_I2_S:
-            return metal_q40_q80_linear(be, &x1, t_w, &y1, (enum geist_dtype) w->dtype, false);
-        case GEIST_DTYPE_Q4_K:
-            return metal_matvec_q4k(be, &x1, t_w, &y1);
-        case GEIST_DTYPE_Q5_K:
-            return metal_matvec_q5k(be, &x1, t_w, &y1);
-        case GEIST_DTYPE_Q6_K:
-            return metal_matvec_q6k(be, &x1, t_w, &y1);
-        case GEIST_DTYPE_F16:
-        case GEIST_DTYPE_BF16:
-        case GEIST_DTYPE_F32:
-            return metal_matvec_f32_dense(be, &x1, t_w, &y1);
-        default:
-            return GEIST_E_UNSUPPORTED;
-        }
+        return metal_linear_dtype(be, &x1, t_w, &y1, (enum geist_dtype) w->dtype, false);
     }
-    switch ((enum geist_dtype) w->dtype) {
-    case GEIST_DTYPE_Q4_0:
-    case GEIST_DTYPE_Q4_1:
-    case GEIST_DTYPE_Q8_0:
-    case GEIST_DTYPE_IQ4_NL:
-    case GEIST_DTYPE_IQ4_XS:
-    case GEIST_DTYPE_Q3_K:
-    case GEIST_DTYPE_IQ3_S:
-    case GEIST_DTYPE_PQ2_0:
-    case GEIST_DTYPE_TQ2_0:
-    case GEIST_DTYPE_I2_S:
-        return metal_q40_q80_linear(be, x, t_w, y, (enum geist_dtype) w->dtype, true);
-    case GEIST_DTYPE_Q4_K:
-        return metal_matmul_q4k(be, x, t_w, y);
-    case GEIST_DTYPE_Q5_K:
-        return metal_matmul_q5k(be, x, t_w, y);
-    case GEIST_DTYPE_Q6_K:
-        return metal_matmul_q6k(be, x, t_w, y);
-    case GEIST_DTYPE_F16:
-    case GEIST_DTYPE_BF16:
-    case GEIST_DTYPE_F32:
-        return metal_matmul_f32_dense(be, x, t_w, y);
-    default:
-        return GEIST_E_UNSUPPORTED;
-    }
+    return metal_linear_dtype(be, x, t_w, y, (enum geist_dtype) w->dtype, true);
 }
 
 [[nodiscard]] static enum geist_status metal_selected_prepare(const struct geist_weight *w,
@@ -3896,7 +3736,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
         return s;
     const struct metal_state *st    = be->state;
     const enum geist_dtype    dtype = (enum geist_dtype) w->dtype;
-    if (dtype == GEIST_DTYPE_F32 || dtype == GEIST_DTYPE_F16 || dtype == GEIST_DTYPE_BF16)
+    if (metal_dtype_is_float(dtype))
         return GEIST_OK;
     if (dtype == GEIST_DTYPE_Q4_K)
         return st->q4k_n4_pipeline != nullptr ? GEIST_OK : GEIST_E_UNSUPPORTED;
@@ -3971,7 +3811,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
                                   : tile;
         const size_t wo = t_w->offset + (size_t) ids[i] * stride;
         const size_t yo = y->offset / sizeof(float) + i * tile;
-        if (dtype == GEIST_DTYPE_F32 || dtype == GEIST_DTYPE_F16 || dtype == GEIST_DTYPE_BF16) {
+        if (metal_dtype_is_float(dtype)) {
             const struct metal_f32_params params = {
                     .n_in         = (uint32_t) w->n_in,
                     .n_out        = (uint32_t) n,
@@ -4074,8 +3914,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
         w->linear_mN                   = metal_linear_mN;
         const struct metal_state *st   = be->state;
         size_t                    tile = 0;
-        if (w->dtype == GEIST_DTYPE_F32 || w->dtype == GEIST_DTYPE_F16 ||
-            w->dtype == GEIST_DTYPE_BF16) {
+        if (metal_dtype_is_float((enum geist_dtype) w->dtype)) {
             tile = 1;
         } else if (w->dtype == GEIST_DTYPE_Q4_K) {
             tile = 4;

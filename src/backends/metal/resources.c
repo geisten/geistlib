@@ -934,44 +934,15 @@ bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
     return true;
 }
 
-bool metal_tensor_is_q5k_matrix(const struct geist_tensor *t,
-                                size_t                    *out_rows,
-                                size_t                    *out_cols,
-                                size_t                    *out_offset_bytes) {
-    if (t == nullptr || t->buffer == nullptr || t->dtype != GEIST_DTYPE_Q5_K ||
-        t->layout != GEIST_LAYOUT_BLOCK_QUANTIZED || t->ndim != 2 || t->shape[0] <= 0 ||
-        t->shape[1] <= 0 || ((size_t) t->shape[1] % METAL_Q5K_BLOCK_ELEMS) != 0) {
-        return false;
-    }
-    const size_t rows           = (size_t) t->shape[0];
-    const size_t cols           = (size_t) t->shape[1];
-    const size_t blocks_per_row = cols / METAL_Q5K_BLOCK_ELEMS;
-    if (rows > SIZE_MAX / blocks_per_row ||
-        rows * blocks_per_row > SIZE_MAX / METAL_Q5K_BLOCK_BYTES) {
-        return false;
-    }
-    const size_t bytes = rows * blocks_per_row * METAL_Q5K_BLOCK_BYTES;
-    if (t->offset > t->buffer->bytes || bytes > t->buffer->bytes - t->offset) {
-        return false;
-    }
-    *out_rows         = rows;
-    *out_cols         = cols;
-    *out_offset_bytes = t->offset;
-    return true;
-}
-
 bool metal_tensor_is_q40_q80_matrix(const struct geist_tensor *t,
                                     enum geist_dtype           dtype,
                                     size_t                    *out_rows,
                                     size_t                    *out_cols,
                                     size_t                    *out_offset_bytes) {
-    if ((dtype != GEIST_DTYPE_Q4_0 && dtype != GEIST_DTYPE_Q4_1 && dtype != GEIST_DTYPE_Q8_0 &&
-         dtype != GEIST_DTYPE_IQ4_NL && dtype != GEIST_DTYPE_IQ4_XS && dtype != GEIST_DTYPE_Q3_K &&
-         dtype != GEIST_DTYPE_IQ3_S && dtype != GEIST_DTYPE_PQ2_0 && dtype != GEIST_DTYPE_TQ2_0 &&
-         dtype != GEIST_DTYPE_I2_S) ||
-        t == nullptr || t->buffer == nullptr || t->dtype != dtype ||
-        t->layout != GEIST_LAYOUT_BLOCK_QUANTIZED || t->ndim != 2 || t->shape[0] <= 0 ||
-        t->shape[1] <= 0 || ((size_t) t->shape[1] % metal_quant_block_elems(dtype)) != 0) {
+    if (!metal_dtype_is_generic_quant(dtype) || t == nullptr || t->buffer == nullptr ||
+        t->dtype != dtype || t->layout != GEIST_LAYOUT_BLOCK_QUANTIZED || t->ndim != 2 ||
+        t->shape[0] <= 0 || t->shape[1] <= 0 ||
+        ((size_t) t->shape[1] % metal_quant_block_elems(dtype)) != 0) {
         return false;
     }
     const size_t rows = (size_t) t->shape[0];

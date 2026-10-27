@@ -625,8 +625,6 @@ enum {
     METAL_Q4K_BLOCK_BYTES               = 144u,
     METAL_Q4K_NT4_DEFAULT_MAX_N_OUT     = 8192u,
     METAL_Q4K_NT4_LARGE_MAX_N_OUT       = 262144u,
-    METAL_Q5K_BLOCK_ELEMS               = 256u,
-    METAL_Q5K_BLOCK_BYTES               = 176u,
     METAL_Q6K_BLOCK_ELEMS               = 256u,
     METAL_Q6K_BLOCK_BYTES               = 210u,
     METAL_Q6K_NT4_MIN_N_OUT             = 1024u,
@@ -636,6 +634,32 @@ enum {
     METAL_ELEM_THREADS                  = 256u,
     METAL_QNORM_ATTENTION_MAX_HEAD_DIM  = 512u,
 };
+
+/* The dtypes whose linear is metal_q40_q80_linear: one kernel family
+ * indexed by dtype, one validator (metal_tensor_is_q40_q80_matrix). */
+static inline bool metal_dtype_is_generic_quant(enum geist_dtype dtype) {
+    switch (dtype) {
+    case GEIST_DTYPE_Q4_0:
+    case GEIST_DTYPE_Q4_1:
+    case GEIST_DTYPE_Q8_0:
+    case GEIST_DTYPE_Q5_K:
+    case GEIST_DTYPE_IQ4_NL:
+    case GEIST_DTYPE_IQ4_XS:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_PQ2_0:
+    case GEIST_DTYPE_TQ2_0:
+    case GEIST_DTYPE_I2_S:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Dense float weights: metal_f32_linear reads F32, F16 and BF16. */
+static inline bool metal_dtype_is_float(enum geist_dtype dtype) {
+    return dtype == GEIST_DTYPE_F32 || dtype == GEIST_DTYPE_F16 || dtype == GEIST_DTYPE_BF16;
+}
 
 /* Elements per raw block of `dtype` (quant_block_layout); 1 for a dtype
  * without a fixed layout. */
@@ -1054,10 +1078,6 @@ bool metal_tensor_is_q4k_matrix(const struct geist_tensor *t,
                                 size_t                    *out_offset_bytes);
 
 bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
-                                size_t                    *out_rows,
-                                size_t                    *out_cols,
-                                size_t                    *out_offset_bytes);
-bool metal_tensor_is_q5k_matrix(const struct geist_tensor *t,
                                 size_t                    *out_rows,
                                 size_t                    *out_cols,
                                 size_t                    *out_offset_bytes);
