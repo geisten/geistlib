@@ -668,17 +668,12 @@ multi_attention(struct transformer_layer_forward_ctx  *ctx,
     struct transformer_arch_state    *st = ctx->st;
     struct transformer_arch_session  *c  = ctx->sess;
     struct transformer_layer_weights *L  = ctx->L;
-    const size_t                      d  = st->d_model;
     if (!st->config.has_attn_output_gate || !ctx->compute_kv) {
         return GEIST_E_UNSUPPORTED;
     }
-    enum geist_status s = blk_rmsnorm(ctx, d, ctx->h_in_buf, &L->attn_norm, c->scratch_normed);
-    if (s == GEIST_OK)
-        s = transformer_rotate_rows(st, ctx->seq, d, c->scratch_normed);
-    if (s == GEIST_OK)
-        s = blk_qkv(ctx, c->scratch_normed);
-    if (s == GEIST_OK)
-        s = blk_qk_norm(ctx, &L->q_norm, &L->k_norm);
+    /* blk_attention's halves; ctx_init leaves the prenorm and add-norm
+     * fusions off for this family. */
+    enum geist_status s = blk_attn_in(ctx, &L->q_norm, &L->k_norm);
     for (size_t b = 0; s == GEIST_OK && b < n; b++) {
         struct transformer_arch_session     *q = seqs[b];
         struct transformer_layer_forward_ctx cb;
@@ -704,11 +699,7 @@ multi_attention(struct transformer_layer_forward_ctx  *ctx,
         if (s == GEIST_OK)
             s = copy_row(ctx->v, c->scratch_attn, b, q->scratch_attn, 0, ctx->q_out);
     }
-    if (s == GEIST_OK)
-        s = blk_o_proj(ctx);
-    if (s == GEIST_OK)
-        s = blk_add(ctx, d, ctx->h_in_buf, c->scratch_o, c->scratch_h_post_attn);
-    return s;
+    return s == GEIST_OK ? blk_attn_out(ctx, nullptr) : s;
 }
 
 enum geist_status transformer_multi_layer(struct transformer_arch_session       *carrier,
