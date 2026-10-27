@@ -84,7 +84,7 @@ static struct geist_backend_fused      cpu_x86_fused;
     }
     *st               = (struct cpu_x86_state) {0};
     st->max_threads   = opts != nullptr && opts->max_threads > 0 ? opts->max_threads : 0;
-    st->ws_generation = cpu_x86_ws_next_generation();
+    st->ws_generation = geist_thread_ws_next_generation();
     be->state         = st;
     return GEIST_OK;
 }

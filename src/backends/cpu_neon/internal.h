@@ -20,13 +20,15 @@
 #include "host_buffer.h" /* struct geist_buffer */
 #include "hw_probe.h"
 #include "kernel_catalog.h"
+#include "thread_ws.h"
 
 /* Kernel scratch for temporary int8 / fp32 / int32 buffers. One
  * workspace PER CALLING THREAD, owned by the backend: concurrent
  * sessions (one thread each, see geist_arch.h) quantize activations
  * and stage dequant tiles here, so a shared instance would race
  * (test_multi_session_parallel_int). Per-thread instances hang off
- * cpu_neon_state.ws_head; no scratch outlives the backend.
+ * cpu_neon_state.ws_head (common/thread_ws.h); no scratch outlives the
+ * backend.
  *
  * Within one workspace the users still follow master-prepares-then-
  * OMP-fan-out: the owning thread fills the scratch, its OMP workers
@@ -96,28 +98,18 @@ struct cpu_neon_workspace {
     size_t  attn_part_sum_cap;
 };
 
-void cpu_neon_workspace_destroy(struct cpu_neon_workspace *ws);
-
-/* One node per (backend, thread) pair; ws_head is a lock-free push-only
- * list. Nodes of exited threads stay until backend destroy — bounded by
- * the number of threads that ever touched the backend. */
-struct cpu_neon_ws_node {
-    pthread_t                 tid;
-    struct cpu_neon_workspace ws;
-    struct cpu_neon_ws_node *_Atomic next;
-};
-
 const struct geist_tunable *cpu_neon_tunables(size_t *out_count);
 
 struct cpu_neon_state {
     struct geist_hw_probe         hw;
     struct cpu_neon_kernel_policy policy;
     bool                          policy_calibrated; /* calibration folded in */
-    int      max_threads;   /* geist_backend_opts.max_threads: caps every region; 0 = no cap */
-    uint64_t ws_generation; /* unique per state instance;
-                             * guards the TLS cache against
-                             * a recycled state address */
-    struct cpu_neon_ws_node *_Atomic ws_head;
+    int max_threads; /* geist_backend_opts.max_threads: caps every region; 0 = no cap */
+    /* The per-thread workspaces (common/thread_ws.h). Nodes of exited
+     * threads stay until backend destroy, bounded by the number of threads
+     * that ever touched the backend. */
+    uint64_t ws_generation;
+    struct geist_thread_ws_node *_Atomic ws_head;
 };
 
 /* The calling thread's workspace on this backend (minted on first use).
@@ -127,8 +119,7 @@ void                       cpu_neon_ws_destroy_all(struct cpu_neon_state *st);
 
 /* Prints the per-catalog-row tensor counts collected by the resolver, if
  * GEIST_LOG_KERNELS=1. Diagnostic; a no-op otherwise. */
-void     cpu_neon_dump_kernel_hits(void);
-uint64_t cpu_neon_ws_next_generation(void);
+void cpu_neon_dump_kernel_hits(void);
 
 /* TQ2_0 (ternary BitNet b1.58) compute kernels — implemented in
  * kernels/tq2_0.c, referenced by the resolver table in weight_resolve.c.

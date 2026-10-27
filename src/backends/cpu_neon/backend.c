@@ -45,7 +45,7 @@ static void cpu_neon_omp_pool_init(void);
     }
     *st               = (struct cpu_neon_state) {0};
     st->max_threads   = opts != nullptr && opts->max_threads > 0 ? opts->max_threads : 0;
-    st->ws_generation = cpu_neon_ws_next_generation();
+    st->ws_generation = geist_thread_ws_next_generation();
     geist_hw_probe_fill(&st->hw);
     st->policy = cpu_neon_kernel_policy_default(&st->hw);
 
