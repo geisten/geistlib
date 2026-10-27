@@ -41,16 +41,56 @@ TRANSFORMER_PROFILE_DEFINE(g_head_profile,
                            "softcap",
                            "sample");
 
-[[nodiscard]] enum geist_status transformer_head_prepare(struct transformer_arch_session *sess,
-                                                         size_t                           row_idx) {
-    struct transformer_arch_state *st = sess->model;
-
+/* The output head's front half on `k` rows: rows [row0, row0 + k) of
+ * scratch_h_b, output_norm'd, into scratch_h_a's first k rows. That is HF's
+ * `last_hidden_state`. The copy runs on the device where the plan bound it
+ * (#352): batched GPU backends do not flush, and its failure is a device
+ * error, not a reason to fall back to a host memcpy. `profile`: time the
+ * copy and the norm as the head's stages. */
+[[nodiscard]] static enum geist_status
+head_norm_rows(struct transformer_arch_session *sess, size_t row0, size_t k, bool profile) {
+    struct transformer_arch_state         *st    = sess->model;
     struct geist_backend                  *be    = st->backend;
     const struct geist_backend_vtbl       *v     = be->desc->vtbl;
     const struct geist_backend_primitives *prims = be->desc->prims;
-    enum geist_status                      s;
-    const bool                             profile = transformer_profile_enabled(&g_head_profile);
-    uint64_t                               t0      = profile ? geist_now_ns() : 0;
+    const size_t                           row   = (size_t) st->d_model * sizeof(float);
+    uint64_t                               t0    = profile ? geist_now_ns() : 0;
+
+    if (st->model_fusions.backend_buffer_copy) {
+        const enum geist_status cs =
+                v->buffer_copy(sess->scratch_h_a, 0, sess->scratch_h_b, row0 * row, k * row);
+        if (cs != GEIST_OK) {
+            return cs;
+        }
+    } else {
+        const uint8_t *src = (const uint8_t *) v->buffer_map(sess->scratch_h_b);
+        uint8_t       *dst = (uint8_t *) v->buffer_map(sess->scratch_h_a);
+        if (src == nullptr || dst == nullptr) {
+            if (src != nullptr) {
+                v->buffer_unmap(sess->scratch_h_b);
+            }
+            if (dst != nullptr) {
+                v->buffer_unmap(sess->scratch_h_a);
+            }
+            return GEIST_E_BACKEND; /* the backend said why */
+        }
+        memcpy(dst, src + row0 * row, k * row);
+        v->buffer_unmap(sess->scratch_h_b);
+        v->buffer_unmap(sess->scratch_h_a);
+    }
+    transformer_profile_add(&g_head_profile, HEAD_PROFILE_COPY, t0);
+
+    struct geist_tensor t_h   = view_2d(sess->scratch_h_a, (int64_t) k, st->d_model);
+    struct geist_tensor t_w   = view_1d(st->output_norm.buffer, st->d_model);
+    t0                        = profile ? geist_now_ns() : 0;
+    const enum geist_status s = prims->rmsnorm(be, &t_h, &t_w, st->config.rms_eps, &t_h);
+    transformer_profile_add(&g_head_profile, HEAD_PROFILE_NORM, t0);
+    return s;
+}
+
+[[nodiscard]] enum geist_status transformer_head_prepare(struct transformer_arch_session *sess,
+                                                         size_t                           row_idx) {
+    struct transformer_arch_state *st = sess->model;
 
     /* Fresh logits this forward — not yet softcapped (peek_logits applies
      * it lazily unless the temp>0 path below does it in place), and dense
@@ -58,55 +98,17 @@ TRANSFORMER_PROFILE_DEFINE(g_head_profile,
     sess->logits_softcapped = false;
     sess->logits_sparse     = false;
 
-    /* Copy chosen row of scratch_h_b into scratch_h_a (reuse as a clean
-     * [1, HIDDEN] buffer for the output head). */
-    {
-        const size_t bytes = st->d_model * sizeof(float);
-        /* Bound at plan build (#352): the device copy keeps batched GPU
-         * backends from flushing, and its failure is a device error, not a
-         * reason to fall back to a host memcpy. */
-        if (st->model_fusions.backend_buffer_copy) {
-            const enum geist_status cs =
-                    v->buffer_copy(sess->scratch_h_a, 0, sess->scratch_h_b, row_idx * bytes, bytes);
-            if (cs != GEIST_OK) {
-                return cs;
-            }
-        } else {
-            const uint8_t *src = (const uint8_t *) v->buffer_map(sess->scratch_h_b);
-            uint8_t       *dst = (uint8_t *) v->buffer_map(sess->scratch_h_a);
-            if (src == nullptr || dst == nullptr) {
-                if (src != nullptr) {
-                    v->buffer_unmap(sess->scratch_h_b);
-                }
-                if (dst != nullptr) {
-                    v->buffer_unmap(sess->scratch_h_a);
-                }
-                return GEIST_E_BACKEND; /* the backend said why */
-            }
-            memcpy(dst, src + row_idx * bytes, bytes);
-            v->buffer_unmap(sess->scratch_h_b);
-            v->buffer_unmap(sess->scratch_h_a);
-        }
-    }
-    transformer_profile_add(&g_head_profile, HEAD_PROFILE_COPY, t0);
-
-    struct geist_tensor t_h_1d       = view_1d(sess->scratch_h_a, st->d_model);
-    struct geist_tensor t_w_out_norm = view_1d(st->output_norm.buffer, st->d_model);
-    t0                               = profile ? geist_now_ns() : 0;
-    s = prims->rmsnorm(be, &t_h_1d, &t_w_out_norm, st->config.rms_eps, &t_h_1d);
-    transformer_profile_add(&g_head_profile, HEAD_PROFILE_NORM, t0);
+    /* The chosen row of scratch_h_b, normed, as scratch_h_a's clean
+     * [1, HIDDEN] row for the output head. */
+    enum geist_status s =
+            head_norm_rows(sess, row_idx, 1, transformer_profile_enabled(&g_head_profile));
     if (s != GEIST_OK) {
         return s;
     }
     /* prism.hadamard: the lm_head reads the normed hidden rotated, in
      * place — the spec head and the dense recompute below read the same
      * rotated row, which is what their (folded) weights expect. */
-    s = transformer_rotate_rows(st, 1, st->d_model, sess->scratch_h_a);
-    if (s != GEIST_OK) {
-        return s;
-    }
-
-    return GEIST_OK;
+    return transformer_rotate_rows(st, 1, st->d_model, sess->scratch_h_a);
 }
 
 /* One row of logits to a token: the repetition penalties (#695) on a copy
@@ -298,35 +300,12 @@ transformer_head_dense_recompute(struct transformer_arch_session *sess) {
 finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_token_t *out_tokens) {
     struct transformer_arch_state *st = sess->model;
 
-    struct geist_backend                  *be    = st->backend;
-    const struct geist_backend_vtbl       *v     = be->desc->vtbl;
-    const struct geist_backend_primitives *prims = be->desc->prims;
-    enum geist_status                      s;
+    struct geist_backend            *be = st->backend;
+    const struct geist_backend_vtbl *v  = be->desc->vtbl;
 
-    /* Source: scratch_h_b [k, HIDDEN]. Apply output_norm row-wise
-     * (rmsnorm batches naturally over the leading dim). Reuse
-     * scratch_h_a as the normed buffer so we don't trash h_b which
-     * the caller may still want. */
-    {
-        const size_t   bytes = k * st->d_model * sizeof(float);
-        const uint8_t *src   = (const uint8_t *) v->buffer_map(sess->scratch_h_b);
-        uint8_t       *dst   = (uint8_t *) v->buffer_map(sess->scratch_h_a);
-        if (src == nullptr || dst == nullptr) {
-            if (src != nullptr) {
-                v->buffer_unmap(sess->scratch_h_b);
-            }
-            if (dst != nullptr) {
-                v->buffer_unmap(sess->scratch_h_a);
-            }
-            return GEIST_E_BACKEND; /* the backend said why */
-        }
-        memcpy(dst, src, bytes);
-        v->buffer_unmap(sess->scratch_h_b);
-        v->buffer_unmap(sess->scratch_h_a);
-    }
-    struct geist_tensor t_h_2d       = view_2d(sess->scratch_h_a, (int64_t) k, st->d_model);
-    struct geist_tensor t_w_out_norm = view_1d(st->output_norm.buffer, st->d_model);
-    s = prims->rmsnorm(be, &t_h_2d, &t_w_out_norm, st->config.rms_eps, &t_h_2d);
+    /* Source: scratch_h_b [k, HIDDEN], normed into scratch_h_a so h_b,
+     * which the caller may still want, stays intact. */
+    enum geist_status s = head_norm_rows(sess, 0, k, false);
     if (s != GEIST_OK) {
         return s;
     }
@@ -336,6 +315,7 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
     }
 
     /* Single batched linear: [k, HIDDEN] @ embed_table^T → [k, VOCAB]. */
+    struct geist_tensor t_h_2d      = view_2d(sess->scratch_h_a, (int64_t) k, st->d_model);
     struct geist_tensor t_logits_2d = view_2d(sess->scratch_logits, (int64_t) k, st->vocab_size);
     s                               = linear_w_or_legacy(be,
                                                          v,
@@ -436,38 +416,6 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
     return GEIST_OK;
 }
 
-/* The output head's front half on `k` rows: copy them out of scratch_h_b,
- * apply output_norm to all of them, leave the result in scratch_h_a. That is
- * HF's `last_hidden_state` -- what a mean-pooled embedding sums -- and it is
- * everything finalize_logits_batch does before the lm_head. */
-[[nodiscard]] enum geist_status transformer_norm_rows(struct transformer_arch_session *sess,
-                                                      size_t                           k) {
-    struct transformer_arch_state         *st    = sess->model;
-    struct geist_backend                  *be    = st->backend;
-    const struct geist_backend_vtbl       *v     = be->desc->vtbl;
-    const struct geist_backend_primitives *prims = be->desc->prims;
-
-    const size_t   bytes = k * (size_t) st->d_model * sizeof(float);
-    const uint8_t *src   = (const uint8_t *) v->buffer_map(sess->scratch_h_b);
-    uint8_t       *dst   = (uint8_t *) v->buffer_map(sess->scratch_h_a);
-    if (src == nullptr || dst == nullptr) {
-        if (src != nullptr) {
-            v->buffer_unmap(sess->scratch_h_b);
-        }
-        if (dst != nullptr) {
-            v->buffer_unmap(sess->scratch_h_a);
-        }
-        return GEIST_E_BACKEND;
-    }
-    memcpy(dst, src, bytes);
-    v->buffer_unmap(sess->scratch_h_b);
-    v->buffer_unmap(sess->scratch_h_a);
-
-    struct geist_tensor t_h_2d       = view_2d(sess->scratch_h_a, (int64_t) k, st->d_model);
-    struct geist_tensor t_w_out_norm = view_1d(st->output_norm.buffer, st->d_model);
-    return prims->rmsnorm(be, &t_h_2d, &t_w_out_norm, st->config.rms_eps, &t_h_2d);
-}
-
 /* One chunk's contribution to a mean-pooled embedding. The norm has to be
  * applied PER ROW BEFORE the sum: rmsnorm is not linear, so norm-then-mean
  * and mean-then-norm are different vectors, and HF exposes
@@ -478,7 +426,7 @@ transformer_embedding_accumulate(struct transformer_arch_session *sess, size_t k
     const struct geist_backend_vtbl *v  = st->backend->desc->vtbl;
     const size_t                     n  = (size_t) st->d_model;
 
-    const enum geist_status s = transformer_norm_rows(sess, k);
+    const enum geist_status s = head_norm_rows(sess, 0, k, false);
     if (s != GEIST_OK) {
         return s;
     }
@@ -549,39 +497,11 @@ transformer_embedding_accumulate(struct transformer_arch_session *sess, size_t k
         return GEIST_E_UNSUPPORTED; /* mean goes through finalize_embedding_mean */
     }
 
-    struct geist_backend                  *be    = st->backend;
-    const struct geist_backend_vtbl       *v     = be->desc->vtbl;
-    const struct geist_backend_primitives *prims = be->desc->prims;
-    const size_t                           n     = (size_t) st->d_model;
-    const size_t                           bytes = n * sizeof(float);
+    const struct geist_backend_vtbl *v = st->backend->desc->vtbl;
+    const size_t                     n = (size_t) st->d_model;
 
-    sess->embedding_valid = false;
-
-    if (st->model_fusions.backend_buffer_copy) {
-        const enum geist_status cs =
-                v->buffer_copy(sess->scratch_h_a, 0, sess->scratch_h_b, (seq - 1) * bytes, bytes);
-        if (cs != GEIST_OK) {
-            return cs;
-        }
-    } else {
-        const uint8_t *src = (const uint8_t *) v->buffer_map(sess->scratch_h_b);
-        uint8_t       *dst = (uint8_t *) v->buffer_map(sess->scratch_h_a);
-        if (src == nullptr || dst == nullptr) {
-            if (src != nullptr)
-                v->buffer_unmap(sess->scratch_h_b);
-            if (dst != nullptr)
-                v->buffer_unmap(sess->scratch_h_a);
-            return GEIST_E_BACKEND;
-        }
-        memcpy(dst, src + (seq - 1) * bytes, bytes);
-        v->buffer_unmap(sess->scratch_h_b);
-        v->buffer_unmap(sess->scratch_h_a);
-    }
-
-    struct geist_tensor     t_h_1d       = view_1d(sess->scratch_h_a, st->d_model);
-    struct geist_tensor     t_w_out_norm = view_1d(st->output_norm.buffer, st->d_model);
-    const enum geist_status s =
-            prims->rmsnorm(be, &t_h_1d, &t_w_out_norm, st->config.rms_eps, &t_h_1d);
+    sess->embedding_valid     = false;
+    const enum geist_status s = head_norm_rows(sess, seq - 1, 1, false);
     if (s != GEIST_OK) {
         return s;
     }
