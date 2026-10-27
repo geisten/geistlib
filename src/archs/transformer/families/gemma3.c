@@ -22,7 +22,6 @@
 
 #include "../arch_family.h"
 #include "../forward/blocks.h"
-#include "../rotation.h"
 #include "../weight_load/internal.h"
 
 #include "gguf_reader.h"
@@ -135,32 +134,11 @@ static bool populate_layers_gemma3(struct transformer_arch_state *st) {
 
 /* ---- Forward ---------------------------------------------------------- */
 
-/* Each step runs only while s is GEIST_OK, so the first failure is what
- * the stage returns and nothing after it touches a buffer. */
 [[nodiscard]] static enum geist_status
 gemma3_attention_block(struct transformer_layer_forward_ctx *ctx) {
-    struct transformer_arch_state    *st   = ctx->st;
-    struct transformer_arch_session  *sess = ctx->sess;
-    struct transformer_layer_weights *L    = ctx->L;
-    const size_t                      d    = st->d_model;
-    struct geist_buffer              *x    = sess->scratch_normed;
-
-    enum geist_status s = blk_attn_norm(ctx, x);
-    if (s == GEIST_OK)
-        s = transformer_rotate_rows(st, ctx->seq, d, x);
-    if (s == GEIST_OK)
-        s = blk_qkv(ctx, x);
-    if (s == GEIST_OK)
-        s = blk_qk_norm(ctx, &L->q_norm, &L->k_norm);
-    if (s == GEIST_OK)
-        s = blk_rope_qk(ctx, st->config.gemma3_q_scale);
-    if (s == GEIST_OK)
-        s = blk_attend(ctx, true);
-    if (s == GEIST_OK)
-        s = blk_o_proj(ctx);
-    if (s == GEIST_OK)
-        s = blk_attn_residual(ctx, &L->post_attn_norm);
-    return s;
+    struct transformer_layer_weights *L = ctx->L;
+    return blk_attention(
+            ctx, &L->q_norm, &L->k_norm, ctx->st->config.gemma3_q_scale, &L->post_attn_norm, false);
 }
 
 /* No PLE stage in this family: the FFN writes h_out directly. */

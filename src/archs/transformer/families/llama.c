@@ -18,7 +18,6 @@
 
 #include "../arch_family.h"
 #include "../forward/blocks.h"
-#include "../rotation.h"
 
 #include "gguf_reader.h"
 
@@ -56,36 +55,9 @@ static bool populate_layers_llama(struct transformer_arch_state *st) {
 
 /* ---- Forward ---------------------------------------------------------- */
 
-/* Each step runs only while s is GEIST_OK, so the first failure is what
- * the stage returns and nothing after it touches a buffer. */
 [[nodiscard]] static enum geist_status
 llama_attention_block(struct transformer_layer_forward_ctx *ctx) {
-    struct transformer_arch_state   *st   = ctx->st;
-    struct transformer_arch_session *sess = ctx->sess;
-    const size_t                     d    = st->d_model;
-    struct geist_buffer             *x    = sess->scratch_normed;
-
-    /* The fused prep covers the plain (f32/f16) cache only. */
-    const bool fused =
-            ctx->P->fuse_attn_rope_append && !ctx->kv_kivi_enabled && !ctx->kv_int8_enabled;
-    const float q_scale = 1.0f / sqrtf((float) ctx->hd);
-
-    enum geist_status s = blk_attn_norm(ctx, x);
-    if (s == GEIST_OK)
-        s = transformer_rotate_rows(st, ctx->seq, d, x);
-    if (s == GEIST_OK)
-        s = blk_qkv(ctx, x);
-    if (s == GEIST_OK && fused)
-        s = blk_rope_append_fused(ctx, nullptr, nullptr, q_scale);
-    if (s == GEIST_OK && !fused)
-        s = blk_rope_qk(ctx, q_scale);
-    if (s == GEIST_OK)
-        s = blk_attend(ctx, !fused);
-    if (s == GEIST_OK)
-        s = blk_o_proj(ctx);
-    if (s == GEIST_OK)
-        s = blk_attn_residual(ctx, nullptr);
-    return s;
+    return blk_attention(ctx, nullptr, nullptr, 1.0f / sqrtf((float) ctx->hd), nullptr, true);
 }
 
 /* ---- Registry entry --------------------------------------------------- */

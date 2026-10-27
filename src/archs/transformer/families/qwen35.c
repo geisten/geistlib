@@ -22,7 +22,6 @@
 
 #include "../arch_family.h"
 #include "../forward/blocks.h"
-#include "../rotation.h"
 #include "../weight_load.h"
 #include "../weight_load/internal.h"
 
@@ -458,33 +457,13 @@ static void qwen35_session_free(struct transformer_arch_session *sess) {
 
 /* ---- Forward ---------------------------------------------------------- */
 
-/* Each step runs only while s is GEIST_OK, so the first failure is what
- * the stage returns and nothing after it touches a buffer. Also the MTP
- * block's attention (forward/layer.c, with an empty plan). */
+/* blk_qkv splits the joint q+gate, blk_o_proj applies the sigmoid gate.
+ * Also the MTP block's attention (forward/layer.c, with an empty plan). */
 [[nodiscard]] static enum geist_status
 qwen35_attention_block(struct transformer_layer_forward_ctx *ctx) {
-    struct transformer_arch_state    *st   = ctx->st;
-    struct transformer_arch_session  *sess = ctx->sess;
-    struct transformer_layer_weights *L    = ctx->L;
-    const size_t                      d    = st->d_model;
-    struct geist_buffer              *x    = sess->scratch_normed;
-
-    enum geist_status s = blk_rmsnorm(ctx, d, ctx->h_in_buf, &L->attn_norm, x);
-    if (s == GEIST_OK)
-        s = transformer_rotate_rows(st, ctx->seq, d, x);
-    if (s == GEIST_OK)
-        s = blk_qkv(ctx, x); /* joint q+gate, split */
-    if (s == GEIST_OK)
-        s = blk_qk_norm(ctx, &L->q_norm, &L->k_norm);
-    if (s == GEIST_OK)
-        s = blk_rope_qk(ctx, 1.0f / sqrtf((float) ctx->hd));
-    if (s == GEIST_OK)
-        s = blk_attend(ctx, true);
-    if (s == GEIST_OK)
-        s = blk_o_proj(ctx); /* sigmoid gate, rotation */
-    if (s == GEIST_OK)
-        s = blk_add(ctx, d, ctx->h_in_buf, sess->scratch_o, sess->scratch_h_post_attn);
-    return s;
+    struct transformer_layer_weights *L = ctx->L;
+    return blk_attention(
+            ctx, &L->q_norm, &L->k_norm, 1.0f / sqrtf((float) ctx->hd), nullptr, false);
 }
 
 /* ---- Registry entry --------------------------------------------------- */
