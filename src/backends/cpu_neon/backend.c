@@ -14,6 +14,7 @@
 #include <geist.h>
 #include <geist_backend.h>
 
+#include "cpu_threads.h"
 #include "hadamard.h"
 #include "heap.h"
 #include "host_ops.h"
@@ -36,7 +37,6 @@ static void cpu_neon_omp_pool_init(void);
 
 [[nodiscard]] static enum geist_status cpu_neon_create(struct geist_backend            *be,
                                                        const struct geist_backend_opts *opts) {
-    (void) opts;
     struct cpu_neon_state *st =
             geist_backend_alloc(be, sizeof(*st), alignof(struct cpu_neon_state));
     if (st == nullptr) {
@@ -44,6 +44,7 @@ static void cpu_neon_omp_pool_init(void);
         return GEIST_E_OOM;
     }
     *st               = (struct cpu_neon_state) {0};
+    st->max_threads   = opts != nullptr && opts->max_threads > 0 ? opts->max_threads : 0;
     st->ws_generation = cpu_neon_ws_next_generation();
     geist_hw_probe_fill(&st->hw);
     st->policy = cpu_neon_kernel_policy_default(&st->hw);
@@ -67,9 +68,9 @@ static void cpu_neon_destroy(struct geist_backend *be) {
 
 /* Parallel-region hooks. The kernels run on geist_par_for (par.h), and the
  * thread count that suits one phase hurts another: the arch layer calls
- * these around each phase, which set geist_par_set_max_threads for it (the
- * OpenMP team with OpenMP, the pool's count without) and restore the
- * previous count afterwards. */
+ * these around each phase, and geist_cpu_region_begin (common/
+ * cpu_threads.c) sets the count chosen here, capped at
+ * geist_backend_opts.max_threads, and restores the previous one after. */
 #if defined(_OPENMP)
 #include <omp.h>
 #else
@@ -164,25 +165,9 @@ static int cpu_neon_region_thread_count(enum geist_parallel_region region) {
 
 static int cpu_neon_parallel_region_begin(struct geist_backend      *be,
                                           enum geist_parallel_region region) {
-    (void) be;
-    const int target = cpu_neon_region_thread_count(region);
-    if (target <= 0)
-        return 0;
-    const size_t max  = geist_par_max_threads();
-    const int    prev = max > (size_t) INT_MAX ? INT_MAX : (int) max;
-    /* Prefill bumps in either direction; decode only caps DOWN — never adds
-     * threads to a memory-bound GEMV. */
-    const bool apply = (region == GEIST_REGION_DECODE_STEP) ? (target < prev) : (target != prev);
-    if (!apply)
-        return 0;
-    geist_par_set_max_threads((size_t) target);
-    return prev; /* >0: restore to this in _end */
-}
-
-static void cpu_neon_parallel_region_end(struct geist_backend *be, int token) {
-    (void) be;
-    if (token > 0)
-        geist_par_set_max_threads((size_t) token);
+    const struct cpu_neon_state *st = be != nullptr ? be->state : nullptr;
+    return geist_cpu_region_begin(
+            region, cpu_neon_region_thread_count(region), st != nullptr ? st->max_threads : 0);
 }
 
 static const struct geist_backend_vtbl cpu_neon_vtbl = {
@@ -197,7 +182,7 @@ static const struct geist_backend_vtbl cpu_neon_vtbl = {
         .buffer_unmap          = geist_host_buffer_unmap,
         .resolve_weight        = cpu_neon_resolve_weight,
         .parallel_region_begin = cpu_neon_parallel_region_begin,
-        .parallel_region_end   = cpu_neon_parallel_region_end,
+        .parallel_region_end   = geist_cpu_region_end,
 };
 
 /* Probe pairing for the fused table below (test_fused_probe_agreement_unit). */

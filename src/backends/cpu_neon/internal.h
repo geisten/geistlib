@@ -113,9 +113,10 @@ struct cpu_neon_state {
     struct geist_hw_probe         hw;
     struct cpu_neon_kernel_policy policy;
     bool                          policy_calibrated; /* calibration folded in */
-    uint64_t                      ws_generation;     /* unique per state instance;
-                                                      * guards the TLS cache against
-                                                      * a recycled state address */
+    int      max_threads;   /* geist_backend_opts.max_threads: caps every region; 0 = no cap */
+    uint64_t ws_generation; /* unique per state instance;
+                             * guards the TLS cache against
+                             * a recycled state address */
     struct cpu_neon_ws_node *_Atomic ws_head;
 };
 

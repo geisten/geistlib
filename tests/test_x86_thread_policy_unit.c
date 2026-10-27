@@ -13,6 +13,9 @@
  *    Without OpenMP the hooks size geist_par_for's pool (#618).
  * 3. caps.manages_host_threads mirrors the hooks' presence.
  * 4. geist_backend_opts.max_threads caps both regions (geist-runtime#93).
+ *
+ * cpu_neon shares the hooks (common/cpu_threads.c) and the two variables, so
+ * a cpu_neon build runs 2-4 on it.
  */
 #define _POSIX_C_SOURCE 200809L /* setenv */
 
@@ -24,22 +27,33 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#if !defined(GEIST_BACKEND_CPU_X86)
+#if defined(GEIST_BACKEND_CPU_X86)
+#define HOOK_BACKEND "cpu_x86"
+#elif defined(GEIST_BACKEND_CPU_NEON)
+#define HOOK_BACKEND "cpu_neon"
+#endif
+
+#if !defined(HOOK_BACKEND)
 int main(void) {
-    printf("SKIP: needs cpu_x86 in this build\n");
+    printf("SKIP: needs cpu_x86 or cpu_neon in this build\n");
     return GEIST_TEST_SKIP;
 }
 #else
 
 #define GEIST_INTERNAL_BACKEND_LAYER
 #include "par.h"
+#if defined(GEIST_BACKEND_CPU_X86)
 #include "src/backends/cpu_x86/threads.h"
+#endif
 
 #if defined(_OPENMP)
 #include <omp.h>
 #endif
 
 static int check_policy(void) {
+#if !defined(GEIST_BACKEND_CPU_X86)
+    return 0;
+#else
     static const struct {
         const char *what;
         int         env;
@@ -73,6 +87,7 @@ static int check_policy(void) {
         }
     }
     return fails;
+#endif
 }
 
 #if defined(_OPENMP)
@@ -126,8 +141,8 @@ static int check_hooks(void) {
     setenv("GEIST_DECODE_THREADS", "2", 1);
     setenv("GEIST_PREFILL_THREADS", "3", 1);
     struct geist_backend *be = nullptr;
-    if (geist_backend_create("cpu_x86", nullptr, nullptr, &be) != GEIST_OK || be == nullptr) {
-        printf("SKIP: cpu_x86 backend did not register on this host\n");
+    if (geist_backend_create(HOOK_BACKEND, nullptr, nullptr, &be) != GEIST_OK || be == nullptr) {
+        printf("SKIP: " HOOK_BACKEND " backend did not register on this host\n");
         return -1;
     }
     const struct geist_backend_vtbl *v     = be->desc->vtbl;
@@ -139,7 +154,7 @@ static int check_hooks(void) {
         fails++;
     }
     if (!hooks) {
-        fprintf(stderr, "FAIL: cpu_x86 without region hooks\n");
+        fprintf(stderr, "FAIL: " HOOK_BACKEND " without region hooks\n");
         fails++;
     } else {
         fails += check_region(v, be, GEIST_REGION_DECODE_STEP, "decode", 4, 2);
@@ -150,8 +165,8 @@ static int check_hooks(void) {
     geist_backend_destroy(be);
     if (hooks) { /* max_threads 2: below the env's 3 for prefill, equal for decode, a cap in both */
         struct geist_backend_opts o = {.max_threads = 2};
-        if (geist_backend_create("cpu_x86", &o, nullptr, &be) != GEIST_OK || be == nullptr) {
-            fprintf(stderr, "FAIL: cpu_x86 with max_threads\n");
+        if (geist_backend_create(HOOK_BACKEND, &o, nullptr, &be) != GEIST_OK || be == nullptr) {
+            fprintf(stderr, "FAIL: " HOOK_BACKEND " with max_threads\n");
             return fails + 1;
         }
         fails += check_region(v, be, GEIST_REGION_PREFILL_BATCH, "prefill, max_threads 2", 4, 2);
@@ -178,4 +193,4 @@ int main(void) {
     return GEIST_TEST_PASS;
 }
 
-#endif /* GEIST_BACKEND_CPU_X86 */
+#endif /* HOOK_BACKEND */

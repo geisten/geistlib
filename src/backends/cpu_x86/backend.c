@@ -43,6 +43,8 @@
 #include "linear_pq2_0.h"
 #include "threads.h"
 
+#include "cpu_threads.h"
+
 #include "geist_gemm.h"
 #include "checked.h"
 #include "env.h"
@@ -556,7 +558,7 @@ __attribute__((constructor)) static void cpu_x86_init_vtbl(void) {
     cpu_x86_vtbl.resolve_weight = cpu_x86_resolve_weight;
     /* Per-phase thread count (threads.c): decode on physical cores. */
     cpu_x86_vtbl.parallel_region_begin = cpu_x86_parallel_region_begin;
-    cpu_x86_vtbl.parallel_region_end   = cpu_x86_parallel_region_end;
+    cpu_x86_vtbl.parallel_region_end   = geist_cpu_region_end;
 
     cpu_x86_prims           = cpu_scalar_prims;
     cpu_x86_prims.gelu_tanh = cpu_x86_gelu_tanh;

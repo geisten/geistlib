@@ -26,17 +26,17 @@
  * Decode is not pinned to one L3 domain: 13-15 % slower on the 9950X
  * (X86.md).
  *
- * The count is geist_par's (par.h): the OpenMP team with OpenMP, the pool's
- * per-thread count without.
+ * geist_cpu_region_begin (common/cpu_threads.c) applies the count and the
+ * cap.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "threads.h"
 
 #include "backend_state.h"
+#include "cpu_threads.h"
 
 #include "hw_probe.h"
-#include "par.h"
 #include "env.h"
 
 #include <limits.h>
@@ -85,30 +85,7 @@ static int region_threads(enum geist_parallel_region region) {
 }
 
 int cpu_x86_parallel_region_begin(struct geist_backend *be, enum geist_parallel_region region) {
-    const struct cpu_x86_state *st     = be != nullptr ? be->state : nullptr;
-    const int                   cap    = st != nullptr ? st->max_threads : 0;
-    int                         target = region_threads(region);
-    if (cap > 0 && (target <= 0 || target > cap)) {
-        target = cap;
-    }
-    if (target <= 0) {
-        return 0;
-    }
-    const size_t max  = geist_par_max_threads();
-    const int    prev = max > (size_t) INT_MAX ? INT_MAX : (int) max;
-    /* Prefill moves either way; decode only caps down — never adds
-     * threads to a memory-bound GEMV. */
-    const bool apply = region == GEIST_REGION_DECODE_STEP ? target < prev : target != prev;
-    if (!apply) {
-        return 0;
-    }
-    geist_par_set_max_threads((size_t) target);
-    return prev; /* > 0: restore to this in _end */
-}
-
-void cpu_x86_parallel_region_end(struct geist_backend *be, int token) {
-    (void) be;
-    if (token > 0) {
-        geist_par_set_max_threads((size_t) token);
-    }
+    const struct cpu_x86_state *st = be != nullptr ? be->state : nullptr;
+    return geist_cpu_region_begin(
+            region, region_threads(region), st != nullptr ? st->max_threads : 0);
 }
