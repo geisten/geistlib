@@ -47,6 +47,7 @@
 #include "host_ops.h"
 
 #include "geist_gemm.h"
+#include "linear_ref.h"
 #include "checked.h"
 #include "env.h"
 #include "heap.h"
@@ -122,31 +123,19 @@ static void cpu_x86_linear_f32_m1(const float               *x,
                 1);
 }
 
-static void cpu_x86_linear_f32_mN(size_t                     m,
-                                  const float               *x,
-                                  const struct geist_weight *w,
-                                  struct geist_backend      *be,
-                                  float                     *y) {
-    (void) be;
-    /* Y [m, n_out] = X [m, n_in] @ W^T  (W row-major [n_out, n_in]). */
-    geist_sgemm(GEIST_OP_N,
-                GEIST_OP_T,
-                (int) m,
-                (int) w->n_out,
-                (int) w->n_in,
-                1.0f,
-                x,
-                (int) w->n_in,
-                (const float *) w->raw,
-                (int) w->n_in,
-                0.0f,
-                y,
-                (int) w->n_out);
+/* An I2_S weight's single per-tensor fp32 scale, at the tail of its raw
+ * blob (offset n_in * n_out / 4). The pair kernels' two weights share n_in
+ * (the dispatcher pairs only those). */
+static inline float i2s_scale(const struct geist_weight *w) {
+    float s;
+    memcpy(&s,
+           (const uint8_t *) w->raw + i2_s_scale_offset((size_t) w->n_in * (size_t) w->n_out),
+           sizeof s);
+    return s;
 }
 
 /* BitNet b1.58 I2_S ternary decode: native packed-2-bit VPDPBUSD GEMV
- * (kernel_i2s). The single per-tensor fp32 scale lives at the tail of the
- * weight blob (offset n_in*n_out/4). */
+ * (kernel_i2s). */
 static void cpu_x86_linear_i2s_m1(const float               *x,
                                   const struct geist_weight *w,
                                   struct geist_backend      *be,
@@ -155,8 +144,7 @@ static void cpu_x86_linear_i2s_m1(const float               *x,
     const size_t   n_in  = (size_t) w->n_in;
     const size_t   n_out = (size_t) w->n_out;
     const uint8_t *raw   = (const uint8_t *) w->raw;
-    float          scale;
-    memcpy(&scale, raw + i2_s_scale_offset(n_in * n_out), sizeof scale);
+    const float    scale = i2s_scale(w);
     i2s_gemv_m1(n_out, n_in, x, raw, scale, y);
 }
 
@@ -189,12 +177,11 @@ static void cpu_x86_linear_i2s_mN(size_t                     m,
                                   const struct geist_weight *w,
                                   struct geist_backend      *be,
                                   float                     *y) {
-    const size_t   n_in  = (size_t) w->n_in;
-    const size_t   n_out = (size_t) w->n_out;
-    const uint8_t *raw   = (const uint8_t *) w->raw;
-    float          scale;
-    memcpy(&scale, raw + i2_s_scale_offset(n_in * n_out), sizeof scale);
-    struct cpu_x86_workspace *ws = i2s_mN_scratch(be, m, n_in, true);
+    const size_t              n_in  = (size_t) w->n_in;
+    const size_t              n_out = (size_t) w->n_out;
+    const uint8_t            *raw   = (const uint8_t *) w->raw;
+    const float               scale = i2s_scale(w);
+    struct cpu_x86_workspace *ws    = i2s_mN_scratch(be, m, n_in, true);
     if (ws == nullptr) {
         i2s_gemm_mN_scalar(m, n_out, n_in, x, raw, scale, y);
         return;
@@ -221,8 +208,7 @@ static void cpu_x86_linear_i2s_x4_m1(const float               *x,
     (void) be;
     const size_t n_in  = (size_t) w->n_in;
     const size_t n_out = (size_t) w->n_out;
-    float        scale;
-    memcpy(&scale, (const uint8_t *) w->raw + i2_s_scale_offset(n_in * n_out), sizeof scale);
+    const float  scale = i2s_scale(w);
     i2s_x4_gemv_m1(n_out, n_in, x, (const uint8_t *) w->aux_fp32, scale, y);
 }
 
@@ -239,8 +225,7 @@ static void cpu_x86_linear_i2s_t5_m1(const float               *x,
     (void) be;
     const size_t n_in  = (size_t) w->n_in;
     const size_t n_out = (size_t) w->n_out;
-    float        scale;
-    memcpy(&scale, (const uint8_t *) w->raw + i2_s_scale_offset(n_in * n_out), sizeof scale);
+    const float  scale = i2s_scale(w);
     i2s_t5_gemv_m1(n_out, n_in, x, i2s_t5_section(w), scale, y);
 }
 
@@ -252,13 +237,7 @@ static void cpu_x86_linear_i2s_t5_pair_m1(const float               *x,
                                           float                     *y1) {
     (void) be;
     const size_t n_in = (size_t) w0->n_in;
-    float        s0, s1;
-    memcpy(&s0,
-           (const uint8_t *) w0->raw + i2_s_scale_offset(n_in * (size_t) w0->n_out),
-           sizeof s0);
-    memcpy(&s1,
-           (const uint8_t *) w1->raw + i2_s_scale_offset(n_in * (size_t) w1->n_out),
-           sizeof s1);
+    const float  s0 = i2s_scale(w0), s1 = i2s_scale(w1);
     i2s_t5_gemv_pair_m1(n_in,
                         x,
                         i2s_t5_section(w0),
@@ -276,12 +255,11 @@ static void cpu_x86_linear_i2s_x4_mN(size_t                     m,
                                      const struct geist_weight *w,
                                      struct geist_backend      *be,
                                      float                     *y) {
-    const size_t n_in  = (size_t) w->n_in;
-    const size_t n_out = (size_t) w->n_out;
-    float        scale;
-    memcpy(&scale, (const uint8_t *) w->raw + i2_s_scale_offset(n_in * n_out), sizeof scale);
-    const uint8_t            *x4 = (const uint8_t *) w->aux_fp32;
-    struct cpu_x86_workspace *ws = i2s_mN_scratch(be, m, n_in, false);
+    const size_t              n_in  = (size_t) w->n_in;
+    const size_t              n_out = (size_t) w->n_out;
+    const float               scale = i2s_scale(w);
+    const uint8_t            *x4    = (const uint8_t *) w->aux_fp32;
+    struct cpu_x86_workspace *ws    = i2s_mN_scratch(be, m, n_in, false);
     if (ws == nullptr) {
         for (size_t i = 0; i < m; i++) {
             i2s_x4_gemv_m1(n_out, n_in, x + i * n_in, x4, scale, y + i * n_out);
@@ -302,13 +280,7 @@ static void cpu_x86_linear_i2s_x4_pair_m1(const float               *x,
                                           float                     *y1) {
     (void) be;
     const size_t n_in = (size_t) w0->n_in;
-    float        s0, s1;
-    memcpy(&s0,
-           (const uint8_t *) w0->raw + i2_s_scale_offset(n_in * (size_t) w0->n_out),
-           sizeof s0);
-    memcpy(&s1,
-           (const uint8_t *) w1->raw + i2_s_scale_offset(n_in * (size_t) w1->n_out),
-           sizeof s1);
+    const float  s0 = i2s_scale(w0), s1 = i2s_scale(w1);
     i2s_x4_gemv_pair_m1(n_in,
                         x,
                         (const uint8_t *) w0->aux_fp32,
@@ -523,7 +495,7 @@ static bool q4k_reads_raw(void) {
          * for a weight the loader marked exact (an MoE router, #48). */
         if ((w->flags & GEIST_W_EXACT) != 0 || cpu_x86_linear_f32q_resolve(w) != GEIST_OK) {
             w->linear_m1 = cpu_x86_linear_f32_m1;
-            w->linear_mN = cpu_x86_linear_f32_mN;
+            w->linear_mN = geist_linear_f32_mN;
         }
         break;
     default:

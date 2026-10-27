@@ -17,6 +17,7 @@
 #ifndef GEIST_BACKENDS_COMMON_LINEAR_REF_H
 #define GEIST_BACKENDS_COMMON_LINEAR_REF_H
 
+#include <geist.h>
 #include <geist_weight.h>
 
 #include <stddef.h>
@@ -40,5 +41,16 @@ void geist_linear_ref_rows(size_t                     m,
                            const float               *x,
                            const struct geist_weight *w,
                            float                     *y);
+
+/* resolve_weight's entry check, the same on every CPU backend:
+ * GEIST_E_INVALID_ARG without a weight, a source, positive dimensions or a
+ * raw_nbytes; GEIST_E_FORMAT when raw_nbytes does not cover (dtype, n_in,
+ * n_out) (quant_weight_extent_ok), since the kernels index `raw` by shape. */
+[[nodiscard]] enum geist_status geist_weight_precheck(const struct geist_weight *w);
+
+/* linear_mN for an F32 weight on a backend with a fast GEMM:
+ * y [m, n_out] = x [m, n_in] · Wᵀ through geist_sgemm (geist_gemm.h). */
+void geist_linear_f32_mN(
+        size_t m, const float *x, const struct geist_weight *w, struct geist_backend *be, float *y);
 
 #endif /* GEIST_BACKENDS_COMMON_LINEAR_REF_H */

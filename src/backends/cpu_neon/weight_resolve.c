@@ -509,28 +509,6 @@ static void cpu_neon_w_f32_m1(const float               *x,
     }
 }
 
-static void cpu_neon_w_f32_mN(size_t                     m,
-                              const float               *x,
-                              const struct geist_weight *w,
-                              struct geist_backend      *be,
-                              float                     *y) {
-    (void) be;
-    /* Y [m, n_out] = X [m, n_in] @ W^T   (W row-major [n_out, n_in]). */
-    geist_sgemm(GEIST_OP_N,
-                GEIST_OP_T,
-                (int) m,
-                (int) w->n_out,
-                (int) w->n_in,
-                1.0f,
-                x,
-                (int) w->n_in,
-                (const float *) w->raw,
-                (int) w->n_in,
-                0.0f,
-                y,
-                (int) w->n_out);
-}
-
 /* ---- M>1 (prefill) trampolines --------------------------------------- */
 
 static void cpu_neon_w_q3k_mN(size_t                     m,
@@ -1308,7 +1286,7 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
          "iq4_xs/w4a8"},
 
         /* F32 native both paths. */
-        {GEIST_DTYPE_F32, CPU_NEON_ISA_NEON, cpu_neon_w_f32_m1, cpu_neon_w_f32_mN, "f32"},
+        {GEIST_DTYPE_F32, CPU_NEON_ISA_NEON, cpu_neon_w_f32_m1, geist_linear_f32_mN, "f32"},
 
 /* F16: fused in-register-convert GEMV for decode (M=1); prefill and BF16
  * on the dequant+SGEMM trampoline. */
@@ -1740,14 +1718,11 @@ enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_bac
 
 [[nodiscard]] enum geist_status cpu_neon_resolve_weight(struct geist_backend *be,
                                                         struct geist_weight  *w) {
-    if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0 || w->raw_nbytes == 0u) {
-        return GEIST_E_INVALID_ARG;
-    }
     /* The source extent, before anything reads it: the repacks (Q4_K
-     * predecode, Q6_K n-tile, TL1) stream the whole tensor, so raw_nbytes
-     * must cover (dtype, n_in, n_out). */
-    if (!quant_weight_extent_ok(w)) {
-        return GEIST_E_FORMAT;
+     * predecode, Q6_K n-tile, TL1) stream the whole tensor. */
+    const enum geist_status pre = geist_weight_precheck(w);
+    if (pre != GEIST_OK) {
+        return pre;
     }
     /* Fail fast without backend state: the policy carries the runtime ISA
      * bits that gate kernel installation, and a synthesized default could
