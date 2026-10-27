@@ -1077,6 +1077,38 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
     return metal_op_end(be, cmd, enc, "F32 linear");
 }
 
+/* An F32 rows view (metal_tensor_is_f32_rows) or vector
+ * (metal_tensor_is_f32_vector: one row) of an op's operand. `fits` says
+ * whether its geometry fits the kernels' uint32 params and its buffer is
+ * this backend's: an op reports UNSUPPORTED for any shape that does not
+ * match first and INVALID_ARG for !fits only after that. */
+struct metal_rows {
+    size_t rows, cols, off, stride;
+    bool   fits;
+};
+
+/* Records in r->fits whether r fits uint32 params and t is this backend's.
+ * Returns true, so it chains after the shape check. */
+static bool
+metal_rows_fit(const struct geist_backend *be, const struct geist_tensor *t, struct metal_rows *r) {
+    r->fits = r->rows <= UINT32_MAX && r->cols <= UINT32_MAX && r->off <= UINT32_MAX &&
+              r->stride <= UINT32_MAX && t->buffer->owner == be->state;
+    return true;
+}
+
+static bool
+metal_rows_of(const struct geist_backend *be, const struct geist_tensor *t, struct metal_rows *r) {
+    return metal_tensor_is_f32_rows(t, &r->rows, &r->cols, &r->off, &r->stride) &&
+           metal_rows_fit(be, t, r);
+}
+
+static bool
+metal_vec_of(const struct geist_backend *be, const struct geist_tensor *t, struct metal_rows *r) {
+    r->rows   = 1;
+    r->stride = 0;
+    return metal_tensor_is_f32_vector(t, &r->cols, &r->off) && metal_rows_fit(be, t, r);
+}
+
 [[nodiscard]] static enum geist_status metal_rmsnorm(struct geist_backend      *be,
                                                      const struct geist_tensor *x,
                                                      const struct geist_tensor *w,
@@ -1086,19 +1118,12 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    size_t rows = 0, cols = 0, x_off = 0, x_stride = 0;
-    size_t y_rows = 0, y_cols = 0, y_off = 0, y_stride = 0;
-    size_t w_n = 0, w_off = 0;
-    if (!metal_tensor_is_f32_rows(x, &rows, &cols, &x_off, &x_stride) ||
-        !metal_tensor_is_f32_rows(y, &y_rows, &y_cols, &y_off, &y_stride) ||
-        !metal_tensor_is_f32_vector(w, &w_n, &w_off) || y_rows != rows || y_cols != cols ||
-        w_n != cols) {
+    struct metal_rows xr, yr, wr;
+    if (!metal_rows_of(be, x, &xr) || !metal_rows_of(be, y, &yr) || !metal_vec_of(be, w, &wr) ||
+        yr.rows != xr.rows || yr.cols != xr.cols || wr.cols != xr.cols) {
         return GEIST_E_UNSUPPORTED;
     }
-    if (rows > UINT32_MAX || cols > UINT32_MAX || x_off > UINT32_MAX || y_off > UINT32_MAX ||
-        w_off > UINT32_MAX || x_stride > UINT32_MAX || y_stride > UINT32_MAX ||
-        x->buffer->owner != be->state || w->buffer->owner != be->state ||
-        y->buffer->owner != be->state) {
+    if (!xr.fits || !yr.fits || !wr.fits) {
         return GEIST_E_INVALID_ARG;
     }
     enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
@@ -1107,13 +1132,13 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
     }
     struct metal_state            *st     = be->state;
     const struct metal_rows_params params = {
-            .rows         = (uint32_t) rows,
-            .cols         = (uint32_t) cols,
-            .x_offset     = (uint32_t) x_off,
-            .w_offset     = (uint32_t) w_off,
-            .y_offset     = (uint32_t) y_off,
-            .x_row_stride = (uint32_t) x_stride,
-            .y_row_stride = (uint32_t) y_stride,
+            .rows         = (uint32_t) xr.rows,
+            .cols         = (uint32_t) xr.cols,
+            .x_offset     = (uint32_t) xr.off,
+            .w_offset     = (uint32_t) wr.off,
+            .y_offset     = (uint32_t) yr.off,
+            .x_row_stride = (uint32_t) xr.stride,
+            .y_row_stride = (uint32_t) yr.stride,
             .eps          = eps,
     };
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
@@ -1137,22 +1162,13 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    size_t rows = 0, cols = 0, x_off = 0, x_stride = 0;
-    size_t r_rows = 0, r_cols = 0, r_off = 0, r_stride = 0;
-    size_t y_rows = 0, y_cols = 0, y_off = 0, y_stride = 0;
-    size_t w_n = 0, w_off = 0;
-    if (!metal_tensor_is_f32_rows(x, &rows, &cols, &x_off, &x_stride) ||
-        !metal_tensor_is_f32_rows(res, &r_rows, &r_cols, &r_off, &r_stride) ||
-        !metal_tensor_is_f32_rows(y, &y_rows, &y_cols, &y_off, &y_stride) ||
-        !metal_tensor_is_f32_vector(w, &w_n, &w_off) || r_rows != rows || r_cols != cols ||
-        y_rows != rows || y_cols != cols || w_n != cols) {
+    struct metal_rows xr, rr, yr, wr;
+    if (!metal_rows_of(be, x, &xr) || !metal_rows_of(be, res, &rr) || !metal_rows_of(be, y, &yr) ||
+        !metal_vec_of(be, w, &wr) || rr.rows != xr.rows || rr.cols != xr.cols ||
+        yr.rows != xr.rows || yr.cols != xr.cols || wr.cols != xr.cols) {
         return GEIST_E_UNSUPPORTED;
     }
-    if (rows > UINT32_MAX || cols > UINT32_MAX || x_off > UINT32_MAX || r_off > UINT32_MAX ||
-        y_off > UINT32_MAX || w_off > UINT32_MAX || x_stride > UINT32_MAX ||
-        r_stride > UINT32_MAX || y_stride > UINT32_MAX || x->buffer->owner != be->state ||
-        res->buffer->owner != be->state || w->buffer->owner != be->state ||
-        y->buffer->owner != be->state) {
+    if (!xr.fits || !rr.fits || !yr.fits || !wr.fits) {
         return GEIST_E_INVALID_ARG;
     }
     enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
@@ -1161,15 +1177,15 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
     }
     struct metal_state                 *st     = be->state;
     const struct metal_post_norm_params params = {
-            .rows                = (uint32_t) rows,
-            .cols                = (uint32_t) cols,
-            .residual_offset     = (uint32_t) r_off,
-            .x_offset            = (uint32_t) x_off,
-            .w_offset            = (uint32_t) w_off,
-            .y_offset            = (uint32_t) y_off,
-            .residual_row_stride = (uint32_t) r_stride,
-            .x_row_stride        = (uint32_t) x_stride,
-            .y_row_stride        = (uint32_t) y_stride,
+            .rows                = (uint32_t) xr.rows,
+            .cols                = (uint32_t) xr.cols,
+            .residual_offset     = (uint32_t) rr.off,
+            .x_offset            = (uint32_t) xr.off,
+            .w_offset            = (uint32_t) wr.off,
+            .y_offset            = (uint32_t) yr.off,
+            .residual_row_stride = (uint32_t) rr.stride,
+            .x_row_stride        = (uint32_t) xr.stride,
+            .y_row_stride        = (uint32_t) yr.stride,
             .eps                 = eps,
     };
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
@@ -1199,27 +1215,15 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
         y == nullptr || z == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    size_t rows = 0, cols = 0, x_off = 0, x_stride = 0;
-    size_t r_rows = 0, r_cols = 0, r_off = 0, r_stride = 0;
-    size_t y_rows = 0, y_cols = 0, y_off = 0, y_stride = 0;
-    size_t z_rows = 0, z_cols = 0, z_off = 0, z_stride = 0;
-    size_t w_n = 0, w_off = 0, zw_n = 0, zw_off = 0;
-    if (!metal_tensor_is_f32_rows(x, &rows, &cols, &x_off, &x_stride) ||
-        !metal_tensor_is_f32_rows(res, &r_rows, &r_cols, &r_off, &r_stride) ||
-        !metal_tensor_is_f32_rows(y, &y_rows, &y_cols, &y_off, &y_stride) ||
-        !metal_tensor_is_f32_rows(z, &z_rows, &z_cols, &z_off, &z_stride) ||
-        !metal_tensor_is_f32_vector(z_w, &zw_n, &zw_off) ||
-        (w != nullptr && (!metal_tensor_is_f32_vector(w, &w_n, &w_off) || w_n != cols)) ||
-        r_rows != rows || r_cols != cols || y_rows != rows || y_cols != cols || z_rows != rows ||
-        z_cols != cols || zw_n != cols) {
+    struct metal_rows xr, rr, yr, zr, zwr, wr = {.fits = true};
+    if (!metal_rows_of(be, x, &xr) || !metal_rows_of(be, res, &rr) || !metal_rows_of(be, y, &yr) ||
+        !metal_rows_of(be, z, &zr) || !metal_vec_of(be, z_w, &zwr) ||
+        (w != nullptr && (!metal_vec_of(be, w, &wr) || wr.cols != xr.cols)) || rr.rows != xr.rows ||
+        rr.cols != xr.cols || yr.rows != xr.rows || yr.cols != xr.cols || zr.rows != xr.rows ||
+        zr.cols != xr.cols || zwr.cols != xr.cols) {
         return GEIST_E_UNSUPPORTED;
     }
-    if (rows > UINT32_MAX || cols > UINT32_MAX || x_off > UINT32_MAX || r_off > UINT32_MAX ||
-        y_off > UINT32_MAX || z_off > UINT32_MAX || w_off > UINT32_MAX || zw_off > UINT32_MAX ||
-        x_stride > UINT32_MAX || r_stride > UINT32_MAX || y_stride > UINT32_MAX ||
-        z_stride > UINT32_MAX || x->buffer->owner != be->state || res->buffer->owner != be->state ||
-        (w != nullptr && w->buffer->owner != be->state) || z_w->buffer->owner != be->state ||
-        y->buffer->owner != be->state || z->buffer->owner != be->state) {
+    if (!xr.fits || !rr.fits || !yr.fits || !zr.fits || !zwr.fits || !wr.fits) {
         return GEIST_E_INVALID_ARG;
     }
     enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
@@ -1228,18 +1232,18 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
     }
     struct metal_state                  *st     = be->state;
     const struct metal_post_norm2_params params = {
-            .rows                = (uint32_t) rows,
-            .cols                = (uint32_t) cols,
-            .residual_offset     = (uint32_t) r_off,
-            .x_offset            = (uint32_t) x_off,
-            .w_offset            = (uint32_t) w_off,
-            .zw_offset           = (uint32_t) zw_off,
-            .y_offset            = (uint32_t) y_off,
-            .z_offset            = (uint32_t) z_off,
-            .residual_row_stride = (uint32_t) r_stride,
-            .x_row_stride        = (uint32_t) x_stride,
-            .y_row_stride        = (uint32_t) y_stride,
-            .z_row_stride        = (uint32_t) z_stride,
+            .rows                = (uint32_t) xr.rows,
+            .cols                = (uint32_t) xr.cols,
+            .residual_offset     = (uint32_t) rr.off,
+            .x_offset            = (uint32_t) xr.off,
+            .w_offset            = (uint32_t) wr.off,
+            .zw_offset           = (uint32_t) zwr.off,
+            .y_offset            = (uint32_t) yr.off,
+            .z_offset            = (uint32_t) zr.off,
+            .residual_row_stride = (uint32_t) rr.stride,
+            .x_row_stride        = (uint32_t) xr.stride,
+            .y_row_stride        = (uint32_t) yr.stride,
+            .z_row_stride        = (uint32_t) zr.stride,
             .has_w               = w != nullptr ? 1u : 0u,
             .eps                 = eps,
             .scale               = scale,
@@ -1268,19 +1272,12 @@ metal_binary_rows(struct geist_backend      *be,
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    size_t rows = 0, cols = 0, a_off = 0, a_stride = 0;
-    size_t b_rows = 0, b_cols = 0, b_off = 0, b_stride = 0;
-    size_t y_rows = 0, y_cols = 0, y_off = 0, y_stride = 0;
-    if (!metal_tensor_is_f32_rows(a, &rows, &cols, &a_off, &a_stride) ||
-        !metal_tensor_is_f32_rows(b, &b_rows, &b_cols, &b_off, &b_stride) ||
-        !metal_tensor_is_f32_rows(y, &y_rows, &y_cols, &y_off, &y_stride) || b_rows != rows ||
-        y_rows != rows || b_cols != cols || y_cols != cols) {
+    struct metal_rows ar, br, yr;
+    if (!metal_rows_of(be, a, &ar) || !metal_rows_of(be, b, &br) || !metal_rows_of(be, y, &yr) ||
+        br.rows != ar.rows || yr.rows != ar.rows || br.cols != ar.cols || yr.cols != ar.cols) {
         return GEIST_E_UNSUPPORTED;
     }
-    if (rows > UINT32_MAX || cols > UINT32_MAX || a_off > UINT32_MAX || b_off > UINT32_MAX ||
-        y_off > UINT32_MAX || a_stride > UINT32_MAX || b_stride > UINT32_MAX ||
-        y_stride > UINT32_MAX || a->buffer->owner != be->state || b->buffer->owner != be->state ||
-        y->buffer->owner != be->state) {
+    if (!ar.fits || !br.fits || !yr.fits) {
         return GEIST_E_INVALID_ARG;
     }
     enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
@@ -1289,14 +1286,14 @@ metal_binary_rows(struct geist_backend      *be,
     }
     struct metal_state                   *st     = be->state;
     const struct metal_binary_rows_params params = {
-            .rows         = (uint32_t) rows,
-            .cols         = (uint32_t) cols,
-            .a_offset     = (uint32_t) a_off,
-            .b_offset     = (uint32_t) b_off,
-            .y_offset     = (uint32_t) y_off,
-            .a_row_stride = (uint32_t) a_stride,
-            .b_row_stride = (uint32_t) b_stride,
-            .y_row_stride = (uint32_t) y_stride,
+            .rows         = (uint32_t) ar.rows,
+            .cols         = (uint32_t) ar.cols,
+            .a_offset     = (uint32_t) ar.off,
+            .b_offset     = (uint32_t) br.off,
+            .y_offset     = (uint32_t) yr.off,
+            .a_row_stride = (uint32_t) ar.stride,
+            .b_row_stride = (uint32_t) br.stride,
+            .y_row_stride = (uint32_t) yr.stride,
     };
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
@@ -1501,34 +1498,29 @@ static bool metal_hadamard_geometry_ok(
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    size_t rows = 0, cols = 0, xo = 0, xs = 0;
-    size_t gr = 0, gc = 0, go = 0, gs = 0;
-    size_t yr = 0, yc = 0, yo = 0, ys = 0;
-    if (!metal_tensor_is_f32_rows(x, &rows, &cols, &xo, &xs) ||
-        !metal_tensor_is_f32_rows(gate, &gr, &gc, &go, &gs) ||
-        !metal_tensor_is_f32_rows(y, &yr, &yc, &yo, &ys) || gr != rows || yr != rows ||
-        gc != cols || yc != cols) {
+    struct metal_rows xr, gr, yr;
+    if (!metal_rows_of(be, x, &xr) || !metal_rows_of(be, gate, &gr) || !metal_rows_of(be, y, &yr) ||
+        gr.rows != xr.rows || yr.rows != xr.rows || gr.cols != xr.cols || yr.cols != xr.cols) {
         return GEIST_E_UNSUPPORTED;
     }
-    if (rows > UINT32_MAX || cols > UINT32_MAX || xo > UINT32_MAX || go > UINT32_MAX ||
-        yo > UINT32_MAX || xs > UINT32_MAX || gs > UINT32_MAX || ys > UINT32_MAX ||
-        x->buffer->owner != be->state || gate->buffer->owner != be->state ||
-        y->buffer->owner != be->state) {
+    if (!xr.fits || !gr.fits || !yr.fits) {
         return GEIST_E_INVALID_ARG;
     }
     enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK)
         return s;
-    struct metal_state                                *st     = be->state;
-    const struct metal_binary_rows_params              params = {.rows         = (uint32_t) rows,
-                                                                 .cols         = (uint32_t) cols,
-                                                                 .a_offset     = (uint32_t) xo,
-                                                                 .b_offset     = (uint32_t) go,
-                                                                 .y_offset     = (uint32_t) yo,
-                                                                 .a_row_stride = (uint32_t) xs,
-                                                                 .b_row_stride = (uint32_t) gs,
-                                                                 .y_row_stride = (uint32_t) ys};
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool   = metal_standalone_pool(st);
+    struct metal_state                   *st     = be->state;
+    const struct metal_binary_rows_params params = {
+            .rows         = (uint32_t) xr.rows,
+            .cols         = (uint32_t) xr.cols,
+            .a_offset     = (uint32_t) xr.off,
+            .b_offset     = (uint32_t) gr.off,
+            .y_offset     = (uint32_t) yr.off,
+            .a_row_stride = (uint32_t) xr.stride,
+            .b_row_stride = (uint32_t) gr.stride,
+            .y_row_stride = (uint32_t) yr.stride,
+    };
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
     void *enc = metal_op_begin(be, nullptr, &cmd);
@@ -1551,16 +1543,12 @@ metal_unary_rows(struct geist_backend      *be,
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    size_t rows = 0, cols = 0, x_off = 0, x_stride = 0;
-    size_t y_rows = 0, y_cols = 0, y_off = 0, y_stride = 0;
-    if (!metal_tensor_is_f32_rows(x, &rows, &cols, &x_off, &x_stride) ||
-        !metal_tensor_is_f32_rows(y, &y_rows, &y_cols, &y_off, &y_stride) || y_rows != rows ||
-        y_cols != cols) {
+    struct metal_rows xr, yr;
+    if (!metal_rows_of(be, x, &xr) || !metal_rows_of(be, y, &yr) || yr.rows != xr.rows ||
+        yr.cols != xr.cols) {
         return GEIST_E_UNSUPPORTED;
     }
-    if (rows > UINT32_MAX || cols > UINT32_MAX || x_off > UINT32_MAX || y_off > UINT32_MAX ||
-        x_stride > UINT32_MAX || y_stride > UINT32_MAX || x->buffer->owner != be->state ||
-        y->buffer->owner != be->state) {
+    if (!xr.fits || !yr.fits) {
         return GEIST_E_INVALID_ARG;
     }
     enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
@@ -1569,12 +1557,12 @@ metal_unary_rows(struct geist_backend      *be,
     }
     struct metal_state                  *st     = be->state;
     const struct metal_scale_rows_params params = {
-            .rows         = (uint32_t) rows,
-            .cols         = (uint32_t) cols,
-            .x_offset     = (uint32_t) x_off,
-            .y_offset     = (uint32_t) y_off,
-            .x_row_stride = (uint32_t) x_stride,
-            .y_row_stride = (uint32_t) y_stride,
+            .rows         = (uint32_t) xr.rows,
+            .cols         = (uint32_t) xr.cols,
+            .x_offset     = (uint32_t) xr.off,
+            .y_offset     = (uint32_t) yr.off,
+            .x_row_stride = (uint32_t) xr.stride,
+            .y_row_stride = (uint32_t) yr.stride,
             .scale        = scale,
     };
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
