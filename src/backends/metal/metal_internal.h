@@ -92,9 +92,7 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_ARGMAX,
     METAL_PROFILE_DISPATCH_DELTANET_PREFILL,
     METAL_PROFILE_DISPATCH_DELTANET_DECODE,
-    /* chunked-prefill sub-stages, individually skippable for the
-     * subtractive profiler (all still count as DELTANET for the
-     * category-level GEIST_SKIP_DELTANET). */
+    /* chunked-prefill sub-stages, timed apart from the rest of DeltaNet */
     METAL_PROFILE_DISPATCH_DN_PREP,  /* cst_copy + conv + norm + roll */
     METAL_PROFILE_DISPATCH_DN_CHUNK, /* dnf_chunk */
     METAL_PROFILE_DISPATCH_DN_STATE, /* dnf_state */
@@ -549,7 +547,6 @@ struct metal_state {
     _Atomic(uintptr_t)        seq_owner;
     bool                      sequence_has_work;
     bool                      profile_enabled;
-    bool                      skip_next_dispatch; /* subtractive profiler: drop the next dispatch */
     struct metal_profile_stat profile[METAL_PROFILE_STAGE_COUNT];
     /* GPU time of committed command buffers (profile only): the sum of the
      * buffers' own times, and their union on the GPU timeline (busy). */

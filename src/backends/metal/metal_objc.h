@@ -339,10 +339,6 @@ static inline void metal_msg_send_dispatch(struct metal_state *st,
                                            struct metal_size   groups,
                                            struct metal_size   threads) {
     void *sel = metal_sel_register_name(st, "dispatchThreadgroups:threadsPerThreadgroup:");
-    if (st->skip_next_dispatch) {
-        st->skip_next_dispatch = false;
-        return;
-    }
     union {
         void *raw;
         void (*fn)(void *, void *, struct metal_size, struct metal_size);
