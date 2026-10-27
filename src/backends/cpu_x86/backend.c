@@ -44,6 +44,7 @@
 #include "threads.h"
 
 #include "cpu_threads.h"
+#include "host_ops.h"
 
 #include "geist_gemm.h"
 #include "checked.h"
@@ -364,9 +365,7 @@ static bool cpu_x86_linear_i2s_x4_resolve(struct geist_weight *w) {
     if (t5) {
         i2s_to_t5(n_out, n_in, (const uint8_t *) w->raw, blob + x4_bytes);
     }
-    w->aux_fp32  = (const float *) blob;
-    w->aux_n     = (int32_t) blob_bytes;
-    w->flags     = (uint16_t) (w->flags | GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK);
+    geist_weight_attach_aux(w, blob, blob_bytes, 0, 0, 0);
     w->linear_m1 = t5 ? cpu_x86_linear_i2s_t5_m1 : cpu_x86_linear_i2s_x4_m1;
     w->linear_mN = cpu_x86_linear_i2s_x4_mN;
     /* Fused gate+up / q+k decode (dispatcher gates on equal linear_pair_m1
@@ -425,9 +424,7 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
     }
     f16_to_q8w(
             n_out, n_in, (const uint16_t *) w->raw, (int8_t *) blob, (float *) (blob + scales_off));
-    w->aux_fp32  = (const float *) blob;
-    w->aux_n     = (int32_t) blob_bytes;
-    w->flags     = (uint16_t) (w->flags | GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK);
+    geist_weight_attach_aux(w, blob, blob_bytes, 0, 0, 0);
     w->linear_m1 = cpu_x86_linear_q8w_m1;
     return true;
 }

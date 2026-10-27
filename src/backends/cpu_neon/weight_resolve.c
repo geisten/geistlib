@@ -27,6 +27,7 @@
 #include <geist_backend.h>
 #include <geist_weight.h>
 
+#include "host_ops.h"
 #include "linear_ref.h"
 #include "quant.h"
 #include "selected_rows.h"
@@ -1428,12 +1429,8 @@ install_tq2_0_tl1_if_eligible(struct geist_weight *w, const struct cpu_neon_kern
         safe_free(&tl1_buf);
         return GEIST_OK;
     }
-    w->aux_fp32 = (const float *) tl1_buf;
-    w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
-    w->backend_layout    = GEIST_W_LAYOUT_TQ2_0_TL1;
-    w->backend_alignment = 64;
-    w->linear_m1         = cpu_neon_w_tl1_m1;
+    geist_weight_attach_aux(w, tl1_buf, bytes, GEIST_W_LAYOUT_TQ2_0_TL1, 64, 0);
+    w->linear_m1 = cpu_neon_w_tl1_m1;
     /* Prefill (m>1) stays on the SDOT q8a_mN path: a TL1 LUT-GEMM loses
      * there on A76 (Pi 5 BitNet 2B-4T prefill 21.0 vs 33.6 t/s). */
     return GEIST_OK;
@@ -1465,12 +1462,13 @@ install_q4k_predecode_if_eligible(struct geist_weight                 *w,
         safe_free(&buf);
         return GEIST_OK;
     }
-    w->aux_fp32 = (const float *) buf;
-    w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
-    w->backend_layout =
-            use_ntile_pack ? GEIST_W_LAYOUT_Q4_K_PREDECODE_NTILE4 : GEIST_W_LAYOUT_Q4_K_PREDECODE;
-    w->backend_alignment = 64;
+    geist_weight_attach_aux(w,
+                            buf,
+                            bytes,
+                            use_ntile_pack ? GEIST_W_LAYOUT_Q4_K_PREDECODE_NTILE4
+                                           : GEIST_W_LAYOUT_Q4_K_PREDECODE,
+                            64,
+                            0);
     return GEIST_OK;
 }
 
@@ -1507,12 +1505,13 @@ install_q6k_ntile_if_eligible(struct geist_weight *w, const struct cpu_neon_kern
         safe_free(&buf);
         return GEIST_OK;
     }
-    w->aux_fp32 = (const float *) buf;
-    w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
-    w->backend_layout    = use_stream ? GEIST_W_LAYOUT_Q6_K_PREDECODE_NTILE4_STREAM
-                                      : GEIST_W_LAYOUT_Q6_K_PREDECODE_NTILE4;
-    w->backend_alignment = 64;
+    geist_weight_attach_aux(w,
+                            buf,
+                            bytes,
+                            use_stream ? GEIST_W_LAYOUT_Q6_K_PREDECODE_NTILE4_STREAM
+                                       : GEIST_W_LAYOUT_Q6_K_PREDECODE_NTILE4,
+                            64,
+                            0);
     return GEIST_OK;
 }
 
@@ -1544,11 +1543,7 @@ install_q6k_x8_gemv_if_eligible(struct geist_weight                 *w,
         safe_free(&buf);
         return GEIST_OK;
     }
-    w->aux_fp32 = (const float *) buf;
-    w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
-    w->backend_layout    = GEIST_W_LAYOUT_Q6_K_X8_GEMV;
-    w->backend_alignment = 64;
+    geist_weight_attach_aux(w, buf, bytes, GEIST_W_LAYOUT_Q6_K_X8_GEMV, 64, 0);
 #else
     (void) w;
     (void) policy;
@@ -1583,11 +1578,7 @@ install_q4_0_x8_gemv_if_eligible(struct geist_weight                 *w,
         safe_free(&buf);
         return GEIST_OK;
     }
-    w->aux_fp32 = (const float *) buf;
-    w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK | GEIST_W_RAW_COLD;
-    w->backend_layout    = GEIST_W_LAYOUT_Q4_0_X8_GEMV;
-    w->backend_alignment = 64;
+    geist_weight_attach_aux(w, buf, bytes, GEIST_W_LAYOUT_Q4_0_X8_GEMV, 64, GEIST_W_RAW_COLD);
 #else
     (void) w;
     (void) policy;
@@ -1613,15 +1604,11 @@ static void install_pq2_0_x8_gemv_if_eligible(struct geist_weight               
         return;
     }
     pq2_0_x8_pack(w->raw, (size_t) w->n_in, (size_t) w->n_out, buf);
-    w->aux_fp32 = (const float *) buf;
-    w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK | GEIST_W_RAW_COLD;
-    w->backend_layout    = GEIST_W_LAYOUT_PQ2_0_X8_GEMV;
-    w->backend_alignment = 64;
-    w->linear_m1         = cpu_neon_w_pq2_0_x8_m1;
-    w->linear_mN         = cpu_neon_w_pq2_0_x8_mN;
-    w->linear_pair_m1    = cpu_neon_w_pq2_0_x8_pair_m1;
-    w->linear_pair_mN    = cpu_neon_w_pq2_0_x8_pair_mN;
+    geist_weight_attach_aux(w, buf, bytes, GEIST_W_LAYOUT_PQ2_0_X8_GEMV, 64, GEIST_W_RAW_COLD);
+    w->linear_m1      = cpu_neon_w_pq2_0_x8_m1;
+    w->linear_mN      = cpu_neon_w_pq2_0_x8_mN;
+    w->linear_pair_m1 = cpu_neon_w_pq2_0_x8_pair_m1;
+    w->linear_pair_mN = cpu_neon_w_pq2_0_x8_pair_mN;
 #else
     (void) w;
     (void) policy;
