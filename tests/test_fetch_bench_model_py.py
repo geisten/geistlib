@@ -3,7 +3,8 @@
 
 Every protocol model has a pinned download source; a fetch resumes a
 partial file over HTTP Range, caches the result, and refuses content whose
-sha256 differs from the protocol. Hermetic: a local HTTP server, no network.
+sha256 differs from the protocol. --url mode does the same for any URL
+with a given sha256. Hermetic: a local HTTP server, no network.
 """
 from __future__ import annotations
 
@@ -40,6 +41,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(BLOB) - start))
         self.end_headers()
         self.wfile.write(BLOB[start:])
+
+    def do_HEAD(self):  # noqa: N802
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(BLOB)))
+        self.end_headers()
 
     def log_message(self, *args):
         pass
@@ -82,6 +88,13 @@ with tempfile.TemporaryDirectory() as tmp:
     except SystemExit:
         expect(not (cache / "bad.gguf").exists() and not (cache / "bad.gguf.part").exists(),
                "sha256 mismatch is refused and leaves nothing behind")
+
+    path = fbm.fetch_file(url, good, cache / "u.gguf")
+    expect(path.read_bytes() == BLOB and served[-1] == 0,
+           "--url mode takes the size from the server and fetches the file")
+    n = len(served)
+    fbm.fetch_file(url, good, cache / "u.gguf")
+    expect(len(served) == n, "--url mode reuses the cached file")
 
 server.shutdown()
 print("PASS" if not fails else f"FAIL ({fails})")
