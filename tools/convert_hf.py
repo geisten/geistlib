@@ -34,7 +34,6 @@ that repository); the manifest keeps a slot for its verdict.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -45,6 +44,9 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bench_host import sha256_file  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -88,14 +90,6 @@ SMALL_MODEL_BYTES = 4_000_000_000
 
 # Files a conversion reads: weights, configs, tokenizer.
 ALLOW = ["*.safetensors", "*.json", "tokenizer*", "*.model", "*.txt", "*.tiktoken"]
-
-
-def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
 
 
 def git_head(repo: Path) -> str:

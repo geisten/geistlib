@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Host plumbing shared by the benchmark runners (bench_cross_engine.py,
 bench_mac_ab.py, bench_revision_ab.py, bench_quality_perf.py): provenance
-hashes, the quiet-host gate, run schedules and the dispersion statistic."""
+hashes, the quiet-host gate, run schedules and the dispersion statistic.
+Stdlib only: the fetch and convert tools import sha256_file from here too."""
 from __future__ import annotations
 
 import hashlib

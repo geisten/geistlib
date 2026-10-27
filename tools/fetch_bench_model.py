@@ -17,7 +17,6 @@ Stdlib only.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shutil
@@ -25,18 +24,13 @@ import sys
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bench_host import sha256_file  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 SOURCES = ROOT / "benchmark" / "model_sources.json"
 CHUNK = 8 << 20
 MARGIN = 1 << 30  # keep 1 GiB free beyond the download
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(CHUNK):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def download(url: str, part: Path, size: int) -> None:
