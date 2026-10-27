@@ -399,31 +399,46 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
  * §3); the old buffer stays alive while a command buffer still holds it. If
  * it cannot grow, the bounded GEMM takes the call (metal_pq2_xh_ready).
  * Serial-encoder ordering makes the reuse across GEMMs safe. */
+/* Grow-only scratch: afterwards *buf holds at least n_bytes, or is nullptr
+ * when it could not grow (status). A smaller buffer is released first. */
+[[nodiscard]] static enum geist_status metal_scratch_reserve(struct geist_backend *be,
+                                                             size_t                n_bytes,
+                                                             unsigned int          memory_flags,
+                                                             bool                  host_visible,
+                                                             struct geist_buffer **buf) {
+    if (*buf != nullptr ? (*buf)->bytes >= n_bytes : n_bytes == 0u) {
+        return GEIST_OK;
+    }
+    metal_buffer_destroy_internal(be, *buf);
+    *buf = nullptr;
+    return metal_new_buffer(be, n_bytes, GEIST_BUFFER_SCRATCH, memory_flags, host_visible, buf);
+}
+
+/* Bytes a grow-only scratch holds; 0 when absent. */
+static size_t metal_scratch_bytes(const struct geist_buffer *buf) {
+    return buf != nullptr ? buf->bytes : 0u;
+}
+
 static void metal_pq2_xh_reserve(struct geist_backend *be, size_t rows, size_t n_in) {
     struct metal_state *st = be->state;
     size_t              cap;
-    if (ckd_mul(&cap, rows, n_in) || ckd_mul(&cap, cap, sizeof(uint16_t)) ||
-        st->pq2_xh_capacity >= cap) {
-        return;
-    }
-    metal_buffer_destroy_internal(be, st->pq2_xh_buffer);
-    st->pq2_xh_buffer   = nullptr;
-    st->pq2_xh_capacity = 0;
-    if (metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, false, &st->pq2_xh_buffer) == GEIST_OK) {
-        st->pq2_xh_capacity = cap;
+    if (!ckd_mul(&cap, rows, n_in) && !ckd_mul(&cap, cap, sizeof(uint16_t))) {
+        (void) metal_scratch_reserve(be, cap, 0, false, &st->pq2_xh_buffer);
     }
 }
 
 static bool metal_pq2_xh_ready(const struct metal_state      *st,
                                const struct metal_q4k_params *params) {
     return st->cvt_f16_pipeline != nullptr && st->pq2_xh_buffer != nullptr &&
-           (size_t) params->rows * params->n_in * sizeof(uint16_t) <= st->pq2_xh_capacity;
+           (size_t) params->rows * params->n_in * sizeof(uint16_t) <=
+                   metal_scratch_bytes(st->pq2_xh_buffer);
 }
 
 static bool metal_pq2_m8_fits(const struct metal_state *st, const struct metal_q4k_params *params) {
     return params->rows >= 2u && params->rows <= 8u && st->pq2_m8_pipeline != nullptr &&
            st->cvt_kmaj_pipeline != nullptr && st->pq2_xh_buffer != nullptr &&
-           (size_t) 8u * params->n_in * sizeof(uint16_t) <= st->pq2_xh_capacity &&
+           (size_t) 8u * params->n_in * sizeof(uint16_t) <=
+                   metal_scratch_bytes(st->pq2_xh_buffer) &&
            (params->n_in % 128u) == 0u && (params->x_offset % 4u) == 0u &&
            (params->x_row_stride % 4u) == 0u;
 }
@@ -2239,27 +2254,18 @@ static void *metal_flash_pipeline(const struct metal_state *st, size_t head_dim)
                                                                 struct metal_state        *st,
                                                                 const struct geist_tensor *k,
                                                                 size_t                     k_off) {
-    const size_t cap = (k->buffer->bytes / sizeof(float) - k_off) * sizeof(uint16_t);
-    if (st->attn_kvf16_capacity >= cap) {
-        return GEIST_OK;
-    }
-    metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
-    metal_buffer_destroy_internal(be, st->attn_vf16_buffer);
-    st->attn_kf16_buffer    = nullptr;
-    st->attn_vf16_buffer    = nullptr;
-    st->attn_kvf16_capacity = 0;
-    enum geist_status s =
-            metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, true, &st->attn_kf16_buffer);
+    const size_t      cap = (k->buffer->bytes / sizeof(float) - k_off) * sizeof(uint16_t);
+    enum geist_status s   = metal_scratch_reserve(be, cap, 0, true, &st->attn_kf16_buffer);
     if (s == GEIST_OK) {
-        s = metal_new_buffer(be, cap, GEIST_BUFFER_SCRATCH, 0, true, &st->attn_vf16_buffer);
+        s = metal_scratch_reserve(be, cap, 0, true, &st->attn_vf16_buffer);
     }
     if (s != GEIST_OK) {
         metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
+        metal_buffer_destroy_internal(be, st->attn_vf16_buffer);
         st->attn_kf16_buffer = nullptr;
-        return s;
+        st->attn_vf16_buffer = nullptr;
     }
-    st->attn_kvf16_capacity = cap;
-    return GEIST_OK;
+    return s;
 }
 
 /* rows>1 fast path: on an F32 cache, convert K/V to persistent f16
@@ -2429,21 +2435,10 @@ enum { METAL_DECQ_MAX_GROUPS = 256 };
         quad_pipeline = nullptr;
     }
     const size_t partial_bytes = q_heads * 32u * (head_dim + 2u) * sizeof(float);
-    if (st->attn_dec_partials_buffer != nullptr && st->attn_dec_partials_capacity < partial_bytes) {
-        metal_buffer_destroy_internal(be, st->attn_dec_partials_buffer);
-        st->attn_dec_partials_buffer   = nullptr;
-        st->attn_dec_partials_capacity = 0;
-    }
-    if (st->attn_dec_partials_buffer == nullptr) {
-        if (metal_new_buffer(be,
-                             partial_bytes,
-                             GEIST_BUFFER_SCRATCH,
-                             GEIST_MEMORY_DEVICE,
-                             false,
-                             &st->attn_dec_partials_buffer) != GEIST_OK) {
-            return GEIST_E_BACKEND;
-        }
-        st->attn_dec_partials_capacity = partial_bytes;
+    if (metal_scratch_reserve(
+                be, partial_bytes, GEIST_MEMORY_DEVICE, false, &st->attn_dec_partials_buffer) !=
+        GEIST_OK) {
+        return GEIST_E_BACKEND;
     }
     struct {
         uint32_t rows, kv_len, qh, kvh, hd, qpos, sw, qo, kco, vco, yo;

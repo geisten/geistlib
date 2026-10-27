@@ -233,7 +233,6 @@ struct metal_state {
     void                *cvt_kmaj_function;
     void                *cvt_kmaj_pipeline;
     struct geist_buffer *pq2_xh_buffer;
-    size_t               pq2_xh_capacity;
     /* Device-dependent crossovers; see tuning.c. Seeded from M1 Max
      * measurements, then a calibration blob, then the env. */
     struct metal_tuning {
@@ -491,7 +490,6 @@ struct metal_state {
      * path on an F32 KV cache; decode reads the F32 cache directly. */
     struct geist_buffer *attn_kf16_buffer;
     struct geist_buffer *attn_vf16_buffer;
-    size_t               attn_kvf16_capacity;
     /* The 32-key-block split-KV decode kernels (#17), F16 and F32 KV, in
      * the prefill flash kernels' head_dim slots (64, 128, 256 and 512
      * built; see metal_decv_pipeline). */
@@ -509,7 +507,6 @@ struct metal_state {
     void                *attention_dec_combine_function;
     void                *attention_dec_combine_pipeline;
     struct geist_buffer *attn_dec_partials_buffer;
-    size_t               attn_dec_partials_capacity;
     void                *sequence_command_buffer;
     void                *sequence_compute_encoder;
     void                *sequence_pool; /* autorelease pool, sequence begin..end */
