@@ -31,14 +31,10 @@ static void metal_buf_reg_add(struct metal_state *st, struct geist_buffer *buf) 
     if (st == nullptr || buf == nullptr || buf->mapped == nullptr) {
         return;
     }
-    if (st->buf_reg_count == st->buf_reg_cap) {
-        const size_t ncap  = st->buf_reg_cap != 0 ? st->buf_reg_cap * 2 : 64;
-        void        *grown = realloc(st->buf_reg, ncap * sizeof(*st->buf_reg));
-        if (grown == nullptr) {
-            return; /* lookup will miss and report loudly */
-        }
-        st->buf_reg     = grown;
-        st->buf_reg_cap = ncap;
+    if (st->buf_reg_count == st->buf_reg_cap &&
+        !heap_grow_array(
+                st->buf_reg, st->buf_reg_cap, st->buf_reg_cap != 0 ? st->buf_reg_cap * 2 : 64)) {
+        return; /* lookup will miss and report loudly */
     }
     st->buf_reg[st->buf_reg_count++] = (struct metal_buf_reg_entry) {
             .base  = buf->mapped,
@@ -227,10 +223,10 @@ static bool metal_responds(struct metal_state *st, void *obj, const char *select
 static void *metal_residency_keep_alive(void *arg) {
     struct metal_state *st = arg;
     pthread_setname_np("geist-metal-residency");
-    uint64_t last = metal_now_ns();
+    uint64_t last = geist_now_ns();
     pthread_mutex_lock(&st->res_lock);
     while (!st->res_stop) {
-        const uint64_t now = metal_now_ns();
+        const uint64_t now = geist_now_ns();
         if (atomic_exchange(&st->res_used, false)) {
             last = now;
         }
@@ -756,7 +752,7 @@ void *metal_buffer_map(struct geist_buffer *buf) {
     {
         struct metal_state *st = buf->owner;
         if (metal_seq_references(st, buf->buffer, buf->base_off, buf->bytes)) {
-            if (metal_env_enabled("GEIST_METAL_STRICT_BATCH")) {
+            if (geist_env_flag("GEIST_METAL_STRICT_BATCH", false)) {
                 geist_backend_set_error(st->backend,
                                         GEIST_E_BACKEND,
                                         "metal: host map of active sequence buffer (%zu bytes)",

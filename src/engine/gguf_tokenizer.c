@@ -158,13 +158,9 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
     }
     tok->vocab_size = (size_t) count;
 
-    for (uint64_t i = 0; i < count; i++) {
-        uint64_t slen;
-        memcpy(&slen, p, 8);
-        p += 8;
-        tok->token_str[i] = (const char *) p;
-        tok->token_len[i] = (size_t) slen;
-        p += slen;
+    struct gguf_str_iter tokens = {.p = p, .left = count};
+    for (size_t i = 0; i < tok->vocab_size; i++) {
+        gguf_str_next(&tokens, &tok->token_str[i], &tok->token_len[i]);
     }
 
     /* tokenizer.ggml.merges: each entry is "left right"
@@ -181,13 +177,11 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
             gguf_tokenizer_unload(tok);
             return false;
         }
-        tok->n_merges = (size_t) count;
-        for (uint64_t i = 0; i < count; i++) {
-            uint64_t slen;
-            memcpy(&slen, p, 8);
-            p += 8;
-            const char *s = (const char *) p;
-            p += slen;
+        tok->n_merges               = (size_t) count;
+        struct gguf_str_iter merges = {.p = p, .left = count};
+        const char          *s;
+        size_t               slen;
+        for (size_t i = 0; gguf_str_next(&merges, &s, &slen); i++) {
             size_t sp = 0;
             while (sp < slen && s[sp] != ' ')
                 sp++;

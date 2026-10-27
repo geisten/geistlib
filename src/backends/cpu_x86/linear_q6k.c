@@ -28,6 +28,7 @@
 #include "q6k_to_w8a8.h"
 #include "q8_kx4.h"
 
+#include "env.h"
 #include "heap.h"
 #include "par.h"
 #include "quant.h" /* Q3_K / Q6_K block sizes */
@@ -37,7 +38,6 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h> /* getenv */
 
 /* SoA layout in the heap blob (allocated once per Q6_K weight at
  * resolve_weight): weights | w_scales | w_offsets, row-major or
@@ -80,11 +80,7 @@ static inline bool q6k_use_w8x8(size_t n_out) {
  * dot is scalar, about seven times slower. So raw is the default below
  * VNNI; GEIST_Q6K_RAW=1 or 0 overrides it. */
 static bool q6k_reads_raw(void) {
-    const char *e = getenv("GEIST_Q6K_RAW");
-    if (e != nullptr && e[0] != '\0') {
-        return e[0] != '0';
-    }
-    return !w8a8_isa_is_vnni();
+    return geist_env_flag("GEIST_Q6K_RAW", !w8a8_isa_is_vnni());
 }
 
 static void cpu_x86_linear_q6k_raw_mN(size_t                     m,

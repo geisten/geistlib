@@ -70,19 +70,6 @@ const char *const metal_profile_stage_names[METAL_PROFILE_STAGE_COUNT] = {
 #include "metal_shaders.h"
 #include "metal_objc.h"
 
-bool metal_env_enabled(const char *name) {
-    const char *value = getenv(name);
-    return value != nullptr && value[0] != '\0' && strcmp(value, "0") != 0;
-}
-
-uint64_t metal_now_ns(void) {
-    struct timespec ts = {0};
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
-        return 0;
-    }
-    return (uint64_t) ts.tv_sec * 1000000000ull + (uint64_t) ts.tv_nsec;
-}
-
 static uint64_t metal_saturating_add_u64(uint64_t a, uint64_t b) {
     return UINT64_MAX - a < b ? UINT64_MAX : a + b;
 }
@@ -108,7 +95,7 @@ void metal_profile_add_wait(struct metal_state      *st,
         start_ns == 0) {
         return;
     }
-    const uint64_t end_ns = metal_now_ns();
+    const uint64_t end_ns = geist_now_ns();
     if (end_ns < start_ns) {
         return;
     }
@@ -137,7 +124,8 @@ static bool metal_skip_stage(enum metal_profile_stage s) {
     case METAL_PROFILE_DISPATCH_Q4K_GATE_UP_NT8:
     case METAL_PROFILE_DISPATCH_Q4K_GATE_UP_W4A8:
     case METAL_PROFILE_DISPATCH_Q80_GATE_UP:
-        return metal_env_enabled("GEIST_SKIP_GEMM") || metal_env_enabled("GEIST_SKIP_GATE_UP");
+        return geist_env_flag("GEIST_SKIP_GEMM", false) ||
+               geist_env_flag("GEIST_SKIP_GATE_UP", false);
     case METAL_PROFILE_DISPATCH_Q4K_LINEAR_BASE:
     case METAL_PROFILE_DISPATCH_Q4K_LINEAR_MM_FAST:
     case METAL_PROFILE_DISPATCH_Q4K_LINEAR_N4:
@@ -147,58 +135,63 @@ static bool metal_skip_stage(enum metal_profile_stage s) {
     case METAL_PROFILE_DISPATCH_Q4K_QK_BASE:
     case METAL_PROFILE_DISPATCH_Q4K_QK_NT4:
     case METAL_PROFILE_DISPATCH_QKV3:
-        return metal_env_enabled("GEIST_SKIP_GEMM") || metal_env_enabled("GEIST_SKIP_Q4K_LINEAR");
+        return geist_env_flag("GEIST_SKIP_GEMM", false) ||
+               geist_env_flag("GEIST_SKIP_Q4K_LINEAR", false);
     case METAL_PROFILE_DISPATCH_Q4K_PLE_GATE_NT8:
     case METAL_PROFILE_DISPATCH_F32_PLE_GATE:
     case METAL_PROFILE_DISPATCH_F32_PLE_PROJ_NORM:
-        return metal_env_enabled("GEIST_SKIP_GEMM") || metal_env_enabled("GEIST_SKIP_PLE");
+        return geist_env_flag("GEIST_SKIP_GEMM", false) || geist_env_flag("GEIST_SKIP_PLE", false);
     case METAL_PROFILE_DISPATCH_Q6K_LINEAR_BASE:
     case METAL_PROFILE_DISPATCH_Q6K_LINEAR_N4:
     case METAL_PROFILE_DISPATCH_Q6K_LINEAR_NT4:
     case METAL_PROFILE_DISPATCH_Q6K_LINEAR_NT8:
-        return metal_env_enabled("GEIST_SKIP_GEMM") || metal_env_enabled("GEIST_SKIP_Q6K");
+        return geist_env_flag("GEIST_SKIP_GEMM", false) || geist_env_flag("GEIST_SKIP_Q6K", false);
     case METAL_PROFILE_DISPATCH_RMSNORM_ROWS:
     case METAL_PROFILE_DISPATCH_RMSNORM_ADD_ROWS:
     case METAL_PROFILE_DISPATCH_ADD_NORM_ROWS:
-        return metal_env_enabled("GEIST_SKIP_NORM");
+        return geist_env_flag("GEIST_SKIP_NORM", false);
     case METAL_PROFILE_DISPATCH_ATTENTION_ROWS:
     case METAL_PROFILE_DISPATCH_ATTENTION_QNORM_ROWS:
-        return metal_env_enabled("GEIST_SKIP_ATTN");
+        return geist_env_flag("GEIST_SKIP_ATTN", false);
     case METAL_PROFILE_DISPATCH_Q_NORM_ROPE:
     case METAL_PROFILE_DISPATCH_K_NORM_ROPE_APPEND:
     case METAL_PROFILE_DISPATCH_V_NORM_APPEND:
     case METAL_PROFILE_DISPATCH_KV_NORM_APPEND:
     case METAL_PROFILE_DISPATCH_ROPE_APPEND:
     case METAL_PROFILE_DISPATCH_ROPE_ROWS:
-        return metal_env_enabled("GEIST_SKIP_ROPE");
+        return geist_env_flag("GEIST_SKIP_ROPE", false);
     case METAL_PROFILE_DISPATCH_KV_APPEND_ROWS:
-        return metal_env_enabled("GEIST_SKIP_KV");
+        return geist_env_flag("GEIST_SKIP_KV", false);
     case METAL_PROFILE_DISPATCH_GELU_MUL_ROWS:
-        return metal_env_enabled("GEIST_SKIP_GELU");
+        return geist_env_flag("GEIST_SKIP_GELU", false);
     case METAL_PROFILE_DISPATCH_F32_MATMUL:
-        return metal_env_enabled("GEIST_SKIP_F32");
+        return geist_env_flag("GEIST_SKIP_F32", false);
     case METAL_PROFILE_DISPATCH_EMBED:
-        return metal_env_enabled("GEIST_SKIP_EMBED");
+        return geist_env_flag("GEIST_SKIP_EMBED", false);
     case METAL_PROFILE_DISPATCH_ADD_ROWS:
     case METAL_PROFILE_DISPATCH_MUL_ROWS:
     case METAL_PROFILE_DISPATCH_SCALE_ROWS:
     case METAL_PROFILE_DISPATCH_GELU_ROWS:
-        return metal_env_enabled("GEIST_SKIP_ELEM");
+        return geist_env_flag("GEIST_SKIP_ELEM", false);
     case METAL_PROFILE_DISPATCH_COPY_U32:
-        return metal_env_enabled("GEIST_SKIP_COPY");
+        return geist_env_flag("GEIST_SKIP_COPY", false);
     case METAL_PROFILE_DISPATCH_HADAMARD:
-        return metal_env_enabled("GEIST_SKIP_HADAMARD");
+        return geist_env_flag("GEIST_SKIP_HADAMARD", false);
     case METAL_PROFILE_DISPATCH_DELTANET_PREFILL:
     case METAL_PROFILE_DISPATCH_DELTANET_DECODE:
-        return metal_env_enabled("GEIST_SKIP_DELTANET");
+        return geist_env_flag("GEIST_SKIP_DELTANET", false);
     case METAL_PROFILE_DISPATCH_DN_PREP:
-        return metal_env_enabled("GEIST_SKIP_DELTANET") || metal_env_enabled("GEIST_SKIP_DN_PREP");
+        return geist_env_flag("GEIST_SKIP_DELTANET", false) ||
+               geist_env_flag("GEIST_SKIP_DN_PREP", false);
     case METAL_PROFILE_DISPATCH_DN_CHUNK:
-        return metal_env_enabled("GEIST_SKIP_DELTANET") || metal_env_enabled("GEIST_SKIP_DN_CHUNK");
+        return geist_env_flag("GEIST_SKIP_DELTANET", false) ||
+               geist_env_flag("GEIST_SKIP_DN_CHUNK", false);
     case METAL_PROFILE_DISPATCH_DN_STATE:
-        return metal_env_enabled("GEIST_SKIP_DELTANET") || metal_env_enabled("GEIST_SKIP_DN_STATE");
+        return geist_env_flag("GEIST_SKIP_DELTANET", false) ||
+               geist_env_flag("GEIST_SKIP_DN_STATE", false);
     case METAL_PROFILE_DISPATCH_DN_OUT:
-        return metal_env_enabled("GEIST_SKIP_DELTANET") || metal_env_enabled("GEIST_SKIP_DN_OUT");
+        return geist_env_flag("GEIST_SKIP_DELTANET", false) ||
+               geist_env_flag("GEIST_SKIP_DN_OUT", false);
     default:
         return false;
     }

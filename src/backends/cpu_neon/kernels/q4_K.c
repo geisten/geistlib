@@ -9,6 +9,7 @@
  * (`dequant_q4_K_row`) and the block struct live in src/formats/gguf/.
  */
 #include "quant_blocks.h"
+#include "env.h"
 #include "heap.h"
 #include "linear_ref.h"
 #include "par.h"
@@ -26,7 +27,6 @@
 #include <arm_neon.h>
 #endif
 
-#include "../parallel.h"
 #include "decode_rows.h"
 
 struct q4k_predecode_header {
@@ -729,8 +729,7 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
     static _Atomic int pack_act = -1;
     int                pack_on  = atomic_load_explicit(&pack_act, memory_order_relaxed);
     if (pack_on < 0) {
-        const char *e = getenv("GEIST_Q4K_PACK_ACT");
-        pack_on       = (e != nullptr && e[0] == '0') ? 0 : 1;
+        pack_on = geist_env_flag("GEIST_Q4K_PACK_ACT", true);
         atomic_store_explicit(&pack_act, pack_on, memory_order_relaxed);
     }
     int8_t *packed = nullptr;
@@ -762,7 +761,7 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
                                   .w        = w_q4k,
                                   .act      = packed,
                                   .y        = y};
-    cpu_neon_par_for_dynamic(n_panels, 1, q4k_prefill_panels, &job);
+    geist_par_for_dynamic(n_panels, 1, q4k_prefill_panels, &job);
 #undef NC
 #undef MT
 #else
@@ -866,7 +865,7 @@ void linear_q4k_w4a8_prefill_predecoded(size_t         m,
                                   .sum32    = sum32,
                                   .w        = packed,
                                   .y        = y};
-    cpu_neon_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_rows, &job);
+    geist_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1016,7 +1015,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
                                   .sum32    = sum32,
                                   .w        = packed,
                                   .y        = y};
-    cpu_neon_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_mtile4_rows, &job);
+    geist_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_mtile4_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1236,7 +1235,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
                                   .sum32    = sum32,
                                   .w        = packed,
                                   .y        = y};
-    cpu_neon_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_mtile8_rows, &job);
+    geist_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_mtile8_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1417,7 +1416,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
                                   .sum32    = sum32,
                                   .w        = packed,
                                   .y        = y};
-    cpu_neon_par_for_dynamic(n_tiles, 4, q4k_prefill_predecoded_mtile4_ntile4_packed_tiles, &job);
+    geist_par_for_dynamic(n_tiles, 4, q4k_prefill_predecoded_mtile4_ntile4_packed_tiles, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1912,7 +1911,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
                                   .sum32    = sum32,
                                   .w        = packed,
                                   .y        = y};
-    cpu_neon_par_for_dynamic(n_tiles, 4, q4k_prefill_sdot_tiles, &job);
+    geist_par_for_dynamic(n_tiles, 4, q4k_prefill_sdot_tiles, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -2108,7 +2107,7 @@ void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t        
                                   .w1       = packed1,
                                   .y        = y0,
                                   .y1       = y1};
-    cpu_neon_par_for_dynamic(
+    geist_par_for_dynamic(
             total_tiles, 4, q4k_prefill_pair_predecoded_mtile4_ntile4_packed_tiles, &job);
 #else
     (void) x_q8;

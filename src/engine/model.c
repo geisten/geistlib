@@ -18,6 +18,7 @@
 #include <geist_backend.h> /* auto_cpu, the backend error slot */
 
 #include "checked.h"
+#include "env.h"
 #include "heap.h"
 #include "sp_bpe_tokenizer.h"
 #include "gguf_tokenizer.h"
@@ -340,8 +341,7 @@ static char *find_tokenizer_path(const char *gguf_path) {
      * and vision encoders to locate their standalone safetensors files. */
     char *aux_root = gguf_dir(path);
 
-    const char *text_only_env = getenv("GEIST_TEXT_ONLY");
-    const bool  text_only     = text_only_env != nullptr && text_only_env[0] == '1';
+    const bool text_only = geist_env_flag("GEIST_TEXT_ONLY", false);
 
     /* The architecture says whether the bundled towers fit its family
      * (supports_towers; today only Gemma 4, 1536-dim soft tokens). Never

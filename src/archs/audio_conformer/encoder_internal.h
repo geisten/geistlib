@@ -5,6 +5,7 @@
 #ifndef GEIST_INTERNAL_AUDIO_ENCODER_INTERNAL_H
 #define GEIST_INTERNAL_AUDIO_ENCODER_INTERNAL_H
 #include "audio_encoder.h"
+#include "clock.h"
 #include "heap.h"
 
 #include "audio_kernels.h"
@@ -48,9 +49,7 @@ extern struct ae_stage_timer g_ae_subsample, g_ae_pos_emb, g_ae_layer_total, g_a
         g_ae_norm_pre_attn, g_ae_attn, g_ae_norm_post_attn, g_ae_lconv, g_ae_ffn2, g_ae_norm_out,
         g_ae_output_proj, g_ae_embed_proj;
 static inline double ae_now_ms_(void) {
-    struct timeval tv;
-    gettimeofday(&tv, nullptr);
-    return (double) tv.tv_sec * 1000.0 + (double) tv.tv_usec / 1000.0;
+    return (double) geist_now_ns() / 1e6; /* monotonic, unlike gettimeofday */
 }
 #define AE_TIC() const double _ae_t0 = ae_now_ms_()
 #define AE_TOC(stg)                            \

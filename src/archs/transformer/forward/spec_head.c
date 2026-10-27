@@ -55,6 +55,7 @@
 #include "../../../engine/sampler.h"
 #include "quant.h"
 #include "checked.h"
+#include "env.h"
 #include "heap.h"
 #include "par.h"
 
@@ -128,8 +129,7 @@ static int spec_head_env(void) {
     /* Default ON; GEIST_SPEC_HEAD=0 forces it off. Read per call (once per
      * decoded token — noise next to the head itself) so tests can toggle it
      * within one process. */
-    const char *e = getenv("GEIST_SPEC_HEAD");
-    return (e != nullptr && e[0] == '0') ? 0 : 1;
+    return geist_env_flag("GEIST_SPEC_HEAD", true);
 }
 
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
@@ -334,7 +334,7 @@ static void spec_build_rows(void *ctx, size_t r0, size_t r1) {
     const uint32_t        *dims      = j->dims;
     int8_t                *sketch    = j->sketch;
     float                 *rscale    = j->rscale;
-    float *tmp = j->scratch + atomic_fetch_add_explicit(&j->next_slot, 1, memory_order_relaxed) * H;
+    float                 *tmp       = j->scratch + geist_par_slot(&j->next_slot) * H;
     for (size_t r = r0; r < r1; r++) {
         spec_row_to_f32(dt, Wbase + r * row_bytes, H, tmp);
         float amax = 1e-8f;
@@ -397,9 +397,8 @@ struct spec_final_job {
 };
 
 static void spec_final_rows(void *ctx, size_t c0, size_t c1) {
-    struct spec_final_job *j = ctx;
-    float                 *row_f32 =
-            j->rows + atomic_fetch_add_explicit(&j->next_slot, 1, memory_order_relaxed) * j->H;
+    struct spec_final_job *j       = ctx;
+    float                 *row_f32 = j->rows + geist_par_slot(&j->next_slot) * j->H;
     for (size_t c = c0; c < c1; c++) {
         const size_t   row = j->cand[c].idx;
         const uint8_t *rb  = j->Wbase + row * j->stride;

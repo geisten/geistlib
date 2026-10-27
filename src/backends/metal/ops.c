@@ -199,8 +199,7 @@ static bool metal_encode_q6k_mm32(struct metal_state            *st,
                                   const struct metal_q4k_params *params) {
     static int mm_fast_env = -1;
     if (mm_fast_env < 0) {
-        const char *e = getenv("GEIST_METAL_Q6K_MM_FAST");
-        mm_fast_env   = e == nullptr || e[0] != '0';
+        mm_fast_env = geist_env_flag("GEIST_METAL_Q6K_MM_FAST", true);
     }
     if (!mm_fast_env || st->q6k_mm32_pipeline == nullptr || (params->n_out % 64u) != 0u ||
         (params->n_in % 32u) != 0u || (params->x_offset % 8u) != 0u ||

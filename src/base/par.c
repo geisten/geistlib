@@ -22,11 +22,11 @@
 #if defined(__APPLE__)
 #include <dispatch/dispatch.h>
 #else
+#include "clock.h"
 #include "omp_idle.h"
 
 #include <pthread.h>
 #include <sched.h>
-#include <time.h>
 #endif
 #endif
 
@@ -182,7 +182,7 @@ static struct {
     pthread_mutex_t lock;
     size_t          n_workers; /* workers 1..n_workers exist */
     uint64_t        gen;
-    long long       spin_ns; /* idle spin before a worker sleeps */
+    uint64_t        spin_ns; /* idle spin before a worker sleeps */
     /* The task, written under `lock` before `word` publishes it, read by
      * workers 1..T-1 until each releases `done`. */
     size_t       n;
@@ -200,12 +200,6 @@ static inline void cpu_relax(void) {
 #endif
 }
 
-static long long now_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (long long) ts.tv_sec * 1000000000LL + ts.tv_nsec;
-}
-
 /* Waits for the word to move past `seen`: spins until the worker has been
  * idle (no range of its own) for spin_ns since `idle_since`, then sleeps on
  * its condition variable. Only a call that gives the worker a range wakes
@@ -214,14 +208,14 @@ static long long now_ns(void) {
  * seq_cst store of `word` before it loads `sleeping`: one of the two sees
  * the other. */
 static uint64_t
-wait_word(struct par_worker *me, uint64_t seen, long long spin_ns, long long idle_since) {
+wait_word(struct par_worker *me, uint64_t seen, uint64_t spin_ns, uint64_t idle_since) {
     for (unsigned i = 1;; i++) {
         const uint64_t w = atomic_load_explicit(&g_pool.word, memory_order_acquire);
         if (w != seen) {
             return w;
         }
         cpu_relax();
-        if ((i & 255u) == 0 && now_ns() - idle_since > spin_ns) {
+        if ((i & 255u) == 0 && geist_now_ns() - idle_since > spin_ns) {
             break;
         }
     }
@@ -239,9 +233,9 @@ wait_word(struct par_worker *me, uint64_t seen, long long spin_ns, long long idl
 static void *worker_main(void *arg) {
     const size_t       id      = (size_t) (uintptr_t) arg;
     struct par_worker *me      = &g_pool.workers[id];
-    const long long    spin_ns = g_pool.spin_ns;
+    const uint64_t     spin_ns = g_pool.spin_ns;
     uint64_t           seen    = me->start_word;
-    long long          idle    = now_ns();
+    uint64_t           idle    = geist_now_ns();
     tl_inside                  = true; /* a body's own geist_par_for runs serially */
     for (;;) {
         seen           = wait_word(me, seen, spin_ns, idle);
@@ -252,7 +246,7 @@ static void *worker_main(void *arg) {
             par_range(g_pool.n, id, T, &b, &e);
             g_pool.fn(g_pool.ctx, b, e);
             atomic_store_explicit(&me->done, seen, memory_order_release);
-            idle = now_ns();
+            idle = geist_now_ns();
         }
     }
     return nullptr;
@@ -261,7 +255,7 @@ static void *worker_main(void *arg) {
 /* Grows the pool to T - 1 workers; returns the T it can serve. Under lock. */
 static size_t ensure_workers(size_t T) {
     if (g_pool.n_workers == 0) {
-        g_pool.spin_ns = (long long) geist_omp_idle_spin_ms(nullptr) * 1000000LL;
+        g_pool.spin_ns = (uint64_t) geist_omp_idle_spin_ms(nullptr) * 1000000u;
     }
     while (g_pool.n_workers + 1 < T) {
         const size_t       id = g_pool.n_workers + 1;

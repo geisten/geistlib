@@ -26,10 +26,10 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "../internal.h"
-#include "../parallel.h"
 #include "checked.h"
 #include "geist_gemm.h"
 #include "heap.h"
+#include "par.h"
 #include "linear_ref.h"
 
 #include "quant.h"
@@ -153,8 +153,8 @@ pq2_0_prep(struct cpu_neon_workspace *ws, size_t n_in, const float *x, float *in
     if (ws == nullptr || n_in % PQ2_0_BLOCK_ELEMS != 0) {
         return false;
     }
-    if (!cpu_neon_grow_array(ws->m1_xq, ws->m1_xq_cap, n_in) ||
-        !cpu_neon_grow_array(ws->m1_bsum, ws->m1_bsum_cap, nb)) {
+    if (!heap_scratch_grow_array(ws->m1_xq, ws->m1_xq_cap, n_in) ||
+        !heap_scratch_grow_array(ws->m1_bsum, ws->m1_bsum_cap, nb)) {
         return false;
     }
     *inv_act_scale = pq2_0_quant_row(n_in, x, ws->m1_xq, ws->m1_bsum);
@@ -561,9 +561,9 @@ static bool pq2_0_quant_rows(struct cpu_neon_workspace *ws,
     const size_t nb = n_in / PQ2_0_BLOCK_ELEMS;
     size_t       nx = 0, ns = 0;
     if (ws == nullptr || m == 0 || n_in % PQ2_0_BLOCK_ELEMS != 0 || ckd_mul(&nx, m, n_in) ||
-        ckd_mul(&ns, m, nb) || !cpu_neon_grow_array(ws->mN_xq, ws->mN_xq_cap, nx) ||
-        !cpu_neon_grow_array(ws->mN_bsum, ws->mN_bsum_cap, ns) ||
-        !cpu_neon_grow_array(ws->mN_sc, ws->mN_sc_cap, m)) {
+        ckd_mul(&ns, m, nb) || !heap_scratch_grow_array(ws->mN_xq, ws->mN_xq_cap, nx) ||
+        !heap_scratch_grow_array(ws->mN_bsum, ws->mN_bsum_cap, ns) ||
+        !heap_scratch_grow_array(ws->mN_sc, ws->mN_sc_cap, m)) {
         return false;
     }
     struct pq2_0_quant_job job = {
@@ -709,7 +709,8 @@ static void pq2_0_x8_gemm_tiles(void *ctx, size_t t0, size_t t1) {
         struct cpu_neon_workspace *tws = cpu_neon_ws(st);
         const size_t               r0  = ti * T;
         const size_t               tr  = n_out - r0 < T ? n_out - r0 : T;
-        if (tws == nullptr || !cpu_neon_grow_array(tws->pq2_tile, tws->pq2_tile_cap, T * n_in)) {
+        if (tws == nullptr ||
+            !heap_scratch_grow_array(tws->pq2_tile, tws->pq2_tile_cap, T * n_in)) {
             /* No tile to stage these rows in: the reference computes them,
              * from the unpermuted x and the source weight. */
             geist_linear_ref_rows(m, r0, tr, n_out, x, w, y + r0);
@@ -753,7 +754,7 @@ static void pq2_0_x8_gemm_permuted(struct cpu_neon_state     *st,
                                     .x     = x,
                                     .w     = w,
                                     .y     = y};
-    cpu_neon_par_for_dynamic((n_out + T - 1) / T, 1, pq2_0_x8_gemm_tiles, &job);
+    geist_par_for_dynamic((n_out + T - 1) / T, 1, pq2_0_x8_gemm_tiles, &job);
 }
 
 /* Grows the shared permute buffer and fills it. Returns nullptr on
@@ -762,7 +763,7 @@ static const float *
 pq2_0_permuted_x(struct cpu_neon_workspace *ws, size_t m, size_t n_in, const float *x) {
     size_t need = 0;
     if (m == 0 || ws == nullptr || ckd_mul(&need, m, n_in) ||
-        !cpu_neon_grow_array(ws->pq2_xp, ws->pq2_xp_cap, need)) {
+        !heap_scratch_grow_array(ws->pq2_xp, ws->pq2_xp_cap, need)) {
         return nullptr;
     }
     pq2_0_permute_x(m, n_in, x, ws->pq2_xp);

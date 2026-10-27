@@ -20,6 +20,7 @@
 #include "moe_profile.h"
 
 #include "forward/internal.h"
+#include "env.h"
 #include "gguf_reader.h"
 #include "heap.h"
 
@@ -193,7 +194,7 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
     if (mg == nullptr) {
         return;
     }
-    if (getenv("GEIST_VERBOSE") != nullptr && mg->n_hot > 0) {
+    if (geist_env_flag("GEIST_VERBOSE", false) && mg->n_hot > 0) {
         fprintf(stderr,
                 "geist: moe: %llu expert rows ran on %s, %llu on the CPU\n",
                 (unsigned long long) atomic_load(&mg->rows_gpu),
@@ -227,7 +228,7 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
     const size_t                      slots   = moe_slots(&st->config);
     const struct geist_backend_vtbl  *gv      = gbe->desc->vtbl;
     const struct geist_backend_fused *gf      = gbe->desc->fused;
-    const bool                        verbose = getenv("GEIST_VERBOSE") != nullptr;
+    const bool                        verbose = geist_env_flag("GEIST_VERBOSE", false);
     if (n_exp == 0 || st->layers[0].moe_gate_w == nullptr || gv->resolve_weight == nullptr ||
         gv->buffer_copy == nullptr || gf == nullptr || gf->linear_t == nullptr ||
         gf->silu_mul == nullptr) {
@@ -241,9 +242,9 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
                       L0->moe_down_w[0].raw_nbytes;
     size_t       n  = moe_fit(st, gbe, eb);
     /* GEIST_MOE_HOT=<n>: exactly n, past the budget (tests, measurements). */
-    const char *force = getenv("GEIST_MOE_HOT");
-    if (force != nullptr && *force != '\0') {
-        n = (size_t) strtoull(force, nullptr, 10);
+    long force;
+    if (geist_parse_long(getenv("GEIST_MOE_HOT"), &force) && force >= 0) {
+        n = (size_t) force;
     }
     n = n < n_layers * slots ? n : n_layers * slots;
 
@@ -364,10 +365,9 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
     }
     /* #201: a layer whose every routed expert is here routes and runs
      * them on the device at decode (GEIST_MOE_DEVICE=0: never). */
-    const char *dev_env = getenv("GEIST_MOE_DEVICE");
     if (gbe == st->backend && slots == n_exp && gf->moe_route != nullptr &&
         gf->linear_t_ids != nullptr && gf->moe_weighted_sum != nullptr &&
-        gf->supported != nullptr && !(dev_env != nullptr && strcmp(dev_env, "0") == 0)) {
+        gf->supported != nullptr && geist_env_flag("GEIST_MOE_DEVICE", true)) {
         mg->device = heap_calloc_array_aligned(bool, n_layers);
         for (size_t l = 0; mg->device != nullptr && l < n_layers; l++) {
             bool all = true;
@@ -388,11 +388,10 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
     /* #162: with the experts split, a decode step routes on the device and
      * starts its hot experts without the host (GEIST_MOE_GPU_ROUTE=0: the
      * host routes). */
-    const char *rt_env = getenv("GEIST_MOE_GPU_ROUTE");
-    mg->routed         = mg->one_wait && !mg->any_device && gf->moe_route != nullptr &&
-                         gf->linear_t_sel != nullptr && gf->submit_mark != nullptr &&
-                         gf->map_marked != nullptr && slots - n_exp <= 1 &&
-                         !(rt_env != nullptr && strcmp(rt_env, "0") == 0);
+    mg->routed = mg->one_wait && !mg->any_device && gf->moe_route != nullptr &&
+                 gf->linear_t_sel != nullptr && gf->submit_mark != nullptr &&
+                 gf->map_marked != nullptr && slots - n_exp <= 1 &&
+                 geist_env_flag("GEIST_MOE_GPU_ROUTE", true);
     if (mg->routed) {
         mg->sel_w = heap_calloc_array_aligned(const struct geist_weight *, n_layers * 3 * n_exp);
         for (size_t l = 0; mg->sel_w != nullptr && l < n_layers; l++)

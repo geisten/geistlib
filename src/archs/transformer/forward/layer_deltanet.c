@@ -614,9 +614,8 @@ static void dn_prefill_heads(void *ctx, size_t h0, size_t h1) {
     const size_t           vald  = j->vald;
     const size_t           ws_f  = j->ws_f;
     const float            eps   = j->eps;
-    float                 *ws =
-            j->ws_all + atomic_fetch_add_explicit(&j->next_slot, 1, memory_order_relaxed) * ws_f;
-    float *o = ws + ws_f - seq * d_v;
+    float                 *ws    = j->ws_all + geist_par_slot(&j->next_slot) * ws_f;
+    float                 *o     = ws + ws_f - seq * d_v;
     for (size_t hv = h0; hv < h1; hv++) {
         const size_t hk = hv % n_kh; /* tiled v-head order, see decode path */
         for (size_t off = 0; off < seq; off += DN_SUBCHUNK) {
@@ -849,7 +848,7 @@ static struct transformer_forward_profile g_dn_profile = {
 static inline void dn_profile_mark(size_t stage, uint64_t *t0) {
     if (*t0 != 0) {
         transformer_profile_add(&g_dn_profile, stage, *t0);
-        *t0 = transformer_profile_now_ns();
+        *t0 = geist_now_ns();
     }
 }
 
@@ -889,8 +888,8 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
     struct geist_tensor t_h_2d  = view_2d(ctx->h_in_buf, ctx->SEQ, st->d_model);
     struct geist_tensor t_x_2d  = view_2d(sess->scratch_normed, ctx->SEQ, st->d_model);
     struct geist_tensor t_gamma = view_1d(L->attn_norm.buffer, st->d_model);
-    uint64_t t0 = transformer_profile_enabled(&g_dn_profile) ? transformer_profile_now_ns() : 0;
-    enum geist_status s = prims->rmsnorm(be, &t_h_2d, &t_gamma, eps, &t_x_2d);
+    uint64_t            t0      = transformer_profile_enabled(&g_dn_profile) ? geist_now_ns() : 0;
+    enum geist_status   s       = prims->rmsnorm(be, &t_h_2d, &t_gamma, eps, &t_x_2d);
     if (s != GEIST_OK)
         return s;
     dn_profile_mark(DN_PROFILE_NORM, &t0);

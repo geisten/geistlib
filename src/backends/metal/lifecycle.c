@@ -12,8 +12,7 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     /* First: the set keeps its members alive, the raw buffers below among
      * them. */
     metal_residency_destroy(st);
-    free(st->buf_reg);
-    st->buf_reg       = nullptr;
+    safe_free((void **) &st->buf_reg);
     st->buf_reg_count = 0;
     st->buf_reg_cap   = 0;
     metal_buffer_destroy_internal(be, st->attn_dec_partials_buffer);
@@ -162,7 +161,7 @@ void metal_destroy(struct geist_backend *be) {
                     ? (uint32_t) rotate_prefill
             : rotate_set ? (uint32_t) rotate
                          : 16u;
-    st->profile_enabled = metal_env_enabled("GEIST_METAL_PROFILE");
+    st->profile_enabled = geist_env_flag("GEIST_METAL_PROFILE", false);
 
     enum geist_status s = metal_load_runtime(be, st);
     if (s != GEIST_OK) {
@@ -178,7 +177,7 @@ void metal_destroy(struct geist_backend *be) {
     }
     metal_msg_send_void0(st, st->device, "retain");
     st->ws_budget = metal_msg_send_ulong0(st, st->device, "recommendedMaxWorkingSetSize");
-    st->ws_ignore = metal_env_enabled("GEIST_METAL_IGNORE_BUDGET");
+    st->ws_ignore = geist_env_flag("GEIST_METAL_IGNORE_BUDGET", false);
 
     st->command_queue = metal_msg_send_id0(st, st->device, "newCommandQueue");
     if (st->command_queue == nullptr) {
@@ -190,8 +189,10 @@ void metal_destroy(struct geist_backend *be) {
     /* Keep what the GPU binds wired while the backend is in use (#530).
      * GEIST_METAL_KEEP_ALIVE_S=n: for n s after the last dispatch (default
      * 180, as llama.cpp); 0 leaves the unwiring to macOS. */
-    const char *keep_alive = getenv("GEIST_METAL_KEEP_ALIVE_S");
-    const long  keep_s     = keep_alive != nullptr ? strtol(keep_alive, nullptr, 10) : 180;
+    long keep_s;
+    if (!geist_parse_long(getenv("GEIST_METAL_KEEP_ALIVE_S"), &keep_s)) {
+        keep_s = 180;
+    }
     if (keep_s > 0) {
         metal_residency_create(st, (uint64_t) keep_s);
     }

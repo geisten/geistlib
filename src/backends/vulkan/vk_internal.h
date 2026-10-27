@@ -17,6 +17,8 @@
 #include <geist_util.h> /* struct geist_backend_memory */
 
 #include "checked.h"        /* ckd_* size arithmetic (AGENT.md §3) */
+#include "clock.h"          /* geist_now_ns: host wait counters */
+#include "env.h"            /* geist_env_flag: GEIST_VK_* switches */
 #include "gemma4_kernels.h" /* shared reference rope/attention kernels */
 #include "heap.h"
 #include "quant.h"             /* CPU dequant helpers for the non-GPU dtype fallback */

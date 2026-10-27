@@ -8,6 +8,7 @@
 #include "encoder_internal.h"
 
 #include "audio_linear.h"
+#include "env.h"
 
 #ifdef GEIST_AUDIO_PROFILE
 struct ae_stage_timer g_ae_subsample, g_ae_pos_emb, g_ae_layer_total, g_ae_ffn1, g_ae_norm_pre_attn,
@@ -189,8 +190,7 @@ struct AudioEncoder *audio_encoder_create(const char *safetensors_path) {
     }
     /* Opt-in streaming worker thread; default is the sync
      * pull-after-end_input path. Sessions start it lazily in stream_begin. */
-    const char *env_stream = getenv("GEIST_AUDIO_STREAM");
-    if (env_stream != nullptr && env_stream[0] == '1') {
+    if (geist_env_flag("GEIST_AUDIO_STREAM", false)) {
         if (!stream_worker_start(a)) {
             fprintf(stderr,
                     "audio_encoder: GEIST_AUDIO_STREAM=1 set but worker "

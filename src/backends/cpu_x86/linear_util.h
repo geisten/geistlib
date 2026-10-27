@@ -171,19 +171,6 @@ static inline bool vnni_tiles_usable(void) {
 }
 #endif
 
-/* The most threads a geist_par_for call (or an OpenMP region) may run at
- * once: per-thread scratch is sized by it. */
-static inline size_t team_max(void) {
-    return geist_par_max_threads();
-}
-
-/* A geist_par_for body's scratch slot, below team_max(): each range of one
- * call claims the next index from `next`, which the caller zeroes before
- * the call. A call runs at most team_max() ranges, each once. */
-static inline size_t par_slot(atomic_size_t *next) {
-    return atomic_fetch_add_explicit(next, 1, memory_order_relaxed);
-}
-
 /* Inside an OpenMP region (the AMX PQ2_0 GEMM): this thread's index and the
  * team's size; 0 / 1 without OpenMP. */
 static inline size_t team_id(void) {

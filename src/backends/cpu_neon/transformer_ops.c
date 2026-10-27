@@ -7,13 +7,14 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "internal.h"
-#include "parallel.h"
+#include "par.h"
 
 #include "gemma4_kernels.h"
 #include "host_buffer.h"
 #include "quant.h"
 #include "heap.h"
 #include "checked.h"
+#include "env.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -181,7 +182,7 @@ static inline void add_scaled_f32_neon_256(float *dst, const float *src, float s
  * 8 heads (Gemma 4 E2B) then spreads its rows over 8 threads instead of
  * one, where it used to fall back to the scalar reference (#16). */
 static void attention_par(size_t total, geist_par_fn fn, void *ctx) {
-    cpu_neon_par_for_dynamic(total, total < 16 ? 1 : 8, fn, ctx);
+    geist_par_for_dynamic(total, total < 16 ? 1 : 8, fn, ctx);
 }
 
 static inline void scale_f32_neon(float *x, float scale, size_t n) {
@@ -635,8 +636,7 @@ static bool attn_split_decode_on(void) {
     static _Atomic int on = -1;
     int                v  = atomic_load_explicit(&on, memory_order_relaxed);
     if (v < 0) {
-        const char *e = getenv("GEIST_ATTN_SPLIT_DECODE");
-        v             = e != nullptr && e[0] == '1';
+        v = geist_env_flag("GEIST_ATTN_SPLIT_DECODE", false);
         atomic_store_explicit(&on, v, memory_order_relaxed);
     }
     return v != 0;
@@ -816,9 +816,9 @@ static bool attention_heads_grouped_neon(const float               *q,
     size_t n_rows = 0, n_slots = 0, n_out = 0;
     if (parts > 1 && ws != nullptr && !ckd_mul(&n_rows, n_q, n_q_heads) &&
         !ckd_mul(&n_slots, n_rows, parts) && !ckd_mul(&n_out, n_slots, head_dim)) {
-        if (cpu_neon_grow_array(ws->attn_part_out, ws->attn_part_out_cap, n_out) &&
-            cpu_neon_grow_array(ws->attn_part_max, ws->attn_part_max_cap, n_slots) &&
-            cpu_neon_grow_array(ws->attn_part_sum, ws->attn_part_sum_cap, n_slots)) {
+        if (heap_scratch_grow_array(ws->attn_part_out, ws->attn_part_out_cap, n_out) &&
+            heap_scratch_grow_array(ws->attn_part_max, ws->attn_part_max_cap, n_slots) &&
+            heap_scratch_grow_array(ws->attn_part_sum, ws->attn_part_sum_cap, n_slots)) {
             struct attn_split_job sj = {.job      = {.q              = q,
                                                      .k              = k,
                                                      .v              = v,
@@ -836,7 +836,7 @@ static bool attention_heads_grouped_neon(const float               *q,
                                         .part_out = ws->attn_part_out,
                                         .part_max = ws->attn_part_max,
                                         .part_sum = ws->attn_part_sum};
-            cpu_neon_par_for_dynamic(items * parts, 1, attn_split_items, &sj);
+            geist_par_for_dynamic(items * parts, 1, attn_split_items, &sj);
             attn_split_merge(&sj, n_rows);
             return true;
         }
@@ -855,7 +855,7 @@ static bool attention_heads_grouped_neon(const float               *q,
                            .sliding_window = sliding_window,
                            .hd256          = hd256,
                            .out            = out};
-    cpu_neon_par_for_dynamic(items, 1, attn_group_items, &job);
+    geist_par_for_dynamic(items, 1, attn_group_items, &job);
     return true;
 }
 #endif

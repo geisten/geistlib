@@ -58,7 +58,7 @@ static struct transformer_forward_profile g_head_profile = {
     const struct geist_backend_primitives *prims = be->desc->prims;
     enum geist_status                      s;
     const bool                             profile = transformer_profile_enabled(&g_head_profile);
-    uint64_t                               t0      = profile ? transformer_profile_now_ns() : 0;
+    uint64_t                               t0      = profile ? geist_now_ns() : 0;
 
     /* Fresh logits this forward — not yet softcapped (peek_logits applies
      * it lazily unless the temp>0 path below does it in place), and dense
@@ -100,7 +100,7 @@ static struct transformer_forward_profile g_head_profile = {
 
     struct geist_tensor t_h_1d       = view_1d(sess->scratch_h_a, st->d_model);
     struct geist_tensor t_w_out_norm = view_1d(st->output_norm.buffer, st->d_model);
-    t0                               = profile ? transformer_profile_now_ns() : 0;
+    t0                               = profile ? geist_now_ns() : 0;
     s = prims->rmsnorm(be, &t_h_1d, &t_w_out_norm, st->config.rms_eps, &t_h_1d);
     transformer_profile_add(&g_head_profile, HEAD_PROFILE_NORM, t0);
     if (s != GEIST_OK) {
@@ -156,7 +156,7 @@ sample_row(struct transformer_arch_session *sess, size_t n_ctx, const float *log
     /* Speculative i8-sketch fast path (GEIST_SPEC_HEAD=1). Handles the whole
      * projection + greedy argmax when eligible; otherwise falls through to the
      * exact dense lm_head below. Reads the normalized hidden from scratch_h_a. */
-    t0 = profile ? transformer_profile_now_ns() : 0;
+    t0 = profile ? geist_now_ns() : 0;
     if (transformer_spec_head_try(sess, out_token)) {
         transformer_profile_add(&g_head_profile, HEAD_PROFILE_LM_HEAD, t0);
         return GEIST_OK;
@@ -164,7 +164,7 @@ sample_row(struct transformer_arch_session *sess, size_t n_ctx, const float *log
 
     struct geist_tensor t_h_2d      = view_2d(sess->scratch_h_a, 1, st->d_model);
     struct geist_tensor t_logits_2d = view_2d(sess->scratch_logits, 1, st->vocab_size);
-    t0                              = profile ? transformer_profile_now_ns() : 0;
+    t0                              = profile ? geist_now_ns() : 0;
     s                               = linear_w_or_legacy(be,
                                                          v,
                                                          sess->scratch_h_a,
@@ -184,7 +184,7 @@ sample_row(struct transformer_arch_session *sess, size_t n_ctx, const float *log
      * Not with repetition penalties: they need the row on the host. */
     const bool penalties = geist_sampler_penalties_active(&sess->pen);
     if (sess->temperature == 0.0f && !penalties && st->model_fusions.argmax) {
-        t0          = profile ? transformer_profile_now_ns() : 0;
+        t0          = profile ? geist_now_ns() : 0;
         int32_t idx = -1;
         s           = fused->argmax_f32(be, &t_logits_2d, &idx);
         if (s != GEIST_OK || idx < 0 || (size_t) idx >= (size_t) st->vocab_size) {
@@ -203,7 +203,7 @@ sample_row(struct transformer_arch_session *sess, size_t n_ctx, const float *log
     const bool    sampler_needs_softcap = sess->temperature > 0.0f || penalties;
     geist_token_t best_id;
     {
-        t0                          = profile ? transformer_profile_now_ns() : 0;
+        t0                          = profile ? geist_now_ns() : 0;
         struct geist_buffer *mb     = nullptr;
         const float         *logits = transformer_logits_host(sess, sampler_needs_softcap, &mb);
         if (logits == nullptr) {

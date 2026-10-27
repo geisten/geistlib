@@ -18,6 +18,7 @@
 #include <stdatomic.h>
 
 #include "checked.h"
+#include "clock.h"
 #include "heap.h"
 #include "parse.h"
 #include "image_pipeline.h"
@@ -84,8 +85,8 @@ struct geist_session_full {
     enum geist_status err_code;
     char              err_msg[512];
 
-    /* Counters for geist_session_get_stats. Monotonic-ns timing uses
-     * clock_gettime(CLOCK_MONOTONIC); deltas are accumulated at each
+    /* Counters for geist_session_get_stats. Timing uses
+     * geist_now_ns (clock.h); deltas are accumulated at each
      * top-level entry point (decode_step, prefill_tokens, attach_audio,
      * decode_speculative). */
     uint64_t n_tokens_decoded;
@@ -109,12 +110,6 @@ struct geist_session_full {
      * call that sees it (cancel_requested, through the arch's check). */
     _Atomic bool cancel;
 };
-
-static inline uint64_t monotonic_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
-}
 
 /* Engine-internal: cast the public opaque handle to the full struct. */
 static inline struct geist_session_full *as_full(struct geist_session *s) {
@@ -513,10 +508,10 @@ const char *geist_session_errmsg(const struct geist_session *s) {
             return GEIST_E_IO;
         }
         n_enc += enc_n;
-        const uint64_t          t0 = monotonic_ns();
+        const uint64_t          t0 = geist_now_ns();
         const enum geist_status ps =
                 ops->prefill(arch_sess(sf), n_enc, (const geist_token_t *) enc_ids);
-        sf->total_prefill_ns += monotonic_ns() - t0;
+        sf->total_prefill_ns += geist_now_ns() - t0;
         void *p = enc_ids;
         safe_free(&p);
         return ps == GEIST_OK ? GEIST_OK : session_op_failed(sf, ps, "prefill");
@@ -531,9 +526,9 @@ const char *geist_session_errmsg(const struct geist_session *s) {
     }
     /* sp_bpe yields uint32_t; bit-pattern of u32 ≡ i32 for IDs in 21-bit
      * vocab range. arch->prefill takes geist_token_t (int32_t). */
-    const uint64_t          t0 = monotonic_ns();
+    const uint64_t          t0 = geist_now_ns();
     const enum geist_status ps = ops->prefill(arch_sess(sf), n_ids, (const geist_token_t *) ids);
-    sf->total_prefill_ns += monotonic_ns() - t0;
+    sf->total_prefill_ns += geist_now_ns() - t0;
     safe_free((void **) &ids);
     return ps == GEIST_OK ? GEIST_OK : session_op_failed(sf, ps, "prefill");
 }
@@ -610,9 +605,9 @@ geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_toke
     if (ops == nullptr || ops->prefill == nullptr) {
         return GEIST_E_INVALID_STATE;
     }
-    const uint64_t          t0 = monotonic_ns();
+    const uint64_t          t0 = geist_now_ns();
     const enum geist_status ps = ops->prefill(arch_sess(sf), n, ids);
-    sf->total_prefill_ns += monotonic_ns() - t0;
+    sf->total_prefill_ns += geist_now_ns() - t0;
     return ps == GEIST_OK ? GEIST_OK : session_op_failed(sf, ps, "prefill");
 }
 
@@ -631,9 +626,9 @@ geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_toke
         sf->err_code = GEIST_E_CANCELLED;
         return GEIST_E_CANCELLED;
     }
-    const uint64_t          t0 = monotonic_ns();
+    const uint64_t          t0 = geist_now_ns();
     const enum geist_status ds = ops->decode_step(arch_sess(sf), out_token);
-    sf->total_decode_ns += monotonic_ns() - t0;
+    sf->total_decode_ns += geist_now_ns() - t0;
     if (ds != GEIST_OK) {
         return session_op_failed(sf, ds, "decode_step");
     }
@@ -687,9 +682,9 @@ size_t geist_model_decode_batch_max(const struct geist_model *m) {
         }
         arch[b] = arch_sess(as_full(sessions[b]));
     }
-    const uint64_t          t0 = monotonic_ns();
+    const uint64_t          t0 = geist_now_ns();
     const enum geist_status ds = model->text_decoder.arch_ops->decode_batch(n, arch, out_tokens);
-    const uint64_t          dt = monotonic_ns() - t0;
+    const uint64_t          dt = geist_now_ns() - t0;
     for (size_t b = 0; b < n; b++) {
         struct geist_session_full *sf = as_full(sessions[b]);
         sf->total_decode_ns += dt / n;
@@ -891,7 +886,7 @@ spec_fallback_single(struct geist_session *s, geist_token_t out_tokens[static 1]
 
     *n_out = emitted;
     sf->n_tokens_decoded += emitted;
-    sf->total_decode_ns += monotonic_ns() - t_start;
+    sf->total_decode_ns += geist_now_ns() - t_start;
     return GEIST_OK;
 }
 
@@ -1015,7 +1010,7 @@ draft_model_rollback(struct geist_session *d, size_t history_n, size_t guesses, 
     if (!can_spec)
         return spec_fallback_single(s, out_tokens, n_out);
 
-    const uint64_t      t_start = monotonic_ns();
+    const uint64_t      t_start = geist_now_ns();
     const geist_token_t seed    = ops->peek_next_token(st);
     if (seed < 0)
         return spec_fallback_single(s, out_tokens, n_out);
@@ -1093,7 +1088,7 @@ draft_model_rollback(struct geist_session *d, size_t history_n, size_t guesses, 
                           ops->kv_truncate != nullptr && ops->kv_len != nullptr;
     if (!can_spec || n_drafts == 0)
         return spec_fallback_single(s, out_tokens, n_out);
-    const uint64_t      t_start = monotonic_ns();
+    const uint64_t      t_start = geist_now_ns();
     const geist_token_t seed    = ops->peek_next_token(st);
     if (seed < 0)
         return spec_fallback_single(s, out_tokens, n_out);
@@ -1219,9 +1214,9 @@ const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t)
         sf->err_code = GEIST_E_OOM;
         return GEIST_E_OOM;
     }
-    const uint64_t t_enc0 = monotonic_ns();
+    const uint64_t t_enc0 = geist_now_ns();
     size_t         n_soft = enc_ops->encode_pcm(enc_st, n_samples, max_soft, pcm_samples, soft);
-    sf->total_audio_encode_ns += monotonic_ns() - t_enc0;
+    sf->total_audio_encode_ns += geist_now_ns() - t_enc0;
     if (n_soft == 0) {
         safe_free((void **) &soft);
         snprintf(sf->err_msg,
@@ -1247,9 +1242,9 @@ const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t)
         return GEIST_E_INTERNAL;
     }
 
-    const uint64_t          t_pre0 = monotonic_ns();
+    const uint64_t          t_pre0 = geist_now_ns();
     const enum geist_status as     = dec_ops->prefill_audio(arch_sess(sf), n_soft, soft);
-    sf->total_prefill_ns += monotonic_ns() - t_pre0;
+    sf->total_prefill_ns += geist_now_ns() - t_pre0;
     safe_free((void **) &soft);
     return as == GEIST_OK ? GEIST_OK : session_op_failed(sf, as, "prefill_audio");
 }
@@ -1330,10 +1325,10 @@ const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t)
     if (enc_ops->stream_poll == nullptr || sf->audio_stream_injected >= sf->audio_stream_cap) {
         return GEIST_OK; /* nothing to do — end() covers it */
     }
-    const uint64_t t0  = monotonic_ns();
+    const uint64_t t0  = geist_now_ns();
     const size_t   got = enc_ops->stream_poll(
             enc_st, sf->audio_stream_cap - sf->audio_stream_injected, sf->audio_stream_buf);
-    sf->total_audio_encode_ns += monotonic_ns() - t0;
+    sf->total_audio_encode_ns += geist_now_ns() - t0;
     if (got == 0) {
         return GEIST_OK;
     }
@@ -1390,9 +1385,9 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
                                          ? sf->audio_stream_cap - sf->audio_stream_injected
                                          : 0;
 
-    const uint64_t t_enc0 = monotonic_ns();
+    const uint64_t t_enc0 = geist_now_ns();
     const size_t n_soft = remaining_cap > 0 ? enc_ops->stream_end(enc_st, remaining_cap, soft) : 0;
-    sf->total_audio_encode_ns += monotonic_ns() - t_enc0;
+    sf->total_audio_encode_ns += geist_now_ns() - t_enc0;
 
     const size_t total = sf->audio_stream_injected + n_soft;
     if (total == 0) {
@@ -1468,9 +1463,9 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
         sf->err_code = GEIST_E_OOM;
         return GEIST_E_OOM;
     }
-    const uint64_t t_enc0 = monotonic_ns();
+    const uint64_t t_enc0 = geist_now_ns();
     size_t         n_soft = enc_ops->encode_image(enc_st, height, width, max_soft, rgb, soft);
-    sf->total_vision_encode_ns += monotonic_ns() - t_enc0;
+    sf->total_vision_encode_ns += geist_now_ns() - t_enc0;
     if (n_soft == 0) {
         safe_free((void **) &soft);
         snprintf(sf->err_msg,
@@ -1481,9 +1476,9 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
         return GEIST_E_IO;
     }
 
-    const uint64_t          t_pre0 = monotonic_ns();
+    const uint64_t          t_pre0 = geist_now_ns();
     const enum geist_status is     = dec_ops->prefill_image(arch_sess(sf), n_soft, soft);
-    sf->total_prefill_ns += monotonic_ns() - t_pre0;
+    sf->total_prefill_ns += geist_now_ns() - t_pre0;
     safe_free((void **) &soft);
     return is == GEIST_OK ? GEIST_OK : session_op_failed(sf, is, "prefill_image");
 }
@@ -1546,9 +1541,9 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
         sf->err_code = GEIST_E_OOM;
         return GEIST_E_OOM;
     }
-    const uint64_t t_enc0 = monotonic_ns();
+    const uint64_t t_enc0 = geist_now_ns();
     size_t n_soft = enc_ops->encode_video(enc_st, n_frames, height, width, max_soft, frames, soft);
-    sf->total_vision_encode_ns += monotonic_ns() - t_enc0;
+    sf->total_vision_encode_ns += geist_now_ns() - t_enc0;
     if (n_soft == 0) {
         safe_free((void **) &soft);
         snprintf(sf->err_msg,
@@ -1559,9 +1554,9 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
         return GEIST_E_IO;
     }
 
-    const uint64_t          t_pre0 = monotonic_ns();
+    const uint64_t          t_pre0 = geist_now_ns();
     const enum geist_status is     = dec_ops->prefill_image(arch_sess(sf), n_soft, soft);
-    sf->total_prefill_ns += monotonic_ns() - t_pre0;
+    sf->total_prefill_ns += geist_now_ns() - t_pre0;
     safe_free((void **) &soft);
     return is == GEIST_OK ? GEIST_OK : session_op_failed(sf, is, "prefill_image");
 }

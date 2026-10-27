@@ -349,9 +349,9 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     /* Async streaming (#78 phase 2): a transfer-only family is the copy
      * engines, which run beside the compute queue. On where the device has
      * one; GEIST_VK_STREAM_ASYNC=0 keeps the copies in the compute batch. */
-    const char *async = getenv("GEIST_VK_STREAM_ASYNC");
-    st->xq_family     = UINT32_MAX;
-    for (uint32_t i = 0; (async == nullptr || strcmp(async, "0") != 0) && i < nfam; ++i) {
+    const bool async = geist_env_flag("GEIST_VK_STREAM_ASYNC", true);
+    st->xq_family    = UINT32_MAX;
+    for (uint32_t i = 0; async && i < nfam; ++i) {
         const VkQueueFlags f = fams[i].queueFlags;
         if ((f & VK_QUEUE_TRANSFER_BIT) && !(f & (VK_QUEUE_COMPUTE_BIT | VK_QUEUE_GRAPHICS_BIT)) &&
             !(f & (VK_QUEUE_VIDEO_DECODE_BIT_KHR | VK_QUEUE_VIDEO_ENCODE_BIT_KHR)) &&
@@ -579,11 +579,9 @@ static size_t vk_parse_bytes(const char *v) {
     }
     *st                 = (struct vk_state) {0};
     st->backend         = be;
-    const char *profile = getenv("GEIST_VK_PROFILE"); /* unset, "" or "0": off */
-    st->profile_enabled = profile != nullptr && profile[0] != '\0' && strcmp(profile, "0") != 0;
-    st->pq2_f32_acc     = getenv("GEIST_VK_PQ2_F32_ACC") != nullptr;
-    const char *strict  = getenv("GEIST_VK_STRICT");
-    st->strict          = strict != nullptr && strcmp(strict, "0") != 0;
+    st->profile_enabled = geist_env_flag("GEIST_VK_PROFILE", false);
+    st->pq2_f32_acc     = geist_env_flag("GEIST_VK_PQ2_F32_ACC", false);
+    st->strict          = geist_env_flag("GEIST_VK_STRICT", false);
     st->vram_budget     = vk_parse_bytes(getenv("GEIST_VK_VRAM_BUDGET"));
     const char *reserve = getenv("GEIST_VK_WEIGHT_RESERVE");
     st->weight_reserve  = reserve != nullptr ? vk_parse_bytes(reserve) : SIZE_MAX;
@@ -598,8 +596,7 @@ static size_t vk_parse_bytes(const char *v) {
     /* Device-local scratch pool (#488), default on; GEIST_VK_SCRATCH_DEVICE=0
      * keeps it host-visible. The arch still asks only where no host path
      * maps a pool slot (scratch_device_wanted); see vk_buffer_create_api. */
-    const char *scratch_env = getenv("GEIST_VK_SCRATCH_DEVICE");
-    st->scratch_device      = scratch_env == nullptr || strcmp(scratch_env, "0") != 0;
+    st->scratch_device = geist_env_flag("GEIST_VK_SCRATCH_DEVICE", true);
 
     enum geist_status s = vk_load_runtime(be, st);
     if (s != GEIST_OK) {
@@ -632,7 +629,7 @@ static size_t vk_parse_bytes(const char *v) {
         return s;
     }
 
-    if (getenv("GEIST_VK_VERBOSE") != nullptr) {
+    if (geist_env_flag("GEIST_VK_VERBOSE", false)) {
         fprintf(stderr,
                 "geist vulkan: %s (fp16 %d, int8-dot %d, coopmat %d, subgroup %u%s)\n",
                 st->device_name,
@@ -649,7 +646,7 @@ static size_t vk_parse_bytes(const char *v) {
 void vk_destroy(struct geist_backend *be) {
     if (be->state != nullptr) {
         struct vk_state *st = be->state;
-        if (getenv("GEIST_VK_VERBOSE") != nullptr || st->profile_enabled) {
+        if (geist_env_flag("GEIST_VK_VERBOSE", false) || st->profile_enabled) {
             fprintf(stderr,
                     "geist vulkan stats: dispatches %llu, flushes %llu, barriers %llu "
                     "(elided %llu)\n",

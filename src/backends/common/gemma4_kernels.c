@@ -3,6 +3,7 @@
 #include <geist_types.h>
 #include "heap.h"
 #include "checked.h"
+#include "env.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -50,25 +51,13 @@ void gelu_tanh_fp32(size_t n, const float *x, float *y) {
     }
 }
 
-/* Opt-in Apple-only fast tanh (GEIST_FAST_TANH=1 at process start):
- * gelu_tanh_mul_fp32 uses Accelerate's vvtanhf, ~10x faster than tanhf but
- * 1-2 ULP off libm, which compounds past the strict parity gate. */
-#if defined(__APPLE__)
-static int fast_tanh_enabled(void) {
-    static _Atomic int v = -1;
-    if (v < 0) {
-        const char *s = getenv("GEIST_FAST_TANH");
-        v             = (s != nullptr && s[0] == '1') ? 1 : 0;
-    }
-    return v;
-}
-#endif
-
 void gelu_tanh_mul_fp32(size_t n, const float *x, const float *z, float *y) {
     const float kAlpha = 0.7978845608028654f;
     const float kBeta  = 0.044715f;
 #if defined(__APPLE__)
-    if (fast_tanh_enabled()) {
+    /* Opt-in (GEIST_FAST_TANH=1 at process start): Accelerate's vvtanhf,
+     * ~10x faster than tanhf but 1-2 ULP off libm. */
+    if (geist_fast_tanh_enabled()) {
         extern void vvtanhf(float *y, const float *x, const int *n_int);
         for (size_t i = 0; i < n; i++) {
             const float xi = x[i];

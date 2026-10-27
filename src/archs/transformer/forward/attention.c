@@ -525,19 +525,6 @@ struct attn_job {
     atomic_size_t                next; /* the next item to hand out */
 };
 
-/* Takes the next item of j, or returns false once none is left. */
-static inline bool attn_next_item(struct attn_job *j, size_t *i) {
-    *i = atomic_fetch_add_explicit(&j->next, 1, memory_order_relaxed);
-    return *i < j->n_items;
-}
-
-/* Runs fn on min(n_items, threads) ranges, one item counter for all. */
-static void attn_dynamic(struct attn_job *j, geist_par_fn fn) {
-    const size_t threads = geist_par_max_threads();
-    atomic_init(&j->next, 0);
-    geist_par_for(j->n_items < threads ? j->n_items : threads, fn, j);
-}
-
 /* The grouped pass of per_pass heads, item by the runtime count. */
 static inline void attn_int8_pass(size_t                       per_pass,
                                   const struct attn_int8_args *a,
@@ -566,7 +553,7 @@ static inline void attn_int8_pass(size_t                       per_pass,
  * at least ATTN_CHUNK_MIN each, so none is empty. */
 static void attn_int8_chunk_items(void *ctx, size_t, size_t) {
     struct attn_job *j = ctx;
-    for (size_t i; attn_next_item(j, &i);) {
+    for (size_t i; geist_par_next(&j->next, j->n_items, &i);) {
         const size_t c    = i % j->n_chunks;
         const size_t pass = i / j->n_chunks % j->n_passes;
         const size_t kv_h = i / j->n_chunks / j->n_passes;
@@ -594,7 +581,7 @@ static void attn_int8_merge_heads(void *ctx, size_t h0, size_t h1) {
 /* GQA-grouped passes: items (query, KV head, pass), in that order. */
 static void attn_int8_pass_items(void *ctx, size_t, size_t) {
     struct attn_job *j = ctx;
-    for (size_t i; attn_next_item(j, &i);) {
+    for (size_t i; geist_par_next(&j->next, j->n_items, &i);) {
         const size_t pass = i % j->n_passes;
         const size_t kv_h = i / j->n_passes % j->a->n_kv_heads;
         const size_t t    = i / j->n_passes / j->a->n_kv_heads;
@@ -622,7 +609,7 @@ static void attn_int8_head_items(void *ctx, size_t, size_t) {
     const int8_t                *v_q8           = args->v_q8;
     const float                 *v_scale        = args->v_scale;
     float                       *out            = args->out;
-    for (size_t it; attn_next_item(job, &it);) {
+    for (size_t it; geist_par_next(&job->next, job->n_items, &it);) {
         const size_t t     = it / n_q_heads;
         const size_t h     = it % n_q_heads;
         const size_t q_pos = q_offset + t;
@@ -783,7 +770,7 @@ void attention_int8_via_buffers(size_t        n_q,
         j.dec_lo   = dec_lo;
         j.dec_hi   = dec_hi;
         j.n_items  = n_kv_heads * j.n_passes * j.n_chunks;
-        attn_dynamic(&j, attn_int8_chunk_items);
+        geist_par_for_pull(j.n_items, &j.next, attn_int8_chunk_items, &j);
         geist_par_for(n_q_heads, attn_int8_merge_heads, &j);
         return;
     }
@@ -791,7 +778,7 @@ void attention_int8_via_buffers(size_t        n_q,
         /* GQA-grouped passes (see attn_int8_item). Same item independence as
          * the one-head loop below. */
         j.n_items = n_q * n_kv_heads * j.n_passes;
-        attn_dynamic(&j, attn_int8_pass_items);
+        geist_par_for_pull(j.n_items, &j.next, attn_int8_pass_items, &j);
         return;
     }
     /* The O(n^2) attention core. Every (t,h) is independent: it reads the
@@ -802,7 +789,7 @@ void attention_int8_via_buffers(size_t        n_q,
      * Items are (t,h), not t: decode passes n_q == 1, and the heads are the
      * axis that still has width when t does not. */
     j.n_items = n_q * n_q_heads;
-    attn_dynamic(&j, attn_int8_head_items);
+    geist_par_for_pull(j.n_items, &j.next, attn_int8_head_items, &j);
 }
 
 /* INT4 attention: the INT8 one-head loop over INT8 K, with each V row
@@ -845,8 +832,7 @@ static void attn_int4_head_items(void *ctx, size_t, size_t) {
     const uint8_t        *v_q4           = job->v_q4;
     const float          *v_scale        = job->v_scale;
     float                *out            = job->out;
-    for (size_t it;
-         (it = atomic_fetch_add_explicit(&job->next, 1, memory_order_relaxed)) < job->n_items;) {
+    for (size_t it; geist_par_next(&job->next, job->n_items, &it);) {
         const size_t t     = it / n_q_heads;
         const size_t h     = it % n_q_heads;
         const size_t q_pos = q_offset + t;
@@ -947,22 +933,20 @@ void attention_int4_via_buffers(size_t         n_q,
 
     /* Items (t,h) for the same reason as the INT8 core above: decode passes
      * n_q == 1, so only the head axis has width to parallelize over. */
-    struct attn_int4_job j       = {.n_q_heads      = n_q_heads,
-                                    .head_dim       = head_dim,
-                                    .n_kv           = n_kv,
-                                    .n_kv_heads     = n_kv_heads,
-                                    .q_offset       = q_offset,
-                                    .sliding_window = sliding_window,
-                                    .n_items        = n_q * n_q_heads,
-                                    .q              = q,
-                                    .k_q8           = k_q8,
-                                    .k_scale        = k_scale,
-                                    .v_q4           = v_q4,
-                                    .v_scale        = v_scale,
-                                    .out            = out};
-    const size_t         threads = geist_par_max_threads();
-    atomic_init(&j.next, 0);
-    geist_par_for(j.n_items < threads ? j.n_items : threads, attn_int4_head_items, &j);
+    struct attn_int4_job j = {.n_q_heads      = n_q_heads,
+                              .head_dim       = head_dim,
+                              .n_kv           = n_kv,
+                              .n_kv_heads     = n_kv_heads,
+                              .q_offset       = q_offset,
+                              .sliding_window = sliding_window,
+                              .n_items        = n_q * n_q_heads,
+                              .q              = q,
+                              .k_q8           = k_q8,
+                              .k_scale        = k_scale,
+                              .v_q4           = v_q4,
+                              .v_scale        = v_scale,
+                              .out            = out};
+    geist_par_for_pull(j.n_items, &j.next, attn_int4_head_items, &j);
 }
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop

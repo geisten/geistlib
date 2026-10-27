@@ -190,7 +190,7 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
     sess->prenorm_layer = 0;
 
     ctx.profile = transformer_profile_enabled(&g_layer_profile);
-    uint64_t t0 = ctx.profile ? transformer_profile_now_ns() : 0;
+    uint64_t t0 = ctx.profile ? geist_now_ns() : 0;
     /* Per-layer token mixer: DeltaNet layers replace the whole
      * attention block (incl. its residual add); the FFN/PLE stages are
      * mixer-agnostic. */
@@ -204,7 +204,7 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
     if (s != GEIST_OK) {
         return s;
     }
-    t0 = ctx.profile ? transformer_profile_now_ns() : 0;
+    t0 = ctx.profile ? geist_now_ns() : 0;
     s  = fam->ffn_block(&ctx); /* incl. the layer tail (PLE, scale) */
     /* Starting the clock later by the tail's time leaves it out of "ffn". */
     transformer_profile_add(&g_layer_profile,
@@ -553,7 +553,7 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     /* 1+2. Dequant n PLE rows + scale by 16. Device path: per-row fused
      * lookup+scale dispatches — no host dequant, no pipeline flush from
      * mapping the scratch mid-batch. */
-    t0                    = prof ? transformer_profile_now_ns() : 0;
+    t0                    = prof ? geist_now_ns() : 0;
     bool gather_on_device = st->model_fusions.ple_lookup_scaled;
     if (gather_on_device) {
         for (size_t t = 0; t < n; t++) {
@@ -590,7 +590,7 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     /* 3. linear(h, model_proj) → out_buf. */
     struct geist_tensor t_h_2d   = view_2d(h_buf, (int64_t) n, st->d_model);
     struct geist_tensor t_out_2d = view_2d(out_buf, (int64_t) n, (int64_t) PLE_OUT);
-    t0                           = prof ? transformer_profile_now_ns() : 0;
+    t0                           = prof ? geist_now_ns() : 0;
     enum geist_status s          = linear_w_or_legacy(
             be, v, h_buf, out_buf, &st->model_proj_w, n, &t_h_2d, &st->model_proj, &t_out_2d);
     plepre_add(PLEPRE_MODEL_PROJ, t0);
@@ -599,7 +599,7 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     }
 
     /* 4. *= PLE_MODEL_PROJ_SCALE. */
-    t0 = prof ? transformer_profile_now_ns() : 0;
+    t0 = prof ? geist_now_ns() : 0;
     if (st->model_fusions.prim_scale_f32) {
         s = prims->scale_f32(be, &t_out_2d, st->config.ple_model_proj_scale, &t_out_2d);
         if (s != GEIST_OK) {
@@ -621,7 +621,7 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     struct geist_tensor t_out_norm =
             view_2d(out_buf, (int64_t) (n * st->n_layers), st->hidden_per_layer);
     struct geist_tensor t_w = view_1d(st->model_proj_norm.buffer, st->hidden_per_layer);
-    t0                      = prof ? transformer_profile_now_ns() : 0;
+    t0                      = prof ? geist_now_ns() : 0;
     s = prims->rmsnorm(be, &t_out_norm, &t_w, st->config.rms_eps, &t_out_norm);
     plepre_add(PLEPRE_RMSNORM, t0);
     if (s != GEIST_OK) {
@@ -629,7 +629,7 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     }
 
     /* 6. out_buf = (out_buf + ple_lookup) * PLE_INPUT_SCALE. */
-    t0 = prof ? transformer_profile_now_ns() : 0;
+    t0 = prof ? geist_now_ns() : 0;
     /* Path chosen once, before anything mutates out_buf: `add` is a required
      * member, so only scale_f32 decides (#352). */
     if (st->model_fusions.prim_scale_f32) {

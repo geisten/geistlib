@@ -1,5 +1,6 @@
 #include "audio_kernels.h"
 #include "encoder_internal.h" /* HEAD_DIM + head-primitive decls */
+#include "env.h"
 
 #include <math.h>
 #include <stdatomic.h>
@@ -192,15 +193,7 @@ void softmax_fp32(size_t n_rows, size_t d, float *x) {
     /* GEIST_FAST_TANH=1 enables vForce vvexpf on macOS (~3x faster than the
      * NEON poly path, ~1-2 ULP drift). Reuses the existing Vision env flag.
      * Pi 5 and other ARM targets use the NEON poly exp by default. */
-    /* See vision_kernels.c softmax: relaxed-atomic first-use cache so
-     * concurrent sessions do not race on it. */
-    static _Atomic int fast_expf = -1;
-    int                fe        = atomic_load_explicit(&fast_expf, memory_order_relaxed);
-    if (fe < 0) {
-        const char *s = getenv("GEIST_FAST_TANH");
-        fe            = (s != nullptr && s[0] == '1') ? 1 : 0;
-        atomic_store_explicit(&fast_expf, fe, memory_order_relaxed);
-    }
+    [[maybe_unused]] const bool fe = geist_fast_tanh_enabled();
 #if defined(__APPLE__)
     extern void vvexpf(float *y, const float *x, const int *n_int);
 #endif

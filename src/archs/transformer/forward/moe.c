@@ -310,7 +310,7 @@ static struct transformer_forward_profile g_moe_profile = {
 static inline void moe_profile_mark(size_t stage, uint64_t *t0) {
     if (*t0 != 0) {
         transformer_profile_add(&g_moe_profile, stage, *t0);
-        *t0 = transformer_profile_now_ns();
+        *t0 = geist_now_ns();
     }
 }
 
@@ -328,8 +328,8 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     const size_t                      n_sel = seq * k;
     struct geist_buffer              *x     = sess->scratch_pre_ff;
 
-    uint64_t t0 = transformer_profile_enabled(&g_moe_profile) ? transformer_profile_now_ns() : 0;
-    enum geist_status s = blk_rmsnorm(ctx, d, sess->scratch_h_post_attn, &L->ffn_norm, x);
+    uint64_t          t0 = transformer_profile_enabled(&g_moe_profile) ? geist_now_ns() : 0;
+    enum geist_status s  = blk_rmsnorm(ctx, d, sess->scratch_h_post_attn, &L->ffn_norm, x);
     moe_profile_mark(MOE_PROFILE_NORM, &t0);
     if (s == GEIST_OK) {
         struct geist_tensor t_x = view_2d(x, ctx->SEQ, (int64_t) d);
