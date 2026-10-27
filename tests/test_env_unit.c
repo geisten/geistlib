@@ -47,6 +47,7 @@ int main(void) {
     fails += geist_expect(count_with("0") == 0, "count 0: not a count");
     fails += geist_expect(count_with("-2") == 0, "count -2: not a count");
     fails += geist_expect(count_with("4x") == 0, "count 4x: not a count");
+    fails += geist_expect(count_with("99999999999") == 0, "count past INT_MAX: not a count");
     unsetenv(NAME);
     if (fails == 0)
         printf("PASS: GEIST_* flags and counts follow env.h's rule\n");

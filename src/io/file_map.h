@@ -20,9 +20,4 @@ struct io_map {
 
 /* *out = msg when out is non-null; returns msg. The readers' errmsg
  * out-parameter. */
-static inline const char *io_set_err(const char **out, const char *msg) {
-    if (out != nullptr) {
-        *out = msg;
-    }
-    return msg;
-}
+const char *io_set_err(const char **out, const char *msg);
