@@ -714,29 +714,6 @@ static void metal_encode_binary_rows(struct metal_state                    *st,
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
-static void metal_encode_scale_rows(struct metal_state                   *st,
-                                    void                                 *enc,
-                                    const struct geist_tensor            *x,
-                                    const struct geist_tensor            *y,
-                                    const struct metal_scale_rows_params *params) {
-    metal_msg_send_set_pipeline(st, enc, st->scale_rows_pipeline);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 1);
-    metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 2);
-    const struct metal_size groups = {
-            .width  = (params->rows * params->cols + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS,
-            .height = 1,
-            .depth  = 1,
-    };
-    const struct metal_size threads = {
-            .width  = METAL_ELEM_THREADS,
-            .height = 1,
-            .depth  = 1,
-    };
-    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_SCALE_ROWS, groups);
-    metal_msg_send_dispatch(st, enc, groups, threads);
-}
-
 static void metal_encode_qgate_split(struct metal_state              *st,
                                      void                            *enc,
                                      const struct geist_tensor       *joint,
@@ -773,34 +750,12 @@ static void metal_encode_sigmoid_mul(struct metal_state                    *st,
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
-static void metal_encode_gelu_rows(struct metal_state                   *st,
-                                   void                                 *enc,
-                                   const struct geist_tensor            *x,
-                                   const struct geist_tensor            *y,
-                                   const struct metal_scale_rows_params *params) {
-    metal_msg_send_set_pipeline(st, enc, st->gelu_rows_pipeline);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 1);
-    metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 2);
-    const struct metal_size groups = {
-            .width  = (params->rows * params->cols + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS,
-            .height = 1,
-            .depth  = 1,
-    };
-    const struct metal_size threads = {
-            .width  = METAL_ELEM_THREADS,
-            .height = 1,
-            .depth  = 1,
-    };
-    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_GELU_ROWS, groups);
-    metal_msg_send_dispatch(st, enc, groups, threads);
-}
-
-/* One-input elementwise rows (silu_rows, relu2_rows): same buffers and
- * params, the pipeline picks the function. */
+/* One-input elementwise rows (scale_rows, gelu_rows, silu_rows,
+ * relu2_rows): same buffers and params, the pipeline picks the function. */
 static void metal_encode_unary_rows(struct metal_state                   *st,
                                     void                                 *enc,
                                     void                                 *pipeline,
+                                    enum metal_profile_stage              stage,
                                     const struct geist_tensor            *x,
                                     const struct geist_tensor            *y,
                                     const struct metal_scale_rows_params *params) {
@@ -814,7 +769,7 @@ static void metal_encode_unary_rows(struct metal_state                   *st,
             .depth  = 1,
     };
     const struct metal_size threads = {METAL_ELEM_THREADS, 1, 1};
-    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_GELU_ROWS, groups);
+    metal_profile_add_dispatch(st, stage, groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
 
@@ -1377,51 +1332,6 @@ metal_binary_rows(struct geist_backend      *be,
     return metal_binary_rows(be, &st->mul_rows_pipeline, METAL_PROFILE_DISPATCH_MUL_ROWS, a, b, y);
 }
 
-[[nodiscard]] static enum geist_status metal_scale_f32(struct geist_backend      *be,
-                                                       const struct geist_tensor *x,
-                                                       float                      scale,
-                                                       struct geist_tensor       *y) {
-
-    if (be == nullptr || be->state == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    size_t rows = 0, cols = 0, x_off = 0, x_stride = 0;
-    size_t y_rows = 0, y_cols = 0, y_off = 0, y_stride = 0;
-    if (!metal_tensor_is_f32_rows(x, &rows, &cols, &x_off, &x_stride) ||
-        !metal_tensor_is_f32_rows(y, &y_rows, &y_cols, &y_off, &y_stride) || y_rows != rows ||
-        y_cols != cols) {
-        return GEIST_E_UNSUPPORTED;
-    }
-    if (rows > UINT32_MAX || cols > UINT32_MAX || x_off > UINT32_MAX || y_off > UINT32_MAX ||
-        x_stride > UINT32_MAX || y_stride > UINT32_MAX || x->buffer->owner != be->state ||
-        y->buffer->owner != be->state) {
-        return GEIST_E_INVALID_ARG;
-    }
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
-    if (s != GEIST_OK) {
-        return s;
-    }
-    struct metal_state                  *st     = be->state;
-    const struct metal_scale_rows_params params = {
-            .rows         = (uint32_t) rows,
-            .cols         = (uint32_t) cols,
-            .x_offset     = (uint32_t) x_off,
-            .y_offset     = (uint32_t) y_off,
-            .x_row_stride = (uint32_t) x_stride,
-            .y_row_stride = (uint32_t) y_stride,
-            .scale        = scale,
-    };
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-
-    void *cmd = nullptr;
-    void *enc = metal_op_begin(be, nullptr, &cmd);
-    if (enc == nullptr) {
-        return GEIST_E_BACKEND;
-    }
-    metal_encode_scale_rows(st, enc, x, y, &params);
-    return metal_op_end(be, cmd, enc, nullptr);
-}
-
 [[nodiscard]] static enum geist_status metal_attn_qgate_split(struct geist_backend      *be,
                                                               const struct geist_tensor *joint,
                                                               size_t                     heads,
@@ -1630,9 +1540,15 @@ static bool metal_hadamard_geometry_ok(
     return metal_op_end(be, cmd, enc, nullptr);
 }
 
-[[nodiscard]] static enum geist_status
-metal_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
-
+/* The pipeline is passed as the address of its state field, as in
+ * metal_binary_rows. scale reaches scale_rows only; the others ignore it. */
+[[nodiscard, gnu::always_inline]] static inline enum geist_status
+metal_unary_rows(struct geist_backend      *be,
+                 void *const               *pipeline,
+                 enum metal_profile_stage   stage,
+                 const struct geist_tensor *x,
+                 float                      scale,
+                 struct geist_tensor       *y) {
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -1660,7 +1576,7 @@ metal_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct g
             .y_offset     = (uint32_t) y_off,
             .x_row_stride = (uint32_t) x_stride,
             .y_row_stride = (uint32_t) y_stride,
-            .scale        = 0.0f,
+            .scale        = scale,
     };
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
@@ -1669,63 +1585,50 @@ metal_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct g
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
-    metal_encode_gelu_rows(st, enc, x, y, &params);
+    metal_encode_unary_rows(st, enc, *pipeline, stage, x, y, &params);
     return metal_op_end(be, cmd, enc, nullptr);
 }
 
-[[nodiscard]] static enum geist_status metal_unary_rows(struct geist_backend      *be,
-                                                        const struct geist_tensor *x,
-                                                        struct geist_tensor       *y,
-                                                        bool                       relu2) {
+[[nodiscard]] static enum geist_status metal_scale_f32(struct geist_backend      *be,
+                                                       const struct geist_tensor *x,
+                                                       float                      scale,
+                                                       struct geist_tensor       *y) {
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    size_t rows = 0, cols = 0, x_off = 0, x_stride = 0;
-    size_t y_rows = 0, y_cols = 0, y_off = 0, y_stride = 0;
-    if (!metal_tensor_is_f32_rows(x, &rows, &cols, &x_off, &x_stride) ||
-        !metal_tensor_is_f32_rows(y, &y_rows, &y_cols, &y_off, &y_stride) || y_rows != rows ||
-        y_cols != cols) {
-        return GEIST_E_UNSUPPORTED;
-    }
-    if (rows > UINT32_MAX || cols > UINT32_MAX || x_off > UINT32_MAX || y_off > UINT32_MAX ||
-        x_stride > UINT32_MAX || y_stride > UINT32_MAX || x->buffer->owner != be->state ||
-        y->buffer->owner != be->state) {
+    struct metal_state *st = be->state;
+    return metal_unary_rows(
+            be, &st->scale_rows_pipeline, METAL_PROFILE_DISPATCH_SCALE_ROWS, x, scale, y);
+}
+
+[[nodiscard]] static enum geist_status
+metal_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
+    if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    enum geist_status s = metal_ensure_q4k_pipeline(be);
-    if (s != GEIST_OK) {
-        return s;
-    }
-    struct metal_state                  *st     = be->state;
-    const struct metal_scale_rows_params params = {
-            .rows         = (uint32_t) rows,
-            .cols         = (uint32_t) cols,
-            .x_offset     = (uint32_t) x_off,
-            .y_offset     = (uint32_t) y_off,
-            .x_row_stride = (uint32_t) x_stride,
-            .y_row_stride = (uint32_t) y_stride,
-            .scale        = 0.0f,
-    };
-    void *pipeline = relu2 ? st->relu2_rows_pipeline : st->silu_rows_pipeline;
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-
-    void *cmd = nullptr;
-    void *enc = metal_op_begin(be, nullptr, &cmd);
-    if (enc == nullptr) {
-        return GEIST_E_BACKEND;
-    }
-    metal_encode_unary_rows(st, enc, pipeline, x, y, &params);
-    return metal_op_end(be, cmd, enc, nullptr);
+    struct metal_state *st = be->state;
+    return metal_unary_rows(
+            be, &st->gelu_rows_pipeline, METAL_PROFILE_DISPATCH_GELU_ROWS, x, 0.0f, y);
 }
 
 [[nodiscard]] static enum geist_status
 metal_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
-    return metal_unary_rows(be, x, y, false);
+    if (be == nullptr || be->state == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct metal_state *st = be->state;
+    return metal_unary_rows(
+            be, &st->silu_rows_pipeline, METAL_PROFILE_DISPATCH_GELU_ROWS, x, 0.0f, y);
 }
 
 [[nodiscard]] static enum geist_status
 metal_relu_squared(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
-    return metal_unary_rows(be, x, y, true);
+    if (be == nullptr || be->state == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct metal_state *st = be->state;
+    return metal_unary_rows(
+            be, &st->relu2_rows_pipeline, METAL_PROFILE_DISPATCH_GELU_ROWS, x, 0.0f, y);
 }
 
 [[nodiscard]] static enum geist_status metal_gelu_tanh_mul(struct geist_backend      *be,
