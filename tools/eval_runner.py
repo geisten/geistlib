@@ -26,64 +26,11 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 from pathlib import Path
 
-
-class Repl:
-    """Thin wrapper around a persistent eval_geist process."""
-
-    def __init__(self, binary: str, gguf: str, awq: str | None = None):
-        cmd = [binary, gguf] + (["--awq", awq] if awq else [])
-        self.proc = subprocess.Popen(
-            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, bufsize=1)
-        # eval_geist emits a "READY" banner on stdout once the model is loaded.
-        assert self.proc.stdout
-        while True:
-            line = self.proc.stdout.readline()
-            if not line:
-                err = self.proc.stderr.read() if self.proc.stderr else ""
-                sys.exit(f"eval_geist exited before READY.\n{err}")
-            if line.strip() == "READY":
-                break
-
-    def cmd(self, line: str) -> str:
-        assert self.proc.stdin and self.proc.stdout
-        self.proc.stdin.write(line + "\n")
-        self.proc.stdin.flush()
-        out = self.proc.stdout.readline().strip()
-        if not out:
-            err = self.proc.stderr.read() if self.proc.stderr else ""
-            sys.exit(f"eval_geist produced no response to {line!r}.\n{err}")
-        return out
-
-    def decode(self, ids: list[int], n_decode: int) -> list[int]:
-        resp = self.cmd(f"DECODE {len(ids)} {' '.join(map(str, ids))} {n_decode}")
-        parts = resp.split()
-        if parts[0] != "OK":
-            sys.exit(f"DECODE failed: {resp}")
-        return [int(x) for x in parts[2:]]
-
-    def score(self, prompt: list[int], cont: list[int]) -> float:
-        resp = self.cmd(f"SCORE {len(prompt)} {' '.join(map(str, prompt))} "
-                        f"{len(cont)} {' '.join(map(str, cont))}")
-        parts = resp.split()
-        if parts[0] != "OK":
-            sys.exit(f"SCORE failed: {resp}")
-        return float(parts[1])  # total continuation logprob
-
-    def reset(self) -> None:
-        self.cmd("RESET")
-
-    def close(self) -> None:
-        if self.proc.poll() is None:
-            try:
-                self.cmd("QUIT")
-            except SystemExit:
-                pass
-        self.proc.terminate()
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from eval_repl import EvalRepl  # noqa: E402
 
 
 def load_tokenizer(name: str):
@@ -127,11 +74,13 @@ def main() -> None:
         sys.exit(f"eval_runner: binary not found: {args.bin} (run `make` first)")
 
     tok = load_tokenizer(args.tokenizer) if args.tokenizer else None
-    repl = Repl(args.bin, args.gguf, args.awq)
+    repl = EvalRepl(args.bin, args.gguf, args=["--awq", args.awq] if args.awq else [])
     try:
         if args.mode == "generate":
             ids = parse_ids(args, tok, args.prompt)
-            out = repl.decode(ids, args.n)
+            # DECODE -> OK <n> <id...>
+            out = [int(x) for x in repl.command(
+                f"DECODE {len(ids)} {' '.join(map(str, ids))} {args.n}")[1:]]
             text = tok.decode(out) if tok else None
             print(f"prompt_ids={ids}")
             print(f"output_ids={out}")
@@ -142,8 +91,10 @@ def main() -> None:
             best_i, best_lp = -1, float("-inf")
             for i, opt in enumerate(args.options):
                 cont = tok.encode(opt, add_special_tokens=False)
-                repl.reset()
-                lp = repl.score(prompt_ids, cont)
+                repl.command("RESET")
+                lp = float(repl.command(  # SCORE -> OK <total continuation logprob> ...
+                    f"SCORE {len(prompt_ids)} {' '.join(map(str, prompt_ids))} "
+                    f"{len(cont)} {' '.join(map(str, cont))}")[0])
                 print(f"  [{i}] logprob={lp:.3f}  {opt!r}")
                 if lp > best_lp:
                     best_i, best_lp = i, lp
