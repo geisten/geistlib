@@ -247,6 +247,13 @@ static void nkv_run(size_t        n_q,
 #pragma GCC diagnostic pop
 #endif
 
+/* The shape probe of this TU's op, defined by the including .c file. It is
+ * static because nkv_attention passes its address: the address of an
+ * extern function, taken in -fPIE code, is a PC-relative relocation that
+ * ld rejects when it links libgeist.a into libgeist.so (the symbol may
+ * bind externally there). */
+static bool nkv_supported(const struct geist_fusion_query *q);
+
 /* fused->attention_kv_int8 or fused->attention_kv_int4, per NKV_INT4:
  * checks the views and the shapes, then runs. */
 static inline enum geist_status nkv_attention(struct geist_backend                 *be,
@@ -258,7 +265,7 @@ static inline enum geist_status nkv_attention(struct geist_backend              
             args,
             NKV_INT4,
             NKV_INT4 ? GEIST_FUSED_ATTN_KV_INT4 : GEIST_FUSED_ATTN_KV_INT8,
-            NKV_INT4 ? cpu_neon_attention_kv_int4_supported : cpu_neon_attention_kv_int8_supported,
+            nkv_supported,
             &a);
     if (s != GEIST_OK) {
         return s;

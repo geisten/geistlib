@@ -19,10 +19,14 @@
 constexpr bool NKV_INT4 = true;
 #include "attention_kv.h" /* the loop and the checks, shared with attention_int8.c */
 
-bool cpu_neon_attention_kv_int4_supported(const struct geist_fusion_query *q) {
+static bool nkv_supported(const struct geist_fusion_query *q) {
     return q != nullptr && q->head_dim >= 2 && q->head_dim % 2 == 0 &&
            q->head_dim <= NKV_HEAD_DIM_MAX && q->n_kv_heads >= 1 && q->n_q_heads >= q->n_kv_heads &&
            q->n_q_heads % q->n_kv_heads == 0;
+}
+
+bool cpu_neon_attention_kv_int4_supported(const struct geist_fusion_query *q) {
+    return nkv_supported(q);
 }
 
 enum geist_status cpu_neon_attention_kv_int4(struct geist_backend                 *be,
