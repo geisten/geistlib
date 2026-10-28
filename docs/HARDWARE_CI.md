@@ -26,7 +26,7 @@ tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib \
 | `vulkan-gpu` | `geist-vulkan` | nightly + dispatch: Vulkan suite + model e2e on the discrete GPU |
 | `vulkan-ab` | `geist-vulkan` | dispatch: A/B on one Vulkan device or the Zen 5 CPU |
 | `cross-engine-campaign` | `geist-vulkan` | dispatch: one cell of the cross-engine matrix |
-| `bench-matrix` | per column (`geist-avx512`, `geist-vulkan`, `macos-15-heavy`, `pi5`) | nightly (Sundays: every model; Mac cells only start 00:00–07:00 Berlin time) + dispatch: the cross-engine matrix, published to [geisten.net/bench](https://geisten.net/bench/) |
+| `bench-matrix` | per column (`geist-avx512`, `geist-vulkan`, `apple-m1max`, `pi5`) | nightly (Sundays: every model; Mac cells only start 00:00–07:00 Berlin time) + dispatch: the cross-engine matrix, published to [geisten.net/bench](https://geisten.net/bench/) |
 
 ### Benchmark matrix
 
@@ -109,7 +109,7 @@ holds the lock for a compile; a build waits only while a measurement runs:
 | name | label | lock | install |
 | :-- | :-- | :-- | :-- |
 | `mac-light` | `macos-15:host` | ci lease while a job runs (45 min declared); takes no job while it is held; daemon at `nice 10` | `~/gitea-runner-mac-light`, LaunchAgent `net.geisten.gitea-runner-mac-light` (`Nice` 10) |
-| `mac-m1max` | `macos-15-heavy:host` | held for the whole job | `~/gitea-runner-geisten`, LaunchAgent `net.geisten.gitea-runner-geisten` |
+| `mac-m1max` | `macos-15-heavy:host`, `apple-m1max:host` (benchmark columns only) | held for the whole job | `~/gitea-runner-geisten`, LaunchAgent `net.geisten.gitea-runner-geisten` |
 
 `mac-m1max`'s hooks (`~/bin/mac-runner-job-started.sh` /
 `mac-runner-job-completed.sh`) hold a `ci` lease while a job runs. Its

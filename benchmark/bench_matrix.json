@@ -44,7 +44,7 @@
       "weekly": ["gemma4-e4b-q4km", "llama32-3b-q4km", "bitnet-large-tq2", "qwen3-0.6b-q8", "qwen35-4b-q4"]
     },
     "apple_m1max": {
-      "runner": "macos-15-heavy",
+      "runner": "apple-m1max",
       "protocol": "cpu",
       "build": "make TARGET=mac-omp bin",
       "llama": "cpu",
@@ -53,7 +53,7 @@
       "weekly": ["gemma4-e4b-q4km", "llama32-3b-q4km", "bitnet-large-tq2", "qwen3-0.6b-q8", "qwen35-4b-q4", "qwen38-27b-q4", "bonsai2-27b-pq2"]
     },
     "apple_m1max_metal": {
-      "runner": "macos-15-heavy",
+      "runner": "apple-m1max",
       "protocol": "gpu",
       "build": "make TARGET=mac-omp BACKENDS=\"cpu_neon cpu_scalar metal\" bin",
       "llama": "metal",
