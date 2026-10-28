@@ -15,11 +15,20 @@
  *     session, a session of another model, a full context, n above the max.
  *   - A member that owes a forward from an earlier decode_step decodes in a
  *     batch too, and every member advances by exactly one position.
+ *
+ * Batched decode needs a device buffer copy, a device argmax and the fused
+ * DeltaNet mixer, which only the GPU backends have. So that the batched
+ * path also runs where no GPU is (the Linux coverage leg, #232), the same
+ * checks run once more on cpu_scalar behind a test shim that adds those
+ * three ops on the host: buffer_copy as memmove, argmax_f32 as a scan and
+ * deltanet_mix as the shared scalar oracle (deltanet_ref.h).
  */
 #include "test_helpers.h"
 #include "model_fixtures.h"
+#include "deltanet_ref.h"
 
 #include <geist.h>
+#include <geist_backend.h>
 #include <geist_util.h>
 
 #include <math.h>
@@ -275,6 +284,199 @@ static int check_batching(const struct run *r, size_t max) {
     return fails;
 }
 
+/* ---- cpu_scalar + host batching ops (#232) ---------------------------- */
+
+static const struct geist_backend_vtbl  *shim_base; /* cpu_scalar's vtbl */
+static const struct geist_backend_fused *shim_base_fused;
+
+static float *shim_f32(const struct geist_tensor *t) {
+    if (t == nullptr || t->dtype != GEIST_DTYPE_F32 || t->layout != GEIST_LAYOUT_DENSE)
+        return nullptr;
+    uint8_t *p = shim_base->buffer_map(t->buffer);
+    return p != nullptr ? (float *) (p + t->offset) : nullptr;
+}
+
+static enum geist_status shim_buffer_copy(struct geist_buffer       *dst,
+                                          size_t                     dst_offset,
+                                          const struct geist_buffer *src,
+                                          size_t                     src_offset,
+                                          size_t                     n_bytes) {
+    uint8_t *d = shim_base->buffer_map(dst);
+    uint8_t *s = shim_base->buffer_map((struct geist_buffer *) src);
+    if (d == nullptr || s == nullptr)
+        return GEIST_E_BACKEND;
+    memmove(d + dst_offset, s + src_offset, n_bytes);
+    return GEIST_OK;
+}
+
+/* First index of the maximum, as the GPU kernels report it. */
+static enum geist_status
+shim_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, int32_t *out_index) {
+    (void) be;
+    const float *x = shim_f32(logits);
+    if (x == nullptr || logits->ndim < 1 || out_index == nullptr)
+        return GEIST_E_INVALID_ARG;
+    const size_t n    = (size_t) logits->shape[logits->ndim - 1];
+    size_t       best = 0;
+    for (size_t i = 1; i < n; i++)
+        if (x[i] > x[best])
+            best = i;
+    *out_index = (int32_t) best;
+    return GEIST_OK;
+}
+
+static enum geist_status shim_deltanet_mix(struct geist_backend                 *be,
+                                           const struct geist_deltanet_mix_args *a) {
+    (void) be;
+    float *qkv = shim_f32(a->qkv), *z = shim_f32(a->z), *cs = shim_f32(a->conv_state),
+          *ds         = shim_f32(a->delta_state);
+    const float *beta = shim_f32(a->beta), *alpha = shim_f32(a->alpha),
+                *conv_w = shim_f32(a->conv_w), *ssm_a = shim_f32(a->ssm_a),
+                *dt_bias = shim_f32(a->dt_bias), *norm_w = shim_f32(a->norm_w);
+    if (qkv == nullptr || z == nullptr || cs == nullptr || ds == nullptr || beta == nullptr ||
+        alpha == nullptr || conv_w == nullptr || ssm_a == nullptr || dt_bias == nullptr ||
+        norm_w == nullptr || a->conv_kernel < 2)
+        return GEIST_E_UNSUPPORTED; /* nothing advanced */
+    deltanet_mix_ref(a->seq,
+                     a->n_k_heads,
+                     a->n_v_heads,
+                     a->head_k,
+                     a->head_v,
+                     a->conv_kernel,
+                     a->eps,
+                     beta,
+                     alpha,
+                     conv_w,
+                     ssm_a,
+                     dt_bias,
+                     norm_w,
+                     qkv,
+                     z,
+                     cs,
+                     ds);
+    return GEIST_OK;
+}
+
+static bool shim_supported(struct geist_backend *be, const struct geist_fusion_query *q) {
+    if (q != nullptr && (q->op == GEIST_FUSED_ARGMAX_F32 || q->op == GEIST_FUSED_DELTANET_MIX))
+        return true;
+    return shim_base_fused->supported != nullptr && shim_base_fused->supported(be, q);
+}
+
+static struct geist_backend_vtbl              shim_vtbl;
+static struct geist_backend_fused             shim_fused;
+static struct geist_backend_descriptor        shim_desc;
+static const struct geist_backend_descriptor *shim_orig_desc;
+
+/* cpu_scalar with the three ops batched decode needs; nullptr when
+ * cpu_scalar is not in this build. Destroy with shim_destroy. */
+static struct geist_backend *shim_create(void) {
+    struct geist_backend *be = nullptr;
+    if (geist_backend_create("cpu_scalar", nullptr, nullptr, &be) != GEIST_OK || be == nullptr)
+        return nullptr;
+    shim_base               = be->desc->vtbl;
+    shim_base_fused         = geist_backend_fused_tbl(be);
+    shim_vtbl               = *shim_base;
+    shim_fused              = *shim_base_fused;
+    shim_desc               = *be->desc;
+    shim_vtbl.buffer_copy   = shim_buffer_copy;
+    shim_fused.supported    = shim_supported;
+    shim_fused.argmax_f32   = shim_argmax_f32;
+    shim_fused.deltanet_mix = shim_deltanet_mix;
+    shim_desc.vtbl          = &shim_vtbl;
+    shim_desc.fused         = &shim_fused;
+    shim_orig_desc          = be->desc;
+    be->desc                = &shim_desc;
+    return be;
+}
+
+static void shim_destroy(struct geist_backend *be) {
+    if (be == nullptr)
+        return;
+    be->desc = shim_orig_desc;
+    geist_backend_destroy(be);
+}
+
+/* Every check on one backend; *batching counts backends with max >= 2. */
+static int run_backend(struct geist_backend *be,
+                       const char           *name,
+                       const struct tf_buf  *hybrid,
+                       const struct tf_buf  *llama,
+                       size_t                n_tok,
+                       int                  *batching) {
+    int                 fails = 0;
+    struct geist_model *mh = nullptr, *ml = nullptr;
+    if (geist_model_load_from_memory(hybrid->b, hybrid->n, be, &mh) != GEIST_OK ||
+        geist_model_load_from_memory(llama->b, llama->n, be, &ml) != GEIST_OK) {
+        fprintf(stderr, "FAIL: %s: model load: %s\n", name, geist_last_create_error());
+        fails++;
+    } else {
+        const size_t max = geist_model_decode_batch_max(mh);
+        printf("%s: decode_batch_max hybrid %zu, llama %zu\n",
+               name,
+               max,
+               geist_model_decode_batch_max(ml));
+        const struct run rl = {ml, mh, be, name, VOCAB, false};
+        fails +=
+                expect(&rl, geist_model_decode_batch_max(ml) == 0, "a llama has no batched decode");
+        {
+            struct geist_session *a = open_session(&rl, ml, CTX), *b = open_session(&rl, ml, CTX);
+            geist_token_t         ids[16], out[2];
+            const size_t          n       = prompt(0, ids);
+            struct geist_session *pair[2] = {a, b};
+            if (a != nullptr && b != nullptr &&
+                geist_session_prefill_tokens(a, n, ids) == GEIST_OK &&
+                geist_session_prefill_tokens(b, n, ids) == GEIST_OK) {
+                fails += expect(&rl,
+                                geist_session_decode_batch(2, pair, out) == GEIST_E_UNSUPPORTED &&
+                                        geist_session_length(a) == n,
+                                "n = 2 without batched decode is refused, nothing advances");
+                fails += expect(&rl,
+                                geist_session_decode_batch(1, pair, out) == GEIST_OK,
+                                "n = 1 works without batched decode");
+            }
+            geist_session_destroy(a);
+            geist_session_destroy(b);
+        }
+        *batching += max >= 2;
+        /* Batch 3: one mixer call for all sessions (deltanet_mix_states)
+         * gives what one call per session gives, bit for bit. */
+        if (max >= 2) {
+            setenv("GEIST_DECODE_BATCH_PER_SESSION", "1", 1);
+            struct geist_model *mp = nullptr;
+            const bool          loaded =
+                    geist_model_load_from_memory(hybrid->b, hybrid->n, be, &mp) == GEIST_OK;
+            unsetenv("GEIST_DECODE_BATCH_PER_SESSION");
+            static struct trace one_call[8], per_session[8];
+            const struct run    rm = {mh, ml, be, name, n_tok, false};
+            const struct run    rp = {mp, ml, be, name, n_tok, false};
+            const size_t        n  = max < NP ? max : NP;
+            size_t              ps[8];
+            for (size_t b = 0; b < n; b++)
+                ps[b] = b;
+            bool same_all =
+                    loaded && batched(&rm, n, ps, one_call) && batched(&rp, n, ps, per_session);
+            for (size_t b = 0; same_all && b < n; b++)
+                same_all = same(&rm, &one_call[b], &per_session[b]);
+            fails += expect(&rm,
+                            same_all,
+                            "one mixer call for all sessions equals one per session, bit for bit");
+            geist_model_destroy(mp);
+        }
+        for (int sampling = 0; sampling < 2; sampling++) {
+            const struct run r = {mh, ml, be, name, n_tok, sampling != 0};
+            fails += check_batching(&r, max);
+            if (max >= 2 && sampling == 0) {
+                fails += check_refusals(&r, max);
+                fails += check_owed(&r);
+            }
+        }
+    }
+    geist_model_destroy(mh);
+    geist_model_destroy(ml);
+    return fails;
+}
+
 int main(void) {
     struct tf_vocab v      = tf_make_vocab("\xc4\xa0", false);
     struct tf_buf   hybrid = mf_qwen35_gguf(&(struct mf_qwen35) {.layers     = 4,
@@ -306,54 +508,20 @@ int main(void) {
         if (geist_backend_create(BACKENDS[bi], nullptr, nullptr, &be) != GEIST_OK || be == nullptr)
             continue; /* not in this build */
         ran++;
-        struct geist_model *mh = nullptr, *ml = nullptr;
-        if (geist_model_load_from_memory(hybrid.b, hybrid.n, be, &mh) != GEIST_OK ||
-            geist_model_load_from_memory(llama.b, llama.n, be, &ml) != GEIST_OK) {
-            fprintf(stderr, "FAIL: %s: model load: %s\n", BACKENDS[bi], geist_last_create_error());
-            fails++;
-        } else {
-            const size_t max = geist_model_decode_batch_max(mh);
-            printf("%s: decode_batch_max hybrid %zu, llama %zu\n",
-                   BACKENDS[bi],
-                   max,
-                   geist_model_decode_batch_max(ml));
-            const struct run rl = {ml, mh, be, BACKENDS[bi], VOCAB, false};
-            fails += expect(
-                    &rl, geist_model_decode_batch_max(ml) == 0, "a llama has no batched decode");
-            {
-                struct geist_session *a = open_session(&rl, ml, CTX),
-                                     *b = open_session(&rl, ml, CTX);
-                geist_token_t         ids[16], out[2];
-                const size_t          n       = prompt(0, ids);
-                struct geist_session *pair[2] = {a, b};
-                if (a != nullptr && b != nullptr &&
-                    geist_session_prefill_tokens(a, n, ids) == GEIST_OK &&
-                    geist_session_prefill_tokens(b, n, ids) == GEIST_OK) {
-                    fails += expect(&rl,
-                                    geist_session_decode_batch(2, pair, out) ==
-                                                    GEIST_E_UNSUPPORTED &&
-                                            geist_session_length(a) == n,
-                                    "n = 2 without batched decode is refused, nothing advances");
-                    fails += expect(&rl,
-                                    geist_session_decode_batch(1, pair, out) == GEIST_OK,
-                                    "n = 1 works without batched decode");
-                }
-                geist_session_destroy(a);
-                geist_session_destroy(b);
-            }
-            batching += max >= 2;
-            for (int sampling = 0; sampling < 2; sampling++) {
-                const struct run r = {mh, ml, be, BACKENDS[bi], v.n_tok, sampling != 0};
-                fails += check_batching(&r, max);
-                if (max >= 2 && sampling == 0) {
-                    fails += check_refusals(&r, max);
-                    fails += check_owed(&r);
-                }
-            }
-        }
-        geist_model_destroy(mh);
-        geist_model_destroy(ml);
+        fails += run_backend(be, BACKENDS[bi], &hybrid, &llama, v.n_tok, &batching);
         geist_backend_destroy(be);
+    }
+    /* The batched path on the host: it must batch. */
+    struct geist_backend *shim = shim_create();
+    if (shim != nullptr) {
+        ran++;
+        const int before = batching;
+        fails += run_backend(shim, "cpu_scalar+host-batch", &hybrid, &llama, v.n_tok, &batching);
+        if (batching == before) {
+            fprintf(stderr, "FAIL: cpu_scalar+host-batch: decode_batch_max < 2\n");
+            fails++;
+        }
+        shim_destroy(shim);
     }
     free(hybrid.b);
     free(llama.b);

@@ -353,6 +353,10 @@ struct metal_state {
     void *dn_dec_v_pipeline;
     void *dn_dec_v_rows_function;
     void *dn_dec_v_rows_pipeline;
+    void *dn_dec_qk_b_function; /* #26: several sessions' decode rows */
+    void *dn_dec_qk_b_pipeline;
+    void *dn_dec_v_b_function;
+    void *dn_dec_v_b_pipeline;
     void *dnf_cst_copy_function;
     void *dnf_cst_copy_pipeline;
     void *dnf_conv_function;
