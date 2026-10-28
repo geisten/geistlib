@@ -72,17 +72,25 @@ static inline bool metal_seq_mine(const struct metal_state *st) {
     return atomic_load_explicit(&st->seq_owner, memory_order_relaxed) == (uintptr_t) pthread_self();
 }
 
-/* Also takes seq_lock for the submission, so it waits out a sequence
- * another thread has open (recursive: free inside the caller's own). */
+/* Outside the caller's own sequence it also takes seq_lock for the
+ * submission, so it waits out a sequence another thread has open. Inside
+ * its own sequence the caller already holds seq_lock (region begin took
+ * it), so it takes nothing ({nullptr, nullptr}): a sequenced op costs no
+ * lock. Checking before locking is safe -- only this thread can make the
+ * sequence its own. */
 static inline struct metal_pool metal_standalone_pool(struct metal_state *st) {
+    if (metal_seq_mine(st)) {
+        return (struct metal_pool) {nullptr, nullptr};
+    }
     pthread_mutex_lock(&st->seq_lock);
-    return (struct metal_pool) {st, metal_seq_mine(st) ? nullptr : metal_pool_push(st)};
+    return (struct metal_pool) {st, metal_pool_push(st)};
 }
 
 static inline void metal_pool_end(struct metal_pool *pool) {
-    if (pool->token != nullptr) {
-        metal_pool_pop(pool->st, pool->token);
+    if (pool->st == nullptr) {
+        return;
     }
+    metal_pool_pop(pool->st, pool->token);
     pthread_mutex_unlock(&pool->st->seq_lock);
 }
 
@@ -331,10 +339,6 @@ static inline void metal_msg_send_dispatch(struct metal_state *st,
                                            struct metal_size   groups,
                                            struct metal_size   threads) {
     void *sel = metal_sel_register_name(st, "dispatchThreadgroups:threadsPerThreadgroup:");
-    if (st->skip_next_dispatch) {
-        st->skip_next_dispatch = false;
-        return;
-    }
     union {
         void *raw;
         void (*fn)(void *, void *, struct metal_size, struct metal_size);

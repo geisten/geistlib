@@ -914,6 +914,12 @@
               "qualifies": true
             }
           ]
+        },
+        "status": "complete (2026-10-28)",
+        "result": {
+          "writeup": "benchmark/results/DECISION_EARLY_EXIT_CAP8192_2026-10-28.md",
+          "test": "early exit tau 0.8: 85.6 % vs full reasoning at cap 8192 85.6 %; gains 27, losses 27; 0.0 pp, conservative 95 % interval [-4.74, +4.74]; non-inferiority at 2 pp not established; 0.23x generated tokens (152,657 vs 676,706); 330 exits (221 at token 128); 41 questions capped at 8192 under full reasoning, 39 of them exit (25 correct), 2 stay capped",
+          "time": "policy run 9,192 s of lease in pad mode (20.8 useful tok/s); full reasoning has no single cap-8192 run (#264 6,901 s + re-runs 18,561 s); vs #171 unbatched cap 2048 23,894 s"
         }
       }
     ]

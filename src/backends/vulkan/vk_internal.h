@@ -213,7 +213,7 @@ enum vk_fb {
     VK_FB_HOST_VIEW,   /* a host loop over a mapped tensor (vk_tensor_host) */
     VK_FB_HOST_LINEAR, /* a linear on the host row-dequant path (vk_w_cpu_mN) */
     VK_FB_HOST_COPY,   /* vk_buffer_copy through mapped memory */
-    VK_FB_LINEAR_T,    /* linear_t / linear_t_pair declined: arch host linear */
+    VK_FB_LINEAR_T,    /* linear_t declined: arch host linear */
     VK_FB_ARGMAX,      /* argmax declined: arch scans on the host */
     VK_FB_EMBED,       /* embedding lookup declined: arch gathers on the host */
     VK_FB_KV_APPEND,   /* kv_append_f16 declined */

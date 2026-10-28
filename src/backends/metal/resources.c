@@ -769,32 +769,61 @@ void metal_buffer_unmap(struct geist_buffer *buf) {
     (void) buf;
 }
 
-bool metal_tensor_is_f32_vector(const struct geist_tensor *t,
-                                size_t                    *out_n,
-                                size_t                    *out_offset_floats) {
+/* A dense F32 view as rows inside its buffer: 1D is one row; 2D has a unit column stride and a row
+ * stride of exactly the column count, or with `strided` at least that (a strided view into a larger
+ * slab, e.g. the per-layer PLE slice; kernels take the row stride from their params). The offset
+ * and row stride come back in elements. */
+static bool metal_tensor_f32_rows_view(const struct geist_tensor *t,
+                                       bool                       strided,
+                                       size_t                    *out_rows,
+                                       size_t                    *out_cols,
+                                       size_t                    *out_offset_elems,
+                                       size_t                    *out_row_stride) {
     if (t == nullptr || t->buffer == nullptr || t->dtype != GEIST_DTYPE_F32 ||
-        t->layout != GEIST_LAYOUT_DENSE || (t->ndim != 1 && t->ndim != 2) ||
-        t->offset % sizeof(float) != 0) {
+        t->layout != GEIST_LAYOUT_DENSE || t->offset % sizeof(float) != 0) {
         return false;
     }
-    size_t n = 0;
+    size_t rows = 1, cols = 0, stride = 0;
     if (t->ndim == 1) {
         if (t->shape[0] <= 0 || t->stride[0] != 1) {
             return false;
         }
-        n = (size_t) t->shape[0];
-    } else {
-        if (t->shape[0] != 1 || t->shape[1] <= 0 || t->stride[0] != t->shape[1] ||
-            t->stride[1] != 1) {
+        cols   = (size_t) t->shape[0];
+        stride = cols;
+    } else if (t->ndim == 2) {
+        if (t->shape[0] <= 0 || t->shape[1] <= 0 || t->stride[1] != 1 ||
+            (strided ? t->stride[0] < t->shape[1] : t->stride[0] != t->shape[1])) {
             return false;
         }
-        n = (size_t) t->shape[1];
+        rows   = (size_t) t->shape[0];
+        cols   = (size_t) t->shape[1];
+        stride = (size_t) t->stride[0];
+    } else {
+        return false;
     }
-    if (t->offset > t->buffer->bytes || n > (t->buffer->bytes - t->offset) / sizeof(float)) {
+    if (rows > 1 && stride > (SIZE_MAX - cols) / (rows - 1)) {
+        return false;
+    }
+    const size_t elems = (rows - 1) * stride + cols;
+    if (t->offset > t->buffer->bytes || elems > (t->buffer->bytes - t->offset) / sizeof(float)) {
+        return false;
+    }
+    *out_rows         = rows;
+    *out_cols         = cols;
+    *out_offset_elems = t->offset / sizeof(float);
+    *out_row_stride   = stride;
+    return true;
+}
+
+bool metal_tensor_is_f32_vector(const struct geist_tensor *t,
+                                size_t                    *out_n,
+                                size_t                    *out_offset_floats) {
+    size_t rows = 0, n = 0, off = 0, stride = 0;
+    if (!metal_tensor_f32_rows_view(t, false, &rows, &n, &off, &stride) || rows != 1) {
         return false;
     }
     *out_n             = n;
-    *out_offset_floats = t->offset / sizeof(float);
+    *out_offset_floats = off;
     return true;
 }
 
@@ -803,55 +832,9 @@ bool metal_tensor_is_f32_matrix(const struct geist_tensor *t,
                                 size_t                    *out_cols,
                                 size_t                    *out_offset_floats,
                                 size_t                    *out_row_stride) {
-    if (t == nullptr || t->buffer == nullptr || t->dtype != GEIST_DTYPE_F32 ||
-        t->layout != GEIST_LAYOUT_DENSE || t->ndim != 2 || t->shape[0] <= 0 || t->shape[1] <= 0 ||
-        t->stride[0] != t->shape[1] || t->stride[1] != 1 || t->offset % sizeof(float) != 0) {
-        return false;
-    }
-    const size_t rows = (size_t) t->shape[0];
-    const size_t cols = (size_t) t->shape[1];
-    if (rows > SIZE_MAX / cols) {
-        return false;
-    }
-    const size_t elems = rows * cols;
-    if (t->offset > t->buffer->bytes || elems > (t->buffer->bytes - t->offset) / sizeof(float)) {
-        return false;
-    }
-    *out_rows          = rows;
-    *out_cols          = cols;
-    *out_offset_floats = t->offset / sizeof(float);
-    *out_row_stride    = cols;
-    return true;
-}
-
-/* Like metal_tensor_is_f32_matrix but accepts a row stride wider than the
- * column count (a strided view into a larger slab, e.g. the per-layer PLE
- * slice). Kernels take the row stride from their params. */
-static bool metal_tensor_is_f32_matrix_strided(const struct geist_tensor *t,
-                                               size_t                    *out_rows,
-                                               size_t                    *out_cols,
-                                               size_t                    *out_offset_floats,
-                                               size_t                    *out_row_stride) {
-    if (t == nullptr || t->buffer == nullptr || t->dtype != GEIST_DTYPE_F32 ||
-        t->layout != GEIST_LAYOUT_DENSE || t->ndim != 2 || t->shape[0] <= 0 || t->shape[1] <= 0 ||
-        t->stride[0] < t->shape[1] || t->stride[1] != 1 || t->offset % sizeof(float) != 0) {
-        return false;
-    }
-    const size_t rows   = (size_t) t->shape[0];
-    const size_t cols   = (size_t) t->shape[1];
-    const size_t stride = (size_t) t->stride[0];
-    if (rows > 1 && stride > (SIZE_MAX - cols) / (rows - 1)) {
-        return false;
-    }
-    const size_t elems = (rows - 1) * stride + cols;
-    if (t->offset > t->buffer->bytes || elems > (t->buffer->bytes - t->offset) / sizeof(float)) {
-        return false;
-    }
-    *out_rows          = rows;
-    *out_cols          = cols;
-    *out_offset_floats = t->offset / sizeof(float);
-    *out_row_stride    = stride;
-    return true;
+    return t != nullptr && t->ndim == 2 &&
+           metal_tensor_f32_rows_view(
+                   t, false, out_rows, out_cols, out_offset_floats, out_row_stride);
 }
 
 bool metal_tensor_is_f32_rows(const struct geist_tensor *t,
@@ -859,27 +842,8 @@ bool metal_tensor_is_f32_rows(const struct geist_tensor *t,
                               size_t                    *out_cols,
                               size_t                    *out_offset_floats,
                               size_t                    *out_row_stride) {
-    if (t == nullptr || out_rows == nullptr || out_cols == nullptr ||
-        out_offset_floats == nullptr || out_row_stride == nullptr) {
-        return false;
-    }
-    if (t->ndim == 1) {
-        size_t n   = 0;
-        size_t off = 0;
-        if (!metal_tensor_is_f32_vector(t, &n, &off)) {
-            return false;
-        }
-        *out_rows          = 1;
-        *out_cols          = n;
-        *out_offset_floats = off;
-        *out_row_stride    = n;
-        return true;
-    }
-    /* The elementwise kernels take per-tensor row strides from their
-     * params, so a strided 2D view (e.g. the per-layer PLE slice of the
-     * [seq, n_layers*hpl] slab) is fine here. */
-    return metal_tensor_is_f32_matrix_strided(
-            t, out_rows, out_cols, out_offset_floats, out_row_stride);
+    return metal_tensor_f32_rows_view(
+            t, true, out_rows, out_cols, out_offset_floats, out_row_stride);
 }
 
 bool metal_tensor_is_q4k_matrix(const struct geist_tensor *t,
@@ -934,44 +898,15 @@ bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
     return true;
 }
 
-bool metal_tensor_is_q5k_matrix(const struct geist_tensor *t,
-                                size_t                    *out_rows,
-                                size_t                    *out_cols,
-                                size_t                    *out_offset_bytes) {
-    if (t == nullptr || t->buffer == nullptr || t->dtype != GEIST_DTYPE_Q5_K ||
-        t->layout != GEIST_LAYOUT_BLOCK_QUANTIZED || t->ndim != 2 || t->shape[0] <= 0 ||
-        t->shape[1] <= 0 || ((size_t) t->shape[1] % METAL_Q5K_BLOCK_ELEMS) != 0) {
-        return false;
-    }
-    const size_t rows           = (size_t) t->shape[0];
-    const size_t cols           = (size_t) t->shape[1];
-    const size_t blocks_per_row = cols / METAL_Q5K_BLOCK_ELEMS;
-    if (rows > SIZE_MAX / blocks_per_row ||
-        rows * blocks_per_row > SIZE_MAX / METAL_Q5K_BLOCK_BYTES) {
-        return false;
-    }
-    const size_t bytes = rows * blocks_per_row * METAL_Q5K_BLOCK_BYTES;
-    if (t->offset > t->buffer->bytes || bytes > t->buffer->bytes - t->offset) {
-        return false;
-    }
-    *out_rows         = rows;
-    *out_cols         = cols;
-    *out_offset_bytes = t->offset;
-    return true;
-}
-
 bool metal_tensor_is_q40_q80_matrix(const struct geist_tensor *t,
                                     enum geist_dtype           dtype,
                                     size_t                    *out_rows,
                                     size_t                    *out_cols,
                                     size_t                    *out_offset_bytes) {
-    if ((dtype != GEIST_DTYPE_Q4_0 && dtype != GEIST_DTYPE_Q4_1 && dtype != GEIST_DTYPE_Q8_0 &&
-         dtype != GEIST_DTYPE_IQ4_NL && dtype != GEIST_DTYPE_IQ4_XS && dtype != GEIST_DTYPE_Q3_K &&
-         dtype != GEIST_DTYPE_IQ3_S && dtype != GEIST_DTYPE_PQ2_0 && dtype != GEIST_DTYPE_TQ2_0 &&
-         dtype != GEIST_DTYPE_I2_S) ||
-        t == nullptr || t->buffer == nullptr || t->dtype != dtype ||
-        t->layout != GEIST_LAYOUT_BLOCK_QUANTIZED || t->ndim != 2 || t->shape[0] <= 0 ||
-        t->shape[1] <= 0 || ((size_t) t->shape[1] % metal_quant_block_elems(dtype)) != 0) {
+    if (!metal_dtype_is_generic_quant(dtype) || t == nullptr || t->buffer == nullptr ||
+        t->dtype != dtype || t->layout != GEIST_LAYOUT_BLOCK_QUANTIZED || t->ndim != 2 ||
+        t->shape[0] <= 0 || t->shape[1] <= 0 ||
+        ((size_t) t->shape[1] % metal_quant_block_elems(dtype)) != 0) {
         return false;
     }
     const size_t rows = (size_t) t->shape[0];
