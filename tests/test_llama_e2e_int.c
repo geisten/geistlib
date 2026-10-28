@@ -70,8 +70,8 @@ int main(void) {
     }
     printf("loaded: arch=%s\n", geist_model_arch(model));
 
-    /* Confirm the engine attached the GGUF-embedded tokenizer, not
-     * sp_bpe. */
+    /* Confirm the engine attached the GGUF-embedded tokenizer, not a
+     * tokenizer.bin. */
     struct gguf_tokenizer *gtok = geist_model_internal_gguf_tokenizer(model);
     if (gtok == nullptr) {
         fprintf(stderr, "FAIL: model has no GGUF-embedded tokenizer attached\n");

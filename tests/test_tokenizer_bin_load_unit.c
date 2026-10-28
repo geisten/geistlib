@@ -1,6 +1,6 @@
 /*
- * test_sp_bpe_load_unit — sp_bpe_tokenizer_load trusts a tokenizer.bin's
- * lengths and counts only as far as the file backs them.
+ * test_tokenizer_bin_load_unit — gguf_tokenizer_load_bin trusts a
+ * tokenizer.bin's lengths and counts only as far as the file backs them.
  *
  * Every length and count in the file is untrusted. A length is checked by
  * subtraction, not `p + len > end`, which forms a pointer past the mapping
@@ -13,9 +13,11 @@
  * prefix of it must be refused; and a header whose counts the rest of the
  * file cannot hold must be refused without the process growing.
  */
+#define GEIST_INTERNAL_ENGINE_LAYER
+
 #include "test_helpers.h"
 
-#include "sp_bpe_tokenizer.h"
+#include "gguf_tokenizer.h"
 #include "tokenizer_fixtures.h"
 
 #include <fcntl.h>
@@ -29,14 +31,14 @@
 
 static const char SPM_MARKER[] = "\xe2\x96\x81"; /* ▁ */
 
-/* Header layout (tf_sp_bpe_bin): magic, version, then these u32 counts. */
+/* Header layout (tf_tokenizer_bin): magic, version, then these u32 counts. */
 enum { OFF_VOCAB = 8, OFF_MERGES = 12, OFF_SPECIALS = 16 };
 
-static char g_path[] = "/tmp/test_sp_bpe_load_XXXXXX";
+static char g_path[] = "/tmp/test_tokenizer_bin_load_XXXXXX";
 
-/* Writes the first n bytes of b to g_path and loads it; *tok is set on
- * success and must be freed. */
-static bool load_prefix(const struct tf_buf *b, size_t n, struct sp_bpe_tokenizer **tok) {
+/* Writes the first n bytes of b to g_path and loads it into *tok, which
+ * must be unloaded on success. */
+static bool load_prefix(const struct tf_buf *b, size_t n, struct gguf_tokenizer *tok) {
     FILE *f = fopen(g_path, "wb");
     if (f == nullptr) {
         fprintf(stderr, "cannot write %s\n", g_path);
@@ -46,8 +48,7 @@ static bool load_prefix(const struct tf_buf *b, size_t n, struct sp_bpe_tokenize
         xfwrite(b->b, 1, n, f);
     }
     fclose(f);
-    *tok = nullptr;
-    return sp_bpe_tokenizer_load(tok, g_path);
+    return gguf_tokenizer_load_bin(tok, g_path);
 }
 
 static long peak_rss_kb(void) {
@@ -78,10 +79,13 @@ static bool load_in_child(const struct tf_buf *b, bool *loaded, long *grew_kb) {
     }
     if (pid == 0) {
         close(fds[0]);
-        const long               before = peak_rss_kb();
-        struct sp_bpe_tokenizer *tok    = nullptr;
-        const long report[2] = {load_prefix(b, b->n, &tok) ? 1 : 0, peak_rss_kb() - before};
-        sp_bpe_tokenizer_free(tok);
+        const long            before = peak_rss_kb();
+        struct gguf_tokenizer tok;
+        const bool            ok        = load_prefix(b, b->n, &tok);
+        const long            report[2] = {ok ? 1 : 0, peak_rss_kb() - before};
+        if (ok) {
+            gguf_tokenizer_unload(&tok);
+        }
         const bool sent = write(fds[1], report, sizeof report) == (ssize_t) sizeof report;
         _exit(sent ? 0 : 1);
     }
@@ -105,7 +109,7 @@ int main(void) {
     close(fd);
 
     struct tf_vocab v     = tf_make_vocab(SPM_MARKER, true);
-    struct tf_buf   bin   = tf_sp_bpe_bin(&v);
+    struct tf_buf   bin   = tf_tokenizer_bin(&v);
     int             fails = 0;
 
     /* A claimed count the file cannot hold, one section at a time. */
@@ -138,17 +142,22 @@ int main(void) {
     }
 
     /* The whole file loads, and says what it holds. */
-    struct sp_bpe_tokenizer *tok = nullptr;
-    const bool               ok  = load_prefix(&bin, bin.n, &tok);
-    fails += geist_expect(ok && sp_bpe_tokenizer_vocab_size(tok) == v.n_tok, "the fixture loads");
-    size_t len = 0;
+    struct gguf_tokenizer tok;
+    const bool            ok = load_prefix(&bin, bin.n, &tok);
+    fails += geist_expect(ok && tok.vocab_size == v.n_tok && tok.n_merges == v.n_merge,
+                          "the fixture loads");
     if (ok) {
-        const char *last = sp_bpe_tokenizer_id_to_text(tok, (uint32_t) (v.n_tok - 1), &len);
-        fails += geist_expect(last != nullptr && len == strlen(v.tok[v.n_tok - 1]) &&
+        const char  *last = tok.token_str[v.n_tok - 1];
+        const size_t len  = tok.token_len[v.n_tok - 1];
+        fails += geist_expect(len == strlen(v.tok[v.n_tok - 1]) &&
                                       memcmp(last, v.tok[v.n_tok - 1], len) == 0,
                               "its last token reads back");
+        fails += geist_expect(tok.bos_id == 1 && tok.eos_id == 2 && tok.unk_id == (int32_t) v.unk &&
+                                      tok.mode == GGUF_TOK_MODE_SPM && tok.tokenizer_bin &&
+                                      !tok.add_space_prefix && tok.add_bos,
+                              "its header ids and the SPM mode without the ▁ prefix");
+        gguf_tokenizer_unload(&tok);
     }
-    sp_bpe_tokenizer_free(tok);
 
     /* Every proper prefix ends inside the header or inside an entry the
      * header's counts promise: all must be refused. The loader says why on
@@ -159,12 +168,12 @@ int main(void) {
     fflush(stderr);
     dup2(devnull, 2);
     for (size_t n = 0; n < bin.n; n++) {
-        struct sp_bpe_tokenizer *t = nullptr;
+        struct gguf_tokenizer t;
         if (load_prefix(&bin, n, &t)) {
             if (loaded_prefixes++ == 0) {
                 first_loaded = n;
             }
-            sp_bpe_tokenizer_free(t);
+            gguf_tokenizer_unload(&t);
         }
     }
     fflush(stderr);

@@ -228,7 +228,6 @@ LIB_SOURCES := \
     src/engine/dry_breakers.c \
     src/engine/session.c \
     src/engine/decision.c \
-    src/engine/sp_bpe_tokenizer.c \
     src/engine/gguf_tokenizer.c \
     src/engine/version.c \
     src/archs/transformer/arch.c \

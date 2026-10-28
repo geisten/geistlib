@@ -2,8 +2,8 @@
  * src/engine/pair_merge.h — the greedy pairwise merge at the heart of the
  * BPE and SentencePiece encoders, in O(n log n).
  *
- * Layer: ENGINE (internal). Header-only: gguf_tokenizer.c (gpt2, SPM and
- * unigram modes) and sp_bpe_tokenizer.c share it.
+ * Layer: ENGINE (internal). Header-only: gguf_tokenizer.c's gpt2, SPM and
+ * unigram modes share it, and test_tokenizer_merge_unit checks it.
  *
  * An encoder splits a chunk into symbols, one per UTF-8 codepoint, and
  * then, while any adjacent pair can merge, merges the pair with the lowest
