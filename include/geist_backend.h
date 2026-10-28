@@ -930,6 +930,20 @@ struct geist_backend_fused {
                                       struct geist_tensor             *y);
     uint64_t (*submit_mark)(struct geist_backend *be);
     void *(*map_marked)(struct geist_backend *be, uint64_t mark, struct geist_buffer *buf);
+
+    /* Optional (#26, batched decode): deltanet_mix for n independent
+     * sessions, one row each, in one call. args describes the n rows (seq =
+     * n) as for deltanet_mix; its conv_state / delta_state are ignored: row
+     * t reads and advances conv_states[t] and delta_states[t], each a
+     * session's own state with the geometry deltanet_mix requires. Same
+     * math, in the same order, as n deltanet_mix calls of one row each.
+     * GEIST_E_UNSUPPORTED guarantees no state changed. nullptr = one
+     * deltanet_mix call per session. */
+    enum geist_status (*deltanet_mix_states)(struct geist_backend                 *be,
+                                             size_t                                n,
+                                             const struct geist_deltanet_mix_args *args,
+                                             struct geist_tensor *const conv_states[GEIST_AT_LEAST(n)],
+                                             struct geist_tensor *const delta_states[GEIST_AT_LEAST(n)]);
 };
 
 /* ====================================================================== */
