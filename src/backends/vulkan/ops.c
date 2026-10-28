@@ -3137,6 +3137,158 @@ static_assert(sizeof(struct vk_dn_norm_push) == 12 * 4, "deltanet_norm_f32.comp 
     return vk_seq_dispatch_acc(be, VK_PIPE_DN_DELTA, bi, acc, &push, sizeof(push), n_vh32, 1, 1);
 }
 
+/* deltanet_mix_states (#26, batched decode): n sessions, one token each, in
+ * four dispatches instead of four per session. Row b of qkv/z/beta/alpha is
+ * session b's token; conv_states[b] / delta_states[b] are its own states,
+ * bound one per slot (dn_conv_b, dn_scan_b). The q/k l2norm and the gated
+ * RMSNorm are per row already, so deltanet_norm_f32 takes all n rows. Per
+ * session the arithmetic and its order are vk_deltanet_mix's scan path at
+ * seq = 1, so the outputs and states are bit-identical to one call per
+ * session. UNSUPPORTED (nothing dispatched) where that path or the 14-binding
+ * pipelines are missing, or the states do not share one offset. */
+[[nodiscard]] static enum geist_status
+vk_deltanet_mix_states(struct geist_backend                 *be,
+                       size_t                                n,
+                       const struct geist_deltanet_mix_args *a,
+                       struct geist_tensor *const            conv_states[static n],
+                       struct geist_tensor *const            delta_states[static n]) {
+    enum { MAXS = VK_DN_MAX_STATES };
+    if (a == nullptr || a->qkv == nullptr || a->z == nullptr || a->beta == nullptr ||
+        a->alpha == nullptr || a->conv_w == nullptr || a->ssm_a == nullptr ||
+        a->dt_bias == nullptr || a->norm_w == nullptr || n < 1 || n > MAXS || a->seq != n) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const struct vk_state *vs   = be->state;
+    const size_t           n_kh = a->n_k_heads, n_vh = a->n_v_heads;
+    const size_t           dk = a->head_k, dv = a->head_v, K = a->conv_kernel;
+    if (vs->pipes[VK_PIPE_DN_CONV_B] == VK_NULL_HANDLE ||
+        vs->pipes[VK_PIPE_DN_SCAN_B] == VK_NULL_HANDLE ||
+        !vk_deltanet_geometry_ok(n, n_kh, n_vh, dk, dv, K) ||
+        dk > VK_DN_SCAN_LANES * VK_DN_SCAN_ROWS || dk % 4u != 0u) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const size_t keyd  = n_kh * dk;
+    const size_t vald  = n_vh * dv;
+    const size_t convd = 2 * keyd + vald;
+    if (convd % 4u != 0u || vk_t_n(a->qkv) != n * convd || vk_t_n(a->z) < n * vald ||
+        vk_t_n(a->beta) < n * n_vh || vk_t_n(a->alpha) < n * n_vh ||
+        vk_t_n(a->conv_w) != convd * K || vk_t_n(a->ssm_a) != n_vh || vk_t_n(a->dt_bias) != n_vh ||
+        vk_t_n(a->norm_w) != dv) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    VkDescriptorBufferInfo bqkv, bz, bb, ba, bw, bA, bdt, bnw, bcs[MAXS], bs[MAXS];
+    uint32_t               oqkv, oz, ob, oa, ow, oA, odt, onw, ocs = 0, os = 0;
+    if (!vk_tensor_gpu(a->qkv, &bqkv, &oqkv) || !vk_tensor_gpu(a->z, &bz, &oz) ||
+        !vk_tensor_gpu(a->beta, &bb, &ob) || !vk_tensor_gpu(a->alpha, &ba, &oa) ||
+        !vk_tensor_gpu(a->conv_w, &bw, &ow) || !vk_tensor_gpu(a->ssm_a, &bA, &oA) ||
+        !vk_tensor_gpu(a->dt_bias, &bdt, &odt) || !vk_tensor_gpu(a->norm_w, &bnw, &onw) ||
+        oqkv % 4u != 0u) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    for (size_t b = 0; b < n; b++) {
+        uint32_t oc = 0, o = 0;
+        if (conv_states[b] == nullptr || delta_states[b] == nullptr ||
+            vk_t_n(conv_states[b]) != (K - 1) * convd ||
+            vk_t_n(delta_states[b]) != n_vh * dk * dv ||
+            !vk_tensor_gpu(conv_states[b], &bcs[b], &oc) ||
+            !vk_tensor_gpu(delta_states[b], &bs[b], &o) || (b > 0 && (oc != ocs || o != os))) {
+            return GEIST_E_UNSUPPORTED;
+        }
+        ocs = oc, os = o;
+    }
+    /* slots past n repeat the last session's states; gy / gz never reach them */
+    for (size_t b = n; b < MAXS; b++) {
+        bcs[b] = bcs[n - 1], bs[b] = bs[n - 1];
+    }
+    uint32_t n32, n_kh32, n_vh32, dk32, dv32, keyd32, convd32, K32;
+    if (vk_ckd_u32(n, &n32) || vk_ckd_u32(n_kh, &n_kh32) || vk_ckd_u32(n_vh, &n_vh32) ||
+        vk_ckd_u32(dk, &dk32) || vk_ckd_u32(dv, &dv32) || vk_ckd_u32(keyd, &keyd32) ||
+        vk_ckd_u32(convd, &convd32) || vk_ckd_u32(K, &K32)) {
+        return vk_too_wide(be, "deltanet_mix_states");
+    }
+    {
+        VkDescriptorBufferInfo bi[2 + MAXS]  = {bqkv, bw};
+        struct vk_access       acc[2 + MAXS] = {vk_acc_tensor(a->qkv, true),
+                                                vk_acc_tensor(a->conv_w, false)};
+        for (size_t b = 0; b < MAXS; b++) {
+            bi[2 + b]  = bcs[b];
+            acc[2 + b] = vk_acc_tensor(conv_states[b < n ? b : n - 1], true);
+        }
+        const uint32_t          push[5] = {convd32, K32, oqkv, ow, ocs};
+        const enum geist_status s       = vk_seq_dispatch_acc(
+                be,
+                VK_PIPE_DN_CONV_B,
+                bi,
+                acc,
+                push,
+                sizeof(push),
+                convd32 / VK_DN_CONV_WG + (convd32 % VK_DN_CONV_WG != 0u ? 1u : 0u),
+                n32,
+                1);
+        if (s != GEIST_OK) {
+            return s;
+        }
+    }
+    const float                  qsc      = 1.0f / sqrtf((float) dk);
+    struct vk_dn_norm_push       np       = {.mode    = 0,
+                                             .seq     = n32,
+                                             .len     = dk32,
+                                             .n_kh    = n_kh32,
+                                             .n_vh    = n_vh32,
+                                             .keyd    = keyd32,
+                                             .convd   = convd32,
+                                             .qkv_off = oqkv,
+                                             .z_off   = oz,
+                                             .nw_off  = onw,
+                                             .eps     = a->eps,
+                                             .qscale  = qsc};
+    const VkDescriptorBufferInfo nbi[3]   = {bqkv, bz, bnw};
+    const struct vk_access       nacc0[3] = {vk_acc_tensor(a->qkv, true),
+                                             vk_acc_tensor(a->z, false),
+                                             vk_acc_tensor(a->norm_w, false)};
+    enum geist_status            s        = vk_seq_dispatch_acc(
+            be, VK_PIPE_DN_NORM, nbi, nacc0, &np, sizeof(np), 2u * n_kh32, n32, 1);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    {
+        const struct {
+            uint32_t n_kh, n_vh, dk, dv, keyd, convd;
+            uint32_t qkv_off, beta_off, alpha_off, a_off, dtb_off, s_off;
+        } sp = {n_kh32, n_vh32, dk32, dv32, keyd32, convd32, oqkv, ob, oa, oA, odt, os};
+        VkDescriptorBufferInfo sbi[6 + MAXS]  = {bqkv, bb, ba, bA, bdt, bqkv};
+        struct vk_access       sacc[6 + MAXS] = {vk_acc_tensor(a->qkv, false),
+                                                 vk_acc_tensor(a->beta, false),
+                                                 vk_acc_tensor(a->alpha, false),
+                                                 vk_acc_tensor(a->ssm_a, false),
+                                                 vk_acc_tensor(a->dt_bias, false),
+                                                 vk_acc_tensor(a->qkv, true)};
+        for (size_t b = 0; b < MAXS; b++) {
+            sbi[6 + b]  = bs[b];
+            sacc[6 + b] = vk_acc_tensor(delta_states[b < n ? b : n - 1], true);
+        }
+        const uint32_t cols = VK_DN_SCAN_WG / VK_DN_SCAN_LANES;
+        s                   = vk_seq_dispatch_acc(be,
+                                                  VK_PIPE_DN_SCAN_B,
+                                                  sbi,
+                                                  sacc,
+                                                  &sp,
+                                                  sizeof(sp),
+                                                  n_vh32,
+                                                  dv32 / cols + (dv32 % cols != 0u ? 1u : 0u),
+                                                  n32);
+        if (s != GEIST_OK) {
+            return s;
+        }
+    }
+    np.mode                         = 1;
+    np.len                          = dv32;
+    const struct vk_access nacc1[3] = {vk_acc_tensor(a->qkv, false),
+                                       vk_acc_tensor(a->z, true),
+                                       vk_acc_tensor(a->norm_w, false)};
+    return vk_seq_dispatch_acc(be, VK_PIPE_DN_NORM, nbi, nacc1, &np, sizeof(np), n_vh32, n32, 1);
+}
+
 /* ====================================================================== */
 /* Descriptor                                                              */
 /* ====================================================================== */
@@ -3315,6 +3467,7 @@ static const struct geist_backend_fused vk_fused = {
         .attn_qkv_prep           = vk_attn_qkv_prep,
         .kv_append_f16           = vk_fb_kv_append_f16,
         .deltanet_mix            = vk_deltanet_mix,
+        .deltanet_mix_states     = vk_deltanet_mix_states,
         .attn_qgate_split        = vk_fb_attn_qgate_split,
         .sigmoid_mul             = vk_sigmoid_mul,
         .silu_mul                = vk_silu_mul,

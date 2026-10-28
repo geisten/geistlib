@@ -89,5 +89,8 @@
 #define VK_DN_SCAN_LANES 8u
 #define VK_DN_SCAN_ROWS 16u
 #define VK_DN_NORM_WG 128u
+/* deltanet_conv_b_f32 / deltanet_scan_b_f32 (#26, batch 3): sessions per
+ * batched decode call, one state binding each. */
+#define VK_DN_MAX_STATES 8u
 
 #endif /* GEIST_VK_LIMITS_H */
