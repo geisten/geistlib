@@ -144,9 +144,14 @@ void layernorm_fp32_ws(
 }
 
 void silu_fp32(size_t n, float x[static n]) {
+    /* exp(-v) overflows below -88.72283: the exact result there is -0 (v
+     * over +inf), but gcc's -ffast-math (finite-math) vectorizes expf into
+     * libmvec, which NaNs past that range; the LConv's SiLU reaches it on
+     * real audio. Below the overflow point the -0 is spelled out, so every
+     * finite exp keeps its bits. */
     for (size_t i = 0; i < n; i++) {
-        float v = x[i];
-        x[i]    = v / (1.0f + expf(-v));
+        const float v = x[i];
+        x[i]          = v < -88.72283172607421875f ? -0.0f : v / (1.0f + expf(-v));
     }
 }
 
