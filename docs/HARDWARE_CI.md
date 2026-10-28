@@ -128,17 +128,37 @@ lock-held A/B). Each has its own `cache.dir` and
 race on one action checkout. Both run with `capacity: 1` and
 `fetch_timeout: 30s`.
 
+### Mac mini M6 (host mode, since 2026-10-28)
+
+A Mac mini M6 (Mac18,5; 12 cores: 2 super, 4 performance, 6 efficiency;
+32 GB; Metal 4; macOS 27) in the home LAN serves the same CI labels as the
+MacBook, so a `macos-15` or `macos-15-heavy` job runs on whichever Mac is
+free:
+
+| name | labels | lock | install |
+| :-- | :-- | :-- | :-- |
+| `macmini-m6` | `macos-15:host`, `macos-15-heavy:host`, `macmini-m6:host` | its own lease broker (`~/bin/with-macmini-lock`, `/tmp/macmini-heavy.lock`, `127.0.0.1:7384`); the hooks hold a `ci` lease for every job, the health check takes no job while someone else holds it | `~/gitea-runner-macmini`, LaunchAgents `net.geisten.gitea-runner-macmini` and `net.geisten.hostlease`; capacity 1 |
+
+It is reached only through Gitea (no SSH, no tunnel): geisten-infra
+`roles/host_lease/files/macmini/install.sh` set it up from a one-off job and
+updates it the same way. Benchmark columns never take the shared labels: the
+M1 Max columns ask for `apple-m1max`, a Mac mini column would ask for
+`macmini-m6`. The CI perf floors are absolute tok/s minimums, which the M6
+meets as well as the M1 Max.
+
 Which label a job takes:
 
 - `macos-15-heavy` — the job loads a real model or its result is a timing:
   CI's post-merge `models, Metal, ASan + perf (macOS arm64)` leg (Metal
   parity, qwen3.5 integration, perf gate; `scripts/gitea-ci.py` sets it,
   GitHub's copy keeps `macos-15`) and the Mac columns of `bench-matrix`
-  (`benchmark/bench_matrix.json`).
+  (`benchmark/bench_matrix.json`, now on the machine label `apple-m1max`).
+  Runs on `mac-m1max` or `macmini-m6`.
 - `macos-15` — build and model-free tests: CI's required `build + unit
   tests (macOS arm64)` leg, the post-merge `macOS arm64 GCD (no OpenMP)` leg
-  and the release build (`release.yml` `macos-arm64`). These may run while
-  an agent measures; nice 10 keeps them behind it, not out.
+  and the release build (`release.yml` `macos-arm64`). On `mac-light` these
+  may run while an agent measures; nice 10 keeps them behind it, not out. On
+  `macmini-m6` they hold that Mac's lock like every job there.
 
 A step that must not overlap a measurement on a `macos-15` job wraps itself
 in `~/bin/with-mac-lock`; better, it moves to `macos-15-heavy`.
