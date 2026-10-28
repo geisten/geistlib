@@ -1832,6 +1832,16 @@ int main(void) {
     run_q4k_half_case(mt, 512, 1030);
 #endif
 
+    /* #271: decode below 32 lanes of head_dim (the Qwen3.5 fixtures' 16).
+     * The per-key decode kernel's first lane chunk read Q from unwritten
+     * threadgroup memory and K/V of the next head (past the cache at its
+     * last row) and wrote its partial into the next simdgroup's slots.
+     * Last, so the shared random stream of the cases above stays as it
+     * was. */
+    run_flash_ref_case(mt, ref, 1, 47, 4, 2, 16, 0);
+    run_flash_ref_case(mt, ref, 1, 40, 4, 1, 16, 0);
+    run_flash_ref_case(mt, ref, 1, 99, 8, 2, 8, 0);
+
     geist_backend_destroy(mt);
     geist_backend_destroy(ref);
     if (g_fail == 0) {
