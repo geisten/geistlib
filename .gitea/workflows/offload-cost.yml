@@ -81,14 +81,7 @@ jobs:
         if: inputs.e2e
         run: |
           set -eo pipefail
-          CACHE=${GEIST_MODEL_CACHE:-$HOME/geist-models}
-          mkdir -p "$CACHE"
-          F="$CACHE/$(basename "$MODEL_URL")"
-          if [ ! -f "$F" ]; then
-            curl -fL --retry 5 -C - -o "$F.part" "$MODEL_URL"
-            echo "$MODEL_SHA  $F.part" | sha256sum -c -
-            mv "$F.part" "$F"
-          fi
+          F=$(python3 tools/fetch_bench_model.py --url "$MODEL_URL" --sha256 "$MODEL_SHA")
           echo "MODEL=$F" >> "$GITHUB_ENV"
       - name: End to end, every layer on Vulkan, by prefill chunk
         if: inputs.e2e

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Host plumbing shared by the benchmark runners (bench_cross_engine.py,
 bench_mac_ab.py, bench_revision_ab.py, bench_quality_perf.py): provenance
-hashes, the quiet-host gate, run schedules and the dispersion statistic."""
+hashes, the quiet-host gate, run schedules and the dispersion statistic.
+Stdlib only: the fetch and convert tools import sha256_file from here too."""
 from __future__ import annotations
 
 import hashlib
@@ -260,3 +261,57 @@ def build_schedule_rotating(variants: list[dict], cycles: int) -> list[tuple[int
         order = variants[offset:] + variants[:offset]
         schedule.extend((cycle, position, variant) for position, variant in enumerate(order))
     return schedule
+
+
+def perf_sweep_command(binary, gguf, seq_lens, decode_n: int, warmup: int, repeats: int,
+                       threads: int | str | None = None) -> list[str]:
+    """argv for one bench_perf_sweep run emitting JSONL; seq_lens is a
+    comma-separated string or a sequence of ints."""
+    if not isinstance(seq_lens, str):
+        seq_lens = ",".join(map(str, seq_lens))
+    command = [str(binary), "--gguf", str(gguf), "--seq-lens", seq_lens,
+               "--decode-n", str(decode_n), "--warmup", str(warmup), "--repeats", str(repeats)]
+    if threads is not None:
+        command += ["--threads", str(threads)]
+    return command + ["--emit-jsonl"]
+
+
+def run_jsonl(command: list[str], env: dict[str, str] | None = None, label: str = "command",
+              cwd: Path | None = None) -> tuple[list[dict], list[str], float]:
+    """Run command; return (its stdout JSON rows, stderr lines, wall seconds).
+    A nonzero exit raises RuntimeError naming label and the last diagnostic line."""
+    started = time.monotonic()
+    proc = subprocess.run(command, capture_output=True, text=True, env=env, cwd=cwd)
+    elapsed = time.monotonic() - started
+    if proc.returncode != 0:
+        diagnostic = (proc.stderr.splitlines() or proc.stdout.splitlines() or ["no diagnostics"])[-1]
+        raise RuntimeError(f"{label} exited {proc.returncode}: {diagnostic}")
+    rows = [json.loads(line) for line in proc.stdout.splitlines() if line.startswith("{")]
+    return rows, proc.stderr.splitlines(), elapsed
+
+
+def load_partial(path: Path) -> tuple[dict, list[dict]]:
+    """The metadata and run records of an unfinished JSONL artifact, for --resume."""
+    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    if not records or records[0].get("kind") != "metadata":
+        raise ValueError("resume artifact does not start with metadata")
+    if any(record.get("kind") == "summary" for record in records):
+        raise ValueError("resume artifact already contains a completed summary")
+    unexpected = [record.get("kind") for record in records[1:]
+                  if record.get("kind") not in {"run", "resume"}]
+    if unexpected:
+        raise ValueError(f"resume artifact contains unexpected records: {unexpected}")
+    metadata = {key: value for key, value in records[0].items() if key != "kind"}
+    return metadata, [record for record in records[1:] if record.get("kind") == "run"]
+
+
+def check_schedule_prefix(runs: list[dict], schedule: list[tuple[int, int, dict]],
+                          key: str) -> None:
+    """Saved runs must be the first len(runs) slots of schedule; run[key]
+    names the slot's entry by its label."""
+    if len(runs) > len(schedule):
+        raise ValueError("resume artifact contains too many runs")
+    for run, (cycle, position, entry) in zip(runs, schedule):
+        if (run.get("cycle"), run.get("position"), run.get(key)) != (
+                cycle, position, entry["label"]):
+            raise ValueError("resume runs are not an exact schedule prefix")

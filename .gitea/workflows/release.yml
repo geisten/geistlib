@@ -101,10 +101,27 @@ jobs:
           [ "$DRY_RUN" = true ] || exit 1
           echo "::warning::release gate fails; a release needs the release PR first (rehearsal continues)"
 
-  linux-arm64:
-    name: linux-arm64 (musl-static, dependency-free)
+  linux:
+    name: ${{ matrix.name }}
     needs: version-guard
-    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            name: linux-arm64 (musl-static, dependency-free)
+            runner: ubuntu-24.04-arm
+            make_args: ""
+          # The native AVX-512/VNNI backend over an x86-64-v3 baseline: the
+          # AVX-512 kernels are compiled per-TU and runtime-dispatched via
+          # hw_probe, so the one binary runs on any x86-64-v3 CPU (no SIGILL).
+          - arch: x86_64
+            name: linux-x86_64 (musl-static, AVX-512, dependency-free)
+            runner: ubuntu-24.04
+            make_args: BACKENDS="cpu_x86 cpu_scalar"
+    runs-on: ${{ matrix.runner }}
+    env:
+      ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -113,86 +130,41 @@ jobs:
       # no libc dependency, is more portable than a glibc -static binary (no NSS /
       # glibc-version quirks), and is much smaller. Alpine 3.21 ships gcc 14
       # (needed for -std=c23) and a musl-built libgomp for OpenMP. The host job
-      # stays on ubuntu-arm so checkout / upload-artifact (Node actions) work;
+      # stays on ubuntu so checkout / upload-artifact (Node actions) work;
       # only the compile runs in the container, writing into the mounted volume.
-      # GEMM_PROVIDER=native -> native NEON fp32 + vendored FFT (no OpenBLAS/FFTW),
+      # GEMM_PROVIDER=native -> native SIMD fp32 + vendored FFT (no OpenBLAS/FFTW),
       # so the archive carries no BLAS dependency into a consumer's link. The
       # artifact is libgeist.a plus headers: link flags like -static belong to
       # whoever links it, not to building an archive, so this job passes none.
       - name: Build + smoke + package libgeist SDK
         run: |
-          docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
+          docker run --rm -e ARCH -v "$PWD:/src" -w /src alpine:3.21 sh -c '
             set -e
             apk add --no-cache build-base linux-headers
-            make TARGET=linux CC=gcc GEMM_PROVIDER=native lib
-            sh scripts/package-sdk.sh libgeist-linux-arm64 lib/linux/release -fopenmp -lm
-            d=dist/libgeist-linux-arm64
+            make TARGET=linux CC=gcc ${{ matrix.make_args }} GEMM_PROVIDER=native lib
+            sh scripts/package-sdk.sh libgeist-linux-$ARCH lib/linux/release -fopenmp -lm
+            d=dist/libgeist-linux-$ARCH
 
-            # ---- CLI binaries ------------------------------------------------
-            # geist-linux-arm64: the slim bring-your-own-GGUF CLI (<1 MB).
-            # Fully static (musl + libgomp.a): runs on any 64-bit Pi OS with
-            # no toolchain, no Python, no shared libs.
+            # ---- CLI binary ---------------------------------------------------
+            # geist-linux-$ARCH: the slim bring-your-own-GGUF CLI (<1 MB).
+            # Fully static (musl + libgomp.a): runs with no toolchain, no
+            # Python, no shared libs.
             cc -std=c23 -static -I "$d/include" examples/simple_generate.c \
-              "$d/libgeist.a" -fopenmp -lm -o dist/geist-linux-arm64
+              "$d/libgeist.a" -fopenmp -lm -o dist/geist-linux-$ARCH
             # No model in this smoke: exit 2 + usage is the contract.
-            ./dist/geist-linux-arm64 2>/dev/null || [ $? -eq 2 ]
+            ./dist/geist-linux-$ARCH 2>/dev/null || [ $? -eq 2 ]
           '
-          tar -C dist -czf libgeist-linux-arm64.tar.gz libgeist-linux-arm64
+          tar -C dist -czf "libgeist-linux-$ARCH.tar.gz" "libgeist-linux-$ARCH"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           retention-days: 14
-          name: libgeist-linux-arm64
-          path: libgeist-linux-arm64.tar.gz
+          name: libgeist-linux-${{ matrix.arch }}
+          path: libgeist-linux-${{ matrix.arch }}.tar.gz
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           retention-days: 14
-          name: geist-cli-linux-arm64
-          path: dist/geist-linux-arm64
-          compression-level: 0
-
-  linux-x86_64:
-    name: linux-x86_64 (musl-static, AVX-512, dependency-free)
-    needs: version-guard
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.version-guard.outputs.sha }}
-      # Same musl-static recipe as arm64, on x86_64, with the native
-      # AVX-512/VNNI backend (BACKENDS="cpu_x86 cpu_scalar"). Baseline is
-      # x86-64-v3 with the AVX-512 kernels compiled per-TU and runtime-dispatched
-      # via hw_probe, so the one binary runs on any x86-64-v3 CPU (no SIGILL).
-      # GEMM_PROVIDER=native -> BLAS-free (portable scalar fp32 for the
-      # vision/audio dense path; the quantized text kernels never touch BLAS).
-      - name: Build + smoke + package libgeist SDK
-        run: |
-          docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
-            set -e
-            apk add --no-cache build-base linux-headers
-            make TARGET=linux CC=gcc BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native lib
-            sh scripts/package-sdk.sh libgeist-linux-x86_64 lib/linux/release -fopenmp -lm
-            d=dist/libgeist-linux-x86_64
-
-            # ---- CLI binaries — mirror of the arm64 job (geistlib#217) ------
-            # geist-linux-x86_64: the slim bring-your-own-GGUF CLI. Fully
-            # static (musl + libgomp.a); x86-64-v3 baseline with AVX-512
-            # runtime-dispatched, so it runs on any Haswell/Zen+ machine.
-            cc -std=c23 -static -I "$d/include" examples/simple_generate.c \
-              "$d/libgeist.a" -fopenmp -lm -o dist/geist-linux-x86_64
-            # No model in this smoke: exit 2 + usage is the contract.
-            ./dist/geist-linux-x86_64 2>/dev/null || [ $? -eq 2 ]
-          '
-          tar -C dist -czf libgeist-linux-x86_64.tar.gz libgeist-linux-x86_64
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 14
-          name: libgeist-linux-x86_64
-          path: libgeist-linux-x86_64.tar.gz
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 14
-          name: geist-cli-linux-x86_64
-          path: dist/geist-linux-x86_64
+          name: geist-cli-linux-${{ matrix.arch }}
+          path: dist/geist-linux-${{ matrix.arch }}
           compression-level: 0
 
   macos-arm64:
@@ -232,7 +204,7 @@ jobs:
           path: libgeist-macos-arm64.tar.gz
   release:
     name: verify, upload to geisten.net and publish
-    needs: [version-guard, linux-arm64, linux-x86_64, macos-arm64]
+    needs: [version-guard, linux, macos-arm64]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

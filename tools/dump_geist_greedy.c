@@ -11,13 +11,9 @@
  * GEIST_DUMP_LAST_LOGITS=<path> also writes the logits of the last step
  * (float32), for tools/compare_logits.py.
  */
-#include <geist.h>
-#include <geist_backend.h>
-#include <geist_util.h>
+#include "tool_common.h"
 
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
 
 int main(int argc, char **argv) {
     if (argc != 4) {
@@ -37,24 +33,21 @@ int main(int argc, char **argv) {
     const size_t         n_ids = fread(ids, sizeof ids[0], MAX_PROMPT_TOKENS, f);
     fclose(f);
 
-    struct geist_backend *backend = nullptr;
-    struct geist_model   *model   = nullptr;
-    struct geist_session *session = nullptr;
-    int                   rc      = 1;
-    const char           *bn      = getenv("GEIST_DUMP_BACKEND");
+    struct tool_engine e  = {0};
+    int                rc = 1;
+    const char        *bn = getenv("GEIST_DUMP_BACKEND");
     if (bn == nullptr || bn[0] == '\0')
         bn = "auto";
-    if (n_ids == 0 || geist_backend_create(bn, nullptr, nullptr, &backend) != GEIST_OK ||
-        geist_model_load(argv[1], backend, &model) != GEIST_OK) {
-        fprintf(stderr, "load failed: %s\n", geist_last_create_error());
+    struct geist_session_opts opts = {.temperature = 0.0f};
+    if (n_ids == 0) {
+        fprintf(stderr, "no prompt ids in %s\n", argv[2]);
         goto out;
     }
-    struct geist_session_opts opts = {.temperature = 0.0f};
-    if (geist_session_create(model, backend, &opts, &session) != GEIST_OK ||
-        geist_session_prefill_tokens(session, n_ids, ids) != GEIST_OK) {
-        fprintf(stderr,
-                "prefill failed: %s\n",
-                session != nullptr ? geist_session_errmsg(session) : "no session");
+    if (!tool_open(bn, nullptr, argv[1], nullptr, &opts, &e))
+        goto out;
+    struct geist_session *session = e.sess;
+    if (geist_session_prefill_tokens(session, n_ids, ids) != GEIST_OK) {
+        fprintf(stderr, "prefill failed: %s\n", geist_session_errmsg(session));
         goto out;
     }
     for (long step = 0; step < n_steps; step++) {
@@ -92,15 +85,9 @@ int main(int argc, char **argv) {
         }
         printf("%ld %d %zu %.6f %.6f\n", step, (int) t, b, (double) la, (double) lb);
     }
-    fprintf(stderr,
-            "backend=%s prompt=%zu steps=%ld\n",
-            geist_backend_name(backend),
-            n_ids,
-            n_steps);
+    fprintf(stderr, "backend=%s prompt=%zu steps=%ld\n", geist_backend_name(e.be), n_ids, n_steps);
     rc = 0;
 out:
-    geist_session_destroy(session);
-    geist_model_destroy(model);
-    geist_backend_destroy(backend);
+    tool_close(&e);
     return rc;
 }

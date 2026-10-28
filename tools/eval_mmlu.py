@@ -38,10 +38,12 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from eval_repl import EvalRepl  # noqa: E402
 
 LETTERS = ["A", "B", "C", "D"]
 
@@ -71,60 +73,6 @@ EMBEDDED_SHOTS = [
      ["Abraham Lincoln", "Thomas Jefferson", "George Washington", "John Adams"], 2),
     ("biology", "How many legs does a spider have?", ["6", "8", "10", "4"], 1),
 ]
-
-
-class Repl:
-    """Persistent eval_geist process speaking the TOK / SCOREALT protocol."""
-
-    def __init__(self, binary: str, gguf: str):
-        self.proc = subprocess.Popen(
-            [binary, gguf], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, bufsize=1)
-        assert self.proc.stdout
-        while True:
-            line = self.proc.stdout.readline()
-            if not line:
-                err = self.proc.stderr.read() if self.proc.stderr else ""
-                sys.exit(f"eval_geist exited before READY.\n{err}")
-            if line.strip() == "READY":
-                break
-
-    def _cmd(self, line: str) -> list[str]:
-        assert self.proc.stdin and self.proc.stdout
-        self.proc.stdin.write(line + "\n")
-        self.proc.stdin.flush()
-        resp = self.proc.stdout.readline().strip()
-        parts = resp.split()
-        if not parts or parts[0] != "OK":
-            sys.exit(f"eval_geist error for {line[:40]!r}: {resp}")
-        return parts[1:]
-
-    def tok(self, text: str) -> list[int]:
-        # "TOK <text>" -> "OK <n> <id..>". The REPL is line-oriented, so escape
-        # newlines/tabs; eval_geist's TOK unescapes them before tokenizing.
-        esc = text.replace("\\", "\\\\").replace("\n", "\\n").replace("\t", "\\t")
-        parts = self._cmd("TOK " + esc)
-        return [int(x) for x in parts[1:]]
-
-    def bos(self) -> int:
-        """The model's own BOS id, or -1 when its metadata says not to add one.
-        TOK does not prepend it, so the caller decides."""
-        add, bos_id = self._cmd("BOS")
-        return int(bos_id) if int(add) and int(bos_id) >= 0 else -1
-
-    def scorealt(self, prompt_ids: list[int], alt_ids: list[int]) -> list[float]:
-        cmd = (f"SCOREALT {len(prompt_ids)} {' '.join(map(str, prompt_ids))} "
-               f"{len(alt_ids)} {' '.join(map(str, alt_ids))}")
-        return [float(x) for x in self._cmd(cmd)]
-
-    def close(self):
-        try:
-            if self.proc.poll() is None:
-                self.proc.stdin.write("QUIT\n")
-                self.proc.stdin.flush()
-        except (BrokenPipeError, ValueError):
-            pass
-        self.proc.terminate()
 
 
 def _format_q(question: str, choices: list[str]) -> str:
@@ -215,18 +163,18 @@ def main() -> None:
     if not rows:
         sys.exit("eval_mmlu: no questions loaded")
 
-    repl = Repl(args.bin, args.gguf)
+    repl = EvalRepl(args.bin, args.gguf)
     try:
         # The four answer-letter tokens (one token each for the Gemma vocab).
         letter_ids = []
         for letter in LETTERS:
-            ids = repl.tok(" " + letter)
+            ids = repl.encode(" " + letter)
             if len(ids) != 1:
                 sys.exit(f"eval_mmlu: ' {letter}' is not a single token ({ids}); "
                          "this scorer assumes single-token answer letters.")
             letter_ids.append(ids[0])
 
-        bos_id = repl.bos() if args.bos == -2 else args.bos
+        bos_id = (-1 if repl.bos is None else repl.bos) if args.bos == -2 else args.bos
         if args.verbose:
             print(f"BOS: {'none' if bos_id < 0 else bos_id}"
                   f"{' (from the model)' if args.bos == -2 else ' (forced)'}")
@@ -235,10 +183,12 @@ def main() -> None:
         per_subj = defaultdict(lambda: [0, 0])  # subject -> [correct, total]
         for i, (subject, question, choices, gold) in enumerate(rows):
             shots = pick_shots(shots_by_subject, subject, args.shots)
-            prompt_ids = repl.tok(build_prompt(subject, question, choices, shots))
+            prompt_ids = repl.encode(build_prompt(subject, question, choices, shots))
             if bos_id >= 0:
                 prompt_ids = [bos_id] + prompt_ids
-            lps = repl.scorealt(prompt_ids, letter_ids)
+            lps = [float(x) for x in repl.command(
+                f"SCOREALT {len(prompt_ids)} {' '.join(map(str, prompt_ids))} "
+                f"{len(letter_ids)} {' '.join(map(str, letter_ids))}")]
             pred = max(range(4), key=lambda k: lps[k])
             ok = (pred == gold)
             n_correct += ok

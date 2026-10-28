@@ -13,9 +13,7 @@ import json
 import os
 import platform
 import statistics
-import subprocess
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,9 +24,13 @@ ERROR = 99
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bench_host import (  # noqa: E402
     build_schedule_rotating as build_schedule,
+    check_schedule_prefix,
     command_output,
+    load_partial,
     machine_state,
     median_absolute_deviation,
+    perf_sweep_command,
+    run_jsonl,
     sha256_file,
     wait_for_quiet,
 )
@@ -64,36 +66,16 @@ def parse_variants(values: list[str]) -> list[dict]:
 
 
 def run_variant(variant: dict, gguf: Path, protocol: dict, threads: int | None) -> dict:
-    seq_lens = ",".join(str(value) for value in protocol["seq_lens"])
-    command = [
-        variant["binary"],
-        "--gguf", str(gguf),
-        "--seq-lens", seq_lens,
-        "--decode-n", str(protocol["decode_n"]),
-        "--warmup", str(protocol["warmup"]),
-        "--repeats", str(protocol["repeats"]),
-        "--emit-jsonl",
-    ]
+    command = perf_sweep_command(variant["binary"], gguf, protocol["seq_lens"],
+                                 protocol["decode_n"], protocol["warmup"], protocol["repeats"],
+                                 threads)
     env = dict(os.environ)
     # Measurement condition: active wait for every run, also on libgomp, where
     # it is unbounded; harmless here because each run exits when it is done.
     env.setdefault("OMP_WAIT_POLICY", "active")
     if threads is not None:
         env["OMP_NUM_THREADS"] = str(threads)
-        command += ["--threads", str(threads)]
-
-    before = time.monotonic()
-    proc = subprocess.run(command, capture_output=True, text=True, env=env)
-    elapsed = time.monotonic() - before
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"{variant['label']} exited {proc.returncode}: "
-            f"{(proc.stderr.splitlines() or ['no diagnostics'])[-1]}"
-        )
-    rows = []
-    for line in proc.stdout.splitlines():
-        if line.startswith("{"):
-            rows.append(json.loads(line))
+    rows, stderr, elapsed = run_jsonl(command, env, variant["label"])
     expected = protocol["seq_lens"]
     if [row.get("seq_len") for row in rows] != expected:
         raise RuntimeError(f"{variant['label']} emitted unexpected sequence rows")
@@ -108,7 +90,7 @@ def run_variant(variant: dict, gguf: Path, protocol: dict, threads: int | None) 
         "variant": variant["label"],
         "elapsed_seconds": elapsed,
         "rows": rows,
-        "stderr": proc.stderr.splitlines(),
+        "stderr": stderr,
         "machine_after": machine_state(),
     }
 
@@ -178,21 +160,6 @@ def render_report(metadata: dict, summary: dict, baseline: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def load_partial(path: Path) -> tuple[dict, list[dict]]:
-    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    if not records or records[0].get("kind") != "metadata":
-        raise ValueError("resume artifact does not start with metadata")
-    if any(record.get("kind") == "summary" for record in records):
-        raise ValueError("resume artifact already contains a completed summary")
-    unexpected = [record.get("kind") for record in records[1:]
-                  if record.get("kind") not in {"run", "resume"}]
-    if unexpected:
-        raise ValueError(f"resume artifact contains unexpected records: {unexpected}")
-    metadata = {key: value for key, value in records[0].items() if key != "kind"}
-    runs = [record for record in records[1:] if record.get("kind") == "run"]
-    return metadata, runs
-
-
 def validate_resume(metadata: dict, runs: list[dict], current: dict,
                     variants: list[dict], baseline: str) -> list[tuple[int, int, dict]]:
     if metadata.get("schema") != "geist.benchmark.apple-ab.v1":
@@ -212,12 +179,7 @@ def validate_resume(metadata: dict, runs: list[dict], current: dict,
             raise ValueError("resume variant binaries do not match this invocation")
 
     schedule = build_schedule(variants, metadata["protocol"]["cycles"])
-    if len(runs) > len(schedule):
-        raise ValueError("resume artifact contains too many runs")
-    for run, (cycle, position, variant) in zip(runs, schedule):
-        if (run.get("cycle"), run.get("position"), run.get("variant")) != (
-                cycle, position, variant["label"]):
-            raise ValueError("resume runs are not an exact schedule prefix")
+    check_schedule_prefix(runs, schedule, "variant")
     return schedule
 
 

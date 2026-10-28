@@ -37,11 +37,11 @@ import argparse
 import random
 import struct
 import sys
+from pathlib import Path
 
-ALIGN = 32  # general.alignment, the GGUF default (src/io/gguf_reader.c)
-
-# GGUF value types (src/io/gguf_reader.h)
-VT_U32, VT_I32, VT_F32, VT_BOOL, VT_STRING, VT_ARRAY = 4, 5, 6, 7, 8, 9
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gguf_write import (ALIGN, aligned, header, kv_bool, kv_f32,  # noqa: E402
+                        kv_i32_array, kv_str, kv_str_array, kv_u32, tensor_info)
 
 # qtype -> (ggml type id, elements per block, bytes per block, byte offsets of
 # the fp16 scales inside a block). Layouts follow src/quant/quant.h.
@@ -80,37 +80,6 @@ PRESETS = {
                               interval=4, wtype="pq2_0", embd_type="pq2_0",
                               ab_type="bf16", hadamard_block=1024),
 }
-
-
-def gstr(s: str) -> bytes:
-    b = s.encode()
-    return struct.pack("<Q", len(b)) + b
-
-
-def kv_u32(k: str, v: int) -> bytes:
-    return gstr(k) + struct.pack("<II", VT_U32, v)
-
-
-def kv_f32(k: str, v: float) -> bytes:
-    return gstr(k) + struct.pack("<If", VT_F32, v)
-
-
-def kv_str(k: str, v: str) -> bytes:
-    return gstr(k) + struct.pack("<I", VT_STRING) + gstr(v)
-
-
-def kv_str_array(k: str, items: list[str]) -> bytes:
-    return (gstr(k) + struct.pack("<IIQ", VT_ARRAY, VT_STRING, len(items))
-            + b"".join(gstr(s) for s in items))
-
-
-def kv_bool(k: str, v: bool) -> bytes:
-    return gstr(k) + struct.pack("<I?", VT_BOOL, v)
-
-
-def kv_i32_array(k: str, items: list[int]) -> bytes:
-    return (gstr(k) + struct.pack("<IIQ", VT_ARRAY, VT_I32, len(items))
-            + struct.pack(f"<{len(items)}i", *items))
 
 
 def spm_tokenizer() -> tuple[list[str], list[str]]:
@@ -308,17 +277,12 @@ def write_gguf(path: str, meta: list[bytes], tensors: list[tuple], seed: int) ->
             n *= x
         type_id, block_elems, block_bytes, _ = QTYPES[qt]
         nbytes = n // block_elems * block_bytes
-        infos.append(gstr(name) + struct.pack("<I", len(dims))
-                     + b"".join(struct.pack("<Q", x) for x in dims)
-                     + struct.pack("<IQ", type_id, offset))
+        infos.append(tensor_info(name, dims, type_id, offset))
         sizes.append((n, nbytes))
-        offset += (nbytes + ALIGN - 1) // ALIGN * ALIGN
-    header = (struct.pack("<IIQQ", 0x46554747, 3, len(tensors), len(meta))
-              + b"".join(meta) + b"".join(infos))
-    header += b"\0" * (-len(header) % ALIGN)
+        offset += aligned(nbytes)
     total = 0
     with open(path, "wb") as f:
-        f.write(header)
+        f.write(header(len(tensors), meta, infos))
         for (name, _, qt, fill), (n, nbytes) in zip(tensors, sizes):
             written = 0
             for chunk in tensor_bytes(rng, qt, n, fill):

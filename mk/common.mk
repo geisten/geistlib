@@ -396,22 +396,29 @@ BIN_TARGETS := $(patsubst %.c,$(BIN_DIR)/%,$(BIN_SOURCES))
 DEPS := $(LIB_OBJS:.o=.d) $(BIN_OBJS:.o=.d)
 
 # ---- Rules ---------------------------------------------------------------
-# FAMILIES / TOWERS: like DECISION, a content stamp rebuilds the two TUs
-# that read the selection (the family registry, the arch registry) and
-# relinks, so switching selections never mixes old objects in.
-SELECT_CONFIG   := $(sort $(FAMILIES)) towers=$(TOWERS)
-SELECT_PREVIOUS := $(shell cat $(BUILD_DIR)/select-config 2>/dev/null)
-ifneq ($(SELECT_CONFIG),$(SELECT_PREVIOUS))
-.PHONY: force-select-transition
-$(BUILD_DIR)/src/archs/transformer/arch_family.o $(BUILD_DIR)/src/engine/arch_registry.o $(LIB_FILE) $(BIN_TARGETS): force-select-transition
+# $(call config_stamp,<name>,<value>,<objects>): a content stamp
+# $(BUILD_DIR)/<name> holding <value>, so a build-time selection switched
+# 0 -> 1 -> 0 never mixes old objects in and needs no make clean. When
+# <value> differs from the stamp, <objects>, the archive and the binaries are
+# forced to rebuild: Darwin make/archive timestamps can have one-second
+# resolution, so mtimes alone would miss a quick transition. No extra work
+# for an unchanged value.
+define config_stamp
+ifneq ($(2),$$(shell cat $$(BUILD_DIR)/$(1) 2>/dev/null))
+.PHONY: force-$(1)-transition
+$(3) $$(LIB_FILE) $$(BIN_TARGETS): force-$(1)-transition
 endif
-.PHONY: force-select-config
-$(BUILD_DIR)/select-config: force-select-config
-	@mkdir -p $(@D)
-	@if [ "$(SELECT_CONFIG)" != "$$(cat $@ 2>/dev/null)" ]; then \
-	    printf '%s\n' '$(SELECT_CONFIG)' > $@; \
-	fi
-$(BUILD_DIR)/src/archs/transformer/arch_family.o $(BUILD_DIR)/src/engine/arch_registry.o: $(BUILD_DIR)/select-config
+.PHONY: force-$(1)
+$$(BUILD_DIR)/$(1): force-$(1)
+	@mkdir -p $$(@D)
+	@if [ "$(2)" != "$$$$(cat $$@ 2>/dev/null)" ]; then printf '%s\n' '$(2)' > $$@; fi
+$(3): $$(BUILD_DIR)/$(1)
+endef
+
+# FAMILIES / TOWERS: the two TUs that read the selection (the family
+# registry, the arch registry).
+SELECT_CONFIG := $(sort $(FAMILIES)) towers=$(TOWERS)
+$(eval $(call config_stamp,select-config,$(SELECT_CONFIG),$(BUILD_DIR)/src/archs/transformer/arch_family.o $(BUILD_DIR)/src/engine/arch_registry.o))
 $(BUILD_DIR)/src/archs/transformer/arch_family.o: CFLAGS_STRICT += $(FAMILY_DEFINES)
 $(BUILD_DIR)/src/engine/arch_registry.o: CFLAGS_STRICT += -DGEIST_TOWERS=$(TOWERS)
 
@@ -434,25 +441,9 @@ $(error DECISION_CONTEXT=1 requires DECISION=1)
 endif
 endif
 DECISION_CONFIG := $(DECISION) $(DECISION_CONTEXT)
-
-# Darwin make/archive timestamps can have one-second resolution. A flag
-# transition must force compilation, archiving and linking even when all
-# three outputs share the same timestamp. No extra work for an unchanged flag.
-DECISION_PREVIOUS := $(shell cat $(BUILD_DIR)/decision-config 2>/dev/null)
-ifneq ($(DECISION_CONFIG),$(DECISION_PREVIOUS))
-.PHONY: force-decision-transition
-$(BUILD_DIR)/src/engine/decision.o $(LIB_FILE) $(BIN_TARGETS): force-decision-transition
-endif
-
-# A content stamp makes 0 -> 1 -> 0 reliable without make clean. Only this
-# translation unit depends on the flag; callers query the linked capability.
-.PHONY: force-decision-config
-$(BUILD_DIR)/decision-config: force-decision-config
-	@mkdir -p $(@D)
-	@if [ "$(DECISION_CONFIG)" != "$$(cat $@ 2>/dev/null)" ]; then \
-	    printf '%s\n' '$(DECISION_CONFIG)' > $@; \
-	fi
-$(BUILD_DIR)/src/engine/decision.o: $(BUILD_DIR)/decision-config
+# Only this translation unit depends on the flag; callers query the linked
+# capability.
+$(eval $(call config_stamp,decision-config,$(DECISION_CONFIG),$(BUILD_DIR)/src/engine/decision.o))
 # GCC's target-wide -ffast-math otherwise folds isfinite to true. These
 # numeric API guards must observe NaN/Inf; leave the inference kernels alone.
 $(BUILD_DIR)/src/engine/decision.o: CFLAGS_STRICT += -DGEIST_ENABLE_DECISION=$(DECISION) -DGEIST_ENABLE_DECISION_CONTEXT=$(DECISION_CONTEXT) -fno-finite-math-only
