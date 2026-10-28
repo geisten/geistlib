@@ -8,22 +8,20 @@ See docs/DECISION.md for interpretation and cache/quality limitations.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
 import platform
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bench_host import sha256_file as sha256  # noqa: E402  (also used by decision_encoders)
+
 ROOT = Path(__file__).resolve().parents[1]
 MODES = ("decision_dense", "scorealt_dense", "generate_1", "generate_long")
-
-
-def sha256(path: Path) -> str:
-    with open(path, "rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def cases_from_jsonl(path: Path) -> list[dict]:

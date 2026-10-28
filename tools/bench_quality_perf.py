@@ -48,7 +48,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from bench_host import command_output  # noqa: E402
+from bench_host import command_output, perf_sweep_command  # noqa: E402
 from bench_host import sha256_file as hash_file  # noqa: E402
 APPLE_PROTOCOL_PATH = ROOT / "benchmark" / "apple_cpu_protocol.json"
 
@@ -103,14 +103,8 @@ def run_sweep(bin_dir: Path, gguf: str, threads: str | None,
     if threads:
         env["OMP_NUM_THREADS"] = threads
 
-    cmd = [str(exe), "--gguf", gguf,
-           "--seq-lens", str(workload["seq_len"]),
-           "--decode-n", str(workload["decode_n"]),
-           "--warmup", str(workload["warmup"]),
-           "--repeats", str(workload["repeats"]),
-           "--emit-jsonl"]
-    if threads:
-        cmd += ["--threads", threads]
+    cmd = perf_sweep_command(exe, gguf, str(workload["seq_len"]), workload["decode_n"],
+                             workload["warmup"], workload["repeats"], threads or None)
 
     proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
     out = proc.stdout + proc.stderr

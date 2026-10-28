@@ -71,7 +71,8 @@ COOL_TIMEOUT_SECONDS = 1200
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bench_host import build_schedule_rotating as build_schedule  # noqa: E402
-from bench_host import command_output, sha256_file, wait_for_apple_cool  # noqa: E402
+from bench_host import (command_output, perf_sweep_command, run_jsonl,  # noqa: E402
+                        sha256_file, wait_for_apple_cool)
 
 
 def parse_revs(values: list[str]) -> list[tuple[str, str]]:
@@ -128,14 +129,9 @@ def build(sha: str, work: Path, make_args: list[str], jobs: int) -> Path:
 
 
 def run_variant(binary: Path, args: argparse.Namespace, env: dict[str, str]) -> list[dict]:
-    command = [str(binary), "--gguf", str(args.gguf), "--seq-lens", args.seq_lens,
-               "--decode-n", str(args.decode_n), "--repeats", str(args.repeats),
-               "--warmup", str(args.warmup), "--emit-jsonl"]
-    proc = subprocess.run(command, capture_output=True, text=True, env=env)
-    if proc.returncode != 0:
-        last = (proc.stderr.splitlines() or ["no diagnostics"])[-1]
-        raise RuntimeError(f"{binary.name} exited {proc.returncode}: {last}")
-    rows = [json.loads(line) for line in proc.stdout.splitlines() if line.startswith("{")]
+    command = perf_sweep_command(binary, args.gguf, args.seq_lens, args.decode_n,
+                                 args.warmup, args.repeats)
+    rows, _, _ = run_jsonl(command, env, binary.name)
     if [row.get("seq_len") for row in rows] != [int(s) for s in args.seq_lens.split(",")]:
         raise RuntimeError(f"{binary.name} emitted unexpected sequence rows")
     return rows
