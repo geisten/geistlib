@@ -23,6 +23,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <geist_types.h> /* enum geist_dtype */
+
 typedef enum {
     GGUF_TYPE_F32    = 0,
     GGUF_TYPE_F16    = 1,
@@ -113,6 +115,10 @@ const struct gguf_tensor_t *gguf_tensor_at(const struct gguf_ctx *ctx, size_t id
 const struct gguf_tensor_t *gguf_get_tensor(const struct gguf_ctx *ctx, const char *name);
 
 const char *gguf_dtype_name(gguf_dtype_t dt);
+
+/* The geist dtype a GGUF tensor type loads as, or GEIST_DTYPE_CUSTOM for a
+ * type geist has no kernels for. */
+enum geist_dtype gguf_dtype_geist(gguf_dtype_t dt);
 
 /* Total element count across all dims of a tensor. */
 size_t gguf_tensor_elem_count(const struct gguf_tensor_t *t);
