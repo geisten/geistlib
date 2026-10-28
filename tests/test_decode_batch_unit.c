@@ -342,6 +342,31 @@ int main(void) {
                 geist_session_destroy(b);
             }
             batching += max >= 2;
+            /* Batch 3: one mixer call for all sessions (deltanet_mix_states)
+             * gives what one call per session gives, bit for bit. */
+            if (max >= 2) {
+                setenv("GEIST_DECODE_BATCH_PER_SESSION", "1", 1);
+                struct geist_model *mp = nullptr;
+                const bool          loaded =
+                        geist_model_load_from_memory(hybrid.b, hybrid.n, be, &mp) == GEIST_OK;
+                unsetenv("GEIST_DECODE_BATCH_PER_SESSION");
+                static struct trace one_call[8], per_session[8];
+                const struct run    rm = {mh, ml, be, BACKENDS[bi], v.n_tok, false};
+                const struct run    rp = {mp, ml, be, BACKENDS[bi], v.n_tok, false};
+                const size_t        n  = max < NP ? max : NP;
+                size_t              ps[8];
+                for (size_t b = 0; b < n; b++)
+                    ps[b] = b;
+                bool same_all =
+                        loaded && batched(&rm, n, ps, one_call) && batched(&rp, n, ps, per_session);
+                for (size_t b = 0; same_all && b < n; b++)
+                    same_all = same(&rm, &one_call[b], &per_session[b]);
+                fails += expect(
+                        &rm,
+                        same_all,
+                        "one mixer call for all sessions equals one per session, bit for bit");
+                geist_model_destroy(mp);
+            }
             for (int sampling = 0; sampling < 2; sampling++) {
                 const struct run r = {mh, ml, be, BACKENDS[bi], v.n_tok, sampling != 0};
                 fails += check_batching(&r, max);

@@ -4176,6 +4176,153 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
     return metal_op_end(be, cmd, enc, "DeltaNet");
 }
 
+/* deltanet_mix_states (#26, batched decode): n sessions, one row each, in
+ * two dispatches (dn_dec_qk_b, dn_dec_v_b) instead of 2n; row b reads and
+ * advances its own session's states, bound at buffers 13 + b and 21 + b. */
+[[nodiscard]] static enum geist_status
+metal_deltanet_mix_states(struct geist_backend                 *be,
+                          size_t                                n,
+                          const struct geist_deltanet_mix_args *args,
+                          struct geist_tensor *const            conv_states[static n],
+                          struct geist_tensor *const            delta_states[static n]) {
+    enum { MAX_STATES = 8 };
+    if (be == nullptr || be->state == nullptr || args == nullptr || args->qkv == nullptr ||
+        args->z == nullptr || args->beta == nullptr || args->alpha == nullptr ||
+        args->conv_w == nullptr || args->ssm_a == nullptr || args->dt_bias == nullptr ||
+        args->norm_w == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct metal_state *st = be->state;
+    if (n < 1 || n > MAX_STATES || args->seq != n || args->n_k_heads == 0 || args->n_v_heads == 0 ||
+        args->n_v_heads % args->n_k_heads != 0 || args->head_k == 0 || args->head_k > 128 ||
+        args->head_v == 0 || 4u * args->head_v > 1024u || args->conv_kernel < 2 ||
+        st->dn_dec_qk_b_pipeline == nullptr || st->dn_dec_v_b_pipeline == nullptr) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const size_t key_dim   = args->n_k_heads * args->head_k;
+    const size_t value_dim = args->n_v_heads * args->head_v;
+    const size_t conv_dim  = 2u * key_dim + value_dim;
+    size_t       q_rows = 0, q_cols = 0, q_off = 0, q_stride = 0;
+    size_t       z_rows = 0, z_cols = 0, z_off = 0, z_stride = 0;
+    size_t       b_rows = 0, b_cols = 0, b_off = 0, b_stride = 0;
+    size_t       a_rows = 0, a_cols = 0, a_off = 0, a_stride = 0;
+    size_t       cw_rows = 0, cw_cols = 0, cw_off = 0, cw_stride = 0;
+    size_t       aw_n = 0, aw_off = 0, dt_n = 0, dt_off = 0, nw_n = 0, nw_off = 0;
+    if (!metal_tensor_is_f32_matrix(args->qkv, &q_rows, &q_cols, &q_off, &q_stride) ||
+        !metal_tensor_is_f32_matrix(args->z, &z_rows, &z_cols, &z_off, &z_stride) ||
+        !metal_tensor_is_f32_matrix(args->beta, &b_rows, &b_cols, &b_off, &b_stride) ||
+        !metal_tensor_is_f32_matrix(args->alpha, &a_rows, &a_cols, &a_off, &a_stride) ||
+        !metal_tensor_is_f32_matrix(args->conv_w, &cw_rows, &cw_cols, &cw_off, &cw_stride) ||
+        !metal_tensor_is_f32_vector(args->ssm_a, &aw_n, &aw_off) ||
+        !metal_tensor_is_f32_vector(args->dt_bias, &dt_n, &dt_off) ||
+        !metal_tensor_is_f32_vector(args->norm_w, &nw_n, &nw_off) || q_rows != n ||
+        q_cols != conv_dim || q_stride != conv_dim || z_rows != n || z_cols != value_dim ||
+        z_stride != value_dim || b_rows != n || b_cols != args->n_v_heads ||
+        b_stride != args->n_v_heads || a_rows != n || a_cols != args->n_v_heads ||
+        a_stride != args->n_v_heads || cw_rows != conv_dim || cw_cols != args->conv_kernel ||
+        cw_stride != args->conv_kernel || aw_n != args->n_v_heads || dt_n != args->n_v_heads ||
+        nw_n != args->head_v) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* Every session's states: the deltanet_mix geometry, one offset for all. */
+    size_t cs_off0 = 0, s_off0 = 0;
+    for (size_t t = 0; t < n; t++) {
+        size_t cs_rows = 0, cs_cols = 0, cs_off = 0, cs_stride = 0, s0 = 0, s1 = 0, s2 = 0,
+               s_off = 0;
+        if (conv_states[t] == nullptr || delta_states[t] == nullptr ||
+            !metal_tensor_is_f32_matrix(conv_states[t], &cs_rows, &cs_cols, &cs_off, &cs_stride) ||
+            !metal_tensor_is_f32_3d(delta_states[t], &s0, &s1, &s2, &s_off) ||
+            cs_rows != args->conv_kernel - 1u || cs_cols != conv_dim || cs_stride != conv_dim ||
+            s0 != args->n_v_heads || s1 != args->head_k || s2 != args->head_v) {
+            return GEIST_E_UNSUPPORTED;
+        }
+        if (t == 0) {
+            cs_off0 = cs_off, s_off0 = s_off;
+        } else if (cs_off != cs_off0 || s_off != s_off0) {
+            return GEIST_E_UNSUPPORTED;
+        }
+        if (conv_states[t]->buffer == nullptr || conv_states[t]->buffer->owner != st ||
+            delta_states[t]->buffer == nullptr || delta_states[t]->buffer->owner != st) {
+            return GEIST_E_INVALID_ARG;
+        }
+    }
+    const struct geist_tensor *all[] = {args->qkv,
+                                        args->z,
+                                        args->beta,
+                                        args->alpha,
+                                        args->conv_w,
+                                        args->ssm_a,
+                                        args->dt_bias,
+                                        args->norm_w};
+    for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
+        if (all[i]->buffer == nullptr || all[i]->buffer->owner != st) {
+            return GEIST_E_INVALID_ARG;
+        }
+    }
+    const size_t offsets[] = {
+            q_off, z_off, b_off, a_off, cw_off, aw_off, dt_off, nw_off, cs_off0, s_off0};
+    for (size_t i = 0; i < sizeof offsets / sizeof offsets[0]; i++) {
+        if (offsets[i] > UINT32_MAX) {
+            return GEIST_E_INVALID_ARG;
+        }
+    }
+    enum geist_status status = metal_ensure(be, METAL_TAB_DELTANET);
+    if (status != GEIST_OK) {
+        return status;
+    }
+    if (st->dn_dec_qk_b_pipeline == nullptr || st->dn_dec_v_b_pipeline == nullptr) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    struct metal_deltanet_params params = {.seq                = (uint32_t) n,
+                                           .n_k_heads          = (uint32_t) args->n_k_heads,
+                                           .n_v_heads          = (uint32_t) args->n_v_heads,
+                                           .head_k             = (uint32_t) args->head_k,
+                                           .head_v             = (uint32_t) args->head_v,
+                                           .conv_kernel        = (uint32_t) args->conv_kernel,
+                                           .qkv_offset         = (uint32_t) q_off,
+                                           .z_offset           = (uint32_t) z_off,
+                                           .beta_offset        = (uint32_t) b_off,
+                                           .alpha_offset       = (uint32_t) a_off,
+                                           .conv_w_offset      = (uint32_t) cw_off,
+                                           .ssm_a_offset       = (uint32_t) aw_off,
+                                           .dt_bias_offset     = (uint32_t) dt_off,
+                                           .norm_w_offset      = (uint32_t) nw_off,
+                                           .conv_state_offset  = (uint32_t) cs_off0,
+                                           .delta_state_offset = (uint32_t) s_off0,
+                                           .eps                = args->eps};
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    void                                              *cmd  = nullptr;
+    void *enc = metal_op_begin(be, "DeltaNet states", &cmd);
+    if (enc == nullptr) {
+        return GEIST_E_BACKEND;
+    }
+    for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
+        metal_msg_send_set_buffer(st, enc, all[i]->buffer->buffer, all[i]->buffer->base_off, i);
+    }
+    for (size_t t = 0; t < MAX_STATES; t++) { /* unused slots repeat the last session */
+        const size_t u = t < n ? t : n - 1;
+        metal_msg_send_set_buffer(
+                st, enc, conv_states[u]->buffer->buffer, conv_states[u]->buffer->base_off, 13 + t);
+        metal_msg_send_set_buffer(st,
+                                  enc,
+                                  delta_states[u]->buffer->buffer,
+                                  delta_states[u]->buffer->base_off,
+                                  21 + t);
+    }
+    metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);
+    const struct metal_size gk = {args->n_k_heads, n, 1};
+    const struct metal_size tk = {256, 1, 1};
+    metal_msg_send_set_pipeline(st, enc, st->dn_dec_qk_b_pipeline);
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gk);
+    metal_msg_send_dispatch(st, enc, gk, tk);
+    const struct metal_size gv = {args->n_v_heads, n, 1};
+    const struct metal_size tv = {4u * (uint32_t) args->head_v, 1, 1};
+    metal_msg_send_set_pipeline(st, enc, st->dn_dec_v_b_pipeline);
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gv);
+    metal_msg_send_dispatch(st, enc, gv, tv);
+    return metal_op_end(be, cmd, enc, "DeltaNet states");
+}
+
 /* Backend vtbl. */
 static const struct geist_backend_vtbl metal_vtbl = {
         .create                = metal_create,
@@ -4545,6 +4692,7 @@ static const struct geist_backend_fused metal_fused = {
         .ple_block                    = metal_ple_block,
         .rmsnorm_add                  = metal_rmsnorm_add,
         .deltanet_mix                 = metal_deltanet_mix,
+        .deltanet_mix_states          = metal_deltanet_mix_states,
         .attn_qgate_split             = metal_attn_qgate_split,
         .sigmoid_mul                  = metal_sigmoid_mul,
         .hadamard_rotate              = metal_hadamard_rotate,
