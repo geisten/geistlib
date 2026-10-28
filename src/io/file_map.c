@@ -6,6 +6,13 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+const char *io_set_err(const char **out, const char *msg) {
+    if (out != nullptr) {
+        *out = msg;
+    }
+    return msg;
+}
+
 bool io_map_ro(const char *path, int flags, struct io_map *out, const char **err) {
     const int fd = open(path, O_RDONLY);
     if (fd < 0) {
