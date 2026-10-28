@@ -1,0 +1,33 @@
+{
+ "capped_handling": {
+  "baseline_capped": 41,
+  "policy_exit": 39,
+  "policy_correct": 25,
+  "policy_still_capped": 2,
+  "policy_eos": 0
+ },
+ "exit_positions": {
+  "128": 221,
+  "256": 29,
+  "384": 23,
+  "512-1024": 34,
+  "1025-2048": 14,
+  "2049-8192": 9
+ },
+ "exit_position_median": 128,
+ "subgroups": {
+  "exits": 330,
+  "exit_correct": 264,
+  "baseline_correct_on_exits": 264,
+  "exit_answer_equals_full": 260,
+  "nonexit": 170,
+  "nonexit_policy_correct": 164,
+  "nonexit_baseline_correct": 164,
+  "stops": {
+   "early_exit": 330,
+   "eos": 168,
+   "limit": 2
+  }
+ },
+ "baseline_tokens": 676706
+}

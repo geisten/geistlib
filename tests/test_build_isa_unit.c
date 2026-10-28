@@ -82,6 +82,8 @@ int main(void) {
                               "backend creation refuses this host, naming what it lacks");
     }
     geist_backend_destroy(be);
+    /* P-cores: a count on Apple silicon, 0 elsewhere; never negative. */
+    fails += geist_expect(geist_hw_perf_cores() >= 0, "geist_hw_perf_cores is a count or 0");
     if (fails != 0) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;

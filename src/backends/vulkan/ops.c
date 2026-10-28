@@ -1392,12 +1392,9 @@ static_assert(sizeof(struct vk_hadamard_push) == 11 * 4, "hadamard_f32.comp push
     }
     const size_t rows = (size_t) args->x->shape[0], width = (size_t) args->x->shape[1];
     const size_t block = args->block, rep = args->perm_rep;
-    const bool   permute = rep > 1;
-    size_t       pn      = 0;
     const bool   geometry_ok =
-            block >= 2 && (block & (block - 1)) == 0 && width != 0 && width % block == 0 &&
-            (!permute || (!args->inverse && !ckd_mul(&pn, args->perm_hd, args->perm_nk) &&
-                          !ckd_mul(&pn, pn, rep) && pn == width && args->perm_hd != 0));
+            block >= 2 && geist_hadamard_geometry_ok(
+                                  width, block, args->perm_hd, args->perm_nk, rep, args->inverse);
     VkDescriptorBufferInfo bi[3];
     uint32_t               off[3];
     const bool             has_signs = args->signs != nullptr;
@@ -2460,28 +2457,6 @@ static void *vk_map_marked(struct geist_backend *be, uint64_t mark, struct geist
     return buf->host_alias != nullptr ? buf->host_alias : buf->mapped;
 }
 
-[[nodiscard]] static enum geist_status vk_linear_t_pair(struct geist_backend      *be,
-                                                        const struct geist_tensor *t_x,
-                                                        const struct geist_weight *w0,
-                                                        const struct geist_tensor *t_w0,
-                                                        const struct geist_weight *w1,
-                                                        const struct geist_tensor *t_w1,
-                                                        size_t                     m,
-                                                        struct geist_tensor       *t_y0,
-                                                        struct geist_tensor       *t_y1) {
-    /* Two appended dispatches. Check both weights up front so the fallback
-     * never sees a half-done pair. */
-    struct vk_state *st = be->state;
-    if (vk_weight_lookup(st, w0->raw) == nullptr || vk_weight_lookup(st, w1->raw) == nullptr) {
-        return GEIST_E_UNSUPPORTED;
-    }
-    enum geist_status s = vk_linear_t(be, t_x, w0, t_w0, m, t_y0);
-    if (s == GEIST_OK) {
-        s = vk_linear_t(be, t_x, w1, t_w1, m, t_y1);
-    }
-    return s;
-}
-
 [[nodiscard]] static enum geist_status
 vk_embedding_lookup_scaled(struct geist_backend      *be,
                            const struct geist_tensor *embed_table,
@@ -3272,19 +3247,6 @@ vk_declined(struct geist_backend *be, enum geist_status s, enum vk_fb site) {
     return vk_declined(be, vk_linear_t(be, t_x, w, t_w, m, t_y), VK_FB_LINEAR_T);
 }
 
-[[nodiscard]] static enum geist_status vk_fb_linear_t_pair(struct geist_backend      *be,
-                                                           const struct geist_tensor *t_x,
-                                                           const struct geist_weight *w0,
-                                                           const struct geist_tensor *t_w0,
-                                                           const struct geist_weight *w1,
-                                                           const struct geist_tensor *t_w1,
-                                                           size_t                     m,
-                                                           struct geist_tensor       *t_y0,
-                                                           struct geist_tensor       *t_y1) {
-    return vk_declined(
-            be, vk_linear_t_pair(be, t_x, w0, t_w0, w1, t_w1, m, t_y0, t_y1), VK_FB_LINEAR_T);
-}
-
 [[nodiscard]] static enum geist_status
 vk_fb_embedding_lookup_scaled(struct geist_backend      *be,
                               const struct geist_tensor *embed_table,
@@ -3336,7 +3298,6 @@ static const struct geist_backend_fused vk_fused = {
         .gelu_tanh_mul = vk_gelu_tanh_mul,
         /* Batched-submit paths: one flush per token (argmax). */
         .linear_t                = vk_fb_linear_t,
-        .linear_t_pair           = vk_fb_linear_t_pair,
         .linear_t_grouped        = vk_linear_t_grouped,
         .submit                  = vk_submit,
         .rows_weighted_sum       = vk_rows_weighted_sum,

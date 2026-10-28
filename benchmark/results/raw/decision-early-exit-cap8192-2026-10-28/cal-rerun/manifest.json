@@ -1,0 +1,438 @@
+{
+  "protocol": "geist-decision-batched-reasoning-v1",
+  "tracking_issue": "geistlib#26",
+  "plan": "docs/DECISION_CAMPAIGN_PLAN.json batched_reasoning_26",
+  "model_sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1",
+  "binary_sha256": "2e43e8dbef0fbec59aa3bf39b1e5bf529ea9e01f139915398f0ebd0c23f2484f",
+  "cases_sha256": "fc156c7d35bf53fe21728e8ada189b71606278a8368faeda031f4c8498664d5e",
+  "profile": "chat_reasoning",
+  "split": "calibration",
+  "align": 320,
+  "cap": 8192,
+  "batch": 8,
+  "probe": [
+    198,
+    248069,
+    271
+  ],
+  "probe_interval": 128,
+  "exit_tau": 0.0,
+  "pad": true,
+  "question_ids": [
+    "08803e222d1c9652940034ac83af38e5859eb5e12f3f07bd164cd4131a821e8b",
+    "0f6afb927a61fe32f2d179a6d9c18fd001c4bad56ac99cb6a8345fc30aa41e83",
+    "12496eaf8be6940ff651f4607be365e380048eae2f1272c734f1b1c5e296fc6b",
+    "1d0b0265547fc7089abc3d21720e9b2bf2c0cc508de247a6e37109ff4e645c63",
+    "21d6b75b3d66262f7e4bcc78abb3cde14ef4837834487774d9c8806df007f74e",
+    "239d63ce885434003e02a9a7239b9589afcb16aab702faf48fb44c9987b61cdd",
+    "24e3efd99631e45ab6d9bdbd18cbdc96e21b794573e6ab2c3049ad798767028c",
+    "3147c8fa573c32b1896d608ff3b9872b445db0a57cb23e8d1e7b04d5884a7349",
+    "33a512f218ffb50f8045c6644098e843c6ad3199e251ca167c889b7e63c1c140",
+    "34bfa8cd024b8b346a23c1fe726e62b19d592c927f5234e84512b7370b4c3de3",
+    "36fe969d30828b8eefeb0268dd733304157e8911b2c974cb83ce98203d8f61fe",
+    "375003f031b1d29cd4e4c459ba6caec0d7535ae77aae8184a82d735fe59aeccd",
+    "38bb1a647e3cd1558973d2bee8e1498ab0931eeaa0d0ad1206daf53714df76f6",
+    "390e071d9726dcc56ce892416e73a974a331642cbf0fb03e89433272dc60b9df",
+    "3d19e316bf1b199171ec0285a89eeea4d388c31e1e20c8f04c881f0866e805fd",
+    "3f9124244bb9bfe693bf19a0f6eb217593621935b8e2094616b2edcb2aa61d6d",
+    "420b0689d3812dcd3585540facecdef98810f656733f9ef95420dc6822f2b541",
+    "47999ff5aec8de420cbb8f5b64dc83d147839ebe73a64e53dc9b1f8f3f4f78dd",
+    "4d36d92d60655f09d0c4197c26fb38543f4190fd2d48ecf1c53252bd131aec95",
+    "4fe1dc4736bc813a82485cfeac04aa2f128f20723a4525b81519a1a421eeabb6",
+    "5e4d529361ca20e3be894cdfd02c521fbed246c5eb0f34c8914327fc8ba9ddf2",
+    "6e6b55f78dd82b9e2acfeb89e86805664a26987b23493f68aea5e934b9b2bfa4",
+    "71e462aa21bfb4d0d657a0fd6bc6b2b2c37389a7d21547325dedd0b77f5a9386",
+    "72fb711edfe8413472426492134469997be5f50241c29a63aeb7eef217842548",
+    "7420458814d442b5cd038be013881183183816ae7585b1c6069166ee13865a18",
+    "7e4e6873a96cdf3c13bc63df8682af1d5d8ab4e5a20b909e1679defd778c654a",
+    "81882c0ba3d38fbc53c46fd39dc0b1024d40d0ac49f326f65ef42bc4ccf8369f",
+    "827c5945f2fae09e8396da4445bf85917aae72de7007f5e32ac9e5172cb2791e",
+    "8784e58933af135d0d4107497b7f77db69157ddecf18575971d753d273bf18f8",
+    "8b240380d8cd99171d99d9fe39a7f17a94d861d65246b3f9434bffb8625637ac",
+    "9bee304f9c238beea2fac26bc317aeb2f9b3fe780ba958a2194ec1ca0502d379",
+    "9cf05b0ba20afb162d31d54d95b6f16adf5a3b924a21cd3af13528e84bb84a95",
+    "a1ac6274fc0855ba1bce5886697a09f5789890ef1b9ad76965a1dcf6e7730236",
+    "a33b43c437dc9ba1539d19b22132f03106583cabb55dc7e0ffb5cfd972720a6f",
+    "a54d8e11f4c577b9b50aa9bf54a239ed74f337d4fe9ae54e4610bf13e025158d",
+    "bdf2f2e0305310f06fa33f4bd0c42080b1ebcb7dd84e8c7cc3fd5ae39478f905",
+    "c13e58d8820a79e1afa2292f1813c73449ceac534307cfa091cd82622df30d74",
+    "c3d7fa070175d838e72c86706787d872ddd1338dd2225ba06cddca862476e6b3",
+    "c3ed1fdcff73bb4daf14a327cd46099fdf53094a762d36d0118d6472d8805a86",
+    "cf24465b7b685128af541036b1dc89e4cee33648fb1180a56c47a004c02f7d57",
+    "d146075082c6125d5b73ed7955c06f221c1ff1e2791c49a952bbaf3fdc7a7503",
+    "d18434c93b7322d55be0f6304d33d2c9b24ff6fecbf34b679425d0c18b49c877",
+    "d423da590bc0e63cf8d1f78ff073b4929a74a6158144ad385de37b5901c3edb0",
+    "d686c38d47d9468497a8f08b992c712517967e0412ec3c38336a4d09a391df52",
+    "d7ba44fea6af08e73bdabc2eb211478159f088be5a851762cfd49a2ffb691930",
+    "daed75f2738cd37f50ffe21e3b385a9bf167a11a9a6c5adb3bf4afb047aa090d",
+    "db27e83f9cf1c56ef396311d0d0c8d649fc29ef3df6c0d5d0fbea7f491c4c83d",
+    "e25bc096b36fcac04cce75ed03720b1ea6f1daffa5893eb5dec77a1d614e408d",
+    "e50157341083c9e02f8a0b374be8f9a6975ecc60761a755b8e2104c531190f2d",
+    "e61c2d352e77bbab3c134abc2b0ab96241a5dbfe27374b38da66ca8fb0f11591",
+    "e7ab736193b37f624253bd87caa755cae04015443c7780f7e0e54cfd99c2c6a6",
+    "eb7e4955ef694cf3cad5b6321f5341b4ec4a8e66c9518f6935fd62b8a417b832",
+    "f5cfc4b24e2a4807f2cd8074ed044e4ab78cdedd65d711b9cd7bda4c2072c6d4",
+    "fdfa32be32bbd61873d358b1f02ccb09fd42938d61d6bcb4c5a251b00f1e39c8"
+  ],
+  "backend": "metal",
+  "threads": 6,
+  "command": [
+    "/Users/germar/workspace/geistlib-campaigns/236c-src/bin/mac-omp/release/tools/bench_reasoning_batch",
+    "/Users/germar/Library/Application Support/geisten/models/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+    "metal",
+    "3098",
+    "8192",
+    "8",
+    "128",
+    "0.0",
+    "pad"
+  ],
+  "order": [
+    "validation/clinical_knowledge/73/rotation0",
+    "validation/college_computer_science/115/rotation0",
+    "validation/computer_security/161/rotation0",
+    "validation/computer_security/165/rotation0",
+    "validation/econometrics/198/rotation0",
+    "validation/elementary_mathematics/250/rotation0",
+    "validation/global_facts/283/rotation0",
+    "validation/high_school_chemistry/342/rotation0",
+    "validation/high_school_chemistry/333/rotation0",
+    "validation/high_school_physics/519/rotation0",
+    "validation/high_school_physics/523/rotation0",
+    "validation/high_school_psychology/555/rotation0",
+    "validation/high_school_statistics/597/rotation0",
+    "validation/high_school_statistics/600/rotation0",
+    "validation/high_school_statistics/607/rotation0",
+    "validation/moral_disputes/908/rotation0",
+    "validation/moral_scenarios/931/rotation0",
+    "validation/moral_scenarios/930/rotation0",
+    "validation/moral_scenarios/939/rotation0",
+    "validation/moral_scenarios/981/rotation0",
+    "validation/moral_scenarios/995/rotation0",
+    "validation/philosophy/1055/rotation0",
+    "validation/philosophy/1057/rotation0",
+    "validation/prehistory/1108/rotation0",
+    "validation/prehistory/1115/rotation0",
+    "validation/professional_accounting/1148/rotation0",
+    "validation/professional_accounting/1145/rotation0",
+    "validation/professional_accounting/1125/rotation0",
+    "validation/professional_law/1205/rotation0",
+    "validation/professional_law/1206/rotation0",
+    "validation/professional_law/1194/rotation0",
+    "validation/professional_law/1295/rotation0",
+    "validation/professional_law/1223/rotation0",
+    "validation/professional_law/1294/rotation0",
+    "validation/professional_law/1256/rotation0",
+    "validation/professional_law/1272/rotation0",
+    "validation/professional_law/1245/rotation0",
+    "validation/professional_law/1284/rotation0",
+    "validation/professional_law/1176/rotation0",
+    "validation/professional_law/1189/rotation0",
+    "validation/professional_law/1258/rotation0",
+    "validation/professional_law/1270/rotation0",
+    "validation/professional_law/1312/rotation0",
+    "validation/professional_medicine/1334/rotation0",
+    "validation/professional_psychology/1380/rotation0",
+    "validation/professional_psychology/1413/rotation0",
+    "validation/professional_psychology/1362/rotation0",
+    "validation/professional_psychology/1375/rotation0",
+    "validation/security_studies/1442/rotation0",
+    "validation/sociology/1475/rotation0",
+    "validation/us_foreign_policy/1485/rotation0",
+    "validation/virology/1496/rotation0",
+    "validation/world_religions/1529/rotation0",
+    "validation/world_religions/1522/rotation0"
+  ],
+  "cuts": {
+    "abstract_algebra": {
+      "questions": 2,
+      "shared_tokens": 371,
+      "cut": 320
+    },
+    "anatomy": {
+      "questions": 2,
+      "shared_tokens": 356,
+      "cut": 320
+    },
+    "astronomy": {
+      "questions": 3,
+      "shared_tokens": 591,
+      "cut": 320
+    },
+    "business_ethics": {
+      "questions": 2,
+      "shared_tokens": 550,
+      "cut": 320
+    },
+    "clinical_knowledge": {
+      "questions": 5,
+      "shared_tokens": 412,
+      "cut": 320
+    },
+    "college_biology": {
+      "questions": 2,
+      "shared_tokens": 473,
+      "cut": 320
+    },
+    "college_chemistry": {
+      "questions": 1,
+      "shared_tokens": 0,
+      "cut": 0
+    },
+    "college_computer_science": {
+      "questions": 2,
+      "shared_tokens": 794,
+      "cut": 640
+    },
+    "college_mathematics": {
+      "questions": 2,
+      "shared_tokens": 588,
+      "cut": 320
+    },
+    "college_medicine": {
+      "questions": 3,
+      "shared_tokens": 468,
+      "cut": 320
+    },
+    "college_physics": {
+      "questions": 2,
+      "shared_tokens": 484,
+      "cut": 320
+    },
+    "computer_security": {
+      "questions": 2,
+      "shared_tokens": 377,
+      "cut": 320
+    },
+    "conceptual_physics": {
+      "questions": 4,
+      "shared_tokens": 319,
+      "cut": 0
+    },
+    "econometrics": {
+      "questions": 2,
+      "shared_tokens": 588,
+      "cut": 320
+    },
+    "electrical_engineering": {
+      "questions": 3,
+      "shared_tokens": 481,
+      "cut": 320
+    },
+    "elementary_mathematics": {
+      "questions": 7,
+      "shared_tokens": 577,
+      "cut": 320
+    },
+    "formal_logic": {
+      "questions": 2,
+      "shared_tokens": 563,
+      "cut": 320
+    },
+    "global_facts": {
+      "questions": 2,
+      "shared_tokens": 445,
+      "cut": 320
+    },
+    "high_school_biology": {
+      "questions": 5,
+      "shared_tokens": 489,
+      "cut": 320
+    },
+    "high_school_chemistry": {
+      "questions": 4,
+      "shared_tokens": 490,
+      "cut": 320
+    },
+    "high_school_computer_science": {
+      "questions": 1,
+      "shared_tokens": 0,
+      "cut": 0
+    },
+    "high_school_european_history": {
+      "questions": 3,
+      "shared_tokens": 2566,
+      "cut": 2560
+    },
+    "high_school_geography": {
+      "questions": 4,
+      "shared_tokens": 397,
+      "cut": 320
+    },
+    "high_school_government_and_politics": {
+      "questions": 3,
+      "shared_tokens": 459,
+      "cut": 320
+    },
+    "high_school_macroeconomics": {
+      "questions": 7,
+      "shared_tokens": 374,
+      "cut": 320
+    },
+    "high_school_mathematics": {
+      "questions": 4,
+      "shared_tokens": 552,
+      "cut": 320
+    },
+    "high_school_microeconomics": {
+      "questions": 4,
+      "shared_tokens": 397,
+      "cut": 320
+    },
+    "high_school_physics": {
+      "questions": 3,
+      "shared_tokens": 542,
+      "cut": 320
+    },
+    "high_school_psychology": {
+      "questions": 10,
+      "shared_tokens": 496,
+      "cut": 320
+    },
+    "high_school_statistics": {
+      "questions": 4,
+      "shared_tokens": 778,
+      "cut": 640
+    },
+    "high_school_us_history": {
+      "questions": 3,
+      "shared_tokens": 2014,
+      "cut": 1920
+    },
+    "high_school_world_history": {
+      "questions": 4,
+      "shared_tokens": 1173,
+      "cut": 960
+    },
+    "human_aging": {
+      "questions": 4,
+      "shared_tokens": 330,
+      "cut": 320
+    },
+    "human_sexuality": {
+      "questions": 2,
+      "shared_tokens": 346,
+      "cut": 320
+    },
+    "international_law": {
+      "questions": 2,
+      "shared_tokens": 609,
+      "cut": 320
+    },
+    "jurisprudence": {
+      "questions": 2,
+      "shared_tokens": 396,
+      "cut": 320
+    },
+    "logical_fallacies": {
+      "questions": 3,
+      "shared_tokens": 439,
+      "cut": 320
+    },
+    "machine_learning": {
+      "questions": 2,
+      "shared_tokens": 669,
+      "cut": 640
+    },
+    "management": {
+      "questions": 2,
+      "shared_tokens": 297,
+      "cut": 0
+    },
+    "marketing": {
+      "questions": 4,
+      "shared_tokens": 421,
+      "cut": 320
+    },
+    "medical_genetics": {
+      "questions": 2,
+      "shared_tokens": 347,
+      "cut": 320
+    },
+    "miscellaneous": {
+      "questions": 14,
+      "shared_tokens": 317,
+      "cut": 0
+    },
+    "moral_disputes": {
+      "questions": 6,
+      "shared_tokens": 479,
+      "cut": 320
+    },
+    "moral_scenarios": {
+      "questions": 16,
+      "shared_tokens": 663,
+      "cut": 640
+    },
+    "nutrition": {
+      "questions": 5,
+      "shared_tokens": 592,
+      "cut": 320
+    },
+    "philosophy": {
+      "questions": 6,
+      "shared_tokens": 338,
+      "cut": 320
+    },
+    "prehistory": {
+      "questions": 6,
+      "shared_tokens": 535,
+      "cut": 320
+    },
+    "professional_accounting": {
+      "questions": 5,
+      "shared_tokens": 692,
+      "cut": 640
+    },
+    "professional_law": {
+      "questions": 28,
+      "shared_tokens": 1476,
+      "cut": 1280
+    },
+    "professional_medicine": {
+      "questions": 5,
+      "shared_tokens": 992,
+      "cut": 960
+    },
+    "professional_psychology": {
+      "questions": 11,
+      "shared_tokens": 568,
+      "cut": 320
+    },
+    "public_relations": {
+      "questions": 2,
+      "shared_tokens": 421,
+      "cut": 320
+    },
+    "security_studies": {
+      "questions": 4,
+      "shared_tokens": 1089,
+      "cut": 960
+    },
+    "sociology": {
+      "questions": 4,
+      "shared_tokens": 439,
+      "cut": 320
+    },
+    "us_foreign_policy": {
+      "questions": 2,
+      "shared_tokens": 432,
+      "cut": 320
+    },
+    "virology": {
+      "questions": 3,
+      "shared_tokens": 344,
+      "cut": 320
+    },
+    "world_religions": {
+      "questions": 3,
+      "shared_tokens": 286,
+      "cut": 0
+    }
+  },
+  "environment": {
+    "OMP_NUM_THREADS": "6",
+    "OMP_WAIT_POLICY": "passive"
+  },
+  "source_revision": "09db2362a33de13d4675ccf7c601b6d1306944dd"
+}
