@@ -622,12 +622,8 @@ enum {
     METAL_RESOURCE_STORAGE_MODE_PRIVATE = 2u << 4,
     METAL_Q4K_THREADS_PER_ROW           = 256u,
     METAL_Q4K_N4_THREADS                = 64u,
-    METAL_Q4K_BLOCK_ELEMS               = 256u,
-    METAL_Q4K_BLOCK_BYTES               = 144u,
     METAL_Q4K_NT4_DEFAULT_MAX_N_OUT     = 8192u,
     METAL_Q4K_NT4_LARGE_MAX_N_OUT       = 262144u,
-    METAL_Q6K_BLOCK_ELEMS               = 256u,
-    METAL_Q6K_BLOCK_BYTES               = 210u,
     METAL_Q6K_NT4_MIN_N_OUT             = 1024u,
     METAL_Q6K_NT4_MAX_N_OUT             = 8192u,
     METAL_Q4K_M_TILE                    = 8u,
@@ -636,10 +632,13 @@ enum {
     METAL_QNORM_ATTENTION_MAX_HEAD_DIM  = 512u,
 };
 
-/* The dtypes whose linear is metal_q40_q80_linear: one kernel family
- * indexed by dtype, one validator (metal_tensor_is_q40_q80_matrix). */
-static inline bool metal_dtype_is_generic_quant(enum geist_dtype dtype) {
+/* The dtypes whose linear is metal_quant_linear: one validator
+ * (metal_tensor_is_quant_matrix), one host path; only the encoder differs
+ * (metal_encode_quant_linear). */
+static inline bool metal_dtype_is_quant(enum geist_dtype dtype) {
     switch (dtype) {
+    case GEIST_DTYPE_Q4_K:
+    case GEIST_DTYPE_Q6_K:
     case GEIST_DTYPE_Q4_0:
     case GEIST_DTYPE_Q4_1:
     case GEIST_DTYPE_Q8_0:
@@ -1073,21 +1072,11 @@ bool metal_tensor_is_f32_rows(const struct geist_tensor *t,
                               size_t                    *out_offset_floats,
                               size_t                    *out_row_stride);
 
-bool metal_tensor_is_q4k_matrix(const struct geist_tensor *t,
-                                size_t                    *out_rows,
-                                size_t                    *out_cols,
-                                size_t                    *out_offset_bytes);
-
-bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
-                                size_t                    *out_rows,
-                                size_t                    *out_cols,
-                                size_t                    *out_offset_bytes);
-
-bool metal_tensor_is_q40_q80_matrix(const struct geist_tensor *t,
-                                    enum geist_dtype           dtype,
-                                    size_t                    *out_rows,
-                                    size_t                    *out_cols,
-                                    size_t                    *out_offset_bytes);
+bool metal_tensor_is_quant_matrix(const struct geist_tensor *t,
+                                  enum geist_dtype           dtype,
+                                  size_t                    *out_rows,
+                                  size_t                    *out_cols,
+                                  size_t                    *out_offset_bytes);
 
 bool metal_tensor_is_f32_3d(const struct geist_tensor *t,
                             size_t                    *out_d0,
