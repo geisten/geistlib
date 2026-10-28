@@ -55,6 +55,7 @@ static struct transformer_runtime_flags transformer_runtime_flags_from_env(void)
             .bitnet_sub_ln_enabled = !geist_env_flag("GEIST_BITNET_NO_SUBLN", false),
             .dump_act_sparsity     = geist_env_flag("GEIST_DUMP_ACT_SPARSITY", false),
             .dn_seq_prefill        = geist_env_flag("GEIST_DN_SEQ_PREFILL", false),
+            .batch_per_session     = geist_env_flag("GEIST_DECODE_BATCH_PER_SESSION", false),
     };
 }
 

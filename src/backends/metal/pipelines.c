@@ -80,6 +80,8 @@ static const struct metal_pipeline_row metal_deltanet_rows[] = {
         METAL_PIPE(deltanet, "dn_dec_qk", dn_dec_qk),
         METAL_PIPE(deltanet, "dn_dec_v", dn_dec_v),
         METAL_PIPE(deltanet, "dn_dec_v_rows", dn_dec_v_rows),
+        METAL_PIPE(deltanet, "dn_dec_qk_b", dn_dec_qk_b),
+        METAL_PIPE(deltanet, "dn_dec_v_b", dn_dec_v_b),
         METAL_PIPE(deltanet, "dnf_cst_copy", dnf_cst_copy),
         METAL_PIPE(deltanet, "dnf_conv", dnf_conv),
         METAL_PIPE(deltanet, "dnf_norm", dnf_norm),
@@ -278,6 +280,8 @@ static const struct metal_library_row metal_deltanet_libs[] = {
                   metal_deltanet_source,
                   metal_dn_decode_source,
                   metal_dn_decode_rows_source,
+                  metal_dn_decode_states_source,
+                  metal_dn_decode_states_v_source,
                   metal_dnf_prep_source,
                   metal_dnf_chunk_source,
                   metal_dnf_state_source,
@@ -589,68 +593,35 @@ static void metal_release_libs(struct metal_state            *st,
     }
 }
 
+/* The pipeline tables, by enum metal_table. */
+static const struct {
+    size_t                           n_libs;
+    const struct metal_library_row  *libs;
+    size_t                           n_rows;
+    const struct metal_pipeline_row *rows;
+} metal_tables[METAL_TAB_COUNT] = {
+#define METAL_TABLE(T, libs, rows) [T] = {METAL_N(libs), libs, METAL_N(rows), rows}
+        METAL_TABLE(METAL_TAB_DELTANET, metal_deltanet_libs, metal_deltanet_rows),
+        METAL_TABLE(METAL_TAB_QUANT, metal_quant_libs, metal_quant_rows),
+        METAL_TABLE(METAL_TAB_ATTENTION, metal_attention_libs, metal_attention_rows),
+        METAL_TABLE(METAL_TAB_HADAMARD, metal_hadamard_libs, metal_hadamard_rows),
+        METAL_TABLE(METAL_TAB_ARGMAX, metal_argmax_libs, metal_argmax_rows),
+        METAL_TABLE(METAL_TAB_MOE, metal_moe_libs, metal_moe_rows),
+#undef METAL_TABLE
+};
+
 void metal_release_pipeline_tables(struct metal_state *st) {
-    metal_release_rows(st, METAL_N(metal_deltanet_rows), metal_deltanet_rows);
-    metal_release_rows(st, METAL_N(metal_quant_rows), metal_quant_rows);
-    metal_release_rows(st, METAL_N(metal_attention_rows), metal_attention_rows);
-    metal_release_rows(st, METAL_N(metal_hadamard_rows), metal_hadamard_rows);
-    metal_release_rows(st, METAL_N(metal_argmax_rows), metal_argmax_rows);
-    metal_release_rows(st, METAL_N(metal_moe_rows), metal_moe_rows);
-    metal_release_libs(st, METAL_N(metal_deltanet_libs), metal_deltanet_libs);
-    metal_release_libs(st, METAL_N(metal_quant_libs), metal_quant_libs);
-    metal_release_libs(st, METAL_N(metal_attention_libs), metal_attention_libs);
-    metal_release_libs(st, METAL_N(metal_hadamard_libs), metal_hadamard_libs);
-    metal_release_libs(st, METAL_N(metal_argmax_libs), metal_argmax_libs);
-    metal_release_libs(st, METAL_N(metal_moe_libs), metal_moe_libs);
+    for (size_t t = 0; t < METAL_TAB_COUNT; t++) {
+        metal_release_rows(st, metal_tables[t].n_rows, metal_tables[t].rows);
+    }
+    for (size_t t = 0; t < METAL_TAB_COUNT; t++) {
+        metal_release_libs(st, metal_tables[t].n_libs, metal_tables[t].libs);
+    }
 }
 
-#define METAL_TABLES(libs, rows) METAL_N(libs), libs, METAL_N(rows), rows
-
-[[nodiscard]] enum geist_status metal_ensure_deltanet_pipeline(struct geist_backend *be) {
-    if (be == nullptr || be->state == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    return metal_ensure_tables(be, METAL_TABLES(metal_deltanet_libs, metal_deltanet_rows));
-}
-
-[[nodiscard]] enum geist_status metal_ensure_q4k_pipeline(struct geist_backend *be) {
-    if (be == nullptr || be->state == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    return metal_ensure_tables(be, METAL_TABLES(metal_quant_libs, metal_quant_rows));
-}
-
-[[nodiscard]] enum geist_status metal_ensure_attention_pipeline(struct geist_backend *be) {
-    if (be == nullptr || be->state == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    return metal_ensure_tables(be, METAL_TABLES(metal_attention_libs, metal_attention_rows));
-}
-
-[[nodiscard]] enum geist_status metal_ensure_hadamard_pipeline(struct geist_backend *be) {
-    if (be == nullptr || be->state == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    return metal_ensure_tables(be, METAL_TABLES(metal_hadamard_libs, metal_hadamard_rows));
-}
-
-[[nodiscard]] enum geist_status metal_ensure_moe_pipeline(struct geist_backend *be) {
-    if (be == nullptr || be->state == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    return metal_ensure_tables(be, METAL_TABLES(metal_moe_libs, metal_moe_rows));
-}
-
-[[nodiscard]] enum geist_status metal_ensure_argmax_pipeline(struct geist_backend *be) {
-    if (be == nullptr || be->state == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    struct metal_state     *st = be->state;
-    const enum geist_status s =
-            metal_ensure_tables(be, METAL_TABLES(metal_argmax_libs, metal_argmax_rows));
-    if (s != GEIST_OK) {
-        return s;
-    }
+/* The argmax result (host-visible) and partials buffers. */
+static enum geist_status metal_argmax_buffers(struct geist_backend *be) {
+    struct metal_state *st = be->state;
     if (st->argmax_result_buffer == nullptr) {
         st->argmax_result_buffer = metal_msg_send_id_size_uint(st,
                                                                st->device,
@@ -684,4 +655,16 @@ void metal_release_pipeline_tables(struct metal_state *st) {
         }
     }
     return GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status metal_ensure(struct geist_backend *be, enum metal_table table) {
+    if (be == nullptr || be->state == nullptr || table >= METAL_TAB_COUNT) {
+        return GEIST_E_INVALID_ARG;
+    }
+    const enum geist_status s = metal_ensure_tables(be,
+                                                    metal_tables[table].n_libs,
+                                                    metal_tables[table].libs,
+                                                    metal_tables[table].n_rows,
+                                                    metal_tables[table].rows);
+    return s == GEIST_OK && table == METAL_TAB_ARGMAX ? metal_argmax_buffers(be) : s;
 }

@@ -33,8 +33,17 @@ struct dtype_map_entry {
     bool              supported;
 };
 
-/* weight_load/dtype_map.c */
-struct dtype_map_entry map_gguf_dtype(gguf_dtype_t gd);
+/* The geist dtype and layout a GGUF tensor type loads as; supported is
+ * false for a type geist has no kernels for. */
+static inline struct dtype_map_entry map_gguf_dtype(gguf_dtype_t gd) {
+    const enum geist_dtype dt = gguf_dtype_geist(gd);
+    const bool dense = dt == GEIST_DTYPE_F32 || dt == GEIST_DTYPE_F16 || dt == GEIST_DTYPE_BF16;
+    return (struct dtype_map_entry) {
+            .dtype     = dt,
+            .layout    = dense ? GEIST_LAYOUT_DENSE : GEIST_LAYOUT_BLOCK_QUANTIZED,
+            .supported = dt != GEIST_DTYPE_CUSTOM,
+    };
+}
 
 /* ---- Tensor view builders (inline; tiny pure functions) --------------- */
 

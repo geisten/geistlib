@@ -18,14 +18,11 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     metal_buffer_destroy_internal(be, st->attn_dec_partials_buffer);
     st->attn_dec_partials_buffer = nullptr;
     metal_buffer_destroy_internal(be, st->pq2_xh_buffer);
-    st->pq2_xh_buffer   = nullptr;
-    st->pq2_xh_capacity = 0;
+    st->pq2_xh_buffer = nullptr;
     metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
     metal_buffer_destroy_internal(be, st->attn_vf16_buffer);
-    st->attn_kf16_buffer           = nullptr;
-    st->attn_vf16_buffer           = nullptr;
-    st->attn_kvf16_capacity        = 0;
-    st->attn_dec_partials_capacity = 0;
+    st->attn_kf16_buffer = nullptr;
+    st->attn_vf16_buffer = nullptr;
     if (st->objc_msgSend != nullptr && st->sel_registerName != nullptr) {
         if (st->sequence_active) {
             metal_msg_send_void0(st, st->sequence_compute_encoder, "endEncoding");

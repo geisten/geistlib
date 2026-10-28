@@ -46,6 +46,7 @@
 #include <geist_backend.h>
 
 #include <math.h>
+#include <stdlib.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <string.h>
@@ -1303,6 +1304,57 @@ transformer_layer_run_deltanet_multi(struct transformer_layer_forward_ctx  *ctx,
     struct geist_tensor t_aw     = view_1d(L->dn_a.buffer, (int64_t) n_vh);
     struct geist_tensor t_dtb    = view_1d(L->dn_dt_bias.buffer, (int64_t) n_vh);
     struct geist_tensor t_nrm    = view_1d(L->dn_norm.buffer, (int64_t) d_v);
+    /* One call for every session's mixer step where the backend has it
+     * (batch 3, deltanet_mix_states): the same math, in the same order, as
+     * the per-session calls below. GEIST_DECODE_BATCH_PER_SESSION=1 at load
+     * keeps the per-session calls (the A/B and the identity test). */
+    if (s == GEIST_OK && !st->runtime_flags.batch_per_session &&
+        fused->deltanet_mix_states != nullptr && n <= 8) {
+        struct geist_tensor  cs_t[8], s_t[8];
+        struct geist_tensor *cs_p[8], *s_p[8];
+        bool                 ok = true;
+        for (size_t b = 0; b < n; b++) {
+            struct transformer_arch_session *q = seqs[b];
+            if (q->dn_conv_state == nullptr || q->dn_S == nullptr ||
+                q->dn_conv_state[ctx->layer_idx] == nullptr || q->dn_S[ctx->layer_idx] == nullptr) {
+                ok = false;
+                break;
+            }
+            cs_t[b] = view_2d(q->dn_conv_state[ctx->layer_idx], (int64_t) (K - 1), (int64_t) convd);
+            s_t[b] = (struct geist_tensor) {.buffer = q->dn_S[ctx->layer_idx],
+                                            .dtype  = GEIST_DTYPE_F32,
+                                            .layout = GEIST_LAYOUT_DENSE,
+                                            .ndim   = 3,
+                                            .shape = {(int64_t) n_vh, (int64_t) d_k, (int64_t) d_v},
+                                            .stride = {(int64_t) (d_k * d_v), (int64_t) d_v, 1}};
+            cs_p[b] = &cs_t[b], s_p[b] = &s_t[b];
+        }
+        struct geist_deltanet_mix_args args = {.qkv         = &t_qkv,
+                                               .z           = &t_z,
+                                               .beta        = &t_b,
+                                               .alpha       = &t_a,
+                                               .conv_w      = &t_conv_w,
+                                               .ssm_a       = &t_aw,
+                                               .dt_bias     = &t_dtb,
+                                               .norm_w      = &t_nrm,
+                                               .seq         = n,
+                                               .n_k_heads   = n_kh,
+                                               .n_v_heads   = n_vh,
+                                               .head_k      = d_k,
+                                               .head_v      = d_v,
+                                               .conv_kernel = K,
+                                               .eps         = ctx->eps};
+        const enum geist_status        ms =
+                ok ? fused->deltanet_mix_states(be, n, &args, cs_p, s_p) : GEIST_E_UNSUPPORTED;
+        if (ms == GEIST_OK) {
+            for (size_t b = 0; b < n; b++)
+                if (seqs[b]->dn_fresh != nullptr)
+                    seqs[b]->dn_fresh[ctx->layer_idx] = false;
+            goto mixed;
+        }
+        if (ms != GEIST_E_UNSUPPORTED)
+            return ms;
+    }
     for (size_t b = 0; s == GEIST_OK && b < n; b++) {
         struct transformer_arch_session *q = seqs[b];
         if (q->dn_conv_state == nullptr || q->dn_S == nullptr ||
@@ -1348,6 +1400,7 @@ transformer_layer_run_deltanet_multi(struct transformer_layer_forward_ctx  *ctx,
     }
     if (s != GEIST_OK)
         return s;
+mixed:;
     struct geist_buffer *mix_buf = sess->dn_scratch_z;
     if (st->rotation.active) {
         s = transformer_rotate(

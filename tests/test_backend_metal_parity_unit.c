@@ -462,7 +462,7 @@ static void run_staged_upload(struct geist_backend *mt) {
     const bool           ok = dev_alloc(mt, sizeof old, &x) != nullptr &&
                               dev_alloc(mt, sizeof old, &y) != nullptr &&
                               dev_alloc(mt, sizeof old, &z) != nullptr &&
-                              metal_ensure_attention_pipeline(mt) == GEIST_OK &&
+                              metal_ensure(mt, METAL_TAB_ATTENTION) == GEIST_OK &&
                               v->buffer_upload(x, sizeof old, (const uint8_t *) old) == GEIST_OK;
     check(ok, "staged upload: buffers");
     if (ok) {
@@ -582,10 +582,66 @@ static void run_f32kv_attention_case(struct geist_backend *mt,
     v->buffer_destroy(mt, bo16);
 }
 
-/* #91: the prefill flash kernels (and, at one query row, the split-KV
- * decode kernels, #17) against cpu_scalar's attention on the
- * same half-rounded K/V. The Metal kernels round Q and the softmax weights
- * to half for the f16 matrix products and accumulate in f32, so the bound
+/* Largest |got - ref| of one decode row (the query at position k_rows - 1)
+ * against attention in double over the same f32 K/V: scale 1, the last
+ * `window` keys when window > 0, every key otherwise. q and got hold
+ * q_heads * hd floats, k and v k_rows * kv_heads * hd (products, so plain
+ * pointers per AGENT.md §1). */
+static double flash_decode_err_vs_double(size_t       k_rows,
+                                         size_t       q_heads,
+                                         size_t       kv_heads,
+                                         size_t       hd,
+                                         size_t       window,
+                                         const float *q,
+                                         const float *k,
+                                         const float *v,
+                                         const float *got) {
+    double *score = malloc(k_rows * sizeof *score);
+    double *acc   = malloc(hd * sizeof *acc);
+    if (score == nullptr || acc == nullptr) {
+        free(score);
+        free(acc);
+        return INFINITY;
+    }
+    const size_t lo  = window > 0 && k_rows > window ? k_rows - window : 0;
+    double       err = 0.0;
+    for (size_t h = 0; h < q_heads; h++) {
+        const size_t kh = h / (q_heads / kv_heads);
+        double       mx = -INFINITY;
+        for (size_t j = lo; j < k_rows; j++) {
+            double dot = 0.0;
+            for (size_t i = 0; i < hd; i++) {
+                dot += (double) q[h * hd + i] * k[(j * kv_heads + kh) * hd + i];
+            }
+            score[j] = dot;
+            mx       = dot > mx ? dot : mx;
+        }
+        double sum = 0.0;
+        for (size_t i = 0; i < hd; i++) {
+            acc[i] = 0.0;
+        }
+        for (size_t j = lo; j < k_rows; j++) {
+            const double w = exp(score[j] - mx);
+            sum += w;
+            for (size_t i = 0; i < hd; i++) {
+                acc[i] += w * v[(j * kv_heads + kh) * hd + i];
+            }
+        }
+        for (size_t i = 0; i < hd; i++) {
+            const double e = fabs((double) got[h * hd + i] - acc[i] / sum);
+            err            = e > err ? e : err;
+        }
+    }
+    free(score);
+    free(acc);
+    return err;
+}
+
+/* #91: the prefill flash kernels against cpu_scalar's attention on the
+ * same half-rounded K/V (at one query row, the split-KV decode kernels,
+ * #17, against attention in double; see below). The Metal kernels round Q
+ * and the softmax weights to half for the f16 matrix products and
+ * accumulate in f32, so the bound
  * is a tolerance, not bits: 1e-2 absolute on outputs of magnitude <= 2.7
  * (the half-rounded Q alone costs ~4e-3 on these data, with either
  * kernel); a masking or tiling bug is off by 0.1 or more.
@@ -666,13 +722,22 @@ static void run_flash_ref_case(struct geist_backend *mt,
         check(v->buffer_download(q_elems * sizeof(float), (uint8_t *) got, bo) == GEIST_OK,
               "flash reference download");
         (void) rv;
-        /* Decode (one row) keeps Q and the weights in f32: only the
-         * summation order differs from cpu_scalar. */
-        const double err  = geist_test_max_abs(q_elems, got, orf);
+        /* Decode (one row) keeps Q and the weights in f32, so it is held to
+         * 2e-5 against attention in double (it lands near 2e-6). Not against
+         * cpu_scalar: its float dot products and sums follow the
+         * optimization level, and the -O1 sanitizer build (sequential
+         * sums) sits 2e-5 from double at hd 512 over 1000 keys by itself
+         * (#233, #268). Prefill rounds to half and keeps cpu_scalar. */
+        const double err  = q_rows == 1
+                                    ? flash_decode_err_vs_double(
+                                              k_rows, q_heads, kv_heads, hd, window, qr, kr, vr, got)
+                                    : geist_test_max_abs(q_elems, got, orf);
         const bool   pass = err < (q_rows == 1 ? 2e-5 : 1e-2);
-        check(pass, "flash attention matches cpu_scalar");
-        printf("  flash vs cpu_scalar rows %zu at %zu heads %zu/%zu hd %zu window %zu max_abs "
-               "%.2e %s\n",
+        check(pass,
+              q_rows == 1 ? "flash decode matches attention in double"
+                          : "flash attention matches cpu_scalar");
+        printf("  flash vs %s rows %zu at %zu heads %zu/%zu hd %zu window %zu max_abs %.2e %s\n",
+               q_rows == 1 ? "double" : "cpu_scalar",
                q_rows,
                q_offset,
                q_heads,
@@ -1009,9 +1074,7 @@ static void run_fused_matvec_case(
             for (size_t i = 0; i < n_kv; i++) {
                 const double a = got[i], b = got[n_kv + i];
                 const double r = fabs(a - b) / (fabs(b) > 1.0 ? fabs(b) : 1.0);
-                if (r > rel && silu)
-                    printf("DBG i=%zu fused=%.9g sep=%.9g\n", i, a, b);
-                rel = r > rel ? r : rel;
+                rel            = r > rel ? r : rel;
             }
             const bool eq = memcmp(got, got + n_kv, n_kv * sizeof(float)) == 0;
             check(eq,
@@ -1768,6 +1831,16 @@ int main(void) {
     run_q4k_half_case(mt, 1536, 1100);
     run_q4k_half_case(mt, 512, 1030);
 #endif
+
+    /* #271: decode below 32 lanes of head_dim (the Qwen3.5 fixtures' 16).
+     * The per-key decode kernel's first lane chunk read Q from unwritten
+     * threadgroup memory and K/V of the next head (past the cache at its
+     * last row) and wrote its partial into the next simdgroup's slots.
+     * Last, so the shared random stream of the cases above stays as it
+     * was. */
+    run_flash_ref_case(mt, ref, 1, 47, 4, 2, 16, 0);
+    run_flash_ref_case(mt, ref, 1, 40, 4, 1, 16, 0);
+    run_flash_ref_case(mt, ref, 1, 99, 8, 2, 8, 0);
 
     geist_backend_destroy(mt);
     geist_backend_destroy(ref);

@@ -21,43 +21,12 @@
  *   dim     uint32    embedding dimension
  *   data    float32[count * dim]   row-major, already L2-normalised
  */
-#include <geist.h>
-#include <geist_backend.h>
-#include <geist_util.h>
+#include "tool_common.h"
 
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 enum { MAX_PROMPT_TOKENS = 8192 };
-
-static char *read_file_z(const char *path, size_t *size) {
-    FILE *f = fopen(path, "rb");
-    if (f == nullptr) {
-        return nullptr;
-    }
-    if (fseek(f, 0, SEEK_END) != 0) {
-        fclose(f);
-        return nullptr;
-    }
-    const long end = ftell(f);
-    if (end < 0 || fseek(f, 0, SEEK_SET) != 0) {
-        fclose(f);
-        return nullptr;
-    }
-    const size_t bytes = (size_t) end;
-    char        *data  = malloc(bytes + 1u);
-    if (data == nullptr || fread(data, 1, bytes, f) != bytes) {
-        free(data);
-        fclose(f);
-        return nullptr;
-    }
-    fclose(f);
-    data[bytes] = '\0';
-    *size       = bytes;
-    return data;
-}
 
 /* Split `text` in place into NUL-terminated lines, skipping blank ones.
  * Returns the count and fills `out` up to `cap` entries. */
@@ -101,7 +70,7 @@ int main(int argc, char **argv) {
     }
 
     size_t text_bytes = 0;
-    char  *text       = read_file_z(argv[2], &text_bytes);
+    char  *text       = tool_read_file(argv[2], &text_bytes);
     if (text == nullptr || text_bytes == 0) {
         fprintf(stderr, "failed to read non-empty prompts file: %s\n", argv[2]);
         free(text);
@@ -122,27 +91,18 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    struct geist_backend *backend = nullptr;
-    struct geist_model   *model   = nullptr;
-    struct geist_session *session = nullptr;
-    geist_token_t        *ids     = nullptr;
-    FILE                 *out     = nullptr;
-    int                   rc      = 1;
+    struct tool_engine e   = {0};
+    geist_token_t     *ids = nullptr;
+    FILE              *out = nullptr;
+    int                rc  = 1;
 
-    if (geist_backend_create("auto", nullptr, nullptr, &backend) != GEIST_OK) {
-        fprintf(stderr, "backend create failed: %s\n", geist_last_create_error());
-        goto done;
-    }
-    if (geist_model_load(argv[1], backend, &model) != GEIST_OK) {
-        fprintf(stderr, "model load failed: %s\n", geist_last_create_error());
-        goto done;
-    }
     struct geist_session_opts opts = {.temperature = 0.0f};
-    if (geist_session_create(model, backend, &opts, &session) != GEIST_OK) {
-        fprintf(stderr, "session create failed\n");
+    if (!tool_open("auto", nullptr, argv[1], nullptr, &opts, &e)) {
         goto done;
     }
-    ids = malloc(MAX_PROMPT_TOKENS * sizeof(*ids));
+    struct geist_model   *model   = e.model;
+    struct geist_session *session = e.sess;
+    ids                           = malloc(MAX_PROMPT_TOKENS * sizeof(*ids));
     if (ids == nullptr) {
         goto done;
     }
@@ -221,7 +181,7 @@ int main(int argc, char **argv) {
     }
     fprintf(stderr,
             "backend=%s prompts=%zu dim=%zu -> %s\n",
-            geist_backend_name(backend),
+            geist_backend_name(e.be),
             n_prompts,
             dim,
             argv[3]);
@@ -232,15 +192,7 @@ done:
         rc = 1;
     }
     free(ids);
-    if (session != nullptr) {
-        geist_session_destroy(session);
-    }
-    if (model != nullptr) {
-        geist_model_destroy(model);
-    }
-    if (backend != nullptr) {
-        geist_backend_destroy(backend);
-    }
+    tool_close(&e);
     free(prompts);
     free(text);
     return rc;

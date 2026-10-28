@@ -82,42 +82,46 @@ struct dtype_row_t {
      * truncated mid-scale from passing the extent check. */
     size_t      tail_bytes;
     const char *name;
+    /* What the tensor loads as; GEIST_DTYPE_CUSTOM when geist cannot. */
+    enum geist_dtype geist;
 };
 
 static const struct dtype_row_t DTYPE_ROWS[] = {
-        {GGUF_TYPE_F32, 4, 1, 0, "F32"},
-        {GGUF_TYPE_F16, 2, 1, 0, "F16"},
-        {GGUF_TYPE_BF16, 2, 1, 0, "BF16"},
-        {GGUF_TYPE_Q4_0, 18, 32, 0, "Q4_0"}, /* fp16 d + 32 nibbles */
-        {GGUF_TYPE_Q4_1, 20, 32, 0, "Q4_1"}, /* fp16 d, fp16 m + 32 nibbles */
-        {GGUF_TYPE_Q5_0, 22, 32, 0, "Q5_0"},
-        {GGUF_TYPE_Q5_1, 24, 32, 0, "Q5_1"},
-        {GGUF_TYPE_Q8_0, 34, 32, 0, "Q8_0"}, /* fp16 d + 32 int8 */
-        {GGUF_TYPE_Q8_1, 36, 32, 0, "Q8_1"},
-        {GGUF_TYPE_Q2_K, 82, 256, 0, "Q2_K"},
-        {GGUF_TYPE_Q3_K, 110, 256, 0, "Q3_K"},
-        {GGUF_TYPE_Q4_K, 144, 256, 0, "Q4_K"}, /* k-quant 4-bit super-block */
-        {GGUF_TYPE_Q5_K, 176, 256, 0, "Q5_K"},
-        {GGUF_TYPE_Q6_K, 210, 256, 0, "Q6_K"},
-        {GGUF_TYPE_Q8_K, 292, 256, 0, "Q8_K"},
-        {GGUF_TYPE_IQ3_S, 110, 256, 0, "IQ3_S"},   /* fp16 d + 64 qs + 8 qh + 32 signs + 4 scales */
-        {GGUF_TYPE_IQ4_NL, 18, 32, 0, "IQ4_NL"},   /* fp16 d + 16 packed LUT nibbles */
-        {GGUF_TYPE_IQ4_XS, 136, 256, 0, "IQ4_XS"}, /* fp16 d + u16 scales_h + 4 scales_l + 128 qs */
-        {GGUF_TYPE_IQ2_S, 82, 256, 0, "IQ2_S"}, /* fp16 d + 64 qs (incl signs) + 8 qh + 8 scales */
-        {GGUF_TYPE_TQ1_0, 54, 256, 0, "TQ1_0"}, /* 5-trit packed; 52 + 2-byte fp16 scale */
-        {GGUF_TYPE_TQ2_0, 66, 256, 0, "TQ2_0"}, /* 4-trit packed; 64 + 2-byte fp16 scale */
+        {GGUF_TYPE_F32, 4, 1, 0, "F32", GEIST_DTYPE_F32},
+        {GGUF_TYPE_F16, 2, 1, 0, "F16", GEIST_DTYPE_F16},
+        {GGUF_TYPE_BF16, 2, 1, 0, "BF16", GEIST_DTYPE_BF16},
+        {GGUF_TYPE_Q4_0, Q4_0_BLOCK_BYTES, Q4_0_BLOCK_ELEMS, 0, "Q4_0", GEIST_DTYPE_Q4_0},
+        {GGUF_TYPE_Q4_1, Q4_1_BLOCK_BYTES, Q4_1_BLOCK_ELEMS, 0, "Q4_1", GEIST_DTYPE_Q4_1},
+        {GGUF_TYPE_Q5_0, Q5_0_BLOCK_BYTES, Q5_0_BLOCK_ELEMS, 0, "Q5_0", GEIST_DTYPE_Q5_0},
+        {GGUF_TYPE_Q5_1, 24, 32, 0, "Q5_1", GEIST_DTYPE_CUSTOM},
+        {GGUF_TYPE_Q8_0, Q8_0_BLOCK_BYTES, Q8_0_BLOCK_ELEMS, 0, "Q8_0", GEIST_DTYPE_Q8_0},
+        {GGUF_TYPE_Q8_1, 36, 32, 0, "Q8_1", GEIST_DTYPE_CUSTOM},
+        {GGUF_TYPE_Q2_K, 82, 256, 0, "Q2_K", GEIST_DTYPE_CUSTOM},
+        {GGUF_TYPE_Q3_K, Q3_K_BLOCK_BYTES, Q3_K_BLOCK_ELEMS, 0, "Q3_K", GEIST_DTYPE_Q3_K},
+        {GGUF_TYPE_Q4_K, Q4_K_BLOCK_BYTES, Q4_K_BLOCK_ELEMS, 0, "Q4_K", GEIST_DTYPE_Q4_K},
+        {GGUF_TYPE_Q5_K, Q5_K_BLOCK_BYTES, Q5_K_BLOCK_ELEMS, 0, "Q5_K", GEIST_DTYPE_Q5_K},
+        {GGUF_TYPE_Q6_K, Q6_K_BLOCK_BYTES, Q6_K_BLOCK_ELEMS, 0, "Q6_K", GEIST_DTYPE_Q6_K},
+        {GGUF_TYPE_Q8_K, 292, 256, 0, "Q8_K", GEIST_DTYPE_CUSTOM},
+        {GGUF_TYPE_IQ3_S, IQ3_S_BLOCK_BYTES, IQ3_S_BLOCK_ELEMS, 0, "IQ3_S", GEIST_DTYPE_IQ3_S},
+        {GGUF_TYPE_IQ4_NL, IQ4_NL_BLOCK_BYTES, IQ4_NL_BLOCK_ELEMS, 0, "IQ4_NL", GEIST_DTYPE_IQ4_NL},
+        {GGUF_TYPE_IQ4_XS, IQ4_XS_BLOCK_BYTES, IQ4_XS_BLOCK_ELEMS, 0, "IQ4_XS", GEIST_DTYPE_IQ4_XS},
+        {GGUF_TYPE_IQ2_S, IQ2_S_BLOCK_BYTES, IQ2_S_BLOCK_ELEMS, 0, "IQ2_S", GEIST_DTYPE_IQ2_S},
+        /* 5-trit packed; 52 + 2-byte fp16 scale */
+        {GGUF_TYPE_TQ1_0, 54, 256, 0, "TQ1_0", GEIST_DTYPE_TQ1_0},
+        {GGUF_TYPE_TQ2_0, TQ2_0_BLOCK_BYTES, TQ2_0_BLOCK_ELEMS, 0, "TQ2_0", GEIST_DTYPE_TQ2_0},
         /* I2_S (BitNet b1.58 official): 256-elem blocks of 64 packed bytes (4
          * trits/byte, 2.0 bpw), NO per-block scale. A single f32 per-TENSOR scale
          * is stored right after the packed bytes (offset n_elems/4); it sits just
          * past the block-computed nbytes but inside the mmap, so the kernel reads
          * it from raw + n_in*n_out/4. (Confirmed against bitnet.cpp quantize_i2_s:
          * one scale_ptr[0] per tensor, not per row.) */
-        {GGUF_TYPE_I2_S, I2_S_BLOCK_BYTES, I2_S_BLOCK_ELEMS, sizeof(float), "I2_S"},
-        {GGUF_TYPE_PQ2_0,
-         PQ2_0_BLOCK_BYTES,
-         PQ2_0_BLOCK_ELEMS,
-         0,
-         "PQ2_0"}, /* fp16 d + 32 bytes of 2-bit codes */
+        {GGUF_TYPE_I2_S,
+         I2_S_BLOCK_BYTES,
+         I2_S_BLOCK_ELEMS,
+         sizeof(float),
+         "I2_S",
+         GEIST_DTYPE_I2_S},
+        {GGUF_TYPE_PQ2_0, PQ2_0_BLOCK_BYTES, PQ2_0_BLOCK_ELEMS, 0, "PQ2_0", GEIST_DTYPE_PQ2_0},
 };
 static const size_t DTYPE_ROWS_N = sizeof(DTYPE_ROWS) / sizeof(DTYPE_ROWS[0]);
 
@@ -131,6 +135,11 @@ static const struct dtype_row_t *dtype_lookup(gguf_dtype_t dt) {
 const char *gguf_dtype_name(gguf_dtype_t dt) {
     const struct dtype_row_t *r = dtype_lookup(dt);
     return r ? r->name : "?";
+}
+
+enum geist_dtype gguf_dtype_geist(gguf_dtype_t dt) {
+    const struct dtype_row_t *r = dtype_lookup(dt);
+    return r ? r->geist : GEIST_DTYPE_CUSTOM;
 }
 
 /* Element count, or 0 when the dimensions cannot be multiplied in a size_t.

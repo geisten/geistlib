@@ -65,16 +65,9 @@ jobs:
           MODEL_SHA: ${{ inputs.model_sha256 }}
         run: |
           set -eo pipefail
-          CACHE=${GEIST_MODEL_CACHE:-$HOME/geist-models}
-          F="$CACHE/$(basename "$MODEL_URL")"
-          if [ ! -f "$F" ]; then
-            mkdir -p "$CACHE"
-            curl -fL --retry 5 -C - -o "$F.part" "$MODEL_URL"
-            echo "$MODEL_SHA  $F.part" | sha256sum -c -
-            mv "$F.part" "$F"
-          fi
+          F=$(python3 tools/fetch_bench_model.py --url "$MODEL_URL" --sha256 "$MODEL_SHA")
           # Strata's --gguf-dir takes a folder: one with only this file.
-          D="$CACHE/strata-gguf-$(basename "$F" .gguf)"
+          D="$(dirname "$F")/strata-gguf-$(basename "$F" .gguf)"
           mkdir -p "$D" && ln -sf "$F" "$D/"
           # Strata's setup takes a --gguf-dir file only with its finish mark;
           # it checks the size and SHA-256 itself.

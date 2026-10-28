@@ -941,36 +941,36 @@ struct vk_access vk_acc_tensor(const struct geist_tensor *t, bool write) {
     return vk_acc(lo, span, write);
 }
 
-/* GPU view of a tensor: VkBuffer + f32 element offset. False when the
- * tensor's buffer has no VkBuffer behind it (e.g. GGUF-mmap aliases), or
- * when the offset does not fit the shaders' uint32 element index. */
-bool vk_tensor_gpu(const struct geist_tensor *t, VkDescriptorBufferInfo *out, uint32_t *elem_off) {
+/* GPU view of a tensor: VkBuffer + offset in elem_size-byte elements.
+ * False when the tensor's buffer has no VkBuffer behind it (e.g. GGUF-mmap
+ * aliases), or when the offset does not fit the shaders' uint32 element
+ * index. */
+static bool vk_tensor_gpu_elems(const struct geist_tensor *t,
+                                size_t                     elem_size,
+                                VkDescriptorBufferInfo    *out,
+                                uint32_t                  *elem_off) {
     if (t == nullptr || t->buffer == nullptr || t->buffer->buf == VK_NULL_HANDLE) {
         return false;
     }
     size_t byte_off;
-    if (ckd_add(&byte_off, t->buffer->base_off, t->offset) || byte_off % 4 != 0 ||
-        vk_ckd_u32(byte_off / 4, elem_off)) {
+    if (ckd_add(&byte_off, t->buffer->base_off, t->offset) || byte_off % elem_size != 0 ||
+        vk_ckd_u32(byte_off / elem_size, elem_off)) {
         return false;
     }
     *out = (VkDescriptorBufferInfo) {.buffer = t->buffer->buf, .range = VK_WHOLE_SIZE};
     return true;
 }
 
-/* Same, but offsets in f16 elements (for F16 KV-cache views). */
+/* Offsets in f32 elements. */
+bool vk_tensor_gpu(const struct geist_tensor *t, VkDescriptorBufferInfo *out, uint32_t *elem_off) {
+    return vk_tensor_gpu_elems(t, sizeof(float), out, elem_off);
+}
+
+/* Offsets in f16 elements (for F16 KV-cache views). */
 bool vk_tensor_gpu_f16(const struct geist_tensor *t,
                        VkDescriptorBufferInfo    *out,
                        uint32_t                  *elem_off) {
-    if (t == nullptr || t->buffer == nullptr || t->buffer->buf == VK_NULL_HANDLE) {
-        return false;
-    }
-    size_t byte_off;
-    if (ckd_add(&byte_off, t->buffer->base_off, t->offset) || byte_off % 2 != 0 ||
-        vk_ckd_u32(byte_off / 2, elem_off)) {
-        return false;
-    }
-    *out = (VkDescriptorBufferInfo) {.buffer = t->buffer->buf, .range = VK_WHOLE_SIZE};
-    return true;
+    return vk_tensor_gpu_elems(t, sizeof(uint16_t), out, elem_off);
 }
 
 /* Element count of a DENSE tensor of `dtype`, 0 on any mismatch (metadata

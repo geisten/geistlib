@@ -92,9 +92,7 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_ARGMAX,
     METAL_PROFILE_DISPATCH_DELTANET_PREFILL,
     METAL_PROFILE_DISPATCH_DELTANET_DECODE,
-    /* chunked-prefill sub-stages, individually skippable for the
-     * subtractive profiler (all still count as DELTANET for the
-     * category-level GEIST_SKIP_DELTANET). */
+    /* chunked-prefill sub-stages, timed apart from the rest of DeltaNet */
     METAL_PROFILE_DISPATCH_DN_PREP,  /* cst_copy + conv + norm + roll */
     METAL_PROFILE_DISPATCH_DN_CHUNK, /* dnf_chunk */
     METAL_PROFILE_DISPATCH_DN_STATE, /* dnf_state */
@@ -235,7 +233,6 @@ struct metal_state {
     void                *cvt_kmaj_function;
     void                *cvt_kmaj_pipeline;
     struct geist_buffer *pq2_xh_buffer;
-    size_t               pq2_xh_capacity;
     /* Device-dependent crossovers; see tuning.c. Seeded from M1 Max
      * measurements, then a calibration blob, then the env. */
     struct metal_tuning {
@@ -356,6 +353,10 @@ struct metal_state {
     void *dn_dec_v_pipeline;
     void *dn_dec_v_rows_function;
     void *dn_dec_v_rows_pipeline;
+    void *dn_dec_qk_b_function; /* #26: several sessions' decode rows */
+    void *dn_dec_qk_b_pipeline;
+    void *dn_dec_v_b_function;
+    void *dn_dec_v_b_pipeline;
     void *dnf_cst_copy_function;
     void *dnf_cst_copy_pipeline;
     void *dnf_conv_function;
@@ -493,7 +494,6 @@ struct metal_state {
      * path on an F32 KV cache; decode reads the F32 cache directly. */
     struct geist_buffer *attn_kf16_buffer;
     struct geist_buffer *attn_vf16_buffer;
-    size_t               attn_kvf16_capacity;
     /* The 32-key-block split-KV decode kernels (#17), F16 and F32 KV, in
      * the prefill flash kernels' head_dim slots (64, 128, 256 and 512
      * built; see metal_decv_pipeline). */
@@ -511,7 +511,6 @@ struct metal_state {
     void                *attention_dec_combine_function;
     void                *attention_dec_combine_pipeline;
     struct geist_buffer *attn_dec_partials_buffer;
-    size_t               attn_dec_partials_capacity;
     void                *sequence_command_buffer;
     void                *sequence_compute_encoder;
     void                *sequence_pool; /* autorelease pool, sequence begin..end */
@@ -549,7 +548,6 @@ struct metal_state {
     _Atomic(uintptr_t)        seq_owner;
     bool                      sequence_has_work;
     bool                      profile_enabled;
-    bool                      skip_next_dispatch; /* subtractive profiler: drop the next dispatch */
     struct metal_profile_stat profile[METAL_PROFILE_STAGE_COUNT];
     /* GPU time of committed command buffers (profile only): the sum of the
      * buffers' own times, and their union on the GPU timeline (busy). */
@@ -628,8 +626,6 @@ enum {
     METAL_Q4K_BLOCK_BYTES               = 144u,
     METAL_Q4K_NT4_DEFAULT_MAX_N_OUT     = 8192u,
     METAL_Q4K_NT4_LARGE_MAX_N_OUT       = 262144u,
-    METAL_Q5K_BLOCK_ELEMS               = 256u,
-    METAL_Q5K_BLOCK_BYTES               = 176u,
     METAL_Q6K_BLOCK_ELEMS               = 256u,
     METAL_Q6K_BLOCK_BYTES               = 210u,
     METAL_Q6K_NT4_MIN_N_OUT             = 1024u,
@@ -639,6 +635,32 @@ enum {
     METAL_ELEM_THREADS                  = 256u,
     METAL_QNORM_ATTENTION_MAX_HEAD_DIM  = 512u,
 };
+
+/* The dtypes whose linear is metal_q40_q80_linear: one kernel family
+ * indexed by dtype, one validator (metal_tensor_is_q40_q80_matrix). */
+static inline bool metal_dtype_is_generic_quant(enum geist_dtype dtype) {
+    switch (dtype) {
+    case GEIST_DTYPE_Q4_0:
+    case GEIST_DTYPE_Q4_1:
+    case GEIST_DTYPE_Q8_0:
+    case GEIST_DTYPE_Q5_K:
+    case GEIST_DTYPE_IQ4_NL:
+    case GEIST_DTYPE_IQ4_XS:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_PQ2_0:
+    case GEIST_DTYPE_TQ2_0:
+    case GEIST_DTYPE_I2_S:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Dense float weights: metal_f32_linear reads F32, F16 and BF16. */
+static inline bool metal_dtype_is_float(enum geist_dtype dtype) {
+    return dtype == GEIST_DTYPE_F32 || dtype == GEIST_DTYPE_F16 || dtype == GEIST_DTYPE_BF16;
+}
 
 /* Elements per raw block of `dtype` (quant_block_layout); 1 for a dtype
  * without a fixed layout. */
@@ -1060,10 +1082,6 @@ bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
                                 size_t                    *out_rows,
                                 size_t                    *out_cols,
                                 size_t                    *out_offset_bytes);
-bool metal_tensor_is_q5k_matrix(const struct geist_tensor *t,
-                                size_t                    *out_rows,
-                                size_t                    *out_cols,
-                                size_t                    *out_offset_bytes);
 
 bool metal_tensor_is_q40_q80_matrix(const struct geist_tensor *t,
                                     enum geist_dtype           dtype,
@@ -1083,17 +1101,21 @@ bool metal_tensor_is_f16_3d(const struct geist_tensor *t,
                             size_t                    *out_d2,
                             size_t                    *out_offset_halfs);
 
-[[nodiscard]] enum geist_status metal_ensure_q4k_pipeline(struct geist_backend *be);
+/* The pipeline tables of pipelines.c; metal_ensure builds one on first
+ * use (ARGMAX also allocates its result buffers). */
+enum metal_table {
+    METAL_TAB_DELTANET,
+    METAL_TAB_QUANT, /* quantized/F32 linears and the elementwise kernels */
+    METAL_TAB_ATTENTION,
+    METAL_TAB_HADAMARD,
+    METAL_TAB_ARGMAX,
+    METAL_TAB_MOE,
+    METAL_TAB_COUNT,
+};
 
-[[nodiscard]] enum geist_status metal_ensure_attention_pipeline(struct geist_backend *be);
+[[nodiscard]] enum geist_status metal_ensure(struct geist_backend *be, enum metal_table table);
 
-[[nodiscard]] enum geist_status metal_ensure_argmax_pipeline(struct geist_backend *be);
-[[nodiscard]] enum geist_status metal_ensure_moe_pipeline(struct geist_backend *be);
-[[nodiscard]] enum geist_status metal_ensure_hadamard_pipeline(struct geist_backend *be);
-
-[[nodiscard]] enum geist_status metal_ensure_deltanet_pipeline(struct geist_backend *be);
-
-/* Releases every library, pipeline and function the ensure_* tables in
+/* Releases every library, pipeline and function the tables in
  * pipelines.c build. */
 void metal_release_pipeline_tables(struct metal_state *st);
 

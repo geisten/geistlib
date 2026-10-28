@@ -25,12 +25,14 @@ loudly before a test consumes it (same idea as fetch-llama-model's pin).
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import struct
 import sys
 import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bench_host import sha256_file  # noqa: E402
 
 # A revision, not `main`: --sha256 already fails loudly when upstream content changes, but a
 # branch that moves turns a reproducible extraction into a coin flip. Verified 2026-09-19.
@@ -147,14 +149,7 @@ def main() -> int:
                         break
             print(f"  {done / 1048576:7.0f} / {total_mb:.0f} MB", flush=True)
 
-    sha = hashlib.sha256()
-    with open(part, "rb") as f:
-        while True:
-            buf = f.read(CHUNK)
-            if not buf:
-                break
-            sha.update(buf)
-    digest = sha.hexdigest()
+    digest = sha256_file(part)
     print(f"sha256 {digest}")
     if args.sha256 and digest != args.sha256.lower():
         part.unlink()

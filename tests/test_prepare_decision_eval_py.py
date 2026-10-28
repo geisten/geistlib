@@ -2,6 +2,7 @@
 import importlib.util
 import io
 from pathlib import Path
+import subprocess
 import sys
 import unittest
 from unittest.mock import patch
@@ -61,14 +62,14 @@ class PreparationTests(unittest.TestCase):
             def poll(self):
                 return 0
         log, process = Log(), Process()
-        with patch.object(prepare.subprocess, "Popen", return_value=process):
+        with patch.object(subprocess, "Popen", return_value=process):
             with self.assertRaises(ValueError):
                 prepare.Tokenizer("binary", "model", log)
         self.assertTrue(log.stream.closed)
         self.assertTrue(process.stdin.closed)
         self.assertTrue(process.stdout.closed)
         log = Log()
-        with patch.object(prepare.subprocess, "Popen", side_effect=OSError("unavailable")):
+        with patch.object(subprocess, "Popen", side_effect=OSError("unavailable")):
             with self.assertRaises(OSError):
                 prepare.Tokenizer("binary", "model", log)
         self.assertTrue(log.stream.closed)

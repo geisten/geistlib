@@ -40,15 +40,11 @@
  * Usage:
  *   eval_geist <gguf> [--awq <scales.bin>]
  */
-#include <geist.h>
-#include <geist_util.h>
-#include <geist_backend.h>
+#include "tool_common.h"
 
 #include <ctype.h>
 #include <math.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 /* Read whitespace-separated int32 list of length n into out. */
@@ -382,33 +378,17 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    struct geist_backend *be = nullptr;
-    enum geist_status     s  = geist_backend_create("auto", nullptr, nullptr, &be);
-    if (s != GEIST_OK) {
-        fprintf(stderr, "backend create failed: %s\n", geist_last_create_error());
-        return 1;
-    }
-
-    struct geist_model *model = nullptr;
-    s                         = geist_model_load(gguf_path, be, &model);
-    if (s != GEIST_OK) {
-        fprintf(stderr, "geist_model_load failed: %s\n", geist_last_create_error());
-        geist_backend_destroy(be);
-        return 1;
-    }
-
     struct geist_session_opts opts = {
             .temperature     = 0.0f, /* greedy */
             .awq_scales_path = awq_path,
     };
-    struct geist_session *sess = nullptr;
-    s                          = geist_session_create(model, be, &opts, &sess);
-    if (s != GEIST_OK) {
-        fprintf(stderr, "geist_session_create failed\n");
-        geist_model_destroy(model);
-        geist_backend_destroy(be);
+    struct tool_engine e = {0};
+    if (!tool_open("auto", nullptr, gguf_path, nullptr, &opts, &e)) {
+        tool_close(&e);
         return 1;
     }
+    struct geist_model   *model = e.model;
+    struct geist_session *sess  = e.sess;
 
     fprintf(stderr, "READY\n");
     fflush(stderr);
@@ -464,8 +444,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    geist_session_destroy(sess);
-    geist_model_destroy(model);
-    geist_backend_destroy(be);
+    tool_close(&e);
     return 0;
 }
