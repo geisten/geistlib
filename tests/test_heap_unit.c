@@ -171,6 +171,8 @@ int main(void) {
         heap_fail_allocations(false);
         CHECK(!grew && s == nullptr && cap == 0, "scratch OOM: nullptr and 0, next call retries");
         CHECK(heap_scratch_grow_array(s, cap, 16) && s != nullptr && cap == 16, "scratch retry");
+        CHECK(heap_grow_slow((void **) &s, &cap, 8, sizeof *s, 0, true) && cap == 16,
+              "slow path called directly while big enough: no change");
         safe_free((void **) &s);
     }
 
