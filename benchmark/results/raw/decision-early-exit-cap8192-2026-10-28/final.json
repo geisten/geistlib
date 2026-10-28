@@ -1,0 +1,53 @@
+{
+ "policy": {
+  "accuracy": 0.856,
+  "correct": 428,
+  "early_exits": 330,
+  "capped": 2,
+  "generated_tokens": 152657,
+  "probes": 1586,
+  "probe_ms_total": 202165.406,
+  "latency_ms": {
+   "p50": 31802.210499999997,
+   "p95": 188412.99964999987
+  },
+  "complete_driver_runs": {
+   "runs": 32,
+   "tokens": 152657,
+   "decode_ms": 7349920.567,
+   "wall_ms": 8971193.461,
+   "tokens_per_s_decode": 20.769884328465558
+  }
+ },
+ "vs_full_reasoning_cap8192": {
+  "gains": 27,
+  "losses": 27,
+  "difference_pp": 0.0,
+  "interval_pp": [
+   -4.743400073598913,
+   4.743400073598913
+  ],
+  "noninferior": false,
+  "baseline_accuracy": 0.856,
+  "direct_accuracy": 0.856
+ },
+ "vs_171_cap2048": {
+  "gains": 51,
+  "losses": 18,
+  "difference_pp": 6.6,
+  "interval_pp": [
+   1.4299554839234105,
+   11.651814010665271
+  ],
+  "noninferior": true,
+  "baseline_accuracy": 0.79,
+  "direct_accuracy": 0.856
+ },
+ "baseline_tokens_cap8192": 676706,
+ "token_ratio": 0.22558836481426203,
+ "lease_s": {
+  "policy": 9192.408259630203,
+  "baseline_264": 6901.306392431259,
+  "baseline_rerun_cap8192": 18560.735727787018
+ }
+}

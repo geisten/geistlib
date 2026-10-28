@@ -1,0 +1,30 @@
+{
+  "started_unix": 1793051325.47596,
+  "rows": [
+    210,
+    211,
+    214,
+    220,
+    224,
+    226,
+    228,
+    231
+  ],
+  "lock_note": "#236 cap8192 cal-rerun chunk 6",
+  "deadline_minutes": 28.0,
+  "cool_gate": {
+    "cool_gate": "temperature",
+    "cool_wait_seconds": 1.2,
+    "gpu_temp_c": 63.7,
+    "cpu_temp_c": 66.2
+  },
+  "run": {
+    "started_unix": 1793051326.64534,
+    "wall_seconds": 1336.8575401306152,
+    "returncode": 0,
+    "lines": 13,
+    "stopped_at_deadline": false,
+    "discarded_partial_line_bytes": 0
+  },
+  "ended_unix": 1793052663.504736
+}
