@@ -217,10 +217,15 @@ static int run(struct geist_model *m, struct geist_backend *be, const char *what
                                           GEIST_E_TOO_MANY_TOKENS &&
                                   none == nullptr,
                           "a prefix filling the prompt capacity is refused");
-    fails += geist_expect(geist_decision_prefix_prepare(a, SIZE_MAX, CTX - 1, full, &pf) ==
-                                          GEIST_OK &&
-                                  score_p(a, pf, 1, S1, got),
-                          "prefix + one suffix token at exact capacity scores");
+    /* One suffix token is the decode path (#271: Metal's per-key decode
+     * kernel read past head_dim 16 and returned garbage, at times NaN):
+     * bit-identical to a fresh prefill(47), prefill(1) as well. */
+    float refcap[NCAND];
+    fails += geist_expect(
+            geist_decision_prefix_prepare(a, SIZE_MAX, CTX - 1, full, &pf) == GEIST_OK &&
+                    score_p(a, pf, 1, S1, got) && reference(m, be, CTX - 1, full, 1, S1, refcap) &&
+                    memcmp(got, refcap, sizeof got) == 0,
+            "prefix + one suffix token at exact capacity scores");
     fails += geist_expect(geist_decision_score_from_prefix(a, pf, 2, NCAND, S1, CAND, &r) ==
                                           GEIST_E_TOO_MANY_TOKENS &&
                                   cleared(&r),
