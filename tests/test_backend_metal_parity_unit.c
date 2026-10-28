@@ -1832,6 +1832,15 @@ int main(void) {
     run_q4k_half_case(mt, 512, 1030);
 #endif
 
+    /* #271: decode at head_dim below 32 (the qwen35 unit fixture's 16) from
+     * 32 keys on, where rows==1 leaves the scalar kernel. The split-KV
+     * decode body gives every lane a head_dim element, so these must stay
+     * on the scalar kernel. Last, for the random stream above. */
+    run_flash_ref_case(mt, ref, 1, 31, 4, 2, 16, 0);
+    run_flash_ref_case(mt, ref, 1, 47, 4, 2, 16, 0);
+    run_flash_ref_case(mt, ref, 1, 200, 8, 2, 16, 64);
+    run_flash_ref_case(mt, ref, 1, 63, 4, 1, 8, 0);
+
     geist_backend_destroy(mt);
     geist_backend_destroy(ref);
     if (g_fail == 0) {

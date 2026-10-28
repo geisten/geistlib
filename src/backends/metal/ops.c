@@ -3476,7 +3476,13 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
         return s;
     }
     struct metal_state *st = be->state;
-    if (q_rows == 1u &&
+    /* The split-KV decode kernels give every lane of a simdgroup at least
+     * one head_dim element (lane ln reads q/K/V element ln unguarded and
+     * stores its accumulator at sg*head_dim+ln), so head_dim < 32 reads
+     * unset threadgroup memory and overlaps the neighbouring simdgroup's
+     * slots: O(1) error and intermittent NaN (#271). It takes the scalar
+     * kernel. */
+    if (q_rows == 1u && head_dim >= 32u &&
         (head_dim <= 256u || (head_dim <= 512u && st->attention_dec512_f16_pipeline != nullptr)) &&
         k_rows >= 32u && st->attention_dec_f16_pipeline != nullptr &&
         st->attention_dec_combine_pipeline != nullptr) {
