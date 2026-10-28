@@ -2572,14 +2572,19 @@ static const char metal_attn_dec_f16_body[] =
         "uint kvh=h/(p.qh/p.kvh),qp=p.qpos;"
         "uint slo=(p.sw>0u&&qp+1u>p.sw)?qp+1u-p.sw:0u;uint shi=qp<p.kv_len?qp:p.kv_len-1u;"
         /* fixed 8-chunk unroll (hd<=256) keeps a[] in registers — a runtime
-         * bound would spill the accumulators to thread-private device memory */
+         * bound would spill the accumulators to thread-private device memory.
+         * Every chunk is guarded, the first too: below hd 32 (the Qwen3.5
+         * fixtures' 16) the lanes past hd would read Q from unwritten
+         * threadgroup memory and K/V of the next head (past the cache at
+         * its last row), and write into the next simdgroup's partial (#271). */
         "float m=-3.402823466e+38f,l=0.0f,a0=0,a1=0,a2=0,a3=0,a4=0,a5=0,a6=0,a7=0;"
         "bool "
-        "g1=ln+32u<hd,g2=ln+64u<hd,g3=ln+96u<hd,g4=ln+128u<hd,g5=ln+160u<hd,g6=ln+192u<hd,g7=ln+"
+        "g0=ln<hd,g1=ln+32u<hd,g2=ln+64u<hd,g3=ln+96u<hd,g4=ln+128u<hd,g5=ln+160u<hd,g6=ln+192u<hd,"
+        "g7=ln+"
         "224u<hd;"
         "for(uint t=slo+ss*8u+sg;t<=shi;t+=sp.ns*8u){"
         "uint kb=p.kco+t*p.kvh*hd+kvh*hd;"
-        "float d=qv[ln]*KVF(kc[kb+ln]);"
+        "float d=g0?qv[ln]*KVF(kc[kb+ln]):0.0f;"
         "if(g1)d+=qv[ln+32u]*KVF(kc[kb+ln+32u]);"
         "if(g2)d+=qv[ln+64u]*KVF(kc[kb+ln+64u]);"
         "if(g3)d+=qv[ln+96u]*KVF(kc[kb+ln+96u]);"
@@ -2591,7 +2596,7 @@ static const char metal_attn_dec_f16_body[] =
         "float mn=max(m,d),corr=exp(m-mn),e=exp(d-mn);"
         "l=l*corr+e;"
         "uint vb=p.vco+t*p.kvh*hd+kvh*hd;"
-        "a0=a0*corr+e*KVF(vc[vb+ln]);"
+        "if(g0)a0=a0*corr+e*KVF(vc[vb+ln]);"
         "if(g1)a1=a1*corr+e*KVF(vc[vb+ln+32u]);"
         "if(g2)a2=a2*corr+e*KVF(vc[vb+ln+64u]);"
         "if(g3)a3=a3*corr+e*KVF(vc[vb+ln+96u]);"
@@ -2602,7 +2607,7 @@ static const char metal_attn_dec_f16_body[] =
         "m=mn;}"
         "if(ln==0u){tm[sg]=m;tl[sg]=l;}"
         "uint tb=sg*hd+ln;"
-        "ta[tb]=a0;"
+        "if(g0)ta[tb]=a0;"
         "if(g1)ta[tb+32u]=a1;if(g2)ta[tb+64u]=a2;if(g3)ta[tb+96u]=a3;"
         "if(g4)ta[tb+128u]=a4;if(g5)ta[tb+160u]=a5;if(g6)ta[tb+192u]=a6;if(g7)ta[tb+224u]=a7;"
         "threadgroup_barrier(mem_flags::mem_threadgroup);"
