@@ -83,6 +83,9 @@ X(VK_PIPE_DN_DELTA,               deltanet_delta_f32_spv,      "dn_delta",      
 X(VK_PIPE_DN_NORM,                deltanet_norm_f32_spv,       "dn_norm",                3, PLAIN)
 /* column-split DeltaNet recurrence; needs clustered subgroups (st->dn_scan) */
 X(VK_PIPE_DN_SCAN,                deltanet_scan_f32_spv,       "dn_scan",                8, PLAIN)
+/* batched decode (#26): every session's conv / scan step, its own states */
+X(VK_PIPE_DN_CONV_B,              deltanet_conv_b_f32_spv,     "dn_conv_b",             10, PLAIN)
+X(VK_PIPE_DN_SCAN_B,              deltanet_scan_b_f32_spv,     "dn_scan_b",             14, PLAIN)
 X(VK_PIPE_MATVEC_Q4_0,            matvec_q4_0_spv,             "matvec_q4_0",            3, PLAIN)
 X(VK_PIPE_MATMUL_Q4_0,            matmul_q4_0_spv,             "matmul_q4_0",            3, TILED)
 X(VK_PIPE_MATVEC_Q4_1,            matvec_q4_1_spv,             "matvec_q4_1",            3, PLAIN)

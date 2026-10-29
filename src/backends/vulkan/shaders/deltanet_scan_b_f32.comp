@@ -1,0 +1,155 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_clustered : enable
+#include "vk_limits.h"
+
+/* deltanet_scan_f32.comp for batched decode (#26, batch 3): workgroup z = b
+ * steps session b's one token (row b of qkv, beta and alpha) against
+ * session b's own recurrent state, bound at 6 + b. Per column the
+ * arithmetic is deltanet_scan_f32's at seq = 1, in the same order, so the
+ * result is bit-identical to one call per session. Unused state bindings
+ * repeat the last one and are never touched (gz = sessions).
+ *
+ * Same host checks as deltanet_scan_f32 (clustered subgroups of at least
+ * LANES lanes; d_k <= LANES * ROWS; d_k, conv_dim and the qkv offset
+ * multiples of 4).
+ *
+ * Bindings: 0 qkv (vec4, read), 1 beta, 2 alpha, 3 ssm_a, 4 dt_bias,
+ * 5 qkv (o out), 6..13 delta states, all at s_off.
+ * Dispatch: gx = n_vh, gy = ceil(d_v / COLS), gz = n. */
+
+layout(local_size_x = VK_DN_SCAN_WG) in;
+
+const uint LANES = VK_DN_SCAN_LANES;
+const uint G = VK_DN_SCAN_ROWS / 4u; /* vec4 row groups per lane */
+const uint COLS = VK_DN_SCAN_WG / VK_DN_SCAN_LANES;
+
+layout(set = 0, binding = 0) restrict readonly buffer QKV { vec4 qkv4[]; };
+layout(set = 0, binding = 1) readonly buffer Beta { float beta_in[]; };
+layout(set = 0, binding = 2) readonly buffer Alpha { float alpha_in[]; };
+layout(set = 0, binding = 3) readonly buffer A { float ssm_a[]; };
+layout(set = 0, binding = 4) readonly buffer DT { float dt_bias[]; };
+layout(set = 0, binding = 5) restrict writeonly buffer OUT { float qkv_out[]; };
+layout(set = 0, binding = 6) buffer S0 { float st0[]; };
+layout(set = 0, binding = 7) buffer S1 { float st1[]; };
+layout(set = 0, binding = 8) buffer S2 { float st2[]; };
+layout(set = 0, binding = 9) buffer S3 { float st3[]; };
+layout(set = 0, binding = 10) buffer S4 { float st4[]; };
+layout(set = 0, binding = 11) buffer S5 { float st5[]; };
+layout(set = 0, binding = 12) buffer S6 { float st6[]; };
+layout(set = 0, binding = 13) buffer S7 { float st7[]; };
+
+layout(push_constant) uniform Push {
+    uint n_kh;
+    uint n_vh;
+    uint dk;
+    uint dv;
+    uint keyd;
+    uint convd;
+    uint qkv_off;
+    uint beta_off;
+    uint alpha_off;
+    uint a_off;
+    uint dtb_off;
+    uint s_off;
+} pc;
+
+/* b is uniform per workgroup: the switch never diverges */
+float st_load(uint b, uint i) {
+    switch (b) {
+    case 0u: return st0[i];
+    case 1u: return st1[i];
+    case 2u: return st2[i];
+    case 3u: return st3[i];
+    case 4u: return st4[i];
+    case 5u: return st5[i];
+    case 6u: return st6[i];
+    default: return st7[i];
+    }
+}
+
+void st_store(uint b, uint i, float x) {
+    switch (b) {
+    case 0u: st0[i] = x; break;
+    case 1u: st1[i] = x; break;
+    case 2u: st2[i] = x; break;
+    case 3u: st3[i] = x; break;
+    case 4u: st4[i] = x; break;
+    case 5u: st5[i] = x; break;
+    case 6u: st6[i] = x; break;
+    default: st7[i] = x; break;
+    }
+}
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint lane = tid % LANES;
+    uint hv = gl_WorkGroupID.x;
+    uint b = gl_WorkGroupID.z;
+    uint hk = hv % pc.n_kh;
+    uint j = gl_WorkGroupID.y * COLS + tid / LANES;
+    bool col_ok = j < pc.dv;
+    uint jc = col_ok ? j : 0u;
+    uint ng = pc.dk / 4u; /* valid vec4 groups */
+    uint sbase = pc.s_off + hv * pc.dk * pc.dv;
+    uint row = pc.qkv_off + b * pc.convd; /* session b's token */
+    uint qo4 = (row + hk * pc.dk) / 4u;   /* all multiples of 4 */
+    uint ko4 = (row + pc.keyd + hk * pc.dk) / 4u;
+    uint vat = row + 2u * pc.keyd + hv * pc.dv + jc;
+    float A = ssm_a[pc.a_off + hv];
+    float dtb = dt_bias[pc.dtb_off + hv];
+
+    vec4 s[G];
+    for (uint c = 0u; c < G; ++c) {
+        uint g = c * LANES + lane;
+        s[c] = vec4(0.0);
+        if (col_ok && g < ng) {
+            uint at = sbase + 4u * g * pc.dv + j;
+            s[c] = vec4(st_load(b, at), st_load(b, at + pc.dv), st_load(b, at + 2u * pc.dv),
+                        st_load(b, at + 3u * pc.dv));
+        }
+    }
+
+    vec4 kc[G], qc[G];
+    for (uint c = 0u; c < G; ++c) {
+        uint g = c * LANES + lane;
+        bool ok = g < ng;
+        kc[c] = ok ? qkv4[ko4 + g] : vec4(0.0);
+        qc[c] = ok ? qkv4[qo4 + g] : vec4(0.0);
+    }
+    float vc = qkv4[vat / 4u][vat % 4u];
+    float bc = beta_in[pc.beta_off + b * pc.n_vh + hv];
+    float xc = alpha_in[pc.alpha_off + b * pc.n_vh + hv] + dtb;
+
+    float beta = 1.0 / (1.0 + exp(-bc));
+    float sp = xc > 30.0 ? xc : log(1.0 + exp(xc));
+    float decay = exp(A * sp);
+
+    vec4 p = vec4(0.0);
+    for (uint c = 0u; c < G; ++c) {
+        p = fma(s[c], kc[c], p);
+    }
+    float kvm = subgroupClusteredAdd((p.x + p.y) + (p.z + p.w), LANES) * decay;
+    float delta = (vc - kvm) * beta;
+    vec4 o4 = vec4(0.0);
+    for (uint c = 0u; c < G; ++c) {
+        s[c] = fma(kc[c], vec4(delta), s[c] * decay);
+        o4 = fma(s[c], qc[c], o4);
+    }
+    float o = subgroupClusteredAdd((o4.x + o4.y) + (o4.z + o4.w), LANES);
+    if (col_ok && lane == 0u) {
+        qkv_out[vat] = o;
+    }
+
+    for (uint c = 0u; c < G; ++c) {
+        uint g = c * LANES + lane;
+        if (col_ok && g < ng) {
+            uint at = sbase + 4u * g * pc.dv + j;
+            st_store(b, at, s[c].x);
+            st_store(b, at + pc.dv, s[c].y);
+            st_store(b, at + 2u * pc.dv, s[c].z);
+            st_store(b, at + 3u * pc.dv, s[c].w);
+        }
+    }
+}

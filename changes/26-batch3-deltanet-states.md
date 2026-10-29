@@ -10,4 +10,3 @@
     (median of 12 interleaved cycles, faster in 11, 95 % interval
     [-7.1 %, -0.6 %]).
   - `GEIST_DECODE_BATCH_PER_SESSION=1` at load keeps one call per session.
-    Vulkan still uses one call per session.

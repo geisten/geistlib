@@ -307,7 +307,17 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
                                 st->device_name);
         return GEIST_E_UNSUPPORTED;
     }
-    st->ts_period_ns   = pprops.properties.limits.timestampPeriod;
+    st->ts_period_ns = pprops.properties.limits.timestampPeriod;
+    {
+        const VkPhysicalDeviceLimits *lim = &pprops.properties.limits;
+        uint32_t                      nb  = lim->maxPerStageDescriptorStorageBuffers;
+        if (lim->maxDescriptorSetStorageBuffers < nb) {
+            nb = lim->maxDescriptorSetStorageBuffers;
+        }
+        /* the 8 the pipelines before batch 3 bind are assumed, as before */
+        nb               = nb < 8u ? 8u : nb;
+        st->max_bindings = nb < VK_MAX_BINDINGS ? nb : VK_MAX_BINDINGS;
+    }
     st->unified_memory = pprops.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ||
                          pprops.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
     st->subgroup_size  = sgp.subgroupSize;
