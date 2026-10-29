@@ -64,8 +64,10 @@ jobs:
       # this step passed; it lives in the runner's home, outside the workspace
       # checkout cleans. The thresholds (3 % decode, 5 % prefill) sit above
       # the board's measured night-to-night noise on an unchanged commit —
-      # benchmark/bench_compare.py has the numbers. A deliberate slowdown
-      # leaves this red until someone re-runs with reset_baseline.
+      # benchmark/bench_compare.py has the numbers. A drop the reference
+      # engine measured in the same run (bitnet.cpp) shares is the board, not
+      # geist, and passes. A deliberate slowdown leaves this red until someone
+      # re-runs with reset_baseline.
       # Exit 3 = the run's own spread says the board was busy: neither a
       # verdict nor a new baseline (#446), the step summary says why.
       - name: regression vs the last green run

@@ -262,6 +262,20 @@ enum geist_status blk_k_prep(struct transformer_layer_forward_ctx *ctx,
     return s;
 }
 
+/* Batched decode (#26): RoPE on one row of `buf` at byte offset `off`
+ * (`heads` heads of hd), with ctx's session position: blk_q_prep's and
+ * blk_k_prep's rope_apply, on a carrier row instead of scratch_q/k. */
+enum geist_status blk_rope_row(struct transformer_layer_forward_ctx *ctx,
+                               struct geist_buffer                  *buf,
+                               size_t                                off,
+                               size_t                                heads) {
+    struct geist_tensor t_cos, t_sin;
+    rope_rows(ctx, &t_cos, &t_sin);
+    struct geist_tensor t_x = view_3d(buf, 1, (int64_t) heads, (int64_t) ctx->hd);
+    t_x.offset              = off;
+    return ctx->prims->rope_apply(ctx->be, &t_x, &t_cos, &t_sin);
+}
+
 enum geist_status blk_rope_qk(struct transformer_layer_forward_ctx *ctx, float q_scale) {
     enum geist_status s = blk_q_prep(ctx, nullptr, q_scale);
     if (s == GEIST_OK)

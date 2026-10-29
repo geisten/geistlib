@@ -1,0 +1,101 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "vk_limits.h"
+
+/* deltanet_conv_f32.comp for batched decode (#26, batch 3): row b of qkv is
+ * session b's one token, and its window is session b's own conv state,
+ * bound at 2 + b. Per channel the arithmetic is deltanet_conv_f32's at
+ * seq = 1, in the same order, so the result is bit-identical to one call
+ * per session. Up to VK_DN_MAX_STATES sessions; unused state bindings repeat
+ * the last one and are never touched (gy = sessions).
+ *
+ * Bindings: 0 qkv [n, convd] in/out, 1 conv_w [convd, K], 2..9 conv states
+ * [(K-1), convd] in/out, all at st_off. Dispatch: gx = ceil(convd / 128),
+ * gy = n. */
+
+layout(local_size_x = VK_DN_CONV_WG) in;
+
+layout(set = 0, binding = 0) buffer QKV { float qkv[]; };
+layout(set = 0, binding = 1) readonly buffer W { float cw[]; };
+layout(set = 0, binding = 2) buffer ST0 { float cs0[]; };
+layout(set = 0, binding = 3) buffer ST1 { float cs1[]; };
+layout(set = 0, binding = 4) buffer ST2 { float cs2[]; };
+layout(set = 0, binding = 5) buffer ST3 { float cs3[]; };
+layout(set = 0, binding = 6) buffer ST4 { float cs4[]; };
+layout(set = 0, binding = 7) buffer ST5 { float cs5[]; };
+layout(set = 0, binding = 8) buffer ST6 { float cs6[]; };
+layout(set = 0, binding = 9) buffer ST7 { float cs7[]; };
+
+layout(push_constant) uniform Push {
+    uint convd;
+    uint K;
+    uint qkv_off;
+    uint w_off;
+    uint st_off;
+} pc;
+
+#include "silu.glsl"
+
+/* b is uniform per workgroup: the switch never diverges */
+float cs_load(uint b, uint i) {
+    switch (b) {
+    case 0u: return cs0[i];
+    case 1u: return cs1[i];
+    case 2u: return cs2[i];
+    case 3u: return cs3[i];
+    case 4u: return cs4[i];
+    case 5u: return cs5[i];
+    case 6u: return cs6[i];
+    default: return cs7[i];
+    }
+}
+
+void cs_store(uint b, uint i, float x) {
+    switch (b) {
+    case 0u: cs0[i] = x; break;
+    case 1u: cs1[i] = x; break;
+    case 2u: cs2[i] = x; break;
+    case 3u: cs3[i] = x; break;
+    case 4u: cs4[i] = x; break;
+    case 5u: cs5[i] = x; break;
+    case 6u: cs6[i] = x; break;
+    default: cs7[i] = x; break;
+    }
+}
+
+void main() {
+    uint c = gl_GlobalInvocationID.x;
+    uint b = gl_WorkGroupID.y;
+    if (c >= pc.convd) {
+        return;
+    }
+    const uint KMAX = VK_DN_MAX_CONV_K;
+    uint hist = pc.K - 1u;
+    float win[KMAX - 1u];
+    float w[KMAX - 1u];
+    for (uint j = 0u; j < KMAX - 1u; ++j) {
+        win[j] = j < hist ? cs_load(b, pc.st_off + j * pc.convd + c) : 0.0;
+        w[j] = j < hist ? cw[pc.w_off + c * pc.K + j] : 0.0;
+    }
+    float wx = cw[pc.w_off + c * pc.K + hist];
+    uint at = pc.qkv_off + b * pc.convd + c;
+    float xt = qkv[at];
+    float acc = 0.0;
+    for (uint j = 0u; j < KMAX - 1u; ++j) {
+        acc = fma(w[j], win[j], acc); /* w[j] = 0 past hist */
+    }
+    acc = fma(wx, xt, acc);
+    qkv[at] = silu(acc);
+    for (uint j = 0u; j < KMAX - 1u; ++j) {
+        if (j + 1u < hist) {
+            win[j] = win[j + 1u];
+        } else if (j + 1u == hist) {
+            win[j] = xt;
+        }
+    }
+    for (uint j = 0u; j < KMAX - 1u; ++j) {
+        if (j < hist) {
+            cs_store(b, pc.st_off + j * pc.convd + c, win[j]);
+        }
+    }
+}

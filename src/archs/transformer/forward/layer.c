@@ -649,6 +649,72 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     return v->buffer_copy(dst, dst_row * bytes, src, src_row * bytes, bytes);
 }
 
+/* Can multi_attention_rows run: every per-session op on the device (F16
+ * or device-copied F32 cache, scale_f32), and not forced per session
+ * (GEIST_DECODE_BATCH_PER_SESSION or _ATTN_COPY). All members share the model, so the
+ * carrier's flags are theirs. */
+static bool multi_attention_rows_ok(const struct transformer_layer_forward_ctx *ctx) {
+    const struct transformer_arch_state *st = ctx->st;
+    return !st->runtime_flags.batch_per_session && !st->runtime_flags.batch_attn_copy &&
+           !ctx->kv_kivi_enabled && !ctx->kv_int8_enabled &&
+           (ctx->kv_f16_enabled || st->model_fusions.backend_buffer_copy) &&
+           st->model_fusions.prim_scale_f32 && ctx->prims->scale_f32 != nullptr &&
+           (!ctx->kv_f16_enabled || ctx->fused->kv_append_f16 != nullptr);
+}
+
+/* multi_attention's per-session RoPE, KV append and attention (#26, batch
+ * 3), on the carrier's rows in place: no copies into and out of each
+ * session's scratch, and q *= 1/sqrt(hd) once over all n rows. Each op is
+ * the one blk_rope_qk / blk_attend runs, on the same values, so the
+ * outputs are bit-identical to the copying path. */
+[[nodiscard]] static enum geist_status
+multi_attention_rows(struct transformer_layer_forward_ctx  *ctx,
+                     size_t                                 n,
+                     struct transformer_arch_session *const seqs[static n],
+                     size_t                                 layer_idx) {
+    struct transformer_arch_state       *st = ctx->st;
+    struct transformer_arch_session     *c  = ctx->sess;
+    const size_t                         qb = ctx->q_out * sizeof(float);
+    const size_t                         kb = ctx->kv_out * sizeof(float);
+    struct transformer_layer_forward_ctx cb[TRANSFORMER_DECODE_BATCH_CAP];
+    if (n > TRANSFORMER_DECODE_BATCH_CAP) {
+        return GEIST_E_INVALID_ARG;
+    }
+    enum geist_status s = GEIST_OK;
+    for (size_t b = 0; s == GEIST_OK && b < n; b++) {
+        struct transformer_arch_session *q = seqs[b];
+        transformer_layer_ctx_init(&cb[b],
+                                   q,
+                                   (int) layer_idx,
+                                   q->kv_len,
+                                   1,
+                                   false,
+                                   q->scratch_h_a,
+                                   nullptr,
+                                   q->scratch_h_b);
+        frame_arena_reset(&q->scratch_arena);
+        s = blk_rope_row(&cb[b], c->scratch_q, b * qb, st->n_q_heads);
+    }
+    if (s == GEIST_OK) {
+        struct geist_tensor t_q = view_2d(c->scratch_q, (int64_t) n, (int64_t) ctx->q_out);
+        s = ctx->prims->scale_f32(ctx->be, &t_q, 1.0f / sqrtf((float) ctx->hd), &t_q);
+    }
+    for (size_t b = 0; s == GEIST_OK && b < n; b++) {
+        s = blk_rope_row(&cb[b], c->scratch_k, b * kb, st->n_kv_heads);
+        if (s == GEIST_OK)
+            s = transformer_kv_store_append_row(&cb[b], c->scratch_k, c->scratch_v, b * kb);
+        if (s == GEIST_OK) {
+            cb[b].kv_len_now        = cb[b].q_position + 1;
+            struct geist_tensor t_q = view_3d(c->scratch_q, 1, st->n_q_heads, (int64_t) ctx->hd);
+            struct geist_tensor t_at =
+                    view_3d(c->scratch_attn, 1, st->n_q_heads, (int64_t) ctx->hd);
+            t_q.offset = t_at.offset = b * qb;
+            s                        = transformer_kv_store_attention(&cb[b], &t_q, &t_at);
+        }
+    }
+    return s;
+}
+
 /* The Qwen3.5 gated attention block (families/qwen35.c) for n sequences:
  * norm, q+gate/k/v projections and q/k norms over the carrier's n rows; RoPE,
  * KV append and attention per sequence, in that sequence's session at its
@@ -667,6 +733,10 @@ multi_attention(struct transformer_layer_forward_ctx  *ctx,
     /* blk_attention's halves; ctx_init leaves the prenorm and add-norm
      * fusions off for this family. */
     enum geist_status s = blk_attn_in(ctx, &L->q_norm, &L->k_norm);
+    if (s == GEIST_OK && multi_attention_rows_ok(ctx)) {
+        s = multi_attention_rows(ctx, n, seqs, layer_idx);
+        goto attended;
+    }
     for (size_t b = 0; s == GEIST_OK && b < n; b++) {
         struct transformer_arch_session     *q = seqs[b];
         struct transformer_layer_forward_ctx cb;
@@ -692,6 +762,7 @@ multi_attention(struct transformer_layer_forward_ctx  *ctx,
         if (s == GEIST_OK)
             s = copy_row(ctx->v, c->scratch_attn, b, q->scratch_attn, 0, ctx->q_out);
     }
+attended:
     return s == GEIST_OK ? blk_attn_out(ctx, nullptr) : s;
 }
 

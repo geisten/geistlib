@@ -202,7 +202,7 @@ struct vk_dset_entry {
 enum {
     VK_SEL_TABS         = 1024,     /* linear_t_sel tables cached (3 per MoE layer) */
     VK_SEL_TAB_BYTES    = 4u << 20, /* their buffer */
-    VK_MAX_BINDINGS     = 8,        /* storage buffers per dispatch (deltanet_mix needs 8) */
+    VK_MAX_BINDINGS     = 14,       /* storage buffers per dispatch (dn_scan_b needs 14) */
     VK_SEQ_MAX_SETS     = 4096,     /* descriptor sets per flush window */
     VK_SEQ_MAX_DISPATCH = 4000,     /* rotate the sequence before pool runs dry */
     VK_PUSH_RANGE       = 128,      /* one push range covers every shader block */
@@ -322,6 +322,9 @@ struct vk_state {
      * subgroup narrower than its VK_DN_SCAN_LANES cluster. Otherwise the
      * DeltaNet mixer stays on deltanet_delta_f32 (#467). */
     bool dn_scan;
+    /* Storage buffers one dispatch may bind (device limit, capped at
+     * VK_MAX_BINDINGS); pipelines past it are not created. */
+    uint32_t max_bindings;
 
     /* Device feature probes. */
     bool has_fp16;     /* shaderFloat16 + 16-bit storage */

@@ -31,9 +31,11 @@
 #include "shaders/attn_comb_spv.h"
 #include "shaders/attn_part_f16_spv.h"
 #include "shaders/attn_part_g2_f16_spv.h"
+#include "shaders/deltanet_conv_b_f32_spv.h"
 #include "shaders/deltanet_conv_f32_spv.h"
 #include "shaders/deltanet_delta_f32_spv.h"
 #include "shaders/deltanet_norm_f32_spv.h"
+#include "shaders/deltanet_scan_b_f32_spv.h"
 #include "shaders/deltanet_scan_f32_spv.h"
 #include "shaders/embed_lookup_scaled_spv.h"
 #include "shaders/ffn_gate_up_gelu_q4k_spv.h"
@@ -259,6 +261,9 @@ vk_pcache_save(struct geist_backend *be, struct vk_state *st, const char *path, 
     /* Set/pipeline layouts for 2..VK_MAX_BINDINGS storage-buffer bindings;
      * every shader declares a push block within the shared 128-byte range. */
     for (uint32_t n = 2; n <= VK_MAX_BINDINGS; ++n) {
+        if (n > st->max_bindings) {
+            break; /* layouts stay VK_NULL_HANDLE; their pipelines are skipped */
+        }
         VkDescriptorSetLayoutBinding bindings[VK_MAX_BINDINGS];
         for (uint32_t i = 0; i < n; ++i) {
             bindings[i] = (VkDescriptorSetLayoutBinding) {
@@ -347,8 +352,11 @@ vk_pcache_save(struct geist_backend *be, struct vk_state *st, const char *path, 
         if (vk_pipe_needs_coopmat(i) && !st->has_coopmat) {
             continue; /* stays VK_NULL_HANDLE; linear_t falls back */
         }
-        if (i == VK_PIPE_DN_SCAN && !st->dn_scan) {
+        if ((i == VK_PIPE_DN_SCAN || i == VK_PIPE_DN_SCAN_B) && !st->dn_scan) {
             continue; /* stays VK_NULL_HANDLE; deltanet_mix runs deltanet_delta_f32 */
+        }
+        if (st->seq_playouts[vk_pipe_nbind[i] - 2] == VK_NULL_HANDLE) {
+            continue; /* more bindings than the device takes; the op says UNSUPPORTED */
         }
         /* Full subgroups need local_size_x to be a multiple of 32; every
          * tiled GEMM is 128 or 256 wide, so a miss is a shader edit that

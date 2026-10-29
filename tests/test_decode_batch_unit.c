@@ -442,10 +442,16 @@ static int run_backend(struct geist_backend *be,
         /* Batch 3: one mixer call for all sessions (deltanet_mix_states)
          * gives what one call per session gives, bit for bit. */
         if (max >= 2) {
+            /* Its own copy of the bytes: a GPU backend registers weights by
+             * host address, and the second model must not share (or, at
+             * destroy, unregister) the first one's. */
+            uint8_t *copy = malloc(hybrid->n);
             setenv("GEIST_DECODE_BATCH_PER_SESSION", "1", 1);
             struct geist_model *mp = nullptr;
             const bool          loaded =
-                    geist_model_load_from_memory(hybrid->b, hybrid->n, be, &mp) == GEIST_OK;
+                    copy != nullptr &&
+                    (memcpy(copy, hybrid->b, hybrid->n),
+                     geist_model_load_from_memory(copy, hybrid->n, be, &mp) == GEIST_OK);
             unsetenv("GEIST_DECODE_BATCH_PER_SESSION");
             static struct trace one_call[8], per_session[8];
             const struct run    rm = {mh, ml, be, name, n_tok, false};
@@ -462,6 +468,7 @@ static int run_backend(struct geist_backend *be,
                             same_all,
                             "one mixer call for all sessions equals one per session, bit for bit");
             geist_model_destroy(mp);
+            free(copy);
         }
         for (int sampling = 0; sampling < 2; sampling++) {
             const struct run r = {mh, ml, be, name, n_tok, sampling != 0};
