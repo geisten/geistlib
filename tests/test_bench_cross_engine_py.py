@@ -139,6 +139,39 @@ class CrossEngineBenchmarkTest(unittest.TestCase):
         self.assertIsNotNone(idle)
         self.assertTrue(0.0 <= idle <= 100.0)
 
+    def test_cool_each_repeat_runs_one_call_per_length_and_repeat(self) -> None:
+        workload = {"seq_lens": [128, 1024], "repeats": 3, "decode_n": 64,
+                    "prefill_threads": 6, "decode_threads": 5, "expect_backend": "cpu_neon"}
+        gate = {"cool_each_repeat": True, "timeout_seconds": 60,
+                "apple_temp_gate": {"max_cpu_c": 45, "fallback_seconds": 45}}
+        calls, cools = [], []
+
+        def fake_geist(engine, model, piece):
+            calls.append((piece["seq_lens"], piece["repeats"]))
+            n = len(calls)
+            return {"rows": [{"seq_len": piece["seq_lens"][0], "prefill_tps": [100.0 + n],
+                              "decode_tps": [10.0 + n], "native": {"call": n}}],
+                    "elapsed_seconds": 1.0}
+
+        def fake_cool(limits, deadline):
+            cools.append(limits["max_cpu_c"])
+            return {"cool_gate": "temperature", "cpu_temp_c": 30.0}
+
+        with mock.patch.object(BENCH, "run_geist", fake_geist), \
+             mock.patch.object(BENCH, "wait_for_apple_cool", fake_cool):
+            result = BENCH.run_cooled({"kind": "geist"}, Path("m.gguf"), workload, 0, gate)
+        # one cooled call per length and repeat, each a single-repeat, single-length call
+        self.assertEqual(len(calls), 6)
+        self.assertEqual(len(cools), 6)
+        self.assertTrue(all(c == ([128], 1) or c == ([1024], 1) for c in calls))
+        # merged back into the shape of one call: per length, one sample per repeat
+        self.assertEqual([row["seq_len"] for row in result["rows"]], [128, 1024])
+        self.assertEqual(result["rows"][0]["prefill_tps"], [101.0, 103.0, 105.0])
+        self.assertEqual(result["rows"][1]["decode_tps"], [12.0, 14.0, 16.0])
+        self.assertEqual(result["rows"][0]["native"], {"call": 1})
+        self.assertEqual(result["elapsed_seconds"], 6.0)
+        self.assertEqual(BENCH.repeat_spread_pct(result) > 0, True)
+
 
 FAKE_MACMON = """#!{python}
 # One macmon sample per call: the next GPU,CPU pair from the readings file.
@@ -149,6 +182,7 @@ gpu, cpu = map(float, lines[0].split(","))
 path.write_text("\\n".join(lines[1:] or lines[:1]))
 print(json.dumps({{"gpu_freq_mhz": 389, "temp": {{"gpu_temp_avg": gpu, "cpu_temp_avg": cpu}}}}))
 """
+
 
 
 class AppleCoolGateTest(unittest.TestCase):
