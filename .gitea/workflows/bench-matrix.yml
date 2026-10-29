@@ -40,8 +40,14 @@ on:
 permissions:
   contents: read
 
+# One run per dispatched column (inputs.only), the schedule as "all": a
+# dispatch for one machine no longer waits for a run measuring another
+# (2026-10-29: the Mac mini's first CPU cells queued four hours behind the
+# desktop's weekly AMD cells). Two measurements on one machine still exclude
+# each other through its host lock and its runner's capacity 1. Only the
+# publish job, which rebuilds the whole site and archive, stays serialized.
 concurrency:
-  group: bench-matrix
+  group: bench-matrix-${{ inputs.only || 'all' }}
   cancel-in-progress: false
 
 jobs:
@@ -248,6 +254,9 @@ jobs:
 
   publish:
     needs: measure
+    concurrency:
+      group: bench-matrix-publish
+      cancel-in-progress: false
     if: always() && (github.event_name == 'schedule' || inputs.publish == true || inputs.publish == 'true')
     runs-on: ubuntu-latest
     steps:
