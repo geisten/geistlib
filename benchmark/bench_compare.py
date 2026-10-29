@@ -19,6 +19,14 @@ an idle Pi 5 and ~15 % when another job shares the board (#446). Past
 --max-spread the run is reported as not comparable: exit 3, so the workflow neither fails
 on it nor promotes it to the new baseline.
 
+A slower host is not a slower geist either. `make bench` measures a
+reference engine (bitnet.cpp) on the same board in the same run; when both
+runs carry the same engine at the same version, a row is a regression only
+if geist dropped past the limit both in tok/s and relative to that engine.
+Nightly runs 1905-2182 (2026-10-23..28) read geist decode 3-9 % under the
+last green run while bitnet.cpp dropped 2-8 % with them and the ratio held at
+1.90-2.01x; an A/B of the two commits outside CI showed no difference.
+
 Exit codes: 0 ok (or nothing to compare), 1 regression, 2 usage,
 3 not comparable (contended run).
 """
@@ -29,12 +37,35 @@ import sys
 from pathlib import Path
 
 
-def compare(cur: dict, base: dict, max_drop: dict[str, float]) -> tuple[list[str], list[str]]:
-    """Markdown table lines and a list of regressions (empty when none)."""
+def reference_shift(cur: dict, base: dict) -> tuple[str, dict[str, float]] | None:
+    """The reference engine both runs measured, and how far it moved (now/then
+    per metric); None when the runs share no engine at one version."""
+    then = {(b.get("engine"), b.get("version")): b for b in base.get("baselines") or []}
+    for b in cur.get("baselines") or []:
+        old = then.get((b.get("engine"), b.get("version")))
+        if old is None or b.get("engine") is None:
+            continue
+        try:
+            shift = {m: float(b[m]) / float(old[m]) for m in ("prefill_tps", "decode_tps")}
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            continue
+        if all(v > 0 for v in shift.values()):
+            return b["engine"], shift
+    return None
+
+
+def compare(cur: dict, base: dict, max_drop: dict[str, float],
+            ref: tuple[str, dict[str, float]] | None = None) -> tuple[list[str], list[str]]:
+    """Markdown table lines and a list of regressions (empty when none). With
+    ref (engine, now/then per metric) a drop counts only if geist also lost
+    ground against that engine."""
     base_rows = {r["seq_len"]: r for r in base["rows"]}
-    lines = [f"| seq | metric | last green ({base['commit']}) | now ({cur['commit']}) | Δ |",
-             "| --: | :-- | --: | --: | --: |"]
-    bad = []
+    head = f"| seq | metric | last green ({base['commit']}) | now ({cur['commit']}) | Δ |"
+    rule = "| --: | :-- | --: | --: | --: |"
+    if ref is not None:
+        head += f" Δ vs {ref[0]} |"
+        rule += " --: |"
+    lines, bad = [head, rule], []
     for r in cur["rows"]:
         b = base_rows.get(r["seq_len"])
         if b is None:
@@ -42,11 +73,19 @@ def compare(cur: dict, base: dict, max_drop: dict[str, float]) -> tuple[list[str
         for metric in ("prefill_tps", "decode_tps"):
             was, now = float(b[metric]), float(r[metric])
             delta = 100.0 * (now - was) / was if was else 0.0
-            flag = " **REGRESSION**" if -delta > max_drop[metric] else ""
-            lines.append(f"| {r['seq_len']} | {metric} | {was:.2f} | {now:.2f} | {delta:+.1f} %{flag} |")
-            if flag:
+            rel = None
+            if ref is not None and was:
+                rel = 100.0 * (now / ref[1][metric] - was) / was
+            slower = -delta > max_drop[metric] and (rel is None or -rel > max_drop[metric])
+            flag = " **REGRESSION**" if slower else ""
+            line = f"| {r['seq_len']} | {metric} | {was:.2f} | {now:.2f} | {delta:+.1f} %{flag} |"
+            if rel is not None:
+                line += f" {rel:+.1f} % |"
+            lines.append(line)
+            if slower:
                 bad.append(f"seq {r['seq_len']} {metric}: {was:.2f} -> {now:.2f} ({delta:+.1f} %, "
-                           f"limit -{max_drop[metric]:.0f} %)")
+                           f"limit -{max_drop[metric]:.0f} %"
+                           + (f"; {rel:+.1f} % against {ref[0]}" if rel is not None else "") + ")")
     return lines, bad
 
 
@@ -85,9 +124,16 @@ def main() -> int:
                 fh.write(f"## bench vs last green\n\n{msg}\n\n")
         return 3
 
+    ref = reference_shift(cur, base)
     lines, bad = compare(cur, base, {"decode_tps": args.max_drop_decode,
-                                     "prefill_tps": args.max_drop_prefill})
-    report = "\n".join(["## bench vs last green", ""] + lines)
+                                     "prefill_tps": args.max_drop_prefill}, ref)
+    note = []
+    if ref is not None:
+        note = ["", f"Reference engine {ref[0]} on this board, same version in both runs: "
+                    f"decode {100.0 * (ref[1]['decode_tps'] - 1):+.1f} %, "
+                    f"prefill {100.0 * (ref[1]['prefill_tps'] - 1):+.1f} %. "
+                    "A row regresses only if geist also lost ground against it."]
+    report = "\n".join(["## bench vs last green", ""] + lines + note)
     print(report)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
