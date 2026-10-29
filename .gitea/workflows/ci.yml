@@ -1281,7 +1281,7 @@ jobs:
   coverage:
     name: coverage ratchet (Linux x86_64, unit + int)
     # Nightly, on dispatch and for a pull request labelled ci:full; not on
-    # main pushes. The instrumented run takes ~140 min of one of desktop-ci's
+    # main pushes. The instrumented run takes ~135-150 min of one of desktop-ci's
     # four slots, and with one per merge it was the biggest CI bottleneck
     # (2026-10-21: three at once, 74 % runner load). A coverage drop is
     # caught by the next nightly run.
@@ -1291,7 +1291,7 @@ jobs:
     # The instrumented build prefills the real model many times across
     # the int suite. e2e adds ~half an hour and moves the per-subsystem
     # numbers only by noise, so the measurement is unit + int.
-    timeout-minutes: 150
+    timeout-minutes: 180
     env:
       # gcc's coverage counters are shared by all threads: on the 16-core
       # desktop 8 OpenMP threads made one int test take 32 minutes. Coverage
