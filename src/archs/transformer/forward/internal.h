@@ -356,6 +356,11 @@ transformer_forward_mtp_layer(struct transformer_arch_session  *sess,
 [[nodiscard]] enum geist_status
 transformer_kv_store_append(struct transformer_layer_forward_ctx *ctx);
 [[nodiscard]] enum geist_status
+transformer_kv_store_append_row(struct transformer_layer_forward_ctx *ctx,
+                                struct geist_buffer                  *k_src,
+                                struct geist_buffer                  *v_src,
+                                size_t                                off);
+[[nodiscard]] enum geist_status
 transformer_kv_store_attention(struct transformer_layer_forward_ctx *ctx,
                                const struct geist_tensor            *t_q_3d,
                                struct geist_tensor                  *t_attn_3d);

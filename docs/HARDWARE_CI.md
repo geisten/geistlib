@@ -26,7 +26,7 @@ tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib \
 | `vulkan-gpu` | `geist-vulkan` | nightly + dispatch: Vulkan suite + model e2e on the discrete GPU |
 | `vulkan-ab` | `geist-vulkan` | dispatch: A/B on one Vulkan device or the Zen 5 CPU |
 | `cross-engine-campaign` | `geist-vulkan` | dispatch: one cell of the cross-engine matrix |
-| `bench-matrix` | per column (`geist-avx512`, `geist-vulkan`, `macos-15-heavy`, `pi5`) | nightly (Sundays: every model; Mac cells only start 00:00–07:00 Berlin time) + dispatch: the cross-engine matrix, published to [geisten.net/bench](https://geisten.net/bench/) |
+| `bench-matrix` | per column (`geist-avx512`, `geist-vulkan`, `apple-m1max`, `pi5`) | nightly (Sundays: every model; Mac cells only start 00:00–07:00 Berlin time) + dispatch: the cross-engine matrix, published to [geisten.net/bench](https://geisten.net/bench/) |
 
 ### Benchmark matrix
 
@@ -109,7 +109,7 @@ holds the lock for a compile; a build waits only while a measurement runs:
 | name | label | lock | install |
 | :-- | :-- | :-- | :-- |
 | `mac-light` | `macos-15:host` | ci lease while a job runs (45 min declared); takes no job while it is held; daemon at `nice 10` | `~/gitea-runner-mac-light`, LaunchAgent `net.geisten.gitea-runner-mac-light` (`Nice` 10) |
-| `mac-m1max` | `macos-15-heavy:host` | held for the whole job | `~/gitea-runner-geisten`, LaunchAgent `net.geisten.gitea-runner-geisten` |
+| `mac-m1max` | `macos-15-heavy:host`, `apple-m1max:host` (benchmark columns only) | held for the whole job | `~/gitea-runner-geisten`, LaunchAgent `net.geisten.gitea-runner-geisten` |
 
 `mac-m1max`'s hooks (`~/bin/mac-runner-job-started.sh` /
 `mac-runner-job-completed.sh`) hold a `ci` lease while a job runs. Its
@@ -128,17 +128,37 @@ lock-held A/B). Each has its own `cache.dir` and
 race on one action checkout. Both run with `capacity: 1` and
 `fetch_timeout: 30s`.
 
+### Mac mini M6 (host mode, since 2026-10-28)
+
+A Mac mini M6 (Mac18,5; 12 cores: 2 super, 4 performance, 6 efficiency;
+32 GB; Metal 4; macOS 27) in the home LAN serves the same CI labels as the
+MacBook, so a `macos-15` or `macos-15-heavy` job runs on whichever Mac is
+free:
+
+| name | labels | lock | install |
+| :-- | :-- | :-- | :-- |
+| `macmini-m6` | `macos-15:host`, `macos-15-heavy:host`, `macmini-m6:host` | its own lease broker (`~/bin/with-macmini-lock`, `/tmp/macmini-heavy.lock`, `127.0.0.1:7384`); the hooks hold a `ci` lease for every job, the health check takes no job while someone else holds it | `~/gitea-runner-macmini`, LaunchAgents `net.geisten.gitea-runner-macmini` and `net.geisten.hostlease`; capacity 1 |
+
+It is reached only through Gitea (no SSH, no tunnel): geisten-infra
+`roles/host_lease/files/macmini/install.sh` set it up from a one-off job and
+updates it the same way. Benchmark columns never take the shared labels: the
+M1 Max columns ask for `apple-m1max`, a Mac mini column would ask for
+`macmini-m6`. The CI perf floors are absolute tok/s minimums, which the M6
+meets as well as the M1 Max.
+
 Which label a job takes:
 
 - `macos-15-heavy` — the job loads a real model or its result is a timing:
   CI's post-merge `models, Metal, ASan + perf (macOS arm64)` leg (Metal
   parity, qwen3.5 integration, perf gate; `scripts/gitea-ci.py` sets it,
   GitHub's copy keeps `macos-15`) and the Mac columns of `bench-matrix`
-  (`benchmark/bench_matrix.json`).
+  (`benchmark/bench_matrix.json`, now on the machine label `apple-m1max`).
+  Runs on `mac-m1max` or `macmini-m6`.
 - `macos-15` — build and model-free tests: CI's required `build + unit
   tests (macOS arm64)` leg, the post-merge `macOS arm64 GCD (no OpenMP)` leg
-  and the release build (`release.yml` `macos-arm64`). These may run while
-  an agent measures; nice 10 keeps them behind it, not out.
+  and the release build (`release.yml` `macos-arm64`). On `mac-light` these
+  may run while an agent measures; nice 10 keeps them behind it, not out. On
+  `macmini-m6` they hold that Mac's lock like every job there.
 
 A step that must not overlap a measurement on a `macos-15` job wraps itself
 in `~/bin/with-mac-lock`; better, it moves to `macos-15-heavy`.
@@ -336,7 +356,7 @@ service=ci-hygiene -i action=deploy`), inspect it with `-i action=status`
 host, with its API client `scripts/gitea_api.py` installed next to it in
 `~/ci-bot/` (geisten-infra's desktop role copies both), and polls Gitea every 90 s for the open pull requests of
 `geisten/geistlib` and `geisten/geist-runtime` (everyone's, not only
-Claude's). It replaces the ad-hoc watcher scripts and does three things,
+Claude's). It replaces the ad-hoc watcher scripts and does four things,
 each within fixed rules; anything else stays with a human:
 
 1. **Infra reruns.** For a completed run of a PR's head commit it classifies
@@ -363,8 +383,17 @@ each within fixed rules; anything else stays with a human:
    rebased under rule 2's terms and, if it asks for it (label `automerge`,
    or "auto-merge" in the body and not "no/don't auto-merge"), auto-merge
    (merge commit, when checks succeed) is enabled once. The bot never
-   cancels an auto-merge someone scheduled; a dependency closed unmerged
-   gets one comment.
+   cancels an auto-merge someone scheduled (except under rule 4); a
+   dependency closed unmerged gets one comment.
+4. **Agent pipeline** (AGENT.md §9). A PR labelled `status:accepted` — its
+   agent review passed and its auto-merge is scheduled — whose run has a
+   real failure (rule 1's classification) gets that auto-merge cancelled,
+   one comment with the last 60 log lines of each really failed job, and
+   `status:fix` in place of `status:accepted`. The label starts the fix
+   job of `.gitea/workflows/agent.yml`, which works that comment. A run
+   whose `changes` job holds an agent head for a human's `/ci-ok` is not a
+   failure: no rerun, no fix round. Rule 3 never enables auto-merge on an
+   `agent/*` head.
 
 What it already did lives in `~/ci-bot/state.json` (restarts are
 idempotent; closed PRs are forgotten); every decision goes to

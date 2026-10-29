@@ -22,7 +22,13 @@ things; everything else it leaves to a human:
    `depends-on-#N`) waits until every #N is merged; then it is rebased onto
    its base under rule 2's terms, and auto-merge is enabled if the PR asks
    for it (label `automerge`, or "auto-merge" in the body). It never
-   cancels an auto-merge someone else scheduled.
+   cancels an auto-merge someone else scheduled, except under rule 4.
+4. Agent pipeline (AGENT.md §9). A PR in status:accepted (its review
+   passed, auto-merge scheduled) whose CI has a real failure gets its
+   auto-merge cancelled, the failed jobs' log tails as a comment and
+   status:fix, so the fix agent (.gitea/workflows/agent.yml) works them.
+   A run held for a human's /ci-ok (agent heads, ci.yml `changes`) is left
+   alone, and rule 3 never enables auto-merge on an agent/* head.
 
 State (what it already did) lives in a JSON file, so restarts are
 idempotent. Every decision is logged. --dry-run reads everything and runs
@@ -53,7 +59,11 @@ RERUN_MAX = 2
 INFRA_MAX_SECONDS = 300
 LABEL_REBASE = "ci-bot:rebase"
 LABEL_AUTOMERGE = "automerge"
+LABEL_ACCEPTED, LABEL_FIX = "status:accepted", "status:fix"
+LOG_TAIL = 60                                  # lines of each failed job's log in the comment
 MARKER = "<!-- ci-bot:{} -->"
+AGENT_HEAD = re.compile(r"^agent/")
+HOLD_STEP = "Hold an agent head until a human approves it"  # ci.yml `changes`; scripts/agent_gate.py
 SETUP_STEP = re.compile(r"^set up job|checkout|ccache|^prepare", re.I)
 BOT_COMMIT = re.compile(r"^co-authored-by:\s*claude\b|noreply@anthropic\.com", re.I | re.M)
 DEPENDS = re.compile(r"\bdepends\s+on\s+#(\d+)", re.I)
@@ -86,10 +96,12 @@ def job_seconds(job: dict) -> float | None:
 
 
 def classify_job(job: dict, logs_found: bool | None = None) -> tuple[str, str]:
-    """('infra'|'real'|'logs?', reason). 'logs?' asks the caller to look up
+    """('held'|'infra'|'real'|'logs?', reason). 'logs?' asks the caller to look up
     whether the job's log exists and call again with logs_found."""
     steps = sorted(job.get("steps") or [], key=lambda s: s.get("number", 0))
     failed = [s for s in steps if s.get("conclusion") == "failure"]
+    if failed and failed[0].get("name") == HOLD_STEP:
+        return "held", "agent head waits for a human's /ci-ok"
     secs = job_seconds(job)
     zombie = is_zombie_sweep(job.get("completed_at"))
     if not failed and (not steps or steps[0].get("conclusion") != "success"):
@@ -156,6 +168,10 @@ def depends_on(pr: dict) -> list[int]:
 
 
 def wants_automerge(pr: dict) -> bool:
+    # An agent head merges only through its review's PASS (agent.yml), never
+    # because its model-written body or a label asks for it.
+    if AGENT_HEAD.match((pr.get("head") or {}).get("ref") or ""):
+        return False
     if any(l.get("name") == LABEL_AUTOMERGE for l in pr.get("labels") or []):
         return True
     body = pr.get("body") or ""
@@ -376,8 +392,14 @@ class Bot:
             for kind, j, why in verdicts:
                 log(f"{tag} run {run_id} attempt {attempt}: job {j['id']} '{j['name'][:60]}': {kind} ({why})")
             done = self.state["reruns"].get(key, 0)
-            if any(k == "real" for k, _, _ in verdicts):
+            if any(k == "held" for k, _, _ in verdicts):
+                # Not a failure of the change: no rerun (it would hold again), no fix round.
+                decision = "agent head held for a human's /ci-ok: left alone"
+            elif any(k == "real" for k, _, _ in verdicts):
                 decision = "real failure present: left alone"
+                if any(l.get("name") == LABEL_ACCEPTED for l in pr.get("labels") or []):
+                    self.send_back(repo, tag, pr, [j for k, j, _ in verdicts if k == "real"])
+                    decision = f"real failure on an accepted agent PR: auto-merge cancelled, {LABEL_FIX}"
             elif done >= RERUN_MAX:
                 decision = f"infra only, but {done} reruns already: left alone"
             else:
@@ -388,6 +410,31 @@ class Bot:
             log(f"{tag} run {run_id} attempt {attempt}: {decision}")
             self.state["seen"][f"{key}:a{attempt}"] = decision
         return False
+
+    # -- 4. agent pipeline: a red CI after the review passed
+    def send_back(self, repo: str, tag: str, pr: dict, jobs: list[dict]) -> None:
+        """Cancels the auto-merge, posts the failed jobs' log tails (the fix
+        agent's work order) and hands the PR back with status:fix. The label
+        goes last: it starts the fix job, which reads the comment."""
+        n = pr["number"]
+        parts = [f"**CI failed** on {pr['head']['sha'][:8]}: the review passed, the build did not."]
+        for j in jobs:
+            try:
+                text = self.api.get(f"/repos/{repo}/actions/jobs/{j['id']}/logs", raw=True, tries=2)
+                tail = "\n".join(text.decode(errors="replace").splitlines()[-LOG_TAIL:])
+            except ApiError as e:
+                tail = f"(log unavailable: {e})"
+            parts.append(f"### {j['name']}\n```\n{tail}\n```")
+        try:
+            self.api.write("DELETE", f"/repos/{repo}/pulls/{n}/merge", what=f"cancel the auto-merge of {tag}")
+        except ApiError as e:
+            if e.code != 404:                  # 404: nothing scheduled
+                raise
+        self.api.write("POST", f"/repos/{repo}/issues/{n}/comments", {"body": "\n\n".join(parts)},
+                       what=f"comment the CI failure on {tag}")
+        labels = [l["name"] for l in pr.get("labels") or [] if not l["name"].startswith("status:")]
+        self.api.write("PUT", f"/repos/{repo}/issues/{n}/labels", {"labels": labels + [LABEL_FIX]},
+                       what=f"label {tag} {LABEL_FIX}")
 
     # -- comments, once per PR and kind (marker in the comment body)
     def comment_once(self, repo: str, tag: str, pr: dict, kind: str, text: str) -> None:
