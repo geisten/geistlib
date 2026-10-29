@@ -236,7 +236,7 @@ static int run_tokenizer_bin(struct geist_backend *be) {
     size_t          n_long = 0;
     struct tf_vocab v      = vocab(TOKENIZER_BIN, &n_long);
     struct tf_buf   g      = model_gguf(&v, nullptr, false);
-    struct tf_buf   bin    = tf_sp_bpe_bin(&v);
+    struct tf_buf   bin    = tf_tokenizer_bin(&v);
     char            dir[]  = "/tmp/test_token_to_str_XXXXXX";
     char            gpath[64], tpath[64];
     int             fails = 1;
