@@ -94,3 +94,16 @@ if __name__ == "__main__":
         with self.assertRaises(ValueError):
             dataset.select_stratified(rows, 101)
 
+    def test_follow_up_sample_excludes_the_first_one(self):
+        # #286: a second held-out sample drawn from the population minus the
+        # first sample, with its own seed, never repeats a question.
+        sizes = {"a": 50, "b": 30, "c": 20}
+        rows = [{**self.row(f"{s}{j}"), "subject": s, "question_id": f"{s}{j}"}
+                for s, n in sizes.items() for j in range(n)]
+        first = {r["question_id"] for r in dataset.select_stratified(rows, 10)[0]}
+        rest = [r for r in rows if r["question_id"] not in first]
+        second, allocation = dataset.select_stratified(rest, 30, seed="follow-up")
+        self.assertEqual(len(second), 30)
+        self.assertFalse(first & {r["question_id"] for r in second})
+        self.assertEqual(allocation, {"a": 15, "b": 9, "c": 6})
+
