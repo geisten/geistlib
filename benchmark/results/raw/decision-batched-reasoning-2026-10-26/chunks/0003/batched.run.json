@@ -1,0 +1,8 @@
+{
+  "started_unix": 1792963754.093823,
+  "wall_seconds": 1497.7683200836182,
+  "returncode": -15,
+  "lines": 94,
+  "stopped_at_deadline": true,
+  "discarded_partial_line_bytes": 0
+}

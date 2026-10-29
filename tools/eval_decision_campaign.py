@@ -50,40 +50,67 @@ def read_lines(path):
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
 
 
-def collect(out_dir, rows, profiles, warmup, repeats, backend):
-    """profile -> {row index: samples}; runtime records; seconds of driver wall time per profile."""
+def is_spotcheck(chunk):
+    return (chunk / "chunk.json").exists() and bool(ev.read_json(chunk / "chunk.json").get("spotcheck"))
+
+
+def read_chunk(chunk, name, backend, kinds=("sample",)):
+    """(records, runtimes) of driver run `name` in one chunk; None before its row index exists.
+
+    records: every record of a kind in `kinds`, its case_index mapped to the
+    campaign row, stamped with the chunk and the arrival time of its line.
+    runtimes: the runtime records, checked against `backend`.
+    """
+    index_path = chunk / f"{name}.rows.json"
+    if not index_path.exists():
+        return None
+    indices = ev.read_json(index_path)
+    recv = {}
+    if (chunk / f"{name}.recv.tsv").exists():
+        for line in (chunk / f"{name}.recv.tsv").read_text().splitlines():
+            n, t = line.split("\t")
+            recv[int(n)] = float(t)
+    records, runtimes = [], []
+    for line_no, record in enumerate(read_lines(chunk / f"{name}.driver.jsonl")):
+        kind = record.get("kind")
+        if kind == "runtime":
+            if record["backend"] != backend or record["kv_mode"] != "fp32":
+                raise ValueError("invalid runtime record")
+            runtimes.append(record)
+            continue
+        if kind not in kinds:
+            raise ValueError("unexpected driver record")
+        local = record["case_index"]
+        if not 0 <= local < len(indices):
+            raise ValueError("driver case index outside its chunk")
+        records.append({**record, "case_index": indices[local], "chunk": chunk.name,
+                        "recv_unix": recv.get(line_no)})
+    return records, runtimes
+
+
+def collect(out_dir, rows, profiles, warmup, repeats, backend, spotcheck=False):
+    """profile -> {row index: samples}; runtime records; seconds of driver wall time per profile.
+
+    Determinism spot-check chunks (a second, independent trial on a declared
+    subset) are kept apart from the main samples: spotcheck=True collects them.
+    """
     trials = 1 + warmup + repeats
     done = {p: {} for p in profiles}
     runtimes, walls = [], {p: 0. for p in profiles}
     for chunk in chunk_dirs(out_dir):
+        if is_spotcheck(chunk) != spotcheck:
+            continue
         for profile, modes in profiles.items():
-            index_path = chunk / f"{profile}.rows.json"
-            if not index_path.exists():
+            read = read_chunk(chunk, profile, backend)
+            if read is None:
                 continue
-            indices = ev.read_json(index_path)
-            records = read_lines(chunk / f"{profile}.driver.jsonl")
-            recv = {}
-            if (chunk / f"{profile}.recv.tsv").exists():
-                for line in (chunk / f"{profile}.recv.tsv").read_text().splitlines():
-                    n, t = line.split("\t")
-                    recv[int(n)] = float(t)
+            records, chunk_runtimes = read
+            runtimes += chunk_runtimes
             info = ev.read_json(chunk / f"{profile}.run.json") if (chunk / f"{profile}.run.json").exists() else {}
             walls[profile] += info.get("wall_seconds", 0.)
             groups = {}
-            for line_no, record in enumerate(records):
-                if record.get("kind") == "runtime":
-                    if record["backend"] != backend or record["kv_mode"] != "fp32":
-                        raise ValueError("invalid runtime record")
-                    runtimes.append(record)
-                    continue
-                if record.get("kind") != "sample":
-                    raise ValueError("unexpected driver record")
-                local = record["case_index"]
-                if not 0 <= local < len(indices):
-                    raise ValueError("driver case index outside its chunk")
-                record = {**record, "case_index": indices[local], "chunk": chunk.name,
-                          "recv_unix": recv.get(line_no)}
-                groups.setdefault(indices[local], []).append(record)
+            for record in records:
+                groups.setdefault(record["case_index"], []).append(record)
             for row, samples in groups.items():
                 keys = {(s["mode"], s["trial"]) for s in samples}
                 if len(keys) != len(samples):
@@ -96,19 +123,30 @@ def collect(out_dir, rows, profiles, warmup, repeats, backend):
     return done, runtimes, walls
 
 
+def spotcheck_rows(rows, args):
+    if not getattr(args, "spotcheck", 0):
+        return []
+    chosen, _ = ev.data.select_stratified(rows, args.spotcheck, seed=args.spotcheck_seed)
+    keep = {r["question_id"] for r in chosen}
+    return [i for i, r in enumerate(rows) if r["question_id"] in keep]
+
+
 def status(out_dir, rows, profiles, args):
     done, _, _ = collect(out_dir, rows, profiles, args.warmup, args.repeats, args.backend)
     pending = [i for i in range(len(rows)) if any(i not in done[p] for p in profiles)]
+    spot, _, _ = collect(out_dir, rows, profiles, args.warmup, args.repeats, args.backend, spotcheck=True)
+    spot_pending = [i for i in spotcheck_rows(rows, args) if any(i not in spot[p] for p in profiles)]
     seconds = 0.
     for chunk in chunk_dirs(out_dir):
         info = ev.read_json(chunk / "chunk.json")
         if info.get("ended_unix"):
             seconds += info["ended_unix"] - info["started_unix"]
-    value = {"questions": len(rows), "complete": len(rows) - len(pending), "pending": len(pending),
+    value = {"questions": len(rows), "complete": len(rows) - len(pending),
+             "pending": len(pending) + len(spot_pending), "spotcheck_pending": len(spot_pending),
              "complete_by_profile": {p: len(done[p]) for p in profiles},
              "chunks": len(chunk_dirs(out_dir)), "chunk_seconds_total": round(seconds, 1)}
     ev.write_json(out_dir / "status.json", value)
-    return value, done, pending
+    return value, done, (pending, spot_pending)
 
 
 class TempLog:
@@ -126,13 +164,10 @@ class TempLog:
 
     def pump(self):
         for line in self.proc.stdout:
-            try:
-                temp = json.loads(line)["temp"]
-                value = {"t": time.time(), "gpu_c": round(float(temp["gpu_temp_avg"]), 1),
-                         "cpu_c": round(float(temp["cpu_temp_avg"]), 1)}
-            except (ValueError, KeyError, TypeError):
+            temps = bench_host.parse_macmon(line)
+            if temps is None:
                 continue
-            self.out.write(json.dumps(value) + "\n")
+            self.out.write(json.dumps({"t": time.time(), **temps}) + "\n")
             self.out.flush()
 
     def close(self):
@@ -146,28 +181,37 @@ class TempLog:
 def cool_gate(args, deadline):
     limits = {"fallback_seconds": 45}
     limits["max_gpu_c" if args.backend == "metal" else "max_cpu_c"] = args.cool_max_c
-    return bench_host.wait_for_apple_cool(limits, min(deadline, time.monotonic() + args.cool_timeout_minutes * 60))
+    left = max(0., deadline - time.time())
+    return bench_host.wait_for_apple_cool(limits, time.monotonic() + min(left, args.cool_timeout_minutes * 60))
 
 
-def run_driver(command, cases, env, chunk, profile, deadline):
-    """Stream the driver's lines to disk as they arrive; stop it at the deadline."""
+def run_driver(command, cases, env, chunk, profile, deadline, wire=None):
+    """Stream the driver's lines to disk as they arrive; stop it at the deadline.
+
+    wire: the driver's stdin; default bench.wire_input(cases)."""
     out = (chunk / f"{profile}.driver.jsonl").open("w")
     recv = (chunk / f"{profile}.recv.tsv").open("w")
     err = (chunk / f"{profile}.stderr.log").open("w")
     start = time.time()
     proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err,
                             env=env, text=True)
-    stopped = threading.Event()
+    stopped, finished = threading.Event(), threading.Event()
 
-    def stop():
-        stopped.set()
-        proc.terminate()
-    timer = threading.Timer(max(0., deadline - time.monotonic()), stop)
+    def watchdog():
+        # Wall clock, not a monotonic timer: macOS's monotonic clock stands
+        # still while the host sleeps, and a lease is measured in wall time
+        # (a 2-hour sleep once let a chunk overrun its lease, #171).
+        while not finished.wait(5):
+            if time.time() >= deadline:
+                stopped.set()
+                proc.terminate()
+                return
+    timer = threading.Thread(target=watchdog, daemon=True)
     timer.start()
 
     def feed():
         try:
-            proc.stdin.write(bench.wire_input(cases))
+            proc.stdin.write(bench.wire_input(cases) if wire is None else wire)
             proc.stdin.close()
         except (BrokenPipeError, ValueError):
             pass
@@ -185,7 +229,7 @@ def run_driver(command, cases, env, chunk, profile, deadline):
         n += 1
     code = proc.wait()
     proc.stdout.close()
-    timer.cancel()
+    finished.set()
     for f in (out, recv, err):
         f.close()
     info = {"started_unix": start, "wall_seconds": time.time() - start, "returncode": code,
@@ -211,7 +255,8 @@ def thermal_latency(samples_by_profile, profiles, temps, backend, limit):
     result = {}
     for profile, modes in profiles.items():
         for mode in modes:
-            warm = [s for s in samples_by_profile[profile] if s["mode"] == mode and s["phase"] == "warm"]
+            mine = [s for s in samples_by_profile[profile] if s["mode"] == mode]
+            warm = [s for s in mine if s["phase"] == "warm"] or mine  # --repeats 0: the single trial
             annotated = []
             for s in warm:
                 temp = None
@@ -235,6 +280,29 @@ def thermal_latency(samples_by_profile, profiles, temps, backend, limit):
     return result
 
 
+def spotcheck_report(args, rows, profiles, done, manifest):
+    """Second independent trial (another process and chunk) vs the main trial: bit-exact or not."""
+    spot, _, _ = collect(args.out_dir, rows, profiles, args.warmup, args.repeats, args.backend, spotcheck=True)
+    result, mismatches = {}, []
+    for profile, modes in profiles.items():
+        for mode in modes:
+            same = n = 0
+            for i in spotcheck_rows(rows, args):
+                a = [s for s in done[profile][i] if s["mode"] == mode]
+                b = [s for s in spot[profile][i] if s["mode"] == mode]
+                keys = ("best_index", "logits") if mode in ev.NUMERIC else ("generated_ids", "generated_utf8_hex")
+                n += 1
+                if all(x.get(k) == y.get(k) for x, y in zip(a, b) for k in keys) and len(a) == len(b):
+                    same += 1
+                else:
+                    mismatches.append({"question_id": rows[i]["question_id"], "profile": profile, "mode": mode})
+            result[f"{profile}/{mode}"] = {"questions": n, "identical": same}
+    return {"declared": manifest["determinism_spotcheck"], "by_arm": result, "mismatches": mismatches,
+            "deterministic": not mismatches,
+            "scope": "Exact logits/argmax for numeric arms, exact greedy token IDs and surface bytes for generation; "
+                     "the second trial ran in a separate process after the main run."}
+
+
 def finalize(args, meta, rows, bound, calibration, profiles, manifest, done):
     cases = {p: bench.cases_from_jsonl(args.out_dir / f"{p}.cases.jsonl") for p in profiles}
     _, runtimes, walls = collect(args.out_dir, rows, profiles, args.warmup, args.repeats, args.backend)
@@ -255,15 +323,85 @@ def finalize(args, meta, rows, bound, calibration, profiles, manifest, done):
                                        for c in chunk_dirs(args.out_dir) for p in c.glob("*.run.json")),
         "scope": "Chunked under the host lock; each driver run started on a cool chip, model loaded per run. "
                  "Mode order inside a run rotates with the case index within that run, not the global index."}
+    if getattr(args, "spotcheck", 0):
+        report["determinism_spotcheck"] = spotcheck_report(args, rows, profiles, done, manifest)
     report["latency_by_start_temperature"] = thermal_latency(
         {p: o[1] for p, o in outputs.items()}, profiles, temperatures(args.out_dir), args.backend, args.cool_max_c)
     ev.write_json(args.out_dir / "report.json", report)
     return args.out_dir / "report.json"
 
 
+def import_samples(args, rows, profiles, cases, manifest):
+    """Seed chunk 0000 with complete samples of an earlier run (#171 amendment).
+
+    Allowed only for an identical binding (model, binary, tokenizer, template,
+    backend, environment, threads) and decode/warmup/repeat policy, and only
+    for questions whose prompt and candidate IDs are identical. Only the modes
+    this run declares are taken; the rest of the earlier samples stay there.
+    """
+    old_dir = args.import_from
+    old = ev.read_json(old_dir / "manifest.json")
+    for key in ("binding", "decode_cap", "warmup", "repeats", "dataset_revision", "shots"):
+        if old[key] != manifest[key]:
+            raise ValueError(f"import: {key} differs from the earlier run")
+    old_profiles = {p: tuple(c[c.index("--modes") + 1].split(",")) for p, c in old["commands"].items()}
+    old_cases = {p: bench.cases_from_jsonl(old_dir / f"{p}.cases.jsonl") for p in old_profiles}
+    first = next(iter(old_cases.values()))
+    done, runtimes, _ = collect(old_dir, first, old_profiles, args.warmup, args.repeats, args.backend)
+    chunk = args.out_dir / "chunks" / "0000"
+    chunk.mkdir(parents=True)
+    imported = {}
+    for profile, modes in profiles.items():
+        if profile not in old_profiles or not set(modes) <= set(old_profiles[profile]):
+            continue
+        by_id = {c["id"]: i for i, c in enumerate(old_cases[profile])}
+        take = []
+        for i, case in enumerate(cases[profile]):
+            j = by_id.get(case["id"])
+            if j is None or j not in done[profile]:
+                continue
+            o = old_cases[profile][j]
+            if o["prompt_ids"] != case["prompt_ids"] or o["candidate_ids"] != case["candidate_ids"]:
+                raise ValueError(f"import: prompt differs for {case['id']}")
+            take.append((i, [s for s in done[profile][j] if s["mode"] in modes]))
+        if not take:
+            continue
+        ev.write_json(chunk / f"{profile}.rows.json", [i for i, _ in take])
+        with (chunk / f"{profile}.driver.jsonl").open("w") as out, (chunk / f"{profile}.recv.tsv").open("w") as recv:
+            out.write(json.dumps(runtimes[0]) + "\n")
+            n = 1
+            for local, (_, samples) in enumerate(take):
+                for sample in sorted(samples, key=lambda s: (s["trial"], s["order"])):
+                    t = sample["recv_unix"]
+                    sample = {k: v for k, v in sample.items() if k not in ("chunk", "recv_unix")}
+                    out.write(json.dumps({**sample, "case_index": local}) + "\n")
+                    if t is not None:
+                        recv.write(f"{n}\t{t:.6f}\n")
+                    n += 1
+        ev.write_json(chunk / f"{profile}.run.json", {"imported_from": str(old_dir.resolve()), "wall_seconds": 0.,
+                                                       "returncode": 0, "stopped_at_deadline": False, "lines": n})
+        imported[profile] = len(take)
+    temps = [v for c in chunk_dirs(old_dir) for v in read_lines(c / "temps.jsonl")]
+    (chunk / "temps.jsonl").write_text("".join(json.dumps(v) + "\n" for v in temps))
+    now = time.time()
+    ev.write_json(chunk / "chunk.json", {"started_unix": now, "ended_unix": now, "imported_from": str(old_dir.resolve()),
+                                         "imported_questions": imported,
+                                         "source_manifest_sha256": bench.sha256(old_dir / "manifest.json"),
+                                         "note": "Samples measured in the earlier run (its host time is accounted there); "
+                                                 "they were interleaved with that run's other arms.",
+                                         "runs": {}})
+    return imported
+
+
 def run(args):
-    deadline = time.monotonic() + args.deadline_minutes * 60
+    deadline = time.time() + args.deadline_minutes * 60  # wall clock, see run_driver
     meta, rows, env, bound, calibration, profiles, flats, commands, manifest = ev.prepare_run(args)
+    if getattr(args, "spotcheck", 0):
+        manifest["determinism_spotcheck"] = {
+            "questions": args.spotcheck, "seed": args.spotcheck_seed,
+            "policy": "decision_dataset.select_stratified over the prepared rows: subject-proportional quotas, "
+                      "within a subject by sha256([seed, question_id]); label-independent",
+            "question_ids": [rows[i]["question_id"] for i in spotcheck_rows(rows, args)]}
     frozen = args.out_dir / "manifest.json"
     if frozen.exists():
         old = ev.read_json(frozen)
@@ -278,17 +416,22 @@ def run(args):
             raise FileExistsError(f"{args.out_dir} has content but no manifest")
         cases = ev.write_inputs(args, meta, profiles, flats)
         ev.write_json(frozen, manifest)  # frozen before any labelled inference
-    value, done, pending = status(args.out_dir, rows, profiles, args)
-    if args.status or not pending:
-        if not pending and not (args.out_dir / "report.json").exists():
+    if getattr(args, "import_from", None) and not chunk_dirs(args.out_dir):
+        print(json.dumps({"imported": import_samples(args, rows, profiles, cases, manifest)}))
+    value, done, (pending, spot_pending) = status(args.out_dir, rows, profiles, args)
+    if args.status or not (pending or spot_pending):
+        if not (pending or spot_pending) and not (args.out_dir / "report.json").exists():
             print(finalize(args, meta, rows, bound, calibration, profiles, manifest, done))
         print(json.dumps(value))
         return value
-    batch = pending[:args.chunk_questions]
+    spotcheck = not pending  # the second trial runs after the main run is complete
+    batch = pending[:args.chunk_questions] if pending else spot_pending[:args.chunk_questions]
+    if spotcheck:
+        done, _, _ = collect(args.out_dir, rows, profiles, args.warmup, args.repeats, args.backend, spotcheck=True)
     chunk = args.out_dir / "chunks" / f"{len(chunk_dirs(args.out_dir)):04d}"
     chunk.mkdir(parents=True)
     info = {"started_unix": time.time(), "rows": batch, "lock_note": os.environ.get("LOCK_NOTE"),
-            "deadline_minutes": args.deadline_minutes, "runs": {}}
+            "deadline_minutes": args.deadline_minutes, "spotcheck": spotcheck, "runs": {}}
     ev.write_json(chunk / "chunk.json", info)
     temps = TempLog(chunk / "temps.jsonl")
     try:
@@ -296,7 +439,7 @@ def run(args):
             todo = [i for i in batch if i not in done[profile]]
             if not todo:
                 continue
-            if time.monotonic() >= deadline:
+            if time.time() >= deadline:
                 break
             gate = cool_gate(args, deadline)
             ev.write_json(chunk / f"{profile}.rows.json", todo)
@@ -309,8 +452,8 @@ def run(args):
         temps.close()
         info["ended_unix"] = time.time()
         ev.write_json(chunk / "chunk.json", info)
-    value, done, pending = status(args.out_dir, rows, profiles, args)
-    if not pending:
+    value, done, (pending, spot_pending) = status(args.out_dir, rows, profiles, args)
+    if not (pending or spot_pending):
         print(finalize(args, meta, rows, bound, calibration, profiles, manifest, done))
     print(json.dumps(value))
     return value
@@ -329,6 +472,17 @@ def main():
     p.add_argument("--warmup", type=int, required=True)
     p.add_argument("--repeats", type=int, required=True)
     p.add_argument("--calibration", type=Path)
+    p.add_argument("--calibration-modes", type=lambda v: v.split(","),
+                   help="calibration split only: numeric arms to run (default: all three)")
+    p.add_argument("--question-ids", type=Path, help="JSON list: run only these question IDs, in this order")
+    p.add_argument("--reasoning-only", action="store_true", help="only the chat_reasoning profile")
+    p.add_argument("--core-arms", action="store_true",
+                   help="test/development: only chat_direct dense+selected and chat_reasoning")
+    p.add_argument("--spotcheck", type=int, default=0,
+                   help="after the main run, a second independent trial on N declared questions")
+    p.add_argument("--spotcheck-seed", default="geist-decision-determinism-spotcheck-v1")
+    p.add_argument("--import-from", type=Path,
+                   help="an earlier run of the same binding: reuse its complete samples of these modes")
     p.add_argument("--chunk-questions", type=int, required=True, help="pending questions per invocation")
     p.add_argument("--deadline-minutes", type=float, required=True, help="the driver is stopped at this point")
     p.add_argument("--cool-max-c", type=float, default=65.)
@@ -336,7 +490,8 @@ def main():
     p.add_argument("--status", action="store_true", help="report progress (and finalize if complete); no inference")
     args = p.parse_args()
     if (not 2 <= args.decode_cap <= 32768 or not 0 <= args.warmup <= 1000
-            or not 1 <= args.repeats <= 10000 or args.threads < 1 or args.chunk_questions < 1
+            or not 0 <= args.repeats <= 10000 or (args.repeats == 0 and args.warmup)
+            or args.threads < 1 or args.chunk_questions < 1 or args.spotcheck < 0
             or not args.deadline_minutes > 0 or not math.isfinite(args.margin_pp) or not 0 <= args.margin_pp <= 100):
         p.error("invalid decode/warmup/repeat/thread/chunk/deadline/margin bounds")
     run(args)

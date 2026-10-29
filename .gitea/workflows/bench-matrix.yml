@@ -29,7 +29,7 @@ on:
         options: [nightly, weekly]
         default: nightly
       only:
-        description: "restrict to one column or column/model, e.g. pi5 or nvidia_2080ti_vulkan/bonsai2-27b-pq2"
+        description: "restrict to columns or column/models, comma-separated, e.g. pi5 or amd_9950x/qwen35-4b-q4,nvidia_2080ti_vulkan/bonsai2-27b-pq2"
         type: string
         default: ""
       publish:
@@ -52,8 +52,10 @@ jobs:
     # Nightly cells take 13-18 min on the desktop and the GPU and 42-46 min
     # on the Pi (run 1097); the weekly Pi cells (3B/4B) need the rest. A
     # busy host no longer eats this: the Apple profiles wait at most 20 min
-    # for a quiet host, then fail as "host busy" and the run's later cells
-    # on that host fail at once (#14, #23).
+    # for a quiet host, then give up as "host busy" and the run's later cells
+    # on that host do not wait again (#14, #23). On a schedule such a cell
+    # ends green with a warning and a "not measured" summary line; on a
+    # dispatch it fails.
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -78,24 +80,42 @@ jobs:
           - {column: nvidia_2080ti_vulkan, model: bitnet-large-tq2, runner: geist-vulkan, weekly: true}
           - {column: nvidia_2080ti_vulkan, model: qwen3-0.6b-q8, runner: geist-vulkan, weekly: true}
           - {column: nvidia_2080ti_vulkan, model: qwen35-4b-q4, runner: geist-vulkan, weekly: true}
-          - {column: apple_m1max, model: qwen35-0.8b-q8, runner: macos-15-heavy, weekly: false}
-          - {column: apple_m1max, model: gemma4-e2b-q4km, runner: macos-15-heavy, weekly: false}
-          - {column: apple_m1max, model: gemma4-e4b-q4km, runner: macos-15-heavy, weekly: true}
-          - {column: apple_m1max, model: llama32-3b-q4km, runner: macos-15-heavy, weekly: true}
-          - {column: apple_m1max, model: bitnet-large-tq2, runner: macos-15-heavy, weekly: true}
-          - {column: apple_m1max, model: qwen3-0.6b-q8, runner: macos-15-heavy, weekly: true}
-          - {column: apple_m1max, model: qwen35-4b-q4, runner: macos-15-heavy, weekly: true}
-          - {column: apple_m1max, model: qwen38-27b-q4, runner: macos-15-heavy, weekly: true}
-          - {column: apple_m1max, model: bonsai2-27b-pq2, runner: macos-15-heavy, weekly: true}
-          - {column: apple_m1max_metal, model: gemma4-e2b-q4km, runner: macos-15-heavy, weekly: false}
-          - {column: apple_m1max_metal, model: bonsai2-27b-pq2, runner: macos-15-heavy, weekly: false}
-          - {column: apple_m1max_metal, model: gemma4-e4b-q4km, runner: macos-15-heavy, weekly: true}
-          - {column: apple_m1max_metal, model: llama32-3b-q4km, runner: macos-15-heavy, weekly: true}
-          - {column: apple_m1max_metal, model: bitnet-large-tq2, runner: macos-15-heavy, weekly: true}
-          - {column: apple_m1max_metal, model: qwen3-0.6b-q8, runner: macos-15-heavy, weekly: true}
-          - {column: apple_m1max_metal, model: qwen35-0.8b-q8, runner: macos-15-heavy, weekly: true}
-          - {column: apple_m1max_metal, model: qwen35-4b-q4, runner: macos-15-heavy, weekly: true}
-          - {column: apple_m1max_metal, model: qwen38-27b-q4, runner: macos-15-heavy, weekly: true}
+          - {column: apple_m1max, model: qwen35-0.8b-q8, runner: apple-m1max, weekly: false}
+          - {column: apple_m1max, model: gemma4-e2b-q4km, runner: apple-m1max, weekly: false}
+          - {column: apple_m1max, model: gemma4-e4b-q4km, runner: apple-m1max, weekly: true}
+          - {column: apple_m1max, model: llama32-3b-q4km, runner: apple-m1max, weekly: true}
+          - {column: apple_m1max, model: bitnet-large-tq2, runner: apple-m1max, weekly: true}
+          - {column: apple_m1max, model: qwen3-0.6b-q8, runner: apple-m1max, weekly: true}
+          - {column: apple_m1max, model: qwen35-4b-q4, runner: apple-m1max, weekly: true}
+          - {column: apple_m1max, model: qwen38-27b-q4, runner: apple-m1max, weekly: true}
+          - {column: apple_m1max, model: bonsai2-27b-pq2, runner: apple-m1max, weekly: true}
+          - {column: apple_m1max_metal, model: gemma4-e2b-q4km, runner: apple-m1max, weekly: false}
+          - {column: apple_m1max_metal, model: bonsai2-27b-pq2, runner: apple-m1max, weekly: false}
+          - {column: apple_m1max_metal, model: gemma4-e4b-q4km, runner: apple-m1max, weekly: true}
+          - {column: apple_m1max_metal, model: llama32-3b-q4km, runner: apple-m1max, weekly: true}
+          - {column: apple_m1max_metal, model: bitnet-large-tq2, runner: apple-m1max, weekly: true}
+          - {column: apple_m1max_metal, model: qwen3-0.6b-q8, runner: apple-m1max, weekly: true}
+          - {column: apple_m1max_metal, model: qwen35-0.8b-q8, runner: apple-m1max, weekly: true}
+          - {column: apple_m1max_metal, model: qwen35-4b-q4, runner: apple-m1max, weekly: true}
+          - {column: apple_m1max_metal, model: qwen38-27b-q4, runner: apple-m1max, weekly: true}
+          - {column: apple_m6_mini, model: qwen35-0.8b-q8, runner: macmini-m6, weekly: false}
+          - {column: apple_m6_mini, model: gemma4-e2b-q4km, runner: macmini-m6, weekly: false}
+          - {column: apple_m6_mini, model: gemma4-e4b-q4km, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini, model: llama32-3b-q4km, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini, model: bitnet-large-tq2, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini, model: qwen3-0.6b-q8, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini, model: qwen35-4b-q4, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini, model: qwen38-27b-q4, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini, model: bonsai2-27b-pq2, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini_metal, model: gemma4-e2b-q4km, runner: macmini-m6, weekly: false}
+          - {column: apple_m6_mini_metal, model: bonsai2-27b-pq2, runner: macmini-m6, weekly: false}
+          - {column: apple_m6_mini_metal, model: gemma4-e4b-q4km, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini_metal, model: llama32-3b-q4km, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini_metal, model: bitnet-large-tq2, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini_metal, model: qwen3-0.6b-q8, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini_metal, model: qwen35-0.8b-q8, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini_metal, model: qwen35-4b-q4, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini_metal, model: qwen38-27b-q4, runner: macmini-m6, weekly: true}
           - {column: pi5, model: qwen3-0.6b-q8, runner: pi5, weekly: false}
           - {column: pi5, model: qwen35-0.8b-q8, runner: pi5, weekly: false}
           - {column: pi5, model: gemma4-e2b-q4km, runner: pi5, weekly: true}
@@ -111,24 +131,34 @@ jobs:
           ONLY="${{ inputs.only }}"
           run=1
           if [ "${{ matrix.weekly }}" = true ] && [ "$SET" != weekly ]; then run=0; fi
-          case "$ONLY" in ""|"${{ matrix.column }}"|"${{ matrix.column }}/${{ matrix.model }}") ;; *) run=0 ;; esac
+          if [ -n "$ONLY" ]; then
+            case ",$ONLY," in *",${{ matrix.column }},"*|*",${{ matrix.column }}/${{ matrix.model }},"*) ;; *) run=0 ;; esac
+          fi
           # The M1 Max is also the developers' machine and serves PR CI: a
           # scheduled run starts its cells only between 00:00 and 07:00
           # Berlin time. Run 1723 (2026-10-22) re-measured every Apple cell
           # after a protocol change and held the Mac lease from 00:40 to past
           # 11:30, with 13 PR jobs waiting. Cells left over are measured the
           # next night; a dispatched run is not limited.
-          if [ "$run" = 1 ] && [ "${{ matrix.runner }}" = macos-15-heavy ] && [ "${{ github.event_name }}" = schedule ] &&
+          if [ "$run" = 1 ] && [ "${{ matrix.runner }}" = apple-m1max ] && [ "${{ github.event_name }}" = schedule ] &&
              [ "$(TZ=Europe/Berlin date +%H)" -ge 7 ]; then
             echo "::notice::outside the Mac night window (00-07 Berlin): not measured this run"
             run=0
           fi
           # A cell before this one on the same host timed out waiting for a
-          # quiet host (see Measure): fail at once instead of waiting again.
-          # Host runners (macOS) share /tmp across jobs; the marker is per run.
+          # quiet host (see Measure): do not wait again. Host runners (macOS)
+          # share /tmp across jobs; the marker is per run. A scheduled run
+          # reports the cell as not measured (the Mac is a workstation; a
+          # busy night is no verdict on geist), a dispatched one fails.
           if [ "$run" = 1 ] && [ -e "/tmp/geist-bench-busy-${{ github.run_id }}" ]; then
-            echo "::error::host busy earlier in run ${{ github.run_id }}: not measured"
-            exit 1
+            if [ "${{ github.event_name }}" = schedule ]; then
+              echo "::warning::host busy earlier in run ${{ github.run_id }}: not measured"
+              echo "- ${{ matrix.column }}/${{ matrix.model }}: not measured, host busy earlier in this run" >> "$GITHUB_STEP_SUMMARY"
+              run=0
+            else
+              echo "::error::host busy earlier in run ${{ github.run_id }}: not measured"
+              exit 1
+            fi
           fi
           echo "set=$SET run=$run"
           echo "run=$run" >> "$GITHUB_OUTPUT"
@@ -149,6 +179,8 @@ jobs:
         run: eval "$CELL_BUILD"
       - name: Ensure pinned llama.cpp build
         if: steps.sel.outputs.run == '1'
+        env:
+          LOCK_NOTE: "bench-matrix ${{ matrix.column }}/${{ matrix.model }}: llama.cpp build (run ${{ github.run_id }})"
         run: |
           set -eo pipefail
           echo "LLAMA_BENCH=$(eval "$CELL_PREFIX" scripts/ensure-llama-bench.sh "$CELL_LLAMA" "'$CELL_LLAMA_REPO'" "'$CELL_LLAMA_PIN'")" >> "$GITHUB_ENV"
@@ -160,11 +192,14 @@ jobs:
           set -eo pipefail
           echo "MODEL_PATH=$(python3 tools/fetch_bench_model.py --model ${{ matrix.model }} --protocol benchmark/cross_engine_${CELL_PROTOCOL}_protocol.json)" >> "$GITHUB_ENV"
       - name: Measure (frozen protocol, quiet-host gate)
+        id: measure
         if: steps.sel.outputs.run == '1'
         env:
           # The desktop also enumerates a Raphael iGPU; pin llama.cpp to the
           # discrete card. Ignored elsewhere.
           GGML_VK_VISIBLE_DEVICES: "0"
+          # who holds the host lock, in with-*-lock status and on /status/ci/
+          LOCK_NOTE: "bench-matrix ${{ matrix.column }}/${{ matrix.model }} (run ${{ github.run_id }})"
         run: |
           set -eo pipefail
           if [ "$CELL_LLAMA" = vulkan ]; then . scripts/gpu-lock.sh; fi
@@ -175,15 +210,24 @@ jobs:
             --host-profile ${{ matrix.column }} --model ${{ matrix.model }} \
             --out-dir bench-out 2> >(tee gate.err >&2) || {
             sleep 1 # tee writes asynchronously
-            grep -q 'host did not become quiet' gate.err && touch "/tmp/geist-bench-busy-${{ github.run_id }}"
-            exit 1
+            grep -q 'host did not become quiet' gate.err || exit 1
+            touch "/tmp/geist-bench-busy-${{ github.run_id }}"
+            # The quiet-host gate refused the host: nothing was measured, so
+            # there is nothing to judge. Nightly runs 1908-2187 went red
+            # every night on the M1 Max at 76-79 % idle (gate 80 %).
+            [ "${{ github.event_name }}" = schedule ] || exit 1
+            echo "::warning::host did not become quiet: not measured"
+            echo "- ${{ matrix.column }}/${{ matrix.model }}: not measured, $(grep -m1 -o 'host did not become quiet: [^,]*, idle=[^,]*' gate.err)" >> "$GITHUB_STEP_SUMMARY"
+            echo "measured=0" >> "$GITHUB_OUTPUT"
+            exit 0
           }
           mkdir -p "site/runs/${{ matrix.column }}/${{ matrix.model }}"
           mv bench-out/*.jsonl bench-out/*.md "site/runs/${{ matrix.column }}/${{ matrix.model }}/"
+          echo "measured=1" >> "$GITHUB_OUTPUT"
       - name: Upload to geisten.net/bench
         # A schedule has no inputs, and '' == false in an expression: the
         # first nightly run (850) skipped every upload this way.
-        if: steps.sel.outputs.run == '1' && (github.event_name == 'schedule' || inputs.publish == true || inputs.publish == 'true')
+        if: steps.measure.outputs.measured == '1' && (github.event_name == 'schedule' || inputs.publish == true || inputs.publish == 'true')
         env:
           BENCH_SSH_KEY: ${{ secrets.BENCH_SSH_KEY }}
         run: |

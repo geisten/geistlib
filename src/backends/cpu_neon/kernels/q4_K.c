@@ -9,6 +9,7 @@
  * (`dequant_q4_K_row`) and the block struct live in src/formats/gguf/.
  */
 #include "quant_blocks.h"
+#include "env.h"
 #include "heap.h"
 #include "linear_ref.h"
 #include "par.h"
@@ -26,7 +27,6 @@
 #include <arm_neon.h>
 #endif
 
-#include "../parallel.h"
 #include "decode_rows.h"
 
 struct q4k_predecode_header {
@@ -729,8 +729,7 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
     static _Atomic int pack_act = -1;
     int                pack_on  = atomic_load_explicit(&pack_act, memory_order_relaxed);
     if (pack_on < 0) {
-        const char *e = getenv("GEIST_Q4K_PACK_ACT");
-        pack_on       = (e != nullptr && e[0] == '0') ? 0 : 1;
+        pack_on = geist_env_flag("GEIST_Q4K_PACK_ACT", true);
         atomic_store_explicit(&pack_act, pack_on, memory_order_relaxed);
     }
     int8_t *packed = nullptr;
@@ -762,7 +761,7 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
                                   .w        = w_q4k,
                                   .act      = packed,
                                   .y        = y};
-    cpu_neon_par_for_dynamic(n_panels, 1, q4k_prefill_panels, &job);
+    geist_par_for_dynamic(n_panels, 1, q4k_prefill_panels, &job);
 #undef NC
 #undef MT
 #else
@@ -866,7 +865,7 @@ void linear_q4k_w4a8_prefill_predecoded(size_t         m,
                                   .sum32    = sum32,
                                   .w        = packed,
                                   .y        = y};
-    cpu_neon_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_rows, &job);
+    geist_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1016,7 +1015,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
                                   .sum32    = sum32,
                                   .w        = packed,
                                   .y        = y};
-    cpu_neon_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_mtile4_rows, &job);
+    geist_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_mtile4_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1236,7 +1235,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
                                   .sum32    = sum32,
                                   .w        = packed,
                                   .y        = y};
-    cpu_neon_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_mtile8_rows, &job);
+    geist_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_mtile8_rows, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1417,7 +1416,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
                                   .sum32    = sum32,
                                   .w        = packed,
                                   .y        = y};
-    cpu_neon_par_for_dynamic(n_tiles, 4, q4k_prefill_predecoded_mtile4_ntile4_packed_tiles, &job);
+    geist_par_for_dynamic(n_tiles, 4, q4k_prefill_predecoded_mtile4_ntile4_packed_tiles, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1782,46 +1781,28 @@ static void q4k_sdot_tile4x8(const struct q4k_prefill_job *job,
                 acc[t] = vdupq_n_s32(0);
                 a[t]   = vld1q_s8(xb + (size_t) t * n_in);
             }
-            for (int j = 0; j < 4; j++) {
-                const int8x16_t w = vld1q_s8(wbuf + (is * 8 + j) * 16);
-                for (int t = 0; t < 8; t++) {
-                    switch (j) {
-                    case 0:
-                        acc[t] = vdotq_laneq_s32(acc[t], w, a[t], 0);
-                        break;
-                    case 1:
-                        acc[t] = vdotq_laneq_s32(acc[t], w, a[t], 1);
-                        break;
-                    case 2:
-                        acc[t] = vdotq_laneq_s32(acc[t], w, a[t], 2);
-                        break;
-                    default:
-                        acc[t] = vdotq_laneq_s32(acc[t], w, a[t], 3);
-                        break;
-                    }
-                }
+            const int8x16_t lo0 = vld1q_s8(wbuf + (is * 8 + 0) * 16);
+            const int8x16_t lo1 = vld1q_s8(wbuf + (is * 8 + 1) * 16);
+            const int8x16_t lo2 = vld1q_s8(wbuf + (is * 8 + 2) * 16);
+            const int8x16_t lo3 = vld1q_s8(wbuf + (is * 8 + 3) * 16);
+            for (int t = 0; t < 8; t++) {
+                acc[t] = vdotq_laneq_s32(acc[t], lo0, a[t], 0);
+                acc[t] = vdotq_laneq_s32(acc[t], lo1, a[t], 1);
+                acc[t] = vdotq_laneq_s32(acc[t], lo2, a[t], 2);
+                acc[t] = vdotq_laneq_s32(acc[t], lo3, a[t], 3);
             }
             for (int t = 0; t < 8; t++) {
                 a[t] = vld1q_s8(xb + (size_t) t * n_in + 16);
             }
-            for (int j = 0; j < 4; j++) {
-                const int8x16_t w = vld1q_s8(wbuf + (is * 8 + 4 + j) * 16);
-                for (int t = 0; t < 8; t++) {
-                    switch (j) {
-                    case 0:
-                        acc[t] = vdotq_laneq_s32(acc[t], w, a[t], 0);
-                        break;
-                    case 1:
-                        acc[t] = vdotq_laneq_s32(acc[t], w, a[t], 1);
-                        break;
-                    case 2:
-                        acc[t] = vdotq_laneq_s32(acc[t], w, a[t], 2);
-                        break;
-                    default:
-                        acc[t] = vdotq_laneq_s32(acc[t], w, a[t], 3);
-                        break;
-                    }
-                }
+            const int8x16_t hi0 = vld1q_s8(wbuf + (is * 8 + 4) * 16);
+            const int8x16_t hi1 = vld1q_s8(wbuf + (is * 8 + 5) * 16);
+            const int8x16_t hi2 = vld1q_s8(wbuf + (is * 8 + 6) * 16);
+            const int8x16_t hi3 = vld1q_s8(wbuf + (is * 8 + 7) * 16);
+            for (int t = 0; t < 8; t++) {
+                acc[t] = vdotq_laneq_s32(acc[t], hi0, a[t], 0);
+                acc[t] = vdotq_laneq_s32(acc[t], hi1, a[t], 1);
+                acc[t] = vdotq_laneq_s32(acc[t], hi2, a[t], 2);
+                acc[t] = vdotq_laneq_s32(acc[t], hi3, a[t], 3);
             }
             const int32x4_t scv = wb[b - b0].sc[is];
             for (int t = 0; t < 8; t++) {
@@ -1854,8 +1835,6 @@ enum { Q4K_SDOT_PREP_BLOCKS = 16 };
  * blocks are prepared Q4K_SDOT_PREP_BLOCKS at a time on the stack, and
  * each group of 8 tokens carries its accumulators from one pass to the
  * next, so every output still sums its blocks in order. */
-static void q4k_prefill_sdot_tiles(void *ctx, size_t nt0, size_t nt1);
-
 static void q4k_prefill_sdot_tiles(void *ctx, size_t nt0, size_t nt1) {
     const struct q4k_prefill_job     *job = ctx;
     const struct q4k_predecode_block *w   = q4k_predecode_ntile4_blocks(job->w);
@@ -1932,7 +1911,7 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
                                   .sum32    = sum32,
                                   .w        = packed,
                                   .y        = y};
-    cpu_neon_par_for_dynamic(n_tiles, 4, q4k_prefill_sdot_tiles, &job);
+    geist_par_for_dynamic(n_tiles, 4, q4k_prefill_sdot_tiles, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -2128,7 +2107,7 @@ void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t        
                                   .w1       = packed1,
                                   .y        = y0,
                                   .y1       = y1};
-    cpu_neon_par_for_dynamic(
+    geist_par_for_dynamic(
             total_tiles, 4, q4k_prefill_pair_predecoded_mtile4_ntile4_packed_tiles, &job);
 #else
     (void) x_q8;

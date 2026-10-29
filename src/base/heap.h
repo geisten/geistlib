@@ -76,6 +76,34 @@ void *heap_alloc_large(size_t size, size_t alignment);
  * *ptr = nullptr; tolerates null ptr and null *ptr. */
 void safe_free(void **ptr);
 
+/* Grow *buf, an array of *cap elements of `size` bytes aligned to `align`
+ * (0 = OPTIMAL_ALIGNMENT), to exactly `need` elements. True without
+ * allocating while *cap >= need. heap.h has no realloc: alignment and
+ * heap_alloc_large mappings rule it out.
+ *
+ * heap_grow keeps the *cap elements, and on overflow or OOM returns false
+ * with *buf and *cap untouched: for arrays that are appended to (pass a
+ * doubled need).
+ *
+ * heap_scratch_grow drops the contents and frees the old buffer first; on
+ * overflow or OOM it returns false with *buf == nullptr and *cap == 0, so
+ * every later call retries and a kernel takes its no-scratch fallback until
+ * one succeeds (test_linear_fallback_unit). For per-call scratch. */
+[[nodiscard]] bool
+heap_grow_slow(void **buf, size_t *cap, size_t need, size_t size, size_t align, bool keep);
+[[nodiscard]] static inline bool
+heap_grow(void **buf, size_t *cap, size_t need, size_t size, size_t align) {
+    return *cap >= need || heap_grow_slow(buf, cap, need, size, align, true);
+}
+[[nodiscard]] static inline bool
+heap_scratch_grow(void **buf, size_t *cap, size_t need, size_t size, size_t align) {
+    return *cap >= need || heap_grow_slow(buf, cap, need, size, align, false);
+}
+#define heap_grow_array(_ptr, _cap, _need) \
+    heap_grow((void **) &(_ptr), &(_cap), (_need), sizeof *(_ptr), alignof(typeof(*(_ptr))))
+#define heap_scratch_grow_array(_ptr, _cap, _need) \
+    heap_scratch_grow((void **) &(_ptr), &(_cap), (_need), sizeof *(_ptr), alignof(typeof(*(_ptr))))
+
 /* A thread's high-water scratch buffer: *buf holds *cap elements of `size`
  * bytes. Grows it to at least `count` (contents dropped) and frees it when
  * the thread exits, so a kernel's `static _Thread_local` scratch does not

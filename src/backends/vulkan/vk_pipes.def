@@ -30,7 +30,14 @@ X(VK_PIPE_MATVEC_F32,             matvec_f32_spv,              "matvec_f32",    
 X(VK_PIPE_MATVEC_F32_ID,          matvec_f32_id_spv,           "matvec_f32_id",          2, PLAIN)
 X(VK_PIPE_MATVEC_Q4K_ID,          matvec_q4k_id_spv,           "matvec_q4k_id",          2, PLAIN)
 X(VK_PIPE_MATVEC_Q6K_ID,          matvec_q6k_id_spv,           "matvec_q6k_id",          2, PLAIN)
+X(VK_PIPE_MATVEC_Q5K_ID,          matvec_q5k_id_spv,           "matvec_q5k_id",          2, PLAIN)
+X(VK_PIPE_MATVEC_F32_SEL,         matvec_f32_sel_spv,          "matvec_f32_sel",         4, PLAIN)
+X(VK_PIPE_MATVEC_Q4K_SEL,         matvec_q4k_sel_spv,          "matvec_q4k_sel",         4, PLAIN)
+X(VK_PIPE_MATVEC_Q6K_SEL,         matvec_q6k_sel_spv,          "matvec_q6k_sel",         4, PLAIN)
+X(VK_PIPE_MATVEC_Q5K_SEL,         matvec_q5k_sel_spv,          "matvec_q5k_sel",         4, PLAIN)
+X(VK_PIPE_MOE_TOPK,               moe_topk_spv,                "moe_topk",               3, PLAIN)
 X(VK_PIPE_ROWS_WSUM_ADD,          rows_wsum_add_spv,           "rows_wsum_add",          3, PLAIN)
+X(VK_PIPE_ROWS_GATHER,            rows_gather_spv,             "rows_gather",            3, PLAIN)
 X(VK_PIPE_MATMUL_F32,             matmul_f32_spv,              "matmul_f32",             3, TILED)
 X(VK_PIPE_ADD,                    add_f32_spv,                 "add",                    3, PLAIN)
 X(VK_PIPE_MUL,                    mul_f32_spv,                 "mul",                    3, PLAIN)
@@ -62,18 +69,23 @@ X(VK_PIPE_MM_PQ2_0_CM,            matmul_pq2_0_cm_spv,         "mm_pq2_0_cm",   
 X(VK_PIPE_MM_PQ2_0_CM_F32,        matmul_pq2_0_f32acc_cm_spv,  "mm_pq2_0_cm_f32",        3, COOPMAT)
 /* 128 x 64 tile (f32 acc) for batches under 128 tokens */
 X(VK_PIPE_MM_PQ2_0_CM64,          matmul_pq2_0_t64_cm_spv,     "mm_pq2_0_cm64",          3, COOPMAT)
+/* 2..15 tokens: one weight decode, the tokens on the MMA (#105) */
+X(VK_PIPE_MM_PQ2_0_M16_CM,        matmul_pq2_0_m16_cm_spv,     "mm_pq2_0_m16_cm",        3, COOPMAT)
 /* fused PLE gate: gelu(x.gate_w) * ple_in */
 X(VK_PIPE_PLE_GATE,               ple_gate_f32_spv,            "ple_gate",               4, PLAIN)
 /* ffn_gate_up with the pre-FFN rmsnorm folded in */
 X(VK_PIPE_FFN_NORM_GU,            ffn_norm_gate_up_q4k_spv,    "ffn_norm_gu",            5, PLAIN)
 /* gated-DeltaNet causal conv + silu (deltanet_mix stage 1) */
-X(VK_PIPE_DN_CONV,                deltanet_conv_f32_spv,       "dn_conv",                3, PLAIN)
+X(VK_PIPE_DN_CONV,                deltanet_conv_f32_spv,       "dn_conv",                4, PLAIN)
 /* gated-DeltaNet recurrence + gated rmsnorm (stage 2) */
 X(VK_PIPE_DN_DELTA,               deltanet_delta_f32_spv,      "dn_delta",               8, PLAIN)
 /* DeltaNet q/k l2norm and gated output rmsnorm (fast path) */
 X(VK_PIPE_DN_NORM,                deltanet_norm_f32_spv,       "dn_norm",                3, PLAIN)
 /* column-split DeltaNet recurrence; needs clustered subgroups (st->dn_scan) */
-X(VK_PIPE_DN_SCAN,                deltanet_scan_f32_spv,       "dn_scan",                7, PLAIN)
+X(VK_PIPE_DN_SCAN,                deltanet_scan_f32_spv,       "dn_scan",                8, PLAIN)
+/* batched decode (#26): every session's conv / scan step, its own states */
+X(VK_PIPE_DN_CONV_B,              deltanet_conv_b_f32_spv,     "dn_conv_b",             10, PLAIN)
+X(VK_PIPE_DN_SCAN_B,              deltanet_scan_b_f32_spv,     "dn_scan_b",             14, PLAIN)
 X(VK_PIPE_MATVEC_Q4_0,            matvec_q4_0_spv,             "matvec_q4_0",            3, PLAIN)
 X(VK_PIPE_MATMUL_Q4_0,            matmul_q4_0_spv,             "matmul_q4_0",            3, TILED)
 X(VK_PIPE_MATVEC_Q4_1,            matvec_q4_1_spv,             "matvec_q4_1",            3, PLAIN)

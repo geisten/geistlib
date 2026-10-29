@@ -12,80 +12,12 @@ import hashlib
 from importlib.metadata import version
 import json
 from pathlib import Path
-import subprocess
 import time
 
 import bench_decision as bench
 import decision_dataset as data
 import eval_mmlu
-
-
-class Tokenizer:
-    """GGUF tokenizer through eval_geist; stderr goes to a file, never a blocked pipe."""
-    def __init__(self, binary, model, log):
-        self.log = log.open("w")
-        start = time.perf_counter()
-        try:
-            self.process = subprocess.Popen([str(binary), str(model)], stdin=subprocess.PIPE,
-                                            stdout=subprocess.PIPE, stderr=self.log, text=True, bufsize=1)
-            while True:
-                line = self.process.stdout.readline()
-                if not line:
-                    raise RuntimeError(f"tokenizer exited before READY; see {log}")
-                if line.strip() == "READY":
-                    break
-            self.startup_ms = (time.perf_counter() - start) * 1000
-            parts = self.command("BOS")
-            if len(parts) != 2 or parts[0] not in ("0", "1"):
-                raise ValueError("invalid tokenizer BOS policy")
-            bos = int(parts[1])
-            if parts[0] == "1" and bos < 0:
-                raise ValueError("invalid tokenizer BOS token")
-            self.bos = bos if parts[0] == "1" else None
-        except BaseException:
-            self.close()
-            raise
-
-    def command(self, text):
-        self.process.stdin.write(text + "\n")
-        self.process.stdin.flush()
-        response = self.process.stdout.readline().strip().split()
-        if not response or response[0] != "OK":
-            raise RuntimeError(f"tokenizer command failed: {response}")
-        return response[1:]
-
-    def encode(self, text):
-        if "\0" in text or len(text.encode("utf-8")) >= 65536:
-            raise ValueError("prompt does not fit the lossless TOK protocol")
-        # MMLU text keeps its CRs (college_mathematics exemplars, #171); a raw
-        # CR ending a line would be stripped by the REPL, so it travels escaped.
-        escaped = (text.replace("\\", "\\\\").replace("\n", "\\n")
-                   .replace("\t", "\\t").replace("\r", "\\r"))
-        response = self.command("TOK " + escaped)
-        if not response:
-            raise ValueError("missing token count")
-        ids = [int(x) for x in response[1:]]
-        if int(response[0]) != len(ids) or not ids or any(i < 0 for i in ids):
-            raise ValueError("invalid tokenizer result")
-        return ids
-
-    def close(self):
-        if hasattr(self, "process"):
-            if self.process.poll() is None:
-                try:
-                    self.process.stdin.write("QUIT\n")
-                    self.process.stdin.flush()
-                    self.process.wait(timeout=20)
-                except (BrokenPipeError, ValueError, subprocess.TimeoutExpired):
-                    self.process.terminate()
-                    try:
-                        self.process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        self.process.kill()
-                        self.process.wait()
-            self.process.stdin.close()
-            self.process.stdout.close()
-        self.log.close()
+from eval_repl import EvalRepl as Tokenizer  # stderr to a log file, never a blocked pipe
 
 
 def token_case(tokenizer, text, labels):

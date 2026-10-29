@@ -114,12 +114,39 @@ between backends, so code that compares bits names its backend.
 
 `geist_model_modalities`, `geist_session_attach_audio` / `attach_image` /
 `attach_video`, the `geist_session_audio_*` streaming family,
-`geist_session_decode_speculative`, the `geist_session_snapshot` / `restore`
-family, the `geist_session_stats` family and the layer split
+`geist_session_decode_speculative`, `geist_session_verify_drafts`,
+`geist_session_checkpoint`, `geist_session_set_draft`, the
+`geist_session_snapshot` / `restore`
+family, `geist_session_decode_batch` / `geist_model_decode_batch_max`, the `geist_session_stats` family and the layer split
 (`geist_session_opts.split_backend` / `split_layers`, #49, with
 `GEIST_SPLIT_AUTO` for the planner's choice, #78) remain
 `EXPERIMENTAL`. They are useful and supported, but an agent runtime must not
 build its core loop on them expecting release-boundary stability.
+
+### Batched decode (experimental, #26)
+
+`geist_session_decode_batch(n, sessions, out_tokens)` is
+`geist_session_decode_step` for each of n distinct sessions of one model.
+Their forwards run as one batched pass:
+- every linear layer and the lm_head read their weights once for the n rows;
+- attention, the KV cache and recurrent state stay per session;
+- each session samples with its own settings.
+
+The guarantees:
+- **Isolation.** For a given n, a session's tokens and logits are
+  bit-identical whichever other sessions share the call and in whichever slot.
+- **Numerics.** n = 1 is `decode_step` itself. For n > 1 the batched rows
+  round differently from a single-row step: logits can differ in the last
+  digits, and over long generations a greedy path can diverge.
+- **Refusals change nothing.** These are: `nullptr`, a repeated session,
+  another model's session, n above `geist_model_decode_batch_max`, KIVI/MTP/
+  split members, nothing pending, a full context and cancellation. A failure
+  during the pass resets every member.
+
+The decoder vtable carries the two optional `decode_batch` /
+`decode_batch_max` slots, appended without moving existing fields.
+`geist_model_decode_batch_max` is 0 where a model cannot batch; today only
+Qwen3.5-family hybrids on Metal and Vulkan can, up to 8 sessions.
 
 ### Optional decision API (experimental)
 

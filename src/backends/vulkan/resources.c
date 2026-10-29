@@ -340,7 +340,7 @@ enum geist_status vk_memory_info(const struct geist_backend *be, struct geist_ba
         buf->bar_bytes = (size_t) minfo.allocationSize;
         st->bar_used += buf->bar_bytes;
     }
-    const bool verbose = getenv("GEIST_VK_VERBOSE") != nullptr;
+    const bool verbose = geist_env_flag("GEIST_VK_VERBOSE", false);
     if (verbose && buf->host_visible) {
         fprintf(stderr,
                 "  buffer %zu KiB role=%d bar=%d\n",
@@ -522,6 +522,8 @@ static void vk_weight_forget(struct geist_backend *be, const uint8_t *lo, const 
     if (dropped == 0) {
         return;
     }
+    st->n_sel_tabs  = 0; /* their addresses may name a dropped copy */
+    st->seltab_used = 0;
     memset(st->weight_index, 0, st->cap_weight_index * sizeof(uint32_t));
     for (size_t i = 0; i < st->n_weights; ++i) {
         vk_weight_index_put(st->weight_index, st->cap_weight_index, st->weights[i].host, i);
@@ -939,36 +941,36 @@ struct vk_access vk_acc_tensor(const struct geist_tensor *t, bool write) {
     return vk_acc(lo, span, write);
 }
 
-/* GPU view of a tensor: VkBuffer + f32 element offset. False when the
- * tensor's buffer has no VkBuffer behind it (e.g. GGUF-mmap aliases), or
- * when the offset does not fit the shaders' uint32 element index. */
-bool vk_tensor_gpu(const struct geist_tensor *t, VkDescriptorBufferInfo *out, uint32_t *elem_off) {
+/* GPU view of a tensor: VkBuffer + offset in elem_size-byte elements.
+ * False when the tensor's buffer has no VkBuffer behind it (e.g. GGUF-mmap
+ * aliases), or when the offset does not fit the shaders' uint32 element
+ * index. */
+static bool vk_tensor_gpu_elems(const struct geist_tensor *t,
+                                size_t                     elem_size,
+                                VkDescriptorBufferInfo    *out,
+                                uint32_t                  *elem_off) {
     if (t == nullptr || t->buffer == nullptr || t->buffer->buf == VK_NULL_HANDLE) {
         return false;
     }
     size_t byte_off;
-    if (ckd_add(&byte_off, t->buffer->base_off, t->offset) || byte_off % 4 != 0 ||
-        vk_ckd_u32(byte_off / 4, elem_off)) {
+    if (ckd_add(&byte_off, t->buffer->base_off, t->offset) || byte_off % elem_size != 0 ||
+        vk_ckd_u32(byte_off / elem_size, elem_off)) {
         return false;
     }
     *out = (VkDescriptorBufferInfo) {.buffer = t->buffer->buf, .range = VK_WHOLE_SIZE};
     return true;
 }
 
-/* Same, but offsets in f16 elements (for F16 KV-cache views). */
+/* Offsets in f32 elements. */
+bool vk_tensor_gpu(const struct geist_tensor *t, VkDescriptorBufferInfo *out, uint32_t *elem_off) {
+    return vk_tensor_gpu_elems(t, sizeof(float), out, elem_off);
+}
+
+/* Offsets in f16 elements (for F16 KV-cache views). */
 bool vk_tensor_gpu_f16(const struct geist_tensor *t,
                        VkDescriptorBufferInfo    *out,
                        uint32_t                  *elem_off) {
-    if (t == nullptr || t->buffer == nullptr || t->buffer->buf == VK_NULL_HANDLE) {
-        return false;
-    }
-    size_t byte_off;
-    if (ckd_add(&byte_off, t->buffer->base_off, t->offset) || byte_off % 2 != 0 ||
-        vk_ckd_u32(byte_off / 2, elem_off)) {
-        return false;
-    }
-    *out = (VkDescriptorBufferInfo) {.buffer = t->buffer->buf, .range = VK_WHOLE_SIZE};
-    return true;
+    return vk_tensor_gpu_elems(t, sizeof(uint16_t), out, elem_off);
 }
 
 /* Element count of a DENSE tensor of `dtype`, 0 on any mismatch (metadata
@@ -1012,7 +1014,7 @@ void *vk_tensor_host(const struct geist_tensor *t, size_t *out_n) {
          * can tell this refusal from any other bad input. */
         if (t->buffer->buf != VK_NULL_HANDLE) {
             t->buffer->owner->stat_host_denied++;
-            if (getenv("GEIST_VK_VERBOSE") != nullptr) {
+            if (geist_env_flag("GEIST_VK_VERBOSE", false)) {
                 fprintf(stderr,
                         "geist vulkan: a CPU fallback needs a device-local buffer (%zu KiB, "
                         "role %d); failing the op\n",

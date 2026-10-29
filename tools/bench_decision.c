@@ -1,6 +1,11 @@
 /* Public-API benchmark driver. tools/bench_decision.py owns dataset validation,
  * hashes, host metadata and summaries. This process owns inference timing.
  * Wire input per case: n_prompt n_candidates prompt_ids... candidate_ids...
+ * With --prefix (#26) each case starts with n_cached: the decision_prefix arm
+ * scores the prompt from a snapshot of its first n_cached tokens
+ * (geist_decision_prefix_prepare), prepared when a case's cached tokens differ
+ * from the previous case's and kept otherwise. The prepare is timed apart from
+ * the samples and reported as a "prefix_prepare" record.
  * No text templates or label truncation are performed here. */
 #include <geist_decision.h>
 #include <geist_util.h>
@@ -90,16 +95,33 @@
 }
 
 /* Filter benchmark arms without changing the default paired protocol. */
-[[nodiscard]] static bool parse_modes(const char *text, bool enabled[static 5]) {
-    const char *names[] = {
-            "decision_dense", "scorealt_dense", "generate_1", "generate_long", "decision_selected"};
-    for (size_t i = 0; i < 5; i++)
+constexpr size_t         N_MODES             = 6;
+static const char *const MODE_NAMES[N_MODES] = {"decision_dense",
+                                                "scorealt_dense",
+                                                "generate_1",
+                                                "generate_long",
+                                                "decision_selected",
+                                                "decision_prefix"};
+enum { MODE_DENSE = 0, MODE_SCOREALT = 1, MODE_SELECTED = 4, MODE_PREFIX = 5 };
+
+/* Arms answered through the decision API (geist_decision_result). */
+[[nodiscard]] static bool api_mode(size_t mode) {
+    return mode == MODE_DENSE || mode == MODE_SELECTED || mode == MODE_PREFIX;
+}
+
+/* Guard for the prefix image: Bonsai 2 27B needs ~438 MiB at 2,304 cached
+ * tokens (#26). The budget is checked before anything is allocated. */
+static const size_t PREFIX_SNAPSHOT_CAP = SIZE_MAX / 4;
+
+[[nodiscard]] static bool parse_modes(const char *text, bool enabled[static N_MODES]) {
+    const char *const *names = MODE_NAMES;
+    for (size_t i = 0; i < N_MODES; i++)
         enabled[i] = false;
     const char *cursor = text;
     while (*cursor) {
         const size_t length = strcspn(cursor, ",");
         bool         found  = false;
-        for (size_t i = 0; i < 5; i++) {
+        for (size_t i = 0; i < N_MODES; i++) {
             if (strlen(names[i]) == length && strncmp(cursor, names[i], length) == 0) {
                 if (enabled[i])
                     return false;
@@ -122,7 +144,7 @@
 
 int main(int argc, char **argv) {
     size_t      prompt_cap, candidate_cap, decode_n, warmup, repeats;
-    bool        include_selected = false, include_text = false;
+    bool        include_selected = false, include_text = false, include_prefix = false;
     const char *mode_filter     = nullptr;
     bool        arguments_valid = argc >= 8;
     for (int i = 8; i < argc && arguments_valid; i++) {
@@ -130,34 +152,42 @@ int main(int argc, char **argv) {
             include_selected = true;
         else if (strcmp(argv[i], "--text") == 0 && !include_text)
             include_text = true;
+        else if (strcmp(argv[i], "--prefix") == 0 && !include_prefix)
+            include_prefix = true;
         else if (strcmp(argv[i], "--modes") == 0 && mode_filter == nullptr && i + 1 < argc)
             mode_filter = argv[++i];
         else
             arguments_valid = false;
     }
-    bool enabled[5] = {true, true, true, true, include_selected};
+    bool enabled[N_MODES] = {true, true, true, true, include_selected, include_prefix};
     if (mode_filter != nullptr)
         arguments_valid = arguments_valid && parse_modes(mode_filter, enabled);
-    if ((enabled[4] && (!include_selected || !enabled[0])) || !arguments_valid ||
+    if ((enabled[MODE_SELECTED] && (!include_selected || !enabled[MODE_DENSE])) ||
+        enabled[MODE_PREFIX] != include_prefix || !arguments_valid ||
         !number(&prompt_cap, argv[3]) || !number(&candidate_cap, argv[4]) ||
         !number(&decode_n, argv[5]) || !number(&warmup, argv[6]) || !number(&repeats, argv[7]) ||
-        prompt_cap == 0 || candidate_cap == 0 || decode_n < 2 || repeats == 0 ||
-        prompt_cap > 1048576 || candidate_cap > 1048576 || decode_n > 32768 || warmup > 1000 ||
-        repeats > 10000) {
+        prompt_cap == 0 || candidate_cap == 0 || decode_n < 2 || prompt_cap > 1048576 ||
+        candidate_cap > 1048576 || decode_n > 32768 || warmup > 1000 || repeats > 10000) {
         fprintf(stderr,
                 "usage: bench_decision model.gguf backend prompt_cap candidate_cap decode_n warmup "
-                "repeats [--selected] [--modes comma,separated,names] [--text]\n");
+                "repeats [--selected] [--prefix] [--modes comma,separated,names] [--text]\n");
         return 2;
     }
     if (!geist_decision_available()) {
         fprintf(stderr, "rebuild with DECISION=1\n");
         return 2;
     }
+    if (include_prefix && !geist_decision_prefix_available()) {
+        fprintf(stderr, "--prefix: rebuild with DECISION=1 DECISION_CONTEXT=1\n");
+        return 2;
+    }
     struct geist_backend           *be = nullptr;
     struct geist_model             *m  = nullptr;
     struct geist_session           *s  = nullptr;
-    struct geist_decision          *d = nullptr, *selected = nullptr;
-    const struct geist_backend_opts bo = {.log_level_max = GEIST_LOG_ERROR};
+    struct geist_decision          *d = nullptr, *selected = nullptr, *prefixed = nullptr;
+    struct geist_decision_prefix   *prefix   = nullptr;
+    size_t                          n_cached = 0; /* tokens in `prefix`, valid when non-null */
+    const struct geist_backend_opts bo       = {.log_level_max = GEIST_LOG_ERROR};
     /* Bounds above make this sum/product safe, even on 32-bit hosts. */
     const struct geist_session_opts so = {
             .max_seq_len = prompt_cap + decode_n, .top_p = 1.0f, .kv_mode = GEIST_KV_FP32};
@@ -168,11 +198,13 @@ int main(int argc, char **argv) {
     int                              exit_code     = 1;
     geist_token_t                   *prompt        = calloc(prompt_cap, sizeof *prompt);
     geist_token_t                   *candidates    = calloc(candidate_cap, sizeof *candidates);
+    geist_token_t                   *cached        = calloc(prompt_cap, sizeof *cached);
     geist_token_t                   *generated     = calloc(decode_n, sizeof *generated);
     float                           *logits        = calloc(candidate_cap, sizeof *logits);
     double                          *probabilities = calloc(candidate_cap, sizeof *probabilities);
-    if (prompt == nullptr || candidates == nullptr || generated == nullptr || logits == nullptr ||
-        probabilities == nullptr || geist_backend_create(argv[2], &bo, nullptr, &be) != GEIST_OK ||
+    if (prompt == nullptr || candidates == nullptr || cached == nullptr || generated == nullptr ||
+        logits == nullptr || probabilities == nullptr ||
+        geist_backend_create(argv[2], &bo, nullptr, &be) != GEIST_OK ||
         geist_model_load_with_opts(argv[1], be, &so, &m) != GEIST_OK ||
         geist_session_create(m, be, &so, &s) != GEIST_OK ||
         geist_decision_create(m, be, &o, &d) != GEIST_OK) {
@@ -187,25 +219,60 @@ int main(int argc, char **argv) {
             goto done;
         }
     }
+    /* A handle of its own: preparing a prefix runs on its session, so the
+     * dense reference handle is never touched by the prefix arm. */
+    if (include_prefix && (geist_decision_create(m, be, &o, &prefixed) != GEIST_OK ||
+                           !geist_decision_prefix_supported(prefixed))) {
+        fprintf(stderr, "prefix: %s\n", geist_last_create_error());
+        goto done;
+    }
     printf("{\"kind\":\"runtime\",\"version\":\"%s\",\"backend\":\"%s\",\"vocab\":%zu,\"kv_mode\":"
            "\"fp32\"}\n",
            geist_version_string(),
            geist_backend_name(be),
            geist_decision_vocab_size(d));
-    const char *modes[] = {
-            "decision_dense", "scorealt_dense", "generate_1", "generate_long", "decision_selected"};
-    size_t active[5], n_modes = 0;
-    for (size_t i = 0; i < 5; i++)
+    const char *const *modes = MODE_NAMES;
+    size_t             active[N_MODES], n_modes = 0;
+    for (size_t i = 0; i < N_MODES; i++)
         if (enabled[i])
             active[n_modes++] = i;
-    size_t case_index = 0, np, nc;
+    size_t case_index = 0, np = 0, nc = 0, ncut = 0;
     int    read;
-    while ((read = scan_number(&np)) == 1) {
-        if (scan_number(&nc) != 1 || np == 0 || np > prompt_cap || nc == 0 || nc > candidate_cap ||
+    while ((read = include_prefix ? scan_number(&ncut) : scan_number(&np)) == 1) {
+        if ((include_prefix && scan_number(&np) != 1) || scan_number(&nc) != 1 || np == 0 ||
+            np > prompt_cap || nc == 0 || nc > candidate_cap || ncut >= np ||
             !read_ids(np, geist_decision_vocab_size(d), prompt) ||
             !read_ids(nc, geist_decision_vocab_size(d), candidates)) {
             fprintf(stderr, "invalid wire input at case %zu\n", case_index);
             goto done;
+        }
+        if (include_prefix && (prefix == nullptr || ncut != n_cached ||
+                               memcmp(cached, prompt, ncut * sizeof *prompt) != 0)) {
+            geist_decision_prefix_destroy(prefix);
+            prefix                         = nullptr;
+            const uint64_t          start  = now_ns();
+            const enum geist_status status = geist_decision_prefix_prepare(
+                    prefixed, PREFIX_SNAPSHOT_CAP, ncut, prompt, &prefix);
+            const double                      elapsed = (double) (now_ns() - start) / 1e6;
+            struct geist_decision_prefix_info info    = {};
+            if (status != GEIST_OK || geist_decision_prefix_get_info(prefix, &info) != GEIST_OK) {
+                fprintf(stderr,
+                        "case %zu prefix prepare: %s: %s\n",
+                        case_index,
+                        geist_status_to_string(status),
+                        geist_decision_errmsg(prefixed));
+                goto done;
+            }
+            memcpy(cached, prompt, ncut * sizeof *prompt);
+            n_cached = ncut;
+            printf("{\"kind\":\"prefix_prepare\",\"case_index\":%zu,\"elapsed_ms\":%.9f,"
+                   "\"cached_tokens\":%zu,\"snapshot_bytes\":%zu,\"prefill_chunk\":%zu}\n",
+                   case_index,
+                   elapsed,
+                   info.cached_tokens,
+                   info.snapshot_bytes,
+                   info.prefill_chunk);
+            fflush(stdout);
         }
         for (size_t trial = 0; trial < 1 + warmup + repeats; trial++) {
             const char *phase = trial == 0 ? "first" : trial <= warmup ? "warmup" : "warm";
@@ -215,9 +282,19 @@ int main(int argc, char **argv) {
                 size_t                       best = 0, n_generated = 0;
                 enum geist_status            status = GEIST_OK;
                 const uint64_t               start  = now_ns();
-                if (mode == 0 || mode == 4) {
-                    status = geist_decision_score(
-                            mode == 4 ? selected : d, np, nc, prompt, candidates, &result);
+                if (mode == MODE_PREFIX) {
+                    status = geist_decision_score_from_prefix(
+                            prefixed, prefix, np - ncut, nc, prompt + ncut, candidates, &result);
+                    if (status == GEIST_OK) {
+                        best = result.best_index;
+                    }
+                } else if (mode == MODE_DENSE || mode == MODE_SELECTED) {
+                    status = geist_decision_score(mode == MODE_SELECTED ? selected : d,
+                                                  np,
+                                                  nc,
+                                                  prompt,
+                                                  candidates,
+                                                  &result);
                     if (status == GEIST_OK) {
                         best = result.best_index;
                     }
@@ -251,9 +328,10 @@ int main(int argc, char **argv) {
                             case_index,
                             modes[mode],
                             geist_status_to_string(status),
-                            (mode == 0 || mode == 4)
-                                    ? geist_decision_errmsg(mode == 4 ? selected : d)
-                                    : geist_session_errmsg(s));
+                            api_mode(mode) ? geist_decision_errmsg(mode == MODE_SELECTED ? selected
+                                                                   : mode == MODE_PREFIX ? prefixed
+                                                                                         : d)
+                                           : geist_session_errmsg(s));
                     goto done;
                 }
                 printf("{\"kind\":\"sample\",\"case_index\":%zu,\"mode\":\"%s\",\"phase\":\"%s\","
@@ -271,22 +349,24 @@ int main(int argc, char **argv) {
                     printf("%s%d", i ? "," : "", generated[i]);
                 }
                 printf("],\"best_index\":");
-                if (mode < 2 || mode == 4) {
+                if (api_mode(mode) || mode == MODE_SCOREALT) {
                     printf("%zu,\"logits\":[", best);
                     for (size_t i = 0; i < nc; i++) {
                         printf("%s%.9g",
                                i ? "," : "",
-                               (mode == 0 || mode == 4) ? result.logits[i] : logits[i]);
+                               api_mode(mode) ? result.logits[i] : logits[i]);
                     }
                     printf("],\"conditional_probabilities\":[");
                     for (size_t i = 0; i < nc; i++) {
                         printf("%s%.17g",
                                i ? "," : "",
-                               (mode == 0 || mode == 4) ? result.probabilities[i]
-                                                        : probabilities[i]);
+                               api_mode(mode) ? result.probabilities[i] : probabilities[i]);
                     }
                     printf("]");
-                    if (mode == 0 || mode == 4) {
+                    if (mode == MODE_PREFIX) {
+                        printf(",\"cached_tokens\":%zu", ncut);
+                    }
+                    if (api_mode(mode)) {
                         printf(",\"projected_rows\":%zu,\"logit_readback_bytes\":%zu,\"head_ns\":"
                                "%" PRIu64,
                                result.projected_rows,
@@ -346,9 +426,12 @@ int main(int argc, char **argv) {
 done:
     free(prompt);
     free(candidates);
+    free(cached);
     free(generated);
     free(logits);
     free(probabilities);
+    geist_decision_prefix_destroy(prefix);
+    geist_decision_destroy(prefixed);
     geist_decision_destroy(selected);
     geist_decision_destroy(d);
     geist_session_destroy(s);

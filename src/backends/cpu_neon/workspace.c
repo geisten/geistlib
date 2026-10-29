@@ -102,4 +102,10 @@ void cpu_neon_workspace_destroy(struct cpu_neon_workspace *ws) {
     ws->dequant_w_fp32_cap = 0;
     safe_free((void **) &ws->elt_f32);
     ws->elt_f32_cap = 0;
+    safe_free((void **) &ws->attn_part_out);
+    ws->attn_part_out_cap = 0;
+    safe_free((void **) &ws->attn_part_max);
+    ws->attn_part_max_cap = 0;
+    safe_free((void **) &ws->attn_part_sum);
+    ws->attn_part_sum_cap = 0;
 }

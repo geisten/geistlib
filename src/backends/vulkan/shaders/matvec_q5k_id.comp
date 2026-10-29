@@ -1,0 +1,6 @@
+#version 450
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#include "vk_limits.h"
+#include "matvec_q5k_id_body.glsl"

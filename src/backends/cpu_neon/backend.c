@@ -16,9 +16,10 @@
 
 #include "hadamard.h"
 #include "heap.h"
+#include "hw_probe.h"
 #include "omp_idle.h"
 #include "par.h"
-#include "parse.h"
+#include "env.h"
 #include "quant.h"
 
 #include <limits.h>
@@ -74,25 +75,6 @@ static void cpu_neon_destroy(struct geist_backend *be) {
 #include <unistd.h>
 #endif
 
-#if defined(__APPLE__)
-#include <sys/sysctl.h>
-/* Performance-core count on Apple Silicon, or 0 if the sysctl is
- * unavailable. A static OMP partition that includes efficiency cores waits
- * on their chunks (M1 Max pp512: 91 tps on 10 cores vs 145 on 8 P-cores). */
-static int apple_perf_cores(void) {
-    int    v   = 0;
-    size_t len = sizeof v;
-    if (sysctlbyname("hw.perflevel0.physicalcpu", &v, &len, nullptr, 0) == 0 && v > 0) {
-        return v;
-    }
-    return 0;
-}
-#else
-static int apple_perf_cores(void) {
-    return 0;
-}
-#endif
-
 /* One-time thread setup at backend create, through the environment only:
  * libomp reads it at the first OpenMP API call, and a model's blocktime
  * (prefill_tuning.c) comes later, at model load. An explicit setting in
@@ -101,7 +83,9 @@ static int apple_perf_cores(void) {
  *   a passive worker's wake-up dominates (qwen3.5-4B: 163 vs 46 ms/tok).
  * - KMP_BLOCKTIME: bounds that spin once the work stops (omp_idle.h).
  * - OMP_NUM_THREADS: the pool is sized to the P-cores, so the per-phase
- *   caps never land on efficiency cores (qwen3.5-4B: 114 vs 47 ms/tok).
+ *   caps never land on efficiency cores (qwen3.5-4B: 114 vs 47 ms/tok); a
+ *   static partition over E-cores waits on their chunks (M1 Max pp512: 91
+ *   tps on 10 cores vs 145 on 8 P-cores).
  *   geist_par_for's own pool (no OpenMP) reads it too. */
 static void cpu_neon_omp_pool_init(void) {
     static _Atomic int done = 0;
@@ -110,7 +94,7 @@ static void cpu_neon_omp_pool_init(void) {
         return;
     setenv("OMP_WAIT_POLICY", "active", 0);
     geist_omp_idle_default();
-    const int pc = apple_perf_cores();
+    const int pc = geist_hw_perf_cores();
     if (pc > 0) {
         char n[16];
         snprintf(n, sizeof n, "%d", pc);
@@ -138,12 +122,11 @@ static int cpu_neon_region_thread_count(enum geist_parallel_region region) {
          * quiesced box; a background process eating a core inverts it. */
         static _Atomic int n = -1;
         if (n < 0) {
-            const char *env = getenv("GEIST_PREFILL_THREADS");
-            if (env != nullptr && env[0] != '\0') {
-                long v;
-                n = geist_parse_long(env, &v) && v > 0 && v <= INT_MAX ? (int) v : 0;
+            const int env = geist_env_count("GEIST_PREFILL_THREADS");
+            if (env >= 0) {
+                n = env;
             } else {
-                const int pc = apple_perf_cores();
+                const int pc = geist_hw_perf_cores();
                 n            = (pc > 0) ? pc : online_cpus();
             }
         }
@@ -154,10 +137,9 @@ static int cpu_neon_region_thread_count(enum geist_parallel_region region) {
      * ambient count. */
     static _Atomic int n = -1;
     if (n < 0) {
-        const char *env = getenv("GEIST_DECODE_THREADS");
-        if (env != nullptr && env[0] != '\0') {
-            long v;
-            n = geist_parse_long(env, &v) && v > 0 && v <= INT_MAX ? (int) v : 0;
+        const int env = geist_env_count("GEIST_DECODE_THREADS");
+        if (env >= 0) {
+            n = env;
         } else {
 #if defined(GEIST_TARGET_PI5)
             n = 3;
@@ -171,7 +153,7 @@ static int cpu_neon_region_thread_count(enum geist_parallel_region region) {
              * 16.6 on 3 (#456). The spare starts at 6 P-cores: 8 on the
              * measured M1 Max, 4 on the base chips. */
             constexpr int spare_from = 6;
-            const int     pc         = apple_perf_cores();
+            const int     pc         = geist_hw_perf_cores();
             n                        = (pc >= spare_from) ? pc - 1 : pc;
 #endif
         }
@@ -230,6 +212,12 @@ static bool cpu_neon_fused_supported(struct geist_backend *be, const struct geis
         return true; /* F32 elementwise, any geometry, any m */
     case GEIST_FUSED_HADAMARD_ROTATE:
         return geist_hadamard_query_ok(q); /* the shared host transform */
+    case GEIST_FUSED_RMSNORM_ADD:
+    case GEIST_FUSED_RMSNORM_ADD_NORM:
+        return cpu_neon_res_norm_supported(q->d_model); /* F32 rows, any m */
+    case GEIST_FUSED_ATTN_QKV_PREP:
+    case GEIST_FUSED_ATTN_ROPE_APPEND:
+        return q->head_dim > 0 && q->head_dim % 2 == 0 && q->n_q_heads > 0; /* any m */
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
     case GEIST_FUSED_ATTN_KV_INT8:
         return cpu_neon_attention_kv_int8_supported(q);
@@ -258,6 +246,10 @@ static const struct geist_backend_fused cpu_neon_fused = {
         .gelu_tanh_mul_scaled = cpu_neon_gelu_tanh_mul_scaled,
         .silu_mul             = cpu_neon_silu_mul,
         .hadamard_rotate      = cpu_neon_hadamard_rotate,
+        .rmsnorm_add          = cpu_neon_rmsnorm_add,
+        .rmsnorm_add_norm     = cpu_neon_rmsnorm_add_norm,
+        .attn_qkv_prep        = cpu_neon_attn_qkv_prep,
+        .attn_rope_append     = cpu_neon_attn_rope_append,
         .kv_append_f16        = cpu_neon_kv_append_f16,
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
         .attention_kv_int8 = cpu_neon_attention_kv_int8,

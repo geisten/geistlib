@@ -14,10 +14,12 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "blocks.h"
 #include "profile.h"
 #include "../arch_family.h"
 #include "../arch_state.h"
 #include "../forward.h"
+#include "../rotation.h"
 
 #include "checked.h"
 #include "heap.h"
@@ -25,6 +27,7 @@
 #include <geist.h>
 #include <geist_backend.h>
 
+#include <math.h>
 #include <stdatomic.h>
 #include <string.h>
 
@@ -187,7 +190,7 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
     sess->prenorm_layer = 0;
 
     ctx.profile = transformer_profile_enabled(&g_layer_profile);
-    uint64_t t0 = ctx.profile ? transformer_profile_now_ns() : 0;
+    uint64_t t0 = ctx.profile ? geist_now_ns() : 0;
     /* Per-layer token mixer: DeltaNet layers replace the whole
      * attention block (incl. its residual add); the FFN/PLE stages are
      * mixer-agnostic. */
@@ -201,7 +204,7 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
     if (s != GEIST_OK) {
         return s;
     }
-    t0 = ctx.profile ? transformer_profile_now_ns() : 0;
+    t0 = ctx.profile ? geist_now_ns() : 0;
     s  = fam->ffn_block(&ctx); /* incl. the layer tail (PLE, scale) */
     /* Starting the clock later by the tail's time leaves it out of "ffn". */
     transformer_profile_add(&g_layer_profile,
@@ -550,7 +553,7 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     /* 1+2. Dequant n PLE rows + scale by 16. Device path: per-row fused
      * lookup+scale dispatches — no host dequant, no pipeline flush from
      * mapping the scratch mid-batch. */
-    t0                    = prof ? transformer_profile_now_ns() : 0;
+    t0                    = prof ? geist_now_ns() : 0;
     bool gather_on_device = st->model_fusions.ple_lookup_scaled;
     if (gather_on_device) {
         for (size_t t = 0; t < n; t++) {
@@ -587,7 +590,7 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     /* 3. linear(h, model_proj) → out_buf. */
     struct geist_tensor t_h_2d   = view_2d(h_buf, (int64_t) n, st->d_model);
     struct geist_tensor t_out_2d = view_2d(out_buf, (int64_t) n, (int64_t) PLE_OUT);
-    t0                           = prof ? transformer_profile_now_ns() : 0;
+    t0                           = prof ? geist_now_ns() : 0;
     enum geist_status s          = linear_w_or_legacy(
             be, v, h_buf, out_buf, &st->model_proj_w, n, &t_h_2d, &st->model_proj, &t_out_2d);
     plepre_add(PLEPRE_MODEL_PROJ, t0);
@@ -596,7 +599,7 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     }
 
     /* 4. *= PLE_MODEL_PROJ_SCALE. */
-    t0 = prof ? transformer_profile_now_ns() : 0;
+    t0 = prof ? geist_now_ns() : 0;
     if (st->model_fusions.prim_scale_f32) {
         s = prims->scale_f32(be, &t_out_2d, st->config.ple_model_proj_scale, &t_out_2d);
         if (s != GEIST_OK) {
@@ -618,7 +621,7 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     struct geist_tensor t_out_norm =
             view_2d(out_buf, (int64_t) (n * st->n_layers), st->hidden_per_layer);
     struct geist_tensor t_w = view_1d(st->model_proj_norm.buffer, st->hidden_per_layer);
-    t0                      = prof ? transformer_profile_now_ns() : 0;
+    t0                      = prof ? geist_now_ns() : 0;
     s = prims->rmsnorm(be, &t_out_norm, &t_w, st->config.rms_eps, &t_out_norm);
     plepre_add(PLEPRE_RMSNORM, t0);
     if (s != GEIST_OK) {
@@ -626,7 +629,7 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     }
 
     /* 6. out_buf = (out_buf + ple_lookup) * PLE_INPUT_SCALE. */
-    t0 = prof ? transformer_profile_now_ns() : 0;
+    t0 = prof ? geist_now_ns() : 0;
     /* Path chosen once, before anything mutates out_buf: `add` is a required
      * member, so only scale_f32 decides (#352). */
     if (st->model_fusions.prim_scale_f32) {
@@ -653,4 +656,93 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     }
     plepre_add(PLEPRE_COMBINE, t0);
     return GEIST_OK;
+}
+
+/* Batched decode (#26): copy one row between two buffers on the device; a
+ * copy onto itself (the carrier's own row) is skipped. */
+[[nodiscard]] static enum geist_status copy_row(const struct geist_backend_vtbl *v,
+                                                struct geist_buffer             *dst,
+                                                size_t                           dst_row,
+                                                struct geist_buffer             *src,
+                                                size_t                           src_row,
+                                                size_t                           floats) {
+    const size_t bytes = floats * sizeof(float);
+    if (dst == src && dst_row == src_row)
+        return GEIST_OK;
+    return v->buffer_copy(dst, dst_row * bytes, src, src_row * bytes, bytes);
+}
+
+/* The Qwen3.5 gated attention block (families/qwen35.c) for n sequences:
+ * norm, q+gate/k/v projections and q/k norms over the carrier's n rows; RoPE,
+ * KV append and attention per sequence, in that sequence's session at its
+ * own position; output gate, o_proj and residual over the n rows. */
+[[nodiscard]] static enum geist_status
+multi_attention(struct transformer_layer_forward_ctx  *ctx,
+                size_t                                 n,
+                struct transformer_arch_session *const seqs[static n],
+                size_t                                 layer_idx) {
+    struct transformer_arch_state    *st = ctx->st;
+    struct transformer_arch_session  *c  = ctx->sess;
+    struct transformer_layer_weights *L  = ctx->L;
+    const size_t                      d  = st->d_model;
+    if (!st->config.has_attn_output_gate || !ctx->compute_kv) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    enum geist_status s = blk_rmsnorm(ctx, d, ctx->h_in_buf, &L->attn_norm, c->scratch_normed);
+    if (s == GEIST_OK)
+        s = transformer_rotate_rows(st, ctx->seq, d, c->scratch_normed);
+    if (s == GEIST_OK)
+        s = blk_qkv(ctx, c->scratch_normed);
+    if (s == GEIST_OK)
+        s = blk_qk_norm(ctx, &L->q_norm, &L->k_norm);
+    for (size_t b = 0; s == GEIST_OK && b < n; b++) {
+        struct transformer_arch_session     *q = seqs[b];
+        struct transformer_layer_forward_ctx cb;
+        transformer_layer_ctx_init(&cb,
+                                   q,
+                                   (int) layer_idx,
+                                   q->kv_len,
+                                   1,
+                                   false,
+                                   q->scratch_h_a,
+                                   nullptr,
+                                   q->scratch_h_b);
+        frame_arena_reset(&q->scratch_arena);
+        s = copy_row(ctx->v, q->scratch_q, 0, c->scratch_q, b, ctx->q_out);
+        if (s == GEIST_OK)
+            s = copy_row(ctx->v, q->scratch_k, 0, c->scratch_k, b, ctx->kv_out);
+        if (s == GEIST_OK)
+            s = copy_row(ctx->v, q->scratch_v, 0, c->scratch_v, b, ctx->kv_out);
+        if (s == GEIST_OK)
+            s = blk_rope_qk(&cb, 1.0f / sqrtf((float) cb.hd));
+        if (s == GEIST_OK)
+            s = blk_attend(&cb, true);
+        if (s == GEIST_OK)
+            s = copy_row(ctx->v, c->scratch_attn, b, q->scratch_attn, 0, ctx->q_out);
+    }
+    if (s == GEIST_OK)
+        s = blk_o_proj(ctx);
+    if (s == GEIST_OK)
+        s = blk_add(ctx, d, ctx->h_in_buf, c->scratch_o, c->scratch_h_post_attn);
+    return s;
+}
+
+enum geist_status transformer_multi_layer(struct transformer_arch_session       *carrier,
+                                          size_t                                 n,
+                                          struct transformer_arch_session *const seqs[static n],
+                                          int                                    layer_idx,
+                                          struct geist_buffer                   *h_in_buf,
+                                          struct geist_buffer                   *h_out_buf) {
+    struct transformer_arch_state *st = carrier->model;
+    if (layer_idx < 0 || (size_t) layer_idx >= st->n_layers || n == 0 || n > carrier->m_max) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct transformer_layer_forward_ctx ctx;
+    transformer_layer_ctx_init(&ctx, carrier, layer_idx, 0, n, false, h_in_buf, nullptr, h_out_buf);
+    frame_arena_reset(&carrier->scratch_arena);
+    carrier->prenorm_layer = 0;
+    enum geist_status s    = st->layers[layer_idx].mixer == GEIST_MIXER_DELTANET
+                                     ? transformer_layer_run_deltanet_multi(&ctx, n, seqs)
+                                     : multi_attention(&ctx, n, seqs, (size_t) layer_idx);
+    return s == GEIST_OK ? st->family->ffn_block(&ctx) : s;
 }

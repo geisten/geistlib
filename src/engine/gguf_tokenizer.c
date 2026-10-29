@@ -17,6 +17,7 @@
 #include "pair_merge.h"
 
 #include "checked.h"
+#include "fnv1a.h"
 #include "heap.h"
 
 #include <stdint.h>
@@ -157,13 +158,9 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
     }
     tok->vocab_size = (size_t) count;
 
-    for (uint64_t i = 0; i < count; i++) {
-        uint64_t slen;
-        memcpy(&slen, p, 8);
-        p += 8;
-        tok->token_str[i] = (const char *) p;
-        tok->token_len[i] = (size_t) slen;
-        p += slen;
+    struct gguf_str_iter tokens = {.p = p, .left = count};
+    for (size_t i = 0; i < tok->vocab_size; i++) {
+        gguf_str_next(&tokens, &tok->token_str[i], &tok->token_len[i]);
     }
 
     /* tokenizer.ggml.merges: each entry is "left right"
@@ -180,13 +177,11 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
             gguf_tokenizer_unload(tok);
             return false;
         }
-        tok->n_merges = (size_t) count;
-        for (uint64_t i = 0; i < count; i++) {
-            uint64_t slen;
-            memcpy(&slen, p, 8);
-            p += 8;
-            const char *s = (const char *) p;
-            p += slen;
+        tok->n_merges               = (size_t) count;
+        struct gguf_str_iter merges = {.p = p, .left = count};
+        const char          *s;
+        size_t               slen;
+        for (size_t i = 0; gguf_str_next(&merges, &s, &slen); i++) {
             size_t sp = 0;
             while (sp < slen && s[sp] != ' ')
                 sp++;
@@ -269,43 +264,41 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
     }
 
     /* Build the vocab + merges hash indices. Both tables are
-     * pow-of-2 sized with load factor ~0.5; failure to allocate is
-     * non-fatal — the encoder's linear-scan fallback kicks in. */
-    {
-        const size_t vsize = next_pow2(tok->vocab_size * 2);
-        tok->vocab_hash    = heap_alloc_array_aligned(int32_t, vsize);
-        if (tok->vocab_hash != nullptr) {
-            tok->vocab_hash_mask = vsize - 1;
-            for (size_t s = 0; s < vsize; s++)
-                tok->vocab_hash[s] = -1;
-            for (size_t id = 0; id < tok->vocab_size; id++) {
-                uint64_t h = fnv1a64(tok->token_str[id], tok->token_len[id]);
-                size_t   k = (size_t) h & tok->vocab_hash_mask;
-                while (tok->vocab_hash[k] >= 0) {
-                    k = (k + 1) & tok->vocab_hash_mask;
-                }
-                tok->vocab_hash[k] = (int32_t) id;
-            }
-        }
+     * pow-of-2 sized with load factor ~0.5. A table that cannot be
+     * allocated fails the load. */
+    const size_t vsize = next_pow2(tok->vocab_size * 2);
+    const size_t msize = tok->n_merges > 0 ? next_pow2(tok->n_merges * 2) : 0;
+    tok->vocab_hash    = heap_alloc_array_aligned(int32_t, vsize);
+    tok->merge_hash    = msize > 0 ? heap_alloc_array_aligned(size_t, msize) : nullptr;
+    if (tok->vocab_hash == nullptr || (msize > 0 && tok->merge_hash == nullptr)) {
+        gguf_tokenizer_unload(tok);
+        return false;
     }
-    if (tok->n_merges > 0) {
-        const size_t msize = next_pow2(tok->n_merges * 2);
-        tok->merge_hash    = heap_alloc_array_aligned(size_t, msize);
-        if (tok->merge_hash != nullptr) {
-            tok->merge_hash_mask = msize - 1;
-            for (size_t s = 0; s < msize; s++)
-                tok->merge_hash[s] = SIZE_MAX;
-            for (size_t m = 0; m < tok->n_merges; m++) {
-                uint64_t h = fnv1a64_pair(tok->merge_left[m],
-                                          tok->merge_left_len[m],
-                                          tok->merge_right[m],
-                                          tok->merge_right_len[m]);
-                size_t   k = (size_t) h & tok->merge_hash_mask;
-                while (tok->merge_hash[k] != SIZE_MAX) {
-                    k = (k + 1) & tok->merge_hash_mask;
-                }
-                tok->merge_hash[k] = m;
+    tok->vocab_hash_mask = vsize - 1;
+    for (size_t s = 0; s < vsize; s++)
+        tok->vocab_hash[s] = -1;
+    for (size_t id = 0; id < tok->vocab_size; id++) {
+        uint64_t h = fnv1a64(tok->token_str[id], tok->token_len[id]);
+        size_t   k = (size_t) h & tok->vocab_hash_mask;
+        while (tok->vocab_hash[k] >= 0) {
+            k = (k + 1) & tok->vocab_hash_mask;
+        }
+        tok->vocab_hash[k] = (int32_t) id;
+    }
+    if (msize > 0) {
+        tok->merge_hash_mask = msize - 1;
+        for (size_t s = 0; s < msize; s++)
+            tok->merge_hash[s] = SIZE_MAX;
+        for (size_t m = 0; m < tok->n_merges; m++) {
+            uint64_t h = fnv1a64_pair(tok->merge_left[m],
+                                      tok->merge_left_len[m],
+                                      tok->merge_right[m],
+                                      tok->merge_right_len[m]);
+            size_t   k = (size_t) h & tok->merge_hash_mask;
+            while (tok->merge_hash[k] != SIZE_MAX) {
+                k = (k + 1) & tok->merge_hash_mask;
             }
+            tok->merge_hash[k] = m;
         }
     }
 
@@ -634,25 +627,13 @@ size_t gguf_tokenizer_decode(
 /* FNV-1a 64-bit. Stable across builds; we just need a good
  * distribution over short byte strings. */
 static uint64_t fnv1a64(const char *p, size_t n) {
-    uint64_t h = 0xcbf29ce484222325ULL;
-    for (size_t i = 0; i < n; i++) {
-        h ^= (uint8_t) p[i];
-        h *= 0x100000001b3ULL;
-    }
-    return h;
+    return geist_fnv1a(GEIST_FNV1A_INIT, n, p);
 }
 
 /* Hash a (left, right) pair. The separator byte ensures
  * ("ab", "") and ("a", "b") hash distinctly. */
 static uint64_t fnv1a64_pair(const char *a, size_t alen, const char *b, size_t blen) {
-    uint64_t h = fnv1a64(a, alen);
-    h ^= 0xFFu;
-    h *= 0x100000001b3ULL;
-    for (size_t i = 0; i < blen; i++) {
-        h ^= (uint8_t) b[i];
-        h *= 0x100000001b3ULL;
-    }
-    return h;
+    return geist_fnv1a(geist_fnv1a(fnv1a64(a, alen), 1, "\xff"), blen, b);
 }
 
 static size_t next_pow2(size_t n) {
@@ -662,17 +643,9 @@ static size_t next_pow2(size_t n) {
     return p;
 }
 
-/* O(1) vocab lookup. Returns -1 when no entry matches. */
+/* O(1) vocab lookup (the load built the table). Returns -1 when no entry
+ * matches. */
 static int32_t vocab_lookup(const struct gguf_tokenizer *tok, const char *bytes, size_t len) {
-    if (tok->vocab_hash == nullptr || tok->vocab_hash_mask == 0) {
-        /* Fallback to linear scan if the hash table wasn't built. */
-        for (size_t i = 0; i < tok->vocab_size; i++) {
-            if (tok->token_len[i] == len && memcmp(tok->token_str[i], bytes, len) == 0) {
-                return (int32_t) i;
-            }
-        }
-        return -1;
-    }
     uint64_t h = fnv1a64(bytes, len);
     size_t   i = (size_t) h & tok->vocab_hash_mask;
     while (true) {
@@ -694,20 +667,13 @@ int32_t gguf_tokenizer_id_for_text(const struct gguf_tokenizer *tok, const char 
 }
 
 /* O(1) merge-rank lookup. Returns SIZE_MAX when no merge has
- * (left, right) as its operands. */
+ * (left, right) as its operands; the table is absent only without merges. */
 static size_t merge_lookup(const struct gguf_tokenizer *tok,
                            const char                  *lstr,
                            size_t                       llen,
                            const char                  *rstr,
                            size_t                       rlen) {
-    if (tok->merge_hash == nullptr || tok->merge_hash_mask == 0) {
-        for (size_t m = 0; m < tok->n_merges; m++) {
-            if (tok->merge_left_len[m] == llen && tok->merge_right_len[m] == rlen &&
-                memcmp(tok->merge_left[m], lstr, llen) == 0 &&
-                memcmp(tok->merge_right[m], rstr, rlen) == 0) {
-                return m;
-            }
-        }
+    if (tok->merge_hash == nullptr) {
         return SIZE_MAX;
     }
     uint64_t h = fnv1a64_pair(lstr, llen, rstr, rlen);

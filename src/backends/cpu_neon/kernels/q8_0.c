@@ -4,6 +4,7 @@
  * Pure compute. Block layout from src/quant/quant_blocks.h.
  */
 #include "quant_blocks.h"
+#include "env.h"
 #include "heap.h"
 #include "par.h"
 #include "quant.h"
@@ -226,8 +227,7 @@ static bool q8_0_sdot_on(void) {
     static _Atomic int on = -1;
     int                v  = atomic_load_explicit(&on, memory_order_relaxed);
     if (v < 0) {
-        const char *e = getenv("GEIST_Q8_0_SDOT_PREFILL");
-        v             = e == nullptr || e[0] != '0';
+        v = geist_env_flag("GEIST_Q8_0_SDOT_PREFILL", true);
         atomic_store_explicit(&on, v, memory_order_relaxed);
     }
     return v != 0;

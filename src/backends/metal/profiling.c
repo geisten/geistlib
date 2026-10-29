@@ -64,23 +64,11 @@ const char *const metal_profile_stage_names[METAL_PROFILE_STAGE_COUNT] = {
         [METAL_PROFILE_DISPATCH_SIGMOID_MUL]          = "dispatch.sigmoid_mul",
         [METAL_PROFILE_DISPATCH_HADAMARD]             = "dispatch.hadamard",
         [METAL_PROFILE_DISPATCH_PQ2_X_F16]            = "dispatch.pq2_x_f16",
+        [METAL_PROFILE_DISPATCH_PQ2_M8]               = "dispatch.pq2_m8",
 };
 
 #include "metal_shaders.h"
 #include "metal_objc.h"
-
-bool metal_env_enabled(const char *name) {
-    const char *value = getenv(name);
-    return value != nullptr && value[0] != '\0' && strcmp(value, "0") != 0;
-}
-
-uint64_t metal_now_ns(void) {
-    struct timespec ts = {0};
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
-        return 0;
-    }
-    return (uint64_t) ts.tv_sec * 1000000000ull + (uint64_t) ts.tv_nsec;
-}
 
 static uint64_t metal_saturating_add_u64(uint64_t a, uint64_t b) {
     return UINT64_MAX - a < b ? UINT64_MAX : a + b;
@@ -107,7 +95,7 @@ void metal_profile_add_wait(struct metal_state      *st,
         start_ns == 0) {
         return;
     }
-    const uint64_t end_ns = metal_now_ns();
+    const uint64_t end_ns = geist_now_ns();
     if (end_ns < start_ns) {
         return;
     }
@@ -116,101 +104,11 @@ void metal_profile_add_wait(struct metal_state      *st,
     stat->calls                     = metal_saturating_add_u64(stat->calls, 1);
 }
 
-/* Subtractive profiler: env GEIST_SKIP_<CAT> drops a whole op category's
- * dispatches so the wait.prefill_text delta reveals that category's GPU time.
- * GEIST_SKIP_H additionally restricts a category skip to dispatches with a
- * matching threadgroup-grid height (mm_sg height = ceil(n_out/64), so this
- * isolates a single GEMM shape). Output is garbage during a skip run —
- * timing only. */
-static bool metal_skip_grid_match(struct metal_size groups) {
-    const char *h = getenv("GEIST_SKIP_H");
-    long        height;
-    return h == nullptr || (geist_parse_long(h, &height) && height == (long) groups.height);
-}
-
-static bool metal_skip_stage(enum metal_profile_stage s) {
-    switch (s) {
-    case METAL_PROFILE_DISPATCH_Q4K_GATE_UP_BASE:
-    case METAL_PROFILE_DISPATCH_Q4K_GATE_UP_N4:
-    case METAL_PROFILE_DISPATCH_Q4K_GATE_UP_NT4:
-    case METAL_PROFILE_DISPATCH_Q4K_GATE_UP_NT8:
-    case METAL_PROFILE_DISPATCH_Q4K_GATE_UP_W4A8:
-    case METAL_PROFILE_DISPATCH_Q80_GATE_UP:
-        return metal_env_enabled("GEIST_SKIP_GEMM") || metal_env_enabled("GEIST_SKIP_GATE_UP");
-    case METAL_PROFILE_DISPATCH_Q4K_LINEAR_BASE:
-    case METAL_PROFILE_DISPATCH_Q4K_LINEAR_MM_FAST:
-    case METAL_PROFILE_DISPATCH_Q4K_LINEAR_N4:
-    case METAL_PROFILE_DISPATCH_Q4K_LINEAR_NT4:
-    case METAL_PROFILE_DISPATCH_Q4K_LINEAR_NT8:
-    case METAL_PROFILE_DISPATCH_Q4K_LINEAR_W4A8:
-    case METAL_PROFILE_DISPATCH_Q4K_QK_BASE:
-    case METAL_PROFILE_DISPATCH_Q4K_QK_NT4:
-    case METAL_PROFILE_DISPATCH_QKV3:
-        return metal_env_enabled("GEIST_SKIP_GEMM") || metal_env_enabled("GEIST_SKIP_Q4K_LINEAR");
-    case METAL_PROFILE_DISPATCH_Q4K_PLE_GATE_NT8:
-    case METAL_PROFILE_DISPATCH_F32_PLE_GATE:
-    case METAL_PROFILE_DISPATCH_F32_PLE_PROJ_NORM:
-        return metal_env_enabled("GEIST_SKIP_GEMM") || metal_env_enabled("GEIST_SKIP_PLE");
-    case METAL_PROFILE_DISPATCH_Q6K_LINEAR_BASE:
-    case METAL_PROFILE_DISPATCH_Q6K_LINEAR_N4:
-    case METAL_PROFILE_DISPATCH_Q6K_LINEAR_NT4:
-    case METAL_PROFILE_DISPATCH_Q6K_LINEAR_NT8:
-        return metal_env_enabled("GEIST_SKIP_GEMM") || metal_env_enabled("GEIST_SKIP_Q6K");
-    case METAL_PROFILE_DISPATCH_RMSNORM_ROWS:
-    case METAL_PROFILE_DISPATCH_RMSNORM_ADD_ROWS:
-    case METAL_PROFILE_DISPATCH_ADD_NORM_ROWS:
-        return metal_env_enabled("GEIST_SKIP_NORM");
-    case METAL_PROFILE_DISPATCH_ATTENTION_ROWS:
-    case METAL_PROFILE_DISPATCH_ATTENTION_QNORM_ROWS:
-        return metal_env_enabled("GEIST_SKIP_ATTN");
-    case METAL_PROFILE_DISPATCH_Q_NORM_ROPE:
-    case METAL_PROFILE_DISPATCH_K_NORM_ROPE_APPEND:
-    case METAL_PROFILE_DISPATCH_V_NORM_APPEND:
-    case METAL_PROFILE_DISPATCH_KV_NORM_APPEND:
-    case METAL_PROFILE_DISPATCH_ROPE_APPEND:
-    case METAL_PROFILE_DISPATCH_ROPE_ROWS:
-        return metal_env_enabled("GEIST_SKIP_ROPE");
-    case METAL_PROFILE_DISPATCH_KV_APPEND_ROWS:
-        return metal_env_enabled("GEIST_SKIP_KV");
-    case METAL_PROFILE_DISPATCH_GELU_MUL_ROWS:
-        return metal_env_enabled("GEIST_SKIP_GELU");
-    case METAL_PROFILE_DISPATCH_F32_MATMUL:
-        return metal_env_enabled("GEIST_SKIP_F32");
-    case METAL_PROFILE_DISPATCH_EMBED:
-        return metal_env_enabled("GEIST_SKIP_EMBED");
-    case METAL_PROFILE_DISPATCH_ADD_ROWS:
-    case METAL_PROFILE_DISPATCH_MUL_ROWS:
-    case METAL_PROFILE_DISPATCH_SCALE_ROWS:
-    case METAL_PROFILE_DISPATCH_GELU_ROWS:
-        return metal_env_enabled("GEIST_SKIP_ELEM");
-    case METAL_PROFILE_DISPATCH_COPY_U32:
-        return metal_env_enabled("GEIST_SKIP_COPY");
-    case METAL_PROFILE_DISPATCH_HADAMARD:
-        return metal_env_enabled("GEIST_SKIP_HADAMARD");
-    case METAL_PROFILE_DISPATCH_DELTANET_PREFILL:
-    case METAL_PROFILE_DISPATCH_DELTANET_DECODE:
-        return metal_env_enabled("GEIST_SKIP_DELTANET");
-    case METAL_PROFILE_DISPATCH_DN_PREP:
-        return metal_env_enabled("GEIST_SKIP_DELTANET") || metal_env_enabled("GEIST_SKIP_DN_PREP");
-    case METAL_PROFILE_DISPATCH_DN_CHUNK:
-        return metal_env_enabled("GEIST_SKIP_DELTANET") || metal_env_enabled("GEIST_SKIP_DN_CHUNK");
-    case METAL_PROFILE_DISPATCH_DN_STATE:
-        return metal_env_enabled("GEIST_SKIP_DELTANET") || metal_env_enabled("GEIST_SKIP_DN_STATE");
-    case METAL_PROFILE_DISPATCH_DN_OUT:
-        return metal_env_enabled("GEIST_SKIP_DELTANET") || metal_env_enabled("GEIST_SKIP_DN_OUT");
-    default:
-        return false;
-    }
-}
-
 void metal_profile_add_dispatch(struct metal_state      *st,
                                 enum metal_profile_stage stage,
                                 struct metal_size        groups) {
     if (st == nullptr || !st->profile_enabled || stage >= METAL_PROFILE_STAGE_COUNT) {
         return;
-    }
-    if (metal_skip_stage(stage) && metal_skip_grid_match(groups)) {
-        st->skip_next_dispatch = true;
     }
     struct metal_profile_stat *stat = &st->profile[stage];
     stat->calls                     = metal_saturating_add_u64(stat->calls, 1);

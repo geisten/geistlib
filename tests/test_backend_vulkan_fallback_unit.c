@@ -6,7 +6,7 @@
  * shader does not apply, and the arch then runs the op on the host; weights
  * without a GPU kernel run on a host row-dequant path. Checked here:
  *
- *   - a declined fused op (argmax, linear_t, linear_t_pair, embedding,
+ *   - a declined fused op (argmax, linear_t, embedding,
  *     kv_append_f16, attn_qgate_split) counts one fallback at its site and
  *     still returns GEIST_E_UNSUPPORTED; under strict mode it returns
  *     GEIST_E_BACKEND with an error naming the site;
@@ -128,12 +128,6 @@ static int check_declines(struct geist_backend *be) {
         b = st->fallbacks[VK_FB_LINEAR_T];
         fails += expect_declined(
                 st, f->linear_t(be, &x, &w, nullptr, 1, &y0), VK_FB_LINEAR_T, b, "linear_t");
-        b = st->fallbacks[VK_FB_LINEAR_T];
-        fails += expect_declined(st,
-                                 f->linear_t_pair(be, &x, &w, nullptr, &w, nullptr, 1, &y0, &y1),
-                                 VK_FB_LINEAR_T,
-                                 b,
-                                 "linear_t_pair");
 
         /* Embedding: a dtype the gather shader has no code for. */
         struct geist_tensor table = x;

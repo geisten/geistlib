@@ -33,6 +33,8 @@
 #define GEIST_INTERNAL_ENGINE_LAYER
 
 #include "../src/archs/transformer/arch_state.h"
+#include "../src/archs/transformer/moe_gpu.h"
+#include "../src/base/heap.h"
 #include "../src/engine/model.h"
 #include "model_fixtures.h"
 #include "test_helpers.h"
@@ -321,6 +323,41 @@ static int check_on_gpu(const char *gpu, size_t hot, const float ref[static VOCA
         fails += geist_expect(hot == 0 || (mg != nullptr && mg->n_hot == hot && mg->rows_gpu > 0),
                               "the hot experts are placed and run");
         fails += geist_expect(c1 >= 0.999 && c2 >= 0.999, "the logits match cpu_scalar's");
+
+        /* #164: only the experts without a GPU copy are resolved on the
+         * CPU; a session that cannot get its GPU buffers is refused. */
+        struct transformer_arch_session *a       = geist_session_internal_arch_session(s);
+        bool                             cold_ok = true, hot_bare = true;
+        for (size_t l = 0; l < GEOM.layers; l++) {
+            for (size_t e = 0; e < GEOM.experts; e++) {
+                const struct geist_weight *w = &st->layers[l].moe_gate_w[e];
+                if (moe_gpu_hot(a, l, e))
+                    hot_bare = hot_bare && w->linear_m1 == nullptr;
+                else
+                    cold_ok = cold_ok && w->linear_m1 != nullptr;
+            }
+        }
+        fails += geist_expect(cold_ok, "the experts without a GPU copy run on the CPU");
+        fails += geist_expect(hot_bare, "the experts with a GPU copy have no CPU copy");
+        if (hot > 0) {
+            moe_gpu_session_free(a);
+            heap_fail_allocations(true);
+            const enum geist_status fs = moe_gpu_session_alloc(a);
+            heap_fail_allocations(false);
+            fails += geist_expect(fs != GEIST_OK,
+                                  "no GPU buffers for a session: refused, the hot experts have no "
+                                  "CPU copy");
+            moe_gpu_session_free(a);
+            float again[VOCAB];
+            fails += geist_expect(moe_gpu_session_alloc(a) == GEIST_OK &&
+                                          logits_after(s, N_PROMPT, ids, N_PROMPT, again) &&
+                                          cosine(again, ref) >= 0.999,
+                                  "with its buffers back the session runs again");
+        }
+        /* #201: with every expert on a GPU that routes, decode never leaves it. */
+        if (mg != nullptr && mg->any_device)
+            fails += geist_expect(hot == 16 && mg->n_device > 0,
+                                  "the token-by-token run routed on the device");
     }
     unsetenv("GEIST_MOE_HOT");
     geist_session_destroy(s);
@@ -331,6 +368,8 @@ static int check_on_gpu(const char *gpu, size_t hot, const float ref[static VOCA
 }
 
 int main(void) {
+    /* No profile cache in the user's home: placement stays the tests' (#165). */
+    setenv("GEIST_MOE_PROFILE_CACHE", "0", 1);
     int       fails = 0;
     float     scalar[VOCAB], other[VOCAB];
     const int sc = check_backend("cpu_scalar", scalar);

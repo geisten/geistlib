@@ -165,5 +165,9 @@ Recipe: [DEPLOY.md](DEPLOY.md).
 | `GEIST_MMAP_PREFETCH=1` | `MADV_WILLNEED` the weight mapping: steadier first-token latency on 4 KB-page Linux (no-op on the Pi 5's 16 KB pages) |
 | `GEIST_BACKEND=<name>` | override the `"auto"` backend choice (e.g. `cpu_neon` on a Mac, where `"auto"` is `metal`; `vulkan`) |
 
+An on/off knob (`GEIST_WEIGHT_MMAP`, `GEIST_VERBOSE`, `GEIST_KV_ROT`, ...) is
+off when it is empty or `0` and on for any other value; unset leaves the
+default (`src/base/env.h`).
+
 Backend-specific knobs: [BACKENDS.md](BACKENDS.md). Measured rationale:
 [../benchmark/results/PI5.md](../benchmark/results/PI5.md).

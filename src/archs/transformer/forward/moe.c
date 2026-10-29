@@ -13,6 +13,9 @@
  *   h_out  = h_post_attn + sum_{e in S} w_e * down_e(silu(gate_e(x)) * up_e(x)),
  *   x      = rmsnorm(h_post_attn)
  *
+ * A shared expert (moe_n_shared = 1, qwen35moe) is one more selection per
+ * token, slot moe_n_experts, weighted sigmoid(x . moe_shexp_gate).
+ *
  * The routing runs on the host. The rows routed to one expert are gathered
  * into one [m, d_model] block, so the expert's projections run as one
  * m-row linear (the prefill kernels) instead of m single-row ones.
@@ -32,6 +35,8 @@
 #include <string.h>
 
 #include "../moe_gpu.h"
+#include "../moe_profile.h"
+#include "heap.h"
 #include "par.h"
 #include "profile.h"
 
@@ -142,6 +147,7 @@ static void moe_trace(int             layer,
                       size_t          rows,
                       size_t          n_exp,
                       size_t          k,
+                      size_t          stride,
                       const float    *lg,
                       const uint32_t *ids) {
     (void) pthread_once(&g_moe_trace_once, moe_trace_init);
@@ -152,7 +158,7 @@ static void moe_trace(int             layer,
         return;
     for (size_t r = 0; r < rows; r++) {
         const float    *l  = lg + r * n_exp;
-        const uint32_t *id = ids + r * k;
+        const uint32_t *id = ids + r * stride;
         uint32_t        sorted[GEIST_MOE_MAX_EXPERTS];
         float           kth = l[id[k - 1]], out = -INFINITY;
         memcpy(sorted, id, k * sizeof sorted[0]);
@@ -304,7 +310,7 @@ static struct transformer_forward_profile g_moe_profile = {
 static inline void moe_profile_mark(size_t stage, uint64_t *t0) {
     if (*t0 != 0) {
         transformer_profile_add(&g_moe_profile, stage, *t0);
-        *t0 = transformer_profile_now_ns();
+        *t0 = geist_now_ns();
     }
 }
 
@@ -315,13 +321,15 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     const struct geist_backend_vtbl  *v     = ctx->v;
     const size_t                      d     = st->d_model;
     const size_t                      n_exp = st->config.moe_n_experts;
-    const size_t                      k     = st->config.moe_n_used;
+    const size_t                      n_rt  = st->config.moe_n_used;
+    const size_t                      k     = moe_k(&st->config); /* selections per token */
+    const size_t                      slots = moe_slots(&st->config);
     const size_t                      seq   = ctx->seq;
     const size_t                      n_sel = seq * k;
     struct geist_buffer              *x     = sess->scratch_pre_ff;
 
-    uint64_t t0 = transformer_profile_enabled(&g_moe_profile) ? transformer_profile_now_ns() : 0;
-    enum geist_status s = blk_rmsnorm(ctx, d, sess->scratch_h_post_attn, &L->ffn_norm, x);
+    uint64_t          t0 = transformer_profile_enabled(&g_moe_profile) ? geist_now_ns() : 0;
+    enum geist_status s  = blk_rmsnorm(ctx, d, sess->scratch_h_post_attn, &L->ffn_norm, x);
     moe_profile_mark(MOE_PROFILE_NORM, &t0);
     if (s == GEIST_OK) {
         struct geist_tensor t_x = view_2d(x, ctx->SEQ, (int64_t) d);
@@ -332,45 +340,74 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     if (s != GEIST_OK) {
         return s;
     }
+    /* #201: a decode step routes and runs its experts on the device. */
+    if (moe_gpu_device(sess, (size_t) ctx->layer_idx, seq)) {
+        s = moe_gpu_device_ffn(
+                sess, (size_t) ctx->layer_idx, seq, x, sess->scratch_h_post_attn, ctx->h_out_buf);
+        moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);
+        return s;
+    }
     /* On a GPU x rides along with the router's batch: one wait for both. */
     if (sess->moe_x_io != nullptr) {
         s = v->buffer_copy(sess->moe_x_io, 0, x, 0, seq * d * sizeof(float));
         if (s != GEIST_OK)
             return s;
     }
+    /* #162: the device routes and starts the hot experts; the host waits
+     * for the router alone (the mark) and reads what it wrote. */
+    const bool                        routed = moe_gpu_routed(sess, (size_t) ctx->layer_idx, seq);
+    struct geist_backend             *rbe    = routed ? st->moe_gpu->be : nullptr;
+    const struct geist_backend_fused *rgf    = routed ? rbe->desc->fused : nullptr;
+    uint64_t                          mark   = 0;
+    if (routed) {
+        mark = moe_gpu_route_launch(sess, (size_t) ctx->layer_idx, &s);
+        if (s != GEIST_OK) {
+            geist_backend_set_error(ctx->be,
+                                    s,
+                                    "moe: layer %d: routing on the GPU failed: %s",
+                                    ctx->layer_idx,
+                                    geist_backend_errmsg(rbe));
+            return s;
+        }
+    }
     moe_profile_mark(MOE_PROFILE_ROUTER, &t0);
 
     /* Route on the host. */
-    const float *lg = (const float *) v->buffer_map(sess->moe_logits);
+    const float *lg = (const float *) (routed ? rgf->map_marked(rbe, mark, sess->moe_logits)
+                                              : v->buffer_map(sess->moe_logits));
     if (lg == nullptr) {
         return GEIST_E_BACKEND;
     }
-    bool routed = true;
-    for (size_t r = 0; r < seq && routed; r++) {
-        routed = moe_route_topk(n_exp,
-                                k,
-                                st->config.moe_norm_topk,
-                                lg + r * n_exp,
-                                sess->moe_ids + r * k,
-                                sess->moe_wts + r * k);
+    bool routed_ok = true;
+    for (size_t r = 0; r < seq && routed_ok; r++) {
+        routed_ok = moe_route_topk(n_exp,
+                                   n_rt,
+                                   st->config.moe_norm_topk,
+                                   lg + r * n_exp,
+                                   sess->moe_ids + r * k,
+                                   sess->moe_wts + r * k);
     }
-    if (routed)
-        moe_trace(ctx->layer_idx, ctx->q_position, seq, n_exp, k, lg, sess->moe_ids);
+    for (size_t r = 0; r < seq && k > n_rt; r++)
+        sess->moe_ids[r * k + n_rt] = (uint32_t) n_exp; /* the shared expert */
+    if (routed_ok) {
+        moe_trace(ctx->layer_idx, ctx->q_position, seq, n_exp, n_rt, k, lg, sess->moe_ids);
+        moe_profile_count(st->moe_prof, (size_t) ctx->layer_idx, seq, k, n_rt, sess->moe_ids);
+    }
     v->buffer_unmap(sess->moe_logits);
-    if (!routed) {
+    if (!routed_ok) {
         geist_backend_set_error(ctx->be,
                                 GEIST_E_BACKEND,
                                 "moe: layer %d router logits are not finite",
                                 ctx->layer_idx);
         return GEIST_E_BACKEND;
     }
-    moe_bucket(n_exp, n_sel, sess->moe_ids, sess->moe_rows, sess->moe_row_start);
+    moe_bucket(slots, n_sel, sess->moe_ids, sess->moe_rows, sess->moe_row_start);
     moe_profile_mark(MOE_PROFILE_ROUTE, &t0);
 
     /* Gather each expert's rows into its slice of the bucketed buffer. A
      * GPU's device-local x is copied down first. */
     struct geist_buffer *xb = sess->moe_x_io != nullptr ? sess->moe_x_io : x;
-    const float         *xs = (const float *) v->buffer_map(xb);
+    const float *xs = (const float *) (routed ? rgf->map_marked(rbe, mark, xb) : v->buffer_map(xb));
     if (xs == nullptr) {
         if (v->buffer_download(seq * d * sizeof(float), (uint8_t *) sess->moe_x_host, x) !=
             GEIST_OK)
@@ -379,6 +416,13 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     }
     for (size_t i = 0; i < n_sel; i++) {
         memcpy(sess->moe_xg + i * d, xs + (sess->moe_rows[i] / k) * d, d * sizeof(float));
+    }
+    /* The shared expert's weight: sigmoid of x against its gate vector. */
+    for (size_t r = 0; r < seq && k > n_rt; r++) {
+        double dot = 0.0;
+        for (size_t c = 0; c < d; c++)
+            dot += (double) xs[r * d + c] * (double) L->moe_shexp_gate[c];
+        sess->moe_wts[r * k + n_rt] = (float) (1.0 / (1.0 + exp(-dot)));
     }
     if (xs != sess->moe_x_host)
         v->buffer_unmap(xb);
@@ -392,13 +436,13 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     j->be               = st->moe_cpu != nullptr ? st->moe_cpu : ctx->be; /* the CPU experts' */
     j->d                = d;
     j->inter            = ctx->inter;
-    j->n_exp            = n_exp;
+    j->n_exp            = slots;
     j->n_active         = 0;
     j->n_hot            = 0;
     j->layer            = (size_t) ctx->layer_idx;
     j->gpu_status       = GEIST_OK;
     size_t rows_gpu     = 0;
-    for (size_t e = 0; e < n_exp; e++) {
+    for (size_t e = 0; e < slots; e++) {
         const size_t m = sess->moe_row_start[e + 1] - sess->moe_row_start[e];
         if (m == 0)
             continue;
@@ -419,16 +463,13 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
      * starts its hot experts now and does not wait for them; the CPU runs
      * the cold ones meanwhile and the GPU adds the hot outputs onto their
      * sum. GEIST_E_UNSUPPORTED (a weight not resident): the batch below. */
-    bool launched = false;
-    if (j->n_hot > 0 && moe_gpu_launchable(sess, j->layer, j->n_hot, j->hot)) {
-        s = moe_gpu_launch(sess, j->layer, j->n_hot, j->hot);
+    bool launched = routed; /* its hot experts run already */
+    if (!routed && j->n_hot > 0 && j->n_hot <= GEIST_MOE_MAX_EXPERTS && st->moe_gpu->one_wait &&
+        sess->moe_x_io != nullptr) {
+        s = moe_gpu_launch(sess, j->layer, seq, j->n_hot, j->hot);
         if (s != GEIST_OK && s != GEIST_E_UNSUPPORTED) {
-            geist_backend_set_error(ctx->be,
-                                    s,
-                                    "moe: layer %d: the GPU experts failed: %s",
-                                    ctx->layer_idx,
-                                    geist_backend_errmsg(st->moe_gpu->be));
-            return s;
+            j->gpu_status = s;
+            goto gpu_fail;
         }
         launched = s == GEIST_OK;
         s        = GEIST_OK;
@@ -443,6 +484,7 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     moe_gpu_task(j); /* a thread library that gave the caller no range */
     moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);
     if (j->gpu_status != GEIST_OK) {
+    gpu_fail:
         geist_backend_set_error(ctx->be,
                                 j->gpu_status,
                                 "moe: layer %d: the GPU experts failed: %s",
@@ -459,27 +501,26 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     }
 
     if (launched) {
-        /* The cold experts' weighted sum on the host (one token: d floats,
-         * in expert order); the GPU adds the hot outputs, weighted, onto it
-         * without the host waiting for them. */
-        float *cold = sess->moe_x_host;
-        float  w_hot[GEIST_MOE_MAX_EXPERTS];
-        memset(cold, 0, d * sizeof(float));
+        /* The cold experts' weighted sum per token on the host, in expert
+         * order; the GPU adds the hot outputs, weighted, onto it without
+         * the host waiting for them. */
+        float *cold                          = sess->moe_x_host;
+        bool   is_hot[GEIST_MOE_MAX_EXPERTS] = {false};
+        for (size_t h = 0; h < j->n_hot; h++)
+            is_hot[j->hot[h]] = true;
+        memset(cold, 0, seq * d * sizeof(float));
         for (size_t i = 0; i < n_sel; i++) {
-            const uint32_t sel = sess->moe_rows[i], e = sess->moe_ids[sel];
-            const float    wt = sess->moe_wts[sel];
-            size_t         h  = 0;
-            while (h < j->n_hot && j->hot[h] != e)
-                h++;
-            if (h < j->n_hot) {
-                w_hot[h] = wt;
+            const uint32_t sel = sess->moe_rows[i];
+            if (is_hot[sess->moe_ids[sel]])
                 continue;
-            }
+            const float  wt  = sess->moe_wts[sel];
+            float       *dst = cold + (sel / k) * d;
             const float *src = sess->moe_y + i * d;
             for (size_t c = 0; c < d; c++)
-                cold[c] += wt * src[c];
+                dst[c] += wt * src[c];
         }
-        s = moe_gpu_finish(sess, j->n_hot, w_hot, cold, sess->moe_acc);
+        s = routed ? moe_gpu_route_finish(sess, j->layer, cold, sess->moe_acc)
+                   : moe_gpu_finish(sess, seq, j->n_hot, j->hot, cold, sess->moe_acc);
         if (s == GEIST_OK)
             s = blk_add(ctx, d, sess->scratch_h_post_attn, sess->moe_acc, ctx->h_out_buf);
         moe_profile_mark(MOE_PROFILE_SUM, &t0);
@@ -506,4 +547,80 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     s = blk_add(ctx, d, sess->scratch_h_post_attn, sess->moe_acc, ctx->h_out_buf);
     moe_profile_mark(MOE_PROFILE_SUM, &t0);
     return s;
+}
+
+/* ---- Session state ---------------------------------------------------- */
+
+/* Router logits, the gathered rows of one expert and the weighted sum, plus
+ * the host-side routing (blk_moe_ffn). */
+enum geist_status moe_session_alloc(struct transformer_arch_session *sess) {
+    const struct transformer_arch_state *st    = sess->model;
+    struct geist_backend                *be    = st->backend;
+    const size_t                         n_exp = st->config.moe_n_experts;
+    const size_t                         n_sel = sess->m_max * moe_k(&st->config);
+    /* The host reads the logits and writes the sum: on a GPU they live in
+     * cached host memory the device writes and reads in place. */
+    const bool        io = be->desc->caps.batched_submit;
+    enum geist_status s  = io ? be->desc->vtbl->buffer_create(be,
+                                                              sess->m_max * n_exp * sizeof(float),
+                                                              GEIST_BUFFER_IO,
+                                                              GEIST_MEMORY_AUTO,
+                                                              &sess->moe_logits)
+                              : transformer_scratch_alloc(
+                                        be, sess->m_max * n_exp * sizeof(float), &sess->moe_logits);
+    if (s == GEIST_OK)
+        s = io ? be->desc->vtbl->buffer_create(be,
+                                               sess->m_max * st->d_model * sizeof(float),
+                                               GEIST_BUFFER_IO,
+                                               GEIST_MEMORY_AUTO,
+                                               &sess->moe_acc)
+               : transformer_scratch_alloc(
+                         be, sess->m_max * st->d_model * sizeof(float), &sess->moe_acc);
+    if (s == GEIST_OK && io)
+        s = be->desc->vtbl->buffer_create(be,
+                                          sess->m_max * st->d_model * sizeof(float),
+                                          GEIST_BUFFER_IO,
+                                          GEIST_MEMORY_AUTO,
+                                          &sess->moe_x_io);
+    if (s != GEIST_OK)
+        return s;
+    const size_t inter  = moe_inter(st);
+    sess->moe_ids       = heap_alloc_array_aligned(uint32_t, n_sel);
+    sess->moe_wts       = heap_alloc_array_aligned(float, n_sel);
+    sess->moe_rows      = heap_alloc_array_aligned(uint32_t, n_sel);
+    sess->moe_row_start = heap_alloc_array_aligned(size_t, moe_slots(&st->config) + 1);
+    sess->moe_xg        = heap_alloc_array_aligned(float, n_sel * st->d_model);
+    sess->moe_y         = heap_alloc_array_aligned(float, n_sel * st->d_model);
+    sess->moe_g         = heap_alloc_array_aligned(float, n_sel *inter);
+    sess->moe_u         = heap_alloc_array_aligned(float, n_sel *inter);
+    sess->moe_x_host    = heap_alloc_array_aligned(float, sess->m_max * st->d_model);
+    if (sess->moe_ids == nullptr || sess->moe_wts == nullptr || sess->moe_rows == nullptr ||
+        sess->moe_row_start == nullptr || sess->moe_xg == nullptr || sess->moe_y == nullptr ||
+        sess->moe_g == nullptr || sess->moe_u == nullptr || sess->moe_x_host == nullptr) {
+        geist_backend_set_error(be, GEIST_E_OOM, "transformer: MoE routing state alloc failed");
+        return GEIST_E_OOM;
+    }
+    return moe_gpu_session_alloc(sess);
+}
+
+void moe_session_free(struct transformer_arch_session *sess) {
+    moe_gpu_session_free(sess);
+    void *host[] = {sess->moe_x_host,
+                    sess->moe_xg,
+                    sess->moe_y,
+                    sess->moe_g,
+                    sess->moe_u,
+                    sess->moe_ids,
+                    sess->moe_wts,
+                    sess->moe_rows,
+                    sess->moe_row_start};
+    for (size_t i = 0; i < sizeof host / sizeof host[0]; i++)
+        safe_free(&host[i]);
+    sess->moe_xg = sess->moe_y = sess->moe_g = sess->moe_u = sess->moe_x_host = nullptr;
+    sess->moe_wts                                                             = nullptr;
+    sess->moe_ids = sess->moe_rows = nullptr;
+    sess->moe_row_start            = nullptr;
+    transformer_buffer_release(sess->model->backend, &sess->moe_logits);
+    transformer_buffer_release(sess->model->backend, &sess->moe_acc);
+    transformer_buffer_release(sess->model->backend, &sess->moe_x_io);
 }

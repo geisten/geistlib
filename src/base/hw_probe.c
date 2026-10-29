@@ -68,6 +68,17 @@ static bool sysctl_bool(const char *name, bool fallback) {
 }
 #endif
 
+int geist_hw_perf_cores(void) {
+#if defined(__APPLE__)
+    int    v   = 0;
+    size_t len = sizeof v;
+    if (sysctlbyname("hw.perflevel0.physicalcpu", &v, &len, nullptr, 0) == 0 && v > 0) {
+        return v;
+    }
+#endif
+    return 0;
+}
+
 void geist_hw_probe_isa(struct geist_hw_probe *out) {
     if (out == nullptr) {
         return;
@@ -353,10 +364,9 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
                 *p = '-';
             }
         }
-        int    p_cores = 0, e_cores = 0;
-        size_t ilen = sizeof(p_cores);
-        (void) sysctlbyname("hw.perflevel0.physicalcpu", &p_cores, &ilen, nullptr, 0);
-        ilen = sizeof(e_cores);
+        const int p_cores = geist_hw_perf_cores();
+        int       e_cores = 0;
+        size_t    ilen    = sizeof(e_cores);
         (void) sysctlbyname("hw.perflevel1.physicalcpu", &e_cores, &ilen, nullptr, 0);
         if (brand[0] != '\0') {
             snprintf(out->uarch, sizeof(out->uarch), "apple:%s:%dP+%dE", brand, p_cores, e_cores);

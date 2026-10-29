@@ -45,6 +45,7 @@
 
 #include "geist_gemm.h"
 #include "checked.h"
+#include "env.h"
 #include "heap.h"
 #include "quant.h"
 
@@ -323,8 +324,7 @@ static void cpu_x86_linear_i2s_x4_pair_m1(const float               *x,
 static int cpu_x86_i2s_pair_enabled(void) {
     static _Atomic int e = -1;
     if (e < 0) {
-        const char *v = getenv("GEIST_I2S_PAIR");
-        e             = (v != nullptr && v[0] == '0') ? 0 : 1;
+        e = geist_env_flag("GEIST_I2S_PAIR", true);
     }
     return e;
 }
@@ -334,8 +334,7 @@ static int cpu_x86_i2s_pair_enabled(void) {
 static int cpu_x86_i2s_t5_enabled(void) {
     static _Atomic int e = -1;
     if (e < 0) {
-        const char *v = getenv("GEIST_I2S_T5");
-        e             = (v != nullptr && v[0] == '0') ? 0 : 1;
+        e = geist_env_flag("GEIST_I2S_T5", true);
     }
     return e;
 }
@@ -413,11 +412,8 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
     if ((uint64_t) n_out * n_in < (1u << 20)) {
         return false; /* tiny F16 dense → not worth the BW/quant tradeoff */
     }
-    {
-        const char *e = getenv("GEIST_Q8_LMHEAD"); /* =0 keeps the exact F16C GEMV */
-        if (e != nullptr && e[0] == '0') {
-            return false;
-        }
+    if (!geist_env_flag("GEIST_Q8_LMHEAD", true)) {
+        return false; /* =0 keeps the exact F16C GEMV */
     }
     const size_t scales_off = q8w_scales_offset(n_out, n_in);
     const size_t blob_bytes = scales_off + n_out * sizeof(float);
@@ -440,11 +436,7 @@ static bool cpu_x86_linear_q8w_resolve(struct geist_weight *w) {
  * GEIST_Q4K_RAW=1 takes the raw kernel on any host (half the Q4_K memory,
  * about half the prefill speed on AVX-512); =0 keeps the repack. */
 static bool q4k_reads_raw(void) {
-    const char *e = getenv("GEIST_Q4K_RAW");
-    if (e != nullptr && e[0] != '\0') {
-        return e[0] != '0';
-    }
-    return !q4kx8_avx512_usable();
+    return geist_env_flag("GEIST_Q4K_RAW", !q4kx8_avx512_usable());
 }
 
 [[nodiscard]] static enum geist_status cpu_x86_resolve_weight(struct geist_backend *be,

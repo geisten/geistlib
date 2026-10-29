@@ -66,18 +66,22 @@ struct metal_pipeline_row {
      "attention_flash_d" #HD,                                               \
      offsetof(struct metal_state, attention_flash_function[(HD) / 32 - 1]), \
      offsetof(struct metal_state, attention_flash_pipeline[(HD) / 32 - 1])}
-/* A decode kernel's row (#17): head_dim HD, KV type KV, in slot HD/32 - 1. */
-#define METAL_DECV_PIPE(HD, KV)                                                   \
-    {offsetof(struct metal_state, attn_decv_library),                             \
-     "attention_decv_d" #HD "_" #KV,                                              \
-     offsetof(struct metal_state, attention_decv_##KV##_function[(HD) / 32 - 1]), \
-     offsetof(struct metal_state, attention_decv_##KV##_pipeline[(HD) / 32 - 1])}
+/* A decode kernel's row (#17): KIND decv or decq, head_dim HD, KV type KV,
+ * in slot HD/32 - 1. */
+#define METAL_DEC_PIPE(KIND, HD, KV)                                                  \
+    {offsetof(struct metal_state, attn_decv_library),                                 \
+     "attention_" #KIND "_d" #HD "_" #KV,                                             \
+     offsetof(struct metal_state, attention_##KIND##_##KV##_function[(HD) / 32 - 1]), \
+     offsetof(struct metal_state, attention_##KIND##_##KV##_pipeline[(HD) / 32 - 1])}
 #define METAL_N(rows) (sizeof(rows) / sizeof((rows)[0]))
 
 static const struct metal_pipeline_row metal_deltanet_rows[] = {
         METAL_PIPE(deltanet, "deltanet_mix", deltanet_mix),
         METAL_PIPE(deltanet, "dn_dec_qk", dn_dec_qk),
         METAL_PIPE(deltanet, "dn_dec_v", dn_dec_v),
+        METAL_PIPE(deltanet, "dn_dec_v_rows", dn_dec_v_rows),
+        METAL_PIPE(deltanet, "dn_dec_qk_b", dn_dec_qk_b),
+        METAL_PIPE(deltanet, "dn_dec_v_b", dn_dec_v_b),
         METAL_PIPE(deltanet, "dnf_cst_copy", dnf_cst_copy),
         METAL_PIPE(deltanet, "dnf_conv", dnf_conv),
         METAL_PIPE(deltanet, "dnf_norm", dnf_norm),
@@ -108,7 +112,9 @@ static const struct metal_pipeline_row metal_quant_rows[] = {
         METAL_PIPE(quant_sg, "matvec_pq2_n8", pq2_n8),
         METAL_PIPE(quant_sg, "matmul_pq2_mm_sg", pq2_mm),
         METAL_PIPE(quant_sg, "matmul_pq2_mm_sg_fast", pq2_mm_fast),
+        METAL_PIPE(quant_sg, "matmul_pq2_m8", pq2_m8),
         METAL_PIPE(quant_sg, "cvt_f32_f16_rows", cvt_f16),
+        METAL_PIPE(quant_sg, "cvt_f32_f16_kmaj8", cvt_kmaj),
         METAL_PIPE(quant_sg, "matvec_iq4nl_n4", iq4nl_n4),
         METAL_PIPE(quant_sg, "matmul_iq4nl_mm_sg", iq4nl_mm),
         METAL_PIPE(quant_sg, "matvec_iq4xs_n4", iq4xs_n4),
@@ -127,14 +133,19 @@ static const struct metal_pipeline_row metal_quant_rows[] = {
         METAL_PIPE(quant_sg, "matmul_q41_mm_sg_fast", q41_mm_fast),
         METAL_PIPE(quant_sg, "matmul_q5k_mm_sg_fast", q5k_mm_fast),
         METAL_PIPE(q4k_n4, "matvec_q4k_n4", q4k_n4),
+        METAL_PIPE(q4k_n4, "matvec_q4k_h", q4k_h),
         METAL_PIPE(q4k_gate_up_n4, "gate_up_q4k_n4", q4k_gate_up_n4),
+        METAL_PIPE(q4k_gate_up_n4, "gate_up_q4k_h", q4k_gate_up_h),
         METAL_PIPE(q4k_pair_n4, "pair_q4k_n4", q4k_pair_n4),
         METAL_PIPE(q4k_gate_up_n4, "gate_up_silu_q4k_n4", q4k_gate_up_silu_n4),
+        METAL_PIPE(q4k_gate_up_n4, "gate_up_silu_q4k_h", q4k_gate_up_silu_h),
         METAL_PIPE(q4k_gate_up_n4, "gate_up_q80_n4", q80_gate_up_n4),
         METAL_PIPE(q4k_gate_up_n4, "gate_up_silu_q80_n4", q80_gate_up_silu_n4),
         METAL_PIPE(mv3, "mv3_q4k_q4k_q4k", mv3_q4k_q4k_q4k),
         METAL_PIPE(mv3, "mv3_q4k_q4k_q6k", mv3_q4k_q4k_q6k),
         METAL_PIPE(mv3, "mv3_q80_q80_q80", mv3_q80_q80_q80),
+        METAL_PIPE(mv3, "mv3_q4k_h_q4k_q4k", mv3_q4k_h_q4k_q4k),
+        METAL_PIPE(mv3, "mv3_q4k_h_q4k_q6k", mv3_q4k_h_q4k_q6k),
         METAL_PIPE(q4k, "matmul_q4k_m8", q4k_matmul_m8),
         METAL_PIPE(q4k_m16, "matmul_q4k_m16", q4k_matmul_m16),
         METAL_PIPE(q6k, "matvec_q6k", q6k),
@@ -164,6 +175,8 @@ static const struct metal_pipeline_row metal_quant_rows[] = {
         METAL_PIPE(f32, "matmul_bf16w", bf16w_matmul),
         METAL_PIPE(f32, "matmul_bf16w_sg", bf16w_matmul_sg),
         METAL_PIPE(f32, "ple_gate_f32", f32_ple_gate),
+        METAL_PIPE(f32, "ple_gate_f32_sg", f32_ple_gate_sg),
+        METAL_PIPE(f32, "matvec_f32_rows", f32_matvec_rows),
         METAL_PIPE(f32, "ple_proj_norm_f32", f32_ple_proj_norm),
         METAL_PIPE(q4k_mm_sg, "matmul_q4k_mm_sg", q4k_mm_sg),
         METAL_PIPE(q4k_mm_sg_fast, "matmul_q4k_mm_sg_fast", q4k_mm_sg_fast),
@@ -203,14 +216,20 @@ static const struct metal_pipeline_row metal_attention_rows[] = {
         METAL_FLASH_PIPE(384),
         METAL_FLASH_PIPE(448),
         METAL_FLASH_PIPE(512),
-        METAL_DECV_PIPE(64, f16),
-        METAL_DECV_PIPE(128, f16),
-        METAL_DECV_PIPE(256, f16),
-        METAL_DECV_PIPE(512, f16),
-        METAL_DECV_PIPE(64, f32kv),
-        METAL_DECV_PIPE(128, f32kv),
-        METAL_DECV_PIPE(256, f32kv),
-        METAL_DECV_PIPE(512, f32kv),
+        METAL_DEC_PIPE(decv, 64, f16),
+        METAL_DEC_PIPE(decv, 128, f16),
+        METAL_DEC_PIPE(decv, 256, f16),
+        METAL_DEC_PIPE(decv, 512, f16),
+        METAL_DEC_PIPE(decv, 64, f32kv),
+        METAL_DEC_PIPE(decv, 128, f32kv),
+        METAL_DEC_PIPE(decv, 256, f32kv),
+        METAL_DEC_PIPE(decv, 512, f32kv),
+        METAL_DEC_PIPE(decq, 128, f16),
+        METAL_DEC_PIPE(decq, 256, f16),
+        METAL_DEC_PIPE(decq, 512, f16),
+        METAL_DEC_PIPE(decq, 128, f32kv),
+        METAL_DEC_PIPE(decq, 256, f32kv),
+        METAL_DEC_PIPE(decq, 512, f32kv),
         METAL_PIPE(attn_dec_f32kv, "attention_dec512_f32kv", attention_dec512_f32kv),
 };
 
@@ -219,9 +238,19 @@ static const struct metal_pipeline_row metal_hadamard_rows[] = {
         METAL_PIPE(hadamard, "hadamard_rows4", hadamard4),
 };
 
+static const struct metal_pipeline_row metal_moe_rows[] = {
+        METAL_PIPE(moe, "moe_topk", moe_topk),
+        METAL_PIPE(moe, "moe_mv_q4k", moe_mv_q4k),
+        METAL_PIPE(moe, "moe_mv_q6k", moe_mv_q6k),
+        METAL_PIPE(moe, "moe_mv_q80", moe_mv_q80),
+        METAL_PIPE(moe, "moe_mv_f32", moe_mv_f32),
+        METAL_PIPE(moe, "moe_wsum", moe_wsum),
+};
+
 static const struct metal_pipeline_row metal_argmax_rows[] = {
-        METAL_PIPE(argmax, "argmax_f32", argmax),
         METAL_PIPE(argmax, "argmax_f32_batch", argmax_batch),
+        METAL_PIPE(argmax, "argmax_f32_part", argmax_part),
+        METAL_PIPE(argmax, "argmax_f32_merge", argmax_merge),
 };
 
 /* A library compiled from one MSL unit: the shader literals concatenated
@@ -250,6 +279,9 @@ static const struct metal_library_row metal_deltanet_libs[] = {
                   "DeltaNet",
                   metal_deltanet_source,
                   metal_dn_decode_source,
+                  metal_dn_decode_rows_source,
+                  metal_dn_decode_states_source,
+                  metal_dn_decode_states_v_source,
                   metal_dnf_prep_source,
                   metal_dnf_chunk_source,
                   metal_dnf_state_source,
@@ -294,25 +326,36 @@ static const struct metal_library_row metal_quant_libs[] = {
                   metal_qsg_pq2_n8_source,
                   metal_qsg_mm_pq2_source,
                   metal_qsg_mm_pq2_fast_source,
+                  metal_qsg_mm_pq2_m8_source,
                   metal_qsg_cvt_f16_source,
+                  metal_qsg_cvt_kmaj_source,
                   metal_qsg_tq2_source,
                   metal_qsg_tq2_n4_source,
                   metal_qsg_mm_tq2_source,
                   metal_qsg_i2s_source,
                   metal_qsg_i2s_n4_source,
                   metal_qsg_mm_i2s_source),
-        METAL_LIB(q4k_n4, "Q4_K n4", metal_mv_hdr_source, metal_mv_q4k_body, metal_q4k_n4_kernel),
+        METAL_LIB(q4k_n4,
+                  "Q4_K n4",
+                  metal_mv_hdr_source,
+                  metal_mv_q4k_body,
+                  metal_q4k_n4_kernel,
+                  metal_mv_q4k_h_body,
+                  metal_q4k_h_kernel),
         METAL_LIB(q4k_gate_up_n4,
                   "gate/up n4",
                   metal_q4k_gate_up_n4_source,
                   metal_gate_up_q4k_gelu_kernel,
+                  metal_gate_up_q4k_h_gelu_kernel,
                   metal_gate_up_q4k_silu_kernel,
+                  metal_gate_up_q4k_h_silu_kernel,
                   metal_gate_up_q80_gelu_kernel,
                   metal_gate_up_q80_silu_kernel),
         METAL_LIB(mv3,
                   "q/k/v matvec",
                   metal_mv_hdr_source,
                   metal_mv_q4k_body,
+                  metal_mv_q4k_h_body,
                   metal_mv_q6k_body,
                   metal_mv_q80_body,
                   metal_mv3_head,
@@ -339,6 +382,7 @@ static const struct metal_library_row metal_quant_libs[] = {
                   "F32",
                   metal_f32_source,
                   metal_f32_ple_source,
+                  metal_f32_sg_mv_source,
                   metal_f32_mm_source,
                   metal_f16_w_source,
                   metal_bf16_w_source),
@@ -362,7 +406,10 @@ static const struct metal_library_row metal_attention_libs[] = {
                   metal_attn_dec_f16_plain_head,
                   metal_attn_dec_f16_body),
         METAL_LIB(attn_dec_combine, "attention combine", metal_attn_dec_combine_source),
-        METAL_LIB(attn_decv, "block decode attention", metal_attn_decv_source),
+        METAL_LIB(attn_decv,
+                  "block decode attention",
+                  metal_attn_decv_source,
+                  metal_attn_decq_source),
         METAL_LIB(attn_dec512_f16,
                   "dec512",
                   metal_attn_kv_header,
@@ -385,6 +432,16 @@ static const struct metal_library_row metal_attention_libs[] = {
 
 static const struct metal_library_row metal_hadamard_libs[] = {
         METAL_LIB(hadamard, "hadamard", metal_hadamard_source),
+};
+
+static const struct metal_library_row metal_moe_libs[] = {
+        METAL_LIB(moe,
+                  "MoE",
+                  metal_mv_hdr_source,
+                  metal_mv_q4k_body,
+                  metal_mv_q6k_body,
+                  metal_mv_q80_body,
+                  metal_moe_source),
 };
 
 static const struct metal_library_row metal_argmax_libs[] = {
@@ -536,59 +593,35 @@ static void metal_release_libs(struct metal_state            *st,
     }
 }
 
+/* The pipeline tables, by enum metal_table. */
+static const struct {
+    size_t                           n_libs;
+    const struct metal_library_row  *libs;
+    size_t                           n_rows;
+    const struct metal_pipeline_row *rows;
+} metal_tables[METAL_TAB_COUNT] = {
+#define METAL_TABLE(T, libs, rows) [T] = {METAL_N(libs), libs, METAL_N(rows), rows}
+        METAL_TABLE(METAL_TAB_DELTANET, metal_deltanet_libs, metal_deltanet_rows),
+        METAL_TABLE(METAL_TAB_QUANT, metal_quant_libs, metal_quant_rows),
+        METAL_TABLE(METAL_TAB_ATTENTION, metal_attention_libs, metal_attention_rows),
+        METAL_TABLE(METAL_TAB_HADAMARD, metal_hadamard_libs, metal_hadamard_rows),
+        METAL_TABLE(METAL_TAB_ARGMAX, metal_argmax_libs, metal_argmax_rows),
+        METAL_TABLE(METAL_TAB_MOE, metal_moe_libs, metal_moe_rows),
+#undef METAL_TABLE
+};
+
 void metal_release_pipeline_tables(struct metal_state *st) {
-    metal_release_rows(st, METAL_N(metal_deltanet_rows), metal_deltanet_rows);
-    metal_release_rows(st, METAL_N(metal_quant_rows), metal_quant_rows);
-    metal_release_rows(st, METAL_N(metal_attention_rows), metal_attention_rows);
-    metal_release_rows(st, METAL_N(metal_hadamard_rows), metal_hadamard_rows);
-    metal_release_rows(st, METAL_N(metal_argmax_rows), metal_argmax_rows);
-    metal_release_libs(st, METAL_N(metal_deltanet_libs), metal_deltanet_libs);
-    metal_release_libs(st, METAL_N(metal_quant_libs), metal_quant_libs);
-    metal_release_libs(st, METAL_N(metal_attention_libs), metal_attention_libs);
-    metal_release_libs(st, METAL_N(metal_hadamard_libs), metal_hadamard_libs);
-    metal_release_libs(st, METAL_N(metal_argmax_libs), metal_argmax_libs);
+    for (size_t t = 0; t < METAL_TAB_COUNT; t++) {
+        metal_release_rows(st, metal_tables[t].n_rows, metal_tables[t].rows);
+    }
+    for (size_t t = 0; t < METAL_TAB_COUNT; t++) {
+        metal_release_libs(st, metal_tables[t].n_libs, metal_tables[t].libs);
+    }
 }
 
-#define METAL_TABLES(libs, rows) METAL_N(libs), libs, METAL_N(rows), rows
-
-[[nodiscard]] enum geist_status metal_ensure_deltanet_pipeline(struct geist_backend *be) {
-    if (be == nullptr || be->state == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    return metal_ensure_tables(be, METAL_TABLES(metal_deltanet_libs, metal_deltanet_rows));
-}
-
-[[nodiscard]] enum geist_status metal_ensure_q4k_pipeline(struct geist_backend *be) {
-    if (be == nullptr || be->state == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    return metal_ensure_tables(be, METAL_TABLES(metal_quant_libs, metal_quant_rows));
-}
-
-[[nodiscard]] enum geist_status metal_ensure_attention_pipeline(struct geist_backend *be) {
-    if (be == nullptr || be->state == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    return metal_ensure_tables(be, METAL_TABLES(metal_attention_libs, metal_attention_rows));
-}
-
-[[nodiscard]] enum geist_status metal_ensure_hadamard_pipeline(struct geist_backend *be) {
-    if (be == nullptr || be->state == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    return metal_ensure_tables(be, METAL_TABLES(metal_hadamard_libs, metal_hadamard_rows));
-}
-
-[[nodiscard]] enum geist_status metal_ensure_argmax_pipeline(struct geist_backend *be) {
-    if (be == nullptr || be->state == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    struct metal_state     *st = be->state;
-    const enum geist_status s =
-            metal_ensure_tables(be, METAL_TABLES(metal_argmax_libs, metal_argmax_rows));
-    if (s != GEIST_OK) {
-        return s;
-    }
+/* The argmax result (host-visible) and partials buffers. */
+static enum geist_status metal_argmax_buffers(struct geist_backend *be) {
+    struct metal_state *st = be->state;
     if (st->argmax_result_buffer == nullptr) {
         st->argmax_result_buffer = metal_msg_send_id_size_uint(st,
                                                                st->device,
@@ -608,5 +641,30 @@ void metal_release_pipeline_tables(struct metal_state *st) {
         }
         st->argmax_result_capacity = 1u;
     }
+    if (st->argmax_part_buffer == nullptr) {
+        st->argmax_part_buffer =
+                metal_msg_send_id_size_uint(st,
+                                            st->device,
+                                            "newBufferWithLength:options:",
+                                            METAL_ARGMAX_PARTS * 2u * sizeof(uint32_t),
+                                            METAL_RESOURCE_STORAGE_MODE_PRIVATE);
+        if (st->argmax_part_buffer == nullptr) {
+            geist_backend_set_error(
+                    be, GEIST_E_BACKEND, "metal argmax: partials buffer allocation failed");
+            return GEIST_E_BACKEND;
+        }
+    }
     return GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status metal_ensure(struct geist_backend *be, enum metal_table table) {
+    if (be == nullptr || be->state == nullptr || table >= METAL_TAB_COUNT) {
+        return GEIST_E_INVALID_ARG;
+    }
+    const enum geist_status s = metal_ensure_tables(be,
+                                                    metal_tables[table].n_libs,
+                                                    metal_tables[table].libs,
+                                                    metal_tables[table].n_rows,
+                                                    metal_tables[table].rows);
+    return s == GEIST_OK && table == METAL_TAB_ARGMAX ? metal_argmax_buffers(be) : s;
 }

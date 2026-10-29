@@ -47,9 +47,6 @@ struct geist_model {
     /* Engine-side state (struct model_engine_state in model.c). */
     void *weights;
 
-    /* The loaded tokenizer: sp_bpe_tokenizer or gguf_tokenizer. */
-    void *tokenizer;
-
     /* Owning backend (weights live in its buffers). */
     struct geist_backend *backend;
 

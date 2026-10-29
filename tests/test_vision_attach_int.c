@@ -92,11 +92,17 @@ int main(int argc, char **argv) {
     }
     printf("image attached: 280 soft tokens injected into KV cache\n");
 
+    /* The encoder's time is vision time, not audio time. */
+    int                        fails = 0;
+    struct geist_session_stats st    = {0};
+    fails += geist_expect(geist_session_get_stats(sess, &st) == GEIST_OK &&
+                                  st.total_vision_encode_ns > 0 && st.total_audio_encode_ns == 0,
+                          "attach_image counts its encode as vision, not audio");
+
     /* Decode a handful of tokens after the vision context. We don't
      * expect coherent text from a bare image with no chat-template wrap
      * — this just validates the prefill_image path didn't poison the
      * KV cache or the logits head. */
-    int           fails = 0;
     geist_token_t tok;
     printf("decoded:");
     for (int i = 0; i < 6; i++) {

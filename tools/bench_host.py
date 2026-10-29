@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Host plumbing shared by the benchmark runners (bench_cross_engine.py,
 bench_mac_ab.py, bench_revision_ab.py, bench_quality_perf.py): provenance
-hashes, the quiet-host gate, run schedules and the dispersion statistic."""
+hashes, the quiet-host gate, run schedules and the dispersion statistic.
+Stdlib only: the fetch and convert tools import sha256_file from here too."""
 from __future__ import annotations
 
 import hashlib
@@ -121,6 +122,18 @@ def find_macmon() -> str | None:
     return shutil.which("macmon", path=path)
 
 
+def parse_macmon(line: str) -> dict | None:
+    """The GPU and CPU temperature in degrees C from one `macmon pipe` line
+    (its averages over the die sensors), or None where the line cannot be
+    read."""
+    try:
+        temp = json.loads(line)["temp"]
+        return {"gpu_c": round(float(temp["gpu_temp_avg"]), 1),
+                "cpu_c": round(float(temp["cpu_temp_avg"]), 1)}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def apple_temps() -> dict | None:
     """The Apple SoC's GPU and CPU temperature in degrees C from one macmon
     sample (its averages over the die sensors; no root needed), or None where
@@ -133,17 +146,21 @@ def apple_temps() -> dict | None:
     try:
         proc = subprocess.run([macmon, "pipe", "-s", "1", "-i", "1000"],
                               capture_output=True, text=True, timeout=15)
-        temp = json.loads(proc.stdout.strip().splitlines()[-1])["temp"]
-        return {"gpu_c": round(float(temp["gpu_temp_avg"]), 1),
-                "cpu_c": round(float(temp["cpu_temp_avg"]), 1)}
-    except (OSError, subprocess.SubprocessError, IndexError, KeyError, TypeError,
-            ValueError):
+    except (OSError, subprocess.SubprocessError):
         return None
+    lines = proc.stdout.strip().splitlines()
+    return parse_macmon(lines[-1]) if lines else None
 
 
 def apple_too_warm(temps: dict, limits: dict) -> bool:
     return (temps["gpu_c"] > limits.get("max_gpu_c", float("inf"))
             or temps["cpu_c"] > limits.get("max_cpu_c", float("inf")))
+
+
+# The gate's own waits, patchable apart from time.sleep: subprocess.run(timeout=)
+# polls with time.sleep on Linux, so patching that module-wide also records
+# the macmon call's internal waits (CI linux-arm64, run 1802).
+_sleep = time.sleep
 
 
 def wait_for_apple_cool(limits: dict, deadline: float) -> dict:
@@ -158,7 +175,7 @@ def wait_for_apple_cool(limits: dict, deadline: float) -> dict:
         if temps is None:
             pause = limits["fallback_seconds"]
             print(f"  macmon unavailable: cool-down pause {pause}s", file=sys.stderr, flush=True)
-            time.sleep(pause)
+            _sleep(pause)
             return {"cool_gate": "time", "cool_wait_seconds": pause,
                     "gpu_temp_c": None, "cpu_temp_c": None}
         if not apple_too_warm(temps, limits):
@@ -168,7 +185,7 @@ def wait_for_apple_cool(limits: dict, deadline: float) -> dict:
                                f"still above {limits} at timeout")
         print(f"  waiting for cool chip: GPU {temps['gpu_c']} C, CPU {temps['cpu_c']} C",
               file=sys.stderr, flush=True)
-        time.sleep(APPLE_TEMP_POLL_SECONDS)
+        _sleep(APPLE_TEMP_POLL_SECONDS)
     return {"cool_gate": "temperature",
             "cool_wait_seconds": round(time.monotonic() - started, 1),
             "gpu_temp_c": temps["gpu_c"], "cpu_temp_c": temps["cpu_c"]}
@@ -244,3 +261,57 @@ def build_schedule_rotating(variants: list[dict], cycles: int) -> list[tuple[int
         order = variants[offset:] + variants[:offset]
         schedule.extend((cycle, position, variant) for position, variant in enumerate(order))
     return schedule
+
+
+def perf_sweep_command(binary, gguf, seq_lens, decode_n: int, warmup: int, repeats: int,
+                       threads: int | str | None = None) -> list[str]:
+    """argv for one bench_perf_sweep run emitting JSONL; seq_lens is a
+    comma-separated string or a sequence of ints."""
+    if not isinstance(seq_lens, str):
+        seq_lens = ",".join(map(str, seq_lens))
+    command = [str(binary), "--gguf", str(gguf), "--seq-lens", seq_lens,
+               "--decode-n", str(decode_n), "--warmup", str(warmup), "--repeats", str(repeats)]
+    if threads is not None:
+        command += ["--threads", str(threads)]
+    return command + ["--emit-jsonl"]
+
+
+def run_jsonl(command: list[str], env: dict[str, str] | None = None, label: str = "command",
+              cwd: Path | None = None) -> tuple[list[dict], list[str], float]:
+    """Run command; return (its stdout JSON rows, stderr lines, wall seconds).
+    A nonzero exit raises RuntimeError naming label and the last diagnostic line."""
+    started = time.monotonic()
+    proc = subprocess.run(command, capture_output=True, text=True, env=env, cwd=cwd)
+    elapsed = time.monotonic() - started
+    if proc.returncode != 0:
+        diagnostic = (proc.stderr.splitlines() or proc.stdout.splitlines() or ["no diagnostics"])[-1]
+        raise RuntimeError(f"{label} exited {proc.returncode}: {diagnostic}")
+    rows = [json.loads(line) for line in proc.stdout.splitlines() if line.startswith("{")]
+    return rows, proc.stderr.splitlines(), elapsed
+
+
+def load_partial(path: Path) -> tuple[dict, list[dict]]:
+    """The metadata and run records of an unfinished JSONL artifact, for --resume."""
+    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    if not records or records[0].get("kind") != "metadata":
+        raise ValueError("resume artifact does not start with metadata")
+    if any(record.get("kind") == "summary" for record in records):
+        raise ValueError("resume artifact already contains a completed summary")
+    unexpected = [record.get("kind") for record in records[1:]
+                  if record.get("kind") not in {"run", "resume"}]
+    if unexpected:
+        raise ValueError(f"resume artifact contains unexpected records: {unexpected}")
+    metadata = {key: value for key, value in records[0].items() if key != "kind"}
+    return metadata, [record for record in records[1:] if record.get("kind") == "run"]
+
+
+def check_schedule_prefix(runs: list[dict], schedule: list[tuple[int, int, dict]],
+                          key: str) -> None:
+    """Saved runs must be the first len(runs) slots of schedule; run[key]
+    names the slot's entry by its label."""
+    if len(runs) > len(schedule):
+        raise ValueError("resume artifact contains too many runs")
+    for run, (cycle, position, entry) in zip(runs, schedule):
+        if (run.get("cycle"), run.get("position"), run.get(key)) != (
+                cycle, position, entry["label"]):
+            raise ValueError("resume runs are not an exact schedule prefix")

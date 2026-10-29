@@ -6,6 +6,7 @@
 #include "../arch_state.h"
 #include "../forward.h"
 #include "../scratch_plan.h"
+#include "env.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -44,8 +45,7 @@ static struct transformer_forward_profile g_mtp_profile = {
 };
 
 static bool mtp_spec_head_enabled(void) {
-    const char *env = getenv("GEIST_MTP_SPEC_HEAD");
-    return env != nullptr && env[0] == '1';
+    return geist_env_flag("GEIST_MTP_SPEC_HEAD", false);
 }
 
 static enum geist_status
@@ -121,7 +121,7 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
     const int64_t                          N     = (int64_t) n;
     enum geist_status                      s;
     const bool                             profile = transformer_profile_enabled(&g_mtp_profile);
-    uint64_t                               t0      = profile ? transformer_profile_now_ns() : 0;
+    uint64_t                               t0      = profile ? geist_now_ns() : 0;
 
     /* Upload target residual rows before executing any stateful attention. */
     float *hp = (float *) v->buffer_map(sess->mtp_hidden_norm);
@@ -139,7 +139,7 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
     struct geist_tensor t_h  = view_2d(sess->mtp_hidden_norm, N, (int64_t) H);
     struct geist_tensor t_en = view_1d(M->enorm.buffer, (int64_t) H);
     struct geist_tensor t_hn = view_1d(M->hnorm.buffer, (int64_t) H);
-    t0                       = profile ? transformer_profile_now_ns() : 0;
+    t0                       = profile ? geist_now_ns() : 0;
     s                        = prims->rmsnorm(be, &t_e, &t_en, st->config.rms_eps, &t_e);
     if (s == GEIST_OK)
         s = prims->rmsnorm(be, &t_h, &t_hn, st->config.rms_eps, &t_h);
@@ -151,7 +151,7 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
      * target hidden].  Keep this explicit; swapping the halves produces
      * plausible but incorrect draft logits. */
     const float *ep = (const float *) v->buffer_map(sess->mtp_embed);
-    t0              = profile ? transformer_profile_now_ns() : 0;
+    t0              = profile ? geist_now_ns() : 0;
     hp              = (float *) v->buffer_map(sess->mtp_hidden_norm);
     float *cp       = (float *) v->buffer_map(sess->mtp_concat);
     if (ep == nullptr || hp == nullptr || cp == nullptr)
@@ -167,7 +167,7 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
 
     struct geist_tensor t_cat  = view_2d(sess->mtp_concat, N, (int64_t) (2 * H));
     struct geist_tensor t_seed = view_2d(sess->scratch_h_a, N, (int64_t) H);
-    t0                         = profile ? transformer_profile_now_ns() : 0;
+    t0                         = profile ? geist_now_ns() : 0;
     s                          = linear_w_or_legacy(be,
                                                     v,
                                                     sess->mtp_concat,
@@ -181,7 +181,7 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
     if (s != GEIST_OK)
         return s;
 
-    t0 = profile ? transformer_profile_now_ns() : 0;
+    t0 = profile ? geist_now_ns() : 0;
     s  = transformer_forward_mtp_layer(
             sess, &M->block, sess->mtp_kv_len, n, sess->scratch_h_a, sess->scratch_h_b);
     transformer_profile_add(&g_mtp_profile, MTP_PROFILE_BLOCK, t0);
@@ -189,7 +189,7 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
         return s;
 
     if (out_hidden != nullptr) {
-        t0               = profile ? transformer_profile_now_ns() : 0;
+        t0               = profile ? geist_now_ns() : 0;
         const float *raw = (const float *) v->buffer_map(sess->scratch_h_b);
         if (raw == nullptr)
             return GEIST_E_BACKEND;
@@ -203,7 +203,7 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
         return GEIST_OK;
     }
 
-    t0                         = profile ? transformer_profile_now_ns() : 0;
+    t0                         = profile ? geist_now_ns() : 0;
     struct geist_tensor t_raw  = view_2d(sess->scratch_h_b, N, (int64_t) H);
     struct geist_tensor t_norm = view_2d(sess->scratch_h_a, N, (int64_t) H);
     struct geist_tensor t_wn   = view_1d(M->shared_head_norm.buffer, (int64_t) H);

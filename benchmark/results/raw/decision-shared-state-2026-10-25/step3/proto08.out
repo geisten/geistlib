@@ -1,0 +1,17 @@
+with-mac-lock: waiting (#1 in queue, batch) behind pid 26156 '#26 step1 prefix scoring chunk 1' [batch] sh /Users/germar/workspace/geistlib-campaigns/26/run1.sh, 6m30s of 30 min; queue 1: batch/38130 0s
+carrier m_max 256
+prepared 16 prompts in 4.3 s (A 875..840 tokens)
+agreement B=1: 1/1 sequences token-identical over 32 steps (earliest divergence step 32), 1/1 bit-identical logits at every step, max |logit diff| before divergence 0
+agreement B=2: 2/2 sequences token-identical over 32 steps (earliest divergence step 32), 0/2 bit-identical logits at every step, max |logit diff| before divergence 0.001098
+agreement B=4: 4/4 sequences token-identical over 32 steps (earliest divergence step 32), 0/4 bit-identical logits at every step, max |logit diff| before divergence 0.001301
+agreement B=8: 8/8 sequences token-identical over 32 steps (earliest divergence step 32), 0/8 bit-identical logits at every step, max |logit diff| before divergence 0.0234
+invariance B=8: A0 in slot 0 among A1..A7 vs slot 3 among B0..B6: tokens identical yes, bit-identical logits 32/32 steps (max |diff| 0)
+invariance B=4: A0 in slot 0 among A1..A3 vs slot 2 among B0..B2: tokens identical yes, bit-identical logits 32/32 steps (max |diff| 0)
+speed (64 steps, best of 3 rounds):
+  single-sequence decode: 5.7 ms/step, 175.88 tok/s (rounds 364/372/368 ms)
+  B=1: 5.8 ms/step, 172.90 tok/s aggregate, 0.98x single (rounds 370/375/371 ms)
+  B=2: 17.5 ms/step, 114.35 tok/s aggregate, 0.65x single (rounds 1154/1127/1119 ms)
+  B=4: 34.5 ms/step, 116.00 tok/s aggregate, 0.66x single (rounds 2412/2207/2227 ms)
+  B=8: 27.5 ms/step, 290.43 tok/s aggregate, 1.65x single (rounds 1787/1763/1775 ms)
+GATE (B=8 >= 2.0x single): FAIL (1.65x)
+ISOLATION: PASS

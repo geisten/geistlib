@@ -44,15 +44,15 @@ from typing import Callable, Iterator, NamedTuple
 
 import numpy as np
 
-# ---- GGUF constants ------------------------------------------------------
-# Metadata value types and ggml tensor types, mirroring src/io/gguf_reader.c.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gguf_write import (ALIGN, aligned, header, kv_bool, kv_f32,  # noqa: E402
+                        kv_i32_array, kv_str, kv_str_array, kv_u32, tensor_info)
 
-VT_U32, VT_F32, VT_BOOL, VT_STRING, VT_ARRAY = 4, 6, 7, 8, 9
+# ---- GGUF constants ------------------------------------------------------
+# ggml tensor types, mirroring src/io/gguf_reader.c.
 
 GGML_F32, GGML_F16, GGML_I2_S = 0, 1, 36
 
-GGUF_VERSION = 3
-GGUF_ALIGNMENT = 32  # the spec default geistlib assumes (gguf_reader.c)
 
 # I2_S blocking, from src/quant/quant.h.
 I2S_BLOCK_ELEMS = 256
@@ -236,22 +236,6 @@ def map_tensor_name(hf_name: str, layer_map: dict[str, str]) -> str | None:
 # ---- GGUF writing --------------------------------------------------------
 
 
-def _kv(key: str, vt: int, payload: bytes) -> bytes:
-    return struct.pack("<Q", len(key)) + key.encode() + struct.pack("<I", vt) + payload
-
-
-def kv_u32(key: str, v: int) -> bytes:
-    return _kv(key, VT_U32, struct.pack("<I", v))
-
-
-def kv_f32(key: str, v: float) -> bytes:
-    return _kv(key, VT_F32, struct.pack("<f", v))
-
-
-def kv_bool(key: str, v: bool) -> bytes:
-    return _kv(key, VT_BOOL, struct.pack("<B", 1 if v else 0))
-
-
 def pooling_of(model_dir: Path) -> str:
     """Read the pooling from the checkpoint, not from the model card.
 
@@ -276,21 +260,6 @@ def pooling_of(model_dir: Path) -> str:
     return "mean"
 
 
-def kv_str(key: str, v: str) -> bytes:
-    b = v.encode()
-    return _kv(key, VT_STRING, struct.pack("<Q", len(b)) + b)
-
-
-def kv_str_array(key: str, items: list[str]) -> bytes:
-    body = b"".join(struct.pack("<Q", len(b)) + b for b in (s.encode() for s in items))
-    return _kv(key, VT_ARRAY, struct.pack("<IQ", VT_STRING, len(items)) + body)
-
-
-def kv_i32_array(key: str, items: list[int]) -> bytes:
-    body = struct.pack(f"<{len(items)}i", *items)
-    return _kv(key, VT_ARRAY, struct.pack("<IQ", 5, len(items)) + body)
-
-
 class OutTensor(NamedTuple):
     """A tensor planned for the output file. `emit` produces its bytes."""
 
@@ -301,37 +270,20 @@ class OutTensor(NamedTuple):
     emit: Callable[[], bytes]
 
 
-def tensor_info(t: OutTensor, offset: int) -> bytes:
-    name = t.name.encode()
-    return (
-        struct.pack("<Q", len(name))
-        + name
-        + struct.pack("<I", len(t.dims))
-        + struct.pack(f"<{len(t.dims)}Q", *t.dims)
-        + struct.pack("<IQ", t.ggml_type, offset)
-    )
-
-
 def write_gguf(path: Path, metadata: list[bytes], tensors: list[OutTensor]) -> None:
     """Write header + tensor infos, then stream each tensor's data."""
-    header = struct.pack("<IIQQ", 0x46554747, GGUF_VERSION, len(tensors), len(metadata))
-    body = header + b"".join(metadata)
-
     infos, offset = [], 0
     for t in tensors:
-        infos.append(tensor_info(t, offset))
-        offset += (t.nbytes + GGUF_ALIGNMENT - 1) // GGUF_ALIGNMENT * GGUF_ALIGNMENT
-    body += b"".join(infos)
-
-    pad = -len(body) % GGUF_ALIGNMENT
+        infos.append(tensor_info(t.name, t.dims, t.ggml_type, offset))
+        offset += aligned(t.nbytes)
     with path.open("wb") as out:
-        out.write(body + b"\0" * pad)
+        out.write(header(len(tensors), metadata, infos))
         for t in tensors:
             data = t.emit()
             if len(data) != t.nbytes:
                 raise SystemExit(f"{t.name}: planned {t.nbytes} bytes, got {len(data)}")
             out.write(data)
-            out.write(b"\0" * (-len(data) % GGUF_ALIGNMENT))
+            out.write(b"\0" * (-len(data) % ALIGN))
 
 
 # ---- conversion ----------------------------------------------------------

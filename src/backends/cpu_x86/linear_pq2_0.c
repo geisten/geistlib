@@ -378,7 +378,7 @@ static void gemm_groups(void *ctx, size_t g0, size_t g1) {
     const int32_t   *neg_sum = pc->bias;
     const float     *inv     = pc->inv;
     float           *y       = pc->y;
-    float           *acc     = pc->accs + par_slot(&pc->slot) * pc->acc_elems;
+    float           *acc     = pc->accs + geist_par_slot(&pc->slot) * pc->acc_elems;
     for (size_t g = g0; g < g1; g++) {
         const size_t r0 = g * GEMM_ROWS;
         const size_t nr = n_out - r0 < GEMM_ROWS ? n_out - r0 : GEMM_ROWS;
@@ -402,7 +402,7 @@ static void gemm_groups(void *ctx, size_t g0, size_t g1) {
 
 /* M>1: all m rows quantized (in parallel, one token per iteration), then the
  * GEMM by groups of GEMM_ROWS weight rows, each range with its own
- * accumulators (par_slot). The workspace holds the int8 activations (mN_acts), the
+ * accumulators (geist_par_slot). The workspace holds the int8 activations (mN_acts), the
  * block sums (mN_sum_a), the per-token factors (mN_scale) and the
  * accumulators (mN_aux). */
 static void cpu_x86_linear_pq2_0_mN(size_t                     m,
@@ -418,7 +418,7 @@ static void cpu_x86_linear_pq2_0_mN(size_t                     m,
     struct cpu_x86_workspace *ws = nullptr;
     if (be != nullptr && be->state != nullptr && !ckd_mul(&acts, m, n_in) &&
         !ckd_mul(&sums, m, nb * sizeof(int32_t)) && !ckd_mul(&scales, m, sizeof(float)) &&
-        !ckd_mul(&accs, team_max(), acc_elems * sizeof(float))) {
+        !ckd_mul(&accs, geist_par_max_threads(), acc_elems * sizeof(float))) {
         ws = cpu_x86_ws_acquire_mN((struct cpu_x86_state *) be->state, acts, sums, scales, accs);
     }
     if (ws == nullptr) {
@@ -536,7 +536,7 @@ static void cpu_x86_linear_pq2_0_mN_amx(size_t                     m,
     if (be != nullptr && be->state != nullptr && !ckd_mul(&acts, m, n_in) &&
         !ckd_mul(&sums, m, nb * sizeof(int32_t)) && !ckd_mul(&scales, m, sizeof(float)) &&
         !ckd_mul(&packed, nb, pass_tn * PQ2_0_AMX_TILE_BYTES) &&
-        !ckd_mul(&per_team, team_max(), stride) &&
+        !ckd_mul(&per_team, geist_par_max_threads(), stride) &&
         /* the packed tiles, a page to align the scratch, a gap page */
         !ckd_add(&aux, packed, 2 * AMX_PAGE) && !ckd_add(&aux, aux, per_team)) {
         ws = cpu_x86_ws_acquire_mN((struct cpu_x86_state *) be->state, acts, sums, scales, aux);

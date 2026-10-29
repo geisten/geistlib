@@ -1,14 +1,14 @@
 #include "gguf_reader.h"
 #include "checked.h"
+#include "env.h"
+#include "file_map.h"
 #include "heap.h"
 #include "quant.h"
 
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 /* GGUF metadata value types */
@@ -82,42 +82,46 @@ struct dtype_row_t {
      * truncated mid-scale from passing the extent check. */
     size_t      tail_bytes;
     const char *name;
+    /* What the tensor loads as; GEIST_DTYPE_CUSTOM when geist cannot. */
+    enum geist_dtype geist;
 };
 
 static const struct dtype_row_t DTYPE_ROWS[] = {
-        {GGUF_TYPE_F32, 4, 1, 0, "F32"},
-        {GGUF_TYPE_F16, 2, 1, 0, "F16"},
-        {GGUF_TYPE_BF16, 2, 1, 0, "BF16"},
-        {GGUF_TYPE_Q4_0, 18, 32, 0, "Q4_0"}, /* fp16 d + 32 nibbles */
-        {GGUF_TYPE_Q4_1, 20, 32, 0, "Q4_1"}, /* fp16 d, fp16 m + 32 nibbles */
-        {GGUF_TYPE_Q5_0, 22, 32, 0, "Q5_0"},
-        {GGUF_TYPE_Q5_1, 24, 32, 0, "Q5_1"},
-        {GGUF_TYPE_Q8_0, 34, 32, 0, "Q8_0"}, /* fp16 d + 32 int8 */
-        {GGUF_TYPE_Q8_1, 36, 32, 0, "Q8_1"},
-        {GGUF_TYPE_Q2_K, 82, 256, 0, "Q2_K"},
-        {GGUF_TYPE_Q3_K, 110, 256, 0, "Q3_K"},
-        {GGUF_TYPE_Q4_K, 144, 256, 0, "Q4_K"}, /* k-quant 4-bit super-block */
-        {GGUF_TYPE_Q5_K, 176, 256, 0, "Q5_K"},
-        {GGUF_TYPE_Q6_K, 210, 256, 0, "Q6_K"},
-        {GGUF_TYPE_Q8_K, 292, 256, 0, "Q8_K"},
-        {GGUF_TYPE_IQ3_S, 110, 256, 0, "IQ3_S"},   /* fp16 d + 64 qs + 8 qh + 32 signs + 4 scales */
-        {GGUF_TYPE_IQ4_NL, 18, 32, 0, "IQ4_NL"},   /* fp16 d + 16 packed LUT nibbles */
-        {GGUF_TYPE_IQ4_XS, 136, 256, 0, "IQ4_XS"}, /* fp16 d + u16 scales_h + 4 scales_l + 128 qs */
-        {GGUF_TYPE_IQ2_S, 82, 256, 0, "IQ2_S"}, /* fp16 d + 64 qs (incl signs) + 8 qh + 8 scales */
-        {GGUF_TYPE_TQ1_0, 54, 256, 0, "TQ1_0"}, /* 5-trit packed; 52 + 2-byte fp16 scale */
-        {GGUF_TYPE_TQ2_0, 66, 256, 0, "TQ2_0"}, /* 4-trit packed; 64 + 2-byte fp16 scale */
+        {GGUF_TYPE_F32, 4, 1, 0, "F32", GEIST_DTYPE_F32},
+        {GGUF_TYPE_F16, 2, 1, 0, "F16", GEIST_DTYPE_F16},
+        {GGUF_TYPE_BF16, 2, 1, 0, "BF16", GEIST_DTYPE_BF16},
+        {GGUF_TYPE_Q4_0, Q4_0_BLOCK_BYTES, Q4_0_BLOCK_ELEMS, 0, "Q4_0", GEIST_DTYPE_Q4_0},
+        {GGUF_TYPE_Q4_1, Q4_1_BLOCK_BYTES, Q4_1_BLOCK_ELEMS, 0, "Q4_1", GEIST_DTYPE_Q4_1},
+        {GGUF_TYPE_Q5_0, Q5_0_BLOCK_BYTES, Q5_0_BLOCK_ELEMS, 0, "Q5_0", GEIST_DTYPE_Q5_0},
+        {GGUF_TYPE_Q5_1, 24, 32, 0, "Q5_1", GEIST_DTYPE_CUSTOM},
+        {GGUF_TYPE_Q8_0, Q8_0_BLOCK_BYTES, Q8_0_BLOCK_ELEMS, 0, "Q8_0", GEIST_DTYPE_Q8_0},
+        {GGUF_TYPE_Q8_1, 36, 32, 0, "Q8_1", GEIST_DTYPE_CUSTOM},
+        {GGUF_TYPE_Q2_K, 82, 256, 0, "Q2_K", GEIST_DTYPE_CUSTOM},
+        {GGUF_TYPE_Q3_K, Q3_K_BLOCK_BYTES, Q3_K_BLOCK_ELEMS, 0, "Q3_K", GEIST_DTYPE_Q3_K},
+        {GGUF_TYPE_Q4_K, Q4_K_BLOCK_BYTES, Q4_K_BLOCK_ELEMS, 0, "Q4_K", GEIST_DTYPE_Q4_K},
+        {GGUF_TYPE_Q5_K, Q5_K_BLOCK_BYTES, Q5_K_BLOCK_ELEMS, 0, "Q5_K", GEIST_DTYPE_Q5_K},
+        {GGUF_TYPE_Q6_K, Q6_K_BLOCK_BYTES, Q6_K_BLOCK_ELEMS, 0, "Q6_K", GEIST_DTYPE_Q6_K},
+        {GGUF_TYPE_Q8_K, 292, 256, 0, "Q8_K", GEIST_DTYPE_CUSTOM},
+        {GGUF_TYPE_IQ3_S, IQ3_S_BLOCK_BYTES, IQ3_S_BLOCK_ELEMS, 0, "IQ3_S", GEIST_DTYPE_IQ3_S},
+        {GGUF_TYPE_IQ4_NL, IQ4_NL_BLOCK_BYTES, IQ4_NL_BLOCK_ELEMS, 0, "IQ4_NL", GEIST_DTYPE_IQ4_NL},
+        {GGUF_TYPE_IQ4_XS, IQ4_XS_BLOCK_BYTES, IQ4_XS_BLOCK_ELEMS, 0, "IQ4_XS", GEIST_DTYPE_IQ4_XS},
+        {GGUF_TYPE_IQ2_S, IQ2_S_BLOCK_BYTES, IQ2_S_BLOCK_ELEMS, 0, "IQ2_S", GEIST_DTYPE_IQ2_S},
+        /* 5-trit packed; 52 + 2-byte fp16 scale */
+        {GGUF_TYPE_TQ1_0, 54, 256, 0, "TQ1_0", GEIST_DTYPE_TQ1_0},
+        {GGUF_TYPE_TQ2_0, TQ2_0_BLOCK_BYTES, TQ2_0_BLOCK_ELEMS, 0, "TQ2_0", GEIST_DTYPE_TQ2_0},
         /* I2_S (BitNet b1.58 official): 256-elem blocks of 64 packed bytes (4
          * trits/byte, 2.0 bpw), NO per-block scale. A single f32 per-TENSOR scale
          * is stored right after the packed bytes (offset n_elems/4); it sits just
          * past the block-computed nbytes but inside the mmap, so the kernel reads
          * it from raw + n_in*n_out/4. (Confirmed against bitnet.cpp quantize_i2_s:
          * one scale_ptr[0] per tensor, not per row.) */
-        {GGUF_TYPE_I2_S, I2_S_BLOCK_BYTES, I2_S_BLOCK_ELEMS, sizeof(float), "I2_S"},
-        {GGUF_TYPE_PQ2_0,
-         PQ2_0_BLOCK_BYTES,
-         PQ2_0_BLOCK_ELEMS,
-         0,
-         "PQ2_0"}, /* fp16 d + 32 bytes of 2-bit codes */
+        {GGUF_TYPE_I2_S,
+         I2_S_BLOCK_BYTES,
+         I2_S_BLOCK_ELEMS,
+         sizeof(float),
+         "I2_S",
+         GEIST_DTYPE_I2_S},
+        {GGUF_TYPE_PQ2_0, PQ2_0_BLOCK_BYTES, PQ2_0_BLOCK_ELEMS, 0, "PQ2_0", GEIST_DTYPE_PQ2_0},
 };
 static const size_t DTYPE_ROWS_N = sizeof(DTYPE_ROWS) / sizeof(DTYPE_ROWS[0]);
 
@@ -131,6 +135,11 @@ static const struct dtype_row_t *dtype_lookup(gguf_dtype_t dt) {
 const char *gguf_dtype_name(gguf_dtype_t dt) {
     const struct dtype_row_t *r = dtype_lookup(dt);
     return r ? r->name : "?";
+}
+
+enum geist_dtype gguf_dtype_geist(gguf_dtype_t dt) {
+    const struct dtype_row_t *r = dtype_lookup(dt);
+    return r ? r->geist : GEIST_DTYPE_CUSTOM;
 }
 
 /* Element count, or 0 when the dimensions cannot be multiplied in a size_t.
@@ -325,12 +334,6 @@ static bool record_meta_kv(struct gguf_ctx *ctx,
 
 /* ---- open / close --------------------------------------------------------- */
 
-static const char *set_err(const char **out, const char *msg) {
-    if (out)
-        *out = msg;
-    return msg;
-}
-
 /* Shared parser: `map`/`fsize` already point at the GGUF bytes — an mmap we
  * own (file path) or a caller-provided buffer (from-memory path, owns_map=0).
  * On failure the bytes are released only if we own them. */
@@ -338,15 +341,15 @@ static struct gguf_ctx *
 gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) {
     struct cur_t c = {.p = (const uint8_t *) map, .end = (const uint8_t *) map + fsize, .ok = true};
 
-#define GGUF_FAIL(msg)          \
-    do {                        \
-        if (owns_map) {         \
-            munmap(map, fsize); \
-            if (fd >= 0)        \
-                close(fd);      \
-        }                       \
-        set_err(errmsg, (msg)); \
-        return nullptr;         \
+#define GGUF_FAIL(msg)             \
+    do {                           \
+        if (owns_map) {            \
+            munmap(map, fsize);    \
+            if (fd >= 0)           \
+                close(fd);         \
+        }                          \
+        io_set_err(errmsg, (msg)); \
+        return nullptr;            \
     } while (0)
 
     uint32_t magic = read_u32(&c);
@@ -399,13 +402,13 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
         ctx->meta_kvs = heap_calloc_array_aligned(struct gguf_meta_kv_t, mcount);
         if (!ctx->meta_kvs) {
             gguf_close(ctx);
-            set_err(errmsg, "calloc meta_kvs");
+            io_set_err(errmsg, "calloc meta_kvs");
             return nullptr;
         }
         ctx->meta_key_arena = heap_alloc_array_aligned(char, (size_t) (c.end - c.p) + 1);
         if (!ctx->meta_key_arena) {
             gguf_close(ctx);
-            set_err(errmsg, "malloc meta_key_arena");
+            io_set_err(errmsg, "malloc meta_key_arena");
             return nullptr;
         }
     }
@@ -415,12 +418,12 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
         uint32_t    vt  = read_u32(&c);
         if (!c.ok) {
             gguf_close(ctx);
-            set_err(errmsg, "metadata KV truncated");
+            io_set_err(errmsg, "metadata KV truncated");
             return nullptr;
         }
         if (!record_meta_kv(ctx, (size_t) i, key, klen, &c, vt) || !c.ok) {
             gguf_close(ctx);
-            set_err(errmsg, "metadata value walk failed");
+            io_set_err(errmsg, "metadata value walk failed");
             return nullptr;
         }
     }
@@ -429,14 +432,14 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
     ctx->tensors = heap_calloc_array_aligned(struct gguf_tensor_t, tcount);
     if (!ctx->tensors) {
         gguf_close(ctx);
-        set_err(errmsg, "calloc tensors");
+        io_set_err(errmsg, "calloc tensors");
         return nullptr;
     }
     /* Upper-bound name arena by remaining bytes in mmap. */
     ctx->name_arena = heap_alloc_array_aligned(char, (size_t) (c.end - c.p) + 1);
     if (!ctx->name_arena) {
         gguf_close(ctx);
-        set_err(errmsg, "malloc name_arena");
+        io_set_err(errmsg, "malloc name_arena");
         return nullptr;
     }
 
@@ -445,7 +448,7 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
         const char *nptr = read_str(&c, &nlen);
         if (!c.ok) {
             gguf_close(ctx);
-            set_err(errmsg, "tensor name truncated");
+            io_set_err(errmsg, "tensor name truncated");
             return nullptr;
         }
         char *name_dst = ctx->name_arena + ctx->name_arena_used;
@@ -457,7 +460,7 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
         uint32_t n_dims = read_u32(&c);
         if (n_dims > GGUF_MAX_DIMS) {
             gguf_close(ctx);
-            set_err(errmsg, "tensor n_dims > 4");
+            io_set_err(errmsg, "tensor n_dims > 4");
             return nullptr;
         }
         ctx->tensors[i].n_dims = (int) n_dims;
@@ -471,7 +474,7 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
         ctx->tensors[i].offset = off;
         if (!c.ok) {
             gguf_close(ctx);
-            set_err(errmsg, "tensor info truncated");
+            io_set_err(errmsg, "tensor info truncated");
             return nullptr;
         }
     }
@@ -484,12 +487,12 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
     const size_t info_end = (size_t) (c.p - (const uint8_t *) map);
     if (geist_ckd_round_up_pow2(info_end, (size_t) ctx->alignment, &ctx->data_offset)) {
         gguf_close(ctx);
-        set_err(errmsg, "tensor-info end overflows alignment padding");
+        io_set_err(errmsg, "tensor-info end overflows alignment padding");
         return nullptr;
     }
     if (ctx->data_offset > fsize) {
         gguf_close(ctx);
-        set_err(errmsg, "data section past EOF");
+        io_set_err(errmsg, "data section past EOF");
         return nullptr;
     }
 
@@ -509,19 +512,19 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
          * the byte count below would be meaningless. */
         if (elems == 0u) {
             gguf_close(ctx);
-            set_err(errmsg, "tensor dimensions overflow or are empty");
+            io_set_err(errmsg, "tensor dimensions overflow or are empty");
             return nullptr;
         }
         if (elems % dt->block_elems != 0) {
             gguf_close(ctx);
-            set_err(errmsg, "tensor elem count not divisible by block size");
+            io_set_err(errmsg, "tensor elem count not divisible by block size");
             return nullptr;
         }
         size_t nbytes = 0;
         if (ckd_mul(&nbytes, elems / dt->block_elems, dt->block_bytes) ||
             ckd_add(&nbytes, nbytes, dt->tail_bytes)) {
             gguf_close(ctx);
-            set_err(errmsg, "tensor byte count overflows");
+            io_set_err(errmsg, "tensor byte count overflows");
             return nullptr;
         }
         t->nbytes = nbytes;
@@ -534,7 +537,7 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
             ckd_add(&abs_off, ctx->data_offset, (size_t) t->offset) ||
             ckd_add(&abs_end, abs_off, nbytes) || abs_end > fsize) {
             gguf_close(ctx);
-            set_err(errmsg, "tensor data past EOF");
+            io_set_err(errmsg, "tensor data past EOF");
             return nullptr;
         }
         t->data = (const uint8_t *) map + abs_off;
@@ -557,12 +560,12 @@ gguf_parse(void *map, size_t fsize, int fd, bool owns_map, const char **errmsg) 
  *    runs, and a cold multi-GB prefault just front-loads the same I/O). */
 static void apply_mmap_advice(void *map, size_t size) {
 #if defined(__linux__) && defined(MADV_HUGEPAGE)
-    if (getenv("GEIST_NO_HUGEPAGE") == nullptr) {
+    if (!geist_env_flag("GEIST_NO_HUGEPAGE", false)) {
         (void) madvise(map, size, MADV_HUGEPAGE);
     }
 #endif
 #if defined(MADV_WILLNEED)
-    if (getenv("GEIST_MMAP_PREFETCH") != nullptr) {
+    if (geist_env_flag("GEIST_MMAP_PREFETCH", false)) {
         (void) madvise(map, size, MADV_WILLNEED);
     }
 #endif
@@ -583,29 +586,12 @@ static constexpr int gguf_map_flags = MAP_PRIVATE;
 #endif
 
 struct gguf_ctx *gguf_open(const char *path, const char **errmsg) {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        set_err(errmsg, "open() failed");
+    struct io_map m;
+    if (!io_map_ro(path, gguf_map_flags, &m, errmsg)) {
         return nullptr;
     }
-
-    struct stat sb;
-    if (fstat(fd, &sb) != 0) {
-        close(fd);
-        set_err(errmsg, "fstat() failed");
-        return nullptr;
-    }
-    size_t fsize = (size_t) sb.st_size;
-
-    void *map = mmap(nullptr, fsize, PROT_READ, gguf_map_flags, fd, 0);
-    if (map == MAP_FAILED) {
-        close(fd);
-        set_err(errmsg, "mmap() failed");
-        return nullptr;
-    }
-    apply_mmap_advice(map, fsize);
-
-    return gguf_parse(map, fsize, fd, /*owns_map=*/true, errmsg);
+    apply_mmap_advice(m.map, m.size);
+    return gguf_parse(m.map, m.size, m.fd, /*owns_map=*/true, errmsg);
 }
 
 void gguf_release_range(const struct gguf_ctx *ctx, const void *p, size_t n) {
@@ -652,7 +638,7 @@ void gguf_release_range(const struct gguf_ctx *ctx, const void *p, size_t n) {
 
 struct gguf_ctx *gguf_open_memory(const void *data, size_t size, const char **errmsg) {
     if (data == nullptr || size < 8) {
-        set_err(errmsg, "gguf_open_memory: null or too-small buffer");
+        io_set_err(errmsg, "gguf_open_memory: null or too-small buffer");
         return nullptr;
     }
     /* The caller owns `data`; we alias it read-only and never munmap/free it.

@@ -147,7 +147,8 @@ struct transformer_layer_weights {
      * moe_n_experts entries per projection, views into the GGUF's 3-D
      * ffn_{gate,up,down}_exps tensors (one buffer each, in bufs[]):
      * gate/up [intermediate, HIDDEN], down [HIDDEN, intermediate]. */
-    size_t               moe_n_experts; /* entries in each expert array */
+    size_t               moe_n_experts;  /* entries in each expert array (routed + shared) */
+    float               *moe_shexp_gate; /* [HIDDEN], host: the shared expert's gate */
     struct geist_tensor  moe_router;
     struct geist_weight  moe_router_w;
     struct geist_tensor *moe_gate, *moe_up, *moe_down;
@@ -368,6 +369,29 @@ struct transformer_arch_session {
     size_t               dn_txn_kivi_residual_count;
     size_t               dn_txn_kivi_drained_count;
     bool                 dn_txn_active;
+    /* Per-row DeltaNet state of the current verify (#192): slots x conv_n /
+     * slots x s_n floats per DeltaNet layer, written by the backend
+     * (geist_deltanet_mix_args.row_*) so a rejected suffix rolls back by one
+     * copy instead of a replay. Allocated on the first verify that can use
+     * them; dn_rows_req: this verify asks for them; dn_rows_ok: every
+     * DeltaNet layer wrote them; dn_rows_off: the backend never does. */
+#define TRANSFORMER_DN_ROW_SLOTS 7u /* verify rows - 1: a k_max of 7 */
+    struct geist_buffer *dn_row_conv_buf;
+    struct geist_buffer *dn_row_S_buf;
+    bool                 dn_rows_req;
+    bool                 dn_rows_ok;
+    bool                 dn_rows_off;
+    /* geist_session_checkpoint (#192): up to TRANSFORMER_CKPT_SLOTS lengths
+     * to which truncate can return, DeltaNet state included (ckpt_conv_buf /
+     * ckpt_S_buf: slots x n_dn x conv_n / s_n floats, allocated on the first
+     * checkpoint). ckpt_lens rise; a reset, or a truncate below one, drops
+     * the checkpoints above. */
+#define TRANSFORMER_CKPT_SLOTS 8u
+    struct geist_buffer *ckpt_conv_buf;
+    struct geist_buffer *ckpt_S_buf;
+    size_t               ckpt_lens[TRANSFORMER_CKPT_SLOTS]; /* oldest first */
+    size_t               n_ckpt;
+    size_t               ckpt_base; /* buffer slot of the oldest: a ring */
     /* qwen35 scratch: joint q+gate projection result
      * [m_max, 2*q_out] + saved per-head gate [m_max, q_out], and the
      * DeltaNet projection outputs (qkv [m_max, conv_dim], z
@@ -435,10 +459,18 @@ struct transformer_arch_session {
      * and in VRAM (x), the gate and up outputs in VRAM. nullptr: every
      * expert runs on the CPU. */
     struct geist_buffer *moe_gpu_x_io, *moe_gpu_y_io, *moe_gpu_x, *moe_gpu_g, *moe_gpu_u;
+    /* #201, on the GPU: the routed ids [m_max * n_used] then the
+     * non-finite flag (uint32), and their weights [m_max * n_used]. */
+    struct geist_buffer *moe_dev_ids, *moe_dev_w;
     float               *moe_x_host; /* [m_max, d_model]: x when the backend cannot map it */
     /* On a GPU: x copied into cached host memory in the router's batch, so
      * one wait brings the logits and x (#78 phase 3). nullptr on a CPU. */
     struct geist_buffer *moe_x_io;
+    /* moe_gpu_launch / finish (#163), host: the hot rows' source tokens
+     * [m_max * n_used]; per token its hot rows and weights (CSR: start
+     * [m_max + 1], fill [m_max], rows and w [m_max * n_used]). */
+    uint32_t *moe_ids_hot, *moe_csr_start, *moe_csr_fill, *moe_csr_rows;
+    float    *moe_csr_w;
 
     /* ---- Last-decode prediction (consumed by next decode_step). */
     bool logits_valid;
@@ -461,6 +493,12 @@ struct transformer_arch_session {
      * invariant), so peek_logits applies it lazily for value consumers
      * (scoring/perplexity). Reset per forward in finalize_logits_one_row. */
     bool logits_softcapped;
+    /* A discrete GPU keeps scratch_logits in the BAR window or VRAM, which the
+     * host reads at ~90 MB/s: a host-read row is copied on the device into
+     * this readback buffer (cached system memory) first (#219,
+     * transformer_logits_host). Null where the host reads the row in place
+     * (CPU backends, unified memory). */
+    struct geist_buffer *logits_host;
     /* Whether scratch_logits is SPARSE — the spec-head fast path computed
      * exact logits only for its top-K candidates and set every other entry to
      * -inf (fine for the greedy argmax it serves). Value consumers must not
@@ -530,9 +568,10 @@ struct transformer_arch_session {
 struct transformer_runtime_flags {
     bool bitnet_sub_ln_enabled;
     bool dump_act_sparsity;
-    bool dn_seq_prefill; /* force the sequential DeltaNet prefill path
-                          * (GEIST_DN_SEQ_PREFILL=1) — the equivalence
-                          * oracle for the chunked formulation */
+    bool batch_per_session; /* batched decode (#26): one mixer call per session, not one for all */
+    bool dn_seq_prefill;    /* force the sequential DeltaNet prefill path
+                             * (GEIST_DN_SEQ_PREFILL=1) — the equivalence
+                             * oracle for the chunked formulation */
 };
 
 /* ---- Top-level state --------------------------------------------------- */
@@ -555,23 +594,39 @@ struct transformer_offload {
 struct transformer_moe_gpu {
     struct geist_backend *be;    /* not owned: the caller's split backend */
     size_t                n_hot; /* experts with a copy on `be` */
-    /* [n_layers * n_experts * 3]: gate, up, down of each expert, resolved on
-     * `be`; raw == nullptr for an expert that stays on the CPU. */
+    /* [n_layers * moe_slots * 3]: gate, up, down of each expert, resolved
+     * on `be`; raw == nullptr for an expert that stays on the CPU. */
     struct geist_weight *twins;
-    /* [n_layers * 3]: aliased over each layer's expert tensors on `be`;
+    /* [n_layers * 6]: aliased over each layer's expert tensors on `be`
+     * (routed gate, up, down, then the shared expert's; null without one);
      * destroying them frees the copies (vk_weight_forget, #121). */
     struct geist_buffer **bufs;
+    size_t                n_bufs;
     /* [n_layers]: the backend runs the layer's hot experts at decode as one
      * grouped linear per projection (supported(GEIST_FUSED_LINEAR_GROUPED)). */
     bool *grouped;
     /* The backend has submit and rows_weighted_sum for a decode step's hot
      * experts: one wait per layer (#161). */
-    bool             one_wait;
-    _Atomic uint64_t rows_gpu, rows_cpu; /* GEIST_VERBOSE at destroy */
-    /* GEIST_VERBOSE at destroy: batches, and their ns packing (to the
-     * copy), recording, waiting (buffer_map of the outputs), unpacking. */
-    _Atomic uint64_t batches, ns_pack, ns_record, ns_wait, ns_unpack;
-    _Atomic uint64_t n_grouped, ns_wait_grouped; /* the decode batches of them */
+    bool one_wait;
+    /* The hot experts have no CPU copy (moe_resolve_cold, #164): every
+     * session must run them here. */
+    bool no_cpu_copy;
+    /* [n_layers]: a decode step of the layer routes and runs its experts
+     * on the device, the host out of the loop (#201): every routed expert
+     * has a copy, no shared expert, fused->moe_route & co. any_device: one
+     * layer does. */
+    bool *device;
+    bool  any_device;
+    /* #162: a decode step routes on the device and starts the hot experts
+     * there before the host has seen the router; the host runs the cold
+     * ones (fused->linear_t_sel & co., layers with grouped[]). */
+    bool routed;
+    /* [n_layers * 3 * moe_n_experts]: per layer and projection, each routed
+     * expert's twin or nullptr (no copy): linear_t_sel's w. */
+    const struct geist_weight **sel_w;
+    _Atomic uint64_t            n_routed;                    /* layer steps that took that route */
+    _Atomic uint64_t            n_device;                    /* layer steps that took that route */
+    _Atomic uint64_t            rows_gpu, rows_cpu, batches; /* GEIST_VERBOSE at destroy */
 };
 
 struct transformer_arch_state {
@@ -588,6 +643,9 @@ struct transformer_arch_state {
     bool                           split_stage;
     struct transformer_offload    *offload; /* owned; nullptr without offload (#78) */
     struct transformer_moe_gpu    *moe_gpu; /* owned; nullptr without hot experts */
+    /* Owned: the router's selections counted at run time and kept with
+     * the model (#165, moe_profile.h); nullptr for a dense model. */
+    struct transformer_moe_profile *moe_prof;
     /* Owned: the experts' home when `backend` is not a CPU backend (a GPU):
      * every expert is resolved here and runs here unless moe_gpu holds a
      * copy (#78 phase 3). nullptr on a CPU backend. */
@@ -756,6 +814,15 @@ struct transformer_arch_state {
     bool                             has_default_opts; /* false: state_create got nullptr */
 };
 
+/* The widest expert FFN of the stack: the per-row size of the MoE
+ * session buffers. */
+static inline size_t moe_inter(const struct transformer_arch_state *st) {
+    size_t inter = 0;
+    for (size_t li = 0; li < st->n_layers; li++)
+        inter = st->layers[li].intermediate > inter ? st->layers[li].intermediate : inter;
+    return inter;
+}
+
 /* Whether `st` holds and runs layer li (#49). */
 static inline bool transformer_layer_owned(const struct transformer_arch_state *st, size_t li) {
     return li >= st->layer_lo && li < st->layer_hi;
@@ -879,6 +946,35 @@ transformer_compute_per_layer_input(struct transformer_arch_session *sess,
 [[nodiscard]] enum geist_status transformer_decode_step(struct transformer_arch_session *sess,
                                                         geist_token_t  input_token,
                                                         geist_token_t *out_token);
+
+/* Batched decode (#26): the forwards that n independent sessions of one
+ * model owe, run as one pass. Every linear (projections, FFN, lm_head) runs
+ * once over n rows; RoPE, the KV append, attention and the DeltaNet mixer
+ * run per session on its own cache, recurrent state and position. Row b
+ * belongs to seqs[b] alone, so for a given n a session's result does not
+ * depend on the other members or its row (bit for bit); n selects the row
+ * kernels, so it is not bit-identical to the single-row decode or to
+ * another n. seqs[0]'s scratch
+ * carries the n rows. Each session consumes its next_token_pending at
+ * kv_len, appends it, advances by one and samples its next token with its
+ * own sampler (next_token_pending, logits_valid, its own scratch_logits).
+ * Callers check transformer_decode_batch_max(st) >= n and every member
+ * first (forward/step.c). On failure the members' states are partly
+ * advanced; the caller resets them. */
+enum { TRANSFORMER_DECODE_BATCH_CAP = 8 }; /* rows the small-row kernels cover */
+[[nodiscard]] size_t transformer_decode_batch_max(const struct transformer_arch_state *st);
+[[nodiscard]] enum geist_status
+transformer_decode_batch_forward(size_t n, struct transformer_arch_session *const seqs[static n]);
+
+/* One layer of transformer_decode_batch_forward (forward/layer.c); row b of
+ * carrier's buffers belongs to seqs[b]. */
+[[nodiscard]] enum geist_status
+transformer_multi_layer(struct transformer_arch_session       *carrier,
+                        size_t                                 n,
+                        struct transformer_arch_session *const seqs[static n],
+                        int                                    layer_idx,
+                        struct geist_buffer                   *h_in_buf,
+                        struct geist_buffer                   *h_out_buf);
 
 /* Append one audio soft-token (HIDDEN floats, already produced by the
  * audio encoder) to the KV cache.
@@ -1072,6 +1168,15 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
  * truncate op in geist_arch.h. The caller has settled a deferred advance. */
 [[nodiscard]] enum geist_status transformer_session_truncate(struct transformer_arch_session *sess,
                                                              size_t                           n);
+
+/* geist_session_checkpoint (#192): record the state now so that
+ * transformer_session_truncate can return to this length, DeltaNet layers
+ * included (the transaction buffers, on the device). The caller has settled
+ * a deferred advance. transformer_checkpoint_restore puts it back. */
+[[nodiscard]] enum geist_status
+transformer_session_checkpoint(struct transformer_arch_session *sess);
+[[nodiscard]] enum geist_status
+transformer_checkpoint_restore(struct transformer_arch_session *sess, size_t slot);
 
 /* The KV-cache bytes per position of a layout on this model (#625): what
  * transformer_kv_bytes_per_token and transformer_plan both report. */

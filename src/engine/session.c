@@ -18,6 +18,7 @@
 #include <stdatomic.h>
 
 #include "checked.h"
+#include "clock.h"
 #include "heap.h"
 #include "parse.h"
 #include "image_pipeline.h"
@@ -71,6 +72,10 @@ struct geist_session_full {
     /* Per-session arch state, from the arch's session_alloc. */
     void *arch_session;
 
+    /* geist_session_set_draft (#192): a small model's session that drafts
+     * for decode_speculative; the caller owns it. */
+    struct geist_session *draft;
+
     /* Sampler defaults from geist_session_opts. */
     float    temperature;
     float    top_p;
@@ -80,14 +85,15 @@ struct geist_session_full {
     enum geist_status err_code;
     char              err_msg[512];
 
-    /* Counters for geist_session_get_stats. Monotonic-ns timing uses
-     * clock_gettime(CLOCK_MONOTONIC); deltas are accumulated at each
+    /* Counters for geist_session_get_stats. Timing uses
+     * geist_now_ns (clock.h); deltas are accumulated at each
      * top-level entry point (decode_step, prefill_tokens, attach_audio,
      * decode_speculative). */
     uint64_t n_tokens_decoded;
     uint64_t total_decode_ns;
     uint64_t total_prefill_ns;
     uint64_t total_audio_encode_ns;
+    uint64_t total_vision_encode_ns; /* attach_image, attach_video */
 
     /* Streaming audio turn (#256). samples is _Atomic because push may
      * run on a capture thread while end reads it on the session thread.
@@ -104,12 +110,6 @@ struct geist_session_full {
      * call that sees it (cancel_requested, through the arch's check). */
     _Atomic bool cancel;
 };
-
-static inline uint64_t monotonic_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
-}
 
 /* Engine-internal: cast the public opaque handle to the full struct. */
 static inline struct geist_session_full *as_full(struct geist_session *s) {
@@ -228,24 +228,34 @@ static void token_strs_free(struct token_strs *ts) {
     *ts = (struct token_strs) {0};
 }
 
+/* Record a session error (code + formatted message) and return the code. */
+[[gnu::format(printf, 3, 4)]] static enum geist_status
+session_fail(struct geist_session_full *sf, enum geist_status code, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(sf->err_msg, sizeof sf->err_msg, fmt, ap);
+    va_end(ap);
+    sf->err_code = code;
+    return code;
+}
+
 /* Record a failed per-session dispatch. The op's status return IS the
  * control flow; the backend error slot only contributes detail text for
  * the session's error message. */
 static enum geist_status
 session_op_failed(struct geist_session_full *sf, enum geist_status s, const char *what) {
-    sf->err_code = s;
     /* The backend's message belongs to THIS failure only if its sticky code
      * still matches. Optional probes (a missing untied output.weight at
      * load) leave a stale message behind, and reporting it verbatim points
      * every debugger at the wrong tensor. */
     const bool fresh = geist_backend_errcode(sf->backend) == s;
-    snprintf(sf->err_msg,
-             sizeof(sf->err_msg),
-             "%s failed (status %d)%s%s",
-             what,
-             (int) s,
-             fresh ? ": " : " [backend set no message; stale: ",
-             geist_backend_errmsg(sf->backend));
+    (void) session_fail(sf,
+                        s,
+                        "%s failed (status %d)%s%s",
+                        what,
+                        (int) s,
+                        fresh ? ": " : " [backend set no message; stale: ",
+                        geist_backend_errmsg(sf->backend));
     if (!fresh) {
         const size_t n = strlen(sf->err_msg);
         if (n + 2 <= sizeof(sf->err_msg)) {
@@ -344,18 +354,19 @@ set_dry_breakers(struct geist_session_full                 *sf,
         return GEIST_E_OOM;
     }
     *sf = (struct geist_session_full) {
-            .model                 = m,
-            .backend               = m->backend,
-            .arch_session          = nullptr,
-            .temperature           = opts != nullptr ? opts->temperature : 0.0f,
-            .top_p                 = opts != nullptr ? opts->top_p : 1.0f,
-            .top_k                 = opts != nullptr ? opts->top_k : 0,
-            .random_seed           = opts != nullptr ? opts->random_seed : 0,
-            .err_code              = GEIST_OK,
-            .n_tokens_decoded      = 0,
-            .total_decode_ns       = 0,
-            .total_prefill_ns      = 0,
-            .total_audio_encode_ns = 0,
+            .model                  = m,
+            .backend                = m->backend,
+            .arch_session           = nullptr,
+            .temperature            = opts != nullptr ? opts->temperature : 0.0f,
+            .top_p                  = opts != nullptr ? opts->top_p : 1.0f,
+            .top_k                  = opts != nullptr ? opts->top_k : 0,
+            .random_seed            = opts != nullptr ? opts->random_seed : 0,
+            .err_code               = GEIST_OK,
+            .n_tokens_decoded       = 0,
+            .total_decode_ns        = 0,
+            .total_prefill_ns       = 0,
+            .total_audio_encode_ns  = 0,
+            .total_vision_encode_ns = 0,
     };
     sf->err_msg[0] = '\0';
 
@@ -471,16 +482,14 @@ const char *geist_session_errmsg(const struct geist_session *s) {
         return GEIST_E_INVALID_STATE;
     }
     if (tok == nullptr && gtok == nullptr) {
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "set_prompt: no tokenizer found. SentencePiece path needs "
-                 "tokenizer.bin alongside the model (set GEIST_TOKENIZER_PATH "
-                 "or place it in the model dir); Llama-family path needs the "
-                 "tokenizer embedded in the GGUF (general.architecture + "
-                 "tokenizer.ggml.* keys). Falling back to "
-                 "geist_session_prefill_tokens with pre-tokenized IDs.");
-        sf->err_code = GEIST_E_NOT_FOUND;
-        return GEIST_E_NOT_FOUND;
+        return session_fail(sf,
+                            GEIST_E_NOT_FOUND,
+                            "set_prompt: no tokenizer found. SentencePiece path needs "
+                            "tokenizer.bin alongside the model (set GEIST_TOKENIZER_PATH "
+                            "or place it in the model dir); Llama-family path needs the "
+                            "tokenizer embedded in the GGUF (general.architecture + "
+                            "tokenizer.ggml.* keys). Falling back to "
+                            "geist_session_prefill_tokens with pre-tokenized IDs.");
     }
 
     /* GGUF-embedded tokenizer path. Prepends BOS when add_bos is set. */
@@ -490,9 +499,7 @@ const char *geist_session_errmsg(const struct geist_session *s) {
         const size_t cap     = strlen(prompt) + 8;
         int32_t     *enc_ids = heap_alloc_array_aligned(int32_t, cap);
         if (enc_ids == nullptr) {
-            snprintf(sf->err_msg, sizeof(sf->err_msg), "set_prompt: alloc fail");
-            sf->err_code = GEIST_E_OOM;
-            return GEIST_E_OOM;
+            return session_fail(sf, GEIST_E_OOM, "set_prompt: alloc fail");
         }
         size_t n_enc = 0;
         if (gtok->bos_id >= 0 && gtok->add_bos) {
@@ -502,15 +509,13 @@ const char *geist_session_errmsg(const struct geist_session *s) {
         if (gguf_tokenizer_encode(gtok, prompt, cap - n_enc, enc_ids + n_enc, &enc_n) != GEIST_OK) {
             void *p = enc_ids;
             safe_free(&p);
-            snprintf(sf->err_msg, sizeof(sf->err_msg), "set_prompt: gguf_tokenizer_encode failed");
-            sf->err_code = GEIST_E_IO;
-            return GEIST_E_IO;
+            return session_fail(sf, GEIST_E_IO, "set_prompt: gguf_tokenizer_encode failed");
         }
         n_enc += enc_n;
-        const uint64_t          t0 = monotonic_ns();
+        const uint64_t          t0 = geist_now_ns();
         const enum geist_status ps =
                 ops->prefill(arch_sess(sf), n_enc, (const geist_token_t *) enc_ids);
-        sf->total_prefill_ns += monotonic_ns() - t0;
+        sf->total_prefill_ns += geist_now_ns() - t0;
         void *p = enc_ids;
         safe_free(&p);
         return ps == GEIST_OK ? GEIST_OK : session_op_failed(sf, ps, "prefill");
@@ -519,15 +524,13 @@ const char *geist_session_errmsg(const struct geist_session *s) {
     uint32_t *ids   = nullptr;
     size_t    n_ids = 0;
     if (!sp_bpe_tokenizer_encode(tok, prompt, &ids, &n_ids)) {
-        snprintf(sf->err_msg, sizeof(sf->err_msg), "tokenizer encode failed");
-        sf->err_code = GEIST_E_IO;
-        return GEIST_E_IO;
+        return session_fail(sf, GEIST_E_IO, "tokenizer encode failed");
     }
     /* sp_bpe yields uint32_t; bit-pattern of u32 ≡ i32 for IDs in 21-bit
      * vocab range. arch->prefill takes geist_token_t (int32_t). */
-    const uint64_t          t0 = monotonic_ns();
+    const uint64_t          t0 = geist_now_ns();
     const enum geist_status ps = ops->prefill(arch_sess(sf), n_ids, (const geist_token_t *) ids);
-    sf->total_prefill_ns += monotonic_ns() - t0;
+    sf->total_prefill_ns += geist_now_ns() - t0;
     safe_free((void **) &ids);
     return ps == GEIST_OK ? GEIST_OK : session_op_failed(sf, ps, "prefill");
 }
@@ -551,41 +554,36 @@ const char *geist_session_errmsg(const struct geist_session *s) {
         const enum geist_status st =
                 gguf_tokenizer_encode(gtok, text, out_capacity, out_ids, n_out);
         if (st != GEIST_OK) {
-            snprintf(sf->err_msg,
-                     sizeof(sf->err_msg),
-                     "tokenize: %s (out_capacity %zu)",
-                     st == GEIST_E_INVALID_ARG ? "more tokens than fit" : "gguf encode failed",
-                     out_capacity);
-            sf->err_code = st;
+            return session_fail(sf,
+                                st,
+                                "tokenize: %s (out_capacity %zu)",
+                                st == GEIST_E_INVALID_ARG ? "more tokens than fit"
+                                                          : "gguf encode failed",
+                                out_capacity);
         }
-        return st;
+        return GEIST_OK;
     }
 
     struct sp_bpe_tokenizer *tok = geist_model_internal_tokenizer(sf->model);
     if (tok == nullptr) {
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "tokenize: no tokenizer found (GGUF-embedded or external tokenizer.bin)");
-        sf->err_code = GEIST_E_NOT_FOUND;
-        return GEIST_E_NOT_FOUND;
+        return session_fail(
+                sf,
+                GEIST_E_NOT_FOUND,
+                "tokenize: no tokenizer found (GGUF-embedded or external tokenizer.bin)");
     }
 
     uint32_t *ids   = nullptr;
     size_t    n_ids = 0;
     if (!sp_bpe_tokenizer_encode(tok, text, &ids, &n_ids)) {
-        snprintf(sf->err_msg, sizeof(sf->err_msg), "tokenize: encode failed");
-        sf->err_code = GEIST_E_IO;
-        return GEIST_E_IO;
+        return session_fail(sf, GEIST_E_IO, "tokenize: encode failed");
     }
     if (n_ids > out_capacity) {
         safe_free((void **) &ids);
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "tokenize: %zu tokens > out_capacity %zu",
-                 n_ids,
-                 out_capacity);
-        sf->err_code = GEIST_E_INVALID_ARG;
-        return GEIST_E_INVALID_ARG;
+        return session_fail(sf,
+                            GEIST_E_INVALID_ARG,
+                            "tokenize: %zu tokens > out_capacity %zu",
+                            n_ids,
+                            out_capacity);
     }
     for (size_t i = 0; i < n_ids; i++)
         out_ids[i] = (geist_token_t) ids[i];
@@ -604,9 +602,9 @@ geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_toke
     if (ops == nullptr || ops->prefill == nullptr) {
         return GEIST_E_INVALID_STATE;
     }
-    const uint64_t          t0 = monotonic_ns();
+    const uint64_t          t0 = geist_now_ns();
     const enum geist_status ps = ops->prefill(arch_sess(sf), n, ids);
-    sf->total_prefill_ns += monotonic_ns() - t0;
+    sf->total_prefill_ns += geist_now_ns() - t0;
     return ps == GEIST_OK ? GEIST_OK : session_op_failed(sf, ps, "prefill");
 }
 
@@ -621,18 +619,77 @@ geist_session_prefill_tokens(struct geist_session *s, size_t n, const geist_toke
         return GEIST_E_INVALID_STATE;
     }
     if (cancel_requested(sf)) {
-        snprintf(sf->err_msg, sizeof(sf->err_msg), "decode_step cancelled");
-        sf->err_code = GEIST_E_CANCELLED;
-        return GEIST_E_CANCELLED;
+        return session_fail(sf, GEIST_E_CANCELLED, "decode_step cancelled");
     }
-    const uint64_t          t0 = monotonic_ns();
+    const uint64_t          t0 = geist_now_ns();
     const enum geist_status ds = ops->decode_step(arch_sess(sf), out_token);
-    sf->total_decode_ns += monotonic_ns() - t0;
+    sf->total_decode_ns += geist_now_ns() - t0;
     if (ds != GEIST_OK) {
         return session_op_failed(sf, ds, "decode_step");
     }
     sf->n_tokens_decoded++;
     return GEIST_OK;
+}
+
+size_t geist_model_decode_batch_max(const struct geist_model *m) {
+    if (m == nullptr) {
+        return 0;
+    }
+    const struct geist_arch_ops_decoder *ops = m->text_decoder.arch_ops;
+    if (ops == nullptr || ops->decode_batch == nullptr || ops->decode_batch_max == nullptr) {
+        return 0;
+    }
+    return ops->decode_batch_max(m->text_decoder.arch_meta);
+}
+
+[[nodiscard]] enum geist_status geist_session_decode_batch(size_t                      n,
+                                                           struct geist_session *const sessions[],
+                                                           geist_token_t out_tokens[]) {
+    if (out_tokens != nullptr) {
+        for (size_t b = 0; b < n; b++) {
+            out_tokens[b] = -1;
+        }
+    }
+    if (n == 0 || sessions == nullptr || out_tokens == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (n == 1) {
+        return geist_session_decode_step(sessions[0], &out_tokens[0]);
+    }
+    if (sessions[0] == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_model *model = as_full(sessions[0])->model;
+    if (n > geist_model_decode_batch_max(model)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* Bounded by decode_batch_max: no allocation on the decode path. */
+    void *arch[64];
+    if (n > sizeof arch / sizeof arch[0]) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    for (size_t b = 0; b < n; b++) {
+        if (sessions[b] == nullptr || as_full(sessions[b])->model != model) {
+            return GEIST_E_INVALID_ARG;
+        }
+        if (cancel_requested(as_full(sessions[b]))) {
+            return GEIST_E_CANCELLED;
+        }
+        arch[b] = arch_sess(as_full(sessions[b]));
+    }
+    const uint64_t          t0 = geist_now_ns();
+    const enum geist_status ds = model->text_decoder.arch_ops->decode_batch(n, arch, out_tokens);
+    const uint64_t          dt = geist_now_ns() - t0;
+    for (size_t b = 0; b < n; b++) {
+        struct geist_session_full *sf = as_full(sessions[b]);
+        sf->total_decode_ns += dt / n;
+        if (ds == GEIST_OK) {
+            sf->n_tokens_decoded++;
+        } else {
+            (void) session_op_failed(sf, ds, "decode_batch");
+        }
+    }
+    return ds;
 }
 
 const float *geist_session_peek_logits(size_t *n_logits, struct geist_session *s) {
@@ -763,79 +820,18 @@ spec_fallback_single(struct geist_session *s, geist_token_t out_tokens[static 1]
     return GEIST_OK;
 }
 
-[[nodiscard]] enum geist_status geist_session_decode_speculative(struct geist_session *s,
-                                                                 size_t                k_max,
-                                                                 size_t                history_n,
-                                                                 const geist_token_t  *history,
-                                                                 size_t                out_capacity,
-                                                                 geist_token_t        *out_tokens,
-                                                                 size_t               *n_out) {
-    if (s == nullptr || n_out == nullptr || (history_n > 0 && history == nullptr) ||
-        (out_capacity > 0 && out_tokens == nullptr)) {
-        return GEIST_E_INVALID_ARG;
-    }
-    if (k_max == 0 || k_max > GEIST_SPEC_KMAX_HARDCAP) {
-        return GEIST_E_INVALID_ARG;
-    }
-    if (out_capacity < k_max + 1) {
-        return GEIST_E_INVALID_ARG;
-    }
-    *n_out = 0;
-
-    struct geist_session_full           *sf  = as_full(s);
-    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
-    void                                *st  = sf->arch_session;
-    if (ops == nullptr)
-        return GEIST_E_INVALID_STATE;
-
-    const bool can_spec = ops->peek_next_token != nullptr && ops->verify_forward != nullptr &&
-                          ops->kv_truncate != nullptr && ops->kv_len != nullptr;
-    if (!can_spec)
-        return spec_fallback_single(s, out_tokens, n_out);
-
-    const uint64_t      t_start = monotonic_ns();
-    const geist_token_t seed    = ops->peek_next_token(st);
-    if (seed < 0)
-        return spec_fallback_single(s, out_tokens, n_out);
-
-    geist_token_t drafts[GEIST_SPEC_KMAX_HARDCAP];
-    size_t        match_L      = 0;
-    size_t        k            = 0;
-    bool          native_draft = false;
-    if (ops->draft_tokens != nullptr) {
-        const enum geist_status ds = ops->draft_tokens(st, k_max, seed, drafts, &k);
-        if (ds == GEIST_OK) {
-            native_draft = k > 0;
-        } else if (ds != GEIST_E_UNSUPPORTED) {
-            return session_op_failed(sf, ds, "architecture-native draft");
-        }
-    }
-    if (!native_draft) {
-        k = propose_drafts_ngram(
-                history, history_n, seed, k_max, /*max_suffix=*/4, drafts, &match_L);
-    }
-    if (k <= 1)
-        return spec_fallback_single(s, out_tokens, n_out);
-
-    /* Lazy-draft gate: skip verify-forward (~1.6-2.3x a single decode) when
-     * the n-gram match is shorter than GEIST_SPEC_MIN_L (default 2). A
-     * seed-only match (L=1) is accepted too rarely to pay for it. */
-    /* Relaxed-atomic first-use cache: concurrent sessions reach this on
-     * their own threads. */
-    static _Atomic int min_L_cached = -1;
-    int                min_L        = atomic_load_explicit(&min_L_cached, memory_order_relaxed);
-    if (min_L < 0) {
-        const char *env = getenv("GEIST_SPEC_MIN_L");
-        long        v;
-        if (!geist_parse_long(env, &v))
-            v = 2;
-        min_L = (v <= 0) ? 1 : (v > 8 ? 8 : (int) v);
-        atomic_store_explicit(&min_L_cached, min_L, memory_order_relaxed);
-    }
-    if (!native_draft && (int) match_L < min_L) {
-        return spec_fallback_single(s, out_tokens, n_out);
-    }
-
+/* Verify k candidate tokens (drafts[0] the pending seed, drafts[1..] the
+ * guesses after it) in one forward, accept the longest matching prefix, roll
+ * back the rest and push the bonus or correction token (shared by
+ * decode_speculative and verify_drafts). */
+[[nodiscard]] static enum geist_status spec_verify(struct geist_session_full           *sf,
+                                                   const struct geist_arch_ops_decoder *ops,
+                                                   void                                *st,
+                                                   size_t                               k,
+                                                   const geist_token_t                 *drafts,
+                                                   geist_token_t                       *out_tokens,
+                                                   size_t                              *n_out,
+                                                   uint64_t                             t_start) {
     const size_t            kv_before = ops->kv_len(st);
     geist_token_t           verify_out[GEIST_SPEC_KMAX_HARDCAP];
     const enum geist_status vs = ops->verify_forward(st, k, drafts, verify_out);
@@ -885,8 +881,213 @@ spec_fallback_single(struct geist_session *s, geist_token_t out_tokens[static 1]
 
     *n_out = emitted;
     sf->n_tokens_decoded += emitted;
-    sf->total_decode_ns += monotonic_ns() - t_start;
+    sf->total_decode_ns += geist_now_ns() - t_start;
     return GEIST_OK;
+}
+
+/* A draft model's session drafts (#192). It is brought to the target's
+ * committed tokens (history; usually the previous call's correction is all
+ * that is missing), then the seed and k_max - 1 greedy steps follow, with a
+ * checkpoint after the seed and after every step but the last, so that
+ * draft_model_rollback can return to seed + accepted drafts. */
+[[nodiscard]] static enum geist_status draft_model_propose(struct geist_session *d,
+                                                           size_t                history_n,
+                                                           const geist_token_t  *history,
+                                                           geist_token_t         seed,
+                                                           size_t                k_max,
+                                                           geist_token_t        *drafts,
+                                                           size_t               *k) {
+    size_t have = geist_session_length(d);
+    if (have > history_n) {
+        /* ahead of the target (an unexpected path): back to it, or start over */
+        if (geist_session_truncate(d, history_n) == GEIST_OK) {
+            have = history_n;
+        } else {
+            if (geist_session_reset(d) != GEIST_OK)
+                return GEIST_E_INVALID_STATE;
+            have = 0;
+        }
+    }
+    enum geist_status s = GEIST_OK;
+    if (have < history_n)
+        s = geist_session_prefill_tokens(d, history_n - have, history + have);
+    if (s == GEIST_OK)
+        s = geist_session_prefill_tokens(d, 1, &seed);
+    /* Without checkpoints (e.g. the KIVI KV cache) a rejected guess makes
+     * the next call start the draft over: slower, still exact. */
+    bool ckpt = true;
+    if (s == GEIST_OK) {
+        s = geist_session_checkpoint(d);
+        if (s == GEIST_E_UNSUPPORTED) {
+            ckpt = false;
+            s    = GEIST_OK;
+        }
+    }
+    drafts[0] = seed;
+    *k        = 1;
+    for (size_t i = 0; s == GEIST_OK && i + 1 < k_max; i++) {
+        s = geist_session_decode_step(d, &drafts[*k]);
+        if (s == GEIST_OK)
+            ++*k;
+        if (s == GEIST_OK && ckpt && i + 2 < k_max)
+            s = geist_session_checkpoint(d);
+    }
+    return s;
+}
+
+/* After the verify: the draft keeps seed + the accepted guesses. n_out is
+ * spec_verify's count, accepted guesses + seed + correction. A failed
+ * rollback leaves the draft ahead; draft_model_propose then starts over. */
+static void
+draft_model_rollback(struct geist_session *d, size_t history_n, size_t guesses, size_t n_out) {
+    const size_t accepted = n_out >= 2 ? n_out - 2 : 0;
+    if (accepted < guesses)
+        (void) geist_session_truncate(d, history_n + 1 + accepted);
+}
+
+[[nodiscard]] enum geist_status geist_session_set_draft(struct geist_session *s,
+                                                        struct geist_session *draft) {
+    if (s == nullptr || draft == s) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_session_full *sf = as_full(s);
+    if (draft == nullptr) {
+        sf->draft = nullptr;
+        return GEIST_OK;
+    }
+    struct geist_session_full   *df = as_full(draft);
+    const struct gguf_tokenizer *a  = geist_model_internal_gguf_tokenizer(sf->model);
+    const struct gguf_tokenizer *b  = geist_model_internal_gguf_tokenizer(df->model);
+    bool same = sf->model == df->model ||
+                (a != nullptr && b != nullptr && a->vocab_size == b->vocab_size);
+    for (size_t t = 0; same && sf->model != df->model && t < a->vocab_size; t++) {
+        same = a->token_len[t] == b->token_len[t] &&
+               memcmp(a->token_str[t], b->token_str[t], a->token_len[t]) == 0;
+    }
+    if (!same) {
+        return session_fail(
+                sf, GEIST_E_INVALID_ARG, "set_draft: the draft model's vocabulary differs");
+    }
+    sf->draft = draft;
+    return GEIST_OK;
+}
+
+[[nodiscard]] enum geist_status geist_session_decode_speculative(struct geist_session *s,
+                                                                 size_t                k_max,
+                                                                 size_t                history_n,
+                                                                 const geist_token_t  *history,
+                                                                 size_t                out_capacity,
+                                                                 geist_token_t        *out_tokens,
+                                                                 size_t               *n_out) {
+    if (s == nullptr || n_out == nullptr || (history_n > 0 && history == nullptr) ||
+        (out_capacity > 0 && out_tokens == nullptr)) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (k_max == 0 || k_max > GEIST_SPEC_KMAX_HARDCAP) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (out_capacity < k_max + 1) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *n_out = 0;
+
+    struct geist_session_full           *sf  = as_full(s);
+    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
+    void                                *st  = sf->arch_session;
+    if (ops == nullptr)
+        return GEIST_E_INVALID_STATE;
+
+    const bool can_spec = ops->peek_next_token != nullptr && ops->verify_forward != nullptr &&
+                          ops->kv_truncate != nullptr && ops->kv_len != nullptr;
+    if (!can_spec)
+        return spec_fallback_single(s, out_tokens, n_out);
+
+    const uint64_t      t_start = geist_now_ns();
+    const geist_token_t seed    = ops->peek_next_token(st);
+    if (seed < 0)
+        return spec_fallback_single(s, out_tokens, n_out);
+
+    geist_token_t drafts[GEIST_SPEC_KMAX_HARDCAP];
+    size_t        match_L      = 0;
+    size_t        k            = 0;
+    bool          native_draft = false;
+    if (sf->draft != nullptr) {
+        const enum geist_status ds =
+                draft_model_propose(sf->draft, history_n, history, seed, k_max, drafts, &k);
+        if (ds != GEIST_OK)
+            return session_op_failed(sf, ds, "draft model");
+        const enum geist_status vs =
+                spec_verify(sf, ops, st, k, drafts, out_tokens, n_out, t_start);
+        if (vs == GEIST_OK)
+            draft_model_rollback(sf->draft, history_n, k - 1, *n_out);
+        return vs;
+    }
+    if (ops->draft_tokens != nullptr) {
+        const enum geist_status ds = ops->draft_tokens(st, k_max, seed, drafts, &k);
+        if (ds == GEIST_OK) {
+            native_draft = k > 0;
+        } else if (ds != GEIST_E_UNSUPPORTED) {
+            return session_op_failed(sf, ds, "architecture-native draft");
+        }
+    }
+    if (!native_draft) {
+        k = propose_drafts_ngram(
+                history, history_n, seed, k_max, /*max_suffix=*/4, drafts, &match_L);
+    }
+    if (k <= 1)
+        return spec_fallback_single(s, out_tokens, n_out);
+
+    /* Lazy-draft gate: skip verify-forward (~1.6-2.3x a single decode) when
+     * the n-gram match is shorter than GEIST_SPEC_MIN_L (default 2). A
+     * seed-only match (L=1) is accepted too rarely to pay for it. */
+    /* Relaxed-atomic first-use cache: concurrent sessions reach this on
+     * their own threads. */
+    static _Atomic int min_L_cached = -1;
+    int                min_L        = atomic_load_explicit(&min_L_cached, memory_order_relaxed);
+    if (min_L < 0) {
+        const char *env = getenv("GEIST_SPEC_MIN_L");
+        long        v;
+        if (!geist_parse_long(env, &v))
+            v = 2;
+        min_L = (v <= 0) ? 1 : (v > 8 ? 8 : (int) v);
+        atomic_store_explicit(&min_L_cached, min_L, memory_order_relaxed);
+    }
+    if (!native_draft && (int) match_L < min_L) {
+        return spec_fallback_single(s, out_tokens, n_out);
+    }
+
+    return spec_verify(sf, ops, st, k, drafts, out_tokens, n_out, t_start);
+}
+
+[[nodiscard]] enum geist_status geist_session_verify_drafts(struct geist_session *s,
+                                                            size_t                n_drafts,
+                                                            const geist_token_t  *drafts,
+                                                            size_t                out_capacity,
+                                                            geist_token_t        *out_tokens,
+                                                            size_t               *n_out) {
+    if (s == nullptr || n_out == nullptr || (n_drafts > 0 && drafts == nullptr) ||
+        out_tokens == nullptr || n_drafts + 1 > GEIST_SPEC_KMAX_HARDCAP ||
+        out_capacity < n_drafts + 2) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *n_out                                   = 0;
+    struct geist_session_full           *sf  = as_full(s);
+    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
+    void                                *st  = sf->arch_session;
+    if (ops == nullptr)
+        return GEIST_E_INVALID_STATE;
+    const bool can_spec = ops->peek_next_token != nullptr && ops->verify_forward != nullptr &&
+                          ops->kv_truncate != nullptr && ops->kv_len != nullptr;
+    if (!can_spec || n_drafts == 0)
+        return spec_fallback_single(s, out_tokens, n_out);
+    const uint64_t      t_start = geist_now_ns();
+    const geist_token_t seed    = ops->peek_next_token(st);
+    if (seed < 0)
+        return spec_fallback_single(s, out_tokens, n_out);
+    geist_token_t rows[GEIST_SPEC_KMAX_HARDCAP];
+    rows[0] = seed;
+    memcpy(rows + 1, drafts, n_drafts * sizeof(geist_token_t));
+    return spec_verify(sf, ops, st, n_drafts + 1, rows, out_tokens, n_out, t_start);
 }
 
 /* The surface form comes from the model's tokenizer: the GGUF-embedded one
@@ -928,8 +1129,7 @@ const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t)
         dst = token_strs_room(&sf->strs, need);
     }
     if (dst == nullptr) {
-        sf->err_code = GEIST_E_OOM;
-        snprintf(sf->err_msg, sizeof sf->err_msg, "token_to_str: out of memory for token %d", t);
+        (void) session_fail(sf, GEIST_E_OOM, "token_to_str: out of memory for token %d", t);
         return nullptr;
     }
     if (piece != nullptr) {
@@ -938,12 +1138,11 @@ const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t)
         const int32_t id = (int32_t) t;
         len              = gguf_tokenizer_decode(gtok, &id, 1, dst, need);
         if (len >= need) { /* longer than stored: refuse rather than cut */
-            sf->err_code = GEIST_E_INTERNAL;
-            snprintf(sf->err_msg,
-                     sizeof sf->err_msg,
-                     "token_to_str: token %d decodes longer "
-                     "than it is stored",
-                     t);
+            (void) session_fail(sf,
+                                GEIST_E_INTERNAL,
+                                "token_to_str: token %d decodes longer "
+                                "than it is stored",
+                                t);
             return nullptr;
         }
     }
@@ -953,6 +1152,27 @@ const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t)
     token_strs_place(sf->strs.cap, sf->strs.id, sf->strs.str, t, dst);
     sf->strs.n++;
     return dst;
+}
+
+/* The tail every attach_* shares: n_soft soft tokens the encoder wrote into
+ * `soft` (heap, freed here) go into the decoder through `prefill`, timed as
+ * prefill. An encoder that produced none fails with `empty` (GEIST_E_IO). */
+[[nodiscard]] static enum geist_status
+inject_soft(struct geist_session_full *sf,
+            size_t                     n_soft,
+            float                     *soft,
+            enum geist_status (*prefill)(void *session, size_t n, const float *soft_tokens),
+            const char *op,
+            const char *empty) {
+    if (n_soft == 0) {
+        safe_free((void **) &soft);
+        return session_fail(sf, GEIST_E_IO, "%s", empty);
+    }
+    const uint64_t          t0 = geist_now_ns();
+    const enum geist_status ps = prefill(arch_sess(sf), n_soft, soft);
+    sf->total_prefill_ns += geist_now_ns() - t0;
+    safe_free((void **) &soft);
+    return ps == GEIST_OK ? GEIST_OK : session_op_failed(sf, ps, op);
 }
 
 /* Audio path: PCM → mel → audio_conformer encode → soft tokens →
@@ -969,27 +1189,20 @@ const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t)
     void                                *enc_st  = sf->model->audio_encoder.arch_meta;
     const struct geist_arch_ops_decoder *dec_ops = sf->model->text_decoder.arch_ops;
     if (enc_ops == nullptr || enc_st == nullptr) {
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "attach_audio: model has no audio encoder loaded "
-                 "(missing audio_tower.safetensors or mel_constants.bin)");
-        sf->err_code = GEIST_E_NOT_FOUND;
-        return GEIST_E_NOT_FOUND;
+        return session_fail(sf,
+                            GEIST_E_NOT_FOUND,
+                            "attach_audio: model has no audio encoder loaded "
+                            "(missing audio_tower.safetensors or mel_constants.bin)");
     }
     if (dec_ops == nullptr || dec_ops->prefill_audio == nullptr) {
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "attach_audio: decoder arch lacks audio injection path");
-        sf->err_code = GEIST_E_UNSUPPORTED;
-        return GEIST_E_UNSUPPORTED;
+        return session_fail(
+                sf, GEIST_E_UNSUPPORTED, "attach_audio: decoder arch lacks audio injection path");
     }
     if (sample_rate != 16000) {
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "attach_audio: only 16 kHz PCM supported (got %d Hz)",
-                 sample_rate);
-        sf->err_code = GEIST_E_UNSUPPORTED;
-        return GEIST_E_UNSUPPORTED;
+        return session_fail(sf,
+                            GEIST_E_UNSUPPORTED,
+                            "attach_audio: only 16 kHz PCM supported (got %d Hz)",
+                            sample_rate);
     }
 
     /* Size the soft-token buffer from the audio length so long audio is
@@ -1001,43 +1214,33 @@ const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t)
     const size_t soft_dim = enc_ops->soft_token_dim(enc_st);
     float       *soft     = heap_alloc_array_aligned(float, max_soft *soft_dim);
     if (soft == nullptr) {
-        snprintf(sf->err_msg, sizeof(sf->err_msg), "attach_audio: soft-token buffer alloc failed");
-        sf->err_code = GEIST_E_OOM;
-        return GEIST_E_OOM;
+        return session_fail(sf, GEIST_E_OOM, "attach_audio: soft-token buffer alloc failed");
     }
-    const uint64_t t_enc0 = monotonic_ns();
+    const uint64_t t_enc0 = geist_now_ns();
     size_t         n_soft = enc_ops->encode_pcm(enc_st, n_samples, max_soft, pcm_samples, soft);
-    sf->total_audio_encode_ns += monotonic_ns() - t_enc0;
-    if (n_soft == 0) {
-        safe_free((void **) &soft);
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "attach_audio: audio encoder produced 0 soft tokens "
-                 "(too-short input, audio beyond the encoder's 30 s limit, "
-                 "or encoder failure)");
-        sf->err_code = GEIST_E_IO;
-        return GEIST_E_IO;
-    }
-    if (n_soft >= max_soft) {
+    sf->total_audio_encode_ns += geist_now_ns() - t_enc0;
+    if (n_soft != 0 && n_soft >= max_soft) {
         /* The bound carries headroom, so a full buffer can only mean the
          * encoder hit the cap — truncated audio must be an error, not a
          * silent drop (#247). */
         safe_free((void **) &soft);
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "attach_audio: soft-token bound too small (%zu tokens for %zu samples) — "
-                 "audio would be truncated",
-                 max_soft,
-                 n_samples);
-        sf->err_code = GEIST_E_INTERNAL;
-        return GEIST_E_INTERNAL;
+        return session_fail(
+                sf,
+                GEIST_E_INTERNAL,
+                "attach_audio: soft-token bound too small (%zu tokens for %zu samples) — "
+                "audio would be truncated",
+                max_soft,
+                n_samples);
     }
 
-    const uint64_t          t_pre0 = monotonic_ns();
-    const enum geist_status as     = dec_ops->prefill_audio(arch_sess(sf), n_soft, soft);
-    sf->total_prefill_ns += monotonic_ns() - t_pre0;
-    safe_free((void **) &soft);
-    return as == GEIST_OK ? GEIST_OK : session_op_failed(sf, as, "prefill_audio");
+    return inject_soft(sf,
+                       n_soft,
+                       soft,
+                       dec_ops->prefill_audio,
+                       "prefill_audio",
+                       "attach_audio: audio encoder produced 0 soft tokens "
+                       "(too-short input, audio beyond the encoder's 30 s limit, "
+                       "or encoder failure)");
 }
 
 /* Streaming audio turn (#256): equivalent to attach_audio over the
@@ -1053,20 +1256,14 @@ const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t)
     const struct geist_arch_ops_decoder *dec_ops = sf->model->text_decoder.arch_ops;
     if (enc_ops == nullptr || enc_st == nullptr || dec_ops == nullptr ||
         dec_ops->prefill_audio == nullptr) {
-        snprintf(sf->err_msg, sizeof(sf->err_msg), "audio_begin: model cannot hear");
-        sf->err_code = GEIST_E_NOT_FOUND;
-        return GEIST_E_NOT_FOUND;
+        return session_fail(sf, GEIST_E_NOT_FOUND, "audio_begin: model cannot hear");
     }
     if (enc_ops->stream_begin == nullptr || enc_ops->stream_push == nullptr ||
         enc_ops->stream_end == nullptr) {
-        snprintf(sf->err_msg, sizeof(sf->err_msg), "audio_begin: encoder has no streaming path");
-        sf->err_code = GEIST_E_UNSUPPORTED;
-        return GEIST_E_UNSUPPORTED;
+        return session_fail(sf, GEIST_E_UNSUPPORTED, "audio_begin: encoder has no streaming path");
     }
     if (sf->audio_streaming) {
-        snprintf(sf->err_msg, sizeof(sf->err_msg), "audio_begin: streaming turn already open");
-        sf->err_code = GEIST_E_INVALID_STATE;
-        return GEIST_E_INVALID_STATE;
+        return session_fail(sf, GEIST_E_INVALID_STATE, "audio_begin: streaming turn already open");
     }
     /* Scratch for poll/end, sized for the encoder's 30 s worst case so
      * incremental injection never reallocates mid-turn.
@@ -1081,15 +1278,11 @@ const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t)
     const size_t soft_dim = enc_ops->soft_token_dim(enc_st);
     float       *scratch  = heap_alloc_n_aligned(cap, soft_dim * sizeof(float), alignof(float));
     if (scratch == nullptr) {
-        snprintf(sf->err_msg, sizeof(sf->err_msg), "audio_begin: scratch alloc failed");
-        sf->err_code = GEIST_E_OOM;
-        return GEIST_E_OOM;
+        return session_fail(sf, GEIST_E_OOM, "audio_begin: scratch alloc failed");
     }
     if (!enc_ops->stream_begin(enc_st)) {
         safe_free((void **) &scratch);
-        snprintf(sf->err_msg, sizeof(sf->err_msg), "audio_begin: encoder stream_begin failed");
-        sf->err_code = GEIST_E_BACKEND;
-        return GEIST_E_BACKEND;
+        return session_fail(sf, GEIST_E_BACKEND, "audio_begin: encoder stream_begin failed");
     }
     sf->audio_stream_buf      = scratch;
     sf->audio_stream_cap      = cap;
@@ -1116,10 +1309,10 @@ const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t)
     if (enc_ops->stream_poll == nullptr || sf->audio_stream_injected >= sf->audio_stream_cap) {
         return GEIST_OK; /* nothing to do — end() covers it */
     }
-    const uint64_t t0  = monotonic_ns();
+    const uint64_t t0  = geist_now_ns();
     const size_t   got = enc_ops->stream_poll(
             enc_st, sf->audio_stream_cap - sf->audio_stream_injected, sf->audio_stream_buf);
-    sf->total_audio_encode_ns += monotonic_ns() - t0;
+    sf->total_audio_encode_ns += geist_now_ns() - t0;
     if (got == 0) {
         return GEIST_OK;
     }
@@ -1145,12 +1338,10 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
     if (!enc_ops->stream_push(enc_st, n, pcm)) {
         /* Buffer overflow (>30 s) or encoder shutdown — surface loudly,
          * never drop audio silently (#247's rule). */
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "audio_push: encoder refused %zu samples (>30 s buffered?)",
-                 n);
-        sf->err_code = GEIST_E_UNSUPPORTED;
-        return GEIST_E_UNSUPPORTED;
+        return session_fail(sf,
+                            GEIST_E_UNSUPPORTED,
+                            "audio_push: encoder refused %zu samples (>30 s buffered?)",
+                            n);
     }
     atomic_fetch_add_explicit(&sf->audio_stream_samples, n, memory_order_relaxed);
     return GEIST_OK;
@@ -1176,29 +1367,25 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
                                          ? sf->audio_stream_cap - sf->audio_stream_injected
                                          : 0;
 
-    const uint64_t t_enc0 = monotonic_ns();
+    const uint64_t t_enc0 = geist_now_ns();
     const size_t n_soft = remaining_cap > 0 ? enc_ops->stream_end(enc_st, remaining_cap, soft) : 0;
-    sf->total_audio_encode_ns += monotonic_ns() - t_enc0;
+    sf->total_audio_encode_ns += geist_now_ns() - t_enc0;
 
     const size_t total = sf->audio_stream_injected + n_soft;
     if (total == 0) {
         safe_free((void **) &soft);
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "audio_end: encoder produced 0 soft tokens (no audio pushed, "
-                 "or encoder failure)");
-        sf->err_code = GEIST_E_IO;
-        return GEIST_E_IO;
+        return session_fail(sf,
+                            GEIST_E_IO,
+                            "audio_end: encoder produced 0 soft tokens (no audio pushed, "
+                            "or encoder failure)");
     }
     if (total >= sf->audio_stream_cap) {
         safe_free((void **) &soft);
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "audio_end: soft-token bound too small (%zu tokens for %zu samples)",
-                 sf->audio_stream_cap,
-                 n_samples);
-        sf->err_code = GEIST_E_INTERNAL;
-        return GEIST_E_INTERNAL;
+        return session_fail(sf,
+                            GEIST_E_INTERNAL,
+                            "audio_end: soft-token bound too small (%zu tokens for %zu samples)",
+                            sf->audio_stream_cap,
+                            n_samples);
     }
     enum geist_status as = GEIST_OK;
     if (n_soft > 0) {
@@ -1230,19 +1417,14 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
     void                                *enc_st  = sf->model->vision_encoder.arch_meta;
     const struct geist_arch_ops_decoder *dec_ops = sf->model->text_decoder.arch_ops;
     if (enc_ops == nullptr || enc_st == nullptr) {
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "attach_image: model has no vision encoder loaded "
-                 "(missing vision_tower.safetensors)");
-        sf->err_code = GEIST_E_NOT_FOUND;
-        return GEIST_E_NOT_FOUND;
+        return session_fail(sf,
+                            GEIST_E_NOT_FOUND,
+                            "attach_image: model has no vision encoder loaded "
+                            "(missing vision_tower.safetensors)");
     }
     if (dec_ops == nullptr || dec_ops->prefill_image == nullptr) {
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "attach_image: decoder arch lacks vision injection path");
-        sf->err_code = GEIST_E_UNSUPPORTED;
-        return GEIST_E_UNSUPPORTED;
+        return session_fail(
+                sf, GEIST_E_UNSUPPORTED, "attach_image: decoder arch lacks vision injection path");
     }
 
     /* Gemma 4: max 280 soft tokens per image; soft_dim == text hidden size. */
@@ -1250,28 +1432,18 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
     const size_t soft_dim = enc_ops->soft_token_dim(enc_st);
     float       *soft = heap_alloc_n_aligned(max_soft, soft_dim * sizeof(float), alignof(float));
     if (soft == nullptr) {
-        snprintf(sf->err_msg, sizeof(sf->err_msg), "attach_image: soft-token buffer alloc failed");
-        sf->err_code = GEIST_E_OOM;
-        return GEIST_E_OOM;
+        return session_fail(sf, GEIST_E_OOM, "attach_image: soft-token buffer alloc failed");
     }
-    const uint64_t t_enc0 = monotonic_ns();
+    const uint64_t t_enc0 = geist_now_ns();
     size_t         n_soft = enc_ops->encode_image(enc_st, height, width, max_soft, rgb, soft);
-    sf->total_audio_encode_ns += monotonic_ns() - t_enc0;
-    if (n_soft == 0) {
-        safe_free((void **) &soft);
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "attach_image: vision encoder produced 0 soft tokens "
-                 "(degenerate image dims or encoder failure)");
-        sf->err_code = GEIST_E_IO;
-        return GEIST_E_IO;
-    }
-
-    const uint64_t          t_pre0 = monotonic_ns();
-    const enum geist_status is     = dec_ops->prefill_image(arch_sess(sf), n_soft, soft);
-    sf->total_prefill_ns += monotonic_ns() - t_pre0;
-    safe_free((void **) &soft);
-    return is == GEIST_OK ? GEIST_OK : session_op_failed(sf, is, "prefill_image");
+    sf->total_vision_encode_ns += geist_now_ns() - t_enc0;
+    return inject_soft(sf,
+                       n_soft,
+                       soft,
+                       dec_ops->prefill_image,
+                       "prefill_image",
+                       "attach_image: vision encoder produced 0 soft tokens "
+                       "(degenerate image dims or encoder failure)");
 }
 
 /* Video path: per-frame run_image → concat soft tokens →
@@ -1300,56 +1472,37 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
     void                                *enc_st  = sf->model->vision_encoder.arch_meta;
     const struct geist_arch_ops_decoder *dec_ops = sf->model->text_decoder.arch_ops;
     if (enc_ops == nullptr || enc_st == nullptr) {
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "attach_video: model has no vision encoder loaded "
-                 "(missing vision_tower.safetensors)");
-        sf->err_code = GEIST_E_NOT_FOUND;
-        return GEIST_E_NOT_FOUND;
+        return session_fail(sf,
+                            GEIST_E_NOT_FOUND,
+                            "attach_video: model has no vision encoder loaded "
+                            "(missing vision_tower.safetensors)");
     }
     if (dec_ops == nullptr || dec_ops->prefill_image == nullptr) {
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "attach_video: decoder arch lacks vision injection path");
-        sf->err_code = GEIST_E_UNSUPPORTED;
-        return GEIST_E_UNSUPPORTED;
+        return session_fail(
+                sf, GEIST_E_UNSUPPORTED, "attach_video: decoder arch lacks vision injection path");
     }
 
     /* 70 soft tokens per frame × n_frames; soft_dim == text hidden size. */
     size_t max_soft = 0;
     if (ckd_mul(&max_soft, (size_t) 70, n_frames)) {
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "attach_video: n_frames %zu is too large",
-                 n_frames);
-        sf->err_code = GEIST_E_INVALID_ARG;
-        return GEIST_E_INVALID_ARG;
+        return session_fail(
+                sf, GEIST_E_INVALID_ARG, "attach_video: n_frames %zu is too large", n_frames);
     }
     const size_t soft_dim = enc_ops->soft_token_dim(enc_st);
     float       *soft = heap_alloc_n_aligned(max_soft, soft_dim * sizeof(float), alignof(float));
     if (soft == nullptr) {
-        snprintf(sf->err_msg, sizeof(sf->err_msg), "attach_video: soft-token buffer alloc failed");
-        sf->err_code = GEIST_E_OOM;
-        return GEIST_E_OOM;
+        return session_fail(sf, GEIST_E_OOM, "attach_video: soft-token buffer alloc failed");
     }
-    const uint64_t t_enc0 = monotonic_ns();
+    const uint64_t t_enc0 = geist_now_ns();
     size_t n_soft = enc_ops->encode_video(enc_st, n_frames, height, width, max_soft, frames, soft);
-    sf->total_audio_encode_ns += monotonic_ns() - t_enc0;
-    if (n_soft == 0) {
-        safe_free((void **) &soft);
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "attach_video: vision encoder produced 0 soft tokens "
-                 "(degenerate frame dims or encoder failure)");
-        sf->err_code = GEIST_E_IO;
-        return GEIST_E_IO;
-    }
-
-    const uint64_t          t_pre0 = monotonic_ns();
-    const enum geist_status is     = dec_ops->prefill_image(arch_sess(sf), n_soft, soft);
-    sf->total_prefill_ns += monotonic_ns() - t_pre0;
-    safe_free((void **) &soft);
-    return is == GEIST_OK ? GEIST_OK : session_op_failed(sf, is, "prefill_image");
+    sf->total_vision_encode_ns += geist_now_ns() - t_enc0;
+    return inject_soft(sf,
+                       n_soft,
+                       soft,
+                       dec_ops->prefill_image,
+                       "prefill_image",
+                       "attach_video: vision encoder produced 0 soft tokens "
+                       "(degenerate frame dims or encoder failure)");
 }
 
 [[nodiscard]] enum geist_status
@@ -1360,11 +1513,9 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
     struct geist_session_full           *sf  = as_full(s);
     const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
     if (ops == nullptr || ops->pin_prefix == nullptr) {
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "pin_prefix: active architecture does not support prefix pinning");
-        sf->err_code = GEIST_E_UNSUPPORTED;
-        return GEIST_E_UNSUPPORTED;
+        return session_fail(sf,
+                            GEIST_E_UNSUPPORTED,
+                            "pin_prefix: active architecture does not support prefix pinning");
     }
     const enum geist_status ps = ops->pin_prefix(arch_sess(sf), n, ids);
     return ps == GEIST_OK ? GEIST_OK : session_op_failed(sf, ps, "pin_prefix");
@@ -1386,14 +1537,25 @@ size_t geist_session_length(const struct geist_session *s) {
     struct geist_session_full           *sf  = as_full(s);
     const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
     if (ops == nullptr || ops->truncate == nullptr) {
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "truncate: the active architecture cannot truncate");
-        sf->err_code = GEIST_E_UNSUPPORTED;
-        return GEIST_E_UNSUPPORTED;
+        return session_fail(
+                sf, GEIST_E_UNSUPPORTED, "truncate: the active architecture cannot truncate");
     }
     const enum geist_status ts = ops->truncate(arch_sess(sf), n);
     return ts == GEIST_OK ? GEIST_OK : session_op_failed(sf, ts, "truncate");
+}
+
+[[nodiscard]] enum geist_status geist_session_checkpoint(struct geist_session *s) {
+    if (s == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct geist_session_full           *sf  = as_full(s);
+    const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
+    if (ops == nullptr || ops->checkpoint == nullptr) {
+        return session_fail(
+                sf, GEIST_E_UNSUPPORTED, "checkpoint: the active architecture cannot checkpoint");
+    }
+    const enum geist_status cs = ops->checkpoint(arch_sess(sf));
+    return cs == GEIST_OK ? GEIST_OK : session_op_failed(sf, cs, "checkpoint");
 }
 
 [[nodiscard]] enum geist_status geist_session_kv_bytes_per_token(const struct geist_session *s,
@@ -1420,16 +1582,14 @@ static const struct geist_arch_ops_decoder *snapshot_ops(struct geist_session_fu
     const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
     if (ops == nullptr || ops->snapshot_size == nullptr || ops->snapshot == nullptr ||
         ops->restore == nullptr) {
-        snprintf(sf->err_msg,
-                 sizeof(sf->err_msg),
-                 "%s: active architecture does not support session snapshots",
-                 what);
-        sf->err_code = GEIST_E_UNSUPPORTED;
+        (void) session_fail(sf,
+                            GEIST_E_UNSUPPORTED,
+                            "%s: active architecture does not support session snapshots",
+                            what);
         return nullptr;
     }
     if (sf->audio_streaming) {
-        snprintf(sf->err_msg, sizeof(sf->err_msg), "%s: an audio stream is open", what);
-        sf->err_code = GEIST_E_INVALID_STATE;
+        (void) session_fail(sf, GEIST_E_INVALID_STATE, "%s: an audio stream is open", what);
         return nullptr;
     }
     return ops;
@@ -1492,10 +1652,11 @@ geist_session_restore(size_t n_bytes, const void *buf, struct geist_session *s) 
     }
     const struct geist_session_full *sf = (const struct geist_session_full *) s;
     *out                                = (struct geist_session_stats) {
-            .n_tokens_decoded      = sf->n_tokens_decoded,
-            .total_decode_ns       = sf->total_decode_ns,
-            .total_prefill_ns      = sf->total_prefill_ns,
-            .total_audio_encode_ns = sf->total_audio_encode_ns,
+            .n_tokens_decoded       = sf->n_tokens_decoded,
+            .total_decode_ns        = sf->total_decode_ns,
+            .total_prefill_ns       = sf->total_prefill_ns,
+            .total_audio_encode_ns  = sf->total_audio_encode_ns,
+            .total_vision_encode_ns = sf->total_vision_encode_ns,
             /* buffer_alloc_* and per_op_* stay zero: they need backend-side
              * counters / opt-in op profiling. */
     };
@@ -1511,5 +1672,6 @@ geist_session_restore(size_t n_bytes, const void *buf, struct geist_session *s) 
     sf->total_decode_ns           = 0;
     sf->total_prefill_ns          = 0;
     sf->total_audio_encode_ns     = 0;
+    sf->total_vision_encode_ns    = 0;
     return GEIST_OK;
 }

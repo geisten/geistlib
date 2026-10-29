@@ -141,6 +141,41 @@ int main(void) {
         CHECK(ok, "heap_tl_grow grows, keeps a big enough buffer, fails cleanly");
     }
 
+    /* ---- heap_grow_array: keeps contents, leaves the buffer on OOM ----- */
+    {
+        uint32_t *g   = nullptr;
+        size_t    cap = 0;
+        CHECK(heap_grow_array(g, cap, 4) && g != nullptr && cap == 4, "grow from empty");
+        for (uint32_t i = 0; i < 4; i++) {
+            g[i] = 100 + i;
+        }
+        uint32_t *first = g;
+        CHECK(heap_grow_array(g, cap, 3) && g == first && cap == 4, "big enough: no change");
+        CHECK(heap_grow_array(g, cap, 8) && cap == 8 && g[0] == 100 && g[3] == 103,
+              "grow keeps the contents");
+        uint32_t *kept = g;
+        heap_fail_allocations(true);
+        const bool grew = heap_grow_array(g, cap, 16);
+        heap_fail_allocations(false);
+        CHECK(!grew && g == kept && cap == 8 && g[3] == 103, "OOM leaves buffer and cap");
+        safe_free((void **) &g);
+    }
+    /* ---- heap_scratch_grow_array: drops the buffer on OOM -------------- */
+    {
+        float *s   = nullptr;
+        size_t cap = 0;
+        CHECK(heap_scratch_grow_array(s, cap, 8) && s != nullptr && cap == 8, "scratch grow");
+        CHECK(heap_scratch_grow_array(s, cap, 4) && cap == 8, "scratch big enough");
+        heap_fail_allocations(true);
+        const bool grew = heap_scratch_grow_array(s, cap, 16);
+        heap_fail_allocations(false);
+        CHECK(!grew && s == nullptr && cap == 0, "scratch OOM: nullptr and 0, next call retries");
+        CHECK(heap_scratch_grow_array(s, cap, 16) && s != nullptr && cap == 16, "scratch retry");
+        CHECK(heap_grow_slow((void **) &s, &cap, 8, sizeof *s, 0, true) && cap == 16,
+              "slow path called directly while big enough: no change");
+        safe_free((void **) &s);
+    }
+
     printf("PASS: heap alloc/calloc/alloc_n — zero/overflow/alignment guards, "
            "including the array macros at the SIZE_MAX boundary\n");
     return GEIST_TEST_PASS;

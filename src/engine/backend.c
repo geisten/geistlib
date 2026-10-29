@@ -92,7 +92,6 @@ static const struct geist_backend_descriptor *auto_cpu_descriptor(void) {
             .alloc    = *a,
             .state    = nullptr,
             .err_code = GEIST_OK,
-            .has_opts = opts != nullptr,
             .opts     = opts != nullptr ? *opts : (struct geist_backend_opts) {0},
     };
     be->err_msg[0] = '\0';
@@ -180,7 +179,7 @@ enum geist_status geist_backend_create_auto_cpu(const struct geist_backend *gpu,
     if (gpu == nullptr || !gpu->auto_cpu || desc == nullptr) {
         return GEIST_E_NOT_FOUND;
     }
-    return create_from(desc, gpu->has_opts ? &gpu->opts : nullptr, &gpu->alloc, out);
+    return create_from(desc, &gpu->opts, &gpu->alloc, out);
 }
 
 void geist_backend_destroy(struct geist_backend *be) {

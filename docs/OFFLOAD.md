@@ -442,7 +442,10 @@ met.
 > 57.4/59.7). **The model on the CPU with a GPU split backend** is the
 > steady alternative: +19-23 % over the CPU alone in every run and both
 > measures, prefill as the CPU's, perplexity 29.96 against 29.90. Prefill
-> trails llama.cpp's best split by half in every geist mode (#163). Raw data:
+> trails llama.cpp's best split by half in every geist mode — **since #163
+> the model on the GPU does not**: the hot rows are gathered and summed on
+> the device and a discrete GPU prefills a mixture of experts in chunks of
+> 512, 490-498 tok/s (runs 1754/1755). Raw data:
 > `benchmark/results/raw/moe-real-text-2026-10-22/`.
 
 - **The model on the GPU.** A mixture-of-experts model loaded on a GPU
@@ -485,6 +488,30 @@ memory). Runs 1704/1705 (3 cycles): 44.9-51.8 tok/s after 32 tokens,
 perplexity 29.99 (CPU 29.90). The card is still only ~35 % busy (P0 most of
 the time); routing on the GPU (#162) is the next margin.
 
+**Routing on the GPU (#162).** GPU timestamps showed the card idle for
+37-42 us per decode layer between the router and the hot experts (median,
+5,400-6,500 boundaries per run): the host's wake-up, routing, recording and
+submit. Now the GPU ranks the router's experts itself (`fused->moe_route`,
+the host's order: logit descending, id ascending) and runs the experts it
+holds by those ids (`fused->linear_t_sel`, a per-layer table of their
+device addresses, a cold expert's slot skipped) right after the router, in
+the same command buffer; the host waits for an event after the router
+(`submit_mark` / `map_marked`), routes too, runs the cold experts and hands
+their sum to the GPU as before. A separate submission for the GPU's part
+cost ~15 us per layer at the boundary, which the event avoids. 512 decoded
+tokens after a 512-token prompt, 3 interleaved cycles, `GEIST_MOE_GPU_ROUTE`
+0 / 1:
+
+| decode tok/s | host routes | GPU routes |
+|:--|:--|:--|
+| Qwen3-30B-A3B Q4_K_M, quiet | 67.8 / 69.2 / 70.7 | **74.0 / 73.6 / 74.4** |
+| Qwen3.6-35B-A3B UD-Q4_K_XL, quiet | 81.6 / 76.3 / 82.2 | **86.8 / 87.1 / 87.8** |
+| Qwen3-30B-A3B, 16 CPU hogs | 53.8 / 53.3 | 53.6 / 57.9 |
+| Qwen3.6-35B-A3B, 16 CPU hogs | 61.7 / 61.2 | **70.7 / 69.4** |
+
+Perplexity of this file (`bench_nll`, 1,023 tokens one at a time): 30.168 /
+30.178 and 17.126 / 17.124.
+
 On the pseudo-random prompt decode beats both CPU only (+45 %) and
 llama.cpp `-ot exps=CPU` (+30 %); on real text see the correction above. Quality: the perplexity of `docs/OFFLOAD.md`
 (1,023 tokens fed one at a time, `bench_nll`) is 29.90 on the CPU and 30.06
@@ -493,6 +520,53 @@ tiny differences into other continuations. **Open: prefill** — a chunk's
 experts get ~8 rows each and run one by one (~450 dispatches per layer);
 a grouped GEMM is the next step. Raw data:
 `benchmark/results/raw/moe-phase3-2026-10-21/`.
+
+**Strata itself on the same box (#167).** `strata-compare.yml`: Strata
+built from source (`5c8dd322`, CUDA, its own setup), llama.cpp's
+llama-server (CUDA and Vulkan) and geistlib on one model Strata runs,
+Qwen3.6-35B-A3B UD-Q4_K_XL (the file Strata pins), the same chat request
+of 2,726 prompt tokens of this file, 128 greedy tokens, rounds alternating
+the engine order, the servers' own timings. geistlib in GPU mode with the
+expert profile from its own router trace (run 1830, 79.2 % cover of the
+profile corpus, `tools/moe_usage/trace_usage.py`). Medians of 3 rounds per
+run:
+
+| | prefill tok/s | decode tok/s | runs |
+|:--|--:|--:|:--|
+| Strata, MTP off (`--mtp 0`) | 605 | 62.0 / 62.2 | 1839, 1842 |
+| Strata, its MTP draft (`--mtp 2`) | 589 | 62.2 | 1842 |
+| llama.cpp CUDA `--n-cpu-moe 26` (24 does not fit) | 470 | 67.8 | 1839 |
+| llama.cpp CUDA `--n-cpu-moe 28` | 444 | 66.1 | 1839 |
+| llama.cpp CUDA `--n-cpu-moe 40` (every expert on the CPU) | 332 | 56.2 | 1843 |
+| llama.cpp Vulkan `--n-cpu-moe 24` | 364 | 52.2 | 1839 |
+| llama.cpp Vulkan `--n-cpu-moe 40` | 245 | 44.1 | 1843 |
+| **geist Vulkan, GPU mode, profile** | **513 / 518** | **65.9 / 68.0** | 1839, 1842 |
+| geist cpu_x86 | 174 | 22.8 | 1843 |
+
+- **Decode:** geistlib is 1.06-1.09× Strata and level with llama.cpp CUDA's
+  best split (0.97-1.00×), on Vulkan against their CUDA.
+- **Prefill:** 0.85× Strata, 1.1× llama.cpp CUDA, 1.4× llama.cpp Vulkan.
+- Strata's MTP draft brought nothing on this request (62.2 either way).
+- geistlib's decode scatters more than the others' (57.4-69.0 over six
+  rounds; #161).
+- The earlier estimate (Strata ~1.4× ahead in decode, from its own docs
+  on other cards) is superseded.
+
+Raw data: `benchmark/results/raw/strata-compare-2026-10-23/`.
+
+**Prefill rows padded to 16 (#167, run 1930).** The tensor-core GEMM tiles
+need a multiple of 16 rows; a hot expert's share of a chunk rarely is, so
+its GEMMs ran on the scalar kernel. Padded (a repeated token, never summed),
+with main's cold-expert pool (#161), 4 interleaved rounds, the same request:
+
+| | prefill tok/s | decode tok/s |
+|:--|--:|--:|
+| Strata, MTP off | 605 | 62.2 |
+| **geist GPU mode, profile, padded** | **655** | **71.3** |
+| geist GPU mode, profile, not padded | 522 | 71.6 |
+
+The decode collapses of runs 1921-1925 (3.3 tok/s) came on a branch
+without #161's fix, at desktop loads up to 30; with it, no round fell.
 
 **Phase 4, only if phase 3 shows the static cover as the limit:** the
 adaptive tier, measured against Strata's +16.5 %.

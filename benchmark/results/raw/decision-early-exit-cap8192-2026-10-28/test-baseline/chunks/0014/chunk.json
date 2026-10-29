@@ -1,0 +1,25 @@
+{
+  "started_unix": 1793079111.567754,
+  "rows": [
+    493,
+    497,
+    499
+  ],
+  "lock_note": "#236 cap8192 test-baseline chunk 15",
+  "deadline_minutes": 28.0,
+  "cool_gate": {
+    "cool_gate": "temperature",
+    "cool_wait_seconds": 56.7,
+    "gpu_temp_c": 64.7,
+    "cpu_temp_c": 67.1
+  },
+  "run": {
+    "started_unix": 1793079168.269925,
+    "wall_seconds": 269.2555537223816,
+    "returncode": 0,
+    "lines": 6,
+    "stopped_at_deadline": false,
+    "discarded_partial_line_bytes": 0
+  },
+  "ended_unix": 1793079437.527575
+}

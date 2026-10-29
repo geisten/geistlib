@@ -59,17 +59,29 @@ compute_weight_arena_capacity(const struct geist_backend          *be,
 /* Load the 3-D expert tensor `name`, [n_experts][n_out][n_in] in row-major
  * order, as n_experts projections: one buffer (tracked by L), a heap array
  * of n_experts views into it and one of resolved weights, both owned by L
- * (freed with the layer). Fails when a backend has no kernel for the
- * experts' dtype, naming the tensor. */
+ * (freed with the layer). A `shared` 2-D tensor [n_out][n_in], when given,
+ * is one more entry, slot n_experts. Fails when a backend has no kernel
+ * for the experts' dtype, naming the tensor. */
 [[nodiscard]] enum geist_status load_layer_experts(struct transformer_arch_state    *st,
                                                    struct gguf_ctx                  *gguf,
                                                    struct transformer_layer_weights *L,
                                                    const char                       *name,
+                                                   const char                       *shared,
                                                    size_t                            n_experts,
                                                    size_t                            n_out,
                                                    size_t                            n_in,
                                                    struct geist_tensor             **out_views,
                                                    struct geist_weight             **out_weights);
+
+/* A mixture-of-experts FFN's tensors under the architecture prefix `arch`:
+ * the router, the experts and, with config.moe_n_shared, the shared expert
+ * (slot moe_n_experts) and its gate vector (host). On a GPU backend the
+ * experts' home is st->moe_cpu, created here. Refuses a gating function
+ * other than softmax. */
+[[nodiscard]] enum geist_status moe_wire_layer(struct transformer_arch_state    *st,
+                                               struct gguf_ctx                  *gguf,
+                                               struct transformer_layer_weights *L,
+                                               const char                       *arch);
 
 /* Load one trailing Qwen3.5 MTP block. The regular attention/FFN block and
  * its nextn-specific fusion/norm tensors share one owning-buffer list. */

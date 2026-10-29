@@ -225,8 +225,7 @@ struct ax_job {
  * [dec_lo + c * len, ...], at least AX_CHUNK_MIN each, so none is empty. */
 static inline void ax_chunk_items(void *ctx, size_t, size_t) {
     struct ax_job *j = ctx;
-    for (size_t i;
-         (i = atomic_fetch_add_explicit(&j->next, 1, memory_order_relaxed)) < j->n_items;) {
+    for (size_t i; geist_par_next(&j->next, j->n_items, &i);) {
         const size_t c    = i % j->n_chunks;
         const size_t pass = i / j->n_chunks % j->n_passes;
         const size_t kv_h = i / j->n_chunks / j->n_passes;
@@ -265,8 +264,7 @@ static inline void ax_merge_heads(void *ctx, size_t h0, size_t h1) {
  * none is left. */
 static inline void ax_query_items(void *ctx, size_t, size_t) {
     struct ax_job *j = ctx;
-    for (size_t i;
-         (i = atomic_fetch_add_explicit(&j->next, 1, memory_order_relaxed)) < j->n_items;) {
+    for (size_t i; geist_par_next(&j->next, j->n_items, &i);) {
         const size_t qb   = i % j->n_blocks;
         const size_t pass = i / j->n_blocks % j->n_passes;
         const size_t kv_h = i / j->n_blocks / j->n_passes;
@@ -286,13 +284,6 @@ static inline void ax_query_items(void *ctx, size_t, size_t) {
                     hi,
                     nullptr);
     }
-}
-
-/* Runs fn on min(n_items, threads) ranges, one item counter for all. */
-static inline void ax_dynamic(struct ax_job *j, geist_par_fn fn) {
-    const size_t threads = geist_par_max_threads();
-    atomic_init(&j->next, 0);
-    geist_par_for(j->n_items < threads ? j->n_items : threads, fn, j);
 }
 
 /* The kernel on host pointers, validated by the caller (see struct
@@ -356,7 +347,7 @@ static inline void ax_dynamic(struct ax_job *j, geist_par_fn fn) {
         j.dec_lo   = dec_lo;
         j.dec_hi   = dec_hi;
         j.n_items  = n_kv_heads * j.n_passes * j.n_chunks;
-        ax_dynamic(&j, ax_chunk_items);
+        geist_par_for_pull(j.n_items, &j.next, ax_chunk_items, &j);
         geist_par_for(n_q_heads, ax_merge_heads, &j);
         return;
     }
@@ -367,7 +358,7 @@ static inline void ax_dynamic(struct ax_job *j, geist_par_fn fn) {
     j.n_blocks = (n_q + plan.per_item - 1) / plan.per_item;
     j.n_q      = n_q;
     j.n_items  = n_kv_heads * j.n_passes * j.n_blocks;
-    ax_dynamic(&j, ax_query_items);
+    geist_par_for_pull(j.n_items, &j.next, ax_query_items, &j);
 }
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_ATTENTION_DRIVER_H */

@@ -8,11 +8,11 @@
  * their kernels, M>1 prefill, and an FP32 GEMV (linear_q6k_decode_fp32).
  */
 #include "quant_blocks.h"
+#include "env.h"
 #include "heap.h"
 #include "par.h"
 #include "quant.h"
 
-#include "../parallel.h"
 #include "decode_rows.h"
 
 #include <stddef.h>
@@ -330,9 +330,7 @@ int q6k_x8_gemv_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst) {
 
 #if defined(__ARM_NEON)
 static void q6k_decode_rows(void *ctx, size_t n0, size_t n1);
-#endif
 
-#if defined(__ARM_NEON)
 const int16_t *q6k_decode_bsums(size_t n_in, const int8_t x_q8[static n_in]) {
     static _Thread_local int16_t *bsums_tl  = nullptr;
     static _Thread_local size_t   bsums_cap = 0;
@@ -936,8 +934,7 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
     static _Atomic int q6k_pack_act = -1;
     int                pack_on      = atomic_load_explicit(&q6k_pack_act, memory_order_relaxed);
     if (pack_on < 0) {
-        const char *e = getenv("GEIST_Q6K_PACK_ACT");
-        pack_on       = (e != nullptr && e[0] == '0') ? 0 : 1;
+        pack_on = geist_env_flag("GEIST_Q6K_PACK_ACT", true);
         atomic_store_explicit(&q6k_pack_act, pack_on, memory_order_relaxed);
     }
     const int8_t *packed = nullptr;
@@ -987,7 +984,7 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
                                   .n_out            = n_out,
                                   .n_blocks_per_row = n_blocks_per_row,
                                   .y                = y};
-    cpu_neon_par_for_dynamic(n_pairs, 2, q6k_prefill_pre_pairs, &job);
+    geist_par_for_dynamic(n_pairs, 2, q6k_prefill_pre_pairs, &job);
 
     /* NR=1 tail for odd n_out. */
     for (size_t n = n_pairs * 2; n < n_out; n++) {
@@ -1183,7 +1180,7 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4(size_t        m,
                                  .n_out            = n_out,
                                  .n_blocks_per_row = n_blocks_per_row,
                                  .y                = y};
-    cpu_neon_par_for_dynamic(n_tiles, 4, q6k_ntile4_tiles, &job);
+    geist_par_for_dynamic(n_tiles, 4, q6k_ntile4_tiles, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1395,7 +1392,7 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4_stream(size_t        m,
                                   .n_out            = n_out,
                                   .n_blocks_per_row = n_blocks_per_row,
                                   .y                = y};
-    cpu_neon_par_for_dynamic(n_tiles, 4, q6k_stream4_tiles, &job);
+    geist_par_for_dynamic(n_tiles, 4, q6k_stream4_tiles, &job);
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1467,5 +1464,5 @@ void linear_q6k_decode_fp32(size_t      n_in,
     const size_t               n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
 
     struct q6k_fp32_job job = {.w = w, .x = x, .n_blocks_per_row = n_blocks_per_row, .y = y};
-    cpu_neon_par_for_dynamic(n_out, 4, q6k_fp32_rows, &job);
+    geist_par_for_dynamic(n_out, 4, q6k_fp32_rows, &job);
 }

@@ -233,6 +233,57 @@ geist_session_pin_prefix(struct geist_session *s, size_t n, const geist_token_t 
  * the longest max_seq_len that fits into memory. */
 size_t                          geist_session_length(const struct geist_session *s);
 [[nodiscard]] enum geist_status geist_session_truncate(struct geist_session *s, size_t n);
+
+/* @stability EXPERIMENTAL (#26) — one decode step for several independent
+ * sessions of the same model in one pass.
+ *
+ * geist_session_decode_batch does what geist_session_decode_step does for
+ * each of sessions[0..n-1] and writes each one's token to out_tokens[b]. The
+ * forwards the sessions owe run as one batched pass: every linear layer reads
+ * its weights once for all n rows, while attention and recurrent state stay
+ * per session. Several questions decoded together (each forked from a
+ * prefix with geist_session_restore, say) then cost about one step's weight
+ * traffic instead of n.
+ *
+ *   - Isolation: for a given n, a session's tokens and logits depend only
+ *     on that session: which other sessions share the call and the
+ *     session's place in sessions[] do not change them, bit for bit. Another
+ *     n may select other row kernels and round differently.
+ *   - Numerics: n = 1 is geist_session_decode_step itself. For n > 1, the
+ *     batched rows round differently from a single-row step, so logits can
+ *     differ in the last digits from decoding the session alone (greedy
+ *     tokens usually match, not always).
+ *   - Each session samples with its own settings, penalties and RNG.
+ *   - Sessions must be distinct, created on the same model, each with
+ *     something to decode (after a prefill or a decode step), and none used
+ *     from another thread during the call.
+ *   - Refusals change nothing: GEIST_E_INVALID_ARG (nullptr, a repeated
+ *     session, another model), GEIST_E_UNSUPPORTED (n above
+ *     geist_model_decode_batch_max, a session with the KIVI cache, MTP
+ *     drafting or a split/offloaded model), GEIST_E_INVALID_STATE (nothing
+ *     pending), GEIST_E_TOO_MANY_TOKENS (a full context), GEIST_E_CANCELLED.
+ *     A failure during the pass resets every member. out_tokens is -1 on
+ *     every failure.
+ *
+ * geist_model_decode_batch_max: the largest n the model takes on the
+ * backend it was loaded on; 0 when it cannot batch (n = 1 still works).
+ * Today: Qwen3.5-family hybrids (Qwen3.5, Bonsai 2) on Metal and Vulkan, up
+ * to 8 sessions. */
+[[nodiscard]] enum geist_status geist_session_decode_batch(size_t                      n,
+                                                           struct geist_session *const sessions[],
+                                                           geist_token_t               out_tokens[]);
+[[nodiscard]] size_t geist_model_decode_batch_max(const struct geist_model *m);
+
+/* @stability EXPERIMENTAL (#192) — a cheap way back for short look-aheads
+ * (a draft model's speculative tokens). geist_session_checkpoint records the
+ * session's state now, where the backend keeps it; afterwards
+ * geist_session_truncate to the checkpoint's length succeeds on recurrent
+ * (DeltaNet) layers too and restores that state. Nothing is copied to the
+ * host. The 8 newest checkpoints are kept (a ninth drops the oldest), at
+ * rising lengths, e.g. one per draft step; a truncate keeps those at or
+ * below its length, a reset drops all. GEIST_E_UNSUPPORTED where the
+ * architecture cannot, with MTP drafting or the KIVI KV cache. */
+[[nodiscard]] enum geist_status geist_session_checkpoint(struct geist_session *s);
 [[nodiscard]] enum geist_status geist_session_kv_bytes_per_token(const struct geist_session *s,
                                                                  size_t *out_bytes);
 
@@ -425,6 +476,41 @@ geist_model_gains(struct geist_model *m, float **out_gains, size_t *out_n);
                                                                  geist_token_t        *out_tokens,
                                                                  size_t               *n_out);
 
+/* @stability EXPERIMENTAL — a draft model for decode_speculative (#192).
+ *
+ * After geist_session_set_draft(s, draft), geist_session_decode_speculative
+ * on s takes its guesses from `draft`, a session of a small model with the
+ * same vocabulary (e.g. Qwen3.5 0.8B for Bonsai 2 27B), instead of the
+ * internal n-gram drafter: k_max - 1 greedy draft steps per call. The engine
+ * keeps the draft session in step with s from the `history` that
+ * decode_speculative receives (prompt + emitted tokens), so the caller only
+ * creates it; it may start empty, and the first call prefills the prompt.
+ * The caller owns `draft`, keeps it alive while attached and does not use
+ * it otherwise; set_draft(s, nullptr) detaches. GEIST_E_INVALID_ARG when
+ * the vocabularies differ. Under greedy decoding the stream is unchanged.
+ * On Metal k_max <= 8 keeps the verify on the small-row kernels. */
+[[nodiscard]] enum geist_status geist_session_set_draft(struct geist_session *s,
+                                                        struct geist_session *draft);
+
+/* @stability EXPERIMENTAL — verify caller-supplied drafts (#192).
+ *
+ * geist_session_decode_speculative with the drafts coming from the caller
+ * (e.g. a small draft model in a session of its own) instead of the
+ * internal drafter. drafts[0..n_drafts) are guesses for the tokens after
+ * the pending token (the one geist_session_decode_step would return next);
+ * the pending token and the guesses are verified in one forward pass, the
+ * longest prefix the model agrees with is accepted and the model's own
+ * next token follows it. Writes 1..n_drafts+2 tokens to `out_tokens` and
+ * their count to `*n_out`; under greedy decoding the stream equals as many
+ * decode_step calls. n_drafts = 0 is one decode step. n_drafts + 1 must not
+ * exceed 16 and out_capacity must be at least n_drafts + 2. */
+[[nodiscard]] enum geist_status geist_session_verify_drafts(struct geist_session *s,
+                                                            size_t                n_drafts,
+                                                            const geist_token_t  *drafts,
+                                                            size_t                out_capacity,
+                                                            geist_token_t        *out_tokens,
+                                                            size_t               *n_out);
+
 /* ====================================================================== */
 /* Stats / Telemetry                                                       */
 /* ====================================================================== */
@@ -436,12 +522,17 @@ struct geist_session_stats {
     uint64_t n_tokens_decoded;
     uint64_t total_decode_ns;
     uint64_t total_prefill_ns;
-    uint64_t total_audio_encode_ns;
+    uint64_t total_audio_encode_ns; /* attach_audio and the audio_* stream */
 
     /* Always zero: backend-side counters are not implemented. */
     uint64_t buffer_alloc_count;
     uint64_t buffer_alloc_bytes_peak;
     uint64_t buffer_alloc_bytes_current;
+
+    /* Wired: attach_image / attach_video encoder time (the decoder prefill
+     * of their soft tokens counts as prefill). Last, so a caller built
+     * against the previous layout still reads the fields above right. */
+    uint64_t total_vision_encode_ns;
 };
 
 /* @stability EXPERIMENTAL */

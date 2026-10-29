@@ -5,6 +5,8 @@
  */
 #include "vk_internal.h"
 
+#include "cache_dir.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,9 +31,11 @@
 #include "shaders/attn_comb_spv.h"
 #include "shaders/attn_part_f16_spv.h"
 #include "shaders/attn_part_g2_f16_spv.h"
+#include "shaders/deltanet_conv_b_f32_spv.h"
 #include "shaders/deltanet_conv_f32_spv.h"
 #include "shaders/deltanet_delta_f32_spv.h"
 #include "shaders/deltanet_norm_f32_spv.h"
+#include "shaders/deltanet_scan_b_f32_spv.h"
 #include "shaders/deltanet_scan_f32_spv.h"
 #include "shaders/embed_lookup_scaled_spv.h"
 #include "shaders/ffn_gate_up_gelu_q4k_spv.h"
@@ -43,6 +47,7 @@
 #include "shaders/matmul_f32_spv.h"
 #include "shaders/matmul_pq2_0_f32acc_cm_spv.h"
 #include "shaders/matmul_pq2_0_t64_cm_spv.h"
+#include "shaders/matmul_pq2_0_m16_cm_spv.h"
 #include "shaders/matmul_pq2_0_cm_spv.h"
 #include "shaders/matmul_pq2_0_spv.h"
 #include "shaders/matmul_q4_0_spv.h"
@@ -83,8 +88,15 @@
 #include "shaders/matvec_q5k_spv.h"
 #include "shaders/matvec_q6k_spv.h"
 #include "shaders/matvec_q6k_id_spv.h"
+#include "shaders/matvec_q5k_id_spv.h"
 #include "shaders/matvec_q4k_id_spv.h"
 #include "shaders/rows_wsum_add_spv.h"
+#include "shaders/rows_gather_spv.h"
+#include "shaders/matvec_f32_sel_spv.h"
+#include "shaders/matvec_q4k_sel_spv.h"
+#include "shaders/matvec_q5k_sel_spv.h"
+#include "shaders/matvec_q6k_sel_spv.h"
+#include "shaders/moe_topk_spv.h"
 #include "shaders/matvec_q8_0_mt_spv.h"
 #include "shaders/matvec_q8_0_spv.h"
 #include "shaders/matvec_tq2_0_spv.h"
@@ -168,14 +180,8 @@ static bool vk_pcache_path(const struct vk_state *st, size_t n, char path[static
     if (env != nullptr) {
         return strcmp(env, "0") != 0 && env[0] != '\0' && (size_t) snprintf(path, n, "%s", env) < n;
     }
-    char        dir[1024];
-    const char *xdg  = getenv("XDG_CACHE_HOME");
-    const char *home = getenv("HOME");
-    int         w    = xdg != nullptr && xdg[0] != '\0' ? snprintf(dir, sizeof dir, "%s/geist", xdg)
-                       : home != nullptr && home[0] != '\0'
-                               ? snprintf(dir, sizeof dir, "%s/.cache/geist", home)
-                               : -1;
-    if (w < 0 || (size_t) w >= sizeof dir) {
+    char dir[1024];
+    if (!geist_cache_dir(sizeof dir, nullptr, dir)) {
         return false;
     }
     /* ponytail: one level of mkdir; a missing ~/.cache just means no cache */
@@ -184,7 +190,7 @@ static bool vk_pcache_path(const struct vk_state *st, size_t n, char path[static
     for (size_t i = 0; i < VK_UUID_SIZE; ++i) {
         snprintf(uuid + 2 * i, 3, "%02x", st->pcache_uuid[i]);
     }
-    w = snprintf(path, n, "%s/vulkan-pipelines-%s.bin", dir, uuid);
+    const int w = snprintf(path, n, "%s/vulkan-pipelines-%s.bin", dir, uuid);
     return w > 0 && (size_t) w < n;
 }
 
@@ -255,6 +261,9 @@ vk_pcache_save(struct geist_backend *be, struct vk_state *st, const char *path, 
     /* Set/pipeline layouts for 2..VK_MAX_BINDINGS storage-buffer bindings;
      * every shader declares a push block within the shared 128-byte range. */
     for (uint32_t n = 2; n <= VK_MAX_BINDINGS; ++n) {
+        if (n > st->max_bindings) {
+            break; /* layouts stay VK_NULL_HANDLE; their pipelines are skipped */
+        }
         VkDescriptorSetLayoutBinding bindings[VK_MAX_BINDINGS];
         for (uint32_t i = 0; i < n; ++i) {
             bindings[i] = (VkDescriptorSetLayoutBinding) {
@@ -343,8 +352,11 @@ vk_pcache_save(struct geist_backend *be, struct vk_state *st, const char *path, 
         if (vk_pipe_needs_coopmat(i) && !st->has_coopmat) {
             continue; /* stays VK_NULL_HANDLE; linear_t falls back */
         }
-        if (i == VK_PIPE_DN_SCAN && !st->dn_scan) {
+        if ((i == VK_PIPE_DN_SCAN || i == VK_PIPE_DN_SCAN_B) && !st->dn_scan) {
             continue; /* stays VK_NULL_HANDLE; deltanet_mix runs deltanet_delta_f32 */
+        }
+        if (st->seq_playouts[vk_pipe_nbind[i] - 2] == VK_NULL_HANDLE) {
+            continue; /* more bindings than the device takes; the op says UNSUPPORTED */
         }
         /* Full subgroups need local_size_x to be a multiple of 32; every
          * tiled GEMM is 128 or 256 wide, so a miss is a shader edit that

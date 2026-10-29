@@ -5,6 +5,8 @@
 
 #include "profile.h"
 
+#include "env.h"
+
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -58,11 +60,9 @@ static bool transformer_profile_env_enabled(void) {
     if (atomic_load(&g_profile_enabled) < 0) {
         pthread_mutex_lock(&g_profile_mu);
         if (atomic_load(&g_profile_enabled) < 0) {
-            const char *env = getenv("GEIST_PROFILE_PREFILL");
-            if (env == nullptr || env[0] == '\0') {
-                env = getenv("GEIST_PROFILE_FORWARD");
-            }
-            const int on = (env != nullptr && env[0] == '1') ? 1 : 0;
+            /* GEIST_PROFILE_PREFILL, else GEIST_PROFILE_FORWARD. */
+            const int on = geist_env_flag("GEIST_PROFILE_PREFILL",
+                                          geist_env_flag("GEIST_PROFILE_FORWARD", false));
             if (on && !g_profile_atexit_registered) {
                 atexit(transformer_profile_print_all);
                 g_profile_atexit_registered = true;
@@ -101,18 +101,12 @@ bool transformer_profile_enabled(struct transformer_forward_profile *profile) {
     return true;
 }
 
-uint64_t transformer_profile_now_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
-}
-
 uint64_t
 transformer_profile_add(struct transformer_forward_profile *profile, size_t stage, uint64_t t0) {
     if (profile == nullptr || t0 == 0 || stage >= profile->stage_count) {
         return 0;
     }
-    const uint64_t ns = transformer_profile_now_ns() - t0;
+    const uint64_t ns = geist_now_ns() - t0;
     atomic_fetch_add_explicit(&profile->ns[stage], ns, memory_order_relaxed);
     atomic_fetch_add_explicit(&profile->calls[stage], 1, memory_order_relaxed);
     return ns;

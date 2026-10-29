@@ -62,7 +62,8 @@ enum geist_status cpu_scalar_attention_f16(struct geist_backend      *be,
     if (qp == nullptr || kp == nullptr || vp == nullptr || op == nullptr || q->ndim != 3 ||
         out->ndim != 3 || k->shape[1] != v->shape[1] || k->shape[0] != v->shape[0] ||
         k->shape[2] != q->shape[2] || v->shape[2] != q->shape[2] ||
-        q->shape[1] % k->shape[1] != 0) {
+        q->shape[1] % k->shape[1] != 0 || out->shape[0] != q->shape[0] ||
+        out->shape[1] != q->shape[1] || out->shape[2] != q->shape[2]) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "attention: bad F16 KV views");
         return GEIST_E_INVALID_ARG;
     }
@@ -127,7 +128,7 @@ enum geist_status cpu_scalar_kv_append_f16(struct geist_backend      *be,
     const float *vp = geist_host_tensor_f32(v, &nv);
     float       *op = geist_host_tensor_f32(out, &no);
     if (qp == nullptr || kp == nullptr || vp == nullptr || op == nullptr || q->ndim != 3 ||
-        k->ndim != 3 || v->ndim != 3) {
+        k->ndim != 3 || v->ndim != 3 || out->ndim != 3) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_scalar attention: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
@@ -136,6 +137,13 @@ enum geist_status cpu_scalar_kv_append_f16(struct geist_backend      *be,
     size_t head_dim   = (size_t) q->shape[2];
     size_t n_kv       = (size_t) k->shape[0];
     size_t n_kv_heads = (size_t) k->shape[1];
+    if (k->shape[2] != (int64_t) head_dim || v->shape[2] != (int64_t) head_dim ||
+        v->shape[0] != (int64_t) n_kv || v->shape[1] != (int64_t) n_kv_heads ||
+        out->shape[0] != (int64_t) n_q || out->shape[1] != (int64_t) n_q_heads ||
+        out->shape[2] != (int64_t) head_dim) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_scalar attention: shape mismatch");
+        return GEIST_E_INVALID_ARG;
+    }
     attention_mqa_causal_kv(
             n_q, n_kv, q_offset, n_q_heads, n_kv_heads, head_dim, sliding_window, qp, kp, vp, op);
     return GEIST_OK;

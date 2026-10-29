@@ -30,6 +30,9 @@ PROFILES = {
     "chat_reasoning": ("generate_long",),
 }
 NUMERIC = {"decision_dense", "decision_selected", "scorealt_dense"}
+# What the quality gate needs (#171 amendment 2): direct score, selected rows
+# (the speedup arm, checked bit-exact against dense), the reasoning baseline.
+CORE_PROFILES = {"chat_direct": ("decision_dense", "decision_selected"), "chat_reasoning": ("generate_long",)}
 
 
 read_json = data.read_json
@@ -159,8 +162,11 @@ def summarize_profile(samples, rows, profile, modes, runtime, decode_cap, warmup
         first_times, per_case, warm_times = [], [], []
         for i, row in enumerate(rows):
             trials = sorted(grouped[(i, mode)], key=lambda s: s["trial"])
-            warm = [s for s in trials if s["phase"] == "warm"]
-            s = next(s for s in trials if s["trial"] == warmup + 1)
+            # With --repeats 0 each question/arm has a single trial (#171): it is
+            # both the quality representative and the latency sample.
+            warm = [s for s in trials if s["phase"] == "warm"] or trials[-1:]
+            pick = min(warmup + 1, len(trials) - 1)
+            s = trials[pick]
             case = row["profiles"][profile]
             meta = {k: row[k] for k in ("question_id", "split", "variant", "target_index", "subject")}
             if mode in NUMERIC:
@@ -177,7 +183,7 @@ def summarize_profile(samples, rows, profile, modes, runtime, decode_cap, warmup
                 decoded = [generation_outcome(t, row, profile == "chat_reasoning", eos,
                                               1 if mode == "generate_1" else decode_cap, runtime["vocab"])
                            for t in trials]
-                result = decoded[warmup + 1]
+                result = decoded[pick]
                 if any(t["generated_utf8_hex"] != s["generated_utf8_hex"]
                        or t["generated_text_complete"] != s["generated_text_complete"] for t in trials):
                     raise ValueError("generated surface changed between deterministic repeats")
@@ -257,6 +263,18 @@ def comparison(direct, baseline, direct_times, baseline_times, purpose, margin, 
 
 def prepare_run(args):
     meta, rows = load_cases(args.cases_dir, args.split, args.purpose)
+    subset = None
+    if getattr(args, "question_ids", None):
+        # A frozen list of question IDs out of the validated bundle (#171
+        # amendment 3: re-run only the reasoning answers that hit the cap).
+        # The list order is the run order; the bundle itself stays complete.
+        wanted = json.loads(Path(args.question_ids).read_text())
+        by_id = {r["question_id"]: r for r in rows}
+        if len(set(wanted)) != len(wanted) or any(q not in by_id for q in wanted):
+            raise ValueError("question-ids must be unique IDs of the prepared bundle")
+        rows = [by_id[q] for q in wanted]
+        subset = {"question_ids_sha256": bench.sha256(Path(args.question_ids)), "questions": len(rows),
+                  "of_prepared": meta["counts"][args.split]["questions"]}
     model_hash, binary_hash = bench.sha256(args.model), bench.sha256(args.binary)
     if model_hash != meta["model_sha256"]:
         raise ValueError("model differs from prepared GGUF tokenizer/template checkpoint")
@@ -270,7 +288,19 @@ def prepare_run(args):
             raise ValueError("calibration policy binding mismatch")
         if {r["question_id"] for r in rows} & set(calibration["question_ids"]):
             raise ValueError("calibration and evaluation questions overlap")
-    profiles = {"chat_direct": PROFILES["chat_direct"][:3]} if args.purpose == "calibration" else PROFILES
+    if args.purpose == "calibration":
+        # Temperature is fitted on decision_dense alone; selected rows are bit-identical
+        # to it and SCOREALT is a parity reference, so a campaign may drop them (#171).
+        modes = tuple(getattr(args, "calibration_modes", None) or PROFILES["chat_direct"][:3])
+        if "decision_dense" not in modes or not set(modes) <= set(PROFILES["chat_direct"][:3]):
+            raise ValueError("calibration needs decision_dense and numeric arms only")
+        profiles = {"chat_direct": tuple(m for m in PROFILES["chat_direct"] if m in modes)}
+    else:
+        if getattr(args, "calibration_modes", None):
+            raise ValueError("--calibration-modes applies to the calibration split only")
+        profiles = CORE_PROFILES if getattr(args, "core_arms", False) else PROFILES
+        if getattr(args, "reasoning_only", False):
+            profiles = {"chat_reasoning": PROFILES["chat_reasoning"]}
     flats, commands = {}, {}
     for profile, modes in profiles.items():
         flats[profile] = [{"id": r["id"], "target_index": r["target_index"], **r["profiles"][profile]} for r in rows]
@@ -288,7 +318,7 @@ def prepare_run(args):
                 "dataset": meta["dataset"], "dataset_revision": meta["dataset_revision"],
                 "dataset_subset": meta["dataset_subset"], "shots": meta["shots"], "rotations": meta["rotations"],
                 "subject_limit": meta.get("subject_limit", 0), "per_subject": meta["per_subject"],
-                "test_sample": meta.get("test_sample"),
+                "test_sample": meta.get("test_sample"), "question_subset": subset,
                 "source_revision": bench.command_output(["git", "rev-parse", "HEAD"]),
                 "source_status": bench.command_output(["git", "status", "--porcelain"]),
                 "host": platform.node(), "os": platform.platform(), "machine": platform.machine(),
@@ -331,6 +361,10 @@ def build_report(args, meta, rows, bound, calibration, profiles, cases, outputs,
         report["population"] = (f"Label-independent subject-stratified sample of {sample['questions']} questions "
                                 f"from the cleaned held-out test population of {sample['population']}; "
                                 "not a stock-MMLU score.")
+    if manifest.get("question_subset"):
+        sub = manifest["question_subset"]
+        report["population"] = (report.get("population", "") + f" Restricted to a frozen list of {sub['questions']} "
+                                f"of {sub['of_prepared']} question IDs (sha256 {sub['question_ids_sha256']}).").strip()
     results = {}
     for profile, modes in profiles.items():
         runtime, samples, wall_ms = outputs[profile]
@@ -346,7 +380,7 @@ def build_report(args, meta, rows, bound, calibration, profiles, cases, outputs,
             elif calibration:
                 value["decision_dense"]["calibrated_quality"] = metrics.apply_calibration(numeric["decision_dense"], calibration, bound)
                 value["decision_selected"]["calibrated_quality"] = metrics.apply_calibration(numeric["decision_selected"], calibration, bound)
-    if args.purpose != "calibration":
+    if args.purpose != "calibration" and "chat_direct" in profiles:
         _, direct, dt = results["chat_direct"]
         _, baseline, bt = results["chat_reasoning"]
         report["comparison"] = comparison(direct["decision_selected"], baseline["generate_long"],
@@ -396,11 +430,17 @@ def main():
     p.add_argument("--warmup", type=int, required=True)
     p.add_argument("--repeats", type=int, required=True)
     p.add_argument("--calibration", type=Path)
+    p.add_argument("--question-ids", type=Path, help="JSON list: run only these question IDs, in this order")
+    p.add_argument("--reasoning-only", action="store_true", help="only the chat_reasoning profile")
+    p.add_argument("--core-arms", action="store_true",
+                   help="test/development: only chat_direct dense+selected and chat_reasoning")
+    p.add_argument("--calibration-modes", type=lambda v: v.split(","),
+                   help="calibration split only: numeric arms to run (default: all three)")
     p.add_argument("--out-dir", type=Path, required=True)
     args = p.parse_args()
     if (not 2 <= args.decode_cap <= 32768 or not 0 <= args.warmup <= 1000
-            or not 1 <= args.repeats <= 10000 or args.threads < 1
-            or not math.isfinite(args.margin_pp) or not 0 <= args.margin_pp <= 100):
+            or not 0 <= args.repeats <= 10000 or args.threads < 1
+            or (args.repeats == 0 and args.warmup) or not math.isfinite(args.margin_pp) or not 0 <= args.margin_pp <= 100):
         p.error("invalid decode/warmup/repeat/thread/margin bounds")
     run(args)
 

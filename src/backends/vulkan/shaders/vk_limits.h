@@ -32,6 +32,9 @@
 /* Weights per dispatch of the grouped matvecs (matvec_*_id.comp, #78 phase
  * 3): the push block carries one device address per weight. */
 #define VK_GROUP_MAX 8u
+/* moe_topk: the most experts a router row may have (the row sits in shared
+ * memory). */
+#define VK_MOE_TOPK_MAX_N 512u
 /* matvec_pq2_0: one row per lane of a 32-lane slice. */
 #define VK_MV_PQ2_0_ROWS_PER_WG 32u
 /* ffn_gate_up_gelu_q4k: NUM_ROWS rows in one 32-lane workgroup. */
@@ -86,5 +89,8 @@
 #define VK_DN_SCAN_LANES 8u
 #define VK_DN_SCAN_ROWS 16u
 #define VK_DN_NORM_WG 128u
+/* deltanet_conv_b_f32 / deltanet_scan_b_f32 (#26, batch 3): sessions per
+ * batched decode call, one state binding each. */
+#define VK_DN_MAX_STATES 8u
 
 #endif /* GEIST_VK_LIMITS_H */

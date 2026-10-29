@@ -34,7 +34,6 @@ that repository); the manifest keeps a slot for its verdict.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -45,6 +44,10 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bench_host import sha256_file  # noqa: E402
+from eval_repl import EvalRepl  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -88,14 +91,6 @@ SMALL_MODEL_BYTES = 4_000_000_000
 
 # Files a conversion reads: weights, configs, tokenizer.
 ALLOW = ["*.safetensors", "*.json", "tokenizer*", "*.model", "*.txt", "*.tiktoken"]
-
-
-def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
 
 
 def git_head(repo: Path) -> str:
@@ -214,55 +209,22 @@ def cmd_convert(a: argparse.Namespace) -> int:
     return 0 if determinism is None or determinism["identical"] else 1
 
 
-class EvalGeist:
-    """eval_geist as a subprocess (see tools/eval_geist.c for the protocol)."""
-
-    def __init__(self, exe: Path, gguf: Path):
-        self.p = subprocess.Popen([str(exe), str(gguf)], stdin=subprocess.PIPE,
-                                  stdout=subprocess.PIPE, text=True, bufsize=1)
-        ready = self.p.stdout.readline().strip()  # announced once the model is loaded
-        if ready != "READY":
-            raise RuntimeError(f"eval_geist {gguf}: {ready!r} instead of READY")
-
-    def ask(self, line: str) -> list[str]:
-        self.p.stdin.write(line + "\n")
-        self.p.stdin.flush()
-        reply = self.p.stdout.readline().split()
-        if not reply or reply[0] != "OK":
-            raise RuntimeError(f"eval_geist: {line[:40]}... -> {' '.join(reply)[:200]}")
-        return reply[1:]
-
-    def tokens(self, text: str) -> list[int]:
-        esc = text.replace("\\", "\\\\").replace("\n", "\\n").replace("\t", "\\t")
-        r = self.ask(f"TOK {esc}")
-        return [int(t) for t in r[1:1 + int(r[0])]]
-
-    def close(self) -> None:
-        try:
-            self.p.stdin.write("QUIT\n")
-            self.p.stdin.flush()
-        except BrokenPipeError:
-            pass
-        self.p.wait(timeout=60)
-
-
 def perplexity(exe: Path, gguf: Path, ids: list[int], window: int) -> float:
     """exp(-mean log p) over `ids` in windows of `window` tokens, each window's
     first token given as the prompt (it is not scored)."""
-    ev = EvalGeist(exe, gguf)
+    ev = EvalRepl(exe, gguf)
     total, n = 0.0, 0
     try:
         # The model's own BOS policy (Gemma needs <bos>; llama-perplexity adds
         # it too): with BOS the whole window is scored after it, without it
         # the window's first token is the prompt.
-        add_bos, bos = (int(x) for x in ev.ask("BOS")[:2])
         for w in range(0, len(ids) - 1, window):
             chunk = ids[w:w + window]
             if len(chunk) < 2:
                 break
-            prompt, cont = ([bos], chunk) if add_bos else ([chunk[0]], chunk[1:])
-            ev.ask("RESET")
-            r = ev.ask(f"SCORE {len(prompt)} " + " ".join(map(str, prompt)) +
+            prompt, cont = ([ev.bos], chunk) if ev.bos is not None else ([chunk[0]], chunk[1:])
+            ev.command("RESET")
+            r = ev.command(f"SCORE {len(prompt)} " + " ".join(map(str, prompt)) +
                        f" {len(cont)} " + " ".join(map(str, cont)))
             lps = [float(x) for x in r[1:]]
             total += sum(lps)
@@ -286,8 +248,8 @@ def cmd_gate(a: argparse.Namespace) -> int:
     bound = a.bound if a.bound is not None else (PPL_BOUNDS_SMALL if small else PPL_BOUNDS)[quant]
     text = Path(a.text).read_text()
     # tokenize with the reference: both files must share the tokenizer
-    ev = EvalGeist(exe, Path(a.ref))
-    ids = ev.tokens(text)
+    ev = EvalRepl(exe, Path(a.ref))
+    ids = ev.encode(text)
     ev.close()
     ref_ppl = perplexity(exe, Path(a.ref), ids, a.window)
     cand_ppl = perplexity(exe, Path(a.cand), ids, a.window)

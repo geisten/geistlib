@@ -86,18 +86,12 @@ release-check:
 release-state-check:
 	@sh scripts/check-published-release.sh
 
-AGENT_CONTRACT_SMOKE := $(BIN_DIR)/examples/agent_contract_smoke
-agent-contract-smoke: $(AGENT_CONTRACT_SMOKE)
-	@$(AGENT_CONTRACT_SMOKE)
-$(AGENT_CONTRACT_SMOKE): examples/agent_contract_smoke.c $(LIB_FILE) include/geist.h include/geist_util.h
-	@mkdir -p $(@D)
-	$(CC) -std=c23 -Wall -Wextra -Wpedantic -Werror -Iinclude $(LDFLAGS) -o $@ $< $(LIB_FILE) $(LDLIBS)
-
-# The API geist-runtime builds on (#622), enforced the same way.
-RUNTIME_CONTRACT_SMOKE := $(BIN_DIR)/examples/runtime_contract_smoke
-runtime-contract-smoke: $(RUNTIME_CONTRACT_SMOKE)
-	@$(RUNTIME_CONTRACT_SMOKE)
-$(RUNTIME_CONTRACT_SMOKE): examples/runtime_contract_smoke.c $(LIB_FILE) include/geist.h include/geist_util.h
+# runtime-contract-smoke: the API geist-runtime builds on (#622), enforced
+# the same way.
+CONTRACT_SMOKES := $(BIN_DIR)/examples/agent_contract_smoke $(BIN_DIR)/examples/runtime_contract_smoke
+agent-contract-smoke runtime-contract-smoke: %-contract-smoke: $(BIN_DIR)/examples/%_contract_smoke
+	@$<
+$(CONTRACT_SMOKES): $(BIN_DIR)/examples/%: examples/%.c $(LIB_FILE) include/geist.h include/geist_util.h
 	@mkdir -p $(@D)
 	$(CC) -std=c23 -Wall -Wextra -Wpedantic -Werror -Iinclude $(LDFLAGS) -o $@ $< $(LIB_FILE) $(LDLIBS)
 
@@ -277,26 +271,24 @@ test-py:
 	if [ $$status -ne 0 ]; then echo "test-py: FAIL"; exit $$status; fi; \
 	echo "test-py: PASS"
 
+# $(call skip_on_77,<command>): run it; its exit 77 (SKIPPED, tests/README.md)
+# reports "<target>: SKIPPED" and succeeds.
+skip_on_77 = $(1); rc=$$?; if [ $$rc -eq 77 ]; then echo "$@: SKIPPED"; exit 0; fi; exit $$rc
+
 # The BitNet embedding chain end to end on a synthetic model: converter ->
 # GGUF -> loader -> per-projection norms -> pooling -> peek_embedding. Kept out
 # of test-py (which is hermetic by contract) because it runs a built binary,
 # and out of test-int because it needs no reference GGUF — it builds its own.
 # Skips (77) when numpy or the tool is missing, so it is safe to run anywhere.
 test-embedding: bin
-	@python3 tests/scripts/embedding_e2e_smoke.py $(BIN_DIR)/tools/dump_geist_embedding; \
-	rc=$$?; \
-	if [ $$rc -eq 77 ]; then echo "test-embedding: SKIPPED"; exit 0; fi; \
-	exit $$rc
+	@$(call skip_on_77,python3 tests/scripts/embedding_e2e_smoke.py $(BIN_DIR)/tools/dump_geist_embedding)
 
 # Dequant parity against gguf-py, the canonical reference implementation.
 # Kept out of test-py, which is hermetic by contract — this one needs a real
 # GGUF. Skips (77) when the model or the `gguf` package is missing, so it is
 # safe to run anywhere; pass GGUF files as arguments to check specific ones.
 test-dequant: bin
-	@python3 tests/scripts/validate_gguf_dequant.py $(DEQUANT_MODELS); \
-	rc=$$?; \
-	if [ $$rc -eq 77 ]; then echo "test-dequant: SKIPPED"; exit 0; fi; \
-	exit $$rc
+	@$(call skip_on_77,python3 tests/scripts/validate_gguf_dequant.py $(DEQUANT_MODELS))
 
 # `make test-all` adds e2e but excludes benches. Model first (see `test`).
 test-all: $(MODEL_PREREQ) test-unit test-int test-py test-e2e

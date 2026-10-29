@@ -24,6 +24,7 @@
 #include "weight_load.h"
 #include "rotation.h"
 #include "moe_gpu.h"
+#include "moe_profile.h"
 
 #include "gguf_reader.h"
 #include "gemma4_kernels.h"
@@ -32,7 +33,7 @@
 #include "fwht.h"
 #include "kivi.h"
 #include "ptqtp_awq.h"
-#include "parse.h"
+#include "env.h"
 #include "hw_probe.h"
 
 #include <geist.h>
@@ -49,19 +50,12 @@
 #include <arm_neon.h>
 #endif
 
-static bool env_flag_enabled(const char *name, bool fallback) {
-    const char *env = getenv(name);
-    if (env == nullptr || env[0] == '\0') {
-        return fallback;
-    }
-    return env[0] == '1' || env[0] == 'y' || env[0] == 'Y' || env[0] == 't' || env[0] == 'T';
-}
-
 static struct transformer_runtime_flags transformer_runtime_flags_from_env(void) {
     return (struct transformer_runtime_flags) {
-            .bitnet_sub_ln_enabled = !env_flag_enabled("GEIST_BITNET_NO_SUBLN", false),
-            .dump_act_sparsity     = env_flag_enabled("GEIST_DUMP_ACT_SPARSITY", false),
-            .dn_seq_prefill        = env_flag_enabled("GEIST_DN_SEQ_PREFILL", false),
+            .bitnet_sub_ln_enabled = !geist_env_flag("GEIST_BITNET_NO_SUBLN", false),
+            .dump_act_sparsity     = geist_env_flag("GEIST_DUMP_ACT_SPARSITY", false),
+            .dn_seq_prefill        = geist_env_flag("GEIST_DN_SEQ_PREFILL", false),
+            .batch_per_session     = geist_env_flag("GEIST_DECODE_BATCH_PER_SESSION", false),
     };
 }
 
@@ -116,6 +110,7 @@ static void release_layer_weight_aux(struct transformer_layer_weights *L) {
         safe_free(&pv);
         *views[p] = nullptr;
     }
+    safe_free((void **) &L->moe_shexp_gate);
 }
 
 /* ---- Runtime infrastructure: KV caches, RoPE tables, scratch ---------- */
@@ -898,6 +893,7 @@ static void free_scratch(struct geist_backend *be, struct transformer_arch_sessi
         for (size_t i = 0; i < sizeof slots / sizeof slots[0]; i++) {
             transformer_buffer_release(be, slots[i]);
         }
+        transformer_buffer_release(be, &sess->logits_host);
     }
     if (sess->scratch_arena_base != nullptr) {
         safe_free(&sess->scratch_arena_base);
@@ -925,6 +921,24 @@ static void free_scratch(struct geist_backend *be, struct transformer_arch_sessi
 
 /* Session-owned runtime allocations: KV caches, scratch pool and slots,
  * per-forward arena, ones row, then the family's own state. */
+/* The readback copy of one logits row (#219), on a discrete GPU only: there
+ * scratch_logits is device memory the host reads uncached. */
+[[nodiscard]] static enum geist_status alloc_logits_host(struct transformer_arch_session *sess) {
+    const struct transformer_arch_state *st = sess->model;
+    struct geist_backend                *be = st->backend;
+    struct geist_backend_memory          mem;
+    if (sess->scratch_logits == nullptr || !be->desc->caps.batched_submit ||
+        be->desc->vtbl->buffer_copy == nullptr || geist_backend_memory_info(be, &mem) != GEIST_OK ||
+        mem.unified_memory) {
+        return GEIST_OK;
+    }
+    return be->desc->vtbl->buffer_create(be,
+                                         (size_t) st->vocab_size * sizeof(float),
+                                         GEIST_BUFFER_IO,
+                                         GEIST_MEMORY_AUTO,
+                                         &sess->logits_host);
+}
+
 [[nodiscard]] static enum geist_status
 allocate_runtime_session(struct transformer_arch_session *sess) {
     const struct transformer_arch_state *st = sess->model;
@@ -940,6 +954,8 @@ allocate_runtime_session(struct transformer_arch_session *sess) {
         s = alloc_scratch_arena(sess);
     if (s == GEIST_OK)
         s = alloc_ones_row(sess, &plan);
+    if (s == GEIST_OK)
+        s = alloc_logits_host(sess);
     if (s == GEIST_OK && st->family != nullptr && st->family->session_alloc != nullptr)
         s = st->family->session_alloc(sess);
     return s;
@@ -1265,6 +1281,20 @@ geometry_from_metadata(struct geist_backend             *be,
         st->m_max = 64;
     }
 
+    /* A mixture of experts on a discrete GPU (#163): a chunk's rows are
+     * spread over its experts, ~8 per expert at 128, ~32 at 512, and the
+     * hot experts' GEMMs need the larger batch (Qwen3-30B-A3B, RTX 2080 Ti:
+     * prefill 302-307 tok/s at 128, 490-498 at 512, runs 1754/1755).
+     * Before the weights load: the fused ops are planned for this m_max.
+     * caps.max_m and GEIST_M_MAX, applied below, still win. */
+    if (st->config.moe_n_experts > 0 && be->desc != nullptr &&
+        strncmp(be->desc->name, "cpu_", 4) != 0 && st->m_max < 512) {
+        struct geist_backend_memory mem;
+        if (geist_backend_memory_info(be, &mem) == GEIST_OK && !mem.unified_memory) {
+            st->m_max = 512;
+        }
+    }
+
     /* Per-model prefill knobs (prefill_tuning.h): the chunk gets the delta
      * for this family and weight size, and its OpenMP spin policy becomes
      * the process default — here, before weight packing
@@ -1327,13 +1357,8 @@ geometry_from_metadata(struct geist_backend             *be,
     /* GPU backends default to the backend-arena mode: norm weights and
      * embed tables must live inside a backend buffer to be GPU-bindable;
      * mmap pages are not (every touching op would flush + run on CPU). */
-    bool mmap_alias_mode = !be->desc->caps.weights_need_backend_arena;
-    {
-        const char *env = getenv("GEIST_WEIGHT_MMAP");
-        if (env != nullptr && env[0] != '\0') {
-            mmap_alias_mode = (env[0] != '0');
-        }
-    }
+    const bool mmap_alias_mode =
+            geist_env_flag("GEIST_WEIGHT_MMAP", !be->desc->caps.weights_need_backend_arena);
 
     if (!mmap_alias_mode) {
         /* First arena chunk from the GGUF's tensor table (the whole model
@@ -1507,10 +1532,21 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
                                                      const struct geist_session_opts *opts,
                                                      struct transformer_arch_state  **out) {
     enum geist_status s = state_create_range(be, gguf, opts, 0, SIZE_MAX, false, false, out);
+    /* A mixture of experts counts its router's selections (#165); the
+     * counts of earlier runs place its experts below. */
+    if (s == GEIST_OK && (*out)->config.moe_n_experts > 0) {
+        char dir[1024];
+        (*out)->moe_prof = moe_profile_open((*out)->n_layers,
+                                            (*out)->config.moe_n_experts,
+                                            moe_profile_key(gguf),
+                                            moe_profile_dir(sizeof dir, dir) ? dir : nullptr);
+    }
     /* A mixture of experts on a GPU: its experts live on moe_cpu; the GPU
      * gets copies of the hottest, in the memory the rest left (#78). */
     if (s == GEIST_OK && (*out)->moe_cpu != nullptr) {
         s = moe_gpu_attach(*out, be);
+        if (s == GEIST_OK)
+            s = moe_resolve_cold(*out);
         if (s != GEIST_OK) {
             transformer_state_destroy(*out);
             *out = nullptr;
@@ -1579,7 +1615,7 @@ plan_split_layers(struct gguf_ctx *gguf, const struct geist_session_opts *opts, 
             kv = SIZE_MAX;
         }
         *out = mem.unified_memory ? n : transformer_split_layers_fit(n, bytes, kv, avail);
-        if (getenv("GEIST_VERBOSE") != nullptr) {
+        if (geist_env_flag("GEIST_VERBOSE", false)) {
             fprintf(stderr,
                     "geist: split planner: %zu of %zu layers on %s (%zu MiB free, %zu MiB "
                     "reserved, %zu MiB KV per layer at %zu positions)\n",
@@ -1623,7 +1659,7 @@ plan_split_layers(struct gguf_ctx *gguf, const struct geist_session_opts *opts, 
     } else {
         sub->m_max = st->m_max;
     }
-    if (getenv("GEIST_VERBOSE") != nullptr) {
+    if (geist_env_flag("GEIST_VERBOSE", false)) {
         fprintf(stderr,
                 "geist: layer split: layers 0..%zu on %s, layers %zu..%zu, embedding and head "
                 "on %s\n",
@@ -1648,9 +1684,9 @@ static size_t offload_m_min(const struct transformer_arch_state *st, struct geis
     if (st->layer_lo >= st->n_layers) {
         return 0;
     }
-    const char *v = getenv("GEIST_OFFLOAD_M_MIN");
-    if (v != nullptr && *v != '\0') {
-        return (size_t) strtoull(v, nullptr, 10);
+    long v;
+    if (geist_parse_long(getenv("GEIST_OFFLOAD_M_MIN"), &v) && v >= 0) {
+        return (size_t) v;
     }
     struct geist_backend_memory mem;
     if (geist_backend_memory_info(sbe, &mem) != GEIST_OK || mem.unified_memory) {
@@ -1665,7 +1701,7 @@ static size_t offload_m_min(const struct transformer_arch_state *st, struct geis
     }
     const size_t avail = geist_mem_available();
     if (avail == 0 || copy > avail / 5 * 4) {
-        if (getenv("GEIST_VERBOSE") != nullptr) {
+        if (geist_env_flag("GEIST_VERBOSE", false)) {
             fprintf(stderr,
                     "geist: offload off: its copy of %zu MiB needs more host memory than the "
                     "%zu MiB available (GEIST_OFFLOAD_M_MIN overrides)\n",
@@ -1681,7 +1717,7 @@ static void offload_destroy(struct transformer_offload *o) {
     if (o == nullptr) {
         return;
     }
-    if (getenv("GEIST_VERBOSE") != nullptr && o->twins != nullptr) {
+    if (geist_env_flag("GEIST_VERBOSE", false) && o->twins != nullptr) {
         fprintf(stderr,
                 "geist: offload: %llu prefill chunks ran on %s, %llu steps mirrored there\n",
                 (unsigned long long) atomic_load(&o->chunks),
@@ -1727,7 +1763,7 @@ static void offload_destroy(struct transformer_offload *o) {
     if (o->twins->m_max < st->m_max) {
         st->m_max = o->twins->m_max;
     }
-    if (getenv("GEIST_VERBOSE") != nullptr) {
+    if (geist_env_flag("GEIST_VERBOSE", false)) {
         fprintf(stderr,
                 "geist: offload: prefill chunks of %zu rows or more run layers %zu..%zu on %s\n",
                 m_min,
@@ -1766,24 +1802,28 @@ static void offload_destroy(struct transformer_offload *o) {
     return s;
 }
 
-enum geist_status transformer_state_create(struct geist_backend            *be,
-                                           const char                      *gguf_path,
-                                           const struct geist_session_opts *opts,
-                                           struct transformer_arch_state  **out) {
-    if (be == nullptr || gguf_path == nullptr || out == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    *out                  = nullptr;
-    const char      *err  = nullptr;
-    struct gguf_ctx *gguf = gguf_open(gguf_path, &err);
-    if (gguf == nullptr) {
-        geist_backend_set_error(be,
-                                GEIST_E_FILE_NOT_FOUND,
-                                "transformer: gguf_open(%s): %s",
-                                gguf_path,
-                                err != nullptr ? err : "(no detail)");
-        return GEIST_E_FILE_NOT_FOUND;
-    }
+/* Where a model's GGUF comes from, so the split stage and the offload twins
+ * can open their own copy of it (as model.c's load_args). */
+struct gguf_src {
+    const char *path; /* else data / size */
+    const void *data;
+    size_t      size;
+};
+
+static struct gguf_ctx *gguf_src_open(const struct gguf_src *src) {
+    const char *err = nullptr;
+    return src->path != nullptr ? gguf_open(src->path, &err)
+                                : gguf_open_memory(src->data, src->size, &err);
+}
+
+/* The state for an opened `gguf` (consumed): whole on `be`, or with the
+ * split stage (MoE split, planned or given layer split) and its offload
+ * twins, which open `src` again. */
+static enum geist_status state_create_opened(struct geist_backend            *be,
+                                             struct gguf_ctx                 *gguf,
+                                             const struct gguf_src           *src,
+                                             const struct geist_session_opts *opts,
+                                             struct transformer_arch_state  **out) {
     if (split_requested(opts) && moe_gpu_is_moe(gguf)) {
         return create_moe_split(be, gguf, opts, out);
     }
@@ -1805,21 +1845,26 @@ enum geist_status transformer_state_create(struct geist_backend            *be,
     if (s != GEIST_OK) {
         return s;
     }
-    struct gguf_ctx *gguf2 = gguf_open(gguf_path, &err);
+    const enum geist_status open_err =
+            src->path != nullptr ? GEIST_E_FILE_NOT_FOUND : GEIST_E_FORMAT;
+    struct gguf_ctx *gguf2 = gguf_src_open(src);
     if (gguf2 == nullptr) {
-        geist_backend_set_error(be,
-                                GEIST_E_FILE_NOT_FOUND,
-                                "transformer: gguf_open(%s) for the split stage",
-                                gguf_path);
+        if (src->path != nullptr) {
+            geist_backend_set_error(
+                    be, open_err, "transformer: gguf_open(%s) for the split stage", src->path);
+        } else {
+            geist_backend_set_error(
+                    be, open_err, "transformer: gguf_open_memory for the split stage");
+        }
         transformer_state_destroy(*out);
         *out = nullptr;
-        return GEIST_E_FILE_NOT_FOUND;
+        return open_err;
     }
     s                  = attach_split(*out, gguf2, opts);
     const size_t m_min = s == GEIST_OK ? offload_m_min(*out, opts->split_backend) : 0;
     if (m_min > 0) {
-        struct gguf_ctx *gguf3 = gguf_open(gguf_path, &err);
-        s = gguf3 != nullptr ? attach_offload(*out, gguf3, opts, m_min) : GEIST_E_FILE_NOT_FOUND;
+        struct gguf_ctx *gguf3 = gguf_src_open(src);
+        s = gguf3 != nullptr ? attach_offload(*out, gguf3, opts, m_min) : open_err;
         if (gguf3 == nullptr) {
             transformer_state_destroy(*out);
         }
@@ -1828,6 +1873,27 @@ enum geist_status transformer_state_create(struct geist_backend            *be,
         *out = nullptr;
     }
     return s;
+}
+
+enum geist_status transformer_state_create(struct geist_backend            *be,
+                                           const char                      *gguf_path,
+                                           const struct geist_session_opts *opts,
+                                           struct transformer_arch_state  **out) {
+    if (be == nullptr || gguf_path == nullptr || out == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *out                  = nullptr;
+    const char      *err  = nullptr;
+    struct gguf_ctx *gguf = gguf_open(gguf_path, &err);
+    if (gguf == nullptr) {
+        geist_backend_set_error(be,
+                                GEIST_E_FILE_NOT_FOUND,
+                                "transformer: gguf_open(%s): %s",
+                                gguf_path,
+                                err != nullptr ? err : "(no detail)");
+        return GEIST_E_FILE_NOT_FOUND;
+    }
+    return state_create_opened(be, gguf, &(struct gguf_src) {.path = gguf_path}, opts, out);
 }
 
 enum geist_status transformer_state_create_from_memory(struct geist_backend            *be,
@@ -1848,48 +1914,8 @@ enum geist_status transformer_state_create_from_memory(struct geist_backend     
                                 err != nullptr ? err : "(no detail)");
         return GEIST_E_FORMAT;
     }
-    if (split_requested(opts) && moe_gpu_is_moe(gguf)) {
-        return create_moe_split(be, gguf, opts, out);
-    }
-    struct geist_session_opts planned;
-    if (split_requested(opts) && opts->split_layers == GEIST_SPLIT_AUTO) {
-        planned                    = *opts;
-        const enum geist_status ps = plan_split_layers(gguf, opts, &planned.split_layers);
-        if (ps != GEIST_OK) {
-            gguf_close(gguf);
-            return ps;
-        }
-        opts = &planned;
-    }
-    if (!split_requested(opts)) {
-        return transformer_state_create_from_gguf(be, gguf, opts, out);
-    }
-    enum geist_status s =
-            state_create_range(be, gguf, opts, opts->split_layers, SIZE_MAX, false, false, out);
-    if (s != GEIST_OK) {
-        return s;
-    }
-    struct gguf_ctx *gguf2 = gguf_open_memory(data, size, &err);
-    if (gguf2 == nullptr) {
-        geist_backend_set_error(
-                be, GEIST_E_FORMAT, "transformer: gguf_open_memory for the split stage");
-        transformer_state_destroy(*out);
-        *out = nullptr;
-        return GEIST_E_FORMAT;
-    }
-    s                  = attach_split(*out, gguf2, opts);
-    const size_t m_min = s == GEIST_OK ? offload_m_min(*out, opts->split_backend) : 0;
-    if (m_min > 0) {
-        struct gguf_ctx *gguf3 = gguf_open_memory(data, size, &err);
-        s = gguf3 != nullptr ? attach_offload(*out, gguf3, opts, m_min) : GEIST_E_FORMAT;
-        if (gguf3 == nullptr) {
-            transformer_state_destroy(*out);
-        }
-    }
-    if (s != GEIST_OK) {
-        *out = nullptr;
-    }
-    return s;
+    return state_create_opened(
+            be, gguf, &(struct gguf_src) {.data = data, .size = size}, opts, out);
 }
 
 void transformer_state_destroy(struct transformer_arch_state *st) {
@@ -1916,6 +1942,8 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     st->offload = nullptr;
     moe_gpu_destroy(st->moe_gpu); /* its copies key on the expert bytes freed below */
     st->moe_gpu = nullptr;
+    moe_profile_close(st->moe_prof); /* writes the profile cache */
+    st->moe_prof = nullptr;
 
     if (be != nullptr) {
         /* The layer array may be missing: its allocation failed. */
@@ -2029,17 +2057,14 @@ resolve_kv_mode_requested(const struct geist_backend      *be,
     if (m != GEIST_KV_AUTO) {
         return m;
     }
-    const char *env_kivi = getenv("GEIST_KV_KIVI");
-    const char *env_int8 = getenv("GEIST_KV_INT8");
-    const char *env_int4 = getenv("GEIST_KV_INT4");
-    if (env_int4 != nullptr && env_int4[0] == '1') {
+    if (geist_env_flag("GEIST_KV_INT4", false)) {
         return GEIST_KV_INT4;
     }
-    if (env_kivi != nullptr && env_kivi[0] == '1') {
+    if (geist_env_flag("GEIST_KV_KIVI", false)) {
         return GEIST_KV_KIVI;
     }
-    if (env_int8 != nullptr) {
-        return (env_int8[0] == '1') ? GEIST_KV_INT8 : GEIST_KV_FP32;
+    if (getenv("GEIST_KV_INT8") != nullptr) { /* set at all: INT8 or, when off, FP32 */
+        return geist_env_flag("GEIST_KV_INT8", false) ? GEIST_KV_INT8 : GEIST_KV_FP32;
     }
     /* The model family's preference, where it has one (transformer_family
      * .kv_auto): a precision need of the model, so it outranks the
@@ -2124,10 +2149,7 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
      * against FP32 KV, mean JS 0.016 nats and 82 % top-1 unrotated, 0.0013
      * and 96 % rotated). GEIST_KV_ROT=0 opts out, =1 forces on. */
     {
-        const char *env_rot     = getenv("GEIST_KV_ROT");
-        const bool  rot_default = kl.int8;
-        const bool  rot_on      = (env_rot != nullptr) ? (env_rot[0] == '1') : rot_default;
-        kl.rot                  = kl.int8 && rot_on;
+        kl.rot = kl.int8 && geist_env_flag("GEIST_KV_ROT", kl.int8);
     }
     /* F16 cache: explicit request (session, family), or AUTO-resolved
      * FP32 upgraded on a backend that does so by default
@@ -2136,17 +2158,15 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
      * GEIST_KV_F16=0 forces FP32, =1 requests it under AUTO). Without
      * them F16 degrades to FP32. */
     {
-        const bool  slot_ok = state->backend != nullptr &&
-                              state->backend->desc->caps.kv_f16_attention &&
-                              geist_backend_fused_tbl(state->backend)->kv_append_f16 != nullptr;
-        const char *env_f16 = getenv("GEIST_KV_F16");
-        bool        want    = mode == GEIST_KV_F16;
+        const bool slot_ok = state->backend != nullptr &&
+                             state->backend->desc->caps.kv_f16_attention &&
+                             geist_backend_fused_tbl(state->backend)->kv_append_f16 != nullptr;
+        bool       want    = mode == GEIST_KV_F16;
         if (mode == GEIST_KV_FP32 && (opts == nullptr || opts->kv_mode == GEIST_KV_AUTO) &&
             state->backend != nullptr) {
-            want = env_f16 != nullptr ? env_f16[0] == '1'
-                                      : state->backend->desc->caps.kv_f16_by_default;
+            want = geist_env_flag("GEIST_KV_F16", state->backend->desc->caps.kv_f16_by_default);
         }
-        kl.f16 = want && slot_ok && !(env_f16 != nullptr && env_f16[0] == '0');
+        kl.f16 = want && slot_ok && geist_env_flag("GEIST_KV_F16", true); /* =0 forces FP32 */
     }
     return kl;
 }
@@ -2393,7 +2413,7 @@ static struct transformer_arch_session *session_shell(struct transformer_arch_st
         return nullptr;
     }
     sess->model       = state;
-    sess->mtp_enabled = state->n_mtp_layers > 0 && env_flag_enabled("GEIST_MTP", false);
+    sess->mtp_enabled = state->n_mtp_layers > 0 && geist_env_flag("GEIST_MTP", false);
     sess->m_max       = (opts != nullptr && opts->m_max > 0) ? opts->m_max : state->m_max;
     /* Honor opts->max_seq_len up to the model's frozen bound. Sessions
      * may run SMALLER windows (their KV caches are sized to req_seq);

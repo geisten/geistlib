@@ -5,7 +5,10 @@ name: vulkan-split
 # 0..N-1 on the GPU (the rest and the head on the CPU) at several N, and
 # llama.cpp's llama-bench -ngl at the same N on the same file, with
 # tools/bench_layer_split.py. Peak RSS and VRAM per configuration. The
-# report goes to the job summary, the raw rows to an artifact.
+# report goes to the job summary, the raw rows to an artifact. `env` sets
+# extra variables for every run, e.g. GEIST_OFFLOAD_M_MIN=64 (offload rows
+# on the split, #78) or GEIST_VK_STREAM_ASYNC=0 (streamed copies in the
+# compute batch); dispatch once per setting for an on/off comparison.
 #
 # On demand only:  tea actions workflows dispatch --login git.geisten.net \
 #   --repo geisten/geistlib --ref <branch> vulkan-split.yml
@@ -45,6 +48,10 @@ on:
         description: "interleaved cycles"
         type: string
         default: "3"
+      env:
+        description: "extra VAR=VALUE for every run, separated by ; (e.g. GEIST_OFFLOAD_M_MIN=64)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -61,6 +68,7 @@ jobs:
       LLAMA_PIN: ${{ inputs.llama_pin }}
       CYCLES: ${{ inputs.cycles }}
       GPU_ONLY: ${{ inputs.gpu_only }}
+      EXTRA_ENV: ${{ inputs.env }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -72,14 +80,7 @@ jobs:
       - name: Model (cached outside the workspace, sha256-checked)
         run: |
           set -eo pipefail
-          CACHE=${GEIST_MODEL_CACHE:-$HOME/geist-models}
-          mkdir -p "$CACHE"
-          F="$CACHE/$(basename "$MODEL_URL")"
-          if [ ! -f "$F" ]; then
-            curl -fL --retry 5 -C - -o "$F.part" "$MODEL_URL"
-            echo "$MODEL_SHA  $F.part" | sha256sum -c -
-            mv "$F.part" "$F"
-          fi
+          F=$(python3 tools/fetch_bench_model.py --url "$MODEL_URL" --sha256 "$MODEL_SHA")
           echo "MODEL=$F" >> "$GITHUB_ENV"
       - name: Build geistlib (vulkan + cpu_x86)
         run: make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
@@ -94,12 +95,14 @@ jobs:
         run: |
           set -eo pipefail
           . scripts/gpu-lock.sh
+          for e in $(echo "$EXTRA_ENV" | tr ';' ' '); do export "$e"; done
           GEIST_SPLIT_BACKEND=vulkan GEIST_SPLIT_GGUF_PATH="$MODEL" GEIST_SPLIT_POINTS="$(echo "$SPLITS" | tr '; ' ',,')" \
             bin/linux/release/tests/test_layer_split_int 2>&1 | tee split-out/correctness.txt
       - name: Measure
         run: |
           set -eo pipefail
           . scripts/gpu-lock.sh
+          for e in $(echo "$EXTRA_ENV" | tr ';' ' '); do export "$e"; done
           python3 tools/bench_layer_split.py \
             --bench bin/linux/release/tests/bench_perf_sweep --gguf "$MODEL" \
             --cpu cpu_x86 --gpu vulkan --splits "$SPLITS" --cycles "$CYCLES" \

@@ -21,6 +21,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
+
+#include <geist_types.h> /* enum geist_dtype */
 
 typedef enum {
     GGUF_TYPE_F32    = 0,
@@ -113,6 +116,10 @@ const struct gguf_tensor_t *gguf_get_tensor(const struct gguf_ctx *ctx, const ch
 
 const char *gguf_dtype_name(gguf_dtype_t dt);
 
+/* The geist dtype a GGUF tensor type loads as, or GEIST_DTYPE_CUSTOM for a
+ * type geist has no kernels for. */
+enum geist_dtype gguf_dtype_geist(gguf_dtype_t dt);
+
 /* Total element count across all dims of a tensor. */
 size_t gguf_tensor_elem_count(const struct gguf_tensor_t *t);
 
@@ -158,5 +165,28 @@ bool gguf_get_meta_array_info(const struct gguf_ctx *ctx,
                               uint32_t              *out_elem_vt,
                               uint64_t              *out_count,
                               const uint8_t        **out_payload);
+
+/* Walks a STRING array from gguf_get_meta_array_info:
+ * `struct gguf_str_iter it = {.p = payload, .left = count};` then
+ * `while (gguf_str_next(&it, &s, &len))`. The reader validated every
+ * element's extent when it opened the file, so the (u64 length, bytes)
+ * pairs are read back without re-checking against the payload end. */
+struct gguf_str_iter {
+    const uint8_t *p;
+    uint64_t       left;
+};
+
+static inline bool gguf_str_next(struct gguf_str_iter *it, const char **s, size_t *len) {
+    if (it->left == 0) {
+        return false;
+    }
+    uint64_t n = 0;
+    memcpy(&n, it->p, sizeof n);
+    *s   = (const char *) (it->p + sizeof n);
+    *len = (size_t) n;
+    it->p += sizeof n + (size_t) n;
+    it->left--;
+    return true;
+}
 
 #endif

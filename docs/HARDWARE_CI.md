@@ -26,7 +26,7 @@ tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib \
 | `vulkan-gpu` | `geist-vulkan` | nightly + dispatch: Vulkan suite + model e2e on the discrete GPU |
 | `vulkan-ab` | `geist-vulkan` | dispatch: A/B on one Vulkan device or the Zen 5 CPU |
 | `cross-engine-campaign` | `geist-vulkan` | dispatch: one cell of the cross-engine matrix |
-| `bench-matrix` | per column (`geist-avx512`, `geist-vulkan`, `macos-15-heavy`, `pi5`) | nightly (Sundays: every model; Mac cells only start 00:00–07:00 Berlin time) + dispatch: the cross-engine matrix, published to [geisten.net/bench](https://geisten.net/bench/) |
+| `bench-matrix` | per column (`geist-avx512`, `geist-vulkan`, `apple-m1max`, `pi5`) | nightly (Sundays: every model; Mac cells only start 00:00–07:00 Berlin time) + dispatch: the cross-engine matrix, published to [geisten.net/bench](https://geisten.net/bench/) |
 
 ### Benchmark matrix
 
@@ -36,8 +36,10 @@ cell. Each job fetches its model into the host cache (`GEIST_MODEL_CACHE`,
 default `~/geist-models`) with `tools/fetch_bench_model.py` — the URL comes
 from `benchmark/model_sources.json`, the SHA-256 from the protocol — builds
 the pinned llama.cpp (`scripts/ensure-llama-bench.sh`) and runs
-`tools/bench_cross_engine.py` inside the host lock: `/tmp/geist-bench.lock`
-on the desktop (the docker CI runner's health check pauses it while held),
+`tools/bench_cross_engine.py` inside the host lock: `~/bin/with-desktop-lock`
+on the desktop (`/tmp/geist-bench.lock` through a lease broker that names the
+holder; the docker CI runner `desktop-ci` pauses while it is held and
+git.geisten.net/status/ci/ lists it as "paused" with that holder),
 `with-pi-lock` on the Pi, `~/bin/with-mac-lock` on the Mac (`/tmp/mac-heavy.lock`; the
 `mac-m1max` runner (`macos-15-heavy`) holds it for every job and takes no
 job while an agent holds it — see "Mac runners" and "Host locks"). The Apple profiles gate on idle CPU (>= 80 %
@@ -107,7 +109,7 @@ holds the lock for a compile; a build waits only while a measurement runs:
 | name | label | lock | install |
 | :-- | :-- | :-- | :-- |
 | `mac-light` | `macos-15:host` | ci lease while a job runs (45 min declared); takes no job while it is held; daemon at `nice 10` | `~/gitea-runner-mac-light`, LaunchAgent `net.geisten.gitea-runner-mac-light` (`Nice` 10) |
-| `mac-m1max` | `macos-15-heavy:host` | held for the whole job | `~/gitea-runner-geisten`, LaunchAgent `net.geisten.gitea-runner-geisten` |
+| `mac-m1max` | `macos-15-heavy:host`, `apple-m1max:host` (benchmark columns only) | held for the whole job | `~/gitea-runner-geisten`, LaunchAgent `net.geisten.gitea-runner-geisten` |
 
 `mac-m1max`'s hooks (`~/bin/mac-runner-job-started.sh` /
 `mac-runner-job-completed.sh`) hold a `ci` lease while a job runs. Its
@@ -126,17 +128,37 @@ lock-held A/B). Each has its own `cache.dir` and
 race on one action checkout. Both run with `capacity: 1` and
 `fetch_timeout: 30s`.
 
+### Mac mini M6 (host mode, since 2026-10-28)
+
+A Mac mini M6 (Mac18,5; 12 cores: 2 super, 4 performance, 6 efficiency;
+32 GB; Metal 4; macOS 27) in the home LAN serves the same CI labels as the
+MacBook, so a `macos-15` or `macos-15-heavy` job runs on whichever Mac is
+free:
+
+| name | labels | lock | install |
+| :-- | :-- | :-- | :-- |
+| `macmini-m6` | `macos-15:host`, `macos-15-heavy:host`, `macmini-m6:host` | its own lease broker (`~/bin/with-macmini-lock`, `/tmp/macmini-heavy.lock`, `127.0.0.1:7384`); the hooks hold a `ci` lease for every job, the health check takes no job while someone else holds it | `~/gitea-runner-macmini`, LaunchAgents `net.geisten.gitea-runner-macmini` and `net.geisten.hostlease`; capacity 1 |
+
+It is reached only through Gitea (no SSH, no tunnel): geisten-infra
+`roles/host_lease/files/macmini/install.sh` set it up from a one-off job and
+updates it the same way. Benchmark columns never take the shared labels: the
+M1 Max columns ask for `apple-m1max`, a Mac mini column would ask for
+`macmini-m6`. The CI perf floors are absolute tok/s minimums, which the M6
+meets as well as the M1 Max.
+
 Which label a job takes:
 
 - `macos-15-heavy` — the job loads a real model or its result is a timing:
   CI's post-merge `models, Metal, ASan + perf (macOS arm64)` leg (Metal
   parity, qwen3.5 integration, perf gate; `scripts/gitea-ci.py` sets it,
   GitHub's copy keeps `macos-15`) and the Mac columns of `bench-matrix`
-  (`benchmark/bench_matrix.json`).
+  (`benchmark/bench_matrix.json`, now on the machine label `apple-m1max`).
+  Runs on `mac-m1max` or `macmini-m6`.
 - `macos-15` — build and model-free tests: CI's required `build + unit
   tests (macOS arm64)` leg, the post-merge `macOS arm64 GCD (no OpenMP)` leg
-  and the release build (`release.yml` `macos-arm64`). These may run while
-  an agent measures; nice 10 keeps them behind it, not out.
+  and the release build (`release.yml` `macos-arm64`). On `mac-light` these
+  may run while an agent measures; nice 10 keeps them behind it, not out. On
+  `macmini-m6` they hold that Mac's lock like every job there.
 
 A step that must not overlap a measurement on a `macos-15` job wraps itself
 in `~/bin/with-mac-lock`; better, it moves to `macos-15-heavy`.
@@ -284,32 +306,26 @@ Each runner host has its own cache, listening where its jobs connect:
 | :-- | :-- | :-- | :-- |
 | desktop | user unit `git-cache` | `192.168.178.43:8417` | `desktop-ci`, `desktop-tsan` |
 | Pi 5 | system unit `git-cache` (as `germar`) | `172.17.0.1:8417` (docker bridge), `127.0.0.1:8417` | `pi5-ci` → bridge, `pi5-rspdevelop` (host mode) → 127.0.0.1 |
-| Mac | LaunchAgent `net.geisten.git-cache` | `127.0.0.1:8417` | `mac-light`, `mac-m1max` (host mode) |
+| Mac | none (removed 2026-10-27, see below) | | `mac-light`, `mac-m1max` fetch from Gitea |
 | cloud-arm64-hel1 | system unit `git-cache` | `172.17.0.1:8417` | not yet (no token) |
 
 The Pi takes the same workflow with `-i host=pi5`. Its deploy job runs on
 `pi5-rspdevelop` and holds the board lock, so `pi5-ci` (which takes no job
 while the lock is held) restarts at once; `pi5-rspdevelop` itself restarts
 from a transient unit once the job has ended and the lock is free.
-`-i host=pi5 -i action=verify` then runs one checkout on each Pi
-runner and looks for both in the cache's log (the container probe asks for
-`ubuntu-24.04-arm-pi`, the label only `pi5-ci` carries).
+`-i host=pi5 -i action=status` then shows the service, the runners' wiring
+and the cache's log, where every checkout of a Pi job appears as `served
+127.0.0.1` (host mode) or `served 172.…` (`pi5-ci`).
 
-The Mac is installed by hand, `sh scripts/git-cache-mac.sh install`
-(`status` shows its state). Its token is not the org secret: the user
-places a read-only token in `~/.config/git-cache/token` (mode 0600), and
-launchd starts the cache once that file exists. The host-mode runners do
-not point git at the cache directly; their `envs` include a file
-
-```yaml
-  GIT_CONFIG_COUNT: "1"
-  GIT_CONFIG_KEY_0: include.path
-  GIT_CONFIG_VALUE_0: /Users/germar/git-cache/ci.gitconfig
-```
-
-that the cache writes once it serves geistlib and removes when it stops. A
-missing include file is ignored, so without the token, or with the cache
-down, Mac jobs fetch from Gitea as before.
+The Mac has no git cache any more (2026-10-27). It never got its read-only
+token, so it never served, and its include file in the runners' `envs`
+(`GIT_CONFIG_COUNT`/`KEY_0` = `include.path`) overrode the workflows' own
+`GIT_CONFIG_KEY_0` token rule: Mac jobs then fetched geistlib with a personal
+credential from the login keychain, and failed once that was unavailable.
+The workflows now pass the geistlib token in `GIT_CONFIG_PARAMETERS`, which
+the runners' numbered keys cannot override, and the Mac runners set no git
+configuration. `scripts/git-cache-mac.sh install` would set the cache up
+again; it needs a read-only token in `~/.config/git-cache/token`.
 
 ## CI hygiene
 
@@ -330,14 +346,15 @@ log `~/ci-hygiene/ci-hygiene.log`) keeps two recurring failures away:
   (`docker.gitea.com/runner-images:*`); no `--volumes`. The script compares
   the tagged image list before and after and logs any loss.
 
-Install or update it with the `ci-hygiene` workflow (`-i action=deploy`),
-inspect it with `-i action=status` (timer, last log lines, any lock left in
-the action caches).
+Install or update it with the `host-service` workflow (`-i
+service=ci-hygiene -i action=deploy`), inspect it with `-i action=status`
+(timer, last log lines, any lock left in the action caches).
 
 ## CI bot
 
 `scripts/ci-bot.py` runs as the user service `ci-bot` on the desktop runner
-host and polls Gitea every 90 s for the open pull requests of
+host, with its API client `scripts/gitea_api.py` installed next to it in
+`~/ci-bot/` (geisten-infra's desktop role copies both), and polls Gitea every 90 s for the open pull requests of
 `geisten/geistlib` and `geisten/geist-runtime` (everyone's, not only
 Claude's). It replaces the ad-hoc watcher scripts and does four things,
 each within fixed rules; anything else stays with a human:
@@ -388,9 +405,9 @@ python3 scripts/ci-bot.py --dry-run --once --home /tmp/cb --token-file <file>
 The token (`~/.config/ci-bot/token`, 0600) comes from the org Actions secret
 `CI_BOT_TOKEN`, scope `write:repository`, ideally of a dedicated bot user
 with write access to both repositories; pushes, comments and reruns then
-show that user. Install, update, stop or inspect the bot with the `ci-bot`
-workflow (`-i action=deploy|rollback|status`, `-i dry_run=true` to watch
-its decisions first); deploy fails with a clear message when the secret is
+show that user. Install, update, stop or inspect the bot with the
+`host-service` workflow (`-i service=ci-bot -i action=deploy|rollback|status`,
+`-i dry_run=true` to watch its decisions first); deploy fails with a clear message when the secret is
 missing and does not start the service unless one dry-run poll with the
 new script and token works. Tests: `tests/test_ci_bot_py.py` (recorded API
 responses in `tests/data/ci_bot/`, part of `make test-py`).

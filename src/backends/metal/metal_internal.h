@@ -12,6 +12,8 @@
 #include <geist.h>
 #include <geist_backend.h>
 #include "quant.h"
+#include "clock.h"
+#include "env.h"
 #include "heap.h"
 #include <math.h>
 
@@ -90,9 +92,7 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_ARGMAX,
     METAL_PROFILE_DISPATCH_DELTANET_PREFILL,
     METAL_PROFILE_DISPATCH_DELTANET_DECODE,
-    /* chunked-prefill sub-stages, individually skippable for the
-     * subtractive profiler (all still count as DELTANET for the
-     * category-level GEIST_SKIP_DELTANET). */
+    /* chunked-prefill sub-stages, timed apart from the rest of DeltaNet */
     METAL_PROFILE_DISPATCH_DN_PREP,  /* cst_copy + conv + norm + roll */
     METAL_PROFILE_DISPATCH_DN_CHUNK, /* dnf_chunk */
     METAL_PROFILE_DISPATCH_DN_STATE, /* dnf_state */
@@ -101,6 +101,7 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_SIGMOID_MUL,
     METAL_PROFILE_DISPATCH_HADAMARD,
     METAL_PROFILE_DISPATCH_PQ2_X_F16,
+    METAL_PROFILE_DISPATCH_PQ2_M8,
     METAL_PROFILE_STAGE_COUNT,
 };
 
@@ -223,12 +224,15 @@ struct metal_state {
     void  *pq2_mm_pipeline;
     void  *pq2_mm_fast_function;
     void  *pq2_mm_fast_pipeline;
+    void  *pq2_m8_function;
+    void  *pq2_m8_pipeline;
     /* x -> f16 for pq2_mm_fast (cvt_f32_f16_rows), into pq2_xh_buffer:
      * grow-only, rows x n_in halves of the widest call so far. */
     void                *cvt_f16_function;
     void                *cvt_f16_pipeline;
+    void                *cvt_kmaj_function;
+    void                *cvt_kmaj_pipeline;
     struct geist_buffer *pq2_xh_buffer;
-    size_t               pq2_xh_capacity;
     /* Device-dependent crossovers; see tuning.c. Seeded from M1 Max
      * measurements, then a calibration blob, then the env. */
     struct metal_tuning {
@@ -267,6 +271,8 @@ struct metal_state {
     void *iq4xs_mm_fast_pipeline;
     void *q4k_n4_function;
     void *q4k_n4_pipeline;
+    void *q4k_h_function;
+    void *q4k_h_pipeline;
     void *q4k_matmul_m8_function;
     void *q4k_matmul_m8_pipeline;
     void *q4k_m16_library;
@@ -301,8 +307,13 @@ struct metal_state {
     void *mv3_q4k_q4k_q6k_pipeline;
     void *mv3_q80_q80_q80_function;
     void *mv3_q80_q80_q80_pipeline;
+    void *mv3_q4k_h_q4k_q4k_function;
+    void *mv3_q4k_h_q4k_q4k_pipeline;
+    void *mv3_q4k_h_q4k_q6k_function;
+    void *mv3_q4k_h_q4k_q6k_pipeline;
     void *embed_library;
     void *argmax_library;
+    void *moe_library; /* #201: routing and id-indexed expert matvecs */
     void *hadamard_library;
     void *hadamard_function;
     void *hadamard_pipeline;
@@ -310,6 +321,10 @@ struct metal_state {
     void *hadamard4_pipeline;
     void *q4k_gate_up_n4_function;
     void *q4k_gate_up_n4_pipeline;
+    void *q4k_gate_up_h_function;
+    void *q4k_gate_up_h_pipeline;
+    void *q4k_gate_up_silu_h_function;
+    void *q4k_gate_up_silu_h_pipeline;
     void *q6k_function;
     void *q6k_pipeline;
     void *q6k_n4_function;
@@ -336,6 +351,12 @@ struct metal_state {
     void *dn_dec_qk_pipeline;
     void *dn_dec_v_function;
     void *dn_dec_v_pipeline;
+    void *dn_dec_v_rows_function;
+    void *dn_dec_v_rows_pipeline;
+    void *dn_dec_qk_b_function; /* #26: several sessions' decode rows */
+    void *dn_dec_qk_b_pipeline;
+    void *dn_dec_v_b_function;
+    void *dn_dec_v_b_pipeline;
     void *dnf_cst_copy_function;
     void *dnf_cst_copy_pipeline;
     void *dnf_conv_function;
@@ -391,15 +412,34 @@ struct metal_state {
     void    *f32_matmul_mm_pipeline;
     void    *f32_ple_gate_function;
     void    *f32_ple_gate_pipeline;
+    void    *f32_ple_gate_sg_function; /* decode, a simdgroup per row (#196) */
+    void    *f32_ple_gate_sg_pipeline;
+    void    *f32_matvec_rows_function;
+    void    *f32_matvec_rows_pipeline;
     void    *f32_ple_proj_norm_function;
     void    *f32_ple_proj_norm_pipeline;
-    void    *argmax_function;
-    void    *argmax_pipeline;
     void    *argmax_batch_function;
     void    *argmax_batch_pipeline;
+    void    *argmax_part_function;
+    void    *argmax_part_pipeline;
+    void    *argmax_merge_function;
+    void    *argmax_merge_pipeline;
+    void    *moe_topk_function;
+    void    *moe_topk_pipeline;
+    void    *moe_mv_q4k_function;
+    void    *moe_mv_q4k_pipeline;
+    void    *moe_mv_q6k_function;
+    void    *moe_mv_q6k_pipeline;
+    void    *moe_mv_q80_function;
+    void    *moe_mv_q80_pipeline;
+    void    *moe_mv_f32_function;
+    void    *moe_mv_f32_pipeline;
+    void    *moe_wsum_function;
+    void    *moe_wsum_pipeline;
     void    *argmax_result_buffer;
     void    *argmax_result_mapped;
     uint32_t argmax_result_capacity;
+    void    *argmax_part_buffer; /* METAL_ARGMAX_PARTS (value, index) pairs, GPU only */
     void    *rope_rows_function;
     void    *rope_rows_pipeline;
     void    *kv_append_rows_function;
@@ -454,20 +494,23 @@ struct metal_state {
      * path on an F32 KV cache; decode reads the F32 cache directly. */
     struct geist_buffer *attn_kf16_buffer;
     struct geist_buffer *attn_vf16_buffer;
-    size_t               attn_kvf16_capacity;
     /* The 32-key-block split-KV decode kernels (#17), F16 and F32 KV, in
      * the prefill flash kernels' head_dim slots (64, 128, 256 and 512
      * built; see metal_decv_pipeline). */
-    void                *attn_decv_library;
-    void                *attention_decv_f16_function[METAL_FLASH_SLOTS];
-    void                *attention_decv_f16_pipeline[METAL_FLASH_SLOTS];
-    void                *attention_decv_f32kv_function[METAL_FLASH_SLOTS];
-    void                *attention_decv_f32kv_pipeline[METAL_FLASH_SLOTS];
+    void *attn_decv_library;
+    void *attention_decv_f16_function[METAL_FLASH_SLOTS];
+    void *attention_decv_f16_pipeline[METAL_FLASH_SLOTS];
+    void *attention_decv_f32kv_function[METAL_FLASH_SLOTS];
+    void *attention_decv_f32kv_pipeline[METAL_FLASH_SLOTS];
+    /* attention_decq (#196): 128-thread blocks, head_dim 128/256/512. */
+    void                *attention_decq_f16_function[METAL_FLASH_SLOTS];
+    void                *attention_decq_f16_pipeline[METAL_FLASH_SLOTS];
+    void                *attention_decq_f32kv_function[METAL_FLASH_SLOTS];
+    void                *attention_decq_f32kv_pipeline[METAL_FLASH_SLOTS];
     void                *attn_dec_combine_library;
     void                *attention_dec_combine_function;
     void                *attention_dec_combine_pipeline;
     struct geist_buffer *attn_dec_partials_buffer;
-    size_t               attn_dec_partials_capacity;
     void                *sequence_command_buffer;
     void                *sequence_compute_encoder;
     void                *sequence_pool; /* autorelease pool, sequence begin..end */
@@ -505,7 +548,6 @@ struct metal_state {
     _Atomic(uintptr_t)        seq_owner;
     bool                      sequence_has_work;
     bool                      profile_enabled;
-    bool                      skip_next_dispatch; /* subtractive profiler: drop the next dispatch */
     struct metal_profile_stat profile[METAL_PROFILE_STAGE_COUNT];
     /* GPU time of committed command buffers (profile only): the sum of the
      * buffers' own times, and their union on the GPU timeline (busy). */
@@ -584,8 +626,6 @@ enum {
     METAL_Q4K_BLOCK_BYTES               = 144u,
     METAL_Q4K_NT4_DEFAULT_MAX_N_OUT     = 8192u,
     METAL_Q4K_NT4_LARGE_MAX_N_OUT       = 262144u,
-    METAL_Q5K_BLOCK_ELEMS               = 256u,
-    METAL_Q5K_BLOCK_BYTES               = 176u,
     METAL_Q6K_BLOCK_ELEMS               = 256u,
     METAL_Q6K_BLOCK_BYTES               = 210u,
     METAL_Q6K_NT4_MIN_N_OUT             = 1024u,
@@ -595,6 +635,32 @@ enum {
     METAL_ELEM_THREADS                  = 256u,
     METAL_QNORM_ATTENTION_MAX_HEAD_DIM  = 512u,
 };
+
+/* The dtypes whose linear is metal_q40_q80_linear: one kernel family
+ * indexed by dtype, one validator (metal_tensor_is_q40_q80_matrix). */
+static inline bool metal_dtype_is_generic_quant(enum geist_dtype dtype) {
+    switch (dtype) {
+    case GEIST_DTYPE_Q4_0:
+    case GEIST_DTYPE_Q4_1:
+    case GEIST_DTYPE_Q8_0:
+    case GEIST_DTYPE_Q5_K:
+    case GEIST_DTYPE_IQ4_NL:
+    case GEIST_DTYPE_IQ4_XS:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_PQ2_0:
+    case GEIST_DTYPE_TQ2_0:
+    case GEIST_DTYPE_I2_S:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Dense float weights: metal_f32_linear reads F32, F16 and BF16. */
+static inline bool metal_dtype_is_float(enum geist_dtype dtype) {
+    return dtype == GEIST_DTYPE_F32 || dtype == GEIST_DTYPE_F16 || dtype == GEIST_DTYPE_BF16;
+}
 
 /* Elements per raw block of `dtype` (quant_block_layout); 1 for a dtype
  * without a fixed layout. */
@@ -869,6 +935,9 @@ struct metal_f32_ple_proj_norm_params {
     float    eps;
 };
 
+/* Threadgroups of the decode argmax's first pass (argmax_f32_part). */
+enum { METAL_ARGMAX_PARTS = 128 };
+
 struct metal_argmax_params {
     uint32_t n;
     uint32_t x_offset;
@@ -900,6 +969,10 @@ struct metal_deltanet_params {
     uint32_t conv_state_offset;
     uint32_t delta_state_offset;
     float    eps;
+    uint32_t row_cs_offset; /* per-row state slots (#192), row_slots 0 = none */
+    uint32_t row_s_offset;
+    uint32_t row_slots;
+    uint32_t row; /* dn_dec_qk: the row this dispatch runs */
 };
 
 struct metal_qgate_params {
@@ -1009,10 +1082,6 @@ bool metal_tensor_is_q6k_matrix(const struct geist_tensor *t,
                                 size_t                    *out_rows,
                                 size_t                    *out_cols,
                                 size_t                    *out_offset_bytes);
-bool metal_tensor_is_q5k_matrix(const struct geist_tensor *t,
-                                size_t                    *out_rows,
-                                size_t                    *out_cols,
-                                size_t                    *out_offset_bytes);
 
 bool metal_tensor_is_q40_q80_matrix(const struct geist_tensor *t,
                                     enum geist_dtype           dtype,
@@ -1032,16 +1101,21 @@ bool metal_tensor_is_f16_3d(const struct geist_tensor *t,
                             size_t                    *out_d2,
                             size_t                    *out_offset_halfs);
 
-[[nodiscard]] enum geist_status metal_ensure_q4k_pipeline(struct geist_backend *be);
+/* The pipeline tables of pipelines.c; metal_ensure builds one on first
+ * use (ARGMAX also allocates its result buffers). */
+enum metal_table {
+    METAL_TAB_DELTANET,
+    METAL_TAB_QUANT, /* quantized/F32 linears and the elementwise kernels */
+    METAL_TAB_ATTENTION,
+    METAL_TAB_HADAMARD,
+    METAL_TAB_ARGMAX,
+    METAL_TAB_MOE,
+    METAL_TAB_COUNT,
+};
 
-[[nodiscard]] enum geist_status metal_ensure_attention_pipeline(struct geist_backend *be);
+[[nodiscard]] enum geist_status metal_ensure(struct geist_backend *be, enum metal_table table);
 
-[[nodiscard]] enum geist_status metal_ensure_argmax_pipeline(struct geist_backend *be);
-[[nodiscard]] enum geist_status metal_ensure_hadamard_pipeline(struct geist_backend *be);
-
-[[nodiscard]] enum geist_status metal_ensure_deltanet_pipeline(struct geist_backend *be);
-
-/* Releases every library, pipeline and function the ensure_* tables in
+/* Releases every library, pipeline and function the tables in
  * pipelines.c build. */
 void metal_release_pipeline_tables(struct metal_state *st);
 
@@ -1070,10 +1144,6 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit);
 
 #include "metal_shaders.h"
 #include "metal_objc.h"
-
-bool metal_env_enabled(const char *name);
-
-uint64_t metal_now_ns(void);
 
 void metal_profile_add_wait(struct metal_state      *st,
                             enum metal_profile_stage stage,

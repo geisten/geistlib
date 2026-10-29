@@ -1,0 +1,21 @@
+with-mac-lock: waiting (#1 in queue, batch) behind pid 31546 'geisten/geistlib run 2027 build-test' [ci] runner job hold, 29s of 45 min; queue 1: batch/33290 0s
+gate gpu 57
+So. 25 Okt. 2026 17:38:48 CET
+carrier m_max 320
+prepared 16 prompts in 139.6 s (A 875..840 tokens)
+agreement B=1: 1/1 sequences token-identical over 32 steps (earliest divergence step 32), 1/1 bit-identical logits at every step, max |logit diff| before divergence 0
+agreement B=2: 2/2 sequences token-identical over 32 steps (earliest divergence step 32), 0/2 bit-identical logits at every step, max |logit diff| before divergence 0.004143
+agreement B=4: 4/4 sequences token-identical over 32 steps (earliest divergence step 32), 0/4 bit-identical logits at every step, max |logit diff| before divergence 0.004143
+agreement B=8: 8/8 sequences token-identical over 32 steps (earliest divergence step 32), 0/8 bit-identical logits at every step, max |logit diff| before divergence 0.009289
+invariance B=8: A0 in slot 0 among A1..A7 vs slot 3 among B0..B6: tokens identical yes, bit-identical logits 32/32 steps (max |diff| 0)
+invariance B=4: A0 in slot 0 among A1..A3 vs slot 2 among B0..B2: tokens identical yes, bit-identical logits 32/32 steps (max |diff| 0)
+speed (64 steps, best of 3 rounds):
+  single-sequence decode: 52.1 ms/step, 19.20 tok/s (rounds 3333/3473/3473 ms)
+  B=1: 55.0 ms/step, 18.18 tok/s aggregate, 0.95x single (rounds 3521/3538/3525 ms)
+  B=2: 89.6 ms/step, 22.32 tok/s aggregate, 1.16x single (rounds 5763/5742/5736 ms)
+  B=4: 96.6 ms/step, 41.40 tok/s aggregate, 2.16x single (rounds 6184/6241/6210 ms)
+  B=8: 120.1 ms/step, 66.63 tok/s aggregate, 3.47x single (rounds 7685/7701/7696 ms)
+GATE (B=8 >= 2.0x single): PASS (3.47x)
+ISOLATION: PASS
+rc=0
+So. 25 Okt. 2026 17:43:07 CET

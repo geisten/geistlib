@@ -100,6 +100,11 @@ static PFN_vkVoidFunction vk_iproc(struct vk_state *st, const char *name) {
     VK_LOAD_I(st, DestroyFence);
     VK_LOAD_I(st, ResetFences);
     VK_LOAD_I(st, WaitForFences);
+    VK_LOAD_I(st, CreateEvent);
+    VK_LOAD_I(st, DestroyEvent);
+    VK_LOAD_I(st, GetEventStatus);
+    VK_LOAD_I(st, ResetEvent);
+    VK_LOAD_I(st, CmdSetEvent);
     VK_LOAD_I(st, CreateShaderModule);
     VK_LOAD_I(st, DestroyShaderModule);
     VK_LOAD_I(st, CreateDescriptorSetLayout);
@@ -156,6 +161,9 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         if (st->uring != nullptr) {
             vk_buffer_destroy(be, st->uring);
         }
+        if (st->seltab != nullptr) {
+            vk_buffer_destroy(be, st->seltab);
+        }
         if (st->xring != nullptr) {
             vk_buffer_destroy(be, st->xring);
         }
@@ -195,6 +203,9 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         }
         if (st->xfer_fence != VK_NULL_HANDLE) {
             st->fn.DestroyFence(st->device, st->xfer_fence, nullptr);
+        }
+        if (st->mark_event != VK_NULL_HANDLE) {
+            st->fn.DestroyEvent(st->device, st->mark_event, nullptr);
         }
         if (st->up_mem != VK_NULL_HANDLE) {
             st->fn.UnmapMemory(st->device, st->up_mem);
@@ -296,7 +307,17 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
                                 st->device_name);
         return GEIST_E_UNSUPPORTED;
     }
-    st->ts_period_ns   = pprops.properties.limits.timestampPeriod;
+    st->ts_period_ns = pprops.properties.limits.timestampPeriod;
+    {
+        const VkPhysicalDeviceLimits *lim = &pprops.properties.limits;
+        uint32_t                      nb  = lim->maxPerStageDescriptorStorageBuffers;
+        if (lim->maxDescriptorSetStorageBuffers < nb) {
+            nb = lim->maxDescriptorSetStorageBuffers;
+        }
+        /* the 8 the pipelines before batch 3 bind are assumed, as before */
+        nb               = nb < 8u ? 8u : nb;
+        st->max_bindings = nb < VK_MAX_BINDINGS ? nb : VK_MAX_BINDINGS;
+    }
     st->unified_memory = pprops.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ||
                          pprops.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
     st->subgroup_size  = sgp.subgroupSize;
@@ -338,9 +359,9 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     /* Async streaming (#78 phase 2): a transfer-only family is the copy
      * engines, which run beside the compute queue. On where the device has
      * one; GEIST_VK_STREAM_ASYNC=0 keeps the copies in the compute batch. */
-    const char *async = getenv("GEIST_VK_STREAM_ASYNC");
-    st->xq_family     = UINT32_MAX;
-    for (uint32_t i = 0; (async == nullptr || strcmp(async, "0") != 0) && i < nfam; ++i) {
+    const bool async = geist_env_flag("GEIST_VK_STREAM_ASYNC", true);
+    st->xq_family    = UINT32_MAX;
+    for (uint32_t i = 0; async && i < nfam; ++i) {
         const VkQueueFlags f = fams[i].queueFlags;
         if ((f & VK_QUEUE_TRANSFER_BIT) && !(f & (VK_QUEUE_COMPUTE_BIT | VK_QUEUE_GRAPHICS_BIT)) &&
             !(f & (VK_QUEUE_VIDEO_DECODE_BIT_KHR | VK_QUEUE_VIDEO_ENCODE_BIT_KHR)) &&
@@ -483,7 +504,11 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         return GEIST_E_BACKEND;
     }
     VkFenceCreateInfo finfo = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    if (st->fn.CreateFence(st->device, &finfo, nullptr, &st->xfer_fence) != VK_SUCCESS) {
+    if (st->fn.CreateFence(st->device, &finfo, nullptr, &st->xfer_fence) != VK_SUCCESS ||
+        st->fn.CreateEvent(st->device,
+                           &(VkEventCreateInfo) {.sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO},
+                           nullptr,
+                           &st->mark_event) != VK_SUCCESS) {
         geist_backend_set_error(be, GEIST_E_BACKEND, "vulkan: fence creation failed");
         return GEIST_E_BACKEND;
     }
@@ -496,18 +521,17 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
                 .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                 .flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
                 .queueFamilyIndex = st->xq_family};
-        const VkCommandBufferAllocateInfo xainfo = {
+        VkSemaphoreTypeCreateInfo tinfo = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                           .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
+        VkSemaphoreCreateInfo     sinfo = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                                           .pNext = &tinfo};
+        bool                      ok =
+                st->fn.CreateCommandPool(st->device, &xpinfo, nullptr, &st->xq_pool) == VK_SUCCESS;
+        const VkCommandBufferAllocateInfo xa = {
                 .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .commandPool        = st->xq_pool,
                 .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
                 .commandBufferCount = 2};
-        VkSemaphoreTypeCreateInfo   tinfo = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
-                                             .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
-        VkSemaphoreCreateInfo       sinfo = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-                                             .pNext = &tinfo};
-        VkCommandBufferAllocateInfo xa    = xainfo;
-        bool                        ok =
-                st->fn.CreateCommandPool(st->device, &xpinfo, nullptr, &st->xq_pool) == VK_SUCCESS;
-        xa.commandPool = st->xq_pool;
         ok = ok && st->fn.AllocateCommandBuffers(st->device, &xa, st->xq_cmd) == VK_SUCCESS &&
              st->fn.CreateSemaphore(st->device, &sinfo, nullptr, &st->tl_copy) == VK_SUCCESS &&
              st->fn.CreateSemaphore(st->device, &sinfo, nullptr, &st->tl_comp) == VK_SUCCESS;
@@ -565,10 +589,9 @@ static size_t vk_parse_bytes(const char *v) {
     }
     *st                 = (struct vk_state) {0};
     st->backend         = be;
-    st->profile_enabled = getenv("GEIST_VK_PROFILE") != nullptr;
-    st->pq2_f32_acc     = getenv("GEIST_VK_PQ2_F32_ACC") != nullptr;
-    const char *strict  = getenv("GEIST_VK_STRICT");
-    st->strict          = strict != nullptr && strcmp(strict, "0") != 0;
+    st->profile_enabled = geist_env_flag("GEIST_VK_PROFILE", false);
+    st->pq2_f32_acc     = geist_env_flag("GEIST_VK_PQ2_F32_ACC", false);
+    st->strict          = geist_env_flag("GEIST_VK_STRICT", false);
     st->vram_budget     = vk_parse_bytes(getenv("GEIST_VK_VRAM_BUDGET"));
     const char *reserve = getenv("GEIST_VK_WEIGHT_RESERVE");
     st->weight_reserve  = reserve != nullptr ? vk_parse_bytes(reserve) : SIZE_MAX;
@@ -583,8 +606,7 @@ static size_t vk_parse_bytes(const char *v) {
     /* Device-local scratch pool (#488), default on; GEIST_VK_SCRATCH_DEVICE=0
      * keeps it host-visible. The arch still asks only where no host path
      * maps a pool slot (scratch_device_wanted); see vk_buffer_create_api. */
-    const char *scratch_env = getenv("GEIST_VK_SCRATCH_DEVICE");
-    st->scratch_device      = scratch_env == nullptr || strcmp(scratch_env, "0") != 0;
+    st->scratch_device = geist_env_flag("GEIST_VK_SCRATCH_DEVICE", true);
 
     enum geist_status s = vk_load_runtime(be, st);
     if (s != GEIST_OK) {
@@ -617,7 +639,7 @@ static size_t vk_parse_bytes(const char *v) {
         return s;
     }
 
-    if (getenv("GEIST_VK_VERBOSE") != nullptr) {
+    if (geist_env_flag("GEIST_VK_VERBOSE", false)) {
         fprintf(stderr,
                 "geist vulkan: %s (fp16 %d, int8-dot %d, coopmat %d, subgroup %u%s)\n",
                 st->device_name,
@@ -634,7 +656,7 @@ static size_t vk_parse_bytes(const char *v) {
 void vk_destroy(struct geist_backend *be) {
     if (be->state != nullptr) {
         struct vk_state *st = be->state;
-        if (getenv("GEIST_VK_VERBOSE") != nullptr || st->profile_enabled) {
+        if (geist_env_flag("GEIST_VK_VERBOSE", false) || st->profile_enabled) {
             fprintf(stderr,
                     "geist vulkan stats: dispatches %llu, flushes %llu, barriers %llu "
                     "(elided %llu)\n",

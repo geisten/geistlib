@@ -258,6 +258,97 @@ static enum geist_status op_decode_step(void *session, geist_token_t *out) {
     return GEIST_OK;
 }
 
+static size_t op_decode_batch_max(const void *arch_state) {
+    return transformer_decode_batch_max(arch_state);
+}
+
+/* Can decode_step run on this member, and can its forwards run in a batch?
+ * Read-only: the refusal of any member must leave all untouched. */
+[[nodiscard]] static enum geist_status batch_member_ok(const struct transformer_arch_session *sess,
+                                                       const struct transformer_arch_state   *st) {
+    if (sess->model != st) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (sess->kv_kivi_enabled || sess->mtp_enabled || sess->twin_sess != nullptr ||
+        sess->split_sess != nullptr) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (!sess->logits_valid) {
+        return GEIST_E_INVALID_STATE; /* nothing pending: prefill first */
+    }
+    /* The owed forward appends one row, the returned token owes the next. */
+    const size_t need = sess->advance_deferred ? 2 : 1;
+    return sess->kv_len + need <= sess->max_seq_len ? GEIST_OK : GEIST_E_TOO_MANY_TOKENS;
+}
+
+static enum geist_status
+op_decode_batch(size_t n, void *const sessions[static n], geist_token_t out[static n]) {
+    for (size_t b = 0; b < n; b++) {
+        out[b] = -1;
+    }
+    if (n == 0 || sessions[0] == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (n == 1) {
+        return op_decode_step(sessions[0], out); /* exactly decode_step */
+    }
+    struct transformer_arch_session *first = sessions[0];
+    struct transformer_arch_state   *st    = first->model;
+    if (n > transformer_decode_batch_max(st)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    struct transformer_arch_session *owe[TRANSFORMER_DECODE_BATCH_CAP];
+    size_t                           n_owe = 0;
+    for (size_t b = 0; b < n; b++) {
+        struct transformer_arch_session *sess = sessions[b];
+        if (sess == nullptr) {
+            return GEIST_E_INVALID_ARG;
+        }
+        for (size_t c = 0; c < b; c++) {
+            if (sessions[c] == sess) {
+                return GEIST_E_INVALID_ARG;
+            }
+        }
+        const enum geist_status ms = batch_member_ok(sess, st);
+        if (ms != GEIST_OK) {
+            return ms;
+        }
+        if (sess->advance_deferred) {
+            owe[n_owe++] = sess;
+        }
+    }
+    /* Forwards owed by an earlier decode_step run first: batched from two
+     * on, a lone one as settle runs it. */
+    enum geist_status s = GEIST_OK;
+    if (n_owe == 1) {
+        s = settle(owe[0]);
+    } else if (n_owe > 1) {
+        s = transformer_decode_batch_forward(n_owe, owe);
+        for (size_t b = 0; s == GEIST_OK && b < n_owe; b++) {
+            owe[b]->advance_deferred = false;
+        }
+    }
+    /* Then each member's token, and its forward run now, batched, rather
+     * than owed as decode_step leaves it: the observable state (token,
+     * length, the logits peek returns) is the same either way. */
+    struct transformer_arch_session *all[TRANSFORMER_DECODE_BATCH_CAP];
+    for (size_t b = 0; s == GEIST_OK && b < n; b++) {
+        all[b] = sessions[b];
+        transformer_recurrent_txn_commit(all[b]);
+        out[b] = all[b]->next_token_pending;
+    }
+    if (s == GEIST_OK) {
+        s = transformer_decode_batch_forward(n, all);
+    }
+    if (s != GEIST_OK) {
+        for (size_t b = 0; b < n; b++) {
+            out[b] = -1;
+            transformer_session_reset(sessions[b]);
+        }
+    }
+    return s;
+}
+
 static size_t op_hidden_dim(const void *arch_state) {
     const struct transformer_arch_state *st = arch_state;
     return st != nullptr ? st->d_model : 0;
@@ -296,23 +387,18 @@ static const float *op_peek_logits(size_t *n_logits, void *session) {
         *n_logits = 0;
         return nullptr;
     }
-    float *p = (float *) st->backend->desc->vtbl->buffer_map(sess->scratch_logits);
+    /* The greedy argmax path skips the Gemma final-logit softcap (monotonic,
+     * so the argmax is invariant and it saves ~262k tanhf/token on decode).
+     * peek_logits exposes the VALUES to scoring/perplexity consumers, which
+     * need the model-conformant softcapped logits. On a discrete GPU the row
+     * comes as a host copy (#219: reading it in place ran at ~90 MB/s). */
+    struct geist_buffer *mb = nullptr;
+    float               *p  = transformer_logits_host(sess, true, &mb);
     if (p == nullptr) {
         *n_logits = 0; /* no mapping, or a failed batch: the backend error says which */
         return nullptr;
     }
     *n_logits = (size_t) st->vocab_size;
-    /* The greedy argmax path skips the Gemma final-logit softcap (monotonic,
-     * so the argmax is invariant and it saves ~262k tanhf/token on decode).
-     * peek_logits exposes the VALUES to scoring/perplexity consumers, which
-     * need the model-conformant softcapped logits — apply it lazily, once. */
-    if (st->config.logit_softcap > 0.0f && !sess->logits_softcapped) {
-        const float c = st->config.logit_softcap;
-        for (size_t i = 0; i < (size_t) st->vocab_size; i++) {
-            p[i] = tanhf(p[i] / c) * c;
-        }
-        sess->logits_softcapped = true;
-    }
     return (const float *) p;
 }
 
@@ -384,6 +470,14 @@ static enum geist_status op_truncate(void *session, size_t n) {
         return s;
     }
     return transformer_session_truncate((struct transformer_arch_session *) session, n);
+}
+
+static enum geist_status op_checkpoint(void *session) {
+    const enum geist_status s = settle(session);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    return transformer_session_checkpoint((struct transformer_arch_session *) session);
 }
 
 static enum geist_status op_kv_bytes_per_token(size_t *out_bytes, const void *session) {
@@ -468,6 +562,7 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .kv_truncate              = op_kv_truncate,
         .kv_len                   = op_kv_len,
         .truncate                 = op_truncate,
+        .checkpoint               = op_checkpoint,
         .plan                     = transformer_plan,
         .kv_bytes_per_token       = op_kv_bytes_per_token,
         .session_alloc            = op_session_alloc,
@@ -482,4 +577,6 @@ const struct geist_arch_ops_decoder geist_arch_transformer = {
         .restore                  = op_restore,
         .prefill_geometry         = op_prefill_geometry,
         .supports_towers          = op_supports_towers,
+        .decode_batch             = op_decode_batch,
+        .decode_batch_max         = op_decode_batch_max,
 };

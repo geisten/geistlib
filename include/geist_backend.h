@@ -304,6 +304,8 @@ enum geist_fused_op {
     GEIST_FUSED_ROWS_WEIGHTED_SUM,
     GEIST_FUSED_FFN_GATE_UP_SILU,
     GEIST_FUSED_ATTN_ROPE_APPEND,
+    GEIST_FUSED_ROWS_GATHER,
+    GEIST_FUSED_MOE_DEVICE,
 };
 
 /* Load-time capability probe for one fused op at one layer's geometry.
@@ -368,6 +370,16 @@ struct geist_deltanet_mix_args {
     size_t                     head_v;
     size_t                     conv_kernel;
     float                      eps;
+    /* Optional (#192, speculative verify): per-row state slots. When both
+     * are set and the backend fills them, it sets *rows_written: row t <
+     * seq - 1 leaves its conv state in slot t of row_conv_state
+     * (slots x (conv_kernel - 1) x conv_dim) and its delta state in slot t of
+     * row_delta_state (slots x n_v_heads x head_k x head_v), so a rejected
+     * speculative suffix rolls back by one copy. A backend that cannot
+     * leaves *rows_written alone. */
+    struct geist_tensor *row_conv_state;
+    struct geist_tensor *row_delta_state;
+    bool                *rows_written;
 };
 
 /* Arguments for fused->attention_kv_int8 and attention_kv_int4 (the int4
@@ -544,20 +556,39 @@ struct geist_backend_fused {
      * at the next wait. nullptr = nothing to start. */
     void (*submit)(struct geist_backend *be);
 
-    /* out[c] = add[c] + sum_{j < n} w[j] * y[j][c] for c in [0, d): the
-     * weighted sum of n mixture-of-experts outputs onto a partial sum the
-     * host made (#161). add is HOST memory, read during the call — work
-     * already started (submit) is not waited for. y is [n, d] and out
-     * [1, d], F32 DENSE on this backend. Its decomposed twin is the host
-     * loop over a mapped y. Plan-bound: supported(GEIST_FUSED_ROWS_WEIGHTED_
-     * SUM) with m = n. nullptr = the host loop. */
+    /* out[t][c] = add[t][c] + sum_{k in [start[t], start[t+1])} w[k] *
+     * y[rows[k]][c] for t in [0, m), c in [0, d): mixture-of-experts outputs,
+     * weighted by the router, onto the partial sums the host made, one
+     * output row per token (#161, #163). start, rows, w and add are HOST
+     * memory, read during the call — work already started (submit) is not
+     * waited for. y is [*, d] and out [m, d], F32 DENSE on this backend.
+     * Its decomposed twin is the host loop over a mapped y. Plan-bound:
+     * supported(GEIST_FUSED_ROWS_WEIGHTED_SUM) with m the most tokens.
+     * nullptr = the host loop. */
     enum geist_status (*rows_weighted_sum)(struct geist_backend      *be,
-                                           size_t                     n,
+                                           size_t                     m,
                                            size_t                     d,
+                                           size_t                     n,
+                                           const uint32_t             start[GEIST_AT_LEAST(m + 1)],
+                                           const uint32_t             rows[GEIST_AT_LEAST(n)],
                                            const float                w[GEIST_AT_LEAST(n)],
-                                           const float                add[GEIST_AT_LEAST(d)],
+                                           const float                add[GEIST_AT_LEAST(m * d)],
                                            const struct geist_tensor *y,
                                            struct geist_tensor       *out);
+
+    /* out[i][c] = x[src[i]][c] for i in [0, n), c in [0, d): rows gathered
+     * on the device, e.g. a mixture-of-experts layer's rows in its experts'
+     * order (#163). src is HOST memory, read during the call, not waiting
+     * for work already started. x is [*, d] and out [n, d], F32 DENSE.
+     * Its decomposed twin is n buffer_copy calls. Plan-bound:
+     * supported(GEIST_FUSED_ROWS_GATHER) with m the most rows. nullptr =
+     * buffer_copy row by row. */
+    enum geist_status (*rows_gather)(struct geist_backend      *be,
+                                     size_t                     n,
+                                     size_t                     d,
+                                     const uint32_t             src[GEIST_AT_LEAST(n)],
+                                     const struct geist_tensor *x,
+                                     struct geist_tensor       *out);
 
     /* Fused out = embed_table[token_id, :] * scale.
      *   embed_table shape [vocab_size, d_model]
@@ -617,9 +648,9 @@ struct geist_backend_fused {
      *   y = gelu_tanh(x · gate_w^T) * (x · up_w^T)
      * One kernel reads x once for both weights and applies the activation
      * in the epilogue. x [rows, d_in], gate_w/up_w resolved weight
-     * tensors [inter, d_in] (same dtype and shape), y [rows, inter]. Backends may support only a subset (e.g.
-     * rows==1, Q4_K) — GEIST_E_UNSUPPORTED falls back to the decomposed
-     * ops. nullptr = always decomposed. */
+     * tensors [inter, d_in] (same dtype and shape), y [rows, inter]. Backends may support only a
+     * subset (e.g. rows==1, Q4_K) — GEIST_E_UNSUPPORTED falls back to the decomposed ops. nullptr =
+     * always decomposed. */
     enum geist_status (*ffn_gate_up)(struct geist_backend      *be,
                                      const struct geist_tensor *x,
                                      const struct geist_tensor *gate_w,
@@ -777,7 +808,7 @@ struct geist_backend_fused {
      * Plan-bound per layer: GEIST_FUSED_ATTN_KV_INT8 with head_dim and the
      * head counts; nullptr (or a probe that says no) leaves the
      * architecture's host loop. */
-    enum geist_status (*attention_kv_int8)(struct geist_backend                      *be,
+    enum geist_status (*attention_kv_int8)(struct geist_backend                 *be,
                                            const struct geist_attention_kv_args *args);
 
     /* Attention over the INT4 KV cache (GEIST_KV_INT4), with
@@ -792,7 +823,7 @@ struct geist_backend_fused {
      * decomposed twin is the architecture's attention_int4_via_buffers.
      * Plan-bound per layer like attention_kv_int8, with
      * GEIST_FUSED_ATTN_KV_INT4. */
-    enum geist_status (*attention_kv_int4)(struct geist_backend                      *be,
+    enum geist_status (*attention_kv_int4)(struct geist_backend                 *be,
                                            const struct geist_attention_kv_args *args);
 
     /* A residual step and the pre-norm that reads its result, one pass:
@@ -812,6 +843,107 @@ struct geist_backend_fused {
                                           const struct geist_tensor *z_w,
                                           struct geist_tensor       *y,
                                           struct geist_tensor       *z);
+
+    /* Mixture-of-experts decode on the device (#201): with every routed
+     * expert of a layer resolved here, the layer's routing, experts and
+     * weighted sum run without the host. EXPERIMENTAL.
+     *
+     * moe_route: for t in [0, m), the k largest of logits[t][0, n) --
+     * ranked by (logit descending, id ascending), the host's
+     * moe_route_topk -- as uint32 ids[t * k + j] at the start of `ids`,
+     * and their softmax probabilities over all n as w[t * k + j] (F32
+     * DENSE [m * k]), renormalised over the k when norm.
+     * A row with a non-finite logit sets the uint32 at byte flag_offset of
+     * `ids` to 1 (never cleared here) and still writes k ids < n. logits is
+     * F32 [m, n] (row stride >= n).
+     *
+     * linear_t_ids: y[s] = W_e x[r] for s in [0, m * k), e = ids[s], r = s
+     * (x_per_slot) or s / k. `experts` holds the n experts' weights back to
+     * back -- expert e's [n_out, n_in] from byte e * w0->raw_nbytes of it,
+     * each laid out as w0 (expert 0's weight, resolved here) -- x is F32
+     * [m or m * k, n_in], y F32 [m * k, n_out].
+     *
+     * moe_weighted_sum: out[t][c] = add[t][c] + sum_{j < k} w[t * k + j] *
+     * y[t * k + j][c] for t in [0, m), c in [0, d), the sum in j order. w F32
+     * [m * k], y F32 [m * k, d], add and out F32 [m, d]; out may alias add.
+     *
+     * Plan-bound: supported(GEIST_FUSED_MOE_DEVICE) with m the most tokens
+     * and gate_w / up_w / down_w expert 0's weights answers for all three.
+     * nullptr = the host routes. */
+    enum geist_status (*moe_route)(struct geist_backend      *be,
+                                   size_t                     m,
+                                   size_t                     n,
+                                   size_t                     k,
+                                   bool                       norm,
+                                   const struct geist_tensor *logits,
+                                   struct geist_buffer       *ids,
+                                   size_t                     flag_offset,
+                                   struct geist_tensor       *w);
+    enum geist_status (*linear_t_ids)(struct geist_backend      *be,
+                                      size_t                     n,
+                                      size_t                     m,
+                                      size_t                     k,
+                                      bool                       x_per_slot,
+                                      const struct geist_weight *w0,
+                                      const struct geist_tensor *experts,
+                                      const struct geist_buffer *ids,
+                                      const struct geist_tensor *x,
+                                      struct geist_tensor       *y);
+    enum geist_status (*moe_weighted_sum)(struct geist_backend      *be,
+                                          size_t                     m,
+                                          size_t                     k,
+                                          size_t                     d,
+                                          const struct geist_tensor *w,
+                                          const struct geist_tensor *y,
+                                          const struct geist_tensor *add,
+                                          struct geist_tensor       *out);
+
+    /* Mixture-of-experts decode with the experts split between a GPU and
+     * the CPU (#162): the device routes (moe_route) and starts the experts
+     * it holds before the host has seen the router. EXPERIMENTAL.
+     *
+     * linear_t_sel: y[s] = W_e x[s * x_per_slot] for s in [0, k) with
+     * e = ids[s] (uint32 at the start of `ids`, written by the
+     * device earlier in the batch) and w[e] != nullptr; a slot whose expert
+     * has no weight here (w[e] == nullptr) is skipped, its y row left as it
+     * was. w[0, n) are resolved here and share dtype, n_in and n_out; the
+     * array and its weights stay unchanged while their copies here live (the
+     * backend may keep what it derived from the array, keyed by its
+     * address). x is F32 [1 or k, n_in], y F32 [k, n_out].
+     *
+     * submit_mark: starts the work recorded so far, as submit, and returns
+     * a mark for it (0: none, the work already waited for).
+     * map_marked: waits until the work up to `mark` is done -- not for work
+     * started after it -- and returns the host pointer of `buf` (a
+     * GEIST_BUFFER_IO buffer), or nullptr (a failed batch: the backend
+     * error). One mark is outstanding at a time.
+     *
+     * Plan-bound: supported(GEIST_FUSED_LINEAR_GROUPED) for the experts'
+     * weights answers for linear_t_sel. nullptr = the host routes. */
+    enum geist_status (*linear_t_sel)(struct geist_backend            *be,
+                                      size_t                           n,
+                                      const struct geist_weight *const w[GEIST_AT_LEAST(n)],
+                                      size_t                           k,
+                                      bool                             x_per_slot,
+                                      const struct geist_buffer       *ids,
+                                      const struct geist_tensor       *x,
+                                      struct geist_tensor             *y);
+    uint64_t (*submit_mark)(struct geist_backend *be);
+    void *(*map_marked)(struct geist_backend *be, uint64_t mark, struct geist_buffer *buf);
+
+    /* Optional (#26, batched decode): deltanet_mix for n independent
+     * sessions, one row each, in one call. args describes the n rows (seq =
+     * n) as for deltanet_mix; its conv_state / delta_state are ignored: row
+     * t reads and advances conv_states[t] and delta_states[t], each a
+     * session's own state with the geometry deltanet_mix requires. Same
+     * math, in the same order, as n deltanet_mix calls of one row each.
+     * GEIST_E_UNSUPPORTED guarantees no state changed. nullptr = one
+     * deltanet_mix call per session. */
+    enum geist_status (*deltanet_mix_states)(struct geist_backend                 *be,
+                                             size_t                                n,
+                                             const struct geist_deltanet_mix_args *args,
+                                             struct geist_tensor *const conv_states[GEIST_AT_LEAST(n)],
+                                             struct geist_tensor *const delta_states[GEIST_AT_LEAST(n)]);
 };
 
 /* ====================================================================== */
@@ -1031,8 +1163,8 @@ struct geist_backend {
      * (GEIST_E_OOM) retries on that CPU backend (docs/API_CONTRACT.md).
      * Explicit names never set it. */
     bool auto_cpu;
-    /* The opts this backend was created with, for that CPU backend. */
-    bool                      has_opts;
+    /* The opts this backend was created with (zeroed for nullptr, which
+     * every backend reads the same), for that CPU backend. */
     struct geist_backend_opts opts;
 };
 

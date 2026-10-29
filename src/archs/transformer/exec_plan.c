@@ -8,6 +8,7 @@
 #include "arch_family.h"
 #include "forward.h"
 
+#include "env.h"
 #include "error.h"
 #include "heap.h"
 
@@ -20,8 +21,7 @@
 /* Env gate for the FFN fusion, read once at plan build: GEGLU epilogue
  * fusion with the AWQ scale folded in is on unless GEIST_FFN_FUSED_SCALE=0. */
 static bool ffn_fused_scale_enabled(void) {
-    const char *env = getenv("GEIST_FFN_FUSED_SCALE");
-    return env == nullptr || env[0] != '0';
+    return geist_env_flag("GEIST_FFN_FUSED_SCALE", true);
 }
 
 /* The backend's attention over the INT8 cache, and over the packed INT4
@@ -29,8 +29,7 @@ static bool ffn_fused_scale_enabled(void) {
  * keeps the host loops (forward/attention.c): for A/B runs, and to rule
  * the kernels out. Read once at plan build. */
 static bool kv_int8_fused_enabled(void) {
-    const char *env = getenv("GEIST_KV_INT8_FUSED");
-    return env == nullptr || env[0] != '0';
+    return geist_env_flag("GEIST_KV_INT8_FUSED", true);
 }
 
 static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
@@ -75,6 +74,10 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
     case GEIST_FUSED_ARGMAX_F32:
         have = fused->argmax_f32 != nullptr;
         break;
+    case GEIST_FUSED_MOE_DEVICE:
+        have = fused->moe_route != nullptr && fused->linear_t_ids != nullptr &&
+               fused->moe_weighted_sum != nullptr;
+        break;
     case GEIST_FUSED_BITNET_ACT_QUANT:
         have = fused->bitnet_act_quant != nullptr;
         break;
@@ -98,6 +101,9 @@ static bool probe(struct geist_backend *be, struct geist_fusion_query q) {
         break;
     case GEIST_FUSED_ROWS_WEIGHTED_SUM: /* probed by moe_gpu.c at load */
         have = fused->rows_weighted_sum != nullptr;
+        break;
+    case GEIST_FUSED_ROWS_GATHER: /* probed by moe_gpu.c at load */
+        have = fused->rows_gather != nullptr;
         break;
     }
     return have && fused->supported != nullptr && fused->supported(be, &q);

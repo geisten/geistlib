@@ -8,15 +8,16 @@
  * desc->prims->attention is what the transformer calls with an FP32 cache.
  * Each backend has its own: cpu_neon NEON rows, up to four query heads of
  * one KV head together where that gives every thread an item (#16) and one
- * head a row otherwise, cpu_x86 an AVX2 kernel that takes every shape and
- * plans its work (attention.c: passes of up to four heads of a KV group,
- * prefill items of up to four queries, decode split into chunks). The
- * shapes cover every branch: MQA, GQA and MHA, one query (decode) and many
- * (prefill), head_dim 64, 128 and 256 (compiled for) and others (20, 40
- * and 80 with their tails, 512), contexts on both sides of 512-position
- * blocks, sliding windows, and each of cpu_x86's plans: passes of 1-4
- * heads, one, two or four queries an item (the last one short), decode
- * split into 2-4 chunks or not.
+ * head a row otherwise, and with GEIST_ATTN_SPLIT_DECODE=1 (opt-in; the
+ * test re-runs itself with it set) a decode step's long key range split
+ * into parts merged at the end when it has few such items (cut at fixed
+ * key positions: the same bytes on 1, 3 and 7 threads, checked here), cpu_x86 an AVX2 kernel that
+ * takes every shape and plans its work (attention.c: passes of up to four heads of a KV group,
+ * prefill items of up to four queries, decode split into chunks). The shapes cover every branch:
+ * MQA, GQA and MHA, one query (decode) and many (prefill), head_dim 64, 128 and 256 (compiled for)
+ * and others (20, 40 and 80 with their tails, 512), contexts on both sides of 512-position blocks,
+ * sliding windows, and each of cpu_x86's plans: passes of 1-4 heads, one, two or four queries an
+ * item (the last one short), decode split into 2-4 chunks or not.
  *
  * K and V rows that no query may see (before every window) hold NaN, and
  * the output starts as NaN: a kernel that reads past the mask, or leaves a
@@ -28,7 +29,14 @@
  * the output in any float kernel (the reference, too), so those shapes get
  * 1e-4 rather than 2e-5.
  */
+/* setenv, execv on glibc; no-op on macOS. Must precede any system header. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "test_helpers.h"
+
+#include "par.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -38,6 +46,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static uint64_t g_rng = 0x2545F4914F6CDD1Dull;
 static float    urand(void) { /* [-1, 1) */
@@ -190,6 +199,34 @@ static int run(struct geist_backend *be, const char *backend, const struct shape
     if (st == GEIST_OK) {
         (void) be->desc->vtbl->buffer_download(nq * sizeof(float), (uint8_t *) out, bo);
     }
+    /* cpu_neon's decode results must not depend on the thread count (its
+     * split decode cuts the keys at fixed positions): the same call on 1, 3
+     * and 7 threads gives the same bytes. */
+    int thread_fails = 0;
+    if (st == GEIST_OK && !f16 && sh->n_q <= 2 && strcmp(backend, "cpu_neon") == 0) {
+        const size_t saved   = geist_par_max_threads();
+        float       *again   = xmalloc(nq * sizeof *again);
+        const size_t tries[] = {1, 3, 7};
+        for (size_t i = 0; i < sizeof tries / sizeof tries[0]; i++) {
+            geist_par_set_max_threads(tries[i]);
+            const enum geist_status st2 =
+                    be->desc->prims->attention(be, &tq, &tk, &tv, q_offset, sh->window, &to);
+            (void) be->desc->vtbl->buffer_download(nq * sizeof(float), (uint8_t *) again, bo);
+            char what2[160];
+            snprintf(what2,
+                     sizeof what2,
+                     "cpu_neon: n_q %zu, heads %zu/%zu, n_kv %zu: same bytes on %zu threads",
+                     sh->n_q,
+                     sh->n_q_heads,
+                     sh->n_kv_heads,
+                     sh->n_kv,
+                     tries[i]);
+            thread_fails += geist_expect(
+                    st2 == GEIST_OK && memcmp(again, out, nq * sizeof *again) == 0, what2);
+        }
+        geist_par_set_max_threads(saved);
+        free(again);
+    }
     double worst = 0.0;
     size_t at = 0, nonfinite = 0;
     for (size_t i = 0; st == GEIST_OK && i < nq; i++) {
@@ -233,10 +270,68 @@ static int run(struct geist_backend *be, const char *backend, const struct shape
     free(out);
     free(ref);
     free(scores);
-    return geist_expect(st == GEIST_OK && nonfinite == 0 && worst <= tol, what);
+    return thread_fails + geist_expect(st == GEIST_OK && nonfinite == 0 && worst <= tol, what);
 }
 
-int main(void) {
+/* Views whose shapes disagree with q must be refused, not run: the kernels
+ * size their loops from q and k, so a short out (or v) view would be
+ * written (read) past its end — ASan reports it where a backend skips the
+ * check. Returns the number of failed checks. */
+static int shape_checks(struct geist_backend *be, const char *backend, bool f16) {
+    const size_t           n_q = 2, heads = 4, kv_heads = 2, hd = 64, n_kv = 8;
+    const enum geist_dtype kvt = f16 ? GEIST_DTYPE_F16 : GEIST_DTYPE_F32;
+    float                 *q   = xmalloc(n_q * heads * hd * sizeof *q);
+    float                 *kv  = xmalloc(n_kv * kv_heads * hd * sizeof *kv);
+    for (size_t i = 0; i < n_q * heads * hd; i++) {
+        q[i] = urand();
+    }
+    for (size_t i = 0; i < n_kv * kv_heads * hd; i++) {
+        kv[i] = urand();
+    }
+    struct geist_buffer *bq = upload(be, q, n_q * heads * hd);
+    struct geist_buffer *bk =
+            f16 ? upload_f16(be, kv, n_kv * kv_heads * hd) : upload(be, kv, n_kv * kv_heads * hd);
+    struct geist_buffer *bv = f16 ? upload_f16(be, kv, (n_kv - 1) * kv_heads * hd)
+                                  : upload(be, kv, (n_kv - 1) * kv_heads * hd);
+    struct geist_buffer *bvf =
+            f16 ? upload_f16(be, kv, n_kv * kv_heads * hd) : upload(be, kv, n_kv * kv_heads * hd);
+    struct geist_buffer    *bo  = upload(be, q, (n_q - 1) * heads * hd);
+    struct geist_tensor     tq  = tensor3(bq, n_q, heads, hd, GEIST_DTYPE_F32);
+    struct geist_tensor     tk  = tensor3(bk, n_kv, kv_heads, hd, kvt);
+    struct geist_tensor     tvs = tensor3(bv, n_kv - 1, kv_heads, hd, kvt); /* one row short */
+    struct geist_tensor     tv  = tensor3(bvf, n_kv, kv_heads, hd, kvt);
+    struct geist_tensor     tos = tensor3(bo, n_q - 1, heads, hd, GEIST_DTYPE_F32); /* one short */
+    const enum geist_status s_out =
+            be->desc->prims->attention(be, &tq, &tk, &tv, n_kv - n_q, 0, &tos);
+    struct geist_buffer    *bo2 = upload(be, q, n_q * heads * hd);
+    struct geist_tensor     to  = tensor3(bo2, n_q, heads, hd, GEIST_DTYPE_F32);
+    const enum geist_status s_v =
+            be->desc->prims->attention(be, &tq, &tk, &tvs, n_kv - n_q, 0, &to);
+    be->desc->vtbl->buffer_destroy(be, bq);
+    be->desc->vtbl->buffer_destroy(be, bk);
+    be->desc->vtbl->buffer_destroy(be, bv);
+    be->desc->vtbl->buffer_destroy(be, bvf);
+    be->desc->vtbl->buffer_destroy(be, bo);
+    be->desc->vtbl->buffer_destroy(be, bo2);
+    free(q);
+    free(kv);
+    char what[120];
+    snprintf(what,
+             sizeof what,
+             "%s %s: an out view shorter than q is refused",
+             backend,
+             f16 ? "F16" : "F32");
+    int fails = geist_expect(s_out != GEIST_OK, what);
+    snprintf(what,
+             sizeof what,
+             "%s %s: a v view shorter than k is refused",
+             backend,
+             f16 ? "F16" : "F32");
+    return fails + geist_expect(s_v != GEIST_OK, what);
+}
+
+int main(int argc, char **argv) {
+    (void) argc;
     static const struct shape SHAPES[] = {
             /* decode, fewer than 16 (query, head) pairs: cpu_neon's reference path */
             {1, 4, 1, 64, 1, 0, 0.0f},
@@ -282,6 +377,15 @@ int main(void) {
             {17, 4, 1, 20, 600, 0, 0.0f},
             {1, 8, 1, 512, 1500, 0, 0.0f},
             {12, 8, 1, 512, 900, 0, 0.0f},
+            /* cpu_neon's split decode (#16): Llama 3.2 3B's 24/8 heads and
+             * Gemma 4 E2B's 8/1 at depth, a key range just long enough to
+             * split, one that splits into a ragged last part, a sliding
+             * window, and two queries (spec decode) whose ranges differ */
+            {1, 24, 8, 128, 1025, 0, 0.0f},
+            {1, 8, 1, 256, 1024, 512, 0.0f},
+            {1, 24, 8, 128, 256, 0, 0.0f},
+            {1, 24, 8, 128, 1999, 0, 300.0f},
+            {2, 24, 8, 128, 700, 0, 0.0f},
     };
     static const char *const BACKENDS[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
     int                      fails = 0, ran = 0;
@@ -295,6 +399,8 @@ int main(void) {
             fails += run(be, BACKENDS[b], &SHAPES[i], false);
             fails += run(be, BACKENDS[b], &SHAPES[i], true);
         }
+        fails += shape_checks(be, BACKENDS[b], false);
+        fails += shape_checks(be, BACKENDS[b], true);
         geist_backend_destroy(be);
     }
     if (ran == 0) {
@@ -305,6 +411,17 @@ int main(void) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;
     }
-    printf("PASS: F32 and F16-KV attention match the double reference on every CPU backend\n");
+    const char *split = getenv("GEIST_ATTN_SPLIT_DECODE");
+    printf("PASS: F32 and F16-KV attention match the double reference on every CPU backend%s\n",
+           split != nullptr ? " (cpu_neon split decode on)" : "");
+    /* cpu_neon reads its opt-in split decode once per process: run again
+     * with it on, so both paths are checked. */
+    if (split == nullptr) {
+        setenv("GEIST_ATTN_SPLIT_DECODE", "1", 1);
+        fflush(stdout);
+        execv(argv[0], argv);
+        perror("execv");
+        return GEIST_TEST_FAIL;
+    }
     return GEIST_TEST_PASS;
 }

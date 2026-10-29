@@ -1,14 +1,14 @@
 #include "sp_bpe_tokenizer.h"
+#include "file_map.h"
+#include "fnv1a.h"
 #include "heap.h"
 #include "pair_merge.h"
 
-#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 /* SentencePiece space marker U+2581 in UTF-8. */
@@ -75,28 +75,11 @@ struct sp_bpe_tokenizer {
 /* ---- helpers -------------------------------------------------------------- */
 
 static uint64_t fnv1a(const void *data, size_t n) {
-    const uint8_t *p = (const uint8_t *) data;
-    uint64_t       h = 14695981039346656037ULL;
-    for (size_t i = 0; i < n; i++) {
-        h ^= p[i];
-        h *= 1099511628211ULL;
-    }
-    return h;
+    return geist_fnv1a(GEIST_FNV1A_INIT, n, data);
 }
 
 static uint64_t fnv1a_two(const void *a, size_t na, const void *b, size_t nb) {
-    uint64_t       h = 14695981039346656037ULL;
-    const uint8_t *p = (const uint8_t *) a;
-    for (size_t i = 0; i < na; i++) {
-        h ^= p[i];
-        h *= 1099511628211ULL;
-    }
-    p = (const uint8_t *) b;
-    for (size_t i = 0; i < nb; i++) {
-        h ^= p[i];
-        h *= 1099511628211ULL;
-    }
-    return h;
+    return geist_fnv1a(geist_fnv1a(GEIST_FNV1A_INIT, na, a), nb, b);
 }
 
 static size_t next_pow2(size_t n) {
@@ -188,24 +171,15 @@ bool sp_bpe_tokenizer_load(struct sp_bpe_tokenizer **out, const char *path) {
         return false;
     *out = nullptr;
 
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        perror("open");
+    struct io_map m;
+    const char   *err = nullptr;
+    if (!io_map_ro(path, MAP_PRIVATE, &m, &err)) {
+        perror(err); /* "open() failed: No such file or directory" */
         return false;
     }
-
-    struct stat sb;
-    if (fstat(fd, &sb) != 0) {
-        close(fd);
-        return false;
-    }
-    size_t fsize = (size_t) sb.st_size;
-
-    void *map = mmap(nullptr, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
-    if (map == MAP_FAILED) {
-        close(fd);
-        return false;
-    }
+    const int    fd    = m.fd;
+    void        *map   = m.map;
+    const size_t fsize = m.size;
 
     const uint8_t *p   = (const uint8_t *) map;
     const uint8_t *end = p + fsize;
@@ -439,21 +413,10 @@ static inline size_t utf8_cp_len(uint8_t b) {
 }
 
 /* Append a token ID to dynamic array; returns false on alloc failure.
- * heap.h has no realloc-equivalent, so this grows via explicit
- * alloc-new + memcpy + safe_free-old. The grow happens at most
- * log2(N) times during encode, so the extra cost is negligible. */
+ * Doubling: the grow happens at most log2(N) times during encode. */
 static bool append_id(uint32_t **arr, size_t *count, size_t *cap, uint32_t id) {
-    if (*count == *cap) {
-        size_t    new_cap = *cap ? *cap * 2 : 16;
-        uint32_t *na      = heap_alloc_array_aligned(uint32_t, new_cap);
-        if (!na)
-            return false;
-        if (*arr) {
-            memcpy(na, *arr, *count * sizeof(uint32_t));
-            safe_free((void **) arr);
-        }
-        *arr = na;
-        *cap = new_cap;
+    if (*count == *cap && !heap_grow_array(*arr, *cap, *cap ? *cap * 2 : 16)) {
+        return false;
     }
     (*arr)[(*count)++] = id;
     return true;

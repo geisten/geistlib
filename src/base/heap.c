@@ -1,6 +1,8 @@
 #include "heap.h"
 
 #include "checked.h"
+#include "env.h"
+
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -89,7 +91,7 @@ void *heap_alloc_aligned(const size_t size, size_t alignment) {
     /* Big streaming allocations (weight repacks, lm_head blobs read every
      * token) get THP like the GGUF mmap (gguf_reader.c apply_mmap_advice):
      * fewer TLB misses in bandwidth-bound GEMVs. Advisory. */
-    if (p != nullptr && aligned >= (2u << 20) && getenv("GEIST_NO_HUGEPAGE") == nullptr) {
+    if (p != nullptr && aligned >= (2u << 20) && !geist_env_flag("GEIST_NO_HUGEPAGE", false)) {
         /* madvise needs a page-aligned address; the allocation is only
          * `alignment`-aligned. Advise the page-aligned sub-range. */
         const size_t    page  = 4096;
@@ -215,7 +217,7 @@ void *heap_alloc_large(const size_t size, const size_t alignment) {
     atomic_fetch_add_explicit(&g_heap_allocs, 1u, memory_order_relaxed);
 #if defined(__linux__) && defined(MADV_HUGEPAGE)
     /* THP as in heap_alloc_aligned; the mapping is page-aligned. */
-    if (len >= (2u << 20) && getenv("GEIST_NO_HUGEPAGE") == nullptr) {
+    if (len >= (2u << 20) && !geist_env_flag("GEIST_NO_HUGEPAGE", false)) {
         (void) madvise(p, len, MADV_HUGEPAGE);
     }
 #endif
@@ -238,6 +240,32 @@ void safe_free(void **ptr) {
         free(*ptr);
     }
     *ptr = nullptr;
+}
+
+bool heap_grow_slow(void       **buf,
+                    size_t      *cap,
+                    const size_t need,
+                    const size_t size,
+                    size_t       align,
+                    const bool   keep) {
+    if (*cap >= need) {
+        return true;
+    }
+    if (!keep) {
+        safe_free(buf);
+        *cap = 0;
+    }
+    void *fresh = heap_alloc_n_aligned(need, size, align);
+    if (fresh == nullptr) {
+        return false;
+    }
+    if (*buf != nullptr && *cap != 0u) {
+        memcpy(fresh, *buf, *cap * size); /* *cap * size bytes were allocated */
+    }
+    safe_free(buf);
+    *buf = fresh;
+    *cap = need;
+    return true;
 }
 
 /* heap_tl_grow's per-thread registry: the buffers each thread's

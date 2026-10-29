@@ -42,6 +42,12 @@ backend where bits matter.
 | `cpu_x86` | x86-64-v3 (AVX2) baseline with runtime-dispatched AVX-512/VNNI: one binary, no SIGILL on older CPUs | default on x86-64 |
 | `cpu_scalar` | portable C, no SIMD | numerical reference; parity is per dtype (ternary W2A8 is intentionally not bit-exact to scalar W2A32, see [ARCHITECTURE.md](ARCHITECTURE.md#where-the-oracle-stops-ternary)) |
 
+`cpu_neon` has one opt-in for decode at depth:
+
+| Variable | Effect |
+| :-- | :-- |
+| `GEIST_ATTN_SPLIT_DECODE=1` | split a decode step's attention over long contexts across threads (flash-decoding, #16): with at most 16 grouped items (a decode step; Llama 3.2 3B has 8, Gemma 4 E2B 2) and 256+ keys, each item's keys are cut at multiples of 128 positions and the parts merged in double. M1 Max, decode time at depth 1024 (10 interleaved cycles): −8.6 % on Llama 3.2 3B Q4_K_M (9/10 faster), −8.5 % on Qwen3.5 0.8B Q8_0 (9/10), −7.2 % on Gemma 4 E2B Q4_K_M (7/10, within that run's noise; −8.8 % and −12.1 % in two earlier runs of the same split); depth 128 and prefill unchanged. Off by default because it changes float order: the attention output stays as close to a double reference as the default's, and NLL moves within the noise one ulp on the attention output causes, but cpu_neon's int8 decode activations turn such a difference into a quantization step, so greedy output departs from the default's at near-ties (Llama 3.2 3B at step 26 of 512, top-2 margin 0.09; Gemma 4 E2B at 391, 0.36; Qwen3.5 identical). Deterministic across thread counts. |
+
 A build for armv8.2 refuses a CPU without dot product (Cortex-A72, Pi 4) at
 `geist_backend_create`, naming the missing feature. CI runs NEON on arm64,
 AVX-512/VNNI under Intel SDE (a silent downgrade fails), scalar everywhere,
@@ -138,8 +144,11 @@ limit fails the load.
 | `GEIST_VK_VRAM_BUDGET` | lower the device memory limit (bytes, K/M/G suffix) to reproduce a smaller card |
 | `GEIST_VK_PIPELINE_CACHE` | compiled-pipeline cache file (default `$XDG_CACHE_HOME/geist` or `~/.cache/geist`, one file per driver build); `0` turns it off. The NVIDIA driver's own cache is per executable, so without it every new binary spends ~2 s compiling pipelines |
 | `GEIST_M_MAX` | prefill chunk rows (Vulkan default 128) |
-| `GEIST_MOE_PROFILE=<file>` | the order a mixture-of-experts model's experts get a GPU copy in: the USAGE lines of `tools/moe_usage` ("profile" set), e.g. `benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt` for Qwen3-30B-A3B; without it the same share of every layer (docs/OFFLOAD.md, phase 3) |
+| `GEIST_MOE_PROFILE=<file>` | the order a mixture-of-experts model's experts get a GPU copy in: the USAGE lines of `tools/moe_usage` ("profile" set), e.g. `benchmark/results/raw/2026-10-15_moe_expert_usage_vulkan_run1225.txt` for Qwen3-30B-A3B; without it the counts of earlier runs from the profile cache (below), else the same share of every layer (docs/OFFLOAD.md, phase 3) |
+| `GEIST_MOE_PROFILE_CACHE=1\|<dir>` | opt-in (#165): a mixture-of-experts model's run-time expert profile. The router's selections are counted while sessions run, added to the cache file's when the model is unloaded, and the next load places its GPU copies by them (`GEIST_MOE_PROFILE` still wins). `1` = `$XDG_CACHE_HOME/geist/moe-profile` or `~/.cache/geist/moe-profile`; one file per model (`<key>.txt`, the USAGE format; `src/archs/transformer/moe_profile.h`); unset, empty or `0`: off (the default). Trade-off with the model on a discrete GPU: Qwen3.6-35B-A3B on the RTX 2080 Ti decodes ~16 % faster and prefills ~10 % slower with a profile (the GPU then takes ~79 % of a prefill chunk's rows); `GEIST_MOE_HOT=2000` kept prefill at 568-579 tok/s (run 1845). A foreign or corrupt file is ignored with one line on stderr |
 | `GEIST_MOE_HOT=<n>` | exactly n experts with a GPU copy, past the memory budget (tests, measurements; 0 = none) |
+| `GEIST_MOE_DEVICE=0` | a mixture of experts whose every expert is on the GPU keeps routing its decode steps on the host instead of on the device (#201: `fused->moe_route`, `linear_t_ids`, `moe_weighted_sum`; Metal) |
+| `GEIST_MOE_GPU_ROUTE=0` | a mixture of experts split between a discrete GPU and the CPU keeps routing its decode steps on the host instead of on the GPU (#162: the GPU ranks the router's experts as the host does, `fused->moe_route`, and starts the hot ones by id, `linear_t_sel`, while the host waits for the router alone, `submit_mark` / `map_marked`, and runs the cold ones; Vulkan) |
 | `GEIST_VK_STREAM_ASYNC=0` | copy streamed weights in the compute batch instead of on the GPU's transfer-only queue (default: on where the device has one), see Memory |
 | `GEIST_VK_STREAM_M_MIN` | rows from which `linear_t` copies a weight that lives in host memory into a VRAM slot before the GEMM (default 32; `0` reads it over the bus as before), see Memory |
 | `GEIST_VK_PQ2_F32_ACC=1` | f32 instead of f16 accumulation in the PQ2_0 tensor-core GEMM (default folds into f32 every 64 k) |

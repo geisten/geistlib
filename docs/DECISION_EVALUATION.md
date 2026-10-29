@@ -34,6 +34,19 @@ and 2.328 on CPU; neither passes the quality gate. Campaign wall times were
 retain provenance, uncertainty and measurement limits. This is an eight-question
 development result, not held-out acceptance.
 
+## Held-out sample (2026-10-23, #171)
+
+[500 held-out questions](../benchmark/results/DECISION_MMLU_HELDOUT_2026-10-23.md):
+direct scoring 67.8 %, reasoning capped at 512 tokens 65.4 % (164 capped),
+paired difference +2.4 pp in [−5.1, +9.9] pp, so the 2 pp margin is not
+established (about 1,450 questions would be needed at these rates). Where
+reasoning finished it was 97.3 % accurate against 75.9 % for direct scoring,
+so the cap, not parity, produces the near-tie. Temperature 1.055 from 250
+calibration questions; ECE 0.046 → 0.037. Re-running the 164 capped answers at cap 2048
+(amendment 3) lifts reasoning to 79.0 % (87 still capped): direct minus
+reasoning is −11.2 pp in [−18.2, −4.0] pp, so direct scoring is inferior
+beyond the 2 pp margin.
+
 ## Data and prompt construction
 
 `tools/prepare_decision_eval.py` reads an existing immutable HF snapshot
@@ -164,6 +177,25 @@ code. Each driver run starts on a cool chip (65 °C; GPU for Metal, CPU for
 cpu_neon), macmon is logged during the chunk, and the report adds warm
 latency over all samples and over the samples that started cool. `--status`
 prints progress without inference.
+
+The deadline is wall-clock time, checked every 5 s: macOS's monotonic clock
+stands still while the host sleeps, which once let a chunk overrun its lease.
+`--calibration-modes decision_dense` runs only the arm the temperature is
+fitted on. `tools/sample_decision_cases.py` derives a declared,
+label-independent stratified sample from a prepared development or calibration
+bundle without re-tokenizing. `--import-from RUN` seeds a new run with the
+complete samples of an earlier run that has the identical binding and policy,
+for the questions and modes the new run declares (#171 amendment, see
+`held_out_campaign_171` in the plan).
+
+`--repeats 0` runs a single trial per question and arm (it is both the
+quality representative and the latency sample). `--core-arms` keeps only
+chat_direct dense/selected and chat_reasoning. `--spotcheck N` adds, after the
+main run, a second independent trial on N declared, label-independent
+questions and reports whether every arm reproduced bit-exactly. `--question-ids FILE`
+runs only a frozen JSON list of question IDs of the validated bundle (in that
+order) and `--reasoning-only` only the chat_reasoning profile; #171 uses both
+to re-run the capped reasoning answers at a higher cap (amendment 3).
 
 ```sh
 LOCK_PRIO=batch LOCK_MAX=30 LOCK_NOTE="#171 chunk" ~/bin/with-mac-lock \

@@ -285,6 +285,7 @@ enum geist_status load_layer_experts(struct transformer_arch_state    *st,
                                      struct gguf_ctx                  *gguf,
                                      struct transformer_layer_weights *L,
                                      const char                       *name,
+                                     const char                       *shared,
                                      size_t                            n_experts,
                                      size_t                            n_out,
                                      size_t                            n_in,
@@ -325,51 +326,160 @@ enum geist_status load_layer_experts(struct transformer_arch_state    *st,
     /* Every quantized format packs whole rows, so expert e's [n_out, n_in]
      * matrix is the e-th equal slice of the tensor's bytes. */
     const size_t         eb      = t->nbytes / n_experts;
-    struct geist_tensor *views   = heap_calloc_array_aligned(struct geist_tensor, n_experts);
-    struct geist_weight *weights = heap_calloc_array_aligned(struct geist_weight, n_experts);
+    const size_t         slots   = n_experts + (shared != nullptr);
+    struct geist_tensor *views   = heap_calloc_array_aligned(struct geist_tensor, slots);
+    struct geist_weight *weights = heap_calloc_array_aligned(struct geist_weight, slots);
     *out_views                   = views;
     *out_weights                 = weights;
-    L->moe_n_experts             = n_experts; /* what the layer teardown walks */
+    L->moe_n_experts             = slots; /* what the layer teardown walks */
     if (views == nullptr || weights == nullptr) {
         geist_backend_set_error(be, GEIST_E_OOM, "transformer: no memory for experts '%s'", name);
         return GEIST_E_OOM;
     }
+    /* A shared expert: slot n_experts, a [n_out, n_in] tensor of its own. */
+    const struct gguf_tensor_t *ts   = nullptr;
+    struct geist_buffer        *bufs = nullptr;
+    if (shared != nullptr) {
+        s = load_tensor_to_buffer(st, gguf, shared, per, WEIGHT_LINEAR, &ts, &bufs);
+        if (s != GEIST_OK)
+            return s;
+        if (layer_track_buf(L, bufs) != 0) {
+            v->buffer_destroy(be, bufs);
+            geist_backend_set_error(be,
+                                    GEIST_E_INTERNAL,
+                                    "transformer: layer buffer list overflow on '%s'",
+                                    shared);
+            return GEIST_E_INTERNAL;
+        }
+        if (!map_gguf_dtype(ts->dtype).supported) {
+            geist_backend_set_error(be,
+                                    GEIST_E_UNSUPPORTED,
+                                    "transformer: shared expert '%s' (%s) is not supported",
+                                    shared,
+                                    gguf_dtype_name(ts->dtype));
+            return GEIST_E_UNSUPPORTED;
+        }
+    }
     const uint8_t *host = (const uint8_t *) v->buffer_map(buf);
-    if (host == nullptr) {
+    const uint8_t *hs   = bufs != nullptr ? (const uint8_t *) v->buffer_map(bufs) : nullptr;
+    if (host == nullptr || (bufs != nullptr && hs == nullptr)) {
         geist_backend_set_error(
                 be, GEIST_E_BACKEND, "transformer: buffer_map(%s) returned null", name);
         return GEIST_E_BACKEND;
     }
-    for (size_t e = 0; e < n_experts && s == GEIST_OK; e++) {
-        views[e] = make_view_2d(buf, dm.dtype, dm.layout, (int64_t) n_out, (int64_t) n_in);
-        views[e].offset += (int64_t) (e * eb);
+    for (size_t e = 0; e < slots && s == GEIST_OK; e++) {
+        const bool                   sh  = e == n_experts;
+        const struct dtype_map_entry dme = sh ? map_gguf_dtype(ts->dtype) : dm;
+        views[e]                         = make_view_2d(
+                sh ? bufs : buf, dme.dtype, dme.layout, (int64_t) n_out, (int64_t) n_in);
+        views[e].offset += sh ? 0 : (int64_t) (e * eb);
         weights[e] = (struct geist_weight) {
-                .raw        = host + e * eb,
-                .raw_nbytes = eb,
+                .raw        = sh ? hs : host + e * eb,
+                .raw_nbytes = sh ? ts->nbytes : eb,
                 .n_in       = (int32_t) n_in,
                 .n_out      = (int32_t) n_out,
-                .dtype      = (uint16_t) dm.dtype,
+                .dtype      = (uint16_t) dme.dtype,
         };
-        /* On a GPU the experts' home is the state's CPU backend (#78). */
-        struct geist_backend *rb = st->moe_cpu != nullptr ? st->moe_cpu : be;
-        if (rb->desc->vtbl->resolve_weight == nullptr) {
+        /* On a GPU the experts' home is the state's CPU backend (#78), and
+         * moe_resolve_cold resolves there only the experts that got no GPU
+         * copy (#164): the placement comes first. */
+        if (st->moe_cpu != nullptr) {
             continue;
         }
-        rb->calibration.locked = true;
-        s                      = rb->desc->vtbl->resolve_weight(rb, &weights[e]);
+        if (be->desc->vtbl->resolve_weight == nullptr) {
+            continue;
+        }
+        be->calibration.locked = true;
+        s                      = be->desc->vtbl->resolve_weight(be, &weights[e]);
         if (s == GEIST_E_UNSUPPORTED) {
             geist_backend_set_error(be,
                                     GEIST_E_UNSUPPORTED,
                                     "transformer: %s has no %s linear for experts '%s'",
-                                    rb->desc->name,
+                                    be->desc->name,
                                     gguf_dtype_name(t->dtype),
                                     name);
         } else if (s == GEIST_OK && (weights[e].flags & GEIST_W_RAW_COLD) != 0) {
             /* A host repack the kernels read instead of the source (#729). */
-            gguf_release_range(gguf, weights[e].raw, eb);
+            gguf_release_range(gguf, weights[e].raw, weights[e].raw_nbytes);
         }
     }
     v->buffer_unmap(buf);
+    if (bufs != nullptr)
+        v->buffer_unmap(bufs);
+    return s;
+}
+
+enum geist_status moe_wire_layer(struct transformer_arch_state    *st,
+                                 struct gguf_ctx                  *gguf,
+                                 struct transformer_layer_weights *L,
+                                 const char                       *arch) {
+    struct geist_backend *be = st->backend;
+    /* On a GPU the experts live on a CPU backend of the state's own; the
+     * GPU gets copies of the hottest after the load (moe_gpu.c, #78). */
+    if (strncmp(be->desc->name, "cpu_", 4) != 0 && st->moe_cpu == nullptr) {
+        static const char *const cpus[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
+        for (size_t i = 0; i < sizeof cpus / sizeof cpus[0] && st->moe_cpu == nullptr; i++)
+            if (geist_backend_create(cpus[i], nullptr, nullptr, &st->moe_cpu) != GEIST_OK)
+                st->moe_cpu = nullptr;
+        if (st->moe_cpu == nullptr) {
+            geist_backend_set_error(be,
+                                    GEIST_E_UNSUPPORTED,
+                                    "%s: no CPU backend for the experts on %s",
+                                    arch,
+                                    be->desc->name);
+            return GEIST_E_UNSUPPORTED;
+        }
+    }
+    const size_t n_exp = st->config.moe_n_experts;
+    const size_t d     = st->d_model;
+    const size_t ff    = L->intermediate;
+    const bool   sh    = st->config.moe_n_shared > 0;
+    char         name[64], sname[64];
+
+    /* A router this unit does not implement is refused, never
+     * approximated: llama.cpp's gating enum, 1 = softmax. */
+    uint32_t gating = 1;
+    snprintf(name, sizeof name, "%s.expert_gating_func", arch);
+    if (gguf_get_meta_u32(gguf, name, &gating) && gating != 1) {
+        geist_backend_set_error(be,
+                                GEIST_E_UNSUPPORTED,
+                                "%s: expert_gating_func %u is not softmax (1)",
+                                arch,
+                                gating);
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* The router's top-k is a discrete choice: it keeps its own precision. */
+    snprintf(name, sizeof name, "blk.%d.ffn_gate_inp.weight", L->layer_idx);
+    enum geist_status s =
+            load_layer_matrix(st, gguf, L, name, n_exp, d, true, &L->moe_router, &L->moe_router_w);
+    static const char *const proj[]  = {"gate", "up", "down"};
+    struct geist_tensor    **views[] = {&L->moe_gate, &L->moe_up, &L->moe_down};
+    struct geist_weight    **ws[]    = {&L->moe_gate_w, &L->moe_up_w, &L->moe_down_w};
+    for (size_t p = 0; p < 3 && s == GEIST_OK; p++) {
+        snprintf(name, sizeof name, "blk.%d.ffn_%s_exps.weight", L->layer_idx, proj[p]);
+        snprintf(sname, sizeof sname, "blk.%d.ffn_%s_shexp.weight", L->layer_idx, proj[p]);
+        s = load_layer_experts(st,
+                               gguf,
+                               L,
+                               name,
+                               sh ? sname : nullptr,
+                               n_exp,
+                               p < 2 ? ff : d,
+                               p < 2 ? d : ff,
+                               views[p],
+                               ws[p]);
+    }
+    if (s == GEIST_OK && sh) {
+        /* The shared expert's gate: one [d] vector the host reads. */
+        snprintf(name, sizeof name, "blk.%d.ffn_gate_inp_shexp.weight", L->layer_idx);
+        const struct gguf_tensor_t *t = gguf_get_tensor(gguf, name);
+        if (t == nullptr || gguf_tensor_elem_count(t) != d ||
+            (L->moe_shexp_gate = gguf_dequant_to_fp32(t)) == nullptr) {
+            geist_backend_set_error(
+                    be, GEIST_E_FORMAT, "%s: '%s' is missing or not [%zu]", arch, name, d);
+            return GEIST_E_FORMAT;
+        }
+    }
     return s;
 }
 

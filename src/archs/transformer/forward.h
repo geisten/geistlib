@@ -148,6 +148,15 @@ void transformer_spec_session_scratch_free(struct transformer_arch_session *sess
 [[nodiscard]] enum geist_status
 transformer_head_dense_recompute(struct transformer_arch_session *sess);
 
+/* The pending logits row (scratch_logits row 0) where the host reads it at
+ * memory speed (#219): on a discrete GPU a device copy into the session's
+ * readback buffer, else the row itself. With `softcap` the family's final
+ * softcap is applied -- to the copy, or once in place (logits_softcapped).
+ * *mapped is the buffer to unmap; nullptr on failure (the backend says why). */
+[[nodiscard]] float *transformer_logits_host(struct transformer_arch_session *sess,
+                                             bool                             softcap,
+                                             struct geist_buffer            **mapped);
+
 /* Batched variant for verify_forward — runs lm_head on k rows in one
  * batched call, writes k per-position argmaxes into out_tokens. */
 [[nodiscard]] enum geist_status
@@ -206,5 +215,23 @@ static inline bool transformer_lookup_on_host(const struct geist_backend *be) {
                                                         size_t               row,
                                                         float                scale,
                                                         struct geist_buffer *dst);
+
+/* A pass's thread regime (geist_backend_vtbl.parallel_region_begin): the
+ * model backend's, and with a mixture of experts on a GPU also that of the
+ * CPU backend running its cold experts (#218). Without the latter, the
+ * cold experts' OpenMP region ran on the ambient team of one thread per
+ * logical CPU: 31 spinning threads beside the GPU driver, and a decode
+ * step stalled for 20-380 ms whenever one of them lost its CPU. */
+struct transformer_region {
+    int be;      /* parallel_region_begin's token for the model backend */
+    int moe_cpu; /* and for the cold experts' backend */
+};
+
+[[nodiscard]] struct transformer_region
+transformer_region_begin(const struct transformer_arch_state *st,
+                         enum geist_parallel_region           region);
+
+/* Restores what transformer_region_begin(st, ...) changed. */
+void transformer_region_end(const struct transformer_arch_state *st, struct transformer_region tok);
 
 #endif /* GEIST_INTERNAL_ARCH_TRANSFORMER_FORWARD_H */

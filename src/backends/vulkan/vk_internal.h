@@ -17,6 +17,8 @@
 #include <geist_util.h> /* struct geist_backend_memory */
 
 #include "checked.h"        /* ckd_* size arithmetic (AGENT.md §3) */
+#include "clock.h"          /* geist_now_ns: host wait counters */
+#include "env.h"            /* geist_env_flag: GEIST_VK_* switches */
 #include "gemma4_kernels.h" /* shared reference rope/attention kernels */
 #include "heap.h"
 #include "quant.h"             /* CPU dequant helpers for the non-GPU dtype fallback */
@@ -74,6 +76,11 @@ struct vk_fns {
     PFN_vkDestroyFence                DestroyFence;
     PFN_vkResetFences                 ResetFences;
     PFN_vkWaitForFences               WaitForFences;
+    PFN_vkCreateEvent                 CreateEvent;
+    PFN_vkDestroyEvent                DestroyEvent;
+    PFN_vkGetEventStatus              GetEventStatus;
+    PFN_vkResetEvent                  ResetEvent;
+    PFN_vkCmdSetEvent                 CmdSetEvent;
     /* compute pipeline machinery */
     PFN_vkCreateShaderModule         CreateShaderModule;
     PFN_vkDestroyShaderModule        DestroyShaderModule;
@@ -193,10 +200,12 @@ struct vk_dset_entry {
 };
 
 enum {
-    VK_MAX_BINDINGS     = 8,    /* storage buffers per dispatch (deltanet_mix needs 8) */
-    VK_SEQ_MAX_SETS     = 4096, /* descriptor sets per flush window */
-    VK_SEQ_MAX_DISPATCH = 4000, /* rotate the sequence before pool runs dry */
-    VK_PUSH_RANGE       = 128,  /* one push range covers every shader block */
+    VK_SEL_TABS         = 1024,     /* linear_t_sel tables cached (3 per MoE layer) */
+    VK_SEL_TAB_BYTES    = 4u << 20, /* their buffer */
+    VK_MAX_BINDINGS     = 14,       /* storage buffers per dispatch (dn_scan_b needs 14) */
+    VK_SEQ_MAX_SETS     = 4096,     /* descriptor sets per flush window */
+    VK_SEQ_MAX_DISPATCH = 4000,     /* rotate the sequence before pool runs dry */
+    VK_PUSH_RANGE       = 128,      /* one push range covers every shader block */
 };
 
 /* Where work can leave the GPU (vk_fallback). */
@@ -204,7 +213,7 @@ enum vk_fb {
     VK_FB_HOST_VIEW,   /* a host loop over a mapped tensor (vk_tensor_host) */
     VK_FB_HOST_LINEAR, /* a linear on the host row-dequant path (vk_w_cpu_mN) */
     VK_FB_HOST_COPY,   /* vk_buffer_copy through mapped memory */
-    VK_FB_LINEAR_T,    /* linear_t / linear_t_pair declined: arch host linear */
+    VK_FB_LINEAR_T,    /* linear_t declined: arch host linear */
     VK_FB_ARGMAX,      /* argmax declined: arch scans on the host */
     VK_FB_EMBED,       /* embedding lookup declined: arch gathers on the host */
     VK_FB_KV_APPEND,   /* kv_append_f16 declined */
@@ -313,6 +322,9 @@ struct vk_state {
      * subgroup narrower than its VK_DN_SCAN_LANES cluster. Otherwise the
      * DeltaNet mixer stays on deltanet_delta_f32 (#467). */
     bool dn_scan;
+    /* Storage buffers one dispatch may bind (device limit, capped at
+     * VK_MAX_BINDINGS); pipelines past it are not created. */
+    uint32_t max_bindings;
 
     /* Device feature probes. */
     bool has_fp16;     /* shaderFloat16 + 16-bit storage */
@@ -405,6 +417,12 @@ struct vk_state {
      * (rows_weighted_sum's partial sum, #161): host-visible, written in
      * place at uring_used bytes; free again once a flush has waited. */
     struct geist_buffer *uring;
+    /* #162: linear_t_sel's address tables, built once per weight array
+     * (sel_key) in seltab; cleared when a weight leaves the registry. */
+    struct geist_buffer *seltab;
+    const void          *sel_key[VK_SEL_TABS];
+    uint32_t             sel_n[VK_SEL_TABS], sel_off[VK_SEL_TABS];
+    uint32_t             n_sel_tabs, seltab_used;
     size_t               uring_used;
     size_t               xring_used;
 
@@ -414,11 +432,16 @@ struct vk_state {
      * submit + fence-wait, triggered by any host data access (buffer_map /
      * CPU-op fallback / argmax readback). Descriptor sets come from
      * dset_cache; seq_pool holds the uncached ones and is reset at flush. */
-    VkCommandBuffer       seq_cmds[VK_SEQ_CMDBUFS];
-    VkCommandBuffer       seq_cmd;     /* currently recording */
-    uint32_t              seq_cmd_idx; /* next ring slot */
-    uint32_t              seq_in_cmd;  /* dispatches in the open cmd buffer */
-    VkFence               seq_fence;
+    VkCommandBuffer seq_cmds[VK_SEQ_CMDBUFS];
+    VkCommandBuffer seq_cmd;     /* currently recording */
+    uint32_t        seq_cmd_idx; /* next ring slot */
+    uint32_t        seq_in_cmd;  /* dispatches in the open cmd buffer */
+    VkFence         seq_fence;
+    /* #162: submit_mark's event, polled by map_marked. */
+    bool                  mark_pending;
+    uint64_t              mark_n;
+    VkEvent               mark_event;
+    bool                  mark_in_open; /* set in the open command buffer, not submitted yet */
     bool                  seq_open;
     uint32_t              seq_dispatches;
     VkDescriptorPool      seq_pool;
@@ -596,7 +619,12 @@ void vk_seq_flush(struct vk_state *st);
 /* End the open submission here without waiting (a roll, or a flush when the
  * ring is full), so what is recorded next goes into a submission of its own
  * (async streaming, #78). */
-void                            vk_seq_cut(struct vk_state *st);
+void vk_seq_cut(struct vk_state *st);
+/* #162: records an event after the work so far (nothing is submitted) and
+ * returns its mark (0: nothing in flight); vk_seq_wait_mark submits it if
+ * need be and polls the event. One mark at a time. */
+uint64_t                        vk_seq_mark(struct vk_state *st);
+void                            vk_seq_wait_mark(struct vk_state *st, uint64_t mark);
 [[nodiscard]] enum geist_status vk_seq_take_failure(struct vk_state *st);
 
 /* Record that the work at `site` leaves the GPU. Returns the status the

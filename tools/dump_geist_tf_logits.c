@@ -8,13 +8,9 @@
  * independent runtime (benchmark/dump_llamacpp_tf.cpp) writes the same rows
  * for tools/js_streams.c. GEIST_BACKEND picks the backend.
  */
-#include <geist.h>
-#include <geist_backend.h>
-#include <geist_util.h>
+#include "tool_common.h"
 
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
 
 int main(int argc, char **argv) {
     if (argc != 5) {
@@ -35,17 +31,15 @@ int main(int argc, char **argv) {
     if (n_ids <= (size_t) n_prompt)
         return 2;
 
-    struct geist_backend     *be   = nullptr;
-    struct geist_model       *m    = nullptr;
-    struct geist_session     *s    = nullptr;
+    struct tool_engine        e    = {0};
     FILE                     *out  = nullptr;
     int                       rc   = 1;
     struct geist_session_opts opts = {.temperature = 0.0f, .max_seq_len = n_ids + 16};
-    if (geist_backend_create("auto", nullptr, nullptr, &be) != GEIST_OK ||
-        geist_model_load(argv[1], be, &m) != GEIST_OK ||
-        geist_session_create(m, be, &opts, &s) != GEIST_OK ||
-        geist_session_prefill_tokens(s, (size_t) n_prompt, ids) != GEIST_OK) {
-        fprintf(stderr, "setup failed: %s\n", geist_last_create_error());
+    if (!tool_open("auto", nullptr, argv[1], nullptr, &opts, &e))
+        goto done;
+    struct geist_session *s = e.sess;
+    if (geist_session_prefill_tokens(s, (size_t) n_prompt, ids) != GEIST_OK) {
+        fprintf(stderr, "prefill failed: %s\n", geist_session_errmsg(s));
         goto done;
     }
     out = fopen(argv[4], "wb");
@@ -60,13 +54,11 @@ int main(int argc, char **argv) {
             goto done;
         }
     }
-    fprintf(stderr, "backend=%s steps=%zu\n", geist_backend_name(be), n_ids - (size_t) n_prompt);
+    fprintf(stderr, "backend=%s steps=%zu\n", geist_backend_name(e.be), n_ids - (size_t) n_prompt);
     rc = 0;
 done:
     if (out != nullptr)
         fclose(out);
-    geist_session_destroy(s);
-    geist_model_destroy(m);
-    geist_backend_destroy(be);
+    tool_close(&e);
     return rc;
 }

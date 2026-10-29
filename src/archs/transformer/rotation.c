@@ -73,27 +73,6 @@ static bool meta_str_is(struct gguf_ctx *g, const char *key, const char *want) {
     return v != nullptr && len == strlen(want) && memcmp(v, want, len) == 0;
 }
 
-/* Walk a GGUF string array. The reader validated every element's extent
- * when it opened the file, so the (u64 length, bytes) pairs can be read
- * back without re-checking the cursor against the payload end. */
-struct str_iter {
-    const uint8_t *p;
-    uint64_t       left;
-};
-
-static bool str_next(struct str_iter *it, const char **s, size_t *len) {
-    if (it->left == 0) {
-        return false;
-    }
-    uint64_t n = 0;
-    memcpy(&n, it->p, sizeof n);
-    *s   = (const char *) (it->p + sizeof n);
-    *len = (size_t) n;
-    it->p += sizeof n + (size_t) n;
-    it->left--;
-    return true;
-}
-
 /* "blk.<i>.<kind>.weight" -> (i, kind); false on anything else. */
 static bool parse_layer_name(const char *s, size_t len, size_t *layer, size_t *kind) {
     static const char pre[] = "blk.";
@@ -156,12 +135,12 @@ static bool is_name(const char *s, size_t len, const char *want) {
     if (seen == nullptr) {
         return fail(st, GEIST_E_OOM, "out of memory", nullptr);
     }
-    bool             *seen_output = &seen[cells - 1];
-    enum geist_status s           = GEIST_OK;
-    struct str_iter   it          = {.p = p, .left = n};
-    const char       *name        = nullptr;
-    size_t            len         = 0;
-    while (s == GEIST_OK && str_next(&it, &name, &len)) {
+    bool                *seen_output = &seen[cells - 1];
+    enum geist_status    s           = GEIST_OK;
+    struct gguf_str_iter it          = {.p = p, .left = n};
+    const char          *name        = nullptr;
+    size_t               len         = 0;
+    while (s == GEIST_OK && gguf_str_next(&it, &name, &len)) {
         size_t layer = 0;
         size_t kind  = (size_t) ROT_KIND_COUNT;
         bool  *slot  = nullptr;
@@ -204,10 +183,10 @@ static bool is_name(const char *s, size_t len, const char *want) {
         st->rotation.embed_inverse = false;
         return GEIST_OK;
     }
-    struct str_iter it   = {.p = p, .left = n};
-    const char     *name = nullptr;
-    size_t          len  = 0;
-    if (vt != GGUF_META_VT_STRING || n != 1 || !str_next(&it, &name, &len) ||
+    struct gguf_str_iter it   = {.p = p, .left = n};
+    const char          *name = nullptr;
+    size_t               len  = 0;
+    if (vt != GGUF_META_VT_STRING || n != 1 || !gguf_str_next(&it, &name, &len) ||
         !is_name(name, len, "token_embd.weight")) {
         return fail(
                 st, GEIST_E_FORMAT, "inverse_weight_names must be [token_embd.weight]", nullptr);

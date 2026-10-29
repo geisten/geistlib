@@ -86,52 +86,15 @@ struct cpu_neon_workspace {
     size_t pq2_xp_cap;
     float *pq2_tile;
     size_t pq2_tile_cap;
+    /* Split decode attention (transformer_ops.c): per (query, head, part)
+     * the part's unnormalized output, its max and its sum. */
+    float  *attn_part_out;
+    size_t  attn_part_out_cap;
+    float  *attn_part_max;
+    size_t  attn_part_max_cap;
+    double *attn_part_sum;
+    size_t  attn_part_sum_cap;
 };
-
-/* Grow-on-demand helpers for the workspace buffers. Return false on OOM,
- * leaving the capacity at 0 so the next call retries. The kernels are
- * void — see each call site for how it degrades. */
-[[nodiscard]] static inline bool cpu_neon_grow_i8(int8_t **p, size_t *cap, size_t need) {
-    if (*cap >= need) {
-        return true;
-    }
-    safe_free((void **) p);
-    *p = heap_alloc_array_aligned(int8_t, need);
-    if (*p == nullptr) {
-        *cap = 0;
-        return false;
-    }
-    *cap = need;
-    return true;
-}
-
-[[nodiscard]] static inline bool cpu_neon_grow_i32(int32_t **p, size_t *cap, size_t need) {
-    if (*cap >= need) {
-        return true;
-    }
-    safe_free((void **) p);
-    *p = heap_alloc_array_aligned(int32_t, need);
-    if (*p == nullptr) {
-        *cap = 0;
-        return false;
-    }
-    *cap = need;
-    return true;
-}
-
-[[nodiscard]] static inline bool cpu_neon_grow_f32(float **p, size_t *cap, size_t need) {
-    if (*cap >= need) {
-        return true;
-    }
-    safe_free((void **) p);
-    *p = heap_alloc_array_aligned(float, need);
-    if (*p == nullptr) {
-        *cap = 0;
-        return false;
-    }
-    *cap = need;
-    return true;
-}
 
 void cpu_neon_workspace_destroy(struct cpu_neon_workspace *ws);
 
@@ -301,12 +264,60 @@ struct geist_hadamard_args;
                                                  const struct geist_tensor *w,
                                                  float                      eps,
                                                  struct geist_tensor       *y);
+/* fused->rmsnorm_add / rmsnorm_add_norm on rmsnorm_fp32 + add_fp32, rows
+ * across threads in prefill (#195); the probe answers
+ * cpu_neon_res_norm_supported(d_model). */
+[[nodiscard]] bool              cpu_neon_res_norm_supported(size_t cols);
+[[nodiscard]] enum geist_status cpu_neon_rmsnorm_add(struct geist_backend      *be,
+                                                     const struct geist_tensor *res,
+                                                     const struct geist_tensor *x,
+                                                     const struct geist_tensor *w,
+                                                     float                      eps,
+                                                     struct geist_tensor       *y);
+[[nodiscard]] enum geist_status cpu_neon_rmsnorm_add_norm(struct geist_backend      *be,
+                                                          float                      eps,
+                                                          float                      scale,
+                                                          const struct geist_tensor *res,
+                                                          const struct geist_tensor *x,
+                                                          const struct geist_tensor *w,
+                                                          const struct geist_tensor *z_w,
+                                                          struct geist_tensor       *y,
+                                                          struct geist_tensor       *z);
 
 /* Transformer ops — wraps gemma4_kernels.c reference kernels. */
 [[nodiscard]] enum geist_status cpu_neon_rope_apply(struct geist_backend      *be,
                                                     struct geist_tensor       *x,
                                                     const struct geist_tensor *cos,
                                                     const struct geist_tensor *sin);
+/* fused->attn_qkv_prep (Gemma 4) and attn_rope_append (Llama, Qwen3): the
+ * q/k(/v) norms, RoPE, q scale and KV append per token, tokens across
+ * threads in prefill (#195). */
+[[nodiscard]] enum geist_status cpu_neon_attn_qkv_prep(struct geist_backend      *be,
+                                                       struct geist_tensor       *q,
+                                                       struct geist_tensor       *k,
+                                                       struct geist_tensor       *v,
+                                                       const struct geist_tensor *q_norm_w,
+                                                       const struct geist_tensor *k_norm_w,
+                                                       const struct geist_tensor *v_norm_w,
+                                                       const struct geist_tensor *cos,
+                                                       const struct geist_tensor *sin,
+                                                       float                      eps,
+                                                       size_t                     q_position,
+                                                       struct geist_tensor       *k_cache,
+                                                       struct geist_tensor       *v_cache);
+[[nodiscard]] enum geist_status cpu_neon_attn_rope_append(struct geist_backend      *be,
+                                                          struct geist_tensor       *q,
+                                                          struct geist_tensor       *k,
+                                                          const struct geist_tensor *v,
+                                                          const struct geist_tensor *q_norm_w,
+                                                          const struct geist_tensor *k_norm_w,
+                                                          const struct geist_tensor *cos,
+                                                          const struct geist_tensor *sin,
+                                                          float                      eps,
+                                                          float                      q_scale,
+                                                          size_t                     q_position,
+                                                          struct geist_tensor       *k_cache,
+                                                          struct geist_tensor       *v_cache);
 /* fused->kv_append_f16: k_src / v_src rows (F32) to IEEE half at row
  * q_position of the F16 caches (#48). */
 [[nodiscard]] enum geist_status cpu_neon_kv_append_f16(struct geist_backend      *be,
