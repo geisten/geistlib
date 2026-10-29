@@ -279,6 +279,41 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
     return GEIST_OK;
 }
 
+/* Batched decode (#26): transformer_kv_store_append's F16 and device-copy
+ * paths for one row taken at byte `off` of k_src / v_src (a carrier's
+ * rows) instead of the session's scratch_k / scratch_v. UNSUPPORTED for the
+ * quantised caches and the host path. */
+enum geist_status transformer_kv_store_append_row(struct transformer_layer_forward_ctx *ctx,
+                                                  struct geist_buffer                  *k_src,
+                                                  struct geist_buffer                  *v_src,
+                                                  size_t                                off) {
+    struct transformer_arch_state *st = ctx->st;
+    const size_t                   qp = ctx->q_position;
+    if (ctx->seq != 1 || ctx->kv_kivi_enabled || ctx->kv_int8_enabled) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (ctx->kv_f16_enabled) {
+        struct geist_tensor t_k = view_3d(k_src, 1, st->n_kv_heads, (int64_t) ctx->hd);
+        struct geist_tensor t_v = view_3d(v_src, 1, st->n_kv_heads, (int64_t) ctx->hd);
+        t_k.offset = t_v.offset  = off;
+        struct geist_tensor t_kc = view_3d_f16(
+                ctx->k_cache_buf, (int64_t) (qp + 1), st->n_kv_heads, (int64_t) ctx->hd);
+        struct geist_tensor t_vc = view_3d_f16(
+                ctx->v_cache_buf, (int64_t) (qp + 1), st->n_kv_heads, (int64_t) ctx->hd);
+        return ctx->fused->kv_append_f16(ctx->be, &t_k, &t_v, qp, &t_kc, &t_vc);
+    }
+    if (!st->model_fusions.backend_buffer_copy) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const size_t      row_bytes = ctx->kv_out * sizeof(float);
+    enum geist_status s =
+            ctx->v->buffer_copy(ctx->k_cache_buf, qp * row_bytes, k_src, off, row_bytes);
+    if (s == GEIST_OK) {
+        s = ctx->v->buffer_copy(ctx->v_cache_buf, qp * row_bytes, v_src, off, row_bytes);
+    }
+    return s;
+}
+
 enum geist_status transformer_kv_store_attention(struct transformer_layer_forward_ctx *ctx,
                                                  const struct geist_tensor            *t_q_3d,
                                                  struct geist_tensor                  *t_attn_3d) {
