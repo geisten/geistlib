@@ -47,7 +47,7 @@ def chunk_dirs(out_dir):
 
 def read_lines(path):
     """Complete JSON lines only; the writer never persists a partial line."""
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
+    return [json.loads(line) for line in path.read_text().split("\n") if line.strip()] if path.exists() else []
 
 
 def is_spotcheck(chunk):
