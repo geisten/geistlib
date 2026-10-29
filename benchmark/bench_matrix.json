@@ -1,12 +1,14 @@
 {
   "schema": "geist.benchmark.matrix.v1",
-  "note": "Which protocol model runs on which host column, and how often (.gitea/workflows/bench-matrix.yml, tools/bench_matrix.py). A model is listed only where it fits: no 27B on the 4 GB Pi, no 16 GB Qwen3.8 on the 11 GB card. nightly runs every night, weekly adds the rest on Sundays. The Linux columns build with GEMM_PROVIDER=native, the configuration of the release binaries users download; a run records its GEMM (from the geist binary's linked libraries) and is compared only with runs of the same GEMM. prefix wraps the measurement in the host lock: the desktop CI runner pauses while /tmp/geist-bench.lock is held (with-desktop-lock, a lease broker that names the holder on git.geisten.net/status/ci/; LOCK_MAX=180, the cell job's timeout, bounds a cell's hold: weekly 27B cells run past an hour), the Pi has with-pi-lock and the Mac with-mac-lock (its CI jobs hold that lock for their whole run, and a step inside such a job passes straight through).",
+  "note": "Which protocol model runs on which host column, and how often (.gitea/workflows/bench-matrix.yml, tools/bench_matrix.py). A model is listed only where it fits: no 27B on the 4 GB Pi, no 16 GB Qwen3.8 on the 11 GB card. nightly runs every night, weekly adds the rest on Sundays. The Linux columns build with GEMM_PROVIDER=native, the configuration of the release binaries users download; a run records its GEMM (from the geist binary's linked libraries) and is compared only with runs of the same GEMM. prefix wraps the measurement in the host lock: the desktop CI runner pauses while /tmp/geist-bench.lock is held (with-desktop-lock, a lease broker that names the holder on git.geisten.net/status/ci/; LOCK_MAX=180, the cell job's timeout, bounds a cell's hold: weekly 27B cells run past an hour), the Pi has with-pi-lock, the MacBook (M1 Max) with-mac-lock and the Mac mini (M6) with-macmini-lock (its CI jobs hold that lock for their whole run, and a step inside such a job passes straight through).",
   "labels": {
     "columns": {
       "amd_9950x": "AMD Ryzen 9 9950X · CPU",
       "nvidia_2080ti_vulkan": "RTX 2080 Ti · Vulkan",
       "apple_m1max": "Apple M1 Max · CPU",
       "apple_m1max_metal": "Apple M1 Max · Metal",
+      "apple_m6_mini": "Apple M6 (Mac mini) · CPU",
+      "apple_m6_mini_metal": "Apple M6 (Mac mini) · Metal",
       "pi5": "Raspberry Pi 5 · CPU"
     },
     "models": {
@@ -44,7 +46,7 @@
       "weekly": ["gemma4-e4b-q4km", "llama32-3b-q4km", "bitnet-large-tq2", "qwen3-0.6b-q8", "qwen35-4b-q4"]
     },
     "apple_m1max": {
-      "runner": "macos-15-heavy",
+      "runner": "apple-m1max",
       "protocol": "cpu",
       "build": "make TARGET=mac-omp bin",
       "llama": "cpu",
@@ -53,11 +55,29 @@
       "weekly": ["gemma4-e4b-q4km", "llama32-3b-q4km", "bitnet-large-tq2", "qwen3-0.6b-q8", "qwen35-4b-q4", "qwen38-27b-q4", "bonsai2-27b-pq2"]
     },
     "apple_m1max_metal": {
-      "runner": "macos-15-heavy",
+      "runner": "apple-m1max",
       "protocol": "gpu",
       "build": "make TARGET=mac-omp BACKENDS=\"cpu_neon cpu_scalar metal\" bin",
       "llama": "metal",
       "prefix": "~/bin/with-mac-lock",
+      "nightly": ["gemma4-e2b-q4km", "bonsai2-27b-pq2"],
+      "weekly": ["gemma4-e4b-q4km", "llama32-3b-q4km", "bitnet-large-tq2", "qwen3-0.6b-q8", "qwen35-0.8b-q8", "qwen35-4b-q4", "qwen38-27b-q4"]
+    },
+    "apple_m6_mini": {
+      "runner": "macmini-m6",
+      "protocol": "cpu",
+      "build": "make TARGET=mac-omp bin",
+      "llama": "cpu",
+      "prefix": "~/bin/with-macmini-lock",
+      "nightly": ["qwen35-0.8b-q8", "gemma4-e2b-q4km"],
+      "weekly": ["gemma4-e4b-q4km", "llama32-3b-q4km", "bitnet-large-tq2", "qwen3-0.6b-q8", "qwen35-4b-q4", "qwen38-27b-q4", "bonsai2-27b-pq2"]
+    },
+    "apple_m6_mini_metal": {
+      "runner": "macmini-m6",
+      "protocol": "gpu",
+      "build": "make TARGET=mac-omp BACKENDS=\"cpu_neon cpu_scalar metal\" bin",
+      "llama": "metal",
+      "prefix": "~/bin/with-macmini-lock",
       "nightly": ["gemma4-e2b-q4km", "bonsai2-27b-pq2"],
       "weekly": ["gemma4-e4b-q4km", "llama32-3b-q4km", "bitnet-large-tq2", "qwen3-0.6b-q8", "qwen35-0.8b-q8", "qwen35-4b-q4", "qwen38-27b-q4"]
     },

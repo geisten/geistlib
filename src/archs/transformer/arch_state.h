@@ -569,6 +569,8 @@ struct transformer_runtime_flags {
     bool bitnet_sub_ln_enabled;
     bool dump_act_sparsity;
     bool batch_per_session; /* batched decode (#26): one mixer call per session, not one for all */
+    bool batch_attn_copy;   /* batched decode (#26): attention through each session's scratch
+                             * (GEIST_DECODE_BATCH_ATTN_COPY=1, the A/B of the row path) */
     bool dn_seq_prefill;    /* force the sequential DeltaNet prefill path
                              * (GEIST_DN_SEQ_PREFILL=1) — the equivalence
                              * oracle for the chunked formulation */

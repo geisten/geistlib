@@ -79,6 +79,27 @@ class BenchCompareTest(unittest.TestCase):
             with mock.patch.object(sys, "argv", ["bench_compare", str(cur), "--baseline", str(base)]):
                 self.assertEqual(bench_compare.main(), 1)  # quiet run, the drop counts
 
+    def test_a_slower_host_is_not_a_regression(self):
+        # Runs 2104 -> 2207 in shape: geist and bitnet.cpp both ~7 % slower.
+        base, cur = _run("aaa", 45.0, 17.91), _run("bbb", 45.5, 16.64)
+        base["baselines"] = [{"engine": "bitnet.cpp", "version": "01eb415", "prefill_tps": 46.86, "decode_tps": 8.98}]
+        cur["baselines"] = [{"engine": "bitnet.cpp", "version": "01eb415", "prefill_tps": 46.26, "decode_tps": 8.28}]
+        ref = bench_compare.reference_shift(cur, base)
+        self.assertEqual(ref[0], "bitnet.cpp")
+        lines, bad = bench_compare.compare(cur, base, self.LIMITS, ref)
+        self.assertEqual(bad, [])
+        self.assertIn("Δ vs bitnet.cpp", lines[0])
+        _, bad = bench_compare.compare(cur, base, self.LIMITS)  # without the reference it would fail
+        self.assertEqual(len(bad), 2)
+        # geist drops past the limit against an unchanged reference: still a regression
+        cur["baselines"][0]["decode_tps"] = 8.98
+        _, bad = bench_compare.compare(cur, base, self.LIMITS, bench_compare.reference_shift(cur, base))
+        self.assertEqual(len(bad), 2)
+        self.assertIn("against bitnet.cpp", bad[0])
+        # another engine version is no reference
+        cur["baselines"][0]["version"] = "1234567"
+        self.assertIsNone(bench_compare.reference_shift(cur, base))
+
     def test_faster_is_never_a_regression(self):
         lines, bad = bench_compare.compare(_run("bbb", 60.0, 20.0), _run("aaa", 45.0, 15.0), self.LIMITS)
         self.assertEqual(bad, [])

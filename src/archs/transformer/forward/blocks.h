@@ -73,6 +73,13 @@ void blk_scale_cols(struct transformer_layer_forward_ctx *ctx,
                                            const struct geist_tensor            *k_norm,
                                            bool                                  v_norm);
 
+/* RoPE on the one row of `heads` heads at byte `off` of `buf`, at the
+ * session position of ctx (batched decode, #26). */
+[[nodiscard]] enum geist_status blk_rope_row(struct transformer_layer_forward_ctx *ctx,
+                                             struct geist_buffer                  *buf,
+                                             size_t                                off,
+                                             size_t                                heads);
+
 /* RoPE on q, q *= q_scale, RoPE on k, in that order (scratch_q, scratch_k). */
 [[nodiscard]] enum geist_status blk_rope_qk(struct transformer_layer_forward_ctx *ctx,
                                             float                                 q_scale);

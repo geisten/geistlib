@@ -923,5 +923,54 @@
         }
       }
     ]
+  },
+  "early_exit_default_286": {
+    "tracking_issue": "geistlib#286 (Gitea), follow-up of #236",
+    "declared_date": "2026-10-29",
+    "decided_by": "user (2026-10-29: #286 approved; declare by PR before any inference, night-only)",
+    "declared_before_inference": true,
+    "question": "Is early exit (tau 0.8, probes every 128 tokens, frozen in #236) non-inferior to full reasoning at cap 8192 on Bonsai 2 27B, within the 2 pp margin, so that it can become the default of decision mode?",
+    "sample": {
+      "questions": 3500,
+      "population": "the cleaned classic-MMLU test split (13,904; cais/mmlu c30699e8, exact-overlap exclusion) minus the 500 #171/#236 test questions (cases-test/test.jsonl sha256 108f815e3c21f6fe17adc4fa25d5a14f3051473349e156c06f59f46f86aa3977): 13,404",
+      "seed": "geist-decision-test-sample-286-v1",
+      "policy": "decision_dataset.select_stratified (subject-proportional largest-remainder quotas, 21-386 per subject over 57 subjects; within a subject the first by sha256([seed, question_id]); label-independent)",
+      "question_ids_sha256": "ac034b06a853a8f9609baa9692111edb6f211ce65a218d594b36f780da3b7da8",
+      "question_ids_sha256_of": "the selected question_ids in selection order, joined by newlines",
+      "prepare": "tools/prepare_decision_eval.py --splits test --test-sample 3500 --test-seed geist-decision-test-sample-286-v1 --test-exclude <#171 cases-test/test.jsonl>, otherwise the #171 frozen prompt policy (5 shots, exclude, rotations 1, template date 2026-10-04)"
+    },
+    "sample_size": {
+      "rule": "decision_metrics.paired_quality (exact binomial gain/loss intervals, Bonferroni), 2 pp margin, at the #236 cap-8192 discordance (27 gains, 27 losses in 500: 5.4 % each)",
+      "lower_bound_pp_at_zero_difference": {
+        "500": -4.74,
+        "2800": -1.95,
+        "3000": -1.88,
+        "3500": -1.74,
+        "4000": -1.63
+      },
+      "note": "n = 3,500 establishes the margin at that discordance if the true difference is above about -0.2 pp (at -0.25 pp the bound is -2.02)."
+    },
+    "run": {
+      "driver": "tools/eval_decision_batched_reasoning.py -> tools/bench_reasoning_batch",
+      "settings": "Bonsai 2 27B PQ2_0 (3907dc16...), Metal on the M1 Max, FP32 KV, 6 threads, OMP_WAIT_POLICY=passive, greedy, chat_reasoning prompts in subject order, per-subject prefix snapshot aligned to 320, cap 8192, batch 8 refilled as questions finish (no --pad), probes [198, 248069, 271] every 128 generated tokens recorded with --exit-tau 0",
+      "both_arms_from_one_run": "Probes are transparent (#236 step 1: 8/8 generations token-identical with and without probes), so the recorded run is the full-reasoning arm. The early-exit arm is the frozen policy applied to the recorded probes of the same generation: the first probe at position >= 128 whose top softmax probability over the four options (temperature 1) is >= 0.8 answers with that option; without one, the full-reasoning answer. A question's two arms share one trajectory.",
+      "batching": "Refilled batching without padding is sound here: both arms of a question come from the same generation, so which questions share its batched steps (and the per-n rounding of those steps) cannot favour either arm. Padding was needed in #236 only because the arms were separate runs. A question in flight at a chunk deadline is re-run from its prompt in the next chunk; finished questions are never re-run.",
+      "scoring": "eval_decision.generation_outcome, thinking on, as in #171/#236; a capped full answer without a final letter is wrong for the full arm"
+    },
+    "analysis": {
+      "primary": "paired_quality(early exit, full reasoning, margin 2 pp): non-inferior iff the lower bound of the conservative 95 % interval is above -2 pp",
+      "secondary": "accuracy of both arms, gains/losses, early exits, capped answers, generated tokens and their ratio, probe count and time; results file + JSON by PR",
+      "no_interim": "No interim analysis: the 3,500 are analysed once, after all are complete (progress reports give counts and throughput only, no accuracy)."
+    },
+    "latency_check": {
+      "questions": "300 of the 3,500: decision_dataset.select_stratified(the 3,500, 300, seed geist-decision-latency-286-v1), question_ids_sha256 0afb9f8a4dad53ea3f485f5d660fd75f357859dde820fa4c8addabedf0306717",
+      "when": "after the main run is complete",
+      "run": "live early exit with the decision-mode defaults (probe every 128, tau 0.8), same settings, batch 8 refilled, no padding",
+      "method_note": "geistr decide --early-exit (geist-runtime #256) runs the same probe sequence (snapshot, prefill the thinking close, read the option logits, restore) between geistr_chats_next steps. The engine driver runs it here because it takes the prepared MMLU prompts; geistr decide builds its own prompt, whose answers could not be compared with the offline arm.",
+      "reported": "p50/p95 per-question latency (prompt to answer, including its prefill) and aggregate generated tokens/s for live early exit; the same for full reasoning on the same 300 from the main run (also with its probe time subtracted); agreement of the live answers with the offline early-exit answers (reported, not required to be identical: different batch companions round differently)"
+    },
+    "schedule": "night-only, 21:00-07:00 Berlin: a scheduler starts chunks only inside the window and stops starting new ones at 07:00; chunks under 28-min wall-clock deadlines, LOCK_PRIO=batch, LOCK_MAX=30, cool start, caffeinate, resumable from frozen manifests",
+    "estimate": "full reasoning about 1,350 tokens per question (#236 cap 8192): about 4.7 M tokens at about 50-58 tok/s aggregate with 8 in flight, plus about 37,000 probes at about 0.12 s and prefix prefills: about 25-27 h of lease; latency check about 1 h; about 4 nights at about 7 h of lease per night",
+    "if_noninferior": "a geist-runtime PR that makes --early-exit the default of geistr decide --escalate chat, left for the user's merge decision"
   }
 }
