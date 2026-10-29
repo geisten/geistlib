@@ -77,6 +77,24 @@
         }
       }
     },
+    "apple_m6_mini": {
+      "prefill_threads": 6,
+      "decode_threads": 5,
+      "expect_backend": "cpu_neon",
+      "note": "Apple M6, 12 cores: 2 super + 4 performance + 6 efficiency, 32 GB. Same rule as the M1 Max (prefill on every big core, decode leaves one to the OS); a first setting, not tuned by a thread sweep.",
+      "host_gate": {
+        "min_cpu_idle_pct": 80,
+        "max_repeat_spread_pct": 5,
+        "max_retries": 3,
+        "timeout_seconds": 1200,
+        "note": "As the M1 Max profile: >= 80 % of all cores idle over the settle window, repeats within 5 %, at most 20 min of waiting. A dedicated CI host (runner macmini-m6): other measurements are excluded by ~/bin/with-macmini-lock, and the runner hooks hold that lock for every job.",
+        "apple_temp_gate": {
+          "max_cpu_c": 65,
+          "fallback_seconds": 45,
+          "note": "Threshold and fallback taken over from the M1 Max profile (65 C, 45 s); not yet measured on the M6."
+        }
+      }
+    },
     "amd_9950x": {
       "prefill_threads": 16,
       "decode_threads": 15,

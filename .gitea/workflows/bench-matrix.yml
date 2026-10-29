@@ -96,6 +96,24 @@ jobs:
           - {column: apple_m1max_metal, model: qwen35-0.8b-q8, runner: apple-m1max, weekly: true}
           - {column: apple_m1max_metal, model: qwen35-4b-q4, runner: apple-m1max, weekly: true}
           - {column: apple_m1max_metal, model: qwen38-27b-q4, runner: apple-m1max, weekly: true}
+          - {column: apple_m6_mini, model: qwen35-0.8b-q8, runner: macmini-m6, weekly: false}
+          - {column: apple_m6_mini, model: gemma4-e2b-q4km, runner: macmini-m6, weekly: false}
+          - {column: apple_m6_mini, model: gemma4-e4b-q4km, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini, model: llama32-3b-q4km, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini, model: bitnet-large-tq2, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini, model: qwen3-0.6b-q8, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini, model: qwen35-4b-q4, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini, model: qwen38-27b-q4, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini, model: bonsai2-27b-pq2, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini_metal, model: gemma4-e2b-q4km, runner: macmini-m6, weekly: false}
+          - {column: apple_m6_mini_metal, model: bonsai2-27b-pq2, runner: macmini-m6, weekly: false}
+          - {column: apple_m6_mini_metal, model: gemma4-e4b-q4km, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini_metal, model: llama32-3b-q4km, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini_metal, model: bitnet-large-tq2, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini_metal, model: qwen3-0.6b-q8, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini_metal, model: qwen35-0.8b-q8, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini_metal, model: qwen35-4b-q4, runner: macmini-m6, weekly: true}
+          - {column: apple_m6_mini_metal, model: qwen38-27b-q4, runner: macmini-m6, weekly: true}
           - {column: pi5, model: qwen3-0.6b-q8, runner: pi5, weekly: false}
           - {column: pi5, model: qwen35-0.8b-q8, runner: pi5, weekly: false}
           - {column: pi5, model: gemma4-e2b-q4km, runner: pi5, weekly: true}
