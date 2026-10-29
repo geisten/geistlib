@@ -75,6 +75,8 @@ expect(bot.classify_job(job(checkout_fail, end="2026-10-20T10:25:25Z"))[0] == "i
        "checkout fails at a zombie sweep (:x5:25) -> infra")
 ccache = [("Run actions/checkout@x", "success"), ("ccache", "failure"), ("Build", "skipped")]
 expect(bot.classify_job(job(ccache))[0] == "infra", "ccache before the build fails quickly -> infra")
+hold = [("Run actions/checkout@x", "success"), (bot.HOLD_STEP, "failure"), ("Test", "skipped")]
+expect(bot.classify_job(job(hold))[0] == "held", "agent head held for /ci-ok -> held, not real")
 build = [("Run actions/checkout@x", "success"), ("Build", "failure"), ("Test", "skipped")]
 expect(bot.classify_job(job(build), True)[0] == "real", "build step fails -> real")
 after_build = [("Run actions/checkout@x", "success"), ("Build", "failure"), ("ccache save", "failure")]
@@ -144,6 +146,10 @@ body = b.api.writes[1][2]["body"]
 expect(body.startswith("**CI failed**") and body.rstrip("`\n").endswith("error: the real one")
        and body.count("line") <= bot.LOG_TAIL, "comment: the failed jobs' log tails")
 expect(b.api.writes[2][2] == {"labels": ["ci:full", bot.LABEL_FIX]}, "status:accepted -> status:fix, ci:full kept")
+held = dict(job(hold), id=777)
+b = ci_bot(1516, [held], logs=b"x")
+b.ci("geisten/geistlib", "geisten/geistlib#122", accepted)
+expect(b.api.writes == [], "an accepted agent PR held for /ci-ok -> no rerun, no send-back")
 b = ci_bot(1516, [j for j in JOBS["1516"] if j["id"] == 12880], logs=bot.ApiError(404, "logs not found"))
 b.ci("geisten/geistlib", "geisten/geistlib#122", PR["pr"])
 expect(len(b.api.writes) == 1, "a long job whose logs are gone -> rerun")
@@ -186,6 +192,8 @@ expect(bot.depends_on({"number": 5, "body": "Fixes #3", "labels": []}) == [], "n
 expect(bot.wants_automerge({"body": "Enable auto-merge once #3 is in.", "labels": []}), "body asks for auto-merge")
 expect(bot.wants_automerge({"body": "", "labels": [{"name": "automerge"}]}), "label automerge")
 expect(not bot.wants_automerge({"body": "Please do not auto-merge.", "labels": []}), "'do not auto-merge'")
+expect(not bot.wants_automerge({"body": "auto-merge please", "labels": [{"name": "automerge"}],
+                                 "head": {"ref": "agent/issue-7"}}), "never on an agent/* head")
 expect(not bot.wants_automerge({"body": "Depends on #3", "labels": []}), "silent PR -> no")
 
 print("CHANGELOG union")

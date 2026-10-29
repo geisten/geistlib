@@ -390,7 +390,10 @@ each within fixed rules; anything else stays with a human:
    real failure (rule 1's classification) gets that auto-merge cancelled,
    one comment with the last 60 log lines of each really failed job, and
    `status:fix` in place of `status:accepted`. The label starts the fix
-   job of `.gitea/workflows/agent.yml`, which works that comment.
+   job of `.gitea/workflows/agent.yml`, which works that comment. A run
+   whose `changes` job holds an agent head for a human's `/ci-ok` is not a
+   failure: no rerun, no fix round. Rule 3 never enables auto-merge on an
+   `agent/*` head.
 
 What it already did lives in `~/ci-bot/state.json` (restarts are
 idempotent; closed PRs are forgotten); every decision goes to
