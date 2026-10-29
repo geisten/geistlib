@@ -356,7 +356,7 @@ service=ci-hygiene -i action=deploy`), inspect it with `-i action=status`
 host, with its API client `scripts/gitea_api.py` installed next to it in
 `~/ci-bot/` (geisten-infra's desktop role copies both), and polls Gitea every 90 s for the open pull requests of
 `geisten/geistlib` and `geisten/geist-runtime` (everyone's, not only
-Claude's). It replaces the ad-hoc watcher scripts and does three things,
+Claude's). It replaces the ad-hoc watcher scripts and does four things,
 each within fixed rules; anything else stays with a human:
 
 1. **Infra reruns.** For a completed run of a PR's head commit it classifies
@@ -383,8 +383,17 @@ each within fixed rules; anything else stays with a human:
    rebased under rule 2's terms and, if it asks for it (label `automerge`,
    or "auto-merge" in the body and not "no/don't auto-merge"), auto-merge
    (merge commit, when checks succeed) is enabled once. The bot never
-   cancels an auto-merge someone scheduled; a dependency closed unmerged
-   gets one comment.
+   cancels an auto-merge someone scheduled (except under rule 4); a
+   dependency closed unmerged gets one comment.
+4. **Agent pipeline** (AGENT.md §9). A PR labelled `status:accepted` — its
+   agent review passed and its auto-merge is scheduled — whose run has a
+   real failure (rule 1's classification) gets that auto-merge cancelled,
+   one comment with the last 60 log lines of each really failed job, and
+   `status:fix` in place of `status:accepted`. The label starts the fix
+   job of `.gitea/workflows/agent.yml`, which works that comment. A run
+   whose `changes` job holds an agent head for a human's `/ci-ok` is not a
+   failure: no rerun, no fix round. Rule 3 never enables auto-merge on an
+   `agent/*` head.
 
 What it already did lives in `~/ci-bot/state.json` (restarts are
 idempotent; closed PRs are forgotten); every decision goes to
