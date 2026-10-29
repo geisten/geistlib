@@ -92,11 +92,20 @@ def prepare(args):
                 raise ValueError("split must be a unique development/calibration/test name")
             rows = data.select_per_subject(splits[split], args.per_subject, subject_limit=args.subject_limit)
             if split == "test" and args.test_sample:
-                rows, allocation = data.select_stratified(rows, args.test_sample)
-                test_sample = {"questions": len(rows), "population": len(splits["test"]),
-                               "seed": "geist-decision-test-sample-v1", "allocation": allocation,
+                population = len(rows)
+                excluded = {}
+                if args.test_exclude:
+                    used = {json.loads(line)["question_id"] for line in args.test_exclude.open()}
+                    rows = [r for r in rows if r["question_id"] not in used]
+                    excluded = {"file": str(args.test_exclude), "questions": len(used),
+                                "removed": population - len(rows),
+                                "sha256": hashlib.sha256(args.test_exclude.read_bytes()).hexdigest()}
+                rows, allocation = data.select_stratified(rows, args.test_sample, seed=args.test_seed)
+                test_sample = {"questions": len(rows), "population": population - excluded.get("removed", 0),
+                               "seed": args.test_seed, "allocation": allocation,
                                "policy": "subject-proportional largest-remainder allocation; within a subject "
-                                         "the first questions by sha256([seed, question_id]); label-independent"}
+                                         "the first questions by sha256([seed, question_id]); label-independent",
+                               **({"excluded": excluded} if excluded else {})}
             path = args.out_dir / f"{split}.jsonl"
             count = 0
             with path.open("w") as output:
@@ -165,10 +174,16 @@ def main():
     p.add_argument("--rotations", type=int, choices=(1, 4), default=1)
     p.add_argument("--test-sample", type=int, default=0,
                    help="0 = whole held-out test split; N = a label-independent subject-stratified sample of N")
+    p.add_argument("--test-seed", default="geist-decision-test-sample-v1",
+                   help="seed of the --test-sample selection")
+    p.add_argument("--test-exclude", type=Path,
+                   help="a prepared cases JSONL whose questions the --test-sample may not draw (#286)")
     p.add_argument("--template-date", default=datetime.now(timezone.utc).date().isoformat())
     args = p.parse_args()
     if not 0 <= args.shots <= 5 or args.per_subject < 0 or args.subject_limit < 0:
         p.error("invalid shots/per-subject bounds")
+    if args.test_exclude and not args.test_sample:
+        p.error("--test-exclude applies to a --test-sample")
     if args.test_sample < 0 or (args.test_sample and (args.per_subject or args.subject_limit)):
         p.error("--test-sample samples the whole test population; it excludes --per-subject/--subject-limit")
     prepare(args)
