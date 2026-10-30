@@ -605,6 +605,23 @@ without #161's fix, at desktop loads up to 30; with it, no round fell.
 **Phase 4, only if phase 3 shows the static cover as the limit:** the
 adaptive tier, measured against Strata's +16.5 %.
 
+**Batched sessions and the expert budget (#317).** `moe_fit` leaves room
+for one session next to the hot experts unless the caller declares more
+with `geist_session_opts.batch_sessions` (read at load). Each declared
+session reserves its own buffers, and that room comes out of the hot set.
+Declare only the sessions actually decoded together; 4-5 is usually a good
+value. RTX 2080 Ti, 2,048 positions, aggregate decode tok/s:
+
+| | one session, full hot set | 8 sessions, room for 9 | 8 sessions, 3,000 / 2,000 hot |
+|:--|--:|--:|--:|
+| Qwen3.6-35B-A3B UD-Q4_K_XL | 88.8 (3,919 hot) | 113 (1,878 hot) | 124.5 |
+| Qwen3-30B-A3B Q4_K_M | 74.2 (2,834 hot) | 70.7 (1,052 hot) | 83-87 |
+
+Qwen3-30B-A3B loses more per declared session than Qwen3.6-35B-A3B: its
+experts are bigger (2.9 vs 1.8 MB) and a session's KV cache spans 48
+layers, so each session pushes more experts to the CPU, whose cold-expert
+work every batched row then pays (#238: CPU memory bandwidth bound).
+
 All measurements under `scripts/gpu-lock.sh` (and `with-mac-lock` on the
 Mac), interleaved cycles, raw samples kept, `bench_revision_ab.py` parent vs
 patch for "single-backend runs pay nothing".

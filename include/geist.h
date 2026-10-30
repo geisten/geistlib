@@ -402,7 +402,12 @@ struct geist_session_opts {
      * hottest experts; the budget leaves room for this many sessions'
      * buffers (KV cache at max_seq_len, scratch, recurrent and routing
      * state) instead of one, so the sessions fit next to the experts.
-     * 0 = 1. Other models ignore it. */
+     * 0 = 1. Other models ignore it.
+     * Every declared session costs hot experts (each one goes to the CPU
+     * for every token of every session), so declare only the sessions
+     * actually used at once; 4-5 is usually a good value. Qwen3-30B-A3B
+     * loses more per declared session than Qwen3.6-35B-A3B: bigger experts
+     * and 48 layers of KV cache (RTX 2080 Ti, docs/OFFLOAD.md, #317). */
     size_t batch_sessions;
 };
 
