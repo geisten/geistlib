@@ -183,6 +183,21 @@ enum geist_status blk_qk_norm(struct transformer_layer_forward_ctx *ctx,
     return s;
 }
 
+enum geist_status blk_qk_norm_whole_row(struct transformer_layer_forward_ctx *ctx,
+                                        const struct geist_tensor            *q_w,
+                                        const struct geist_tensor            *k_w) {
+    const int64_t       q_out = (int64_t) ctx->L->q_out;
+    const int64_t       k_out = (int64_t) ctx->L->kv_out;
+    struct geist_tensor t_q   = view_2d(ctx->sess->scratch_q, ctx->SEQ, q_out);
+    struct geist_tensor t_k   = view_2d(ctx->sess->scratch_k, ctx->SEQ, k_out);
+    struct geist_tensor t_qw  = view_1d(q_w->buffer, q_out);
+    struct geist_tensor t_kw  = view_1d(k_w->buffer, k_out);
+    enum geist_status   s     = ctx->prims->rmsnorm(ctx->be, &t_q, &t_qw, ctx->eps, &t_q);
+    if (s == GEIST_OK)
+        s = ctx->prims->rmsnorm(ctx->be, &t_k, &t_kw, ctx->eps, &t_k);
+    return s;
+}
+
 /* The cos/sin rows for this layer's RoPE (full or sliding table) at the
  * session's position. */
 static void rope_rows(struct transformer_layer_forward_ctx *ctx,
