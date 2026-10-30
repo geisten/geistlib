@@ -9,6 +9,7 @@ import hashlib
 import os
 import json
 import platform
+import re
 import shutil
 import statistics
 import subprocess
@@ -191,6 +192,49 @@ def wait_for_apple_cool(limits: dict, deadline: float) -> dict:
             "gpu_temp_c": temps["gpu_c"], "cpu_temp_c": temps["cpu_c"]}
 
 
+APPLE_POWER_POLL_SECONDS = 30
+
+
+def parse_pmset_power(batt: str, settings: str) -> dict:
+    """The power source and Low Power Mode from `pmset -g batt` and `pmset -g`.
+    source is "AC", "battery" or pmset's own name for anything else (a UPS);
+    a Mac without a battery (Mac mini, Studio) prints no battery line and may
+    lack the lowpowermode key, which reads as AC with the mode off. Laptops
+    with High Power Mode name the setting powermode (1 = low)."""
+    drawing = re.search(r"drawing from '([^']+)'", batt)
+    name = drawing.group(1) if drawing else "AC Power"
+    source = {"AC Power": "AC", "Battery Power": "battery"}.get(name, name)
+    modes = dict(re.findall(r"^\s*(lowpowermode|powermode)\s+(\d+)", settings, re.MULTILINE))
+    low = modes.get("lowpowermode") == "1" or modes.get("powermode") == "1"
+    return {"source": source, "low_power_mode": int(low)}
+
+
+def apple_power() -> dict:
+    return parse_pmset_power(command_output(["pmset", "-g", "batt"]),
+                             command_output(["pmset", "-g"]))
+
+
+def apple_power_ok(power: dict) -> bool:
+    return power["source"] == "AC" and not power["low_power_mode"]
+
+
+def wait_for_apple_power(deadline: float) -> dict:
+    """Block until the Mac runs on AC power with Low Power Mode off: on
+    battery with Low Power Mode on the M1 Max measured ~1.5x slower, silently
+    (2026-10-30). Polls every 30 s; raises TimeoutError, the busy failure,
+    when the deadline passes first. Returns {"power": {source,
+    low_power_mode, wait_seconds}} for the run's machine state."""
+    started = time.monotonic()
+    while not apple_power_ok(power := apple_power()):
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"power gate: source {power['source']}, low power mode "
+                               f"{power['low_power_mode']} at timeout")
+        print(f"  waiting for AC power / low power mode off: source {power['source']}, "
+              f"low power mode {power['low_power_mode']}", file=sys.stderr, flush=True)
+        _sleep(APPLE_POWER_POLL_SECONDS)
+    return {"power": {**power, "wait_seconds": round(time.monotonic() - started, 1)}}
+
+
 def gate_state(gate: dict) -> dict:
     state = machine_state()
     if "min_cpu_idle_pct" in gate:
@@ -214,6 +258,8 @@ def wait_for_quiet(gate: dict) -> dict:
                     time.sleep(gate["cooldown_seconds"])
                 state = gate_state(gate)
                 if host_is_quiet(state, gate):
+                    if gate.get("apple_power_gate"):
+                        state.update(wait_for_apple_power(deadline))
                     if "apple_temp_gate" in gate:
                         state.update(wait_for_apple_cool(gate["apple_temp_gate"], deadline))
                     return state

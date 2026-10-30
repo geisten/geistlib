@@ -84,6 +84,21 @@ class CampaignTests(unittest.TestCase):
             "template_date": "2026-10-04", "label_policy": "ABCD", "dataset": "synthetic",
             "dataset_revision": "0" * 40, "dataset_subset": True})
 
+    def test_cool_gate_on_macos_waits_for_ac_power_first(self):
+        args = SimpleNamespace(backend="metal", cool_max_c=65., cool_timeout_minutes=1.)
+        power = {"power": {"source": "AC", "low_power_mode": 0, "wait_seconds": 30.0}}
+        cool = {"cool_gate": "temperature", "cool_wait_seconds": 0, "gpu_temp_c": 50., "cpu_temp_c": 50.}
+        with (patch.object(campaign.platform, "system", return_value="Darwin"),
+              patch.object(campaign.bench_host, "wait_for_apple_power", return_value=power) as ac,
+              patch.object(campaign.bench_host, "wait_for_apple_cool", return_value=cool)):
+            self.assertEqual(campaign.cool_gate(args, campaign.time.time() + 60), {**cool, **power})
+        ac.assert_called_once()
+        with (patch.object(campaign.platform, "system", return_value="Linux"),
+              patch.object(campaign.bench_host, "wait_for_apple_power") as ac,
+              patch.object(campaign.bench_host, "wait_for_apple_cool", return_value=cool)):
+            self.assertEqual(campaign.cool_gate(args, campaign.time.time() + 60), cool)
+        ac.assert_not_called()
+
     def test_interrupted_chunk_resumes_without_rerunning_completed_questions(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -106,6 +121,7 @@ class CampaignTests(unittest.TestCase):
             gate = {"cool_gate": "temperature", "cool_wait_seconds": 0, "gpu_temp_c": 50., "cpu_temp_c": 50.}
             with (
                 patch.object(campaign.bench_host, "wait_for_apple_cool", return_value=gate),
+                patch.object(campaign.bench_host, "wait_for_apple_power", return_value={}),
                 patch.object(campaign.bench_host, "find_macmon", return_value=None),
                 patch.object(ev.bench, "command_output", return_value="test"),
                 patch.dict(os.environ, {"FAKE_LOG": str(log), "FAKE_STALL_AFTER": "1"}),
@@ -167,6 +183,7 @@ class CampaignTests(unittest.TestCase):
             gate = {"cool_gate": "temperature", "cool_wait_seconds": 0, "gpu_temp_c": 50., "cpu_temp_c": 50.}
             with (
                 patch.object(campaign.bench_host, "wait_for_apple_cool", return_value=gate),
+                patch.object(campaign.bench_host, "wait_for_apple_power", return_value={}),
                 patch.object(campaign.bench_host, "find_macmon", return_value=None),
                 patch.object(ev.bench, "command_output", return_value="test"),
                 patch.dict(os.environ, {"FAKE_LOG": str(log), "FAKE_STALL_AFTER": "-1"}),
@@ -219,6 +236,7 @@ class CampaignTests(unittest.TestCase):
             gate = {"cool_gate": "temperature", "cool_wait_seconds": 0, "gpu_temp_c": 50., "cpu_temp_c": 50.}
             with (
                 patch.object(campaign.bench_host, "wait_for_apple_cool", return_value=gate),
+                patch.object(campaign.bench_host, "wait_for_apple_power", return_value={}),
                 patch.object(campaign.bench_host, "find_macmon", return_value=None),
                 patch.object(ev.bench, "command_output", return_value="test"),
                 patch.dict(os.environ, {"FAKE_LOG": str(log), "FAKE_STALL_AFTER": "-1"}),
@@ -252,6 +270,7 @@ class CampaignTests(unittest.TestCase):
             gate = {"cool_gate": "temperature", "cool_wait_seconds": 0, "gpu_temp_c": 50., "cpu_temp_c": 50.}
             with (
                 patch.object(campaign.bench_host, "wait_for_apple_cool", return_value=gate),
+                patch.object(campaign.bench_host, "wait_for_apple_power", return_value={}),
                 patch.object(campaign.bench_host, "find_macmon", return_value=None),
                 patch.object(ev.bench, "command_output", return_value="test"),
                 patch.dict(os.environ, {"FAKE_LOG": str(log), "FAKE_STALL_AFTER": "-1"}),

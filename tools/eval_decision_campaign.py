@@ -16,7 +16,9 @@ any difference other than its start time (binary, model, evaluator sources,
 source revision, calibration file, environment, cases).
 
 Latency: each driver run starts on a cool chip (GPU below --cool-max-c for
-Metal, CPU for cpu_neon; macmon, METHODOLOGY.md#cool-start-on-apple-silicon).
+Metal, CPU for cpu_neon; macmon, METHODOLOGY.md#cool-start-on-apple-silicon)
+and, on macOS, on AC power with Low Power Mode off
+(METHODOLOGY.md#power-gate-on-apple-silicon).
 Within a run the chip heats up; macmon is logged throughout and every sample
 is annotated with the temperature at its start, so the report gives latency
 for all warm samples and, separately, for the samples that started cool.
@@ -27,6 +29,7 @@ import argparse
 import json
 import math
 import os
+import platform
 from pathlib import Path
 import subprocess
 import sys
@@ -179,10 +182,15 @@ class TempLog:
 
 
 def cool_gate(args, deadline):
+    """On macOS the run first waits for AC power with Low Power Mode off
+    (METHODOLOGY.md#power-gate-on-apple-silicon), then for a cool chip;
+    either one past the timeout fails the chunk as busy."""
     limits = {"fallback_seconds": 45}
     limits["max_gpu_c" if args.backend == "metal" else "max_cpu_c"] = args.cool_max_c
     left = max(0., deadline - time.time())
-    return bench_host.wait_for_apple_cool(limits, time.monotonic() + min(left, args.cool_timeout_minutes * 60))
+    until = time.monotonic() + min(left, args.cool_timeout_minutes * 60)
+    power = bench_host.wait_for_apple_power(until) if platform.system() == "Darwin" else {}
+    return {**bench_host.wait_for_apple_cool(limits, until), **power}
 
 
 def run_driver(command, cases, env, chunk, profile, deadline, wire=None):

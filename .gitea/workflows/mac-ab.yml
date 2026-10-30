@@ -4,6 +4,8 @@
 # tools/bench_revision_ab.py builds each revision in its own worktree and
 # measures them interleaved with a control run of the base binary, under
 # the Mac mini's host lock. Same shape as pi5-ab.yml.
+# On macOS the tool starts every run on a cool chip and on AC power with
+# Low Power Mode off (benchmark/METHODOLOGY.md, cool start / power gate).
 #
 #   tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib --ref main \
 #     -i new=origin/<branch> -i model=qwen35-0.8b-q8 mac-ab.yml

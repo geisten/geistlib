@@ -397,5 +397,15 @@ class RevisionAbTest(unittest.TestCase):
         self.assertIn("3 of 3 runs started after a fixed 45 s pause", report)
         self.assertNotIn("Cool start", revision_ab.render_report(REVISION_METADATA, rows))
 
+    def test_the_report_states_the_power_state(self):
+        runs = _revision_runs({"base": self.BASE, "new": self.BASE, "control": self.BASE})
+        rows = revision_ab.summarize(runs, ["base", "new", "control"], "base")
+        powers = [{"source": "AC", "low_power_mode": 0, "wait_seconds": 30.0},
+                  {"source": "AC", "low_power_mode": 0, "wait_seconds": 0.0}]
+        report = revision_ab.render_report({**REVISION_METADATA, "start_power": powers}, rows)
+        self.assertIn("Power: all 2 runs started on AC power with Low Power Mode off; "
+                      "30 s spent waiting", report)
+        self.assertNotIn("Power:", revision_ab.render_report(REVISION_METADATA, rows))
+
 if __name__ == "__main__":
     unittest.main()

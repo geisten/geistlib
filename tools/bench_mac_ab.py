@@ -144,6 +144,8 @@ def render_report(metadata: dict, summary: dict, baseline: str) -> str:
         "",
         f"Baseline: `{baseline}`",
         "",
+        *(["Every run started on AC power with Low Power Mode off (power gate, pmset).", ""]
+          if protocol.get("apple_power_gate") else []),
         "| Variant | Seq | Prefill median tok/s | MAD | vs base | Decode median tok/s | MAD | vs base |",
         "| :-- | --: | --: | --: | --: | --: | --: | --: |",
     ]
@@ -283,6 +285,7 @@ def main() -> int:
                     "timeout_seconds": args.quiet_timeout,
                     **({"apple_temp_gate": protocol["apple_temp_gate"]}
                        if "apple_temp_gate" in protocol else {}),
+                    "apple_power_gate": protocol.get("apple_power_gate", False),
                 })
                 run = run_variant(variant, gguf, protocol, args.threads)
             except (RuntimeError, TimeoutError) as error:
