@@ -272,7 +272,9 @@ struct metal_state {
     void *q4k_n4_function;
     void *q4k_n4_pipeline;
     void *q4k_h_function;
+    void *q4k_m8_function;
     void *q4k_h_pipeline;
+    void *q4k_m8_pipeline; /* #316: matvec_q4k_n4 over 2..8 rows */
     void *q4k_matmul_m8_function;
     void *q4k_matmul_m8_pipeline;
     void *q4k_m16_library;
@@ -328,7 +330,9 @@ struct metal_state {
     void *q6k_function;
     void *q6k_pipeline;
     void *q6k_n4_function;
+    void *q6k_m8_function;
     void *q6k_n4_pipeline;
+    void *q6k_m8_pipeline; /* #316: matvec_q6k_n4 over 2..8 rows */
     void *q6k_mm_sg_library;
     void *q6k_matmul_sg_function;
     void *q6k_matmul_sg_pipeline;

@@ -102,6 +102,35 @@ static bool metal_q4k_half_rows(const void *pipeline, uint32_t n_in, uint32_t n_
     return pipeline != nullptr && nb % 4u == 2u && n_out >= 1024u;
 }
 
+/* GEIST_METAL_MV_M8=0: 2..8-row Q4_K/Q6_K linears go one n4 matvec per row
+ * (#316's A/B control). */
+static bool metal_mv_m8_env(void) {
+    static int on = -1;
+    if (on < 0)
+        on = geist_env_flag("GEIST_METAL_MV_M8", true);
+    return on != 0;
+}
+
+/* matvec_q4k_m8 / matvec_q6k_m8 (#316): the n4 matvec's grid (64 threads,
+ * 4 outputs per threadgroup), every activation row in one dispatch. */
+static void metal_encode_mv_m8(struct metal_state            *st,
+                               void                          *enc,
+                               void                          *pipeline,
+                               const struct geist_tensor     *x,
+                               const struct geist_tensor     *w,
+                               const struct geist_tensor     *y,
+                               const struct metal_q4k_params *params) {
+    metal_msg_send_set_pipeline(st, enc, pipeline);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
+    metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
+    metal_msg_send_dispatch(st,
+                            enc,
+                            (struct metal_size) {(params->n_out + 3u) / 4u, 1, 1},
+                            (struct metal_size) {METAL_Q4K_N4_THREADS, 1, 1});
+}
+
 static void metal_encode_q4k_linear(struct metal_state            *st,
                                     void                          *enc,
                                     const struct geist_tensor     *x,
@@ -113,6 +142,18 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
      * through the matvec kernel: the m8 tile kernel costs as much as a full
      * 64-row GEMM for any row count (#578). */
     if (m_tile8 && params->rows <= METAL_MATVEC_MAX_ROWS && params->n_out >= 4u) {
+        /* #316: 2..8 rows in one pass over the weights, bit-identical to
+         * the n4 matvec per row; the K%1024 == 512 shapes (matvec_q4k_h)
+         * keep going row by row. */
+        if (params->rows >= 2u && params->rows <= 8u && metal_mv_m8_env() &&
+            st->q4k_m8_pipeline != nullptr &&
+            !metal_q4k_half_rows(st->q4k_h_pipeline, params->n_in, params->n_out)) {
+            metal_encode_mv_m8(st, enc, st->q4k_m8_pipeline, x, w, y, params);
+            metal_profile_add_dispatch(st,
+                                       METAL_PROFILE_DISPATCH_Q4K_LINEAR_N4,
+                                       (struct metal_size) {(params->n_out + 3u) / 4u, 1, 1});
+            return;
+        }
         for (uint32_t r = 0; r < params->rows; r++) {
             struct metal_q4k_params one = *params;
             one.rows                    = 1u;
@@ -247,6 +288,13 @@ static void metal_encode_q6k_linear(struct metal_state            *st,
     }
     if (m_tile8 && params->rows > 1u && params->rows <= METAL_MATVEC_MAX_ROWS &&
         params->n_out >= 4u) {
+        if (params->rows <= 8u && metal_mv_m8_env() && st->q6k_m8_pipeline != nullptr) {
+            metal_encode_mv_m8(st, enc, st->q6k_m8_pipeline, x, w, y, params); /* #316 */
+            metal_profile_add_dispatch(st,
+                                       METAL_PROFILE_DISPATCH_Q6K_LINEAR_N4,
+                                       (struct metal_size) {(params->n_out + 3u) / 4u, 1, 1});
+            return;
+        }
         for (uint32_t r = 0; r < params->rows; r++) {
             struct metal_q4k_params one = *params;
             one.rows                    = 1u;
