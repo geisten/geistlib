@@ -360,6 +360,7 @@ No new vtable slot for v0: upload, `linear_t` and download exist.
 | Multi-GPU, tensor/pipeline parallel | out of the target set (hardware people already own) |
 | Offload on unified memory (Metal) | never: one memory, nothing to move; #49 showed Metal alone wins |
 | FFN-block granularity instead of per linear | activation transfers show up in the v0 profile |
+| Skipping the router's low-weight experts (Strata's `ROUTE_TAIL_SKIP`) | never as a default: every setting that removes real work misses the 0.5 % perplexity bar ([MOE_ROUTE_TAIL_2026-10-30.md](../benchmark/results/MOE_ROUTE_TAIL_2026-10-30.md), #240) |
 
 ## Plan
 
