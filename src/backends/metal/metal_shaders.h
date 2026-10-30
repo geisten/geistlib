@@ -976,6 +976,59 @@ static const char metal_q4k_n4_kernel[] =
         "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
         "sg[[simdgroup_index_in_threadgroup]]){mv_q4k(x,w,y,p,tg.x,tg.y,ti,sg);}\n";
 
+/* #316: matvec_q4k_n4 over 2..8 activation rows. A simdgroup loads its
+ * two weight rows' block (scales, d, dmin, the 16 quant words a lane
+ * reads) once into registers and dots it with every activation row in
+ * turn. Per (activation row, weight row) the arithmetic is mv_q4k's,
+ * statement for statement and in the same block order, so each output is
+ * bit-identical to the single-row kernel's. */
+static const char metal_q4k_m8_kernel[] =
+        "kernel void matvec_q4k_m8(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){constexpr ushort km1=0x3f3f,km2=0x0f0f,km3=0xc0c0;"
+        "uint ix=uint(ti)/8u,it=uint(ti)&7u,iq=it>>2u,ir=it&3u,fr=(tg.x*2u+uint(sg))*2u;"
+        "if(fr>=p.no)return;uint nb=p.ni>>8u,R=min(p.rows,8u);bool two=fr+1u<p.no;"
+        "float s0[8],s1[8];for(uint b=0u;b<8u;b++){s0[b]=0.0f;s1[b]=0.0f;}"
+        "ushort scA[4],scB[4];thread const uchar*a8=(thread const uchar*)scA;thread const "
+        "uchar*b8=(thread const uchar*)scB;ushort qa1[4],qa2[4],qb1[4],qb2[4];"
+        "for(uint ib=ix;ib<nb;ib+=4u){float dA0,dA1,dB0=0.0f,dB1=0.0f;"
+        "{device const uchar*wb=w+p.wo+(fr*p.bpr+ib)*144u;device const ushort*sc=(device const "
+        "ushort*)(wb+4u)+iq;device const ushort*q1=(device const ushort*)(wb+16u)+16u*iq+4u*ir;"
+        "device const half*dh=(device const half*)wb;scA[0]=sc[0]&km1;scA[1]=sc[2]&km1;"
+        "scA[2]=((sc[4]>>0)&km2)|((sc[0]&km3)>>2);scA[3]=((sc[4]>>4)&km2)|((sc[2]&km3)>>2);"
+        "for(uint i=0u;i<4u;i++){qa1[i]=q1[i];qa2[i]=q1[i+32u];}dA0=float(dh[0]);dA1=float(dh[1]);}"
+        "if(two){device const uchar*wb=w+p.wo+((fr+1u)*p.bpr+ib)*144u;device const "
+        "ushort*sc=(device const ushort*)(wb+4u)+iq;device const ushort*q1=(device const "
+        "ushort*)(wb+16u)+16u*iq+4u*ir;device const half*dh=(device const half*)wb;"
+        "scB[0]=sc[0]&km1;scB[1]=sc[2]&km1;scB[2]=((sc[4]>>0)&km2)|((sc[0]&km3)>>2);"
+        "scB[3]=((sc[4]>>4)&km2)|((sc[2]&km3)>>2);for(uint i=0u;i<4u;i++){qb1[i]=q1[i];"
+        "qb2[i]=q1[i+32u];}dB0=float(dh[0]);dB1=float(dh[1]);}"
+        "for(uint b=0u;b<R;b++){device const float*y4=x+p.xo+b*p.xs+ib*256u+64u*iq+8u*ir;"
+        "float yl[16],yh[16];float4 sumy=float4(0.0f);for(uint i=0u;i<8u;i++){yl[i]=y4[i];"
+        "sumy[0]+=yl[i];yl[i+8u]=y4[i+32u];sumy[1]+=yl[i+8u];yh[i]=y4[i+128u];sumy[2]+=yh[i];"
+        "yh[i+8u]=y4[i+160u];sumy[3]+=yh[i+8u];}"
+        "{float4 a1=float4(0.0f),a2=float4(0.0f);for(uint i=0u;i<4u;i++){ushort q=qa1[i];"
+        "a1[0]+=yl[2u*i+0u]*float(q&0x000f);a1[1]+=yl[2u*i+1u]*float(q&0x0f00);a1[2]+=yl[2u*i+8u]*"
+        "float(q&0x00f0);a1[3]+=yl[2u*i+9u]*float(q&0xf000);q=qa2[i];a2[0]+=yh[2u*i+0u]*float(q&"
+        "0x000f);a2[1]+=yh[2u*i+1u]*float(q&0x0f00);a2[2]+=yh[2u*i+8u]*float(q&0x00f0);a2[3]+="
+        "yh[2u*i+9u]*float(q&0xf000);}float "
+        "acc=dA0*((a1[0]+(1.0f/256.0f)*a1[1])*float(a8[0])+(a1[2]"
+        "+(1.0f/256.0f)*a1[3])*float(a8[1])*(1.0f/16.0f)+(a2[0]+(1.0f/256.0f)*a2[1])*float(a8[4])"
+        "+(a2[2]+(1.0f/256.0f)*a2[3])*float(a8[5])*(1.0f/16.0f))-dA1*(sumy[0]*float(a8[2])+sumy[1]"
+        "*float(a8[3])+sumy[2]*float(a8[6])+sumy[3]*float(a8[7]));s0[b]+=acc;}"
+        "if(two){float4 a1=float4(0.0f),a2=float4(0.0f);for(uint i=0u;i<4u;i++){ushort q=qb1[i];"
+        "a1[0]+=yl[2u*i+0u]*float(q&0x000f);a1[1]+=yl[2u*i+1u]*float(q&0x0f00);a1[2]+=yl[2u*i+8u]*"
+        "float(q&0x00f0);a1[3]+=yl[2u*i+9u]*float(q&0xf000);q=qb2[i];a2[0]+=yh[2u*i+0u]*float(q&"
+        "0x000f);a2[1]+=yh[2u*i+1u]*float(q&0x0f00);a2[2]+=yh[2u*i+8u]*float(q&0x00f0);a2[3]+="
+        "yh[2u*i+9u]*float(q&0xf000);}float "
+        "acc=dB0*((a1[0]+(1.0f/256.0f)*a1[1])*float(b8[0])+(a1[2]"
+        "+(1.0f/256.0f)*a1[3])*float(b8[1])*(1.0f/16.0f)+(a2[0]+(1.0f/256.0f)*a2[1])*float(b8[4])"
+        "+(a2[2]+(1.0f/256.0f)*a2[3])*float(b8[5])*(1.0f/16.0f))-dB1*(sumy[0]*float(b8[2])+sumy[1]"
+        "*float(b8[3])+sumy[2]*float(b8[6])+sumy[3]*float(b8[7]));s1[b]+=acc;}}}"
+        "for(uint b=0u;b<R;b++){float t0=simd_sum(s0[b]),t1=simd_sum(s1[b]);if(ti==0){uint "
+        "o=p.yo+b*p.ys+fr;y[o]=t0;if(two)y[o+1u]=t1;}}}\n";
+
 /* #196: matvec_q4k_n4 for K a multiple of 512 but not of 1024 (Gemma 4's
  * d_model 1536: six blocks per row). The n4 kernel's four 8-lane groups
  * stride the blocks by four, so at six blocks two groups take two and two
@@ -1408,6 +1461,49 @@ static const char metal_mv_q6k_body[] =
         "if(rr==0u)sf0+=acc;else sf1+=acc;}}"
         "float a0=simd_sum(sf0),a1=simd_sum(sf1);"
         "if(ti==0){uint o=p.yo+b*p.ys+fr;y[o]=a0;if(fr+1u<p.no)y[o+1u]=a1;}}\n";
+
+/* #316: matvec_q6k_n4 over 2..8 activation rows, as matvec_q4k_m8: the two
+ * weight rows' quants, high bits, scales and d of a block in registers,
+ * dotted with each activation row; per output mv_q6k's arithmetic in its
+ * order (bit-identical). Needs mv_q6k's q6h/q6i8 helpers. */
+static const char metal_q6k_m8_kernel[] =
+        "kernel void matvec_q6k_m8(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){uint fr=(tg.x*2u+uint(sg))*2u;if(fr>=p.no)return;"
+        "uint nb=p.ni>>8u,R=min(p.rows,8u);bool two=fr+1u<p.no;"
+        "ushort tid=ti/2u,ix=ti%2u,ip=tid/8u,il=tid%8u,l0=4u*il,is=8u*ip+l0/16u;"
+        "uint yoff=128u*uint(ip)+uint(l0),qlo=64u*uint(ip)+uint(l0),qho=32u*uint(ip)+uint(l0);"
+        "float s0[8],s1[8];for(uint b=0u;b<8u;b++){s0[b]=0.0f;s1[b]=0.0f;}"
+        "for(uint i=uint(ix);i<nb;i+=2u){uchar qa1[4],qa2[4],qa3[4],qb1[4],qb2[4],qb3[4];"
+        "float ca[4],cb[4],da,db=0.0f;"
+        "{uint bo=p.wo+(fr*p.bpr+i)*210u;device const uchar*q1=w+bo+qlo;device const "
+        "uchar*q2=q1+32u;"
+        "device const uchar*qh=w+bo+128u+qho;uint sco=bo+192u+uint(is);for(ushort l=0;l<4;l++){"
+        "qa1[l]=q1[l];qa2[l]=q2[l];qa3[l]=qh[l];}ca[0]=float(q6i8(w,sco));ca[1]=float(q6i8(w,"
+        "sco+2u));ca[2]=float(q6i8(w,sco+4u));ca[3]=float(q6i8(w,sco+6u));da=q6h(w,bo+208u);}"
+        "if(two){uint bo=p.wo+((fr+1u)*p.bpr+i)*210u;device const uchar*q1=w+bo+qlo;device const "
+        "uchar*q2=q1+32u;device const uchar*qh=w+bo+128u+qho;uint sco=bo+192u+uint(is);for(ushort "
+        "l=0;l<4;l++){qb1[l]=q1[l];qb2[l]=q2[l];qb3[l]=qh[l];}cb[0]=float(q6i8(w,sco));cb[1]="
+        "float(q6i8(w,sco+2u));cb[2]=float(q6i8(w,sco+4u));cb[3]=float(q6i8(w,sco+6u));"
+        "db=q6h(w,bo+208u);}"
+        "for(uint b=0u;b<R;b++){device const float*yv=x+p.xo+b*p.xs+yoff+i*256u;float yl[16];"
+        "for(ushort l=0;l<4;l++){yl[4*l+0]=yv[l];yl[4*l+1]=yv[l+32];yl[4*l+2]=yv[l+64];"
+        "yl[4*l+3]=yv[l+96];}"
+        "{float4 s=float4(0.0f);for(ushort l=0;l<4;l++){uint hb=uint(qa3[l]);"
+        "s[0]+=yl[4*l+0]*float(int((uint(qa1[l])&15u)|((hb&3u)<<4u))-32);"
+        "s[1]+=yl[4*l+1]*float(int((uint(qa2[l])&15u)|(((hb>>2u)&3u)<<4u))-32);"
+        "s[2]+=yl[4*l+2]*float(int((uint(qa1[l])>>4u)|(((hb>>4u)&3u)<<4u))-32);"
+        "s[3]+=yl[4*l+3]*float(int((uint(qa2[l])>>4u)|(((hb>>6u)&3u)<<4u))-32);}"
+        "s0[b]+=da*(s[0]*ca[0]+s[1]*ca[1]+s[2]*ca[2]+s[3]*ca[3]);}"
+        "if(two){float4 s=float4(0.0f);for(ushort l=0;l<4;l++){uint hb=uint(qb3[l]);"
+        "s[0]+=yl[4*l+0]*float(int((uint(qb1[l])&15u)|((hb&3u)<<4u))-32);"
+        "s[1]+=yl[4*l+1]*float(int((uint(qb2[l])&15u)|(((hb>>2u)&3u)<<4u))-32);"
+        "s[2]+=yl[4*l+2]*float(int((uint(qb1[l])>>4u)|(((hb>>4u)&3u)<<4u))-32);"
+        "s[3]+=yl[4*l+3]*float(int((uint(qb2[l])>>4u)|(((hb>>6u)&3u)<<4u))-32);}"
+        "s1[b]+=db*(s[0]*cb[0]+s[1]*cb[1]+s[2]*cb[2]+s[3]*cb[3]);}}}"
+        "for(uint b=0u;b<R;b++){float t0=simd_sum(s0[b]),t1=simd_sum(s1[b]);if(ti==0){uint "
+        "o=p.yo+b*p.ys+fr;y[o]=t0;if(two)y[o+1u]=t1;}}}\n";
 
 static const char metal_q6k_n4_kernel[] =
         "kernel void matvec_q6k_n4(device const float*x[[buffer(0)]],device const "
