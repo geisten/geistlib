@@ -522,6 +522,8 @@ int main(void) {
                                                             .seed     = 14});
     int           fails = 0, ran = 0, batching = 0;
     char          label[64];
+    /* The host route too (#245): batched only on request, tested here. */
+    setenv("GEIST_DECODE_BATCH_MOE_HOST", "1", 1);
     for (size_t bi = 0; bi < sizeof BACKENDS / sizeof BACKENDS[0]; bi++) {
         struct geist_backend *be = nullptr;
         if (geist_backend_create(BACKENDS[bi], nullptr, nullptr, &be) != GEIST_OK || be == nullptr)

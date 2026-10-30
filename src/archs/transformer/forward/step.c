@@ -942,6 +942,19 @@ size_t transformer_decode_batch_max(const struct transformer_arch_state *st) {
     if (!q35 && st->family != &transformer_family_qwen3moe) {
         return 0;
     }
+    /* An MoE batches where its rows route on the device. On the host route
+     * the n rows cost more than n single steps on the M1 Max (0.4-0.6x,
+     * #245); GEIST_DECODE_BATCH_MOE_HOST=1 batches them anyway. */
+    if (st->config.moe_n_experts > 0 && !st->runtime_flags.batch_moe_host) {
+        const struct transformer_moe_gpu *mg = st->moe_gpu;
+        bool all = mg != nullptr && mg->device != nullptr && mg->device_rows >= 2;
+        for (size_t l = 0; all && l < st->n_layers; l++)
+            all = mg->device[l];
+        if (!all)
+            return 0;
+        if (mg->device_rows < st->m_max && mg->device_rows < TRANSFORMER_DECODE_BATCH_CAP)
+            return mg->device_rows;
+    }
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(st->backend);
     if (fused == nullptr || fused->deltanet_mix == nullptr || fused->argmax_f32 == nullptr ||
         st->backend->desc->vtbl->buffer_copy == nullptr || !st->model_fusions.backend_buffer_copy) {
