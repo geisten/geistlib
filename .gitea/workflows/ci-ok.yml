@@ -1,0 +1,26 @@
+name: ci-ok
+
+# "/ci-ok <sha>" (the whole comment, by an approver) on a PR: ci.yml's `hold`
+# lets that agent/* head through (it reads the comment itself); this reruns
+# the held run. scripts/agent_gate.py rerun-held.
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  rerun:
+    if: >-
+      github.event.issue.pull_request && github.event.sender.login == 'germar' &&
+      startsWith(github.event.comment.body, '/ci-ok')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - env:
+          GITEA_TOKEN: ${{ secrets.AGENT_BOT_TOKEN }}
+        run: python3 scripts/agent_gate.py rerun-held
