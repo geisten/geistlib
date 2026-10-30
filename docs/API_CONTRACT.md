@@ -84,6 +84,15 @@ consumer that cannot ask which family it loaded cannot avoid that.
 | `geist_session_pin_prefix` | amortizing the system prompt across turns | STABLE since 0.6.0 |
 | `geist_session_tokenize` | measuring a candidate before committing it | STABLE since 0.6.0 |
 
+**BOS (#263).** One rule on both tokenizer paths (GGUF-embedded and an
+external `tokenizer.bin`): `geist_session_tokenize` returns the text's tokens
+and adds no BOS (a BOS the text spells out, `<bos>` or `<s>`, encodes as that
+id); `geist_model_add_bos` says whether the model expects one; and
+`geist_session_set_prompt` starts the prefilled sequence with exactly one BOS
+when it does, prepending it unless the prompt's tokens already begin with it.
+A consumer that prefills tokens itself (`tokenize` + `prefill_tokens`) adds the
+BOS per `geist_model_add_bos`.
+
 `geist_session_peek_logits`'s ownership clause lets an accelerator backend
 satisfy it by staging device memory into session storage, so the contract does
 not freeze a CPU-only design.

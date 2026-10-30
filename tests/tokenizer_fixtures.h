@@ -236,6 +236,24 @@ tf_tokenizer_kv(struct tf_buf *o, const struct tf_vocab *v, const char *model, b
     tf_u32(o, v->unk);
 }
 
+/* The TF_TOKENIZER_BOS_KEYS keys that make tf_make_vocab's "<s>" (id 1)
+ * the BOS: tokenizer.ggml.bos_token_id, and a token_type array marking
+ * <unk> UNKNOWN (2), <s> and </s> CONTROL (3) and the rest NORMAL (1), so
+ * that "<s>" written in text encodes as the one BOS id. */
+enum { TF_TOKENIZER_BOS_KEYS = 2 };
+static inline void tf_tokenizer_bos_kv(struct tf_buf *o, const struct tf_vocab *v) {
+    tf_gstr(o, "tokenizer.ggml.bos_token_id", 27);
+    tf_u32(o, TF_GGUF_UINT32);
+    tf_u32(o, 1u);
+    tf_gstr(o, "tokenizer.ggml.token_type", 25);
+    tf_u32(o, TF_GGUF_ARRAY);
+    tf_u32(o, TF_GGUF_UINT32);
+    tf_u64(o, v->n_tok);
+    for (size_t i = 0; i < v->n_tok; i++) {
+        tf_u32(o, i == v->unk ? 2u : i == 1 || i == 2 ? 3u : 1u);
+    }
+}
+
 /* A GGUF holding only tokenizer metadata (see tf_tokenizer_kv). */
 static inline struct tf_buf tf_gguf(const struct tf_vocab *v, const char *model, bool with_merges) {
     struct tf_buf o = {0};
@@ -259,16 +277,18 @@ static inline struct tf_buf tf_gguf(const struct tf_vocab *v, const char *model,
 
 /* ---- tokenizer.bin (gguf_tokenizer_load_bin) ----------------------------- */
 
-static inline struct tf_buf tf_tokenizer_bin(const struct tf_vocab *v) {
+/* with_specials: list "<s>" (BOS, id 1) and "</s>" (EOS, id 2) as special
+ * tokens, so text that spells them encodes as those ids. */
+static inline struct tf_buf tf_tokenizer_bin_ex(const struct tf_vocab *v, bool with_specials) {
     struct tf_buf o = {0};
     tf_u32(&o, 0x4B544D47u); /* "GMTK" */
     tf_u32(&o, 1u);
     tf_u32(&o, (uint32_t) v->n_tok);
     tf_u32(&o, (uint32_t) v->n_merge);
-    tf_u32(&o, 0u); /* specials */
-    tf_u32(&o, 1u); /* bos */
-    tf_u32(&o, 2u); /* eos */
-    tf_u32(&o, 0u); /* pad */
+    tf_u32(&o, with_specials ? 2u : 0u); /* specials */
+    tf_u32(&o, 1u);                      /* bos */
+    tf_u32(&o, 2u);                      /* eos */
+    tf_u32(&o, 0u);                      /* pad */
     tf_u32(&o, v->unk);
     for (size_t i = 0; i < v->n_tok; i++) {
         tf_u16(&o, (uint16_t) strlen(v->tok[i]));
@@ -280,7 +300,16 @@ static inline struct tf_buf tf_tokenizer_bin(const struct tf_vocab *v) {
         tf_u16(&o, (uint16_t) strlen(v->merge_r[m]));
         tf_put(&o, v->merge_r[m], strlen(v->merge_r[m]));
     }
+    for (uint32_t id = 1; with_specials && id <= 2; id++) {
+        tf_u32(&o, id);
+        tf_u16(&o, (uint16_t) strlen(v->tok[id]));
+        tf_put(&o, v->tok[id], strlen(v->tok[id]));
+    }
     return o;
+}
+
+static inline struct tf_buf tf_tokenizer_bin(const struct tf_vocab *v) {
+    return tf_tokenizer_bin_ex(v, false);
 }
 
 /* ---- text ---------------------------------------------------------------- */

@@ -504,20 +504,22 @@ const char *geist_session_errmsg(const struct geist_session *s) {
     if (enc_ids == nullptr) {
         return session_fail(sf, GEIST_E_OOM, "set_prompt: alloc fail");
     }
-    /* Prepends BOS when add_bos is set, but not for a tokenizer.bin (#263). */
-    size_t n_enc = 0;
-    if (gtok->bos_id >= 0 && gtok->add_bos && !gtok->tokenizer_bin) {
-        enc_ids[n_enc++] = gtok->bos_id;
-    }
+    /* Exactly one BOS when the model expects it (add_bos), on both tokenizer
+     * paths (#263): prepended unless the prompt's own tokens begin with it,
+     * as a rendered chat template's ("<bos>...") do. The prompt encodes
+     * from enc_ids[1]; enc_ids[0] holds the BOS when it is prepended. */
     size_t enc_n = 0;
-    if (gguf_tokenizer_encode(gtok, prompt, cap - n_enc, enc_ids + n_enc, &enc_n) != GEIST_OK) {
+    if (gguf_tokenizer_encode(gtok, prompt, cap - 1, enc_ids + 1, &enc_n) != GEIST_OK) {
         safe_free((void **) &enc_ids);
         return session_fail(sf, GEIST_E_IO, "set_prompt: gguf_tokenizer_encode failed");
     }
-    n_enc += enc_n;
-    const uint64_t          t0 = geist_now_ns();
-    const enum geist_status ps =
-            ops->prefill(arch_sess(sf), n_enc, (const geist_token_t *) enc_ids);
+    const bool prepend =
+            gtok->bos_id >= 0 && gtok->add_bos && (enc_n == 0 || enc_ids[1] != gtok->bos_id);
+    enc_ids[0]                    = gtok->bos_id;
+    const int32_t          *ids   = prepend ? enc_ids : enc_ids + 1;
+    const size_t            n_enc = prepend ? enc_n + 1 : enc_n;
+    const uint64_t          t0    = geist_now_ns();
+    const enum geist_status ps    = ops->prefill(arch_sess(sf), n_enc, (const geist_token_t *) ids);
     sf->total_prefill_ns += geist_now_ns() - t0;
     safe_free((void **) &enc_ids);
     return ps == GEIST_OK ? GEIST_OK : session_op_failed(sf, ps, "prefill");
