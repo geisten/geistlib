@@ -604,6 +604,47 @@ enum geist_status blk_attn_residual(struct transformer_layer_forward_ctx *ctx,
                         sess->scratch_h_post_attn);
 }
 
+/* Each step runs only while s is GEIST_OK, so the first failure is what
+ * the block returns and nothing after it touches a buffer. */
+enum geist_status blk_attention(struct transformer_layer_forward_ctx *ctx,
+                                const struct geist_tensor            *q_norm,
+                                const struct geist_tensor            *k_norm,
+                                float                                 q_scale,
+                                const struct geist_tensor            *post_w,
+                                bool                                  allow_fused_rope) {
+    const bool fused = allow_fused_rope && ctx->P->fuse_attn_rope_append && !ctx->kv_kivi_enabled &&
+                       !ctx->kv_int8_enabled;
+
+    enum geist_status s = blk_attn_in(ctx, fused ? nullptr : q_norm, k_norm);
+    if (s == GEIST_OK && fused)
+        s = blk_rope_append_fused(ctx, q_norm, k_norm, q_scale);
+    if (s == GEIST_OK && !fused)
+        s = blk_rope_qk(ctx, q_scale);
+    if (s == GEIST_OK)
+        s = blk_attend(ctx, !fused);
+    return s == GEIST_OK ? blk_attn_out(ctx, post_w) : s;
+}
+
+enum geist_status blk_attn_in(struct transformer_layer_forward_ctx *ctx,
+                              const struct geist_tensor            *q_norm,
+                              const struct geist_tensor            *k_norm) {
+    struct geist_buffer *x = ctx->sess->scratch_normed;
+    enum geist_status    s = blk_attn_norm(ctx, x);
+    if (s == GEIST_OK)
+        s = transformer_rotate_rows(ctx->st, ctx->seq, ctx->st->d_model, x);
+    if (s == GEIST_OK)
+        s = blk_qkv(ctx, x);
+    if (s == GEIST_OK && q_norm != nullptr)
+        s = blk_qk_norm(ctx, q_norm, k_norm);
+    return s;
+}
+
+enum geist_status blk_attn_out(struct transformer_layer_forward_ctx *ctx,
+                               const struct geist_tensor            *post_w) {
+    const enum geist_status s = blk_o_proj(ctx);
+    return s == GEIST_OK ? blk_attn_residual(ctx, post_w) : s;
+}
+
 enum geist_status blk_residual_out(struct transformer_layer_forward_ctx *ctx,
                                    float                                 scale,
                                    bool                                  fused,

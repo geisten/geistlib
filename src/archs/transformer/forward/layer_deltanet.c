@@ -827,23 +827,15 @@ enum dn_profile_stage {
     DN_PROFILE_COUNT,
 };
 
-static _Atomic uint64_t  g_dn_profile_ns[DN_PROFILE_COUNT];
-static _Atomic uint64_t  g_dn_profile_calls[DN_PROFILE_COUNT];
-static const char *const g_dn_profile_names[DN_PROFILE_COUNT] = {
-        "norm",
-        "beta_alpha",
-        "qkv",
-        "z",
-        "mix",
-        "out",
-};
-static struct transformer_forward_profile g_dn_profile = {
-        .title       = "transformer deltanet",
-        .stage_names = g_dn_profile_names,
-        .stage_count = DN_PROFILE_COUNT,
-        .ns          = g_dn_profile_ns,
-        .calls       = g_dn_profile_calls,
-};
+TRANSFORMER_PROFILE_DEFINE(g_dn_profile,
+                           "transformer deltanet",
+                           DN_PROFILE_COUNT,
+                           "norm",
+                           "beta_alpha",
+                           "qkv",
+                           "z",
+                           "mix",
+                           "out");
 
 /* Close stage `stage` and start the next one at now. */
 static inline void dn_profile_mark(size_t stage, uint64_t *t0) {
@@ -973,12 +965,8 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
         struct geist_tensor t_nrm    = view_1d(L->dn_norm.buffer, (int64_t) d_v);
         struct geist_tensor t_cstate =
                 view_2d(sess->dn_conv_state[ctx->layer_idx], (int64_t) (K - 1), (int64_t) convd);
-        struct geist_tensor t_S = {.buffer = sess->dn_S[ctx->layer_idx],
-                                   .dtype  = GEIST_DTYPE_F32,
-                                   .layout = GEIST_LAYOUT_DENSE,
-                                   .ndim   = 3,
-                                   .shape  = {(int64_t) n_vh, (int64_t) d_k, (int64_t) d_v},
-                                   .stride = {(int64_t) (d_k * d_v), (int64_t) d_v, 1}};
+        struct geist_tensor t_S =
+                view_3d(sess->dn_S[ctx->layer_idx], (int64_t) n_vh, (int64_t) d_k, (int64_t) d_v);
         struct geist_deltanet_mix_args args = {.qkv         = &t_qkv,
                                                .z           = &t_z,
                                                .beta        = &t_b,

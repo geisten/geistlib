@@ -13,6 +13,14 @@
 #include <geist_backend.h>
 #include <geist_types.h>
 
+#include <math.h>
+
+/* What a looked-up token embedding is multiplied by: sqrt(d_model) where
+ * the model has the scale (has_embed_scale: Gemma 3/4), else 1. */
+static inline float transformer_embed_scale(const struct transformer_arch_state *st) {
+    return st->config.has_embed_scale ? sqrtf((float) st->d_model) : 1.0f;
+}
+
 /* Bounds guard: every KV-appending entry point (prefill text/audio,
  * decode, verify) must call this before writing. Positions past
  * sess->max_seq_len have no KV rows and no RoPE table entries — writing
@@ -167,11 +175,6 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
 [[nodiscard]] enum geist_status finalize_logits_last_row(struct transformer_arch_session *sess,
                                                          size_t                           seq);
 
-/* Output-head front half: scratch_h_b's first `k` rows, output_norm'd, into
- * scratch_h_a. The lm_head is NOT applied -- see head.c. */
-[[nodiscard]] enum geist_status transformer_norm_rows(struct transformer_arch_session *sess,
-                                                      size_t                           k);
-
 /* Mean pooling, which unlike last-token spans chunks: accumulate every
  * chunk, then finalize once with the total token count. */
 [[nodiscard]] enum geist_status
@@ -208,6 +211,15 @@ static inline bool transformer_lookup_on_host(const struct geist_backend *be) {
  * (mapping dst would flush that work once per prefill chunk, #529) and
  * which reaches a dst the host cannot map (a device-local scratch pool,
  * #488). Other backends write through buffer_map. */
+/* n tokens' embeddings into rows [0, n) of out: the embed_table row times
+ * transformer_embed_scale, looked up on the device where the plan bound it,
+ * else gathered on the host, then the prism inverse rotation. ids must be
+ * in range. Decode, batched decode and prefill embed through it. */
+[[nodiscard]] enum geist_status transformer_embed_rows(struct transformer_arch_session *sess,
+                                                       size_t                           n,
+                                                       const geist_token_t  ids[static n],
+                                                       struct geist_buffer *out);
+
 [[nodiscard]] enum geist_status transformer_gather_rows(struct transformer_arch_session *sess,
                                                         const struct geist_tensor       *table,
                                                         size_t                           n,

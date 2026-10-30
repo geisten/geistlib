@@ -321,11 +321,9 @@ struct transformer_arch_session {
     void              *scratch_arena_base;
     size_t             scratch_arena_bytes;
     struct frame_arena scratch_arena;
-    void              *scratch_pool_base;
-    size_t             scratch_pool_bytes;
-    size_t             scratch_pool_used;
+    struct frame_arena scratch_pool;
     /* Pool allocated through the backend so GPU backends can bind aliased
-     * slices directly; scratch_pool_base == buffer_map(buf). */
+     * slices directly; scratch_pool.base == buffer_map(buf). */
     struct geist_buffer *scratch_pool_buf;
     /* The device-local part of the pool (#488), when the session runs with
      * one (scratch_device; see scratch_device_wanted in arch_state.c). Every

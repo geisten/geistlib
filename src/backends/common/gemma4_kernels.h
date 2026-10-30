@@ -29,6 +29,9 @@ void bf16_array_to_fp32(size_t n, const void *src, float dst[static n]);
  * Returns nullptr on alloc failure. */
 float *bf16_alloc_fp32(size_t n, const void *src);
 
+/* In-place clamp to [lo, hi] (the Gemma 4 towers' clippable linears). */
+void clamp_fp32(size_t n, float x[static n], float lo, float hi);
+
 /* RMSNorm — Gemma 4 style:
  *   for each row of x [n_rows][hidden]:
  *     mean_sq = sum(x[i]²) / hidden

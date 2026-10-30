@@ -60,6 +60,108 @@ void ffn_run(const struct FFN *ffn, float *h, size_t n) {
     safe_free((void **) &residual);
 }
 
+void attn_head_core(size_t       hd_per_t,
+                    const float *q,
+                    const float *k,
+                    const float *v,
+                    const float *rel_k,
+                    const bool  *mask,
+                    float       *out) {
+    float scores_ac[CHUNK_SIZE * CONTEXT_SIZE];
+    float scores_bd[CHUNK_SIZE * CONTEXT_SIZE];
+    float bd_padded[CHUNK_SIZE * (CONTEXT_SIZE + 1)];
+
+    /* matrix_ac[i, j] = sum_d q[i, d] * k[j, d]   for i in chunk, j in context. */
+    for (int i = 0; i < CHUNK_SIZE; i++) {
+        const float *qi = q + (size_t) i * hd_per_t;
+        for (int j = 0; j < CONTEXT_SIZE; j++) {
+            const float *kj                 = k + (size_t) j * hd_per_t;
+            scores_ac[i * CONTEXT_SIZE + j] = dot_head_fp32(qi, kj);
+        }
+    }
+
+    /* matrix_bd[i, p] = sum_d q[i, d] * rel_k[p, d]   for i in chunk, p in pos_len.
+     * rel_k is (POS_LEN, N_HEADS, HEAD_DIM) flat: a head's rows are
+     * AUDIO_HIDDEN apart. Then rel_shift to (CHUNK_SIZE, CONTEXT_SIZE). */
+    for (int i = 0; i < CHUNK_SIZE; i++) {
+        const float *qi = q + (size_t) i * hd_per_t;
+        for (int p = 0; p < POS_LEN; p++) {
+            const float *rp                       = rel_k + (size_t) p * AUDIO_HIDDEN;
+            bd_padded[i * (CONTEXT_SIZE + 1) + p] = dot_head_fp32(qi, rp);
+        }
+        /* zero-pad the rest of this row (positions POS_LEN..CONTEXT_SIZE) */
+        for (int p = POS_LEN; p <= CONTEXT_SIZE; p++) {
+            bd_padded[i * (CONTEXT_SIZE + 1) + p] = 0.0f;
+        }
+    }
+    /* rel_shift: flatten (CHUNK_SIZE, CONTEXT_SIZE+1) → CHUNK_SIZE * (CONTEXT_SIZE+1)
+     * then take the first CHUNK_SIZE * CONTEXT_SIZE entries, view as
+     * (CHUNK_SIZE, CONTEXT_SIZE): a cyclic row shift that aligns the
+     * relative-position bias across the chunk. */
+    for (int idx = 0; idx < CHUNK_SIZE * CONTEXT_SIZE; idx++) {
+        scores_bd[idx] = bd_padded[idx];
+    }
+
+    /* Combine + soft-cap + mask + softmax. */
+    for (int i = 0; i < CHUNK_SIZE; i++) {
+        for (int j = 0; j < CONTEXT_SIZE; j++) {
+            float s = scores_ac[i * CONTEXT_SIZE + j] + scores_bd[i * CONTEXT_SIZE + j];
+            s       = tanhf(s / ATTN_SOFTCAP) * ATTN_SOFTCAP;
+            if (mask && !mask[i * CONTEXT_SIZE + j]) {
+                s = -1e9f;
+            }
+            scores_ac[i * CONTEXT_SIZE + j] = s; /* reuse scores_ac as combined */
+        }
+    }
+    softmax_fp32(CHUNK_SIZE, CONTEXT_SIZE, scores_ac);
+
+    /* attn @ V → (CHUNK_SIZE, HEAD_DIM) into out at this block/head slot. */
+    for (int i = 0; i < CHUNK_SIZE; i++) {
+        float *out_row = out + (size_t) i * AUDIO_HIDDEN;
+        zero_head_fp32(out_row);
+        for (int j = 0; j < CONTEXT_SIZE; j++) {
+            const float  w  = scores_ac[i * CONTEXT_SIZE + j];
+            const float *vj = v + (size_t) j * hd_per_t;
+            axpy_head_fp32(out_row, w, vj);
+        }
+    }
+}
+
+void attn_qkv_scaled(
+        const struct Attn *attn, size_t n, const float *h, float *q, float *k, float *v) {
+    const float q_scale = (1.0f / sqrtf((float) HEAD_DIM)) / logf(2.0f);
+    /* M_E is glibc-specific (not in C23); pin the constant for portability. */
+    const float k_scale = log1pf(2.71828182845904523536f) / logf(2.0f); /* log(1+e) / log(2) */
+
+    /* The projections clip their input in place: each gets a fresh copy. */
+    float *h_clip = heap_alloc_array_aligned(float, n *AUDIO_HIDDEN);
+    memcpy(h_clip, h, n * AUDIO_HIDDEN * sizeof(float));
+    clip_linear_apply(&attn->q_proj, h_clip, n, AUDIO_HIDDEN, AUDIO_HIDDEN, q);
+    memcpy(h_clip, h, n * AUDIO_HIDDEN * sizeof(float));
+    clip_linear_apply(&attn->k_proj, h_clip, n, AUDIO_HIDDEN, AUDIO_HIDDEN, k);
+    memcpy(h_clip, h, n * AUDIO_HIDDEN * sizeof(float));
+    clip_linear_apply(&attn->v_proj, h_clip, n, AUDIO_HIDDEN, AUDIO_HIDDEN, v);
+    safe_free((void **) &h_clip);
+
+    /* q *= q_scale * softplus(per_dim_scale), k *= k_scale. Layout: q is
+     * (n, n_heads, head_dim). Fold q_scale into the per-dim table so the
+     * inner loop is one mul/lane. */
+    float q_pds[HEAD_DIM];
+    for (int d = 0; d < HEAD_DIM; d++) {
+        q_pds[d] = q_scale * log1pf(expf(attn->per_dim_scale[d]));
+    }
+    for (size_t t = 0; t < n; t++) {
+        for (int head_i = 0; head_i < N_HEADS; head_i++) {
+            float *qrow = q + ((size_t) t * N_HEADS + head_i) * HEAD_DIM;
+            /* Plain elementwise mul; the compiler vectorizes it at -O3. */
+            for (int d = 0; d < HEAD_DIM; d++)
+                qrow[d] *= q_pds[d];
+        }
+    }
+    for (size_t i = 0; i < n * AUDIO_HIDDEN; i++)
+        k[i] *= k_scale;
+}
+
 /* attn_run's per-(block, head) attention, for geist_par_for. */
 struct attn_run_job {
     const float *q;
@@ -69,94 +171,23 @@ struct attn_run_job {
     const bool  *attn_mask;
     float       *attn_out;
     size_t       hd_per_t;
-    int          n_padded;
 };
 
-/* Items [i0, i1) of (block b, head hd), in that order. Scratch arrays are
- * declared inside the body so each range has its own. */
+/* Items [i0, i1) of (block b, head hd), in that order. */
 static void attn_run_items(void *ctx, size_t i0, size_t i1) {
-    const struct attn_run_job *job       = ctx;
-    const float               *q         = job->q;
-    const float               *k_ctx     = job->k_ctx;
-    const float               *v_ctx     = job->v_ctx;
-    const float               *rel_k     = job->rel_k;
-    const bool                *attn_mask = job->attn_mask;
-    float                     *attn_out  = job->attn_out;
-    const size_t               hd_per_t  = job->hd_per_t;
-    const int                  n_padded  = job->n_padded;
+    const struct attn_run_job *job      = ctx;
+    const size_t               hd_per_t = job->hd_per_t;
     for (size_t it = i0; it < i1; it++) {
-        const int b  = (int) (it / N_HEADS);
-        const int hd = (int) (it % N_HEADS);
-
-        float scores_ac[CHUNK_SIZE * CONTEXT_SIZE];
-        float scores_bd[CHUNK_SIZE * CONTEXT_SIZE];
-        float bd_padded[CHUNK_SIZE * (CONTEXT_SIZE + 1)];
-        /* Q rows for this block/head: (CHUNK_SIZE, HEAD_DIM). */
-        const float *q_bh = q + ((size_t) b * CHUNK_SIZE) * hd_per_t + (size_t) hd * HEAD_DIM;
-        /* K rows: (CONTEXT_SIZE, HEAD_DIM). */
-        const float *k_bh = k_ctx + ((size_t) b * CONTEXT_SIZE) * hd_per_t + (size_t) hd * HEAD_DIM;
-        /* V rows: same layout as K. */
-        const float *v_bh = v_ctx + ((size_t) b * CONTEXT_SIZE) * hd_per_t + (size_t) hd * HEAD_DIM;
-        /* Relative-K rows: (POS_LEN, HEAD_DIM). */
-        const float *rk_h = rel_k + (size_t) hd * HEAD_DIM;
-        /* Note: rel_k layout is (POS_LEN, N_HEADS, HEAD_DIM) flat as (POS_LEN, 1024).
-         * To pick head `hd`, stride POS_LEN times by AUDIO_HIDDEN. */
-
-        /* matrix_ac[i, j] = sum_d q[i, d] * k[j, d]   for i in chunk, j in context. */
-        for (int i = 0; i < CHUNK_SIZE; i++) {
-            const float *qi = q_bh + (size_t) i * hd_per_t;
-            for (int j = 0; j < CONTEXT_SIZE; j++) {
-                const float *kj                 = k_bh + (size_t) j * hd_per_t;
-                scores_ac[i * CONTEXT_SIZE + j] = dot_head_fp32(qi, kj);
-            }
-        }
-
-        /* matrix_bd[i, p] = sum_d q[i, d] * rel_k[p, d]   for i in chunk, p in pos_len.
-         * Then rel_shift to (CHUNK_SIZE, CONTEXT_SIZE). */
-        for (int i = 0; i < CHUNK_SIZE; i++) {
-            const float *qi = q_bh + (size_t) i * hd_per_t;
-            for (int p = 0; p < POS_LEN; p++) {
-                const float *rp                       = rk_h + (size_t) p * AUDIO_HIDDEN;
-                bd_padded[i * (CONTEXT_SIZE + 1) + p] = dot_head_fp32(qi, rp);
-            }
-            /* zero-pad the rest of this row (positions POS_LEN..CONTEXT_SIZE) */
-            for (int p = POS_LEN; p <= CONTEXT_SIZE; p++) {
-                bd_padded[i * (CONTEXT_SIZE + 1) + p] = 0.0f;
-            }
-        }
-        /* rel_shift: flatten (CHUNK_SIZE, CONTEXT_SIZE+1) → CHUNK_SIZE * (CONTEXT_SIZE+1)
-         * then take the first CHUNK_SIZE * CONTEXT_SIZE entries, view as
-         * (CHUNK_SIZE, CONTEXT_SIZE). */
-        for (int idx = 0; idx < CHUNK_SIZE * CONTEXT_SIZE; idx++) {
-            scores_bd[idx] = bd_padded[idx];
-        }
-
-        /* Combine + soft-cap + mask + softmax. */
-        for (int i = 0; i < CHUNK_SIZE; i++) {
-            for (int j = 0; j < CONTEXT_SIZE; j++) {
-                float s = scores_ac[i * CONTEXT_SIZE + j] + scores_bd[i * CONTEXT_SIZE + j];
-                s       = tanhf(s / ATTN_SOFTCAP) * ATTN_SOFTCAP;
-                if (attn_mask && !attn_mask[((size_t) b * CHUNK_SIZE + i) * CONTEXT_SIZE + j]) {
-                    s = -1e9f;
-                }
-                scores_ac[i * CONTEXT_SIZE + j] = s; /* reuse scores_ac as combined */
-            }
-        }
-        softmax_fp32(CHUNK_SIZE, CONTEXT_SIZE, scores_ac);
-
-        /* attn @ V → (CHUNK_SIZE, HEAD_DIM) into attn_out at this block/head slot. */
-        for (int i = 0; i < CHUNK_SIZE; i++) {
-            const int t_out = b * CHUNK_SIZE + i;
-            if (t_out >= n_padded)
-                break;
-            float *out_row = attn_out + (size_t) t_out * AUDIO_HIDDEN + (size_t) hd * HEAD_DIM;
-            zero_head_fp32(out_row);
-            for (int j = 0; j < CONTEXT_SIZE; j++) {
-                const float  w  = scores_ac[i * CONTEXT_SIZE + j];
-                const float *vj = v_bh + (size_t) j * hd_per_t;
-                axpy_head_fp32(out_row, w, vj);
-            }
-        }
+        const size_t b    = it / N_HEADS;
+        const size_t hd   = it % N_HEADS;
+        const size_t head = hd * HEAD_DIM;
+        attn_head_core(hd_per_t,
+                       job->q + b * CHUNK_SIZE * hd_per_t + head,
+                       job->k_ctx + b * CONTEXT_SIZE * hd_per_t + head,
+                       job->v_ctx + b * CONTEXT_SIZE * hd_per_t + head,
+                       job->rel_k + head,
+                       job->attn_mask ? job->attn_mask + b * CHUNK_SIZE * CONTEXT_SIZE : nullptr,
+                       job->attn_out + b * CHUNK_SIZE * AUDIO_HIDDEN + head);
     }
 }
 
@@ -171,43 +202,14 @@ void attn_run(const struct Attn *attn,
               const float       *pos_emb,
               const bool        *attn_mask,
               float             *y) {
-    const float q_scale = (1.0f / sqrtf((float) HEAD_DIM)) / logf(2.0f);
-    /* M_E is glibc-specific (not in C23); pin the constant for portability. */
-    const float k_scale    = log1pf(2.71828182845904523536f) / logf(2.0f); /* log(1+e) / log(2) */
-    const int   num_blocks = ((int) n + CHUNK_SIZE - 1) / CHUNK_SIZE;
-    const int   n_padded   = num_blocks * CHUNK_SIZE;
+    const int num_blocks = ((int) n + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    const int n_padded   = num_blocks * CHUNK_SIZE;
 
-    /* 1. Q/K/V projections (with input/output clip). */
-    float *h_clip_in = heap_alloc_array_aligned(float, n *AUDIO_HIDDEN);
-    float *q         = heap_calloc_array_aligned(float, (size_t) n_padded *AUDIO_HIDDEN);
-    float *k         = heap_alloc_array_aligned(float, (size_t) n *AUDIO_HIDDEN);
-    float *v         = heap_alloc_array_aligned(float, (size_t) n *AUDIO_HIDDEN);
-
-    memcpy(h_clip_in, h, n * AUDIO_HIDDEN * sizeof(float));
-    clip_linear_apply(&attn->q_proj, h_clip_in, n, AUDIO_HIDDEN, AUDIO_HIDDEN, q);
-    memcpy(h_clip_in, h, n * AUDIO_HIDDEN * sizeof(float));
-    clip_linear_apply(&attn->k_proj, h_clip_in, n, AUDIO_HIDDEN, AUDIO_HIDDEN, k);
-    memcpy(h_clip_in, h, n * AUDIO_HIDDEN * sizeof(float));
-    clip_linear_apply(&attn->v_proj, h_clip_in, n, AUDIO_HIDDEN, AUDIO_HIDDEN, v);
-    safe_free((void **) &h_clip_in);
-
-    /* 2. Apply scales: q *= q_scale * softplus(per_dim_scale), k *= k_scale.
-     *    Layout: q is (n_padded, n_heads, head_dim). Q-pad rows beyond n stay zero.
-     *    Fold q_scale into the per-dim table so the inner loop is one mul/lane. */
-    float q_pds[HEAD_DIM];
-    for (int d = 0; d < HEAD_DIM; d++) {
-        q_pds[d] = q_scale * log1pf(expf(attn->per_dim_scale[d]));
-    }
-    for (int t = 0; t < (int) n; t++) {
-        for (int head_i = 0; head_i < N_HEADS; head_i++) {
-            float *qrow = q + ((size_t) t * N_HEADS + head_i) * HEAD_DIM;
-            /* Plain elementwise mul; the compiler vectorizes it at -O3. */
-            for (int d = 0; d < HEAD_DIM; d++)
-                qrow[d] *= q_pds[d];
-        }
-    }
-    for (size_t i = 0; i < n * AUDIO_HIDDEN; i++)
-        k[i] *= k_scale;
+    /* 1+2. Scaled Q/K/V projections. Q-pad rows beyond n stay zero. */
+    float *q = heap_calloc_array_aligned(float, (size_t) n_padded *AUDIO_HIDDEN);
+    float *k = heap_alloc_array_aligned(float, (size_t) n *AUDIO_HIDDEN);
+    float *v = heap_alloc_array_aligned(float, (size_t) n *AUDIO_HIDDEN);
+    attn_qkv_scaled(attn, n, h, q, k, v);
 
     /* 3. Build context-windowed K/V: (num_blocks, CONTEXT_SIZE=24, n_heads, head_dim).
      *    HF: F.pad(K, (0,0, 0,0, max_past=12, chunk-1=11)), then unfold(size=24, stride=12).
@@ -249,8 +251,7 @@ void attn_run(const struct Attn *attn,
                                      .rel_k     = rel_k,
                                      .attn_mask = attn_mask,
                                      .attn_out  = attn_out,
-                                     .hd_per_t  = hd_per_t,
-                                     .n_padded  = n_padded};
+                                     .hd_per_t  = hd_per_t};
     geist_par_for((size_t) num_blocks * N_HEADS, attn_run_items, (void *) &job);
     safe_free((void **) &rel_k);
     safe_free((void **) &k_ctx);
