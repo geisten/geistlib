@@ -13,7 +13,7 @@
  * The expert width is olmoe.feed_forward_length; the file has no key_length
  * and no expert_weights_norm.
  *
- *   h_post_attn = h_in + o_proj(attention(rope(qk_norm(qkv(norm(h_in))))))
+ *   h_post_attn = h_in + o_proj(attend(rope(qk_norm(qkv(rot(attn_norm(h_in)))))))
  *   h_out       = blk_moe_ffn(h_post_attn)
  *
  * Removing the family is this file, its registry lines in arch_family.c and
@@ -23,7 +23,6 @@
 
 #include "../arch_family.h"
 #include "../forward/blocks.h"
-#include "../rotation.h"
 #include "../weight_load.h"
 
 #include "gguf_reader.h"
@@ -71,31 +70,20 @@ static bool populate_layers_olmoe(struct transformer_arch_state *st) {
     return moe_wire_layer(st, gguf, L, "olmoe");
 }
 
-/* Each step runs only while s is GEIST_OK. */
+/* blk_attention with the QK norms over whole rows. Each step runs only
+ * while s is GEIST_OK. */
 [[nodiscard]] static enum geist_status
 olmoe_attention_block(struct transformer_layer_forward_ctx *ctx) {
-    struct transformer_arch_state    *st   = ctx->st;
-    struct transformer_arch_session  *sess = ctx->sess;
-    struct transformer_layer_weights *L    = ctx->L;
-    const size_t                      d    = st->d_model;
-    struct geist_buffer              *x    = sess->scratch_normed;
+    struct transformer_layer_weights *L = ctx->L;
 
-    enum geist_status s = blk_rmsnorm(ctx, d, ctx->h_in_buf, &L->attn_norm, x);
-    if (s == GEIST_OK)
-        s = transformer_rotate_rows(st, ctx->seq, d, x);
-    if (s == GEIST_OK)
-        s = blk_qkv(ctx, x);
+    enum geist_status s = blk_attn_in(ctx, nullptr, nullptr);
     if (s == GEIST_OK)
         s = blk_qk_norm_whole_row(ctx, &L->q_norm, &L->k_norm);
     if (s == GEIST_OK)
         s = blk_rope_qk(ctx, 1.0f / sqrtf((float) ctx->hd));
     if (s == GEIST_OK)
         s = blk_attend(ctx, true);
-    if (s == GEIST_OK)
-        s = blk_o_proj(ctx);
-    if (s == GEIST_OK)
-        s = blk_add(ctx, d, ctx->h_in_buf, sess->scratch_o, sess->scratch_h_post_attn);
-    return s;
+    return s == GEIST_OK ? blk_attn_out(ctx, nullptr) : s;
 }
 
 const struct transformer_family transformer_family_olmoe = {

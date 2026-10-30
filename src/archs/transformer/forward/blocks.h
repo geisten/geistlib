@@ -193,7 +193,8 @@ blk_relu_sq(struct transformer_layer_forward_ctx *ctx, size_t n, struct geist_bu
                                               bool allow_fused_rope);
 
 /* blk_attention's two halves around RoPE and attend, for a caller that
- * attends per sequence (batched decode, forward/layer.c). blk_attn_in:
+ * attends per sequence (batched decode, forward/layer.c) or norms q and k
+ * its own way (families/olmoe.c). blk_attn_in:
  * attn_norm, rotation, q/k/v and, where q_norm is non-null, the QK-norm.
  * blk_attn_out: o_proj and the residual step (blk_attn_residual). */
 [[nodiscard]] enum geist_status blk_attn_in(struct transformer_layer_forward_ctx *ctx,
