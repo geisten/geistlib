@@ -1,0 +1,85 @@
+# A/B of two revisions on the Apple M6 Mac mini (runner macmini-m6), for a
+# PR that has to show "no prefill/decode regression" while the M1 Max is
+# too busy to measure (#232 era: agents, campaigns and CI share it).
+# tools/bench_revision_ab.py builds each revision in its own worktree and
+# measures them interleaved with a control run of the base binary, under
+# the Mac mini's host lock. Same shape as pi5-ab.yml.
+#
+#   tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib --ref main \
+#     -i new=origin/<branch> -i model=qwen35-0.8b-q8 mac-ab.yml
+#   Metal: -i backends="cpu_neon cpu_scalar metal" -i env="GEIST_BENCH_BACKEND=metal"
+name: mac-ab
+
+on:
+  workflow_dispatch:
+    inputs:
+      new:
+        description: "revision under test, e.g. origin/refactor/cpu-common"
+        required: true
+      base:
+        description: "baseline revision"
+        default: origin/main
+      model:
+        description: "models key of benchmark/cross_engine_cpu_protocol.json (host cache, sha256-gated)"
+        default: qwen35-0.8b-q8
+      backends:
+        description: "BACKENDS for make (add metal for a Metal A/B)"
+        default: "cpu_neon cpu_scalar"
+      env:
+        description: "space-separated VAR=VALUE for every bench run, e.g. GEIST_BENCH_BACKEND=metal"
+        default: ""
+      seq_lens:
+        description: "prompt lengths (bench_perf_sweep --seq-lens)"
+        default: "128,512"
+      cycles:
+        description: "interleaved cycles (10 decide on 9 one way)"
+        default: "12"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macmini-m6
+  cancel-in-progress: false
+
+jobs:
+  ab:
+    runs-on: macmini-m6
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # both revisions must resolve locally
+      - name: model (host cache, sha256-gated)
+        env:
+          GEIST_MODEL_CACHE: ${{ vars.GEIST_MODEL_CACHE }}
+          MODEL: ${{ inputs.model }}
+        run: |
+          set -eo pipefail
+          echo "MODEL_PATH=$(python3 tools/fetch_bench_model.py --model "$MODEL" --protocol benchmark/cross_engine_cpu_protocol.json)" >> "$GITHUB_ENV"
+      - name: A/B (build + measure under the host lock)
+        env:
+          BASE: ${{ inputs.base }}
+          NEW: ${{ inputs.new }}
+          BACKENDS_IN: ${{ inputs.backends }}
+          ENV_IN: ${{ inputs.env }}
+          SEQ_LENS: ${{ inputs.seq_lens }}
+          CYCLES: ${{ inputs.cycles }}
+          LOCK_NOTE: "mac-ab ${{ inputs.new }} vs ${{ inputs.base }} (run ${{ github.run_id }})"
+        run: |
+          set -eo pipefail
+          set --
+          for kv in $ENV_IN; do set -- "$@" --env "$kv"; done
+          ~/bin/with-macmini-lock python3 tools/bench_revision_ab.py \
+            --rev "base=$BASE" --rev "new=$NEW" --gguf "$MODEL_PATH" \
+            --make-arg TARGET=mac-omp --make-arg "BACKENDS=$BACKENDS_IN" \
+            --seq-lens "$SEQ_LENS" --cycles "$CYCLES" "$@" \
+            --out-dir "$RUNNER_TEMP/ab"
+          cat "$RUNNER_TEMP"/ab/*/revision_ab.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 14
+          name: mac-ab-${{ github.run_id }}
+          path: ${{ runner.temp }}/ab/
+          if-no-files-found: ignore
