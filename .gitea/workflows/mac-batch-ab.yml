@@ -1,0 +1,146 @@
+# Batched-decode A/B of two revisions on the Apple M6 Mac mini (runner
+# macmini-m6): tests/bench_decode_batch (n = 1/2/4/8 sessions, isolation,
+# aggregate tokens/s) for each revision, process cycles interleaved with the
+# order rotating, every run under the mini's host lock. mac-ab.yml covers
+# single-session prefill/decode (bench_perf_sweep); this one covers
+# geist_session_decode_batch, e.g. #316's 2..8-row Metal linears.
+# The model comes by URL + sha256 (MoE models are not in the cross-engine
+# protocol); the prompts are 16 paragraphs of the repo's docs, tokenized by
+# the model itself. One GEIST_METAL_PROFILE run per revision closes the job.
+#
+#   tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib --ref main \
+#     -i new=origin/<branch> mac-batch-ab.yml
+name: mac-batch-ab
+
+on:
+  workflow_dispatch:
+    inputs:
+      new:
+        description: "revision under test, e.g. origin/metal/316-mv-rows"
+        required: true
+      base:
+        description: "baseline revision"
+        default: origin/main
+      model_url:
+        description: "GGUF URL (pinned revision)"
+        default: https://huggingface.co/Qwen/Qwen3-30B-A3B-GGUF/resolve/e4d4bafdfb96a411a163846265362aceb0b9c63a/Qwen3-30B-A3B-Q4_K_M.gguf
+      model_sha256:
+        description: "sha256 of the GGUF"
+        default: 0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5
+      env:
+        description: "space-separated VAR=VALUE for every bench run"
+        default: ""
+      cycles:
+        description: "interleaved process cycles"
+        default: "4"
+      n_time:
+        description: "timed steps per n (bench_decode_batch n_time)"
+        default: "64"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macmini-m6
+  cancel-in-progress: false
+
+jobs:
+  ab:
+    runs-on: macmini-m6
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: host
+        run: |
+          echo "memory: $(( $(sysctl -n hw.memsize) / 1073741824 )) GiB"
+          sysctl -n machdep.cpu.brand_string
+          pmset -g batt | head -2
+          pmset -g | grep -i lowpowermode || true
+      - name: model (cached outside the workspace, sha256-checked)
+        env:
+          GEIST_MODEL_CACHE: ${{ vars.GEIST_MODEL_CACHE }}
+          URL: ${{ inputs.model_url }}
+          SHA: ${{ inputs.model_sha256 }}
+        run: |
+          set -eo pipefail
+          echo "MODEL_PATH=$(python3 tools/fetch_bench_model.py --url "$URL" --sha256 "$SHA")" >> "$GITHUB_ENV"
+      - name: build both revisions
+        env:
+          BASE: ${{ inputs.base }}
+          NEW: ${{ inputs.new }}
+        run: |
+          set -eo pipefail
+          for v in base new; do
+            ref=$BASE; [ $v = new ] && ref=$NEW
+            rm -rf "$RUNNER_TEMP/$v"
+            git worktree add --detach "$RUNNER_TEMP/$v" "$ref"
+            make -C "$RUNNER_TEMP/$v" -j8 TARGET=mac-omp BACKENDS="cpu_neon cpu_scalar metal" \
+              bin/mac-omp/release/tests/bench_decode_batch bin/mac-omp/release/tools/dump_geist_tokens >/dev/null
+            echo "$v = $(git -C "$RUNNER_TEMP/$v" rev-parse --short HEAD)"
+          done
+      - name: prompts (16 doc paragraphs, the model's tokens)
+        run: |
+          set -eo pipefail
+          python3 - <<'PY'
+          import os, re
+          paras = []
+          for f in ["docs/OFFLOAD.md", "docs/ARCHITECTURE.md", "docs/TUNING.md", "README.md"]:
+              for p in re.split(r"\n\s*\n", open(f).read()):
+                  p = p.strip()
+                  if 400 < len(p) < 1400 and not p.startswith(("|", "```")):
+                      paras.append(p)
+          open(os.environ["RUNNER_TEMP"] + "/corpus.hex", "w").write("".join(p.encode().hex() + "\n" for p in paras[:16]))
+          PY
+          "$RUNNER_TEMP/base/bin/mac-omp/release/tools/dump_geist_tokens" "$MODEL_PATH" "$RUNNER_TEMP/corpus.hex" --no-prefill --ids 0 \
+            | grep '^  tokenize=0 n=[1-9]' | sed 's/^.*: //' > "$RUNNER_TEMP/all.txt"
+          head -8 "$RUNNER_TEMP/all.txt" > "$RUNNER_TEMP/a.txt"; sed -n 9,16p "$RUNNER_TEMP/all.txt" > "$RUNNER_TEMP/b.txt"
+          wc -l "$RUNNER_TEMP/a.txt" "$RUNNER_TEMP/b.txt"
+      - name: A/B (interleaved, under the host lock)
+        env:
+          ENV_IN: ${{ inputs.env }}
+          CYCLES: ${{ inputs.cycles }}
+          NT: ${{ inputs.n_time }}
+        run: |
+          set -o pipefail
+          out="$RUNNER_TEMP/ab.txt"; : > "$out"
+          for c in $(seq "$CYCLES"); do
+            if [ $((c % 2)) = 1 ]; then order="base new"; else order="new base"; fi
+            for v in $order; do
+              echo "== cycle $c $v" | tee -a "$out"
+              LOCK_NOTE="mac-batch-ab $v (run ${{ github.run_id }})" ~/bin/with-macmini-lock \
+                env $ENV_IN "$RUNNER_TEMP/$v/bin/mac-omp/release/tests/bench_decode_batch" "$MODEL_PATH" metal \
+                "$RUNNER_TEMP/a.txt" "$RUNNER_TEMP/b.txt" 8 "$NT" 2>&1 \
+                | grep -E "decode_batch_max|agreement|isolation|decode_step|decode_batch n=|ISOLATION" | tee -a "$out"
+            done
+          done
+          python3 - "$out" <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import re, sys, statistics as st, collections
+          d = collections.defaultdict(list); v = None
+          for l in open(sys.argv[1]):
+              m = re.match(r"== cycle (\d+) (\w+)", l)
+              if m: v = m.group(2); continue
+              m = re.search(r"decode_step: ([\d.]+) ms/step", l)
+              if m: d[(v, 1)].append(float(m.group(1)))
+              m = re.search(r"decode_batch n=(\d+): ([\d.]+) ms/step", l)
+              if m: d[(v, int(m.group(1)))].append(float(m.group(2)))
+          print("| n | base ms/step (median) | new ms/step (median) | new/base |\n|--|--|--|--|")
+          for n in (1, 2, 4, 8):
+              b, w = d.get(("base", n), []), d.get(("new", n), [])
+              if b and w:
+                  print(f"| {n} | {st.median(b):.1f} {b} | {st.median(w):.1f} {w} | {st.median(w)/st.median(b):.3f} |")
+          PY
+      - name: GPU profile (one run per revision)
+        env:
+          ENV_IN: ${{ inputs.env }}
+        run: |
+          for v in base new; do
+            echo "== $v"
+            ~/bin/with-macmini-lock env $ENV_IN GEIST_METAL_PROFILE=1 "$RUNNER_TEMP/$v/bin/mac-omp/release/tests/bench_decode_batch" \
+              "$MODEL_PATH" metal "$RUNNER_TEMP/a.txt" "$RUNNER_TEMP/b.txt" 2 32 2>&1 | grep -E "gpu|dispatch|wait|decode_" | head -40
+          done
+      - name: clean up
+        if: always()
+        run: |
+          for v in base new; do git worktree remove --force "$RUNNER_TEMP/$v" 2>/dev/null || true; done
