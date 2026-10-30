@@ -14,7 +14,8 @@
  * expert), x one row per token (gate/up) and one row per slot (down);
  * against fused->linear_t of each slot's expert alone, to 1e-5 of the
  * output scale (the same matvec bodies). supported(GEIST_FUSED_MOE_DEVICE)
- * says yes for these dtypes at m = 1.
+ * says yes for these dtypes at m = 1 and at m = 8 (a batched decode's rows,
+ * #245), no at m = 0.
  *
  * moe_weighted_sum: two tokens of three slots onto their rows of `add`,
  * against the host sum to 1e-5 of its scale.
@@ -203,6 +204,11 @@ static int test_ids(struct geist_backend *be, const struct qfmt *q) {
     const struct geist_fusion_query qq = {
             .op = GEIST_FUSED_MOE_DEVICE, .m = 1, .gate_w = &w[0], .up_w = &w[0], .down_w = &w[0]};
     fails += geist_expect(f->supported(be, &qq), "supported(GEIST_FUSED_MOE_DEVICE)");
+    struct geist_fusion_query q8 = qq, q0 = qq;
+    q8.m = 8;
+    q0.m = 0;
+    fails += geist_expect(f->supported(be, &q8) && !f->supported(be, &q0),
+                          "supported(GEIST_FUSED_MOE_DEVICE) at m = 8, not at m = 0");
     float xs[M * K * N_IN];
     for (size_t i = 0; i < M * K * N_IN; i++)
         xs[i] = (float) rng_u8() / 64.0f - 2.0f;

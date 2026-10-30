@@ -382,8 +382,29 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
             mg->device[l]                      = all && gf->supported(gbe, &q);
             mg->any_device                     = mg->any_device || mg->device[l];
         }
+        /* #245: a batched decode's rows too, when every device layer takes
+         * them (GEIST_DECODE_BATCH_MOE_DEVICE=0: the host routes them). */
+        const size_t rows =
+                st->m_max < TRANSFORMER_DECODE_BATCH_CAP ? st->m_max : TRANSFORMER_DECODE_BATCH_CAP;
+        mg->device_rows = 1;
+        bool rows_ok =
+                mg->any_device && rows > 1 && geist_env_flag("GEIST_DECODE_BATCH_MOE_DEVICE", true);
+        for (size_t l = 0; rows_ok && l < n_layers; l++) {
+            const struct geist_weight      *tw = &mg->twins[l * slots * 3];
+            const struct geist_fusion_query q  = {.op     = GEIST_FUSED_MOE_DEVICE,
+                                                  .m      = rows,
+                                                  .gate_w = &tw[0],
+                                                  .up_w   = &tw[1],
+                                                  .down_w = &tw[2]};
+            rows_ok                            = !mg->device[l] || gf->supported(gbe, &q);
+        }
+        if (rows_ok)
+            mg->device_rows = rows;
         if (verbose && mg->any_device)
-            fprintf(stderr, "geist: moe: decode routes on %s (#201)\n", gbe->desc->name);
+            fprintf(stderr,
+                    "geist: moe: decode routes on %s (#201), batched rows up to %zu\n",
+                    gbe->desc->name,
+                    mg->device_rows);
     }
     /* #162: with the experts split, a decode step routes on the device and
      * starts its hot experts without the host (GEIST_MOE_GPU_ROUTE=0: the
@@ -665,9 +686,22 @@ enum geist_status moe_gpu_run(struct transformer_arch_session *sess,
     return GEIST_OK;
 }
 
+/* moe_gpu_launch's per-row mode (#245): the rows of a batched decode, each
+ * selection one matvec of its own, so a row's result does not depend on
+ * which other rows chose its expert. Needs grouped linears and at most
+ * GEIST_MOE_MAX_EXPERTS routed rows. */
+static bool moe_gpu_per_row(const struct transformer_moe_gpu *mg,
+                            size_t                            layer,
+                            size_t                            seq,
+                            size_t                            k,
+                            bool                              decode_rows) {
+    return decode_rows && mg->grouped[layer] && seq * k <= GEIST_MOE_MAX_EXPERTS;
+}
+
 enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
                                  size_t                           layer,
                                  size_t                           seq,
+                                 bool                             decode_rows,
                                  size_t                           n_hot,
                                  const uint32_t                   hot[static n_hot]) {
     const struct transformer_arch_state *st    = sess->model;
@@ -678,9 +712,10 @@ enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
     const size_t                         k     = moe_k(&st->config);
     const size_t                         inter = st->layers[layer].intermediate;
     const size_t                        *rs    = sess->moe_row_start;
+    const bool                           per   = moe_gpu_per_row(mg, layer, seq, k, decode_rows);
     /* The hot experts' rows, in their order, gathered from x on the device:
      * packed row p reads token src[p]. sess->moe_rows is bucketed by expert;
-     * its entries are row * k + slot. */
+     * its entries are row * k + slot. Per row: no padding. */
     uint32_t *src  = (uint32_t *) sess->moe_ids_hot;
     size_t    rows = 0, real = 0;
     bool      one = mg->grouped[layer];
@@ -690,39 +725,47 @@ enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
         real += m;
         for (size_t r = rs[hot[i]]; r < rs[hot[i] + 1]; r++)
             src[rows++] = sess->moe_rows[r] / (uint32_t) k;
-        for (size_t r = m; r < moe_pad(m); r++, rows++)
+        for (size_t r = m; !per && r < moe_pad(m); r++, rows++)
             src[rows] = src[rows - 1];
     }
     struct geist_tensor xin = view_2d(sess->scratch_pre_ff, (int64_t) seq, (int64_t) d);
     struct geist_tensor x   = view_2d(sess->moe_gpu_x, (int64_t) rows, (int64_t) d);
     enum geist_status   s   = gf->rows_gather(gbe, rows, d, src, &xin, &x);
-    if (one) {
+    if (one || per) {
         /* A decode step: one row per expert, one grouped matvec each over
          * the routed ones; a shared expert (last in hot[], its own dtype)
-         * after them as plain matvecs. */
-        const size_t               n_rt = n_hot - (hot[n_hot - 1] >= st->config.moe_n_experts);
+         * after them as plain matvecs, over its m_sh rows. Per row (#245):
+         * every routed row its own entry of the grouped matvecs. */
+        const bool                 sh   = hot[n_hot - 1] >= st->config.moe_n_experts;
+        const size_t               m_sh = sh ? rs[hot[n_hot - 1] + 1] - rs[hot[n_hot - 1]] : 0;
+        const size_t               n_rt = rows - m_sh; /* routed packed rows */
         struct geist_tensor        g    = view_2d(sess->moe_gpu_g, (int64_t) rows, (int64_t) inter);
         struct geist_tensor        u    = view_2d(sess->moe_gpu_u, (int64_t) rows, (int64_t) inter);
         struct geist_tensor        xr   = view_2d(sess->moe_gpu_x, (int64_t) n_rt, (int64_t) d);
         struct geist_tensor        gr   = view_2d(sess->moe_gpu_g, (int64_t) n_rt, (int64_t) inter);
         struct geist_tensor        ur   = view_2d(sess->moe_gpu_u, (int64_t) n_rt, (int64_t) inter);
         const struct geist_weight *w[3][GEIST_MOE_MAX_EXPERTS];
-        hot_twins(st, layer, n_hot, hot, w);
+        uint32_t                   ex[GEIST_MOE_MAX_EXPERTS]; /* packed row -> expert */
+        size_t                     at = 0;
+        for (size_t i = 0; i < n_hot; i++)
+            for (size_t r = rs[hot[i]]; r < rs[hot[i] + 1]; r++)
+                ex[at++] = hot[i];
+        hot_twins(st, layer, rows, ex, w);
         if (s == GEIST_OK && n_rt > 0)
             s = gf->linear_t_grouped(gbe, n_rt, w[0], &xr, &gr);
         if (s == GEIST_OK && n_rt > 0)
             s = gf->linear_t_grouped(gbe, n_rt, w[1], &xr, &ur);
         struct geist_tensor xs, gs, us, t[3];
-        if (n_rt < n_hot) {
-            xs = view_2d_at(sess->moe_gpu_x, n_rt * d * 4, 1, (int64_t) d);
-            gs = view_2d_at(sess->moe_gpu_g, n_rt * inter * 4, 1, (int64_t) inter);
-            us = view_2d_at(sess->moe_gpu_u, n_rt * inter * 4, 1, (int64_t) inter);
+        if (m_sh > 0) {
+            xs = view_2d_at(sess->moe_gpu_x, n_rt * d * 4, (int64_t) m_sh, (int64_t) d);
+            gs = view_2d_at(sess->moe_gpu_g, n_rt * inter * 4, (int64_t) m_sh, (int64_t) inter);
+            us = view_2d_at(sess->moe_gpu_u, n_rt * inter * 4, (int64_t) m_sh, (int64_t) inter);
             for (size_t p = 0; p < 3; p++)
-                t[p] = expert_view(st, mg, layer, hot[n_rt], p);
+                t[p] = expert_view(st, mg, layer, hot[n_hot - 1], p);
             if (s == GEIST_OK)
-                s = gf->linear_t(gbe, &xs, w[0][n_rt], &t[0], 1, &gs);
+                s = gf->linear_t(gbe, &xs, w[0][n_rt], &t[0], m_sh, &gs);
             if (s == GEIST_OK)
-                s = gf->linear_t(gbe, &xs, w[1][n_rt], &t[1], 1, &us);
+                s = gf->linear_t(gbe, &xs, w[1][n_rt], &t[1], m_sh, &us);
         }
         if (s == GEIST_OK)
             s = gf->silu_mul(gbe, &g, &u, &g);
@@ -730,8 +773,8 @@ enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
          * the backend's hazard tracking orders before this write). */
         if (s == GEIST_OK && n_rt > 0)
             s = gf->linear_t_grouped(gbe, n_rt, w[2], &gr, &xr);
-        if (s == GEIST_OK && n_rt < n_hot)
-            s = gf->linear_t(gbe, &gs, w[2][n_rt], &t[2], 1, &xs);
+        if (s == GEIST_OK && m_sh > 0)
+            s = gf->linear_t(gbe, &gs, w[2][n_rt], &t[2], m_sh, &xs);
     } else if (s == GEIST_OK) {
         /* A prefill chunk: each expert's rows as one GEMM, the outputs
          * over x. */
@@ -747,6 +790,8 @@ enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
 
 enum geist_status moe_gpu_finish(struct transformer_arch_session *sess,
                                  size_t                           seq,
+                                 size_t                           layer,
+                                 bool                             decode_rows,
                                  size_t                           n_hot,
                                  const uint32_t                   hot[static n_hot],
                                  const float          cold[static seq * sess->model->d_model],
@@ -754,7 +799,8 @@ enum geist_status moe_gpu_finish(struct transformer_arch_session *sess,
     const struct transformer_arch_state *st = sess->model;
     const struct transformer_moe_gpu    *mg = st->moe_gpu;
     const size_t                         d = st->d_model, k = moe_k(&st->config);
-    const size_t                        *rs = sess->moe_row_start;
+    const size_t                        *rs  = sess->moe_row_start;
+    const bool                           per = moe_gpu_per_row(mg, layer, seq, k, decode_rows);
     /* Per token, its hot rows (packed index) and weights: counted, then
      * placed (CSR). Packed rows follow hot[]'s order, as moe_gpu_launch. */
     uint32_t *start = sess->moe_csr_start, *rows = sess->moe_csr_rows;
@@ -775,7 +821,7 @@ enum geist_status moe_gpu_finish(struct transformer_arch_session *sess,
             rows[fill[t]] = (uint32_t) p;
             w[fill[t]++]  = sess->moe_wts[sel];
         }
-        p += moe_pad(m) - m; /* the padding rows, as moe_gpu_launch packs them */
+        p += per ? 0 : moe_pad(m) - m; /* the padding rows, as moe_gpu_launch packs them */
     }
     struct geist_tensor y = view_2d(sess->moe_gpu_x, (int64_t) p, (int64_t) d);
     struct geist_tensor o = view_2d(out, (int64_t) seq, (int64_t) d);
@@ -888,10 +934,14 @@ enum geist_status moe_gpu_route_finish(struct transformer_arch_session *sess,
     return mg->be->desc->fused->rows_weighted_sum(mg->be, 1, d, n, start, rows, w, cold, &y, &o);
 }
 
-bool moe_gpu_device(const struct transformer_arch_session *sess, size_t layer, size_t seq) {
+bool moe_gpu_device(const struct transformer_arch_session *sess,
+                    size_t                                 layer,
+                    size_t                                 seq,
+                    bool                                   decode_rows) {
     const struct transformer_moe_gpu *mg = sess->model->moe_gpu;
-    return seq == 1 && mg != nullptr && mg->device != nullptr && sess->moe_dev_ids != nullptr &&
-           layer < sess->model->n_layers && mg->device[layer];
+    return mg != nullptr && (seq == 1 || (decode_rows && seq <= mg->device_rows)) &&
+           mg->device != nullptr && sess->moe_dev_ids != nullptr && layer < sess->model->n_layers &&
+           mg->device[layer];
 }
 
 enum geist_status moe_gpu_device_ffn(struct transformer_arch_session *sess,
