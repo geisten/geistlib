@@ -203,6 +203,10 @@ int main(int argc, char **argv) {
      * mixture of experts on an 11 GB card need the small one). */
     if (getenv("GEIST_BENCH_M_MAX") != nullptr)
         so.m_max = strtoul(getenv("GEIST_BENCH_M_MAX"), nullptr, 10);
+    /* GEIST_BENCH_MAX_SEQ: the sessions' window (default 2048), so nine
+     * sessions of a large MoE fit next to its experts on a 32 GB Mac. */
+    if (getenv("GEIST_BENCH_MAX_SEQ") != nullptr)
+        so.max_seq_len = strtoul(getenv("GEIST_BENCH_MAX_SEQ"), nullptr, 10);
     so.batch_sessions = MAXB + 1; /* the reference session and the batch's eight */
     check(geist_model_load_with_opts(argv[1], be, &so, &m), "load");
     const size_t max = geist_model_decode_batch_max(m);
