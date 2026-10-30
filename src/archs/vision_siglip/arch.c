@@ -26,9 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct vision_siglip_state {
-    struct VisionEncoder *enc;
-};
+/* The encoder state is the VisionEncoder itself. */
 
 static void *vision_siglip_state_create(struct geist_backend *be, const char *aux_root) {
     (void) be; /* the tower runs on host memory, not backend buffers */
@@ -45,28 +43,11 @@ static void *vision_siglip_state_create(struct geist_backend *be, const char *au
     }
     struct VisionEncoder *enc = vision_encoder_create(path);
     safe_free((void **) &path);
-    if (enc == nullptr) {
-        return nullptr;
-    }
-    struct vision_siglip_state *st =
-            heap_alloc_aligned(sizeof(*st), alignof(struct vision_siglip_state));
-    if (st == nullptr) {
-        vision_encoder_destroy(enc);
-        return nullptr;
-    }
-    *st = (struct vision_siglip_state) {.enc = enc};
-    return st;
+    return enc;
 }
 
 static void vision_siglip_state_destroy(void *encoder_state) {
-    if (encoder_state == nullptr) {
-        return;
-    }
-    struct vision_siglip_state *st = encoder_state;
-    if (st->enc != nullptr) {
-        vision_encoder_destroy(st->enc);
-    }
-    safe_free(&encoder_state);
+    vision_encoder_destroy(encoder_state);
 }
 
 static size_t vision_siglip_encode_image(void          *encoder_state,
@@ -79,8 +60,7 @@ static size_t vision_siglip_encode_image(void          *encoder_state,
         height == 0 || width == 0) {
         return 0;
     }
-    struct vision_siglip_state *st = encoder_state;
-    size_t n_soft = vision_encoder_run_image(st->enc, height, width, rgb, out_soft);
+    size_t n_soft = vision_encoder_run_image(encoder_state, height, width, rgb, out_soft);
     if (n_soft > max_soft) {
         return 0;
     }
@@ -98,8 +78,8 @@ static size_t vision_siglip_encode_video(void          *encoder_state,
         n_frames == 0 || height == 0 || width == 0) {
         return 0;
     }
-    struct vision_siglip_state *st = encoder_state;
-    size_t n_soft = vision_encoder_run_video(st->enc, n_frames, height, width, frames, out_soft);
+    size_t n_soft =
+            vision_encoder_run_video(encoder_state, n_frames, height, width, frames, out_soft);
     if (n_soft > max_soft) {
         return 0;
     }
@@ -107,10 +87,9 @@ static size_t vision_siglip_encode_video(void          *encoder_state,
 }
 
 static size_t vision_siglip_soft_token_dim(const void *encoder_state) {
-    const struct vision_siglip_state *st = encoder_state;
     /* Per-checkpoint: 1536 (E2B) or 2560 (E4B) — the text model's
      * residual-stream width, read from the tower safetensors (#258). */
-    return vision_encoder_soft_dim(st != nullptr ? st->enc : nullptr);
+    return vision_encoder_soft_dim(encoder_state);
 }
 
 const struct geist_arch_ops_vision geist_arch_vision_siglip = {

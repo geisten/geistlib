@@ -1,4 +1,5 @@
 #include "safetensors_reader.h"
+#include "checked.h"
 #include "file_map.h"
 #include "heap.h"
 
@@ -477,4 +478,98 @@ const struct st_tensor_t *st_get(const struct st_ctx *ctx, const char *name) {
             return &ctx->tensors[i];
     }
     return nullptr;
+}
+
+// ---- BF16 weight loaders ----------------------------------------------------
+
+static float bf16_bits_to_f32(const unsigned char *p) {
+    // memcpy: tensor data sits at any byte offset in the map
+    uint16_t raw;
+    memcpy(&raw, p, sizeof raw);
+    const uint32_t bits = (uint32_t) raw << 16;
+    float          f;
+    memcpy(&f, &bits, sizeof f);
+    return f;
+}
+
+static const struct st_tensor_t *
+bf16_tensor(const struct st_ctx *ctx, const char *name, size_t elems, const char *who) {
+    const struct st_tensor_t *t = st_get(ctx, name);
+    if (t == nullptr) {
+        fprintf(stderr, "%s: missing tensor '%s'\n", who, name);
+        return nullptr;
+    }
+    if (t->dtype != ST_DTYPE_BF16) {
+        fprintf(stderr, "%s: '%s' dtype=%s, want BF16\n", who, name, st_dtype_name(t->dtype));
+        return nullptr;
+    }
+    size_t want = 0;
+    if (ckd_mul(&want, elems, (size_t) 2) || t->nbytes != want) {
+        fprintf(stderr, "%s: '%s' has %zu bytes, want %zu elements\n", who, name, t->nbytes, elems);
+        return nullptr;
+    }
+    return t;
+}
+
+float *st_load_bf16_f32(const struct st_ctx *ctx,
+                        size_t               n_parts,
+                        size_t               part_elems,
+                        const char *const    names[static n_parts],
+                        const char          *who) {
+    size_t total = 0, bytes = 0;
+    if (ckd_mul(&total, n_parts, part_elems) || ckd_mul(&bytes, total, sizeof(float))) {
+        return nullptr;
+    }
+    const struct st_tensor_t *parts[4];
+    if (n_parts == 0 || n_parts > sizeof parts / sizeof parts[0]) {
+        return nullptr;
+    }
+    for (size_t i = 0; i < n_parts; i++) {
+        parts[i] = bf16_tensor(ctx, names[i], part_elems, who);
+        if (parts[i] == nullptr) {
+            return nullptr;
+        }
+    }
+    float *dst = heap_alloc_large(bytes, alignof(float));
+    if (dst == nullptr) {
+        fprintf(stderr, "%s: no memory for '%s'\n", who, names[0]);
+        return nullptr;
+    }
+    for (size_t i = 0; i < n_parts; i++) {
+        const unsigned char *src = parts[i]->data;
+        float               *out = dst + i * part_elems;
+        for (size_t j = 0; j < part_elems; j++) {
+            out[j] = bf16_bits_to_f32(src + 2 * j);
+        }
+    }
+    return dst;
+}
+
+bool st_load_bf16_scalar(const struct st_ctx *ctx, const char *name, const char *who, float *out) {
+    const struct st_tensor_t *t = st_get(ctx, name);
+    if (t == nullptr || t->dtype != ST_DTYPE_BF16 || t->nbytes != 2) {
+        fprintf(stderr, "%s: missing/bad scalar '%s'\n", who, name);
+        return false;
+    }
+    *out = bf16_bits_to_f32(t->data);
+    return true;
+}
+
+bool st_load_clip4(const struct st_ctx *ctx,
+                   const char          *prefix,
+                   const char          *who,
+                   float               *in_min,
+                   float               *in_max,
+                   float               *out_min,
+                   float               *out_max) {
+    static const char *const suffix[4] = {"input_min", "input_max", "output_min", "output_max"};
+    float *const             out[4]    = {in_min, in_max, out_min, out_max};
+    for (size_t i = 0; i < 4; i++) {
+        char name[384];
+        snprintf(name, sizeof name, "%s%s", prefix, suffix[i]);
+        if (!st_load_bf16_scalar(ctx, name, who, out[i])) {
+            return false;
+        }
+    }
+    return true;
 }

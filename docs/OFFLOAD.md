@@ -357,9 +357,43 @@ No new vtable slot for v0: upload, `linear_t` and download exist.
 | Graph scheduler, per-op CPU fallback (ggml_backend_sched) | never; it contradicts load-time binding, and the measured gap needs only weight-bound linears |
 | Adaptive expert cache (LRU swaps between decode windows) | the static profile's held-out cover is the bottleneck on a 128+ expert model **and** swap traffic between windows fits the bus |
 | SSD tier, own read-ahead | the page cache measurably fails (major faults per token) on a model that does not fit RAM |
-| Multi-GPU, tensor/pipeline parallel | out of the target set (hardware people already own) |
+| Multi-GPU, tensor/pipeline parallel, or experts split across GPUs (Strata's `--gpus`) | out of the target set (hardware people already own); see [below](#experts-across-gpus-and-fewer-experts-248) |
+| Expert pruning or merging in the engine | never at load: a model transformation, see [below](#experts-across-gpus-and-fewer-experts-248) |
 | Offload on unified memory (Metal) | never: one memory, nothing to move; #49 showed Metal alone wins |
 | FFN-block granularity instead of per linear | activation transfers show up in the v0 profile |
+| Skipping the router's low-weight experts (Strata's `ROUTE_TAIL_SKIP`) | never as a default: every setting that removes real work misses the 0.5 % perplexity bar ([MOE_ROUTE_TAIL_2026-10-30.md](../benchmark/results/MOE_ROUTE_TAIL_2026-10-30.md), #240) |
+
+### Experts across GPUs, and fewer experts (#248)
+
+**An expert split across GPUs: out of scope.** It does not fit the placement,
+and we could not measure it.
+
+- **Fit:** `split_backend` is one device. The device route (#162, #201) ranks
+  and runs a layer's experts in the router's own command buffer, through one
+  table of device addresses. A second card holds experts that table cannot
+  reach, so its rows have to cross the host twice per layer. Every wait taken
+  out of a layer so far was a gain (#161, #162), so this works against them.
+- **Gain on our hardware:** none to report. The GPU box has one RTX 2080 Ti,
+  and Metal has one memory.
+- **Add when:** a machine with two discrete GPUs enters the target set, and
+  measurements show the cold experts' CPU branch is what limits it.
+
+**Expert pruning or merging at load: out of scope.** It belongs before the
+engine.
+
+- **Fit:** it changes the arithmetic, where load-time placement must not.
+  Pruning makes expert ids sparse, and router output, the profile, the rank
+  kernels and the hot-expert tables all index by dense id. Merging has to
+  produce new weights, which a loader that binds what the file holds should
+  not invent.
+- **Evidence:** the routers have no cheap tail. Dropping only the eighth pick
+  costs up to +3.3 % perplexity
+  ([MOE_ROUTE_TAIL_2026-10-30.md](../benchmark/results/MOE_ROUTE_TAIL_2026-10-30.md)),
+  and the memory goal is met without touching quality: the profile puts 88.5 %
+  of the selections on 2,807 of 6,144 experts.
+- **Add when:** never in the engine. An offline tool can write a smaller GGUF;
+  a file with a lower `expert_count` and matching tensors is an ordinary MoE
+  model to the loader.
 
 ## Plan
 

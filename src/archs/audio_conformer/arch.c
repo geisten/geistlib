@@ -24,11 +24,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct audio_conformer_state {
-    /* Weights, Conformer layers, and the mel pipeline (enc->mel) that both
-     * encode_pcm and the streaming path use. */
-    struct AudioEncoder *enc;
-};
+/* The encoder state is the AudioEncoder itself: weights, Conformer layers,
+ * and the mel pipeline (enc->mel) that both encode_pcm and the streaming
+ * path use. */
 
 static void *audio_conformer_state_create(struct geist_backend *be, const char *aux_root) {
     (void) be; /* the audio encoder allocates on its own, not through the backend */
@@ -71,26 +69,11 @@ static void *audio_conformer_state_create(struct geist_backend *be, const char *
         audio_encoder_destroy(enc);
         return nullptr;
     }
-
-    struct audio_conformer_state *st =
-            heap_alloc_aligned(sizeof(*st), alignof(struct audio_conformer_state));
-    if (st == nullptr) {
-        audio_encoder_destroy(enc);
-        return nullptr;
-    }
-    *st = (struct audio_conformer_state) {.enc = enc};
-    return st;
+    return enc;
 }
 
 static void audio_conformer_state_destroy(void *encoder_state) {
-    if (encoder_state == nullptr) {
-        return;
-    }
-    struct audio_conformer_state *st = encoder_state;
-    if (st->enc != nullptr) {
-        audio_encoder_destroy(st->enc);
-    }
-    safe_free(&encoder_state);
+    audio_encoder_destroy(encoder_state);
 }
 
 /* Compute mel frames from int16 PCM at 16 kHz. Returns n_frames on success,
@@ -129,7 +112,7 @@ static size_t audio_conformer_encode_pcm(void          *encoder_state,
     if (encoder_state == nullptr || pcm == nullptr || out_soft == nullptr || max_soft == 0) {
         return 0;
     }
-    struct audio_conformer_state *st = encoder_state;
+    struct AudioEncoder *enc = encoder_state;
 
     /* Refuse (not silently truncate, #247) input beyond the 30 s the
      * model was built for. The session surfaces this as an error. */
@@ -159,14 +142,14 @@ static size_t audio_conformer_encode_pcm(void          *encoder_state,
         return 0;
     }
 
-    size_t got = pcm_to_mel(st->enc->mel, pcm, n_samples, mel, n_frames);
+    size_t got = pcm_to_mel(enc->mel, pcm, n_samples, mel, n_frames);
     if (got != n_frames) {
         safe_free((void **) &mel);
         safe_free((void **) &mask);
         return 0;
     }
 
-    size_t n_soft = audio_encoder_run(st->enc, n_mel, mel, mask, out_soft);
+    size_t n_soft = audio_encoder_run(enc, n_mel, mel, mask, out_soft);
 
     /* GEIST_AUDIO_DEBUG_DUMP=<prefix>: write the mel and soft-token
      * stages as raw fp32 for reference-parity diagnosis (#268). */
@@ -181,7 +164,7 @@ static size_t audio_conformer_encode_pcm(void          *encoder_state,
         }
         snprintf(path, sizeof path, "%s.soft.bin", dump);
         if ((f = fopen(path, "wb")) != nullptr) {
-            fwrite(out_soft, sizeof(float), n_soft * audio_encoder_soft_dim(st->enc), f);
+            fwrite(out_soft, sizeof(float), n_soft * audio_encoder_soft_dim(enc), f);
             fclose(f);
         }
         fprintf(stderr,
@@ -196,49 +179,48 @@ static size_t audio_conformer_encode_pcm(void          *encoder_state,
 }
 
 static bool audio_conformer_stream_begin(void *encoder_state) {
-    struct audio_conformer_state *st = encoder_state;
-    if (st == nullptr || st->enc == nullptr) {
+    struct AudioEncoder *enc = encoder_state;
+    if (enc == nullptr) {
         return false;
     }
     /* Lazy worker start: session-level streaming always overlaps encode
      * with the arriving PCM, no env needed. Reset clears any previous
      * utterance. */
-    if (!stream_worker_start(st->enc)) {
+    if (!stream_worker_start(enc)) {
         return false;
     }
-    audio_encoder_reset(st->enc);
+    audio_encoder_reset(enc);
     return true;
 }
 
 static bool audio_conformer_stream_push(void *encoder_state, size_t n, const int16_t *pcm) {
-    struct audio_conformer_state *st = encoder_state;
-    if (st == nullptr || st->enc == nullptr || pcm == nullptr) {
+    struct AudioEncoder *enc = encoder_state;
+    if (enc == nullptr || pcm == nullptr) {
         return false;
     }
-    return audio_encoder_push_pcm(st->enc, n, pcm) == 0;
+    return audio_encoder_push_pcm(enc, n, pcm) == 0;
 }
 
 static size_t audio_conformer_stream_poll(void *encoder_state, size_t max_soft, float *out_soft) {
-    struct audio_conformer_state *st = encoder_state;
-    if (st == nullptr || st->enc == nullptr || out_soft == nullptr || max_soft == 0) {
+    struct AudioEncoder *enc = encoder_state;
+    if (enc == nullptr || out_soft == nullptr || max_soft == 0) {
         return 0;
     }
     /* timeout 0 = non-blocking: only tokens the worker already emitted. */
-    return audio_encoder_pull_softtokens(st->enc, max_soft, out_soft, 0);
+    return audio_encoder_pull_softtokens(enc, max_soft, out_soft, 0);
 }
 
 static size_t audio_conformer_stream_end(void *encoder_state, size_t max_soft, float *out_soft) {
-    struct audio_conformer_state *st = encoder_state;
-    if (st == nullptr || st->enc == nullptr || out_soft == nullptr || max_soft == 0) {
+    struct AudioEncoder *enc = encoder_state;
+    if (enc == nullptr || out_soft == nullptr || max_soft == 0) {
         return 0;
     }
-    audio_encoder_end_input(st->enc);
-    const size_t dim   = audio_encoder_soft_dim(st->enc);
+    audio_encoder_end_input(enc);
+    const size_t dim   = audio_encoder_soft_dim(enc);
     size_t       total = 0;
     size_t       got;
-    while (total < max_soft &&
-           (got = audio_encoder_pull_softtokens(
-                    st->enc, max_soft - total, out_soft + total * dim, -1)) > 0) {
+    while (total < max_soft && (got = audio_encoder_pull_softtokens(
+                                        enc, max_soft - total, out_soft + total * dim, -1)) > 0) {
         total += got;
     }
     return total;
@@ -250,11 +232,11 @@ static size_t audio_conformer_stream_end(void *encoder_state, size_t max_soft, f
  * stream_begin calls it — a stream that was aborted and one that was
  * never opened are the same state. */
 static void audio_conformer_stream_abort(void *encoder_state) {
-    struct audio_conformer_state *st = encoder_state;
-    if (st == nullptr || st->enc == nullptr) {
+    struct AudioEncoder *enc = encoder_state;
+    if (enc == nullptr) {
         return;
     }
-    audio_encoder_reset(st->enc);
+    audio_encoder_reset(enc);
 }
 
 static size_t audio_conformer_max_soft_tokens(const void *encoder_state, size_t n_samples) {
@@ -263,10 +245,10 @@ static size_t audio_conformer_max_soft_tokens(const void *encoder_state, size_t 
 }
 
 static size_t audio_conformer_soft_token_dim(const void *encoder_state) {
-    const struct audio_conformer_state *st = encoder_state;
+    const struct AudioEncoder *enc = encoder_state;
     /* Per-checkpoint: 1536 (E2B) or 2560 (E4B) — the text model's
      * residual-stream width, read from the tower safetensors (#258). */
-    return audio_encoder_soft_dim(st != nullptr ? st->enc : nullptr);
+    return audio_encoder_soft_dim(enc);
 }
 
 const struct geist_arch_ops_encoder geist_arch_audio_conformer = {

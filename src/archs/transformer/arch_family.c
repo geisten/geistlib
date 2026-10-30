@@ -169,6 +169,37 @@ void family_uniform_layers(struct transformer_arch_state *st,
     }
 }
 
+uint32_t family_head_dim(const struct transformer_arch_state *st, const char *arch) {
+    uint32_t head_dim = 0;
+    if (st->gguf != nullptr) {
+        (void) family_meta_u32(
+                (struct gguf_ctx *) st->gguf, arch, nullptr, "attention.key_length", &head_dim);
+    }
+    if (head_dim == 0 && st->n_q_heads > 0) {
+        head_dim = (uint32_t) (st->d_model / st->n_q_heads);
+    }
+    return head_dim;
+}
+
+void family_populate_moe(struct gguf_ctx *g, const char *arch, struct transformer_arch_state *st) {
+    uint32_t u;
+    if (family_meta_u32(g, arch, nullptr, "expert_count", &u)) {
+        st->config.moe_n_experts = u;
+    }
+    if (family_meta_u32(g, arch, nullptr, "expert_used_count", &u)) {
+        st->config.moe_n_used = u;
+    }
+    char k[96];
+    snprintf(k, sizeof k, "%s.expert_weights_norm", arch);
+    bool b                   = true;
+    st->config.moe_norm_topk = !gguf_get_meta_bool(g, k, &b) || b;
+}
+
+bool family_moe_ok(const struct geist_arch_config *c) {
+    return c->moe_n_experts > 0 && c->moe_n_used > 0 && c->moe_n_used <= c->moe_n_experts &&
+           moe_slots(c) <= GEIST_MOE_MAX_EXPERTS;
+}
+
 /* ---- Registry --------------------------------------------------------- */
 
 /* Only the families the build selected (make FAMILIES=..., mk/common.mk).

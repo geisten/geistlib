@@ -281,29 +281,6 @@ static bool spec_dtype_ok(uint16_t dt) {
     }
 }
 
-/* Byte stride between consecutive embedding rows for `dt` (n elements/row). */
-static size_t spec_row_stride(uint16_t dt, size_t n) {
-    switch (dt) {
-    case GEIST_DTYPE_F16:
-    case GEIST_DTYPE_BF16:
-        return n * 2;
-    case GEIST_DTYPE_F32:
-        return n * 4;
-    case GEIST_DTYPE_Q3_K:
-        return n / Q3_K_BLOCK_ELEMS * Q3_K_BLOCK_BYTES;
-    case GEIST_DTYPE_Q4_K:
-        return n / Q4_K_BLOCK_ELEMS * Q4_K_BLOCK_BYTES;
-    case GEIST_DTYPE_Q5_K:
-        return n / Q5_K_BLOCK_ELEMS * Q5_K_BLOCK_BYTES;
-    case GEIST_DTYPE_Q6_K:
-        return n / Q6_K_BLOCK_ELEMS * Q6_K_BLOCK_BYTES;
-    case GEIST_DTYPE_Q8_0:
-        return n / Q8_0_BLOCK_ELEMS * Q8_0_BLOCK_BYTES;
-    default:
-        return 0;
-    }
-}
-
 /* Dequantize one embedding row (`row` points at its first byte) to f32. The
  * row is decoded as a tensor of its own: every spec_dtype_ok dtype is
  * self-contained per block (no per-tensor scale). */
@@ -433,8 +410,8 @@ static bool spec_head_build(struct transformer_arch_state *st) {
     if (H != (size_t) st->d_model || V != (size_t) st->vocab_size) {
         return false;
     }
-    const size_t row_bytes = spec_row_stride(w->dtype, H);
-    if (row_bytes == 0) {
+    size_t row_bytes = 0; /* stride between consecutive embedding rows */
+    if (quant_raw_bytes((enum geist_dtype) w->dtype, H, &row_bytes)) {
         return false;
     }
 
@@ -615,7 +592,10 @@ bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_toke
     const size_t                     topk   = st->spec_topk;
     const uint16_t                   dt     = st->embed_table_w.dtype;
     const uint8_t *const             Wbase  = (const uint8_t *) st->embed_table_w.raw;
-    const size_t                     stride = spec_row_stride(dt, H);
+    size_t                           stride = 0;
+    if (quant_raw_bytes((enum geist_dtype) dt, H, &stride)) {
+        return false; /* spec_head_build refused this table already */
+    }
 
     const float *h      = (const float *) v->buffer_map(sess->scratch_h_a);
     float       *logits = (float *) v->buffer_map(sess->scratch_logits);

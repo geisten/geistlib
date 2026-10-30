@@ -179,6 +179,29 @@ blk_relu_sq(struct transformer_layer_forward_ctx *ctx, size_t n, struct geist_bu
                                                  struct geist_buffer                  *res,
                                                  struct geist_buffer                  *tmp);
 
+/* The standard attention block into scratch_h_post_attn (Llama, Qwen3,
+ * Gemma 3, Qwen3-MoE, Qwen3.5):
+ *   h_post_attn = h_in + post_w(o_proj(attend(rope(qk_norm(qkv(rot(attn_norm(h_in))))))))
+ * q_norm / k_norm nullptr: no QK-norm; post_w nullptr: plain residual. With
+ * allow_fused_rope, the plan-bound fused prep (blk_rope_append_fused) takes
+ * the QK-norm, RoPE, q scale and KV append on the plain (f32/f16) cache. */
+[[nodiscard]] enum geist_status blk_attention(struct transformer_layer_forward_ctx *ctx,
+                                              const struct geist_tensor            *q_norm,
+                                              const struct geist_tensor            *k_norm,
+                                              float                                 q_scale,
+                                              const struct geist_tensor            *post_w,
+                                              bool allow_fused_rope);
+
+/* blk_attention's two halves around RoPE and attend, for a caller that
+ * attends per sequence (batched decode, forward/layer.c). blk_attn_in:
+ * attn_norm, rotation, q/k/v and, where q_norm is non-null, the QK-norm.
+ * blk_attn_out: o_proj and the residual step (blk_attn_residual). */
+[[nodiscard]] enum geist_status blk_attn_in(struct transformer_layer_forward_ctx *ctx,
+                                            const struct geist_tensor            *q_norm,
+                                            const struct geist_tensor            *k_norm);
+[[nodiscard]] enum geist_status blk_attn_out(struct transformer_layer_forward_ctx *ctx,
+                                             const struct geist_tensor            *post_w);
+
 /* Pre-norm SwiGLU FFN with residual (Llama, Qwen3):
  *   h_out = h_post_attn + down(silu(gate(x)) * up(x)),  x = rmsnorm(h_post_attn) */
 [[nodiscard]] enum geist_status blk_ffn_swiglu(struct transformer_layer_forward_ctx *ctx);

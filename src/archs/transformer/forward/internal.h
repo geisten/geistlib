@@ -116,14 +116,14 @@ struct transformer_layer_forward_ctx {
 /* ---- Tensor view builders --------------------------------------------- *
  *
  * Build a geist_tensor describing a row-major F32 DENSE view onto the
- * given backend buffer. All views start at offset 0 except view_2d_at,
- * which exposes an explicit byte offset (used by attention scratch
- * partitioning).
+ * given backend buffer. All views start at offset 0 except view_1d_at and
+ * view_2d_at, which take an explicit byte offset (a row of a scratch
+ * buffer, attention scratch partitioning).
  */
-static inline struct geist_tensor view_1d(struct geist_buffer *b, int64_t n) {
+static inline struct geist_tensor view_1d_at(struct geist_buffer *b, size_t off_bytes, int64_t n) {
     struct geist_tensor t = {
             .buffer = b,
-            .offset = 0,
+            .offset = off_bytes,
             .dtype  = GEIST_DTYPE_F32,
             .layout = GEIST_LAYOUT_DENSE,
             .ndim   = 1,
@@ -131,6 +131,10 @@ static inline struct geist_tensor view_1d(struct geist_buffer *b, int64_t n) {
             .stride = {1, 0, 0, 0, 0, 0, 0, 0},
     };
     return t;
+}
+
+static inline struct geist_tensor view_1d(struct geist_buffer *b, int64_t n) {
+    return view_1d_at(b, 0, n);
 }
 
 static inline struct geist_tensor
