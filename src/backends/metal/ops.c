@@ -4562,11 +4562,12 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
 }
 
 /* GEIST_FUSED_MOE_DEVICE: the three experts' dtypes have an id-indexed
- * matvec and their widths its block. */
+ * matvec and their widths its block. Any m: the route, the matvec and the
+ * sum take one row (or slot) per threadgroup row (#245). */
 static bool metal_moe_device_supported(struct geist_backend            *be,
                                        const struct geist_fusion_query *q) {
-    if (q->m != 1 || q->gate_w == nullptr || q->up_w == nullptr || q->down_w == nullptr ||
-        metal_ensure(be, METAL_TAB_MOE) != GEIST_OK)
+    if (q->m == 0 || q->m > UINT32_MAX || q->gate_w == nullptr || q->up_w == nullptr ||
+        q->down_w == nullptr || metal_ensure(be, METAL_TAB_MOE) != GEIST_OK)
         return false;
     const struct geist_weight *ws[] = {q->gate_w, q->up_w, q->down_w};
     for (size_t i = 0; i < 3; i++) {

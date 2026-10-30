@@ -9,6 +9,7 @@
 #include "../arch_state.h"
 #include "../rotation.h"
 #include "../forward.h"
+#include "../moe_gpu.h"
 #include "../scratch_plan.h"
 
 #include "checked.h"
@@ -922,14 +923,21 @@ enum geist_status transformer_session_apply_opts(struct transformer_arch_session
             &sess->pen, &pp, (size_t) sess->model->vocab_size, sess->max_seq_len);
 }
 
-/* Batched decode (#26, declared in arch_state.h). Qwen3.5 family (dense
- * FFN, gated attention) on a backend with the fused DeltaNet mixer, a device
- * buffer copy and a device argmax; 8 rows at most, the range the small-row
- * kernels cover (#186, #221). */
+/* Batched decode (#26, declared in arch_state.h). The Qwen3.5 family (gated
+ * attention, dense FFN), its MoE (#245) and Qwen3-MoE (#245; Qwen3
+ * attention) on a backend with the fused DeltaNet mixer, a device buffer
+ * copy and a device argmax; 8 rows at most, the range the small-row kernels
+ * cover (#186, #221). The MoE block takes the n rows as it takes a prefill
+ * chunk's, on the device when moe_gpu_device says so. */
 size_t transformer_decode_batch_max(const struct transformer_arch_state *st) {
-    if (st == nullptr || st->family != &transformer_family_qwen35 || st->config.has_ple ||
-        !st->config.has_attn_output_gate || geist_pooling_is_embedding(st->config.pooling) ||
+    if (st == nullptr || st->config.has_ple || geist_pooling_is_embedding(st->config.pooling) ||
         st->offload != nullptr) {
+        return 0;
+    }
+    const bool q35 = (st->family == &transformer_family_qwen35 ||
+                      st->family == &transformer_family_qwen35moe) &&
+                     st->config.has_attn_output_gate;
+    if (!q35 && st->family != &transformer_family_qwen3moe) {
         return 0;
     }
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(st->backend);
@@ -1030,6 +1038,10 @@ transformer_decode_batch_forward(size_t n, struct transformer_arch_session *cons
             q->logits_valid       = true;
         }
     }
+    /* The device route's non-finite flag (#201), the device idle now: the
+     * carrier's buffers routed every row. */
+    if (s == GEIST_OK)
+        s = moe_gpu_device_check(carrier);
     transformer_region_end(st, region_tok);
     return s;
 }

@@ -194,11 +194,12 @@ struct moe_job {
     uint32_t                                hot[GEIST_MOE_MAX_EXPERTS]; /* on the GPU (#78) */
     size_t                                  n_hot;
     size_t                                  layer;
-    pthread_t                               caller; /* the only thread that runs the GPU's batch */
-    _Atomic bool                            gpu_taken;
-    _Atomic size_t                          next;
-    _Atomic bool                            failed;
-    enum geist_status                       gpu_status;
+    bool              decode_rows; /* a batched decode's rows (#245): each row its own matvec */
+    pthread_t         caller;      /* the only thread that runs the GPU's batch */
+    _Atomic bool      gpu_taken;
+    _Atomic size_t    next;
+    _Atomic bool      failed;
+    enum geist_status gpu_status;
 };
 
 static void moe_linear(size_t                     m,
@@ -215,14 +216,11 @@ static void moe_linear(size_t                     m,
         *ok = false;
 }
 
-/* Expert e over its m gathered rows, all on the calling thread (the
- * kernels' own geist_par_for runs inline inside a parallel region):
- * y = down(silu(gate(x)) * up(x)). Rows start at `row0` of the bucketed
- * host buffers. */
-static bool moe_expert(const struct moe_job *j, size_t e) {
+/* Expert e over its m gathered rows from row0 of the bucketed host
+ * buffers, all on the calling thread (the kernels' own geist_par_for runs
+ * inline inside a parallel region): y = down(silu(gate(x)) * up(x)). */
+static bool moe_expert_rows(const struct moe_job *j, size_t e, size_t row0, size_t m) {
     struct transformer_arch_session *sess = j->sess;
-    const size_t                     row0 = sess->moe_row_start[e];
-    const size_t                     m    = sess->moe_row_start[e + 1] - row0;
     const float                     *x    = sess->moe_xg + row0 * j->d;
     float                           *g    = sess->moe_g + row0 * j->inter;
     float                           *u    = sess->moe_u + row0 * j->inter;
@@ -248,6 +246,20 @@ static bool moe_expert(const struct moe_job *j, size_t e) {
     for (size_t i = 0; i < m * j->inter; i++)
         g[i] = g[i] / (1.0f + expf(-g[i])) * u[i];
     moe_linear(m, g, &j->L->moe_down_w[e], j->be, y, &ok);
+    return ok;
+}
+
+/* Expert e over its rows: as one m-row block, or, for a batched decode's
+ * rows (#245), row by row, so that a row's result does not depend on how
+ * many other rows chose e. */
+static bool moe_expert(const struct moe_job *j, size_t e) {
+    const size_t row0 = j->sess->moe_row_start[e];
+    const size_t m    = j->sess->moe_row_start[e + 1] - row0;
+    if (!j->decode_rows)
+        return moe_expert_rows(j, e, row0, m);
+    bool ok = true;
+    for (size_t r = 0; r < m && ok; r++)
+        ok = moe_expert_rows(j, e, row0 + r, 1);
     return ok;
 }
 
@@ -340,8 +352,9 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     if (s != GEIST_OK) {
         return s;
     }
-    /* #201: a decode step routes and runs its experts on the device. */
-    if (moe_gpu_device(sess, (size_t) ctx->layer_idx, seq)) {
+    /* #201: a decode step routes and runs its experts on the device; so do
+     * the rows of a batched decode (#245). */
+    if (moe_gpu_device(sess, (size_t) ctx->layer_idx, seq, ctx->decode_rows)) {
         s = moe_gpu_device_ffn(
                 sess, (size_t) ctx->layer_idx, seq, x, sess->scratch_h_post_attn, ctx->h_out_buf);
         moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);
@@ -440,6 +453,7 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     j->n_active         = 0;
     j->n_hot            = 0;
     j->layer            = (size_t) ctx->layer_idx;
+    j->decode_rows      = ctx->decode_rows;
     j->gpu_status       = GEIST_OK;
     size_t rows_gpu     = 0;
     for (size_t e = 0; e < slots; e++) {
@@ -466,7 +480,7 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     bool launched = routed; /* its hot experts run already */
     if (!routed && j->n_hot > 0 && j->n_hot <= GEIST_MOE_MAX_EXPERTS && st->moe_gpu->one_wait &&
         sess->moe_x_io != nullptr) {
-        s = moe_gpu_launch(sess, j->layer, seq, j->n_hot, j->hot);
+        s = moe_gpu_launch(sess, j->layer, seq, j->decode_rows, j->n_hot, j->hot);
         if (s != GEIST_OK && s != GEIST_E_UNSUPPORTED) {
             j->gpu_status = s;
             goto gpu_fail;
@@ -520,7 +534,14 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
                 dst[c] += wt * src[c];
         }
         s = routed ? moe_gpu_route_finish(sess, j->layer, cold, sess->moe_acc)
-                   : moe_gpu_finish(sess, seq, j->n_hot, j->hot, cold, sess->moe_acc);
+                   : moe_gpu_finish(sess,
+                                    seq,
+                                    j->layer,
+                                    j->decode_rows,
+                                    j->n_hot,
+                                    j->hot,
+                                    cold,
+                                    sess->moe_acc);
         if (s == GEIST_OK)
             s = blk_add(ctx, d, sess->scratch_h_post_attn, sess->moe_acc, ctx->h_out_buf);
         moe_profile_mark(MOE_PROFILE_SUM, &t0);
