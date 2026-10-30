@@ -204,11 +204,12 @@ static void cpu_neon_w_q6k_m1(const float               *x,
     if (xq == nullptr) {
         return;
     }
-    if (w->backend_layout == GEIST_W_LAYOUT_Q6_K_X8_GEMV && w->aux_fp32 != nullptr) {
-        linear_q6k_decode_w6a8_x8_pre(n_in, n_out, sc, xq, w->aux_fp32, y);
-        return;
+    const bool done = w->backend_layout == GEIST_W_LAYOUT_Q6_K_X8_GEMV && w->aux_fp32 != nullptr
+                              ? linear_q6k_decode_w6a8_x8_pre(n_in, n_out, sc, xq, w->aux_fp32, y)
+                              : linear_q6k_decode_w6a8_pre(n_in, n_out, sc, xq, w->raw, y);
+    if (!done) { /* the kernel's own scratch failed (#274), y unwritten */
+        geist_linear_ref(1, x, w, y);
     }
-    linear_q6k_decode_w6a8_pre(n_in, n_out, sc, xq, w->raw, y);
 }
 
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)

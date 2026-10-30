@@ -350,7 +350,7 @@ const int16_t *q6k_decode_bsums(size_t n_in, const int8_t x_q8[static n_in]) {
 }
 #endif
 
-void linear_q6k_decode_w6a8_pre(size_t       n_in,
+bool linear_q6k_decode_w6a8_pre(size_t       n_in,
                                 size_t       n_out,
                                 const float *x_scales,
                                 const int8_t x_q8[static n_in],
@@ -370,7 +370,7 @@ void linear_q6k_decode_w6a8_pre(size_t       n_in,
      * vsubq_s8 per super-block (as ggml_vec_dot_q6_K_q8_K). */
     const int16_t *bsums = q6k_decode_bsums(n_in, x_q8); /* shared with workers */
     if (bsums == nullptr) {
-        return;
+        return false;
     }
 
     struct q6k_decode_ctx ctx = {
@@ -385,6 +385,7 @@ void linear_q6k_decode_w6a8_pre(size_t       n_in,
     /* Static row split at every size: the dynamic 4-row chunks below
      * 4096 rows cost 12-15 % of an M1 Max Llama 3.2 3B decode (#16). */
     geist_par_for(n_out, q6k_decode_rows, &ctx);
+    return true;
 #else
     (void) x_q8;
     (void) x_scales;
@@ -393,6 +394,7 @@ void linear_q6k_decode_w6a8_pre(size_t       n_in,
     (void) n_out;
     (void) y;
     fprintf(stderr, "linear_q6k_decode_w6a8_pre: NEON required\n");
+    return false;
 #endif
 }
 
@@ -552,7 +554,7 @@ static void q6k_x8_tiles(void *ctx, size_t t0, size_t t1) {
 }
 #endif
 
-void linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
+bool linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
                                    size_t       n_out,
                                    const float *x_scales,
                                    const int8_t x_q8[static n_in],
@@ -560,12 +562,12 @@ void linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
                                    float        y[static n_out]) {
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
     if (!q6k_x8_valid(packed, n_in, n_out))
-        return;
+        return false;
     const size_t                                      n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
     static _Thread_local struct q8k_activation_block *q8_tl            = nullptr;
     static _Thread_local size_t                       q8_cap           = 0;
     if (!heap_tl_grow_array(q8_tl, q8_cap, n_blocks_per_row)) {
-        return;
+        return false;
     }
     for (size_t b = 0; b < n_blocks_per_row; b++) {
         struct q8k_activation_block *qb = q8_tl + b;
@@ -582,6 +584,7 @@ void linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
                              .n_blocks_per_row = n_blocks_per_row,
                              .y                = y};
     geist_par_for(n_out / 8, q6k_x8_tiles, &job);
+    return true;
 #else
     (void) x_q8;
     (void) x_scales;
@@ -590,6 +593,7 @@ void linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
     (void) n_out;
     (void) y;
     fprintf(stderr, "linear_q6k_decode_w6a8_x8_pre: NEON dotprod required\n");
+    return false;
 #endif
 }
 
