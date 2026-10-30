@@ -737,7 +737,9 @@ jobs:
         uses: ./.github/actions/apt-install
         timeout-minutes: 15
         with:
-          packages: gcc-14 clang-19 libomp-19-dev libclang-rt-19-dev
+          # libstdc++-14-dev: with gcc-14 installed, clang picks gcc 14's
+          # install dir, and the libFuzzer link needs its -lstdc++.
+          packages: gcc-14 clang-19 libomp-19-dev libclang-rt-19-dev libstdc++-14-dev
       - name: Build + unit tests (scalar only, no SIMD)
         run: |
           make TARGET=linux CC=gcc-14 BACKENDS="cpu_scalar" GEMM_PROVIDER=native
