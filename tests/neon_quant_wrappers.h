@@ -16,6 +16,7 @@
 #include "heap.h"
 #include "quant.h"
 
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -117,7 +118,11 @@ linear_q6k_decode_w6a8_x8(size_t n_in, size_t n_out, const float *x, const void 
     struct nqw_act a;
     if (!nqw_quantize(1, n_in, GEIST_ACT_Q8K_ELEMS, false, x, &a))
         return;
-    linear_q6k_decode_w6a8_x8_pre(n_in, n_out, a.x_scales, a.x_q8, packed, y);
+    if (!linear_q6k_decode_w6a8_x8_pre(n_in, n_out, a.x_scales, a.x_q8, packed, y)) {
+        for (size_t i = 0; i < n_out; i++) {
+            y[i] = NAN; /* no scratch: no answer, and the test sees it */
+        }
+    }
     nqw_act_free(&a);
 }
 

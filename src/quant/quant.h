@@ -633,21 +633,26 @@ void linear_q4k_decode_w4a8_pre(size_t         n_in,
  * sub-block at a time and dots against pre-quantized x_q8 via vdotq_s32.
  * Per-sub-block scale s_j (int8) and per-super-block d (fp16) are folded
  * in scalar after the dot. x_q8 must be pre-quantized via
- * quantize_x_int8_sym; no per-block sum32 (Q6_K has no min-offset). */
-void   linear_q6k_decode_w6a8_pre(size_t       n_in,
-                                  size_t       n_out,
-                                  const float *x_scales,
-                                  const int8_t x_q8[static n_in],
-                                  const void  *w_q6k,
-                                  float        y[static n_out]);
-size_t q6k_x8_gemv_size_bytes(size_t n_in, size_t n_out);
-int    q6k_x8_gemv_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst);
-void   linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
-                                     size_t       n_out,
-                                     const float *x_scales,
-                                     const int8_t x_q8[static n_in],
-                                     const void  *packed,
-                                     float        y[static n_out]);
+ * quantize_x_int8_sym; no per-block sum32 (Q6_K has no min-offset).
+ *
+ * Both Q6_K GEMVs need thread-local scratch (the sub-block activation
+ * sums; the x8 form also its activation blocks and a valid packed blob).
+ * They return false, y unwritten, when they cannot have it, and the
+ * caller computes y another way (#274); true means y is written. */
+[[nodiscard]] bool linear_q6k_decode_w6a8_pre(size_t       n_in,
+                                              size_t       n_out,
+                                              const float *x_scales,
+                                              const int8_t x_q8[static n_in],
+                                              const void  *w_q6k,
+                                              float        y[static n_out]);
+size_t             q6k_x8_gemv_size_bytes(size_t n_in, size_t n_out);
+int                q6k_x8_gemv_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst);
+[[nodiscard]] bool linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
+                                                 size_t       n_out,
+                                                 const float *x_scales,
+                                                 const int8_t x_q8[static n_in],
+                                                 const void  *packed,
+                                                 float        y[static n_out]);
 
 /* W6A8 prefill (m>1) for Q6_K. Same design as the W3A8 / W4A8 prefill: read each super-block once
  * per output row, extract 4 reconstructed int8 streams, dot against m activation rows via
