@@ -718,16 +718,17 @@ multi_attention_rows(struct transformer_layer_forward_ctx  *ctx,
 /* The Qwen3.5 gated attention block (families/qwen35.c) for n sequences:
  * norm, q+gate/k/v projections and q/k norms over the carrier's n rows; RoPE,
  * KV append and attention per sequence, in that sequence's session at its
- * own position; output gate, o_proj and residual over the n rows. */
+ * own position; output gate, o_proj and residual over the n rows. Without
+ * the output gate (blk_qkv and blk_o_proj follow the config) it is Qwen3's
+ * attention, qwen3moe's attention_block (#245). */
 [[nodiscard]] static enum geist_status
 multi_attention(struct transformer_layer_forward_ctx  *ctx,
                 size_t                                 n,
                 struct transformer_arch_session *const seqs[static n],
                 size_t                                 layer_idx) {
-    struct transformer_arch_state    *st = ctx->st;
-    struct transformer_arch_session  *c  = ctx->sess;
-    struct transformer_layer_weights *L  = ctx->L;
-    if (!st->config.has_attn_output_gate || !ctx->compute_kv) {
+    struct transformer_arch_session  *c = ctx->sess;
+    struct transformer_layer_weights *L = ctx->L;
+    if (!ctx->compute_kv) {
         return GEIST_E_UNSUPPORTED;
     }
     /* blk_attention's halves; ctx_init leaves the prenorm and add-norm
@@ -778,6 +779,7 @@ enum geist_status transformer_multi_layer(struct transformer_arch_session       
     }
     struct transformer_layer_forward_ctx ctx;
     transformer_layer_ctx_init(&ctx, carrier, layer_idx, 0, n, false, h_in_buf, nullptr, h_out_buf);
+    ctx.decode_rows = true;
     frame_arena_reset(&carrier->scratch_arena);
     carrier->prenorm_layer = 0;
     enum geist_status s    = st->layers[layer_idx].mixer == GEIST_MIXER_DELTANET

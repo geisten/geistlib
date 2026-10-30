@@ -154,8 +154,10 @@ The guarantees:
 
 The decoder vtable carries the two optional `decode_batch` /
 `decode_batch_max` slots, appended without moving existing fields.
-`geist_model_decode_batch_max` is 0 where a model cannot batch; today only
-Qwen3.5-family hybrids on Metal and Vulkan can, up to 8 sessions.
+`geist_model_decode_batch_max` is 0 where a model cannot batch; today
+Qwen3.5-family hybrids on Metal and Vulkan can, and the Qwen MoE models (#245)
+on Metal where their experts route on the device and on Vulkan with the experts
+split with the CPU, up to 8 sessions.
 
 ### Optional decision API (experimental)
 

@@ -49,10 +49,13 @@ struct transformer_layer_forward_ctx {
      * the MTP block's zeroed one. */
     const struct transformer_layer_exec_plan *P;
 
-    int                  layer_idx;
-    size_t               q_position;
-    size_t               seq;
-    bool                 advance_kv;
+    int    layer_idx;
+    size_t q_position;
+    size_t seq;
+    bool   advance_kv;
+    /* Batched decode (#26, #245): the seq rows are one decode token each of
+     * seq independent sessions, not a prefill chunk of one. */
+    bool                 decode_rows;
     struct geist_buffer *h_in_buf;
     struct geist_buffer *per_layer_input_buf;
     struct geist_buffer *h_out_buf;

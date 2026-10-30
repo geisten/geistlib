@@ -567,6 +567,9 @@ struct transformer_runtime_flags {
     bool bitnet_sub_ln_enabled;
     bool dump_act_sparsity;
     bool batch_per_session; /* batched decode (#26): one mixer call per session, not one for all */
+    bool batch_moe_host;    /* batched decode (#245): an MoE whose rows the host routes
+                             * batches too (GEIST_DECODE_BATCH_MOE_HOST=1); off, only
+                             * the device route (#201) does, where it pays */
     bool batch_attn_copy;   /* batched decode (#26): attention through each session's scratch
                              * (GEIST_DECODE_BATCH_ATTN_COPY=1, the A/B of the row path) */
     bool dn_seq_prefill;    /* force the sequential DeltaNet prefill path
@@ -617,6 +620,9 @@ struct transformer_moe_gpu {
      * layer does. */
     bool *device;
     bool  any_device;
+    /* #245: the most rows of a batched decode the device layers take (1:
+     * single decode steps only). */
+    size_t device_rows;
     /* #162: a decode step routes on the device and starts the hot experts
      * there before the host has seen the router; the host runs the cold
      * ones (fused->linear_t_sel & co., layers with grouped[]). */

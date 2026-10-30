@@ -55,18 +55,23 @@ void                            moe_gpu_session_free(struct transformer_arch_ses
 /* One wait per layer (#161, #163), the model on the GPU (mg->one_wait, the
  * session's moe_x_io, 1 <= n_hot <= GEIST_MOE_MAX_EXPERTS): launch gathers
  * the rows of experts hot[0, n_hot) from x on the device, records their
- * batch (grouped matvecs at one row each, else a GEMM per expert) and
- * starts it without waiting; finish
+ * batch (grouped matvecs at one row each, else a GEMM per expert; with
+ * decode_rows, a batched decode's rows (#245), one grouped matvec per
+ * selection where the layer has grouped linears) and starts it without
+ * waiting; finish, with launch's layer and decode_rows,
  * writes out[t] = cold[t] + the hot outputs of token t weighted by the
  * router, on the GPU, cold being the host's sum of the other experts —
  * no wait either. */
 [[nodiscard]] enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
                                                size_t                           layer,
                                                size_t                           seq,
+                                               bool                             decode_rows,
                                                size_t                           n_hot,
                                                const uint32_t                   hot[static n_hot]);
 [[nodiscard]] enum geist_status moe_gpu_finish(struct transformer_arch_session *sess,
                                                size_t                           seq,
+                                               size_t                           layer,
+                                               bool                             decode_rows,
                                                size_t                           n_hot,
                                                const uint32_t                   hot[static n_hot],
                                                const float cold[static seq * sess->model->d_model],
@@ -91,9 +96,13 @@ moe_gpu_routed(const struct transformer_arch_session *sess, size_t layer, size_t
                                                      struct geist_buffer *out);
 
 /* #201: a decode step (seq == 1) of layer `layer` routes and runs its
- * experts on the device: mg->device[layer] and the session's buffers. */
-[[nodiscard]] bool
-moe_gpu_device(const struct transformer_arch_session *sess, size_t layer, size_t seq);
+ * experts on the device: mg->device[layer] and the session's buffers.
+ * decode_rows: the seq rows are a batched decode's (#245), one token of
+ * each of seq sessions; up to mg->device_rows of them take the route. */
+[[nodiscard]] bool moe_gpu_device(const struct transformer_arch_session *sess,
+                                  size_t                                 layer,
+                                  size_t                                 seq,
+                                  bool                                   decode_rows);
 
 /* That step: routing of sess->moe_logits, gate, up, silu_mul, down by the
  * routed ids, and out = add + their weighted sum, recorded on the device

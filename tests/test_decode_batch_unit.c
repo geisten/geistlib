@@ -501,35 +501,53 @@ int main(void) {
                                                                  .dn_conv    = 4,
                                                                  .seed       = 1,
                                                                  .tok        = &v});
-    struct tf_buf   llama  = mf_llama_gguf(&(struct mf_llama) {.layers   = 2,
-                                                               .d_model  = 128,
-                                                               .heads    = 4,
-                                                               .kv_heads = 2,
-                                                               .ffn      = 256,
-                                                               .vocab    = VOCAB,
-                                                               .context  = 256,
-                                                               .seed     = 14});
-    int             fails = 0, ran = 0, batching = 0;
+    /* #245: Qwen3-MoE batches too, its experts' rows routed per row. */
+    struct tf_buf moe   = mf_qwen3moe_gguf(&(struct mf_qwen3moe) {.layers    = 2,
+                                                                  .d_model   = 64,
+                                                                  .heads     = 4,
+                                                                  .kv_heads  = 2,
+                                                                  .head_dim  = 16,
+                                                                  .experts   = 8,
+                                                                  .used      = 2,
+                                                                  .expert_ff = 32,
+                                                                  .vocab     = 256,
+                                                                  .seed      = 5});
+    struct tf_buf llama = mf_llama_gguf(&(struct mf_llama) {.layers   = 2,
+                                                            .d_model  = 128,
+                                                            .heads    = 4,
+                                                            .kv_heads = 2,
+                                                            .ffn      = 256,
+                                                            .vocab    = VOCAB,
+                                                            .context  = 256,
+                                                            .seed     = 14});
+    int           fails = 0, ran = 0, batching = 0;
+    char          label[64];
+    /* The host route too (#245): batched only on request, tested here. */
+    setenv("GEIST_DECODE_BATCH_MOE_HOST", "1", 1);
     for (size_t bi = 0; bi < sizeof BACKENDS / sizeof BACKENDS[0]; bi++) {
         struct geist_backend *be = nullptr;
         if (geist_backend_create(BACKENDS[bi], nullptr, nullptr, &be) != GEIST_OK || be == nullptr)
             continue; /* not in this build */
         ran++;
         fails += run_backend(be, BACKENDS[bi], &hybrid, &llama, v.n_tok, &batching);
+        snprintf(label, sizeof label, "%s/qwen3moe", BACKENDS[bi]);
+        fails += run_backend(be, label, &moe, &llama, 256, &batching);
         geist_backend_destroy(be);
     }
-    /* The batched path on the host: it must batch. */
+    /* The batched path on the host: it must batch, the hybrid and the MoE. */
     struct geist_backend *shim = shim_create();
     if (shim != nullptr) {
         ran++;
         const int before = batching;
         fails += run_backend(shim, "cpu_scalar+host-batch", &hybrid, &llama, v.n_tok, &batching);
-        if (batching == before) {
+        fails += run_backend(shim, "cpu_scalar+host-batch/qwen3moe", &moe, &llama, 256, &batching);
+        if (batching != before + 2) {
             fprintf(stderr, "FAIL: cpu_scalar+host-batch: decode_batch_max < 2\n");
             fails++;
         }
         shim_destroy(shim);
     }
+    free(moe.b);
     free(hybrid.b);
     free(llama.b);
     tf_free_vocab(&v);
