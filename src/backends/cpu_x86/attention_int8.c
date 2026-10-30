@@ -39,7 +39,7 @@
 #include "kernel_w4a8.h" /* w4a8_dispatcher_tier */
 
 #include "gemma4_kernels.h" /* ATTN_EXP_FLOOR */
-#include "host_buffer.h"    /* struct geist_buffer, cpu_scalar's buffer ops */
+#include "host_ops.h"       /* geist_host_attn_kvq_views */
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -549,82 +549,41 @@ enum geist_status cpu_x86_attention_kv_int8(struct geist_backend                
     if (be == nullptr || be->state == nullptr || args == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    size_t        nq = 0, nk = 0, nv = 0, nks = 0, nvs = 0, no = 0;
-    const float  *q  = geist_host_tensor(args->q, GEIST_DTYPE_F32, sizeof(float), 3, &nq);
-    const int8_t *k  = geist_host_tensor(args->k, GEIST_DTYPE_I8, 1, 3, &nk);
-    const int8_t *v  = geist_host_tensor(args->v, GEIST_DTYPE_I8, 1, 3, &nv);
-    const float  *ks = geist_host_tensor(args->k_scale, GEIST_DTYPE_F32, sizeof(float), 2, &nks);
-    const float  *vs = geist_host_tensor(args->v_scale, GEIST_DTYPE_F32, sizeof(float), 2, &nvs);
-    float *out = (float *) geist_host_tensor(args->out, GEIST_DTYPE_F32, sizeof(float), 3, &no);
-    if (q == nullptr || k == nullptr || v == nullptr || ks == nullptr || vs == nullptr ||
-        out == nullptr) {
-        geist_backend_set_error(be,
-                                GEIST_E_INVALID_ARG,
-                                "cpu_x86 attention_kv_int8: q, scales and out must be F32, k and "
-                                "v I8, DENSE views of the rank given within their buffers");
-        return GEIST_E_INVALID_ARG;
-    }
-    const size_t                    n_q        = (size_t) args->q->shape[0];
-    const size_t                    n_q_heads  = (size_t) args->q->shape[1];
-    const size_t                    head_dim   = (size_t) args->q->shape[2];
-    const size_t                    n_kv       = (size_t) args->k->shape[0];
-    const size_t                    n_kv_heads = (size_t) args->k->shape[1];
-    const struct geist_fusion_query shape      = {.op         = GEIST_FUSED_ATTN_KV_INT8,
-                                                  .head_dim   = head_dim,
-                                                  .n_q_heads  = n_q_heads,
-                                                  .n_kv_heads = n_kv_heads};
-    if (!cpu_x86_attention_kv_int8_supported(&shape)) {
-        geist_backend_set_error(be,
-                                GEIST_E_UNSUPPORTED,
-                                "cpu_x86 attention_kv_int8: head_dim %zu, %zu query heads on %zu "
-                                "KV heads",
-                                head_dim,
-                                n_q_heads,
-                                n_kv_heads);
-        return GEIST_E_UNSUPPORTED;
-    }
-    /* Matching shapes, and every query's position in the cache: n_q and
-     * n_kv are >= 1 (ai8_view refuses an empty dimension), so the
-     * subtraction cannot wrap. */
-    if ((size_t) args->k->shape[2] != head_dim || nv != nk || (size_t) args->v->shape[0] != n_kv ||
-        (size_t) args->v->shape[1] != n_kv_heads || no != nq ||
-        (size_t) args->out->shape[0] != n_q || (size_t) args->out->shape[1] != n_q_heads ||
-        nks != n_kv * n_kv_heads || nvs != n_kv * n_kv_heads ||
-        (size_t) args->k_scale->shape[0] != n_kv || (size_t) args->v_scale->shape[0] != n_kv ||
-        n_q > n_kv || args->q_offset > n_kv - n_q) {
-        geist_backend_set_error(be,
-                                GEIST_E_INVALID_ARG,
-                                "cpu_x86 attention_kv_int8: shapes do not match, or %zu queries "
-                                "at %zu run past %zu cached positions",
-                                n_q,
-                                args->q_offset,
-                                n_kv);
-        return GEIST_E_INVALID_ARG;
+    struct geist_host_attn_kvq a;
+    const enum geist_status    s = geist_host_attn_kvq_views(be,
+                                                             "attention_kv_int8",
+                                                             args,
+                                                             false,
+                                                             GEIST_FUSED_ATTN_KV_INT8,
+                                                             cpu_x86_attention_kv_int8_supported,
+                                                             &a);
+    if (s != GEIST_OK) {
+        return s;
     }
     /* A split decode's partial results, in the calling thread's workspace;
      * without it the decode runs unsplit (same result to rounding). */
-    const size_t part_floats = cpu_x86_attention_kv_int8_part_floats(n_q_heads, head_dim);
-    float *part = n_q == 1 ? cpu_x86_ws_attn_part((struct cpu_x86_state *) be->state, part_floats)
-                           : nullptr;
+    const size_t part_floats = cpu_x86_attention_kv_int8_part_floats(a.n_q_heads, a.head_dim);
+    float *part = a.n_q == 1 ? cpu_x86_ws_attn_part((struct cpu_x86_state *) be->state, part_floats)
+                             : nullptr;
     /* The AVX-512 VNNI kernel where it may run: the same results to
      * rounding (see attention_int8_avx512_vnni.c). */
     typeof(cpu_x86_attention_kv_int8_run) *run = ai8_vnni_usable()
                                                          ? cpu_x86_attention_kv_int8_run_avx512_vnni
                                                          : cpu_x86_attention_kv_int8_run;
-    run(n_q,
-        n_q_heads,
-        head_dim,
-        n_kv,
-        n_kv_heads,
+    run(a.n_q,
+        a.n_q_heads,
+        a.head_dim,
+        a.n_kv,
+        a.n_kv_heads,
         part_floats,
         args->q_offset,
         args->sliding_window,
-        q,
-        k,
-        ks,
-        v,
-        vs,
-        out,
+        a.q,
+        a.k,
+        a.k_scale,
+        a.v,
+        a.v_scale,
+        a.out,
         part);
     return GEIST_OK;
 }

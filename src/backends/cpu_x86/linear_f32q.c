@@ -22,6 +22,7 @@
 
 #include "backend_state.h"
 #include "checked.h"
+#include "host_ops.h"
 #include "kernel_w8a8.h"
 #include "linear_ref.h"
 
@@ -145,9 +146,7 @@ void f32_to_w8a8_row(
         }
     }
 
-    w->aux_fp32 = (const float *) blob;
-    w->aux_n    = (int32_t) f32q_blob_bytes(n_in, n_out);
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
+    geist_weight_attach_aux(w, blob, f32q_blob_bytes(n_in, n_out), 0, 0, 0);
     w->linear_m1 = cpu_x86_linear_f32q_m1;
     w->linear_mN = cpu_x86_linear_f32q_mN;
     return GEIST_OK;

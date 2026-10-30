@@ -43,7 +43,7 @@
 #include "backend_state.h"
 
 #include "gemma4_kernels.h" /* ATTN_EXP_FLOOR, attention_mqa_causal_kv */
-#include "host_buffer.h"    /* struct geist_buffer, cpu_scalar's buffer ops */
+#include "host_ops.h"       /* geist_host_attn_views */
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -477,78 +477,33 @@ static void ax_run_item(size_t                per_pass,
     }
 }
 
+/* The kernel on validated views (host_ops.h): K and V of `elem` bytes
+ * (F32, or F16 widened as they load). Shapes this kernel does not take
+ * (head_dim past AX_HEAD_DIM_MAX: the architecture refuses it at load) run
+ * the shared reference. */
 #if defined(AF_F16)
-/* An F16 DENSE 3-D view's halves, or nullptr. */
-/* cpu_x86_attention over the F16 KV cache: the same kernel with K and V
- * widened by F16C as they are loaded. */
-[[nodiscard]] enum geist_status cpu_x86_attention_f16(struct geist_backend      *be,
-                                                      const struct geist_tensor *q,
-                                                      const struct geist_tensor *k,
-                                                      const struct geist_tensor *v,
-                                                      size_t                     q_offset,
-                                                      size_t                     sliding_window,
-                                                      struct geist_tensor       *out) {
-    size_t          nq = 0, nk = 0, nv = 0, no = 0;
-    const float    *qp = geist_host_tensor_f32(q, &nq);
-    const uint16_t *kp = geist_host_tensor_f16_3d(k, &nk);
-    const uint16_t *vp = geist_host_tensor_f16_3d(v, &nv);
-    float          *op = geist_host_tensor_f32(out, &no);
-    if (qp == nullptr || kp == nullptr || vp == nullptr || op == nullptr || q->ndim != 3 ||
-        out->ndim != 3) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 attention: bad F16 KV views");
-        return GEIST_E_INVALID_ARG;
-    }
-    const size_t n_q = (size_t) q->shape[0], n_q_heads = (size_t) q->shape[1];
-    const size_t head_dim = (size_t) q->shape[2], n_kv = (size_t) k->shape[0];
-    const size_t n_kv_heads = (size_t) k->shape[1];
-    if (k->shape[2] != (int64_t) head_dim || v->shape[2] != (int64_t) head_dim ||
-        v->shape[0] != (int64_t) n_kv || v->shape[1] != (int64_t) n_kv_heads ||
-        out->shape[0] != (int64_t) n_q || out->shape[1] != (int64_t) n_q_heads ||
-        out->shape[2] != (int64_t) head_dim) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 attention: shape mismatch");
-        return GEIST_E_INVALID_ARG;
-    }
-    if (n_q_heads % n_kv_heads != 0 || head_dim > AX_HEAD_DIM_MAX) {
-        if (!attention_mqa_causal_kv_f16(n_q,
-                                         n_kv,
+[[nodiscard]] enum geist_status cpu_x86_attention_f16(struct geist_backend         *be,
+                                                      const struct geist_host_attn *a,
+                                                      size_t                        q_offset,
+                                                      size_t sliding_window) {
+    const size_t elem = sizeof(uint16_t);
+    if (a->head_dim > AX_HEAD_DIM_MAX) {
+        if (!attention_mqa_causal_kv_f16(a->n_q,
+                                         a->n_kv,
                                          q_offset,
-                                         n_q_heads,
-                                         n_kv_heads,
-                                         head_dim,
+                                         a->n_q_heads,
+                                         a->n_kv_heads,
+                                         a->head_dim,
                                          sliding_window,
-                                         qp,
-                                         kp,
-                                         vp,
-                                         op)) {
+                                         a->q,
+                                         a->k,
+                                         a->v,
+                                         a->out)) {
             geist_backend_set_error(be, GEIST_E_UNSUPPORTED, "cpu_x86 attention: F16 head_dim");
             return GEIST_E_UNSUPPORTED;
         }
         return GEIST_OK;
     }
-    const size_t part_floats = ax_part_floats(n_q_heads, head_dim);
-    float *part = n_q == 1 && be->state != nullptr
-                          ? cpu_x86_ws_attn_part((struct cpu_x86_state *) be->state, part_floats)
-                          : nullptr;
-    /* The chunk span is the FP32 kernel's; not measured for F16 yet. */
-    ax_run(n_q,
-           n_q_heads,
-           head_dim,
-           n_kv,
-           n_kv_heads,
-           part_floats,
-           q_offset,
-           sliding_window,
-           sizeof(uint16_t),
-           AX_CHUNK_SPAN_F32,
-           qp,
-           kp,
-           nullptr,
-           vp,
-           nullptr,
-           op,
-           part);
-    return GEIST_OK;
-}
 #else
 [[nodiscard]] enum geist_status cpu_x86_attention(struct geist_backend      *be,
                                                   const struct geist_tensor *q,
@@ -557,77 +512,54 @@ static void ax_run_item(size_t                per_pass,
                                                   size_t                     q_offset,
                                                   size_t                     sliding_window,
                                                   struct geist_tensor       *out) {
-    if (be == nullptr || q == nullptr || k == nullptr || v == nullptr || out == nullptr) {
-        return GEIST_E_INVALID_ARG;
+    struct geist_host_attn  views;
+    const enum geist_status s = geist_host_attn_views(be, q, k, v, out, &views);
+    if (s != GEIST_OK) {
+        return s;
     }
-    if (k->dtype == GEIST_DTYPE_F16) { /* the F16 cache: attention_f16.c */
-        return cpu_x86_attention_f16(be, q, k, v, q_offset, sliding_window, out);
+    if (views.f16) { /* the F16 cache: attention_f16.c */
+        return cpu_x86_attention_f16(be, &views, q_offset, sliding_window);
     }
-    size_t       nq, nk, nv, no;
-    const float *qp = geist_host_tensor_f32(q, &nq);
-    const float *kp = geist_host_tensor_f32(k, &nk);
-    const float *vp = geist_host_tensor_f32(v, &nv);
-    float       *op = geist_host_tensor_f32(out, &no);
-    if (qp == nullptr || kp == nullptr || vp == nullptr || op == nullptr) {
-        geist_backend_set_error(
-                be, GEIST_E_UNSUPPORTED, "cpu_x86 attention: tensors must be F32 DENSE");
-        return GEIST_E_UNSUPPORTED;
-    }
-    if (q->ndim != 3 || k->ndim != 3 || v->ndim != 3 || out->ndim != 3) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 attention: bad ranks");
-        return GEIST_E_INVALID_ARG;
-    }
-    size_t n_q        = (size_t) q->shape[0];
-    size_t n_q_heads  = (size_t) q->shape[1];
-    size_t head_dim   = (size_t) q->shape[2];
-    size_t n_kv       = (size_t) k->shape[0];
-    size_t n_kv_heads = (size_t) k->shape[1];
-    if (k->shape[2] != (int64_t) head_dim || v->shape[2] != (int64_t) head_dim ||
-        v->shape[0] != (int64_t) n_kv || v->shape[1] != (int64_t) n_kv_heads ||
-        out->shape[0] != (int64_t) n_q || out->shape[1] != (int64_t) n_q_heads ||
-        out->shape[2] != (int64_t) head_dim) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_x86 attention: shape mismatch");
-        return GEIST_E_INVALID_ARG;
-    }
-    /* Every dimension is at least 1: geist_tensor_f32_dense refuses a view
-     * with a non-positive one. */
-    if (n_q_heads % n_kv_heads != 0 || head_dim > AX_HEAD_DIM_MAX) {
-        attention_mqa_causal_kv(n_q,
-                                n_kv,
+    const struct geist_host_attn *a    = &views;
+    const size_t                  elem = sizeof(float);
+    if (a->head_dim > AX_HEAD_DIM_MAX) {
+        attention_mqa_causal_kv(a->n_q,
+                                a->n_kv,
                                 q_offset,
-                                n_q_heads,
-                                n_kv_heads,
-                                head_dim,
+                                a->n_q_heads,
+                                a->n_kv_heads,
+                                a->head_dim,
                                 sliding_window,
-                                qp,
-                                kp,
-                                vp,
-                                op);
+                                a->q,
+                                a->k,
+                                a->v,
+                                a->out);
         return GEIST_OK;
     }
+#endif
     /* A split decode's partial results, in the calling thread's workspace;
-     * without it the decode runs unsplit (same result to rounding). */
-    const size_t part_floats = ax_part_floats(n_q_heads, head_dim);
-    float *part = n_q == 1 && be->state != nullptr
+     * without it the decode runs unsplit (same result to rounding). The
+     * chunk span is the FP32 kernel's; not measured for F16 yet. */
+    const size_t part_floats = ax_part_floats(a->n_q_heads, a->head_dim);
+    float *part = a->n_q == 1 && be->state != nullptr
                           ? cpu_x86_ws_attn_part((struct cpu_x86_state *) be->state, part_floats)
                           : nullptr;
-    ax_run(n_q,
-           n_q_heads,
-           head_dim,
-           n_kv,
-           n_kv_heads,
+    ax_run(a->n_q,
+           a->n_q_heads,
+           a->head_dim,
+           a->n_kv,
+           a->n_kv_heads,
            part_floats,
            q_offset,
            sliding_window,
-           sizeof(float),
+           elem,
            AX_CHUNK_SPAN_F32,
-           qp,
-           kp,
+           a->q,
+           a->k,
            nullptr,
-           vp,
+           a->v,
            nullptr,
-           op,
+           a->out,
            part);
     return GEIST_OK;
 }
-#endif /* AF_F16 */

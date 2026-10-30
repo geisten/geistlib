@@ -3,6 +3,7 @@
  */
 #include "linear_ref.h"
 
+#include "geist_gemm.h"
 #include "quant.h"
 
 /* Elements decoded per step: a multiple of every block size (32, 128 and
@@ -104,4 +105,32 @@ void geist_linear_ref_rows(size_t                     m,
 
 void geist_linear_ref(size_t m, const float *x, const struct geist_weight *w, float *y) {
     geist_linear_ref_rows(m, 0, (size_t) w->n_out, (size_t) w->n_out, x, w, y);
+}
+
+enum geist_status geist_weight_precheck(const struct geist_weight *w) {
+    if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0 || w->raw_nbytes == 0u) {
+        return GEIST_E_INVALID_ARG;
+    }
+    return quant_weight_extent_ok(w) ? GEIST_OK : GEIST_E_FORMAT;
+}
+
+void geist_linear_f32_mN(size_t                     m,
+                         const float               *x,
+                         const struct geist_weight *w,
+                         struct geist_backend      *be,
+                         float                     *y) {
+    (void) be;
+    geist_sgemm(GEIST_OP_N,
+                GEIST_OP_T,
+                (int) m,
+                (int) w->n_out,
+                (int) w->n_in,
+                1.0f,
+                x,
+                (int) w->n_in,
+                (const float *) w->raw,
+                (int) w->n_in,
+                0.0f,
+                y,
+                (int) w->n_out);
 }

@@ -32,9 +32,8 @@
 [[nodiscard]] int
 cpu_x86_phase_threads(int env, bool omp_threads_set, size_t logical, size_t physical);
 
-/* The vtable's parallel_region_begin / _end: set geist_par_max_threads for
- * the phase (OpenMP or not) and restore it. */
-int  cpu_x86_parallel_region_begin(struct geist_backend *be, enum geist_parallel_region region);
-void cpu_x86_parallel_region_end(struct geist_backend *be, int token);
+/* The vtable's parallel_region_begin (geist_cpu_region_begin with this
+ * policy and geist_backend_opts.max_threads; _end is geist_cpu_region_end). */
+int cpu_x86_parallel_region_begin(struct geist_backend *be, enum geist_parallel_region region);
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_THREADS_H */
