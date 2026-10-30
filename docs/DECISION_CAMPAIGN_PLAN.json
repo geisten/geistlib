@@ -971,6 +971,18 @@
     },
     "schedule": "night-only, 21:00-07:00 Berlin: a scheduler starts chunks only inside the window and stops starting new ones at 07:00; chunks under 28-min wall-clock deadlines, LOCK_PRIO=batch, LOCK_MAX=30, cool start, caffeinate, resumable from frozen manifests",
     "estimate": "full reasoning about 1,350 tokens per question (#236 cap 8192): about 4.7 M tokens at about 50-58 tok/s aggregate with 8 in flight, plus about 37,000 probes at about 0.12 s and prefix prefills: about 25-27 h of lease; latency check about 1 h; about 4 nights at about 7 h of lease per night",
-    "if_noninferior": "a geist-runtime PR that makes --early-exit the default of geistr decide --escalate chat, left for the user's merge decision"
+    "if_noninferior": "a geist-runtime PR that makes --early-exit the default of geistr decide --escalate chat, left for the user's merge decision",
+    "amendments": [
+      {
+        "date": "2026-10-30",
+        "decided_by": "coordinator relay of the power-gate finding (#286 comment, PR #321): latency needs AC with Low Power Mode off",
+        "declared_before_inference": "for the latency phase: yes (it has not started); the main run is in progress and unchanged",
+        "reason": "The M1 Max was found on battery with Low Power Mode on (2026-10-30), which slows Mac timings by about 1.5x. pmset -g log shows AC vs battery but not Low Power Mode, so the main run's per-question latencies (night 1: AC except about 3 min of chunk 0; Low Power Mode unknown) cannot serve as the verified full-reasoning reference of the latency check.",
+        "power_gate": "Every latency-phase chunk starts only on AC with Low Power Mode off (campaign.sh waits without holding the lock; run.sh re-checks under the lock). Power state is sampled every 30 s during every chunk (power-<job>.log). A latency chunk with any sample off AC or with Low Power Mode on is discarded and its questions re-run.",
+        "latency_check_change": "Both latency arms are measured live under the gate on the same 300 questions: early exit (tau 0.8, as declared) and full reasoning (tau 0, probes recorded, as in the main run), in that order. The comparison uses these two runs; the main run's latencies for the 300 are reported for reference only. Agreement of the live early-exit answers with the offline early-exit answers stays as declared.",
+        "estimate": "about 2.5-3 h of extra lease for the full-reasoning arm of the 300",
+        "unchanged": "sample, main run, primary analysis, accuracy evidence (power does not change the computation, only its speed)"
+      }
+    ]
   }
 }
