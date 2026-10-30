@@ -29,6 +29,11 @@ temperatures of every run. A warm M1 Max GPU drops from 1293 MHz to
 1050-1110 MHz past ~82 C, so back to back the earlier variant of a cycle
 heats the chip for the later ones. --no-cool turns the gate off.
 
+On macOS every run also starts on AC power with Low Power Mode off (pmset):
+on battery in Low Power Mode the M1 Max measured ~1.5x slower without any
+other sign. The tool waits for both (polling every 30 s) and fails as busy
+after the gate timeout; --no-power-gate turns the gate off.
+
 Example, on the synthetic model of `make bench-synth`:
 
   make gguf_artifacts/synth/llama32-1b-q4_k.gguf
@@ -72,7 +77,7 @@ COOL_TIMEOUT_SECONDS = 1200
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bench_host import build_schedule_rotating as build_schedule  # noqa: E402
 from bench_host import (command_output, perf_sweep_command, run_jsonl,  # noqa: E402
-                        sha256_file, wait_for_apple_cool)
+                        sha256_file, wait_for_apple_cool, wait_for_apple_power)
 
 
 def parse_revs(values: list[str]) -> list[tuple[str, str]]:
@@ -251,6 +256,9 @@ def render_report(metadata: dict, rows: list[dict]) -> str:
     starts = metadata.get("start_temps")
     if starts:
         lines += ["", cool_line(metadata["cool_gate"], starts)]
+    powers = metadata.get("start_power")
+    if powers:
+        lines += ["", power_line(powers)]
     tested = sum(r["variant"] != CONTROL for r in rows)
     if tested > 1:
         lines += ["", f"{tested} comparisons: at 95 % about one interval in twenty excludes "
@@ -270,6 +278,13 @@ def cool_line(gate: dict, starts: list[dict]) -> str:
     return (f"Cool start: every run began at GPU {min(gpu):.1f}-{max(gpu):.1f} C "
             f"(limit {gate.get('max_gpu_c', '-')}), CPU {min(cpu):.1f}-{max(cpu):.1f} C "
             f"(limit {gate.get('max_cpu_c', '-')}); {wait:.0f} s spent cooling.")
+
+
+def power_line(powers: list[dict]) -> str:
+    """One report line on the power state the runs started in."""
+    wait = sum(power["wait_seconds"] for power in powers)
+    return (f"Power: all {len(powers)} runs started on AC power with Low Power Mode off; "
+            f"{wait:.0f} s spent waiting for it.")
 
 
 def system_info() -> dict:
@@ -306,6 +321,9 @@ def main() -> int:
                         help="skip the second run of the baseline's binary")
     parser.add_argument("--no-cool", action="store_true",
                         help="on macOS, start runs without waiting for a cool chip")
+    parser.add_argument("--no-power-gate", action="store_true",
+                        help="on macOS, start runs without requiring AC power and "
+                             "Low Power Mode off")
     parser.add_argument("--out-dir", type=Path,
                         default=Path.home() / "bench-geistlib" / "revision-ab")
     args = parser.parse_args()
@@ -370,6 +388,7 @@ def main() -> int:
         "system": system_info(),
         "cool_gate": (COOL_GATE if platform.system() == "Darwin" and not args.no_cool
                       else None),
+        "power_gate": platform.system() == "Darwin" and not args.no_power_gate,
     }
 
     raw_path = work / "revision_ab.jsonl"
@@ -380,9 +399,10 @@ def main() -> int:
             print(f"cycle {cycle + 1}/{args.cycles}: {variant['label']}",
                   file=sys.stderr, flush=True)
             try:
-                start = (wait_for_apple_cool(metadata["cool_gate"],
-                                             time.monotonic() + COOL_TIMEOUT_SECONDS)
-                         if metadata["cool_gate"] else None)
+                deadline = time.monotonic() + COOL_TIMEOUT_SECONDS
+                start = wait_for_apple_power(deadline) if metadata["power_gate"] else {}
+                if metadata["cool_gate"]:
+                    start.update(wait_for_apple_cool(metadata["cool_gate"], deadline))
                 rows = run_variant(variant["binary"], args, env)
             except (RuntimeError, TimeoutError) as error:
                 print(f"ERROR: {error}", file=sys.stderr)
@@ -396,7 +416,9 @@ def main() -> int:
         rows = summarize(runs, [v["label"] for v in variants], baseline)
         raw.write(json.dumps({"kind": "summary", "rows": rows}, sort_keys=True) + "\n")
 
-    metadata["start_temps"] = [run["start"] for run in runs if "start" in run]
+    metadata["start_temps"] = [run["start"] for run in runs if "cool_gate" in run.get("start", {})]
+    metadata["start_power"] = [run["start"]["power"] for run in runs
+                               if "power" in run.get("start", {})]
     report = render_report(metadata, rows)
     (work / "revision_ab.md").write_text(report)
     print(report)

@@ -37,6 +37,7 @@ from bench_host import (  # noqa: E402,F401  (re-exported for bench_thread_sweep
     run_jsonl as run_command,
     sha256_file,
     wait_for_apple_cool,
+    wait_for_apple_power,
     wait_for_quiet,
 )
 
@@ -255,7 +256,9 @@ def run_cooled(engine: dict, model: Path, workload: dict, cycle: int, gate: dict
     cool_gates, elapsed = [], 0.0
     for _ in range(workload["repeats"]):
         for seq_len in workload["seq_lens"]:
-            cool_gates.append(wait_for_apple_cool(limits, time.monotonic() + gate["timeout_seconds"]))
+            deadline = time.monotonic() + gate["timeout_seconds"]
+            power = wait_for_apple_power(deadline) if gate.get("apple_power_gate") else {}
+            cool_gates.append({**wait_for_apple_cool(limits, deadline), **power})
             piece = {**workload, "seq_lens": [seq_len], "repeats": 1}
             result = (run_geist(engine, model, piece) if engine["kind"] == "geist"
                       else run_llama(engine, model, piece, cycle))
@@ -345,6 +348,9 @@ def render_report(metadata: dict, summary: dict, gpu_device: str | None = None) 
         )
     lines += [
         "",
+        *(["Every run started on AC power with Low Power Mode off (power gate, pmset); "
+           "each run's machine state records it.", ""]
+          if metadata.get("host_gate", {}).get("apple_power_gate") else []),
         "Token streams are engine-native synthetic inputs; this is compute-shape parity, not token/logit parity. "
         "Publish speedups only together with the repository's separate quality-parity gate.",
     ]

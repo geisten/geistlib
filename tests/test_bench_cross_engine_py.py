@@ -278,5 +278,131 @@ class AppleCoolGateTest(unittest.TestCase):
                 self.assertNotIn("apple_temp_gate", profile.get("host_gate", {}), name)
 
 
+# `pmset -g batt` and `pmset -g` as the M1 Max laptop and the Mac mini print
+# them (2026-10-30); the settings are trimmed to the lines around the key.
+PMSET_BATT = {
+    "ac": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=39125091)\t100%; charged; "
+          "0:00 remaining present: true",
+    "battery": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=39125091)\t80%; "
+               "discharging; 11:08 remaining present: true",
+    "desktop": "Now drawing from 'AC Power'",
+    "ups": "Now drawing from 'UPS Power'\n -UPS (id=1)\t90%; discharging",
+}
+PMSET_SETTINGS = {
+    "off": "System-wide power settings:\nCurrently in use:\n standby              1\n"
+           " tcpkeepalive         1\n lowpowermode         0\n womp                 0",
+    "low": "System-wide power settings:\nCurrently in use:\n standby              1\n"
+           " tcpkeepalive         1\n lowpowermode         1\n womp                 0",
+    "absent": "System-wide power settings:\nCurrently in use:\n sleep                1\n"
+              " womp                 1",
+    "powermode_low": "Currently in use:\n powermode            1\n womp                 0",
+    "powermode_high": "Currently in use:\n powermode            2\n womp                 0",
+}
+
+FAKE_PMSET = """#!{python}
+# pmset -g batt / pmset -g from the next "batt settings" pair in the states
+# file; `pmset -g` consumes the pair (the gate reads batt first).
+import json, pathlib, sys
+path = pathlib.Path({states!r})
+batt, settings = json.loads(path.read_text())[0]
+table = json.loads({tables!r})
+if sys.argv[1:] == ["-g", "batt"]:
+    print(table["batt"][batt])
+else:
+    print(table["settings"][settings])
+    states = json.loads(path.read_text())
+    path.write_text(json.dumps(states[1:] or states[:1]))
+"""
+
+
+class ApplePowerGateTest(unittest.TestCase):
+    """The AC power / Low Power Mode gate, against a fake pmset on PATH."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.states = Path(directory.name) / "states"
+        pmset = Path(directory.name) / "pmset"
+        tables = json.dumps({"batt": PMSET_BATT, "settings": PMSET_SETTINGS})
+        pmset.write_text(FAKE_PMSET.format(python=sys.executable, states=str(self.states),
+                                           tables=tables))
+        pmset.chmod(0o755)
+        path = mock.patch.dict(os.environ,
+                               {"PATH": directory.name + os.pathsep + os.environ["PATH"]})
+        path.start()
+        self.addCleanup(path.stop)
+
+    def gate(self, states: list[tuple[str, str]],
+             deadline: float = float("inf")) -> tuple[dict, list[float]]:
+        self.states.write_text(json.dumps(states))
+        with mock.patch.object(HOST, "_sleep") as sleep:
+            state = HOST.wait_for_apple_power(deadline)
+        return state, [call.args[0] for call in sleep.call_args_list]
+
+    def test_parse_reads_source_and_low_power_mode(self) -> None:
+        cases = {("ac", "off"): ("AC", 0), ("battery", "off"): ("battery", 0),
+                 ("battery", "low"): ("battery", 1), ("ac", "low"): ("AC", 1),
+                 ("desktop", "absent"): ("AC", 0), ("ups", "off"): ("UPS Power", 0),
+                 ("ac", "powermode_low"): ("AC", 1), ("ac", "powermode_high"): ("AC", 0)}
+        for (batt, settings), (source, low) in cases.items():
+            power = HOST.parse_pmset_power(PMSET_BATT[batt], PMSET_SETTINGS[settings])
+            self.assertEqual(power, {"source": source, "low_power_mode": low}, (batt, settings))
+
+    def test_ac_with_low_power_off_starts_at_once(self) -> None:
+        state, sleeps = self.gate([("ac", "off")])
+        self.assertEqual(sleeps, [])
+        self.assertEqual(state, {"power": {"source": "AC", "low_power_mode": 0,
+                                           "wait_seconds": state["power"]["wait_seconds"]}})
+
+    def test_a_desktop_without_battery_passes(self) -> None:
+        state, sleeps = self.gate([("desktop", "absent")])
+        self.assertEqual((state["power"]["source"], state["power"]["low_power_mode"], sleeps),
+                         ("AC", 0, []))
+
+    def test_battery_and_low_power_wait_until_both_hold(self) -> None:
+        # On battery in Low Power Mode, then plugged in, then the mode off.
+        state, sleeps = self.gate([("battery", "low"), ("ac", "low"), ("ac", "off")])
+        self.assertEqual(sleeps, [HOST.APPLE_POWER_POLL_SECONDS] * 2)
+        self.assertEqual(HOST.APPLE_POWER_POLL_SECONDS, 30)
+        self.assertEqual(state["power"]["source"], "AC")
+
+    def test_power_that_never_returns_fails_as_busy(self) -> None:
+        with self.assertRaisesRegex(TimeoutError, "power gate: source battery"):
+            self.gate([("battery", "off")], deadline=0.0)
+        with self.assertRaisesRegex(TimeoutError, "low power mode 1"):
+            self.gate([("ac", "low")], deadline=0.0)
+
+    def test_quiet_gate_records_the_power_state(self) -> None:
+        gate = {"max_load_per_core": 0.2, "settle_seconds": 0, "cooldown_seconds": 0,
+                "timeout_seconds": 60, "apple_power_gate": True}
+        self.states.write_text(json.dumps([("battery", "off"), ("ac", "off")]))
+        with mock.patch.object(HOST, "machine_state",
+                               return_value={"load_1m": 0.0, "load_per_core": 0.0}), \
+             mock.patch.object(HOST, "_sleep"), mock.patch.object(HOST.time, "sleep"):
+            state = HOST.wait_for_quiet(gate)
+        self.assertEqual(state["power"]["source"], "AC")
+        self.assertEqual(state["power"]["low_power_mode"], 0)
+
+    def test_quiet_gate_without_the_entry_reads_no_power(self) -> None:
+        gate = {"max_load_per_core": 0.2, "settle_seconds": 0, "cooldown_seconds": 0,
+                "timeout_seconds": 60}
+        with mock.patch.object(HOST, "machine_state",
+                               return_value={"load_1m": 0.0, "load_per_core": 0.0}), \
+             mock.patch.object(HOST, "apple_power") as power, \
+             mock.patch.object(HOST.time, "sleep"):
+            state = HOST.wait_for_quiet(gate)
+        power.assert_not_called()
+        self.assertNotIn("power", state)
+
+    def test_apple_profiles_enable_the_power_gate(self) -> None:
+        gpu = json.loads((ROOT / "benchmark/cross_engine_gpu_protocol.json").read_text())
+        cpu = json.loads((ROOT / "benchmark/cross_engine_cpu_protocol.json").read_text())
+        apple = json.loads((ROOT / "benchmark/apple_cpu_protocol.json").read_text())
+        self.assertIs(apple["interleaved_ab"]["apple_power_gate"], True)
+        for name, profile in {**gpu["host_profiles"], **cpu["host_profiles"]}.items():
+            gated = profile.get("host_gate", {}).get("apple_power_gate", False)
+            self.assertEqual(gated, name.startswith("apple"), name)
+
+
 if __name__ == "__main__":
     unittest.main()

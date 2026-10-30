@@ -32,6 +32,7 @@
     "settle_seconds": 30,
     "max_load_per_core": 0.2,
     "regression_guard_pct": 5.0,
+    "apple_power_gate": true,
     "apple_temp_gate": {"max_cpu_c": 65, "fallback_seconds": 45,
       "note": "every run starts on a cool chip (#17); limits and measurements as in cross_engine_cpu_protocol.json apple_m1max, see benchmark/METHODOLOGY.md#cool-start-on-apple-silicon"}
   }

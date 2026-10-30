@@ -102,6 +102,33 @@ the hottest state and lies 10-15 °C above the idle floor, so a desktop
 shared with other agents' builds still reaches it; the 45 s fallback is the
 pause that cooled both engines to parity in #17.
 
+### Power gate on Apple Silicon
+
+**Every Mac measurement runs on AC power with Low Power Mode off.** On
+2026-10-30 the M1 Max was found on battery with Low Power Mode on
+(`pmset -g batt`: "Battery Power"; `pmset -g`: `lowpowermode 1`), and its
+timings were about 1.5x slower than on AC without anything else in the run
+showing it. The gate reads `pmset -g batt` (the "Now drawing from" line) and
+`pmset -g` (`lowpowermode`, or `powermode` 1 on laptops with High Power
+Mode) before every run. A Mac without a battery (the Mac mini M6) prints no
+battery line and may lack the `lowpowermode` key; that reads as AC with the
+mode off. Anything else (battery, a UPS, Low Power Mode on) makes the gate
+wait, polling every 30 s and logging "waiting for AC power / low power mode
+off"; past the gate's timeout the run fails as busy, like a warm chip or a
+host that never gets quiet. Each run records the state it started in as
+`power: {source, low_power_mode, wait_seconds}` in its machine state.
+
+- `bench_cross_engine.py`: `"apple_power_gate": true` in the Apple host
+  profiles' `host_gate`, checked after the quiet-host gate and before the
+  cool gate (and before each piece under `cool_each_repeat`); the report
+  says every run started on AC.
+- `bench_mac_ab.py`: `apple_power_gate` in `apple_cpu_protocol.json`.
+- `bench_revision_ab.py` (and so `mac-ab.yml`): on by default on macOS,
+  before the cool gate; the report states it, the JSONL each run's
+  `start.power`. `--no-power-gate` turns it off.
+- `eval_decision_campaign.py` / `eval_decision_batched_reasoning.py`: on
+  macOS, as part of the latency phase's cool gate.
+
 Raw timing probes for individual subsystems:
 
 ```sh
