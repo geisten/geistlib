@@ -726,9 +726,8 @@ multi_attention(struct transformer_layer_forward_ctx  *ctx,
                 size_t                                 n,
                 struct transformer_arch_session *const seqs[static n],
                 size_t                                 layer_idx) {
-    struct transformer_arch_state    *st = ctx->st;
-    struct transformer_arch_session  *c  = ctx->sess;
-    struct transformer_layer_weights *L  = ctx->L;
+    struct transformer_arch_session  *c = ctx->sess;
+    struct transformer_layer_weights *L = ctx->L;
     if (!ctx->compute_kv) {
         return GEIST_E_UNSUPPORTED;
     }
