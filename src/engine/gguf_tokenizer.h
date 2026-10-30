@@ -99,7 +99,6 @@ struct gguf_tokenizer {
      * the ▁ prefix. Keeps what that path has always answered (#263):
      *   - encode splits symbols by the UTF-8 lead byte alone (a truncated
      *     sequence swallows the bytes after it), not by valid sequences;
-     *   - add_bos is true, but geist_session_set_prompt does not prepend BOS;
      *   - geist_session_token_to_str returns the stored piece undecoded, and
      *     nullptr past the vocab;
      *   - geist_model_token_by_text finds nothing, DRY sequence breakers are
