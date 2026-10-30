@@ -91,12 +91,19 @@ runners — `desktop-ci` (docker, capacity 4), `desktop-tsan` (docker) and
   bind-mounted read-only at `/run/geist-bench.lock`; the host runner checks
   `/tmp/geist-bench.lock` directly. It only probes (`flock -n` every 10 s),
   so it never delays the lease broker, and logs `bench lock: waiting …` in
-  the job log. The wait is bounded by `BENCH_WAIT_MAX` (default 45 min,
-  measurements hold the lock ≤ 30 min per section); past it the job starts
-  with a warning instead of starving.
+  the job log. The hook runs inside the job's own `timeout-minutes`
+  (gitea-runner has no separate hook timeout), so the wait is bounded by
+  `BENCH_WAIT_MAX` (default 240 s, below the shortest job budget of 5 min);
+  past it the job starts with a warning. A 45-min bound killed the 5-min
+  `changes` and 10-min clang-format jobs ("job started hook … context
+  deadline exceeded") on 2026-10-30.
 
-Jobs already running when a lease begins run on; the bench tools' load gate
-still applies. Configs, hooks and units: geisten-infra `roles/desktop_ci`.
+The health check is what holds jobs back for a whole measurement on an idle
+runner. **Known gap:** a busy `desktop-ci` (capacity 4) still fetches into
+free slots during a lease, and those jobs start after at most 4 min; closing
+it needs a gate outside the job (capacity-1 runners, or disabling the runner
+through the Gitea API while a lease is held). Jobs already running when a
+lease begins run on; the bench tools' load gate still applies. Configs, hooks and units: geisten-infra `roles/desktop_ci`.
 
 ### Host locks: the lease broker
 
