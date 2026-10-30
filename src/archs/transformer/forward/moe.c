@@ -126,6 +126,38 @@ static void moe_bucket(size_t         n_exp,
     start[0] = 0;
 }
 
+/* #240: how many of a token's n_rt routed selections (ranked, weights w)
+ * the tail policy keeps; at least one. */
+static size_t
+moe_tail_keep(const struct transformer_runtime_flags *f, size_t n_rt, const float w[static n_rt]) {
+    double tot = 0.0;
+    for (size_t j = 0; j < n_rt; j++)
+        tot += (double) w[j];
+    if (f->moe_tail == MOE_TAIL_TOP) {
+        const size_t r = (size_t) f->moe_tail_param;
+        return r < 1 ? 1 : r < n_rt ? r : n_rt;
+    }
+    size_t keep = 1;
+    double cum  = (double) w[0];
+    while (keep < n_rt) {
+        if (f->moe_tail == MOE_TAIL_MIN && (double) w[keep] < (double) f->moe_tail_param * tot)
+            break;
+        if (f->moe_tail == MOE_TAIL_CUM && cum >= (double) f->moe_tail_param * tot)
+            break;
+        cum += (double) w[keep++];
+    }
+    return keep;
+}
+
+static _Atomic uint64_t g_tail_kept, g_tail_of; /* XXX experiment stats */
+static void             moe_tail_stats(void) {
+    fprintf(stderr,
+            "moe tail: kept %llu of %llu routed selections (%.3f per token of 8)\n",
+            (unsigned long long) g_tail_kept,
+            (unsigned long long) g_tail_of,
+            g_tail_of ? 8.0 * (double) g_tail_kept / (double) g_tail_of : 0.0);
+}
+
 /* GEIST_MOE_TRACE=<path>: append one record per routed row — int32 layer,
  * int32 position, the k chosen expert ids (uint32, ascending) and the
  * router-logit margin between the k-th choice and the best one left out
@@ -340,8 +372,9 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     if (s != GEIST_OK) {
         return s;
     }
+    const bool tail = st->runtime_flags.moe_tail != MOE_TAIL_NONE;
     /* #201: a decode step routes and runs its experts on the device. */
-    if (moe_gpu_device(sess, (size_t) ctx->layer_idx, seq)) {
+    if (!tail && moe_gpu_device(sess, (size_t) ctx->layer_idx, seq)) {
         s = moe_gpu_device_ffn(
                 sess, (size_t) ctx->layer_idx, seq, x, sess->scratch_h_post_attn, ctx->h_out_buf);
         moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);
@@ -355,10 +388,10 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     }
     /* #162: the device routes and starts the hot experts; the host waits
      * for the router alone (the mark) and reads what it wrote. */
-    const bool                        routed = moe_gpu_routed(sess, (size_t) ctx->layer_idx, seq);
-    struct geist_backend             *rbe    = routed ? st->moe_gpu->be : nullptr;
-    const struct geist_backend_fused *rgf    = routed ? rbe->desc->fused : nullptr;
-    uint64_t                          mark   = 0;
+    const bool            routed = !tail && moe_gpu_routed(sess, (size_t) ctx->layer_idx, seq);
+    struct geist_backend *rbe    = routed ? st->moe_gpu->be : nullptr;
+    const struct geist_backend_fused *rgf  = routed ? rbe->desc->fused : nullptr;
+    uint64_t                          mark = 0;
     if (routed) {
         mark = moe_gpu_route_launch(sess, (size_t) ctx->layer_idx, &s);
         if (s != GEIST_OK) {
@@ -401,7 +434,29 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
                                 ctx->layer_idx);
         return GEIST_E_BACKEND;
     }
-    moe_bucket(slots, n_sel, sess->moe_ids, sess->moe_rows, sess->moe_row_start);
+    /* #240: the dropped tail goes to bucket `slots`, which never runs; the
+     * kept weights are renormalised. */
+    static atomic_flag      reg = ATOMIC_FLAG_INIT;
+    if (tail && !atomic_flag_test_and_set(&reg))
+        atexit(moe_tail_stats);
+    for (size_t r = 0; r < seq && tail; r++) {
+        uint32_t    *ids  = sess->moe_ids + r * k;
+        float       *w    = sess->moe_wts + r * k;
+        const size_t keep = moe_tail_keep(&st->runtime_flags, n_rt, w);
+        atomic_fetch_add(&g_tail_kept, keep);
+        atomic_fetch_add(&g_tail_of, n_rt);
+        double       sum  = 0.0;
+        for (size_t j = 0; j < keep; j++)
+            sum += (double) w[j];
+        for (size_t j = keep; j < n_rt; j++) {
+            ids[j] = (uint32_t) slots;
+            w[j]   = 0.0f;
+        }
+        for (size_t j = 0; j < keep && st->config.moe_norm_topk && sum > 0.0; j++)
+            w[j] = (float) ((double) w[j] / sum);
+    }
+    moe_bucket(slots + 1, n_sel, sess->moe_ids, sess->moe_rows, sess->moe_row_start);
+    const size_t n_run = sess->moe_row_start[slots]; /* the selections that run */
     moe_profile_mark(MOE_PROFILE_ROUTE, &t0);
 
     /* Gather each expert's rows into its slice of the bucketed buffer. A
@@ -458,7 +513,7 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
             j->active[j->n_active++] = (uint32_t) e;
     }
     if (st->moe_gpu != nullptr)
-        atomic_fetch_add_explicit(&st->moe_gpu->rows_cpu, n_sel - rows_gpu, memory_order_relaxed);
+        atomic_fetch_add_explicit(&st->moe_gpu->rows_cpu, n_run - rows_gpu, memory_order_relaxed);
     /* One wait per layer (#161): a decode step with the model on the GPU
      * starts its hot experts now and does not wait for them; the CPU runs
      * the cold ones meanwhile and the GPU adds the hot outputs onto their
@@ -509,7 +564,7 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
         for (size_t h = 0; h < j->n_hot; h++)
             is_hot[j->hot[h]] = true;
         memset(cold, 0, seq * d * sizeof(float));
-        for (size_t i = 0; i < n_sel; i++) {
+        for (size_t i = 0; i < n_run; i++) {
             const uint32_t sel = sess->moe_rows[i];
             if (is_hot[sess->moe_ids[sel]])
                 continue;
@@ -534,7 +589,7 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
         return GEIST_E_BACKEND;
     }
     memset(acc, 0, seq * d * sizeof(float));
-    for (size_t i = 0; i < n_sel; i++) {
+    for (size_t i = 0; i < n_run; i++) {
         const uint32_t sel = sess->moe_rows[i];
         const float    wt  = sess->moe_wts[sel];
         float         *dst = acc + (sel / k) * d;
@@ -588,7 +643,7 @@ enum geist_status moe_session_alloc(struct transformer_arch_session *sess) {
     sess->moe_ids       = heap_alloc_array_aligned(uint32_t, n_sel);
     sess->moe_wts       = heap_alloc_array_aligned(float, n_sel);
     sess->moe_rows      = heap_alloc_array_aligned(uint32_t, n_sel);
-    sess->moe_row_start = heap_alloc_array_aligned(size_t, moe_slots(&st->config) + 1);
+    sess->moe_row_start = heap_alloc_array_aligned(size_t, moe_slots(&st->config) + 2);
     sess->moe_xg        = heap_alloc_array_aligned(float, n_sel * st->d_model);
     sess->moe_y         = heap_alloc_array_aligned(float, n_sel * st->d_model);
     sess->moe_g         = heap_alloc_array_aligned(float, n_sel *inter);

@@ -574,6 +574,12 @@ struct transformer_runtime_flags {
     bool dn_seq_prefill;    /* force the sequential DeltaNet prefill path
                              * (GEIST_DN_SEQ_PREFILL=1) — the equivalence
                              * oracle for the chunked formulation */
+    /* #240, EXPERIMENTAL: drop the router's tail (GEIST_MOE_TAIL): none,
+     * keep the best `param` (top:r), drop renormalised weights below param
+     * (min:t), or keep the shortest prefix whose weight reaches param
+     * (cum:p). The host routes when it is on. */
+    enum { MOE_TAIL_NONE, MOE_TAIL_TOP, MOE_TAIL_MIN, MOE_TAIL_CUM } moe_tail;
+    float moe_tail_param;
 };
 
 /* ---- Top-level state --------------------------------------------------- */

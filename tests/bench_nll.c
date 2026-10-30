@@ -101,8 +101,12 @@ int main(int argc, char **argv) {
     n = total < max_tokens ? total : max_tokens;
     memcpy(ids, all, n * sizeof *ids);
 
-    double          sum = 0.0;
-    size_t          cnt = 0, nl = 0;
+    double sum = 0.0;
+    size_t cnt = 0, nl = 0;
+    /* GEIST_NLL_DUMP=<path>: per scored position "argmax nll" (one line
+     * each), for top-1 agreement and paired NLL against another run (#240). */
+    FILE *dump =
+            getenv("GEIST_NLL_DUMP") != nullptr ? fopen(getenv("GEIST_NLL_DUMP"), "w") : nullptr;
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     /* Time per token: the prefill call, the logits read, the bench's softmax
@@ -125,12 +129,19 @@ int main(int argc, char **argv) {
             return GEIST_TEST_ERROR;
         }
         double mx = lg[0];
+        size_t am = 0;
         for (size_t v = 1; v < nl; v++)
-            mx = lg[v] > mx ? lg[v] : mx;
+            if (lg[v] > mx) {
+                mx = lg[v];
+                am = v;
+            }
         double z = 0.0;
         for (size_t v = 0; v < nl; v++)
             z += exp((double) lg[v] - mx);
-        sum += mx + log(z) - (double) lg[ids[i + 1]];
+        const double tok_nll = mx + log(z) - (double) lg[ids[i + 1]];
+        sum += tok_nll;
+        if (dump != nullptr)
+            fprintf(dump, "%zu %.6f\n", am, tok_nll);
         cnt++;
         clock_gettime(CLOCK_MONOTONIC, &a3);
 #define NLL_MS(x, y) \
@@ -141,6 +152,8 @@ int main(int argc, char **argv) {
 #undef NLL_MS
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
+    if (dump != nullptr)
+        fclose(dump);
     if (n > 1)
         fprintf(stderr,
                 "bench_nll: per token ms: prefill %.3f, peek_logits %.3f, softmax %.3f\n",

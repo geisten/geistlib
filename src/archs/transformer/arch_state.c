@@ -50,14 +50,34 @@
 #include <arm_neon.h>
 #endif
 
+/* GEIST_MOE_TAIL=top:<r> | min:<t> | cum:<p> (#240). */
+static void moe_tail_from_env(struct transformer_runtime_flags *f) {
+    const char *e = getenv("GEIST_MOE_TAIL");
+    if (e == nullptr || strlen(e) < 5 || e[3] != ':')
+        return;
+    char       *end = nullptr;
+    const float v   = strtof(e + 4, &end);
+    if (end == e + 4 || !(v > 0.0f))
+        return;
+    if (strncmp(e, "top", 3) == 0)
+        f->moe_tail = MOE_TAIL_TOP;
+    else if (strncmp(e, "min", 3) == 0)
+        f->moe_tail = MOE_TAIL_MIN;
+    else if (strncmp(e, "cum", 3) == 0)
+        f->moe_tail = MOE_TAIL_CUM;
+    f->moe_tail_param = v;
+}
+
 static struct transformer_runtime_flags transformer_runtime_flags_from_env(void) {
-    return (struct transformer_runtime_flags) {
+    struct transformer_runtime_flags f = {
             .bitnet_sub_ln_enabled = !geist_env_flag("GEIST_BITNET_NO_SUBLN", false),
             .dump_act_sparsity     = geist_env_flag("GEIST_DUMP_ACT_SPARSITY", false),
             .dn_seq_prefill        = geist_env_flag("GEIST_DN_SEQ_PREFILL", false),
             .batch_per_session     = geist_env_flag("GEIST_DECODE_BATCH_PER_SESSION", false),
             .batch_attn_copy       = geist_env_flag("GEIST_DECODE_BATCH_ATTN_COPY", false),
     };
+    moe_tail_from_env(&f);
+    return f;
 }
 
 static void release_weight_aux(struct geist_weight *w) {
