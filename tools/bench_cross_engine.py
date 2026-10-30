@@ -17,6 +17,7 @@ import os
 import platform
 import statistics
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,6 +36,7 @@ from bench_host import (  # noqa: E402,F401  (re-exported for bench_thread_sweep
     perf_sweep_command,
     run_jsonl as run_command,
     sha256_file,
+    wait_for_apple_cool,
     wait_for_quiet,
 )
 
@@ -239,6 +241,34 @@ def run_llama(engine: dict, model: Path, workload: dict, cycle: int) -> dict:
     }
 
 
+def run_cooled(engine: dict, model: Path, workload: dict, cycle: int, gate: dict) -> dict:
+    """One engine call per sequence length and repeat, each after the Apple
+    temperature gate (host_gate.cool_each_repeat): the Mac mini M6 drops its
+    performance-core clock from ~4.7 to ~3.6 GHz within 45 s of 6-thread
+    load while its fan stays at minimum, so back-to-back repeats inside one
+    call measured the throttling (2026-10-29: geist 1024-token prefill
+    322 -> 247 tok/s over six calls, clock -22 %). The pieces merge into the
+    same rows a single call returns; summary and report are unchanged."""
+    limits = gate["apple_temp_gate"]
+    rows = {seq_len: {"seq_len": seq_len, "prefill_tps": [], "decode_tps": [], "native": None}
+            for seq_len in workload["seq_lens"]}
+    cool_gates, elapsed = [], 0.0
+    for _ in range(workload["repeats"]):
+        for seq_len in workload["seq_lens"]:
+            cool_gates.append(wait_for_apple_cool(limits, time.monotonic() + gate["timeout_seconds"]))
+            piece = {**workload, "seq_lens": [seq_len], "repeats": 1}
+            result = (run_geist(engine, model, piece) if engine["kind"] == "geist"
+                      else run_llama(engine, model, piece, cycle))
+            got = result["rows"][0]
+            row = rows[seq_len]
+            row["prefill_tps"] += got["prefill_tps"]
+            row["decode_tps"] += got["decode_tps"]
+            row["native"] = row["native"] or got["native"]
+            elapsed += result["elapsed_seconds"]
+    return {"rows": [rows[seq_len] for seq_len in workload["seq_lens"]],
+            "elapsed_seconds": elapsed, "cool_gates": cool_gates}
+
+
 def summarize(runs: list[dict], engines: list[dict], workload: dict) -> dict:
     summary = {}
     for engine in engines:
@@ -432,8 +462,11 @@ def main() -> int:
             try:
                 while True:
                     before = wait_for_quiet(gate)
-                    result = (run_geist(engine, model, workload) if engine["kind"] == "geist"
-                              else run_llama(engine, model, workload, cycle))
+                    if gate.get("cool_each_repeat"):
+                        result = run_cooled(engine, model, workload, cycle, gate)
+                    else:
+                        result = (run_geist(engine, model, workload) if engine["kind"] == "geist"
+                                  else run_llama(engine, model, workload, cycle))
                     limit = gate.get("max_repeat_spread_pct")
                     spread = repeat_spread_pct(result)
                     if limit is None or spread <= limit:
