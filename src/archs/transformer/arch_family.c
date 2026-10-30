@@ -210,6 +210,9 @@ static const struct transformer_family *const REGISTRY[] = {
 #if defined(GEIST_FAMILY_QWEN3MOE)
         &transformer_family_qwen3moe, /* families/qwen3moe.c */
 #endif
+#if defined(GEIST_FAMILY_OLMOE)
+        &transformer_family_olmoe, /* families/olmoe.c */
+#endif
 };
 static const size_t REGISTRY_N = sizeof REGISTRY / sizeof REGISTRY[0];
 
@@ -242,6 +245,9 @@ const char *const geist_arch_transformer_gguf_names[] = {
 #endif
 #if defined(GEIST_FAMILY_QWEN3MOE)
         "qwen3moe",
+#endif
+#if defined(GEIST_FAMILY_OLMOE)
+        "olmoe",
 #endif
         nullptr,
 };

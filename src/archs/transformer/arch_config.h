@@ -184,6 +184,9 @@ struct geist_arch_config {
      * post_ffw residual norms. Gemma sets both flags; qwen3 only this
      * one (standard scale, plain residual adds). */
     bool has_qk_norms;
+    /* The QK norms run over a token's whole q/k row, before the split into
+     * heads, instead of per head (OLMoE). */
+    bool qk_norm_whole_row;
 
     /* ---- BitNet b1.58 family knobs.
      *

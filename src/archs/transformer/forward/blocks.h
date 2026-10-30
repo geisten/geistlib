@@ -61,6 +61,12 @@ void blk_scale_cols(struct transformer_layer_forward_ctx *ctx,
                                             const struct geist_tensor            *q_w,
                                             const struct geist_tensor            *k_w);
 
+/* RMSNorm over a token's whole q row and k row, the heads not yet told apart
+ * (OLMoE's QK-norm): q_w has q_out elements, k_w kv_out. */
+[[nodiscard]] enum geist_status blk_qk_norm_whole_row(struct transformer_layer_forward_ctx *ctx,
+                                                      const struct geist_tensor            *q_w,
+                                                      const struct geist_tensor            *k_w);
+
 /* q: optional per-head RMSNorm (q_norm, nullptr for none), RoPE, then
  * q *= q_scale unless q_scale is 1 (scratch_q). */
 [[nodiscard]] enum geist_status blk_q_prep(struct transformer_layer_forward_ctx *ctx,
