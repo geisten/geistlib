@@ -388,18 +388,26 @@ static inline struct tf_buf mf_qwen35_gguf(const struct mf_qwen35 *c) {
  * experts of width expert_ff, the `used` best per token. Weights as
  * mf_llama. For the load-refusal tests: `drop` names a tensor to leave out,
  * `gating` (when nonzero) writes qwen3moe.expert_gating_func, and
- * `shared_expert` adds a shared-expert router the family does not run. */
+ * `shared_expert` adds a shared-expert router the family does not run.
+ * `olmoe` writes the same model as OLMoE (olmoe.* keys): QK norms over the
+ * whole row, the expert width in feed_forward_length, no key_length;
+ * `bad_qk_norm` then leaves those norms at head_dim. */
 struct mf_qwen3moe {
     uint32_t    layers, d_model, heads, kv_heads, head_dim, experts, used, expert_ff, vocab;
     uint64_t    seed;
     const char *drop;
     uint32_t    gating;
     bool        shared_expert;
+    bool        olmoe;
+    bool        bad_qk_norm;
 };
 
 static inline struct tf_buf mf_qwen3moe_gguf(const struct mf_qwen3moe *c) {
-    const uint32_t    d  = c->d_model;
-    struct mf_tensors ts = {0};
+    const uint32_t    d    = c->d_model;
+    const char *const arch = c->olmoe ? "olmoe" : "qwen3moe";
+    const uint32_t    q_n  = c->olmoe && !c->bad_qk_norm ? c->heads * c->head_dim : c->head_dim;
+    const uint32_t    k_n  = c->olmoe && !c->bad_qk_norm ? c->kv_heads * c->head_dim : c->head_dim;
+    struct mf_tensors ts   = {0};
     mf_add(&ts, d, c->vocab, MF_RAND, "token_embd.weight");
     mf_add(&ts, d, 0, MF_ONE, "output_norm.weight");
     for (uint32_t l = 0; l < c->layers; l++) {
@@ -408,8 +416,8 @@ static inline struct tf_buf mf_qwen3moe_gguf(const struct mf_qwen3moe *c) {
         mf_add(&ts, d, c->kv_heads * c->head_dim, MF_RAND, "blk.%u.attn_k.weight", l);
         mf_add(&ts, d, c->kv_heads * c->head_dim, MF_RAND, "blk.%u.attn_v.weight", l);
         mf_add(&ts, c->heads * c->head_dim, d, MF_RAND, "blk.%u.attn_output.weight", l);
-        mf_add(&ts, c->head_dim, 0, MF_ONE, "blk.%u.attn_q_norm.weight", l);
-        mf_add(&ts, c->head_dim, 0, MF_ONE, "blk.%u.attn_k_norm.weight", l);
+        mf_add(&ts, q_n, 0, MF_ONE, "blk.%u.attn_q_norm.weight", l);
+        mf_add(&ts, k_n, 0, MF_ONE, "blk.%u.attn_k_norm.weight", l);
         mf_add(&ts, d, 0, MF_ONE, "blk.%u.ffn_norm.weight", l);
         mf_add(&ts, d, c->experts, MF_RAND, "blk.%u.ffn_gate_inp.weight", l);
         mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_gate_exps.weight", l);
@@ -434,34 +442,47 @@ static inline struct tf_buf mf_qwen3moe_gguf(const struct mf_qwen3moe *c) {
         const char *key;
         uint32_t    v;
     } u32[] = {
-            {"qwen3moe.block_count", c->layers},
-            {"qwen3moe.embedding_length", d},
-            {"qwen3moe.attention.head_count", c->heads},
-            {"qwen3moe.attention.head_count_kv", c->kv_heads},
-            {"qwen3moe.attention.key_length", c->head_dim},
-            {"qwen3moe.expert_count", c->experts},
-            {"qwen3moe.expert_used_count", c->used},
-            {"qwen3moe.expert_feed_forward_length", c->expert_ff},
-            {"qwen3moe.context_length", 4096},
-            {"qwen3moe.vocab_size", c->vocab},
-            {"qwen3moe.expert_gating_func", c->gating},
+            {"block_count", c->layers},
+            {"embedding_length", d},
+            {"attention.head_count", c->heads},
+            {"attention.head_count_kv", c->kv_heads},
+            {"expert_count", c->experts},
+            {"expert_used_count", c->used},
+            {"context_length", 4096},
+            {"vocab_size", c->vocab},
+            {c->olmoe ? "feed_forward_length" : "expert_feed_forward_length", c->expert_ff},
+            {"attention.key_length", c->head_dim},
+            {"expert_gating_func", c->gating},
     };
-    const size_t n_u32 = sizeof u32 / sizeof u32[0] - (c->gating == 0 ? 1 : 0);
+    /* OLMoE has no key_length; the gating key is written only when asked. */
+    const bool write_u32[] = {
+            true, true, true, true, true, true, true, true, true, !c->olmoe, c->gating != 0};
+    const size_t n_u32     = sizeof u32 / sizeof u32[0];
+    size_t       n_written = 0;
+    for (size_t i = 0; i < n_u32; i++) {
+        n_written += write_u32[i] ? 1 : 0;
+    }
 
+    char          key[64];
     struct tf_buf o = {0};
     tf_put(&o, "GGUF", 4);
     tf_u32(&o, 3);
     tf_u64(&o, ts.n);
-    tf_u64(&o, 1 + n_u32 + 2);
+    tf_u64(&o, 1 + n_written + 2);
     mf_key(&o, "general.architecture", TF_GGUF_STRING);
-    tf_gstr(&o, "qwen3moe", 8);
+    tf_gstr(&o, arch, strlen(arch));
     for (size_t i = 0; i < n_u32; i++) {
-        mf_key(&o, u32[i].key, TF_GGUF_UINT32);
-        tf_u32(&o, u32[i].v);
+        if (write_u32[i]) {
+            snprintf(key, sizeof key, "%s.%s", arch, u32[i].key);
+            mf_key(&o, key, TF_GGUF_UINT32);
+            tf_u32(&o, u32[i].v);
+        }
     }
-    mf_key(&o, "qwen3moe.rope.freq_base", TF_GGUF_FLOAT32);
+    snprintf(key, sizeof key, "%s.rope.freq_base", arch);
+    mf_key(&o, key, TF_GGUF_FLOAT32);
     tf_f32(&o, 1000000.0f);
-    mf_key(&o, "qwen3moe.attention.layer_norm_rms_epsilon", TF_GGUF_FLOAT32);
+    snprintf(key, sizeof key, "%s.attention.layer_norm_rms_epsilon", arch);
+    mf_key(&o, key, TF_GGUF_FLOAT32);
     tf_f32(&o, 1e-6f);
     mf_write_tensors(&o, &ts, c->seed);
     return o;

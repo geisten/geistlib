@@ -538,11 +538,13 @@ layer_tensor(char name[static 64], const struct transformer_layer_weights *L, co
     const size_t      d          = st->d_model;
     const size_t      rope_il_hd = st->config.rope_interleaved ? L->head_dim : 0;
     const bool        qk_norms   = st->config.has_qk_norms;
+    const size_t      q_norm_n   = st->config.qk_norm_whole_row ? L->q_out : L->head_dim;
+    const size_t      k_norm_n   = st->config.qk_norm_whole_row ? L->kv_out : L->head_dim;
     char              name[64];
     enum geist_status s = GEIST_OK;
     if (qk_norms) {
         s = load_layer_norm(
-                st, gguf, L, layer_tensor(name, L, "attn_q_norm.weight"), L->head_dim, &L->q_norm);
+                st, gguf, L, layer_tensor(name, L, "attn_q_norm.weight"), q_norm_n, &L->q_norm);
     }
     if (s == GEIST_OK && L->q_proj.buffer == nullptr) {
         s = load_layer_proj_rope_il(st,
@@ -591,7 +593,7 @@ layer_tensor(char name[static 64], const struct transformer_layer_weights *L, co
     }
     if (s == GEIST_OK && qk_norms) {
         s = load_layer_norm(
-                st, gguf, L, layer_tensor(name, L, "attn_k_norm.weight"), L->head_dim, &L->k_norm);
+                st, gguf, L, layer_tensor(name, L, "attn_k_norm.weight"), k_norm_n, &L->k_norm);
     }
     return s;
 }
