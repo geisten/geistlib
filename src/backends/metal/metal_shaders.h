@@ -976,6 +976,18 @@ static const char metal_q4k_n4_kernel[] =
         "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
         "sg[[simdgroup_index_in_threadgroup]]){mv_q4k(x,w,y,p,tg.x,tg.y,ti,sg);}\n";
 
+/* #245: matvec_q4k_n4 over 2..9 activation rows in one dispatch. Each
+ * threadgroup runs mv_q4k once per row, so a row's arithmetic is the
+ * single-row kernel's statement for statement (bit-identical to one
+ * dispatch per row), while the threadgroup's weight blocks, read for row 0,
+ * come from cache for the rows after it. */
+static const char metal_q4k_r_kernel[] =
+        "kernel void matvec_q4k_r(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){for(uint b=0u;b<p.rows;b++)mv_q4k(x,w,y,p,tg.x,b,"
+        "ti,sg);}\n";
+
 /* #196: matvec_q4k_n4 for K a multiple of 512 but not of 1024 (Gemma 4's
  * d_model 1536: six blocks per row). The n4 kernel's four 8-lane groups
  * stride the blocks by four, so at six blocks two groups take two and two
@@ -1408,6 +1420,14 @@ static const char metal_mv_q6k_body[] =
         "if(rr==0u)sf0+=acc;else sf1+=acc;}}"
         "float a0=simd_sum(sf0),a1=simd_sum(sf1);"
         "if(ti==0){uint o=p.yo+b*p.ys+fr;y[o]=a0;if(fr+1u<p.no)y[o+1u]=a1;}}\n";
+
+/* #245: matvec_q6k_n4 over 2..9 rows in one dispatch, as matvec_q4k_r. */
+static const char metal_q6k_r_kernel[] =
+        "kernel void matvec_q6k_r(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){for(uint b=0u;b<p.rows;b++)mv_q6k(x,w,y,p,tg.x,b,"
+        "ti,sg);}\n";
 
 static const char metal_q6k_n4_kernel[] =
         "kernel void matvec_q6k_n4(device const float*x[[buffer(0)]],device const "

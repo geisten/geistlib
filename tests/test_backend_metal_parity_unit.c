@@ -1102,6 +1102,59 @@ static void run_fused_matvec_case(
 }
 
 #ifdef GEIST_BACKEND_METAL
+/* #245: a 2..9-row Q4_K / Q6_K linear in one dispatch (matvec_q4k_r,
+ * matvec_q6k_r) against one n4 matvec per row: bit-identical, since each
+ * row runs the n4 kernel's arithmetic unchanged. */
+static void run_mv_rows_case(struct geist_backend *mt, int dtype, size_t n_in, size_t n_out) {
+    const struct geist_backend_vtbl  *v  = mt->desc->vtbl;
+    const struct geist_backend_fused *f  = geist_backend_fused_tbl(mt);
+    struct metal_state               *st = mt->state;
+    void **const pipe = dtype == GEIST_DTYPE_Q4_K ? &st->q4k_r_pipeline : &st->q6k_r_pipeline;
+    enum { ROWS = 8 };
+    struct geist_buffer *bx = nullptr, *bw = nullptr, *by = nullptr;
+    struct geist_tensor  tw;
+    float               *x   = dev_alloc(mt, ROWS * n_in * sizeof(float), &bx);
+    bool                 ok  = x != nullptr && *pipe != nullptr &&
+                               quant_weight(mt, dtype, n_in, n_out, &bw, &tw) != nullptr &&
+                               dev_alloc(mt, ROWS * n_out * sizeof(float), &by) != nullptr;
+    float               *got = malloc(2 * ROWS * n_out * sizeof(float));
+    check(ok && got != nullptr, "mv rows buffers");
+    if (!ok || got == nullptr) {
+        free(got);
+        return;
+    }
+    for (size_t i = 0; i < ROWS * n_in; i++)
+        x[i] = ((float) rng_u8() - 127.5f) * 0.0372529f;
+    const struct geist_weight ww = {
+            .n_in = (int32_t) n_in, .n_out = (int32_t) n_out, .dtype = dtype};
+    void *const keep = *pipe;
+    bool        same = true;
+    for (size_t rows = 2; rows <= ROWS && ok; rows++) {
+        struct geist_tensor tx = f32_row(bx, n_in), ty = f32_row(by, n_out);
+        tx.shape[0] = ty.shape[0] = (int64_t) rows;
+        for (size_t i = 0; i < 2 && ok; i++) {
+            *pipe = i == 0 ? keep : nullptr; /* i = 1: one dispatch per row */
+            ok    = f->linear_t(mt, &tx, &ww, &tw, rows, &ty) == GEIST_OK &&
+                    v->buffer_download(rows * n_out * sizeof(float),
+                                       (uint8_t *) (got + i * ROWS * n_out),
+                                       by) == GEIST_OK;
+        }
+        same = same && ok && memcmp(got, got + ROWS * n_out, rows * n_out * sizeof(float)) == 0;
+    }
+    *pipe = keep;
+    check(ok, "mv rows dispatch");
+    check(same, "2..8-row matvec is bit-identical to one matvec per row");
+    printf("  %s %zu->%zu, 2..8 rows in one dispatch: %s\n",
+           dtype == GEIST_DTYPE_Q4_K ? "Q4_K" : "Q6_K",
+           n_in,
+           n_out,
+           same ? "bit-identical" : "DIFFERS");
+    free(got);
+    v->buffer_destroy(mt, by);
+    v->buffer_destroy(mt, bw);
+    v->buffer_destroy(mt, bx);
+}
+
 /* #196: matvec_q4k_h and gate_up_q4k_h (K = 512 mod 1024, n_out >= 1024)
  * against the n4 kernels they replace there. Rounding only: the half
  * simdgroups reduce by shuffles in another order than simd_sum. */
@@ -1828,6 +1881,8 @@ int main(void) {
      * (1100 and 1030 rows: ragged last threadgroup and half). */
     run_case(mt, ref, GEIST_DTYPE_Q4_K, "Q4_K", 1536, 1100, 1);
 #ifdef GEIST_BACKEND_METAL
+    run_mv_rows_case(mt, GEIST_DTYPE_Q4_K, 2048, 516);
+    run_mv_rows_case(mt, GEIST_DTYPE_Q6_K, 1024, 300);
     run_q4k_half_case(mt, 1536, 1100);
     run_q4k_half_case(mt, 512, 1030);
 #endif
