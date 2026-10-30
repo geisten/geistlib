@@ -329,11 +329,29 @@ static bool populate_layers_qwen35(struct transformer_arch_state *st) {
             {n_dn > 0, m * st->config.dn_n_v_heads, &sess->dn_scratch_b},
             {n_dn > 0, m * st->config.dn_n_v_heads, &sess->dn_scratch_a},
     };
+    /* These slabs hold m_max rows: at the MoE chunk of 512 (#163) 4-16 MiB
+     * each. Host-visible, the first sessions' fit the BAR window (VRAM the
+     * host can map) and every later one's landed in system memory, where
+     * each batched decode step (#245) read and wrote them over PCIe: 8
+     * sessions of Qwen3.6-35B-A3B on an RTX 2080 Ti ran at 87 tok/s at
+     * m_max 512 against 111 at 64. So a slab the window no longer holds
+     * goes to device memory when the session's scratch pool is device-local
+     * (#488); one that fits stays where it was. Only the host fallbacks map
+     * them, and scratch_device_wanted rules those out: the q/gate split and
+     * the sigmoid gate run on the backend, and a DeltaNet mixer the backend
+     * declines cannot run on a device-only recurrent state anyway
+     * (exec_plan.c). */
+    const bool device = sess->scratch_device && sess->scratch_dev_pool_buf != nullptr &&
+                        be->desc->vtbl->fast_host_bytes != nullptr;
     for (size_t i = 0; i < sizeof bufs / sizeof bufs[0]; i++) {
         if (!bufs[i].want)
             continue;
+        const size_t      bytes = bufs[i].floats * sizeof(float);
         enum geist_status s =
-                transformer_scratch_alloc(be, bufs[i].floats * sizeof(float), bufs[i].out);
+                device && be->desc->vtbl->fast_host_bytes(be) < bytes
+                        ? be->desc->vtbl->buffer_create(
+                                  be, bytes, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, bufs[i].out)
+                        : transformer_scratch_alloc(be, bytes, bufs[i].out);
         if (s != GEIST_OK)
             return s;
     }
