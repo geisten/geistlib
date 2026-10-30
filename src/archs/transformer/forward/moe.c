@@ -393,6 +393,55 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
         moe_trace(ctx->layer_idx, ctx->q_position, seq, n_exp, n_rt, k, lg, sess->moe_ids);
         moe_profile_count(st->moe_prof, (size_t) ctx->layer_idx, seq, k, n_rt, sess->moe_ids);
     }
+    /* XXX #238 experiment, never merged: XMOE_PRED=<path> dumps, per decode
+     * layer, the actual routed ids ("A") and the next layer's router applied
+     * to this layer's input, renormed with the next layer's ffn_norm ("P",
+     * the 32 best ids). Host route on a CPU backend only. */
+    static FILE *pred_f    = nullptr;
+    static int   pred_init = 0;
+    static float pred_x[8192], pred_lg[1024];
+    if (!pred_init) {
+        pred_init = 1;
+        if (getenv("XMOE_PRED") != nullptr)
+            pred_f = fopen(getenv("XMOE_PRED"), "w");
+    }
+    if (pred_f != nullptr && routed_ok && seq == 1 && !routed && d <= 8192 && n_exp <= 1024) {
+        fprintf(pred_f, "A %zu %d", ctx->q_position, ctx->layer_idx);
+        for (size_t j = 0; j < n_rt; j++)
+            fprintf(pred_f, " %u", sess->moe_ids[j]);
+        fputc('\n', pred_f);
+        const size_t L1 = (size_t) ctx->layer_idx + 1;
+        if (L1 < st->n_layers && st->layers[L1].moe_router_w.linear_m1 != nullptr) {
+            const float *xh  = (const float *) v->buffer_map(x);
+            const float *w0  = (const float *) v->buffer_map(L->ffn_norm.buffer);
+            const float *w1  = (const float *) v->buffer_map(st->layers[L1].ffn_norm.buffer);
+            if (xh != nullptr && w0 != nullptr && w1 != nullptr) {
+                const size_t o0 = (size_t) L->ffn_norm.offset / sizeof(float);
+                const size_t o1 = (size_t) st->layers[L1].ffn_norm.offset / sizeof(float);
+                for (size_t c = 0; c < d; c++)
+                    pred_x[c] = w0[o0 + c] != 0.0f ? xh[c] / w0[o0 + c] * w1[o1 + c] : 0.0f;
+                st->layers[L1].moe_router_w.linear_m1(
+                        pred_x, &st->layers[L1].moe_router_w, ctx->be, pred_lg);
+                fprintf(pred_f, "P %zu %zu", ctx->q_position, L1);
+                bool taken[1024] = {false};
+                for (size_t r = 0; r < 32 && r < n_exp; r++) {
+                    size_t b = n_exp;
+                    for (size_t e = 0; e < n_exp; e++)
+                        if (!taken[e] && (b == n_exp || pred_lg[e] > pred_lg[b]))
+                            b = e;
+                    taken[b] = true;
+                    fprintf(pred_f, " %zu", b);
+                }
+                fputc('\n', pred_f);
+            }
+            if (xh != nullptr)
+                v->buffer_unmap(x);
+            if (w0 != nullptr)
+                v->buffer_unmap(L->ffn_norm.buffer);
+            if (w1 != nullptr)
+                v->buffer_unmap(st->layers[L1].ffn_norm.buffer);
+        }
+    }
     v->buffer_unmap(sess->moe_logits);
     if (!routed_ok) {
         geist_backend_set_error(ctx->be,
@@ -459,6 +508,12 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     }
     if (st->moe_gpu != nullptr)
         atomic_fetch_add_explicit(&st->moe_gpu->rows_cpu, n_sel - rows_gpu, memory_order_relaxed);
+    /* XXX #238 ceiling experiment, never merged: drop the CPU's experts. */
+    static int skip_cold = -1;
+    if (skip_cold < 0)
+        skip_cold = getenv("XMOE_SKIP_COLD") != nullptr;
+    if (skip_cold && j->n_hot > 0)
+        j->n_active = 0;
     /* One wait per layer (#161): a decode step with the model on the GPU
      * starts its hot experts now and does not wait for them; the CPU runs
      * the cold ones meanwhile and the GPU adds the hot outputs onto their
@@ -480,7 +535,19 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     atomic_store_explicit(&j->failed, false, memory_order_relaxed);
     const size_t tasks   = (j->n_hot > 0 && !launched) + j->n_active;
     const size_t threads = geist_par_max_threads();
-    geist_par_for(tasks < threads ? tasks : threads, moe_worker, j);
+    /* XXX #238 experiment: XMOE_COLD_SERIAL=1 runs the CPU experts one after
+     * another on this thread, each kernel spreading over every thread
+     * itself, while the launched GPU batch runs. */
+    static int cold_serial = -1;
+    if (cold_serial < 0)
+        cold_serial = getenv("XMOE_COLD_SERIAL") != nullptr;
+    if (cold_serial && launched && seq == 1) {
+        for (size_t a = 0; a < j->n_active; a++)
+            if (!moe_expert(j, j->active[a]))
+                atomic_store_explicit(&j->failed, true, memory_order_relaxed);
+        atomic_store_explicit(&j->next, j->n_active, memory_order_relaxed);
+    } else
+        geist_par_for(tasks < threads ? tasks : threads, moe_worker, j);
     moe_gpu_task(j); /* a thread library that gave the caller no range */
     moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);
     if (j->gpu_status != GEIST_OK) {
@@ -511,7 +578,7 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
         memset(cold, 0, seq * d * sizeof(float));
         for (size_t i = 0; i < n_sel; i++) {
             const uint32_t sel = sess->moe_rows[i];
-            if (is_hot[sess->moe_ids[sel]])
+            if (is_hot[sess->moe_ids[sel]] || skip_cold)
                 continue;
             const float  wt  = sess->moe_wts[sel];
             float       *dst = cold + (sel / k) * d;
