@@ -41,8 +41,10 @@ geist_token_t geist_model_bos_token(const struct geist_model *m);
 /* @stability STABLE since 0.20.0 — the tokenizer's add_bos_token /
  * add_eos_token metadata (geist-runtime contract, #622).
  *
- * geist_session_tokenize returns content tokens only; these say whether the
- * model expects BOS / EOS around them. Embedding models in particular pool
+ * geist_session_tokenize returns content tokens only (a BOS the text spells
+ * out encodes as that id, none is added); these say whether the model
+ * expects BOS / EOS around them, for a caller that prefills tokens itself.
+ * geist_session_set_prompt applies add_bos on its own, with one BOS (#263). Embedding models in particular pool
  * over exactly the sequence passed, so a missing BOS gives a different
  * vector. Both false when no tokenizer is loaded. */
 bool geist_model_add_bos(const struct geist_model *m);

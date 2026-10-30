@@ -416,7 +416,13 @@ enum geist_status geist_session_reset(struct geist_session *s);
 /* @stability STABLE since 0.1.0
  * Tokenize `prompt` and prefill it into the session. The generation loop
  * then calls geist_session_decode_step until it emits the model's EOS
- * token (get its id from geist_model_eos_token in <geist_util.h>). */
+ * token (get its id from geist_model_eos_token in <geist_util.h>).
+ *
+ * When the model expects BOS (geist_model_add_bos), the prefilled sequence
+ * starts with exactly one: set_prompt prepends it unless the prompt's own
+ * tokens already begin with it, as a chat template rendered with its BOS
+ * text ("<bos>", "<s>") does. The same for a GGUF tokenizer and a
+ * tokenizer.bin (#263). */
 enum geist_status geist_session_set_prompt(struct geist_session *s, const char *prompt);
 
 /* @stability STABLE since 0.1.0

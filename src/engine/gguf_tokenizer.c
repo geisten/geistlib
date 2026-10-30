@@ -709,7 +709,7 @@ oom:
     sort_specials(tok);
     tok->mode          = GGUF_TOK_MODE_SPM;
     tok->tokenizer_bin = true;
-    tok->add_bos       = true; /* #263: reported, but set_prompt does not prepend it */
+    tok->add_bos       = true; /* the Gemma models it serves expect BOS (#263) */
     build_spm_byte_map(tok);
     return true;
 }

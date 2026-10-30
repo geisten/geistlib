@@ -33,6 +33,8 @@ struct mf_llama {
     const struct tf_vocab *tok;
     const char            *tok_model;
     bool                   tok_merges;
+    /* With tok: "<s>" is the BOS and a CONTROL token (tf_tokenizer_bos_kv). */
+    bool tok_bos;
     /* attn_q stored as F16 instead of F32 (backends that widen or refuse
      * half-precision projections). */
     bool f16_q;
@@ -240,6 +242,7 @@ static inline struct tf_buf mf_llama_gguf(const struct mf_llama *c) {
     tf_u64(&o, ts.n);
     tf_u64(&o,
            1 + n_u32 + 2 + (c->tok != nullptr ? TF_TOKENIZER_KEYS : 0) +
+                   (c->tok != nullptr && c->tok_bos ? TF_TOKENIZER_BOS_KEYS : 0) +
                    (c->chat_template != nullptr ? 1 : 0));
     mf_key(&o, "general.architecture", TF_GGUF_STRING);
     tf_gstr(&o, "llama", 5);
@@ -259,6 +262,9 @@ static inline struct tf_buf mf_llama_gguf(const struct mf_llama *c) {
     tf_f32(&o, 1e-5f);
     if (c->tok != nullptr) {
         tf_tokenizer_kv(&o, c->tok, c->tok_model, c->tok_merges);
+        if (c->tok_bos) {
+            tf_tokenizer_bos_kv(&o, c->tok);
+        }
     }
     mf_write_tensors(&o, &ts, c->seed);
     return o;

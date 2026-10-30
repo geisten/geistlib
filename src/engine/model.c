@@ -856,9 +856,8 @@ geist_token_t geist_model_bos_token(const struct geist_model *m) {
 
 bool geist_model_add_bos(const struct geist_model *m) {
     const struct model_engine_state *eng = model_engine(m);
-    /* A tokenizer.bin has no such metadata; its loader sets add_bos, which
-     * says the model expects BOS, while set_prompt does not prepend it there,
-     * so callers add it themselves (#263). */
+    /* A tokenizer.bin has no such metadata; its loader sets add_bos.
+     * set_prompt honours it on both paths, with one BOS (#263). */
     if (eng == nullptr || eng->gguf_tok == nullptr) {
         return false;
     }
