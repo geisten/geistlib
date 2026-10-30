@@ -11,6 +11,13 @@
 # a test names (tests/test_bench_tools_py.py reads benchmark/results/APPLE.md)
 # counts as code. Anything else, a push, or a missing base: code.
 #
+# It also prints "build=true" when the pull request changes what the
+# documented builds (ci.yml readme-build: `make lib` in clean debian:13,
+# alpine:3.21 and ubuntu:24.04 images) exercise beyond the required legs: the
+# recipes (README.md, docs/QUICKSTART.md, docs/DEPLOY.md) or the build files
+# (Makefile, mk/). readme-build runs on such a pull request, nightly and on
+# dispatch; otherwise not (no base: build=false).
+#
 # --tier prints which CI tier runs (docs/CI_COVERAGE.md "Tiers"):
 # "full=true" runs the post-merge tier as well — on anything but a pull
 # request, on GitHub (the mirror's pull requests run everything on GitHub's
@@ -65,6 +72,16 @@ docs_only() {
     return 0
 }
 
+# Reads paths on stdin; exit 0 if one is a documented-build recipe or build file.
+build_paths() {
+    while IFS= read -r p; do
+        case "$p" in
+            README.md | docs/QUICKSTART.md | docs/DEPLOY.md | Makefile | mk/*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
 if [ "${1:-}" = "--test" ]; then
     export NO_TEST_REFS=1
     ok() { printf '%s\n' "$@" | docs_only || { echo "FAIL: expected docs: $*"; exit 1; }; }
@@ -76,6 +93,9 @@ if [ "${1:-}" = "--test" ]; then
     no .gitea/workflows/ci.yml
     no include/geist.h   # no BASE: cannot prove a version-only change
     unset NO_TEST_REFS
+    printf '%s\n' src/engine/session.c docs/OFFLOAD.md | build_paths && { echo "FAIL: not a build path"; exit 1; }
+    printf '%s\n' src/x.c mk/target-linux.mk | build_paths || { echo "FAIL: mk/ is a build path"; exit 1; }
+    printf '%s\n' README.md | build_paths || { echo "FAIL: README.md is a build path"; exit 1; }
     printf 'benchmark/results/APPLE.md\n' | docs_only && { echo "FAIL: APPLE.md is read by a test"; exit 1; }
     ev=$(mktemp)
     t() {  # t <event> <server> <labels json> <expected tier output>
@@ -104,10 +124,16 @@ fi
 BASE=${1:-${BASE_SHA:-}}
 if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
     echo "code=true"
+    echo "build=false"
     exit 0
 fi
 if git diff --name-only "$BASE"...HEAD | docs_only; then
     echo "code=false"
 else
     echo "code=true"
+fi
+if git diff --name-only "$BASE"...HEAD | build_paths; then
+    echo "build=true"
+else
+    echo "build=false"
 fi

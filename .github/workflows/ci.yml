@@ -83,6 +83,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ steps.paths.outputs.code }}
+      build: ${{ steps.paths.outputs.build }}
       full: ${{ steps.tier.outputs.full }}
       label: ${{ steps.tier.outputs.label }}
     steps:
@@ -521,10 +522,16 @@ jobs:
   # GEMM_PROVIDER, no bash in the image — only the prerequisites the README
   # states (gcc >= 14 and make) and the command it prints. `lib` on purpose:
   # it is the README's first command and needs no BLAS.
+  # Nightly and on dispatch, and on a pull request that changes a recipe or
+  # a build file (ci-changes.sh build=true: README.md, docs/QUICKSTART.md,
+  # docs/DEPLOY.md, Makefile, mk/); not on other pull requests, ci:full
+  # included, nor on main pushes. Everything else it compiles the required
+  # legs compile with the same gcc 14 (musl included), so three more
+  # desktop-ci slots per merge bought only the recipe check.
   readme-build:
     name: documented build (${{ matrix.image }})
     needs: changes
-    if: needs.changes.outputs.full == 'true'
+    if: github.event_name != 'push' && (needs.changes.outputs.build == 'true' || (needs.changes.outputs.full == 'true' && (github.event_name != 'pull_request' || github.server_url == 'https://github.com')))
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
@@ -575,7 +582,7 @@ jobs:
   # Cover the shipped x86_64 path (release.yml linux-x86_64: cpu_x86,
   # runtime-dispatched over an x86-64-v3 baseline) with unit + int + e2e.
   # Hosted runners don't guarantee AVX-512, so the CPU feature check reports
-  # whether the AVX-512 kernels ran; build-test-x86_64-scalar covers the
+  # whether the AVX-512 kernels ran; build-test-x86_64-scalar-clang covers the
   # SIMD-free path. Two legs in parallel: the full suite, and the int suite
   # once more under GEIST_FORCE_ISA=avx2 — sequential they were the slowest
   # job of every PR run.
@@ -700,49 +707,47 @@ jobs:
           path: perf-last
           key: perf-x86_64-synth-${{ github.run_id }}
 
-  # Guarantee the SIMD-free portable reference builds + passes on x86_64,
-  # independent of whatever SIMD the runner CPU happens to have. This is the
-  # baseline every other x86 kernel is checked against; if it drifts, quantized
-  # correctness is unmoored.
-  build-test-x86_64-scalar:
-    name: build + unit tests (Linux x86_64, cpu_scalar portable reference)
+  # Two small x86_64 build + unit legs in one job (one checkout, one apt
+  # install, one desktop-ci slot instead of two). Their trees differ in
+  # BACKENDS and CC, and the objects do not record their flags, so the
+  # second build starts from `make clean`. The clang steps run even when the
+  # scalar ones failed: a failure in one must not hide the other's result.
+  #
+  # cpu_scalar: guarantee the SIMD-free portable reference builds + passes on
+  # x86_64, independent of whatever SIMD the runner CPU happens to have. This
+  # is the baseline every other x86 kernel is checked against; if it drifts,
+  # quantized correctness is unmoored.
+  #
+  # clang: every other x86_64 leg uses gcc. clang outlines an OpenMP
+  # `parallel for` body into a function that does not inherit the kernel's
+  # target attribute, which aborted instruction selection before #415. Build
+  # + unit tests suffice — the failure mode is a compile abort.
+  # libomp-19-dev provides omp.h; libclang-rt-19-dev the sanitizer runtime
+  # -fsanitize=fuzzer needs (libclang-common-19-dev only recommends it).
+  build-test-x86_64-scalar-clang:
+    name: build + unit tests (Linux x86_64, cpu_scalar portable reference; clang)
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install deps
+        id: deps
         uses: ./.github/actions/apt-install
         timeout-minutes: 15
         with:
-          packages: gcc-14
+          # libstdc++-14-dev: with gcc-14 installed, clang picks gcc 14's
+          # install dir, and the libFuzzer link needs its -lstdc++.
+          packages: gcc-14 clang-19 libomp-19-dev libclang-rt-19-dev libstdc++-14-dev
       - name: Build + unit tests (scalar only, no SIMD)
         run: |
           make TARGET=linux CC=gcc-14 BACKENDS="cpu_scalar" GEMM_PROVIDER=native
           make test-unit TARGET=linux CC=gcc-14 BACKENDS="cpu_scalar" GEMM_PROVIDER=native AUTO_FETCH_MODEL=0
-
-  # clang on x86_64. Every other x86_64 leg uses gcc: clang outlines an
-  # OpenMP `parallel for` body into a function that does not inherit the
-  # kernel's target attribute, which aborted instruction selection before
-  # #415. Build + unit tests suffice — the failure mode is a compile abort.
-  # libomp-19-dev provides omp.h; libclang-rt-19-dev the sanitizer runtime
-  # -fsanitize=fuzzer needs (libclang-common-19-dev only recommends it).
-  build-test-x86_64-clang:
-    name: build + unit tests (Linux x86_64, clang)
-    needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install deps
-        uses: ./.github/actions/apt-install
-        timeout-minutes: 15
-        with:
-          packages: clang-19 libomp-19-dev libclang-rt-19-dev
       - name: Build + unit tests (release backends, clang)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
+          make clean TARGET=linux
           make TARGET=linux CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
           make test-unit TARGET=linux CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native AUTO_FETCH_MODEL=0
 
@@ -751,6 +756,7 @@ jobs:
       # The corpus is seeded by the harness itself. UBSan halts, as in the
       # deterministic gate: in recover mode libFuzzer runs on to a green exit.
       - name: Fuzz harnesses (libFuzzer, 30 s per target)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: make fuzz-libfuzzer TARGET=linux CC=clang-19 FUZZ_CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native FUZZ_SECONDS=30
@@ -840,48 +846,6 @@ jobs:
           GEIST_TEST_PUSH_PACE_US: "600000"
         run: ./bin/linux/release/tests/test_audio_stream_session_int
 
-  # x86_64 counterpart to audio-smoke: the AVX-512/VNNI audio path. Only the
-  # tower is needed: the encoder runs without an LLM.
-  audio-parity-x86_64:
-    name: audio W8A8 parity (Linux x86_64, AVX-512 VNNI)
-    needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    env:
-      GEIST_STRICT_FIXTURES: audio
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 500M
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: ccache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ github.workspace }}/.ccache
-          key: ccache-audio-parity-x86_64-${{ github.run_id }}
-          restore-keys: |
-            ccache-audio-parity-x86_64-
-            ccache-build-test-x86_64-
-      - name: Install deps
-        uses: ./.github/actions/apt-install
-        timeout-minutes: 15
-        with:
-          packages: gcc-14 libopenblas-dev ccache
-      - name: Build
-        run: make TARGET=linux CC="ccache gcc-14" bin
-      # Same cache key as audio-smoke on purpose: one 614 MB entry serves both
-      # legs instead of two, which the repo's 10 GB cache budget notices.
-      - name: Cache audio tower
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: audio_bench/audio_tower.safetensors
-          key: geist-audio-tower-d6c45a6c2762
-      - name: Fetch audio tower (Range-extracted, SHA-pinned)
-        run: make fetch-audio-tower
-      # The tower is present, so a skip (exit 77) fails the step.
-      - name: Attn/LConv W8A8 parity vs shipping precision (a skip is a failure)
-        run: ./bin/linux/release/tests/test_audio_attn_w8a8_parity_int
-
   # TARGET=pi5 is the primary deployment target (#244). The arm64 runner
   # compiles the exact pi5 flag set (-mcpu=cortex-a76 is a codegen choice,
   # not a run requirement). Build-only: the Pi 5 stays the arbiter for
@@ -950,12 +914,18 @@ jobs:
   # Real hardware runs nightly on git.geisten.net
   # (.gitea/workflows/native-avx512.yml): no self-hosted runner is attached
   # to this public mirror.
+  #
+  # The same job then runs the audio W8A8 parity leg on the runner's own
+  # AVX-512 VNNI (x86_64 counterpart to audio-smoke; only the tower is
+  # needed: the encoder runs without an LLM). One job, one desktop-ci slot;
+  # its build uses the default BACKENDS and GEMM, so it starts from `make
+  # clean`, and it runs even when an SDE step failed.
   avx512-sde:
-    name: AVX-512/VNNI guaranteed (Linux x86_64, Intel SDE)
+    name: AVX-512/VNNI (Linux x86_64, Intel SDE dispatch; audio W8A8 parity)
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
@@ -966,12 +936,16 @@ jobs:
         with:
           path: ${{ github.workspace }}/.ccache
           key: ccache-sde-${{ github.run_id }}
-          restore-keys: ccache-sde-
+          restore-keys: |
+            ccache-sde-
+            ccache-audio-parity-x86_64-
+            ccache-build-test-x86_64-
       - name: Install deps
+        id: deps
         uses: ./.github/actions/apt-install
         timeout-minutes: 15
         with:
-          packages: gcc-14 ccache
+          packages: gcc-14 libopenblas-dev ccache
       - name: Install Intel SDE
         uses: petarpetrovt/setup-sde@6d2773bc0ef3005fd52e0ae0bb91782321793aec # v6.0
         with:
@@ -1018,6 +992,33 @@ jobs:
           name: avx512-sde-diagnostics
           path: ci-diagnostics/
           if-no-files-found: warn
+
+      # Audio W8A8 parity on the runner's AVX-512 VNNI (formerly the job
+      # audio-parity-x86_64).
+      - name: Build (default backends and GEMM) for the audio parity leg
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: |
+          make clean TARGET=linux
+          make TARGET=linux CC="ccache gcc-14" bin
+      # Same cache key as audio-smoke on purpose: one 614 MB entry serves both
+      # legs instead of two, which the repo's 10 GB cache budget notices.
+      - name: Cache audio tower
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: audio_bench/audio_tower.safetensors
+          key: geist-audio-tower-d6c45a6c2762
+      - name: Fetch audio tower (Range-extracted, SHA-pinned)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        env:
+          GEIST_STRICT_FIXTURES: audio
+        run: make fetch-audio-tower
+      # The tower is present, so a skip (exit 77) fails the step.
+      - name: Attn/LConv W8A8 parity vs shipping precision (a skip is a failure)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        env:
+          GEIST_STRICT_FIXTURES: audio
+        run: ./bin/linux/release/tests/test_audio_attn_w8a8_parity_int
 
   # Vulkan after every merge (#182), software tier: Mesa's lavapipe is a real
   # Vulkan implementation (loader -> ICD -> SPIR-V pipeline), so the
@@ -1424,10 +1425,8 @@ jobs:
       - readme-build
       - build-test-musl
       - build-test-x86_64
-      - build-test-x86_64-scalar
-      - build-test-x86_64-clang
+      - build-test-x86_64-scalar-clang
       - audio-smoke
-      - audio-parity-x86_64
       - pi5-target-build
       - build-test-musl-x86_64
       - avx512-sde

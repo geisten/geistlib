@@ -242,9 +242,14 @@ make MODE=asan test-unit           # ASan + UBSan
 A pull request's CI runs only the required tier (format, contract, build +
 unit tests); ASan, TSan, the real-model suites, Metal and the perf floors run
 after the merge ([docs/CI_COVERAGE.md](docs/CI_COVERAGE.md#tiers)). Run the
-sanitizer suite above yourself, and for a change to a kernel, a GPU backend
-or memory handling label the PR `ci:full` before pushing, so the post-merge
-tier runs on it.
+sanitizer suite above yourself, and for a change to a kernel, a GPU backend,
+memory handling, threading or other sanitizer-relevant code label the PR
+`ci:full` before pushing, so the post-merge tier runs on it. Do **not** set
+`ci:full` on any other PR unless the user asks for it: each such run adds
+~25 jobs (coverage alone ~140 min) that every other PR's required checks
+queue behind, and the nightly full run catches the rest
+([docs/CI_COVERAGE.md](docs/CI_COVERAGE.md#tiers), "When to set
+`ci:full`").
 
 CI builds every Linux target with **gcc**; local macOS builds use clang, and
 they disagree on parts of C23 (e.g. a `constexpr` with two declarators
