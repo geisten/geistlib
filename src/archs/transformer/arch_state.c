@@ -178,23 +178,19 @@ void transformer_buffer_release(struct geist_backend *be, struct geist_buffer **
     if (sess->scratch_dev_pool_buf != nullptr && !host_mapped) {
         return alloc_device_slice(sess, bytes, out_buf);
     }
-    struct geist_backend *be      = sess->model->backend;
-    const size_t          align   = 64;
-    const size_t          mask    = align - 1;
-    const size_t          aligned = (sess->scratch_pool_used + mask) & ~mask;
-    if (aligned + bytes > sess->scratch_pool_bytes) {
+    struct geist_backend *be = sess->model->backend;
+    void                 *p  = frame_arena_alloc(&sess->scratch_pool, bytes, 64);
+    if (p == nullptr) {
         geist_backend_set_error(be,
                                 GEIST_E_OOM,
                                 "transformer: scratch pool exhausted "
                                 "(used %zu, need %zu, capacity %zu)",
-                                sess->scratch_pool_used,
+                                sess->scratch_pool.used,
                                 bytes,
-                                sess->scratch_pool_bytes);
+                                sess->scratch_pool.capacity);
         return GEIST_E_OOM;
     }
-    void *p = (uint8_t *) sess->scratch_pool_base + aligned;
     memset(p, 0, bytes);
-    sess->scratch_pool_used = aligned + bytes;
     return be->desc->vtbl->buffer_create_aliased(be, p, bytes, GEIST_BUFFER_SCRATCH, out_buf);
 }
 
@@ -715,35 +711,30 @@ static void free_kv_caches(const struct transformer_arch_state *st,
 [[nodiscard]] static enum geist_status
 alloc_scratch_pool(struct transformer_arch_session       *sess,
                    const struct transformer_scratch_plan *plan) {
-    struct geist_backend *be = sess->model->backend;
-    sess->scratch_pool_bytes = plan->pool_bytes;
+    struct geist_backend *be    = sess->model->backend;
+    size_t                bytes = plan->pool_bytes;
     if (sess->scratch_device) {
         enum geist_status s = alloc_device_pool(sess, plan->pool_bytes - plan->host_bytes);
         if (s != GEIST_OK) {
             return s;
         }
         if (sess->scratch_dev_pool_buf != nullptr) {
-            sess->scratch_pool_bytes = plan->host_bytes;
+            bytes = plan->host_bytes;
         }
     }
-    enum geist_status s = be->desc->vtbl->buffer_create(be,
-                                                        sess->scratch_pool_bytes,
-                                                        GEIST_BUFFER_SCRATCH,
-                                                        GEIST_MEMORY_MAPPED,
-                                                        &sess->scratch_pool_buf);
+    enum geist_status s = be->desc->vtbl->buffer_create(
+            be, bytes, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_MAPPED, &sess->scratch_pool_buf);
     if (s != GEIST_OK) {
         return s; /* the backend set the error (e.g. a GPU budget, #531) */
     }
-    sess->scratch_pool_base = be->desc->vtbl->buffer_map(sess->scratch_pool_buf);
-    if (sess->scratch_pool_base == nullptr) {
-        geist_backend_set_error(be,
-                                GEIST_E_OOM,
-                                "transformer: scratch pool alloc failed (%zu bytes)",
-                                sess->scratch_pool_bytes);
+    void *base = be->desc->vtbl->buffer_map(sess->scratch_pool_buf);
+    if (base == nullptr) {
+        geist_backend_set_error(
+                be, GEIST_E_OOM, "transformer: scratch pool alloc failed (%zu bytes)", bytes);
         return GEIST_E_OOM;
     }
-    memset(sess->scratch_pool_base, 0, sess->scratch_pool_bytes);
-    sess->scratch_pool_used = 0;
+    memset(base, 0, bytes);
+    frame_arena_init(&sess->scratch_pool, base, bytes);
     return GEIST_OK;
 }
 
@@ -909,15 +900,11 @@ static void free_scratch(struct geist_backend *be, struct transformer_arch_sessi
     }
     if (sess->scratch_pool_buf != nullptr) {
         be->desc->vtbl->buffer_destroy(be, sess->scratch_pool_buf);
-        sess->scratch_pool_buf   = nullptr;
-        sess->scratch_pool_base  = nullptr;
-        sess->scratch_pool_bytes = 0;
-        sess->scratch_pool_used  = 0;
-    } else if (sess->scratch_pool_base != nullptr) {
-        safe_free(&sess->scratch_pool_base);
-        sess->scratch_pool_bytes = 0;
-        sess->scratch_pool_used  = 0;
+        sess->scratch_pool_buf = nullptr;
+    } else if (sess->scratch_pool.base != nullptr) {
+        safe_free(&sess->scratch_pool.base);
     }
+    sess->scratch_pool = (struct frame_arena) {0};
 }
 
 /* Session-owned runtime allocations: KV caches, scratch pool and slots,

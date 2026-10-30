@@ -25,7 +25,6 @@
 
 #include "../arch_family.h"
 #include "../forward/blocks.h"
-#include "../rotation.h"
 #include "../weight_load.h"
 
 #include "gguf_reader.h"
@@ -37,36 +36,22 @@
 static void populate_qwen3moe(struct gguf_ctx *gguf, struct transformer_arch_state *st) {
     st->config.has_qk_norms   = true;
     st->config.ffn_activation = GEIST_FFN_SWIGLU;
-    st->config.moe_norm_topk  = true;
 
     family_populate_common(gguf, "qwen3moe", nullptr, st);
     st->vocab_size = family_vocab_size(gguf, "qwen3moe", nullptr);
-    uint32_t u;
-    if (gguf_get_meta_u32(gguf, "qwen3moe.expert_count", &u))
-        st->config.moe_n_experts = u;
-    if (gguf_get_meta_u32(gguf, "qwen3moe.expert_used_count", &u))
-        st->config.moe_n_used = u;
-    bool b;
-    if (gguf_get_meta_bool(gguf, "qwen3moe.expert_weights_norm", &b))
-        st->config.moe_norm_topk = b; /* absent: Qwen3-MoE's norm_topk_prob */
+    family_populate_moe(gguf, "qwen3moe", st);
 }
 
 static bool populate_layers_qwen3moe(struct transformer_arch_state *st) {
-    struct gguf_ctx *g        = (struct gguf_ctx *) st->gguf;
-    uint32_t         head_dim = 0, expert_ff = 0;
+    struct gguf_ctx *g         = (struct gguf_ctx *) st->gguf;
+    const uint32_t   head_dim  = family_head_dim(st, "qwen3moe");
+    uint32_t         expert_ff = 0;
     float            freq_base = 1000000.0f;
     if (g != nullptr) {
-        gguf_get_meta_u32(g, "qwen3moe.attention.key_length", &head_dim);
         gguf_get_meta_u32(g, "qwen3moe.expert_feed_forward_length", &expert_ff);
         gguf_get_meta_f32(g, "qwen3moe.rope.freq_base", &freq_base);
     }
-    if (head_dim == 0 && st->n_q_heads > 0) {
-        head_dim = (uint32_t) (st->d_model / st->n_q_heads);
-    }
-    /* A router needs at least one expert to pick and no more than exist. */
-    if (head_dim == 0 || expert_ff == 0 || st->config.moe_n_experts == 0 ||
-        st->config.moe_n_used == 0 || st->config.moe_n_used > st->config.moe_n_experts ||
-        st->config.moe_n_experts > GEIST_MOE_MAX_EXPERTS) {
+    if (head_dim == 0 || expert_ff == 0 || !family_moe_ok(&st->config)) {
         return false;
     }
     family_uniform_layers(st, head_dim, expert_ff /* one expert's width */, freq_base);
@@ -90,31 +75,12 @@ static bool populate_layers_qwen3moe(struct transformer_arch_state *st) {
     return moe_wire_layer(st, gguf, L, "qwen3moe");
 }
 
-/* Qwen3's attention, unchanged. Each step runs only while s is GEIST_OK. */
+/* Qwen3's attention, unfused. */
 [[nodiscard]] static enum geist_status
 qwen3moe_attention_block(struct transformer_layer_forward_ctx *ctx) {
-    struct transformer_arch_state    *st   = ctx->st;
-    struct transformer_arch_session  *sess = ctx->sess;
-    struct transformer_layer_weights *L    = ctx->L;
-    const size_t                      d    = st->d_model;
-    struct geist_buffer              *x    = sess->scratch_normed;
-
-    enum geist_status s = blk_rmsnorm(ctx, d, ctx->h_in_buf, &L->attn_norm, x);
-    if (s == GEIST_OK)
-        s = transformer_rotate_rows(st, ctx->seq, d, x);
-    if (s == GEIST_OK)
-        s = blk_qkv(ctx, x);
-    if (s == GEIST_OK)
-        s = blk_qk_norm(ctx, &L->q_norm, &L->k_norm);
-    if (s == GEIST_OK)
-        s = blk_rope_qk(ctx, 1.0f / sqrtf((float) ctx->hd));
-    if (s == GEIST_OK)
-        s = blk_attend(ctx, true);
-    if (s == GEIST_OK)
-        s = blk_o_proj(ctx);
-    if (s == GEIST_OK)
-        s = blk_add(ctx, d, ctx->h_in_buf, sess->scratch_o, sess->scratch_h_post_attn);
-    return s;
+    struct transformer_layer_weights *L = ctx->L;
+    return blk_attention(
+            ctx, &L->q_norm, &L->k_norm, 1.0f / sqrtf((float) ctx->hd), nullptr, false);
 }
 
 const struct transformer_family transformer_family_qwen3moe = {

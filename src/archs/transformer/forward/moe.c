@@ -288,23 +288,15 @@ enum moe_profile_stage {
     MOE_PROFILE_COUNT,
 };
 
-static _Atomic uint64_t  g_moe_profile_ns[MOE_PROFILE_COUNT];
-static _Atomic uint64_t  g_moe_profile_calls[MOE_PROFILE_COUNT];
-static const char *const g_moe_profile_names[MOE_PROFILE_COUNT] = {
-        "norm",
-        "router",
-        "route",
-        "gather",
-        "experts",
-        "sum",
-};
-static struct transformer_forward_profile g_moe_profile = {
-        .title       = "transformer moe ffn",
-        .stage_names = g_moe_profile_names,
-        .stage_count = MOE_PROFILE_COUNT,
-        .ns          = g_moe_profile_ns,
-        .calls       = g_moe_profile_calls,
-};
+TRANSFORMER_PROFILE_DEFINE(g_moe_profile,
+                           "transformer moe ffn",
+                           MOE_PROFILE_COUNT,
+                           "norm",
+                           "router",
+                           "route",
+                           "gather",
+                           "experts",
+                           "sum");
 
 /* Close stage `stage` and start the next one at now (GEIST_PROFILE_FORWARD). */
 static inline void moe_profile_mark(size_t stage, uint64_t *t0) {

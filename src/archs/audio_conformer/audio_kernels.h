@@ -59,9 +59,6 @@ void layernorm_fp32_ws(
 /* In-place SiLU (a.k.a. swish): y = x * sigmoid(x). */
 void silu_fp32(size_t n, float x[static n]);
 
-/* In-place clamp: x[i] = clamp(x[i], lo, hi). */
-void clamp_fp32(size_t n, float x[static n], float lo, float hi);
-
 /* In-place GLU on rows: split last axis (length 2*d) in half, output dim d.
  *   y[r, i] = x[r, i] * sigmoid(x[r, d + i])    for i in [0, d)
  * x and y may alias (in-place); only the first d * batch elements of y are written. */

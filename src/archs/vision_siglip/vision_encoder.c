@@ -119,66 +119,9 @@ struct VisionEncoder {
     size_t soft_dim;
 };
 
-/* Load a 0-d bf16 scalar by name. Returns false if missing or not bf16. */
-static bool load_bf16_scalar(struct st_ctx *sf, const char *name, float *out) {
-    const struct st_tensor_t *t = st_get(sf, name);
-    if (t == nullptr || t->dtype != ST_DTYPE_BF16 || t->nbytes != 2) {
-        fprintf(stderr, "vision_encoder: missing/bad scalar '%s'\n", name);
-        return false;
-    }
-    uint16_t raw;
-    memcpy(&raw, t->data, 2);
-    uint32_t bits = ((uint32_t) raw) << 16;
-    memcpy(out, &bits, 4);
-    return true;
-}
-
-static bool load_clip(struct st_ctx *sf, const char *prefix, struct clip *c) {
-    char b[256];
-    snprintf(b, sizeof b, "%s.input_min", prefix);
-    if (!load_bf16_scalar(sf, b, &c->in_min))
-        return false;
-    snprintf(b, sizeof b, "%s.input_max", prefix);
-    if (!load_bf16_scalar(sf, b, &c->in_max))
-        return false;
-    snprintf(b, sizeof b, "%s.output_min", prefix);
-    if (!load_bf16_scalar(sf, b, &c->out_min))
-        return false;
-    snprintf(b, sizeof b, "%s.output_max", prefix);
-    if (!load_bf16_scalar(sf, b, &c->out_max))
-        return false;
-    return true;
-}
-
-/* Load a BF16 tensor by name, dequant to a freshly-allocated fp32 buffer.
- * Returns nullptr on failure. */
+/* name's BF16 tensor of n elements, widened to F32 (st_load_bf16_f32). */
 static float *load_bf16(struct st_ctx *sf, const char *name, size_t n) {
-    const struct st_tensor_t *t = st_get(sf, name);
-    if (t == nullptr) {
-        fprintf(stderr, "vision_encoder: missing tensor '%s'\n", name);
-        return nullptr;
-    }
-    if (t->dtype != ST_DTYPE_BF16) {
-        fprintf(stderr,
-                "vision_encoder: '%s' dtype=%s, want BF16\n",
-                name,
-                st_dtype_name(t->dtype));
-        return nullptr;
-    }
-    if (t->nbytes != n * 2) {
-        fprintf(stderr,
-                "vision_encoder: '%s' size mismatch: got %zu bytes, want %zu\n",
-                name,
-                t->nbytes,
-                n * 2);
-        return nullptr;
-    }
-    /* Weight-sized: mmap'd, so destroy returns the pages (#733). */
-    float *dst = heap_alloc_large(n * sizeof(float), alignof(float));
-    if (dst != nullptr) {
-        bf16_array_to_fp32(n, t->data, dst);
-    }
-    return dst;
+    return st_load_bf16_f32(sf, 1, n, &name, "vision_encoder");
 }
 
 static bool load_layer(struct st_ctx *sf, int idx, struct vision_layer *L) {
@@ -200,71 +143,30 @@ static bool load_layer(struct st_ctx *sf, int idx, struct vision_layer *L) {
 
     /* Q/K/V stacked into a single (3*VTH, VTH) weight at load time. */
     {
-        float *q_tmp = nullptr, *k_tmp = nullptr, *v_tmp = nullptr;
-        snprintf(buf, sizeof buf, "%s.%d.%s", P, idx, "self_attn.q_proj.linear.weight");
-        q_tmp = load_bf16(sf, buf, (size_t) VTH * VTH);
-        if (q_tmp == nullptr)
+        char q[256], k[256], v[256];
+        snprintf(q, sizeof q, "%s.%d.self_attn.q_proj.linear.weight", P, idx);
+        snprintf(k, sizeof k, "%s.%d.self_attn.k_proj.linear.weight", P, idx);
+        snprintf(v, sizeof v, "%s.%d.self_attn.v_proj.linear.weight", P, idx);
+        const char *const names[] = {q, k, v};
+        L->qkv_proj = st_load_bf16_f32(sf, 3, (size_t) VTH * VTH, names, "vision_encoder");
+        if (L->qkv_proj == nullptr)
             return false;
-        snprintf(buf, sizeof buf, "%s.%d.%s", P, idx, "self_attn.k_proj.linear.weight");
-        k_tmp = load_bf16(sf, buf, (size_t) VTH * VTH);
-        if (k_tmp == nullptr) {
-            safe_free((void **) &q_tmp);
-            return false;
-        }
-        snprintf(buf, sizeof buf, "%s.%d.%s", P, idx, "self_attn.v_proj.linear.weight");
-        v_tmp = load_bf16(sf, buf, (size_t) VTH * VTH);
-        if (v_tmp == nullptr) {
-            safe_free((void **) &q_tmp);
-            safe_free((void **) &k_tmp);
-            return false;
-        }
-        L->qkv_proj = heap_alloc_large(3 * (size_t) VTH * VTH * sizeof(float), alignof(float));
-        if (L->qkv_proj == nullptr) {
-            safe_free((void **) &q_tmp);
-            safe_free((void **) &k_tmp);
-            safe_free((void **) &v_tmp);
-            return false;
-        }
-        const size_t one = (size_t) VTH * VTH;
-        memcpy(L->qkv_proj, q_tmp, one * sizeof(float));
-        memcpy(L->qkv_proj + one, k_tmp, one * sizeof(float));
-        memcpy(L->qkv_proj + 2 * one, v_tmp, one * sizeof(float));
-        safe_free((void **) &q_tmp);
-        safe_free((void **) &k_tmp);
-        safe_free((void **) &v_tmp);
     }
     LOAD_(o_proj, "self_attn.o_proj.linear.weight", VTH * VTH);
 
     LOAD_(q_norm, "self_attn.q_norm.weight", V_HEAD_D);
     LOAD_(k_norm, "self_attn.k_norm.weight", V_HEAD_D);
 
-    /* Load gate+up as separate buffers temporarily, then stack into
-     * gate_up_proj (rows 0..INTER-1 = gate, rows INTER..2*INTER-1 = up). */
+    /* gate and up stacked into gate_up_proj (rows 0..INTER-1 = gate, rows
+     * INTER..2*INTER-1 = up). */
     {
-        float *gate_tmp = nullptr, *up_tmp = nullptr;
-        snprintf(buf, sizeof buf, "%s.%d.%s", P, idx, "mlp.gate_proj.linear.weight");
-        gate_tmp = load_bf16(sf, buf, (size_t) V_INTER * VTH);
-        if (gate_tmp == nullptr)
+        char g[256], u[256];
+        snprintf(g, sizeof g, "%s.%d.mlp.gate_proj.linear.weight", P, idx);
+        snprintf(u, sizeof u, "%s.%d.mlp.up_proj.linear.weight", P, idx);
+        const char *const names[] = {g, u};
+        L->gate_up_proj = st_load_bf16_f32(sf, 2, (size_t) V_INTER * VTH, names, "vision_encoder");
+        if (L->gate_up_proj == nullptr)
             return false;
-        snprintf(buf, sizeof buf, "%s.%d.%s", P, idx, "mlp.up_proj.linear.weight");
-        up_tmp = load_bf16(sf, buf, (size_t) V_INTER * VTH);
-        if (up_tmp == nullptr) {
-            safe_free((void **) &gate_tmp);
-            return false;
-        }
-        L->gate_up_proj =
-                heap_alloc_large(2 * (size_t) V_INTER * VTH * sizeof(float), alignof(float));
-        if (L->gate_up_proj == nullptr) {
-            safe_free((void **) &gate_tmp);
-            safe_free((void **) &up_tmp);
-            return false;
-        }
-        memcpy(L->gate_up_proj, gate_tmp, (size_t) V_INTER * VTH * sizeof(float));
-        memcpy(L->gate_up_proj + (size_t) V_INTER * VTH,
-               up_tmp,
-               (size_t) V_INTER * VTH * sizeof(float));
-        safe_free((void **) &gate_tmp);
-        safe_free((void **) &up_tmp);
     }
     LOAD_(down_proj, "mlp.down_proj.linear.weight", (size_t) VTH * V_INTER);
 
@@ -272,11 +174,17 @@ static bool load_layer(struct st_ctx *sf, int idx, struct vision_layer *L) {
 
     /* Per-Linear clipping scalars. */
     char b[256];
-#define CLIP(field, suffix)                                \
-    do {                                                   \
-        snprintf(b, sizeof b, "%s.%d.%s", P, idx, suffix); \
-        if (!load_clip(sf, b, &L->field))                  \
-            return false;                                  \
+#define CLIP(field, suffix)                                 \
+    do {                                                    \
+        snprintf(b, sizeof b, "%s.%d.%s.", P, idx, suffix); \
+        if (!st_load_clip4(sf,                              \
+                           b,                               \
+                           "vision_encoder",                \
+                           &L->field.in_min,                \
+                           &L->field.in_max,                \
+                           &L->field.out_min,               \
+                           &L->field.out_max))              \
+            return false;                                   \
     } while (0)
     CLIP(q_clip, "self_attn.q_proj");
     CLIP(k_clip, "self_attn.k_proj");
@@ -406,49 +314,6 @@ static void dbg_dump(const char *name, const float *buf, size_t n) {
         return;
     fwrite(buf, sizeof(float), n, f);
     fclose(f);
-}
-
-/* In-place per-head RMSNorm: applies rmsnorm_fp32 to each (head_dim,)
- * slice within (n_tokens, n_heads, head_dim). */
-static void rmsnorm_per_head(float       *x,
-                             const float *weight,
-                             size_t       n_tokens,
-                             size_t       n_heads,
-                             size_t       head_dim,
-                             float        eps) {
-    rmsnorm_fp32(n_tokens * n_heads, head_dim, x, weight, eps, x);
-}
-
-/* In-place clamp x to [lo, hi] (Gemma4ClippableLinear input/output gates).
- * NEON-vectorized 16-wide on ARM; bit-exact vs scalar for finite inputs
- * (NaN behavior is irrelevant since activations are guaranteed finite
- * by the upstream clamp chain). */
-static void clamp_fp32(size_t n, float *x, float lo, float hi) {
-    size_t i = 0;
-#if defined(__ARM_NEON)
-    const float32x4_t vlo = vdupq_n_f32(lo);
-    const float32x4_t vhi = vdupq_n_f32(hi);
-    for (; i + 16 <= n; i += 16) {
-        float32x4_t v0 = vld1q_f32(x + i + 0);
-        float32x4_t v1 = vld1q_f32(x + i + 4);
-        float32x4_t v2 = vld1q_f32(x + i + 8);
-        float32x4_t v3 = vld1q_f32(x + i + 12);
-        v0             = vminq_f32(vmaxq_f32(v0, vlo), vhi);
-        v1             = vminq_f32(vmaxq_f32(v1, vlo), vhi);
-        v2             = vminq_f32(vmaxq_f32(v2, vlo), vhi);
-        v3             = vminq_f32(vmaxq_f32(v3, vlo), vhi);
-        vst1q_f32(x + i + 0, v0);
-        vst1q_f32(x + i + 4, v1);
-        vst1q_f32(x + i + 8, v2);
-        vst1q_f32(x + i + 12, v3);
-    }
-#endif
-    for (; i < n; i++) {
-        if (x[i] < lo)
-            x[i] = lo;
-        else if (x[i] > hi)
-            x[i] = hi;
-    }
 }
 
 bool vision_encoder_run_tower(const struct VisionEncoder *v,
@@ -592,9 +457,10 @@ bool vision_encoder_run_tower(const struct VisionEncoder *v,
             }
         }
 
-        rmsnorm_per_head(q, L->q_norm, n_patches, V_HEADS, V_HEAD_D, V_EPS);
-        rmsnorm_per_head(k, L->k_norm, n_patches, V_HEADS, V_HEAD_D, V_EPS);
-        rmsnorm_per_head(vbuf, nullptr, n_patches, V_HEADS, V_HEAD_D, V_EPS);
+        /* per-head RMSNorm over each (head_dim,) slice; v without a scale */
+        rmsnorm_fp32(n_patches * V_HEADS, V_HEAD_D, q, L->q_norm, V_EPS, q);
+        rmsnorm_fp32(n_patches * V_HEADS, V_HEAD_D, k, L->k_norm, V_EPS, k);
+        rmsnorm_fp32(n_patches * V_HEADS, V_HEAD_D, vbuf, nullptr, V_EPS, vbuf);
 
         rope_2d_split_fp32(n_patches, V_HEADS, V_HEAD_D, V_THETA, q, positions);
         rope_2d_split_fp32(n_patches, V_HEADS, V_HEAD_D, V_THETA, k, positions);

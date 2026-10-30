@@ -8,39 +8,6 @@
 
 static void quantize_clippable_w8(struct ClippableLinear *cl, size_t out_dim, size_t in_dim);
 
-float *load_bf16(struct st_ctx *sf, const char *name, size_t expect_elems) {
-    const struct st_tensor_t *t = st_get(sf, name);
-    if (!t) {
-        fprintf(stderr, "audio_encoder: missing %s\n", name);
-        return nullptr;
-    }
-    if (t->dtype != ST_DTYPE_BF16) {
-        fprintf(stderr, "audio_encoder: %s expected BF16, got %s\n", name, st_dtype_name(t->dtype));
-        return nullptr;
-    }
-    size_t n = t->nbytes / 2;
-    if (n != expect_elems) {
-        fprintf(stderr, "audio_encoder: %s expected %zu elems, got %zu\n", name, expect_elems, n);
-        return nullptr;
-    }
-    return bf16_alloc_fp32(n, t->data);
-}
-
-/* Read a scalar bf16 tensor (shape ()) → float. */
-static bool load_bf16_scalar(struct st_ctx *sf, const char *name, float *out) {
-    const struct st_tensor_t *t = st_get(sf, name);
-    if (!t || t->dtype != ST_DTYPE_BF16 || t->nbytes != 2) {
-        fprintf(stderr, "audio_encoder: bad scalar %s\n", name);
-        return false;
-    }
-    /* memcpy, not *(const uint16_t *): tensor data sits at an arbitrary byte
-     * offset in the mmap and may be odd-aligned. */
-    uint16_t raw;
-    memcpy(&raw, t->data, sizeof raw);
-    *out = bf16_to_fp32(raw);
-    return true;
-}
-
 static bool load_clippable(struct st_ctx          *sf,
                            const char             *prefix,
                            struct ClippableLinear *cl,
@@ -52,17 +19,13 @@ static bool load_clippable(struct st_ctx          *sf,
     cl->w = load_bf16(sf, buf, out_dim * in_dim);
     if (!cl->w)
         return false;
-    snprintf(buf, sizeof(buf), "%sinput_min", prefix);
-    if (!load_bf16_scalar(sf, buf, &cl->input_min))
-        return false;
-    snprintf(buf, sizeof(buf), "%sinput_max", prefix);
-    if (!load_bf16_scalar(sf, buf, &cl->input_max))
-        return false;
-    snprintf(buf, sizeof(buf), "%soutput_min", prefix);
-    if (!load_bf16_scalar(sf, buf, &cl->output_min))
-        return false;
-    snprintf(buf, sizeof(buf), "%soutput_max", prefix);
-    if (!load_bf16_scalar(sf, buf, &cl->output_max))
+    if (!st_load_clip4(sf,
+                       prefix,
+                       "audio_encoder",
+                       &cl->input_min,
+                       &cl->input_max,
+                       &cl->output_min,
+                       &cl->output_max))
         return false;
 
     cl->prec = prec;

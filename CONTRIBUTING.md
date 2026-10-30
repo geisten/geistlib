@@ -81,9 +81,13 @@ post-merge tier runs the rest: integration + e2e against real models, the
 Metal gate, the perf floors on the Pi 5 and the M1 Max, ASan + UBSan, TSan,
 coverage, Vulkan on lavapipe and the other build legs; a job failing there
 opens a Gitea issue (`CI on main: <job>`, label `ci-failure`) that the next
-green run closes. A PR that touches kernels, a GPU backend, memory handling
-or the build should run that tier before the merge: add the label `ci:full`
-and push. Before pushing, run the checks in
+green run closes. A PR that touches kernels, a GPU backend, memory handling,
+threading or other sanitizer-relevant code should run that tier before the
+merge: add the label `ci:full` and push. Any other PR leaves the label off
+(unless the user asks for it) and relies on the nightly run; each `ci:full`
+run adds ~25 jobs that every other PR queues behind
+([docs/CI_COVERAGE.md](docs/CI_COVERAGE.md#tiers), "When to set
+`ci:full`"). Before pushing, run the checks in
 [AGENT.md §7](AGENT.md#7-before-you-push).
 
 `main` merges only when every required job is green; the branch protection

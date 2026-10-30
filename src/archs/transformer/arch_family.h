@@ -168,6 +168,17 @@ void   family_uniform_layers(struct transformer_arch_state *st,
                              size_t                         intermediate,
                              float                          rope_theta);
 
+/* attention.key_length, else d_model / n_q_heads as a last resort (#258:
+ * the quotient is wrong exactly where the key matters), else 0. */
+uint32_t family_head_dim(const struct transformer_arch_state *st, const char *arch);
+
+/* MoE metadata: expert_count, expert_used_count, expert_weights_norm
+ * (absent: true, Qwen3-MoE's norm_topk_prob); family_moe_ok: at least one
+ * expert to pick, no more picks than experts, every slot within
+ * GEIST_MOE_MAX_EXPERTS. */
+void family_populate_moe(struct gguf_ctx *g, const char *arch, struct transformer_arch_state *st);
+bool family_moe_ok(const struct geist_arch_config *c);
+
 /* Select a family by `general.architecture` string. Returns the
  * matching family entry, or nullptr when the key is absent or no
  * entry matches (fail closed — caller aborts the load). */

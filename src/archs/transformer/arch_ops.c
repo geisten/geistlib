@@ -448,13 +448,6 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
     if (vocab_ok != GEIST_OK) {
         return vocab_ok;
     }
-    struct geist_backend *be = st->backend;
-
-    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
-    /* sqrt(d_model) embedding scale is Gemma-3/4-specific; Llama / BitNet
-     * don't scale. */
-    const float embed_scale = st->config.has_embed_scale ? sqrtf((float) st->d_model) : 1.0f;
-
     /* Chunk by the SESSION cap, not st->m_max: every scratch buffer is
      * sized with sess->m_max (arch_state.c), which may be smaller. With
      * offload a chunk the load backend runs may be smaller still (#78). */
@@ -464,68 +457,10 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
             return GEIST_E_CANCELLED; /* kv_len counts the finished sub-batches */
         }
 
-        /* 1. Embed all chunk tokens into scratch_h_a [chunk, HIDDEN].
-         * Device path first: per-row fused lookup+scale dispatches keep
-         * batched GPU backends from flushing the pipeline through a
-         * mapped host pointer (and skip the host dequant loop). */
-        bool embed_on_device = st->model_fusions.embed_lookup_scaled;
-        bool embed_batched   = false;
-        if (embed_on_device && fused->embedding_lookup_scaled_rows != nullptr) {
-            /* One dispatch for the whole chunk instead of one per token
-             * (#322). Non-OK (row cap, unsupported dtype)
-             * falls through to the per-token loop below. */
-            struct geist_tensor t_rows = {
-                    .buffer = sess->scratch_h_a,
-                    .offset = 0,
-                    .dtype  = GEIST_DTYPE_F32,
-                    .layout = GEIST_LAYOUT_DENSE,
-                    .ndim   = 2,
-                    .shape  = {(int64_t) chunk, (int64_t) st->d_model, 0, 0, 0, 0, 0, 0},
-                    .stride = {(int64_t) st->d_model, 1, 0, 0, 0, 0, 0, 0},
-            };
-            embed_batched = fused->embedding_lookup_scaled_rows(
-                                    be, chunk, &st->embed_table, ids + off, embed_scale, &t_rows) ==
-                            GEIST_OK;
-        }
-        if (embed_on_device && !embed_batched) {
-            for (size_t t = 0; t < chunk; t++) {
-                struct geist_tensor t_row = {
-                        .buffer = sess->scratch_h_a,
-                        .offset = t * st->d_model * sizeof(float),
-                        .dtype  = GEIST_DTYPE_F32,
-                        .layout = GEIST_LAYOUT_DENSE,
-                        .ndim   = 1,
-                        .shape  = {(int64_t) st->d_model, 0, 0, 0, 0, 0, 0, 0},
-                        .stride = {1, 0, 0, 0, 0, 0, 0, 0},
-                };
-                const enum geist_status es = fused->embedding_lookup_scaled(
-                        be, &st->embed_table, ids[off + t], embed_scale, &t_row);
-                if (es != GEIST_OK) {
-                    return es; /* bound at plan build — failure is a real error */
-                }
-            }
-        }
-        if (!embed_on_device) {
-            const enum geist_status s = transformer_gather_rows(sess,
-                                                                &st->embed_table,
-                                                                chunk,
-                                                                ids + off,
-                                                                st->d_model,
-                                                                embed_scale,
-                                                                sess->scratch_h_a);
-            if (s != GEIST_OK) {
-                return s;
-            }
-        }
-
-        /* prism.hadamard: token_embd stores rotated rows. */
-        enum geist_status s = GEIST_OK;
-        if (st->rotation.embed_inverse) {
-            s = transformer_rotate(
-                    st, chunk, st->d_model, false, true, sess->scratch_h_a, sess->scratch_h_a);
-            if (s != GEIST_OK) {
-                return s;
-            }
+        /* 1. Embed all chunk tokens into scratch_h_a [chunk, HIDDEN]. */
+        enum geist_status s = transformer_embed_rows(sess, chunk, ids + off, sess->scratch_h_a);
+        if (s != GEIST_OK) {
+            return s;
         }
 
         /* 2. Batched PLE precompute; skipped for non-PLE families. */
@@ -650,40 +585,22 @@ static enum geist_status verify_forward_inner(struct transformer_arch_session *s
     if (vocab_ok != GEIST_OK) {
         return vocab_ok;
     }
-    struct geist_backend            *be = st->backend;
-    const struct geist_backend_vtbl *v  = be->desc->vtbl;
-    const float embed_scale = st->config.has_embed_scale ? sqrtf((float) st->d_model) : 1.0f;
-
-    /* 1. Embed all k tokens into scratch_h_a [k, HIDDEN]. */
-    {
-        float *h_dst = (float *) v->buffer_map(sess->scratch_h_a);
-        if (h_dst == nullptr) {
-            return GEIST_E_BACKEND; /* the backend said why */
-        }
-        for (size_t t = 0; t < k; t++) {
-            enum geist_status s =
-                    dequant_one_row(be, &st->embed_table, (size_t) ids[t], h_dst + t * st->d_model);
-            if (s != GEIST_OK) {
-                v->buffer_unmap(sess->scratch_h_a);
-                return s;
-            }
-        }
-        if (embed_scale != 1.0f) {
-            const size_t n_floats = k * st->d_model;
-            for (size_t i = 0; i < n_floats; i++) {
-                h_dst[i] *= embed_scale;
-            }
-        }
-        v->buffer_unmap(sess->scratch_h_a);
-    }
-
-    enum geist_status s = GEIST_OK;
-    if (st->rotation.embed_inverse) {
+    /* 1. Embed all k tokens into scratch_h_a [k, HIDDEN], gathered on the
+     * host. */
+    enum geist_status s = transformer_gather_rows(sess,
+                                                  &st->embed_table,
+                                                  k,
+                                                  ids,
+                                                  st->d_model,
+                                                  transformer_embed_scale(st),
+                                                  sess->scratch_h_a);
+    if (s == GEIST_OK && st->rotation.embed_inverse) {
+        /* prism.hadamard: token_embd stores rotated rows. */
         s = transformer_rotate(
                 st, k, st->d_model, false, true, sess->scratch_h_a, sess->scratch_h_a);
-        if (s != GEIST_OK) {
-            return s;
-        }
+    }
+    if (s != GEIST_OK) {
+        return s;
     }
 
     /* 2. PLE precompute; skipped for non-PLE families. */

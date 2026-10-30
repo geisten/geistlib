@@ -24,23 +24,15 @@ enum ple_profile_stage {
     PLE_ADD,
     PLE_PROFILE_COUNT,
 };
-static _Atomic uint64_t  g_ple_ns[PLE_PROFILE_COUNT];
-static _Atomic uint64_t  g_ple_calls[PLE_PROFILE_COUNT];
-static const char *const g_ple_names[PLE_PROFILE_COUNT] = {
-        "gate_lin",
-        "gelu",
-        "mul",
-        "proj_lin",
-        "rmsnorm",
-        "add",
-};
-static struct transformer_forward_profile g_ple_profile = {
-        .title       = "transformer ple (per-layer)",
-        .stage_names = g_ple_names,
-        .stage_count = PLE_PROFILE_COUNT,
-        .ns          = g_ple_ns,
-        .calls       = g_ple_calls,
-};
+TRANSFORMER_PROFILE_DEFINE(g_ple_profile,
+                           "transformer ple (per-layer)",
+                           PLE_PROFILE_COUNT,
+                           "gate_lin",
+                           "gelu",
+                           "mul",
+                           "proj_lin",
+                           "rmsnorm",
+                           "add");
 
 static enum geist_status run_ple(struct transformer_layer_forward_ctx *ctx) {
 

@@ -34,21 +34,13 @@
 /* GEIST_PROFILE_FORWARD=1: per-layer stages. The PLE and layer-scale tail
  * records itself (layer_ple.c), and "ffn" is the family's ffn_block without
  * it. */
-static _Atomic uint64_t  g_layer_ns[TRANSFORMER_LAYER_PROFILE_COUNT];
-static _Atomic uint64_t  g_layer_calls[TRANSFORMER_LAYER_PROFILE_COUNT];
-static const char *const g_layer_names[TRANSFORMER_LAYER_PROFILE_COUNT] = {
-        "attention",
-        "ffn",
-        "ple",
-        "scale",
-};
-static struct transformer_forward_profile g_layer_profile = {
-        .title       = "transformer",
-        .stage_names = g_layer_names,
-        .stage_count = TRANSFORMER_LAYER_PROFILE_COUNT,
-        .ns          = g_layer_ns,
-        .calls       = g_layer_calls,
-};
+TRANSFORMER_PROFILE_DEFINE(g_layer_profile,
+                           "transformer",
+                           TRANSFORMER_LAYER_PROFILE_COUNT,
+                           "attention",
+                           "ffn",
+                           "ple",
+                           "scale");
 
 uint64_t transformer_layer_profile_add(enum transformer_layer_profile_stage stage, uint64_t t0) {
     return transformer_profile_add(&g_layer_profile, stage, t0);
@@ -510,22 +502,14 @@ enum plepre_stage {
     PLEPRE_COMBINE,
     PLEPRE_COUNT,
 };
-static _Atomic uint64_t  g_plepre_ns[PLEPRE_COUNT];
-static _Atomic uint64_t  g_plepre_calls[PLEPRE_COUNT];
-static const char *const g_plepre_names[PLEPRE_COUNT] = {
-        "gather_q5k",
-        "model_proj",
-        "scale",
-        "rmsnorm",
-        "combine",
-};
-static struct transformer_forward_profile g_plepre_profile = {
-        .title       = "transformer ple precompute (per-chunk)",
-        .stage_names = g_plepre_names,
-        .stage_count = PLEPRE_COUNT,
-        .ns          = g_plepre_ns,
-        .calls       = g_plepre_calls,
-};
+TRANSFORMER_PROFILE_DEFINE(g_plepre_profile,
+                           "transformer ple precompute (per-chunk)",
+                           PLEPRE_COUNT,
+                           "gather_q5k",
+                           "model_proj",
+                           "scale",
+                           "rmsnorm",
+                           "combine");
 
 static void plepre_add(enum plepre_stage stage, uint64_t t0) {
     transformer_profile_add(&g_plepre_profile, stage, t0);
@@ -557,15 +541,8 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
     bool gather_on_device = st->model_fusions.ple_lookup_scaled;
     if (gather_on_device) {
         for (size_t t = 0; t < n; t++) {
-            struct geist_tensor t_row = {
-                    .buffer = sess->scratch_ple_lookup,
-                    .offset = t * PLE_OUT * sizeof(float),
-                    .dtype  = GEIST_DTYPE_F32,
-                    .layout = GEIST_LAYOUT_DENSE,
-                    .ndim   = 1,
-                    .shape  = {(int64_t) PLE_OUT, 0, 0, 0, 0, 0, 0, 0},
-                    .stride = {1, 0, 0, 0, 0, 0, 0, 0},
-            };
+            struct geist_tensor t_row =
+                    view_1d_at(sess->scratch_ple_lookup, t * PLE_OUT * sizeof(float), PLE_OUT);
             const enum geist_status es = fused->embedding_lookup_scaled(
                     be, &st->ple_table, ple_ids[t], st->config.ple_table_scale, &t_row);
             if (es != GEIST_OK) {
@@ -750,17 +727,12 @@ multi_attention(struct transformer_layer_forward_ctx  *ctx,
     struct transformer_arch_state    *st = ctx->st;
     struct transformer_arch_session  *c  = ctx->sess;
     struct transformer_layer_weights *L  = ctx->L;
-    const size_t                      d  = st->d_model;
     if (!st->config.has_attn_output_gate || !ctx->compute_kv) {
         return GEIST_E_UNSUPPORTED;
     }
-    enum geist_status s = blk_rmsnorm(ctx, d, ctx->h_in_buf, &L->attn_norm, c->scratch_normed);
-    if (s == GEIST_OK)
-        s = transformer_rotate_rows(st, ctx->seq, d, c->scratch_normed);
-    if (s == GEIST_OK)
-        s = blk_qkv(ctx, c->scratch_normed);
-    if (s == GEIST_OK)
-        s = blk_qk_norm(ctx, &L->q_norm, &L->k_norm);
+    /* blk_attention's halves; ctx_init leaves the prenorm and add-norm
+     * fusions off for this family. */
+    enum geist_status s = blk_attn_in(ctx, &L->q_norm, &L->k_norm);
     if (s == GEIST_OK && multi_attention_rows_ok(ctx)) {
         s = multi_attention_rows(ctx, n, seqs, layer_idx);
         goto attended;
@@ -791,11 +763,7 @@ multi_attention(struct transformer_layer_forward_ctx  *ctx,
             s = copy_row(ctx->v, c->scratch_attn, b, q->scratch_attn, 0, ctx->q_out);
     }
 attended:
-    if (s == GEIST_OK)
-        s = blk_o_proj(ctx);
-    if (s == GEIST_OK)
-        s = blk_add(ctx, d, ctx->h_in_buf, c->scratch_o, c->scratch_h_post_attn);
-    return s;
+    return s == GEIST_OK ? blk_attn_out(ctx, nullptr) : s;
 }
 
 enum geist_status transformer_multi_layer(struct transformer_arch_session       *carrier,

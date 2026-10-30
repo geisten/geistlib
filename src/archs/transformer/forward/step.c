@@ -570,51 +570,53 @@ size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
     return GEIST_OK;
 }
 
-/* Dequantize one row of the embed_table into a HIDDEN-sized scratch
- * buffer. Gemma 3/4 multiply the embedding by sqrt(d_model); Llama /
- * BitNet do not. Gated on has_embed_scale, as in prefill: Gemma 3 has the
- * scale and no PLE. */
-/* Inlined into transformer_decode_step as before batched decode (#26) called
- * it too: the single-token path keeps its code. */
-[[nodiscard, gnu::always_inline]] static inline enum geist_status
-embed_lookup_and_scale(struct transformer_arch_session *sess,
-                       geist_token_t                    token_id,
-                       struct geist_buffer             *out_h_buf) {
-    struct transformer_arch_state *st = sess->model;
-
-    if (token_id < 0 || (size_t) token_id >= (size_t) st->vocab_size) {
-        return GEIST_E_INVALID_ARG;
-    }
-    struct geist_backend *be    = st->backend;
-    const float           scale = st->config.has_embed_scale ? sqrtf((float) st->d_model) : 1.0f;
-
+enum geist_status transformer_embed_rows(struct transformer_arch_session *sess,
+                                         size_t                           n,
+                                         const geist_token_t              ids[static n],
+                                         struct geist_buffer             *out) {
+    struct transformer_arch_state    *st    = sess->model;
+    struct geist_backend             *be    = st->backend;
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
-    /* Device path: fused lookup+scale keeps batched GPU backends from
-     * dequantizing through a mapped host pointer every token. Bound at
-     * plan build. */
-    if (st->model_fusions.embed_lookup_scaled) {
-        struct geist_tensor     t_out = view_1d(out_h_buf, st->d_model);
-        const enum geist_status es =
-                fused->embedding_lookup_scaled(be, &st->embed_table, token_id, scale, &t_out);
-        if (es != GEIST_OK) {
-            return es;
+    const float                       scale = transformer_embed_scale(st);
+    enum geist_status                 s     = GEIST_OK;
+    if (!st->model_fusions.embed_lookup_scaled) {
+        /* Host path: an untied table on a device-copy or unified-memory
+         * backend, or a CPU backend. */
+        s = transformer_gather_rows(sess, &st->embed_table, n, ids, st->d_model, scale, out);
+    } else {
+        /* Device path, bound at plan build: batched GPU backends do not
+         * dequantize through a mapped host pointer. Several rows go in one
+         * dispatch where the backend has it (#322; the same per-element
+         * math), else one per row. */
+        bool done = false;
+        if (n > 1 && fused->embedding_lookup_scaled_rows != nullptr) {
+            struct geist_tensor t_rows = view_2d(out, (int64_t) n, st->d_model);
+            done                       = fused->embedding_lookup_scaled_rows(
+                                                 be, n, &st->embed_table, ids, scale, &t_rows) == GEIST_OK;
         }
-        /* prism.hadamard: token_embd stores rotated rows. */
-        return st->rotation.embed_inverse
-                       ? transformer_rotate(st, 1, st->d_model, false, true, out_h_buf, out_h_buf)
-                       : GEIST_OK;
+        for (size_t t = 0; !done && s == GEIST_OK && t < n; t++) {
+            struct geist_tensor t_row =
+                    view_1d_at(out, t * st->d_model * sizeof(float), st->d_model);
+            s = fused->embedding_lookup_scaled(be, &st->embed_table, ids[t], scale, &t_row);
+        }
     }
-
-    /* Host path: the row is gathered on the host (an untied table on a
-     * device-copy or unified-memory backend, or a CPU backend). */
-    enum geist_status s = transformer_gather_rows(
-            sess, &st->embed_table, 1, &token_id, st->d_model, scale, out_h_buf);
     if (s != GEIST_OK) {
         return s;
     }
+    /* prism.hadamard: token_embd stores rotated rows. */
     return st->rotation.embed_inverse
-                   ? transformer_rotate(st, 1, st->d_model, false, true, out_h_buf, out_h_buf)
+                   ? transformer_rotate(st, n, st->d_model, false, true, out, out)
                    : GEIST_OK;
+}
+
+/* One token, range-checked, into out_h_buf. */
+[[nodiscard]] static enum geist_status embed_lookup_and_scale(struct transformer_arch_session *sess,
+                                                              geist_token_t        token_id,
+                                                              struct geist_buffer *out_h_buf) {
+    if (token_id < 0 || (size_t) token_id >= (size_t) sess->model->vocab_size) {
+        return GEIST_E_INVALID_ARG;
+    }
+    return transformer_embed_rows(sess, 1, &token_id, out_h_buf);
 }
 
 /* Post-seed step: with scratch_h_a already populated with the residual-

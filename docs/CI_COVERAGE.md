@@ -28,11 +28,19 @@ arm64 on `macos-15-heavy`, Linux arm64 on the Pi 5, `ubuntu-24.04-arm-pi`;
 these two skip `main` pushes and run nightly, on dispatch and with `ci:full`,
 because each holds its host's benchmark lock for 40+ minutes; the
 coverage ratchet skips `main` pushes too: ~140 min of a `desktop-ci` slot),
-the other build legs (clang, scalar, arm64 musl, `TARGET=pi5`, macOS GCD)
-and the documented builds. The documented builds take under a minute each,
-but they recompile what the required legs already compile with the same gcc
-14 (Alpine, ubuntu + gcc-14) and only catch a README recipe that drifts, so
-three more checkouts per pull request buy little.
+the other build legs (scalar + clang in one job, arm64 musl, `TARGET=pi5`,
+macOS GCD). Small x86_64 legs share a job (and one `desktop-ci` slot):
+scalar with clang, the SDE dispatch proof with the audio W8A8 parity leg.
+
+**Documented builds (`readme-build`).** `make lib` in clean `debian:13`,
+`alpine:3.21` and `ubuntu:24.04` images run nightly, on dispatch, and on a
+pull request whose diff touches a recipe or a build file (`README.md`,
+`docs/QUICKSTART.md`, `docs/DEPLOY.md`, `Makefile`, `mk/`;
+`scripts/ci-changes.sh` prints `build=true`) — not on other pull requests,
+`ci:full` included, and not on `main` pushes. They recompile what the
+required legs already compile with the same gcc 14 (musl included) and only
+catch a recipe that drifts, so three `desktop-ci` slots per merge bought
+little.
 
 **Failures on `main` become issues.** The last job of a run on `main`,
 `file failing main jobs as issues` (`scripts/ci-issues.py`, the job's own
@@ -41,13 +49,28 @@ token), opens one issue per failing job name, `CI on main: <job>`, labelled
 Skipped and cancelled jobs change nothing.
 
 **Opting in on a pull request.** Label it `ci:full` before pushing (the label
-is read when the run starts: add it, then push), and the whole post-merge
-tier, coverage included, runs on the pull request; or dispatch CI on the
-branch (`tea actions workflows dispatch --ref <branch> ci.yml`). Either is
-worth it for a change to kernels, the Metal or Vulkan backends, sanitizer-
-sensitive memory handling, or the build system. Documentation-only pull
-requests skip both tiers' build jobs as before (`scripts/ci-changes.sh`). On
-the GitHub mirror, pull requests run both tiers on GitHub's runners.
+is read when the run starts: add it, then push), and the post-merge tier,
+coverage included, runs on the pull request; or dispatch CI on the branch
+(`tea actions workflows dispatch --ref <branch> ci.yml`). Each `ci:full` run
+adds ~25 jobs, among them the ~140 min coverage job, to the shared runners,
+and every other pull request's required jobs queue behind them.
+
+**When to set `ci:full` (agents and humans alike).** Only when the pull
+request changes
+
+- kernels (`src/backends/cpu_*`, SIMD or quantized math),
+- a GPU backend (Metal, Vulkan),
+- memory handling (allocation, arenas, mmap, KV cache, buffer lifetimes),
+- threading (OpenMP regions, GCD, sessions run in parallel, cancellation),
+- or other code a sanitizer is there to catch (bounds, untrusted lengths,
+  undefined behaviour),
+
+or when the user asks for it. Everything else — refactors outside those
+areas, tools, scripts, CI, documentation, tests — relies on the nightly run
+of the full tier (03:47 UTC), whose failures become issues. When in doubt,
+leave it off: the nightly run catches it the next morning. Documentation-only
+pull requests skip both tiers' build jobs (`scripts/ci-changes.sh`). On the
+GitHub mirror, pull requests run both tiers on GitHub's runners.
 
 ## Matrix
 
@@ -57,8 +80,8 @@ the GitHub mirror, pull requests run both tiers on GitHub's runners.
 | **macOS x86_64** (cpu_x86 AVX2, Accelerate) | ✅ | ✅ | ⚪ qwen3.5¹ | — | ✅⁴ | `build-test`, `build-test-full` (GitHub only) |
 | **Linux arm64** (cpu_neon, glibc) | ✅ | ✅ | ✅ | ✅ | ✅ | `build-test`, `build-test-full`, `build-test-musl`, `asan` |
 | **Linux x86_64** (cpu_x86 AVX-512/VNNI, glibc) | ✅ | ✅ | ✅³ | ✅ | ✅² | `build-test-x86_64`, `build-test-musl-x86_64`, `asan-x86_64` |
-| **Linux x86_64** (cpu_scalar, no SIMD) | ✅ | ✅ | — | — | — | `build-test-x86_64-scalar` |
-| **Linux x86_64** (cpu_x86, clang) | ✅ | ✅ | — | — | — | `build-test-x86_64-clang`⁵ |
+| **Linux x86_64** (cpu_scalar, no SIMD) | ✅ | ✅ | — | — | — | `build-test-x86_64-scalar-clang` |
+| **Linux x86_64** (cpu_x86, clang) | ✅ | ✅ | — | — | — | `build-test-x86_64-scalar-clang`⁵ |
 
 Every environment in [`release.yml`](../.gitea/workflows/release.yml)
 (macos-arm64, linux-arm64, linux-x86_64) has build **and** test coverage. On
@@ -92,7 +115,7 @@ private — nightly on `main`, and on demand for a branch or a reviewed PR
    breakage at -O1 that the gcc sanitizer legs cannot see, e.g. an `omp simd`
    the instrumentation cannot satisfy (`-Wpass-failed=transform-warning` under
    `-Werror`). Model-free unit suite.
-5. **x86_64 clang (`build-test-x86_64-clang`).** Every other x86_64 leg uses
+5. **x86_64 clang (`build-test-x86_64-scalar-clang`).** Every other x86_64 leg uses
    gcc. clang outlines OpenMP `parallel for` bodies into functions that do not
    inherit a kernel's `target` attribute, which can abort instruction
    selection (#415); this leg builds and runs the model-free unit suite.
@@ -109,7 +132,7 @@ guarantee an AVX-512 CPU, so:
   "Report CPU features" step). When present, the AVX-512 kernels are exercised;
   when absent, runtime dispatch falls back to AVX2/scalar and the AVX-512 kernels
   are *built but not run* on that leg.
-- `build-test-x86_64-scalar` **guarantees** the SIMD-free portable reference
+- `build-test-x86_64-scalar-clang` **guarantees** the SIMD-free portable reference
   builds and passes — the baseline every SIMD kernel is checked against, runner
   CPU notwithstanding.
 
@@ -133,7 +156,7 @@ explicitly either way).
 | `smollm2-360m-instruct-q8_0.gguf` (~369 MB) | llama populator + GPT-2-BPE tokenizer mode | `HuggingFaceTB/SmolLM2-360M-Instruct-GGUF`, revision- and SHA-256-pinned in the Makefile (`LLAMA_MODEL_SHA256`), Apache-2.0 | Linux arm64 + x86_64 int/e2e |
 | `qwen3-0.6b-q8_0.gguf` (~609 MB) | qwen3 geometry, per-head Q/K norm and tokenizer mode | `Qwen/Qwen3-0.6B-GGUF`, revision- and SHA-256-pinned in the Makefile | Linux arm64 + x86_64 int/e2e |
 | `qwen3.5-0.8b-q8_0.gguf` (~780 MB) | qwen35 hybrid DeltaNet/attention family | `unsloth/Qwen3.5-0.8B-GGUF`, revision- and SHA-256-pinned in the Makefile | Linux arm64 + x86_64 int/e2e |
-| `audio_tower.safetensors` (~614 MB) | Conformer audio encoder, W8A8 attention and LConv | Range-extracted and SHA-256-pinned (`make fetch-audio-tower`) | `audio-smoke` (arm64, NEON) + `audio-parity-x86_64` (AVX-512/VNNI) |
+| `audio_tower.safetensors` (~614 MB) | Conformer audio encoder, W8A8 attention and LConv | Range-extracted and SHA-256-pinned (`make fetch-audio-tower`) | `audio-smoke` (arm64, NEON) + `avx512-sde` (its audio W8A8 parity steps, AVX-512/VNNI) |
 
 The llama tests (`test_llama_load_int`, `test_llama_e2e_int`) are **executed,
 not merely built**: both Linux int/e2e legs fetch the model
@@ -271,7 +294,7 @@ behind `GEIST_FUZZ_STANDALONE`, which is what lets them run in a gcc job:
 | Target | Job | Cost |
 | :-- | :-- | :-- |
 | `make MODE=asan fuzz` (3000 runs/harness, fixed seed) | `asan-x86_64` | < 1 s, reuses that job's sanitizer tree |
-| `make fuzz-libfuzzer FUZZ_SECONDS=30` (coverage-guided) | `build-test-x86_64-clang` | ~1 min run, ~7 M execs per target |
+| `make fuzz-libfuzzer FUZZ_SECONDS=30` (coverage-guided) | `build-test-x86_64-scalar-clang` | ~1 min run, ~7 M execs per target |
 
 `MODE=fuzz` (asan + ubsan + `-fsanitize=fuzzer-no-link`) instruments the
 library in its own build tree. Do not substitute
