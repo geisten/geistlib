@@ -12,8 +12,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "internal.h"
-#include "host_buffer.h"
-#include "hadamard.h"
+#include "host_ops.h"
 
 #include "gemma4_kernels.h"
 #include "heap.h"
@@ -35,32 +34,24 @@ extern void vvtanhf(float *y, const float *x, const int *n);
                                              const struct geist_tensor *a,
                                              const struct geist_tensor *b,
                                              struct geist_tensor       *y) {
-    size_t       na = 0, nb = 0, ny = 0;
-    const float *ap = geist_host_tensor_f32(a, &na);
-    const float *bp = geist_host_tensor_f32(b, &nb);
-    float       *yp = geist_host_tensor_f32(y, &ny);
-    if (ap == nullptr || bp == nullptr || yp == nullptr || na != nb || na != ny) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon add: bad inputs");
-        return GEIST_E_INVALID_ARG;
+    struct geist_host_ew    v;
+    const enum geist_status s = geist_host_ew_views(be, "add", GEIST_EW_Z, a, b, nullptr, y, &v);
+    if (s == GEIST_OK) {
+        add_fp32(v.n, v.x, v.z, v.y);
     }
-    add_fp32(na, ap, bp, yp);
-    return GEIST_OK;
+    return s;
 }
 
 [[nodiscard]] enum geist_status cpu_neon_mul(struct geist_backend      *be,
                                              const struct geist_tensor *a,
                                              const struct geist_tensor *b,
                                              struct geist_tensor       *y) {
-    size_t       na = 0, nb = 0, ny = 0;
-    const float *ap = geist_host_tensor_f32(a, &na);
-    const float *bp = geist_host_tensor_f32(b, &nb);
-    float       *yp = geist_host_tensor_f32(y, &ny);
-    if (ap == nullptr || bp == nullptr || yp == nullptr || na != nb || na != ny) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon mul: bad inputs");
-        return GEIST_E_INVALID_ARG;
+    struct geist_host_ew    v;
+    const enum geist_status s = geist_host_ew_views(be, "mul", GEIST_EW_Z, a, b, nullptr, y, &v);
+    if (s == GEIST_OK) {
+        mul_fp32(v.n, v.x, v.z, v.y);
     }
-    mul_fp32(na, ap, bp, yp);
-    return GEIST_OK;
+    return s;
 }
 
 #if defined(__APPLE__) && defined(HAVE_ACCELERATE)
@@ -118,18 +109,17 @@ static void gelu_accelerate(
 
 [[nodiscard]] enum geist_status
 cpu_neon_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
-    size_t       nx = 0, ny = 0;
-    const float *xp = geist_host_tensor_f32(x, &nx);
-    float       *yp = geist_host_tensor_f32(y, &ny);
-    if (xp == nullptr || yp == nullptr || nx != ny) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon gelu_tanh: bad inputs");
-        return GEIST_E_INVALID_ARG;
+    struct geist_host_ew    v;
+    const enum geist_status s =
+            geist_host_ew_views(be, "gelu_tanh", GEIST_EW_XY, x, nullptr, nullptr, y, &v);
+    if (s != GEIST_OK) {
+        return s;
     }
 #if defined(__APPLE__) && defined(HAVE_ACCELERATE)
-    gelu_accelerate(nx, xp, nullptr, nullptr, 1, yp);
-    return GEIST_OK;
+    gelu_accelerate(v.n, v.x, nullptr, nullptr, 1, v.y);
+#else
+    gelu_tanh_fp32(v.n, v.x, v.y);
 #endif
-    gelu_tanh_fp32(nx, xp, yp);
     return GEIST_OK;
 }
 
@@ -137,19 +127,17 @@ cpu_neon_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struc
                                                        const struct geist_tensor *x,
                                                        const struct geist_tensor *z,
                                                        struct geist_tensor       *y) {
-    size_t       nx = 0, nz = 0, ny = 0;
-    const float *xp = geist_host_tensor_f32(x, &nx);
-    const float *zp = geist_host_tensor_f32(z, &nz);
-    float       *yp = geist_host_tensor_f32(y, &ny);
-    if (xp == nullptr || zp == nullptr || yp == nullptr || nx != nz || nx != ny) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon gelu_tanh_mul: bad inputs");
-        return GEIST_E_INVALID_ARG;
+    struct geist_host_ew    v;
+    const enum geist_status s =
+            geist_host_ew_views(be, "gelu_tanh_mul", GEIST_EW_Z, x, z, nullptr, y, &v);
+    if (s != GEIST_OK) {
+        return s;
     }
 #if defined(__APPLE__) && defined(HAVE_ACCELERATE)
-    gelu_accelerate(nx, xp, zp, nullptr, 1, yp);
-    return GEIST_OK;
+    gelu_accelerate(v.n, v.x, v.z, nullptr, 1, v.y);
+#else
+    gelu_tanh_mul_fp32(v.n, v.x, v.z, v.y);
 #endif
-    gelu_tanh_mul_fp32(nx, xp, zp, yp);
     return GEIST_OK;
 }
 
@@ -158,53 +146,46 @@ cpu_neon_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struc
                                                               const struct geist_tensor *z,
                                                               const float               *scale,
                                                               struct geist_tensor       *y) {
-    size_t       nx = 0, nz = 0, ny = 0;
-    const float *xp = geist_host_tensor_f32(x, &nx);
-    const float *zp = geist_host_tensor_f32(z, &nz);
-    float       *yp = geist_host_tensor_f32(y, &ny);
-    if (xp == nullptr || zp == nullptr || yp == nullptr || scale == nullptr || nx != nz ||
-        nx != ny || x->ndim < 1 || z->ndim < 1 || y->ndim < 1) {
-        geist_backend_set_error(
-                be, GEIST_E_INVALID_ARG, "cpu_neon gelu_tanh_mul_scaled: bad inputs");
-        return GEIST_E_INVALID_ARG;
+    struct geist_host_ew    v;
+    const enum geist_status s = geist_host_ew_views(
+            be, "gelu_tanh_mul_scaled", GEIST_EW_Z | GEIST_EW_FEAT, x, z, nullptr, y, &v);
+    if (s != GEIST_OK) {
+        return s;
     }
-    const size_t feat = (size_t) y->shape[y->ndim - 1];
-    if (feat == 0 || nx % feat != 0) {
+    if (scale == nullptr) {
         geist_backend_set_error(
-                be, GEIST_E_INVALID_ARG, "cpu_neon gelu_tanh_mul_scaled: feature mismatch");
+                be, GEIST_E_INVALID_ARG, "cpu_neon gelu_tanh_mul_scaled: null scale");
         return GEIST_E_INVALID_ARG;
     }
 #if defined(__APPLE__) && defined(HAVE_ACCELERATE)
-    gelu_accelerate(nx, xp, zp, scale, feat, yp);
-    return GEIST_OK;
-#endif
+    gelu_accelerate(v.n, v.x, v.z, scale, v.feat, v.y);
+#else
     const float  kAlpha = 0.7978845608028654f;
     const float  kBeta  = 0.044715f;
-    const size_t rows   = nx / feat;
+    const size_t rows   = v.n / v.feat;
     for (size_t r = 0; r < rows; r++) {
-        const size_t base = r * feat;
-        for (size_t j = 0; j < feat; j++) {
+        const size_t base = r * v.feat;
+        for (size_t j = 0; j < v.feat; j++) {
             const size_t i     = base + j;
-            const float  xi    = xp[i];
+            const float  xi    = v.x[i];
             const float  inner = kAlpha * (xi + kBeta * xi * xi * xi);
-            yp[i]              = (0.5f * xi * (1.0f + tanhf(inner))) * zp[i] * scale[j];
+            v.y[i]             = (0.5f * xi * (1.0f + tanhf(inner))) * v.z[i] * scale[j];
         }
     }
+#endif
     return GEIST_OK;
 }
 
 [[nodiscard]] enum geist_status cpu_neon_relu_squared(struct geist_backend      *be,
                                                       const struct geist_tensor *x,
                                                       struct geist_tensor       *y) {
-    size_t       nx = 0, ny = 0;
-    const float *xp = geist_host_tensor_f32(x, &nx);
-    float       *yp = geist_host_tensor_f32(y, &ny);
-    if (xp == nullptr || yp == nullptr || nx != ny) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon relu_squared: bad inputs");
-        return GEIST_E_INVALID_ARG;
+    struct geist_host_ew    v;
+    const enum geist_status s =
+            geist_host_ew_views(be, "relu_squared", GEIST_EW_XY, x, nullptr, nullptr, y, &v);
+    if (s == GEIST_OK) {
+        relu_squared_fp32(v.n, v.x, v.y);
     }
-    relu_squared_fp32(nx, xp, yp);
-    return GEIST_OK;
+    return s;
 }
 
 /* y = silu(x), or the SwiGLU product silu(x) * z when z is non-null, in
@@ -248,31 +229,26 @@ static void silu_all(size_t n, const float *x, const float *z, float *y) {
 
 [[nodiscard]] enum geist_status
 cpu_neon_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y) {
-    size_t       nx = 0, ny = 0;
-    const float *xp = geist_host_tensor_f32(x, &nx);
-    float       *yp = geist_host_tensor_f32(y, &ny);
-    if (xp == nullptr || yp == nullptr || nx != ny) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon silu: bad inputs");
-        return GEIST_E_INVALID_ARG;
+    struct geist_host_ew    v;
+    const enum geist_status s =
+            geist_host_ew_views(be, "silu", GEIST_EW_XY, x, nullptr, nullptr, y, &v);
+    if (s == GEIST_OK) {
+        silu_all(v.n, v.x, nullptr, v.y);
     }
-    silu_all(nx, xp, nullptr, yp);
-    return GEIST_OK;
+    return s;
 }
 
 [[nodiscard]] enum geist_status cpu_neon_silu_mul(struct geist_backend      *be,
                                                   const struct geist_tensor *x,
                                                   const struct geist_tensor *z,
                                                   struct geist_tensor       *y) {
-    size_t       nx = 0, nz = 0, ny = 0;
-    const float *xp = geist_host_tensor_f32(x, &nx);
-    const float *zp = geist_host_tensor_f32(z, &nz);
-    float       *yp = geist_host_tensor_f32(y, &ny);
-    if (xp == nullptr || zp == nullptr || yp == nullptr || nx != nz || nx != ny) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon silu_mul: bad inputs");
-        return GEIST_E_INVALID_ARG;
+    struct geist_host_ew    v;
+    const enum geist_status s =
+            geist_host_ew_views(be, "silu_mul", GEIST_EW_Z, x, z, nullptr, y, &v);
+    if (s == GEIST_OK) {
+        silu_all(v.n, v.x, v.z, v.y);
     }
-    silu_all(nx, xp, zp, yp);
-    return GEIST_OK;
+    return s;
 }
 
 [[nodiscard]] enum geist_status cpu_neon_rmsnorm(struct geist_backend      *be,
@@ -280,22 +256,13 @@ cpu_neon_silu(struct geist_backend *be, const struct geist_tensor *x, struct gei
                                                  const struct geist_tensor *w,
                                                  float                      eps,
                                                  struct geist_tensor       *y) {
-    size_t       nx = 0, nw = 0, ny = 0;
-    const float *xp = geist_host_tensor_f32(x, &nx);
-    const float *wp = geist_host_tensor_f32(w, &nw);
-    float       *yp = geist_host_tensor_f32(y, &ny);
-    if (xp == nullptr || wp == nullptr || yp == nullptr || nx != ny) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon rmsnorm: bad inputs");
-        return GEIST_E_INVALID_ARG;
+    struct geist_host_ew    v;
+    const enum geist_status s =
+            geist_host_ew_views(be, "rmsnorm", GEIST_EW_W, x, nullptr, w, y, &v);
+    if (s == GEIST_OK) {
+        rmsnorm_fp32(v.n / v.feat, v.feat, v.x, v.w, eps, v.y);
     }
-    size_t feat = (size_t) x->shape[x->ndim - 1];
-    if (feat == 0 || nw != feat || nx % feat != 0) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon rmsnorm: feat mismatch");
-        return GEIST_E_INVALID_ARG;
-    }
-    size_t n_rows = nx / feat;
-    rmsnorm_fp32(n_rows, feat, xp, wp, eps, yp);
-    return GEIST_OK;
+    return s;
 }
 
 /* The residual-norm fusions (#195): per row,
@@ -420,23 +387,4 @@ static enum geist_status res_norm_run(struct geist_backend      *be,
         return GEIST_E_INVALID_ARG;
     }
     return res_norm_run(be, "rmsnorm_add_norm", eps, scale, res, x, w, z_w, y, z);
-}
-
-[[nodiscard]] enum geist_status cpu_neon_hadamard_rotate(struct geist_backend             *be,
-                                                         const struct geist_hadamard_args *args) {
-    if (args == nullptr) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon hadamard_rotate: null args");
-        return GEIST_E_INVALID_ARG;
-    }
-    size_t       nx = 0, ns = 0, ny = 0;
-    const float *xp = geist_host_tensor_f32(args->x, &nx);
-    const float *sp = args->signs != nullptr ? geist_host_tensor_f32(args->signs, &ns) : nullptr;
-    float       *yp = geist_host_tensor_f32(args->y, &ny);
-    enum geist_status s = (args->signs != nullptr && sp == nullptr)
-                                  ? GEIST_E_INVALID_ARG
-                                  : geist_hadamard_apply(args, nx, ns, ny, xp, sp, yp);
-    if (s != GEIST_OK) {
-        geist_backend_set_error(be, s, "cpu_neon hadamard_rotate: bad inputs");
-    }
-    return s;
 }

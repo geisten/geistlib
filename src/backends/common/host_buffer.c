@@ -13,7 +13,7 @@
 
 #include <string.h>
 
-static const char *backend_name(const struct geist_backend *be) {
+const char *geist_host_backend_name(const struct geist_backend *be) {
     return be != nullptr && be->desc != nullptr && be->desc->name != nullptr ? be->desc->name
                                                                              : "cpu";
 }
@@ -28,15 +28,19 @@ enum geist_status geist_host_buffer_create(struct geist_backend  *be,
     }
     *out = nullptr;
     if (bytes == 0) {
-        geist_backend_set_error(
-                be, GEIST_E_INVALID_ARG, "%s: zero-byte buffer requested", backend_name(be));
+        geist_backend_set_error(be,
+                                GEIST_E_INVALID_ARG,
+                                "%s: zero-byte buffer requested",
+                                geist_host_backend_name(be));
         return GEIST_E_INVALID_ARG;
     }
 
     struct geist_buffer *buf = geist_backend_alloc(be, sizeof(*buf), alignof(struct geist_buffer));
     if (buf == nullptr) {
-        geist_backend_set_error(
-                be, GEIST_E_OOM, "%s: failed to allocate buffer handle", backend_name(be));
+        geist_backend_set_error(be,
+                                GEIST_E_OOM,
+                                "%s: failed to allocate buffer handle",
+                                geist_host_backend_name(be));
         return GEIST_E_OOM;
     }
 
@@ -47,7 +51,7 @@ enum geist_status geist_host_buffer_create(struct geist_backend  *be,
         geist_backend_set_error(be,
                                 GEIST_E_OOM,
                                 "%s: failed to allocate %zu-byte host buffer",
-                                backend_name(be),
+                                geist_host_backend_name(be),
                                 bytes);
         return GEIST_E_OOM;
     }
@@ -75,12 +79,13 @@ enum geist_status geist_host_buffer_create_aliased(struct geist_backend  *be,
         geist_backend_set_error(be,
                                 GEIST_E_INVALID_ARG,
                                 "%s: aliased buffer needs host_ptr + bytes",
-                                backend_name(be));
+                                geist_host_backend_name(be));
         return GEIST_E_INVALID_ARG;
     }
     struct geist_buffer *buf = geist_backend_alloc(be, sizeof(*buf), alignof(struct geist_buffer));
     if (buf == nullptr) {
-        geist_backend_set_error(be, GEIST_E_OOM, "%s: buffer handle alloc", backend_name(be));
+        geist_backend_set_error(
+                be, GEIST_E_OOM, "%s: buffer handle alloc", geist_host_backend_name(be));
         return GEIST_E_OOM;
     }
     *buf = (struct geist_buffer) {

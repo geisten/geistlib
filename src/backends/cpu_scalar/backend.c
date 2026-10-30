@@ -20,6 +20,7 @@
 
 #include "hadamard.h"
 #include "heap.h"
+#include "host_ops.h"
 #include "quant.h"
 
 #include <stdarg.h>
@@ -109,8 +110,8 @@ const struct geist_backend_fused cpu_scalar_fused = {
         .supported            = cpu_scalar_fused_supported,
         .gelu_tanh_mul        = cpu_scalar_gelu_tanh_mul,
         .gelu_tanh_mul_scaled = cpu_scalar_gelu_tanh_mul_scaled,
-        .hadamard_rotate      = cpu_scalar_hadamard_rotate,
-        .kv_append_f16        = cpu_scalar_kv_append_f16,
+        .hadamard_rotate      = geist_host_hadamard_rotate,
+        .kv_append_f16        = geist_host_kv_append_f16,
 };
 
 const struct geist_backend_descriptor geist_backend_cpu_scalar = {

@@ -11,6 +11,7 @@
 
 #include "gemma4_kernels.h"
 #include "host_buffer.h"
+#include "host_ops.h"
 #include "quant.h"
 #include "heap.h"
 #include "checked.h"
@@ -970,83 +971,42 @@ static void attn_f16_items(void *ctx, size_t i0, size_t i1) {
 
 /* Attention over an F16 KV cache (#48): the NEON rows from 16 (query,
  * head) pairs, the shared reference below. */
-[[nodiscard]] static enum geist_status cpu_neon_attention_f16(struct geist_backend      *be,
-                                                              const struct geist_tensor *q,
-                                                              const struct geist_tensor *k,
-                                                              const struct geist_tensor *v,
-                                                              size_t                     q_offset,
-                                                              size_t               sliding_window,
-                                                              struct geist_tensor *out) {
-    size_t          nq = 0, nk = 0, nv = 0, no = 0;
-    const float    *qp = geist_host_tensor_f32(q, &nq);
-    const uint16_t *kp = geist_host_tensor_f16_3d(k, &nk);
-    const uint16_t *vp = geist_host_tensor_f16_3d(v, &nv);
-    float          *op = geist_host_tensor_f32(out, &no);
-    if (qp == nullptr || kp == nullptr || vp == nullptr || op == nullptr || q->ndim != 3 ||
-        out->ndim != 3 || k->shape[1] != v->shape[1] || k->shape[0] != v->shape[0] ||
-        k->shape[2] != q->shape[2] || v->shape[2] != q->shape[2] ||
-        q->shape[1] % k->shape[1] != 0 || out->shape[0] != q->shape[0] ||
-        out->shape[1] != q->shape[1] || out->shape[2] != q->shape[2]) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon attention: bad F16 KV views");
-        return GEIST_E_INVALID_ARG;
-    }
+[[nodiscard]] static enum geist_status cpu_neon_attention_f16(struct geist_backend         *be,
+                                                              const struct geist_host_attn *a,
+                                                              size_t q_offset,
+                                                              size_t sliding_window) {
 #if defined(__ARM_NEON)
     /* 16+ (query, head) pairs: the NEON rows, as for the FP32 cache. */
-    if ((size_t) q->shape[0] * (size_t) q->shape[1] >= 16) {
-        struct attn_job_f16 job = {.q              = qp,
-                                   .k              = kp,
-                                   .v              = vp,
-                                   .n_kv           = (size_t) k->shape[0],
+    if (a->n_q * a->n_q_heads >= 16) {
+        struct attn_job_f16 job = {.q              = a->q,
+                                   .k              = a->k,
+                                   .v              = a->v,
+                                   .n_kv           = a->n_kv,
                                    .q_offset       = q_offset,
-                                   .n_q_heads      = (size_t) q->shape[1],
-                                   .n_kv_heads     = (size_t) k->shape[1],
-                                   .head_dim       = (size_t) q->shape[2],
+                                   .n_q_heads      = a->n_q_heads,
+                                   .n_kv_heads     = a->n_kv_heads,
+                                   .head_dim       = a->head_dim,
                                    .sliding_window = sliding_window,
-                                   .out            = op};
-        attention_par((size_t) q->shape[0] * (size_t) q->shape[1], attn_f16_items, &job);
+                                   .out            = a->out};
+        attention_par(a->n_q * a->n_q_heads, attn_f16_items, &job);
         return GEIST_OK;
     }
 #endif
-    if (!attention_mqa_causal_kv_f16((size_t) q->shape[0],
-                                     (size_t) k->shape[0],
+    if (!attention_mqa_causal_kv_f16(a->n_q,
+                                     a->n_kv,
                                      q_offset,
-                                     (size_t) q->shape[1],
-                                     (size_t) k->shape[1],
-                                     (size_t) q->shape[2],
+                                     a->n_q_heads,
+                                     a->n_kv_heads,
+                                     a->head_dim,
                                      sliding_window,
-                                     qp,
-                                     kp,
-                                     vp,
-                                     op)) {
+                                     a->q,
+                                     a->k,
+                                     a->v,
+                                     a->out)) {
         geist_backend_set_error(
                 be, GEIST_E_UNSUPPORTED, "cpu_neon attention: F16 head_dim too large");
         return GEIST_E_UNSUPPORTED;
     }
-    return GEIST_OK;
-}
-
-enum geist_status cpu_neon_kv_append_f16(struct geist_backend      *be,
-                                         const struct geist_tensor *k_src,
-                                         const struct geist_tensor *v_src,
-                                         size_t                     q_position,
-                                         struct geist_tensor       *k_cache,
-                                         struct geist_tensor       *v_cache) {
-    size_t       nks = 0, nvs = 0, nkc = 0, nvc = 0;
-    const float *ks = geist_host_tensor_f32(k_src, &nks);
-    const float *vs = geist_host_tensor_f32(v_src, &nvs);
-    uint16_t    *kc = geist_host_tensor_f16_3d(k_cache, &nkc);
-    uint16_t    *vc = geist_host_tensor_f16_3d(v_cache, &nvc);
-    /* The source rows land at row q_position of the caches, whose views
-     * end with them: the subtraction cannot wrap once both hold. */
-    if (ks == nullptr || vs == nullptr || kc == nullptr || vc == nullptr || nks != nvs ||
-        nkc != nvc || nks > nkc || k_src->shape[1] != k_cache->shape[1] ||
-        k_src->shape[2] != k_cache->shape[2] ||
-        q_position * (size_t) k_cache->shape[1] * (size_t) k_cache->shape[2] != nkc - nks) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon kv_append_f16: bad views");
-        return GEIST_E_INVALID_ARG;
-    }
-    kv_rows_to_f16(nks, ks, kc + (nkc - nks));
-    kv_rows_to_f16(nvs, vs, vc + (nvc - nvs));
     return GEIST_OK;
 }
 
@@ -1273,38 +1233,18 @@ static enum geist_status qkv_prep_run(struct geist_backend      *be,
                                                    size_t                     q_offset,
                                                    size_t                     sliding_window,
                                                    struct geist_tensor       *out) {
-    if (be == nullptr || q == nullptr || k == nullptr || v == nullptr || out == nullptr) {
-        return GEIST_E_INVALID_ARG;
+    struct geist_host_attn  a;
+    const enum geist_status s = geist_host_attn_views(be, q, k, v, out, &a);
+    if (s != GEIST_OK) {
+        return s;
     }
-    if (k->dtype == GEIST_DTYPE_F16) {
-        return cpu_neon_attention_f16(be, q, k, v, q_offset, sliding_window, out);
+    if (a.f16) {
+        return cpu_neon_attention_f16(be, &a, q_offset, sliding_window);
     }
-    size_t       nq, nk, nv, no;
-    const float *qp = geist_host_tensor_f32(q, &nq);
-    const float *kp = geist_host_tensor_f32(k, &nk);
-    const float *vp = geist_host_tensor_f32(v, &nv);
-    float       *op = geist_host_tensor_f32(out, &no);
-    if (qp == nullptr || kp == nullptr || vp == nullptr || op == nullptr) {
-        geist_backend_set_error(
-                be, GEIST_E_UNSUPPORTED, "cpu_neon attention: tensors must be F32 DENSE");
-        return GEIST_E_UNSUPPORTED;
-    }
-    if (q->ndim != 3 || k->ndim != 3 || v->ndim != 3 || out->ndim != 3) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon attention: bad ranks");
-        return GEIST_E_INVALID_ARG;
-    }
-    size_t n_q        = (size_t) q->shape[0];
-    size_t n_q_heads  = (size_t) q->shape[1];
-    size_t head_dim   = (size_t) q->shape[2];
-    size_t n_kv       = (size_t) k->shape[0];
-    size_t n_kv_heads = (size_t) k->shape[1];
-    if (k->shape[2] != (int64_t) head_dim || v->shape[2] != (int64_t) head_dim ||
-        v->shape[0] != (int64_t) n_kv || v->shape[1] != (int64_t) n_kv_heads ||
-        out->shape[0] != (int64_t) n_q || out->shape[1] != (int64_t) n_q_heads ||
-        out->shape[2] != (int64_t) head_dim) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "cpu_neon attention: shape mismatch");
-        return GEIST_E_INVALID_ARG;
-    }
+    const float *qp = a.q, *kp = a.k, *vp = a.v;
+    float       *op  = a.out;
+    const size_t n_q = a.n_q, n_q_heads = a.n_q_heads, head_dim = a.head_dim;
+    const size_t n_kv = a.n_kv, n_kv_heads = a.n_kv_heads;
 #if defined(__ARM_NEON)
     /* hd256: the shape attention_mqa1_causal_kv_neon's rows use. */
     if (attention_heads_grouped_neon(qp,

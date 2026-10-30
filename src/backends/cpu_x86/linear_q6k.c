@@ -21,6 +21,7 @@
 
 #include "backend_state.h"
 #include "checked.h"
+#include "host_ops.h"
 #include "kernel_q4k_tiled.h" /* tiled int8 Q6_K GEMM, AVX-512 VNNI (#18) */
 #include "kernel_w8a8.h"
 #include "kernel_q6k_gemv.h"
@@ -281,9 +282,7 @@ static void w8x_repack_groups(void *ctx, size_t g0, size_t g1) {
         }
     }
 
-    w->aux_fp32 = (const float *) blob;
-    w->aux_n    = (int32_t) blob_bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
+    geist_weight_attach_aux(w, blob, blob_bytes, 0, 0, 0);
     w->linear_m1 = cpu_x86_linear_q6k_m1;
     w->linear_mN = cpu_x86_linear_q6k_mN;
     return GEIST_OK;

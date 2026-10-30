@@ -56,9 +56,6 @@ struct geist_weight;
                                                         struct geist_tensor       *y);
 [[nodiscard]] enum geist_status
 cpu_scalar_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_tensor *y);
-struct geist_hadamard_args;
-[[nodiscard]] enum geist_status cpu_scalar_hadamard_rotate(struct geist_backend             *be,
-                                                           const struct geist_hadamard_args *args);
 [[nodiscard]] enum geist_status cpu_scalar_rmsnorm(struct geist_backend      *be,
                                                    const struct geist_tensor *x,
                                                    const struct geist_tensor *w,
@@ -70,26 +67,8 @@ struct geist_hadamard_args;
                                                       struct geist_tensor       *x,
                                                       const struct geist_tensor *cos,
                                                       const struct geist_tensor *sin);
-/* Causal attention over an F16 KV cache (F16 DENSE 3-D k / v views, F32 q
- * and out): the shared reference, attention_mqa_causal_kv_f16. The other
- * CPU backends route F16 here until they have their own kernels (#48). */
-[[nodiscard]] enum geist_status cpu_scalar_attention_f16(struct geist_backend      *be,
-                                                         const struct geist_tensor *q,
-                                                         const struct geist_tensor *k,
-                                                         const struct geist_tensor *v,
-                                                         size_t                     q_offset,
-                                                         size_t                     sliding_window,
-                                                         struct geist_tensor       *out);
-
-/* fused->kv_append_f16 for the CPU backends: k_src / v_src rows (F32) to
- * IEEE half at row q_position of the F16 caches. */
-[[nodiscard]] enum geist_status cpu_scalar_kv_append_f16(struct geist_backend      *be,
-                                                         const struct geist_tensor *k_src,
-                                                         const struct geist_tensor *v_src,
-                                                         size_t                     q_position,
-                                                         struct geist_tensor       *k_cache,
-                                                         struct geist_tensor       *v_cache);
-
+/* prims->attention: the shared reference kernels, attention_mqa_causal_kv
+ * and, over an F16 KV cache, attention_mqa_causal_kv_f16. */
 [[nodiscard]] enum geist_status cpu_scalar_attention(struct geist_backend      *be,
                                                      const struct geist_tensor *q,
                                                      const struct geist_tensor *k,

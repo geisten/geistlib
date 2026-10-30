@@ -430,7 +430,7 @@ int main(void) {
         GEIST_SKIP("no AVX-512 VNNI on this host");
     }
     struct cpu_x86_state st         = {0};
-    st.ws_generation                = cpu_x86_ws_next_generation();
+    st.ws_generation                = geist_thread_ws_next_generation();
     static const size_t shapes[][3] = {
             {16, 16, 256},   /* one band, one microtile */
             {20, 24, 256},   /* ragged band, N % 16 == 8 */
