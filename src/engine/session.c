@@ -24,7 +24,6 @@
 #include "image_pipeline.h"
 #include "dry_breakers.h"
 #include "sampler.h"
-#include "sp_bpe_tokenizer.h"
 #include "gguf_tokenizer.h"
 
 #include <geist.h>
@@ -295,10 +294,12 @@ set_dry_breakers(struct geist_session_full                 *sf,
         strs   = geist_dry_default_breakers;
         n_strs = sizeof geist_dry_default_breakers / sizeof geist_dry_default_breakers[0];
     }
-    size_t            n_words = 0;
-    geist_token_t    *packed  = nullptr;
-    enum geist_status s       = geist_dry_breakers_resolve(
-            &n_words, &packed, geist_model_internal_gguf_tokenizer(sf->model), n_strs, strs);
+    /* A tokenizer.bin has never resolved them. */
+    const struct gguf_tokenizer *tok     = geist_model_internal_gguf_tokenizer(sf->model);
+    size_t                       n_words = 0;
+    geist_token_t               *packed  = nullptr;
+    enum geist_status            s       = geist_dry_breakers_resolve(
+            &n_words, &packed, tok != nullptr && !tok->tokenizer_bin ? tok : nullptr, n_strs, strs);
     if (s == GEIST_OK && n_words > 0) {
         s = ops->set_dry_breakers(arch_sess(sf), n_words, packed);
     }
@@ -476,12 +477,11 @@ const char *geist_session_errmsg(const struct geist_session *s) {
     }
     struct geist_session_full           *sf   = as_full(s);
     const struct geist_arch_ops_decoder *ops  = sf->model->text_decoder.arch_ops;
-    struct sp_bpe_tokenizer             *tok  = geist_model_internal_tokenizer(sf->model);
     struct gguf_tokenizer               *gtok = geist_model_internal_gguf_tokenizer(sf->model);
     if (ops == nullptr || ops->prefill == nullptr) {
         return GEIST_E_INVALID_STATE;
     }
-    if (tok == nullptr && gtok == nullptr) {
+    if (gtok == nullptr) {
         return session_fail(sf,
                             GEIST_E_NOT_FOUND,
                             "set_prompt: no tokenizer found. SentencePiece path needs "
@@ -492,46 +492,36 @@ const char *geist_session_errmsg(const struct geist_session *s) {
                             "geist_session_prefill_tokens with pre-tokenized IDs.");
     }
 
-    /* GGUF-embedded tokenizer path. Prepends BOS when add_bos is set. */
-    if (gtok != nullptr) {
-        /* ≤ 1 id per byte + ▁ prefix + BOS. An SPM vocab without a ▁ piece
-         * spends 3 byte ids per space; encode then fails, it never truncates. */
-        const size_t cap     = strlen(prompt) + 8;
-        int32_t     *enc_ids = heap_alloc_array_aligned(int32_t, cap);
-        if (enc_ids == nullptr) {
-            return session_fail(sf, GEIST_E_OOM, "set_prompt: alloc fail");
-        }
-        size_t n_enc = 0;
-        if (gtok->bos_id >= 0 && gtok->add_bos) {
-            enc_ids[n_enc++] = gtok->bos_id;
-        }
-        size_t enc_n = 0;
-        if (gguf_tokenizer_encode(gtok, prompt, cap - n_enc, enc_ids + n_enc, &enc_n) != GEIST_OK) {
-            void *p = enc_ids;
-            safe_free(&p);
-            return session_fail(sf, GEIST_E_IO, "set_prompt: gguf_tokenizer_encode failed");
-        }
-        n_enc += enc_n;
-        const uint64_t          t0 = geist_now_ns();
-        const enum geist_status ps =
-                ops->prefill(arch_sess(sf), n_enc, (const geist_token_t *) enc_ids);
-        sf->total_prefill_ns += geist_now_ns() - t0;
-        void *p = enc_ids;
-        safe_free(&p);
-        return ps == GEIST_OK ? GEIST_OK : session_op_failed(sf, ps, "prefill");
+    /* ≤ 1 id per byte + ▁ prefix + BOS. An SPM vocab without a ▁ piece
+     * spends 3 byte ids per space; encode then fails, it never truncates —
+     * except for a tokenizer.bin, whose room covers that (it never failed). */
+    size_t cap;
+    if (ckd_mul(&cap, strlen(prompt), gtok->tokenizer_bin ? (size_t) 3 : (size_t) 1) ||
+        ckd_add(&cap, cap, 8)) {
+        return session_fail(sf, GEIST_E_OOM, "set_prompt: prompt too long");
     }
-
-    uint32_t *ids   = nullptr;
-    size_t    n_ids = 0;
-    if (!sp_bpe_tokenizer_encode(tok, prompt, &ids, &n_ids)) {
-        return session_fail(sf, GEIST_E_IO, "tokenizer encode failed");
+    int32_t *enc_ids = heap_alloc_array_aligned(int32_t, cap);
+    if (enc_ids == nullptr) {
+        return session_fail(sf, GEIST_E_OOM, "set_prompt: alloc fail");
     }
-    /* sp_bpe yields uint32_t; bit-pattern of u32 ≡ i32 for IDs in 21-bit
-     * vocab range. arch->prefill takes geist_token_t (int32_t). */
-    const uint64_t          t0 = geist_now_ns();
-    const enum geist_status ps = ops->prefill(arch_sess(sf), n_ids, (const geist_token_t *) ids);
+    /* Exactly one BOS when the model expects it (add_bos), on both tokenizer
+     * paths (#263): prepended unless the prompt's own tokens begin with it,
+     * as a rendered chat template's ("<bos>...") do. The prompt encodes
+     * from enc_ids[1]; enc_ids[0] holds the BOS when it is prepended. */
+    size_t enc_n = 0;
+    if (gguf_tokenizer_encode(gtok, prompt, cap - 1, enc_ids + 1, &enc_n) != GEIST_OK) {
+        safe_free((void **) &enc_ids);
+        return session_fail(sf, GEIST_E_IO, "set_prompt: gguf_tokenizer_encode failed");
+    }
+    const bool prepend =
+            gtok->bos_id >= 0 && gtok->add_bos && (enc_n == 0 || enc_ids[1] != gtok->bos_id);
+    enc_ids[0]                    = gtok->bos_id;
+    const int32_t          *ids   = prepend ? enc_ids : enc_ids + 1;
+    const size_t            n_enc = prepend ? enc_n + 1 : enc_n;
+    const uint64_t          t0    = geist_now_ns();
+    const enum geist_status ps    = ops->prefill(arch_sess(sf), n_enc, (const geist_token_t *) ids);
     sf->total_prefill_ns += geist_now_ns() - t0;
-    safe_free((void **) &ids);
+    safe_free((void **) &enc_ids);
     return ps == GEIST_OK ? GEIST_OK : session_op_failed(sf, ps, "prefill");
 }
 
@@ -547,48 +537,24 @@ const char *geist_session_errmsg(const struct geist_session *s) {
     *n_out                        = 0;
     struct geist_session_full *sf = as_full(s);
 
-    /* GGUF-embedded tokenizer path (mirrors set_prompt). No BOS prepended —
-     * tokenize reports the content tokens; callers add BOS if they need it. */
+    /* No BOS prepended — tokenize reports the content tokens; callers add BOS
+     * if they need it. */
     struct gguf_tokenizer *gtok = geist_model_internal_gguf_tokenizer(sf->model);
-    if (gtok != nullptr) {
-        const enum geist_status st =
-                gguf_tokenizer_encode(gtok, text, out_capacity, out_ids, n_out);
-        if (st != GEIST_OK) {
-            return session_fail(sf,
-                                st,
-                                "tokenize: %s (out_capacity %zu)",
-                                st == GEIST_E_INVALID_ARG ? "more tokens than fit"
-                                                          : "gguf encode failed",
-                                out_capacity);
-        }
-        return GEIST_OK;
-    }
-
-    struct sp_bpe_tokenizer *tok = geist_model_internal_tokenizer(sf->model);
-    if (tok == nullptr) {
+    if (gtok == nullptr) {
         return session_fail(
                 sf,
                 GEIST_E_NOT_FOUND,
                 "tokenize: no tokenizer found (GGUF-embedded or external tokenizer.bin)");
     }
-
-    uint32_t *ids   = nullptr;
-    size_t    n_ids = 0;
-    if (!sp_bpe_tokenizer_encode(tok, text, &ids, &n_ids)) {
-        return session_fail(sf, GEIST_E_IO, "tokenize: encode failed");
-    }
-    if (n_ids > out_capacity) {
-        safe_free((void **) &ids);
+    const enum geist_status st = gguf_tokenizer_encode(gtok, text, out_capacity, out_ids, n_out);
+    if (st != GEIST_OK) {
         return session_fail(sf,
-                            GEIST_E_INVALID_ARG,
-                            "tokenize: %zu tokens > out_capacity %zu",
-                            n_ids,
+                            st,
+                            "tokenize: %s (out_capacity %zu)",
+                            st == GEIST_E_INVALID_ARG ? "more tokens than fit"
+                                                      : "gguf encode failed",
                             out_capacity);
     }
-    for (size_t i = 0; i < n_ids; i++)
-        out_ids[i] = (geist_token_t) ids[i];
-    *n_out = n_ids;
-    safe_free((void **) &ids);
     return GEIST_OK;
 }
 
@@ -958,8 +924,9 @@ draft_model_rollback(struct geist_session *d, size_t history_n, size_t guesses, 
     struct geist_session_full   *df = as_full(draft);
     const struct gguf_tokenizer *a  = geist_model_internal_gguf_tokenizer(sf->model);
     const struct gguf_tokenizer *b  = geist_model_internal_gguf_tokenizer(df->model);
-    bool same = sf->model == df->model ||
-                (a != nullptr && b != nullptr && a->vocab_size == b->vocab_size);
+    /* Vocabularies from a tokenizer.bin have never been compared. */
+    bool same = sf->model == df->model || (a != nullptr && b != nullptr && !a->tokenizer_bin &&
+                                           !b->tokenizer_bin && a->vocab_size == b->vocab_size);
     for (size_t t = 0; same && sf->model != df->model && t < a->vocab_size; t++) {
         same = a->token_len[t] == b->token_len[t] &&
                memcmp(a->token_str[t], b->token_str[t], a->token_len[t]) == 0;
@@ -1093,9 +1060,9 @@ draft_model_rollback(struct geist_session *d, size_t history_n, size_t guesses, 
 /* The surface form comes from the model's tokenizer: the GGUF-embedded one
  * decodes (byte-level BPE maps its codepoints back to bytes, SentencePiece
  * ▁ to a space and <0xXX> to the byte), a tokenizer.bin piece is taken as
- * stored. Either way it is kept in the session (struct token_strs), where
- * later calls cannot overwrite it; like every session call, not from two
- * threads at once. An id past a GGUF vocab reads "<unk>", as the decoder
+ * stored (tokenizer_bin). Either way it is kept in the session (struct
+ * token_strs), where later calls cannot overwrite it; like every session
+ * call, not from two threads at once. An id past a GGUF vocab reads "<unk>", as the decoder
  * writes it; past a tokenizer.bin vocab there is nothing. */
 const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t) {
     if (s == nullptr || t < 0) {
@@ -1106,25 +1073,18 @@ const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t)
     if (hit != nullptr) {
         return hit;
     }
-    struct gguf_tokenizer   *gtok  = geist_model_internal_gguf_tokenizer(sf->model);
-    struct sp_bpe_tokenizer *tok   = geist_model_internal_tokenizer(sf->model);
-    const char              *piece = nullptr; /* the tokenizer.bin piece */
-    size_t                   len   = 0;
-    if (gtok != nullptr) {
-        if ((size_t) t >= gtok->vocab_size) {
-            return "<unk>";
-        }
-        len = gtok->token_len[t]; /* decoding only ever shortens a token */
-    } else if (tok != nullptr) {
-        piece = sp_bpe_tokenizer_id_to_text(tok, (uint32_t) t, &len);
-        if (piece == nullptr) {
-            return nullptr;
-        }
-    } else {
+    struct gguf_tokenizer *gtok = geist_model_internal_gguf_tokenizer(sf->model);
+    if (gtok == nullptr) {
         return nullptr;
     }
-    size_t need = 0;
-    char  *dst  = nullptr;
+    if ((size_t) t >= gtok->vocab_size) {
+        return gtok->tokenizer_bin ? nullptr : "<unk>";
+    }
+    /* the tokenizer.bin piece; else decoding, which only ever shortens a token */
+    const char *piece = gtok->tokenizer_bin ? gtok->token_str[t] : nullptr;
+    size_t      len   = gtok->token_len[t];
+    size_t      need  = 0;
+    char       *dst   = nullptr;
     if (!ckd_add(&need, len, 1) && token_strs_make_room(&sf->strs)) {
         dst = token_strs_room(&sf->strs, need);
     }

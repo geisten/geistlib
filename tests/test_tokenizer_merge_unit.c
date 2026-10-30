@@ -11,8 +11,8 @@
  *    The final segmentation must match the reference rescan exactly.
  *
  * 2. Encoders against the rescan. Synthetic SPM (merges) and unigram
- *    (scores) tokenizers from tokenizer_fixtures.h, and sp_bpe_tokenizer
- *    on the same vocabulary. The reference here is a rescan-based
+ *    (scores) tokenizers from tokenizer_fixtures.h, and the same vocabulary
+ *    as a tokenizer.bin (gguf_tokenizer_load_bin). The reference here is a rescan-based
  *    encode of a text without specials: ▁ normalization (plus the leading
  *    ▁ of add_space_prefix for the GGUF SPM modes), one symbol per byte of
  *    this ASCII text, the rescan, vocab lookup. Texts of words, of one
@@ -26,7 +26,6 @@
 #include "gguf_reader.h"
 #include "gguf_tokenizer.h"
 #include "pair_merge.h"
-#include "sp_bpe_tokenizer.h"
 #include "tokenizer_fixtures.h"
 
 #include <stdint.h>
@@ -335,9 +334,9 @@ static char *random_letters(size_t n) {
 static int check_encoders(void) {
     struct tf_vocab v  = tf_make_vocab(SPM_MARKER_BYTES, true);
     struct tf_buf   gs = tf_gguf(&v, "llama", true), gu = tf_gguf(&v, "llama", false);
-    struct tf_buf   bin = tf_sp_bpe_bin(&v);
+    struct tf_buf   bin = tf_tokenizer_bin(&v);
 
-    struct gguf_tokenizer spm, uni;
+    struct gguf_tokenizer spm, uni, sp;
     int                   fails = 0;
     if (!load_gguf(&spm, &gs) || !load_gguf(&uni, &gu)) {
         fprintf(stderr, "FAIL: fixture tokenizer did not load\n");
@@ -350,11 +349,10 @@ static int check_encoders(void) {
         return 1;
     }
     close(fd);
-    struct sp_bpe_tokenizer *sp    = nullptr;
-    const bool               sp_ok = sp_bpe_tokenizer_load(&sp, path);
+    const bool sp_ok = gguf_tokenizer_load_bin(&sp, path);
     unlink(path);
     if (!sp_ok) {
-        fprintf(stderr, "FAIL: sp_bpe fixture did not load\n");
+        fprintf(stderr, "FAIL: tokenizer.bin fixture did not load\n");
         return 1;
     }
 
@@ -369,49 +367,33 @@ static int check_encoders(void) {
         char        *text = trial % 3 == 0   ? tf_text(n, next_u32(), false)
                             : trial % 3 == 1 ? tf_text(n, next_u32(), true)
                                              : random_letters(n);
-        /* GGUF SPM (add_space_prefix on by default) and unigram */
-        for (int mode = 0; mode < 2; mode++) {
-            size_t n_got = 0;
-            if (gguf_tokenizer_encode(mode == 0 ? &spm : &uni, text, 8192, got, &n_got) !=
-                GEIST_OK) {
-                fprintf(stderr, "FAIL: encode failed\n");
+        /* GGUF SPM (add_space_prefix on by default), unigram, and the
+         * tokenizer.bin (no leading ▁) */
+        static const char *const NAME[] = {"SPM", "unigram", "tokenizer.bin"};
+        for (int mode = 0; mode < 3; mode++) {
+            const struct gguf_tokenizer *t     = mode == 0 ? &spm : mode == 1 ? &uni : &sp;
+            size_t                       n_got = 0;
+            if (gguf_tokenizer_encode(t, text, 8192, got, &n_got) != GEIST_OK) {
+                fprintf(stderr, "FAIL: %s encode failed\n", NAME[mode]);
                 fails++;
                 continue;
             }
-            const size_t n_want = ref_encode(mode == 0 ? &by_rank : &by_sc, text, true, want);
+            const size_t n_want = ref_encode(mode == 1 ? &by_sc : &by_rank, text, mode != 2, want);
             if (n_got != n_want || memcmp(got, want, n_got * sizeof *got) != 0) {
                 fprintf(stderr,
                         "FAIL: %s differs from the rescan (%zu bytes, %zu vs %zu ids)\n",
-                        mode == 0 ? "SPM" : "unigram",
+                        NAME[mode],
                         n,
                         n_got,
                         n_want);
                 fails++;
             }
         }
-        /* sp_bpe: no leading ▁ */
-        uint32_t *sp_ids = nullptr;
-        size_t    n_sp   = 0;
-        if (!sp_bpe_tokenizer_encode(sp, text, &sp_ids, &n_sp)) {
-            fprintf(stderr, "FAIL: sp_bpe encode failed\n");
-            fails++;
-        } else {
-            const size_t n_want = ref_encode(&by_rank, text, false, want);
-            bool         same   = n_sp == n_want;
-            for (size_t i = 0; same && i < n_sp; i++) {
-                same = sp_ids[i] == (uint32_t) want[i];
-            }
-            if (!same) {
-                fprintf(stderr, "FAIL: sp_bpe differs from the rescan (%zu bytes)\n", n);
-                fails++;
-            }
-            safe_free((void **) &sp_ids);
-        }
         free(text);
         texts++;
     }
     printf("  encoders: %d texts (words, one run, random letters; up to 3000 bytes), SPM, "
-           "unigram and sp_bpe as the rescan\n",
+           "unigram and tokenizer.bin as the rescan\n",
            texts);
     free(got);
     free(want);
@@ -419,7 +401,7 @@ static int check_encoders(void) {
     ref_map_free(&by_rank.merge);
     ref_map_free(&by_sc.tok);
     ref_map_free(&by_sc.merge);
-    sp_bpe_tokenizer_free(sp);
+    gguf_tokenizer_unload(&sp);
     gguf_tokenizer_unload(&spm);
     gguf_tokenizer_unload(&uni);
     free(gs.b);

@@ -14,8 +14,10 @@
  *   - without heap: linear_m1, linear_mN (m = 9) and, where the two
  *     weights share them, the pair kernels run with every heap allocation
  *     failing (heap_fail_allocations), on a fresh thread — no workspace
- *     yet — and on one that ran them on 256-wide weights first, so every
- *     buffer it has must grow. Each row of each y must be, bit for bit, one
+ *     yet —, on one that ran them on 256-wide weights first, so every
+ *     buffer it has must grow, and on one that ran linear_mN on the same
+ *     weights first, so the shared workspace fits and only a kernel's own
+ *     scratch must grow. Each row of each y must be, bit for bit, one
  *     of the answers a kernel may give without scratch: its own (it needed
  *     none), linear_m1's for that row (an mN kernel that falls back row by
  *     row), the single kernel's (a pair that splits) or geist_linear_ref's.
@@ -169,6 +171,7 @@ run_kernels(struct geist_backend *be, const struct wpair *p, const float *x, str
 struct starve {
     struct geist_backend *be;
     const struct wpair   *warm; /* run first, heap working; nullptr: none */
+    struct ys            *ymN;  /* non-null: t's linear_mN runs first, heap working */
     const float          *xw;   /* [M, N_WARM] */
     struct ys            *yw;   /* its y */
     const struct wpair   *t;
@@ -180,6 +183,11 @@ static void *run_starved(void *arg) {
     struct starve *s = arg;
     if (s->warm != nullptr) {
         run_kernels(s->be, s->warm, s->xw, s->yw);
+    }
+    if (s->ymN != nullptr) {
+        for (size_t i = 0; i < 2; i++) {
+            s->t->w[i].linear_mN(M, s->x, &s->t->w[i], s->be, s->ymN[i].mN);
+        }
     }
     heap_fail_allocations(true);
     run_kernels(s->be, s->t, s->x, s->y);
@@ -309,9 +317,10 @@ static int run_dtype(const char *backend, const char *pass, struct geist_backend
     }
     const size_t nsum = N_OUT[0] + N_OUT[1];
     /* x [M_BIG, N_IN] and xw [M, N_WARM]; per weight: the answers with the
-     * heap (ys), the reference [M_BIG, n], two starved runs (ys each), the
-     * warm run's y (ys) and the m > cap run [M_BIG, n]. */
-    const size_t floats = M_BIG * N_IN + M * N_WARM + nsum * (4 * 4 * M + 2 * M_BIG);
+     * heap (ys), the reference [M_BIG, n], three starved runs (ys each), the
+     * warm run's y (ys), the mN-first run's y (ys) and the m > cap run
+     * [M_BIG, n]. */
+    const size_t floats = M_BIG * N_IN + M * N_WARM + nsum * (6 * 4 * M + 2 * M_BIG);
     float       *buf    = malloc(floats * sizeof *buf);
     if (buf == nullptr) {
         fprintf(stderr, "FAIL: %s: test allocation\n", tag);
@@ -322,13 +331,15 @@ static int run_dtype(const char *backend, const char *pass, struct geist_backend
     fill_nan(floats, buf);
     float *cur = buf, *x = cur, *xw = cur + M_BIG * N_IN;
     cur += M_BIG * N_IN + M * N_WARM;
-    struct ys norm[2], fresh[2], warmed[2], yw[2];
+    struct ys norm[2], fresh[2], warmed[2], yw[2], primed[2], ymN[2];
     float    *ref[2], *big[2];
     for (size_t i = 0; i < 2; i++) {
         norm[i]   = ys_at(N_OUT[i], &cur);
         fresh[i]  = ys_at(N_OUT[i], &cur);
         warmed[i] = ys_at(N_OUT[i], &cur);
         yw[i]     = ys_at(N_OUT[i], &cur);
+        primed[i] = ys_at(N_OUT[i], &cur);
+        ymN[i]    = ys_at(N_OUT[i], &cur);
         ref[i]    = cur;
         big[i]    = cur + M_BIG * N_OUT[i];
         cur += 2 * M_BIG * N_OUT[i];
@@ -349,12 +360,18 @@ static int run_dtype(const char *backend, const char *pass, struct geist_backend
         geist_linear_ref(M_BIG, x, &t.w[i], ref[i]);
     }
 
-    struct starve s[2] = {
+    /* The third: linear_mN at full width first, so the backend's shared
+     * workspace already fits and only the m = 1 kernels' own scratch must
+     * grow (#274: the Q6_K GEMV's bsums returned without writing y). */
+    struct starve s[3] = {
             {.be = be, .warm = nullptr, .t = &t, .x = x, .y = fresh},
             {.be = be, .warm = &warm, .xw = xw, .yw = yw, .t = &t, .x = x, .y = warmed},
+            {.be = be, .warm = nullptr, .ymN = ymN, .t = &t, .x = x, .y = primed},
     };
-    const char *const how[2] = {"no heap, fresh thread", "no heap, every buffer to grow"};
-    for (size_t k = 0; k < 2; k++) {
+    const char *const how[3] = {"no heap, fresh thread",
+                                "no heap, every buffer to grow",
+                                "no heap, workspace fits after linear_mN"};
+    for (size_t k = 0; k < 3; k++) {
         pthread_t th;
         if (pthread_create(&th, nullptr, run_starved, &s[k]) != 0 ||
             pthread_join(th, nullptr) != 0) {

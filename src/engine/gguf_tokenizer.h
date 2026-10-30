@@ -33,7 +33,8 @@
  *             Llama/SentencePiece vocab — incl. BitNet b1.58, which ships
  *             tokenizer.ggml.model="llama" with scores but no merges.
  * UNSUPPORTED leaves the encode/decode paths refusing so the engine falls
- * back to an external tokenizer.bin. */
+ * back to an external tokenizer.bin, which gguf_tokenizer_load_bin reads into
+ * the same struct in SPM mode. */
 enum gguf_tokenizer_mode {
     GGUF_TOK_MODE_UNSUPPORTED = 0,
     GGUF_TOK_MODE_GPT2,
@@ -94,6 +95,17 @@ struct gguf_tokenizer {
     bool    pre_qwen2;
     int32_t spm_byte_id[256]; /* SPM byte fallback: byte → "<0xXX>" vocab id, -1 if absent */
 
+    /* Loaded from a tokenizer.bin (gguf_tokenizer_load_bin), SPM mode without
+     * the ▁ prefix. Keeps what that path has always answered (#263):
+     *   - encode splits symbols by the UTF-8 lead byte alone (a truncated
+     *     sequence swallows the bytes after it), not by valid sequences;
+     *   - geist_session_token_to_str returns the stored piece undecoded, and
+     *     nullptr past the vocab;
+     *   - geist_model_token_by_text finds nothing, DRY sequence breakers are
+     *     not resolved, and a draft model is accepted only if it is the same
+     *     model. */
+    bool tokenizer_bin;
+
     /* Open-addressed hash indices over the vocab + merges arrays. A slot
      * holds the array index; -1 (vocab) or SIZE_MAX (merges) marks empty.
      * Power-of-2 sized, load factor ~0.5, mask = size - 1. Built at load;
@@ -139,6 +151,12 @@ struct gguf_tokenizer {
  * merge and model-name byte into heap arenas, so the caller may close the
  * gguf_ctx afterwards. Also returns false for GGUF_TOK_MODE_UNSUPPORTED. */
 [[nodiscard]] bool gguf_tokenizer_load_copy(struct gguf_tokenizer *tok, const struct gguf_ctx *ctx);
+
+/* Load a tokenizer.bin ("GMTK" v1: header, u16-length-prefixed tokens, merge
+ * pairs in rank order, then (id, text) special tokens) into *tok, owning a
+ * heap copy of the file. Prints why on stderr and returns false (with *tok
+ * unloaded) for a file it cannot read or that its counts overrun. */
+[[nodiscard]] bool gguf_tokenizer_load_bin(struct gguf_tokenizer *tok, const char *path);
 
 void gguf_tokenizer_unload(struct gguf_tokenizer *tok);
 

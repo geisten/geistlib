@@ -2,8 +2,9 @@ name: CI
 
 # This repository on GitHub is the public mirror of git.geisten.net/geisten/
 # geistlib, where development happens and .gitea/workflows/ci.yml (generated
-# from this file by scripts/gitea-ci.py) gates every change. Here CI runs for
-# pull requests from contributors, on GitHub's runners.
+# from this file by scripts/gitea-ci.py; edit this file, then run it — CI's
+# `gitea-ci.py --check` fails when the two disagree) gates every change. Here
+# CI runs for pull requests from contributors, on GitHub's runners.
 on:
   pull_request:
   workflow_dispatch:
@@ -28,6 +29,8 @@ jobs:
       - run: sh scripts/check-version.sh
       # Changelog fragments (changes/*.md) parse, so the release can fold them in.
       - run: python3 scripts/changelog.py check
+      # .gitea/workflows/ci.yml is this file through scripts/gitea-ci.py (#272).
+      - run: python3 scripts/gitea-ci.py --check
       # main's branch protection requires each CI job by name; a job added or
       # renamed without .gitea/required-checks.txt would go unrequired.
       - name: Required status checks match the CI jobs
@@ -1101,6 +1104,8 @@ jobs:
                    test_backend_vulkan_vram_budget_unit \
                    test_backend_vulkan_pipeline_cache_unit \
                    test_backend_vulkan_weight_index_unit \
+                   test_backend_vulkan_linear_grouped_unit \
+                   test_qwen3moe_unit \
                    test_gguf_release_range_unit; do
             echo "=== $t ==="
             bin/linux/release/tests/"$t" 2>&1 | tee -a ci-diagnostics/vulkan-tests.txt
@@ -1284,7 +1289,7 @@ jobs:
     # The instrumented build prefills the real model many times across
     # the int suite. e2e adds ~half an hour and moves the per-subsystem
     # numbers only by noise, so the measurement is unit + int.
-    timeout-minutes: 150
+    timeout-minutes: 180
     env:
       # gcc's coverage counters are shared by all threads: on the 16-core
       # desktop 8 OpenMP threads made one int test take 32 minutes. Coverage

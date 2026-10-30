@@ -27,6 +27,7 @@
 #include <geist_backend.h>
 #include <geist_weight.h>
 
+#include "host_ops.h"
 #include "linear_ref.h"
 #include "quant.h"
 #include "selected_rows.h"
@@ -204,11 +205,12 @@ static void cpu_neon_w_q6k_m1(const float               *x,
     if (xq == nullptr) {
         return;
     }
-    if (w->backend_layout == GEIST_W_LAYOUT_Q6_K_X8_GEMV && w->aux_fp32 != nullptr) {
-        linear_q6k_decode_w6a8_x8_pre(n_in, n_out, sc, xq, w->aux_fp32, y);
-        return;
+    const bool done = w->backend_layout == GEIST_W_LAYOUT_Q6_K_X8_GEMV && w->aux_fp32 != nullptr
+                              ? linear_q6k_decode_w6a8_x8_pre(n_in, n_out, sc, xq, w->aux_fp32, y)
+                              : linear_q6k_decode_w6a8_pre(n_in, n_out, sc, xq, w->raw, y);
+    if (!done) { /* the kernel's own scratch failed (#274), y unwritten */
+        geist_linear_ref(1, x, w, y);
     }
-    linear_q6k_decode_w6a8_pre(n_in, n_out, sc, xq, w->raw, y);
 }
 
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
@@ -506,28 +508,6 @@ static void cpu_neon_w_f32_m1(const float               *x,
     } else {
         f32_m1_rows(&j, 0, n_c);
     }
-}
-
-static void cpu_neon_w_f32_mN(size_t                     m,
-                              const float               *x,
-                              const struct geist_weight *w,
-                              struct geist_backend      *be,
-                              float                     *y) {
-    (void) be;
-    /* Y [m, n_out] = X [m, n_in] @ W^T   (W row-major [n_out, n_in]). */
-    geist_sgemm(GEIST_OP_N,
-                GEIST_OP_T,
-                (int) m,
-                (int) w->n_out,
-                (int) w->n_in,
-                1.0f,
-                x,
-                (int) w->n_in,
-                (const float *) w->raw,
-                (int) w->n_in,
-                0.0f,
-                y,
-                (int) w->n_out);
 }
 
 /* ---- M>1 (prefill) trampolines --------------------------------------- */
@@ -1307,7 +1287,7 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
          "iq4_xs/w4a8"},
 
         /* F32 native both paths. */
-        {GEIST_DTYPE_F32, CPU_NEON_ISA_NEON, cpu_neon_w_f32_m1, cpu_neon_w_f32_mN, "f32"},
+        {GEIST_DTYPE_F32, CPU_NEON_ISA_NEON, cpu_neon_w_f32_m1, geist_linear_f32_mN, "f32"},
 
 /* F16: fused in-register-convert GEMV for decode (M=1); prefill and BF16
  * on the dequant+SGEMM trampoline. */
@@ -1428,12 +1408,8 @@ install_tq2_0_tl1_if_eligible(struct geist_weight *w, const struct cpu_neon_kern
         safe_free(&tl1_buf);
         return GEIST_OK;
     }
-    w->aux_fp32 = (const float *) tl1_buf;
-    w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
-    w->backend_layout    = GEIST_W_LAYOUT_TQ2_0_TL1;
-    w->backend_alignment = 64;
-    w->linear_m1         = cpu_neon_w_tl1_m1;
+    geist_weight_attach_aux(w, tl1_buf, bytes, GEIST_W_LAYOUT_TQ2_0_TL1, 64, 0);
+    w->linear_m1 = cpu_neon_w_tl1_m1;
     /* Prefill (m>1) stays on the SDOT q8a_mN path: a TL1 LUT-GEMM loses
      * there on A76 (Pi 5 BitNet 2B-4T prefill 21.0 vs 33.6 t/s). */
     return GEIST_OK;
@@ -1465,12 +1441,13 @@ install_q4k_predecode_if_eligible(struct geist_weight                 *w,
         safe_free(&buf);
         return GEIST_OK;
     }
-    w->aux_fp32 = (const float *) buf;
-    w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
-    w->backend_layout =
-            use_ntile_pack ? GEIST_W_LAYOUT_Q4_K_PREDECODE_NTILE4 : GEIST_W_LAYOUT_Q4_K_PREDECODE;
-    w->backend_alignment = 64;
+    geist_weight_attach_aux(w,
+                            buf,
+                            bytes,
+                            use_ntile_pack ? GEIST_W_LAYOUT_Q4_K_PREDECODE_NTILE4
+                                           : GEIST_W_LAYOUT_Q4_K_PREDECODE,
+                            64,
+                            0);
     return GEIST_OK;
 }
 
@@ -1507,12 +1484,13 @@ install_q6k_ntile_if_eligible(struct geist_weight *w, const struct cpu_neon_kern
         safe_free(&buf);
         return GEIST_OK;
     }
-    w->aux_fp32 = (const float *) buf;
-    w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
-    w->backend_layout    = use_stream ? GEIST_W_LAYOUT_Q6_K_PREDECODE_NTILE4_STREAM
-                                      : GEIST_W_LAYOUT_Q6_K_PREDECODE_NTILE4;
-    w->backend_alignment = 64;
+    geist_weight_attach_aux(w,
+                            buf,
+                            bytes,
+                            use_stream ? GEIST_W_LAYOUT_Q6_K_PREDECODE_NTILE4_STREAM
+                                       : GEIST_W_LAYOUT_Q6_K_PREDECODE_NTILE4,
+                            64,
+                            0);
     return GEIST_OK;
 }
 
@@ -1544,11 +1522,7 @@ install_q6k_x8_gemv_if_eligible(struct geist_weight                 *w,
         safe_free(&buf);
         return GEIST_OK;
     }
-    w->aux_fp32 = (const float *) buf;
-    w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK;
-    w->backend_layout    = GEIST_W_LAYOUT_Q6_K_X8_GEMV;
-    w->backend_alignment = 64;
+    geist_weight_attach_aux(w, buf, bytes, GEIST_W_LAYOUT_Q6_K_X8_GEMV, 64, 0);
 #else
     (void) w;
     (void) policy;
@@ -1583,11 +1557,7 @@ install_q4_0_x8_gemv_if_eligible(struct geist_weight                 *w,
         safe_free(&buf);
         return GEIST_OK;
     }
-    w->aux_fp32 = (const float *) buf;
-    w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK | GEIST_W_RAW_COLD;
-    w->backend_layout    = GEIST_W_LAYOUT_Q4_0_X8_GEMV;
-    w->backend_alignment = 64;
+    geist_weight_attach_aux(w, buf, bytes, GEIST_W_LAYOUT_Q4_0_X8_GEMV, 64, GEIST_W_RAW_COLD);
 #else
     (void) w;
     (void) policy;
@@ -1613,15 +1583,11 @@ static void install_pq2_0_x8_gemv_if_eligible(struct geist_weight               
         return;
     }
     pq2_0_x8_pack(w->raw, (size_t) w->n_in, (size_t) w->n_out, buf);
-    w->aux_fp32 = (const float *) buf;
-    w->aux_n    = (int32_t) bytes;
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK | GEIST_W_RAW_COLD;
-    w->backend_layout    = GEIST_W_LAYOUT_PQ2_0_X8_GEMV;
-    w->backend_alignment = 64;
-    w->linear_m1         = cpu_neon_w_pq2_0_x8_m1;
-    w->linear_mN         = cpu_neon_w_pq2_0_x8_mN;
-    w->linear_pair_m1    = cpu_neon_w_pq2_0_x8_pair_m1;
-    w->linear_pair_mN    = cpu_neon_w_pq2_0_x8_pair_mN;
+    geist_weight_attach_aux(w, buf, bytes, GEIST_W_LAYOUT_PQ2_0_X8_GEMV, 64, GEIST_W_RAW_COLD);
+    w->linear_m1      = cpu_neon_w_pq2_0_x8_m1;
+    w->linear_mN      = cpu_neon_w_pq2_0_x8_mN;
+    w->linear_pair_m1 = cpu_neon_w_pq2_0_x8_pair_m1;
+    w->linear_pair_mN = cpu_neon_w_pq2_0_x8_pair_mN;
 #else
     (void) w;
     (void) policy;
@@ -1753,14 +1719,11 @@ enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_bac
 
 [[nodiscard]] enum geist_status cpu_neon_resolve_weight(struct geist_backend *be,
                                                         struct geist_weight  *w) {
-    if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0 || w->raw_nbytes == 0u) {
-        return GEIST_E_INVALID_ARG;
-    }
     /* The source extent, before anything reads it: the repacks (Q4_K
-     * predecode, Q6_K n-tile, TL1) stream the whole tensor, so raw_nbytes
-     * must cover (dtype, n_in, n_out). */
-    if (!quant_weight_extent_ok(w)) {
-        return GEIST_E_FORMAT;
+     * predecode, Q6_K n-tile, TL1) stream the whole tensor. */
+    const enum geist_status pre = geist_weight_precheck(w);
+    if (pre != GEIST_OK) {
+        return pre;
     }
     /* Fail fast without backend state: the policy carries the runtime ISA
      * bits that gate kernel installation, and a synthesized default could

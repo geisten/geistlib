@@ -3,7 +3,8 @@
  * tokenizer: gguf_tokenizer in gpt2 mode (ordinary words, and one unbroken
  * run of letters, which the pre-tokenizer keeps as a single chunk), SPM
  * mode (the whole text between specials is one chunk), unigram mode, and
- * sp_bpe_tokenizer. Synthetic vocabularies from tokenizer_fixtures.h.
+ * a tokenizer.bin (gguf_tokenizer_load_bin). Synthetic vocabularies from
+ * tokenizer_fixtures.h.
  *
  * Each row prints the median encode time and an FNV-1a hash of the ids:
  * two builds that print the same hashes produced the same tokens.
@@ -15,7 +16,6 @@
 #include "gguf_reader.h"
 #include "gguf_tokenizer.h"
 #include "heap.h"
-#include "sp_bpe_tokenizer.h"
 #include "tokenizer_fixtures.h"
 #include "test_helpers.h"
 
@@ -75,31 +75,6 @@ static struct row time_gguf(const struct gguf_tokenizer *tok, const char *text, 
     return r;
 }
 
-static struct row time_sp_bpe(const struct sp_bpe_tokenizer *tok, const char *text) {
-    struct row r = {.ms = -1.0};
-    double     t[5];
-    int        runs = 0;
-    for (; runs < 5; runs++) {
-        uint32_t    *ids   = nullptr;
-        size_t       n_ids = 0;
-        const double t0    = geist_test_now_ms();
-        if (!sp_bpe_tokenizer_encode(tok, text, &ids, &n_ids)) {
-            return r;
-        }
-        t[runs] = geist_test_now_ms() - t0;
-        r.n_ids = n_ids;
-        r.hash  = fnv_ids(n_ids, ids, sizeof *ids);
-        safe_free((void **) &ids);
-        if (t[runs] > 1000.0) {
-            runs++;
-            break;
-        }
-    }
-    qsort(t, (size_t) runs, sizeof *t, cmp_double);
-    r.ms = t[runs / 2];
-    return r;
-}
-
 static bool load_gguf(struct gguf_tokenizer *tok, const struct tf_buf *g) {
     const char      *err = nullptr;
     struct gguf_ctx *ctx = gguf_open_memory(g->b, g->n, &err);
@@ -120,7 +95,7 @@ int main(int argc, char **argv) {
     struct tf_buf   g_gpt2 = tf_gguf(&gpt2_v, "gpt2", true);
     struct tf_buf   g_spm  = tf_gguf(&spm_v, "llama", true);
     struct tf_buf   g_uni  = tf_gguf(&spm_v, "llama", false);
-    struct tf_buf   bin    = tf_sp_bpe_bin(&spm_v);
+    struct tf_buf   bin    = tf_tokenizer_bin(&spm_v);
 
     struct gguf_tokenizer t_gpt2, t_spm, t_uni;
     if (!load_gguf(&t_gpt2, &g_gpt2) || !load_gguf(&t_spm, &g_spm) || !load_gguf(&t_uni, &g_uni)) {
@@ -134,11 +109,11 @@ int main(int argc, char **argv) {
         return 1;
     }
     close(fd);
-    struct sp_bpe_tokenizer *t_sp  = nullptr;
-    const bool               sp_ok = sp_bpe_tokenizer_load(&t_sp, path);
+    struct gguf_tokenizer t_sp;
+    const bool            sp_ok = gguf_tokenizer_load_bin(&t_sp, path);
     unlink(path);
     if (!sp_ok) {
-        fprintf(stderr, "sp_bpe load failed\n");
+        fprintf(stderr, "tokenizer.bin load failed\n");
         return 1;
     }
 
@@ -155,7 +130,7 @@ int main(int argc, char **argv) {
                 {"gpt2 one run", time_gguf(&t_gpt2, letters, n)},
                 {"spm words", time_gguf(&t_spm, words, n)},
                 {"unigram words", time_gguf(&t_uni, words, n)},
-                {"sp_bpe words", time_sp_bpe(t_sp, words)},
+                {"tokenizer.bin words", time_gguf(&t_sp, words, n)},
         };
         for (size_t i = 0; i < sizeof rows / sizeof *rows; i++) {
             printf("%s {\"mode\":\"%s\",\"chars\":%zu,\"ids\":%zu,\"ms\":%.3f,\"us_per_char\":%.4f,"
@@ -174,7 +149,7 @@ int main(int argc, char **argv) {
     }
     printf("\n]}\n");
 
-    sp_bpe_tokenizer_free(t_sp);
+    gguf_tokenizer_unload(&t_sp);
     gguf_tokenizer_unload(&t_gpt2);
     gguf_tokenizer_unload(&t_spm);
     gguf_tokenizer_unload(&t_uni);

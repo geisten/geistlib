@@ -20,7 +20,6 @@
 #include "checked.h"
 #include "env.h"
 #include "heap.h"
-#include "sp_bpe_tokenizer.h"
 #include "gguf_tokenizer.h"
 #include "gguf_reader.h"
 
@@ -38,15 +37,11 @@
  */
 struct model_engine_state {
     char *path;
-    /* Two tokenizer paths, exactly one populated:
-     *  - `sp_tok` is loaded from an external tokenizer.bin (Gemma path).
-     *  - `gguf_tok` is loaded from the GGUF-embedded vocab + merges
-     *    (Llama / Mistral path). Owns heap-arena copies of the
-     *    token strings so the gguf_ctx can close after load.
-     * set_prompt / tokenize dispatch on whichever is non-null. */
-    struct sp_bpe_tokenizer *sp_tok;
-    struct gguf_tokenizer   *gguf_tok;
-    struct model_meta       *meta; /* metadata kept from the GGUF (owned, nullptr if OOM) */
+    /* The GGUF-embedded tokenizer, or else an external tokenizer.bin
+     * (gguf_tokenizer_load_bin; tokenizer_bin set); nullptr without either.
+     * Owns heap copies of its strings, so the gguf_ctx can close after load. */
+    struct gguf_tokenizer *gguf_tok;
+    struct model_meta     *meta; /* metadata kept from the GGUF (owned, nullptr if OOM) */
 };
 
 /* What the model keeps of the GGUF's metadata once the gguf_ctx closes (#622):
@@ -176,11 +171,7 @@ static const struct geist_arch_descriptor *model_arch_gate(const char *fn, const
 
 /* Free the engine-side pieces gathered before state_create, on a failed
  * load. Mirrors the teardown in geist_model_destroy. */
-static void
-model_load_undo(struct sp_bpe_tokenizer *sp, struct gguf_tokenizer *gg, struct model_meta *meta) {
-    if (sp != nullptr) {
-        sp_bpe_tokenizer_free(sp);
-    }
+static void model_load_undo(struct gguf_tokenizer *gg, struct model_meta *meta) {
     if (gg != nullptr) {
         gguf_tokenizer_unload(gg);
         void *p = gg;
@@ -234,7 +225,7 @@ static char *find_tokenizer_path(const char *gguf_path) {
     *gguf_tok = nullptr;
     if (*desc == nullptr) {
         gguf_close(tg);
-        model_load_undo(nullptr, nullptr, *meta);
+        model_load_undo(nullptr, *meta);
         *meta = nullptr;
         return GEIST_E_UNSUPPORTED;
     }
@@ -256,12 +247,11 @@ static char *find_tokenizer_path(const char *gguf_path) {
 [[nodiscard]] static enum geist_status model_assemble(const char                         *fn,
                                                       const char                         *path,
                                                       const struct geist_arch_descriptor *desc,
-                                                      void                    *arch_state,
-                                                      struct sp_bpe_tokenizer *sp_tok,
-                                                      struct gguf_tokenizer   *gguf_tok,
-                                                      struct model_meta       *meta,
-                                                      struct geist_backend    *be,
-                                                      struct geist_model     **out) {
+                                                      void                  *arch_state,
+                                                      struct gguf_tokenizer *gguf_tok,
+                                                      struct model_meta     *meta,
+                                                      struct geist_backend  *be,
+                                                      struct geist_model   **out) {
     struct geist_model        *m = heap_alloc_aligned(sizeof(*m), alignof(struct geist_model));
     struct model_engine_state *eng =
             heap_alloc_aligned(sizeof(*eng), alignof(struct model_engine_state));
@@ -276,7 +266,7 @@ static char *find_tokenizer_path(const char *gguf_path) {
         safe_free((void **) &eng);
         safe_free((void **) &m);
         desc->decoder_ops->state_destroy(arch_state);
-        model_load_undo(sp_tok, gguf_tok, meta);
+        model_load_undo(gguf_tok, meta);
         geist_error_set_create_time(GEIST_E_OOM, fn, "failed to allocate %s", missing);
         return GEIST_E_OOM;
     }
@@ -285,7 +275,6 @@ static char *find_tokenizer_path(const char *gguf_path) {
     }
     *eng = (struct model_engine_state) {
             .path     = path_copy,
-            .sp_tok   = sp_tok,
             .gguf_tok = gguf_tok,
             .meta     = meta,
     };
@@ -328,20 +317,20 @@ static char *find_tokenizer_path(const char *gguf_path) {
                                     terr != nullptr ? terr : "unknown error");
         return GEIST_E_IO;
     }
-    struct sp_bpe_tokenizer            *sp_tok   = nullptr;
     struct gguf_tokenizer              *gguf_tok = nullptr;
     struct model_meta                  *meta     = nullptr;
     const struct geist_arch_descriptor *desc     = nullptr;
     if (model_read_header("geist_model_load", tg, &meta, &desc, &gguf_tok) != GEIST_OK) {
         return GEIST_E_UNSUPPORTED;
     }
-    /* External tokenizer.bin (sp_bpe_tokenizer) only when the GGUF has no
-     * usable one. Also best effort. */
+    /* External tokenizer.bin only when the GGUF has no usable one. Also
+     * best effort. */
     if (gguf_tok == nullptr) {
         char *tok_path = find_tokenizer_path(path);
         if (tok_path != nullptr) {
-            if (!sp_bpe_tokenizer_load(&sp_tok, tok_path)) {
-                sp_tok = nullptr;
+            gguf_tok = heap_alloc_aligned(sizeof(*gguf_tok), alignof(struct gguf_tokenizer));
+            if (gguf_tok != nullptr && !gguf_tokenizer_load_bin(gguf_tok, tok_path)) {
+                safe_free((void **) &gguf_tok);
             }
             safe_free((void **) &tok_path);
         }
@@ -353,7 +342,7 @@ static char *find_tokenizer_path(const char *gguf_path) {
     geist_error_clear_create_time();
     void *arch_state = desc->decoder_ops->state_create(be, path, opts);
     if (arch_state == nullptr) {
-        model_load_undo(sp_tok, gguf_tok, meta);
+        model_load_undo(gguf_tok, meta);
         if (!geist_have_create_error()) {
             geist_error_set_create_time(GEIST_E_IO,
                                         "geist_model_load",
@@ -363,8 +352,8 @@ static char *find_tokenizer_path(const char *gguf_path) {
         }
         return geist_create_error_code() != GEIST_OK ? geist_create_error_code() : GEIST_E_IO;
     }
-    const enum geist_status as = model_assemble(
-            "geist_model_load", path, desc, arch_state, sp_tok, gguf_tok, meta, be, out);
+    const enum geist_status as =
+            model_assemble("geist_model_load", path, desc, arch_state, gguf_tok, meta, be, out);
     if (as != GEIST_OK) {
         return as;
     }
@@ -478,7 +467,7 @@ static char *find_tokenizer_path(const char *gguf_path) {
         return GEIST_E_UNSUPPORTED;
     }
     if (desc->decoder_ops->state_create_from_memory == nullptr) {
-        model_load_undo(nullptr, gguf_tok, meta);
+        model_load_undo(gguf_tok, meta);
         geist_error_set_create_time(
                 GEIST_E_UNSUPPORTED,
                 "geist_model_load_from_memory",
@@ -494,7 +483,7 @@ static char *find_tokenizer_path(const char *gguf_path) {
     geist_error_clear_create_time();
     void *arch_state = desc->decoder_ops->state_create_from_memory(be, data, size, opts);
     if (arch_state == nullptr) {
-        model_load_undo(nullptr, gguf_tok, meta);
+        model_load_undo(gguf_tok, meta);
         if (!geist_have_create_error()) {
             geist_error_set_create_time(GEIST_E_FORMAT,
                                         "geist_model_load_from_memory",
@@ -503,15 +492,8 @@ static char *find_tokenizer_path(const char *gguf_path) {
         }
         return geist_create_error_code() != GEIST_OK ? geist_create_error_code() : GEIST_E_FORMAT;
     }
-    return model_assemble("geist_model_load_from_memory",
-                          nullptr,
-                          desc,
-                          arch_state,
-                          nullptr,
-                          gguf_tok,
-                          meta,
-                          be,
-                          out);
+    return model_assemble(
+            "geist_model_load_from_memory", nullptr, desc, arch_state, gguf_tok, meta, be, out);
 }
 
 /* "auto" fallback. A backend that "auto" made a GPU backend (be->auto_cpu)
@@ -650,10 +632,6 @@ void geist_model_destroy(struct geist_model *m) {
     /* Tear down engine-side state (path string, tokenizer). */
     struct model_engine_state *eng = (struct model_engine_state *) m->weights;
     if (eng != nullptr) {
-        if (eng->sp_tok != nullptr) {
-            sp_bpe_tokenizer_free(eng->sp_tok);
-            eng->sp_tok = nullptr;
-        }
         if (eng->gguf_tok != nullptr) {
             gguf_tokenizer_unload(eng->gguf_tok);
             void *p = eng->gguf_tok;
@@ -862,9 +840,6 @@ geist_token_t geist_model_eos_token(const struct geist_model *m) {
     if (eng->gguf_tok != nullptr) {
         return (geist_token_t) eng->gguf_tok->eos_id;
     }
-    if (eng->sp_tok != nullptr) {
-        return (geist_token_t) sp_bpe_tokenizer_eos_id(eng->sp_tok);
-    }
     return GEIST_TOKEN_NONE;
 }
 
@@ -876,24 +851,17 @@ geist_token_t geist_model_bos_token(const struct geist_model *m) {
     if (eng->gguf_tok != nullptr) {
         return (geist_token_t) eng->gguf_tok->bos_id;
     }
-    if (eng->sp_tok != nullptr) {
-        return (geist_token_t) sp_bpe_tokenizer_bos_id(eng->sp_tok);
-    }
     return GEIST_TOKEN_NONE;
 }
 
 bool geist_model_add_bos(const struct geist_model *m) {
     const struct model_engine_state *eng = model_engine(m);
-    /* The SentencePiece path has no such metadata. True says the model
-     * expects BOS; set_prompt's sp branch does not prepend it, so callers
-     * add it themselves (#263). */
-    if (eng == nullptr) {
+    /* A tokenizer.bin has no such metadata; its loader sets add_bos.
+     * set_prompt honours it on both paths, with one BOS (#263). */
+    if (eng == nullptr || eng->gguf_tok == nullptr) {
         return false;
     }
-    if (eng->gguf_tok != nullptr) {
-        return eng->gguf_tok->add_bos;
-    }
-    return eng->sp_tok != nullptr;
+    return eng->gguf_tok->add_bos;
 }
 
 bool geist_model_add_eos(const struct geist_model *m) {
@@ -910,19 +878,12 @@ geist_token_t geist_model_token_by_text(const struct geist_model *m, const char 
         return GEIST_TOKEN_NONE;
     }
     /* Exact-vocab lookup is the GGUF-embedded tokenizer path (what a chat app
-     * loading the .gguf directly uses). The external SentencePiece path has no
-     * reverse lookup exposed; callers there rely on eos/bos. */
-    if (eng->gguf_tok != nullptr) {
+     * loading the .gguf directly uses). A tokenizer.bin has never answered it;
+     * callers there rely on eos/bos. */
+    if (eng->gguf_tok != nullptr && !eng->gguf_tok->tokenizer_bin) {
         return (geist_token_t) gguf_tokenizer_id_for_text(eng->gguf_tok, text);
     }
     return GEIST_TOKEN_NONE;
-}
-
-struct sp_bpe_tokenizer *geist_model_internal_tokenizer(struct geist_model *m) {
-    if (m == nullptr || m->weights == nullptr) {
-        return nullptr;
-    }
-    return ((struct model_engine_state *) m->weights)->sp_tok;
 }
 
 struct gguf_tokenizer *geist_model_internal_gguf_tokenizer(struct geist_model *m) {

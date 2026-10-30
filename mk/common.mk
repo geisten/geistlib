@@ -228,7 +228,6 @@ LIB_SOURCES := \
     src/engine/dry_breakers.c \
     src/engine/session.c \
     src/engine/decision.c \
-    src/engine/sp_bpe_tokenizer.c \
     src/engine/gguf_tokenizer.c \
     src/engine/version.c \
     src/archs/transformer/arch.c \
@@ -280,6 +279,9 @@ LIB_SOURCES := \
     src/backends/common/hadamard.c \
     src/backends/common/linear_ref.c \
     src/backends/common/host_buffer.c \
+    src/backends/common/host_ops.c \
+    src/backends/common/cpu_threads.c \
+    src/backends/common/thread_ws.c \
     src/formats/ptqtp/ptqtp_awq.c \
     src/io/aux_file.c \
     src/io/file_map.c \
@@ -292,10 +294,11 @@ endif
 
 # src/backends/common/ above is the shared compute library (GEMM, gemma4
 # kernels, KIVI) — used by every backend AND by the arch layer, so it is
-# always compiled. host_buffer.c, the CPU backends' shared buffer ops, is
-# listed here once rather than in each CPU backend fragment. The per-backend
-# implementation TUs are NOT listed here; they come from BACKEND_SOURCES
-# below, gated by BACKENDS.
+# always compiled. host_buffer.c, host_ops.c, cpu_threads.c and
+# thread_ws.c, the CPU backends' shared buffer ops, view checks, region hooks
+# and workspace registry, are listed here once rather than in each CPU
+# backend fragment. The per-backend implementation TUs are NOT listed here;
+# they come from BACKEND_SOURCES below, gated by BACKENDS.
 
 # ---- Backend sources (selected by BACKENDS) ------------------------------
 # Each enabled backend contributes its implementation TUs via a per-backend
@@ -325,7 +328,7 @@ STB_OBJ := $(BUILD_DIR)/third_party/stb/stb_impl.o
 # path under bin/ (tests/test_foo -> bin/.../tests/test_foo; tools/eval_geist ->
 # bin/.../tools/eval_geist).
 TEST_SOURCES := $(wildcard tests/test_*.c tests/bench_*.c)
-DEMO_SOURCES := tools/bench_decision.c tools/bench_reasoning_batch.c tools/bench_reasoning_probe.c tools/eval_geist.c tools/dump_geist_logits.c tools/dump_geist_greedy.c tools/dump_geist_tf_logits.c tools/dump_geist_embedding.c tools/zo_tune.c
+DEMO_SOURCES := tools/bench_decision.c tools/bench_reasoning_batch.c tools/bench_reasoning_probe.c tools/eval_geist.c tools/dump_geist_logits.c tools/dump_geist_greedy.c tools/dump_geist_tf_logits.c tools/dump_geist_embedding.c tools/dump_geist_tokens.c tools/zo_tune.c
 
 # These tests call cblas_* directly as an independent reference to validate
 # geist's own kernels. They can't link under GEMM_PROVIDER=native (no cblas to

@@ -20,10 +20,14 @@
 #include "fnv1a.h"
 #include "heap.h"
 
+#include "file_map.h"
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 /* Build the gpt2 codepoint → byte inverse map. Walks the same logic
  * as huggingface_hub's bytes_to_unicode(): 188 identity bytes plus
@@ -120,6 +124,20 @@ static int32_t utf8_decode_one(const char *s, size_t n, size_t *advance) {
     return -1;
 }
 
+/* The sequence length a UTF-8 lead byte announces (1..4), 1 for a byte that
+ * cannot lead one. Continuation bytes are not looked at (tokenizer_bin). */
+static size_t utf8_lead_len(uint8_t b) {
+    if (b < 0x80)
+        return 1;
+    if ((b & 0xE0) == 0xC0)
+        return 2;
+    if ((b & 0xF0) == 0xE0)
+        return 3;
+    if ((b & 0xF8) == 0xF0)
+        return 4;
+    return 1;
+}
+
 /* Hash helpers, defined further down. */
 static uint64_t fnv1a64(const char *p, size_t n);
 static uint64_t fnv1a64_pair(const char *a, size_t alen, const char *b, size_t blen);
@@ -129,6 +147,71 @@ static int32_t  vocab_lookup(const struct gguf_tokenizer *tok, const char *bytes
 /* SentencePiece space marker U+2581 (▁) in UTF-8. */
 static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
 #define SPM_MARKER_LEN 3
+
+/* Sort the specials by length, longest first and stable among equals, so the
+ * first match in the encoders' linear scan is the leftmost-longest one. */
+static void sort_specials(struct gguf_tokenizer *tok) {
+    for (size_t a = 1; a < tok->n_specials; a++) {
+        struct gguf_tokenizer_special tmp = tok->specials[a];
+        size_t                        b   = a;
+        while (b > 0 && tok->specials[b - 1].len < tmp.len) {
+            tok->specials[b] = tok->specials[b - 1];
+            b--;
+        }
+        tok->specials[b] = tmp;
+    }
+}
+
+/* Build the vocab + merges hash indices over token_str / merge_*. Both
+ * tables are pow-of-2 sized with load factor ~0.5; a lookup that collides
+ * with an earlier equal entry finds the earlier one (the lower id or rank).
+ * False when a table cannot be allocated. */
+static bool build_indices(struct gguf_tokenizer *tok) {
+    const size_t vsize = next_pow2(tok->vocab_size * 2);
+    const size_t msize = tok->n_merges > 0 ? next_pow2(tok->n_merges * 2) : 0;
+    tok->vocab_hash    = heap_alloc_array_aligned(int32_t, vsize);
+    tok->merge_hash    = msize > 0 ? heap_alloc_array_aligned(size_t, msize) : nullptr;
+    if (tok->vocab_hash == nullptr || (msize > 0 && tok->merge_hash == nullptr)) {
+        return false;
+    }
+    tok->vocab_hash_mask = vsize - 1;
+    for (size_t s = 0; s < vsize; s++)
+        tok->vocab_hash[s] = -1;
+    for (size_t id = 0; id < tok->vocab_size; id++) {
+        uint64_t h = fnv1a64(tok->token_str[id], tok->token_len[id]);
+        size_t   k = (size_t) h & tok->vocab_hash_mask;
+        while (tok->vocab_hash[k] >= 0) {
+            k = (k + 1) & tok->vocab_hash_mask;
+        }
+        tok->vocab_hash[k] = (int32_t) id;
+    }
+    if (msize > 0) {
+        tok->merge_hash_mask = msize - 1;
+        for (size_t s = 0; s < msize; s++)
+            tok->merge_hash[s] = SIZE_MAX;
+        for (size_t m = 0; m < tok->n_merges; m++) {
+            uint64_t h = fnv1a64_pair(tok->merge_left[m],
+                                      tok->merge_left_len[m],
+                                      tok->merge_right[m],
+                                      tok->merge_right_len[m]);
+            size_t   k = (size_t) h & tok->merge_hash_mask;
+            while (tok->merge_hash[k] != SIZE_MAX) {
+                k = (k + 1) & tok->merge_hash_mask;
+            }
+            tok->merge_hash[k] = m;
+        }
+    }
+    return true;
+}
+
+/* SentencePiece byte-fallback map: "<0xXX>" → vocab id (-1 if not present). */
+static void build_spm_byte_map(struct gguf_tokenizer *tok) {
+    for (int i = 0; i < 256; i++) {
+        char buf[8];
+        int  n              = snprintf(buf, sizeof buf, "<0x%02X>", (unsigned) i);
+        tok->spm_byte_id[i] = vocab_lookup(tok, buf, (size_t) n);
+    }
+}
 
 [[nodiscard]] bool gguf_tokenizer_load(struct gguf_tokenizer *tok, const struct gguf_ctx *ctx) {
     if (tok == nullptr)
@@ -248,58 +331,15 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
                         k++;
                     }
                     tok->n_specials = k;
-                    /* Sort by len desc — leftmost-longest match at encode. */
-                    for (size_t a = 1; a < k; a++) {
-                        struct gguf_tokenizer_special tmp = tok->specials[a];
-                        size_t                        b   = a;
-                        while (b > 0 && tok->specials[b - 1].len < tmp.len) {
-                            tok->specials[b] = tok->specials[b - 1];
-                            b--;
-                        }
-                        tok->specials[b] = tmp;
-                    }
+                    sort_specials(tok);
                 }
             }
         }
     }
 
-    /* Build the vocab + merges hash indices. Both tables are
-     * pow-of-2 sized with load factor ~0.5. A table that cannot be
-     * allocated fails the load. */
-    const size_t vsize = next_pow2(tok->vocab_size * 2);
-    const size_t msize = tok->n_merges > 0 ? next_pow2(tok->n_merges * 2) : 0;
-    tok->vocab_hash    = heap_alloc_array_aligned(int32_t, vsize);
-    tok->merge_hash    = msize > 0 ? heap_alloc_array_aligned(size_t, msize) : nullptr;
-    if (tok->vocab_hash == nullptr || (msize > 0 && tok->merge_hash == nullptr)) {
+    if (!build_indices(tok)) {
         gguf_tokenizer_unload(tok);
         return false;
-    }
-    tok->vocab_hash_mask = vsize - 1;
-    for (size_t s = 0; s < vsize; s++)
-        tok->vocab_hash[s] = -1;
-    for (size_t id = 0; id < tok->vocab_size; id++) {
-        uint64_t h = fnv1a64(tok->token_str[id], tok->token_len[id]);
-        size_t   k = (size_t) h & tok->vocab_hash_mask;
-        while (tok->vocab_hash[k] >= 0) {
-            k = (k + 1) & tok->vocab_hash_mask;
-        }
-        tok->vocab_hash[k] = (int32_t) id;
-    }
-    if (msize > 0) {
-        tok->merge_hash_mask = msize - 1;
-        for (size_t s = 0; s < msize; s++)
-            tok->merge_hash[s] = SIZE_MAX;
-        for (size_t m = 0; m < tok->n_merges; m++) {
-            uint64_t h = fnv1a64_pair(tok->merge_left[m],
-                                      tok->merge_left_len[m],
-                                      tok->merge_right[m],
-                                      tok->merge_right_len[m]);
-            size_t   k = (size_t) h & tok->merge_hash_mask;
-            while (tok->merge_hash[k] != SIZE_MAX) {
-                k = (k + 1) & tok->merge_hash_mask;
-            }
-            tok->merge_hash[k] = m;
-        }
     }
 
     /* Resolve the tokenization algorithm. "gpt2" is byte-level BPE; any
@@ -350,12 +390,7 @@ static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
         bool b;
         tok->add_space_prefix =
                 gguf_get_meta_bool(ctx, "tokenizer.ggml.add_space_prefix", &b) ? b : true;
-        /* Byte-fallback map: "<0xXX>" → vocab id (-1 if not present). */
-        for (int i = 0; i < 256; i++) {
-            char buf[8];
-            int  n              = snprintf(buf, sizeof buf, "<0x%02X>", (unsigned) i);
-            tok->spm_byte_id[i] = vocab_lookup(tok, buf, (size_t) n);
-        }
+        build_spm_byte_map(tok);
     }
     return true;
 }
@@ -444,8 +479,8 @@ void gguf_tokenizer_unload(struct gguf_tokenizer *tok) {
                                             const struct gguf_ctx *ctx) {
     if (!gguf_tokenizer_load(tok, ctx))
         return false;
-    /* Refuse an unsupported mode so the engine falls back to the external
-     * sp_bpe (tokenizer.bin) path. */
+    /* Refuse an unsupported mode so the engine falls back to an external
+     * tokenizer.bin (gguf_tokenizer_load_bin). */
     if (tok->mode == GGUF_TOK_MODE_UNSUPPORTED) {
         gguf_tokenizer_unload(tok);
         return false;
@@ -510,6 +545,172 @@ void gguf_tokenizer_unload(struct gguf_tokenizer *tok) {
      * compare bytes via memcmp at probe time so they still match the
      * rewritten arena pointers — same bytes, different address.
      * No rebuild needed. */
+    return true;
+}
+
+/* ---- tokenizer.bin ------------------------------------------------------ */
+
+#define TOKENIZER_BIN_MAGIC 0x4B544D47u /* "GMTK" little-endian */
+#define TOKENIZER_BIN_VERSION 1u
+
+static uint32_t rd_u32(const uint8_t *p) {
+    uint32_t v;
+    memcpy(&v, p, 4);
+    return v;
+}
+
+static uint16_t rd_u16(const uint8_t *p) {
+    uint16_t v;
+    memcpy(&v, p, 2);
+    return v;
+}
+
+/* A u16-length-prefixed string at *p; false when the file ends first. The
+ * length is checked by subtraction before p moves (AGENT.md §4). */
+static bool rd_str(const uint8_t **p, const uint8_t *end, const char **s, size_t *len) {
+    if ((size_t) (end - *p) < 2) {
+        return false;
+    }
+    const uint16_t n = rd_u16(*p);
+    *p += 2;
+    if (n > (size_t) (end - *p)) {
+        return false;
+    }
+    *s   = (const char *) *p;
+    *len = n;
+    *p += n;
+    return true;
+}
+
+/* Parse the file image [p, end) (the vocab arena) into tok. Every count is
+ * checked against the bytes left before its table is allocated: an entry
+ * takes at least 2 (token), 4 (merge) or 6 (special) bytes. */
+static bool parse_tokenizer_bin(struct gguf_tokenizer *tok, const uint8_t *p, const uint8_t *end) {
+    if ((size_t) (end - p) < 36) {
+        fprintf(stderr, "tokenizer.bin: file too small for header\n");
+        return false;
+    }
+    const uint32_t magic = rd_u32(p), version = rd_u32(p + 4);
+    if (magic != TOKENIZER_BIN_MAGIC) {
+        fprintf(stderr, "tokenizer.bin: bad magic %08x\n", magic);
+        return false;
+    }
+    if (version != TOKENIZER_BIN_VERSION) {
+        fprintf(stderr, "tokenizer.bin: unsupported version %u\n", version);
+        return false;
+    }
+    const uint32_t n_tok = rd_u32(p + 8), n_merges = rd_u32(p + 12), n_specials = rd_u32(p + 16);
+    tok->bos_id = (int32_t) rd_u32(p + 20);
+    tok->eos_id = (int32_t) rd_u32(p + 24);
+    /* p + 28: pad id, which nothing reads. */
+    tok->unk_id = (int32_t) rd_u32(p + 32);
+    p += 36;
+
+    if (n_tok > (size_t) (end - p) / 2) {
+        goto truncated;
+    }
+    /* An empty vocab fails here too (a zero count allocates nothing). */
+    tok->token_str = heap_alloc_array_aligned(const char *, n_tok);
+    tok->token_len = heap_alloc_array_aligned(size_t, n_tok);
+    if (tok->token_str == nullptr || tok->token_len == nullptr) {
+        goto oom;
+    }
+    tok->vocab_size = n_tok;
+    for (size_t i = 0; i < n_tok; i++) {
+        if (!rd_str(&p, end, &tok->token_str[i], &tok->token_len[i])) {
+            goto truncated;
+        }
+    }
+
+    if (n_merges > (size_t) (end - p) / 4) {
+        goto truncated;
+    }
+    if (n_merges > 0) {
+        tok->merge_left      = heap_alloc_array_aligned(const char *, n_merges);
+        tok->merge_left_len  = heap_alloc_array_aligned(size_t, n_merges);
+        tok->merge_right     = heap_alloc_array_aligned(const char *, n_merges);
+        tok->merge_right_len = heap_alloc_array_aligned(size_t, n_merges);
+        if (tok->merge_left == nullptr || tok->merge_left_len == nullptr ||
+            tok->merge_right == nullptr || tok->merge_right_len == nullptr) {
+            goto oom;
+        }
+        tok->n_merges = n_merges;
+    }
+    for (size_t m = 0; m < n_merges; m++) {
+        if (!rd_str(&p, end, &tok->merge_left[m], &tok->merge_left_len[m]) ||
+            !rd_str(&p, end, &tok->merge_right[m], &tok->merge_right_len[m])) {
+            goto truncated;
+        }
+    }
+
+    if (n_specials > (size_t) (end - p) / 6) {
+        goto truncated;
+    }
+    if (n_specials > 0) {
+        tok->specials = heap_alloc_array_aligned(struct gguf_tokenizer_special, n_specials);
+        if (tok->specials == nullptr) {
+            goto oom;
+        }
+    }
+    for (size_t i = 0; i < n_specials; i++) {
+        if ((size_t) (end - p) < 4) {
+            goto truncated;
+        }
+        const int32_t id = (int32_t) rd_u32(p);
+        p += 4;
+        if (!rd_str(&p, end, &tok->specials[i].text, &tok->specials[i].len)) {
+            goto truncated;
+        }
+        tok->specials[i].id = id;
+        tok->n_specials     = i + 1;
+    }
+    return true;
+
+truncated:
+    fprintf(stderr, "tokenizer.bin: truncated file\n");
+    return false;
+oom:
+    fprintf(stderr, "tokenizer.bin: allocation failed\n");
+    return false;
+}
+
+[[nodiscard]] bool gguf_tokenizer_load_bin(struct gguf_tokenizer *tok, const char *path) {
+    if (tok == nullptr || path == nullptr) {
+        return false;
+    }
+    *tok = (struct gguf_tokenizer) {0};
+    struct io_map m;
+    const char   *err = nullptr;
+    if (!io_map_ro(path, MAP_PRIVATE, &m, &err)) {
+        perror(err); /* "open() failed: No such file or directory" */
+        return false;
+    }
+    /* The strings stay in a heap copy of the file, so the mapping goes now. */
+    tok->vocab_arena = heap_alloc_array_aligned(char, m.size);
+    if (tok->vocab_arena != nullptr) {
+        memcpy(tok->vocab_arena, m.map, m.size);
+    }
+    munmap(m.map, m.size);
+    close(m.fd);
+    if (tok->vocab_arena == nullptr) {
+        fprintf(stderr, "tokenizer.bin: allocation failed\n");
+        return false;
+    }
+    const uint8_t *p = (const uint8_t *) tok->vocab_arena;
+    if (!parse_tokenizer_bin(tok, p, p + m.size)) {
+        gguf_tokenizer_unload(tok);
+        return false;
+    }
+    if (!build_indices(tok)) {
+        fprintf(stderr, "tokenizer.bin: allocation failed\n");
+        gguf_tokenizer_unload(tok);
+        return false;
+    }
+    sort_specials(tok);
+    tok->mode          = GGUF_TOK_MODE_SPM;
+    tok->tokenizer_bin = true;
+    tok->add_bos       = true; /* the Gemma models it serves expect BOS (#263) */
+    build_spm_byte_map(tok);
     return true;
 }
 
@@ -751,11 +952,17 @@ static size_t bpe_chunk_to_ids(const struct gguf_tokenizer *tok,
     struct pair_merge_sym *syms = heap_alloc_array_aligned(struct pair_merge_sym, buf_len);
     if (syms == nullptr)
         return SIZE_MAX; /* Allocation failure, never an empty chunk. */
-    int    n_syms = 0;
-    size_t k      = 0;
+    /* A local, so the stores to syms (-fno-strict-aliasing) do not reload it. */
+    const bool lead_only = tok->tokenizer_bin;
+    int        n_syms    = 0;
+    size_t     k         = 0;
     while (k < buf_len) {
         size_t adv;
-        (void) utf8_decode_one(buf + k, buf_len - k, &adv);
+        if (lead_only) {
+            adv = utf8_lead_len((uint8_t) buf[k]);
+        } else {
+            (void) utf8_decode_one(buf + k, buf_len - k, &adv);
+        }
         if (adv == 0)
             adv = 1;
         if (k + adv > buf_len)

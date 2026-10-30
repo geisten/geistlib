@@ -27,7 +27,7 @@ MODES = ("decision_dense", "scorealt_dense", "generate_1", "generate_long")
 def cases_from_jsonl(path: Path) -> list[dict]:
     cases = []
     seen = set()
-    for line_no, line in enumerate(path.read_text().splitlines(), 1):
+    for line_no, line in enumerate(path.read_text().split("\n"), 1):
         if not line.strip():
             continue
         case = json.loads(line)

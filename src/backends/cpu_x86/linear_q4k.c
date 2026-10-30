@@ -22,6 +22,7 @@
 
 #include "backend_state.h"
 #include "checked.h"
+#include "host_ops.h"
 #include "kernel_q4k_tiled.h"  /* tiled int8 Q4_K GEMM, AVX-512 VNNI (#18) */
 #include "kernel_q4kx8_gemm.h" /* lane-parallel Q4_Kx8 GEMV / GEMM */
 #include "kernel_w4a8.h"
@@ -153,13 +154,11 @@ static void w4a8_repack_rows(void *ctx, size_t m0, size_t m1) {
 
     /* aux_fp32 reinterpreted as the blob pointer; engine frees it on
      * model destroy via heap_free / safe_free (GEIST_W_AUX_HEAP_OWNED). */
-    w->aux_fp32 = (const float *) blob;
-    w->aux_n    = (int32_t) blob_bytes;
     /* m1 and mN read only the blob; raw is left to the geist_linear_ref
      * fallback, which faults it back in. RAW_COLD lets the loader drop the
      * source pages (#729), so a Q4_K matrix is resident once, not twice:
      * Qwen3-30B-A3B Q4_K_M held 30 GB for an 18.6 GB file (#48). */
-    w->flags |= GEIST_W_AUX_HEAP_OWNED | GEIST_W_AUX_BACKEND_REPACK | GEIST_W_RAW_COLD;
+    geist_weight_attach_aux(w, blob, blob_bytes, 0, 0, GEIST_W_RAW_COLD);
     w->linear_m1 = cpu_x86_linear_q4k_m1;
     w->linear_mN = cpu_x86_linear_q4k_mN;
     return GEIST_OK;

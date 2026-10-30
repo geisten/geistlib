@@ -25,7 +25,8 @@
 #error "cpu_x86/backend_state.h is internal to the backend layer."
 #endif
 
-#include <pthread.h>
+#include "thread_ws.h"
+
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -34,6 +35,7 @@ struct cpu_x86_workspace {
     int8_t  *acts_scratch;  /* int8 activation buffer; heap_alloc_aligned. */
     int32_t *sum_a_scratch; /* per-block sum_a int32 buffer; heap-aligned. */
     size_t   scratch_cap;   /* max n_in (in fp32 elements) the scratch covers. */
+    size_t   sum_a_cap;     /* bytes */
     /* M>1 (prefill) high-water scratch, aligned for AVX-512 loads. Four
      * buffers rather than one arena: each has its own element type, and
      * `mN_aux` stays live alongside `mN_acts` (i2s_gemm_avx512_vnni permutes
@@ -59,21 +61,13 @@ struct cpu_x86_workspace {
     size_t tiled_acts_cap; /* bytes */
 };
 
-/* One node per (backend, thread) pair; ws_head is a lock-free push-only
- * list so acquire never blocks a concurrent session. */
-struct cpu_x86_ws_node {
-    pthread_t tid;
-    struct cpu_x86_ws_node *_Atomic next;
-    struct cpu_x86_workspace ws;
-};
-
 struct cpu_x86_state {
-    int      max_threads; /* geist_backend_opts.max_threads: caps every region; 0 = no cap */
+    int max_threads; /* geist_backend_opts.max_threads: caps every region; 0 = no cap */
+    /* The per-thread workspaces (common/thread_ws.h): a lock-free
+     * push-only list, so acquire never blocks a concurrent session. */
     uint64_t ws_generation;
-    struct cpu_x86_ws_node *_Atomic ws_head;
+    struct geist_thread_ws_node *_Atomic ws_head;
 };
-
-uint64_t cpu_x86_ws_next_generation(void);
 
 /* The calling thread's workspace with scratch_cap >= n_in, or nullptr on
  * OOM (callers zero their output and return, matching cpu_neon). */

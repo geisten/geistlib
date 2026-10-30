@@ -1,5 +1,6 @@
 /*
- * test_tokenizer — encodes TEST_STRINGS with sp_bpe_tokenizer and prints the
+ * test_tokenizer — encodes TEST_STRINGS with a tokenizer.bin
+ * (gguf_tokenizer_load_bin) and prints the
  * ids in a diff-friendly form, for a manual parity check against a reference
  * tokenizer (e.g. HuggingFace's on the same strings). Fails only if an
  * encode fails; skips without a tokenizer.bin argument.
@@ -11,7 +12,9 @@
  * Run:
  *   ./test_tokenizer ../gemma-4-E2B-it/tokenizer.bin
  */
-#include "sp_bpe_tokenizer.h"
+#define GEIST_INTERNAL_ENGINE_LAYER
+
+#include "gguf_tokenizer.h"
 #include "test_helpers.h"
 
 #include <stdio.h>
@@ -63,31 +66,33 @@ static void print_hex(const char *s) {
 int main(int argc, char **argv) {
     GEIST_REQUIRE_ARGS(argc, 2, "<tokenizer.bin>");
 
-    struct sp_bpe_tokenizer *tok = nullptr;
-    if (!sp_bpe_tokenizer_load(&tok, argv[1])) {
-        fprintf(stderr, "sp_bpe_tokenizer_load failed for %s\n", argv[1]);
+    struct gguf_tokenizer tok;
+    if (!gguf_tokenizer_load_bin(&tok, argv[1])) {
+        fprintf(stderr, "gguf_tokenizer_load_bin failed for %s\n", argv[1]);
         return 1;
     }
     fprintf(stderr,
-            "# loaded vocab_size=%u, specials=%u, "
-            "bos=%u eos=%u pad=%u unk=%u\n",
-            sp_bpe_tokenizer_vocab_size(tok),
-            sp_bpe_tokenizer_specials_count(tok),
-            sp_bpe_tokenizer_bos_id(tok),
-            sp_bpe_tokenizer_eos_id(tok),
-            sp_bpe_tokenizer_pad_id(tok),
-            sp_bpe_tokenizer_unk_id(tok));
+            "# loaded vocab_size=%zu, merges=%zu, specials=%zu, bos=%d eos=%d unk=%d\n",
+            tok.vocab_size,
+            tok.n_merges,
+            tok.n_specials,
+            tok.bos_id,
+            tok.eos_id,
+            tok.unk_id);
 
-    int rc = 0;
+    int      rc  = 0;
+    size_t   cap = 0;
+    int32_t *ids = nullptr;
     for (size_t i = 0; i < TEST_COUNT; i++) {
         const char *s = TEST_STRINGS[i];
         printf("INPUT: ");
         print_hex(s);
         printf("\n");
 
-        uint32_t *ids = nullptr;
-        size_t    n   = 0;
-        if (!sp_bpe_tokenizer_encode(tok, s, &ids, &n)) {
+        size_t n = 0;
+        cap      = strlen(s) * 3 + 1; /* a space may cost 3 byte ids */
+        ids      = realloc(ids, cap * sizeof *ids);
+        if (ids == nullptr || gguf_tokenizer_encode(&tok, s, cap, ids, &n) != GEIST_OK) {
             printf("  ids:        ENCODE_FAILED\n\n");
             rc = 1;
             continue;
@@ -96,12 +101,11 @@ int main(int argc, char **argv) {
         for (size_t j = 0; j < n; j++) {
             if (j > 0)
                 printf(",");
-            printf("%u", ids[j]);
+            printf("%d", ids[j]);
         }
         printf("\n\n");
-        free(ids);
     }
-
-    sp_bpe_tokenizer_free(tok);
+    free(ids);
+    gguf_tokenizer_unload(&tok);
     return rc;
 }

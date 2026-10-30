@@ -27,7 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* sp_bpe_tokenizer_encode("Hello") = [9259]. No BOS prefix. We hard-code
+/* Gemma's tokenizer.bin encodes "Hello" as [9259]. No BOS prefix. We hard-code
  * to keep the test focused on the forward pass; tokenizer correctness has
  * its own unit tests. */
 #define HELLO_TOKEN 9259

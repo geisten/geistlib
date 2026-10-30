@@ -33,6 +33,10 @@ struct geist_buffer {
     unsigned int           memory_flags;
 };
 
+/* be->desc->name, or "cpu" when it is missing: the prefix of the CPU
+ * backends' shared error messages. */
+[[nodiscard]] const char *geist_host_backend_name(const struct geist_backend *be);
+
 /* geist_backend_vtbl buffer entry points, for any backend whose buffers
  * are plain host memory. Errors are reported under be->desc->name. */
 [[nodiscard]] enum geist_status geist_host_buffer_create(struct geist_backend  *be,

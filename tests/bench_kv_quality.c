@@ -35,7 +35,6 @@
 
 #include "src/engine/gguf_tokenizer.h"
 #include "src/engine/model.h"
-#include "src/engine/sp_bpe_tokenizer.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -217,23 +216,18 @@ static bool score_mode(struct geist_session *ref,
     return true;
 }
 
-/* Tokenize via the sp_bpe tokenizer, else the GGUF-embedded one. */
+/* Tokenize via the model's tokenizer (GGUF-embedded or tokenizer.bin). */
 static bool tokenize(struct geist_model *model,
                      const char         *text,
                      uint32_t          **ids_out,
                      size_t             *n_out,
                      bool               *had_tokenizer) {
-    *had_tokenizer               = false;
-    struct sp_bpe_tokenizer *tok = geist_model_internal_tokenizer(model);
-    if (tok != nullptr) {
-        *had_tokenizer = true;
-        return sp_bpe_tokenizer_encode(tok, text, ids_out, n_out);
-    }
+    *had_tokenizer              = false;
     struct gguf_tokenizer *gtok = geist_model_internal_gguf_tokenizer(model);
     if (gtok == nullptr)
         return false;
     *had_tokenizer   = true;
-    const size_t cap = strlen(text) + 16;
+    const size_t cap = strlen(text) * 3 + 16; /* a space may cost 3 byte ids */
     int32_t     *tmp = (int32_t *) malloc(cap * sizeof(int32_t));
     bool         ok  = false;
     if (tmp != nullptr && gguf_tokenizer_encode(gtok, text, cap, tmp, n_out) == GEIST_OK) {

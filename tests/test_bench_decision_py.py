@@ -26,6 +26,15 @@ class DecisionBenchmarkTests(unittest.TestCase):
         cases = self.parse({"id": "a", "prompt_ids": [1, 2], "candidate_ids": [3, 4], "target_index": 0})
         self.assertEqual(bench.wire_input(cases), "2 2 1 2 3 4\n")
 
+    def test_unicode_line_separators_inside_a_record(self):
+        # #286: MMLU text holds U+0085; str.splitlines() cut records there.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cases.jsonl"
+            rows = [{"id": f"q{i}", "question": f"a\x85b\u2028c{i}", "prompt_ids": [1], "candidate_ids": [2, 3]}
+                    for i in range(2)]
+            path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+            self.assertEqual([c["id"] for c in bench.cases_from_jsonl(path)], ["q0", "q1"])
+
     def samples(self):
         rows = []
         for trial in range(3):

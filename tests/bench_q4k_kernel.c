@@ -441,7 +441,8 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
 
         /* W6A8: needs symmetric int8 quantization of x (no sum32 needed). */
         quantize_x_q8_groups(n_in, GEIST_ACT_Q8K_ELEMS, x, x_q8, x_sc, nullptr);
-        linear_q6k_decode_w6a8_pre(n_in, n_out, x_sc, x_q8, t->data, y);
+        /* The scratch it needs now stays for the timed calls below. */
+        bool ok = linear_q6k_decode_w6a8_pre(n_in, n_out, x_sc, x_q8, t->data, y);
 
         /* Cosine similarity vs reference. */
         double dot = 0, na = 0, nb = 0;
@@ -454,7 +455,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
 
         /* Bench W6A8 hot loop. */
         const double tw = geist_test_now_ms();
-        linear_q6k_decode_w6a8_pre(n_in, n_out, x_sc, x_q8, t->data, y);
+        ok &= linear_q6k_decode_w6a8_pre(n_in, n_out, x_sc, x_q8, t->data, y);
         const double single_ms3 = geist_test_now_ms() - tw;
         int          n_iter3    = (int) (200.0 / (single_ms3 + 0.001)) + 5;
         if (n_iter3 > 5000)
@@ -463,7 +464,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
             n_iter3 = 3;
         const double t03 = geist_test_now_ms();
         for (int it = 0; it < n_iter3; it++)
-            linear_q6k_decode_w6a8_pre(n_in, n_out, x_sc, x_q8, t->data, y);
+            ok &= linear_q6k_decode_w6a8_pre(n_in, n_out, x_sc, x_q8, t->data, y);
         const double dt_ms3 = (geist_test_now_ms() - t03) / n_iter3;
         const double gbps3  = (double) bytes_per_call / (dt_ms3 * 1e6);
         printf("  %-32s [Q6_K W6A8] (same shape)         %7.1f MB  %7.2f ms  %5.2f GB/s  (%d it)  "
@@ -475,6 +476,9 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
                n_iter3,
                cos_sim);
         fflush(stdout);
+        if (!ok) {
+            fprintf(stderr, "  %s: Q6_K W6A8 had no scratch; the row above is void\n", name);
+        }
 
         free(y_ref);
 

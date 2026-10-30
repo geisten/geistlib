@@ -16,14 +16,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* cpu_x86_attention over F16 k / v views (attention_f16.c). */
-[[nodiscard]] enum geist_status cpu_x86_attention_f16(struct geist_backend      *be,
-                                                      const struct geist_tensor *q,
-                                                      const struct geist_tensor *k,
-                                                      const struct geist_tensor *v,
-                                                      size_t                     q_offset,
-                                                      size_t                     sliding_window,
-                                                      struct geist_tensor       *out);
+struct geist_host_attn;
+
+/* cpu_x86_attention over F16 k / v views (attention_f16.c), validated by
+ * the caller (geist_host_attn_views). */
+[[nodiscard]] enum geist_status cpu_x86_attention_f16(struct geist_backend         *be,
+                                                      const struct geist_host_attn *a,
+                                                      size_t                        q_offset,
+                                                      size_t                        sliding_window);
 
 [[nodiscard]] enum geist_status cpu_x86_attention(struct geist_backend      *be,
                                                   const struct geist_tensor *q,

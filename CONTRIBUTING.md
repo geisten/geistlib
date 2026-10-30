@@ -90,7 +90,8 @@ and push. Before pushing, run the checks in
 names each one in `.gitea/required-checks.txt`. A job is post-merge exactly
 when its `if:` tests `needs.changes.outputs.full`. Adding, renaming or
 removing a CI job (edit `.github/workflows/ci.yml`, then `python3
-scripts/gitea-ci.py`) means regenerating that list with
+scripts/gitea-ci.py`; never `.gitea/workflows/ci.yml` by hand, which CI's
+`gitea-ci.py --check` rejects) means regenerating that list with
 `scripts/required_checks.py print` in the same PR (CI fails until it
 matches; a new job must also go into the `ci-issues` job's `needs`) and,
 after the merge, applying it with `GITEA_TOKEN=<admin token>
