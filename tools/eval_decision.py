@@ -48,7 +48,7 @@ def load_cases(directory, split, purpose):
             or bench.sha256(directory / "split_audit.json") != meta["split_audit_sha256"]
             or bench.sha256(directory / "chat_template.jinja") != meta["gguf_metadata"]["template_sha256"]):
         raise ValueError("prepared dataset/template/audit integrity mismatch")
-    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    rows = [json.loads(line) for line in path.read_text().split("\n") if line.strip()]
     seen, canonical = set(), set()
     if meta["rotations"] not in (1, 4):
         raise ValueError("one or four label rotations required")
@@ -407,7 +407,7 @@ def run(args):
         wall_ms = (time.perf_counter() - start) * 1000
         if proc.returncode:
             raise RuntimeError(f"driver failed ({proc.returncode}): {profile}; raw partial outputs retained")
-        records = [json.loads(line) for line in (args.out_dir / f"{profile}.driver.jsonl").read_text().splitlines()]
+        records = [json.loads(line) for line in (args.out_dir / f"{profile}.driver.jsonl").read_text().split("\n") if line.strip()]
         runtime, samples = check_runtime(records, args)
         outputs[profile] = (runtime, samples, wall_ms)
     report = build_report(args, meta, rows, bound, calibration, profiles, cases, outputs, manifest)

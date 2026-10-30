@@ -38,8 +38,9 @@ from `benchmark/model_sources.json`, the SHA-256 from the protocol — builds
 the pinned llama.cpp (`scripts/ensure-llama-bench.sh`) and runs
 `tools/bench_cross_engine.py` inside the host lock: `~/bin/with-desktop-lock`
 on the desktop (`/tmp/geist-bench.lock` through a lease broker that names the
-holder; the docker CI runner `desktop-ci` pauses while it is held and
-git.geisten.net/status/ci/ lists it as "paused" with that holder),
+holder; no desktop CI job starts while it is held — see "Desktop: CI waits
+for measurements" — and git.geisten.net/status/ci/ lists the runners as
+"paused" with that holder),
 `with-pi-lock` on the Pi, `~/bin/with-mac-lock` on the Mac (`/tmp/mac-heavy.lock`; the
 `mac-m1max` runner (`macos-15-heavy`) holds it for every job and takes no
 job while an agent holds it — see "Mac runners" and "Host locks"). The Apple profiles gate on idle CPU (>= 80 %
@@ -62,7 +63,7 @@ runners are described below:
 | machine | name | labels | install |
 | :-- | :-- | :-- | :-- |
 | Pi 5 (`rspdevelop`) | `pi5-rspdevelop` | `pi5:host` | `~/gitea-runner`, system unit `gitea-runner.service` |
-| desktop | `geisten-desktop-gr` | `geist-vulkan:host`, `geist-avx512:host` | `~/gitea-runner`, user unit `gitea-runner.service` (linger) |
+| desktop | `geisten-desktop-gr` | `geist-vulkan:host`, `geist-avx512:host` | `~/gitea-runner-geisten`, user unit `gitea-runner-geisten.service` (linger) |
 
 `config.yaml` puts a node24 first on `PATH` (JavaScript actions such as
 `upload-artifact` need it) and, on the Pi, sets
@@ -70,6 +71,32 @@ runners are described below:
 `runner-job-completed.sh`: they hold the board lock for the whole job, so
 these jobs also wait for other runners on the board.
 Heavy steps still go through `~/bin/with-pi-lock`.
+
+### Desktop: CI waits for measurements
+
+Measurements on the desktop (bench-matrix cells, A/B runs by hand) hold
+`/tmp/geist-bench.lock` through `~/bin/with-desktop-lock`. All three desktop
+runners — `desktop-ci` (docker, capacity 4), `desktop-tsan` (docker) and
+`geisten-desktop-gr` (host) — keep new jobs off the host while it is held:
+
+- a health check (`~/gitea-runner-ci/hooks/bench-free.sh`, `flock -n`)
+  pauses fetching. gitea-runner v5 evaluates it **only while the runner is
+  idle** (the last result is reused while any job runs), so on its own it
+  never stopped `desktop-ci`, which nearly always has a job running: until
+  2026-10-30 jobs landed inside held leases (a 27B bench-matrix cell timed
+  out; task 19454 started 2 min into a held lease in the reproduction);
+- a `job_started` hook (`hooks/bench-wait.sh`) runs before every job's first
+  step, before any action is downloaded, and waits until the lock is free.
+  Docker runners run hooks inside the job container, so the lock file is
+  bind-mounted read-only at `/run/geist-bench.lock`; the host runner checks
+  `/tmp/geist-bench.lock` directly. It only probes (`flock -n` every 10 s),
+  so it never delays the lease broker, and logs `bench lock: waiting …` in
+  the job log. The wait is bounded by `BENCH_WAIT_MAX` (default 45 min,
+  measurements hold the lock ≤ 30 min per section); past it the job starts
+  with a warning instead of starving.
+
+Jobs already running when a lease begins run on; the bench tools' load gate
+still applies. Configs, hooks and units: geisten-infra `roles/desktop_ci`.
 
 ### Host locks: the lease broker
 

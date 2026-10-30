@@ -87,11 +87,12 @@
         "max_repeat_spread_pct": 5,
         "max_retries": 3,
         "timeout_seconds": 1200,
+        "cool_each_repeat": true,
         "note": "As the M1 Max profile: >= 80 % of all cores idle over the settle window, repeats within 5 %, at most 20 min of waiting. A dedicated CI host (runner macmini-m6): other measurements are excluded by ~/bin/with-macmini-lock, and the runner hooks hold that lock for every job.",
         "apple_temp_gate": {
-          "max_cpu_c": 65,
+          "max_cpu_c": 45,
           "fallback_seconds": 45,
-          "note": "Threshold and fallback taken over from the M1 Max profile (65 C, 45 s); not yet measured on the M6."
+          "note": "Measured on the M6 (2026-10-29, macmon, geist 1024-token prefill, 6 threads, six calls back to back): the performance-core clock fell from 4692 to 3645 MHz (-22 %) and the prefill from 322 to 247 tok/s (-23 %) as the CPU went from 50 to 67 C, while the fan stayed at its minimum 1000 rpm; at 47 C the clock was still at its top. So every engine call starts below 45 C, and cool_each_repeat makes that one call per sequence length and repeat (bench_cross_engine.run_cooled): back-to-back repeats inside one call measured the throttling (repeat spread 6-15 %, runs 2204 and 2246). Idle under the lock the chip sits at 25-31 C."
         }
       }
     },
