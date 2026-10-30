@@ -835,7 +835,7 @@ static const char metal_qsg_mm_tq2_source[] =
  * bytes (i2_s_scale_offset). The GEMM template hands its dequant only the
  * block pointer, so dqi2s_t is a macro that reads the scale through the
  * kernel's own `w` and `p`; both kernels therefore need the view to start
- * at the tensor (metal_tensor_is_q40_q80_matrix checks the tail fits). */
+ * at the tensor (metal_tensor_is_quant_matrix checks the tail fits). */
 static const char metal_qsg_i2s_source[] =
         "struct bi2s{uchar qs[64];};\n"
         "static inline void dqi2s(device const bi2s*xb,short il,thread half4x4&r,float s){"
