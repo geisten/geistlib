@@ -1,6 +1,6 @@
 /*
  * src/io/file_map.h — a whole file mapped read-only, for the model and
- * tokenizer readers (GGUF, safetensors, sp_bpe).
+ * tokenizer readers (GGUF, safetensors, tokenizer.bin).
  */
 #pragma once
 

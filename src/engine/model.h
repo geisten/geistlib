@@ -75,11 +75,8 @@ static inline bool geist_model_accepts_backend(const struct geist_model   *m,
 struct geist_arch_descriptor;
 extern const struct geist_arch_descriptor *const geist_arch_registry[];
 
-/* External tokenizer.bin tokenizer. nullptr if not loaded. */
-struct sp_bpe_tokenizer;
-struct sp_bpe_tokenizer *geist_model_internal_tokenizer(struct geist_model *m);
-
-/* GGUF-embedded tokenizer. Tried first; tokenizer.bin is the fallback. */
+/* The model's tokenizer: GGUF-embedded, or else a tokenizer.bin (tokenizer_bin
+ * set). nullptr without either. */
 struct gguf_tokenizer;
 struct gguf_tokenizer *geist_model_internal_gguf_tokenizer(struct geist_model *m);
 

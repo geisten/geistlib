@@ -2,7 +2,7 @@
  * tokenizer_fixtures.h — synthetic tokenizers for the merge-engine test and
  * bench_tokenizer: in-memory GGUFs for the gpt2 (byte-level BPE), SPM
  * (merges over ▁-normalized text) and unigram (scores, no merges) modes of
- * gguf_tokenizer, and a tokenizer.bin for sp_bpe_tokenizer.
+ * gguf_tokenizer, and a tokenizer.bin for gguf_tokenizer_load_bin.
  *
  * The vocabulary is built like a trained BPE's: every word of a fixed list
  * is spelled out as a chain of merges from its first character (with the
@@ -257,9 +257,9 @@ static inline struct tf_buf tf_gguf(const struct tf_vocab *v, const char *model,
     return o;
 }
 
-/* ---- tokenizer.bin (sp_bpe_tokenizer) ------------------------------------ */
+/* ---- tokenizer.bin (gguf_tokenizer_load_bin) ----------------------------- */
 
-static inline struct tf_buf tf_sp_bpe_bin(const struct tf_vocab *v) {
+static inline struct tf_buf tf_tokenizer_bin(const struct tf_vocab *v) {
     struct tf_buf o = {0};
     tf_u32(&o, 0x4B544D47u); /* "GMTK" */
     tf_u32(&o, 1u);

@@ -1284,7 +1284,7 @@ jobs:
     # The instrumented build prefills the real model many times across
     # the int suite. e2e adds ~half an hour and moves the per-subsystem
     # numbers only by noise, so the measurement is unit + int.
-    timeout-minutes: 150
+    timeout-minutes: 180
     env:
       # gcc's coverage counters are shared by all threads: on the 16-core
       # desktop 8 OpenMP threads made one int test take 32 minutes. Coverage

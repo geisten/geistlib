@@ -55,7 +55,7 @@ def common_prefix(a, b):
 
 
 def load_rows(cases_dir, split, profile):
-    rows = [json.loads(line) for line in (cases_dir / f"{split}.jsonl").read_text().splitlines() if line.strip()]
+    rows = [json.loads(line) for line in (cases_dir / f"{split}.jsonl").read_text().split("\n") if line.strip()]
     if not rows:
         raise ValueError("no prepared cases")
     for r in rows:

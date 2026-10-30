@@ -172,7 +172,7 @@ def progress(args, rows, sample, plain, manifest):
 
 def run(args):
     deadline = time.time() + args.deadline_minutes * 60  # wall clock (see campaign.run_driver)
-    rows = [json.loads(line) for line in (args.cases_dir / f"{args.split}.jsonl").read_text().splitlines()
+    rows = [json.loads(line) for line in (args.cases_dir / f"{args.split}.jsonl").read_text().split("\n")
             if line.strip()]
     chosen, _ = data.select_stratified(rows, args.sample, seed=args.seed)
     keep = {r["question_id"] for r in chosen}

@@ -29,6 +29,8 @@ runner is on a given day, it is the same for both engines in one job, so the
 ratio cancels most of it (benchmark/METHODOLOGY.md: "the ratio on your own box is the number that
 travels"). The ratio floors are cliff floors too.
 """
+from __future__ import annotations
+
 import argparse
 import json
 import os
