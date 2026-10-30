@@ -656,7 +656,12 @@ struct transformer_arch_state {
      * every expert is resolved here and runs here unless moe_gpu holds a
      * copy (#78 phase 3). nullptr on a CPU backend. */
     struct geist_backend *moe_cpu;
-    bool                  weights_on_host; /* the twins (#78): matrices GEIST_W_HOST */
+    /* The hot-expert budget (moe_gpu.c, #245 follow-up): it leaves room for
+     * moe_sessions sessions (geist_session_opts.batch_sessions at load, at
+     * least 1), each with moe_session_kv_bytes of KV at max_seq_len. */
+    size_t moe_sessions;
+    size_t moe_session_kv_bytes;
+    bool   weights_on_host; /* the twins (#78): matrices GEIST_W_HOST */
     /* Unique per loaded model in this process (never 0): binds a session
      * snapshot to the model it was taken on (snapshot.c). */
     uint64_t snapshot_id;

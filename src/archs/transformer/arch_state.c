@@ -1531,7 +1531,17 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
                                             moe_profile_dir(sizeof dir, dir) ? dir : nullptr);
     }
     /* A mixture of experts on a GPU: its experts live on moe_cpu; the GPU
-     * gets copies of the hottest, in the memory the rest left (#78). */
+     * gets copies of the hottest, in the memory the rest left (#78), less
+     * what the sessions the caller declared will take. */
+    if (s == GEIST_OK && (*out)->moe_cpu != nullptr) {
+        struct transformer_arch_state     *ms = *out;
+        const struct transformer_kv_layout kl = transformer_kv_layout_resolve(ms, opts);
+        size_t                             kv = 0;
+        ms->moe_sessions = opts != nullptr && opts->batch_sessions > 1 ? opts->batch_sessions : 1;
+        if (transformer_kv_bytes_for(&kv, ms, &kl) != GEIST_OK ||
+            ckd_mul(&ms->moe_session_kv_bytes, kv, ms->max_seq_len))
+            ms->moe_session_kv_bytes = 0;
+    }
     if (s == GEIST_OK && (*out)->moe_cpu != nullptr) {
         s = moe_gpu_attach(*out, be);
         if (s == GEIST_OK)
