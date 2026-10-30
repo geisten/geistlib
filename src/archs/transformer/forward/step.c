@@ -20,6 +20,7 @@
 
 #include <geist.h>
 #include <geist_backend.h>
+#include <geist_util.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -942,17 +943,24 @@ size_t transformer_decode_batch_max(const struct transformer_arch_state *st) {
     if (!q35 && st->family != &transformer_family_qwen3moe) {
         return 0;
     }
-    /* An MoE batches where its rows route on the device. On the host route
-     * the n rows cost more than n single steps on the M1 Max (0.4-0.6x,
-     * #245); GEIST_DECODE_BATCH_MOE_HOST=1 batches them anyway. */
+    /* An MoE batches where it pays (#245): on the device route (Metal,
+     * every expert resident), or on the host route with the experts split
+     * across a discrete GPU and the CPU (RTX 2080 Ti, Qwen3.6-35B-A3B:
+     * 1.56x at 8 sessions). The host route on a unified-memory GPU costs
+     * more than single steps (M1 Max: 0.4-0.6x) and stays off;
+     * GEIST_DECODE_BATCH_MOE_HOST=1 batches it anyway. */
     if (st->config.moe_n_experts > 0 && !st->runtime_flags.batch_moe_host) {
         const struct transformer_moe_gpu *mg = st->moe_gpu;
         bool all = mg != nullptr && mg->device != nullptr && mg->device_rows >= 2;
         for (size_t l = 0; all && l < st->n_layers; l++)
             all = mg->device[l];
-        if (!all)
+        struct geist_backend_memory mem;
+        const bool discrete = mg != nullptr && st->moe_cpu != nullptr &&
+                              geist_backend_memory_info(st->backend, &mem) == GEIST_OK &&
+                              !mem.unified_memory;
+        if (!all && !discrete)
             return 0;
-        if (mg->device_rows < st->m_max && mg->device_rows < TRANSFORMER_DECODE_BATCH_CAP)
+        if (all && mg->device_rows < st->m_max && mg->device_rows < TRANSFORMER_DECODE_BATCH_CAP)
             return mg->device_rows;
     }
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(st->backend);

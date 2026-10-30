@@ -270,8 +270,9 @@ size_t                          geist_session_length(const struct geist_session 
  * geist_model_decode_batch_max: the largest n the model takes on the
  * backend it was loaded on; 0 when it cannot batch (n = 1 still works).
  * Today: Qwen3.5-family hybrids (Qwen3.5, Bonsai 2) on Metal and Vulkan,
- * and Qwen3-MoE where its experts route on the device (Metal, #245), up to
- * 8 sessions. */
+ * and the Qwen MoE models (#245) on Metal where their experts route on the
+ * device and on Vulkan with the experts split with the CPU, up to 8
+ * sessions. */
 [[nodiscard]] enum geist_status geist_session_decode_batch(size_t                      n,
                                                            struct geist_session *const sessions[],
                                                            geist_token_t               out_tokens[]);
