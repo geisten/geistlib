@@ -18,10 +18,12 @@
 
 #include "moe_gpu.h"
 #include "moe_profile.h"
+#include "scratch_plan.h"
 
 #include "forward/internal.h"
 #include "env.h"
 #include "gguf_reader.h"
+#include "checked.h"
 #include "heap.h"
 
 #include <geist_backend.h>
@@ -87,8 +89,38 @@ static int rank_cmp(const void *a, const void *b) {
     return x->idx < y->idx ? -1 : x->idx > y->idx;
 }
 
+/* One more session's device buffers, for the budget below: its KV cache at
+ * max_seq_len, the scratch pool, the DeltaNet state with its transaction
+ * snapshot, and the hot experts' routing buffers (moe_gpu_session_alloc);
+ * plus a twentieth and 16 MiB for what this leaves out (small per-layer
+ * buffers, allocator rounding). On the RTX 2080 Ti at 2048 positions this
+ * gives 419 / 447 MiB where a session took 348 / 386-412 MiB
+ * (bench_session_vram, Qwen3.6-35B-A3B / Qwen3-30B-A3B). */
+static size_t moe_session_bytes(const struct transformer_arch_state *st, size_t moe_bufs) {
+    struct transformer_scratch_plan sp;
+    transformer_scratch_plan_build(st, st->m_max, &sp);
+    size_t dn = 0;
+    for (size_t l = 0; l < st->n_layers; l++)
+        if (st->layers[l].mixer == GEIST_MIXER_DELTANET)
+            dn++;
+    const size_t key_dim   = st->config.dn_n_k_heads * st->config.dn_head_k;
+    const size_t value_dim = st->config.dn_n_v_heads * st->config.dn_head_v;
+    const size_t conv_n    = st->config.dn_conv_kernel > 0
+                                     ? (st->config.dn_conv_kernel - 1) * (2 * key_dim + value_dim)
+                                     : 0;
+    const size_t s_n       = st->config.dn_n_v_heads * st->config.dn_head_k * st->config.dn_head_v;
+    size_t       b = 0, t = 0;
+    if (ckd_mul(&t, dn, 2 * (conv_n + s_n) * sizeof(float)) || ckd_add(&b, t, sp.pool_bytes) ||
+        ckd_add(&b, b, st->moe_session_kv_bytes) || ckd_add(&b, b, moe_bufs) ||
+        ckd_add(&b, b, b / 20 + ((size_t) 16 << 20)))
+        return SIZE_MAX;
+    return b;
+}
+
 /* Experts that fit `gbe` after a reserve: a sixteenth of the device and
  * 512 MiB (the planner's, plan_split_layers) plus one session's buffers.
+ * Each further session the caller declared (st->moe_sessions,
+ * geist_session_opts.batch_sessions) reserves moe_session_bytes more.
  * On unified memory only for the model on that GPU (#168): its experts'
  * buffers alias the mapping, so every expert that fits runs there and none
  * waits on the CPU. A CPU model with such a GPU beside it keeps them all. */
@@ -102,7 +134,12 @@ moe_fit(const struct transformer_arch_state *st, struct geist_backend *gbe, size
     /* one session's moe_gpu_x, _g, _u, with the padding rows (moe_pad) */
     const size_t n_sel   = st->m_max * moe_k(&st->config) + 15 * moe_slots(&st->config);
     const size_t session = n_sel * (st->d_model + 2 * moe_inter(st)) * sizeof(float);
-    const size_t reserve = (size_t) (mem.total_bytes / 16) + ((size_t) 512 << 20) + session;
+    size_t       reserve = (size_t) (mem.total_bytes / 16) + ((size_t) 512 << 20) + session;
+    size_t       more    = 0;
+    if (st->moe_sessions > 1 &&
+        (ckd_mul(&more, st->moe_sessions - 1, moe_session_bytes(st, session)) ||
+         ckd_add(&reserve, reserve, more)))
+        return 0;
     return mem.free_bytes > reserve ? ((size_t) mem.free_bytes - reserve) / expert_bytes : 0;
 }
 
@@ -351,6 +388,14 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
     if (s != GEIST_OK) {
         moe_gpu_destroy(mg);
         return s;
+    }
+    if (verbose && st->moe_sessions > 1) {
+        const size_t n_sel = st->m_max * moe_k(&st->config) + 15 * slots;
+        fprintf(stderr,
+                "geist: moe: budget leaves room for %zu sessions (%zu MiB each beyond the first)\n",
+                st->moe_sessions,
+                moe_session_bytes(st, n_sel * (st->d_model + 2 * moe_inter(st)) * sizeof(float)) >>
+                        20);
     }
     if (verbose) {
         fprintf(stderr,

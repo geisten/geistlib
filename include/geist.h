@@ -395,6 +395,15 @@ struct geist_session_opts {
     struct geist_backend *split_backend;
     size_t                split_layers;
 #define GEIST_SPLIT_AUTO SIZE_MAX /* @stability EXPERIMENTAL, see split_layers */
+
+    /* @stability EXPERIMENTAL — sessions the caller will keep at once, e.g.
+     * the n of geist_session_decode_batch. Read only at model load. A
+     * mixture-of-experts model on a GPU fills the device with copies of its
+     * hottest experts; the budget leaves room for this many sessions'
+     * buffers (KV cache at max_seq_len, scratch, recurrent and routing
+     * state) instead of one, so the sessions fit next to the experts.
+     * 0 = 1. Other models ignore it. */
+    size_t batch_sessions;
 };
 
 /* @stability STABLE since 0.1.0
