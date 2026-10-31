@@ -1,0 +1,69 @@
+# One measurement script from a branch on the Apple M6 Mac mini (runner
+# macmini-m6), under its host lock: a profile or a kernel microbench that
+# mac-ab.yml's two-revision A/B does not cover (#314: Metal prefill vs
+# llama.cpp). The script gets the model path as $1 and writes what it wants
+# kept to $PROBE_OUT, which is uploaded and appended to the job summary
+# (*.md files). The macmini-m6 host is CI-only; this is the way onto it.
+#
+#   tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib --ref main \
+#     -i ref=<branch> -i script=tools/probes/<name>.sh -i model=gemma4-e2b-q4km mac-probe.yml
+name: mac-probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "revision whose script runs (branch or SHA)"
+        required: true
+      script:
+        description: "script in that revision, run with sh (tools/probes/...)"
+        required: true
+      model:
+        description: "models key of benchmark/cross_engine_cpu_protocol.json (host cache, sha256-gated)"
+        default: gemma4-e2b-q4km
+      args:
+        description: "extra arguments for the script, after the model path"
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macmini-m6
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: macmini-m6
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - name: model (host cache, sha256-gated)
+        env:
+          GEIST_MODEL_CACHE: ${{ vars.GEIST_MODEL_CACHE }}
+          MODEL: ${{ inputs.model }}
+        run: |
+          set -eo pipefail
+          echo "MODEL_PATH=$(python3 tools/fetch_bench_model.py --model "$MODEL" --protocol benchmark/cross_engine_cpu_protocol.json)" >> "$GITHUB_ENV"
+      - name: probe (under the host lock)
+        env:
+          SCRIPT: ${{ inputs.script }}
+          ARGS: ${{ inputs.args }}
+          LOCK_NOTE: "mac-probe ${{ inputs.script }} @ ${{ inputs.ref }} (run ${{ github.run_id }})"
+        run: |
+          set -eo pipefail
+          case "$SCRIPT" in tools/probes/*.sh) ;; *) echo "::error::script must be tools/probes/*.sh"; exit 2 ;; esac
+          export PROBE_OUT="$RUNNER_TEMP/probe"
+          mkdir -p "$PROBE_OUT"
+          # shellcheck disable=SC2086 # ARGS is a word list
+          ~/bin/with-macmini-lock sh "$SCRIPT" "$MODEL_PATH" $ARGS
+          cat "$PROBE_OUT"/*.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 14
+          name: mac-probe-${{ github.run_id }}
+          path: ${{ runner.temp }}/probe/
+          if-no-files-found: ignore
