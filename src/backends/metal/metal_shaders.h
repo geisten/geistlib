@@ -1099,11 +1099,18 @@ static const char metal_q4k_m16_source[] =
         "threadgroup);}if(lid==0u){for(uint m=0u;m<16u;m++){uint "
         "b=bb+m;if(b<p.rows)y[p.yo+b*p.ys+row]=part[m][0];}}}\n";
 
-static const char metal_q4k_mm_sg_source[] =
+/* The head shared by the 64x32 Q4_K/Q6_K GEMM units below and the
+ * tensor-API units (metal_mm_tc_*): the params struct of every quant
+ * GEMM and the unroll macro. */
+static const char metal_qmm_head_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
         "#define FOR_UNROLL(x) _Pragma(\"clang loop unroll(full)\") for(x)\n"
-        "struct P{uint ni,no,rows,bpr,xo,wo,yo,xs,ys;};\n"
+        "struct P{uint ni,no,rows,bpr,xo,wo,yo,xs,ys;};\n";
+
+/* Q4_K block and its 16-element dequant (llama dequantize_q4_K): il
+ * picks the 16-element chunk 0..15 of the 256-element block. */
+static const char metal_q4k_dq_source[] =
         "struct block_q4_K{half d;half dmin;uchar scales[12];uchar qs[128];};\n"
         "static inline uchar2 sm2(short j,short k,device const uchar*q){return "
         "j<4?uchar2(uchar(q[j+k]&63),uchar(q[j+4+k]&63)):uchar2(uchar((q[j+4+k]&15)|((q[j-4+k]&192)"
@@ -1113,7 +1120,22 @@ static const char metal_q4k_mm_sg_source[] =
         "sc=sm2(is,il/2,xb->scales);float d=il<2?float(xb->d):float(xb->d)/16.0f;float "
         "mn=float(xb->dmin);float dl=d*float(sc[0]);float ml=mn*float(sc[1]);ushort "
         "mask=il<2?0x0f:0xf0;FOR_UNROLL(short "
-        "i=0;i<16;i++){r[i/4][i%4]=half(dl*float(q[i]&mask)-ml);}}\n"
+        "i=0;i<16;i++){r[i/4][i%4]=half(dl*float(q[i]&mask)-ml);}}\n";
+
+/* Q6_K 16-element dequant on a raw 210-byte block, as matmul_q6k_sg_fast
+ * reads it: half(d * sc * (q - 32)). */
+static const char metal_q6k_dq_source[] =
+        "static inline void dq6(device const uchar*b,short il,thread half4x4&r){short k0=16*il;"
+        "short hi=k0>>7;short ih=k0&127;short st=ih>>5;short l0=ih&31;"
+        "device const uchar*ql=b+hi*64+l0+((st&1)?32:0);device const uchar*qh=b+128+hi*32+l0;"
+        "float d=float(as_type<half>(ushort(ushort(b[208])|(ushort(b[209])<<8))));"
+        "float dl=d*float(as_type<char>(b[192+hi*8+(l0>>4)+2*st]));short qs=(st>=2)?4:0;short "
+        "hs=2*st;"
+        "FOR_UNROLL(short i=0;i<16;i++){int "
+        "q=int(((uint(ql[i])>>qs)&15u)|(((uint(qh[i])>>hs)&3u)<<4u));"
+        "r[i/4][i%4]=half(dl*float(q-32));}}\n";
+
+static const char metal_q4k_mm_sg_source[] =
         "kernel void matmul_q4k_mm_sg(device const float*x[[buffer(0)]],device const "
         "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup "
         "char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],ushort "
@@ -1164,20 +1186,6 @@ static const char metal_q4k_mm_sg_source[] =
  * activation staging, direct device-memory output. Dispatched only when
  * rows%32==0, n_out%64==0, n_in%32==0 and x is 8-float aligned. */
 static const char metal_q4k_mm_sg_fast_source[] =
-        "#include <metal_stdlib>\n"
-        "using namespace metal;\n"
-        "#define FOR_UNROLL(x) _Pragma(\"clang loop unroll(full)\") for(x)\n"
-        "struct P{uint ni,no,rows,bpr,xo,wo,yo,xs,ys;};\n"
-        "struct block_q4_K{half d;half dmin;uchar scales[12];uchar qs[128];};\n"
-        "static inline uchar2 sm2(short j,short k,device const uchar*q){return "
-        "j<4?uchar2(uchar(q[j+k]&63),uchar(q[j+4+k]&63)):uchar2(uchar((q[j+4+k]&15)|((q[j-4+k]&192)"
-        ">>2)),uchar((q[j+4+k]>>4)|((q[j+k]&192)>>2)));}\n"
-        "static inline void dq4(device const block_q4_K*xb,short il,thread half4x4&r){device const "
-        "uchar*q=xb->qs;short is=(il/4)*2;q=q+(il/4)*32+16*(il&1);il=il&3;uchar2 "
-        "sc=sm2(is,il/2,xb->scales);float d=il<2?float(xb->d):float(xb->d)/16.0f;float "
-        "mn=float(xb->dmin);float dl=d*float(sc[0]);float ml=mn*float(sc[1]);ushort "
-        "mask=il<2?0x0f:0xf0;FOR_UNROLL(short "
-        "i=0;i<16;i++){r[i/4][i%4]=half(dl*float(q[i]&mask)-ml);}}\n"
         "kernel void matmul_q4k_mm_sg_fast(device const float*x[[buffer(0)]],device const "
         "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup "
         "char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],ushort "
@@ -1231,19 +1239,6 @@ static const char metal_q4k_mm_sg_fast_source[] =
  * dequantizes. dq6 gives the 16 consecutive elements of il as
  * matmul_q6k_sg_fast does, half(d * sc * (q - 32)). */
 static const char metal_q6k_mm32_source[] =
-        "#include <metal_stdlib>\n"
-        "using namespace metal;\n"
-        "#define FOR_UNROLL(x) _Pragma(\"clang loop unroll(full)\") for(x)\n"
-        "struct P{uint ni,no,rows,bpr,xo,wo,yo,xs,ys;};\n"
-        "static inline void dq6(device const uchar*b,short il,thread half4x4&r){short k0=16*il;"
-        "short hi=k0>>7;short ih=k0&127;short st=ih>>5;short l0=ih&31;"
-        "device const uchar*ql=b+hi*64+l0+((st&1)?32:0);device const uchar*qh=b+128+hi*32+l0;"
-        "float d=float(as_type<half>(ushort(ushort(b[208])|(ushort(b[209])<<8))));"
-        "float dl=d*float(as_type<char>(b[192+hi*8+(l0>>4)+2*st]));short qs=(st>=2)?4:0;short "
-        "hs=2*st;"
-        "FOR_UNROLL(short i=0;i<16;i++){int "
-        "q=int(((uint(ql[i])>>qs)&15u)|(((uint(qh[i])>>hs)&3u)<<4u));"
-        "r[i/4][i%4]=half(dl*float(q-32));}}\n"
         "kernel void matmul_q6k_mm_sg_fast(device const float*x[[buffer(0)]],device const "
         "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup "
         "char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],ushort "
@@ -1291,6 +1286,68 @@ static const char metal_q6k_mm32_source[] =
         "j=uint(ti);j<(p.rows-r1)*64u;j+=128u)"
         "{y[p.yo+(r1+j/64u)*p.ys+r0+j%64u]=T[j];}}"
         "}\n";
+
+/* Tensor-API GEMMs (#314): the Metal 4 matmul2d of MetalPerformancePrimitives,
+ * which Apple GPU family 10+ (M5, M6, A19) runs on the matrix units of each
+ * GPU core; the simdgroup_matrix GEMMs above stay on the ALUs. The unit
+ * compiles with language version 4.0 (metal_tensor_options) only, and only
+ * on a device that has the units (metal_state.tensor_mm). It is llama.cpp's
+ * kernel_mul_mm under GGML_METAL_HAS_TENSOR: per 32-wide K step the 128
+ * threads dequantize a 64-row x 32 weight tile to half in threadgroup memory
+ * (one 16-element chunk each), and four simdgroups multiply it with the
+ * activations' 128-row x 32 tile read as float straight from device memory,
+ * accumulating 64 x 128 outputs in float. The tensors' extents bound every
+ * edge (ragged row tile, n_out % 64, the last K step), so one kernel takes
+ * every shape. */
+static const char metal_mm_tc_head_source[] =
+        "#include <metal_tensor>\n"
+        "#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n";
+
+/* One tc GEMM on block type BLK with the 16-element dequant DQ (device
+ * const BLK*, short il, thread half4x4&) and QKNL chunks per block. Grid:
+ * ((rows + 127) / 128, (n_out + 63) / 64), 128 threads, 4096 bytes of
+ * threadgroup memory. */
+#define GEIST_METAL_MM_TC_KERNEL(NAME, BLK, DQ, QKNL)                                              \
+    "kernel void matmul_" NAME "_mm_tc(device const float*x[[buffer(0)]],device const "            \
+    "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup "      \
+    "char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],ushort "                \
+    "ti[[thread_index_in_threadgroup]]){\n"                                                        \
+    "using namespace mpp::tensor_ops;"                                                             \
+    "constexpr int NRA=64;constexpr int NRB=128;constexpr int NK=32;constexpr int QK_NL=" QKNL ";" \
+    "const int K=int(p.ni),M=int(p.no),N=int(p.rows),XS=int(p.xs);"                                \
+    "const int ra=int(tg.y)*NRA,rb=int(tg.x)*NRB;"                                                 \
+    "threadgroup half*sa=(threadgroup half*)shmem;"                                                \
+    "device float*xb=(device float*)x+p.xo;"                                                       \
+    "matmul2d<matmul2d_descriptor(NRB,NRA,static_cast<int>(dynamic_extent),false,true,true,"       \
+    "matmul2d_descriptor::mode::multiply_accumulate),execution_simdgroups<4>> mm;"                 \
+    "auto tB0=tensor(xb,dextents<int32_t,2>(K,N),array<int,2>({1,XS}));"                           \
+    "auto tA0=tensor(sa,dextents<int32_t,2>(NK,NRA));"                                             \
+    "auto cT=mm.get_destination_cooperative_tensor<decltype(tB0),decltype(tA0),float>();"          \
+    "FOR_UNROLL(uint16_t i=0;i<cT.get_capacity();++i){if(cT.is_valid_element(i))cT[i]=0.0f;}"      \
+    "const int row=int(ti)/2;const short kc=short(ti%2);const bool live=ra+row<M;"                 \
+    "device const " BLK "*wp=(device const " BLK "*)(w+p.wo)+min(ra+row,M-1)*int(p.bpr);"          \
+    "for(int k0=0;k0<K;k0+=NK){"                                                                   \
+    "const int kp=k0+kc*16;half4x4 t;" DQ "(wp+kp/(16*QK_NL),short((kp/16)%QK_NL),t);"             \
+    "FOR_UNROLL(short i=0;i<16;i++){sa[row*NK+kc*16+i]=(live&&kp+i<K)?t[i/4][i%4]:half(0.0h);}"    \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                             \
+    "const int kE=min(NK,K-k0);"                                                                   \
+    "auto tAv=tensor(sa,dextents<int32_t,2>(kE,NRA),array<int,2>({1,NK}));"                        \
+    "auto tBv=tensor(xb+k0+rb*XS,dextents<int32_t,2>(kE,N-rb),array<int,2>({1,XS}));"              \
+    "mm.run(tBv,tAv,cT);"                                                                          \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);}"                                            \
+    "auto tD=tensor(y+p.yo,dextents<int32_t,2>(M,N),array<int,2>({1,int(p.ys)}));"                 \
+    "cT.store(tD.slice(ra,rb));}\n"
+
+/* Q6_K has no block struct in metal_q6k_dq_source; the tc template steps
+ * blocks by type. */
+static const char metal_mm_tc_q6k_block_source[] =
+        "struct block_q6_K{uchar b[210];};\n"
+        "static inline void dq6b(device const block_q6_K*xb,short il,thread "
+        "half4x4&r){dq6(xb->b,il,r);}\n";
+static const char metal_mm_tc_q4k_source[] =
+        GEIST_METAL_MM_TC_KERNEL("q4k", "block_q4_K", "dq4", "16");
+static const char metal_mm_tc_q6k_source[] =
+        GEIST_METAL_MM_TC_KERNEL("q6k", "block_q6_K", "dq6b", "16");
 
 static const char metal_q6k_source[] =
         "#include <metal_stdlib>\n"

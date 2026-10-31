@@ -131,6 +131,30 @@ static void metal_encode_mv_m8(struct metal_state            *st,
                             (struct metal_size) {METAL_Q4K_N4_THREADS, 1, 1});
 }
 
+/* The tensor-API GEMM (#314, metal_mm_tc_*) on pipe: 64 outputs x 128
+ * rows per threadgroup of 128 threads, bounds by the kernel's tensor
+ * extents, so any rows >= 2 shape. */
+static void metal_encode_mm_tc(struct metal_state            *st,
+                               void                          *enc,
+                               void                          *pipe,
+                               const struct geist_tensor     *x,
+                               const struct geist_tensor     *w,
+                               const struct geist_tensor     *y,
+                               const struct metal_q4k_params *params) {
+    metal_msg_send_set_pipeline(st, enc, pipe);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
+    metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
+    metal_msg_send_set_threadgroup_memory(st, enc, 64u * 32u * 2u, 0u);
+    const struct metal_size groups  = {.width  = (params->rows + 127u) / 128u,
+                                       .height = (params->n_out + 63u) / 64u,
+                                       .depth  = 1};
+    const struct metal_size threads = {.width = 128u, .height = 1u, .depth = 1u};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_MM_TC, groups);
+    metal_msg_send_dispatch(st, enc, groups, threads);
+}
+
 static void metal_encode_q4k_linear(struct metal_state            *st,
                                     void                          *enc,
                                     const struct geist_tensor     *x,
@@ -161,6 +185,10 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
             one.y_offset += r * params->y_row_stride;
             metal_encode_q4k_linear(st, enc, x, w, y, &one, false);
         }
+        return;
+    }
+    if (m_tile8 && params->rows >= 8u && st->q4k_mm_tc_pipeline != nullptr) {
+        metal_encode_mm_tc(st, enc, st->q4k_mm_tc_pipeline, x, w, y, params);
         return;
     }
     const bool m_tile16 = m_tile8 && params->rows >= METAL_Q4K_M16_TILE;
@@ -269,6 +297,10 @@ static void metal_encode_q6k_linear(struct metal_state            *st,
                                     const struct geist_tensor     *y,
                                     const struct metal_q4k_params *params,
                                     bool                           m_tile8) {
+    if (m_tile8 && params->rows > METAL_MATVEC_MAX_ROWS && st->q6k_mm_tc_pipeline != nullptr) {
+        metal_encode_mm_tc(st, enc, st->q6k_mm_tc_pipeline, x, w, y, params);
+        return;
+    }
     if (m_tile8 && params->rows > METAL_MATVEC_MAX_ROWS &&
         metal_encode_q6k_mm32(st, enc, x, w, y, params)) {
         return;
