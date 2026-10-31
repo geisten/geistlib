@@ -118,6 +118,21 @@ which builds both revisions from scratch and measures them against a control
 run of the baseline: an incremental build differs from a clean one in code
 layout, which alone moves timings by a few percent.
 
+For a PR's Apple "no regression" gate, run it on the Mac mini M6 through CI
+rather than on a shared workstation:
+
+```sh
+tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib --ref main \
+  -i new=origin/<branch> -i model=qwen35-0.8b-q8 mac-ab.yml
+# Metal: -i backends="cpu_neon cpu_scalar metal" -i env="GEIST_BENCH_BACKEND=metal"
+```
+
+`model` is a key of `benchmark/cross_engine_cpu_protocol.json` (host cache,
+sha256-checked). On the quiet M6 the control interval stays within ±0.3 %;
+the M1 Max, shared by agents, campaigns and CI, gave ±2-28 % in the same week
+(#279/#282). `pi5-ab.yml` and `vulkan-ab.yml` do the same on the Pi 5 and the
+desktop GPU.
+
 ## Formatting
 
 ```sh
