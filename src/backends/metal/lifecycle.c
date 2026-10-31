@@ -175,6 +175,12 @@ void metal_destroy(struct geist_backend *be) {
     metal_msg_send_void0(st, st->device, "retain");
     st->ws_budget = metal_msg_send_ulong0(st, st->device, "recommendedMaxWorkingSetSize");
     st->ws_ignore = geist_env_flag("GEIST_METAL_IGNORE_BUDGET", false);
+    /* MTLGPUFamilyApple10 = 1010: M5/A19 and later carry matrix units the
+     * tensor API reaches (#314). Earlier GPUs run it on the ALUs, no faster
+     * than the simdgroup GEMMs (llama.cpp: M2 Ultra -5 %, M4 even). */
+    st->tensor_mm =
+            geist_env_flag("GEIST_METAL_TENSOR",
+                           metal_msg_send_bool_long(st, st->device, "supportsFamily:", 1010));
 
     st->command_queue = metal_msg_send_id0(st, st->device, "newCommandQueue");
     if (st->command_queue == nullptr) {

@@ -249,6 +249,20 @@ static const struct metal_pipeline_row metal_moe_rows[] = {
         METAL_PIPE(moe, "moe_wsum", moe_wsum),
 };
 
+static const struct metal_pipeline_row metal_tensor_rows[] = {
+        METAL_PIPE(mm_tc, "matmul_q4k_mm_tc", q4k_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_q6k_mm_tc", q6k_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_q40_mm_tc", q40_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_q80_mm_tc", q80_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_q41_mm_tc", q41_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_q5k_mm_tc", q5k_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_iq4nl_mm_tc", iq4nl_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_iq4xs_mm_tc", iq4xs_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_q3k_mm_tc", q3k_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_iq3s_mm_tc", iq3s_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_pq2_mm_tc", pq2_mm_tc),
+};
+
 static const struct metal_pipeline_row metal_argmax_rows[] = {
         METAL_PIPE(argmax, "argmax_f32_batch", argmax_batch),
         METAL_PIPE(argmax, "argmax_f32_part", argmax_part),
@@ -365,9 +379,21 @@ static const struct metal_library_row metal_quant_libs[] = {
                   metal_mv3_kernels),
         METAL_LIB(q4k_pair_n4, "Q4_K pair n4", metal_q4k_pair_n4_source),
         METAL_LIB(q4k_m16, "Q4_K m16", metal_q4k_m16_source),
-        METAL_LIB(q4k_mm_sg, "Q4_K simdgroup mm", metal_q4k_mm_sg_source),
-        METAL_LIB(q4k_mm_sg_fast, "Q4_K simdgroup mm fast", metal_q4k_mm_sg_fast_source),
-        METAL_LIB(q6k_mm32, "Q6_K simdgroup mm fast", metal_q6k_mm32_source),
+        METAL_LIB(q4k_mm_sg,
+                  "Q4_K simdgroup mm",
+                  metal_qmm_head_source,
+                  metal_q4k_dq_source,
+                  metal_q4k_mm_sg_source),
+        METAL_LIB(q4k_mm_sg_fast,
+                  "Q4_K simdgroup mm fast",
+                  metal_qmm_head_source,
+                  metal_q4k_dq_source,
+                  metal_q4k_mm_sg_fast_source),
+        METAL_LIB(q6k_mm32,
+                  "Q6_K simdgroup mm fast",
+                  metal_qmm_head_source,
+                  metal_q6k_dq_source,
+                  metal_q6k_mm32_source),
         METAL_LIB(q6k, "Q6_K", metal_q6k_source),
         METAL_LIB(q6k_mm_sg, "Q6_K mm_sg", metal_q6k_mm_sg_source),
         METAL_LIB(q6k_mm_sg_fast, "Q6_K mm_sg fast", metal_q6k_mm_sg_fast_source),
@@ -452,6 +478,33 @@ static const struct metal_library_row metal_moe_libs[] = {
                   metal_moe_source),
 };
 
+/* Compiled with language version 4.0 (metal_tensor_options). */
+static const struct metal_library_row metal_tensor_libs[] = {
+        /* metal_qsg_common_source opens with the head the Q4_K/Q6_K units
+         * take from metal_qmm_head_source; nullptr is the IQ3_S grid. */
+        METAL_LIB(mm_tc,
+                  "tensor-API GEMM",
+                  metal_mm_tc_head_source,
+                  metal_qsg_common_source,
+                  nullptr,
+                  metal_qsg_common2_source,
+                  metal_qsg_pq2_dq_source,
+                  metal_q4k_dq_source,
+                  metal_q6k_dq_source,
+                  metal_mm_tc_q6k_block_source,
+                  metal_mm_tc_q4k_source,
+                  metal_mm_tc_q6k_source,
+                  metal_mm_tc_q40_source,
+                  metal_mm_tc_q80_source,
+                  metal_mm_tc_q41_source,
+                  metal_mm_tc_q5k_source,
+                  metal_mm_tc_iq4nl_source,
+                  metal_mm_tc_iq4xs_source,
+                  metal_mm_tc_q3k_source,
+                  metal_mm_tc_iq3s_source,
+                  metal_mm_tc_pq2_source),
+};
+
 static const struct metal_library_row metal_argmax_libs[] = {
         METAL_LIB(argmax, "argmax", metal_argmax_source),
 };
@@ -480,6 +533,7 @@ static char *metal_iq3s_grid_source(void) {
 /* Concatenates the row's parts and compiles them into its library field. */
 [[nodiscard]] static enum geist_status metal_compile_library(struct geist_backend *be,
                                                              void                 *ns_string,
+                                                             void                 *options,
                                                              const struct metal_library_row *row) {
     struct metal_state *st   = be->state;
     char               *grid = nullptr;
@@ -523,7 +577,7 @@ static char *metal_iq3s_grid_source(void) {
     void  *err     = nullptr;
     void **library = metal_state_slot(st, row->library);
     *library       = metal_msg_send_id_id_id_err(
-            st, st->device, "newLibraryWithSource:options:error:", source, nullptr, &err);
+            st, st->device, "newLibraryWithSource:options:error:", source, options, &err);
     if (*library == nullptr) {
         const char *msg = metal_nserror_message(st, err);
         geist_backend_set_error(be,
@@ -562,6 +616,7 @@ metal_create_pipelines(struct geist_backend           *be,
  * they are built (see struct metal_pipeline_row). */
 [[nodiscard]] static enum geist_status
 metal_ensure_tables(struct geist_backend           *be,
+                    void                           *options,
                     size_t                          n_libs,
                     const struct metal_library_row  libs[static n_libs],
                     size_t                          n_rows,
@@ -576,7 +631,7 @@ metal_ensure_tables(struct geist_backend           *be,
         return GEIST_E_BACKEND;
     }
     for (size_t i = 0; i < n_libs; i++) {
-        const enum geist_status s = metal_compile_library(be, ns_string, &libs[i]);
+        const enum geist_status s = metal_compile_library(be, ns_string, options, &libs[i]);
         if (s != GEIST_OK) {
             return s;
         }
@@ -615,6 +670,7 @@ static const struct {
         METAL_TABLE(METAL_TAB_HADAMARD, metal_hadamard_libs, metal_hadamard_rows),
         METAL_TABLE(METAL_TAB_ARGMAX, metal_argmax_libs, metal_argmax_rows),
         METAL_TABLE(METAL_TAB_MOE, metal_moe_libs, metal_moe_rows),
+        METAL_TABLE(METAL_TAB_TENSOR, metal_tensor_libs, metal_tensor_rows),
 #undef METAL_TABLE
 };
 
@@ -665,14 +721,68 @@ static enum geist_status metal_argmax_buffers(struct geist_backend *be) {
     return GEIST_OK;
 }
 
+/* MTLCompileOptions at language version 4.0, the first that exposes
+ * <metal_tensor> and MetalPerformancePrimitives; nullptr if the class is
+ * missing. Owned by the caller (release). */
+static void *metal_tensor_options(struct metal_state *st) {
+    void *cls = metal_objc_get_class(st, "MTLCompileOptions");
+    void *opt = cls != nullptr ? metal_msg_send_id0(st, cls, "new") : nullptr;
+    if (opt != nullptr) {
+        /* MTLLanguageVersion4_0 = (4 << 16) + 0 */
+        metal_msg_send_void_ulong(st, opt, "setLanguageVersion:", 4ul << 16);
+    }
+    return opt;
+}
+
+/* The tensor-API GEMMs, once, after the QUANT table. Not fatal: if the unit
+ * does not compile (the OS lacks the tensor API), tensor_mm drops and the
+ * simdgroup GEMMs take every shape. */
+static void metal_ensure_tensor(struct geist_backend *be) {
+    struct metal_state *st = be->state;
+    if (!st->tensor_mm ||
+        *metal_state_slot(st, metal_tensor_rows[METAL_N(metal_tensor_rows) - 1].pipeline) !=
+                nullptr) {
+        return;
+    }
+    void                   *opt = metal_tensor_options(st);
+    const enum geist_status s   = opt == nullptr ? GEIST_E_UNSUPPORTED
+                                                 : metal_ensure_tables(be,
+                                                                       opt,
+                                                                       METAL_N(metal_tensor_libs),
+                                                                       metal_tensor_libs,
+                                                                       METAL_N(metal_tensor_rows),
+                                                                       metal_tensor_rows);
+    metal_msg_send_void0(st, opt, "release");
+    if (s != GEIST_OK) {
+        st->tensor_mm = false;
+        metal_release_rows(st, METAL_N(metal_tensor_rows), metal_tensor_rows);
+        metal_release_libs(st, METAL_N(metal_tensor_libs), metal_tensor_libs);
+        for (size_t i = 0; i < METAL_N(metal_tensor_rows); i++) {
+            *metal_state_slot(st, metal_tensor_rows[i].function) = nullptr;
+            *metal_state_slot(st, metal_tensor_rows[i].pipeline) = nullptr;
+        }
+        for (size_t i = 0; i < METAL_N(metal_tensor_libs); i++) {
+            *metal_state_slot(st, metal_tensor_libs[i].library) = nullptr;
+        }
+    }
+}
+
 [[nodiscard]] enum geist_status metal_ensure(struct geist_backend *be, enum metal_table table) {
     if (be == nullptr || be->state == nullptr || table >= METAL_TAB_COUNT) {
         return GEIST_E_INVALID_ARG;
     }
+    if (table == METAL_TAB_TENSOR) {
+        metal_ensure_tensor(be);
+        return GEIST_OK;
+    }
     const enum geist_status s = metal_ensure_tables(be,
+                                                    nullptr,
                                                     metal_tables[table].n_libs,
                                                     metal_tables[table].libs,
                                                     metal_tables[table].n_rows,
                                                     metal_tables[table].rows);
+    if (s == GEIST_OK && table == METAL_TAB_QUANT) {
+        metal_ensure_tensor(be);
+    }
     return s == GEIST_OK && table == METAL_TAB_ARGMAX ? metal_argmax_buffers(be) : s;
 }

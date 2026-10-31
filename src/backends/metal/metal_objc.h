@@ -214,6 +214,17 @@ metal_msg_send_bool0(struct metal_state *st, void *receiver, const char *selecto
     return send.fn(receiver, sel);
 }
 
+/* -[MTLDevice supportsFamily:] and other BOOL (NSInteger) messages. */
+static inline bool
+metal_msg_send_bool_long(struct metal_state *st, void *receiver, const char *selector, long a) {
+    void *sel = metal_sel_register_name(st, selector);
+    union {
+        void *raw;
+        unsigned char (*fn)(void *, void *, long);
+    } send = {.raw = st->objc_msgSend};
+    return send.fn(receiver, sel, a) != 0;
+}
+
 static inline void metal_msg_send_void_ulong(struct metal_state *st,
                                              void               *receiver,
                                              const char         *selector,

@@ -102,6 +102,7 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_HADAMARD,
     METAL_PROFILE_DISPATCH_PQ2_X_F16,
     METAL_PROFILE_DISPATCH_PQ2_M8,
+    METAL_PROFILE_DISPATCH_MM_TC, /* tensor-API GEMMs (#314) */
     METAL_PROFILE_STAGE_COUNT,
 };
 
@@ -289,6 +290,30 @@ struct metal_state {
     void *q6k_mm32_library; /* matmul_q6k_mm_sg_fast (#17) */
     void *q6k_mm32_function;
     void *q6k_mm32_pipeline;
+    /* Tensor-API GEMMs (#314, metal_mm_tc_*): built only when tensor_mm. */
+    void *mm_tc_library;
+    void *q4k_mm_tc_function;
+    void *q4k_mm_tc_pipeline;
+    void *q6k_mm_tc_function;
+    void *q6k_mm_tc_pipeline;
+    void *q40_mm_tc_function;
+    void *q40_mm_tc_pipeline;
+    void *q80_mm_tc_function;
+    void *q80_mm_tc_pipeline;
+    void *q41_mm_tc_function;
+    void *q41_mm_tc_pipeline;
+    void *q5k_mm_tc_function;
+    void *q5k_mm_tc_pipeline;
+    void *iq4nl_mm_tc_function;
+    void *iq4nl_mm_tc_pipeline;
+    void *iq4xs_mm_tc_function;
+    void *iq4xs_mm_tc_pipeline;
+    void *q3k_mm_tc_function;
+    void *q3k_mm_tc_pipeline;
+    void *iq3s_mm_tc_function;
+    void *iq3s_mm_tc_pipeline;
+    void *pq2_mm_tc_function;
+    void *pq2_mm_tc_pipeline;
     void *q4k_gate_up_n4_library;
     void *q4k_pair_n4_library;
     void *q4k_pair_n4_function;
@@ -548,10 +573,15 @@ struct metal_state {
      * into a sequence they do not own. seq_owner is that thread while the
      * sequence is open, else 0; only the owner writes its own id, so a
      * thread reading its own id back is never wrong (metal_seq_mine). */
-    pthread_mutex_t           seq_lock;
-    _Atomic(uintptr_t)        seq_owner;
-    bool                      sequence_has_work;
-    bool                      profile_enabled;
+    pthread_mutex_t    seq_lock;
+    _Atomic(uintptr_t) seq_owner;
+    bool               sequence_has_work;
+    bool               profile_enabled;
+    /* Prefill GEMMs on the tensor API (#314): the GPU has matrix units
+     * (Apple family 10+: M5, M6, A19), or GEIST_METAL_TENSOR=1 forces it;
+     * GEIST_METAL_TENSOR=0 keeps the simdgroup GEMMs. Cleared when the
+     * tensor unit does not compile (an OS without the Metal 4 tensor API). */
+    bool                      tensor_mm;
     struct metal_profile_stat profile[METAL_PROFILE_STAGE_COUNT];
     /* GPU time of committed command buffers (profile only): the sum of the
      * buffers' own times, and their union on the GPU timeline (busy). */
@@ -1103,6 +1133,7 @@ enum metal_table {
     METAL_TAB_HADAMARD,
     METAL_TAB_ARGMAX,
     METAL_TAB_MOE,
+    METAL_TAB_TENSOR, /* tensor-API GEMMs; metal_ensure(QUANT) builds it when tensor_mm */
     METAL_TAB_COUNT,
 };
 
