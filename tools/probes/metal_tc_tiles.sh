@@ -1,5 +1,5 @@
 #!/bin/sh
-# metal_tc_tiles.sh MODEL [CYCLES] — Metal prefill per tensor-GEMM tile shape
+# metal_tc_tiles.sh MODEL [CYCLES [TILE...]] — Metal prefill per tensor-GEMM tile shape
 # (GEIST_METAL_TC_TILE="nra,nrb,nk,nsg"), interleaved CYCLES times with the
 # order rotated (#314 tile sweep). Run by mac-probe.yml under the host lock.
 set -eu
@@ -9,6 +9,10 @@ OUT=${PROBE_OUT:-probe-out}
 SEQ=${PROBE_SEQ:-128,512,1024}
 COOL=${PROBE_COOL:-10}
 TILES=${PROBE_TILES:-"64,128,32,4 64,128,64,4 64,128,128,4 128,128,32,8 128,128,64,8 64,64,32,4 128,64,32,4 64,256,32,8 128,256,32,8 32,128,32,4 64,128,32,8 32,64,32,2"}
+if [ $# -gt 2 ]; then
+    shift 2
+    TILES="$*"
+fi
 mkdir -p "$OUT"
 make -j8 TARGET=mac-omp BACKENDS="cpu_neon cpu_scalar metal" bin >"$OUT/build.log" 2>&1
 GEIST=bin/mac-omp/release/tests/bench_perf_sweep
