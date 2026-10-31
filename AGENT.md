@@ -301,42 +301,19 @@ exceed the hosted-runner limit: jobs queue for up to 9 minutes, and the next
 merge makes the whole wave stale again. On 2026-10-08 one PR waited three
 hours this way.
 
-## 9. The agent pipeline
+## 9. Agent heads
 
-Issues and pull requests move through status labels
-(`.gitea/workflows/agent.yml` has the details):
-
-| label | on | what happens |
-|---|---|---|
-| `agent` | issue | CI's Claude Code implements it; the bot opens the PR |
-| `status:pr-open` | issue | a PR for it exists |
-| `status:validate` | PR | a stronger model (Opus, read-only tools) reviews it against the issue |
-| `status:accepted` | PR | review passed; merges itself once the required CI is green |
-| `status:fix` | PR | review failed, or CI failed after it passed (ci-bot); CI's Claude Code works the findings |
-| `status:stuck` | PR | three fix rounds without success, a fix that changed nothing, a failed run, or an issue edited after the work: a human's turn |
-
-Working on your own (Codex, Claude Code, by hand): write the issue with
-acceptance criteria first, then either label it `agent`, or implement it,
-open the PR with `Closes #<n>` in the body and label the PR
-`status:validate`. List every choice the issue left open under
-`## Assumptions` in the PR description; the reviewer checks them.
-`/agent <text>` as a PR comment hands an `agent/issue-<n>` PR to the agent
-with that text.
+Agents work on their own machines (local Claude Code / Codex sessions,
+temporary environments); no model runs in CI. How they claim issues and
+hand work on: `geisten/orga` `AGENTS.md` (`bin/agent-claim <n>`, branch
+`agent/issue-<n>`). Write the issue with acceptance criteria first; open
+the PR with `Closes #<n>` in the body and every choice the issue left open
+under `## Assumptions`; a human (or a local agent asked to) reviews it.
 
 **CI on an `agent/*` head waits for a human.** Model-written code runs on
 no runner until an approver read the commit and commented exactly
 `/ci-ok <sha>` (7+ hex digits of the head) on the PR; the `changes` job of
-CI fails until then, and the comment reruns it. Each new push needs its own
+CI fails until then (`scripts/agent_gate.py ci-hold`), and the comment
+reruns it (`.gitea/workflows/ci-ok.yml`). Each new push needs its own
 `/ci-ok`. Reason: the runners' job containers reach the docker socket, and
 the macOS leg runs on the shared Mac without a container.
-
-What the pipeline enforces, whatever a prompt says (`scripts/agent_gate.py`,
-`scripts/agent-sandbox.sh`): models run in a container of their own as an
-unprivileged user, holding only the Claude token; the bot token lives only
-in jobs that run trusted code and read the model's output as data; a patch
-touching `.gitea/`, `.github/`, `scripts/`, `mk/`, `Makefile`, `*.mk`,
-`build/`, `bin/`, any `.git*` file, `.claude/`, `CLAUDE.md`, `AGENT(S).md`,
-`.mcp.json`, `.clang-format` or `CHANGELOG.md`, or adding a symlink or
-submodule, is refused; the pipeline writes the PR's `Closes #<n>` and strips
-auto-merge and depends-on requests from the body; ci-bot never enables
-auto-merge on an `agent/*` head.

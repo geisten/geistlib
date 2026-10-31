@@ -90,7 +90,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      # An agent/* head (model-written, .gitea/workflows/agent.yml) runs no
+      # An agent/* head (model-written, AGENT.md §9) runs no
       # CI until an approver commented "/ci-ok <sha>" for this commit: the
       # Gitea runners' job containers reach the docker socket and the macOS
       # leg runs on the shared Mac. Every job that builds or runs the tree
