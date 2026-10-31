@@ -76,14 +76,14 @@ Heavy steps still go through `~/bin/with-pi-lock`.
 
 Measurements on the desktop (bench-matrix cells, A/B runs by hand) hold
 `/tmp/geist-bench.lock` through `~/bin/with-desktop-lock`. All three desktop
-runners — `desktop-ci` (docker, capacity 4), `desktop-tsan` (docker) and
-`geisten-desktop-gr` (host) — keep new jobs off the host while it is held:
+runners — `desktop-ci-1..4` (docker, one slot each), `desktop-tsan` (docker)
+and `geisten-desktop-gr` (host) — keep new jobs off the host while it is held:
 
 - a health check (`~/gitea-runner-ci/hooks/bench-free.sh`, `flock -n`)
   pauses fetching. gitea-runner v5 evaluates it **only while the runner is
   idle** (the last result is reused while any job runs), so on its own it
-  never stopped `desktop-ci`, which nearly always has a job running: until
-  2026-10-30 jobs landed inside held leases (a 27B bench-matrix cell timed
+  never stopped the old capacity-4 `desktop-ci`, which nearly always had a
+  job running: until 2026-10-30 jobs landed inside held leases (a 27B bench-matrix cell timed
   out; task 19454 started 2 min into a held lease in the reproduction);
 - a `job_started` hook (`hooks/bench-wait.sh`) runs before every job's first
   step, before any action is downloaded, and waits until the lock is free.
@@ -99,10 +99,13 @@ runners — `desktop-ci` (docker, capacity 4), `desktop-tsan` (docker) and
   deadline exceeded") on 2026-10-30.
 
 The health check is what holds jobs back for a whole measurement on an idle
-runner. **Known gap:** a busy `desktop-ci` (capacity 4) still fetches into
-free slots during a lease, and those jobs start after at most 4 min; closing
-it needs a gate outside the job (capacity-1 runners, or disabling the runner
-through the Gitea API while a lease is held). Jobs already running when a
+runner. Since 2026-10-31 the docker CI runner is four one-slot runners
+(`desktop-ci-1..4`, geisten-infra PR #8) instead of one with capacity 4,
+which fetched into free slots during a lease while one job kept it busy; a
+one-slot runner is idle between jobs, so the health check gates every fetch.
+They share one actions cache (`gitea-ci-cache`, a `gitea-runner
+cache-server` on :8098) and clone actions into their own `~/.cache/act-ci-N`.
+Jobs already running when a
 lease begins run on; the bench tools' load gate still applies. Configs, hooks and units: geisten-infra `roles/desktop_ci`.
 
 ### Host locks: the lease broker
@@ -316,7 +319,7 @@ the org secret `GIT_CACHE_TOKEN`, read-only); concurrent jobs share that
 fetch. Only docker networks and localhost may connect, and it refuses
 pushes.
 
-The docker runners (`desktop-ci`, `desktop-tsan`) give their job containers
+The docker runners (`desktop-ci-1..4`, `desktop-tsan`) give their job containers
 
 ```yaml
 envs:
@@ -338,7 +341,7 @@ Each runner host has its own cache, listening where its jobs connect:
 
 | host | service | listens on | runners wired |
 | :-- | :-- | :-- | :-- |
-| desktop | user unit `git-cache` | `192.168.178.43:8417` | `desktop-ci`, `desktop-tsan` |
+| desktop | user unit `git-cache` | `192.168.178.43:8417` | `desktop-ci-1..4`, `desktop-tsan` |
 | Pi 5 | system unit `git-cache` (as `germar`) | `172.17.0.1:8417` (docker bridge), `127.0.0.1:8417` | `pi5-ci` → bridge, `pi5-rspdevelop` (host mode) → 127.0.0.1 |
 | Mac | none (removed 2026-10-27, see below) | | `mac-light`, `mac-m1max` fetch from Gitea |
 | cloud-arm64-hel1 | system unit `git-cache` | `172.17.0.1:8417` | not yet (no token) |
