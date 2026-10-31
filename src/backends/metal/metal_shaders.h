@@ -1303,7 +1303,7 @@ static const char metal_mm_tc_head_source[] =
         "#include <metal_tensor>\n"
         "#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n"
         "#ifndef TC_NRA\n#define TC_NRA 64\n#define TC_NRB 128\n#define TC_NK 32\n"
-        "#define TC_NSG 4\n#endif\n";
+        "#define TC_NSG 4\n#define TC_DB 0\n#endif\n";
 
 /* One tc GEMM on block type BLK with the 16-element dequant DQ (device
  * const BLK*, short il, thread half4x4&) and QKNL chunks per block. Grid:
@@ -1328,17 +1328,22 @@ static const char metal_mm_tc_head_source[] =
     "auto cT=mm.get_destination_cooperative_tensor<decltype(tB0),decltype(tA0),float>();"    \
     "FOR_UNROLL(uint16_t i=0;i<cT.get_capacity();++i){if(cT.is_valid_element(i))cT[i]=0.0f;}" \
     "device const " BLK "*w0=(device const " BLK "*)(w+p.wo);"                                \
-    "for(int k0=0;k0<K;k0+=NK){"                                                             \
+    "auto stage=[&](int k0,threadgroup half*dst){"                                           \
     "FOR_UNROLL(int wk=ti;wk<NRA*NKC;wk+=NT){const int row=wk/NKC;const int kc=wk%NKC;"      \
     "const bool live=ra+row<M;const int kp=k0+kc*16;half4x4 t;"                              \
     DQ "(w0+min(ra+row,M-1)*int(p.bpr)+kp/(16*QK_NL),short((kp/16)%QK_NL),t);"               \
-    "FOR_UNROLL(short i=0;i<16;i++){sa[row*NK+kc*16+i]=(live&&kp+i<K)?t[i/4][i%4]:half(0.0h);}}" \
-    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                       \
-    "const int kE=min(NK,K-k0);"                                                             \
-    "auto tAv=tensor(sa,dextents<int32_t,2>(kE,NRA),array<int,2>({1,NK}));"                  \
+    "FOR_UNROLL(short i=0;i<16;i++){dst[row*NK+kc*16+i]=(live&&kp+i<K)?t[i/4][i%4]:half(0.0h);}}};" \
+    "auto step=[&](int k0,threadgroup half*src){const int kE=min(NK,K-k0);"                   \
+    "auto tAv=tensor(src,dextents<int32_t,2>(kE,NRA),array<int,2>({1,NK}));"                 \
     "auto tBv=tensor(xb+k0+rb*XS,dextents<int32_t,2>(kE,N-rb),array<int,2>({1,XS}));"        \
-    "mm.run(tBv,tAv,cT);"                                                                    \
-    "threadgroup_barrier(mem_flags::mem_threadgroup);}"                                      \
+    "mm.run(tBv,tAv,cT);};"                                                                  \
+    "if(TC_DB){stage(0,sa);threadgroup_barrier(mem_flags::mem_threadgroup);"                 \
+    "for(int k0=0,b=0;k0<K;k0+=NK,b^=1){threadgroup half*cur=sa+b*NRA*NK;"                   \
+    "if(k0+NK<K)stage(k0+NK,sa+(b^1)*NRA*NK);step(k0,cur);"                                  \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);}}"                                     \
+    "else{for(int k0=0;k0<K;k0+=NK){stage(k0,sa);"                                           \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);step(k0,sa);"                           \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);}}"                                     \
     "auto tD=tensor(y+p.yo,dextents<int32_t,2>(M,N),array<int,2>({1,int(p.ys)}));"           \
     "cT.store(tD.slice(ra,rb));}\n"
 

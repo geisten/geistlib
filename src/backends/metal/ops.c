@@ -146,7 +146,8 @@ static void metal_encode_mm_tc(struct metal_state            *st,
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
-    metal_msg_send_set_threadgroup_memory(st, enc, st->tc_nra * st->tc_nk * 2u, 0u);
+    metal_msg_send_set_threadgroup_memory(
+            st, enc, st->tc_nra * st->tc_nk * 2u * (st->tc_db ? 2u : 1u), 0u);
     const struct metal_size groups  = {.width  = (params->rows + st->tc_nrb - 1u) / st->tc_nrb,
                                        .height = (params->n_out + st->tc_nra - 1u) / st->tc_nra,
                                        .depth  = 1};

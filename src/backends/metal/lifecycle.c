@@ -187,10 +187,13 @@ void metal_destroy(struct geist_backend *be) {
     st->tc_nrb = 128u;
     st->tc_nk  = 32u;
     st->tc_nsg = 4u;
+    st->tc_db  = 0u;
     {
         const char *tile = getenv("GEIST_METAL_TC_TILE");
-        unsigned    a = 0, b = 0, c = 0, d = 0;
-        if (tile != nullptr && sscanf(tile, "%u,%u,%u,%u", &a, &b, &c, &d) == 4 && a > 0 &&
+        unsigned    a = 0, b = 0, c = 0, d = 0, e = 0;
+        const int   n = tile != nullptr ? sscanf(tile, "%u,%u,%u,%u,%u", &a, &b, &c, &d, &e) : 0;
+        st->tc_db       = n == 5 && e != 0u;
+        if (n >= 4 && a > 0 &&
             b > 0 && c >= 16 && c % 16 == 0 && d > 0 && d <= 32) {
             st->tc_nra = a;
             st->tc_nrb = b;

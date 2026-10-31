@@ -570,11 +570,13 @@ static char *metal_iq3s_grid_source(void) {
     if (row->library == offsetof(struct metal_state, mm_tc_library)) {
         snprintf(tile,
                  sizeof tile,
-                 "#define TC_NRA %u\n#define TC_NRB %u\n#define TC_NK %u\n#define TC_NSG %u\n",
+                 "#define TC_NRA %u\n#define TC_NRB %u\n#define TC_NK %u\n#define TC_NSG "
+                 "%u\n#define TC_DB %u\n",
                  st->tc_nra,
                  st->tc_nrb,
                  st->tc_nk,
-                 st->tc_nsg);
+                 st->tc_nsg,
+                 st->tc_db);
     }
     total += strlen(tile);
     char *buf = malloc(total);
