@@ -2240,9 +2240,9 @@ static void *metal_flash_pipeline(const struct metal_state *st, size_t head_dim)
     if (st->tensor_mm) {
         (void) metal_ensure(be, METAL_TAB_TENSOR); /* not fatal: drops tensor_mm */
     }
-    void *tc = st->tensor_mm && head_dim % 64u == 0u && head_dim / 64u <= 8u
-                       ? st->attention_flash_tc_pipeline[head_dim / 64u - 1u]
-                       : nullptr;
+    void        *tc      = st->tensor_mm && head_dim % 64u == 0u && head_dim / 64u <= 8u
+                                   ? st->attention_flash_tc_pipeline[head_dim / 64u - 1u]
+                                   : nullptr;
     const size_t tc_rows = head_dim >= 512u ? 16u : 32u;
     metal_msg_send_set_pipeline(st, enc, tc != nullptr ? tc : metal_flash_pipeline(st, head_dim));
     metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 0);

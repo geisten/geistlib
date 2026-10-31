@@ -1416,7 +1416,8 @@ static const char metal_attn_flash_tc_source_a[] =
         "matmul2d<matmul2d_descriptor(Q,D,C,false,false,false,"
         "matmul2d_descriptor::mode::multiply_accumulate),execution_simdgroups<NSG>> mpv;"
         "auto tv0=tensor(vp,dextents<int32_t,2>(D,C),array<int,2>({1,kstr}));"
-        "auto co=mpv.template get_destination_cooperative_tensor<decltype(tp),decltype(tv0),float>();"
+        "auto co=mpv.template "
+        "get_destination_cooperative_tensor<decltype(tp),decltype(tv0),float>();"
         "for(short i=0;i<co.get_capacity();++i){if(co.is_valid_element(i))co[i]=0.0f;}";
 
 static const char metal_attn_flash_tc_source_b[] =
