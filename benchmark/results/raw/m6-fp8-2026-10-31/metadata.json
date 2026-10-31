@@ -1,0 +1,33 @@
+{
+  "cpu": "Apple M6",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A425",
+  "revision": "15a088d72531899d3ade55fd24e36d3594fefd86",
+  "working_tree_dirty": true,
+  "binary_sha256": "af70c1543995fa751eb1eceb10c892d849b555cfc4979de855794f18bef2bc36",
+  "cycles": 6,
+  "protocol": {
+    "seq_lens": [
+      128,
+      512
+    ],
+    "decode_n": 32,
+    "warmup": 16,
+    "repeats": 1,
+    "order": "AB/BA alternation, same binary",
+    "threads": 4
+  },
+  "models": {
+    "llama": {
+      "path": "/Users/germar/geist-models/llama-3.2-3b-Q4_K_M.gguf",
+      "sha256": "6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff"
+    },
+    "qwen": {
+      "path": "/Users/germar/geist-models/qwen3.5-0.8b-q8_0.gguf",
+      "sha256": "0ad885ffd4bb022fc4f0d33a3308fa108ef8613159d3b3a67e23abca056b7a6c"
+    },
+    "bonsai": {
+      "path": "/Users/germar/geist-models/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+      "sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1"
+    }
+  }
+}

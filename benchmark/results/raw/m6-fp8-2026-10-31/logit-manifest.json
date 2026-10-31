@@ -1,0 +1,146 @@
+{
+  "qwen/logits-3-metal4.bin": {
+    "bytes": 993280,
+    "sha256": "20697f6b246449d00f6dc5c90f2256b14e247aa9c2e1b1d75e55c6498fbaa576"
+  },
+  "qwen/logits-3-fp8.bin": {
+    "bytes": 993280,
+    "sha256": "970088c2d99149e549b9b3526609570ff0b27e9d76fc34a85e6a4fd3b8a83e90"
+  },
+  "qwen/ids-3-fp8.bin": {
+    "bytes": 48,
+    "sha256": "5c8e3193dc9c1262ebb95678e07fed8c585b06da43cd80c6456f767950c331e0"
+  },
+  "qwen/ids-4-metal4.bin": {
+    "bytes": 100,
+    "sha256": "c4c13c898951bbb981eeba95f55abe640b2f5e15605277ec61f1bfa7d1723d3d"
+  },
+  "qwen/ids-3-metal4.bin": {
+    "bytes": 48,
+    "sha256": "5c8e3193dc9c1262ebb95678e07fed8c585b06da43cd80c6456f767950c331e0"
+  },
+  "qwen/logits-0-fp8.bin": {
+    "bytes": 993280,
+    "sha256": "6f7ea25726dcbc66cdaf8c97433dfdbd6fc419c4a5874ddccb84af766a9b6b56"
+  },
+  "qwen/logits-4-metal4.bin": {
+    "bytes": 993280,
+    "sha256": "264971a939b3c0d860164cde896489349df8bcc5b6c842d749837fd908631313"
+  },
+  "qwen/ids-0-fp8.bin": {
+    "bytes": 56,
+    "sha256": "56627ba794c4bb45c1e2151e4482dd3bca399df3e096f2c54ca8044d02dee4a5"
+  },
+  "qwen/logits-4-fp8.bin": {
+    "bytes": 993280,
+    "sha256": "715c0e763b064b6670788f4079e8efc2db82d010981093ae215f52a53835e3cd"
+  },
+  "qwen/ids-0-metal4.bin": {
+    "bytes": 56,
+    "sha256": "56627ba794c4bb45c1e2151e4482dd3bca399df3e096f2c54ca8044d02dee4a5"
+  },
+  "qwen/ids-4-fp8.bin": {
+    "bytes": 100,
+    "sha256": "c4c13c898951bbb981eeba95f55abe640b2f5e15605277ec61f1bfa7d1723d3d"
+  },
+  "qwen/logits-0-metal4.bin": {
+    "bytes": 993280,
+    "sha256": "78855b9739f6a00c8ffa207bbb2cf24d6fd836a3a178c623243dafba022cd7e8"
+  },
+  "bonsai/logits-3-metal4.bin": {
+    "bytes": 993280,
+    "sha256": "0e55b5ed639254f22b568368c308640c175fb0bc557b07c670447e52f701ebcd"
+  },
+  "bonsai/logits-3-fp8.bin": {
+    "bytes": 993280,
+    "sha256": "ed87959819d2941086cb80594db24cf10467e7e1f255a7f6062234d913695f86"
+  },
+  "bonsai/ids-3-fp8.bin": {
+    "bytes": 48,
+    "sha256": "5c8e3193dc9c1262ebb95678e07fed8c585b06da43cd80c6456f767950c331e0"
+  },
+  "bonsai/ids-4-metal4.bin": {
+    "bytes": 100,
+    "sha256": "c4c13c898951bbb981eeba95f55abe640b2f5e15605277ec61f1bfa7d1723d3d"
+  },
+  "bonsai/ids-3-metal4.bin": {
+    "bytes": 48,
+    "sha256": "5c8e3193dc9c1262ebb95678e07fed8c585b06da43cd80c6456f767950c331e0"
+  },
+  "bonsai/logits-0-fp8.bin": {
+    "bytes": 993280,
+    "sha256": "1934c5f59e20ac916759c784eff946b66796c8596555b901b86790a3b4376d34"
+  },
+  "bonsai/logits-4-metal4.bin": {
+    "bytes": 993280,
+    "sha256": "e2ceafc023548164e6a0114b0263a7014992a6a33093c2a6c36287592c7dad3b"
+  },
+  "bonsai/ids-0-fp8.bin": {
+    "bytes": 56,
+    "sha256": "56627ba794c4bb45c1e2151e4482dd3bca399df3e096f2c54ca8044d02dee4a5"
+  },
+  "bonsai/logits-4-fp8.bin": {
+    "bytes": 993280,
+    "sha256": "89368d6198c5f482d7e904c50bf3391a619caaa64facf01f4814fb5924e1ed04"
+  },
+  "bonsai/ids-0-metal4.bin": {
+    "bytes": 56,
+    "sha256": "56627ba794c4bb45c1e2151e4482dd3bca399df3e096f2c54ca8044d02dee4a5"
+  },
+  "bonsai/ids-4-fp8.bin": {
+    "bytes": 100,
+    "sha256": "c4c13c898951bbb981eeba95f55abe640b2f5e15605277ec61f1bfa7d1723d3d"
+  },
+  "bonsai/logits-0-metal4.bin": {
+    "bytes": 993280,
+    "sha256": "af03226d5107956700a3bd139fd6e3ae6b7623ad23609a83f1ee9e407c231b39"
+  },
+  "llama/logits-3-metal4.bin": {
+    "bytes": 513024,
+    "sha256": "691c5e6a4f24cfa4908a9a14c69af688096f5b1c403575665c8e17d291eaa0de"
+  },
+  "llama/logits-3-fp8.bin": {
+    "bytes": 513024,
+    "sha256": "c5a5db29c3178b53e2f8cd5225515c50874943d20d6d5b2c6db651b763deb3c5"
+  },
+  "llama/ids-3-fp8.bin": {
+    "bytes": 60,
+    "sha256": "1364c2910941e887717f6044579a83c4adcdf829c42dd6620be73236bd3f4be8"
+  },
+  "llama/ids-4-metal4.bin": {
+    "bytes": 108,
+    "sha256": "86b4b149fa2587380feacf9fe203dba3d6b075a5775768719e6ead1238f28719"
+  },
+  "llama/ids-3-metal4.bin": {
+    "bytes": 60,
+    "sha256": "1364c2910941e887717f6044579a83c4adcdf829c42dd6620be73236bd3f4be8"
+  },
+  "llama/logits-0-fp8.bin": {
+    "bytes": 513024,
+    "sha256": "16912389123986a42673375c6ce4f086dee56e51f76ffbd8a8713f121bc84922"
+  },
+  "llama/logits-4-metal4.bin": {
+    "bytes": 513024,
+    "sha256": "1dd98c84a54b9766f4552c77377b0e180bfff7bfb0bf017619fa479a248e049f"
+  },
+  "llama/ids-0-fp8.bin": {
+    "bytes": 56,
+    "sha256": "998057ccde281d2be20b3b1fd85ea13204d4447bb0f16d98b9034279b060b033"
+  },
+  "llama/logits-4-fp8.bin": {
+    "bytes": 513024,
+    "sha256": "cab0540b7c1c1c95acd8c3f86f5c560171ede06acd2195ac4f5badefd21c39a8"
+  },
+  "llama/ids-0-metal4.bin": {
+    "bytes": 56,
+    "sha256": "998057ccde281d2be20b3b1fd85ea13204d4447bb0f16d98b9034279b060b033"
+  },
+  "llama/ids-4-fp8.bin": {
+    "bytes": 108,
+    "sha256": "86b4b149fa2587380feacf9fe203dba3d6b075a5775768719e6ead1238f28719"
+  },
+  "llama/logits-0-metal4.bin": {
+    "bytes": 513024,
+    "sha256": "d40daf897509714c356901e259b729025210c7075594d245ec89ce257ffc396f"
+  }
+}

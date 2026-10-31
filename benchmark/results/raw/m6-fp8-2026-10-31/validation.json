@@ -1,0 +1,33 @@
+{
+  "release": {
+    "tests": 162,
+    "seconds": 35,
+    "passed": 108,
+    "skipped": 54,
+    "failed": 0,
+    "errors": 0
+  },
+  "asan_ubsan": {
+    "tests": 162,
+    "seconds": 81,
+    "passed": 108,
+    "skipped": 54,
+    "failed": 0,
+    "errors": 0
+  },
+  "native_oracle": [
+    "FP8 oracle K=32 rows=13 power=0 NRMSE=0",
+    "FP8 oracle K=160 rows=129 power=-32 NRMSE=0",
+    "FP8 oracle K=256 rows=128 power=32 NRMSE=0"
+  ],
+  "native_oracle_asan": [
+    "FP8 oracle K=32 rows=13 power=0 NRMSE=0",
+    "FP8 oracle K=160 rows=129 power=-32 NRMSE=0",
+    "FP8 oracle K=256 rows=128 power=32 NRMSE=0"
+  ],
+  "default_gpu_parity": "test_backend_metal_parity_unit: all checks passed",
+  "fp8_gpu_parity": "test_backend_metal_parity_unit: all checks passed",
+  "fp8_gpu_parity_asan": "test_backend_metal_parity_unit: all checks passed",
+  "tensor_disabled_gpu_parity": "test_backend_metal_parity_unit: all checks passed",
+  "format": "All 580 files conform to .clang-format"
+}

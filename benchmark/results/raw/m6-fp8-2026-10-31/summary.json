@@ -1,0 +1,272 @@
+{
+  "performance": [
+    {
+      "model": "llama",
+      "seq_len": 128,
+      "metal4": {
+        "prefill_tps": 1953.8405,
+        "decode_tps": 70.35249999999999,
+        "rss_mb": 604.205,
+        "backend_allocated_mb": 2086.14
+      },
+      "fp8": {
+        "prefill_tps": 1039.9065,
+        "decode_tps": 70.3785,
+        "rss_mb": 604.46,
+        "backend_allocated_mb": 2086.14
+      },
+      "paired_prefill_speedup": 0.5321715622991453
+    },
+    {
+      "model": "llama",
+      "seq_len": 512,
+      "metal4": {
+        "prefill_tps": 2048.922,
+        "decode_tps": 68.8305,
+        "rss_mb": 604.385,
+        "backend_allocated_mb": 2086.14
+      },
+      "fp8": {
+        "prefill_tps": 1074.1805,
+        "decode_tps": 68.981,
+        "rss_mb": 604.64,
+        "backend_allocated_mb": 2086.14
+      },
+      "paired_prefill_speedup": 0.524282521648356
+    },
+    {
+      "model": "qwen",
+      "seq_len": 128,
+      "metal4": {
+        "prefill_tps": 5878.436,
+        "decode_tps": 155.1155,
+        "rss_mb": 159.78,
+        "backend_allocated_mb": 895.42
+      },
+      "fp8": {
+        "prefill_tps": 3874.5025,
+        "decode_tps": 155.0095,
+        "rss_mb": 159.97,
+        "backend_allocated_mb": 895.42
+      },
+      "paired_prefill_speedup": 0.6590313637852998
+    },
+    {
+      "model": "qwen",
+      "seq_len": 512,
+      "metal4": {
+        "prefill_tps": 7138.4259999999995,
+        "decode_tps": 154.958,
+        "rss_mb": 159.915,
+        "backend_allocated_mb": 901.45
+      },
+      "fp8": {
+        "prefill_tps": 4452.232,
+        "decode_tps": 155.062,
+        "rss_mb": 160.1,
+        "backend_allocated_mb": 901.45
+      },
+      "paired_prefill_speedup": 0.6237101800405882
+    },
+    {
+      "model": "bonsai",
+      "seq_len": 128,
+      "metal4": {
+        "prefill_tps": 255.1135,
+        "decode_tps": 19.0475,
+        "rss_mb": 474.39,
+        "backend_allocated_mb": 7452.52
+      },
+      "fp8": {
+        "prefill_tps": 125.537,
+        "decode_tps": 19.2195,
+        "rss_mb": 474.46000000000004,
+        "backend_allocated_mb": 7452.52
+      },
+      "paired_prefill_speedup": 0.49209603301818194
+    },
+    {
+      "model": "bonsai",
+      "seq_len": 512,
+      "metal4": {
+        "prefill_tps": 223.959,
+        "decode_tps": 19.149,
+        "rss_mb": 487.33500000000004,
+        "backend_allocated_mb": 7480.0
+      },
+      "fp8": {
+        "prefill_tps": 110.77250000000001,
+        "decode_tps": 19.14,
+        "rss_mb": 487.44500000000005,
+        "backend_allocated_mb": 7480.0
+      },
+      "paired_prefill_speedup": 0.4942551004870833
+    }
+  ],
+  "quality": [
+    {
+      "model": "llama",
+      "mean_nll": {
+        "metal4": 1.3993873273809523,
+        "fp8": 1.397377976190476
+      },
+      "continuation_tokens": 168,
+      "conditional_ppl_ratio": 0.9979926662041828,
+      "exact_generations": 8,
+      "first_token_matches": 12,
+      "cases": 12
+    },
+    {
+      "model": "qwen",
+      "mean_nll": {
+        "metal4": 1.3125183860759493,
+        "fp8": 1.3208143037974684
+      },
+      "continuation_tokens": 158,
+      "conditional_ppl_ratio": 1.0083304242019109,
+      "exact_generations": 8,
+      "first_token_matches": 12,
+      "cases": 12
+    },
+    {
+      "model": "bonsai",
+      "mean_nll": {
+        "metal4": 1.0332550126582278,
+        "fp8": 1.0152958924050632
+      },
+      "continuation_tokens": 158,
+      "conditional_ppl_ratio": 0.9822011836733373,
+      "exact_generations": 10,
+      "first_token_matches": 12,
+      "cases": 12
+    }
+  ],
+  "logits": [
+    {
+      "model": "llama",
+      "case": "Paris",
+      "top1_a": 12366,
+      "top1_b": 12366,
+      "top1_same": true,
+      "top5_overlap": 5,
+      "top10_overlap": 10,
+      "centered_cosine": 0.998735,
+      "centered_rmse": 0.110143,
+      "js_nats": 0.0001,
+      "p_top1_a": 0.9573,
+      "p_top1_b": 0.9604
+    },
+    {
+      "model": "llama",
+      "case": "German",
+      "top1_a": 12366,
+      "top1_b": 12366,
+      "top1_same": true,
+      "top5_overlap": 4,
+      "top10_overlap": 9,
+      "centered_cosine": 0.99751,
+      "centered_rmse": 0.130978,
+      "js_nats": 0.000191,
+      "p_top1_a": 0.968,
+      "p_top1_b": 0.9734
+    },
+    {
+      "model": "llama",
+      "case": "Python",
+      "top1_a": 865,
+      "top1_b": 865,
+      "top1_same": true,
+      "top5_overlap": 5,
+      "top10_overlap": 10,
+      "centered_cosine": 0.997494,
+      "centered_rmse": 0.118333,
+      "js_nats": 0.000638,
+      "p_top1_a": 0.5579,
+      "p_top1_b": 0.5875
+    },
+    {
+      "model": "qwen",
+      "case": "Paris",
+      "top1_a": 11751,
+      "top1_b": 11751,
+      "top1_same": true,
+      "top5_overlap": 4,
+      "top10_overlap": 9,
+      "centered_cosine": 0.997448,
+      "centered_rmse": 0.184252,
+      "js_nats": 0.001654,
+      "p_top1_a": 0.5935,
+      "p_top1_b": 0.6293
+    },
+    {
+      "model": "qwen",
+      "case": "German",
+      "top1_a": 11751,
+      "top1_b": 11751,
+      "top1_same": true,
+      "top5_overlap": 3,
+      "top10_overlap": 10,
+      "centered_cosine": 0.996709,
+      "centered_rmse": 0.213919,
+      "js_nats": 0.008367,
+      "p_top1_a": 0.5215,
+      "p_top1_b": 0.4309
+    },
+    {
+      "model": "qwen",
+      "case": "Python",
+      "top1_a": 830,
+      "top1_b": 830,
+      "top1_same": true,
+      "top5_overlap": 5,
+      "top10_overlap": 10,
+      "centered_cosine": 0.997219,
+      "centered_rmse": 0.181274,
+      "js_nats": 0.000365,
+      "p_top1_a": 0.9765,
+      "p_top1_b": 0.9686
+    },
+    {
+      "model": "bonsai",
+      "case": "Paris",
+      "top1_a": 11751,
+      "top1_b": 11751,
+      "top1_same": true,
+      "top5_overlap": 5,
+      "top10_overlap": 10,
+      "centered_cosine": 0.999401,
+      "centered_rmse": 0.058528,
+      "js_nats": 2.3e-05,
+      "p_top1_a": 0.9777,
+      "p_top1_b": 0.978
+    },
+    {
+      "model": "bonsai",
+      "case": "German",
+      "top1_a": 11751,
+      "top1_b": 11751,
+      "top1_same": true,
+      "top5_overlap": 5,
+      "top10_overlap": 10,
+      "centered_cosine": 0.998837,
+      "centered_rmse": 0.089111,
+      "js_nats": 0.000203,
+      "p_top1_a": 0.8948,
+      "p_top1_b": 0.9007
+    },
+    {
+      "model": "bonsai",
+      "case": "Python",
+      "top1_a": 830,
+      "top1_b": 830,
+      "top1_same": true,
+      "top5_overlap": 5,
+      "top10_overlap": 10,
+      "centered_cosine": 0.999594,
+      "centered_rmse": 0.044357,
+      "js_nats": 6e-06,
+      "p_top1_a": 0.9932,
+      "p_top1_b": 0.9929
+    }
+  ]
+}

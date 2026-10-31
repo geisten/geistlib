@@ -98,7 +98,8 @@ def main() -> None:
     subprocess.run([str(oracle)], check=True)
     metadata = dict(cpu=command_output(["sysctl", "-n", "machdep.cpu.brand_string"]),
                     os=command_output(["sw_vers"]), revision=command_output(["git", "rev-parse", "HEAD"]),
-                    working_tree_dirty=bool(command_output(["git", "status", "--porcelain"])),
+                    working_tree_dirty=bool(subprocess.check_output(
+                        ["git", "status", "--porcelain", "--untracked-files=no"], text=True).strip()),
                     binary_sha256=sha256_file(bench), cycles=args.cycles,
                     protocol=dict(seq_lens=[128, 512], decode_n=32, warmup=16, repeats=1,
                                   order="AB/BA alternation, same binary", threads=4), models={})
@@ -177,7 +178,10 @@ def main() -> None:
                 raise RuntimeError("logit comparison used different token IDs")
             comparison = subprocess.check_output(["python3", str(ROOT / "tools/compare_logits.py"),
                            str(subdir / f"logits-{case}-metal4.bin"), str(subdir / f"logits-{case}-fp8.bin")], text=True)
-            summary["logits"].append(dict(model=label, case=CASES[case][0], **json.loads(comparison)))
+            metrics = json.loads(comparison)
+            if not all(math.isfinite(v) for v in metrics.values() if isinstance(v, float)):
+                raise RuntimeError("non-finite logit comparison")
+            summary["logits"].append(dict(model=label, case=CASES[case][0], **metrics))
     (args.out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2), flush=True)
 
