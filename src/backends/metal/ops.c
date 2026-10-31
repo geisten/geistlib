@@ -2037,10 +2037,16 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
         return s;
     }
     struct metal_state *st = be->state;
-    if (dtype == GEIST_DTYPE_PQ2_0 && rows >= 8u && n_out % 64u == 0u && n_in % 32u == 0u) {
-        metal_pq2_xh_reserve(be, rows, n_in);
-    } else if (dtype == GEIST_DTYPE_PQ2_0 && rows >= 2u && rows <= 8u) {
+    /* Short batches prefer pq2_m8, including exactly eight rows. Larger
+     * tensor GEMMs read f32 directly and never bind pq2_xh_buffer: avoid
+     * allocating/growing an unused f16 copy on M5/M6. Test the compiled
+     * pipeline, not tensor_mm, so a failed Metal 4 compile retains the
+     * simdgroup fallback's scratch. */
+    if (dtype == GEIST_DTYPE_PQ2_0 && rows >= 2u && rows <= 8u) {
         metal_pq2_xh_reserve(be, 8u, n_in);
+    } else if (dtype == GEIST_DTYPE_PQ2_0 && rows > 8u && st->pq2_mm_tc_pipeline == nullptr &&
+               n_out % 64u == 0u && n_in % 32u == 0u) {
+        metal_pq2_xh_reserve(be, rows, n_in);
     }
     const struct metal_q4k_params params = {
             .n_in           = (uint32_t) n_in,

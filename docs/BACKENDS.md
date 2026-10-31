@@ -74,6 +74,44 @@ wired for `GEIST_METAL_KEEP_ALIVE_S` seconds after the last token (default
 180), so the next request does not pay to wire it again; `0` leaves it to
 macOS, which unwires about 2 s after the GPU goes idle.
 
+### Apple M5/M6 tensor acceleration
+
+On Apple GPU family 10 and later, quantized prefill GEMMs automatically use
+Metal 4's `MetalPerformancePrimitives::matmul2d` to reach the GPU Neural
+Accelerators. Dispatch checks GPU capabilities rather than the device name;
+if the tensor library cannot compile on the installed OS, the backend falls
+back to its simdgroup kernels. `GEIST_METAL_TENSOR=0` disables the tensor
+path; `=1` requests it on older devices too, where it may be slower.
+Single-token decode keeps the specialized quantized matvec kernels.
+
+PQ2_0 tensor prefill reads FP32 activations directly and keeps weights in
+their packed format, dequantizing tiles to FP16 in threadgroup memory. It
+does not allocate the simdgroup path's full FP16 activation scratch for
+batches above eight rows. At 320 rows and an input width of 17408 this avoids
+11,141,120 bytes (10.625 MiB) of unused GPU scratch. Batches of two to eight
+rows still reserve scratch for the specialized short-batch kernel.
+
+The backend currently uses Metal, not Core ML, so it does not dispatch to
+the separate Neural Engine. GPU Neural Accelerators and the Neural Engine
+are distinct execution resources. There is no FP8 model dtype or FP8 GEMM
+path here; converting existing low-bit weights to FP8 would change memory
+use and numerical behavior and requires separate quality and performance
+validation.
+
+To check both execution paths on a Mac with GPU access:
+
+```sh
+make -j8 bin/mac-omp/release/tests/test_backend_metal_parity_unit
+GEIST_METAL_TENSOR=0 bin/mac-omp/release/tests/test_backend_metal_parity_unit
+GEIST_METAL_TENSOR=1 bin/mac-omp/release/tests/test_backend_metal_parity_unit
+```
+
+The parity gate compares against the scalar backend and checks that tensor
+prefill leaves scratch absent, or unchanged after a short batch. For model
+throughput and greedy-output checks use
+[`metal_prefill_tensor.sh`](../tools/probes/metal_prefill_tensor.sh) with a
+local GGUF. Measure on the target device before quoting a speedup.
+
 ## Vulkan (Linux GPU, experimental)
 
 Build with `BACKENDS="vulkan cpu_x86 cpu_scalar"`; `libvulkan` is loaded at run
