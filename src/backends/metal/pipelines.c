@@ -252,6 +252,15 @@ static const struct metal_pipeline_row metal_moe_rows[] = {
 static const struct metal_pipeline_row metal_tensor_rows[] = {
         METAL_PIPE(mm_tc, "matmul_q4k_mm_tc", q4k_mm_tc),
         METAL_PIPE(mm_tc, "matmul_q6k_mm_tc", q6k_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_q40_mm_tc", q40_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_q80_mm_tc", q80_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_q41_mm_tc", q41_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_q5k_mm_tc", q5k_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_iq4nl_mm_tc", iq4nl_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_iq4xs_mm_tc", iq4xs_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_q3k_mm_tc", q3k_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_iq3s_mm_tc", iq3s_mm_tc),
+        METAL_PIPE(mm_tc, "matmul_pq2_mm_tc", pq2_mm_tc),
 };
 
 static const struct metal_pipeline_row metal_argmax_rows[] = {
@@ -471,15 +480,29 @@ static const struct metal_library_row metal_moe_libs[] = {
 
 /* Compiled with language version 4.0 (metal_tensor_options). */
 static const struct metal_library_row metal_tensor_libs[] = {
+        /* metal_qsg_common_source opens with the head the Q4_K/Q6_K units
+         * take from metal_qmm_head_source; nullptr is the IQ3_S grid. */
         METAL_LIB(mm_tc,
                   "tensor-API GEMM",
                   metal_mm_tc_head_source,
-                  metal_qmm_head_source,
+                  metal_qsg_common_source,
+                  nullptr,
+                  metal_qsg_common2_source,
+                  metal_qsg_pq2_dq_source,
                   metal_q4k_dq_source,
                   metal_q6k_dq_source,
                   metal_mm_tc_q6k_block_source,
                   metal_mm_tc_q4k_source,
-                  metal_mm_tc_q6k_source),
+                  metal_mm_tc_q6k_source,
+                  metal_mm_tc_q40_source,
+                  metal_mm_tc_q80_source,
+                  metal_mm_tc_q41_source,
+                  metal_mm_tc_q5k_source,
+                  metal_mm_tc_iq4nl_source,
+                  metal_mm_tc_iq4xs_source,
+                  metal_mm_tc_q3k_source,
+                  metal_mm_tc_iq3s_source,
+                  metal_mm_tc_pq2_source),
 };
 
 static const struct metal_library_row metal_argmax_libs[] = {
@@ -716,7 +739,9 @@ static void *metal_tensor_options(struct metal_state *st) {
  * simdgroup GEMMs take every shape. */
 static void metal_ensure_tensor(struct geist_backend *be) {
     struct metal_state *st = be->state;
-    if (!st->tensor_mm || st->q6k_mm_tc_pipeline != nullptr) {
+    if (!st->tensor_mm ||
+        *metal_state_slot(st, metal_tensor_rows[METAL_N(metal_tensor_rows) - 1].pipeline) !=
+                nullptr) {
         return;
     }
     void                   *opt = metal_tensor_options(st);

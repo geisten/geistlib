@@ -1349,6 +1349,22 @@ static const char metal_mm_tc_q4k_source[] =
 static const char metal_mm_tc_q6k_source[] =
         GEIST_METAL_MM_TC_KERNEL("q6k", "block_q6_K", "dq6b", "16");
 
+/* The simdgroup quant unit's formats (their block structs and dequants
+ * come from metal_qsg_common_source, metal_qsg_common2_source and
+ * metal_qsg_pq2_dq_source). */
+static const char metal_mm_tc_q40_source[] = GEIST_METAL_MM_TC_KERNEL("q40", "bq40", "dq40", "2");
+static const char metal_mm_tc_q80_source[] = GEIST_METAL_MM_TC_KERNEL("q80", "bq80", "dq80", "2");
+static const char metal_mm_tc_q41_source[] = GEIST_METAL_MM_TC_KERNEL("q41", "bq41", "dq41", "2");
+static const char metal_mm_tc_q5k_source[] = GEIST_METAL_MM_TC_KERNEL("q5k", "bq5k", "dq5k", "16");
+static const char metal_mm_tc_iq4nl_source[] =
+        GEIST_METAL_MM_TC_KERNEL("iq4nl", "biq4nl", "dqiq4nl", "2");
+static const char metal_mm_tc_iq4xs_source[] =
+        GEIST_METAL_MM_TC_KERNEL("iq4xs", "biq4xs", "dqiq4xs", "16");
+static const char metal_mm_tc_q3k_source[] = GEIST_METAL_MM_TC_KERNEL("q3k", "bq3k", "dq3k", "16");
+static const char metal_mm_tc_iq3s_source[] =
+        GEIST_METAL_MM_TC_KERNEL("iq3s", "biq3s", "dqiq3s", "16");
+static const char metal_mm_tc_pq2_source[] = GEIST_METAL_MM_TC_KERNEL("pq2", "bpq2", "dqpq2", "8");
+
 static const char metal_q6k_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"

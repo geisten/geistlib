@@ -386,6 +386,7 @@ struct metal_quant_pipes {
     void    *n4;        /* decode GEMV (rows == 1) */
     void    *mm;        /* bounded 64x32 simdgroup GEMM */
     void    *mm_fast;   /* interior variant, nullable */
+    void    *tc;        /* tensor-API GEMM (#314), null unless tensor_mm */
     void    *base;      /* naive single-row kernel, nullable */
     void    *m8;        /* naive 8-row kernel, nullable */
     uint32_t n4_tile;   /* output rows one n4 threadgroup covers */
@@ -403,7 +404,8 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
          * from tuning.pq2_n8_min_n_out output rows up (on 27B shapes: the
          * FFN and lm_head GEMVs gain, the 1024-row attn kv ones lose). */
         const bool n8 = n_out >= st->tuning.pq2_n8_min_n_out && st->pq2_n8_pipeline != nullptr;
-        return (struct metal_quant_pipes) {.n4 = n8 ? st->pq2_n8_pipeline : st->pq2_n4_pipeline,
+        return (struct metal_quant_pipes) {.tc = st->pq2_mm_tc_pipeline,
+                                           .n4 = n8 ? st->pq2_n8_pipeline : st->pq2_n4_pipeline,
                                            .mm = st->pq2_mm_pipeline,
                                            .mm_fast   = st->pq2_mm_fast_pipeline,
                                            .n4_tile   = n8 ? 16u : 8u,
@@ -411,39 +413,45 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
                                            .mm_fast64 = true};
     }
     case GEIST_DTYPE_Q4_0:
-        return (struct metal_quant_pipes) {.n4      = st->q40_n4_pipeline,
+        return (struct metal_quant_pipes) {.tc      = st->q40_mm_tc_pipeline,
+                                           .n4      = st->q40_n4_pipeline,
                                            .mm      = st->q40_mm_pipeline,
                                            .mm_fast = st->q40_mm_fast_pipeline,
                                            .base    = st->q40_pipeline,
                                            .m8      = st->q40_m8_pipeline,
                                            .n4_tile = 8u};
     case GEIST_DTYPE_Q8_0:
-        return (struct metal_quant_pipes) {.n4      = st->q80_n4_pipeline,
+        return (struct metal_quant_pipes) {.tc      = st->q80_mm_tc_pipeline,
+                                           .n4      = st->q80_n4_pipeline,
                                            .mm      = st->q80_mm_pipeline,
                                            .mm_fast = st->q80_mm_fast_pipeline,
                                            .base    = st->q80_pipeline,
                                            .m8      = st->q80_m8_pipeline,
                                            .n4_tile = 8u};
     case GEIST_DTYPE_Q4_1:
-        return (struct metal_quant_pipes) {.n4      = st->q41_n4_pipeline,
+        return (struct metal_quant_pipes) {.tc      = st->q41_mm_tc_pipeline,
+                                           .n4      = st->q41_n4_pipeline,
                                            .mm      = st->q41_mm_pipeline,
                                            .mm_fast = st->q41_mm_fast_pipeline,
                                            .base    = st->q41_pipeline,
                                            .m8      = st->q41_m8_pipeline,
                                            .n4_tile = 4u};
     case GEIST_DTYPE_IQ4_NL:
-        return (struct metal_quant_pipes) {.n4        = st->iq4nl_n4_pipeline,
+        return (struct metal_quant_pipes) {.tc        = st->iq4nl_mm_tc_pipeline,
+                                           .n4        = st->iq4nl_n4_pipeline,
                                            .mm        = st->iq4nl_mm_pipeline,
                                            .n4_tile   = 8u,
                                            .gemm_only = true};
     case GEIST_DTYPE_IQ4_XS:
-        return (struct metal_quant_pipes) {.n4        = st->iq4xs_n4_pipeline,
+        return (struct metal_quant_pipes) {.tc        = st->iq4xs_mm_tc_pipeline,
+                                           .n4        = st->iq4xs_n4_pipeline,
                                            .mm        = st->iq4xs_mm_pipeline,
                                            .mm_fast   = st->iq4xs_mm_fast_pipeline,
                                            .n4_tile   = 4u,
                                            .gemm_only = true};
     case GEIST_DTYPE_Q3_K:
-        return (struct metal_quant_pipes) {.n4        = st->q3k_n4_pipeline,
+        return (struct metal_quant_pipes) {.tc        = st->q3k_mm_tc_pipeline,
+                                           .n4        = st->q3k_n4_pipeline,
                                            .mm        = st->q3k_mm_pipeline,
                                            .n4_tile   = 4u,
                                            .gemm_only = true};
@@ -458,12 +466,14 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
                                            .n4_tile   = 4u,
                                            .gemm_only = true};
     case GEIST_DTYPE_IQ3_S:
-        return (struct metal_quant_pipes) {.n4        = st->iq3s_n4_pipeline,
+        return (struct metal_quant_pipes) {.tc        = st->iq3s_mm_tc_pipeline,
+                                           .n4        = st->iq3s_n4_pipeline,
                                            .mm        = st->iq3s_mm_pipeline,
                                            .n4_tile   = 4u,
                                            .gemm_only = true};
     default: /* Q5_K */
-        return (struct metal_quant_pipes) {.n4      = st->q5k_n4_pipeline,
+        return (struct metal_quant_pipes) {.tc      = st->q5k_mm_tc_pipeline,
+                                           .n4      = st->q5k_n4_pipeline,
                                            .mm      = st->q5k_mm_pipeline,
                                            .mm_fast = st->q5k_mm_fast_pipeline,
                                            .base    = st->q5k_pipeline,
@@ -582,6 +592,10 @@ static void metal_encode_generic_quant(struct metal_state            *st,
         return;
     }
     const struct metal_quant_pipes p = metal_quant_pipes_for(st, dtype, params->n_out);
+    if (params->rows >= 8u && p.tc != nullptr) {
+        metal_encode_mm_tc(st, enc, p.tc, x, w, y, params);
+        return;
+    }
     /* rows==1 -> simdgroup GEMV (llama mul_mv structure); rows>=8 -> 64x32
      * simdgroup GEMM (bounds-checked, arbitrary rows/n_out); the naive
      * kernels remain the fallback for tiny shapes. gemm_only formats have no naive

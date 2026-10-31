@@ -72,7 +72,20 @@ for t in 0 1; do
         --seq-lens 512 --decode-n 1 --warmup 1 --repeats 1 >"$OUT/profile_tensor$t.txt" 2>&1 || true
 done
 
-python3 - "$OUT" <<'PY'
+# Greedy check: the tensor GEMMs' rounding differs from the simdgroup ones'
+# (float activations, the matrix units' accumulation), so the completions
+# of tests/bench_quality must match token for token.
+for t in 0 1; do
+    GEIST_METAL_TENSOR=$t bin/mac-omp/release/tests/bench_quality "$MODEL" \
+        >"$OUT/quality_tensor$t.txt" 2>"$OUT/quality_tensor$t.err" || true
+done
+if cmp -s "$OUT/quality_tensor0.txt" "$OUT/quality_tensor1.txt"; then
+    GREEDY="identical"
+else
+    GREEDY="DIFFERENT (see quality_tensor*.txt)"
+fi
+
+GREEDY=$GREEDY python3 - "$OUT" <<'PY'
 import json, statistics, sys, os
 out = sys.argv[1]
 tps = {}
@@ -102,6 +115,7 @@ for s in seqs:
         row[1] / row[0], row[3] / row[2], row[1] / row[3]))
 lines += ["", "Spread (min-max per arm/seq): " + "; ".join(
     "%s@%d %.0f-%.0f" % (a, s, min(v), max(v)) for (a, s), v in sorted(tps.items())), ""]
+lines += ["bench_quality completions, tensor off vs on: " + os.environ.get("GREEDY", "?"), ""]
 open(os.path.join(out, "summary.md"), "w").write("\n".join(lines) + "\n")
 print("\n".join(lines))
 PY
