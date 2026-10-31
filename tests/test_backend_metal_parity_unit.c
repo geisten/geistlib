@@ -298,9 +298,12 @@ static void run_case(struct geist_backend *mt,
           "y download");
 
     double max_rel = 0.0;
+    double error2 = 0.0, reference2 = 0.0;
     for (size_t i = 0; i < m * n_out; i++) {
-        const double a   = y_dl[i];
-        const double b   = y_rf[i];
+        const double a = y_dl[i];
+        const double b = y_rf[i];
+        error2 += (a - b) * (a - b);
+        reference2 += b * b;
         const double rel = fabs(a - b) / (fabs(b) > 1.0 ? fabs(b) : 1.0);
         if (rel > max_rel) {
             max_rel = rel;
@@ -315,8 +318,21 @@ static void run_case(struct geist_backend *mt,
              n_out,
              n_in,
              max_rel);
-    check(max_rel < tol, label);
-    printf("  %-6s m=%-3zu  max_rel %.2e %s\n", name, m, max_rel, max_rel < tol ? "OK" : "FAIL");
+    bool fp8 = false;
+#ifdef GEIST_BACKEND_METAL
+    fp8 = ((struct metal_state *) mt->state)->fp8_mm && m >= 8u && dtype != GEIST_DTYPE_F32 &&
+          dtype != GEIST_DTYPE_F16 && dtype != GEIST_DTYPE_BF16 && dtype != GEIST_DTYPE_TQ2_0 &&
+          dtype != GEIST_DTYPE_I2_S;
+#endif
+    const double nrmse = sqrt(error2 / fmax(reference2, 1e-30));
+    if (fp8) {
+        printf("  FP8 %s m=%zu nrmse %.6g max_rel %.6g\n", name, m, nrmse, max_rel);
+    }
+    /* FP8 intentionally quantizes both operands. Its experimental error
+     * budget is separate from the unchanged default-path parity gate. */
+    const bool pass = fp8 ? isfinite(nrmse) && nrmse < 0.06 : max_rel < tol;
+    check(pass, label);
+    printf("  %-6s m=%-3zu  max_rel %.2e %s\n", name, m, max_rel, pass ? "OK" : "FAIL");
 
     v->buffer_destroy(mt, bw);
     v->buffer_destroy(mt, bx);

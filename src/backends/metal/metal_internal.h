@@ -588,6 +588,7 @@ struct metal_state {
      * GEIST_METAL_TENSOR=0 keeps the simdgroup GEMMs. Cleared when the
      * tensor unit does not compile (an OS without the Metal 4 tensor API). */
     bool                      tensor_mm;
+    bool                      fp8_mm; /* opt-in M6 native FP8; cleared on compile failure */
     struct metal_profile_stat profile[METAL_PROFILE_STAGE_COUNT];
     /* GPU time of committed command buffers (profile only): the sum of the
      * buffers' own times, and their union on the GPU timeline (busy). */

@@ -74,6 +74,63 @@ wired for `GEIST_METAL_KEEP_ALIVE_S` seconds after the last token (default
 180), so the next request does not pay to wire it again; `0` leaves it to
 macOS, which unwires about 2 s after the GPU goes idle.
 
+### Experimental native FP8 on M6
+
+`GEIST_METAL_FP8=1` opts into native FP8 E4M3 operands for quantized
+prefill GEMMs on Apple GPU family 11 (M6) and later, with Metal 4.1/macOS 27.
+It is **off by default**. `GEIST_METAL_TENSOR=0` disables it as well.
+Older GPUs retain the existing path; if the FP8 library fails to compile,
+the backend reports the failure and retries the ordinary Metal 4 tensor
+library before falling back to simdgroup GEMMs.
+
+The GGUF and resident weight representation stay packed. Each GPU tile
+stages weights and activations as FP8 E4M3 with a separate E8M0 power-of-two
+scale per 32 values, then calls `MetalPerformancePrimitives::matmul2d`
+with **both operands still FP8**, accumulating in FP32. Packing uses Apple's
+round-to-nearest-even operation. This is native FP8 matrix execution,
+rather than decoding FP8 back to FP16 before multiplication. The API and
+alignment rules are specified in Apple's [Metal Shading Language
+Specification](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf),
+sections 2.21 and 2.22, and in the SDK MPP matmul header.
+
+This is a lossy compute mode, not an FP8 GGUF loader or an FP8 KV cache.
+Single-token decode, attention and short-batch kernel selection stay on
+their existing paths. Converting tile operands does not halve model RAM:
+the original low-bit weights are already smaller than FP8. This kernel
+uses 25,344 bytes of threadgroup memory (including scale planes), versus
+8,192 for the existing tensor GEMM; this is on-chip tile storage, not a
+full-model allocation. Conversion and staging overhead can outweigh the
+faster matrix arithmetic. See the measured [M6 comparison](../benchmark/results/M6_FP8.md)
+before enabling it.
+
+Build and reproduce the comparison on a Mac with native FP8 support:
+
+```sh
+make -j8 bin/mac-omp/release/tests/bench_perf_sweep \
+  bin/mac-omp/release/tests/test_metal_fp8_unit \
+  bin/mac-omp/release/tools/eval_geist \
+  bin/mac-omp/release/tools/dump_geist_logits
+~/bin/with-macmini-lock python3 tools/bench_metal_fp8.py \
+  --model llama=/path/to/llama-3.2-3b-Q4_K_M.gguf \
+  --out /tmp/m6-fp8-comparison --cycles 6
+```
+
+Use the appropriate host-lock wrapper on another Mac. The script checks
+that the FP8 arm really compiled, alternates the two modes on the same
+binary, gates temperature and AC power, and records model/binary hashes,
+RSS, Metal allocations, continuation NLL, greedy tokens and full-vocabulary
+logit comparisons. Its twelve self-authored completion tasks are a smoke
+corpus, not a standard perplexity or reasoning benchmark. GPU allocations
+and RSS overlap on unified memory and must not be added together.
+
+The default parity gate retains its existing tolerance. When explicitly
+run with FP8 enabled it reports NRMSE against the scalar backend with a
+separate 6% experimental error budget. `test_metal_fp8_unit` independently
+rounds E4M3 values on the CPU and verifies exact results on dyadic fixtures,
+including zero blocks, partial K/output/row tiles, nonzero offsets and
+activation magnitudes scaled by 2^-32 and 2^32. It fails if a capable M6
+silently falls back, and skips when the GPU feature is unavailable.
+
 ## Vulkan (Linux GPU, experimental)
 
 Build with `BACKENDS="vulkan cpu_x86 cpu_scalar"`; `libvulkan` is loaded at run

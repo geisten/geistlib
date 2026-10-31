@@ -52,6 +52,9 @@
 #include <geist.h>
 #include <geist_util.h>
 #include <geist_backend.h>
+#ifdef GEIST_BACKEND_METAL
+#include "../src/backends/metal/metal_internal.h"
+#endif
 
 #include <limits.h>
 #include <stdbool.h>
@@ -493,6 +496,16 @@ int main(int argc, char **argv) {
         const double total_tps_best  = (double) (n_p + decode_n) * 1000.0 / total_best;
         const double total_tps_worst = (double) (n_p + decode_n) * 1000.0 / total_worst;
 
+        struct geist_backend_resources resources = {0};
+        const double allocated_mb = geist_backend_resources_snapshot(be, &resources) == GEIST_OK
+                                            ? (double) resources.allocated_bytes / (1024.0 * 1024.0)
+                                            : -1.0;
+        bool         fp8_active   = false;
+#ifdef GEIST_BACKEND_METAL
+        if (strcmp(be->desc->name, "metal") == 0) {
+            fp8_active = ((struct metal_state *) be->state)->fp8_mm;
+        }
+#endif
         printf("{\"seq_len\":%d,\"decode_n\":%d,"
                "\"prefill_ms\":%.2f,\"decode_ms\":%.2f,\"total_ms\":%.2f,\"ttft_ms\":%.2f,"
                "\"prefill_tps\":%.3f,\"decode_tps\":%.3f,\"total_tps\":%.3f,"
@@ -501,7 +514,8 @@ int main(int argc, char **argv) {
                "\"total_ms_best\":%.2f,\"total_ms_worst\":%.2f,"
                "\"total_tps_best\":%.3f,\"total_tps_worst\":%.3f,"
                "\"agg\":\"mean\",\"repeats\":%zu,\"repeats_requested\":%d,"
-               "\"warmup\":%d,\"rss_mb\":%.2f,\"threads\":%d,\"samples\":{"
+               "\"warmup\":%d,\"rss_mb\":%.2f,\"backend_allocated_mb\":%.2f,\"metal_fp8_active\":%"
+               "s,\"threads\":%d,\"samples\":{"
                "\"prefill_ms\":",
                n_p,
                decode_n,
@@ -524,6 +538,8 @@ int main(int argc, char **argv) {
                repeats,
                warmup_n,
                process_rss_mb(),
+               allocated_mb,
+               fp8_active ? "true" : "false",
                threads);
         print_json_samples(measured, prefill_ms);
         printf(",\"decode_ms\":");

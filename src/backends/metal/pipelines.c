@@ -3,6 +3,7 @@
  */
 #include "metal_internal.h"
 #include "iq_grids.h"
+#include "metal_fp8_shaders.h"
 
 [[nodiscard]] static enum geist_status metal_create_named_pipeline(struct geist_backend *be,
                                                                    void                 *library,
@@ -520,6 +521,37 @@ static const struct metal_library_row metal_tensor_libs[] = {
                   metal_attn_flash_tc_source_b),
 };
 
+static const struct metal_library_row metal_tensor_fp8_libs[] = {
+        /* metal_qsg_common_source opens with the head the Q4_K/Q6_K units
+         * take from metal_qmm_head_source; nullptr is the IQ3_S grid. */
+        METAL_LIB(mm_tc,
+                  "native FP8 tensor GEMM",
+                  metal_mm_tc_head_source,
+                  metal_mm_fp8_helper_source,
+                  metal_qsg_common_source,
+                  nullptr,
+                  metal_qsg_common2_source,
+                  metal_qsg_pq2_dq_source,
+                  metal_q4k_dq_source,
+                  metal_q6k_dq_source,
+                  metal_mm_tc_q6k_block_source,
+                  metal_mm_fp8_q4k_source,
+                  metal_mm_fp8_q6k_source,
+                  metal_mm_fp8_q40_source,
+                  metal_mm_fp8_q80_source,
+                  metal_mm_fp8_q41_source,
+                  metal_mm_fp8_q5k_source,
+                  metal_mm_fp8_iq4nl_source,
+                  metal_mm_fp8_iq4xs_source,
+                  metal_mm_fp8_q3k_source,
+                  metal_mm_fp8_iq3s_source,
+                  metal_mm_fp8_pq2_source),
+        METAL_LIB(attn_tc,
+                  "tensor-API flash",
+                  metal_attn_flash_tc_source_a,
+                  metal_attn_flash_tc_source_b),
+};
+
 static const struct metal_library_row metal_argmax_libs[] = {
         METAL_LIB(argmax, "argmax", metal_argmax_source),
 };
@@ -744,7 +776,8 @@ static void *metal_tensor_options(struct metal_state *st) {
     void *opt = cls != nullptr ? metal_msg_send_id0(st, cls, "new") : nullptr;
     if (opt != nullptr) {
         /* MTLLanguageVersion4_0 = (4 << 16) + 0 */
-        metal_msg_send_void_ulong(st, opt, "setLanguageVersion:", 4ul << 16);
+        metal_msg_send_void_ulong(
+                st, opt, "setLanguageVersion:", (4ul << 16) + (st->fp8_mm ? 1ul : 0ul));
     }
     return opt;
 }
@@ -759,26 +792,38 @@ static void metal_ensure_tensor(struct geist_backend *be) {
                 nullptr) {
         return;
     }
-    void                   *opt = metal_tensor_options(st);
-    const enum geist_status s   = opt == nullptr ? GEIST_E_UNSUPPORTED
-                                                 : metal_ensure_tables(be,
-                                                                       opt,
-                                                                       METAL_N(metal_tensor_libs),
-                                                                       metal_tensor_libs,
-                                                                       METAL_N(metal_tensor_rows),
-                                                                       metal_tensor_rows);
-    metal_msg_send_void0(st, opt, "release");
-    if (s != GEIST_OK) {
-        st->tensor_mm = false;
+    for (;;) {
+        void                           *opt = metal_tensor_options(st);
+        const struct metal_library_row *libs =
+                st->fp8_mm ? metal_tensor_fp8_libs : metal_tensor_libs;
+        const enum geist_status s = opt == nullptr ? GEIST_E_UNSUPPORTED
+                                                   : metal_ensure_tables(be,
+                                                                         opt,
+                                                                         METAL_N(metal_tensor_libs),
+                                                                         libs,
+                                                                         METAL_N(metal_tensor_rows),
+                                                                         metal_tensor_rows);
+        metal_msg_send_void0(st, opt, "release");
+        if (s == GEIST_OK) {
+            return;
+        }
         metal_release_rows(st, METAL_N(metal_tensor_rows), metal_tensor_rows);
-        metal_release_libs(st, METAL_N(metal_tensor_libs), metal_tensor_libs);
+        metal_release_libs(st, METAL_N(metal_tensor_libs), libs);
         for (size_t i = 0; i < METAL_N(metal_tensor_rows); i++) {
             *metal_state_slot(st, metal_tensor_rows[i].function) = nullptr;
             *metal_state_slot(st, metal_tensor_rows[i].pipeline) = nullptr;
         }
         for (size_t i = 0; i < METAL_N(metal_tensor_libs); i++) {
-            *metal_state_slot(st, metal_tensor_libs[i].library) = nullptr;
+            *metal_state_slot(st, libs[i].library) = nullptr;
         }
+        if (!st->fp8_mm) {
+            st->tensor_mm = false;
+            return;
+        }
+        fprintf(stderr,
+                "metal: native FP8 unavailable (%s); falling back to Metal 4 tensors\n",
+                geist_backend_errmsg(be));
+        st->fp8_mm = false;
     }
 }
 

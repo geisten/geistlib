@@ -182,6 +182,11 @@ void metal_destroy(struct geist_backend *be) {
             geist_env_flag("GEIST_METAL_TENSOR",
                            metal_msg_send_bool_long(st, st->device, "supportsFamily:", 1010));
 
+    /* Apple family 11 exposes the M6 native FP8 matrix lane. Never force
+     * this on older GPUs: API support alone can mean emulation. */
+    st->fp8_mm = st->tensor_mm && geist_env_flag("GEIST_METAL_FP8", false) &&
+                 metal_msg_send_bool_long(st, st->device, "supportsFamily:", 1011);
+
     st->command_queue = metal_msg_send_id0(st, st->device, "newCommandQueue");
     if (st->command_queue == nullptr) {
         geist_backend_set_error(be, GEIST_E_BACKEND, "metal: failed to create command queue");
