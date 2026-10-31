@@ -66,6 +66,7 @@ const char *const metal_profile_stage_names[METAL_PROFILE_STAGE_COUNT] = {
         [METAL_PROFILE_DISPATCH_PQ2_X_F16]            = "dispatch.pq2_x_f16",
         [METAL_PROFILE_DISPATCH_PQ2_M8]               = "dispatch.pq2_m8",
         [METAL_PROFILE_DISPATCH_MM_TC]                = "dispatch.mm_tc",
+        [METAL_PROFILE_DISPATCH_ATTENTION_TC]         = "dispatch.attention_tc",
 };
 
 #include "metal_shaders.h"

@@ -1365,6 +1365,102 @@ static const char metal_mm_tc_iq3s_source[] =
         GEIST_METAL_MM_TC_KERNEL("iq3s", "biq3s", "dqiq3s", "16");
 static const char metal_mm_tc_pq2_source[] = GEIST_METAL_MM_TC_KERNEL("pq2", "bpq2", "dqpq2", "8");
 
+/* Tensor-API prefill flash attention (#314): llama.cpp's
+ * kernel_flash_attn_ext_tensor on geist's flash parameters and cache
+ * layout. A threadgroup of 8 simdgroups owns Q query rows of one head (32,
+ * or 16 at head_dim 512 for threadgroup memory) and walks their live keys
+ * in 64-key blocks as attention_flash does (tail block re-covered with the
+ * processed keys masked, causal and window masks in place):
+ *   - S = Q K^T: matmul2d, Q as half in threadgroup memory, K straight from
+ *     the f16 cache;
+ *   - online softmax per row on the simdgroups, P as half; the running max
+ *     moves only when it grows by more than 8 (e^8 fits in half), so O is
+ *     rescaled lazily;
+ *   - O += P V: matmul2d into a float cooperative tensor, V from the cache.
+ * The store's extents clip a ragged last tile; its rows repeat the last
+ * valid row. Built in the tensor unit (language version 4.0), only when
+ * tensor_mm. Grid: ((rows + Q - 1) / Q, q_heads), 256 threads. */
+static const char metal_attn_flash_tc_source_a[] =
+        "#include <metal_stdlib>\n"
+        "#include <metal_tensor>\n"
+        "#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n"
+        "using namespace metal;\n"
+        "struct AT{uint rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo;};\n"
+        "template<short D,short Q>\n"
+        "kernel void attention_flash_tc(device const float*q[[buffer(0)]],device const "
+        "half*kc[[buffer(1)]],device const half*vc[[buffer(2)]],device float*y[[buffer(3)]],"
+        "constant AT&p[[buffer(4)]],uint2 tg[[threadgroup_position_in_grid]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]],ushort ln[[thread_index_in_simdgroup]]){"
+        "using namespace mpp::tensor_ops;"
+        "constexpr short NSG=8,C=64,NW=32,NQ=Q/NSG,NC=C/NW;"
+        "threadgroup half sq[Q*D];threadgroup float ss[Q*C];threadgroup half sp[Q*C];"
+        "threadgroup float sr[Q];threadgroup int sf[1];"
+        "const uint h=tg.y,q0=tg.x*Q,kvh=h/(p.qh/p.kvh);const int kstr=int(p.kvh)*D;"
+        "device half*kp=(device half*)kc+p.kco+kvh*D;device half*vp=(device half*)vc+p.vco+kvh*D;"
+        "for(int i=sg*NW+ln;i<Q*D;i+=NSG*NW){const uint row=min(q0+uint(i/D),p.rows-1u);"
+        "sq[i]=half(q[p.qo+row*p.qh*D+h*D+i%D]);}"
+        "uint qp[NQ];float M[NQ],S[NQ];"
+        "for(short jj=0;jj<NQ;jj++){qp[jj]=p.qpos+min(q0+uint(jj*NSG+sg),p.rows-1u);"
+        "M[jj]=-FLT_MAX/2;S[jj]=0.0f;}"
+        "if(sg==0&&ln==0)sf[0]=0;"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "const uint qf=p.qpos+q0,ql=p.qpos+min(q0+Q-1u,p.rows-1u);"
+        "const uint thi=min(ql,p.kv_len-1u);"
+        "const uint tlo=(p.sw>0u&&qf+1u>p.sw)?qf+1u-p.sw:0u;"
+        "const uint span=thi+1u-tlo,nfull=span/C,nit=nfull+(span%C>0u?1u:0u);"
+        "auto tq=tensor(sq,dextents<int32_t,2>(D,Q));"
+        "auto ts=tensor(ss,dextents<int32_t,2>(C,Q));"
+        "auto tp=tensor(sp,dextents<int32_t,2>(C,Q));"
+        "matmul2d<matmul2d_descriptor(Q,C,D,false,true,false,matmul2d_descriptor::mode::multiply),"
+        "execution_simdgroups<NSG>> mqk;"
+        "matmul2d<matmul2d_descriptor(Q,D,C,false,false,false,"
+        "matmul2d_descriptor::mode::multiply_accumulate),execution_simdgroups<NSG>> mpv;"
+        "auto tv0=tensor(vp,dextents<int32_t,2>(D,C),array<int,2>({1,kstr}));"
+        "auto co=mpv.template get_destination_cooperative_tensor<decltype(tp),decltype(tv0),float>();"
+        "for(short i=0;i<co.get_capacity();++i){if(co.is_valid_element(i))co[i]=0.0f;}";
+
+static const char metal_attn_flash_tc_source_b[] =
+        "for(uint it=0u;it<nit;it++){"
+        "const uint t0=it<nfull?tlo+it*C:(thi+1u>=C?thi+1u-C:0u);"
+        "const uint skipb=it<nfull?0u:tlo+nfull*C;"
+        "{auto tk=tensor(kp+t0*kstr,dextents<int32_t,2>(D,C),array<int,2>({1,kstr}));"
+        "mqk.run(tq,tk,ts);}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(short jj=0;jj<NQ;jj++){const short j=jj*NSG+sg;"
+        "const uint slr=(p.sw>0u&&qp[jj]+1u>p.sw)?qp[jj]+1u-p.sw:0u;"
+        "float s[NC];float m=M[jj];"
+        "for(short ii=0;ii<NC;ii++){const uint t=t0+uint(ii*NW+ln);float v=ss[j*C+ii*NW+ln];"
+        "if(t<skipb||t>qp[jj]||t<slr)v=-FLT_MAX;s[ii]=v;m=max(m,v);}"
+        "m=simd_max(m);float ms=1.0f;"
+        "if(m>M[jj]+8.0f){ms=exp(M[jj]-m);M[jj]=m;if(ln==0)sf[0]=int(it)+1;}"
+        "float sum=0.0f;"
+        "for(short ii=0;ii<NC;ii++){const half e=half(exp(s[ii]-M[jj]));"
+        "sp[j*C+ii*NW+ln]=e;sum+=float(e);}"
+        "S[jj]=S[jj]*ms+simd_sum(sum);if(ln==0)sr[j]=ms;}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "if(sf[0]==int(it)+1){for(short i=0;i<co.get_capacity();++i){"
+        "if(co.is_valid_element(i))co[i]*=sr[co.get_multidimensional_index(i)[1]];}}"
+        "{auto tv=tensor(vp+t0*kstr,dextents<int32_t,2>(D,C),array<int,2>({1,kstr}));"
+        "mpv.run(tp,tv,co);}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);}"
+        "for(short jj=0;jj<NQ;jj++){const short j=jj*NSG+sg;"
+        "if(ln==0)sr[j]=S[jj]==0.0f?0.0f:1.0f/S[jj];}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(short i=0;i<co.get_capacity();++i){"
+        "if(co.is_valid_element(i))co[i]*=sr[co.get_multidimensional_index(i)[1]];}"
+        "auto td=tensor(y+p.yo+q0*p.qh*D+h*D,dextents<int32_t,2>(D,int(p.rows-q0)),"
+        "array<int,2>({1,int(p.qh)*D}));"
+        "co.store(td);}\n"
+        "typedef decltype(attention_flash_tc<64,32>) attention_flash_tc_t;\n"
+        "template [[host_name(\"attention_flash_tc_d64\")]] kernel attention_flash_tc_t "
+        "attention_flash_tc<64,32>;\n"
+        "template [[host_name(\"attention_flash_tc_d128\")]] kernel attention_flash_tc_t "
+        "attention_flash_tc<128,32>;\n"
+        "template [[host_name(\"attention_flash_tc_d256\")]] kernel attention_flash_tc_t "
+        "attention_flash_tc<256,32>;\n"
+        "template [[host_name(\"attention_flash_tc_d512\")]] kernel attention_flash_tc_t "
+        "attention_flash_tc<512,16>;\n";
+
 static const char metal_q6k_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"

@@ -103,6 +103,7 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_PQ2_X_F16,
     METAL_PROFILE_DISPATCH_PQ2_M8,
     METAL_PROFILE_DISPATCH_MM_TC, /* tensor-API GEMMs (#314) */
+    METAL_PROFILE_DISPATCH_ATTENTION_TC, /* tensor-API prefill flash (#314) */
     METAL_PROFILE_STAGE_COUNT,
 };
 
@@ -314,6 +315,11 @@ struct metal_state {
     void *iq3s_mm_tc_pipeline;
     void *pq2_mm_tc_function;
     void *pq2_mm_tc_pipeline;
+    /* Tensor-API prefill flash (#314), head_dim HD in slot HD/64 - 1
+     * (64, 128, 256, 512 built); built only when tensor_mm. */
+    void *attn_tc_library;
+    void *attention_flash_tc_function[8];
+    void *attention_flash_tc_pipeline[8];
     void *q4k_gate_up_n4_library;
     void *q4k_pair_n4_library;
     void *q4k_pair_n4_function;

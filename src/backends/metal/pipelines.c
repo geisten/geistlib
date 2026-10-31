@@ -66,6 +66,13 @@ struct metal_pipeline_row {
      "attention_flash_d" #HD,                                               \
      offsetof(struct metal_state, attention_flash_function[(HD) / 32 - 1]), \
      offsetof(struct metal_state, attention_flash_pipeline[(HD) / 32 - 1])}
+/* A tensor-API prefill flash kernel's row (#314): head_dim HD in slot
+ * HD/64 - 1. */
+#define METAL_FLASH_TC_PIPE(HD)                                                \
+    {offsetof(struct metal_state, attn_tc_library),                            \
+     "attention_flash_tc_d" #HD,                                               \
+     offsetof(struct metal_state, attention_flash_tc_function[(HD) / 64 - 1]), \
+     offsetof(struct metal_state, attention_flash_tc_pipeline[(HD) / 64 - 1])}
 /* A decode kernel's row (#17): KIND decv or decq, head_dim HD, KV type KV,
  * in slot HD/32 - 1. */
 #define METAL_DEC_PIPE(KIND, HD, KV)                                                  \
@@ -261,6 +268,10 @@ static const struct metal_pipeline_row metal_tensor_rows[] = {
         METAL_PIPE(mm_tc, "matmul_q3k_mm_tc", q3k_mm_tc),
         METAL_PIPE(mm_tc, "matmul_iq3s_mm_tc", iq3s_mm_tc),
         METAL_PIPE(mm_tc, "matmul_pq2_mm_tc", pq2_mm_tc),
+        METAL_FLASH_TC_PIPE(64),
+        METAL_FLASH_TC_PIPE(128),
+        METAL_FLASH_TC_PIPE(256),
+        METAL_FLASH_TC_PIPE(512),
 };
 
 static const struct metal_pipeline_row metal_argmax_rows[] = {
@@ -503,6 +514,10 @@ static const struct metal_library_row metal_tensor_libs[] = {
                   metal_mm_tc_q3k_source,
                   metal_mm_tc_iq3s_source,
                   metal_mm_tc_pq2_source),
+        METAL_LIB(attn_tc,
+                  "tensor-API flash",
+                  metal_attn_flash_tc_source_a,
+                  metal_attn_flash_tc_source_b),
 };
 
 static const struct metal_library_row metal_argmax_libs[] = {
