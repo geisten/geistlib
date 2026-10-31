@@ -7,7 +7,7 @@
 #   status   service state and the last log lines
 # GIT_CACHE_HOST picks the host profile:
 #   desktop  (geist-vulkan) user service on the LAN address; docker runners
-#            gitea-runner-ci and gitea-runner-tsan (user units)
+#            gitea-runner-ci-1..4 and gitea-runner-tsan (user units)
 #   pi5      (pi5) system service on 127.0.0.1 and the docker bridge;
 #            docker runner gitea-runner-ci (bridge address) and host runner
 #            gitea-runner (127.0.0.1), both system units. The deploy job runs
@@ -23,7 +23,7 @@ say() { echo "git-cache: $*"; }
 case "$HOST" in
 desktop)
   LISTEN=192.168.178.43:8417
-  RUNNERS="gitea-runner-ci:$LISTEN gitea-runner-tsan:$LISTEN"
+  RUNNERS="gitea-runner-ci-1:$LISTEN gitea-runner-ci-2:$LISTEN gitea-runner-ci-3:$LISTEN gitea-runner-ci-4:$LISTEN gitea-runner-tsan:$LISTEN"
   UNIT=$HOME/.config/systemd/user/git-cache.service
   export XDG_RUNTIME_DIR=/run/user/$(id -u)
   sc() { systemctl --user "$@"; }
