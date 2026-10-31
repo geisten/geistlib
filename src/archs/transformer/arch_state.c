@@ -1538,6 +1538,10 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         const struct transformer_kv_layout kl = transformer_kv_layout_resolve(ms, opts);
         size_t                             kv = 0;
         ms->moe_sessions = opts != nullptr && opts->batch_sessions > 1 ? opts->batch_sessions : 1;
+        ms->moe_session_m_max =
+                opts != nullptr && opts->batch_m_max > 0 && opts->batch_m_max < ms->m_max
+                        ? opts->batch_m_max
+                        : ms->m_max;
         if (transformer_kv_bytes_for(&kv, ms, &kl) != GEIST_OK ||
             ckd_mul(&ms->moe_session_kv_bytes, kv, ms->max_seq_len))
             ms->moe_session_kv_bytes = 0;

@@ -208,6 +208,14 @@ int main(int argc, char **argv) {
     if (getenv("GEIST_BENCH_MAX_SEQ") != nullptr)
         so.max_seq_len = strtoul(getenv("GEIST_BENCH_MAX_SEQ"), nullptr, 10);
     so.batch_sessions = MAXB + 1; /* the reference session and the batch's eight */
+    /* GEIST_BENCH_BATCH_M_MAX: the batch's eight sessions are decode-sized
+     * (geist_session_opts.batch_m_max at load, their m_max at create); the
+     * reference session keeps the default. */
+    struct geist_session_opts mo = so;
+    if (getenv("GEIST_BENCH_BATCH_M_MAX") != nullptr) {
+        so.batch_m_max = strtoul(getenv("GEIST_BENCH_BATCH_M_MAX"), nullptr, 10);
+        mo.m_max       = so.batch_m_max;
+    }
     check(geist_model_load_with_opts(argv[1], be, &so, &m), "load");
     const size_t max = geist_model_decode_batch_max(m);
     printf("decode_batch_max %zu\n", max);
@@ -216,7 +224,7 @@ int main(int argc, char **argv) {
     struct geist_session *ref = nullptr, *ss[MAXB] = {};
     check(geist_session_create(m, be, &so, &ref), "session");
     for (size_t b = 0; b < MAXB; b++)
-        check(geist_session_create(m, be, &so, &ss[b]), "session");
+        check(geist_session_create(m, be, &mo, &ss[b]), "session");
     const double tp = now_ms();
     for (size_t q = 0; q < NQ; q++) {
         prepare(ref, &A[q]);

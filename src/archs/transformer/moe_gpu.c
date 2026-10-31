@@ -96,21 +96,37 @@ static int rank_cmp(const void *a, const void *b) {
  * buffers, allocator rounding). On the RTX 2080 Ti at 2048 positions this
  * gives 419 / 447 MiB where a session took 348 / 386-412 MiB
  * (bench_session_vram, Qwen3.6-35B-A3B / Qwen3-30B-A3B). */
-static size_t moe_session_bytes(const struct transformer_arch_state *st, size_t moe_bufs) {
+static size_t moe_session_bytes(const struct transformer_arch_state *st) {
+    const size_t m = st->moe_session_m_max > 0 ? st->moe_session_m_max : st->m_max;
     struct transformer_scratch_plan sp;
-    transformer_scratch_plan_build(st, st->m_max, &sp);
-    size_t dn = 0;
-    for (size_t l = 0; l < st->n_layers; l++)
+    transformer_scratch_plan_build(st, m, &sp);
+    size_t dn = 0, q_out_max = 0;
+    for (size_t l = 0; l < st->n_layers; l++) {
         if (st->layers[l].mixer == GEIST_MIXER_DELTANET)
             dn++;
+        if (st->layers[l].q_out > q_out_max)
+            q_out_max = st->layers[l].q_out;
+    }
     const size_t key_dim   = st->config.dn_n_k_heads * st->config.dn_head_k;
     const size_t value_dim = st->config.dn_n_v_heads * st->config.dn_head_v;
     const size_t conv_n    = st->config.dn_conv_kernel > 0
                                      ? (st->config.dn_conv_kernel - 1) * (2 * key_dim + value_dim)
                                      : 0;
     const size_t s_n       = st->config.dn_n_v_heads * st->config.dn_head_k * st->config.dn_head_v;
+    /* the Qwen3.5 family's m-row slabs (families/qwen35.c): q+gate, gate,
+     * and with DeltaNet layers its qkv, z, b and a rows */
+    const size_t slab_row = st->config.has_attn_output_gate
+                                    ? 3 * q_out_max + (dn > 0 ? 2 * key_dim + 2 * value_dim +
+                                                                        2 * st->config.dn_n_v_heads
+                                                              : 0)
+                                    : 0;
+    /* the routing buffers (moe_gpu_session_alloc): moe_gpu_x, _g, _u with
+     * the padding rows (moe_pad) */
+    const size_t n_sel    = m * moe_k(&st->config) + 15 * moe_slots(&st->config);
+    const size_t moe_bufs = n_sel * (st->d_model + 2 * moe_inter(st)) * sizeof(float);
     size_t       b = 0, t = 0;
     if (ckd_mul(&t, dn, 2 * (conv_n + s_n) * sizeof(float)) || ckd_add(&b, t, sp.pool_bytes) ||
+        ckd_mul(&t, m, slab_row * sizeof(float)) || ckd_add(&b, b, t) ||
         ckd_add(&b, b, st->moe_session_kv_bytes) || ckd_add(&b, b, moe_bufs) ||
         ckd_add(&b, b, b / 20 + ((size_t) 16 << 20)))
         return SIZE_MAX;
@@ -136,9 +152,8 @@ moe_fit(const struct transformer_arch_state *st, struct geist_backend *gbe, size
     const size_t session = n_sel * (st->d_model + 2 * moe_inter(st)) * sizeof(float);
     size_t       reserve = (size_t) (mem.total_bytes / 16) + ((size_t) 512 << 20) + session;
     size_t       more    = 0;
-    if (st->moe_sessions > 1 &&
-        (ckd_mul(&more, st->moe_sessions - 1, moe_session_bytes(st, session)) ||
-         ckd_add(&reserve, reserve, more)))
+    if (st->moe_sessions > 1 && (ckd_mul(&more, st->moe_sessions - 1, moe_session_bytes(st)) ||
+                                 ckd_add(&reserve, reserve, more)))
         return 0;
     return mem.free_bytes > reserve ? ((size_t) mem.free_bytes - reserve) / expert_bytes : 0;
 }
@@ -390,12 +405,12 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
         return s;
     }
     if (verbose && st->moe_sessions > 1) {
-        const size_t n_sel = st->m_max * moe_k(&st->config) + 15 * slots;
         fprintf(stderr,
-                "geist: moe: budget leaves room for %zu sessions (%zu MiB each beyond the first)\n",
+                "geist: moe: budget leaves room for %zu sessions (%zu MiB each beyond the first, "
+                "m_max %zu)\n",
                 st->moe_sessions,
-                moe_session_bytes(st, n_sel * (st->d_model + 2 * moe_inter(st)) * sizeof(float)) >>
-                        20);
+                moe_session_bytes(st) >> 20,
+                st->moe_session_m_max);
     }
     if (verbose) {
         fprintf(stderr,

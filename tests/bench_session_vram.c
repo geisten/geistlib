@@ -47,6 +47,8 @@ int main(int argc, char **argv) {
     struct geist_session_opts so = {.max_seq_len = win, .top_p = 1.0f, .m_max = mm};
     if (getenv("GEIST_BENCH_BATCH_SESSIONS") != nullptr)
         so.batch_sessions = strtoul(getenv("GEIST_BENCH_BATCH_SESSIONS"), nullptr, 10);
+    if (getenv("GEIST_BENCH_BATCH_M_MAX") != nullptr)
+        so.batch_m_max = strtoul(getenv("GEIST_BENCH_BATCH_M_MAX"), nullptr, 10);
     struct geist_model *m = nullptr;
     if (geist_model_load_with_opts(argv[1], be, &so, &m) != GEIST_OK) {
         fprintf(stderr, "load: %s\n", geist_last_create_error());
