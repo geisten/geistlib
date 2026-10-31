@@ -13,7 +13,8 @@ OUT=${PROBE_OUT:-probe-out}
 mkdir -p "$OUT"
 BUILD='make -j8 TARGET=mac-omp BACKENDS="cpu_neon cpu_scalar metal" bin'
 sh -c "$BUILD" >"$OUT/build_new.log" 2>&1
-rm -rf ../ple-base && git worktree add -q --detach ../ple-base origin/main
+git fetch -q --depth 1 origin main # the job checkout is shallow, without origin/main
+rm -rf ../ple-base && git worktree add -q --detach ../ple-base FETCH_HEAD
 (cd ../ple-base && sh -c "$BUILD") >"$OUT/build_base.log" 2>&1
 
 printf 'The capital of France is' >"$OUT/prompt_short.txt"
