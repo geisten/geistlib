@@ -117,6 +117,26 @@ void metal_destroy(struct geist_backend *be) {
 #endif
 }
 
+/* EXPERIMENT (#314 tile sweep): "nra,nrb,nk,nsg[,db]" from env, else 64,128,32,4. */
+static void metal_tc_tile_env(
+        const char *name, uint32_t *nra, uint32_t *nrb, uint32_t *nk, uint32_t *nsg, uint32_t *db) {
+    *nra             = 64u;
+    *nrb             = 128u;
+    *nk              = 32u;
+    *nsg             = 4u;
+    *db              = 0u;
+    const char *tile = getenv(name);
+    unsigned    a = 0, b = 0, c = 0, d = 0, e = 0;
+    const int   n = tile != nullptr ? sscanf(tile, "%u,%u,%u,%u,%u", &a, &b, &c, &d, &e) : 0;
+    if (n >= 4 && a > 0 && b > 0 && c >= 16 && c % 16 == 0 && d > 0 && d <= 32) {
+        *nra = a;
+        *nrb = b;
+        *nk  = c;
+        *nsg = d;
+        *db  = n == 5 && e != 0u;
+    }
+}
+
 [[nodiscard]] enum geist_status metal_create(struct geist_backend            *be,
                                              const struct geist_backend_opts *opts) {
 
@@ -183,23 +203,14 @@ void metal_destroy(struct geist_backend *be) {
     st->tensor_mm =
             geist_env_flag("GEIST_METAL_TENSOR",
                            metal_msg_send_bool_long(st, st->device, "supportsFamily:", 1010));
-    st->tc_nra = 64u;
-    st->tc_nrb = 128u;
-    st->tc_nk  = 32u;
-    st->tc_nsg = 4u;
-    st->tc_db  = 0u;
-    {
-        const char *tile = getenv("GEIST_METAL_TC_TILE");
-        unsigned    a = 0, b = 0, c = 0, d = 0, e = 0;
-        const int   n = tile != nullptr ? sscanf(tile, "%u,%u,%u,%u,%u", &a, &b, &c, &d, &e) : 0;
-        st->tc_db     = n == 5 && e != 0u;
-        if (n >= 4 && a > 0 && b > 0 && c >= 16 && c % 16 == 0 && d > 0 && d <= 32) {
-            st->tc_nra = a;
-            st->tc_nrb = b;
-            st->tc_nk  = c;
-            st->tc_nsg = d;
-        }
-    }
+    metal_tc_tile_env(
+            "GEIST_METAL_TC_TILE", &st->tc_nra, &st->tc_nrb, &st->tc_nk, &st->tc_nsg, &st->tc_db);
+    metal_tc_tile_env("GEIST_METAL_TC_TILE_GU",
+                      &st->tcg_nra,
+                      &st->tcg_nrb,
+                      &st->tcg_nk,
+                      &st->tcg_nsg,
+                      &st->tcg_db);
 
     st->command_queue = metal_msg_send_id0(st, st->device, "newCommandQueue");
     if (st->command_queue == nullptr) {

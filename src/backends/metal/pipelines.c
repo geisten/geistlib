@@ -575,7 +575,7 @@ static char *metal_iq3s_grid_source(void) {
     for (size_t i = 0; i < row->n_parts; i++) {
         total += strlen(row->parts[i] != nullptr ? row->parts[i] : grid);
     }
-    char tile[160] = "";
+    char tile[320] = "";
     if (row->library == offsetof(struct metal_state, mm_tc_library)) {
         snprintf(tile,
                  sizeof tile,
@@ -586,6 +586,16 @@ static char *metal_iq3s_grid_source(void) {
                  st->tc_nk,
                  st->tc_nsg,
                  st->tc_db);
+        const size_t n = strlen(tile);
+        snprintf(tile + n,
+                 sizeof tile - n,
+                 "#define TCG_NRA %u\n#define TCG_NRB %u\n#define TCG_NK %u\n#define TCG_NSG "
+                 "%u\n#define TCG_DB %u\n",
+                 st->tcg_nra,
+                 st->tcg_nrb,
+                 st->tcg_nk,
+                 st->tcg_nsg,
+                 st->tcg_db);
     }
     total += strlen(tile);
     char *buf = malloc(total);

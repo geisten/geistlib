@@ -20,15 +20,25 @@ GEIST=bin/mac-omp/release/tests/bench_perf_sweep
 n=$(echo $TILES | wc -w)
 c=0
 while [ "$c" -lt "$CYCLES" ]; do
-    set -- $TILES
     k=0
     while [ "$k" -lt "$n" ]; do
         idx=$(((k + c * 5) % n + 1))
+        set -- $TILES
         eval t=\${$idx}
         sleep "$COOL"
-        GEIST_BENCH_BACKEND=metal GEIST_METAL_TENSOR=1 GEIST_METAL_TC_TILE=$t "$GEIST" --gguf "$MODEL" \
+        # an arm is GEMM_TILE[/GATE_UP_TILE|/off]: off keeps the unfused FFN front
+        gt=${t%%/*}
+        gu=default
+        case $t in */*) gu=${t#*/} ;; esac
+        set -- GEIST_METAL_TC_TILE=$gt
+        if [ "$gu" = off ]; then
+            set -- "$@" GEIST_FFN_GATE_UP_MN=0
+        elif [ "$gu" != default ]; then
+            set -- "$@" GEIST_METAL_TC_TILE_GU=$gu
+        fi
+        env GEIST_BENCH_BACKEND=metal GEIST_METAL_TENSOR=1 "$@" "$GEIST" --gguf "$MODEL" \
             --seq-lens "$SEQ" --decode-n 1 --warmup 1 --repeats 3 2>>"$OUT/err.txt" |
-            sed "s/^{/{\"tile\":\"$t\",/" >>"$OUT/runs.jsonl"
+            sed "s|^{|{\"tile\":\"$t\",|" >>"$OUT/runs.jsonl"
         k=$((k + 1))
     done
     c=$((c + 1))
@@ -46,9 +56,9 @@ for t, _ in d:
     if t not in tiles:
         tiles.append(t)
 seqs = sorted({s for _, s in d})
-base = tiles[0] if "64,128,32,4" not in tiles else "64,128,32,4"
-lines = ["## tc GEMM tile sweep, prefill tok/s (median; vs %s)" % base, "",
-         "| tile nra,nrb,nk,nsg | " + " | ".join(str(s) for s in seqs) + " |",
+base = tiles[0]
+lines = ["## tc tile sweep (GEMM/gate_up), prefill tok/s (median; vs %s)" % base, "",
+         "| arm nra,nrb,nk,nsg[,db] | " + " | ".join(str(s) for s in seqs) + " |",
          "|--|" + "--:|" * len(seqs)]
 for t in tiles:
     cells = []

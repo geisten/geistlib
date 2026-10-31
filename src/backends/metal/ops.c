@@ -2637,11 +2637,11 @@ static void *metal_gate_up_tc_pipe(const struct metal_state *st, enum geist_dtyp
     metal_msg_send_set_bytes(st, enc, &p, sizeof p, 4);
     metal_msg_send_set_bytes(st, enc, &uo, sizeof uo, 5);
     metal_msg_send_set_threadgroup_memory(
-            st, enc, 2u * st->tc_nra * st->tc_nk * 2u * (st->tc_db ? 2u : 1u), 0u);
-    const struct metal_size groups  = {.width  = (p.rows + st->tc_nrb - 1u) / st->tc_nrb,
-                                       .height = (p.n_out + st->tc_nra - 1u) / st->tc_nra,
+            st, enc, 2u * st->tcg_nra * st->tcg_nk * 2u * (st->tcg_db ? 2u : 1u), 0u);
+    const struct metal_size groups  = {.width  = (p.rows + st->tcg_nrb - 1u) / st->tcg_nrb,
+                                       .height = (p.n_out + st->tcg_nra - 1u) / st->tcg_nra,
                                        .depth  = 1};
-    const struct metal_size threads = {.width = 32u * st->tc_nsg, .height = 1u, .depth = 1u};
+    const struct metal_size threads = {.width = 32u * st->tcg_nsg, .height = 1u, .depth = 1u};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_MM_TC, groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
     return metal_op_end(be, cmd, enc, nullptr);

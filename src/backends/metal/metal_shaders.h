@@ -1303,7 +1303,9 @@ static const char metal_mm_tc_head_source[] =
         "#include <metal_tensor>\n"
         "#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n"
         "#ifndef TC_NRA\n#define TC_NRA 64\n#define TC_NRB 128\n#define TC_NK 32\n"
-        "#define TC_NSG 4\n#define TC_DB 0\n#endif\n";
+        "#define TC_NSG 4\n#define TC_DB 0\n#endif\n"
+        "#ifndef TCG_NRA\n#define TCG_NRA 64\n#define TCG_NRB 128\n#define TCG_NK 32\n"
+        "#define TCG_NSG 4\n#define TCG_DB 0\n#endif\n";
 
 /* One tc GEMM on block type BLK with the 16-element dequant DQ (device
  * const BLK*, short il, thread half4x4&) and QKNL chunks per block. Grid:
@@ -1362,7 +1364,7 @@ static const char metal_mm_tc_head_source[] =
     "threadgroup char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],ushort " \
     "ti[[thread_index_in_threadgroup]]){\n"                                                     \
     "using namespace mpp::tensor_ops;"                                                          \
-    "constexpr int NRA=TC_NRA,NRB=TC_NRB,NK=TC_NK,NSG=TC_NSG,NT=NSG*32,NKC=NK/16,T=NRA*NK;"     \
+    "constexpr int NRA=TCG_NRA,NRB=TCG_NRB,NK=TCG_NK,NSG=TCG_NSG,NT=NSG*32,NKC=NK/16,T=NRA*NK;" \
     "constexpr int QK_NL=" QKNL ";"                                                             \
     "const int K=int(p.ni),M=int(p.no),N=int(p.rows),XS=int(p.xs);"                             \
     "const int ra=int(tg.y)*NRA,rb=int(tg.x)*NRB;"                                              \
@@ -1389,7 +1391,7 @@ static const char metal_mm_tc_head_source[] =
     "auto tG=tensor(src,dextents<int32_t,2>(kE,NRA),array<int,2>({1,NK}));"                     \
     "auto tU=tensor(src+T,dextents<int32_t,2>(kE,NRA),array<int,2>({1,NK}));"                   \
     "mm.run(tBv,tG,cG);mm.run(tBv,tU,cU);};"                                                    \
-    "if(TC_DB){stage(0,sa);threadgroup_barrier(mem_flags::mem_threadgroup);"                    \
+    "if(TCG_DB){stage(0,sa);threadgroup_barrier(mem_flags::mem_threadgroup);"                   \
     "for(int k0=0,b=0;k0<K;k0+=NK,b^=1){threadgroup half*cur=sa+b*2*T;"                         \
     "if(k0+NK<K)stage(k0+NK,sa+(b^1)*2*T);step(k0,cur);"                                        \
     "threadgroup_barrier(mem_flags::mem_threadgroup);}}"                                        \
