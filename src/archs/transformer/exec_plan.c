@@ -24,6 +24,12 @@ static bool ffn_fused_scale_enabled(void) {
     return geist_env_flag("GEIST_FFN_FUSED_SCALE", true);
 }
 
+/* The prefill gate/up fusions (#314) are bound unless GEIST_FFN_GATE_UP_MN=0,
+ * which keeps the two GEMMs and the epilogue pass: the A/B switch. */
+static bool ffn_gate_up_mn_enabled(void) {
+    return geist_env_flag("GEIST_FFN_GATE_UP_MN", true);
+}
+
 /* The backend's attention over the INT8 cache, and over the packed INT4
  * one that rides its storage, is bound unless GEIST_KV_INT8_FUSED=0, which
  * keeps the host loops (forward/attention.c): for A/B runs, and to rule
@@ -237,6 +243,21 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
         q.m  = 1;
         P->fuse_ffn_gate_up_silu_m1 =
                 st->config.ffn_activation == GEIST_FFN_SWIGLU && shared_ffn_input && probe(be, q);
+
+        /* The same two fronts for prefill (#314: the GEMM epilogue keeps
+         * the gate and up outputs and their elementwise pass off memory),
+         * probed at the largest m. */
+        q                           = base;
+        q.op                        = GEIST_FUSED_FFN_GATE_UP;
+        q.m                         = m_cap;
+        P->fuse_ffn_gate_up_mN      = m_cap > 1 && geglu && shared_ffn_input &&
+                                      L->down_awq_inv_scale == nullptr && !has_sub_norm &&
+                                      ffn_gate_up_mn_enabled() && probe(be, q);
+        q                           = base;
+        q.op                        = GEIST_FUSED_FFN_GATE_UP_SILU;
+        q.m                         = m_cap;
+        P->fuse_ffn_gate_up_silu_mN = m_cap > 1 && st->config.ffn_activation == GEIST_FFN_SWIGLU &&
+                                      shared_ffn_input && ffn_gate_up_mn_enabled() && probe(be, q);
 
         q                       = base;
         q.op                    = GEIST_FUSED_GELU_TANH_MUL_SCALED;

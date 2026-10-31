@@ -11,7 +11,7 @@ COOL=${PROBE_COOL:-10}
 TILES=${PROBE_TILES:-"64,128,32,4 64,128,64,4 64,128,128,4 128,128,32,8 128,128,64,8 64,64,32,4 128,64,32,4 64,256,32,8 128,256,32,8 32,128,32,4 64,128,32,8 32,64,32,2"}
 if [ $# -gt 2 ]; then
     shift 2
-    TILES="$*"
+    TILES=$(echo "$*" | tr ':' ',') # tea's -i splits on commas: pass 64:128:32:4
 fi
 mkdir -p "$OUT"
 make -j8 TARGET=mac-omp BACKENDS="cpu_neon cpu_scalar metal" bin >"$OUT/build.log" 2>&1

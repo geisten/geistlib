@@ -1309,43 +1309,104 @@ static const char metal_mm_tc_head_source[] =
  * const BLK*, short il, thread half4x4&) and QKNL chunks per block. Grid:
  * ((rows + 127) / 128, (n_out + 63) / 64), 128 threads, 4096 bytes of
  * threadgroup memory. */
-#define GEIST_METAL_MM_TC_KERNEL(NAME, BLK, DQ, QKNL)                                        \
-    "kernel void matmul_" NAME "_mm_tc(device const float*x[[buffer(0)]],device const "      \
-    "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup " \
-    "char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],ushort "          \
-    "ti[[thread_index_in_threadgroup]]){\n"                                                  \
-    "using namespace mpp::tensor_ops;"                                                       \
-    "constexpr int NRA=TC_NRA,NRB=TC_NRB,NK=TC_NK,NSG=TC_NSG,NT=NSG*32,NKC=NK/16;"           \
-    "constexpr int QK_NL=" QKNL ";"                                                          \
-    "const int K=int(p.ni),M=int(p.no),N=int(p.rows),XS=int(p.xs);"                          \
-    "const int ra=int(tg.y)*NRA,rb=int(tg.x)*NRB;"                                           \
-    "threadgroup half*sa=(threadgroup half*)shmem;"                                          \
-    "device float*xb=(device float*)x+p.xo;"                                                 \
-    "matmul2d<matmul2d_descriptor(NRB,NRA,static_cast<int>(dynamic_extent),false,true,true," \
-    "matmul2d_descriptor::mode::multiply_accumulate),execution_simdgroups<NSG>> mm;"         \
-    "auto tB0=tensor(xb,dextents<int32_t,2>(K,N),array<int,2>({1,XS}));"                     \
-    "auto tA0=tensor(sa,dextents<int32_t,2>(NK,NRA));"                                       \
-    "auto cT=mm.get_destination_cooperative_tensor<decltype(tB0),decltype(tA0),float>();"    \
-    "FOR_UNROLL(uint16_t i=0;i<cT.get_capacity();++i){if(cT.is_valid_element(i))cT[i]=0.0f;}" \
-    "device const " BLK "*w0=(device const " BLK "*)(w+p.wo);"                                \
-    "auto stage=[&](int k0,threadgroup half*dst){"                                           \
-    "FOR_UNROLL(int wk=ti;wk<NRA*NKC;wk+=NT){const int row=wk/NKC;const int kc=wk%NKC;"      \
-    "const bool live=ra+row<M;const int kp=k0+kc*16;half4x4 t;"                              \
-    DQ "(w0+min(ra+row,M-1)*int(p.bpr)+kp/(16*QK_NL),short((kp/16)%QK_NL),t);"               \
-    "FOR_UNROLL(short i=0;i<16;i++){dst[row*NK+kc*16+i]=(live&&kp+i<K)?t[i/4][i%4]:half(0.0h);}}};" \
-    "auto step=[&](int k0,threadgroup half*src){const int kE=min(NK,K-k0);"                   \
-    "auto tAv=tensor(src,dextents<int32_t,2>(kE,NRA),array<int,2>({1,NK}));"                 \
-    "auto tBv=tensor(xb+k0+rb*XS,dextents<int32_t,2>(kE,N-rb),array<int,2>({1,XS}));"        \
-    "mm.run(tBv,tAv,cT);};"                                                                  \
-    "if(TC_DB){stage(0,sa);threadgroup_barrier(mem_flags::mem_threadgroup);"                 \
-    "for(int k0=0,b=0;k0<K;k0+=NK,b^=1){threadgroup half*cur=sa+b*NRA*NK;"                   \
-    "if(k0+NK<K)stage(k0+NK,sa+(b^1)*NRA*NK);step(k0,cur);"                                  \
-    "threadgroup_barrier(mem_flags::mem_threadgroup);}}"                                     \
-    "else{for(int k0=0;k0<K;k0+=NK){stage(k0,sa);"                                           \
-    "threadgroup_barrier(mem_flags::mem_threadgroup);step(k0,sa);"                           \
-    "threadgroup_barrier(mem_flags::mem_threadgroup);}}"                                     \
-    "auto tD=tensor(y+p.yo,dextents<int32_t,2>(M,N),array<int,2>({1,int(p.ys)}));"           \
+#define GEIST_METAL_MM_TC_KERNEL(NAME, BLK, DQ, QKNL)                                          \
+    "kernel void matmul_" NAME "_mm_tc(device const float*x[[buffer(0)]],device const "        \
+    "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup "  \
+    "char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],ushort "            \
+    "ti[[thread_index_in_threadgroup]]){\n"                                                    \
+    "using namespace mpp::tensor_ops;"                                                         \
+    "constexpr int NRA=TC_NRA,NRB=TC_NRB,NK=TC_NK,NSG=TC_NSG,NT=NSG*32,NKC=NK/16;"             \
+    "constexpr int QK_NL=" QKNL ";"                                                            \
+    "const int K=int(p.ni),M=int(p.no),N=int(p.rows),XS=int(p.xs);"                            \
+    "const int ra=int(tg.y)*NRA,rb=int(tg.x)*NRB;"                                             \
+    "threadgroup half*sa=(threadgroup half*)shmem;"                                            \
+    "device float*xb=(device float*)x+p.xo;"                                                   \
+    "matmul2d<matmul2d_descriptor(NRB,NRA,static_cast<int>(dynamic_extent),false,true,true,"   \
+    "matmul2d_descriptor::mode::multiply_accumulate),execution_simdgroups<NSG>> mm;"           \
+    "auto tB0=tensor(xb,dextents<int32_t,2>(K,N),array<int,2>({1,XS}));"                       \
+    "auto tA0=tensor(sa,dextents<int32_t,2>(NK,NRA));"                                         \
+    "auto cT=mm.get_destination_cooperative_tensor<decltype(tB0),decltype(tA0),float>();"      \
+    "FOR_UNROLL(uint16_t i=0;i<cT.get_capacity();++i){if(cT.is_valid_element(i))cT[i]=0.0f;}"  \
+    "device const " BLK "*w0=(device const " BLK "*)(w+p.wo);"                                 \
+    "auto stage=[&](int k0,threadgroup half*dst){"                                             \
+    "FOR_UNROLL(int wk=ti;wk<NRA*NKC;wk+=NT){const int row=wk/NKC;const int kc=wk%NKC;"        \
+    "const int kp=k0+kc*16;half4x4 t=half4x4(0.0h);"                                           \
+    "if(ra+row<M&&kp<K){" DQ "(w0+(ra+row)*int(p.bpr)+kp/(16*QK_NL),short((kp/16)%QK_NL),t);}" \
+    "FOR_UNROLL(short i=0;i<16;i++){dst[row*NK+kc*16+i]=t[i/4][i%4];}}};"                      \
+    "auto step=[&](int k0,threadgroup half*src){const int kE=min(NK,K-k0);"                    \
+    "auto tAv=tensor(src,dextents<int32_t,2>(kE,NRA),array<int,2>({1,NK}));"                   \
+    "auto tBv=tensor(xb+k0+rb*XS,dextents<int32_t,2>(kE,N-rb),array<int,2>({1,XS}));"          \
+    "mm.run(tBv,tAv,cT);};"                                                                    \
+    "if(TC_DB){stage(0,sa);threadgroup_barrier(mem_flags::mem_threadgroup);"                   \
+    "for(int k0=0,b=0;k0<K;k0+=NK,b^=1){threadgroup half*cur=sa+b*NRA*NK;"                     \
+    "if(k0+NK<K)stage(k0+NK,sa+(b^1)*NRA*NK);step(k0,cur);"                                    \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);}}"                                       \
+    "else{for(int k0=0;k0<K;k0+=NK){stage(k0,sa);"                                             \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);step(k0,sa);"                             \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);}}"                                       \
+    "auto tD=tensor(y+p.yo,dextents<int32_t,2>(M,N),array<int,2>({1,int(p.ys)}));"             \
     "cT.store(tD.slice(ra,rb));}\n"
+
+/* FFN gate + up on the tensor API with the GEGLU / SwiGLU epilogue (#314):
+ * y = act(x . gate^T) * (x . up^T), act gelu_tanh (ACT 0) or silu (ACT 1),
+ * the formulas of gelu_mul_rows / silu_mul_rows. The mm_tc tile, with the
+ * gate and up weight tiles staged side by side and two float accumulators
+ * of the same layout, so the epilogue pairs their elements in registers:
+ * the two GEMM outputs and the elementwise pass over them never reach
+ * memory. Buffers: x, gate, up, y, P (wo = the gate's byte offset), the
+ * up weight's byte offset. */
+#define GEIST_METAL_GATE_UP_TC_KERNEL(NAME, BLK, DQ, QKNL)                                      \
+    "template<int ACT>kernel void gate_up_" NAME "_tc(device const float*x[[buffer(0)]],"       \
+    "device const uchar*wg[[buffer(1)]],device const uchar*wu[[buffer(2)]],device "             \
+    "float*y[[buffer(3)]],constant P&p[[buffer(4)]],constant uint&uo[[buffer(5)]],"             \
+    "threadgroup char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],ushort " \
+    "ti[[thread_index_in_threadgroup]]){\n"                                                     \
+    "using namespace mpp::tensor_ops;"                                                          \
+    "constexpr int NRA=TC_NRA,NRB=TC_NRB,NK=TC_NK,NSG=TC_NSG,NT=NSG*32,NKC=NK/16,T=NRA*NK;"     \
+    "constexpr int QK_NL=" QKNL ";"                                                             \
+    "const int K=int(p.ni),M=int(p.no),N=int(p.rows),XS=int(p.xs);"                             \
+    "const int ra=int(tg.y)*NRA,rb=int(tg.x)*NRB;"                                              \
+    "threadgroup half*sa=(threadgroup half*)shmem;"                                             \
+    "device float*xb=(device float*)x+p.xo;"                                                    \
+    "matmul2d<matmul2d_descriptor(NRB,NRA,static_cast<int>(dynamic_extent),false,true,true,"    \
+    "matmul2d_descriptor::mode::multiply_accumulate),execution_simdgroups<NSG>> mm;"            \
+    "auto tB0=tensor(xb,dextents<int32_t,2>(K,N),array<int,2>({1,XS}));"                        \
+    "auto tA0=tensor(sa,dextents<int32_t,2>(NK,NRA));"                                          \
+    "auto cG=mm.get_destination_cooperative_tensor<decltype(tB0),decltype(tA0),float>();"       \
+    "auto cU=mm.get_destination_cooperative_tensor<decltype(tB0),decltype(tA0),float>();"       \
+    "FOR_UNROLL(uint16_t i=0;i<cG.get_capacity();++i){if(cG.is_valid_element(i)){cG[i]=0.0f;"   \
+    "cU[i]=0.0f;}}"                                                                             \
+    "device const " BLK "*g0=(device const " BLK "*)(wg+p.wo);"                                 \
+    "device const " BLK "*u0=(device const " BLK "*)(wu+uo);"                                   \
+    "auto stage=[&](int k0,threadgroup half*dst){"                                              \
+    "FOR_UNROLL(int wk=ti;wk<2*NRA*NKC;wk+=NT){const int h=wk/(NRA*NKC),r=wk%(NRA*NKC);"        \
+    "const int row=r/NKC,kc=r%NKC,kp=k0+kc*16;half4x4 t=half4x4(0.0h);"                         \
+    "if(ra+row<M&&kp<K){" DQ "((h?u0:g0)+(ra+row)*int(p.bpr)+kp/(16*QK_NL),"                    \
+    "short((kp/16)%QK_NL),t);}"                                                                 \
+    "FOR_UNROLL(short i=0;i<16;i++){dst[h*T+row*NK+kc*16+i]=t[i/4][i%4];}}};"                   \
+    "auto step=[&](int k0,threadgroup half*src){const int kE=min(NK,K-k0);"                     \
+    "auto tBv=tensor(xb+k0+rb*XS,dextents<int32_t,2>(kE,N-rb),array<int,2>({1,XS}));"           \
+    "auto tG=tensor(src,dextents<int32_t,2>(kE,NRA),array<int,2>({1,NK}));"                     \
+    "auto tU=tensor(src+T,dextents<int32_t,2>(kE,NRA),array<int,2>({1,NK}));"                   \
+    "mm.run(tBv,tG,cG);mm.run(tBv,tU,cU);};"                                                    \
+    "if(TC_DB){stage(0,sa);threadgroup_barrier(mem_flags::mem_threadgroup);"                    \
+    "for(int k0=0,b=0;k0<K;k0+=NK,b^=1){threadgroup half*cur=sa+b*2*T;"                         \
+    "if(k0+NK<K)stage(k0+NK,sa+(b^1)*2*T);step(k0,cur);"                                        \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);}}"                                        \
+    "else{for(int k0=0;k0<K;k0+=NK){stage(k0,sa);"                                              \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);step(k0,sa);"                              \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);}}"                                        \
+    "FOR_UNROLL(uint16_t i=0;i<cG.get_capacity();++i){if(cG.is_valid_element(i)){"              \
+    "const float g=cG[i];cG[i]=(ACT==0?0.5f*g*(1.0f+tanh(clamp(0.7978845608028654f*(g+"         \
+    "0.044715f*g*g*g),-10.0f,10.0f))):g/(1.0f+exp(-g)))*cU[i];}}"                               \
+    "auto tD=tensor(y+p.yo,dextents<int32_t,2>(M,N),array<int,2>({1,int(p.ys)}));"              \
+    "cG.store(tD.slice(ra,rb));}\n"                                                             \
+    "template [[host_name(\"gate_up_" NAME "_tc\")]] kernel void gate_up_" NAME "_tc<0>("       \
+    "device const float*,device const uchar*,device const uchar*,device float*,constant P&,"    \
+    "constant uint&,threadgroup char*,uint3,ushort);\n"                                         \
+    "template [[host_name(\"gate_up_silu_" NAME "_tc\")]] kernel void gate_up_" NAME "_tc<1>("  \
+    "device const float*,device const uchar*,device const uchar*,device float*,constant P&,"    \
+    "constant uint&,threadgroup char*,uint3,ushort);\n"
 
 /* Q6_K has no block struct in metal_q6k_dq_source; the tc template steps
  * blocks by type. */
@@ -1357,6 +1418,12 @@ static const char metal_mm_tc_q4k_source[] =
         GEIST_METAL_MM_TC_KERNEL("q4k", "block_q4_K", "dq4", "16");
 static const char metal_mm_tc_q6k_source[] =
         GEIST_METAL_MM_TC_KERNEL("q6k", "block_q6_K", "dq6b", "16");
+static const char metal_gate_up_tc_q4k_source[] =
+        GEIST_METAL_GATE_UP_TC_KERNEL("q4k", "block_q4_K", "dq4", "16");
+static const char metal_gate_up_tc_q80_source[] =
+        GEIST_METAL_GATE_UP_TC_KERNEL("q80", "bq80", "dq80", "2");
+static const char metal_gate_up_tc_q40_source[] =
+        GEIST_METAL_GATE_UP_TC_KERNEL("q40", "bq40", "dq40", "2");
 
 /* The simdgroup quant unit's formats (their block structs and dequants
  * come from metal_qsg_common_source, metal_qsg_common2_source and

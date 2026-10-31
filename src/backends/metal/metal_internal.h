@@ -293,6 +293,19 @@ struct metal_state {
     void *q6k_mm32_pipeline;
     /* Tensor-API GEMMs (#314, metal_mm_tc_*): built only when tensor_mm. */
     void *mm_tc_library;
+    /* gate_up[_silu]_{q4k,q80,q40}_tc (#314): fused prefill FFN fronts. */
+    void *gate_up_q4k_tc_function;
+    void *gate_up_q4k_tc_pipeline;
+    void *gate_up_silu_q4k_tc_function;
+    void *gate_up_silu_q4k_tc_pipeline;
+    void *gate_up_q80_tc_function;
+    void *gate_up_q80_tc_pipeline;
+    void *gate_up_silu_q80_tc_function;
+    void *gate_up_silu_q80_tc_pipeline;
+    void *gate_up_q40_tc_function;
+    void *gate_up_q40_tc_pipeline;
+    void *gate_up_silu_q40_tc_function;
+    void *gate_up_silu_q40_tc_pipeline;
     void *q4k_mm_tc_function;
     void *q4k_mm_tc_pipeline;
     void *q6k_mm_tc_function;
@@ -587,7 +600,7 @@ struct metal_state {
      * (Apple family 10+: M5, M6, A19), or GEIST_METAL_TENSOR=1 forces it;
      * GEIST_METAL_TENSOR=0 keeps the simdgroup GEMMs. Cleared when the
      * tensor unit does not compile (an OS without the Metal 4 tensor API). */
-    bool                      tensor_mm;
+    bool tensor_mm;
     /* EXPERIMENT (#314 tile sweep): the tc GEMM tile, GEIST_METAL_TC_TILE=
      * "nra,nrb,nk,nsg" (default 64,128,32,4). */
     uint32_t                  tc_nra, tc_nrb, tc_nk, tc_nsg, tc_db;
