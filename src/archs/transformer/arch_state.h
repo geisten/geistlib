@@ -661,7 +661,8 @@ struct transformer_arch_state {
      * least 1), each with moe_session_kv_bytes of KV at max_seq_len. */
     size_t moe_sessions;
     size_t moe_session_kv_bytes;
-    bool   weights_on_host; /* the twins (#78): matrices GEIST_W_HOST */
+    size_t moe_session_m_max; /* the further sessions' m_max (batch_m_max), else m_max */
+    bool   weights_on_host;   /* the twins (#78): matrices GEIST_W_HOST */
     /* Unique per loaded model in this process (never 0): binds a session
      * snapshot to the model it was taken on (snapshot.c). */
     uint64_t snapshot_id;
