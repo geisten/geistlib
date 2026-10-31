@@ -208,7 +208,7 @@ bool family_moe_ok(const struct geist_arch_config *c) {
 #if !defined(GEIST_FAMILY_BITNET) && !defined(GEIST_FAMILY_GEMMA3) &&    \
         !defined(GEIST_FAMILY_GEMMA4) && !defined(GEIST_FAMILY_LLAMA) && \
         !defined(GEIST_FAMILY_QWEN3) && !defined(GEIST_FAMILY_QWEN35) && \
-        !defined(GEIST_FAMILY_QWEN3MOE)
+        !defined(GEIST_FAMILY_QWEN3MOE) && !defined(GEIST_FAMILY_OLMOE)
 #define GEIST_FAMILY_BITNET 1
 #define GEIST_FAMILY_GEMMA3 1
 #define GEIST_FAMILY_GEMMA4 1
@@ -216,6 +216,7 @@ bool family_moe_ok(const struct geist_arch_config *c) {
 #define GEIST_FAMILY_QWEN3 1
 #define GEIST_FAMILY_QWEN35 1
 #define GEIST_FAMILY_QWEN3MOE 1
+#define GEIST_FAMILY_OLMOE 1
 #endif
 static const struct transformer_family *const REGISTRY[] = {
 #if defined(GEIST_FAMILY_GEMMA4)
