@@ -418,6 +418,9 @@ struct geist_session_opts {
      * Qwen3.6-35B-A3B session takes 185 MiB at m_max 8 against 297 MiB at
      * the MoE default of 512, so more hot experts fit next to the batch. It
      * still prefills, in chunks of m_max rows (slower: docs/OFFLOAD.md).
+     * Recommended: 64 in general (most of the decode gain, prefill at half
+     * speed); 8 when the members start from a snapshot of a full-size
+     * session and rarely prefill themselves (e.g. #26's shared prefix).
      * 0 = the model's default m_max. */
     size_t batch_m_max;
 };

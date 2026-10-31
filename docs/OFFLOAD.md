@@ -635,8 +635,11 @@ budget gives the difference to the hot experts. RTX 2080 Ti, 9 sessions,
 | 64 | – / 117.5 | – / 79.7 | 432 / 391 tok/s |
 | 8 | 2,785 / 121.1 | 2,141 / 83.0 | 191 / 146 tok/s |
 
-A member prefills in chunks of its m_max, so a long prompt on it is slower;
-64 keeps most of the decode gain at half the prefill speed.
+A member prefills in chunks of its m_max, so a long prompt on it is slower.
+**Recommendation:** `batch_m_max` 64 in general (most of the decode gain at
+half the prefill speed); 8 when the members start from a snapshot of a
+full-size session (`geist_session_restore`) and rarely prefill themselves,
+e.g. #26's shared-prefix questions.
 
 All measurements under `scripts/gpu-lock.sh` (and `with-mac-lock` on the
 Mac), interleaved cycles, raw samples kept, `bench_revision_ab.py` parent vs
