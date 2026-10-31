@@ -588,6 +588,9 @@ struct metal_state {
      * GEIST_METAL_TENSOR=0 keeps the simdgroup GEMMs. Cleared when the
      * tensor unit does not compile (an OS without the Metal 4 tensor API). */
     bool                      tensor_mm;
+    /* EXPERIMENT (#314 tile sweep): the tc GEMM tile, GEIST_METAL_TC_TILE=
+     * "nra,nrb,nk,nsg" (default 64,128,32,4). */
+    uint32_t                  tc_nra, tc_nrb, tc_nk, tc_nsg;
     struct metal_profile_stat profile[METAL_PROFILE_STAGE_COUNT];
     /* GPU time of committed command buffers (profile only): the sum of the
      * buffers' own times, and their union on the GPU timeline (busy). */

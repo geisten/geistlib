@@ -566,6 +566,17 @@ static char *metal_iq3s_grid_source(void) {
     for (size_t i = 0; i < row->n_parts; i++) {
         total += strlen(row->parts[i] != nullptr ? row->parts[i] : grid);
     }
+    char tile[160] = "";
+    if (row->library == offsetof(struct metal_state, mm_tc_library)) {
+        snprintf(tile,
+                 sizeof tile,
+                 "#define TC_NRA %u\n#define TC_NRB %u\n#define TC_NK %u\n#define TC_NSG %u\n",
+                 st->tc_nra,
+                 st->tc_nrb,
+                 st->tc_nk,
+                 st->tc_nsg);
+    }
+    total += strlen(tile);
     char *buf = malloc(total);
     if (buf == nullptr) {
         free(grid);
@@ -573,7 +584,8 @@ static char *metal_iq3s_grid_source(void) {
                 be, GEIST_E_OOM, "metal: %s shader source alloc failed", row->label);
         return GEIST_E_OOM;
     }
-    size_t off = 0;
+    size_t off = strlen(tile);
+    memcpy(buf, tile, off);
     for (size_t i = 0; i < row->n_parts; i++) {
         const char  *part = row->parts[i] != nullptr ? row->parts[i] : grid;
         const size_t len  = strlen(part);

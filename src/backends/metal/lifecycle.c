@@ -2,6 +2,8 @@
  * src/backends/metal/lifecycle.c — device/queue lifecycle and runtime loading.
  */
 #include "metal_internal.h"
+
+#include <stdio.h>
 #include "parse.h"
 
 static void metal_destroy_state(struct geist_backend *be, struct metal_state *st) {
@@ -181,6 +183,21 @@ void metal_destroy(struct geist_backend *be) {
     st->tensor_mm =
             geist_env_flag("GEIST_METAL_TENSOR",
                            metal_msg_send_bool_long(st, st->device, "supportsFamily:", 1010));
+    st->tc_nra = 64u;
+    st->tc_nrb = 128u;
+    st->tc_nk  = 32u;
+    st->tc_nsg = 4u;
+    {
+        const char *tile = getenv("GEIST_METAL_TC_TILE");
+        unsigned    a = 0, b = 0, c = 0, d = 0;
+        if (tile != nullptr && sscanf(tile, "%u,%u,%u,%u", &a, &b, &c, &d) == 4 && a > 0 &&
+            b > 0 && c >= 16 && c % 16 == 0 && d > 0 && d <= 32) {
+            st->tc_nra = a;
+            st->tc_nrb = b;
+            st->tc_nk  = c;
+            st->tc_nsg = d;
+        }
+    }
 
     st->command_queue = metal_msg_send_id0(st, st->device, "newCommandQueue");
     if (st->command_queue == nullptr) {

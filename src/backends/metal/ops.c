@@ -146,11 +146,11 @@ static void metal_encode_mm_tc(struct metal_state            *st,
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
-    metal_msg_send_set_threadgroup_memory(st, enc, 64u * 32u * 2u, 0u);
-    const struct metal_size groups  = {.width  = (params->rows + 127u) / 128u,
-                                       .height = (params->n_out + 63u) / 64u,
+    metal_msg_send_set_threadgroup_memory(st, enc, st->tc_nra * st->tc_nk * 2u, 0u);
+    const struct metal_size groups  = {.width  = (params->rows + st->tc_nrb - 1u) / st->tc_nrb,
+                                       .height = (params->n_out + st->tc_nra - 1u) / st->tc_nra,
                                        .depth  = 1};
-    const struct metal_size threads = {.width = 128u, .height = 1u, .depth = 1u};
+    const struct metal_size threads = {.width = 32u * st->tc_nsg, .height = 1u, .depth = 1u};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_MM_TC, groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
