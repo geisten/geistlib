@@ -47,6 +47,7 @@ def main():
         "top5_overlap": len(set(ra[:5]) & set(rb[:5])),
         "top10_overlap": len(set(ra[:10]) & set(rb[:10])),
         "centered_cosine": round(cos, 6), "centered_rmse": round(rmse, 6),
+        "max_abs_delta": round(max(abs(x - y) for x, y in zip(a, b)), 6),
         "js_nats": round((kl(pa) + kl(pb)) / 2, 6),
         "p_top1_a": round(pa[ra[0]], 4), "p_top1_b": round(pb[rb[0]], 4),
     }))
