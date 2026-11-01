@@ -21,6 +21,7 @@ def main():
              'The original compact PQ2 weights remain unchanged. Full-K candidates temporarily requantize one matrix pair; they do not expand or cache the entire model.', '',
              'Block modes preserve original half scales and exact integer weight codes. Their per-128 preparation/scaling overhead outweighed native matrix throughput in this campaign. Full-K INT8/FP8 use power-of-two row scales, adding weight and activation rounding.', '',
              '## Matrix exploration', '',
+             'The existing Metal tensor path reads FP32 activations and stages decoded PQ2 weights as FP16. `half2` instead pairs scaled FP16 activations with original packed INT2 weight codes. The full-K FP8 and INT8 candidates use native low-precision operand tensors.', '',
              'Two forward/reverse rotations explore 65 configurations on three actual Bonsai layer shapes. Timings include preparation, GEMM and synchronization after 64 discarded warmups. Sampled CPU-double dots check an independent quantization oracle. This is tuning data, not a statistical application performance gate.', '',
              '| M × N × K | Existing Metal (µs) | Best INT8 (µs) | Best FP8 (µs) | INT8 speedup |',
              '|---|---:|---:|---:|---:|']
@@ -33,6 +34,12 @@ def main():
                 for mode in ('staged_int8','staged_fp8')}
         i, f = best['staged_int8'], best['staged_fp8']
         lines.append(f'| {shape[0]} × {shape[1]} × {shape[2]} | {base["wall_us"]:.1f} | {i["wall_us"]:.1f} | {f["wall_us"]:.1f} | {i["speedup"]:.3f}× |')
+    lines += ['', '| M × N × K | Best block INT8 µs | Best block FP8 µs | Best INT2 µs | Best FP16/INT2 µs | Best cooperative FP16 µs |', '|---|---:|---:|---:|---:|---:|']
+    for shape in shapes:
+        rows = [r for r in matrix if (r['m'], r['n'], r['k']) == shape]
+        us = [min(r['wall_us'] for r in rows if r['config']['mode'] == mode)
+              for mode in ('int8','fp8','int2','half2','coop16')]
+        lines.append('| ' + ' × '.join(map(str,shape)) + ' | ' + ' | '.join(f'{v:.1f}' for v in us) + ' |')
     lines += ['', 'The selected full-K geometry is a 128-row tile with four SIMD groups. Use `GEIST_METAL_PQ2_TILE=128 GEIST_METAL_PQ2_SIMDGROUPS=4` with `GEIST_METAL_PQ2_MODE=staged_int8` or `staged_fp8`.', '', '## Full-model performance and memory', '',
               'Six rotated cycles per arm, one identical executable and GGUF, AC power, Low Power Mode off, CPU/GPU start temperatures ≤65 °C. Each process discards a longest-prompt warmup; decode measures 32 tokens. The table gives medians and paired per-cycle speedup ranges, including losses. Native dispatch counters verify that each candidate really ran.', '',
               'The optional 512-row protocol changes the session batch limit for **all** arms, including its baseline; it does not change the library default. Compare within each protocol. RSS on macOS omits private Metal allocations; backend allocated memory is the more relevant memory measure here.', '',

@@ -78,6 +78,7 @@ def main():
     ap.add_argument('--seq-lens',default='128,512,2048')
     ap.add_argument('--m-max',type=int,default=0)
     ap.add_argument('--skip-quality',action='store_true')
+    ap.add_argument('--quality-only',action='store_true',help='reuse complete, hash-matching performance records')
     args=ap.parse_args()
     if args.cycles<6:ap.error('at least six rotated cycles required')
     seqs=[int(s) for s in args.seq_lens.split(',')]
@@ -91,26 +92,36 @@ def main():
               revision=command_output(['git','rev-parse','HEAD']),model=dict(path=str(args.model),sha256=sha256_file(args.model)),
               binary_sha256={str(b.relative_to(args.bin_dir)):sha256_file(b) for b in (bench,evaluate,dump)},
               configs=configs,cycles=args.cycles,protocol=dict(seq_lens=seqs,decode_n=32,warmup=max(seqs),repeats=1,m_max=args.m_max,threads=4))
-    (args.out/'metadata.json').write_text(json.dumps(meta,indent=2)+'\n')
-    records=[]
-    with (args.out/'runs.jsonl').open('w') as out:
-        for cycle in range(args.cycles):
-            order=configs[cycle%len(configs):]+configs[:cycle%len(configs)]
-            for cfg in order:
-                print(f'cycle {cycle+1}/{args.cycles} {cfg["label"]}',flush=True)
-                state=gate()
-                command=[str(bench),'--gguf',str(args.model),'--seq-lens',args.seq_lens,'--decode-n','32','--warmup',str(max(seqs)),'--repeats','1']
-                if args.m_max:command+=['--m-max',str(args.m_max)]
-                with (args.out/f'perf-{cycle}-{cfg["label"]}.err').open('w') as err:
-                    run=subprocess.run(command,env=env_for(cfg),stdout=subprocess.PIPE,stderr=err,text=True,timeout=1200,check=True)
-                rows=[json.loads(s) for s in run.stdout.splitlines()]
-                if len(rows)!=len(seqs):raise RuntimeError('incomplete performance sweep')
-                for row in rows:
-                    active=row['pq2_native_calls']>0
-                    if active!=(cfg['label']!='baseline'):raise RuntimeError('performance arm silently fell back')
-                    if cfg['mode']!='coop16' and row['metal_pq2_quant_dispatches']!=row['pq2_native_calls']:raise RuntimeError('unexpected preparation reuse/count')
-                    row.update(arm=cfg['label'],cycle=cycle,**state)
-                    out.write(json.dumps(row)+'\n');out.flush();records.append(row)
+    if args.quality_only:
+        previous=json.loads((args.out/'metadata.json').read_text())
+        for key in ('model','binary_sha256','configs','cycles','protocol'):
+            if meta[key]!=previous[key]:raise RuntimeError('quality restart metadata mismatch: '+key)
+        records=[json.loads(line) for line in (args.out/'runs.jsonl').read_text().splitlines()]
+        expected={(cycle,cfg['label'],seq) for cycle in range(args.cycles) for cfg in configs for seq in seqs}
+        actual={(r['cycle'],r['arm'],r['seq_len']) for r in records}
+        if actual!=expected or len(records)!=len(expected):raise RuntimeError('incomplete performance records')
+        (args.out/'quality-metadata.json').write_text(json.dumps(meta,indent=2)+'\n')
+    else:
+        (args.out/'metadata.json').write_text(json.dumps(meta,indent=2)+'\n')
+        records=[]
+        with (args.out/'runs.jsonl').open('w') as out:
+            for cycle in range(args.cycles):
+                order=configs[cycle%len(configs):]+configs[:cycle%len(configs)]
+                for cfg in order:
+                    print(f'cycle {cycle+1}/{args.cycles} {cfg["label"]}',flush=True)
+                    state=gate()
+                    command=[str(bench),'--gguf',str(args.model),'--seq-lens',args.seq_lens,'--decode-n','32','--warmup',str(max(seqs)),'--repeats','1']
+                    if args.m_max:command+=['--m-max',str(args.m_max)]
+                    with (args.out/f'perf-{cycle}-{cfg["label"]}.err').open('w') as err:
+                        run=subprocess.run(command,env=env_for(cfg),stdout=subprocess.PIPE,stderr=err,text=True,timeout=1200,check=True)
+                    rows=[json.loads(s) for s in run.stdout.splitlines()]
+                    if len(rows)!=len(seqs):raise RuntimeError('incomplete performance sweep')
+                    for row in rows:
+                        active=row['pq2_native_calls']>0
+                        if active!=(cfg['label']!='baseline'):raise RuntimeError('performance arm silently fell back')
+                        if cfg['mode']!='coop16' and row['metal_pq2_quant_dispatches']!=row['pq2_native_calls']:raise RuntimeError('unexpected preparation reuse/count')
+                        row.update(arm=cfg['label'],cycle=cycle,**state)
+                        out.write(json.dumps(row)+'\n');out.flush();records.append(row)
     qrows=[];old_env=dict(os.environ)
     if not args.skip_quality:
         try:
