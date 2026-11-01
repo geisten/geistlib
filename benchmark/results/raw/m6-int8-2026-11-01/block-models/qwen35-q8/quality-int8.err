@@ -1,0 +1,46 @@
+READY
+metal backend profile:
+  note: wait.* is CPU wall time spent committing/waiting for submitted Metal command buffers; dispatch.* counts encoded kernel dispatches and threadgroups.
+  wait.decode_layer_loop             3536.41 ms  (552 calls)
+  wait.prefill_text                  2331.16 ms  (194 calls)
+  dispatch.rmsnorm_rows                45506 dispatches  683954 threadgroups
+  dispatch.q4k_linear.n4               98726 dispatches  43382320 threadgroups
+  dispatch.int8_quant_x                 5400 dispatches  5256576 threadgroups
+  dispatch.q80_gate_up                 17040 dispatches  7633920 threadgroups
+  dispatch.rope_rows                    8952 dispatches  50694 threadgroups
+  dispatch.kv_append_rows               4476 dispatches  75912 threadgroups
+  dispatch.attention_rows               8520 dispatches  331056 threadgroups
+  dispatch.gelu_mul_rows                 864 dispatches  1886976 threadgroups
+  dispatch.embed                         746 dispatches  25304 threadgroups
+  dispatch.add_rows                    35808 dispatches  1214592 threadgroups
+  dispatch.scale_rows                   4476 dispatches  303648 threadgroups
+  dispatch.copy_u32                     1492 dispatches  28288 threadgroups
+  dispatch.argmax                       1492 dispatches  91012 threadgroups
+  dispatch.deltanet_decode             25560 dispatches  408960 threadgroups
+  dispatch.dn.prep                      2592 dispatches  404352 threadgroups
+  dispatch.dn.chunk                      648 dispatches  31104 threadgroups
+  dispatch.dn.state                      648 dispatches  82944 threadgroups
+  dispatch.dn.out                        648 dispatches  31104 threadgroups
+  dispatch.qgate_split                  4476 dispatches  303648 threadgroups
+  dispatch.sigmoid_mul                  4476 dispatches  303648 threadgroups
+  dispatch.mm_tc                        6696 dispatches  676512 threadgroups
+  dispatch.attention_tc                  216 dispatches  9072 threadgroups
+  gpu: 6070 command buffers, busy 7809.74 ms (union), sum 7809.74 ms
+  gpu   2109.39 ms  27.0 %      552 buffers  rmsnorm_rows+q4k_linear.n4+q80_gate_up+rope_rows+kv_append_rows+attention_rows+add_rows+scale_rows+copy_u32+argmax+deltanet_decode+qgate_split+sigmoid_mul
+  gpu   1350.86 ms  17.3 %      552 buffers  rmsnorm_rows+q4k_linear.n4+q80_gate_up+rope_rows+kv_append_rows+attention_rows+embed+add_rows+scale_rows+deltanet_decode+qgate_split+sigmoid_mul
+  gpu   1142.59 ms  14.6 %      396 buffers  rmsnorm_rows+int8_quant_x+gelu_mul_rows+add_rows+dn.prep+dn.chunk+dn.state+dn.out+mm_tc
+  gpu    704.09 ms   9.0 %      216 buffers  rmsnorm_rows+int8_quant_x+gelu_mul_rows+add_rows+mm_tc
+  gpu    644.92 ms   8.3 %      216 buffers  rmsnorm_rows+int8_quant_x+gelu_mul_rows+add_rows+qgate_split+mm_tc
+  gpu    489.48 ms   6.3 %      216 buffers  rmsnorm_rows+int8_quant_x+add_rows+dn.prep+dn.chunk+dn.state+dn.out+mm_tc
+  gpu    433.08 ms   5.5 %     1738 buffers  rmsnorm_rows+q4k_linear.n4+q80_gate_up+add_rows+deltanet_decode
+  gpu    287.30 ms   3.7 %      158 buffers  rmsnorm_rows+q4k_linear.n4+add_rows+copy_u32+argmax
+  gpu    159.80 ms   2.0 %      216 buffers  rmsnorm_rows+int8_quant_x+rope_rows+kv_append_rows+add_rows+scale_rows+sigmoid_mul+mm_tc+attention_tc
+  gpu    132.63 ms   1.7 %       36 buffers  rmsnorm_rows+q4k_linear.n4+int8_quant_x+gelu_mul_rows+add_rows+copy_u32+argmax+mm_tc
+  gpu     76.21 ms   1.0 %       36 buffers  rmsnorm_rows+int8_quant_x+embed+dn.prep+dn.chunk+dn.state+dn.out+mm_tc
+  gpu     68.89 ms   0.9 %      316 buffers  rmsnorm_rows+q4k_linear.n4+q80_gate_up+add_rows+deltanet_decode+sigmoid_mul
+  gpu     45.16 ms   0.6 %      316 buffers  rmsnorm_rows+q4k_linear.n4+q80_gate_up+rope_rows+kv_append_rows+attention_rows+add_rows+scale_rows+sigmoid_mul
+  gpu     44.11 ms   0.6 %      316 buffers  rmsnorm_rows+q4k_linear.n4+q80_gate_up+rope_rows+kv_append_rows+attention_rows+add_rows+scale_rows+qgate_split
+  gpu     31.96 ms   0.4 %      158 buffers  rmsnorm_rows+q4k_linear.n4+q80_gate_up+embed+add_rows+deltanet_decode
+  gpu     31.17 ms   0.4 %      316 buffers  rmsnorm_rows+q4k_linear.n4+q80_gate_up+rope_rows+kv_append_rows+attention_rows+add_rows+scale_rows+qgate_split+sigmoid_mul
+  gpu     30.25 ms   0.4 %      158 buffers  rmsnorm_rows+q4k_linear.n4+q80_gate_up+add_rows+deltanet_decode+qgate_split
+  gpu     27.86 ms   0.4 %      158 buffers  rmsnorm_rows+q4k_linear.n4+q80_gate_up+rope_rows+add_rows+deltanet_decode+qgate_split

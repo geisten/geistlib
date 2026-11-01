@@ -1,0 +1,22 @@
+backend=metal tokens=148 logits=151936 top1=19846 piece= Berlin
+metal backend profile:
+  note: wait.* is CPU wall time spent committing/waiting for submitted Metal command buffers; dispatch.* counts encoded kernel dispatches and threadgroups.
+  wait.prefill_text                    10.58 ms  (1 calls)
+  dispatch.rmsnorm_rows                    2 dispatches  149 threadgroups
+  dispatch.q4k_linear.n4                   1 dispatches  18992 threadgroups
+  dispatch.int8_quant_x                  196 dispatches  29008 threadgroups
+  dispatch.add_norm_rows                  55 dispatches  8140 threadgroups
+  dispatch.rope_append                    28 dispatches  99456 threadgroups
+  dispatch.gelu_mul_rows                  28 dispatches  49728 threadgroups
+  dispatch.embed                           1 dispatches  592 threadgroups
+  dispatch.add_rows                        1 dispatches  592 threadgroups
+  dispatch.copy_u32                        2 dispatches  596 threadgroups
+  dispatch.argmax                          2 dispatches  75 threadgroups
+  dispatch.mm_tc                         392 dispatches  354816 threadgroups
+  dispatch.attention_tc                   28 dispatches  2240 threadgroups
+  gpu: 43 command buffers, busy 26.56 ms (union), sum 26.56 ms
+  gpu      8.94 ms  33.6 %       14 buffers  int8_quant_x+add_norm_rows+gelu_mul_rows+mm_tc
+  gpu      8.26 ms  31.1 %       14 buffers  int8_quant_x+add_norm_rows+rope_append+gelu_mul_rows+mm_tc+attention_tc
+  gpu      7.62 ms  28.7 %       13 buffers  int8_quant_x+add_norm_rows+rope_append+mm_tc+attention_tc
+  gpu      1.26 ms   4.7 %        1 buffers  rmsnorm_rows+q4k_linear.n4+int8_quant_x+add_rows+copy_u32+argmax+mm_tc
+  gpu      0.48 ms   1.8 %        1 buffers  rmsnorm_rows+int8_quant_x+rope_append+embed+mm_tc+attention_tc

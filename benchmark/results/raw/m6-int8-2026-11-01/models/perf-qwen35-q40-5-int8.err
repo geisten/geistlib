@@ -1,0 +1,3 @@
+[bench] backend: metal
+[bench] warmup phase (discarded): 512-token prefill + 4 decode steps
+[bench] measuring 1 repeat(s) per seq_len; reporting the MEAN (with best/worst)

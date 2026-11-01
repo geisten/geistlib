@@ -1,0 +1,2 @@
+# Regenerable full-vocabulary dumps stay local; hashes are recorded.
+*.bin

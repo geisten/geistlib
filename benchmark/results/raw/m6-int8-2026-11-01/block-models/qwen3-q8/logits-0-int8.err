@@ -1,0 +1,24 @@
+backend=metal tokens=147 logits=151936 top1=12095 piece= Paris
+metal backend profile:
+  note: wait.* is CPU wall time spent committing/waiting for submitted Metal command buffers; dispatch.* counts encoded kernel dispatches and threadgroups.
+  wait.prefill_text                    39.76 ms  (1 calls)
+  dispatch.rmsnorm_rows                    2 dispatches  148 threadgroups
+  dispatch.q4k_linear.n4                   1 dispatches  18992 threadgroups
+  dispatch.int8_quant_x                  196 dispatches  164640 threadgroups
+  dispatch.add_norm_rows                  55 dispatches  8085 threadgroups
+  dispatch.rope_append                    28 dispatches  98784 threadgroups
+  dispatch.gelu_mul_rows                  28 dispatches  49392 threadgroups
+  dispatch.embed                           1 dispatches  588 threadgroups
+  dispatch.add_rows                        1 dispatches  588 threadgroups
+  dispatch.copy_u32                        2 dispatches  592 threadgroups
+  dispatch.argmax                          2 dispatches  75 threadgroups
+  dispatch.mm_tc                         196 dispatches  16128 threadgroups
+  dispatch.attention_tc                   28 dispatches  2240 threadgroups
+  gpu: 34 command buffers, busy 80.95 ms (union), sum 80.95 ms
+  gpu     44.21 ms  54.6 %       18 buffers  int8_quant_x+add_norm_rows+rope_append+gelu_mul_rows+mm_tc+attention_tc
+  gpu     12.11 ms  15.0 %        5 buffers  int8_quant_x+add_norm_rows+rope_append+gelu_mul_rows+mm_tc
+  gpu     10.34 ms  12.8 %        4 buffers  int8_quant_x+add_norm_rows+gelu_mul_rows+mm_tc+attention_tc
+  gpu      8.91 ms  11.0 %        4 buffers  int8_quant_x+add_norm_rows+rope_append+mm_tc+attention_tc
+  gpu      3.13 ms   3.9 %        1 buffers  rmsnorm_rows+q4k_linear.n4+int8_quant_x+add_norm_rows+gelu_mul_rows+add_rows+copy_u32+mm_tc+attention_tc
+  gpu      2.23 ms   2.8 %        1 buffers  rmsnorm_rows+int8_quant_x+add_norm_rows+rope_append+embed+mm_tc+attention_tc
+  gpu      0.01 ms   0.0 %        1 buffers  argmax

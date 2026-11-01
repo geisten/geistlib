@@ -1,0 +1,318 @@
+[
+  {
+    "m": 128,
+    "n": 4096,
+    "k": 32,
+    "mode": "f16",
+    "convert": {
+      "gpu_us": 28.3476565,
+      "wall_us": 35.609375,
+      "tflops_or_tops": 0.0
+    },
+    "operand_bytes": 1081344,
+    "output_bytes": 2097152,
+    "gemm": {
+      "gpu_us": 27.5651035,
+      "wall_us": 35.09375,
+      "tflops_or_tops": 1.21734
+    },
+    "combined": {
+      "gpu_us": 66.273438,
+      "wall_us": 75.640625,
+      "tflops_or_tops": 0.5063095
+    }
+  },
+  {
+    "m": 128,
+    "n": 4096,
+    "k": 32,
+    "mode": "fp8",
+    "convert": {
+      "gpu_us": 25.065103999999998,
+      "wall_us": 32.953125,
+      "tflops_or_tops": 0.0
+    },
+    "operand_bytes": 540672,
+    "output_bytes": 2097152,
+    "gemm": {
+      "gpu_us": 27.414063,
+      "wall_us": 35.78125,
+      "tflops_or_tops": 1.2241490000000002
+    },
+    "combined": {
+      "gpu_us": 63.759766,
+      "wall_us": 73.34375,
+      "tflops_or_tops": 0.5262645
+    },
+    "calibrate32": {
+      "gpu_us": 74.99479099999999,
+      "wall_us": 82.5625,
+      "tflops_or_tops": 0.0
+    }
+  },
+  {
+    "m": 128,
+    "n": 4096,
+    "k": 32,
+    "mode": "i8",
+    "convert": {
+      "gpu_us": 23.90039,
+      "wall_us": 31.703125,
+      "tflops_or_tops": 0.0
+    },
+    "operand_bytes": 540672,
+    "output_bytes": 2097152,
+    "gemm": {
+      "gpu_us": 21.9381515,
+      "wall_us": 30.71875,
+      "tflops_or_tops": 1.5297494999999999
+    },
+    "combined": {
+      "gpu_us": 57.749348499999996,
+      "wall_us": 66.078125,
+      "tflops_or_tops": 0.581043
+    },
+    "calibrate32": {
+      "gpu_us": 40.336588,
+      "wall_us": 48.875,
+      "tflops_or_tops": 0.0
+    }
+  },
+  {
+    "m": 128,
+    "n": 4096,
+    "k": 4096,
+    "mode": "f16",
+    "convert": {
+      "gpu_us": 663.1634114999999,
+      "wall_us": 673.21875,
+      "tflops_or_tops": 0.0
+    },
+    "operand_bytes": 34603008,
+    "output_bytes": 2097152,
+    "gemm": {
+      "gpu_us": 371.8046875,
+      "wall_us": 382.109375,
+      "tflops_or_tops": 11.5517805
+    },
+    "combined": {
+      "gpu_us": 1017.0625,
+      "wall_us": 1023.0,
+      "tflops_or_tops": 4.222984
+    }
+  },
+  {
+    "m": 128,
+    "n": 4096,
+    "k": 4096,
+    "mode": "fp8",
+    "convert": {
+      "gpu_us": 547.9101565000001,
+      "wall_us": 553.921875,
+      "tflops_or_tops": 0.0
+    },
+    "operand_bytes": 17301504,
+    "output_bytes": 2097152,
+    "gemm": {
+      "gpu_us": 154.43229100000002,
+      "wall_us": 163.78125,
+      "tflops_or_tops": 27.811337
+    },
+    "combined": {
+      "gpu_us": 703.2057295,
+      "wall_us": 709.421875,
+      "tflops_or_tops": 6.107697
+    },
+    "calibrate32": {
+      "gpu_us": 680.0071614999999,
+      "wall_us": 688.21875,
+      "tflops_or_tops": 0.0
+    }
+  },
+  {
+    "m": 128,
+    "n": 4096,
+    "k": 4096,
+    "mode": "i8",
+    "convert": {
+      "gpu_us": 547.955078,
+      "wall_us": 557.265625,
+      "tflops_or_tops": 0.0
+    },
+    "operand_bytes": 17301504,
+    "output_bytes": 2097152,
+    "gemm": {
+      "gpu_us": 155.1731765,
+      "wall_us": 163.96875,
+      "tflops_or_tops": 27.6785445
+    },
+    "combined": {
+      "gpu_us": 703.4134115,
+      "wall_us": 709.390625,
+      "tflops_or_tops": 6.105893999999999
+    },
+    "calibrate32": {
+      "gpu_us": 585.177734,
+      "wall_us": 593.65625,
+      "tflops_or_tops": 0.0
+    }
+  },
+  {
+    "m": 512,
+    "n": 4096,
+    "k": 4096,
+    "mode": "f16",
+    "convert": {
+      "gpu_us": 728.7897145,
+      "wall_us": 739.34375,
+      "tflops_or_tops": 0.0
+    },
+    "operand_bytes": 37748736,
+    "output_bytes": 8388608,
+    "gemm": {
+      "gpu_us": 1387.4596350000002,
+      "wall_us": 1398.328125,
+      "tflops_or_tops": 12.382258
+    },
+    "combined": {
+      "gpu_us": 2066.5917965,
+      "wall_us": 2074.171875,
+      "tflops_or_tops": 8.313142
+    }
+  },
+  {
+    "m": 512,
+    "n": 4096,
+    "k": 4096,
+    "mode": "fp8",
+    "convert": {
+      "gpu_us": 599.0234375,
+      "wall_us": 606.03125,
+      "tflops_or_tops": 0.0
+    },
+    "operand_bytes": 18874368,
+    "output_bytes": 8388608,
+    "gemm": {
+      "gpu_us": 594.740235,
+      "wall_us": 604.453125,
+      "tflops_or_tops": 28.886356
+    },
+    "combined": {
+      "gpu_us": 1190.463541,
+      "wall_us": 1198.171875,
+      "tflops_or_tops": 14.431424
+    },
+    "calibrate32": {
+      "gpu_us": 741.6803385000001,
+      "wall_us": 748.921875,
+      "tflops_or_tops": 0.0
+    }
+  },
+  {
+    "m": 512,
+    "n": 4096,
+    "k": 4096,
+    "mode": "i8",
+    "convert": {
+      "gpu_us": 599.6634105,
+      "wall_us": 607.515625,
+      "tflops_or_tops": 0.0
+    },
+    "operand_bytes": 18874368,
+    "output_bytes": 8388608,
+    "gemm": {
+      "gpu_us": 582.4798185,
+      "wall_us": 591.796875,
+      "tflops_or_tops": 29.4943715
+    },
+    "combined": {
+      "gpu_us": 1181.6399735,
+      "wall_us": 1189.65625,
+      "tflops_or_tops": 14.539015
+    },
+    "calibrate32": {
+      "gpu_us": 639.5371095,
+      "wall_us": 645.46875,
+      "tflops_or_tops": 0.0
+    }
+  },
+  {
+    "m": 512,
+    "n": 8192,
+    "k": 8192,
+    "mode": "f16",
+    "convert": {
+      "gpu_us": 2794.1028635000002,
+      "wall_us": 2800.25,
+      "tflops_or_tops": 0.0
+    },
+    "operand_bytes": 142606336,
+    "output_bytes": 16777216,
+    "gemm": {
+      "gpu_us": 6301.847656,
+      "wall_us": 6308.875,
+      "tflops_or_tops": 10.904899
+    },
+    "combined": {
+      "gpu_us": 9025.435547500001,
+      "wall_us": 9031.015625,
+      "tflops_or_tops": 7.6139835
+    }
+  },
+  {
+    "m": 512,
+    "n": 8192,
+    "k": 8192,
+    "mode": "fp8",
+    "convert": {
+      "gpu_us": 2309.214844,
+      "wall_us": 2314.859375,
+      "tflops_or_tops": 0.0
+    },
+    "operand_bytes": 71303168,
+    "output_bytes": 16777216,
+    "gemm": {
+      "gpu_us": 3114.2513025,
+      "wall_us": 3124.484375,
+      "tflops_or_tops": 22.066133999999998
+    },
+    "combined": {
+      "gpu_us": 5379.431640000001,
+      "wall_us": 5385.328125,
+      "tflops_or_tops": 12.7745165
+    },
+    "calibrate32": {
+      "gpu_us": 2794.977213,
+      "wall_us": 2801.453125,
+      "tflops_or_tops": 0.0
+    }
+  },
+  {
+    "m": 512,
+    "n": 8192,
+    "k": 8192,
+    "mode": "i8",
+    "convert": {
+      "gpu_us": 2324.045573,
+      "wall_us": 2330.625,
+      "tflops_or_tops": 0.0
+    },
+    "operand_bytes": 71303168,
+    "output_bytes": 16777216,
+    "gemm": {
+      "gpu_us": 2987.1263019999997,
+      "wall_us": 2995.421875,
+      "tflops_or_tops": 23.00624
+    },
+    "combined": {
+      "gpu_us": 5256.7402345,
+      "wall_us": 5262.640625,
+      "tflops_or_tops": 13.072731000000001
+    },
+    "calibrate32": {
+      "gpu_us": 2496.9134115,
+      "wall_us": 2503.09375,
+      "tflops_or_tops": 0.0
+    }
+  }
+]

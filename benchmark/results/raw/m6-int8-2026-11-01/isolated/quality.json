@@ -1,0 +1,554 @@
+[
+  {
+    "phase": "quality",
+    "fixture": "uniform",
+    "mode": "f16",
+    "m": 128,
+    "n": 4096,
+    "k": 32,
+    "samples": 32,
+    "nrmse": 0.000302621586,
+    "cosine": 0.99999996,
+    "max_abs_real_units": 0.056614324,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 33.3,
+      "cpu_temp_c": 34.1
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "uniform",
+    "mode": "fp8",
+    "m": 128,
+    "n": 4096,
+    "k": 32,
+    "samples": 32,
+    "nrmse": 0.0390936746,
+    "cosine": 0.999253947,
+    "max_abs_real_units": 12.3737752,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 33.3,
+      "cpu_temp_c": 34.1
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "uniform",
+    "mode": "i8",
+    "m": 128,
+    "n": 4096,
+    "k": 32,
+    "samples": 32,
+    "nrmse": 0.00678939177,
+    "cosine": 0.999977289,
+    "max_abs_real_units": 1.53986857,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 33.3,
+      "cpu_temp_c": 34.1
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "outlier",
+    "mode": "f16",
+    "m": 128,
+    "n": 4096,
+    "k": 32,
+    "samples": 32,
+    "nrmse": 0.000252268156,
+    "cosine": 0.999999982,
+    "max_abs_real_units": 0.0134398458,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 33.3,
+      "cpu_temp_c": 34.1
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "outlier",
+    "mode": "fp8",
+    "m": 128,
+    "n": 4096,
+    "k": 32,
+    "samples": 32,
+    "nrmse": 0.0244701898,
+    "cosine": 0.999824291,
+    "max_abs_real_units": 1.15886856,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 33.3,
+      "cpu_temp_c": 34.1
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "outlier",
+    "mode": "i8",
+    "m": 128,
+    "n": 4096,
+    "k": 32,
+    "samples": 32,
+    "nrmse": 0.00513886355,
+    "cosine": 0.999990674,
+    "max_abs_real_units": 0.249521026,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 33.3,
+      "cpu_temp_c": 34.1
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "uniform",
+    "mode": "f16",
+    "m": 128,
+    "n": 4096,
+    "k": 4096,
+    "samples": 32,
+    "nrmse": 0.00039908696,
+    "cosine": 0.999999921,
+    "max_abs_real_units": 0.906721115,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 33.1,
+      "cpu_temp_c": 33.6
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "uniform",
+    "mode": "fp8",
+    "m": 128,
+    "n": 4096,
+    "k": 4096,
+    "samples": 32,
+    "nrmse": 0.036860776,
+    "cosine": 0.999320593,
+    "max_abs_real_units": 90.3752164,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 33.1,
+      "cpu_temp_c": 33.6
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "uniform",
+    "mode": "i8",
+    "m": 128,
+    "n": 4096,
+    "k": 4096,
+    "samples": 32,
+    "nrmse": 0.00676529196,
+    "cosine": 0.999977154,
+    "max_abs_real_units": 13.7702262,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 33.1,
+      "cpu_temp_c": 33.6
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "outlier",
+    "mode": "f16",
+    "m": 128,
+    "n": 4096,
+    "k": 4096,
+    "samples": 32,
+    "nrmse": 0.000287145497,
+    "cosine": 0.999999961,
+    "max_abs_real_units": 0.026776968,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 33.1,
+      "cpu_temp_c": 33.6
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "outlier",
+    "mode": "fp8",
+    "m": 128,
+    "n": 4096,
+    "k": 4096,
+    "samples": 32,
+    "nrmse": 0.0356862532,
+    "cosine": 0.999424441,
+    "max_abs_real_units": 3.88724002,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 33.1,
+      "cpu_temp_c": 33.6
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "outlier",
+    "mode": "i8",
+    "m": 128,
+    "n": 4096,
+    "k": 4096,
+    "samples": 32,
+    "nrmse": 0.00781759867,
+    "cosine": 0.999970206,
+    "max_abs_real_units": 0.80349512,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 33.1,
+      "cpu_temp_c": 33.6
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "uniform",
+    "mode": "f16",
+    "m": 512,
+    "n": 4096,
+    "k": 4096,
+    "samples": 32,
+    "nrmse": 0.000214653498,
+    "cosine": 0.999999977,
+    "max_abs_real_units": 0.624787812,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 36.1,
+      "cpu_temp_c": 35.0
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "uniform",
+    "mode": "fp8",
+    "m": 512,
+    "n": 4096,
+    "k": 4096,
+    "samples": 32,
+    "nrmse": 0.0252717952,
+    "cosine": 0.999680874,
+    "max_abs_real_units": 64.4011691,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 36.1,
+      "cpu_temp_c": 35.0
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "uniform",
+    "mode": "i8",
+    "m": 512,
+    "n": 4096,
+    "k": 4096,
+    "samples": 32,
+    "nrmse": 0.00544308429,
+    "cosine": 0.9999868,
+    "max_abs_real_units": 14.7255228,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 36.1,
+      "cpu_temp_c": 35.0
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "outlier",
+    "mode": "f16",
+    "m": 512,
+    "n": 4096,
+    "k": 4096,
+    "samples": 32,
+    "nrmse": 0.000311134483,
+    "cosine": 0.999999952,
+    "max_abs_real_units": 0.0272542731,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 36.1,
+      "cpu_temp_c": 35.0
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "outlier",
+    "mode": "fp8",
+    "m": 512,
+    "n": 4096,
+    "k": 4096,
+    "samples": 32,
+    "nrmse": 0.0269824033,
+    "cosine": 0.999677873,
+    "max_abs_real_units": 2.47802278,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 36.1,
+      "cpu_temp_c": 35.0
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "outlier",
+    "mode": "i8",
+    "m": 512,
+    "n": 4096,
+    "k": 4096,
+    "samples": 32,
+    "nrmse": 0.00599595501,
+    "cosine": 0.999982132,
+    "max_abs_real_units": 0.643271615,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 36.1,
+      "cpu_temp_c": 35.0
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "uniform",
+    "mode": "f16",
+    "m": 512,
+    "n": 8192,
+    "k": 8192,
+    "samples": 32,
+    "nrmse": 0.00023387268,
+    "cosine": 0.999999973,
+    "max_abs_real_units": 0.982943051,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 40.5,
+      "cpu_temp_c": 37.0
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "uniform",
+    "mode": "fp8",
+    "m": 512,
+    "n": 8192,
+    "k": 8192,
+    "samples": 32,
+    "nrmse": 0.036699482,
+    "cosine": 0.999328875,
+    "max_abs_real_units": 137.991466,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 40.5,
+      "cpu_temp_c": 37.0
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "uniform",
+    "mode": "i8",
+    "m": 512,
+    "n": 8192,
+    "k": 8192,
+    "samples": 32,
+    "nrmse": 0.00721698561,
+    "cosine": 0.999978016,
+    "max_abs_real_units": 29.3894669,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 40.5,
+      "cpu_temp_c": 37.0
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "outlier",
+    "mode": "f16",
+    "m": 512,
+    "n": 8192,
+    "k": 8192,
+    "samples": 32,
+    "nrmse": 0.000199489973,
+    "cosine": 0.999999982,
+    "max_abs_real_units": 0.0332044248,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 40.5,
+      "cpu_temp_c": 37.0
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "outlier",
+    "mode": "fp8",
+    "m": 512,
+    "n": 8192,
+    "k": 8192,
+    "samples": 32,
+    "nrmse": 0.0317419447,
+    "cosine": 0.999528957,
+    "max_abs_real_units": 4.14939005,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 40.5,
+      "cpu_temp_c": 37.0
+    }
+  },
+  {
+    "phase": "quality",
+    "fixture": "outlier",
+    "mode": "i8",
+    "m": 512,
+    "n": 8192,
+    "k": 8192,
+    "samples": 32,
+    "nrmse": 0.00722807157,
+    "cosine": 0.999973947,
+    "max_abs_real_units": 0.973916501,
+    "power": {
+      "source": "AC",
+      "low_power_mode": 0,
+      "wait_seconds": 0.0
+    },
+    "thermal": {
+      "cool_gate": "temperature",
+      "cool_wait_seconds": 1.1,
+      "gpu_temp_c": 40.5,
+      "cpu_temp_c": 37.0
+    }
+  }
+]

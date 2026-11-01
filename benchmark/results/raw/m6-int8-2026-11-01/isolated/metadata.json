@@ -1,0 +1,42 @@
+{
+  "cpu": "Apple M6",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A425",
+  "revision": "753379f0f1f4539608c80b3c8a731f5f5431bc74",
+  "binary_sha256": "9d7acec526c50923d37af2015d9f9d84496e51575b69494bbea0147bed6081ec",
+  "source_sha256": {
+    "tests/bench_metal_precision.c": "02e4fdb65757037ea852247b43e760737267ef2b8c30d5880e79ee6b44cd340d",
+    "tests/metal_precision_shaders.h": "e8501ba2a233ee396109a74dbc7f93535a20338edf8158e71c838ae1cd7f6b5d"
+  },
+  "shapes": [
+    [
+      128,
+      4096,
+      32
+    ],
+    [
+      128,
+      4096,
+      4096
+    ],
+    [
+      512,
+      4096,
+      4096
+    ],
+    [
+      512,
+      8192,
+      8192
+    ]
+  ],
+  "repeats": 32,
+  "cycles": 6,
+  "input": "LCG seed 0x54321, integers -8..7, all formats exact",
+  "tile": {
+    "rows": 128,
+    "columns": 64,
+    "simdgroups": 8
+  },
+  "quality": "32 CPU double dot samples per format; same normalized non-integer source; fixed scale 1/16; uniform and outlier fixtures",
+  "notes": "cache-warm controlled benchmark; not a full-model or peak-memory measurement"
+}

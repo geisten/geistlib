@@ -1,0 +1,242 @@
+[
+  {
+    "path": "llama3-q4k/ids-0-int8.bin",
+    "bytes": 592,
+    "sha256": "20481132f456ceaf2aa2ec5d9191c0b65bfc18f32ac822807ad9ad5f155e54b4"
+  },
+  {
+    "path": "llama3-q4k/ids-0-metal4.bin",
+    "bytes": 592,
+    "sha256": "20481132f456ceaf2aa2ec5d9191c0b65bfc18f32ac822807ad9ad5f155e54b4"
+  },
+  {
+    "path": "llama3-q4k/ids-3-int8.bin",
+    "bytes": 596,
+    "sha256": "0ffac7663adc77176a24fbfdb0f48c41f73d071e34b52463afb2ea9b0464a1a0"
+  },
+  {
+    "path": "llama3-q4k/ids-3-metal4.bin",
+    "bytes": 596,
+    "sha256": "0ffac7663adc77176a24fbfdb0f48c41f73d071e34b52463afb2ea9b0464a1a0"
+  },
+  {
+    "path": "llama3-q4k/ids-4-int8.bin",
+    "bytes": 644,
+    "sha256": "09afb1050e35f2fa6ec7a7d4c494f5577d78bb938199cb160f16c2ecdfeddaa7"
+  },
+  {
+    "path": "llama3-q4k/ids-4-metal4.bin",
+    "bytes": 644,
+    "sha256": "09afb1050e35f2fa6ec7a7d4c494f5577d78bb938199cb160f16c2ecdfeddaa7"
+  },
+  {
+    "path": "llama3-q4k/logits-0-int8.bin",
+    "bytes": 513024,
+    "sha256": "c3b818351324acbce6b4ea5a0cb07daf02b1c05bb319b7e170f6d24e14dbb604"
+  },
+  {
+    "path": "llama3-q4k/logits-0-metal4.bin",
+    "bytes": 513024,
+    "sha256": "421804a8fd5e33ade0d918f847150f2411b03f255f38aaf340f7862c3ec8a95d"
+  },
+  {
+    "path": "llama3-q4k/logits-3-int8.bin",
+    "bytes": 513024,
+    "sha256": "e29b1f1a6fb15d27b421fff46e24d415ca75f55ef01363e83d3e3e527eb891d8"
+  },
+  {
+    "path": "llama3-q4k/logits-3-metal4.bin",
+    "bytes": 513024,
+    "sha256": "8067a6d7036133b073ebfede3ebd5b122d4efbfe7dfd06d1f65c5ba03433d620"
+  },
+  {
+    "path": "llama3-q4k/logits-4-int8.bin",
+    "bytes": 513024,
+    "sha256": "79823a32458aa00c9d3f854996477c59a0355bb25d727af4697061713b4ca0f7"
+  },
+  {
+    "path": "llama3-q4k/logits-4-metal4.bin",
+    "bytes": 513024,
+    "sha256": "85238a647658081913d594cff612dda5bc00cff44d9931bc70d89f9b86540004"
+  },
+  {
+    "path": "qwen3-q8/ids-0-int8.bin",
+    "bytes": 588,
+    "sha256": "d81b34341fe5c030f8b28d9ce695ca4e406244b941bbb0eb19468afc5e875c5e"
+  },
+  {
+    "path": "qwen3-q8/ids-0-metal4.bin",
+    "bytes": 588,
+    "sha256": "d81b34341fe5c030f8b28d9ce695ca4e406244b941bbb0eb19468afc5e875c5e"
+  },
+  {
+    "path": "qwen3-q8/ids-3-int8.bin",
+    "bytes": 592,
+    "sha256": "97f4cf70cd1241d4ca20af2b1059c3f1367ed7e93d4f148db93e31cdc5430556"
+  },
+  {
+    "path": "qwen3-q8/ids-3-metal4.bin",
+    "bytes": 592,
+    "sha256": "97f4cf70cd1241d4ca20af2b1059c3f1367ed7e93d4f148db93e31cdc5430556"
+  },
+  {
+    "path": "qwen3-q8/ids-4-int8.bin",
+    "bytes": 624,
+    "sha256": "f9f23a4f2e5c66ca05fd6f6fbca5023913c76539bfff85464ef1a719d0ce877c"
+  },
+  {
+    "path": "qwen3-q8/ids-4-metal4.bin",
+    "bytes": 624,
+    "sha256": "f9f23a4f2e5c66ca05fd6f6fbca5023913c76539bfff85464ef1a719d0ce877c"
+  },
+  {
+    "path": "qwen3-q8/logits-0-int8.bin",
+    "bytes": 607744,
+    "sha256": "8adc06e27349fe9c075705a462762fae74b152b79a367312283b024ee64778fc"
+  },
+  {
+    "path": "qwen3-q8/logits-0-metal4.bin",
+    "bytes": 607744,
+    "sha256": "051ad165b29260a7ab67deeca9dcbe03188e0d8185c4dfabd10911d15797a5f1"
+  },
+  {
+    "path": "qwen3-q8/logits-3-int8.bin",
+    "bytes": 607744,
+    "sha256": "8f22c4abb73448fc416ee8f674ba1a2b499227d01f535f574e69529bb1b82e93"
+  },
+  {
+    "path": "qwen3-q8/logits-3-metal4.bin",
+    "bytes": 607744,
+    "sha256": "e51bb88ca16f560d49d8e7fafe9876bc4537c8f464f0e9fcbad035c8fe9783b4"
+  },
+  {
+    "path": "qwen3-q8/logits-4-int8.bin",
+    "bytes": 607744,
+    "sha256": "050ff847192b605b841c9ab2f188ee2f9c61a796072b00adda2cf3713567bc66"
+  },
+  {
+    "path": "qwen3-q8/logits-4-metal4.bin",
+    "bytes": 607744,
+    "sha256": "82e8865ec68202ea1d4a5c6bae06e10ecff1bca1e50af968ccb03bda5ffa4625"
+  },
+  {
+    "path": "qwen35-q40/ids-0-int8.bin",
+    "bytes": 592,
+    "sha256": "ae6e74d99287b5668f0ff199d95e6d99c249a73fdb9e29cafe44312cee21dc7d"
+  },
+  {
+    "path": "qwen35-q40/ids-0-metal4.bin",
+    "bytes": 592,
+    "sha256": "ae6e74d99287b5668f0ff199d95e6d99c249a73fdb9e29cafe44312cee21dc7d"
+  },
+  {
+    "path": "qwen35-q40/ids-3-int8.bin",
+    "bytes": 584,
+    "sha256": "748075dc8321089cfb0285f7efe17dc0f4724627617ae245394131a2f50e9444"
+  },
+  {
+    "path": "qwen35-q40/ids-3-metal4.bin",
+    "bytes": 584,
+    "sha256": "748075dc8321089cfb0285f7efe17dc0f4724627617ae245394131a2f50e9444"
+  },
+  {
+    "path": "qwen35-q40/ids-4-int8.bin",
+    "bytes": 636,
+    "sha256": "e47d0a9cd73204af1d860c26e3458cea88f9c7e512e64478875d209783c76f3b"
+  },
+  {
+    "path": "qwen35-q40/ids-4-metal4.bin",
+    "bytes": 636,
+    "sha256": "e47d0a9cd73204af1d860c26e3458cea88f9c7e512e64478875d209783c76f3b"
+  },
+  {
+    "path": "qwen35-q40/logits-0-int8.bin",
+    "bytes": 993280,
+    "sha256": "cc2c243fb7e04fedcf5788b4497956299bbfdc8f7e23f44b61ca0d8f2ca60b3d"
+  },
+  {
+    "path": "qwen35-q40/logits-0-metal4.bin",
+    "bytes": 993280,
+    "sha256": "4b20b1c4e303001c1e5b3d8f0d8cffe61a07ff2e5f053970144a8c9396947c42"
+  },
+  {
+    "path": "qwen35-q40/logits-3-int8.bin",
+    "bytes": 993280,
+    "sha256": "9e92b94e46453deb69bbb069003882cd0cd5485f01a51bbd03db610c2f2209ba"
+  },
+  {
+    "path": "qwen35-q40/logits-3-metal4.bin",
+    "bytes": 993280,
+    "sha256": "50951a70fcc5b4fe5c0d4a48c2578d814e4b75d8298b4c4ca2542cb736102fd6"
+  },
+  {
+    "path": "qwen35-q40/logits-4-int8.bin",
+    "bytes": 993280,
+    "sha256": "f0cdb5cf9edd63f29af485e6abc156e7a0752dea71ee06b5302de33e9edbe305"
+  },
+  {
+    "path": "qwen35-q40/logits-4-metal4.bin",
+    "bytes": 993280,
+    "sha256": "97ace70d11eb49fd1fabc14542f8b8a96302160b6a2f52556bcd69088710c47d"
+  },
+  {
+    "path": "qwen35-q8/ids-0-int8.bin",
+    "bytes": 592,
+    "sha256": "ae6e74d99287b5668f0ff199d95e6d99c249a73fdb9e29cafe44312cee21dc7d"
+  },
+  {
+    "path": "qwen35-q8/ids-0-metal4.bin",
+    "bytes": 592,
+    "sha256": "ae6e74d99287b5668f0ff199d95e6d99c249a73fdb9e29cafe44312cee21dc7d"
+  },
+  {
+    "path": "qwen35-q8/ids-3-int8.bin",
+    "bytes": 584,
+    "sha256": "748075dc8321089cfb0285f7efe17dc0f4724627617ae245394131a2f50e9444"
+  },
+  {
+    "path": "qwen35-q8/ids-3-metal4.bin",
+    "bytes": 584,
+    "sha256": "748075dc8321089cfb0285f7efe17dc0f4724627617ae245394131a2f50e9444"
+  },
+  {
+    "path": "qwen35-q8/ids-4-int8.bin",
+    "bytes": 636,
+    "sha256": "e47d0a9cd73204af1d860c26e3458cea88f9c7e512e64478875d209783c76f3b"
+  },
+  {
+    "path": "qwen35-q8/ids-4-metal4.bin",
+    "bytes": 636,
+    "sha256": "e47d0a9cd73204af1d860c26e3458cea88f9c7e512e64478875d209783c76f3b"
+  },
+  {
+    "path": "qwen35-q8/logits-0-int8.bin",
+    "bytes": 993280,
+    "sha256": "50b33c5db6ebe631e8e9c788e3b21747cc0459ab1507bf55f20487216251e60e"
+  },
+  {
+    "path": "qwen35-q8/logits-0-metal4.bin",
+    "bytes": 993280,
+    "sha256": "8cc69c457e1ac39b156e47d5612d9618b4723aac8d9bbc52d493ff088e53800f"
+  },
+  {
+    "path": "qwen35-q8/logits-3-int8.bin",
+    "bytes": 993280,
+    "sha256": "57a61446de14fbaefd6dfaa2376a21cc810c309c46cdfbf1d39c8119eff5c3a8"
+  },
+  {
+    "path": "qwen35-q8/logits-3-metal4.bin",
+    "bytes": 993280,
+    "sha256": "8bd54f69a28ff549b7c286cd96bb03a359248d0449898679dcb2d65fc2454f91"
+  },
+  {
+    "path": "qwen35-q8/logits-4-int8.bin",
+    "bytes": 993280,
+    "sha256": "a300f768b52d2fd24af5e3549bd41c590f9ce398a8a684dd6daccfa5bd292cf3"
+  },
+  {
+    "path": "qwen35-q8/logits-4-metal4.bin",
+    "bytes": 993280,
+    "sha256": "40abe89daeb92043aa55180a22e0971095bf5cbfc56023d4b3e5a4bddbfc35e3"
+  }
+]

@@ -1,6 +1,9 @@
 /* Native W8A8 prefill: prepare row-scaled INT8 activations and weights
  * once per matrix call, shared by all tiles. One full-K INT32 tensor dot
  * is rescaled once into FP32. Host caps K <=65536 to prevent overflow.
+ * Row scales use ceil(log2(amax/127)) without approximate division:
+ * normalized 127 is 1.984375 * 2^6, with mantissa bits 0x7e0000.
+ * Zero rows use scale 1; tiny scales clamp to minimum normal FP32.
  * Original GGUF weights remain mapped; row requantization adds error.
  * Workspace holds one prepared matrix pair, not a model-sized cache. */
 

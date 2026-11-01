@@ -1,0 +1,26 @@
+READY
+metal backend profile:
+  note: wait.* is CPU wall time spent committing/waiting for submitted Metal command buffers; dispatch.* counts encoded kernel dispatches and threadgroups.
+  wait.decode_layer_loop             2698.27 ms  (552 calls)
+  wait.prefill_text                  1424.35 ms  (202 calls)
+  dispatch.rmsnorm_rows                 1508 dispatches  7052 threadgroups
+  dispatch.q4k_linear.n4               40962 dispatches  19466592 threadgroups
+  dispatch.qkv3                        20104 dispatches  10293248 threadgroups
+  dispatch.q80_gate_up                 20104 dispatches  7719936 threadgroups
+  dispatch.add_norm_rows               41470 dispatches  346390 threadgroups
+  dispatch.rope_append                 21112 dispatches  4232256 threadgroups
+  dispatch.attention_rows              40208 dispatches  2469824 threadgroups
+  dispatch.gelu_mul_rows                1008 dispatches  1874880 threadgroups
+  dispatch.embed                         754 dispatches  25192 threadgroups
+  dispatch.add_rows                      754 dispatches  25192 threadgroups
+  dispatch.copy_u32                     1508 dispatches  28208 threadgroups
+  dispatch.argmax                       1508 dispatches  56550 threadgroups
+  dispatch.mm_tc                        7056 dispatches  387072 threadgroups
+  dispatch.attention_tc                 1008 dispatches  84672 threadgroups
+  gpu: 4552 command buffers, busy 4211.23 ms (union), sum 4211.48 ms
+  gpu   1552.04 ms  36.9 %      718 buffers  rmsnorm_rows+q4k_linear.n4+qkv3+q80_gate_up+add_norm_rows+rope_append+attention_rows+embed
+  gpu   1296.22 ms  30.8 %      718 buffers  rmsnorm_rows+q4k_linear.n4+qkv3+q80_gate_up+add_norm_rows+rope_append+attention_rows+add_rows+copy_u32+argmax
+  gpu    734.65 ms  17.4 %      720 buffers  add_norm_rows+rope_append+gelu_mul_rows+mm_tc+attention_tc
+  gpu    549.37 ms  13.0 %     2324 buffers  q4k_linear.n4+qkv3+q80_gate_up+add_norm_rows+rope_append+attention_rows
+  gpu     44.07 ms   1.0 %       36 buffers  rmsnorm_rows+q4k_linear.n4+add_rows+copy_u32+argmax+mm_tc
+  gpu     35.12 ms   0.8 %       36 buffers  rmsnorm_rows+add_norm_rows+rope_append+gelu_mul_rows+embed+mm_tc+attention_tc

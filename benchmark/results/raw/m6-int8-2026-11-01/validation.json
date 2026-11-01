@@ -1,0 +1,43 @@
+{
+  "release": {
+    "total": 162,
+    "seconds": 46,
+    "passed": 113,
+    "skipped": 49,
+    "failed": 0,
+    "error": 0,
+    "command": "make -j8 MODE=release test-unit",
+    "log_sha256": "e8aa8f7ad7a6ea1c66c393f47907366a8ca8445137ab6f8f7b3144188204aeb3",
+    "real_gpu_int8_pass": true,
+    "real_gpu_default_parity_pass": true
+  },
+  "asan": {
+    "total": 162,
+    "seconds": 95,
+    "passed": 113,
+    "skipped": 49,
+    "failed": 0,
+    "error": 0,
+    "command": "make -j8 MODE=asan test-unit",
+    "log_sha256": "822b87256ebef138fb2bf9bafa1488d65ea66b705e633db0984e9c455350a223",
+    "real_gpu_int8_pass": true,
+    "real_gpu_default_parity_pass": true
+  },
+  "format": "All 582 files conform to .clang-format",
+  "python": "py_compile and --help; benchmark runners exercised end to end",
+  "gcc": "gcc-14/gcc-15 unavailable locally; Linux GCC CI remains pending human agent-head approval",
+  "host_lock": "exclusive M6 interactive lease, no concurrent heavy work during measurements",
+  "headers": {
+    "command": "make check-headers",
+    "result": "PASS",
+    "log_sha256": "faf91a57eb1638a4f519628bc13ce9c24b91821f639ce041b298da318900204d",
+    "last_line": "check-headers: 7 public headers compile as C23 and as C++17"
+  },
+  "fallback": {
+    "command": "GEIST_METAL_TENSOR=0 GEIST_METAL_INT8=1 bin/mac-omp/release/tests/test_backend_metal_parity_unit",
+    "result": "PASS",
+    "log_sha256": "42551e5759bf1b8e84370f30b6421485febcb35eb3842ad4a5714c3b36e6a09d",
+    "last_line": "test_backend_metal_parity_unit: all checks passed"
+  },
+  "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)"
+}

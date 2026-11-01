@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare block-scaled M6 INT8 with the default Metal 4 FP16 path on identical GGUFs.
+"""Compare row-scaled M6 W8A8 with the default Metal 4 FP16 path on identical GGUFs.
 
 Build the four binaries listed in docs/BACKENDS.md first. Run this script
 under the Mac host lock. No downloads or external Python dependencies.
@@ -97,6 +97,12 @@ def quality(binary: Path, model: Path, arm: str, out: Path) -> list[dict]:
     for row in rows:
         row["quality_run_int8_dispatches"] = actual
     return rows
+
+
+def write_logit_manifest(out: Path) -> None:
+    records=[dict(path=str(p.relative_to(out)),bytes=p.stat().st_size,sha256=sha256_file(p))
+             for p in sorted(out.rglob("*.bin"))]
+    (out / "logit-manifest.json").write_text(json.dumps(records,indent=2)+"\n")
 
 
 def main() -> None:
@@ -246,6 +252,7 @@ def main() -> None:
                 raise RuntimeError("non-finite logit comparison")
             summary["logits"].append(dict(model=label, case=CASES[case][0], **metrics))
     (args.out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    write_logit_manifest(args.out)
     print(json.dumps(summary, indent=2), flush=True)
 
 

@@ -1,0 +1,35 @@
+{
+  "cpu": "Apple M6",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A425",
+  "revision": "373ba5bb715b837e896425253a238a66964839b9",
+  "working_tree_dirty": false,
+  "binary_sha256": {
+    "tests/bench_perf_sweep": "133d9d9ea71b8b8af4fe40e0d08e74de7a3fcdba92091cb020eb6424a2edffbe",
+    "tests/test_metal_int8_unit": "ceeca0e98f790704efaa217cab95f51ff80ecd775a6c7a78260b61adff638331",
+    "tools/eval_geist": "b0ae2fa751d679de13c35ee4aa63a415fd90bb5e6f17e2b7f8268ccb069c162a",
+    "tools/dump_geist_logits": "44d3e06a08bece1d9c6fa792e175be2a3cbc2cb924b7b5afefd5cecd88e529dc"
+  },
+  "cycles": 6,
+  "protocol": {
+    "seq_lens": [
+      128,
+      512
+    ],
+    "decode_n": 32,
+    "warmup": 512,
+    "repeats": 1,
+    "order": "AB/BA alternation, same binary",
+    "threads": 4,
+    "int8_tile_rows": 128
+  },
+  "models": {
+    "qwen3-q8": {
+      "path": "/Users/germar/models/qwen3-0.6b-q8_0.gguf",
+      "sha256": "9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031"
+    },
+    "llama3-q4k": {
+      "path": "/Users/germar/geist-models/llama-3.2-3b-Q4_K_M.gguf",
+      "sha256": "6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff"
+    }
+  }
+}

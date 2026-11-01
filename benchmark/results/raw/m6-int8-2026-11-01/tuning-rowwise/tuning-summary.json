@@ -1,0 +1,32 @@
+[
+  {
+    "model": "qwen3-q8",
+    "tile_rows": 32,
+    "prefill_tps": 7051.370999999999
+  },
+  {
+    "model": "qwen3-q8",
+    "tile_rows": 64,
+    "prefill_tps": 7413.414000000001
+  },
+  {
+    "model": "qwen3-q8",
+    "tile_rows": 128,
+    "prefill_tps": 7592.0470000000005
+  },
+  {
+    "model": "llama3-q4k",
+    "tile_rows": 32,
+    "prefill_tps": 910.7815
+  },
+  {
+    "model": "llama3-q4k",
+    "tile_rows": 64,
+    "prefill_tps": 1148.5865
+  },
+  {
+    "model": "llama3-q4k",
+    "tile_rows": 128,
+    "prefill_tps": 1308.578
+  }
+]

@@ -1,0 +1,31 @@
+backend=metal tokens=159 logits=248320 top1=830 piece= x
+metal backend profile:
+  note: wait.* is CPU wall time spent committing/waiting for submitted Metal command buffers; dispatch.* counts encoded kernel dispatches and threadgroups.
+  wait.prefill_text                    12.55 ms  (1 calls)
+  dispatch.rmsnorm_rows                   61 dispatches  17173 threadgroups
+  dispatch.q4k_linear.n4                   1 dispatches  31040 threadgroups
+  dispatch.int8_quant_x                  150 dispatches  23850 threadgroups
+  dispatch.rope_rows                      12 dispatches  1194 threadgroups
+  dispatch.kv_append_rows                  6 dispatches  1908 threadgroups
+  dispatch.gelu_mul_rows                  24 dispatches  53424 threadgroups
+  dispatch.embed                           1 dispatches  636 threadgroups
+  dispatch.add_rows                       48 dispatches  30528 threadgroups
+  dispatch.scale_rows                      6 dispatches  7632 threadgroups
+  dispatch.copy_u32                        2 dispatches  640 threadgroups
+  dispatch.argmax                          2 dispatches  122 threadgroups
+  dispatch.dn.prep                        72 dispatches  11232 threadgroups
+  dispatch.dn.chunk                       18 dispatches  864 threadgroups
+  dispatch.dn.state                       18 dispatches  2304 threadgroups
+  dispatch.dn.out                         18 dispatches  864 threadgroups
+  dispatch.qgate_split                     6 dispatches  7632 threadgroups
+  dispatch.sigmoid_mul                     6 dispatches  7632 threadgroups
+  dispatch.mm_tc                         336 dispatches  411912 threadgroups
+  dispatch.attention_tc                    6 dispatches  240 threadgroups
+  gpu: 49 command buffers, busy 34.93 ms (union), sum 34.93 ms
+  gpu     12.36 ms  35.4 %       18 buffers  rmsnorm_rows+int8_quant_x+gelu_mul_rows+add_rows+mm_tc
+  gpu      9.45 ms  27.1 %       12 buffers  rmsnorm_rows+int8_quant_x+dn.prep+dn.chunk+dn.state+dn.out+mm_tc
+  gpu      4.56 ms  13.1 %        6 buffers  rmsnorm_rows+int8_quant_x+kv_append_rows+gelu_mul_rows+add_rows+sigmoid_mul+mm_tc+attention_tc
+  gpu      3.97 ms  11.4 %        5 buffers  rmsnorm_rows+int8_quant_x+add_rows+dn.prep+dn.chunk+dn.state+dn.out+mm_tc
+  gpu      2.00 ms   5.7 %        6 buffers  rmsnorm_rows+int8_quant_x+rope_rows+scale_rows+qgate_split+mm_tc
+  gpu      1.78 ms   5.1 %        1 buffers  rmsnorm_rows+q4k_linear.n4+add_rows+copy_u32+argmax
+  gpu      0.81 ms   2.3 %        1 buffers  rmsnorm_rows+int8_quant_x+embed+dn.prep+dn.chunk+dn.state+dn.out+mm_tc
