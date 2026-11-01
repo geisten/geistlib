@@ -40,6 +40,16 @@ static const char *const PROMPTS[] = {
         "State the Pythagorean theorem in one sentence.",
         "Return only code for a recursive Python function fibonacci(n).",
         "Translate 'Good morning.' to German.",
+        /* Past 64 tokens of context, so the prompt runs the backends'
+         * prefill flash-attention kernels (the Metal ones need a 64-key
+         * cache), not only their short-cache paths. */
+        "Read the passage and answer in one sentence: which river flows through the city? "
+        "Passage: The city grew up around a bend of the Danube, where merchants from the "
+        "east and the west met to trade salt, grain and timber. Its old town sits on a "
+        "hill above the river, with a castle that has burned and been rebuilt three times. "
+        "In the nineteenth century a railway bridge joined the two banks, and the factories "
+        "that followed turned the harbour into one of the busiest on the river. Today most "
+        "of the factories are gone, the harbour is a park, and the castle is a museum.",
 };
 #define N_PROMPTS (sizeof PROMPTS / sizeof PROMPTS[0])
 

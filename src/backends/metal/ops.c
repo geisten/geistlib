@@ -132,7 +132,7 @@ static void metal_encode_mv_m8(struct metal_state            *st,
 }
 
 /* The tensor-API GEMM (#314, metal_mm_tc_*) on pipe: 64 outputs x 128
- * rows per threadgroup of 128 threads, bounds by the kernel's tensor
+ * rows per threadgroup of 256 threads, bounds by the kernel's tensor
  * extents, so any rows >= 2 shape. */
 static void metal_encode_mm_tc(struct metal_state            *st,
                                void                          *enc,
@@ -146,11 +146,11 @@ static void metal_encode_mm_tc(struct metal_state            *st,
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
-    metal_msg_send_set_threadgroup_memory(st, enc, 64u * 32u * 2u, 0u);
+    metal_msg_send_set_threadgroup_memory(st, enc, 64u * 64u * 2u, 0u);
     const struct metal_size groups  = {.width  = (params->rows + 127u) / 128u,
                                        .height = (params->n_out + 63u) / 64u,
                                        .depth  = 1};
-    const struct metal_size threads = {.width = 128u, .height = 1u, .depth = 1u};
+    const struct metal_size threads = {.width = 256u, .height = 1u, .depth = 1u};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_MM_TC, groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
 }
@@ -1032,6 +1032,21 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
     /* A few rows of a narrow matrix (DeltaNet beta/alpha: 48 outputs) would
      * leave the 8x8 GEMM n_out/8 threadgroups; the reduction kernel spreads
      * every output over a threadgroup instead (#192). */
+    /* On the matrix units (#314): F32 weights rounded to half per tile. */
+    if (params->rows >= 8u && w->dtype == GEIST_DTYPE_F32 && st->f32_mm_tc_pipeline != nullptr &&
+        params->n_in % 16u == 0u) {
+        const struct metal_q4k_params tp = {.n_in           = params->n_in,
+                                            .n_out          = params->n_out,
+                                            .rows           = params->rows,
+                                            .blocks_per_row = params->n_in / 16u,
+                                            .x_offset       = params->x_offset,
+                                            .w_byte_offset  = params->w_offset * 4u,
+                                            .y_offset       = params->y_offset,
+                                            .x_row_stride   = params->x_row_stride,
+                                            .y_row_stride   = params->y_row_stride};
+        metal_encode_mm_tc(st, enc, st->f32_mm_tc_pipeline, x, w, y, &tp);
+        return;
+    }
     const bool narrow_few = params->rows <= 8u && params->n_out < 1024u;
     const bool use_sg     = params->rows > 1u && sg_pipe != nullptr && !narrow_few;
     const bool use_mm     = use_sg && w->dtype == GEIST_DTYPE_F32 &&
@@ -2234,17 +2249,29 @@ static void *metal_flash_pipeline(const struct metal_state *st, size_t head_dim)
         metal_msg_send_dispatch(st, enc, cgroups, cthreads);
     }
 
-    /* 16 query rows per threadgroup; 4 simdgroups up to head_dim 256, 8
-     * above (the Gemma global layers, head_dim 512). */
-    metal_msg_send_set_pipeline(st, enc, metal_flash_pipeline(st, head_dim));
+    /* On the matrix units (#314) Q rows per threadgroup, 32 or 16 at
+     * head_dim 512, 8 simdgroups; else 16 rows and 4 simdgroups up to
+     * head_dim 256, 8 above (the Gemma global layers, head_dim 512). */
+    if (st->tensor_mm) {
+        (void) metal_ensure(be, METAL_TAB_TENSOR); /* not fatal: drops tensor_mm */
+    }
+    void        *tc      = st->tensor_mm && head_dim % 64u == 0u && head_dim / 64u <= 8u
+                                   ? st->attention_flash_tc_pipeline[head_dim / 64u - 1u]
+                                   : nullptr;
+    const size_t tc_rows = head_dim >= 512u ? 16u : 32u;
+    metal_msg_send_set_pipeline(st, enc, tc != nullptr ? tc : metal_flash_pipeline(st, head_dim));
     metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, kf16, 0, 1);
     metal_msg_send_set_buffer(st, enc, vf16, 0, 2);
     metal_msg_send_set_buffer(st, enc, out->buffer->buffer, out->buffer->base_off, 3);
     metal_msg_send_set_bytes(st, enc, &fp, sizeof(fp), 4);
-    const struct metal_size fgroups  = {(q_rows + 15u) / 16u, q_heads, 1};
-    const struct metal_size fthreads = {head_dim > 256u ? 256u : 128u, 1, 1};
-    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ATTENTION_ROWS, fgroups);
+    const size_t            frows    = tc != nullptr ? tc_rows : 16u;
+    const struct metal_size fgroups  = {(q_rows + frows - 1u) / frows, q_heads, 1};
+    const struct metal_size fthreads = {tc != nullptr || head_dim > 256u ? 256u : 128u, 1, 1};
+    metal_profile_add_dispatch(st,
+                               tc != nullptr ? METAL_PROFILE_DISPATCH_ATTENTION_TC
+                                             : METAL_PROFILE_DISPATCH_ATTENTION_ROWS,
+                               fgroups);
     metal_msg_send_dispatch(st, enc, fgroups, fthreads);
 
     return metal_op_end(be, cmd, enc, "flash attention");

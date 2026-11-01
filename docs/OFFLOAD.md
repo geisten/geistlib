@@ -622,6 +622,25 @@ experts are bigger (2.9 vs 1.8 MB) and a session's KV cache spans 48
 layers, so each session pushes more experts to the CPU, whose cold-expert
 work every batched row then pays (#238: CPU memory bandwidth bound).
 
+**Decode-sized batch members (`batch_m_max`).** A session's scratch,
+DeltaNet slabs and routing buffers scale with its m_max (512 by default for
+an MoE on a discrete GPU). Batch members created with a small m_max, and
+declared at load with `geist_session_opts.batch_m_max`, cost less, and the
+budget gives the difference to the hot experts. RTX 2080 Ti, 9 sessions,
+2,048 positions, aggregate decode at 8 sessions:
+
+| members' m_max | Qwen3.6-35B-A3B hot / tok/s | Qwen3-30B-A3B hot / tok/s | prefill of a member (Qwen3.6 / Qwen3-30B) |
+|:--|--:|--:|--:|
+| 512 (default) | 1,840 / 108.9 | 1,605 / 70.7 | 853 / 801 tok/s |
+| 64 | – / 117.5 | – / 79.7 | 432 / 391 tok/s |
+| 8 | 2,785 / 121.1 | 2,141 / 83.0 | 191 / 146 tok/s |
+
+A member prefills in chunks of its m_max, so a long prompt on it is slower.
+**Recommendation:** `batch_m_max` 64 in general (most of the decode gain at
+half the prefill speed); 8 when the members start from a snapshot of a
+full-size session (`geist_session_restore`) and rarely prefill themselves,
+e.g. #26's shared-prefix questions.
+
 All measurements under `scripts/gpu-lock.sh` (and `with-mac-lock` on the
 Mac), interleaved cycles, raw samples kept, `bench_revision_ab.py` parent vs
 patch for "single-backend runs pay nothing".
