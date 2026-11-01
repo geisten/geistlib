@@ -1986,6 +1986,73 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
     return GEIST_OK;
 }
 
+/* Bounded, grow-only activation data + per-128 FP32 scales and sums.
+ * Block modes read original PQ2; staged modes reuse one prepared pair. */
+[[nodiscard]] static bool
+metal_pq2_lowp_reserve(struct geist_backend *be, size_t rows, size_t ni, size_t n_out) {
+    struct metal_state *st = be->state;
+    if (st->pq2_lowp_mode == 5u)
+        return true;
+    size_t elems, data, meta, bytes;
+    if (st->pq2_lowp_mode >= 7u) {
+        size_t count;
+        if (ckd_add(&count, rows, n_out) || ckd_mul(&data, count, ni) || data > UINT32_MAX ||
+            ckd_mul(&meta, count, 4u) || ckd_add(&bytes, data, meta))
+            return false;
+    } else {
+        if (ckd_mul(&elems, rows, ni) || elems > UINT32_MAX ||
+            ckd_mul(&data, elems, st->pq2_lowp_mode == 4u ? 2u : 1u) ||
+            ckd_mul(&meta, elems / 128u, 8u) || ckd_add(&bytes, data, meta))
+            return false;
+    }
+    return metal_scratch_reserve(be, bytes, 0, false, &st->pq2_lowp_x) == GEIST_OK;
+}
+
+static void metal_encode_pq2_lowp(struct metal_state            *st,
+                                  void                          *enc,
+                                  const struct geist_tensor     *x,
+                                  const struct geist_tensor     *w,
+                                  const struct geist_tensor     *y,
+                                  const struct metal_q4k_params *p) {
+    if (st->pq2_lowp_mode != 5u) {
+        metal_msg_send_set_pipeline(st, enc, st->pq2_lowp_x_pipeline);
+        if (st->pq2_lowp_mode >= 7u)
+            metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 3);
+        metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+        metal_msg_send_set_buffer(st, enc, st->pq2_lowp_x->buffer, st->pq2_lowp_x->base_off, 1);
+        metal_msg_send_set_bytes(st, enc, p, sizeof *p, 2);
+        const size_t qrows = st->pq2_lowp_mode >= 7u ? (size_t) p->rows + p->n_out : p->rows;
+        const struct metal_size qg = {
+                st->pq2_lowp_mode >= 7u ? (qrows + 7u) / 8u : (qrows * p->blocks_per_row + 7u) / 8u,
+                1,
+                1};
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_PQ2_LOWP_X, qg);
+        metal_msg_send_dispatch(st, enc, qg, (struct metal_size) {256, 1, 1});
+        st->pq2_lowp_quant_dispatches++;
+    }
+    const uint32_t slot =
+            (st->pq2_lowp_simdgroups == 4 ? 0u : 3u) + (st->pq2_lowp_tile == 32   ? 0u
+                                                        : st->pq2_lowp_tile == 64 ? 1u
+                                                                                  : 2u);
+    metal_msg_send_set_pipeline(st, enc, st->pq2_lowp_mm_pipeline[slot]);
+    if (st->pq2_lowp_mode == 5u)
+        metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    else
+        metal_msg_send_set_buffer(st, enc, st->pq2_lowp_x->buffer, st->pq2_lowp_x->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
+    metal_msg_send_set_bytes(st, enc, p, sizeof *p, 3);
+    if (st->pq2_lowp_mode <= 4u)
+        metal_msg_send_set_threadgroup_memory(
+                st, enc, 8448u + (st->pq2_lowp_shared_acc ? st->pq2_lowp_tile * 64u * 4u : 0u), 0);
+    const struct metal_size groups = {
+            (p->rows + st->pq2_lowp_tile - 1u) / st->pq2_lowp_tile, (p->n_out + 63u) / 64u, 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_MM_TC, groups);
+    metal_msg_send_dispatch(
+            st, enc, groups, (struct metal_size) {st->pq2_lowp_simdgroups * 32u, 1, 1});
+    st->pq2_lowp_mm_dispatches++;
+}
+
 /* Every quantized linear (metal_dtype_is_quant): matrix runs the m-row
  * GEMM on 2D views, else the one-row matvec on 1D views. */
 [[nodiscard]] static enum geist_status metal_quant_linear(struct geist_backend      *be,
@@ -1993,7 +2060,8 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
                                                           const struct geist_tensor *w,
                                                           struct geist_tensor       *y,
                                                           enum geist_dtype           dtype,
-                                                          bool                       matrix) {
+                                                          bool                       matrix,
+                                                          bool                       allow_lowp) {
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -2037,9 +2105,21 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
         return s;
     }
     struct metal_state *st = be->state;
-    if (dtype == GEIST_DTYPE_PQ2_0 && rows >= 8u && n_out % 64u == 0u && n_in % 32u == 0u) {
+    bool lowp = allow_lowp && matrix && dtype == GEIST_DTYPE_PQ2_0 && st->pq2_lowp_mode != 0 &&
+                st->tensor_mm && rows >= 64u && rows <= INT_MAX && n_in <= INT_MAX &&
+                n_out <= INT_MAX;
+    if (lowp && st->pq2_lowp_mode == 7u && n_in > 65536u)
+        lowp = false;
+    if (lowp) {
+        const enum geist_status ready = metal_ensure(be, METAL_TAB_PQ2_LOWP);
+        lowp = ready == GEIST_OK && st->pq2_lowp_mode != 0 && st->pq2_lowp_x_pipeline != nullptr &&
+               metal_pq2_lowp_reserve(be, rows, n_in, n_out);
+    }
+
+    if (!lowp && dtype == GEIST_DTYPE_PQ2_0 && rows >= 8u && n_out % 64u == 0u &&
+        n_in % 32u == 0u) {
         metal_pq2_xh_reserve(be, rows, n_in);
-    } else if (dtype == GEIST_DTYPE_PQ2_0 && rows >= 2u && rows <= 8u) {
+    } else if (!lowp && dtype == GEIST_DTYPE_PQ2_0 && rows >= 2u && rows <= 8u) {
         metal_pq2_xh_reserve(be, 8u, n_in);
     }
     const struct metal_q4k_params params = {
@@ -2060,7 +2140,10 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
-    metal_encode_quant_linear(st, enc, x, w, y, &params, dtype, matrix);
+    if (lowp)
+        metal_encode_pq2_lowp(st, enc, x, w, y, &params);
+    else
+        metal_encode_quant_linear(st, enc, x, w, y, &params, dtype, matrix);
     return metal_op_end(be, cmd, enc, "quant linear");
 }
 
@@ -3483,9 +3566,10 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
                                                           const struct geist_tensor *w,
                                                           struct geist_tensor       *y,
                                                           enum geist_dtype           dtype,
-                                                          bool                       matrix) {
+                                                          bool                       matrix,
+                                                          bool                       allow_lowp) {
     if (metal_dtype_is_quant(dtype)) {
-        return metal_quant_linear(be, x, w, y, dtype, matrix);
+        return metal_quant_linear(be, x, w, y, dtype, matrix, allow_lowp);
     }
     if (metal_dtype_is_float(dtype)) {
         return metal_f32_linear(be, x, w, y, matrix);
@@ -3566,7 +3650,8 @@ static void metal_linear_mN(size_t                     m,
         tw.stride[0] = (int64_t) n_in;
         tw.stride[1] = 1;
     }
-    const enum geist_status s = metal_linear_dtype(be, &tx, &tw, &ty, tw.dtype, true);
+    const enum geist_status s =
+            metal_linear_dtype(be, &tx, &tw, &ty, tw.dtype, true, (w->flags & GEIST_W_EXACT) == 0);
     if (s != GEIST_OK) {
         fprintf(stderr,
                 "geist metal: linear dispatch failed "
@@ -3623,9 +3708,16 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
             y1.shape[1]  = 0;
             y1.stride[1] = 0;
         }
-        return metal_linear_dtype(be, &x1, t_w, &y1, (enum geist_dtype) w->dtype, false);
+        return metal_linear_dtype(be,
+                                  &x1,
+                                  t_w,
+                                  &y1,
+                                  (enum geist_dtype) w->dtype,
+                                  false,
+                                  (w->flags & GEIST_W_EXACT) == 0);
     }
-    return metal_linear_dtype(be, x, t_w, y, (enum geist_dtype) w->dtype, true);
+    return metal_linear_dtype(
+            be, x, t_w, y, (enum geist_dtype) w->dtype, true, (w->flags & GEIST_W_EXACT) == 0);
 }
 
 [[nodiscard]] static enum geist_status metal_selected_prepare(const struct geist_weight *w,

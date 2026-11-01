@@ -60,7 +60,7 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_Q4K_LINEAR_W4A8,
     METAL_PROFILE_DISPATCH_Q4K_PLE_GATE_NT8,
     METAL_PROFILE_DISPATCH_F32_PLE_GATE,
-    METAL_PROFILE_DISPATCH_Q4K_QUANT_X,
+    METAL_PROFILE_DISPATCH_PQ2_LOWP_X, /* retired Q4_K quant slot */
     METAL_PROFILE_DISPATCH_Q6K_LINEAR_BASE,
     METAL_PROFILE_DISPATCH_Q6K_LINEAR_N4,
     METAL_PROFILE_DISPATCH_Q6K_LINEAR_NT4,
@@ -587,6 +587,13 @@ struct metal_state {
      * (Apple family 10+: M5, M6, A19), or GEIST_METAL_TENSOR=1 forces it;
      * GEIST_METAL_TENSOR=0 keeps the simdgroup GEMMs. Cleared when the
      * tensor unit does not compile (an OS without the Metal 4 tensor API). */
+    bool                      pq2_lowp_shared_acc;
+    uint32_t                  pq2_lowp_mode, pq2_lowp_tile, pq2_lowp_simdgroups;
+    void                     *pq2_lowp_library;
+    void                     *pq2_lowp_x_function, *pq2_lowp_x_pipeline;
+    void                     *pq2_lowp_mm_function[6], *pq2_lowp_mm_pipeline[6];
+    struct geist_buffer      *pq2_lowp_x;
+    uint64_t                  pq2_lowp_quant_dispatches, pq2_lowp_mm_dispatches;
     bool                      tensor_mm;
     struct metal_profile_stat profile[METAL_PROFILE_STAGE_COUNT];
     /* GPU time of committed command buffers (profile only): the sum of the
@@ -1140,6 +1147,7 @@ enum metal_table {
     METAL_TAB_ARGMAX,
     METAL_TAB_MOE,
     METAL_TAB_TENSOR, /* tensor-API GEMMs; metal_ensure(QUANT) builds it when tensor_mm */
+    METAL_TAB_PQ2_LOWP,
     METAL_TAB_COUNT,
 };
 
