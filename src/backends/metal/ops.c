@@ -2105,6 +2105,9 @@ static void metal_encode_pq2_lowp(struct metal_state            *st,
         return s;
     }
     struct metal_state *st = be->state;
+    /* Native pipeline setup and shared scratch growth must hold the same
+     * sequence lock as their dispatch, including standalone fused calls. */
+    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
     bool lowp = allow_lowp && matrix && dtype == GEIST_DTYPE_PQ2_0 && st->pq2_lowp_mode != 0 &&
                 st->tensor_mm && rows >= 64u && rows <= INT_MAX && n_in <= INT_MAX &&
                 n_out <= INT_MAX;
@@ -2133,7 +2136,6 @@ static void metal_encode_pq2_lowp(struct metal_state            *st,
             .x_row_stride   = (uint32_t) x_row_stride,
             .y_row_stride   = (uint32_t) y_row_stride,
     };
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
     void *enc = metal_op_begin(be, "quant linear", &cmd);
