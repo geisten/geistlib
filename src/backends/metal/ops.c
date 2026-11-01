@@ -1201,7 +1201,7 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
             .y_row_stride = (uint32_t) y_row_stride,
     };
 
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
     void *enc = metal_op_begin(be, "F32 linear", &cmd);
@@ -1276,7 +1276,7 @@ metal_vec_of(const struct geist_backend *be, const struct geist_tensor *t, struc
             .y_row_stride = (uint32_t) yr.stride,
             .eps          = eps,
     };
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
     void *enc = metal_op_begin(be, nullptr, &cmd);
@@ -1323,7 +1323,7 @@ metal_vec_of(const struct geist_backend *be, const struct geist_tensor *t, struc
             .y_row_stride        = (uint32_t) yr.stride,
             .eps                 = eps,
     };
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
     void *enc = metal_op_begin(be, nullptr, &cmd);
@@ -1383,7 +1383,7 @@ metal_vec_of(const struct geist_backend *be, const struct geist_tensor *t, struc
             .eps                 = eps,
             .scale               = scale,
     };
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
     void *enc = metal_op_begin(be, nullptr, &cmd);
@@ -1430,7 +1430,7 @@ metal_binary_rows(struct geist_backend      *be,
             .b_row_stride = (uint32_t) br.stride,
             .y_row_stride = (uint32_t) yr.stride,
     };
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
     void *enc = metal_op_begin(be, nullptr, &cmd);
@@ -1490,17 +1490,17 @@ metal_binary_rows(struct geist_backend      *be,
     enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
     if (s != GEIST_OK)
         return s;
-    struct metal_state                                *st     = be->state;
-    const struct metal_qgate_params                    params = {.rows     = (uint32_t) rows,
-                                                                 .heads    = (uint32_t) heads,
-                                                                 .head_dim = (uint32_t) head_dim,
-                                                                 .joint_offset     = (uint32_t) jo,
-                                                                 .q_offset         = (uint32_t) qo,
-                                                                 .gate_offset      = (uint32_t) go,
-                                                                 .joint_row_stride = (uint32_t) js,
-                                                                 .q_row_stride     = (uint32_t) qs,
-                                                                 .gate_row_stride  = (uint32_t) gs};
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool   = metal_standalone_pool(st);
+    struct metal_state                             *st     = be->state;
+    const struct metal_qgate_params                 params = {.rows         = (uint32_t) rows,
+                                                              .heads        = (uint32_t) heads,
+                                                              .head_dim     = (uint32_t) head_dim,
+                                                              .joint_offset = (uint32_t) jo,
+                                                              .q_offset     = (uint32_t) qo,
+                                                              .gate_offset  = (uint32_t) go,
+                                                              .joint_row_stride = (uint32_t) js,
+                                                              .q_row_stride     = (uint32_t) qs,
+                                                              .gate_row_stride  = (uint32_t) gs};
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool   = metal_standalone_pool(st);
 
     void *cmd = nullptr;
     void *enc = metal_op_begin(be, nullptr, &cmd);
@@ -1615,7 +1615,7 @@ static bool metal_hadamard_geometry_ok(
             .ys    = (uint32_t) ys,
             .so    = (uint32_t) so,
     };
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
     void *enc = metal_op_begin(be, nullptr, &cmd);
@@ -1655,7 +1655,7 @@ static bool metal_hadamard_geometry_ok(
             .b_row_stride = (uint32_t) gr.stride,
             .y_row_stride = (uint32_t) yr.stride,
     };
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
     void *enc = metal_op_begin(be, nullptr, &cmd);
@@ -1700,7 +1700,7 @@ metal_unary_rows(struct geist_backend      *be,
             .y_row_stride = (uint32_t) yr.stride,
             .scale        = scale,
     };
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
     void *enc = metal_op_begin(be, nullptr, &cmd);
@@ -1892,7 +1892,7 @@ metal_embedding_lookup_scaled(struct geist_backend      *be,
             .scale          = scale,
     };
 
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
     void *enc = metal_op_begin(be, "embedding_lookup_scaled", &cmd);
@@ -2068,7 +2068,7 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
             .x_row_stride   = (uint32_t) x_row_stride,
             .y_row_stride   = (uint32_t) y_row_stride,
     };
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
     void *enc = metal_op_begin(be, "quant linear", &cmd);
@@ -2130,7 +2130,7 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
             .rope_row_stride = (uint32_t) cos_stride,
             .rope_row_offset = 0,
     };
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
     void *enc = metal_op_begin(be, "rope_apply", &cmd);
@@ -2229,9 +2229,9 @@ static void *metal_flash_pipeline(const struct metal_state *st, size_t head_dim)
     void *kf16 = kv_native_f16 ? k->buffer->buffer : st->attn_kf16_buffer->buffer;
     void *vf16 = kv_native_f16 ? value->buffer->buffer : st->attn_vf16_buffer->buffer;
 
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-    void                                              *cmd  = nullptr;
-    void                                              *enc  = metal_op_begin(be, nullptr, &cmd);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
+    void                                           *cmd  = nullptr;
+    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -2381,9 +2381,9 @@ enum { METAL_DECQ_MAX_GROUPS = 256 };
     const size_t k_base = kv_native_f16 ? 0u : k->buffer->base_off;
     const size_t v_base = kv_native_f16 ? 0u : value->buffer->base_off;
 
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-    void                                              *cmd  = nullptr;
-    void                                              *enc  = metal_op_begin(be, nullptr, &cmd);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
+    void                                           *cmd  = nullptr;
+    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -2501,9 +2501,9 @@ enum { METAL_DECQ_MAX_GROUPS = 256 };
             .x_row_stride       = (uint32_t) x_stride,
             .y_row_stride       = (uint32_t) y0_stride,
     };
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-    void                                              *cmd  = nullptr;
-    void                                              *enc  = metal_op_begin(be, nullptr, &cmd);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
+    void                                           *cmd  = nullptr;
+    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -2632,9 +2632,9 @@ static bool metal_mv_weight_of(const struct geist_tensor *t, struct metal_mv_wei
             .x_row_stride       = (uint32_t) x_stride,
             .y_row_stride       = (uint32_t) y_stride,
     };
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-    void                                              *cmd  = nullptr;
-    void                                              *enc  = metal_op_begin(be, nullptr, &cmd);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
+    void                                           *cmd  = nullptr;
+    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -2776,9 +2776,9 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
         uint32_t                g1, g2;
         struct metal_q4k_params p0, p1, p2;
     } t3 = {groups[0], groups[0] + groups[1], p[0], p[1], p[2]};
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-    void                                              *cmd  = nullptr;
-    void                                              *enc  = metal_op_begin(be, nullptr, &cmd);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
+    void                                           *cmd  = nullptr;
+    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -2928,9 +2928,9 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
             (uint32_t) q_position,
             eps};
 
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-    void                                              *cmd  = nullptr;
-    void                                              *enc  = metal_op_begin(be, nullptr, &cmd);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
+    void                                           *cmd  = nullptr;
+    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -3064,9 +3064,9 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
     const struct geist_tensor *qw = q_norm_w != nullptr ? q_norm_w : q;
     const struct geist_tensor *kw = k_norm_w != nullptr ? k_norm_w : q;
 
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-    void                                              *cmd  = nullptr;
-    void                                              *enc  = metal_op_begin(be, nullptr, &cmd);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
+    void                                           *cmd  = nullptr;
+    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -3156,19 +3156,19 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
     }
     struct {
         uint32_t ni, no, rows, xo, wo, po, yo, xs, ps, ys;
-    } gp                                                    = {(uint32_t) d_in,
-                                                               (uint32_t) hpl,
-                                                               (uint32_t) rows,
-                                                               (uint32_t) x_off,
-                                                               (uint32_t) gw_off,
-                                                               (uint32_t) p_off,
-                                                               (uint32_t) g_off,
-                                                               (uint32_t) x_stride,
-                                                               (uint32_t) p_stride,
-                                                               (uint32_t) g_stride};
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-    void                                              *cmd  = nullptr;
-    void                                              *enc  = metal_op_begin(be, nullptr, &cmd);
+    } gp                                                 = {(uint32_t) d_in,
+                                                            (uint32_t) hpl,
+                                                            (uint32_t) rows,
+                                                            (uint32_t) x_off,
+                                                            (uint32_t) gw_off,
+                                                            (uint32_t) p_off,
+                                                            (uint32_t) g_off,
+                                                            (uint32_t) x_stride,
+                                                            (uint32_t) p_stride,
+                                                            (uint32_t) g_stride};
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
+    void                                           *cmd  = nullptr;
+    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -3250,9 +3250,9 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
     struct {
         uint32_t n, xo, ng;
     } ap = {(uint32_t) n, (uint32_t) x_off, (uint32_t) ng};
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-    void                                              *cmd  = nullptr;
-    void                                              *enc  = metal_op_begin(be, nullptr, &cmd);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
+    void                                           *cmd  = nullptr;
+    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -3334,9 +3334,9 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
             (uint32_t) vc_off,
             (uint32_t) q_position};
 
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-    void                                              *cmd  = nullptr;
-    void                                              *enc  = metal_op_begin(be, nullptr, &cmd);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
+    void                                           *cmd  = nullptr;
+    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -3480,7 +3480,7 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
             .v_cache_offset = (uint32_t) v_off,
             .y_offset       = (uint32_t) out_off,
     };
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
     void *enc = metal_op_begin(be, "attention", &cmd);
@@ -3712,9 +3712,9 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     const enum geist_status s = metal_selected_prepare(w, be);
     if (s != GEIST_OK)
         return s;
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-    void                                              *cmd  = nullptr;
-    void                                              *enc  = metal_op_begin(be, nullptr, &cmd);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
+    void                                           *cmd  = nullptr;
+    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr)
         return GEIST_E_BACKEND;
     const enum geist_dtype         dtype = (enum geist_dtype) w->dtype;
@@ -3957,9 +3957,9 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
                                            .delta_state_offset = (uint32_t) s_off,
                                            .eps                = args->eps};
 
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-    void                                              *cmd  = nullptr;
-    void                                              *enc  = metal_op_begin(be, "DeltaNet", &cmd);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
+    void                                           *cmd  = nullptr;
+    void                                           *enc  = metal_op_begin(be, "DeltaNet", &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -4221,8 +4221,8 @@ metal_deltanet_mix_states(struct geist_backend                 *be,
                                            .conv_state_offset  = (uint32_t) cs_off0,
                                            .delta_state_offset = (uint32_t) s_off0,
                                            .eps                = args->eps};
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
-    void                                              *cmd  = nullptr;
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
+    void                                           *cmd  = nullptr;
     void *enc = metal_op_begin(be, "DeltaNet states", &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
@@ -4307,15 +4307,15 @@ struct metal_moe_sum_params {
     enum geist_status s = metal_ensure(be, METAL_TAB_MOE);
     if (s != GEIST_OK)
         return s;
-    struct metal_state                                *st = be->state;
-    const struct metal_moe_route_params                q  = {.n    = (uint32_t) n,
-                                                             .k    = (uint32_t) k,
-                                                             .norm = norm ? 1u : 0u,
-                                                             .flag = (uint32_t) (flag_offset / 4u),
-                                                             .ls   = (uint32_t) ls,
-                                                             .lo   = (uint32_t) lo,
-                                                             .wo   = (uint32_t) wo};
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    struct metal_state                             *st   = be->state;
+    const struct metal_moe_route_params             q    = {.n    = (uint32_t) n,
+                                                            .k    = (uint32_t) k,
+                                                            .norm = norm ? 1u : 0u,
+                                                            .flag = (uint32_t) (flag_offset / 4u),
+                                                            .ls   = (uint32_t) ls,
+                                                            .lo   = (uint32_t) lo,
+                                                            .wo   = (uint32_t) wo};
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
     void *cmd = nullptr, *enc = metal_op_begin(be, "MoE route", &cmd);
     if (enc == nullptr)
         return GEIST_E_BACKEND;
@@ -4421,10 +4421,10 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
             .x_row_stride   = (uint32_t) xs,
             .y_row_stride   = (uint32_t) ys,
     };
-    const struct metal_moe_ids_params                  q    = {.estride  = (uint32_t) w0->raw_nbytes,
-                                                               .per_slot = x_per_slot ? 1u : 0u,
-                                                               .k        = (uint32_t) k};
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    const struct metal_moe_ids_params               q    = {.estride  = (uint32_t) w0->raw_nbytes,
+                                                            .per_slot = x_per_slot ? 1u : 0u,
+                                                            .k        = (uint32_t) k};
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
     void *cmd = nullptr, *enc = metal_op_begin(be, "MoE expert matvec", &cmd);
     if (enc == nullptr)
         return GEIST_E_BACKEND;
@@ -4467,14 +4467,14 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
     enum geist_status s = metal_ensure(be, METAL_TAB_MOE);
     if (s != GEIST_OK)
         return s;
-    struct metal_state                                *st   = be->state;
-    const struct metal_moe_sum_params                  q    = {.d  = (uint32_t) d,
-                                                               .k  = (uint32_t) k,
-                                                               .yo = (uint32_t) yo,
-                                                               .wo = (uint32_t) wo,
-                                                               .ao = (uint32_t) ao,
-                                                               .oo = (uint32_t) oo};
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    struct metal_state                             *st   = be->state;
+    const struct metal_moe_sum_params               q    = {.d  = (uint32_t) d,
+                                                            .k  = (uint32_t) k,
+                                                            .yo = (uint32_t) yo,
+                                                            .wo = (uint32_t) wo,
+                                                            .ao = (uint32_t) ao,
+                                                            .oo = (uint32_t) oo};
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
     void *cmd = nullptr, *enc = metal_op_begin(be, "MoE weighted sum", &cmd);
     if (enc == nullptr)
         return GEIST_E_BACKEND;

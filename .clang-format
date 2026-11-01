@@ -61,3 +61,4 @@ IndentPPDirectives: None
 
 # Comments may be reflowed, but keep code generation and legal text untouched.
 ReflowComments: true
+AttributeMacros: [GEIST_CLEANUP]

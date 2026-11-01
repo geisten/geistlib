@@ -418,7 +418,7 @@ static bool metal_copies_in_sequence(const struct metal_state *st,
     metal_flush_if_referenced(st, src, src_offset, n_bytes);
     metal_flush_if_referenced(st, dst, dst_offset, n_bytes);
 
-    [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     if (cmd == nullptr) {

@@ -57,7 +57,7 @@ static inline void metal_pool_pop(struct metal_state *st, void *pool) {
 /* Pool for a standalone submission (commandBuffer ... waitUntilCompleted),
  * popped on every return path:
  *
- *     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
+ *     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
  *
  * Inside a command sequence it pushes nothing: the sequence's pool covers
  * the op, and a nested one would be popped from under it by a flush. */
