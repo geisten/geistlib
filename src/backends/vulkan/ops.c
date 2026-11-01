@@ -1945,8 +1945,8 @@ vk_stage_weights(struct geist_backend *be, size_t n, const struct geist_weight *
     struct geist_buffer *src[VK_STAGE_MAX];
     for (size_t i = 0; i < n; ++i) {
         src[i] = w[i] != nullptr ? vk_weight_lookup(st, w[i]->raw) : nullptr;
-        if (src[i] == nullptr || src[i]->device_mem || src[i]->buf == VK_NULL_HANDLE ||
-            src[i]->bytes > st->stage_bytes) {
+        if (src[i] == nullptr || (src[i]->memory_flags & GEIST_MEMORY_HOST) == 0 ||
+            src[i]->buf == VK_NULL_HANDLE || src[i]->bytes > st->stage_bytes) {
             return GEIST_E_UNSUPPORTED;
         }
         for (size_t j = 0; j < i; ++j) {

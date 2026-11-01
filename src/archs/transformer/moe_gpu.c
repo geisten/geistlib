@@ -188,7 +188,8 @@ static size_t moe_pad(size_t m) {
 
 /* #239: the most cold experts a prefill step of the model on `gbe` copies
  * there (0: no staging): the backend stages, holds the model itself, has
- * its own memory, and GEIST_MOE_STAGE is not 0. GEIST_MOE_STAGE_MAX sets
+ * its own memory (or GEIST_MOE_STAGE_M_MIN asks anyway: tests on lavapipe),
+ * and GEIST_MOE_STAGE is not 0. GEIST_MOE_STAGE_MAX sets
  * the count (default 16: a step of Qwen3.6-35B-A3B stages 14 on average
  * at 32 rows, and 32 slots were no faster but cost decode hot experts). */
 static size_t moe_stage_wanted(const struct transformer_arch_state *st, struct geist_backend *gbe) {
@@ -197,8 +198,11 @@ static size_t moe_stage_wanted(const struct transformer_arch_state *st, struct g
     if (gbe != st->backend || gf == nullptr || gf->stage_weights == nullptr ||
         gf->stage_reserve == nullptr || gf->rows_gather == nullptr ||
         gf->rows_weighted_sum == nullptr || gf->submit == nullptr ||
-        geist_backend_memory_info(gbe, &mem) != GEIST_OK || mem.unified_memory ||
+        geist_backend_memory_info(gbe, &mem) != GEIST_OK ||
         !geist_env_flag("GEIST_MOE_STAGE", true))
+        return 0;
+    /* One memory has nothing to copy; a test may still ask with a threshold. */
+    if (mem.unified_memory && getenv("GEIST_MOE_STAGE_M_MIN") == nullptr)
         return 0;
     long n = 16;
     if (geist_parse_long(getenv("GEIST_MOE_STAGE_MAX"), &n) && (n < 0 || n > 64))
