@@ -15,6 +15,11 @@
  * those of the second half of its window: first = N / 2 compares the
  * same tokens.
  *
+ * GEIST_NLL_PREFILL=1 feeds the context before `first` in one prefill
+ * call (the engine's chunks; GEIST_NLL_M_MAX=<rows> sets their size)
+ * instead of one token at a time, so a change to the prefill path shows in
+ * the perplexity of the tokens after it.
+ *
  * GEIST_BENCH_BACKEND picks the backend (default: the engine's choice);
  * GEIST_BENCH_SPLIT_BACKEND (+ GEIST_BENCH_SPLIT_LAYERS, "auto" or a count)
  * adds a split backend, which for a mixture-of-experts model holds its
@@ -84,7 +89,11 @@ int main(int argc, char **argv) {
     struct geist_session           *s   = nullptr;
     geist_token_t                  *ids = malloc((max_tokens + 1) * sizeof *ids);
     size_t                          n   = 0;
-    const struct geist_session_opts so  = {.top_p = 1.0f, .max_seq_len = max_tokens + 8};
+    const char                     *mm  = getenv("GEIST_NLL_M_MAX"); /* prefill chunk rows */
+    const struct geist_session_opts so  = {
+            .top_p       = 1.0f,
+            .max_seq_len = max_tokens + 8,
+            .m_max       = mm != nullptr ? (size_t) strtoull(mm, nullptr, 10) : 0};
     if (ids == nullptr || geist_model_load_with_opts(argv[1], be, &lo, &m) != GEIST_OK ||
         geist_session_create(m, be, &so, &s) != GEIST_OK) {
         fprintf(stderr, "load failed: %s\n", geist_backend_errmsg(be));
@@ -108,7 +117,19 @@ int main(int argc, char **argv) {
     /* Time per token: the prefill call, the logits read, the bench's softmax
      * (stderr, #219: where a token-by-token feed spends its time). */
     double t_pre = 0.0, t_peek = 0.0, t_soft = 0.0;
-    for (size_t i = 0; i + 1 < n; i++) {
+    /* GEIST_NLL_PREFILL=1: the context [0, first) in one prefill call, in
+     * the session's chunks, so that its K/V rows come from the prefill
+     * path (#239); the scored tokens follow one at a time. */
+    size_t      i0 = 0;
+    const char *pf = getenv("GEIST_NLL_PREFILL");
+    if (first > 1 && pf != nullptr && strcmp(pf, "1") == 0) {
+        if (geist_session_prefill_tokens(s, first - 1, ids) != GEIST_OK) {
+            fprintf(stderr, "prefill failed: %s\n", geist_backend_errmsg(be));
+            return GEIST_TEST_ERROR;
+        }
+        i0 = first - 1;
+    }
+    for (size_t i = i0; i + 1 < n; i++) {
         struct timespec a0, a1, a2, a3;
         clock_gettime(CLOCK_MONOTONIC, &a0);
         if (geist_session_prefill_tokens(s, 1, &ids[i]) != GEIST_OK) {

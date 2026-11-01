@@ -47,7 +47,7 @@ llama.cpp/ggml):
 | :-- | :-- | :-- |
 | Static profile cache: the hottest experts in VRAM (4,500 of 24,576 serve 50 % of selections) | **yes** | It is a placement fixed at load: #48 phase 2 already plans it |
 | CPU computes the experts not on the GPU in place, concurrently with the GPU | **yes** | One more route of the same weight, see below. Needs a non-blocking GPU submit |
-| `--pcie-frac`: a share of the missing experts copied to the GPU instead of computed on the CPU | **as a threshold** | The same trade as op offload; we decide it by `m`, not by a fraction |
+| `--pcie-frac`: a share of the missing experts copied to the GPU instead of computed on the CPU | **as a threshold (built, #239)** | The same trade as op offload; we decide it by `m`, not by a fraction ([below](#cold-experts-staged-for-prefill-239)) |
 | Prefill in chunks up to 8,192, borrowing expert-cache VRAM for the buffers | **partly** | Large chunks are what makes streaming pay; borrowing cache slots waits for a cache |
 | Next layer's experts streamed over PCIe while this layer's attention runs | **yes (v1)** | Prefetch one layer ahead in a staging ring |
 | Adaptive tier: LRU swaps between decode windows on a helper thread | **not yet** | Run-time migration; it changes residency, not arithmetic, but it is the most code. After v1, if the static cover is too low |

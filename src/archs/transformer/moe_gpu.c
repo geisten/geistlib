@@ -24,14 +24,20 @@
 #include "env.h"
 #include "gguf_reader.h"
 #include "checked.h"
+#include "clock.h"
 #include "heap.h"
+#include "par.h"
+#include "parse.h"
 
 #include <geist_backend.h>
 #include <geist_util.h>
 
+#include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 bool moe_gpu_is_moe(const struct gguf_ctx *gguf) {
     size_t      len  = 0;
@@ -140,8 +146,10 @@ static size_t moe_session_bytes(const struct transformer_arch_state *st) {
  * On unified memory only for the model on that GPU (#168): its experts'
  * buffers alias the mapping, so every expert that fits runs there and none
  * waits on the CPU. A CPU model with such a GPU beside it keeps them all. */
-static size_t
-moe_fit(const struct transformer_arch_state *st, struct geist_backend *gbe, size_t expert_bytes) {
+static size_t moe_fit(const struct transformer_arch_state *st,
+                      struct geist_backend                *gbe,
+                      size_t                               expert_bytes,
+                      size_t                               stage_max) {
     struct geist_backend_memory mem;
     if (geist_backend_memory_info(gbe, &mem) != GEIST_OK || expert_bytes == 0 ||
         (mem.unified_memory && gbe != st->backend)) {
@@ -151,7 +159,19 @@ moe_fit(const struct transformer_arch_state *st, struct geist_backend *gbe, size
     const size_t n_sel   = st->m_max * moe_k(&st->config) + 15 * moe_slots(&st->config);
     const size_t session = n_sel * (st->d_model + 2 * moe_inter(st)) * sizeof(float);
     size_t       reserve = (size_t) (mem.total_bytes / 16) + ((size_t) 512 << 20) + session;
-    size_t       more    = 0;
+    /* #239: the staging slots, three per staged expert, each as big as the
+     * biggest expert projection of any layer, a sixteenth over its file
+     * bytes for the backend's layout (Q6_K's padded blocks). */
+    size_t slot = 0, stage = 0;
+    for (size_t l = 0; stage_max > 0 && l < st->n_layers; l++)
+        for (size_t p = 0; p < 3; p++) {
+            const size_t b = expert_proj(&st->layers[l], p)[0].raw_nbytes;
+            slot           = b > slot ? b : slot;
+        }
+    if (stage_max > 0 &&
+        (ckd_mul(&stage, 3 * stage_max, slot + slot / 16) || ckd_add(&reserve, reserve, stage)))
+        return 0;
+    size_t more = 0;
     if (st->moe_sessions > 1 && (ckd_mul(&more, st->moe_sessions - 1, moe_session_bytes(st)) ||
                                  ckd_add(&reserve, reserve, more)))
         return 0;
@@ -164,6 +184,37 @@ moe_fit(const struct transformer_arch_state *st, struct geist_backend *gbe, size
  * token and are never summed. */
 static size_t moe_pad(size_t m) {
     return m > 1 ? (m + 15) & ~(size_t) 15 : m;
+}
+
+/* #239: the most cold experts a prefill step of the model on `gbe` copies
+ * there (0: no staging): the backend stages, holds the model itself, has
+ * its own memory, and GEIST_MOE_STAGE is not 0. GEIST_MOE_STAGE_MAX sets
+ * the count (default 16: a step of Qwen3.6-35B-A3B stages 14 on average
+ * at 32 rows, and 32 slots were no faster but cost decode hot experts). */
+static size_t moe_stage_wanted(const struct transformer_arch_state *st, struct geist_backend *gbe) {
+    const struct geist_backend_fused *gf = gbe->desc->fused;
+    struct geist_backend_memory       mem;
+    if (gbe != st->backend || gf == nullptr || gf->stage_weights == nullptr ||
+        gf->stage_reserve == nullptr || gf->rows_gather == nullptr ||
+        gf->rows_weighted_sum == nullptr || gf->submit == nullptr ||
+        geist_backend_memory_info(gbe, &mem) != GEIST_OK || mem.unified_memory ||
+        !geist_env_flag("GEIST_MOE_STAGE", true))
+        return 0;
+    long n = 16;
+    if (geist_parse_long(getenv("GEIST_MOE_STAGE_MAX"), &n) && (n < 0 || n > 64))
+        n = n < 0 ? 0 : 64;
+    return (size_t) n;
+}
+
+/* Expert e's gate, up and down on the device: its resident copy, else its
+ * host twin for staging (#239), else nullptr. */
+static const struct geist_weight *
+expert_twins(const struct transformer_moe_gpu *mg, size_t slots, size_t layer, size_t e) {
+    const struct geist_weight *tw = &mg->twins[(layer * slots + e) * 3];
+    if (tw->raw != nullptr)
+        return tw;
+    tw = mg->stage_w != nullptr ? &mg->stage_w[(layer * slots + e) * 3] : nullptr;
+    return tw != nullptr && tw->raw != nullptr ? tw : nullptr;
 }
 
 /* Projection p (gate, up, down) of expert e in layer `layer`: the CPU's
@@ -193,15 +244,16 @@ static void hot_twins(const struct transformer_arch_state *st,
 }
 
 /* Experts hot[0, n_hot) of layer `layer` over their rows of moe_gpu_x (in
- * hot[]'s order, each padded to moe_pad when `pad`), the outputs into the
- * same rows of y. Phase by phase over all of them, not expert by expert:
- * the experts of a phase touch disjoint rows, so the backend's hazard
- * tracking puts a barrier only between the phases (gate and up, then
- * silu_mul, then down), and the small decode GEMVs run side by side. */
+ * hot[]'s order from row at0, each padded to moe_pad when `pad`), the
+ * outputs into the same rows of y; a staged expert (#239) reads its slot. Phase by phase over all
+ * of them, not expert by expert: the experts of a phase touch disjoint rows, so the backend's
+ * hazard tracking puts a barrier only between the phases (gate and up, then silu_mul, then down),
+ * and the small decode GEMVs run side by side. */
 static enum geist_status record_phases(struct transformer_arch_session *sess,
                                        size_t                           layer,
                                        size_t                           n_hot,
                                        bool                             pad,
+                                       size_t                           at0,
                                        const uint32_t                   hot[static n_hot],
                                        struct geist_buffer             *y) {
     const struct transformer_arch_state *st  = sess->model;
@@ -213,10 +265,10 @@ static enum geist_status record_phases(struct transformer_arch_session *sess,
     const size_t                        *rs    = sess->moe_row_start;
     enum geist_status                    s     = GEIST_OK;
     for (size_t phase = 0; phase < 3 && s == GEIST_OK; phase++) {
-        size_t at = 0;
+        size_t at = at0;
         for (size_t i = 0; i < n_hot && s == GEIST_OK; i++) {
             const size_t e = hot[i], m0 = rs[e + 1] - rs[e], m = pad ? moe_pad(m0) : m0;
-            const struct geist_weight *tw = &mg->twins[(layer * slots + e) * 3];
+            const struct geist_weight *tw = expert_twins(mg, slots, layer, e);
             struct geist_tensor        x =
                     view_2d_at(sess->moe_gpu_x, at * d * 4, (int64_t) m, (int64_t) d);
             struct geist_tensor g =
@@ -255,6 +307,12 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
         fprintf(stderr,
                 "geist: moe: %llu GPU batches\n",
                 (unsigned long long) atomic_load(&mg->batches));
+        if (mg->stage_max > 0)
+            fprintf(stderr,
+                    "geist: moe: %llu cold experts staged on %s for %llu rows (#239)\n",
+                    (unsigned long long) atomic_load(&mg->n_staged),
+                    geist_backend_name(mg->be),
+                    (unsigned long long) atomic_load(&mg->rows_staged));
         fprintf(stderr,
                 "geist: moe: %llu layer steps routed on the device, %llu with the experts split\n",
                 (unsigned long long) atomic_load(&mg->n_device),
@@ -266,6 +324,8 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
             gv->buffer_destroy(mg->be, mg->bufs[i]);
     }
     void *b = mg->bufs, *t = mg->twins, *g = mg->grouped, *dv = mg->device, *m = mg;
+    void *stw = mg->stage_w;
+    safe_free(&stw);
     void *sw = (void *) mg->sel_w;
     safe_free(&sw);
     safe_free(&b);
@@ -273,6 +333,93 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
     safe_free(&g);
     safe_free(&dv);
     safe_free(&m);
+}
+
+/* #239: the staging slots for stage_max experts, then a host twin
+ * (GEIST_W_HOST) of each routed expert without a copy on the device, in
+ * rank order, as many as a quarter of the host's memory holds
+ * (GEIST_MOE_STAGE_HOST=<MiB> sets the bytes). Any failure leaves staging
+ * off; the experts stay on the CPU. */
+static void moe_stage_attach(const struct transformer_arch_state *st,
+                             struct transformer_moe_gpu          *mg,
+                             size_t                               stage_max,
+                             const struct moe_rank               *rank) {
+    struct geist_backend             *gbe = mg->be;
+    const struct geist_backend_vtbl  *gv  = gbe->desc->vtbl;
+    const struct geist_backend_fused *gf  = gbe->desc->fused;
+    const size_t                      L = st->n_layers, n_exp = st->config.moe_n_experts;
+    const size_t                      slots = moe_slots(&st->config);
+    const struct geist_weight       **like =
+            heap_calloc_array_aligned(const struct geist_weight *, 3 * L);
+    for (size_t l = 0; like != nullptr && l < L; l++)
+        for (size_t p = 0; p < 3; p++)
+            like[l * 3 + p] = &expert_proj(&st->layers[l], p)[0];
+    enum geist_status s =
+            like != nullptr ? gf->stage_reserve(gbe, 3 * stage_max, 3 * L, like) : GEIST_E_OOM;
+    void *lk = (void *) like;
+    safe_free(&lk);
+    long   mib  = -1;
+    size_t used = 0;
+#if defined(_SC_PHYS_PAGES)
+    const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGESIZE);
+#else
+    const long pages = 0, page = 0; /* unknown: GEIST_MOE_STAGE_HOST only */
+#endif
+    size_t budget = pages > 0 && page > 0 ? (size_t) pages / 4 * (size_t) page : 0;
+    if (geist_parse_long(getenv("GEIST_MOE_STAGE_HOST"), &mib) && mib >= 0)
+        budget = (size_t) mib << 20;
+    if (s == GEIST_OK)
+        mg->stage_w = heap_calloc_array_aligned(struct geist_weight, L * slots * 3);
+    for (size_t k = 0; s == GEIST_OK && mg->stage_w != nullptr && k < L * slots; k++) {
+        const size_t l = rank[k].idx % L, e = rank[k].idx / L;
+        if (e >= n_exp || mg->twins[(l * slots + e) * 3].raw != nullptr)
+            continue;
+        struct geist_weight *tw = &mg->stage_w[(l * slots + e) * 3];
+        size_t               b  = 0;
+        for (size_t p = 0; p < 3; p++)
+            b += expert_proj(&st->layers[l], p)[e].raw_nbytes;
+        if (b > budget - used)
+            break;
+        enum geist_status rs = GEIST_OK;
+        for (size_t p = 0; p < 3 && rs == GEIST_OK; p++) {
+            const struct geist_weight *w = &expert_proj(&st->layers[l], p)[e];
+            tw[p]                        = (struct geist_weight) {.raw        = w->raw,
+                                                                  .raw_nbytes = w->raw_nbytes,
+                                                                  .n_in       = w->n_in,
+                                                                  .n_out      = w->n_out,
+                                                                  .dtype      = w->dtype,
+                                                                  .flags      = GEIST_W_HOST};
+            gbe->calibration.locked      = true;
+            rs                           = gv->resolve_weight(gbe, &tw[p]);
+        }
+        if (rs != GEIST_OK) {
+            memset(tw, 0, 3 * sizeof *tw);
+            break; /* host memory is short: the rest stay CPU-only */
+        }
+        /* The backend holds its own copy; the CPU's repack (moe_resolve_cold)
+         * faults the file pages back in from the page cache. */
+        for (size_t p = 0; p < 3; p++)
+            gguf_release_range(st->gguf, tw[p].raw, tw[p].raw_nbytes);
+        used += b;
+        mg->n_stage_w++;
+    }
+    if (s == GEIST_OK && mg->stage_w != nullptr && mg->n_stage_w > 0) {
+        mg->stage_max = stage_max;
+    } else {
+        void *sw = mg->stage_w;
+        safe_free(&sw);
+        mg->stage_w   = nullptr;
+        mg->n_stage_w = 0;
+    }
+    if (geist_env_flag("GEIST_VERBOSE", false))
+        fprintf(stderr,
+                "geist: moe: staging %s: %zu cold experts held in host memory (%zu MiB) for "
+                "%s, up to %zu per prefill step\n",
+                mg->stage_max > 0 ? "on" : "off",
+                mg->n_stage_w,
+                used >> 20,
+                gbe->desc->name,
+                stage_max);
 }
 
 enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist_backend *gbe) {
@@ -290,9 +437,10 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
         return GEIST_OK;
     }
     const struct transformer_layer_weights *L0 = &st->layers[0];
-    const size_t eb = L0->moe_gate_w[0].raw_nbytes + L0->moe_up_w[0].raw_nbytes +
-                      L0->moe_down_w[0].raw_nbytes;
-    size_t       n  = moe_fit(st, gbe, eb);
+    const size_t eb        = L0->moe_gate_w[0].raw_nbytes + L0->moe_up_w[0].raw_nbytes +
+                             L0->moe_down_w[0].raw_nbytes;
+    const size_t stage_max = moe_stage_wanted(st, gbe);
+    size_t       n         = moe_fit(st, gbe, eb, stage_max);
     /* GEIST_MOE_HOT=<n>: exactly n, past the budget (tests, measurements). */
     long force;
     if (geist_parse_long(getenv("GEIST_MOE_HOT"), &force) && force >= 0) {
@@ -397,6 +545,9 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
             mg->grouped[l]                    = gf->supported(gbe, &q);
         }
     }
+    /* Staging runs beside the resident experts, in their session buffers. */
+    if (s == GEIST_OK && stage_max > 0 && mg->n_hot > 0)
+        moe_stage_attach(st, mg, stage_max, rank);
     void *r = rank, *c = count;
     safe_free(&r);
     safe_free(&c);
@@ -729,7 +880,7 @@ enum geist_status moe_gpu_run(struct transformer_arch_session *sess,
             s = gs;
     }
     if (s == GEIST_OK && !grouped_done)
-        s = record_phases(sess, layer, n_hot, false, hot, sess->moe_gpu_y_io);
+        s = record_phases(sess, layer, n_hot, false, 0, hot, sess->moe_gpu_y_io);
     const float *yio = s == GEIST_OK ? gv->buffer_map(sess->moe_gpu_y_io) : nullptr; /* waits */
     if (yio == nullptr) {
         return s != GEIST_OK ? s : GEIST_E_BACKEND;
@@ -762,6 +913,7 @@ enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
                                  size_t                           layer,
                                  size_t                           seq,
                                  bool                             decode_rows,
+                                 size_t                           n_res,
                                  size_t                           n_hot,
                                  const uint32_t                   hot[static n_hot]) {
     const struct transformer_arch_state *st    = sess->model;
@@ -837,8 +989,14 @@ enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
             s = gf->linear_t(gbe, &gs, w[2][n_rt], &t[2], m_sh, &xs);
     } else if (s == GEIST_OK) {
         /* A prefill chunk: each expert's rows as one GEMM, the outputs
-         * over x. */
-        s = record_phases(sess, layer, n_hot, true, hot, sess->moe_gpu_x);
+         * over x. The resident experts first: the staged ones (#239) wait
+         * for their copies, which run meanwhile. */
+        size_t at = 0;
+        for (size_t i = 0; i < n_res; i++)
+            at += moe_pad(rs[hot[i] + 1] - rs[hot[i]]);
+        s = record_phases(sess, layer, n_res, true, 0, hot, sess->moe_gpu_x);
+        if (s == GEIST_OK && n_hot > n_res)
+            s = record_phases(sess, layer, n_hot - n_res, true, at, hot + n_res, sess->moe_gpu_x);
     }
     if (s == GEIST_OK) {
         gf->submit(gbe);
@@ -1085,4 +1243,324 @@ enum geist_status moe_gpu_device_check(struct transformer_arch_session *sess) {
         return GEIST_E_BACKEND;
     }
     return GEIST_OK;
+}
+
+/* ---- Cold experts staged for a prefill step (#239) --------------------- */
+
+bool moe_gpu_stageable(const struct transformer_arch_session *sess,
+                       size_t                                 layer,
+                       size_t                                 e,
+                       size_t                                 m) {
+    const struct transformer_moe_gpu *mg = sess->model->moe_gpu;
+    return mg != nullptr && mg->stage_m_min > 0 && m >= mg->stage_m_min &&
+           sess->moe_gpu_x != nullptr && sess->moe_x_io != nullptr &&
+           layer < sess->model->n_layers &&
+           mg->stage_w[(layer * moe_slots(&sess->model->config) + e) * 3].raw != nullptr;
+}
+
+enum geist_status moe_gpu_stage(struct transformer_arch_session *sess,
+                                size_t                           layer,
+                                size_t                           n,
+                                const uint32_t                   e[static n]) {
+    const struct transformer_arch_state *st    = sess->model;
+    struct transformer_moe_gpu          *mg    = st->moe_gpu;
+    const size_t                         slots = moe_slots(&st->config);
+    const struct geist_weight           *w[3 * 64];
+    if (n == 0 || n > mg->stage_max || n > 64)
+        return GEIST_E_UNSUPPORTED;
+    for (size_t i = 0; i < n; i++)
+        for (size_t p = 0; p < 3; p++)
+            w[i * 3 + p] = &mg->stage_w[(layer * slots + e[i]) * 3 + p];
+    const enum geist_status s = mg->be->desc->fused->stage_weights(mg->be, 3 * n, w);
+    if (s == GEIST_OK) {
+        size_t rows = 0;
+        for (size_t i = 0; i < n; i++)
+            rows += sess->moe_row_start[e[i] + 1] - sess->moe_row_start[e[i]];
+        atomic_fetch_add_explicit(&mg->n_staged, n, memory_order_relaxed);
+        atomic_fetch_add_explicit(&mg->rows_staged, rows, memory_order_relaxed);
+    }
+    return s;
+}
+
+/* The calibration's CPU part: every thread runs one expert over its own m
+ * rows at once, as the cold experts of a prefill step run, each thread
+ * another of the layer's cold experts where there are enough. */
+struct stage_cpu_sonde {
+    const struct transformer_arch_state *st;
+    struct geist_backend                *be;
+    const uint32_t                      *pair; /* layer * slots + expert, n_pair of them */
+    size_t                               n_pair, round, m, d, inter;
+    float                               *x, *g, *u, *y;
+    uint64_t                            *dt; /* [rounds * 64]: each task's own time, ns */
+    atomic_size_t                        next;
+    _Atomic bool                         failed;
+};
+
+static void stage_cpu_task(void *ctx, size_t begin, size_t end) {
+    (void) begin;
+    (void) end;
+    struct stage_cpu_sonde                 *c     = ctx;
+    const size_t                            t     = geist_par_slot(&c->next);
+    const size_t                            slots = moe_slots(&c->st->config);
+    const size_t                            k     = (c->round * 64 + t) % c->n_pair;
+    const struct transformer_layer_weights *L     = &c->st->layers[c->pair[k] / slots];
+    const size_t                            e     = c->pair[k] % slots;
+    float                     *g = c->g + t * c->m * c->inter, *u = c->u + t * c->m * c->inter;
+    const float               *x    = c->x + t * c->m * c->d;
+    const struct geist_weight *w[3] = {&L->moe_gate_w[e], &L->moe_up_w[e], &L->moe_down_w[e]};
+    if (w[0]->linear_mN == nullptr || w[1]->linear_mN == nullptr || w[2]->linear_mN == nullptr) {
+        atomic_store_explicit(&c->failed, true, memory_order_relaxed);
+        return;
+    }
+    const uint64_t t0 = geist_now_ns();
+    w[0]->linear_mN(c->m, x, w[0], c->be, g);
+    w[1]->linear_mN(c->m, x, w[1], c->be, u);
+    for (size_t i = 0; i < c->m * c->inter; i++)
+        g[i] = g[i] / (1.0f + expf(-g[i])) * u[i];
+    w[2]->linear_mN(c->m, g, w[2], c->be, c->y + t * c->m * c->d);
+    c->dt[c->round * 64 + t] = geist_now_ns() - t0;
+}
+
+static int cmp_u64(const void *a, const void *b) {
+    const uint64_t x = *(const uint64_t *) a, y = *(const uint64_t *) b;
+    return x < y ? -1 : x > y;
+}
+
+static uint64_t median5(uint64_t v[static 5]) {
+    qsort(v, 5, sizeof v[0], cmp_u64);
+    return v[2];
+}
+
+/* Records `reps` times gate, up, silu_mul and down of expert e of layer
+ * `layer` (its device weights tw) over m rows of the sonde's buffers,
+ * staging copies of the n_cold experts w before each when n_cold > 0, then
+ * waits once: the wall time in ns, 0 on failure. Back to back, as a
+ * prefill step's experts run: no wait between them, the GPU clocked up. */
+static uint64_t stage_gpu_run(const struct transformer_arch_state *st,
+                              size_t                               layer,
+                              size_t                               e,
+                              const struct geist_weight           *tw,
+                              size_t                               m,
+                              size_t                               reps,
+                              size_t                               n_cold,
+                              const struct geist_weight *const    *w,
+                              struct geist_buffer                 *buf[static 4]) {
+    const struct transformer_moe_gpu *mg  = st->moe_gpu;
+    struct geist_backend             *gbe = mg->be;
+    const struct geist_backend_fused *gf  = gbe->desc->fused;
+    const size_t                      d = st->d_model, inter = st->layers[layer].intermediate;
+    struct geist_tensor               x     = view_2d(buf[0], (int64_t) m, (int64_t) d);
+    struct geist_tensor               g     = view_2d(buf[1], (int64_t) m, (int64_t) inter);
+    struct geist_tensor               u     = view_2d(buf[2], (int64_t) m, (int64_t) inter);
+    struct geist_tensor               y     = view_2d(buf[3], (int64_t) m, (int64_t) d);
+    struct geist_tensor               w0    = expert_view(st, mg, layer, e, 0);
+    struct geist_tensor               w1    = expert_view(st, mg, layer, e, 1);
+    struct geist_tensor               w2    = expert_view(st, mg, layer, e, 2);
+    float                             probe = 0.0f;
+    enum geist_status                 s     = GEIST_OK;
+    const uint64_t                    t0    = geist_now_ns();
+    for (size_t r = 0; r < reps && s == GEIST_OK; r++) {
+        if (n_cold > 0)
+            s = gf->stage_weights(gbe, 3 * n_cold, w);
+        if (s == GEIST_OK)
+            s = gf->linear_t(gbe, &x, &tw[0], &w0, m, &g);
+        if (s == GEIST_OK)
+            s = gf->linear_t(gbe, &x, &tw[1], &w1, m, &u);
+        if (s == GEIST_OK)
+            s = gf->silu_mul(gbe, &g, &u, &g);
+        if (s == GEIST_OK)
+            s = gf->linear_t(gbe, &g, &tw[2], &w2, m, &y);
+    }
+    if (s == GEIST_OK) /* a download waits for the batch */
+        s = gbe->desc->vtbl->buffer_download(sizeof probe, (uint8_t *) &probe, buf[3]);
+    const uint64_t t1 = geist_now_ns();
+    return s == GEIST_OK && t1 > t0 ? t1 - t0 : 0;
+}
+
+/* m_min = B / (bw * t_cpu) per expert: B its bytes, bw the staging copy
+ * rate, t_cpu its time per row on the CPU (all threads, as a step's cold
+ * experts run). In a prefill step the CPU's cold experts are the critical
+ * path (#239: without them a step is 1.43x faster) while the GPU waits for
+ * them. An expert moved over saves that path its CPU time and costs it at
+ * most its copy on the one copy engine; its GEMMs (t_gpu per row and a
+ * fixed part, both reported) fill the GPU's wait. The copy overlaps the
+ * resident experts' GEMMs as well, so the break-even is at most this m:
+ * the power of two at or below it is taken, which also keeps the
+ * measurement's noise from moving it. SIZE_MAX: never. */
+size_t moe_stage_m_min(double bytes, double bw, double t_cpu) {
+    if (!(bw > 0.0) || !(t_cpu > 0.0) || !(bytes > 0.0))
+        return SIZE_MAX;
+    const double m = bytes / bw / t_cpu;
+    if (!(m < 1e6))
+        return SIZE_MAX;
+    size_t p = 1;
+    while ((double) (p * 2) <= m)
+        p <<= 1;
+    return p;
+}
+
+void moe_gpu_stage_calibrate(struct transformer_arch_state *st) {
+    struct transformer_moe_gpu *mg = st->moe_gpu;
+    if (mg == nullptr || mg->stage_max == 0)
+        return;
+    const bool verbose = geist_env_flag("GEIST_VERBOSE", false);
+    long       force   = -1;
+    if (geist_parse_long(getenv("GEIST_MOE_STAGE_M_MIN"), &force) && force >= 0) {
+        mg->stage_m_min = (size_t) force;
+        if (verbose)
+            fprintf(stderr,
+                    "geist: moe: staging threshold %zu rows (GEIST_MOE_STAGE_M_MIN)\n",
+                    mg->stage_m_min);
+        return;
+    }
+    /* A layer with a resident and a staged routed expert, the most staged. */
+    const size_t slots = moe_slots(&st->config), n_exp = st->config.moe_n_experts;
+    size_t       layer = SIZE_MAX, e_hot = 0, e_cold[64], n_cold = 0;
+    for (size_t l = 0; l < st->n_layers && layer == SIZE_MAX; l++) {
+        size_t h = SIZE_MAX, n = 0;
+        for (size_t e = 0; e < n_exp; e++) {
+            if (mg->twins[(l * slots + e) * 3].raw != nullptr && h == SIZE_MAX)
+                h = e;
+            else if (mg->stage_w[(l * slots + e) * 3].raw != nullptr && n < mg->stage_max)
+                e_cold[n++] = e;
+        }
+        if (h != SIZE_MAX && n > 0) {
+            layer  = l;
+            e_hot  = h;
+            n_cold = n;
+        }
+    }
+    struct geist_backend            *gbe   = mg->be;
+    const struct geist_backend_vtbl *gv    = gbe->desc->vtbl;
+    const size_t                     d     = st->d_model;
+    const size_t                     inter = layer != SIZE_MAX ? st->layers[layer].intermediate : 0;
+    enum { M_LO = 16, M_HI = 256, M_CPU = 32 };
+    struct geist_buffer *buf[4] = {nullptr};
+    const size_t      bytes[4]  = {M_HI * d * 4, M_HI * inter * 4, M_HI * inter * 4, M_HI * d * 4};
+    enum geist_status s         = layer != SIZE_MAX ? GEIST_OK : GEIST_E_UNSUPPORTED;
+    for (size_t i = 0; i < 4 && s == GEIST_OK; i++)
+        s = gv->buffer_create(gbe, bytes[i], GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, &buf[i]);
+    float *zero = s == GEIST_OK ? heap_calloc_array_aligned(float, M_HI *d) : nullptr;
+    if (s == GEIST_OK)
+        s = zero != nullptr ? gv->buffer_upload(buf[0], M_HI * d * 4, (const uint8_t *) zero)
+                            : GEIST_E_OOM;
+    /* GPU: a resident expert at two row counts, R times back to back;
+     * then R rounds of n_cold staged experts' copies, each read by one
+     * GEMM of its first expert at M_LO rows. After a warm-up that clocks
+     * the card and its link up. */
+    enum { R = 16 };
+    const struct geist_weight *th =
+            s == GEIST_OK ? &mg->twins[(layer * slots + e_hot) * 3] : nullptr;
+    const struct geist_weight *w[3 * 64];
+    double                     staged_bytes = 0.0;
+    for (size_t i = 0; s == GEIST_OK && i < n_cold; i++)
+        for (size_t p = 0; p < 3; p++) {
+            w[i * 3 + p] = &mg->stage_w[(layer * slots + e_cold[i]) * 3 + p];
+            staged_bytes += (double) w[i * 3 + p]->raw_nbytes;
+        }
+    uint64_t lo[5], hi[5], cp[5];
+    for (size_t r = 0; s == GEIST_OK && r < 3; r++) /* warm-up */
+        if (stage_gpu_run(st, layer, e_hot, th, M_HI, 4 * R, 0, w, buf) == 0 ||
+            stage_gpu_run(st, layer, e_cold[0], w[0], M_LO, R / 4, n_cold, w, buf) == 0)
+            s = GEIST_E_BACKEND;
+    for (size_t r = 0; s == GEIST_OK && r < 5; r++) {
+        lo[r] = stage_gpu_run(st, layer, e_hot, th, M_LO, R, 0, w, buf);
+        hi[r] = stage_gpu_run(st, layer, e_hot, th, M_HI, R, 0, w, buf);
+        cp[r] = stage_gpu_run(st, layer, e_cold[0], w[0], M_LO, R, n_cold, w, buf);
+        if (lo[r] == 0 || hi[r] == 0 || cp[r] == 0)
+            s = GEIST_E_BACKEND;
+    }
+    if (s == GEIST_OK) { /* nothing stays staged */
+        const struct geist_weight *none[1] = {nullptr};
+        s                                  = gbe->desc->fused->stage_weights(gbe, 0, none);
+    }
+    for (size_t i = 0; i < 4; i++)
+        if (buf[i] != nullptr)
+            gv->buffer_destroy(gbe, buf[i]);
+    void *z = zero;
+    safe_free(&z);
+    /* CPU: every thread one cold expert's CPU weights over M_CPU rows, each
+     * round other experts from all layers, so that they come from memory
+     * as a step's cold experts do, not from the cache. */
+    const size_t           P    = geist_par_max_threads() < 64 ? geist_par_max_threads() : 64;
+    uint32_t              *pair = heap_alloc_array_aligned(uint32_t, 6 * 64);
+    struct stage_cpu_sonde c    = {
+            .st = st, .be = st->moe_cpu, .pair = pair, .m = M_CPU, .d = d, .inter = inter};
+    uint64_t cpu = UINT64_MAX;
+    for (size_t i = 0; pair != nullptr && i < st->n_layers * slots && c.n_pair < 6 * 64; i++) {
+        const size_t l = i % st->n_layers, e = i / st->n_layers;
+        if (e < n_exp && mg->twins[(l * slots + e) * 3].raw == nullptr &&
+            st->layers[l].intermediate == inter)
+            pair[c.n_pair++] = (uint32_t) (l * slots + e);
+    }
+    if (s == GEIST_OK) {
+        c.x = heap_calloc_array_aligned(float, P * M_CPU * d);
+        c.y = heap_alloc_array_aligned(float, P * M_CPU * d);
+        c.g = heap_alloc_array_aligned(float, P * M_CPU * inter);
+        c.u = heap_alloc_array_aligned(float, P * M_CPU * inter);
+        if (pair == nullptr || c.n_pair == 0 || c.x == nullptr || c.y == nullptr ||
+            c.g == nullptr || c.u == nullptr)
+            s = GEIST_E_OOM;
+    }
+    /* Each task times itself and the median of all counts: a round's wall
+     * time is its slowest thread's, and one thread the host preempts made
+     * whole rounds 2-3x slower right after a load. */
+    c.dt = heap_calloc_array_aligned(uint64_t, 6 * 64);
+    if (c.dt == nullptr)
+        s = GEIST_E_OOM;
+    for (size_t r = 0; s == GEIST_OK && r < 6; r++) {
+        atomic_store_explicit(&c.next, 0, memory_order_relaxed);
+        c.round = r;
+        geist_par_for(P, stage_cpu_task, &c);
+        if (atomic_load_explicit(&c.failed, memory_order_relaxed))
+            s = GEIST_E_UNSUPPORTED;
+    }
+    if (s == GEIST_OK) {
+        uint64_t *v = c.dt;
+        size_t    n = 0;
+        for (size_t r = 1; r < 6; r++) /* round 0 warms up */
+            for (size_t t = 0; t < P; t++)
+                v[n++] = c.dt[r * 64 + t];
+        qsort(v, n, sizeof v[0], cmp_u64);
+        cpu = v[n / 2];
+    }
+    void *cd = c.dt;
+    safe_free(&cd);
+    void *pp = pair;
+    safe_free(&pp);
+    void *cx = c.x, *cy = c.y, *cg = c.g, *cu = c.u;
+    safe_free(&cx);
+    safe_free(&cy);
+    safe_free(&cg);
+    safe_free(&cu);
+    if (s != GEIST_OK) {
+        mg->stage_m_min = 0;
+        if (verbose)
+            fprintf(stderr, "geist: moe: staging off, its calibration failed (%d)\n", (int) s);
+        return;
+    }
+    const double t_lo = (double) median5(lo) * 1e-9 / R, t_hi = (double) median5(hi) * 1e-9 / R;
+    const double t_gpu = t_hi > t_lo ? (t_hi - t_lo) / (M_HI - M_LO) : 0.0;
+    const double t_fix = t_lo - t_gpu * M_LO > 0.0 ? t_lo - t_gpu * M_LO : 0.0;
+    const double t_cp  = (double) median5(cp) * 1e-9 / R - t_lo;
+    const double bw    = t_cp > 0.0 ? staged_bytes / t_cp : 0.0;
+    /* P threads each run one expert's M_CPU rows in `cpu` ns: per row, all
+     * threads together. */
+    const double t_cpu = (double) cpu * 1e-9 / (double) (P * M_CPU);
+    const double eb    = staged_bytes / (double) n_cold;
+    const size_t m     = t_cpu > t_gpu ? moe_stage_m_min(eb, bw, t_cpu) : SIZE_MAX;
+    mg->stage_m_min    = m <= st->m_max ? m : 0;
+    if (verbose)
+        fprintf(stderr,
+                "geist: moe: staging cost model: copy %.2f GB/s (%.2f MB per expert), GPU "
+                "%.2f us per row + %.1f us, CPU %.2f us per row (%zu threads) -> threshold %zu "
+                "rows%s\n",
+                bw * 1e-9,
+                eb * 1e-6,
+                t_gpu * 1e6,
+                t_fix * 1e6,
+                t_cpu * 1e6,
+                P,
+                m == SIZE_MAX ? 0 : m,
+                mg->stage_m_min == 0 ? " (above the chunk: off)" : "");
 }
