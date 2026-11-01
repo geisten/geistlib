@@ -16,7 +16,7 @@ import subprocess
 import time
 from bench_host import command_output,sha256_file,wait_for_apple_cool,wait_for_apple_power
 from eval_repl import EvalRepl
-from pq2_quality_cases import CASES
+from pq2_quality_cases import CASES, CHAT_CASES
 ROOT=Path(__file__).resolve().parents[1]
 
 
@@ -46,6 +46,8 @@ def quality(binary,model,cfg,out):
     label=cfg['label'];log=out/f'quality-{label}.err'
     repl=EvalRepl(binary,model,log=log);rows=[]
     try:
+        eos=repl.encode("<|im_end|>")
+        if len(eos)!=1:raise RuntimeError("expected Bonsai Qwen im_end token")
         for name,prompt,continuation in CASES:
             ids=repl.encode(prompt)
             if repl.bos is not None:ids.insert(0,repl.bos)
@@ -59,7 +61,8 @@ def quality(binary,model,cfg,out):
             if len(probs)!=len(cont) or not all(math.isfinite(v) for v in probs):raise RuntimeError('invalid quality scores')
             if len(tokens)!=24 or int(decoded[0])!=24 or any(t<0 for t in tokens):raise RuntimeError('invalid decode stream')
             rows.append(dict(arm=label,case=name,prompt=prompt,continuation=continuation,prompt_ids=ids,
-                             continuation_ids=cont,logprobs=probs,generated_ids=tokens,generated_text=text))
+                             continuation_ids=cont,logprobs=probs,generated_ids=tokens,generated_text=text,
+                             eos_id=eos[0],generated_ids_until_eos=tokens[:tokens.index(eos[0])] if eos[0] in tokens else tokens))
     finally:repl.close()
     match=re.search(r'dispatch\.pq2_lowp_x\s+(\d+) dispatches',log.read_text())
     calls=int(match.group(1)) if match else 0
@@ -69,6 +72,7 @@ def quality(binary,model,cfg,out):
 
 
 def main():
+    global CASES
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--model',type=Path,required=True)
     ap.add_argument('--config',action='append',default=[])
@@ -78,8 +82,10 @@ def main():
     ap.add_argument('--seq-lens',default='128,512,2048')
     ap.add_argument('--m-max',type=int,default=0)
     ap.add_argument('--skip-quality',action='store_true')
+    ap.add_argument('--quality-format',choices=('completion','chat'),default='chat')
     ap.add_argument('--quality-only',action='store_true',help='reuse complete, hash-matching performance records')
     args=ap.parse_args()
+    if args.quality_format=='chat':CASES=CHAT_CASES
     if args.cycles<6:ap.error('at least six rotated cycles required')
     seqs=[int(s) for s in args.seq_lens.split(',')]
     if not seqs or min(seqs)<64 or max(seqs)>8192:ap.error('sequence lengths must be 64..8192')
@@ -91,7 +97,7 @@ def main():
     meta=dict(cpu=command_output(['sysctl','-n','machdep.cpu.brand_string']),os=command_output(['sw_vers']),
               revision=command_output(['git','rev-parse','HEAD']),model=dict(path=str(args.model),sha256=sha256_file(args.model)),
               binary_sha256={str(b.relative_to(args.bin_dir)):sha256_file(b) for b in (bench,evaluate,dump)},
-              configs=configs,cycles=args.cycles,protocol=dict(seq_lens=seqs,decode_n=32,warmup=max(seqs),repeats=1,m_max=args.m_max,threads=4))
+              configs=configs,cycles=args.cycles,quality_format=args.quality_format,protocol=dict(seq_lens=seqs,decode_n=32,warmup=max(seqs),repeats=1,m_max=args.m_max,threads=4))
     if args.quality_only:
         previous=json.loads((args.out/'metadata.json').read_text())
         for key in ('model','binary_sha256','configs','cycles','protocol'):
