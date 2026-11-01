@@ -41,6 +41,7 @@ def main():
                     repeats=args.repeats, cycles=args.cycles,
                     input="LCG seed 0x54321, integers -8..7, all formats exact",
                     tile=dict(rows=128, columns=64, simdgroups=8),
+                    quality="32 CPU double dot samples per format; same normalized non-integer source; fixed scale 1/16; uniform and outlier fixtures",
                     notes="cache-warm controlled benchmark; not a full-model or peak-memory measurement")
     (args.out / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     rows = []
@@ -56,7 +57,7 @@ def main():
                                      stdout=subprocess.PIPE, stderr=err, text=True, check=True)
             parsed = [json.loads(line) for line in run.stdout.splitlines()]
             # Three phases for FP16; four each for FP8 and INT8.
-            if len(parsed) != args.cycles * 11:
+            if len(parsed) != args.cycles * 11 + 6:
                 raise RuntimeError("incomplete precision sweep")
             for row in parsed:
                 row.update(power=power, thermal=thermal)
@@ -77,6 +78,7 @@ def main():
                     point["operand_bytes"] = selected[0]["operand_bytes"]
                     point["output_bytes"] = selected[0]["output_bytes"]
             summary.append(point)
+    (args.out / "quality.json").write_text(json.dumps([r for r in rows if r["phase"] == "quality"], indent=2) + "\n")
     (args.out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2), flush=True)
 

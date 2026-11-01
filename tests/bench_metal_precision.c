@@ -359,6 +359,67 @@ int main(int argc, char **argv) {
             }
         }
     }
+    /* Separate non-integer quality fixtures. All modes consume the same
+     * normalized source (fixed scale 1/16 in real units, no clipping).
+     * Performance above uses exactly representable values only. */
+    for (unsigned fixture = 0; fixture < 2; fixture++) {
+        uint32_t seed = 0x127cu;
+        for (size_t i = 0; i < elements; i++) {
+            seed              = seed * 1664525u + 1013904223u;
+            const float unit  = (float) (seed >> 8) / 16777216.0f * 2.0f - 1.0f;
+            const float range = fixture == 0 || i % 1024u == 0 ? 120.0f : 4.0f;
+            data[i]           = i % p.stride < p.k ? unit * range : 0.0f;
+        }
+        for (unsigned mode = 0; mode < 3; mode++) {
+            double gpu = 0, wall = 0;
+            if (!timed(st,
+                       2,
+                       4,
+                       &p,
+                       elements,
+                       cvt[mode],
+                       mm[mode],
+                       src,
+                       packed[mode],
+                       out,
+                       &gpu,
+                       &wall))
+                goto cleanup;
+            const void *result = v->buffer_map(out);
+            double      err2 = 0, ref2 = 0, got2 = 0, dot = 0, max_abs = 0;
+            for (size_t i = 0; i < 32; i++) {
+                const size_t row = i == 0 ? 0 : i == 1 ? p.m - 1 : (i * 73u) % p.m;
+                const size_t col = i == 0 ? 0 : i == 1 ? p.n - 1 : (i * 137u) % p.n;
+                double       ref = 0;
+                for (size_t k = 0; k < p.k; k++)
+                    ref += (double) data[row * p.stride + k] *
+                           data[((size_t) p.m + col) * p.stride + k];
+                const double got   = mode == 2 ? ((const int32_t *) result)[row * p.n + col]
+                                               : ((const float *) result)[row * p.n + col];
+                const double error = got - ref;
+                err2 += error * error;
+                ref2 += ref * ref;
+                got2 += got * got;
+                dot += ref * got;
+                max_abs = fmax(max_abs, fabs(error) / 256.0);
+            }
+            const double nrmse  = sqrt(err2 / fmax(ref2, 1e-300));
+            const double cosine = dot / sqrt(fmax(ref2 * got2, 1e-300));
+            if (!isfinite(nrmse) || !isfinite(cosine))
+                goto cleanup;
+            printf("{\"phase\":\"quality\",\"fixture\":\"%s\",\"mode\":\"%s\",\"m\":%u,\"n\":%u,"
+                   "\"k\":%u,\"samples\":32,\"nrmse\":%.9g,\"cosine\":%.9g,\"max_abs_real_units\":%"
+                   ".9g}\n",
+                   fixture == 0 ? "uniform" : "outlier",
+                   names[mode],
+                   p.m,
+                   p.n,
+                   p.k,
+                   nrmse,
+                   cosine,
+                   max_abs);
+        }
+    }
     rc = GEIST_TEST_PASS;
 cleanup:
     for (unsigned mode = 0; mode < 3; mode++) {
