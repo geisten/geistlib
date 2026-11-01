@@ -1,0 +1,12 @@
+qwen3-0.6b-q8_0.gguf clean-main bit-identical
+qwen3-0.6b-q8_0.gguf default bit-identical
+qwen3-0.6b-q8_0.gguf int8 bit-identical
+qwen3-0.6b-q8_0.gguf fp8 bit-identical
+qwen3.5-0.8b-q8_0.gguf clean-main bit-identical
+qwen3.5-0.8b-q8_0.gguf default bit-identical
+qwen3.5-0.8b-q8_0.gguf int8 bit-identical
+qwen3.5-0.8b-q8_0.gguf fp8 bit-identical
+llama-3.2-3b-Q4_K_M.gguf clean-main bit-identical
+llama-3.2-3b-Q4_K_M.gguf default bit-identical
+llama-3.2-3b-Q4_K_M.gguf int8 bit-identical
+llama-3.2-3b-Q4_K_M.gguf fp8 bit-identical

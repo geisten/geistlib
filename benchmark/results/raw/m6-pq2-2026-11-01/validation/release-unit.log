@@ -1,0 +1,439 @@
+cc -std=c23 -Wall -Wextra -Wpedantic -Werror -Wshadow -Wundef -fno-strict-aliasing -Iinclude -I. -Isrc/base -Isrc/quant -Isrc/backends/common -Isrc/formats/gguf -Isrc/formats/ptqtp -Isrc/io -Isrc/engine -Isrc/archs/audio_conformer -Isrc/archs/vision_siglip -Ithird_party/stb -DGEIST_BACKEND_CPU_NEON=1 -DGEIST_BACKEND_CPU_SCALAR=1 -DGEIST_BACKEND_METAL=1  -O3 -DNDEBUG -DHAVE_ACCELERATE=1 -Xpreprocessor -fopenmp -isystem /opt/homebrew/opt/libomp/include -ffast-math -fno-finite-math-only    -MMD -MP -c src/backends/metal/ops.c -o build/mac-omp/release/src/backends/metal/ops.o
+ar rcs lib/mac-omp/release/libgeist.a build/mac-omp/release/src/base/heap.o build/mac-omp/release/src/base/error.o build/mac-omp/release/src/base/hw_probe.o build/mac-omp/release/src/base/calibration.o build/mac-omp/release/src/base/omp_idle.o build/mac-omp/release/src/base/par.o build/mac-omp/release/src/base/cpu_limit.o build/mac-omp/release/src/base/cache_dir.o build/mac-omp/release/src/engine/allocator.o build/mac-omp/release/src/engine/backend.o build/mac-omp/release/src/engine/backend_registry.o build/mac-omp/release/src/engine/arch_registry.o build/mac-omp/release/src/engine/model.o build/mac-omp/release/src/engine/sampler.o build/mac-omp/release/src/engine/sampler_penalties.o build/mac-omp/release/src/engine/dry_breakers.o build/mac-omp/release/src/engine/session.o build/mac-omp/release/src/engine/decision.o build/mac-omp/release/src/engine/gguf_tokenizer.o build/mac-omp/release/src/engine/version.o build/mac-omp/release/src/archs/transformer/arch.o build/mac-omp/release/src/archs/transformer/arch_state.o build/mac-omp/release/src/archs/transformer/prefill_tuning.o build/mac-omp/release/src/archs/transformer/arch_family.o build/mac-omp/release/src/archs/transformer/exec_plan.o build/mac-omp/release/src/archs/transformer/scratch_plan.o build/mac-omp/release/src/archs/transformer/rotation.o build/mac-omp/release/src/archs/transformer/moe_gpu.o build/mac-omp/release/src/archs/transformer/moe_profile.o build/mac-omp/release/src/archs/transformer/forward/attention.o build/mac-omp/release/src/archs/transformer/forward/blocks.o build/mac-omp/release/src/archs/transformer/forward/moe.o build/mac-omp/release/src/archs/transformer/forward/kv_store.o build/mac-omp/release/src/archs/transformer/forward/layer.o build/mac-omp/release/src/archs/transformer/forward/layer_deltanet.o build/mac-omp/release/src/archs/transformer/forward/layer_ple.o build/mac-omp/release/src/archs/transformer/forward/linear.o build/mac-omp/release/src/archs/transformer/forward/profile.o build/mac-omp/release/src/archs/transformer/forward/probes.o build/mac-omp/release/src/archs/transformer/forward/step.o build/mac-omp/release/src/archs/transformer/forward/head.o build/mac-omp/release/src/archs/transformer/forward/decision_rows.o build/mac-omp/release/src/archs/transformer/forward/mtp.o build/mac-omp/release/src/archs/transformer/forward/spec_head.o build/mac-omp/release/src/archs/transformer/weight_load/tensor_views.o build/mac-omp/release/src/archs/transformer/weight_load/layer_wiring.o build/mac-omp/release/src/archs/transformer/arch_ops.o build/mac-omp/release/src/archs/transformer/snapshot.o build/mac-omp/release/src/formats/gguf/common.o build/mac-omp/release/src/formats/gguf/iq4.o build/mac-omp/release/src/formats/gguf/q8_0.o build/mac-omp/release/src/formats/gguf/q4_0.o build/mac-omp/release/src/formats/gguf/q4_1.o build/mac-omp/release/src/formats/gguf/q5_0.o build/mac-omp/release/src/formats/gguf/q3_K.o build/mac-omp/release/src/formats/gguf/q4_K.o build/mac-omp/release/src/formats/gguf/q5_K.o build/mac-omp/release/src/formats/gguf/q6_K.o build/mac-omp/release/src/formats/gguf/iq2_s.o build/mac-omp/release/src/formats/gguf/iq3_s.o build/mac-omp/release/src/formats/gguf/tq2_0.o build/mac-omp/release/src/formats/gguf/pq2_0.o build/mac-omp/release/src/backends/common/geist_gemm.o build/mac-omp/release/src/backends/common/gemma4_kernels.o build/mac-omp/release/src/backends/common/kivi.o build/mac-omp/release/src/backends/common/fwht.o build/mac-omp/release/src/backends/common/hadamard.o build/mac-omp/release/src/backends/common/linear_ref.o build/mac-omp/release/src/backends/common/host_buffer.o build/mac-omp/release/src/backends/common/host_ops.o build/mac-omp/release/src/backends/common/cpu_threads.o build/mac-omp/release/src/backends/common/thread_ws.o build/mac-omp/release/src/formats/ptqtp/ptqtp_awq.o build/mac-omp/release/src/io/aux_file.o build/mac-omp/release/src/io/file_map.o build/mac-omp/release/src/io/gguf_reader.o build/mac-omp/release/src/io/safetensors_reader.o build/mac-omp/release/src/archs/transformer/families/bitnet.o build/mac-omp/release/src/archs/transformer/families/gemma3.o build/mac-omp/release/src/archs/transformer/families/gemma4.o build/mac-omp/release/src/archs/transformer/families/llama.o build/mac-omp/release/src/archs/transformer/families/olmoe.o build/mac-omp/release/src/archs/transformer/families/qwen3.o build/mac-omp/release/src/archs/transformer/families/qwen35.o build/mac-omp/release/src/archs/transformer/families/qwen3moe.o build/mac-omp/release/src/archs/audio_conformer/arch.o build/mac-omp/release/src/archs/audio_conformer/audio_encoder.o build/mac-omp/release/src/archs/audio_conformer/encoder_weights.o build/mac-omp/release/src/archs/audio_conformer/encoder_stream.o build/mac-omp/release/src/archs/audio_conformer/encoder_forward.o build/mac-omp/release/src/archs/audio_conformer/audio_kernels.o build/mac-omp/release/src/archs/audio_conformer/audio_linear.o build/mac-omp/release/src/archs/audio_conformer/mel_pipeline.o build/mac-omp/release/src/archs/vision_siglip/arch.o build/mac-omp/release/src/archs/vision_siglip/vision_encoder.o build/mac-omp/release/src/archs/vision_siglip/vision_kernels.o build/mac-omp/release/src/archs/vision_siglip/image_pipeline.o build/mac-omp/release/src/backends/cpu_neon/attention_int4.o build/mac-omp/release/src/backends/cpu_neon/attention_int8.o build/mac-omp/release/src/backends/cpu_neon/backend.o build/mac-omp/release/src/backends/cpu_neon/elementwise.o build/mac-omp/release/src/backends/cpu_neon/kernel_catalog.o build/mac-omp/release/src/backends/cpu_neon/calibrate.o build/mac-omp/release/src/backends/cpu_neon/kernels/iq2_s.o build/mac-omp/release/src/backends/cpu_neon/kernels/iq3_s.o build/mac-omp/release/src/backends/cpu_neon/kernels/iq4_xs.o build/mac-omp/release/src/backends/cpu_neon/kernels/q3_K.o build/mac-omp/release/src/backends/cpu_neon/kernels/q4_01.o build/mac-omp/release/src/backends/cpu_neon/kernels/q4_K.o build/mac-omp/release/src/backends/cpu_neon/kernels/q5_K.o build/mac-omp/release/src/backends/cpu_neon/kernels/q6_K.o build/mac-omp/release/src/backends/cpu_neon/kernels/q8_0.o build/mac-omp/release/src/backends/cpu_neon/kernels/pq2_0.o build/mac-omp/release/src/backends/cpu_neon/kernels/tq2_0.o build/mac-omp/release/src/backends/cpu_neon/tl1.o build/mac-omp/release/src/backends/cpu_neon/transformer_ops.o build/mac-omp/release/src/backends/cpu_neon/weight_resolve.o build/mac-omp/release/src/backends/cpu_neon/workspace.o build/mac-omp/release/src/backends/cpu_scalar/backend.o build/mac-omp/release/src/backends/cpu_scalar/elementwise.o build/mac-omp/release/src/backends/cpu_scalar/transformer_ops.o build/mac-omp/release/src/backends/cpu_scalar/weight_resolve.o build/mac-omp/release/src/backends/metal/lifecycle.o build/mac-omp/release/src/backends/metal/resources.o build/mac-omp/release/src/backends/metal/pipelines.o build/mac-omp/release/src/backends/metal/sequence.o build/mac-omp/release/src/backends/metal/ops.o build/mac-omp/release/src/backends/metal/profiling.o build/mac-omp/release/src/backends/metal/tuning.o build/mac-omp/release/third_party/stb/stb_impl.o
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_arch_gate_unit build/mac-omp/release/tests/test_arch_gate_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_attention_f32_unit build/mac-omp/release/tests/test_attention_f32_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_attention_int8_unit build/mac-omp/release/tests/test_attention_int8_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_attention_kivi_unit build/mac-omp/release/tests/test_attention_kivi_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_audio_attach_int build/mac-omp/release/tests/test_audio_attach_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_audio_kernels_unit build/mac-omp/release/tests/test_audio_kernels_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_audio_chat_e2e build/mac-omp/release/tests/test_audio_chat_e2e.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_audio_attn_w8a8_parity_int build/mac-omp/release/tests/test_audio_attn_w8a8_parity_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_audio_latency_e2e build/mac-omp/release/tests/test_audio_latency_e2e.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_audio_linear_parity_unit build/mac-omp/release/tests/test_audio_linear_parity_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_audio_long_clip_int build/mac-omp/release/tests/test_audio_long_clip_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_audio_stream_lifecycle_int build/mac-omp/release/tests/test_audio_stream_lifecycle_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_audio_stream_live_parity_int build/mac-omp/release/tests/test_audio_stream_live_parity_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_audio_stream_parity_unit build/mac-omp/release/tests/test_audio_stream_parity_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_audio_stream_session_int build/mac-omp/release/tests/test_audio_stream_session_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_audio_stream_wav_int build/mac-omp/release/tests/test_audio_stream_wav_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_awq_int build/mac-omp/release/tests/test_awq_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_auto_unit build/mac-omp/release/tests/test_backend_auto_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_cpu_scalar_unit build/mac-omp/release/tests/test_backend_cpu_scalar_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_cross_ref_unit build/mac-omp/release/tests/test_backend_cross_ref_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_memory_info_unit build/mac-omp/release/tests/test_backend_memory_info_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_metal_deltanet_chunk_unit build/mac-omp/release/tests/test_backend_metal_deltanet_chunk_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_metal_deltanet_unit build/mac-omp/release/tests/test_backend_metal_deltanet_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_metal_parity_unit build/mac-omp/release/tests/test_backend_metal_parity_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_metal_probe build/mac-omp/release/tests/test_backend_metal_probe.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_ops_unit build/mac-omp/release/tests/test_backend_ops_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_resources_unit build/mac-omp/release/tests/test_backend_resources_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_vs_direct_int build/mac-omp/release/tests/test_backend_vs_direct_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_vulkan_buffer_unit build/mac-omp/release/tests/test_backend_vulkan_buffer_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_vulkan_deltanet_unit build/mac-omp/release/tests/test_backend_vulkan_deltanet_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_vulkan_dispatch_fail_unit build/mac-omp/release/tests/test_backend_vulkan_dispatch_fail_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_vulkan_fallback_unit build/mac-omp/release/tests/test_backend_vulkan_fallback_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_vulkan_linear_grouped_unit build/mac-omp/release/tests/test_backend_vulkan_linear_grouped_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_vulkan_linear_parity build/mac-omp/release/tests/test_backend_vulkan_linear_parity.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_vulkan_narrowing_unit build/mac-omp/release/tests/test_backend_vulkan_narrowing_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_vulkan_ops_unit build/mac-omp/release/tests/test_backend_vulkan_ops_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_vulkan_pipeline_cache_unit build/mac-omp/release/tests/test_backend_vulkan_pipeline_cache_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_vulkan_registry_unit build/mac-omp/release/tests/test_backend_vulkan_registry_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_vulkan_scratch_placement_unit build/mac-omp/release/tests/test_backend_vulkan_scratch_placement_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_vulkan_vram_budget_unit build/mac-omp/release/tests/test_backend_vulkan_vram_budget_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_backend_vulkan_weight_index_unit build/mac-omp/release/tests/test_backend_vulkan_weight_index_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_bonsai_e2e_int build/mac-omp/release/tests/test_bonsai_e2e_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_bitnet_arch_unit build/mac-omp/release/tests/test_bitnet_arch_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_bos_contract_unit build/mac-omp/release/tests/test_bos_contract_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_build_isa_unit build/mac-omp/release/tests/test_build_isa_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_calibration_paths_unit build/mac-omp/release/tests/test_calibration_paths_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_calibration_unit build/mac-omp/release/tests/test_calibration_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_chat_audio_int build/mac-omp/release/tests/test_chat_audio_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_chat_image_int build/mac-omp/release/tests/test_chat_image_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_chat_int build/mac-omp/release/tests/test_chat_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_cpu_limit_unit build/mac-omp/release/tests/test_cpu_limit_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_decision_errors_unit build/mac-omp/release/tests/test_decision_errors_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_decision_int build/mac-omp/release/tests/test_decision_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_decision_prefix_int build/mac-omp/release/tests/test_decision_prefix_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_decision_prefix_unit build/mac-omp/release/tests/test_decision_prefix_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_decision_unit build/mac-omp/release/tests/test_decision_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_decode_batch_unit build/mac-omp/release/tests/test_decode_batch_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_decode_cadence_unit build/mac-omp/release/tests/test_decode_cadence_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_decode_no_alloc_unit build/mac-omp/release/tests/test_decode_no_alloc_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_deltanet_chunk_int build/mac-omp/release/tests/test_deltanet_chunk_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_deltanet_chunk_unit build/mac-omp/release/tests/test_deltanet_chunk_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_deltanet_conv_unit build/mac-omp/release/tests/test_deltanet_conv_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_deltanet_prefill_ws_unit build/mac-omp/release/tests/test_deltanet_prefill_ws_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_deltanet_reset_unit build/mac-omp/release/tests/test_deltanet_reset_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_env_unit build/mac-omp/release/tests/test_env_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_f16_widen_cap_unit build/mac-omp/release/tests/test_f16_widen_cap_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_fp16_unit build/mac-omp/release/tests/test_fp16_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_frame_arena_unit build/mac-omp/release/tests/test_frame_arena_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_full_logits_int build/mac-omp/release/tests/test_full_logits_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_full_logits_gguf_int build/mac-omp/release/tests/test_full_logits_gguf_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_fused_probe_agreement_unit build/mac-omp/release/tests/test_fused_probe_agreement_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_fwht_unit build/mac-omp/release/tests/test_fwht_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_gains_int build/mac-omp/release/tests/test_gains_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_geist_gemm_unit build/mac-omp/release/tests/test_geist_gemm_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_gelu_x86_unit build/mac-omp/release/tests/test_gelu_x86_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_gemma3_decode_parity_int build/mac-omp/release/tests/test_gemma3_decode_parity_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_gemma3_family_unit build/mac-omp/release/tests/test_gemma3_family_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_gemma3_generative_e2e build/mac-omp/release/tests/test_gemma3_generative_e2e.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_gguf_dequant_unit build/mac-omp/release/tests/test_gguf_dequant_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_gguf_reader_unit build/mac-omp/release/tests/test_gguf_reader_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_gguf_tokenizer_overflow_unit build/mac-omp/release/tests/test_gguf_tokenizer_overflow_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_gguf_spm_tokenizer_unit build/mac-omp/release/tests/test_gguf_spm_tokenizer_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_gguf_release_range_unit build/mac-omp/release/tests/test_gguf_release_range_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_head_count_check_unit build/mac-omp/release/tests/test_head_count_check_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_hadamard_unit build/mac-omp/release/tests/test_hadamard_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_head_dim_limit_unit build/mac-omp/release/tests/test_head_dim_limit_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_heap_unit build/mac-omp/release/tests/test_heap_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_host_buffer_unit build/mac-omp/release/tests/test_host_buffer_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_i2_s_parity_unit build/mac-omp/release/tests/test_i2_s_parity_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_idle_cpu_int build/mac-omp/release/tests/test_idle_cpu_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_image_geometry_unit build/mac-omp/release/tests/test_image_geometry_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_int4_kv_unit build/mac-omp/release/tests/test_int4_kv_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_io_malformed_unit build/mac-omp/release/tests/test_io_malformed_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_iq4_dequant_unit build/mac-omp/release/tests/test_iq4_dequant_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_iq_dequant_unit build/mac-omp/release/tests/test_iq_dequant_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_iq_kernel_int build/mac-omp/release/tests/test_iq_kernel_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_kernel_no_alloc_unit build/mac-omp/release/tests/test_kernel_no_alloc_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_kivi_unit build/mac-omp/release/tests/test_kivi_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_known_answer_e2e build/mac-omp/release/tests/test_known_answer_e2e.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_kv_placement_unit build/mac-omp/release/tests/test_kv_placement_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_kv_mode_family_unit build/mac-omp/release/tests/test_kv_mode_family_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_kv_int8_fused_unit build/mac-omp/release/tests/test_kv_int8_fused_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_kv_quality_int build/mac-omp/release/tests/test_kv_quality_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_layer_scale_output_unit build/mac-omp/release/tests/test_layer_scale_output_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_layer_split_fault_int build/mac-omp/release/tests/test_layer_split_fault_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_layer_split_int build/mac-omp/release/tests/test_layer_split_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_layers0to14_int build/mac-omp/release/tests/test_layers0to14_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_layers0to4_int build/mac-omp/release/tests/test_layers0to4_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_linear_fallback_unit build/mac-omp/release/tests/test_linear_fallback_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_linear_fp32_rows_unit build/mac-omp/release/tests/test_linear_fp32_rows_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_linear_ref_unit build/mac-omp/release/tests/test_linear_ref_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_llama_e2e_int build/mac-omp/release/tests/test_llama_e2e_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_llama_load_int build/mac-omp/release/tests/test_llama_load_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_load_from_memory_int build/mac-omp/release/tests/test_load_from_memory_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_load_from_memory_opts_unit build/mac-omp/release/tests/test_load_from_memory_opts_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_logit_golden_int build/mac-omp/release/tests/test_logit_golden_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_mel_pipeline_unit build/mac-omp/release/tests/test_mel_pipeline_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_mem_available_unit build/mac-omp/release/tests/test_mem_available_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_metal_autorelease_unit build/mac-omp/release/tests/test_metal_autorelease_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_metal_budget_unit build/mac-omp/release/tests/test_metal_budget_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_metal_pq2_lowp_unit build/mac-omp/release/tests/test_metal_pq2_lowp_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_metal_resources_unit build/mac-omp/release/tests/test_metal_resources_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_model_modalities_int build/mac-omp/release/tests/test_model_modalities_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_model_plan_unit build/mac-omp/release/tests/test_model_plan_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_moe_device_unit build/mac-omp/release/tests/test_moe_device_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_moe_profile_unit build/mac-omp/release/tests/test_moe_profile_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_moe_route_unit build/mac-omp/release/tests/test_moe_route_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_multi_session_int build/mac-omp/release/tests/test_multi_session_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_multi_session_parallel_int build/mac-omp/release/tests/test_multi_session_parallel_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_neon_act_outlier_unit build/mac-omp/release/tests/test_neon_act_outlier_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_neon_decode_triple_unit build/mac-omp/release/tests/test_neon_decode_triple_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_neon_q4k_act_cache_unit build/mac-omp/release/tests/test_neon_q4k_act_cache_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_neon_q4k_pair_unit build/mac-omp/release/tests/test_neon_q4k_pair_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_olmoe_unit build/mac-omp/release/tests/test_olmoe_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_par_for_unit build/mac-omp/release/tests/test_par_for_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_parse_unit build/mac-omp/release/tests/test_parse_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_pin_prefix_int build/mac-omp/release/tests/test_pin_prefix_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_pin_prefix_recurrent_unit build/mac-omp/release/tests/test_pin_prefix_recurrent_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_pin_prefix_unit build/mac-omp/release/tests/test_pin_prefix_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_pooling_select_unit build/mac-omp/release/tests/test_pooling_select_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_pq2_0_unit build/mac-omp/release/tests/test_pq2_0_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_prefill_determinism_int build/mac-omp/release/tests/test_prefill_determinism_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_prefill_q3k_int build/mac-omp/release/tests/test_prefill_q3k_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_prefill_tuning_unit build/mac-omp/release/tests/test_prefill_tuning_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_projection_input_norms_unit build/mac-omp/release/tests/test_projection_input_norms_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_profile_race_int build/mac-omp/release/tests/test_profile_race_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_published_embedding_e2e build/mac-omp/release/tests/test_published_embedding_e2e.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_q4_0_x8_layout_unit build/mac-omp/release/tests/test_q4_0_x8_layout_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_q4k_kernel_int build/mac-omp/release/tests/test_q4k_kernel_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_q5_0_unit build/mac-omp/release/tests/test_q5_0_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_q6k_prefill_int build/mac-omp/release/tests/test_q6k_prefill_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_q8_0_prefill_unit build/mac-omp/release/tests/test_q8_0_prefill_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_qwen35_e2e_int build/mac-omp/release/tests/test_qwen35_e2e_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_qwen35_load_int build/mac-omp/release/tests/test_qwen35_load_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_quant_dequant_row_unit build/mac-omp/release/tests/test_quant_dequant_row_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_qwen35_metal_e2e_int build/mac-omp/release/tests/test_qwen35_metal_e2e_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_qwen35_mtp_forward_int build/mac-omp/release/tests/test_qwen35_mtp_forward_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_qwen35_vulkan_e2e_int build/mac-omp/release/tests/test_qwen35_vulkan_e2e_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_qwen35moe_unit build/mac-omp/release/tests/test_qwen35moe_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_qwen3_e2e_int build/mac-omp/release/tests/test_qwen3_e2e_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_qwen3_load_int build/mac-omp/release/tests/test_qwen3_load_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_qwen3moe_unit build/mac-omp/release/tests/test_qwen3moe_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_res_norm_neon_unit build/mac-omp/release/tests/test_res_norm_neon_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_rmsnorm_add_x86_unit build/mac-omp/release/tests/test_rmsnorm_add_x86_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_resolve_weight_unit build/mac-omp/release/tests/test_resolve_weight_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_rope_dims_unit build/mac-omp/release/tests/test_rope_dims_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_rope_rows_unit build/mac-omp/release/tests/test_rope_rows_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_rotation_load_unit build/mac-omp/release/tests/test_rotation_load_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_safetensors_unit build/mac-omp/release/tests/test_safetensors_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_sampler_penalties_unit build/mac-omp/release/tests/test_sampler_penalties_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_sampler_unit build/mac-omp/release/tests/test_sampler_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_scratch_plan_unit build/mac-omp/release/tests/test_scratch_plan_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_selected_rows_unit build/mac-omp/release/tests/test_selected_rows_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_session_backend_mismatch_unit build/mac-omp/release/tests/test_session_backend_mismatch_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_session_cancel_unit build/mac-omp/release/tests/test_session_cancel_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_session_kv_sizing_unit build/mac-omp/release/tests/test_session_kv_sizing_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_session_lifecycle_int build/mac-omp/release/tests/test_session_lifecycle_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_session_null_args_unit build/mac-omp/release/tests/test_session_null_args_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_session_penalties_int build/mac-omp/release/tests/test_session_penalties_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_session_sampling_int build/mac-omp/release/tests/test_session_sampling_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_session_snapshot_unit build/mac-omp/release/tests/test_session_snapshot_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_session_truncate_unit build/mac-omp/release/tests/test_session_truncate_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_silu_neon_unit build/mac-omp/release/tests/test_silu_neon_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_silu_x86_unit build/mac-omp/release/tests/test_silu_x86_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_spec_head_sampling_int build/mac-omp/release/tests/test_spec_head_sampling_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_special_tokens_int build/mac-omp/release/tests/test_special_tokens_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_speculative_int4_int build/mac-omp/release/tests/test_speculative_int4_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_speculative_loop_int build/mac-omp/release/tests/test_speculative_loop_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_speculative_primitives_int build/mac-omp/release/tests/test_speculative_primitives_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_split_planner_unit build/mac-omp/release/tests/test_split_planner_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_state_decode_int build/mac-omp/release/tests/test_state_decode_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_state_layer_fwd_int build/mac-omp/release/tests/test_state_layer_fwd_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_state_weights_int build/mac-omp/release/tests/test_state_weights_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_step12to14_ple_int build/mac-omp/release/tests/test_step12to14_ple_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_step1_embedding_unit build/mac-omp/release/tests/test_step1_embedding_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_step2_input_layernorm_unit build/mac-omp/release/tests/test_step2_input_layernorm_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_step3_q_proj_unit build/mac-omp/release/tests/test_step3_q_proj_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_step4_qkv_norm_unit build/mac-omp/release/tests/test_step4_qkv_norm_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_step5_attn_oproj_int build/mac-omp/release/tests/test_step5_attn_oproj_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_step8to11_mlp_norms_int build/mac-omp/release/tests/test_step8to11_mlp_norms_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_tensor_view_unit build/mac-omp/release/tests/test_tensor_view_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_tl1_parity_unit build/mac-omp/release/tests/test_tl1_parity_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_token_to_str_unit build/mac-omp/release/tests/test_token_to_str_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_tokenizer_bin_load_unit build/mac-omp/release/tests/test_tokenizer_bin_load_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_tokenizer_merge_unit build/mac-omp/release/tests/test_tokenizer_merge_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_tokenizer_unit build/mac-omp/release/tests/test_tokenizer_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_transformer_block_via_vtable_int build/mac-omp/release/tests/test_transformer_block_via_vtable_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_unigram_tok_int build/mac-omp/release/tests/test_unigram_tok_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_video_attach_int build/mac-omp/release/tests/test_video_attach_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_vision_attach_int build/mac-omp/release/tests/test_vision_attach_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_vision_e2e_unit build/mac-omp/release/tests/test_vision_e2e_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_vision_kernels_unit build/mac-omp/release/tests/test_vision_kernels_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_vision_preprocess_unit build/mac-omp/release/tests/test_vision_preprocess_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_vision_tower_blocks_unit build/mac-omp/release/tests/test_vision_tower_blocks_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_vocab_size_check_unit build/mac-omp/release/tests/test_vocab_size_check_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_wav_reader_unit build/mac-omp/release/tests/test_wav_reader_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_weight_arena_capacity_unit build/mac-omp/release/tests/test_weight_arena_capacity_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_weight_load_via_backend_int build/mac-omp/release/tests/test_weight_load_via_backend_int.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_weight_rows_unit build/mac-omp/release/tests/test_weight_rows_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_x86_attention_int8_unit build/mac-omp/release/tests/test_x86_attention_int8_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_x86_generic_linear_unit build/mac-omp/release/tests/test_x86_generic_linear_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_x86_iq4_unit build/mac-omp/release/tests/test_x86_iq4_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_x86_isa_dispatch_unit build/mac-omp/release/tests/test_x86_isa_dispatch_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_x86_kernel_no_alloc_unit build/mac-omp/release/tests/test_x86_kernel_no_alloc_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_x86_large_k_unit build/mac-omp/release/tests/test_x86_large_k_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_x86_q3k_unit build/mac-omp/release/tests/test_x86_q3k_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_x86_q4_0_unit build/mac-omp/release/tests/test_x86_q4_0_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_x86_q4k_prefill_tail_unit build/mac-omp/release/tests/test_x86_q4k_prefill_tail_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_x86_q4k_raw_unit build/mac-omp/release/tests/test_x86_q4k_raw_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_x86_q5k_unit build/mac-omp/release/tests/test_x86_q5k_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_x86_q6k_layout_unit build/mac-omp/release/tests/test_x86_q6k_layout_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_x86_q6k_raw_unit build/mac-omp/release/tests/test_x86_q6k_raw_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_x86_q8_0_unit build/mac-omp/release/tests/test_x86_q8_0_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_x86_thread_policy_unit build/mac-omp/release/tests/test_x86_thread_policy_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/test_x86_tq2_0_unit build/mac-omp/release/tests/test_x86_tq2_0_unit.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_attention_int8 build/mac-omp/release/tests/bench_attention_int8.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_audio_encode build/mac-omp/release/tests/bench_audio_encode.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_audio_streaming build/mac-omp/release/tests/bench_audio_streaming.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_decode_batch build/mac-omp/release/tests/bench_decode_batch.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_audio_wer build/mac-omp/release/tests/bench_audio_wer.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_dequant build/mac-omp/release/tests/bench_dequant.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_kv_quality build/mac-omp/release/tests/bench_kv_quality.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_linear_mN build/mac-omp/release/tests/bench_linear_mN.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_metal_deltanet build/mac-omp/release/tests/bench_metal_deltanet.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_metal_flash_attn build/mac-omp/release/tests/bench_metal_flash_attn.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_metal_pq2 build/mac-omp/release/tests/bench_metal_pq2.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_metal_pq2_gemm build/mac-omp/release/tests/bench_metal_pq2_gemm.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_nll build/mac-omp/release/tests/bench_nll.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_offload_cost build/mac-omp/release/tests/bench_offload_cost.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_perf_sweep build/mac-omp/release/tests/bench_perf_sweep.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_q4k_kernel build/mac-omp/release/tests/bench_q4k_kernel.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_quality build/mac-omp/release/tests/bench_quality.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_sampler build/mac-omp/release/tests/bench_sampler.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_sgemv build/mac-omp/release/tests/bench_sgemv.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_session_vram build/mac-omp/release/tests/bench_session_vram.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_stream build/mac-omp/release/tests/bench_stream.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_speculative build/mac-omp/release/tests/bench_speculative.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_tokenizer build/mac-omp/release/tests/bench_tokenizer.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_t5_unpack build/mac-omp/release/tests/bench_t5_unpack.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_video_encode build/mac-omp/release/tests/bench_video_encode.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/bench_vision_encode build/mac-omp/release/tests/bench_vision_encode.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tools/bench_decision build/mac-omp/release/tools/bench_decision.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tools/bench_reasoning_batch build/mac-omp/release/tools/bench_reasoning_batch.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tools/bench_reasoning_probe build/mac-omp/release/tools/bench_reasoning_probe.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tools/eval_geist build/mac-omp/release/tools/eval_geist.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tools/dump_geist_logits build/mac-omp/release/tools/dump_geist_logits.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tools/dump_geist_greedy build/mac-omp/release/tools/dump_geist_greedy.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tools/dump_geist_tf_logits build/mac-omp/release/tools/dump_geist_tf_logits.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tools/dump_geist_embedding build/mac-omp/release/tools/dump_geist_embedding.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tools/dump_geist_tokens build/mac-omp/release/tools/dump_geist_tokens.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tools/zo_tune build/mac-omp/release/tools/zo_tune.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/fuzz_gguf build/mac-omp/release/tests/fuzz_gguf.o lib/mac-omp/release/libgeist.a -lm   -ldl
+cc  -framework Accelerate -L/opt/homebrew/opt/libomp/lib -lomp  -o bin/mac-omp/release/tests/fuzz_tokenizer build/mac-omp/release/tests/fuzz_tokenizer.o lib/mac-omp/release/libgeist.a -lm   -ldl
+  PASS  test_arch_gate_unit (arch gate: fail-closed rejection pass)
+  PASS  test_attention_f32_unit (PASS: F32 and F16-KV attention match the double reference on every CPU backend (cpu_neon split decode on))
+  PASS  test_attention_int8_unit (PASS: INT8 attention matches the double reference on every path, the backends' kernels too)
+  PASS  test_attention_kivi_unit (PASS: KIVI attention matches the double reference of the cache it reads)
+  PASS  test_audio_kernels_unit (PASS: silu_fp32 finite past the exp overflow, clamp_fp32 exact)
+  PASS  test_audio_linear_parity_unit (PASS)
+  SKIP  test_audio_stream_parity_unit (SKIP: audio_tower.safetensors not found (audio_bench/, ../audio_bench/, ../gemma-4-E2B-it/))
+  PASS  test_backend_auto_unit (PASS: "auto" picks metal; a refused model falls back to the CPU)
+  PASS  test_backend_cpu_scalar_unit (PASS: backend cpu_scalar walking skeleton (0.21.0))
+  PASS  test_backend_cross_ref_unit (PASS: scalar/neon/direct all agree within tolerance)
+  SKIP  test_backend_memory_info_unit (SKIP: no Vulkan backend or device)
+  PASS  test_backend_metal_deltanet_chunk_unit (PASS: Metal chunked DeltaNet prefill parity at real head sizes)
+  PASS  test_backend_metal_deltanet_unit (PASS: Metal DeltaNet prefill and stateful decode parity)
+  PASS  test_backend_metal_parity_unit (test_backend_metal_parity_unit: all checks passed)
+  PASS  test_backend_ops_unit (PASS: add / gelu_tanh / rmsnorm — cpu_scalar ≡ cpu_neon)
+  PASS  test_backend_resources_unit (backend resources: unsupported, missing, failing and closed handles passed)
+  SKIP  test_backend_vulkan_buffer_unit (SKIP: vulkan backend unavailable (not built or no device))
+  SKIP  test_backend_vulkan_deltanet_unit (SKIP: Vulkan backend unavailable)
+  SKIP  test_backend_vulkan_dispatch_fail_unit (SKIP: vulkan backend not built)
+  SKIP  test_backend_vulkan_fallback_unit (SKIP: vulkan backend not built)
+  SKIP  test_backend_vulkan_linear_grouped_unit (SKIP: vulkan backend unavailable)
+  SKIP  test_backend_vulkan_narrowing_unit (SKIP: vulkan backend not built)
+  SKIP  test_backend_vulkan_ops_unit (SKIP: Vulkan backend unavailable)
+  SKIP  test_backend_vulkan_pipeline_cache_unit (SKIP: Vulkan backend unavailable)
+  SKIP  test_backend_vulkan_registry_unit (SKIP: vulkan backend unavailable (not built or no device))
+  SKIP  test_backend_vulkan_scratch_placement_unit (SKIP: built without the Vulkan backend)
+  SKIP  test_backend_vulkan_vram_budget_unit (SKIP: vulkan backend not built)
+  SKIP  test_backend_vulkan_weight_index_unit (SKIP: vulkan backend not built)
+  PASS  test_bitnet_arch_unit (bitnet arch: FFN-activation selection + relu_squared requirement pass)
+  PASS  test_bos_contract_unit (PASS: set_prompt starts with exactly one BOS on both tokenizer paths)
+  PASS  test_build_isa_unit (PASS: a host is refused exactly when it lacks a feature this build uses)
+  PASS  test_calibration_paths_unit (test_calibration_paths_unit: all checks passed)
+  PASS  test_calibration_unit (test_calibration_unit: all checks passed)
+  PASS  test_cpu_limit_unit (PASS: limit 0, team 12)
+  PASS  test_decision_errors_unit (decision errors: disabled PASS)
+  PASS  test_decision_prefix_unit (test_decision_prefix_unit: DECISION_CONTEXT=0 stubs PASS)
+  PASS  test_decision_unit (decision: disabled stubs PASS)
+  PASS  test_decode_batch_unit (PASS: decode_batch (4 backend(s), 4 batching))
+  PASS  test_decode_cadence_unit (PASS: decode steps, peeks, turns, resets and a full context behave as specified)
+  PASS  test_decode_no_alloc_unit (PASS: steady-state decode and prefill stay within their allocation ceilings)
+  PASS  test_deltanet_chunk_unit (OK: dn_head_chunk == dn_head_step on all shapes, the fresh chunk == the chunk from zeros, no denormals)
+  PASS  test_deltanet_conv_unit (PASS: DeltaNet conv row matches the reference; chunked prefill matches sequential)
+  PASS  test_deltanet_prefill_ws_unit (PASS: a chunked DeltaNet prefill gives the same bits whatever ran before it)
+  PASS  test_deltanet_reset_unit (OK: a reset's stale DeltaNet state never reaches a logit)
+  PASS  test_env_unit (PASS: GEIST_* flags and counts follow env.h's rule)
+  PASS  test_f16_widen_cap_unit (  load error: transformer: cpu_scalar has no F16 linear for 'blk.0.attn_q.weight' (2112x2112); use a quantized GGUF or a CPU backend)
+  PASS  test_fp16_unit (PASS: fp16_to_fp32 decodes all 65536 half-precision values)
+  PASS  test_frame_arena_unit (PASS: frame_arena alloc / align / reset / exhaustion / overflow guard)
+  PASS  test_fused_probe_agreement_unit (fused probe agreement: pass)
+  PASS  test_fwht_unit (PASS: FWHT is self-inverse, dot-preserving, suppresses outliers, and runs the plain passes' butterflies to the bit)
+  PASS  test_geist_gemm_unit (PASS: geist_sgemm matches the double reference in 1008 cases)
+  SKIP  test_gelu_x86_unit (SKIP: cpu_x86 backend not compiled in)
+  PASS  test_gemma3_family_unit (PASS: gemma3 is registered and the embed scale stands alone)
+  SKIP  test_gguf_dequant_unit (SKIP: Missing test data. Usage: <model.gguf> <tensor_name> <out.bin> [max_rows])
+  SKIP  test_gguf_reader_unit (SKIP: no GGUF: pass one as an argument or set GEIST_GGUF_PATH)
+  PASS  test_gguf_release_range_unit (gguf release range: pass)
+  SKIP  test_gguf_spm_tokenizer_unit (SKIP: GGUF model not found. Set GEIST_GGUF_PATH or place model in ./, ../models/)
+  PASS  test_gguf_tokenizer_overflow_unit (PASS: gguf_tokenizer_encode fails instead of truncating (spm, unigram, gpt2))
+  PASS  test_hadamard_unit (PASS test_hadamard_unit)
+  PASS  test_head_count_check_unit (PASS: head counts that do not divide are refused at load)
+  PASS  test_head_dim_limit_unit (PASS: head_dim above the supported maximum is refused at load)
+  PASS  test_heap_unit (PASS: heap alloc/calloc/alloc_n — zero/overflow/alignment guards, including the array macros at the SIZE_MAX boundary)
+  PASS  test_host_buffer_unit (PASS: host buffers refuse bad arguments, survive allocation failures, round-trip data)
+  PASS  test_i2_s_parity_unit (I2_S PARITY: PASS)
+  PASS  test_image_geometry_unit (PASS: image geometry — unrepresentable dimensions refused, 224x320 still plans (672x960, 280 soft tokens), and 224x320 preprocesses cleanly)
+  PASS  test_int4_kv_unit (PASS: int4 pack/unpack round-trips with correct sign-extension)
+  PASS  test_io_malformed_unit (test_io_malformed_unit: PASS)
+  PASS  test_iq4_dequant_unit (test_iq4_dequant_unit: all checks passed)
+  SKIP  test_iq_dequant_unit ([dbg] start)
+  PASS  test_kernel_no_alloc_unit (PASS: 14 dtypes, linear_m1/linear_mN allocate nothing in steady state (200 decode + 8 prefill shapes each, whole workspace stable))
+  PASS  test_kivi_unit (PASS: KIVI helpers preserve packing semantics and round-trip tolerance)
+  PASS  test_kv_int8_fused_unit (PASS: the architecture's quantized-KV attention on the backends' kernels)
+  PASS  test_kv_mode_family_unit (PASS: KV mode by family, session and environment; dense models unchanged)
+  PASS  test_kv_placement_unit (PASS: INT8/INT4 and FP32 KV caches placed as the backend asks, and sessions run on them)
+  PASS  test_layer_scale_output_unit (PASS: the layer output scale skips a scalar of 1 and applies any other)
+  PASS  test_linear_fallback_unit (PASS: every CPU linear kernel computes y without its scratch and past its row cap)
+  PASS  test_linear_fp32_rows_unit (PASS: linear_fp32 gives each row the same bits for any row count)
+  PASS  test_linear_ref_unit (PASS: geist_linear_ref matches a whole-row decode for every dtype it decodes; cpu_scalar's kernels are it and allocate nothing)
+  PASS  test_load_from_memory_opts_unit
+  SKIP  test_mel_pipeline_unit (SKIP: Missing test data. Usage: <wav> <mel_constants.bin> <out_mel.bin>)
+  PASS  test_mem_available_unit (PASS: available 0 MiB)
+  SKIP  test_metal_autorelease_unit ()
+  PASS  test_metal_budget_unit (PASS: metal working-set budget refuses at load and session create)
+  PASS  test_metal_pq2_lowp_unit (PQ2 oracle dtype=22 rows=64 K=256 N=65 power=0 exact=0 NRMSE=0)
+  SKIP  test_metal_resources_unit ()
+  PASS  test_model_plan_unit (test_model_plan_unit: plan = session for every KV mode and the env, file = memory, window growth, refusals on 3 backend(s) passed)
+  PASS  test_moe_device_unit (PASS: device routing, id-indexed expert matvecs, weighted sum)
+  PASS  test_moe_profile_unit (PASS: moe profile counted, kept, read back, foreign and corrupt files ignored)
+  PASS  test_moe_route_unit (PASS: MoE router top-k matches the softmax reference on ties, k = n, zero input, an unused expert, and refuses k = 0, k > n, non-finite logits)
+  PASS  test_neon_act_outlier_unit (PASS: one |x| = 100 outlier leaves the other activation groups exact to 0.02)
+  PASS  test_neon_decode_triple_unit (PASS: the q/k/v decode triple matches each weight's linear_m1 bit for bit)
+  PASS  test_neon_q4k_act_cache_unit (PASS: the Q4_K decode kernel quantizes a rewritten input anew)
+  PASS  test_neon_q4k_pair_unit (PASS: the paired Q4_K decode GEMV matches two single ones bit for bit)
+  PASS  test_olmoe_unit (skip vulkan: not in this build)
+  PASS  test_par_for_unit (PASS: geist_par_for (OpenMP))
+  PASS  test_parse_unit (PASS: geist_parse_long takes whole decimal longs, rejects the rest)
+  PASS  test_pin_prefix_recurrent_unit (PASS: pin_prefix refuses a prefix a reset could not return to)
+  PASS  test_pin_prefix_unit (PASS: a pinned prefix gives the cache of a fresh session, before and after turns)
+  PASS  test_pooling_select_unit (PASS: pooling is selected, refused and classified correctly)
+  PASS  test_pq2_0_unit (PASS test_pq2_0_unit)
+  PASS  test_prefill_tuning_unit (PASS: prefill tuning resolves default + delta + override; blocktime lands as specified)
+  PASS  test_projection_input_norms_unit (PASS: proj_in scratch is conditional and fully accounted for)
+  PASS  test_q4_0_x8_layout_unit
+  PASS  test_q5_0_unit (PASS test_q5_0_unit)
+  PASS  test_q8_0_prefill_unit (PASS: SDOT tiles)
+  PASS  test_quant_dequant_row_unit (quant_dequant_row: 18 dtypes bit-identical to the replaced copies)
+  PASS  test_qwen35moe_unit (PASS: qwen35moe dense twin, backends, hot experts, model on the GPU)
+  PASS  test_qwen3moe_unit (PASS: qwen3moe prefill shapes, reset reuse, fault injection, load refusals)
+  PASS  test_res_norm_neon_unit (PASS: cpu_neon rmsnorm_add / rmsnorm_add_norm / attn_qkv_prep / attn_rope_append bit-identical to the separate ops)
+  PASS  test_resolve_weight_unit (PASS: cpu_neon resolve_weight covers Q3_K/Q4_K/Q5_K/Q6_K/Q8_0/IQ2_S/IQ3_S/F32/F16/BF16 (M=1 and M>1); linear_support agrees with the resolver on every dtype; short and unset source extents are refused.)
+  SKIP  test_rmsnorm_add_x86_unit (SKIP: cpu_x86 backend not compiled in)
+  PASS  test_rope_dims_unit (PASS: rotary head_dim contract — odd and zero rejected, every accepted head_dim fills its whole cos/sin table)
+  PASS  test_rope_rows_unit
+  PASS  test_rotation_load_unit (PASS test_rotation_load_unit)
+  SKIP  test_safetensors_unit (SKIP: Missing test data. Usage: <model.safetensors> [tensor_name ...])
+  PASS  test_sampler_penalties_unit (test_sampler_penalties_unit: OK)
+  PASS  test_sampler_unit (PASS: all 10 sampler checks)
+  PASS  test_scratch_plan_unit (PASS: scratch plan uses largest per-layer intermediate width)
+  PASS  test_selected_rows_unit (  metal dtype=22 layout=0 tile=16 vocab=6150: exact PASS)
+  SKIP  test_session_backend_mismatch_unit (SKIP: no GGUF fixture found (set GEIST_GGUF_PATH))
+  PASS  test_session_cancel_unit (PASS: geist_session_cancel stops prefill and decode_step cleanly)
+  PASS  test_session_kv_sizing_unit (session kv sizing: pass)
+  PASS  test_session_null_args_unit (PASS: a null array is rejected at all nine array parameters)
+  PASS  test_session_snapshot_unit (PASS: snapshots restore into the same and other sessions bit-exactly, bad images are refused)
+  PASS  test_session_truncate_unit (test_session_truncate_unit: metadata, length, truncate (bit-identical, refusals), KV bytes per position on 3 backend(s) passed)
+  PASS  test_silu_neon_unit (PASS: cpu_neon silu bit-identical to cpu_scalar, silu_mul to silu then mul)
+  SKIP  test_silu_x86_unit (SKIP: cpu_x86 backend not compiled in)
+  PASS  test_split_planner_unit (PASS: split planner fit)
+  SKIP  test_step1_embedding_unit (SKIP: Missing test data. Usage: <model.safetensors> <input_ids.bin> <out.bin>)
+  SKIP  test_step2_input_layernorm_unit (SKIP: Missing test data. Usage: <model.safetensors> <input_ids.bin> <out.bin>)
+  SKIP  test_step3_q_proj_unit (SKIP: Missing test data. Usage: <model.safetensors> <ids.bin> <out.bin>)
+  SKIP  test_step4_qkv_norm_unit (SKIP: Missing test data. Usage: <model.safetensors> <ids.bin> <out_prefix>)
+  PASS  test_tensor_view_unit (PASS: malformed tensor views (ndim, dimension sign, overflowing product, buffer extent, offset, alignment) are refused by every CPU backend in this build)
+  PASS  test_tl1_parity_unit (mismatches: 0 / 32)
+  PASS  test_token_to_str_unit (PASS: token strings are NUL-terminated and outlive the calls after them)
+  PASS  test_tokenizer_bin_load_unit (PASS: tokenizer.bin lengths and counts are checked against the file)
+  PASS  test_tokenizer_merge_unit (PASS: the merge heap makes the rescan's merges)
+  SKIP  test_tokenizer_unit (SKIP: Missing test data. Usage: <tokenizer.bin>)
+  SKIP  test_vision_e2e_unit (SKIP: vision_bench/vision_tower.safetensors not found. Run extract_vision_tower.)
+  PASS  test_vision_kernels_unit (PASS: vision avg-pool, 2D RoPE and bidirectional attention match the double references)
+  SKIP  test_vision_preprocess_unit (SKIP: dumps not found at dumps/vision/syn_320x224.* (HF reference dumps; the script that writes them is not in this repository))
+  SKIP  test_vision_tower_blocks_unit (SKIP: vision_bench/vision_tower.safetensors not found. Run tools/dump_vision_tower.py to extract.)
+  PASS  test_vocab_size_check_unit (PASS: a GGUF without a vocabulary size is refused at load)
+  PASS  test_wav_reader_unit (PASS)
+  PASS  test_weight_arena_capacity_unit (weight arena capacity: pass)
+  PASS  test_weight_rows_unit (PASS: resolve_weight refuses rows that are not whole blocks)
+  SKIP  test_x86_attention_int8_unit (SKIP: needs cpu_x86 in this build)
+  SKIP  test_x86_generic_linear_unit (SKIP: needs cpu_x86 and cpu_scalar in this build)
+  SKIP  test_x86_iq4_unit (SKIP: needs cpu_x86 and cpu_scalar in this build)
+  SKIP  test_x86_isa_dispatch_unit (SKIP: x86 ISA dispatch test needs a cpu_x86 build)
+  SKIP  test_x86_kernel_no_alloc_unit (SKIP: cpu_x86 backend not in this build)
+  SKIP  test_x86_large_k_unit (SKIP: needs cpu_x86 and cpu_scalar in this build)
+  SKIP  test_x86_q3k_unit (SKIP: needs cpu_x86 and cpu_scalar in this build)
+  SKIP  test_x86_q4_0_unit (SKIP: needs cpu_x86 and cpu_scalar in this build)
+  SKIP  test_x86_q4k_prefill_tail_unit (SKIP: needs cpu_x86 and cpu_scalar in this build)
+  SKIP  test_x86_q4k_raw_unit (SKIP: needs cpu_x86 and cpu_scalar in this build)
+  SKIP  test_x86_q5k_unit (SKIP: needs cpu_x86 and cpu_scalar in this build)
+  SKIP  test_x86_q6k_layout_unit (SKIP: needs cpu_x86 and cpu_scalar in this build)
+  SKIP  test_x86_q6k_raw_unit (SKIP: needs cpu_x86 and cpu_scalar in this build)
+  SKIP  test_x86_q8_0_unit (SKIP: needs cpu_x86 and cpu_scalar in this build)
+  PASS  test_x86_thread_policy_unit (PASS: decode team policy and region hooks)
+  SKIP  test_x86_tq2_0_unit (SKIP: needs cpu_x86 and cpu_scalar in this build)
+
+Ran 162 test(s) in 46s: 113 passed, 49 skipped, 0 failed, 0 error
