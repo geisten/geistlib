@@ -166,6 +166,10 @@ static int check_refuses_per_head_norms(void) {
 }
 
 int main(void) {
+    /* Exact F32 here: the M5/M6 tensor GEMM rounds F32 weights to half
+     * (#340), beyond these fixtures' tolerances; test_backend_metal_parity_unit
+     * covers it (#361). */
+    setenv("GEIST_METAL_TENSOR", "0", 1);
     setenv("GEIST_MOE_PROFILE_CACHE", "0", 1);
     int       fails = 0;
     float     scalar[VOCAB], other[VOCAB];
