@@ -127,7 +127,7 @@ def main() -> None:
                         ["git", "status", "--porcelain", "--untracked-files=no"], text=True).strip()),
                     binary_sha256={str(p.relative_to(args.bin_dir)): sha256_file(p)
                                    for p in (bench, oracle, evaluate, dump)}, cycles=args.cycles,
-                    protocol=dict(seq_lens=[128, 512], decode_n=32, warmup=16, repeats=1,
+                    protocol=dict(seq_lens=[128, 512], decode_n=32, warmup=512, repeats=1,
                                   order="AB/BA alternation, same binary", threads=4, int8_tile_rows=args.tile_rows), models={})
     for label, path in models:
         metadata["models"][label] = dict(path=path, sha256=sha256_file(Path(path)))
@@ -146,7 +146,7 @@ def main() -> None:
                                                       fallback_seconds=45), deadline)
                         with (args.out / f"tune-{label}-{cycle}-{tile}.err").open("w") as err:
                             proc = subprocess.run([str(bench), "--gguf", path, "--seq-lens", "512",
-                                                   "--decode-n", "8", "--warmup", "16", "--repeats", "1"],
+                                                   "--decode-n", "8", "--warmup", "512", "--repeats", "1"],
                                       env=dict(env_for(1), GEIST_METAL_INT8_TILE=str(tile)),
                                       text=True, stdout=subprocess.PIPE, stderr=err, check=True)
                         for line in proc.stdout.splitlines():
@@ -175,7 +175,7 @@ def main() -> None:
                                                    fallback_seconds=45), deadline)
                     with (args.out / f"perf-{label}-{cycle}-{arm}.err").open("w") as err:
                         proc = subprocess.run([str(bench), "--gguf", path, "--seq-lens", "128,512",
-                                               "--decode-n", "32", "--warmup", "16", "--repeats", "1"],
+                                               "--decode-n", "32", "--warmup", "512", "--repeats", "1"],
                                               env=env_for(int8), text=True, stdout=subprocess.PIPE,
                                               stderr=err, check=True)
                     for line in proc.stdout.splitlines():

@@ -117,12 +117,16 @@ make -j8 bin/mac-omp/release/tests/bench_metal_precision \
   --model qwen3=/path/to/qwen3-q8_0.gguf --out /tmp/int8
 ```
 
+The model runner warms 512 tokens before measuring pp128/pp512 so the
+native path and its high-water workspace are exercised before timing.
 The isolated benchmark uses identical representable integer inputs and
 identical geometry for FP16, E4M3 FP8 and INT8, with FP32/INT32 outputs.
 It separates prepared-operand GEMM, simple cast/pack conversion, their
 combined cost, and blockwise dynamic-range calibration. Operand byte
 counts exclude the retained FP32 source and other benchmark buffers;
-they are not process memory savings. Full-model quality uses a small
+they are not process memory savings. Separate non-integer uniform and
+outlier fixtures compare format error against sampled CPU-double dots.
+Full-model quality uses a small
 self-authored completion corpus with prompts of at least 128 tokens,
 continuation NLL, greedy generation, and full-vocabulary logit comparisons.
 It is a smoke check, not a standard perplexity or task-accuracy evaluation.
