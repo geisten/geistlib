@@ -28,6 +28,7 @@
 
 #include "gemma4_kernels.h"
 #include "heap.h"
+#include "cleanup.h"
 #include "kivi.h"
 #include "ptqtp_awq.h"
 
@@ -800,7 +801,7 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_sessio
 
     /* Pre-fill a pad-id array for compute_per_layer_inputs_batch.
      * Audio tokens use pad_token_id (0) as PLE row identity. */
-    geist_token_t *pad_ids =
+    GEIST_CLEANUP(heap_freep) geist_token_t *pad_ids =
             heap_alloc_aligned(sess->m_max * sizeof(geist_token_t), alignof(geist_token_t));
     if (pad_ids == nullptr) {
         return GEIST_E_OOM;
@@ -844,8 +845,7 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_sessio
             const size_t bytes = chunk * st->d_model * sizeof(float);
             uint8_t     *dst   = (uint8_t *) v->buffer_map(sess->scratch_h_a);
             if (dst == nullptr) {
-                rc = GEIST_E_BACKEND; /* the backend said why */
-                goto cleanup;
+                return GEIST_E_BACKEND; /* the backend said why */
             }
             memcpy(dst, (const uint8_t *) (soft_tokens + off * st->d_model), bytes);
             v->buffer_unmap(sess->scratch_h_a);
@@ -857,7 +857,7 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_sessio
             rc = compute_per_layer_inputs_batch(
                     sess, chunk, pad_ids, sess->scratch_h_a, sess->scratch_per_layer_input);
             if (rc != GEIST_OK) {
-                goto cleanup;
+                return rc;
             }
             ple_buf = sess->scratch_per_layer_input;
         }
@@ -868,7 +868,7 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_sessio
         rc = transformer_run_all_layers(
                 sess, q_pos, chunk, sess->scratch_h_a, ple_buf, sess->scratch_h_b);
         if (rc != GEIST_OK) {
-            goto cleanup;
+            return rc;
         }
 
         sess->kv_len += chunk;
@@ -876,22 +876,18 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_sessio
             sess->kivi_residual_count += chunk;
             rc = transformer_kivi_drain_full(sess);
             if (rc != GEIST_OK) {
-                goto cleanup;
+                return rc;
             }
         }
 
         if (off + chunk == n) {
             rc = finalize_logits_last_row(sess, chunk);
             if (rc != GEIST_OK) {
-                goto cleanup;
+                return rc;
             }
         }
     }
 
-cleanup: {
-    void *p = pad_ids;
-    safe_free(&p);
-}
     return rc;
 }
 
@@ -1000,6 +996,10 @@ transformer_pin_prefix(struct transformer_arch_session *sess, size_t n, const ge
     return GEIST_OK;
 }
 
+static void awq_closep(struct ptqtp_awq_ctx **awq) {
+    ptqtp_awq_close(*awq);
+}
+
 /*
  * Folds attn_norm and ffn_norm gamma against per-channel AWQ
  * scales so the runtime sees a single gamma multiply (zero AWQ overhead
@@ -1017,8 +1017,8 @@ enum geist_status apply_awq_to_state(struct transformer_arch_state *st, const ch
     if (awq_path == nullptr)
         return GEIST_OK;
 
-    const char           *err = nullptr;
-    struct ptqtp_awq_ctx *awq = ptqtp_awq_open(awq_path, &err);
+    const char                                     *err = nullptr;
+    GEIST_CLEANUP(awq_closep) struct ptqtp_awq_ctx *awq = ptqtp_awq_open(awq_path, &err);
     if (awq == nullptr) {
         geist_backend_set_error(st->backend,
                                 GEIST_E_FILE_NOT_FOUND,
@@ -1028,8 +1028,7 @@ enum geist_status apply_awq_to_state(struct transformer_arch_state *st, const ch
         return GEIST_E_FILE_NOT_FOUND;
     }
 
-    enum geist_status rc = GEIST_OK;
-    char              key[64];
+    char key[64];
 
     for (int i = 0; (size_t) i < st->n_layers; i++) {
         struct transformer_layer_weights *L = &st->layers[i];
@@ -1047,12 +1046,11 @@ enum geist_status apply_awq_to_state(struct transformer_arch_state *st, const ch
                                         key,
                                         n,
                                         (int) st->d_model);
-                rc = GEIST_E_INVALID_ARG;
-                goto cleanup;
+                return GEIST_E_INVALID_ARG;
             }
-            rc = awq_fold_norm(st, L, n, s, &L->attn_norm);
+            const enum geist_status rc = awq_fold_norm(st, L, n, s, &L->attn_norm);
             if (rc != GEIST_OK)
-                goto cleanup;
+                return rc;
         }
 
         /* ffn_norm gamma /= s_ffn_norm */
@@ -1066,12 +1064,11 @@ enum geist_status apply_awq_to_state(struct transformer_arch_state *st, const ch
                                         key,
                                         n,
                                         (int) st->d_model);
-                rc = GEIST_E_INVALID_ARG;
-                goto cleanup;
+                return GEIST_E_INVALID_ARG;
             }
-            rc = awq_fold_norm(st, L, n, s, &L->ffn_norm);
+            const enum geist_status rc = awq_fold_norm(st, L, n, s, &L->ffn_norm);
             if (rc != GEIST_OK)
-                goto cleanup;
+                return rc;
         }
 
         /* o_proj input: 1/s applied at runtime to attn_out [q_out]. */
@@ -1085,13 +1082,11 @@ enum geist_status apply_awq_to_state(struct transformer_arch_state *st, const ch
                                         key,
                                         n,
                                         (size_t) L->q_out);
-                rc = GEIST_E_INVALID_ARG;
-                goto cleanup;
+                return GEIST_E_INVALID_ARG;
             }
             L->o_awq_inv_scale = heap_alloc_aligned(n * sizeof(float), alignof(float));
             if (L->o_awq_inv_scale == nullptr) {
-                rc = GEIST_E_OOM;
-                goto cleanup;
+                return GEIST_E_OOM;
             }
             for (size_t j = 0; j < n; j++)
                 L->o_awq_inv_scale[j] = 1.0f / s[j];
@@ -1108,20 +1103,16 @@ enum geist_status apply_awq_to_state(struct transformer_arch_state *st, const ch
                                         key,
                                         n,
                                         (size_t) L->intermediate);
-                rc = GEIST_E_INVALID_ARG;
-                goto cleanup;
+                return GEIST_E_INVALID_ARG;
             }
             L->down_awq_inv_scale = heap_alloc_aligned(n * sizeof(float), alignof(float));
             if (L->down_awq_inv_scale == nullptr) {
-                rc = GEIST_E_OOM;
-                goto cleanup;
+                return GEIST_E_OOM;
             }
             for (size_t j = 0; j < n; j++)
                 L->down_awq_inv_scale[j] = 1.0f / s[j];
         }
     }
 
-cleanup:
-    ptqtp_awq_close(awq);
-    return rc;
+    return GEIST_OK;
 }
