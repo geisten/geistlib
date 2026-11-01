@@ -191,7 +191,7 @@ void metal_destroy(struct geist_backend *be) {
     st->int8_tile_rows = geist_parse_long(getenv("GEIST_METAL_INT8_TILE"), &int8_tile) &&
                                          (int8_tile == 32 || int8_tile == 64 || int8_tile == 128)
                                  ? (uint32_t) int8_tile
-                                 : 64u;
+                                 : 128u;
 
     st->command_queue = metal_msg_send_id0(st, st->device, "newCommandQueue");
     if (st->command_queue == nullptr) {

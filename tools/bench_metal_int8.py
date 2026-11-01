@@ -55,7 +55,7 @@ CASES = [(name, CONTEXT + prompt, continuation) for name, prompt, continuation i
 def env_for(int8: int) -> dict:
     return dict(os.environ, GEIST_BACKEND="metal", GEIST_BENCH_BACKEND="metal",
                 GEIST_DUMP_BACKEND="metal", GEIST_METAL_TENSOR="1",
-                GEIST_METAL_INT8=str(int8), GEIST_METAL_INT8_TILE=os.environ.get("GEIST_METAL_INT8_TILE", "64"),
+                GEIST_METAL_INT8=str(int8), GEIST_METAL_INT8_TILE=os.environ.get("GEIST_METAL_INT8_TILE", "128"),
                 GEIST_METAL_PROFILE="0", OMP_NUM_THREADS="4")
 
 
@@ -105,7 +105,7 @@ def main() -> None:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--bin-dir", type=Path, default=ROOT / "bin/mac-omp/release")
     ap.add_argument("--cycles", type=int, default=6)
-    ap.add_argument("--tile-rows", type=int, choices=(32, 64, 128), default=64)
+    ap.add_argument("--tile-rows", type=int, choices=(32, 64, 128), default=128)
     ap.add_argument("--tune-only", action="store_true", help="six-cycle tile sweep, no quality run")
     args = ap.parse_args()
     os.environ["GEIST_METAL_INT8_TILE"] = str(args.tile_rows)

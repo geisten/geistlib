@@ -98,7 +98,7 @@ bytes, holding one prepared matrix pair and its scales. It adds memory
 rather than reducing the mapped model's size.
 
 `GEIST_METAL_INT8_TILE=32|64|128` selects the row tile in the same binary
-(default 64; output tile 64, eight SIMD groups). This is a tuning control,
+(default 128; output tile 64, eight SIMD groups). This is a tuning control,
 not a promise that any INT8 configuration improves full-model speed.
 `GEIST_METAL_PROFILE=1` reports `dispatch.int8_quant_x`; the performance
 sweep also emits actual INT8 quantization/GEMM dispatch counts and backend
