@@ -100,7 +100,9 @@ There is no model-wide expanded cache. Scratch grows to its high-water
 geometry and is reused until backend destruction.
 
 `GEIST_METAL_PQ2_TILE=32|64|128` and
-`GEIST_METAL_PQ2_SIMDGROUPS=4|8` select candidate geometry.
+`GEIST_METAL_PQ2_SIMDGROUPS=4|8` select candidate geometry. Full-K staged
+modes default to the measured 128-row/four-SIMD-group geometry; other
+candidates default to eight SIMD groups.
 `GEIST_METAL_PQ2_SHARED_ACC=1` moves block-mode FP32 running sums to
 threadgroup memory to compare register pressure; its row tile is capped
 at 64 to fit the hardware memory limit. All settings are experimental;

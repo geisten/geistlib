@@ -205,7 +205,7 @@ void metal_destroy(struct geist_backend *be) {
     st->pq2_lowp_simdgroups =
             geist_parse_long(getenv("GEIST_METAL_PQ2_SIMDGROUPS"), &sg) && (sg == 4 || sg == 8)
                     ? (uint32_t) sg
-                    : 8u;
+                    : st->pq2_lowp_mode >= 7u ? 4u : 8u;
 
     st->pq2_lowp_shared_acc = st->pq2_lowp_mode >= 1u && st->pq2_lowp_mode <= 4u &&
                               geist_env_flag("GEIST_METAL_PQ2_SHARED_ACC", false);
