@@ -583,10 +583,7 @@ struct metal_state {
     _Atomic(uintptr_t) seq_owner;
     bool               sequence_has_work;
     bool               profile_enabled;
-    /* Prefill GEMMs on the tensor API (#314): the GPU has matrix units
-     * (Apple family 10+: M5, M6, A19), or GEIST_METAL_TENSOR=1 forces it;
-     * GEIST_METAL_TENSOR=0 keeps the simdgroup GEMMs. Cleared when the
-     * tensor unit does not compile (an OS without the Metal 4 tensor API). */
+    /* Opt-in PQ2 candidates; compile and allocate only for an eligible call. */
     bool                      pq2_lowp_shared_acc;
     uint32_t                  pq2_lowp_mode, pq2_lowp_tile, pq2_lowp_simdgroups;
     void                     *pq2_lowp_library;
@@ -594,6 +591,10 @@ struct metal_state {
     void                     *pq2_lowp_mm_function[6], *pq2_lowp_mm_pipeline[6];
     struct geist_buffer      *pq2_lowp_x;
     uint64_t                  pq2_lowp_quant_dispatches, pq2_lowp_mm_dispatches;
+    /* Prefill GEMMs on the tensor API (#314): the GPU has matrix units
+     * (Apple family 10+: M5, M6, A19), or GEIST_METAL_TENSOR=1 forces it;
+     * GEIST_METAL_TENSOR=0 keeps the simdgroup GEMMs. Cleared when the
+     * tensor unit does not compile (an OS without the Metal 4 tensor API). */
     bool                      tensor_mm;
     struct metal_profile_stat profile[METAL_PROFILE_STAGE_COUNT];
     /* GPU time of committed command buffers (profile only): the sum of the

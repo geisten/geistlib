@@ -96,6 +96,14 @@ def main():
         previous=json.loads((args.out/'metadata.json').read_text())
         for key in ('model','binary_sha256','configs','cycles','protocol'):
             if meta[key]!=previous[key]:raise RuntimeError('quality restart metadata mismatch: '+key)
+        if (args.out/'summary.json').exists() and (args.out/'quality.jsonl').exists():
+            saved=[json.loads(line) for line in (args.out/'quality.jsonl').read_text().splitlines()]
+            expected={(cfg['label'],name,prompt,continuation) for cfg in configs for name,prompt,continuation in CASES}
+            actual={(r['arm'],r['case'],r['prompt'],r['continuation']) for r in saved}
+            summary=json.loads((args.out/'summary.json').read_text())
+            if actual==expected and len(saved)==len(expected) and len(summary['quality'])==len(configs)-1 and len(summary['logits'])==3*(len(configs)-1):
+                print('Complete matching quality records already present.',flush=True)
+                return
         records=[json.loads(line) for line in (args.out/'runs.jsonl').read_text().splitlines()]
         expected={(cycle,cfg['label'],seq) for cycle in range(args.cycles) for cfg in configs for seq in seqs}
         actual={(r['cycle'],r['arm'],r['seq_len']) for r in records}
