@@ -1,0 +1,4 @@
+{"model":"Qwen3.6-35B-A3B-UD-Q4_K_XL","v":"GEIST_MOE_STAGE=0","staged":"","r":{"tokens":1023,"nll":2.070668,"ppl":7.9301,"tps":64.89}}
+{"model":"Qwen3.6-35B-A3B-UD-Q4_K_XL","v":"X=default","staged":"2115 cold experts staged on vulkan for 150901 rows","r":{"tokens":1023,"nll":2.070391,"ppl":7.9279,"tps":68.23}}
+{"model":"Qwen3-30B-A3B-Q4_K_M","v":"GEIST_MOE_STAGE=0","staged":"","r":{"tokens":1023,"nll":2.434507,"ppl":11.4102,"tps":57.78}}
+{"model":"Qwen3-30B-A3B-Q4_K_M","v":"X=default","staged":"1193 cold experts staged on vulkan for 142238 rows","r":{"tokens":1023,"nll":2.432539,"ppl":11.3878,"tps":59.58}}
