@@ -3,7 +3,6 @@
  */
 #include "metal_internal.h"
 #include "parse.h"
-#include "parse.h"
 
 static void metal_destroy_state(struct geist_backend *be, struct metal_state *st) {
     if (be == nullptr || st == nullptr) {

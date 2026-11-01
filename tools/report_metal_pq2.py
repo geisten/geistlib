@@ -63,6 +63,8 @@ def main():
     for r in model['logits']:
         lines.append(f'| {r["arm"]} | {r["case"]} | {r["top1_same"]} | {r["top10_overlap"]}/10 | {r["centered_cosine"]:.6f} | {r["centered_rmse"]:.6f} | {r["js_nats"]:.6f} |')
     lines += ['', 'Requantization can change generated text; these modes remain experimental and disabled by default. Short prompts can lose performance because preparation is not sufficiently amortized. Decode kernels are unchanged; decode timing differences reflect run noise and potentially different prefill state.', '', '## Isolation and validation', '']
+    default = load('model/default-isolation.json')
+    lines.append(f'- Bonsai default: {len(default["cases"])} long-prompt full-vocabulary dumps are bit-identical to clean main.')
     isolation = load('isolation/results.json')
     for name in sorted({r['model'] for r in isolation}):
         rs=[r for r in isolation if r['model']==name]
