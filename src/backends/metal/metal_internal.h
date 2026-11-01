@@ -588,15 +588,14 @@ struct metal_state {
      * GEIST_METAL_TENSOR=0 keeps the simdgroup GEMMs. Cleared when the
      * tensor unit does not compile (an OS without the Metal 4 tensor API). */
     bool                      tensor_mm;
-    bool                      int8_mm; /* opt-in M6 block-scaled INT8 prefill */
+    bool                      int8_mm; /* opt-in M6 row-scaled W8A8 prefill */
     void                     *int8_library;
     void                     *int8_quant_function, *int8_quant_pipeline;
-    void                     *int8_q80_function[3], *int8_q80_pipeline[3];
-    void                     *int8_q40_function[3], *int8_q40_pipeline[3];
-    void                     *int8_q4k_function[3], *int8_q4k_pipeline[3];
+    void                     *int8_pack_function[3], *int8_pack_pipeline[3];
+    void                     *int8_gemm_function[3], *int8_gemm_pipeline[3];
     struct geist_buffer      *int8_x_buffer;
     uint32_t                  int8_tile_rows;
-    uint64_t                  int8_quant_dispatches, int8_gemm_dispatches;
+    uint64_t                  int8_quant_dispatches, int8_weight_dispatches, int8_gemm_dispatches;
     struct metal_profile_stat profile[METAL_PROFILE_STAGE_COUNT];
     /* GPU time of committed command buffers (profile only): the sum of the
      * buffers' own times, and their union on the GPU timeline (busy). */

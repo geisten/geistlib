@@ -82,15 +82,20 @@ Other devices, unsupported formats, exact weights (`GEIST_W_EXACT`),
 decode and batches below 64 rows retain the existing implementation.
 Compilation or workspace allocation failure also retains that path.
 
-Activations use symmetric INT8 quantization with one FP32 scale per 32
-values and round-to-nearest-even. The quantization runs once per matrix
-call, shared across all output tiles. Original packed weights remain in
-place. INT32 partial dots cover 32 elements; their original weight scales
-and Q4_K affine correction are applied into FP32 running sums. There is
-additional activation quantization error compared with the existing
-FP16 tensor path. Scratch grows to the high-water geometry and consumes
-`rows * n_in * 1.25` bytes, including block scales and sums. No additional
-model-sized weight allocation is made.
+Activations and decoded weight rows use symmetric INT8 quantization with
+one power-of-two scale per row (stored as FP32) and round-to-nearest-even.
+The scale is the smallest power of two covering `amax / 127`, clamped to
+the minimum normal FP32 value; zero rows use scale 1. Power-of-two scaling
+also makes quantization rounding independent of approximate GPU division. Preparation runs once
+per matrix call, shared by every output tile; the GEMM then consumes the
+prepared operands over full K and applies the two row scales in FP32.
+Original packed weights remain mapped. K is capped at 65,536 so even a
+worst-case signed INT8 dot cannot overflow INT32; larger matrices retain
+the existing implementation. Rowwise requantization adds activation and
+weight error compared with the existing FP16 tensor path. Scratch grows
+to the high-water geometry and consumes `(rows + n_out) * (n_in + 4)`
+bytes, holding one prepared matrix pair and its scales. It adds memory
+rather than reducing the mapped model's size.
 
 `GEIST_METAL_INT8_TILE=32|64|128` selects the row tile in the same binary
 (default 64; output tile 64, eight SIMD groups). This is a tuning control,

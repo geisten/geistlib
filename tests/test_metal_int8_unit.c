@@ -1,5 +1,5 @@
-/* Independent blockwise INT8 oracle against canonical CPU weight codecs.
- * Tests raw Q8_0/Q4_0/Q4_K scale semantics, affine Q4_K correction, ties,
+/* Independent rowwise INT8 oracle against canonical CPU weight codecs.
+ * Tests raw Q8_0/Q4_0/Q4_K scale semantics, affine Q4_K decoding, ties,
  * zero/NaN inputs, tails, offsets, scratch reuse and exact/short bypass. */
 #define _POSIX_C_SOURCE 200809L
 #include "test_helpers.h"
@@ -35,6 +35,15 @@ static void fill_weights(size_t bytes, uint8_t out[static bytes], enum geist_dty
             /* All packed six-bit scale/min fields, including high bits. */
         }
     }
+}
+
+static float row_scale(float amax) {
+    if (amax == 0)
+        return 1.0f;
+    int         exponent;
+    const float fraction = frexpf(amax, &exponent);
+    const int   shift    = exponent - 7 + (fraction > 127.0f / 128.0f);
+    return ldexpf(1.0f, shift < -126 ? -126 : shift);
 }
 
 static int run_case(struct geist_backend *be,
@@ -76,6 +85,7 @@ static int run_case(struct geist_backend *be,
     }
     memset(w, 0xa5, WOFF + wb + GUARD);
     fill_weights(wb, w + WOFF, dtype);
+    memset(w + WOFF, 0, wb / n_out); /* Zero weight row and zero-scale handling. */
     memcpy(weight_copy, w + WOFF, wb);
     for (size_t i = 0; i < OFF + nx + GUARD; i++)
         x[i] = -777.0f;
@@ -88,15 +98,13 @@ static int run_case(struct geist_backend *be,
                                         : (float) ((int) ((r * 17u + k * 23u) % 223u) - 111) * 0.5f;
             x[OFF + r * n_in + k] = r == rows - 1 ? 0.0f : ldexpf(value, power);
         }
-        for (size_t b = 0; b < n_in / 32u; b++) {
-            float amax = 0.0f;
-            for (size_t k = 0; k < 32; k++)
-                amax = fmaxf(amax, fabsf(x[OFF + r * n_in + b * 32u + k]));
-            const float d = amax > 0 ? fmaxf(amax / 127.0f, 0x1p-126f) : 1.0f;
-            for (size_t k = 0; k < 32; k++) {
-                const float value          = x[OFF + r * n_in + b * 32u + k];
-                qx[r * n_in + b * 32u + k] = native ? nearbyintf(value / d) * d : value;
-            }
+        float amax = 0;
+        for (size_t k = 0; k < n_in; k++)
+            amax = fmaxf(amax, fabsf(x[OFF + r * n_in + k]));
+        const float d = row_scale(amax);
+        for (size_t k = 0; k < n_in; k++) {
+            volatile float ratio = (float) ((double) x[OFF + r * n_in + k] / d);
+            qx[r * n_in + k]     = native ? nearbyintf(ratio) * d : x[OFF + r * n_in + k];
         }
     }
     if (poison)
@@ -131,7 +139,8 @@ static int run_case(struct geist_backend *be,
                                     .ndim   = 2,
                                     .shape  = {(int64_t) rows, (int64_t) n_out},
                                     .stride = {(int64_t) n_out, 1}};
-    const uint64_t calls = st->int8_gemm_dispatches, quant_calls = st->int8_quant_dispatches;
+    const uint64_t calls = st->int8_gemm_dispatches, quant_calls = st->int8_quant_dispatches,
+                   weight_calls = st->int8_weight_dispatches;
     if (f == nullptr || f->linear_t == nullptr ||
         f->linear_t(be, &tx, &weight, &tw, rows, &ty) != GEIST_OK) {
         fails = geist_expect(false, "INT8 linear dispatch");
@@ -139,8 +148,13 @@ static int run_case(struct geist_backend *be,
     }
     struct geist_buffer *scratch  = st->int8_x_buffer;
     const size_t         capacity = scratch ? scratch->bytes : 0;
+    if (native && (scratch == nullptr || !st->int8_mm)) {
+        fails = geist_expect(false, "INT8 compilation/workspace failed on M6");
+        goto cleanup;
+    }
     if (native) {
-        fails |= geist_expect(scratch != nullptr && capacity >= nx + nx / 32u * 8u,
+        fails |= geist_expect(scratch != nullptr &&
+                                      capacity >= (rows + n_out) * (n_in + sizeof(float)),
                               "INT8 workspace extent");
         if (f->linear_t(be, &tx, &weight, &tw, rows, &ty) != GEIST_OK) {
             fails = geist_expect(false, "INT8 repeated dispatch");
@@ -153,6 +167,8 @@ static int run_case(struct geist_backend *be,
                           "INT8 routing and bypass");
     fails |= geist_expect(st->int8_quant_dispatches - quant_calls == (native ? 2u : 0u),
                           "one activation quantization per matrix call");
+    fails |= geist_expect(st->int8_weight_dispatches - weight_calls == (native ? 2u : 0u),
+                          "one weight preparation per matrix call");
     if (v->buffer_download((OFF + ny + GUARD) * sizeof(float), (uint8_t *) readback, by) !=
         GEIST_OK) {
         fails = geist_expect(false, "INT8 result download");
@@ -163,6 +179,16 @@ static int run_case(struct geist_backend *be,
         if (!quant_dequant_row(dtype, n_in * n_out, o * n_in, n_in, weight_copy, wr)) {
             fails = geist_expect(false, "canonical weight decoder");
             goto cleanup;
+        }
+        if (native) {
+            float amax = 0;
+            for (size_t k = 0; k < n_in; k++)
+                amax = fmaxf(amax, fabsf(wr[k]));
+            const float d = row_scale(amax);
+            for (size_t k = 0; k < n_in; k++) {
+                volatile float ratio = (float) ((double) wr[k] / d);
+                wr[k]                = nearbyintf(ratio) * d;
+            }
         }
         for (size_t r = 0; r < rows; r++) {
             const float got = readback[OFF + r * n_out + o];
@@ -227,6 +253,7 @@ int main(void) {
     fails |= run_case(be, GEIST_DTYPE_Q8_0, 64, 256, 65, 0, false, false);
     fails |= run_case(be, GEIST_DTYPE_Q8_0, 129, 544, 257, -20, false, false);
     fails |= run_case(be, GEIST_DTYPE_Q8_0, 128, 1056, 67, 20, false, false);
+    fails |= run_case(be, GEIST_DTYPE_Q8_0, 64, 65536, 65, 0, false, false);
     fails |= run_case(be, GEIST_DTYPE_Q4_0, 129, 544, 67, 0, false, false);
     fails |= run_case(be, GEIST_DTYPE_Q4_K, 129, 768, 67, 0, false, false);
     fails |= run_case(be, GEIST_DTYPE_Q4_K, 64, 256, 65, -20, false, false);
@@ -234,7 +261,7 @@ int main(void) {
     fails |= run_case(be, GEIST_DTYPE_Q8_0, 8, 256, 65, 0, false, false);
     fails |= run_case(be, GEIST_DTYPE_Q8_0, 1, 256, 65, 0, false, false);
     fails |= run_case(be, GEIST_DTYPE_Q8_0, 64, 256, 65, 0, false, true);
-    fails |= geist_expect(st->int8_mm && st->int8_q4k_pipeline[2] != nullptr,
+    fails |= geist_expect(st->int8_mm && st->int8_gemm_pipeline[2] != nullptr,
                           "M6 INT8 really compiled; fallback is not coverage");
     geist_backend_destroy(be);
     return fails ? GEIST_TEST_FAIL : GEIST_TEST_PASS;

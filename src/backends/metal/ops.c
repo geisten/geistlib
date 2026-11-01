@@ -1986,21 +1986,21 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
     return GEIST_OK;
 }
 
-/* Private grow-only activation workspace: INT8 values, then one FP32
- * scale and INT32 sum per 32 values. No weight repack or model copy. */
-[[nodiscard]] static bool metal_int8_reserve(struct geist_backend *be, size_t rows, size_t n_in) {
+/* Grow-only prepared matrix pair: X/W INT8 data followed by row FP32 scales. */
+[[nodiscard]] static bool
+metal_int8_reserve(struct geist_backend *be, size_t rows, size_t n_in, size_t n_out) {
     struct metal_state *st = be->state;
-    size_t              data, metadata, bytes;
-    if (ckd_mul(&data, rows, n_in) || data > UINT32_MAX || ckd_mul(&metadata, data / 32u, 8u) ||
-        ckd_add(&bytes, data, metadata)) {
+    size_t              nr, data, sc, bytes;
+    if (ckd_add(&nr, rows, n_out) || ckd_mul(&data, nr, n_in) || data > UINT32_MAX ||
+        ckd_mul(&sc, nr, 4u) || ckd_add(&bytes, data, sc))
         return false;
-    }
     return metal_scratch_reserve(be, bytes, 0, false, &st->int8_x_buffer) == GEIST_OK;
 }
 
 static void metal_encode_int8(struct metal_state            *st,
                               void                          *enc,
                               void                          *pipe,
+                              void                          *pack,
                               const struct geist_tensor     *x,
                               const struct geist_tensor     *w,
                               const struct geist_tensor     *y,
@@ -2011,18 +2011,23 @@ static void metal_encode_int8(struct metal_state            *st,
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, st->int8_x_buffer->buffer, st->int8_x_buffer->base_off, 1);
     metal_msg_send_set_bytes(st, enc, &p, sizeof p, 2);
-    const size_t            blocks  = (size_t) p.rows * p.blocks_per_row;
-    const struct metal_size qgroups = {(blocks + 7u) / 8u, 1, 1};
+    const struct metal_size qgroups = {p.rows, 1, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_INT8_QUANT_X, qgroups);
     metal_msg_send_dispatch(st, enc, qgroups, (struct metal_size) {256, 1, 1});
     st->int8_quant_dispatches++;
 
+    metal_msg_send_set_pipeline(st, enc, pack);
+    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, st->int8_x_buffer->buffer, st->int8_x_buffer->base_off, 1);
+    metal_msg_send_set_bytes(st, enc, &p, sizeof p, 2);
+    const struct metal_size wg = {p.n_out, 1, 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_MM_TC, wg);
+    metal_msg_send_dispatch(st, enc, wg, (struct metal_size) {256, 1, 1});
+    st->int8_weight_dispatches++;
     metal_msg_send_set_pipeline(st, enc, pipe);
     metal_msg_send_set_buffer(st, enc, st->int8_x_buffer->buffer, st->int8_x_buffer->base_off, 0);
-    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
-    metal_msg_send_set_bytes(st, enc, &p, sizeof p, 3);
-    metal_msg_send_set_threadgroup_memory(st, enc, 2560u, 0);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 1);
+    metal_msg_send_set_bytes(st, enc, &p, sizeof p, 2);
     const struct metal_size groups = {
             (p.rows + st->int8_tile_rows - 1u) / st->int8_tile_rows, (p.n_out + 63u) / 64u, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_MM_TC, groups);
@@ -2101,13 +2106,13 @@ static void metal_encode_int8(struct metal_state            *st,
     const uint32_t tile_index = st->int8_tile_rows == 32u   ? 0u
                                 : st->int8_tile_rows == 64u ? 1u
                                                             : 2u;
-    void          *int8_pipe  = dtype == GEIST_DTYPE_Q8_0   ? st->int8_q80_pipeline[tile_index]
-                                : dtype == GEIST_DTYPE_Q4_0 ? st->int8_q40_pipeline[tile_index]
-                                : dtype == GEIST_DTYPE_Q4_K ? st->int8_q4k_pipeline[tile_index]
-                                                            : nullptr;
-    const bool     int8 = allow_int8 && st->int8_mm && matrix && rows >= 64u && n_in >= 256u &&
-                          n_out >= 64u && rows <= INT_MAX && n_in <= INT_MAX && n_out <= INT_MAX &&
-                          int8_pipe != nullptr && metal_int8_reserve(be, rows, n_in);
+    void          *int8_pipe =
+            (dtype == GEIST_DTYPE_Q8_0 || dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q4_K)
+                    ? st->int8_gemm_pipeline[tile_index]
+                    : nullptr;
+    const bool int8 = allow_int8 && st->int8_mm && matrix && rows >= 64u && n_in >= 256u &&
+                      n_out >= 64u && rows <= INT_MAX && n_in <= 65536u && n_out <= INT_MAX &&
+                      int8_pipe != nullptr && metal_int8_reserve(be, rows, n_in, n_out);
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
@@ -2116,7 +2121,16 @@ static void metal_encode_int8(struct metal_state            *st,
         return GEIST_E_BACKEND;
     }
     if (int8) {
-        metal_encode_int8(st, enc, int8_pipe, x, w, y, &params);
+        metal_encode_int8(st,
+                          enc,
+                          int8_pipe,
+                          st->int8_pack_pipeline[dtype == GEIST_DTYPE_Q8_0   ? 0
+                                                 : dtype == GEIST_DTYPE_Q4_0 ? 1
+                                                                             : 2],
+                          x,
+                          w,
+                          y,
+                          &params);
     } else {
         metal_encode_quant_linear(st, enc, x, w, y, &params, dtype, matrix);
     }

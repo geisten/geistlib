@@ -282,15 +282,12 @@ static const struct metal_pipeline_row metal_tensor_rows[] = {
      offsetof(struct metal_state, int8_##TAG##_pipeline[INDEX])}
 static const struct metal_pipeline_row metal_int8_rows[] = {
         METAL_PIPE(int8, "int8_quant_x", int8_quant),
-        INT8_ROW(q80, 0, 32),
-        INT8_ROW(q80, 1, 64),
-        INT8_ROW(q80, 2, 128),
-        INT8_ROW(q40, 0, 32),
-        INT8_ROW(q40, 1, 64),
-        INT8_ROW(q40, 2, 128),
-        INT8_ROW(q4k, 0, 32),
-        INT8_ROW(q4k, 1, 64),
-        INT8_ROW(q4k, 2, 128),
+        INT8_ROW(pack, 0, q80),
+        INT8_ROW(pack, 1, q40),
+        INT8_ROW(pack, 2, q4k),
+        INT8_ROW(gemm, 0, 32),
+        INT8_ROW(gemm, 1, 64),
+        INT8_ROW(gemm, 2, 128),
 };
 #undef INT8_ROW
 
@@ -546,15 +543,12 @@ static const struct metal_library_row metal_int8_libs[] = {
                   metal_qmm_head_source,
                   metal_int8_head_source,
                   metal_int8_quant_source,
-                  metal_int8_q80_32_source,
-                  metal_int8_q80_64_source,
-                  metal_int8_q80_128_source,
-                  metal_int8_q40_32_source,
-                  metal_int8_q40_64_source,
-                  metal_int8_q40_128_source,
-                  metal_int8_q4k_32_source,
-                  metal_int8_q4k_64_source,
-                  metal_int8_q4k_128_source),
+                  metal_int8_pack_q80_source,
+                  metal_int8_pack_q40_source,
+                  metal_int8_pack_q4k_source,
+                  metal_int8_gemm_32_source,
+                  metal_int8_gemm_64_source,
+                  metal_int8_gemm_128_source),
 };
 
 static const struct metal_library_row metal_argmax_libs[] = {
@@ -823,13 +817,15 @@ static void metal_ensure_tensor(struct geist_backend *be) {
 /* A separate library keeps the default tensor path intact on failure. */
 static void metal_ensure_int8(struct geist_backend *be) {
     struct metal_state *st = be->state;
-    if (!st->int8_mm || st->int8_q4k_pipeline[2] != nullptr)
+    if (!st->int8_mm || st->int8_gemm_pipeline[2] != nullptr)
         return;
     if (!st->tensor_mm) {
         st->int8_mm = false;
         return;
     }
-    void                   *opt    = metal_tensor_options(st);
+    void *opt = metal_tensor_options(st);
+    if (opt != nullptr)
+        metal_msg_send_void_bool(st, opt, "setFastMathEnabled:", false);
     const enum geist_status result = opt == nullptr ? GEIST_E_UNSUPPORTED
                                                     : metal_ensure_tables(be,
                                                                           opt,
