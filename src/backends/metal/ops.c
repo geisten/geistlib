@@ -1986,6 +1986,50 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
     return GEIST_OK;
 }
 
+/* Private grow-only activation workspace: INT8 values, then one FP32
+ * scale and INT32 sum per 32 values. No weight repack or model copy. */
+[[nodiscard]] static bool metal_int8_reserve(struct geist_backend *be, size_t rows, size_t n_in) {
+    struct metal_state *st = be->state;
+    size_t              data, metadata, bytes;
+    if (ckd_mul(&data, rows, n_in) || data > UINT32_MAX || ckd_mul(&metadata, data / 32u, 8u) ||
+        ckd_add(&bytes, data, metadata)) {
+        return false;
+    }
+    return metal_scratch_reserve(be, bytes, 0, false, &st->int8_x_buffer) == GEIST_OK;
+}
+
+static void metal_encode_int8(struct metal_state            *st,
+                              void                          *enc,
+                              void                          *pipe,
+                              const struct geist_tensor     *x,
+                              const struct geist_tensor     *w,
+                              const struct geist_tensor     *y,
+                              const struct metal_q4k_params *params) {
+    struct metal_q4k_params p = *params;
+    p.blocks_per_row          = p.n_in / 32u;
+    metal_msg_send_set_pipeline(st, enc, st->int8_quant_pipeline);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, st->int8_x_buffer->buffer, st->int8_x_buffer->base_off, 1);
+    metal_msg_send_set_bytes(st, enc, &p, sizeof p, 2);
+    const size_t            blocks  = (size_t) p.rows * p.blocks_per_row;
+    const struct metal_size qgroups = {(blocks + 7u) / 8u, 1, 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_INT8_QUANT_X, qgroups);
+    metal_msg_send_dispatch(st, enc, qgroups, (struct metal_size) {256, 1, 1});
+    st->int8_quant_dispatches++;
+
+    metal_msg_send_set_pipeline(st, enc, pipe);
+    metal_msg_send_set_buffer(st, enc, st->int8_x_buffer->buffer, st->int8_x_buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
+    metal_msg_send_set_bytes(st, enc, &p, sizeof p, 3);
+    metal_msg_send_set_threadgroup_memory(st, enc, 2560u, 0);
+    const struct metal_size groups = {
+            (p.rows + st->int8_tile_rows - 1u) / st->int8_tile_rows, (p.n_out + 63u) / 64u, 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_MM_TC, groups);
+    metal_msg_send_dispatch(st, enc, groups, (struct metal_size) {256, 1, 1});
+    st->int8_gemm_dispatches++;
+}
+
 /* Every quantized linear (metal_dtype_is_quant): matrix runs the m-row
  * GEMM on 2D views, else the one-row matvec on 1D views. */
 [[nodiscard]] static enum geist_status metal_quant_linear(struct geist_backend      *be,
@@ -1993,7 +2037,8 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
                                                           const struct geist_tensor *w,
                                                           struct geist_tensor       *y,
                                                           enum geist_dtype           dtype,
-                                                          bool                       matrix) {
+                                                          bool                       matrix,
+                                                          bool                       allow_int8) {
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -2053,6 +2098,16 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
             .x_row_stride   = (uint32_t) x_row_stride,
             .y_row_stride   = (uint32_t) y_row_stride,
     };
+    const uint32_t tile_index = st->int8_tile_rows == 32u   ? 0u
+                                : st->int8_tile_rows == 64u ? 1u
+                                                            : 2u;
+    void          *int8_pipe  = dtype == GEIST_DTYPE_Q8_0   ? st->int8_q80_pipeline[tile_index]
+                                : dtype == GEIST_DTYPE_Q4_0 ? st->int8_q40_pipeline[tile_index]
+                                : dtype == GEIST_DTYPE_Q4_K ? st->int8_q4k_pipeline[tile_index]
+                                                            : nullptr;
+    const bool     int8 = allow_int8 && st->int8_mm && matrix && rows >= 64u && n_in >= 256u &&
+                          n_out >= 64u && rows <= INT_MAX && n_in <= INT_MAX && n_out <= INT_MAX &&
+                          int8_pipe != nullptr && metal_int8_reserve(be, rows, n_in);
     [[gnu::cleanup(metal_pool_end)]] struct metal_pool pool = metal_standalone_pool(st);
 
     void *cmd = nullptr;
@@ -2060,7 +2115,11 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
-    metal_encode_quant_linear(st, enc, x, w, y, &params, dtype, matrix);
+    if (int8) {
+        metal_encode_int8(st, enc, int8_pipe, x, w, y, &params);
+    } else {
+        metal_encode_quant_linear(st, enc, x, w, y, &params, dtype, matrix);
+    }
     return metal_op_end(be, cmd, enc, "quant linear");
 }
 
@@ -3483,9 +3542,10 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
                                                           const struct geist_tensor *w,
                                                           struct geist_tensor       *y,
                                                           enum geist_dtype           dtype,
-                                                          bool                       matrix) {
+                                                          bool                       matrix,
+                                                          bool                       allow_int8) {
     if (metal_dtype_is_quant(dtype)) {
-        return metal_quant_linear(be, x, w, y, dtype, matrix);
+        return metal_quant_linear(be, x, w, y, dtype, matrix, allow_int8);
     }
     if (metal_dtype_is_float(dtype)) {
         return metal_f32_linear(be, x, w, y, matrix);
@@ -3566,7 +3626,8 @@ static void metal_linear_mN(size_t                     m,
         tw.stride[0] = (int64_t) n_in;
         tw.stride[1] = 1;
     }
-    const enum geist_status s = metal_linear_dtype(be, &tx, &tw, &ty, tw.dtype, true);
+    const enum geist_status s =
+            metal_linear_dtype(be, &tx, &tw, &ty, tw.dtype, true, (w->flags & GEIST_W_EXACT) == 0);
     if (s != GEIST_OK) {
         fprintf(stderr,
                 "geist metal: linear dispatch failed "
@@ -3623,9 +3684,16 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
             y1.shape[1]  = 0;
             y1.stride[1] = 0;
         }
-        return metal_linear_dtype(be, &x1, t_w, &y1, (enum geist_dtype) w->dtype, false);
+        return metal_linear_dtype(be,
+                                  &x1,
+                                  t_w,
+                                  &y1,
+                                  (enum geist_dtype) w->dtype,
+                                  false,
+                                  (w->flags & GEIST_W_EXACT) == 0);
     }
-    return metal_linear_dtype(be, x, t_w, y, (enum geist_dtype) w->dtype, true);
+    return metal_linear_dtype(
+            be, x, t_w, y, (enum geist_dtype) w->dtype, true, (w->flags & GEIST_W_EXACT) == 0);
 }
 
 [[nodiscard]] static enum geist_status metal_selected_prepare(const struct geist_weight *w,

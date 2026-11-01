@@ -3,6 +3,7 @@
  */
 #include "metal_internal.h"
 #include "iq_grids.h"
+#include "metal_int8_shaders.h"
 
 [[nodiscard]] static enum geist_status metal_create_named_pipeline(struct geist_backend *be,
                                                                    void                 *library,
@@ -274,6 +275,25 @@ static const struct metal_pipeline_row metal_tensor_rows[] = {
         METAL_FLASH_TC_PIPE(512),
 };
 
+#define INT8_ROW(TAG, INDEX, TILE)                               \
+    {offsetof(struct metal_state, int8_library),                 \
+     "int8_" #TAG "_" #TILE,                                     \
+     offsetof(struct metal_state, int8_##TAG##_function[INDEX]), \
+     offsetof(struct metal_state, int8_##TAG##_pipeline[INDEX])}
+static const struct metal_pipeline_row metal_int8_rows[] = {
+        METAL_PIPE(int8, "int8_quant_x", int8_quant),
+        INT8_ROW(q80, 0, 32),
+        INT8_ROW(q80, 1, 64),
+        INT8_ROW(q80, 2, 128),
+        INT8_ROW(q40, 0, 32),
+        INT8_ROW(q40, 1, 64),
+        INT8_ROW(q40, 2, 128),
+        INT8_ROW(q4k, 0, 32),
+        INT8_ROW(q4k, 1, 64),
+        INT8_ROW(q4k, 2, 128),
+};
+#undef INT8_ROW
+
 static const struct metal_pipeline_row metal_argmax_rows[] = {
         METAL_PIPE(argmax, "argmax_f32_batch", argmax_batch),
         METAL_PIPE(argmax, "argmax_f32_part", argmax_part),
@@ -520,6 +540,23 @@ static const struct metal_library_row metal_tensor_libs[] = {
                   metal_attn_flash_tc_source_b),
 };
 
+static const struct metal_library_row metal_int8_libs[] = {
+        METAL_LIB(int8,
+                  "INT8 tensor GEMM",
+                  metal_qmm_head_source,
+                  metal_int8_head_source,
+                  metal_int8_quant_source,
+                  metal_int8_q80_32_source,
+                  metal_int8_q80_64_source,
+                  metal_int8_q80_128_source,
+                  metal_int8_q40_32_source,
+                  metal_int8_q40_64_source,
+                  metal_int8_q40_128_source,
+                  metal_int8_q4k_32_source,
+                  metal_int8_q4k_64_source,
+                  metal_int8_q4k_128_source),
+};
+
 static const struct metal_library_row metal_argmax_libs[] = {
         METAL_LIB(argmax, "argmax", metal_argmax_source),
 };
@@ -686,6 +723,7 @@ static const struct {
         METAL_TABLE(METAL_TAB_ARGMAX, metal_argmax_libs, metal_argmax_rows),
         METAL_TABLE(METAL_TAB_MOE, metal_moe_libs, metal_moe_rows),
         METAL_TABLE(METAL_TAB_TENSOR, metal_tensor_libs, metal_tensor_rows),
+        METAL_TABLE(METAL_TAB_INT8, metal_int8_libs, metal_int8_rows),
 #undef METAL_TABLE
 };
 
@@ -782,9 +820,46 @@ static void metal_ensure_tensor(struct geist_backend *be) {
     }
 }
 
+/* A separate library keeps the default tensor path intact on failure. */
+static void metal_ensure_int8(struct geist_backend *be) {
+    struct metal_state *st = be->state;
+    if (!st->int8_mm || st->int8_q4k_pipeline[2] != nullptr)
+        return;
+    if (!st->tensor_mm) {
+        st->int8_mm = false;
+        return;
+    }
+    void                   *opt    = metal_tensor_options(st);
+    const enum geist_status result = opt == nullptr ? GEIST_E_UNSUPPORTED
+                                                    : metal_ensure_tables(be,
+                                                                          opt,
+                                                                          METAL_N(metal_int8_libs),
+                                                                          metal_int8_libs,
+                                                                          METAL_N(metal_int8_rows),
+                                                                          metal_int8_rows);
+    metal_msg_send_void0(st, opt, "release");
+    if (result == GEIST_OK)
+        return;
+    fprintf(stderr,
+            "metal: INT8 unavailable (%s); keeping default tensors\n",
+            geist_backend_errmsg(be));
+    st->int8_mm = false;
+    metal_release_rows(st, METAL_N(metal_int8_rows), metal_int8_rows);
+    metal_release_libs(st, METAL_N(metal_int8_libs), metal_int8_libs);
+    for (size_t i = 0; i < METAL_N(metal_int8_rows); i++) {
+        *metal_state_slot(st, metal_int8_rows[i].function) = nullptr;
+        *metal_state_slot(st, metal_int8_rows[i].pipeline) = nullptr;
+    }
+    st->int8_library = nullptr;
+}
+
 [[nodiscard]] enum geist_status metal_ensure(struct geist_backend *be, enum metal_table table) {
     if (be == nullptr || be->state == nullptr || table >= METAL_TAB_COUNT) {
         return GEIST_E_INVALID_ARG;
+    }
+    if (table == METAL_TAB_INT8) {
+        metal_ensure_int8(be);
+        return GEIST_OK;
     }
     if (table == METAL_TAB_TENSOR) {
         metal_ensure_tensor(be);
@@ -798,6 +873,7 @@ static void metal_ensure_tensor(struct geist_backend *be) {
                                                     metal_tables[table].rows);
     if (s == GEIST_OK && table == METAL_TAB_QUANT) {
         metal_ensure_tensor(be);
+        metal_ensure_int8(be);
     }
     return s == GEIST_OK && table == METAL_TAB_ARGMAX ? metal_argmax_buffers(be) : s;
 }

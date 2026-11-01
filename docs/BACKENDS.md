@@ -74,6 +74,55 @@ wired for `GEIST_METAL_KEEP_ALIVE_S` seconds after the last token (default
 180), so the next request does not pay to wire it again; `0` leaves it to
 macOS, which unwires about 2 s after the GPU goes idle.
 
+### Experimental M6 INT8 prefill
+
+`GEIST_METAL_INT8=1 GEIST_METAL_TENSOR=1` enables native integer tensor
+matmul for Q8_0, Q4_0 and Q4_K on Apple GPU family 11 (M6). It is opt-in.
+Other devices, unsupported formats, exact weights (`GEIST_W_EXACT`),
+decode and batches below 64 rows retain the existing implementation.
+Compilation or workspace allocation failure also retains that path.
+
+Activations use symmetric INT8 quantization with one FP32 scale per 32
+values and round-to-nearest-even. The quantization runs once per matrix
+call, shared across all output tiles. Original packed weights remain in
+place. INT32 partial dots cover 32 elements; their original weight scales
+and Q4_K affine correction are applied into FP32 running sums. There is
+additional activation quantization error compared with the existing
+FP16 tensor path. Scratch grows to the high-water geometry and consumes
+`rows * n_in * 1.25` bytes, including block scales and sums. No additional
+model-sized weight allocation is made.
+
+`GEIST_METAL_INT8_TILE=32|64|128` selects the row tile in the same binary
+(default 64; output tile 64, eight SIMD groups). This is a tuning control,
+not a promise that any INT8 configuration improves full-model speed.
+`GEIST_METAL_PROFILE=1` reports `dispatch.int8_quant_x`; the performance
+sweep also emits actual INT8 quantization/GEMM dispatch counts and backend
+allocated bytes in addition to process RSS.
+
+Build and reproduce on an exclusively leased M6:
+
+```sh
+make -j8 bin/mac-omp/release/tests/bench_metal_precision \
+  bin/mac-omp/release/tests/test_metal_int8_unit \
+  bin/mac-omp/release/tests/bench_perf_sweep \
+  bin/mac-omp/release/tools/eval_geist \
+  bin/mac-omp/release/tools/dump_geist_logits
+~/bin/with-macmini-lock python3 tools/bench_metal_precision.py --out /tmp/precision
+~/bin/with-macmini-lock python3 tools/bench_metal_int8.py \
+  --model qwen3=/path/to/qwen3-q8_0.gguf --out /tmp/int8
+```
+
+The isolated benchmark uses identical representable integer inputs and
+identical geometry for FP16, E4M3 FP8 and INT8, with FP32/INT32 outputs.
+It separates prepared-operand GEMM, simple cast/pack conversion, their
+combined cost, and blockwise dynamic-range calibration. Operand byte
+counts exclude the retained FP32 source and other benchmark buffers;
+they are not process memory savings. Full-model quality uses a small
+self-authored completion corpus with prompts of at least 128 tokens,
+continuation NLL, greedy generation, and full-vocabulary logit comparisons.
+It is a smoke check, not a standard perplexity or task-accuracy evaluation.
+
+
 ## Vulkan (Linux GPU, experimental)
 
 Build with `BACKENDS="vulkan cpu_x86 cpu_scalar"`; `libvulkan` is loaded at run

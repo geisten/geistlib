@@ -17,6 +17,8 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->buf_reg_cap   = 0;
     metal_buffer_destroy_internal(be, st->attn_dec_partials_buffer);
     st->attn_dec_partials_buffer = nullptr;
+    metal_buffer_destroy_internal(be, st->int8_x_buffer);
+    st->int8_x_buffer = nullptr;
     metal_buffer_destroy_internal(be, st->pq2_xh_buffer);
     st->pq2_xh_buffer = nullptr;
     metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
@@ -181,6 +183,15 @@ void metal_destroy(struct geist_backend *be) {
     st->tensor_mm =
             geist_env_flag("GEIST_METAL_TENSOR",
                            metal_msg_send_bool_long(st, st->device, "supportsFamily:", 1010));
+
+    st->int8_mm = st->tensor_mm && geist_env_flag("GEIST_METAL_INT8", false) &&
+                  metal_msg_send_bool_long(st, st->device, "supportsFamily:", 1011);
+
+    long int8_tile     = 0;
+    st->int8_tile_rows = geist_parse_long(getenv("GEIST_METAL_INT8_TILE"), &int8_tile) &&
+                                         (int8_tile == 32 || int8_tile == 64 || int8_tile == 128)
+                                 ? (uint32_t) int8_tile
+                                 : 64u;
 
     st->command_queue = metal_msg_send_id0(st, st->device, "newCommandQueue");
     if (st->command_queue == nullptr) {
