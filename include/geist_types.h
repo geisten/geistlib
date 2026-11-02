@@ -91,6 +91,14 @@ enum geist_dtype {
      * moves. layout=GEIST_LAYOUT_BLOCK_QUANTIZED. */
     GEIST_DTYPE_Q5_0,
 
+    /* GGUF MXFP4 (ggml type 39, OCP microscaling FP4): 32-elem blocks of
+     * one E8M0 exponent byte e followed by 16 nibble bytes (17 bytes,
+     * 4.25 bpw); element j is the low nibble of qs[j], j + 16 the high.
+     * Value kvalues_mxfp4[code] * 2^(e - 128), the table holding twice the
+     * E2M1 values {0, .5, 1, 1.5, 2, 3, 4, 6} with a sign bit. GPT-OSS
+     * stores its experts in it. layout=GEIST_LAYOUT_BLOCK_QUANTIZED. */
+    GEIST_DTYPE_MXFP4,
+
     /* Not a dtype: one past the last, for sizing tables keyed by dtype. */
     GEIST_DTYPE_COUNT,
 };

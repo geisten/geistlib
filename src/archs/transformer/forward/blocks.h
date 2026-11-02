@@ -39,6 +39,12 @@
                                         struct geist_buffer                  *b,
                                         struct geist_buffer                  *y);
 
+/* x[t, :] += b over rows of n; a no-op for b (or its buffer) nullptr. */
+[[nodiscard]] enum geist_status blk_add_bias(struct transformer_layer_forward_ctx *ctx,
+                                             size_t                                n,
+                                             const struct geist_tensor            *b,
+                                             struct geist_buffer                  *x);
+
 /* y = x * W^T for a projection loaded as [n_out, n_in]; dims come from w. */
 [[nodiscard]] enum geist_status blk_linear(struct transformer_layer_forward_ctx *ctx,
                                            struct geist_buffer                  *x,
@@ -223,6 +229,24 @@ blk_relu_sq(struct transformer_layer_forward_ctx *ctx, size_t n, struct geist_bu
  * finite. */
 [[nodiscard]] bool moe_route_topk(
         size_t n, size_t k, bool norm, const float logits[static n], uint32_t *ids, float *w);
+
+/* A model's router beyond moe_route_topk (arch_config.h moe_gating). */
+struct moe_router {
+    enum geist_moe_gating gating; /* 0: SOFTMAX */
+    bool                  norm;   /* renormalise the selected weights to sum 1 */
+    const float          *bias;   /* [n] added to the logits first, or nullptr */
+};
+
+/* moe_route_topk generalised by `r`: the bias is added to the logits;
+ * GEIST_MOE_GATING_SOFTMAX_WEIGHT selects as softmax does and weights the
+ * selected by the softmax over their logits alone. False as moe_route_topk,
+ * or when n exceeds GEIST_MOE_MAX_EXPERTS. */
+[[nodiscard]] bool moe_route(size_t                   n,
+                             size_t                   k,
+                             const struct moe_router *r,
+                             const float              logits[static n],
+                             uint32_t                *ids,
+                             float                   *w);
 
 /* Pre-norm mixture-of-experts SwiGLU FFN with residual:
  *   h_out = h_post_attn + sum_{e in topk} w_e * down_e(silu(gate_e(x)) * up_e(x)),
