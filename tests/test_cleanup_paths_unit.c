@@ -7,7 +7,7 @@
  *     a SentencePiece GGUF tokenizer, with the n-th allocation failing for
  *     every n until it succeeds; then the logits equal an undisturbed run.
  *   - AWQ at load (apply_awq_to_state): scales of 1 for all four inputs of
- *     every layer give bit-identical logits, scales of 2 do not; a wrong
+ *     every layer keep the logits (1e-5 of their scale), scales of 2 do not; a wrong
  *     length and a missing file are refused; the load is walked the same
  *     way, every failure a clean refusal.
  *   - Audio prefill (transformer_prefill_audio_batch): 20 soft tokens in
@@ -175,12 +175,20 @@ static int check_awq(void) {
     float         plain[VOCAB], one[VOCAB], two[VOCAB];
     int           fails = 0;
     fails += geist_expect(run_awq(&g, nullptr, plain) == GEIST_OK, "the model loads without AWQ");
-    fails += geist_expect(write_awq(1.0f, false) && run_awq(&g, awq_path, one) == GEIST_OK &&
-                                  memcmp(plain, one, sizeof plain) == 0,
-                          "AWQ scales of 1 change nothing, bit for bit");
-    fails += geist_expect(write_awq(2.0f, false) && run_awq(&g, awq_path, two) == GEIST_OK &&
-                                  memcmp(plain, two, sizeof plain) != 0,
-                          "AWQ scales of 2 change the logits");
+    /* Scales of 1 change no value but the path: the runtime then scales the
+     * o_proj and down_proj inputs as a separate step, which may round
+     * differently (x86 cpu_scalar does). Hence a bound, not bit identity. */
+    const bool ok1   = write_awq(1.0f, false) && run_awq(&g, awq_path, one) == GEIST_OK;
+    const bool ok2   = write_awq(2.0f, false) && run_awq(&g, awq_path, two) == GEIST_OK;
+    double     scale = 0.0, d1 = 0.0, d2 = 0.0;
+    for (size_t i = 0; i < VOCAB; i++) {
+        scale = fmax(scale, fabs(plain[i]));
+        d1    = fmax(d1, fabs((double) one[i] - plain[i]));
+        d2    = fmax(d2, fabs((double) two[i] - plain[i]));
+    }
+    printf("awq: max|d| scales 1 %.3g, scales 2 %.3g, of scale %.3g\n", d1, d2, scale);
+    fails += geist_expect(ok1 && d1 <= 1e-5 * scale, "AWQ scales of 1 keep the logits");
+    fails += geist_expect(ok2 && d2 > 1e-2 * scale, "AWQ scales of 2 change the logits");
     fails +=
             geist_expect(write_awq(1.0f, true) && run_awq(&g, awq_path, two) == GEIST_E_INVALID_ARG,
                          "a scale vector of the wrong length is refused");
