@@ -357,6 +357,27 @@ kv_store_attention_sinks(struct transformer_layer_forward_ctx *ctx,
                                 ctx->layer_idx);
         return GEIST_E_UNSUPPORTED;
     }
+    /* The backend's kernel where it has one; its refusal leaves the host. */
+    if (ctx->fused->attention_sinks != nullptr && ctx->L->attn_sinks_t.buffer != nullptr) {
+        const int64_t       n_kh = st->n_kv_heads, hd = (int64_t) ctx->hd;
+        const int64_t       n_kv = (int64_t) ctx->kv_len_now;
+        struct geist_tensor k  = ctx->kv_f16_enabled ? view_3d_f16(ctx->k_cache_buf, n_kv, n_kh, hd)
+                                                     : view_3d(ctx->k_cache_buf, n_kv, n_kh, hd);
+        struct geist_tensor vv = ctx->kv_f16_enabled ? view_3d_f16(ctx->v_cache_buf, n_kv, n_kh, hd)
+                                                     : view_3d(ctx->v_cache_buf, n_kv, n_kh, hd);
+        struct geist_tensor sk = view_1d_at(
+                ctx->L->attn_sinks_t.buffer, (size_t) ctx->L->attn_sinks_t.offset, st->n_q_heads);
+        const struct geist_attention_sinks_args args = {.q              = t_q,
+                                                        .k              = &k,
+                                                        .v              = &vv,
+                                                        .sinks          = &sk,
+                                                        .out            = t_out,
+                                                        .q_offset       = ctx->q_position,
+                                                        .sliding_window = ctx->L->sliding_window};
+        const enum geist_status                 s    = ctx->fused->attention_sinks(ctx->be, &args);
+        if (s != GEIST_E_UNSUPPORTED)
+            return s;
+    }
     struct attn_sinks_job j = {
             .n_kv           = ctx->kv_len_now,
             .q_offset       = ctx->q_position,
