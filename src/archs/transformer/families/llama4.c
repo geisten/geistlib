@@ -51,7 +51,8 @@
 static const char ARCH[] = "llama4";
 
 /* llama.cpp's constants for the chunked layers and the NoPE temperature. */
-static constexpr uint32_t CHUNK = 8192, NO_ROPE_STEP = 4;
+static constexpr uint32_t CHUNK        = 8192;
+static constexpr uint32_t NO_ROPE_STEP = 4;
 
 struct llama4_meta {
     uint32_t moe_step;    /* MoE layer when (i + 1) % moe_step == 0; 0: none */
