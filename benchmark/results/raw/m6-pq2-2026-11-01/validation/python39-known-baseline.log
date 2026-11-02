@@ -1,0 +1,524 @@
+=== tests/test_agent_gate_py.py ===
+protected paths
+  ✓ .gitea/workflows/ci.yml refused
+  ✓ .github/actions/apt-install/action.yml refused
+  ✓ scripts/ci-bot.py refused
+  ✓ mk/common.mk refused
+  ✓ Makefile refused
+  ✓ .gitattributes refused
+  ✓ src/.gitattributes refused
+  ✓ .gitmodules refused
+  ✓ tests/.gitignore refused
+  ✓ .claude/settings.json refused
+  ✓ src/.claude/settings.local.json refused
+  ✓ CLAUDE.md refused
+  ✓ AGENT.md refused
+  ✓ AGENTS.md refused
+  ✓ docs/AGENTS.md refused
+  ✓ .mcp.json refused
+  ✓ .clang-format refused
+  ✓ CHANGELOG.md refused
+  ✓ tests/extra.mk refused
+  ✓ build/linux/release/src/x.d refused
+  ✓ bin/x refused
+  ✓ src/engine/session.c allowed
+  ✓ tests/test_x.c allowed
+  ✓ changes/42-fix.md allowed
+  ✓ docs/OFFLOAD.md allowed
+  ✓ tools/geistr/geistr.c allowed
+  ✓ include/geist.h allowed
+  ✓ src/makefile_notes.txt allowed
+  ✓ docs/git.md allowed
+sandbox output
+  ✓ patches, pr.md, stdout.md -> clean
+  ✓ symlink to /etc/passwd refused
+  ✓ symlinked patch refused (not followed)
+  ✓ odd patch name refused
+  ✓ oversized output refused
+  ✓ fifo refused
+PR body
+  ✓ closing keyword -> refs
+  ✓ every closing form neutralised
+  ✓ a plain 'Fix' without an issue stays
+  ✓ auto-merge requests removed
+  ✓ depends-on (ci-bot) neutralised
+  ✓ @mention neutralised, mail and code kept
+  ✓ model's pin replaced by the pipeline's
+  ✓ Closes #7 appended last
+  ✓ body capped
+  ✓ comment text: no mentions
+verdict
+  ✓ 'ok\nVERDICT: PASS' -> PASS
+  ✓ 'ok\nVERDICT: PASS\n\n  \n' -> PASS
+  ✓ '**VERDICT: PASS**' -> PASS
+  ✓ '`VERDICT: PASS`' -> PASS
+  ✓ 'VERDICT: FAIL' -> FAIL
+  ✓ 'VERDICT: PASS\nbut actually no' -> FAIL
+  ✓ '' -> FAIL
+  ✓ 'VERDICT: PASSED' -> FAIL
+  ✓ 'VERDICT: PASS or FAIL' -> FAIL
+issue pin
+  ✓ hash sees every byte
+  ✓ no body == empty body
+/ci-ok
+  ✓ approver, bare comment, prefix -> ok
+  ✓ full sha, whitespace -> ok
+  ✓ the bot cannot approve
+  ✓ a non-approver cannot
+  ✓ a log tail ci-bot posts as germar does not approve
+  ✓ another commit -> no
+  ✓ under 7 hex digits -> no
+fix rounds and work orders
+  ✓ newest review is the work order
+  ✓ answered by a fix -> nothing to do
+  ✓ a later CI failure -> work order
+  ✓ a review by an untrusted user is no work order
+  ✓ rounds count the bot's fixes only
+  ✓ reviewed: per head sha
+paths of a patch series (real git)
+  ✓ a new source file -> accepted
+  ✓ a commit under scripts/ -> refused
+  ✓ added and removed again -> the series' net diff is clean
+  ✓ a symlink -> refused
+  ✓ a rename onto Makefile -> refused (no rename detection)
+ci-hold and claims (fake API)
+  ✓ a human's branch -> no hold
+  ✓ a human's branch, comments unreadable -> still no hold (warning only)
+  ✓ agent head without /ci-ok -> held
+  ✓ agent head with /ci-ok for its sha -> runs
+  ✓ approval of an older commit does not carry over to a new push
+  ✓ agent head, API down -> held (fail closed)
+  ✓ a PR opened by the bot on any branch -> held
+  ✓ a push to main -> no hold
+  ✓ fresh agent issue -> go, empty lease, pinned hash
+  ✓ claim drops `agent` first
+  ✓ a later label on a worked issue -> no second run
+  ✓ the bot cannot start work
+  ✓ review: pinned issue unchanged -> go
+  ✓ review: issue text written for the sandbox
+  ✓ review: issue edited since the work -> stuck
+  ✓ review: this head was reviewed already (a re-fired label) -> skip
+  ✓ review: fork head -> skip
+  ✓ review: label set by someone else -> skip
+  ✓ fix: the newest review is the work order
+  ✓ fix: head `main` -> never pushed to
+  ✓ fix: head release/x -> refused
+  ✓ /agent by germar -> go
+  ✓ /agent by the bot -> skip
+  ✓ fix: round limit -> stuck
+  ✓ /ci-ok -> the held run is rerun
+  ✓ /ci-ok by the bot -> nothing
+test_agent_gate_py: PASS
+=== tests/test_bench_cross_engine_py.py ===
+.  waiting for cool chip: GPU 88.0 C, CPU 60.0 C
+  waiting for cool chip: GPU 63.0 C, CPU 75.0 C
+....  waiting for cool chip: GPU 70.0 C, CPU 60.0 C
+..  macmon unavailable: cool-down pause 45s
+.  macmon unavailable: cool-down pause 45s
+....  waiting for AC power / low power mode off: source battery, low power mode 1
+  waiting for AC power / low power mode off: source AC, low power mode 1
+...  waiting for AC power / low power mode off: source battery, low power mode 0
+..........
+----------------------------------------------------------------------
+Ran 25 tests in 9.173s
+
+OK
+=== tests/test_bench_decision_py.py ===
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.002s
+
+OK
+=== tests/test_bench_matrix_py.py ===
+  ✓ every planned model and column exists in its protocol
+  ✓ weekly is a strict superset of nightly
+  ✓ every column and model has a display label
+  ✓ no duplicate cells
+  ✓ bench-matrix.yml carries the current include (tools/bench_matrix.py include)
+  ✓ --only narrows
+  ✓ only the geist-only slowdown is a regression
+  ✓ index marks the regressed cell, draws trends
+  ✓ index uses the site's stylesheet
+  ✓ each cell gets an archive page with every run
+  ✓ a release snapshot freezes each cell's newest run
+  ✓ the matrix links the release page
+  ✓ a run records its GEMM; another GEMM is not a regression
+  ✓ a cell names the measured geist binary's commit, not the runner's
+  ✓ an interrupted run is skipped
+PASS
+=== tests/test_bench_tools_py.py ===
+Traceback (most recent call last):
+  File "/Users/germar/Documents/ChatGPT/geistlib/pq2-pr/tests/test_bench_tools_py.py", line 44, in <module>
+    bench_compare = load_module("bench_compare", "benchmark/bench_compare.py")
+  File "/Users/germar/Documents/ChatGPT/geistlib/pq2-pr/tests/test_bench_tools_py.py", line 19, in load_module
+    spec.loader.exec_module(module)
+  File "<frozen importlib._bootstrap_external>", line 850, in exec_module
+  File "<frozen importlib._bootstrap>", line 228, in _call_with_frames_removed
+  File "/Users/germar/Documents/ChatGPT/geistlib/pq2-pr/benchmark/bench_compare.py", line 40, in <module>
+    def reference_shift(cur: dict, base: dict) -> tuple[str, dict[str, float]] | None:
+TypeError: unsupported operand type(s) for |: 'types.GenericAlias' and 'NoneType'
+=== tests/test_bitnet_embedding_convert_py.py ===
+warning: /var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmp7_x3fkc2/1_Pooling/config.json missing; assuming mean pooling
+warning: /var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmpxowl1ugz/1_Pooling/config.json missing; assuming mean pooling
+warning: /var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmph_97fak9/1_Pooling/config.json missing; assuming mean pooling
+=== BitNet embedding converter: I2_S packing ===
+  PASS  packing is byte-identical to the C pack_i2_s
+  PASS  pack -> unpack recovers every trit
+  PASS  stored scale is mean(|w|), not its reciprocal
+  PASS  in-features not divisible by 256 is refused
+  PASS  qwen3 tensor names map correctly (LM head dropped)
+  PASS  gemma3 post_attention_layernorm keeps its own semantics
+  PASS  all seven per-projection norms map to the loader's names
+  PASS  f16 overflow fails instead of writing inf
+wrote /var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmp7_x3fkc2/mini-i2_s.gguf — 38 tensors (14 I2_S), arch=qwen3
+  PASS  the mini model has all 23 norms
+  PASS  every 1-D norm is F32
+  PASS  output_norm is F32
+  PASS  token_embd stays F16
+  PASS  projections are still I2_S
+wrote /var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmpxowl1ugz/mini-f16.gguf — 38 tensors (0 I2_S), arch=qwen3
+  PASS  norms stay F32 in --outtype f16 too
+  PASS  no I2_S tensors in f16 mode
+wrote /var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmph_97fak9/mini-i2_s.gguf — 38 tensors (14 I2_S), arch=qwen3
+  PASS  GGUF magic and version are v3
+  PASS  lm_head is dropped, everything else kept
+  PASS  metadata is non-empty
+  PASS  file is larger than its header
+all checks passed
+=== tests/test_ci_bot_py.py ===
+classifier, recorded runs
+  ✓ run 1531: lost tasks (every step failed, end :x5:25) are infra
+  ✓ run 1538: act-cache lock, no step ran -> infra
+  ✓ run 1539: a job whose only run step was an always() upload is infra
+  ✓ run 1516: job 12868 (lost task) infra
+  ✓ run 1516: coverage gate failure asks for the log
+  ✓ run 1516: coverage gate failure with a log is real
+classifier, synthetic jobs
+  ✓ checkout fails after 40 s -> infra
+  ✓ checkout fails after 20 min, no sweep -> ask for the log
+  ✓   ... with a log -> real
+  ✓   ... logs not found -> infra
+  ✓ checkout fails at a zombie sweep (:x5:25) -> infra
+  ✓ ccache before the build fails quickly -> infra
+  ✓ agent head held for /ci-ok -> held, not real
+  ✓ build step fails -> real
+  ✓ a ccache step after a failed build is not setup
+  ✓ zombie sweep pattern hh:x5:25 / not hh:x6:25
+statuses -> runs
+  ✓ PR #122: one failed status (run 1534, still running: ci() waits for 'completed')
+  ✓ successful statuses are ignored
+rerun decisions
+2026-11-01 18:50:50 geisten/geistlib#122 run 1531 attempt 1: job 13061 'build + unit tests (Linux arm64)': infra (every step marked failed: task lost by the runner)
+2026-11-01 18:50:50 geisten/geistlib#122 run 1531 attempt 1: job 13068 'integration tests (Linux x86_64, cpu_x86 forced AVX2)': infra (every step marked failed: task lost by the runner)
+2026-11-01 18:50:50 geisten/geistlib#122 run 1531 attempt 1: infra only: rerun failed jobs (rerun 1/2)
+  ✓ infra-only run 1531 -> one rerun-failed-jobs
+  ✓ same attempt polled again -> no second rerun
+2026-11-01 18:50:50 geisten/geistlib#122 run 1531 attempt 2: job 13061 'build + unit tests (Linux arm64)': infra (every step marked failed: task lost by the runner)
+2026-11-01 18:50:50 geisten/geistlib#122 run 1531 attempt 2: job 13068 'integration tests (Linux x86_64, cpu_x86 forced AVX2)': infra (every step marked failed: task lost by the runner)
+2026-11-01 18:50:50 geisten/geistlib#122 run 1531 attempt 2: infra only: rerun failed jobs (rerun 2/2)
+2026-11-01 18:50:50 geisten/geistlib#122 run 1531 attempt 3: job 13061 'build + unit tests (Linux arm64)': infra (every step marked failed: task lost by the runner)
+2026-11-01 18:50:50 geisten/geistlib#122 run 1531 attempt 3: job 13068 'integration tests (Linux x86_64, cpu_x86 forced AVX2)': infra (every step marked failed: task lost by the runner)
+2026-11-01 18:50:50 geisten/geistlib#122 run 1531 attempt 3: infra only, but 2 reruns already: left alone
+2026-11-01 18:50:50 geisten/geistlib#122 run 1531 attempt 4: job 13061 'build + unit tests (Linux arm64)': infra (every step marked failed: task lost by the runner)
+2026-11-01 18:50:50 geisten/geistlib#122 run 1531 attempt 4: job 13068 'integration tests (Linux x86_64, cpu_x86 forced AVX2)': infra (every step marked failed: task lost by the runner)
+2026-11-01 18:50:50 geisten/geistlib#122 run 1531 attempt 4: infra only, but 2 reruns already: left alone
+  ✓ failing again and again -> at most 2 reruns
+2026-11-01 18:50:50 geisten/geistlib#122 run 1516 attempt 1: job 12868 'build + tests (Linux x86_64, cpu_x86 AVX-512 + scalar)': infra (every step marked failed: task lost by the runner)
+2026-11-01 18:50:50 geisten/geistlib#122 run 1516 attempt 1: job 12880 'coverage ratchet (Linux x86_64, unit + int)': real (failed at step 'Coverage report + gate')
+2026-11-01 18:50:50 geisten/geistlib#122 run 1516 attempt 1: real failure present: left alone
+  ✓ run 1516 with a real coverage failure -> no rerun
+2026-11-01 18:50:50 geisten/geistlib#122 run 1516 attempt 1: job 12868 'build + tests (Linux x86_64, cpu_x86 AVX-512 + scalar)': infra (every step marked failed: task lost by the runner)
+2026-11-01 18:50:50 geisten/geistlib#122 run 1516 attempt 1: job 12880 'coverage ratchet (Linux x86_64, unit + int)': real (failed at step 'Coverage report + gate')
+2026-11-01 18:50:50 geisten/geistlib#122 run 1516 attempt 1: real failure on an accepted agent PR: auto-merge cancelled, status:fix
+  ✓ ... on a PR in status:accepted -> cancel the merge, comment, relabel (label last)
+  ✓ comment: the failed jobs' log tails
+  ✓ status:accepted -> status:fix, ci:full kept
+2026-11-01 18:50:50 geisten/geistlib#122 run 1516 attempt 1: job 777 'j': held (agent head waits for a human's /ci-ok)
+2026-11-01 18:50:50 geisten/geistlib#122 run 1516 attempt 1: agent head held for a human's /ci-ok: left alone
+  ✓ an accepted agent PR held for /ci-ok -> no rerun, no send-back
+2026-11-01 18:50:50 geisten/geistlib#122 run 1516 attempt 1: job 12880 'coverage ratchet (Linux x86_64, unit + int)': infra (logs not found)
+2026-11-01 18:50:50 geisten/geistlib#122 run 1516 attempt 1: infra only: rerun failed jobs (rerun 1/2)
+  ✓ a long job whose logs are gone -> rerun
+2026-11-01 18:50:50 geisten/geistlib#122 run 1538 attempt 1: job 13293 'integration tests (Linux x86_64, cpu_x86 forced AVX2)': infra (first step never ran: the job died in 'Set up job')
+2026-11-01 18:50:50 geisten/geistlib#122 run 1538 attempt 1: job 13294 'build + tests (Linux x86_64, cpu_x86 AVX-512 + scalar)': infra (first step never ran: the job died in 'Set up job')
+2026-11-01 18:50:50 geisten/geistlib#122 run 1538 attempt 1: job 13298 'audio W8A8 parity (Linux x86_64, AVX-512 VNNI)': infra (first step never ran: the job died in 'Set up job')
+2026-11-01 18:50:50 geisten/geistlib#122 run 1538 attempt 1: job 13301 'AVX-512/VNNI guaranteed (Linux x86_64, Intel SDE)': infra (first step never ran: the job died in 'Set up job')
+2026-11-01 18:50:50 geisten/geistlib#122 run 1538 attempt 1: job 13302 'Vulkan backend (Linux x86_64, lavapipe)': infra (every step marked failed: task lost by the runner)
+2026-11-01 18:50:50 geisten/geistlib#122 run 1538 attempt 1: job 13304 'ASan + UBSan (Linux x86_64)': infra (first step never ran: the job died in 'Set up job')
+2026-11-01 18:50:50 geisten/geistlib#122 run 1538 attempt 1: job 13305 'TSan multi-session (Linux x86_64, cpu_x86)': infra (first step never ran: the job died in 'Set up job')
+2026-11-01 18:50:50   DRY-RUN would POST rerun-failed-jobs on run 1538
+2026-11-01 18:50:50 geisten/geistlib#122 run 1538 attempt 1: infra only: rerun failed jobs (rerun 1/2)
+  ✓ dry-run -> no write at all
+state survives a flaky listing
+2026-11-01 18:50:50 geisten/geistlib#122 run 1531 attempt 1: job 13061 'build + unit tests (Linux arm64)': infra (every step marked failed: task lost by the runner)
+2026-11-01 18:50:50 geisten/geistlib#122 run 1531 attempt 1: job 13068 'integration tests (Linux x86_64, cpu_x86 forced AVX2)': infra (every step marked failed: task lost by the runner)
+2026-11-01 18:50:50 geisten/geistlib#122 run 1531 attempt 1: infra only: rerun failed jobs (rerun 1/2)
+2026-11-01 18:50:50 geisten/geist-runtime: listing PRs failed: HTTP 0: timed out
+  ✓ listing timed out -> state kept
+  ✓ PR gone from a good listing -> forgotten
+  ✓ state written to disk
+who may be force-pushed
+  ✓ PR #122: every non-merge commit carries the Claude trailer (merge commits ignored)
+  ✓ one human commit -> no
+  ✓ ... unless labelled ci-bot:rebase
+  ✓ a fork's branch -> never
+  ✓ head repo must be the PR's repo
+dependencies, auto-merge
+  ✓ 'Depends on #N' in the body, case-insensitive
+  ✓ label depends-on-#N
+  ✓ no dependency
+  ✓ body asks for auto-merge
+  ✓ label automerge
+  ✓ 'do not auto-merge'
+  ✓ never on an agent/* head
+  ✓ silent PR -> no
+CHANGELOG union
+  ✓ both sides kept, main's first
+  ✓ diff3 base dropped, duplicate line once
+  ✓ unbalanced markers -> None
+trial rebase in throwaway repositories
+  ✓ CHANGELOG-only conflict -> rebased, both entries kept
+  ✓ the branch itself is untouched (push is separate)
+  ✓ conflict in a.c -> refused (conflict, ['CHANGELOG.md', 'a.c'])
+  ✓ scratch worktree removed
+  ✓ PR already on its base -> nothing to do
+  ✓ no conflict -> clean rebase onto the new base
+test_ci_bot_py: PASS
+=== tests/test_ci_issues_py.py ===
+  ✓ open / comment / close; skipped, cancelled, running and the reporter itself left alone
+  ✓ no jobs, no action
+PASS
+=== tests/test_coverage_gate_py.py ===
+coverage-gate control:
+  ✓ on-baseline passes
+  ✓ dip inside 0.5pp tolerance passes
+  ✓ regression beyond tolerance FAILS
+  ✓ empty scope FAILS (not 100%)
+  ✓ unset baseline FAILS and demands a commit
+  ✓ hard floor fires independently of a satisfied ratchet
+PASS: coverage gate fires when it must and only then
+=== tests/test_decision_dataset_py.py ===
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.001s
+
+OK
+=== tests/test_decision_encoders_py.py ===
+............
+----------------------------------------------------------------------
+Ran 12 tests in 0.093s
+
+OK
+=== tests/test_decision_metrics_py.py ===
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.002s
+
+OK
+=== tests/test_embedding_fidelity_py.py ===
+=== embedding fidelity gate ===
+  PASS  identical inputs pass
+  PASS  float-noise-sized drift passes
+  PASS  one wrong row fails
+  PASS  shape mismatch fails rather than comparing a prefix
+  PASS  uniform rescaling does not move the cosine
+  PASS  a zero row fails instead of producing nan
+selftest: PASS
+  PASS  the gate's own selftest passes
+  PASS  a .gemb round-trips to the same shape
+  PASS  a .gemb round-trips to the same values
+  PASS  rejects wrong magic
+  PASS  rejects future version
+  PASS  rejects count larger than payload
+  PASS  rejects dim larger than payload
+  PASS  rejects truncated header
+  PASS  a 0.6 cosine fails the default floor
+  PASS  the same pair passes a 0.5 floor
+all checks passed
+=== tests/test_eval_decision_batched_reasoning_py.py ===
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.642s
+
+OK
+{"questions": 5, "complete": 0, "pending": 5, "chunks": 0}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+/var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmpfvoqp5cf/run/report.json
+{"questions": 5, "complete": 5, "pending": 0, "chunks": 3}
+{"questions": 5, "complete": 0, "pending": 5, "chunks": 0}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+/var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmpzxrq78yi/run/report.json
+{"questions": 5, "complete": 5, "pending": 0, "chunks": 3}
+{"questions": 5, "complete": 0, "pending": 5, "chunks": 0}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+/var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmpxz7f6iy5/run/report.json
+{"questions": 5, "complete": 5, "pending": 0, "chunks": 3}
+{"questions": 5, "complete": 0, "pending": 5, "chunks": 0}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+/var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmpxz7f6iy5/run-exit/report.json
+{"questions": 5, "complete": 5, "pending": 0, "chunks": 3}
+{"questions": 2, "complete": 0, "pending": 2, "chunks": 0}
+/var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmph_6g6unn/run/report.json
+{"questions": 2, "complete": 2, "pending": 0, "chunks": 1}
+{"questions": 5, "complete": 0, "pending": 5, "chunks": 0}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+=== tests/test_eval_decision_campaign_py.py ===
+......
+----------------------------------------------------------------------
+Ran 6 tests in 5.578s
+
+OK
+{"questions": 4, "complete": 2, "pending": 2, "spotcheck_pending": 0, "complete_by_profile": {"chat_direct": 2, "cloze": 2, "chat_reasoning": 2}, "chunks": 1, "chunk_seconds_total": 0.2}
+{"imported": {"chat_direct": 2, "cloze": 2, "chat_reasoning": 2}}
+/var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmp5p7mzubo/second/report.json
+{"questions": 4, "complete": 4, "pending": 0, "spotcheck_pending": 0, "complete_by_profile": {"chat_direct": 4, "cloze": 4, "chat_reasoning": 4}, "chunks": 2, "chunk_seconds_total": 0.0}
+{"questions": 3, "complete": 0, "pending": 3, "spotcheck_pending": 0, "complete_by_profile": {"chat_direct": 1, "cloze": 0, "chat_reasoning": 0}, "chunks": 1, "chunk_seconds_total": 5.0}
+{"questions": 3, "complete": 2, "pending": 1, "spotcheck_pending": 0, "complete_by_profile": {"chat_direct": 2, "cloze": 2, "chat_reasoning": 2}, "chunks": 2, "chunk_seconds_total": 5.1}
+/var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmp5sjfdp1d/run/report.json
+{"questions": 3, "complete": 3, "pending": 0, "spotcheck_pending": 0, "complete_by_profile": {"chat_direct": 3, "cloze": 3, "chat_reasoning": 3}, "chunks": 3, "chunk_seconds_total": 5.1}
+/var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmpe1hu33uv/run/report.json
+{"questions": 2, "complete": 2, "pending": 0, "spotcheck_pending": 0, "complete_by_profile": {"chat_reasoning": 2}, "chunks": 1, "chunk_seconds_total": 0.0}
+{"questions": 6, "complete": 6, "pending": 2, "spotcheck_pending": 2, "complete_by_profile": {"chat_direct": 6, "chat_reasoning": 6}, "chunks": 1, "chunk_seconds_total": 0.1}
+/var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmpk6st25d2/run/report.json
+{"questions": 6, "complete": 6, "pending": 0, "spotcheck_pending": 0, "complete_by_profile": {"chat_direct": 6, "chat_reasoning": 6}, "chunks": 2, "chunk_seconds_total": 0.1}
+=== tests/test_eval_decision_prefix_py.py ===
+........
+----------------------------------------------------------------------
+Ran 8 tests in 0.748s
+
+OK
+{"questions": 5, "complete": 0, "pending": 5, "chunks": 0}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+/var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmpym2vweep/run/report.json
+{"questions": 5, "complete": 5, "pending": 0, "chunks": 3}
+{"questions": 5, "complete": 0, "pending": 5, "chunks": 0}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+{"questions": 5, "complete": 0, "pending": 5, "chunks": 0}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+/var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmp5bzkm4hm/run/report.json
+{"questions": 5, "complete": 5, "pending": 0, "chunks": 3}
+{"questions": 5, "complete": 0, "pending": 5, "chunks": 0}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+/var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmpw87owmyk/run/report.json
+{"questions": 5, "complete": 5, "pending": 0, "chunks": 3}
+{"questions": 5, "complete": 0, "pending": 5, "chunks": 0}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+/var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmpw87owmyk/run2/report.json
+{"questions": 5, "complete": 5, "pending": 0, "chunks": 3}
+{"questions": 5, "complete": 0, "pending": 5, "chunks": 0}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+{"questions": 5, "complete": 4, "pending": 1, "chunks": 2}
+/var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmpsx_etyc5/run/report.json
+{"questions": 5, "complete": 5, "pending": 0, "chunks": 3}
+{"questions": 5, "complete": 0, "pending": 5, "chunks": 0}
+{"questions": 5, "complete": 2, "pending": 3, "chunks": 1}
+{"questions": 5, "complete": 0, "pending": 5, "chunks": 0}
+/var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmpj5m22kwz/run/report.json
+{"questions": 5, "complete": 5, "pending": 0, "chunks": 1}
+=== tests/test_eval_decision_probe_pilot_py.py ===
+.
+----------------------------------------------------------------------
+Ran 1 test in 0.232s
+
+OK
+{"questions": 8, "complete": 0, "pending": 8, "transparency_pending": 2, "chunks": 0}
+{"questions": 8, "complete": 3, "pending": 5, "transparency_pending": 2, "chunks": 1}
+{"questions": 8, "complete": 3, "pending": 5, "transparency_pending": 2, "chunks": 1}
+{"questions": 8, "complete": 6, "pending": 2, "transparency_pending": 2, "chunks": 2}
+{"questions": 8, "complete": 6, "pending": 2, "transparency_pending": 2, "chunks": 2}
+{"questions": 8, "complete": 8, "pending": 0, "transparency_pending": 2, "chunks": 3}
+{"questions": 8, "complete": 8, "pending": 0, "transparency_pending": 2, "chunks": 3}
+/var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmp2l4x15d0/run/report.json
+{"questions": 8, "complete": 8, "pending": 0, "transparency_pending": 0, "chunks": 4}
+=== tests/test_eval_decision_py.py ===
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.039s
+
+OK
+/var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmp01xpybqi/run/report.json
+=== tests/test_eval_wer_py.py ===
+eval_audio_wer normalization:
+  ✓ 'Schön groß, weiß!' -> ['schön', 'groß', 'weiß']
+  ✓ "It's an A-B test." -> ["it's", 'an', 'a', 'b', 'test']
+  ✓ 'Ärzte über Straße' -> ['ärzte', 'über', 'straße']
+  ✓ '  double  spaces\tand\nlines ' -> ['double', 'spaces', 'and', 'lines']
+  ✓ edit distance counts umlaut words as whole words
+PASS
+=== tests/test_fetch_bench_model_py.py ===
+fetching m.gguf (0.0 GB) from http://127.0.0.1:58503/m.gguf
+fetching bad.gguf (0.0 GB) from http://127.0.0.1:58503/m.gguf
+fetching u.gguf (0.0 GB) from http://127.0.0.1:58503/m.gguf
+  ✓ cross_engine_cpu_protocol.json: every model has a source
+  ✓ cross_engine_gpu_protocol.json: every model has a source
+  ✓ resumed download is complete
+  ✓ resume asked for the missing range only
+  ✓ partial file renamed into place
+  ✓ cached file is not downloaded again
+  ✓ sha256 mismatch is refused and leaves nothing behind
+  ✓ --url mode takes the size from the server and fetches the file
+  ✓ --url mode reuses the cached file
+PASS
+=== tests/test_gen_synth_gguf_py.py ===
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 1.932s
+
+OK
+wrote /var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmp31mmtcje/0.gguf: 11 tensors, 0.7 M params, layers=1 d=256 heads=4/2 ffn=512 w=q4_k embd=q8_0
+wrote /var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmp31mmtcje/1.gguf: 11 tensors, 0.7 M params, layers=1 d=256 heads=4/2 ffn=512 w=q4_k embd=q8_0
+wrote /var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmp31mmtcje/2.gguf: 11 tensors, 0.7 M params, layers=1 d=256 heads=4/2 ffn=512 w=q4_k embd=q8_0
+wrote /var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmp2n0nb3v8/tok.gguf: 11 tensors, 0.7 M params, layers=1 d=256 heads=4/2 ffn=512 w=q4_k embd=q8_0
+wrote /var/folders/28/9wsqj19d0r96ndq_7qzn72780000gn/T/tmpr_vviit7/tiny.gguf: 11 tensors, 0.7 M params, layers=1 d=256 heads=4/2 ffn=512 w=q4_k embd=q8_0
+=== tests/test_prepare_decision_eval_py.py ===
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.000s
+
+OK
+=== tests/test_required_checks_py.py ===
+  ✓ matrix entries expand, steps and comments are ignored, a job without name uses its key
+  ✓ a job whose if: tests outputs.full is not required
+  ✓ post_merge=True lists the other tier
+  ✓ ci-issues must wait for every job (block and inline needs parsed)
+  ✓ the real workflow yields distinct names
+  ✓ .gitea/required-checks.txt matches .gitea/workflows/ci.yml
+  ✓ the real ci-issues job waits for every other job
+PASS
+=== tests/test_run_tests_py.py ===
+......
+----------------------------------------------------------------------
+Ran 6 tests in 1.558s
+
+OK
+test-py: FAIL
+make: *** [test-py] Error 1

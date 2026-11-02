@@ -1,0 +1,23 @@
+{
+  "clean_main_binary_sha256": "b488864e90c3faaa4033cac47dd452a13580e1ba8bc85bcff5b6ba7620972f62",
+  "cases": [
+    {
+      "case": 0,
+      "bit_identical": true,
+      "ids_sha256": "c7ede857f61687d962f2a2d96e097028a25f424422c0e0b30f538ec9381c29bf",
+      "logits_sha256": "a524044a07c84b91ef6e6fe1a2e1afa12fefb47a5a18e1e49a79759ed9a5be1d"
+    },
+    {
+      "case": 3,
+      "bit_identical": true,
+      "ids_sha256": "1c411b452d7a78a7bcc94317667528a61170bee797dcded2ddfb8cfdf71229a2",
+      "logits_sha256": "6efc0bba45b66c63808c8a494e0544396b0a5510563c8d96e3d9079e4c55a4d0"
+    },
+    {
+      "case": 4,
+      "bit_identical": true,
+      "ids_sha256": "7036bf920fb676a72c1d2f7f76504769718c0e50d88900625f4adc1e8e026063",
+      "logits_sha256": "9c7f0aa24a55db59808ddba7558a0fe4c2434058212a7b35018348c332e078c0"
+    }
+  ]
+}

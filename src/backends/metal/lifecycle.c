@@ -17,6 +17,8 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->buf_reg_cap   = 0;
     metal_buffer_destroy_internal(be, st->attn_dec_partials_buffer);
     st->attn_dec_partials_buffer = nullptr;
+    metal_buffer_destroy_internal(be, st->pq2_lowp_x);
+    st->pq2_lowp_x = nullptr;
     metal_buffer_destroy_internal(be, st->pq2_xh_buffer);
     st->pq2_xh_buffer = nullptr;
     metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
@@ -181,6 +183,35 @@ void metal_destroy(struct geist_backend *be) {
     st->tensor_mm =
             geist_env_flag("GEIST_METAL_TENSOR",
                            metal_msg_send_bool_long(st, st->device, "supportsFamily:", 1010));
+
+    const char *pqmode = getenv("GEIST_METAL_PQ2_MODE");
+    if (st->tensor_mm && pqmode != nullptr &&
+        metal_msg_send_bool_long(st, st->device, "supportsFamily:", 1011)) {
+        st->pq2_lowp_mode = strcmp(pqmode, "int8") == 0          ? 1u
+                            : strcmp(pqmode, "fp8") == 0         ? 2u
+                            : strcmp(pqmode, "int2") == 0        ? 3u
+                            : strcmp(pqmode, "half2") == 0       ? 4u
+                            : strcmp(pqmode, "coop16") == 0      ? 5u
+                            : strcmp(pqmode, "coop8") == 0       ? 6u
+                            : strcmp(pqmode, "staged_int8") == 0 ? 7u
+                            : strcmp(pqmode, "staged_fp8") == 0  ? 8u
+                                                                 : 0u;
+    }
+    long tile = 0, sg = 0;
+    st->pq2_lowp_tile = geist_parse_long(getenv("GEIST_METAL_PQ2_TILE"), &tile) &&
+                                        (tile == 32 || tile == 64 || tile == 128)
+                                ? (uint32_t) tile
+                                : 128u;
+    st->pq2_lowp_simdgroups =
+            geist_parse_long(getenv("GEIST_METAL_PQ2_SIMDGROUPS"), &sg) && (sg == 4 || sg == 8)
+                    ? (uint32_t) sg
+            : st->pq2_lowp_mode >= 7u ? 4u
+                                      : 8u;
+
+    st->pq2_lowp_shared_acc = st->pq2_lowp_mode >= 1u && st->pq2_lowp_mode <= 4u &&
+                              geist_env_flag("GEIST_METAL_PQ2_SHARED_ACC", false);
+    if (st->pq2_lowp_shared_acc && st->pq2_lowp_tile == 128u)
+        st->pq2_lowp_tile = 64u;
 
     st->command_queue = metal_msg_send_id0(st, st->device, "newCommandQueue");
     if (st->command_queue == nullptr) {

@@ -1,0 +1,2 @@
+# Template trailing blank lines are part of the measured token stream.
+model-chat/prompt-*.txt -whitespace
