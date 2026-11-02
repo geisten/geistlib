@@ -42,6 +42,13 @@ enum gguf_tokenizer_mode {
     GGUF_TOK_MODE_UNIGRAM,
 };
 
+/* The regex-sequence pretokenizers (gguf_tokenizer_seq_split). */
+enum gguf_pre_seq {
+    GGUF_PRE_NONE = 0,
+    GGUF_PRE_DEEPSEEK_LLM, /* tokenizer.ggml.pre "deepseek-llm" (DeepSeek-V2) */
+    GGUF_PRE_DEEPSEEK_V3,  /* "deepseek-v3" (DeepSeek-V3, R1) */
+};
+
 struct gguf_tokenizer {
     /* Pointer-and-length pair for each vocab entry. The pointer
      * indexes into the GGUF mmap; valid for the ctx's lifetime. */
@@ -95,7 +102,11 @@ struct gguf_tokenizer {
     bool pre_qwen2;
     /* GPT-2 mode: tokenizer.ggml.pre == "gpt-4o" or "llama4" (#243) —
      * gguf_tokenizer_gpt4o_chunk_end splits the text. */
-    bool    pre_gpt4o;
+    bool pre_gpt4o;
+    /* GPT-2 mode: a pretokenizer llama.cpp runs as a sequence of regexes
+     * (gguf_tokenizer_seq_split): "deepseek-llm", "deepseek-v3" (#242).
+     * GGUF_PRE_NONE otherwise. */
+    enum gguf_pre_seq pre_seq;
     int32_t spm_byte_id[256]; /* SPM byte fallback: byte → "<0xXX>" vocab id, -1 if absent */
 
     /* Loaded from a tokenizer.bin (gguf_tokenizer_load_bin), SPM mode without
@@ -169,6 +180,15 @@ void gguf_tokenizer_unload(struct gguf_tokenizer *tok);
  * Exposed for tests. */
 [[nodiscard]] size_t
 gguf_tokenizer_gpt4o_chunk_end(size_t tlen, size_t i, const char text[static tlen]);
+
+/* Split n codepoints as llama.cpp's regex sequence for `kind` does
+ * (GGUF_PRE_DEEPSEEK_LLM or _V3): the piece lengths, in codepoints and in
+ * order, land in pieces[0, return value); pieces[n, 2n) is scratch. Every
+ * piece is non-empty and they sum to n. Exposed for tests. */
+[[nodiscard]] size_t gguf_tokenizer_seq_split(enum gguf_pre_seq kind,
+                                              size_t            n,
+                                              const uint32_t    cps[static n],
+                                              size_t            pieces[static 2 * n]);
 
 /* Exact vocab lookup: token id for the surface string `text`, or -1 if it is
  * not a single vocab entry. Backs the public geist_model_token_by_text. */
