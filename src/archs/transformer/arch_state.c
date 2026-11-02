@@ -113,6 +113,7 @@ static void release_layer_weight_aux(struct transformer_layer_weights *L) {
         *views[p] = nullptr;
     }
     safe_free((void **) &L->moe_shexp_gate);
+    safe_free((void **) &L->attn_sinks);
     float **biases[] = {&L->moe_router_b, &L->moe_gate_b, &L->moe_up_b, &L->moe_down_b};
     for (size_t i = 0; i < sizeof biases / sizeof biases[0]; i++)
         safe_free((void **) biases[i]);
@@ -2273,7 +2274,9 @@ static bool scratch_device_wanted(const struct transformer_arch_session *sess) {
     }
     for (size_t li = 0; li < st->n_layers; li++) {
         const struct transformer_layer_weights *L = &st->layers[li];
-        if (L->o_awq_inv_scale != nullptr || L->down_awq_inv_scale != nullptr) {
+        /* Attention sinks (#243) attend on the host over mapped rows. */
+        if (L->o_awq_inv_scale != nullptr || L->down_awq_inv_scale != nullptr ||
+            L->attn_sinks != nullptr) {
             return false;
         }
     }
