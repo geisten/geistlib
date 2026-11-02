@@ -49,6 +49,7 @@ static const struct {
         {GEIST_DTYPE_TQ2_0, "TQ2_0", TQ2_0_BLOCK_ELEMS},
         {GEIST_DTYPE_PQ2_0, "PQ2_0", PQ2_0_BLOCK_ELEMS},
         {GEIST_DTYPE_I2_S, "I2_S", I2_S_BLOCK_ELEMS},
+        {GEIST_DTYPE_MXFP4, "MXFP4", MXFP4_BLOCK_ELEMS},
 };
 
 /* resolve_weight on zeroed storage of `bytes` for an [n_out, n_in] weight. */

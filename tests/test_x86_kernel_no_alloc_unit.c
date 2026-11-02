@@ -73,6 +73,9 @@ static size_t bytes_tq2_0(void) {
 static size_t bytes_pq2_0(void) {
     return (N_IN / PQ2_0_BLOCK_ELEMS) * PQ2_0_BLOCK_BYTES * N_OUT;
 }
+static size_t bytes_mxfp4(void) {
+    return (N_IN / MXFP4_BLOCK_ELEMS) * MXFP4_BLOCK_BYTES * N_OUT;
+}
 static size_t bytes_half(void) {
     return N_IN * N_OUT * 2;
 }
@@ -88,6 +91,7 @@ static const struct dtype_case CASES[] = {
         {"PQ2_0", (uint16_t) GEIST_DTYPE_PQ2_0, bytes_pq2_0},
         {"BF16", (uint16_t) GEIST_DTYPE_BF16, bytes_half},
         {"F16", (uint16_t) GEIST_DTYPE_F16, bytes_half},
+        {"MXFP4", (uint16_t) GEIST_DTYPE_MXFP4, bytes_mxfp4},
 };
 
 /* Deterministic bytes. Contents are irrelevant — this test is about
