@@ -1475,6 +1475,51 @@ static void vk_attn_part_geometry(uint32_t  active,
     *n_spans             = (tiles + per - 1u) / per;
 }
 
+/* fused->attention_sinks (#243): attention_sinks_{f32,f16}.comp, one
+ * workgroup per (query row, head). */
+[[nodiscard]] static enum geist_status
+vk_attention_sinks(struct geist_backend *be, const struct geist_attention_sinks_args *a) {
+    if (a == nullptr || a->q == nullptr || a->k == nullptr || a->v == nullptr ||
+        a->sinks == nullptr || a->out == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct vk_state       *stt  = be->state;
+    const bool             kv16 = a->k->dtype == GEIST_DTYPE_F16;
+    const enum vk_pipe     pipe = kv16 ? VK_PIPE_ATTENTION_SINKS_F16 : VK_PIPE_ATTENTION_SINKS;
+    VkDescriptorBufferInfo bi[5];
+    uint32_t               off[5];
+    if (stt->pipes[pipe] == VK_NULL_HANDLE || a->q->ndim != 3 || a->k->ndim != 3 ||
+        a->q->shape[2] > VK_ATTN_MAX_HEAD_DIM || vk_t_n(a->q) == 0 || vk_t_n(a->out) == 0 ||
+        vk_t_n(a->sinks) == 0 || a->sinks->dtype != GEIST_DTYPE_F32 ||
+        a->sinks->shape[0] != a->q->shape[1] || a->k->shape[1] <= 0 ||
+        a->q->shape[1] % a->k->shape[1] != 0 ||
+        !(kv16 ? (vk_t_n16(a->k) != 0 && vk_t_n16(a->v) != 0 &&
+                  vk_tensor_gpu_f16(a->k, &bi[1], &off[1]) &&
+                  vk_tensor_gpu_f16(a->v, &bi[2], &off[2]))
+               : (vk_t_n(a->k) != 0 && vk_t_n(a->v) != 0 && vk_tensor_gpu(a->k, &bi[1], &off[1]) &&
+                  vk_tensor_gpu(a->v, &bi[2], &off[2]))) ||
+        !vk_tensor_gpu(a->q, &bi[0], &off[0]) || !vk_tensor_gpu(a->sinks, &bi[3], &off[3]) ||
+        !vk_tensor_gpu(a->out, &bi[4], &off[4])) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    uint32_t n_q, qh, hd, n_kv, kvh, qpos, win;
+    if (vk_ckd_u32((size_t) a->q->shape[0], &n_q) || vk_ckd_u32((size_t) a->q->shape[1], &qh) ||
+        vk_ckd_u32((size_t) a->q->shape[2], &hd) || vk_ckd_u32((size_t) a->k->shape[0], &n_kv) ||
+        vk_ckd_u32((size_t) a->k->shape[1], &kvh) || vk_ckd_u32(a->q_offset, &qpos) ||
+        vk_ckd_u32(a->sliding_window, &win)) {
+        return vk_too_wide(be, "attention_sinks");
+    }
+    const uint32_t push[12] = {
+            n_q, n_kv, qh, kvh, hd, qpos, win, off[0], off[1], off[2], off[4], off[3]};
+    const struct vk_access acc[5] = {
+            vk_acc_tensor(a->q, false),
+            kv16 ? vk_acc_tensor16(a->k, false) : vk_acc_tensor(a->k, false),
+            kv16 ? vk_acc_tensor16(a->v, false) : vk_acc_tensor(a->v, false),
+            vk_acc_tensor(a->sinks, false),
+            vk_acc_tensor(a->out, true)};
+    return vk_seq_dispatch_acc(be, pipe, bi, acc, push, sizeof push, n_q, qh, 1);
+}
+
 [[nodiscard]] static enum geist_status vk_attention(struct geist_backend      *be,
                                                     const struct geist_tensor *q,
                                                     const struct geist_tensor *k,
@@ -3474,6 +3519,7 @@ static const struct geist_backend_fused vk_fused = {
         .silu_mul                = vk_silu_mul,
         .bitnet_act_quant        = vk_bitnet_act_quant,
         .hadamard_rotate         = vk_hadamard_rotate,
+        .attention_sinks         = vk_attention_sinks,
 };
 
 const struct geist_backend_descriptor geist_backend_vulkan = {
