@@ -79,8 +79,8 @@ static void iq2s_decode_rows(void *ctx, size_t n0, size_t n1) {
             const float   d  = fp16_to_fp32(blk->d);
             const int8_t *xb = x_q8 + b * IQ2_S_BLOCK_ELEMS;
 
-            int32x4_t int_acc = vdupq_n_s32(0);
-            int8_t    w_i8[32] __attribute__((aligned(16)));
+            int32x4_t          int_acc = vdupq_n_s32(0);
+            alignas(16) int8_t w_i8[32];
 
             for (int ib32 = 0; ib32 < 8; ib32++) {
                 iq2s_subblock_to_int8(
@@ -173,7 +173,7 @@ static void iq2s_prefill_rows(void *ctx, size_t n0, size_t n1) {
             for (size_t i = 0; i < m; i++)
                 row_acc[i] = vdupq_n_s32(0);
 
-            int8_t w_i8[32] __attribute__((aligned(16)));
+            alignas(16) int8_t w_i8[32];
             for (int ib32 = 0; ib32 < 8; ib32++) {
                 iq2s_subblock_to_int8(
                         w_i8, &blk->qs[ib32 * 4], &blk->qs[32 + ib32 * 4], blk->qh[ib32]);

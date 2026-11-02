@@ -88,8 +88,8 @@ static void iq3s_decode_rows(void *ctx, size_t n0, size_t n1) {
             const float   d  = fp16_to_fp32(blk->d);
             const int8_t *xb = x_q8 + b * IQ3_S_BLOCK_ELEMS;
 
-            int32x4_t int_acc = vdupq_n_s32(0);
-            int8_t    w_i8[32] __attribute__((aligned(16)));
+            int32x4_t          int_acc = vdupq_n_s32(0);
+            alignas(16) int8_t w_i8[32];
 
             /* 4 outer iterations; each covers two 32-element sub-blocks
              * sharing one scales byte (low nibble + high nibble). */
@@ -192,7 +192,7 @@ static void iq3s_prefill_rows(void *ctx, size_t n0, size_t n1) {
             for (size_t i = 0; i < m; i++)
                 row_acc[i] = vdupq_n_s32(0);
 
-            int8_t w_i8[32] __attribute__((aligned(16)));
+            alignas(16) int8_t w_i8[32];
             /* 4 outer iterations × 2 halves = 8 sub-blocks of 32 elements. */
             for (int ib = 0; ib < 4; ib++) {
                 const int32_t s_a = 1 + 2 * (blk->scales[ib] & 0xf);

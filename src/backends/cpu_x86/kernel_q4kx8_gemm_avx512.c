@@ -45,9 +45,9 @@ struct q8k_row {
  * see q4kx8_gemv_m1 — so the bound is a tile size, not a limit on K. */
 constexpr size_t Q8K_SEG = 64;
 
-__attribute__((unused)) static void quantize_q8k_row(size_t         n_super,
-                                                     const float    x[static n_super * 256],
-                                                     struct q8k_row out[static n_super]) {
+[[maybe_unused]] static void quantize_q8k_row(size_t         n_super,
+                                              const float    x[static n_super * 256],
+                                              struct q8k_row out[static n_super]) {
     /* One scale per super-block, as Q8_K has: a row-wide max-abs lets one
      * outlier coarsen every other super-block of the row (#694). */
     for (size_t s = 0; s < n_super; s++) {
