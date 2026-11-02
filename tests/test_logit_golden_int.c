@@ -59,6 +59,10 @@ static const struct {
          * the argmaxes agree with llama.cpp's greedy continuation. */
         {"gguf_artifacts/DeepSeek-V2-Lite.Q4_K_M.gguf",
          "tests/data/logit_golden/DeepSeek-V2-Lite.Q4_K_M.txt"},
+        /* Llama 4 Scout (#244): chunked / NoPE layers, top-1 sigmoid
+         * experts; the argmaxes agree with llama.cpp's greedy continuation. */
+        {"gguf_artifacts/meta-llama_Llama-4-Scout-17B-16E-Instruct-Q3_K_S.gguf",
+         "tests/data/logit_golden/meta-llama_Llama-4-Scout-17B-16E-Instruct-Q3_K_S.txt"},
 };
 enum { N_FIXTURES = sizeof FIXTURES / sizeof FIXTURES[0] };
 
