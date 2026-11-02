@@ -120,6 +120,7 @@ struct transformer_family {
 extern const struct transformer_family transformer_family_bitnet_b158;
 extern const struct transformer_family transformer_family_bitnet;
 extern const struct transformer_family transformer_family_llama;
+extern const struct transformer_family transformer_family_llama_moe;
 extern const struct transformer_family transformer_family_qwen3;
 extern const struct transformer_family transformer_family_gemma3;
 extern const struct transformer_family transformer_family_gemma4;

@@ -51,8 +51,12 @@
 
 #include <geist.h>
 #include <geist_util.h>
+#ifdef GEIST_BACKEND_METAL
+#include "../src/backends/metal/metal_internal.h"
+#endif
 #include <geist_backend.h>
 
+#include <inttypes.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -385,6 +389,15 @@ int main(int argc, char **argv) {
 
     bool failed = false;
     for (size_t idx = 0; idx < n_seq_lens; idx++) {
+        uint64_t pq2_q_before = 0, pq2_m_before = 0;
+#ifdef GEIST_BACKEND_METAL
+        if (strcmp(be->desc->name, "metal") == 0) {
+            const struct metal_state *st = be->state;
+            pq2_q_before                 = st->pq2_lowp_quant_dispatches;
+            pq2_m_before                 = st->pq2_lowp_mm_dispatches;
+        }
+#endif
+
         const int n_p = seq_lens[idx];
         if ((size_t) repeats > SIZE_MAX / sizeof(double)) {
             fprintf(stderr, "sample buffer size overflow\n");
@@ -493,6 +506,20 @@ int main(int argc, char **argv) {
         const double total_tps_best  = (double) (n_p + decode_n) * 1000.0 / total_best;
         const double total_tps_worst = (double) (n_p + decode_n) * 1000.0 / total_worst;
 
+        struct geist_backend_resources resources;
+        const double allocated_mb = geist_backend_resources_snapshot(be, &resources) == GEIST_OK
+                                            ? (double) resources.allocated_bytes / (1024.0 * 1024.0)
+                                            : -1.0;
+        uint64_t     pq2_quant = 0, pq2_gemm = 0;
+#ifdef GEIST_BACKEND_METAL
+        if (strcmp(geist_backend_name(be), "metal") == 0) {
+            const struct metal_state *st = be->state;
+            pq2_quant                    = st->pq2_lowp_quant_dispatches;
+            pq2_gemm                     = st->pq2_lowp_mm_dispatches;
+        }
+#endif
+        pq2_quant -= pq2_q_before;
+        pq2_gemm -= pq2_m_before;
         printf("{\"seq_len\":%d,\"decode_n\":%d,"
                "\"prefill_ms\":%.2f,\"decode_ms\":%.2f,\"total_ms\":%.2f,\"ttft_ms\":%.2f,"
                "\"prefill_tps\":%.3f,\"decode_tps\":%.3f,\"total_tps\":%.3f,"
@@ -501,7 +528,9 @@ int main(int argc, char **argv) {
                "\"total_ms_best\":%.2f,\"total_ms_worst\":%.2f,"
                "\"total_tps_best\":%.3f,\"total_tps_worst\":%.3f,"
                "\"agg\":\"mean\",\"repeats\":%zu,\"repeats_requested\":%d,"
-               "\"warmup\":%d,\"rss_mb\":%.2f,\"threads\":%d,\"samples\":{"
+               "\"warmup\":%d,\"rss_mb\":%.2f,\"backend_allocated_mb\":%.2f,\"metal_pq2_quant_"
+               "dispatches\":%" PRIu64 ",\"pq2_native_calls\":%" PRIu64
+               ",\"threads\":%d,\"samples\":{"
                "\"prefill_ms\":",
                n_p,
                decode_n,
@@ -524,6 +553,9 @@ int main(int argc, char **argv) {
                repeats,
                warmup_n,
                process_rss_mb(),
+               allocated_mb,
+               pq2_quant,
+               pq2_gemm,
                threads);
         print_json_samples(measured, prefill_ms);
         printf(",\"decode_ms\":");

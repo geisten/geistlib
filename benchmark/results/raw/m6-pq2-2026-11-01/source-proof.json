@@ -1,0 +1,8 @@
+{
+  "measured_revision": "d06a6a15430a20e3008a0ab3639cebdaf0baef09",
+  "final_validated_revision": "82c71d6df64f965442c8e7f6c0d77244d72db1e1",
+  "gpu_kernel_source": "src/backends/metal/metal_pq2_lowp_shaders.h",
+  "gpu_kernel_sha256": "5dbe3da1b84fcd6d1b68e3fa3e14998da9623f86fbd353cc830d2d7c987e615e",
+  "unchanged": true,
+  "final_binary_replay": "37de78670c0ab5241bc04d00ff7b3ba7335bbac6368afa93fb50651104d5136e"
+}
