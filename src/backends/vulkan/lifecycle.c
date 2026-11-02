@@ -143,6 +143,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
         if (st->xq != VK_NULL_HANDLE) {
             (void) st->fn.QueueWaitIdle(st->xq);
         }
+        vk_stage_release(be, st); /* before the registry it scans goes */
         for (size_t i = 0; i < st->n_weights; ++i) {
             vk_buffer_destroy(be, st->weights[i].gpu);
         }
@@ -536,6 +537,14 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
              st->fn.CreateSemaphore(st->device, &sinfo, nullptr, &st->tl_copy) == VK_SUCCESS &&
              st->fn.CreateSemaphore(st->device, &sinfo, nullptr, &st->tl_comp) == VK_SUCCESS;
         st->xq_on = ok;
+        /* #239: the staging copies' command buffer. */
+        const VkCommandBufferAllocateInfo sa = {
+                .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .commandPool        = st->xq_pool,
+                .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                .commandBufferCount = 1};
+        st->stage_xq =
+                ok && st->fn.AllocateCommandBuffers(st->device, &sa, &st->stage_cmd) == VK_SUCCESS;
     }
     return GEIST_OK;
 }
@@ -687,6 +696,17 @@ void vk_destroy(struct geist_backend *be) {
                         (unsigned long long) (st->stat_streamed_bytes >> 20),
                         st->xq_on ? "on" : "off",
                         (unsigned long long) st->stat_prefetch_hits);
+            }
+            if (st->requested_host_bytes != 0 || st->stat_staged != 0) {
+                fprintf(stderr,
+                        "geist vulkan host weights: %zu MiB; staged into VRAM %llu times "
+                        "(%llu MiB), %zu slots of %zu KiB, %s\n",
+                        st->requested_host_bytes >> 20,
+                        (unsigned long long) st->stat_staged,
+                        (unsigned long long) (st->stat_staged_bytes >> 20),
+                        st->stage_cap,
+                        st->stage_bytes >> 10,
+                        st->xq_on && st->stage_xq ? "transfer queue" : "in the batch");
             }
             fprintf(stderr,
                     "geist vulkan scratch: device-local %llu (%llu MiB), BAR %llu (%llu MiB), "

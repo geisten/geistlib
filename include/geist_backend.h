@@ -961,6 +961,35 @@ struct geist_backend_fused {
                                              struct geist_tensor *const conv_states[GEIST_AT_LEAST(n)],
                                              struct geist_tensor *const delta_states[GEIST_AT_LEAST(n)]);
 
+    /* Mixture-of-experts prefill with cold experts copied to the device
+     * (#239). EXPERIMENTAL.
+     *
+     * stage_reserve: makes n_slots device slots, each big enough for any
+     * weight of this backend's layout shaped like one of like[0, n_like)
+     * (dtype, n_in, n_out); a call asking no more than what exists keeps
+     * them. Called at load, never per step.
+     *
+     * stage_weights: copies the weights w[0, n), each resolved on this
+     * backend with GEIST_W_HOST (held in host memory), into the slots.
+     * Until the next call, linear_t binds a weight's slot instead of its
+     * host copy. The copies run beside the work already recorded (on a
+     * transfer queue where the device has one, else in the batch); the
+     * first linear_t that reads a staged weight waits for them on the
+     * device, the host never waits for them. They start only after the work
+     * that read the previous weights is done. GEIST_E_UNSUPPORTED (nothing
+     * staged, the previous weights no longer bound): n above n_slots, a
+     * weight twice, a weight that is not a host-held weight of this
+     * backend, or bigger than a slot.
+     *
+     * nullptr = no staging: cold experts stay on the CPU. */
+    enum geist_status (*stage_reserve)(struct geist_backend            *be,
+                                       size_t                           n_slots,
+                                       size_t                           n_like,
+                                       const struct geist_weight *const like[GEIST_AT_LEAST(n_like)]);
+    enum geist_status (*stage_weights)(struct geist_backend            *be,
+                                       size_t                           n,
+                                       const struct geist_weight *const w[GEIST_AT_LEAST(n)]);
+
     /* Optional (#243, GPT-OSS): attention with a sink logit per head, see
      * geist_attention_sinks_args. GEIST_E_UNSUPPORTED (nothing written):
      * the architecture runs its host twin over mapped buffers instead.

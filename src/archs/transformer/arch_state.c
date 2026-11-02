@@ -1596,6 +1596,8 @@ enum geist_status transformer_state_create_from_gguf(struct geist_backend       
         s = moe_gpu_attach(*out, be);
         if (s == GEIST_OK)
             s = moe_resolve_cold(*out);
+        if (s == GEIST_OK)
+            moe_gpu_stage_calibrate(*out);
         if (s != GEIST_OK) {
             transformer_state_destroy(*out);
             *out = nullptr;

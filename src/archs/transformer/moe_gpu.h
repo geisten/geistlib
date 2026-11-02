@@ -61,11 +61,14 @@ void                            moe_gpu_session_free(struct transformer_arch_ses
  * waiting; finish, with launch's layer and decode_rows,
  * writes out[t] = cold[t] + the hot outputs of token t weighted by the
  * router, on the GPU, cold being the host's sum of the other experts —
- * no wait either. */
+ * no wait either. hot[0, n_res) have a copy on the GPU; hot[n_res, n_hot)
+ * are a prefill step's staged experts (#239, moe_gpu_stage ran for them),
+ * recorded after the others. */
 [[nodiscard]] enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
                                                size_t                           layer,
                                                size_t                           seq,
                                                bool                             decode_rows,
+                                               size_t                           n_res,
                                                size_t                           n_hot,
                                                const uint32_t                   hot[static n_hot]);
 [[nodiscard]] enum geist_status moe_gpu_finish(struct transformer_arch_session *sess,
@@ -76,6 +79,30 @@ void                            moe_gpu_session_free(struct transformer_arch_ses
                                                const uint32_t                   hot[static n_hot],
                                                const float cold[static seq * sess->model->d_model],
                                                struct geist_buffer *out);
+
+/* #239: a prefill step may copy expert e of layer `layer`, which has no
+ * copy on the GPU, there for its m rows (m >= mg->stage_m_min, a host twin,
+ * the session's buffers). */
+[[nodiscard]] bool
+moe_gpu_stageable(const struct transformer_arch_session *sess, size_t layer, size_t e, size_t m);
+
+/* Copies experts e[0, n) of layer `layer` (each moe_gpu_stageable) into the
+ * GPU's staging slots, without waiting; launch then runs them after the
+ * resident experts. Not GEIST_OK: none copied, they stay on the CPU. */
+[[nodiscard]] enum geist_status moe_gpu_stage(struct transformer_arch_session *sess,
+                                              size_t                           layer,
+                                              size_t                           n,
+                                              const uint32_t                   e[static n]);
+
+/* #239: the staging threshold from a cost model measured at load (after
+ * moe_resolve_cold): copy rate, GPU and CPU time per expert row.
+ * GEIST_MOE_STAGE_M_MIN=<rows> sets it (0: off). No-op without staging. */
+void moe_gpu_stage_calibrate(struct transformer_arch_state *st);
+
+/* Its rule: the rows from which a staged expert of `bytes`, copied at bw
+ * bytes/s, pays against t_cpu s per row on the CPU: bytes / (bw * t_cpu),
+ * the power of two at or below. SIZE_MAX: never (no copy rate). */
+[[nodiscard]] size_t moe_stage_m_min(double bytes, double bw, double t_cpu);
 
 /* #162: a decode step (seq == 1) of layer `layer` routes on the device
  * with the experts split. route_launch starts the work so far (the router)

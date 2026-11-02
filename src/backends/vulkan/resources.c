@@ -559,6 +559,14 @@ void vk_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf) {
             }
         }
     }
+    /* #239: the staging slots must not name a freed weight. */
+    if (buf->staged != nullptr) {
+        for (size_t i = 0; i < st->stage_n; ++i) {
+            if (st->stage_src[i] == buf) {
+                st->stage_src[i] = nullptr;
+            }
+        }
+    }
     if (buf->buf != VK_NULL_HANDLE && !buf->borrowed) {
         /* drop cached descriptor sets that reference this buffer — the
          * driver may recycle the handle value for a future buffer */
