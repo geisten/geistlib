@@ -59,6 +59,9 @@ def main() -> int:
                     default=Path(__file__).resolve().parent.parent / "bin" / "mac-omp" / "release" / "tools" / "eval_geist")
     ap.add_argument("--ctx", type=int, default=512)
     ap.add_argument("--chunks", type=int, default=8)
+    ap.add_argument("--first-chunk", type=int, default=0,
+                    help="score geist's chunks from this one on (a run split in parts; "
+                         "combine their nll_sum / scored_tokens)")
     ap.add_argument("--ngl", type=int, default=0, help="llama.cpp GPU layers")
     ap.add_argument("--skip-llama", type=float, default=None,
                     help="use this llama.cpp perplexity instead of running it")
@@ -73,15 +76,24 @@ def main() -> int:
         # llama-tokenize added BOS when the vocabulary asks for one; geist's
         # TOK never does.
         body = ids[1:] if ev.bos is not None and ids and ids[0] == ev.bos else ids
-        own = [int(x) for x in ev.command("TOK " + a.text.read_text().replace("\\", "\\\\")
-                                          .replace("\n", "\\n").replace("\t", "\\t"))[1:]]
-        tok_ok = own == body
-        first_diff = next((i for i, (x, y) in enumerate(zip(own, body)) if x != y),
-                          None if len(own) == len(body) else min(len(own), len(body)))
+        text = a.text.read_text()
+        esc = lambda t: t.replace("\\", "\\\\").replace("\n", "\\n").replace("\t", "\\t")
+        try:
+            own = [int(x) for x in ev.command("TOK " + esc(text))[1:]]
+            tok_ok = own == body
+            first_diff = next((i for i, (x, y) in enumerate(zip(own, body)) if x != y),
+                              None if len(own) == len(body) else min(len(own), len(body)))
+        except RuntimeError:
+            # Past eval_geist's TOK capacity: compare a prefix cut at a line
+            # end (a whole-line prefix tokenizes as the text does up to there).
+            cut = text.rfind("\n", 0, 16000) + 1
+            own = [int(x) for x in ev.command("TOK " + esc(text[:cut]))[1:]]
+            tok_ok = own == body[:len(own)]
+            first_diff = next((i for i, (x, y) in enumerate(zip(own, body)) if x != y), None)
         n_chunk = min(a.chunks, len(ids) // a.ctx)
         first = a.ctx // 2
         nll, count = 0.0, 0
-        for c in range(n_chunk):
+        for c in range(a.first_chunk, n_chunk):
             chunk = ids[c * a.ctx:(c + 1) * a.ctx]
             if ev.bos is not None:
                 chunk[0] = ev.bos
@@ -96,7 +108,8 @@ def main() -> int:
         ev.close()
     ppl = math.exp(nll / count)
     print(json.dumps({"model": a.model.name, "text": a.text.name, "ctx": a.ctx, "chunks": n_chunk,
-                      "scored_tokens": count, "geist_ppl": round(ppl, 4), "llama_ppl": ref,
+                      "first_chunk": a.first_chunk, "scored_tokens": count, "nll_sum": round(nll, 6),
+                      "geist_ppl": round(ppl, 4), "llama_ppl": ref,
                       "rel_diff": round(ppl / ref - 1.0, 5), "backend": os.environ.get("GEIST_BACKEND", "auto"),
                       "tokenizer_agrees": tok_ok, "first_token_diff": first_diff}))
     return 0
