@@ -1,0 +1,1 @@
+{"mode":7,"tile":128,"simdgroups":4,"m":256,"n":5120,"k":17408,"cycle":0,"repeats":1,"wall_us":2745.000000,"tops":16.624418,"nrmse":0,"backend_allocated_mb":135.547,"scratch_bytes":93606912,"weight_bytes":23674880,"shared_acc":false}

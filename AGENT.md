@@ -149,6 +149,13 @@ and as C++17 with `-pedantic-errors`. It runs in `make test` and in CI's
 - **No runtime heap allocation in hot paths** (per-token, per-layer, per
   block). Use caller-provided workspace or a thread-local high-water buffer.
 - Free through `safe_free(&p)`; it tolerates null and nulls your pointer.
+- **Scope-exit cleanup in cold code only.** On load, setup and error paths,
+  `GEIST_CLEANUP(fn)` from `src/base/cleanup.h` (`heap_freep` for a heap.h
+  pointer) replaces a `goto` to a free-and-return label; keep whichever form
+  is shorter. Never under `kernels/` or `forward/`
+  (`scripts/check-cleanup-scope.sh`), and never on a pointer that is handed
+  out. Write the macro, not `[[gnu::cleanup]]`: unsupported compilers are
+  refused in one place.
 - **Every size product from untrusted input goes through
   `src/base/checked.h`** (`ckd_mul`, `ckd_add`, `geist_ckd_round_up_pow2`)
   before it reaches an allocation, an index, or an alignment. Model metadata

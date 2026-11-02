@@ -75,6 +75,8 @@ jobs:
       # #236: audio matmul kernels are bound at load time from the hw probe;
       # a compile-time ISA branch returning to the forward pass fails here.
       - run: sh scripts/check-audio-dispatch.sh
+      # #349: GEIST_CLEANUP stays out of kernels/ and forward/.
+      - run: sh scripts/check-cleanup-scope.sh
 
   # Pull requests that change only documentation, raw benchmark data or the
   # version lines (a release PR) skip the build and test jobs: a skipped job

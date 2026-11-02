@@ -31,6 +31,7 @@
 
 #include "checked.h"
 #include "heap.h"
+#include "cleanup.h"
 #include "gemma4_kernels.h"
 #include "image_pipeline.h"
 #include "safetensors_reader.h"
@@ -327,22 +328,24 @@ bool vision_encoder_run_tower(const struct VisionEncoder *v,
     }
 
     /* Scratch buffers. Largest: gate/up at (n, V_INTER=3072) fp32. */
-    float *scaled           = heap_alloc_array_aligned(float, n_patches *VTH);
-    float *resid            = heap_alloc_array_aligned(float, n_patches *VTH);
-    float *normed           = heap_alloc_array_aligned(float, n_patches *VTH);
-    float *q                = heap_alloc_array_aligned(float, n_patches *VTH);
-    float *k                = heap_alloc_array_aligned(float, n_patches *VTH);
-    float *vbuf             = heap_alloc_array_aligned(float, n_patches *VTH);
-    float *attn             = heap_alloc_array_aligned(float, n_patches *VTH);
-    float *proj             = heap_alloc_array_aligned(float, n_patches *VTH);
-    float *gate             = heap_alloc_array_aligned(float, n_patches *V_INTER);
-    float *up               = heap_alloc_array_aligned(float, n_patches *V_INTER);
-    float *gate_up_combined = heap_alloc_array_aligned(float, n_patches * 2 * V_INTER);
-    float *qkv_combined     = heap_alloc_array_aligned(float, n_patches * 3 * VTH);
+    GEIST_CLEANUP(heap_freep) float *scaled = heap_alloc_array_aligned(float, n_patches *VTH);
+    GEIST_CLEANUP(heap_freep) float *resid  = heap_alloc_array_aligned(float, n_patches *VTH);
+    GEIST_CLEANUP(heap_freep) float *normed = heap_alloc_array_aligned(float, n_patches *VTH);
+    GEIST_CLEANUP(heap_freep) float *q      = heap_alloc_array_aligned(float, n_patches *VTH);
+    GEIST_CLEANUP(heap_freep) float *k      = heap_alloc_array_aligned(float, n_patches *VTH);
+    GEIST_CLEANUP(heap_freep) float *vbuf   = heap_alloc_array_aligned(float, n_patches *VTH);
+    GEIST_CLEANUP(heap_freep) float *attn   = heap_alloc_array_aligned(float, n_patches *VTH);
+    GEIST_CLEANUP(heap_freep) float *proj   = heap_alloc_array_aligned(float, n_patches *VTH);
+    GEIST_CLEANUP(heap_freep) float *gate   = heap_alloc_array_aligned(float, n_patches *V_INTER);
+    GEIST_CLEANUP(heap_freep) float *up     = heap_alloc_array_aligned(float, n_patches *V_INTER);
+    GEIST_CLEANUP(heap_freep) float *gate_up_combined =
+            heap_alloc_array_aligned(float, n_patches * 2 * V_INTER);
+    GEIST_CLEANUP(heap_freep) float *qkv_combined =
+            heap_alloc_array_aligned(float, n_patches * 3 * VTH);
 
     if (!scaled || !resid || !normed || !q || !k || !vbuf || !attn || !proj || !gate || !up ||
         !gate_up_combined || !qkv_combined) {
-        goto fail;
+        return false;
     }
 
     /* ---- Patch embedder ---------------------------------------------- */
@@ -548,46 +551,7 @@ bool vision_encoder_run_tower(const struct VisionEncoder *v,
         dbg_dump(nm, hidden_out, n_patches * VTH);
     }
 
-    safe_free((void **) &scaled);
-    safe_free((void **) &resid);
-    safe_free((void **) &normed);
-    safe_free((void **) &q);
-    safe_free((void **) &k);
-    safe_free((void **) &vbuf);
-    safe_free((void **) &attn);
-    safe_free((void **) &proj);
-    safe_free((void **) &gate);
-    safe_free((void **) &up);
-    safe_free((void **) &gate_up_combined);
-    safe_free((void **) &qkv_combined);
     return true;
-
-fail:
-    if (scaled)
-        safe_free((void **) &scaled);
-    if (resid)
-        safe_free((void **) &resid);
-    if (normed)
-        safe_free((void **) &normed);
-    if (q)
-        safe_free((void **) &q);
-    if (k)
-        safe_free((void **) &k);
-    if (vbuf)
-        safe_free((void **) &vbuf);
-    if (attn)
-        safe_free((void **) &attn);
-    if (proj)
-        safe_free((void **) &proj);
-    if (gate)
-        safe_free((void **) &gate);
-    if (up)
-        safe_free((void **) &up);
-    if (gate_up_combined)
-        safe_free((void **) &gate_up_combined);
-    if (qkv_combined)
-        safe_free((void **) &qkv_combined);
-    return false;
 }
 
 /* Shared core: image plan → preprocess → tower → pool → projector for
@@ -607,20 +571,20 @@ static size_t run_image_internal(const struct VisionEncoder *v,
     const size_t n_soft    = plan.soft_tokens;
     const size_t patch_px  = VISION_PATCH_SIZE * VISION_PATCH_SIZE * 3;
 
-    float   *patches   = heap_alloc_array_aligned(float, n_patches *patch_px);
-    int32_t *positions = heap_alloc_array_aligned(int32_t, n_patches * 2);
-    float   *tower     = heap_alloc_array_aligned(float, n_patches *VTH);
-    float   *pooled    = heap_alloc_array_aligned(float, n_soft *VTH);
-    float   *normed    = heap_alloc_array_aligned(float, n_soft *VTH);
+    GEIST_CLEANUP(heap_freep) float *patches = heap_alloc_array_aligned(float, n_patches *patch_px);
+    GEIST_CLEANUP(heap_freep) int32_t *positions = heap_alloc_array_aligned(int32_t, n_patches * 2);
+    GEIST_CLEANUP(heap_freep) float   *tower     = heap_alloc_array_aligned(float, n_patches *VTH);
+    GEIST_CLEANUP(heap_freep) float   *pooled    = heap_alloc_array_aligned(float, n_soft *VTH);
+    GEIST_CLEANUP(heap_freep) float   *normed    = heap_alloc_array_aligned(float, n_soft *VTH);
 
     if (!patches || !positions || !tower || !pooled || !normed)
-        goto fail;
+        return 0;
 
     if (!image_pipeline_preprocess(rgb, &plan, patches))
-        goto fail;
+        return 0;
     image_pipeline_position_ids(&plan, positions);
     if (!vision_encoder_run_tower(v, n_patches, patches, positions, tower)) {
-        goto fail;
+        return 0;
     }
     avgpool2d_k3_fp32(tower, pooled, plan.grid_h, plan.grid_w, VTH);
     {
@@ -634,25 +598,7 @@ static size_t run_image_internal(const struct VisionEncoder *v,
     linear_fp32(n_soft, VTH, v->soft_dim, normed, v->projector_weight, nullptr, out);
     dbg_dump("soft_tokens", out, n_soft * v->soft_dim);
 
-    safe_free((void **) &patches);
-    safe_free((void **) &positions);
-    safe_free((void **) &tower);
-    safe_free((void **) &pooled);
-    safe_free((void **) &normed);
     return n_soft;
-
-fail:
-    if (patches)
-        safe_free((void **) &patches);
-    if (positions)
-        safe_free((void **) &positions);
-    if (tower)
-        safe_free((void **) &tower);
-    if (pooled)
-        safe_free((void **) &pooled);
-    if (normed)
-        safe_free((void **) &normed);
-    return 0;
 }
 
 size_t vision_encoder_run_image(const struct VisionEncoder *v,

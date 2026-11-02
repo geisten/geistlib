@@ -19,6 +19,7 @@
 #include "checked.h"
 #include "fnv1a.h"
 #include "heap.h"
+#include "cleanup.h"
 
 #include "file_map.h"
 
@@ -1327,7 +1328,8 @@ static bool encode_spm(const struct gguf_tokenizer *tok,
 
     /* Scratch for one normalized chunk: worst case every byte is a space
      * (→ ▁, 3 bytes) plus an optional leading ▁. Reused across chunks. */
-    char *buf = heap_alloc_array_aligned(char, tlen *SPM_MARKER_LEN + SPM_MARKER_LEN);
+    GEIST_CLEANUP(heap_freep) char *buf =
+            heap_alloc_array_aligned(char, tlen *SPM_MARKER_LEN + SPM_MARKER_LEN);
     if (buf == nullptr)
         return false;
 
@@ -1354,7 +1356,7 @@ static bool encode_spm(const struct gguf_tokenizer *tok,
         if (w_ > 0 && *n_out < cap) {                                                          \
             size_t produced_ = spm_chunk_to_ids(tok, buf, w_, out_ids + *n_out, cap - *n_out); \
             if (produced_ == SIZE_MAX)                                                         \
-                goto fail;                                                                     \
+                return false;                                                                  \
             *n_out += produced_;                                                               \
         }                                                                                      \
     } while (0)
@@ -1384,22 +1386,13 @@ static bool encode_spm(const struct gguf_tokenizer *tok,
     if (chunk_start < tlen)
         SPM_FLUSH(tlen);
 #undef SPM_FLUSH
-
-    void *p = buf;
-    safe_free(&p);
     return true;
-
-fail:
-    p = buf;
-    safe_free(&p);
-    *n_out = 0;
-    return false;
 }
 
 /* Writes the first min(needed, cap) IDs and returns true either way — false
- * only on allocation failure, once gguf_tokenizer_encode has refused modes
- * that cannot encode. A full buffer is therefore ambiguous; the caller
- * resolves it. */
+ * only on allocation failure (*n_out then counts the IDs written before it),
+ * once gguf_tokenizer_encode has refused modes that cannot encode. A full
+ * buffer is therefore ambiguous; the caller resolves it. */
 static bool encode_upto(const struct gguf_tokenizer *tok,
                         const char                  *text,
                         int32_t                     *out_ids,
@@ -1417,7 +1410,7 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
 
     /* Worst-case chunk size = entire input byte run × 4 (codepoint
      * 256+ encodes as 2 UTF-8 bytes, so up to 2× expansion). */
-    char *chunk_buf = heap_alloc_array_aligned(char, tlen * 4 + 16);
+    GEIST_CLEANUP(heap_freep) char *chunk_buf = heap_alloc_array_aligned(char, tlen * 4 + 16);
     if (chunk_buf == nullptr)
         return false;
 
@@ -1471,7 +1464,7 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
             size_t produced = bpe_chunk_to_ids(
                     tok, chunk_buf, cb_used, out_ids + *n_out, cap - *n_out, false);
             if (produced == SIZE_MAX)
-                goto fail;
+                return false;
             *n_out += produced;
             i = end;
             if (*n_out >= cap)
@@ -1509,7 +1502,7 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
                 size_t produced = bpe_chunk_to_ids(
                         tok, chunk_buf, cb_used, out_ids + *n_out, cap - *n_out, false);
                 if (produced == SIZE_MAX)
-                    goto fail;
+                    return false;
                 *n_out += produced;
                 if (*n_out >= cap)
                     break;
@@ -1531,7 +1524,7 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
                 size_t produced = bpe_chunk_to_ids(
                         tok, chunk_buf, cb_used, out_ids + *n_out, cap - *n_out, false);
                 if (produced == SIZE_MAX)
-                    goto fail;
+                    return false;
                 *n_out += produced;
             }
             break;
@@ -1561,22 +1554,13 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
         size_t produced =
                 bpe_chunk_to_ids(tok, chunk_buf, cb_used, out_ids + *n_out, cap - *n_out, false);
         if (produced == SIZE_MAX)
-            goto fail;
+            return false;
         *n_out += produced;
         if (*n_out >= cap)
             break;
         (void) run_start;
     }
-
-    void *p = chunk_buf;
-    safe_free(&p);
     return true;
-
-fail:
-    p = chunk_buf;
-    safe_free(&p);
-    *n_out = 0;
-    return false;
 }
 
 [[nodiscard]] enum geist_status gguf_tokenizer_encode(const struct gguf_tokenizer *tok,

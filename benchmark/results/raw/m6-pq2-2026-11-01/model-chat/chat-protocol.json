@@ -1,0 +1,9 @@
+{
+  "architecture": "qwen35",
+  "gguf_chat_template_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+  "enable_thinking": false,
+  "add_generation_prompt": true,
+  "conversation": "text-only system + user + assistant prefix",
+  "fixture": "tools/pq2_quality_cases.py: CHAT_CASES",
+  "notes": "Fixed text-only rendering verified against the model GGUF template; no tools or vision. Not a reasoning-quality benchmark."
+}

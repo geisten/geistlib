@@ -1,0 +1,67 @@
+READY
+metal backend profile:
+  note: wait.* is CPU wall time spent committing/waiting for submitted Metal command buffers; dispatch.* counts encoded kernel dispatches and threadgroups.
+  wait.decode_layer_loop            29473.31 ms  (552 calls)
+  wait.prefill_text                  4678.76 ms  (194 calls)
+  dispatch.rmsnorm_rows               131626 dispatches  14759018 threadgroups
+  dispatch.q4k_linear.n4              284746 dispatches  215149120 threadgroups
+  dispatch.pq2_lowp_x                  30000 dispatches  37719600 threadgroups
+  dispatch.rope_rows                   26176 dispatches  1440656 threadgroups
+  dispatch.kv_append_rows              13088 dispatches  1639808 threadgroups
+  dispatch.attention_rows              22720 dispatches  7203840 threadgroups
+  dispatch.gelu_mul_rows               52352 dispatches  111506944 threadgroups
+  dispatch.f32_matmul                  78528 dispatches  5072256 threadgroups
+  dispatch.add_rows                   104704 dispatches  65592320 threadgroups
+  dispatch.scale_rows                  13088 dispatches  9838848 threadgroups
+  dispatch.copy_u32                     1636 dispatches  795200 threadgroups
+  dispatch.argmax                       1492 dispatches  91012 threadgroups
+  dispatch.deltanet_decode             68160 dispatches  2181120 threadgroups
+  dispatch.dn.prep                     20736 dispatches  5534208 threadgroups
+  dispatch.dn.chunk                     5184 dispatches  919296 threadgroups
+  dispatch.dn.state                     5184 dispatches  1990656 threadgroups
+  dispatch.dn.out                       5184 dispatches  919296 threadgroups
+  dispatch.qgate_split                 13088 dispatches  9838848 threadgroups
+  dispatch.sigmoid_mul                 13088 dispatches  9838848 threadgroups
+  dispatch.hadamard                   210972 dispatches  54245504 threadgroups
+  dispatch.mm_tc                       43200 dispatches  15353856 threadgroups
+  dispatch.attention_tc                 1728 dispatches  305280 threadgroups
+  gpu: 29076 command buffers, busy 131717.76 ms (union), sum 131717.76 ms
+  gpu  24457.77 ms  18.6 %     3312 buffers  rmsnorm_rows+q4k_linear.n4+rope_rows+kv_append_rows+attention_rows+gelu_mul_rows+f32_matmul+add_rows+scale_rows+deltanet_decode+qgate_split+sigmoid_mul+hadamard
+  gpu  21089.40 ms  16.0 %     1761 buffers  rmsnorm_rows+pq2_lowp_x+gelu_mul_rows+f32_matmul+add_rows+hadamard+mm_tc
+  gpu  18292.62 ms  13.9 %     1500 buffers  rmsnorm_rows+pq2_lowp_x+gelu_mul_rows+add_rows+hadamard+mm_tc
+  gpu  12450.39 ms   9.5 %     1800 buffers  rmsnorm_rows+pq2_lowp_x+add_rows+dn.prep+dn.chunk+dn.state+dn.out+hadamard+mm_tc
+  gpu   9595.55 ms   7.3 %      864 buffers  rmsnorm_rows+pq2_lowp_x+gelu_mul_rows+f32_matmul+add_rows+dn.prep+dn.chunk+dn.state+dn.out+hadamard+mm_tc
+  gpu   7057.83 ms   5.4 %      600 buffers  rmsnorm_rows+pq2_lowp_x+gelu_mul_rows+add_rows+qgate_split+hadamard+mm_tc
+  gpu   5415.61 ms   4.1 %      900 buffers  pq2_lowp_x+f32_matmul+dn.prep+dn.chunk+dn.state+dn.out+hadamard+mm_tc
+  gpu   5100.90 ms   3.9 %      552 buffers  rmsnorm_rows+q4k_linear.n4+rope_rows+kv_append_rows+attention_rows+gelu_mul_rows+f32_matmul+add_rows+scale_rows+copy_u32+argmax+deltanet_decode+qgate_split+sigmoid_mul+hadamard
+  gpu   3258.20 ms   2.5 %     4898 buffers  rmsnorm_rows+q4k_linear.n4+gelu_mul_rows+f32_matmul+add_rows+deltanet_decode+hadamard
+  gpu   3188.60 ms   2.4 %      528 buffers  rmsnorm_rows+gelu_mul_rows+f32_matmul+add_rows+hadamard+mm_tc
+  gpu   2678.99 ms   2.0 %      528 buffers  rmsnorm_rows+add_rows+dn.prep+dn.chunk+dn.state+dn.out+hadamard+mm_tc
+  gpu   2571.05 ms   2.0 %      495 buffers  rmsnorm_rows+gelu_mul_rows+f32_matmul+add_rows+sigmoid_mul+hadamard+mm_tc
+  gpu   2416.29 ms   1.8 %      600 buffers  rmsnorm_rows+pq2_lowp_x+rope_rows+kv_append_rows+add_rows+scale_rows+sigmoid_mul+hadamard+mm_tc+attention_tc
+  gpu   2254.93 ms   1.7 %      528 buffers  rmsnorm_rows+gelu_mul_rows+add_rows+dn.prep+dn.chunk+dn.state+dn.out+hadamard+mm_tc
+  gpu   1955.66 ms   1.5 %      600 buffers  rmsnorm_rows+pq2_lowp_x+rope_rows+kv_append_rows+scale_rows+qgate_split+sigmoid_mul+hadamard+mm_tc+attention_tc
+  gpu   1842.25 ms   1.4 %      528 buffers  rmsnorm_rows+gelu_mul_rows+f32_matmul+add_rows+dn.prep+dn.chunk+dn.state+dn.out+hadamard+mm_tc
+  gpu   1642.63 ms   1.2 %      528 buffers  rmsnorm_rows+rope_rows+kv_append_rows+add_rows+scale_rows+qgate_split+hadamard+mm_tc+attention_tc
+  gpu   1110.58 ms   0.8 %     1422 buffers  rmsnorm_rows+q4k_linear.n4+gelu_mul_rows+add_rows+deltanet_decode+hadamard
+  gpu   1060.06 ms   0.8 %     1422 buffers  rmsnorm_rows+q4k_linear.n4+gelu_mul_rows+f32_matmul+add_rows+hadamard
+  gpu    818.48 ms   0.6 %     1264 buffers  rmsnorm_rows+q4k_linear.n4+f32_matmul+add_rows+deltanet_decode+hadamard
+  gpu    746.56 ms   0.6 %       72 buffers  rmsnorm_rows+pq2_lowp_x+gelu_mul_rows+f32_matmul+add_rows+copy_u32+hadamard+mm_tc
+  gpu    457.62 ms   0.3 %      632 buffers  rmsnorm_rows+q4k_linear.n4+gelu_mul_rows+add_rows+qgate_split+hadamard
+  gpu    359.19 ms   0.3 %      158 buffers  rmsnorm_rows+q4k_linear.n4+copy_u32+argmax+hadamard
+  gpu    188.65 ms   0.1 %       36 buffers  rmsnorm_rows+pq2_lowp_x+f32_matmul+dn.prep+dn.chunk+dn.state+dn.out+hadamard+mm_tc
+  gpu    187.40 ms   0.1 %      316 buffers  rmsnorm_rows+q4k_linear.n4+gelu_mul_rows+f32_matmul+add_rows+sigmoid_mul+hadamard
+  gpu    187.33 ms   0.1 %      474 buffers  rmsnorm_rows+q4k_linear.n4+rope_rows+kv_append_rows+attention_rows+add_rows+scale_rows+sigmoid_mul+hadamard
+  gpu    167.80 ms   0.1 %      316 buffers  rmsnorm_rows+q4k_linear.n4+rope_rows+kv_append_rows+attention_rows+gelu_mul_rows+add_rows+scale_rows+sigmoid_mul+hadamard
+  gpu    165.45 ms   0.1 %       33 buffers  rmsnorm_rows+gelu_mul_rows+add_rows+copy_u32+sigmoid_mul+hadamard+mm_tc
+  gpu    158.28 ms   0.1 %      316 buffers  rmsnorm_rows+q4k_linear.n4+rope_rows+gelu_mul_rows+add_rows+scale_rows+qgate_split+hadamard
+  gpu    114.90 ms   0.1 %      316 buffers  rmsnorm_rows+q4k_linear.n4+rope_rows+kv_append_rows+attention_rows+add_rows+scale_rows+qgate_split+hadamard
+  gpu    114.32 ms   0.1 %      632 buffers  rmsnorm_rows+q4k_linear.n4+rope_rows+kv_append_rows+attention_rows+add_rows+scale_rows+qgate_split+sigmoid_mul+hadamard
+  gpu    106.78 ms   0.1 %      158 buffers  rmsnorm_rows+q4k_linear.n4+rope_rows+gelu_mul_rows+add_rows+qgate_split+hadamard
+  gpu     97.55 ms   0.1 %      158 buffers  rmsnorm_rows+q4k_linear.n4+kv_append_rows+attention_rows+gelu_mul_rows+add_rows+sigmoid_mul+hadamard
+  gpu     97.43 ms   0.1 %      158 buffers  rmsnorm_rows+q4k_linear.n4+attention_rows+gelu_mul_rows+f32_matmul+add_rows+sigmoid_mul+hadamard
+  gpu     96.43 ms   0.1 %      158 buffers  rmsnorm_rows+q4k_linear.n4+kv_append_rows+attention_rows+gelu_mul_rows+add_rows+copy_u32+sigmoid_mul+hadamard
+  gpu     81.61 ms   0.1 %       36 buffers  q4k_linear.n4+argmax
+  gpu     63.19 ms   0.0 %      316 buffers  rmsnorm_rows+q4k_linear.n4+rope_rows+kv_append_rows+attention_rows+scale_rows+qgate_split+sigmoid_mul+hadamard
+  gpu     53.00 ms   0.0 %      158 buffers  rmsnorm_rows+q4k_linear.n4+rope_rows+kv_append_rows+gelu_mul_rows+add_rows+scale_rows+qgate_split+hadamard
+  gpu     16.50 ms   0.0 %        3 buffers  rmsnorm_rows+pq2_lowp_x+gelu_mul_rows+add_rows+copy_u32+hadamard+mm_tc
