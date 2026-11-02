@@ -325,6 +325,102 @@ static void run_case(struct geist_backend *mt,
     free(y_rf);
 }
 
+/* #361: F32 weights stay F32 on every route, the tensor-API one included.
+ * run_case's F32 weights have 8 significant bits, exact in half, so a GEMM
+ * that rounds them to half passes there; here weights and activations use
+ * the full 24-bit mantissa. Measured max_rel (|d| / max(|ref|, 1)) at
+ * n_in = 512: F32 accumulation 7e-6..4e-5, weights rounded to half 1e-2
+ * (on the M1 Max with the tensor path forced on; a Python model of the
+ * rounding gives the same). tensor = true builds a second metal
+ * backend with GEIST_METAL_TENSOR=1, so the matrix-unit path is checked on
+ * GPUs that would not take it by default (it runs on the ALUs there). */
+static void run_f32_full_mantissa_case(
+        struct geist_backend *ref, bool tensor, size_t n_in, size_t n_out, size_t m) {
+    const double tol = 2e-4;
+    const char  *old = getenv("GEIST_METAL_TENSOR");
+    char         saved[8];
+    snprintf(saved, sizeof saved, "%s", old != nullptr ? old : "");
+    setenv("GEIST_METAL_TENSOR", tensor ? "1" : "0", 1);
+    struct geist_backend   *mt = nullptr;
+    const enum geist_status cs = geist_backend_create("metal", nullptr, nullptr, &mt);
+    if (old != nullptr) {
+        setenv("GEIST_METAL_TENSOR", saved, 1);
+    } else {
+        unsetenv("GEIST_METAL_TENSOR");
+    }
+    if (cs != GEIST_OK || mt == nullptr) {
+        check(false, "metal backend for the F32 full-mantissa case");
+        return;
+    }
+    const struct geist_backend_vtbl *v      = mt->desc->vtbl;
+    const size_t                     wbytes = n_in * n_out * sizeof(float);
+    struct geist_buffer             *bw = nullptr, *bx = nullptr, *by = nullptr;
+    float                           *w  = dev_alloc(mt, wbytes, &bw);
+    float                           *x  = dev_alloc(mt, m * n_in * sizeof(float), &bx);
+    float                           *y  = dev_alloc(mt, m * n_out * sizeof(float), &by);
+    float                           *yd = malloc(m * n_out * sizeof(float));
+    float                           *yr = malloc(m * n_out * sizeof(float));
+    if (w == nullptr || x == nullptr || y == nullptr || yd == nullptr || yr == nullptr) {
+        check(false, "backend buffer alloc + map");
+        free(yd);
+        free(yr);
+        geist_backend_destroy(mt);
+        return;
+    }
+    /* 24 random bits per value in [-1, 1) and [-4, 4): none exact in half. */
+    for (size_t i = 0; i < n_in * n_out; i++) {
+        const uint32_t r = (uint32_t) rng_u8() << 16 | (uint32_t) rng_u8() << 8 | rng_u8();
+        w[i]             = (float) r / 8388608.0f - 1.0f;
+    }
+    for (size_t i = 0; i < m * n_in; i++) {
+        const uint32_t r = (uint32_t) rng_u8() << 16 | (uint32_t) rng_u8() << 8 | rng_u8();
+        x[i]             = (float) r / 2097152.0f - 4.0f;
+    }
+    struct geist_weight w_mt = {.raw        = w,
+                                .raw_nbytes = wbytes,
+                                .n_in       = (int32_t) n_in,
+                                .n_out      = (int32_t) n_out,
+                                .dtype      = GEIST_DTYPE_F32};
+    struct geist_weight w_rf = w_mt;
+    check(v->resolve_weight(mt, &w_mt) == GEIST_OK && w_mt.linear_mN != nullptr,
+          "metal resolve_weight (F32)");
+    check(ref->desc->vtbl->resolve_weight(ref, &w_rf) == GEIST_OK && w_rf.linear_mN != nullptr,
+          "cpu_scalar resolve_weight (F32)");
+    if (w_mt.linear_mN != nullptr && w_rf.linear_mN != nullptr) {
+        w_mt.linear_mN(m, x, &w_mt, mt, y);
+        w_rf.linear_mN(m, x, &w_rf, ref, yr);
+        check(v->buffer_download(m * n_out * sizeof(float), (uint8_t *) yd, by) == GEIST_OK,
+              "y download");
+        double max_rel = 0.0;
+        for (size_t i = 0; i < m * n_out; i++) {
+            const double b   = yr[i];
+            const double rel = fabs(yd[i] - b) / (fabs(b) > 1.0 ? fabs(b) : 1.0);
+            max_rel          = rel > max_rel ? rel : max_rel;
+        }
+        char label[128];
+        snprintf(label,
+                 sizeof label,
+                 "F32 full mantissa, tensor %d, m=%zu (%zux%zu), max_rel=%.2e",
+                 tensor,
+                 m,
+                 n_out,
+                 n_in,
+                 max_rel);
+        check(max_rel < tol, label);
+        printf("  F32fm  tc=%d m=%-3zu  max_rel %.2e %s\n",
+               tensor,
+               m,
+               max_rel,
+               max_rel < tol ? "OK" : "FAIL");
+    }
+    v->buffer_destroy(mt, bw);
+    v->buffer_destroy(mt, bx);
+    v->buffer_destroy(mt, by);
+    free(yd);
+    free(yr);
+    geist_backend_destroy(mt);
+}
+
 static void run_silu_case(struct geist_backend *mt) {
     const size_t                     n  = 257;
     const struct geist_backend_vtbl *v  = mt->desc->vtbl;
@@ -1667,6 +1763,29 @@ int main(void) {
         return 1;
     }
 
+#ifdef GEIST_BACKEND_METAL
+    /* Start with a fresh scratch state. Tensor prefill reads f32 directly;
+     * only the short-batch and simdgroup paths need an f16 activation copy.
+     * Compare every path to the independent scalar dequantizer as well. */
+    struct metal_state *st = mt->state;
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 384, 129);
+    if (st->pq2_mm_tc_pipeline != nullptr) {
+        check(st->pq2_xh_buffer == nullptr, "tensor prefill needs no f16 scratch");
+    } else {
+        check(st->pq2_xh_buffer != nullptr, "simdgroup prefill retains f16 scratch");
+    }
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 384, 8);
+    check(st->pq2_xh_buffer != nullptr, "eight-row PQ2 retains f16 scratch");
+    struct geist_buffer *short_scratch = st->pq2_xh_buffer;
+    const size_t         short_bytes   = short_scratch != nullptr ? short_scratch->bytes : 0u;
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1024, 384, 129);
+    if (st->pq2_mm_tc_pipeline != nullptr) {
+        check(st->pq2_xh_buffer == short_scratch && st->pq2_xh_buffer != nullptr &&
+                      st->pq2_xh_buffer->bytes == short_bytes,
+              "tensor prefill does not grow short-batch scratch");
+    }
+#endif
+
     /* n_in must be a multiple of 256 for k-quants; n_out deliberately not a
      * multiple of the threadgroup width to catch tail bugs. */
     /* A ragged last row tile on the interior fast kernels (#35): n_out fills
@@ -1927,6 +2046,16 @@ int main(void) {
     run_flash_ref_case(mt, ref, 1, 47, 4, 2, 16, 0);
     run_flash_ref_case(mt, ref, 1, 40, 4, 1, 16, 0);
     run_flash_ref_case(mt, ref, 1, 99, 8, 2, 8, 0);
+
+    /* #361: F32 weights with full mantissas, prefill-sized rows (the
+     * tensor-API GEMM took rows >= 8 and rounded the weights to half), on
+     * the default route and with the tensor path forced on. */
+    static const size_t f32_rows[] = {8, 33, 128};
+    for (size_t i = 0; i < sizeof f32_rows / sizeof f32_rows[0]; i++) {
+        run_f32_full_mantissa_case(ref, false, 512, 384, f32_rows[i]);
+        run_f32_full_mantissa_case(ref, true, 512, 384, f32_rows[i]);
+    }
+    run_f32_full_mantissa_case(ref, true, 256, 130, 8);
 
     geist_backend_destroy(mt);
     geist_backend_destroy(ref);

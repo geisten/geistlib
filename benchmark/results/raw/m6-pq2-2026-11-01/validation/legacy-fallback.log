@@ -1,0 +1,234 @@
+  Q4_0   m=13   max_rel 0.00e+00 OK
+  Q5_K   m=13   max_rel 0.00e+00 OK
+  Q4_K   m=13   max_rel 0.00e+00 OK
+  Q6_K   m=13   max_rel 0.00e+00 OK
+  F32    m=13   max_rel 0.00e+00 OK
+  PQ2_0  m=13   max_rel 0.00e+00 OK
+  Q4_1   m=13   max_rel 0.00e+00 OK
+  Q8_0   m=13   max_rel 0.00e+00 OK
+  IQ4XS  m=13   max_rel 0.00e+00 OK
+  Q4_0   m=33   max_rel 0.00e+00 OK
+  Q5_K   m=33   max_rel 0.00e+00 OK
+  Q4_K   m=33   max_rel 0.00e+00 OK
+  Q6_K   m=33   max_rel 0.00e+00 OK
+  F32    m=33   max_rel 0.00e+00 OK
+  PQ2_0  m=33   max_rel 0.00e+00 OK
+  Q4_1   m=33   max_rel 0.00e+00 OK
+  Q8_0   m=33   max_rel 0.00e+00 OK
+  IQ4XS  m=33   max_rel 0.00e+00 OK
+  Q4_0   m=47   max_rel 0.00e+00 OK
+  Q5_K   m=47   max_rel 0.00e+00 OK
+  Q4_K   m=47   max_rel 0.00e+00 OK
+  Q6_K   m=47   max_rel 0.00e+00 OK
+  F32    m=47   max_rel 0.00e+00 OK
+  PQ2_0  m=47   max_rel 0.00e+00 OK
+  Q4_1   m=47   max_rel 0.00e+00 OK
+  Q8_0   m=47   max_rel 0.00e+00 OK
+  IQ4XS  m=47   max_rel 0.00e+00 OK
+  Q4_0   m=100  max_rel 0.00e+00 OK
+  Q5_K   m=100  max_rel 0.00e+00 OK
+  Q4_K   m=100  max_rel 0.00e+00 OK
+  Q6_K   m=100  max_rel 0.00e+00 OK
+  F32    m=100  max_rel 0.00e+00 OK
+  PQ2_0  m=100  max_rel 0.00e+00 OK
+  Q4_1   m=100  max_rel 0.00e+00 OK
+  Q8_0   m=100  max_rel 0.00e+00 OK
+  IQ4XS  m=100  max_rel 0.00e+00 OK
+  Q4_0   m=1    max_rel 0.00e+00 OK
+  Q4_0   m=8    max_rel 0.00e+00 OK
+  Q4_0   m=33   max_rel 0.00e+00 OK
+  Q4_0   m=32   max_rel 0.00e+00 OK
+  Q4_1   m=1    max_rel 0.00e+00 OK
+  Q4_1   m=8    max_rel 0.00e+00 OK
+  Q4_1   m=33   max_rel 0.00e+00 OK
+  Q4_1   m=32   max_rel 0.00e+00 OK
+  Q8_0   m=1    max_rel 0.00e+00 OK
+  Q8_0   m=8    max_rel 0.00e+00 OK
+  Q8_0   m=33   max_rel 0.00e+00 OK
+  Q8_0   m=32   max_rel 0.00e+00 OK
+  Q4_K   m=1    max_rel 0.00e+00 OK
+  Q4_K   m=8    max_rel 0.00e+00 OK
+  Q5_K   m=1    max_rel 0.00e+00 OK
+  Q5_K   m=8    max_rel 0.00e+00 OK
+  Q5_K   m=33   max_rel 0.00e+00 OK
+  Q5_K   m=32   max_rel 0.00e+00 OK
+  IQ4NL  m=1    max_rel 0.00e+00 OK
+  IQ4NL  m=4    max_rel 0.00e+00 OK
+  IQ4NL  m=33   max_rel 0.00e+00 OK
+  IQ4XS  m=1    max_rel 0.00e+00 OK
+  IQ4XS  m=4    max_rel 0.00e+00 OK
+  IQ4XS  m=33   max_rel 0.00e+00 OK
+  Q3_K   m=32   max_rel 0.00e+00 OK
+  Q3_K   m=8    max_rel 0.00e+00 OK
+  Q3_K   m=1    max_rel 0.00e+00 OK
+  Q3_K   m=4    max_rel 0.00e+00 OK
+  Q3_K   m=33   max_rel 0.00e+00 OK
+  IQ3_S  m=1    max_rel 0.00e+00 OK
+  IQ3_S  m=4    max_rel 0.00e+00 OK
+  IQ3_S  m=33   max_rel 0.00e+00 OK
+  PQ2_0  m=1    max_rel 0.00e+00 OK
+  PQ2_0  m=4    max_rel 0.00e+00 OK
+  PQ2_0  m=33   max_rel 0.00e+00 OK
+  PQ2_0  m=32   max_rel 0.00e+00 OK
+  PQ2_0  m=64   max_rel 0.00e+00 OK
+  PQ2_0  m=128  max_rel 0.00e+00 OK
+  PQ2n8  m=1    max_rel 0.00e+00 OK
+  PQ2n8  m=1    max_rel 0.00e+00 OK
+  PQ2tiny m=1    max_rel 0.00e+00 OK
+  TQ2_0  m=1    max_rel 0.00e+00 OK
+  TQ2_0  m=4    max_rel 0.00e+00 OK
+  TQ2_0  m=33   max_rel 0.00e+00 OK
+  TQ2_0  m=32   max_rel 0.00e+00 OK
+  TQ2tiny m=1    max_rel 0.00e+00 OK
+  F16    m=1    max_rel 0.00e+00 OK
+  F16    m=33   max_rel 0.00e+00 OK
+  BF16   m=1    max_rel 0.00e+00 OK
+  BF16   m=33   max_rel 0.00e+00 OK
+  I2_S   m=1    max_rel 0.00e+00 OK
+  I2_S   m=4    max_rel 0.00e+00 OK
+  I2_S   m=33   max_rel 0.00e+00 OK
+  I2_S   m=32   max_rel 0.00e+00 OK
+  I2Stiny m=1    max_rel 0.00e+00 OK
+  IQ4XStiny m=1    max_rel 0.00e+00 OK
+  Q3Ktiny m=1    max_rel 0.00e+00 OK
+  IQ4NLtiny m=1    max_rel 0.00e+00 OK
+  IQ3Stiny m=1    max_rel 0.00e+00 OK
+  Q6_K   m=32   max_rel 0.00e+00 OK
+  Q6_K   m=96   max_rel 0.00e+00 OK
+  Q6_K   m=1    max_rel 0.00e+00 OK
+  Q6_K   m=8    max_rel 0.00e+00 OK
+  F32    m=1    max_rel 0.00e+00 OK
+  F32    m=8    max_rel 0.00e+00 OK
+  Q4_K   m=33   max_rel 0.00e+00 OK
+  Q4_K   m=32   max_rel 0.00e+00 OK
+  Q6_K   m=64   max_rel 0.00e+00 OK
+  Q4_K   m=34   max_rel 0.00e+00 OK
+  Q4_K   m=65   max_rel 0.00e+00 OK
+  Q4_K   m=45   max_rel 0.00e+00 OK
+  Q4_K   m=5    max_rel 0.00e+00 OK
+  Q4_K   m=12   max_rel 0.00e+00 OK
+  Q6_K   m=70   max_rel 0.00e+00 OK
+  Q6_K   m=80   max_rel 0.00e+00 OK
+  Q6_K   m=3    max_rel 0.00e+00 OK
+  SiLU   n=257  max_abs 5.81e-07 OK
+  relu2  n=257  mismatches 0 OK
+  attn_rope_append rows 1 q 16 kv 8 hd 128 rot 128 qp 37 norm f16: bit-identical OK (0)
+  attn_rope_append rows 1 q 24 kv 8 hd 128 rot 128 qp 200 plain f16: bit-identical OK (0)
+  attn_rope_append rows 7 q 4 kv 2 hd 64 rot 64 qp 0 norm f16: bit-identical OK (0)
+  attn_rope_append rows 3 q 4 kv 1 hd 256 rot 64 qp 11 norm f32: bit-identical OK (0)
+  attn_rope_append rows 1 q 2 kv 2 hd 512 rot 512 qp 5 plain f32: bit-identical OK (0)
+  linear_t_triple 9/9/11 512->512,258: bit-identical OK
+  linear_t_triple 9/9/9 1024->1024,254: bit-identical OK
+  ffn_gate_up 9 1024->254: bit-identical OK (max_rel 0.0e+00)
+  ffn_gate_up_silu 9 1024->254: bit-identical OK (max_rel 0.0e+00)
+  linear_t_triple 9/9/11 1536->1536,256: bit-identical OK
+  linear_t_triple 9/9/9 1536->1536,1030: declined OK
+  ffn_gate_up 9 1536->1030: bit-identical OK (max_rel 0.0e+00)
+  ffn_gate_up_silu 9 1536->1030: bit-identical OK (max_rel 0.0e+00)
+  linear_t_triple 9/9/9 1536->1536,254: bit-identical OK
+  ffn_gate_up 9 1536->254: bit-identical OK (max_rel 0.0e+00)
+  ffn_gate_up_silu 9 1536->254: bit-identical OK (max_rel 0.0e+00)
+  linear_t_triple 9/9/9 3072->3072,1030: bit-identical OK
+  ffn_gate_up 9 3072->1030: bit-identical OK (max_rel 0.0e+00)
+  ffn_gate_up_silu 9 3072->1030: bit-identical OK (max_rel 0.0e+00)
+  linear_t_triple 9/9/9 2048->2048,254: bit-identical OK
+  ffn_gate_up 9 2048->254: bit-identical OK (max_rel 0.0e+00)
+  ffn_gate_up_silu 9 2048->254: bit-identical OK (max_rel 0.0e+00)
+  linear_t_triple 9/9/9 2560->2560,1030: declined OK
+  ffn_gate_up 9 2560->1030: bit-identical OK (max_rel 0.0e+00)
+  ffn_gate_up_silu 9 2560->1030: bit-identical OK (max_rel 0.0e+00)
+  linear_t_triple 7/7/7 1024->1024,260: bit-identical OK
+  ffn_gate_up 7 1024->260: bit-identical OK (max_rel 0.0e+00)
+  ffn_gate_up_silu 7 1024->260: bit-identical OK (max_rel 0.0e+00)
+  linear_t_triple 7/7/7 512->512,131: bit-identical OK
+  ffn_gate_up 7 512->131: bit-identical OK (max_rel 0.0e+00)
+  ffn_gate_up_silu 7 512->131: bit-identical OK (max_rel 0.0e+00)
+  embed Q4_0 max_abs 0.00e+00 OK
+  embed Q8_0 max_abs 0.00e+00 OK
+  embed PQ2_0 max_abs 0.00e+00 OK
+  qgate split + qscale + sigmoid_mul max_abs 5.96e-08 OK
+  rmsnorm rows 1 cols 1536 max_abs 2.38e-07, rmsnorm_add 2.38e-07 OK
+  rmsnorm rows 1 cols 1024 max_abs 2.38e-07, rmsnorm_add 2.38e-07 OK
+  rmsnorm rows 1 cols 2048 max_abs 2.38e-07, rmsnorm_add 2.38e-07 OK
+  rmsnorm rows 1 cols 3072 max_abs 2.38e-07, rmsnorm_add 2.38e-07 OK
+  rmsnorm rows 1 cols 1000 max_abs 2.38e-07, rmsnorm_add 2.38e-07 OK
+  rmsnorm rows 1 cols 5000 max_abs 0.00e+00, rmsnorm_add 2.38e-07 OK
+  rmsnorm rows 1 cols 256 max_abs 2.38e-07, rmsnorm_add 2.38e-07 OK
+  rmsnorm rows 35 cols 256 max_abs 2.38e-07, rmsnorm_add 2.98e-07 OK
+  rmsnorm rows 3 cols 1536 max_abs 0.00e+00, rmsnorm_add 2.38e-07 OK
+  rmsnorm rows 7 cols 896 max_abs 2.38e-07, rmsnorm_add 2.98e-07 OK
+  rmsnorm_add_norm rows 1 cols 1536 norm+scale: bit-identical OK
+  rmsnorm_add_norm rows 1 cols 3072 norm+scale: bit-identical OK
+  rmsnorm_add_norm rows 1 cols 1000 norm+scale: bit-identical OK
+  rmsnorm_add_norm rows 1 cols 5000 norm+scale: bit-identical OK
+  rmsnorm_add_norm rows 1 cols 256 norm+scale: bit-identical OK
+  rmsnorm_add_norm rows 35 cols 256 norm+scale: bit-identical OK
+  rmsnorm_add_norm rows 3 cols 1536 norm+scale: bit-identical OK
+  rmsnorm_add_norm rows 7 cols 896 norm+scale: bit-identical OK
+  rmsnorm_add_norm rows 1 cols 1536 add: bit-identical OK
+  rmsnorm_add_norm rows 1 cols 3072 add: bit-identical OK
+  rmsnorm_add_norm rows 1 cols 1000 add: bit-identical OK
+  rmsnorm_add_norm rows 1 cols 5000 add: bit-identical OK
+  rmsnorm_add_norm rows 1 cols 256 add: bit-identical OK
+  rmsnorm_add_norm rows 35 cols 256 add: bit-identical OK
+  rmsnorm_add_norm rows 3 cols 1536 add: bit-identical OK
+  rmsnorm_add_norm rows 7 cols 896 add: bit-identical OK
+  attention f32 KV vs f16 KV rows 1 at 200 heads 8/2 hd 256 window 0 OK
+  attention f32 KV vs f16 KV rows 1 at 500 heads 8/2 hd 256 window 128 OK
+  attention f32 KV vs f16 KV rows 1 at 99 heads 4/1 hd 512 window 0 OK
+  attention f32 KV vs f16 KV rows 64 at 0 heads 8/2 hd 128 window 0 OK
+  attention f32 KV vs f16 KV rows 13 at 300 heads 4/1 hd 256 window 0 OK
+  attention f32 KV vs f16 KV rows 40 at 100 heads 8/2 hd 256 window 64 OK
+  attention f32 KV vs f16 KV rows 24 at 50 heads 2/1 hd 512 window 0 OK
+  attention f32 KV vs f16 KV rows 37 at 600 heads 4/1 hd 512 window 256 OK
+  flash vs cpu_scalar rows 320 at 700 heads 24/4 hd 256 window 0 max_abs 4.38e-03 OK
+  flash vs cpu_scalar rows 37 at 600 heads 8/1 hd 256 window 512 max_abs 3.40e-03 OK
+  flash vs cpu_scalar rows 100 at 0 heads 8/1 hd 256 window 32 max_abs 4.19e-03 OK
+  flash vs cpu_scalar rows 45 at 300 heads 8/1 hd 512 window 0 max_abs 2.80e-03 OK
+  flash vs cpu_scalar rows 64 at 0 heads 8/2 hd 128 window 0 max_abs 4.20e-03 OK
+  flash vs cpu_scalar rows 13 at 51 heads 4/2 hd 64 window 0 max_abs 3.22e-03 OK
+  flash vs cpu_scalar rows 9 at 20 heads 4/1 hd 256 window 0 max_abs 5.48e-06 OK
+  flash vs cpu_scalar rows 40 at 100 heads 4/2 hd 96 window 0 max_abs 2.98e-03 OK
+  flash vs cpu_scalar rows 17 at 450 heads 2/1 hd 512 window 128 max_abs 2.53e-03 OK
+  flash vs cpu_scalar rows 30 at 70 heads 4/1 hd 384 window 0 max_abs 3.13e-03 OK
+  flash vs cpu_scalar rows 2 at 98 heads 4/4 hd 32 window 0 max_abs 1.42e-03 OK
+  flash vs cpu_scalar rows 25 at 15 heads 4/2 hd 256 window 0 max_abs 7.84e-06 OK
+  flash vs double rows 1 at 511 heads 8/1 hd 256 window 512 max_abs 1.35e-06 OK
+  flash vs double rows 1 at 700 heads 8/1 hd 256 window 512 max_abs 1.38e-06 OK
+  flash vs double rows 1 at 1000 heads 8/1 hd 512 window 0 max_abs 1.92e-06 OK
+  flash vs double rows 1 at 40 heads 8/2 hd 128 window 0 max_abs 1.50e-06 OK
+  flash vs double rows 1 at 63 heads 4/4 hd 64 window 0 max_abs 1.62e-06 OK
+  flash vs double rows 1 at 2100 heads 24/4 hd 256 window 0 max_abs 1.51e-06 OK
+  flash vs double rows 1 at 100 heads 4/1 hd 96 window 0 max_abs 1.13e-06 OK
+  flash vs double rows 1 at 77 heads 2/1 hd 512 window 16 max_abs 1.03e-06 OK
+  flash vs double rows 1 at 31 heads 8/2 hd 128 window 0 max_abs 1.20e-06 OK
+  ple_block rows d 1536 hpl 256: gate max_abs 4.58e-05, proj max_abs 2.44e-04 OK
+  ple_block rows d 384 hpl 1024: gate max_abs 1.57e-05, proj max_abs 2.44e-04 OK
+  ple_block rows d 2048 hpl 250: gate max_abs 6.10e-05, proj max_abs 2.44e-04 OK
+  PQ2m8  m=2    max_rel 0.00e+00 OK
+  PQ2m8  m=7    max_rel 0.00e+00 OK
+  PQ2m8  m=8    max_rel 0.00e+00 OK
+  argmax n 1: want 0 got 0 OK
+  argmax n 21 (late max): want 17 got 17 OK
+  argmax n 255: want 38 got 38 OK
+  argmax n 275 (late max): want 144 got 144 OK
+  argmax n 2049: want 19 got 19 OK
+  argmax n 2069 (late max): want 1041 got 1041 OK
+  argmax n 151936: want 27 got 27 OK
+  argmax n 151956 (late max): want 75985 got 75985 OK
+  argmax n 262144: want 128 got 128 OK
+  argmax n 262164 (late max): want 131089 got 131089 OK
+  argmax n 524365: want 20 got 20 OK
+  argmax n 524385 (late max): want 262199 got 262199 OK
+  argmax n 4099 (all NaN): want 0 got 0 OK
+  Q4_K   m=1    max_rel 0.00e+00 OK
+  Q4_K 2048->514, 2..8 rows in one pass: rows independent yes, vs n4 per row max_rel 1.1e-07
+  Q4_K 4096->2048, 2..8 rows in one pass: rows independent yes, vs n4 per row max_rel 9.9e-08
+  Q6_K 1024->302, 2..8 rows in one pass: rows independent yes, vs n4 per row max_rel 0.0e+00
+  Q6_K 2048->4096, 2..8 rows in one pass: rows independent yes, vs n4 per row max_rel 0.0e+00
+  q4k half-simdgroup 1536->1100: matvec max_rel 8.5e-08, gate/up max_rel 2.0e-07 OK
+  q4k half-simdgroup 512->1030: matvec max_rel 2.1e-07, gate/up max_rel 2.2e-07 OK
+  flash vs double rows 1 at 47 heads 4/2 hd 16 window 0 max_abs 3.61e-07 OK
+  flash vs double rows 1 at 40 heads 4/1 hd 16 window 0 max_abs 6.26e-07 OK
+  flash vs double rows 1 at 99 heads 8/2 hd 8 window 0 max_abs 6.44e-07 OK
+test_backend_metal_parity_unit: all checks passed

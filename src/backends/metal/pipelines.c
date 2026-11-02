@@ -2,6 +2,7 @@
  * src/backends/metal/pipelines.c — compute-pipeline compilation and caching.
  */
 #include "metal_internal.h"
+#include "metal_pq2_lowp_shaders.h"
 #include "iq_grids.h"
 
 [[nodiscard]] static enum geist_status metal_create_named_pipeline(struct geist_backend *be,
@@ -268,7 +269,6 @@ static const struct metal_pipeline_row metal_tensor_rows[] = {
         METAL_PIPE(mm_tc, "matmul_q3k_mm_tc", q3k_mm_tc),
         METAL_PIPE(mm_tc, "matmul_iq3s_mm_tc", iq3s_mm_tc),
         METAL_PIPE(mm_tc, "matmul_pq2_mm_tc", pq2_mm_tc),
-        METAL_PIPE(mm_tc, "matmul_f32_mm_tc", f32_mm_tc),
         METAL_FLASH_TC_PIPE(64),
         METAL_FLASH_TC_PIPE(128),
         METAL_FLASH_TC_PIPE(256),
@@ -285,6 +285,109 @@ static const struct metal_pipeline_row metal_argmax_rows[] = {
  * in order. The sources are split into literals of at most 4095 chars
  * (the -Wpedantic limit), so a unit is often several parts. A nullptr
  * part stands for the IQ3_S grid, see metal_iq3s_grid_source. */
+#define PQ2_LOWP_ROW(KIND, IDX, TILE, SG)                     \
+    {offsetof(struct metal_state, pq2_lowp_library),          \
+     "pq2_" #KIND "_m" #TILE "_s" #SG,                        \
+     offsetof(struct metal_state, pq2_lowp_mm_function[IDX]), \
+     offsetof(struct metal_state, pq2_lowp_mm_pipeline[IDX])}
+static const struct metal_pipeline_row metal_pq2_i8_rows[] = {
+        {offsetof(struct metal_state, pq2_lowp_library),
+         "pq2_i8_x",
+         offsetof(struct metal_state, pq2_lowp_x_function),
+         offsetof(struct metal_state, pq2_lowp_x_pipeline)},
+        PQ2_LOWP_ROW(i8, 0, 32, 4),
+        PQ2_LOWP_ROW(i8, 1, 64, 4),
+        PQ2_LOWP_ROW(i8, 2, 128, 4),
+        PQ2_LOWP_ROW(i8, 3, 32, 8),
+        PQ2_LOWP_ROW(i8, 4, 64, 8),
+        PQ2_LOWP_ROW(i8, 5, 128, 8),
+};
+static const struct metal_pipeline_row metal_pq2_f8_rows[] = {
+        {offsetof(struct metal_state, pq2_lowp_library),
+         "pq2_f8_x",
+         offsetof(struct metal_state, pq2_lowp_x_function),
+         offsetof(struct metal_state, pq2_lowp_x_pipeline)},
+        PQ2_LOWP_ROW(f8, 0, 32, 4),
+        PQ2_LOWP_ROW(f8, 1, 64, 4),
+        PQ2_LOWP_ROW(f8, 2, 128, 4),
+        PQ2_LOWP_ROW(f8, 3, 32, 8),
+        PQ2_LOWP_ROW(f8, 4, 64, 8),
+        PQ2_LOWP_ROW(f8, 5, 128, 8),
+};
+static const struct metal_pipeline_row metal_pq2_i2_rows[] = {
+        {offsetof(struct metal_state, pq2_lowp_library),
+         "pq2_i2_x",
+         offsetof(struct metal_state, pq2_lowp_x_function),
+         offsetof(struct metal_state, pq2_lowp_x_pipeline)},
+        PQ2_LOWP_ROW(i2, 0, 32, 4),
+        PQ2_LOWP_ROW(i2, 1, 64, 4),
+        PQ2_LOWP_ROW(i2, 2, 128, 4),
+        PQ2_LOWP_ROW(i2, 3, 32, 8),
+        PQ2_LOWP_ROW(i2, 4, 64, 8),
+        PQ2_LOWP_ROW(i2, 5, 128, 8),
+};
+static const struct metal_pipeline_row metal_pq2_h2_rows[] = {
+        {offsetof(struct metal_state, pq2_lowp_library),
+         "pq2_h2_x",
+         offsetof(struct metal_state, pq2_lowp_x_function),
+         offsetof(struct metal_state, pq2_lowp_x_pipeline)},
+        PQ2_LOWP_ROW(h2, 0, 32, 4),
+        PQ2_LOWP_ROW(h2, 1, 64, 4),
+        PQ2_LOWP_ROW(h2, 2, 128, 4),
+        PQ2_LOWP_ROW(h2, 3, 32, 8),
+        PQ2_LOWP_ROW(h2, 4, 64, 8),
+        PQ2_LOWP_ROW(h2, 5, 128, 8),
+};
+static const struct metal_pipeline_row metal_pq2_c16_rows[] = {
+        {offsetof(struct metal_state, pq2_lowp_library),
+         "pq2_c16_x",
+         offsetof(struct metal_state, pq2_lowp_x_function),
+         offsetof(struct metal_state, pq2_lowp_x_pipeline)},
+        PQ2_LOWP_ROW(c16, 0, 32, 4),
+        PQ2_LOWP_ROW(c16, 1, 64, 4),
+        PQ2_LOWP_ROW(c16, 2, 128, 4),
+        PQ2_LOWP_ROW(c16, 3, 32, 8),
+        PQ2_LOWP_ROW(c16, 4, 64, 8),
+        PQ2_LOWP_ROW(c16, 5, 128, 8),
+};
+static const struct metal_pipeline_row metal_pq2_c8_rows[] = {
+        {offsetof(struct metal_state, pq2_lowp_library),
+         "pq2_c8_x",
+         offsetof(struct metal_state, pq2_lowp_x_function),
+         offsetof(struct metal_state, pq2_lowp_x_pipeline)},
+        PQ2_LOWP_ROW(c8, 0, 32, 4),
+        PQ2_LOWP_ROW(c8, 1, 64, 4),
+        PQ2_LOWP_ROW(c8, 2, 128, 4),
+        PQ2_LOWP_ROW(c8, 3, 32, 8),
+        PQ2_LOWP_ROW(c8, 4, 64, 8),
+        PQ2_LOWP_ROW(c8, 5, 128, 8),
+};
+static const struct metal_pipeline_row metal_pq2_r8_rows[] = {
+        {offsetof(struct metal_state, pq2_lowp_library),
+         "pq2_r8_x",
+         offsetof(struct metal_state, pq2_lowp_x_function),
+         offsetof(struct metal_state, pq2_lowp_x_pipeline)},
+        PQ2_LOWP_ROW(r8, 0, 32, 4),
+        PQ2_LOWP_ROW(r8, 1, 64, 4),
+        PQ2_LOWP_ROW(r8, 2, 128, 4),
+        PQ2_LOWP_ROW(r8, 3, 32, 8),
+        PQ2_LOWP_ROW(r8, 4, 64, 8),
+        PQ2_LOWP_ROW(r8, 5, 128, 8),
+};
+static const struct metal_pipeline_row metal_pq2_mx_rows[] = {
+        {offsetof(struct metal_state, pq2_lowp_library),
+         "pq2_mx_x",
+         offsetof(struct metal_state, pq2_lowp_x_function),
+         offsetof(struct metal_state, pq2_lowp_x_pipeline)},
+        PQ2_LOWP_ROW(mx, 0, 32, 4),
+        PQ2_LOWP_ROW(mx, 1, 64, 4),
+        PQ2_LOWP_ROW(mx, 2, 128, 4),
+        PQ2_LOWP_ROW(mx, 3, 32, 8),
+        PQ2_LOWP_ROW(mx, 4, 64, 8),
+        PQ2_LOWP_ROW(mx, 5, 128, 8),
+};
+#undef PQ2_LOWP_ROW
+
 struct metal_library_row {
     size_t             library;
     const char        *label; /* names the library in errors */
@@ -514,8 +617,7 @@ static const struct metal_library_row metal_tensor_libs[] = {
                   metal_mm_tc_iq4xs_source,
                   metal_mm_tc_q3k_source,
                   metal_mm_tc_iq3s_source,
-                  metal_mm_tc_pq2_source,
-                  metal_mm_tc_f32_source),
+                  metal_mm_tc_pq2_source),
         METAL_LIB(attn_tc,
                   "tensor-API flash",
                   metal_attn_flash_tc_source_a,
@@ -674,6 +776,143 @@ static void metal_release_libs(struct metal_state            *st,
 }
 
 /* The pipeline tables, by enum metal_table. */
+static const struct metal_library_row metal_pq2_i8_libs[] = {
+        METAL_LIB(pq2_lowp,
+                  "PQ2 i8",
+                  metal_pq2_lowp_head,
+                  metal_pq2_i8_x_source,
+                  metal_pq2_i8_m32_s4_source,
+                  metal_pq2_i8_m64_s4_source,
+                  metal_pq2_i8_m128_s4_source,
+                  metal_pq2_i8_m32_s8_source,
+                  metal_pq2_i8_m64_s8_source,
+                  metal_pq2_i8_m128_s8_source)};
+static const struct metal_library_row metal_pq2_f8_libs[] = {
+        METAL_LIB(pq2_lowp,
+                  "PQ2 f8",
+                  metal_pq2_lowp_head,
+                  metal_pq2_f8_x_source,
+                  metal_pq2_f8_m32_s4_source,
+                  metal_pq2_f8_m64_s4_source,
+                  metal_pq2_f8_m128_s4_source,
+                  metal_pq2_f8_m32_s8_source,
+                  metal_pq2_f8_m64_s8_source,
+                  metal_pq2_f8_m128_s8_source)};
+static const struct metal_library_row metal_pq2_i2_libs[] = {
+        METAL_LIB(pq2_lowp,
+                  "PQ2 i2",
+                  metal_pq2_lowp_head,
+                  metal_pq2_i2_x_source,
+                  metal_pq2_i2_m32_s4_source,
+                  metal_pq2_i2_m64_s4_source,
+                  metal_pq2_i2_m128_s4_source,
+                  metal_pq2_i2_m32_s8_source,
+                  metal_pq2_i2_m64_s8_source,
+                  metal_pq2_i2_m128_s8_source)};
+static const struct metal_library_row metal_pq2_h2_libs[] = {
+        METAL_LIB(pq2_lowp,
+                  "PQ2 h2",
+                  metal_pq2_lowp_head,
+                  metal_pq2_h2_x_source,
+                  metal_pq2_h2_m32_s4_source,
+                  metal_pq2_h2_m64_s4_source,
+                  metal_pq2_h2_m128_s4_source,
+                  metal_pq2_h2_m32_s8_source,
+                  metal_pq2_h2_m64_s8_source,
+                  metal_pq2_h2_m128_s8_source)};
+
+static const struct metal_library_row metal_pq2_c16_libs[] = {
+        METAL_LIB(pq2_lowp,
+                  "PQ2 c16",
+                  metal_pq2_lowp_head,
+                  metal_pq2_c16_x_source,
+                  metal_pq2_c16_m32_s4_source,
+                  metal_pq2_c16_m64_s4_source,
+                  metal_pq2_c16_m128_s4_source,
+                  metal_pq2_c16_m32_s8_source,
+                  metal_pq2_c16_m64_s8_source,
+                  metal_pq2_c16_m128_s8_source)};
+static const struct metal_library_row metal_pq2_c8_libs[] = {
+        METAL_LIB(pq2_lowp,
+                  "PQ2 c8",
+                  metal_pq2_lowp_head,
+                  metal_pq2_c8_x_source,
+                  metal_pq2_c8_m32_s4_source,
+                  metal_pq2_c8_m64_s4_source,
+                  metal_pq2_c8_m128_s4_source,
+                  metal_pq2_c8_m32_s8_source,
+                  metal_pq2_c8_m64_s8_source,
+                  metal_pq2_c8_m128_s8_source)};
+static const struct metal_library_row metal_pq2_r8_libs[] = {
+        METAL_LIB(pq2_lowp,
+                  "PQ2 r8",
+                  metal_pq2_lowp_head,
+                  metal_pq2_r8_x_source,
+                  metal_pq2_r8_m32_s4_source,
+                  metal_pq2_r8_m64_s4_source,
+                  metal_pq2_r8_m128_s4_source,
+                  metal_pq2_r8_m32_s8_source,
+                  metal_pq2_r8_m64_s8_source,
+                  metal_pq2_r8_m128_s8_source)};
+static const struct metal_library_row metal_pq2_mx_libs[] = {
+        METAL_LIB(pq2_lowp,
+                  "PQ2 mx",
+                  metal_pq2_lowp_head,
+                  metal_pq2_mx_x_source,
+                  metal_pq2_mx_m32_s4_source,
+                  metal_pq2_mx_m64_s4_source,
+                  metal_pq2_mx_m128_s4_source,
+                  metal_pq2_mx_m32_s8_source,
+                  metal_pq2_mx_m64_s8_source,
+                  metal_pq2_mx_m128_s8_source)};
+static const struct metal_library_row metal_pq2_i8_shared_libs[] = {
+        METAL_LIB(pq2_lowp,
+                  "PQ2 i8 shared",
+                  metal_pq2_shared_config,
+                  metal_pq2_lowp_head,
+                  metal_pq2_i8_x_source,
+                  metal_pq2_i8_m32_s4_source,
+                  metal_pq2_i8_m64_s4_source,
+                  metal_pq2_i8_m128_s4_source,
+                  metal_pq2_i8_m32_s8_source,
+                  metal_pq2_i8_m64_s8_source,
+                  metal_pq2_i8_m128_s8_source)};
+static const struct metal_library_row metal_pq2_f8_shared_libs[] = {
+        METAL_LIB(pq2_lowp,
+                  "PQ2 f8 shared",
+                  metal_pq2_shared_config,
+                  metal_pq2_lowp_head,
+                  metal_pq2_f8_x_source,
+                  metal_pq2_f8_m32_s4_source,
+                  metal_pq2_f8_m64_s4_source,
+                  metal_pq2_f8_m128_s4_source,
+                  metal_pq2_f8_m32_s8_source,
+                  metal_pq2_f8_m64_s8_source,
+                  metal_pq2_f8_m128_s8_source)};
+static const struct metal_library_row metal_pq2_i2_shared_libs[] = {
+        METAL_LIB(pq2_lowp,
+                  "PQ2 i2 shared",
+                  metal_pq2_shared_config,
+                  metal_pq2_lowp_head,
+                  metal_pq2_i2_x_source,
+                  metal_pq2_i2_m32_s4_source,
+                  metal_pq2_i2_m64_s4_source,
+                  metal_pq2_i2_m128_s4_source,
+                  metal_pq2_i2_m32_s8_source,
+                  metal_pq2_i2_m64_s8_source,
+                  metal_pq2_i2_m128_s8_source)};
+static const struct metal_library_row metal_pq2_h2_shared_libs[] = {
+        METAL_LIB(pq2_lowp,
+                  "PQ2 h2 shared",
+                  metal_pq2_shared_config,
+                  metal_pq2_lowp_head,
+                  metal_pq2_h2_x_source,
+                  metal_pq2_h2_m32_s4_source,
+                  metal_pq2_h2_m64_s4_source,
+                  metal_pq2_h2_m128_s4_source,
+                  metal_pq2_h2_m32_s8_source,
+                  metal_pq2_h2_m64_s8_source,
+                  metal_pq2_h2_m128_s8_source)};
 static const struct {
     size_t                           n_libs;
     const struct metal_library_row  *libs;
@@ -688,6 +927,7 @@ static const struct {
         METAL_TABLE(METAL_TAB_ARGMAX, metal_argmax_libs, metal_argmax_rows),
         METAL_TABLE(METAL_TAB_MOE, metal_moe_libs, metal_moe_rows),
         METAL_TABLE(METAL_TAB_TENSOR, metal_tensor_libs, metal_tensor_rows),
+        METAL_TABLE(METAL_TAB_PQ2_LOWP, metal_pq2_i8_libs, metal_pq2_i8_rows),
 #undef METAL_TABLE
 };
 
@@ -784,9 +1024,65 @@ static void metal_ensure_tensor(struct geist_backend *be) {
     }
 }
 
+static void metal_ensure_pq2_lowp(struct geist_backend *be) {
+    struct metal_state *st = be->state;
+    if (st->pq2_lowp_mode == 0 || st->pq2_lowp_x_pipeline != nullptr)
+        return;
+    const struct metal_library_row  *lib_sets[] = {metal_pq2_i8_libs,
+                                                   metal_pq2_f8_libs,
+                                                   metal_pq2_i2_libs,
+                                                   metal_pq2_h2_libs,
+                                                   metal_pq2_c16_libs,
+                                                   metal_pq2_c8_libs,
+                                                   metal_pq2_r8_libs,
+                                                   metal_pq2_mx_libs};
+    const struct metal_pipeline_row *row_sets[] = {metal_pq2_i8_rows,
+                                                   metal_pq2_f8_rows,
+                                                   metal_pq2_i2_rows,
+                                                   metal_pq2_h2_rows,
+                                                   metal_pq2_c16_rows,
+                                                   metal_pq2_c8_rows,
+                                                   metal_pq2_r8_rows,
+                                                   metal_pq2_mx_rows};
+    const struct metal_library_row  *libs       = lib_sets[st->pq2_lowp_mode - 1u];
+    const struct metal_pipeline_row *rows       = row_sets[st->pq2_lowp_mode - 1u];
+    if (st->pq2_lowp_shared_acc) {
+        const struct metal_library_row *sets[] = {metal_pq2_i8_shared_libs,
+                                                  metal_pq2_f8_shared_libs,
+                                                  metal_pq2_i2_shared_libs,
+                                                  metal_pq2_h2_shared_libs};
+        libs                                   = sets[st->pq2_lowp_mode - 1u];
+    }
+    void *opt = metal_tensor_options(st);
+    if (opt != nullptr)
+        metal_msg_send_void_ulong(st, opt, "setLanguageVersion:", (4ul << 16) + 1ul);
+    enum geist_status status =
+            opt == nullptr ? GEIST_E_UNSUPPORTED : metal_ensure_tables(be, opt, 1, libs, 7, rows);
+    metal_msg_send_void0(st, opt, "release");
+    if (status == GEIST_OK)
+        return;
+    fprintf(stderr,
+            "metal: PQ2 low precision unavailable (%s); keeping existing path\n",
+            geist_backend_errmsg(be));
+    metal_release_rows(st, 7, rows);
+    metal_release_libs(st, 1, libs);
+    st->pq2_lowp_library    = nullptr;
+    st->pq2_lowp_x_function = nullptr;
+    st->pq2_lowp_x_pipeline = nullptr;
+    for (unsigned i = 0; i < 6; i++) {
+        st->pq2_lowp_mm_function[i] = nullptr;
+        st->pq2_lowp_mm_pipeline[i] = nullptr;
+    }
+    st->pq2_lowp_mode = 0;
+}
+
 [[nodiscard]] enum geist_status metal_ensure(struct geist_backend *be, enum metal_table table) {
     if (be == nullptr || be->state == nullptr || table >= METAL_TAB_COUNT) {
         return GEIST_E_INVALID_ARG;
+    }
+    if (table == METAL_TAB_PQ2_LOWP) {
+        metal_ensure_pq2_lowp(be);
+        return GEIST_OK;
     }
     if (table == METAL_TAB_TENSOR) {
         metal_ensure_tensor(be);

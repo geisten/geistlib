@@ -1,0 +1,9 @@
+baseline 0 bit-identical
+baseline 3 bit-identical
+baseline 4 bit-identical
+int8 0 bit-identical
+int8 3 bit-identical
+int8 4 bit-identical
+fp8 0 bit-identical
+fp8 3 bit-identical
+fp8 4 bit-identical
