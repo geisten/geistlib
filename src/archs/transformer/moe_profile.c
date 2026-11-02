@@ -29,6 +29,11 @@ struct transformer_moe_profile {
     bool              loaded;
     _Atomic uint64_t *count; /* [n_layers * n_exp], this process's */
     _Atomic uint64_t  tokens;
+    /* [(layer * n_exp + e) * MOE_PROFILE_BUCKETS + b]: prefill rows by
+     * bucket, read at load and this process's. */
+    uint64_t         *rows_base;
+    _Atomic uint64_t *rows;
+    size_t            m_min_base, m_min; /* staging thresholds, 0: none */
 };
 
 uint64_t moe_profile_key(const struct gguf_ctx *gguf) {
@@ -93,7 +98,7 @@ static bool read_file(struct transformer_moe_profile *p, FILE *f, const char **w
     }
     char want[17];
     snprintf(want, sizeof want, "%016" PRIx64, p->key);
-    if (ver != 1 || strcmp(key, want) != 0 || fl != L || fe != E) {
+    if ((ver != 1 && ver != 2) || strcmp(key, want) != 0 || fl != L || fe != E) {
         *why = "made for another model";
         return false;
     }
@@ -116,24 +121,51 @@ static bool read_file(struct transformer_moe_profile *p, FILE *f, const char **w
             p->base[l * E + e] = c;
         }
     }
+    if (ver == 1)
+        return true; /* no prefill rows */
+    if (fscanf(f, " STAGE %16s m-min %zu ", key, &p->m_min_base) != 2 || strcmp(key, want) != 0) {
+        *why = "the STAGE line does not parse";
+        return false;
+    }
+    for (size_t l = 0; l < L; l++) {
+        for (size_t b = 0; b < MOE_PROFILE_BUCKETS; b++) {
+            size_t lo = 0, fl2 = 0;
+            if (fscanf(f, " PREFILL %16s rows-from %zu %zu ", key, &lo, &fl2) != 3 ||
+                strcmp(key, want) != 0 || lo != (size_t) 1 << b || fl2 != l) {
+                *why = "a PREFILL line does not parse";
+                return false;
+            }
+            for (size_t e = 0; e < E; e++) {
+                unsigned long long c = 0;
+                if (fscanf(f, e == 0 ? "%llu" : ",%llu", &c) != 1) {
+                    *why = "a prefill count does not parse";
+                    return false;
+                }
+                p->rows_base[(l * E + e) * MOE_PROFILE_BUCKETS + b] = c;
+            }
+        }
+    }
     return true;
 }
 
 struct transformer_moe_profile *
 moe_profile_open(size_t n_layers, size_t n_exp, uint64_t key, const char *dir) {
-    size_t n = 0;
-    if (ckd_mul(&n, n_layers, n_exp) || n == 0)
+    size_t n = 0, nr = 0;
+    if (ckd_mul(&n, n_layers, n_exp) || n == 0 || ckd_mul(&nr, n, MOE_PROFILE_BUCKETS))
         return nullptr;
     struct transformer_moe_profile *p =
             heap_calloc_aligned(1, sizeof *p, alignof(struct transformer_moe_profile));
     if (p == nullptr)
         return nullptr;
-    p->n_layers = n_layers;
-    p->n_exp    = n_exp;
-    p->key      = key;
-    p->base     = heap_calloc_array_aligned(uint64_t, n);
-    p->count    = heap_calloc_array_aligned(_Atomic uint64_t, n);
-    if (p->base == nullptr || p->count == nullptr) {
+    p->n_layers  = n_layers;
+    p->n_exp     = n_exp;
+    p->key       = key;
+    p->base      = heap_calloc_array_aligned(uint64_t, n);
+    p->count     = heap_calloc_array_aligned(_Atomic uint64_t, n);
+    p->rows_base = heap_calloc_array_aligned(uint64_t, nr);
+    p->rows      = heap_calloc_array_aligned(_Atomic uint64_t, nr);
+    if (p->base == nullptr || p->count == nullptr || p->rows_base == nullptr ||
+        p->rows == nullptr) {
         moe_profile_close(p);
         return nullptr;
     }
@@ -152,7 +184,9 @@ moe_profile_open(size_t n_layers, size_t n_exp, uint64_t key, const char *dir) {
     fclose(f);
     if (!p->loaded) {
         memset(p->base, 0, n * sizeof *p->base);
+        memset(p->rows_base, 0, nr * sizeof *p->rows_base);
         p->base_tokens = 0;
+        p->m_min_base  = 0;
         fprintf(stderr, "geist: moe: profile cache %s ignored: %s\n", p->path, why);
     }
     return p;
@@ -176,6 +210,64 @@ void moe_profile_count(struct transformer_moe_profile *p,
     }
     if (layer == 0)
         atomic_fetch_add_explicit(&p->tokens, seq, memory_order_relaxed);
+}
+
+void moe_profile_count_chunk(struct transformer_moe_profile *p,
+                             size_t                          layer,
+                             size_t                          n_exp,
+                             const size_t                    row_start[static n_exp + 1]) {
+    if (p == nullptr || layer >= p->n_layers)
+        return;
+    const size_t      n   = n_exp < p->n_exp ? n_exp : p->n_exp;
+    _Atomic uint64_t *row = p->rows + layer * p->n_exp * MOE_PROFILE_BUCKETS;
+    for (size_t e = 0; e < n; e++) {
+        const size_t m = row_start[e + 1] - row_start[e];
+        if (m == 0)
+            continue;
+        size_t b = 0;
+        while (b + 1 < MOE_PROFILE_BUCKETS && m >> (b + 1) != 0)
+            b++;
+        atomic_fetch_add_explicit(&row[e * MOE_PROFILE_BUCKETS + b], m, memory_order_relaxed);
+    }
+}
+
+/* Bucket i's prefill rows, the file's plus this process's. */
+static uint64_t rows_at(const struct transformer_moe_profile *p, size_t i) {
+    return p->rows_base[i] + atomic_load_explicit(&p->rows[i], memory_order_relaxed);
+}
+
+bool moe_profile_prefill_rows(const struct transformer_moe_profile *p,
+                              size_t                                m_min,
+                              size_t                                n,
+                              uint64_t                              out[static n]) {
+    memset(out, 0, n * sizeof *out);
+    if (p == nullptr)
+        return false;
+    size_t b0 = 0;
+    while (b0 + 1 < MOE_PROFILE_BUCKETS && m_min >> (b0 + 1) != 0)
+        b0++;
+    const size_t m   = p->n_layers * p->n_exp < n ? p->n_layers * p->n_exp : n;
+    bool         any = false;
+    for (size_t i = 0; i < p->n_layers * p->n_exp; i++) {
+        uint64_t r = 0;
+        for (size_t b = 0; b < MOE_PROFILE_BUCKETS; b++) {
+            const uint64_t c = rows_at(p, i * MOE_PROFILE_BUCKETS + b);
+            any              = any || c > 0;
+            r += b >= b0 ? c : 0;
+        }
+        if (i < m)
+            out[i] = r;
+    }
+    return any;
+}
+
+size_t moe_profile_stage_m_min(const struct transformer_moe_profile *p) {
+    return p == nullptr ? 0 : p->m_min > 0 ? p->m_min : p->m_min_base;
+}
+
+void moe_profile_set_stage_m_min(struct transformer_moe_profile *p, size_t m_min) {
+    if (p != nullptr)
+        p->m_min = m_min;
 }
 
 void moe_profile_counts(const struct transformer_moe_profile *p,
@@ -219,7 +311,7 @@ static void write_file(const struct transformer_moe_profile *p) {
     const unsigned long long tok =
             p->base_tokens + atomic_load_explicit(&p->tokens, memory_order_relaxed);
     bool ok = fprintf(f,
-                      "# geist moe profile v1 key %s layers %zu experts %zu\n",
+                      "# geist moe profile v2 key %s layers %zu experts %zu\n",
                       key,
                       p->n_layers,
                       p->n_exp) > 0;
@@ -235,6 +327,18 @@ static void write_file(const struct transformer_moe_profile *p) {
         }
         ok = ok && fputc('\n', f) != EOF;
     }
+    ok = ok && fprintf(f, "STAGE %s m-min %zu\n", key, moe_profile_stage_m_min(p)) > 0;
+    for (size_t l = 0; ok && l < p->n_layers; l++) {
+        for (size_t b = 0; ok && b < MOE_PROFILE_BUCKETS; b++) {
+            ok = fprintf(f, "PREFILL %s rows-from %zu %zu ", key, (size_t) 1 << b, l) > 0;
+            for (size_t e = 0; ok && e < p->n_exp; e++)
+                ok = fprintf(f,
+                             e == 0 ? "%llu" : ",%llu",
+                             (unsigned long long) rows_at(
+                                     p, (l * p->n_exp + e) * MOE_PROFILE_BUCKETS + b)) > 0;
+            ok = ok && fputc('\n', f) != EOF;
+        }
+    }
     ok = fclose(f) == 0 && ok;
     if (!ok || rename(tmp, p->path) != 0) {
         fprintf(stderr, "geist: moe: profile cache %s not written: %s\n", p->path, strerror(errno));
@@ -249,7 +353,10 @@ void moe_profile_close(struct transformer_moe_profile *p) {
         atomic_load_explicit(&p->tokens, memory_order_relaxed) > 0)
         write_file(p);
     void *b = p->base, *c = (void *) p->count, *s = p;
+    void *rb = p->rows_base, *r = (void *) p->rows;
     safe_free(&b);
     safe_free(&c);
+    safe_free(&rb);
+    safe_free(&r);
     safe_free(&s);
 }

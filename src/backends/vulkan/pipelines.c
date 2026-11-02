@@ -28,6 +28,8 @@
 #include "shaders/attention_f16_mw_cm_spv.h"
 #include "shaders/attention_f16_spv.h"
 #include "shaders/attention_f32_spv.h"
+#include "shaders/attention_sinks_f16_spv.h"
+#include "shaders/attention_sinks_f32_spv.h"
 #include "shaders/attn_comb_spv.h"
 #include "shaders/attn_part_f16_spv.h"
 #include "shaders/attn_part_g2_f16_spv.h"

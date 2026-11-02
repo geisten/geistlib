@@ -1,0 +1,5 @@
+GEIST_MOE_STAGE=0 {"tokens":1023,"nll":2.333335,"ppl":10.3123,"tps":75.87}
+GEIST_MOE_STAGE_HOST=65536 {"tokens":1023,"nll":2.339165,"ppl":10.3726,"tps":78.93}
+X=main {"tokens":1023,"nll":2.331914,"ppl":10.2976,"tps":77.42}
+NEW {"tokens":1023,"nll":2.340953,"ppl":10.3911,"tps":78.44}
+NEW {"tokens":1023,"nll":2.340953,"ppl":10.3911,"tps":78.67}

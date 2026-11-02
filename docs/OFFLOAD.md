@@ -653,8 +653,9 @@ with them skipped (timing only, outputs wrong) the prefill ran at
 chunk, 55 % to experts with more than 32.
 
 **What.** Each cold expert gets a host copy on the GPU backend at load
-(`GEIST_W_HOST`: Vulkan keeps it in pinned host memory), in profile order,
-in 4 GiB (or a quarter of the host's memory if less;
+(`GEIST_W_HOST`: Vulkan keeps it in pinned host memory), in the order of
+the run-time profile's prefill rows when it has them (below), else of the
+selection counts, in 4 GiB (or a quarter of the host's memory if less;
 `GEIST_MOE_STAGE_HOST` sets it, see the budget below). A prefill step
 (`blk_moe_ffn`, `seq > 1`, the model on the GPU) copies the cold experts
 with at least `stage_m_min` rows, at most 16 of them, the most rows first,
@@ -711,12 +712,80 @@ and prefill tok/s grows with the budget (2 interleaved cycles each):
 
 The default is 4 GiB, the knee for Qwen3-30B-A3B. Qwen3.6-35B-A3B's profile
 (a decode trace of another corpus) predicts which of its many small cold
-experts a prefill stages less well, so it keeps 57 %; more needs
-`GEIST_MOE_STAGE_HOST`. VmRSS counts the pinned copies twice (the driver's
+experts a prefill stages less well, so it keeps 57 %; the prefill rows of
+the run-time profile fix that (next section). VmRSS counts the pinned copies twice (the driver's
 and geist's mapping of the same pages; `rssprobe.c` in the raw data: 2,000
 MiB of host weights, MemAvailable −1,985 MiB, PSS +2,002 MiB, VmRSS +4,002
 MiB), so peak RSS below grows by twice the budget while the host loses it
 once.
+
+**Host copies by the prefill profile.** The run-time profile (#165,
+`moe_profile.h`) counts every prefill chunk's experts a second time, by
+rows: an expert with m rows in a chunk adds m to bucket ⌊log2 m⌋ (ten
+buckets, the last from 512 rows). A threshold reads off the rows a prefill
+would have staged, the buckets from log2 `m_min` on. The profile cache file
+(v2) keeps them beside the USAGE counts, and the threshold the last load
+measured with them (a v1 file still loads, with neither). At load the cold
+experts are then ranked by their rows at the threshold per pinned byte, ties
+by their rows at a quarter of it, then by the selection counts and the index
+(`moe_stage_order`); the copies go in that order until the budget is used.
+The threshold is `GEIST_MOE_STAGE_M_MIN`, else the profile's, else 32 (the
+cost model's pick for both models here; it is measured only after the
+copies exist). Without prefill rows (no cache, a fresh one, a v1 file) the
+order is the selection counts', as before: the same copies. The resident
+experts do not change: they follow the USAGE counts (or
+`GEIST_MOE_PROFILE`) as before, and the prefill rows touch only the copies.
+
+The rows a profile needs come with the cache on (`GEIST_MOE_PROFILE_CACHE`):
+the first run counts and writes them when the model goes, the next load
+uses them. Measured with the cache made by one 2,726-token request (128
+decoded) and copied fresh into each run, `GEIST_MOE_PROFILE` as before for
+the resident set; SAME is a profile of the measured request itself
+(`docs/OFFLOAD.md` of main), CROSS of the first 2,726 tokens of
+`docs/ARCHITECTURE.md`. Prefill tok/s, interleaved cycles, 4 GiB unless
+"all":
+
+| | off | main (4 GiB) | **SAME** | **CROSS** | all |
+|:--|--:|--:|--:|--:|--:|
+| Qwen3.6-35B-A3B, 3 cycles | 775 / 792 / 786 | 811 / 858 / 850 | **931 / 926 / 921** | **916 / 913 / 916** | 921 / 893 / 926 |
+| median, share of the gain | 786 | 850, 48 % | **926, 104 %** | **916, 96 %** | 921, 100 % |
+| staged experts / rows | | 1,701 / 107 k | 2,782 / 195 k | 2,514 / 176 k | 2,782 / 195 k |
+| Qwen3-30B-A3B, 5 cycles | 709 / 693 / 702 / 705 / 701 | 820 / 820 / 823 / 797 / 808 | **826 / 845 / 839 / 840 / 842** | **846 / 826 / 842 / 827 / 834** | 846 / 828 / 822 / 823 / 840 |
+| median, share of the gain | 702 | 820, 93 % | **840, 110 %** | **834, 105 %** | 828, 100 % |
+
+- With a profile of the request itself 4 GiB stage what every cold expert
+  copied (11.7 / 9.1 GB) stages: the same 2,782 / 3,237 experts and rows,
+  so the prefill is at the all-copies speed. A profile of another text
+  keeps 96 % of Qwen3.6-35B-A3B's gain instead of 48 % (main in the same
+  session; 57 % in the budget table above). Qwen3-30B-A3B was at 91-93 %
+  already and gains within the noise: SAME and "all" stage the same set,
+  so their gap (840 against 828) is the spread.
+- Rows at a quarter of the threshold matter after one request: few cold
+  experts reached 32 rows in a chunk, the rest of the 4 GiB went by the
+  decode counts. Offline (the two caches, 4 GiB, the share of the rows a
+  prefill of `docs/OFFLOAD.md` stages at 32 that the copies hold): decode
+  counts 51 % / 77 % (Qwen3.6-35B-A3B / Qwen3-30B-A3B), the CROSS rows at
+  32 then decode counts 66 % / 85 %, at 32 then at 8 89 % / 94 %; a first
+  build with the 32-row key alone measured CROSS at 871 tok/s (60 %).
+- Decode unchanged (the same resident experts: 3,917 / 2,833 hot, the same
+  cover in every run): medians main 79.5 / 66.3, SAME 77.2 / 66.8, CROSS
+  77.7 / 66.7 tok/s, staging off 78.2 / 65.7; the spread within a variant
+  is as large (SAME 74.9-78.5; in a first session main 77.9, SAME 79.1).
+  A decode step stages nothing, and the copies are not read there.
+  NOPROF (the branch, the cache on and empty) staged the same 1,701 experts
+  for the same 107,380 rows as main: the fresh start makes the same copies.
+- The fresh threshold measurement can still land on 64 for Qwen3-30B-A3B
+  (one run in five, every variant), as before.
+- Perplexity (`bench_nll`, `GEIST_NLL_PREFILL=1`, the context prefilled in
+  512-row chunks, 1,023 tokens scored; tokens 1,024-2,048 and 2,048-3,072
+  of `docs/OFFLOAD.md` and of `docs/ARCHITECTURE.md`; main against SAME):
+  Qwen3.6-35B-A3B +0.16 / −0.02 / −0.16 / +0.91 % per window, +0.22 % over
+  the four; Qwen3-30B-A3B −0.13 / +0.48 / +0.06 / −0.16 %, +0.06 %. The
+  +0.91 % window (`docs/ARCHITECTURE.md` 1,024-2,048) is where staging
+  itself moves the score: staging off 10.312, main 10.298, every cold
+  expert copied 10.373, SAME 10.391 (twice, bit for bit). More rows on
+  the GPU's F32 path instead of the CPU's W8A8 flip routing there; #359
+  saw the same spread with the default.
 
 **Results with the default** (RTX 2080 Ti + 9950X, the 2,726-token request,
 128 decoded tokens, 4 interleaved cycles against staging off on the same
@@ -764,7 +833,8 @@ one core, so both columns read a little low; Strata from runs
   Q4_K on the card, base against the branch, 6 cycles: -0.1 to 0.0 %, the
   control ±18.9 %.
 
-Raw data: `benchmark/results/raw/moe-prefill-stage-2026-11-01/`.
+Raw data: `benchmark/results/raw/moe-prefill-stage-2026-11-01/`; the host
+copies by the prefill profile: `benchmark/results/raw/moe-prefill-profile-2026-11-02/`.
 
 All measurements under `scripts/gpu-lock.sh` (and `with-mac-lock` on the
 Mac), interleaved cycles, raw samples kept, `bench_revision_ab.py` parent vs
@@ -781,7 +851,7 @@ patch for "single-backend runs pay nothing".
   with a second, pinned host copy of the profile's hottest cold experts (4
   GiB by default, 11.7 GB for all of Qwen3.6-35B-A3B's); copying from the
   CPU's own bytes is out while cpu_x86 repacks Q4_K into its own layout.
-  A better predictor of a prefill's staged experts than the decode profile
-  would let 4 GiB keep more of Qwen3.6-35B-A3B's gain.
+  The run-time profile's prefill rows choose which cold experts get it
+  (above); without a cache the decode profile still does.
 - MoE concurrency: the CPU workers and the Vulkan host thread share cores; the
   OpenMP region (`parallel_region_begin`) has to leave one thread for submit.

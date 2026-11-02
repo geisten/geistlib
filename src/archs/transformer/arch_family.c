@@ -195,6 +195,39 @@ void family_populate_moe(struct gguf_ctx *g, const char *arch, struct transforme
     st->config.moe_norm_topk = !gguf_get_meta_bool(g, k, &b) || b;
 }
 
+bool family_populate_yarn(struct gguf_ctx *g, const char *arch, struct transformer_arch_state *st) {
+    char   k[96];
+    size_t len = 0;
+    snprintf(k, sizeof k, "%s.rope.scaling.type", arch);
+    const char *type = gguf_get_meta_string(g, k, &len);
+    if (type == nullptr || len != 4 || memcmp(type, "yarn", 4) != 0) {
+        return true;
+    }
+    float    factor = 0.0f, beta_fast = 32.0f, beta_slow = 1.0f, attn = 1.0f, log_mul = 0.0f;
+    uint32_t orig = 0;
+    (void) family_meta_f32(g, arch, nullptr, "rope.scaling.factor", &factor);
+    (void) family_meta_u32(g, arch, nullptr, "rope.scaling.original_context_length", &orig);
+    (void) family_meta_f32(g, arch, nullptr, "rope.scaling.yarn_beta_fast", &beta_fast);
+    (void) family_meta_f32(g, arch, nullptr, "rope.scaling.yarn_beta_slow", &beta_slow);
+    (void) family_meta_f32(g, arch, nullptr, "rope.scaling.attn_factor", &attn);
+    (void) family_meta_f32(g, arch, nullptr, "rope.scaling.yarn_log_multiplier", &log_mul);
+    /* A log multiplier (DeepSeek) changes the magnitude rule; the family
+     * that has one reads it itself. Refused here rather than guessed. */
+    if (!(factor > 1.0f) || orig == 0 || !(beta_fast > beta_slow) || !(beta_slow > 0.0f) ||
+        log_mul != 0.0f) {
+        return false;
+    }
+    /* llama.cpp's context setup: attn_factor = mscale(factor) cancelled by
+     * 1 / (1 + 0.1 ln factor), times rope.scaling.attn_factor; rope_yarn
+     * then multiplies cos/sin by attn_factor * (1 + 0.1 ln factor). */
+    st->config.rope_yarn_factor    = factor;
+    st->config.rope_yarn_orig_ctx  = orig;
+    st->config.rope_yarn_beta_fast = beta_fast;
+    st->config.rope_yarn_beta_slow = beta_slow;
+    st->config.rope_yarn_mscale    = attn * (1.0f + 0.1f * logf(factor));
+    return true;
+}
+
 bool family_moe_ok(const struct geist_arch_config *c) {
     return c->moe_n_experts > 0 && c->moe_n_used > 0 && c->moe_n_used <= c->moe_n_experts &&
            moe_slots(c) <= GEIST_MOE_MAX_EXPERTS;
@@ -209,7 +242,7 @@ bool family_moe_ok(const struct geist_arch_config *c) {
         !defined(GEIST_FAMILY_GEMMA4) && !defined(GEIST_FAMILY_LLAMA) &&   \
         !defined(GEIST_FAMILY_QWEN3) && !defined(GEIST_FAMILY_QWEN35) &&   \
         !defined(GEIST_FAMILY_QWEN3MOE) && !defined(GEIST_FAMILY_OLMOE) && \
-        !defined(GEIST_FAMILY_GRANITEMOE)
+        !defined(GEIST_FAMILY_GRANITEMOE) && !defined(GEIST_FAMILY_GPT_OSS)
 #define GEIST_FAMILY_BITNET 1
 #define GEIST_FAMILY_GEMMA3 1
 #define GEIST_FAMILY_GEMMA4 1
@@ -219,6 +252,7 @@ bool family_moe_ok(const struct geist_arch_config *c) {
 #define GEIST_FAMILY_QWEN3MOE 1
 #define GEIST_FAMILY_OLMOE 1
 #define GEIST_FAMILY_GRANITEMOE 1
+#define GEIST_FAMILY_GPT_OSS 1
 #endif
 static const struct transformer_family *const REGISTRY[] = {
 #if defined(GEIST_FAMILY_GEMMA4)
@@ -249,6 +283,9 @@ static const struct transformer_family *const REGISTRY[] = {
 #endif
 #if defined(GEIST_FAMILY_GRANITEMOE)
         &transformer_family_granitemoe, /* families/granitemoe.c */
+#endif
+#if defined(GEIST_FAMILY_GPT_OSS)
+        &transformer_family_gpt_oss, /* families/gpt_oss.c */
 #endif
 };
 static const size_t REGISTRY_N = sizeof REGISTRY / sizeof REGISTRY[0];
@@ -288,6 +325,9 @@ const char *const geist_arch_transformer_gguf_names[] = {
 #endif
 #if defined(GEIST_FAMILY_GRANITEMOE)
         "granitemoe",
+#endif
+#if defined(GEIST_FAMILY_GPT_OSS)
+        "gpt-oss",
 #endif
         nullptr,
 };

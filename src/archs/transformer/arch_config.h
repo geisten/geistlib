@@ -249,6 +249,27 @@ struct geist_arch_config {
     /* A family refuses more experts than this at load (blk_moe_ffn lists
      * the active experts of a layer on the stack). */
 #define GEIST_MOE_MAX_EXPERTS 512
+    /* How the router's logits become the selection and its weights
+     * (llama.cpp's expert_gating_func, moe_route):
+     *   SOFTMAX         p = softmax(logits) over all experts; the k largest
+     *                   p, weights p (renormalised when moe_norm_topk).
+     *   SOFTMAX_WEIGHT  the k largest logits; weights the softmax over those
+     *                   k logits alone (GPT-OSS, #243).
+     * The router's bias (ffn_gate_inp.bias), where a layer has one, is added
+     * to the logits first. Values are the GGUF key's. */
+    enum geist_moe_gating {
+        GEIST_MOE_GATING_SOFTMAX        = 1,
+        GEIST_MOE_GATING_SOFTMAX_WEIGHT = 3,
+    } moe_gating;
+    /* The expert FFN's activation (moe_expert_rows):
+     *   SWIGLU      silu(gate) * up.
+     *   SWIGLU_OAI  g = min(gate, limit), u = clamp(up, -limit, limit),
+     *               g * sigmoid(alpha * g) * (u + 1), alpha 1.702, limit 7
+     *               (GPT-OSS, llama.cpp's ggml_swiglu_oai, #243). */
+    enum geist_moe_act {
+        GEIST_MOE_ACT_SWIGLU = 0,
+        GEIST_MOE_ACT_SWIGLU_OAI,
+    } moe_act;
 
     /* ---- Pooling. A model with a pooling kind other than NONE is an
      * EMBEDDING model: it has no LM head, emits no tokens, and its forward
@@ -295,6 +316,18 @@ struct geist_arch_config {
      *
      * With n_rotated_dims == head_dim both collapse to the same thing. */
     bool rope_partial_block;
+
+    /* YaRN context extension (rope.scaling.type = yarn; GPT-OSS, #243), as
+     * ggml's rope_yarn computes it: rope_yarn_factor > 1 turns it on.
+     * Frequency i (pair index) blends the interpolated angle (divided by the
+     * factor) with the original one by a ramp over the correction dims of
+     * rope_yarn_orig_ctx / beta_fast / beta_slow, and cos/sin are scaled by
+     * rope_yarn_mscale (llama.cpp's attn_factor times 1 + 0.1 ln factor). */
+    float  rope_yarn_factor;
+    size_t rope_yarn_orig_ctx;
+    float  rope_yarn_beta_fast;
+    float  rope_yarn_beta_slow;
+    float  rope_yarn_mscale;
 
     /* ---- qwen35 hybrid family ------------------------------------------ *
      *

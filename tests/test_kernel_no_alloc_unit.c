@@ -80,6 +80,7 @@ static const struct dtype_case CASES[] = {
         {"IQ4_XS", (uint16_t) GEIST_DTYPE_IQ4_XS, IQ4_XS_BLOCK_ELEMS, IQ4_XS_BLOCK_BYTES},
         {"IQ2_S", (uint16_t) GEIST_DTYPE_IQ2_S, IQ2_S_BLOCK_ELEMS, IQ2_S_BLOCK_BYTES},
         {"IQ3_S", (uint16_t) GEIST_DTYPE_IQ3_S, IQ3_S_BLOCK_ELEMS, IQ3_S_BLOCK_BYTES},
+        {"MXFP4", (uint16_t) GEIST_DTYPE_MXFP4, MXFP4_BLOCK_ELEMS, MXFP4_BLOCK_BYTES},
         /* The dequant + SGEMM trampolines: IQ4_NL and F16 prefill, BF16
          * and Q5_0 decode and prefill. */
         {"IQ4_NL", (uint16_t) GEIST_DTYPE_IQ4_NL, IQ4_NL_BLOCK_ELEMS, IQ4_NL_BLOCK_BYTES},

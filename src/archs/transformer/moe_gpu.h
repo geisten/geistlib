@@ -104,6 +104,22 @@ void moe_gpu_stage_calibrate(struct transformer_arch_state *st);
  * the power of two at or below. SIZE_MAX: never (no copy rate). */
 [[nodiscard]] size_t moe_stage_m_min(double bytes, double bw, double t_cpu);
 
+/* #239: a cold expert's claim on a host copy for staging. */
+struct moe_stage_cand {
+    uint64_t rows;    /* prefill rows at the staging threshold, by the profile */
+    uint64_t rows_lo; /* prefill rows at a quarter of it */
+    uint64_t bytes;   /* gate + up + down */
+    uint64_t count;   /* selections: the resident experts' ranking key */
+    uint32_t idx;     /* e * n_layers + layer */
+};
+
+/* The order the host copies are made in, until the budget is used: the
+ * most prefill rows per byte at the threshold first, then at a quarter of
+ * it (an expert a chunk routed nearly as often: another text may take it
+ * over), then the most selections, then the lower idx. With no prefill
+ * rows (every rows 0) that is the resident ranking's order. */
+void moe_stage_order(size_t n, struct moe_stage_cand c[static n]);
+
 /* #162: a decode step (seq == 1) of layer `layer` routes on the device
  * with the experts split. route_launch starts the work so far (the router)
  * and returns its mark (fused->map_marked: the host reads the logits and
