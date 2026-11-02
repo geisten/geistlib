@@ -3572,6 +3572,76 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
     return metal_op_end(be, cmd, enc, "attention");
 }
 
+/* fused->attention_sinks (#243): one simdgroup per (query row, head). */
+[[nodiscard]] static enum geist_status
+metal_attention_sinks(struct geist_backend *be, const struct geist_attention_sinks_args *a) {
+    if (be == nullptr || be->state == nullptr || a == nullptr || a->q == nullptr ||
+        a->k == nullptr || a->v == nullptr || a->sinks == nullptr || a->out == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    size_t     q_rows = 0, q_heads = 0, hd = 0, q_off = 0, o_rows = 0, o_heads = 0, o_hd = 0;
+    size_t     o_off = 0, k_rows = 0, k_heads = 0, k_hd = 0, k_off = 0, v_rows = 0, v_heads = 0;
+    size_t     v_hd = 0, v_off = 0;
+    const bool f32 = metal_tensor_is_f32_3d(a->k, &k_rows, &k_heads, &k_hd, &k_off) &&
+                     metal_tensor_is_f32_3d(a->v, &v_rows, &v_heads, &v_hd, &v_off);
+    const bool f16 = !f32 && metal_tensor_is_f16_3d(a->k, &k_rows, &k_heads, &k_hd, &k_off) &&
+                     metal_tensor_is_f16_3d(a->v, &v_rows, &v_heads, &v_hd, &v_off);
+    const struct geist_tensor *sk = a->sinks;
+    if (!metal_tensor_is_f32_3d(a->q, &q_rows, &q_heads, &hd, &q_off) ||
+        !metal_tensor_is_f32_3d(a->out, &o_rows, &o_heads, &o_hd, &o_off) || (!f32 && !f16) ||
+        sk->buffer == nullptr || sk->dtype != GEIST_DTYPE_F32 || sk->ndim != 1 ||
+        (size_t) sk->shape[0] != q_heads || sk->offset % sizeof(float) != 0 || hd > 256u) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (o_rows != q_rows || o_heads != q_heads || o_hd != hd || k_hd != hd || v_hd != hd ||
+        k_rows != v_rows || k_heads != v_heads || k_heads == 0 || q_heads % k_heads != 0 ||
+        a->q_offset + q_rows > k_rows || k_rows > UINT32_MAX || q_rows > UINT32_MAX ||
+        q_heads > UINT32_MAX || a->q_offset > UINT32_MAX || a->sliding_window > UINT32_MAX ||
+        q_off > UINT32_MAX || k_off > UINT32_MAX || v_off > UINT32_MAX || o_off > UINT32_MAX ||
+        a->q->buffer->owner != be->state || a->k->buffer->owner != be->state ||
+        a->v->buffer->owner != be->state || a->out->buffer->owner != be->state ||
+        sk->buffer->owner != be->state) {
+        return GEIST_E_INVALID_ARG;
+    }
+    enum geist_status s = metal_ensure(be, METAL_TAB_ATTENTION);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    struct metal_state                       *st = be->state;
+    const struct metal_attention_sinks_params p  = {
+            .rows           = (uint32_t) q_rows,
+            .kv_len         = (uint32_t) k_rows,
+            .q_heads        = (uint32_t) q_heads,
+            .kv_heads       = (uint32_t) k_heads,
+            .head_dim       = (uint32_t) hd,
+            .q_position     = (uint32_t) a->q_offset,
+            .sliding_window = (uint32_t) a->sliding_window,
+            .q_offset       = (uint32_t) q_off,
+            .k_offset       = (uint32_t) k_off,
+            .v_offset       = (uint32_t) v_off,
+            .y_offset       = (uint32_t) o_off,
+            .sinks_offset   = (uint32_t) ((size_t) sk->offset / sizeof(float)),
+    };
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
+    void                                           *cmd  = nullptr;
+    void *enc = metal_op_begin(be, "attention_sinks", &cmd);
+    if (enc == nullptr) {
+        return GEIST_E_BACKEND;
+    }
+    metal_msg_send_set_pipeline(
+            st, enc, f16 ? st->attention_sinks_f16_pipeline : st->attention_sinks_f32_pipeline);
+    metal_msg_send_set_buffer(st, enc, a->q->buffer->buffer, a->q->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, a->k->buffer->buffer, a->k->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, a->v->buffer->buffer, a->v->buffer->base_off, 2);
+    metal_msg_send_set_buffer(st, enc, sk->buffer->buffer, sk->buffer->base_off, 3);
+    metal_msg_send_set_buffer(st, enc, a->out->buffer->buffer, a->out->buffer->base_off, 4);
+    metal_msg_send_set_bytes(st, enc, &p, sizeof p, 5);
+    const struct metal_size groups  = {.width = q_rows, .height = q_heads, .depth = 1};
+    const struct metal_size threads = {.width = 32, .height = 1, .depth = 1};
+    metal_msg_send_dispatch(st, enc, groups, threads);
+    return metal_op_end(be, cmd, enc, "attention_sinks");
+}
+
 /* The one dtype -> linear op switch: matrix runs the m-row GEMM, else the
  * one-row matvec on 1D views. */
 [[nodiscard]] static enum geist_status metal_linear_dtype(struct geist_backend      *be,
@@ -4718,6 +4788,7 @@ static const struct geist_backend_fused metal_fused = {
         .deltanet_mix_states          = metal_deltanet_mix_states,
         .attn_qgate_split             = metal_attn_qgate_split,
         .sigmoid_mul                  = metal_sigmoid_mul,
+        .attention_sinks              = metal_attention_sinks,
         .hadamard_rotate              = metal_hadamard_rotate,
         .rmsnorm_add_norm             = metal_rmsnorm_add_norm,
         .moe_route                    = metal_moe_route,

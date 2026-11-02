@@ -3125,6 +3125,46 @@ static const char metal_attn_dec_f16_plain_head[] =
  * over the splits, four independent loads per step. One thread looping
  * over the splits per element (16-32 dependent load and exp steps) cost
  * 18-37 us per call on the M1 Max, as much as the attention itself (#17). */
+/* Attention with a sink logit per head (#243, GPT-OSS). One simdgroup per
+ * (query row, head): the keys of the row's causal window in order, each
+ * dot a simd_sum over the lanes' dims, an online softmax that starts at
+ * the sink with sum 1 and nothing accumulated (the sink's value row is
+ * zero), so the result is sum_s e^{s_s} v_s / (e^{sink} + sum_s e^{s_s}).
+ * head_dim up to 256 (8 dims a lane). */
+static const char metal_attn_sinks_source[] =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct AS{uint rows,kv_len,qh,kvh,hd,qpos,win,qo,ko,vo,yo,so;};\n"
+        "template<typename KT>static void sink_row(device const float*q,device const KT*k,"
+        "device const KT*v,device const float*sk,device float*y,constant AS&p,uint2 tg,"
+        "uint ln){const uint t=tg.x,h=tg.y;if(t>=p.rows||h>=p.qh||p.hd>256u)return;"
+        "const uint hd=p.hd,kh=h/(p.qh/p.kvh),pos=p.qpos+t;"
+        "const uint lo=(p.win>0u&&pos+1u>p.win)?pos+1u-p.win:0u;"
+        "const uint hi=min(pos,p.kv_len-1u);const uint per=(hd+31u)/32u;"
+        "device const float*qv=q+p.qo+(t*p.qh+h)*hd;float qd[8],acc[8];"
+        "for(uint i=0u;i<8u;i++){const uint d=ln+i*32u;qd[i]=(i<per&&d<hd)?qv[d]:0.0f;acc[i]=0.0f;}"
+        "float m=sk[p.so+h],l=1.0f;"
+        "for(uint s=lo;s<=hi&&p.kv_len>0u;s++){"
+        "device const KT*kr=k+p.ko+(s*p.kvh+kh)*hd;float part=0.0f;"
+        "for(uint i=0u;i<per;i++){const uint d=ln+i*32u;if(d<hd)part+=qd[i]*float(kr[d]);}"
+        "const float sc=simd_sum(part);const float mn=max(m,sc);"
+        "const float c=exp(m-mn),e=exp(sc-mn);l=l*c+e;"
+        "device const KT*vr=v+p.vo+(s*p.kvh+kh)*hd;"
+        "for(uint i=0u;i<per;i++){const uint d=ln+i*32u;if(d<hd)acc[i]=acc[i]*c+e*float(vr[d]);}"
+        "m=mn;}"
+        "device float*yo=y+p.yo+(t*p.qh+h)*hd;const float il=1.0f/l;"
+        "for(uint i=0u;i<per;i++){const uint d=ln+i*32u;if(d<hd)yo[d]=acc[i]*il;}}\n"
+        "kernel void attention_sinks_f32(device const float*q[[buffer(0)]],device const "
+        "float*k[[buffer(1)]],device const float*v[[buffer(2)]],device const "
+        "float*sk[[buffer(3)]],device float*y[[buffer(4)]],constant AS&p[[buffer(5)]],uint2 "
+        "tg[[threadgroup_position_in_grid]],uint ln[[thread_index_in_simdgroup]]){"
+        "sink_row<float>(q,k,v,sk,y,p,tg,ln);}\n"
+        "kernel void attention_sinks_f16(device const float*q[[buffer(0)]],device const "
+        "half*k[[buffer(1)]],device const half*v[[buffer(2)]],device const "
+        "float*sk[[buffer(3)]],device float*y[[buffer(4)]],constant AS&p[[buffer(5)]],uint2 "
+        "tg[[threadgroup_position_in_grid]],uint ln[[thread_index_in_simdgroup]]){"
+        "sink_row<half>(q,k,v,sk,y,p,tg,ln);}\n";
+
 static const char metal_attn_dec_combine_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"

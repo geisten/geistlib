@@ -10,6 +10,10 @@
  * attention_mqa_causal_kv's bytes' worth (1e-6), a sink far above every
  * score an output near zero.
  *
+ * Every backend's fused->attention_sinks (Metal) against the same
+ * reference: F32 and F16 caches, prefill, a window, a decode at 1099 with a
+ * 128-key window, head_dim 48; within 1e-5 of scale.
+ *
  * rope_compute_yarn_at: the cos/sin table against ggml's rope_yarn in
  * double (corr dims, ramp, mscale) at positions 0..4096 for head_dim 64,
  * base 150000, factor 32, original context 4096 (gpt-oss-20b's), within
@@ -18,6 +22,9 @@
 #include "test_helpers.h"
 
 #include "gemma4_kernels.h"
+
+#include <geist.h>
+#include <geist_backend.h>
 
 #include <math.h>
 #include <stdint.h>
@@ -236,6 +243,114 @@ static void check_yarn(void) {
     free(s);
 }
 
+/* A backend's fused->attention_sinks against the double reference: every
+ * backend in the build that has the op (Metal). */
+static struct geist_buffer *upload(struct geist_backend *be, const void *x, size_t bytes) {
+    struct geist_buffer *b = nullptr;
+    if (be->desc->vtbl->buffer_create(be, bytes, GEIST_BUFFER_ACTIVATION, GEIST_MEMORY_AUTO, &b) !=
+                GEIST_OK ||
+        be->desc->vtbl->buffer_upload(b, bytes, (const uint8_t *) x) != GEIST_OK) {
+        fprintf(stderr, "buffer create/upload failed\n");
+        exit(GEIST_TEST_ERROR);
+    }
+    return b;
+}
+
+static struct geist_tensor
+view3(struct geist_buffer *b, size_t d0, size_t d1, size_t d2, enum geist_dtype dt) {
+    return (struct geist_tensor) {.buffer = b,
+                                  .dtype  = dt,
+                                  .layout = GEIST_LAYOUT_DENSE,
+                                  .ndim   = 3,
+                                  .shape  = {(int64_t) d0, (int64_t) d1, (int64_t) d2},
+                                  .stride = {(int64_t) (d1 * d2), (int64_t) d2, 1}};
+}
+
+static void check_backend_sinks(const char *name, struct shape sh, bool f16) {
+    struct geist_backend *be = nullptr;
+    if (geist_backend_create(name, nullptr, nullptr, &be) != GEIST_OK)
+        return;
+    if (be->desc->fused == nullptr || be->desc->fused->attention_sinks == nullptr) {
+        geist_backend_destroy(be);
+        return;
+    }
+    const size_t nq = sh.n_q * sh.n_q_heads * sh.head_dim,
+                 nk = sh.n_kv * sh.n_kv_heads * sh.head_dim;
+    float    *q = malloc(nq * 4), *k = malloc(nk * 4), *v = malloc(nk * 4), *out = malloc(nq * 4);
+    uint16_t *kh = malloc(nk * 2), *vh = malloc(nk * 2);
+    double   *ref = malloc(nq * sizeof *ref);
+    float     sinks[64];
+    for (size_t i = 0; i < nq; i++)
+        q[i] = rnd() * 0.5f;
+    for (size_t i = 0; i < nk; i++) {
+        k[i]  = rnd();
+        v[i]  = rnd();
+        kh[i] = to_half(k[i]);
+        vh[i] = to_half(v[i]);
+        if (f16) {
+            k[i] = from_half(kh[i]);
+            v[i] = from_half(vh[i]);
+        }
+    }
+    for (size_t h = 0; h < sh.n_q_heads; h++)
+        sinks[h] = rnd() * 3.0f;
+    ref_sinks(&sh, q, k, v, sinks, ref);
+    const enum geist_dtype kt = f16 ? GEIST_DTYPE_F16 : GEIST_DTYPE_F32;
+    struct geist_buffer   *bq = upload(be, q, nq * 4), *bo = upload(be, q, nq * 4);
+    struct geist_buffer   *bk = f16 ? upload(be, kh, nk * 2) : upload(be, k, nk * 4);
+    struct geist_buffer   *bv = f16 ? upload(be, vh, nk * 2) : upload(be, v, nk * 4);
+    struct geist_buffer   *bs = upload(be, sinks, sh.n_q_heads * 4);
+    struct geist_tensor    tq = view3(bq, sh.n_q, sh.n_q_heads, sh.head_dim, GEIST_DTYPE_F32);
+    struct geist_tensor    to = view3(bo, sh.n_q, sh.n_q_heads, sh.head_dim, GEIST_DTYPE_F32);
+    struct geist_tensor    tk = view3(bk, sh.n_kv, sh.n_kv_heads, sh.head_dim, kt);
+    struct geist_tensor    tv = view3(bv, sh.n_kv, sh.n_kv_heads, sh.head_dim, kt);
+    struct geist_tensor    ts = {.buffer = bs,
+                                 .dtype  = GEIST_DTYPE_F32,
+                                 .layout = GEIST_LAYOUT_DENSE,
+                                 .ndim   = 1,
+                                 .shape  = {(int64_t) sh.n_q_heads},
+                                 .stride = {1}};
+    const struct geist_attention_sinks_args args = {.q              = &tq,
+                                                    .k              = &tk,
+                                                    .v              = &tv,
+                                                    .sinks          = &ts,
+                                                    .out            = &to,
+                                                    .q_offset       = sh.q_offset,
+                                                    .sliding_window = sh.window};
+    const enum geist_status                 st   = be->desc->fused->attention_sinks(be, &args);
+    double                                  err = 1e30, scale = 1e-30;
+    if (st == GEIST_OK &&
+        be->desc->vtbl->buffer_download(nq * 4, (uint8_t *) out, bo) == GEIST_OK) {
+        err = 0.0;
+        for (size_t i = 0; i < nq; i++) {
+            err   = fmax(err, fabs(out[i] - ref[i]));
+            scale = fmax(scale, fabs(ref[i]));
+        }
+    }
+    char what[160];
+    snprintf(what,
+             sizeof what,
+             "%s attention_sinks %s n_q %zu n_kv %zu window %zu",
+             name,
+             f16 ? "F16" : "F32",
+             sh.n_q,
+             sh.n_kv,
+             sh.window);
+    printf("%-44s max|d| %.3g of scale %.3g\n", what, err, scale);
+    expect(err <= 1e-5 * fmax(scale, 1.0), what);
+    struct geist_buffer *bufs[] = {bq, bo, bk, bv, bs};
+    for (size_t i = 0; i < 5; i++)
+        be->desc->vtbl->buffer_destroy(be, bufs[i]);
+    free(q);
+    free(k);
+    free(v);
+    free(out);
+    free(kh);
+    free(vh);
+    free(ref);
+    geist_backend_destroy(be);
+}
+
 int main(void) {
     const struct shape prefill = {.n_q        = 37,
                                   .n_kv       = 37,
@@ -268,6 +383,37 @@ int main(void) {
                                 .head_dim   = 48,
                                 .window     = 0};
     check_sinks("a chunk after 593 rows, head_dim 48", chunk, false, 3.0f);
+    const char *const gpus[] = {"metal", "vulkan"};
+    for (size_t b = 0; b < 2; b++) {
+        const struct shape pf  = {.n_q        = 37,
+                                  .n_kv       = 37,
+                                  .q_offset   = 0,
+                                  .n_q_heads  = 8,
+                                  .n_kv_heads = 2,
+                                  .head_dim   = 64,
+                                  .window     = 0};
+        struct shape       sw  = pf;
+        sw.window              = 9;
+        const struct shape dc  = {.n_q        = 1,
+                                  .n_kv       = 1100,
+                                  .q_offset   = 1099,
+                                  .n_q_heads  = 8,
+                                  .n_kv_heads = 2,
+                                  .head_dim   = 64,
+                                  .window     = 128};
+        const struct shape h48 = {.n_q        = 7,
+                                  .n_kv       = 600,
+                                  .q_offset   = 593,
+                                  .n_q_heads  = 6,
+                                  .n_kv_heads = 3,
+                                  .head_dim   = 48,
+                                  .window     = 0};
+        check_backend_sinks(gpus[b], pf, false);
+        check_backend_sinks(gpus[b], sw, true);
+        check_backend_sinks(gpus[b], dc, false);
+        check_backend_sinks(gpus[b], dc, true);
+        check_backend_sinks(gpus[b], h48, false);
+    }
     check_no_sink();
     check_yarn();
     if (fails) {

@@ -116,7 +116,8 @@ struct transformer_layer_weights {
     /* Attention sinks (GPT-OSS, #243), host [N_Q_HEADS] or nullptr: a
      * per-head logit that joins every query's softmax with a zero value
      * row. Host memory: the sink attention runs on the host. */
-    float *attn_sinks;
+    float              *attn_sinks;
+    struct geist_tensor attn_sinks_t; /* the same, F32 DENSE on the backend */
 
     /* ---- Pre-resolved kernels, one per projection. ---------------------- *
      * Filled at load time by the backend's resolve_weight; the forward

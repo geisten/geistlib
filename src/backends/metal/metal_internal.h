@@ -510,14 +510,20 @@ struct metal_state {
     void    *attention_rows_pipeline;
     void    *attention_rows_f16_function;
     void    *attention_rows_f16_pipeline;
-    void    *attn_qnorm_dec_f16_library;
-    void    *attention_qnorm_dec_f16_function;
-    void    *attention_qnorm_dec_f16_pipeline;
-    void    *attention_dec_f16_function;
-    void    *attention_dec_f16_pipeline;
-    void    *attention_dec512_f16_function;
-    void    *attention_dec512_f16_pipeline;
-    void    *attn_dec512_f16_library;
+    /* Attention with sink logits (#243): F32 and F16 caches. */
+    void *attn_sinks_library;
+    void *attention_sinks_f32_function;
+    void *attention_sinks_f32_pipeline;
+    void *attention_sinks_f16_function;
+    void *attention_sinks_f16_pipeline;
+    void *attn_qnorm_dec_f16_library;
+    void *attention_qnorm_dec_f16_function;
+    void *attention_qnorm_dec_f16_pipeline;
+    void *attention_dec_f16_function;
+    void *attention_dec_f16_pipeline;
+    void *attention_dec512_f16_function;
+    void *attention_dec512_f16_pipeline;
+    void *attn_dec512_f16_library;
     /* The prefill flash kernels (#91), one per head_dim: slot hd/32 - 1
      * holds head_dim hd (multiples of 32 up to 256, of 64 up to 512; the
      * other slots stay nullptr). See metal_flash_pipeline. */
@@ -937,6 +943,23 @@ struct metal_attention_params {
     uint32_t k_cache_offset;
     uint32_t v_cache_offset;
     uint32_t y_offset;
+};
+
+/* attention_sinks_{f32,f16} (#243): the metal_attention_params geometry,
+ * offsets in elements, plus the sinks' offset (floats). */
+struct metal_attention_sinks_params {
+    uint32_t rows;
+    uint32_t kv_len;
+    uint32_t q_heads;
+    uint32_t kv_heads;
+    uint32_t head_dim;
+    uint32_t q_position;
+    uint32_t sliding_window;
+    uint32_t q_offset;
+    uint32_t k_offset;
+    uint32_t v_offset;
+    uint32_t y_offset;
+    uint32_t sinks_offset;
 };
 
 struct metal_embed_params {
