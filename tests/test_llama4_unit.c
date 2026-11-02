@@ -19,7 +19,9 @@
  *     the gate weight after instead of before the expert, or without the
  *     shared expert moves the logits by more than 1e-2;
  *   - every backend: chunked and single-token prefill agree, a reset
- *     repeats its logits bit for bit, the logits match cpu_scalar.
+ *     repeats its logits bit for bit, the logits match cpu_scalar (cpu_neon
+ *     and Metal within 1e-3; Vulkan cosine 0.999; cpu_x86, which runs F32
+ *     as W8A8, cosine 0.995: see below).
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 #define GEIST_INTERNAL_ENGINE_LAYER
@@ -387,8 +389,14 @@ int main(void) {
             }
             const double d = sqrt(num / den), c = cosine(other, scalar);
             printf("%s vs cpu_scalar: relative L2 %.3g, cosine %.6f\n", more[i], d, c);
-            const bool exact = strcmp(more[i], "cpu_neon") == 0 || strcmp(more[i], "metal") == 0;
-            fails += geist_expect(exact ? d <= 1e-3 : c >= 0.999,
+            /* cpu_x86 runs these F32 weights as W8A8. In a chunked layer the
+             * first queries of a chunk attend to one or two keys, so their
+             * value rows' rounding is not averaged away: 0.02 relative L2
+             * without chunks, 0.08 with (#244; the attention itself matches
+             * the reference on views, test_attention_f32_unit). */
+            const bool   exact = strcmp(more[i], "cpu_neon") == 0 || strcmp(more[i], "metal") == 0;
+            const double cos_min = strcmp(more[i], "cpu_x86") == 0 ? 0.995 : 0.999;
+            fails += geist_expect(exact ? d <= 1e-3 : c >= cos_min,
                                   "a backend matches cpu_scalar within its tolerance");
         }
     }
