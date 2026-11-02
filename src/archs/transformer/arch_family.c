@@ -208,7 +208,7 @@ bool family_moe_ok(const struct geist_arch_config *c) {
 #if !defined(GEIST_FAMILY_BITNET) && !defined(GEIST_FAMILY_GEMMA3) &&    \
         !defined(GEIST_FAMILY_GEMMA4) && !defined(GEIST_FAMILY_LLAMA) && \
         !defined(GEIST_FAMILY_QWEN3) && !defined(GEIST_FAMILY_QWEN35) && \
-        !defined(GEIST_FAMILY_QWEN3MOE)
+        !defined(GEIST_FAMILY_QWEN3MOE) && !defined(GEIST_FAMILY_OLMOE)
 #define GEIST_FAMILY_BITNET 1
 #define GEIST_FAMILY_GEMMA3 1
 #define GEIST_FAMILY_GEMMA4 1
@@ -216,6 +216,7 @@ bool family_moe_ok(const struct geist_arch_config *c) {
 #define GEIST_FAMILY_QWEN3 1
 #define GEIST_FAMILY_QWEN35 1
 #define GEIST_FAMILY_QWEN3MOE 1
+#define GEIST_FAMILY_OLMOE 1
 #endif
 static const struct transformer_family *const REGISTRY[] = {
 #if defined(GEIST_FAMILY_GEMMA4)
@@ -296,6 +297,14 @@ const struct transformer_family *transformer_family_select(struct gguf_ctx *gguf
             const struct transformer_family *f    = REGISTRY[i];
             const size_t                     flen = strlen(f->name);
             if (flen == arch_len && memcmp(arch, f->name, flen) == 0) {
+#if defined(GEIST_FAMILY_LLAMA)
+                /* Mixtral shares its architecture name with dense Llama. */
+                uint32_t experts = 0;
+                if (f == &transformer_family_llama &&
+                    gguf_get_meta_u32(gguf, "llama.expert_count", &experts) && experts > 0) {
+                    return &transformer_family_llama_moe;
+                }
+#endif
                 return f;
             }
         }

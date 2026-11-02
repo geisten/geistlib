@@ -1,0 +1,2537 @@
+[
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "off",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 1805.4375,
+    "speedup": 1.0
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 4305.9375,
+    "speedup": 0.4192902242543
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 4287.125,
+    "speedup": 0.4211301279995335
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 4435.8125,
+    "speedup": 0.4070139348766432
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 3516.8125,
+    "speedup": 0.5133732605875349
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 3260.3125,
+    "speedup": 0.5537621010255919
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 3565.6875,
+    "speedup": 0.5063364358205816
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 4226.5,
+    "speedup": 0.42717082692535197
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 4182.0625,
+    "speedup": 0.43170983217013137
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 3488.0,
+    "speedup": 0.5176139621559633
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 3041.5625,
+    "speedup": 0.593588821534984
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 4375.125,
+    "speedup": 0.4126596382960487
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 4365.6875,
+    "speedup": 0.4135517029104809
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 4450.5625,
+    "speedup": 0.40566501425381624
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 3745.0625,
+    "speedup": 0.48208474491413694
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 3452.4375,
+    "speedup": 0.5229457448541791
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 3628.75,
+    "speedup": 0.4975370306579401
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 4330.3125,
+    "speedup": 0.4169300714440355
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 4207.9375,
+    "speedup": 0.4290552081631441
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 3616.8125,
+    "speedup": 0.4991791805629957
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 3087.3125,
+    "speedup": 0.5847925987408142
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 4581.125,
+    "speedup": 0.3941035226063467
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 4981.3125,
+    "speedup": 0.3624421274513494
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 5692.6875,
+    "speedup": 0.3171502914923751
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 4207.0,
+    "speedup": 0.4291508200618018
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 3746.4375,
+    "speedup": 0.4819078124218007
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 4489.0625,
+    "speedup": 0.4021858684302123
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 4915.25,
+    "speedup": 0.3673134632012614
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 4962.1875,
+    "speedup": 0.3638390326846779
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 4076.75,
+    "speedup": 0.44286196112099097
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 3497.25,
+    "speedup": 0.5162449067124169
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 4493.5625,
+    "speedup": 0.4017831063883055
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 4704.9375,
+    "speedup": 0.38373251504403616
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 5335.875,
+    "speedup": 0.33835828238105276
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 4197.3125,
+    "speedup": 0.430141310660095
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 3847.625,
+    "speedup": 0.4692342678925311
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 4270.875,
+    "speedup": 0.42273246114672053
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 4713.5625,
+    "speedup": 0.3830303512470663
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 4719.5625,
+    "speedup": 0.3825434031226411
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 4050.875,
+    "speedup": 0.44569074582651896
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 3836.0625,
+    "speedup": 0.4706486143017743
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop16",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 8276.3125,
+    "speedup": 0.21814515824529343
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop16",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 6848.0,
+    "speedup": 0.2636444947429907
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop16",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 9317.875,
+    "speedup": 0.19376064821646566
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop16",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 14152.625,
+    "speedup": 0.12756909053974086
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop16",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 8395.6875,
+    "speedup": 0.2150434374790629
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop16",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 6853.375,
+    "speedup": 0.26343772229011253
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 8228.625,
+    "speedup": 0.21940937884518982
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 7605.875,
+    "speedup": 0.2373740693871514
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 8452.375,
+    "speedup": 0.21360120676141323
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 13322.9375,
+    "speedup": 0.13551347065915456
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 8293.5625,
+    "speedup": 0.2176914323609426
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 7654.8125,
+    "speedup": 0.2358565281644717
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 2747.0,
+    "speedup": 0.657239716053877
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 2059.75,
+    "speedup": 0.8765323461585144
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 2028.875,
+    "speedup": 0.8898712340582835
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 4227.9375,
+    "speedup": 0.42702558871790325
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 2721.625,
+    "speedup": 0.6633674734763239
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 2061.5,
+    "speedup": 0.8757882609750182
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 2763.0625,
+    "speedup": 0.6534189870840779
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 2159.1875,
+    "speedup": 0.836165224187339
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 2087.4375,
+    "speedup": 0.864906134914219
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 4220.0,
+    "speedup": 0.42782879146919434
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 2752.3125,
+    "speedup": 0.655971115198583
+  },
+  {
+    "m": 128,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 2123.0,
+    "speedup": 0.8504180405087141
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "off",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 3777.25,
+    "speedup": 1.0
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 8974.3125,
+    "speedup": 0.42089575106728233
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 9034.0,
+    "speedup": 0.41811489926942663
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 9364.4375,
+    "speedup": 0.4033611201954202
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 6921.3125,
+    "speedup": 0.5457418661561662
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 6911.125,
+    "speedup": 0.5465463292879235
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 7300.5,
+    "speedup": 0.5173960687624135
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 8336.9375,
+    "speedup": 0.4530740454753319
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 8277.8125,
+    "speedup": 0.456310166484201
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 6811.4375,
+    "speedup": 0.554545204297918
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 5820.5,
+    "speedup": 0.6489562752340864
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "fp8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 8872.875,
+    "speedup": 0.4257075637828776
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "fp8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 8899.75,
+    "speedup": 0.4244220343268069
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "fp8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 9133.25,
+    "speedup": 0.413571291708866
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "fp8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 7479.5625,
+    "speedup": 0.5050094841777176
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "fp8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 6769.9375,
+    "speedup": 0.5579445895918537
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "fp8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 7256.0625,
+    "speedup": 0.520564700207585
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "fp8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 8547.25,
+    "speedup": 0.4419257655971219
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "fp8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 8328.25,
+    "speedup": 0.45354666346471345
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "fp8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 7103.625,
+    "speedup": 0.5317355575498425
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "fp8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 5927.0625,
+    "speedup": 0.6372887075174254
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int2",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 9526.8125,
+    "speedup": 0.3964862329346778
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int2",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 10612.125,
+    "speedup": 0.35593719448272615
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int2",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 11916.9375,
+    "speedup": 0.31696482422602285
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int2",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 8449.5,
+    "speedup": 0.44703828628912956
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int2",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 7901.0625,
+    "speedup": 0.47806861418954727
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int2",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 9499.875,
+    "speedup": 0.39761049487493255
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int2",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 9670.1875,
+    "speedup": 0.39060773123582143
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int2",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 9973.0,
+    "speedup": 0.3787476185701394
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int2",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 8095.875,
+    "speedup": 0.466564762919388
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "int2",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 6826.5625,
+    "speedup": 0.5533165484092469
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "half2",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 9369.625,
+    "speedup": 0.4031377990047627
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "half2",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 9776.5625,
+    "speedup": 0.38635767939907306
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "half2",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 11233.0,
+    "speedup": 0.33626368734977297
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "half2",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 8446.3125,
+    "speedup": 0.4472069912165812
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "half2",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 7470.9375,
+    "speedup": 0.5055925042874472
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "half2",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 8852.375,
+    "speedup": 0.42669340148830115
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "half2",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 10050.0,
+    "speedup": 0.3758457711442786
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "half2",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 9853.9375,
+    "speedup": 0.3833239250807101
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "half2",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 8218.875,
+    "speedup": 0.45958236376633055
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "half2",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 7787.5,
+    "speedup": 0.48504012841091493
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "coop16",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 17367.1875,
+    "speedup": 0.21749347728295096
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "coop16",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 14041.0625,
+    "speedup": 0.26901454216872833
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "coop16",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 18969.125,
+    "speedup": 0.19912621167291586
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "coop16",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 28019.1875,
+    "speedup": 0.1348094051620876
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "coop16",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 17418.3125,
+    "speedup": 0.21685510579741865
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "coop16",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 14454.5,
+    "speedup": 0.26132000415095646
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "coop8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 16667.0625,
+    "speedup": 0.22662961754658326
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "coop8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 15591.5,
+    "speedup": 0.2422634127569509
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "coop8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 18046.4375,
+    "speedup": 0.20930723861704006
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "coop8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 26832.4375,
+    "speedup": 0.14077178042434646
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "coop8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 16825.4375,
+    "speedup": 0.22449639125282775
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "coop8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 16054.375,
+    "speedup": 0.23527854556779695
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 5505.875,
+    "speedup": 0.6860399119122755
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 3652.8125,
+    "speedup": 1.0340662161006073
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 2813.625,
+    "speedup": 1.3424852281309698
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 9518.1875,
+    "speedup": 0.3968455128668142
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 5906.375,
+    "speedup": 0.6395208567014454
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 3969.625,
+    "speedup": 0.951538243536858
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 5557.0625,
+    "speedup": 0.6797206257802572
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 3699.6875,
+    "speedup": 1.0209646084973394
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 2841.375,
+    "speedup": 1.3293739826668427
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 9394.625,
+    "speedup": 0.40206501057785704
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 5932.125,
+    "speedup": 0.6367448426997071
+  },
+  {
+    "m": 256,
+    "n": 5120,
+    "k": 17408,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 4154.0625,
+    "speedup": 0.909290604077334
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "off",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 5922.875,
+    "speedup": 1.0
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 17167.625,
+    "speedup": 0.34500258480715884
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 15982.6875,
+    "speedup": 0.3705806673627323
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 16317.0,
+    "speedup": 0.362987987987988
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 13355.1875,
+    "speedup": 0.44348871927106975
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 12074.8125,
+    "speedup": 0.4905148630672319
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 13345.1875,
+    "speedup": 0.4438210403563082
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 16074.5,
+    "speedup": 0.3684640268748639
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 15612.75,
+    "speedup": 0.37936141935277257
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 13357.5,
+    "speedup": 0.4434119408571963
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 11439.875,
+    "speedup": 0.517739485789836
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 17055.0625,
+    "speedup": 0.3472795834081523
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 16504.25,
+    "speedup": 0.3588696850811155
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 16686.625,
+    "speedup": 0.3549474504281123
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 14136.375,
+    "speedup": 0.4189811744524321
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 13151.8125,
+    "speedup": 0.4503466727494784
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 13734.0625,
+    "speedup": 0.4312544085189652
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 16486.1875,
+    "speedup": 0.3592628677794669
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 15833.0625,
+    "speedup": 0.3740827145727493
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 13848.25,
+    "speedup": 0.4276984456519777
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "fp8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 11612.25,
+    "speedup": 0.5100540377618463
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 17675.75,
+    "speedup": 0.3350847913101283
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 18844.125,
+    "speedup": 0.3143088363083985
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 21730.0,
+    "speedup": 0.2725667280257708
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 16054.625,
+    "speedup": 0.3689201709787678
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 13890.875,
+    "speedup": 0.42638602679816784
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 16988.5,
+    "speedup": 0.3486402566442005
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 18655.125,
+    "speedup": 0.31749318216843897
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 18839.4375,
+    "speedup": 0.3143870404835601
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 15700.4375,
+    "speedup": 0.37724267237776016
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "int2",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 13243.125,
+    "speedup": 0.4472414932276181
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 17552.75,
+    "speedup": 0.3374328808876102
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 18006.25,
+    "speedup": 0.3289343977785491
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 20365.1875,
+    "speedup": 0.2908333154310512
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 16018.0625,
+    "speedup": 0.36976226057302497
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 14467.9375,
+    "speedup": 0.40937936039604816
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 16355.25,
+    "speedup": 0.3621390684948258
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 17913.5,
+    "speedup": 0.3306375080246741
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": true
+    },
+    "wall_us": 17871.5,
+    "speedup": 0.331414542707663
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 15629.375,
+    "speedup": 0.3789578917902987
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "half2",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": true
+    },
+    "wall_us": 14561.625,
+    "speedup": 0.4067454696848738
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop16",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 32219.1875,
+    "speedup": 0.18383067543214737
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop16",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 26503.75,
+    "speedup": 0.22347309343017496
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop16",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 38161.4375,
+    "speedup": 0.15520576236154626
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop16",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 55018.6875,
+    "speedup": 0.10765205912990927
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop16",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 32414.625,
+    "speedup": 0.18272230513232837
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop16",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 26584.625,
+    "speedup": 0.22279324985776552
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 31659.6875,
+    "speedup": 0.18707938920748982
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 29097.3125,
+    "speedup": 0.20355402238608805
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 32503.6875,
+    "speedup": 0.1822216325455381
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 52227.75,
+    "speedup": 0.11340475130557989
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 31736.6875,
+    "speedup": 0.18662549454791083
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "coop8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 29297.625,
+    "speedup": 0.20216229131200908
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 8065.0625,
+    "speedup": 0.7343867452980061
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 5239.3125,
+    "speedup": 1.1304679764759211
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 3881.125,
+    "speedup": 1.5260716931302136
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 14200.75,
+    "speedup": 0.41708184426878864
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 7965.0,
+    "speedup": 0.7436126804770873
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_int8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 5168.8125,
+    "speedup": 1.145886990483791
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 8119.125,
+    "speedup": 0.7294967130078672
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 5419.1875,
+    "speedup": 1.09294520626939
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    "wall_us": 3953.125,
+    "speedup": 1.4982766798418972
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 14282.5625,
+    "speedup": 0.4146927415861124
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 8030.625,
+    "speedup": 0.7375359950190676
+  },
+  {
+    "m": 512,
+    "n": 17408,
+    "k": 5120,
+    "config": {
+      "mode": "staged_fp8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    "wall_us": 5320.75,
+    "speedup": 1.1131654372034019
+  }
+]

@@ -1,0 +1,94 @@
+{
+  "performance": [
+    {
+      "arm": "int8",
+      "seq_len": 512,
+      "baseline": {
+        "prefill_tps": 256.2595,
+        "decode_tps": 19.2405,
+        "rss_mb": 853.395,
+        "backend_allocated_mb": 7847.23
+      },
+      "int8": {
+        "prefill_tps": 379.756,
+        "decode_tps": 19.2405,
+        "rss_mb": 854.055,
+        "backend_allocated_mb": 7923.77
+      },
+      "paired_speedup": 1.481289229046323,
+      "paired_range": [
+        1.464792798979309,
+        1.4869908354280184
+      ],
+      "wins": 6
+    },
+    {
+      "arm": "int8",
+      "seq_len": 2048,
+      "baseline": {
+        "prefill_tps": 253.635,
+        "decode_tps": 18.889499999999998,
+        "rss_mb": 853.5699999999999,
+        "backend_allocated_mb": 7847.23
+      },
+      "int8": {
+        "prefill_tps": 374.0535,
+        "decode_tps": 18.859,
+        "rss_mb": 854.19,
+        "backend_allocated_mb": 7923.77
+      },
+      "paired_speedup": 1.4738236472727535,
+      "paired_range": [
+        1.4619360809330395,
+        1.4795995645382685
+      ],
+      "wins": 6
+    },
+    {
+      "arm": "fp8",
+      "seq_len": 512,
+      "baseline": {
+        "prefill_tps": 256.2595,
+        "decode_tps": 19.2405,
+        "rss_mb": 853.395,
+        "backend_allocated_mb": 7847.23
+      },
+      "fp8": {
+        "prefill_tps": 374.1785,
+        "decode_tps": 19.234,
+        "rss_mb": 853.985,
+        "backend_allocated_mb": 7923.77
+      },
+      "paired_speedup": 1.4596471407480214,
+      "paired_range": [
+        1.4399430832504923,
+        1.4646951262395387
+      ],
+      "wins": 6
+    },
+    {
+      "arm": "fp8",
+      "seq_len": 2048,
+      "baseline": {
+        "prefill_tps": 253.635,
+        "decode_tps": 18.889499999999998,
+        "rss_mb": 853.5699999999999,
+        "backend_allocated_mb": 7847.23
+      },
+      "fp8": {
+        "prefill_tps": 368.4205,
+        "decode_tps": 18.877499999999998,
+        "rss_mb": 854.125,
+        "backend_allocated_mb": 7923.77
+      },
+      "paired_speedup": 1.453561011304704,
+      "paired_range": [
+        1.441863398100343,
+        1.4568461267703114
+      ],
+      "wins": 6
+    }
+  ],
+  "quality": [],
+  "logits": []
+}

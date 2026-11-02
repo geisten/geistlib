@@ -1,0 +1,51 @@
+{
+  "cpu": "Apple M6",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A425",
+  "revision": "82c71d6df64f965442c8e7f6c0d77244d72db1e1",
+  "model": {
+    "path": "/Users/germar/geist-models/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+    "sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1"
+  },
+  "binary_sha256": {
+    "tests/bench_perf_sweep": "86828d32f3c505b321b4dfa2423e7dd9e37ed4001083aec99ca1fe831656c28e",
+    "tools/eval_geist": "d9072d6319929db5d6204f542d3d399f83f12d3f72de4a17740622fc559383b0",
+    "tools/dump_geist_logits": "ba94c785dd041756dc1bf7b908b0926712f29614fad4c2f9698ecd6a5f38d91d"
+  },
+  "configs": [
+    {
+      "label": "baseline",
+      "mode": "off",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "label": "int8",
+      "mode": "staged_int8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "label": "fp8",
+      "mode": "staged_fp8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    }
+  ],
+  "cycles": 6,
+  "quality_format": "chat",
+  "protocol": {
+    "seq_lens": [
+      128,
+      512,
+      2048
+    ],
+    "decode_n": 32,
+    "warmup": 2048,
+    "repeats": 1,
+    "m_max": 0,
+    "threads": 4
+  }
+}

@@ -1,0 +1,8 @@
+PQ2 oracle dtype=22 rows=64 K=128 N=65 power=0 exact=0 NRMSE=0
+PQ2 oracle dtype=22 rows=129 K=384 N=67 power=-20 exact=0 NRMSE=1.14845561e-08
+PQ2 oracle dtype=22 rows=128 K=1024 N=257 power=20 exact=0 NRMSE=1.22065034e-07
+PQ2 oracle dtype=22 rows=64 K=128 N=65 power=0 exact=1 NRMSE=0
+PQ2 oracle dtype=22 rows=8 K=256 N=65 power=0 exact=0 NRMSE=0
+PQ2 oracle dtype=22 rows=1 K=256 N=65 power=0 exact=0 NRMSE=0
+PQ2 oracle dtype=7 rows=64 K=256 N=65 power=0 exact=0 NRMSE=0
+PQ2 oracle dtype=22 rows=64 K=256 N=65 power=0 exact=0 NRMSE=2.83870218e-09

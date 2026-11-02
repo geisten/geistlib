@@ -1,0 +1,420 @@
+{
+  "cpu": "Apple M6",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A425",
+  "revision": "4573a2ce72b265fc26f84011b5db854e189f05d3",
+  "binary_sha256": "f352339d6b24351707913dbd46061ff5ef5e8bf6853761179a8af6259ee96c4b",
+  "configs": [
+    {
+      "mode": "off",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "int8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "int8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "int8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "int8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "int8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "int8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "int8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": true
+    },
+    {
+      "mode": "int8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": true
+    },
+    {
+      "mode": "int8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": true
+    },
+    {
+      "mode": "int8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": true
+    },
+    {
+      "mode": "fp8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "fp8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "fp8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "fp8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "fp8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "fp8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "fp8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": true
+    },
+    {
+      "mode": "fp8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": true
+    },
+    {
+      "mode": "fp8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": true
+    },
+    {
+      "mode": "fp8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": true
+    },
+    {
+      "mode": "int2",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "int2",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "int2",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "int2",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "int2",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "int2",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "int2",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": true
+    },
+    {
+      "mode": "int2",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": true
+    },
+    {
+      "mode": "int2",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": true
+    },
+    {
+      "mode": "int2",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": true
+    },
+    {
+      "mode": "half2",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "half2",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "half2",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "half2",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "half2",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "half2",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "half2",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": true
+    },
+    {
+      "mode": "half2",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": true
+    },
+    {
+      "mode": "half2",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": true
+    },
+    {
+      "mode": "half2",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": true
+    },
+    {
+      "mode": "coop16",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "coop16",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "coop16",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "coop16",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "coop16",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "coop16",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "coop8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "coop8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "coop8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "coop8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "coop8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "coop8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "staged_int8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "staged_int8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "staged_int8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "staged_int8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "staged_int8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "staged_int8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "staged_fp8",
+      "tile": 32,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "staged_fp8",
+      "tile": 64,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "staged_fp8",
+      "tile": 128,
+      "simdgroups": 4,
+      "shared": false
+    },
+    {
+      "mode": "staged_fp8",
+      "tile": 32,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "staged_fp8",
+      "tile": 64,
+      "simdgroups": 8,
+      "shared": false
+    },
+    {
+      "mode": "staged_fp8",
+      "tile": 128,
+      "simdgroups": 8,
+      "shared": false
+    }
+  ],
+  "shapes": [
+    [
+      128,
+      17408,
+      5120
+    ],
+    [
+      256,
+      5120,
+      17408
+    ],
+    [
+      512,
+      17408,
+      5120
+    ]
+  ],
+  "outer_cycles": 2,
+  "inner_cycles": 2,
+  "repeats": 8,
+  "warmup": 64,
+  "notes": "Exploratory rotated-order sweep; wall timing includes actual preparation, GEMM and host wait. Independent CPU oracle per point."
+}
