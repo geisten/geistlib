@@ -1,0 +1,25 @@
+Final local validation
+Archived UTC: 2026-11-01T17:55:45.263149+00:00
+
+Python 3.13.18
+release: Ran 162 test(s) in 46s: 113 passed, 49 skipped, 0 failed, 0 error
+asan: Ran 162 test(s) in 96s: 113 passed, 49 skipped, 0 failed, 0 error
+Python tooling suite: PASS with isolated Python 3.13 + NumPy test dependencies (system Python 3.9 cannot import existing main PEP-604 annotations; bare Python 3.13 lacked NumPy).
+clang-format 22: All 582 files conform to .clang-format
+Public C23/C++17 headers: PASS
+Legacy tensor-disabled Metal parity: PASS
+
+All eight per-mode CPU oracles passed in release and ASan/UBSan; four shared-accumulator variants also passed.
+The exhaustive matrix campaign checks independent sampled CPU-double dots for every geometry.
+
+model: 54 complete recorded rows
+model-m512: 36 complete recorded rows
+matrix: 780 complete recorded rows
+Chat quality: 36 rows, prompt lengths 714..739 tokens, native preparation verified.
+Final binary replay: 9 bit-identical baseline/INT8/FP8 logit vectors.
+Existing models: 12 bit-identical token-ID/logit checks including clean main.
+Bonsai default vs clean main: 3 bit-identical logit vectors.
+Staged default geometry: 128 rows / four SIMD groups; independent CPU oracle passed.
+Clean revision A/B: final source, six cycles plus a baseline control, raw report retained.
+GCC 14/15 unavailable on this macOS host; Linux GCC is covered by required CI.
+CI remains pending human /ci-ok HEAD per AGENT.md section 9.

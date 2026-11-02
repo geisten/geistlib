@@ -112,6 +112,47 @@ throughput and greedy-output checks use
 [`metal_prefill_tensor.sh`](../tools/probes/metal_prefill_tensor.sh) with a
 local GGUF. Measure on the target device before quoting a speedup.
 
+### Opt-in M6 PQ2 tuning
+
+`GEIST_METAL_PQ2_MODE` selects an experimental PQ2-only prefill candidate:
+`int8`, `fp8`, `int2`, `half2`, `coop16`, `coop8`, `staged_int8`, or
+`staged_fp8`. Unset or `off` retains the existing kernels. M6 GPU family 11
+and tensor support are required. Decode, batches below 64, exact weights,
+other formats/devices and compilation/workspace failures retain their
+previous paths. No new library or workspace is created for non-PQ2 models.
+
+Block modes preserve the original codes and half block scales, preparing
+activations once per 128 values. INT2 preserves the code bias through an
+exact activation-sum correction. `half2` uses scaled FP16 activations;
+`coop16` reads the original FP32 activation tensor directly. Cooperative
+input variants avoid threadgroup staging using single-SIMD-group operands.
+The FP8/INT8 activation variants change numerical rounding.
+
+`staged_int8` and `staged_fp8` prepare a full temporary matrix pair and use
+one full-K dot, with power-of-two row scales applied afterward. They add
+weight and activation requantization error and consume
+`(rows + n_out) * (n_in + 4)` scratch bytes. INT32 full-K dots are limited
+to K<=65536. PQ2-specific preparation finds row maxima from packed code
+presence and original block scales, then expands four codes per lane.
+There is no model-wide expanded cache. Scratch grows to its high-water
+geometry and is reused until backend destruction.
+
+`GEIST_METAL_PQ2_TILE=32|64|128` and
+`GEIST_METAL_PQ2_SIMDGROUPS=4|8` select candidate geometry. Full-K staged
+modes default to the measured 128-row/four-SIMD-group geometry; other
+candidates default to eight SIMD groups.
+`GEIST_METAL_PQ2_SHARED_ACC=1` moves block-mode FP32 running sums to
+threadgroup memory to compare register pressure; its row tile is capped
+at 64 to fit the hardware memory limit. All settings are experimental;
+no speed or quality equivalence is implied by enabling them.
+
+Build `tests/bench_metal_pq2` and run `tools/tune_metal_pq2.py --out DIR`
+under an exclusive M6 lease for a rotated-order, shape-based exploration.
+The matrix fixture and real production dispatch are identical across modes;
+64 warmups are discarded and sampled CPU-double dots verify results against
+independently decoded/quantized operands. Full-model tests are required
+before treating a matrix-level speedup as an application improvement.
+
 ## Vulkan (Linux GPU, experimental)
 
 Build with `BACKENDS="vulkan cpu_x86 cpu_scalar"`; `libvulkan` is loaded at run
