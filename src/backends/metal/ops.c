@@ -1032,6 +1032,21 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
     /* A few rows of a narrow matrix (DeltaNet beta/alpha: 48 outputs) would
      * leave the 8x8 GEMM n_out/8 threadgroups; the reduction kernel spreads
      * every output over a threadgroup instead (#192). */
+    /* On the matrix units (#314): F32 weights rounded to half per tile. */
+    if (params->rows >= 8u && w->dtype == GEIST_DTYPE_F32 && st->f32_mm_tc_pipeline != nullptr &&
+        params->n_in % 16u == 0u) {
+        const struct metal_q4k_params tp = {.n_in           = params->n_in,
+                                            .n_out          = params->n_out,
+                                            .rows           = params->rows,
+                                            .blocks_per_row = params->n_in / 16u,
+                                            .x_offset       = params->x_offset,
+                                            .w_byte_offset  = params->w_offset * 4u,
+                                            .y_offset       = params->y_offset,
+                                            .x_row_stride   = params->x_row_stride,
+                                            .y_row_stride   = params->y_row_stride};
+        metal_encode_mm_tc(st, enc, st->f32_mm_tc_pipeline, x, w, y, &tp);
+        return;
+    }
     const bool narrow_few = params->rows <= 8u && params->n_out < 1024u;
     const bool use_sg     = params->rows > 1u && sg_pipe != nullptr && !narrow_few;
     const bool use_mm     = use_sg && w->dtype == GEIST_DTYPE_F32 &&
@@ -2119,11 +2134,16 @@ static void metal_encode_pq2_lowp(struct metal_state            *st,
                metal_pq2_lowp_reserve(be, rows, n_in, n_out);
     }
 
-    if (!lowp && dtype == GEIST_DTYPE_PQ2_0 && rows >= 8u && n_out % 64u == 0u &&
-        n_in % 32u == 0u) {
-        metal_pq2_xh_reserve(be, rows, n_in);
-    } else if (!lowp && dtype == GEIST_DTYPE_PQ2_0 && rows >= 2u && rows <= 8u) {
+    /* Short batches prefer pq2_m8, including exactly eight rows. Larger
+     * tensor GEMMs read f32 directly and never bind pq2_xh_buffer: avoid
+     * allocating/growing an unused f16 copy on M5/M6. Test the compiled
+     * pipeline, not tensor_mm, so a failed Metal 4 compile retains the
+     * simdgroup fallback's scratch. */
+    if (!lowp && dtype == GEIST_DTYPE_PQ2_0 && rows >= 2u && rows <= 8u) {
         metal_pq2_xh_reserve(be, 8u, n_in);
+    } else if (!lowp && dtype == GEIST_DTYPE_PQ2_0 && rows > 8u &&
+               st->pq2_mm_tc_pipeline == nullptr && n_out % 64u == 0u && n_in % 32u == 0u) {
+        metal_pq2_xh_reserve(be, rows, n_in);
     }
     const struct metal_q4k_params params = {
             .n_in           = (uint32_t) n_in,
