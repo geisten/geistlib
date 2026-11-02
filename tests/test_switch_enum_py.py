@@ -5,7 +5,9 @@ Copies include/, adds a probe value to a public enum, and compiles the whole
 library with its own flags under -fsyntax-only. Each switch over that enum
 (here: each `case` of the enum's last value) has to be reported, in the .c
 files and in the headers they include. Sources this target does not build
-(cpu_x86 and Vulkan on a Mac) are not in the compile commands.
+(cpu_x86 and Vulkan on a Mac) are not in the compile commands. A make
+variable given to `make test-py` (CC, TARGET) reaches `make -n` through
+MAKEFLAGS.
 """
 import re
 import shlex
@@ -78,6 +80,10 @@ class SwitchEnum(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.commands = compile_commands()
+        source, argv = next(iter(cls.commands.items()))
+        probe = syntax_only(argv, source, ROOT / "include")
+        if "-std=c23" in probe.stderr:
+            raise unittest.SkipTest(f"{argv[0]} has no C23: make test-py CC=<compiler>")
 
     def probe(self, enum, header, last):
         value = "SWITCH_ENUM_PROBE"

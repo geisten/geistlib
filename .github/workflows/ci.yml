@@ -191,9 +191,10 @@ jobs:
         run: make test-decision TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
       # Hermetic Python suite (algorithm reference impls). Part of `make test` (#146).
+      # The job's compiler: test_switch_enum_py.py compiles the library with it.
       - name: Python tests
         if: matrix.target == 'linux'
-        run: make test-py
+        run: make test-py TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
       # The BitNet embedding chain, executed end to end. Called directly, not via
       # `make test-embedding`, whose 77 is a benign skip without numpy: here numpy
