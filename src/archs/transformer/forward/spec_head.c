@@ -32,16 +32,22 @@
  *    layouts fall back to an f32-dequant dot — high precision, not bit-exact.)
  *
  * So the only approximation is phase 2 — *which* rows become finalists. The
- * true argmax must be among the top-K; recall grows with the vocab, so TOP_K's
- * default is vocab-aware (512 for ~128 K, 4096 for ~256 K). At those sizes
- * greedy output is byte-identical to the dense head (verified: BitNet 128 K and
- * Gemma 256 K). A too-small TOP_K (e.g. 512 on Gemma) drops the argmax on a
- * near-tie and the continuation diverges — coherent, not reproducible. Tune
- * with GEIST_SPEC_TOPK / GEIST_SPEC_STRIDE.
+ * true argmax must be among the top-K, and nothing guarantees that it is: the
+ * sketch keeps a quarter of the dimensions, and a row whose alignment with the
+ * hidden state sits in the other three quarters ranks low however large its
+ * logit. Llama 3.2 3B (Q6_K head, #384), 1024 greedy steps: the true argmax
+ * needs a top-K of 2 at the median, 375 at p99, and 1070 and 2108 at the two
+ * steps it missed with K = 1024 (" The" for " Casual", 0.9 logits behind).
+ * Rows left out reached logit 20.1 next to a winner of 21.2, so no threshold
+ * on the finalists' logits tells a safe step from a miss, and the
+ * Cauchy-Schwarz bound that would prove one (e6c217d8, 6a005cf6) declines on
+ * nearly every token. Tune with GEIST_SPEC_TOPK / GEIST_SPEC_STRIDE.
  *
- * Default ON for greedy decode on an eligible tied lm_head (GEIST_SPEC_HEAD=0
- * forces the exact dense head). Non-greedy sampling, ineligible dtypes, and
- * hosts without NEON+dotprod or AVX2 always use the dense head.
+ * Hence OFF by default (#384): greedy is the argmax of the full head.
+ * GEIST_SPEC_HEAD=1 opts in for greedy decode on an eligible tied lm_head,
+ * trading that guarantee for the head's bandwidth. Non-greedy sampling,
+ * ineligible dtypes, and hosts without NEON+dotprod or AVX2 always use the
+ * dense head.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -126,10 +132,11 @@ static size_t spec_env_sz(const char *name, size_t dflt, size_t lo, size_t hi) {
 }
 
 static int spec_head_env(void) {
-    /* Default ON; GEIST_SPEC_HEAD=0 forces it off. Read per call (once per
+    /* Default OFF: it can emit a token that is not the argmax (#384, see the
+     * file comment); GEIST_SPEC_HEAD=1 opts in. Read per call (once per
      * decoded token — noise next to the head itself) so tests can toggle it
      * within one process. */
-    return geist_env_flag("GEIST_SPEC_HEAD", true);
+    return geist_env_flag("GEIST_SPEC_HEAD", false);
 }
 
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)

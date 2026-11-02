@@ -177,8 +177,9 @@ of it every token.
 
 Three things follow, and they bound what is still worth trying:
 
-1. **The output head is done.** 626.2 → 83.3 MB is a **7.5×** cut, and it ships
-   on by default (`spec_head.c`, `GEIST_SPEC_HEAD=0` disables). It went from the
+1. **The output head is done.** 626.2 → 83.3 MB is a **7.5×** cut. It shipped
+   on by default (`spec_head.c`) until #384 made it opt-in (`GEIST_SPEC_HEAD=1`):
+   the sketch can leave the true argmax out of its finalists. It went from the
    largest single item to a small one. The 78.3 MB sketch table is also 78.3 MB
    of *resident* RAM — a deliberate trade of footprint for bandwidth, which is
    affordable on a 4 GB board only because the F16 table itself stays mmap'd.
