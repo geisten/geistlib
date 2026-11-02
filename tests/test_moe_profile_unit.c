@@ -21,8 +21,9 @@
  *     threshold carried over by a run that measured none;
  *   - a v1 file (USAGE lines only) still loads, with no prefill rows, and
  *     is rewritten as v2; a PREFILL line that does not parse: ignored;
- *   - moe_stage_order: the most rows per byte, then the most selections,
- *     then the lower index; with no rows, the resident ranking's order.
+ *   - moe_stage_order: the most rows per byte at the threshold, then at a
+ *     quarter of it, then the most selections, then the lower index;
+ *     with no rows, the resident ranking's order.
  * The qwen3moe fixture on cpu_scalar (GEIST_MOE_PROFILE_CACHE = the
  * directory): a prefill of N tokens counts N x used selections per layer,
  * written when the model goes, and the next load reads them. With a GPU
@@ -344,6 +345,15 @@ static int check_stage_order(void) {
     for (size_t i = 0; i < 6; i++)
         ok = ok && d[i].idx == want[i];
     fails += geist_expect(ok, "the most prefill rows per byte first, then the selection counts");
+    struct moe_stage_cand q[] = {
+            {.rows = 0, .rows_lo = 0, .bytes = 100, .count = 50, .idx = 1},
+            {.rows = 0, .rows_lo = 10, .bytes = 100, .count = 0, .idx = 5},
+            {.rows = 0, .rows_lo = 10, .bytes = 200, .count = 0, .idx = 2}, /* half per byte */
+            {.rows = 5, .rows_lo = 5, .bytes = 100, .count = 0, .idx = 9},
+    };
+    moe_stage_order(4, q);
+    fails += geist_expect(q[0].idx == 9 && q[1].idx == 5 && q[2].idx == 2 && q[3].idx == 1,
+                          "rows at a quarter of the threshold break ties before the counts");
     return fails;
 }
 

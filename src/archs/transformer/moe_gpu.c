@@ -97,11 +97,12 @@ static int rank_cmp(const void *a, const void *b) {
 
 static int stage_cmp(const void *a, const void *b) {
     const struct moe_stage_cand *x = a, *y = b;
-    /* x->rows / x->bytes against y's, without the division. */
-    const double rx = (double) x->rows * (double) y->bytes,
-                 ry = (double) y->rows * (double) x->bytes;
-    if (rx != ry)
-        return rx > ry ? -1 : 1;
+    /* rows / bytes against y's, without the division. */
+    const double xb = (double) x->bytes, yb = (double) y->bytes;
+    if ((double) x->rows * yb != (double) y->rows * xb)
+        return (double) x->rows * yb > (double) y->rows * xb ? -1 : 1;
+    if ((double) x->rows_lo * yb != (double) y->rows_lo * xb)
+        return (double) x->rows_lo * yb > (double) y->rows_lo * xb ? -1 : 1;
     if (x->count != y->count)
         return x->count > y->count ? -1 : 1;
     return x->idx < y->idx ? -1 : x->idx > y->idx;
@@ -401,17 +402,24 @@ static void moe_stage_attach(const struct transformer_arch_state *st,
     if (geist_parse_long(getenv("GEIST_MOE_STAGE_HOST"), &mib) && mib >= 0)
         budget = (size_t) mib << 20;
     /* The cold routed experts, by the prefill rows a staging threshold
-     * takes: the profile's most rows per pinned byte first (#239). */
+     * takes: the profile's most rows per pinned byte first (#239). Rows at
+     * a quarter of the threshold break the ties, which are most of the
+     * cold experts after one request: Qwen3.6-35B-A3B with a profile of
+     * docs/ARCHITECTURE.md, 4 GiB of copies held 66 % of the rows a
+     * prefill of docs/OFFLOAD.md stages by the threshold's rows and the
+     * decode counts, 89 % with these (51 % by the decode counts alone). */
     long   th_env = -1;
     size_t th     = geist_parse_long(getenv("GEIST_MOE_STAGE_M_MIN"), &th_env) && th_env > 0
                             ? (size_t) th_env
                             : moe_profile_stage_m_min(st->moe_prof);
     th            = th > 0 ? th : 32;
-    uint64_t              *prow = heap_calloc_array_aligned(uint64_t, L *n_exp);
+    uint64_t              *prow = heap_calloc_array_aligned(uint64_t, 2 * L * n_exp);
     struct moe_stage_cand *cand = heap_calloc_array_aligned(struct moe_stage_cand, L * slots);
-    const bool             by_rows =
-            prow != nullptr && moe_profile_prefill_rows(st->moe_prof, th, L * n_exp, prow);
-    size_t n_cand = 0;
+    const bool by_rows = prow != nullptr &&
+                         moe_profile_prefill_rows(st->moe_prof, th, L * n_exp, prow) &&
+                         moe_profile_prefill_rows(
+                                 st->moe_prof, th >= 4 ? th / 4 : 1, L * n_exp, prow + L * n_exp);
+    size_t     n_cand  = 0;
     for (size_t k = 0; cand != nullptr && prow != nullptr && k < L * slots; k++) {
         const size_t l = rank[k].idx % L, e = rank[k].idx / L;
         if (e >= n_exp || mg->twins[(l * slots + e) * 3].raw != nullptr)
@@ -419,8 +427,11 @@ static void moe_stage_attach(const struct transformer_arch_state *st,
         size_t b = 0;
         for (size_t p = 0; p < 3; p++)
             b += expert_proj(&st->layers[l], p)[e].raw_nbytes;
-        cand[n_cand++] =
-                (struct moe_stage_cand) {prow[l * n_exp + e], b, rank[k].count, rank[k].idx};
+        cand[n_cand++] = (struct moe_stage_cand) {.rows    = prow[l * n_exp + e],
+                                                  .rows_lo = prow[(L + l) * n_exp + e],
+                                                  .bytes   = b,
+                                                  .count   = rank[k].count,
+                                                  .idx     = rank[k].idx};
     }
     if (cand == nullptr || prow == nullptr)
         s = GEIST_E_OOM;
