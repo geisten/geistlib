@@ -177,12 +177,10 @@ class FakeClient:
 
     def call(self, method, path, body=None, **_):
         self.calls.append((method, path, body))
-        if method == "GET":
-            v = self.routes[path]
-            if isinstance(v, Exception):
-                raise v
-            return v
-        return None
+        v = self.routes[path] if method == "GET" else self.routes.get((method, path))
+        if isinstance(v, Exception):
+            raise v
+        return v
 
     def pages(self, path, key=None):
         v = self.routes[path]
@@ -301,6 +299,12 @@ expect(("POST", "/repos/geisten/geistlib/actions/runs/41/rerun-failed-jobs", Non
        "/ci-ok -> the held run is rerun")
 rc, o, fake, _ = run(["rerun-held"], dict(ok_ev, sender={"login": "geist-agent"}), {})
 expect(fake.calls == [], "/ci-ok by the bot -> nothing")
+RERUN41 = "/repos/geisten/geistlib/actions/runs/41/rerun-failed-jobs"
+rc, o, fake, _ = run(["rerun-held"], ok_ev, {P9: pull(), f"/repos/geisten/geistlib/commits/{SHA}/status?limit=100": st,
+                                             ("POST", RERUN41): gate.ApiError(403, "user should have a permission")})
+posted = [b["body"] for m, p, b in fake.calls if m == "POST" and p == C9]
+expect(rc == 1 and len(posted) == 1 and "run 41" in posted[0] and "HTTP 403" in posted[0],
+       "/ci-ok, rerun refused (403) -> a comment names the run and the error, the job fails")
 
 if failures:
     print(f"test_agent_gate_py: FAIL ({failures})")
