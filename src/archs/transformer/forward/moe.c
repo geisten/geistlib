@@ -229,7 +229,8 @@ struct moe_job {
     size_t                                  n_active;
     uint32_t                                hot[GEIST_MOE_MAX_EXPERTS]; /* on the GPU (#78) */
     size_t                                  n_hot;
-    size_t                                  layer;
+    size_t            n_res; /* hot[0, n_res) resident, the rest staged (#239) */
+    size_t            layer;
     bool              decode_rows; /* a batched decode's rows (#245): each row its own matvec */
     pthread_t         caller;      /* the only thread that runs the GPU's batch */
     _Atomic bool      gpu_taken;
@@ -479,6 +480,25 @@ static void moe_worker(void *ctx, size_t begin, size_t end) {
     }
 }
 
+/* #239: of the n staged candidates, keep the cap with the most rows (ties:
+ * the lower expert id) and hand the others to the CPU (j->active); the
+ * kept ones stay in expert order. */
+static void moe_stage_pick(
+        const size_t *row_start, size_t cap, size_t *n, uint32_t *staged, struct moe_job *j) {
+    while (*n > cap) {
+        size_t worst = 0;
+        for (size_t i = 1; i < *n; i++) {
+            const size_t mi = row_start[staged[i] + 1] - row_start[staged[i]];
+            const size_t mw = row_start[staged[worst] + 1] - row_start[staged[worst]];
+            if (mi < mw || (mi == mw && staged[i] > staged[worst]))
+                worst = i;
+        }
+        j->active[j->n_active++] = staged[worst];
+        memmove(staged + worst, staged + worst + 1, (*n - worst - 1) * sizeof *staged);
+        (*n)--;
+    }
+}
+
 enum moe_profile_stage {
     MOE_PROFILE_NORM = 0,
     MOE_PROFILE_ROUTER,
@@ -638,10 +658,20 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     j->decode_rows      = ctx->decode_rows;
     j->gpu_status       = GEIST_OK;
     size_t rows_gpu     = 0;
+    /* #239: a prefill step on the model's GPU copies the cold experts with
+     * the most rows there, from mg->stage_m_min rows on. */
+    const bool stage = seq > 1 && !ctx->decode_rows && !routed && st->moe_gpu != nullptr &&
+                       st->moe_gpu->stage_m_min > 0 && st->moe_gpu->one_wait;
+    uint32_t   staged[GEIST_MOE_MAX_EXPERTS];
+    size_t     n_staged = 0;
     for (size_t e = 0; e < slots; e++) {
         const size_t m = sess->moe_row_start[e + 1] - sess->moe_row_start[e];
         if (m == 0)
             continue;
+        if (stage && !moe_gpu_hot(sess, j->layer, e) && moe_gpu_stageable(sess, j->layer, e, m)) {
+            staged[n_staged++] = (uint32_t) e;
+            continue;
+        }
         /* ponytail: with the model on the CPU, hot experts at decode only.
          * A prefill step's experts have many rows each; run one by one on
          * the GPU they took longer than the CPU for all of them (run 1669:
@@ -653,6 +683,19 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
         } else
             j->active[j->n_active++] = (uint32_t) e;
     }
+    j->n_res = j->n_hot;
+    if (n_staged > 0) {
+        moe_stage_pick(sess->moe_row_start, st->moe_gpu->stage_max, &n_staged, staged, j);
+        if (moe_gpu_stage(sess, j->layer, n_staged, staged) == GEIST_OK) {
+            for (size_t i = 0; i < n_staged; i++) {
+                j->hot[j->n_hot++] = staged[i];
+                rows_gpu += sess->moe_row_start[staged[i] + 1] - sess->moe_row_start[staged[i]];
+            }
+        } else {
+            for (size_t i = 0; i < n_staged; i++)
+                j->active[j->n_active++] = staged[i];
+        }
+    }
     if (st->moe_gpu != nullptr)
         atomic_fetch_add_explicit(&st->moe_gpu->rows_cpu, n_sel - rows_gpu, memory_order_relaxed);
     /* One wait per layer (#161): a decode step with the model on the GPU
@@ -662,7 +705,7 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     bool launched = routed; /* its hot experts run already */
     if (!routed && j->n_hot > 0 && j->n_hot <= GEIST_MOE_MAX_EXPERTS && st->moe_gpu->one_wait &&
         sess->moe_x_io != nullptr) {
-        s = moe_gpu_launch(sess, j->layer, seq, j->decode_rows, j->n_hot, j->hot);
+        s = moe_gpu_launch(sess, j->layer, seq, j->decode_rows, j->n_res, j->n_hot, j->hot);
         if (s != GEIST_OK && s != GEIST_E_UNSUPPORTED) {
             j->gpu_status = s;
             goto gpu_fail;
