@@ -198,7 +198,7 @@ ref_forward(const struct ref_model *m, struct ref_knobs k, double logits[static 
             const size_t s_lo  = slide && p + 1 > WINDOW ? p + 1 - WINDOW : 0;
             for (size_t hh = 0; hh < HEADS; hh++) {
                 const size_t kvh = hh / (HEADS / KV_HEADS);
-                double       sc[N_PROMPT], mx = k.no_sinks ? -INFINITY : m->l[l].sinks[hh];
+                double       sc[N_PROMPT], mx = k.no_sinks ? -1e300 : m->l[l].sinks[hh];
                 for (size_t s = s_lo; s <= p; s++) {
                     double dot = 0.0;
                     for (size_t i = 0; i < HD; i++)
