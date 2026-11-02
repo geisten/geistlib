@@ -186,6 +186,18 @@ void rope_compute_at(size_t pos_offset,
                      float *cos_out,
                      float *sin_out);
 
+/* rope_compute_at's full-rotation table (row width head_dim, NEOX pairs)
+ * with per-pair frequency factors (rope_freqs.weight, Llama 3 / 4): pair i
+ * turns at theta^(-2i/head_dim) / factors[i], as ggml's rope does with
+ * freq_factors. factors has head_dim / 2 entries. */
+void rope_compute_ff_at(size_t       pos_offset,
+                        size_t       n_positions,
+                        size_t       head_dim,
+                        float        theta,
+                        const float *factors,
+                        float       *cos_out,
+                        float       *sin_out);
+
 /* Row width of the tables rope_compute_at writes, which is also the width
  * rope_apply rotates over. See the partial-rotary note in arch_config.h. */
 [[nodiscard]] static inline size_t

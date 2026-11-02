@@ -48,6 +48,10 @@ struct mf_llama {
      * a template may contain NUL bytes (0: strlen). */
     const char *chat_template;
     size_t      chat_template_len;
+    /* rope_freqs.weight (Llama 3.x frequency factors, #379) with this many
+     * elements, 1 + i / 2 (all 1 with rope_freqs_ones); 0: none. */
+    uint32_t rope_freqs;
+    bool     rope_freqs_ones;
 };
 
 /* Qwen3.5 geometry (qwen35.* keys). Block i is attention when
@@ -94,8 +98,9 @@ static inline float mf_weight(uint64_t *s) {
 
 /* ---- F32 tensors ---------------------------------------------------------- */
 
-/* MF_RAMP: element i is mf_ramp(i), mixed signs, no draw from the seed. */
-enum mf_fill { MF_RAND, MF_ONE, MF_NEG_ONE, MF_ZERO, MF_RAMP };
+/* MF_RAMP: element i is mf_ramp(i), mixed signs, no draw from the seed.
+ * MF_STEP: element i is 1 + i / 2 (positive factors, e.g. rope_freqs). */
+enum mf_fill { MF_RAND, MF_ONE, MF_NEG_ONE, MF_ZERO, MF_RAMP, MF_STEP };
 
 static inline float mf_ramp(uint64_t i) {
     return ((float) (i % 7) - 3.0f) * 0.25f;
@@ -185,6 +190,7 @@ static inline void mf_write_tensors(struct tf_buf *o, struct mf_tensors *ts, uin
         for (uint64_t e = 0; e < mf_elems(t); e++) {
             const float v = t->fill == MF_RAND   ? mf_weight(&s) * t->scale
                             : t->fill == MF_RAMP ? mf_ramp(e)
+                            : t->fill == MF_STEP ? 1.0f + 0.5f * (float) e
                                                  : c;
             if (t->f16) {
                 const _Float16 h = (_Float16) v;
@@ -205,6 +211,9 @@ static inline struct tf_buf mf_llama_gguf(const struct mf_llama *c) {
     struct mf_tensors ts = {0};
     mf_add(&ts, c->d_model, c->vocab, MF_RAND, "token_embd.weight");
     mf_add(&ts, c->d_model, 0, MF_ONE, "output_norm.weight");
+    if (c->rope_freqs != 0) {
+        mf_add(&ts, c->rope_freqs, 0, c->rope_freqs_ones ? MF_ONE : MF_STEP, "rope_freqs.weight");
+    }
     if (c->untied) {
         mf_add(&ts, c->d_model, c->vocab, MF_RAND, "output.weight");
     }

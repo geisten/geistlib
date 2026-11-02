@@ -215,6 +215,32 @@ void rope_compute_at(size_t pos_offset,
     safe_free((void **) &inv_freq);
 }
 
+void rope_compute_ff_at(size_t       pos_offset,
+                        size_t       n_positions,
+                        size_t       head_dim,
+                        float        theta,
+                        const float *factors,
+                        float       *cos_out,
+                        float       *sin_out) {
+    const float  theta_scale = powf(theta, -2.0f / (float) head_dim);
+    const size_t half        = head_dim / 2;
+    for (size_t s = 0; s < n_positions; s++) {
+        /* ggml's order: the angle multiplied down pair by pair in float,
+         * divided by the pair's factor. */
+        float angle = (float) (pos_offset + s);
+        for (size_t i = 0; i < half; i++) {
+            const float th                   = angle / factors[i];
+            const float c                    = cosf(th);
+            const float si                   = sinf(th);
+            cos_out[s * head_dim + i]        = c;
+            cos_out[s * head_dim + half + i] = c;
+            sin_out[s * head_dim + i]        = si;
+            sin_out[s * head_dim + half + i] = si;
+            angle *= theta_scale;
+        }
+    }
+}
+
 /* Row `at` of a K or V cache as floats: in place for F32, widened into
  * `row` for F16. */
 static inline const float *

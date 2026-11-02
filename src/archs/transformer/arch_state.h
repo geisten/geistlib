@@ -726,6 +726,11 @@ struct transformer_arch_state {
     void  *rope_il_rows;
     size_t rope_il_rows_used;
     size_t rope_il_rows_capacity;
+    /* RoPE frequency factors (rope_freqs.weight, Llama 3 / 4, #244): pair i
+     * of a full rotation turns at theta^(-2i/d) / rope_freq_factors[i];
+     * nullptr = none. Host, [n_rope_freq_factors]; freed with the state. */
+    float *rope_freq_factors;
+    size_t n_rope_freq_factors;
     /* Matrices widened to F32 on a weights_device_copy backend
      * (per_layer_model_proj #658, a small half-precision projection #468):
      * plain host memory the backend copies to the device at resolve_weight,
