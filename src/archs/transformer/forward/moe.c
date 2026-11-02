@@ -145,23 +145,28 @@ bool moe_route(size_t                   n,
         for (size_t i = 0; i < n; i++)
             score[i] = exp((double) (logits[i] - mx)) / z;
     }
-    /* 3.-4. selection scores, the groups left out masked to -inf. */
+    /* 3.-4. selection scores; the experts of groups left out are not
+     * eligible. No infinities: the build's -ffast-math assumes none. */
     float sel[GEIST_MOE_MAX_EXPERTS];
-    for (size_t i = 0; i < n; i++)
+    bool  ok[GEIST_MOE_MAX_EXPERTS];
+    for (size_t i = 0; i < n; i++) {
         sel[i] = (float) score[i] + (r->sel_bias != nullptr ? r->sel_bias[i] : 0.0f);
+        ok[i]  = true;
+    }
     if (grouped) {
         const size_t g = r->n_group, per = n / g;
         if (n % g != 0 || per < 2 || r->topk_group == 0 || r->topk_group > g)
             return false;
         float gs[GEIST_MOE_MAX_EXPERTS];
         for (size_t q = 0; q < g; q++) {
-            float a = -INFINITY, b = -INFINITY; /* the group's best two */
-            for (size_t i = q * per; i < (q + 1) * per; i++) {
-                if (sel[i] > a) {
+            const float *x = sel + q * per; /* the group's best two */
+            float        a = x[0] > x[1] ? x[0] : x[1], b = x[0] > x[1] ? x[1] : x[0];
+            for (size_t i = 2; i < per; i++) {
+                if (x[i] > a) {
                     b = a;
-                    a = sel[i];
-                } else if (sel[i] > b) {
-                    b = sel[i];
+                    a = x[i];
+                } else if (x[i] > b) {
+                    b = x[i];
                 }
             }
             gs[q] = a + b;
@@ -174,26 +179,21 @@ bool moe_route(size_t                   n,
         for (size_t j = 0; j < r->topk_group; j++)
             kept[keep[j]] = true;
         for (size_t i = 0; i < n; i++)
-            if (!kept[i / per])
-                sel[i] = -INFINITY;
+            ok[i] = kept[i / per];
     }
-    /* 5. the k best, (score descending, id ascending), never a -inf. */
-    float    last    = INFINITY;
-    uint32_t last_id = 0;
+    /* 5. the k best eligible, (score descending, id ascending). */
     for (size_t j = 0; j < k; j++) {
         size_t best = n;
         for (size_t i = 0; i < n; i++) {
-            const bool after = sel[i] < last || (sel[i] == last && i > last_id);
-            if ((j > 0 && !after) || sel[i] == -INFINITY)
+            if (!ok[i])
                 continue;
             if (best == n || sel[i] > sel[best])
                 best = i;
         }
         if (best == n)
             return false; /* fewer eligible experts than k */
-        ids[j]  = (uint32_t) best;
-        last    = sel[best];
-        last_id = (uint32_t) best;
+        ids[j]   = (uint32_t) best;
+        ok[best] = false;
     }
     /* 6. weights. */
     double wd[GEIST_MOE_MAX_EXPERTS], sum = 0.0;

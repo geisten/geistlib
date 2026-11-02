@@ -138,7 +138,7 @@ static void ref_route(size_t                   n,
         double       gs[64];
         bool         keep[64] = {false};
         for (size_t g = 0; g < r->n_group; g++) {
-            double a = -INFINITY, b = -INFINITY;
+            double a = -1e300, b = -1e300; /* finite: -ffast-math */
             for (size_t i = g * per; i < (g + 1) * per; i++) {
                 if (sel[i] > a) {
                     b = a;
@@ -158,14 +158,14 @@ static void ref_route(size_t                   n,
         }
         for (size_t i = 0; i < n; i++)
             if (!keep[i / per])
-                sel[i] = -INFINITY;
+                sel[i] = -1e300;
     }
     bool   taken[64] = {false};
     double sum       = 0.0;
     for (size_t j = 0; j < k; j++) {
         size_t best = n;
         for (size_t i = 0; i < n; i++)
-            if (!taken[i] && sel[i] != -INFINITY && (best == n || sel[i] > sel[best]))
+            if (!taken[i] && sel[i] > -1e299 && (best == n || sel[i] > sel[best]))
                 best = i;
         taken[best] = true;
         ids[j]      = (uint32_t) best;
