@@ -5,7 +5,9 @@
  * cases #48 lists: ties in router scores, top-k = number of experts, an
  * expert never selected, all-zero router input, and refusals (k = 0, k > n,
  * non-finite logits). moe_route: a router bias and GPT-OSS's
- * softmax over the selected (#243). No model, no fixture.
+ * softmax over the selected (#243); DeepSeek's sigmoid scores, selection
+ * bias, groups, renormalisation and scale against a double reference over
+ * 4000 draws, ties and refusals (#242). No model, no fixture.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -102,8 +104,136 @@ static void check_softmax_weight(void) {
     expect(!moe_route(6, 0, &sw, logits, ids, w), "softmax_weight refuses k = 0");
 }
 
+/* DeepSeek's router (#242) against a double reference of llama.cpp's
+ * build_moe_ffn steps: sigmoid or softmax scores, exp_probs_b, groups
+ * scored by their two best, renormalisation and scale. */
+static uint64_t g_rng = 0x2545f4914f6cdd1dull;
+
+static double rnd(void) {
+    g_rng ^= g_rng << 13;
+    g_rng ^= g_rng >> 7;
+    g_rng ^= g_rng << 17;
+    return (double) (g_rng >> 11) / (double) (1ull << 53) * 2.0 - 1.0;
+}
+
+static void ref_route(size_t                   n,
+                      size_t                   k,
+                      const struct moe_router *r,
+                      const float             *logits,
+                      uint32_t                *ids,
+                      double                  *w) {
+    double sc[64], sel[64];
+    double mx = logits[0], z = 0.0;
+    for (size_t i = 1; i < n; i++)
+        mx = fmax(mx, logits[i]);
+    for (size_t i = 0; i < n; i++)
+        z += exp(logits[i] - mx);
+    for (size_t i = 0; i < n; i++) {
+        sc[i]  = r->gating == GEIST_MOE_GATING_SIGMOID ? 1.0 / (1.0 + exp(-(double) logits[i]))
+                                                       : exp(logits[i] - mx) / z;
+        sel[i] = (double) (float) sc[i] + (r->sel_bias ? r->sel_bias[i] : 0.0);
+    }
+    if (r->n_group > 1) {
+        const size_t per = n / r->n_group;
+        double       gs[64];
+        bool         keep[64] = {false};
+        for (size_t g = 0; g < r->n_group; g++) {
+            double a = -INFINITY, b = -INFINITY;
+            for (size_t i = g * per; i < (g + 1) * per; i++) {
+                if (sel[i] > a) {
+                    b = a;
+                    a = sel[i];
+                } else if (sel[i] > b) {
+                    b = sel[i];
+                }
+            }
+            gs[g] = a + b;
+        }
+        for (size_t j = 0; j < r->topk_group; j++) {
+            size_t best = r->n_group;
+            for (size_t g = 0; g < r->n_group; g++)
+                if (!keep[g] && (best == r->n_group || gs[g] > gs[best]))
+                    best = g;
+            keep[best] = true;
+        }
+        for (size_t i = 0; i < n; i++)
+            if (!keep[i / per])
+                sel[i] = -INFINITY;
+    }
+    bool   taken[64] = {false};
+    double sum       = 0.0;
+    for (size_t j = 0; j < k; j++) {
+        size_t best = n;
+        for (size_t i = 0; i < n; i++)
+            if (!taken[i] && sel[i] != -INFINITY && (best == n || sel[i] > sel[best]))
+                best = i;
+        taken[best] = true;
+        ids[j]      = (uint32_t) best;
+        sum += sc[best];
+    }
+    for (size_t j = 0; j < k; j++)
+        w[j] = sc[ids[j]] / (r->norm ? fmax(sum, 6.103515625e-5) : 1.0) *
+               (r->w_scale != 0.0f ? r->w_scale : 1.0);
+}
+
+static void check_deepseek(void) {
+    float bias[64];
+    for (size_t i = 0; i < 64; i++)
+        bias[i] = (float) (rnd() * 0.3);
+    const struct moe_router cases[] = {
+            {.gating     = GEIST_MOE_GATING_SIGMOID,
+             .norm       = true,
+             .sel_bias   = bias,
+             .w_scale    = 2.5f,
+             .n_group    = 8,
+             .topk_group = 4},
+            {.gating = GEIST_MOE_GATING_SIGMOID, .norm = true, .sel_bias = bias, .w_scale = 1.0f},
+            {.gating = GEIST_MOE_GATING_SOFTMAX, .norm = false, .n_group = 8, .topk_group = 3},
+            {.gating = GEIST_MOE_GATING_SOFTMAX, .norm = false, .w_scale = 16.0f},
+    };
+    int bad = 0;
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        for (int trial = 0; trial < 1000; trial++) {
+            float logits[64];
+            for (size_t i = 0; i < 64; i++)
+                logits[i] = (float) (rnd() * 4.0);
+            uint32_t ids[8], want[8];
+            float    w[8];
+            double   wd[8];
+            if (!moe_route(64, 6, &cases[c], logits, ids, w)) {
+                bad++;
+                continue;
+            }
+            ref_route(64, 6, &cases[c], logits, want, wd);
+            for (size_t j = 0; j < 6; j++) {
+                if (ids[j] != want[j] || fabs(w[j] - wd[j]) > 1e-6 * fmax(1.0, fabs(wd[j]))) {
+                    bad++;
+                    break;
+                }
+            }
+        }
+    }
+    expect(bad == 0, "DeepSeek routers match the double reference over 4000 draws");
+    /* Ties: equal groups keep the lower group id, equal scores the lower
+     * expert id. 8 experts in 4 groups of 2, all logits equal. */
+    const float             flat[8] = {0};
+    const struct moe_router grp     = {
+            .gating = GEIST_MOE_GATING_SIGMOID, .n_group = 4, .topk_group = 2};
+    uint32_t ids[4];
+    float    w[4];
+    expect(moe_route(8, 4, &grp, flat, ids, w) && ids[0] == 0 && ids[1] == 1 && ids[2] == 2 &&
+                   ids[3] == 3,
+           "tied groups and scores take the lower ids");
+    /* Groups that leave fewer eligible experts than k are refused. */
+    expect(!moe_route(8, 5, &grp, flat, ids, w), "k past the kept groups' experts is refused");
+    const struct moe_router uneven = {
+            .gating = GEIST_MOE_GATING_SIGMOID, .n_group = 3, .topk_group = 1};
+    expect(!moe_route(8, 2, &uneven, flat, ids, w), "groups that do not divide n are refused");
+}
+
 int main(void) {
     check_softmax_weight();
+    check_deepseek();
     /* Distinct scores: the k largest, largest first. */
     const float a[6] = {0.1f, 2.0f, -1.0f, 3.5f, 0.0f, 1.9f};
     check("distinct, k=3, norm", 6, 3, true, a, (const uint32_t[]) {3, 1, 5});
