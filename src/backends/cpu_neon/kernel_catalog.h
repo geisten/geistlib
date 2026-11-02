@@ -93,6 +93,11 @@ struct cpu_neon_kernel_policy {
     bool q4_01_native_mn;
     bool iq4xs_native_mn;
     bool tq2_0_native_mn;
+    /* MXFP4 prefill on the int8 SDOT kernel, else dequant + SGEMM. Default
+     * on everywhere: a mixture of experts runs one expert per thread, where
+     * single-threaded SGEMM calls share the AMX units (#16). Env:
+     * GEIST_MXFP4_NATIVE_MN. */
+    bool mxfp4_native_mn;
     bool tq2_0_tl1_m1;
 };
 

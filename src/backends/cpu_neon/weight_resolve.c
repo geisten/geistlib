@@ -1689,6 +1689,11 @@ static void apply_resolver_post_hooks(struct geist_weight                 *w,
     case GEIST_DTYPE_PQ2_0:
         install_pq2_0_x8_gemv_if_eligible(w, policy);
         return;
+    case GEIST_DTYPE_MXFP4:
+        if (!policy->mxfp4_native_mn) {
+            w->linear_mN = cpu_neon_w_dequant_trampoline_mN;
+        }
+        return;
     case GEIST_DTYPE_TQ2_0:
         /* Native q8a_mN vs trampoline (only meaningful when the q8a
          * row was installed, i.e. host has dotprod). On the fp32
