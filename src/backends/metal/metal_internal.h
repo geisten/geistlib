@@ -315,8 +315,6 @@ struct metal_state {
     void *iq3s_mm_tc_pipeline;
     void *pq2_mm_tc_function;
     void *pq2_mm_tc_pipeline;
-    void *f32_mm_tc_function;
-    void *f32_mm_tc_pipeline;
     /* Tensor-API prefill flash (#314), head_dim HD in slot HD/64 - 1
      * (64, 128, 256, 512 built); built only when tensor_mm. */
     void *attn_tc_library;
