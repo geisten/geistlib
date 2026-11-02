@@ -27,6 +27,25 @@ void heap_fail_allocations(bool on) {
     atomic_store_explicit(&g_heap_fail, on, memory_order_relaxed);
 }
 
+/* See heap_fail_after(): allocations left before they fail; < 0 is off. */
+static _Atomic int64_t g_heap_budget = -1;
+
+void heap_fail_after(int64_t n) {
+    atomic_store_explicit(&g_heap_budget, n < 0 ? -1 : n, memory_order_relaxed);
+}
+
+static bool heap_should_fail(void) {
+    if (atomic_load_explicit(&g_heap_fail, memory_order_relaxed)) {
+        return true;
+    }
+    int64_t b = atomic_load_explicit(&g_heap_budget, memory_order_relaxed);
+    while (b > 0 &&
+           !atomic_compare_exchange_weak_explicit(
+                   &g_heap_budget, &b, b - 1, memory_order_relaxed, memory_order_relaxed)) {
+    }
+    return b == 0;
+}
+
 /* True iff x is a non-zero power of two. Allocation alignments must satisfy
  * this: the rounding mask ~(alignment-1) and aligned_alloc() are both
  * undefined otherwise. */
@@ -66,7 +85,7 @@ static void *portable_aligned_alloc(const size_t alignment, const size_t size) {
 void *heap_alloc_aligned(const size_t size, size_t alignment) {
     size_t aligned = 0;
 
-    if (size == 0u || atomic_load_explicit(&g_heap_fail, memory_order_relaxed)) {
+    if (size == 0u || heap_should_fail()) {
         return nullptr;
     }
     if (alignment == 0u) {
@@ -202,8 +221,7 @@ void *heap_alloc_large(const size_t size, const size_t alignment) {
         geist_ckd_round_up_pow2(size, page, &len)) {
         return heap_alloc_aligned(size, alignment);
     }
-    if ((alignment != 0u && !size_is_pow2(alignment)) ||
-        atomic_load_explicit(&g_heap_fail, memory_order_relaxed)) {
+    if ((alignment != 0u && !size_is_pow2(alignment)) || heap_should_fail()) {
         return nullptr;
     }
     void *p = mmap(nullptr, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
