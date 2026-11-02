@@ -1,0 +1,25 @@
+# scripts/check_static.py: why an analyzer finding in the baseline stays.
+# file, check, reason. Other checks need no reason; they are style-level.
+include/geist_backend.h	clang-analyzer-core.NullDereference	be->desc is set once in backend.c create_from; the defensive check at exec_plan.c:201 seeds the report
+src/archs/audio_conformer/audio_kernels.c	clang-analyzer-deadcode.DeadStores	harmless dead store under NEON
+src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	state->backend is set after the null check; split_sess exists only under state->split; be->desc is set once in create_from
+src/archs/transformer/forward/attention.c	clang-analyzer-core.UndefinedBinaryOperatorResult	REAL at the KIVI path (:152): head_dim % 4 != 0 is not refused; the :909 one needs an odd head_dim, which allocate_runtime_rope rejects
+src/archs/transformer/forward/layer_deltanet.c	clang-analyzer-core.UndefinedBinaryOperatorResult	convd = 2*keyd+vald is nonzero when d_k and n_kh are, and both convolution branches write y[0,convd)
+src/archs/transformer/forward/moe.c	clang-analyzer-core.NullDereference	n_hot > 0 and a GPU status imply moe_gpu is non-null, across the translation unit
+src/archs/transformer/forward/spec_head.c	clang-analyzer-optin.taint.TaintedDiv	spec_env_sz clamps to [1,H] and the :423 loop stops at 1
+src/archs/transformer/moe_gpu.c	clang-analyzer-core.CallAndMessage	the path needs n_hot == 0; the only caller guards n_hot > 0
+src/archs/transformer/moe_gpu.c	clang-analyzer-core.UndefinedBinaryOperatorResult	ex[] gets exactly rows entries; the opaque rows_gather call only lost rs for the analyzer
+src/archs/transformer/moe_gpu.c	clang-analyzer-deadcode.DeadStores	harmless dead store; delete rows = n_hot
+src/archs/transformer/moe_gpu.c	clang-analyzer-security.ArrayBound	layer < n_layers and e < n_exp bound the index by the size of count
+src/archs/transformer/rotation.c	clang-analyzer-optin.core.EnumCastOutOfRange	enum range UB is C++ only; MIXER_ANY is a sentinel compared here
+src/backends/common/gemma4_kernels.c	clang-analyzer-unix.cstring.NullArg	heap_tl_grow keeps ptr and cap paired (heap.c:342) and the path needs a nonzero size
+src/backends/cpu_neon/attention_kv.h	clang-analyzer-core.UndefinedBinaryOperatorResult	nkv_supported requires an even head_dim before nkv_run; the analyzer cannot follow that function pointer
+src/backends/cpu_neon/kernels/q4_K.c	clang-analyzer-core.NullDereference	heap_tl_grow keeps ptr and cap paired (heap.c:342) and the path needs a nonzero size
+src/backends/cpu_neon/kernels/q4_K.c	clang-analyzer-unix.cstring.NullArg	heap_tl_grow keeps ptr and cap paired (heap.c:342) and the path needs a nonzero size; x is [static n_in] and null-checked in linear.c:152
+src/backends/cpu_neon/kernels/q6_K.c	clang-analyzer-core.NullDereference	heap_tl_grow keeps ptr and cap paired (heap.c:342) and the path needs a nonzero size
+src/backends/cpu_neon/kernels/q6_K.c	clang-analyzer-unix.cstring.NullArg	heap_tl_grow keeps ptr and cap paired (heap.c:342) and the path needs a nonzero size
+src/base/fnv1a.h	clang-analyzer-core.uninitialized.Assign	the caller passes a fully initialized uint64_t[3]; byte reads inside an integer are not modelled
+src/engine/backend.c	clang-analyzer-security.VAList	va_start precedes va_end on a straight line; a checker miss
+src/engine/model.c	clang-analyzer-core.NullDereference	both branches read the same thread-local error code with no write between
+src/engine/sampler_penalties.c	clang-analyzer-unix.cstring.NullArg	both passes walk the same const packed list, so t is non-null or OOM returned
+src/engine/session.c	clang-analyzer-core.uninitialized.Assign	session_fail returns its non-OK code; variadics are not inlined by the analyzer

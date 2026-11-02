@@ -227,9 +227,8 @@ static inline const char *geist_test_find_qwen35_gguf(void) {
     return nullptr;
 }
 
-/* clang-tidy: bugprone-macro-parentheses doesn't understand that `varname` here is a
- * declaration identifier — wrapping it in parens would yield invalid C. Suppress. */
-#define GEIST_REQUIRE_GGUF(varname) /* NOLINT(bugprone-macro-parentheses) */                   \
+/* bugprone-macro-parentheses does not see that `varname` is a declared name. */
+#define GEIST_REQUIRE_GGUF(varname) /* NOLINT(bugprone-macro-parentheses): a declarator */     \
     const char *varname = geist_test_find_gguf();                                              \
     if ((varname) == nullptr) {                                                                \
         GEIST_SKIP_FIXTURE(                                                                    \

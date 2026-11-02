@@ -11,10 +11,11 @@ the test suite**, not just built.
 CI runs in two tiers on git.geisten.net. A pull request waits for the fast
 one only; everything heavy runs after the merge.
 
-**Required (every pull request, branch protection on `main`).** Seven
+**Required (every pull request, branch protection on `main`).** Eight
 checks, listed in [`.gitea/required-checks.txt`](../.gitea/required-checks.txt):
-`clang-format`, the API contract, the source version and changelog check,
-`changed paths`, and build + model-free unit tests on Linux x86_64 (musl in
+`clang-format`, static analysis (`make check-static`: clang-tidy on the
+macOS arm64 sources, with a findings ratchet), the API contract, the source
+version and changelog check, `changed paths`, and build + model-free unit tests on Linux x86_64 (musl in
 Alpine, `cpu_x86 cpu_scalar` — the release recipe), Linux arm64 (glibc,
 cloud runner) and macOS arm64 (`mac-light`). About 15 minutes; nothing in
 it loads a real model, needs a GPU or measures time.

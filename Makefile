@@ -570,6 +570,14 @@ $(error No clang-format $(CLANG_FORMAT_MAJOR).x found. Install it with 'pip inst
 endif
 endif
 
+# Static analysis, no models and no GPU: the seeded defects must be found, and
+# the library must have no finding beyond scripts/static-baseline.txt (#342).
+CLANG_TIDY ?= clang-tidy
+.PHONY: check-static
+check-static:
+	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py --selftest
+	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py
+
 format:
 	@$(CLANG_FORMAT) -i $(FORMAT_FILES)
 	@echo "Formatted $(words $(FORMAT_FILES)) files."
@@ -588,6 +596,7 @@ help:
 	"  make lib | bin             only the static lib | only the binaries" \
 	"  make shared                the shared library for FFI callers (examples/ffi)" \
 	"  make DECISION=1            enable experimental numeric candidate scoring" \
+	"  make check-static          clang-tidy with a findings ratchet (no models, no GPU)" \
 	"  make DECISION=1 DECISION_CONTEXT=1  add snapshot-backed prefix scoring (#5)" \
 	"  make FAMILIES=\"bitnet llama\"  build only these model families (default: all)" \
 	"  make TOWERS=0              leave out the Gemma 4 audio/vision encoder towers" \
