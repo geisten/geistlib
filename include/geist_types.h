@@ -22,7 +22,7 @@ extern "C" {
 
 /* Values are ABI (metal shaders hardcode some): new dtypes go at the end,
  * directly above GEIST_DTYPE_COUNT. */
-enum geist_dtype {
+enum geist_dtype : uint32_t {
     GEIST_DTYPE_F32,
     GEIST_DTYPE_F16,
     GEIST_DTYPE_BF16,
@@ -102,8 +102,9 @@ enum geist_dtype {
     /* Not a dtype: one past the last, for sizing tables keyed by dtype. */
     GEIST_DTYPE_COUNT,
 };
+static_assert(sizeof(enum geist_dtype) == sizeof(uint32_t));
 
-enum geist_layout {
+enum geist_layout : uint32_t {
     GEIST_LAYOUT_DENSE,
     GEIST_LAYOUT_PACKED_1BIT,
     GEIST_LAYOUT_PACKED_2BIT,
@@ -112,8 +113,9 @@ enum geist_layout {
     GEIST_LAYOUT_BLOCK_QUANTIZED, /* k-quants family — see quant_desc */
     GEIST_LAYOUT_CUSTOM,
 };
+static_assert(sizeof(enum geist_layout) == sizeof(uint32_t));
 
-enum geist_buffer_role {
+enum geist_buffer_role : uint32_t {
     GEIST_BUFFER_WEIGHT,     /* read-only, lifetime = model */
     GEIST_BUFFER_ACTIVATION, /* read+write, lifetime = forward pass */
     GEIST_BUFFER_KV_CACHE,   /* read+write, lifetime = session */
@@ -121,8 +123,9 @@ enum geist_buffer_role {
     GEIST_BUFFER_IO,         /* user-provided host buffer */
     GEIST_BUFFER_STAGING,    /* host-mapped, for upload/download */
 };
+static_assert(sizeof(enum geist_buffer_role) == sizeof(uint32_t));
 
-enum geist_memory_flags {
+enum geist_memory_flags : uint32_t {
     GEIST_MEMORY_AUTO         = 0,
     GEIST_MEMORY_HOST         = 1 << 0,
     GEIST_MEMORY_DEVICE       = 1 << 1,
@@ -134,6 +137,7 @@ enum geist_memory_flags {
      * underlying bytes. Created via buffer_create_aliased. */
     GEIST_MEMORY_ALIASED = 1 << 4,
 };
+static_assert(sizeof(enum geist_memory_flags) == sizeof(uint32_t));
 
 /* Quantization metadata for block-quantized layouts.
  * bits_per_value as rational num/den so 1.58-bit (158/100) is exact. */

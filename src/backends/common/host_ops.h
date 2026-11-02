@@ -37,12 +37,13 @@ struct geist_host_ew {
 };
 
 /* What geist_host_ew_views requires beyond x and y. */
-enum geist_host_ew_need {
+enum geist_host_ew_need : uint32_t {
     GEIST_EW_XY   = 0,       /* y = op(x) */
     GEIST_EW_Z    = 1u << 0, /* a second operand z, as many elements as x */
     GEIST_EW_FEAT = 1u << 1, /* rows of feat = x's last dimension */
     GEIST_EW_W    = 1u << 2, /* a weight w of feat elements (implies FEAT) */
 };
+static_assert(sizeof(enum geist_host_ew_need) == sizeof(uint32_t));
 
 /* Resolve x and y, and z and w where `need` asks for them (nullptr
  * otherwise), as F32 DENSE host views (host_buffer.h). x, y and z must hold

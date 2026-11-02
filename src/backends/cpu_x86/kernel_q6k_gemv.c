@@ -83,7 +83,8 @@ static inline __m128i scale_shuffle(int i) {
  * sub-blocks of 16, an int8 scale per sub-block, one fp16 d, and unsigned
  * codes with a uniform offset: Q6_K 0..63 - 32, Q3_K 0..7 - 4. So one dot
  * serves both; only the unpacking differs. */
-enum kfmt { KF_Q6K, KF_Q3K };
+enum kfmt : uint32_t { KF_Q6K, KF_Q3K };
+static_assert(sizeof(enum kfmt) == sizeof(uint32_t));
 
 static inline size_t kfmt_bytes(enum kfmt f) {
     return f == KF_Q6K ? sizeof(struct block_q6_K_t) : sizeof(struct block_q3_K_t);

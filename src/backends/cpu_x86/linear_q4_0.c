@@ -218,7 +218,8 @@ static void dot_rows_q4_1(size_t                     nb,
 }
 
 /* The three LUT formats the kernels below share. */
-enum lut4_fmt { LUT4_IQ4_NL, LUT4_IQ4_XS, LUT4_MXFP4 };
+enum lut4_fmt : uint32_t { LUT4_IQ4_NL, LUT4_IQ4_XS, LUT4_MXFP4 };
+static_assert(sizeof(enum lut4_fmt) == sizeof(uint32_t));
 
 /* The format's 16-entry int8 table in both 128-bit lanes: ggml's
  * kvalues_iq4nl (src/formats/gguf/iq4.c) or kvalues_mxfp4. */

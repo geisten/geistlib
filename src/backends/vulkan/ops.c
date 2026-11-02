@@ -30,7 +30,8 @@
  * block_elems also sets `blocks_per_row` in the push block and the shape
  * rule the resolver enforces (n_in % block_elems == 0); the f32 kernels
  * ignore blocks_per_row, so DENSE keeps 256 there. */
-enum vk_layout { VK_LAYOUT_VERBATIM, VK_LAYOUT_PAD216, VK_LAYOUT_SOA, VK_LAYOUT_DENSE };
+enum vk_layout : uint32_t { VK_LAYOUT_VERBATIM, VK_LAYOUT_PAD216, VK_LAYOUT_SOA, VK_LAYOUT_DENSE };
+static_assert(sizeof(enum vk_layout) == sizeof(uint32_t));
 
 struct vk_dtype {
     enum geist_dtype dtype;
@@ -1039,7 +1040,8 @@ static bool vk_q8_0_narrow(const struct vk_state *st, enum vk_pipe pipe, const s
 }
 
 /* The 3-buffer elementwise ops (vk_try_ew3 above, vk_ew3_cpu below). */
-enum vk_ew3_op { EW3_ADD, EW3_MUL, EW3_GELU_MUL, EW3_SILU_MUL, EW3_SIGMOID_MUL };
+enum vk_ew3_op : uint32_t { EW3_ADD, EW3_MUL, EW3_GELU_MUL, EW3_SILU_MUL, EW3_SIGMOID_MUL };
+static_assert(sizeof(enum vk_ew3_op) == sizeof(uint32_t));
 
 /* Strided-aware CPU fallback core for the 3-buffer elementwise ops. */
 [[nodiscard]] static enum geist_status vk_ew3_cpu(struct geist_backend      *be,

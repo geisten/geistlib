@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum mtp_profile_stage {
+enum mtp_profile_stage : uint32_t {
     MTP_PROFILE_INPUT = 0,
     MTP_PROFILE_NORMS,
     MTP_PROFILE_CONCAT,
@@ -24,6 +24,7 @@ enum mtp_profile_stage {
     MTP_PROFILE_HEAD,
     MTP_PROFILE_COUNT,
 };
+static_assert(sizeof(enum mtp_profile_stage) == sizeof(uint32_t));
 
 TRANSFORMER_PROFILE_DEFINE(g_mtp_profile,
                            "transformer MTP",

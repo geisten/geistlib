@@ -19,12 +19,13 @@
 #include <math.h>
 
 /* Which GPU command sequence a capture/profile wait belongs to. */
-enum geist_command_sequence_kind {
+enum geist_command_sequence_kind : uint32_t {
     GEIST_COMMAND_SEQUENCE_DECODE_LAYER_LOOP,
     GEIST_COMMAND_SEQUENCE_DECODE_GREEDY_STEP,
     GEIST_COMMAND_SEQUENCE_PREFILL_TEXT,
     GEIST_COMMAND_SEQUENCE_VERIFY_GREEDY,
 };
+static_assert(sizeof(enum geist_command_sequence_kind) == sizeof(uint32_t));
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -41,7 +42,7 @@ enum geist_command_sequence_kind {
 #include <sys/stat.h>
 #include <time.h>
 
-enum metal_profile_stage {
+enum metal_profile_stage : uint32_t {
     METAL_PROFILE_WAIT_DECODE_LAYER_LOOP = 0,
     METAL_PROFILE_WAIT_DECODE_GREEDY_STEP,
     METAL_PROFILE_WAIT_VERIFY_GREEDY,
@@ -107,6 +108,7 @@ enum metal_profile_stage {
     METAL_PROFILE_DISPATCH_ATTENTION_TC, /* tensor-API prefill flash (#314) */
     METAL_PROFILE_STAGE_COUNT,
 };
+static_assert(sizeof(enum metal_profile_stage) == sizeof(uint32_t));
 
 struct metal_profile_stat {
     uint64_t ns;
@@ -1169,7 +1171,7 @@ bool metal_tensor_is_f16_3d(const struct geist_tensor *t,
 
 /* The pipeline tables of pipelines.c; metal_ensure builds one on first
  * use (ARGMAX also allocates its result buffers). */
-enum metal_table {
+enum metal_table : uint32_t {
     METAL_TAB_DELTANET,
     METAL_TAB_QUANT, /* quantized/F32 linears and the elementwise kernels */
     METAL_TAB_ATTENTION,
@@ -1180,6 +1182,7 @@ enum metal_table {
     METAL_TAB_PQ2_LOWP,
     METAL_TAB_COUNT,
 };
+static_assert(sizeof(enum metal_table) == sizeof(uint32_t));
 
 [[nodiscard]] enum geist_status metal_ensure(struct geist_backend *be, enum metal_table table);
 

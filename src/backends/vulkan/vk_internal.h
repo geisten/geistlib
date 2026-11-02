@@ -114,19 +114,21 @@ struct vk_fns {
  * pipeline (enum, SPIR-V blob, profiler name, binding count, kind). The
  * descriptor layout is chosen by binding count; all share the unified
  * push block. */
-enum vk_pipe {
+enum vk_pipe : uint32_t {
 #define X(id, spv, name, nbind, kind) id,
 #include "vk_pipes.def"
 #undef X
     VK_PIPE_COUNT,
 };
+static_assert(sizeof(enum vk_pipe) == sizeof(uint32_t));
 
 /* vk_pipes.def's kind column. */
-enum vk_pipe_kind {
+enum vk_pipe_kind : uint32_t {
     VK_PK_PLAIN,
     VK_PK_TILED,   /* register-tiled GEMM: one output row per 32-lane subgroup */
     VK_PK_COOPMAT, /* needs VK_KHR_cooperative_matrix */
 };
+static_assert(sizeof(enum vk_pipe_kind) == sizeof(uint32_t));
 
 static const enum vk_pipe_kind vk_pipe_kinds[VK_PIPE_COUNT] = {
 #define X(id, spv, name, nbind, kind) [id] = VK_PK_##kind,
@@ -210,7 +212,7 @@ enum {
 };
 
 /* Where work can leave the GPU (vk_fallback). */
-enum vk_fb {
+enum vk_fb : uint32_t {
     VK_FB_HOST_VIEW,   /* a host loop over a mapped tensor (vk_tensor_host) */
     VK_FB_HOST_LINEAR, /* a linear on the host row-dequant path (vk_w_cpu_mN) */
     VK_FB_HOST_COPY,   /* vk_buffer_copy through mapped memory */
@@ -221,6 +223,7 @@ enum vk_fb {
     VK_FB_QGATE,       /* attn_qgate_split declined */
     VK_FB_COUNT
 };
+static_assert(sizeof(enum vk_fb) == sizeof(uint32_t));
 
 struct vk_state {
     struct geist_backend *backend;
@@ -562,12 +565,13 @@ void vk_stage_release(struct geist_backend *be, struct vk_state *st);
 
 /* Where a buffer's bytes live (#488). NONE: a bookkeeping alias with no
  * VkBuffer behind it (GGUF mmap). */
-enum vk_placement {
+enum vk_placement : uint32_t {
     VK_PLACEMENT_DEVICE = 0, /* device-local, not host-visible */
     VK_PLACEMENT_BAR    = 1, /* device-local and host-visible */
     VK_PLACEMENT_HOST   = 2, /* host memory, read by the GPU over the bus */
     VK_PLACEMENT_NONE   = 3,
 };
+static_assert(sizeof(enum vk_placement) == sizeof(uint32_t));
 
 [[nodiscard]] enum vk_placement vk_buffer_placement(const struct geist_buffer *buf);
 

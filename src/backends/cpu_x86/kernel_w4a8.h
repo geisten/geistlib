@@ -67,13 +67,14 @@
 #include <stdint.h>
 
 /* ISA tiers the dispatcher can select. Ordered by preference. */
-enum w4a8_isa {
+enum w4a8_isa : uint32_t {
     W4A8_ISA_SCALAR      = 0,
     W4A8_ISA_AVX2        = 1,
     W4A8_ISA_AVX512      = 2,
     W4A8_ISA_AVX512_VNNI = 3,
     W4A8_ISA_AVX512_BF16 = 4, /* top of the order, never probed: "no override" */
 };
+static_assert(sizeof(enum w4a8_isa) == sizeof(uint32_t));
 
 /* Width of one block; not a runtime parameter — required by the layout. */
 constexpr size_t W4A8_BLOCK_ELEMS         = 32;

@@ -1240,7 +1240,7 @@ static size_t qwen2_chunk_end(const char *text, size_t tlen, size_t i) {
  * and the letter / number / whitespace sets are llama.cpp's own
  * (unicode_class.h; the whitespace list below). Hence "ÉCOLE" splits after
  * É, as it does in llama.cpp (HF, with real case classes, keeps it whole). */
-enum g4_kind {
+enum g4_kind : uint32_t {
     G4_OTHER, /* [^\s\p{L}\p{N}] */
     G4_SPACE, /* \s other than \r \n */
     G4_NL,    /* \r \n */
@@ -1249,6 +1249,7 @@ enum g4_kind {
     G4_ALPHA, /* a non-ASCII letter: both U and L */
     G4_DIGIT, /* \p{N} */
 };
+static_assert(sizeof(enum g4_kind) == sizeof(uint32_t));
 
 static enum g4_kind g4_kind_at(const char *text, size_t tlen, size_t i, size_t *adv) {
     const uint32_t cp = q2_cp_at(text, tlen, i, adv);

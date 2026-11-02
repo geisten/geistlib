@@ -499,7 +499,7 @@ static void moe_stage_pick(
     }
 }
 
-enum moe_profile_stage {
+enum moe_profile_stage : uint32_t {
     MOE_PROFILE_NORM = 0,
     MOE_PROFILE_ROUTER,
     MOE_PROFILE_ROUTE,
@@ -508,6 +508,7 @@ enum moe_profile_stage {
     MOE_PROFILE_SUM,
     MOE_PROFILE_COUNT,
 };
+static_assert(sizeof(enum moe_profile_stage) == sizeof(uint32_t));
 
 TRANSFORMER_PROFILE_DEFINE(g_moe_profile,
                            "transformer moe ffn",

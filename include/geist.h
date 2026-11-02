@@ -56,7 +56,7 @@ void        geist_version_components(int *major, int *minor, int *patch);
 /* Status / Errors                                                         */
 /* ====================================================================== */
 
-enum geist_status {
+enum geist_status : uint32_t {
     GEIST_OK = 0,
 
     /* Generic */
@@ -86,6 +86,7 @@ enum geist_status {
     /* -- EXPERIMENTAL (#628) -- */
     GEIST_E_CANCELLED, /* geist_session_cancel stopped the call */
 };
+static_assert(sizeof(enum geist_status) == sizeof(uint32_t));
 
 /* @stability STABLE since 0.1.0
  * Returns a stable identifier string for the status code. Never returns
@@ -102,13 +103,14 @@ const char *geist_last_create_error(void);
 /* Logging                                                                 */
 /* ====================================================================== */
 
-enum geist_log_level {
+enum geist_log_level : uint32_t {
     GEIST_LOG_ERROR = 0,
     GEIST_LOG_WARN  = 1,
     GEIST_LOG_INFO  = 2,
     GEIST_LOG_DEBUG = 3,
     GEIST_LOG_TRACE = 4,
 };
+static_assert(sizeof(enum geist_log_level) == sizeof(uint32_t));
 
 /* @stability EXPERIMENTAL — categories and call frequency may evolve. */
 typedef void (*geist_log_callback_t)(enum geist_log_level level,
@@ -263,7 +265,7 @@ typedef int32_t geist_token_t;
  * AUTO = env / platform default; FP32/INT8/KIVI/F16 = explicit override.
  * F16 requires a backend with a fused f32→f16 KV append (GPU backends);
  * on other backends it silently falls back to FP32. */
-enum geist_kv_mode {
+enum geist_kv_mode : uint32_t {
     GEIST_KV_AUTO = 0,
     GEIST_KV_FP32 = 1,
     /* INT8 K and V, per-token per-head scales, Hadamard-rotated by default
@@ -278,6 +280,7 @@ enum geist_kv_mode {
      * GEIST_KV_INT4=1. */
     GEIST_KV_INT4 = 5,
 };
+static_assert(sizeof(enum geist_kv_mode) == sizeof(uint32_t));
 
 struct geist_session_opts {
     /* Sequence length cap; 0 = use model default. */

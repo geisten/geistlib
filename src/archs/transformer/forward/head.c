@@ -23,7 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum head_profile_stage {
+enum head_profile_stage : uint32_t {
     HEAD_PROFILE_COPY = 0,
     HEAD_PROFILE_NORM,
     HEAD_PROFILE_LM_HEAD,
@@ -31,6 +31,7 @@ enum head_profile_stage {
     HEAD_PROFILE_SAMPLE,
     HEAD_PROFILE_COUNT,
 };
+static_assert(sizeof(enum head_profile_stage) == sizeof(uint32_t));
 
 TRANSFORMER_PROFILE_DEFINE(g_head_profile,
                            "transformer head",

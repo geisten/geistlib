@@ -106,7 +106,7 @@ typedef void (*geist_kernel_linear_triple_m1_fn)(const float               *x,
                                                  float                     *y1,
                                                  float                     *y2);
 
-enum geist_weight_flags {
+enum geist_weight_flags : uint32_t {
     /* aux_fp32 holds AWQ inverse-scales of length n_out. */
     GEIST_W_HAS_AWQ_INV = 1U << 0,
     /* The weight has been transpiled into a backend-private layout;
@@ -134,8 +134,9 @@ enum geist_weight_flags {
      * there instead of spending device memory on it. */
     GEIST_W_HOST = 1U << 6,
 };
+static_assert(sizeof(enum geist_weight_flags) == sizeof(uint32_t));
 
-enum geist_weight_backend_layout {
+enum geist_weight_backend_layout : uint32_t {
     GEIST_W_LAYOUT_SOURCE = 0,
     GEIST_W_LAYOUT_TQ2_0_TL1,
     GEIST_W_LAYOUT_TQ2_0_Q8A,
@@ -148,6 +149,7 @@ enum geist_weight_backend_layout {
     GEIST_W_LAYOUT_Q4_0_X8_GEMV,
     GEIST_W_LAYOUT_PQ2_0_X8_GEMV,
 };
+static_assert(sizeof(enum geist_weight_backend_layout) == sizeof(uint32_t));
 
 struct geist_weight {
     const void *raw; /* mmap or backend-arena bytes */

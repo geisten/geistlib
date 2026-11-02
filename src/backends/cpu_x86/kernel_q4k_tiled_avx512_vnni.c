@@ -517,7 +517,8 @@ store_window(int n_w, int n_a, size_t w0, size_t a0, size_t N, const float *acc,
     }
 }
 
-enum tiled_format { TILED_Q4KX8, TILED_Q5K, TILED_Q6K, TILED_Q4_0, TILED_Q4_1 };
+enum tiled_format : uint32_t { TILED_Q4KX8, TILED_Q5K, TILED_Q6K, TILED_Q4_0, TILED_Q4_1 };
+static_assert(sizeof(enum tiled_format) == sizeof(uint32_t));
 
 struct tiled_job {
     enum tiled_format          format;

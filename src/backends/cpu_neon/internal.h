@@ -211,11 +211,12 @@ struct geist_weight;
  * from the same kernel table and runtime ISA gating
  * cpu_neon_resolve_weight dispatches on, so the two cannot drift
  * (test_resolve_weight_unit gates the equivalence). */
-enum cpu_neon_linear_support_kind {
+enum cpu_neon_linear_support_kind : uint32_t {
     CPU_NEON_SUPPORT_NONE,     /* no kernel resolves this dtype */
     CPU_NEON_SUPPORT_EMULATED, /* generic dequant trampolines only */
     CPU_NEON_SUPPORT_NATIVE,   /* purpose-built kernel on m1 or mN */
 };
+static_assert(sizeof(enum cpu_neon_linear_support_kind) == sizeof(uint32_t));
 enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_backend *be,
                                                           enum geist_dtype            w_dtype);
 
