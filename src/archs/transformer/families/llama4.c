@@ -9,11 +9,12 @@
  *   - attention: GQA, interleaved (NORM) RoPE with the file's
  *     rope_freqs.weight frequency factors, scale 1/sqrt(head_dim); with
  *     attention.sliding_window absent (Scout and Maverick) every fourth
- *     layer (index 3, 7, ...) has no RoPE and sees the whole context, its q
- *     scaled by llama.cpp's temperature log(floor((pos + 1) / 8192) + 1) *
- *     0.1 + 1, the other layers attend within chunks of 8192 keys
- *     (attention.sliding_window_pattern, default 4); a file whose
- *     sliding_window is 0 ropes and attends fully everywhere. On RoPE
+ *     layer (index 3, 7, ...) has no RoPE, its q scaled by llama.cpp's
+ *     temperature log(floor((pos + 1) / 8192) + 1) * 0.1 + 1, and the last
+ *     of every attention.sliding_window_pattern layers (default 4, the same
+ *     layers) sees the whole context while the others attend within chunks
+ *     of 8192 keys; a file whose sliding_window is 0 ropes and attends
+ *     fully everywhere. On RoPE
  *     layers of a model with fewer than 128 experts, q and k are
  *     RMS-normalised without a weight after RoPE;
  *   - FFN: every interleave_moe_layer_step-th layer (1-based) is a mixture
@@ -78,10 +79,16 @@ static struct llama4_meta meta(const struct transformer_arch_state *st) {
     return m;
 }
 
-/* Layer li has RoPE (and attends in chunks): llama.cpp's use_rope and its
- * swa pattern coincide for this architecture. */
+/* Layer li has RoPE: llama.cpp's use_rope, every NO_ROPE_STEP-th layer
+ * without (none when the file turns chunking off). */
 static bool rope_layer(const struct llama4_meta *m, size_t li) {
-    return m->chunk == 0 || m->pattern == 0 || li % m->pattern != m->pattern - 1;
+    return m->chunk == 0 || (li + 1) % NO_ROPE_STEP != 0;
+}
+
+/* Layer li attends in chunks: llama.cpp's swa pattern (set_swa_pattern,
+ * the last of every `pattern` layers full). */
+static bool chunked_layer(const struct llama4_meta *m, size_t li) {
+    return m->chunk > 0 && (m->pattern == 0 || li % m->pattern != m->pattern - 1);
 }
 
 static bool moe_layer(const struct llama4_meta *m, size_t li) {
@@ -125,7 +132,7 @@ static bool populate_layers_llama4(struct transformer_arch_state *st) {
     for (size_t i = 0; i < st->n_layers; i++) {
         struct transformer_layer_weights *L = &st->layers[i];
         family_uniform_layer(st, i, hd, moe_layer(&m, i) ? eff : ff, base, (int) hd, L);
-        L->is_full    = !rope_layer(&m, i) || m.chunk == 0;
+        L->is_full    = !chunked_layer(&m, i);
         L->attn_chunk = L->is_full ? 0 : m.chunk;
     }
     return true;
