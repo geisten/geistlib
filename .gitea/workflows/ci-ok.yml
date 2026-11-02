@@ -21,6 +21,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # CI_OK_TOKEN: write access, which Gitea's rerun endpoint needs and the
+      # agent bot's token must not have (#357). Only this job holds it: it
+      # runs main's script on an approver's comment, never model output.
       - env:
-          GITEA_TOKEN: ${{ secrets.AGENT_BOT_TOKEN }}
+          GITEA_TOKEN: ${{ secrets.CI_OK_TOKEN }}
         run: python3 scripts/agent_gate.py rerun-held
