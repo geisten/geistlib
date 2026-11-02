@@ -198,7 +198,7 @@ static void ref_forward(const struct ref_model *m, struct knobs k, double logits
             const size_t s_lo = use_rope && !k.no_chunks ? p - p % CHUNK : 0;
             for (size_t hh = 0; hh < HEADS; hh++) {
                 const size_t kvh = hh / (HEADS / KVH);
-                double       sc[N_PROMPT], mx = -INFINITY, den = 0.0;
+                double       sc[N_PROMPT], mx = -1e300, den = 0.0;
                 for (size_t s = s_lo; s <= p; s++) {
                     double dot = 0.0;
                     for (size_t i = 0; i < HD; i++)
