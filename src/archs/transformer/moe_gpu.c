@@ -161,15 +161,20 @@ static size_t moe_fit(const struct transformer_arch_state *st,
     size_t       reserve = (size_t) (mem.total_bytes / 16) + ((size_t) 512 << 20) + session;
     /* #239: the staging slots, three per staged expert, each as big as the
      * biggest expert projection of any layer, a sixteenth over its file
-     * bytes for the backend's layout (Q6_K's padded blocks). */
+     * bytes for the backend's layout (Q6_K's padded blocks). Up to half of
+     * the 512 MiB headroom above holds them (40-61 MiB at the default 16
+     * experts per step); only what exceeds that comes out of the hot
+     * experts: taking all of it from them cost Qwen3.6-35B-A3B 1.6 %
+     * decode on the RTX 2080 Ti (23 fewer hot experts). */
     size_t slot = 0, stage = 0;
     for (size_t l = 0; stage_max > 0 && l < st->n_layers; l++)
         for (size_t p = 0; p < 3; p++) {
             const size_t b = expert_proj(&st->layers[l], p)[0].raw_nbytes;
             slot           = b > slot ? b : slot;
         }
-    if (stage_max > 0 &&
-        (ckd_mul(&stage, 3 * stage_max, slot + slot / 16) || ckd_add(&reserve, reserve, stage)))
+    const size_t headroom = (size_t) 256 << 20;
+    if (stage_max > 0 && (ckd_mul(&stage, 3 * stage_max, slot + slot / 16) ||
+                          (stage > headroom && ckd_add(&reserve, reserve, stage - headroom))))
         return 0;
     size_t more = 0;
     if (st->moe_sessions > 1 && (ckd_mul(&more, st->moe_sessions - 1, moe_session_bytes(st)) ||
@@ -341,7 +346,7 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
 
 /* #239: the staging slots for stage_max experts, then a host twin
  * (GEIST_W_HOST) of each routed expert without a copy on the device, in
- * rank order, as many as a quarter of the host's memory holds
+ * rank order, in 4 GiB or a quarter of the host's memory if less
  * (GEIST_MOE_STAGE_HOST=<MiB> sets the bytes). Any failure leaves staging
  * off; the experts stay on the CPU. */
 static void moe_stage_attach(const struct transformer_arch_state *st,
@@ -369,7 +374,12 @@ static void moe_stage_attach(const struct transformer_arch_state *st,
 #else
     const long pages = 0, page = 0; /* unknown: GEIST_MOE_STAGE_HOST only */
 #endif
+    /* 4 GiB, or a quarter of the host's memory if less. The profile's
+     * hottest cold experts come first: on the RTX 2080 Ti box 4 GiB kept
+     * 91 % of the prefill gain of all cold experts (9.1 GB) for
+     * Qwen3-30B-A3B and 57 % of it (11.7 GB) for Qwen3.6-35B-A3B. */
     size_t budget = pages > 0 && page > 0 ? (size_t) pages / 4 * (size_t) page : 0;
+    budget        = budget < ((size_t) 4 << 30) ? budget : (size_t) 4 << 30;
     if (geist_parse_long(getenv("GEIST_MOE_STAGE_HOST"), &mib) && mib >= 0)
         budget = (size_t) mib << 20;
     if (s == GEIST_OK)
