@@ -550,15 +550,36 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
         case GEIST_DTYPE_Q5_0:  /* no shader yet: the odd Q4_K_M tensor (#675) */
         case GEIST_DTYPE_MXFP4: /* no shader yet: GPT-OSS's experts (#243) */
             return vk_resolve_host(be, w);
-        default:
-            geist_backend_set_error(be,
-                                    GEIST_E_UNSUPPORTED,
-                                    "vulkan: no kernel for weight dtype %u (%dx%d)",
-                                    (unsigned) w->dtype,
-                                    (int) w->n_out,
-                                    (int) w->n_in);
-            return GEIST_E_UNSUPPORTED;
+        case GEIST_DTYPE_F32:
+        case GEIST_DTYPE_I8:
+        case GEIST_DTYPE_U8:
+        case GEIST_DTYPE_Q4_0:
+        case GEIST_DTYPE_Q4_1:
+        case GEIST_DTYPE_Q8_0:
+        case GEIST_DTYPE_Q4_K:
+        case GEIST_DTYPE_Q5_K:
+        case GEIST_DTYPE_Q6_K:
+        case GEIST_DTYPE_IQ2_S:
+        case GEIST_DTYPE_IQ3_S:
+        case GEIST_DTYPE_TQ1_0:
+        case GEIST_DTYPE_TQ2_0:
+        case GEIST_DTYPE_I2_S:
+        case GEIST_DTYPE_IQ4_NL:
+        case GEIST_DTYPE_IQ4_XS:
+        case GEIST_DTYPE_BINARY:
+        case GEIST_DTYPE_TERNARY:
+        case GEIST_DTYPE_CUSTOM:
+        case GEIST_DTYPE_PQ2_0:
+        case GEIST_DTYPE_COUNT:
+            break;
         }
+        geist_backend_set_error(be,
+                                GEIST_E_UNSUPPORTED,
+                                "vulkan: no kernel for weight dtype %u (%dx%d)",
+                                (unsigned) w->dtype,
+                                (int) w->n_out,
+                                (int) w->n_in);
+        return GEIST_E_UNSUPPORTED;
     }
     if (w->dtype != GEIST_DTYPE_F32 && (size_t) w->n_in % ld->block_elems != 0) {
         /* Row length is not a whole number of blocks: the GPU kernels index
@@ -675,7 +696,8 @@ static uint32_t vk_groups(uint32_t n) {
  * Register-tiled quant GEMMs: 8 output rows x 32 batch rows;
  * matmul_q6k / matmul_f32: 4 x 16. */
 uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out) {
-    switch (pipe) {
+    /* A partial map over ~100 pipes: not an enum switch on purpose (#346). */
+    switch ((uint32_t) pipe) {
     case VK_PIPE_MATVEC_Q4K:
     case VK_PIPE_MATVEC_Q6K:
     case VK_PIPE_MATVEC_Q4_0:
@@ -704,7 +726,8 @@ uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out) {
 }
 
 uint32_t vk_linear_gy(enum vk_pipe pipe, uint32_t m) {
-    switch (pipe) {
+    /* A partial map over ~100 pipes: not an enum switch on purpose (#346). */
+    switch ((uint32_t) pipe) {
     case VK_PIPE_MATMUL_Q4K:
     case VK_PIPE_MATMUL_Q4_0:
     case VK_PIPE_MATMUL_Q4_1:
@@ -796,7 +819,8 @@ void vk_linear_cm_route(struct vk_state *st,
      * 3072 x 128 and 6144 x 64 still lose by 3-25 %). */
     enum vk_pipe c128 = VK_PIPE_COUNT, sb = VK_PIPE_COUNT;
     uint64_t     c128_min = cm32 ? 3u << 16 : 5u << 16;
-    switch (cm) {
+    /* A partial map over ~100 pipes: not an enum switch on purpose (#346). */
+    switch ((uint32_t) cm) {
     case VK_PIPE_MM_Q4K_CM:
         c128 = VK_PIPE_MM_Q4K_CM128;
         sb   = VK_PIPE_MM_Q4K_CM128_SB;
@@ -2317,9 +2341,31 @@ static enum vk_pipe vk_grouped_pipe(uint16_t dtype, bool sel) {
         return sel ? VK_PIPE_MATVEC_Q5K_SEL : VK_PIPE_MATVEC_Q5K_ID;
     case GEIST_DTYPE_Q6_K:
         return sel ? VK_PIPE_MATVEC_Q6K_SEL : VK_PIPE_MATVEC_Q6K_ID;
-    default:
-        return VK_PIPE_COUNT;
+    case GEIST_DTYPE_F16:
+    case GEIST_DTYPE_BF16:
+    case GEIST_DTYPE_I8:
+    case GEIST_DTYPE_U8:
+    case GEIST_DTYPE_Q4_0:
+    case GEIST_DTYPE_Q4_1:
+    case GEIST_DTYPE_Q8_0:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_IQ2_S:
+    case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_TQ1_0:
+    case GEIST_DTYPE_TQ2_0:
+    case GEIST_DTYPE_I2_S:
+    case GEIST_DTYPE_IQ4_NL:
+    case GEIST_DTYPE_IQ4_XS:
+    case GEIST_DTYPE_BINARY:
+    case GEIST_DTYPE_TERNARY:
+    case GEIST_DTYPE_CUSTOM:
+    case GEIST_DTYPE_PQ2_0:
+    case GEIST_DTYPE_Q5_0:
+    case GEIST_DTYPE_MXFP4:
+    case GEIST_DTYPE_COUNT:
+        break;
     }
+    return VK_PIPE_COUNT;
 }
 
 /* The weight's copy is resident in VRAM and has a device address. */
@@ -3616,9 +3662,16 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
         const struct vk_dtype *ed = vk_dtype_of((enum geist_dtype) q->table_dtype);
         return ed != nullptr && ed->embed_code >= 0;
     }
-    default:
-        return false;
+    case GEIST_FUSED_GELU_TANH_MUL_SCALED:
+    case GEIST_FUSED_ATTN_KV_INT8:
+    case GEIST_FUSED_ATTN_KV_INT4:
+    case GEIST_FUSED_RMSNORM_ADD_NORM:
+    case GEIST_FUSED_FFN_GATE_UP_SILU:
+    case GEIST_FUSED_ATTN_ROPE_APPEND:
+    case GEIST_FUSED_MOE_DEVICE:
+        break;
     }
+    return false;
 }
 
 /* ---- Fused-op entry points: a decline is a fallback (#474).            */

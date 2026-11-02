@@ -118,7 +118,6 @@ enum w4a8_isa w4a8_dispatcher_init(void) {
     case W4A8_ISA_AVX512:
     case W4A8_ISA_AVX2:
     case W4A8_ISA_SCALAR:
-    default:
         g_dot     = w4a8_dot_scalar;
         g_current = W4A8_ISA_SCALAR;
         break;
@@ -239,7 +238,6 @@ const char *w4a8_isa_name(enum w4a8_isa isa) {
         return "avx512_vnni";
     case W4A8_ISA_AVX512_BF16:
         return "avx512_bf16";
-    default:
-        return "?";
     }
+    return "?";
 }

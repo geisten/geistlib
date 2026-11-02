@@ -935,9 +935,23 @@ static size_t blk_bytes_for(enum geist_dtype dt) {
         return IQ4_NL_BLOCK_BYTES;
     case GEIST_DTYPE_IQ4_XS:
         return IQ4_XS_BLOCK_BYTES;
-    default:
-        return 0; /* F16/BF16: not block-quantized */
+    case GEIST_DTYPE_F32:
+    case GEIST_DTYPE_F16:
+    case GEIST_DTYPE_BF16:
+    case GEIST_DTYPE_I8:
+    case GEIST_DTYPE_U8:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_IQ2_S:
+    case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_TQ1_0:
+    case GEIST_DTYPE_I2_S:
+    case GEIST_DTYPE_BINARY:
+    case GEIST_DTYPE_TERNARY:
+    case GEIST_DTYPE_CUSTOM:
+    case GEIST_DTYPE_COUNT:
+        break;
     }
+    return 0; /* F16/BF16: not block-quantized */
 }
 static size_t blk_elems_for(enum geist_dtype dt) {
     switch (dt) {
@@ -965,9 +979,23 @@ static size_t blk_elems_for(enum geist_dtype dt) {
         return IQ4_NL_BLOCK_ELEMS;
     case GEIST_DTYPE_IQ4_XS:
         return IQ4_XS_BLOCK_ELEMS;
-    default:
-        return 1;
+    case GEIST_DTYPE_F32:
+    case GEIST_DTYPE_F16:
+    case GEIST_DTYPE_BF16:
+    case GEIST_DTYPE_I8:
+    case GEIST_DTYPE_U8:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_IQ2_S:
+    case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_TQ1_0:
+    case GEIST_DTYPE_I2_S:
+    case GEIST_DTYPE_BINARY:
+    case GEIST_DTYPE_TERNARY:
+    case GEIST_DTYPE_CUSTOM:
+    case GEIST_DTYPE_COUNT:
+        break;
     }
+    return 1;
 }
 static dequant_row_fn dequant_row_fn_for(enum geist_dtype dt) {
     switch (dt) {
@@ -995,9 +1023,23 @@ static dequant_row_fn dequant_row_fn_for(enum geist_dtype dt) {
         return dequant_iq4_nl_row;
     case GEIST_DTYPE_IQ4_XS:
         return dequant_iq4_xs_row;
-    default:
-        return nullptr; /* F16/BF16 handled inline */
+    case GEIST_DTYPE_F32:
+    case GEIST_DTYPE_F16:
+    case GEIST_DTYPE_BF16:
+    case GEIST_DTYPE_I8:
+    case GEIST_DTYPE_U8:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_IQ2_S:
+    case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_TQ1_0:
+    case GEIST_DTYPE_I2_S:
+    case GEIST_DTYPE_BINARY:
+    case GEIST_DTYPE_TERNARY:
+    case GEIST_DTYPE_CUSTOM:
+    case GEIST_DTYPE_COUNT:
+        break;
     }
+    return nullptr; /* F16/BF16 handled inline */
 }
 
 /* Materialize TILE rows of the weight into `tile_fp32` (row-major,
@@ -1710,9 +1752,25 @@ static void apply_resolver_post_hooks(struct geist_weight                 *w,
             (void) install_tq2_0_tl1_if_eligible(w, policy);
         }
         return;
-    default:
-        return;
+    case GEIST_DTYPE_F32:
+    case GEIST_DTYPE_F16:
+    case GEIST_DTYPE_BF16:
+    case GEIST_DTYPE_I8:
+    case GEIST_DTYPE_U8:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_IQ2_S:
+    case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_TQ1_0:
+    case GEIST_DTYPE_I2_S:
+    case GEIST_DTYPE_IQ4_NL:
+    case GEIST_DTYPE_BINARY:
+    case GEIST_DTYPE_TERNARY:
+    case GEIST_DTYPE_CUSTOM:
+    case GEIST_DTYPE_Q5_0:
+    case GEIST_DTYPE_COUNT:
+        break;
     }
+    return;
 }
 
 /* Runtime ISA bits this host offers, in the same form the table's

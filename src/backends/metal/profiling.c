@@ -185,9 +185,8 @@ metal_profile_wait_stage_for_sequence(enum geist_command_sequence_kind kind) {
         return METAL_PROFILE_WAIT_VERIFY_GREEDY;
     case GEIST_COMMAND_SEQUENCE_PREFILL_TEXT:
         return METAL_PROFILE_WAIT_PREFILL_TEXT;
-    default:
-        return METAL_PROFILE_STAGE_COUNT;
     }
+    return METAL_PROFILE_STAGE_COUNT;
 }
 
 void metal_profile_print_summary(const struct metal_state *st) {

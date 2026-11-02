@@ -197,11 +197,18 @@ bool quant_dequant_row(enum geist_dtype dt,
         dequant_i2_s_blocks(n, src, scale, out);
         return true;
     }
-    default:
-        /* I8 / U8: a raw layout but no f32 decode here. */
-        memset(out, 0, n * sizeof *out);
-        return false;
+    case GEIST_DTYPE_I8:
+    case GEIST_DTYPE_U8:
+    case GEIST_DTYPE_TQ1_0:
+    case GEIST_DTYPE_BINARY:
+    case GEIST_DTYPE_TERNARY:
+    case GEIST_DTYPE_CUSTOM:
+    case GEIST_DTYPE_COUNT:
+        break;
     }
+    /* I8 / U8: a raw layout but no f32 decode here. */
+    memset(out, 0, n * sizeof *out);
+    return false;
 }
 
 bool gguf_dequant_row_to_fp32(const struct gguf_tensor_t *t,

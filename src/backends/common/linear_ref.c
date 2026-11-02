@@ -38,9 +38,16 @@ bool geist_linear_ref_decodes(uint16_t dtype) {
     case GEIST_DTYPE_PQ2_0:
     case GEIST_DTYPE_I2_S:
         return true;
-    default:
-        return false;
+    case GEIST_DTYPE_I8:
+    case GEIST_DTYPE_U8:
+    case GEIST_DTYPE_TQ1_0:
+    case GEIST_DTYPE_BINARY:
+    case GEIST_DTYPE_TERNARY:
+    case GEIST_DTYPE_CUSTOM:
+    case GEIST_DTYPE_COUNT:
+        break;
     }
+    return false;
 }
 
 /* Elements [k0, k0 + n) of row j, decoded into out. k0 and n are whole

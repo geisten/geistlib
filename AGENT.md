@@ -135,6 +135,12 @@ and as C++17 with `-pedantic-errors`. It runs in `make test` and in CI's
   Aliasing the compiler was told cannot happen is a miscompile.
 - `typeof` / `auto` only where they clarify; never where they hide ownership.
 
+Every named enum in `src/` and `include/` has a fixed underlying type and a
+`static_assert` on its size. A `switch` over an enum lists every value and has
+no `default:`; what an unknown value from a file should do goes behind the
+`switch`. `-Wswitch-enum` makes that a build error. A partial map over a large
+enum switches on `(uint32_t)` and says so.
+
 ## 3. Memory
 
 - **Engine, arch and kernel allocation flows through `src/base/heap.h`** —

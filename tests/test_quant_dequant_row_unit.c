@@ -43,7 +43,7 @@ constexpr size_t N_OUT = 6;
  * the replaced copies did. */
 static void
 old_decode(size_t d, size_t n_total, size_t e0, size_t n, const uint8_t *raw, float *out) {
-    switch (DTYPES[d].dt) {
+    switch ((uint32_t) DTYPES[d].dt) {
     case GEIST_DTYPE_F32:
         memcpy(out, raw + e0 * sizeof(float), n * sizeof(float));
         return;
@@ -81,7 +81,7 @@ old_decode(size_t d, size_t n_total, size_t e0, size_t n, const uint8_t *raw, fl
 }
 
 static gguf_dtype_t gguf_type_of(enum geist_dtype dt) {
-    switch (dt) {
+    switch ((uint32_t) dt) {
     case GEIST_DTYPE_F32:
         return GGUF_TYPE_F32;
     case GEIST_DTYPE_F16:

@@ -110,7 +110,7 @@ static inline uint8_t *make_weight(size_t d, size_t n_in, size_t n_out, size_t *
         return nullptr;
     }
     const size_t n = n_in * n_out;
-    switch (DTYPES[d].dt) {
+    switch ((uint32_t) DTYPES[d].dt) {
     case GEIST_DTYPE_F32:
         for (size_t i = 0; i < n; i++) {
             const float f = next_f();

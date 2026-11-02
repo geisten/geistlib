@@ -579,9 +579,10 @@ static inline size_t iq4_row_bytes(enum lut4_fmt fmt, size_t n_in) {
         return n_in / IQ4_XS_BLOCK_ELEMS * sizeof(struct block_iq4_xs_t);
     case LUT4_MXFP4:
         return n_in / MXFP4_BLOCK_ELEMS * sizeof(struct block_mxfp4_t);
-    default:
-        return n_in / IQ4_NL_BLOCK_ELEMS * sizeof(struct block_iq4_nl_t);
+    case LUT4_IQ4_NL:
+        break;
     }
+    return n_in / IQ4_NL_BLOCK_ELEMS * sizeof(struct block_iq4_nl_t);
 }
 
 static enum lut4_fmt lut4_fmt_of(uint16_t dtype) {

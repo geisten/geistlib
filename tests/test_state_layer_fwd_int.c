@@ -103,7 +103,7 @@ static float *dequant_proj_to_fp32(struct geist_backend      *be,
     }
 
     /* The geist_tensor's dtype tells us which dequant helper to call. */
-    switch (t->dtype) {
+    switch ((uint32_t) t->dtype) {
     case GEIST_DTYPE_F32:
         memcpy(fp32, raw, n_out * n_in * sizeof(float));
         break;
@@ -735,7 +735,7 @@ static int check_ple_precompute(struct transformer_arch_state *st, geist_token_t
         const uint8_t *raw     = (const uint8_t *) v->buffer_map(st->ple_table.buffer);
         const size_t   row_idx = (size_t) token_id;
         const size_t   n_in    = (size_t) GEIST_GEMMA4_PLE_OUT;
-        switch (st->ple_table.dtype) {
+        switch ((uint32_t) st->ple_table.dtype) {
         case GEIST_DTYPE_F32:
             memcpy(ple_lookup_row, raw + row_idx * n_in * sizeof(float), n_in * sizeof(float));
             break;

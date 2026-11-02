@@ -310,8 +310,15 @@ static inline size_t i2_s_scale_offset(const size_t n_elems) {
         /* Plus the single f32 per-tensor scale at the tail. */
         blk_elems = I2_S_BLOCK_ELEMS, blk_bytes = I2_S_BLOCK_BYTES, tail = sizeof(float);
         break;
-    default:
-        /* TQ1_0, BINARY, TERNARY, CUSTOM: no fixed raw layout here. */
+    case GEIST_DTYPE_TQ1_0:
+    case GEIST_DTYPE_BINARY:
+    case GEIST_DTYPE_TERNARY:
+    case GEIST_DTYPE_CUSTOM:
+    case GEIST_DTYPE_COUNT:
+        break;
+    }
+    /* No fixed raw layout here, or a value outside the enum from a file. */
+    if (blk_elems == 0) {
         return false;
     }
     *blk_elems_out = blk_elems;

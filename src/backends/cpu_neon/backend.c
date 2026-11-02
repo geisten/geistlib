@@ -209,10 +209,25 @@ static bool cpu_neon_fused_supported(struct geist_backend *be, const struct geis
         return cpu_neon_attention_kv_int8_supported(q);
     case GEIST_FUSED_ATTN_KV_INT4:
         return cpu_neon_attention_kv_int4_supported(q);
+#else
+    case GEIST_FUSED_ATTN_KV_INT8:
+    case GEIST_FUSED_ATTN_KV_INT4:
 #endif
-    default:
-        return false;
+    case GEIST_FUSED_FFN_GATE_UP:
+    case GEIST_FUSED_FFN_NORM_GATE_UP:
+    case GEIST_FUSED_PLE_BLOCK:
+    case GEIST_FUSED_EMBEDDING_LOOKUP_SCALED:
+    case GEIST_FUSED_ARGMAX_F32:
+    case GEIST_FUSED_BITNET_ACT_QUANT:
+    case GEIST_FUSED_DELTANET_MIX:
+    case GEIST_FUSED_LINEAR_GROUPED:
+    case GEIST_FUSED_ROWS_WEIGHTED_SUM:
+    case GEIST_FUSED_FFN_GATE_UP_SILU:
+    case GEIST_FUSED_ROWS_GATHER:
+    case GEIST_FUSED_MOE_DEVICE:
+        break;
     }
+    return false;
 }
 
 static const struct geist_backend_primitives cpu_neon_prims = {

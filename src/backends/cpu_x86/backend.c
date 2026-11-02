@@ -499,7 +499,17 @@ static bool q4k_reads_raw(void) {
             w->linear_mN = geist_linear_f32_mN;
         }
         break;
-    default:
+    case GEIST_DTYPE_BF16:
+    case GEIST_DTYPE_I8:
+    case GEIST_DTYPE_U8:
+    case GEIST_DTYPE_IQ2_S:
+    case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_TQ1_0:
+    case GEIST_DTYPE_BINARY:
+    case GEIST_DTYPE_TERNARY:
+    case GEIST_DTYPE_CUSTOM:
+    case GEIST_DTYPE_Q5_0:
+    case GEIST_DTYPE_COUNT:
         (void) cpu_x86_linear_generic_bind(w);
         break;
     }

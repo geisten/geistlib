@@ -89,9 +89,28 @@ static bool cpu_scalar_fused_supported(struct geist_backend            *be,
         return true;
     case GEIST_FUSED_HADAMARD_ROTATE:
         return geist_hadamard_query_ok(q);
-    default:
-        return false;
+    case GEIST_FUSED_SILU_MUL:
+    case GEIST_FUSED_FFN_GATE_UP:
+    case GEIST_FUSED_FFN_NORM_GATE_UP:
+    case GEIST_FUSED_RMSNORM_ADD:
+    case GEIST_FUSED_ATTN_QKV_PREP:
+    case GEIST_FUSED_PLE_BLOCK:
+    case GEIST_FUSED_EMBEDDING_LOOKUP_SCALED:
+    case GEIST_FUSED_ARGMAX_F32:
+    case GEIST_FUSED_BITNET_ACT_QUANT:
+    case GEIST_FUSED_ATTN_KV_INT8:
+    case GEIST_FUSED_ATTN_KV_INT4:
+    case GEIST_FUSED_DELTANET_MIX:
+    case GEIST_FUSED_RMSNORM_ADD_NORM:
+    case GEIST_FUSED_LINEAR_GROUPED:
+    case GEIST_FUSED_ROWS_WEIGHTED_SUM:
+    case GEIST_FUSED_FFN_GATE_UP_SILU:
+    case GEIST_FUSED_ATTN_ROPE_APPEND:
+    case GEIST_FUSED_ROWS_GATHER:
+    case GEIST_FUSED_MOE_DEVICE:
+        break;
     }
+    return false;
 }
 
 /* Exported like the vtbl: cpu_x86 struct-copies these as its baseline. */

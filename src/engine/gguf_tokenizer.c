@@ -1271,9 +1271,10 @@ static enum g4_kind g4_kind_at(const char *text, size_t tlen, size_t i, size_t *
         return G4_ALPHA;
     case UNICODE_CLASS_NUMBER:
         return G4_DIGIT;
-    default:
-        return G4_OTHER;
+    case UNICODE_CLASS_OTHER:
+        break;
     }
+    return G4_OTHER;
 }
 
 static bool g4_is_u(enum g4_kind k) {

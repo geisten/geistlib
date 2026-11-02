@@ -104,7 +104,9 @@ endif
 
 # ---- Base CFLAGS ---------------------------------------------------------
 
-WARNINGS_BASE   := -Wall -Wextra -Wpedantic -Werror
+# -Wswitch-enum: a new enum value fails the build at every switch over that
+# enum, `default:` or not (#346). tests/test_switch_enum_py.py proves it.
+WARNINGS_BASE   := -Wall -Wextra -Wpedantic -Wswitch-enum -Werror
 WARNINGS_STRICT := $(WARNINGS_BASE) -Wshadow -Wundef
 
 # Include paths:

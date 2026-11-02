@@ -38,7 +38,7 @@ constexpr size_t N_OUT = 5;
 /* Row j of the weight, whole, decoded here. */
 static void decode_row(size_t d, size_t n_in, const uint8_t *raw, size_t j, float *out) {
     const size_t e0 = j * n_in;
-    switch (DTYPES[d].dt) {
+    switch ((uint32_t) DTYPES[d].dt) {
     case GEIST_DTYPE_F32:
         memcpy(out, raw + 4 * e0, n_in * 4);
         return;
