@@ -69,8 +69,11 @@ static void check_softmax_weight(void) {
     uint32_t    ids[4];
     float       w[4];
     /* Biased: {0.1, 0.5, -1, 3.5, 2.2, 1.9} -> 3, 4, 5. */
-    const uint32_t want[3] = {3, 4, 5};
-    if (!moe_route(6, 3, GEIST_MOE_GATING_SOFTMAX_WEIGHT, false, logits, bias, ids, w)) {
+    const uint32_t          want[3] = {3, 4, 5};
+    const struct moe_router sw      = {.gating = GEIST_MOE_GATING_SOFTMAX_WEIGHT, .bias = bias};
+    const struct moe_router sb = {.gating = GEIST_MOE_GATING_SOFTMAX, .norm = true, .bias = bias};
+    const struct moe_router sp = {.gating = GEIST_MOE_GATING_SOFTMAX};
+    if (!moe_route(6, 3, &sw, logits, ids, w)) {
         expect(false, "softmax_weight routes");
         return;
     }
@@ -88,18 +91,15 @@ static void check_softmax_weight(void) {
     const float biased[6] = {0.1f, 0.5f, -1.0f, 3.5f, 2.2f, 1.9f};
     uint32_t    ids2[3];
     float       w2[3];
-    expect(moe_route(6, 3, GEIST_MOE_GATING_SOFTMAX, true, logits, bias, ids, w) &&
-                   moe_route_topk(6, 3, true, biased, ids2, w2) && ids[0] == ids2[0] &&
-                   ids[1] == ids2[1] && ids[2] == ids2[2] && fabsf(w[0] - w2[0]) < 1e-6f &&
-                   fabsf(w[2] - w2[2]) < 1e-6f,
+    expect(moe_route(6, 3, &sb, logits, ids, w) && moe_route_topk(6, 3, true, biased, ids2, w2) &&
+                   ids[0] == ids2[0] && ids[1] == ids2[1] && ids[2] == ids2[2] &&
+                   fabsf(w[0] - w2[0]) < 1e-6f && fabsf(w[2] - w2[2]) < 1e-6f,
            "softmax with a bias is the top-k of the biased logits");
     /* Without a bias, SOFTMAX is moe_route_topk itself. */
-    expect(moe_route(6, 2, GEIST_MOE_GATING_SOFTMAX, false, logits, nullptr, ids, w) &&
-                   moe_route_topk(6, 2, false, logits, ids2, w2) && ids[0] == ids2[0] &&
-                   ids[1] == ids2[1] && w[0] == w2[0] && w[1] == w2[1],
+    expect(moe_route(6, 2, &sp, logits, ids, w) && moe_route_topk(6, 2, false, logits, ids2, w2) &&
+                   ids[0] == ids2[0] && ids[1] == ids2[1] && w[0] == w2[0] && w[1] == w2[1],
            "softmax without a bias is moe_route_topk");
-    expect(!moe_route(6, 0, GEIST_MOE_GATING_SOFTMAX_WEIGHT, false, logits, bias, ids, w),
-           "softmax_weight refuses k = 0");
+    expect(!moe_route(6, 0, &sw, logits, ids, w), "softmax_weight refuses k = 0");
 }
 
 int main(void) {

@@ -101,25 +101,23 @@ bool moe_route_topk(
     return true;
 }
 
-bool moe_route(size_t                n,
-               size_t                k,
-               enum geist_moe_gating gating,
-               bool                  norm,
-               const float           logits[static n],
-               const float          *bias,
-               uint32_t             *ids,
-               float                *w) {
+bool moe_route(size_t                   n,
+               size_t                   k,
+               const struct moe_router *r,
+               const float              logits[static n],
+               uint32_t                *ids,
+               float                   *w) {
     if (n == 0 || n > GEIST_MOE_MAX_EXPERTS) {
         return false;
     }
     float biased[GEIST_MOE_MAX_EXPERTS];
-    if (bias != nullptr) {
+    if (r->bias != nullptr) {
         for (size_t i = 0; i < n; i++)
-            biased[i] = logits[i] + bias[i];
+            biased[i] = logits[i] + r->bias[i];
         logits = biased;
     }
-    if (gating != GEIST_MOE_GATING_SOFTMAX_WEIGHT) {
-        return moe_route_topk(n, k, norm, logits, ids, w);
+    if (r->gating != GEIST_MOE_GATING_SOFTMAX_WEIGHT) {
+        return moe_route_topk(n, k, r->norm, logits, ids, w);
     }
     /* The selection is softmax's (the k largest logits, same ties); the
      * weights are the softmax over those k logits alone. ids[0] holds the
@@ -448,16 +446,13 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     if (lg == nullptr) {
         return GEIST_E_BACKEND;
     }
-    bool routed_ok = true;
+    bool                    routed_ok = true;
+    const struct moe_router router    = {.gating = st->config.moe_gating,
+                                         .norm   = st->config.moe_norm_topk,
+                                         .bias   = L->moe_router_b};
     for (size_t r = 0; r < seq && routed_ok; r++) {
-        routed_ok = moe_route(n_exp,
-                              n_rt,
-                              st->config.moe_gating,
-                              st->config.moe_norm_topk,
-                              lg + r * n_exp,
-                              L->moe_router_b,
-                              sess->moe_ids + r * k,
-                              sess->moe_wts + r * k);
+        routed_ok = moe_route(
+                n_exp, n_rt, &router, lg + r * n_exp, sess->moe_ids + r * k, sess->moe_wts + r * k);
     }
     for (size_t r = 0; r < seq && k > n_rt; r++)
         sess->moe_ids[r * k + n_rt] = (uint32_t) n_exp; /* the shared expert */

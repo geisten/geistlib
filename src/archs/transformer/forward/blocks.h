@@ -230,19 +230,23 @@ blk_relu_sq(struct transformer_layer_forward_ctx *ctx, size_t n, struct geist_bu
 [[nodiscard]] bool moe_route_topk(
         size_t n, size_t k, bool norm, const float logits[static n], uint32_t *ids, float *w);
 
-/* moe_route_topk generalised by the model's router (arch_config.h
- * moe_gating): bias (nullptr: none) is added to the logits first;
+/* A model's router beyond moe_route_topk (arch_config.h moe_gating). */
+struct moe_router {
+    enum geist_moe_gating gating; /* 0: SOFTMAX */
+    bool                  norm;   /* renormalise the selected weights to sum 1 */
+    const float          *bias;   /* [n] added to the logits first, or nullptr */
+};
+
+/* moe_route_topk generalised by `r`: the bias is added to the logits;
  * GEIST_MOE_GATING_SOFTMAX_WEIGHT selects as softmax does and weights the
  * selected by the softmax over their logits alone. False as moe_route_topk,
  * or when n exceeds GEIST_MOE_MAX_EXPERTS. */
-[[nodiscard]] bool moe_route(size_t                n,
-                             size_t                k,
-                             enum geist_moe_gating gating,
-                             bool                  norm,
-                             const float           logits[static n],
-                             const float          *bias,
-                             uint32_t             *ids,
-                             float                *w);
+[[nodiscard]] bool moe_route(size_t                   n,
+                             size_t                   k,
+                             const struct moe_router *r,
+                             const float              logits[static n],
+                             uint32_t                *ids,
+                             float                   *w);
 
 /* Pre-norm mixture-of-experts SwiGLU FFN with residual:
  *   h_out = h_post_attn + sum_{e in topk} w_e * down_e(silu(gate_e(x)) * up_e(x)),
