@@ -3,6 +3,7 @@
  */
 #include "ptqtp_awq.h"
 #include "heap.h"
+#include "cleanup.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,7 +57,7 @@ struct ptqtp_awq_ctx *ptqtp_awq_open(const char *path, const char **err) {
         return nullptr;
     }
 
-    uint8_t *raw = heap_alloc_array_aligned(uint8_t, sz);
+    GEIST_CLEANUP(heap_freep) uint8_t *raw = heap_alloc_array_aligned(uint8_t, sz);
     if (!raw) {
         fclose(f);
         if (err)
@@ -64,7 +65,6 @@ struct ptqtp_awq_ctx *ptqtp_awq_open(const char *path, const char **err) {
         return nullptr;
     }
     if (fread(raw, 1, (size_t) sz, f) != (size_t) sz) {
-        safe_free((void **) &raw);
         fclose(f);
         if (err)
             *err = ERR_TRUNC;
@@ -73,7 +73,6 @@ struct ptqtp_awq_ctx *ptqtp_awq_open(const char *path, const char **err) {
     fclose(f);
 
     if (memcmp(raw, "AWQS", 4) != 0) {
-        safe_free((void **) &raw);
         if (err)
             *err = ERR_MAGIC;
         return nullptr;
@@ -82,7 +81,6 @@ struct ptqtp_awq_ctx *ptqtp_awq_open(const char *path, const char **err) {
     memcpy(&version, raw + 4, 4);
     memcpy(&n_norms, raw + 8, 4);
     if (version != 1) {
-        safe_free((void **) &raw);
         if (err)
             *err = ERR_VER;
         return nullptr;
@@ -90,7 +88,6 @@ struct ptqtp_awq_ctx *ptqtp_awq_open(const char *path, const char **err) {
 
     struct ptqtp_awq_ctx *ctx = heap_calloc_array_aligned(struct ptqtp_awq_ctx, 1);
     if (!ctx) {
-        safe_free((void **) &raw);
         if (err)
             *err = ERR_NOMEM;
         return nullptr;
@@ -122,7 +119,6 @@ struct ptqtp_awq_ctx *ptqtp_awq_open(const char *path, const char **err) {
     ctx->data_arena = heap_alloc_aligned(data_total, alignof(float));
     ctx->entries    = heap_calloc_array_aligned(struct awq_entry, n_norms);
     if (!ctx->name_arena || !ctx->data_arena || !ctx->entries) {
-        safe_free((void **) &raw);
         ptqtp_awq_close(ctx);
         if (err) {
             *err = ERR_NOMEM;
@@ -154,11 +150,9 @@ struct ptqtp_awq_ctx *ptqtp_awq_open(const char *path, const char **err) {
         pos += (size_t) n_in * sizeof(float);
     }
 
-    safe_free((void **) &raw);
     return ctx;
 
 err_trunc:
-    safe_free((void **) &raw);
     ptqtp_awq_close(ctx);
     if (err)
         *err = ERR_TRUNC;
