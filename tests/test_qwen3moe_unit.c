@@ -26,6 +26,10 @@
  * with a copy on the GPU; prefill in chunks and token by token; the logits
  * match cpu_scalar's within the CPU experts' tolerance (cosine >= 0.999:
  * cpu_x86 runs F32 experts as W8A8).
+ * Cold experts staged for prefill (#239): the model on the GPU, 8 hot,
+ * GEIST_MOE_STAGE_M_MIN=1: every cold expert has a host copy on the GPU
+ * backend, the prefill chunks run them there, the logits still match
+ * cpu_scalar's; moe_stage_m_min's rule on fixed costs.
  * Load refusals: a missing expert tensor (named in the error), a router
  * gating other than softmax, a shared expert, more experts used than exist.
  */
@@ -283,6 +287,8 @@ static int check_hot(const char *gpu, size_t hot, const float ref[static VOCAB])
 /* The fixture loaded on GPU backend `gpu`, `hot` experts with a copy there;
  * its logits (chunked and token by token) against `ref`. Returns failures,
  * or -1 when `gpu` is not built. */
+static bool g_expect_staged; /* check_on_gpu under GEIST_MOE_STAGE_M_MIN=1 (#239) */
+
 static int check_on_gpu(const char *gpu, size_t hot, const float ref[static VOCAB]) {
     struct geist_backend *gbe = nullptr;
     if (geist_backend_create(gpu, nullptr, nullptr, &gbe) != GEIST_OK) {
@@ -323,6 +329,13 @@ static int check_on_gpu(const char *gpu, size_t hot, const float ref[static VOCA
         fails += geist_expect(hot == 0 || (mg != nullptr && mg->n_hot == hot && mg->rows_gpu > 0),
                               "the hot experts are placed and run");
         fails += geist_expect(c1 >= 0.999 && c2 >= 0.999, "the logits match cpu_scalar's");
+        /* #239: with GEIST_MOE_STAGE_M_MIN=1 every cold expert of a prefill
+         * chunk is copied to the GPU and run there (a backend that stages). */
+        if (g_expect_staged && gbe->desc->fused->stage_weights != nullptr)
+            fails += geist_expect(mg != nullptr &&
+                                          mg->n_stage_w == GEOM.layers * GEOM.experts - hot &&
+                                          mg->rows_staged > 0,
+                                  "the cold experts of the prefill chunks ran staged on the GPU");
 
         /* #164: only the experts without a GPU copy are resolved on the
          * CPU; a session that cannot get its GPU buffers is refused. */
@@ -404,9 +417,26 @@ int main(void) {
                 if (r < 0)
                     break;
             }
+            /* #239: the cold experts staged for every prefill chunk. */
+            setenv("GEIST_MOE_STAGE_M_MIN", "1", 1);
+            g_expect_staged = true;
+            const int r     = check_on_gpu(gpus[b], 8, scalar);
+            fails += r > 0 ? r : 0;
+            g_expect_staged = false;
+            unsetenv("GEIST_MOE_STAGE_M_MIN");
         }
     }
 
+    /* #239: the staging threshold's rule. */
+    fails += geist_expect(moe_stage_m_min(1.9e6, 12.7e9, 3e-6) == 32,
+                          "a 1.9 MB expert at 12.7 GB/s and 3 us per CPU row: from 32 rows");
+    fails += geist_expect(moe_stage_m_min(1.9e6, 12.7e9, 1.5e-6) == 64,
+                          "half the CPU time per row doubles the threshold");
+    fails += geist_expect(moe_stage_m_min(3.06e6, 12.4e9, 3.0e-6) == 64,
+                          "a bigger expert needs more rows");
+    fails += geist_expect(moe_stage_m_min(1.9e6, 0.0, 3e-6) == SIZE_MAX &&
+                                  moe_stage_m_min(1.9e6, 12.7e9, 0.0) == SIZE_MAX,
+                          "no copy rate or no CPU time: never");
     struct mf_qwen3moe c = GEOM;
     c.drop               = "blk.1.ffn_up_exps.weight";
     fails += check_refused("a missing expert tensor is refused by name", &c, "ffn_up_exps");

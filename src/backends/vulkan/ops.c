@@ -614,7 +614,9 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
         spill = true;
         s     = vk_buffer_create(be, bytes, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_HOST, &gpu);
     }
-    if (s == GEIST_OK && spill) {
+    if (s == GEIST_OK && spill && (w->flags & GEIST_W_HOST) != 0) {
+        st->requested_host_bytes += bytes; /* asked for (#78, #239), not a spill */
+    } else if (s == GEIST_OK && spill) {
         if (st->spilled_weights++ == 0) {
             fprintf(stderr,
                     "geist vulkan: device memory is full (%zu MiB in use); further weights "
@@ -1865,6 +1867,191 @@ static void vk_weight_done(struct vk_state *st) {
     vk_seq_cut(st);
 }
 
+/* ---- MoE prefill staging (#239) --------------------------------------- */
+
+/* Unbinds the staged weights from their slots. */
+static void vk_stage_unbind(struct vk_state *st) {
+    for (size_t i = 0; i < st->stage_n; ++i) {
+        if (st->stage_src[i] != nullptr) {
+            st->stage_src[i]->staged = nullptr;
+        }
+        st->stage_src[i] = nullptr;
+    }
+    st->stage_n        = 0;
+    st->stage_unwaited = false;
+}
+
+void vk_stage_release(struct geist_backend *be, struct vk_state *st) {
+    vk_seq_flush(st);
+    if (st->xq_on) {
+        (void) st->fn.QueueWaitIdle(st->xq);
+    }
+    vk_stage_unbind(st);
+    for (size_t i = 0; i < st->stage_cap; ++i) {
+        vk_buffer_destroy(be, st->stage_slot[i]);
+        st->stage_slot[i] = nullptr;
+    }
+    st->stage_cap   = 0;
+    st->stage_bytes = 0;
+}
+
+[[nodiscard]] static enum geist_status
+vk_stage_reserve_slots(struct geist_backend            *be,
+                       size_t                           n_slots,
+                       size_t                           n_like,
+                       const struct geist_weight *const like[static n_like]) {
+    struct vk_state *st         = be->state;
+    size_t           slot_bytes = 0;
+    for (size_t i = 0; i < n_like; ++i) {
+        const size_t b = like[i] != nullptr ? vk_weight_bytes(like[i]) : 0;
+        slot_bytes     = b > slot_bytes ? b : slot_bytes;
+    }
+    if (n_slots == 0 || slot_bytes == 0 || n_slots > VK_STAGE_MAX) {
+        geist_backend_set_error(be,
+                                GEIST_E_INVALID_ARG,
+                                "vulkan: %zu staging slots (1 to %d)",
+                                n_slots,
+                                (int) VK_STAGE_MAX);
+        return GEIST_E_INVALID_ARG;
+    }
+    if (n_slots <= st->stage_cap && slot_bytes <= st->stage_bytes) {
+        return GEIST_OK;
+    }
+    const size_t n = n_slots > st->stage_cap ? n_slots : st->stage_cap;
+    const size_t b = slot_bytes > st->stage_bytes ? slot_bytes : st->stage_bytes;
+    vk_stage_release(be, st);
+    enum geist_status s = GEIST_OK;
+    /* Shared with the transfer queue, like the streaming slots. */
+    st->wslot_creating = true;
+    for (size_t i = 0; i < n && s == GEIST_OK; ++i) {
+        s = vk_buffer_create(be, b, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_DEVICE, &st->stage_slot[i]);
+        st->stage_cap = i + (s == GEIST_OK);
+    }
+    st->wslot_creating = false;
+    st->stage_bytes    = b;
+    if (s != GEIST_OK) {
+        vk_stage_release(be, st);
+    }
+    return s;
+}
+
+[[nodiscard]] static enum geist_status
+vk_stage_weights(struct geist_backend *be, size_t n, const struct geist_weight *const w[static n]) {
+    struct vk_state *st = be->state;
+    vk_stage_unbind(st);
+    if (n > st->stage_cap) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    struct geist_buffer *src[VK_STAGE_MAX];
+    for (size_t i = 0; i < n; ++i) {
+        src[i] = w[i] != nullptr ? vk_weight_lookup(st, w[i]->raw) : nullptr;
+        if (src[i] == nullptr || (src[i]->memory_flags & GEIST_MEMORY_HOST) == 0 ||
+            src[i]->buf == VK_NULL_HANDLE || src[i]->bytes > st->stage_bytes) {
+            return GEIST_E_UNSUPPORTED;
+        }
+        for (size_t j = 0; j < i; ++j) {
+            if (src[j] == src[i]) {
+                return GEIST_E_UNSUPPORTED; /* one slot per weight */
+            }
+        }
+    }
+    if (st->xq_on && st->stage_xq) {
+        /* Work recorded so far may carry the signal the copies wait for. */
+        if (st->seq_signal_comp != 0) {
+            vk_seq_cut(st);
+        }
+        /* The command buffer may still be pending from the last copies. */
+        if (st->stage_ready != 0) {
+            const VkSemaphoreWaitInfo wi = {.sType          = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                                            .semaphoreCount = 1,
+                                            .pSemaphores    = &st->tl_copy,
+                                            .pValues        = &st->stage_ready};
+            if (st->fn.WaitSemaphores(st->device, &wi, UINT64_MAX) != VK_SUCCESS) {
+                return GEIST_E_BACKEND;
+            }
+        }
+        const VkCommandBuffer          cb    = st->stage_cmd;
+        const VkCommandBufferBeginInfo begin = {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+        if (st->fn.ResetCommandBuffer(cb, 0) != VK_SUCCESS ||
+            st->fn.BeginCommandBuffer(cb, &begin) != VK_SUCCESS) {
+            return GEIST_E_BACKEND;
+        }
+        for (size_t i = 0; i < n; ++i) {
+            const VkBufferCopy region = {.srcOffset = src[i]->base_off,
+                                         .dstOffset = st->stage_slot[i]->base_off,
+                                         .size      = src[i]->bytes};
+            st->fn.CmdCopyBuffer(cb, src[i]->buf, st->stage_slot[i]->buf, 1, &region);
+        }
+        if (st->fn.EndCommandBuffer(cb) != VK_SUCCESS) {
+            return GEIST_E_BACKEND;
+        }
+        const uint64_t                      sig = st->tl_copy_val + 1;
+        const VkPipelineStageFlags          wst = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        const VkTimelineSemaphoreSubmitInfo tl  = {
+                .sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                .waitSemaphoreValueCount   = 1,
+                .pWaitSemaphoreValues      = &st->stage_free,
+                .signalSemaphoreValueCount = 1,
+                .pSignalSemaphoreValues    = &sig};
+        const VkSubmitInfo info = {.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                                   .pNext                = &tl,
+                                   .waitSemaphoreCount   = 1,
+                                   .pWaitSemaphores      = &st->tl_comp,
+                                   .pWaitDstStageMask    = &wst,
+                                   .commandBufferCount   = 1,
+                                   .pCommandBuffers      = &cb,
+                                   .signalSemaphoreCount = 1,
+                                   .pSignalSemaphores    = &st->tl_copy};
+        if (st->fn.QueueSubmit(st->xq, 1, &info, VK_NULL_HANDLE) != VK_SUCCESS) {
+            return GEIST_E_BACKEND;
+        }
+        st->tl_copy_val    = sig;
+        st->stage_ready    = sig;
+        st->stage_unwaited = true;
+    } else {
+        /* In the batch: the hazard tracking orders each copy after the
+         * slot's last reader and before its next. */
+        for (size_t i = 0; i < n; ++i) {
+            const enum geist_status s =
+                    vk_buffer_copy(st->stage_slot[i], 0, src[i], 0, src[i]->bytes);
+            if (s != GEIST_OK) {
+                return s;
+            }
+        }
+    }
+    for (size_t i = 0; i < n; ++i) {
+        src[i]->staged   = st->stage_slot[i];
+        st->stage_src[i] = src[i];
+        st->stat_staged_bytes += src[i]->bytes;
+    }
+    st->stage_n = n;
+    st->stat_staged += n;
+    return GEIST_OK;
+}
+
+/* A GEMM is about to read a staged weight: the first since the copies went
+ * to the transfer queue starts a submission that waits for them (the work
+ * recorded before runs meanwhile), and every submission with such a reader
+ * signals tl_comp; the last of them frees the slots for the next copies. */
+static void vk_stage_read(struct vk_state *st) {
+    if (!st->xq_on || !st->stage_xq) {
+        return;
+    }
+    if (st->stage_unwaited) {
+        vk_seq_cut(st);
+        if (st->stage_ready > st->seq_wait_copy) {
+            st->seq_wait_copy = st->stage_ready;
+        }
+        st->stage_unwaited = false;
+    }
+    if (st->seq_signal_comp == 0) {
+        st->seq_signal_comp = ++st->tl_comp_val;
+    }
+    st->stage_free = st->seq_signal_comp;
+}
+
 /* The buffer linear_t binds for weight `wbuf` at m rows: wbuf itself, or,
  * for a weight spilled to host memory at m >= stream_m_min, the next of two
  * VRAM slots after a copy of it there (#78). In the batch, the sequence's
@@ -1879,6 +2066,11 @@ static void vk_weight_done(struct vk_state *st) {
                                                       struct geist_buffer **out) {
     struct vk_state *st = be->state;
     *out                = wbuf;
+    if (wbuf->staged != nullptr) {
+        vk_stage_read(st);
+        *out = wbuf->staged;
+        return GEIST_OK;
+    }
     if (wbuf->device_mem || m < st->stream_m_min) {
         return GEIST_OK;
     }
@@ -3468,6 +3660,8 @@ static const struct geist_backend_fused vk_fused = {
         .kv_append_f16           = vk_fb_kv_append_f16,
         .deltanet_mix            = vk_deltanet_mix,
         .deltanet_mix_states     = vk_deltanet_mix_states,
+        .stage_reserve           = vk_stage_reserve_slots,
+        .stage_weights           = vk_stage_weights,
         .attn_qgate_split        = vk_fb_attn_qgate_split,
         .sigmoid_mul             = vk_sigmoid_mul,
         .silu_mul                = vk_silu_mul,

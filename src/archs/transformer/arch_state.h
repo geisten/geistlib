@@ -630,9 +630,18 @@ struct transformer_moe_gpu {
     /* [n_layers * 3 * moe_n_experts]: per layer and projection, each routed
      * expert's twin or nullptr (no copy): linear_t_sel's w. */
     const struct geist_weight **sel_w;
-    _Atomic uint64_t            n_routed;                    /* layer steps that took that route */
-    _Atomic uint64_t            n_device;                    /* layer steps that took that route */
-    _Atomic uint64_t            rows_gpu, rows_cpu, batches; /* GEIST_VERBOSE at destroy */
+    /* #239: cold experts copied to `be` for a prefill step. stage_w
+     * [n_layers * moe_slots * 3] is each cold expert's gate, up and down
+     * resolved on `be` with GEIST_W_HOST (raw == nullptr: none); a prefill
+     * step copies those with at least stage_m_min rows into the staging
+     * slots (fused->stage_weights), at most stage_max of them, the most
+     * rows first. stage_m_min == 0: off. */
+    struct geist_weight *stage_w;
+    size_t               n_stage_w, stage_m_min, stage_max;
+    _Atomic uint64_t     rows_staged, n_staged;
+    _Atomic uint64_t     n_routed;                    /* layer steps that took that route */
+    _Atomic uint64_t     n_device;                    /* layer steps that took that route */
+    _Atomic uint64_t     rows_gpu, rows_cpu, batches; /* GEIST_VERBOSE at destroy */
 };
 
 struct transformer_arch_state {

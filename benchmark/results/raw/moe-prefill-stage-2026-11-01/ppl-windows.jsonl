@@ -1,0 +1,12 @@
+{"model":"Qwen3-30B-A3B-Q4_K_M","window":"1024-2048","v":"GEIST_MOE_STAGE=0","r":{"tokens":1023,"nll":2.259221,"ppl":9.5756,"tps":55.86}}
+{"model":"Qwen3-30B-A3B-Q4_K_M","window":"1024-2048","v":"X=default","r":{"tokens":1023,"nll":2.261283,"ppl":9.5954,"tps":59.41}}
+{"model":"Qwen3.6-35B-A3B-UD-Q4_K_XL","window":"1024-2048","v":"GEIST_MOE_STAGE=0","r":{"tokens":1023,"nll":1.831856,"ppl":6.2455,"tps":66.34}}
+{"model":"Qwen3.6-35B-A3B-UD-Q4_K_XL","window":"1024-2048","v":"X=default","r":{"tokens":1023,"nll":1.829035,"ppl":6.2279,"tps":69.83}}
+{"model":"Qwen3-30B-A3B-Q4_K_M","text":"ARCHITECTURE","window":"1024-2048","v":"GEIST_MOE_STAGE=0","r":{"tokens":1023,"nll":2.849435,"ppl":17.2780,"tps":74.62}}
+{"model":"Qwen3-30B-A3B-Q4_K_M","text":"ARCHITECTURE","window":"1024-2048","v":"X=default","r":{"tokens":1023,"nll":2.847398,"ppl":17.2429,"tps":74.66}}
+{"model":"Qwen3-30B-A3B-Q4_K_M","text":"ARCHITECTURE","window":"2048-3072","v":"GEIST_MOE_STAGE=0","r":{"tokens":1023,"nll":2.966510,"ppl":19.4240,"tps":64.99}}
+{"model":"Qwen3-30B-A3B-Q4_K_M","text":"ARCHITECTURE","window":"2048-3072","v":"X=default","r":{"tokens":1023,"nll":2.962952,"ppl":19.3550,"tps":67.21}}
+{"model":"Qwen3.6-35B-A3B-UD-Q4_K_XL","text":"ARCHITECTURE","window":"1024-2048","v":"GEIST_MOE_STAGE=0","r":{"tokens":1023,"nll":2.333335,"ppl":10.3123,"tps":75.86}}
+{"model":"Qwen3.6-35B-A3B-UD-Q4_K_XL","text":"ARCHITECTURE","window":"1024-2048","v":"X=default","r":{"tokens":1023,"nll":2.331914,"ppl":10.2976,"tps":79.03}}
+{"model":"Qwen3.6-35B-A3B-UD-Q4_K_XL","text":"ARCHITECTURE","window":"2048-3072","v":"GEIST_MOE_STAGE=0","r":{"tokens":1023,"nll":2.255305,"ppl":9.5382,"tps":70.70}}
+{"model":"Qwen3.6-35B-A3B-UD-Q4_K_XL","text":"ARCHITECTURE","window":"2048-3072","v":"X=default","r":{"tokens":1023,"nll":2.256404,"ppl":9.5487,"tps":72.50}}

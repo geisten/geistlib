@@ -180,6 +180,7 @@ enum {
     VK_XRING_CAP    = 192u << 20, /* a full prefill chunk stages ~124 MB */
     VK_MAX_M        = 512,
     VK_STREAM_M_MIN = 32,
+    VK_STAGE_MAX    = 192, /* staging slots (#239): 64 experts of one MoE layer step */
     /* default row threshold for streaming spilled weights (#78) */ /* caps.max_m; resolve_weight
                                                                        checks it x n_in fits the
                                                                        ring */
@@ -249,6 +250,7 @@ struct vk_state {
     size_t weight_reserve;
     size_t spilled_weights;
     size_t spilled_weight_bytes;
+    size_t requested_host_bytes; /* GEIST_W_HOST weights, in host memory by request */
     /* A spilled weight is read over the bus on every use. From
      * stream_m_min rows on, linear_t copies it into one of two VRAM slots
      * first (one DMA per use instead of the shaders' scattered reads, #78)
@@ -284,6 +286,25 @@ struct vk_state {
     uint64_t                   seq_wait_copy;   /* next compute submit waits tl_copy >= this */
     uint64_t                   seq_signal_comp; /* next compute submit signals tl_comp = this */
     uint64_t                   stat_prefetch_hits;
+    /* MoE prefill staging (#239, fused->stage_weights): VRAM slots for
+     * weights held in host memory. A staged weight's buffer names its slot
+     * (geist_buffer.staged) until the next staging, and linear_t binds that.
+     * With the transfer queue the copies are one submission there that
+     * waits on the device for the last readers of the slots (tl_comp >=
+     * stage_free) and signals tl_copy = stage_ready; the first staged read
+     * after it starts a compute submission that waits for that
+     * (stage_unwaited), so the work recorded before overlaps the copies.
+     * Without it the copies go into the batch. */
+    struct geist_buffer *stage_slot[VK_STAGE_MAX];
+    struct geist_buffer *stage_src[VK_STAGE_MAX];
+    size_t               stage_n;
+    size_t               stage_cap;   /* slots */
+    size_t               stage_bytes; /* bytes per slot */
+    uint64_t             stage_ready, stage_free;
+    bool                 stage_unwaited;
+    VkCommandBuffer      stage_cmd;
+    bool                 stage_xq; /* stage_cmd allocated: copies on the transfer queue */
+    uint64_t             stat_staged, stat_staged_bytes;
     /* VK_EXT_memory_budget is enabled: vk_heap_budget reports the driver's
      * budget and usage, which see every allocation on the device (#665). */
     bool has_mem_budget;
@@ -500,6 +521,7 @@ struct geist_buffer {
     bool                   borrowed;    /* buf/mem owned by a parent buffer */
     bool                   view;        /* buffer_create_view slice of a parent */
     struct geist_buffer   *stream_next; /* async streaming: the weight streamed after this one */
+    struct geist_buffer   *staged;      /* #239: the VRAM slot holding this host weight, or null */
     size_t bar_bytes;  /* counted in vk_state.bar_used (host-visible + device-local) */
     size_t vram_bytes; /* counted in vk_state.vram_used */
 };
@@ -509,6 +531,9 @@ struct geist_buffer {
                                           const struct geist_backend_opts *opts);
 
 void vk_destroy(struct geist_backend *be);
+
+/* #239: destroys the staging slots; no weight stays staged. */
+void vk_stage_release(struct geist_backend *be, struct vk_state *st);
 
 [[nodiscard]] enum geist_status vk_buffer_create(struct geist_backend  *be,
                                                  size_t                 bytes,

@@ -3,7 +3,8 @@
 Status: **phase 0 measured; streaming of spilled weights in the Vulkan
 backend (#79, default on); phase 1 built on `feat/78-offload-route`:
 prefill chunks of a split model run every layer on the GPU, decode stays
-split (`GEIST_OFFLOAD_M_MIN`, off by default).** Builds on the layer split of #49
+split (`GEIST_OFFLOAD_M_MIN`, off by default); MoE prefill copies cold
+experts with many rows to the GPU (#239, default on).** Builds on the layer split of #49
 (merged in #68) and the MoE family of #48.
 
 ## The question
@@ -47,7 +48,7 @@ llama.cpp/ggml):
 | :-- | :-- | :-- |
 | Static profile cache: the hottest experts in VRAM (4,500 of 24,576 serve 50 % of selections) | **yes** | It is a placement fixed at load: #48 phase 2 already plans it |
 | CPU computes the experts not on the GPU in place, concurrently with the GPU | **yes** | One more route of the same weight, see below. Needs a non-blocking GPU submit |
-| `--pcie-frac`: a share of the missing experts copied to the GPU instead of computed on the CPU | **as a threshold** | The same trade as op offload; we decide it by `m`, not by a fraction |
+| `--pcie-frac`: a share of the missing experts copied to the GPU instead of computed on the CPU | **as a threshold (built, #239)** | The same trade as op offload; we decide it by `m`, not by a fraction ([below](#cold-experts-staged-for-prefill-239)) |
 | Prefill in chunks up to 8,192, borrowing expert-cache VRAM for the buffers | **partly** | Large chunks are what makes streaming pay; borrowing cache slots waits for a cache |
 | Next layer's experts streamed over PCIe while this layer's attention runs | **yes (v1)** | Prefetch one layer ahead in a staging ring |
 | Adaptive tier: LRU swaps between decode windows on a helper thread | **not yet** | Run-time migration; it changes residency, not arithmetic, but it is the most code. After v1, if the static cover is too low |
@@ -641,6 +642,130 @@ half the prefill speed); 8 when the members start from a snapshot of a
 full-size session (`geist_session_restore`) and rarely prefill themselves,
 e.g. #26's shared-prefix questions.
 
+### Cold experts staged for prefill (#239)
+
+**Why.** In GPU mode a prefill chunk's cold experts ran on the CPU, and
+they were the critical path: 38 % of a 2,726-token prefill's expert rows
+(394 k of 1.03 M, Qwen3.6-35B-A3B, profile run 1830) went to the CPU, and
+with them skipped (timing only, outputs wrong) the prefill ran at
+1,128-1,131 tok/s instead of 772-799, +43 %. The rows are not spread thin:
+75 % of the cold rows belong to experts with more than 16 rows in their
+chunk, 55 % to experts with more than 32.
+
+**What.** Each cold expert gets a host copy on the GPU backend at load
+(`GEIST_W_HOST`: Vulkan keeps it in pinned host memory), in profile order,
+in 4 GiB (or a quarter of the host's memory if less;
+`GEIST_MOE_STAGE_HOST` sets it, see the budget below). A prefill step
+(`blk_moe_ffn`, `seq > 1`, the model on the GPU) copies the cold experts
+with at least `stage_m_min` rows, at most 16 of them, the most rows first,
+into VRAM staging slots (`fused->stage_weights`) and runs them in the same
+grouped, padded GEMM path as the resident experts, recorded after them;
+the CPU keeps the rest. On Vulkan the step's copies are one submission on
+the transfer queue that starts before the resident experts' GEMMs are
+recorded and overlaps them; the first staged GEMM starts a compute
+submission that waits for it on a timeline semaphore, and the next step's
+copies wait on the device for the last staged reader. The host never waits
+for a copy. Without a transfer queue (lavapipe) the copies go into the
+batch. A second set of slots, so that one layer's copies need not wait for
+the previous layer's staged GEMMs, measured 931 against 928 tok/s with
+one: the next layer's routing waits for this layer anyway. Metal (unified
+memory) has no `stage_weights` and nothing changes there; neither does
+decode (`seq == 1`) or a batched decode.
+
+**Threshold.** Fixed at load from a cost model measured on the model's own
+experts (`moe_gpu_stage_calibrate`, `GEIST_VERBOSE` prints it): the
+staging copy rate `bw`, the GPU's time per row and per expert, and the
+CPU's time per row with every thread on another cold expert, from memory,
+as a step's cold experts run. The CPU is the critical path and the GPU
+waits for it, so a moved expert saves its CPU time and costs at most its
+copy: `m_min = B / (bw · t_cpu)`, taken at the power of two at or below
+(the copy also overlaps the resident GEMMs, so this is an upper bound of
+the break-even). Five loads each:
+
+| | copy | expert | GPU per row + per expert | CPU per row (32 threads) | threshold |
+|:--|--:|--:|--:|--:|--:|
+| Qwen3.6-35B-A3B UD-Q4_K_XL | 12.8-13.0 GB/s | 1.90 MB | 0.47-0.65 + 121-126 µs | 2.74-2.94 µs | 32 (5 of 5) |
+| Qwen3-30B-A3B Q4_K_M | 12.2-12.5 GB/s | 3.06 MB | 0.51-0.67 + 102-147 µs | 3.47-3.92 µs | 64 (4 of 5), 32 |
+
+Measured by hand against it (draft code, up to 32 experts per step, 3
+cycles, prefill tok/s): Qwen3.6-35B-A3B off 795, 16 rows 904, **32 rows
+925**, 64 rows 886; Qwen3-30B-A3B off 723, 16 rows 777, 32 rows 848, **64
+rows 843**. The model's pick is the best measured one or within 1 % of it.
+Placement is a pure function of the chunk's routing once the threshold is
+fixed; a threshold near a power of two can land on either neighbour
+between loads (Qwen3-30B-A3B above), as the hot set already depends on the
+free VRAM at load. `GEIST_MOE_STAGE_M_MIN=<rows>` pins it, `0` or
+`GEIST_MOE_STAGE=0` turns staging off.
+
+**Host budget.** The host copies are pinned memory, so the default does
+not take every cold expert: Qwen3.6-35B-A3B has 6,386 of them (11.7 GB),
+Qwen3-30B-A3B 3,333 (9.1 GB). The profile's hottest cold experts come first,
+and prefill tok/s grows with the budget (2 interleaved cycles each):
+
+| `GEIST_MOE_STAGE_HOST` | off | 1 GiB | 2 GiB | 3 GiB | **4 GiB** | 6 GiB | all |
+|:--|--:|--:|--:|--:|--:|--:|--:|
+| Qwen3.6-35B-A3B | 789 | 799 | 836 | 828 | **869** | 882 | 930 |
+| share of the gain | | 7 % | 33 % | 28 % | **57 %** | 66 % | 100 % |
+| Qwen3-30B-A3B | 709 | 744 | 785 | 819 | **825** | 835 | 836 |
+| share of the gain | | 28 % | 60 % | 87 % | **91 %** | 99 % | 100 % |
+
+The default is 4 GiB, the knee for Qwen3-30B-A3B. Qwen3.6-35B-A3B's profile
+(a decode trace of another corpus) predicts which of its many small cold
+experts a prefill stages less well, so it keeps 57 %; more needs
+`GEIST_MOE_STAGE_HOST`. VmRSS counts the pinned copies twice (the driver's
+and geist's mapping of the same pages; `rssprobe.c` in the raw data: 2,000
+MiB of host weights, MemAvailable −1,985 MiB, PSS +2,002 MiB, VmRSS +4,002
+MiB), so peak RSS below grows by twice the budget while the host loses it
+once.
+
+**Results with the default** (RTX 2080 Ti + 9950X, the 2,726-token request,
+128 decoded tokens, 4 interleaved cycles against staging off on the same
+binary, under the desktop lease; one CI coverage job was still running on
+one core, so both columns read a little low; Strata from runs
+1839/1842/1930):
+
+| | prefill tok/s | decode tok/s | peak VmRSS |
+|:--|--:|--:|--:|
+| Strata, MTP off (Qwen3.6-35B-A3B, CUDA) | 605 | 62.0-62.2 | |
+| Qwen3.6-35B-A3B, staging off | 795 / 797 / 800 / 756 | 77.9 / 76.5 / 77.7 / 77.6 | 15.6 GB |
+| **Qwen3.6-35B-A3B, default (4 GiB)** | **856 / 866 / 793 / 867** | 77.2 / 77.9 / 78.3 / 78.6 | 23.3 GB |
+| Qwen3-30B-A3B, staging off | 689 / 668 / 697 / 647 | 64.7 / 65.5 / 65.6 / 64.9 | 14.1 GB |
+| **Qwen3-30B-A3B, default (4 GiB)** | **810 / 830 / 814 / 809** | 64.9 / 65.5 / 64.7 / 68.2 | 18.5 GB |
+
+- Prefill +8 % (Qwen3.6-35B-A3B, median 861 against 796; 1.42x Strata) and
+  +20 % (Qwen3-30B-A3B, 812 against 679). With every cold expert copied
+  (`GEIST_MOE_STAGE_HOST` past the model's cold bytes) the earlier
+  acceptance run read 921 against main's 799 (+15 %, 1.52x Strata) and
+  830 against 695 (+19 %).
+- Decode unchanged: medians 78.1 / 77.6 and 65.2 / 65.2.
+- Perplexity unchanged (`bench_nll`, `GEIST_NLL_PREFILL=1`: the context
+  prefilled in 512-row chunks, the next 1,023 tokens scored; four windows
+  per model: tokens 1,024-2,048 and 2,048-3,072 of this file and of
+  `docs/ARCHITECTURE.md`): Qwen3.6-35B-A3B −0.28 to +0.11 % per window,
+  −0.08 % over the four; Qwen3-30B-A3B −0.36 to +0.49 % per window, +0.03 %
+  over the four. The staged experts run in F32 accumulation on the GPU
+  instead of the CPU's W8A8; the spread is the routing's sensitivity, not a
+  direction.
+- **VRAM**: 48 slots (16 experts) of the biggest projection, 864 KiB
+  (Qwen3.6-35B-A3B, its Q6_K layers' down) and 1,296 KiB (Qwen3-30B-A3B):
+  40.5 and 60.8 MiB, from the planner's 512 MiB headroom, so the hot set is
+  the same as with staging off (2,832 hot experts for Qwen3-30B-A3B either
+  way). Taken from the hot experts instead (the first version: 23 and 22
+  fewer, 0.6-0.7 % of the hot capacity) they cost Qwen3.6-35B-A3B 1.6 %
+  decode (77.8 against 79.1 tok/s with the hot count matched, 4 cycles).
+  32 experts per step were no faster than 16 (931 against 926 tok/s).
+- A step stages ~7-12 experts on average (Qwen3.6-35B-A3B: 1,701 of a
+  2,726-token prefill's 240 layer steps with the default, 2,806 with all
+  cold experts copied); the copies hide behind the GEMMs.
+- The first try, the existing streaming path (#79: each projection copied
+  into one of two slots when its GEMM runs), lost: 578 tok/s, the copies
+  and GEMMs serialized weight by weight.
+- Dense models pay nothing: `bench_revision_ab.py`, synthetic Llama-1B
+  Q4_K on the card, base against the branch, 6 cycles: -0.1 to 0.0 %, the
+  control ±18.9 %.
+
+Raw data: `benchmark/results/raw/moe-prefill-stage-2026-11-01/`.
+
 All measurements under `scripts/gpu-lock.sh` (and `with-mac-lock` on the
 Mac), interleaved cycles, raw samples kept, `bench_revision_ab.py` parent vs
 patch for "single-backend runs pay nothing".
@@ -652,6 +777,11 @@ patch for "single-backend runs pay nothing".
   not apply, and the GPU parity suite passes on the real card.
 - Pinned host memory for DMA: the GGUF mapping is pageable. Staging needs
   either a pinned bounce buffer (one extra memcpy, CPU-bound) or importing
-  the mapping (`VK_EXT_external_memory_host`, alignment limits).
+  the mapping (`VK_EXT_external_memory_host`, alignment limits). #239 pays
+  with a second, pinned host copy of the profile's hottest cold experts (4
+  GiB by default, 11.7 GB for all of Qwen3.6-35B-A3B's); copying from the
+  CPU's own bytes is out while cpu_x86 repacks Q4_K into its own layout.
+  A better predictor of a prefill's staged experts than the decode profile
+  would let 4 GiB keep more of Qwen3.6-35B-A3B's gain.
 - MoE concurrency: the CPU workers and the Vulkan host thread share cores; the
   OpenMP region (`parallel_region_begin`) has to leave one thread for submit.
