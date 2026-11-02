@@ -1667,6 +1667,29 @@ int main(void) {
         return 1;
     }
 
+#ifdef GEIST_BACKEND_METAL
+    /* Start with a fresh scratch state. Tensor prefill reads f32 directly;
+     * only the short-batch and simdgroup paths need an f16 activation copy.
+     * Compare every path to the independent scalar dequantizer as well. */
+    struct metal_state *st = mt->state;
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 384, 129);
+    if (st->pq2_mm_tc_pipeline != nullptr) {
+        check(st->pq2_xh_buffer == nullptr, "tensor prefill needs no f16 scratch");
+    } else {
+        check(st->pq2_xh_buffer != nullptr, "simdgroup prefill retains f16 scratch");
+    }
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 512, 384, 8);
+    check(st->pq2_xh_buffer != nullptr, "eight-row PQ2 retains f16 scratch");
+    struct geist_buffer *short_scratch = st->pq2_xh_buffer;
+    const size_t         short_bytes   = short_scratch != nullptr ? short_scratch->bytes : 0u;
+    run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2_0", 1024, 384, 129);
+    if (st->pq2_mm_tc_pipeline != nullptr) {
+        check(st->pq2_xh_buffer == short_scratch && st->pq2_xh_buffer != nullptr &&
+                      st->pq2_xh_buffer->bytes == short_bytes,
+              "tensor prefill does not grow short-batch scratch");
+    }
+#endif
+
     /* n_in must be a multiple of 256 for k-quants; n_out deliberately not a
      * multiple of the threadgroup width to catch tail bugs. */
     /* A ragged last row tile on the interior fast kernels (#35): n_out fills
