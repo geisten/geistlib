@@ -931,6 +931,12 @@ token.
 - Strata's MTP draft brought nothing on the same request either (62.2 tok/s
   either way, run 1842).
 
+Re-checked after main's GPT-OSS work (#243, which splits a decode step's
+CPU experts by rows) was merged in, 2 cycles (`ab-post-merge.jsonl`): MTP off
+77.3 / 76.2 on main against 78.0 / 78.1; MTP K = 2 7.3 / 7.2 on main (this
+time beside other load) against 62.7 / 62.6, K = 3 63.3 / 63.4 (acceptance
+0.77 / 0.51); n-gram K = 3 12.5 / 12.4 against 62.9 / 63.9.
+
 MTP stays opt-in. For an MoE with experts split across GPU and CPU, leave
 it off. Raw data: `benchmark/results/raw/moe-mtp-2026-11-02/`.
 
