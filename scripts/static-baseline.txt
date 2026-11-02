@@ -9,6 +9,7 @@
 5	src/archs/audio_conformer/encoder_stream.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 1	src/archs/audio_conformer/encoder_weights.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 1	src/archs/transformer/arch_state.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'unsigned int'
+1	src/archs/transformer/arch_state.c	bugprone-invalid-enum-default-initialization	enum value of type 'geist_moe_gating' initialized with invalid value of 0, enum doesn't have a zero-value enumerator
 2	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Access to field 'desc' results in a dereference of a null pointer (loaded from variable 'be')
 1	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Access to field 'split' results in a dereference of a null pointer (loaded from variable 'state')
 1	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Access to field 'vtbl' results in a dereference of a null pointer (loaded from field 'desc')
@@ -21,7 +22,7 @@
 3	src/archs/transformer/forward/decision_rows.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
 9	src/archs/transformer/forward/head.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
 4	src/archs/transformer/forward/kv_store.c	bugprone-misplaced-widening-cast	either cast from 'size_t' (aka 'unsigned long') to 'int64_t' (aka 'long long') is ineffective, or there is loss of precision before the conversion
-14	src/archs/transformer/forward/kv_store.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
+16	src/archs/transformer/forward/kv_store.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
 1	src/archs/transformer/forward/layer.c	bugprone-misplaced-widening-cast	either cast from 'size_t' (aka 'unsigned long') to 'int64_t' (aka 'long long') is ineffective, or there is loss of precision before the conversion
 16	src/archs/transformer/forward/layer.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
 10	src/archs/transformer/forward/layer_deltanet.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
