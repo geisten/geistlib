@@ -4,7 +4,8 @@
  * moe_route_topk against a double-precision reference on the router edge
  * cases #48 lists: ties in router scores, top-k = number of experts, an
  * expert never selected, all-zero router input, and refusals (k = 0, k > n,
- * non-finite logits). No model, no fixture.
+ * non-finite logits). moe_route: a router bias and GPT-OSS's
+ * softmax over the selected (#243). No model, no fixture.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -59,7 +60,50 @@ check(const char *what, size_t n, size_t k, bool norm, const float *logits, cons
         expect(fabs(sum - 1.0) < 1e-6, "renormalised weights sum to 1");
 }
 
+/* moe_route, GPT-OSS's router (#243): the bias is added to the logits
+ * before the selection, and SOFTMAX_WEIGHT weights the selected by the
+ * softmax over their biased logits alone. */
+static void check_softmax_weight(void) {
+    const float logits[6] = {0.1f, 2.0f, -1.0f, 3.5f, 0.0f, 1.9f};
+    const float bias[6]   = {0.0f, -1.5f, 0.0f, 0.0f, 2.2f, 0.0f};
+    uint32_t    ids[4];
+    float       w[4];
+    /* Biased: {0.1, 0.5, -1, 3.5, 2.2, 1.9} -> 3, 4, 5. */
+    const uint32_t          want[3] = {3, 4, 5};
+    const struct moe_router sw      = {.gating = GEIST_MOE_GATING_SOFTMAX_WEIGHT, .bias = bias};
+    const struct moe_router sb = {.gating = GEIST_MOE_GATING_SOFTMAX, .norm = true, .bias = bias};
+    const struct moe_router sp = {.gating = GEIST_MOE_GATING_SOFTMAX};
+    if (!moe_route(6, 3, &sw, logits, ids, w)) {
+        expect(false, "softmax_weight routes");
+        return;
+    }
+    double b[3], z = 0.0;
+    for (size_t j = 0; j < 3; j++) {
+        b[j] = (double) logits[want[j]] + (double) bias[want[j]];
+        z += exp(b[j] - b[0]);
+    }
+    for (size_t j = 0; j < 3; j++) {
+        expect(ids[j] == want[j], "softmax_weight selects by the biased logits");
+        expect(fabs(w[j] - exp(b[j] - b[0]) / z) < 1e-6,
+               "softmax_weight weights are the softmax over the selected");
+    }
+    /* SOFTMAX with a bias: moe_route_topk on the biased logits. */
+    const float biased[6] = {0.1f, 0.5f, -1.0f, 3.5f, 2.2f, 1.9f};
+    uint32_t    ids2[3];
+    float       w2[3];
+    expect(moe_route(6, 3, &sb, logits, ids, w) && moe_route_topk(6, 3, true, biased, ids2, w2) &&
+                   ids[0] == ids2[0] && ids[1] == ids2[1] && ids[2] == ids2[2] &&
+                   fabsf(w[0] - w2[0]) < 1e-6f && fabsf(w[2] - w2[2]) < 1e-6f,
+           "softmax with a bias is the top-k of the biased logits");
+    /* Without a bias, SOFTMAX is moe_route_topk itself. */
+    expect(moe_route(6, 2, &sp, logits, ids, w) && moe_route_topk(6, 2, false, logits, ids2, w2) &&
+                   ids[0] == ids2[0] && ids[1] == ids2[1] && w[0] == w2[0] && w[1] == w2[1],
+           "softmax without a bias is moe_route_topk");
+    expect(!moe_route(6, 0, &sw, logits, ids, w), "softmax_weight refuses k = 0");
+}
+
 int main(void) {
+    check_softmax_weight();
     /* Distinct scores: the k largest, largest first. */
     const float a[6] = {0.1f, 2.0f, -1.0f, 3.5f, 0.0f, 1.9f};
     check("distinct, k=3, norm", 6, 3, true, a, (const uint32_t[]) {3, 1, 5});

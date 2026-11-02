@@ -77,6 +77,13 @@ static const struct {
          dequant_pq2_0_row,
          {0, -1}},
         {GEIST_DTYPE_I2_S, "I2_S", I2_S_BLOCK_ELEMS, I2_S_BLOCK_BYTES, nullptr, {-1, -1}},
+        /* The E8M0 exponent at byte 0 is no fp16: make_weight pins it. */
+        {GEIST_DTYPE_MXFP4,
+         "MXFP4",
+         MXFP4_BLOCK_ELEMS,
+         MXFP4_BLOCK_BYTES,
+         dequant_mxfp4_row,
+         {-1, -1}},
 };
 enum { N_DTYPES = sizeof DTYPES / sizeof DTYPES[0] };
 
@@ -136,6 +143,9 @@ static inline uint8_t *make_weight(size_t d, size_t n_in, size_t n_out, size_t *
     }
     for (size_t b = 0; b < n / DTYPES[d].blk; b++) {
         uint8_t *blk = raw + b * DTYPES[d].bytes;
+        if (DTYPES[d].dt == GEIST_DTYPE_MXFP4) {
+            blk[0] = (uint8_t) (124u + next_u32() % 5u); /* scale 2^-4 .. 2^0 */
+        }
         for (size_t f = 0; f < 2; f++) {
             if (DTYPES[d].d[f] >= 0) {
                 blk[DTYPES[d].d[f]]     = 0x00; /* fp16 0.5 */

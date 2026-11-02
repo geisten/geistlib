@@ -92,7 +92,10 @@ struct gguf_tokenizer {
      * qwen2 pretokenizer scanner instead of the simple word splitter
      * (contractions, single digits, punctuation runs, the one-codepoint
      * prefix rule; #275). Also set for pre == "qwen35". */
-    bool    pre_qwen2;
+    bool pre_qwen2;
+    /* GPT-2 mode: tokenizer.ggml.pre == "gpt-4o" or "llama4" (#243) —
+     * gguf_tokenizer_gpt4o_chunk_end splits the text. */
+    bool    pre_gpt4o;
     int32_t spm_byte_id[256]; /* SPM byte fallback: byte → "<0xXX>" vocab id, -1 if absent */
 
     /* Loaded from a tokenizer.bin (gguf_tokenizer_load_bin), SPM mode without
@@ -159,6 +162,13 @@ struct gguf_tokenizer {
 [[nodiscard]] bool gguf_tokenizer_load_bin(struct gguf_tokenizer *tok, const char *path);
 
 void gguf_tokenizer_unload(struct gguf_tokenizer *tok);
+
+/* End (exclusive, a byte offset) of the gpt-4o pretokenizer chunk that
+ * starts at byte i < tlen of text: llama.cpp's LLAMA_VOCAB_PRE_TYPE_GPT4O
+ * regex over llama.cpp's letter / number / whitespace classes. Always > i.
+ * Exposed for tests. */
+[[nodiscard]] size_t
+gguf_tokenizer_gpt4o_chunk_end(size_t tlen, size_t i, const char text[static tlen]);
 
 /* Exact vocab lookup: token id for the surface string `text`, or -1 if it is
  * not a single vocab entry. Backs the public geist_model_token_by_text. */

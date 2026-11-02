@@ -155,6 +155,9 @@ bool quant_dequant_row(enum geist_dtype dt,
     case GEIST_DTYPE_Q5_0:
         dequant_q5_0_row(n, src, out);
         return true;
+    case GEIST_DTYPE_MXFP4:
+        dequant_mxfp4_row(n, src, out);
+        return true;
     case GEIST_DTYPE_Q8_0:
         dequant_q8_0_row(n, src, out);
         return true;

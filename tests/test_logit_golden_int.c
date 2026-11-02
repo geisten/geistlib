@@ -52,6 +52,9 @@ static const struct {
          "tests/data/logit_golden/smollm2-360m-instruct-q8_0.txt"},
         {"gguf_artifacts/qwen3-0.6b-q8_0.gguf", "tests/data/logit_golden/qwen3-0.6b-q8_0.txt"},
         {"gguf_artifacts/qwen3.5-0.8b-q8_0.gguf", "tests/data/logit_golden/qwen3.5-0.8b-q8_0.txt"},
+        /* GPT-OSS (#243): MXFP4 experts, sinks, YaRN; the argmaxes agree
+         * with llama.cpp's greedy continuation of the same prompt. */
+        {"gguf_artifacts/gpt-oss-20b-MXFP4.gguf", "tests/data/logit_golden/gpt-oss-20b-MXFP4.txt"},
 };
 enum { N_FIXTURES = sizeof FIXTURES / sizeof FIXTURES[0] };
 
