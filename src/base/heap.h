@@ -54,6 +54,12 @@ void *heap_alloc_n_aligned(size_t count, size_t size, size_t alignment);
  * sets it. */
 void heap_fail_allocations(bool on);
 
+/* Test hook for walking every allocation of an error path (#349): the next
+ * `n` allocations in this header succeed and every later one fails, until
+ * a negative `n` turns it off. A test repeats a call for n = 0, 1, ...
+ * until it succeeds, so each allocation inside it fails once. */
+void heap_fail_after(int64_t n);
+
 /* Typed array allocation. Count and element size reach the overflow check
  * separately: model-controlled counts (tensor dims, image geometry, KV
  * capacities) must not wrap into a small allocation. */
