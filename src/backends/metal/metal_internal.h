@@ -15,6 +15,7 @@
 #include "clock.h"
 #include "env.h"
 #include "heap.h"
+#include "cleanup.h"
 #include <math.h>
 
 /* Which GPU command sequence a capture/profile wait belongs to. */
