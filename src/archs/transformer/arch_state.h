@@ -110,20 +110,21 @@ struct transformer_layer_weights {
     struct geist_tensor down_proj;      /* [HIDDEN, intermediate] */
     struct geist_tensor per_layer_gate; /* [HIDDEN_PER_LAYER, HIDDEN] */
     struct geist_tensor per_layer_proj; /* [HIDDEN, HIDDEN_PER_LAYER] */
-    /* Projection biases and attention sinks (GPT-OSS, #243), F32 DENSE;
-     * buffer == nullptr where the layer has none. q/k/v/o biases are added
-     * to the projection's rows; attn_sinks [n_q_heads] is a per-head logit
-     * that joins every query's softmax with a zero value row. */
-    struct geist_tensor q_bias;     /* [q_out] */
-    struct geist_tensor k_bias;     /* [kv_out] */
-    struct geist_tensor v_bias;     /* [kv_out] */
-    struct geist_tensor o_bias;     /* [HIDDEN] */
-    struct geist_tensor attn_sinks; /* [N_Q_HEADS] */
+    /* Projection biases (GPT-OSS, #243), F32 DENSE; buffer == nullptr
+     * where the layer has none. They are added to the projection's rows. */
+    struct geist_tensor q_bias; /* [q_out] */
+    struct geist_tensor k_bias; /* [kv_out] */
+    struct geist_tensor v_bias; /* [kv_out] */
+    struct geist_tensor o_bias; /* [HIDDEN] */
+    /* Attention sinks (GPT-OSS, #243), host [N_Q_HEADS] or nullptr: a
+     * per-head logit that joins every query's softmax with a zero value
+     * row. Host memory: the sink attention runs on the host. */
+    float *attn_sinks;
     /* Multi-head latent attention (config.mla_kv_rank > 0, #242). */
     struct geist_tensor mla_q_a;       /* [mla_q_rank, HIDDEN], when mla_q_rank > 0 */
     struct geist_tensor mla_q_a_norm;  /* [mla_q_rank] */
     struct geist_tensor mla_kv_a;      /* [mla_rope + mla_kv_rank, HIDDEN] */
-    struct geist_tensor mla_kv_a_norm; /* [mla_kv_rank] */
+    float              *mla_kv_a_norm; /* [mla_kv_rank], host: the latent is normalised there */
     struct geist_tensor mla_kv_b;      /* [N_Q_HEADS * (nope + mla_v_dim), mla_kv_rank] */
     struct geist_weight mla_q_a_w, mla_kv_a_w, mla_kv_b_w;
 

@@ -116,6 +116,8 @@ static void release_layer_weight_aux(struct transformer_layer_weights *L) {
         *views[p] = nullptr;
     }
     safe_free((void **) &L->moe_shexp_gate);
+    safe_free((void **) &L->attn_sinks);
+    safe_free((void **) &L->mla_kv_a_norm);
     float **biases[] = {
             &L->moe_router_b, &L->moe_gate_b, &L->moe_up_b, &L->moe_down_b, &L->moe_sel_b};
     for (size_t i = 0; i < sizeof biases / sizeof biases[0]; i++)
@@ -2305,14 +2307,17 @@ static bool scratch_device_wanted(const struct transformer_arch_session *sess) {
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(st->backend);
     const bool gate_on_host = st->config.has_attn_output_gate &&
                               (fused->attn_qgate_split == nullptr || fused->sigmoid_mul == nullptr);
-    if (ple_on_host || gate_on_host || st->config.has_sub_ln ||
+    /* Latent attention (#242) assembles K and V on the host. */
+    if (ple_on_host || gate_on_host || st->config.has_sub_ln || st->config.mla_kv_rank > 0 ||
         st->config.has_projection_input_norms || !st->model_fusions.backend_buffer_copy ||
         !st->model_fusions.prim_scale_f32) {
         return false;
     }
     for (size_t li = 0; li < st->n_layers; li++) {
         const struct transformer_layer_weights *L = &st->layers[li];
-        if (L->o_awq_inv_scale != nullptr || L->down_awq_inv_scale != nullptr) {
+        /* Attention sinks (#243) attend on the host over mapped rows. */
+        if (L->o_awq_inv_scale != nullptr || L->down_awq_inv_scale != nullptr ||
+            L->attn_sinks != nullptr) {
             return false;
         }
     }
