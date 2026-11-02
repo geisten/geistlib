@@ -43,15 +43,19 @@
  * Cauchy-Schwarz bound that would prove one (e6c217d8, 6a005cf6) declines on
  * nearly every token. Tune with GEIST_SPEC_TOPK / GEIST_SPEC_STRIDE.
  *
- * Hence OFF by default (#384): greedy is the argmax of the full head.
- * GEIST_SPEC_HEAD=1 opts in for greedy decode on an eligible tied lm_head,
- * trading that guarantee for the head's bandwidth. Non-greedy sampling,
- * ineligible dtypes, and hosts without NEON+dotprod or AVX2 always use the
+ * Hence the family decides the default (#384, transformer_family.
+ * spec_head_default): ON for BitNet, whose tied F16 head is ~50 % of a decode
+ * step's bytes (Pi 5: +82 % decode) and where the miss rate is the price of
+ * that (BitNet 2B-4T, 4 x 256 greedy steps: 3 tokens, 0.3 %, not the
+ * argmax, the first 3.3 logits behind), OFF for every other family, whose greedy is the argmax of
+ * the full head (Llama 3.2 3B gains only ~8 %). GEIST_SPEC_HEAD=0/1 overrides either way.
+ * Non-greedy sampling, ineligible dtypes, and hosts without NEON+dotprod or AVX2 always use the
  * dense head.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "../arch_family.h"
 #include "../arch_state.h"
 #include "../forward.h"
 
@@ -131,12 +135,13 @@ static size_t spec_env_sz(const char *name, size_t dflt, size_t lo, size_t hi) {
     return (size_t) v;
 }
 
-static int spec_head_env(void) {
-    /* Default OFF: it can emit a token that is not the argmax (#384, see the
-     * file comment); GEIST_SPEC_HEAD=1 opts in. Read per call (once per
-     * decoded token — noise next to the head itself) so tests can toggle it
-     * within one process. */
-    return geist_env_flag("GEIST_SPEC_HEAD", false);
+static int spec_head_env(const struct transformer_arch_state *st) {
+    /* The family decides the default (transformer_family.spec_head_default,
+     * #384: BitNet on, everything else off); GEIST_SPEC_HEAD=0/1 overrides.
+     * Read per call (once per decoded token — noise next to the head
+     * itself) so tests can toggle it within one process. */
+    return geist_env_flag("GEIST_SPEC_HEAD",
+                          st->family != nullptr && st->family->spec_head_default);
 }
 
 #if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
@@ -551,7 +556,7 @@ static bool spec_head_build(struct transformer_arch_state *st) {
  * batched-submit GPU backend (the sketch is a HOST optimization), or when
  * the head is ineligible. */
 void transformer_spec_head_init(struct transformer_arch_state *st) {
-    if (spec_head_env() == 0 || st->backend->desc->caps.batched_submit) {
+    if (spec_head_env(st) == 0 || st->backend->desc->caps.batched_submit) {
         st->spec_state = -1;
         return;
     }
@@ -560,7 +565,7 @@ void transformer_spec_head_init(struct transformer_arch_state *st) {
 
 bool transformer_spec_head_try(struct transformer_arch_session *sess, geist_token_t *out_token) {
     struct transformer_arch_state *st = sess->model;
-    if (spec_head_env() == 0) {
+    if (spec_head_env(st) == 0) {
         return false;
     }
     /* Built eagerly at state_create (transformer_spec_head_init); 0 means

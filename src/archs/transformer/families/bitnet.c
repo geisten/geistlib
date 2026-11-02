@@ -183,21 +183,23 @@ bitnet_attention_block(struct transformer_layer_forward_ctx *ctx) {
 /* ---- Registry entries ------------------------------------------------- */
 
 const struct transformer_family transformer_family_bitnet_b158 = {
-        .name            = "bitnet-b1.58",
-        .populate        = bitnet_b158_populate,
-        .populate_layers = bitnet_populate_layers,
-        .wire_layer      = bitnet_wire_layer,
-        .attention_block = bitnet_attention_block,
-        .ffn_block       = bitnet_ffn_block,
+        .name              = "bitnet-b1.58",
+        .populate          = bitnet_b158_populate,
+        .populate_layers   = bitnet_populate_layers,
+        .wire_layer        = bitnet_wire_layer,
+        .attention_block   = bitnet_attention_block,
+        .ffn_block         = bitnet_ffn_block,
+        .spec_head_default = true, /* #384 */
 };
 
 /* Community converters (e.g. gianni-cor/bitnet_b1_58-3B-TQ2_0) write
  * "general.architecture" = "bitnet". Same unit; meta_* tries both prefixes. */
 const struct transformer_family transformer_family_bitnet = {
-        .name            = "bitnet",
-        .populate        = bitnet_community_populate,
-        .populate_layers = bitnet_populate_layers,
-        .wire_layer      = bitnet_wire_layer,
-        .attention_block = bitnet_attention_block,
-        .ffn_block       = bitnet_ffn_block,
+        .name              = "bitnet",
+        .populate          = bitnet_community_populate,
+        .populate_layers   = bitnet_populate_layers,
+        .wire_layer        = bitnet_wire_layer,
+        .attention_block   = bitnet_attention_block,
+        .ffn_block         = bitnet_ffn_block,
+        .spec_head_default = true, /* #384 */
 };

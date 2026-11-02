@@ -1,12 +1,14 @@
 /*
  * test_spec_head_greedy_unit — greedy decode is the argmax of the full
- * output head by default (#384).
+ * output head by default, except on BitNet (#384).
  *
  * The speculative output head (forward/spec_head.c) scores only the rows an
  * int8 sketch ranks highest, and the sketch can rank the true argmax out:
  * on Llama 3.2 3B it emitted " The" where the full head and llama.cpp pick
- * " Casual". It is therefore opt-in (GEIST_SPEC_HEAD=1). On a llama fixture
- * whose tied F16 head the spec head accepts (vocab 8192, width 1280):
+ * " Casual". The model family decides its default
+ * (transformer_family.spec_head_default): on for both BitNet families, off
+ * for the rest; GEIST_SPEC_HEAD=0/1 overrides. On a llama fixture whose
+ * tied F16 head the spec head accepts (vocab 8192, width 1280):
  *   - by default the spec head is not built, every greedy token is the
  *     argmax of the step's full logits, and the tokens equal those of
  *     GEIST_SPEC_HEAD=0, over N_STEPS steps on every CPU backend;
@@ -21,6 +23,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 #define GEIST_INTERNAL_ENGINE_LAYER
 
+#include "../src/archs/transformer/arch_family.h"
 #include "../src/archs/transformer/arch_state.h"
 #include "../src/engine/model.h"
 #include "model_fixtures.h"
@@ -101,6 +104,11 @@ int main(void) {
                                                         .seed     = 384,
                                                         .f16_embd = true});
     unsetenv("GEIST_SPEC_TOPK");
+    fails += geist_expect(transformer_family_bitnet_b158.spec_head_default &&
+                                  transformer_family_bitnet.spec_head_default,
+                          "BitNet keeps the spec head on by default");
+    fails += geist_expect(!transformer_family_llama.spec_head_default,
+                          "llama defaults to the full head");
     for (size_t b = 0; b < sizeof backends / sizeof backends[0]; b++) {
         struct geist_backend *be = nullptr;
         if (geist_backend_create(backends[b], nullptr, nullptr, &be) != GEIST_OK) {
@@ -145,6 +153,6 @@ int main(void) {
     }
     free(g.b);
     if (fails == 0)
-        printf("PASS: greedy is the full head's argmax unless GEIST_SPEC_HEAD=1\n");
+        printf("PASS: greedy is the full head's argmax off BitNet unless GEIST_SPEC_HEAD=1\n");
     return fails == 0 ? 0 : 1;
 }

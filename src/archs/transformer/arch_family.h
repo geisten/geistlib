@@ -106,6 +106,12 @@ struct transformer_family {
      * the quality bar on this family (#53; test_kv_quality_int states the
      * bar); GEIST_KV_AUTO = INT4 is fine. */
     enum geist_kv_mode kv_int4_instead;
+    /* The speculative i8-sketch output head (forward/spec_head.c) is on by
+     * default for greedy decode. It can emit a token that is not the full
+     * head's argmax (#384), so only families where it pays for that are on:
+     * BitNet, whose tied F16 head is ~50 % of a decode step's bytes.
+     * GEIST_SPEC_HEAD=0/1 overrides it either way. */
+    bool spec_head_default;
 
     enum geist_status (*wire_layer)(struct transformer_arch_state    *st,
                                     struct gguf_ctx                  *gguf,
