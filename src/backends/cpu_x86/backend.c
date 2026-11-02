@@ -420,7 +420,7 @@ static bool q4k_reads_raw(void) {
     }
     /* Rebind per dtype. Q4_K → raw GGUF or Q4_Kx8 GEMV/GEMM; Q6_K → native
      * GEMV + raw or W8A8 GEMM; Q3_K / Q5_K → native GEMV / GEMM on the GGUF
-     * bytes; Q4_0 / Q4_1 / IQ4_NL / IQ4_XS → nibbles x Q8_0; TQ2_0 → trits x
+     * bytes; Q4_0 / Q4_1 / IQ4_NL / IQ4_XS / MXFP4 → nibbles x Q8_0; TQ2_0 → trits x
      * int8; Q8_0 → int8 Q8_0 x Q8_0; PQ2_0 → W2 x A8 GEMV / GEMM; I2_S → VNNI
      * x4; F16 → Q8 or F16C GEMV for M=1; F32 → W8A8. Everything else — and
      * Q4_K / Q6_K when their repack cannot be built — takes the generic
@@ -443,6 +443,7 @@ static bool q4k_reads_raw(void) {
     }
     case GEIST_DTYPE_IQ4_NL:
     case GEIST_DTYPE_IQ4_XS:
+    case GEIST_DTYPE_MXFP4:
         cpu_x86_linear_iq4_bind(w);
         break;
     case GEIST_DTYPE_Q3_K:

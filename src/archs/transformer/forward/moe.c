@@ -101,6 +101,124 @@ bool moe_route_topk(
     return true;
 }
 
+bool moe_route(size_t                   n,
+               size_t                   k,
+               const struct moe_router *r,
+               const float              logits[static n],
+               uint32_t                *ids,
+               float                   *w) {
+    if (n == 0 || n > GEIST_MOE_MAX_EXPERTS || k == 0 || k > n) {
+        return false;
+    }
+    float biased[GEIST_MOE_MAX_EXPERTS];
+    if (r->bias != nullptr) {
+        for (size_t i = 0; i < n; i++)
+            biased[i] = logits[i] + r->bias[i];
+        logits = biased;
+    }
+    const bool grouped = r->n_group > 1;
+    const bool plain =
+            r->sel_bias == nullptr && !grouped && (r->w_scale == 0.0f || r->w_scale == 1.0f);
+    if (plain && r->gating != GEIST_MOE_GATING_SIGMOID &&
+        r->gating != GEIST_MOE_GATING_SOFTMAX_WEIGHT) {
+        return moe_route_topk(n, k, r->norm, logits, ids, w);
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (!finite_bits(logits[i]))
+            return false;
+    }
+    /* 2. scores, in double for the softmax's sum. */
+    double score[GEIST_MOE_MAX_EXPERTS];
+    if (r->gating == GEIST_MOE_GATING_SIGMOID) {
+        for (size_t i = 0; i < n; i++)
+            score[i] = 1.0 / (1.0 + exp(-(double) logits[i]));
+    } else if (r->gating == GEIST_MOE_GATING_SOFTMAX_WEIGHT) {
+        for (size_t i = 0; i < n; i++)
+            score[i] = logits[i];
+    } else {
+        float mx = logits[0];
+        for (size_t i = 1; i < n; i++)
+            mx = logits[i] > mx ? logits[i] : mx;
+        double z = 0.0;
+        for (size_t i = 0; i < n; i++)
+            z += exp((double) (logits[i] - mx));
+        for (size_t i = 0; i < n; i++)
+            score[i] = exp((double) (logits[i] - mx)) / z;
+    }
+    /* 3.-4. selection scores, the groups left out masked to -inf. */
+    float sel[GEIST_MOE_MAX_EXPERTS];
+    for (size_t i = 0; i < n; i++)
+        sel[i] = (float) score[i] + (r->sel_bias != nullptr ? r->sel_bias[i] : 0.0f);
+    if (grouped) {
+        const size_t g = r->n_group, per = n / g;
+        if (n % g != 0 || per < 2 || r->topk_group == 0 || r->topk_group > g)
+            return false;
+        float gs[GEIST_MOE_MAX_EXPERTS];
+        for (size_t q = 0; q < g; q++) {
+            float a = -INFINITY, b = -INFINITY; /* the group's best two */
+            for (size_t i = q * per; i < (q + 1) * per; i++) {
+                if (sel[i] > a) {
+                    b = a;
+                    a = sel[i];
+                } else if (sel[i] > b) {
+                    b = sel[i];
+                }
+            }
+            gs[q] = a + b;
+        }
+        uint32_t keep[GEIST_MOE_MAX_EXPERTS];
+        float    unused[GEIST_MOE_MAX_EXPERTS];
+        if (!moe_route_topk(g, r->topk_group, false, gs, keep, unused))
+            return false;
+        bool kept[GEIST_MOE_MAX_EXPERTS] = {false};
+        for (size_t j = 0; j < r->topk_group; j++)
+            kept[keep[j]] = true;
+        for (size_t i = 0; i < n; i++)
+            if (!kept[i / per])
+                sel[i] = -INFINITY;
+    }
+    /* 5. the k best, (score descending, id ascending), never a -inf. */
+    float    last    = INFINITY;
+    uint32_t last_id = 0;
+    for (size_t j = 0; j < k; j++) {
+        size_t best = n;
+        for (size_t i = 0; i < n; i++) {
+            const bool after = sel[i] < last || (sel[i] == last && i > last_id);
+            if ((j > 0 && !after) || sel[i] == -INFINITY)
+                continue;
+            if (best == n || sel[i] > sel[best])
+                best = i;
+        }
+        if (best == n)
+            return false; /* fewer eligible experts than k */
+        ids[j]  = (uint32_t) best;
+        last    = sel[best];
+        last_id = (uint32_t) best;
+    }
+    /* 6. weights. */
+    double wd[GEIST_MOE_MAX_EXPERTS], sum = 0.0;
+    if (r->gating == GEIST_MOE_GATING_SOFTMAX_WEIGHT) {
+        double mx = score[ids[0]];
+        for (size_t j = 1; j < k; j++)
+            mx = score[ids[j]] > mx ? score[ids[j]] : mx;
+        double z = 0.0;
+        for (size_t j = 0; j < k; j++)
+            z += exp(score[ids[j]] - mx);
+        for (size_t j = 0; j < k; j++)
+            wd[j] = exp(score[ids[j]] - mx) / z;
+    } else {
+        for (size_t j = 0; j < k; j++)
+            wd[j] = score[ids[j]];
+    }
+    for (size_t j = 0; j < k; j++)
+        sum += wd[j];
+    const double scale = r->w_scale != 0.0f ? (double) r->w_scale : 1.0;
+    const double den   = r->norm ? (sum > 6.103515625e-5 ? sum : 6.103515625e-5) : 1.0;
+    for (size_t j = 0; j < k; j++)
+        w[j] = (float) (wd[j] / den * scale);
+    return true;
+}
+
 /* Bucket each row's selections by expert (counting sort, rows in order):
  * expert e's selections are rows[start[e] .. start[e + 1]), each a flat
  * index row * k + slot into ids / wts. */
@@ -188,7 +306,8 @@ struct moe_job {
     const struct transformer_layer_weights *L;
     struct transformer_arch_session        *sess;
     struct geist_backend                   *be;
-    size_t                                  d, inter, n_exp;
+    size_t                                  d, inter, n_exp, n_routed;
+    enum geist_moe_act                      act;
     uint32_t                                active[GEIST_MOE_MAX_EXPERTS]; /* on the CPU */
     size_t                                  n_active;
     uint32_t                                hot[GEIST_MOE_MAX_EXPERTS]; /* on the GPU (#78) */
@@ -244,9 +363,36 @@ static bool moe_expert_rows(const struct moe_job *j, size_t e, size_t row0, size
     }
     if (!ok)
         return false;
-    for (size_t i = 0; i < m * j->inter; i++)
-        g[i] = g[i] / (1.0f + expf(-g[i])) * u[i];
+    /* The routed experts' biases where the layer has them (not the shared
+     * expert's slot, e == n_routed). */
+    const bool   routed = e < j->n_routed;
+    const size_t inter  = j->inter;
+    const float *gb =
+            routed && j->L->moe_gate_b != nullptr ? j->L->moe_gate_b + e * inter : nullptr;
+    const float *ub = routed && j->L->moe_up_b != nullptr ? j->L->moe_up_b + e * inter : nullptr;
+    const float *db = routed && j->L->moe_down_b != nullptr ? j->L->moe_down_b + e * j->d : nullptr;
+    for (size_t r = 0; gb != nullptr && r < m; r++)
+        for (size_t i = 0; i < inter; i++)
+            g[r * inter + i] += gb[i];
+    for (size_t r = 0; ub != nullptr && r < m; r++)
+        for (size_t i = 0; i < inter; i++)
+            u[r * inter + i] += ub[i];
+    if (j->act == GEIST_MOE_ACT_SWIGLU_OAI) {
+        /* llama.cpp's ggml_swiglu_oai, alpha 1.702, limit 7. */
+        constexpr float alpha = 1.702f, limit = 7.0f;
+        for (size_t i = 0; i < m * inter; i++) {
+            const float gc = g[i] < limit ? g[i] : limit;
+            const float uc = u[i] < -limit ? -limit : u[i] > limit ? limit : u[i];
+            g[i]           = gc / (1.0f + expf(-alpha * gc)) * (uc + 1.0f);
+        }
+    } else {
+        for (size_t i = 0; i < m * inter; i++)
+            g[i] = g[i] / (1.0f + expf(-g[i])) * u[i];
+    }
     moe_linear(m, g, &j->L->moe_down_w[e], j->be, y, &ok);
+    for (size_t r = 0; ok && db != nullptr && r < m; r++)
+        for (size_t c = 0; c < j->d; c++)
+            y[r * j->d + c] += db[c];
     return ok;
 }
 
@@ -403,14 +549,17 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     if (lg == nullptr) {
         return GEIST_E_BACKEND;
     }
-    bool routed_ok = true;
+    bool                    routed_ok = true;
+    const struct moe_router router    = {.gating     = st->config.moe_gating,
+                                         .norm       = st->config.moe_norm_topk,
+                                         .bias       = L->moe_router_b,
+                                         .sel_bias   = L->moe_sel_b,
+                                         .w_scale    = st->config.moe_w_scale,
+                                         .n_group    = st->config.moe_n_group,
+                                         .topk_group = st->config.moe_topk_group};
     for (size_t r = 0; r < seq && routed_ok; r++) {
-        routed_ok = moe_route_topk(n_exp,
-                                   n_rt,
-                                   st->config.moe_norm_topk,
-                                   lg + r * n_exp,
-                                   sess->moe_ids + r * k,
-                                   sess->moe_wts + r * k);
+        routed_ok = moe_route(
+                n_exp, n_rt, &router, lg + r * n_exp, sess->moe_ids + r * k, sess->moe_wts + r * k);
     }
     for (size_t r = 0; r < seq && k > n_rt; r++)
         sess->moe_ids[r * k + n_rt] = (uint32_t) n_exp; /* the shared expert */
@@ -462,6 +611,8 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     j->d                = d;
     j->inter            = ctx->inter;
     j->n_exp            = slots;
+    j->n_routed         = n_exp;
+    j->act              = st->config.moe_act;
     j->n_active         = 0;
     j->n_hot            = 0;
     j->layer            = (size_t) ctx->layer_idx;

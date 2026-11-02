@@ -107,6 +107,22 @@ struct transformer_layer_weights {
     struct geist_tensor down_proj;      /* [HIDDEN, intermediate] */
     struct geist_tensor per_layer_gate; /* [HIDDEN_PER_LAYER, HIDDEN] */
     struct geist_tensor per_layer_proj; /* [HIDDEN, HIDDEN_PER_LAYER] */
+    /* Projection biases and attention sinks (GPT-OSS, #243), F32 DENSE;
+     * buffer == nullptr where the layer has none. q/k/v/o biases are added
+     * to the projection's rows; attn_sinks [n_q_heads] is a per-head logit
+     * that joins every query's softmax with a zero value row. */
+    struct geist_tensor q_bias;     /* [q_out] */
+    struct geist_tensor k_bias;     /* [kv_out] */
+    struct geist_tensor v_bias;     /* [kv_out] */
+    struct geist_tensor o_bias;     /* [HIDDEN] */
+    struct geist_tensor attn_sinks; /* [N_Q_HEADS] */
+    /* Multi-head latent attention (config.mla_kv_rank > 0, #242). */
+    struct geist_tensor mla_q_a;       /* [mla_q_rank, HIDDEN], when mla_q_rank > 0 */
+    struct geist_tensor mla_q_a_norm;  /* [mla_q_rank] */
+    struct geist_tensor mla_kv_a;      /* [mla_rope + mla_kv_rank, HIDDEN] */
+    struct geist_tensor mla_kv_a_norm; /* [mla_kv_rank] */
+    struct geist_tensor mla_kv_b;      /* [N_Q_HEADS * (nope + mla_v_dim), mla_kv_rank] */
+    struct geist_weight mla_q_a_w, mla_kv_a_w, mla_kv_b_w;
 
     /* ---- Pre-resolved kernels, one per projection. ---------------------- *
      * Filled at load time by the backend's resolve_weight; the forward
@@ -147,8 +163,16 @@ struct transformer_layer_weights {
      * moe_n_experts entries per projection, views into the GGUF's 3-D
      * ffn_{gate,up,down}_exps tensors (one buffer each, in bufs[]):
      * gate/up [intermediate, HIDDEN], down [HIDDEN, intermediate]. */
-    size_t               moe_n_experts;  /* entries in each expert array (routed + shared) */
-    float               *moe_shexp_gate; /* [HIDDEN], host: the shared expert's gate */
+    size_t moe_n_experts;  /* entries in each expert array (routed + shared) */
+    float *moe_shexp_gate; /* [HIDDEN], host: the shared expert's gate */
+    /* Biases, host, nullptr where the layer has none (GPT-OSS, #243): the
+     * router's [moe_n_experts] (added to its logits) and the routed
+     * experts' [moe_n_experts, intermediate] after gate and up and
+     * [moe_n_experts, HIDDEN] after down. */
+    float *moe_router_b, *moe_gate_b, *moe_up_b, *moe_down_b;
+    /* DeepSeek-V3's selection bias (exp_probs_b) [moe_n_experts], host, or
+     * nullptr (#242). */
+    float               *moe_sel_b;
     struct geist_tensor  moe_router;
     struct geist_weight  moe_router_w;
     struct geist_tensor *moe_gate, *moe_up, *moe_down;
@@ -314,6 +338,11 @@ struct transformer_arch_session {
     struct geist_buffer *scratch_h_b;
     struct geist_buffer *scratch_per_layer_input;
     struct geist_buffer *scratch_logits;
+    /* Multi-head latent attention's own rows (#242), [m_max, n] each:
+     * kv_a (mla_rope + mla_kv_rank), the normalised latent (mla_kv_rank),
+     * kv_b's heads (n_q_heads * (nope + mla_v_dim)) and q_a (mla_q_rank,
+     * when the model has it); nullptr without MLA. */
+    struct geist_buffer *mla_kv_a, *mla_lat, *mla_kv, *mla_q_a;
 
     /* ---- Memory backing for the buffers above.
      * scratch_arena: per-forward frame-arena, reset per layer.

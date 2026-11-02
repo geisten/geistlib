@@ -22,6 +22,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /* FP16 -> FP32. Inline where the hardware converts natively (one `fcvt` on
  * ARM64): the K-quant decode kernels convert a scale per super-block, and an
@@ -92,6 +93,24 @@ void             dequant_q4_1_row(size_t n_elems, const void *blocks, float out[
 constexpr size_t Q5_0_BLOCK_ELEMS = 32;
 constexpr size_t Q5_0_BLOCK_BYTES = 22;
 void             dequant_q5_0_row(size_t n_elems, const void *blocks, float out[static n_elems]);
+
+/* MXFP4 block: 32 elements, one E8M0 exponent byte + 16 nibble bytes = 17
+ * bytes (no alignment: rows of blocks are packed). Codes index the doubled
+ * E2M1 table kvalues_mxfp4; the scale is mxfp4_e8m0_half(e) = 2^(e - 128). */
+constexpr size_t MXFP4_BLOCK_ELEMS = 32;
+constexpr size_t MXFP4_BLOCK_BYTES = 17;
+void             dequant_mxfp4_row(size_t n_elems, const void *blocks, float out[static n_elems]);
+/* Twice the E2M1 values (+0..6, -0..-6), indexed by the 4-bit code. */
+extern const int8_t kvalues_mxfp4[16];
+
+/* The block scale of MXFP4: 2^(e - 128) as ggml_e8m0_to_fp32_half computes
+ * it (e < 2 are the two denormals 2^-128 and 2^-127). */
+static inline float mxfp4_e8m0_half(uint8_t e) {
+    const uint32_t bits = e < 2 ? 0x00200000u << e : (uint32_t) (e - 1) << 23;
+    float          f;
+    memcpy(&f, &bits, sizeof f);
+    return f;
+}
 
 /* Q3_K super-block: 256 elements, 110 bytes:
  *   32 hmask (high bit), 64 qs (low 2 bits), 12 scales (16 × 6-bit signed), 1 fp16 d */
@@ -165,6 +184,23 @@ void linear_iq4xs_w4a8_prefill_pre(size_t        m,
                                    const void   *w_iq4xs,
                                    float        *y);
 
+/* MXFP4 W4A8 NEON decode GEMV and 4-token prefill (int8 activations with
+ * one scale per 32, GEIST_ACT_Q8_0_ELEMS). Per (row, token) the prefill is
+ * bit-identical to the m=1 GEMV. */
+void linear_mxfp4_decode_w4a8_pre(size_t       n_in,
+                                  size_t       n_out,
+                                  const float *x_scales,
+                                  const int8_t x_q8[static n_in],
+                                  const void  *w_mxfp4,
+                                  float        y[static n_out]);
+void linear_mxfp4_w4a8_prefill_pre(size_t        m,
+                                   size_t        n_in,
+                                   size_t        n_out,
+                                   const int8_t *x_q8,
+                                   const float  *x_scales,
+                                   const void   *w_mxfp4,
+                                   float        *y);
+
 /* TQ2_0 super-block: 256 elements, 66 bytes, 2.0625 bpw.
  *   qs[64]: 256 trits packed 4-per-byte (encoding: 0/1/2 mapped to -1/0/+1)
  *   d: fp16 scale.
@@ -233,6 +269,9 @@ static inline size_t i2_s_scale_offset(const size_t n_elems) {
         break;
     case GEIST_DTYPE_Q5_0:
         blk_elems = Q5_0_BLOCK_ELEMS, blk_bytes = Q5_0_BLOCK_BYTES;
+        break;
+    case GEIST_DTYPE_MXFP4:
+        blk_elems = MXFP4_BLOCK_ELEMS, blk_bytes = MXFP4_BLOCK_BYTES;
         break;
     case GEIST_DTYPE_Q8_0:
         blk_elems = Q8_0_BLOCK_ELEMS, blk_bytes = Q8_0_BLOCK_BYTES;

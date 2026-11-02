@@ -96,6 +96,9 @@ static void release_layer_weight_aux(struct transformer_layer_weights *L) {
     release_weight_aux(&L->dn_alpha_w);
     release_weight_aux(&L->dn_out_w);
     release_weight_aux(&L->moe_router_w);
+    release_weight_aux(&L->mla_q_a_w);
+    release_weight_aux(&L->mla_kv_a_w);
+    release_weight_aux(&L->mla_kv_b_w);
     /* The expert arrays: n_experts entries each, all set or all null. */
     struct geist_weight **experts[] = {&L->moe_gate_w, &L->moe_up_w, &L->moe_down_w};
     for (size_t p = 0; p < 3; p++) {
@@ -113,6 +116,10 @@ static void release_layer_weight_aux(struct transformer_layer_weights *L) {
         *views[p] = nullptr;
     }
     safe_free((void **) &L->moe_shexp_gate);
+    float **biases[] = {
+            &L->moe_router_b, &L->moe_gate_b, &L->moe_up_b, &L->moe_down_b, &L->moe_sel_b};
+    for (size_t i = 0; i < sizeof biases / sizeof biases[0]; i++)
+        safe_free((void **) biases[i]);
 }
 
 /* ---- Runtime infrastructure: KV caches, RoPE tables, scratch ---------- */
@@ -413,9 +420,46 @@ rope_row_widths(const struct transformer_arch_state *st, size_t *sl_width, size_
         geist_backend_set_error(be, GEIST_E_OOM, "transformer: RoPE table host alloc failed");
         return GEIST_E_OOM;
     }
-    rope_compute_at(
-            0, st->max_seq_len, sliding_hd, sliding_rot, pblock, sliding_th, cos_sl, sin_sl);
-    rope_compute_at(0, st->max_seq_len, full_hd, full_rot, pblock, full_th, cos_fl, sin_fl);
+    const struct geist_arch_config *c = &st->config;
+    if (c->rope_yarn_factor > 1.0f) {
+        /* YaRN (#243): over the table's width, i.e. a full rotation or a
+         * partial block (DeepSeek's pe dims, #242). */
+        if ((sliding_rot != sliding_hd || full_rot != full_hd) && !pblock) {
+            void *p[4] = {cos_sl, sin_sl, cos_fl, sin_fl};
+            for (size_t i = 0; i < 4; i++)
+                safe_free(&p[i]);
+            geist_backend_set_error(be,
+                                    GEIST_E_UNSUPPORTED,
+                                    "transformer: YaRN on a partial rotation needs its own block");
+            return GEIST_E_UNSUPPORTED;
+        }
+        rope_compute_yarn_at(0,
+                             st->max_seq_len,
+                             sl_width,
+                             sliding_th,
+                             c->rope_yarn_factor,
+                             c->rope_yarn_orig_ctx,
+                             c->rope_yarn_beta_fast,
+                             c->rope_yarn_beta_slow,
+                             c->rope_yarn_mscale,
+                             cos_sl,
+                             sin_sl);
+        rope_compute_yarn_at(0,
+                             st->max_seq_len,
+                             fl_width,
+                             full_th,
+                             c->rope_yarn_factor,
+                             c->rope_yarn_orig_ctx,
+                             c->rope_yarn_beta_fast,
+                             c->rope_yarn_beta_slow,
+                             c->rope_yarn_mscale,
+                             cos_fl,
+                             sin_fl);
+    } else {
+        rope_compute_at(
+                0, st->max_seq_len, sliding_hd, sliding_rot, pblock, sliding_th, cos_sl, sin_sl);
+        rope_compute_at(0, st->max_seq_len, full_hd, full_rot, pblock, full_th, cos_fl, sin_fl);
+    }
 
     enum geist_status s = upload_table(be, cos_sl, n_sl_floats, &st->rope_cos_sliding);
     if (s == GEIST_OK) {
