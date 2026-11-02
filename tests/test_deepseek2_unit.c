@@ -232,7 +232,7 @@ static void ref_forward(const struct ref_model    *m,
                 memcpy(vc[l][p][hh], kv + hh * (NOPE + VD) + NOPE, VD * sizeof(double));
             }
             for (size_t hh = 0; hh < HEADS; hh++) {
-                double sc[N_PROMPT], mx = -INFINITY, den = 0.0;
+                double sc[N_PROMPT], mx = -1e300, den = 0.0;
                 for (size_t s = 0; s <= p; s++) {
                     double dot = 0.0;
                     for (size_t i = 0; i < HK; i++)
@@ -280,7 +280,7 @@ static void ref_forward(const struct ref_model    *m,
                 const size_t per = EXPERTS / g->n_group;
                 double       gs[EXPERTS];
                 for (size_t q2 = 0; q2 < g->n_group; q2++) {
-                    double a = -INFINITY, b = -INFINITY;
+                    double a = -1e300, b = -1e300; /* finite: -ffast-math */
                     for (size_t i = q2 * per; i < (q2 + 1) * per; i++) {
                         if (sel[i] > a) {
                             b = a;
@@ -301,15 +301,14 @@ static void ref_forward(const struct ref_model    *m,
                 }
                 for (size_t i = 0; i < EXPERTS; i++)
                     if (!keep[i / per])
-                        sel[i] = -INFINITY;
+                        sel[i] = -1e300;
             }
             size_t ids[USED];
             bool   taken[EXPERTS] = {false};
             for (size_t j = 0; j < USED; j++) {
                 size_t best = EXPERTS;
                 for (size_t e2 = 0; e2 < EXPERTS; e2++)
-                    if (!taken[e2] && sel[e2] != -INFINITY &&
-                        (best == EXPERTS || sel[e2] > sel[best]))
+                    if (!taken[e2] && sel[e2] > -1e299 && (best == EXPERTS || sel[e2] > sel[best]))
                         best = e2;
                 taken[best] = true;
                 ids[j]      = best;
