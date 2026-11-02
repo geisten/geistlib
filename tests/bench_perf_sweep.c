@@ -35,6 +35,22 @@
  *                              controlled by OMP_NUM_THREADS. We echo it back
  *                              in the JSONL for reproducibility.
  *   --emit-jsonl               accepted alias; output is JSONL by default.
+ *   --spec K                   decode through geist_session_decode_speculative
+ *                              with k_max K (the architecture's own drafter,
+ *                              e.g. GEIST_MTP=1, else the n-gram one) instead
+ *                              of decode_step; decode_tps counts the tokens
+ *                              emitted. Adds "spec":{calls, single (calls that
+ *                              fell back to one token), accept[i] (calls whose
+ *                              draft i+1 was accepted)} to the row.
+ *   --emit-tokens              add the first repeat's decoded tokens
+ *                              ("tokens":[...], decode_n of them), for greedy
+ *                              equivalence checks between runs.
+ *   --emit-margins             with --emit-tokens and decode_step: per token
+ *                              the runner-up and the logit gap to it
+ *                              ("margins":[[id,gap],...]), so a divergence
+ *                              between runs can be told from a near-tie. Reads
+ *                              the logits before every step: slower, so not
+ *                              for timing.
  *
  * Output: one JSON object per line on stdout, e.g.
  *   {"seq_len":256,"decode_n":64,"prefill_ms":1234.5,"decode_ms":890.1,
@@ -147,6 +163,87 @@ static void print_json_samples(size_t n, const double samples[static n]) {
     putchar(']');
 }
 
+/* decode_speculative's k_max cap (GEIST_SPEC_KMAX_HARDCAP in session.c). */
+constexpr int SPEC_K_CAP = 16;
+
+/* What a speculative decode loop did: calls, calls that emitted one token
+ * (no draft verified), and per draft position how many calls accepted it. */
+struct spec_stats {
+    size_t calls;
+    size_t single;
+    size_t accept[SPEC_K_CAP];
+};
+
+/* decode_n tokens (at least; a call can overshoot) after the prefill of
+ * hist[0..n_p): decode_step, or decode_speculative with k_max spec_k fed the
+ * growing history. hist has room for n_p + decode_n + spec_k + 1 tokens.
+ * Returns the tokens emitted (0 on failure, s says why). */
+static size_t decode_run(struct geist_session *sess,
+                         int                   spec_k,
+                         size_t                n_p,
+                         size_t                decode_n,
+                         geist_token_t        *hist,
+                         struct spec_stats    *st,
+                         float                *margins,
+                         double               *t_first,
+                         enum geist_status    *s) {
+    const double t1   = geist_test_now_ms();
+    double       step = t1;
+    const bool   ms   = getenv("GEIST_BENCH_STEP_MS") != nullptr;
+    size_t       n    = 0;
+    *s                = GEIST_OK;
+    while (n < decode_n) {
+        size_t got = 0;
+        if (spec_k > 0) {
+            *s = geist_session_decode_speculative(sess,
+                                                  (size_t) spec_k,
+                                                  n_p + n,
+                                                  hist,
+                                                  (size_t) spec_k + 1,
+                                                  hist + n_p + n,
+                                                  &got);
+            if (*s == GEIST_OK) {
+                st->calls++;
+                st->single += got == 1;
+                /* got = seed + accepted drafts + correction. */
+                for (size_t i = 0; got >= 2 && i < got - 2; i++)
+                    st->accept[i]++;
+            }
+        } else {
+            if (margins != nullptr) { /* the runner-up before the step picks */
+                size_t       nl = 0;
+                const float *l  = geist_session_peek_logits(&nl, sess);
+                size_t       a = 0, b = 1;
+                for (size_t i = 0; l != nullptr && nl > 1 && i < nl; i++) {
+                    if (l[i] > l[a]) {
+                        b = a;
+                        a = i;
+                    } else if (i != a && (b == a || l[i] > l[b])) {
+                        b = i;
+                    }
+                }
+                margins[2 * n]     = l != nullptr && nl > 1 ? (float) b : -1.0f;
+                margins[2 * n + 1] = l != nullptr && nl > 1 ? l[a] - l[b] : 0.0f;
+            }
+            *s  = geist_session_decode_step(sess, hist + n_p + n);
+            got = 1;
+        }
+        if (ms) { /* GEIST_BENCH_STEP_MS: each step's wall time, stderr */
+            const double now = geist_test_now_ms();
+            fprintf(stderr, "step %zu %zu %.3f\n", n, got, now - step);
+            step = now;
+        }
+        if (*s != GEIST_OK || got == 0) {
+            fprintf(stderr, "decode failed at token %zu (status %d)\n", n, (int) *s);
+            return 0;
+        }
+        if (n == 0)
+            *t_first = geist_test_now_ms() - t1;
+        n += got;
+    }
+    return n;
+}
+
 int main(int argc, char **argv) {
     int         seq_lens[16];
     size_t      n_seq_lens  = 0;
@@ -160,6 +257,9 @@ int main(int argc, char **argv) {
     float       temperature = 0.0f; /* 0 = greedy; >0 engages the sampler */
     int         top_k       = 0;
     const char *gguf_arg    = nullptr;
+    int         spec_k      = 0; /* 0: decode_step */
+    bool        emit_tokens = false;
+    bool        emit_margin = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--seq-lens") == 0 && i + 1 < argc) {
             n_seq_lens = parse_csv_ints(16, seq_lens, argv[++i]);
@@ -189,6 +289,13 @@ int main(int argc, char **argv) {
                 return GEIST_TEST_ERROR;
         } else if (strcmp(argv[i], "--gguf") == 0 && i + 1 < argc) {
             gguf_arg = argv[++i];
+        } else if (strcmp(argv[i], "--spec") == 0 && i + 1 < argc) {
+            if (!parse_nonnegative_int(argv[++i], &spec_k) || spec_k > SPEC_K_CAP)
+                return GEIST_TEST_ERROR;
+        } else if (strcmp(argv[i], "--emit-tokens") == 0) {
+            emit_tokens = true;
+        } else if (strcmp(argv[i], "--emit-margins") == 0) {
+            emit_margin = true;
         } else if (strcmp(argv[i], "--emit-jsonl") == 0) {
             /* Accepted alias; stdout is already JSONL. */
         }
@@ -314,14 +421,16 @@ int main(int argc, char **argv) {
 
     /* Pre-generate token buffer for the largest prefill. Pseudo-random in
      * [1, vocab_cap) — avoid token 0 (often <pad> / <unk>). */
-    if ((size_t) max_seq > SIZE_MAX / sizeof(geist_token_t)) {
+    if ((size_t) max_seq > SIZE_MAX / sizeof(geist_token_t) / 2) {
         fprintf(stderr, "token buffer size overflow\n");
         geist_session_destroy(sess);
         geist_model_destroy(model);
         geist_backend_destroy(be);
         return GEIST_TEST_ERROR;
     }
-    geist_token_t *ids = (geist_token_t *) malloc((size_t) max_seq * sizeof(*ids));
+    /* The prompt, then the decoded tokens (decode_run's history). */
+    const size_t   n_ids = (size_t) max_seq + (size_t) decode_n + (size_t) spec_k + 1;
+    geist_token_t *ids   = (geist_token_t *) malloc(n_ids * sizeof(*ids));
     if (ids == nullptr) {
         fprintf(stderr, "token buffer allocation failed\n");
         geist_session_destroy(sess);
@@ -419,8 +528,14 @@ int main(int argc, char **argv) {
             break;
         }
 
-        const bool step_ms  = getenv("GEIST_BENCH_STEP_MS") != nullptr;
-        size_t     measured = 0;
+        struct spec_stats spec = {0};
+        geist_token_t *tokens  = emit_tokens ? malloc((size_t) decode_n * sizeof *tokens) : nullptr;
+        float         *margins = emit_tokens && emit_margin && spec_k == 0
+                                         ? calloc(2 * (size_t) decode_n, sizeof *margins)
+                                         : nullptr;
+        size_t         n_tokens  = 0;
+        size_t         n_decoded = 0;
+        size_t         measured  = 0;
         for (int r = 0; r < repeats; r++) {
             s = geist_session_reset(sess);
             if (s != GEIST_OK) {
@@ -440,32 +555,25 @@ int main(int argc, char **argv) {
                 continue;
             }
 
-            const double  t1      = geist_test_now_ms();
-            double        t_first = 0.0, t_step = t1;
-            geist_token_t out = 0;
-            for (int j = 0; j < decode_n; j++) {
-                s = geist_session_decode_step(sess, &out);
-                if (step_ms) { /* GEIST_BENCH_STEP_MS: each step's wall time, stderr */
-                    const double now = geist_test_now_ms();
-                    fprintf(stderr, "step %d %d %.3f\n", r, j, now - t_step);
-                    t_step = now;
-                }
-                if (s != GEIST_OK) {
-                    fprintf(stderr,
-                            "decode failed at seq_len=%d repeat=%d step=%d (status %d)\n",
-                            n_p,
-                            r,
-                            j,
-                            (int) s);
-                    break;
-                }
-                if (j == 0) {
-                    t_first = geist_test_now_ms() - t1;
-                }
-            }
+            const double t1       = geist_test_now_ms();
+            double       t_first  = 0.0;
+            const size_t got      = decode_run(sess,
+                                               spec_k,
+                                               (size_t) n_p,
+                                               (size_t) decode_n,
+                                               ids,
+                                               &spec,
+                                               n_tokens == 0 ? margins : nullptr,
+                                               &t_first,
+                                               &s);
             const double t_decode = geist_test_now_ms() - t1;
             if (s != GEIST_OK)
                 continue;
+            if (tokens != nullptr && n_tokens == 0) {
+                n_tokens = (size_t) decode_n;
+                memcpy(tokens, ids + n_p, n_tokens * sizeof *tokens);
+            }
+            n_decoded += got;
 
             prefill_ms[measured]       = t_prefill;
             decode_ms[measured]        = t_decode;
@@ -475,6 +583,8 @@ int main(int argc, char **argv) {
         }
 
         if (measured == 0) {
+            free(margins);
+            free(tokens);
             free(prefill_ms);
             free(decode_ms);
             free(total_ms_repeats);
@@ -490,8 +600,10 @@ int main(int argc, char **argv) {
         const double t_decode  = mean_of(measured, decode_ms);
         const double t_ttft    = mean_of(measured, ttft_ms);
 
-        const double pre_tps   = (double) n_p * 1000.0 / t_prefill;
-        const double dec_tps   = decode_n > 0 ? (double) decode_n * 1000.0 / t_decode : 0.0;
+        const double pre_tps = (double) n_p * 1000.0 / t_prefill;
+        /* A speculative call can emit past decode_n: count what came out. */
+        const double dec_tps =
+                decode_n > 0 ? (double) n_decoded / (double) measured * 1000.0 / t_decode : 0.0;
         const double total_ms  = t_prefill + t_decode;
         const double total_tps = (double) (n_p + decode_n) * 1000.0 / total_ms;
         double       pre_best;
@@ -564,7 +676,34 @@ int main(int argc, char **argv) {
         print_json_samples(measured, total_ms_repeats);
         printf(",\"ttft_ms\":");
         print_json_samples(measured, ttft_ms);
-        printf("}}\n");
+        printf("}");
+        if (spec_k > 0) {
+            printf(",\"spec\":{\"k\":%d,\"calls\":%zu,\"single\":%zu,\"decoded\":%zu,\"accept\":[",
+                   spec_k,
+                   spec.calls,
+                   spec.single,
+                   n_decoded);
+            for (int i = 0; i + 1 < spec_k; i++)
+                printf(i == 0 ? "%zu" : ",%zu", spec.accept[i]);
+            printf("]}");
+        }
+        if (n_tokens > 0) {
+            printf(",\"tokens\":[");
+            for (size_t i = 0; i < n_tokens; i++)
+                printf(i == 0 ? "%d" : ",%d", (int) tokens[i]);
+            printf("]");
+        }
+        if (n_tokens > 0 && margins != nullptr) {
+            printf(",\"margins\":[");
+            for (size_t i = 0; i < n_tokens; i++)
+                printf(i == 0 ? "[%d,%.3f]" : ",[%d,%.3f]",
+                       (int) margins[2 * i],
+                       margins[2 * i + 1]);
+            printf("]");
+        }
+        printf("}\n");
+        free(margins);
+        free(tokens);
         fflush(stdout);
         free(prefill_ms);
         free(decode_ms);
