@@ -391,7 +391,9 @@ static inline struct tf_buf mf_qwen35_gguf(const struct mf_qwen35 *c) {
  * `shared_expert` adds a shared-expert router the family does not run.
  * `olmoe` writes the same model as OLMoE (olmoe.* keys): QK norms over the
  * whole row, the expert width in feed_forward_length, no key_length;
- * `bad_qk_norm` then leaves those norms at head_dim. */
+ * `bad_qk_norm` then leaves those norms at head_dim. `mixtral` writes it as
+ * Mixtral (llama.* keys): no QK norms, the same keys as OLMoE; `split_experts`
+ * then adds the per-expert tensors of old files, ahead of the merged ones. */
 struct mf_qwen3moe {
     uint32_t    layers, d_model, heads, kv_heads, head_dim, experts, used, expert_ff, vocab;
     uint64_t    seed;
@@ -400,11 +402,14 @@ struct mf_qwen3moe {
     bool        shared_expert;
     bool        olmoe;
     bool        bad_qk_norm;
+    bool        mixtral;
+    bool        split_experts;
 };
 
 static inline struct tf_buf mf_qwen3moe_gguf(const struct mf_qwen3moe *c) {
     const uint32_t    d    = c->d_model;
-    const char *const arch = c->olmoe ? "olmoe" : "qwen3moe";
+    const bool        ol   = c->olmoe || c->mixtral; /* no key_length, width in feed_forward */
+    const char *const arch = c->mixtral ? "llama" : c->olmoe ? "olmoe" : "qwen3moe";
     const uint32_t    q_n  = c->olmoe && !c->bad_qk_norm ? c->heads * c->head_dim : c->head_dim;
     const uint32_t    k_n  = c->olmoe && !c->bad_qk_norm ? c->kv_heads * c->head_dim : c->head_dim;
     struct mf_tensors ts   = {0};
@@ -416,10 +421,15 @@ static inline struct tf_buf mf_qwen3moe_gguf(const struct mf_qwen3moe *c) {
         mf_add(&ts, d, c->kv_heads * c->head_dim, MF_RAND, "blk.%u.attn_k.weight", l);
         mf_add(&ts, d, c->kv_heads * c->head_dim, MF_RAND, "blk.%u.attn_v.weight", l);
         mf_add(&ts, c->heads * c->head_dim, d, MF_RAND, "blk.%u.attn_output.weight", l);
-        mf_add(&ts, q_n, 0, MF_ONE, "blk.%u.attn_q_norm.weight", l);
-        mf_add(&ts, k_n, 0, MF_ONE, "blk.%u.attn_k_norm.weight", l);
+        if (!c->mixtral) {
+            mf_add(&ts, q_n, 0, MF_ONE, "blk.%u.attn_q_norm.weight", l);
+            mf_add(&ts, k_n, 0, MF_ONE, "blk.%u.attn_k_norm.weight", l);
+        }
         mf_add(&ts, d, 0, MF_ONE, "blk.%u.ffn_norm.weight", l);
         mf_add(&ts, d, c->experts, MF_RAND, "blk.%u.ffn_gate_inp.weight", l);
+        if (c->split_experts) {
+            mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_gate.0.weight", l);
+        }
         mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_gate_exps.weight", l);
         ts.t[ts.n - 1].ne2 = c->experts;
         mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_up_exps.weight", l);
@@ -450,13 +460,14 @@ static inline struct tf_buf mf_qwen3moe_gguf(const struct mf_qwen3moe *c) {
             {"expert_used_count", c->used},
             {"context_length", 4096},
             {"vocab_size", c->vocab},
-            {c->olmoe ? "feed_forward_length" : "expert_feed_forward_length", c->expert_ff},
+            {ol ? "feed_forward_length" : "expert_feed_forward_length", c->expert_ff},
             {"attention.key_length", c->head_dim},
             {"expert_gating_func", c->gating},
     };
-    /* OLMoE has no key_length; the gating key is written only when asked. */
+    /* OLMoE and Mixtral have no key_length; the gating key is written only
+     * when asked. */
     const bool write_u32[] = {
-            true, true, true, true, true, true, true, true, true, !c->olmoe, c->gating != 0};
+            true, true, true, true, true, true, true, true, true, !ol, c->gating != 0};
     const size_t n_u32     = sizeof u32 / sizeof u32[0];
     size_t       n_written = 0;
     for (size_t i = 0; i < n_u32; i++) {

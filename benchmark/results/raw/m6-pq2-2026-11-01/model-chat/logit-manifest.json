@@ -1,0 +1,92 @@
+[
+  {
+    "path": "ids-0-baseline.bin",
+    "bytes": 2864,
+    "sha256": "c7ede857f61687d962f2a2d96e097028a25f424422c0e0b30f538ec9381c29bf"
+  },
+  {
+    "path": "ids-0-fp8.bin",
+    "bytes": 2864,
+    "sha256": "c7ede857f61687d962f2a2d96e097028a25f424422c0e0b30f538ec9381c29bf"
+  },
+  {
+    "path": "ids-0-int8.bin",
+    "bytes": 2864,
+    "sha256": "c7ede857f61687d962f2a2d96e097028a25f424422c0e0b30f538ec9381c29bf"
+  },
+  {
+    "path": "ids-3-baseline.bin",
+    "bytes": 2856,
+    "sha256": "1c411b452d7a78a7bcc94317667528a61170bee797dcded2ddfb8cfdf71229a2"
+  },
+  {
+    "path": "ids-3-fp8.bin",
+    "bytes": 2856,
+    "sha256": "1c411b452d7a78a7bcc94317667528a61170bee797dcded2ddfb8cfdf71229a2"
+  },
+  {
+    "path": "ids-3-int8.bin",
+    "bytes": 2856,
+    "sha256": "1c411b452d7a78a7bcc94317667528a61170bee797dcded2ddfb8cfdf71229a2"
+  },
+  {
+    "path": "ids-4-baseline.bin",
+    "bytes": 2908,
+    "sha256": "7036bf920fb676a72c1d2f7f76504769718c0e50d88900625f4adc1e8e026063"
+  },
+  {
+    "path": "ids-4-fp8.bin",
+    "bytes": 2908,
+    "sha256": "7036bf920fb676a72c1d2f7f76504769718c0e50d88900625f4adc1e8e026063"
+  },
+  {
+    "path": "ids-4-int8.bin",
+    "bytes": 2908,
+    "sha256": "7036bf920fb676a72c1d2f7f76504769718c0e50d88900625f4adc1e8e026063"
+  },
+  {
+    "path": "logits-0-baseline.bin",
+    "bytes": 993280,
+    "sha256": "a524044a07c84b91ef6e6fe1a2e1afa12fefb47a5a18e1e49a79759ed9a5be1d"
+  },
+  {
+    "path": "logits-0-fp8.bin",
+    "bytes": 993280,
+    "sha256": "428345ae5b06be6cb91bd661ff320ecce0f4b01c8e7ee2e6289c51a4d22926e3"
+  },
+  {
+    "path": "logits-0-int8.bin",
+    "bytes": 993280,
+    "sha256": "b1d8f4c579638e27a669e57ba5466760838bcb810382c29d04f7bbec68e9ef20"
+  },
+  {
+    "path": "logits-3-baseline.bin",
+    "bytes": 993280,
+    "sha256": "6efc0bba45b66c63808c8a494e0544396b0a5510563c8d96e3d9079e4c55a4d0"
+  },
+  {
+    "path": "logits-3-fp8.bin",
+    "bytes": 993280,
+    "sha256": "9041e26d550d6c1a8d3dd176d7858da7b5b353b9b91846dc9e2cb62a89cbf3b2"
+  },
+  {
+    "path": "logits-3-int8.bin",
+    "bytes": 993280,
+    "sha256": "77817a576880692c8d5ad04367087f1a891ea31e10d9177a57e112e39296f4cd"
+  },
+  {
+    "path": "logits-4-baseline.bin",
+    "bytes": 993280,
+    "sha256": "9c7f0aa24a55db59808ddba7558a0fe4c2434058212a7b35018348c332e078c0"
+  },
+  {
+    "path": "logits-4-fp8.bin",
+    "bytes": 993280,
+    "sha256": "bdbdc3518163ce3280955dd433a3e54bbe12c11f9f1093836983e63f47888d44"
+  },
+  {
+    "path": "logits-4-int8.bin",
+    "bytes": 993280,
+    "sha256": "e2bebe43be481917a2ec0dd9d667f4441354e303ebe4ec3cac0ce8b82db1fb15"
+  }
+]
