@@ -366,25 +366,20 @@ kv_store_attention_sinks(struct transformer_layer_forward_ctx *ctx,
             .sliding_window = ctx->L->sliding_window,
             .f16            = ctx->kv_f16_enabled,
             .q              = (const float *) v->buffer_map(t_q->buffer),
-            .sinks          = (const float *) v->buffer_map(ctx->L->attn_sinks.buffer),
+            .sinks          = ctx->L->attn_sinks,
             .k              = v->buffer_map(ctx->k_cache_buf),
             .v              = v->buffer_map(ctx->v_cache_buf),
             .out            = (float *) v->buffer_map(t_out->buffer),
     };
-    const void *ptrs[] = {j.q, j.sinks, j.k, j.v, j.out};
-    const bool  ok     = j.q != nullptr && j.sinks != nullptr && j.k != nullptr && j.v != nullptr &&
-                         j.out != nullptr;
+    const void *ptrs[] = {j.q, j.k, j.v, j.out};
+    const bool  ok     = j.q != nullptr && j.k != nullptr && j.v != nullptr && j.out != nullptr;
     if (ok) {
-        j.q     = (const float *) ((const uint8_t *) j.q + t_q->offset);
-        j.sinks = (const float *) ((const uint8_t *) j.sinks + ctx->L->attn_sinks.offset);
-        j.out   = (float *) ((uint8_t *) j.out + t_out->offset);
+        j.q   = (const float *) ((const uint8_t *) j.q + t_q->offset);
+        j.out = (float *) ((uint8_t *) j.out + t_out->offset);
         geist_par_for(ctx->seq * st->n_q_heads, attn_sinks_range, &j);
     }
-    struct geist_buffer *mapped[] = {t_q->buffer,
-                                     ctx->L->attn_sinks.buffer,
-                                     ctx->k_cache_buf,
-                                     ctx->v_cache_buf,
-                                     t_out->buffer};
+    struct geist_buffer *mapped[] = {
+            t_q->buffer, ctx->k_cache_buf, ctx->v_cache_buf, t_out->buffer};
     for (size_t i = 0; i < sizeof mapped / sizeof mapped[0]; i++)
         if (ptrs[i] != nullptr)
             v->buffer_unmap(mapped[i]);
@@ -403,7 +398,7 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
     const struct geist_backend_primitives *prims      = ctx->prims;
     const size_t                           kv_len_now = ctx->kv_len_now;
 
-    if (L->attn_sinks.buffer != nullptr) {
+    if (L->attn_sinks != nullptr) {
         return kv_store_attention_sinks(ctx, t_q_3d, t_attn_3d);
     }
     if (ctx->kv_kivi_enabled) {

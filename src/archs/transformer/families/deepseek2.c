@@ -241,8 +241,8 @@ static float *host_vector(struct transformer_arch_state          *st,
                                       &L->mla_kv_a,
                                       &L->mla_kv_a_w);
     if (s == GEIST_OK)
-        s = load_layer_norm(
-                st, gguf, L, T("attn_kv_a_norm.weight"), c->mla_kv_rank, &L->mla_kv_a_norm);
+        L->mla_kv_a_norm =
+                host_vector(st, gguf, L, "attn_kv_a_norm.weight", c->mla_kv_rank, true, &s);
     if (s == GEIST_OK)
         s = load_layer_matrix(st,
                               gguf,
@@ -388,10 +388,9 @@ static void deepseek2_session_free(struct transformer_arch_session *sess) {
     /* The latent: rows [pe, kv_a) of kv_a after the load's reorder. */
     float       *a  = (float *) v->buffer_map(sess->mla_kv_a);
     float       *lt = (float *) v->buffer_map(sess->mla_lat);
-    const float *nw = (const float *) v->buffer_map(L->mla_kv_a_norm.buffer);
-    if (a == nullptr || lt == nullptr || nw == nullptr)
+    const float *nw = L->mla_kv_a_norm;
+    if (a == nullptr || lt == nullptr)
         return GEIST_E_BACKEND;
-    nw = (const float *) ((const uint8_t *) nw + L->mla_kv_a_norm.offset);
     for (size_t t = 0; t < ctx->seq; t++) {
         const float *src = a + t * kv_a + pe;
         double       ss  = 0.0;
@@ -401,7 +400,6 @@ static void deepseek2_session_free(struct transformer_arch_session *sess) {
         for (size_t i = 0; i < rank; i++)
             lt[t * rank + i] = src[i] * r * nw[i];
     }
-    v->buffer_unmap(L->mla_kv_a_norm.buffer);
     v->buffer_unmap(sess->mla_lat);
     v->buffer_unmap(sess->mla_kv_a);
     enum geist_status s =
