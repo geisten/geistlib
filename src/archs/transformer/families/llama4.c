@@ -207,26 +207,39 @@ static bool populate_layers_llama4(struct transformer_arch_state *st) {
     return s;
 }
 
-/* q *= the NoPE layers' temperature times the attention scale, per row:
+/* q *= the attention scale times, on NoPE layers (`temp`), the temperature
  * log(floor((pos + 1) / temp_length) + 1) * 0.1 + 1 (llama.cpp's
- * f_attn_temp_offset 1, scale 0.1). On the host. */
-[[nodiscard]] static enum geist_status nope_q_scale(struct transformer_layer_forward_ctx *ctx,
-                                                    const struct llama4_meta             *m) {
-    float *q = (float *) ctx->v->buffer_map(ctx->sess->scratch_q);
-    if (q == nullptr)
-        return GEIST_E_BACKEND;
-    const float base = 1.0f / sqrtf((float) ctx->hd);
-    for (size_t t = 0; t < ctx->seq; t++) {
-        const size_t pos = ctx->q_position + t;
-        const float  temp =
-                m->chunk == 0
-                        ? 1.0f
-                        : logf(floorf((float) (pos + 1) / (float) m->temp_length) + 1.0f) * 0.1f +
-                                  1.0f;
-        for (size_t i = 0; i < ctx->q_out; i++)
-            q[t * ctx->q_out + i] *= base * temp;
+ * f_attn_temp_offset 1, scale 0.1), one scale_f32 per run of rows that share
+ * it; on the host where the backend has no scale_f32. */
+[[nodiscard]] static enum geist_status
+q_scale(struct transformer_layer_forward_ctx *ctx, const struct llama4_meta *m, bool temp) {
+    const float  base = 1.0f / sqrtf((float) ctx->hd);
+    const size_t row  = ctx->q_out * sizeof(float);
+    for (size_t t0 = 0; t0 < ctx->seq;) {
+        const size_t steps = temp && m->chunk > 0 ? (ctx->q_position + t0 + 1) / m->temp_length : 0;
+        size_t       t1    = t0 + 1;
+        while (t1 < ctx->seq && temp && m->chunk > 0 &&
+               (ctx->q_position + t1 + 1) / m->temp_length == steps)
+            t1++;
+        if (!temp || m->chunk == 0)
+            t1 = ctx->seq;
+        const float scale = base * (logf((float) steps + 1.0f) * 0.1f + 1.0f);
+        if (ctx->st->model_fusions.prim_scale_f32) {
+            struct geist_tensor q = view_2d_at(
+                    ctx->sess->scratch_q, t0 * row, (int64_t) (t1 - t0), (int64_t) ctx->q_out);
+            const enum geist_status s = ctx->prims->scale_f32(ctx->be, &q, scale, &q);
+            if (s != GEIST_OK)
+                return s;
+        } else {
+            float *q = (float *) ctx->v->buffer_map(ctx->sess->scratch_q);
+            if (q == nullptr)
+                return GEIST_E_BACKEND;
+            for (size_t i = t0 * ctx->q_out; i < t1 * ctx->q_out; i++)
+                q[i] *= scale;
+            ctx->v->buffer_unmap(ctx->sess->scratch_q);
+        }
+        t0 = t1;
     }
-    ctx->v->buffer_unmap(ctx->sess->scratch_q);
     return GEIST_OK;
 }
 
@@ -256,9 +269,9 @@ llama4_attention_block(struct transformer_layer_forward_ctx *ctx) {
         if (s == GEIST_OK && m.kq_norm)
             s = qk_unit_norm(ctx);
         if (s == GEIST_OK)
-            s = nope_q_scale(ctx, &(struct llama4_meta) {.chunk = 0});
+            s = q_scale(ctx, &m, false);
     } else if (s == GEIST_OK) {
-        s = nope_q_scale(ctx, &m);
+        s = q_scale(ctx, &m, true);
     }
     if (s == GEIST_OK)
         s = blk_attend(ctx, true);
