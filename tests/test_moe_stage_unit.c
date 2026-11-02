@@ -17,12 +17,18 @@
  *   - GEIST_MOE_STAGE_MAX=1: at most one expert (three weights) per step;
  *   - GEIST_MOE_STAGE=0 and GEIST_MOE_STAGE_HOST=0: no host copies, nothing
  *     staged, the experts' rows as before.
+ * Which cold experts get the host copies, with experts of 1.5 MiB and 3 MiB
+ * for copies (two), the resident set from GEIST_MOE_PROFILE, the profile
+ * cache in a temporary directory: the fresh start takes the resident
+ * ranking's next two; after one prefill the cache's prefill rows decide
+ * (the most rows first), the resident set unchanged.
  * The real copies and their ordering on Vulkan: test_backend_vulkan_stage_unit.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 #define GEIST_INTERNAL_ENGINE_LAYER
 
 #include "../src/archs/transformer/arch_state.h"
+#include "../src/archs/transformer/moe_profile.h"
 #include "../src/engine/model.h"
 #include "model_fixtures.h"
 #include "test_helpers.h"
@@ -31,10 +37,12 @@
 #include <geist_backend.h>
 #include <geist_util.h>
 
+#include <dirent.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 enum { VOCAB = 96, N_PROMPT = 21 };
 
@@ -306,6 +314,165 @@ static bool run(const struct tf_buf *g, const float ref[static VOCAB], struct ou
     return ok;
 }
 
+/* ---- Host copies chosen by the profile's prefill rows ------------------ */
+
+/* Experts of 1.5 MiB (F32 256 x 512, three of them): GEIST_MOE_STAGE_HOST
+ * = 3 MiB holds two host copies. */
+static const struct mf_qwen3moe GEOM_BIG = {.layers    = 2,
+                                            .d_model   = 256,
+                                            .heads     = 4,
+                                            .kv_heads  = 2,
+                                            .head_dim  = 64,
+                                            .experts   = 8,
+                                            .used      = 2,
+                                            .expert_ff = 512,
+                                            .vocab     = VOCAB,
+                                            .seed      = 11};
+
+enum { N_BIG = 2 * 8 };
+
+/* Loads `g` on the host GPU, notes which experts are resident (hot) and
+ * which have a host copy (host), the prefill rows the profile had at load
+ * at threshold 1 (rows), then prefills the prompt in chunks of 8. */
+static bool placed(const struct tf_buf *g,
+                   bool                 hot[static N_BIG],
+                   bool                 host[static N_BIG],
+                   uint64_t             rows[static N_BIG]) {
+    struct geist_backend *be = nullptr;
+    if (geist_backend_create("cpu_scalar", nullptr, nullptr, &be) != GEIST_OK)
+        return false;
+    fake_install(be);
+    struct geist_model   *m = nullptr;
+    struct geist_session *s = nullptr;
+    geist_token_t         ids[N_PROMPT];
+    float                 lg[VOCAB];
+    for (size_t i = 0; i < N_PROMPT; i++)
+        ids[i] = (geist_token_t) ((i * 37 + 5) % VOCAB);
+    bool ok = geist_model_load_from_memory(g->b, g->n, be, &m) == GEIST_OK;
+    if (ok) {
+        const struct transformer_arch_state *st = geist_model_internal_arch_meta(m);
+        const struct transformer_moe_gpu    *mg = st->moe_gpu;
+        ok = mg != nullptr && mg->stage_w != nullptr && moe_slots(&st->config) == 8;
+        for (size_t i = 0; ok && i < N_BIG; i++) {
+            hot[i]  = mg->twins[i * 3].raw != nullptr;
+            host[i] = mg->stage_w[i * 3].raw != nullptr;
+        }
+        if (ok && !moe_profile_prefill_rows(st->moe_prof, 1, N_BIG, rows))
+            memset(rows, 0, N_BIG * sizeof rows[0]);
+    }
+    ok = ok && geist_session_create(m, be, &OPTS, &s) == GEIST_OK &&
+         logits_after(s, N_PROMPT, ids, OPTS.m_max, lg);
+    if (!ok)
+        fprintf(stderr, "%s\n", geist_backend_errmsg(be));
+    geist_session_destroy(s);
+    geist_model_destroy(m); /* writes the profile cache */
+    be->desc = g_orig;
+    geist_backend_destroy(be);
+    return ok;
+}
+
+/* Expert i before expert j for a host copy: more prefill rows, then the
+ * resident ranking's count (check_prefill_choice's profile), then the lower
+ * e * 2 + l. */
+static bool before(const uint64_t rows[static N_BIG], uint32_t i, uint32_t j) {
+    const uint64_t ci = i / 8 == 0 ? 8 - i % 8 : i % 8 + 1, cj = j / 8 == 0 ? 8 - j % 8 : j % 8 + 1;
+    if (rows[i] != rows[j])
+        return rows[i] > rows[j];
+    if (ci != cj)
+        return ci > cj;
+    return (i % 8) * 2 + i / 8 < (j % 8) * 2 + j / 8;
+}
+
+/* The fresh start picks the host copies in the resident ranking's order;
+ * after a prefill, the profile cache's prefill rows pick them, and the
+ * resident experts stay the same. */
+static int check_prefill_choice(void) {
+    int         fails = 0;
+    const char *tmp   = getenv("TMPDIR");
+    char        dir[256], prof[300];
+    snprintf(dir, sizeof dir, "%s/geist_moe_stage_XXXXXX", tmp != nullptr ? tmp : "/tmp");
+    if (mkdtemp(dir) == nullptr)
+        return geist_expect(false, "a temporary cache directory");
+    /* The resident ranking (GEIST_MOE_PROFILE wins over the cache): layer
+     * 0's experts 0-3, layer 1's 4-7 hot; the cold ones by count, then
+     * e * 2 + l: (l1,e3) and (l0,e4) at 4, (l1,e2) and (l0,e5) at 3, ... */
+    snprintf(prof, sizeof prof, "%s/usage.txt", dir);
+    FILE *f = fopen(prof, "w");
+    if (f != nullptr) {
+        fputs("USAGE fixture profile corpus 9 0 8,7,6,5,4,3,2,1\n"
+              "USAGE fixture profile corpus 9 1 1,2,3,4,5,6,7,8\n",
+              f);
+        fclose(f);
+    }
+    setenv("GEIST_MOE_PROFILE", prof, 1);
+    setenv("GEIST_MOE_PROFILE_CACHE", dir, 1);
+    setenv("GEIST_MOE_STAGE_HOST", "3", 1);
+    setenv("GEIST_MOE_STAGE_M_MIN", "1", 1);
+    struct tf_buf g = mf_qwen3moe_gguf(&GEOM_BIG);
+    bool          hot0[N_BIG], host0[N_BIG], hot1[N_BIG], host1[N_BIG];
+    uint64_t      rows0[N_BIG], rows1[N_BIG];
+    const bool    ok0 = placed(&g, hot0, host0, rows0);
+    const bool    ok1 = ok0 && placed(&g, hot1, host1, rows1);
+    fails += geist_expect(ok0 && ok1, "the big fixture loads and prefills twice");
+    if (ok0 && ok1) {
+        bool want_hot[N_BIG] = {0}, fresh = true, zero = true;
+        for (size_t e = 0; e < 4; e++)
+            want_hot[e] = want_hot[8 + 4 + e] = true;
+        for (size_t i = 0; i < N_BIG; i++) {
+            fresh = fresh && host0[i] == (i == 8 + 3 || i == 4);
+            zero  = zero && rows0[i] == 0;
+        }
+        fails += geist_expect(memcmp(hot0, want_hot, sizeof hot0) == 0 &&
+                                      memcmp(hot1, want_hot, sizeof hot1) == 0,
+                              "the resident experts follow GEIST_MOE_PROFILE, both loads");
+        fails += geist_expect(zero && fresh,
+                              "fresh start: no prefill rows, host copies in the resident order");
+        /* The two cold experts with the most rows (equal bytes), ties by
+         * count, then e * 2 + l. */
+        uint32_t want[2] = {UINT32_MAX, UINT32_MAX};
+        uint64_t total   = 0;
+        for (size_t k = 0; k < 2; k++)
+            for (uint32_t i = 0; i < N_BIG; i++)
+                if (!hot1[i] && i != want[0] &&
+                    (want[k] == UINT32_MAX || before(rows1, i, want[k])))
+                    want[k] = i;
+        bool picked = true;
+        for (size_t i = 0; i < N_BIG; i++) {
+            total += rows1[i];
+            picked = picked && host1[i] == (i == want[0] || i == want[1]);
+        }
+        printf("prefill-aware host copies: (l%u,e%u) %llu rows, (l%u,e%u) %llu rows; fresh "
+               "start (l1,e3), (l0,e4)\n",
+               want[0] / 8,
+               want[0] % 8,
+               (unsigned long long) rows1[want[0]],
+               want[1] / 8,
+               want[1] % 8,
+               (unsigned long long) rows1[want[1]]);
+        fails += geist_expect(total == 2ull * N_PROMPT * 2,
+                              "the cache holds every prefill row of the first run");
+        fails += geist_expect(picked, "after a prefill: the most prefill rows get the host copies");
+    }
+    unsetenv("GEIST_MOE_STAGE_M_MIN");
+    unsetenv("GEIST_MOE_STAGE_HOST");
+    unsetenv("GEIST_MOE_PROFILE");
+    setenv("GEIST_MOE_PROFILE_CACHE", "0", 1);
+    remove(prof);
+    DIR *dp = opendir(dir); /* the cache file is the one entry left */
+    for (struct dirent *de = dp != nullptr ? readdir(dp) : nullptr; de != nullptr;
+         de                = readdir(dp)) {
+        char path[600];
+        if (de->d_name[0] != '.' &&
+            (size_t) snprintf(path, sizeof path, "%s/%s", dir, de->d_name) < sizeof path)
+            remove(path);
+    }
+    if (dp != nullptr)
+        closedir(dp);
+    rmdir(dir);
+    free(g.b);
+    return fails;
+}
+
 int main(void) {
     setenv("GEIST_MOE_PROFILE_CACHE", "0", 1);
     setenv("GEIST_MOE_HOT", "8", 1);
@@ -377,6 +544,7 @@ int main(void) {
     unsetenv("GEIST_MOE_STAGE");
     unsetenv("GEIST_MOE_STAGE_M_MIN");
 
+    fails += check_prefill_choice();
     free(g.b);
     if (fails == 0)
         printf("PASS: cold experts staged for prefill on a host GPU (#239)\n");
