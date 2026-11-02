@@ -49,6 +49,7 @@ static const struct qfmt QF[] = {
         {GEIST_DTYPE_TQ2_0, 256, 66, -2}, /* d is the TRAILING f16 */
         {GEIST_DTYPE_PQ2_0, 128, 34, 2},
         {GEIST_DTYPE_Q5_0, 32, 22, 2},
+        {GEIST_DTYPE_MXFP4, 32, 17, 0}, /* byte 0 is an E8M0 exponent */
 };
 
 static const struct qfmt *qfmt_of(int dtype) {
@@ -83,6 +84,10 @@ static void fill_blob(uint8_t *dst, size_t n_in, size_t n_out, int dtype) {
             uint8_t *blk = dst + (r * bpr + b) * q->bytes;
             for (size_t i = 0; i < q->bytes; i++) {
                 blk[i] = rng_u8();
+            }
+            if (dtype == GEIST_DTYPE_MXFP4) {
+                blk[0] = 127; /* scale 2^-1 */
+                continue;
             }
             if (q->scale_bytes < 0) {
                 blk[q->bytes - 2] = 0x00; /* d = fp16(1.0) */
@@ -386,6 +391,10 @@ int main(void) {
      * agree with cpu_scalar. */
     run_case(vk, ref, GEIST_DTYPE_Q5_0, "Q5_0", 512, 383, 1);
     run_case(vk, ref, GEIST_DTYPE_Q5_0, "Q5_0", 352, 45, 8);
+    /* MXFP4 (GPT-OSS experts, #243): no shader either; 2880 is the experts'
+     * row width, 90 unaligned 17-byte blocks. */
+    run_case(vk, ref, GEIST_DTYPE_MXFP4, "MXFP4", 2880, 45, 1);
+    run_case(vk, ref, GEIST_DTYPE_MXFP4, "MXFP4", 512, 383, 8);
     /* Q5_K on the tensor cores (#467): its 5-bit products leave f16's exact
      * integer range as Q6_K's do, so judged by PARITY_MAG; two superblocks
      * per row, a partly empty token tile, linear_t, the m % 16 split */

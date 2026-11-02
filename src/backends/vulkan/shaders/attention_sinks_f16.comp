@@ -1,0 +1,32 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+#include "vk_limits.h"
+
+/* attention_f32.comp with a sink logit per head (#243): attn_sinks_body.glsl.
+ * K / V as float16_t, offsets in elements. */
+
+layout(set = 0, binding = 0) readonly buffer Q { float q[]; };
+layout(set = 0, binding = 1) readonly buffer K { float16_t k[]; };
+layout(set = 0, binding = 2) readonly buffer V { float16_t v[]; };
+layout(set = 0, binding = 3) readonly buffer S { float sk[]; };
+layout(set = 0, binding = 4) writeonly buffer Out { float out_v[]; };
+
+layout(push_constant) uniform Push {
+    uint n_q;
+    uint n_kv;
+    uint n_q_heads;
+    uint n_kv_heads;
+    uint head_dim;
+    uint q_offset_abs;
+    uint sliding_window;
+    uint q_offset;
+    uint k_offset;
+    uint v_offset;
+    uint out_offset;
+    uint sinks_offset;
+} pc;
+
+#define LOAD_K(i) float(k[i])
+#define LOAD_V(i) float(v[i])
+#include "attn_sinks_body.glsl"

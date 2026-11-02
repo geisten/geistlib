@@ -176,7 +176,7 @@ LDLIBS  := $(LDLIBS_TARGET) $(GEMM_LDLIBS) $(EXTRA_LDLIBS)
 # vision encoder towers. The defaults build everything; the test suite
 # assumes them. A change of either variable rebuilds what depends on it
 # (select-config stamp below), no `make clean` needed.
-ALL_FAMILIES := bitnet gemma3 gemma4 llama olmoe qwen3 qwen35 qwen3moe
+ALL_FAMILIES := bitnet gemma3 gemma4 gpt_oss llama olmoe qwen3 qwen35 qwen3moe
 FAMILIES     ?= $(ALL_FAMILIES)
 TOWERS       ?= 1
 ifneq ($(filter-out $(ALL_FAMILIES),$(FAMILIES)),)
@@ -264,6 +264,7 @@ LIB_SOURCES := \
     src/formats/gguf/q4_0.c \
     src/formats/gguf/q4_1.c \
     src/formats/gguf/q5_0.c \
+    src/formats/gguf/mxfp4.c \
     src/formats/gguf/q3_K.c \
     src/formats/gguf/q4_K.c \
     src/formats/gguf/q5_K.c \
