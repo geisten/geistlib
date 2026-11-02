@@ -442,6 +442,12 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
                                            .mm        = st->iq4nl_mm_pipeline,
                                            .n4_tile   = 8u,
                                            .gemm_only = true};
+    case GEIST_DTYPE_MXFP4:
+        /* No tensor-API variant yet: the simdgroup GEMM serves M5/M6 too. */
+        return (struct metal_quant_pipes) {.n4        = st->mx4_n4_pipeline,
+                                           .mm        = st->mx4_mm_pipeline,
+                                           .n4_tile   = 8u,
+                                           .gemm_only = true};
     case GEIST_DTYPE_IQ4_XS:
         return (struct metal_quant_pipes) {.tc        = st->iq4xs_mm_tc_pipeline,
                                            .n4        = st->iq4xs_n4_pipeline,
@@ -3899,6 +3905,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     case GEIST_DTYPE_Q5_K:
     case GEIST_DTYPE_Q6_K:
     case GEIST_DTYPE_IQ4_NL:
+    case GEIST_DTYPE_MXFP4:
     case GEIST_DTYPE_IQ4_XS:
     case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_IQ3_S:

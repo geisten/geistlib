@@ -250,6 +250,10 @@ struct metal_state {
     void *iq4nl_n4_pipeline;
     void *iq4nl_mm_function;
     void *iq4nl_mm_pipeline;
+    void *mx4_n4_function;
+    void *mx4_n4_pipeline;
+    void *mx4_mm_function;
+    void *mx4_mm_pipeline;
     void *iq4xs_n4_function;
     void *iq4xs_n4_pipeline;
     void *iq4xs_mm_function;
@@ -694,6 +698,7 @@ static inline bool metal_dtype_is_quant(enum geist_dtype dtype) {
     case GEIST_DTYPE_Q5_K:
     case GEIST_DTYPE_IQ4_NL:
     case GEIST_DTYPE_IQ4_XS:
+    case GEIST_DTYPE_MXFP4:
     case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_IQ3_S:
     case GEIST_DTYPE_PQ2_0:

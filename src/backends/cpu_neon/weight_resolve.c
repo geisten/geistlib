@@ -448,6 +448,34 @@ static void cpu_neon_w_iq4nl_m1(const float               *x,
     linear_iq4nl_decode_w4a8_pre(n_in, n_out, sc, xq, w->raw, y);
 }
 
+/* MXFP4 (GPT-OSS experts, #243): W4A8 LUT + SDOT for both paths. */
+static void cpu_neon_w_mxfp4_m1(const float               *x,
+                                const struct geist_weight *w,
+                                struct geist_backend      *be,
+                                float                     *y) {
+    const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    float        *sc = nullptr;
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, GEIST_ACT_Q8_0_ELEMS, x, w, y, &sc, nullptr);
+    if (xq == nullptr) {
+        return;
+    }
+    linear_mxfp4_decode_w4a8_pre(n_in, n_out, sc, xq, w->raw, y);
+}
+
+static void cpu_neon_w_mxfp4_mN(size_t                     m,
+                                const float               *x,
+                                const struct geist_weight *w,
+                                struct geist_backend      *be,
+                                float                     *y) {
+    const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    float        *sc = nullptr;
+    const int8_t *xq = ws_quantize_act(be, m, n_in, GEIST_ACT_Q8_0_ELEMS, x, w, y, &sc, nullptr);
+    if (xq == nullptr) {
+        return;
+    }
+    linear_mxfp4_w4a8_prefill_pre(m, n_in, n_out, xq, sc, w->raw, y);
+}
+
 /* F32 dense. M=1 is our own row dot, not Accelerate's sgemv: sgemv rounds
  * differently with the matrix's address (alignment finer than 64 bytes), so
  * the same model gave other logits mmap-aliased than copied (#76). A fixed
@@ -901,6 +929,8 @@ static size_t blk_bytes_for(enum geist_dtype dt) {
         return TQ2_0_BLOCK_BYTES;
     case GEIST_DTYPE_PQ2_0:
         return PQ2_0_BLOCK_BYTES;
+    case GEIST_DTYPE_MXFP4:
+        return MXFP4_BLOCK_BYTES;
     case GEIST_DTYPE_IQ4_NL:
         return IQ4_NL_BLOCK_BYTES;
     case GEIST_DTYPE_IQ4_XS:
@@ -929,6 +959,8 @@ static size_t blk_elems_for(enum geist_dtype dt) {
         return TQ2_0_BLOCK_ELEMS;
     case GEIST_DTYPE_PQ2_0:
         return PQ2_0_BLOCK_ELEMS;
+    case GEIST_DTYPE_MXFP4:
+        return MXFP4_BLOCK_ELEMS;
     case GEIST_DTYPE_IQ4_NL:
         return IQ4_NL_BLOCK_ELEMS;
     case GEIST_DTYPE_IQ4_XS:
@@ -957,6 +989,8 @@ static dequant_row_fn dequant_row_fn_for(enum geist_dtype dt) {
         return dequant_tq2_0_row;
     case GEIST_DTYPE_PQ2_0:
         return dequant_pq2_0_row;
+    case GEIST_DTYPE_MXFP4:
+        return dequant_mxfp4_row;
     case GEIST_DTYPE_IQ4_NL:
         return dequant_iq4_nl_row;
     case GEIST_DTYPE_IQ4_XS:
@@ -1285,6 +1319,12 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
          cpu_neon_w_iq4xs_m1,
          cpu_neon_w_iq4xs_mN,
          "iq4_xs/w4a8"},
+
+        {GEIST_DTYPE_MXFP4,
+         CPU_NEON_ISA_NEON,
+         cpu_neon_w_mxfp4_m1,
+         cpu_neon_w_mxfp4_mN,
+         "mxfp4/w4a8"},
 
         /* F32 native both paths. */
         {GEIST_DTYPE_F32, CPU_NEON_ISA_NEON, cpu_neon_w_f32_m1, geist_linear_f32_mN, "f32"},
