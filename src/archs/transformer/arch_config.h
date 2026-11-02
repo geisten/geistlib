@@ -149,6 +149,15 @@ struct geist_arch_config {
      * sqrt(d_model). The Gemma families do this; Llama/Qwen/BitNet do not.
      * Independent of has_ple: Gemma 3 has the scale and no PLE. */
     bool has_embed_scale;
+    /* A multiplier the family computes instead (Granite); 0: none. */
+    float embed_scale;
+
+    /* ---- Multiplies output_norm's weights at load, so it divides the
+     * logits on every head path (Granite); 0: none. */
+    float output_norm_scale;
+
+    /* ---- Query scale of a family that reads it (Granite's attention_block). */
+    float attn_q_scale;
 
     /* ---- PLE (Per-Layer Embedding, Gemma 4 family only). When
      * has_ple == false, the precompute path is skipped entirely. */

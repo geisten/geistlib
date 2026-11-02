@@ -205,10 +205,11 @@ bool family_moe_ok(const struct geist_arch_config *c) {
 /* Only the families the build selected (make FAMILIES=..., mk/common.mk).
  * A build that selects none (no -DGEIST_FAMILY_*, e.g. another build system)
  * gets all of them. */
-#if !defined(GEIST_FAMILY_BITNET) && !defined(GEIST_FAMILY_GEMMA3) &&    \
-        !defined(GEIST_FAMILY_GEMMA4) && !defined(GEIST_FAMILY_LLAMA) && \
-        !defined(GEIST_FAMILY_QWEN3) && !defined(GEIST_FAMILY_QWEN35) && \
-        !defined(GEIST_FAMILY_QWEN3MOE) && !defined(GEIST_FAMILY_OLMOE)
+#if !defined(GEIST_FAMILY_BITNET) && !defined(GEIST_FAMILY_GEMMA3) &&      \
+        !defined(GEIST_FAMILY_GEMMA4) && !defined(GEIST_FAMILY_LLAMA) &&   \
+        !defined(GEIST_FAMILY_QWEN3) && !defined(GEIST_FAMILY_QWEN35) &&   \
+        !defined(GEIST_FAMILY_QWEN3MOE) && !defined(GEIST_FAMILY_OLMOE) && \
+        !defined(GEIST_FAMILY_GRANITEMOE)
 #define GEIST_FAMILY_BITNET 1
 #define GEIST_FAMILY_GEMMA3 1
 #define GEIST_FAMILY_GEMMA4 1
@@ -217,6 +218,7 @@ bool family_moe_ok(const struct geist_arch_config *c) {
 #define GEIST_FAMILY_QWEN35 1
 #define GEIST_FAMILY_QWEN3MOE 1
 #define GEIST_FAMILY_OLMOE 1
+#define GEIST_FAMILY_GRANITEMOE 1
 #endif
 static const struct transformer_family *const REGISTRY[] = {
 #if defined(GEIST_FAMILY_GEMMA4)
@@ -244,6 +246,9 @@ static const struct transformer_family *const REGISTRY[] = {
 #endif
 #if defined(GEIST_FAMILY_OLMOE)
         &transformer_family_olmoe, /* families/olmoe.c */
+#endif
+#if defined(GEIST_FAMILY_GRANITEMOE)
+        &transformer_family_granitemoe, /* families/granitemoe.c */
 #endif
 };
 static const size_t REGISTRY_N = sizeof REGISTRY / sizeof REGISTRY[0];
@@ -280,6 +285,9 @@ const char *const geist_arch_transformer_gguf_names[] = {
 #endif
 #if defined(GEIST_FAMILY_OLMOE)
         "olmoe",
+#endif
+#if defined(GEIST_FAMILY_GRANITEMOE)
+        "granitemoe",
 #endif
         nullptr,
 };

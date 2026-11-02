@@ -1,7 +1,7 @@
 # Models
 
 A GGUF loads when its `general.architecture` is registered (`gemma4`,
-`gemma3`, `llama`, `qwen3`, `qwen35`, `qwen35moe`, `qwen3moe`, `olmoe`, `bitnet-b1.58`, `bitnet`) and the
+`gemma3`, `llama`, `qwen3`, `qwen35`, `qwen35moe`, `qwen3moe`, `olmoe`, `granitemoe`, `bitnet-b1.58`, `bitnet`) and the
 selected backend supports its dtypes. The table lists the models exercised by
 tests and benchmarks. Text weights are one download; Gemma vision and audio
 also need their tower weights.
@@ -18,6 +18,7 @@ also need their tower weights.
 | Qwen3.5/3.6 MoE (Qwen3.6-35B-A3B) | text | supported GGUF dtypes; router F32 | 21.1 GB (UD-Q4_K_M) | ≥ 24 GB | CPU; a GPU backend runs attention, DeltaNet and router, the experts on the CPU with the hottest copied to the GPU ([OFFLOAD.md](OFFLOAD.md)) | [⬇ Qwen3.6-35B-A3B UD-Q4_K_M](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/resolve/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf) — 256 experts, 8 per token, plus a shared expert; #169 |
 | OLMoE (1B-7B) | text | supported GGUF dtypes; router F32 | 4.2 GB (Q4_K_M) | ≥ 8 GB | CPU (`cpu_neon`, `cpu_x86`, `cpu_scalar`); Metal; Vulkan not run yet | [⬇ OLMoE-1B-7B-0125 Q4_K_M](https://huggingface.co/allenai/OLMoE-1B-7B-0125-Instruct-GGUF/resolve/2ac1d2731792/OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf) — 64 experts, 8 per token; the experts keep their softmax weights, not renormalised; #241 |
 | Mixtral 8x7B | text | supported GGUF dtypes; router F16 | 26.4 GB (Q4_K_M) | ≥ 64 GB (Apple CPU: 50 GB peak footprint, measured with heavy swap on 32 GB) | CPU (`cpu_neon`, `cpu_scalar`); Metal; `cpu_x86` and Vulkan not run yet | [⬇ TheBloke Q4_K_M](https://huggingface.co/TheBloke/Mixtral-8x7B-v0.1-GGUF/resolve/38762deaceb8/mixtral-8x7b-v0.1.Q4_K_M.gguf), then `tools/gguf_merge_experts.py` (this file stores one tensor per expert) — GGUF architecture `llama` with `llama.expert_count`; 8 experts, 2 per token, renormalised; #241 |
+| Granite 3.0 1B A400M | text | supported GGUF dtypes; router F32 | 0.8 GB (Q4_K_M) | ≥ 4 GB | CPU (`cpu_neon`, `cpu_scalar`); Metal; `cpu_x86` and Vulkan not run yet | [⬇ bartowski Q4_K_M](https://huggingface.co/bartowski/granite-3.0-1b-a400m-instruct-GGUF/resolve/0e1c3cecaa6e/granite-3.0-1b-a400m-instruct-Q4_K_M.gguf) — 32 experts, 8 per token, renormalised; attention, embedding, residual and logit scales from the file; the shared expert of GraniteMoeShared is refused; #241 |
 | Ternary-Bonsai-2-27B (Qwen3.8) | text (ternary) | `PQ2_0` + Hadamard | 7.2 GB | ≥ 16 GB | Metal; Vulkan (fits an 11 GiB card) | [⬇ prism-ml GGUF ↗](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf) — numbers in [`TERNARY.md`](../benchmark/results/TERNARY.md) |
 | BitNet b1.58-large | text (ternary) | `TQ2_0` | 207 MB | ≥ 1 GB | smallest footprint | convert from [1bitLLM ↗](https://huggingface.co/1bitLLM/bitnet_b1_58-large) |
 

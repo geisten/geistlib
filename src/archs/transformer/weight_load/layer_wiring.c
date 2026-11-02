@@ -981,6 +981,42 @@ global_keep(struct geist_backend *be, struct transformer_arch_state *st, struct 
     return global_keep(be, st, buf);
 }
 
+/* output_norm times config.output_norm_scale, in a buffer of its own: an F32
+ * norm would otherwise alias the file's read-only pages. */
+[[nodiscard]] static enum geist_status load_scaled_output_norm(struct geist_backend          *be,
+                                                               struct gguf_ctx               *gguf,
+                                                               struct transformer_arch_state *st,
+                                                               struct geist_buffer **out_buf) {
+    const size_t                n = (size_t) st->d_model;
+    const struct gguf_tensor_t *t = gguf_get_tensor(gguf, "output_norm.weight");
+    if (t == nullptr || gguf_tensor_elem_count(t) != n) {
+        geist_backend_set_error(
+                be, GEIST_E_FORMAT, "transformer: output_norm.weight is not %zu elements", n);
+        return GEIST_E_FORMAT;
+    }
+    float *w = gguf_dequant_to_fp32(t);
+    if (w == nullptr) {
+        geist_backend_set_error(be, GEIST_E_FORMAT, "transformer: output_norm.weight dequant");
+        return GEIST_E_FORMAT;
+    }
+    for (size_t i = 0; i < n; i++) {
+        w[i] *= st->config.output_norm_scale;
+    }
+    const struct geist_backend_vtbl *v = be->desc->vtbl;
+    enum geist_status                s = v->buffer_create(
+            be, n * sizeof(float), GEIST_BUFFER_WEIGHT, GEIST_MEMORY_AUTO, out_buf);
+    if (s == GEIST_OK) {
+        s = v->buffer_upload(*out_buf, n * sizeof(float), (const uint8_t *) w);
+        if (s != GEIST_OK) {
+            v->buffer_destroy(be, *out_buf);
+            *out_buf = nullptr;
+        }
+    }
+    void *p = w;
+    safe_free(&p);
+    return s;
+}
+
 /* token_embd [VOCAB, HIDDEN] (the lm_head too when tied; beside a usable
  * output.weight only a lookup table), the lm_head, the PLE globals where
  * the model has them, and output_norm [HIDDEN] (F32). Global buffers are
@@ -1010,7 +1046,10 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
         return s;
     }
     struct geist_buffer *buf = nullptr;
-    s = load_norm_to_f32_buffer(st, gguf, "output_norm.weight", (size_t) st->d_model, &buf);
+    s = st->config.output_norm_scale != 0.0f
+                ? load_scaled_output_norm(be, gguf, st, &buf)
+                : load_norm_to_f32_buffer(
+                          st, gguf, "output_norm.weight", (size_t) st->d_model, &buf);
     if (s != GEIST_OK) {
         return s;
     }
