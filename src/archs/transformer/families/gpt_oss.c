@@ -105,6 +105,7 @@ static float *host_vector(struct transformer_arch_state          *st,
             {"attn_k.bias", L->kv_out, &L->k_bias},
             {"attn_v.bias", L->kv_out, &L->v_bias},
             {"attn_output.bias", d, &L->o_bias},
+            {"attn_sinks.weight", st->n_q_heads, &L->attn_sinks_t},
     };
     enum geist_status s = GEIST_OK;
     for (size_t i = 0; i < sizeof vecs / sizeof vecs[0] && s == GEIST_OK; i++) {
