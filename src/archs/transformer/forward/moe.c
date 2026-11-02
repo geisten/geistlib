@@ -101,6 +101,43 @@ bool moe_route_topk(
     return true;
 }
 
+bool moe_route(size_t                n,
+               size_t                k,
+               enum geist_moe_gating gating,
+               bool                  norm,
+               const float           logits[static n],
+               const float          *bias,
+               uint32_t             *ids,
+               float                *w) {
+    if (n == 0 || n > GEIST_MOE_MAX_EXPERTS) {
+        return false;
+    }
+    float biased[GEIST_MOE_MAX_EXPERTS];
+    if (bias != nullptr) {
+        for (size_t i = 0; i < n; i++)
+            biased[i] = logits[i] + bias[i];
+        logits = biased;
+    }
+    if (gating != GEIST_MOE_GATING_SOFTMAX_WEIGHT) {
+        return moe_route_topk(n, k, norm, logits, ids, w);
+    }
+    /* The selection is softmax's (the k largest logits, same ties); the
+     * weights are the softmax over those k logits alone. ids[0] holds the
+     * largest. */
+    if (!moe_route_topk(n, k, false, logits, ids, w)) {
+        return false;
+    }
+    const float mx  = logits[ids[0]];
+    double      sum = 0.0;
+    for (size_t j = 0; j < k; j++) {
+        sum += exp((double) (logits[ids[j]] - mx));
+    }
+    for (size_t j = 0; j < k; j++) {
+        w[j] = (float) (exp((double) (logits[ids[j]] - mx)) / sum);
+    }
+    return true;
+}
+
 /* Bucket each row's selections by expert (counting sort, rows in order):
  * expert e's selections are rows[start[e] .. start[e + 1]), each a flat
  * index row * k + slot into ids / wts. */
@@ -188,7 +225,8 @@ struct moe_job {
     const struct transformer_layer_weights *L;
     struct transformer_arch_session        *sess;
     struct geist_backend                   *be;
-    size_t                                  d, inter, n_exp;
+    size_t                                  d, inter, n_exp, n_routed;
+    enum geist_moe_act                      act;
     uint32_t                                active[GEIST_MOE_MAX_EXPERTS]; /* on the CPU */
     size_t                                  n_active;
     uint32_t                                hot[GEIST_MOE_MAX_EXPERTS]; /* on the GPU (#78) */
@@ -243,9 +281,36 @@ static bool moe_expert_rows(const struct moe_job *j, size_t e, size_t row0, size
     }
     if (!ok)
         return false;
-    for (size_t i = 0; i < m * j->inter; i++)
-        g[i] = g[i] / (1.0f + expf(-g[i])) * u[i];
+    /* The routed experts' biases where the layer has them (not the shared
+     * expert's slot, e == n_routed). */
+    const bool   routed = e < j->n_routed;
+    const size_t inter  = j->inter;
+    const float *gb =
+            routed && j->L->moe_gate_b != nullptr ? j->L->moe_gate_b + e * inter : nullptr;
+    const float *ub = routed && j->L->moe_up_b != nullptr ? j->L->moe_up_b + e * inter : nullptr;
+    const float *db = routed && j->L->moe_down_b != nullptr ? j->L->moe_down_b + e * j->d : nullptr;
+    for (size_t r = 0; gb != nullptr && r < m; r++)
+        for (size_t i = 0; i < inter; i++)
+            g[r * inter + i] += gb[i];
+    for (size_t r = 0; ub != nullptr && r < m; r++)
+        for (size_t i = 0; i < inter; i++)
+            u[r * inter + i] += ub[i];
+    if (j->act == GEIST_MOE_ACT_SWIGLU_OAI) {
+        /* llama.cpp's ggml_swiglu_oai, alpha 1.702, limit 7. */
+        constexpr float alpha = 1.702f, limit = 7.0f;
+        for (size_t i = 0; i < m * inter; i++) {
+            const float gc = g[i] < limit ? g[i] : limit;
+            const float uc = u[i] < -limit ? -limit : u[i] > limit ? limit : u[i];
+            g[i]           = gc / (1.0f + expf(-alpha * gc)) * (uc + 1.0f);
+        }
+    } else {
+        for (size_t i = 0; i < m * inter; i++)
+            g[i] = g[i] / (1.0f + expf(-g[i])) * u[i];
+    }
     moe_linear(m, g, &j->L->moe_down_w[e], j->be, y, &ok);
+    for (size_t r = 0; ok && db != nullptr && r < m; r++)
+        for (size_t c = 0; c < j->d; c++)
+            y[r * j->d + c] += db[c];
     return ok;
 }
 
@@ -385,12 +450,14 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     }
     bool routed_ok = true;
     for (size_t r = 0; r < seq && routed_ok; r++) {
-        routed_ok = moe_route_topk(n_exp,
-                                   n_rt,
-                                   st->config.moe_norm_topk,
-                                   lg + r * n_exp,
-                                   sess->moe_ids + r * k,
-                                   sess->moe_wts + r * k);
+        routed_ok = moe_route(n_exp,
+                              n_rt,
+                              st->config.moe_gating,
+                              st->config.moe_norm_topk,
+                              lg + r * n_exp,
+                              L->moe_router_b,
+                              sess->moe_ids + r * k,
+                              sess->moe_wts + r * k);
     }
     for (size_t r = 0; r < seq && k > n_rt; r++)
         sess->moe_ids[r * k + n_rt] = (uint32_t) n_exp; /* the shared expert */
@@ -442,6 +509,8 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     j->d                = d;
     j->inter            = ctx->inter;
     j->n_exp            = slots;
+    j->n_routed         = n_exp;
+    j->act              = st->config.moe_act;
     j->n_active         = 0;
     j->n_hot            = 0;
     j->layer            = (size_t) ctx->layer_idx;

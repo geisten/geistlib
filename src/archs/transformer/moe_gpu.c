@@ -281,9 +281,17 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
     const struct geist_backend_vtbl  *gv      = gbe->desc->vtbl;
     const struct geist_backend_fused *gf      = gbe->desc->fused;
     const bool                        verbose = geist_env_flag("GEIST_VERBOSE", false);
-    if (n_exp == 0 || st->layers[0].moe_gate_w == nullptr || gv->resolve_weight == nullptr ||
-        gv->buffer_copy == nullptr || gf == nullptr || gf->linear_t == nullptr ||
-        gf->silu_mul == nullptr) {
+    /* The GPU's expert kernels run silu(gate) * up without biases, weighted
+     * by softmax routing: a router or expert FFN of another kind (GPT-OSS,
+     * #243) keeps every expert on the CPU. */
+    const struct transformer_layer_weights *Lb = &st->layers[0];
+    const bool                              plain =
+            (st->config.moe_gating == 0 || st->config.moe_gating == GEIST_MOE_GATING_SOFTMAX) &&
+            st->config.moe_act == GEIST_MOE_ACT_SWIGLU && Lb->moe_router_b == nullptr &&
+            Lb->moe_gate_b == nullptr && Lb->moe_up_b == nullptr && Lb->moe_down_b == nullptr;
+    if (!plain || n_exp == 0 || st->layers[0].moe_gate_w == nullptr ||
+        gv->resolve_weight == nullptr || gv->buffer_copy == nullptr || gf == nullptr ||
+        gf->linear_t == nullptr || gf->silu_mul == nullptr) {
         if (verbose) {
             fprintf(stderr, "geist: moe: %s cannot run experts; all on the CPU\n", gbe->desc->name);
         }
