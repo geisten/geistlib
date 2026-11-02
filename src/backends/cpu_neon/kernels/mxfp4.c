@@ -16,6 +16,7 @@
 #include "quant_blocks.h"
 
 #include <stddef.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -40,33 +41,133 @@ mxfp4_block_s8(const struct block_mxfp4_t *blk, int8x16_t kv, int8x16_t *lo, int
     *hi                = vqtbl1q_s8(kv, vshrq_n_u8(q, 4));
 }
 
-/* One token's dot with one row: float lanes accumulate d_w * d_x * idot
- * per block, summed across lanes at the end. */
+/* A block's integer dot with 32 int8 activations, as 4 partial lanes. */
+static inline __attribute__((always_inline)) int32x4_t mxfp4_idot(int8x16_t     lo,
+                                                                  int8x16_t     hi,
+                                                                  const int8_t *x) {
+    return vdotq_s32(vdotq_s32(vdupq_n_s32(0), vld1q_s8(x), lo), vld1q_s8(x + 16), hi);
+}
+
+/* One block group's float factors: 2^(e - 128) of each of the 4 blocks
+ * times its activation scale. */
+static inline __attribute__((always_inline)) float32x4_t
+mxfp4_scales4(const struct block_mxfp4_t *blk, const float *xs) {
+    const float sc[4] = {mxfp4_e8m0_half(blk[0].e) * xs[0],
+                         mxfp4_e8m0_half(blk[1].e) * xs[1],
+                         mxfp4_e8m0_half(blk[2].e) * xs[2],
+                         mxfp4_e8m0_half(blk[3].e) * xs[3]};
+    return vld1q_f32(sc);
+}
+
+/* The four blocks' integer sums [s0, s1, s2, s3] from their partials. */
+static inline __attribute__((always_inline)) int32x4_t mxfp4_sum4(int32x4_t d0,
+                                                                  int32x4_t d1,
+                                                                  int32x4_t d2,
+                                                                  int32x4_t d3) {
+    return vpaddq_s32(vpaddq_s32(d0, d1), vpaddq_s32(d2, d3));
+}
+
+/* One token's dot with one row. Blocks go in groups of 4: their integer
+ * sums gathered into one vector, converted once and scaled by a vector of
+ * their factors; the nb % 4 tail blocks into a scalar. The prefill below
+ * repeats exactly these operations per token. */
 static inline __attribute__((always_inline)) float
 mxfp4_row_dot(size_t nb, const struct block_mxfp4_t *row, const int8_t *xq, const float *xs) {
     const int8x16_t kv  = vld1q_s8(kvalues_mxfp4);
     float32x4_t     acc = vdupq_n_f32(0.0f);
-    for (size_t b = 0; b < nb; b++) {
+    size_t          b   = 0;
+    for (; b + 4 <= nb; b += 4) {
+        int8x16_t l0, h0, l1, h1, l2, h2, l3, h3;
+        mxfp4_block_s8(&row[b], kv, &l0, &h0);
+        mxfp4_block_s8(&row[b + 1], kv, &l1, &h1);
+        mxfp4_block_s8(&row[b + 2], kv, &l2, &h2);
+        mxfp4_block_s8(&row[b + 3], kv, &l3, &h3);
+        const int8_t   *x = xq + 32 * b;
+        const int32x4_t s = mxfp4_sum4(mxfp4_idot(l0, h0, x),
+                                       mxfp4_idot(l1, h1, x + 32),
+                                       mxfp4_idot(l2, h2, x + 64),
+                                       mxfp4_idot(l3, h3, x + 96));
+        acc               = vfmaq_f32(acc, vcvtq_f32_s32(s), mxfp4_scales4(&row[b], xs + b));
+    }
+    float tail = 0.0f;
+    for (; b < nb; b++) {
         int8x16_t lo, hi;
         mxfp4_block_s8(&row[b], kv, &lo, &hi);
-        int32x4_t dot = vdotq_s32(vdupq_n_s32(0), vld1q_s8(xq + 32 * b), lo);
-        dot           = vdotq_s32(dot, vld1q_s8(xq + 32 * b + 16), hi);
-        acc           = vmlaq_n_f32(acc, vcvtq_f32_s32(dot), mxfp4_e8m0_half(row[b].e) * xs[b]);
+        tail = fmaf(mxfp4_e8m0_half(row[b].e) * xs[b],
+                    (float) vaddvq_s32(mxfp4_idot(lo, hi, xq + 32 * b)),
+                    tail);
     }
-    return vaddvq_f32(acc);
+    return vaddvq_f32(acc) + tail;
+}
+
+/* Two rows against one token: the activation blocks loaded once for both,
+ * per row mxfp4_row_dot's operations in its order (the same bits). */
+static inline __attribute__((always_inline)) void mxfp4_row2_dot(size_t                      nb,
+                                                                 const struct block_mxfp4_t *r0,
+                                                                 const struct block_mxfp4_t *r1,
+                                                                 const int8_t               *xq,
+                                                                 const float                *xs,
+                                                                 float                      *y0,
+                                                                 float                      *y1) {
+    const int8x16_t kv = vld1q_s8(kvalues_mxfp4);
+    float32x4_t     a0 = vdupq_n_f32(0.0f), a1 = a0;
+    size_t          b = 0;
+    for (; b + 4 <= nb; b += 4) {
+        const int8_t   *x   = xq + 32 * b;
+        const int8x16_t xa0 = vld1q_s8(x), xb0 = vld1q_s8(x + 16), xa1 = vld1q_s8(x + 32),
+                        xb1 = vld1q_s8(x + 48), xa2 = vld1q_s8(x + 64), xb2 = vld1q_s8(x + 80),
+                        xa3 = vld1q_s8(x + 96), xb3 = vld1q_s8(x + 112);
+        int32x4_t       d[2][4];
+        for (size_t r = 0; r < 2; r++) {
+            const struct block_mxfp4_t *row = r == 0 ? r0 : r1;
+            int8x16_t                   lo, hi;
+            mxfp4_block_s8(&row[b], kv, &lo, &hi);
+            d[r][0] = vdotq_s32(vdotq_s32(vdupq_n_s32(0), xa0, lo), xb0, hi);
+            mxfp4_block_s8(&row[b + 1], kv, &lo, &hi);
+            d[r][1] = vdotq_s32(vdotq_s32(vdupq_n_s32(0), xa1, lo), xb1, hi);
+            mxfp4_block_s8(&row[b + 2], kv, &lo, &hi);
+            d[r][2] = vdotq_s32(vdotq_s32(vdupq_n_s32(0), xa2, lo), xb2, hi);
+            mxfp4_block_s8(&row[b + 3], kv, &lo, &hi);
+            d[r][3] = vdotq_s32(vdotq_s32(vdupq_n_s32(0), xa3, lo), xb3, hi);
+        }
+        a0 = vfmaq_f32(a0,
+                       vcvtq_f32_s32(mxfp4_sum4(d[0][0], d[0][1], d[0][2], d[0][3])),
+                       mxfp4_scales4(&r0[b], xs + b));
+        a1 = vfmaq_f32(a1,
+                       vcvtq_f32_s32(mxfp4_sum4(d[1][0], d[1][1], d[1][2], d[1][3])),
+                       mxfp4_scales4(&r1[b], xs + b));
+    }
+    float t0 = 0.0f, t1 = 0.0f;
+    for (; b < nb; b++) {
+        int8x16_t lo, hi;
+        mxfp4_block_s8(&r0[b], kv, &lo, &hi);
+        t0 = fmaf(mxfp4_e8m0_half(r0[b].e) * xs[b],
+                  (float) vaddvq_s32(mxfp4_idot(lo, hi, xq + 32 * b)),
+                  t0);
+        mxfp4_block_s8(&r1[b], kv, &lo, &hi);
+        t1 = fmaf(mxfp4_e8m0_half(r1[b].e) * xs[b],
+                  (float) vaddvq_s32(mxfp4_idot(lo, hi, xq + 32 * b)),
+                  t1);
+    }
+    *y0 = vaddvq_f32(a0) + t0;
+    *y1 = vaddvq_f32(a1) + t1;
 }
 
 static void mxfp4_decode_rows(void *ctx, size_t n0, size_t n1) {
     const struct mxfp4_rows_job *job = ctx;
-    for (size_t n = n0; n < n1; n++) {
-        const struct block_mxfp4_t *row = job->w + n * job->nb;
-        if (n + 1 < n1)
-            __builtin_prefetch(row + job->nb, 0, 0);
-        job->y[n] = mxfp4_row_dot(job->nb, row, job->x_q8, job->x_scales);
+    const size_t                 nb  = job->nb;
+    size_t                       n   = n0;
+    for (; n + 2 <= n1; n += 2) {
+        const struct block_mxfp4_t *row = job->w + n * nb;
+        __builtin_prefetch(row + 2 * nb, 0, 0);
+        mxfp4_row2_dot(nb, row, row + nb, job->x_q8, job->x_scales, &job->y[n], &job->y[n + 1]);
     }
+    if (n < n1)
+        job->y[n] = mxfp4_row_dot(nb, job->w + n * nb, job->x_q8, job->x_scales);
 }
 
-/* Output rows [n0, n1) for all m tokens, 4 tokens per decoded block. */
+/* Output rows [n0, n1) for all m tokens: each group of 4 blocks decoded
+ * once for 4 tokens, each token through mxfp4_row_dot's operations. */
 static void mxfp4_prefill_rows(void *ctx, size_t n0, size_t n1) {
     const struct mxfp4_rows_job *job = ctx;
     const size_t                 nb = job->nb, n_in = job->n_in, n_out = job->n_out, m = job->m;
@@ -75,31 +176,40 @@ static void mxfp4_prefill_rows(void *ctx, size_t n0, size_t n1) {
         const struct block_mxfp4_t *row = job->w + n * nb;
         size_t                      t0  = 0;
         for (; t0 + 4 <= m; t0 += 4) {
-            float32x4_t   a0 = vdupq_n_f32(0.0f), a1 = a0, a2 = a0, a3 = a0;
-            const int8_t *x0 = job->x_q8 + t0 * n_in;
-            const float  *s0 = job->x_scales + t0 * nb;
-            for (size_t b = 0; b < nb; b++) {
+            float32x4_t a[4] = {
+                    vdupq_n_f32(0.0f), vdupq_n_f32(0.0f), vdupq_n_f32(0.0f), vdupq_n_f32(0.0f)};
+            size_t b = 0;
+            for (; b + 4 <= nb; b += 4) {
+                int8x16_t l0, h0, l1, h1, l2, h2, l3, h3;
+                mxfp4_block_s8(&row[b], kv, &l0, &h0);
+                mxfp4_block_s8(&row[b + 1], kv, &l1, &h1);
+                mxfp4_block_s8(&row[b + 2], kv, &l2, &h2);
+                mxfp4_block_s8(&row[b + 3], kv, &l3, &h3);
+                for (size_t t = 0; t < 4; t++) {
+                    const int8_t   *x = job->x_q8 + (t0 + t) * n_in + 32 * b;
+                    const int32x4_t s = mxfp4_sum4(mxfp4_idot(l0, h0, x),
+                                                   mxfp4_idot(l1, h1, x + 32),
+                                                   mxfp4_idot(l2, h2, x + 64),
+                                                   mxfp4_idot(l3, h3, x + 96));
+                    a[t] = vfmaq_f32(a[t],
+                                     vcvtq_f32_s32(s),
+                                     mxfp4_scales4(&row[b], job->x_scales + (t0 + t) * nb + b));
+                }
+            }
+            float tail[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            for (; b < nb; b++) {
                 int8x16_t lo, hi;
                 mxfp4_block_s8(&row[b], kv, &lo, &hi);
-                const float   d  = mxfp4_e8m0_half(row[b].e);
-                const int8_t *x  = x0 + 32 * b;
-                int32x4_t     q0 = vdotq_s32(vdupq_n_s32(0), vld1q_s8(x), lo);
-                int32x4_t     q1 = vdotq_s32(vdupq_n_s32(0), vld1q_s8(x + n_in), lo);
-                int32x4_t     q2 = vdotq_s32(vdupq_n_s32(0), vld1q_s8(x + 2 * n_in), lo);
-                int32x4_t     q3 = vdotq_s32(vdupq_n_s32(0), vld1q_s8(x + 3 * n_in), lo);
-                q0               = vdotq_s32(q0, vld1q_s8(x + 16), hi);
-                q1               = vdotq_s32(q1, vld1q_s8(x + n_in + 16), hi);
-                q2               = vdotq_s32(q2, vld1q_s8(x + 2 * n_in + 16), hi);
-                q3               = vdotq_s32(q3, vld1q_s8(x + 3 * n_in + 16), hi);
-                a0               = vmlaq_n_f32(a0, vcvtq_f32_s32(q0), d * s0[b]);
-                a1               = vmlaq_n_f32(a1, vcvtq_f32_s32(q1), d * s0[nb + b]);
-                a2               = vmlaq_n_f32(a2, vcvtq_f32_s32(q2), d * s0[2 * nb + b]);
-                a3               = vmlaq_n_f32(a3, vcvtq_f32_s32(q3), d * s0[3 * nb + b]);
+                const float d = mxfp4_e8m0_half(row[b].e);
+                for (size_t t = 0; t < 4; t++) {
+                    const int8_t *x = job->x_q8 + (t0 + t) * n_in + 32 * b;
+                    tail[t]         = fmaf(d * job->x_scales[(t0 + t) * nb + b],
+                                           (float) vaddvq_s32(mxfp4_idot(lo, hi, x)),
+                                           tail[t]);
+                }
             }
-            job->y[t0 * n_out + n]       = vaddvq_f32(a0);
-            job->y[(t0 + 1) * n_out + n] = vaddvq_f32(a1);
-            job->y[(t0 + 2) * n_out + n] = vaddvq_f32(a2);
-            job->y[(t0 + 3) * n_out + n] = vaddvq_f32(a3);
+            for (size_t t = 0; t < 4; t++)
+                job->y[(t0 + t) * n_out + n] = vaddvq_f32(a[t]) + tail[t];
         }
         for (; t0 < m; t0++)
             job->y[t0 * n_out + n] =

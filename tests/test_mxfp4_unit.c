@@ -20,7 +20,8 @@
  *      plus 2e-5 of sum |w x| for fp32 accumulation. Every output must be
  *      written. n_in 32, 2880 (GPT-OSS's width) and 4096; n_out 37.
  *      cpu_x86 and cpu_neon must bind kernels of their own, not keep
- *      cpu_scalar's reference.
+ *      cpu_scalar's reference. cpu_neon's prefill gives each token the
+ *      GEMV's bits (its contract in quant.h).
  *
  * Deterministic, no model needed.
  */
@@ -289,6 +290,24 @@ static int check_backend(const char *name) {
                          n_in,
                          m);
                 fails += geist_expect(count_over_bound(n_out, n_in, m, W, x, y) == 0, what);
+                /* GEIST_MXFP4_NATIVE_MN=0 puts prefill on dequant + SGEMM. */
+                const char *nat = getenv("GEIST_MXFP4_NATIVE_MN");
+                if (strcmp(name, "cpu_neon") == 0 && (nat == nullptr || nat[0] != '0')) {
+                    float *y1 = xmalloc(n_out * sizeof(float));
+                    bool   eq = true;
+                    for (size_t t = 0; t < m && eq; t++) {
+                        w.linear_m1(x + t * n_in, &w, be, y1);
+                        eq = memcmp(y1, y + t * n_out, n_out * sizeof(float)) == 0;
+                    }
+                    free(y1);
+                    snprintf(what,
+                             sizeof what,
+                             "%s n_in=%zu m=%zu: each token's row is the GEMV's bits",
+                             name,
+                             n_in,
+                             m);
+                    fails += geist_expect(eq, what);
+                }
             }
         }
         if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0) {
