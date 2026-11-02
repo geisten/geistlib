@@ -230,7 +230,7 @@ static void permute_rows(const struct transformer_arch_state *st,
  * one host allocation for permuted rows outside the arena. */
 static size_t rope_il_rows_capacity(struct gguf_ctx *gguf) {
     static const char *const suffixes[] = {
-            ".attn_q.weight", ".attn_k.weight", ".attn_kv_a_mqa.weight"};
+            ".attn_q.weight", ".attn_k.weight", ".attn_q_b.weight", ".attn_kv_a_mqa.weight"};
     size_t       total = 0;
     const size_t n     = gguf_tensor_count(gguf);
     for (size_t i = 0; i < n; i++) {
