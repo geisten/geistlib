@@ -295,7 +295,8 @@ static bool moe_expert_rows(const struct moe_job *j, size_t e, size_t row0, size
             u[r * inter + i] += ub[i];
     if (j->act == GEIST_MOE_ACT_SWIGLU_OAI) {
         /* llama.cpp's ggml_swiglu_oai, alpha 1.702, limit 7. */
-        constexpr float alpha = 1.702f, limit = 7.0f;
+        constexpr float alpha = 1.702f;
+        constexpr float limit = 7.0f;
         for (size_t i = 0; i < m * inter; i++) {
             const float gc = g[i] < limit ? g[i] : limit;
             const float uc = u[i] < -limit ? -limit : u[i] > limit ? limit : u[i];
