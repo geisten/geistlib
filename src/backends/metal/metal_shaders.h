@@ -1374,14 +1374,6 @@ static const char metal_mm_tc_q3k_source[] = GEIST_METAL_MM_TC_KERNEL("q3k", "bq
 static const char metal_mm_tc_iq3s_source[] =
         GEIST_METAL_MM_TC_KERNEL("iq3s", "biq3s", "dqiq3s", "16");
 static const char metal_mm_tc_pq2_source[] = GEIST_METAL_MM_TC_KERNEL("pq2", "bpq2", "dqpq2", "8");
-/* F32 weights (Gemma's PLE projections) as 16-float blocks, rounded to
- * half on the way into threadgroup memory as llama.cpp's tensor mul_mm
- * does; the activations stay float. */
-static const char metal_mm_tc_f32_source[] =
-        "struct bf32{float v[16];};\n"
-        "static inline void dqf32(device const bf32*b,short il,thread half4x4&r){(void)il;"
-        "for(short i=0;i<16;i++)r[i/4][i%4]=half(b->v[i]);}\n" GEIST_METAL_MM_TC_KERNEL(
-                "f32", "bf32", "dqf32", "1");
 
 /* Tensor-API prefill flash attention (#314): llama.cpp's
  * kernel_flash_attn_ext_tensor on geist's flash parameters and cache

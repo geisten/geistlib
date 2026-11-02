@@ -1032,21 +1032,6 @@ static void metal_encode_f32_matmul(struct metal_state            *st,
     /* A few rows of a narrow matrix (DeltaNet beta/alpha: 48 outputs) would
      * leave the 8x8 GEMM n_out/8 threadgroups; the reduction kernel spreads
      * every output over a threadgroup instead (#192). */
-    /* On the matrix units (#314): F32 weights rounded to half per tile. */
-    if (params->rows >= 8u && w->dtype == GEIST_DTYPE_F32 && st->f32_mm_tc_pipeline != nullptr &&
-        params->n_in % 16u == 0u) {
-        const struct metal_q4k_params tp = {.n_in           = params->n_in,
-                                            .n_out          = params->n_out,
-                                            .rows           = params->rows,
-                                            .blocks_per_row = params->n_in / 16u,
-                                            .x_offset       = params->x_offset,
-                                            .w_byte_offset  = params->w_offset * 4u,
-                                            .y_offset       = params->y_offset,
-                                            .x_row_stride   = params->x_row_stride,
-                                            .y_row_stride   = params->y_row_stride};
-        metal_encode_mm_tc(st, enc, st->f32_mm_tc_pipeline, x, w, y, &tp);
-        return;
-    }
     const bool narrow_few = params->rows <= 8u && params->n_out < 1024u;
     const bool use_sg     = params->rows > 1u && sg_pipe != nullptr && !narrow_few;
     const bool use_mm     = use_sg && w->dtype == GEIST_DTYPE_F32 &&
