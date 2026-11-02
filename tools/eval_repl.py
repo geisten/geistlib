@@ -15,8 +15,8 @@ TOK_TEXT_CAP = 65536  # eval_geist unescapes TOK text into a buffer of this many
 
 class EvalRepl:
     """`command` returns the fields after "OK" and raises RuntimeError on
-    anything else; `bos` is the model's BOS id, or None when its metadata says
-    not to add one; `startup_ms` is the time to READY."""
+    anything else; `bos` is the model's BOS id, or None when the model adds none
+    (geist_model_add_bos: the GGUF metadata resolved as llama.cpp does, #385); `startup_ms` is the time to READY."""
 
     def __init__(self, binary, model, log: Path | None = None, args: list[str] = ()):
         self.log = log.open("w") if log is not None else None
