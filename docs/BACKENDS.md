@@ -149,8 +149,8 @@ limit fails the load.
 | `GEIST_MOE_HOT=<n>` | exactly n experts with a GPU copy, past the memory budget (tests, measurements; 0 = none) |
 | `GEIST_MOE_STAGE=0` | a mixture of experts on a discrete GPU keeps every cold expert of a prefill step on the CPU instead of copying those with many rows to the GPU (#239, default on; docs/OFFLOAD.md "Cold experts staged for prefill") |
 | `GEIST_MOE_STAGE_M_MIN=<rows>` | the rows from which a prefill step copies a cold expert to the GPU, instead of the threshold measured at load (`GEIST_VERBOSE` prints it); `0` = off |
-| `GEIST_MOE_STAGE_MAX=<n>` | the most cold experts a prefill step copies (default 16, at most 64); their slots come out of the hot experts' VRAM |
-| `GEIST_MOE_STAGE_HOST=<MiB>` | host memory for the cold experts' copies on the GPU backend, which the staging copies from (default: a quarter of the host's memory; the rest stay CPU-only) |
+| `GEIST_MOE_STAGE_MAX=<n>` | the most cold experts a prefill step copies (default 16, at most 64); their slots come out of the planner's VRAM headroom, past 256 MiB out of the hot experts |
+| `GEIST_MOE_STAGE_HOST=<MiB>` | host memory for the cold experts' copies on the GPU backend, which the staging copies from (default: 4 GiB, or a quarter of the host's memory if less; the profile's hottest cold experts first, the rest stay CPU-only) |
 | `GEIST_MOE_DEVICE=0` | a mixture of experts whose every expert is on the GPU keeps routing its decode steps on the host instead of on the device (#201: `fused->moe_route`, `linear_t_ids`, `moe_weighted_sum`; Metal) |
 | `GEIST_MOE_GPU_ROUTE=0` | a mixture of experts split between a discrete GPU and the CPU keeps routing its decode steps on the host instead of on the GPU (#162: the GPU ranks the router's experts as the host does, `fused->moe_route`, and starts the hot ones by id, `linear_t_sel`, while the host waits for the router alone, `submit_mark` / `map_marked`, and runs the cold ones; Vulkan) |
 | `GEIST_VK_STREAM_ASYNC=0` | copy streamed weights in the compute batch instead of on the GPU's transfer-only queue (default: on where the device has one), see Memory |

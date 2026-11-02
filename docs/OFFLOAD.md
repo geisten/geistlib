@@ -654,7 +654,8 @@ chunk, 55 % to experts with more than 32.
 
 **What.** Each cold expert gets a host copy on the GPU backend at load
 (`GEIST_W_HOST`: Vulkan keeps it in pinned host memory), in profile order,
-as many as a quarter of the host's memory holds. A prefill step
+in 4 GiB (or a quarter of the host's memory if less;
+`GEIST_MOE_STAGE_HOST` sets it, see the budget below). A prefill step
 (`blk_moe_ffn`, `seq > 1`, the model on the GPU) copies the cold experts
 with at least `stage_m_min` rows, at most 16 of them, the most rows first,
 into VRAM staging slots (`fused->stage_weights`) and runs them in the same
@@ -696,38 +697,66 @@ between loads (Qwen3-30B-A3B above), as the hot set already depends on the
 free VRAM at load. `GEIST_MOE_STAGE_M_MIN=<rows>` pins it, `0` or
 `GEIST_MOE_STAGE=0` turns staging off.
 
-**Results** (RTX 2080 Ti + 9950X, the 2,726-token request, 128 decoded
-tokens, 3 interleaved cycles each against main built from the same base,
-under the desktop lease at load < 3; Strata from runs 1839/1842/1930):
+**Host budget.** The host copies are pinned memory, so the default does
+not take every cold expert: Qwen3.6-35B-A3B has 6,386 of them (11.7 GB),
+Qwen3-30B-A3B 3,333 (9.1 GB). The profile's hottest cold experts come first,
+and prefill tok/s grows with the budget (2 interleaved cycles each):
 
-| | prefill tok/s | decode tok/s |
-|:--|--:|--:|
-| Strata, MTP off (Qwen3.6-35B-A3B, CUDA) | 605 | 62.0-62.2 |
-| Qwen3.6-35B-A3B, main | 808 / 799 / 793 | 76.3 / 74.9 / 76.4 |
-| **Qwen3.6-35B-A3B, staged (threshold 32)** | **915 / 937 / 921** | 72.7 / 76.1 / 74.9 |
-| Qwen3-30B-A3B, main | 726 / 695 / 692 | 63.8 / 62.9 / 61.9 |
-| **Qwen3-30B-A3B, staged (threshold 64)** | **847 / 830 / 828** | 65.1 / 61.1 / 62.4 |
+| `GEIST_MOE_STAGE_HOST` | off | 1 GiB | 2 GiB | 3 GiB | **4 GiB** | 6 GiB | all |
+|:--|--:|--:|--:|--:|--:|--:|--:|
+| Qwen3.6-35B-A3B | 789 | 799 | 836 | 828 | **869** | 882 | 930 |
+| share of the gain | | 7 % | 33 % | 28 % | **57 %** | 66 % | 100 % |
+| Qwen3-30B-A3B | 709 | 744 | 785 | 819 | **825** | 835 | 836 |
+| share of the gain | | 28 % | 60 % | 87 % | **91 %** | 99 % | 100 % |
 
-- Prefill +15 % (Qwen3.6-35B-A3B; 1.52x Strata) and +19 % (Qwen3-30B-A3B).
-  A step stages ~12 experts on average (2,827 in the 240 layer steps of a
-  2,726-token prefill of Qwen3.6-35B-A3B, 5.4 GB copied, ~0.42 s of copy
-  engine time hidden behind the GEMMs).
-- Decode within the run's resolution: medians 74.9 / 76.3 and 62.4 / 62.9;
-  an earlier run of the same design read 76.2 / 76.0 and 65.0 / 63.4.
-- Perplexity (`bench_nll`, `GEIST_NLL_PREFILL=1`: 2,047 tokens of this file
-  prefilled in 512-row chunks, the next 1,023 scored): 7.9301 → 7.9279 and
-  11.4102 → 11.3878. The staged experts run in F32 accumulation on the GPU
-  instead of the CPU's W8A8.
+The default is 4 GiB, the knee for Qwen3-30B-A3B. Qwen3.6-35B-A3B's profile
+(a decode trace of another corpus) predicts which of its many small cold
+experts a prefill stages less well, so it keeps 57 %; more needs
+`GEIST_MOE_STAGE_HOST`. VmRSS counts the pinned copies twice (the driver's
+and geist's mapping of the same pages; `rssprobe.c` in the raw data: 2,000
+MiB of host weights, MemAvailable −1,985 MiB, PSS +2,002 MiB, VmRSS +4,002
+MiB), so peak RSS below grows by twice the budget while the host loses it
+once.
+
+**Results with the default** (RTX 2080 Ti + 9950X, the 2,726-token request,
+128 decoded tokens, 4 interleaved cycles against staging off on the same
+binary, under the desktop lease; one CI coverage job was still running on
+one core, so both columns read a little low; Strata from runs
+1839/1842/1930):
+
+| | prefill tok/s | decode tok/s | peak VmRSS |
+|:--|--:|--:|--:|
+| Strata, MTP off (Qwen3.6-35B-A3B, CUDA) | 605 | 62.0-62.2 | |
+| Qwen3.6-35B-A3B, staging off | 795 / 797 / 800 / 756 | 77.9 / 76.5 / 77.7 / 77.6 | 15.6 GB |
+| **Qwen3.6-35B-A3B, default (4 GiB)** | **856 / 866 / 793 / 867** | 77.2 / 77.9 / 78.3 / 78.6 | 23.3 GB |
+| Qwen3-30B-A3B, staging off | 689 / 668 / 697 / 647 | 64.7 / 65.5 / 65.6 / 64.9 | 14.1 GB |
+| **Qwen3-30B-A3B, default (4 GiB)** | **810 / 830 / 814 / 809** | 64.9 / 65.5 / 64.7 / 68.2 | 18.5 GB |
+
+- Prefill +8 % (Qwen3.6-35B-A3B, median 861 against 796; 1.42x Strata) and
+  +20 % (Qwen3-30B-A3B, 812 against 679). With every cold expert copied
+  (`GEIST_MOE_STAGE_HOST` past the model's cold bytes) the earlier
+  acceptance run read 921 against main's 799 (+15 %, 1.52x Strata) and
+  830 against 695 (+19 %).
+- Decode unchanged: medians 78.1 / 77.6 and 65.2 / 65.2.
+- Perplexity unchanged (`bench_nll`, `GEIST_NLL_PREFILL=1`: the context
+  prefilled in 512-row chunks, the next 1,023 tokens scored; four windows
+  per model: tokens 1,024-2,048 and 2,048-3,072 of this file and of
+  `docs/ARCHITECTURE.md`): Qwen3.6-35B-A3B −0.28 to +0.11 % per window,
+  −0.08 % over the four; Qwen3-30B-A3B −0.36 to +0.49 % per window, +0.03 %
+  over the four. The staged experts run in F32 accumulation on the GPU
+  instead of the CPU's W8A8; the spread is the routing's sensitivity, not a
+  direction.
 - **VRAM**: 48 slots (16 experts) of the biggest projection, 864 KiB
   (Qwen3.6-35B-A3B, its Q6_K layers' down) and 1,296 KiB (Qwen3-30B-A3B):
-  40.5 and 60.8 MiB, which `moe_fit` takes from the hot experts: 3,917 →
-  3,894 (7,099 → 7,057 MiB, cover 79.6 → 79.4 %) and 2,833 → 2,811
-  (8,266 → 8,202 MiB, 88.8 → 88.6 %), about 0.6 % and 0.7 % of the hot-expert
-  capacity. 32 experts per step were no faster (931 against 926 tok/s)
-  and cost ~1 % decode.
-- **Host memory**: the host copies take 11.7 GB (6,386 experts) and 9.1 GB
-  (3,333); peak RSS 16.9 → 40.1 GB and 14.8 → 29.7 GB. Load time with the
-  file cached: unchanged within a second.
+  40.5 and 60.8 MiB, from the planner's 512 MiB headroom, so the hot set is
+  the same as with staging off (2,832 hot experts for Qwen3-30B-A3B either
+  way). Taken from the hot experts instead (the first version: 23 and 22
+  fewer, 0.6-0.7 % of the hot capacity) they cost Qwen3.6-35B-A3B 1.6 %
+  decode (77.8 against 79.1 tok/s with the hot count matched, 4 cycles).
+  32 experts per step were no faster than 16 (931 against 926 tok/s).
+- A step stages ~7-12 experts on average (Qwen3.6-35B-A3B: 1,701 of a
+  2,726-token prefill's 240 layer steps with the default, 2,806 with all
+  cold experts copied); the copies hide behind the GEMMs.
 - The first try, the existing streaming path (#79: each projection copied
   into one of two slots when its GEMM runs), lost: 578 tok/s, the copies
   and GEMMs serialized weight by weight.
@@ -749,8 +778,10 @@ patch for "single-backend runs pay nothing".
 - Pinned host memory for DMA: the GGUF mapping is pageable. Staging needs
   either a pinned bounce buffer (one extra memcpy, CPU-bound) or importing
   the mapping (`VK_EXT_external_memory_host`, alignment limits). #239 pays
-  with a second, pinned host copy of the cold experts (11.7 GB for
-  Qwen3.6-35B-A3B); copying from the CPU's own bytes is out while cpu_x86
-  repacks Q4_K into its own layout.
+  with a second, pinned host copy of the profile's hottest cold experts (4
+  GiB by default, 11.7 GB for all of Qwen3.6-35B-A3B's); copying from the
+  CPU's own bytes is out while cpu_x86 repacks Q4_K into its own layout.
+  A better predictor of a prefill's staged experts than the decode profile
+  would let 4 GiB keep more of Qwen3.6-35B-A3B's gain.
 - MoE concurrency: the CPU workers and the Vulkan host thread share cores; the
   OpenMP region (`parallel_region_begin`) has to leave one thread for submit.
