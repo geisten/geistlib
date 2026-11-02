@@ -15,6 +15,7 @@
 
 #include "gguf_tokenizer.h"
 #include "pair_merge.h"
+#include "unicode_class.h"
 
 #include "checked.h"
 #include "fnv1a.h"
@@ -359,6 +360,9 @@ static void build_spm_byte_map(struct gguf_tokenizer *tok) {
          * parity pinned per-family by the e2e tests). */
         tok->pre_qwen2 = pre != nullptr && ((pre_len == 5 && memcmp(pre, "qwen2", 5) == 0) ||
                                             (pre_len == 6 && memcmp(pre, "qwen35", 6) == 0));
+        /* llama.cpp runs one regex for both (LLAMA_VOCAB_PRE_TYPE_GPT4O, #243). */
+        tok->pre_gpt4o = pre != nullptr && ((pre_len == 6 && memcmp(pre, "gpt-4o", 6) == 0) ||
+                                            (pre_len == 6 && memcmp(pre, "llama4", 6) == 0));
     } else if (tok->n_merges > 0) {
         tok->mode = GGUF_TOK_MODE_SPM;
     } else if (tok->scores != nullptr) {
@@ -1214,6 +1218,160 @@ static size_t qwen2_chunk_end(const char *text, size_t tlen, size_t i) {
     return q2_punct_run_end(text, tlen, i); /* 4. no lead space */
 }
 
+/* ---- gpt-4o pretokenizer scanner (#243) -------------------------------- *
+ *
+ * tokenizer.ggml.pre "gpt-4o" (GPT-OSS's o200k_harmony) and "llama4". The
+ * regex llama.cpp runs for them (llama-vocab.cpp, LLAMA_VOCAB_PRE_TYPE_GPT4O;
+ * tokenizer.json's \p{Lu}/\p{Ll} classes rewritten as "a letter that is not
+ * a-z" / "a letter that is not A-Z"):
+ *
+ *   1. [^\r\n\p{L}\p{N}]?U*L+C?      U = letter not a-z, L = letter not A-Z,
+ *   2. [^\r\n\p{L}\p{N}]?U+L*C?      C = 's 't 're 've 'm 'll 'd (any case)
+ *   3. \p{N}{1,3}
+ *   4.  ?[^\s\p{L}\p{N}]+[\r\n/]*
+ *   5. \s*[\r\n]+
+ *   6. \s+(?!\S)
+ *   7. \s+
+ *
+ * taken in that order at each position, as std::regex does (first matching
+ * alternative, greedy with backtracking). It runs on llama.cpp's collapsed
+ * text, so this scanner classifies the way that text does: a non-ASCII
+ * letter is both U and L, a combining mark is neither letter nor number,
+ * and the letter / number / whitespace sets are llama.cpp's own
+ * (unicode_class.h; the whitespace list below). Hence "ÉCOLE" splits after
+ * É, as it does in llama.cpp (HF, with real case classes, keeps it whole). */
+enum g4_kind {
+    G4_OTHER, /* [^\s\p{L}\p{N}] */
+    G4_SPACE, /* \s other than \r \n */
+    G4_NL,    /* \r \n */
+    G4_UPPER, /* A-Z */
+    G4_LOWER, /* a-z */
+    G4_ALPHA, /* a non-ASCII letter: both U and L */
+    G4_DIGIT, /* \p{N} */
+};
+
+static enum g4_kind g4_kind_at(const char *text, size_t tlen, size_t i, size_t *adv) {
+    const uint32_t cp = q2_cp_at(text, tlen, i, adv);
+    if (cp < 0x80) {
+        if (cp == '\r' || cp == '\n')
+            return G4_NL;
+        if (cp == ' ' || cp == '\t' || cp == 0x0B || cp == 0x0C)
+            return G4_SPACE;
+        if (cp >= 'A' && cp <= 'Z')
+            return G4_UPPER;
+        if (cp >= 'a' && cp <= 'z')
+            return G4_LOWER;
+        return cp >= '0' && cp <= '9' ? G4_DIGIT : G4_OTHER;
+    }
+    if (cp == 0x85 || q2_is_ws(cp))
+        return G4_SPACE;
+    switch (unicode_class_of(cp)) {
+    case UNICODE_CLASS_LETTER:
+        return G4_ALPHA;
+    case UNICODE_CLASS_NUMBER:
+        return G4_DIGIT;
+    default:
+        return G4_OTHER;
+    }
+}
+
+static bool g4_is_u(enum g4_kind k) {
+    return k == G4_UPPER || k == G4_ALPHA;
+}
+static bool g4_is_l(enum g4_kind k) {
+    return k == G4_LOWER || k == G4_ALPHA;
+}
+static bool g4_is_letter(enum g4_kind k) {
+    return k == G4_UPPER || k == G4_LOWER || k == G4_ALPHA;
+}
+
+/* End of an optional contraction at j ('s 't 're 've 'm 'll 'd, any case). */
+static size_t g4_contraction_end(const char *text, size_t tlen, size_t j) {
+    if (j + 1 >= tlen || text[j] != '\'')
+        return j;
+    const char a = (char) (text[j + 1] | 0x20);
+    if (a == 's' || a == 't' || a == 'm' || a == 'd')
+        return j + 2;
+    if (j + 2 < tlen) {
+        const char b = (char) (text[j + 2] | 0x20);
+        if ((a == 'r' && b == 'e') || (a == 'v' && b == 'e') || (a == 'l' && b == 'l'))
+            return j + 3;
+    }
+    return j;
+}
+
+/* Alternatives 1 and 2 from the letter at s. */
+static size_t g4_letters_end(const char *text, size_t tlen, size_t s) {
+    /* U* greedy, remembering the last cp that is also an L. */
+    size_t j = s, last_l = SIZE_MAX, last_l_adv = 0, adv;
+    while (j < tlen) {
+        const enum g4_kind k = g4_kind_at(text, tlen, j, &adv);
+        if (!g4_is_u(k))
+            break;
+        if (g4_is_l(k))
+            last_l = j, last_l_adv = adv;
+        j += adv;
+    }
+    if (j < tlen && g4_is_l(g4_kind_at(text, tlen, j, &adv))) {
+        /* 1. L+ right after the whole U run. */
+        while (j < tlen && g4_is_l(g4_kind_at(text, tlen, j, &adv)))
+            j += adv;
+        return g4_contraction_end(text, tlen, j);
+    }
+    if (last_l != SIZE_MAX) /* 1. backtracked: U* ends before the last L of the run */
+        return g4_contraction_end(text, tlen, last_l + last_l_adv);
+    return g4_contraction_end(text, tlen, j); /* 2. U+ (j > s: s is a letter, not an L) */
+}
+
+size_t gguf_tokenizer_gpt4o_chunk_end(size_t tlen, size_t i, const char text[static tlen]) {
+    size_t             adv0, adv;
+    const enum g4_kind k0 = g4_kind_at(text, tlen, i, &adv0);
+
+    if (g4_is_letter(k0))
+        return g4_letters_end(text, tlen, i);
+    const bool         more = i + adv0 < tlen;
+    const enum g4_kind k1   = more ? g4_kind_at(text, tlen, i + adv0, &adv) : G4_NL;
+    /* 1./2. with the one-codepoint prefix [^\r\n\p{L}\p{N}]. */
+    if ((k0 == G4_OTHER || k0 == G4_SPACE) && more && g4_is_letter(k1))
+        return g4_letters_end(text, tlen, i + adv0);
+    if (k0 == G4_DIGIT) { /* 3. */
+        size_t j = i + adv0;
+        for (int n = 1; n < 3 && j < tlen && g4_kind_at(text, tlen, j, &adv) == G4_DIGIT; n++)
+            j += adv;
+        return j;
+    }
+    /* 4. punctuation run, after an optional ASCII space. */
+    size_t p = SIZE_MAX;
+    if (k0 == G4_OTHER)
+        p = i;
+    else if (text[i] == ' ' && more && k1 == G4_OTHER)
+        p = i + 1;
+    if (p != SIZE_MAX) {
+        while (p < tlen && g4_kind_at(text, tlen, p, &adv) == G4_OTHER)
+            p += adv;
+        while (p < tlen && (text[p] == '\r' || text[p] == '\n' || text[p] == '/'))
+            p++;
+        return p;
+    }
+    /* Whitespace (k0 is G4_SPACE or G4_NL). */
+    size_t j = i, last_nl_end = 0, n_cps = 0, last_start = i;
+    while (j < tlen) {
+        const enum g4_kind k = g4_kind_at(text, tlen, j, &adv);
+        if (k != G4_SPACE && k != G4_NL)
+            break;
+        if (k == G4_NL)
+            last_nl_end = j + adv;
+        last_start = j;
+        j += adv;
+        n_cps++;
+    }
+    if (last_nl_end > 0)
+        return last_nl_end; /* 5. */
+    if (j >= tlen || n_cps < 2)
+        return j;      /* 6. at the end, else 7. one codepoint */
+    return last_start; /* 6. the run but its last codepoint */
+}
+
 /* Merge-engine key for unigram: the joined piece's score, highest first.
  * The float's bits made to sort as unsigned (sign bit set: all bits
  * flipped; clear: sign bit set) and then reversed. -0 is made +0 first so
@@ -1414,7 +1572,8 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
     if (chunk_buf == nullptr)
         return false;
 
-    size_t i = 0;
+    size_t i            = 0;
+    size_t next_special = 0; /* gpt-4o: start of the next special after i */
     while (i < tlen) {
         /* Leftmost-longest special-token match at current position. The
          * specials array is sorted by len desc, so the first hit IS the
@@ -1433,6 +1592,41 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
         }
         if (matched_special)
             continue;
+
+        if (tok->pre_gpt4o) {
+            /* gpt-4o chunks run on the text up to the next special token,
+             * as llama.cpp splits on specials first and runs the regex on
+             * each fragment (a lookahead at the fragment's end sees the
+             * end). next_special stays valid until i passes it. */
+            if (next_special <= i) {
+                next_special = tlen;
+                for (size_t p = i + 1; p < tlen && next_special == tlen; p++) {
+                    for (size_t s = 0; s < tok->n_specials; s++) {
+                        const size_t slen = tok->specials[s].len;
+                        if (slen != 0 && slen <= tlen - p && text[p] == tok->specials[s].text[0] &&
+                            memcmp(text + p, tok->specials[s].text, slen) == 0) {
+                            next_special = p;
+                            break;
+                        }
+                    }
+                }
+            }
+            const size_t end     = gguf_tokenizer_gpt4o_chunk_end(next_special, i, text);
+            size_t       cb_used = 0;
+            for (size_t b = i; b < end; b++) {
+                uint32_t cp = gpt2_byte_to_codepoint((unsigned char) text[b]);
+                cb_used += utf8_encode_one(cp, chunk_buf + cb_used);
+            }
+            size_t produced = bpe_chunk_to_ids(
+                    tok, chunk_buf, cb_used, out_ids + *n_out, cap - *n_out, false);
+            if (produced == SIZE_MAX)
+                return false;
+            *n_out += produced;
+            i = end;
+            if (*n_out >= cap)
+                break;
+            continue;
+        }
 
         if (tok->pre_qwen2) {
             /* qwen2 pretokenizer chunk, clamped at the first embedded
