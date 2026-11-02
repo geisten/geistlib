@@ -84,6 +84,9 @@ static void block_geom(int dtype, size_t *elems, size_t *bytes) {
     case GEIST_DTYPE_IQ4_NL:
         *elems = 32u, *bytes = IQ4NL_BB;
         return;
+    case GEIST_DTYPE_MXFP4:
+        *elems = 32u, *bytes = MXFP4_BLOCK_BYTES;
+        return;
     case GEIST_DTYPE_IQ4_XS:
         *elems = K_BLOCK, *bytes = IQ4XS_BB;
         return;
@@ -128,7 +131,11 @@ static void fill_blob(uint8_t *dst, size_t n_in, size_t n_out, int dtype) {
             for (size_t i = 0; i < bb; i++) {
                 blk[i] = rng_u8();
             }
-            if (dtype == GEIST_DTYPE_PQ2_0) {
+            if (dtype == GEIST_DTYPE_MXFP4) {
+                /* e in 126..129: scale 2^-2 .. 2^1, a wrong block's scale
+                 * shows, and every weight stays exact in half. */
+                blk[0] = (uint8_t) (126u + (rng_u8() & 3u));
+            } else if (dtype == GEIST_DTYPE_PQ2_0) {
                 /* d in {0.5, 1, 2, 4} per block (exact in half), so a kernel
                  * reading the wrong block's scale shows; codes stay random,
                  * 3 = +2 included. */
@@ -1828,6 +1835,14 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_IQ4_NL, "IQ4NL", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_IQ4_NL, "IQ4NL", 512, 383, 4);
     run_case(mt, ref, GEIST_DTYPE_IQ4_NL, "IQ4NL", 512, 383, 33);
+    /* MXFP4 (#243): the IQ4_NL routes on 17-byte blocks; 2880 is GPT-OSS's
+     * expert width (90 blocks, rows not 4-byte aligned). */
+    run_case(mt, ref, GEIST_DTYPE_MXFP4, "MXFP4", 512, 383, 1);
+    run_case(mt, ref, GEIST_DTYPE_MXFP4, "MXFP4", 512, 383, 4);
+    run_case(mt, ref, GEIST_DTYPE_MXFP4, "MXFP4", 512, 383, 33);
+    run_case(mt, ref, GEIST_DTYPE_MXFP4, "MXFP4", 2880, 97, 1);
+    run_case(mt, ref, GEIST_DTYPE_MXFP4, "MXFP4", 2880, 97, 40);
+    run_case(mt, ref, GEIST_DTYPE_MXFP4, "MXFP4tiny", 512, 3, 1);
     run_case(mt, ref, GEIST_DTYPE_IQ4_XS, "IQ4XS", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_IQ4_XS, "IQ4XS", 512, 383, 4);
     run_case(mt, ref, GEIST_DTYPE_IQ4_XS, "IQ4XS", 512, 383, 33);

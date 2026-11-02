@@ -78,6 +78,14 @@ struct block_q5_0_t {
 } __attribute__((packed));
 _Static_assert(sizeof(struct block_q5_0_t) == Q5_0_BLOCK_BYTES, "struct block_q5_0_t size");
 
+/* Element j's code is the low nibble of qs[j], element j + 16's the high
+ * nibble; value = kvalues_mxfp4[code] * mxfp4_e8m0_half(e). */
+struct block_mxfp4_t {
+    uint8_t e; /* E8M0 shared exponent */
+    uint8_t qs[16];
+} __attribute__((packed));
+_Static_assert(sizeof(struct block_mxfp4_t) == MXFP4_BLOCK_BYTES, "struct block_mxfp4_t size");
+
 /* Element (h * 128 + l * 32 + k) is bits 2l..2l+1 of qs[h * 32 + k], h < 2,
  * l < 4, k < 32; the trit is that value minus 1. */
 struct block_tq2_0_t {

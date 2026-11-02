@@ -107,6 +107,15 @@ struct transformer_layer_weights {
     struct geist_tensor down_proj;      /* [HIDDEN, intermediate] */
     struct geist_tensor per_layer_gate; /* [HIDDEN_PER_LAYER, HIDDEN] */
     struct geist_tensor per_layer_proj; /* [HIDDEN, HIDDEN_PER_LAYER] */
+    /* Projection biases and attention sinks (GPT-OSS, #243), F32 DENSE;
+     * buffer == nullptr where the layer has none. q/k/v/o biases are added
+     * to the projection's rows; attn_sinks [n_q_heads] is a per-head logit
+     * that joins every query's softmax with a zero value row. */
+    struct geist_tensor q_bias;     /* [q_out] */
+    struct geist_tensor k_bias;     /* [kv_out] */
+    struct geist_tensor v_bias;     /* [kv_out] */
+    struct geist_tensor o_bias;     /* [HIDDEN] */
+    struct geist_tensor attn_sinks; /* [N_Q_HEADS] */
 
     /* ---- Pre-resolved kernels, one per projection. ---------------------- *
      * Filled at load time by the backend's resolve_weight; the forward
@@ -147,8 +156,13 @@ struct transformer_layer_weights {
      * moe_n_experts entries per projection, views into the GGUF's 3-D
      * ffn_{gate,up,down}_exps tensors (one buffer each, in bufs[]):
      * gate/up [intermediate, HIDDEN], down [HIDDEN, intermediate]. */
-    size_t               moe_n_experts;  /* entries in each expert array (routed + shared) */
-    float               *moe_shexp_gate; /* [HIDDEN], host: the shared expert's gate */
+    size_t moe_n_experts;  /* entries in each expert array (routed + shared) */
+    float *moe_shexp_gate; /* [HIDDEN], host: the shared expert's gate */
+    /* Biases, host, nullptr where the layer has none (GPT-OSS, #243): the
+     * router's [moe_n_experts] (added to its logits) and the routed
+     * experts' [moe_n_experts, intermediate] after gate and up and
+     * [moe_n_experts, HIDDEN] after down. */
+    float               *moe_router_b, *moe_gate_b, *moe_up_b, *moe_down_b;
     struct geist_tensor  moe_router;
     struct geist_weight  moe_router_w;
     struct geist_tensor *moe_gate, *moe_up, *moe_down;

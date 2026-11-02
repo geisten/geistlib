@@ -113,6 +113,9 @@ static void release_layer_weight_aux(struct transformer_layer_weights *L) {
         *views[p] = nullptr;
     }
     safe_free((void **) &L->moe_shexp_gate);
+    float **biases[] = {&L->moe_router_b, &L->moe_gate_b, &L->moe_up_b, &L->moe_down_b};
+    for (size_t i = 0; i < sizeof biases / sizeof biases[0]; i++)
+        safe_free((void **) biases[i]);
 }
 
 /* ---- Runtime infrastructure: KV caches, RoPE tables, scratch ---------- */
@@ -413,9 +416,36 @@ rope_row_widths(const struct transformer_arch_state *st, size_t *sl_width, size_
         geist_backend_set_error(be, GEIST_E_OOM, "transformer: RoPE table host alloc failed");
         return GEIST_E_OOM;
     }
-    rope_compute_at(
-            0, st->max_seq_len, sliding_hd, sliding_rot, pblock, sliding_th, cos_sl, sin_sl);
-    rope_compute_at(0, st->max_seq_len, full_hd, full_rot, pblock, full_th, cos_fl, sin_fl);
+    const struct geist_arch_config *c = &st->config;
+    if (c->rope_yarn_factor > 1.0f) {
+        /* YaRN (#243): full rotation only, which the family checked. */
+        rope_compute_yarn_at(0,
+                             st->max_seq_len,
+                             sliding_hd,
+                             sliding_th,
+                             c->rope_yarn_factor,
+                             c->rope_yarn_orig_ctx,
+                             c->rope_yarn_beta_fast,
+                             c->rope_yarn_beta_slow,
+                             c->rope_yarn_mscale,
+                             cos_sl,
+                             sin_sl);
+        rope_compute_yarn_at(0,
+                             st->max_seq_len,
+                             full_hd,
+                             full_th,
+                             c->rope_yarn_factor,
+                             c->rope_yarn_orig_ctx,
+                             c->rope_yarn_beta_fast,
+                             c->rope_yarn_beta_slow,
+                             c->rope_yarn_mscale,
+                             cos_fl,
+                             sin_fl);
+    } else {
+        rope_compute_at(
+                0, st->max_seq_len, sliding_hd, sliding_rot, pblock, sliding_th, cos_sl, sin_sl);
+        rope_compute_at(0, st->max_seq_len, full_hd, full_rot, pblock, full_th, cos_fl, sin_fl);
+    }
 
     enum geist_status s = upload_table(be, cos_sl, n_sl_floats, &st->rope_cos_sliding);
     if (s == GEIST_OK) {

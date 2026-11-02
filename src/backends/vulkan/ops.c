@@ -546,7 +546,8 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
             }
             [[fallthrough]];
         case GEIST_DTYPE_Q3_K:
-        case GEIST_DTYPE_Q5_0: /* no shader yet: the odd Q4_K_M tensor (#675) */
+        case GEIST_DTYPE_Q5_0:  /* no shader yet: the odd Q4_K_M tensor (#675) */
+        case GEIST_DTYPE_MXFP4: /* no shader yet: GPT-OSS's experts (#243) */
             return vk_resolve_host(be, w);
         default:
             geist_backend_set_error(be,
