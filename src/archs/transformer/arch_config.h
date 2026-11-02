@@ -262,6 +262,10 @@ struct geist_arch_config {
      * for the selection alone; the weights are the unbiased scores. */
     float  moe_w_scale;
     size_t moe_n_group, moe_topk_group;
+    /* Llama 4 (#244): a routed expert's input row is multiplied by its
+     * weight before the expert runs, and its output is summed unweighted
+     * (llama.cpp's weight_before_ffn). */
+    bool moe_weight_before;
     /* The expert FFN's activation (moe_expert_rows):
      *   SWIGLU      silu(gate) * up.
      *   SWIGLU_OAI  g = min(gate, limit), u = clamp(up, -limit, limit),

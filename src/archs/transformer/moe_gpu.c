@@ -443,13 +443,16 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
     const struct geist_backend_fused *gf      = gbe->desc->fused;
     const bool                        verbose = geist_env_flag("GEIST_VERBOSE", false);
     /* The GPU's expert kernels run silu(gate) * up without biases, weighted
-     * by softmax routing: a router or expert FFN of another kind (GPT-OSS,
-     * #243) keeps every expert on the CPU. */
+     * by softmax routing: a router or expert FFN of another kind (GPT-OSS
+     * #243, DeepSeek #242, Llama 4 #244) keeps every expert on the CPU. */
+    const struct geist_arch_config         *cf = &st->config;
     const struct transformer_layer_weights *Lb = &st->layers[0];
     const bool                              plain =
-            (st->config.moe_gating == 0 || st->config.moe_gating == GEIST_MOE_GATING_SOFTMAX) &&
-            st->config.moe_act == GEIST_MOE_ACT_SWIGLU && Lb->moe_router_b == nullptr &&
-            Lb->moe_gate_b == nullptr && Lb->moe_up_b == nullptr && Lb->moe_down_b == nullptr;
+            (cf->moe_gating == 0 || cf->moe_gating == GEIST_MOE_GATING_SOFTMAX) &&
+            cf->moe_act == GEIST_MOE_ACT_SWIGLU && !cf->moe_weight_before && cf->moe_n_group <= 1 &&
+            (cf->moe_w_scale == 0.0f || cf->moe_w_scale == 1.0f) && Lb->moe_router_b == nullptr &&
+            Lb->moe_sel_b == nullptr && Lb->moe_gate_b == nullptr && Lb->moe_up_b == nullptr &&
+            Lb->moe_down_b == nullptr;
     if (!plain || n_exp == 0 || st->layers[0].moe_gate_w == nullptr ||
         gv->resolve_weight == nullptr || gv->buffer_copy == nullptr || gf == nullptr ||
         gf->linear_t == nullptr || gf->silu_mul == nullptr) {

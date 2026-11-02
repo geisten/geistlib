@@ -67,9 +67,12 @@ struct transformer_layer_weights {
     size_t                      kv_out;         /* N_KV_HEADS * head_dim */
     size_t                      intermediate;   /* FFN inner dim — 12288 if kv_shared else 6144 */
     size_t                      sliding_window; /* 0 (unbounded) for full; 512 for sliding */
-    float                       rope_theta;     /* 1000000.0 for full; 10000.0 for sliding */
-    int                         n_rotated_dims; /* 128 for full; head_dim for sliding */
-    float                       layer_scalar;   /* per-layer output scale (scalar tensor) */
+    /* Chunked attention (Llama 4, #244): q at position p sees the keys of
+     * its own chunk, [p - p % attn_chunk, p]; 0 = none. */
+    size_t attn_chunk;
+    float  rope_theta;     /* 1000000.0 for full; 10000.0 for sliding */
+    int    n_rotated_dims; /* 128 for full; head_dim for sliding */
+    float  layer_scalar;   /* per-layer output scale (scalar tensor) */
 
     /* ---- Norm weights (always F32 DENSE). ----------------------------- */
     struct geist_tensor attn_norm;           /* [HIDDEN] */
@@ -755,6 +758,11 @@ struct transformer_arch_state {
     void  *rope_il_rows;
     size_t rope_il_rows_used;
     size_t rope_il_rows_capacity;
+    /* RoPE frequency factors (rope_freqs.weight, Llama 3 / 4, #244): pair i
+     * of a full rotation turns at theta^(-2i/d) / rope_freq_factors[i];
+     * nullptr = none. Host, [n_rope_freq_factors]; freed with the state. */
+    float *rope_freq_factors;
+    size_t n_rope_freq_factors;
     /* Matrices widened to F32 on a weights_device_copy backend
      * (per_layer_model_proj #658, a small half-precision projection #468):
      * plain host memory the backend copies to the device at resolve_weight,
