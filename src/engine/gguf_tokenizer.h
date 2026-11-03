@@ -17,6 +17,7 @@
 #include "gguf_reader.h"
 
 #include <geist.h>
+#include <geist_util.h>
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -162,13 +163,26 @@ struct gguf_tokenizer {
      * scan: at each text position try every special's exact string
      * first, and only fall through to byte-level BPE when none match.
      * Without this Llama3 specials like `<|begin_of_text|>` get
-     * shredded into `< | begin _ of _ text | >`. */
+     * shredded into `< | begin _ of _ text | >`.
+     *
+     * `user`: matched inside plain text as well (#409) — a USER_DEFINED(4)
+     * entry that is not control-looking, the ones llama.cpp still matches
+     * with special parsing off (parse_special=false skips CONTROL and
+     * UNKNOWN). specials[n_specials, n_specials + n_user_specials) repeats
+     * those entries in the same order, so a scan over plain text walks only
+     * them; one allocation holds both runs. */
     struct gguf_tokenizer_special {
         const char *text;
         size_t      len;
         int32_t     id;
+        bool        user;
     }     *specials;
     size_t n_specials;
+    size_t n_user_specials;
+    /* special_first[c]: bit 0 when a special token starts with byte c, bit 1
+     * when a `user` one does. Most text bytes start none, and the encoders
+     * skip the scan there. */
+    uint8_t special_first[256];
 };
 
 /* Load token table + special-ID metadata. Allocates two pointer
@@ -291,5 +305,23 @@ size_t gguf_tokenizer_decode(
                                                       size_t                       cap,
                                                       int32_t                     *out_ids,
                                                       size_t                      *n_out);
+
+/* gguf_tokenizer_encode with special-token parsing off inside n_plain byte
+ * ranges of text (#409; geist_session_tokenize_plain). A special token is
+ * matched where it lies wholly outside them; inside them only the `user`
+ * ones are (llama.cpp's parse_special=false), so a "<|im_start|>" there is
+ * encoded as text. The text is still encoded in one pass: the pretokenizer
+ * and the merges see it as they would with no special in the ranges, so a
+ * text whose ranges spell none encodes exactly as gguf_tokenizer_encode
+ * encodes it. The ranges are ascending and disjoint (plain[k].end <=
+ * plain[k+1].begin) and within strlen(text); GEIST_E_INVALID_ARG otherwise,
+ * and for plain null with n_plain > 0. n_plain 0 is gguf_tokenizer_encode. */
+[[nodiscard]] enum geist_status gguf_tokenizer_encode_plain(const struct gguf_tokenizer   *tok,
+                                                            const char                    *text,
+                                                            size_t                         n_plain,
+                                                            const struct geist_text_range *plain,
+                                                            size_t                         cap,
+                                                            int32_t                       *out_ids,
+                                                            size_t                        *n_out);
 
 #endif /* GEIST_INTERNAL_ENGINE_GGUF_TOKENIZER_H */

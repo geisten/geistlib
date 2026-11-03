@@ -96,6 +96,14 @@ static enum geist_status (*const c_truncate)(struct geist_session *,
 static enum geist_status (*const c_kv_bytes)(const struct geist_session *,
                                              size_t *) = geist_session_kv_bytes_per_token;
 
+static enum geist_status (*const c_tokenize_plain)(struct geist_session *,
+                                                   const char *,
+                                                   size_t,
+                                                   const struct geist_text_range *,
+                                                   size_t,
+                                                   geist_token_t *,
+                                                   size_t *) = geist_session_tokenize_plain;
+
 static enum geist_status (*const c_plan)(const char *,
                                          struct geist_backend *,
                                          const struct geist_session_opts *,
@@ -141,6 +149,7 @@ static const struct {
         {"geist_session_kv_bytes_per_token", (const void *) &c_kv_bytes},
         {"geist_model_plan", (const void *) &c_plan},
         {"geist_model_plan_from_memory", (const void *) &c_plan_from_memory},
+        {"geist_session_tokenize_plain", (const void *) &c_tokenize_plain},
 };
 
 int main(void) {

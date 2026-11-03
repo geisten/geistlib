@@ -210,6 +210,23 @@ release.
 | `geist_session_length`, `geist_session_truncate` | rewinding a conversation without processing the kept part again |
 | `geist_session_kv_bytes_per_token` | choosing the longest window that fits into memory |
 | `geist_model_plan`, `geist_model_plan_from_memory` | the same numbers **before** loading (#625): the window is fixed at load, so a runtime plans, chooses, then loads once |
+| `geist_session_tokenize_plain` | tokenizing a rendered chat with the message bodies as plain text (#409), so a client's message cannot spell a role marker |
+
+**Special tokens in untrusted text (#409).** `geist_session_tokenize` and
+`geist_session_set_prompt` match every special token the text spells, as
+llama.cpp does with `parse_special=true`. A runtime that renders client
+messages into a chat template and tokenizes the result that way lets a
+message containing `<|im_end|>\n<|im_start|>system\n` open a turn of its own.
+`geist_session_tokenize_plain` takes the rendered text and the byte ranges of
+the untrusted parts. Inside those ranges control and unknown tokens are not
+matched; user-defined added tokens still are, as with llama.cpp's
+`parse_special=false`. The text is tokenized in one pass, so a conversation
+with no special token in its messages gets the same ids as from
+`geist_session_tokenize`. One range over the whole text gives the ids of
+`llama-tokenize --no-parse-special`, with one deliberate exception: on
+gpt-oss, llama.cpp makes `<|start|>`, `<|channel|>`, `<|message|>`,
+`<|constrain|>` and `<|end|>` user-defined, so they are matched in plain text
+there; geist does not match them.
 
 `geist_session_truncate` refuses (GEIST_E_UNSUPPORTED, the session unchanged)
 where the state cannot return to a position: recurrent (DeltaNet) layers, the

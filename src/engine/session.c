@@ -530,8 +530,18 @@ const char *geist_session_errmsg(const struct geist_session *s) {
                                                        size_t                out_capacity,
                                                        geist_token_t        *out_ids,
                                                        size_t               *n_out) {
+    return geist_session_tokenize_plain(s, text, 0, nullptr, out_capacity, out_ids, n_out);
+}
+
+[[nodiscard]] enum geist_status geist_session_tokenize_plain(struct geist_session          *s,
+                                                             const char                    *text,
+                                                             size_t                         n_plain,
+                                                             const struct geist_text_range *plain,
+                                                             size_t         out_capacity,
+                                                             geist_token_t *out_ids,
+                                                             size_t        *n_out) {
     if (s == nullptr || text == nullptr || n_out == nullptr ||
-        (out_capacity > 0 && out_ids == nullptr)) {
+        (out_capacity > 0 && out_ids == nullptr) || (n_plain > 0 && plain == nullptr)) {
         return GEIST_E_INVALID_ARG;
     }
     *n_out                        = 0;
@@ -546,13 +556,17 @@ const char *geist_session_errmsg(const struct geist_session *s) {
                 GEIST_E_NOT_FOUND,
                 "tokenize: no tokenizer found (GGUF-embedded or external tokenizer.bin)");
     }
-    const enum geist_status st = gguf_tokenizer_encode(gtok, text, out_capacity, out_ids, n_out);
+    const enum geist_status st =
+            gguf_tokenizer_encode_plain(gtok, text, n_plain, plain, out_capacity, out_ids, n_out);
     if (st != GEIST_OK) {
         return session_fail(sf,
                             st,
                             "tokenize: %s (out_capacity %zu)",
-                            st == GEIST_E_INVALID_ARG ? "more tokens than fit"
-                                                      : "gguf encode failed",
+                            st == GEIST_E_INVALID_ARG
+                                    ? (n_plain > 0 ? "more tokens than fit, or a plain range out "
+                                                     "of order or past the text"
+                                                   : "more tokens than fit")
+                                    : "gguf encode failed",
                             out_capacity);
     }
     return GEIST_OK;
