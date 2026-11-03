@@ -1,41 +1,23 @@
 {
  "gaps": {
   "_Static_assert": {
-   "files": {
-    "src/backends/cpu_neon/kernels/q4_01.c": 3,
-    "src/backends/cpu_x86/q4k_to_q4kx8.h": 1,
-    "src/backends/cpu_x86/q8_kx4.h": 1,
-    "src/quant/quant_blocks.h": 13
-   },
-   "total": 18,
+   "files": {},
+   "total": 0,
    "what": "_Static_assert"
   },
   "__attribute__": {
    "files": {
     "src/archs/audio_conformer/audio_linear.c": 1,
     "src/backends/common/geist_gemm.c": 2,
-    "src/backends/cpu_neon/kernels/iq2_s.c": 2,
-    "src/backends/cpu_neon/kernels/iq3_s.c": 2,
     "src/backends/cpu_neon/kernels/mxfp4.c": 6,
     "src/backends/cpu_neon/kernels/pq2_0.c": 1,
-    "src/backends/cpu_neon/kernels/q3_K.c": 2,
-    "src/backends/cpu_neon/kernels/q4_01.c": 2,
-    "src/backends/cpu_neon/kernels/q4_K.c": 5,
-    "src/backends/cpu_neon/kernels/q5_K.c": 3,
-    "src/backends/cpu_neon/kernels/q6_K.c": 6,
-    "src/backends/cpu_neon/kernels/q8_0.c": 1,
-    "src/backends/cpu_neon/tl1.c": 1,
     "src/backends/cpu_neon/transformer_ops.c": 2,
     "src/backends/cpu_x86/backend.c": 1,
-    "src/backends/cpu_x86/kernel_i2s.c": 1,
     "src/backends/cpu_x86/kernel_q4k_tiled_avx512_vnni.c": 2,
-    "src/backends/cpu_x86/kernel_q4kx8_gemm_avx512.c": 2,
-    "src/backends/cpu_x86/kernel_q4kx8_gemm_avx512_full.c": 2,
-    "src/backends/cpu_x86/q4k_to_q4kx8.h": 1,
-    "src/backends/cpu_x86/q8_kx4.h": 1,
-    "src/quant/quant_blocks.h": 13
+    "src/backends/cpu_x86/kernel_q4kx8_gemm_avx512.c": 1,
+    "src/backends/cpu_x86/kernel_q4kx8_gemm_avx512_full.c": 2
    },
-   "total": 59,
+   "total": 18,
    "what": "__attribute__"
   },
   "__builtin": {

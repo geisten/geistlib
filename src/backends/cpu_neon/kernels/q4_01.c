@@ -31,18 +31,18 @@
 #include <arm_neon.h>
 #endif
 
-struct block_q4_0k_t {
+struct [[gnu::packed]] block_q4_0k_t {
     uint16_t d;
     uint8_t  qs[16];
-} __attribute__((packed));
-_Static_assert(sizeof(struct block_q4_0k_t) == 18, "q4_0 block size");
+};
+static_assert(sizeof(struct block_q4_0k_t) == 18, "q4_0 block size");
 
-struct block_q4_1k_t {
+struct [[gnu::packed]] block_q4_1k_t {
     uint16_t d;
     uint16_t m;
     uint8_t  qs[16];
-} __attribute__((packed));
-_Static_assert(sizeof(struct block_q4_1k_t) == 20, "q4_1 block size");
+};
+static_assert(sizeof(struct block_q4_1k_t) == 20, "q4_1 block size");
 
 /* dot of 32 activations against one nibble block, weights biased by -8
  * (Q4_0) or unbiased (Q4_1: bias handled via bsum outside). */
@@ -183,7 +183,7 @@ struct q4_0_x8_block {
      * four rows g*4..g*4+3 back to back. */
     uint8_t qs[16 * 8];
 };
-_Static_assert(sizeof(struct q4_0_x8_block) == 8 * 18, "q4_0 x8 block size");
+static_assert(sizeof(struct q4_0_x8_block) == 8 * 18, "q4_0 x8 block size");
 
 static const uint32_t Q4_0_X8_GEMV_MAGIC = 0x38583431u; /* "14X8" (v2) */
 
