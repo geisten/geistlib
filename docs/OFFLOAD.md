@@ -53,7 +53,7 @@ llama.cpp/ggml):
 | Next layer's experts streamed over PCIe while this layer's attention runs | **yes (v1)** | Prefetch one layer ahead in a staging ring |
 | Adaptive tier: LRU swaps between decode windows on a helper thread | **not yet** | Run-time migration; it changes residency, not arithmetic, but it is the most code. After v1, if the static cover is too low |
 | SSD tier (`experts.bin`, `posix_fadvise`) | **no** | The page cache of the mmap does this already (#48 phase 0) |
-| Speculative decoding with an MTP draft | separate | Already in geistlib (`mtp.c`, n-gram draft); orthogonal to offload |
+| Speculative decoding with an MTP draft | separate | Already in geistlib (`mtp.c`, n-gram draft); orthogonal to offload. Measured on Qwen3.6-35B-A3B in GPU mode: no gain ([below](#mtp-draft-decoding-in-gpu-mode-246)) |
 
 ## What we already measured
 
@@ -653,8 +653,9 @@ with them skipped (timing only, outputs wrong) the prefill ran at
 chunk, 55 % to experts with more than 32.
 
 **What.** Each cold expert gets a host copy on the GPU backend at load
-(`GEIST_W_HOST`: Vulkan keeps it in pinned host memory), in profile order,
-in 4 GiB (or a quarter of the host's memory if less;
+(`GEIST_W_HOST`: Vulkan keeps it in pinned host memory), in the order of
+the run-time profile's prefill rows when it has them (below), else of the
+selection counts, in 4 GiB (or a quarter of the host's memory if less;
 `GEIST_MOE_STAGE_HOST` sets it, see the budget below). A prefill step
 (`blk_moe_ffn`, `seq > 1`, the model on the GPU) copies the cold experts
 with at least `stage_m_min` rows, at most 16 of them, the most rows first,
@@ -711,12 +712,80 @@ and prefill tok/s grows with the budget (2 interleaved cycles each):
 
 The default is 4 GiB, the knee for Qwen3-30B-A3B. Qwen3.6-35B-A3B's profile
 (a decode trace of another corpus) predicts which of its many small cold
-experts a prefill stages less well, so it keeps 57 %; more needs
-`GEIST_MOE_STAGE_HOST`. VmRSS counts the pinned copies twice (the driver's
+experts a prefill stages less well, so it keeps 57 %; the prefill rows of
+the run-time profile fix that (next section). VmRSS counts the pinned copies twice (the driver's
 and geist's mapping of the same pages; `rssprobe.c` in the raw data: 2,000
 MiB of host weights, MemAvailable −1,985 MiB, PSS +2,002 MiB, VmRSS +4,002
 MiB), so peak RSS below grows by twice the budget while the host loses it
 once.
+
+**Host copies by the prefill profile.** The run-time profile (#165,
+`moe_profile.h`) counts every prefill chunk's experts a second time, by
+rows: an expert with m rows in a chunk adds m to bucket ⌊log2 m⌋ (ten
+buckets, the last from 512 rows). A threshold reads off the rows a prefill
+would have staged, the buckets from log2 `m_min` on. The profile cache file
+(v2) keeps them beside the USAGE counts, and the threshold the last load
+measured with them (a v1 file still loads, with neither). At load the cold
+experts are then ranked by their rows at the threshold per pinned byte, ties
+by their rows at a quarter of it, then by the selection counts and the index
+(`moe_stage_order`); the copies go in that order until the budget is used.
+The threshold is `GEIST_MOE_STAGE_M_MIN`, else the profile's, else 32 (the
+cost model's pick for both models here; it is measured only after the
+copies exist). Without prefill rows (no cache, a fresh one, a v1 file) the
+order is the selection counts', as before: the same copies. The resident
+experts do not change: they follow the USAGE counts (or
+`GEIST_MOE_PROFILE`) as before, and the prefill rows touch only the copies.
+
+The rows a profile needs come with the cache on (`GEIST_MOE_PROFILE_CACHE`):
+the first run counts and writes them when the model goes, the next load
+uses them. Measured with the cache made by one 2,726-token request (128
+decoded) and copied fresh into each run, `GEIST_MOE_PROFILE` as before for
+the resident set; SAME is a profile of the measured request itself
+(`docs/OFFLOAD.md` of main), CROSS of the first 2,726 tokens of
+`docs/ARCHITECTURE.md`. Prefill tok/s, interleaved cycles, 4 GiB unless
+"all":
+
+| | off | main (4 GiB) | **SAME** | **CROSS** | all |
+|:--|--:|--:|--:|--:|--:|
+| Qwen3.6-35B-A3B, 3 cycles | 775 / 792 / 786 | 811 / 858 / 850 | **931 / 926 / 921** | **916 / 913 / 916** | 921 / 893 / 926 |
+| median, share of the gain | 786 | 850, 48 % | **926, 104 %** | **916, 96 %** | 921, 100 % |
+| staged experts / rows | | 1,701 / 107 k | 2,782 / 195 k | 2,514 / 176 k | 2,782 / 195 k |
+| Qwen3-30B-A3B, 5 cycles | 709 / 693 / 702 / 705 / 701 | 820 / 820 / 823 / 797 / 808 | **826 / 845 / 839 / 840 / 842** | **846 / 826 / 842 / 827 / 834** | 846 / 828 / 822 / 823 / 840 |
+| median, share of the gain | 702 | 820, 93 % | **840, 110 %** | **834, 105 %** | 828, 100 % |
+
+- With a profile of the request itself 4 GiB stage what every cold expert
+  copied (11.7 / 9.1 GB) stages: the same 2,782 / 3,237 experts and rows,
+  so the prefill is at the all-copies speed. A profile of another text
+  keeps 96 % of Qwen3.6-35B-A3B's gain instead of 48 % (main in the same
+  session; 57 % in the budget table above). Qwen3-30B-A3B was at 91-93 %
+  already and gains within the noise: SAME and "all" stage the same set,
+  so their gap (840 against 828) is the spread.
+- Rows at a quarter of the threshold matter after one request: few cold
+  experts reached 32 rows in a chunk, the rest of the 4 GiB went by the
+  decode counts. Offline (the two caches, 4 GiB, the share of the rows a
+  prefill of `docs/OFFLOAD.md` stages at 32 that the copies hold): decode
+  counts 51 % / 77 % (Qwen3.6-35B-A3B / Qwen3-30B-A3B), the CROSS rows at
+  32 then decode counts 66 % / 85 %, at 32 then at 8 89 % / 94 %; a first
+  build with the 32-row key alone measured CROSS at 871 tok/s (60 %).
+- Decode unchanged (the same resident experts: 3,917 / 2,833 hot, the same
+  cover in every run): medians main 79.5 / 66.3, SAME 77.2 / 66.8, CROSS
+  77.7 / 66.7 tok/s, staging off 78.2 / 65.7; the spread within a variant
+  is as large (SAME 74.9-78.5; in a first session main 77.9, SAME 79.1).
+  A decode step stages nothing, and the copies are not read there.
+  NOPROF (the branch, the cache on and empty) staged the same 1,701 experts
+  for the same 107,380 rows as main: the fresh start makes the same copies.
+- The fresh threshold measurement can still land on 64 for Qwen3-30B-A3B
+  (one run in five, every variant), as before.
+- Perplexity (`bench_nll`, `GEIST_NLL_PREFILL=1`, the context prefilled in
+  512-row chunks, 1,023 tokens scored; tokens 1,024-2,048 and 2,048-3,072
+  of `docs/OFFLOAD.md` and of `docs/ARCHITECTURE.md`; main against SAME):
+  Qwen3.6-35B-A3B +0.16 / −0.02 / −0.16 / +0.91 % per window, +0.22 % over
+  the four; Qwen3-30B-A3B −0.13 / +0.48 / +0.06 / −0.16 %, +0.06 %. The
+  +0.91 % window (`docs/ARCHITECTURE.md` 1,024-2,048) is where staging
+  itself moves the score: staging off 10.312, main 10.298, every cold
+  expert copied 10.373, SAME 10.391 (twice, bit for bit). More rows on
+  the GPU's F32 path instead of the CPU's W8A8 flip routing there; #359
+  saw the same spread with the default.
 
 **Results with the default** (RTX 2080 Ti + 9950X, the 2,726-token request,
 128 decoded tokens, 4 interleaved cycles against staging off on the same
@@ -764,7 +833,112 @@ one core, so both columns read a little low; Strata from runs
   Q4_K on the card, base against the branch, 6 cycles: -0.1 to 0.0 %, the
   control ±18.9 %.
 
-Raw data: `benchmark/results/raw/moe-prefill-stage-2026-11-01/`.
+Raw data: `benchmark/results/raw/moe-prefill-stage-2026-11-01/`; the host
+copies by the prefill profile: `benchmark/results/raw/moe-prefill-profile-2026-11-02/`.
+
+### MTP draft decoding in GPU mode (#246)
+
+Qwen3.6-35B-A3B ships one MTP (nextn) block. `GEIST_MTP=1` loads it, and
+`geist_session_decode_speculative` then drafts with it; the target verifies
+every draft, so the output is the target's. In GPU mode the block's attention
+runs on the GPU and its 256 experts on the CPU (the GPU's expert table covers
+the 40 target layers only). Measured on the RTX 2080 Ti + 9950X box with
+UD-Q4_K_XL, GPU mode, the run-1830 expert profile, the 2,726-token request of
+the sections above, 128 greedy tokens, `bench_perf_sweep --spec K` (draft
+length K: the seed and K - 1 drafts per call).
+
+**Correctness.** Greedy output with MTP equals greedy output without, up to
+near-ties of the target. Four prompts (this file at 2,726 tokens,
+`docs/ARCHITECTURE.md` at 1,024, `src/engine/session.c` at 512, `README.md`
+at 256), 128 tokens each, K = 2 and 3: five of the eight runs are identical
+over all 128 tokens. The other three part at the reference's closest call
+(its top two tokens 0.025, 0.042 and 0.019 logits apart; no closer step in
+those runs) and take the runner-up: the verify pass scores its rows with
+other kernels than decode_step's single row (`tests/spec_tie.h`, whose bar is
+1.5 logits). K = 4 on `docs/ARCHITECTURE.md` parts the same way at a 0.155
+gap. MTP off on the branch is token-identical to main on all four prompts.
+On Metal (Qwen3.8-27B Q4_0, a dense model with an MTP block; it takes the
+per-row DeltaNet rollback below) K = 2 and 3 are identical to MTP off over
+128 tokens, and `test_speculative_loop_int` passes with `GEIST_MTP=1`.
+
+**On main MTP decoded at 22-29 tok/s against 79 with it off** (7-9 with a CI
+job beside it). Three causes, fixed (single runs, the request above):
+
+1. The draft head mapped the vocabulary's logits row (248k floats in device
+   memory behind the BAR, ~30 ms per draft token over the bus) for a host
+   argmax. It takes the device argmax now, as the target head does: K = 3
+   26.8 → 59.4 tok/s.
+2. A verify entered the thread region of the model's backend only, and
+   Vulkan has none: the CPU experts ran outside cpu_x86's region. The verify
+   enters the region on `moe_cpu` too now, as prefill does, and a draft
+   step the decode one: K = 2 8.8 → 65.6 tok/s with a CI job on the box, and
+   55.9 → 65.6 for the draft's region alone. The n-gram drafter was hit the
+   same way (K = 3: 52.6 → 66.0 tok/s, quiet, with item 3).
+3. A partial accept replayed the accepted rows through a prefill whenever the
+   model had an MTP block, even with `GEIST_MTP` off (n-gram drafts or a
+   draft model on Qwen3.6). The per-row DeltaNet states of #192 serve it now,
+   and the MTP block's carry comes from the verify's rows: K = 3 53.0 → 59.4.
+
+A verify's experts also run as decode steps' do (row by row, the batched
+decode's path of #245) instead of a prefill chunk's per-expert GEMMs: the
+same kernels as decode_step. As fast (K = 2 63.2 → 65.6, K = 3 59.1 → 59.4
+tok/s), and the drafts are accepted more often (K = 2: 0.71 → 0.78), the
+MTP block reading the target's hidden rows from those kernels.
+
+**Results**, 3 interleaved cycles, the request above (`ab-prompt.jsonl`):
+
+| | decode tok/s | median | vs off | prefill tok/s | tokens/call | acceptance by draft |
+|:--|:--|--:|--:|--:|--:|:--|
+| main, MTP off | 78.96 / 79.33 / 79.08 | 79.1 | | 862-873 | | |
+| branch, MTP off | 79.07 / 80.37 / 79.82 | 79.8 | 1.01 | 856-868 | | |
+| main, MTP K = 2 | 28.78 / 22.06 / 28.11 | 28.1 | 0.36 | 618-637 | 2.65 | 0.65 |
+| **branch, MTP K = 2** | 64.36 / 66.61 / 66.68 | **66.6** | **0.84** | 634-644 | 2.78 | 0.78 |
+| branch, MTP K = 3 | 60.99 / 60.75 / 60.58 | 60.8 | 0.77 | 632-635 | 3.15 | 0.66 / 0.49 |
+| main, n-gram K = 3 | 53.80 / 52.64 / 51.67 | 52.6 | 0.67 | 867-878 | 1.78 | 0.16 / 0.14 |
+| branch, n-gram K = 3 | 65.51 / 66.00 / 66.28 | 66.0 | 0.83 | 849-875 | 1.78 | 0.16 / 0.14 |
+
+On text the drafts guess better, MTP comes level with MTP off and no further
+(`ab-high-acceptance.jsonl`, 3 cycles, medians):
+
+| prompt | MTP off | K = 2 | K = 3 | K = 4 | acceptance at K = 3 |
+|:--|--:|--:|--:|--:|:--|
+| `docs/ARCHITECTURE.md`, 1,024 tokens | 85.5 | 81.2 (0.95) | 84.9 (0.99) | 84.2 (0.98) | 0.91 / 0.74 |
+| `README.md`, 256 tokens | 78.4 | 74.5 (0.95) | 78.5 (1.00) | | 0.91 / 0.80 |
+
+**Why no gain: a verify row costs a decode step.** Per call (wall-clock
+phases, the request above, a diagnostic build; `trace/`): a decode step
+takes 12.96 ms, 14.49 with the MTP block kept in step. K = 2: the draft 2.3
+ms (one MTP step, its CPU experts and head included), the verify of 2 rows
+25.7 ms (1.98 steps: layers 21.9, MTP block 1.8, head 1.7), the forward of
+the correction token 15.1 ms: 43.1 ms for 2.78 tokens, 15.5 ms a token. K =
+3: 4.6 + 32.9 (2.54 steps) + 14.8 = 52.4 ms for 3.15 tokens, 16.6 ms a
+token.
+
+- The draft is cheap; the verify is not. Each row routes to its own 8 of
+  256 experts, so a verify of k rows moves about k steps' expert work, the
+  hot experts' matvecs on the GPU and the cold ones on the CPU, as batched
+  decode does (#317: 8 rows at 6.3 steps). The per-expert GEMMs of the
+  prefill path cost the same (26.1 against 25.6 ms for 2 rows). A dense
+  model's verify reads its weights once for all rows; an MoE's mostly does
+  not.
+- Break-even at K = 2 and 0.78 acceptance needs a 2-row verify in 18.6 ms
+  (1.43 steps). Leaving the correction token unforwarded for the next
+  call's verify (llama.cpp's cadence) saves its 15 ms but emits one token
+  less per call: 28 ms for 1.78 tokens, 15.7 ms a token, still slower.
+- Prefill with MTP on loses 26 % (632-644 against 856-873 tok/s): every
+  chunk also runs through the MTP block to keep its cache in step, and its
+  experts all stay on the CPU.
+- Strata's MTP draft brought nothing on the same request either (62.2 tok/s
+  either way, run 1842).
+
+Re-checked after main's GPT-OSS work (#243, which splits a decode step's
+CPU experts by rows) was merged in, 2 cycles (`ab-post-merge.jsonl`): MTP off
+77.3 / 76.2 on main against 78.0 / 78.1; MTP K = 2 7.3 / 7.2 on main (this
+time beside other load) against 62.7 / 62.6, K = 3 63.3 / 63.4 (acceptance
+0.77 / 0.51); n-gram K = 3 12.5 / 12.4 against 62.9 / 63.9.
+
+MTP stays opt-in. For an MoE with experts split across GPU and CPU, leave
+it off. Raw data: `benchmark/results/raw/moe-mtp-2026-11-02/`.
 
 All measurements under `scripts/gpu-lock.sh` (and `with-mac-lock` on the
 Mac), interleaved cycles, raw samples kept, `bench_revision_ab.py` parent vs
@@ -781,7 +955,7 @@ patch for "single-backend runs pay nothing".
   with a second, pinned host copy of the profile's hottest cold experts (4
   GiB by default, 11.7 GB for all of Qwen3.6-35B-A3B's); copying from the
   CPU's own bytes is out while cpu_x86 repacks Q4_K into its own layout.
-  A better predictor of a prefill's staged experts than the decode profile
-  would let 4 GiB keep more of Qwen3.6-35B-A3B's gain.
+  The run-time profile's prefill rows choose which cold experts get it
+  (above); without a cache the decode profile still does.
 - MoE concurrency: the CPU workers and the Vulkan host thread share cores; the
   OpenMP region (`parallel_region_begin`) has to leave one thread for submit.

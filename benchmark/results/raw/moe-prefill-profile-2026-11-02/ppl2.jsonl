@@ -1,0 +1,16 @@
+{"model":"Qwen3.6-35B-A3B-UD-Q4_K_XL","win":"prompt.md 3072 2048","v":"MAIN","staged":"1306 cold experts staged on vulkan for 84618 rows","r":{"tokens":1023,"nll":2.090037,"ppl":8.0852,"tps":47.80}}
+{"model":"Qwen3.6-35B-A3B-UD-Q4_K_XL","win":"prompt.md 3072 2048","v":"NEW","staged":"2107 cold experts staged on vulkan for 153111 rows","r":{"tokens":1023,"nll":2.091589,"ppl":8.0978,"tps":66.57}}
+{"model":"Qwen3.6-35B-A3B-UD-Q4_K_XL","win":"prompt.md 2048 1024","v":"MAIN","staged":"666 cold experts staged on vulkan for 40632 rows","r":{"tokens":1023,"nll":1.829035,"ppl":6.2279,"tps":70.99}}
+{"model":"Qwen3.6-35B-A3B-UD-Q4_K_XL","win":"prompt.md 2048 1024","v":"NEW","staged":"979 cold experts staged on vulkan for 61913 rows","r":{"tokens":1023,"nll":1.828837,"ppl":6.2266,"tps":72.32}}
+{"model":"Qwen3.6-35B-A3B-UD-Q4_K_XL","win":"main/docs/ARCHITECTURE.md 3072 2048","v":"MAIN","staged":"1029 cold experts staged on vulkan for 59861 rows","r":{"tokens":1023,"nll":2.256404,"ppl":9.5487,"tps":71.15}}
+{"model":"Qwen3.6-35B-A3B-UD-Q4_K_XL","win":"main/docs/ARCHITECTURE.md 3072 2048","v":"NEW","staged":"1399 cold experts staged on vulkan for 80197 rows","r":{"tokens":1023,"nll":2.254793,"ppl":9.5333,"tps":71.63}}
+{"model":"Qwen3.6-35B-A3B-UD-Q4_K_XL","win":"main/docs/ARCHITECTURE.md 2048 1024","v":"MAIN","staged":"544 cold experts staged on vulkan for 34314 rows","r":{"tokens":1023,"nll":2.331914,"ppl":10.2976,"tps":78.58}}
+{"model":"Qwen3.6-35B-A3B-UD-Q4_K_XL","win":"main/docs/ARCHITECTURE.md 2048 1024","v":"NEW","staged":"751 cold experts staged on vulkan for 46178 rows","r":{"tokens":1023,"nll":2.340953,"ppl":10.3911,"tps":79.90}}
+{"model":"Qwen3-30B-A3B-Q4_K_M","win":"prompt.md 3072 2048","v":"MAIN","staged":"1917 cold experts staged on vulkan for 162233 rows","r":{"tokens":1023,"nll":2.402687,"ppl":11.0528,"tps":58.87}}
+{"model":"Qwen3-30B-A3B-Q4_K_M","win":"prompt.md 3072 2048","v":"NEW","staged":"2361 cold experts staged on vulkan for 198018 rows","r":{"tokens":1023,"nll":2.401391,"ppl":11.0385,"tps":58.87}}
+{"model":"Qwen3-30B-A3B-Q4_K_M","win":"prompt.md 2048 1024","v":"MAIN","staged":"905 cold experts staged on vulkan for 61959 rows","r":{"tokens":1023,"nll":2.262004,"ppl":9.6023,"tps":64.68}}
+{"model":"Qwen3-30B-A3B-Q4_K_M","win":"prompt.md 2048 1024","v":"NEW","staged":"1105 cold experts staged on vulkan for 77105 rows","r":{"tokens":1023,"nll":2.266833,"ppl":9.6488,"tps":63.18}}
+{"model":"Qwen3-30B-A3B-Q4_K_M","win":"main/docs/ARCHITECTURE.md 3072 2048","v":"MAIN","staged":"1278 cold experts staged on vulkan for 81745 rows","r":{"tokens":1023,"nll":2.962952,"ppl":19.3550,"tps":66.68}}
+{"model":"Qwen3-30B-A3B-Q4_K_M","win":"main/docs/ARCHITECTURE.md 3072 2048","v":"NEW","staged":"1479 cold experts staged on vulkan for 93276 rows","r":{"tokens":1023,"nll":2.963580,"ppl":19.3672,"tps":65.68}}
+{"model":"Qwen3-30B-A3B-Q4_K_M","win":"main/docs/ARCHITECTURE.md 2048 1024","v":"MAIN","staged":"246 cold experts staged on vulkan for 25382 rows","r":{"tokens":1023,"nll":2.852371,"ppl":17.3288,"tps":76.38}}
+{"model":"Qwen3-30B-A3B-Q4_K_M","win":"main/docs/ARCHITECTURE.md 2048 1024","v":"NEW","staged":"276 cold experts staged on vulkan for 28080 rows","r":{"tokens":1023,"nll":2.850732,"ppl":17.3004,"tps":74.61}}

@@ -1,0 +1,92 @@
+vtrace k 2 pre 0.000 layers 23.755 mtp 1.668 head 1.668
+spectrace start 2.427 verify 32.573 trunc 0.015 corr 15.720 k 2 acc 0
+vtrace k 2 pre 0.000 layers 20.969 mtp 1.748 head 1.674
+spectrace start 2.330 verify 24.422 trunc 0.000 corr 14.046 k 2 acc 1
+vtrace k 2 pre 0.000 layers 19.840 mtp 1.882 head 1.667
+spectrace start 2.322 verify 23.416 trunc 0.000 corr 14.097 k 2 acc 1
+vtrace k 2 pre 0.000 layers 19.697 mtp 1.734 head 1.667
+spectrace start 2.328 verify 23.126 trunc 0.000 corr 15.449 k 2 acc 1
+vtrace k 2 pre 0.000 layers 24.084 mtp 3.293 head 1.668
+spectrace start 2.323 verify 29.073 trunc 0.000 corr 16.495 k 2 acc 1
+vtrace k 2 pre 0.000 layers 23.697 mtp 1.701 head 1.668
+spectrace start 2.306 verify 27.093 trunc 0.015 corr 15.178 k 2 acc 0
+vtrace k 2 pre 0.000 layers 24.500 mtp 1.837 head 1.666
+spectrace start 2.318 verify 28.031 trunc 0.000 corr 15.276 k 2 acc 1
+vtrace k 2 pre 0.000 layers 24.693 mtp 1.908 head 1.667
+spectrace start 2.331 verify 28.296 trunc 0.000 corr 15.276 k 2 acc 1
+vtrace k 2 pre 0.000 layers 20.949 mtp 1.750 head 1.666
+spectrace start 2.317 verify 24.394 trunc 0.000 corr 14.148 k 2 acc 1
+vtrace k 2 pre 0.000 layers 19.568 mtp 1.883 head 1.666
+spectrace start 2.322 verify 23.145 trunc 0.000 corr 13.844 k 2 acc 1
+vtrace k 2 pre 0.000 layers 20.753 mtp 1.819 head 1.667
+spectrace start 2.259 verify 24.266 trunc 0.000 corr 15.286 k 2 acc 1
+vtrace k 2 pre 0.000 layers 24.099 mtp 1.886 head 1.667
+spectrace start 2.337 verify 27.680 trunc 0.000 corr 14.862 k 2 acc 1
+vtrace k 2 pre 0.000 layers 24.834 mtp 1.712 head 1.669
+spectrace start 2.309 verify 28.244 trunc 0.015 corr 15.292 k 2 acc 0
+vtrace k 2 pre 0.000 layers 24.306 mtp 1.818 head 1.668
+spectrace start 2.331 verify 27.820 trunc 0.000 corr 16.403 k 2 acc 1
+vtrace k 2 pre 0.000 layers 23.672 mtp 1.816 head 1.661
+spectrace start 2.353 verify 27.183 trunc 0.000 corr 14.566 k 2 acc 1
+vtrace k 2 pre 0.000 layers 21.068 mtp 1.736 head 1.661
+spectrace start 2.330 verify 24.494 trunc 0.000 corr 14.061 k 2 acc 1
+vtrace k 2 pre 0.000 layers 20.955 mtp 1.880 head 1.662
+spectrace start 2.256 verify 24.525 trunc 0.015 corr 14.749 k 2 acc 0
+vtrace k 2 pre 0.000 layers 21.285 mtp 1.809 head 1.668
+spectrace start 2.362 verify 24.791 trunc 0.000 corr 15.489 k 2 acc 1
+vtrace k 2 pre 0.000 layers 23.961 mtp 1.822 head 1.661
+spectrace start 2.261 verify 27.474 trunc 0.000 corr 16.813 k 2 acc 1
+vtrace k 2 pre 0.000 layers 25.367 mtp 1.797 head 1.660
+spectrace start 2.296 verify 28.853 trunc 0.000 corr 15.247 k 2 acc 1
+vtrace k 2 pre 0.000 layers 23.134 mtp 1.733 head 1.662
+spectrace start 2.280 verify 26.558 trunc 0.000 corr 16.731 k 2 acc 1
+vtrace k 2 pre 0.000 layers 25.205 mtp 1.836 head 1.661
+spectrace start 2.312 verify 28.732 trunc 0.000 corr 14.893 k 2 acc 1
+vtrace k 2 pre 0.000 layers 20.983 mtp 1.716 head 1.661
+spectrace start 2.298 verify 24.389 trunc 0.000 corr 14.231 k 2 acc 1
+vtrace k 2 pre 0.000 layers 21.850 mtp 1.718 head 1.668
+spectrace start 2.243 verify 25.266 trunc 0.000 corr 13.927 k 2 acc 1
+vtrace k 2 pre 0.000 layers 20.928 mtp 1.816 head 1.668
+spectrace start 2.313 verify 24.441 trunc 0.000 corr 14.756 k 2 acc 1
+vtrace k 2 pre 0.000 layers 23.153 mtp 1.738 head 1.667
+spectrace start 2.273 verify 26.586 trunc 0.000 corr 16.152 k 2 acc 1
+vtrace k 2 pre 0.000 layers 24.083 mtp 1.838 head 1.667
+spectrace start 2.233 verify 27.616 trunc 0.000 corr 15.038 k 2 acc 1
+vtrace k 2 pre 0.000 layers 25.349 mtp 1.886 head 1.666
+spectrace start 2.249 verify 28.929 trunc 0.015 corr 16.499 k 2 acc 0
+vtrace k 2 pre 0.000 layers 23.714 mtp 1.832 head 1.667
+spectrace start 2.224 verify 27.241 trunc 0.000 corr 14.543 k 2 acc 1
+vtrace k 2 pre 0.000 layers 21.138 mtp 1.893 head 1.666
+spectrace start 2.237 verify 24.725 trunc 0.015 corr 15.367 k 2 acc 0
+vtrace k 2 pre 0.000 layers 20.539 mtp 1.874 head 1.672
+spectrace start 2.342 verify 24.113 trunc 0.000 corr 14.105 k 2 acc 1
+vtrace k 2 pre 0.000 layers 19.661 mtp 1.871 head 1.668
+spectrace start 2.365 verify 23.229 trunc 0.014 corr 13.687 k 2 acc 0
+vtrace k 2 pre 0.000 layers 19.628 mtp 1.800 head 1.667
+spectrace start 2.338 verify 23.123 trunc 0.014 corr 13.602 k 2 acc 0
+vtrace k 2 pre 0.000 layers 19.796 mtp 1.910 head 1.666
+spectrace start 2.346 verify 23.400 trunc 0.000 corr 13.187 k 2 acc 1
+vtrace k 2 pre 0.000 layers 20.522 mtp 1.750 head 1.668
+spectrace start 2.380 verify 23.969 trunc 0.000 corr 13.073 k 2 acc 1
+vtrace k 2 pre 0.000 layers 18.475 mtp 1.763 head 1.666
+spectrace start 2.378 verify 21.933 trunc 0.000 corr 13.089 k 2 acc 1
+vtrace k 2 pre 0.000 layers 19.679 mtp 1.743 head 1.670
+spectrace start 2.388 verify 23.124 trunc 0.000 corr 14.319 k 2 acc 1
+vtrace k 2 pre 0.000 layers 21.031 mtp 1.916 head 1.668
+spectrace start 2.365 verify 24.646 trunc 0.000 corr 14.730 k 2 acc 1
+vtrace k 2 pre 0.000 layers 20.675 mtp 1.849 head 1.668
+spectrace start 2.384 verify 24.219 trunc 0.000 corr 15.022 k 2 acc 1
+vtrace k 2 pre 0.000 layers 21.497 mtp 1.865 head 1.677
+spectrace start 2.387 verify 25.068 trunc 0.000 corr 13.812 k 2 acc 1
+vtrace k 2 pre 0.000 layers 20.101 mtp 1.822 head 1.666
+spectrace start 2.349 verify 23.616 trunc 0.000 corr 14.628 k 2 acc 1
+vtrace k 2 pre 0.000 layers 21.258 mtp 1.743 head 1.667
+spectrace start 2.412 verify 24.696 trunc 0.000 corr 14.138 k 2 acc 1
+vtrace k 2 pre 0.000 layers 20.950 mtp 1.797 head 1.673
+spectrace start 3.839 verify 24.449 trunc 0.017 corr 14.917 k 2 acc 0
+vtrace k 2 pre 0.000 layers 20.339 mtp 1.912 head 1.667
+spectrace start 2.327 verify 23.946 trunc 0.014 corr 14.497 k 2 acc 0
+vtrace k 2 pre 0.000 layers 19.933 mtp 1.758 head 1.668
+spectrace start 2.371 verify 23.388 trunc 0.000 corr 14.078 k 2 acc 1
+vtrace k 2 pre 0.000 layers 21.253 mtp 1.856 head 1.666
+spectrace start 2.351 verify 24.803 trunc 0.000 corr 14.842 k 2 acc 1
