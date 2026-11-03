@@ -130,6 +130,7 @@ extern const struct transformer_family transformer_family_qwen3moe;
 extern const struct transformer_family transformer_family_olmoe;
 extern const struct transformer_family transformer_family_gpt_oss;
 extern const struct transformer_family transformer_family_deepseek2;
+extern const struct transformer_family transformer_family_llama4;
 
 /* arch_family.c — the BitNet embedding variant's metadata (per-projection
  * input norms, pooling), read by the qwen3 and gemma3 populators. */

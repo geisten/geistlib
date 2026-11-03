@@ -209,6 +209,18 @@ void rope_compute_at(size_t pos_offset,
                      float *sin_out);
 
 /* rope_compute_at's full-rotation table (row width head_dim, NEOX pairs)
+ * with per-pair frequency factors (rope_freqs.weight, Llama 3 / 4): pair i
+ * turns at theta^(-2i/head_dim) / factors[i], as ggml's rope does with
+ * freq_factors. factors has head_dim / 2 entries. */
+void rope_compute_ff_at(size_t       pos_offset,
+                        size_t       n_positions,
+                        size_t       head_dim,
+                        float        theta,
+                        const float *factors,
+                        float       *cos_out,
+                        float       *sin_out);
+
+/* rope_compute_at's full-rotation table (row width head_dim, NEOX pairs)
  * with YaRN as ggml's rope_yarn computes it (ext_factor 1): pair i's angle
  * blends pos * theta^(-2i/head_dim) and the same divided by `factor`, by a
  * ramp between the correction dims of orig_ctx, beta_fast and beta_slow
