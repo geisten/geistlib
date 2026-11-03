@@ -641,9 +641,9 @@
     "src/backends/cpu_x86/q8_kx4.c": 1,
     "src/backends/cpu_x86/workspace.c": 18,
     "src/backends/metal/lifecycle.c": 2,
-    "src/backends/metal/metal_internal.h": 393,
+    "src/backends/metal/metal_internal.h": 409,
     "src/backends/metal/metal_objc.h": 170,
-    "src/backends/metal/ops.c": 126,
+    "src/backends/metal/ops.c": 127,
     "src/backends/metal/pipelines.c": 21,
     "src/backends/metal/profiling.c": 14,
     "src/backends/metal/resources.c": 29,
@@ -697,7 +697,7 @@
     "src/io/safetensors_reader.h": 1,
     "src/quant/quant.h": 68
    },
-   "total": 2006,
+   "total": 2023,
    "what": "void * (one per `void` followed by `*`)"
   },
   "void_ptr_cast": {
