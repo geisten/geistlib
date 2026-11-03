@@ -23,6 +23,7 @@ SOURCE = re.compile(r"\s(src/\S+\.c)(?:\s|$)")
 CASES = {
     "-Wimplicit-fallthrough": (
         """
+int f(int x);
 int f(int x) {
     int r = 0;
     switch (x) {
@@ -38,6 +39,7 @@ int f(int x) {
 }
 """,
         """
+int f(int x);
 int f(int x) {
     int r = 0;
     switch (x) {
@@ -53,6 +55,12 @@ int f(int x) {
     return r;
 }
 """,
+    ),
+    "-Wmissing-prototypes": (
+        "int twice(int x) { return 2 * x; }\n",
+        "static int half(int x) { return x / 2; }\n"
+        "int twice(int x);\n"
+        "int twice(int x) { return 4 * half(x); }\n",
     ),
 }
 
