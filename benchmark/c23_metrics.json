@@ -6,18 +6,8 @@
    "what": "_Static_assert"
   },
   "__attribute__": {
-   "files": {
-    "src/archs/audio_conformer/audio_linear.c": 1,
-    "src/backends/common/geist_gemm.c": 2,
-    "src/backends/cpu_neon/kernels/mxfp4.c": 6,
-    "src/backends/cpu_neon/kernels/pq2_0.c": 1,
-    "src/backends/cpu_neon/transformer_ops.c": 2,
-    "src/backends/cpu_x86/backend.c": 1,
-    "src/backends/cpu_x86/kernel_q4k_tiled_avx512_vnni.c": 2,
-    "src/backends/cpu_x86/kernel_q4kx8_gemm_avx512.c": 1,
-    "src/backends/cpu_x86/kernel_q4kx8_gemm_avx512_full.c": 2
-   },
-   "total": 18,
+   "files": {},
+   "total": 0,
    "what": "__attribute__"
   },
   "__builtin": {
