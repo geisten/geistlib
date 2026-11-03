@@ -55,12 +55,14 @@ extern void           vDSP_ctoz(const DSPComplex      *C,
                                 const DSPSplitComplex *Z,
                                 vDSP_Stride            IZ,
                                 vDSP_Length            N);
+
+/* Length of vDSP's split-format FFT halves. */
+constexpr int HALF_N = MEL_FFT_LENGTH / 2; /* 256 */
 #endif
 
 #include "geist_gemm.h"
 
-#define MEL_FLOOR 0.001f
-#define HALF_N (MEL_FFT_LENGTH / 2) /* 256 */
+constexpr float MEL_FLOOR = 0.001f;
 
 #if !defined(__APPLE__)
 /* Vendored real FFT for the non-Apple build: a small in-place iterative

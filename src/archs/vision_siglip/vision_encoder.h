@@ -22,14 +22,14 @@
 /* E2B soft-token dim (text-LM hidden, the projector's row count). The
  * per-checkpoint width — 2560 on E4B — comes from
  * vision_encoder_soft_dim(); size output buffers with that (#258). */
-#define VISION_SOFT_TOKEN_DIM 1536
-#define VISION_TOWER_HIDDEN 768 /* per-block ViT hidden_size */
+constexpr int VISION_SOFT_TOKEN_DIM = 1536;
+constexpr int VISION_TOWER_HIDDEN   = 768; /* per-block ViT hidden_size */
 
 /* Soft tokens per image (after kernel-3 avg-pool). */
-#define VISION_SOFT_TOKENS_PER_IMAGE 280
+constexpr int VISION_SOFT_TOKENS_PER_IMAGE = 280;
 
 /* Soft tokens per video frame (smaller pool to fit 32 frames in context). */
-#define VISION_SOFT_TOKENS_PER_VIDEO_FRAME 70
+constexpr int VISION_SOFT_TOKENS_PER_VIDEO_FRAME = 70;
 
 struct VisionEncoder;
 

@@ -92,21 +92,9 @@
    "files": {
     "include/geist.h": 5,
     "include/geist_util.h": 3,
-    "src/archs/audio_conformer/audio_encoder.h": 1,
     "src/archs/audio_conformer/audio_linear.c": 1,
-    "src/archs/audio_conformer/encoder_internal.h": 27,
-    "src/archs/audio_conformer/mel_pipeline.c": 2,
-    "src/archs/audio_conformer/mel_pipeline.h": 4,
-    "src/archs/transformer/arch_config.h": 1,
     "src/archs/transformer/arch_family.c": 12,
-    "src/archs/transformer/arch_state.h": 2,
-    "src/archs/transformer/forward/probes.c": 1,
-    "src/archs/transformer/forward/spec_head.c": 4,
-    "src/archs/transformer/rotation.c": 1,
-    "src/archs/transformer/scratch_plan.h": 1,
-    "src/archs/vision_siglip/image_pipeline.h": 3,
-    "src/archs/vision_siglip/vision_encoder.c": 8,
-    "src/archs/vision_siglip/vision_encoder.h": 4,
+    "src/archs/transformer/forward/spec_head.c": 1,
     "src/backends/common/geist_gemm.c": 1,
     "src/backends/cpu_neon/kernels/q4_K.c": 2,
     "src/backends/cpu_neon/kernels/tq2_0.c": 1,
@@ -134,16 +122,11 @@
     "src/io/safetensors_reader.h": 1,
     "src/quant/quant.h": 2
    },
-   "total": 167,
+   "total": 109,
    "what": "object-like #define with a replacement"
   },
   "enum_anonymous": {
    "files": {
-    "src/archs/transformer/arch_state.c": 1,
-    "src/archs/transformer/arch_state.h": 1,
-    "src/archs/transformer/forward/profile.c": 1,
-    "src/archs/transformer/moe_gpu.c": 2,
-    "src/archs/transformer/rotation.c": 1,
     "src/backends/common/geist_gemm.c": 1,
     "src/backends/common/geist_gemm.h": 1,
     "src/backends/common/gemma4_kernels.h": 1,
@@ -167,7 +150,7 @@
     "src/io/gguf_reader.c": 2,
     "src/io/gguf_reader.h": 1
    },
-   "total": 46,
+   "total": 40,
    "what": "enum { ... } used as constants (no tag, no typedef)"
   },
   "enum_named": {

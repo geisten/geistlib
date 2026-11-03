@@ -205,6 +205,12 @@ struct transformer_mtp_layer_weights {
     struct geist_weight eh_proj_w;
 };
 
+/* DeltaNet row-state slots of a verify (dn_row_*_buf): verify rows - 1, so
+ * a k_max of 7. */
+constexpr unsigned TRANSFORMER_DN_ROW_SLOTS = 7u;
+/* Checkpoints geist_session_checkpoint keeps (ckpt_lens). */
+constexpr unsigned TRANSFORMER_CKPT_SLOTS = 8u;
+
 /* ---- Per-session mutable state ----------------------------------------- *
  *
  * All mutable state for ONE inference stream; the model
@@ -408,7 +414,6 @@ struct transformer_arch_session {
      * copy instead of a replay. Allocated on the first verify that can use
      * them; dn_rows_req: this verify asks for them; dn_rows_ok: every
      * DeltaNet layer wrote them; dn_rows_off: the backend never does. */
-#define TRANSFORMER_DN_ROW_SLOTS 7u /* verify rows - 1: a k_max of 7 */
     struct geist_buffer *dn_row_conv_buf;
     struct geist_buffer *dn_row_S_buf;
     bool                 dn_rows_req;
@@ -424,7 +429,6 @@ struct transformer_arch_session {
      * ckpt_S_buf: slots x n_dn x conv_n / s_n floats, allocated on the first
      * checkpoint). ckpt_lens rise; a reset, or a truncate below one, drops
      * the checkpoints above. */
-#define TRANSFORMER_CKPT_SLOTS 8u
     struct geist_buffer *ckpt_conv_buf;
     struct geist_buffer *ckpt_S_buf;
     size_t               ckpt_lens[TRANSFORMER_CKPT_SLOTS]; /* oldest first */
@@ -1027,7 +1031,7 @@ transformer_compute_per_layer_input(struct transformer_arch_session *sess,
  * Callers check transformer_decode_batch_max(st) >= n and every member
  * first (forward/step.c). On failure the members' states are partly
  * advanced; the caller resets them. */
-enum { TRANSFORMER_DECODE_BATCH_CAP = 8 }; /* rows the small-row kernels cover */
+constexpr int        TRANSFORMER_DECODE_BATCH_CAP = 8; /* rows the small-row kernels cover */
 [[nodiscard]] size_t transformer_decode_batch_max(const struct transformer_arch_state *st);
 [[nodiscard]] enum geist_status
 transformer_decode_batch_forward(size_t n, struct transformer_arch_session *const seqs[static n]);

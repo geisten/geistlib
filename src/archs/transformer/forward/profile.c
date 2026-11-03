@@ -13,7 +13,7 @@
 #include <stdlib.h>
 #include <time.h>
 
-enum { TRANSFORMER_PROFILE_MAX_SINKS = 16 };
+constexpr int TRANSFORMER_PROFILE_MAX_SINKS = 16;
 
 /* Diagnostics only (env-gated); still made thread-safe so concurrent
  * sessions with profiling on don't race the cache/registry (TSan). */

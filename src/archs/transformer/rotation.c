@@ -24,7 +24,7 @@
  * kind, so a new kind is one line rather than an enum plus two switches.
  * The rows must stay in step with the transformer_rotate() call sites in
  * forward/ — that pairing is what check_weight_names enforces. */
-#define MIXER_ANY ((enum transformer_mixer_kind) - 1)
+constexpr enum transformer_mixer_kind MIXER_ANY = (enum transformer_mixer_kind) - 1;
 
 static const struct {
     const char                 *name;
@@ -43,7 +43,7 @@ static const struct {
         {"ffn_down", MIXER_ANY, offsetof(struct transformer_layer_weights, down_proj_w)},
 };
 
-enum { ROT_KIND_COUNT = (int) (sizeof ROT_KINDS / sizeof ROT_KINDS[0]) };
+constexpr int ROT_KIND_COUNT = (int) (sizeof ROT_KINDS / sizeof ROT_KINDS[0]);
 
 static bool kind_on_layer(size_t k, enum transformer_mixer_kind mixer) {
     return ROT_KINDS[k].mixer == MIXER_ANY || ROT_KINDS[k].mixer == mixer;

@@ -16,7 +16,7 @@ struct transformer_arch_state;
  * tokens) and the MTP head produce more than one row of logits per call, and
  * they carry a handful of tokens. An m_max x vocab slab would dominate the
  * pool for a large vocabulary (127 MiB at m_max 128, 248k vocab). */
-#define TRANSFORMER_LOGITS_ROWS 32u
+constexpr unsigned TRANSFORMER_LOGITS_ROWS = 32u;
 
 struct transformer_scratch_plan {
     size_t hidden;

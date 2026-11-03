@@ -16,10 +16,10 @@
 
 #include <stddef.h>
 
-#define MEL_FRAME_LENGTH 320
-#define MEL_FFT_LENGTH 512
-#define MEL_N_FFT_BINS 257 /* MEL_FFT_LENGTH / 2 + 1 */
-#define MEL_N_MEL 128
+constexpr int MEL_FRAME_LENGTH = 320;
+constexpr int MEL_FFT_LENGTH   = 512;
+constexpr int MEL_N_FFT_BINS   = MEL_FFT_LENGTH / 2 + 1; /* 257 */
+constexpr int MEL_N_MEL        = 128;
 
 struct MelState;
 
