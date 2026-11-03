@@ -1212,21 +1212,49 @@ static void run_fused_matvec_case(
  * same arithmetic, but the shader compiler (fast math) may group it
  * otherwise, so within 1e-6 of the output scale (Q6_K: bit-identical). */
 static void run_mv_m8_case(struct geist_backend *mt, int dtype, size_t n_in, size_t n_out) {
-    const struct geist_backend_vtbl  *v  = mt->desc->vtbl;
-    const struct geist_backend_fused *f  = geist_backend_fused_tbl(mt);
-    struct metal_state               *st = mt->state;
-    void **const pipe = dtype == GEIST_DTYPE_Q4_K ? &st->q4k_m8_pipeline : &st->q6k_m8_pipeline;
-    enum { ROWS = 8 };
+    const struct geist_backend_vtbl  *v    = mt->desc->vtbl;
+    const struct geist_backend_fused *f    = geist_backend_fused_tbl(mt);
+    struct metal_state               *st   = mt->state;
+    void **const                      pipe = dtype == GEIST_DTYPE_Q4_K   ? &st->q4k_m8_pipeline
+                                             : dtype == GEIST_DTYPE_Q6_K ? &st->q6k_m8_pipeline
+                                             : dtype == GEIST_DTYPE_Q4_0 ? &st->q40_r3_pipeline
+                                             : dtype == GEIST_DTYPE_Q4_1 ? &st->q41_r3_pipeline
+                                             : dtype == GEIST_DTYPE_Q8_0 ? &st->q80_r3_pipeline
+                                                                         : &st->q5k_r3_pipeline;
+    /* The #401 formats take the GEMM from 8 rows, so their pass is 7 rows,
+     * and must never reach the naive linear_* kernels, which made a 2-row
+     * verify of the Q4_0 27B cost five decode steps: with those pipelines
+     * unset, a row routed to them stays unwritten (NaN) and fails below. */
+    const bool   r23           = dtype != GEIST_DTYPE_Q4_K && dtype != GEIST_DTYPE_Q6_K;
+    void **const naive[2]      = {!r23                        ? nullptr
+                                  : dtype == GEIST_DTYPE_Q4_0 ? &st->q40_pipeline
+                                  : dtype == GEIST_DTYPE_Q4_1 ? &st->q41_pipeline
+                                  : dtype == GEIST_DTYPE_Q8_0 ? &st->q80_pipeline
+                                                              : &st->q5k_pipeline,
+                                  !r23                        ? nullptr
+                                  : dtype == GEIST_DTYPE_Q4_0 ? &st->q40_m8_pipeline
+                                  : dtype == GEIST_DTYPE_Q4_1 ? &st->q41_m8_pipeline
+                                  : dtype == GEIST_DTYPE_Q8_0 ? &st->q80_m8_pipeline
+                                                              : &st->q5k_m8_pipeline};
+    void        *naive_keep[2] = {nullptr, nullptr};
+    for (size_t i = 0; r23 && i < 2; i++) {
+        naive_keep[i] = *naive[i];
+        *naive[i]     = nullptr;
+    }
+    const size_t         ROWS = r23 ? 7u : 8u;
     struct geist_buffer *bx = nullptr, *bw = nullptr, *by = nullptr;
     struct geist_tensor  tw;
-    float               *x = dev_alloc(mt, ROWS * n_in * sizeof(float), &bx);
+    float               *x  = dev_alloc(mt, ROWS * n_in * sizeof(float), &bx);
+    float               *yv = nullptr;
     bool   ok  = x != nullptr && quant_weight(mt, dtype, n_in, n_out, &bw, &tw) != nullptr &&
-                 dev_alloc(mt, ROWS * n_out * sizeof(float), &by) != nullptr;
+                 (yv = dev_alloc(mt, ROWS * n_out * sizeof(float), &by)) != nullptr;
     float *got = malloc(4 * ROWS * n_out * sizeof(float));
     float *xs  = malloc(ROWS * n_in * sizeof(float));
     ok         = ok && got != nullptr && xs != nullptr && *pipe != nullptr;
     check(ok, "mv m8 buffers");
     if (!ok) {
+        for (size_t i = 0; r23 && i < 2; i++)
+            *naive[i] = naive_keep[i];
         free(got);
         free(xs);
         return;
@@ -1243,7 +1271,8 @@ static void run_mv_m8_case(struct geist_backend *mt, int dtype, size_t n_in, siz
     struct geist_tensor tx = f32_row(bx, n_in), ty = f32_row(by, n_out);
     tx.shape[0] = ty.shape[0] = ROWS;
 #define M8_RUN(dst, rows)                                                                 \
-    (tx.shape[0] = ty.shape[0] = (int64_t) (rows),                                        \
+    (memset(yv, 0xff, ROWS * n_out * sizeof(float)),                                      \
+     tx.shape[0] = ty.shape[0] = (int64_t) (rows),                                        \
      f->linear_t(mt, &tx, &ww, &tw, (rows), &ty) == GEIST_OK &&                           \
              v->buffer_download((rows) * n_out * sizeof(float), (uint8_t *) (dst), by) == \
                      GEIST_OK)
@@ -1269,15 +1298,27 @@ static void run_mv_m8_case(struct geist_backend *mt, int dtype, size_t n_in, siz
     }
     check(ok, "mv m8 dispatch");
     check(iso, "2..8-row matvec: a row's output does not depend on the other rows");
+    bool written = ok;
+    for (size_t i = 0; written && i < ROWS * n_out; i++)
+        written = isfinite(one[i]) && isfinite(per[i]) && isfinite(rev[i]);
+    check(written, "2..8-row matvec writes every row (no naive kernel)");
     check(md / big < 1e-6 && (dtype != GEIST_DTYPE_Q6_K || md == 0.0),
           "2..8-row matvec matches one n4 matvec per row");
-    printf("  %s %zu->%zu, 2..8 rows in one pass: rows independent %s, vs n4 per row max_rel "
+    printf("  %s %zu->%zu, 2..%zu rows in one pass: rows independent %s, vs n4 per row max_rel "
            "%.1e\n",
-           dtype == GEIST_DTYPE_Q4_K ? "Q4_K" : "Q6_K",
+           dtype == GEIST_DTYPE_Q4_K   ? "Q4_K"
+           : dtype == GEIST_DTYPE_Q6_K ? "Q6_K"
+           : dtype == GEIST_DTYPE_Q4_0 ? "Q4_0"
+           : dtype == GEIST_DTYPE_Q4_1 ? "Q4_1"
+           : dtype == GEIST_DTYPE_Q8_0 ? "Q8_0"
+                                       : "Q5_K",
            n_in,
            n_out,
+           ROWS,
            iso ? "yes" : "NO",
            md / big);
+    for (size_t i = 0; r23 && i < 2; i++)
+        *naive[i] = naive_keep[i];
     free(got);
     free(xs);
     v->buffer_destroy(mt, by);
@@ -2048,6 +2089,13 @@ int main(void) {
     run_mv_m8_case(mt, GEIST_DTYPE_Q4_K, 4096, 2048);
     run_mv_m8_case(mt, GEIST_DTYPE_Q6_K, 1024, 302);
     run_mv_m8_case(mt, GEIST_DTYPE_Q6_K, 2048, 4096);
+    run_mv_m8_case(mt, GEIST_DTYPE_Q4_0, 2048, 514);
+    run_mv_m8_case(mt, GEIST_DTYPE_Q4_0, 4096, 2048);
+    run_mv_m8_case(mt, GEIST_DTYPE_Q4_1, 1024, 302);
+    run_mv_m8_case(mt, GEIST_DTYPE_Q4_1, 2048, 2048);
+    run_mv_m8_case(mt, GEIST_DTYPE_Q8_0, 2048, 514);
+    run_mv_m8_case(mt, GEIST_DTYPE_Q5_K, 1536, 1028);
+    run_mv_m8_case(mt, GEIST_DTYPE_Q5_K, 2048, 2048);
     run_q4k_half_case(mt, 1536, 1100);
     run_q4k_half_case(mt, 512, 1030);
 #endif

@@ -1,0 +1,99 @@
+# scripts/check_static.py: known findings; this list only shrinks.
+# count, file, check, message. Regenerate with --update.
+1	include/geist_backend.h	clang-analyzer-core.NullDereference	Access to field 'fused' results in a dereference of a null pointer (loaded from field 'desc')
+2	src/archs/audio_conformer/arch.c	bugprone-assignment-in-if-condition	an assignment within an 'if' condition is bug-prone
+1	src/archs/audio_conformer/audio_encoder.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+1	src/archs/audio_conformer/audio_kernels.c	clang-analyzer-deadcode.DeadStores	Value stored to 'm' during its initialization is never read
+3	src/archs/audio_conformer/encoder_forward.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+2	src/archs/audio_conformer/encoder_forward.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+5	src/archs/audio_conformer/encoder_stream.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+1	src/archs/audio_conformer/encoder_weights.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+1	src/archs/transformer/arch_state.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'unsigned int'
+1	src/archs/transformer/arch_state.c	bugprone-invalid-enum-default-initialization	enum value of type 'geist_moe_gating' initialized with invalid value of 0, enum doesn't have a zero-value enumerator
+2	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Access to field 'desc' results in a dereference of a null pointer (loaded from variable 'be')
+1	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Access to field 'split' results in a dereference of a null pointer (loaded from variable 'state')
+1	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Access to field 'vtbl' results in a dereference of a null pointer (loaded from field 'desc')
+1	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Dereference of null pointer
+1	src/archs/transformer/families/llama.c	bugprone-assignment-in-if-condition	an assignment within an 'if' condition is bug-prone
+1	src/archs/transformer/families/llama4.c	bugprone-assignment-in-if-condition	an assignment within an 'if' condition is bug-prone
+2	src/archs/transformer/families/llama4.c	bugprone-narrowing-conversions	narrowing conversion from 'unsigned long long' to signed type 'int64_t' (aka 'long long') is implementation-defined
+2	src/archs/transformer/forward/attention.c	clang-analyzer-core.UndefinedBinaryOperatorResult	The right operand of '*' is a garbage value
+3	src/archs/transformer/forward/blocks.c	bugprone-misplaced-widening-cast	either cast from 'size_t' (aka 'unsigned long') to 'int64_t' (aka 'long long') is ineffective, or there is loss of precision before the conversion
+12	src/archs/transformer/forward/blocks.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
+4	src/archs/transformer/forward/blocks.c	bugprone-narrowing-conversions	narrowing conversion from 'unsigned long long' to signed type 'int64_t' (aka 'long long') is implementation-defined
+1	src/archs/transformer/forward/decision_rows.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'unsigned int'
+3	src/archs/transformer/forward/decision_rows.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
+9	src/archs/transformer/forward/head.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
+4	src/archs/transformer/forward/kv_store.c	bugprone-misplaced-widening-cast	either cast from 'size_t' (aka 'unsigned long') to 'int64_t' (aka 'long long') is ineffective, or there is loss of precision before the conversion
+18	src/archs/transformer/forward/kv_store.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
+1	src/archs/transformer/forward/layer.c	bugprone-misplaced-widening-cast	either cast from 'size_t' (aka 'unsigned long') to 'int64_t' (aka 'long long') is ineffective, or there is loss of precision before the conversion
+16	src/archs/transformer/forward/layer.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
+10	src/archs/transformer/forward/layer_deltanet.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
+1	src/archs/transformer/forward/layer_deltanet.c	clang-analyzer-core.UndefinedBinaryOperatorResult	The left operand of '*' is a garbage value
+9	src/archs/transformer/forward/layer_ple.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
+1	src/archs/transformer/forward/moe.c	clang-analyzer-core.NullDereference	Access to field 'be' results in a dereference of a null pointer (loaded from field 'moe_gpu')
+1	src/archs/transformer/forward/moe.c	clang-analyzer-core.NullDereference	Access to field 'one_wait' results in a dereference of a null pointer (loaded from field 'moe_gpu')
+2	src/archs/transformer/forward/moe.c	clang-analyzer-core.UndefinedBinaryOperatorResult	The left operand of '>' is a garbage value
+1	src/archs/transformer/forward/mtp.c	bugprone-misplaced-widening-cast	either cast from 'size_t' (aka 'unsigned long') to 'int64_t' (aka 'long long') is ineffective, or there is loss of precision before the conversion
+2	src/archs/transformer/forward/mtp.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
+2	src/archs/transformer/forward/probes.c	bugprone-misplaced-widening-cast	either cast from 'int' to 'size_t' (aka 'unsigned long') is ineffective, or there is loss of precision before the conversion
+1	src/archs/transformer/forward/spec_head.c	clang-analyzer-optin.taint.TaintedDiv	Division by a tainted value, possibly zero
+4	src/archs/transformer/forward/step.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
+4	src/archs/transformer/moe_gpu.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+1	src/archs/transformer/moe_gpu.c	bugprone-unchecked-string-to-number-conversion	'sscanf' used to convert a string to an unsigned integer value, but function will not report conversion errors; consider using 'strtoul' instead
+1	src/archs/transformer/moe_gpu.c	clang-analyzer-core.CallAndMessage	3rd function call argument is an uninitialized value
+1	src/archs/transformer/moe_gpu.c	clang-analyzer-core.UndefinedBinaryOperatorResult	The right operand of '+' is a garbage value
+1	src/archs/transformer/moe_gpu.c	clang-analyzer-deadcode.DeadStores	Value stored to 'rows' is never read
+1	src/archs/transformer/moe_gpu.c	clang-analyzer-security.ArrayBound	Potential out of bound access to the region with tainted offset
+1	src/archs/transformer/moe_profile.c	bugprone-unchecked-string-to-number-conversion	'fscanf' used to convert a string to an integer value, but function will not report conversion errors; consider using 'strtol' instead
+2	src/archs/transformer/moe_profile.c	bugprone-unchecked-string-to-number-conversion	'fscanf' used to convert a string to an unsigned integer value, but function will not report conversion errors; consider using 'strtoul' instead
+1	src/archs/transformer/moe_profile.c	bugprone-unchecked-string-to-number-conversion	'fscanf' used to convert a string to an unsigned integer value, but function will not report conversion errors; consider using 'strtoull' instead
+1	src/archs/transformer/rotation.c	clang-analyzer-optin.core.EnumCastOutOfRange	The value '-1' provided to the cast expression is not in the valid range of values for 'transformer_mixer_kind'
+2	src/archs/transformer/scratch_plan.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'unsigned int'
+1	src/archs/transformer/weight_load/layer_wiring.c	bugprone-assignment-in-if-condition	an assignment within an 'if' condition is bug-prone
+4	src/archs/vision_siglip/vision_encoder.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+1	src/archs/vision_siglip/vision_encoder.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+1	src/backends/common/gemma4_kernels.c	clang-analyzer-unix.cstring.NullArg	Null pointer passed as 1st argument to memory copy function
+1	src/backends/cpu_neon/attention_kv.h	clang-analyzer-core.UndefinedBinaryOperatorResult	The right operand of '*' is a garbage value
+1	src/backends/cpu_neon/internal.h	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+3	src/backends/cpu_neon/kernels/iq2_s.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+1	src/backends/cpu_neon/kernels/iq3_s.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+2	src/backends/cpu_neon/kernels/iq4_xs.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+1	src/backends/cpu_neon/kernels/pq2_0.c	bugprone-casting-through-void	do not cast 'int8_t *' (aka 'signed char *') to 'int32_t *' (aka 'int *') through 'void *'; use reinterpret_cast instead
+8	src/backends/cpu_neon/kernels/pq2_0.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+8	src/backends/cpu_neon/kernels/q3_K.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+1	src/backends/cpu_neon/kernels/q4_01.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+6	src/backends/cpu_neon/kernels/q4_01.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+33	src/backends/cpu_neon/kernels/q4_K.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+1	src/backends/cpu_neon/kernels/q4_K.c	clang-analyzer-core.NullDereference	Array access (from variable 'x_scales') results in a null pointer dereference
+1	src/backends/cpu_neon/kernels/q4_K.c	clang-analyzer-unix.cstring.NullArg	Null pointer passed as 1st argument to memory copy function
+1	src/backends/cpu_neon/kernels/q4_K.c	clang-analyzer-unix.cstring.NullArg	Null pointer passed as 2nd argument to memory copy function
+33	src/backends/cpu_neon/kernels/q6_K.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+8	src/backends/cpu_neon/kernels/q6_K.c	bugprone-narrowing-conversions	narrowing conversion from 'int' to signed type 'int8_t' (aka 'signed char') is implementation-defined
+2	src/backends/cpu_neon/kernels/q6_K.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int' is implementation-defined
+4	src/backends/cpu_neon/kernels/q6_K.c	bugprone-signed-char-misuse	'signed char' to 'int32_t' (aka 'int') conversion; consider casting to 'unsigned char' first.
+1	src/backends/cpu_neon/kernels/q6_K.c	clang-analyzer-core.NullDereference	Array access (from variable 'bsums_tl') results in a null pointer dereference
+1	src/backends/cpu_neon/kernels/q6_K.c	clang-analyzer-core.NullDereference	Array access (from variable 'q6kxs_tl') results in a null pointer dereference
+1	src/backends/cpu_neon/kernels/q6_K.c	clang-analyzer-unix.cstring.NullArg	Null pointer passed as 1st argument to memory copy function
+4	src/backends/cpu_neon/kernels/q8_0.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+8	src/backends/cpu_neon/kernels/tq2_0.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+1	src/backends/cpu_neon/tl1.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+1	src/backends/cpu_neon/transformer_ops.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+1	src/backends/cpu_neon/weight_resolve.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+9	src/backends/metal/ops.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'unsigned int'
+1	src/backends/metal/pipelines.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'unsigned int'
+1	src/backends/metal/resources.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'long' of a multiplication performed in type 'int'
+1	src/base/cpu_limit.c	bugprone-reserved-identifier	declaration uses identifier '_GNU_SOURCE', which is a reserved identifier
+1	src/base/fnv1a.h	clang-analyzer-core.uninitialized.Assign	Assigned value is uninitialized
+1	src/base/omp_idle.c	bugprone-reserved-identifier	declaration uses identifier '_POSIX_C_SOURCE', which is a reserved identifier
+1	src/base/par.c	bugprone-reserved-identifier	declaration uses identifier '_DARWIN_C_SOURCE', which is a reserved identifier
+1	src/base/par.c	bugprone-reserved-identifier	declaration uses identifier '_POSIX_C_SOURCE', which is a reserved identifier
+1	src/engine/backend.c	clang-analyzer-security.VAList	va_end() is called on an uninitialized va_list
+1	src/engine/model.c	clang-analyzer-core.NullDereference	Access to field 'auto_backend' results in a dereference of a null pointer
+1	src/engine/sampler_penalties.c	clang-analyzer-unix.cstring.NullArg	Null pointer passed as 1st argument to memory copy function
+1	src/engine/session.c	clang-analyzer-core.uninitialized.Assign	Assigned value is uninitialized
+2	src/formats/gguf/iq2_s.c	bugprone-narrowing-conversions	narrowing conversion from 'int' to 'float'
+2	src/formats/gguf/iq3_s.c	bugprone-narrowing-conversions	narrowing conversion from 'int' to 'float'
+8	src/formats/gguf/q3_K.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+4	src/formats/gguf/q6_K.c	bugprone-narrowing-conversions	narrowing conversion from 'int' to signed type 'int8_t' (aka 'signed char') is implementation-defined
+1	src/io/gguf_reader.c	bugprone-unused-return-value	the value returned by this function should not be disregarded; neglecting it may lead to errors
