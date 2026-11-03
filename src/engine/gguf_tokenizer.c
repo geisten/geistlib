@@ -164,6 +164,15 @@ static void sort_specials(struct gguf_tokenizer *tok) {
     }
 }
 
+/* special_first from both runs of the specials. */
+static void index_special_first(struct gguf_tokenizer *tok) {
+    memset(tok->special_first, 0, sizeof tok->special_first);
+    for (size_t s = 0; s < tok->n_specials + tok->n_user_specials; s++)
+        if (tok->specials[s].len > 0)
+            tok->special_first[(unsigned char) tok->specials[s].text[0]] |=
+                    s < tok->n_specials ? 1 : 2;
+}
+
 /* Control-looking strings llama.cpp marks CONTROL whatever their token_type
  * (llama_vocab::impl::load, "control-looking token ... will be overridden"):
  * its end-of-generation list (which holds the EOT / EOM lists) always, and
@@ -245,12 +254,18 @@ static const struct {
 #undef FW
 #undef LB
 
-/* Whether token_type tt (null: absent) makes vocab entry i a special token:
- * UNKNOWN(2), CONTROL(3) or USER_DEFINED(4). */
-static bool special_type(const uint8_t *tt, size_t i) {
+/* token_type tt[i] (null: absent, NORMAL). */
+static int32_t token_type_at(const uint8_t *tt, size_t i) {
     int32_t t = 1;
     if (tt != nullptr)
         memcpy(&t, tt + i * 4, 4);
+    return t;
+}
+
+/* Whether token_type tt (null: absent) makes vocab entry i a special token:
+ * UNKNOWN(2), CONTROL(3) or USER_DEFINED(4). */
+static bool special_type(const uint8_t *tt, size_t i) {
+    const int32_t t = token_type_at(tt, i);
     return t == 2 || t == 3 || t == 4;
 }
 
@@ -261,7 +276,16 @@ static bool special_type(const uint8_t *tt, size_t i) {
  * longest first, so leftmost-longest matching in encode is a linear scan;
  * without them Llama 3's <|begin_of_text|> is shredded into
  * `< | begin _ of _ text | >`. Needs the vocab index. Leaves no specials when
- * the list cannot be allocated, as before #404. */
+ * the list cannot be allocated, as before #404.
+ *
+ * The `user` ones (#409) are the entries llama.cpp still matches with
+ * parse_special=false: attr USER_DEFINED without CONTROL or UNKNOWN, which
+ * is token_type 4 unless the string is control-looking (the promotion ORs
+ * CONTROL in). Not mirrored: llama.cpp's gpt-oss hack, which makes
+ * "<|start|>", "<|channel|>", "<|message|>", "<|constrain|>" and (with
+ * "<|return|>" and "<|call|>") "<|end|>" USER_DEFINED, so that they are
+ * matched in plain text too; here they stay role markers that plain text
+ * cannot spell. */
 static void load_specials(struct gguf_tokenizer *tok, const struct gguf_ctx *ctx) {
     uint32_t       tt_vt = 0, u;
     uint64_t       tt_n  = 0;
@@ -272,8 +296,9 @@ static void load_specials(struct gguf_tokenizer *tok, const struct gguf_ctx *ctx
     const int32_t s_close =
             vocab_lookup(tok, "<|tool_response>", 16) >= 0 ? vocab_lookup(tok, "</s>", 4) : -1;
     constexpr size_t N_LOOKING = sizeof CONTROL_LOOKING / sizeof CONTROL_LOOKING[0];
-    int32_t          looking[N_LOOKING]; /* the ones not special by type */
-    size_t           n_looking = 0, n_sp = 0;
+    int32_t          promoted[N_LOOKING]; /* every control-looking entry */
+    int32_t          looking[N_LOOKING];  /* the ones not special by type */
+    size_t           n_promoted = 0, n_looking = 0, n_sp = 0, n_user = 0;
     for (size_t c = 0; c < N_LOOKING; c++) {
         const char *const *keys   = FIM_KEYS[CONTROL_LOOKING[c].fim];
         bool               has_id = false;
@@ -282,24 +307,46 @@ static void load_specials(struct gguf_tokenizer *tok, const struct gguf_ctx *ctx
                                 u < tok->vocab_size);
         const char   *text = CONTROL_LOOKING[c].text;
         const int32_t id   = has_id ? -1 : vocab_lookup(tok, text, strlen(text));
-        if (id >= 0 && id != s_close && !special_type(tt, (size_t) id))
+        if (id < 0 || id == s_close)
+            continue;
+        promoted[n_promoted++] = id;
+        if (!special_type(tt, (size_t) id))
             looking[n_looking++] = id;
     }
-    for (size_t i = 0; tt != nullptr && i < tok->vocab_size; i++)
-        n_sp += special_type(tt, i) && (int32_t) i != s_close;
+    for (size_t i = 0; tt != nullptr && i < tok->vocab_size; i++) {
+        if (!special_type(tt, i) || (int32_t) i == s_close)
+            continue;
+        n_sp++;
+        bool user = token_type_at(tt, i) == 4;
+        for (size_t c = 0; user && c < n_promoted; c++)
+            user = promoted[c] != (int32_t) i;
+        n_user += user;
+    }
     if (n_sp + n_looking == 0)
         return;
-    tok->specials = heap_alloc_array_aligned(struct gguf_tokenizer_special, n_sp + n_looking);
+    tok->specials =
+            heap_alloc_array_aligned(struct gguf_tokenizer_special, n_sp + n_looking + n_user);
     if (tok->specials == nullptr)
         return;
     for (size_t i = 0; i < tok->vocab_size + n_looking; i++) {
         const size_t id = i < tok->vocab_size ? i : (size_t) looking[i - tok->vocab_size];
         if (i < tok->vocab_size && (!special_type(tt, i) || (int32_t) i == s_close))
             continue;
-        tok->specials[tok->n_specials++] = (struct gguf_tokenizer_special) {
-                .text = tok->token_str[id], .len = tok->token_len[id], .id = (int32_t) id};
+        bool user = i < tok->vocab_size && token_type_at(tt, i) == 4;
+        for (size_t c = 0; user && c < n_promoted; c++)
+            user = promoted[c] != (int32_t) id;
+        tok->specials[tok->n_specials++] =
+                (struct gguf_tokenizer_special) {.text = tok->token_str[id],
+                                                 .len  = tok->token_len[id],
+                                                 .id   = (int32_t) id,
+                                                 .user = user};
     }
     sort_specials(tok);
+    /* The user run, in the same longest-first order. */
+    for (size_t s = 0; s < tok->n_specials; s++)
+        if (tok->specials[s].user)
+            tok->specials[tok->n_specials + tok->n_user_specials++] = tok->specials[s];
+    index_special_first(tok);
 }
 
 /* Build the vocab + merges hash indices over token_str / merge_*. Both
@@ -673,9 +720,10 @@ void gguf_tokenizer_unload(struct gguf_tokenizer *tok) {
         safe_free(&p);
         tok->specials = nullptr;
     }
-    tok->vocab_size = 0;
-    tok->n_merges   = 0;
-    tok->n_specials = 0;
+    tok->vocab_size      = 0;
+    tok->n_merges        = 0;
+    tok->n_specials      = 0;
+    tok->n_user_specials = 0;
 }
 
 /* Copy-mode loader. Calls the mmap-pointing loader first, then
@@ -709,9 +757,9 @@ void gguf_tokenizer_unload(struct gguf_tokenizer *tok) {
         tok->token_str[i] = tok->vocab_arena + off;
         off += tok->token_len[i];
     }
-    /* Specials alias into token_str[id]; re-point to the freshly-copied
-     * vocab arena bytes so they survive the gguf_ctx close. */
-    for (size_t s = 0; s < tok->n_specials; s++) {
+    /* Specials (both runs) alias into token_str[id]; re-point to the
+     * freshly-copied vocab arena bytes so they survive the gguf_ctx close. */
+    for (size_t s = 0; s < tok->n_specials + tok->n_user_specials; s++) {
         int32_t id = tok->specials[s].id;
         if (id >= 0 && (size_t) id < tok->vocab_size) {
             tok->specials[s].text = tok->token_str[id];
@@ -869,8 +917,9 @@ static bool parse_tokenizer_bin(struct gguf_tokenizer *tok, const uint8_t *p, co
         if (!rd_str(&p, end, &tok->specials[i].text, &tok->specials[i].len)) {
             goto truncated;
         }
-        tok->specials[i].id = id;
-        tok->n_specials     = i + 1;
+        tok->specials[i].id   = id;
+        tok->specials[i].user = false; /* no token types: none is plain text */
+        tok->n_specials       = i + 1;
     }
     return true;
 
@@ -915,6 +964,7 @@ oom:
         return false;
     }
     sort_specials(tok);
+    index_special_first(tok);
     tok->mode          = GGUF_TOK_MODE_SPM;
     tok->tokenizer_bin = true;
     tok->add_bos       = true; /* the Gemma models it serves expect BOS (#263) */
@@ -1738,12 +1788,51 @@ static size_t spm_chunk_to_ids(
     return bpe_chunk_to_ids(tok, buf, len, out, cap, true);
 }
 
+/* The special tokens one encode matches (#409): all of tok's, except that
+ * inside the caller's plain ranges only the `user` ones are, and a special
+ * that reaches into a plain range is not matched at all. plain is null when
+ * there are no plain ranges (gguf_tokenizer_encode), else one byte per text
+ * byte, 1 inside a range. */
+struct special_scan {
+    const struct gguf_tokenizer_special *all, *user;
+    size_t                               n_all, n_user;
+    const uint8_t                       *first; /* tok->special_first */
+    const uint8_t                       *plain;
+};
+
+/* The longest special token the scan matches at text[p], p < tlen: its
+ * length, and its id in *id; 0 when none. specials are sorted longest
+ * first, so the first allowed hit is the leftmost-longest match. */
+static inline size_t special_at(const struct special_scan *sc,
+                                size_t                     tlen,
+                                size_t                     p,
+                                const char                 text[static tlen],
+                                int32_t                   *id) {
+    const bool in_plain = sc->plain != nullptr && sc->plain[p] != 0;
+    if ((sc->first[(unsigned char) text[p]] & (in_plain ? 2 : 1)) == 0)
+        return 0;
+    const struct gguf_tokenizer_special *sp = in_plain ? sc->user : sc->all;
+    const size_t                         n  = in_plain ? sc->n_user : sc->n_all;
+    for (size_t s = 0; s < n; s++) {
+        const size_t slen = sp[s].len;
+        if (slen == 0 || slen > tlen - p || text[p] != sp[s].text[0] ||
+            memcmp(text + p, sp[s].text, slen) != 0)
+            continue;
+        if (!sp[s].user && sc->plain != nullptr && memchr(sc->plain + p, 1, slen) != nullptr)
+            continue; /* reaches into a plain range */
+        *id = sp[s].id;
+        return slen;
+    }
+    return 0;
+}
+
 /* SentencePiece encode: there is no GPT-2 pre-tokenizer split — the algorithm
  * runs over each whole inter-special chunk after ▁ normalization (space → ▁,
  * plus an optional leading ▁ when add_space_prefix). Unknown symbols fall
  * back to <0xXX> byte tokens. Covers both the merge-driven (SPM) and unigram
  * paths via spm_chunk_to_ids. */
 static bool encode_spm(const struct gguf_tokenizer *tok,
+                       const struct special_scan   *sc,
                        const char                  *text,
                        int32_t                     *out_ids,
                        size_t                       cap,
@@ -1788,26 +1877,20 @@ static bool encode_spm(const struct gguf_tokenizer *tok,
     } while (0)
 
     while (i < tlen) {
-        bool matched = false;
-        for (size_t s = 0; s < tok->n_specials && *n_out < cap; s++) {
-            const size_t slen = tok->specials[s].len;
-            if (slen == 0 || i + slen > tlen)
-                continue;
-            if (memcmp(text + i, tok->specials[s].text, slen) == 0) {
-                if (chunk_start < i)
-                    SPM_FLUSH(i);
-                /* SPM_FLUSH may have filled the buffer to cap; guard the
-                 * special-token write so it truncates instead of overflowing. */
-                if (*n_out < cap)
-                    out_ids[(*n_out)++] = tok->specials[s].id;
-                i += slen;
-                chunk_start = i;
-                matched     = true;
-                break;
-            }
-        }
-        if (!matched)
+        int32_t      id   = -1;
+        const size_t slen = *n_out < cap ? special_at(sc, tlen, i, text, &id) : 0;
+        if (slen == 0) {
             i++;
+            continue;
+        }
+        if (chunk_start < i)
+            SPM_FLUSH(i);
+        /* SPM_FLUSH may have filled the buffer to cap; guard the
+         * special-token write so it truncates instead of overflowing. */
+        if (*n_out < cap)
+            out_ids[(*n_out)++] = id;
+        i += slen;
+        chunk_start = i;
     }
     if (chunk_start < tlen)
         SPM_FLUSH(tlen);
@@ -2080,13 +2163,14 @@ size_t gguf_tokenizer_seq_split(enum gguf_pre_seq kind,
  * once gguf_tokenizer_encode has refused modes that cannot encode. A full
  * buffer is therefore ambiguous; the caller resolves it. */
 static bool encode_upto(const struct gguf_tokenizer *tok,
+                        const struct special_scan   *sc,
                         const char                  *text,
                         int32_t                     *out_ids,
                         size_t                       cap,
                         size_t                      *n_out) {
     *n_out = 0;
     if (tok->mode == GGUF_TOK_MODE_SPM || tok->mode == GGUF_TOK_MODE_UNIGRAM)
-        return encode_spm(tok, text, out_ids, cap, n_out);
+        return encode_spm(tok, sc, text, out_ids, cap, n_out);
     if (tok->mode != GGUF_TOK_MODE_GPT2)
         return false;
 
@@ -2116,38 +2200,23 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
      * it, so the match below is skipped until i reaches it (#403). */
     size_t next_special = 0;
     while (i < tlen) {
-        /* Leftmost-longest special-token match at current position. The
-         * specials array is sorted by len desc, so the first hit IS the
-         * longest possible match at this offset. */
-        bool matched_special = false;
-        for (size_t s = 0; s < tok->n_specials && *n_out < cap && i >= next_special; s++) {
-            size_t slen = tok->specials[s].len;
-            if (slen == 0 || i + slen > tlen)
-                continue;
-            if (memcmp(text + i, tok->specials[s].text, slen) == 0) {
-                out_ids[(*n_out)++] = tok->specials[s].id;
-                i += slen;
-                matched_special = true;
-                break;
-            }
-        }
-        if (matched_special)
+        /* Leftmost-longest special-token match at current position. */
+        int32_t      sp_id = -1;
+        const size_t sp_len =
+                *n_out < cap && i >= next_special ? special_at(sc, tlen, i, text, &sp_id) : 0;
+        if (sp_len != 0) {
+            out_ids[(*n_out)++] = sp_id;
+            i += sp_len;
             continue;
+        }
 
         if (tok->pre_seq != GGUF_PRE_NONE) {
             /* The fragment up to the next special token, split as a whole
              * (llama.cpp splits on specials first). */
             size_t frag_end = tlen;
-            for (size_t p = i + 1; p < tlen && frag_end == tlen; p++) {
-                for (size_t s = 0; s < tok->n_specials; s++) {
-                    const size_t slen = tok->specials[s].len;
-                    if (slen != 0 && slen <= tlen - p && text[p] == tok->specials[s].text[0] &&
-                        memcmp(text + p, tok->specials[s].text, slen) == 0) {
-                        frag_end = p;
-                        break;
-                    }
-                }
-            }
+            for (size_t p = i + 1; p < tlen && frag_end == tlen; p++)
+                if (special_at(sc, tlen, p, text, &sp_id) != 0)
+                    frag_end = p;
             size_t n_cp = 0;
             for (size_t b = i; b < frag_end; n_cp++) {
                 size_t adv;
@@ -2186,16 +2255,9 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
              * the marker). next_special stays valid until i passes it. */
             if (next_special <= i) {
                 next_special = tlen;
-                for (size_t p = i + 1; p < tlen && next_special == tlen; p++) {
-                    for (size_t s = 0; s < tok->n_specials; s++) {
-                        const size_t slen = tok->specials[s].len;
-                        if (slen != 0 && slen <= tlen - p && text[p] == tok->specials[s].text[0] &&
-                            memcmp(text + p, tok->specials[s].text, slen) == 0) {
-                            next_special = p;
-                            break;
-                        }
-                    }
-                }
+                for (size_t p = i + 1; p < tlen && next_special == tlen; p++)
+                    if (special_at(sc, tlen, p, text, &sp_id) != 0)
+                        next_special = p;
             }
             const size_t end =
                     tok->pre_gpt4o ? gguf_tokenizer_gpt4o_chunk_end(next_special, i, text)
@@ -2231,17 +2293,7 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
          * — otherwise its first byte gets shredded into the next punct
          * chunk ("\n<|im_start|>" would become "\n<" + "|" + ..., #275). */
         if (i > start && i < tlen) {
-            bool special_follows = false;
-            for (size_t s = 0; s < tok->n_specials; s++) {
-                const size_t slen = tok->specials[s].len;
-                if (slen == 0 || i + slen > tlen)
-                    continue;
-                if (memcmp(text + i, tok->specials[s].text, slen) == 0) {
-                    special_follows = true;
-                    break;
-                }
-            }
-            if (special_follows) {
+            if (special_at(sc, tlen, i, text, &sp_id) != 0) {
                 size_t cb_used = 0;
                 for (size_t b = start; b < i; b++) {
                     uint32_t cp = gpt2_byte_to_codepoint((unsigned char) text[b]);
@@ -2316,6 +2368,16 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
                                                       size_t                       cap,
                                                       int32_t                     *out_ids,
                                                       size_t                      *n_out) {
+    return gguf_tokenizer_encode_plain(tok, text, 0, nullptr, cap, out_ids, n_out);
+}
+
+[[nodiscard]] enum geist_status gguf_tokenizer_encode_plain(const struct gguf_tokenizer   *tok,
+                                                            const char                    *text,
+                                                            size_t                         n_plain,
+                                                            const struct geist_text_range *plain,
+                                                            size_t                         cap,
+                                                            int32_t                       *out_ids,
+                                                            size_t                        *n_out) {
     if (n_out == nullptr)
         return GEIST_E_INVALID_ARG;
     *n_out = 0;
@@ -2323,15 +2385,37 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
      * filled spare proves the text needs more than `cap` IDs. */
     size_t room;
     if (tok == nullptr || text == nullptr || (cap > 0 && out_ids == nullptr) ||
-        ckd_add(&room, cap, 1))
+        (n_plain > 0 && plain == nullptr) || ckd_add(&room, cap, 1))
         return GEIST_E_INVALID_ARG;
+    /* Ascending, disjoint, within the text; covered: some range is not empty. */
+    const size_t tlen    = n_plain > 0 ? strlen(text) : 0;
+    bool         covered = false;
+    for (size_t k = 0; k < n_plain; k++) {
+        if (plain[k].begin > plain[k].end || plain[k].end > tlen ||
+            (k > 0 && plain[k].begin < plain[k - 1].end))
+            return GEIST_E_INVALID_ARG;
+        covered = covered || plain[k].end > plain[k].begin;
+    }
     if (tok->mode == GGUF_TOK_MODE_UNSUPPORTED)
         return GEIST_E_UNSUPPORTED;
+    GEIST_CLEANUP(heap_freep) uint8_t *mask =
+            covered ? heap_calloc_array_aligned(uint8_t, tlen) : nullptr;
+    if (covered && mask == nullptr)
+        return GEIST_E_OOM;
+    for (size_t k = 0; mask != nullptr && k < n_plain; k++)
+        memset(mask + plain[k].begin, 1, plain[k].end - plain[k].begin);
+    const struct special_scan sc = {
+            .all    = tok->specials,
+            .n_all  = tok->n_specials,
+            .user   = tok->specials != nullptr ? tok->specials + tok->n_specials : nullptr,
+            .n_user = tok->n_user_specials,
+            .first  = tok->special_first,
+            .plain  = mask};
     int32_t *ids = heap_alloc_array_aligned(int32_t, room);
     if (ids == nullptr)
         return GEIST_E_OOM;
     size_t            n  = 0;
-    enum geist_status st = encode_upto(tok, text, ids, room, &n) ? GEIST_OK : GEIST_E_OOM;
+    enum geist_status st = encode_upto(tok, &sc, text, ids, room, &n) ? GEIST_OK : GEIST_E_OOM;
     if (st == GEIST_OK && n > cap)
         st = GEIST_E_INVALID_ARG;
     if (st == GEIST_OK && n > 0) {

@@ -91,7 +91,7 @@
   "define_object": {
    "files": {
     "include/geist.h": 5,
-    "include/geist_util.h": 2,
+    "include/geist_util.h": 3,
     "src/archs/audio_conformer/audio_encoder.h": 1,
     "src/archs/audio_conformer/audio_linear.c": 1,
     "src/archs/audio_conformer/encoder_internal.h": 27,
@@ -134,7 +134,7 @@
     "src/io/safetensors_reader.h": 1,
     "src/quant/quant.h": 2
    },
-   "total": 166,
+   "total": 167,
    "what": "object-like #define with a replacement"
   },
   "enum_anonymous": {
