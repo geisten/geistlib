@@ -120,7 +120,8 @@ void metal_profile_add_dispatch(struct metal_state      *st,
 
 static_assert(METAL_PROFILE_STAGE_COUNT <= 64, "stage mask is a uint64_t");
 
-static double metal_cmd_time(struct metal_state *st, void *cmd, const char *selector) {
+static double
+metal_cmd_time(struct metal_state *st, struct metal_cmdbuf_h *cmd, const char *selector) {
     union {
         void *raw;
         double (*fn)(void *, void *);
@@ -131,7 +132,9 @@ static double metal_cmd_time(struct metal_state *st, void *cmd, const char *sele
 /* Buffers complete in commit order and are accounted in that order, so the
  * union of their GPU intervals needs only the latest end seen. A buffer
  * that never ran (GPUEndTime 0: released unwaited) is skipped. */
-void metal_profile_add_cmd_buffer(struct metal_state *st, void *cmd, uint64_t stage_mask) {
+void metal_profile_add_cmd_buffer(struct metal_state    *st,
+                                  struct metal_cmdbuf_h *cmd,
+                                  uint64_t               stage_mask) {
     if (st == nullptr || !st->profile_enabled || cmd == nullptr) {
         return;
     }
@@ -289,8 +292,8 @@ void metal_capture_begin(struct metal_state *st, enum geist_command_sequence_kin
         url_class == nullptr) {
         return;
     }
-    void *mgr     = metal_msg_send_id0(st, mgr_class, "sharedCaptureManager");
-    void *desc    = metal_msg_send_id0(st, desc_class, "new");
+    struct metal_capture_h *mgr  = metal_msg_send_id0(st, mgr_class, "sharedCaptureManager");
+    void                   *desc = metal_msg_send_id0(st, desc_class, "new");
     void *ns_path = metal_msg_send_id_cstr(st, str_class, "stringWithUTF8String:", path);
     if (mgr == nullptr || desc == nullptr || ns_path == nullptr) {
         return;

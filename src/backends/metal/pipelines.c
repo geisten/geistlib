@@ -5,12 +5,13 @@
 #include "metal_pq2_lowp_shaders.h"
 #include "iq_grids.h"
 
-[[nodiscard]] static enum geist_status metal_create_named_pipeline(struct geist_backend *be,
-                                                                   void                 *library,
-                                                                   void                 *ns_string,
-                                                                   const char           *name,
-                                                                   void **out_function,
-                                                                   void **out_pipeline) {
+[[nodiscard]] static enum geist_status
+metal_create_named_pipeline(struct geist_backend     *be,
+                            struct metal_library_h   *library,
+                            void                     *ns_string,
+                            const char               *name,
+                            struct metal_function_h **out_function,
+                            struct metal_pipeline_h **out_pipeline) {
 
     if (be == nullptr || be->state == nullptr || library == nullptr || ns_string == nullptr ||
         name == nullptr || out_function == nullptr || out_pipeline == nullptr) {
@@ -50,37 +51,43 @@
  * here and the release in metal_release_pipeline_tables. A table is
  * built in order and stops at its first failure, so its last row's
  * pipeline is set only once every row's is (metal_ensure_tables). */
+/* offsetof(struct metal_state, FIELD), and a compile error unless the
+ * field is a struct T * (#347): a row cannot name a pipeline as its
+ * library. */
+#define METAL_FIELD(T, FIELD)                         \
+    _Generic(((struct metal_state *) nullptr)->FIELD, \
+            struct T *: offsetof(struct metal_state, FIELD))
 struct metal_pipeline_row {
     size_t      library;
     const char *name;
     size_t      function;
     size_t      pipeline;
 };
-#define METAL_PIPE(LIB, NAME, FIELD)                 \
-    {offsetof(struct metal_state, LIB##_library),    \
-     NAME,                                           \
-     offsetof(struct metal_state, FIELD##_function), \
-     offsetof(struct metal_state, FIELD##_pipeline)}
+#define METAL_PIPE(LIB, NAME, FIELD)                  \
+    {METAL_FIELD(metal_library_h, LIB##_library),     \
+     NAME,                                            \
+     METAL_FIELD(metal_function_h, FIELD##_function), \
+     METAL_FIELD(metal_pipeline_h, FIELD##_pipeline)}
 /* A prefill flash kernel's row: head_dim HD in slot HD/32 - 1. */
-#define METAL_FLASH_PIPE(HD)                                                \
-    {offsetof(struct metal_state, attn_flash_library),                      \
-     "attention_flash_d" #HD,                                               \
-     offsetof(struct metal_state, attention_flash_function[(HD) / 32 - 1]), \
-     offsetof(struct metal_state, attention_flash_pipeline[(HD) / 32 - 1])}
+#define METAL_FLASH_PIPE(HD)                                                 \
+    {METAL_FIELD(metal_library_h, attn_flash_library),                       \
+     "attention_flash_d" #HD,                                                \
+     METAL_FIELD(metal_function_h, attention_flash_function[(HD) / 32 - 1]), \
+     METAL_FIELD(metal_pipeline_h, attention_flash_pipeline[(HD) / 32 - 1])}
 /* A tensor-API prefill flash kernel's row (#314): head_dim HD in slot
  * HD/64 - 1. */
-#define METAL_FLASH_TC_PIPE(HD)                                                \
-    {offsetof(struct metal_state, attn_tc_library),                            \
-     "attention_flash_tc_d" #HD,                                               \
-     offsetof(struct metal_state, attention_flash_tc_function[(HD) / 64 - 1]), \
-     offsetof(struct metal_state, attention_flash_tc_pipeline[(HD) / 64 - 1])}
+#define METAL_FLASH_TC_PIPE(HD)                                                 \
+    {METAL_FIELD(metal_library_h, attn_tc_library),                             \
+     "attention_flash_tc_d" #HD,                                                \
+     METAL_FIELD(metal_function_h, attention_flash_tc_function[(HD) / 64 - 1]), \
+     METAL_FIELD(metal_pipeline_h, attention_flash_tc_pipeline[(HD) / 64 - 1])}
 /* A decode kernel's row (#17): KIND decv or decq, head_dim HD, KV type KV,
  * in slot HD/32 - 1. */
-#define METAL_DEC_PIPE(KIND, HD, KV)                                                  \
-    {offsetof(struct metal_state, attn_decv_library),                                 \
-     "attention_" #KIND "_d" #HD "_" #KV,                                             \
-     offsetof(struct metal_state, attention_##KIND##_##KV##_function[(HD) / 32 - 1]), \
-     offsetof(struct metal_state, attention_##KIND##_##KV##_pipeline[(HD) / 32 - 1])}
+#define METAL_DEC_PIPE(KIND, HD, KV)                                                   \
+    {METAL_FIELD(metal_library_h, attn_decv_library),                                  \
+     "attention_" #KIND "_d" #HD "_" #KV,                                              \
+     METAL_FIELD(metal_function_h, attention_##KIND##_##KV##_function[(HD) / 32 - 1]), \
+     METAL_FIELD(metal_pipeline_h, attention_##KIND##_##KV##_pipeline[(HD) / 32 - 1])}
 #define METAL_N(rows) (sizeof(rows) / sizeof((rows)[0]))
 
 static const struct metal_pipeline_row metal_deltanet_rows[] = {
@@ -297,16 +304,16 @@ static const struct metal_pipeline_row metal_argmax_rows[] = {
  * in order. The sources are split into literals of at most 4095 chars
  * (the -Wpedantic limit), so a unit is often several parts. A nullptr
  * part stands for the IQ3_S grid, see metal_iq3s_grid_source. */
-#define PQ2_LOWP_ROW(KIND, IDX, TILE, SG)                     \
-    {offsetof(struct metal_state, pq2_lowp_library),          \
-     "pq2_" #KIND "_m" #TILE "_s" #SG,                        \
-     offsetof(struct metal_state, pq2_lowp_mm_function[IDX]), \
-     offsetof(struct metal_state, pq2_lowp_mm_pipeline[IDX])}
+#define PQ2_LOWP_ROW(KIND, IDX, TILE, SG)                      \
+    {METAL_FIELD(metal_library_h, pq2_lowp_library),           \
+     "pq2_" #KIND "_m" #TILE "_s" #SG,                         \
+     METAL_FIELD(metal_function_h, pq2_lowp_mm_function[IDX]), \
+     METAL_FIELD(metal_pipeline_h, pq2_lowp_mm_pipeline[IDX])}
 static const struct metal_pipeline_row metal_pq2_i8_rows[] = {
-        {offsetof(struct metal_state, pq2_lowp_library),
+        {METAL_FIELD(metal_library_h, pq2_lowp_library),
          "pq2_i8_x",
-         offsetof(struct metal_state, pq2_lowp_x_function),
-         offsetof(struct metal_state, pq2_lowp_x_pipeline)},
+         METAL_FIELD(metal_function_h, pq2_lowp_x_function),
+         METAL_FIELD(metal_pipeline_h, pq2_lowp_x_pipeline)},
         PQ2_LOWP_ROW(i8, 0, 32, 4),
         PQ2_LOWP_ROW(i8, 1, 64, 4),
         PQ2_LOWP_ROW(i8, 2, 128, 4),
@@ -315,10 +322,10 @@ static const struct metal_pipeline_row metal_pq2_i8_rows[] = {
         PQ2_LOWP_ROW(i8, 5, 128, 8),
 };
 static const struct metal_pipeline_row metal_pq2_f8_rows[] = {
-        {offsetof(struct metal_state, pq2_lowp_library),
+        {METAL_FIELD(metal_library_h, pq2_lowp_library),
          "pq2_f8_x",
-         offsetof(struct metal_state, pq2_lowp_x_function),
-         offsetof(struct metal_state, pq2_lowp_x_pipeline)},
+         METAL_FIELD(metal_function_h, pq2_lowp_x_function),
+         METAL_FIELD(metal_pipeline_h, pq2_lowp_x_pipeline)},
         PQ2_LOWP_ROW(f8, 0, 32, 4),
         PQ2_LOWP_ROW(f8, 1, 64, 4),
         PQ2_LOWP_ROW(f8, 2, 128, 4),
@@ -327,10 +334,10 @@ static const struct metal_pipeline_row metal_pq2_f8_rows[] = {
         PQ2_LOWP_ROW(f8, 5, 128, 8),
 };
 static const struct metal_pipeline_row metal_pq2_i2_rows[] = {
-        {offsetof(struct metal_state, pq2_lowp_library),
+        {METAL_FIELD(metal_library_h, pq2_lowp_library),
          "pq2_i2_x",
-         offsetof(struct metal_state, pq2_lowp_x_function),
-         offsetof(struct metal_state, pq2_lowp_x_pipeline)},
+         METAL_FIELD(metal_function_h, pq2_lowp_x_function),
+         METAL_FIELD(metal_pipeline_h, pq2_lowp_x_pipeline)},
         PQ2_LOWP_ROW(i2, 0, 32, 4),
         PQ2_LOWP_ROW(i2, 1, 64, 4),
         PQ2_LOWP_ROW(i2, 2, 128, 4),
@@ -339,10 +346,10 @@ static const struct metal_pipeline_row metal_pq2_i2_rows[] = {
         PQ2_LOWP_ROW(i2, 5, 128, 8),
 };
 static const struct metal_pipeline_row metal_pq2_h2_rows[] = {
-        {offsetof(struct metal_state, pq2_lowp_library),
+        {METAL_FIELD(metal_library_h, pq2_lowp_library),
          "pq2_h2_x",
-         offsetof(struct metal_state, pq2_lowp_x_function),
-         offsetof(struct metal_state, pq2_lowp_x_pipeline)},
+         METAL_FIELD(metal_function_h, pq2_lowp_x_function),
+         METAL_FIELD(metal_pipeline_h, pq2_lowp_x_pipeline)},
         PQ2_LOWP_ROW(h2, 0, 32, 4),
         PQ2_LOWP_ROW(h2, 1, 64, 4),
         PQ2_LOWP_ROW(h2, 2, 128, 4),
@@ -351,10 +358,10 @@ static const struct metal_pipeline_row metal_pq2_h2_rows[] = {
         PQ2_LOWP_ROW(h2, 5, 128, 8),
 };
 static const struct metal_pipeline_row metal_pq2_c16_rows[] = {
-        {offsetof(struct metal_state, pq2_lowp_library),
+        {METAL_FIELD(metal_library_h, pq2_lowp_library),
          "pq2_c16_x",
-         offsetof(struct metal_state, pq2_lowp_x_function),
-         offsetof(struct metal_state, pq2_lowp_x_pipeline)},
+         METAL_FIELD(metal_function_h, pq2_lowp_x_function),
+         METAL_FIELD(metal_pipeline_h, pq2_lowp_x_pipeline)},
         PQ2_LOWP_ROW(c16, 0, 32, 4),
         PQ2_LOWP_ROW(c16, 1, 64, 4),
         PQ2_LOWP_ROW(c16, 2, 128, 4),
@@ -363,10 +370,10 @@ static const struct metal_pipeline_row metal_pq2_c16_rows[] = {
         PQ2_LOWP_ROW(c16, 5, 128, 8),
 };
 static const struct metal_pipeline_row metal_pq2_c8_rows[] = {
-        {offsetof(struct metal_state, pq2_lowp_library),
+        {METAL_FIELD(metal_library_h, pq2_lowp_library),
          "pq2_c8_x",
-         offsetof(struct metal_state, pq2_lowp_x_function),
-         offsetof(struct metal_state, pq2_lowp_x_pipeline)},
+         METAL_FIELD(metal_function_h, pq2_lowp_x_function),
+         METAL_FIELD(metal_pipeline_h, pq2_lowp_x_pipeline)},
         PQ2_LOWP_ROW(c8, 0, 32, 4),
         PQ2_LOWP_ROW(c8, 1, 64, 4),
         PQ2_LOWP_ROW(c8, 2, 128, 4),
@@ -375,10 +382,10 @@ static const struct metal_pipeline_row metal_pq2_c8_rows[] = {
         PQ2_LOWP_ROW(c8, 5, 128, 8),
 };
 static const struct metal_pipeline_row metal_pq2_r8_rows[] = {
-        {offsetof(struct metal_state, pq2_lowp_library),
+        {METAL_FIELD(metal_library_h, pq2_lowp_library),
          "pq2_r8_x",
-         offsetof(struct metal_state, pq2_lowp_x_function),
-         offsetof(struct metal_state, pq2_lowp_x_pipeline)},
+         METAL_FIELD(metal_function_h, pq2_lowp_x_function),
+         METAL_FIELD(metal_pipeline_h, pq2_lowp_x_pipeline)},
         PQ2_LOWP_ROW(r8, 0, 32, 4),
         PQ2_LOWP_ROW(r8, 1, 64, 4),
         PQ2_LOWP_ROW(r8, 2, 128, 4),
@@ -387,10 +394,10 @@ static const struct metal_pipeline_row metal_pq2_r8_rows[] = {
         PQ2_LOWP_ROW(r8, 5, 128, 8),
 };
 static const struct metal_pipeline_row metal_pq2_mx_rows[] = {
-        {offsetof(struct metal_state, pq2_lowp_library),
+        {METAL_FIELD(metal_library_h, pq2_lowp_library),
          "pq2_mx_x",
-         offsetof(struct metal_state, pq2_lowp_x_function),
-         offsetof(struct metal_state, pq2_lowp_x_pipeline)},
+         METAL_FIELD(metal_function_h, pq2_lowp_x_function),
+         METAL_FIELD(metal_pipeline_h, pq2_lowp_x_pipeline)},
         PQ2_LOWP_ROW(mx, 0, 32, 4),
         PQ2_LOWP_ROW(mx, 1, 64, 4),
         PQ2_LOWP_ROW(mx, 2, 128, 4),
@@ -408,7 +415,7 @@ struct metal_library_row {
 };
 #define METAL_LIB(LIB, LABEL, ...)                                                  \
     {                                                                               \
-        offsetof(struct metal_state, LIB##_library), LABEL,                         \
+        METAL_FIELD(metal_library_h, LIB##_library), LABEL,                         \
                 sizeof((const char *const[]) {__VA_ARGS__}) / sizeof(const char *), \
                 (const char *const[]) {                                             \
             __VA_ARGS__                                                             \
@@ -646,8 +653,18 @@ static const struct metal_library_row metal_argmax_libs[] = {
         METAL_LIB(argmax, "argmax", metal_argmax_source),
 };
 
-static void **metal_state_slot(struct metal_state *st, size_t offset) {
-    return (void **) ((char *) st + offset);
+/* The state field a table row names by its offset, typed by the row's
+ * column: METAL_PIPE and METAL_LIB check each field's type (#347). */
+static struct metal_library_h **metal_library_slot(struct metal_state *st, size_t offset) {
+    return (struct metal_library_h **) ((char *) st + offset);
+}
+
+static struct metal_function_h **metal_function_slot(struct metal_state *st, size_t offset) {
+    return (struct metal_function_h **) ((char *) st + offset);
+}
+
+static struct metal_pipeline_h **metal_pipeline_slot(struct metal_state *st, size_t offset) {
+    return (struct metal_pipeline_h **) ((char *) st + offset);
 }
 
 /* The IQ3_S grid as an MSL constant array, emitted from quant/iq_grids.h
@@ -711,9 +728,9 @@ static char *metal_iq3s_grid_source(void) {
                 be, GEIST_E_BACKEND, "metal: failed to create %s shader source", row->label);
         return GEIST_E_BACKEND;
     }
-    void  *err     = nullptr;
-    void **library = metal_state_slot(st, row->library);
-    *library       = metal_msg_send_id_id_id_err(
+    void                    *err     = nullptr;
+    struct metal_library_h **library = metal_library_slot(st, row->library);
+    *library                         = metal_msg_send_id_id_id_err(
             st, st->device, "newLibraryWithSource:options:error:", source, options, &err);
     if (*library == nullptr) {
         const char *msg = metal_nserror_message(st, err);
@@ -737,11 +754,11 @@ metal_create_pipelines(struct geist_backend           *be,
     for (size_t i = 0; i < n; i++) {
         const enum geist_status s =
                 metal_create_named_pipeline(be,
-                                            *metal_state_slot(st, rows[i].library),
+                                            *metal_library_slot(st, rows[i].library),
                                             ns_string,
                                             rows[i].name,
-                                            metal_state_slot(st, rows[i].function),
-                                            metal_state_slot(st, rows[i].pipeline));
+                                            metal_function_slot(st, rows[i].function),
+                                            metal_pipeline_slot(st, rows[i].pipeline));
         if (s != GEIST_OK) {
             return s;
         }
@@ -759,7 +776,7 @@ metal_ensure_tables(struct geist_backend           *be,
                     size_t                          n_rows,
                     const struct metal_pipeline_row rows[static n_rows]) {
     struct metal_state *st = be->state;
-    if (*metal_state_slot(st, rows[n_rows - 1].pipeline) != nullptr) {
+    if (*metal_pipeline_slot(st, rows[n_rows - 1].pipeline) != nullptr) {
         return GEIST_OK;
     }
     void *ns_string = metal_objc_get_class(st, "NSString");
@@ -780,8 +797,8 @@ static void metal_release_rows(struct metal_state             *st,
                                size_t                          n,
                                const struct metal_pipeline_row rows[static n]) {
     for (size_t i = 0; i < n; i++) {
-        metal_msg_send_void0(st, *metal_state_slot(st, rows[i].pipeline), "release");
-        metal_msg_send_void0(st, *metal_state_slot(st, rows[i].function), "release");
+        metal_msg_send_void0(st, *metal_pipeline_slot(st, rows[i].pipeline), "release");
+        metal_msg_send_void0(st, *metal_function_slot(st, rows[i].function), "release");
     }
 }
 
@@ -789,7 +806,7 @@ static void metal_release_libs(struct metal_state            *st,
                                size_t                         n,
                                const struct metal_library_row libs[static n]) {
     for (size_t i = 0; i < n; i++) {
-        metal_msg_send_void0(st, *metal_state_slot(st, libs[i].library), "release");
+        metal_msg_send_void0(st, *metal_library_slot(st, libs[i].library), "release");
     }
 }
 
@@ -1015,7 +1032,7 @@ static void *metal_tensor_options(struct metal_state *st) {
 static void metal_ensure_tensor(struct geist_backend *be) {
     struct metal_state *st = be->state;
     if (!st->tensor_mm ||
-        *metal_state_slot(st, metal_tensor_rows[METAL_N(metal_tensor_rows) - 1].pipeline) !=
+        *metal_pipeline_slot(st, metal_tensor_rows[METAL_N(metal_tensor_rows) - 1].pipeline) !=
                 nullptr) {
         return;
     }
@@ -1033,11 +1050,11 @@ static void metal_ensure_tensor(struct geist_backend *be) {
         metal_release_rows(st, METAL_N(metal_tensor_rows), metal_tensor_rows);
         metal_release_libs(st, METAL_N(metal_tensor_libs), metal_tensor_libs);
         for (size_t i = 0; i < METAL_N(metal_tensor_rows); i++) {
-            *metal_state_slot(st, metal_tensor_rows[i].function) = nullptr;
-            *metal_state_slot(st, metal_tensor_rows[i].pipeline) = nullptr;
+            *metal_function_slot(st, metal_tensor_rows[i].function) = nullptr;
+            *metal_pipeline_slot(st, metal_tensor_rows[i].pipeline) = nullptr;
         }
         for (size_t i = 0; i < METAL_N(metal_tensor_libs); i++) {
-            *metal_state_slot(st, metal_tensor_libs[i].library) = nullptr;
+            *metal_library_slot(st, metal_tensor_libs[i].library) = nullptr;
         }
     }
 }
