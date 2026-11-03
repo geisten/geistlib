@@ -72,10 +72,12 @@ struct gguf_tokenizer {
     /* Special token IDs from `tokenizer.ggml.<bos|eos|unknown>_token_id`.
      * -1 when the corresponding key is absent. */
     int32_t bos_id;
-    /* tokenizer.ggml.add_bos_token: whether encode should PREPEND bos.
-     * Qwen-family GGUFs carry a bos_id but set this false — blindly
-     * prepending desynced the qwen35 recurrent state (#281). Absent:
-     * prepend iff bos_id is set and the mode is not GPT2. */
+    /* Whether the model expects BOS prepended, decided as llama.cpp does
+     * (gguf_tokenizer_add_bos_rule): tokenizer.ggml.add_bos_token when the
+     * file has it, else the default of its vocabulary and pretokenizer —
+     * true for Llama 3's byte-BPE ("llama-bpe", #385), false for Qwen's,
+     * whose GGUFs carry a bos_id that must not be prepended (#281). False
+     * when the file has neither the flag nor a bos_id. */
     bool add_bos;
 
     /* tokenizer.ggml.add_eos_token: whether the model expects eos APPENDED.
@@ -189,6 +191,29 @@ gguf_tokenizer_gpt4o_chunk_end(size_t tlen, size_t i, const char text[static tle
                                               size_t            n,
                                               const uint32_t    cps[static n],
                                               size_t            pieces[static 2 * n]);
+
+/* Whether a GGUF tokenizer adds BOS, by llama.cpp's rule
+ * (llama_vocab::impl::load in llama-vocab.cpp; llama-perplexity puts BOS at
+ * the start of every chunk exactly when this is true):
+ *   1. the default of the vocabulary type, from tokenizer.ggml.model:
+ *      "llama" (SPM) and "bert" (WPM) true; byte-BPE ("gpt2", "gemma4", ...)
+ *      true only for the pretokenizers (tokenizer.ggml.pre) whose branch sets
+ *      it — "llama3", "llama-v3", "llama-bpe", "falcon3", "falcon-h1",
+ *      "pixtral", "midm-2.0", "lfm2", "jina-v5-nano", "tekken", "chameleon";
+ *      "t5", "rwkv", "plamo2" false;
+ *   2. tokenizer.ggml.add_bos_token, when present, replaces that default;
+ *   3. a Gemma 4 byte-BPE vocabulary (model "gemma4", or pre "gemma4" /
+ *      "granite-embed-multi-311m") adds BOS even when the flag says false.
+ * model[0, model_len) and pre[0, pre_len) are the metadata strings (not
+ * NUL-terminated; pre null when absent). flag is the add_bos_token value
+ * (0/1), or -1 when the key is absent. fallback is the default for a model
+ * name llama.cpp does not know (it refuses to load those). */
+[[nodiscard]] bool gguf_tokenizer_add_bos_rule(size_t      model_len,
+                                               size_t      pre_len,
+                                               int         flag,
+                                               bool        fallback,
+                                               const char *model,
+                                               const char *pre);
 
 /* Exact vocab lookup: token id for the surface string `text`, or -1 if it is
  * not a single vocab entry. Backs the public geist_model_token_by_text. */
