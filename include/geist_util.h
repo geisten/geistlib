@@ -115,6 +115,7 @@ struct geist_text_range {
  * for an invalid argument or range and on overflow, GEIST_E_NOT_FOUND if no
  * tokenizer is loaded. A tokenizer.bin carries no token types: inside the
  * ranges none of its special tokens is matched. */
+#define GEIST_HAS_TOKENIZE_PLAIN 1 /* for consumers built against several engines */
 [[nodiscard]] enum geist_status
 geist_session_tokenize_plain(struct geist_session          *s,
                              const char                    *text,
