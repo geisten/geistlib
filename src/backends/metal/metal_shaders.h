@@ -972,6 +972,133 @@ static const char metal_qsg_mm_q41_source[] = GEIST_METAL_MM_SG_KERNEL("q41", "b
 static const char metal_qsg_mm_q41_fast_source[] =
         GEIST_METAL_MM_SG_FAST_KERNEL("q41", "bq41", "dq41", "2");
 
+/* #401: 2 or 3 activation rows (a speculative verify; more rows go in
+ * chunks of these) in one pass over the weights, for the formats whose
+ * multi-row path ended in the naive linear_* kernels (one threadgroup per
+ * output and row, byte loads): a 2-row verify of the Q4_0 27B cost five
+ * decode steps there. One n4 matvec per row would not do either: on the
+ * M1 Max a second row costs ~0.9 of the first, the per-row activation
+ * loads and the unpacking being the work, not the weight stream. The n4
+ * grid and lane layout (2 simdgroups x 4 weight rows, a lane on 16 weights
+ * of a block; Q5_K: 8 of a superblock), but a lane loads every row's
+ * activations of a block once, dequantizes each weight row once into
+ * registers (Q4_0/Q4_1/Q8_0 through the 0x6400 half bit pattern, no
+ * integer conversion) and dots it with every row. 2 rows cost 1.0-1.35
+ * and 3 rows 1.2-1.95 of one n4 row (Q4_0/Q4_1/Q5_K/Q8_0 27B shapes).
+ * A row's result is bit-identical in either kernel (each row's sum is the
+ * same expression), so it does not depend on the row count. x rows are
+ * read as float4s: offset and stride must be multiples of 4 floats (the
+ * encoder checks). */
+static const char metal_qsg_mvr_source[] =
+        "template<ushort FMT>static inline void dq32(device const ushort*qs,thread float4&v0,"
+        "thread float4&v1,thread float4&v2,thread float4&v3){"
+        "if(FMT==2){half2 e[4],o[4];FOR_UNROLL(ushort j=0;j<4;j++){"
+        "uint a=uint(qs[2*j])|(uint(qs[2*j+1])<<16u);"
+        "e[j]=as_type<half2>(((a&0x00FF00FFu)^0x00800080u)|0x64006400u)-half2(1152.0h);"
+        "o[j]=as_type<half2>((((a>>8u)&0x00FF00FFu)^0x00800080u)|0x64006400u)-half2(1152.0h);}"
+        "v0=float4(float(e[0].x),float(o[0].x),float(e[0].y),float(o[0].y));"
+        "v1=float4(float(e[1].x),float(o[1].x),float(e[1].y),float(o[1].y));"
+        "v2=float4(float(e[2].x),float(o[2].x),float(e[2].y),float(o[2].y));"
+        "v3=float4(float(e[3].x),float(o[3].x),float(e[3].y),float(o[3].y));return;}"
+        "const half2 off=half2(FMT==0?1032.0h:1024.0h);"
+        "uint a=uint(qs[0])|(uint(qs[1])<<16u),b=uint(qs[2])|(uint(qs[3])<<16u);"
+        "half2 la=as_type<half2>((a&0x000F000Fu)|0x64006400u)-off;"
+        "half2 lA=as_type<half2>(((a>>8u)&0x000F000Fu)|0x64006400u)-off;"
+        "half2 ha=as_type<half2>(((a>>4u)&0x000F000Fu)|0x64006400u)-off;"
+        "half2 hA=as_type<half2>(((a>>12u)&0x000F000Fu)|0x64006400u)-off;"
+        "half2 lb=as_type<half2>((b&0x000F000Fu)|0x64006400u)-off;"
+        "half2 lB=as_type<half2>(((b>>8u)&0x000F000Fu)|0x64006400u)-off;"
+        "half2 hb=as_type<half2>(((b>>4u)&0x000F000Fu)|0x64006400u)-off;"
+        "half2 hB=as_type<half2>(((b>>12u)&0x000F000Fu)|0x64006400u)-off;"
+        "v0=float4(float(la.x),float(lA.x),float(la.y),float(lA.y));"
+        "v1=float4(float(lb.x),float(lB.x),float(lb.y),float(lB.y));"
+        "v2=float4(float(ha.x),float(hA.x),float(ha.y),float(hA.y));"
+        "v3=float4(float(hb.x),float(hB.x),float(hb.y),float(hB.y));}\n"
+        "template<ushort FMT,ushort RT>static inline void mvr32(device const float*x,device "
+        "const uchar*w,device float*y,constant P&p,uint tx,ushort ti,ushort sg){"
+        "constexpr uint BB=FMT==0?18u:(FMT==1?20u:34u);constexpr uint QO=FMT==1?4u:2u;"
+        "uint fr=(tx*2u+uint(sg))*4u;if(fr>=p.no)return;"
+        "uint nb=p.ni>>5u,ix=uint(ti)>>1u,il=(uint(ti)&1u)*(FMT==2?16u:8u);"
+        "uint nr=min(p.no-fr,4u);"
+        "float sf[RT][4];FOR_UNROLL(ushort b=0;b<RT;b++){FOR_UNROLL(ushort rr=0;rr<4;rr++)"
+        "sf[b][rr]=0.0f;}"
+        "for(uint ib=ix;ib<nb;ib+=16u){float4 xa[RT][4];float sx[RT];"
+        "FOR_UNROLL(ushort b=0;b<RT;b++){"
+        "device const float4*xb=(device const float4*)(x+p.xo+uint(b)*p.xs+ib*32u+il);"
+        "xa[b][0]=xb[0];xa[b][1]=xb[1];xa[b][2]=xb[FMT==2?2:4];xa[b][3]=xb[FMT==2?3:5];"
+        "sx[b]=FMT==1?dot(xa[b][0]+xa[b][1]+xa[b][2]+xa[b][3],float4(1.0f)):0.0f;}"
+        "FOR_UNROLL(ushort rr=0;rr<4;rr++){if(rr<nr){"
+        "uint bo=p.wo+((fr+rr)*p.bpr+ib)*BB;"
+        "float4 v0,v1,v2,v3;dq32<FMT>((device const ushort*)(w+bo+QO+il),v0,v1,v2,v3);"
+        "float d=float(*((device const half*)(w+bo)));"
+        "float m=FMT==1?float(*((device const half*)(w+bo+2u))):0.0f;"
+        "FOR_UNROLL(ushort b=0;b<RT;b++){"
+        "float s=dot(xa[b][0],v0)+dot(xa[b][1],v1)+dot(xa[b][2],v2)+dot(xa[b][3],v3);"
+        "sf[b][rr]+=FMT==1?d*s+m*sx[b]:d*s;}}}}"
+        "FOR_UNROLL(ushort b=0;b<RT;b++){FOR_UNROLL(ushort rr=0;rr<4;rr++){"
+        "float a=simd_sum(sf[b][rr]);if(ti==0&&fr+rr<p.no)y[p.yo+b*p.ys+fr+rr]=a;}}}\n";
+
+static const char metal_qsg_mvr_q5k_source[] =
+        "template<ushort RT>static inline void mvr_q5k(device const float*x,device const "
+        "uchar*w,device float*y,constant P&p,uint tx,ushort ti,ushort sg){"
+        "uint fr=(tx*2u+uint(sg))*4u;if(fr>=p.no)return;"
+        "uint nb=p.ni>>8u;uint nr=min(p.no-fr,4u);"
+        "uint sb=uint(ti)>>3u,rr8=uint(ti)&7u,hi=rr8>>2u,i0=(rr8&3u)*8u;"
+        "uint sj=sb*2u+hi,hm=1u<<sj,qsh=hi*4u;"
+        "uint qso=48u+sb*32u+i0,qho=16u+i0,xo=sb*64u+hi*32u+i0;"
+        "float sf[RT][4];FOR_UNROLL(ushort b=0;b<RT;b++){FOR_UNROLL(ushort rr=0;rr<4;rr++)"
+        "sf[b][rr]=0.0f;}"
+        "for(uint ib=0u;ib<nb;ib++){float4 xa[RT][2];float sx[RT];"
+        "FOR_UNROLL(ushort b=0;b<RT;b++){"
+        "device const float4*xb=(device const float4*)(x+p.xo+uint(b)*p.xs+ib*256u+xo);"
+        "xa[b][0]=xb[0];xa[b][1]=xb[1];sx[b]=dot(xa[b][0]+xa[b][1],float4(1.0f));}"
+        "FOR_UNROLL(ushort rr=0;rr<4;rr++){if(rr<nr){"
+        "uint bo=p.wo+((fr+rr)*p.bpr+ib)*176u;"
+        "uint sc,mn;sm5(sj,w+bo+4u,sc,mn);"
+        "float v[8];FOR_UNROLL(ushort i=0;i<8;i++){uint q=(uint(w[bo+qso+i])>>qsh)&15u;"
+        "if((uint(w[bo+qho+i])&hm)!=0u)q+=16u;v[i]=float(q);}"
+        "float4 v0=float4(v[0],v[1],v[2],v[3]),v1=float4(v[4],v[5],v[6],v[7]);"
+        "float ds=float(*((device const half*)(w+bo)))*float(sc);"
+        "float dm=float(*((device const half*)(w+bo+2u)))*float(mn);"
+        "FOR_UNROLL(ushort b=0;b<RT;b++)"
+        "sf[b][rr]+=ds*(dot(xa[b][0],v0)+dot(xa[b][1],v1))-dm*sx[b];}}}"
+        "FOR_UNROLL(ushort b=0;b<RT;b++){FOR_UNROLL(ushort rr=0;rr<4;rr++){"
+        "float a=simd_sum(sf[b][rr]);if(ti==0&&fr+rr<p.no)y[p.yo+b*p.ys+fr+rr]=a;}}}\n";
+
+static const char metal_qsg_mvr_kernels_source[] =
+        "kernel void matvec_q40_r2(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){mvr32<0,2>(x,w,y,p,tg.x,ti,sg);}\n"
+        "kernel void matvec_q40_r3(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){mvr32<0,3>(x,w,y,p,tg.x,ti,sg);}\n"
+        "kernel void matvec_q41_r2(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){mvr32<1,2>(x,w,y,p,tg.x,ti,sg);}\n"
+        "kernel void matvec_q41_r3(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){mvr32<1,3>(x,w,y,p,tg.x,ti,sg);}\n"
+        "kernel void matvec_q80_r2(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){mvr32<2,2>(x,w,y,p,tg.x,ti,sg);}\n"
+        "kernel void matvec_q80_r3(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){mvr32<2,3>(x,w,y,p,tg.x,ti,sg);}\n"
+        "kernel void matvec_q5k_r2(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){mvr_q5k<2>(x,w,y,p,tg.x,ti,sg);}\n"
+        "kernel void matvec_q5k_r3(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){mvr_q5k<3>(x,w,y,p,tg.x,ti,sg);}\n";
+
 static const char metal_mv_hdr_source[] = "#include <metal_stdlib>\n"
                                           "using namespace metal;\n"
                                           "struct P{uint ni,no,rows,bpr,xo,wo,yo,xs,ys;};\n";

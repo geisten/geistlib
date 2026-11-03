@@ -160,4 +160,16 @@ enum w4a8_isa w4a8_dispatcher_tier(void);
 /* Human-readable name for an ISA tier. */
 const char *w4a8_isa_name(enum w4a8_isa isa);
 
+/* AVX-512 VNNI variants, defined in kernel_w4a8_avx512_vnni.c: its own TU, built
+ * with the matching -march= (mk/backend-cpu_x86.mk). Declared here so the
+ * definition and the dispatcher check against one prototype (#343). */
+[[nodiscard]] float
+w4a8_dot_avx512_vnni(size_t        n_blocks,
+                     const uint8_t weights[static n_blocks * W4A8_BLOCK_BYTES_WEIGHTS],
+                     const float   w_scales[static n_blocks],
+                     const float   w_offsets[static n_blocks],
+                     const int8_t  acts[static n_blocks * W4A8_BLOCK_ELEMS],
+                     const int32_t sum_a_per_block[static n_blocks],
+                     float         scale_x);
+
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_KERNEL_W4A8_H */
