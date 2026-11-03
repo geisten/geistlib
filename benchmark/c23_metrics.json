@@ -72,6 +72,7 @@
     "src/archs/audio_conformer/audio_encoder.c": 1,
     "src/archs/audio_conformer/encoder_internal.h": 4,
     "src/archs/transformer/families/deepseek2.c": 1,
+    "src/archs/transformer/families/llama4.c": 1,
     "src/archs/transformer/families/qwen35.c": 2,
     "src/archs/transformer/forward/linear.c": 1,
     "src/archs/transformer/forward/profile.h": 1,
@@ -102,7 +103,7 @@
     "src/formats/gguf/q3_K.c": 1,
     "src/io/gguf_reader.c": 1
    },
-   "total": 78,
+   "total": 79,
    "what": "function-like #define"
   },
   "define_object": {
@@ -115,7 +116,7 @@
     "src/archs/audio_conformer/mel_pipeline.c": 2,
     "src/archs/audio_conformer/mel_pipeline.h": 4,
     "src/archs/transformer/arch_config.h": 1,
-    "src/archs/transformer/arch_family.c": 10,
+    "src/archs/transformer/arch_family.c": 12,
     "src/archs/transformer/arch_state.h": 2,
     "src/archs/transformer/forward/probes.c": 1,
     "src/archs/transformer/forward/spec_head.c": 4,
@@ -151,7 +152,7 @@
     "src/io/safetensors_reader.h": 1,
     "src/quant/quant.h": 2
    },
-   "total": 162,
+   "total": 164,
    "what": "object-like #define with a replacement"
   },
   "enum_anonymous": {
@@ -294,7 +295,7 @@
     "src/archs/audio_conformer/mel_pipeline.h": 1,
     "src/archs/transformer/arch.h": 2,
     "src/archs/transformer/arch_config.h": 2,
-    "src/archs/transformer/arch_family.c": 22,
+    "src/archs/transformer/arch_family.c": 26,
     "src/archs/transformer/arch_family.h": 2,
     "src/archs/transformer/arch_ops.h": 2,
     "src/archs/transformer/arch_state.c": 3,
@@ -442,7 +443,7 @@
     "src/quant/quant.h": 3,
     "src/quant/quant_blocks.h": 1
    },
-   "total": 519,
+   "total": 523,
    "what": "#if, #ifdef, #ifndef"
   },
   "pp_elif": {
@@ -503,7 +504,7 @@
     "src/archs/audio_conformer/encoder_weights.c": 14,
     "src/archs/audio_conformer/mel_pipeline.c": 3,
     "src/archs/transformer/arch_ops.c": 1,
-    "src/archs/transformer/arch_state.c": 14,
+    "src/archs/transformer/arch_state.c": 15,
     "src/archs/transformer/forward/decision_rows.c": 5,
     "src/archs/transformer/forward/spec_head.c": 17,
     "src/archs/vision_siglip/arch.c": 1,
@@ -536,7 +537,7 @@
     "src/io/gguf_reader.c": 5,
     "src/io/safetensors_reader.c": 4
    },
-   "total": 319,
+   "total": 320,
    "what": "(void **) casts, as in safe_free((void **) &p)"
   },
   "void_ptr": {
@@ -555,7 +556,7 @@
     "src/archs/audio_conformer/mel_pipeline.c": 3,
     "src/archs/transformer/arch.c": 40,
     "src/archs/transformer/arch_ops.c": 7,
-    "src/archs/transformer/arch_state.c": 45,
+    "src/archs/transformer/arch_state.c": 47,
     "src/archs/transformer/arch_state.h": 11,
     "src/archs/transformer/exec_plan.c": 1,
     "src/archs/transformer/families/qwen35.c": 2,
@@ -573,7 +574,7 @@
     "src/archs/transformer/rotation.c": 2,
     "src/archs/transformer/snapshot.c": 2,
     "src/archs/transformer/weight_load/internal.h": 2,
-    "src/archs/transformer/weight_load/layer_wiring.c": 5,
+    "src/archs/transformer/weight_load/layer_wiring.c": 6,
     "src/archs/transformer/weight_load/tensor_views.c": 20,
     "src/archs/vision_siglip/arch.c": 6,
     "src/archs/vision_siglip/image_pipeline.c": 3,
@@ -696,7 +697,7 @@
     "src/io/safetensors_reader.h": 1,
     "src/quant/quant.h": 68
    },
-   "total": 2003,
+   "total": 2006,
    "what": "void * (one per `void` followed by `*`)"
   },
   "void_ptr_cast": {
