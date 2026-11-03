@@ -14,6 +14,9 @@
 1	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Access to field 'split' results in a dereference of a null pointer (loaded from variable 'state')
 1	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Access to field 'vtbl' results in a dereference of a null pointer (loaded from field 'desc')
 1	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Dereference of null pointer
+1	src/archs/transformer/families/llama.c	bugprone-assignment-in-if-condition	an assignment within an 'if' condition is bug-prone
+1	src/archs/transformer/families/llama4.c	bugprone-assignment-in-if-condition	an assignment within an 'if' condition is bug-prone
+2	src/archs/transformer/families/llama4.c	bugprone-narrowing-conversions	narrowing conversion from 'unsigned long long' to signed type 'int64_t' (aka 'long long') is implementation-defined
 2	src/archs/transformer/forward/attention.c	clang-analyzer-core.UndefinedBinaryOperatorResult	The right operand of '*' is a garbage value
 3	src/archs/transformer/forward/blocks.c	bugprone-misplaced-widening-cast	either cast from 'size_t' (aka 'unsigned long') to 'int64_t' (aka 'long long') is ineffective, or there is loss of precision before the conversion
 12	src/archs/transformer/forward/blocks.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
@@ -22,7 +25,7 @@
 3	src/archs/transformer/forward/decision_rows.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
 9	src/archs/transformer/forward/head.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
 4	src/archs/transformer/forward/kv_store.c	bugprone-misplaced-widening-cast	either cast from 'size_t' (aka 'unsigned long') to 'int64_t' (aka 'long long') is ineffective, or there is loss of precision before the conversion
-16	src/archs/transformer/forward/kv_store.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
+18	src/archs/transformer/forward/kv_store.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
 1	src/archs/transformer/forward/layer.c	bugprone-misplaced-widening-cast	either cast from 'size_t' (aka 'unsigned long') to 'int64_t' (aka 'long long') is ineffective, or there is loss of precision before the conversion
 16	src/archs/transformer/forward/layer.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
 10	src/archs/transformer/forward/layer_deltanet.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
@@ -30,6 +33,7 @@
 9	src/archs/transformer/forward/layer_ple.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
 1	src/archs/transformer/forward/moe.c	clang-analyzer-core.NullDereference	Access to field 'be' results in a dereference of a null pointer (loaded from field 'moe_gpu')
 1	src/archs/transformer/forward/moe.c	clang-analyzer-core.NullDereference	Access to field 'one_wait' results in a dereference of a null pointer (loaded from field 'moe_gpu')
+2	src/archs/transformer/forward/moe.c	clang-analyzer-core.UndefinedBinaryOperatorResult	The left operand of '>' is a garbage value
 1	src/archs/transformer/forward/mtp.c	bugprone-misplaced-widening-cast	either cast from 'size_t' (aka 'unsigned long') to 'int64_t' (aka 'long long') is ineffective, or there is loss of precision before the conversion
 2	src/archs/transformer/forward/mtp.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
 2	src/archs/transformer/forward/probes.c	bugprone-misplaced-widening-cast	either cast from 'int' to 'size_t' (aka 'unsigned long') is ineffective, or there is loss of precision before the conversion
