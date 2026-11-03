@@ -1,0 +1,7 @@
+reference (decode_step × 30): 271 332 1851 64700 220 17 15 16 20 12 15 16 12 15 20 2228 332 6910 64700 9259 271 40 2908 978 3133 383 264 2313 421 5533
+speculative (k_max=4, 28 calls, 30 emits):  271 332 1851 64700 220 17 15 16 20 12 15 16 12 15 20 2228 332 6910 64700 9259 271 40 2908 978 3133 383 264 2313 421 5533
+speculative tokens-per-call: 1.07  (sequential would be 1.00)
+stochastic (temp=0.7, top_p=0.9): 30 emits in 28 calls = 1.07 t/call
+PASS: speculative loop matches sequential decode (greedy);
+      stochastic path produced valid tokens (distribution-preserving
+      stochastic spec would need per-position logits + rejection sampling)

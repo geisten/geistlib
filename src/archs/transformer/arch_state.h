@@ -395,6 +395,11 @@ struct transformer_arch_session {
     bool                 dn_rows_req;
     bool                 dn_rows_ok;
     bool                 dn_rows_off;
+    /* A speculative verify of an MoE with experts on a GPU (#246): its rows'
+     * experts run as decode steps' do, one row at a time (the batched
+     * decode's decode_rows, #245), not as a prefill chunk's per-expert GEMMs.
+     * Set by verify_forward around its layer loop only. */
+    bool verify_rows;
     /* geist_session_checkpoint (#192): up to TRANSFORMER_CKPT_SLOTS lengths
      * to which truncate can return, DeltaNet state included (ckpt_conv_buf /
      * ckpt_S_buf: slots x n_dn x conv_n / s_n floats, allocated on the first
