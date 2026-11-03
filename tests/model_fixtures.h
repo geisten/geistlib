@@ -48,6 +48,10 @@ struct mf_llama {
      * a template may contain NUL bytes (0: strlen). */
     const char *chat_template;
     size_t      chat_template_len;
+    /* rope_freqs.weight (Llama 3.x frequency factors, #379) with this many
+     * elements, 1 + i / 2 (all 1 with rope_freqs_ones); 0: none. */
+    uint32_t rope_freqs;
+    bool     rope_freqs_ones;
 };
 
 /* Qwen3.5 geometry (qwen35.* keys). Block i is attention when
@@ -207,6 +211,9 @@ static inline struct tf_buf mf_llama_gguf(const struct mf_llama *c) {
     struct mf_tensors ts = {0};
     mf_add(&ts, c->d_model, c->vocab, MF_RAND, "token_embd.weight");
     mf_add(&ts, c->d_model, 0, MF_ONE, "output_norm.weight");
+    if (c->rope_freqs != 0) {
+        mf_add(&ts, c->rope_freqs, 0, c->rope_freqs_ones ? MF_ONE : MF_STEP, "rope_freqs.weight");
+    }
     if (c->untied) {
         mf_add(&ts, c->d_model, c->vocab, MF_RAND, "output.weight");
     }
