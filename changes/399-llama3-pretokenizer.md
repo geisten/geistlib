@@ -3,7 +3,8 @@
   `tokenizer.ggml.pre` of `llama-bpe` (also `llama3`, `llama-v3`,
   `falcon3`, `falcon-h1`, `pixtral`, `midm-2.0`, `lfm2`, `jina-v5-nano`)
   went through geist's simplified GPT-2 splitter: whole digit runs
-  (" 2000" became " 2" "000" instead of " " "200" "0"), one byte per
+  (" 2000" was one chunk, tokens " " "2" "000", instead of llama.cpp's
+  " " "200" "0"), one byte per
   punctuation chunk (" ..." in three pieces) and the whole leading
   whitespace run glued to the next word. The wikitext-2 test text left
   `llama-tokenize` at token 39 on Llama 3.2 3B Instruct. These files now
