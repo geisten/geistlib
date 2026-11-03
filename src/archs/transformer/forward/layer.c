@@ -495,7 +495,7 @@ enum geist_status transformer_compute_per_layer_input(struct transformer_arch_se
 /* Once-per-chunk PLE precompute sub-stage profiler (GEIST_PROFILE_PREFILL=1):
  * splits the otherwise-hidden compute_per_layer_inputs_batch cost into its
  * steps. */
-enum plepre_stage {
+enum plepre_stage : uint32_t {
     PLEPRE_GATHER = 0, /* Q5_K dequant of the per-layer-token-embd rows */
     PLEPRE_MODEL_PROJ, /* the BF16/F32 model_proj matmul */
     PLEPRE_SCALE,
@@ -503,6 +503,7 @@ enum plepre_stage {
     PLEPRE_COMBINE,
     PLEPRE_COUNT,
 };
+static_assert(sizeof(enum plepre_stage) == sizeof(uint32_t));
 TRANSFORMER_PROFILE_DEFINE(g_plepre_profile,
                            "transformer ple precompute (per-chunk)",
                            PLEPRE_COUNT,

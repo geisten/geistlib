@@ -22,20 +22,23 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
-enum geist_hw_os {
+enum geist_hw_os : uint32_t {
     GEIST_HW_OS_UNKNOWN = 0,
     GEIST_HW_OS_MACOS,
     GEIST_HW_OS_LINUX,
     GEIST_HW_OS_WINDOWS,
 };
+static_assert(sizeof(enum geist_hw_os) == sizeof(uint32_t));
 
-enum geist_hw_cpu {
+enum geist_hw_cpu : uint32_t {
     GEIST_HW_CPU_UNKNOWN = 0,
     GEIST_HW_CPU_ARM64_GENERIC,
     GEIST_HW_CPU_APPLE_SILICON,
     GEIST_HW_CPU_X86_64_GENERIC,
 };
+static_assert(sizeof(enum geist_hw_cpu) == sizeof(uint32_t));
 
 struct geist_hw_probe {
     enum geist_hw_os  os;

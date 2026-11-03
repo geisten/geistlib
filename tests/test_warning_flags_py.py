@@ -8,6 +8,7 @@ dropped from mk/common.mk, or that a compiler does not know, fails here. A
 make variable given to `make test-py` (CC, TARGET) reaches `make -n` through
 MAKEFLAGS.
 """
+import os
 import re
 import shlex
 import subprocess
@@ -92,8 +93,10 @@ def compiles(flags, code):
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / "probe.c"
         src.write_text(code)
+        # A real compile, not -fsyntax-only: gcc runs -Wimplicit-fallthrough
+        # in the middle end, which -fsyntax-only never reaches.
         return subprocess.run(
-            flags + ["-fsyntax-only", str(src)], cwd=ROOT, capture_output=True, text=True
+            flags + ["-c", "-o", os.devnull, str(src)], cwd=ROOT, capture_output=True, text=True
         )
 
 
@@ -113,7 +116,8 @@ class WarningFlags(unittest.TestCase):
                 self.assertIn(warning, self.flags)
                 bad = compiles(self.flags, rejected)
                 self.assertNotEqual(bad.returncode, 0, f"{warning} let the probe through")
-                self.assertIn(warning.split("=")[0], bad.stderr)
+                # clang names -Wfoo, gcc under -Werror -Werror=foo
+                self.assertIn(warning.split("=")[0].removeprefix("-W"), bad.stderr)
                 good = compiles(self.flags, accepted)
                 self.assertEqual(good.returncode, 0, good.stderr)
 

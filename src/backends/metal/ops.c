@@ -485,17 +485,33 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
                                            .mm        = st->iq3s_mm_pipeline,
                                            .n4_tile   = 4u,
                                            .gemm_only = true};
-    default: /* Q5_K */
-        return (struct metal_quant_pipes) {.tc      = st->q5k_mm_tc_pipeline,
-                                           .n4      = st->q5k_n4_pipeline,
-                                           .mm      = st->q5k_mm_pipeline,
-                                           .mm_fast = st->q5k_mm_fast_pipeline,
-                                           .base    = st->q5k_pipeline,
-                                           .m8      = st->q5k_m8_pipeline,
-                                           .r2      = st->q5k_r2_pipeline,
-                                           .r3      = st->q5k_r3_pipeline,
-                                           .n4_tile = 4u};
+    case GEIST_DTYPE_F32:
+    case GEIST_DTYPE_F16:
+    case GEIST_DTYPE_BF16:
+    case GEIST_DTYPE_I8:
+    case GEIST_DTYPE_U8:
+    case GEIST_DTYPE_Q4_K:
+    case GEIST_DTYPE_Q5_K:
+    case GEIST_DTYPE_Q6_K:
+    case GEIST_DTYPE_IQ2_S:
+    case GEIST_DTYPE_TQ1_0:
+    case GEIST_DTYPE_BINARY:
+    case GEIST_DTYPE_TERNARY:
+    case GEIST_DTYPE_CUSTOM:
+    case GEIST_DTYPE_Q5_0:
+    case GEIST_DTYPE_COUNT:
+        break;
     }
+    /* Q5_K */
+    return (struct metal_quant_pipes) {.tc      = st->q5k_mm_tc_pipeline,
+                                       .n4      = st->q5k_n4_pipeline,
+                                       .mm      = st->q5k_mm_pipeline,
+                                       .mm_fast = st->q5k_mm_fast_pipeline,
+                                       .base    = st->q5k_pipeline,
+                                       .m8      = st->q5k_m8_pipeline,
+                                       .r2      = st->q5k_r2_pipeline,
+                                       .r3      = st->q5k_r3_pipeline,
+                                       .n4_tile = 4u};
 }
 
 /* The fast PQ2_0 GEMM reads x as f16 (metal_qsg_mm_pq2_fast_source, #103)
@@ -752,10 +768,34 @@ static void metal_encode_quant_linear(struct metal_state            *st,
     case GEIST_DTYPE_Q6_K:
         metal_encode_q6k_linear(st, enc, x, w, y, params, matrix);
         return;
-    default:
-        metal_encode_generic_quant(st, enc, x, w, y, params, dtype);
-        return;
+    case GEIST_DTYPE_F32:
+    case GEIST_DTYPE_F16:
+    case GEIST_DTYPE_BF16:
+    case GEIST_DTYPE_I8:
+    case GEIST_DTYPE_U8:
+    case GEIST_DTYPE_Q4_0:
+    case GEIST_DTYPE_Q4_1:
+    case GEIST_DTYPE_Q8_0:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_Q5_K:
+    case GEIST_DTYPE_IQ2_S:
+    case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_TQ1_0:
+    case GEIST_DTYPE_TQ2_0:
+    case GEIST_DTYPE_I2_S:
+    case GEIST_DTYPE_IQ4_NL:
+    case GEIST_DTYPE_IQ4_XS:
+    case GEIST_DTYPE_BINARY:
+    case GEIST_DTYPE_TERNARY:
+    case GEIST_DTYPE_CUSTOM:
+    case GEIST_DTYPE_PQ2_0:
+    case GEIST_DTYPE_Q5_0:
+    case GEIST_DTYPE_MXFP4:
+    case GEIST_DTYPE_COUNT:
+        break;
     }
+    metal_encode_generic_quant(st, enc, x, w, y, params, dtype);
+    return;
 }
 
 /* From this row width a single-row norm takes the width below instead of
@@ -2682,8 +2722,30 @@ static bool metal_mv_weight_of(const struct geist_tensor *t, struct metal_mv_wei
         block        = 32u;
         out->tg_rows = 8u;
         break;
-    default:
-        return false;
+    case GEIST_DTYPE_F32:
+    case GEIST_DTYPE_F16:
+    case GEIST_DTYPE_BF16:
+    case GEIST_DTYPE_I8:
+    case GEIST_DTYPE_U8:
+    case GEIST_DTYPE_Q4_0:
+    case GEIST_DTYPE_Q4_1:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_Q5_K:
+    case GEIST_DTYPE_IQ2_S:
+    case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_TQ1_0:
+    case GEIST_DTYPE_TQ2_0:
+    case GEIST_DTYPE_I2_S:
+    case GEIST_DTYPE_IQ4_NL:
+    case GEIST_DTYPE_IQ4_XS:
+    case GEIST_DTYPE_BINARY:
+    case GEIST_DTYPE_TERNARY:
+    case GEIST_DTYPE_CUSTOM:
+    case GEIST_DTYPE_PQ2_0:
+    case GEIST_DTYPE_Q5_0:
+    case GEIST_DTYPE_MXFP4:
+    case GEIST_DTYPE_COUNT:
+        break;
     }
     if (!ok || out->n_in > UINT32_MAX || out->n_out > UINT32_MAX || out->offset > UINT32_MAX) {
         return false;
@@ -4056,10 +4118,19 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
             w->linear_rows_prepare = metal_selected_prepare;
         }
         return GEIST_OK;
-    default:
-        /* Callers fall back per weight (linear_m1 stays null). */
-        return GEIST_E_UNSUPPORTED;
+    case GEIST_DTYPE_I8:
+    case GEIST_DTYPE_U8:
+    case GEIST_DTYPE_IQ2_S:
+    case GEIST_DTYPE_TQ1_0:
+    case GEIST_DTYPE_BINARY:
+    case GEIST_DTYPE_TERNARY:
+    case GEIST_DTYPE_CUSTOM:
+    case GEIST_DTYPE_Q5_0:
+    case GEIST_DTYPE_COUNT:
+        break;
     }
+    /* Callers fall back per weight (linear_m1 stays null). */
+    return GEIST_E_UNSUPPORTED;
 }
 
 /* Rows up to which DeltaNet runs the decode kernels (dn_dec_v_rows for
@@ -4555,9 +4626,31 @@ static bool metal_moe_ids_pipe(const struct metal_state *st,
     case GEIST_DTYPE_F32:
         *pipe = st->moe_mv_f32_pipeline, *rows_per_group = 2u, *block = 1u;
         return true;
-    default:
-        return false;
+    case GEIST_DTYPE_F16:
+    case GEIST_DTYPE_BF16:
+    case GEIST_DTYPE_I8:
+    case GEIST_DTYPE_U8:
+    case GEIST_DTYPE_Q4_0:
+    case GEIST_DTYPE_Q4_1:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_Q5_K:
+    case GEIST_DTYPE_IQ2_S:
+    case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_TQ1_0:
+    case GEIST_DTYPE_TQ2_0:
+    case GEIST_DTYPE_I2_S:
+    case GEIST_DTYPE_IQ4_NL:
+    case GEIST_DTYPE_IQ4_XS:
+    case GEIST_DTYPE_BINARY:
+    case GEIST_DTYPE_TERNARY:
+    case GEIST_DTYPE_CUSTOM:
+    case GEIST_DTYPE_PQ2_0:
+    case GEIST_DTYPE_Q5_0:
+    case GEIST_DTYPE_MXFP4:
+    case GEIST_DTYPE_COUNT:
+        break;
     }
+    return false;
 }
 
 /* The experts tensor's byte offset, checked against its dtype's layout. */
@@ -4790,12 +4883,38 @@ static bool metal_fused_supported(struct geist_backend *be, const struct geist_f
         case GEIST_DTYPE_Q6_K:
         case GEIST_DTYPE_PQ2_0:
             return true;
-        default:
-            return false;
+        case GEIST_DTYPE_I8:
+        case GEIST_DTYPE_U8:
+        case GEIST_DTYPE_Q4_1:
+        case GEIST_DTYPE_Q3_K:
+        case GEIST_DTYPE_IQ2_S:
+        case GEIST_DTYPE_IQ3_S:
+        case GEIST_DTYPE_TQ1_0:
+        case GEIST_DTYPE_TQ2_0:
+        case GEIST_DTYPE_I2_S:
+        case GEIST_DTYPE_IQ4_NL:
+        case GEIST_DTYPE_IQ4_XS:
+        case GEIST_DTYPE_BINARY:
+        case GEIST_DTYPE_TERNARY:
+        case GEIST_DTYPE_CUSTOM:
+        case GEIST_DTYPE_Q5_0:
+        case GEIST_DTYPE_MXFP4:
+        case GEIST_DTYPE_COUNT:
+            break;
         }
-    default:
         return false;
+    case GEIST_FUSED_GELU_TANH_MUL_SCALED:
+    case GEIST_FUSED_FFN_NORM_GATE_UP:
+    case GEIST_FUSED_BITNET_ACT_QUANT:
+    case GEIST_FUSED_ATTN_KV_INT8:
+    case GEIST_FUSED_ATTN_KV_INT4:
+    case GEIST_FUSED_DELTANET_MIX:
+    case GEIST_FUSED_LINEAR_GROUPED:
+    case GEIST_FUSED_ROWS_WEIGHTED_SUM:
+    case GEIST_FUSED_ROWS_GATHER:
+        break;
     }
+    return false;
 }
 
 static const struct geist_backend_primitives metal_prims = {

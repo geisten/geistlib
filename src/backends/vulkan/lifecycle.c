@@ -174,7 +174,7 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
             }
         }
         geist_backend_free(be, st->hostbufs);
-        for (int i = 0; i < VK_PIPE_COUNT; ++i) {
+        for (uint32_t i = 0; i < VK_PIPE_COUNT; ++i) {
             if (st->pipes[i] != VK_NULL_HANDLE) {
                 st->fn.DestroyPipeline(st->device, st->pipes[i], nullptr);
             }
@@ -727,7 +727,7 @@ void vk_destroy(struct geist_backend *be) {
                     [VK_PIPE_COUNT] = "copy", /* vkCmdCopyBuffer stamps */
             };
             fprintf(stderr, "geist vulkan gpu profile:\n");
-            for (int i = 0; i <= VK_PIPE_COUNT; ++i) {
+            for (uint32_t i = 0; i <= VK_PIPE_COUNT; ++i) {
                 if (st->prof_calls[i] > 0) {
                     fprintf(stderr,
                             "  %-12s %8.1f ms  %8llu calls  %6.1f us/call\n",

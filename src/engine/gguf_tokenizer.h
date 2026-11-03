@@ -36,19 +36,21 @@
  * UNSUPPORTED leaves the encode/decode paths refusing so the engine falls
  * back to an external tokenizer.bin, which gguf_tokenizer_load_bin reads into
  * the same struct in SPM mode. */
-enum gguf_tokenizer_mode {
+enum gguf_tokenizer_mode : uint32_t {
     GGUF_TOK_MODE_UNSUPPORTED = 0,
     GGUF_TOK_MODE_GPT2,
     GGUF_TOK_MODE_SPM,
     GGUF_TOK_MODE_UNIGRAM,
 };
+static_assert(sizeof(enum gguf_tokenizer_mode) == sizeof(uint32_t));
 
 /* The regex-sequence pretokenizers (gguf_tokenizer_seq_split). */
-enum gguf_pre_seq {
+enum gguf_pre_seq : uint32_t {
     GGUF_PRE_NONE = 0,
     GGUF_PRE_DEEPSEEK_LLM, /* tokenizer.ggml.pre "deepseek-llm" (DeepSeek-V2) */
     GGUF_PRE_DEEPSEEK_V3,  /* "deepseek-v3" (DeepSeek-V3, R1) */
 };
+static_assert(sizeof(enum gguf_pre_seq) == sizeof(uint32_t));
 
 struct gguf_tokenizer {
     /* Pointer-and-length pair for each vocab entry. The pointer

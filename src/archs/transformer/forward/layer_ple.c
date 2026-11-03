@@ -15,7 +15,7 @@
 /* Per-layer PLE sub-stage profiler (GEIST_PROFILE_PREFILL=1). Splits the
  * single "ple" bucket of the main profile into its constituent ops so the
  * Gemma 4 prefill gap can be attributed precisely. */
-enum ple_profile_stage {
+enum ple_profile_stage : uint32_t {
     PLE_GATE = 0,
     PLE_GELU,
     PLE_MUL,
@@ -24,6 +24,7 @@ enum ple_profile_stage {
     PLE_ADD,
     PLE_PROFILE_COUNT,
 };
+static_assert(sizeof(enum ple_profile_stage) == sizeof(uint32_t));
 TRANSFORMER_PROFILE_DEFINE(g_ple_profile,
                            "transformer ple (per-layer)",
                            PLE_PROFILE_COUNT,

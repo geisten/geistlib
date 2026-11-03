@@ -56,10 +56,11 @@ extern "C" {
 /* Execution phase the arch layer is about to enter. Backends may tune their
  * parallelism regime per phase (see parallel_region_begin). Prefill is
  * compute-bound and scales with cores; decode (m=1 GEMV) is memory-bound. */
-enum geist_parallel_region {
+enum geist_parallel_region : uint32_t {
     GEIST_REGION_PREFILL_BATCH,
     GEIST_REGION_DECODE_STEP,
 };
+static_assert(sizeof(enum geist_parallel_region) == sizeof(uint32_t));
 
 /* Backends fill this in (statically) and reference it from their
  * descriptor. Engine dispatches through here. */
@@ -283,7 +284,7 @@ struct geist_backend_primitives {
 
 /* Fused-op identifiers for load-time probing (see `supported` below).
  * Only ops whose call sites are plan-bound have an id. */
-enum geist_fused_op {
+enum geist_fused_op : uint32_t {
     GEIST_FUSED_GELU_TANH_MUL,
     GEIST_FUSED_SILU_MUL,
     GEIST_FUSED_GELU_TANH_MUL_SCALED,
@@ -307,6 +308,7 @@ enum geist_fused_op {
     GEIST_FUSED_ROWS_GATHER,
     GEIST_FUSED_MOE_DEVICE,
 };
+static_assert(sizeof(enum geist_fused_op) == sizeof(uint32_t));
 
 /* Load-time capability probe for one fused op at one layer's geometry.
  * `m` carries the regime: 1 = decode; >1 = prefill, and a `true` answer
@@ -1118,10 +1120,11 @@ struct geist_backend_caps {
  * backend-specific A/B or sweep for THIS machine and writes the best
  * value; budget_ns is a target, not a deadline. The driver owns
  * everything around it (repeats, variance notes, serialization). */
-enum geist_tunable_kind {
+enum geist_tunable_kind : uint32_t {
     GEIST_TUNABLE_BOOL, /* value 0 / 1 */
     GEIST_TUNABLE_SIZE, /* positive size-class value */
 };
+static_assert(sizeof(enum geist_tunable_kind) == sizeof(uint32_t));
 
 struct geist_tunable {
     const char             *name;

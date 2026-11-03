@@ -78,9 +78,27 @@ static row_dequant_fn row_dequant_for(uint16_t dtype) {
         return f16_row;
     case GEIST_DTYPE_BF16:
         return bf16_row;
-    default:
-        return nullptr;
+    case GEIST_DTYPE_F32:
+    case GEIST_DTYPE_I8:
+    case GEIST_DTYPE_U8:
+    case GEIST_DTYPE_Q4_0:
+    case GEIST_DTYPE_Q4_1:
+    case GEIST_DTYPE_Q8_0:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_Q5_K:
+    case GEIST_DTYPE_TQ1_0:
+    case GEIST_DTYPE_TQ2_0:
+    case GEIST_DTYPE_I2_S:
+    case GEIST_DTYPE_IQ4_NL:
+    case GEIST_DTYPE_IQ4_XS:
+    case GEIST_DTYPE_BINARY:
+    case GEIST_DTYPE_TERNARY:
+    case GEIST_DTYPE_CUSTOM:
+    case GEIST_DTYPE_PQ2_0:
+    case GEIST_DTYPE_COUNT:
+        break;
     }
+    return nullptr;
 }
 
 /* 4 x 8 independent FMA lanes (FMA latency, not throughput, bounds a single

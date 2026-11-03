@@ -48,10 +48,11 @@ constexpr size_t TRANSFORMER_HEAD_DIM_MAX = 512;
 
 /* Per-layer token mixer. The layer loop dispatches on this before any
  * attention code runs, so attention paths stay mixer-agnostic. */
-enum transformer_mixer_kind {
+enum transformer_mixer_kind : uint32_t {
     GEIST_MIXER_ATTN = 0, /* softmax attention (KV cache) */
     GEIST_MIXER_DELTANET, /* gated DeltaNet (recurrent conv+delta state) */
 };
+static_assert(sizeof(enum transformer_mixer_kind) == sizeof(uint32_t));
 
 /* Every weight tensor of one transformer layer. Projections keep their
  * native dtype/layout (F32 DENSE or BLOCK_QUANTIZED). KV-shared layers

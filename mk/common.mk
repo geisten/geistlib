@@ -104,6 +104,8 @@ endif
 
 # ---- Base CFLAGS ---------------------------------------------------------
 
+# -Wswitch-enum: a new enum value fails the build at every switch over that
+# enum, `default:` or not (#346). tests/test_switch_enum_py.py proves it.
 # -Wimplicit-fallthrough: gcc's -Wextra has it already (at level 3, which
 # also takes a /* fallthrough */ comment); clang needs it named, and then
 # takes only [[fallthrough]] (#343).
@@ -111,7 +113,7 @@ endif
 # in a header, so the definition and its callers check one prototype. Not
 # -Wstrict-prototypes: in C23 `()` is a prototype and K&R definitions are
 # gone, so it has nothing left to report (#343).
-WARNINGS_BASE   := -Wall -Wextra -Wpedantic -Wimplicit-fallthrough \
+WARNINGS_BASE   := -Wall -Wextra -Wpedantic -Wswitch-enum -Wimplicit-fallthrough \
                    -Wmissing-prototypes -Werror
 WARNINGS_STRICT := $(WARNINGS_BASE) -Wshadow -Wundef
 

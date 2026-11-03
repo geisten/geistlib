@@ -34,7 +34,7 @@ static double now_s(void) {
 }
 
 static int geist_dtype_of(gguf_dtype_t t) {
-    switch (t) {
+    switch ((uint32_t) t) {
     case GGUF_TYPE_F32:
         return GEIST_DTYPE_F32;
     case GGUF_TYPE_Q4_0:

@@ -29,12 +29,13 @@
  *   GATED_SQUARED_RELU — relu(gate)^2 * up; Microsoft BitNet b1.58 2B-4T
  *                        (HF config: hidden_act = "relu2").
  */
-enum geist_ffn_activation_kind {
+enum geist_ffn_activation_kind : uint32_t {
     GEIST_FFN_GEGLU = 0,
     GEIST_FFN_SWIGLU,
     GEIST_FFN_SQUARED_RELU,
     GEIST_FFN_GATED_SQUARED_RELU,
 };
+static_assert(sizeof(enum geist_ffn_activation_kind) == sizeof(uint32_t));
 
 /* How a model turns a sequence of hidden states into one vector.
  *
@@ -44,11 +45,12 @@ enum geist_ffn_activation_kind {
  *                What the BitNet embedding models use.
  *   MEAN       — the mean over all prefilled positions, L2-normalised.
  */
-enum geist_pooling_kind {
+enum geist_pooling_kind : uint32_t {
     GEIST_POOLING_NONE = 0,
     GEIST_POOLING_LAST_TOKEN,
     GEIST_POOLING_MEAN,
 };
+static_assert(sizeof(enum geist_pooling_kind) == sizeof(uint32_t));
 
 /* Map a GGUF `*.pooling` string to a kind. `s`/`len` is the raw metadata
  * value; pass s=nullptr when the key is absent, which yields NONE (a
@@ -254,11 +256,12 @@ struct geist_arch_config {
      *                   k logits alone (GPT-OSS, #243).
      * The router's bias (ffn_gate_inp.bias), where a layer has one, is added
      * to the logits first. Values are the GGUF key's. */
-    enum geist_moe_gating {
+    enum geist_moe_gating : uint32_t {
         GEIST_MOE_GATING_SOFTMAX        = 1,
         GEIST_MOE_GATING_SIGMOID        = 2,
         GEIST_MOE_GATING_SOFTMAX_WEIGHT = 3,
     } moe_gating;
+    static_assert(sizeof(enum geist_moe_gating) == sizeof(uint32_t));
     /* DeepSeek-V3's router (#242), as llama.cpp's build_moe_ffn runs it:
      * moe_w_scale multiplies the final weights (0: 1, i.e. none); with
      * moe_n_group > 1 the experts form that many equal groups, a group
@@ -277,10 +280,11 @@ struct geist_arch_config {
      *   SWIGLU_OAI  g = min(gate, limit), u = clamp(up, -limit, limit),
      *               g * sigmoid(alpha * g) * (u + 1), alpha 1.702, limit 7
      *               (GPT-OSS, llama.cpp's ggml_swiglu_oai, #243). */
-    enum geist_moe_act {
+    enum geist_moe_act : uint32_t {
         GEIST_MOE_ACT_SWIGLU = 0,
         GEIST_MOE_ACT_SWIGLU_OAI,
     } moe_act;
+    static_assert(sizeof(enum geist_moe_act) == sizeof(uint32_t));
 
     /* ---- Pooling. A model with a pooling kind other than NONE is an
      * EMBEDDING model: it has no LM head, emits no tokens, and its forward

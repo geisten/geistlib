@@ -39,7 +39,7 @@ static void bench_one(const struct gguf_tensor_t *t, const char *name) {
     const size_t n_out = t->dims[1];
     size_t       bytes_per_call;
     const char  *kind;
-    switch (t->dtype) {
+    switch ((uint32_t) t->dtype) {
     case GGUF_TYPE_Q4_K:
         if (n_in % Q4_K_BLOCK_ELEMS != 0)
             goto skip_align;

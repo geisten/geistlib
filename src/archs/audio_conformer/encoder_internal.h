@@ -88,11 +88,12 @@ static inline void ae_profile_print_and_reset(void) {
  * every class FP32. On a Pi 5 (benchmark/results/PI5-audio.md) attention,
  * LConv, FFN and the subsample convs each take 19-35 % of an encode, FFN
  * the more the longer the clip. */
-enum audio_linear_prec {
+enum audio_linear_prec : uint32_t {
     AUDIO_PREC_FP32  = 0,
     AUDIO_PREC_W8A32 = 1,
     AUDIO_PREC_W8A8  = 2,
 };
+static_assert(sizeof(enum audio_linear_prec) == sizeof(uint32_t));
 
 struct ClippableLinear {
     /* `w` is dropped after quantization (saves ~450 MB on a Pi 5);

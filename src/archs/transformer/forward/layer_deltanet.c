@@ -817,7 +817,7 @@ static void dn_step_heads(void *ctx, size_t h0, size_t h1) {
     }
 }
 
-enum dn_profile_stage {
+enum dn_profile_stage : uint32_t {
     DN_PROFILE_NORM = 0,
     DN_PROFILE_BETA_ALPHA,
     DN_PROFILE_QKV,
@@ -826,6 +826,7 @@ enum dn_profile_stage {
     DN_PROFILE_OUT,
     DN_PROFILE_COUNT,
 };
+static_assert(sizeof(enum dn_profile_stage) == sizeof(uint32_t));
 
 TRANSFORMER_PROFILE_DEFINE(g_dn_profile,
                            "transformer deltanet",

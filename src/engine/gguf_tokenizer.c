@@ -1359,12 +1359,13 @@ static bool q2_is_ws(uint32_t cp) {
            cp == 0x2029 || cp == 0x202F || cp == 0x205F || cp == 0x3000;
 }
 
-enum q2_kind {
+enum q2_kind : uint32_t {
     Q2_OTHER, /* [^\s\p{L}\p{N}] */
     Q2_WS,    /* \s */
     Q2_LETTER,
     Q2_DIGIT, /* \p{N} */
 };
+static_assert(sizeof(enum q2_kind) == sizeof(uint32_t));
 
 static enum q2_kind q2_kind_at(const char *text, size_t tlen, size_t i, bool marks, size_t *adv) {
     const unsigned char b = (unsigned char) text[i];
@@ -1386,9 +1387,12 @@ static enum q2_kind q2_kind_at(const char *text, size_t tlen, size_t i, bool mar
         return marks ? Q2_LETTER : Q2_OTHER;
     case UNICODE_CLASS_NUMBER:
         return Q2_DIGIT;
-    default:
-        return Q2_OTHER;
+    case UNICODE_CLASS_OTHER:
+    case UNICODE_CLASS_PUNCT:
+    case UNICODE_CLASS_SYMBOL:
+        break;
     }
+    return Q2_OTHER;
 }
 
 /* End of the run of `kind` codepoints starting at j. */
@@ -1549,7 +1553,7 @@ size_t gguf_tokenizer_gpt2_chunk_end(size_t     tlen,
  * and the letter / number / whitespace sets are llama.cpp's own
  * (unicode_class.h; the whitespace list below). Hence "ÉCOLE" splits after
  * É, as it does in llama.cpp (HF, with real case classes, keeps it whole). */
-enum g4_kind {
+enum g4_kind : uint32_t {
     G4_OTHER, /* [^\s\p{L}\p{N}] */
     G4_SPACE, /* \s other than \r \n */
     G4_NL,    /* \r \n */
@@ -1558,6 +1562,7 @@ enum g4_kind {
     G4_ALPHA, /* a non-ASCII letter: both U and L */
     G4_DIGIT, /* \p{N} */
 };
+static_assert(sizeof(enum g4_kind) == sizeof(uint32_t));
 
 static enum g4_kind g4_kind_at(const char *text, size_t tlen, size_t i, size_t *adv) {
     const uint32_t cp = q2_cp_at(text, tlen, i, adv);
@@ -1579,9 +1584,13 @@ static enum g4_kind g4_kind_at(const char *text, size_t tlen, size_t i, size_t *
         return G4_ALPHA;
     case UNICODE_CLASS_NUMBER:
         return G4_DIGIT;
-    default:
-        return G4_OTHER;
+    case UNICODE_CLASS_OTHER:
+    case UNICODE_CLASS_PUNCT:
+    case UNICODE_CLASS_MARK:
+    case UNICODE_CLASS_SYMBOL:
+        break;
     }
+    return G4_OTHER;
 }
 
 static bool g4_is_u(enum g4_kind k) {

@@ -17,7 +17,8 @@ struct geist_decision;
  * SELECTED_ROWS reuses the backbone but projects only requested row tiles.
  * Unsupported model/backend pairs fail explicitly; no automatic fallback.
  * Neither mode supplies a trained classifier head or calibration. */
-enum geist_decision_mode { GEIST_DECISION_DENSE = 0, GEIST_DECISION_SELECTED_ROWS = 1 };
+enum geist_decision_mode : uint32_t { GEIST_DECISION_DENSE = 0, GEIST_DECISION_SELECTED_ROWS = 1 };
+static_assert(sizeof(enum geist_decision_mode) == sizeof(uint32_t));
 
 /* @stability EXPERIMENTAL — zero initialization selects the defaults.
  * These limits size the private session/workspace at creation. */

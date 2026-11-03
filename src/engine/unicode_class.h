@@ -17,7 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-enum unicode_class {
+enum unicode_class : uint32_t {
     UNICODE_CLASS_OTHER  = 0,
     UNICODE_CLASS_LETTER = 1,
     UNICODE_CLASS_NUMBER = 2,
@@ -25,6 +25,7 @@ enum unicode_class {
     UNICODE_CLASS_MARK   = 4,
     UNICODE_CLASS_SYMBOL = 5,
 };
+static_assert(sizeof(enum unicode_class) == sizeof(uint32_t));
 
 static const uint32_t UNICODE_CLASS_RANGES[] = {
         0x0000400u, 0x000050Bu, 0x0000515u, 0x000053Bu, 0x0000545u, 0x0000551u, 0x000055Bu,

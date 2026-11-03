@@ -92,7 +92,7 @@ static inline struct geist_tensor make_view_1d(struct geist_buffer *buf,
  * arena decision (weight_off_arena), so a new tensor needs no rule of its
  * own (#468).
  */
-enum weight_storage {
+enum weight_storage : uint32_t {
     /* Kernels bind the buffer itself: norm gammas, biases, conv taps, the
      * F32 widening of a small half-precision matrix. In the arena in β
      * mode. */
@@ -104,6 +104,7 @@ enum weight_storage {
      * On a weights_device_copy backend the host gathers its rows. */
     WEIGHT_LOOKUP,
 };
+static_assert(sizeof(enum weight_storage) == sizeof(uint32_t));
 
 /* True when a tensor of this intent stays out of the β-mode arena: the
  * backend copies its matrices to the device itself

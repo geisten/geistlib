@@ -153,11 +153,12 @@ void geist_session_cancel(struct geist_session *s);
 /* ====================================================================== */
 
 /* Bits returned by geist_model_modalities. */
-enum geist_modality {
+enum geist_modality : uint32_t {
     GEIST_MOD_AUDIO  = 1 << 0,
     GEIST_MOD_VISION = 1 << 1,
     GEIST_MOD_VIDEO  = 1 << 2,
 };
+static_assert(sizeof(enum geist_modality) == sizeof(uint32_t));
 
 /* @stability EXPERIMENTAL — bitmask of modalities this loaded model
  * instance can consume beyond text.
@@ -604,7 +605,8 @@ enum geist_status geist_session_reset_stats(struct geist_session *s);
  * observer threads before destroy). Failure zero-initializes out; only
  * GEIST_OK makes a zero a measurement. Backends without a provider (CPU)
  * return GEIST_E_UNSUPPORTED. */
-enum geist_resource_source { GEIST_RESOURCE_NONE, GEIST_RESOURCE_METAL_DEVICE };
+enum geist_resource_source : uint32_t { GEIST_RESOURCE_NONE, GEIST_RESOURCE_METAL_DEVICE };
+static_assert(sizeof(enum geist_resource_source) == sizeof(uint32_t));
 struct geist_backend_resources {
     uint64_t                   allocated_bytes;
     enum geist_resource_source source;

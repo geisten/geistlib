@@ -33,7 +33,7 @@ void clip_linear_apply(const struct ClippableLinear *cl,
     case AUDIO_PREC_W8A32:
         ops->w8a32(cl->w_q8, cl->w_scales, x, n, in_dim, out_dim, y);
         break;
-    default:
+    case AUDIO_PREC_FP32:
         linear_fp32(n, in_dim, out_dim, x, cl->w, nullptr, y);
         break;
     }

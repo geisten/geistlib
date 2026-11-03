@@ -188,13 +188,16 @@ void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf, size
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "metal command sequence: nested begin");
         return GEIST_E_INVALID_ARG;
     }
+    bool known = false;
     switch (kind) {
     case GEIST_COMMAND_SEQUENCE_VERIFY_GREEDY:
     case GEIST_COMMAND_SEQUENCE_DECODE_LAYER_LOOP:
     case GEIST_COMMAND_SEQUENCE_DECODE_GREEDY_STEP:
     case GEIST_COMMAND_SEQUENCE_PREFILL_TEXT:
+        known = true;
         break;
-    default:
+    }
+    if (!known) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "metal command sequence: invalid kind");
         return GEIST_E_INVALID_ARG;
     }

@@ -341,13 +341,14 @@ void attention_int4_via_buffers(size_t         n_q,
                                 float         *out);
 
 /* forward/layer.c */
-enum transformer_layer_profile_stage {
+enum transformer_layer_profile_stage : uint32_t {
     TRANSFORMER_LAYER_PROFILE_ATTENTION = 0,
     TRANSFORMER_LAYER_PROFILE_FFN,
     TRANSFORMER_LAYER_PROFILE_PLE,
     TRANSFORMER_LAYER_PROFILE_SCALE,
     TRANSFORMER_LAYER_PROFILE_COUNT,
 };
+static_assert(sizeof(enum transformer_layer_profile_stage) == sizeof(uint32_t));
 /* Adds the time since t0 to a stage of the per-layer profile; returns it
  * (0 when t0 is 0). */
 uint64_t transformer_layer_profile_add(enum transformer_layer_profile_stage stage, uint64_t t0);
