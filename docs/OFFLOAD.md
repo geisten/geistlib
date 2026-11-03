@@ -940,6 +940,21 @@ time beside other load) against 62.7 / 62.6, K = 3 63.3 / 63.4 (acceptance
 MTP stays opt-in. For an MoE with experts split across GPU and CPU, leave
 it off. Raw data: `benchmark/results/raw/moe-mtp-2026-11-02/`.
 
+**A dense model on Metal (#401).** There a verify reads the weights once
+for all its rows, so it should be cheap; on Qwen3.8-27B Q4_0 (M1 Max) MTP
+nevertheless decoded at a third of MTP off, because 2-7 rows of a Q4_0,
+Q4_1, Q8_0 or Q5_K linear took Metal's naive kernels (7-24x a decode row).
+With 2- and 3-row matvecs a call of K = 2 costs about 0.1 decode step for the
+MTP draft (~8 ms), 1.4 steps for the verify (layers 1.3x, the Q6_K head's
+2-row GEMV 2.2x) and one step for the correction token. That pays from an
+acceptance of ~0.55: medians of 3 cycles, 128 tokens, MTP off 11.1-11.8
+tok/s, K = 2 11.9 (acceptance 0.65, `docs/ARCHITECTURE.md`) and 12.9 (0.74,
+`docs/OFFLOAD.md`), K = 3 11.1 / 12.4, K = 4 8.1 / 10.3. The correction
+token's own forward is the largest fixed cost left: folding it into the
+next verify (llama.cpp's cadence) would need a session state for an
+emitted but unforwarded token. Raw data:
+`benchmark/results/raw/metal-mtp-27b-2026-11-03/`.
+
 All measurements under `scripts/gpu-lock.sh` (and `with-mac-lock` on the
 Mac), interleaved cycles, raw samples kept, `bench_revision_ab.py` parent vs
 patch for "single-backend runs pay nothing".

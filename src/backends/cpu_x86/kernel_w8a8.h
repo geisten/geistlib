@@ -175,4 +175,27 @@ void w8x8_gemm(size_t        n_tokens,
 /* Activations are quantized by w8a8_quantize_acts_row above; the GEMMs
  * read token j's scales at act_scales[j * w8a8_act_groups(n_blocks)]. */
 
+/* AVX-512 VNNI variants, defined in kernel_w8a8_avx512_vnni.c: its own TU, built
+ * with the matching -march= (mk/backend-cpu_x86.mk). Declared here so the
+ * definition and the dispatcher check against one prototype (#343). */
+[[nodiscard]] float w8a8_dot_avx512_vnni(size_t        n_blocks,
+                                         const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
+                                         const float   w_scales[static n_blocks],
+                                         const float   w_offsets[static n_blocks],
+                                         const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
+                                         const int32_t sum_a_per_block[static n_blocks],
+                                         const float act_scales[static w8a8_act_groups(n_blocks)]);
+
+void w8a8_gemm_avx512_vnni(
+        size_t        n_tokens,
+        size_t        n_rows,
+        size_t        n_blocks_per_row,
+        const uint8_t weights[static n_rows * n_blocks_per_row * W8A8_BLOCK_ELEMS],
+        const float   w_scales[static n_rows * n_blocks_per_row],
+        const float   w_offsets[static n_rows * n_blocks_per_row],
+        const int8_t  acts[static n_tokens * n_blocks_per_row * W8A8_BLOCK_ELEMS],
+        const int32_t sum_a_per_block[static n_tokens * n_blocks_per_row],
+        const float   act_scales[static n_tokens * w8a8_act_groups(n_blocks_per_row)],
+        float         out[static n_tokens * n_rows]);
+
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_KERNEL_W8A8_H */
