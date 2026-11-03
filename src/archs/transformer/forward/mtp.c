@@ -238,6 +238,20 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
     if (s != GEIST_OK)
         return s;
 
+    /* One draft row on a backend with the greedy device argmax: a 4-byte
+     * index back instead of the vocabulary's logits row, as the target's
+     * head does (#246). */
+    if (n == 1 && st->model_fusions.argmax) {
+        int32_t idx = -1;
+        s           = geist_backend_fused_tbl(be)->argmax_f32(be, &t_logits, &idx);
+        if (s != GEIST_OK || idx < 0 || (size_t) idx >= (size_t) st->vocab_size)
+            return s != GEIST_OK ? s : GEIST_E_BACKEND;
+        out_tokens[0] = (geist_token_t) idx;
+        transformer_profile_add(&g_mtp_profile, MTP_PROFILE_HEAD, t0);
+        sess->mtp_kv_len++;
+        return GEIST_OK;
+    }
+
     const float *logits = (const float *) v->buffer_map(sess->scratch_logits);
     if (logits == nullptr)
         return GEIST_E_BACKEND;
@@ -317,22 +331,26 @@ enum geist_status transformer_mtp_draft(struct transformer_arch_session *sess,
     *n_out                = 1;
     geist_token_t current = seed;
     const float  *hidden  = sess->mtp_pending_h;
+    /* A draft step is a decode step of one layer: the decode regime, on the
+     * MoE's CPU experts' backend too. */
+    const struct transformer_region region =
+            transformer_region_begin(sess->model, GEIST_REGION_DECODE_STEP);
+    enum geist_status s = GEIST_OK;
     while (*n_out < k_max) {
-        geist_token_t     next = -1;
-        enum geist_status s =
-                transformer_mtp_forward(sess, 1, &current, hidden, &next, sess->mtp_target_raw);
+        geist_token_t next = -1;
+        s = transformer_mtp_forward(sess, 1, &current, hidden, &next, sess->mtp_target_raw);
         if (s != GEIST_OK) {
-            sess->mtp_kv_len = base;
-            *n_out           = 0;
-            return s;
+            *n_out = 0;
+            break;
         }
         out_tokens[(*n_out)++] = next;
         current                = next;
         hidden                 = sess->mtp_target_raw;
     }
+    transformer_region_end(sess->model, region);
 
     /* Draft rows are provisional. Target verification will overwrite them
      * at the same positions using authoritative target hidden states. */
     sess->mtp_kv_len = base;
-    return GEIST_OK;
+    return s;
 }

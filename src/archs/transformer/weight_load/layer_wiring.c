@@ -276,6 +276,18 @@ enum geist_status load_layer_matrix(struct transformer_arch_state    *st,
                                    out_weight);
 }
 
+enum geist_status load_layer_matrix_rope_il(struct transformer_arch_state    *st,
+                                            struct gguf_ctx                  *gguf,
+                                            struct transformer_layer_weights *L,
+                                            const char                       *name,
+                                            size_t                            n_out,
+                                            size_t                            n_in,
+                                            size_t                            group,
+                                            struct geist_tensor              *out_view,
+                                            struct geist_weight              *out_weight) {
+    return load_layer_proj_rope_il(st, gguf, L, name, n_out, n_in, group, 0, out_view, out_weight);
+}
+
 enum geist_status load_layer_experts(struct transformer_arch_state    *st,
                                      struct gguf_ctx                  *gguf,
                                      struct transformer_layer_weights *L,
@@ -425,16 +437,19 @@ enum geist_status moe_wire_layer(struct transformer_arch_state    *st,
     const bool   sh    = st->config.moe_n_shared > 0;
     char         name[64], sname[64];
 
-    /* A router this unit does not implement is refused, never
-     * approximated: llama.cpp's gating enum, 1 = softmax. */
-    uint32_t gating = 1;
+    /* A router other than the one the family declared is refused, never
+     * approximated: llama.cpp's gating enum, 1 = softmax (the default),
+     * 2 = sigmoid, 3 = softmax over the selected (arch_config.h). */
+    uint32_t       gating = 1;
+    const uint32_t want   = st->config.moe_gating != 0 ? (uint32_t) st->config.moe_gating : 1;
     snprintf(name, sizeof name, "%s.expert_gating_func", arch);
-    if (gguf_get_meta_u32(gguf, name, &gating) && gating != 1) {
+    if (gguf_get_meta_u32(gguf, name, &gating) && gating != want) {
         geist_backend_set_error(be,
                                 GEIST_E_UNSUPPORTED,
-                                "%s: expert_gating_func %u is not softmax (1)",
+                                "%s: expert_gating_func %u is not the family's (%u)",
                                 arch,
-                                gating);
+                                gating,
+                                want);
         return GEIST_E_UNSUPPORTED;
     }
     /* The router's top-k is a discrete choice: it keeps its own precision. */
@@ -526,9 +541,10 @@ layer_tensor(char name[static 64], const struct transformer_layer_weights *L, co
 }
 
 /* The attention tensors of a softmax-attention layer: the per-head Q/K
- * norms where the model has them, q_proj unless the family loaded its own,
- * o_proj, and k/v unless the layer reads another layer's cache (their
- * slots then stay empty, so any accidental use fails loudly). Llama GGUFs
+ * norms where the model has them, q_proj and o_proj unless the family
+ * loaded its own, and k/v unless the layer reads another layer's cache or
+ * has latent attention (their slots then stay empty, so any accidental use
+ * fails loudly). Llama GGUFs
  * store q/k rows in interleaved RoPE pair order; they are reordered once
  * here so the forward pass rotates half-split pairs like every other family
  * (#464). */
@@ -558,7 +574,7 @@ layer_tensor(char name[static 64], const struct transformer_layer_weights *L, co
                                     &L->q_proj,
                                     &L->q_proj_w);
     }
-    if (s == GEIST_OK) {
+    if (s == GEIST_OK && L->o_proj.buffer == nullptr) {
         s = load_layer_proj(st,
                             gguf,
                             L,
@@ -568,7 +584,9 @@ layer_tensor(char name[static 64], const struct transformer_layer_weights *L, co
                             &L->o_proj,
                             &L->o_proj_w);
     }
-    if (s != GEIST_OK || L->is_kv_shared) {
+    /* Latent attention (#242) has no k / v projections: its family loads
+     * kv_a and kv_b. */
+    if (s != GEIST_OK || L->is_kv_shared || st->config.mla_kv_rank > 0) {
         return s;
     }
     s = load_layer_proj_rope_il(st,
@@ -981,6 +999,42 @@ global_keep(struct geist_backend *be, struct transformer_arch_state *st, struct 
     return global_keep(be, st, buf);
 }
 
+/* output_norm times config.output_norm_scale, in a buffer of its own: an F32
+ * norm would otherwise alias the file's read-only pages. */
+[[nodiscard]] static enum geist_status load_scaled_output_norm(struct geist_backend          *be,
+                                                               struct gguf_ctx               *gguf,
+                                                               struct transformer_arch_state *st,
+                                                               struct geist_buffer **out_buf) {
+    const size_t                n = (size_t) st->d_model;
+    const struct gguf_tensor_t *t = gguf_get_tensor(gguf, "output_norm.weight");
+    if (t == nullptr || gguf_tensor_elem_count(t) != n) {
+        geist_backend_set_error(
+                be, GEIST_E_FORMAT, "transformer: output_norm.weight is not %zu elements", n);
+        return GEIST_E_FORMAT;
+    }
+    float *w = gguf_dequant_to_fp32(t);
+    if (w == nullptr) {
+        geist_backend_set_error(be, GEIST_E_FORMAT, "transformer: output_norm.weight dequant");
+        return GEIST_E_FORMAT;
+    }
+    for (size_t i = 0; i < n; i++) {
+        w[i] *= st->config.output_norm_scale;
+    }
+    const struct geist_backend_vtbl *v = be->desc->vtbl;
+    enum geist_status                s = v->buffer_create(
+            be, n * sizeof(float), GEIST_BUFFER_WEIGHT, GEIST_MEMORY_AUTO, out_buf);
+    if (s == GEIST_OK) {
+        s = v->buffer_upload(*out_buf, n * sizeof(float), (const uint8_t *) w);
+        if (s != GEIST_OK) {
+            v->buffer_destroy(be, *out_buf);
+            *out_buf = nullptr;
+        }
+    }
+    void *p = w;
+    safe_free(&p);
+    return s;
+}
+
 /* token_embd [VOCAB, HIDDEN] (the lm_head too when tied; beside a usable
  * output.weight only a lookup table), the lm_head, the PLE globals where
  * the model has them, and output_norm [HIDDEN] (F32). Global buffers are
@@ -1010,7 +1064,10 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
         return s;
     }
     struct geist_buffer *buf = nullptr;
-    s = load_norm_to_f32_buffer(st, gguf, "output_norm.weight", (size_t) st->d_model, &buf);
+    s = st->config.output_norm_scale != 0.0f
+                ? load_scaled_output_norm(be, gguf, st, &buf)
+                : load_norm_to_f32_buffer(
+                          st, gguf, "output_norm.weight", (size_t) st->d_model, &buf);
     if (s != GEIST_OK) {
         return s;
     }
