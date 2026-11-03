@@ -134,7 +134,7 @@
     "src/io/safetensors_reader.h": 1,
     "src/quant/quant.h": 2
    },
-   "total": 168,
+   "total": 166,
    "what": "object-like #define with a replacement"
   },
   "enum_anonymous": {
@@ -167,7 +167,7 @@
     "src/io/gguf_reader.c": 2,
     "src/io/gguf_reader.h": 1
    },
-   "total": 56,
+   "total": 46,
    "what": "enum { ... } used as constants (no tag, no typedef)"
   },
   "enum_named": {
@@ -472,7 +472,7 @@
     "src/io/gguf_reader.c": 5,
     "src/io/safetensors_reader.c": 4
    },
-   "total": 322,
+   "total": 320,
    "what": "(void **) casts, as in safe_free((void **) &p)"
   },
   "void_ptr": {
@@ -632,7 +632,7 @@
     "src/io/safetensors_reader.h": 1,
     "src/quant/quant.h": 68
    },
-   "total": 2277,
+   "total": 2023,
    "what": "void * (one per `void` followed by `*`)"
   },
   "void_ptr_cast": {
