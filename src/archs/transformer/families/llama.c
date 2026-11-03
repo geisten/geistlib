@@ -28,6 +28,7 @@
 #include "../forward/blocks.h"
 #include "../weight_load.h"
 
+#include "gguf_dequant.h"
 #include "gguf_reader.h"
 
 #include <math.h>
@@ -44,6 +45,11 @@ static void populate_llama(struct gguf_ctx *gguf, struct transformer_arch_state 
 
     family_populate_common(gguf, "llama", nullptr, st);
     st->vocab_size = family_vocab_size(gguf, "llama", nullptr);
+    /* Llama 3.x's rope_scaling "llama3" (#379): the converter stores one
+     * frequency divisor per pair; llama.cpp passes it to every rope. */
+    const struct gguf_tensor_t *t = gguf_get_tensor(gguf, "rope_freqs.weight");
+    if (t != nullptr && (st->rope_freq_factors = gguf_dequant_to_fp32(t)) != nullptr)
+        st->n_rope_freq_factors = gguf_tensor_elem_count(t);
 }
 
 static bool populate_layers_llama(struct transformer_arch_state *st) {
@@ -58,6 +64,12 @@ static bool populate_layers_llama(struct transformer_arch_state *st) {
     if (g != nullptr) {
         gguf_get_meta_u32(g, "llama.feed_forward_length", &intermediate);
         gguf_get_meta_f32(g, "llama.rope.freq_base", &rope_theta);
+    }
+    /* A factor tensor that did not load, or not one per pair, is refused,
+     * not ignored. */
+    if (g != nullptr && gguf_get_tensor(g, "rope_freqs.weight") != nullptr &&
+        (st->rope_freq_factors == nullptr || st->n_rope_freq_factors * 2 != head_dim)) {
+        return false;
     }
     family_uniform_layers(st, head_dim, intermediate, rope_theta);
     return true;

@@ -232,15 +232,30 @@ blk_relu_sq(struct transformer_layer_forward_ctx *ctx, size_t n, struct geist_bu
 
 /* A model's router beyond moe_route_topk (arch_config.h moe_gating). */
 struct moe_router {
-    enum geist_moe_gating gating; /* 0: SOFTMAX */
-    bool                  norm;   /* renormalise the selected weights to sum 1 */
-    const float          *bias;   /* [n] added to the logits first, or nullptr */
+    enum geist_moe_gating gating;   /* 0: SOFTMAX */
+    bool                  norm;     /* renormalise the selected weights to sum 1 */
+    const float          *bias;     /* [n] added to the logits first, or nullptr */
+    const float          *sel_bias; /* [n] added to the scores for the selection only */
+    float                 w_scale;  /* times the final weights; 0: 1 */
+    size_t                n_group;  /* > 1: group-limited selection */
+    size_t                topk_group;
 };
 
-/* moe_route_topk generalised by `r`: the bias is added to the logits;
- * GEIST_MOE_GATING_SOFTMAX_WEIGHT selects as softmax does and weights the
- * selected by the softmax over their logits alone. False as moe_route_topk,
- * or when n exceeds GEIST_MOE_MAX_EXPERTS. */
+/* moe_route_topk generalised by `r`, in llama.cpp's build_moe_ffn order:
+ *   1. logits += bias;
+ *   2. scores: SOFTMAX softmax(logits), SIGMOID sigmoid(logits),
+ *      SOFTMAX_WEIGHT the logits;
+ *   3. selection scores = scores + sel_bias;
+ *   4. with n_group > 1: n / n_group experts per group, a group's score the
+ *      sum of its two best selection scores; experts outside the topk_group
+ *      best groups drop out;
+ *   5. the k best selection scores (ties: lower id first, groups too);
+ *   6. weights: the unbiased scores of the selected, SOFTMAX_WEIGHT the
+ *      softmax over the selected logits; renormalised when norm (the sum
+ *      clamped below at 2^-14, as llama.cpp); times w_scale.
+ * Without sel_bias, groups and scale, SOFTMAX is moe_route_topk exactly.
+ * False as moe_route_topk, when n exceeds GEIST_MOE_MAX_EXPERTS or the
+ * groups do not divide n (topk_group 0 or past n_group). */
 [[nodiscard]] bool moe_route(size_t                   n,
                              size_t                   k,
                              const struct moe_router *r,

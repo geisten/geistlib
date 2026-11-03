@@ -104,7 +104,15 @@ endif
 
 # ---- Base CFLAGS ---------------------------------------------------------
 
-WARNINGS_BASE   := -Wall -Wextra -Wpedantic -Werror
+# -Wimplicit-fallthrough: gcc's -Wextra has it already (at level 3, which
+# also takes a /* fallthrough */ comment); clang needs it named, and then
+# takes only [[fallthrough]] (#343).
+# -Wmissing-prototypes: an external function is defined after a declaration
+# in a header, so the definition and its callers check one prototype. Not
+# -Wstrict-prototypes: in C23 `()` is a prototype and K&R definitions are
+# gone, so it has nothing left to report (#343).
+WARNINGS_BASE   := -Wall -Wextra -Wpedantic -Wimplicit-fallthrough \
+                   -Wmissing-prototypes -Werror
 WARNINGS_STRICT := $(WARNINGS_BASE) -Wshadow -Wundef
 
 # Include paths:
@@ -176,7 +184,7 @@ LDLIBS  := $(LDLIBS_TARGET) $(GEMM_LDLIBS) $(EXTRA_LDLIBS)
 # vision encoder towers. The defaults build everything; the test suite
 # assumes them. A change of either variable rebuilds what depends on it
 # (select-config stamp below), no `make clean` needed.
-ALL_FAMILIES := bitnet gemma3 gemma4 gpt_oss llama olmoe qwen3 qwen35 qwen3moe
+ALL_FAMILIES := bitnet deepseek2 gemma3 gemma4 gpt_oss granitemoe llama llama4 olmoe qwen3 qwen35 qwen3moe
 FAMILIES     ?= $(ALL_FAMILIES)
 TOWERS       ?= 1
 ifneq ($(filter-out $(ALL_FAMILIES),$(FAMILIES)),)

@@ -31,6 +31,8 @@ jobs:
       - run: python3 scripts/changelog.py check
       # .gitea/workflows/ci.yml is this file through scripts/gitea-ci.py (#272).
       - run: python3 scripts/gitea-ci.py --check
+      # benchmark/c23_metrics.json follows the tree (#341).
+      - run: python3 tools/c23_metrics.py check
       # main's branch protection requires each CI job by name; a job added or
       # renamed without .gitea/required-checks.txt would go unrequired.
       - name: Required status checks match the CI jobs

@@ -16,6 +16,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "../weight_load.h"
 
 #include "gguf_dequant.h"
 #include "gguf_reader.h"
@@ -193,12 +194,46 @@ void permute_rope_rows(
     }
 }
 
+void permute_rope_tail_rows(size_t         n_rows,
+                            size_t         row_bytes,
+                            size_t         group,
+                            size_t         rope_n,
+                            const uint8_t *src,
+                            uint8_t       *dst) {
+    const size_t half = rope_n / 2, keep = group - rope_n;
+    for (size_t g = 0; g < n_rows; g += group) {
+        const uint8_t *pe = src + (g + keep) * row_bytes;
+        for (size_t i = 0; i < half; i++) {
+            memcpy(dst + (g + i) * row_bytes, pe + 2 * i * row_bytes, row_bytes);
+            memcpy(dst + (g + half + i) * row_bytes, pe + (2 * i + 1) * row_bytes, row_bytes);
+        }
+        memcpy(dst + (g + rope_n) * row_bytes, src + g * row_bytes, keep * row_bytes);
+    }
+}
+
+/* permute_rope_rows, or the tail form when the model rotates only the last
+ * config.rope_il_n rows of each group. */
+static void permute_rows(const struct transformer_arch_state *st,
+                         size_t                               n_rows,
+                         size_t                               row_bytes,
+                         size_t                               group,
+                         const uint8_t                       *src,
+                         uint8_t                             *dst) {
+    const size_t n = st->config.rope_il_n;
+    if (n == 0 || n >= group) {
+        permute_rope_rows(n_rows, row_bytes, group, src, dst);
+    } else {
+        permute_rope_tail_rows(n_rows, row_bytes, group, n, src, dst);
+    }
+}
+
 /* Bytes every attn_q / attn_k of the file takes, 64-byte aligned each: the
  * one host allocation for permuted rows outside the arena. */
 static size_t rope_il_rows_capacity(struct gguf_ctx *gguf) {
-    static const char *const suffixes[] = {".attn_q.weight", ".attn_k.weight"};
-    size_t                   total      = 0;
-    const size_t             n          = gguf_tensor_count(gguf);
+    static const char *const suffixes[] = {
+            ".attn_q.weight", ".attn_k.weight", ".attn_q_b.weight", ".attn_kv_a_mqa.weight"};
+    size_t       total = 0;
+    const size_t n     = gguf_tensor_count(gguf);
     for (size_t i = 0; i < n; i++) {
         const struct gguf_tensor_t *t = gguf_tensor_at(gguf, i);
         if (t == nullptr) {
@@ -315,11 +350,12 @@ rope_il_rows_alloc(struct transformer_arch_state *st, struct gguf_ctx *gguf, siz
                     be, GEIST_E_OOM, "transformer: no memory to permute '%s'", name);
             return GEIST_E_OOM;
         }
-        permute_rope_rows(n_rows,
-                          bytes / n_rows,
-                          rope_il_head_dim,
-                          (const uint8_t *) fp32,
-                          (uint8_t *) permuted);
+        permute_rows(st,
+                     n_rows,
+                     bytes / n_rows,
+                     rope_il_head_dim,
+                     (const uint8_t *) fp32,
+                     (uint8_t *) permuted);
         void *p = fp32;
         safe_free(&p);
         fp32 = permuted;
@@ -454,8 +490,8 @@ rope_il_rows_alloc(struct transformer_arch_state *st, struct gguf_ctx *gguf, siz
                             be, GEIST_E_OOM, "transformer: no memory to permute '%s'", name);
                     return GEIST_E_OOM;
                 }
-                permute_rope_rows(
-                        n_rows, row_bytes, rope_il_head_dim, (const uint8_t *) t->data, rows);
+                permute_rows(
+                        st, n_rows, row_bytes, rope_il_head_dim, (const uint8_t *) t->data, rows);
                 s = v->buffer_create_aliased(be, rows, t->nbytes, GEIST_BUFFER_WEIGHT, &buf);
             } else {
                 void *tmp = heap_alloc_aligned(t->nbytes, 64);
@@ -464,8 +500,8 @@ rope_il_rows_alloc(struct transformer_arch_state *st, struct gguf_ctx *gguf, siz
                             be, GEIST_E_OOM, "transformer: no memory to permute '%s'", name);
                     return GEIST_E_OOM;
                 }
-                permute_rope_rows(
-                        n_rows, row_bytes, rope_il_head_dim, (const uint8_t *) t->data, tmp);
+                permute_rows(
+                        st, n_rows, row_bytes, rope_il_head_dim, (const uint8_t *) t->data, tmp);
                 s = v->buffer_create(be, t->nbytes, GEIST_BUFFER_WEIGHT, GEIST_MEMORY_AUTO, &buf);
                 if (s == GEIST_OK) {
                     s = v->buffer_upload(buf, t->nbytes, (const uint8_t *) tmp);
@@ -491,11 +527,12 @@ rope_il_rows_alloc(struct transformer_arch_state *st, struct gguf_ctx *gguf, siz
             return GEIST_E_OOM; /* arena_alloc said why */
         }
         if (rope_il_head_dim > 0) {
-            permute_rope_rows(n_rows,
-                              t->nbytes / n_rows,
-                              rope_il_head_dim,
-                              (const uint8_t *) t->data,
-                              (uint8_t *) raw_ptr);
+            permute_rows(st,
+                         n_rows,
+                         t->nbytes / n_rows,
+                         rope_il_head_dim,
+                         (const uint8_t *) t->data,
+                         (uint8_t *) raw_ptr);
         } else {
             memcpy(raw_ptr, t->data, t->nbytes);
         }

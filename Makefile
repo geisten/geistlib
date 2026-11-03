@@ -586,6 +586,14 @@ format-check:
 	@$(CLANG_FORMAT) --dry-run --Werror $(FORMAT_FILES) && \
 	echo "All $(words $(FORMAT_FILES)) files conform to .clang-format"
 
+# benchmark/c23_metrics.json: the C23 gaps of #333 per file (#341). CI runs
+# `tools/c23_metrics.py check`; a change that adds or removes one of them
+# commits the regenerated file.
+.PHONY: c23-metrics
+c23-metrics:
+	@python3 tools/c23_metrics.py write
+	@python3 tools/c23_metrics.py show
+
 help:
 	@printf '%s\n' \
 	"geist build system   (detected TARGET=$(TARGET), MODE=$(MODE), CC=$(CC))" \
@@ -627,6 +635,7 @@ help:
 	"  make bench-mmlu [MMLU_LIMIT=0]              MMLU accuracy (pip install datasets)" \
 	"" \
 	"Format:  make format | format-check          (clang-format, reads .clang-format)" \
+	"Metrics: make c23-metrics                    (benchmark/c23_metrics.json, #341)" \
 	"" \
 	"Release: make release-check                  candidate metadata and published ancestry" \
 	"         make release-state-check            geisten.net latest: version, ancestry, assets" \

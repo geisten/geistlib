@@ -217,4 +217,78 @@ void i2s_t5_gemv_pair_m1(size_t        n_in,
                          size_t        n_out1,
                          float        *y1);
 
+/* AVX-512 VNNI variants, defined in kernel_i2s_avx512_vnni.c: its own TU, built
+ * with the matching -march= (mk/backend-cpu_x86.mk). Declared here so the
+ * definition and the dispatcher check against one prototype (#343). */
+void i2s_gemv_m1_avx512_vnni(size_t        n_out,
+                             size_t        n_in,
+                             const int8_t *xq,
+                             int32_t       sum_a,
+                             const uint8_t w_raw[],
+                             float         scale,
+                             float         y[static n_out]);
+
+void i2s_gemm_avx512_vnni(size_t         m,
+                          size_t         n_out,
+                          size_t         n_in,
+                          const int8_t  *xq,    /* [m * n_in] natural-order int8 */
+                          const int32_t *sum_a, /* [m] */
+                          const float   *scale, /* [m] = tensor_scale * inv_act_scale */
+                          const uint8_t  w_raw[],
+                          int8_t         perm[], /* [m * n_in] caller scratch */
+                          float          y[]);
+
+/* x4 row-interleaved kernels (kernel_i2s_avx512_vnni.c). xq is natural-order
+ * int8 [.. * n_in]; one activation load feeds 4 output rows. */
+void i2s_x4_gemv_m1_avx512_vnni(size_t        n_out,
+                                size_t        n_in,
+                                const int8_t *xq,
+                                int32_t       sum_a,
+                                const uint8_t x4[],
+                                float         scale,
+                                float         y[static n_out]);
+
+void i2s_x4_gemm_avx512_vnni(size_t         m,
+                             size_t         n_out,
+                             size_t         n_in,
+                             const int8_t  *xq,
+                             const int32_t *sum_a,
+                             const float   *scale,
+                             const uint8_t  x4[],
+                             float          y[]);
+
+void i2s_x4_gemv_pair_m1_avx512_vnni(size_t        n_in,
+                                     const int8_t *xq,
+                                     int32_t       sum_a,
+                                     const uint8_t x4_0[],
+                                     float         scale0,
+                                     size_t        n_out0,
+                                     float        *y0,
+                                     const uint8_t x4_1[],
+                                     float         scale1,
+                                     size_t        n_out1,
+                                     float        *y1);
+
+/* VNNI kernels (kernel_i2s_avx512_vnni.c). n_in_pad is the 320-padded
+ * column count; xq must be zero-padded to it. */
+void i2s_t5_gemv_m1_avx512_vnni(size_t        n_out,
+                                size_t        n_in_pad,
+                                const int8_t *xq,
+                                int32_t       sum_a,
+                                const uint8_t t5[],
+                                float         scale,
+                                float         y[static n_out]);
+
+void i2s_t5_gemv_pair_m1_avx512_vnni(size_t        n_in_pad,
+                                     const int8_t *xq,
+                                     int32_t       sum_a,
+                                     const uint8_t t5_0[],
+                                     float         scale0,
+                                     size_t        n_out0,
+                                     float        *y0,
+                                     const uint8_t t5_1[],
+                                     float         scale1,
+                                     size_t        n_out1,
+                                     float        *y1);
+
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_KERNEL_I2S_H */
