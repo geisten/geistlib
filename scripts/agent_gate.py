@@ -383,9 +383,22 @@ def cmd_rerun_held() -> int:
     runs = sorted({int(m.group(1)) for s in st.get("statuses") or []
                    if s.get("status") in ("failure", "error")
                    for m in [re.search(r"/actions/runs/(\d+)", s.get("target_url") or "")] if m})
+    failed = []
     for run in runs:
-        c.call("POST", f"{repo}/actions/runs/{run}/rerun-failed-jobs")
-        print(f"rerun-failed-jobs: run {run}")
+        try:
+            c.call("POST", f"{repo}/actions/runs/{run}/rerun-failed-jobs")
+            print(f"rerun-failed-jobs: run {run}")
+        except ApiError as e:
+            print(f"rerun-failed-jobs: run {run}: {e}")
+            failed.append((run, str(e)))
+    if failed:
+        # Not silent (#357): the approver learns the rerun did not happen.
+        lines = "\n".join(f"- run {run}: {err}" for run, err in failed)
+        c.call("POST", f"{repo}/issues/{n}/comments", {"body": (
+            f"/ci-ok {prefix} was accepted, but the held run could not be restarted:\n{lines}\n\n"
+            "Rerun its failed jobs from the run's page, or with "
+            f"`tea api -X POST {repo}/actions/runs/<run>/rerun-failed-jobs`.")})
+        return 1
     if not runs:
         print("no failed run on the head yet; its CI will see the approval")
     return 0

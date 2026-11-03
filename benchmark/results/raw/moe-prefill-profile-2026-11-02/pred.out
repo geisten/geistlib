@@ -1,0 +1,44 @@
+Qwen3.6-35B-A3B-UD-Q4_K_XL cold 6323 target staged rows 206605
+  decode order (main)      51.2
+  cross rows>=32  +decode  66.4
+  cross rows>=16  +decode  87.4
+  cross rows>=8   +decode  89.2
+  cross rows>=4   +decode  82.7
+  cross rows>=1   +decode  81.6
+  cross r32, then r1, dec  81.6
+  same rows>=32 (oracle)   100.0
+  same rows>=16  +decode   100.0
+  same rows>=8   +decode   100.0
+  same rows>=4   +decode   100.0
+  [arch target] same rows>=32 87.5
+  [arch target] same rows>=16 92.8
+  [arch target] same rows>=8 93.1
+  [arch target] decode 69.8
+  cross r32,r8,dec          89.2
+  cross r32+r8              89.2
+  cross r32+r16+r8          89.2
+  same+cross rows>=32       100.0
+  same+cross rows>=16       100.0
+  same+cross rows>=8       100.0
+Qwen3-30B-A3B-Q4_K_M cold 3312 target staged rows 262269
+  decode order (main)      76.5
+  cross rows>=32  +decode  84.5
+  cross rows>=16  +decode  93.7
+  cross rows>=8   +decode  93.5
+  cross rows>=4   +decode  90.8
+  cross rows>=1   +decode  90.6
+  cross r32, then r1, dec  90.6
+  same rows>=32 (oracle)   100.0
+  same rows>=16  +decode   100.0
+  same rows>=8   +decode   100.0
+  same rows>=4   +decode   100.0
+  [arch target] same rows>=32 94.3
+  [arch target] same rows>=16 97.0
+  [arch target] same rows>=8 97.1
+  [arch target] decode 81.7
+  cross r32,r8,dec          93.5
+  cross r32+r8              93.5
+  cross r32+r16+r8          94.1
+  same+cross rows>=32       100.0
+  same+cross rows>=16       100.0
+  same+cross rows>=8       99.9

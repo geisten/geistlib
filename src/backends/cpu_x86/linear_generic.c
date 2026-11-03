@@ -68,6 +68,8 @@ static row_dequant_fn row_dequant_for(uint16_t dtype) {
         return dequant_q6_K_row;
     case GEIST_DTYPE_Q5_0:
         return dequant_q5_0_row;
+    case GEIST_DTYPE_MXFP4:
+        return dequant_mxfp4_row;
     case GEIST_DTYPE_IQ2_S:
         return dequant_iq2_s_row;
     case GEIST_DTYPE_IQ3_S:

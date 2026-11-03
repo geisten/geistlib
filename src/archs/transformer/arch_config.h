@@ -240,6 +240,41 @@ struct geist_arch_config {
     /* A family refuses more experts than this at load (blk_moe_ffn lists
      * the active experts of a layer on the stack). */
 #define GEIST_MOE_MAX_EXPERTS 512
+    /* How the router's logits become the selection and its weights
+     * (llama.cpp's expert_gating_func, moe_route):
+     *   SOFTMAX         p = softmax(logits) over all experts; the k largest
+     *                   p, weights p (renormalised when moe_norm_topk).
+     *   SOFTMAX_WEIGHT  the k largest logits; weights the softmax over those
+     *                   k logits alone (GPT-OSS, #243).
+     * The router's bias (ffn_gate_inp.bias), where a layer has one, is added
+     * to the logits first. Values are the GGUF key's. */
+    enum geist_moe_gating {
+        GEIST_MOE_GATING_SOFTMAX        = 1,
+        GEIST_MOE_GATING_SIGMOID        = 2,
+        GEIST_MOE_GATING_SOFTMAX_WEIGHT = 3,
+    } moe_gating;
+    /* DeepSeek-V3's router (#242), as llama.cpp's build_moe_ffn runs it:
+     * moe_w_scale multiplies the final weights (0: 1, i.e. none); with
+     * moe_n_group > 1 the experts form that many equal groups, a group
+     * scores the sum of its two best selection scores and only the
+     * moe_topk_group best groups stay eligible. A per-layer selection bias
+     * (exp_probs_b, transformer_layer_weights.moe_sel_b) shifts the scores
+     * for the selection alone; the weights are the unbiased scores. */
+    float  moe_w_scale;
+    size_t moe_n_group, moe_topk_group;
+    /* Llama 4 (#244): a routed expert's input row is multiplied by its
+     * weight before the expert runs, and its output is summed unweighted
+     * (llama.cpp's weight_before_ffn). */
+    bool moe_weight_before;
+    /* The expert FFN's activation (moe_expert_rows):
+     *   SWIGLU      silu(gate) * up.
+     *   SWIGLU_OAI  g = min(gate, limit), u = clamp(up, -limit, limit),
+     *               g * sigmoid(alpha * g) * (u + 1), alpha 1.702, limit 7
+     *               (GPT-OSS, llama.cpp's ggml_swiglu_oai, #243). */
+    enum geist_moe_act {
+        GEIST_MOE_ACT_SWIGLU = 0,
+        GEIST_MOE_ACT_SWIGLU_OAI,
+    } moe_act;
 
     /* ---- Pooling. A model with a pooling kind other than NONE is an
      * EMBEDDING model: it has no LM head, emits no tokens, and its forward
@@ -269,6 +304,13 @@ struct geist_arch_config {
      *          pre-permuted — we have to apply interleaved RoPE to
      *          match. */
     bool rope_interleaved;
+    /* Rows the loader reorders for interleaved RoPE (load_layer_matrix_rope_il,
+     * #242): 0 = the whole group of rows (a llama head); else only the last
+     * rope_il_n rows of each group rotate (DeepSeek-V2: a q head is
+     * [nope | pe], kv_a_mqa [latent | k_pe]) and they move to the front,
+     * deinterleaved, so the forward pass rotates the first rope_il_n dims
+     * with half-split pairs. */
+    size_t rope_il_n;
 
     /* How a PARTIAL rotation (n_rotated_dims < head_dim) is laid out. The
      * two shipped families disagree, and each matches its own reference:
@@ -286,6 +328,34 @@ struct geist_arch_config {
      *
      * With n_rotated_dims == head_dim both collapse to the same thing. */
     bool rope_partial_block;
+
+    /* YaRN context extension (rope.scaling.type = yarn; GPT-OSS, #243), as
+     * ggml's rope_yarn computes it: rope_yarn_factor > 1 turns it on.
+     * Frequency i (pair index) blends the interpolated angle (divided by the
+     * factor) with the original one by a ramp over the correction dims of
+     * rope_yarn_orig_ctx / beta_fast / beta_slow, and cos/sin are scaled by
+     * rope_yarn_mscale (llama.cpp's attn_factor times 1 + 0.1 ln factor). */
+    float  rope_yarn_factor;
+    size_t rope_yarn_orig_ctx;
+    float  rope_yarn_beta_fast;
+    float  rope_yarn_beta_slow;
+    float  rope_yarn_mscale;
+
+    /* ---- Multi-head latent attention (DeepSeek-V2/V3, #242). mla_kv_rank
+     * == 0: none. Otherwise K and V come from a compressed latent: per
+     * token kv_a = [k_pe (mla_rope) | latent (mla_kv_rank)], the latent
+     * RMS-normalised and expanded by kv_b to every head's [k_nope | v];
+     * q (from q_a / q_a_norm / q_b when mla_q_rank > 0) is per head
+     * [q_pe | q_nope] after the load-time row reorder (rope_il_n). The
+     * cache holds full heads of head_dim = mla_rope + nope; V heads of
+     * mla_v_dim < head_dim are zero-padded to it, and the first mla_v_dim
+     * of each output head go to o_proj. attn_q_scale replaces
+     * 1/sqrt(head_dim) (YaRN's mscale squared over it). */
+    size_t mla_kv_rank;
+    size_t mla_q_rank;
+    size_t mla_rope;
+    size_t mla_v_dim;
+    float  attn_q_scale;
 
     /* ---- qwen35 hybrid family ------------------------------------------ *
      *

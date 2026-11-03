@@ -13,6 +13,17 @@
  *   - a file made for another key, layer count or expert count, and a file
  *     whose counts do not parse, are ignored (one line on stderr);
  *   - the file is the USAGE format analyze.py and GEIST_MOE_PROFILE read.
+ * Prefill rows (#239 follow-up), the module on its own:
+ *   - a chunk's rows per expert land in the bucket of floor(log2 m), the
+ *     last from 512; a shared expert and a layer past the table are not
+ *     counted; a threshold reads the buckets from its own on;
+ *   - they and the staging threshold go to the v2 file and come back, the
+ *     threshold carried over by a run that measured none;
+ *   - a v1 file (USAGE lines only) still loads, with no prefill rows, and
+ *     is rewritten as v2; a PREFILL line that does not parse: ignored;
+ *   - moe_stage_order: the most rows per byte at the threshold, then at a
+ *     quarter of it, then the most selections, then the lower index;
+ *     with no rows, the resident ranking's order.
  * The qwen3moe fixture on cpu_scalar (GEIST_MOE_PROFILE_CACHE = the
  * directory): a prefill of N tokens counts N x used selections per layer,
  * written when the model goes, and the next load reads them. With a GPU
@@ -173,6 +184,176 @@ static int check_module(void) {
     moe_profile_close(p);
     remove(path);
     remove(opath);
+    return fails;
+}
+
+/* Prefill rows: counting, buckets, thresholds, the v2 file, a v1 file. */
+static int check_prefill(void) {
+    int            fails = 0;
+    const uint64_t key   = 0x2468aceULL;
+    char           path[512];
+    path_of(key, sizeof path, path);
+    uint64_t got[L * E], tok = 0;
+
+    /* m = 3, 0, 1, 40, 600 and a shared expert's 6 past n_exp. */
+    const size_t                    rs[E + 2] = {0, 3, 3, 4, 44, 644, 650};
+    const uint32_t                  ids[]     = {1, 4, E};
+    struct transformer_moe_profile *p         = moe_profile_open(L, E, key, g_dir);
+    fails += geist_expect(p != nullptr && !moe_profile_prefill_rows(p, 1, L * E, got),
+                          "no prefill counted: no rows");
+    if (p == nullptr)
+        return fails;
+    moe_profile_count_chunk(p, 1, E, rs);
+    moe_profile_count_chunk(p, L, E, rs); /* an MTP block: past the table */
+    moe_profile_count(p, 0, 1, 3, 2, ids);
+    struct {
+        size_t   m_min;
+        uint64_t want[E];
+    } const th[] = {{1, {3, 0, 1, 40, 600}},
+                    {2, {3, 0, 0, 40, 600}},
+                    {4, {0, 0, 0, 40, 600}},
+                    {32, {0, 0, 0, 40, 600}},
+                    {48, {0, 0, 0, 40, 600}}, /* not a power of two: from 32 */
+                    {64, {0, 0, 0, 0, 600}},
+                    {4096, {0, 0, 0, 0, 600}}}; /* the last bucket: from 512 */
+    for (size_t t = 0; t < sizeof th / sizeof th[0]; t++) {
+        const bool any = moe_profile_prefill_rows(p, th[t].m_min, L * E, got);
+        bool       ok  = any;
+        for (size_t i = 0; i < L * E; i++)
+            ok = ok && got[i] == (i / E == 1 ? th[t].want[i % E] : 0);
+        char what[96];
+        snprintf(what, sizeof what, "prefill rows at threshold %zu", th[t].m_min);
+        fails += geist_expect(ok, what);
+    }
+    fails += geist_expect(moe_profile_stage_m_min(p) == 0, "no threshold yet");
+    moe_profile_set_stage_m_min(p, 32);
+    moe_profile_close(p);
+
+    /* The v2 file: rows and the threshold come back; a run without a
+     * threshold of its own keeps the file's. */
+    p = moe_profile_open(L, E, key, g_dir);
+    fails += geist_expect(p != nullptr && moe_profile_loaded(p), "the v2 file loads");
+    if (p != nullptr) {
+        const bool any = moe_profile_prefill_rows(p, 32, L * E, got);
+        fails += geist_expect(any && got[1 * E + 3] == 40 && got[1 * E + 4] == 600 &&
+                                      got[1 * E + 0] == 0,
+                              "the prefill rows read back");
+        fails += geist_expect(moe_profile_stage_m_min(p) == 32, "the threshold reads back");
+        moe_profile_counts(p, L * E, got, &tok);
+        fails += geist_expect(got[0 * E + 1] == 1 && got[0 * E + 4] == 1 && tok == 1,
+                              "the USAGE counts beside them");
+        moe_profile_count_chunk(p, 1, E, rs);
+        moe_profile_count(p, 0, 1, 3, 2, ids);
+    }
+    moe_profile_close(p);
+    p = moe_profile_open(L, E, key, g_dir);
+    if (p != nullptr) {
+        const bool any = moe_profile_prefill_rows(p, 1, L * E, got);
+        fails += geist_expect(any && got[1 * E + 0] == 6 && got[1 * E + 4] == 1200,
+                              "a second run's rows accumulate");
+        fails += geist_expect(moe_profile_stage_m_min(p) == 32,
+                              "a run that measured no threshold keeps the file's");
+    }
+    moe_profile_close(p);
+
+    /* A v1 file: the USAGE counts, no prefill rows, no threshold. */
+    char text[1024];
+    snprintf(text,
+             sizeof text,
+             "# geist moe profile v1 key %016" PRIx64 " layers 3 experts 5\n"
+             "USAGE %016" PRIx64 " profile run-time 7 0 1,2,3,4,5\n"
+             "USAGE %016" PRIx64 " profile run-time 7 1 0,0,0,0,9\n"
+             "USAGE %016" PRIx64 " profile run-time 7 2 5,0,0,0,0\n",
+             key,
+             key,
+             key,
+             key);
+    write_text(path, text);
+    p = moe_profile_open(L, E, key, g_dir);
+    fails += geist_expect(p != nullptr && moe_profile_loaded(p), "a v1 file still loads");
+    if (p != nullptr) {
+        moe_profile_counts(p, L * E, got, &tok);
+        fails += geist_expect(got[0 * E + 4] == 5 && got[1 * E + 4] == 9 && got[2 * E] == 5 &&
+                                      tok == 7,
+                              "a v1 file's counts");
+        fails += geist_expect(!moe_profile_prefill_rows(p, 1, L * E, got) &&
+                                      moe_profile_stage_m_min(p) == 0,
+                              "a v1 file has no prefill rows and no threshold");
+        moe_profile_count(p, 0, 1, 3, 2, ids);
+    }
+    moe_profile_close(p);
+    FILE *f         = fopen(path, "r");
+    char  head[128] = {0};
+    if (f != nullptr) {
+        if (fgets(head, sizeof head, f) == nullptr)
+            head[0] = '\0';
+        fclose(f);
+    }
+    fails += geist_expect(strncmp(head, "# geist moe profile v2 ", 23) == 0,
+                          "a v1 file is rewritten as v2");
+    p = moe_profile_open(L, E, key, g_dir);
+    if (p != nullptr) {
+        moe_profile_counts(p, L * E, got, &tok);
+        fails += geist_expect(moe_profile_loaded(p) && got[1 * E + 4] == 9 && tok == 8,
+                              "and reads back with its counts");
+    }
+    moe_profile_close(p);
+
+    /* A PREFILL line that does not parse: the file is ignored. */
+    snprintf(text,
+             sizeof text,
+             "# geist moe profile v2 key %016" PRIx64 " layers 1 experts 2\n"
+             "USAGE %016" PRIx64 " profile run-time 3 0 1,2\n"
+             "STAGE %016" PRIx64 " m-min 32\n"
+             "PREFILL %016" PRIx64 " rows-from 1 0 4,x\n",
+             key,
+             key,
+             key,
+             key);
+    write_text(path, text);
+    p = moe_profile_open(1, 2, key, g_dir);
+    fails += geist_expect(p != nullptr && !moe_profile_loaded(p) &&
+                                  !moe_profile_prefill_rows(p, 1, 2, got) &&
+                                  moe_profile_stage_m_min(p) == 0,
+                          "a corrupt PREFILL line: ignored, nothing left behind");
+    moe_profile_close(p);
+    remove(path);
+    return fails;
+}
+
+/* moe_stage_order: rows per byte, then selections, then the index. */
+static int check_stage_order(void) {
+    struct moe_stage_cand c[] = {
+            {.rows = 0, .bytes = 100, .count = 9, .idx = 4},
+            {.rows = 0, .bytes = 100, .count = 9, .idx = 1},
+            {.rows = 0, .bytes = 100, .count = 12, .idx = 7},
+    };
+    moe_stage_order(3, c);
+    int fails = geist_expect(c[0].idx == 7 && c[1].idx == 1 && c[2].idx == 4,
+                             "no prefill rows: the selection counts, ties to the lower index");
+    struct moe_stage_cand d[] = {
+            {.rows = 0, .bytes = 100, .count = 9, .idx = 4},
+            {.rows = 50, .bytes = 100, .count = 0, .idx = 9},
+            {.rows = 60, .bytes = 200, .count = 99, .idx = 2}, /* 0.3 per byte */
+            {.rows = 0, .bytes = 100, .count = 12, .idx = 7},
+            {.rows = 30, .bytes = 60, .count = 0, .idx = 3}, /* 0.5, as idx 9 */
+            {.rows = 0, .bytes = 100, .count = 9, .idx = 1},
+    };
+    moe_stage_order(6, d);
+    const uint32_t want[] = {3, 9, 2, 7, 1, 4};
+    bool           ok     = true;
+    for (size_t i = 0; i < 6; i++)
+        ok = ok && d[i].idx == want[i];
+    fails += geist_expect(ok, "the most prefill rows per byte first, then the selection counts");
+    struct moe_stage_cand q[] = {
+            {.rows = 0, .rows_lo = 0, .bytes = 100, .count = 50, .idx = 1},
+            {.rows = 0, .rows_lo = 10, .bytes = 100, .count = 0, .idx = 5},
+            {.rows = 0, .rows_lo = 10, .bytes = 200, .count = 0, .idx = 2}, /* half per byte */
+            {.rows = 5, .rows_lo = 5, .bytes = 100, .count = 0, .idx = 9},
+    };
+    moe_stage_order(4, q);
+    fails += geist_expect(q[0].idx == 9 && q[1].idx == 5 && q[2].idx == 2 && q[3].idx == 1,
+                          "rows at a quarter of the threshold break ties before the counts");
     return fails;
 }
 
@@ -448,6 +629,8 @@ int main(void) {
     setenv("GEIST_MOE_PROFILE_CACHE", g_dir, 1);
     unsetenv("GEIST_MOE_PROFILE");
     fails += check_module();
+    fails += check_prefill();
+    fails += check_stage_order();
     fails += check_model();
     fails += check_determinism();
     rmdir(g_dir);

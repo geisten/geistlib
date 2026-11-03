@@ -276,6 +276,18 @@ enum geist_status load_layer_matrix(struct transformer_arch_state    *st,
                                    out_weight);
 }
 
+enum geist_status load_layer_matrix_rope_il(struct transformer_arch_state    *st,
+                                            struct gguf_ctx                  *gguf,
+                                            struct transformer_layer_weights *L,
+                                            const char                       *name,
+                                            size_t                            n_out,
+                                            size_t                            n_in,
+                                            size_t                            group,
+                                            struct geist_tensor              *out_view,
+                                            struct geist_weight              *out_weight) {
+    return load_layer_proj_rope_il(st, gguf, L, name, n_out, n_in, group, 0, out_view, out_weight);
+}
+
 enum geist_status load_layer_experts(struct transformer_arch_state    *st,
                                      struct gguf_ctx                  *gguf,
                                      struct transformer_layer_weights *L,
@@ -425,16 +437,19 @@ enum geist_status moe_wire_layer(struct transformer_arch_state    *st,
     const bool   sh    = st->config.moe_n_shared > 0;
     char         name[64], sname[64];
 
-    /* A router this unit does not implement is refused, never
-     * approximated: llama.cpp's gating enum, 1 = softmax. */
-    uint32_t gating = 1;
+    /* A router other than the one the family declared is refused, never
+     * approximated: llama.cpp's gating enum, 1 = softmax (the default),
+     * 2 = sigmoid, 3 = softmax over the selected (arch_config.h). */
+    uint32_t       gating = 1;
+    const uint32_t want   = st->config.moe_gating != 0 ? (uint32_t) st->config.moe_gating : 1;
     snprintf(name, sizeof name, "%s.expert_gating_func", arch);
-    if (gguf_get_meta_u32(gguf, name, &gating) && gating != 1) {
+    if (gguf_get_meta_u32(gguf, name, &gating) && gating != want) {
         geist_backend_set_error(be,
                                 GEIST_E_UNSUPPORTED,
-                                "%s: expert_gating_func %u is not softmax (1)",
+                                "%s: expert_gating_func %u is not the family's (%u)",
                                 arch,
-                                gating);
+                                gating,
+                                want);
         return GEIST_E_UNSUPPORTED;
     }
     /* The router's top-k is a discrete choice: it keeps its own precision. */
@@ -526,9 +541,10 @@ layer_tensor(char name[static 64], const struct transformer_layer_weights *L, co
 }
 
 /* The attention tensors of a softmax-attention layer: the per-head Q/K
- * norms where the model has them, q_proj unless the family loaded its own,
- * o_proj, and k/v unless the layer reads another layer's cache (their
- * slots then stay empty, so any accidental use fails loudly). Llama GGUFs
+ * norms where the model has them, q_proj and o_proj unless the family
+ * loaded its own, and k/v unless the layer reads another layer's cache or
+ * has latent attention (their slots then stay empty, so any accidental use
+ * fails loudly). Llama GGUFs
  * store q/k rows in interleaved RoPE pair order; they are reordered once
  * here so the forward pass rotates half-split pairs like every other family
  * (#464). */
@@ -558,7 +574,7 @@ layer_tensor(char name[static 64], const struct transformer_layer_weights *L, co
                                     &L->q_proj,
                                     &L->q_proj_w);
     }
-    if (s == GEIST_OK) {
+    if (s == GEIST_OK && L->o_proj.buffer == nullptr) {
         s = load_layer_proj(st,
                             gguf,
                             L,
@@ -568,7 +584,9 @@ layer_tensor(char name[static 64], const struct transformer_layer_weights *L, co
                             &L->o_proj,
                             &L->o_proj_w);
     }
-    if (s != GEIST_OK || L->is_kv_shared) {
+    /* Latent attention (#242) has no k / v projections: its family loads
+     * kv_a and kv_b. */
+    if (s != GEIST_OK || L->is_kv_shared || st->config.mla_kv_rank > 0) {
         return s;
     }
     s = load_layer_proj_rope_il(st,
