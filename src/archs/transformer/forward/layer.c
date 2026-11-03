@@ -117,6 +117,7 @@ static void transformer_layer_ctx_init(struct transformer_layer_forward_ctx *ctx
     ctx->inter           = L->intermediate;
     ctx->SEQ             = (int64_t) seq;
     ctx->kv_len_now      = q_position + seq;
+    ctx->decode_rows     = sess->verify_rows;
     transformer_layer_bind_kv_buffers(ctx);
 }
 

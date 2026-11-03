@@ -178,6 +178,18 @@ struct layer_norm_spec {
 void permute_rope_rows(
         size_t n_rows, size_t row_bytes, size_t head_dim, const uint8_t *src, uint8_t *dst);
 
+/* permute_rope_rows for a group whose last rope_n rows rotate (DeepSeek-V2,
+ * #242): within each group of `group` rows, the rope_n trailing rows move to
+ * the front in half-split order (row group - rope_n + 2i to i, + 2i + 1 to
+ * rope_n/2 + i) and the other rows follow in their order. rope_n is even,
+ * at most group; group divides n_rows; src and dst do not overlap. */
+void permute_rope_tail_rows(size_t         n_rows,
+                            size_t         row_bytes,
+                            size_t         group,
+                            size_t         rope_n,
+                            const uint8_t *src,
+                            uint8_t       *dst);
+
 /* load_norm_to_f32_buffer for a 2D tensor, with the rows of a llama-family
  * attn_q / attn_k permuted as load_tensor_to_buffer_rope_il does when
  * rope_il_head_dim > 0: the F32-widened q/k of a backend without a

@@ -215,6 +215,64 @@ static void build_spm_byte_map(struct gguf_tokenizer *tok) {
     }
 }
 
+/* s[0, n) is one of the NUL-terminated names in list (null-terminated). */
+static bool name_in(size_t n, const char *s, const char *const *list) {
+    if (s == nullptr)
+        return false;
+    for (; *list != nullptr; list++) {
+        if (strlen(*list) == n && memcmp(s, *list, n) == 0)
+            return true;
+    }
+    return false;
+}
+
+[[nodiscard]] bool gguf_tokenizer_add_bos_rule(size_t      model_len,
+                                               size_t      pre_len,
+                                               int         flag,
+                                               bool        fallback,
+                                               const char *model,
+                                               const char *pre) {
+    /* llama_vocab::impl::load: the vocabulary type comes from the model name. */
+    static const char *const SPM[]  = {"llama", nullptr};
+    static const char *const WPM[]  = {"bert", nullptr};
+    static const char *const BPE[]  = {"gpt2", "hybriddna", "whitespace", "gemma4", nullptr};
+    static const char *const NONE[] = {"t5", "rwkv", "plamo2", "test", "no_vocab", "none", nullptr};
+    /* The BPE pretokenizers whose branch sets add_bos = true. */
+    static const char *const BPE_BOS[] = {"llama3",
+                                          "llama-v3",
+                                          "llama-bpe",
+                                          "falcon3",
+                                          "falcon-h1",
+                                          "pixtral",
+                                          "midm-2.0",
+                                          "lfm2",
+                                          "jina-v5-nano",
+                                          "tekken",
+                                          "chameleon",
+                                          nullptr};
+    /* LLAMA_VOCAB_PRE_TYPE_GEMMA4; model "gemma4" sets this pre itself. */
+    static const char *const GEMMA4[]       = {"gemma4", "granite-embed-multi-311m", nullptr};
+    static const char *const GEMMA4_MODEL[] = {"gemma4", nullptr};
+
+    const bool is_bpe = name_in(model_len, model, BPE);
+    bool       add_bos;
+    if (name_in(model_len, model, SPM) || name_in(model_len, model, WPM)) {
+        add_bos = true;
+    } else if (is_bpe) {
+        add_bos = name_in(pre_len, pre, BPE_BOS);
+    } else if (name_in(model_len, model, NONE)) {
+        add_bos = false; /* UGM, RWKV and the rest: the member default */
+    } else {
+        add_bos = fallback; /* llama.cpp refuses to load this vocabulary */
+    }
+    if (flag >= 0) /* tokenizer.ggml.add_bos_token overrides the default */
+        add_bos = flag != 0;
+    /* ... except for Gemma 4, which llama.cpp forces on (its PR 21500). */
+    const bool gemma4 =
+            is_bpe && (name_in(model_len, model, GEMMA4_MODEL) || name_in(pre_len, pre, GEMMA4));
+    return add_bos || gemma4;
+}
+
 [[nodiscard]] bool gguf_tokenizer_load(struct gguf_tokenizer *tok, const struct gguf_ctx *ctx) {
     if (tok == nullptr)
         return false;
@@ -363,6 +421,13 @@ static void build_spm_byte_map(struct gguf_tokenizer *tok) {
         /* llama.cpp runs one regex for both (LLAMA_VOCAB_PRE_TYPE_GPT4O, #243). */
         tok->pre_gpt4o = pre != nullptr && ((pre_len == 6 && memcmp(pre, "gpt-4o", 6) == 0) ||
                                             (pre_len == 6 && memcmp(pre, "llama4", 6) == 0));
+        /* Regex sequences (#242). */
+        if (pre != nullptr && pre_len == 12 && memcmp(pre, "deepseek-llm", 12) == 0)
+            tok->pre_seq = GGUF_PRE_DEEPSEEK_LLM;
+        else if (pre != nullptr && pre_len == 11 && memcmp(pre, "deepseek-v3", 11) == 0)
+            tok->pre_seq = GGUF_PRE_DEEPSEEK_V3;
+        else
+            tok->pre_seq = GGUF_PRE_NONE;
     } else if (tok->n_merges > 0) {
         tok->mode = GGUF_TOK_MODE_SPM;
     } else if (tok->scores != nullptr) {
@@ -372,22 +437,29 @@ static void build_spm_byte_map(struct gguf_tokenizer *tok) {
         tok->mode = GGUF_TOK_MODE_UNSUPPORTED;
     }
 
-    /* BOS prepend policy (llama.cpp convention): explicit
-     * tokenizer.ggml.add_bos_token wins; absent, SentencePiece-style
-     * models default to prepending (Llama/Gemma) while byte-BPE (gpt2
-     * mode — GPT2/Qwen lineage) defaults to NOT prepending. Qwen3.8
-     * GGUFs carry a bos_id with no flag; blindly prepending desynced
-     * the qwen35 recurrent stack into repetition loops (#281). */
+    /* BOS prepend policy: llama.cpp's (gguf_tokenizer_add_bos_rule). A
+     * byte-BPE file without the flag prepends only for the pretokenizers
+     * llama.cpp names (Llama 3's "llama-bpe", ...), so Qwen3.8 GGUFs, which
+     * carry a bos_id with no flag, still get none: prepending desynced the
+     * qwen35 recurrent stack into repetition loops (#281). Without a BOS id
+     * there is nothing to prepend, whatever the default says (#385). */
     {
         bool b;
         if (gguf_get_meta_bool(ctx, "tokenizer.ggml.add_eos_token", &b)) {
             tok->add_eos = b;
         }
-        if (gguf_get_meta_bool(ctx, "tokenizer.ggml.add_bos_token", &b)) {
-            tok->add_bos = b;
-        } else {
-            tok->add_bos = tok->bos_id >= 0 && tok->mode != GGUF_TOK_MODE_GPT2;
-        }
+        size_t      pre_len  = 0;
+        const char *pre      = gguf_get_meta_string(ctx, "tokenizer.ggml.pre", &pre_len);
+        const bool  has_flag = gguf_get_meta_bool(ctx, "tokenizer.ggml.add_bos_token", &b);
+        tok->add_bos =
+                gguf_tokenizer_add_bos_rule(tok->model_len,
+                                            pre_len,
+                                            has_flag ? (b ? 1 : 0) : -1,
+                                            tok->bos_id >= 0 && tok->mode != GGUF_TOK_MODE_GPT2,
+                                            tok->model,
+                                            pre);
+        if (!has_flag && tok->bos_id < 0)
+            tok->add_bos = false;
     }
 
     if (tok->mode == GGUF_TOK_MODE_SPM || tok->mode == GGUF_TOK_MODE_UNIGRAM) {
@@ -1272,6 +1344,9 @@ static enum g4_kind g4_kind_at(const char *text, size_t tlen, size_t i, size_t *
     case UNICODE_CLASS_NUMBER:
         return G4_DIGIT;
     case UNICODE_CLASS_OTHER:
+    case UNICODE_CLASS_PUNCT:
+    case UNICODE_CLASS_MARK:
+    case UNICODE_CLASS_SYMBOL:
         break;
     }
     return G4_OTHER;
@@ -1549,6 +1624,266 @@ static bool encode_spm(const struct gguf_tokenizer *tok,
     return true;
 }
 
+/* ---- Regex-sequence pretokenizers: deepseek-llm, deepseek-v3 (#242) ---- *
+ *
+ * llama.cpp runs these as a list of regexes (llama-vocab.cpp,
+ * LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_LLM / DEEPSEEK3_LLM), each over the pieces
+ * the previous one left (unicode_regex_split): inside a piece, every
+ * leftmost match becomes a piece and so does every gap between matches.
+ * A regex with a \p{...} class runs on llama.cpp's collapsed text (a
+ * non-ASCII codepoint becomes its class: letter, number, punctuation, mark,
+ * symbol, whitespace or other); one without runs as std::wregex on the
+ * codepoints themselves, non-ASCII whitespace replaced by \v.
+ *
+ * deepseek-llm:
+ *   1. [\r\n]
+ *   2. \s?[A-Za-zµÀ-Ö...]+      a fixed Latin/Greek/Cyrillic/... range list
+ *   3. \s?[!-/:-~！-／：-～‘-‟　-。]+
+ *   4. \s+$
+ *   5. [一-龥ࠀ-一가-퟿]+
+ *   6. \p{N}+
+ * deepseek-v3:
+ *   1. \p{N}{1,3}
+ *   2. [一-龥぀-ゟ゠-ヿ]+
+ *   3. [!"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~][A-Za-z]+
+ *      |[^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+| ?[\p{P}\p{S}]+[\r\n]*
+ *      |\s*[\r\n]+|\s+(?!\S)|\s+
+ * Each matcher below answers "the match that starts exactly at p" with the
+ * regex's own alternative order and backtracking; the driver searches
+ * left to right as std::regex_iterator does. */
+
+struct cp_range {
+    uint32_t lo, hi;
+};
+
+static const struct cp_range DSL_LETTERS[] = {
+        {0x41, 0x5A},       {0x61, 0x7A},       {0xB5, 0xB5},       {0xC0, 0xD6},
+        {0xD8, 0xF6},       {0xF8, 0x1BA},      {0x1BC, 0x1BF},     {0x1C4, 0x293},
+        {0x295, 0x2AF},     {0x370, 0x373},     {0x376, 0x377},     {0x37B, 0x37D},
+        {0x37F, 0x37F},     {0x386, 0x386},     {0x388, 0x38A},     {0x38C, 0x38C},
+        {0x38E, 0x3A1},     {0x3A3, 0x3F5},     {0x3F7, 0x481},     {0x48A, 0x52F},
+        {0x531, 0x556},     {0x10A0, 0x10C5},   {0x13A0, 0x13F5},   {0x13F8, 0x13FD},
+        {0x1C90, 0x1CBA},   {0x1CBD, 0x1CBF},   {0x1D00, 0x1D2B},   {0x1D6B, 0x1D77},
+        {0x1D79, 0x1D9A},   {0x1E00, 0x1F15},   {0x1F18, 0x1F1D},   {0x1F20, 0x1F45},
+        {0x1F48, 0x1F4D},   {0x1F50, 0x1F57},   {0x1F59, 0x1F59},   {0x1F5B, 0x1F5B},
+        {0x1F5D, 0x1F5D},   {0x1F5F, 0x1F7D},   {0x1F80, 0x1FB4},   {0x1FB6, 0x1FBC},
+        {0x1FBE, 0x1FBE},   {0x1FC2, 0x1FC4},   {0x1FC6, 0x1FCC},   {0x1FD0, 0x1FD3},
+        {0x1FD6, 0x1FDB},   {0x1FE0, 0x1FEC},   {0x1FF2, 0x1FF4},   {0x1FF6, 0x1FFC},
+        {0x2102, 0x2102},   {0x2107, 0x2107},   {0x210A, 0x2113},   {0x2115, 0x2115},
+        {0x2119, 0x211D},   {0x2124, 0x2124},   {0x2126, 0x2126},   {0x2128, 0x2128},
+        {0x212A, 0x212D},   {0x212F, 0x2134},   {0x2139, 0x2139},   {0x213C, 0x213F},
+        {0x2145, 0x2149},   {0x214E, 0x214E},   {0x2183, 0x2184},   {0x2C00, 0x2C7B},
+        {0x2C7E, 0x2CE4},   {0x2CEB, 0x2CEE},   {0x2CF2, 0x2CF3},   {0xA640, 0xA66D},
+        {0xA680, 0xA69B},   {0xA722, 0xA76F},   {0xA771, 0xA787},   {0xA78B, 0xA78E},
+        {0xAB70, 0xABBF},   {0xFB00, 0xFB06},   {0xFB13, 0xFB17},   {0xFF21, 0xFF3A},
+        {0xFF41, 0xFF5A},   {0x10400, 0x1044F}, {0x104B0, 0x104D3}, {0x104D8, 0x104FB},
+        {0x10C80, 0x10CB2}, {0x10CC0, 0x10CF2}, {0x118A0, 0x118DF}, {0x1E900, 0x1E943},
+};
+static const struct cp_range DSL_PUNCT[] = {
+        {0x21, 0x2F},
+        {0x3A, 0x7E},
+        {0xFF01, 0xFF0F},
+        {0xFF1A, 0xFF5E},
+        {0x2018, 0x201F},
+        {0x3000, 0x3002},
+};
+static const struct cp_range DSL_CJK[]  = {{0x800, 0x9FA5}, {0xAC00, 0xD7FF}};
+static const struct cp_range DSV3_CJK[] = {{0x3040, 0x30FF}, {0x4E00, 0x9FA5}};
+
+static bool cp_in(size_t n, const struct cp_range r[static n], uint32_t cp) {
+    for (size_t i = 0; i < n; i++)
+        if (cp >= r[i].lo && cp <= r[i].hi)
+            return true;
+    return false;
+}
+#define CP_IN(table, cp) cp_in(sizeof(table) / sizeof((table)[0]), (table), (cp))
+
+/* \s as both regex paths see it: ASCII \t \n \v \f \r and space, and
+ * llama.cpp's non-ASCII whitespace (which it rewrites to \v). */
+static bool seq_ws(uint32_t cp) {
+    return (cp >= 0x09 && cp <= 0x0D) || cp == ' ' || (cp >= 0x80 && (cp == 0x85 || q2_is_ws(cp)));
+}
+
+/* The codepoint a wregex sees: non-ASCII whitespace became \v. */
+static uint32_t seq_wcp(uint32_t cp) {
+    return cp >= 0x80 && seq_ws(cp) ? 0x0B : cp;
+}
+
+/* The collapsed classes (\p{L} \p{N} \p{P} \p{M} \p{S}); ASCII by
+ * llama.cpp's k_ucat_map, the rest by unicode_class.h. */
+static enum unicode_class seq_class(uint32_t cp) {
+    if (cp < 0x80) {
+        if ((cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z'))
+            return UNICODE_CLASS_LETTER;
+        if (cp >= '0' && cp <= '9')
+            return UNICODE_CLASS_NUMBER;
+        if (cp == '$' || cp == '+' || (cp >= '<' && cp <= '>') || cp == '^' || cp == '`' ||
+            cp == '|' || cp == '~')
+            return UNICODE_CLASS_SYMBOL;
+        if (cp >= 0x21 && cp <= 0x7E)
+            return UNICODE_CLASS_PUNCT;
+        return UNICODE_CLASS_OTHER;
+    }
+    return seq_ws(cp) ? UNICODE_CLASS_OTHER : unicode_class_of(cp);
+}
+
+/* One regex: the end of the match starting at p in [p, end), or p. */
+typedef size_t (*seq_match_fn)(const uint32_t *cps, size_t end, size_t p);
+
+static size_t seq_run(const uint32_t *cps, size_t end, size_t j, bool (*in)(uint32_t)) {
+    while (j < end && in(cps[j]))
+        j++;
+    return j;
+}
+
+static bool dsl_letter(uint32_t cp) {
+    return CP_IN(DSL_LETTERS, seq_wcp(cp));
+}
+static bool dsl_punct(uint32_t cp) {
+    return CP_IN(DSL_PUNCT, seq_wcp(cp));
+}
+static bool dsl_cjk(uint32_t cp) {
+    return CP_IN(DSL_CJK, seq_wcp(cp));
+}
+static bool dsv3_cjk(uint32_t cp) {
+    return CP_IN(DSV3_CJK, seq_wcp(cp));
+}
+static bool seq_num(uint32_t cp) {
+    return seq_class(cp) == UNICODE_CLASS_NUMBER;
+}
+static bool seq_lm(uint32_t cp) {
+    const enum unicode_class c = seq_class(cp);
+    return c == UNICODE_CLASS_LETTER || c == UNICODE_CLASS_MARK;
+}
+static bool seq_ps(uint32_t cp) {
+    const enum unicode_class c = seq_class(cp);
+    return c == UNICODE_CLASS_PUNCT || c == UNICODE_CLASS_SYMBOL;
+}
+static bool seq_nl(uint32_t cp) {
+    return cp == '\r' || cp == '\n';
+}
+static bool seq_ascii_alpha(uint32_t cp) {
+    return (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z');
+}
+
+/* [\r\n] */
+static size_t dsl_m1(const uint32_t *cps, size_t end, size_t p) {
+    (void) end;
+    return seq_nl(cps[p]) ? p + 1 : p;
+}
+
+/* \s?[class]+ */
+static size_t seq_space_run(const uint32_t *cps, size_t end, size_t p, bool (*in)(uint32_t)) {
+    if (seq_ws(cps[p]) && p + 1 < end && in(cps[p + 1]))
+        return seq_run(cps, end, p + 1, in);
+    return in(cps[p]) ? seq_run(cps, end, p, in) : p;
+}
+static size_t dsl_m2(const uint32_t *cps, size_t end, size_t p) {
+    return seq_space_run(cps, end, p, dsl_letter);
+}
+static size_t dsl_m3(const uint32_t *cps, size_t end, size_t p) {
+    return seq_space_run(cps, end, p, dsl_punct);
+}
+
+/* \s+$ */
+static size_t dsl_m4(const uint32_t *cps, size_t end, size_t p) {
+    const size_t q = seq_run(cps, end, p, seq_ws);
+    return q > p && q == end ? q : p;
+}
+
+static size_t dsl_m5(const uint32_t *cps, size_t end, size_t p) {
+    return seq_run(cps, end, p, dsl_cjk);
+}
+static size_t dsl_m6(const uint32_t *cps, size_t end, size_t p) {
+    return seq_run(cps, end, p, seq_num);
+}
+
+/* \p{N}{1,3} */
+static size_t dsv3_m1(const uint32_t *cps, size_t end, size_t p) {
+    size_t j = p;
+    while (j < end && j - p < 3 && seq_num(cps[j]))
+        j++;
+    return j;
+}
+static size_t dsv3_m2(const uint32_t *cps, size_t end, size_t p) {
+    return seq_run(cps, end, p, dsv3_cjk);
+}
+
+static size_t dsv3_m3(const uint32_t *cps, size_t end, size_t p) {
+    const uint32_t c0   = cps[p];
+    const bool     more = p + 1 < end;
+    /* [ASCII punctuation][A-Za-z]+ */
+    if (c0 < 0x80 && seq_ps(c0) && more && seq_ascii_alpha(cps[p + 1]))
+        return seq_run(cps, end, p + 1, seq_ascii_alpha);
+    /* [^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+ */
+    const enum unicode_class k0 = seq_class(c0);
+    const bool prefix = !seq_nl(c0) && k0 != UNICODE_CLASS_LETTER && k0 != UNICODE_CLASS_PUNCT &&
+                        k0 != UNICODE_CLASS_SYMBOL;
+    if (prefix && more && seq_lm(cps[p + 1]))
+        return seq_run(cps, end, p + 1, seq_lm);
+    if (seq_lm(c0))
+        return seq_run(cps, end, p, seq_lm);
+    /*  ?[\p{P}\p{S}]+[\r\n]* */
+    size_t j = c0 == ' ' && more && seq_ps(cps[p + 1]) ? p + 1 : p;
+    if (seq_ps(cps[j]))
+        return seq_run(cps, end, seq_run(cps, end, j, seq_ps), seq_nl);
+    if (!seq_ws(c0))
+        return p;
+    /* \s*[\r\n]+ ends after the run's last \r or \n; \s+(?!\S) leaves the
+     * run's last codepoint unless the run ends the piece; \s+ */
+    const size_t q    = seq_run(cps, end, p, seq_ws);
+    size_t       last = p;
+    for (size_t k = p; k < q; k++)
+        if (seq_nl(cps[k]))
+            last = k + 1;
+    if (last > p)
+        return last;
+    if (q == end || q - p < 2)
+        return q;
+    return q - 1;
+}
+
+static const seq_match_fn SEQ_DEEPSEEK_LLM[] = {dsl_m1, dsl_m2, dsl_m3, dsl_m4, dsl_m5, dsl_m6};
+static const seq_match_fn SEQ_DEEPSEEK_V3[]  = {dsv3_m1, dsv3_m2, dsv3_m3};
+
+size_t gguf_tokenizer_seq_split(enum gguf_pre_seq kind,
+                                size_t            n,
+                                const uint32_t    cps[static n],
+                                size_t            pieces[static 2 * n]) {
+    const seq_match_fn *fns   = kind == GGUF_PRE_DEEPSEEK_V3 ? SEQ_DEEPSEEK_V3 : SEQ_DEEPSEEK_LLM;
+    const size_t        n_fns = kind == GGUF_PRE_DEEPSEEK_V3
+                                        ? sizeof SEQ_DEEPSEEK_V3 / sizeof SEQ_DEEPSEEK_V3[0]
+                                        : sizeof SEQ_DEEPSEEK_LLM / sizeof SEQ_DEEPSEEK_LLM[0];
+    size_t             *cur = pieces, *nxt = pieces + n, n_cur = 1;
+    cur[0] = n;
+    for (size_t f = 0; f < n_fns; f++) {
+        size_t n_nxt = 0, start = 0;
+        for (size_t k = 0; k < n_cur; k++) {
+            const size_t end = start + cur[k];
+            size_t       gap = start;
+            for (size_t p = start; p < end;) {
+                const size_t m = fns[f](cps, end, p);
+                if (m == p) {
+                    p++;
+                    continue;
+                }
+                if (p > gap)
+                    nxt[n_nxt++] = p - gap;
+                nxt[n_nxt++] = m - p;
+                gap = p = m;
+            }
+            if (end > gap)
+                nxt[n_nxt++] = end - gap;
+            start = end;
+        }
+        size_t *t = cur;
+        cur = nxt, nxt = t, n_cur = n_nxt;
+    }
+    if (cur != pieces)
+        memcpy(pieces, cur, n_cur * sizeof pieces[0]);
+    return n_cur;
+}
+
 /* Writes the first min(needed, cap) IDs and returns true either way — false
  * only on allocation failure (*n_out then counts the IDs written before it),
  * once gguf_tokenizer_encode has refused modes that cannot encode. A full
@@ -1573,6 +1908,17 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
     GEIST_CLEANUP(heap_freep) char *chunk_buf = heap_alloc_array_aligned(char, tlen * 4 + 16);
     if (chunk_buf == nullptr)
         return false;
+    /* Regex-sequence pretokenizers (#242): a fragment's codepoints, their
+     * byte offsets (plus the end) and the piece lengths with their scratch. */
+    const bool                          seq = tok->pre_seq != GGUF_PRE_NONE;
+    GEIST_CLEANUP(heap_freep) uint32_t *seq_cps =
+            seq ? heap_alloc_array_aligned(uint32_t, tlen) : nullptr;
+    GEIST_CLEANUP(heap_freep) size_t *seq_off =
+            seq ? heap_alloc_array_aligned(size_t, tlen + 1) : nullptr;
+    GEIST_CLEANUP(heap_freep) size_t *seq_pieces =
+            seq ? heap_alloc_array_aligned(size_t, 2 * tlen) : nullptr;
+    if (seq && (seq_cps == nullptr || seq_off == nullptr || seq_pieces == nullptr))
+        return false;
 
     size_t i            = 0;
     size_t next_special = 0; /* gpt-4o: start of the next special after i */
@@ -1594,6 +1940,50 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
         }
         if (matched_special)
             continue;
+
+        if (tok->pre_seq != GGUF_PRE_NONE) {
+            /* The fragment up to the next special token, split as a whole
+             * (llama.cpp splits on specials first). */
+            size_t frag_end = tlen;
+            for (size_t p = i + 1; p < tlen && frag_end == tlen; p++) {
+                for (size_t s = 0; s < tok->n_specials; s++) {
+                    const size_t slen = tok->specials[s].len;
+                    if (slen != 0 && slen <= tlen - p && text[p] == tok->specials[s].text[0] &&
+                        memcmp(text + p, tok->specials[s].text, slen) == 0) {
+                        frag_end = p;
+                        break;
+                    }
+                }
+            }
+            size_t n_cp = 0;
+            for (size_t b = i; b < frag_end; n_cp++) {
+                size_t adv;
+                seq_cps[n_cp] = q2_cp_at(text, frag_end, b, &adv);
+                seq_off[n_cp] = b;
+                b += adv;
+            }
+            seq_off[n_cp] = frag_end;
+            const size_t n_pieces =
+                    gguf_tokenizer_seq_split(tok->pre_seq, n_cp, seq_cps, seq_pieces);
+            size_t at = 0;
+            for (size_t k = 0; k < n_pieces && *n_out < cap; k++) {
+                size_t cb_used = 0;
+                for (size_t b = seq_off[at]; b < seq_off[at + seq_pieces[k]]; b++) {
+                    uint32_t cp = gpt2_byte_to_codepoint((unsigned char) text[b]);
+                    cb_used += utf8_encode_one(cp, chunk_buf + cb_used);
+                }
+                at += seq_pieces[k];
+                size_t produced = bpe_chunk_to_ids(
+                        tok, chunk_buf, cb_used, out_ids + *n_out, cap - *n_out, false);
+                if (produced == SIZE_MAX)
+                    return false;
+                *n_out += produced;
+            }
+            i = frag_end;
+            if (*n_out >= cap)
+                break;
+            continue;
+        }
 
         if (tok->pre_gpt4o) {
             /* gpt-4o chunks run on the text up to the next special token,
