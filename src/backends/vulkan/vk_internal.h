@@ -138,15 +138,15 @@ static const enum vk_pipe_kind vk_pipe_kinds[VK_PIPE_COUNT] = {
 
 /* Pipelines that exist only with VK_KHR_cooperative_matrix; without it they
  * stay VK_NULL_HANDLE and vk_linear_cm_route keeps the register-tiled GEMM. */
-static inline bool vk_pipe_needs_coopmat(int pipe) {
-    return pipe >= 0 && pipe < VK_PIPE_COUNT && vk_pipe_kinds[pipe] == VK_PK_COOPMAT;
+static inline bool vk_pipe_needs_coopmat(uint32_t pipe) {
+    return pipe < VK_PIPE_COUNT && vk_pipe_kinds[pipe] == VK_PK_COOPMAT;
 }
 
 /* The register-tiled GEMMs: one output row per 32-lane subgroup
  * (mm_legacy.glsl and its siblings). The tensor-core variants are not on
  * this list; they keep the native subgroup size. */
-static inline bool vk_pipe_is_tiled_gemm(int pipe) {
-    return pipe >= 0 && pipe < VK_PIPE_COUNT && vk_pipe_kinds[pipe] == VK_PK_TILED;
+static inline bool vk_pipe_is_tiled_gemm(uint32_t pipe) {
+    return pipe < VK_PIPE_COUNT && vk_pipe_kinds[pipe] == VK_PK_TILED;
 }
 
 struct vk_push {

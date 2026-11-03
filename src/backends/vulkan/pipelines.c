@@ -350,7 +350,7 @@ vk_pcache_save(struct geist_backend *be, struct vk_state *st, const char *path, 
     char         pcache_path[1100];
     const bool   use_pcache = vk_pcache_path(st, sizeof pcache_path, pcache_path);
     const size_t loaded     = vk_pcache_load(be, st, use_pcache ? pcache_path : nullptr);
-    for (int i = 0; i < VK_PIPE_COUNT; ++i) {
+    for (uint32_t i = 0; i < VK_PIPE_COUNT; ++i) {
         if (vk_pipe_needs_coopmat(i) && !st->has_coopmat) {
             continue; /* stays VK_NULL_HANDLE; linear_t falls back */
         }
@@ -367,7 +367,7 @@ vk_pcache_save(struct geist_backend *be, struct vk_state *st, const char *path, 
         if (pin && vk_spirv_local_size_x(blobs[i].bytes / 4u, blobs[i].code) % 32u != 0u) {
             geist_backend_set_error(be,
                                     GEIST_E_INTERNAL,
-                                    "vulkan: pipeline %d is not a whole number of 32-lane "
+                                    "vulkan: pipeline %u is not a whole number of 32-lane "
                                     "subgroups",
                                     i);
             return GEIST_E_INTERNAL;
