@@ -154,8 +154,10 @@ struct gguf_tokenizer {
     char *merge_arena; /* not null = copy mode for merges */
     char *model_arena; /* not null = copy mode for model name */
 
-    /* Special / added tokens — entries in `tokenizer.ggml.tokens` whose
-     * `tokenizer.ggml.token_type` is CONTROL(3) or USER_DEFINED(4).
+    /* Special / added tokens — the entries llama.cpp matches in the text
+     * with special parsing on: `tokenizer.ggml.token_type` UNKNOWN(2),
+     * CONTROL(3) or USER_DEFINED(4), and the control-looking strings it
+     * promotes whatever their type ("</s>", "<eos>", ...; #404).
      * Sorted longest-first so the encoder can do leftmost-longest pre-
      * scan: at each text position try every special's exact string
      * first, and only fall through to byte-level BPE when none match.

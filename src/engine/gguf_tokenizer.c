@@ -164,6 +164,144 @@ static void sort_specials(struct gguf_tokenizer *tok) {
     }
 }
 
+/* Control-looking strings llama.cpp marks CONTROL whatever their token_type
+ * (llama_vocab::impl::load, "control-looking token ... will be overridden"):
+ * its end-of-generation list (which holds the EOT / EOM lists) always, and
+ * a FIM role's names when the file has no id for that role. Qwen3 has "</s>"
+ * as a NORMAL token, Gemma 4 "<eos>" (#404). */
+#define FW "\xef\xbd\x9c" /* U+FF5C, DeepSeek's fullwidth bar */
+#define LB "\xe2\x96\x81" /* U+2581 */
+static const char *const FIM_KEYS[][2] = {
+        {nullptr, nullptr},
+        {"tokenizer.ggml.fim_pre_token_id", "tokenizer.ggml.prefix_token_id"},
+        {"tokenizer.ggml.fim_suf_token_id", "tokenizer.ggml.suffix_token_id"},
+        {"tokenizer.ggml.fim_mid_token_id", "tokenizer.ggml.middle_token_id"},
+        {"tokenizer.ggml.fim_pad_token_id", nullptr},
+        {"tokenizer.ggml.fim_rep_token_id", nullptr},
+        {"tokenizer.ggml.fim_sep_token_id", nullptr},
+};
+static const struct {
+    const char *text;
+    uint8_t     fim; /* FIM_KEYS row; 0 = always */
+} CONTROL_LOOKING[] = {
+        {"<|eot_id|>", 0},
+        {"<|im_end|>", 0},
+        {"<|end|>", 0},
+        {"<|return|>", 0},
+        {"<|call|>", 0},
+        {"<|flush|>", 0},
+        {"<|calls|>", 0},
+        {"<end_of_turn>", 0},
+        {"<|endoftext|>", 0},
+        {"</s>", 0},
+        {"<|eom_id|>", 0},
+        {"<EOT>", 0},
+        {"_<EOT>", 0},
+        {"[EOT]", 0},
+        {"[EOS]", 0},
+        {"<|end_of_text|>", 0},
+        {"<end_of_utterance>", 0},
+        {"<eos>", 0},
+        {"<turn|>", 0},
+        {"<|tool_response>", 0},
+        {"<" FW "end" LB "of" LB "sentence" FW ">", 0},
+        {"[e~[", 0},
+        {"<|fim_prefix|>", 1},
+        {"<fim-prefix>", 1},
+        {"<fim_prefix>", 1},
+        {"<" FW "fim" LB "begin" FW ">", 1},
+        {"<PRE>", 1},
+        {LB "<PRE>", 1},
+        {"<|code_prefix|>", 1},
+        {"<|prefix|>", 1},
+        {"<|fim_suffix|>", 2},
+        {"<fim-suffix>", 2},
+        {"<fim_suffix>", 2},
+        {"<" FW "fim" LB "hole" FW ">", 2},
+        {"<SUF>", 2},
+        {LB "<SUF>", 2},
+        {"<|code_suffix|>", 2},
+        {"<|suffix|>", 2},
+        {"<|fim_middle|>", 3},
+        {"<fim-middle>", 3},
+        {"<fim_middle>", 3},
+        {"<" FW "fim" LB "end" FW ">", 3},
+        {"<MID>", 3},
+        {LB "<MID>", 3},
+        {"<|code_middle|>", 3},
+        {"<|middle|>", 3},
+        {"<|fim_pad|>", 4},
+        {"<fim-pad>", 4},
+        {"<fim_pad>", 4},
+        {"<PAD>", 4},
+        {"[PAD]", 4},
+        {"<|fim_repo|>", 5},
+        {"<|repo_name|>", 5},
+        {"<fim-repo>", 5},
+        {"<REPO>", 5},
+        {"<reponame>", 5},
+        {"<|file_sep|>", 6},
+};
+#undef FW
+#undef LB
+
+/* Whether token_type tt (null: absent) makes vocab entry i a special token:
+ * UNKNOWN(2), CONTROL(3) or USER_DEFINED(4). */
+static bool special_type(const uint8_t *tt, size_t i) {
+    int32_t t = 1;
+    if (tt != nullptr)
+        memcpy(&t, tt + i * 4, 4);
+    return t == 2 || t == 3 || t == 4;
+}
+
+/* The special tokens: the vocab entries llama.cpp's tokenizer matches in the
+ * text before pretokenizing (cache_special_tokens, parse_special on). Those
+ * are the special_type ones and the CONTROL_LOOKING entries, but not "</s>" in a vocab that has
+ * "<|tool_response>" (llama.cpp's Gemma 4 workaround makes it NORMAL). Sorted
+ * longest first, so leftmost-longest matching in encode is a linear scan;
+ * without them Llama 3's <|begin_of_text|> is shredded into
+ * `< | begin _ of _ text | >`. Needs the vocab index. Leaves no specials when
+ * the list cannot be allocated, as before #404. */
+static void load_specials(struct gguf_tokenizer *tok, const struct gguf_ctx *ctx) {
+    uint32_t       tt_vt = 0, u;
+    uint64_t       tt_n  = 0;
+    const uint8_t *tt    = nullptr;
+    if (!gguf_get_meta_array_info(ctx, "tokenizer.ggml.token_type", &tt_vt, &tt_n, &tt) ||
+        (tt_vt != GGUF_META_VT_U32 && tt_vt != GGUF_META_VT_I32) || tt_n != tok->vocab_size)
+        tt = nullptr;
+    const int32_t s_close =
+            vocab_lookup(tok, "<|tool_response>", 16) >= 0 ? vocab_lookup(tok, "</s>", 4) : -1;
+    constexpr size_t N_LOOKING = sizeof CONTROL_LOOKING / sizeof CONTROL_LOOKING[0];
+    int32_t          looking[N_LOOKING]; /* the ones not special by type */
+    size_t           n_looking = 0, n_sp = 0;
+    for (size_t c = 0; c < N_LOOKING; c++) {
+        const char *const *keys   = FIM_KEYS[CONTROL_LOOKING[c].fim];
+        bool               has_id = false;
+        for (size_t k = 0; k < 2; k++)
+            has_id = has_id || (keys[k] != nullptr && gguf_get_meta_u32(ctx, keys[k], &u) &&
+                                u < tok->vocab_size);
+        const char   *text = CONTROL_LOOKING[c].text;
+        const int32_t id   = has_id ? -1 : vocab_lookup(tok, text, strlen(text));
+        if (id >= 0 && id != s_close && !special_type(tt, (size_t) id))
+            looking[n_looking++] = id;
+    }
+    for (size_t i = 0; tt != nullptr && i < tok->vocab_size; i++)
+        n_sp += special_type(tt, i) && (int32_t) i != s_close;
+    if (n_sp + n_looking == 0)
+        return;
+    tok->specials = heap_alloc_array_aligned(struct gguf_tokenizer_special, n_sp + n_looking);
+    if (tok->specials == nullptr)
+        return;
+    for (size_t i = 0; i < tok->vocab_size + n_looking; i++) {
+        const size_t id = i < tok->vocab_size ? i : (size_t) looking[i - tok->vocab_size];
+        if (i < tok->vocab_size && (!special_type(tt, i) || (int32_t) i == s_close))
+            continue;
+        tok->specials[tok->n_specials++] = (struct gguf_tokenizer_special) {
+                .text = tok->token_str[id], .len = tok->token_len[id], .id = (int32_t) id};
+    }
+    sort_specials(tok);
+}
+
 /* Build the vocab + merges hash indices over token_str / merge_*. Both
  * tables are pow-of-2 sized with load factor ~0.5; a lookup that collides
  * with an earlier equal entry finds the earlier one (the lower id or rank).
@@ -358,49 +496,11 @@ static bool name_in(size_t n, const char *s, const char *const *list) {
     if (gguf_get_meta_u32(ctx, "tokenizer.ggml.unknown_token_id", &u))
         tok->unk_id = (int32_t) u;
 
-    /* Special / added tokens. GGUF convention: tokenizer.ggml.token_type
-     * is a parallel uint32 array. type 3 = CONTROL (Llama3's
-     * <|begin_of_text|>, <|eot_id|>, etc.), type 4 = USER_DEFINED. We
-     * collect both, sort by len descending so leftmost-longest matching
-     * in encode is a simple linear scan. */
-    {
-        uint32_t       tt_vt = 0;
-        uint64_t       tt_n  = 0;
-        const uint8_t *tt_p  = nullptr;
-        if (gguf_get_meta_array_info(ctx, "tokenizer.ggml.token_type", &tt_vt, &tt_n, &tt_p) &&
-            (tt_vt == GGUF_META_VT_U32 || tt_vt == GGUF_META_VT_I32) && tt_n == tok->vocab_size) {
-            size_t n_sp = 0;
-            for (size_t i = 0; i < tok->vocab_size; i++) {
-                int32_t t;
-                memcpy(&t, tt_p + i * 4, 4);
-                if (t == 3 || t == 4)
-                    n_sp++;
-            }
-            if (n_sp > 0) {
-                tok->specials = heap_alloc_array_aligned(struct gguf_tokenizer_special, n_sp);
-                if (tok->specials != nullptr) {
-                    size_t k = 0;
-                    for (size_t i = 0; i < tok->vocab_size; i++) {
-                        int32_t t;
-                        memcpy(&t, tt_p + i * 4, 4);
-                        if (t != 3 && t != 4)
-                            continue;
-                        tok->specials[k].text = tok->token_str[i];
-                        tok->specials[k].len  = tok->token_len[i];
-                        tok->specials[k].id   = (int32_t) i;
-                        k++;
-                    }
-                    tok->n_specials = k;
-                    sort_specials(tok);
-                }
-            }
-        }
-    }
-
     if (!build_indices(tok)) {
         gguf_tokenizer_unload(tok);
         return false;
     }
+    load_specials(tok, ctx);
 
     /* Resolve the tokenization algorithm. "gpt2" is byte-level BPE; any
      * other model that ships merges (Gemma/Llama/Mistral SentencePiece,
