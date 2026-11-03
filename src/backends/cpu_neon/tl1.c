@@ -217,7 +217,7 @@ static void tl1_row_tiles(void *ctx, size_t rt0, size_t rt1) {
     const float           inv_act_scale       = job->inv_act_scale;
     float                *y                   = job->y;
     for (size_t rt = rt0; rt < rt1; rt++) {
-        float row_sum_fp32[TL1_BM] __attribute__((aligned(16)));
+        alignas(16) float row_sum_fp32[TL1_BM];
         for (size_t r = 0; r < TL1_BM; r++)
             row_sum_fp32[r] = 0.0f;
 

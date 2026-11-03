@@ -92,7 +92,7 @@ static void q8_0_prefill_rows(void *ctx, size_t n0, size_t n1) {
         if (n + 1 < n_out)
             __builtin_prefetch(row + nb_per_row, 0, 0);
 
-        float accs[GEIST_QUANT_M_CAP] __attribute__((aligned(16)));
+        alignas(16) float accs[GEIST_QUANT_M_CAP];
         for (size_t i = 0; i < m; i++)
             accs[i] = 0.0f;
 

@@ -45,14 +45,14 @@
 constexpr size_t Q4_KX8_BLOCK_BYTES = 8 * 144;
 
 /* Interleaved layout matching llama.cpp's block_q4_Kx8 (repack.h:43). */
-struct block_q4_Kx8 {
+struct [[gnu::packed]] block_q4_Kx8 {
     uint16_t d[8];       /* fp16 super-block scales for 8 source rows */
     uint16_t dmin[8];    /* fp16 super-block mins  for 8 source rows */
     uint8_t  scales[96]; /* repacked 6-bit sub-scales + sub-mins */
     uint8_t  qs[1024];   /* 8-byte-interleaved 4-bit quants */
-} __attribute__((packed));
+};
 
-_Static_assert(sizeof(struct block_q4_Kx8) == Q4_KX8_BLOCK_BYTES, "block_q4_Kx8 size mismatch");
+static_assert(sizeof(struct block_q4_Kx8) == Q4_KX8_BLOCK_BYTES, "block_q4_Kx8 size mismatch");
 
 /* Repack one row-octet (8 contiguous Q4_K rows × n_super super-blocks per
  * row) into a Q4_Kx8 array of length n_super.

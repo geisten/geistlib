@@ -821,8 +821,8 @@ static void q6k_prefill_pre_pairs(void *ctx, size_t np0, size_t np1) {
         const struct block_q6_K_t *row0 = w + n * n_blocks_per_row;
         const struct block_q6_K_t *row1 = w + (n + 1) * n_blocks_per_row;
 
-        float accs0[GEIST_QUANT_M_CAP] __attribute__((aligned(16)));
-        float accs1[GEIST_QUANT_M_CAP] __attribute__((aligned(16)));
+        alignas(16) float accs0[GEIST_QUANT_M_CAP];
+        alignas(16) float accs1[GEIST_QUANT_M_CAP];
         for (size_t i = 0; i < m; i++) {
             accs0[i] = 0.0f;
             accs1[i] = 0.0f;
@@ -842,9 +842,9 @@ static void q6k_prefill_pre_pairs(void *ctx, size_t np0, size_t np1) {
             const float d0 = fp16_to_fp32(blk0->d);
             const float d1 = fp16_to_fp32(blk1->d);
 
-            int8x16_t qreg0[16], qreg1[16];
-            int32_t   sreg0[16] __attribute__((aligned(16)));
-            int32_t   sreg1[16] __attribute__((aligned(16)));
+            int8x16_t           qreg0[16], qreg1[16];
+            alignas(16) int32_t sreg0[16];
+            alignas(16) int32_t sreg1[16];
             Q6K_RECON_BLOCK(blk0, qreg0, sreg0);
             Q6K_RECON_BLOCK(blk1, qreg1, sreg1);
 
@@ -993,7 +993,7 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
     /* NR=1 tail for odd n_out. */
     for (size_t n = n_pairs * 2; n < n_out; n++) {
         const struct block_q6_K_t *row = w + n * n_blocks_per_row;
-        float                      accs[GEIST_QUANT_M_CAP] __attribute__((aligned(16)));
+        alignas(16) float          accs[GEIST_QUANT_M_CAP];
         for (size_t i = 0; i < m; i++)
             accs[i] = 0.0f;
 
@@ -1005,7 +1005,7 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
             const struct block_q6_K_t *blk = &row[b];
             const float                d   = fp16_to_fp32(blk->d);
             int8x16_t                  qreg[16];
-            int32_t                    sreg[16] __attribute__((aligned(16)));
+            alignas(16) int32_t        sreg[16];
             Q6K_RECON_BLOCK(blk, qreg, sreg);
 
             const size_t blk_off = b * Q6_K_BLOCK_ELEMS;

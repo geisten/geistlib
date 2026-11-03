@@ -11,11 +11,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct test_block_q4_0 {
+struct [[gnu::packed]] test_block_q4_0 {
     uint16_t d;
     uint8_t  qs[16];
-} __attribute__((packed));
-_Static_assert(sizeof(struct test_block_q4_0) == 18, "Q4_0 fixture block size");
+};
+static_assert(sizeof(struct test_block_q4_0) == 18, "Q4_0 fixture block size");
 
 static size_t v2_index(size_t row, size_t byte) {
     return (row / 4) * 64 + (byte / 4) * 16 + (row % 4) * 4 + (byte % 4);
