@@ -406,7 +406,10 @@ static inline struct tf_buf mf_qwen35_gguf(const struct mf_qwen35 *c) {
  * whole row, the expert width in feed_forward_length, no key_length;
  * `bad_qk_norm` then leaves those norms at head_dim. `mixtral` writes it as
  * Mixtral (llama.* keys): no QK norms, the same keys as OLMoE; `split_experts`
- * then adds the per-expert tensors of old files, ahead of the merged ones. */
+ * then adds the per-expert tensors of old files, ahead of the merged ones.
+ * `granite` writes it as Granite-MoE (granitemoe.* keys, shaped like Mixtral)
+ * with the four scales below, each written when nonzero, and `shared_ff` as
+ * the width of a shared expert. */
 struct mf_qwen3moe {
     uint32_t    layers, d_model, heads, kv_heads, head_dim, experts, used, expert_ff, vocab;
     uint64_t    seed;
@@ -417,15 +420,22 @@ struct mf_qwen3moe {
     bool        bad_qk_norm;
     bool        mixtral;
     bool        split_experts;
+    bool        granite;
+    float       attention_scale, embedding_scale, residual_scale, logit_scale;
+    uint32_t    shared_ff;
 };
 
 static inline struct tf_buf mf_qwen3moe_gguf(const struct mf_qwen3moe *c) {
-    const uint32_t    d    = c->d_model;
-    const bool        ol   = c->olmoe || c->mixtral; /* no key_length, width in feed_forward */
-    const char *const arch = c->mixtral ? "llama" : c->olmoe ? "olmoe" : "qwen3moe";
-    const uint32_t    q_n  = c->olmoe && !c->bad_qk_norm ? c->heads * c->head_dim : c->head_dim;
-    const uint32_t    k_n  = c->olmoe && !c->bad_qk_norm ? c->kv_heads * c->head_dim : c->head_dim;
-    struct mf_tensors ts   = {0};
+    const uint32_t    d     = c->d_model;
+    const bool        no_qk = c->mixtral || c->granite;
+    const bool        ol    = c->olmoe || no_qk; /* no key_length, width in feed_forward */
+    const char *const arch  = c->mixtral   ? "llama"
+                              : c->olmoe   ? "olmoe"
+                              : c->granite ? "granitemoe"
+                                           : "qwen3moe";
+    const uint32_t    q_n   = c->olmoe && !c->bad_qk_norm ? c->heads * c->head_dim : c->head_dim;
+    const uint32_t    k_n   = c->olmoe && !c->bad_qk_norm ? c->kv_heads * c->head_dim : c->head_dim;
+    struct mf_tensors ts    = {0};
     mf_add(&ts, d, c->vocab, MF_RAND, "token_embd.weight");
     mf_add(&ts, d, 0, MF_ONE, "output_norm.weight");
     for (uint32_t l = 0; l < c->layers; l++) {
@@ -434,7 +444,7 @@ static inline struct tf_buf mf_qwen3moe_gguf(const struct mf_qwen3moe *c) {
         mf_add(&ts, d, c->kv_heads * c->head_dim, MF_RAND, "blk.%u.attn_k.weight", l);
         mf_add(&ts, d, c->kv_heads * c->head_dim, MF_RAND, "blk.%u.attn_v.weight", l);
         mf_add(&ts, c->heads * c->head_dim, d, MF_RAND, "blk.%u.attn_output.weight", l);
-        if (!c->mixtral) {
+        if (!no_qk) {
             mf_add(&ts, q_n, 0, MF_ONE, "blk.%u.attn_q_norm.weight", l);
             mf_add(&ts, k_n, 0, MF_ONE, "blk.%u.attn_k_norm.weight", l);
         }
@@ -476,15 +486,38 @@ static inline struct tf_buf mf_qwen3moe_gguf(const struct mf_qwen3moe *c) {
             {ol ? "feed_forward_length" : "expert_feed_forward_length", c->expert_ff},
             {"attention.key_length", c->head_dim},
             {"expert_gating_func", c->gating},
+            {"expert_shared_feed_forward_length", c->shared_ff},
     };
     /* OLMoE and Mixtral have no key_length; the gating key is written only
      * when asked. */
-    const bool write_u32[] = {
-            true, true, true, true, true, true, true, true, true, !ol, c->gating != 0};
-    const size_t n_u32     = sizeof u32 / sizeof u32[0];
-    size_t       n_written = 0;
+    const bool   write_u32[] = {true,
+                                true,
+                                true,
+                                true,
+                                true,
+                                true,
+                                true,
+                                true,
+                                true,
+                                !ol,
+                                c->gating != 0,
+                                c->shared_ff != 0};
+    const size_t n_u32       = sizeof u32 / sizeof u32[0];
+    size_t       n_written   = 0;
     for (size_t i = 0; i < n_u32; i++) {
         n_written += write_u32[i] ? 1 : 0;
+    }
+    const struct {
+        const char *key;
+        float       v;
+    } f32[] = {
+            {"attention.scale", c->attention_scale},
+            {"embedding_scale", c->embedding_scale},
+            {"residual_scale", c->residual_scale},
+            {"logit_scale", c->logit_scale},
+    };
+    for (size_t i = 0; i < sizeof f32 / sizeof f32[0]; i++) {
+        n_written += f32[i].v != 0.0f ? 1 : 0;
     }
 
     char          key[64];
@@ -500,6 +533,13 @@ static inline struct tf_buf mf_qwen3moe_gguf(const struct mf_qwen3moe *c) {
             snprintf(key, sizeof key, "%s.%s", arch, u32[i].key);
             mf_key(&o, key, TF_GGUF_UINT32);
             tf_u32(&o, u32[i].v);
+        }
+    }
+    for (size_t i = 0; i < sizeof f32 / sizeof f32[0]; i++) {
+        if (f32[i].v != 0.0f) {
+            snprintf(key, sizeof key, "%s.%s", arch, f32[i].key);
+            mf_key(&o, key, TF_GGUF_FLOAT32);
+            tf_f32(&o, f32[i].v);
         }
     }
     snprintf(key, sizeof key, "%s.rope.freq_base", arch);

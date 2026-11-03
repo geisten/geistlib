@@ -134,6 +134,7 @@ extern const struct transformer_family transformer_family_qwen35;
 extern const struct transformer_family transformer_family_qwen35moe;
 extern const struct transformer_family transformer_family_qwen3moe;
 extern const struct transformer_family transformer_family_olmoe;
+extern const struct transformer_family transformer_family_granitemoe;
 extern const struct transformer_family transformer_family_gpt_oss;
 extern const struct transformer_family transformer_family_deepseek2;
 extern const struct transformer_family transformer_family_llama4;
