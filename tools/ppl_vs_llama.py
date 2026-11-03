@@ -11,7 +11,8 @@ for its number and repeats exactly that on geist: the token ids come from
 llama-tokenize (so a tokenizer difference cannot hide in the comparison;
 geist's own TOK ids are compared with them and the first difference
 reported), each chunk is a fresh session (eval_geist SCORE: the first
-CTX/2 + 1 tokens prefilled, the rest fed one at a time).
+CTX/2 + 1 tokens prefilled, the rest fed one at a time). It aborts when
+geist's add-BOS decision differs from llama.cpp's (#400).
 
 Prints one JSON line: both perplexities, the relative difference, the token
 count and whether geist's tokenizer agrees. GEIST_BACKEND picks geist's
@@ -31,13 +32,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from eval_repl import EvalRepl  # noqa: E402
 
 
-def llama_tokens(bin_dir: Path, model: Path, text: Path) -> list[int]:
-    out = subprocess.run([str(bin_dir / "llama-tokenize"), "-m", str(model), "-f", str(text),
+def llama_tokens(bin_dir: Path, model: Path, *src: str) -> list[int]:
+    out = subprocess.run([str(bin_dir / "llama-tokenize"), "-m", str(model), *src,
                           "--ids", "--log-disable"], check=True, capture_output=True, text=True)
     m = re.search(r"\[([0-9,\s]*)\]", out.stdout)
     if m is None:
         sys.exit("llama-tokenize printed no id list")
     return [int(x) for x in m.group(1).replace(",", " ").split()]
+
+
+def bos_mismatch(geist_bos: int | None, with_bos: list[int], without_bos: list[int]) -> str | None:
+    """Why geist's add-BOS decision (eval_geist BOS: geist_bos, None for no
+    BOS) differs from llama.cpp's (llama-tokenize of one probe with and
+    without --no-bos), or None when they agree (#400). On a mismatch every
+    chunk is scored with another prefix than llama-perplexity's, which skews
+    the comparison silently (~10 % on Llama 3.2 3B before #385)."""
+    llama_bos = with_bos[0] if with_bos[1:] == without_bos else None
+    if geist_bos == llama_bos:
+        return None
+    say = lambda b: "no BOS" if b is None else f"BOS {b}"
+    return f"BOS mismatch: geist adds {say(geist_bos)}, llama.cpp adds {say(llama_bos)}"
 
 
 def llama_ppl(bin_dir: Path, model: Path, text: Path, ctx: int, chunks: int, ngl: int) -> float:
@@ -67,12 +81,17 @@ def main() -> int:
                     help="use this llama.cpp perplexity instead of running it")
     a = ap.parse_args()
 
-    ids = llama_tokens(a.llama_bin, a.model, a.text)
+    probe = ("-p", "a")
+    llama_bos = (llama_tokens(a.llama_bin, a.model, *probe),
+                 llama_tokens(a.llama_bin, a.model, *probe, "--no-bos"))
+    ids = llama_tokens(a.llama_bin, a.model, "-f", str(a.text))
     ref = a.skip_llama if a.skip_llama is not None else llama_ppl(
         a.llama_bin, a.model, a.text, a.ctx, a.chunks, a.ngl)
 
     ev = EvalRepl(a.eval_geist, a.model)
     try:
+        if (why := bos_mismatch(ev.bos, *llama_bos)) is not None:
+            sys.exit(f"ppl_vs_llama: {why}; the perplexities would not be comparable")
         # llama-tokenize added BOS when the vocabulary asks for one; geist's
         # TOK never does.
         body = ids[1:] if ev.bos is not None and ids and ids[0] == ev.bos else ids

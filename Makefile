@@ -570,6 +570,14 @@ $(error No clang-format $(CLANG_FORMAT_MAJOR).x found. Install it with 'pip inst
 endif
 endif
 
+# Static analysis, no models and no GPU: the seeded defects must be found, and
+# the library must have no finding beyond scripts/static-baseline.txt (#342).
+CLANG_TIDY ?= clang-tidy
+.PHONY: check-static
+check-static:
+	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py --selftest
+	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py
+
 format:
 	@$(CLANG_FORMAT) -i $(FORMAT_FILES)
 	@echo "Formatted $(words $(FORMAT_FILES)) files."
@@ -577,6 +585,14 @@ format:
 format-check:
 	@$(CLANG_FORMAT) --dry-run --Werror $(FORMAT_FILES) && \
 	echo "All $(words $(FORMAT_FILES)) files conform to .clang-format"
+
+# benchmark/c23_metrics.json: the C23 gaps of #333 per file (#341). CI runs
+# `tools/c23_metrics.py check`; a change that adds or removes one of them
+# commits the regenerated file.
+.PHONY: c23-metrics
+c23-metrics:
+	@python3 tools/c23_metrics.py write
+	@python3 tools/c23_metrics.py show
 
 help:
 	@printf '%s\n' \
@@ -588,6 +604,7 @@ help:
 	"  make lib | bin             only the static lib | only the binaries" \
 	"  make shared                the shared library for FFI callers (examples/ffi)" \
 	"  make DECISION=1            enable experimental numeric candidate scoring" \
+	"  make check-static          clang-tidy with a findings ratchet (no models, no GPU)" \
 	"  make DECISION=1 DECISION_CONTEXT=1  add snapshot-backed prefix scoring (#5)" \
 	"  make FAMILIES=\"bitnet llama\"  build only these model families (default: all)" \
 	"  make TOWERS=0              leave out the Gemma 4 audio/vision encoder towers" \
@@ -618,6 +635,7 @@ help:
 	"  make bench-mmlu [MMLU_LIMIT=0]              MMLU accuracy (pip install datasets)" \
 	"" \
 	"Format:  make format | format-check          (clang-format, reads .clang-format)" \
+	"Metrics: make c23-metrics                    (benchmark/c23_metrics.json, #341)" \
 	"" \
 	"Release: make release-check                  candidate metadata and published ancestry" \
 	"         make release-state-check            geisten.net latest: version, ancestry, assets" \

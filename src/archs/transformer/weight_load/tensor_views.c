@@ -16,6 +16,7 @@
 #define GEIST_INTERNAL_ARCH_LAYER
 
 #include "internal.h"
+#include "../weight_load.h"
 
 #include "gguf_dequant.h"
 #include "gguf_reader.h"

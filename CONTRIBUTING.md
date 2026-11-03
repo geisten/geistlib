@@ -140,6 +140,12 @@ make format          # rewrite in place (clang-format 22, .clang-format at root)
 make format-check    # verify only (hard CI gate)
 ```
 
+`benchmark/c23_metrics.json` counts, per file, the constructs the C23 work
+of #333 removes: `switch` with `default:`, enums without a fixed type,
+`void *`, `#if`, `goto` and the rest. CI fails when it no longer matches
+the tree. A change that adds or removes one runs `make c23-metrics` and
+commits the file, so the review sees the count move.
+
 ## Pull requests
 
 Development happens on `git.geisten.net/geisten/geistlib`; this GitHub
