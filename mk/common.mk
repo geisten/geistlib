@@ -104,7 +104,10 @@ endif
 
 # ---- Base CFLAGS ---------------------------------------------------------
 
-WARNINGS_BASE   := -Wall -Wextra -Wpedantic -Werror
+# -Wimplicit-fallthrough: gcc's -Wextra has it already (at level 3, which
+# also takes a /* fallthrough */ comment); clang needs it named, and then
+# takes only [[fallthrough]] (#343).
+WARNINGS_BASE   := -Wall -Wextra -Wpedantic -Wimplicit-fallthrough -Werror
 WARNINGS_STRICT := $(WARNINGS_BASE) -Wshadow -Wundef
 
 # Include paths:
