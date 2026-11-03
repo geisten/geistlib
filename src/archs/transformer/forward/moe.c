@@ -702,6 +702,9 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
         return GEIST_E_BACKEND;
     }
     moe_bucket(slots, n_sel, sess->moe_ids, sess->moe_rows, sess->moe_row_start);
+    /* A prefill chunk's rows per expert: what staging would take (#239). */
+    if (seq > 1 && !ctx->decode_rows)
+        moe_profile_count_chunk(st->moe_prof, (size_t) ctx->layer_idx, n_exp, sess->moe_row_start);
     moe_profile_mark(MOE_PROFILE_ROUTE, &t0);
 
     /* Gather each expert's rows into its slice of the bucketed buffer. A
