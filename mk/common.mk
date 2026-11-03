@@ -107,7 +107,12 @@ endif
 # -Wimplicit-fallthrough: gcc's -Wextra has it already (at level 3, which
 # also takes a /* fallthrough */ comment); clang needs it named, and then
 # takes only [[fallthrough]] (#343).
-WARNINGS_BASE   := -Wall -Wextra -Wpedantic -Wimplicit-fallthrough -Werror
+# -Wmissing-prototypes: an external function is defined after a declaration
+# in a header, so the definition and its callers check one prototype. Not
+# -Wstrict-prototypes: in C23 `()` is a prototype and K&R definitions are
+# gone, so it has nothing left to report (#343).
+WARNINGS_BASE   := -Wall -Wextra -Wpedantic -Wimplicit-fallthrough \
+                   -Wmissing-prototypes -Werror
 WARNINGS_STRICT := $(WARNINGS_BASE) -Wshadow -Wundef
 
 # Include paths:
