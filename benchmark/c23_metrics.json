@@ -217,11 +217,11 @@
     "src/backends/vulkan/ops.c": 2,
     "src/backends/vulkan/vk_internal.h": 4,
     "src/base/hw_probe.h": 2,
-    "src/engine/gguf_tokenizer.c": 1,
+    "src/engine/gguf_tokenizer.c": 2,
     "src/engine/gguf_tokenizer.h": 2,
     "src/engine/unicode_class.h": 1
    },
-   "total": 50,
+   "total": 51,
    "what": "named enum definitions"
   },
   "enum_named_unfixed": {
@@ -253,11 +253,11 @@
     "src/backends/vulkan/ops.c": 2,
     "src/backends/vulkan/vk_internal.h": 4,
     "src/base/hw_probe.h": 2,
-    "src/engine/gguf_tokenizer.c": 1,
+    "src/engine/gguf_tokenizer.c": 2,
     "src/engine/gguf_tokenizer.h": 2,
     "src/engine/unicode_class.h": 1
    },
-   "total": 50,
+   "total": 51,
    "what": "named enum definitions without a fixed underlying type"
   },
   "goto": {
@@ -486,12 +486,12 @@
     "src/backends/metal/sequence.c": 1,
     "src/backends/vulkan/lifecycle.c": 1,
     "src/backends/vulkan/ops.c": 6,
-    "src/engine/gguf_tokenizer.c": 1,
+    "src/engine/gguf_tokenizer.c": 2,
     "src/formats/gguf/common.c": 1,
     "src/io/gguf_reader.c": 1,
     "src/quant/quant.h": 1
    },
-   "total": 49,
+   "total": 50,
    "what": "switch statements with a default: label of their own"
   },
   "void_pp_cast": {
