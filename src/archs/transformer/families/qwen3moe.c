@@ -18,8 +18,8 @@
  * the host. A GPU backend is refused at load until it has a placement that
  * keeps the gathers off the host.
  *
- * Removing the family is this file, its registry lines in arch_family.c and
- * arch_family.h, and its line in mk/common.mk.
+ * Removing the family is this file and its line in family_list.h
+ * (make check-static builds it alone, #345).
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -83,21 +83,20 @@ qwen3moe_attention_block(struct transformer_layer_forward_ctx *ctx) {
             ctx, &L->q_norm, &L->k_norm, 1.0f / sqrtf((float) ctx->hd), nullptr, false);
 }
 
-const struct transformer_family transformer_family_qwen3moe = {
-        .name            = "qwen3moe",
-        .populate        = populate_qwen3moe,
-        .populate_layers = populate_layers_qwen3moe,
-        .wire_layer      = wire_layer_qwen3moe,
-        .session_alloc   = moe_session_alloc,
-        .session_free    = moe_session_free,
-        .attention_block = qwen3moe_attention_block,
-        .ffn_block       = blk_moe_ffn,
-        /* An MoE amplifies KV quantization error about 16x over a dense
-         * model of the same quantization; F16 matches FP32 against the exact
-         * reference (benchmark/results/QWEN3MOE.md). */
-        .kv_auto = GEIST_KV_F16,
-        /* INT4 misses the quality bar here (#53): Qwen3-30B-A3B Q4_K_M,
-         * teacher-forced against FP32 KV on cpu_neon, mean JS 0.020 nats
-         * and 89 % top-1 (INT8: 0.012, 91 %). */
-        .kv_int4_instead = GEIST_KV_F16,
-};
+TRANSFORMER_FAMILY(qwen3moe,
+                   populate_qwen3moe,
+                   populate_layers_qwen3moe,
+                   qwen3moe_attention_block,
+                   blk_moe_ffn,
+                   .decode_batch  = TRANSFORMER_DECODE_BATCH_YES,
+                   .wire_layer    = wire_layer_qwen3moe,
+                   .session_alloc = moe_session_alloc,
+                   .session_free  = moe_session_free,
+                   /* An MoE amplifies KV quantization error about 16x over a dense
+                    * model of the same quantization; F16 matches FP32 against the exact
+                    * reference (benchmark/results/QWEN3MOE.md). */
+                   .kv_auto = GEIST_KV_F16,
+                   /* INT4 misses the quality bar here (#53): Qwen3-30B-A3B Q4_K_M,
+                    * teacher-forced against FP32 KV on cpu_neon, mean JS 0.020 nats
+                    * and 89 % top-1 (INT8: 0.012, 91 %). */
+                   .kv_int4_instead = GEIST_KV_F16);

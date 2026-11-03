@@ -28,10 +28,18 @@
 #endif
 
 #include "arch_state.h"
+#include "family_list.h"
 #include "prefill_tuning.h"
 #include "gguf_reader.h"
 
 struct transformer_layer_forward_ctx;
+
+enum transformer_decode_batch : uint8_t {
+    TRANSFORMER_DECODE_BATCH_NO,
+    TRANSFORMER_DECODE_BATCH_YES,
+    TRANSFORMER_DECODE_BATCH_GATED_ATTN,
+};
+static_assert(sizeof(enum transformer_decode_batch) == sizeof(uint8_t));
 
 struct transformer_family {
     /* Lowercase identifier matching the `general.architecture` GGUF
@@ -79,7 +87,8 @@ struct transformer_family {
      *   (PLE, layer scale) where the family has one. They read no family
      *   flag; whatever the family cannot run is refused at load. DeltaNet
      *   layers are dispatched to the DeltaNet block instead of
-     *   attention_block. state_create refuses a family without them. */
+     *   attention_block. TRANSFORMER_FAMILY (below) requires them, and
+     *   populate and populate_layers, at compile time. */
     /* ---- Family capabilities shared code asks about (#37). Zero = no.
      *
      * rotation: prism.hadamard rotated checkpoints are wired for this
@@ -112,6 +121,11 @@ struct transformer_family {
      * BitNet, whose tied F16 head is ~50 % of a decode step's bytes.
      * GEIST_SPEC_HEAD=0/1 overrides it either way. */
     bool spec_head_default;
+    /* Batched decode (transformer_decode_batch_max, forward/step.c, #26,
+     * #245): the families whose layers the multi-row decode step has been
+     * proven on. GATED_ATTN: only for a checkpoint with the gated attention
+     * output (Qwen3.5's has_attn_output_gate). */
+    enum transformer_decode_batch decode_batch;
 
     enum geist_status (*wire_layer)(struct transformer_arch_state    *st,
                                     struct gguf_ctx                  *gguf,
@@ -122,22 +136,51 @@ struct transformer_family {
     enum geist_status (*ffn_block)(struct transformer_layer_forward_ctx *ctx);
 };
 
-/* Families that live in their own unit (families/<name>.c). */
-extern const struct transformer_family transformer_family_bitnet_b158;
-extern const struct transformer_family transformer_family_bitnet;
-extern const struct transformer_family transformer_family_llama;
+/* The family tables and their names, one per line of family_list.h. A
+ * table is declared whether or not the build selected its unit; only a
+ * selected unit's table is defined, and only REGISTRY (arch_family.c)
+ * refers to one by name. Shared code asks a capability instead. */
+#define TRANSFORMER_FAMILY_DECLARE_(unit, UNIT, sym, gguf_name)             \
+    extern const char                      transformer_family_name_##sym[]; \
+    extern const struct transformer_family transformer_family_##sym;
+GEIST_FAMILY_LIST(TRANSFORMER_FAMILY_DECLARE_)
+#undef TRANSFORMER_FAMILY_DECLARE_
+
+/* Mixtral: llama's table under the same name, chosen by
+ * transformer_family_select when the file has experts. Not a registry
+ * entry of its own. */
 extern const struct transformer_family transformer_family_llama_moe;
-extern const struct transformer_family transformer_family_qwen3;
-extern const struct transformer_family transformer_family_gemma3;
-extern const struct transformer_family transformer_family_gemma4;
-extern const struct transformer_family transformer_family_qwen35;
-extern const struct transformer_family transformer_family_qwen35moe;
-extern const struct transformer_family transformer_family_qwen3moe;
-extern const struct transformer_family transformer_family_olmoe;
-extern const struct transformer_family transformer_family_granitemoe;
-extern const struct transformer_family transformer_family_gpt_oss;
-extern const struct transformer_family transformer_family_deepseek2;
-extern const struct transformer_family transformer_family_llama4;
+
+/* ---- Defining a family table (#345) --------------------------------------
+ *
+ * Every unit defines its tables with this, never with a bare initializer:
+ *
+ *   TRANSFORMER_FAMILY(qwen3, populate_qwen3, populate_layers_qwen3,
+ *                      qwen3_attention_block, blk_ffn_swiglu,
+ *                      .wire_layer = qwen3_wire_layer,
+ *                      .fused_residual_norms = true);
+ *
+ * The four hooks after the symbol are required, so a table without one does
+ * not compile: a missing argument is a preprocessor error, and each is
+ * taken by address, which a function has and nullptr (or 0) has not. The
+ * name is family_list.h's, so a symbol without a line there is an
+ * undeclared identifier. Everything after the hooks is an optional member
+ * by designator (wire_layer, session_alloc, session_free and the
+ * capabilities); setting a required one there again is an override that
+ * -Woverride-init / -Winitializer-overrides reject under -Werror.
+ *
+ * TRANSFORMER_FAMILY_AS(sym, listed, ...) defines a variant table under the
+ * name of another line (llama_moe under "llama"). */
+#define TRANSFORMER_FAMILY_AS(                                                       \
+        sym, listed, populate_, populate_layers_, attention_block_, ffn_block_, ...) \
+    const struct transformer_family transformer_family_##sym = {                     \
+            .name            = transformer_family_name_##listed,                     \
+            .populate        = &(populate_),                                         \
+            .populate_layers = &(populate_layers_),                                  \
+            .attention_block = &(attention_block_),                                  \
+            .ffn_block       = &(ffn_block_),                                        \
+            __VA_ARGS__}
+#define TRANSFORMER_FAMILY(sym, ...) TRANSFORMER_FAMILY_AS(sym, sym, __VA_ARGS__)
 
 /* arch_family.c — the BitNet embedding variant's metadata (per-projection
  * input norms, pooling), read by the qwen3 and gemma3 populators. */

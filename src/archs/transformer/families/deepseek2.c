@@ -31,8 +31,8 @@
  * Refused: files with the split attn_k_b / attn_v_b (absorbed MLA), which
  * this decompressed path does not read.
  *
- * Removing the family is this file, its registry lines in arch_family.c and
- * arch_family.h, and its line in mk/common.mk.
+ * Removing the family is this file and its line in family_list.h
+ * (make check-static builds it alone, #345).
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -499,16 +499,14 @@ deepseek2_ffn_block(struct transformer_layer_forward_ctx *ctx) {
     return s;
 }
 
-const struct transformer_family transformer_family_deepseek2 = {
-        .name            = "deepseek2",
-        .populate        = populate_deepseek2,
-        .populate_layers = populate_layers_deepseek2,
-        .wire_layer      = wire_layer_deepseek2,
-        .session_alloc   = deepseek2_session_alloc,
-        .session_free    = deepseek2_session_free,
-        .attention_block = deepseek2_attention_block,
-        .ffn_block       = deepseek2_ffn_block,
-        /* As the other MoE families: routing amplifies KV quantization. */
-        .kv_auto         = GEIST_KV_F16,
-        .kv_int4_instead = GEIST_KV_F16,
-};
+TRANSFORMER_FAMILY(deepseek2,
+                   populate_deepseek2,
+                   populate_layers_deepseek2,
+                   deepseek2_attention_block,
+                   deepseek2_ffn_block,
+                   .wire_layer    = wire_layer_deepseek2,
+                   .session_alloc = deepseek2_session_alloc,
+                   .session_free  = deepseek2_session_free,
+                   /* As the other MoE families: routing amplifies KV quantization. */
+                   .kv_auto         = GEIST_KV_F16,
+                   .kv_int4_instead = GEIST_KV_F16);

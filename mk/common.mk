@@ -186,7 +186,20 @@ LDLIBS  := $(LDLIBS_TARGET) $(GEMM_LDLIBS) $(EXTRA_LDLIBS)
 # vision encoder towers. The defaults build everything; the test suite
 # assumes them. A change of either variable rebuilds what depends on it
 # (select-config stamp below), no `make clean` needed.
-ALL_FAMILIES := bitnet deepseek2 gemma3 gemma4 gpt_oss granitemoe llama llama4 olmoe qwen3 qwen35 qwen3moe
+#
+# The set comes from src/archs/transformer/family_list.h, the one list of
+# families (#345): each "X(unit, UNIT, ..." line gives a unit and its
+# selection macro. A unit file without a line, or a line without its file,
+# stops the build here. FAMILY_LIST is a variable so scripts/check_wiring.py
+# can prove that.
+FAMILY_LIST  ?= src/archs/transformer/family_list.h
+FAMILY_SED   := s/^ *X(\([a-z0-9_]*\), *\([A-Z0-9_]*\),.*/\1:\2/p
+FAMILY_PAIRS := $(sort $(shell sed -n '$(FAMILY_SED)' $(FAMILY_LIST)))
+ALL_FAMILIES := $(sort $(foreach p,$(FAMILY_PAIRS),$(firstword $(subst :, ,$(p)))))
+FAMILY_UNITS := $(sort $(basename $(notdir $(wildcard src/archs/transformer/families/*.c))))
+ifneq ($(ALL_FAMILIES),$(FAMILY_UNITS))
+$(error family_list.h and src/archs/transformer/families/ disagree: listed without a unit '$(filter-out $(FAMILY_UNITS),$(ALL_FAMILIES))', a unit not listed '$(filter-out $(ALL_FAMILIES),$(FAMILY_UNITS))')
+endif
 FAMILIES     ?= $(ALL_FAMILIES)
 TOWERS       ?= 1
 ifneq ($(filter-out $(ALL_FAMILIES),$(FAMILIES)),)
@@ -201,7 +214,7 @@ $(error TOWERS must be 0 or 1)
 endif
 endif
 FAMILY_SOURCES := $(patsubst %,src/archs/transformer/families/%.c,$(sort $(FAMILIES)))
-FAMILY_DEFINES := $(foreach f,$(sort $(FAMILIES)),-DGEIST_FAMILY_$(shell echo $(f) | tr '[:lower:]' '[:upper:]')=1)
+FAMILY_DEFINES := $(foreach p,$(FAMILY_PAIRS),$(if $(filter $(firstword $(subst :, ,$(p))),$(FAMILIES)),-DGEIST_FAMILY_$(lastword $(subst :, ,$(p)))=1))
 TOWER_SOURCES  := \
     src/archs/audio_conformer/arch.c \
     src/archs/audio_conformer/audio_encoder.c \

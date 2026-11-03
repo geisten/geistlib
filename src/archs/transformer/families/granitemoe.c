@@ -23,8 +23,8 @@
  *     weights.
  *
  * The shared expert of GraniteMoeShared is refused: no published model has
- * one. Removing the family is this file, its registry lines in arch_family.c
- * and arch_family.h, and its line in mk/common.mk.
+ * one. Removing the family is this file and its line in family_list.h
+ * (make check-static builds it alone, #345).
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -94,16 +94,14 @@ granitemoe_attention_block(struct transformer_layer_forward_ctx *ctx) {
     return blk_attention(ctx, nullptr, nullptr, ctx->st->config.attn_q_scale, nullptr, true);
 }
 
-const struct transformer_family transformer_family_granitemoe = {
-        .name            = "granitemoe",
-        .populate        = populate_granitemoe,
-        .populate_layers = populate_layers_granitemoe,
-        .wire_layer      = wire_layer_granitemoe,
-        .session_alloc   = moe_session_alloc,
-        .session_free    = moe_session_free,
-        .attention_block = granitemoe_attention_block,
-        .ffn_block       = blk_moe_ffn,
-        /* As qwen3moe: routing amplifies KV quantization error. */
-        .kv_auto         = GEIST_KV_F16,
-        .kv_int4_instead = GEIST_KV_F16,
-};
+TRANSFORMER_FAMILY(granitemoe,
+                   populate_granitemoe,
+                   populate_layers_granitemoe,
+                   granitemoe_attention_block,
+                   blk_moe_ffn,
+                   .wire_layer    = wire_layer_granitemoe,
+                   .session_alloc = moe_session_alloc,
+                   .session_free  = moe_session_free,
+                   /* As qwen3moe: routing amplifies KV quantization error. */
+                   .kv_auto         = GEIST_KV_F16,
+                   .kv_int4_instead = GEIST_KV_F16);

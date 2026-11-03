@@ -16,8 +16,8 @@
  * prep is the plan-bound fused op on GPU backends (norms + RoPE + KV append
  * in one dispatch), else blk_q_prep / blk_k_prep.
  *
- * Removing the family is this file, its registry lines in arch_family.c and
- * arch_family.h, and its line in mk/common.mk.
+ * Removing the family is this file and its line in family_list.h
+ * (make check-static builds it alone, #345).
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -285,18 +285,16 @@ gemma4_attention_block(struct transformer_layer_forward_ctx *ctx) {
 
 /* ---- Registry entry --------------------------------------------------- */
 
-const struct transformer_family transformer_family_gemma4 = {
-        .name                 = "gemma4",
-        .towers               = true, /* the only towers that exist: 1536-dim soft tokens */
-        .populate             = populate_gemma4,
-        .populate_layers      = populate_layers_gemma4,
-        .wire_layer           = gemma4_wire_layer,
-        .fused_residual_norms = true,
-        .attention_block      = gemma4_attention_block,
-        .ffn_block            = gemma4_ffn_block,
-        /* V at 4 bits breaks Gemma 4 too, not only a 4-bit K (#53): E2B
-         * teacher-forced against FP32 KV, mean JS 0.146 nats and 69 % top-1
-         * for INT4, 0.035 and 88 % for INT8 (another backend's FP32: 0.024,
-         * 88 %). */
-        .kv_int4_instead = GEIST_KV_INT8,
-};
+TRANSFORMER_FAMILY(gemma4,
+                   populate_gemma4,
+                   populate_layers_gemma4,
+                   gemma4_attention_block,
+                   gemma4_ffn_block,
+                   .towers     = true, /* the only towers that exist: 1536-dim soft tokens */
+                   .wire_layer = gemma4_wire_layer,
+                   .fused_residual_norms = true,
+                   /* V at 4 bits breaks Gemma 4 too, not only a 4-bit K (#53): E2B
+                    * teacher-forced against FP32 KV, mean JS 0.146 nats and 69 % top-1
+                    * for INT4, 0.035 and 88 % for INT8 (another backend's FP32: 0.024,
+                    * 88 %). */
+                   .kv_int4_instead = GEIST_KV_INT8);

@@ -572,11 +572,14 @@ endif
 
 # Static analysis, no models and no GPU: the seeded defects must be found, and
 # the library must have no finding beyond scripts/static-baseline.txt (#342).
+# check_wiring.py: the family wiring mistakes in tests/wiring/ fail to
+# compile, and each family builds and links alone (#345).
 CLANG_TIDY ?= clang-tidy
 .PHONY: check-static
 check-static:
 	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py --selftest
 	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py
+	@python3 scripts/check_wiring.py
 
 format:
 	@$(CLANG_FORMAT) -i $(FORMAT_FILES)
@@ -604,7 +607,7 @@ help:
 	"  make lib | bin             only the static lib | only the binaries" \
 	"  make shared                the shared library for FFI callers (examples/ffi)" \
 	"  make DECISION=1            enable experimental numeric candidate scoring" \
-	"  make check-static          clang-tidy with a findings ratchet (no models, no GPU)" \
+	"  make check-static          clang-tidy ratchet, wiring cases, family matrix (no models, no GPU)" \
 	"  make DECISION=1 DECISION_CONTEXT=1  add snapshot-backed prefix scoring (#5)" \
 	"  make FAMILIES=\"bitnet llama\"  build only these model families (default: all)" \
 	"  make TOWERS=0              leave out the Gemma 4 audio/vision encoder towers" \

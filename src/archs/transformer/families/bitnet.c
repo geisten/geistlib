@@ -14,8 +14,8 @@
  * sharing, NEOX RoPE over the whole head (the bitnet.cpp converter does not
  * pre-permute Q/K). Weights are typically I2_S or TQ2_0.
  *
- * Removing the family is this file, its registry lines in arch_family.c and
- * arch_family.h, and its line in mk/common.mk.
+ * Removing the family is this file and its line in family_list.h
+ * (make check-static builds it alone, #345).
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -182,24 +182,20 @@ bitnet_attention_block(struct transformer_layer_forward_ctx *ctx) {
 
 /* ---- Registry entries ------------------------------------------------- */
 
-const struct transformer_family transformer_family_bitnet_b158 = {
-        .name              = "bitnet-b1.58",
-        .populate          = bitnet_b158_populate,
-        .populate_layers   = bitnet_populate_layers,
-        .wire_layer        = bitnet_wire_layer,
-        .attention_block   = bitnet_attention_block,
-        .ffn_block         = bitnet_ffn_block,
-        .spec_head_default = true, /* #384 */
-};
+TRANSFORMER_FAMILY(bitnet_b158,
+                   bitnet_b158_populate,
+                   bitnet_populate_layers,
+                   bitnet_attention_block,
+                   bitnet_ffn_block,
+                   .wire_layer        = bitnet_wire_layer,
+                   .spec_head_default = true /* #384 */);
 
 /* Community converters (e.g. gianni-cor/bitnet_b1_58-3B-TQ2_0) write
  * "general.architecture" = "bitnet". Same unit; meta_* tries both prefixes. */
-const struct transformer_family transformer_family_bitnet = {
-        .name              = "bitnet",
-        .populate          = bitnet_community_populate,
-        .populate_layers   = bitnet_populate_layers,
-        .wire_layer        = bitnet_wire_layer,
-        .attention_block   = bitnet_attention_block,
-        .ffn_block         = bitnet_ffn_block,
-        .spec_head_default = true, /* #384 */
-};
+TRANSFORMER_FAMILY(bitnet,
+                   bitnet_community_populate,
+                   bitnet_populate_layers,
+                   bitnet_attention_block,
+                   bitnet_ffn_block,
+                   .wire_layer        = bitnet_wire_layer,
+                   .spec_head_default = true /* #384 */);

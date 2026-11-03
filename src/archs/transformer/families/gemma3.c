@@ -15,8 +15,8 @@
  * The embedding variant's per-projection input norms are applied by the
  * blocks (blk_qkv, blk_gate_up, blk_o_proj, blk_down) when the model has them.
  *
- * Removing the family is this file, its registry lines in arch_family.c and
- * arch_family.h, and its line in mk/common.mk.
+ * Removing the family is this file and its line in family_list.h
+ * (make check-static builds it alone, #345).
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -148,12 +148,10 @@ gemma3_attention_block(struct transformer_layer_forward_ctx *ctx) {
 
 /* ---- Registry entry --------------------------------------------------- */
 
-const struct transformer_family transformer_family_gemma3 = {
-        .name                 = "gemma3",
-        .populate             = populate_gemma3,
-        .populate_layers      = populate_layers_gemma3,
-        .wire_layer           = gemma3_wire_layer,
-        .fused_residual_norms = true,
-        .attention_block      = gemma3_attention_block,
-        .ffn_block            = gemma3_ffn_block,
-};
+TRANSFORMER_FAMILY(gemma3,
+                   populate_gemma3,
+                   populate_layers_gemma3,
+                   gemma3_attention_block,
+                   gemma3_ffn_block,
+                   .wire_layer           = gemma3_wire_layer,
+                   .fused_residual_norms = true);

@@ -14,8 +14,8 @@
  * composition: the blocks apply the per-projection norms and the norm on
  * o_proj's and down's input when the model has them.
  *
- * Removing the family is this file, its registry lines in arch_family.c and
- * arch_family.h, and its line in mk/common.mk.
+ * Removing the family is this file and its line in family_list.h
+ * (make check-static builds it alone, #345).
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -106,12 +106,10 @@ qwen3_attention_block(struct transformer_layer_forward_ctx *ctx) {
 
 /* ---- Registry entry --------------------------------------------------- */
 
-const struct transformer_family transformer_family_qwen3 = {
-        .name                 = "qwen3",
-        .populate             = populate_qwen3,
-        .populate_layers      = populate_layers_qwen3,
-        .wire_layer           = qwen3_wire_layer,
-        .fused_residual_norms = true,
-        .attention_block      = qwen3_attention_block,
-        .ffn_block            = blk_ffn_swiglu,
-};
+TRANSFORMER_FAMILY(qwen3,
+                   populate_qwen3,
+                   populate_layers_qwen3,
+                   qwen3_attention_block,
+                   blk_ffn_swiglu,
+                   .wire_layer           = qwen3_wire_layer,
+                   .fused_residual_norms = true);
