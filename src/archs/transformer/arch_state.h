@@ -1042,24 +1042,6 @@ transformer_multi_layer(struct transformer_arch_session       *carrier,
                         struct geist_buffer                   *h_in_buf,
                         struct geist_buffer                   *h_out_buf);
 
-/* Append one audio soft-token (HIDDEN floats, already produced by the
- * audio encoder) to the KV cache.
- *
- * Differences vs the text path:
- *   - h_in_host is the soft-token bytes verbatim — no embedding lookup
- *     and no sqrt(HIDDEN) scale (soft-tokens enter post-lookup unscaled).
- *   - PLE token-identity is the pad_token_id (0), not the audio token's
- *     "identity" — matches HF's masked-scatter where audio positions are
- *     remapped to pad before PLE lookup.
- *
- * After return, kv_len is advanced by 1 and next_token_pending is the
- * greedy prediction for the position following this soft-token.
- * advance_audio_token is intended to be called n times in a row for an
- * n-soft-token audio clip; the engine's session_attach_audio takes care
- * of the encoder pipeline upstream. */
-[[nodiscard]] enum geist_status
-transformer_advance_audio_token(struct transformer_arch_session *sess, const float *h_in_host);
-
 /* Batched text prefill: append `n` tokens to the KV cache via the
  * seq>1 path. Processes the input in chunks of at most sess->m_max
  * tokens. After the last chunk, the next-token-pending field holds the
