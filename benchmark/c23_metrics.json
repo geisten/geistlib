@@ -145,14 +145,14 @@
     "src/base/par.c": 2,
     "src/engine/arch_registry.c": 1,
     "src/engine/decision.c": 2,
-    "src/engine/gguf_tokenizer.c": 3,
+    "src/engine/gguf_tokenizer.c": 5,
     "src/engine/session.c": 1,
     "src/io/gguf_reader.c": 1,
     "src/io/gguf_reader.h": 1,
     "src/io/safetensors_reader.h": 1,
     "src/quant/quant.h": 2
    },
-   "total": 164,
+   "total": 166,
    "what": "object-like #define with a replacement"
   },
   "enum_anonymous": {
