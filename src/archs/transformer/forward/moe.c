@@ -720,6 +720,19 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     for (size_t i = 0; i < n_sel; i++) {
         memcpy(sess->moe_xg + i * d, xs + (sess->moe_rows[i] / k) * d, d * sizeof(float));
     }
+    /* Llama 4 (#244): the weight scales the expert's input row; the output
+     * is then summed with weight 1. */
+    for (size_t i = 0; i < n_sel && st->config.moe_weight_before; i++) {
+        const uint32_t sel = sess->moe_rows[i];
+        if (sel % k >= n_rt)
+            continue; /* a shared expert's slot */
+        const float wt = sess->moe_wts[sel];
+        for (size_t c = 0; c < d; c++)
+            sess->moe_xg[i * d + c] *= wt;
+    }
+    for (size_t r = 0; r < seq * k && st->config.moe_weight_before; r++)
+        if (r % k < n_rt)
+            sess->moe_wts[r] = 1.0f;
     /* The shared expert's weight: sigmoid of x against its gate vector. */
     for (size_t r = 0; r < seq && k > n_rt; r++) {
         double dot = 0.0;
