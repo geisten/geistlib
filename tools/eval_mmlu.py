@@ -139,8 +139,8 @@ def main() -> None:
     ap.add_argument("--shots", type=int, default=5, help="few-shot exemplars (MMLU default 5)")
     ap.add_argument("--bos", type=int, default=-2,
                     help="BOS token id to prepend. Default -2 asks the model "
-                         "(GGUF add_bos_token / bos_token_id via the REPL's BOS "
-                         "command): Gemma says yes and gets its <bos>, a model "
+                         "(add_bos_token resolved as llama.cpp does / bos_token_id "
+                         "via the REPL's BOS command): Gemma says yes and gets its <bos>, a model "
                          "whose metadata says no gets none. -1 forces none, any "
                          "other value forces that id. Hardcoding one family's id "
                          "here fed Ternary-Bonsai an unrelated token 2 and cost it "

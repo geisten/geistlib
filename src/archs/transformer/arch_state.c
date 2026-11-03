@@ -462,6 +462,27 @@ rope_row_widths(const struct transformer_arch_state *st, size_t *sl_width, size_
                 0, st->max_seq_len, sliding_hd, sliding_rot, pblock, sliding_th, cos_sl, sin_sl);
         rope_compute_at(0, st->max_seq_len, full_hd, full_rot, pblock, full_th, cos_fl, sin_fl);
     }
+    if (st->rope_freq_factors != nullptr) {
+        /* Frequency factors (#244): full rotation only, one factor a pair. */
+        if (sl_width != sliding_hd || fl_width != full_hd ||
+            st->n_rope_freq_factors * 2 != sliding_hd || st->n_rope_freq_factors * 2 != full_hd ||
+            c->rope_yarn_factor > 1.0f) {
+            void *p[4] = {cos_sl, sin_sl, cos_fl, sin_fl};
+            for (size_t i = 0; i < 4; i++)
+                safe_free(&p[i]);
+            geist_backend_set_error(be,
+                                    GEIST_E_UNSUPPORTED,
+                                    "transformer: %zu RoPE frequency factors do not fit head_dim "
+                                    "%zu",
+                                    st->n_rope_freq_factors,
+                                    full_hd);
+            return GEIST_E_UNSUPPORTED;
+        }
+        rope_compute_ff_at(
+                0, st->max_seq_len, sliding_hd, sliding_th, st->rope_freq_factors, cos_sl, sin_sl);
+        rope_compute_ff_at(
+                0, st->max_seq_len, full_hd, full_th, st->rope_freq_factors, cos_fl, sin_fl);
+    }
 
     enum geist_status s = upload_table(be, cos_sl, n_sl_floats, &st->rope_cos_sliding);
     if (s == GEIST_OK) {
@@ -2069,6 +2090,8 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     st->weight_arena_capacity   = 0;
     st->weight_arena_used       = 0;
     safe_free(&st->rope_il_rows); /* same lifetime as the arena slices */
+    safe_free((void **) &st->rope_freq_factors);
+    st->n_rope_freq_factors   = 0;
     st->rope_il_rows_capacity = 0;
     st->rope_il_rows_used     = 0;
     /* Their buffer handles are gone with the layers and globals. */
@@ -2624,6 +2647,19 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     }
     /* KV-mode resolution: opts override > env > backend/platform default. */
     apply_kv_layout(sess, opts);
+    /* KIVI packs four channels per byte; RoPE alone admits any even head_dim. */
+    for (size_t i = 0; sess->kv_kivi_enabled && i < state->n_layers; i++) {
+        if (state->layers[i].head_dim % 4 != 0) {
+            geist_backend_set_error(be,
+                                    GEIST_E_UNSUPPORTED,
+                                    "transformer_session_alloc: KIVI needs a head_dim that is a "
+                                    "multiple of 4; layer %zu has %zu",
+                                    i,
+                                    state->layers[i].head_dim);
+            transformer_session_free(state, sess);
+            return nullptr;
+        }
+    }
 
     /* Sampler defaults (greedy); apply_opts may override below. */
     sess->temperature = 0.0f;

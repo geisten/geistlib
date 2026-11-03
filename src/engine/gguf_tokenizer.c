@@ -215,6 +215,64 @@ static void build_spm_byte_map(struct gguf_tokenizer *tok) {
     }
 }
 
+/* s[0, n) is one of the NUL-terminated names in list (null-terminated). */
+static bool name_in(size_t n, const char *s, const char *const *list) {
+    if (s == nullptr)
+        return false;
+    for (; *list != nullptr; list++) {
+        if (strlen(*list) == n && memcmp(s, *list, n) == 0)
+            return true;
+    }
+    return false;
+}
+
+[[nodiscard]] bool gguf_tokenizer_add_bos_rule(size_t      model_len,
+                                               size_t      pre_len,
+                                               int         flag,
+                                               bool        fallback,
+                                               const char *model,
+                                               const char *pre) {
+    /* llama_vocab::impl::load: the vocabulary type comes from the model name. */
+    static const char *const SPM[]  = {"llama", nullptr};
+    static const char *const WPM[]  = {"bert", nullptr};
+    static const char *const BPE[]  = {"gpt2", "hybriddna", "whitespace", "gemma4", nullptr};
+    static const char *const NONE[] = {"t5", "rwkv", "plamo2", "test", "no_vocab", "none", nullptr};
+    /* The BPE pretokenizers whose branch sets add_bos = true. */
+    static const char *const BPE_BOS[] = {"llama3",
+                                          "llama-v3",
+                                          "llama-bpe",
+                                          "falcon3",
+                                          "falcon-h1",
+                                          "pixtral",
+                                          "midm-2.0",
+                                          "lfm2",
+                                          "jina-v5-nano",
+                                          "tekken",
+                                          "chameleon",
+                                          nullptr};
+    /* LLAMA_VOCAB_PRE_TYPE_GEMMA4; model "gemma4" sets this pre itself. */
+    static const char *const GEMMA4[]       = {"gemma4", "granite-embed-multi-311m", nullptr};
+    static const char *const GEMMA4_MODEL[] = {"gemma4", nullptr};
+
+    const bool is_bpe = name_in(model_len, model, BPE);
+    bool       add_bos;
+    if (name_in(model_len, model, SPM) || name_in(model_len, model, WPM)) {
+        add_bos = true;
+    } else if (is_bpe) {
+        add_bos = name_in(pre_len, pre, BPE_BOS);
+    } else if (name_in(model_len, model, NONE)) {
+        add_bos = false; /* UGM, RWKV and the rest: the member default */
+    } else {
+        add_bos = fallback; /* llama.cpp refuses to load this vocabulary */
+    }
+    if (flag >= 0) /* tokenizer.ggml.add_bos_token overrides the default */
+        add_bos = flag != 0;
+    /* ... except for Gemma 4, which llama.cpp forces on (its PR 21500). */
+    const bool gemma4 =
+            is_bpe && (name_in(model_len, model, GEMMA4_MODEL) || name_in(pre_len, pre, GEMMA4));
+    return add_bos || gemma4;
+}
+
 [[nodiscard]] bool gguf_tokenizer_load(struct gguf_tokenizer *tok, const struct gguf_ctx *ctx) {
     if (tok == nullptr)
         return false;
@@ -379,22 +437,29 @@ static void build_spm_byte_map(struct gguf_tokenizer *tok) {
         tok->mode = GGUF_TOK_MODE_UNSUPPORTED;
     }
 
-    /* BOS prepend policy (llama.cpp convention): explicit
-     * tokenizer.ggml.add_bos_token wins; absent, SentencePiece-style
-     * models default to prepending (Llama/Gemma) while byte-BPE (gpt2
-     * mode — GPT2/Qwen lineage) defaults to NOT prepending. Qwen3.8
-     * GGUFs carry a bos_id with no flag; blindly prepending desynced
-     * the qwen35 recurrent stack into repetition loops (#281). */
+    /* BOS prepend policy: llama.cpp's (gguf_tokenizer_add_bos_rule). A
+     * byte-BPE file without the flag prepends only for the pretokenizers
+     * llama.cpp names (Llama 3's "llama-bpe", ...), so Qwen3.8 GGUFs, which
+     * carry a bos_id with no flag, still get none: prepending desynced the
+     * qwen35 recurrent stack into repetition loops (#281). Without a BOS id
+     * there is nothing to prepend, whatever the default says (#385). */
     {
         bool b;
         if (gguf_get_meta_bool(ctx, "tokenizer.ggml.add_eos_token", &b)) {
             tok->add_eos = b;
         }
-        if (gguf_get_meta_bool(ctx, "tokenizer.ggml.add_bos_token", &b)) {
-            tok->add_bos = b;
-        } else {
-            tok->add_bos = tok->bos_id >= 0 && tok->mode != GGUF_TOK_MODE_GPT2;
-        }
+        size_t      pre_len  = 0;
+        const char *pre      = gguf_get_meta_string(ctx, "tokenizer.ggml.pre", &pre_len);
+        const bool  has_flag = gguf_get_meta_bool(ctx, "tokenizer.ggml.add_bos_token", &b);
+        tok->add_bos =
+                gguf_tokenizer_add_bos_rule(tok->model_len,
+                                            pre_len,
+                                            has_flag ? (b ? 1 : 0) : -1,
+                                            tok->bos_id >= 0 && tok->mode != GGUF_TOK_MODE_GPT2,
+                                            tok->model,
+                                            pre);
+        if (!has_flag && tok->bos_id < 0)
+            tok->add_bos = false;
     }
 
     if (tok->mode == GGUF_TOK_MODE_SPM || tok->mode == GGUF_TOK_MODE_UNIGRAM) {

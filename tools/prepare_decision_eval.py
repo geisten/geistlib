@@ -84,7 +84,10 @@ def prepare(args):
     tokenizer = Tokenizer(args.tokenizer_binary.resolve(), args.model.resolve(), args.out_dir / "tokenizer.log")
     counts, test_sample = {}, None
     try:
-        if ((tokenizer.bos is not None) != bool(meta["add_bos_token"])
+        # Without add_bos_token the runtime takes llama.cpp's default for the
+        # vocabulary (Llama 3's byte-BPE adds BOS, #385), so only an explicit
+        # flag can disagree.
+        if ((meta["add_bos_token"] is not None and (tokenizer.bos is not None) != bool(meta["add_bos_token"]))
                 or (tokenizer.bos is not None and tokenizer.bos != meta["bos_token_id"])):
             raise ValueError("GGUF metadata and runtime BOS policy disagree")
         for split in args.splits.split(","):
