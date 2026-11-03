@@ -11,7 +11,10 @@
  *
  * Adding a new backend:
  *   1. Implement src/backends/<name>/backend.c exporting
- *      `extern const struct geist_backend_descriptor geist_backend_<name>`.
+ *      `extern const struct geist_backend_descriptor geist_backend_<name>`,
+ *      its tables defined with GEIST_BACKEND_VTBL / _PRIMS / _DESCRIPTOR
+ *      (src/backends/common/backend_tables.h), which refuse a table without
+ *      a required slot at compile time (#345).
  *   2. Add `mk/backend-<name>.mk` setting BACKEND_SOURCES += ...
  *   3. Add `#if GEIST_BACKEND_<NAME>` block below.
  *   4. Build with `make BACKENDS="cpu_neon <name>"`.

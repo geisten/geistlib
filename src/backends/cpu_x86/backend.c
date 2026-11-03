@@ -54,6 +54,7 @@
 #include "quant.h"
 
 #include <geist_backend.h>
+#include "backend_tables.h"
 #include <geist_weight.h>
 
 #include <stddef.h>
@@ -61,16 +62,24 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Borrowed from cpu_scalar/backend.c (exported there). */
-extern const struct geist_backend_vtbl       cpu_scalar_vtbl;
-extern const struct geist_backend_primitives cpu_scalar_prims;
-extern const struct geist_backend_fused      cpu_scalar_fused;
-extern enum geist_status                     cpu_scalar_resolve_weight(struct geist_backend *be,
-                                                                       struct geist_weight  *w);
+/* Borrowed from cpu_scalar (exported there; mk/backend-cpu_x86.mk compiles
+ * its units into a build without BACKENDS=cpu_scalar too). */
+extern const struct geist_backend_fused cpu_scalar_fused;
+extern enum geist_status                cpu_scalar_resolve_weight(struct geist_backend *be,
+                                                                  struct geist_weight  *w);
+[[nodiscard]] extern enum geist_status  cpu_scalar_mul(struct geist_backend      *be,
+                                                       const struct geist_tensor *a,
+                                                       const struct geist_tensor *b,
+                                                       struct geist_tensor       *y);
+[[nodiscard]] extern enum geist_status  cpu_scalar_relu_squared(struct geist_backend      *be,
+                                                                const struct geist_tensor *x,
+                                                                struct geist_tensor       *y);
+[[nodiscard]] extern enum geist_status  cpu_scalar_rope_apply(struct geist_backend      *be,
+                                                              struct geist_tensor       *x,
+                                                              const struct geist_tensor *cos,
+                                                              const struct geist_tensor *sin);
 
-static struct geist_backend_vtbl       cpu_x86_vtbl;
-static struct geist_backend_primitives cpu_x86_prims;
-static struct geist_backend_fused      cpu_x86_fused;
+static struct geist_backend_fused cpu_x86_fused;
 
 /* ---------- Lifecycle ---------- */
 
@@ -529,24 +538,39 @@ static bool cpu_x86_fused_supported(struct geist_backend *be, const struct geist
     return cpu_scalar_fused.supported(be, q);
 }
 
-/* ---------- Vtbl init ---------- */
+/* ---------- Tables ---------- */
 
-__attribute__((constructor)) static void cpu_x86_init_vtbl(void) {
-    cpu_x86_vtbl                = cpu_scalar_vtbl;
-    cpu_x86_vtbl.create         = cpu_x86_create;
-    cpu_x86_vtbl.destroy        = cpu_x86_destroy;
-    cpu_x86_vtbl.resolve_weight = cpu_x86_resolve_weight;
-    /* Per-phase thread count (threads.c): decode on physical cores. */
-    cpu_x86_vtbl.parallel_region_begin = cpu_x86_parallel_region_begin;
-    cpu_x86_vtbl.parallel_region_end   = geist_cpu_region_end;
+/* cpu_scalar's buffer ops (the shared host buffer) with cpu_x86's
+ * lifecycle, resolver and per-phase thread count (threads.c: decode on
+ * physical cores). Spelled out rather than copied from cpu_scalar_vtbl at
+ * start-up, so the required slots are checked at compile time (#345). */
+static const struct geist_backend_vtbl cpu_x86_vtbl =
+        GEIST_BACKEND_VTBL(cpu_x86_destroy,
+                           geist_host_buffer_create,
+                           geist_host_buffer_destroy,
+                           geist_host_buffer_create_aliased,
+                           geist_host_buffer_upload,
+                           geist_host_buffer_download,
+                           geist_host_buffer_map,
+                           geist_host_buffer_unmap,
+                           .create                = cpu_x86_create,
+                           .resolve_weight        = cpu_x86_resolve_weight,
+                           .parallel_region_begin = cpu_x86_parallel_region_begin,
+                           .parallel_region_end   = geist_cpu_region_end);
 
-    cpu_x86_prims           = cpu_scalar_prims;
-    cpu_x86_prims.gelu_tanh = cpu_x86_gelu_tanh;
-    cpu_x86_prims.silu      = cpu_x86_silu;
-    cpu_x86_prims.rmsnorm   = cpu_x86_rmsnorm;
-    cpu_x86_prims.add       = cpu_x86_add;
-    cpu_x86_prims.attention = cpu_x86_attention;
+/* cpu_scalar's primitives where cpu_x86 has no kernel of its own. */
+static const struct geist_backend_primitives cpu_x86_prims =
+        GEIST_BACKEND_PRIMS(cpu_x86_rmsnorm,
+                            cpu_x86_add,
+                            cpu_scalar_mul,
+                            cpu_x86_gelu_tanh,
+                            cpu_x86_silu,
+                            cpu_scalar_rope_apply,
+                            cpu_x86_attention,
+                            .relu_squared = cpu_scalar_relu_squared);
 
+/* The fused paths are all optional: cpu_scalar's, with cpu_x86's on top. */
+__attribute__((constructor)) static void cpu_x86_init_fused(void) {
     cpu_x86_fused                      = cpu_scalar_fused;
     cpu_x86_fused.supported            = cpu_x86_fused_supported;
     cpu_x86_fused.gelu_tanh_mul        = cpu_x86_gelu_tanh_mul;
@@ -555,16 +579,15 @@ __attribute__((constructor)) static void cpu_x86_init_vtbl(void) {
     cpu_x86_fused.attention_kv_int8    = cpu_x86_attention_kv_int8;
 }
 
-const struct geist_backend_descriptor geist_backend_cpu_x86 = {
-        .name  = "cpu_x86",
-        .vtbl  = &cpu_x86_vtbl,
-        .prims = &cpu_x86_prims,
-        .fused = &cpu_x86_fused,
-        .caps  = {.max_m                = GEIST_QUANT_M_CAP,
-                  .preferred_kv_mode    = GEIST_KV_INT8,
-                  .kv_f16_attention     = true, /* on request (#48) */
-                  .kv_q8_block          = true, /* K and V apart in the cache sets */
-                  .kv_dense_block       = true,
-                  .manages_host_threads = true, /* the region hooks above */
-                  .dn_subchunk          = true /* host DeltaNet sub-chunks */},
-};
+const struct geist_backend_descriptor geist_backend_cpu_x86 =
+        GEIST_BACKEND_DESCRIPTOR("cpu_x86",
+                                 cpu_x86_vtbl,
+                                 cpu_x86_prims,
+                                 .fused = &cpu_x86_fused,
+                                 .caps = {.max_m             = GEIST_QUANT_M_CAP,
+                                          .preferred_kv_mode = GEIST_KV_INT8,
+                                          .kv_f16_attention  = true, /* on request (#48) */
+                                          .kv_q8_block = true, /* K and V apart in the cache sets */
+                                          .kv_dense_block       = true,
+                                          .manages_host_threads = true, /* the region hooks above */
+                                          .dn_subchunk = true /* host DeltaNet sub-chunks */});

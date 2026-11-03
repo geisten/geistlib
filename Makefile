@@ -572,8 +572,9 @@ endif
 
 # Static analysis, no models and no GPU: the seeded defects must be found, and
 # the library must have no finding beyond scripts/static-baseline.txt (#342).
-# check_wiring.py: the family wiring mistakes in tests/wiring/ fail to
-# compile, and each family builds and links alone (#345).
+# check_wiring.py: the family and backend wiring mistakes in tests/wiring/
+# fail to compile, and each family and each CPU backend builds and links
+# alone (#345).
 CLANG_TIDY ?= clang-tidy
 .PHONY: check-static
 check-static:

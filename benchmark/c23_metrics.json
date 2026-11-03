@@ -63,6 +63,7 @@
     "src/archs/transformer/forward/profile.h": 1,
     "src/archs/transformer/weight_load/layer_wiring.c": 1,
     "src/archs/vision_siglip/vision_encoder.c": 2,
+    "src/backends/common/backend_tables.h": 3,
     "src/backends/cpu_neon/kernels/pq2_0.c": 2,
     "src/backends/cpu_neon/kernels/q3_K.c": 1,
     "src/backends/cpu_neon/kernels/q4_01.c": 1,
@@ -88,7 +89,7 @@
     "src/formats/gguf/q3_K.c": 1,
     "src/io/gguf_reader.c": 1
    },
-   "total": 97,
+   "total": 100,
    "what": "function-like #define"
   },
   "define_object": {
@@ -279,6 +280,7 @@
     "src/archs/vision_siglip/vision_encoder.h": 1,
     "src/archs/vision_siglip/vision_kernels.c": 1,
     "src/archs/vision_siglip/vision_kernels.h": 1,
+    "src/backends/common/backend_tables.h": 1,
     "src/backends/common/fwht.h": 1,
     "src/backends/common/geist_gemm.c": 7,
     "src/backends/common/geist_gemm.h": 1,
@@ -399,7 +401,7 @@
     "src/quant/quant.h": 3,
     "src/quant/quant_blocks.h": 1
    },
-   "total": 500,
+   "total": 501,
    "what": "#if, #ifdef, #ifndef"
   },
   "pp_elif": {

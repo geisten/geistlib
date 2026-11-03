@@ -13,6 +13,7 @@
 
 #include <geist.h>
 #include <geist_backend.h>
+#include "backend_tables.h"
 
 #include "cpu_threads.h"
 #include "hadamard.h"
@@ -170,20 +171,19 @@ static int cpu_neon_parallel_region_begin(struct geist_backend      *be,
             region, cpu_neon_region_thread_count(region), st != nullptr ? st->max_threads : 0);
 }
 
-static const struct geist_backend_vtbl cpu_neon_vtbl = {
-        .create                = cpu_neon_create,
-        .destroy               = cpu_neon_destroy,
-        .buffer_create         = geist_host_buffer_create,
-        .buffer_destroy        = geist_host_buffer_destroy,
-        .buffer_create_aliased = geist_host_buffer_create_aliased,
-        .buffer_upload         = geist_host_buffer_upload,
-        .buffer_download       = geist_host_buffer_download,
-        .buffer_map            = geist_host_buffer_map,
-        .buffer_unmap          = geist_host_buffer_unmap,
-        .resolve_weight        = cpu_neon_resolve_weight,
-        .parallel_region_begin = cpu_neon_parallel_region_begin,
-        .parallel_region_end   = geist_cpu_region_end,
-};
+static const struct geist_backend_vtbl cpu_neon_vtbl =
+        GEIST_BACKEND_VTBL(cpu_neon_destroy,
+                           geist_host_buffer_create,
+                           geist_host_buffer_destroy,
+                           geist_host_buffer_create_aliased,
+                           geist_host_buffer_upload,
+                           geist_host_buffer_download,
+                           geist_host_buffer_map,
+                           geist_host_buffer_unmap,
+                           .create                = cpu_neon_create,
+                           .resolve_weight        = cpu_neon_resolve_weight,
+                           .parallel_region_begin = cpu_neon_parallel_region_begin,
+                           .parallel_region_end   = geist_cpu_region_end);
 
 /* Probe pairing for the fused table below (test_fused_probe_agreement_unit). */
 static bool cpu_neon_fused_supported(struct geist_backend *be, const struct geist_fusion_query *q) {
@@ -230,16 +230,15 @@ static bool cpu_neon_fused_supported(struct geist_backend *be, const struct geis
     return false;
 }
 
-static const struct geist_backend_primitives cpu_neon_prims = {
-        .rmsnorm      = cpu_neon_rmsnorm,
-        .add          = cpu_neon_add,
-        .mul          = cpu_neon_mul,
-        .gelu_tanh    = cpu_neon_gelu_tanh,
-        .silu         = cpu_neon_silu,
-        .relu_squared = cpu_neon_relu_squared,
-        .rope_apply   = cpu_neon_rope_apply,
-        .attention    = cpu_neon_attention,
-};
+static const struct geist_backend_primitives cpu_neon_prims =
+        GEIST_BACKEND_PRIMS(cpu_neon_rmsnorm,
+                            cpu_neon_add,
+                            cpu_neon_mul,
+                            cpu_neon_gelu_tanh,
+                            cpu_neon_silu,
+                            cpu_neon_rope_apply,
+                            cpu_neon_attention,
+                            .relu_squared = cpu_neon_relu_squared);
 
 static const struct geist_backend_fused cpu_neon_fused = {
         .supported            = cpu_neon_fused_supported,
@@ -258,28 +257,30 @@ static const struct geist_backend_fused cpu_neon_fused = {
 #endif
 };
 
-const struct geist_backend_descriptor geist_backend_cpu_neon = {
-        .name     = "cpu_neon",
-        .vtbl     = &cpu_neon_vtbl,
-        .prims    = &cpu_neon_prims,
-        .fused    = &cpu_neon_fused,
-        .tunables = cpu_neon_tunables,
-        .caps =
-                {
-                        .manages_host_threads = true,
-                        /* bump when kernel perf character changes without
-                         * a tunable rename (see #318) */
-                        .calibration_generation = 1,
-                        .max_m                  = GEIST_QUANT_M_CAP,
-                        /* host DeltaNet sub-chunks (layer_deltanet.c) */
-                        .dn_subchunk      = true,
-                        .kv_f16_attention = true, /* on request (#48) */
+/* The KV cache a session gets on GEIST_KV_AUTO. A constant, not an #if
+ * inside the descriptor's macro arguments, where a directive is undefined. */
 #if defined(__APPLE__)
-                        /* Unified memory + Accelerate: FP32 KV wins. */
-                        .preferred_kv_mode = GEIST_KV_FP32,
+/* Unified memory + Accelerate: FP32 KV wins. */
+static constexpr enum geist_kv_mode cpu_neon_kv_mode = GEIST_KV_FP32;
 #else
-                        /* Pi-class LPDDR: INT8 KV halves the cache traffic. */
-                        .preferred_kv_mode = GEIST_KV_INT8,
+/* Pi-class LPDDR: INT8 KV halves the cache traffic. */
+static constexpr enum geist_kv_mode cpu_neon_kv_mode = GEIST_KV_INT8;
 #endif
-                },
-};
+
+const struct geist_backend_descriptor geist_backend_cpu_neon =
+        GEIST_BACKEND_DESCRIPTOR("cpu_neon",
+                                 cpu_neon_vtbl,
+                                 cpu_neon_prims,
+                                 .fused    = &cpu_neon_fused,
+                                 .tunables = cpu_neon_tunables,
+                                 .caps     = {
+                                         .manages_host_threads = true,
+                                         /* bump when kernel perf character changes without
+                                          * a tunable rename (see #318) */
+                                         .calibration_generation = 1,
+                                         .max_m                  = GEIST_QUANT_M_CAP,
+                                         /* host DeltaNet sub-chunks (layer_deltanet.c) */
+                                         .dn_subchunk       = true,
+                                         .kv_f16_attention  = true, /* on request (#48) */
+                                         .preferred_kv_mode = cpu_neon_kv_mode,
+                                 });

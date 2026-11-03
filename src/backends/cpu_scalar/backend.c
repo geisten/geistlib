@@ -17,6 +17,7 @@
 
 #include <geist.h>
 #include <geist_backend.h>
+#include "backend_tables.h"
 
 #include "hadamard.h"
 #include "heap.h"
@@ -59,20 +60,17 @@ static void cpu_scalar_destroy(struct geist_backend *be) {
 
 /* ---------- Vtable + Descriptor ---------- */
 
-/* Exported so cpu_x86 can reuse the scalar implementations for operations
- * without an x86-specific override. */
-const struct geist_backend_vtbl cpu_scalar_vtbl = {
-        .create                = cpu_scalar_create,
-        .destroy               = cpu_scalar_destroy,
-        .buffer_create         = geist_host_buffer_create,
-        .buffer_destroy        = geist_host_buffer_destroy,
-        .buffer_create_aliased = geist_host_buffer_create_aliased,
-        .buffer_upload         = geist_host_buffer_upload,
-        .buffer_download       = geist_host_buffer_download,
-        .buffer_map            = geist_host_buffer_map,
-        .buffer_unmap          = geist_host_buffer_unmap,
-        .resolve_weight        = cpu_scalar_resolve_weight,
-};
+static const struct geist_backend_vtbl cpu_scalar_vtbl =
+        GEIST_BACKEND_VTBL(cpu_scalar_destroy,
+                           geist_host_buffer_create,
+                           geist_host_buffer_destroy,
+                           geist_host_buffer_create_aliased,
+                           geist_host_buffer_upload,
+                           geist_host_buffer_download,
+                           geist_host_buffer_map,
+                           geist_host_buffer_unmap,
+                           .create         = cpu_scalar_create,
+                           .resolve_weight = cpu_scalar_resolve_weight);
 
 /* Elementwise F32 fusions hold for any geometry and any m; the Hadamard
  * rotation for the geometry the shared host transform accepts. Nothing
@@ -113,18 +111,17 @@ static bool cpu_scalar_fused_supported(struct geist_backend            *be,
     return false;
 }
 
-/* Exported like the vtbl: cpu_x86 struct-copies these as its baseline. */
-const struct geist_backend_primitives cpu_scalar_prims = {
-        .rmsnorm      = cpu_scalar_rmsnorm,
-        .add          = cpu_scalar_add,
-        .mul          = cpu_scalar_mul,
-        .gelu_tanh    = cpu_scalar_gelu_tanh,
-        .silu         = cpu_scalar_silu,
-        .relu_squared = cpu_scalar_relu_squared,
-        .rope_apply   = cpu_scalar_rope_apply,
-        .attention    = cpu_scalar_attention,
-};
+static const struct geist_backend_primitives cpu_scalar_prims =
+        GEIST_BACKEND_PRIMS(cpu_scalar_rmsnorm,
+                            cpu_scalar_add,
+                            cpu_scalar_mul,
+                            cpu_scalar_gelu_tanh,
+                            cpu_scalar_silu,
+                            cpu_scalar_rope_apply,
+                            cpu_scalar_attention,
+                            .relu_squared = cpu_scalar_relu_squared);
 
+/* Exported: cpu_x86 copies it as the base of its own. */
 const struct geist_backend_fused cpu_scalar_fused = {
         .supported            = cpu_scalar_fused_supported,
         .gelu_tanh_mul        = cpu_scalar_gelu_tanh_mul,
@@ -133,23 +130,25 @@ const struct geist_backend_fused cpu_scalar_fused = {
         .kv_append_f16        = geist_host_kv_append_f16,
 };
 
-const struct geist_backend_descriptor geist_backend_cpu_scalar = {
-        .name  = "cpu_scalar",
-        .vtbl  = &cpu_scalar_vtbl,
-        .prims = &cpu_scalar_prims,
-        .fused = &cpu_scalar_fused,
-        .caps =
-                {
-                        .max_m = GEIST_QUANT_M_CAP,
-                        /* host DeltaNet sub-chunks (layer_deltanet.c) */
-                        .dn_subchunk = true,
-                        /* F16 KV on request only (kv_f16_by_default unset):
-                         * a family or session asks for it (#48). */
-                        .kv_f16_attention = true,
+/* The KV cache a session gets on GEIST_KV_AUTO. A constant, not an #if
+ * inside the descriptor's macro arguments, where a directive is undefined. */
 #if defined(__APPLE__)
-                        .preferred_kv_mode = GEIST_KV_FP32,
+static constexpr enum geist_kv_mode cpu_scalar_kv_mode = GEIST_KV_FP32;
 #else
-                        .preferred_kv_mode = GEIST_KV_INT8,
+static constexpr enum geist_kv_mode cpu_scalar_kv_mode = GEIST_KV_INT8;
 #endif
-                },
-};
+
+const struct geist_backend_descriptor geist_backend_cpu_scalar =
+        GEIST_BACKEND_DESCRIPTOR("cpu_scalar",
+                                 cpu_scalar_vtbl,
+                                 cpu_scalar_prims,
+                                 .fused = &cpu_scalar_fused,
+                                 .caps  = {
+                                         .max_m = GEIST_QUANT_M_CAP,
+                                         /* host DeltaNet sub-chunks (layer_deltanet.c) */
+                                         .dn_subchunk = true,
+                                         /* F16 KV on request only (kv_f16_by_default unset):
+                                          * a family or session asks for it (#48). */
+                                         .kv_f16_attention  = true,
+                                         .preferred_kv_mode = cpu_scalar_kv_mode,
+                                 });

@@ -3,8 +3,8 @@
  * backends share, its vtable entry points, and checked access to the
  * tensors that live in it.
  *
- * Layer: BACKEND (shared by cpu_scalar, cpu_neon, cpu_x86). cpu_x86 takes
- * its buffer ops from cpu_scalar_vtbl, so all three see this one layout.
+ * Layer: BACKEND (shared by cpu_scalar, cpu_neon, cpu_x86). All three put
+ * these buffer ops in their vtbl, so they see this one layout.
  * GPU backends define their own struct geist_buffer and must not include
  * this; engine code sees the struct only as the opaque forward declaration
  * in <geist.h>.

@@ -6,10 +6,12 @@ No models, no GPU. Part of `make check-static`.
   cases    every tests/wiring/*.c compiles with -DWIRING_OK and fails
            without it, with the message its `// expect: <regex>` names;
            make refuses a family list that disagrees with the units; no
-           family table is defined without TRANSFORMER_FAMILY
-  matrix   each family alone (make FAMILIES=<one>) builds, and a program
-           that pulls in every object of the library links: a reference
-           from shared code to one family's table is an undefined symbol
+           family or backend table is defined without its macro
+  matrix   each family alone (make FAMILIES=<one>) and each CPU backend
+           alone (make BACKENDS=<one>) builds, and a program that pulls in
+           every object of the library links: a reference from shared code
+           to one family's table, or from one backend to another's, is an
+           undefined symbol
 
   check_wiring.py            both
   check_wiring.py cases      only the cases
@@ -19,6 +21,7 @@ The matrix builds under build/wiring/ and lib/wiring/; objects are reused
 between runs. MAKE names make; JOBS the parallelism.
 """
 import os
+import platform
 import re
 import shlex
 import subprocess
@@ -88,21 +91,40 @@ def cases():
     return bad
 
 
+# A table defined without its macro escapes the macro's checks. A definition
+# is "<struct> <name> =" followed by the macro on the same or the next line.
+BARE = (
+    ("src tests tools", r"struct\s+transformer_family\s+\w+\s*=", None, "TRANSFORMER_FAMILY"),
+    ("src/backends", r"struct\s+geist_backend_vtbl\s+\w+\s*=", "GEIST_BACKEND_VTBL(",
+     "GEIST_BACKEND_VTBL"),
+    ("src/backends", r"struct\s+geist_backend_primitives\s+\w+\s*=", "GEIST_BACKEND_PRIMS(",
+     "GEIST_BACKEND_PRIMS"),
+    ("src/backends", r"struct\s+geist_backend_descriptor\s+\w+\s*=",
+     "GEIST_BACKEND_DESCRIPTOR(", "GEIST_BACKEND_DESCRIPTOR"),
+)
+
+
 def bare_tables():
-    """A family table defined without TRANSFORMER_FAMILY escapes its checks."""
-    tracked = subprocess.run(
-        ["git", "ls-files", "src", "tests", "tools"], cwd=ROOT, check=True,
-        capture_output=True, text=True,
-    ).stdout.split()
-    bare = re.compile(r"struct\s+transformer_family\s+\w+\s*(\[[^]]*\]\s*)?=")
     bad = 0
-    for path in tracked:
-        if path.endswith((".c", ".h")):
+    for dirs, decl, macro, name in BARE:
+        tracked = subprocess.run(
+            ["git", "ls-files", *dirs.split()], cwd=ROOT, check=True,
+            capture_output=True, text=True,
+        ).stdout.split()
+        pattern = re.compile(decl)
+        for path in tracked:
+            if not path.endswith((".c", ".h")):
+                continue
             with open(os.path.join(ROOT, path), errors="replace") as f:
-                for no, line in enumerate(f, 1):
-                    if bare.search(line):
-                        print(f"cases: {path}:{no}: a family table without TRANSFORMER_FAMILY")
-                        bad += 1
+                lines = f.readlines()
+            for no, line in enumerate(lines):
+                m = pattern.search(line)
+                if m is None:
+                    continue
+                after = line[m.end():] + (lines[no + 1] if no + 1 < len(lines) else "")
+                if macro is None or not after.lstrip().startswith(macro):
+                    print(f"cases: {path}:{no + 1}: a table defined without {name}")
+                    bad += 1
     return bad
 
 
@@ -170,12 +192,31 @@ def build_and_link(label, variables, tmp):
     return 0
 
 
+def cpu_backends():
+    """(backend, extra make variables) for each CPU backend this host builds.
+    Apple clang also targets x86_64, so a Mac on arm64 builds cpu_x86 too,
+    with the plain mac target (no libomp for x86_64 here)."""
+    arch = platform.machine()
+    if arch in ("arm64", "aarch64"):
+        out = [("cpu_neon", []), ("cpu_scalar", [])]
+        if sys.platform == "darwin":
+            cc = os.environ.get("CC", "cc")
+            out.append(("cpu_x86", ["TARGET=mac", f"CC={cc} -arch x86_64",
+                                    "EXTRA_CFLAGS=-march=x86-64-v3 -mtune=generic"]))
+        return out
+    return [("cpu_x86", []), ("cpu_scalar", [])]
+
+
 def matrix():
     bad = 0
     out = ["BUILD_DIR=build/wiring/families", "LIB_DIR=lib/wiring/families"]
     with tempfile.TemporaryDirectory() as tmp:
         for fam in all_families():
             bad += build_and_link(f"FAMILIES={fam}", [f"FAMILIES={fam}", *out], tmp)
+        # BACKENDS changes the flags of every object, so one build dir each.
+        for be, extra in cpu_backends():
+            dirs = [f"BUILD_DIR=build/wiring/backend-{be}", f"LIB_DIR=lib/wiring/backend-{be}"]
+            bad += build_and_link(f"BACKENDS={be}", [f"BACKENDS={be}", *extra, *dirs], tmp)
     return bad
 
 
