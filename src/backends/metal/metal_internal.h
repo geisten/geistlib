@@ -229,6 +229,23 @@ struct metal_state {
     void  *pq2_mm_fast_pipeline;
     void  *pq2_m8_function;
     void  *pq2_m8_pipeline;
+    /* #401: 2- and 3-row matvecs (matvec_*_r2 / _r3) */
+    void *q40_r2_function;
+    void *q40_r2_pipeline;
+    void *q40_r3_function;
+    void *q40_r3_pipeline;
+    void *q41_r2_function;
+    void *q41_r2_pipeline;
+    void *q41_r3_function;
+    void *q41_r3_pipeline;
+    void *q80_r2_function;
+    void *q80_r2_pipeline;
+    void *q80_r3_function;
+    void *q80_r3_pipeline;
+    void *q5k_r2_function;
+    void *q5k_r2_pipeline;
+    void *q5k_r3_function;
+    void *q5k_r3_pipeline;
     /* x -> f16 for pq2_mm_fast (cvt_f32_f16_rows), into pq2_xh_buffer:
      * grow-only, rows x n_in halves of the widest call so far. */
     void                *cvt_f16_function;
