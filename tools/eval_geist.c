@@ -27,8 +27,10 @@
  *     Used by the MMLU (TOK/SCOREALT) and tool-calling/JSON (GEN) benchmarks.
  *
  *   BOS -> "OK <add_bos:0|1> <bos_id>"
- *     The model's own BOS policy from its GGUF metadata. TOK does not
- *     prepend it, so a harness asks and decides.
+ *     The model's own BOS policy (geist_model_add_bos): its GGUF metadata,
+ *     resolved as llama.cpp resolves it, so add_bos is 1 exactly when
+ *     llama-perplexity puts BOS at the start of each chunk (#385). TOK does
+ *     not prepend it, so a harness asks and decides.
  *
  *   RESET -> "OK"   (clears KV cache)
  *   QUIT  -> exit
@@ -426,8 +428,9 @@ int main(int argc, char **argv) {
         else if (strcmp(cmd, "GEN") == 0)
             cmd_gen(sess, args);
         else if (strcmp(cmd, "BOS") == 0) {
-            /* The model's own BOS policy, so a harness does not have to
-             * hardcode one family's id. TOK does not prepend it. */
+            /* The model's own BOS policy (llama.cpp's rule, #385), so a
+             * harness does not have to hardcode one family's id. TOK does
+             * not prepend it. */
             printf("OK %d %d\n",
                    geist_model_add_bos(model) ? 1 : 0,
                    (int) geist_model_bos_token(model));
