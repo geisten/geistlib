@@ -156,9 +156,6 @@ struct geist_arch_config {
      * logits on every head path (Granite); 0: none. */
     float output_norm_scale;
 
-    /* ---- Query scale of a family that reads it (Granite's attention_block). */
-    float attn_q_scale;
-
     /* ---- PLE (Per-Layer Embedding, Gemma 4 family only). When
      * has_ple == false, the precompute path is skipped entirely. */
     bool  has_ple;
@@ -359,7 +356,8 @@ struct geist_arch_config {
      * cache holds full heads of head_dim = mla_rope + nope; V heads of
      * mla_v_dim < head_dim are zero-padded to it, and the first mla_v_dim
      * of each output head go to o_proj. attn_q_scale replaces
-     * 1/sqrt(head_dim) (YaRN's mscale squared over it). */
+     * 1/sqrt(head_dim) (YaRN's mscale squared over it); Granite sets it
+     * too (its attention_multiplier), read by its own attention_block. */
     size_t mla_kv_rank;
     size_t mla_q_rank;
     size_t mla_rope;
