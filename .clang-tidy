@@ -1,0 +1,19 @@
+# scripts/check_static.py runs this (#342). Left out, each for a reason:
+#  - bugprone-easily-swappable-parameters: the parameter order of AGENT.md §1
+#    (lengths before arrays) produces adjacent size_t on purpose; 213 findings,
+#    none a bug.
+#  - bugprone-multi-level-implicit-pointer-conversion: safe_free takes void **
+#    by design.
+#  - DeprecatedOrUnsafeBufferHandling: asks for C11 Annex K, which no toolchain
+#    here ships; it flags every fprintf.
+#  - optin.performance.Padding: field order in the session and state structs
+#    follows access patterns, not size.
+Checks: >-
+  -*,
+  clang-analyzer-*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-multi-level-implicit-pointer-conversion,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  -clang-analyzer-optin.performance.Padding
+HeaderFilterRegex: '(src|include)/.*'

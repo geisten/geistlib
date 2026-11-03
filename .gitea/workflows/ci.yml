@@ -1419,6 +1419,26 @@ jobs:
           clang-format --version
           make format-check
 
+  # Static analysis on the macOS arm64 build, the one the baseline was taken
+  # on: clang-tidy pinned like clang-format, because a new version brings new
+  # findings. x86_64 and Vulkan sources are not analysed (#342).
+  static-analysis:
+    name: static analysis (clang-tidy, macOS arm64)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install deps
+        run: |
+          brew install libomp
+          echo "LIBOMP_PREFIX=$(brew --prefix libomp)" >> "$GITHUB_ENV"
+          python3 -m venv "$RUNNER_TEMP/tidy"
+          "$RUNNER_TEMP/tidy/bin/pip" install clang-tidy==22.1.8
+      - name: Check
+        run: make check-static CLANG_TIDY="$RUNNER_TEMP/tidy/bin/clang-tidy"
+
   # Post-merge tier on main: one Gitea issue per failing job name, updated by
   # every later run and closed by the first green one (scripts/ci-issues.py).
   # needs: every other job (scripts/required_checks.py checks the list);
@@ -1446,6 +1466,7 @@ jobs:
       - tsan
       - coverage
       - format
+      - static-analysis
     if: always() && github.server_url != 'https://github.com' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.changes.outputs.full != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 10
