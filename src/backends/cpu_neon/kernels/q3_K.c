@@ -201,8 +201,8 @@ static void q3k_prefill_rows(void *ctx, size_t n0, size_t n1) {
         if (n + 1 < n_out)
             __builtin_prefetch(row + n_blocks_per_row, 0, 0);
 
-        float   my_accs[GEIST_QUANT_M_CAP] __attribute__((aligned(16)));
-        int32_t block_int_accs[GEIST_QUANT_M_CAP] __attribute__((aligned(16)));
+        alignas(16) float   my_accs[GEIST_QUANT_M_CAP];
+        alignas(16) int32_t block_int_accs[GEIST_QUANT_M_CAP];
         for (size_t i = 0; i < m; i++)
             my_accs[i] = 0.0f;
 

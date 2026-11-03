@@ -3,8 +3,8 @@
  * the small inline helpers shared by the dequant codecs (formats/gguf) and
  * the W*A8 compute kernels (backends/cpu_neon).
  *
- * These `__attribute__((packed))` structs ARE the block-layout contract:
- * each is _Static_assert'd against its byte size. They carry no file-format
+ * These `[[gnu::packed]]` structs ARE the block-layout contract:
+ * each is static_assert'd against its byte size. They carry no file-format
  * types, so formats/ and backends/ can both include this header.
  *
  * Helpers used by one TU only (q4k_subpair_dots, iq2s/iq3s subblock
@@ -22,69 +22,69 @@
 /* Exact on-disk byte layouts of the GGUF quant blocks. `packed` rules out
  * compiler padding; block constants live in quant.h. */
 
-struct block_q3_K_t {
+struct [[gnu::packed]] block_q3_K_t {
     uint8_t  hmask[32];
     uint8_t  qs[64];
     uint8_t  scales[12];
     uint16_t d;
-} __attribute__((packed));
-_Static_assert(sizeof(struct block_q3_K_t) == Q3_K_BLOCK_BYTES, "struct block_q3_K_t size");
+};
+static_assert(sizeof(struct block_q3_K_t) == Q3_K_BLOCK_BYTES, "struct block_q3_K_t size");
 
-struct block_q4_K_t {
+struct [[gnu::packed]] block_q4_K_t {
     uint16_t d;    /* fp16 */
     uint16_t dmin; /* fp16 */
     uint8_t  scales[12];
     uint8_t  qs[128];
-} __attribute__((packed));
-_Static_assert(sizeof(struct block_q4_K_t) == 144, "struct block_q4_K_t size");
+};
+static_assert(sizeof(struct block_q4_K_t) == 144, "struct block_q4_K_t size");
 
-struct block_q5_K_t {
+struct [[gnu::packed]] block_q5_K_t {
     uint16_t d;
     uint16_t dmin;
     uint8_t  scales[12];
     uint8_t  qh[32];
     uint8_t  qs[128];
-} __attribute__((packed));
-_Static_assert(sizeof(struct block_q5_K_t) == Q5_K_BLOCK_BYTES, "struct block_q5_K_t size");
+};
+static_assert(sizeof(struct block_q5_K_t) == Q5_K_BLOCK_BYTES, "struct block_q5_K_t size");
 
-struct block_q6_K_t {
+struct [[gnu::packed]] block_q6_K_t {
     uint8_t  ql[128];
     uint8_t  qh[64];
     int8_t   scales[16];
     uint16_t d;
-} __attribute__((packed));
-_Static_assert(sizeof(struct block_q6_K_t) == 210, "struct block_q6_K_t size");
+};
+static_assert(sizeof(struct block_q6_K_t) == 210, "struct block_q6_K_t size");
 
-struct block_q4_0_t {
+struct [[gnu::packed]] block_q4_0_t {
     uint16_t d;      /* scale (fp16) */
     uint8_t  qs[16]; /* element j in the low nibble of qs[j], j + 16 in the high */
-} __attribute__((packed));
-_Static_assert(sizeof(struct block_q4_0_t) == Q4_0_BLOCK_BYTES, "struct block_q4_0_t size");
+};
+static_assert(sizeof(struct block_q4_0_t) == Q4_0_BLOCK_BYTES, "struct block_q4_0_t size");
 
-struct block_q4_1_t {
+struct [[gnu::packed]] block_q4_1_t {
     uint16_t d; /* scale (fp16) */
     uint16_t m; /* min   (fp16) */
     uint8_t  qs[16];
-} __attribute__((packed));
-_Static_assert(sizeof(struct block_q4_1_t) == Q4_1_BLOCK_BYTES, "struct block_q4_1_t size");
+};
+static_assert(sizeof(struct block_q4_1_t) == Q4_1_BLOCK_BYTES, "struct block_q4_1_t size");
 
 /* Element j's 5-bit code is the low nibble of qs[j] plus bit j of qh (read
  * as a little-endian uint32) as bit 4; element j + 16 is the high nibble of
  * qs[j] plus bit j + 16. Value = d * (code - 16). */
-struct block_q5_0_t {
+struct [[gnu::packed]] block_q5_0_t {
     uint16_t d;     /* scale (fp16) */
     uint8_t  qh[4]; /* fifth bit of each element */
     uint8_t  qs[16];
-} __attribute__((packed));
-_Static_assert(sizeof(struct block_q5_0_t) == Q5_0_BLOCK_BYTES, "struct block_q5_0_t size");
+};
+static_assert(sizeof(struct block_q5_0_t) == Q5_0_BLOCK_BYTES, "struct block_q5_0_t size");
 
 /* Element j's code is the low nibble of qs[j], element j + 16's the high
  * nibble; value = kvalues_mxfp4[code] * mxfp4_e8m0_half(e). */
-struct block_mxfp4_t {
+struct [[gnu::packed]] block_mxfp4_t {
     uint8_t e; /* E8M0 shared exponent */
     uint8_t qs[16];
-} __attribute__((packed));
-_Static_assert(sizeof(struct block_mxfp4_t) == MXFP4_BLOCK_BYTES, "struct block_mxfp4_t size");
+};
+static_assert(sizeof(struct block_mxfp4_t) == MXFP4_BLOCK_BYTES, "struct block_mxfp4_t size");
 
 /* Element (h * 128 + l * 32 + k) is bits 2l..2l+1 of qs[h * 32 + k], h < 2,
  * l < 4, k < 32; the trit is that value minus 1. */
@@ -94,42 +94,42 @@ struct block_tq2_0_t {
 };
 static_assert(sizeof(struct block_tq2_0_t) == TQ2_0_BLOCK_BYTES, "struct block_tq2_0_t size");
 
-struct block_q8_0_t {
+struct [[gnu::packed]] block_q8_0_t {
     uint16_t d;
     int8_t   qs[32];
-} __attribute__((packed));
-_Static_assert(sizeof(struct block_q8_0_t) == 34, "struct block_q8_0_t size");
+};
+static_assert(sizeof(struct block_q8_0_t) == 34, "struct block_q8_0_t size");
 
-struct block_iq2_s_t {
+struct [[gnu::packed]] block_iq2_s_t {
     uint16_t d;
     uint8_t  qs[64];    /* low 8 bits of 32 grid indices + 32 sign bytes */
     uint8_t  qh[8];     /* high 2 bits of 32 grid indices, packed */
     uint8_t  scales[8]; /* 4-bit pair per 32-elem sub-block */
-} __attribute__((packed));
-_Static_assert(sizeof(struct block_iq2_s_t) == 82, "struct block_iq2_s_t size");
+};
+static_assert(sizeof(struct block_iq2_s_t) == 82, "struct block_iq2_s_t size");
 
-struct block_iq3_s_t {
+struct [[gnu::packed]] block_iq3_s_t {
     uint16_t d;
     uint8_t  qs[64];
     uint8_t  qh[8];
     uint8_t  signs[32];
     uint8_t  scales[4];
-} __attribute__((packed));
-_Static_assert(sizeof(struct block_iq3_s_t) == 110, "struct block_iq3_s_t size");
+};
+static_assert(sizeof(struct block_iq3_s_t) == 110, "struct block_iq3_s_t size");
 
-struct block_iq4_nl_t {
+struct [[gnu::packed]] block_iq4_nl_t {
     uint16_t d;
     uint8_t  qs[16]; /* 32 4-bit indices into kvalues_iq4nl */
-} __attribute__((packed));
-_Static_assert(sizeof(struct block_iq4_nl_t) == 18, "struct block_iq4_nl_t size");
+};
+static_assert(sizeof(struct block_iq4_nl_t) == 18, "struct block_iq4_nl_t size");
 
-struct block_iq4_xs_t {
+struct [[gnu::packed]] block_iq4_xs_t {
     uint16_t d;
     uint16_t scales_h;    /* 2 high bits per 32-elem sub-block */
     uint8_t  scales_l[4]; /* 4 low bits per sub-block, packed pairs */
     uint8_t  qs[128];     /* 256 4-bit indices into kvalues_iq4nl */
-} __attribute__((packed));
-_Static_assert(sizeof(struct block_iq4_xs_t) == 136, "struct block_iq4_xs_t size");
+};
+static_assert(sizeof(struct block_iq4_xs_t) == 136, "struct block_iq4_xs_t size");
 
 /* Shared Q4_K / Q5_K scale-min unpacker.
  *

@@ -43,13 +43,13 @@
 /* QK_K = 256 — Q8_K super-block size matches Q4_K. */
 constexpr size_t Q8_KX4_BLOCK_BYTES = 4 * sizeof(float) + 4 * 256 + 4 * 16 * sizeof(int16_t);
 
-struct block_q8_Kx4 {
+struct [[gnu::packed]] block_q8_Kx4 {
     float   d[4];          /* per-row super-block scale (fp32) */
     int8_t  qs[4 * 256];   /* 4 rows × 256 quants, 8-byte-row-interleaved */
     int16_t bsums[4 * 16]; /* 4 rows × 16 sub-block sums */
-} __attribute__((packed));
+};
 
-_Static_assert(sizeof(struct block_q8_Kx4) == Q8_KX4_BLOCK_BYTES, "block_q8_Kx4 size mismatch");
+static_assert(sizeof(struct block_q8_Kx4) == Q8_KX4_BLOCK_BYTES, "block_q8_Kx4 size mismatch");
 
 /* Quantize 4 contiguous fp32 activation rows into one block_q8_Kx4 per
  * super-block. Each row has n_in fp32 elements; n_in must be a multiple
