@@ -116,7 +116,8 @@ class WarningFlags(unittest.TestCase):
                 self.assertIn(warning, self.flags)
                 bad = compiles(self.flags, rejected)
                 self.assertNotEqual(bad.returncode, 0, f"{warning} let the probe through")
-                self.assertIn(warning.split("=")[0], bad.stderr)
+                # clang names -Wfoo, gcc under -Werror -Werror=foo
+                self.assertIn(warning.split("=")[0].removeprefix("-W"), bad.stderr)
                 good = compiles(self.flags, accepted)
                 self.assertEqual(good.returncode, 0, good.stderr)
 

@@ -44,11 +44,12 @@ enum gguf_tokenizer_mode : uint32_t {
 static_assert(sizeof(enum gguf_tokenizer_mode) == sizeof(uint32_t));
 
 /* The regex-sequence pretokenizers (gguf_tokenizer_seq_split). */
-enum gguf_pre_seq {
+enum gguf_pre_seq : uint32_t {
     GGUF_PRE_NONE = 0,
     GGUF_PRE_DEEPSEEK_LLM, /* tokenizer.ggml.pre "deepseek-llm" (DeepSeek-V2) */
     GGUF_PRE_DEEPSEEK_V3,  /* "deepseek-v3" (DeepSeek-V3, R1) */
 };
+static_assert(sizeof(enum gguf_pre_seq) == sizeof(uint32_t));
 
 struct gguf_tokenizer {
     /* Pointer-and-length pair for each vocab entry. The pointer
@@ -98,14 +99,26 @@ struct gguf_tokenizer {
     /* Resolved algorithm + SPM-only state (set at load). */
     enum gguf_tokenizer_mode mode;
     bool                     add_space_prefix; /* SPM: prepend ▁ to the input (add_dummy_prefix) */
-    /* GPT-2 mode: tokenizer.ggml.pre == "qwen2" — encode chunks via the
-     * qwen2 pretokenizer scanner instead of the simple word splitter
-     * (contractions, single digits, punctuation runs, the one-codepoint
-     * prefix rule; #275). Also set for pre == "qwen35". */
-    bool pre_qwen2;
+    /* GPT-2 mode: the pretokenizer is llama.cpp's llama3 / qwen2 regex
+     * (gguf_tokenizer_llama3_chunk_end: contractions, the one-codepoint
+     * prefix rule, digit groups, punctuation runs; #275, #399) instead of
+     * the simple word splitter. pre_digits is the most digits one chunk takes: 3 for Llama 3
+     * ("llama-bpe", "llama3", ...), 1 for "qwen2" / "qwen35"; 0 when the
+     * file uses another pretokenizer. pre_marks: letter runs take
+     * combining marks too ("qwen35"). pre_ignore_merges: a chunk that is a
+     * vocab entry is that one token, as llama.cpp's ignore_merges does for
+     * Llama 3. */
+    uint8_t pre_digits;
+    bool    pre_marks;
+    bool    pre_ignore_merges;
     /* GPT-2 mode: tokenizer.ggml.pre == "gpt-4o" or "llama4" (#243) —
      * gguf_tokenizer_gpt4o_chunk_end splits the text. */
     bool pre_gpt4o;
+    /* GPT-2 mode: llama.cpp runs the GPT-2 regex for the pretokenizer
+     * ("gpt-2", "olmo", ...; gguf_tokenizer_gpt2_chunk_end, #403).
+     * pre_split_digits: after its \p{N} split ("smollm", "starcoder", ...). */
+    bool pre_gpt2;
+    bool pre_split_digits;
     /* GPT-2 mode: a pretokenizer llama.cpp runs as a sequence of regexes
      * (gguf_tokenizer_seq_split): "deepseek-llm", "deepseek-v3" (#242).
      * GGUF_PRE_NONE otherwise. */
@@ -143,8 +156,10 @@ struct gguf_tokenizer {
     char *merge_arena; /* not null = copy mode for merges */
     char *model_arena; /* not null = copy mode for model name */
 
-    /* Special / added tokens — entries in `tokenizer.ggml.tokens` whose
-     * `tokenizer.ggml.token_type` is CONTROL(3) or USER_DEFINED(4).
+    /* Special / added tokens — the entries llama.cpp matches in the text
+     * with special parsing on: `tokenizer.ggml.token_type` UNKNOWN(2),
+     * CONTROL(3) or USER_DEFINED(4), and the control-looking strings it
+     * promotes whatever their type ("</s>", "<eos>", ...; #404).
      * Sorted longest-first so the encoder can do leftmost-longest pre-
      * scan: at each text position try every special's exact string
      * first, and only fall through to byte-level BPE when none match.
@@ -183,6 +198,25 @@ void gguf_tokenizer_unload(struct gguf_tokenizer *tok);
  * Exposed for tests. */
 [[nodiscard]] size_t
 gguf_tokenizer_gpt4o_chunk_end(size_t tlen, size_t i, const char text[static tlen]);
+
+/* End (exclusive, a byte offset) of the llama3 / qwen2 pretokenizer chunk
+ * that starts at byte i < tlen of text (llama.cpp's
+ * unicode_regex_split_custom_llama3 / _qwen2 / _qwen35): max_digits is 3
+ * for Llama 3's \p{N}{1,3}, 1 for Qwen's \p{N}; marks puts \p{M} into the
+ * letter class (qwen35). Always > i. Exposed for tests. */
+[[nodiscard]] size_t gguf_tokenizer_llama3_chunk_end(
+        size_t tlen, size_t i, size_t max_digits, bool marks, const char text[static tlen]);
+
+/* End (exclusive, a byte offset) of the GPT-2 pretokenizer chunk that
+ * starts at byte i < tlen of text (llama.cpp's
+ * unicode_regex_split_custom_gpt2). split_digits: the text went through
+ * llama.cpp's "\p{N}" regex first, so every \p{N} codepoint is a chunk of
+ * its own and ends the fragment the regex sees (smollm). Always > i.
+ * Exposed for tests. */
+[[nodiscard]] size_t gguf_tokenizer_gpt2_chunk_end(size_t     tlen,
+                                                   size_t     i,
+                                                   bool       split_digits,
+                                                   const char text[static tlen]);
 
 /* Split n codepoints as llama.cpp's regex sequence for `kind` does
  * (GGUF_PRE_DEEPSEEK_LLM or _V3): the piece lengths, in codepoints and in
@@ -240,19 +274,20 @@ size_t gguf_tokenizer_decode(
  * (AGENT.md §5); GEIST_E_OOM when scratch allocation fails;
  * GEIST_E_UNSUPPORTED for a tokenizer mode that cannot encode. For
  * tokenizer.ggml.model == "gpt2" the encoder:
- *   1. Pre-tokenizes the input into word chunks (simplified GPT-2-
- *      style: leading-space-aware runs of letters / digits / other-
- *      punctuation / whitespace).
+ *   1. Pre-tokenizes the input into word chunks: llama.cpp's regex for
+ *      the llama3 ("llama-bpe", ...), qwen2, qwen35, gpt-4o / llama4,
+ *      deepseek-llm / deepseek-v3 and GPT-2 ("gpt-2", "smollm", ...)
+ *      pretokenizers; for any other
+ *      tokenizer.ggml.pre a simplified GPT-2 split (leading-space-aware
+ *      runs of letters / digits / single punctuation bytes / whitespace),
+ *      which differs from llama.cpp on digits, punctuation runs,
+ *      apostrophes and non-ASCII text.
  *   2. Maps each chunk's bytes to the GPT-2 unicode codepoints
  *      (forward of the decoder's inverse map).
  *   3. Applies BPE merges from `tokenizer.ggml.merges` greedily,
- *      lowest rank first, until no more merges apply.
- *   4. Looks up each final symbol in the vocab to get its ID.
- *
- * The pre-tokenizer is a simplification — it doesn't implement the
- * full GPT-2 regex, so some inputs (apostrophes, complex Unicode)
- * may tokenize slightly differently from a reference encoder. ASCII
- * English text encodes correctly. */
+ *      lowest rank first, until no more merges apply (a llama3 chunk
+ *      that is itself a vocab entry is that token, ignore_merges).
+ *   4. Looks up each final symbol in the vocab to get its ID. */
 [[nodiscard]] enum geist_status gguf_tokenizer_encode(const struct gguf_tokenizer *tok,
                                                       const char                  *text,
                                                       size_t                       cap,

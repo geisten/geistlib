@@ -102,8 +102,9 @@ static bool metal_q4k_half_rows(const void *pipeline, uint32_t n_in, uint32_t n_
     return pipeline != nullptr && nb % 4u == 2u && n_out >= 1024u;
 }
 
-/* GEIST_METAL_MV_M8=0: 2..8-row Q4_K/Q6_K linears go one n4 matvec per row
- * (#316's A/B control). */
+/* GEIST_METAL_MV_M8=0: 2..8-row Q4_K/Q6_K linears (#316) and 2..7-row
+ * Q4_0/Q4_1/Q8_0/Q5_K ones (#401) go one n4 matvec per row (the A/B
+ * control). */
 static bool metal_mv_m8_env(void) {
     static int on = -1;
     if (on < 0)
@@ -389,6 +390,7 @@ struct metal_quant_pipes {
     void    *tc;        /* tensor-API GEMM (#314), null unless tensor_mm */
     void    *base;      /* naive single-row kernel, nullable */
     void    *m8;        /* naive 8-row kernel, nullable */
+    void    *r2, *r3;   /* 2- and 3-row matvecs (#401), nullable */
     uint32_t n4_tile;   /* output rows one n4 threadgroup covers */
     bool     gemm_only; /* no naive kernels: n4 for rows==1, GEMM above */
     bool     mm_fast64; /* mm_fast tiles 64 activation rows, not 32 */
@@ -419,6 +421,8 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
                                            .mm_fast = st->q40_mm_fast_pipeline,
                                            .base    = st->q40_pipeline,
                                            .m8      = st->q40_m8_pipeline,
+                                           .r2      = st->q40_r2_pipeline,
+                                           .r3      = st->q40_r3_pipeline,
                                            .n4_tile = 8u};
     case GEIST_DTYPE_Q8_0:
         return (struct metal_quant_pipes) {.tc      = st->q80_mm_tc_pipeline,
@@ -427,6 +431,8 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
                                            .mm_fast = st->q80_mm_fast_pipeline,
                                            .base    = st->q80_pipeline,
                                            .m8      = st->q80_m8_pipeline,
+                                           .r2      = st->q80_r2_pipeline,
+                                           .r3      = st->q80_r3_pipeline,
                                            .n4_tile = 8u};
     case GEIST_DTYPE_Q4_1:
         return (struct metal_quant_pipes) {.tc      = st->q41_mm_tc_pipeline,
@@ -435,6 +441,8 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
                                            .mm_fast = st->q41_mm_fast_pipeline,
                                            .base    = st->q41_pipeline,
                                            .m8      = st->q41_m8_pipeline,
+                                           .r2      = st->q41_r2_pipeline,
+                                           .r3      = st->q41_r3_pipeline,
                                            .n4_tile = 4u};
     case GEIST_DTYPE_IQ4_NL:
         return (struct metal_quant_pipes) {.tc        = st->iq4nl_mm_tc_pipeline,
@@ -501,6 +509,8 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
                                        .mm_fast = st->q5k_mm_fast_pipeline,
                                        .base    = st->q5k_pipeline,
                                        .m8      = st->q5k_m8_pipeline,
+                                       .r2      = st->q5k_r2_pipeline,
+                                       .r3      = st->q5k_r3_pipeline,
                                        .n4_tile = 4u};
 }
 
@@ -614,6 +624,39 @@ static void metal_encode_generic_quant(struct metal_state            *st,
         return;
     }
     const struct metal_quant_pipes p = metal_quant_pipes_for(st, dtype, params->n_out);
+    /* 2..7 rows (a speculative verify, a short ragged tail) of a format with
+     * naive kernels: the 2- and 3-row matvecs (#401) in chunks of 3, 2 + 2
+     * for four; without them (or GEIST_METAL_MV_M8=0, or x rows not
+     * float4-aligned) one n4 matvec per row. The naive linear_* kernels
+     * took these rows before: a 2-row verify of the Q4_0 27B cost five
+     * decode steps. Eight rows and more keep the GEMM. */
+    if (!p.gemm_only && params->rows >= 2u && params->rows < 8u && params->n_out >= 4u &&
+        p.n4 != nullptr) {
+        const bool chunks = p.r2 != nullptr && p.r3 != nullptr && metal_mv_m8_env() &&
+                            (params->x_offset % 4u) == 0u && (params->x_row_stride % 4u) == 0u;
+        for (uint32_t r = 0, c = 1; r < params->rows; r += c) {
+            const uint32_t left          = params->rows - r;
+            c                            = !chunks ? 1u : (left == 2u || left == 4u) ? 2u : 3u;
+            struct metal_q4k_params part = *params;
+            part.rows                    = c;
+            part.x_offset += r * params->x_row_stride;
+            part.y_offset += r * params->y_row_stride;
+            if (c == 1u) {
+                metal_encode_generic_quant(st, enc, x, w, y, &part, dtype);
+                continue;
+            }
+            metal_msg_send_set_pipeline(st, enc, c == 2u ? p.r2 : p.r3);
+            metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+            metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+            metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
+            metal_msg_send_set_bytes(st, enc, &part, sizeof part, 3);
+            const struct metal_size groups = {(params->n_out + 7u) / 8u, 1u, 1u};
+            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_Q4K_LINEAR_N4, groups);
+            metal_msg_send_dispatch(
+                    st, enc, groups, (struct metal_size) {METAL_Q4K_N4_THREADS, 1u, 1u});
+        }
+        return;
+    }
     if (params->rows >= 8u && p.tc != nullptr) {
         metal_encode_mm_tc(st, enc, p.tc, x, w, y, params);
         return;
