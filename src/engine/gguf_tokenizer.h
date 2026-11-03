@@ -112,6 +112,11 @@ struct gguf_tokenizer {
     /* GPT-2 mode: tokenizer.ggml.pre == "gpt-4o" or "llama4" (#243) —
      * gguf_tokenizer_gpt4o_chunk_end splits the text. */
     bool pre_gpt4o;
+    /* GPT-2 mode: llama.cpp runs the GPT-2 regex for the pretokenizer
+     * ("gpt-2", "olmo", ...; gguf_tokenizer_gpt2_chunk_end, #403).
+     * pre_split_digits: after its \p{N} split ("smollm", "starcoder", ...). */
+    bool pre_gpt2;
+    bool pre_split_digits;
     /* GPT-2 mode: a pretokenizer llama.cpp runs as a sequence of regexes
      * (gguf_tokenizer_seq_split): "deepseek-llm", "deepseek-v3" (#242).
      * GGUF_PRE_NONE otherwise. */
@@ -198,6 +203,17 @@ gguf_tokenizer_gpt4o_chunk_end(size_t tlen, size_t i, const char text[static tle
 [[nodiscard]] size_t gguf_tokenizer_llama3_chunk_end(
         size_t tlen, size_t i, size_t max_digits, bool marks, const char text[static tlen]);
 
+/* End (exclusive, a byte offset) of the GPT-2 pretokenizer chunk that
+ * starts at byte i < tlen of text (llama.cpp's
+ * unicode_regex_split_custom_gpt2). split_digits: the text went through
+ * llama.cpp's "\p{N}" regex first, so every \p{N} codepoint is a chunk of
+ * its own and ends the fragment the regex sees (smollm). Always > i.
+ * Exposed for tests. */
+[[nodiscard]] size_t gguf_tokenizer_gpt2_chunk_end(size_t     tlen,
+                                                   size_t     i,
+                                                   bool       split_digits,
+                                                   const char text[static tlen]);
+
 /* Split n codepoints as llama.cpp's regex sequence for `kind` does
  * (GGUF_PRE_DEEPSEEK_LLM or _V3): the piece lengths, in codepoints and in
  * order, land in pieces[0, return value); pieces[n, 2n) is scratch. Every
@@ -255,8 +271,9 @@ size_t gguf_tokenizer_decode(
  * GEIST_E_UNSUPPORTED for a tokenizer mode that cannot encode. For
  * tokenizer.ggml.model == "gpt2" the encoder:
  *   1. Pre-tokenizes the input into word chunks: llama.cpp's regex for
- *      the llama3 ("llama-bpe", ...), qwen2, qwen35, gpt-4o / llama4 and
- *      deepseek-llm / deepseek-v3 pretokenizers; for any other
+ *      the llama3 ("llama-bpe", ...), qwen2, qwen35, gpt-4o / llama4,
+ *      deepseek-llm / deepseek-v3 and GPT-2 ("gpt-2", "smollm", ...)
+ *      pretokenizers; for any other
  *      tokenizer.ggml.pre a simplified GPT-2 split (leading-space-aware
  *      runs of letters / digits / single punctuation bytes / whitespace),
  *      which differs from llama.cpp on digits, punctuation runs,

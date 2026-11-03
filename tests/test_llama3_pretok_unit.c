@@ -13,6 +13,8 @@
  *   1. gguf_tokenizer_llama3_chunk_end against chunk lists worked out from
  *      llama.cpp's unicode_regex_split_custom_llama3 / _qwen2 / _qwen35
  *      (chunks separated by '\x01').
+ *      Also gguf_tokenizer_gpt2_chunk_end, the GPT-2 regex with and without
+ *      smollm's \p{N} split (#403), against unicode_regex_split_custom_gpt2.
  *   2. gguf_tokenizer_encode on in-memory GGUFs: the pretokenizer names
  *      reach the scanner, Llama 3 skips the merges for a chunk that is a
  *      vocab entry (ignore_merges), and a whitespace run before a special
@@ -105,7 +107,43 @@ static const struct chunk_case CHUNK_CASES[] = {
         {1, true, " \xCC\x81x"},
 };
 
-static int check_chunks(const struct chunk_case *c) {
+/* gguf_tokenizer_gpt2_chunk_end: marks is split_digits here (#403). */
+static const struct chunk_case GPT2_CASES[] = {
+        /* lower-case contractions, " ?" before one class */
+        {0, false, "Hello\x01 world"},
+        {0, false, "it\x01's"},
+        {0, false, "I\x01'\x01M\x01 HERE"},
+        {0, false, "(\x01Hello"},
+        {0, false, "\n\x01Hello"},
+        {0, false, " 2000"},
+        {0, false, "a\x01  \x01 b"},
+        {0, false, "a\x01 \x01 7"},
+        {0, false, "end\x01 ...\x01 \r\n"},
+        {0, false, "cafe\x01\xCC\x81\x01 x"},
+        {0, false, " \x01\xC2\xA0\x01word"},
+        {0, false, "x\x01\xC2\xB2\xC2\xB3"},
+        /* smollm: \p{N} split first, so a digit ends the fragment */
+        {0,
+         true,
+         " \x01"
+         "2\x01"
+         "0\x01"
+         "0\x01"
+         "0"},
+        {0,
+         true,
+         "a\x01  \x01"
+         "7"},
+        {0,
+         true,
+         "x\x01"
+         "1\x01y"},
+        {0, true, "x\x01\xC2\xB2\x01\xC2\xB3"},
+        {0, true, "\xD9\xA1\x01\xD9\xA2"},
+        {0, true, "it\x01's"},
+};
+
+static int check_chunks(const struct chunk_case *c, bool gpt2) {
     char        text[256], want[16][64];
     int         n_want = 0;
     size_t      tl     = 0;
@@ -123,7 +161,9 @@ static int check_chunks(const struct chunk_case *c) {
     size_t i = 0;
     for (int k = 0; k < n_want; k++) {
         const size_t end =
-                i < tl ? gguf_tokenizer_llama3_chunk_end(tl, i, c->max_digits, c->marks, text) : i;
+                i >= tl ? i
+                : gpt2  ? gguf_tokenizer_gpt2_chunk_end(tl, i, c->marks, text)
+                        : gguf_tokenizer_llama3_chunk_end(tl, i, c->max_digits, c->marks, text);
         const size_t len = strlen(want[k]);
         if (end != i + len || memcmp(text + i, want[k], len) != 0) {
             fprintf(stderr,
@@ -171,8 +211,9 @@ static void put_str(struct blob *o, const char *s) {
 
 enum { VT_I32 = 5, VT_STRING = 8, VT_ARRAY = 9 };
 
-/* GPT-2 byte-level pieces: \xc4\xa0 is the space (Ġ). No merges, so every
- * multi-byte id below comes from ignore_merges alone. */
+/* GPT-2 byte-level pieces: \xc4\xa0 is the space (Ġ). No merges unless a
+ * case asks for MERGES, so every multi-byte id of the others comes from
+ * ignore_merges alone. */
 static const char *const VOCAB[] = {
         "2",
         "0",
@@ -185,8 +226,10 @@ static const char *const VOCAB[] = {
         "<|eot_id|>",
 };
 enum { ID_2, ID_0, ID_200, ID_A, ID_B, ID_AB, ID_SP, ID_SP2, ID_EOT, N_VOCAB };
+static const char *const MERGES[] = {"\xc4\xa0 \xc4\xa0", "a b"};
+enum { N_MERGES = sizeof MERGES / sizeof MERGES[0] };
 
-static void build(struct blob *o, const char *pre) {
+static void build(struct blob *o, const char *pre, bool merges) {
     *o = (struct blob) {0};
     put(o, "GGUF", 4);
     put_u32(o, 3); /* version */
@@ -218,7 +261,9 @@ static void build(struct blob *o, const char *pre) {
     put_str(o, "tokenizer.ggml.merges");
     put_u32(o, VT_ARRAY);
     put_u32(o, VT_STRING);
-    put_u64(o, 0);
+    put_u64(o, merges ? N_MERGES : 0);
+    for (size_t i = 0; merges && i < N_MERGES; i++)
+        put_str(o, MERGES[i]);
 
     put_str(o, "t"); /* a 1-element f32 tensor: name, n_dims, dim, dtype, offset */
     put_u32(o, 1);
@@ -247,9 +292,23 @@ static const struct encode_case ENCODE_CASES[] = {
         {"llama-bpe", "a  ", 2, {ID_A, ID_SP2}},
 };
 
-static int check_encode(const struct encode_case *c, bool *error) {
+/* Built with MERGES. */
+static const struct encode_case MERGE_CASES[] = {
+        /* GPT-2 regex (#403), with merges so that chunk ends show: the old
+         * splitter glued "  b" into one chunk (ĠĠ b), llama.cpp gives "a"
+         * " " " b"; smollm's digit split keeps "  " whole before "2". */
+        {"gpt-2", "a  b", 4, {ID_A, ID_SP, ID_SP, ID_B}},
+        {"smollm", "a  b", 4, {ID_A, ID_SP, ID_SP, ID_B}},
+        {"starcoder", "a  b", 4, {ID_A, ID_SP, ID_SP, ID_B}},
+        {"gpt-2", "a  2", 4, {ID_A, ID_SP, ID_SP, ID_2}},
+        {"smollm", "a  2", 3, {ID_A, ID_SP2, ID_2}},
+        {"smollm", "ab2ab", 3, {ID_AB, ID_2, ID_AB}},
+        {"smollm", "a  <|eot_id|>", 3, {ID_A, ID_SP2, ID_EOT}},
+};
+
+static int check_encode(const struct encode_case *c, bool merges, bool *error) {
     struct blob o;
-    build(&o, c->pre);
+    build(&o, c->pre, merges);
     if (o.overflow) {
         fprintf(stderr, "blob buffer too small\n");
         *error = true;
@@ -293,14 +352,19 @@ int main(void) {
     int  fails = 0;
     bool error = false;
     for (size_t c = 0; c < sizeof CHUNK_CASES / sizeof CHUNK_CASES[0]; c++)
-        fails += check_chunks(&CHUNK_CASES[c]);
+        fails += check_chunks(&CHUNK_CASES[c], false);
+    for (size_t c = 0; c < sizeof GPT2_CASES / sizeof GPT2_CASES[0]; c++)
+        fails += check_chunks(&GPT2_CASES[c], true);
     for (size_t c = 0; c < sizeof ENCODE_CASES / sizeof ENCODE_CASES[0]; c++)
-        fails += check_encode(&ENCODE_CASES[c], &error);
+        fails += check_encode(&ENCODE_CASES[c], false, &error);
+    for (size_t c = 0; c < sizeof MERGE_CASES / sizeof MERGE_CASES[0]; c++)
+        fails += check_encode(&MERGE_CASES[c], true, &error);
     if (error)
         return GEIST_TEST_ERROR;
     printf("llama3 pretokenizer: %zu chunk cases, %zu encodes, %d failed\n",
-           sizeof CHUNK_CASES / sizeof CHUNK_CASES[0],
-           sizeof ENCODE_CASES / sizeof ENCODE_CASES[0],
+           sizeof CHUNK_CASES / sizeof CHUNK_CASES[0] + sizeof GPT2_CASES / sizeof GPT2_CASES[0],
+           sizeof ENCODE_CASES / sizeof ENCODE_CASES[0] +
+                   sizeof MERGE_CASES / sizeof MERGE_CASES[0],
            fails);
     return fails == 0 ? GEIST_TEST_PASS : GEIST_TEST_FAIL;
 }
