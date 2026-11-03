@@ -160,6 +160,28 @@ static constexpr size_t ATTN_F16_HEAD_DIM_MAX = 1024;
                                                     const uint16_t *v,
                                                     float          *out);
 
+/* Attention with sinks (GPT-OSS, #243): attention_mqa_causal_kv's mask and
+ * layout (k / v F32, or IEEE half with f16), where every head h's softmax
+ * also takes the logit sinks[h] with a zero value row:
+ *   out = sum_s exp(q.k_s) v_s / (exp(sinks[h]) + sum_s exp(q.k_s)).
+ * Runs the (query, head) rows idx in [i0, i1), idx = t * n_q_heads + h,
+ * so callers can split them over threads. q is pre-scaled. head_dim at
+ * most ATTN_F16_HEAD_DIM_MAX (the caller checks). Allocates nothing. */
+void attention_sinks_items(size_t       i0,
+                           size_t       i1,
+                           size_t       n_kv,
+                           size_t       q_offset,
+                           size_t       n_q_heads,
+                           size_t       n_kv_heads,
+                           size_t       head_dim,
+                           size_t       sliding_window,
+                           bool         f16,
+                           const float *q,
+                           const void  *k,
+                           const void  *v,
+                           const float *sinks,
+                           float       *out);
+
 /* dst = src rounded to IEEE half, nearest even (an F16 KV append). */
 void kv_rows_to_f16(size_t n, const float src[static n], uint16_t dst[static n]);
 
@@ -185,6 +207,35 @@ void rope_compute_at(size_t pos_offset,
                      float  theta,
                      float *cos_out,
                      float *sin_out);
+
+/* rope_compute_at's full-rotation table (row width head_dim, NEOX pairs)
+ * with per-pair frequency factors (rope_freqs.weight, Llama 3 / 4): pair i
+ * turns at theta^(-2i/head_dim) / factors[i], as ggml's rope does with
+ * freq_factors. factors has head_dim / 2 entries. */
+void rope_compute_ff_at(size_t       pos_offset,
+                        size_t       n_positions,
+                        size_t       head_dim,
+                        float        theta,
+                        const float *factors,
+                        float       *cos_out,
+                        float       *sin_out);
+
+/* rope_compute_at's full-rotation table (row width head_dim, NEOX pairs)
+ * with YaRN as ggml's rope_yarn computes it (ext_factor 1): pair i's angle
+ * blends pos * theta^(-2i/head_dim) and the same divided by `factor`, by a
+ * ramp between the correction dims of orig_ctx, beta_fast and beta_slow
+ * (ggml_rope_yarn_corr_dims); cos and sin are multiplied by mscale. */
+void rope_compute_yarn_at(size_t pos_offset,
+                          size_t n_positions,
+                          size_t head_dim,
+                          float  theta,
+                          float  factor,
+                          size_t orig_ctx,
+                          float  beta_fast,
+                          float  beta_slow,
+                          float  mscale,
+                          float *cos_out,
+                          float *sin_out);
 
 /* Row width of the tables rope_compute_at writes, which is also the width
  * rope_apply rotates over. See the partial-rotary note in arch_config.h. */

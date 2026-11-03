@@ -101,6 +101,124 @@ bool moe_route_topk(
     return true;
 }
 
+bool moe_route(size_t                   n,
+               size_t                   k,
+               const struct moe_router *r,
+               const float              logits[static n],
+               uint32_t                *ids,
+               float                   *w) {
+    if (n == 0 || n > GEIST_MOE_MAX_EXPERTS || k == 0 || k > n) {
+        return false;
+    }
+    float biased[GEIST_MOE_MAX_EXPERTS];
+    if (r->bias != nullptr) {
+        for (size_t i = 0; i < n; i++)
+            biased[i] = logits[i] + r->bias[i];
+        logits = biased;
+    }
+    const bool grouped = r->n_group > 1;
+    const bool plain =
+            r->sel_bias == nullptr && !grouped && (r->w_scale == 0.0f || r->w_scale == 1.0f);
+    if (plain && r->gating != GEIST_MOE_GATING_SIGMOID &&
+        r->gating != GEIST_MOE_GATING_SOFTMAX_WEIGHT) {
+        return moe_route_topk(n, k, r->norm, logits, ids, w);
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (!finite_bits(logits[i]))
+            return false;
+    }
+    /* 2. scores, in double for the softmax's sum. */
+    double score[GEIST_MOE_MAX_EXPERTS];
+    if (r->gating == GEIST_MOE_GATING_SIGMOID) {
+        for (size_t i = 0; i < n; i++)
+            score[i] = 1.0 / (1.0 + exp(-(double) logits[i]));
+    } else if (r->gating == GEIST_MOE_GATING_SOFTMAX_WEIGHT) {
+        for (size_t i = 0; i < n; i++)
+            score[i] = logits[i];
+    } else {
+        float mx = logits[0];
+        for (size_t i = 1; i < n; i++)
+            mx = logits[i] > mx ? logits[i] : mx;
+        double z = 0.0;
+        for (size_t i = 0; i < n; i++)
+            z += exp((double) (logits[i] - mx));
+        for (size_t i = 0; i < n; i++)
+            score[i] = exp((double) (logits[i] - mx)) / z;
+    }
+    /* 3.-4. selection scores; the experts of groups left out are not
+     * eligible. No infinities: the build's -ffast-math assumes none. */
+    float sel[GEIST_MOE_MAX_EXPERTS];
+    bool  ok[GEIST_MOE_MAX_EXPERTS];
+    for (size_t i = 0; i < n; i++) {
+        sel[i] = (float) score[i] + (r->sel_bias != nullptr ? r->sel_bias[i] : 0.0f);
+        ok[i]  = true;
+    }
+    if (grouped) {
+        const size_t g = r->n_group, per = n / g;
+        if (n % g != 0 || per < 2 || r->topk_group == 0 || r->topk_group > g)
+            return false;
+        float gs[GEIST_MOE_MAX_EXPERTS];
+        for (size_t q = 0; q < g; q++) {
+            const float *x = sel + q * per; /* the group's best two */
+            float        a = x[0] > x[1] ? x[0] : x[1], b = x[0] > x[1] ? x[1] : x[0];
+            for (size_t i = 2; i < per; i++) {
+                if (x[i] > a) {
+                    b = a;
+                    a = x[i];
+                } else if (x[i] > b) {
+                    b = x[i];
+                }
+            }
+            gs[q] = a + b;
+        }
+        uint32_t keep[GEIST_MOE_MAX_EXPERTS];
+        float    unused[GEIST_MOE_MAX_EXPERTS];
+        if (!moe_route_topk(g, r->topk_group, false, gs, keep, unused))
+            return false;
+        bool kept[GEIST_MOE_MAX_EXPERTS] = {false};
+        for (size_t j = 0; j < r->topk_group; j++)
+            kept[keep[j]] = true;
+        for (size_t i = 0; i < n; i++)
+            ok[i] = kept[i / per];
+    }
+    /* 5. the k best eligible, (score descending, id ascending). */
+    for (size_t j = 0; j < k; j++) {
+        size_t best = n;
+        for (size_t i = 0; i < n; i++) {
+            if (!ok[i])
+                continue;
+            if (best == n || sel[i] > sel[best])
+                best = i;
+        }
+        if (best == n)
+            return false; /* fewer eligible experts than k */
+        ids[j]   = (uint32_t) best;
+        ok[best] = false;
+    }
+    /* 6. weights. */
+    double wd[GEIST_MOE_MAX_EXPERTS], sum = 0.0;
+    if (r->gating == GEIST_MOE_GATING_SOFTMAX_WEIGHT) {
+        double mx = score[ids[0]];
+        for (size_t j = 1; j < k; j++)
+            mx = score[ids[j]] > mx ? score[ids[j]] : mx;
+        double z = 0.0;
+        for (size_t j = 0; j < k; j++)
+            z += exp(score[ids[j]] - mx);
+        for (size_t j = 0; j < k; j++)
+            wd[j] = exp(score[ids[j]] - mx) / z;
+    } else {
+        for (size_t j = 0; j < k; j++)
+            wd[j] = score[ids[j]];
+    }
+    for (size_t j = 0; j < k; j++)
+        sum += wd[j];
+    const double scale = r->w_scale != 0.0f ? (double) r->w_scale : 1.0;
+    const double den   = r->norm ? (sum > 6.103515625e-5 ? sum : 6.103515625e-5) : 1.0;
+    for (size_t j = 0; j < k; j++)
+        w[j] = (float) (wd[j] / den * scale);
+    return true;
+}
+
 /* Bucket each row's selections by expert (counting sort, rows in order):
  * expert e's selections are rows[start[e] .. start[e + 1]), each a flat
  * index row * k + slot into ids / wts. */
@@ -188,7 +306,8 @@ struct moe_job {
     const struct transformer_layer_weights *L;
     struct transformer_arch_session        *sess;
     struct geist_backend                   *be;
-    size_t                                  d, inter, n_exp;
+    size_t                                  d, inter, n_exp, n_routed;
+    enum geist_moe_act                      act;
     uint32_t                                active[GEIST_MOE_MAX_EXPERTS]; /* on the CPU */
     size_t                                  n_active;
     uint32_t                                hot[GEIST_MOE_MAX_EXPERTS]; /* on the GPU (#78) */
@@ -220,6 +339,40 @@ static void moe_linear(size_t                     m,
 /* Expert e over its m gathered rows from row0 of the bucketed host
  * buffers, all on the calling thread (the kernels' own geist_par_for runs
  * inline inside a parallel region): y = down(silu(gate(x)) * up(x)). */
+/* The routed expert e's biases where the layer has them (not the shared
+ * expert's slot, e == n_routed): gate / up [inter], down [d]. */
+static const float *moe_bias(const struct moe_job *j, const float *b, size_t e, size_t n) {
+    return e < j->n_routed && b != nullptr ? b + e * n : nullptr;
+}
+
+/* g[lo, hi) = act(g + gate bias, u + up bias) over one row of the
+ * intermediate (gb / ub nullptr: none). */
+static void moe_act_cols(enum geist_moe_act act,
+                         size_t             lo,
+                         size_t             hi,
+                         const float       *gb,
+                         const float       *ub,
+                         float             *g,
+                         float             *u) {
+    for (size_t i = lo; gb != nullptr && i < hi; i++)
+        g[i] += gb[i];
+    for (size_t i = lo; ub != nullptr && i < hi; i++)
+        u[i] += ub[i];
+    if (act == GEIST_MOE_ACT_SWIGLU_OAI) {
+        /* llama.cpp's ggml_swiglu_oai, alpha 1.702, limit 7. */
+        constexpr float alpha = 1.702f;
+        constexpr float limit = 7.0f;
+        for (size_t i = lo; i < hi; i++) {
+            const float gc = g[i] < limit ? g[i] : limit;
+            const float uc = u[i] < -limit ? -limit : u[i] > limit ? limit : u[i];
+            g[i]           = gc / (1.0f + expf(-alpha * gc)) * (uc + 1.0f);
+        }
+    } else {
+        for (size_t i = lo; i < hi; i++)
+            g[i] = g[i] / (1.0f + expf(-g[i])) * u[i];
+    }
+}
+
 static bool moe_expert_rows(const struct moe_job *j, size_t e, size_t row0, size_t m) {
     struct transformer_arch_session *sess = j->sess;
     const float                     *x    = sess->moe_xg + row0 * j->d;
@@ -244,10 +397,129 @@ static bool moe_expert_rows(const struct moe_job *j, size_t e, size_t row0, size
     }
     if (!ok)
         return false;
-    for (size_t i = 0; i < m * j->inter; i++)
-        g[i] = g[i] / (1.0f + expf(-g[i])) * u[i];
+    const size_t inter = j->inter;
+    const float *gb    = moe_bias(j, j->L->moe_gate_b, e, inter);
+    const float *ub    = moe_bias(j, j->L->moe_up_b, e, inter);
+    const float *db    = moe_bias(j, j->L->moe_down_b, e, j->d);
+    for (size_t r = 0; r < m; r++)
+        moe_act_cols(j->act, 0, inter, gb, ub, g + r * inter, u + r * inter);
     moe_linear(m, g, &j->L->moe_down_w[e], j->be, y, &ok);
+    for (size_t r = 0; ok && db != nullptr && r < m; r++)
+        for (size_t c = 0; c < j->d; c++)
+            y[r * j->d + c] += db[c];
     return ok;
+}
+
+/* Rows [r0, r1) of w as a weight of their own, for a decode step that
+ * splits an expert's rows over threads. Only a weight in the file's own
+ * row-major blocks qualifies: a repacked or backend-owned layout is not
+ * addressable by rows. */
+static bool
+weight_rows(const struct geist_weight *w, size_t r0, size_t r1, struct geist_weight *out) {
+    constexpr uint16_t repacked = GEIST_W_BACKEND_OWNS | GEIST_W_AUX_BACKEND_REPACK |
+                                  GEIST_W_RAW_COLD | GEIST_W_HAS_AWQ_INV;
+    if (w->backend_layout != GEIST_W_LAYOUT_SOURCE || (w->flags & repacked) != 0 || w->n_out <= 0 ||
+        w->raw_nbytes % (size_t) w->n_out != 0 || r0 >= r1 || r1 > (size_t) w->n_out) {
+        return false;
+    }
+    const size_t row = w->raw_nbytes / (size_t) w->n_out;
+    *out             = *w;
+    out->raw         = (const uint8_t *) w->raw + r0 * row;
+    out->raw_nbytes  = (r1 - r0) * row;
+    out->n_out       = (int32_t) (r1 - r0);
+    return true;
+}
+
+/* A decode step whose active experts are fewer than half the threads
+ * (#243: GPT-OSS runs 4 of 32 on 8 threads): instead of one thread per
+ * expert, each expert's rows split into `parts` slices, one task each, in
+ * two passes -- gate / up / activation over a slice of the intermediate,
+ * then down over a slice of the output, which needs the whole activation.
+ * Each output element is the same dot product the unsplit expert computes. */
+struct moe_split {
+    const struct moe_job *j;
+    size_t                parts;
+    int                   pass;
+    _Atomic bool          failed;
+};
+
+/* The [lo, hi) slice of n for part p of parts, 32-row aligned. */
+static void moe_split_range(size_t n, size_t parts, size_t p, size_t *lo, size_t *hi) {
+    const size_t chunk = ((n + parts - 1) / parts + 31) / 32 * 32;
+    *lo                = p * chunk < n ? p * chunk : n;
+    *hi                = *lo + chunk < n ? *lo + chunk : n;
+}
+
+static void moe_split_worker(void *ctx, size_t begin, size_t end) {
+    struct moe_split     *sp = ctx;
+    const struct moe_job *j  = sp->j;
+    for (size_t t = begin; t < end; t++) {
+        const size_t e    = j->active[t / sp->parts];
+        const size_t row0 = j->sess->moe_row_start[e];
+        size_t       lo, hi;
+        moe_split_range(sp->pass == 0 ? j->inter : j->d, sp->parts, t % sp->parts, &lo, &hi);
+        if (lo >= hi)
+            continue;
+        struct geist_weight a, b;
+        bool                ok = true;
+        if (sp->pass == 0) {
+            const float *x = j->sess->moe_xg + row0 * j->d;
+            float       *g = j->sess->moe_g + row0 * j->inter;
+            float       *u = j->sess->moe_u + row0 * j->inter;
+            ok             = weight_rows(&j->L->moe_gate_w[e], lo, hi, &a) &&
+                             weight_rows(&j->L->moe_up_w[e], lo, hi, &b);
+            if (ok && a.linear_pair_m1 != nullptr && a.linear_pair_m1 == b.linear_pair_m1)
+                a.linear_pair_m1(x, &a, &b, j->be, g + lo, u + lo);
+            else if (ok) {
+                moe_linear(1, x, &a, j->be, g + lo, &ok);
+                moe_linear(1, x, &b, j->be, u + lo, &ok);
+            }
+            if (ok)
+                moe_act_cols(j->act,
+                             lo,
+                             hi,
+                             moe_bias(j, j->L->moe_gate_b, e, j->inter),
+                             moe_bias(j, j->L->moe_up_b, e, j->inter),
+                             g,
+                             u);
+        } else {
+            const float *g  = j->sess->moe_g + row0 * j->inter;
+            float       *y  = j->sess->moe_y + row0 * j->d;
+            const float *db = moe_bias(j, j->L->moe_down_b, e, j->d);
+            ok              = weight_rows(&j->L->moe_down_w[e], lo, hi, &a);
+            if (ok)
+                moe_linear(1, g, &a, j->be, y + lo, &ok);
+            for (size_t c = lo; ok && db != nullptr && c < hi; c++)
+                y[c] += db[c];
+        }
+        if (!ok)
+            atomic_store_explicit(&sp->failed, true, memory_order_relaxed);
+    }
+}
+
+/* Whether j's active experts take moe_split: one row each (a decode step
+ * of one sequence), rows addressable as slices, at least two slices per
+ * expert on the threads there are. */
+static size_t moe_split_parts(const struct moe_job *j, size_t seq, size_t threads) {
+    /* GEIST_MOE_SPLIT=0: one thread per expert as before (A/B runs). */
+    static _Atomic int off = -1;
+    if (atomic_load_explicit(&off, memory_order_relaxed) < 0) {
+        const char *v = getenv("GEIST_MOE_SPLIT");
+        atomic_store_explicit(&off, v != nullptr && v[0] == '0', memory_order_relaxed);
+    }
+    if (seq != 1 || j->decode_rows || j->n_active == 0 || threads / j->n_active < 2 ||
+        atomic_load_explicit(&off, memory_order_relaxed) == 1)
+        return 0;
+    for (size_t a = 0; a < j->n_active; a++) {
+        const size_t               e    = j->active[a];
+        const struct geist_weight *w[3] = {
+                &j->L->moe_gate_w[e], &j->L->moe_up_w[e], &j->L->moe_down_w[e]};
+        struct geist_weight probe;
+        for (size_t i = 0; i < 3; i++)
+            if (w[i]->linear_m1 == nullptr || !weight_rows(w[i], 0, 1, &probe))
+                return 0;
+    }
+    return threads / j->n_active;
 }
 
 /* Expert e over its rows: as one m-row block, or, for a batched decode's
@@ -403,14 +675,17 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     if (lg == nullptr) {
         return GEIST_E_BACKEND;
     }
-    bool routed_ok = true;
+    bool                    routed_ok = true;
+    const struct moe_router router    = {.gating     = st->config.moe_gating,
+                                         .norm       = st->config.moe_norm_topk,
+                                         .bias       = L->moe_router_b,
+                                         .sel_bias   = L->moe_sel_b,
+                                         .w_scale    = st->config.moe_w_scale,
+                                         .n_group    = st->config.moe_n_group,
+                                         .topk_group = st->config.moe_topk_group};
     for (size_t r = 0; r < seq && routed_ok; r++) {
-        routed_ok = moe_route_topk(n_exp,
-                                   n_rt,
-                                   st->config.moe_norm_topk,
-                                   lg + r * n_exp,
-                                   sess->moe_ids + r * k,
-                                   sess->moe_wts + r * k);
+        routed_ok = moe_route(
+                n_exp, n_rt, &router, lg + r * n_exp, sess->moe_ids + r * k, sess->moe_wts + r * k);
     }
     for (size_t r = 0; r < seq && k > n_rt; r++)
         sess->moe_ids[r * k + n_rt] = (uint32_t) n_exp; /* the shared expert */
@@ -427,6 +702,9 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
         return GEIST_E_BACKEND;
     }
     moe_bucket(slots, n_sel, sess->moe_ids, sess->moe_rows, sess->moe_row_start);
+    /* A prefill chunk's rows per expert: what staging would take (#239). */
+    if (seq > 1 && !ctx->decode_rows)
+        moe_profile_count_chunk(st->moe_prof, (size_t) ctx->layer_idx, n_exp, sess->moe_row_start);
     moe_profile_mark(MOE_PROFILE_ROUTE, &t0);
 
     /* Gather each expert's rows into its slice of the bucketed buffer. A
@@ -442,6 +720,19 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     for (size_t i = 0; i < n_sel; i++) {
         memcpy(sess->moe_xg + i * d, xs + (sess->moe_rows[i] / k) * d, d * sizeof(float));
     }
+    /* Llama 4 (#244): the weight scales the expert's input row; the output
+     * is then summed with weight 1. */
+    for (size_t i = 0; i < n_sel && st->config.moe_weight_before; i++) {
+        const uint32_t sel = sess->moe_rows[i];
+        if (sel % k >= n_rt)
+            continue; /* a shared expert's slot */
+        const float wt = sess->moe_wts[sel];
+        for (size_t c = 0; c < d; c++)
+            sess->moe_xg[i * d + c] *= wt;
+    }
+    for (size_t r = 0; r < seq * k && st->config.moe_weight_before; r++)
+        if (r % k < n_rt)
+            sess->moe_wts[r] = 1.0f;
     /* The shared expert's weight: sigmoid of x against its gate vector. */
     for (size_t r = 0; r < seq && k > n_rt; r++) {
         double dot = 0.0;
@@ -462,6 +753,8 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     j->d                = d;
     j->inter            = ctx->inter;
     j->n_exp            = slots;
+    j->n_routed         = n_exp;
+    j->act              = st->config.moe_act;
     j->n_active         = 0;
     j->n_hot            = 0;
     j->layer            = (size_t) ctx->layer_idx;
@@ -529,7 +822,18 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     atomic_store_explicit(&j->failed, false, memory_order_relaxed);
     const size_t tasks   = (j->n_hot > 0 && !launched) + j->n_active;
     const size_t threads = geist_par_max_threads();
-    geist_par_for(tasks < threads ? tasks : threads, moe_worker, j);
+    const size_t parts   = j->n_hot == 0 ? moe_split_parts(j, seq, threads) : 0;
+    if (parts > 0) {
+        struct moe_split sp = {.j = j, .parts = parts, .pass = 0};
+        atomic_init(&sp.failed, false);
+        geist_par_for(j->n_active * parts, moe_split_worker, &sp);
+        sp.pass = 1;
+        geist_par_for(j->n_active * parts, moe_split_worker, &sp);
+        if (atomic_load_explicit(&sp.failed, memory_order_relaxed))
+            atomic_store_explicit(&j->failed, true, memory_order_relaxed);
+    } else {
+        geist_par_for(tasks < threads ? tasks : threads, moe_worker, j);
+    }
     moe_gpu_task(j); /* a thread library that gave the caller no range */
     moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);
     if (j->gpu_status != GEIST_OK) {

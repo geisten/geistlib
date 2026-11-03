@@ -411,6 +411,22 @@ struct geist_attention_kv_args {
     size_t                     sliding_window;
 };
 
+/* Arguments for fused->attention_sinks (#243): prims->attention's q, k, v,
+ * out, q_offset and sliding_window (F32 or F16 K/V, as caps.kv_f16_attention
+ * allows), plus sinks, F32 DENSE [n_q_heads]: head h's logit that joins
+ * every softmax of that head with a zero value row,
+ *   out[t, h] = sum_s e^{q.k_s} v_s / (e^{sinks[h]} + sum_s e^{q.k_s}),
+ * the sum over the keys the causal and window mask lets q[t] see. */
+struct geist_attention_sinks_args {
+    const struct geist_tensor *q;
+    const struct geist_tensor *k;
+    const struct geist_tensor *v;
+    const struct geist_tensor *sinks;
+    struct geist_tensor       *out;
+    size_t                     q_offset;
+    size_t                     sliding_window;
+};
+
 /* Arguments for fused->hadamard_rotate. x and y are F32 DENSE
  * [rows, width] views; signs is an F32 [width] vector of +/-1 or nullptr
  * (all +1). Forward (inverse == false):
@@ -973,6 +989,13 @@ struct geist_backend_fused {
     enum geist_status (*stage_weights)(struct geist_backend            *be,
                                        size_t                           n,
                                        const struct geist_weight *const w[GEIST_AT_LEAST(n)]);
+
+    /* Optional (#243, GPT-OSS): attention with a sink logit per head, see
+     * geist_attention_sinks_args. GEIST_E_UNSUPPORTED (nothing written):
+     * the architecture runs its host twin over mapped buffers instead.
+     * nullptr = that twin. EXPERIMENTAL. */
+    enum geist_status (*attention_sinks)(struct geist_backend                    *be,
+                                         const struct geist_attention_sinks_args *args);
 };
 
 /* ====================================================================== */

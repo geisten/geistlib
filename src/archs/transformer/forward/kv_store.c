@@ -16,6 +16,7 @@
 #include <geist_types.h>
 
 #include "fwht.h"
+#include "gemma4_kernels.h" /* attention_sinks_items */
 #include "int4_kv.h"
 #include "kivi.h"
 #include "par.h"
@@ -314,6 +315,147 @@ enum geist_status transformer_kv_store_append_row(struct transformer_layer_forwa
     return s;
 }
 
+/* Attention with sinks (#243) on the host: the (query, head) rows split
+ * over threads, attention_sinks_items each. */
+struct attn_sinks_job {
+    size_t       n_kv, q_offset, n_q_heads, n_kv_heads, head_dim, sliding_window;
+    bool         f16;
+    const float *q, *sinks;
+    const void  *k, *v;
+    float       *out;
+};
+
+static void attn_sinks_range(void *ctx, size_t i0, size_t i1) {
+    const struct attn_sinks_job *j = ctx;
+    attention_sinks_items(i0,
+                          i1,
+                          j->n_kv,
+                          j->q_offset,
+                          j->n_q_heads,
+                          j->n_kv_heads,
+                          j->head_dim,
+                          j->sliding_window,
+                          j->f16,
+                          j->q,
+                          j->k,
+                          j->v,
+                          j->sinks,
+                          j->out);
+}
+
+[[nodiscard]] static enum geist_status
+kv_store_attention_sinks(struct transformer_layer_forward_ctx *ctx,
+                         const struct geist_tensor            *t_q,
+                         struct geist_tensor                  *t_out) {
+    struct transformer_arch_state   *st = ctx->st;
+    const struct geist_backend_vtbl *v  = ctx->v;
+    if (ctx->kv_kivi_enabled || ctx->kv_int8_enabled || ctx->hd > ATTN_F16_HEAD_DIM_MAX) {
+        geist_backend_set_error(ctx->be,
+                                GEIST_E_UNSUPPORTED,
+                                "transformer: layer %d has attention sinks, which run on an "
+                                "F32 or F16 KV cache only",
+                                ctx->layer_idx);
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* The backend's kernel where it has one; its refusal leaves the host. */
+    if (ctx->fused->attention_sinks != nullptr && ctx->L->attn_sinks_t.buffer != nullptr) {
+        const int64_t       n_kh = st->n_kv_heads, hd = (int64_t) ctx->hd;
+        const int64_t       n_kv = (int64_t) ctx->kv_len_now;
+        struct geist_tensor k  = ctx->kv_f16_enabled ? view_3d_f16(ctx->k_cache_buf, n_kv, n_kh, hd)
+                                                     : view_3d(ctx->k_cache_buf, n_kv, n_kh, hd);
+        struct geist_tensor vv = ctx->kv_f16_enabled ? view_3d_f16(ctx->v_cache_buf, n_kv, n_kh, hd)
+                                                     : view_3d(ctx->v_cache_buf, n_kv, n_kh, hd);
+        struct geist_tensor sk = view_1d_at(
+                ctx->L->attn_sinks_t.buffer, (size_t) ctx->L->attn_sinks_t.offset, st->n_q_heads);
+        const struct geist_attention_sinks_args args = {.q              = t_q,
+                                                        .k              = &k,
+                                                        .v              = &vv,
+                                                        .sinks          = &sk,
+                                                        .out            = t_out,
+                                                        .q_offset       = ctx->q_position,
+                                                        .sliding_window = ctx->L->sliding_window};
+        const enum geist_status                 s    = ctx->fused->attention_sinks(ctx->be, &args);
+        if (s != GEIST_E_UNSUPPORTED)
+            return s;
+    }
+    struct attn_sinks_job j = {
+            .n_kv           = ctx->kv_len_now,
+            .q_offset       = ctx->q_position,
+            .n_q_heads      = st->n_q_heads,
+            .n_kv_heads     = st->n_kv_heads,
+            .head_dim       = ctx->hd,
+            .sliding_window = ctx->L->sliding_window,
+            .f16            = ctx->kv_f16_enabled,
+            .q              = (const float *) v->buffer_map(t_q->buffer),
+            .sinks          = ctx->L->attn_sinks,
+            .k              = v->buffer_map(ctx->k_cache_buf),
+            .v              = v->buffer_map(ctx->v_cache_buf),
+            .out            = (float *) v->buffer_map(t_out->buffer),
+    };
+    const void *ptrs[] = {j.q, j.k, j.v, j.out};
+    const bool  ok     = j.q != nullptr && j.k != nullptr && j.v != nullptr && j.out != nullptr;
+    if (ok) {
+        j.q   = (const float *) ((const uint8_t *) j.q + t_q->offset);
+        j.out = (float *) ((uint8_t *) j.out + t_out->offset);
+        geist_par_for(ctx->seq * st->n_q_heads, attn_sinks_range, &j);
+    }
+    struct geist_buffer *mapped[] = {
+            t_q->buffer, ctx->k_cache_buf, ctx->v_cache_buf, t_out->buffer};
+    for (size_t i = 0; i < sizeof mapped / sizeof mapped[0]; i++)
+        if (ptrs[i] != nullptr)
+            v->buffer_unmap(mapped[i]);
+    return ok ? GEIST_OK : GEIST_E_BACKEND; /* the backend said why */
+}
+
+/* Chunked attention (Llama 4, #244) on the F32 / F16 cache: the query rows
+ * split where a chunk starts, each run attending causally over a view of
+ * the cache that begins at its chunk. */
+[[nodiscard]] static enum geist_status
+kv_store_attention_chunked(struct transformer_layer_forward_ctx *ctx,
+                           const struct geist_tensor            *t_q,
+                           struct geist_tensor                  *t_out) {
+    struct transformer_arch_state *st = ctx->st;
+    if (ctx->kv_kivi_enabled || ctx->kv_int8_enabled) {
+        geist_backend_set_error(ctx->be,
+                                GEIST_E_UNSUPPORTED,
+                                "transformer: layer %d attends in chunks, which run on an F32 or "
+                                "F16 KV cache only",
+                                ctx->layer_idx);
+        return GEIST_E_UNSUPPORTED;
+    }
+    const size_t  chunk = ctx->L->attn_chunk, hd = ctx->hd;
+    const int64_t n_q = st->n_q_heads, n_kh = st->n_kv_heads;
+    const size_t  q_row = (size_t) n_q * hd * sizeof(float);
+    const size_t  kv_row =
+            (size_t) n_kh * hd * (ctx->kv_f16_enabled ? sizeof(uint16_t) : sizeof(float));
+    for (size_t t0 = 0; t0 < ctx->seq;) {
+        const size_t p0          = ctx->q_position + t0;
+        const size_t start       = p0 - p0 % chunk;
+        size_t       t1          = start + chunk - ctx->q_position; /* the next chunk's first row */
+        t1                       = t1 < ctx->seq ? t1 : ctx->seq;
+        const size_t        n_kv = ctx->q_position + t1 - start;
+        struct geist_tensor q    = view_3d(t_q->buffer, (int64_t) (t1 - t0), n_q, (int64_t) hd);
+        struct geist_tensor o    = view_3d(t_out->buffer, (int64_t) (t1 - t0), n_q, (int64_t) hd);
+        q.offset                 = t_q->offset + (int64_t) (t0 * q_row);
+        o.offset                 = t_out->offset + (int64_t) (t0 * q_row);
+        struct geist_tensor k =
+                ctx->kv_f16_enabled
+                        ? view_3d_f16(ctx->k_cache_buf, (int64_t) n_kv, n_kh, (int64_t) hd)
+                        : view_3d(ctx->k_cache_buf, (int64_t) n_kv, n_kh, (int64_t) hd);
+        struct geist_tensor v =
+                ctx->kv_f16_enabled
+                        ? view_3d_f16(ctx->v_cache_buf, (int64_t) n_kv, n_kh, (int64_t) hd)
+                        : view_3d(ctx->v_cache_buf, (int64_t) n_kv, n_kh, (int64_t) hd);
+        k.offset                  = (int64_t) (start * kv_row);
+        v.offset                  = (int64_t) (start * kv_row);
+        const enum geist_status s = ctx->prims->attention(ctx->be, &q, &k, &v, p0 - start, 0, &o);
+        if (s != GEIST_OK)
+            return s;
+        t0 = t1;
+    }
+    return GEIST_OK;
+}
+
 enum geist_status transformer_kv_store_attention(struct transformer_layer_forward_ctx *ctx,
                                                  const struct geist_tensor            *t_q_3d,
                                                  struct geist_tensor                  *t_attn_3d) {
@@ -326,6 +468,14 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
     const struct geist_backend_primitives *prims      = ctx->prims;
     const size_t                           kv_len_now = ctx->kv_len_now;
 
+    if (L->attn_sinks != nullptr) {
+        return kv_store_attention_sinks(ctx, t_q_3d, t_attn_3d);
+    }
+    /* Chunked attention (#244) once a chunk boundary is behind the
+     * queries; before that it is plain causal attention. */
+    if (L->attn_chunk > 0 && kv_len_now > L->attn_chunk) {
+        return kv_store_attention_chunked(ctx, t_q_3d, t_attn_3d);
+    }
     if (ctx->kv_kivi_enabled) {
         const float   *qp   = (const float *) v->buffer_map(sess->scratch_q);
         const uint8_t *kqp  = (const uint8_t *) v->buffer_map(ctx->k_kivi_q_buf);

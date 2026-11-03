@@ -118,6 +118,8 @@ static gguf_dtype_t gguf_type_of(enum geist_dtype dt) {
         return GGUF_TYPE_PQ2_0;
     case GEIST_DTYPE_I2_S:
         return GGUF_TYPE_I2_S;
+    case GEIST_DTYPE_MXFP4:
+        return GGUF_TYPE_MXFP4;
     default:
         return GGUF_TYPE_TQ1_0;
     }

@@ -215,6 +215,73 @@ void rope_compute_at(size_t pos_offset,
     safe_free((void **) &inv_freq);
 }
 
+void rope_compute_ff_at(size_t       pos_offset,
+                        size_t       n_positions,
+                        size_t       head_dim,
+                        float        theta,
+                        const float *factors,
+                        float       *cos_out,
+                        float       *sin_out) {
+    const float  theta_scale = powf(theta, -2.0f / (float) head_dim);
+    const size_t half        = head_dim / 2;
+    for (size_t s = 0; s < n_positions; s++) {
+        /* ggml's order: the angle multiplied down pair by pair in float,
+         * divided by the pair's factor. */
+        float angle = (float) (pos_offset + s);
+        for (size_t i = 0; i < half; i++) {
+            const float th                   = angle / factors[i];
+            const float c                    = cosf(th);
+            const float si                   = sinf(th);
+            cos_out[s * head_dim + i]        = c;
+            cos_out[s * head_dim + half + i] = c;
+            sin_out[s * head_dim + i]        = si;
+            sin_out[s * head_dim + half + i] = si;
+            angle *= theta_scale;
+        }
+    }
+}
+
+void rope_compute_yarn_at(size_t pos_offset,
+                          size_t n_positions,
+                          size_t head_dim,
+                          float  theta,
+                          float  factor,
+                          size_t orig_ctx,
+                          float  beta_fast,
+                          float  beta_slow,
+                          float  mscale,
+                          float *cos_out,
+                          float *sin_out) {
+    /* ggml_rope_yarn_corr_dims: the pair indices where the blend starts and
+     * ends, from the number of turns a frequency makes over orig_ctx. */
+    const float n_dims       = (float) head_dim;
+    const float pi2          = 2.0f * 3.14159265358979323846f;
+    const float lb           = 2.0f * logf(theta);
+    float       lo           = floorf(n_dims * logf((float) orig_ctx / (beta_fast * pi2)) / lb);
+    float       hi           = ceilf(n_dims * logf((float) orig_ctx / (beta_slow * pi2)) / lb);
+    lo                       = lo > 0.0f ? lo : 0.0f;
+    hi                       = hi < n_dims - 1.0f ? hi : n_dims - 1.0f;
+    const float  freq_scale  = 1.0f / factor;
+    const float  theta_scale = powf(theta, -2.0f / n_dims);
+    const size_t half        = head_dim / 2;
+    for (size_t s = 0; s < n_positions; s++) {
+        /* ggml's order: the angle multiplied down pair by pair in float. */
+        float angle = (float) (pos_offset + s);
+        for (size_t i = 0; i < half; i++) {
+            const float y                    = ((float) i - lo) / fmaxf(0.001f, hi - lo);
+            const float ramp                 = 1.0f - fminf(1.0f, fmaxf(0.0f, y));
+            const float th                   = freq_scale * angle * (1.0f - ramp) + angle * ramp;
+            const float c                    = cosf(th) * mscale;
+            const float si                   = sinf(th) * mscale;
+            cos_out[s * head_dim + i]        = c;
+            cos_out[s * head_dim + half + i] = c;
+            sin_out[s * head_dim + i]        = si;
+            sin_out[s * head_dim + half + i] = si;
+            angle *= theta_scale;
+        }
+    }
+}
+
 /* Row `at` of a K or V cache as floats: in place for F32, widened into
  * `row` for F16. */
 static inline const float *
@@ -310,6 +377,78 @@ static void attention_kv_ref(size_t       n_q,
                     outv[i] *= inv_sum;
             }
         }
+    }
+}
+
+void attention_sinks_items(size_t       i0,
+                           size_t       i1,
+                           size_t       n_kv,
+                           size_t       q_offset,
+                           size_t       n_q_heads,
+                           size_t       n_kv_heads,
+                           size_t       head_dim,
+                           size_t       sliding_window,
+                           bool         f16,
+                           const float *q,
+                           const void  *k,
+                           const void  *v,
+                           const float *sinks,
+                           float       *out) {
+    const size_t group = n_q_heads / n_kv_heads;
+    float        row[ATTN_F16_HEAD_DIM_MAX];
+    float        scores[ATTN_F32_BLOCK];
+    for (size_t idx = i0; idx < i1; idx++) {
+        const size_t t     = idx / n_q_heads;
+        const size_t h     = idx - t * n_q_heads;
+        const size_t kv_h  = h / group;
+        const size_t q_pos = q_offset + t;
+        size_t       s_lo  = 0;
+        if (sliding_window > 0 && q_pos + 1 > sliding_window)
+            s_lo = q_pos + 1 - sliding_window;
+        const size_t s_hi = q_pos < n_kv ? q_pos : n_kv - 1; /* inclusive */
+        const float *qv   = q + idx * head_dim;
+        float       *outv = out + idx * head_dim;
+        for (size_t i = 0; i < head_dim; i++)
+            outv[i] = 0.0f;
+        /* The sink is one more logit with a zero value row: the softmax
+         * starts at its max with sum exp(0) = 1 and nothing accumulated. */
+        float  max_score = sinks[h];
+        double sum_exp   = 1.0;
+        for (size_t b0 = s_lo; b0 <= s_hi && n_kv > 0; b0 += ATTN_F32_BLOCK) {
+            const size_t n         = s_hi - b0 < ATTN_F32_BLOCK ? s_hi - b0 + 1 : ATTN_F32_BLOCK;
+            float        block_max = max_score;
+            for (size_t j = 0; j < n; j++) {
+                const float *kr =
+                        kv_row(k, f16, ((b0 + j) * n_kv_heads + kv_h) * head_dim, head_dim, row);
+                float dot = 0.0f;
+                for (size_t i = 0; i < head_dim; i++)
+                    dot += qv[i] * kr[i];
+                scores[j] = dot;
+                if (dot > block_max)
+                    block_max = dot;
+            }
+            if (block_max > max_score) {
+                const float d = max_score - block_max;
+                const float c = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
+                sum_exp *= c;
+                for (size_t i = 0; i < head_dim; i++)
+                    outv[i] *= c;
+                max_score = block_max;
+            }
+            for (size_t j = 0; j < n; j++) {
+                scores[j] = expf(fmaxf(scores[j] - max_score, ATTN_EXP_FLOOR));
+                sum_exp += scores[j];
+            }
+            for (size_t j = 0; j < n; j++) {
+                const float *vr =
+                        kv_row(v, f16, ((b0 + j) * n_kv_heads + kv_h) * head_dim, head_dim, row);
+                for (size_t i = 0; i < head_dim; i++)
+                    outv[i] += scores[j] * vr[i];
+            }
+        }
+        const float inv_sum = (float) (1.0 / sum_exp);
+        for (size_t i = 0; i < head_dim; i++)
+            outv[i] *= inv_sum;
     }
 }
 
