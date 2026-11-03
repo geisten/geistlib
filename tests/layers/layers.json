@@ -1,0 +1,15 @@
+{
+ "about": "tools/check_layers.py --selftest: a two-layer tree with one violation of each kind seeded (expected.txt).",
+ "layers": [
+  {"name": "public", "paths": ["include/"], "may_use": [], "interface": true},
+  {"name": "base", "paths": ["src/base/"], "may_use": ["public"]},
+  {"name": "engine", "paths": ["src/engine/"], "may_use": ["base", "public"]}
+ ],
+ "composition": {},
+ "header_defines": [],
+ "portability": {"wrappers": ["src/base/wrapper.h"], "not_portability": ["__cplusplus"]},
+ "selftest": {
+  "flags": ["-std=c23", "-Wall", "-Wextra", "-Werror", "-Iinclude", "-Isrc/base", "-Isrc/engine"],
+  "sources": ["src/base/base.c", "src/base/upward.c", "src/base/calls_up.c", "src/engine/engine.c"]
+ }
+}

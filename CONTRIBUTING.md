@@ -146,6 +146,13 @@ of #333 removes: `switch` with `default:`, enums without a fixed type,
 the tree. A change that adds or removes one runs `make c23-metrics` and
 commits the file, so the review sees the count move.
 
+`make check-layers` proves the layer table `tools/layers.json` (shown in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#dependency-rules)): include
+edges and symbol references across layers, internal headers that do not
+compile alone and portability `#if`s. A new violation fails; fix it, or, for
+a deliberate exception, change the table. `tools/layers_baseline.txt` holds
+the old ones and only shrinks: remove a line once its violation is fixed.
+
 ## Pull requests
 
 Development happens on `git.geisten.net/geisten/geistlib`; this GitHub

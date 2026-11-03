@@ -570,11 +570,21 @@ $(error No clang-format $(CLANG_FORMAT_MAJOR).x found. Install it with 'pip inst
 endif
 endif
 
+# Module boundaries (#344): tools/layers.json says which layer of src/ may use
+# which; tools/check_layers.py proves it from the compiler's include tree, the
+# objects' undefined symbols (nm), every internal header compiled alone and
+# the portability #ifs per file, against tools/layers_baseline.txt. The
+# selftest finds the violations seeded in tests/layers/; no binary runs.
+.PHONY: check-layers
+check-layers: lib
+	@CC="$(CC)" python3 tools/check_layers.py --selftest
+	@python3 tools/check_layers.py --build-dir $(BUILD_DIR)
+
 # Static analysis, no models and no GPU: the seeded defects must be found, and
 # the library must have no finding beyond scripts/static-baseline.txt (#342).
 CLANG_TIDY ?= clang-tidy
 .PHONY: check-static
-check-static:
+check-static: check-layers
 	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py --selftest
 	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py
 
@@ -605,6 +615,7 @@ help:
 	"  make shared                the shared library for FFI callers (examples/ffi)" \
 	"  make DECISION=1            enable experimental numeric candidate scoring" \
 	"  make check-static          clang-tidy with a findings ratchet (no models, no GPU)" \
+	"  make check-layers          layer table: includes, symbols, headers alone, #ifs (#344)" \
 	"  make DECISION=1 DECISION_CONTEXT=1  add snapshot-backed prefix scoring (#5)" \
 	"  make FAMILIES=\"bitnet llama\"  build only these model families (default: all)" \
 	"  make TOWERS=0              leave out the Gemma 4 audio/vision encoder towers" \
