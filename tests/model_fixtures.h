@@ -44,6 +44,9 @@ struct mf_llama {
     /* A separate output.weight (lm_head), so token_embd is a lookup-only
      * table; tied otherwise. */
     bool untied;
+    /* token_embd stored as F16 instead of F32 (a tied F16 lm_head, the
+     * dtype the speculative output head sketches). */
+    bool f16_embd;
     /* tokenizer.chat_template when set; its length in chat_template_len, so
      * a template may contain NUL bytes (0: strlen). */
     const char *chat_template;
@@ -210,6 +213,7 @@ static inline struct tf_buf mf_llama_gguf(const struct mf_llama *c) {
     const uint32_t    hd = c->d_model / c->heads;
     struct mf_tensors ts = {0};
     mf_add(&ts, c->d_model, c->vocab, MF_RAND, "token_embd.weight");
+    ts.t[ts.n - 1].f16 = c->f16_embd;
     mf_add(&ts, c->d_model, 0, MF_ONE, "output_norm.weight");
     if (c->rope_freqs != 0) {
         mf_add(&ts, c->rope_freqs, 0, c->rope_freqs_ones ? MF_ONE : MF_STEP, "rope_freqs.weight");

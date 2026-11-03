@@ -144,7 +144,9 @@ prefill number, read the **llama.cpp CPU** row above — it is the same runner.
 
 Prefill t/s alone understates geist: a real generation is **decode-dominated**
 (one prefill, many decode steps), so end-to-end throughput is what a user feels.
-Measured with the speculative output head **on** (the default since June 2026),
+Measured with the speculative output head **on** (the default since June 2026;
+since #384 only for the BitNet families, where ~0.3 % of greedy tokens are not
+the full head's argmax),
 each engine cold-started under a tight ≤50 °C gate (no thermal skew), total =
 (P+D)/(t_prefill + t_decode). Harness: `benchmark/total_tps.py`, since removed;
 `tools/bench_cross_engine.py` is the current cross-engine runner.
