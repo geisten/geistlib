@@ -986,20 +986,7 @@ dequant_tile(const struct geist_weight *w, size_t row_start, size_t tile_rows, f
             }
 #endif
             for (; i < n_in; i++) {
-                /* Scalar fallback — emulate F16-to-F32 via IEEE bit twiddle. */
-                uint16_t h     = src[i];
-                uint32_t sign  = (uint32_t) (h & 0x8000) << 16;
-                uint32_t exp16 = (h >> 10) & 0x1F;
-                uint32_t mant  = h & 0x3FF;
-                uint32_t bits;
-                if (exp16 == 0) {
-                    bits = sign | (mant ? (((uint32_t) (mant) << 13) | 0x38800000u) : 0u);
-                } else if (exp16 == 0x1F) {
-                    bits = sign | 0x7F800000u | (mant << 13);
-                } else {
-                    bits = sign | ((exp16 + 112u) << 23) | (mant << 13);
-                }
-                memcpy(dst + i, &bits, 4);
+                dst[i] = fp16_to_fp32(src[i]);
             }
             src += n_in;
         }
