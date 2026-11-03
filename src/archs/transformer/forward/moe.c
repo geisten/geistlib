@@ -107,7 +107,7 @@ bool moe_route(size_t                   n,
                const float              logits[static n],
                uint32_t                *ids,
                float                   *w) {
-    if (n == 0 || n > GEIST_MOE_MAX_EXPERTS) {
+    if (n == 0 || n > GEIST_MOE_MAX_EXPERTS || k == 0 || k > n) {
         return false;
     }
     float biased[GEIST_MOE_MAX_EXPERTS];
@@ -116,23 +116,106 @@ bool moe_route(size_t                   n,
             biased[i] = logits[i] + r->bias[i];
         logits = biased;
     }
-    if (r->gating != GEIST_MOE_GATING_SOFTMAX_WEIGHT) {
+    const bool grouped = r->n_group > 1;
+    const bool plain =
+            r->sel_bias == nullptr && !grouped && (r->w_scale == 0.0f || r->w_scale == 1.0f);
+    if (plain && r->gating != GEIST_MOE_GATING_SIGMOID &&
+        r->gating != GEIST_MOE_GATING_SOFTMAX_WEIGHT) {
         return moe_route_topk(n, k, r->norm, logits, ids, w);
     }
-    /* The selection is softmax's (the k largest logits, same ties); the
-     * weights are the softmax over those k logits alone. ids[0] holds the
-     * largest. */
-    if (!moe_route_topk(n, k, false, logits, ids, w)) {
-        return false;
+    for (size_t i = 0; i < n; i++) {
+        if (!finite_bits(logits[i]))
+            return false;
     }
-    const float mx  = logits[ids[0]];
-    double      sum = 0.0;
+    /* 2. scores, in double for the softmax's sum. */
+    double score[GEIST_MOE_MAX_EXPERTS];
+    if (r->gating == GEIST_MOE_GATING_SIGMOID) {
+        for (size_t i = 0; i < n; i++)
+            score[i] = 1.0 / (1.0 + exp(-(double) logits[i]));
+    } else if (r->gating == GEIST_MOE_GATING_SOFTMAX_WEIGHT) {
+        for (size_t i = 0; i < n; i++)
+            score[i] = logits[i];
+    } else {
+        float mx = logits[0];
+        for (size_t i = 1; i < n; i++)
+            mx = logits[i] > mx ? logits[i] : mx;
+        double z = 0.0;
+        for (size_t i = 0; i < n; i++)
+            z += exp((double) (logits[i] - mx));
+        for (size_t i = 0; i < n; i++)
+            score[i] = exp((double) (logits[i] - mx)) / z;
+    }
+    /* 3.-4. selection scores; the experts of groups left out are not
+     * eligible. No infinities: the build's -ffast-math assumes none. */
+    float sel[GEIST_MOE_MAX_EXPERTS];
+    bool  ok[GEIST_MOE_MAX_EXPERTS];
+    for (size_t i = 0; i < n; i++) {
+        sel[i] = (float) score[i] + (r->sel_bias != nullptr ? r->sel_bias[i] : 0.0f);
+        ok[i]  = true;
+    }
+    if (grouped) {
+        const size_t g = r->n_group, per = n / g;
+        if (n % g != 0 || per < 2 || r->topk_group == 0 || r->topk_group > g)
+            return false;
+        float gs[GEIST_MOE_MAX_EXPERTS];
+        for (size_t q = 0; q < g; q++) {
+            const float *x = sel + q * per; /* the group's best two */
+            float        a = x[0] > x[1] ? x[0] : x[1], b = x[0] > x[1] ? x[1] : x[0];
+            for (size_t i = 2; i < per; i++) {
+                if (x[i] > a) {
+                    b = a;
+                    a = x[i];
+                } else if (x[i] > b) {
+                    b = x[i];
+                }
+            }
+            gs[q] = a + b;
+        }
+        uint32_t keep[GEIST_MOE_MAX_EXPERTS];
+        float    unused[GEIST_MOE_MAX_EXPERTS];
+        if (!moe_route_topk(g, r->topk_group, false, gs, keep, unused))
+            return false;
+        bool kept[GEIST_MOE_MAX_EXPERTS] = {false};
+        for (size_t j = 0; j < r->topk_group; j++)
+            kept[keep[j]] = true;
+        for (size_t i = 0; i < n; i++)
+            ok[i] = kept[i / per];
+    }
+    /* 5. the k best eligible, (score descending, id ascending). */
     for (size_t j = 0; j < k; j++) {
-        sum += exp((double) (logits[ids[j]] - mx));
+        size_t best = n;
+        for (size_t i = 0; i < n; i++) {
+            if (!ok[i])
+                continue;
+            if (best == n || sel[i] > sel[best])
+                best = i;
+        }
+        if (best == n)
+            return false; /* fewer eligible experts than k */
+        ids[j]   = (uint32_t) best;
+        ok[best] = false;
     }
-    for (size_t j = 0; j < k; j++) {
-        w[j] = (float) (exp((double) (logits[ids[j]] - mx)) / sum);
+    /* 6. weights. */
+    double wd[GEIST_MOE_MAX_EXPERTS], sum = 0.0;
+    if (r->gating == GEIST_MOE_GATING_SOFTMAX_WEIGHT) {
+        double mx = score[ids[0]];
+        for (size_t j = 1; j < k; j++)
+            mx = score[ids[j]] > mx ? score[ids[j]] : mx;
+        double z = 0.0;
+        for (size_t j = 0; j < k; j++)
+            z += exp(score[ids[j]] - mx);
+        for (size_t j = 0; j < k; j++)
+            wd[j] = exp(score[ids[j]] - mx) / z;
+    } else {
+        for (size_t j = 0; j < k; j++)
+            wd[j] = score[ids[j]];
     }
+    for (size_t j = 0; j < k; j++)
+        sum += wd[j];
+    const double scale = r->w_scale != 0.0f ? (double) r->w_scale : 1.0;
+    const double den   = r->norm ? (sum > 6.103515625e-5 ? sum : 6.103515625e-5) : 1.0;
+    for (size_t j = 0; j < k; j++)
+        w[j] = (float) (wd[j] / den * scale);
     return true;
 }
 
@@ -593,9 +676,13 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
         return GEIST_E_BACKEND;
     }
     bool                    routed_ok = true;
-    const struct moe_router router    = {.gating = st->config.moe_gating,
-                                         .norm   = st->config.moe_norm_topk,
-                                         .bias   = L->moe_router_b};
+    const struct moe_router router    = {.gating     = st->config.moe_gating,
+                                         .norm       = st->config.moe_norm_topk,
+                                         .bias       = L->moe_router_b,
+                                         .sel_bias   = L->moe_sel_b,
+                                         .w_scale    = st->config.moe_w_scale,
+                                         .n_group    = st->config.moe_n_group,
+                                         .topk_group = st->config.moe_topk_group};
     for (size_t r = 0; r < seq && routed_ok; r++) {
         routed_ok = moe_route(
                 n_exp, n_rt, &router, lg + r * n_exp, sess->moe_ids + r * k, sess->moe_wts + r * k);

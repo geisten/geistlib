@@ -55,6 +55,10 @@ static const struct {
         /* GPT-OSS (#243): MXFP4 experts, sinks, YaRN; the argmaxes agree
          * with llama.cpp's greedy continuation of the same prompt. */
         {"gguf_artifacts/gpt-oss-20b-MXFP4.gguf", "tests/data/logit_golden/gpt-oss-20b-MXFP4.txt"},
+        /* DeepSeek-V2-Lite (#242): latent attention, the shared experts;
+         * the argmaxes agree with llama.cpp's greedy continuation. */
+        {"gguf_artifacts/DeepSeek-V2-Lite.Q4_K_M.gguf",
+         "tests/data/logit_golden/DeepSeek-V2-Lite.Q4_K_M.txt"},
 };
 enum { N_FIXTURES = sizeof FIXTURES / sizeof FIXTURES[0] };
 
