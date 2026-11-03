@@ -238,11 +238,12 @@ bool family_moe_ok(const struct geist_arch_config *c) {
 /* Only the families the build selected (make FAMILIES=..., mk/common.mk).
  * A build that selects none (no -DGEIST_FAMILY_*, e.g. another build system)
  * gets all of them. */
-#if !defined(GEIST_FAMILY_BITNET) && !defined(GEIST_FAMILY_GEMMA3) &&      \
-        !defined(GEIST_FAMILY_GEMMA4) && !defined(GEIST_FAMILY_LLAMA) &&   \
-        !defined(GEIST_FAMILY_QWEN3) && !defined(GEIST_FAMILY_QWEN35) &&   \
-        !defined(GEIST_FAMILY_QWEN3MOE) && !defined(GEIST_FAMILY_OLMOE) && \
-        !defined(GEIST_FAMILY_GRANITEMOE) && !defined(GEIST_FAMILY_GPT_OSS)
+#if !defined(GEIST_FAMILY_BITNET) && !defined(GEIST_FAMILY_GEMMA3) &&         \
+        !defined(GEIST_FAMILY_GEMMA4) && !defined(GEIST_FAMILY_LLAMA) &&      \
+        !defined(GEIST_FAMILY_QWEN3) && !defined(GEIST_FAMILY_QWEN35) &&      \
+        !defined(GEIST_FAMILY_QWEN3MOE) && !defined(GEIST_FAMILY_OLMOE) &&    \
+        !defined(GEIST_FAMILY_GPT_OSS) && !defined(GEIST_FAMILY_DEEPSEEK2) && \
+        !defined(GEIST_FAMILY_LLAMA4) && !defined(GEIST_FAMILY_GRANITEMOE)
 #define GEIST_FAMILY_BITNET 1
 #define GEIST_FAMILY_GEMMA3 1
 #define GEIST_FAMILY_GEMMA4 1
@@ -253,6 +254,8 @@ bool family_moe_ok(const struct geist_arch_config *c) {
 #define GEIST_FAMILY_OLMOE 1
 #define GEIST_FAMILY_GRANITEMOE 1
 #define GEIST_FAMILY_GPT_OSS 1
+#define GEIST_FAMILY_DEEPSEEK2 1
+#define GEIST_FAMILY_LLAMA4 1
 #endif
 static const struct transformer_family *const REGISTRY[] = {
 #if defined(GEIST_FAMILY_GEMMA4)
@@ -286,6 +289,12 @@ static const struct transformer_family *const REGISTRY[] = {
 #endif
 #if defined(GEIST_FAMILY_GPT_OSS)
         &transformer_family_gpt_oss, /* families/gpt_oss.c */
+#endif
+#if defined(GEIST_FAMILY_DEEPSEEK2)
+        &transformer_family_deepseek2, /* families/deepseek2.c */
+#endif
+#if defined(GEIST_FAMILY_LLAMA4)
+        &transformer_family_llama4, /* families/llama4.c */
 #endif
 };
 static const size_t REGISTRY_N = sizeof REGISTRY / sizeof REGISTRY[0];
@@ -328,6 +337,12 @@ const char *const geist_arch_transformer_gguf_names[] = {
 #endif
 #if defined(GEIST_FAMILY_GPT_OSS)
         "gpt-oss",
+#endif
+#if defined(GEIST_FAMILY_DEEPSEEK2)
+        "deepseek2",
+#endif
+#if defined(GEIST_FAMILY_LLAMA4)
+        "llama4",
 #endif
         nullptr,
 };

@@ -96,6 +96,9 @@ static void release_layer_weight_aux(struct transformer_layer_weights *L) {
     release_weight_aux(&L->dn_alpha_w);
     release_weight_aux(&L->dn_out_w);
     release_weight_aux(&L->moe_router_w);
+    release_weight_aux(&L->mla_q_a_w);
+    release_weight_aux(&L->mla_kv_a_w);
+    release_weight_aux(&L->mla_kv_b_w);
     /* The expert arrays: n_experts entries each, all set or all null. */
     struct geist_weight **experts[] = {&L->moe_gate_w, &L->moe_up_w, &L->moe_down_w};
     for (size_t p = 0; p < 3; p++) {
@@ -114,7 +117,9 @@ static void release_layer_weight_aux(struct transformer_layer_weights *L) {
     }
     safe_free((void **) &L->moe_shexp_gate);
     safe_free((void **) &L->attn_sinks);
-    float **biases[] = {&L->moe_router_b, &L->moe_gate_b, &L->moe_up_b, &L->moe_down_b};
+    safe_free((void **) &L->mla_kv_a_norm);
+    float **biases[] = {
+            &L->moe_router_b, &L->moe_gate_b, &L->moe_up_b, &L->moe_down_b, &L->moe_sel_b};
     for (size_t i = 0; i < sizeof biases / sizeof biases[0]; i++)
         safe_free((void **) biases[i]);
 }
@@ -419,10 +424,20 @@ rope_row_widths(const struct transformer_arch_state *st, size_t *sl_width, size_
     }
     const struct geist_arch_config *c = &st->config;
     if (c->rope_yarn_factor > 1.0f) {
-        /* YaRN (#243): full rotation only, which the family checked. */
+        /* YaRN (#243): over the table's width, i.e. a full rotation or a
+         * partial block (DeepSeek's pe dims, #242). */
+        if ((sliding_rot != sliding_hd || full_rot != full_hd) && !pblock) {
+            void *p[4] = {cos_sl, sin_sl, cos_fl, sin_fl};
+            for (size_t i = 0; i < 4; i++)
+                safe_free(&p[i]);
+            geist_backend_set_error(be,
+                                    GEIST_E_UNSUPPORTED,
+                                    "transformer: YaRN on a partial rotation needs its own block");
+            return GEIST_E_UNSUPPORTED;
+        }
         rope_compute_yarn_at(0,
                              st->max_seq_len,
-                             sliding_hd,
+                             sl_width,
                              sliding_th,
                              c->rope_yarn_factor,
                              c->rope_yarn_orig_ctx,
@@ -433,7 +448,7 @@ rope_row_widths(const struct transformer_arch_state *st, size_t *sl_width, size_
                              sin_sl);
         rope_compute_yarn_at(0,
                              st->max_seq_len,
-                             full_hd,
+                             fl_width,
                              full_th,
                              c->rope_yarn_factor,
                              c->rope_yarn_orig_ctx,
@@ -446,6 +461,27 @@ rope_row_widths(const struct transformer_arch_state *st, size_t *sl_width, size_
         rope_compute_at(
                 0, st->max_seq_len, sliding_hd, sliding_rot, pblock, sliding_th, cos_sl, sin_sl);
         rope_compute_at(0, st->max_seq_len, full_hd, full_rot, pblock, full_th, cos_fl, sin_fl);
+    }
+    if (st->rope_freq_factors != nullptr) {
+        /* Frequency factors (#244): full rotation only, one factor a pair. */
+        if (sl_width != sliding_hd || fl_width != full_hd ||
+            st->n_rope_freq_factors * 2 != sliding_hd || st->n_rope_freq_factors * 2 != full_hd ||
+            c->rope_yarn_factor > 1.0f) {
+            void *p[4] = {cos_sl, sin_sl, cos_fl, sin_fl};
+            for (size_t i = 0; i < 4; i++)
+                safe_free(&p[i]);
+            geist_backend_set_error(be,
+                                    GEIST_E_UNSUPPORTED,
+                                    "transformer: %zu RoPE frequency factors do not fit head_dim "
+                                    "%zu",
+                                    st->n_rope_freq_factors,
+                                    full_hd);
+            return GEIST_E_UNSUPPORTED;
+        }
+        rope_compute_ff_at(
+                0, st->max_seq_len, sliding_hd, sliding_th, st->rope_freq_factors, cos_sl, sin_sl);
+        rope_compute_ff_at(
+                0, st->max_seq_len, full_hd, full_th, st->rope_freq_factors, cos_fl, sin_fl);
     }
 
     enum geist_status s = upload_table(be, cos_sl, n_sl_floats, &st->rope_cos_sliding);
@@ -2054,6 +2090,8 @@ void transformer_state_destroy(struct transformer_arch_state *st) {
     st->weight_arena_capacity   = 0;
     st->weight_arena_used       = 0;
     safe_free(&st->rope_il_rows); /* same lifetime as the arena slices */
+    safe_free((void **) &st->rope_freq_factors);
+    st->n_rope_freq_factors   = 0;
     st->rope_il_rows_capacity = 0;
     st->rope_il_rows_used     = 0;
     /* Their buffer handles are gone with the layers and globals. */
@@ -2269,7 +2307,8 @@ static bool scratch_device_wanted(const struct transformer_arch_session *sess) {
     const struct geist_backend_fused *fused = geist_backend_fused_tbl(st->backend);
     const bool gate_on_host = st->config.has_attn_output_gate &&
                               (fused->attn_qgate_split == nullptr || fused->sigmoid_mul == nullptr);
-    if (ple_on_host || gate_on_host || st->config.has_sub_ln ||
+    /* Latent attention (#242) assembles K and V on the host. */
+    if (ple_on_host || gate_on_host || st->config.has_sub_ln || st->config.mla_kv_rank > 0 ||
         st->config.has_projection_input_norms || !st->model_fusions.backend_buffer_copy ||
         !st->model_fusions.prim_scale_f32) {
         return false;

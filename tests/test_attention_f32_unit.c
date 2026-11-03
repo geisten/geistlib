@@ -273,6 +273,71 @@ static int run(struct geist_backend *be, const char *backend, const struct shape
     return thread_fails + geist_expect(st == GEIST_OK && nonfinite == 0 && worst <= tol, what);
 }
 
+/* Chunked attention (#244) passes views that start inside their buffers:
+ * k / v after `pre` rows of the cache, q / out after rows of their own.
+ * The rows outside the views hold NaN; the result must be the reference
+ * over the views alone. Returns the number of failed checks. */
+static int view_checks(struct geist_backend *be, const char *backend, bool f16) {
+    const struct shape sh  = {.n_q = 3, .n_q_heads = 4, .n_kv_heads = 2, .head_dim = 16, .n_kv = 9};
+    const size_t       pre = 5, qpre = 2, hd = sh.head_dim;
+    const size_t       q_offset = sh.n_kv - sh.n_q;
+    const size_t       nq = sh.n_q * sh.n_q_heads * hd, nkv = sh.n_kv * sh.n_kv_heads * hd;
+    const size_t       kv_pre = pre * sh.n_kv_heads * hd, q_pre = qpre * sh.n_q_heads * hd;
+    const enum geist_dtype kvt = f16 ? GEIST_DTYPE_F16 : GEIST_DTYPE_F32;
+    float                 *q   = xmalloc((q_pre + nq) * sizeof *q);
+    float                 *k   = xmalloc((kv_pre + nkv) * sizeof *k);
+    float                 *v   = xmalloc((kv_pre + nkv) * sizeof *v);
+    float                 *out = xmalloc((q_pre + nq) * sizeof *out);
+    double                *ref = xmalloc(nq * sizeof *ref), scores[16];
+    for (size_t i = 0; i < q_pre + nq; i++) {
+        q[i]   = i < q_pre ? NAN : urand() * 0.25f;
+        out[i] = NAN;
+    }
+    for (size_t i = 0; i < kv_pre + nkv; i++) {
+        k[i] = i < kv_pre ? NAN : urand();
+        v[i] = i < kv_pre ? NAN : urand();
+    }
+    struct geist_buffer *bk = f16 ? upload_f16(be, k, kv_pre + nkv) : upload(be, k, kv_pre + nkv);
+    struct geist_buffer *bv = f16 ? upload_f16(be, v, kv_pre + nkv) : upload(be, v, kv_pre + nkv);
+    reference(&sh, q_offset, q + q_pre, k + kv_pre, v + kv_pre, ref, scores);
+    struct geist_buffer *bq = upload(be, q, q_pre + nq), *bo = upload(be, out, q_pre + nq);
+    struct geist_tensor  tq      = tensor3(bq, sh.n_q, sh.n_q_heads, hd, GEIST_DTYPE_F32);
+    struct geist_tensor  to      = tensor3(bo, sh.n_q, sh.n_q_heads, hd, GEIST_DTYPE_F32);
+    struct geist_tensor  tk      = tensor3(bk, sh.n_kv, sh.n_kv_heads, hd, kvt);
+    struct geist_tensor  tv      = tensor3(bv, sh.n_kv, sh.n_kv_heads, hd, kvt);
+    const size_t         kv_elem = f16 ? sizeof(uint16_t) : sizeof(float);
+    tq.offset = to.offset = (int64_t) (q_pre * sizeof(float));
+    tk.offset = tv.offset      = (int64_t) (kv_pre * kv_elem);
+    const enum geist_status st = be->desc->prims->attention(be, &tq, &tk, &tv, q_offset, 0, &to);
+    if (st == GEIST_OK) {
+        (void) be->desc->vtbl->buffer_download((q_pre + nq) * sizeof(float), (uint8_t *) out, bo);
+    }
+    double worst = st == GEIST_OK ? 0.0 : INFINITY;
+    for (size_t i = 0; st == GEIST_OK && i < nq; i++) {
+        const float o = out[q_pre + i];
+        worst         = finite_f32(o) ? fmax(worst, fabs((double) o - ref[i])) : 1e30;
+    }
+    for (size_t i = 0; st == GEIST_OK && i < q_pre; i++)
+        worst = finite_f32(out[i]) ? 1e30 : worst; /* rows before the view stay untouched */
+    be->desc->vtbl->buffer_destroy(be, bq);
+    be->desc->vtbl->buffer_destroy(be, bk);
+    be->desc->vtbl->buffer_destroy(be, bv);
+    be->desc->vtbl->buffer_destroy(be, bo);
+    free(q);
+    free(k);
+    free(v);
+    free(out);
+    free(ref);
+    char what[160];
+    snprintf(what,
+             sizeof what,
+             "%s %s: views that start inside their buffers: max error %.3g",
+             backend,
+             f16 ? "F16" : "F32",
+             worst);
+    return geist_expect(worst <= 2e-5, what);
+}
+
 /* Views whose shapes disagree with q must be refused, not run: the kernels
  * size their loops from q and k, so a short out (or v) view would be
  * written (read) past its end — ASan reports it where a backend skips the
@@ -401,6 +466,8 @@ int main(int argc, char **argv) {
         }
         fails += shape_checks(be, BACKENDS[b], false);
         fails += shape_checks(be, BACKENDS[b], true);
+        fails += view_checks(be, BACKENDS[b], false);
+        fails += view_checks(be, BACKENDS[b], true);
         geist_backend_destroy(be);
     }
     if (ran == 0) {
