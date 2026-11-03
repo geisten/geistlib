@@ -27,26 +27,6 @@ typedef float (*w8a8_dot_fn)(size_t        n_blocks,
                              const int32_t sum_a_per_block[static n_blocks],
                              const float   act_scales[static w8a8_act_groups(n_blocks)]);
 
-[[nodiscard]] float w8a8_dot_avx512_vnni(size_t        n_blocks,
-                                         const uint8_t weights[static n_blocks * W8A8_BLOCK_ELEMS],
-                                         const float   w_scales[static n_blocks],
-                                         const float   w_offsets[static n_blocks],
-                                         const int8_t  acts[static n_blocks * W8A8_BLOCK_ELEMS],
-                                         const int32_t sum_a_per_block[static n_blocks],
-                                         const float act_scales[static w8a8_act_groups(n_blocks)]);
-
-void w8a8_gemm_avx512_vnni(
-        size_t        n_tokens,
-        size_t        n_rows,
-        size_t        n_blocks_per_row,
-        const uint8_t weights[static n_rows * n_blocks_per_row * W8A8_BLOCK_ELEMS],
-        const float   w_scales[static n_rows * n_blocks_per_row],
-        const float   w_offsets[static n_rows * n_blocks_per_row],
-        const int8_t  acts[static n_tokens * n_blocks_per_row * W8A8_BLOCK_ELEMS],
-        const int32_t sum_a_per_block[static n_tokens * n_blocks_per_row],
-        const float   act_scales[static n_tokens * w8a8_act_groups(n_blocks_per_row)],
-        float         out[static n_tokens * n_rows]);
-
 static w8a8_dot_fn g_dot8    = nullptr;
 static int         g_inited8 = 0;
 

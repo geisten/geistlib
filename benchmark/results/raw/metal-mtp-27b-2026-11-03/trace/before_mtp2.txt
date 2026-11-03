@@ -1,0 +1,13 @@
+XSPEC k=2 acc=1 draft=7.47 verify=894.92 trunc=0.00 corr=68.72
+XSPEC k=2 acc=0 draft=5.22 verify=612.92 trunc=1.33 corr=71.95
+XSPEC k=2 acc=1 draft=5.43 verify=648.42 trunc=0.00 corr=93.40
+XSPEC k=2 acc=1 draft=7.21 verify=648.47 trunc=0.00 corr=93.21
+XSPEC k=2 acc=0 draft=7.22 verify=684.01 trunc=1.80 corr=93.84
+XSPEC k=2 acc=0 draft=9.13 verify=713.20 trunc=1.50 corr=86.68
+XSPEC k=2 acc=1 draft=9.41 verify=707.37 trunc=0.00 corr=98.15
+XSPEC k=2 acc=0 draft=9.48 verify=698.95 trunc=1.40 corr=79.57
+XSPEC k=2 acc=1 draft=6.91 verify=669.66 trunc=0.00 corr=89.65
+XSPEC k=2 acc=1 draft=9.01 verify=687.54 trunc=0.00 corr=90.07
+XSPEC k=2 acc=1 draft=7.22 verify=678.78 trunc=0.00 corr=88.69
+XSPEC k=2 acc=0 draft=6.93 verify=632.30 trunc=1.40 corr=78.63
+XSPEC k=2 acc=0 draft=6.82 verify=621.60 trunc=1.38 corr=79.41

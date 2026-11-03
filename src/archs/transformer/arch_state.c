@@ -2647,6 +2647,19 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
     }
     /* KV-mode resolution: opts override > env > backend/platform default. */
     apply_kv_layout(sess, opts);
+    /* KIVI packs four channels per byte; RoPE alone admits any even head_dim. */
+    for (size_t i = 0; sess->kv_kivi_enabled && i < state->n_layers; i++) {
+        if (state->layers[i].head_dim % 4 != 0) {
+            geist_backend_set_error(be,
+                                    GEIST_E_UNSUPPORTED,
+                                    "transformer_session_alloc: KIVI needs a head_dim that is a "
+                                    "multiple of 4; layer %zu has %zu",
+                                    i,
+                                    state->layers[i].head_dim);
+            transformer_session_free(state, sess);
+            return nullptr;
+        }
+    }
 
     /* Sampler defaults (greedy); apply_opts may override below. */
     sess->temperature = 0.0f;
