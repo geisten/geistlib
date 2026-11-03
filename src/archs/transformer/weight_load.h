@@ -56,6 +56,19 @@ compute_weight_arena_capacity(const struct geist_backend          *be,
                                                   struct geist_tensor              *out_view,
                                                   struct geist_weight              *out_weight);
 
+/* load_layer_matrix (not exact) with the rows reordered for interleaved
+ * RoPE in groups of `group` rows: the whole group, or its last
+ * config.rope_il_n rows when that is set (arch_config.h). */
+[[nodiscard]] enum geist_status load_layer_matrix_rope_il(struct transformer_arch_state    *st,
+                                                          struct gguf_ctx                  *gguf,
+                                                          struct transformer_layer_weights *L,
+                                                          const char                       *name,
+                                                          size_t                            n_out,
+                                                          size_t                            n_in,
+                                                          size_t                            group,
+                                                          struct geist_tensor *out_view,
+                                                          struct geist_weight *out_weight);
+
 /* Load the 3-D expert tensor `name`, [n_experts][n_out][n_in] in row-major
  * order, as n_experts projections: one buffer (tracked by L), a heap array
  * of n_experts views into it and one of resolved weights, both owned by L

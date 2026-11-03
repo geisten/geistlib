@@ -231,9 +231,9 @@ deltanet_txn_begin(struct transformer_arch_session *sess, size_t k, const geist_
         dn++;
     }
     /* Per-row state slots (#192) for verifies of 2..TRANSFORMER_DN_ROW_SLOTS+1
-     * rows, unless the backend has shown it does not write them. */
-    if (!sess->dn_rows_off && k >= 2 && k - 1 <= TRANSFORMER_DN_ROW_SLOTS &&
-        sess->model->n_mtp_layers == 0) {
+     * rows, unless the backend has shown it does not write them. With the
+     * MTP drafter on, kv_truncate sets its carry from the verify's rows. */
+    if (!sess->dn_rows_off && k >= 2 && k - 1 <= TRANSFORMER_DN_ROW_SLOTS) {
         if (sess->dn_row_S_buf == nullptr) {
             enum geist_status as =
                     device_state_alloc(be,
@@ -417,6 +417,19 @@ static enum geist_status deltanet_rows_restore(struct transformer_arch_session *
     return s;
 }
 
+/* The MTP drafter after a verify's first `accepted` rows were kept (#246):
+ * the verify's sync (transformer_mtp_sync_target) wrote its cache for every
+ * row and left the target's raw hidden rows in mtp_target_raw, so the
+ * accepted prefix needs no replay: its length, and the last kept row's
+ * hidden as the carry. */
+static void mtp_rows_restore(struct transformer_arch_session *sess, size_t accepted) {
+    if (!sess->mtp_enabled || sess->mtp_pending_h == nullptr || sess->mtp_target_raw == nullptr)
+        return;
+    const size_t H   = sess->model->d_model;
+    sess->mtp_kv_len = sess->dn_txn_base_kv_len + accepted;
+    memcpy(sess->mtp_pending_h, sess->mtp_target_raw + (accepted - 1) * H, H * sizeof(float));
+}
+
 /* ---- Batched text prefill -------------------------------------------- */
 
 /* geist_session_cancel (#628): true when the engine says stop. A stopped
@@ -565,6 +578,16 @@ enum geist_status transformer_prefill_rows(struct transformer_arch_session     *
  * accept/reject the draft and then optionally truncates kv_len to
  * undo verify-pass KV writes past the accept point. */
 
+/* An MoE with experts on a GPU verifies its rows' experts as decode steps
+ * (#246): the k rows of a verify are k next-token steps, so each row's
+ * experts run the kernels decode_step runs, row by row (the batched
+ * decode's path, #245), and not a prefill chunk's per-expert GEMMs, which
+ * round differently. As fast for 2-4 rows on the RTX 2080 Ti; the rows stay
+ * out of the profile's prefill rows (#239). */
+static bool transformer_verify_rows(const struct transformer_arch_state *st, size_t k) {
+    return st->moe_gpu != nullptr && k * moe_k(&st->config) <= GEIST_MOE_MAX_EXPERTS;
+}
+
 static enum geist_status verify_forward_inner(struct transformer_arch_session *sess,
                                               size_t                           k,
                                               const geist_token_t             *ids,
@@ -623,7 +646,9 @@ static enum geist_status verify_forward_inner(struct transformer_arch_session *s
         return s;
     const size_t q_pos = sess->kv_len;
     transformer_hist_put(sess, q_pos, k, ids);
+    sess->verify_rows = transformer_verify_rows(st, k);
     s = transformer_run_all_layers(sess, q_pos, k, sess->scratch_h_a, ple_buf, sess->scratch_h_b);
+    sess->verify_rows = false;
     if (s != GEIST_OK) {
         deltanet_txn_restore(sess);
         transformer_recurrent_txn_commit(sess);
@@ -690,14 +715,14 @@ enum geist_status transformer_verify_forward(struct transformer_arch_session *se
     if (sess == nullptr || sess->model == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    struct geist_backend            *be = sess->model->backend;
-    const struct geist_backend_vtbl *v  = be->desc->vtbl;
-    const int                        region_tok =
-            v->parallel_region_begin ? v->parallel_region_begin(be, GEIST_REGION_PREFILL_BATCH) : 0;
+    /* On the MoE's CPU experts' backend too (moe_cpu), as prefill does:
+     * outside the backend's thread region a split MoE's verify ran its CPU
+     * experts several times slower as soon as anything else ran on the
+     * host (#246). */
+    const struct transformer_region region =
+            transformer_region_begin(sess->model, GEIST_REGION_PREFILL_BATCH);
     const enum geist_status s = verify_forward_inner(sess, k, ids, out_tokens);
-    if (v->parallel_region_end) {
-        v->parallel_region_end(be, region_tok);
-    }
+    transformer_region_end(sess->model, region);
     if (sess->dn_rows_req && !sess->dn_rows_ok) {
         sess->dn_rows_off = true; /* the backend does not keep row states (#192) */
     }
@@ -727,6 +752,7 @@ enum geist_status transformer_kv_truncate(struct transformer_arch_session *sess,
             const enum geist_status rs = deltanet_rows_restore(sess, accepted - 1);
             if (rs != GEIST_OK)
                 return rs;
+            mtp_rows_restore(sess, accepted);
             transformer_recurrent_txn_commit(sess);
         } else {
             deltanet_txn_restore(sess);

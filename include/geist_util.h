@@ -46,7 +46,12 @@ geist_token_t geist_model_bos_token(const struct geist_model *m);
  * expects BOS / EOS around them, for a caller that prefills tokens itself.
  * geist_session_set_prompt applies add_bos on its own, with one BOS (#263). Embedding models in particular pool
  * over exactly the sequence passed, so a missing BOS gives a different
- * vector. Both false when no tokenizer is loaded. */
+ * vector. Both false when no tokenizer is loaded.
+ *
+ * add_bos is decided as llama.cpp decides it: the add_bos_token flag when
+ * the GGUF has one, else the default of its vocabulary and pretokenizer
+ * (true for SentencePiece and for Llama 3's byte-BPE, false for Qwen's),
+ * and true for Gemma 4 in any case (#385). */
 bool geist_model_add_bos(const struct geist_model *m);
 bool geist_model_add_eos(const struct geist_model *m);
 

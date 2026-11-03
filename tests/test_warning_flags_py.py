@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Each warning #343 turned on fails the build (#343).
+
+Takes the flags the library is built with (from `make -n`), and compiles two
+snippets per warning: one the warning has to reject under -Werror, and the
+same code written the accepted way, which has to compile. A warning that is
+dropped from mk/common.mk, or that a compiler does not know, fails here. A
+make variable given to `make test-py` (CC, TARGET) reaches `make -n` through
+MAKEFLAGS.
+"""
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SOURCE = re.compile(r"\s(src/\S+\.c)(?:\s|$)")
+
+# warning: (rejected, accepted)
+CASES = {
+    "-Wimplicit-fallthrough": (
+        """
+int f(int x) {
+    int r = 0;
+    switch (x) {
+    case 0:
+        r = 1;
+    case 1:
+        r += 2;
+        break;
+    default:
+        break;
+    }
+    return r;
+}
+""",
+        """
+int f(int x) {
+    int r = 0;
+    switch (x) {
+    case 0:
+        r = 1;
+        [[fallthrough]];
+    case 1:
+        r += 2;
+        break;
+    default:
+        break;
+    }
+    return r;
+}
+""",
+    ),
+}
+
+
+def library_flags():
+    """The compiler and flags of one library object, with -Werror."""
+    out = subprocess.run(
+        ["make", "-n", "-B", "lib"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout
+    for line in out.splitlines():
+        if " -c " in line and " -o " in line and SOURCE.search(line):
+            argv = shlex.split(line)
+            keep = []
+            skip = False
+            for a in argv:
+                if skip:
+                    skip = False
+                elif a in ("-o", "-MF", "-MT"):
+                    skip = True
+                elif a in ("-c", "-MMD", "-MP") or SOURCE.fullmatch(" " + a):
+                    continue
+                else:
+                    keep.append(a)
+            return keep
+    raise AssertionError("make -n lib printed no compile command")
+
+
+def compiles(flags, code):
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "probe.c"
+        src.write_text(code)
+        return subprocess.run(
+            flags + ["-fsyntax-only", str(src)], cwd=ROOT, capture_output=True, text=True
+        )
+
+
+class WarningFlags(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.flags = library_flags()
+        probe = compiles(cls.flags, "int x;\n")
+        if probe.returncode != 0 and "-std=c23" in probe.stderr:
+            raise unittest.SkipTest(f"{cls.flags[0]} has no C23: make test-py CC=<compiler>")
+        assert probe.returncode == 0, probe.stderr
+        assert "-Werror" in cls.flags, cls.flags
+
+    def test_each_warning(self):
+        for warning, (rejected, accepted) in CASES.items():
+            with self.subTest(warning=warning):
+                self.assertIn(warning, self.flags)
+                bad = compiles(self.flags, rejected)
+                self.assertNotEqual(bad.returncode, 0, f"{warning} let the probe through")
+                self.assertIn(warning.split("=")[0], bad.stderr)
+                good = compiles(self.flags, accepted)
+                self.assertEqual(good.returncode, 0, good.stderr)
+
+
+if __name__ == "__main__":
+    sys.exit(unittest.main(verbosity=1))

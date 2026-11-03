@@ -149,6 +149,12 @@ struct geist_arch_config {
      * sqrt(d_model). The Gemma families do this; Llama/Qwen/BitNet do not.
      * Independent of has_ple: Gemma 3 has the scale and no PLE. */
     bool has_embed_scale;
+    /* A multiplier the family computes instead (Granite); 0: none. */
+    float embed_scale;
+
+    /* ---- Multiplies output_norm's weights at load, so it divides the
+     * logits on every head path (Granite); 0: none. */
+    float output_norm_scale;
 
     /* ---- PLE (Per-Layer Embedding, Gemma 4 family only). When
      * has_ple == false, the precompute path is skipped entirely. */
@@ -250,8 +256,22 @@ struct geist_arch_config {
      * to the logits first. Values are the GGUF key's. */
     enum geist_moe_gating {
         GEIST_MOE_GATING_SOFTMAX        = 1,
+        GEIST_MOE_GATING_SIGMOID        = 2,
         GEIST_MOE_GATING_SOFTMAX_WEIGHT = 3,
     } moe_gating;
+    /* DeepSeek-V3's router (#242), as llama.cpp's build_moe_ffn runs it:
+     * moe_w_scale multiplies the final weights (0: 1, i.e. none); with
+     * moe_n_group > 1 the experts form that many equal groups, a group
+     * scores the sum of its two best selection scores and only the
+     * moe_topk_group best groups stay eligible. A per-layer selection bias
+     * (exp_probs_b, transformer_layer_weights.moe_sel_b) shifts the scores
+     * for the selection alone; the weights are the unbiased scores. */
+    float  moe_w_scale;
+    size_t moe_n_group, moe_topk_group;
+    /* Llama 4 (#244): a routed expert's input row is multiplied by its
+     * weight before the expert runs, and its output is summed unweighted
+     * (llama.cpp's weight_before_ffn). */
+    bool moe_weight_before;
     /* The expert FFN's activation (moe_expert_rows):
      *   SWIGLU      silu(gate) * up.
      *   SWIGLU_OAI  g = min(gate, limit), u = clamp(up, -limit, limit),
@@ -290,6 +310,13 @@ struct geist_arch_config {
      *          pre-permuted — we have to apply interleaved RoPE to
      *          match. */
     bool rope_interleaved;
+    /* Rows the loader reorders for interleaved RoPE (load_layer_matrix_rope_il,
+     * #242): 0 = the whole group of rows (a llama head); else only the last
+     * rope_il_n rows of each group rotate (DeepSeek-V2: a q head is
+     * [nope | pe], kv_a_mqa [latent | k_pe]) and they move to the front,
+     * deinterleaved, so the forward pass rotates the first rope_il_n dims
+     * with half-split pairs. */
+    size_t rope_il_n;
 
     /* How a PARTIAL rotation (n_rotated_dims < head_dim) is laid out. The
      * two shipped families disagree, and each matches its own reference:
@@ -319,6 +346,23 @@ struct geist_arch_config {
     float  rope_yarn_beta_fast;
     float  rope_yarn_beta_slow;
     float  rope_yarn_mscale;
+
+    /* ---- Multi-head latent attention (DeepSeek-V2/V3, #242). mla_kv_rank
+     * == 0: none. Otherwise K and V come from a compressed latent: per
+     * token kv_a = [k_pe (mla_rope) | latent (mla_kv_rank)], the latent
+     * RMS-normalised and expanded by kv_b to every head's [k_nope | v];
+     * q (from q_a / q_a_norm / q_b when mla_q_rank > 0) is per head
+     * [q_pe | q_nope] after the load-time row reorder (rope_il_n). The
+     * cache holds full heads of head_dim = mla_rope + nope; V heads of
+     * mla_v_dim < head_dim are zero-padded to it, and the first mla_v_dim
+     * of each output head go to o_proj. attn_q_scale replaces
+     * 1/sqrt(head_dim) (YaRN's mscale squared over it); Granite sets it
+     * too (its attention_multiplier), read by its own attention_block. */
+    size_t mla_kv_rank;
+    size_t mla_q_rank;
+    size_t mla_rope;
+    size_t mla_v_dim;
+    float  attn_q_scale;
 
     /* ---- qwen35 hybrid family ------------------------------------------ *
      *

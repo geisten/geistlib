@@ -16,8 +16,12 @@
 #include <math.h>
 
 /* What a looked-up token embedding is multiplied by: sqrt(d_model) where
- * the model has the scale (has_embed_scale: Gemma 3/4), else 1. */
+ * the model has the scale (has_embed_scale: Gemma 3/4), the family's own
+ * multiplier where it set one (Granite), else 1. */
 static inline float transformer_embed_scale(const struct transformer_arch_state *st) {
+    if (st->config.embed_scale != 0.0f) {
+        return st->config.embed_scale;
+    }
     return st->config.has_embed_scale ? sqrtf((float) st->d_model) : 1.0f;
 }
 

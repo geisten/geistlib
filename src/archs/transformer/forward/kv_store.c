@@ -407,6 +407,55 @@ kv_store_attention_sinks(struct transformer_layer_forward_ctx *ctx,
     return ok ? GEIST_OK : GEIST_E_BACKEND; /* the backend said why */
 }
 
+/* Chunked attention (Llama 4, #244) on the F32 / F16 cache: the query rows
+ * split where a chunk starts, each run attending causally over a view of
+ * the cache that begins at its chunk. */
+[[nodiscard]] static enum geist_status
+kv_store_attention_chunked(struct transformer_layer_forward_ctx *ctx,
+                           const struct geist_tensor            *t_q,
+                           struct geist_tensor                  *t_out) {
+    struct transformer_arch_state *st = ctx->st;
+    if (ctx->kv_kivi_enabled || ctx->kv_int8_enabled) {
+        geist_backend_set_error(ctx->be,
+                                GEIST_E_UNSUPPORTED,
+                                "transformer: layer %d attends in chunks, which run on an F32 or "
+                                "F16 KV cache only",
+                                ctx->layer_idx);
+        return GEIST_E_UNSUPPORTED;
+    }
+    const size_t  chunk = ctx->L->attn_chunk, hd = ctx->hd;
+    const int64_t n_q = st->n_q_heads, n_kh = st->n_kv_heads;
+    const size_t  q_row = (size_t) n_q * hd * sizeof(float);
+    const size_t  kv_row =
+            (size_t) n_kh * hd * (ctx->kv_f16_enabled ? sizeof(uint16_t) : sizeof(float));
+    for (size_t t0 = 0; t0 < ctx->seq;) {
+        const size_t p0          = ctx->q_position + t0;
+        const size_t start       = p0 - p0 % chunk;
+        size_t       t1          = start + chunk - ctx->q_position; /* the next chunk's first row */
+        t1                       = t1 < ctx->seq ? t1 : ctx->seq;
+        const size_t        n_kv = ctx->q_position + t1 - start;
+        struct geist_tensor q    = view_3d(t_q->buffer, (int64_t) (t1 - t0), n_q, (int64_t) hd);
+        struct geist_tensor o    = view_3d(t_out->buffer, (int64_t) (t1 - t0), n_q, (int64_t) hd);
+        q.offset                 = t_q->offset + (int64_t) (t0 * q_row);
+        o.offset                 = t_out->offset + (int64_t) (t0 * q_row);
+        struct geist_tensor k =
+                ctx->kv_f16_enabled
+                        ? view_3d_f16(ctx->k_cache_buf, (int64_t) n_kv, n_kh, (int64_t) hd)
+                        : view_3d(ctx->k_cache_buf, (int64_t) n_kv, n_kh, (int64_t) hd);
+        struct geist_tensor v =
+                ctx->kv_f16_enabled
+                        ? view_3d_f16(ctx->v_cache_buf, (int64_t) n_kv, n_kh, (int64_t) hd)
+                        : view_3d(ctx->v_cache_buf, (int64_t) n_kv, n_kh, (int64_t) hd);
+        k.offset                  = (int64_t) (start * kv_row);
+        v.offset                  = (int64_t) (start * kv_row);
+        const enum geist_status s = ctx->prims->attention(ctx->be, &q, &k, &v, p0 - start, 0, &o);
+        if (s != GEIST_OK)
+            return s;
+        t0 = t1;
+    }
+    return GEIST_OK;
+}
+
 enum geist_status transformer_kv_store_attention(struct transformer_layer_forward_ctx *ctx,
                                                  const struct geist_tensor            *t_q_3d,
                                                  struct geist_tensor                  *t_attn_3d) {
@@ -421,6 +470,11 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
 
     if (L->attn_sinks != nullptr) {
         return kv_store_attention_sinks(ctx, t_q_3d, t_attn_3d);
+    }
+    /* Chunked attention (#244) once a chunk boundary is behind the
+     * queries; before that it is plain causal attention. */
+    if (L->attn_chunk > 0 && kv_len_now > L->attn_chunk) {
+        return kv_store_attention_chunked(ctx, t_q_3d, t_attn_3d);
     }
     if (ctx->kv_kivi_enabled) {
         const float   *qp   = (const float *) v->buffer_map(sess->scratch_q);
