@@ -11,18 +11,20 @@ Scope: the tracked .c, .h and .m files under src/ and include/, except the
 generated SPIR-V and Metal shader headers (*_spv.h, metal_shaders.h).
 
     write   write benchmark/c23_metrics.json
-    check   compare benchmark/c23_metrics.json with the tree; exit 1 on any
-            difference (runs in CI)
+    check   compare the tree with benchmark/c23_metrics.json; exit 1 when a
+            gap grew past its committed ceiling (runs in CI)
     show    print every metric, the gaps and what is already done, as a
             table; --json prints it as JSON instead
 
-benchmark/c23_metrics.json holds the gaps only: what #333's tickets reduce,
-per file, with totals. A count there changes only when code adds or removes
-such a construct, so a pull request that does updates the file
-(`make c23-metrics`) and the change is visible in review. The constructs that
-are already done (nullptr, [[nodiscard]], ...) and the sizes grow with any
-new code; they are in `show`, not in the committed file, so unrelated pull
-requests do not conflict over it.
+benchmark/c23_metrics.json is a ratchet: one ceiling per gap, the total
+#333's tickets reduce. `check` fails only when a total rises above its
+ceiling, so a pull request that adds such a construct raises the ceiling
+(`make c23-metrics`) and review sees it. A pull request that removes some
+passes as is; it may lower the ceiling the same way, and `check` says so.
+Per-file counts are in `show`, not in the committed file: concurrent pull
+requests touching different files used to conflict over every line of it.
+The constructs that are already done (nullptr, [[nodiscard]], ...) and the
+sizes grow with any new code; they are in `show` only.
 
 Stdlib only.
 """
@@ -41,7 +43,6 @@ GENERATED = ("_spv.h", "metal_shaders.h")
 # The gaps of #333, in its order; the committed file holds these.
 GAPS = {
     "switch_with_default": "switch statements with a default: label of their own",
-    "enum_named": "named enum definitions",
     "enum_named_unfixed": "named enum definitions without a fixed underlying type",
     "enum_anonymous": "enum { ... } used as constants (no tag, no typedef)",
     "define_object": "object-like #define with a replacement",
@@ -69,6 +70,7 @@ DONE = {
     "static_assert": "static_assert",
     "std_attribute": "[[gnu::...]] and [[clang::...]]",
     "switch": "switch statements",
+    "enum_named": "named enum definitions",
     "stdbit_include": "#include <stdbit.h>",
 }
 
@@ -304,10 +306,15 @@ def committed(totals: dict, per_file: dict) -> dict:
     return {
         "generated_by": "tools/c23_metrics.py write",
         "scope": "src/ and include/: tracked .c .h .m, without *_spv.h and metal_shaders.h",
-        "gaps": {
-            k: {"what": GAPS[k], "total": totals[k], "files": per_file[k]} for k in GAPS
-        },
+        "ceiling": {k: {"what": GAPS[k], "max": totals[k]} for k in GAPS},
     }
+
+
+def ratchet(ceiling: dict, totals: dict) -> tuple[list, list]:
+    """(gaps above their ceiling or without one, gaps below it)."""
+    grew = [k for k in GAPS if totals[k] > ceiling.get(k, {}).get("max", -1)]
+    fell = [k for k in GAPS if k not in grew and totals[k] < ceiling[k]["max"]]
+    return grew, fell
 
 
 def dump(doc: dict) -> str:
@@ -336,23 +343,19 @@ def main() -> int:
     if args.command == "write":
         OUT.write_text(text)
         return 0
-    old = json.loads(OUT.read_text()) if OUT.exists() else {"gaps": {}}
-    new = json.loads(text)
-    if old == new:
+    ceiling = json.loads(OUT.read_text()).get("ceiling", {}) if OUT.exists() else {}
+    grew, fell = ratchet(ceiling, totals)
+    for k in fell:
+        print(f"  {k}: {ceiling[k]['max']} -> {totals[k]} (may lower the ceiling: make c23-metrics)")
+    if not grew:
         return 0
-    print(f"{OUT.relative_to(ROOT)} is out of date; run `make c23-metrics` and commit it:")
-    for k in GAPS:
-        o = old["gaps"].get(k, {"total": None, "files": {}})
-        g = new["gaps"][k]
-        if o == g:
-            continue
-        print(f"  {k}: {o['total']} -> {g['total']}")
-        for f in sorted(set(o["files"]) | set(g["files"])):
-            a, b = o["files"].get(f, 0), g["files"].get(f, 0)
-            if a != b:
-                print(f"    {f}: {a} -> {b}")
+    print(f"{OUT.relative_to(ROOT)}: a gap grew past its ceiling. Remove the new construct, "
+          "or raise the ceiling with `make c23-metrics` and commit it:")
+    for k in grew:
+        cap = ceiling.get(k, {}).get("max")
+        top = sorted(per_file[k].items(), key=lambda kv: (-kv[1], kv[0]))[:5]
+        print(f"  {k}: {cap} -> {totals[k]}  (largest: " + ", ".join(f"{f} {v}" for f, v in top) + ")")
     return 1
-
 
 if __name__ == "__main__":
     sys.exit(main())
