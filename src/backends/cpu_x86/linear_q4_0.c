@@ -39,6 +39,12 @@
  * maddubs(|w|, sign(xq, w)), at most 2 * 127 * 127 per pair, exact. IQ4_XS
  * is IQ4_NL with a 6-bit scale per 32-element sub-block, which lines up with
  * the Q8_0 activation blocks. Both run the AVX2 kernels at every tier.
+ *
+ * MXFP4 (GPT-OSS's experts, #243) is the same shape once more: 4-bit codes
+ * into a fixed 16-entry int8 table (kvalues_mxfp4, twice the E2M1 values)
+ * and one scale per 32-element block, its E8M0 exponent byte as
+ * mxfp4_e8m0_half(e). Its 17-byte blocks leave every row unaligned; the
+ * kernels only use unaligned loads.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -211,18 +217,42 @@ static void dot_rows_q4_1(size_t                     nb,
     }
 }
 
-/* ggml's kvalues_iq4nl (src/formats/gguf/iq4.c), in both 128-bit lanes. */
-static inline __m256i iq4_table(void) {
-    const __m128i t =
-            _mm_setr_epi8(-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113);
+/* The three LUT formats the kernels below share. */
+enum lut4_fmt { LUT4_IQ4_NL, LUT4_IQ4_XS, LUT4_MXFP4 };
+
+/* The format's 16-entry int8 table in both 128-bit lanes: ggml's
+ * kvalues_iq4nl (src/formats/gguf/iq4.c) or kvalues_mxfp4. */
+static inline __m256i iq4_table(enum lut4_fmt fmt) {
+    const __m128i t = fmt == LUT4_MXFP4 ? _mm_loadu_si128((const __m128i *) kvalues_mxfp4)
+                                        : _mm_setr_epi8(-127,
+                                                        -104,
+                                                        -83,
+                                                        -65,
+                                                        -49,
+                                                        -35,
+                                                        -22,
+                                                        -10,
+                                                        1,
+                                                        13,
+                                                        25,
+                                                        38,
+                                                        53,
+                                                        69,
+                                                        89,
+                                                        113);
     return _mm256_set_m128i(t, t);
 }
 
-/* Block b (32 elements) of an IQ4_NL or IQ4_XS row: its 16 index bytes, and
- * its scale through *dw. */
+/* Block b (32 elements) of an IQ4_NL, IQ4_XS or MXFP4 row: its 16 index
+ * bytes, and its scale through *dw. */
 [[gnu::always_inline]] static inline const uint8_t *
-iq4_block(bool xs, const uint8_t *row, size_t b, float *dw) {
-    if (!xs) {
+iq4_block(enum lut4_fmt fmt, const uint8_t *row, size_t b, float *dw) {
+    if (fmt == LUT4_MXFP4) {
+        const struct block_mxfp4_t *blk = (const struct block_mxfp4_t *) row + b;
+        *dw                             = mxfp4_e8m0_half(blk->e);
+        return blk->qs;
+    }
+    if (fmt == LUT4_IQ4_NL) {
         const struct block_iq4_nl_t *blk = (const struct block_iq4_nl_t *) row + b;
         *dw                              = _cvtsh_ss(blk->d);
         return blk->qs;
@@ -245,12 +275,12 @@ static inline __m256i block_p_signed(__m256i w, const int8_t *xq) {
 /* IQ4, one weight row against one activation row: d dx P per block, two
  * accumulators as in dot_row_q4_0. */
 [[gnu::always_inline]] static inline float
-dot_row_iq4(bool xs, size_t nb, const uint8_t *row, const int8_t *qx, const float *dx) {
-    const __m256i table  = iq4_table();
+dot_row_iq4(enum lut4_fmt fmt, size_t nb, const uint8_t *row, const int8_t *qx, const float *dx) {
+    const __m256i table  = iq4_table(fmt);
     __m256        acc[2] = {_mm256_setzero_ps(), _mm256_setzero_ps()};
     for (size_t b = 0; b < nb; b++) {
         float          dw;
-        const uint8_t *qs = iq4_block(xs, row, b, &dw);
+        const uint8_t *qs = iq4_block(fmt, row, b, &dw);
         const __m256i  p =
                 block_p_signed(_mm256_shuffle_epi8(table, unpack_nibbles(qs)), qx + b * QK);
         acc[b & 1] = _mm256_fmadd_ps(_mm256_set1_ps(dw * dx[b]), _mm256_cvtepi32_ps(p), acc[b & 1]);
@@ -259,21 +289,21 @@ dot_row_iq4(bool xs, size_t nb, const uint8_t *row, const int8_t *qx, const floa
 }
 
 /* NR activation rows against one IQ4 weight row, each block looked up once. */
-[[gnu::always_inline]] static inline void dot_rows_iq4(bool           xs,
+[[gnu::always_inline]] static inline void dot_rows_iq4(enum lut4_fmt  fmt,
                                                        size_t         nb,
                                                        size_t         n_in,
                                                        const uint8_t *row,
                                                        const int8_t  *qx,
                                                        const float   *dx,
                                                        float          out[static NR]) {
-    const __m256i table = iq4_table();
+    const __m256i table = iq4_table(fmt);
     __m256        acc[NR];
     for (size_t r = 0; r < NR; r++) {
         acc[r] = _mm256_setzero_ps();
     }
     for (size_t b = 0; b < nb; b++) {
         float          dw;
-        const uint8_t *qs = iq4_block(xs, row, b, &dw);
+        const uint8_t *qs = iq4_block(fmt, row, b, &dw);
         const __m256i  w  = _mm256_shuffle_epi8(table, unpack_nibbles(qs));
         const __m256i  aw = _mm256_sign_epi8(w, w);
         for (size_t r = 0; r < NR; r++) {
@@ -290,12 +320,15 @@ dot_row_iq4(bool xs, size_t nb, const uint8_t *row, const int8_t *qx, const floa
 }
 
 /* One instance per format: the range bodies below are compiled once for
- * both, with xs a runtime value there. */
+ * all, with the format a runtime value there. */
 static float dot_row_iq4_nl(size_t nb, const uint8_t *row, const int8_t *qx, const float *dx) {
-    return dot_row_iq4(false, nb, row, qx, dx);
+    return dot_row_iq4(LUT4_IQ4_NL, nb, row, qx, dx);
 }
 static float dot_row_iq4_xs(size_t nb, const uint8_t *row, const int8_t *qx, const float *dx) {
-    return dot_row_iq4(true, nb, row, qx, dx);
+    return dot_row_iq4(LUT4_IQ4_XS, nb, row, qx, dx);
+}
+static float dot_row_mxfp4(size_t nb, const uint8_t *row, const int8_t *qx, const float *dx) {
+    return dot_row_iq4(LUT4_MXFP4, nb, row, qx, dx);
 }
 static void dot_rows_iq4_nl(size_t         nb,
                             size_t         n_in,
@@ -303,7 +336,7 @@ static void dot_rows_iq4_nl(size_t         nb,
                             const int8_t  *qx,
                             const float   *dx,
                             float          out[static NR]) {
-    dot_rows_iq4(false, nb, n_in, row, qx, dx, out);
+    dot_rows_iq4(LUT4_IQ4_NL, nb, n_in, row, qx, dx, out);
 }
 static void dot_rows_iq4_xs(size_t         nb,
                             size_t         n_in,
@@ -311,7 +344,21 @@ static void dot_rows_iq4_xs(size_t         nb,
                             const int8_t  *qx,
                             const float   *dx,
                             float          out[static NR]) {
-    dot_rows_iq4(true, nb, n_in, row, qx, dx, out);
+    dot_rows_iq4(LUT4_IQ4_XS, nb, n_in, row, qx, dx, out);
+}
+static void dot_rows_mxfp4(size_t         nb,
+                           size_t         n_in,
+                           const uint8_t *row,
+                           const int8_t  *qx,
+                           const float   *dx,
+                           float          out[static NR]) {
+    dot_rows_iq4(LUT4_MXFP4, nb, n_in, row, qx, dx, out);
+}
+
+/* The format's row body. */
+typedef float (*lut4_dot_fn)(size_t nb, const uint8_t *row, const int8_t *qx, const float *dx);
+static lut4_dot_fn dot_row_lut4(enum lut4_fmt fmt) {
+    return fmt == LUT4_MXFP4 ? dot_row_mxfp4 : fmt == LUT4_IQ4_XS ? dot_row_iq4_xs : dot_row_iq4_nl;
 }
 
 /* One call for geist_par_for: the weight, the activation rows x and their
@@ -319,7 +366,7 @@ static void dot_rows_iq4_xs(size_t         nb,
 struct q4_call {
     size_t         m, n_in, n_out, nb;
     bool           q4_0;  /* Q4_0, else Q4_1 */
-    bool           xs;    /* IQ4_XS, else IQ4_NL */
+    enum lut4_fmt  fmt;   /* IQ4_NL, IQ4_XS or MXFP4 */
     size_t         row_b; /* IQ4 bytes per weight row */
     const uint8_t *raw;
     const float   *x;
@@ -524,18 +571,30 @@ static void cpu_x86_linear_q4_0_mN_vnni(size_t                     m,
     linear_mN(true, m, x, w, be, y);
 }
 
-/* Bytes of one IQ4 weight row of n_in elements. */
-static inline size_t iq4_row_bytes(bool xs, size_t n_in) {
-    return xs ? n_in / IQ4_XS_BLOCK_ELEMS * sizeof(struct block_iq4_xs_t)
-              : n_in / IQ4_NL_BLOCK_ELEMS * sizeof(struct block_iq4_nl_t);
+/* Bytes of one LUT4 weight row of n_in elements. */
+static inline size_t iq4_row_bytes(enum lut4_fmt fmt, size_t n_in) {
+    switch (fmt) {
+    case LUT4_IQ4_XS:
+        return n_in / IQ4_XS_BLOCK_ELEMS * sizeof(struct block_iq4_xs_t);
+    case LUT4_MXFP4:
+        return n_in / MXFP4_BLOCK_ELEMS * sizeof(struct block_mxfp4_t);
+    default:
+        return n_in / IQ4_NL_BLOCK_ELEMS * sizeof(struct block_iq4_nl_t);
+    }
+}
+
+static enum lut4_fmt lut4_fmt_of(uint16_t dtype) {
+    return dtype == GEIST_DTYPE_MXFP4    ? LUT4_MXFP4
+           : dtype == GEIST_DTYPE_IQ4_XS ? LUT4_IQ4_XS
+                                         : LUT4_IQ4_NL;
 }
 
 /* IQ4, M=1: output rows [j0, j1). */
 static void iq4_rows_m1(void *ctx, size_t j0, size_t j1) {
-    const struct q4_call c = *(const struct q4_call *) ctx;
+    const struct q4_call c   = *(const struct q4_call *) ctx;
+    const lut4_dot_fn    dot = dot_row_lut4(c.fmt);
     for (size_t j = j0; j < j1; j++) {
-        c.y[j] = c.xs ? dot_row_iq4_xs(c.nb, c.raw + j * c.row_b, c.qx, c.dx)
-                      : dot_row_iq4_nl(c.nb, c.raw + j * c.row_b, c.qx, c.dx);
+        c.y[j] = dot(c.nb, c.raw + j * c.row_b, c.qx, c.dx);
     }
 }
 
@@ -546,7 +605,7 @@ static void cpu_x86_linear_iq4_m1(const float               *x,
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
     const size_t              nb    = n_in / QK;
-    const bool                xs    = w->dtype == GEIST_DTYPE_IQ4_XS;
+    const enum lut4_fmt       fmt   = lut4_fmt_of(w->dtype);
     struct cpu_x86_workspace *ws    = acquire_acts(be, 1, n_in, QK, QK);
     if (ws == nullptr) {
         geist_linear_ref(1, x, w, y);
@@ -557,8 +616,8 @@ static void cpu_x86_linear_iq4_m1(const float               *x,
                         .n_in  = n_in,
                         .n_out = n_out,
                         .nb    = nb,
-                        .xs    = xs,
-                        .row_b = iq4_row_bytes(xs, n_in),
+                        .fmt   = fmt,
+                        .row_b = iq4_row_bytes(fmt, n_in),
                         .raw   = (const uint8_t *) w->raw,
                         .qx    = ws->mN_acts,
                         .dx    = ws->mN_scale,
@@ -581,7 +640,9 @@ static void iq4_rows_mN(void *ctx, size_t j0, size_t j1) {
         const uint8_t *wr = c.raw + j * c.row_b;
         float          out[NR];
         for (size_t i = 0; i < m_til; i += NR) {
-            if (c.xs) {
+            if (c.fmt == LUT4_MXFP4) {
+                dot_rows_mxfp4(nb, n_in, wr, qx + i * n_in, dx + i * nb, out);
+            } else if (c.fmt == LUT4_IQ4_XS) {
                 dot_rows_iq4_xs(nb, n_in, wr, qx + i * n_in, dx + i * nb, out);
             } else {
                 dot_rows_iq4_nl(nb, n_in, wr, qx + i * n_in, dx + i * nb, out);
@@ -591,8 +652,7 @@ static void iq4_rows_mN(void *ctx, size_t j0, size_t j1) {
             }
         }
         for (size_t i = m_til; i < m; i++) {
-            y[i * n_out + j] = c.xs ? dot_row_iq4_xs(nb, wr, qx + i * n_in, dx + i * nb)
-                                    : dot_row_iq4_nl(nb, wr, qx + i * n_in, dx + i * nb);
+            y[i * n_out + j] = dot_row_lut4(c.fmt)(nb, wr, qx + i * n_in, dx + i * nb);
         }
     }
 }
@@ -604,7 +664,7 @@ static void cpu_x86_linear_iq4_mN(size_t                     m,
                                   float                     *y) {
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
-    const bool                xs    = w->dtype == GEIST_DTYPE_IQ4_XS;
+    const enum lut4_fmt       fmt   = lut4_fmt_of(w->dtype);
     struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in, QK, QK);
     if (ws == nullptr) {
         geist_linear_ref(m, x, w, y);
@@ -614,8 +674,8 @@ static void cpu_x86_linear_iq4_mN(size_t                     m,
                         .n_in  = n_in,
                         .n_out = n_out,
                         .nb    = n_in / QK,
-                        .xs    = xs,
-                        .row_b = iq4_row_bytes(xs, n_in),
+                        .fmt   = fmt,
+                        .row_b = iq4_row_bytes(fmt, n_in),
                         .raw   = (const uint8_t *) w->raw,
                         .x     = x,
                         .qx    = ws->mN_acts,

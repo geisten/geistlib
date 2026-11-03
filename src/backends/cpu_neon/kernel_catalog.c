@@ -85,6 +85,7 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geis
             .q4_01_native_mn = !amx,
             .iq4xs_native_mn = !amx,
             .tq2_0_native_mn = !amx,
+            .mxfp4_native_mn = true,
             .tq2_0_tl1_m1    = false,
     };
 
@@ -103,6 +104,7 @@ struct cpu_neon_kernel_policy cpu_neon_kernel_policy_effective(const struct geis
     p.q4_01_native_mn     = geist_env_flag("GEIST_Q4_01_NATIVE_MN", p.q4_01_native_mn);
     p.iq4xs_native_mn     = geist_env_flag("GEIST_IQ4XS_NATIVE_MN", p.iq4xs_native_mn);
     p.tq2_0_native_mn     = geist_env_flag("GEIST_TQ2_0_NATIVE_MN", p.tq2_0_native_mn);
+    p.mxfp4_native_mn     = geist_env_flag("GEIST_MXFP4_NATIVE_MN", p.mxfp4_native_mn);
     p.tq2_0_tl1_m1        = geist_env_flag("GEIST_TL1", p.tq2_0_tl1_m1);
 
     return p;

@@ -42,6 +42,13 @@ enum gguf_tokenizer_mode {
     GGUF_TOK_MODE_UNIGRAM,
 };
 
+/* The regex-sequence pretokenizers (gguf_tokenizer_seq_split). */
+enum gguf_pre_seq {
+    GGUF_PRE_NONE = 0,
+    GGUF_PRE_DEEPSEEK_LLM, /* tokenizer.ggml.pre "deepseek-llm" (DeepSeek-V2) */
+    GGUF_PRE_DEEPSEEK_V3,  /* "deepseek-v3" (DeepSeek-V3, R1) */
+};
+
 struct gguf_tokenizer {
     /* Pointer-and-length pair for each vocab entry. The pointer
      * indexes into the GGUF mmap; valid for the ctx's lifetime. */
@@ -94,7 +101,14 @@ struct gguf_tokenizer {
      * qwen2 pretokenizer scanner instead of the simple word splitter
      * (contractions, single digits, punctuation runs, the one-codepoint
      * prefix rule; #275). Also set for pre == "qwen35". */
-    bool    pre_qwen2;
+    bool pre_qwen2;
+    /* GPT-2 mode: tokenizer.ggml.pre == "gpt-4o" or "llama4" (#243) —
+     * gguf_tokenizer_gpt4o_chunk_end splits the text. */
+    bool pre_gpt4o;
+    /* GPT-2 mode: a pretokenizer llama.cpp runs as a sequence of regexes
+     * (gguf_tokenizer_seq_split): "deepseek-llm", "deepseek-v3" (#242).
+     * GGUF_PRE_NONE otherwise. */
+    enum gguf_pre_seq pre_seq;
     int32_t spm_byte_id[256]; /* SPM byte fallback: byte → "<0xXX>" vocab id, -1 if absent */
 
     /* Loaded from a tokenizer.bin (gguf_tokenizer_load_bin), SPM mode without
@@ -161,6 +175,22 @@ struct gguf_tokenizer {
 [[nodiscard]] bool gguf_tokenizer_load_bin(struct gguf_tokenizer *tok, const char *path);
 
 void gguf_tokenizer_unload(struct gguf_tokenizer *tok);
+
+/* End (exclusive, a byte offset) of the gpt-4o pretokenizer chunk that
+ * starts at byte i < tlen of text: llama.cpp's LLAMA_VOCAB_PRE_TYPE_GPT4O
+ * regex over llama.cpp's letter / number / whitespace classes. Always > i.
+ * Exposed for tests. */
+[[nodiscard]] size_t
+gguf_tokenizer_gpt4o_chunk_end(size_t tlen, size_t i, const char text[static tlen]);
+
+/* Split n codepoints as llama.cpp's regex sequence for `kind` does
+ * (GGUF_PRE_DEEPSEEK_LLM or _V3): the piece lengths, in codepoints and in
+ * order, land in pieces[0, return value); pieces[n, 2n) is scratch. Every
+ * piece is non-empty and they sum to n. Exposed for tests. */
+[[nodiscard]] size_t gguf_tokenizer_seq_split(enum gguf_pre_seq kind,
+                                              size_t            n,
+                                              const uint32_t    cps[static n],
+                                              size_t            pieces[static 2 * n]);
 
 /* Whether a GGUF tokenizer adds BOS, by llama.cpp's rule
  * (llama_vocab::impl::load in llama-vocab.cpp; llama-perplexity puts BOS at

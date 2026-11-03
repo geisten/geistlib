@@ -1,0 +1,45 @@
+[bench] backend: vulkan
+[bench] prompt: 15683 tokens of prompt.md
+[bench] warmup phase (discarded): 8-token prefill + 4 decode steps
+[bench] measuring 1 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+spectrace start 4.661 verify 40.152 trunc 0.015 corr 15.625 k 3 acc 0
+spectrace start 4.680 verify 30.868 trunc 0.000 corr 13.248 k 3 acc 2
+spectrace start 4.675 verify 30.412 trunc 0.000 corr 13.661 k 3 acc 2
+spectrace start 4.575 verify 34.901 trunc 0.000 corr 16.430 k 3 acc 2
+spectrace start 4.549 verify 36.174 trunc 0.014 corr 14.977 k 3 acc 0
+spectrace start 4.617 verify 35.761 trunc 0.000 corr 15.624 k 3 acc 2
+spectrace start 4.577 verify 35.397 trunc 0.015 corr 15.494 k 3 acc 0
+spectrace start 4.607 verify 31.512 trunc 0.000 corr 12.673 k 3 acc 2
+spectrace start 4.658 verify 30.683 trunc 0.015 corr 14.744 k 3 acc 0
+spectrace start 4.654 verify 34.427 trunc 0.014 corr 16.221 k 3 acc 1
+spectrace start 4.610 verify 33.737 trunc 0.015 corr 15.013 k 3 acc 0
+spectrace start 4.610 verify 36.234 trunc 0.000 corr 15.056 k 3 acc 2
+spectrace start 4.570 verify 35.381 trunc 0.014 corr 15.453 k 3 acc 0
+spectrace start 4.616 verify 30.477 trunc 0.000 corr 12.792 k 3 acc 2
+spectrace start 4.630 verify 28.498 trunc 0.014 corr 15.239 k 3 acc 0
+spectrace start 4.604 verify 35.221 trunc 0.000 corr 15.660 k 3 acc 2
+spectrace start 4.670 verify 34.735 trunc 0.000 corr 16.158 k 3 acc 2
+spectrace start 4.563 verify 34.360 trunc 0.000 corr 14.142 k 3 acc 2
+spectrace start 4.521 verify 31.210 trunc 0.014 corr 16.049 k 3 acc 1
+spectrace start 4.606 verify 33.601 trunc 0.014 corr 14.163 k 3 acc 0
+spectrace start 4.533 verify 35.048 trunc 0.014 corr 15.955 k 3 acc 1
+spectrace start 4.674 verify 36.009 trunc 0.000 corr 15.321 k 3 acc 2
+spectrace start 4.615 verify 34.678 trunc 0.000 corr 16.587 k 3 acc 2
+spectrace start 4.592 verify 35.277 trunc 0.000 corr 14.423 k 3 acc 2
+spectrace start 4.541 verify 31.857 trunc 0.000 corr 14.569 k 3 acc 2
+spectrace start 4.669 verify 31.593 trunc 0.015 corr 14.548 k 3 acc 1
+spectrace start 4.595 verify 35.994 trunc 0.015 corr 16.021 k 3 acc 1
+spectrace start 4.608 verify 35.219 trunc 0.014 corr 16.774 k 3 acc 0
+spectrace start 4.632 verify 34.621 trunc 0.015 corr 16.329 k 3 acc 1
+spectrace start 4.793 verify 35.062 trunc 0.000 corr 14.184 k 3 acc 2
+spectrace start 4.618 verify 30.994 trunc 0.015 corr 15.091 k 3 acc 0
+spectrace start 4.751 verify 30.124 trunc 0.015 corr 14.330 k 3 acc 0
+spectrace start 4.758 verify 30.643 trunc 0.000 corr 13.982 k 3 acc 2
+spectrace start 4.649 verify 31.392 trunc 0.015 corr 14.387 k 3 acc 1
+spectrace start 4.682 verify 28.811 trunc 0.000 corr 13.463 k 3 acc 2
+spectrace start 4.623 verify 28.584 trunc 0.000 corr 12.939 k 3 acc 2
+spectrace start 4.681 verify 28.114 trunc 0.000 corr 13.131 k 3 acc 2
+spectrace start 4.715 verify 30.127 trunc 0.015 corr 13.584 k 3 acc 0
+spectrace start 4.693 verify 28.085 trunc 0.014 corr 13.501 k 3 acc 0
+spectrace start 4.645 verify 30.708 trunc 0.015 corr 14.418 k 3 acc 0
+spectrace start 4.737 verify 33.328 trunc 0.000 corr 14.425 k 3 acc 2

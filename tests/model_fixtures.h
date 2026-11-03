@@ -44,10 +44,17 @@ struct mf_llama {
     /* A separate output.weight (lm_head), so token_embd is a lookup-only
      * table; tied otherwise. */
     bool untied;
+    /* token_embd stored as F16 instead of F32 (a tied F16 lm_head, the
+     * dtype the speculative output head sketches). */
+    bool f16_embd;
     /* tokenizer.chat_template when set; its length in chat_template_len, so
      * a template may contain NUL bytes (0: strlen). */
     const char *chat_template;
     size_t      chat_template_len;
+    /* rope_freqs.weight (Llama 3.x frequency factors, #379) with this many
+     * elements, 1 + i / 2 (all 1 with rope_freqs_ones); 0: none. */
+    uint32_t rope_freqs;
+    bool     rope_freqs_ones;
 };
 
 /* Qwen3.5 geometry (qwen35.* keys). Block i is attention when
@@ -94,8 +101,9 @@ static inline float mf_weight(uint64_t *s) {
 
 /* ---- F32 tensors ---------------------------------------------------------- */
 
-/* MF_RAMP: element i is mf_ramp(i), mixed signs, no draw from the seed. */
-enum mf_fill { MF_RAND, MF_ONE, MF_NEG_ONE, MF_ZERO, MF_RAMP };
+/* MF_RAMP: element i is mf_ramp(i), mixed signs, no draw from the seed.
+ * MF_STEP: element i is 1 + i / 2 (positive factors, e.g. rope_freqs). */
+enum mf_fill { MF_RAND, MF_ONE, MF_NEG_ONE, MF_ZERO, MF_RAMP, MF_STEP };
 
 static inline float mf_ramp(uint64_t i) {
     return ((float) (i % 7) - 3.0f) * 0.25f;
@@ -185,6 +193,7 @@ static inline void mf_write_tensors(struct tf_buf *o, struct mf_tensors *ts, uin
         for (uint64_t e = 0; e < mf_elems(t); e++) {
             const float v = t->fill == MF_RAND   ? mf_weight(&s) * t->scale
                             : t->fill == MF_RAMP ? mf_ramp(e)
+                            : t->fill == MF_STEP ? 1.0f + 0.5f * (float) e
                                                  : c;
             if (t->f16) {
                 const _Float16 h = (_Float16) v;
@@ -204,7 +213,11 @@ static inline struct tf_buf mf_llama_gguf(const struct mf_llama *c) {
     const uint32_t    hd = c->d_model / c->heads;
     struct mf_tensors ts = {0};
     mf_add(&ts, c->d_model, c->vocab, MF_RAND, "token_embd.weight");
+    ts.t[ts.n - 1].f16 = c->f16_embd;
     mf_add(&ts, c->d_model, 0, MF_ONE, "output_norm.weight");
+    if (c->rope_freqs != 0) {
+        mf_add(&ts, c->rope_freqs, 0, c->rope_freqs_ones ? MF_ONE : MF_STEP, "rope_freqs.weight");
+    }
     if (c->untied) {
         mf_add(&ts, c->d_model, c->vocab, MF_RAND, "output.weight");
     }
@@ -393,7 +406,10 @@ static inline struct tf_buf mf_qwen35_gguf(const struct mf_qwen35 *c) {
  * whole row, the expert width in feed_forward_length, no key_length;
  * `bad_qk_norm` then leaves those norms at head_dim. `mixtral` writes it as
  * Mixtral (llama.* keys): no QK norms, the same keys as OLMoE; `split_experts`
- * then adds the per-expert tensors of old files, ahead of the merged ones. */
+ * then adds the per-expert tensors of old files, ahead of the merged ones.
+ * `granite` writes it as Granite-MoE (granitemoe.* keys, shaped like Mixtral)
+ * with the four scales below, each written when nonzero, and `shared_ff` as
+ * the width of a shared expert. */
 struct mf_qwen3moe {
     uint32_t    layers, d_model, heads, kv_heads, head_dim, experts, used, expert_ff, vocab;
     uint64_t    seed;
@@ -404,15 +420,22 @@ struct mf_qwen3moe {
     bool        bad_qk_norm;
     bool        mixtral;
     bool        split_experts;
+    bool        granite;
+    float       attention_scale, embedding_scale, residual_scale, logit_scale;
+    uint32_t    shared_ff;
 };
 
 static inline struct tf_buf mf_qwen3moe_gguf(const struct mf_qwen3moe *c) {
-    const uint32_t    d    = c->d_model;
-    const bool        ol   = c->olmoe || c->mixtral; /* no key_length, width in feed_forward */
-    const char *const arch = c->mixtral ? "llama" : c->olmoe ? "olmoe" : "qwen3moe";
-    const uint32_t    q_n  = c->olmoe && !c->bad_qk_norm ? c->heads * c->head_dim : c->head_dim;
-    const uint32_t    k_n  = c->olmoe && !c->bad_qk_norm ? c->kv_heads * c->head_dim : c->head_dim;
-    struct mf_tensors ts   = {0};
+    const uint32_t    d     = c->d_model;
+    const bool        no_qk = c->mixtral || c->granite;
+    const bool        ol    = c->olmoe || no_qk; /* no key_length, width in feed_forward */
+    const char *const arch  = c->mixtral   ? "llama"
+                              : c->olmoe   ? "olmoe"
+                              : c->granite ? "granitemoe"
+                                           : "qwen3moe";
+    const uint32_t    q_n   = c->olmoe && !c->bad_qk_norm ? c->heads * c->head_dim : c->head_dim;
+    const uint32_t    k_n   = c->olmoe && !c->bad_qk_norm ? c->kv_heads * c->head_dim : c->head_dim;
+    struct mf_tensors ts    = {0};
     mf_add(&ts, d, c->vocab, MF_RAND, "token_embd.weight");
     mf_add(&ts, d, 0, MF_ONE, "output_norm.weight");
     for (uint32_t l = 0; l < c->layers; l++) {
@@ -421,7 +444,7 @@ static inline struct tf_buf mf_qwen3moe_gguf(const struct mf_qwen3moe *c) {
         mf_add(&ts, d, c->kv_heads * c->head_dim, MF_RAND, "blk.%u.attn_k.weight", l);
         mf_add(&ts, d, c->kv_heads * c->head_dim, MF_RAND, "blk.%u.attn_v.weight", l);
         mf_add(&ts, c->heads * c->head_dim, d, MF_RAND, "blk.%u.attn_output.weight", l);
-        if (!c->mixtral) {
+        if (!no_qk) {
             mf_add(&ts, q_n, 0, MF_ONE, "blk.%u.attn_q_norm.weight", l);
             mf_add(&ts, k_n, 0, MF_ONE, "blk.%u.attn_k_norm.weight", l);
         }
@@ -463,15 +486,38 @@ static inline struct tf_buf mf_qwen3moe_gguf(const struct mf_qwen3moe *c) {
             {ol ? "feed_forward_length" : "expert_feed_forward_length", c->expert_ff},
             {"attention.key_length", c->head_dim},
             {"expert_gating_func", c->gating},
+            {"expert_shared_feed_forward_length", c->shared_ff},
     };
     /* OLMoE and Mixtral have no key_length; the gating key is written only
      * when asked. */
-    const bool write_u32[] = {
-            true, true, true, true, true, true, true, true, true, !ol, c->gating != 0};
-    const size_t n_u32     = sizeof u32 / sizeof u32[0];
-    size_t       n_written = 0;
+    const bool   write_u32[] = {true,
+                                true,
+                                true,
+                                true,
+                                true,
+                                true,
+                                true,
+                                true,
+                                true,
+                                !ol,
+                                c->gating != 0,
+                                c->shared_ff != 0};
+    const size_t n_u32       = sizeof u32 / sizeof u32[0];
+    size_t       n_written   = 0;
     for (size_t i = 0; i < n_u32; i++) {
         n_written += write_u32[i] ? 1 : 0;
+    }
+    const struct {
+        const char *key;
+        float       v;
+    } f32[] = {
+            {"attention.scale", c->attention_scale},
+            {"embedding_scale", c->embedding_scale},
+            {"residual_scale", c->residual_scale},
+            {"logit_scale", c->logit_scale},
+    };
+    for (size_t i = 0; i < sizeof f32 / sizeof f32[0]; i++) {
+        n_written += f32[i].v != 0.0f ? 1 : 0;
     }
 
     char          key[64];
@@ -489,12 +535,362 @@ static inline struct tf_buf mf_qwen3moe_gguf(const struct mf_qwen3moe *c) {
             tf_u32(&o, u32[i].v);
         }
     }
+    for (size_t i = 0; i < sizeof f32 / sizeof f32[0]; i++) {
+        if (f32[i].v != 0.0f) {
+            snprintf(key, sizeof key, "%s.%s", arch, f32[i].key);
+            mf_key(&o, key, TF_GGUF_FLOAT32);
+            tf_f32(&o, f32[i].v);
+        }
+    }
     snprintf(key, sizeof key, "%s.rope.freq_base", arch);
     mf_key(&o, key, TF_GGUF_FLOAT32);
     tf_f32(&o, 1000000.0f);
     snprintf(key, sizeof key, "%s.attention.layer_norm_rms_epsilon", arch);
     mf_key(&o, key, TF_GGUF_FLOAT32);
     tf_f32(&o, 1e-6f);
+    mf_write_tensors(&o, &ts, c->seed);
+    return o;
+}
+
+/* GPT-OSS (#243): q/k/v/o biases, a sink logit per head (attn_sinks,
+ * drawn at sink_scale times the usual range), even layers sliding over
+ * `window` keys, YaRN RoPE unless no_yarn, and an MoE whose router and
+ * experts carry biases. F32 weights, tensors and keys under "gpt-oss". */
+struct mf_gpt_oss {
+    uint32_t layers, d_model, heads, kv_heads, head_dim, experts, used, expert_ff, vocab, window;
+    uint64_t seed;
+    float    sink_scale;
+    bool     no_yarn;
+};
+
+static inline struct tf_buf mf_gpt_oss_gguf(const struct mf_gpt_oss *c) {
+    const uint32_t    d  = c->d_model;
+    const uint32_t    q  = c->heads * c->head_dim;
+    const uint32_t    kv = c->kv_heads * c->head_dim;
+    struct mf_tensors ts = {0};
+    mf_add(&ts, d, c->vocab, MF_RAND, "token_embd.weight");
+    mf_add(&ts, d, c->vocab, MF_RAND, "output.weight");
+    mf_add(&ts, d, 0, MF_ONE, "output_norm.weight");
+    for (uint32_t l = 0; l < c->layers; l++) {
+        mf_add(&ts, d, 0, MF_ONE, "blk.%u.attn_norm.weight", l);
+        mf_add(&ts, d, q, MF_RAND, "blk.%u.attn_q.weight", l);
+        mf_add(&ts, q, 0, MF_RAND, "blk.%u.attn_q.bias", l);
+        mf_add(&ts, d, kv, MF_RAND, "blk.%u.attn_k.weight", l);
+        mf_add(&ts, kv, 0, MF_RAND, "blk.%u.attn_k.bias", l);
+        mf_add(&ts, d, kv, MF_RAND, "blk.%u.attn_v.weight", l);
+        mf_add(&ts, kv, 0, MF_RAND, "blk.%u.attn_v.bias", l);
+        mf_add(&ts, q, d, MF_RAND, "blk.%u.attn_output.weight", l);
+        mf_add(&ts, d, 0, MF_RAND, "blk.%u.attn_output.bias", l);
+        mf_add(&ts, c->heads, 0, MF_RAND, "blk.%u.attn_sinks.weight", l);
+        ts.t[ts.n - 1].scale = c->sink_scale;
+        mf_add(&ts, d, 0, MF_ONE, "blk.%u.post_attention_norm.weight", l);
+        mf_add(&ts, d, c->experts, MF_RAND, "blk.%u.ffn_gate_inp.weight", l);
+        mf_add(&ts, c->experts, 0, MF_RAND, "blk.%u.ffn_gate_inp.bias", l);
+        mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_gate_exps.weight", l);
+        ts.t[ts.n - 1].ne2 = c->experts;
+        mf_add(&ts, c->expert_ff, c->experts, MF_RAND, "blk.%u.ffn_gate_exps.bias", l);
+        mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_up_exps.weight", l);
+        ts.t[ts.n - 1].ne2 = c->experts;
+        mf_add(&ts, c->expert_ff, c->experts, MF_RAND, "blk.%u.ffn_up_exps.bias", l);
+        mf_add(&ts, c->expert_ff, d, MF_RAND, "blk.%u.ffn_down_exps.weight", l);
+        ts.t[ts.n - 1].ne2 = c->experts;
+        mf_add(&ts, d, c->experts, MF_RAND, "blk.%u.ffn_down_exps.bias", l);
+    }
+    const struct {
+        const char *key;
+        uint32_t    v;
+    } u32[] = {
+            {"block_count", c->layers},
+            {"embedding_length", d},
+            {"attention.head_count", c->heads},
+            {"attention.head_count_kv", c->kv_heads},
+            {"expert_count", c->experts},
+            {"expert_used_count", c->used},
+            {"context_length", 4096},
+            {"vocab_size", c->vocab},
+            {"expert_feed_forward_length", c->expert_ff},
+            {"attention.key_length", c->head_dim},
+            {"attention.sliding_window", c->window},
+            {"rope.scaling.original_context_length", 64},
+    };
+    const struct {
+        const char *key;
+        float       v;
+    } f32[] = {
+            {"rope.freq_base", 150000.0f},
+            {"attention.layer_norm_rms_epsilon", 1e-5f},
+            {"rope.scaling.factor", 32.0f},
+            {"rope.scaling.yarn_beta_fast", 32.0f},
+            {"rope.scaling.yarn_beta_slow", 1.0f},
+    };
+    const size_t  n_u32 = sizeof u32 / sizeof u32[0], n_f32 = sizeof f32 / sizeof f32[0];
+    const char    arch[] = "gpt-oss";
+    char          key[80];
+    struct tf_buf o = {0};
+    tf_put(&o, "GGUF", 4);
+    tf_u32(&o, 3);
+    tf_u64(&o, ts.n);
+    tf_u64(&o, 1 + n_u32 + n_f32 + (c->no_yarn ? 0 : 1));
+    mf_key(&o, "general.architecture", TF_GGUF_STRING);
+    tf_gstr(&o, arch, strlen(arch));
+    for (size_t i = 0; i < n_u32; i++) {
+        snprintf(key, sizeof key, "%s.%s", arch, u32[i].key);
+        mf_key(&o, key, TF_GGUF_UINT32);
+        tf_u32(&o, u32[i].v);
+    }
+    for (size_t i = 0; i < n_f32; i++) {
+        snprintf(key, sizeof key, "%s.%s", arch, f32[i].key);
+        mf_key(&o, key, TF_GGUF_FLOAT32);
+        tf_f32(&o, f32[i].v);
+    }
+    if (!c->no_yarn) {
+        snprintf(key, sizeof key, "%s.rope.scaling.type", arch);
+        mf_key(&o, key, TF_GGUF_STRING);
+        tf_gstr(&o, "yarn", 4);
+    }
+    mf_write_tensors(&o, &ts, c->seed);
+    return o;
+}
+
+/* DeepSeek-V2 (#242), the unsplit attn_kv_b layout: `lead` dense layers,
+ * then MoE layers with expert_shared_count shared experts. q_rank > 0
+ * writes q_a / q_a_norm / q_b (V3) instead of attn_q. YaRN with DeepSeek's
+ * log multiplier unless no_yarn. v3 writes a sigmoid router (gating 2) with
+ * exp_probs_b, n_group groups (topk_group used), weights renormalised and
+ * scaled by w_scale. F32 weights. */
+struct mf_deepseek2 {
+    uint32_t layers, lead, d_model, heads, nope, rope, v_dim, kv_rank, q_rank, ff;
+    uint32_t experts, used, expert_ff, shared, vocab;
+    uint64_t seed;
+    bool     no_yarn, v3;
+    uint32_t n_group, topk_group;
+    float    w_scale;
+};
+
+static inline struct tf_buf mf_deepseek2_gguf(const struct mf_deepseek2 *c) {
+    const uint32_t    d  = c->d_model;
+    const uint32_t    hk = c->nope + c->rope;
+    struct mf_tensors ts = {0};
+    mf_add(&ts, d, c->vocab, MF_RAND, "token_embd.weight");
+    mf_add(&ts, d, c->vocab, MF_RAND, "output.weight");
+    mf_add(&ts, d, 0, MF_ONE, "output_norm.weight");
+    for (uint32_t l = 0; l < c->layers; l++) {
+        mf_add(&ts, d, 0, MF_ONE, "blk.%u.attn_norm.weight", l);
+        if (c->q_rank > 0) {
+            mf_add(&ts, d, c->q_rank, MF_RAND, "blk.%u.attn_q_a.weight", l);
+            mf_add(&ts, c->q_rank, 0, MF_ONE, "blk.%u.attn_q_a_norm.weight", l);
+            mf_add(&ts, c->q_rank, c->heads * hk, MF_RAND, "blk.%u.attn_q_b.weight", l);
+        } else {
+            mf_add(&ts, d, c->heads * hk, MF_RAND, "blk.%u.attn_q.weight", l);
+        }
+        mf_add(&ts, d, c->kv_rank + c->rope, MF_RAND, "blk.%u.attn_kv_a_mqa.weight", l);
+        mf_add(&ts, c->kv_rank, 0, MF_RAMP, "blk.%u.attn_kv_a_norm.weight", l);
+        mf_add(&ts,
+               c->kv_rank,
+               c->heads * (c->nope + c->v_dim),
+               MF_RAND,
+               "blk.%u.attn_kv_b.weight",
+               l);
+        mf_add(&ts, c->heads * c->v_dim, d, MF_RAND, "blk.%u.attn_output.weight", l);
+        mf_add(&ts, d, 0, MF_ONE, "blk.%u.ffn_norm.weight", l);
+        if (l < c->lead) {
+            mf_add(&ts, d, c->ff, MF_RAND, "blk.%u.ffn_gate.weight", l);
+            mf_add(&ts, d, c->ff, MF_RAND, "blk.%u.ffn_up.weight", l);
+            mf_add(&ts, c->ff, d, MF_RAND, "blk.%u.ffn_down.weight", l);
+            continue;
+        }
+        mf_add(&ts, d, c->experts, MF_RAND, "blk.%u.ffn_gate_inp.weight", l);
+        ts.t[ts.n - 1].scale = 10.0f; /* routing with clear margins */
+        if (c->v3) {
+            mf_add(&ts, c->experts, 0, MF_RAND, "blk.%u.exp_probs_b.bias", l);
+        }
+        mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_gate_exps.weight", l);
+        ts.t[ts.n - 1].ne2 = c->experts;
+        mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_up_exps.weight", l);
+        ts.t[ts.n - 1].ne2 = c->experts;
+        mf_add(&ts, c->expert_ff, d, MF_RAND, "blk.%u.ffn_down_exps.weight", l);
+        ts.t[ts.n - 1].ne2 = c->experts;
+        mf_add(&ts, d, c->shared * c->expert_ff, MF_RAND, "blk.%u.ffn_gate_shexp.weight", l);
+        mf_add(&ts, d, c->shared * c->expert_ff, MF_RAND, "blk.%u.ffn_up_shexp.weight", l);
+        mf_add(&ts, c->shared * c->expert_ff, d, MF_RAND, "blk.%u.ffn_down_shexp.weight", l);
+    }
+    struct {
+        const char *key;
+        uint32_t    v;
+    } u32[16] = {
+            {"block_count", c->layers},
+            {"embedding_length", d},
+            {"attention.head_count", c->heads},
+            {"attention.head_count_kv", c->heads},
+            {"expert_count", c->experts},
+            {"expert_used_count", c->used},
+            {"context_length", 4096},
+            {"vocab_size", c->vocab},
+            {"feed_forward_length", c->ff},
+            {"expert_feed_forward_length", c->expert_ff},
+            {"expert_shared_count", c->shared},
+            {"leading_dense_block_count", c->lead},
+            {"attention.kv_lora_rank", c->kv_rank},
+            {"attention.key_length", hk},
+            {"attention.value_length", c->v_dim},
+            {"rope.dimension_count", c->rope},
+    };
+    size_t n_u32 = 16;
+    struct {
+        const char *key;
+        uint32_t    v;
+    } extra[5]     = {0};
+    size_t n_extra = 0;
+    if (c->q_rank > 0)
+        extra[n_extra++] = (typeof(extra[0])) {"attention.q_lora_rank", c->q_rank};
+    if (!c->no_yarn)
+        extra[n_extra++] = (typeof(extra[0])) {"rope.scaling.original_context_length", 64};
+    if (c->v3) {
+        extra[n_extra++] = (typeof(extra[0])) {"expert_gating_func", 2};
+        extra[n_extra++] = (typeof(extra[0])) {"expert_group_count", c->n_group};
+        extra[n_extra++] = (typeof(extra[0])) {"expert_group_used_count", c->topk_group};
+    }
+    const struct {
+        const char *key;
+        float       v;
+    } f32[] = {
+            {"rope.freq_base", 10000.0f},
+            {"attention.layer_norm_rms_epsilon", 1e-6f},
+            {"rope.scaling.factor", 40.0f},
+            {"rope.scaling.yarn_log_multiplier", 0.0707f},
+            {"expert_weights_scale", c->v3 ? c->w_scale : 1.0f},
+    };
+    const size_t  n_f32  = c->no_yarn ? 2 : sizeof f32 / sizeof f32[0];
+    const char    arch[] = "deepseek2";
+    char          key[80];
+    struct tf_buf o = {0};
+    tf_put(&o, "GGUF", 4);
+    tf_u32(&o, 3);
+    tf_u64(&o, ts.n);
+    tf_u64(&o,
+           1 + n_u32 + n_extra + n_f32 + (c->no_yarn ? 0 : 1) + (c->v3 ? 1 : 0) +
+                   (c->no_yarn && c->v3 ? 1 : 0));
+    mf_key(&o, "general.architecture", TF_GGUF_STRING);
+    tf_gstr(&o, arch, strlen(arch));
+    for (size_t i = 0; i < n_u32; i++) {
+        snprintf(key, sizeof key, "%s.%s", arch, u32[i].key);
+        mf_key(&o, key, TF_GGUF_UINT32);
+        tf_u32(&o, u32[i].v);
+    }
+    for (size_t i = 0; i < n_extra; i++) {
+        snprintf(key, sizeof key, "%s.%s", arch, extra[i].key);
+        mf_key(&o, key, TF_GGUF_UINT32);
+        tf_u32(&o, extra[i].v);
+    }
+    for (size_t i = 0; i < n_f32; i++) {
+        snprintf(key, sizeof key, "%s.%s", arch, f32[i].key);
+        mf_key(&o, key, TF_GGUF_FLOAT32);
+        tf_f32(&o, f32[i].v);
+    }
+    if (c->no_yarn && c->v3) { /* the scale still applies without YaRN */
+        snprintf(key, sizeof key, "%s.expert_weights_scale", arch);
+        mf_key(&o, key, TF_GGUF_FLOAT32);
+        tf_f32(&o, c->w_scale);
+    }
+    if (!c->no_yarn) {
+        snprintf(key, sizeof key, "%s.rope.scaling.type", arch);
+        mf_key(&o, key, TF_GGUF_STRING);
+        tf_gstr(&o, "yarn", 4);
+    }
+    if (c->v3) {
+        snprintf(key, sizeof key, "%s.expert_weights_norm", arch);
+        mf_key(&o, key, 7 /* bool */);
+        tf_put(&o, "\1", 1);
+    }
+    mf_write_tensors(&o, &ts, c->seed);
+    return o;
+}
+
+/* Llama 4 (#244): every moe_step-th layer (1-based) a mixture of experts
+ * plus a shared expert, the rest dense; rope_freqs.weight factors (1, 1.5,
+ * 2, ...); attention.chunk_size / temperature_length shrink llama.cpp's
+ * 8192 so a short prompt crosses chunks. F32 weights. */
+struct mf_llama4 {
+    uint32_t layers, moe_step, d_model, heads, kv_heads, head_dim, ff;
+    uint32_t experts, used, expert_ff, vocab, chunk, temp_length;
+    uint64_t seed;
+};
+
+static inline struct tf_buf mf_llama4_gguf(const struct mf_llama4 *c) {
+    const uint32_t    d  = c->d_model;
+    struct mf_tensors ts = {0};
+    mf_add(&ts, d, c->vocab, MF_RAND, "token_embd.weight");
+    mf_add(&ts, d, c->vocab, MF_RAND, "output.weight");
+    mf_add(&ts, d, 0, MF_ONE, "output_norm.weight");
+    mf_add(&ts, c->head_dim / 2, 0, MF_STEP, "rope_freqs.weight");
+    for (uint32_t l = 0; l < c->layers; l++) {
+        const bool moe = (l + 1) % c->moe_step == 0;
+        mf_add(&ts, d, 0, MF_ONE, "blk.%u.attn_norm.weight", l);
+        mf_add(&ts, d, c->heads * c->head_dim, MF_RAND, "blk.%u.attn_q.weight", l);
+        mf_add(&ts, d, c->kv_heads * c->head_dim, MF_RAND, "blk.%u.attn_k.weight", l);
+        mf_add(&ts, d, c->kv_heads * c->head_dim, MF_RAND, "blk.%u.attn_v.weight", l);
+        mf_add(&ts, c->heads * c->head_dim, d, MF_RAND, "blk.%u.attn_output.weight", l);
+        mf_add(&ts, d, 0, MF_ONE, "blk.%u.ffn_norm.weight", l);
+        if (!moe) {
+            mf_add(&ts, d, c->ff, MF_RAND, "blk.%u.ffn_gate.weight", l);
+            mf_add(&ts, d, c->ff, MF_RAND, "blk.%u.ffn_up.weight", l);
+            mf_add(&ts, c->ff, d, MF_RAND, "blk.%u.ffn_down.weight", l);
+            continue;
+        }
+        mf_add(&ts, d, c->experts, MF_RAND, "blk.%u.ffn_gate_inp.weight", l);
+        ts.t[ts.n - 1].scale = 2.0f; /* weights inside sigmoid's bend */
+        mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_gate_exps.weight", l);
+        ts.t[ts.n - 1].scale = 4.0f; /* silu well past its linear part */
+        ts.t[ts.n - 1].ne2   = c->experts;
+        mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_up_exps.weight", l);
+        ts.t[ts.n - 1].ne2 = c->experts;
+        mf_add(&ts, c->expert_ff, d, MF_RAND, "blk.%u.ffn_down_exps.weight", l);
+        ts.t[ts.n - 1].ne2 = c->experts;
+        mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_gate_shexp.weight", l);
+        mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_up_shexp.weight", l);
+        mf_add(&ts, c->expert_ff, d, MF_RAND, "blk.%u.ffn_down_shexp.weight", l);
+    }
+    const struct {
+        const char *key;
+        uint32_t    v;
+    } u32[] = {
+            {"block_count", c->layers},
+            {"embedding_length", d},
+            {"attention.head_count", c->heads},
+            {"attention.head_count_kv", c->kv_heads},
+            {"expert_count", c->experts},
+            {"expert_used_count", c->used},
+            {"context_length", 4096},
+            {"vocab_size", c->vocab},
+            {"feed_forward_length", c->ff},
+            {"expert_feed_forward_length", c->expert_ff},
+            {"interleave_moe_layer_step", c->moe_step},
+            {"attention.key_length", c->head_dim},
+            {"rope.dimension_count", c->head_dim},
+            {"attention.chunk_size", c->chunk},
+            {"attention.temperature_length", c->temp_length},
+    };
+    const size_t  n_u32  = sizeof u32 / sizeof u32[0];
+    const char    arch[] = "llama4";
+    char          key[80];
+    struct tf_buf o = {0};
+    tf_put(&o, "GGUF", 4);
+    tf_u32(&o, 3);
+    tf_u64(&o, ts.n);
+    tf_u64(&o, 1 + n_u32 + 2);
+    mf_key(&o, "general.architecture", TF_GGUF_STRING);
+    tf_gstr(&o, arch, strlen(arch));
+    for (size_t i = 0; i < n_u32; i++) {
+        snprintf(key, sizeof key, "%s.%s", arch, u32[i].key);
+        mf_key(&o, key, TF_GGUF_UINT32);
+        tf_u32(&o, u32[i].v);
+    }
+    snprintf(key, sizeof key, "%s.rope.freq_base", arch);
+    mf_key(&o, key, TF_GGUF_FLOAT32);
+    tf_f32(&o, 500000.0f);
+    snprintf(key, sizeof key, "%s.attention.layer_norm_rms_epsilon", arch);
+    mf_key(&o, key, TF_GGUF_FLOAT32);
+    tf_f32(&o, 1e-5f);
     mf_write_tensors(&o, &ts, c->seed);
     return o;
 }

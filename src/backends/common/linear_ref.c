@@ -24,6 +24,7 @@ bool geist_linear_ref_decodes(uint16_t dtype) {
     case GEIST_DTYPE_Q4_0:
     case GEIST_DTYPE_Q4_1:
     case GEIST_DTYPE_Q5_0:
+    case GEIST_DTYPE_MXFP4:
     case GEIST_DTYPE_Q8_0:
     case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_Q4_K:

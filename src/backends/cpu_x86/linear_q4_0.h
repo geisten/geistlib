@@ -1,6 +1,6 @@
 /*
  * src/backends/cpu_x86/linear_q4_0.h — cpu_x86 native Q4_0 / Q4_1 / IQ4_NL /
- * IQ4_XS linear.
+ * IQ4_XS / MXFP4 linear.
  *
  * Layer: BACKEND (cpu_x86, internal). See linear_q4_0.c.
  */
@@ -21,7 +21,7 @@
  * blocks. No repack, no aux memory. */
 void cpu_x86_linear_q4_0_bind(struct geist_weight *w);
 
-/* The same for IQ4_NL and IQ4_XS, under the same precondition. */
+/* The same for IQ4_NL, IQ4_XS and MXFP4, under the same precondition. */
 void cpu_x86_linear_iq4_bind(struct geist_weight *w);
 
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_LINEAR_Q4_0_H */
