@@ -8,6 +8,7 @@ dropped from mk/common.mk, or that a compiler does not know, fails here. A
 make variable given to `make test-py` (CC, TARGET) reaches `make -n` through
 MAKEFLAGS.
 """
+import os
 import re
 import shlex
 import subprocess
@@ -23,6 +24,7 @@ SOURCE = re.compile(r"\s(src/\S+\.c)(?:\s|$)")
 CASES = {
     "-Wimplicit-fallthrough": (
         """
+int f(int x);
 int f(int x) {
     int r = 0;
     switch (x) {
@@ -38,6 +40,7 @@ int f(int x) {
 }
 """,
         """
+int f(int x);
 int f(int x) {
     int r = 0;
     switch (x) {
@@ -53,6 +56,12 @@ int f(int x) {
     return r;
 }
 """,
+    ),
+    "-Wmissing-prototypes": (
+        "int twice(int x) { return 2 * x; }\n",
+        "static int half(int x) { return x / 2; }\n"
+        "int twice(int x);\n"
+        "int twice(int x) { return 4 * half(x); }\n",
     ),
 }
 
@@ -84,8 +93,10 @@ def compiles(flags, code):
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / "probe.c"
         src.write_text(code)
+        # A real compile, not -fsyntax-only: gcc runs -Wimplicit-fallthrough
+        # in the middle end, which -fsyntax-only never reaches.
         return subprocess.run(
-            flags + ["-fsyntax-only", str(src)], cwd=ROOT, capture_output=True, text=True
+            flags + ["-c", "-o", os.devnull, str(src)], cwd=ROOT, capture_output=True, text=True
         )
 
 

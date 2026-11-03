@@ -38,17 +38,6 @@ typedef float (*w4a8_dot_fn)(size_t        n_blocks,
                              const int32_t sum_a_per_block[static n_blocks],
                              float         scale_x);
 
-/* Forward decls of the ISA-specific variants. Each lives in its own TU
- * compiled with the matching -march= flag; see mk/backend-cpu_x86.mk. */
-[[nodiscard]] float
-w4a8_dot_avx512_vnni(size_t        n_blocks,
-                     const uint8_t weights[static n_blocks * W4A8_BLOCK_BYTES_WEIGHTS],
-                     const float   w_scales[static n_blocks],
-                     const float   w_offsets[static n_blocks],
-                     const int8_t  acts[static n_blocks * W4A8_BLOCK_ELEMS],
-                     const int32_t sum_a_per_block[static n_blocks],
-                     float         scale_x);
-
 /* Dispatcher state. Once written, never mutated again — readers see a
  * consistent snapshot under any thread interleaving (writes happen at
  * backend create, reads from the inference hot path). */
