@@ -431,6 +431,24 @@ static bool name_in(size_t n, const char *s, const char *const *list) {
         tok->pre_ignore_merges            = name_in(pre_len, pre, LLAMA3);
         tok->pre_digits = tok->pre_ignore_merges ? 3 : name_in(pre_len, pre, QWEN2) ? 1 : 0;
         tok->pre_marks  = name_in(pre_len, pre, QWEN35);
+        /* The GPT-2 regex: LLAMA_VOCAB_PRE_TYPE_GPT2 and the types that share
+         * its regex; the SMOLLM group runs "\p{N}" before it (#403). */
+        static const char *const GPT2[] = {
+                "gpt-2",      "phi-2",        "jina-es",     "jina-de",         "gigachat",
+                "jina-v2-es", "jina-v2-de",   "a.x-4.0",     "mellum",          "modern-bert",
+                "jina-v1-en", "jina-v2-code", "roberta-bpe", "exaone4",         "mpt",
+                "olmo",       "jais",         "trillion",    "granite-docling", nullptr};
+        static const char *const SMOLLM[] = {"smollm",
+                                             "starcoder",
+                                             "refact",
+                                             "command-r",
+                                             "codeshell",
+                                             "exaone",
+                                             "minerva-7b",
+                                             "mellum2",
+                                             nullptr};
+        tok->pre_split_digits             = name_in(pre_len, pre, SMOLLM);
+        tok->pre_gpt2                     = tok->pre_split_digits || name_in(pre_len, pre, GPT2);
         /* llama.cpp runs one regex for both (LLAMA_VOCAB_PRE_TYPE_GPT4O, #243). */
         tok->pre_gpt4o = pre != nullptr && ((pre_len == 6 && memcmp(pre, "gpt-4o", 6) == 0) ||
                                             (pre_len == 6 && memcmp(pre, "llama4", 6) == 0));
@@ -1043,6 +1061,17 @@ static size_t bpe_chunk_to_ids(const struct gguf_tokenizer *tok,
             return 1;
         }
     }
+    /* One codepoint has no pair to merge: skip the scratch (smollm's
+     * digits and lone spaces, #403). */
+    size_t adv1;
+    (void) utf8_decode_one(buf, buf_len, &adv1);
+    if (adv1 == buf_len && !tok->tokenizer_bin) {
+        const int32_t id = vocab_lookup(tok, buf, buf_len);
+        if (id >= 0) {
+            out[0] = id;
+            return 1;
+        }
+    }
 
     /* Decompose into one symbol per UTF-8 codepoint. Cap symbols at
      * buf_len since each codepoint takes >= 1 byte. */
@@ -1188,14 +1217,16 @@ enum q2_kind {
 };
 
 static enum q2_kind q2_kind_at(const char *text, size_t tlen, size_t i, bool marks, size_t *adv) {
-    const uint32_t cp = q2_cp_at(text, tlen, i, adv);
-    if (cp < 0x80) {
-        if (cp == ' ' || (cp >= 0x09 && cp <= 0x0D))
+    const unsigned char b = (unsigned char) text[i];
+    if (b < 0x80) { /* without the decode: most of any text (#403) */
+        *adv = 1;
+        if (b == ' ' || (b >= 0x09 && b <= 0x0D))
             return Q2_WS;
-        if ((cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z'))
+        if ((b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z'))
             return Q2_LETTER;
-        return cp >= '0' && cp <= '9' ? Q2_DIGIT : Q2_OTHER;
+        return b >= '0' && b <= '9' ? Q2_DIGIT : Q2_OTHER;
     }
+    const uint32_t cp = q2_cp_at(text, tlen, i, adv);
     if (cp == 0x85 || q2_is_ws(cp))
         return Q2_WS;
     switch (unicode_class_of(cp)) {
@@ -1289,6 +1320,61 @@ size_t gguf_tokenizer_llama3_chunk_end(
     if (n_cps >= 2 && j < tlen)
         return last_cp_start; /* 6. \s+(?!\S): run minus last cp */
     return j;                 /* 7. \s+ */
+}
+
+/* ---- GPT-2 pretokenizer scanner (#403) --------------------------------- *
+ *
+ * llama.cpp's unicode_regex_split_custom_gpt2, with the classes of the
+ * llama3 scanner above (\p{M} is punctuation here):
+ *
+ *   's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
+ *
+ * split_digits: llama.cpp ran "\p{N}" over the text first ("smollm" and the
+ * rest of its LLAMA_VOCAB_PRE_TYPE_SMOLLM group), so each \p{N} codepoint
+ * is a fragment of its own. Inside the regex a digit then acts as the
+ * fragment's end: " 7" is " " "7", and "a  7" keeps its whitespace whole. */
+size_t gguf_tokenizer_gpt2_chunk_end(size_t     tlen,
+                                     size_t     i,
+                                     bool       split_digits,
+                                     const char text[static tlen]) {
+    size_t             adv0;
+    const enum q2_kind k0 = q2_kind_at(text, tlen, i, false, &adv0);
+    if (split_digits && k0 == Q2_DIGIT)
+        return i + adv0;
+
+    /* contractions, lower case only */
+    if (text[i] == '\'' && i + 1 < tlen) {
+        const char n1 = text[i + 1];
+        if (n1 == 's' || n1 == 't' || n1 == 'm' || n1 == 'd')
+            return i + 2;
+        if (i + 2 < tlen) {
+            const char n2 = text[i + 2];
+            if ((n1 == 'r' && n2 == 'e') || (n1 == 'v' && n2 == 'e') || (n1 == 'l' && n2 == 'l'))
+                return i + 3;
+        }
+    }
+
+    /* letter, number or punct run, after an optional ASCII space */
+    if (k0 != Q2_WS)
+        return q2_run_end(text, tlen, i + adv0, false, k0);
+    if (text[i] == ' ' && i + 1 < tlen) {
+        size_t             adv1;
+        const enum q2_kind k1 = q2_kind_at(text, tlen, i + 1, false, &adv1);
+        if (k1 != Q2_WS && !(split_digits && k1 == Q2_DIGIT))
+            return q2_run_end(text, tlen, i + 1 + adv1, false, k1);
+    }
+
+    /* whitespace run: \s+(?!\S) leaves its last cp when \S follows */
+    size_t       j = i, last = i, n = 0, adv = 0;
+    enum q2_kind k = Q2_WS;
+    while (j < tlen && (k = q2_kind_at(text, tlen, j, false, &adv)) == Q2_WS) {
+        last = j;
+        j += adv;
+        n++;
+    }
+    if (n > 1 && j < tlen && !(split_digits && k == Q2_DIGIT))
+        return last;
+    return j;
 }
 
 /* ---- gpt-4o pretokenizer scanner (#243) -------------------------------- *
@@ -1916,14 +2002,16 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
     if (seq && (seq_cps == nullptr || seq_off == nullptr || seq_pieces == nullptr))
         return false;
 
-    size_t i            = 0;
-    size_t next_special = 0; /* gpt-4o: start of the next special after i */
+    size_t i = 0;
+    /* Scanner paths: start of the next special after i; none starts before
+     * it, so the match below is skipped until i reaches it (#403). */
+    size_t next_special = 0;
     while (i < tlen) {
         /* Leftmost-longest special-token match at current position. The
          * specials array is sorted by len desc, so the first hit IS the
          * longest possible match at this offset. */
         bool matched_special = false;
-        for (size_t s = 0; s < tok->n_specials && *n_out < cap; s++) {
+        for (size_t s = 0; s < tok->n_specials && *n_out < cap && i >= next_special; s++) {
             size_t slen = tok->specials[s].len;
             if (slen == 0 || i + slen > tlen)
                 continue;
@@ -1981,8 +2069,8 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
             continue;
         }
 
-        if (tok->pre_gpt4o || tok->pre_digits != 0) {
-            /* gpt-4o and llama3 / qwen2 chunks run on the text up to the
+        if (tok->pre_gpt4o || tok->pre_digits != 0 || tok->pre_gpt2) {
+            /* gpt-4o, llama3 / qwen2 and GPT-2 chunks run on the text up to the
              * next special token, as llama.cpp splits on specials first and
              * runs the regex on each fragment (a lookahead at the
              * fragment's end sees the end; "es?<|im_end|>" cannot swallow
@@ -2001,8 +2089,10 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
                 }
             }
             const size_t end =
-                    tok->pre_gpt4o
-                            ? gguf_tokenizer_gpt4o_chunk_end(next_special, i, text)
+                    tok->pre_gpt4o ? gguf_tokenizer_gpt4o_chunk_end(next_special, i, text)
+                    : tok->pre_gpt2
+                            ? gguf_tokenizer_gpt2_chunk_end(
+                                      next_special, i, tok->pre_split_digits, text)
                             : gguf_tokenizer_llama3_chunk_end(
                                       next_special, i, tok->pre_digits, tok->pre_marks, text);
             size_t cb_used = 0;
