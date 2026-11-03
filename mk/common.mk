@@ -113,8 +113,14 @@ endif
 # in a header, so the definition and its callers check one prototype. Not
 # -Wstrict-prototypes: in C23 `()` is a prototype and K&R definitions are
 # gone, so it has nothing left to report (#343).
+# -Wformat=2: a format string that is not a literal is an error, so every
+# printf-like helper carries [[gnu::format(printf, ...)]] and its callers'
+# arguments are checked against the format (#343).
+# Not -Wcast-qual: its 111 sites all drop a qualifier on purpose (free of an
+# owned const field, a const job handed to geist_par_for, read-only mmap
+# aliased into a void * API) and found no bug (#343).
 WARNINGS_BASE   := -Wall -Wextra -Wpedantic -Wswitch-enum -Wimplicit-fallthrough \
-                   -Wmissing-prototypes -Werror
+                   -Wmissing-prototypes -Wformat=2 -Werror
 WARNINGS_STRICT := $(WARNINGS_BASE) -Wshadow -Wundef
 
 # Include paths:
