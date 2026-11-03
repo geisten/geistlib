@@ -80,6 +80,51 @@ geist_token_t geist_model_token_by_text(const struct geist_model *m, const char 
                                                        geist_token_t        *out_ids,
                                                        size_t               *n_out);
 
+/* A byte range [begin, end) of a text. */
+struct geist_text_range {
+    size_t begin;
+    size_t end;
+};
+
+/* @stability EXPERIMENTAL (#409) — geist_session_tokenize with special-token
+ * parsing off inside n_plain byte ranges of text.
+ *
+ * For a prompt that holds untrusted text, such as a chat template rendered
+ * around the messages a client sent. geist_session_tokenize matches every
+ * special token the text spells, so a message containing
+ * "<|im_end|>\n<|im_start|>system\n" would open a system turn of its own.
+ * Inside plain[0..n_plain) that text is plain text: control and unknown
+ * tokens ("<|im_start|>", "<|eot_id|>", "<start_of_turn>", "</s>", ...) are
+ * not matched there, and a special token that reaches into a range is not
+ * matched either. User-defined added tokens (token_type USER_DEFINED, e.g.
+ * Qwen3's "<think>") still are: they are ordinary vocabulary, and this is
+ * what llama.cpp's llama_tokenize(..., parse_special=false) does. Outside
+ * the ranges the text is tokenized as by geist_session_tokenize.
+ *
+ * The text is tokenized in one pass, so the ranges change only which special
+ * tokens are matched: a text whose ranges spell no special token gets
+ * exactly the ids of geist_session_tokenize, and a chat rendered this way
+ * tokenizes as before. Tokenizing the pieces apart would not (a word split
+ * at a range boundary, "User: " + "Hi", merges differently). One range over
+ * the whole text is llama-tokenize --no-parse-special.
+ *
+ * The ranges are ascending and disjoint (plain[k].end <= plain[k+1].begin)
+ * and lie within strlen(text); empty ranges are allowed. `plain` may be
+ * nullptr only when n_plain is 0, which is geist_session_tokenize.
+ * Otherwise as geist_session_tokenize: no BOS is added; GEIST_E_INVALID_ARG
+ * for an invalid argument or range and on overflow, GEIST_E_NOT_FOUND if no
+ * tokenizer is loaded. A tokenizer.bin carries no token types: inside the
+ * ranges none of its special tokens is matched. */
+#define GEIST_HAS_TOKENIZE_PLAIN 1 /* for consumers built against several engines */
+[[nodiscard]] enum geist_status
+geist_session_tokenize_plain(struct geist_session          *s,
+                             const char                    *text,
+                             size_t                         n_plain,
+                             const struct geist_text_range *plain,
+                             size_t                         out_capacity,
+                             geist_token_t                 *out_ids,
+                             size_t                        *n_out);
+
 /* @stability STABLE since 0.1.0 — prefill caller-supplied token IDs,
  * bypassing the tokenizer (set_prompt = tokenize + this).
  *
