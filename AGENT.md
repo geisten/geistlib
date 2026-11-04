@@ -134,6 +134,12 @@ and as C++17 with `-pedantic-errors`. It runs in `make test` and in CI's
   tree. Several kernels document "y may alias x" — those must not get it.
   Aliasing the compiler was told cannot happen is a miscompile.
 - `typeof` / `auto` only where they clarify; never where they hide ownership.
+- A handle gets a type of its own: an opaque `struct x *`, never `void *`,
+  so passing the wrong one is a compile error (`make check-handles`). `void *`
+  is for raw bytes and callback contexts.
+- One spelling per concept: `static_assert`, `[[gnu::...]]` / `alignas`,
+  `memcpy` (not `_Static_assert`, `__attribute__`, `__builtin_memcpy`);
+  `tests/test_spelling_py.py` fails on the old ones.
 
 Every named enum in `src/` and `include/` has a fixed underlying type and a
 `static_assert` on its size. A `switch` over an enum lists every value and has
@@ -215,6 +221,18 @@ Neither is "cleaner" in general. Match the surrounding code.
 - Portability differences live **behind clear boundaries**, not scattered
   `#ifdef`s in logic. `make check-layers` counts the `#if`s on a platform
   macro per file outside `src/base/`; a file's count may only fall.
+- **Layers are a table, not a convention.** `tools/layers.json` says which
+  layer of `src/` may include and call which; `make check-layers` proves it
+  from the compiler's include tree and `nm`. A new edge goes into the table
+  with its reason, or the code moves; known violations sit in
+  `tools/layers_baseline.txt`, which only shrinks.
+- **Wiring is checked when it is built.** A model family is one file in
+  `src/archs/transformer/families/` plus one line in `family_list.h`, and its
+  table is written with `TRANSFORMER_FAMILY(...)`; a backend's tables with
+  `GEIST_BACKEND_VTBL/PRIMS/DESCRIPTOR` (`src/backends/common/backend_tables.h`).
+  A missing required hook or slot is then a compile error, and
+  `make check-static` builds each family and each CPU backend alone. Do not
+  add a runtime "is it wired" check instead.
 
 ## 6. Changing an existing API
 
@@ -251,7 +269,12 @@ Public headers under `include/` also need a changelog note: a fragment
 make format-check                  # clang-format is a hard CI gate
 make test-unit MODE=release
 make MODE=asan test-unit           # ASan + UBSan
+make check-static                  # clang-tidy, layers, handles, wiring (no models)
 ```
+
+`benchmark/c23_metrics.json` holds a ceiling for each construct #333 removes;
+CI fails when a count grows. Adding one on purpose (a defining macro, say)
+raises it with `make c23-metrics` in the same PR, with the reason.
 
 A pull request's CI runs only the required tier (format, contract, build +
 unit tests); ASan, TSan, the real-model suites, Metal and the perf floors run
@@ -272,7 +295,8 @@ with a local gcc before pushing:
 
 ```sh
 gcc-15 -std=c23 -O3 -DNDEBUG -fopenmp -Wall -Wextra -Wpedantic -Werror \
-       -Wshadow -Wundef -D_GNU_SOURCE -Wno-vla-parameter \
+       -Wswitch-enum -Wimplicit-fallthrough -Wmissing-prototypes -Wformat=2 \
+       -Wnull-dereference -Wshadow -Wundef -D_GNU_SOURCE -Wno-vla-parameter \
        -march=armv8.2-a+fp16+dotprod \
        -DGEIST_BACKEND_CPU_NEON=1 -DGEIST_BACKEND_CPU_SCALAR=1 \
        -Iinclude -I. -Isrc/base -Isrc/quant -Isrc/backends/common \
@@ -281,9 +305,11 @@ gcc-15 -std=c23 -O3 -DNDEBUG -fopenmp -Wall -Wextra -Wpedantic -Werror \
        -c <changed>.c -o /dev/null
 ```
 
-- The `-I` list is `CFLAGS_STRICT`'s from `mk/common.mk` and `-march` is the
-  arm64 one from `mk/target-linux.mk`; keep them in step. With a shorter `-I`
-  list, `session.c` stops at a missing header before the optimizer runs.
+- The warnings and the `-I` list are `CFLAGS_STRICT`'s from `mk/common.mk`
+  (plus `-Wconversion -Wsign-conversion` in the directories it lists), and
+  `-march` is the arm64 one from `mk/target-linux.mk`; keep them in step.
+  With a shorter `-I` list, `session.c` stops at a missing header before the
+  optimizer runs.
 - `-fopenmp` is what every target builds with; without it `#pragma omp` is an
   unknown pragma, which `-Werror` turns into an error.
 - `-march` makes the check see what CI's arm64 legs compile; a generic
