@@ -1,0 +1,51 @@
+{
+ "about": "The layers of src/ and what each may use (#344). docs/ARCHITECTURE.md shows this table; tools/check_layers.py checks the include edges, the symbol references of the built objects and the headers against it.",
+ "layers": [
+  {"name": "public", "paths": ["include/"], "may_use": [], "interface": true,
+   "what": "the public C ABI; its functions are defined in engine and base"},
+  {"name": "base", "paths": ["src/base/"], "may_use": ["public"],
+   "what": "freestanding utilities: heap, errors, hardware probe, threads"},
+  {"name": "quant", "paths": ["src/quant/"], "may_use": ["base", "public"], "interface": true,
+   "what": "the quantization contract: block layouts and codec declarations, defined in formats"},
+  {"name": "io", "paths": ["src/io/"], "may_use": ["base", "public", "quant"],
+   "what": "GGUF and safetensors readers, file mapping"},
+  {"name": "formats", "paths": ["src/formats/"], "may_use": ["base", "public", "quant", "io"],
+   "what": "per-quant decode of GGUF tensors, the AWQ scale loader"},
+  {"name": "backend_common", "paths": ["src/backends/common/"], "may_use": ["base", "public", "quant"],
+   "what": "the shared compute library: GEMM facade, gemma4 kernels, KIVI, host buffers"},
+  {"name": "cpu_neon", "paths": ["src/backends/cpu_neon/"], "may_use": ["base", "public", "quant", "backend_common"],
+   "what": "backend: Apple Silicon and ARM64"},
+  {"name": "cpu_scalar", "paths": ["src/backends/cpu_scalar/"], "may_use": ["base", "public", "quant", "backend_common"],
+   "what": "backend: the portable reference"},
+  {"name": "cpu_x86", "paths": ["src/backends/cpu_x86/"], "may_use": ["base", "public", "quant", "backend_common"],
+   "what": "backend: x86-64-v3 with AVX-512/VNNI dispatch"},
+  {"name": "metal", "paths": ["src/backends/metal/"], "may_use": ["base", "public", "quant", "backend_common"],
+   "what": "backend: Apple GPU"},
+  {"name": "vulkan", "paths": ["src/backends/vulkan/"], "may_use": ["base", "public", "quant", "backend_common"],
+   "what": "backend: Vulkan GPU"},
+  {"name": "transformer", "paths": ["src/archs/transformer/"], "may_use": ["base", "public", "quant", "io", "formats", "backend_common"],
+   "what": "arch: the decoder stack, families, forward blocks, weight loading"},
+  {"name": "audio_conformer", "paths": ["src/archs/audio_conformer/"], "may_use": ["base", "public", "quant", "io", "formats", "backend_common"],
+   "what": "arch: the Conformer audio tower"},
+  {"name": "vision_siglip", "paths": ["src/archs/vision_siglip/"], "may_use": ["base", "public", "quant", "io", "formats", "backend_common", "third_party"],
+   "what": "arch: the SigLIP vision tower"},
+  {"name": "engine", "paths": ["src/engine/"], "may_use": ["base", "public", "quant", "io", "formats", "backend_common"],
+   "what": "orchestration: model load, sessions, sampler, tokenizers, registries"},
+  {"name": "third_party", "paths": ["third_party/"], "may_use": [],
+   "what": "vendored stb image headers"}
+ ],
+ "composition": {
+  "src/engine/arch_registry.c": ["transformer", "audio_conformer", "vision_siglip"],
+  "src/engine/backend_registry.c": ["cpu_neon", "cpu_scalar", "cpu_x86", "metal", "vulkan"]
+ },
+ "header_defines": ["GEIST_INTERNAL_ENGINE_LAYER", "GEIST_INTERNAL_ARCH_LAYER", "GEIST_INTERNAL_BACKEND_LAYER"],
+ "generated_headers": ["_spv.h", "metal_shaders.h"],
+ "fragments": {
+  "src/backends/cpu_neon/attention_kv.h": "a template: the including file defines NKV_INT4 first, so the loop body specializes per cache",
+  "src/backends/cpu_x86/attention_driver.h": "a template: each including file defines ax_run_item, called by name rather than through a pointer"
+ },
+ "portability": {
+  "wrappers": ["src/base/"],
+  "not_portability": ["__cplusplus"]
+ }
+}

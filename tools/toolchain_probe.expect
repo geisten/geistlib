@@ -1,0 +1,50 @@
+# tools/toolchain_probe.sh --expect: <toolchain id> <feature> <yes|no> (#341).
+# One block per CI toolchain; docs/TOOLCHAIN_PROBE.md explains the verdicts.
+# A change here goes with a change of that document.
+
+# build-test "macOS arm64": Apple clang 21, macOS 27 SDK (mac-light). "macOS x86_64"
+# runs on GitHub's runners only and is not compared.
+macos-arm64 cc_major 21
+macos-arm64 stdbit no
+macos-arm64 counted_by yes
+macos-arm64 fixed_enum_cxx yes
+macos-arm64 gnu_cleanup yes
+macos-arm64 typeof yes
+macos-arm64 stdckdint yes
+macos-arm64 embed yes
+
+# build-test "Linux arm64": gcc-14 on ubuntu-24.04 (glibc 2.39)
+linux-arm64 cc_major 14
+linux-arm64 stdbit yes
+linux-arm64 counted_by no
+linux-arm64 fixed_enum_cxx yes
+linux-arm64 gnu_cleanup yes
+linux-arm64 typeof yes
+linux-arm64 stdckdint yes
+linux-arm64 embed no
+
+# readme-build: clean images with the README's recipe
+debian-13 cc_major 14
+debian-13 stdbit yes
+debian-13 counted_by no
+debian-13 fixed_enum_cxx yes
+debian-13 gnu_cleanup yes
+debian-13 typeof yes
+debian-13 stdckdint yes
+debian-13 embed no
+alpine-3-21 cc_major 14
+alpine-3-21 stdbit no
+alpine-3-21 counted_by no
+alpine-3-21 fixed_enum_cxx yes
+alpine-3-21 gnu_cleanup yes
+alpine-3-21 typeof yes
+alpine-3-21 stdckdint yes
+alpine-3-21 embed no
+ubuntu-24-04 cc_major 14
+ubuntu-24-04 stdbit yes
+ubuntu-24-04 counted_by no
+ubuntu-24-04 fixed_enum_cxx yes
+ubuntu-24-04 gnu_cleanup yes
+ubuntu-24-04 typeof yes
+ubuntu-24-04 stdckdint yes
+ubuntu-24-04 embed no
