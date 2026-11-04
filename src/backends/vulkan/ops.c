@@ -2451,7 +2451,10 @@ vk_linear_t_grouped(struct geist_backend            *be,
                                        .y_stride       = g.ys};
         for (uint32_t k = 0; k < cnt; ++k) {
             const struct geist_buffer *b = vk_grouped_weight(st, w[j0 + k]);
-            push.addr[k]                 = b->addr + b->base_off;
+            if (b == nullptr) { /* checked above; gcc cannot see that */
+                return GEIST_E_UNSUPPORTED;
+            }
+            push.addr[k] = b->addr + b->base_off;
         }
         const struct vk_access  acc[2] = {vk_acc((uint64_t) push.x_offset * 4u,
                                                  ((uint64_t) (cnt - 1u) * g.xs + g.n_in) * 4u,

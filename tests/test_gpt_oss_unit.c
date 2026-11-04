@@ -32,6 +32,7 @@
 #include <geist_util.h>
 
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,17 +78,20 @@ struct ref_model {
     } l[LAYERS];
 };
 
-static float *tensor(struct gguf_ctx *g, const char *fmt, int layer) {
-    char name[64];
-    snprintf(name, sizeof name, fmt, layer);
+[[gnu::format(printf, 2, 3)]] static float *tensor(struct gguf_ctx *g, const char *fmt, ...) {
+    char    name[64];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(name, sizeof name, fmt, ap);
+    va_end(ap);
     const struct gguf_tensor_t *t = gguf_get_tensor(g, name);
     return t != nullptr ? gguf_dequant_to_fp32(t) : nullptr;
 }
 
 static bool ref_load(struct gguf_ctx *g, struct ref_model *m) {
-    m->embd     = tensor(g, "token_embd.weight", 0);
-    m->out      = tensor(g, "output.weight", 0);
-    m->out_norm = tensor(g, "output_norm.weight", 0);
+    m->embd     = tensor(g, "token_embd.weight");
+    m->out      = tensor(g, "output.weight");
+    m->out_norm = tensor(g, "output_norm.weight");
     bool ok     = m->embd && m->out && m->out_norm;
     for (int l = 0; l < LAYERS; l++) {
         m->l[l].attn_norm = tensor(g, "blk.%d.attn_norm.weight", l);
